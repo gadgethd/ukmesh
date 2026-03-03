@@ -79,8 +79,8 @@ export const OpenSourcePage: React.FC = () => (
           <div>
             <strong>The source code is on GitHub</strong>
             <p>
-              The full source code for this dashboard — backend, frontend, viewshed worker, and
-              Docker setup — is publicly available. If you run a MeshCore network and want to set up
+              The full source code for this dashboard is publicly available: backend, frontend,
+              viewshed worker, and Docker setup. If you run a MeshCore network and want to set up
               your own analytics instance, everything you need is there.
             </p>
             <a
@@ -88,9 +88,8 @@ export const OpenSourcePage: React.FC = () => (
               target="_blank"
               rel="noopener noreferrer"
               className="site-btn site-btn--primary"
-              style={{ display: 'inline-block', marginTop: 12 }}
             >
-              View on GitHub
+              View on GitHub →
             </a>
           </div>
         </div>

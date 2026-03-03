@@ -1128,8 +1128,8 @@ html, body, #root {
 .oss-banner__icon { font-size: 24px; flex-shrink: 0; margin-top: 2px; }
 .oss-banner strong { color: var(--text-primary); display: block; margin-bottom: 6px; font-size: 15px; }
 .oss-banner p { font-size: 14px; color: var(--text-secondary); margin: 0; line-height: 1.6; }
-.oss-banner a { color: var(--accent); text-decoration: none; }
-.oss-banner a:hover { text-decoration: underline; }
+.oss-banner a:not(.site-btn) { color: var(--accent); text-decoration: none; }
+.oss-banner a:not(.site-btn):hover { text-decoration: underline; }
 
 /* ── Footer ────────────────────────────────────────────────────────────── */
 .site-footer {
