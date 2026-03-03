@@ -16,6 +16,35 @@ A real-time mesh network analytics platform for [MeshCore](https://meshcore.co.u
 
 ---
 
+## Roadmap
+
+### Phase 1 — Core platform (complete)
+- MQTT ingestion via `mctomqtt` with multi-observer support
+- Packet decoding with `@michaelhart/meshcore-decoder`
+- TimescaleDB storage with 28-day rolling retention
+- Live WebSocket feed to browser clients
+- React dashboard: node map, animated packet arc trails, decoded live feed
+- TX/RX deduplication by packet hash
+
+### Phase 2 — RF coverage (complete)
+- Viewshed worker: SRTM terrain-aware radio horizon computation per repeater
+- Coverage polygons served as GeoJSON and rendered on the map
+- Gap detection overlay highlighting areas with no coverage
+- Dynamic radius calculation based on node elevation
+- UK mainland clipping to remove sea coverage artefacts
+
+### Phase 3 — Repeater owner portal (planned)
+- Ed25519 JWT authentication for repeater owners
+- Owner-facing dashboard for their own nodes
+- Planned node placement tool: drop a marker, preview estimated coverage before deploying
+
+### Phase 4 — Public website (complete)
+- Separate public-facing site at a different hostname from the analytics dashboard
+- Node documentation, install guides, MQTT connection instructions
+- Network statistics page with charts
+
+---
+
 ## Quick Start
 
 ```bash
