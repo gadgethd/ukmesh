@@ -3,6 +3,8 @@ WORKDIR /build/frontend
 COPY frontend/package.json ./
 RUN npm install
 COPY frontend/ ./
+ARG VITE_APP_HOSTNAME
+ENV VITE_APP_HOSTNAME=$VITE_APP_HOSTNAME
 RUN npm run build
 
 FROM nginx:alpine

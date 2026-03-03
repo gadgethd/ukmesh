@@ -91,6 +91,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.website
+      args:
+        VITE_APP_HOSTNAME: ${VITE_APP_HOSTNAME:-}
     restart: unless-stopped
     ports:
       - "3001:80"
