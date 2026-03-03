@@ -1,6 +1,6 @@
-import React, { useState, useCallback, useMemo, useEffect } from 'react';
+import React, { useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import { MapContainer, TileLayer, useMap, Pane, Polygon, Polyline } from 'react-leaflet';
-import type { LatLngExpression, Map as LeafletMap } from 'leaflet';
+import type { LatLngExpression, Map as LeafletMap, Polyline as LeafletPolyline } from 'leaflet';
 import type { MeshNode, PacketArc } from '../../hooks/useNodes.js';
 import type { NodeCoverage } from '../../hooks/useCoverage.js';
 import { NodeMarker } from './NodeMarker.js';
@@ -69,6 +69,10 @@ function useCoverageDisplayRings(coverage: NodeCoverage[]): LatLngExpression[][]
   }, [coverage]);
 }
 
+// Dash pattern cycle length in px — must match dashArray below ('6 9' = 15px).
+const DASH_CYCLE = 15;
+// Pixels to advance per animation frame (~60fps → ~18px/s ≈ 1.2 cycles/s).
+const DASH_STEP  = 0.3;
 
 interface MapViewProps {
   nodes:           Map<string, MeshNode>;
@@ -110,6 +114,50 @@ export const MapView: React.FC<MapViewProps> = ({
   const handleViewStateChange = useCallback((vs: unknown) => {
     setDeckViewState(vs as DeckViewState);
   }, []);
+
+  // Refs to Leaflet Polyline instances for direct SVG attribute animation
+  const regularPathRef = useRef<LeafletPolyline | null>(null);
+  const betaPathRef    = useRef<LeafletPolyline | null>(null);
+  const aniFrameRef    = useRef<number | null>(null);
+
+  // Animate marching dashes by incrementing stroke-dashoffset directly on the
+  // Leaflet SVG path element. CSS animation is unreliable here because Leaflet
+  // calls _updateStyle (setAttribute) on every prop change, which can interrupt
+  // CSS keyframe animations. Direct DOM manipulation in an rAF loop is stable.
+  const hasRegular = !!packetPath;
+  const hasBeta    = !!(showBetaPaths && betaPath);
+
+  useEffect(() => {
+    if (!hasRegular && !hasBeta) {
+      if (aniFrameRef.current !== null) {
+        cancelAnimationFrame(aniFrameRef.current);
+        aniFrameRef.current = null;
+      }
+      return;
+    }
+
+    let offset = 0;
+    const tick = () => {
+      offset = (offset + DASH_STEP) % DASH_CYCLE;
+      // Negative dashoffset = dashes march forward (source → destination)
+      const val = String(-offset);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const rp = (regularPathRef.current as any)?._path as SVGPathElement | null;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const bp = (betaPathRef.current as any)?._path as SVGPathElement | null;
+      if (hasRegular && rp) rp.setAttribute('stroke-dashoffset', val);
+      if (hasBeta    && bp) bp.setAttribute('stroke-dashoffset', val);
+      aniFrameRef.current = requestAnimationFrame(tick);
+    };
+
+    aniFrameRef.current = requestAnimationFrame(tick);
+    return () => {
+      if (aniFrameRef.current !== null) {
+        cancelAnimationFrame(aniFrameRef.current);
+        aniFrameRef.current = null;
+      }
+    };
+  }, [hasRegular, hasBeta]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const FOURTEEN_DAYS_MS = 14 * 24 * 60 * 60 * 1000;
   const allNodesWithPos = useMemo(() => Array.from(nodes.values()).filter(
@@ -184,9 +232,10 @@ export const MapView: React.FC<MapViewProps> = ({
           />
         ))}
 
-        {/* Live packet path — dotted line from source node to receiving observer */}
+        {/* Live packet path — marching dashes from source → observer */}
         {packetPath && (
           <Polyline
+            ref={regularPathRef}
             positions={packetPath}
             pathOptions={{
               color:     '#00c4ff',
@@ -200,6 +249,7 @@ export const MapView: React.FC<MapViewProps> = ({
         {/* Beta path — coverage-validated, unambiguous hop resolution */}
         {showBetaPaths && betaPath && (
           <Polyline
+            ref={betaPathRef}
             positions={betaPath}
             pathOptions={{
               color:     '#a855f7',
