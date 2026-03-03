@@ -63,7 +63,7 @@ function resolvePathWaypoints(
   for (let i = 0; i < N; i++) {
     const prefix = pathHashes[i]!.toUpperCase();
     const candidates = Array.from(allNodes.values()).filter(
-      (n) => n.lat && n.lon && n.node_id.toUpperCase().startsWith(prefix),
+      (n) => n.lat && n.lon && !n.name?.includes('🚫') && n.node_id.toUpperCase().startsWith(prefix),
     );
     if (candidates.length === 0) continue;
 
@@ -160,9 +160,9 @@ function resolveBetaPath(
     const prefix     = pathHashes[i]!.slice(0, 2).toUpperCase();
     const candidates = Array.from(allNodes.values()).filter(
       (n) => n.lat && n.lon && (n.role === undefined || n.role === 2)
-        && n.node_id.toUpperCase().startsWith(prefix),
+        && !n.name?.includes('🚫') && n.node_id.toUpperCase().startsWith(prefix),
     );
-    if (candidates.length === 0) return null;
+    if (candidates.length === 0) continue;
 
     const ambiguityFactor = 1.0 / candidates.length;
     let chosen: MeshNode;
