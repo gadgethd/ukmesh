@@ -61,7 +61,7 @@ A real-time mesh network analytics platform for [MeshCore](https://meshcore.co.u
 
 ```bash
 # 1. Clone and enter the project
-git clone https://github.com/youruser/meshcore-analytics.git
+git clone https://github.com/gadgethd/meshcore-analytics.git
 cd meshcore-analytics
 
 # 2. Copy and configure environment
