@@ -9,9 +9,18 @@ type LearningNode = {
 };
 
 type LearningPacket = {
+  time: string;
   rx_node_id: string;
   src_node_id: string | null;
   path_hashes: string[] | null;
+};
+
+type LearningLink = {
+  node_a_id: string;
+  node_b_id: string;
+  itm_path_loss_db: number | null;
+  count_a_to_b: number;
+  count_b_to_a: number;
 };
 
 type ResolvedHop = {
@@ -22,9 +31,17 @@ type ResolvedHop = {
 const MAX_TRAINING_PACKETS = 120_000;
 const MAX_PREFIX_CHOICES_PER_GROUP = 3;
 const MAX_TRANSITIONS_PER_GROUP = 5;
+const MAX_EDGE_CHOICES_PER_GROUP = 8;
+const MAX_MOTIF2_CHOICES_PER_GROUP = 6;
+const MAX_MOTIF3_CHOICES_PER_GROUP = 4;
+const HOUR_BUCKET_SIZE = 6;
 
 function linkKey(a: string, b: string): string {
   return a < b ? `${a}:${b}` : `${b}:${a}`;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
 }
 
 function distKm(a: LearningNode, b: LearningNode): number {
@@ -41,6 +58,16 @@ function distancePrior(a: LearningNode, b: LearningNode): number {
   const elevB = b.elevation_m ?? 0;
   const elevScore = Math.min(1, Math.max(0, (Math.min(elevA, elevB) + 60) / 320));
   return 0.65 * distScore + 0.35 * elevScore;
+}
+
+function hourBucket(ts: Date): number {
+  return Math.floor(ts.getUTCHours() / HOUR_BUCKET_SIZE);
+}
+
+function recencyScore(lastSeenMs: number | undefined, nowMs: number): number {
+  if (!lastSeenMs) return 0.05;
+  const ageDays = Math.max(0, (nowMs - lastSeenMs) / 86_400_000);
+  return clamp(Math.exp(-ageDays / 21), 0.05, 1);
 }
 
 function resolvePathForPacket(
@@ -96,6 +123,29 @@ function truncateBest(
     .slice(0, max);
 }
 
+function directionalSupport(link: LearningLink, fromId: string, toId: string): number {
+  let forward = 0;
+  let reverse = 0;
+  if (fromId === link.node_a_id && toId === link.node_b_id) {
+    forward = link.count_a_to_b;
+    reverse = link.count_b_to_a;
+  } else if (fromId === link.node_b_id && toId === link.node_a_id) {
+    forward = link.count_b_to_a;
+    reverse = link.count_a_to_b;
+  } else if (fromId === link.node_a_id) {
+    forward = link.count_a_to_b;
+    reverse = link.count_b_to_a;
+  } else if (fromId === link.node_b_id) {
+    forward = link.count_b_to_a;
+    reverse = link.count_a_to_b;
+  } else {
+    return 0.5;
+  }
+  const total = forward + reverse;
+  if (total <= 0) return 0.5;
+  return forward / total;
+}
+
 export async function rebuildPathLearningModels(): Promise<void> {
   const networksResult = await query<{ network: string }>(
     `SELECT DISTINCT network
@@ -116,6 +166,7 @@ export async function rebuildPathLearningModels(): Promise<void> {
 }
 
 async function rebuildNetwork(modelNetwork: string, sourceNetwork: string | undefined): Promise<void> {
+  const nowMs = Date.now();
   const nodeNetworkFilter = sourceNetwork ? 'AND network = $1' : '';
   const packetNetworkFilter = sourceNetwork ? 'AND network = $1' : '';
   const linkNetworkFilter = sourceNetwork ? 'AND a.network = $1 AND b.network = $1' : '';
@@ -135,6 +186,7 @@ async function rebuildNetwork(modelNetwork: string, sourceNetwork: string | unde
     nodeParams,
   );
   const nodesById = new Map(nodesResult.rows.map((n) => [n.node_id, n]));
+
   const prefixMap = new Map<string, LearningNode[]>();
   for (const node of nodesResult.rows) {
     const prefix = node.node_id.slice(0, 2).toUpperCase();
@@ -143,8 +195,8 @@ async function rebuildNetwork(modelNetwork: string, sourceNetwork: string | unde
     else prefixMap.set(prefix, [node]);
   }
 
-  const linksResult = await query<{ node_a_id: string; node_b_id: string }>(
-    `SELECT nl.node_a_id, nl.node_b_id
+  const linksResult = await query<LearningLink>(
+    `SELECT nl.node_a_id, nl.node_b_id, nl.itm_path_loss_db, nl.count_a_to_b, nl.count_b_to_a
      FROM node_links nl
      JOIN nodes a ON a.node_id = nl.node_a_id
      JOIN nodes b ON b.node_id = nl.node_b_id
@@ -153,10 +205,19 @@ async function rebuildNetwork(modelNetwork: string, sourceNetwork: string | unde
        ${linkNetworkFilter}`,
     linkParams,
   );
+
   const confirmedLinks = new Set(linksResult.rows.map((r) => linkKey(r.node_a_id, r.node_b_id)));
+  const linkMetaByPair = new Map(linksResult.rows.map((r) => [linkKey(r.node_a_id, r.node_b_id), r]));
+  const adjacency = new Map<string, Set<string>>();
+  for (const link of linksResult.rows) {
+    if (!adjacency.has(link.node_a_id)) adjacency.set(link.node_a_id, new Set());
+    if (!adjacency.has(link.node_b_id)) adjacency.set(link.node_b_id, new Set());
+    adjacency.get(link.node_a_id)!.add(link.node_b_id);
+    adjacency.get(link.node_b_id)!.add(link.node_a_id);
+  }
 
   const packetsResult = await query<LearningPacket>(
-    `SELECT rx_node_id, src_node_id, path_hashes
+    `SELECT time, rx_node_id, src_node_id, path_hashes
      FROM packets
      WHERE rx_node_id IS NOT NULL
        AND path_hashes IS NOT NULL
@@ -173,6 +234,14 @@ async function rebuildNetwork(modelNetwork: string, sourceNetwork: string | unde
   const transitionCounts = new Map<string, number>();
   const transitionGroupTotals = new Map<string, number>();
 
+  const edgeObservedCounts = new Map<string, number>();
+  const edgeLastSeenMs = new Map<string, number>();
+  const activeFromCounts = new Map<string, number>();
+  const motif2Counts = new Map<string, number>();
+  const motif2GroupTotals = new Map<string, number>();
+  const motif3Counts = new Map<string, number>();
+  const motif3GroupTotals = new Map<string, number>();
+
   let evaluatedPackets = 0;
   let successPackets = 0;
   let confidenceSum = 0;
@@ -187,6 +256,9 @@ async function rebuildNetwork(modelNetwork: string, sourceNetwork: string | unde
     const region = rx.iata ?? 'unknown';
     const resolved = resolvePathForPacket(hashes, src, rx, prefixMap, confirmedLinks);
     if (resolved.length === 0) continue;
+
+    const ts = new Date(packet.time);
+    const bucket = hourBucket(ts);
 
     evaluatedPackets++;
 
@@ -219,11 +291,32 @@ async function rebuildNetwork(modelNetwork: string, sourceNetwork: string | unde
       const edgeKey = `${group}|${to.node_id}`;
       increment(transitionCounts, edgeKey);
       increment(transitionGroupTotals, group);
+
+      const fromGroup = `${region}|${bucket}|${from.node_id}`;
+      const directedEdgeKey = `${fromGroup}|${to.node_id}`;
+      increment(activeFromCounts, fromGroup);
+      increment(edgeObservedCounts, directedEdgeKey);
+      edgeLastSeenMs.set(directedEdgeKey, ts.getTime());
+
+      const motif2Group = `${region}|${bucket}|${from.node_id}`;
+      const motif2Key = `${motif2Group}|${from.node_id}>${to.node_id}`;
+      increment(motif2Counts, motif2Key);
+      increment(motif2GroupTotals, motif2Group);
+
+      if (i < fullNodes.length - 2) {
+        const next = fullNodes[i + 2]!;
+        const motif3Group = `${region}|${bucket}|${from.node_id}>${to.node_id}`;
+        const motif3Key = `${motif3Group}|${from.node_id}>${to.node_id}>${next.node_id}`;
+        increment(motif3Counts, motif3Key);
+        increment(motif3GroupTotals, motif3Group);
+      }
     }
   }
 
   await query('DELETE FROM path_prefix_priors WHERE network = $1', [modelNetwork]);
   await query('DELETE FROM path_transition_priors WHERE network = $1', [modelNetwork]);
+  await query('DELETE FROM path_edge_priors WHERE network = $1', [modelNetwork]);
+  await query('DELETE FROM path_motif_priors WHERE network = $1', [modelNetwork]);
 
   const groupedPrefix = new Map<string, Array<{ nodeId: string; count: number }>>();
   for (const [key, count] of prefixChoiceCounts) {
@@ -277,27 +370,187 @@ async function rebuildNetwork(modelNetwork: string, sourceNetwork: string | unde
     }
   }
 
+  const groupedEdges = new Map<string, Array<{ toNodeId: string; score: number; observed: number; expected: number; missing: number; directional: number; recency: number; reliability: number; pathLoss: number | null; consistencyPenalty: number }>>();
+
+  for (const [fromGroup, activeCount] of activeFromCounts) {
+    const [region, bucketText, fromNodeId] = fromGroup.split('|');
+    const bucket = Number(bucketText);
+    const neighbors = Array.from(adjacency.get(fromNodeId!) ?? []);
+    if (neighbors.length === 0) continue;
+    const degree = Math.max(1, neighbors.length);
+    const uniformExpected = Math.max(1, Math.round(activeCount / degree));
+    const rows: Array<{ toNodeId: string; score: number; observed: number; expected: number; missing: number; directional: number; recency: number; reliability: number; pathLoss: number | null; consistencyPenalty: number }> = [];
+
+    for (const toNodeId of neighbors) {
+      const directedEdgeKey = `${fromGroup}|${toNodeId}`;
+      const observed = edgeObservedCounts.get(directedEdgeKey) ?? 0;
+      const expected = Math.max(observed, uniformExpected);
+      const missing = Math.max(0, expected - observed);
+
+      const linkMeta = linkMetaByPair.get(linkKey(fromNodeId!, toNodeId));
+      const directional = linkMeta ? directionalSupport(linkMeta, fromNodeId!, toNodeId) : 0.5;
+      const recency = recencyScore(edgeLastSeenMs.get(directedEdgeKey), nowMs);
+      const reliability = observed / (expected + 2);
+      const pathLoss = linkMeta?.itm_path_loss_db ?? null;
+      const pathLossScore = pathLoss == null ? 0.55 : clamp((160 - pathLoss) / 45, 0, 1);
+      const missPenalty = expected > 0 ? (missing / expected) * 0.3 : 0;
+
+      let consistencyPenalty = 0;
+      const fromNode = nodesById.get(fromNodeId!);
+      const toNode = nodesById.get(toNodeId);
+      if (fromNode && toNode && pathLoss != null) {
+        const dKm = distKm(fromNode, toNode);
+        if (dKm > 55 && pathLoss > 150) consistencyPenalty += 0.14;
+      }
+      if (observed < 3 && missing >= 3) consistencyPenalty += 0.1;
+      if (directional < 0.06 && observed >= 5) consistencyPenalty += 0.06;
+      consistencyPenalty = clamp(consistencyPenalty, 0, 0.35);
+
+      const score = clamp(
+        0.02,
+        0.995,
+        0.42 * reliability + 0.22 * directional + 0.2 * recency + 0.16 * pathLossScore - missPenalty - consistencyPenalty,
+      );
+
+      rows.push({
+        toNodeId,
+        score,
+        observed,
+        expected,
+        missing,
+        directional,
+        recency,
+        reliability,
+        pathLoss,
+        consistencyPenalty,
+      });
+    }
+
+    groupedEdges.set(`${region}|${bucket}|${fromNodeId}`, rows);
+  }
+
+  let edgeRowsInserted = 0;
+  for (const [groupKey, rows] of groupedEdges) {
+    const [region, bucketText, fromNodeId] = groupKey.split('|');
+    const bucket = Number(bucketText);
+    for (const row of rows.sort((a, b) => b.score - a.score).slice(0, MAX_EDGE_CHOICES_PER_GROUP)) {
+      await query(
+        `INSERT INTO path_edge_priors
+           (network, from_node_id, to_node_id, receiver_region, hour_bucket, observed_count, expected_count, missing_count,
+            directional_support, recency_score, reliability, itm_path_loss_db, score, consistency_penalty, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW())
+         ON CONFLICT (network, receiver_region, hour_bucket, from_node_id, to_node_id) DO UPDATE SET
+           observed_count = EXCLUDED.observed_count,
+           expected_count = EXCLUDED.expected_count,
+           missing_count = EXCLUDED.missing_count,
+           directional_support = EXCLUDED.directional_support,
+           recency_score = EXCLUDED.recency_score,
+           reliability = EXCLUDED.reliability,
+           itm_path_loss_db = EXCLUDED.itm_path_loss_db,
+           score = EXCLUDED.score,
+           consistency_penalty = EXCLUDED.consistency_penalty,
+           updated_at = NOW()`,
+        [
+          modelNetwork,
+          fromNodeId,
+          row.toNodeId,
+          region,
+          bucket,
+          row.observed,
+          row.expected,
+          row.missing,
+          row.directional,
+          row.recency,
+          row.reliability,
+          row.pathLoss,
+          row.score,
+          row.consistencyPenalty,
+        ],
+      );
+      edgeRowsInserted++;
+    }
+  }
+
+  const groupedMotif2 = new Map<string, Array<{ nodeIds: string; count: number }>>();
+  for (const [key, count] of motif2Counts) {
+    const [region, bucket, fromNodeId, nodeIds] = key.split('|');
+    const groupKey = `${region}|${bucket}|${fromNodeId}`;
+    const row = groupedMotif2.get(groupKey) ?? [];
+    row.push({ nodeIds: nodeIds!, count });
+    groupedMotif2.set(groupKey, row);
+  }
+
+  let motifRowsInserted = 0;
+  for (const [groupKey, rows] of groupedMotif2) {
+    const [region, bucketText, fromNodeId] = groupKey.split('|');
+    const bucket = Number(bucketText);
+    const total = motif2GroupTotals.get(groupKey) ?? 1;
+    for (const row of truncateBest(rows.map((r) => ({ key: r.nodeIds, count: r.count })), MAX_MOTIF2_CHOICES_PER_GROUP)) {
+      await query(
+        `INSERT INTO path_motif_priors
+           (network, receiver_region, hour_bucket, motif_len, node_ids, count, probability, updated_at)
+         VALUES ($1, $2, $3, 2, $4, $5, $6, NOW())
+         ON CONFLICT (network, receiver_region, hour_bucket, motif_len, node_ids) DO UPDATE SET
+           count = EXCLUDED.count,
+           probability = EXCLUDED.probability,
+           updated_at = NOW()`,
+        [modelNetwork, region, bucket, row.key, row.count, row.count / total],
+      );
+      motifRowsInserted++;
+    }
+  }
+
+  const groupedMotif3 = new Map<string, Array<{ nodeIds: string; count: number }>>();
+  for (const [key, count] of motif3Counts) {
+    const [region, bucket, head, nodeIds] = key.split('|');
+    const groupKey = `${region}|${bucket}|${head}`;
+    const row = groupedMotif3.get(groupKey) ?? [];
+    row.push({ nodeIds: nodeIds!, count });
+    groupedMotif3.set(groupKey, row);
+  }
+
+  for (const [groupKey, rows] of groupedMotif3) {
+    const [region, bucketText] = groupKey.split('|');
+    const bucket = Number(bucketText);
+    const total = motif3GroupTotals.get(groupKey) ?? 1;
+    for (const row of truncateBest(rows.map((r) => ({ key: r.nodeIds, count: r.count })), MAX_MOTIF3_CHOICES_PER_GROUP)) {
+      await query(
+        `INSERT INTO path_motif_priors
+           (network, receiver_region, hour_bucket, motif_len, node_ids, count, probability, updated_at)
+         VALUES ($1, $2, $3, 3, $4, $5, $6, NOW())
+         ON CONFLICT (network, receiver_region, hour_bucket, motif_len, node_ids) DO UPDATE SET
+           count = EXCLUDED.count,
+           probability = EXCLUDED.probability,
+           updated_at = NOW()`,
+        [modelNetwork, region, bucket, row.key, row.count, row.count / total],
+      );
+      motifRowsInserted++;
+    }
+  }
+
   const top1Accuracy = evaluatedPackets > 0 ? successPackets / evaluatedPackets : 0;
   const meanPredConfidence = evaluatedPackets > 0 ? confidenceSum / evaluatedPackets : 0;
-  const confidenceScale = meanPredConfidence > 0 ? Math.min(1.6, Math.max(0.65, top1Accuracy / meanPredConfidence)) : 1;
-  const recommendedThreshold = Math.min(0.85, Math.max(0.35, 0.45 + (1 - top1Accuracy) * 0.2));
+  const confidenceScale = meanPredConfidence > 0 ? clamp(top1Accuracy / meanPredConfidence, 0.55, 1.7) : 1;
+  const confidenceBias = clamp(top1Accuracy - meanPredConfidence * confidenceScale, -0.2, 0.2);
+  const recommendedThreshold = clamp(0.35 + (1 - top1Accuracy) * 0.2, 0.3, 0.88);
 
   await query(
     `INSERT INTO path_model_calibration
-       (network, evaluated_packets, top1_accuracy, mean_pred_confidence, confidence_scale, recommended_threshold, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, NOW())
+       (network, evaluated_packets, top1_accuracy, mean_pred_confidence, confidence_scale, confidence_bias, recommended_threshold, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
      ON CONFLICT (network) DO UPDATE SET
        evaluated_packets = EXCLUDED.evaluated_packets,
        top1_accuracy = EXCLUDED.top1_accuracy,
        mean_pred_confidence = EXCLUDED.mean_pred_confidence,
        confidence_scale = EXCLUDED.confidence_scale,
+       confidence_bias = EXCLUDED.confidence_bias,
        recommended_threshold = EXCLUDED.recommended_threshold,
        updated_at = NOW()`,
-    [modelNetwork, evaluatedPackets, top1Accuracy, meanPredConfidence, confidenceScale, recommendedThreshold],
+    [modelNetwork, evaluatedPackets, top1Accuracy, meanPredConfidence, confidenceScale, confidenceBias, recommendedThreshold],
   );
 
   console.log(
     `[path-learning] model=${modelNetwork} source=${sourceNetwork ?? 'all'} packets=${evaluatedPackets} ` +
-    `top1=${top1Accuracy.toFixed(3)} scale=${confidenceScale.toFixed(3)}`,
+    `top1=${top1Accuracy.toFixed(3)} scale=${confidenceScale.toFixed(3)} edges=${edgeRowsInserted} motifs=${motifRowsInserted}`,
   );
 }

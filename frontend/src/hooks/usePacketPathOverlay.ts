@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { AggregatedPacket, MeshNode } from './useNodes.js';
 import type { NodeCoverage } from './useCoverage.js';
-import { hasCoords, resolveBetaPath, type LinkMetrics, type PathLearningModel, resolvePathWaypoints } from '../utils/pathing.js';
+import { hasCoords, resolvePathWaypoints } from '../utils/pathing.js';
+import { resolveBetaPath, type LinkMetrics, type PathLearningModel } from '../utils/betaPathing.js';
 import type { Filters } from '../components/FilterPanel/FilterPanel.js';
 
 const PATH_TTL = 5_000;

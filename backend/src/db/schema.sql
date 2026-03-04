@@ -153,12 +153,49 @@ CREATE TABLE IF NOT EXISTS path_transition_priors (
 CREATE INDEX IF NOT EXISTS path_transition_priors_lookup_idx
   ON path_transition_priors(network, receiver_region, from_node_id);
 
+CREATE TABLE IF NOT EXISTS path_edge_priors (
+  network             TEXT        NOT NULL,
+  from_node_id        TEXT        NOT NULL,
+  to_node_id          TEXT        NOT NULL,
+  receiver_region     TEXT        NOT NULL,
+  hour_bucket         SMALLINT    NOT NULL,
+  observed_count      INTEGER     NOT NULL,
+  expected_count      INTEGER     NOT NULL,
+  missing_count       INTEGER     NOT NULL,
+  directional_support DOUBLE PRECISION NOT NULL,
+  recency_score       DOUBLE PRECISION NOT NULL,
+  reliability         DOUBLE PRECISION NOT NULL,
+  itm_path_loss_db    DOUBLE PRECISION,
+  score               DOUBLE PRECISION NOT NULL,
+  consistency_penalty DOUBLE PRECISION NOT NULL DEFAULT 0,
+  updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (network, receiver_region, hour_bucket, from_node_id, to_node_id)
+);
+CREATE INDEX IF NOT EXISTS path_edge_priors_lookup_idx
+  ON path_edge_priors(network, receiver_region, hour_bucket, from_node_id);
+
+CREATE TABLE IF NOT EXISTS path_motif_priors (
+  network         TEXT        NOT NULL,
+  receiver_region TEXT        NOT NULL,
+  hour_bucket     SMALLINT    NOT NULL,
+  motif_len       SMALLINT    NOT NULL,
+  node_ids        TEXT        NOT NULL,
+  count           INTEGER     NOT NULL,
+  probability     DOUBLE PRECISION NOT NULL,
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (network, receiver_region, hour_bucket, motif_len, node_ids)
+);
+CREATE INDEX IF NOT EXISTS path_motif_priors_lookup_idx
+  ON path_motif_priors(network, receiver_region, hour_bucket, motif_len);
+
 CREATE TABLE IF NOT EXISTS path_model_calibration (
   network               TEXT PRIMARY KEY,
   evaluated_packets     INTEGER NOT NULL DEFAULT 0,
   top1_accuracy         DOUBLE PRECISION NOT NULL DEFAULT 0,
   mean_pred_confidence  DOUBLE PRECISION NOT NULL DEFAULT 0,
   confidence_scale      DOUBLE PRECISION NOT NULL DEFAULT 1,
+  confidence_bias       DOUBLE PRECISION NOT NULL DEFAULT 0,
   recommended_threshold DOUBLE PRECISION NOT NULL DEFAULT 0.5,
   updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+ALTER TABLE path_model_calibration ADD COLUMN IF NOT EXISTS confidence_bias DOUBLE PRECISION NOT NULL DEFAULT 0;
