@@ -10,19 +10,38 @@ import { OpenSourcePage } from './pages/OpenSourcePage.js';
 import { MqttPage } from './pages/MqttPage.js';
 import { StatsPage } from './pages/StatsPage.js';
 import { PacketsPage } from './pages/PacketsPage.js';
+import { UKLayout } from './pages/ukmesh/UKLayout.js';
+import { UKHomePage } from './pages/ukmesh/UKHomePage.js';
+import { UKInstallPage } from './pages/ukmesh/UKInstallPage.js';
+import { UKMqttPage } from './pages/ukmesh/UKMqttPage.js';
 import './styles/globals.css';
 
 const root = document.getElementById('root')!;
 const { hostname } = window.location;
 const APP_HOSTNAME = import.meta.env['VITE_APP_HOSTNAME'];
-const isAppDomain = !APP_HOSTNAME || hostname === APP_HOSTNAME;
+const SITE         = import.meta.env['VITE_SITE'] ?? 'teesside';
+const isAppDomain  = !APP_HOSTNAME || hostname === APP_HOSTNAME;
 
-document.title = isAppDomain ? 'MeshCore Analytics' : 'Teesside Mesh';
+document.title = isAppDomain
+  ? 'MeshCore Analytics'
+  : SITE === 'ukmesh' ? 'UK Mesh Network' : 'Teesside Mesh';
 
 ReactDOM.createRoot(root).render(
   <React.StrictMode>
     {isAppDomain ? (
       <App />
+    ) : SITE === 'ukmesh' ? (
+      <BrowserRouter>
+        <Routes>
+          <Route element={<UKLayout />}>
+            <Route index element={<UKHomePage />} />
+            <Route path="about" element={<AboutPage />} />
+            <Route path="install" element={<UKInstallPage />} />
+            <Route path="mqtt" element={<UKMqttPage />} />
+            <Route path="open-source" element={<OpenSourcePage />} />
+          </Route>
+        </Routes>
+      </BrowserRouter>
     ) : (
       <BrowserRouter>
         <Routes>
@@ -31,8 +50,8 @@ ReactDOM.createRoot(root).render(
             <Route path="about" element={<AboutPage />} />
             <Route path="install" element={<InstallPage />} />
             <Route path="mqtt" element={<MqttPage />} />
-            <Route path="open-source" element={<OpenSourcePage />} />
             <Route path="packets" element={<PacketsPage />} />
+            <Route path="open-source" element={<OpenSourcePage />} />
             <Route path="stats" element={<StatsPage />} />
           </Route>
         </Routes>

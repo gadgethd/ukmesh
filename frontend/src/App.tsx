@@ -116,6 +116,32 @@ function distKm(a: MeshNode, b: MeshNode): number {
   return Math.hypot(dlat, dlon);
 }
 
+// ── Line-of-sight check (smooth Earth, k=0.25 refraction) ────────────────────
+const R_EFF_M = 6_371_000 / (1 - 0.25); // ~8,495,000 m effective Earth radius
+
+/**
+ * Smooth-Earth LOS check with atmospheric refraction k=0.25 (equivalent to
+ * the standard 4/3-Earth model). Uses each node's elevation_m (terrain ASL)
+ * plus 5 m antenna height. Samples 20 evenly-spaced points along the path
+ * and rejects the hop if Earth curvature alone would block the ray at any
+ * point. Does not model terrain between the nodes — confirmed links already
+ * have full ITM terrain analysis; this guards unconfirmed candidates.
+ */
+function hasLoS(a: MeshNode, b: MeshNode): boolean {
+  const hA = (a.elevation_m ?? 0) + 5; // metres ASL at antenna
+  const hB = (b.elevation_m ?? 0) + 5;
+  const d  = distKm(a, b) * 1000;      // metres
+  if (d < 1) return true;
+  for (let i = 1; i < 20; i++) {
+    const t     = i / 20;
+    const x     = t * d;
+    const los   = hA + (hB - hA) * t;
+    const bulge = x * (d - x) / (2 * R_EFF_M);
+    if (los < bulge) return false;
+  }
+  return true;
+}
+
 // Fallback range check (used when no ITM data exists for a pair).
 function nodeRange(nodeId: string, coverage: NodeCoverage[]): number {
   const cov = coverage.find((c) => c.node_id === nodeId);
@@ -169,15 +195,15 @@ function resolveBetaPath(
       .map((c) => { usedIds.add(c.node_id); return { node: c, conf: 0.9 }; });
 
     const reachable = all
-      .filter((c) => !usedIds.has(c.node_id) && canReach(c, prevNode, coverage))
+      .filter((c) => !usedIds.has(c.node_id) && canReach(c, prevNode, coverage) && hasLoS(c, prevNode))
       .sort((a, b) => distKm(a, prevNode) - distKm(b, prevNode))
       .slice(0, 2)
       .map((c) => { usedIds.add(c.node_id); return { node: c, conf: 0.3 / Math.max(1, all.length) }; });
 
-    // Last resort: closest prefix match within 150 km, even if outside coverage radius.
+    // Last resort: closest prefix match within 50 km with LOS clearance.
     // Prevents hops being silently dropped just because link data is sparse.
     const fallback = all
-      .filter((c) => !usedIds.has(c.node_id) && distKm(c, prevNode) < 150)
+      .filter((c) => !usedIds.has(c.node_id) && distKm(c, prevNode) < 50 && hasLoS(c, prevNode))
       .sort((a, b) => distKm(a, prevNode) - distKm(b, prevNode))
       .slice(0, 1)
       .map((c) => ({ node: c, conf: 0.05 / Math.max(1, all.length) }));

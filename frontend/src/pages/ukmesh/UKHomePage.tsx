@@ -1,0 +1,192 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { Link } from 'react-router-dom';
+
+interface SiteStats {
+  packetsDay:     number;
+  totalNodes:     number;
+  longestHop:     number;
+  longestHopHash: string | null;
+}
+
+function useFlash(value: number) {
+  const [flash, setFlash] = useState(false);
+  const prev = useRef(value);
+  useEffect(() => {
+    if (value !== prev.current) {
+      prev.current = value;
+      setFlash(true);
+      const t = setTimeout(() => setFlash(false), 600);
+      return () => clearTimeout(t);
+    }
+  }, [value]);
+  return flash;
+}
+
+const StatCard: React.FC<{ value: number; label: string; suffix?: string; format?: (n: number) => string }> = ({
+  value, label, suffix = '', format,
+}) => {
+  const flash = useFlash(value);
+  const display = format ? format(value) : value.toLocaleString();
+  return (
+    <div className="site-stat">
+      <span className={`site-stat__value${flash ? ' tick-flash' : ''}`}>
+        {display}{suffix && <span className="site-stat__suffix">{suffix}</span>}
+      </span>
+      <span className="site-stat__label">{label}</span>
+    </div>
+  );
+};
+
+export const UKHomePage: React.FC = () => {
+  const [stats, setStats] = useState<SiteStats>({ packetsDay: 0, totalNodes: 0, longestHop: 0, longestHopHash: null });
+  const hopFlash = useFlash(stats.longestHop);
+
+  useEffect(() => {
+    const fetch_ = () =>
+      fetch('/api/stats')
+        .then(r => r.json())
+        .then(d => setStats({ packetsDay: d.packetsDay, totalNodes: d.totalNodes, longestHop: d.longestHop, longestHopHash: d.longestHopHash ?? null }))
+        .catch(() => {});
+    fetch_();
+    const t = setInterval(fetch_, 30_000);
+    return () => clearInterval(t);
+  }, []);
+
+  return (
+    <>
+      {/* ── Hero ─────────────────────────────────────────────────────── */}
+      <section className="site-hero">
+        <div className="site-hero__glow" aria-hidden />
+        <div className="site-content">
+          <div className="site-hero__badge">United Kingdom · LoRa 868 MHz</div>
+          <h1 className="site-hero__title">
+            UK<br />
+            <span className="site-hero__title--accent">Mesh Network</span>
+          </h1>
+          <p className="site-hero__sub">
+            A UK-wide off-grid communications network built on{' '}
+            <a href="https://meshcore.co.uk" target="_blank" rel="noopener noreferrer">MeshCore</a>,{' '}
+            a free, open-source LoRa mesh platform. No internet. No infrastructure. Just radio.
+          </p>
+          <div className="site-hero__actions">
+            <a href="https://app.ukmesh.com" className="site-btn site-btn--primary">Open Live Map →</a>
+            <Link to="/about" className="site-btn site-btn--ghost">Learn more</Link>
+          </div>
+        </div>
+      </section>
+
+      {/* ── Live stats ───────────────────────────────────────────────── */}
+      <section className="site-stats-section">
+        <div className="site-content">
+          <p className="site-stats-section__eyebrow">Live network stats · updates every 30s</p>
+          <div className="site-stats-grid">
+            <StatCard value={stats.packetsDay} label="Packets in the last 24 hours" />
+            <StatCard value={stats.totalNodes} label="Nodes ever heard on the network" />
+            <div className="site-stat">
+              <span className={`site-stat__value${hopFlash ? ' tick-flash' : ''}`}>
+                {stats.longestHop.toLocaleString()}<span className="site-stat__suffix"> hops</span>
+              </span>
+              <span className="site-stat__label">Longest relay chain ever recorded</span>
+              {stats.longestHopHash && (
+                <span className="site-stat__hash" title={stats.longestHopHash}>
+                  {stats.longestHopHash}
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* ── Radio config ─────────────────────────────────────────────── */}
+      <section className="site-stats-section site-stats-section--alt">
+        <div className="site-content">
+          <p className="site-stats-section__eyebrow">Network radio configuration</p>
+          <div className="site-stats-grid site-stats-grid--6">
+            <div className="site-stat">
+              <span className="site-stat__value">EU/UK Narrow</span>
+              <span className="site-stat__label">Profile</span>
+            </div>
+            <div className="site-stat">
+              <span className="site-stat__value">869.618</span>
+              <span className="site-stat__label">Frequency (MHz)</span>
+            </div>
+            <div className="site-stat">
+              <span className="site-stat__value">62.5<span className="site-stat__suffix">kHz</span></span>
+              <span className="site-stat__label">Bandwidth</span>
+            </div>
+            <div className="site-stat">
+              <span className="site-stat__value">SF8</span>
+              <span className="site-stat__label">Spreading Factor</span>
+            </div>
+            <div className="site-stat">
+              <span className="site-stat__value">CR8</span>
+              <span className="site-stat__label">Coding Rate</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* ── About cards ─────────────────────────────────────────────── */}
+      <section className="site-section">
+        <div className="site-content site-cards-row">
+
+          <div className="site-card">
+            <div className="site-card__icon">📡</div>
+            <h2 className="site-card__title">What is MeshCore?</h2>
+            <p className="site-card__body">
+              MeshCore is open-source firmware for ESP32 LoRa hardware. Each node acts as
+              both a radio and a relay. Packets hop between nodes automatically, extending
+              range far beyond what a single radio can achieve.
+            </p>
+            <Link to="/about" className="site-card__link">Learn more →</Link>
+          </div>
+
+          <div className="site-card">
+            <div className="site-card__icon">🔧</div>
+            <h2 className="site-card__title">Become an observer</h2>
+            <p className="site-card__body">
+              Connect your repeater node to the UK Mesh MQTT broker and contribute live
+              packet data from your area. All you need is a Linux device, a USB cable,
+              and about 15 minutes.
+            </p>
+            <Link to="/mqtt" className="site-card__link">Observer setup →</Link>
+          </div>
+
+          <div className="site-card">
+            <div className="site-card__icon">🗺️</div>
+            <h2 className="site-card__title">Live map and analytics</h2>
+            <p className="site-card__body">
+              The live dashboard shows every packet heard across the UK in real time: node
+              positions, relay paths, RF coverage, and a decoded packet feed. Built entirely
+              on open source tools.
+            </p>
+            <a href="https://app.ukmesh.com" className="site-card__link">Open map →</a>
+          </div>
+
+        </div>
+      </section>
+
+      {/* ── Discord CTA ─────────────────────────────────────────────── */}
+      <section className="site-section site-section--dark">
+        <div className="site-content site-cta">
+          <div className="site-cta__text">
+            <h2 className="site-cta__title">Join the conversation</h2>
+            <p className="site-cta__body">
+              We hang out on the MeshCore Discord. Come say hello, ask questions, or
+              coordinate coverage with other UK operators. DM <strong>ibengr</strong> to
+              get set up as an observer.
+            </p>
+          </div>
+          <a
+            href="https://discord.gg/bSuST8xvet"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="site-btn site-btn--primary"
+          >
+            Join Discord →
+          </a>
+        </div>
+      </section>
+    </>
+  );
+};

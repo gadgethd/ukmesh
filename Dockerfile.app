@@ -5,7 +5,9 @@ COPY frontend/package.json ./
 RUN npm install
 COPY frontend/ ./
 ARG VITE_APP_HOSTNAME
+ARG VITE_NETWORK=teesside
 ENV VITE_APP_HOSTNAME=$VITE_APP_HOSTNAME
+ENV VITE_NETWORK=$VITE_NETWORK
 RUN npm run build
 
 FROM nginx:alpine

@@ -103,9 +103,36 @@ services:
       dockerfile: Dockerfile.website
       args:
         VITE_APP_HOSTNAME: ${VITE_APP_HOSTNAME:-}
+        VITE_SITE: teesside
     restart: unless-stopped
     ports:
       - "3002:80"
+    depends_on:
+      - backend
+
+  app-ukmesh:
+    build:
+      context: .
+      dockerfile: Dockerfile.app
+      args:
+        VITE_APP_HOSTNAME: app.ukmesh.com
+        VITE_NETWORK: ukmesh
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "3003:80"
+
+  website-ukmesh:
+    build:
+      context: .
+      dockerfile: Dockerfile.website
+      args:
+        VITE_APP_HOSTNAME: app.ukmesh.com
+        VITE_SITE: ukmesh
+    restart: unless-stopped
+    ports:
+      - "3004:80"
     depends_on:
       - backend
 
@@ -120,6 +147,8 @@ services:
       - backend
       - app
       - website
+      - app-ukmesh
+      - website-ukmesh
       - mosquitto
 
 volumes:
