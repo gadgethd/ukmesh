@@ -44,7 +44,8 @@ JOB_QUEUE      = 'meshcore:viewshed_jobs'
 LINK_JOB_QUEUE = 'meshcore:link_jobs'
 LIVE_CHANNEL   = 'meshcore:live'
 
-ANTENNA_HEIGHT_M = 5        # observer height above ground (m) — fixed 5 m antenna
+ANTENNA_HEIGHT_M     = 5    # observer height above ground (m) — fixed 5 m antenna
+MIN_LINK_OBSERVATIONS = 5  # must match backend db/index.ts
 MAX_RADIUS_M     = 100_000  # absolute cap on viewshed radius (m)
 SIMPLIFY_DEG     = 0.001    # Douglas-Peucker tolerance (~100 m)
 N_RAYS           = 720      # number of radial rays cast from the observer
@@ -468,7 +469,12 @@ def backfill_elevations(db):
 
 def process_link_job(db, r_client, job: dict):
     """Resolve relay path prefixes to known nodes (backwards from the receiver),
-    record observations in node_links, and compute RF path loss for new pairs."""
+    record observations in node_links, and compute RF path loss for new pairs.
+
+    Uses accumulated confirmed-link knowledge (node_links) to prefer known
+    neighbours over purely geographic proximity — the algorithm improves as
+    more packets are observed.
+    """
     rx_node_id  = job.get('rx_node_id')
     src_node_id = job.get('src_node_id')
     path_hashes = job.get('path_hashes', [])
@@ -476,7 +482,7 @@ def process_link_job(db, r_client, job: dict):
     if not rx_node_id or not path_hashes:
         return
 
-    # Load all positioned nodes
+    # Load all positioned repeater nodes
     with db.cursor() as cur:
         cur.execute(
             'SELECT node_id, lat, lon, elevation_m, name, role FROM nodes '
@@ -487,6 +493,21 @@ def process_link_job(db, r_client, job: dict):
                      'name': row[4], 'role': row[5]}
             for row in cur.fetchall()
         }
+
+    # Load confirmed link pairs so we can prefer known neighbours when resolving
+    # relay hashes — forms the self-improving feedback loop.
+    with db.cursor() as cur:
+        cur.execute(
+            'SELECT node_a_id, node_b_id FROM node_links '
+            'WHERE itm_viable = true AND observed_count >= %s',
+            (MIN_LINK_OBSERVATIONS,),
+        )
+        confirmed_pairs: set[tuple[str, str]] = {
+            (min(a, b), max(a, b)) for a, b in cur.fetchall()
+        }
+
+    def confirmed_link(a_id: str, b_id: str) -> bool:
+        return (min(a_id, b_id), max(a_id, b_id)) in confirmed_pairs
 
     rx = all_nodes.get(rx_node_id)
     if not rx:
@@ -499,23 +520,39 @@ def process_link_job(db, r_client, job: dict):
             ((a['lon'] - b['lon']) * 111.32 * cos_m) ** 2
         )
 
-    # Resolve path working backwards from rx (known position anchor)
-    resolved: list[tuple[str, dict]] = []   # built in reverse, then flipped
-    prev    = rx
+    # Resolve path working backwards from rx (known position anchor).
+    # Each node can only appear once — MeshCore nodes never relay the same
+    # packet twice.
+    resolved: list[tuple[str, dict]] = []
+    prev_id  = rx_node_id
+    prev     = rx
+    visited  = {rx_node_id}
+
     for prefix in reversed(path_hashes):
         prefix = prefix[:2].upper()
         candidates = [
             (nid, nd) for nid, nd in all_nodes.items()
             if nid.upper().startswith(prefix)
+            and nid not in visited
             and (nd['role'] is None or nd['role'] == 2)
             and nd['name'] and '🚫' not in nd['name']
         ]
         if not candidates:
             continue
-        candidates.sort(key=lambda x: node_dist(x[1], prev))
-        best_id, best = candidates[0]
+
+        # Prefer confirmed neighbours of the previous node; fall back to closest.
+        confirmed = [(nid, nd) for nid, nd in candidates if confirmed_link(nid, prev_id)]
+        if confirmed:
+            confirmed.sort(key=lambda x: node_dist(x[1], prev))
+            best_id, best = confirmed[0]
+        else:
+            candidates.sort(key=lambda x: node_dist(x[1], prev))
+            best_id, best = candidates[0]
+
         resolved.insert(0, (best_id, best))
-        prev = best
+        visited.add(best_id)
+        prev_id = best_id
+        prev    = best
 
     # Build adjacency list: src → relays → rx
     full: list[tuple[str, dict]] = []

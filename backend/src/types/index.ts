@@ -39,7 +39,7 @@ export interface Node {
   firmwareVersion?: string;
 }
 
-export type WSMessageType = 'packet' | 'node_update' | 'node_upsert' | 'coverage_update' | 'initial_state';
+export type WSMessageType = 'packet' | 'node_update' | 'node_upsert' | 'coverage_update' | 'initial_state' | 'link_update';
 
 export interface WSMessage {
   type: WSMessageType;

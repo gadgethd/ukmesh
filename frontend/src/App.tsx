@@ -102,6 +102,7 @@ function resolvePathWaypoints(
 // ── Beta path helpers ─────────────────────────────────────────────────────────
 
 const MAX_BETA_HOPS = 15;
+const MIN_LINK_OBSERVATIONS = 5; // must match backend db/index.ts
 
 /** Canonical lookup key for a link between two nodes (order-independent). */
 function linkKey(a: string, b: string): string {
@@ -452,6 +453,24 @@ export const App: React.FC = () => {
       handleNodeUpsert(msg.data as Partial<MeshNode> & { node_id: string });
     } else if (msg.type === 'coverage_update') {
       handleCoverageUpdate(msg.data as { node_id: string; geom: { type: string; coordinates: unknown } });
+    } else if (msg.type === 'link_update') {
+      const d = msg.data as {
+        node_a_id: string; node_b_id: string;
+        observed_count: number; itm_viable: boolean | null;
+      };
+      if (d.itm_viable && d.observed_count >= MIN_LINK_OBSERVATIONS) {
+        const key = linkKey(d.node_a_id, d.node_b_id);
+        setLinkPairs((prev) => {
+          if (prev.has(key)) return prev;
+          const next = new Set(prev);
+          next.add(key);
+          return next;
+        });
+        setViablePairsArr((prev) => {
+          if (prev.some(([a, b]) => linkKey(a, b) === key)) return prev;
+          return [...prev, [d.node_a_id, d.node_b_id]];
+        });
+      }
     }
   }, [handleInitialState, handlePacket, handleNodeUpdate, handleNodeUpsert, handleCoverageUpdate]);
 
