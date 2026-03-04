@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { statsEndpoint } from '../utils/api.js';
+import { statsEndpoint, uncachedEndpoint } from '../utils/api.js';
 import { useFlash } from '../hooks/useFlash.js';
 
 type SiteStats = {
@@ -43,7 +43,7 @@ export const LiveStatsSection: React.FC<LiveStatsSectionProps> = ({ network }) =
 
   useEffect(() => {
     const loadStats = () => {
-      fetch(statsEndpoint(network))
+      fetch(uncachedEndpoint(statsEndpoint(network)), { cache: 'no-store' })
         .then((response) => response.json())
         .then((data) => setStats({
           packetsDay: data.packetsDay,
@@ -82,4 +82,3 @@ export const LiveStatsSection: React.FC<LiveStatsSectionProps> = ({ network }) =
     </section>
   );
 };
-

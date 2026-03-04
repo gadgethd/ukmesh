@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { statsEndpoint } from '../utils/api.js';
+import { statsEndpoint, uncachedEndpoint } from '../utils/api.js';
 
 export type DashboardStats = {
   mqttNodes: number;
@@ -19,7 +19,10 @@ export function useDashboardStats(network?: string): DashboardStats {
   useEffect(() => {
     const fetchStats = async () => {
       try {
-        const response = await fetch(statsEndpoint(network));
+        const response = await fetch(
+          uncachedEndpoint(statsEndpoint(network)),
+          { cache: 'no-store' }
+        );
         if (response.ok) {
           setStats(await response.json() as DashboardStats);
         }
@@ -35,4 +38,3 @@ export function useDashboardStats(network?: string): DashboardStats {
 
   return stats;
 }
-

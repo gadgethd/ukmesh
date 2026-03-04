@@ -12,3 +12,7 @@ export function chartStatsEndpoint(network?: string): string {
   return withNetworkParam('/api/stats/charts', network);
 }
 
+export function uncachedEndpoint(url: string): string {
+  const sep = url.includes('?') ? '&' : '?';
+  return `${url}${sep}_ts=${Date.now()}`;
+}

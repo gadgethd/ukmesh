@@ -5,7 +5,7 @@ import {
   Tooltip, ResponsiveContainer,
 } from 'recharts';
 import { getCurrentSite } from '../config/site.js';
-import { chartStatsEndpoint } from '../utils/api.js';
+import { chartStatsEndpoint, uncachedEndpoint } from '../utils/api.js';
 
 // ── Colours ───────────────────────────────────────────────────────────────────
 const C_CYAN   = '#00c4ff';
@@ -97,7 +97,7 @@ export const StatsPage: React.FC = () => {
   const site = getCurrentSite();
 
   const load = () => {
-    fetch(chartStatsEndpoint(site.network))
+    fetch(uncachedEndpoint(chartStatsEndpoint(site.network)), { cache: 'no-store' })
       .then(r => r.json())
       .then((d: ChartData) => { setData(d); setLoading(false); setLastUpdate(new Date()); })
       .catch(() => setLoading(false));
