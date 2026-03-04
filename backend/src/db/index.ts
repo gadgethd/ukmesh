@@ -28,7 +28,7 @@ export async function initDb(): Promise<void> {
   const schemaPath = path.join(__dirname, 'schema.sql');
   const sql = fs.readFileSync(schemaPath, 'utf8');
   await pool.query(sql);
-  console.log('[db] schema initialised with 1-year retention policy');
+  console.log('[db] schema initialised, no retention policy (data kept indefinitely)');
 }
 
 export async function incrementAdvertCount(nodeId: string): Promise<number> {

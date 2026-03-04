@@ -1,5 +1,5 @@
 -- MeshCore Analytics — Database Schema
--- TimescaleDB with 1-year auto-retention on packets
+-- TimescaleDB, no automatic data retention (all data kept indefinitely)
 
 CREATE EXTENSION IF NOT EXISTS timescaledb;
 
@@ -45,7 +45,7 @@ ALTER TABLE nodes ADD COLUMN IF NOT EXISTS role INTEGER;
 ALTER TABLE nodes ADD COLUMN IF NOT EXISTS advert_count INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE nodes ADD COLUMN IF NOT EXISTS elevation_m DOUBLE PRECISION;
 
--- ─── Packets hypertable (1-year retention) ────────────────────────────────
+-- ─── Packets hypertable (no retention — data kept indefinitely) ──────────
 
 CREATE TABLE IF NOT EXISTS packets (
   time          TIMESTAMPTZ      NOT NULL DEFAULT NOW(),
@@ -64,9 +64,7 @@ CREATE TABLE IF NOT EXISTS packets (
 
 SELECT create_hypertable('packets', 'time', if_not_exists => TRUE);
 
--- 1-year automatic data retention.
--- add_retention_policy is idempotent (if_not_exists) on first run.
--- If a stale 28-day policy exists from a previous deployment, update it via alter_job.
+-- Remove any existing retention policy so packets are kept indefinitely.
 DO $$
 DECLARE
   _job_id INTEGER;
@@ -78,13 +76,8 @@ BEGIN
       SELECT id::text FROM _timescaledb_catalog.hypertable WHERE table_name = 'packets'
     );
 
-  IF _job_id IS NULL THEN
-    PERFORM add_retention_policy('packets', INTERVAL '1 year');
-  ELSE
-    PERFORM alter_job(_job_id, config => jsonb_set(
-      (SELECT config FROM timescaledb_information.jobs WHERE job_id = _job_id),
-      '{drop_after}', '"1 year"'
-    ));
+  IF _job_id IS NOT NULL THEN
+    PERFORM remove_retention_policy('packets');
   END IF;
 END $$;
 
