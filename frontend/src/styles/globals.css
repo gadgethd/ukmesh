@@ -572,7 +572,7 @@ html, body, #root {
   pointer-events: auto;
   display: flex;
   flex-direction: column;
-  justify-content: flex-start;
+  justify-content: flex-end;
 }
 
 .packet-item {
