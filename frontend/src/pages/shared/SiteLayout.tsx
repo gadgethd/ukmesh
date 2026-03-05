@@ -67,6 +67,13 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
             </NavLink>
           ))}
           <a href={appUrl} className="site-nav__link">Live Map</a>
+          <NavLink
+            to="/login"
+            onClick={() => handleNavClick('/login')}
+            className={({ isActive }) => isActive ? 'site-nav__app-btn site-nav__app-btn--active' : 'site-nav__app-btn'}
+          >
+            Login
+          </NavLink>
         </div>
 
         <button

@@ -1,8 +1,163 @@
-import { Router } from 'express';
+import { Request, Response, Router } from 'express';
+import { rateLimit } from 'express-rate-limit';
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
 import { getNodes, getNodeHistory, getRecentPackets, query, MIN_LINK_OBSERVATIONS } from '../db/index.js';
 import { getWorkerHealthOverview } from '../health/status.js';
 
 const router = Router();
+const OWNER_COOKIE_NAME = 'meshcore_owner_session';
+const OWNER_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const OWNER_LOGIN_LIMITER = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 8,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many login attempts, try again in 15 minutes' },
+});
+
+type OwnerSession = {
+  key: string;
+  exp: number;
+};
+
+function getOwnerCookieKey(): Buffer {
+  const secret = process.env['OWNER_COOKIE_SECRET']
+    ?? [
+      process.env['DATABASE_URL'],
+      process.env['MQTT_PASSWORD'],
+      process.env['CLOUDFLARE_TUNNEL_TOKEN'],
+      'meshcore-owner-cookie-fallback',
+    ].filter(Boolean).join('|');
+  return createHash('sha256').update(secret).digest();
+}
+
+function encryptOwnerSession(payload: OwnerSession): string {
+  const iv = randomBytes(12);
+  const key = getOwnerCookieKey();
+  const cipher = createCipheriv('aes-256-gcm', key, iv);
+  const plaintext = Buffer.from(JSON.stringify(payload), 'utf8');
+  const encrypted = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return `${iv.toString('base64url')}.${tag.toString('base64url')}.${encrypted.toString('base64url')}`;
+}
+
+function decryptOwnerSession(token: string): OwnerSession | null {
+  try {
+    const [ivB64, tagB64, ciphertextB64] = token.split('.');
+    if (!ivB64 || !tagB64 || !ciphertextB64) return null;
+    const iv = Buffer.from(ivB64, 'base64url');
+    const tag = Buffer.from(tagB64, 'base64url');
+    const ciphertext = Buffer.from(ciphertextB64, 'base64url');
+    const key = getOwnerCookieKey();
+    const decipher = createDecipheriv('aes-256-gcm', key, iv);
+    decipher.setAuthTag(tag);
+    const decoded = Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString('utf8');
+    const parsed = JSON.parse(decoded) as Partial<OwnerSession>;
+    if (typeof parsed.key !== 'string' || typeof parsed.exp !== 'number') return null;
+    return { key: parsed.key.toLowerCase(), exp: parsed.exp };
+  } catch {
+    return null;
+  }
+}
+
+function readCookieValue(cookieHeader: string | undefined, key: string): string | null {
+  if (!cookieHeader) return null;
+  const parts = cookieHeader.split(';');
+  for (const part of parts) {
+    const trimmed = part.trim();
+    if (!trimmed.startsWith(`${key}=`)) continue;
+    return decodeURIComponent(trimmed.slice(key.length + 1));
+  }
+  return null;
+}
+
+function normalizeEd25519Key(value: string): string | null {
+  const normalized = value.trim().toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(normalized)) return null;
+  return normalized;
+}
+
+function isSecureRequest(req: { secure: boolean; headers: Record<string, string | string[] | undefined> }): boolean {
+  if (req.secure) return true;
+  const proto = String(req.headers['x-forwarded-proto'] ?? '').toLowerCase();
+  return proto.includes('https');
+}
+
+async function buildOwnerDashboard(key: string) {
+  const [ownedNodes, packetSummary] = await Promise.all([
+    query<{
+      node_id: string;
+      name: string | null;
+      network: string;
+      last_seen: string | null;
+      advert_count: number | null;
+      lat: number | null;
+      lon: number | null;
+      iata: string | null;
+    }>(
+      `SELECT node_id, name, network, last_seen, advert_count, lat, lon, iata
+       FROM nodes
+       WHERE LOWER(node_id) = $1 OR LOWER(COALESCE(public_key, '')) = $1
+       ORDER BY last_seen DESC NULLS LAST`,
+      [key],
+    ),
+    query<{ packets_24h: number; packets_7d: number }>(
+      `SELECT
+         COUNT(*) FILTER (WHERE time > NOW() - INTERVAL '24 hours')::int AS packets_24h,
+         COUNT(*) FILTER (WHERE time > NOW() - INTERVAL '7 days')::int AS packets_7d
+       FROM packets
+       WHERE LOWER(src_node_id) = $1`,
+      [key],
+    ),
+  ]);
+
+  return {
+    nodes: ownedNodes.rows.map((row) => ({
+      ...row,
+      last_seen: row.last_seen ? new Date(row.last_seen).toISOString() : null,
+      advert_count: Number(row.advert_count ?? 0),
+    })),
+    totals: {
+      ownedNodes: ownedNodes.rows.length,
+      packets24h: Number(packetSummary.rows[0]?.packets_24h ?? 0),
+      packets7d: Number(packetSummary.rows[0]?.packets_7d ?? 0),
+    },
+    roadmap: [
+      'Per-node packet history for owner nodes',
+      'Advert and heartbeat trend views',
+      'RSSI and SNR trend views from observer reports',
+      'Node placement planner (coming next)',
+    ],
+  };
+}
+
+function getOwnerSession(req: Request): OwnerSession | null {
+  const token = readCookieValue(req.headers.cookie, OWNER_COOKIE_NAME);
+  if (!token) return null;
+  const session = decryptOwnerSession(token);
+  if (!session || session.exp <= Date.now()) return null;
+  return session;
+}
+
+async function resolveOwnedNodeIds(key: string): Promise<string[]> {
+  const result = await query<{ node_id: string }>(
+    `SELECT node_id
+     FROM nodes
+     WHERE LOWER(node_id) = $1 OR LOWER(COALESCE(public_key, '')) = $1`,
+    [key],
+  );
+  return result.rows.map((row) => row.node_id);
+}
+
+async function requireOwnerSession(req: Request, res: Response): Promise<string | null> {
+  const session = getOwnerSession(req);
+  if (!session) {
+    res.clearCookie(OWNER_COOKIE_NAME, { path: '/' });
+    res.status(401).json({ error: 'Not logged in' });
+    return null;
+  }
+  return session.key;
+}
 
 type NetworkFilters = {
   params: string[];
@@ -285,6 +440,225 @@ router.get('/health', async (_req, res) => {
     console.error('[api] GET /health', (err as Error).message);
     res.status(500).json({ error: 'Internal server error' });
   }
+});
+
+// POST /api/owner/login — login with Ed25519 public key and issue encrypted cookie session
+router.post('/owner/login', OWNER_LOGIN_LIMITER, async (req, res) => {
+  try {
+    const key = normalizeEd25519Key(String((req.body as { ed25519Key?: string })?.ed25519Key ?? ''));
+    if (!key) {
+      res.status(400).json({ error: 'Invalid Ed25519 key format' });
+      return;
+    }
+
+    const dashboard = await buildOwnerDashboard(key);
+    if (dashboard.totals.ownedNodes < 1) {
+      res.status(403).json({ error: 'No active node found for this key yet' });
+      return;
+    }
+
+    const token = encryptOwnerSession({
+      key,
+      exp: Date.now() + OWNER_SESSION_TTL_MS,
+    });
+    res.cookie(OWNER_COOKIE_NAME, token, {
+      httpOnly: true,
+      secure: isSecureRequest(req),
+      sameSite: 'lax',
+      path: '/',
+      maxAge: OWNER_SESSION_TTL_MS,
+    });
+    res.json({ ok: true, dashboard });
+  } catch (err) {
+    console.error('[api] POST /owner/login', (err as Error).message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /api/owner/session — resolve dashboard from encrypted cookie
+router.get('/owner/session', async (req, res) => {
+  try {
+    const sessionKey = await requireOwnerSession(req, res);
+    if (!sessionKey) return;
+
+    const dashboard = await buildOwnerDashboard(sessionKey);
+    if (dashboard.totals.ownedNodes < 1) {
+      res.clearCookie(OWNER_COOKIE_NAME, { path: '/' });
+      res.status(401).json({ error: 'No active node found for this key yet' });
+      return;
+    }
+
+    res.json({ ok: true, dashboard });
+  } catch (err) {
+    console.error('[api] GET /owner/session', (err as Error).message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /api/owner/live?nodeId=<hex> — live owner-focused data for map + packet feed
+router.get('/owner/live', async (req, res) => {
+  try {
+    const sessionKey = await requireOwnerSession(req, res);
+    if (!sessionKey) return;
+    const ownedNodeIds = await resolveOwnedNodeIds(sessionKey);
+    if (ownedNodeIds.length < 1) {
+      res.status(404).json({ error: 'No owned nodes found' });
+      return;
+    }
+
+    const requestedNodeId = String(req.query['nodeId'] ?? '').trim().toLowerCase();
+    const selectedNodeId = requestedNodeId
+      ? ownedNodeIds.find((id) => id.toLowerCase() === requestedNodeId)
+      : ownedNodeIds[0];
+    if (!selectedNodeId) {
+      res.status(403).json({ error: 'Node is not owned by this session' });
+      return;
+    }
+
+    const [ownerNodeResult, incomingResult, packetResult] = await Promise.all([
+      query<{
+        node_id: string;
+        name: string | null;
+        network: string;
+        iata: string | null;
+        advert_count: number | null;
+        last_seen: string | null;
+        lat: number | null;
+        lon: number | null;
+      }>(
+        `SELECT node_id, name, network, iata, advert_count, last_seen, lat, lon
+         FROM nodes
+         WHERE node_id = $1
+         LIMIT 1`,
+        [selectedNodeId],
+      ),
+      query<{
+        node_id: string;
+        name: string | null;
+        network: string | null;
+        iata: string | null;
+        lat: number | null;
+        lon: number | null;
+        packets_24h: number;
+        last_seen: string | null;
+      }>(
+        `SELECT
+           p.src_node_id AS node_id,
+           n.name,
+           n.network,
+           n.iata,
+           n.lat,
+           n.lon,
+           COUNT(*)::int AS packets_24h,
+           MAX(p.time)::text AS last_seen
+         FROM packets p
+         LEFT JOIN nodes n ON n.node_id = p.src_node_id
+         WHERE LOWER(p.rx_node_id) = LOWER($1)
+           AND p.hop_count = 0
+           AND p.src_node_id IS NOT NULL
+           AND LOWER(p.src_node_id) <> LOWER($1)
+           AND p.time > NOW() - INTERVAL '24 hours'
+         GROUP BY p.src_node_id, n.name, n.network, n.iata, n.lat, n.lon
+         ORDER BY packets_24h DESC
+         LIMIT 250`,
+        [selectedNodeId],
+      ),
+      query<{
+        time: string;
+        packet_type: number | null;
+        route_type: number | null;
+        hop_count: number | null;
+        packet_hash: string | null;
+        src_node_id: string | null;
+        src_node_name: string | null;
+        sender: string | null;
+        body: string | null;
+      }>(
+        `WITH ranked AS (
+           SELECT
+             p.time,
+             p.packet_type,
+             p.route_type,
+             p.hop_count,
+             p.packet_hash,
+             p.src_node_id,
+             p.payload,
+             ROW_NUMBER() OVER (
+               PARTITION BY COALESCE(
+                 p.packet_hash,
+                 CONCAT_WS(':',
+                   COALESCE(p.src_node_id, ''),
+                   COALESCE(p.packet_type::text, ''),
+                   COALESCE(p.route_type::text, ''),
+                   COALESCE(p.hop_count::text, ''),
+                   COALESCE(p.payload->'decrypted'->>'sender', ''),
+                   COALESCE(p.payload->'decrypted'->>'text', ''),
+                   DATE_TRUNC('second', p.time)::text
+                 )
+               )
+               ORDER BY p.time DESC
+             ) AS rn
+           FROM packets p
+           WHERE LOWER(p.rx_node_id) = LOWER($1)
+         )
+         SELECT
+           r.time::text AS time,
+           r.packet_type,
+           r.route_type,
+           r.hop_count,
+           r.packet_hash,
+           r.src_node_id,
+           src.name AS src_node_name,
+           COALESCE(r.payload->'decrypted'->>'sender', src.name, r.src_node_id) AS sender,
+           COALESCE(
+             r.payload->'decrypted'->>'text',
+             r.payload->'decrypted'->>'message',
+             r.payload->'decrypted'->>'body',
+             r.payload->'decoded'->>'text',
+             r.payload->>'message'
+           ) AS body
+         FROM ranked r
+         LEFT JOIN nodes src ON src.node_id = r.src_node_id
+         WHERE r.rn = 1
+         ORDER BY r.time DESC
+         LIMIT 5`,
+        [selectedNodeId],
+      ),
+    ]);
+
+    const ownerNode = ownerNodeResult.rows[0];
+    if (!ownerNode) {
+      res.status(404).json({ error: 'Owner node not found' });
+      return;
+    }
+
+    res.json({
+      nodeId: selectedNodeId,
+      ownerNode: {
+        ...ownerNode,
+        advert_count: Number(ownerNode.advert_count ?? 0),
+        last_seen: ownerNode.last_seen ? new Date(ownerNode.last_seen).toISOString() : null,
+      },
+      incomingPeers: incomingResult.rows.map((row) => ({
+        ...row,
+        packets_24h: Number(row.packets_24h ?? 0),
+        last_seen: row.last_seen ? new Date(row.last_seen).toISOString() : null,
+      })),
+      recentPackets: packetResult.rows.map((row) => ({
+        ...row,
+        time: new Date(row.time).toISOString(),
+      })),
+    });
+  } catch (err) {
+    console.error('[api] GET /owner/live', (err as Error).message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// POST /api/owner/logout — clear cookie
+router.post('/owner/logout', async (_req, res) => {
+  res.clearCookie(OWNER_COOKIE_NAME, { path: '/' });
+  res.json({ ok: true });
 });
 
 // POST /api/telemetry/frontend-error — lightweight frontend error reporting
