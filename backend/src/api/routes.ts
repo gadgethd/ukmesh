@@ -1,6 +1,7 @@
 import { Request, Response, Router } from 'express';
 import { rateLimit } from 'express-rate-limit';
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
+import mqtt from 'mqtt';
 import { getNodes, getNodeHistory, getRecentPackets, query, MIN_LINK_OBSERVATIONS } from '../db/index.js';
 import { getWorkerHealthOverview } from '../health/status.js';
 
@@ -16,7 +17,7 @@ const OWNER_LOGIN_LIMITER = rateLimit({
 });
 
 type OwnerSession = {
-  key: string;
+  nodeIds: string[];
   exp: number;
 };
 
@@ -53,8 +54,12 @@ function decryptOwnerSession(token: string): OwnerSession | null {
     decipher.setAuthTag(tag);
     const decoded = Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString('utf8');
     const parsed = JSON.parse(decoded) as Partial<OwnerSession>;
-    if (typeof parsed.key !== 'string' || typeof parsed.exp !== 'number') return null;
-    return { key: parsed.key.toLowerCase(), exp: parsed.exp };
+    if (!Array.isArray(parsed.nodeIds) || typeof parsed.exp !== 'number') return null;
+    const nodeIds = parsed.nodeIds
+      .map((value) => String(value).trim().toLowerCase())
+      .filter((value) => /^[0-9a-f]{64}$/.test(value));
+    if (nodeIds.length < 1) return null;
+    return { nodeIds, exp: parsed.exp };
   } catch {
     return null;
   }
@@ -71,10 +76,56 @@ function readCookieValue(cookieHeader: string | undefined, key: string): string 
   return null;
 }
 
-function normalizeEd25519Key(value: string): string | null {
-  const normalized = value.trim().toLowerCase();
-  if (!/^[0-9a-f]{64}$/.test(normalized)) return null;
-  return normalized;
+function parseOwnerMqttUsernameMap(): Map<string, string[]> {
+  const raw = String(process.env['OWNER_MQTT_USERNAME_MAP'] ?? '').trim();
+  const map = new Map<string, string[]>();
+  if (!raw) return map;
+
+  for (const entry of raw.split(',')) {
+    const trimmed = entry.trim();
+    if (!trimmed) continue;
+    const eqIdx = trimmed.indexOf('=');
+    if (eqIdx <= 0) continue;
+    const username = trimmed.slice(0, eqIdx).trim();
+    const rawNodes = trimmed.slice(eqIdx + 1).trim();
+    if (!username || !rawNodes) continue;
+    const nodeIds = rawNodes
+      .split('|')
+      .map((nodeId) => nodeId.trim().toLowerCase())
+      .filter((nodeId) => /^[0-9a-f]{64}$/.test(nodeId));
+    if (nodeIds.length < 1) continue;
+    map.set(username, Array.from(new Set(nodeIds)));
+  }
+  return map;
+}
+
+function verifyMqttCredentials(mqttUsername: string, mqttPassword: string): Promise<boolean> {
+  const brokerUrl = String(process.env['MQTT_BROKER_URL'] ?? 'ws://mosquitto:9001');
+  const clientId = `owner-auth-${randomBytes(6).toString('hex')}`;
+  const client = mqtt.connect(brokerUrl, {
+    username: mqttUsername,
+    password: mqttPassword,
+    reconnectPeriod: 0,
+    connectTimeout: 5_000,
+    clean: true,
+    clientId,
+  });
+
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (ok: boolean) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      client.removeAllListeners();
+      client.end(true);
+      resolve(ok);
+    };
+    const timer = setTimeout(() => finish(false), 6_000);
+    client.once('connect', () => finish(true));
+    client.once('error', () => finish(false));
+    client.once('close', () => finish(false));
+  });
 }
 
 function isSecureRequest(req: { secure: boolean; headers: Record<string, string | string[] | undefined> }): boolean {
@@ -83,7 +134,24 @@ function isSecureRequest(req: { secure: boolean; headers: Record<string, string 
   return proto.includes('https');
 }
 
-async function buildOwnerDashboard(key: string) {
+async function buildOwnerDashboard(nodeIds: string[]) {
+  if (nodeIds.length < 1) {
+    return {
+      nodes: [],
+      totals: {
+        ownedNodes: 0,
+        packets24h: 0,
+        packets7d: 0,
+      },
+      roadmap: [
+        'Per-node packet history for owner nodes',
+        'Advert and heartbeat trend views',
+        'RSSI and SNR trend views from observer reports',
+        'Node placement planner (coming next)',
+      ],
+    };
+  }
+
   const [ownedNodes, packetSummary] = await Promise.all([
     query<{
       node_id: string;
@@ -97,17 +165,17 @@ async function buildOwnerDashboard(key: string) {
     }>(
       `SELECT node_id, name, network, last_seen, advert_count, lat, lon, iata
        FROM nodes
-       WHERE LOWER(node_id) = $1 OR LOWER(COALESCE(public_key, '')) = $1
+       WHERE LOWER(node_id) = ANY($1::text[])
        ORDER BY last_seen DESC NULLS LAST`,
-      [key],
+      [nodeIds],
     ),
     query<{ packets_24h: number; packets_7d: number }>(
       `SELECT
          COUNT(*) FILTER (WHERE time > NOW() - INTERVAL '24 hours')::int AS packets_24h,
          COUNT(*) FILTER (WHERE time > NOW() - INTERVAL '7 days')::int AS packets_7d
        FROM packets
-       WHERE LOWER(src_node_id) = $1`,
-      [key],
+       WHERE LOWER(src_node_id) = ANY($1::text[])`,
+      [nodeIds],
     ),
   ]);
 
@@ -139,24 +207,14 @@ function getOwnerSession(req: Request): OwnerSession | null {
   return session;
 }
 
-async function resolveOwnedNodeIds(key: string): Promise<string[]> {
-  const result = await query<{ node_id: string }>(
-    `SELECT node_id
-     FROM nodes
-     WHERE LOWER(node_id) = $1 OR LOWER(COALESCE(public_key, '')) = $1`,
-    [key],
-  );
-  return result.rows.map((row) => row.node_id);
-}
-
-async function requireOwnerSession(req: Request, res: Response): Promise<string | null> {
+async function requireOwnerSession(req: Request, res: Response): Promise<string[] | null> {
   const session = getOwnerSession(req);
   if (!session) {
     res.clearCookie(OWNER_COOKIE_NAME, { path: '/' });
     res.status(401).json({ error: 'Not logged in' });
     return null;
   }
-  return session.key;
+  return session.nodeIds;
 }
 
 type NetworkFilters = {
@@ -244,7 +302,7 @@ router.get('/stats', async (req, res) => {
   try {
     const network = req.query['network'] as string | undefined;
     const filters = networkFilters(network);
-    const [mqttCount, packetCount, staleCount, totalNodeCount, longestHopCount] = await Promise.all([
+    const [mqttCount, packetCount, staleCount, mapNodeCount, totalNodeCount, longestHopCount] = await Promise.all([
       query(`SELECT COUNT(DISTINCT rx_node_id) AS count FROM packets WHERE time > NOW() - INTERVAL '10 minutes' AND rx_node_id IS NOT NULL ${filters.packets}`, filters.params),
       query(`SELECT COUNT(DISTINCT packet_hash) AS count FROM packets WHERE time > NOW() - INTERVAL '24 hours' ${filters.packets}`, filters.params),
       query(`SELECT COUNT(*) AS count FROM nodes
@@ -253,6 +311,12 @@ router.get('/stats', async (req, res) => {
                AND (name IS NULL OR name NOT LIKE '%🚫%')
                AND last_seen <= NOW() - INTERVAL '7 days'
                AND last_seen >  NOW() - INTERVAL '14 days'
+               ${filters.nodes}`, filters.params),
+      query(`SELECT COUNT(*) AS count FROM nodes
+             WHERE lat IS NOT NULL AND lon IS NOT NULL
+               AND (role IS NULL OR role = 2)
+               AND (name IS NULL OR name NOT LIKE '%🚫%')
+               AND last_seen > NOW() - INTERVAL '14 days'
                ${filters.nodes}`, filters.params),
       query(`SELECT COUNT(*) AS count FROM nodes
              WHERE (name IS NULL OR name NOT LIKE '%🚫%')
@@ -274,6 +338,7 @@ router.get('/stats', async (req, res) => {
       mqttNodes:      Number(mqttCount.rows[0]?.count ?? 0),
       staleNodes:     Number(staleCount.rows[0]?.count ?? 0),
       packetsDay:     Number(packetCount.rows[0]?.count ?? 0),
+      mapNodes:       Number(mapNodeCount.rows[0]?.count ?? 0),
       totalNodes:     Number(totalNodeCount.rows[0]?.count ?? 0),
       longestHop:     Number(longestHopCount.rows[0]?.count ?? 0),
       longestHopHash: (longestHopCount.rows[0]?.hash as string | undefined) ?? null,
@@ -442,23 +507,41 @@ router.get('/health', async (_req, res) => {
   }
 });
 
-// POST /api/owner/login — login with Ed25519 public key and issue encrypted cookie session
+// POST /api/owner/login — login with MQTT username/password and issue encrypted cookie session
 router.post('/owner/login', OWNER_LOGIN_LIMITER, async (req, res) => {
   try {
-    const key = normalizeEd25519Key(String((req.body as { ed25519Key?: string })?.ed25519Key ?? ''));
-    if (!key) {
-      res.status(400).json({ error: 'Invalid Ed25519 key format' });
+    const body = req.body as { mqttUsername?: string; mqttPassword?: string } | undefined;
+    const mqttUsername = String(body?.mqttUsername ?? '').trim();
+    const mqttPassword = String(body?.mqttPassword ?? '').trim();
+    if (!mqttUsername || !mqttPassword) {
+      res.status(400).json({ error: 'Missing MQTT username or password' });
+      return;
+    }
+    const usernameMap = parseOwnerMqttUsernameMap();
+    if (usernameMap.size < 1) {
+      res.status(503).json({ error: 'Owner login is not configured on the server' });
+      return;
+    }
+    const mappedNodeIds = usernameMap.get(mqttUsername);
+    if (!mappedNodeIds || mappedNodeIds.length < 1) {
+      res.status(403).json({ error: 'Invalid MQTT credentials' });
       return;
     }
 
-    const dashboard = await buildOwnerDashboard(key);
+    const authOk = await verifyMqttCredentials(mqttUsername, mqttPassword);
+    if (!authOk) {
+      res.status(403).json({ error: 'Invalid MQTT credentials' });
+      return;
+    }
+
+    const dashboard = await buildOwnerDashboard(mappedNodeIds);
     if (dashboard.totals.ownedNodes < 1) {
-      res.status(403).json({ error: 'No active node found for this key yet' });
+      res.status(403).json({ error: 'No active node found for this MQTT username yet' });
       return;
     }
 
     const token = encryptOwnerSession({
-      key,
+      nodeIds: mappedNodeIds,
       exp: Date.now() + OWNER_SESSION_TTL_MS,
     });
     res.cookie(OWNER_COOKIE_NAME, token, {
@@ -478,13 +561,13 @@ router.post('/owner/login', OWNER_LOGIN_LIMITER, async (req, res) => {
 // GET /api/owner/session — resolve dashboard from encrypted cookie
 router.get('/owner/session', async (req, res) => {
   try {
-    const sessionKey = await requireOwnerSession(req, res);
-    if (!sessionKey) return;
+    const sessionNodeIds = await requireOwnerSession(req, res);
+    if (!sessionNodeIds) return;
 
-    const dashboard = await buildOwnerDashboard(sessionKey);
+    const dashboard = await buildOwnerDashboard(sessionNodeIds);
     if (dashboard.totals.ownedNodes < 1) {
       res.clearCookie(OWNER_COOKIE_NAME, { path: '/' });
-      res.status(401).json({ error: 'No active node found for this key yet' });
+      res.status(401).json({ error: 'No active node found for this MQTT username yet' });
       return;
     }
 
@@ -498,9 +581,8 @@ router.get('/owner/session', async (req, res) => {
 // GET /api/owner/live?nodeId=<hex> — live owner-focused data for map + packet feed
 router.get('/owner/live', async (req, res) => {
   try {
-    const sessionKey = await requireOwnerSession(req, res);
-    if (!sessionKey) return;
-    const ownedNodeIds = await resolveOwnedNodeIds(sessionKey);
+    const ownedNodeIds = await requireOwnerSession(req, res);
+    if (!ownedNodeIds) return;
     if (ownedNodeIds.length < 1) {
       res.status(404).json({ error: 'No owned nodes found' });
       return;
@@ -711,7 +793,7 @@ router.get('/stats/charts', async (req, res) => {
 
     const [
       phResult, pdResult, rhResult, rdResult,
-      ptResult, rpResult, hdResult, tcResult, sumResult,
+      ptResult, rpResult, hdResult, pcResult, sumResult,
     ] = await Promise.all([
       // packets per hour — last 24h (deduplicated by hash)
       query(`
@@ -776,15 +858,24 @@ router.get('/stats/charts', async (req, res) => {
           ${filters.packets}
         GROUP BY hop_count ORDER BY hop_count
       `, filters.params),
-      // top 10 public channel chatters by decoded sender name — last 7d (deduplicated by hash)
+      // top repeated first-2-hex prefix collisions across known nodes
       query(`
-        SELECT payload->'decrypted'->>'sender' AS name, COUNT(DISTINCT packet_hash) AS count
-        FROM packets
-        WHERE packet_type = 5
-          AND time > NOW() - INTERVAL '7 days'
-          AND payload->'decrypted'->>'sender' IS NOT NULL
-          ${filters.packets}
-        GROUP BY 1 ORDER BY count DESC LIMIT 10
+        WITH prefix_counts AS (
+          SELECT SUBSTRING(LOWER(n.node_id) FROM 1 FOR 2) AS prefix, COUNT(*)::int AS node_count
+          FROM nodes n
+          WHERE n.node_id ~ '^[0-9A-Fa-f]{64}$'
+            AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
+            AND (n.role IS NULL OR n.role != 4)
+            ${filters.nodesAlias('n')}
+          GROUP BY 1
+          HAVING COUNT(*) > 1
+        )
+        SELECT
+          prefix,
+          node_count AS repeats
+        FROM prefix_counts
+        ORDER BY node_count DESC, prefix ASC
+        LIMIT 10
       `, filters.params),
       // summary
       query(`
@@ -819,7 +910,12 @@ router.get('/stats/charts', async (req, res) => {
       packetTypes:     ptResult.rows.map(r => ({ label: PAYLOAD_LABELS[Number(r.packet_type)] ?? `Type${r.packet_type}`, count: Number(r.count) })),
       repeatersPerDay: rpResult.rows.map(r => ({ hour: fmtDay(r.hour), count: Number(r.count ?? 0) })),
       hopDistribution: hdResult.rows.map(r => ({ hops: Number(r.hops), count: Number(r.count) })),
-      topChatters:     tcResult.rows.map(r => ({ name: r.name ?? 'Unknown', count: Number(r.count) })),
+      // Back-compat for cached older frontend bundles that still read topChatters.
+      topChatters: [],
+      prefixCollisions: pcResult.rows.map(r => ({
+        prefix: String(r.prefix ?? '').toUpperCase(),
+        repeats: Number(r.repeats),
+      })),
       summary: {
         totalPackets24h:  Number(sumResult.rows[0].total_24h),
         totalPackets7d:   Number(sumResult.rows[0].total_7d),

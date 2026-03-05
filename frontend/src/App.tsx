@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import type { Map as LeafletMap } from 'leaflet';
 import { MapView } from './components/Map/MapView.js';
 import { FilterPanel, type Filters } from './components/FilterPanel/FilterPanel.js';
@@ -15,7 +15,6 @@ import { usePacketPathOverlay } from './hooks/usePacketPathOverlay.js';
 import { useAppMessageHandler } from './hooks/useAppMessageHandler.js';
 import { usePathLearningModel } from './hooks/usePathLearningModel.js';
 import { getCurrentSite } from './config/site.js';
-import { hasCoords } from './utils/pathing.js';
 
 const DEFAULT_FILTERS: Filters = {
   livePackets: true,
@@ -27,7 +26,6 @@ const DEFAULT_FILTERS: Filters = {
   links: false,
 };
 
-const FOURTEEN_DAYS_MS = 14 * 24 * 60 * 60 * 1000;
 const DISCLAIMER_KEY = 'meshcore-disclaimer-dismissed';
 const FILTERS_KEY = 'meshcore-app-filters-v2';
 
@@ -100,17 +98,6 @@ export const App: React.FC = () => {
     filters,
   });
 
-  const mapNodes = useMemo(() => Array.from(nodes.values()).filter(
-    (node) => hasCoords(node)
-      && Date.now() - new Date(node.last_seen).getTime() < FOURTEEN_DAYS_MS
-      && !node.name?.includes('🚫')
-      && (node.role === undefined || node.role === 2),
-  ).length, [nodes]);
-
-  const totalDevices = useMemo(() => Array.from(nodes.values()).filter(
-    (node) => !node.name?.includes('🚫') && node.role !== 4,
-  ).length, [nodes]);
-
   useEffect(() => {
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('/sw.js').catch(() => {});
@@ -177,8 +164,6 @@ export const App: React.FC = () => {
         wsState={wsState}
         onShowDisclaimer={() => setShowDisclaimer(true)}
         stats={stats}
-        mapNodes={mapNodes}
-        totalDevices={totalDevices}
       />
 
       <MobileControls

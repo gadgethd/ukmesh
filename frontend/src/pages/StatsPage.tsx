@@ -53,7 +53,7 @@ interface ChartData {
   packetTypes:     { label: string; count: number }[];
   repeatersPerDay: { hour: string;  count: number }[];
   hopDistribution: { hops: number;  count: number }[];
-  topChatters:     { name: string;  count: number }[];
+  prefixCollisions:{ prefix: string; repeats: number }[];
   summary: {
     totalPackets24h:  number;
     totalPackets7d:   number;
@@ -284,7 +284,7 @@ export const StatsPage: React.FC = () => {
               </ChartCard>
             </div>
 
-            {/* ── Hop distribution + top nodes ─────────────────────────────── */}
+            {/* ── Hop distribution + prefix collisions ─────────────────────── */}
             <div className="stats-page__row" style={{ marginBottom: 64 }}>
               <ChartCard title="Hop count distribution" sub="last 7 days">
                 <ResponsiveContainer width="100%" height={220}>
@@ -298,18 +298,27 @@ export const StatsPage: React.FC = () => {
                 </ResponsiveContainer>
               </ChartCard>
 
-              <ChartCard title="Most active chatters" sub="public channel · by message count · last 7 days" tall>
+              <ChartCard
+                title="Repeated first-2-hex prefixes"
+                sub="Top 10 by repeat count"
+                tall
+              >
                 <ResponsiveContainer width="100%" height={220}>
-                  <BarChart
-                    data={[...data.topChatters].reverse()}
-                    layout="vertical"
-                    margin={{ top: 4, right: 16, left: 4, bottom: 0 }}
-                  >
-                    <CartesianGrid {...gridProps} horizontal={false} />
-                    <XAxis type="number" {...axisProps} />
-                    <YAxis type="category" dataKey="name" {...axisProps} width={110} tick={{ fill: LABEL_COLOR, fontSize: 10 }} />
-                    <Tooltip content={<CustomTooltip />} />
-                    <Bar dataKey="count" name="Messages" fill={C_PURPLE} fillOpacity={0.75} radius={[0, 3, 3, 0]} />
+                  <BarChart data={data.prefixCollisions} margin={{ top: 8, right: 8, left: -20, bottom: 0 }}>
+                    <CartesianGrid {...gridProps} />
+                    <XAxis
+                      dataKey="prefix"
+                      {...axisProps}
+                    />
+                    <YAxis
+                      {...axisProps}
+                      allowDecimals={false}
+                    />
+                    <Tooltip
+                      content={<CustomTooltip />}
+                      formatter={(value: number) => [value, 'Repeats']}
+                    />
+                    <Bar dataKey="repeats" name="Repeats" fill={C_PURPLE} fillOpacity={0.8} radius={[3, 3, 0, 0]} />
                   </BarChart>
                 </ResponsiveContainer>
               </ChartCard>

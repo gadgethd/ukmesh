@@ -119,7 +119,8 @@ const FitToNodes: React.FC<{ points: Array<{ lat: number; lon: number }> }> = ({
 };
 
 export const OwnerPortalPage: React.FC = () => {
-  const [keyInput, setKeyInput] = useState('');
+  const [mqttUsername, setMqttUsername] = useState('');
+  const [mqttPassword, setMqttPassword] = useState('');
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -155,8 +156,8 @@ export const OwnerPortalPage: React.FC = () => {
 
   const handleLogin = (event: FormEvent) => {
     event.preventDefault();
-    if (!keyInput.trim()) {
-      setError('Enter your Ed25519 key.');
+    if (!mqttUsername.trim() || !mqttPassword.trim()) {
+      setError('Enter your MQTT username and password.');
       return;
     }
     setSubmitting(true);
@@ -164,7 +165,10 @@ export const OwnerPortalPage: React.FC = () => {
     fetch('/api/owner/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ed25519Key: keyInput.trim() }),
+      body: JSON.stringify({
+        mqttUsername: mqttUsername.trim(),
+        mqttPassword: mqttPassword.trim(),
+      }),
     })
       .then(async (res) => {
         const body = await res.json().catch(() => ({}));
@@ -178,7 +182,8 @@ export const OwnerPortalPage: React.FC = () => {
         if (json.dashboard.nodes[0]?.node_id) {
           setSelectedNodeId(json.dashboard.nodes[0].node_id);
         }
-        setKeyInput('');
+        setMqttUsername('');
+        setMqttPassword('');
       })
       .catch((err: Error) => {
         setError(err.message);
@@ -259,7 +264,7 @@ export const OwnerPortalPage: React.FC = () => {
         <div className="site-content">
           <h1 className="site-page-hero__title">Repeater Owner Portal</h1>
           <p className="site-page-hero__sub">
-            Login with your Ed25519 node key. Sessions are kept in an encrypted cookie.
+            Login with your MQTT username and password. Sessions are kept in an encrypted cookie.
           </p>
         </div>
       </section>
@@ -270,19 +275,30 @@ export const OwnerPortalPage: React.FC = () => {
           <section className="prose-section owner-login">
             <h2>Login</h2>
             <p className="prose-note">
-              Enter the 64-character Ed25519 public key of a node currently seen by the network.
+              Enter the MQTT credentials associated with your repeater observer.
             </p>
             <form className="owner-login__form" onSubmit={handleLogin}>
-              <label className="owner-login__label" htmlFor="owner-key">Ed25519 key</label>
+              <label className="owner-login__label" htmlFor="owner-username">MQTT username</label>
+              <input
+                id="owner-username"
+                className="owner-login__input"
+                type="text"
+                autoComplete="username"
+                value={mqttUsername}
+                onChange={(e) => setMqttUsername(e.target.value)}
+                placeholder="Enter username"
+                maxLength={128}
+              />
+              <label className="owner-login__label" htmlFor="owner-key">MQTT password</label>
               <input
                 id="owner-key"
                 className="owner-login__input"
-                type="text"
-                autoComplete="off"
-                value={keyInput}
-                onChange={(e) => setKeyInput(e.target.value)}
-                placeholder="0123abcd... (64 hex chars)"
-                maxLength={128}
+                type="password"
+                autoComplete="current-password"
+                value={mqttPassword}
+                onChange={(e) => setMqttPassword(e.target.value)}
+                placeholder="Enter password"
+                maxLength={256}
               />
               <button className="site-btn site-btn--primary owner-login__button" type="submit" disabled={submitting}>
                 {submitting ? 'Logging in...' : 'Login'}

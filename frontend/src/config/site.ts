@@ -32,7 +32,19 @@ const SITE_CONFIGS: Record<SiteId, SiteConfig> = {
 };
 
 export function getCurrentSite(): SiteConfig {
-  const site = import.meta.env['VITE_SITE'];
-  return site === 'ukmesh' ? SITE_CONFIGS.ukmesh : SITE_CONFIGS.teesside;
-}
+  const siteEnv = import.meta.env['VITE_SITE'];
+  if (siteEnv === 'ukmesh') return SITE_CONFIGS.ukmesh;
+  if (siteEnv === 'teesside') return SITE_CONFIGS.teesside;
 
+  const networkEnv = import.meta.env['VITE_NETWORK'];
+  if (networkEnv === 'ukmesh') return SITE_CONFIGS.ukmesh;
+  if (networkEnv === 'teesside') return SITE_CONFIGS.teesside;
+
+  if (typeof window !== 'undefined') {
+    const host = window.location.hostname.toLowerCase();
+    if (host.includes('ukmesh.com')) return SITE_CONFIGS.ukmesh;
+    if (host.includes('teessidemesh.com')) return SITE_CONFIGS.teesside;
+  }
+
+  return SITE_CONFIGS.teesside;
+}

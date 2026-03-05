@@ -8,8 +8,6 @@ type AppTopBarProps = {
   wsState: WSReadyState;
   onShowDisclaimer: () => void;
   stats: DashboardStats;
-  mapNodes: number;
-  totalDevices: number;
 };
 
 const ConnIndicator: React.FC<{ state: WSReadyState }> = ({ state }) => (
@@ -38,8 +36,6 @@ export const AppTopBar: React.FC<AppTopBarProps> = ({
   wsState,
   onShowDisclaimer,
   stats,
-  mapNodes,
-  totalDevices,
 }) => (
   <header className="topbar">
     <a href={homeUrl} className="topbar__home-btn" title="Home">← Home</a>
@@ -59,11 +55,10 @@ export const AppTopBar: React.FC<AppTopBarProps> = ({
     </button>
     <StatsPanel
       mqttNodes={stats.mqttNodes}
-      mapNodes={mapNodes}
-      totalDevices={totalDevices}
+      mapNodes={stats.mapNodes}
+      totalDevices={stats.totalNodes}
       staleNodes={stats.staleNodes}
       packetsDay={stats.packetsDay}
     />
   </header>
 );
-

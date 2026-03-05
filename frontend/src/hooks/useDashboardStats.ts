@@ -5,12 +5,16 @@ export type DashboardStats = {
   mqttNodes: number;
   staleNodes: number;
   packetsDay: number;
+  mapNodes: number;
+  totalNodes: number;
 };
 
 const EMPTY_STATS: DashboardStats = {
   mqttNodes: 0,
   staleNodes: 0,
   packetsDay: 0,
+  mapNodes: 0,
+  totalNodes: 0,
 };
 
 export function useDashboardStats(network?: string): DashboardStats {
