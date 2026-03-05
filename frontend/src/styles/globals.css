@@ -951,6 +951,179 @@ html, body, #root {
   background: rgba(0, 196, 255, 0.25);
   border-color: var(--accent);
 }
+.site-nav__app-btn--active {
+  background: rgba(0, 196, 255, 0.25);
+  border-color: var(--accent);
+}
+
+/* ── Owner portal ─────────────────────────────────────────────────────── */
+.owner-login__form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 14px;
+  max-width: 680px;
+}
+.owner-login__label {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+.owner-login__input {
+  width: 100%;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-primary);
+  padding: 10px 12px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+.owner-login__input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.owner-login__button {
+  width: fit-content;
+  min-width: 140px;
+}
+.owner-login__error {
+  color: #ff8f8f;
+  margin-top: 10px;
+}
+.owner-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.owner-summary-grid.site-stats-grid--6 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.owner-summary-grid .site-stat {
+  align-items: flex-start;
+  text-align: left;
+  min-height: 110px;
+  padding: 16px 14px;
+}
+.owner-summary-grid .site-stat__value {
+  font-size: clamp(0.95rem, 1.55vw, 1.45rem);
+  line-height: 1.25;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+.owner-summary-grid .site-stat__label {
+  font-size: clamp(10px, 0.9vw, 12px);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.owner-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.owner-table {
+  width: 100%;
+  min-width: 820px;
+  border-collapse: collapse;
+}
+.owner-table th,
+.owner-table td {
+  text-align: left;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.owner-table th {
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.owner-table td code {
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+}
+.owner-roadmap {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.owner-roadmap__item {
+  padding: 16px;
+}
+.owner-select {
+  margin: 12px 0 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.owner-select label {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.owner-select__input {
+  max-width: 360px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-primary);
+  padding: 8px 10px;
+}
+.owner-map-wrap {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+.owner-map {
+  width: 100%;
+  height: 320px;
+}
+.owner-packets {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  height: 360px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+.owner-packet {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 12px;
+  background: var(--bg-panel);
+}
+.owner-packet__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.owner-packet__head strong {
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+}
+.owner-packet__head span {
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-family: var(--font-mono);
+}
+.owner-packet__meta {
+  margin-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+.owner-packet__body {
+  margin-top: 8px;
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1.45;
+}
 
 /* Mobile controls wrapper (filter grid + search) — hidden on desktop */
 .mobile-controls { display: none; }
@@ -1651,6 +1824,10 @@ html, body, #root {
   .site-cta { flex-direction: column; gap: 16px; align-items: flex-start; }
   .site-prose { padding: 24px 0 56px; }
   .prose-section--muted { padding: 20px; }
+  .owner-summary-grid { grid-template-columns: 1fr; }
+  .owner-roadmap { grid-template-columns: 1fr; }
+  .owner-head { flex-direction: column; align-items: flex-start; }
+  .owner-map { height: 260px; }
 }
 
 /* ─── Stats page ─────────────────────────────────────────────────────────── */
