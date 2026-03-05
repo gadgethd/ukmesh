@@ -327,33 +327,6 @@ html, body, #root {
   cursor: pointer;
 }
 
-.filter-presets {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 6px;
-  margin-bottom: 8px;
-}
-
-.filter-preset-btn {
-  width: 100%;
-  text-align: left;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--bg-panel-alt);
-  color: var(--text-secondary);
-  font-size: 11px;
-  font-family: var(--font-mono);
-  padding: 6px 8px;
-  cursor: pointer;
-  transition: background var(--transition), color var(--transition), border-color var(--transition);
-}
-
-.filter-preset-btn:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-  border-color: var(--border-bright);
-}
-
 .filter-beta-note {
   font-size: 10px;
   color: var(--text-muted);
@@ -544,48 +517,39 @@ html, body, #root {
   flex-shrink: 0;
 }
 
-.link-tooltip {
-  min-width: 180px;
-  font-size: 11px;
-  color: var(--text-primary);
-}
-
-.link-tooltip__row {
-  display: flex;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.links-legend {
-  position: absolute;
-  left: 16px;
-  top: 70px;
-  z-index: 820;
+.links-legend-inline {
   background: var(--bg-panel);
   border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  padding: 10px 12px;
-  min-width: 180px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
-  pointer-events: none;
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  margin-top: 8px;
 }
 
-.links-legend__title {
+.links-legend-inline--muted {
+  opacity: 0.6;
+}
+
+.links-legend-inline--compact {
+  margin: 6px 8px 0;
+  padding: 7px 9px;
+}
+
+.links-legend-inline__title {
   font-family: var(--font-mono);
   font-size: 10px;
   color: var(--text-muted);
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
 }
 
-.links-legend__row {
+.links-legend-inline__row {
   display: flex;
   align-items: center;
   gap: 8px;
   font-size: 11px;
   color: var(--text-secondary);
-  margin-bottom: 4px;
+  margin-bottom: 3px;
 }
 
 .links-legend__swatch {
@@ -603,16 +567,12 @@ html, body, #root {
   z-index: 800;
   width: 340px;
   height: 220px;
-  overflow-y: auto;
+  overflow: hidden;
   overflow-x: hidden;
   pointer-events: auto;
-  padding-right: 2px;
-}
-
-/* Fade the oldest (topmost) item only when the feed is full */
-.packet-feed--overflow {
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 40px, black 100%);
-  mask-image: linear-gradient(to bottom, transparent 0%, black 40px, black 100%);
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
 }
 
 .packet-item {
@@ -1758,10 +1718,14 @@ html, body, #root {
   .mobile-filter-grid .filter-row { padding: 8px 6px; }
 
   /* ── Mobile search: shown below filter grid ──────────────────────────── */
-  .mobile-search {
+.mobile-search {
     display: block;
     padding: 8px 12px;
     border-top: 1px solid var(--border);
+  }
+  .mobile-links-legend-wrap {
+    border-top: 1px solid var(--border);
+    padding-top: 2px;
   }
   .mobile-search .node-search {
     position: static;

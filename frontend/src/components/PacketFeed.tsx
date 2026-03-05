@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo } from 'react';
 import type { AggregatedPacket, MeshNode } from '../hooks/useNodes.js';
 
 const TYPE_LABELS: Record<number, string> = {
@@ -21,27 +21,14 @@ interface Props {
   pinnedPacketId?: string | null;
 }
 
-const ROW_HEIGHT = 32;
 const VISIBLE_ROWS = 8;
-const OVERSCAN = 4;
 
 export const PacketFeed: React.FC<Props> = React.memo(({ packets, nodes, onPacketClick, pinnedPacketId }) => {
-  const [scrollTop, setScrollTop] = useState(0);
-  const total = packets.length;
-  const start = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN);
-  const end = Math.min(total, start + VISIBLE_ROWS + OVERSCAN * 2);
-  const visible = useMemo(
-    () => packets.slice(start, end).map((packet, idx) => ({ packet, index: start + idx })),
-    [packets, start, end],
-  );
+  const visible = useMemo(() => packets.slice(0, VISIBLE_ROWS), [packets]);
 
   return (
-  <div
-    className={`packet-feed${packets.length >= VISIBLE_ROWS ? ' packet-feed--overflow' : ''}`}
-    onScroll={(e) => setScrollTop((e.target as HTMLDivElement).scrollTop)}
-  >
-    <div style={{ height: total * ROW_HEIGHT, position: 'relative' }}>
-    {visible.map(({ packet: p, index }) => {
+  <div className="packet-feed">
+    {visible.map((p) => {
       const typeLabel = p.packetType !== undefined
         ? (TYPE_LABELS[p.packetType] ?? `T${p.packetType}`)
         : '???';
@@ -63,7 +50,6 @@ export const PacketFeed: React.FC<Props> = React.memo(({ packets, nodes, onPacke
         <div
           key={p.id}
           className={`packet-item packet-item--clickable${isPinned ? ' packet-item--pinned' : ''}`}
-          style={{ position: 'absolute', top: index * ROW_HEIGHT, left: 0, right: 0 }}
           onClick={() => onPacketClick?.(p)}
           role="button"
           tabIndex={0}
@@ -87,7 +73,6 @@ export const PacketFeed: React.FC<Props> = React.memo(({ packets, nodes, onPacke
         </div>
       );
     })}
-    </div>
   </div>
   );
 });

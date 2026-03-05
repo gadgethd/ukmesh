@@ -16,6 +16,16 @@ interface FilterPanelProps {
   betaPathConfidence?: number | null;
 }
 
+export const LinksLegend: React.FC<{ compact?: boolean; muted?: boolean }> = ({ compact = false, muted = false }) => (
+  <div className={`links-legend-inline${compact ? ' links-legend-inline--compact' : ''}${muted ? ' links-legend-inline--muted' : ''}`}>
+    <div className="links-legend-inline__title">Links Legend</div>
+    <div className="links-legend-inline__row"><span className="links-legend__swatch" style={{ background: '#22c55e' }} /> Good (≤120 dB)</div>
+    <div className="links-legend-inline__row"><span className="links-legend__swatch" style={{ background: '#fbbf24' }} /> Marginal (121-135 dB)</div>
+    <div className="links-legend-inline__row"><span className="links-legend__swatch" style={{ background: '#ef4444' }} /> Weak (&gt;135 dB)</div>
+    <div className="links-legend-inline__row"><span className="links-legend__swatch" style={{ background: '#d1d5db' }} /> Unknown (no dB yet)</div>
+  </div>
+);
+
 export const FILTER_ROWS: Array<{ key: keyof Filters; label: string; color: string; hollow?: boolean }> = [
   { key: 'livePackets',  label: 'Live Feed',        color: '#00c4ff' },
   { key: 'packetPaths',  label: 'Packet Paths',     color: '#00c4ff', hollow: true },
@@ -30,33 +40,6 @@ export const FilterPanel: React.FC<FilterPanelProps> = ({ filters, onChange, bet
     onChange({ ...filters, [key]: !filters[key] });
   };
 
-  const applyPreset = (preset: 'minimal' | 'links' | 'beta') => {
-    const next: Filters = { ...filters };
-    if (preset === 'minimal') {
-      next.livePackets = true;
-      next.packetPaths = false;
-      next.betaPaths = false;
-      next.links = false;
-      next.coverage = false;
-      next.clientNodes = false;
-    } else if (preset === 'links') {
-      next.livePackets = true;
-      next.packetPaths = false;
-      next.betaPaths = true;
-      next.links = true;
-      next.coverage = false;
-      next.clientNodes = false;
-    } else {
-      next.livePackets = true;
-      next.packetPaths = false;
-      next.betaPaths = true;
-      next.links = true;
-      next.coverage = true;
-      next.clientNodes = false;
-    }
-    onChange(next);
-  };
-
   const confidenceLabel = betaPathConfidence == null
     ? 'N/A'
     : betaPathConfidence >= 0.75
@@ -68,11 +51,6 @@ export const FilterPanel: React.FC<FilterPanelProps> = ({ filters, onChange, bet
   return (
     <div className="filter-panel">
       <div className="filter-panel__title">Layers</div>
-      <div className="filter-presets">
-        <button className="filter-preset-btn" onClick={() => applyPreset('minimal')}>Minimal</button>
-        <button className="filter-preset-btn" onClick={() => applyPreset('links')}>Links + Beta</button>
-        <button className="filter-preset-btn" onClick={() => applyPreset('beta')}>Full Beta</button>
-      </div>
       {filters.betaPaths && (
         <div className="filter-beta-note">
           Beta Confidence: <strong>{confidenceLabel}</strong>
@@ -123,6 +101,7 @@ export const FilterPanel: React.FC<FilterPanelProps> = ({ filters, onChange, bet
           )}
         </React.Fragment>
       ))}
+      <LinksLegend muted={!filters.links} />
     </div>
   );
 };

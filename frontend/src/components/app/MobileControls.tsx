@@ -1,7 +1,7 @@
 import React from 'react';
 import type { Map as LeafletMap } from 'leaflet';
 import { NodeSearch } from '../Map/NodeSearch.js';
-import { FILTER_ROWS, type Filters } from '../FilterPanel/FilterPanel.js';
+import { FILTER_ROWS, LinksLegend, type Filters } from '../FilterPanel/FilterPanel.js';
 import type { MeshNode } from '../../hooks/useNodes.js';
 
 type MobileControlsProps = {
@@ -42,9 +42,11 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
         </div>
       ))}
     </div>
+    <div className="mobile-links-legend-wrap">
+      <LinksLegend compact muted={!filters.links} />
+    </div>
     <div className="mobile-search">
       <NodeSearch map={map} nodes={nodes} />
     </div>
   </div>
 );
-

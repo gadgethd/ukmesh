@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useMemo, useEffect, useRef } from 'react';
-import { MapContainer, TileLayer, useMap, Pane, Polygon, Polyline, Tooltip } from 'react-leaflet';
+import { MapContainer, TileLayer, useMap, Pane, Polygon, Polyline } from 'react-leaflet';
 import type { LatLngExpression, Map as LeafletMap, Polyline as LeafletPolyline } from 'leaflet';
 import type { MeshNode, PacketArc } from '../../hooks/useNodes.js';
 import type { NodeCoverage } from '../../hooks/useCoverage.js';
@@ -294,16 +294,8 @@ export const MapView: React.FC<MapViewProps> = ({
                   weight,
                   opacity,
                 }}
-                interactive
-              >
-                <Tooltip direction="center" sticky>
-                  <div className="link-tooltip">
-                    <div className="link-tooltip__row"><span>Seen</span><strong>{line.observedCount}</strong></div>
-                    <div className="link-tooltip__row"><span>Path Loss</span><strong>{line.pathLossDb == null ? 'unknown' : `${Math.round(line.pathLossDb)} dB`}</strong></div>
-                    <div className="link-tooltip__row"><span>A→B / B→A</span><strong>{line.countAToB} / {line.countBToA}</strong></div>
-                  </div>
-                </Tooltip>
-              </Polyline>
+                interactive={false}
+              />
               );
             })}
           </Pane>
@@ -357,16 +349,6 @@ export const MapView: React.FC<MapViewProps> = ({
           />
         )}
       </MapContainer>
-
-      {showLinks && (
-        <div className="links-legend">
-          <div className="links-legend__title">Links Legend</div>
-          <div className="links-legend__row"><span className="links-legend__swatch" style={{ background: '#22c55e' }} /> Good (≤120 dB)</div>
-          <div className="links-legend__row"><span className="links-legend__swatch" style={{ background: '#fbbf24' }} /> Marginal (121-135 dB)</div>
-          <div className="links-legend__row"><span className="links-legend__swatch" style={{ background: '#ef4444' }} /> Weak (&gt;135 dB)</div>
-          <div className="links-legend__row"><span className="links-legend__swatch" style={{ background: '#d1d5db' }} /> Unknown (no dB yet)</div>
-        </div>
-      )}
 
       {/* deck.gl overlay — arcs only */}
       <PacketArcLayer
