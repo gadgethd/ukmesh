@@ -12,7 +12,7 @@ type HealthPayload = {
     worker_name: string;
     status: string;
     queue_depth: number;
-    processed_5m: number;
+    processed_1h: number;
     last_activity_at: string | null;
   }>;
   history: Array<{
@@ -20,7 +20,7 @@ type HealthPayload = {
     worker_name: string;
     status: string;
     queue_depth: number;
-    processed_5m: number;
+    processed_1h: number;
     cpu_load_1m: number | null;
     mem_used_pct: number | null;
     disk_used_pct: number | null;
@@ -43,6 +43,18 @@ function workerLabel(name: string): string {
   if (name === 'link-worker') return 'Link Worker';
   if (name === 'path-learning') return 'Path Learning';
   return name;
+}
+
+function fmtInt(value: number | undefined): string {
+  return Number(value ?? 0).toLocaleString();
+}
+
+function fmtPct(value: number | undefined): string {
+  return `${Number(value ?? 0).toFixed(1)}%`;
+}
+
+function fmtGb(value: number | undefined): string {
+  return `${Number(value ?? 0).toFixed(1)} GB`;
 }
 
 export const HealthPage: React.FC = () => {
@@ -118,7 +130,7 @@ export const HealthPage: React.FC = () => {
                   </div>
                   <div className="health-card__stats">
                     <div className="health-kv"><span>Queue</span><strong>{worker.queue_depth}</strong></div>
-                    <div className="health-kv"><span>Processed 5m</span><strong>{worker.processed_5m}</strong></div>
+                    <div className="health-kv"><span>Processed 1h</span><strong>{worker.processed_1h}</strong></div>
                     <div className="health-kv"><span>Last Activity</span><strong>{timeAgo(worker.last_activity_at)}</strong></div>
                   </div>
                   <div className="health-spark" aria-label="Recent queue depth">
@@ -139,20 +151,22 @@ export const HealthPage: React.FC = () => {
 
         <section className="prose-section">
           <h2>Server Stats</h2>
-          <div className="site-stats-grid site-stats-grid--6">
-            <div className="site-stat"><span className="site-stat__value">{data?.system.cpu.load_pct?.toFixed(1) ?? '0'}%</span><span className="site-stat__label">CPU Load</span></div>
-            <div className="site-stat"><span className="site-stat__value">{data?.system.memory.used_pct?.toFixed(1) ?? '0'}%</span><span className="site-stat__label">Memory Used</span></div>
-            <div className="site-stat"><span className="site-stat__value">{data?.system.disk.used_pct?.toFixed(1) ?? '0'}%</span><span className="site-stat__label">Disk Used</span></div>
-            <div className="site-stat"><span className="site-stat__value">{data?.frontend_errors_1h ?? 0}</span><span className="site-stat__label">Frontend Errors (1h)</span></div>
-            <div className="site-stat"><span className="site-stat__value">{data?.system.runtime.node_version ?? '-'}</span><span className="site-stat__label">Node Runtime</span></div>
-            <div className="site-stat"><span className="site-stat__value">{data?.system.runtime.platform ?? '-'}/{data?.system.runtime.arch ?? '-'}</span><span className="site-stat__label">Platform</span></div>
+          <div className="site-stats-grid site-stats-grid--6 health-system-grid">
+            <div className="site-stat"><span className="site-stat__value">{fmtPct(data?.system.cpu.load_pct)}</span><span className="site-stat__label">CPU Load</span></div>
+            <div className="site-stat"><span className="site-stat__value">{fmtPct(data?.system.memory.used_pct)}</span><span className="site-stat__label">Memory Used</span></div>
+            <div className="site-stat"><span className="site-stat__value">{fmtPct(data?.system.disk.used_pct)}</span><span className="site-stat__label">Disk Used</span></div>
+            <div className="site-stat"><span className="site-stat__value">{fmtInt(data?.frontend_errors_1h)}</span><span className="site-stat__label">Frontend Errors (1h)</span></div>
+            <div className="site-stat"><span className="site-stat__value">{fmtInt(data ? Math.floor(data.system.runtime.uptime_s / 3600) : 0)}h</span><span className="site-stat__label">Uptime</span></div>
+            <div className="site-stat"><span className="site-stat__value">{fmtInt((data?.workers ?? []).reduce((sum, w) => sum + w.queue_depth, 0))}</span><span className="site-stat__label">Queued Jobs</span></div>
           </div>
-          <p className="prose-note">
-            Updated {data?.system.generated_at ? timeAgo(data.system.generated_at) : 'just now'}.
-            Uptime: {data ? Math.floor(data.system.runtime.uptime_s / 3600) : 0}h.
-            Memory: {data?.system.memory.used_mb ?? 0} / {data?.system.memory.total_mb ?? 0} MB.
-            Disk: {data?.system.disk.used_gb ?? 0} / {data?.system.disk.total_gb ?? 0} GB.
-          </p>
+          <div className="health-meta">
+            <div className="health-kv"><span>Updated</span><strong>{data?.system.generated_at ? timeAgo(data.system.generated_at) : 'just now'}</strong></div>
+            <div className="health-kv"><span>Node Runtime</span><strong>{data?.system.runtime.node_version ?? '-'}</strong></div>
+            <div className="health-kv"><span>Platform</span><strong>{data?.system.runtime.platform ?? '-'} / {data?.system.runtime.arch ?? '-'}</strong></div>
+            <div className="health-kv"><span>CPU 1m Load</span><strong>{Number(data?.system.cpu.load_1m ?? 0).toFixed(2)} ({data?.system.cpu.count ?? 0} cores)</strong></div>
+            <div className="health-kv"><span>Memory</span><strong>{fmtInt(data?.system.memory.used_mb)} / {fmtInt(data?.system.memory.total_mb)} MB</strong></div>
+            <div className="health-kv"><span>Disk</span><strong>{fmtGb(data?.system.disk.used_gb)} / {fmtGb(data?.system.disk.total_gb)}</strong></div>
+          </div>
         </section>
       </div>
     </>

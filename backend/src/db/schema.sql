@@ -208,11 +208,13 @@ CREATE TABLE IF NOT EXISTS worker_health_snapshots (
   status          TEXT        NOT NULL,
   queue_depth     INTEGER     NOT NULL DEFAULT 0,
   processed_5m    INTEGER     NOT NULL DEFAULT 0,
+  processed_1h    INTEGER     NOT NULL DEFAULT 0,
   last_activity_at TIMESTAMPTZ,
   cpu_load_1m     DOUBLE PRECISION,
   mem_used_pct    DOUBLE PRECISION,
   disk_used_pct   DOUBLE PRECISION
 );
+ALTER TABLE worker_health_snapshots ADD COLUMN IF NOT EXISTS processed_1h INTEGER NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS worker_health_snapshots_ts_idx
   ON worker_health_snapshots(ts DESC);
 CREATE INDEX IF NOT EXISTS worker_health_snapshots_worker_ts_idx

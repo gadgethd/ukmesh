@@ -1387,6 +1387,21 @@ html, body, #root {
   border-radius: 2px 2px 0 0;
 }
 
+.health-system-grid .site-stat__value {
+  font-size: clamp(24px, 3.2vw, 36px);
+}
+
+.health-meta {
+  margin-top: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 14px 16px;
+  background: var(--bg-panel-alt);
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px 18px;
+}
+
 /* ── Open source banner ─────────────────────────────────────────────────── */
 .oss-banner {
   display: flex;

@@ -7,7 +7,7 @@ type WorkerSnapshot = {
   worker_name: string;
   status: string;
   queue_depth: number;
-  processed_5m: number;
+  processed_1h: number;
   last_activity_at: string | null;
   cpu_load_1m: number;
   mem_used_pct: number;
@@ -78,8 +78,8 @@ async function currentWorkers(): Promise<WorkerSnapshot[]> {
   const [viewshedDepth, linkDepth, viewshedRecent, linkRecent, viewshedLast, linkLast, learning] = await Promise.all([
     r.llen('meshcore:viewshed_jobs'),
     r.llen('meshcore:link_jobs'),
-    query<{ count: string }>(`SELECT COUNT(*) AS count FROM node_coverage WHERE calculated_at > NOW() - INTERVAL '5 minutes'`),
-    query<{ count: string }>(`SELECT COUNT(*) AS count FROM node_links WHERE itm_computed_at > NOW() - INTERVAL '5 minutes'`),
+    query<{ count: string }>(`SELECT COUNT(*) AS count FROM node_coverage WHERE calculated_at > NOW() - INTERVAL '1 hour'`),
+    query<{ count: string }>(`SELECT COUNT(*) AS count FROM node_links WHERE itm_computed_at > NOW() - INTERVAL '1 hour'`),
     query<{ ts: string | null }>(`SELECT MAX(calculated_at)::text AS ts FROM node_coverage`),
     query<{ ts: string | null }>(`SELECT MAX(itm_computed_at)::text AS ts FROM node_links`),
     query<{ ts: string | null }>(`SELECT MAX(updated_at)::text AS ts FROM path_model_calibration`),
@@ -93,14 +93,14 @@ async function currentWorkers(): Promise<WorkerSnapshot[]> {
   const viewshedProcessed = Number(viewshedRecent.rows[0]?.count ?? 0);
   const linkProcessed = Number(linkRecent.rows[0]?.count ?? 0);
   const learningLast = learning.rows[0]?.ts ?? null;
-  const learningRecent = learningLast ? (Date.now() - Date.parse(learningLast)) <= 5 * 60_000 : false;
+  const learningRecent = learningLast ? (Date.now() - Date.parse(learningLast)) <= 60 * 60_000 : false;
 
   return [
     {
       worker_name: 'viewshed-worker',
       status: viewshedDepth > 0 || viewshedProcessed > 0 ? 'running' : 'idle',
       queue_depth: Number(viewshedDepth ?? 0),
-      processed_5m: viewshedProcessed,
+      processed_1h: viewshedProcessed,
       last_activity_at: viewshedLast.rows[0]?.ts ?? null,
       cpu_load_1m: load,
       mem_used_pct: memPct,
@@ -110,7 +110,7 @@ async function currentWorkers(): Promise<WorkerSnapshot[]> {
       worker_name: 'link-worker',
       status: linkDepth > 0 || linkProcessed > 0 ? 'running' : 'idle',
       queue_depth: Number(linkDepth ?? 0),
-      processed_5m: linkProcessed,
+      processed_1h: linkProcessed,
       last_activity_at: linkLast.rows[0]?.ts ?? null,
       cpu_load_1m: load,
       mem_used_pct: memPct,
@@ -120,7 +120,7 @@ async function currentWorkers(): Promise<WorkerSnapshot[]> {
       worker_name: 'path-learning',
       status: learningRecent ? 'running' : 'idle',
       queue_depth: 0,
-      processed_5m: learningRecent ? 1 : 0,
+      processed_1h: learningRecent ? 1 : 0,
       last_activity_at: learningLast,
       cpu_load_1m: load,
       mem_used_pct: memPct,
@@ -134,13 +134,13 @@ export async function captureWorkerHealthSnapshot(): Promise<void> {
   for (const row of rows) {
     await query(
       `INSERT INTO worker_health_snapshots
-         (ts, worker_name, status, queue_depth, processed_5m, last_activity_at, cpu_load_1m, mem_used_pct, disk_used_pct)
-       VALUES (NOW(), $1, $2, $3, $4, $5, $6, $7, $8)`,
+         (ts, worker_name, status, queue_depth, processed_5m, processed_1h, last_activity_at, cpu_load_1m, mem_used_pct, disk_used_pct)
+       VALUES (NOW(), $1, $2, $3, 0, $4, $5, $6, $7, $8)`,
       [
         row.worker_name,
         row.status,
         row.queue_depth,
-        row.processed_5m,
+        row.processed_1h,
         row.last_activity_at,
         row.cpu_load_1m,
         row.mem_used_pct,
@@ -161,12 +161,12 @@ export async function getWorkerHealthOverview() {
       worker_name: string;
       status: string;
       queue_depth: number;
-      processed_5m: number;
+      processed_1h: number;
       cpu_load_1m: number | null;
       mem_used_pct: number | null;
       disk_used_pct: number | null;
     }>(
-      `SELECT ts::text, worker_name, status, queue_depth, processed_5m, cpu_load_1m, mem_used_pct, disk_used_pct
+      `SELECT ts::text, worker_name, status, queue_depth, processed_1h, cpu_load_1m, mem_used_pct, disk_used_pct
        FROM worker_health_snapshots
        ORDER BY ts DESC
        LIMIT 720`,
