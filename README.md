@@ -44,12 +44,18 @@ A real-time analytics platform for [MeshCore](https://meshcore.co.uk) networks. 
 - Public Health page with worker/system status and history
 - Click-to-explain worker cards
 
-### Phase 5 - Network intelligence expansion (planned)
+### Phase 5 - Repeater owner portal (planned)
+- Ed25519 JWT authentication for repeater owners
+- Owner-facing dashboard: per-node packet history, advert counts, RSSI/SNR trends from observers that heard it
+- Planned node placement tool: drop a marker on the map, preview estimated RF coverage before deploying hardware
+- Repeater registration: owners can claim a node by public key, add contact details and notes. Nodes must be actively publishing to MQTT to be claimable.
+
+### Phase 6 - Network intelligence expansion (planned)
 - Network topology graph showing strongest relay relationships
 - Better cross-network correlation and packet-hearing analysis
 - Operator-facing diagnostics for path model explainability
 
-### Phase 6 - Predicted vs observed RF model validation (planned)
+### Phase 7 - Predicted vs observed RF model validation (planned)
 - Compare terrain-predicted links against real observed relay behavior
 - Highlight high-confidence mismatches for network tuning
 - Improve viability heuristics from observed false-positive/false-negative links
