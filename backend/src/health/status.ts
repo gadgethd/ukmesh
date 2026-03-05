@@ -204,7 +204,7 @@ export async function captureWorkerHealthSnapshot(): Promise<void> {
 }
 
 export async function getWorkerHealthOverview() {
-  const [workers, history, errors1h] = await Promise.all([
+  const [workers, history, errors1h, ingest] = await Promise.all([
     currentWorkers(),
     query<{
       ts: string;
@@ -222,12 +222,58 @@ export async function getWorkerHealthOverview() {
        LIMIT 720`,
     ),
     query<{ count: string }>(`SELECT COUNT(*) AS count FROM frontend_error_events WHERE time > NOW() - INTERVAL '1 hour'`),
+    query<{
+      stale_nodes: string;
+      active_nodes: string;
+      max_stale_minutes: string | null;
+      stale_threshold_minutes: string;
+      global_last_packet_at: string | null;
+    }>(
+      `WITH latest_rx AS (
+         SELECT rx_node_id, MAX(time) AS last_packet_at
+         FROM packets
+         WHERE rx_node_id IS NOT NULL
+           AND rx_node_id <> ''
+         GROUP BY rx_node_id
+       ),
+       active_rx AS (
+         SELECT rx_node_id, last_packet_at
+         FROM latest_rx
+         WHERE last_packet_at > NOW() - INTERVAL '7 days'
+       )
+       SELECT
+         COUNT(*) FILTER (WHERE last_packet_at < NOW() - INTERVAL '15 minutes')::text AS stale_nodes,
+         COUNT(*)::text AS active_nodes,
+         MAX(
+           CASE
+             WHEN last_packet_at < NOW() - INTERVAL '15 minutes'
+             THEN FLOOR(EXTRACT(EPOCH FROM (NOW() - last_packet_at)) / 60)
+             ELSE NULL
+           END
+         )::text AS max_stale_minutes,
+         '15'::text AS stale_threshold_minutes,
+         (SELECT MAX(time)::text FROM packets) AS global_last_packet_at
+       FROM active_rx`,
+    ),
   ]);
+
+  const ingestRow = ingest.rows[0];
+  const staleNodes = Number(ingestRow?.stale_nodes ?? 0);
+  const activeNodes = Number(ingestRow?.active_nodes ?? 0);
+  const maxStaleMinutes = Number(ingestRow?.max_stale_minutes ?? 0);
+  const staleThresholdMinutes = Number(ingestRow?.stale_threshold_minutes ?? 15);
 
   return {
     system: systemStats(),
     workers,
     history: history.rows,
     frontend_errors_1h: Number(errors1h.rows[0]?.count ?? 0),
+    ingest: {
+      stale_nodes: staleNodes,
+      active_nodes: activeNodes,
+      max_stale_minutes: staleNodes > 0 ? maxStaleMinutes : 0,
+      stale_threshold_minutes: staleThresholdMinutes,
+      global_last_packet_at: ingestRow?.global_last_packet_at ?? null,
+    },
   };
 }

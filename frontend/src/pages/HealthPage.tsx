@@ -26,6 +26,13 @@ type HealthPayload = {
     disk_used_pct: number | null;
   }>;
   frontend_errors_1h: number;
+  ingest: {
+    stale_nodes: number;
+    active_nodes: number;
+    max_stale_minutes: number;
+    stale_threshold_minutes: number;
+    global_last_packet_at: string | null;
+  };
 };
 
 function timeAgo(ts: string | null): string {
@@ -123,6 +130,15 @@ export const HealthPage: React.FC = () => {
 
       <div className="site-content site-prose">
         {error && <p className="prose-note">Health API error: {error}</p>}
+        {!error && data ? (
+          <p className="prose-note">
+            {data.ingest.stale_nodes < 1
+              ? 'All ingest nodes are active.'
+              : data.ingest.stale_nodes === 1
+                ? `1 ingest node has not injected for ${fmtInt(data.ingest.max_stale_minutes)} minutes.`
+                : `${fmtInt(data.ingest.stale_nodes)} ingest nodes have not injected for up to ${fmtInt(data.ingest.max_stale_minutes)} minutes.`}
+          </p>
+        ) : null}
 
         <section className="prose-section">
           <h2>Workers</h2>
