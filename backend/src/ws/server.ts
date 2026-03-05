@@ -114,24 +114,3 @@ export function broadcastNodeUpsert(node: Record<string, unknown>): void {
   const msg: WSMessage = { type: 'node_upsert', data: node, ts: Date.now() };
   void pub.publish(REDIS_CHANNEL, JSON.stringify(msg));
 }
-
-/** Push a viewshed calculation job for a node with a known position. */
-export function queueViewshedJob(nodeId: string, lat: number, lon: number): void {
-  void pub.lpush('meshcore:viewshed_jobs', JSON.stringify({ node_id: nodeId, lat, lon }));
-}
-
-/** Push a link observation job for a received packet with relay path data. */
-export function queueLinkJob(
-  rxNodeId: string,
-  srcNodeId: string | undefined,
-  pathHashes: string[],
-  hopCount: number | undefined,
-): void {
-  if (!pathHashes.length) return;
-  void pub.lpush('meshcore:link_jobs', JSON.stringify({
-    rx_node_id:   rxNodeId,
-    src_node_id:  srcNodeId,
-    path_hashes:  pathHashes,
-    hop_count:    hopCount,
-  }));
-}

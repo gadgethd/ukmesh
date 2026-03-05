@@ -31,3 +31,5 @@ __pycache__/
 
 # Claude context file (may contain deployment-specific details)
 CLAUDE.md
+AI_MEMORY.md
+knowledge.md

@@ -42,6 +42,8 @@ function workerLabel(name: string): string {
   if (name === 'viewshed-worker') return 'Viewshed Worker';
   if (name === 'link-worker') return 'Link Worker';
   if (name === 'path-learning') return 'Path Learning';
+  if (name === 'health-worker') return 'Health Worker';
+  if (name === 'link-backfill-worker') return 'Link Backfill Worker';
   return name;
 }
 
@@ -60,6 +62,15 @@ function fmtGb(value: number | undefined): string {
 export const HealthPage: React.FC = () => {
   const [data, setData] = useState<HealthPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [expandedWorker, setExpandedWorker] = useState<string | null>(null);
+
+  const workerDescriptions: Record<string, string> = {
+    'viewshed-worker': 'Computes terrain visibility polygons for repeater nodes using elevation data so map coverage can be pre-rendered.',
+    'link-worker': 'Processes observed packet relay paths, resolves node-to-node links, and updates link viability/path-loss metrics.',
+    'path-learning': 'Rebuilds the beta path-learning priors from historical packet behavior so route predictions stay current.',
+    'health-worker': 'Captures periodic worker/system health snapshots used by this Health page for live and historical status.',
+    'link-backfill-worker': 'One-shot startup worker that backfills historical link observations when link tables are empty.',
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -121,9 +132,24 @@ export const HealthPage: React.FC = () => {
               const hist = historyByWorker.get(worker.worker_name) ?? [];
               const peakQueue = Math.max(1, ...hist.map((h) => h.queue_depth));
               const queueBars = hist.slice(0, 48).reverse();
+              const isExpanded = expandedWorker === worker.worker_name;
+              const description = workerDescriptions[worker.worker_name] ?? 'No description available for this worker.';
 
               return (
-                <div key={worker.worker_name} className="site-card health-card">
+                <div
+                  key={worker.worker_name}
+                  className={`site-card health-card health-card--interactive${isExpanded ? ' health-card--expanded' : ''}`}
+                  role="button"
+                  tabIndex={0}
+                  aria-expanded={isExpanded}
+                  onClick={() => setExpandedWorker((curr) => curr === worker.worker_name ? null : worker.worker_name)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      setExpandedWorker((curr) => curr === worker.worker_name ? null : worker.worker_name);
+                    }
+                  }}
+                >
                   <div className="health-card__head">
                     <h3 className="site-card__title">{workerLabel(worker.worker_name)}</h3>
                     <span className={statusClass}>{worker.status.toUpperCase()}</span>
@@ -143,6 +169,9 @@ export const HealthPage: React.FC = () => {
                       />
                     ))}
                   </div>
+                  {isExpanded && (
+                    <p className="health-card__desc">{description}</p>
+                  )}
                 </div>
               );
             })}

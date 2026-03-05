@@ -1,59 +1,35 @@
 # MeshCore Analytics
 
-A real-time mesh network analytics platform for [MeshCore](https://meshcore.co.uk) networks. Ingests MQTT packets via `mctomqtt`, decodes them with `@michaelhart/meshcore-decoder`, stores them in TimescaleDB, and presents a live RF/signals-intelligence-style dashboard with node mapping, coverage viewshed polygons, packet statistics, and a decoded live feed.
+A real-time analytics platform for [MeshCore](https://meshcore.co.uk) networks. It ingests MQTT packets via `mctomqtt`, decodes them with `@michaelhart/meshcore-decoder`, stores them in TimescaleDB, and serves two production sites (`teesside` + `ukmesh`) with live mapping, link intelligence, coverage modelling, packet analytics, and worker/system health.
 
 ---
 
 ## Features
 
-- Live map of repeater nodes with animated packet arcs between observers
-- RF coverage viewshed polygons computed per node using SRTM terrain data
-- Gap detection overlay showing areas without coverage
-- Decoded live packet feed (Adverts, Group messages, DMs, ACKs, Trace routes)
-- Statistics page with charts: packet rates, unique radios, hop distribution, top chatters
-- 28-day rolling packet retention via TimescaleDB
-- Multi-observer support: duplicate packets deduplicated by hash
+- Real-time node map with animated packet arcs and live WebSocket updates
+- RF coverage viewshed polygons per repeater using SRTM terrain data
+- Link intelligence overlay with directional observations and path-loss viability
+- Beta path prediction model with hourly path-learning prior rebuilds
+- Decoded live packet feed (Advert, GroupText, DM, ACK, Path, Trace)
+- Stats pages and chart endpoints for packet rates, radios, hops, and activity
+- Public Health page with worker status/history + server resource metrics
+- Multi-network ingestion (`meshcore/*` and `ukmesh/*`) with per-site filtering
+- Multi-observer deduplication by packet hash
 
 ---
 
-## Roadmap
+## Current State
 
-### Phase 1 — Core platform (complete)
-- MQTT ingestion via `mctomqtt` with multi-observer support
-- Packet decoding with `@michaelhart/meshcore-decoder`
-- TimescaleDB storage with 28-day rolling retention
-- Live WebSocket feed to browser clients
-- React dashboard: node map, animated packet arc trails, decoded live feed
-- TX/RX deduplication by packet hash
-
-### Phase 2 — RF coverage (complete)
-- Viewshed worker: SRTM terrain-aware radio horizon computation per repeater
-- Coverage polygons served as GeoJSON and rendered on the map
-- Gap detection overlay highlighting areas with no coverage
-- Dynamic radius calculation based on node elevation
-- UK mainland clipping to remove sea coverage artefacts
-
-### Phase 3 — Repeater owner portal (planned)
-- Ed25519 JWT authentication for repeater owners
-- Owner-facing dashboard: per-node packet history, advert counts, RSSI/SNR trends from observers that heard it
-- Planned node placement tool: drop a marker on the map, preview estimated RF coverage before deploying hardware
-- Repeater registration: owners can claim a node by public key, add contact details and notes. Nodes must be actively publishing to MQTT to be claimable.
-
-### Phase 4 — Public website (complete)
-- Separate public-facing site at a different hostname from the analytics dashboard
-- Node documentation, install guides, MQTT connection instructions
-- Network statistics page with charts
-- Packet type reference page
-
-### Phase 5 — Network intelligence (planned)
-- Network topology graph: visualise which repeaters most frequently relay for each other
-- Multi-observer correlation: show all observers that heard the same packet on the map simultaneously
-- Multi-network support: remove the hardcoded IATA filter and add a network selector, making the platform usable by other MeshCore communities out of the box
-
-### Phase 6 — Predicted vs actual coverage (planned, stretch goal)
-- Overlay viewshed coverage polygons against where packets from each repeater have actually been received
-- Highlight discrepancies between terrain model predictions and observed real-world range
-- Requires a sufficient number of nodes publishing to MQTT to build a meaningful received-signal dataset
+- Multi-site deployment:
+  - `app.teessidemesh.com` / `www.teessidemesh.com`
+  - `app.ukmesh.com` / `www.ukmesh.com`
+- Split worker architecture for resilience:
+  - `viewshed-worker` (coverage compute)
+  - `link-worker` (link/path-loss processing)
+  - `path-learning-worker` (hourly model rebuild)
+  - `health-worker` (health snapshots)
+  - `link-backfill-worker` (one-shot historical backfill)
+- Nginx frontend proxies use Docker DNS resolver-based upstreams to avoid stale backend IP issues after container recreates.
 
 ---
 
@@ -72,10 +48,16 @@ cp .env.example .env
 docker compose up -d
 
 # 4. Check logs
-docker compose logs -f app
+docker compose logs -f backend
 ```
 
-The app will be available at `http://localhost:3000`.
+Local endpoints:
+
+- Backend API/WS: `http://localhost:3000`
+- Teesside app: `http://localhost:3001`
+- Teesside website: `http://localhost:3002`
+- UKMesh app: `http://localhost:3003`
+- UKMesh website: `http://localhost:3004`
 
 To expose it publicly, configure a Cloudflare Tunnel (see below) or reverse proxy of your choice.
 
@@ -95,7 +77,7 @@ Copy `.env.example` to `.env` and fill in your values. All variables used by the
 | `MQTT_PASSWORD` | *(required)* | MQTT client password |
 | `REDIS_URL` | `redis://redis:6379` | Redis URL for WebSocket pub/sub |
 | `JWT_SECRET` | *(required)* | Secret for JWT verification |
-| `ALLOWED_ORIGINS` | `http://localhost:3000,http://localhost:3001` | Comma-separated browser origins allowed for CORS and WebSocket |
+| `ALLOWED_ORIGINS` | `http://localhost:3001,http://localhost:3002` | Comma-separated browser origins allowed for CORS and WebSocket |
 | `VITE_APP_HOSTNAME` | *(blank — always shows dashboard)* | If set, only this hostname serves the analytics dashboard; all others serve the public website layout |
 | `MESHCORE_CHANNEL_SECRETS` | *(blank)* | Comma-separated channel secrets for decrypting GroupText packets. Format: `name:hex` or bare hex. The default MeshCore public channel key is always included. |
 | `OPENTOPODATA_API` | `https://api.opentopodata.org` | Elevation API endpoint for viewshed computation |
@@ -132,19 +114,25 @@ To expose the app and MQTT broker publicly without opening firewall ports:
 2. Create a tunnel and copy the token
 3. Add to `.env`: `CLOUDFLARE_TUNNEL_TOKEN=<token>`
 4. Start with the tunnel profile: `docker compose --profile tunnel up -d`
-5. Configure public hostnames in the Cloudflare dashboard:
-   - `app.yourdomain.com` → `http://app:3000`
-   - `mqtt.yourdomain.com` → `http://mosquitto:9001` (WebSocket)
+5. Configure public hostnames in the Cloudflare dashboard (example):
+   - `app.teessidemesh.com` → `http://app:80`
+   - `www.teessidemesh.com` → `http://website:80`
+   - `app.ukmesh.com` → `http://app-ukmesh:80`
+   - `www.ukmesh.com` → `http://website-ukmesh:80`
+   - `mqtt.teessidemesh.com` → `http://mosquitto:9001`
+   - `mqtt.ukmesh.com` → `http://mosquitto:9001`
 
 ---
 
 ## MQTT Topic Structure
 
-The backend subscribes to `meshcore/#`. MeshCore devices publish via `mctomqtt` to topics of the form:
+The backend subscribes to both `meshcore/#` and `ukmesh/#`. MeshCore devices publish via `mctomqtt` to topics of the form:
 
 ```
 meshcore/<IATA>/<observer-public-key>/packets   # received/transmitted packets
 meshcore/<IATA>/<observer-public-key>/status    # node status advertisement
+ukmesh/<IATA>/<observer-public-key>/packets
+ukmesh/<IATA>/<observer-public-key>/status
 ```
 
 Payloads are JSON envelopes containing a `raw` hex field (the MeshCore packet) plus metadata (RSSI, SNR, direction, hash, etc.).
@@ -161,24 +149,31 @@ MeshCore Devices
      │ MQTT over WebSocket/TLS
      ▼
  Mosquitto ─────────────────────────────── (optional Cloudflare Tunnel)
-     │ subscribe meshcore/#
+     │ subscribe meshcore/# + ukmesh/#
      ▼
- App (Node.js/TypeScript)
+ Backend (Node.js/TypeScript)
      │
-     ├─ meshcore-decoder → TimescaleDB (packets · 28d retention)
-     │                     (nodes, planned_nodes, observers · persistent)
+     ├─ meshcore-decoder → TimescaleDB (packets, nodes, coverage, priors, health snapshots)
      │
      ├─ Redis pub/sub
      │
-     ├─ WebSocket → Frontend live updates
+     ├─ WebSocket → frontend live updates
      └─ REST API /api/*
-          │
-          └─ Static Frontend (React + Leaflet + deck.gl)
+     
+ App/Web Frontends (Nginx + React)
+     ├─ app / app-ukmesh (interactive dashboard)
+     └─ website / website-ukmesh (public site + health/stats pages)
 
- Viewshed Worker (Python)
-     ├─ Redis job queue
+ Python Workers
+     ├─ viewshed-worker (meshcore:viewshed_jobs)
+     ├─ link-worker (meshcore:link_jobs)
      ├─ SRTM terrain tiles (auto-downloaded)
-     └─ node_coverage table → coverage polygons served via /api/coverage
+     └─ node_coverage + node_links updates
+
+ Backend Workers (Node.js)
+     ├─ path-learning-worker (hourly prior rebuild)
+     ├─ health-worker (minute snapshots)
+     └─ link-backfill-worker (one-shot historical backfill)
 ```
 
 ---
@@ -187,19 +182,27 @@ MeshCore Devices
 
 | Service | Image | Purpose |
 |---|---|---|
-| `timescaledb` | `timescale/timescaledb:latest-pg16` | Time-series packet storage with retention |
+| `timescaledb` | `timescale/timescaledb:latest-pg16` | Time-series and relational data storage |
 | `mosquitto` | `eclipse-mosquitto:2` | MQTT broker (WebSocket only) |
 | `redis` | `redis:7-alpine` | WebSocket fan-out pub/sub and job queue |
-| `app` | Built from `Dockerfile` | Backend API + frontend static files |
+| `backend` | Built from `Dockerfile.backend` | MQTT ingest, decoding, API, WebSocket |
+| `path-learning-worker` | Built from `Dockerfile.backend` | Hourly path-learning model rebuilds |
+| `health-worker` | Built from `Dockerfile.backend` | Periodic health snapshot capture |
+| `link-backfill-worker` | Built from `Dockerfile.backend` | One-shot historical link backfill |
 | `viewshed-worker` | Built from `viewshed-worker/Dockerfile` | Terrain-aware RF coverage computation |
+| `link-worker` | Built from `viewshed-worker/Dockerfile` | Link/path-loss processing from observed paths |
+| `app` | Built from `Dockerfile.app` | Teesside interactive dashboard frontend |
+| `website` | Built from `Dockerfile.website` | Teesside public website frontend |
+| `app-ukmesh` | Built from `Dockerfile.app` | UKMesh interactive dashboard frontend |
+| `website-ukmesh` | Built from `Dockerfile.website` | UKMesh public website frontend |
 | `cloudflared` | `cloudflare/cloudflared` | Optional Cloudflare Tunnel (use `--profile tunnel`) |
 
 ---
 
 ## Data Retention
 
-- **Packets** hypertable: automatic 28-day retention via TimescaleDB retention policy applied on first startup
-- **Nodes**, **planned\_nodes**, **observers**, **node\_coverage**: persist indefinitely
+- Packet retention policy is currently disabled. Historical data is kept indefinitely unless explicitly pruned.
+- Node/link/coverage/path-learning/health tables are also retained indefinitely by default.
 
 ---
 
@@ -238,7 +241,7 @@ This project is built on the following open source libraries and tools:
 | [NumPy](https://numpy.org) | BSD 3-Clause |
 | [SciPy](https://scipy.org) | BSD 3-Clause |
 | [Shapely](https://shapely.readthedocs.io) | BSD 3-Clause |
-| [rasterio](https://rasterio.readthedocs.io) | BSD 3-Clause |
+| [GDAL](https://gdal.org) | MIT/X |
 | [psycopg2](https://www.psycopg.org) | LGPL v3 |
 | [redis-py](https://github.com/redis/redis-py) | MIT |
 | [Requests](https://requests.readthedocs.io) | Apache 2.0 |

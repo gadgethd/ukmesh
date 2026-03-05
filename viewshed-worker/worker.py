@@ -39,6 +39,7 @@ log = logging.getLogger(__name__)
 SRTM_DIR     = Path(os.environ.get('SRTM_DIR', '/data/srtm'))
 REDIS_URL    = os.environ.get('REDIS_URL', 'redis://redis:6379')
 DATABASE_URL = os.environ.get('DATABASE_URL')
+WORKER_MODE  = os.environ.get('WORKER_MODE', 'all').lower()
 
 JOB_QUEUE      = 'meshcore:viewshed_jobs'
 LINK_JOB_QUEUE = 'meshcore:link_jobs'
@@ -748,15 +749,22 @@ def worker_loop():
 
     while True:
         try:
-            # Drain any pending link jobs first (fast) before blocking on viewshed
-            while True:
-                raw = r_client.rpop(LINK_JOB_QUEUE)
-                if raw is None:
-                    break
-                process_link_job(db, r_client, json.loads(raw))
+            if WORKER_MODE in ('all', 'link'):
+                # Drain pending link jobs first (fast) before blocking
+                while True:
+                    raw = r_client.rpop(LINK_JOB_QUEUE)
+                    if raw is None:
+                        break
+                    process_link_job(db, r_client, json.loads(raw))
 
-            # Block-wait for a viewshed or link job (viewshed has priority)
-            item = r_client.brpop([JOB_QUEUE, LINK_JOB_QUEUE], timeout=30)
+            if WORKER_MODE == 'viewshed':
+                wait_queues = [JOB_QUEUE]
+            elif WORKER_MODE == 'link':
+                wait_queues = [LINK_JOB_QUEUE]
+            else:
+                wait_queues = [JOB_QUEUE, LINK_JOB_QUEUE]
+
+            item = r_client.brpop(wait_queues, timeout=30)
             if item is None:
                 continue
             queue_name, raw = item
@@ -771,7 +779,7 @@ def worker_loop():
             log.error(f'{name}: job error: {exc}', exc_info=True)
 
 def main():
-    log.info('Viewshed worker starting')
+    log.info(f'Viewshed worker starting (mode={WORKER_MODE})')
     SRTM_DIR.mkdir(parents=True, exist_ok=True)
 
     # Connect once just to enqueue any nodes that lack coverage, then hand off
@@ -781,8 +789,9 @@ def main():
     r = redis.Redis.from_url(REDIS_URL, decode_responses=True)
     r.ping()
     log.info('Connected to Redis')
-    backfill_elevations(db)
-    enqueue_uncovered(db, r)
+    if WORKER_MODE in ('all', 'viewshed'):
+        backfill_elevations(db)
+        enqueue_uncovered(db, r)
     db.close()
 
     num_workers = int(os.environ.get('NUM_WORKERS', '2'))

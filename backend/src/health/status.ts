@@ -75,7 +75,18 @@ function systemStats() {
 
 async function currentWorkers(): Promise<WorkerSnapshot[]> {
   const r = redis();
-  const [viewshedDepth, linkDepth, viewshedRecent, linkRecent, viewshedLast, linkLast, learning] = await Promise.all([
+  const [
+    viewshedDepth,
+    linkDepth,
+    viewshedRecent,
+    linkRecent,
+    viewshedLast,
+    linkLast,
+    learning,
+    healthRecent,
+    healthLast,
+    backfillState,
+  ] = await Promise.all([
     r.llen('meshcore:viewshed_jobs'),
     r.llen('meshcore:link_jobs'),
     query<{ count: string }>(`SELECT COUNT(*) AS count FROM node_coverage WHERE calculated_at > NOW() - INTERVAL '1 hour'`),
@@ -83,6 +94,21 @@ async function currentWorkers(): Promise<WorkerSnapshot[]> {
     query<{ ts: string | null }>(`SELECT MAX(calculated_at)::text AS ts FROM node_coverage`),
     query<{ ts: string | null }>(`SELECT MAX(itm_computed_at)::text AS ts FROM node_links`),
     query<{ ts: string | null }>(`SELECT MAX(updated_at)::text AS ts FROM path_model_calibration`),
+    query<{ count: string }>(
+      `SELECT COUNT(*) AS count
+       FROM worker_health_snapshots
+       WHERE worker_name = 'health-worker'
+         AND ts > NOW() - INTERVAL '1 hour'`,
+    ),
+    query<{ ts: string | null }>(
+      `SELECT MAX(ts)::text AS ts
+       FROM worker_health_snapshots
+       WHERE worker_name = 'health-worker'`,
+    ),
+    query<{ links: string; last_observed: string | null }>(
+      `SELECT COUNT(*)::text AS links, MAX(last_observed)::text AS last_observed
+       FROM node_links`,
+    ),
   ]);
 
   const stats = systemStats();
@@ -92,8 +118,12 @@ async function currentWorkers(): Promise<WorkerSnapshot[]> {
 
   const viewshedProcessed = Number(viewshedRecent.rows[0]?.count ?? 0);
   const linkProcessed = Number(linkRecent.rows[0]?.count ?? 0);
+  const healthProcessed = Number(healthRecent.rows[0]?.count ?? 0);
+  const healthLastTs = healthLast.rows[0]?.ts ?? null;
   const learningLast = learning.rows[0]?.ts ?? null;
   const learningRecent = learningLast ? (Date.now() - Date.parse(learningLast)) <= 60 * 60_000 : false;
+  const backfillLinks = Number(backfillState.rows[0]?.links ?? 0);
+  const backfillLast = backfillState.rows[0]?.last_observed ?? null;
 
   return [
     {
@@ -122,6 +152,26 @@ async function currentWorkers(): Promise<WorkerSnapshot[]> {
       queue_depth: 0,
       processed_1h: learningRecent ? 1 : 0,
       last_activity_at: learningLast,
+      cpu_load_1m: load,
+      mem_used_pct: memPct,
+      disk_used_pct: diskPct,
+    },
+    {
+      worker_name: 'health-worker',
+      status: healthLastTs ? 'running' : 'idle',
+      queue_depth: 0,
+      processed_1h: healthProcessed,
+      last_activity_at: healthLastTs,
+      cpu_load_1m: load,
+      mem_used_pct: memPct,
+      disk_used_pct: diskPct,
+    },
+    {
+      worker_name: 'link-backfill-worker',
+      status: backfillLinks > 0 ? 'completed' : 'pending',
+      queue_depth: 0,
+      processed_1h: 0,
+      last_activity_at: backfillLast,
       cpu_load_1m: load,
       mem_used_pct: memPct,
       disk_used_pct: diskPct,

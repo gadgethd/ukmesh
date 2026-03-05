@@ -62,6 +62,60 @@ services:
     ports:
       - "3000:3000"
 
+  path-learning-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    restart: unless-stopped
+    command: ["node", "dist/workers/path-learning.js"]
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET required}
+      NODE_ENV: production
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  health-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    restart: unless-stopped
+    command: ["node", "dist/workers/health.js"]
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET required}
+      NODE_ENV: production
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  link-backfill-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    restart: "no"
+    command: ["node", "dist/workers/link-backfill.js"]
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}
+      MQTT_BROKER_URL: ${MQTT_BROKER_URL:-ws://mosquitto:9001}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      MESHCORE_CHANNEL_SECRETS: ${MESHCORE_CHANNEL_SECRETS:-}
+      NODE_ENV: production
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_started
+
   app:
     build:
       context: .
@@ -83,6 +137,7 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       SRTM_DIR: /data/srtm
+      WORKER_MODE: viewshed
       NUM_WORKERS: '1'
     volumes:
       - srtm_data:/data/srtm
@@ -91,6 +146,25 @@ services:
         limits:
           cpus: '1.5'
           memory: '5g'
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  link-worker:
+    build:
+      context: ./viewshed-worker
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      SRTM_DIR: /data/srtm
+      WORKER_MODE: link
+      NUM_WORKERS: '1'
+    volumes:
+      - srtm_data:/data/srtm
     depends_on:
       timescaledb:
         condition: service_healthy

@@ -1329,6 +1329,22 @@ html, body, #root {
   gap: 14px;
 }
 
+.health-card--interactive {
+  cursor: pointer;
+  transition: border-color var(--transition), background var(--transition);
+}
+
+.health-card--interactive:hover,
+.health-card--interactive:focus-visible {
+  border-color: var(--border-bright);
+  background: var(--bg-hover);
+  outline: none;
+}
+
+.health-card--expanded {
+  border-color: var(--accent-glow);
+}
+
 .health-card__head {
   display: flex;
   align-items: center;
@@ -1387,8 +1403,33 @@ html, body, #root {
   border-radius: 2px 2px 0 0;
 }
 
+.health-card__desc {
+  margin: 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
 .health-system-grid .site-stat__value {
   font-size: clamp(24px, 3.2vw, 36px);
+}
+
+.health-system-grid.site-stats-grid--6 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+@media (max-width: 900px) {
+  .health-system-grid.site-stats-grid--6 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 560px) {
+  .health-system-grid.site-stats-grid--6 {
+    grid-template-columns: 1fr;
+  }
 }
 
 .health-meta {
