@@ -34,6 +34,7 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
     { to: '/about', label: 'What is MeshCore', enabled: true },
     { to: '/install', label: 'Install', enabled: true },
     { to: '/mqtt', label: 'MQTT', enabled: true },
+    { to: '/health', label: 'Health', enabled: true },
     { to: '/packets', label: 'Packets', enabled: showPackets },
     { to: '/open-source', label: 'Open Source', enabled: true },
     { to: '/stats', label: 'Stats', enabled: showStats },
@@ -93,4 +94,3 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
     </div>
   );
 };
-

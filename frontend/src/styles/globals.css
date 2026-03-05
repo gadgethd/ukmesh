@@ -327,6 +327,47 @@ html, body, #root {
   cursor: pointer;
 }
 
+.filter-presets {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.filter-preset-btn {
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-panel-alt);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-family: var(--font-mono);
+  padding: 6px 8px;
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition), border-color var(--transition);
+}
+
+.filter-preset-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  border-color: var(--border-bright);
+}
+
+.filter-beta-note {
+  font-size: 10px;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 6px 8px;
+  margin-bottom: 8px;
+  font-family: var(--font-mono);
+}
+
+.filter-beta-note strong {
+  color: var(--accent);
+}
+
 /* ─── Node Marker ────────────────────────────────────────────────────────── */
 .node-marker {
   position: relative;
@@ -503,6 +544,57 @@ html, body, #root {
   flex-shrink: 0;
 }
 
+.link-tooltip {
+  min-width: 180px;
+  font-size: 11px;
+  color: var(--text-primary);
+}
+
+.link-tooltip__row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.links-legend {
+  position: absolute;
+  left: 16px;
+  top: 70px;
+  z-index: 820;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 10px 12px;
+  min-width: 180px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+}
+
+.links-legend__title {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+
+.links-legend__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+}
+
+.links-legend__swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
 /* ─── Live packet feed (bottom left) ────────────────────────────────────── */
 .packet-feed {
   position: absolute;
@@ -510,17 +602,11 @@ html, body, #root {
   left: 16px;
   z-index: 800;
   width: 340px;
-  max-height: 220px;
-  display: flex;
-  flex-direction: column-reverse;
-  gap: 3px;
-  overflow: hidden;
-  pointer-events: none;
-}
-
-/* Re-enable pointer events on individual items so they're clickable */
-.packet-item {
+  height: 220px;
+  overflow-y: auto;
+  overflow-x: hidden;
   pointer-events: auto;
+  padding-right: 2px;
 }
 
 /* Fade the oldest (topmost) item only when the feed is full */
@@ -542,6 +628,7 @@ html, body, #root {
   line-height: 1;
   animation: slide-in 0.15s ease;
   transition: opacity 0.5s ease;
+  margin-bottom: 3px;
 }
 
 .packet-item--fading {
@@ -1232,6 +1319,74 @@ html, body, #root {
 .lib-card__name { font-family: var(--font-mono); font-size: 13px; color: var(--accent); }
 .lib-card__role { font-size: 12px; color: var(--text-secondary); line-height: 1.4; }
 
+.health-workers-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 14px;
+}
+
+.health-card {
+  gap: 14px;
+}
+
+.health-card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.health-pill {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+
+.health-pill--ok {
+  color: var(--online);
+  border-color: rgba(0, 230, 118, 0.45);
+  background: rgba(0, 230, 118, 0.1);
+}
+
+.health-card__stats {
+  display: grid;
+  gap: 6px;
+}
+
+.health-kv {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.health-kv strong {
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+}
+
+.health-spark {
+  height: 44px;
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+
+.health-spark__bar {
+  width: 4px;
+  min-height: 8px;
+  background: var(--accent);
+  opacity: 0.7;
+  border-radius: 2px 2px 0 0;
+}
+
 /* ── Open source banner ─────────────────────────────────────────────────── */
 .oss-banner {
   display: flex;
@@ -1391,7 +1546,7 @@ html, body, #root {
   .map-area .node-search { display: none; }
 
   /* ── Packet feed: full width at bottom, max 4 items ─────────────────── */
-  .packet-feed { width: calc(100% - 32px); max-height: 140px; }
+  .packet-feed { width: calc(100% - 32px); height: 140px; }
 
   /* ── Website nav: keep bar fixed height, dropdown pops below it ─────── */
   .site-nav {

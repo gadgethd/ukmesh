@@ -20,6 +20,7 @@ type UsePacketPathOverlayParams = {
 type UsePacketPathOverlayResult = {
   packetPath: [number, number][] | null;
   betaPacketPath: [number, number][] | null;
+  betaPathConfidence: number | null;
   pathOpacity: number;
   pinnedPacketId: string | null;
   handlePacketPin: (packet: AggregatedPacket) => void;
@@ -36,6 +37,7 @@ export function usePacketPathOverlay({
 }: UsePacketPathOverlayParams): UsePacketPathOverlayResult {
   const [packetPath, setPacketPath] = useState<[number, number][] | null>(null);
   const [betaPacketPath, setBetaPacketPath] = useState<[number, number][] | null>(null);
+  const [betaPathConfidence, setBetaPathConfidence] = useState<number | null>(null);
   const [pinnedPacketId, setPinnedPacketId] = useState<string | null>(null);
   const [pathOpacity, setPathOpacity] = useState(0.75);
 
@@ -58,6 +60,7 @@ export function usePacketPathOverlay({
   const clearPathState = useCallback(() => {
     setPacketPath(null);
     setBetaPacketPath(null);
+    setBetaPathConfidence(null);
     setPathOpacity(0.75);
   }, []);
 
@@ -97,16 +100,20 @@ export function usePacketPathOverlay({
       if (result && result.confidence >= filters.betaPathThreshold) {
         recentPredictionsRef.current.set(pairKey, { path: result.path, ts: Date.now() });
         setBetaPacketPath(result.path);
+        setBetaPathConfidence(result.confidence);
       } else {
         const recent = recentPredictionsRef.current.get(pairKey);
         if (recent && Date.now() - recent.ts < 45_000) {
           setBetaPacketPath(recent.path);
+          setBetaPathConfidence(null);
         } else {
           setBetaPacketPath(null);
+          setBetaPathConfidence(null);
         }
       }
     } else {
       setBetaPacketPath(null);
+      setBetaPathConfidence(null);
     }
 
     if (!filters.packetPaths && !filters.betaPaths) { setPathOpacity(0.75); return; }
@@ -170,16 +177,20 @@ export function usePacketPathOverlay({
       if (result && result.confidence >= filters.betaPathThreshold) {
         recentPredictionsRef.current.set(pairKey, { path: result.path, ts: Date.now() });
         setBetaPacketPath(result.path);
+        setBetaPathConfidence(result.confidence);
       } else {
         const recent = recentPredictionsRef.current.get(pairKey);
         if (recent && Date.now() - recent.ts < 45_000) {
           setBetaPacketPath(recent.path);
+          setBetaPathConfidence(null);
         } else {
           setBetaPacketPath(null);
+          setBetaPathConfidence(null);
         }
       }
     } else {
       setBetaPacketPath(null);
+      setBetaPathConfidence(null);
     }
 
     setPathOpacity(0.75);
@@ -213,6 +224,7 @@ export function usePacketPathOverlay({
   return {
     packetPath,
     betaPacketPath,
+    betaPathConfidence,
     pathOpacity,
     pinnedPacketId,
     handlePacketPin,
