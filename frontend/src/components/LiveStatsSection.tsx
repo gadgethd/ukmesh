@@ -10,7 +10,7 @@ type SiteStats = {
 };
 
 type LiveStatsSectionProps = {
-  network: string;
+  network?: string;
 };
 
 const EMPTY_STATS: SiteStats = {

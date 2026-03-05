@@ -6,7 +6,7 @@ export const UKMqttPage: React.FC = () => (
       <div className="site-content">
         <h1 className="site-page-hero__title">MQTT Observer Setup</h1>
         <p className="site-page-hero__sub">
-          Connect your repeater node to the UK Mesh MQTT broker and contribute live packet
+          Connect your repeater node to the global UK Mesh MQTT broker and contribute live packet
           data to the national dashboard.
         </p>
       </div>
@@ -26,6 +26,11 @@ export const UKMqttPage: React.FC = () => (
           your node's position and RF coverage will be shown, and you will be contributing to the
           UK-wide picture of the network.
         </p>
+        <p>
+          Teesside and UK views use the same ingest feed. Observers using IATA <strong>MME</strong>{' '}
+          are included in Teesside views, while other IATA regions appear in the wider UK/global
+          views.
+        </p>
         <div className="prose-note">
           <strong>Access is by request.</strong> Message <strong>ibengr</strong> on the{' '}
           <a href="https://discord.gg/bSuST8xvet" target="_blank" rel="noopener noreferrer">Discord</a>{' '}
@@ -41,8 +46,8 @@ export const UKMqttPage: React.FC = () => (
         <p>
           We use the pre-built firmware from the team at{' '}
           <a href="https://analyzer.letsmesh.net" target="_blank" rel="noopener noreferrer">letsmesh</a>,
-          a great project for global MeshCore network stats. You will need their firmware with
-          packet logging enabled. The current version is <strong>1.13.0</strong>.
+          a great project for global MeshCore network stats. You will need a letsmesh build with
+          packet logging enabled. Use the latest packet-logging build shown in their onboarding flow.
         </p>
         <ol className="prose-steps">
           <li>
@@ -60,7 +65,7 @@ export const UKMqttPage: React.FC = () => (
         </ol>
         <p className="prose-note">
           This only applies if you are setting up a fresh node. If your repeater is already running
-          1.13.0 from letsmesh it likely already has packet logging enabled.
+          a recent letsmesh packet-logging build it likely already has packet logging enabled.
         </p>
       </section>
 
@@ -96,7 +101,7 @@ export const UKMqttPage: React.FC = () => (
         <p>
           Enter the three-letter IATA code for your nearest commercial airport. Some examples:
         </p>
-        <div className="prose-facts">
+        <div className="prose-facts prose-facts--3x2">
           <div className="prose-fact">
             <span className="prose-fact__value">MME</span>
             <span className="prose-fact__label">Teesside</span>
@@ -126,43 +131,27 @@ export const UKMqttPage: React.FC = () => (
           Use the correct IATA code for your location. A quick search will confirm the right one.
         </p>
 
-        <h3>Add the UK Mesh broker</h3>
+        <h3>Add the global broker</h3>
         <p>
-          The UK Mesh broker uses a custom topic prefix that the interactive installer does not
-          support. Skip adding it through the installer and add it manually instead. Open (or
-          create) <code>/etc/mctomqtt/config.d/00-user.toml</code> and append the following block,
-          substituting your credentials and the IATA code from step 2:
+          When asked if you would like to configure additional MQTT brokers, choose{' '}
+          <strong>y</strong> and add <strong>1</strong> broker using the credentials you received
+          from ibengr:
         </p>
         <div className="code-block">
-          <pre>{`[[broker]]
-name      = "ukmesh"
-enabled   = true
-server    = "mqtt.ukmesh.com"
-port      = 443
-transport = "websockets"
-keepalive = 60
-qos       = 0
-retain    = true
-
-[broker.tls]
-enabled = true
-verify  = true
-
-[broker.auth]
-method   = "password"
-username = "<your username>"
-password = "<your password>"
-
-[broker.topics]
-packets = "ukmesh/<IATA>/{PUBLIC_KEY}/packets"`}</pre>
+          <pre>{`Server hostname/IP: mqtt.ukmesh.com
+Port [1883]: 443
+Use WebSockets transport? [y/N]: y
+Use TLS/SSL encryption? [y/N]: y
+Verify TLS certificates? [Y/n]: y
+Choose authentication method [1-3] [1]: 1
+Username: <your username>
+Password: <your password>`}</pre>
         </div>
-        <p>
-          Replace <code>&lt;IATA&gt;</code> with your three-letter airport code (e.g.{' '}
-          <code>MME</code>, <code>NCL</code>, <code>MAN</code>) and fill in your credentials.
-          Then restart the service:
+        <p className="prose-note">
+          If your installer asks for topic format, use:
         </p>
         <div className="code-block">
-          <pre>{'sudo systemctl restart mctomqtt'}</pre>
+          <pre>{'meshcore/<IATA>/{PUBLIC_KEY}/packets'}</pre>
         </div>
         <p>
           Your node should appear on the{' '}
@@ -198,7 +187,7 @@ packets = "ukmesh/<IATA>/{PUBLIC_KEY}/packets"`}</pre>
         <h2>Get access</h2>
         <p>
           Message <strong>ibengr</strong> on the MeshCore Discord with your node name, location,
-          and IATA code and we will get you set up with credentials for the UK Mesh broker.
+          and IATA code and we will get you set up with credentials for the global broker.
         </p>
         <a
           href="https://discord.gg/bSuST8xvet"

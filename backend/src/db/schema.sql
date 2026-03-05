@@ -86,6 +86,30 @@ ALTER TABLE packets ADD COLUMN IF NOT EXISTS advert_count INTEGER;
 ALTER TABLE packets ADD COLUMN IF NOT EXISTS path_hashes TEXT[];
 ALTER TABLE packets ADD COLUMN IF NOT EXISTS network      TEXT NOT NULL DEFAULT 'teesside';
 
+-- Reclassify legacy rows so Teesside is observer-IATA scoped (MME),
+-- with all other observer IATA values treated as the global/ukmesh side.
+UPDATE packets
+SET network = CASE
+  WHEN UPPER(split_part(topic, '/', 2)) = 'MME' THEN 'teesside'
+  ELSE 'ukmesh'
+END
+WHERE topic IS NOT NULL
+  AND topic <> ''
+  AND network <> CASE
+    WHEN UPPER(split_part(topic, '/', 2)) = 'MME' THEN 'teesside'
+    ELSE 'ukmesh'
+  END;
+
+UPDATE nodes
+SET network = CASE
+  WHEN UPPER(COALESCE(iata, '')) = 'MME' THEN 'teesside'
+  ELSE 'ukmesh'
+END
+WHERE network <> CASE
+  WHEN UPPER(COALESCE(iata, '')) = 'MME' THEN 'teesside'
+  ELSE 'ukmesh'
+END;
+
 -- Indexes for common query patterns
 CREATE INDEX IF NOT EXISTS packets_hash_idx   ON packets (packet_hash, time DESC);
 CREATE INDEX IF NOT EXISTS packets_rx_idx     ON packets (rx_node_id, time DESC);

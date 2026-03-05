@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { AggregatedPacket, MeshNode } from '../hooks/useNodes.js';
 
 const TYPE_LABELS: Record<number, string> = {
@@ -24,10 +24,24 @@ interface Props {
 const VISIBLE_ROWS = 8;
 
 export const PacketFeed: React.FC<Props> = React.memo(({ packets, nodes, onPacketClick, pinnedPacketId }) => {
-  const visible = useMemo(() => packets.slice(0, VISIBLE_ROWS), [packets]);
+  const visible = useMemo(
+    () => packets.slice(0, VISIBLE_ROWS).reverse(),
+    [packets],
+  );
+  const [tickClass, setTickClass] = useState('');
+  const latestIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    const latestId = packets[0]?.id ?? null;
+    if (!latestId || latestIdRef.current === latestId) return;
+    latestIdRef.current = latestId;
+    setTickClass(' packet-feed--tick');
+    const timer = setTimeout(() => setTickClass(''), 220);
+    return () => clearTimeout(timer);
+  }, [packets]);
 
   return (
-  <div className="packet-feed">
+  <div className={`packet-feed${tickClass}`}>
     {visible.map((p) => {
       const typeLabel = p.packetType !== undefined
         ? (TYPE_LABELS[p.packetType] ?? `T${p.packetType}`)

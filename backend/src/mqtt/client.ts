@@ -31,8 +31,12 @@ function emitNodeUpsert(node: Record<string, unknown>) {
 
 /**
  * Topic formats:
- *   meshcore/{IATA}/{OBSERVER_PUBLIC_KEY}/{packets|status}  → network 'teesside'
- *   ukmesh/{IATA}/{OBSERVER_PUBLIC_KEY}/{packets|status}    → network 'ukmesh'
+ *   meshcore/{IATA}/{OBSERVER_PUBLIC_KEY}/{packets|status}
+ *   ukmesh/{IATA}/{OBSERVER_PUBLIC_KEY}/{packets|status} (legacy, accepted during migration)
+ *
+ * Network assignment is now derived from observer IATA:
+ *   - MME => teesside
+ *   - all other IATA => ukmesh/global
  *
  * mctomqtt JSON structure:
  *   status:  { origin, origin_id, model, firmware_version, radio, client_version }
@@ -40,10 +44,8 @@ function emitNodeUpsert(node: Record<string, unknown>) {
  *              payload_len, direction, origin, origin_id, timestamp, type }
  *   All numeric values arrive as strings from mctomqtt regex groups.
  */
-const TOPIC_NETWORKS: Record<string, string> = {
-  meshcore: 'teesside',
-  ukmesh:   'ukmesh',
-};
+const TOPIC_PREFIXES = new Set(['meshcore', 'ukmesh']);
+const TEESSIDE_IATA = (process.env['TEESSIDE_IATA'] ?? 'MME').trim().toUpperCase();
 
 interface TopicParts {
   iata:        string;
@@ -54,10 +56,13 @@ interface TopicParts {
 
 function parseTopic(topic: string): TopicParts | null {
   const parts = topic.split('/');
-  const network = parts.length === 4 ? TOPIC_NETWORKS[parts[0]!] : undefined;
-  if (!network) return null;
-  return { iata: parts[1]!, observerKey: parts[2]!, suffix: parts[3]!, network };
-  return null;
+  if (parts.length !== 4) return null;
+  const prefix = parts[0]?.toLowerCase();
+  if (!prefix || !TOPIC_PREFIXES.has(prefix)) return null;
+  const iata = (parts[1] ?? '').trim().toUpperCase();
+  if (!iata) return null;
+  const network = iata === TEESSIDE_IATA ? 'teesside' : 'ukmesh';
+  return { iata, observerKey: parts[2]!, suffix: parts[3]!, network };
 }
 
 /** Coerce a string or number field to number, returning undefined if not parseable. */
@@ -187,7 +192,7 @@ export function startMqttClient(): void {
 
   client.on('connect', () => {
     console.log('[mqtt] connected');
-    for (const prefix of Object.keys(TOPIC_NETWORKS)) {
+    for (const prefix of TOPIC_PREFIXES) {
       client.subscribe(`${prefix}/#`, { qos: 0 }, (err) => {
         if (err) console.error(`[mqtt] subscribe error (${prefix}/#)`, err.message);
         else      console.log(`[mqtt] subscribed to ${prefix}/#`);

@@ -35,7 +35,7 @@ const BACKEND: LibEntry[] = [
 ];
 
 const INFRA: LibEntry[] = [
-  { name: 'TimescaleDB',          role: 'Time-series PostgreSQL, 28-day packet retention',          url: 'https://www.timescale.com' },
+  { name: 'TimescaleDB',          role: 'Time-series PostgreSQL for packet, node, and link storage', url: 'https://www.timescale.com' },
   { name: 'Redis',                role: 'Pub/sub bus for real-time updates between processes',       url: 'https://redis.io' },
   { name: 'Mosquitto',            role: 'Lightweight MQTT broker',                                  url: 'https://mosquitto.org' },
   { name: 'Docker + Compose',     role: 'Service containerisation and orchestration',                url: 'https://docs.docker.com/compose' },
@@ -84,7 +84,7 @@ export const OpenSourcePage: React.FC = () => (
               your own analytics instance, everything you need is there.
             </p>
             <a
-              href="https://github.com/gadgethd/meshcore-analytics"
+              href="https://github.com/gadgethd/teesside-mesh"
               target="_blank"
               rel="noopener noreferrer"
               className="site-btn site-btn--primary"

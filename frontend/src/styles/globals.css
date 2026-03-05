@@ -631,6 +631,15 @@ html, body, #root {
   to   { transform: translateY(0);   opacity: 1; }
 }
 
+@keyframes packet-shift-up {
+  from { transform: translateY(6px); }
+  to   { transform: translateY(0); }
+}
+
+.packet-feed--tick .packet-item {
+  animation: packet-shift-up 180ms ease;
+}
+
 .packet-item__type {
   font-size: 11px;
   color: var(--accent);
@@ -1373,6 +1382,9 @@ html, body, #root {
   overflow: hidden;
   margin: 24px 0;
 }
+.prose-facts--3x2 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
 .prose-fact {
   display: flex;
   flex-direction: column;
@@ -1384,6 +1396,18 @@ html, body, #root {
 .prose-fact__label { font-size: 12px; color: var(--text-muted); }
 .prose-steps { padding-left: 24px; margin: 0 0 16px; counter-reset: none; }
 .prose-steps li { margin-bottom: 12px; }
+
+@media (max-width: 700px) {
+  .prose-facts--3x2 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 460px) {
+  .prose-facts--3x2 {
+    grid-template-columns: 1fr;
+  }
+}
 
 /* ── Code blocks ───────────────────────────────────────────────────────── */
 .code-block {

@@ -19,32 +19,31 @@ export const AboutPage: React.FC = () => (
         <h2>What is LoRa?</h2>
         <p>
           <strong>LoRa</strong> (Long Range) is a radio modulation technique developed by Semtech that
-          allows small, low-power devices to communicate over surprisingly long distances. In open terrain
-          a single LoRa radio can reliably cover 5–30 km. From a hilltop repeater with a good antenna,
-          even further.
+          allows small, low-power devices to communicate over long distances. Real-world range depends on
+          terrain, antenna, mounting height, and radio settings. In poor urban conditions it may be under
+          1 km, while elevated line-of-sight links can stretch to tens of kilometres.
         </p>
         <p>
-          In the UK, LoRa operates on the <strong>868 MHz ISM band</strong>, a licence-free portion of
-          the radio spectrum allocated for industrial, scientific, and medical use. Anyone can build and
-          operate a LoRa node without needing an amateur radio licence, though many of us on the network
-          are licensed radio amateurs.
+          In the UK, LoRa typically operates in licence-exempt SRD spectrum around <strong>868 MHz</strong>.
+          You do not need an amateur radio licence to run a node in these bands, but operation must stay
+          within Ofcom licence-exempt limits (for example power and duty-cycle constraints in IR2030).
         </p>
         <div className="prose-facts">
           <div className="prose-fact">
             <span className="prose-fact__value">868 MHz</span>
-            <span className="prose-fact__label">UK ISM band</span>
+            <span className="prose-fact__label">UK SRD band</span>
           </div>
           <div className="prose-fact">
-            <span className="prose-fact__value">5–30 km</span>
-            <span className="prose-fact__label">Typical range</span>
+            <span className="prose-fact__value">&lt;1 to 30+ km</span>
+            <span className="prose-fact__label">Range (terrain dependent)</span>
           </div>
           <div className="prose-fact">
-            <span className="prose-fact__value">&lt;1 mW</span>
-            <span className="prose-fact__label">Average transmit power</span>
+            <span className="prose-fact__value">IR2030</span>
+            <span className="prose-fact__label">Licence-exempt limits apply</span>
           </div>
           <div className="prose-fact">
-            <span className="prose-fact__value">No licence</span>
-            <span className="prose-fact__label">Required in the UK</span>
+            <span className="prose-fact__value">Shared</span>
+            <span className="prose-fact__label">Non-protected spectrum</span>
           </div>
         </div>
       </section>

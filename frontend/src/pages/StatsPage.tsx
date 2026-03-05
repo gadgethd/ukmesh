@@ -95,9 +95,10 @@ export const StatsPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
   const site = getCurrentSite();
+  const statsNetwork = site.id === 'ukmesh' ? undefined : site.network;
 
   const load = () => {
-    fetch(uncachedEndpoint(chartStatsEndpoint(site.network)), { cache: 'no-store' })
+    fetch(uncachedEndpoint(chartStatsEndpoint(statsNetwork)), { cache: 'no-store' })
       .then(r => r.json())
       .then((d: ChartData) => { setData(d); setLoading(false); setLastUpdate(new Date()); })
       .catch(() => setLoading(false));
@@ -118,7 +119,9 @@ export const StatsPage: React.FC = () => {
         <div className="site-content">
           <h1 className="site-page-hero__title">Network Stats</h1>
           <p className="site-page-hero__sub">
-            Live analytics from the {site.displayName} network. Updates every 60 seconds.
+            {site.id === 'ukmesh'
+              ? 'Live analytics across all connected networks. Updates every 60 seconds.'
+              : `Live analytics from the ${site.displayName} network. Updates every 60 seconds.`}
           </p>
           {lastUpdate && (
             <p style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>

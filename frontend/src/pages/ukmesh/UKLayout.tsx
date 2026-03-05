@@ -10,7 +10,7 @@ export const UKLayout: React.FC = () => {
       footerName={site.footerName}
       appUrl={site.appUrl}
       showPackets={false}
-      showStats={false}
+      showStats
     />
   );
 };

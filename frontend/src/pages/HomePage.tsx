@@ -80,8 +80,8 @@ export const HomePage: React.FC = () => {
             <h2 className="site-card__title">Get on the network</h2>
             <p className="site-card__body">
               All you need is a supported LoRa board and about 10 minutes. Flash the firmware
-              in your browser, configure your node, and you're on the air. No licence required
-              for the 868 MHz ISM band in the UK.
+              in your browser, configure your node, and you're on the air. In the UK, 868 MHz
+              operation is licence-exempt when run within Ofcom IR2030 limits.
             </p>
             <Link to="/install" className="site-card__link">Install guide →</Link>
           </div>

@@ -94,8 +94,8 @@ export const InstallPage: React.FC = () => (
           Configure your node
         </h2>
         <p>
-          Install the <strong>MeshCore</strong> companion app on your Android phone
-          (search for "MeshCore" on Google Play). iOS support is in development.
+          Install the <strong>MeshCore</strong> companion app on your phone. Official clients are
+          available on Android (Google Play) and iOS (App Store).
         </p>
         <ol className="prose-steps">
           <li>

@@ -29,7 +29,7 @@ export const UKHomePage: React.FC = () => {
         </div>
       </section>
 
-      <LiveStatsSection network={site.network} />
+      <LiveStatsSection />
 
       {/* ── Radio config ─────────────────────────────────────────────── */}
       <section className="site-stats-section site-stats-section--alt">

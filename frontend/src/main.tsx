@@ -44,6 +44,7 @@ ReactDOM.createRoot(root).render(
             <Route path="health" element={<HealthPage />} />
             <Route path="login" element={<OwnerPortalPage />} />
             <Route path="open-source" element={<OpenSourcePage />} />
+            <Route path="stats" element={<StatsPage />} />
           </Route>
         </Routes>
       </BrowserRouter>

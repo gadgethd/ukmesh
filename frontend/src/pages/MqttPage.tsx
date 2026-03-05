@@ -6,8 +6,8 @@ export const MqttPage: React.FC = () => (
       <div className="site-content">
         <h1 className="site-page-hero__title">MQTT Integration</h1>
         <p className="site-page-hero__sub">
-          Connect your repeater node to the Teesside Mesh MQTT broker and contribute live packet
-          data to the network dashboard.
+          Connect your repeater node to the global UK Mesh MQTT broker and contribute live packet
+          data to the dashboards.
         </p>
       </div>
     </section>
@@ -27,6 +27,11 @@ export const MqttPage: React.FC = () => (
           your node's position and coverage will be shown, and you'll be contributing to the
           shared picture of the network.
         </p>
+        <p>
+          Teesside and UK views now share the same ingest path. If your observer IATA is{' '}
+          <strong>MME</strong>, packets are included in Teesside views. Other IATA regions appear
+          in the wider UK/global views.
+        </p>
         <div className="prose-note">
           <strong>Access is by request.</strong> Message <strong>ibengr</strong> on the{' '}
           <a href="https://discord.gg/bSuST8xvet" target="_blank" rel="noopener noreferrer">Discord</a>{' '}
@@ -44,8 +49,8 @@ export const MqttPage: React.FC = () => (
         <p>
           We use the pre-built firmware from the team at{' '}
           <a href="https://analyzer.letsmesh.net" target="_blank" rel="noopener noreferrer">letsmesh</a>
-          {' '}, a great project for global MeshCore network stats. You'll need their firmware with
-          packet logging enabled. The current version is <strong>1.13.0</strong>.
+          {' '}, a great project for global MeshCore network stats. You will need a letsmesh build
+          with packet logging enabled. Use the latest packet-logging build shown in their onboarding flow.
         </p>
         <ol className="prose-steps">
           <li>
@@ -65,7 +70,7 @@ export const MqttPage: React.FC = () => (
         </ol>
         <p className="prose-note">
           This only applies if you're setting up a fresh node. If your repeater is already running
-          1.13.0 from letsmesh, it likely already has packet logging enabled.
+          a recent letsmesh packet-logging build, you can usually skip this step.
         </p>
       </section>
 
@@ -135,14 +140,14 @@ export const MqttPage: React.FC = () => (
           serial access, choose <strong>n</strong>.
         </p>
 
-        <h3>Add the Teesside Mesh broker</h3>
+        <h3>Add the global broker</h3>
         <p>
           When asked if you'd like to configure additional MQTT brokers, choose <strong>y</strong>{' '}
           and add <strong>1</strong> broker. Enter the following details using the credentials
           you received from ibengr:
         </p>
         <div className="code-block">
-          <pre>{`Server hostname/IP: mqtt.teessidemesh.com
+          <pre>{`Server hostname/IP: mqtt.ukmesh.com
 Port [1883]: 443
 Use WebSockets transport? [y/N]: y
 Use TLS/SSL encryption? [y/N]: y
@@ -150,6 +155,12 @@ Verify TLS certificates? [Y/n]: y
 Choose authentication method [1-3] [1]: 1
 Username: <your username>
 Password: <your password>`}</pre>
+        </div>
+        <p className="prose-note">
+          If your installer asks for topic format, use:
+        </p>
+        <div className="code-block">
+          <pre>{'meshcore/<IATA>/{PUBLIC_KEY}/packets'}</pre>
         </div>
         <p>
           Once the installer finishes, your node should appear on the{' '}
@@ -211,7 +222,7 @@ Password: <your password>`}</pre>
         <p>
           Come and find us on Discord in the <strong>North East England</strong> regional channel.
           Message <strong>ibengr</strong> with your node name, location, and IATA code and we'll
-          get you set up with credentials for the Teesside Mesh broker.
+          get you set up with credentials for the global broker.
         </p>
         <a
           href="https://discord.gg/bSuST8xvet"
