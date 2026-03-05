@@ -1,6 +1,6 @@
 # MeshCore Analytics
 
-A real-time analytics platform for [MeshCore](https://meshcore.co.uk) networks. It ingests MQTT packets via `mctomqtt`, decodes them with `@michaelhart/meshcore-decoder`, stores them in TimescaleDB, and serves two production sites (`teesside` + `ukmesh`) with live mapping, link intelligence, coverage modelling, packet analytics, and worker/system health.
+A real-time analytics platform for [MeshCore](https://meshcore.co.uk) networks. It ingests MQTT packets via `mctomqtt`, decodes them with `@michaelhart/meshcore-decoder`, stores them in TimescaleDB, and serves interactive dashboards plus public-facing site pages with live mapping, link intelligence, coverage modelling, packet analytics, and worker/system health.
 
 ---
 
@@ -20,9 +20,6 @@ A real-time analytics platform for [MeshCore](https://meshcore.co.uk) networks. 
 
 ## Current State
 
-- Multi-site deployment:
-  - `app.teessidemesh.com` / `www.teessidemesh.com`
-  - `app.ukmesh.com` / `www.ukmesh.com`
 - Split worker architecture for resilience:
   - `viewshed-worker` (coverage compute)
   - `link-worker` (link/path-loss processing)
@@ -54,10 +51,10 @@ docker compose logs -f backend
 Local endpoints:
 
 - Backend API/WS: `http://localhost:3000`
-- Teesside app: `http://localhost:3001`
-- Teesside website: `http://localhost:3002`
-- UKMesh app: `http://localhost:3003`
-- UKMesh website: `http://localhost:3004`
+- App frontend: `http://localhost:3001`
+- Website frontend: `http://localhost:3002`
+- Optional second app frontend: `http://localhost:3003`
+- Optional second website frontend: `http://localhost:3004`
 
 To expose it publicly, configure a Cloudflare Tunnel (see below) or reverse proxy of your choice.
 
@@ -115,12 +112,11 @@ To expose the app and MQTT broker publicly without opening firewall ports:
 3. Add to `.env`: `CLOUDFLARE_TUNNEL_TOKEN=<token>`
 4. Start with the tunnel profile: `docker compose --profile tunnel up -d`
 5. Configure public hostnames in the Cloudflare dashboard (example):
-   - `app.teessidemesh.com` → `http://app:80`
-   - `www.teessidemesh.com` → `http://website:80`
-   - `app.ukmesh.com` → `http://app-ukmesh:80`
-   - `www.ukmesh.com` → `http://website-ukmesh:80`
-   - `mqtt.teessidemesh.com` → `http://mosquitto:9001`
-   - `mqtt.ukmesh.com` → `http://mosquitto:9001`
+   - `app.example.com` → `http://app:80`
+   - `www.example.com` → `http://website:80`
+   - `app-2.example.com` → `http://app-ukmesh:80`
+   - `www-2.example.com` → `http://website-ukmesh:80`
+   - `mqtt.example.com` → `http://mosquitto:9001`
 
 ---
 
@@ -191,10 +187,10 @@ MeshCore Devices
 | `link-backfill-worker` | Built from `Dockerfile.backend` | One-shot historical link backfill |
 | `viewshed-worker` | Built from `viewshed-worker/Dockerfile` | Terrain-aware RF coverage computation |
 | `link-worker` | Built from `viewshed-worker/Dockerfile` | Link/path-loss processing from observed paths |
-| `app` | Built from `Dockerfile.app` | Teesside interactive dashboard frontend |
-| `website` | Built from `Dockerfile.website` | Teesside public website frontend |
-| `app-ukmesh` | Built from `Dockerfile.app` | UKMesh interactive dashboard frontend |
-| `website-ukmesh` | Built from `Dockerfile.website` | UKMesh public website frontend |
+| `app` | Built from `Dockerfile.app` | Primary interactive dashboard frontend |
+| `website` | Built from `Dockerfile.website` | Primary public website frontend |
+| `app-ukmesh` | Built from `Dockerfile.app` | Secondary interactive dashboard frontend (optional) |
+| `website-ukmesh` | Built from `Dockerfile.website` | Secondary public website frontend (optional) |
 | `cloudflared` | `cloudflare/cloudflared` | Optional Cloudflare Tunnel (use `--profile tunnel`) |
 
 ---
