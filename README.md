@@ -48,7 +48,7 @@ A real-time analytics platform for [MeshCore](https://meshcore.co.uk) networks. 
 - Ed25519 JWT authentication for repeater owners
 - Owner-facing dashboard: per-node packet history, advert counts, RSSI/SNR trends from observers that heard it
 - Planned node placement tool: drop a marker on the map, preview estimated RF coverage before deploying hardware
-- Repeater registration: owners can claim a node by public key, add contact details and notes. Nodes must be actively publishing to MQTT to be claimable.
+- Repeater registration: owners automatically claim their node via their Ed25519 key (no manual login flow), with optional contact details and notes. Nodes must be actively publishing to MQTT to be claimable.
 
 ### Phase 6 - Network intelligence expansion (planned)
 - Network topology graph showing strongest relay relationships
