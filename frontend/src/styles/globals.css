@@ -344,16 +344,16 @@ html, body, #root {
 /* ─── Node Marker ────────────────────────────────────────────────────────── */
 .node-marker {
   position: relative;
-  width: 12px;
-  height: 12px;
+  width: var(--marker-size, 12px);
+  height: var(--marker-size, 12px);
 }
 
 .node-marker__core {
-  width: 12px;
-  height: 12px;
+  width: var(--marker-size, 12px);
+  height: var(--marker-size, 12px);
   border-radius: 50%;
   background: var(--accent);
-  border: 2px solid rgba(0,196,255,0.5);
+  border: var(--marker-border, 2px) solid rgba(0,196,255,0.5);
   box-shadow: 0 0 8px var(--accent-glow);
   position: relative;
   z-index: 2;
@@ -375,8 +375,8 @@ html, body, #root {
   position: absolute;
   top: 50%;
   left: 50%;
-  width: 12px;
-  height: 12px;
+  width: var(--marker-size, 12px);
+  height: var(--marker-size, 12px);
   border-radius: 50%;
   background: var(--accent);
   transform: translate(-50%, -50%);
@@ -1750,6 +1750,24 @@ html, body, #root {
   .mobile-links-legend-wrap {
     border-top: 1px solid var(--border);
     padding-top: 2px;
+  }
+  .mobile-links-legend-wrap--hidden {
+    display: none;
+  }
+  .mobile-legend-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    border: 0;
+    border-top: 1px solid var(--border);
+    background: var(--bg-panel);
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding: 8px 12px;
   }
   .mobile-search .node-search {
     position: static;

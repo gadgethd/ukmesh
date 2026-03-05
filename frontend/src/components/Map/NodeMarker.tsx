@@ -11,7 +11,15 @@ const PREVIEW_TTL_MS = 20_000;
 type MarkerVariant = 'repeater' | 'companion' | 'room';
 
 // Build a custom Leaflet icon from HTML
-function buildIcon(isOnline: boolean, isActive: boolean, isStale: boolean, variant: MarkerVariant): L.DivIcon {
+function buildIcon(
+  isOnline: boolean,
+  isActive: boolean,
+  isStale: boolean,
+  variant: MarkerVariant,
+  markerSize: number,
+): L.DivIcon {
+  const size = Math.max(4, Math.round(markerSize));
+  const border = size >= 10 ? 2 : 1;
   const classes = [
     'node-marker',
     isStale               ? 'node-marker--stale'     : '',
@@ -22,15 +30,15 @@ function buildIcon(isOnline: boolean, isActive: boolean, isStale: boolean, varia
     isOnline && !isStale && variant === 'room'      ? 'node-marker--room'      : '',
   ].filter(Boolean).join(' ');
   const html = `
-    <div class="${classes}">
+    <div class="${classes}" style="--marker-size:${size}px; --marker-border:${border}px;">
       <div class="node-marker__core"></div>
       <div class="node-marker__pulse"></div>
     </div>`;
   return L.divIcon({
     html,
     className: '',
-    iconSize:    [12, 12],
-    iconAnchor:  [6, 6],
+    iconSize:    [size, size],
+    iconAnchor:  [Math.round(size / 2), Math.round(size / 2)],
     popupAnchor: [0, -10],
   });
 }
@@ -79,9 +87,10 @@ interface Props {
   node:          MeshNode;
   isActive:      boolean;
   nodeCoverage?: NodeCoverage;
+  markerSize?:   number;
 }
 
-export const NodeMarker: React.FC<Props> = React.memo(({ node, isActive, nodeCoverage }) => {
+export const NodeMarker: React.FC<Props> = React.memo(({ node, isActive, nodeCoverage, markerSize = 12 }) => {
   const [showPreview, setShowPreview] = useState(false);
   const [links, setLinks]             = useState<NodeLink[] | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -115,7 +124,7 @@ export const NodeMarker: React.FC<Props> = React.memo(({ node, isActive, nodeCov
     <>
       <Marker
         position={[node.lat, node.lon]}
-        icon={buildIcon(node.is_online, isActive, isStale, variant)}
+        icon={buildIcon(node.is_online, isActive, isStale, variant, markerSize)}
       >
         <Popup eventHandlers={{
           add: () => {

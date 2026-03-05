@@ -122,6 +122,18 @@ export const MapView: React.FC<MapViewProps> = ({
   const handleViewStateChange = useCallback((vs: unknown) => {
     setDeckViewState(vs as DeckViewState);
   }, []);
+  const [isMobileViewport, setIsMobileViewport] = useState(
+    () => (typeof window !== 'undefined' ? window.matchMedia('(max-width: 640px)').matches : false),
+  );
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const mq = window.matchMedia('(max-width: 640px)');
+    const update = () => setIsMobileViewport(mq.matches);
+    update();
+    mq.addEventListener('change', update);
+    return () => mq.removeEventListener('change', update);
+  }, []);
 
   // Refs to Leaflet Polyline instances for direct SVG attribute animation
   const regularPathRef = useRef<LeafletPolyline | null>(null);
@@ -235,6 +247,20 @@ export const MapView: React.FC<MapViewProps> = ({
       .slice(0, 400);
   }, [showLinks, viablePairsArr, nodes, linkMetrics, map]);
 
+  const markerSize = useMemo(() => {
+    const leafletZoom = deckViewState.zoom + 1;
+    let size = 12;
+    if (leafletZoom <= 6) size = 5;
+    else if (leafletZoom <= 7) size = 6;
+    else if (leafletZoom <= 8) size = 7;
+    else if (leafletZoom <= 9) size = 8;
+    else if (leafletZoom <= 10) size = 9;
+    else if (leafletZoom <= 11) size = 10;
+    else if (leafletZoom <= 12) size = 11;
+    if (isMobileViewport) size -= 1;
+    return Math.max(4, size);
+  }, [deckViewState.zoom, isMobileViewport]);
+
   return (
     <div className="map-area">
       <NodeSearch nodes={nodes} map={map} />
@@ -308,6 +334,7 @@ export const MapView: React.FC<MapViewProps> = ({
             node={node}
             isActive={activeNodes.has(node.node_id)}
             nodeCoverage={coverageByNodeId.get(node.node_id)}
+            markerSize={markerSize}
           />
         ))}
 
@@ -318,6 +345,7 @@ export const MapView: React.FC<MapViewProps> = ({
             node={node}
             isActive={activeNodes.has(node.node_id)}
             nodeCoverage={coverageByNodeId.get(node.node_id)}
+            markerSize={markerSize}
           />
         ))}
 
