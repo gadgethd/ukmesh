@@ -18,6 +18,44 @@ A real-time analytics platform for [MeshCore](https://meshcore.co.uk) networks. 
 
 ---
 
+## Roadmap
+
+### Phase 1 - Core platform (complete)
+- MQTT ingestion via `mctomqtt` with multi-observer support
+- Packet decoding with `@michaelhart/meshcore-decoder`
+- TimescaleDB storage and live WebSocket fan-out
+- React dashboard: node map, animated packet arcs, decoded live feed
+- Packet deduplication by hash across observers
+
+### Phase 2 - RF coverage and link intelligence (complete)
+- Viewshed worker: SRTM terrain-aware radio horizon computation per repeater
+- Coverage polygons served as GeoJSON and rendered on the map
+- Link worker: observed relay-path processing into node-to-node link intelligence
+- Directional link counts and path-loss viability modelling
+- UK mainland clipping to remove sea coverage artifacts
+
+### Phase 3 - Path learning and predictions (beta)
+- Hourly path-learning prior rebuild worker
+- Beta path overlays and confidence scoring
+- Historical calibration using observed packet behavior
+
+### Phase 4 - Public website and operations (complete)
+- Separate public-facing website pages (install, MQTT, packets, stats)
+- Public Health page with worker/system status and history
+- Click-to-explain worker cards
+
+### Phase 5 - Network intelligence expansion (planned)
+- Network topology graph showing strongest relay relationships
+- Better cross-network correlation and packet-hearing analysis
+- Operator-facing diagnostics for path model explainability
+
+### Phase 6 - Predicted vs observed RF model validation (planned)
+- Compare terrain-predicted links against real observed relay behavior
+- Highlight high-confidence mismatches for network tuning
+- Improve viability heuristics from observed false-positive/false-negative links
+
+---
+
 ## Current State
 
 - Split worker architecture for resilience:
