@@ -29,10 +29,20 @@ const DEFAULT_FILTERS: Filters = {
 
 const FOURTEEN_DAYS_MS = 14 * 24 * 60 * 60 * 1000;
 const DISCLAIMER_KEY = 'meshcore-disclaimer-dismissed';
+const FILTERS_KEY = 'meshcore-app-filters-v2';
 
 export const App: React.FC = () => {
   const site = getCurrentSite();
-  const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS);
+  const [filters, setFilters] = useState<Filters>(() => {
+    try {
+      const raw = localStorage.getItem(FILTERS_KEY);
+      if (!raw) return DEFAULT_FILTERS;
+      const parsed = JSON.parse(raw) as Partial<Filters>;
+      return { ...DEFAULT_FILTERS, ...parsed };
+    } catch {
+      return DEFAULT_FILTERS;
+    }
+  });
   const [map, setMap] = useState<LeafletMap | null>(null);
   const [showDisclaimer, setShowDisclaimer] = useState(() => !localStorage.getItem(DISCLAIMER_KEY));
 
@@ -76,6 +86,7 @@ export const App: React.FC = () => {
   const {
     packetPath,
     betaPacketPath,
+    betaPathConfidence,
     pathOpacity,
     pinnedPacketId,
     handlePacketPin,
@@ -104,6 +115,41 @@ export const App: React.FC = () => {
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('/sw.js').catch(() => {});
     }
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem(FILTERS_KEY, JSON.stringify(filters));
+  }, [filters]);
+
+  useEffect(() => {
+    const postError = (kind: string, message: string, stack?: string) => {
+      void fetch('/api/telemetry/frontend-error', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          kind,
+          message,
+          stack,
+          page: window.location.href,
+          userAgent: navigator.userAgent,
+        }),
+      }).catch(() => {});
+    };
+
+    const onError = (event: ErrorEvent) => {
+      postError('error', event.message ?? 'unknown error', event.error?.stack);
+    };
+    const onRejection = (event: PromiseRejectionEvent) => {
+      const reason = event.reason instanceof Error ? event.reason : new Error(String(event.reason));
+      postError('unhandledrejection', reason.message, reason.stack);
+    };
+
+    window.addEventListener('error', onError);
+    window.addEventListener('unhandledrejection', onRejection);
+    return () => {
+      window.removeEventListener('error', onError);
+      window.removeEventListener('unhandledrejection', onRejection);
+    };
   }, []);
 
   const dismissDisclaimer = useCallback(() => {
@@ -160,7 +206,7 @@ export const App: React.FC = () => {
         onMapReady={setMap}
       />
 
-      <FilterPanel filters={filters} onChange={setFilters} />
+      <FilterPanel filters={filters} onChange={setFilters} betaPathConfidence={betaPathConfidence} />
 
       {filters.livePackets && (
         <PacketFeed

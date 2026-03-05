@@ -1,0 +1,183 @@
+import os from 'node:os';
+import fs from 'node:fs';
+import { Redis } from 'ioredis';
+import { query } from '../db/index.js';
+
+type WorkerSnapshot = {
+  worker_name: string;
+  status: string;
+  queue_depth: number;
+  processed_5m: number;
+  last_activity_at: string | null;
+  cpu_load_1m: number;
+  mem_used_pct: number;
+  disk_used_pct: number;
+};
+
+let redisClient: Redis | null = null;
+
+function redis(): Redis {
+  if (!redisClient) {
+    const redisUrl = process.env['REDIS_URL'] ?? 'redis://redis:6379';
+    redisClient = new Redis(redisUrl);
+    redisClient.on('error', (err) => console.error('[health] redis error', err.message));
+  }
+  return redisClient;
+}
+
+function toPct(num: number): number {
+  return Math.round(num * 1000) / 10;
+}
+
+function systemStats() {
+  const load1 = os.loadavg()[0] ?? 0;
+  const cpuCount = os.cpus().length;
+  const totalMem = os.totalmem();
+  const freeMem = os.freemem();
+  const usedMem = Math.max(0, totalMem - freeMem);
+
+  let diskTotal = 0;
+  let diskUsed = 0;
+  try {
+    const stat = fs.statfsSync('/');
+    diskTotal = Number(stat.blocks) * Number(stat.bsize);
+    const free = Number(stat.bavail) * Number(stat.bsize);
+    diskUsed = Math.max(0, diskTotal - free);
+  } catch {
+    // Keep zeros if statfs is unavailable
+  }
+
+  return {
+    generated_at: new Date().toISOString(),
+    cpu: {
+      load_1m: load1,
+      count: cpuCount,
+      load_pct: cpuCount > 0 ? toPct(load1 / cpuCount) : 0,
+    },
+    memory: {
+      total_mb: Math.round(totalMem / 1_048_576),
+      used_mb: Math.round(usedMem / 1_048_576),
+      used_pct: totalMem > 0 ? toPct(usedMem / totalMem) : 0,
+    },
+    disk: {
+      total_gb: Math.round((diskTotal / 1_073_741_824) * 10) / 10,
+      used_gb: Math.round((diskUsed / 1_073_741_824) * 10) / 10,
+      used_pct: diskTotal > 0 ? toPct(diskUsed / diskTotal) : 0,
+    },
+    runtime: {
+      uptime_s: Math.round(os.uptime()),
+      node_version: process.version,
+      platform: process.platform,
+      arch: process.arch,
+    },
+  };
+}
+
+async function currentWorkers(): Promise<WorkerSnapshot[]> {
+  const r = redis();
+  const [viewshedDepth, linkDepth, viewshedRecent, linkRecent, viewshedLast, linkLast, learning] = await Promise.all([
+    r.llen('meshcore:viewshed_jobs'),
+    r.llen('meshcore:link_jobs'),
+    query<{ count: string }>(`SELECT COUNT(*) AS count FROM node_coverage WHERE calculated_at > NOW() - INTERVAL '5 minutes'`),
+    query<{ count: string }>(`SELECT COUNT(*) AS count FROM node_links WHERE itm_computed_at > NOW() - INTERVAL '5 minutes'`),
+    query<{ ts: string | null }>(`SELECT MAX(calculated_at)::text AS ts FROM node_coverage`),
+    query<{ ts: string | null }>(`SELECT MAX(itm_computed_at)::text AS ts FROM node_links`),
+    query<{ ts: string | null }>(`SELECT MAX(updated_at)::text AS ts FROM path_model_calibration`),
+  ]);
+
+  const stats = systemStats();
+  const load = stats.cpu.load_1m;
+  const memPct = stats.memory.used_pct;
+  const diskPct = stats.disk.used_pct;
+
+  const viewshedProcessed = Number(viewshedRecent.rows[0]?.count ?? 0);
+  const linkProcessed = Number(linkRecent.rows[0]?.count ?? 0);
+  const learningLast = learning.rows[0]?.ts ?? null;
+  const learningRecent = learningLast ? (Date.now() - Date.parse(learningLast)) <= 5 * 60_000 : false;
+
+  return [
+    {
+      worker_name: 'viewshed-worker',
+      status: viewshedDepth > 0 || viewshedProcessed > 0 ? 'running' : 'idle',
+      queue_depth: Number(viewshedDepth ?? 0),
+      processed_5m: viewshedProcessed,
+      last_activity_at: viewshedLast.rows[0]?.ts ?? null,
+      cpu_load_1m: load,
+      mem_used_pct: memPct,
+      disk_used_pct: diskPct,
+    },
+    {
+      worker_name: 'link-worker',
+      status: linkDepth > 0 || linkProcessed > 0 ? 'running' : 'idle',
+      queue_depth: Number(linkDepth ?? 0),
+      processed_5m: linkProcessed,
+      last_activity_at: linkLast.rows[0]?.ts ?? null,
+      cpu_load_1m: load,
+      mem_used_pct: memPct,
+      disk_used_pct: diskPct,
+    },
+    {
+      worker_name: 'path-learning',
+      status: learningRecent ? 'running' : 'idle',
+      queue_depth: 0,
+      processed_5m: learningRecent ? 1 : 0,
+      last_activity_at: learningLast,
+      cpu_load_1m: load,
+      mem_used_pct: memPct,
+      disk_used_pct: diskPct,
+    },
+  ];
+}
+
+export async function captureWorkerHealthSnapshot(): Promise<void> {
+  const rows = await currentWorkers();
+  for (const row of rows) {
+    await query(
+      `INSERT INTO worker_health_snapshots
+         (ts, worker_name, status, queue_depth, processed_5m, last_activity_at, cpu_load_1m, mem_used_pct, disk_used_pct)
+       VALUES (NOW(), $1, $2, $3, $4, $5, $6, $7, $8)`,
+      [
+        row.worker_name,
+        row.status,
+        row.queue_depth,
+        row.processed_5m,
+        row.last_activity_at,
+        row.cpu_load_1m,
+        row.mem_used_pct,
+        row.disk_used_pct,
+      ],
+    );
+  }
+
+  await query(`DELETE FROM worker_health_snapshots WHERE ts < NOW() - INTERVAL '14 days'`);
+  await query(`DELETE FROM frontend_error_events WHERE time < NOW() - INTERVAL '30 days'`);
+}
+
+export async function getWorkerHealthOverview() {
+  const [workers, history, errors1h] = await Promise.all([
+    currentWorkers(),
+    query<{
+      ts: string;
+      worker_name: string;
+      status: string;
+      queue_depth: number;
+      processed_5m: number;
+      cpu_load_1m: number | null;
+      mem_used_pct: number | null;
+      disk_used_pct: number | null;
+    }>(
+      `SELECT ts::text, worker_name, status, queue_depth, processed_5m, cpu_load_1m, mem_used_pct, disk_used_pct
+       FROM worker_health_snapshots
+       ORDER BY ts DESC
+       LIMIT 720`,
+    ),
+    query<{ count: string }>(`SELECT COUNT(*) AS count FROM frontend_error_events WHERE time > NOW() - INTERVAL '1 hour'`),
+  ]);
+
+  return {
+    system: systemStats(),
+    workers,
+    history: history.rows,
+    frontend_errors_1h: Number(errors1h.rows[0]?.count ?? 0),
+  };
+}

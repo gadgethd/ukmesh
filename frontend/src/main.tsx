@@ -10,6 +10,7 @@ import { OpenSourcePage } from './pages/OpenSourcePage.js';
 import { MqttPage } from './pages/MqttPage.js';
 import { StatsPage } from './pages/StatsPage.js';
 import { PacketsPage } from './pages/PacketsPage.js';
+import { HealthPage } from './pages/HealthPage.js';
 import { UKLayout } from './pages/ukmesh/UKLayout.js';
 import { UKHomePage } from './pages/ukmesh/UKHomePage.js';
 import { UKInstallPage } from './pages/ukmesh/UKInstallPage.js';
@@ -39,6 +40,7 @@ ReactDOM.createRoot(root).render(
             <Route path="about" element={<AboutPage />} />
             <Route path="install" element={<UKInstallPage />} />
             <Route path="mqtt" element={<UKMqttPage />} />
+            <Route path="health" element={<HealthPage />} />
             <Route path="open-source" element={<OpenSourcePage />} />
           </Route>
         </Routes>
@@ -51,6 +53,7 @@ ReactDOM.createRoot(root).render(
             <Route path="about" element={<AboutPage />} />
             <Route path="install" element={<InstallPage />} />
             <Route path="mqtt" element={<MqttPage />} />
+            <Route path="health" element={<HealthPage />} />
             <Route path="packets" element={<PacketsPage />} />
             <Route path="open-source" element={<OpenSourcePage />} />
             <Route path="stats" element={<StatsPage />} />

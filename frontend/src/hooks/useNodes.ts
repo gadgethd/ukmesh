@@ -57,6 +57,7 @@ export interface PacketArc {
 }
 
 const ARC_TTL = 5000;
+const FEED_MAX_PACKETS = 120;
 
 interface HashRecord {
   observers: string[];
@@ -123,7 +124,7 @@ export function useNodes() {
         advertCount: row.advert_count ?? undefined,
       });
     }
-    setPackets(initialPackets);
+    setPackets(initialPackets.slice(0, FEED_MAX_PACKETS));
   }, []);
 
   const handlePacket = useCallback((packet: LivePacketData) => {
@@ -159,7 +160,7 @@ export function useNodes() {
         ts:         packet.ts,
         advertCount: packet.advertCount,
       };
-      return [entry, ...prev].slice(0, 20);
+      return [entry, ...prev].slice(0, FEED_MAX_PACKETS);
     });
 
     // ── Pulse the observer node ─────────────────────────────────────────────

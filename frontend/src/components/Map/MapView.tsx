@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useMemo, useEffect, useRef } from 'react';
-import { MapContainer, TileLayer, useMap, Pane, Polygon, Polyline } from 'react-leaflet';
+import { MapContainer, TileLayer, useMap, Pane, Polygon, Polyline, Tooltip } from 'react-leaflet';
 import type { LatLngExpression, Map as LeafletMap, Polyline as LeafletPolyline } from 'leaflet';
 import type { MeshNode, PacketArc } from '../../hooks/useNodes.js';
 import type { NodeCoverage } from '../../hooks/useCoverage.js';
@@ -186,7 +186,7 @@ export const MapView: React.FC<MapViewProps> = ({
   const linkKey = (a: string, b: string) => (a < b ? `${a}:${b}` : `${b}:${a}`);
 
   const linkColor = (pathLossDb: number | null | undefined) => {
-    if (pathLossDb == null) return '#fbbf24';
+    if (pathLossDb == null) return '#d1d5db';
     if (pathLossDb <= 120) return '#22c55e';
     if (pathLossDb <= 135) return '#fbbf24';
     return '#ef4444';
@@ -200,6 +200,8 @@ export const MapView: React.FC<MapViewProps> = ({
       positions: [number, number][];
       observedCount: number;
       pathLossDb: number | null | undefined;
+      countAToB: number;
+      countBToA: number;
     }> = [];
     for (const [aId, bId] of viablePairsArr) {
       const a = nodes.get(aId);
@@ -221,11 +223,17 @@ export const MapView: React.FC<MapViewProps> = ({
           positions: [[a.lat, a.lon], [b.lat, b.lon]],
           observedCount: metrics?.observed_count ?? 0,
           pathLossDb: metrics?.itm_path_loss_db,
+          countAToB: metrics?.count_a_to_b ?? 0,
+          countBToA: metrics?.count_b_to_a ?? 0,
         });
       }
     }
-    return lines;
-  }, [showLinks, viablePairsArr, nodes, linkMetrics]);
+    const zoom = map?.getZoom() ?? DEFAULT_ZOOM;
+    if (zoom >= 9 || lines.length <= 400) return lines;
+    return lines
+      .sort((a, b) => (b.observedCount - a.observedCount))
+      .slice(0, 400);
+  }, [showLinks, viablePairsArr, nodes, linkMetrics, map]);
 
   return (
     <div className="map-area">
@@ -286,8 +294,16 @@ export const MapView: React.FC<MapViewProps> = ({
                   weight,
                   opacity,
                 }}
-                interactive={false}
-              />
+                interactive
+              >
+                <Tooltip direction="center" sticky>
+                  <div className="link-tooltip">
+                    <div className="link-tooltip__row"><span>Seen</span><strong>{line.observedCount}</strong></div>
+                    <div className="link-tooltip__row"><span>Path Loss</span><strong>{line.pathLossDb == null ? 'unknown' : `${Math.round(line.pathLossDb)} dB`}</strong></div>
+                    <div className="link-tooltip__row"><span>A→B / B→A</span><strong>{line.countAToB} / {line.countBToA}</strong></div>
+                  </div>
+                </Tooltip>
+              </Polyline>
               );
             })}
           </Pane>
@@ -341,6 +357,16 @@ export const MapView: React.FC<MapViewProps> = ({
           />
         )}
       </MapContainer>
+
+      {showLinks && (
+        <div className="links-legend">
+          <div className="links-legend__title">Links Legend</div>
+          <div className="links-legend__row"><span className="links-legend__swatch" style={{ background: '#22c55e' }} /> Good (≤120 dB)</div>
+          <div className="links-legend__row"><span className="links-legend__swatch" style={{ background: '#fbbf24' }} /> Marginal (121-135 dB)</div>
+          <div className="links-legend__row"><span className="links-legend__swatch" style={{ background: '#ef4444' }} /> Weak (&gt;135 dB)</div>
+          <div className="links-legend__row"><span className="links-legend__swatch" style={{ background: '#d1d5db' }} /> Unknown (no dB yet)</div>
+        </div>
+      )}
 
       {/* deck.gl overlay — arcs only */}
       <PacketArcLayer

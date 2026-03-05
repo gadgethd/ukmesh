@@ -199,3 +199,33 @@ CREATE TABLE IF NOT EXISTS path_model_calibration (
   updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 ALTER TABLE path_model_calibration ADD COLUMN IF NOT EXISTS confidence_bias DOUBLE PRECISION NOT NULL DEFAULT 0;
+
+-- ─── Public health snapshots / telemetry ────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS worker_health_snapshots (
+  ts              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  worker_name     TEXT        NOT NULL,
+  status          TEXT        NOT NULL,
+  queue_depth     INTEGER     NOT NULL DEFAULT 0,
+  processed_5m    INTEGER     NOT NULL DEFAULT 0,
+  last_activity_at TIMESTAMPTZ,
+  cpu_load_1m     DOUBLE PRECISION,
+  mem_used_pct    DOUBLE PRECISION,
+  disk_used_pct   DOUBLE PRECISION
+);
+CREATE INDEX IF NOT EXISTS worker_health_snapshots_ts_idx
+  ON worker_health_snapshots(ts DESC);
+CREATE INDEX IF NOT EXISTS worker_health_snapshots_worker_ts_idx
+  ON worker_health_snapshots(worker_name, ts DESC);
+
+CREATE TABLE IF NOT EXISTS frontend_error_events (
+  id          BIGSERIAL PRIMARY KEY,
+  time        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  kind        TEXT        NOT NULL,
+  message     TEXT        NOT NULL,
+  stack       TEXT,
+  page        TEXT,
+  user_agent  TEXT
+);
+CREATE INDEX IF NOT EXISTS frontend_error_events_time_idx
+  ON frontend_error_events(time DESC);

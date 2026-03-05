@@ -42,7 +42,7 @@ export function usePathLearningModel(network?: string): PathLearningModel | null
 
   useEffect(() => {
     const load = () => {
-      const endpoint = withNetworkParam('/api/path-learning', network);
+      const endpoint = withNetworkParam('/api/path-learning?limit=6000', network);
       fetch(uncachedEndpoint(endpoint), { cache: 'no-store' })
         .then((response) => response.json())
         .then((data: PathLearningApiResponse) => {

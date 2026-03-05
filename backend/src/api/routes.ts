@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { getNodes, getNodeHistory, getRecentPackets, query, MIN_LINK_OBSERVATIONS } from '../db/index.js';
+import { getWorkerHealthOverview } from '../health/status.js';
 
 const router = Router();
 
@@ -167,6 +168,7 @@ router.get('/planned-nodes', async (_req, res) => {
 router.get('/path-learning', async (req, res) => {
   try {
     const network = (req.query['network'] as string | undefined) ?? 'teesside';
+    const limit = Math.min(12000, Math.max(1000, Number(req.query['limit'] ?? 6000)));
     const [prefixRows, transitionRows, edgeRows, motifRows, calibrationRows] = await Promise.all([
       query<{
         prefix: string;
@@ -180,8 +182,8 @@ router.get('/path-learning', async (req, res) => {
          FROM path_prefix_priors
          WHERE network = $1
          ORDER BY count DESC
-         LIMIT 8000`,
-        [network],
+         LIMIT $2`,
+        [network, limit],
       ),
       query<{
         from_node_id: string;
@@ -194,8 +196,8 @@ router.get('/path-learning', async (req, res) => {
          FROM path_transition_priors
          WHERE network = $1
          ORDER BY count DESC
-         LIMIT 8000`,
-        [network],
+         LIMIT $2`,
+        [network, limit],
       ),
       query<{
         from_node_id: string;
@@ -218,8 +220,8 @@ router.get('/path-learning', async (req, res) => {
          FROM path_edge_priors
          WHERE network = $1
          ORDER BY score DESC, observed_count DESC
-         LIMIT 12000`,
-        [network],
+         LIMIT $2`,
+        [network, limit],
       ),
       query<{
         receiver_region: string;
@@ -233,8 +235,8 @@ router.get('/path-learning', async (req, res) => {
          FROM path_motif_priors
          WHERE network = $1
          ORDER BY count DESC
-         LIMIT 12000`,
-        [network],
+         LIMIT $2`,
+        [network, limit],
       ),
       query<{
         evaluated_packets: number;
@@ -270,6 +272,53 @@ router.get('/path-learning', async (req, res) => {
     });
   } catch (err) {
     console.error('[api] GET /path-learning', (err as Error).message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /api/health — public health overview with worker status and history
+router.get('/health', async (_req, res) => {
+  try {
+    const data = await getWorkerHealthOverview();
+    res.json(data);
+  } catch (err) {
+    console.error('[api] GET /health', (err as Error).message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// POST /api/telemetry/frontend-error — lightweight frontend error reporting
+router.post('/telemetry/frontend-error', async (req, res) => {
+  try {
+    const body = req.body as {
+      kind?: string;
+      message?: string;
+      stack?: string;
+      page?: string;
+      userAgent?: string;
+    };
+
+    const message = String(body.message ?? '').slice(0, 500);
+    if (!message) {
+      res.status(400).json({ error: 'Missing message' });
+      return;
+    }
+
+    await query(
+      `INSERT INTO frontend_error_events (kind, message, stack, page, user_agent)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [
+        String(body.kind ?? 'error').slice(0, 40),
+        message,
+        body.stack ? String(body.stack).slice(0, 4000) : null,
+        body.page ? String(body.page).slice(0, 300) : null,
+        body.userAgent ? String(body.userAgent).slice(0, 500) : null,
+      ],
+    );
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[api] POST /telemetry/frontend-error', (err as Error).message);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

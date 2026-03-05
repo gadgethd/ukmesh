@@ -9,6 +9,17 @@ const REDIS_CHANNEL = 'meshcore:live';
 
 let pub: Redis;
 let sub: Redis;
+const VIABLE_LINK_CACHE_TTL_MS = 30_000;
+const viableLinksCache = new Map<string, { ts: number; data: Awaited<ReturnType<typeof getViableLinks>> }>();
+
+async function getCachedViableLinks(network?: string) {
+  const key = network ?? 'all';
+  const cached = viableLinksCache.get(key);
+  if (cached && (Date.now() - cached.ts) < VIABLE_LINK_CACHE_TTL_MS) return cached.data;
+  const data = await getViableLinks(network);
+  viableLinksCache.set(key, { ts: Date.now(), data });
+  return data;
+}
 
 export function initWebSocketServer(httpServer: Server): WebSocketServer {
   const redisUrl = process.env['REDIS_URL'] ?? 'redis://redis:6379';
@@ -54,7 +65,7 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
     // Send initial state: known nodes + last 5 minutes of packets
     try {
       const [nodes, packets, viableLinks] = await Promise.all([
-        getNodes(network), getLastNPackets(10, network), getViableLinks(network),
+        getNodes(network), getLastNPackets(7, network), getCachedViableLinks(network),
       ]);
       const viablePairs = viableLinks.map((l) => [l.node_a_id, l.node_b_id] as [string, string]);
       const initMsg: WSMessage = {

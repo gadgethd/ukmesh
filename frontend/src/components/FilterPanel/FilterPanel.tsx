@@ -13,6 +13,7 @@ export interface Filters {
 interface FilterPanelProps {
   filters:  Filters;
   onChange: (f: Filters) => void;
+  betaPathConfidence?: number | null;
 }
 
 export const FILTER_ROWS: Array<{ key: keyof Filters; label: string; color: string; hollow?: boolean }> = [
@@ -24,14 +25,60 @@ export const FILTER_ROWS: Array<{ key: keyof Filters; label: string; color: stri
   { key: 'clientNodes',  label: 'Companion / Room', color: '#ff9800' },
 ];
 
-export const FilterPanel: React.FC<FilterPanelProps> = ({ filters, onChange }) => {
+export const FilterPanel: React.FC<FilterPanelProps> = ({ filters, onChange, betaPathConfidence }) => {
   const toggle = (key: keyof Filters) => {
     onChange({ ...filters, [key]: !filters[key] });
   };
 
+  const applyPreset = (preset: 'minimal' | 'links' | 'beta') => {
+    const next: Filters = { ...filters };
+    if (preset === 'minimal') {
+      next.livePackets = true;
+      next.packetPaths = false;
+      next.betaPaths = false;
+      next.links = false;
+      next.coverage = false;
+      next.clientNodes = false;
+    } else if (preset === 'links') {
+      next.livePackets = true;
+      next.packetPaths = false;
+      next.betaPaths = true;
+      next.links = true;
+      next.coverage = false;
+      next.clientNodes = false;
+    } else {
+      next.livePackets = true;
+      next.packetPaths = false;
+      next.betaPaths = true;
+      next.links = true;
+      next.coverage = true;
+      next.clientNodes = false;
+    }
+    onChange(next);
+  };
+
+  const confidenceLabel = betaPathConfidence == null
+    ? 'N/A'
+    : betaPathConfidence >= 0.75
+      ? 'High'
+      : betaPathConfidence >= 0.5
+        ? 'Medium'
+        : 'Low';
+
   return (
     <div className="filter-panel">
       <div className="filter-panel__title">Layers</div>
+      <div className="filter-presets">
+        <button className="filter-preset-btn" onClick={() => applyPreset('minimal')}>Minimal</button>
+        <button className="filter-preset-btn" onClick={() => applyPreset('links')}>Links + Beta</button>
+        <button className="filter-preset-btn" onClick={() => applyPreset('beta')}>Full Beta</button>
+      </div>
+      {filters.betaPaths && (
+        <div className="filter-beta-note">
+          Beta Confidence: <strong>{confidenceLabel}</strong>
+          {betaPathConfidence != null && ` (${Math.round(betaPathConfidence * 100)}%)`}
+        </div>
+      )}
       {FILTER_ROWS.map(({ key, label, color, hollow }) => (
         <React.Fragment key={key}>
           <div
