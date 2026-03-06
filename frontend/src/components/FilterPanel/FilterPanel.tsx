@@ -8,12 +8,15 @@ export interface Filters {
   betaPaths:         boolean;
   betaPathThreshold: number;  // 0–1
   links:             boolean;
+  hexClashes:        boolean;
+  hexClashMaxHops:   number;  // 0–3 (0 = direct only)
 }
 
 interface FilterPanelProps {
   filters:  Filters;
   onChange: (f: Filters) => void;
   betaPathConfidence?: number | null;
+  betaPermutationCount?: number | null;
 }
 
 export const LinksLegend: React.FC<{ compact?: boolean; muted?: boolean }> = ({ compact = false, muted = false }) => (
@@ -31,30 +34,24 @@ export const FILTER_ROWS: Array<{ key: keyof Filters; label: string; color: stri
   { key: 'packetPaths',  label: 'Packet Paths',     color: '#00c4ff', hollow: true },
   { key: 'betaPaths',    label: 'Paths (Beta)',      color: '#a855f7', hollow: true },
   { key: 'links',        label: 'Links (Beta)',     color: '#fbbf24' },
+  { key: 'hexClashes',   label: 'Hex Clashes',      color: '#f97316' },
   { key: 'coverage',     label: 'Coverage',         color: '#00e676' },
   { key: 'clientNodes',  label: 'Companion / Room', color: '#ff9800' },
 ];
 
-export const FilterPanel: React.FC<FilterPanelProps> = ({ filters, onChange, betaPathConfidence }) => {
+export const FilterPanel: React.FC<FilterPanelProps> = ({ filters, onChange, betaPathConfidence, betaPermutationCount }) => {
   const toggle = (key: keyof Filters) => {
     onChange({ ...filters, [key]: !filters[key] });
   };
-
-  const confidenceLabel = betaPathConfidence == null
-    ? 'N/A'
-    : betaPathConfidence >= 0.75
-      ? 'High'
-      : betaPathConfidence >= 0.5
-        ? 'Medium'
-        : 'Low';
 
   return (
     <div className="filter-panel">
       <div className="filter-panel__title">Layers</div>
       {filters.betaPaths && (
         <div className="filter-beta-note">
-          Beta Confidence: <strong>{confidenceLabel}</strong>
-          {betaPathConfidence != null && ` (${Math.round(betaPathConfidence * 100)}%)`}
+          Beta Confidence: <strong>{betaPathConfidence == null ? 'N/A' : `${Math.round(betaPathConfidence * 100)}%`}</strong>
+          <br />
+          Permutations: <strong>{betaPermutationCount == null ? 'N/A' : betaPermutationCount}</strong>
         </div>
       )}
       {FILTER_ROWS.map(({ key, label, color, hollow }) => (
@@ -96,6 +93,22 @@ export const FilterPanel: React.FC<FilterPanelProps> = ({ filters, onChange, bet
                 step={5}
                 value={Math.round(filters.betaPathThreshold * 100)}
                 onChange={(e) => onChange({ ...filters, betaPathThreshold: Number(e.target.value) / 100 })}
+              />
+            </div>
+          )}
+          {key === 'hexClashes' && filters.hexClashes && (
+            <div className="filter-slider" onClick={(e) => e.stopPropagation()}>
+              <span className="filter-slider__label">
+                Hex clash hops: {Math.round(filters.hexClashMaxHops)}
+              </span>
+              <input
+                className="filter-slider__input"
+                type="range"
+                min={0}
+                max={3}
+                step={1}
+                value={Math.round(filters.hexClashMaxHops)}
+                onChange={(e) => onChange({ ...filters, hexClashMaxHops: Number(e.target.value) })}
               />
             </div>
           )}

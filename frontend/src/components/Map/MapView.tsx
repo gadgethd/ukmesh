@@ -88,10 +88,14 @@ interface MapViewProps {
   showCoverage:    boolean;
   showClientNodes: boolean;
   showLinks:       boolean;
+  showHexClashes:  boolean;
+  maxHexClashHops: number;
   viablePairsArr:  [string, string][];
   linkMetrics:     Map<string, LinkMetrics>;
   packetPath:      [number, number][] | null;
   betaPath:        [number, number][] | null;
+  betaLowPath:     [number, number][] | null;
+  betaCompletionPaths: [number, number][][];
   showBetaPaths:   boolean;
   pathOpacity:     number;
   onMapReady?:     (m: LeafletMap) => void;
@@ -103,9 +107,28 @@ const DEFAULT_ZOOM = 11;
 
 export const MapView: React.FC<MapViewProps> = ({
   nodes, arcs, activeNodes, coverage, showPackets, showCoverage, showClientNodes,
-  showLinks, viablePairsArr, linkMetrics, packetPath, betaPath, showBetaPaths, pathOpacity, onMapReady,
+  showLinks, showHexClashes, maxHexClashHops, viablePairsArr, linkMetrics, packetPath, betaPath, betaLowPath, betaCompletionPaths, showBetaPaths, pathOpacity, onMapReady,
 }) => {
   const [map, setMap] = useState<LeafletMap | null>(null);
+  const [focusedPrefix, setFocusedPrefix] = useState<string | null>(null);
+  const [focusedNodeId, setFocusedNodeId] = useState<string | null>(null);
+  const [focusedPrefixNodeIds, setFocusedPrefixNodeIds] = useState<Set<string> | null>(null);
+  const [focusHidePhase, setFocusHidePhase] = useState<'idle' | 'hide' | 'fade'>('idle');
+  const hideTimerRef = useRef<number | null>(null);
+  const fadeTimerRef = useRef<number | null>(null);
+
+  const clearFocusTimers = useCallback(() => {
+    if (hideTimerRef.current !== null) {
+      window.clearTimeout(hideTimerRef.current);
+      hideTimerRef.current = null;
+    }
+    if (fadeTimerRef.current !== null) {
+      window.clearTimeout(fadeTimerRef.current);
+      fadeTimerRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => () => clearFocusTimers(), [clearFocusTimers]);
 
   useEffect(() => {
     if (map && onMapReady) onMapReady(map);
@@ -137,7 +160,6 @@ export const MapView: React.FC<MapViewProps> = ({
 
   // Refs to Leaflet Polyline instances for direct SVG attribute animation
   const regularPathRef = useRef<LeafletPolyline | null>(null);
-  const betaPathRef    = useRef<LeafletPolyline | null>(null);
   const aniFrameRef    = useRef<number | null>(null);
 
   // Animate marching dashes by incrementing stroke-dashoffset directly on the
@@ -145,10 +167,9 @@ export const MapView: React.FC<MapViewProps> = ({
   // calls _updateStyle (setAttribute) on every prop change, which can interrupt
   // CSS keyframe animations. Direct DOM manipulation in an rAF loop is stable.
   const hasRegular = !!packetPath;
-  const hasBeta    = !!(showBetaPaths && betaPath);
 
   useEffect(() => {
-    if (!hasRegular && !hasBeta) {
+    if (!hasRegular) {
       if (aniFrameRef.current !== null) {
         cancelAnimationFrame(aniFrameRef.current);
         aniFrameRef.current = null;
@@ -163,10 +184,7 @@ export const MapView: React.FC<MapViewProps> = ({
       const val = String(-offset);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const rp = (regularPathRef.current as any)?._path as SVGPathElement | null;
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const bp = (betaPathRef.current as any)?._path as SVGPathElement | null;
       if (hasRegular && rp) rp.setAttribute('stroke-dashoffset', val);
-      if (hasBeta    && bp) bp.setAttribute('stroke-dashoffset', val);
       aniFrameRef.current = requestAnimationFrame(tick);
     };
 
@@ -177,7 +195,7 @@ export const MapView: React.FC<MapViewProps> = ({
         aniFrameRef.current = null;
       }
     };
-  }, [hasRegular, hasBeta]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [hasRegular]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const FOURTEEN_DAYS_MS = 14 * 24 * 60 * 60 * 1000;
   const allNodesWithPos = useMemo(() => Array.from(nodes.values()).filter(
@@ -187,6 +205,44 @@ export const MapView: React.FC<MapViewProps> = ({
   ), [nodes]); // eslint-disable-line react-hooks/exhaustive-deps
   const nodesWithPos   = useMemo(() => allNodesWithPos.filter((n) => n.role === undefined || n.role === 2), [allNodesWithPos]);
   const clientNodesArr = useMemo(() => allNodesWithPos.filter((n) => n.role === 1 || n.role === 3), [allNodesWithPos]);
+  const repeaterPrefixIds = useMemo(() => {
+    const prefixMap = new Map<string, string[]>();
+    for (const n of nodesWithPos) {
+      const prefix = n.node_id.slice(0, 2).toUpperCase();
+      const existing = prefixMap.get(prefix);
+      if (existing) existing.push(n.node_id);
+      else prefixMap.set(prefix, [n.node_id]);
+    }
+    return prefixMap;
+  }, [nodesWithPos]);
+
+  const handleToggleSamePrefix = useCallback((nodeId: string, enabled: boolean) => {
+    if (!enabled) {
+      clearFocusTimers();
+      setFocusedPrefix(null);
+      setFocusedNodeId(null);
+      setFocusedPrefixNodeIds(null);
+      setFocusHidePhase('idle');
+      return;
+    }
+    const prefix = nodeId.slice(0, 2).toUpperCase();
+    const ids = repeaterPrefixIds.get(prefix) ?? [nodeId];
+    const idSet = new Set(ids);
+    clearFocusTimers();
+    setFocusedPrefix(prefix);
+    setFocusedNodeId(nodeId);
+    setFocusedPrefixNodeIds(idSet);
+    setFocusHidePhase('hide');
+    hideTimerRef.current = window.setTimeout(() => {
+      setFocusHidePhase('fade');
+      fadeTimerRef.current = window.setTimeout(() => {
+        setFocusedPrefix(null);
+        setFocusedNodeId(null);
+        setFocusedPrefixNodeIds(null);
+        setFocusHidePhase('idle');
+      }, 1200);
+    }, 10_000);
+  }, [clearFocusTimers, repeaterPrefixIds]);
 
   const coverageRings = useCoverageDisplayRings(coverage);
   const coverageByNodeId = useMemo(() => {
@@ -194,6 +250,34 @@ export const MapView: React.FC<MapViewProps> = ({
     for (const c of coverage) m.set(c.node_id, c);
     return m;
   }, [coverage]);
+
+  const distKm = useCallback((a: MeshNode, b: MeshNode) => {
+    if (!hasCoords(a) || !hasCoords(b)) return Number.POSITIVE_INFINITY;
+    const midLat = ((a.lat + b.lat) / 2) * (Math.PI / 180);
+    const dlat = (a.lat - b.lat) * 111;
+    const dlon = (a.lon - b.lon) * 111 * Math.cos(midLat);
+    return Math.hypot(dlat, dlon);
+  }, []);
+
+  const nodeRangeKm = useCallback((nodeId: string) => {
+    const cov = coverageByNodeId.get(nodeId);
+    if (!cov?.radius_m) return 50;
+    return Math.min(80, Math.max(50, cov.radius_m / 1000));
+  }, [coverageByNodeId]);
+
+  const pairInReceiveRange = useCallback((a: MeshNode, b: MeshNode) => {
+    const d = distKm(a, b);
+    const range = Math.max(nodeRangeKm(a.node_id), nodeRangeKm(b.node_id));
+    return d <= range;
+  }, [distKm, nodeRangeKm]);
+
+
+  const clashLinePositions = useCallback((a: MeshNode, b: MeshNode): [number, number][] => {
+    const d = distKm(a, b);
+    if (d > 0.02) return [[a.lat!, a.lon!], [b.lat!, b.lon!]];
+    const off = 0.0018;
+    return [[a.lat!, a.lon!], [b.lat! + off, b.lon! + off]];
+  }, [distKm]);
 
   const linkKey = (a: string, b: string) => (a < b ? `${a}:${b}` : `${b}:${a}`);
 
@@ -203,6 +287,136 @@ export const MapView: React.FC<MapViewProps> = ({
     if (pathLossDb <= 135) return '#fbbf24';
     return '#ef4444';
   };
+
+  const clashAdjacency = useMemo(() => {
+    const adj = new Map<string, Set<string>>();
+    for (const [aId, bId] of viablePairsArr) {
+      const a = nodes.get(aId);
+      const b = nodes.get(bId);
+      if (!hasCoords(a) || !hasCoords(b)) continue;
+      const key = linkKey(aId, bId);
+      // Require computed dB (weak or above) for every edge used in clash-hop routing.
+      const pathLoss = linkMetrics.get(key)?.itm_path_loss_db;
+      if (pathLoss == null) continue;
+      if (!pairInReceiveRange(a, b)) continue;
+      if (!adj.has(aId)) adj.set(aId, new Set());
+      if (!adj.has(bId)) adj.set(bId, new Set());
+      adj.get(aId)!.add(bId);
+      adj.get(bId)!.add(aId);
+    }
+    return adj;
+  }, [viablePairsArr, linkMetrics, nodes, pairInReceiveRange]);
+
+  const shortestPathWithinRelayHops = useCallback((fromId: string, toId: string, maxRelayHops: number) => {
+    if (fromId === toId) return [fromId];
+    const maxEdges = Math.max(1, Math.floor(maxRelayHops) + 1);
+    const visited = new Set<string>([fromId]);
+    const prev = new Map<string, string>();
+    const queue: Array<{ id: string; edges: number }> = [{ id: fromId, edges: 0 }];
+    while (queue.length > 0) {
+      const cur = queue.shift()!;
+      if (cur.edges >= maxEdges) continue;
+      for (const next of (clashAdjacency.get(cur.id) ?? [])) {
+        if (visited.has(next)) continue;
+        visited.add(next);
+        prev.set(next, cur.id);
+        const nextEdges = cur.edges + 1;
+        if (next === toId) {
+          const path = [toId];
+          let p = toId;
+          while (prev.has(p)) {
+            p = prev.get(p)!;
+            path.unshift(p);
+          }
+          return path;
+        }
+        queue.push({ id: next, edges: nextEdges });
+      }
+    }
+    return null;
+  }, [clashAdjacency]);
+
+  type ClashPath = { key: string; nodeIds: string[]; offenderA: string; offenderB: string };
+
+  const clashPaths = useMemo(() => {
+    const paths: ClashPath[] = [];
+    for (const [, ids] of repeaterPrefixIds) {
+      if (ids.length < 2) continue;
+      for (let i = 0; i < ids.length - 1; i++) {
+        for (let j = i + 1; j < ids.length; j++) {
+          const fromId = ids[i]!;
+          const toId = ids[j]!;
+          const path = shortestPathWithinRelayHops(fromId, toId, maxHexClashHops);
+          if (!path || path.length < 2) continue;
+          paths.push({
+            key: `clash-${fromId.slice(0, 8)}-${toId.slice(0, 8)}-${path.length}`,
+            nodeIds: path,
+            offenderA: fromId,
+            offenderB: toId,
+          });
+        }
+      }
+    }
+    return paths;
+  }, [repeaterPrefixIds, shortestPathWithinRelayHops, maxHexClashHops]);
+
+  const focusedClashPaths = useMemo(() => {
+    if (!focusedNodeId || !focusedPrefixNodeIds || focusedPrefixNodeIds.size < 2) return [];
+    const paths: ClashPath[] = [];
+    for (const targetId of focusedPrefixNodeIds) {
+      if (targetId === focusedNodeId) continue;
+      const path = shortestPathWithinRelayHops(focusedNodeId, targetId, maxHexClashHops);
+      if (!path || path.length < 2) continue;
+      paths.push({
+        key: `focus-${focusedNodeId.slice(0, 8)}-${targetId.slice(0, 8)}-${path.length}`,
+        nodeIds: path,
+        offenderA: focusedNodeId,
+        offenderB: targetId,
+      });
+    }
+    return paths;
+  }, [focusedNodeId, focusedPrefixNodeIds, shortestPathWithinRelayHops, maxHexClashHops]);
+
+  const clashPathLines = useMemo(() => {
+    const chosen = showHexClashes ? clashPaths : focusedClashPaths;
+    const lines: Array<{ key: string; positions: [number, number][] }> = [];
+    const edgeKeys = new Set<string>();
+    for (const path of chosen) {
+      for (let i = 0; i < path.nodeIds.length - 1; i++) {
+        const a = nodes.get(path.nodeIds[i]!);
+        const b = nodes.get(path.nodeIds[i + 1]!);
+        if (!hasCoords(a) || !hasCoords(b)) continue;
+        const edgeKey = linkKey(a.node_id, b.node_id);
+        if (edgeKeys.has(edgeKey)) continue;
+        edgeKeys.add(edgeKey);
+        lines.push({ key: `${path.key}-${edgeKey}`, positions: clashLinePositions(a, b) });
+      }
+    }
+    return lines;
+  }, [showHexClashes, clashPaths, focusedClashPaths, nodes, clashLinePositions]);
+
+  const clashOffenderNodeIds = useMemo(() => {
+    const ids = new Set<string>();
+    const chosen = showHexClashes ? clashPaths : focusedClashPaths;
+    for (const path of chosen) {
+      ids.add(path.offenderA);
+      ids.add(path.offenderB);
+    }
+    return ids;
+  }, [showHexClashes, clashPaths, focusedClashPaths]);
+
+  const clashVisibleNodeIds = useMemo(() => {
+    const ids = new Set<string>();
+    const chosen = showHexClashes ? clashPaths : focusedClashPaths;
+    for (const path of chosen) {
+      for (const id of path.nodeIds) ids.add(id);
+    }
+    return ids;
+  }, [showHexClashes, clashPaths, focusedClashPaths]);
+
+  const clashModeActive = showHexClashes || !!focusedPrefixNodeIds;
+  const effectiveShowCoverage = showCoverage && !clashModeActive;
+  const effectiveShowLinks = showLinks && !clashModeActive;
 
   // Resolve viable link pairs to lat/lon polyline positions
   const linkLines = useMemo(() => {
@@ -288,7 +502,7 @@ export const MapView: React.FC<MapViewProps> = ({
         {/* Coverage — raw outer rings from each viewshed, fillRule:'nonzero'.
             nonzero means overlapping CCW rings sum winding numbers (+1 each)
             so all covered areas fill regardless of how many viewsheds overlap. */}
-        {showCoverage && coverageRings.length > 0 && (
+        {effectiveShowCoverage && coverageRings.length > 0 && (
           <Pane name="coveragePane" style={{ zIndex: 350 }}>
             <Polygon
               positions={coverageRings as LatLngExpression[][]}
@@ -304,7 +518,7 @@ export const MapView: React.FC<MapViewProps> = ({
         )}
 
         {/* Confirmed link lines — ITM-viable node pairs */}
-        {showLinks && linkLines.length > 0 && (
+        {effectiveShowLinks && linkLines.length > 0 && (
           <Pane name="linksPane" style={{ zIndex: 400 }}>
             {linkLines.map((line) => {
               const obs = Math.max(1, line.observedCount);
@@ -327,27 +541,60 @@ export const MapView: React.FC<MapViewProps> = ({
           </Pane>
         )}
 
+        {clashModeActive && (
+          <Pane name="hexClashPane" style={{ zIndex: 405 }}>
+            {clashPathLines.map((line) => (
+              <Polyline
+                key={line.key}
+                positions={line.positions}
+                pathOptions={{
+                  color: '#f97316',
+                  weight: 2.2,
+                  opacity: 0.9,
+                }}
+                interactive={false}
+              />
+            ))}
+          </Pane>
+        )}
+
         {/* Repeater markers — Leaflet default marker pane at zIndex 600 */}
-        {nodesWithPos.map((node) => (
-          <NodeMarker
-            key={node.node_id}
-            node={node}
-            isActive={activeNodes.has(node.node_id)}
-            nodeCoverage={coverageByNodeId.get(node.node_id)}
-            markerSize={markerSize}
-          />
-        ))}
+        {nodesWithPos.map((node) => {
+          if (showHexClashes && !clashVisibleNodeIds.has(node.node_id)) return null;
+          const isFocusVisible = clashVisibleNodeIds.has(node.node_id) || (focusedPrefixNodeIds?.has(node.node_id) ?? false);
+          if (focusedPrefixNodeIds && focusHidePhase === 'hide' && !isFocusVisible) return null;
+          return (
+            <NodeMarker
+              key={node.node_id}
+              node={node}
+              isActive={activeNodes.has(node.node_id)}
+              isHighlighted={!!focusedPrefix && node.node_id.slice(0, 2).toUpperCase() === focusedPrefix}
+              isRestoring={!!focusedPrefixNodeIds && focusHidePhase === 'fade' && !isFocusVisible}
+              hexClashState={clashModeActive ? (clashOffenderNodeIds.has(node.node_id) ? 'offender' : clashVisibleNodeIds.has(node.node_id) ? 'clear' : undefined) : undefined}
+              samePrefixRepeaterCount={repeaterPrefixIds.get(node.node_id.slice(0, 2).toUpperCase())?.length ?? 1}
+              samePrefixActive={!!focusedPrefix && node.node_id.slice(0, 2).toUpperCase() === focusedPrefix}
+              onToggleSamePrefix={handleToggleSamePrefix}
+              nodeCoverage={coverageByNodeId.get(node.node_id)}
+              markerSize={markerSize}
+            />
+          );
+        })}
 
         {/* Companion radio + room server markers (toggled via filter) */}
-        {showClientNodes && clientNodesArr.map((node) => (
-          <NodeMarker
-            key={node.node_id}
-            node={node}
-            isActive={activeNodes.has(node.node_id)}
-            nodeCoverage={coverageByNodeId.get(node.node_id)}
-            markerSize={markerSize}
-          />
-        ))}
+        {showClientNodes && !showHexClashes && clientNodesArr.map((node) => {
+          const isFocusVisible = clashVisibleNodeIds.has(node.node_id);
+          if (focusedPrefixNodeIds && focusHidePhase === 'hide' && !isFocusVisible) return null;
+          return (
+            <NodeMarker
+              key={node.node_id}
+              node={node}
+              isActive={activeNodes.has(node.node_id)}
+              isRestoring={!!focusedPrefixNodeIds && focusHidePhase === 'fade' && !isFocusVisible}
+              nodeCoverage={coverageByNodeId.get(node.node_id)}
+              markerSize={markerSize}
+            />
+          );
+        })}
 
         {/* Live packet path — marching dashes from source → observer */}
         {packetPath && (
@@ -366,15 +613,45 @@ export const MapView: React.FC<MapViewProps> = ({
         {/* Beta path — coverage-validated, unambiguous hop resolution */}
         {showBetaPaths && betaPath && (
           <Polyline
-            ref={betaPathRef}
             positions={betaPath}
             pathOptions={{
               color:     '#a855f7',
-              weight:    2,
+              weight:    2.2,
               dashArray: '6 9',
               opacity:   pathOpacity,
             }}
           />
+        )}
+
+        {showBetaPaths && betaLowPath && (
+          <Polyline
+            positions={betaLowPath}
+            pathOptions={{
+              color:     '#ef4444',
+              weight:    2.4,
+              dashArray: '6 9',
+              opacity:   Math.min(0.9, pathOpacity),
+            }}
+            interactive={false}
+          />
+        )}
+
+        {showBetaPaths && betaCompletionPaths.length > 0 && (
+          <Pane name="betaCompletionsPane" style={{ zIndex: 520 }}>
+            {betaCompletionPaths.map((path, idx) => (
+              <Polyline
+                key={`beta-completion-${idx}`}
+                positions={path}
+                pathOptions={{
+                  color: '#ef4444',
+                  weight: 1.2,
+                  dashArray: '3 9',
+                  opacity: Math.min(0.45, pathOpacity * 0.6),
+                }}
+                interactive={false}
+              />
+            ))}
+          </Pane>
         )}
       </MapContainer>
 

@@ -47,6 +47,7 @@ LIVE_CHANNEL   = 'meshcore:live'
 
 ANTENNA_HEIGHT_M     = 5    # observer height above ground (m) — fixed 5 m antenna
 MIN_LINK_OBSERVATIONS = 5  # must match backend db/index.ts
+PREFIX_AMBIGUITY_RADIUS_KM = 45.0  # only penalize same-prefix ambiguity when nodes are realistically in range
 MAX_RADIUS_M     = 100_000  # absolute cap on viewshed radius (m)
 SIMPLIFY_DEG     = 0.001    # Douglas-Peucker tolerance (~100 m)
 N_RAYS           = 720      # number of radial rays cast from the observer
@@ -521,6 +522,23 @@ def process_link_job(db, r_client, job: dict):
             ((a['lon'] - b['lon']) * 111.32 * cos_m) ** 2
         )
 
+    def local_prefix_ambiguity_penalty(prefix: str, target_id: str, target_node: dict, anchor_node: dict, pool: list[tuple[str, dict]]) -> float:
+        target_dist = node_dist(target_node, anchor_node)
+        raw = 0.0
+        for cand_id, cand_node in pool:
+            if cand_id == target_id:
+                continue
+            if not cand_id.upper().startswith(prefix):
+                continue
+            cand_dist = node_dist(cand_node, anchor_node)
+            if cand_dist > PREFIX_AMBIGUITY_RADIUS_KM:
+                continue
+            dist_similarity = max(0.0, 1.0 - abs(cand_dist - target_dist) / PREFIX_AMBIGUITY_RADIUS_KM)
+            proximity = max(0.0, 1.0 - cand_dist / PREFIX_AMBIGUITY_RADIUS_KM)
+            raw += dist_similarity * proximity
+        # Bound so this is only a modest confidence deduction in clustered regions.
+        return min(0.24, raw * 0.12)
+
     # Resolve path working backwards from rx (known position anchor).
     # Each node can only appear once — MeshCore nodes never relay the same
     # packet twice.
@@ -541,14 +559,22 @@ def process_link_job(db, r_client, job: dict):
         if not candidates:
             continue
 
-        # Prefer confirmed neighbours of the previous node; fall back to closest.
-        confirmed = [(nid, nd) for nid, nd in candidates if confirmed_link(nid, prev_id)]
-        if confirmed:
-            confirmed.sort(key=lambda x: node_dist(x[1], prev))
-            best_id, best = confirmed[0]
-        else:
-            candidates.sort(key=lambda x: node_dist(x[1], prev))
-            best_id, best = candidates[0]
+        # Prefer confirmed neighbours of the previous node, but deduct confidence
+        # when same-prefix repeaters cluster near the same anchor (possible ambiguity).
+        best_id = None
+        best = None
+        best_score = float('-inf')
+        for nid, nd in candidates:
+            confirmed_bonus = 2.5 if confirmed_link(nid, prev_id) else 0.0
+            distance_score = -node_dist(nd, prev) / 12.0
+            ambiguity_penalty = local_prefix_ambiguity_penalty(prefix, nid, nd, prev, candidates)
+            score = confirmed_bonus + distance_score - ambiguity_penalty
+            if score > best_score:
+                best_score = score
+                best_id, best = nid, nd
+
+        if best_id is None or best is None:
+            continue
 
         resolved.insert(0, (best_id, best))
         visited.add(best_id)

@@ -27,6 +27,7 @@ export function confirmedLinkConfidence(
     transition: number;
     motif: number;
     edge: number;
+    ambiguity: number;
   },
 ): number {
   const observed = meta?.observed_count ?? MIN_LINK_OBSERVATIONS;
@@ -35,6 +36,15 @@ export function confirmedLinkConfidence(
   const plPenalty = pathLoss == null ? 0 : Math.min(0.12, Math.max(0, (pathLoss - 130) / 120));
   const dirBoost = (directionalSupport(meta, fromId, toId) - 0.5) * 0.12;
   const viableBoost = meta?.itm_viable === false ? -0.1 : 0.05;
-  const conf = 0.66 + obsBoost + dirBoost + viableBoost - plPenalty + boosts.prefix + boosts.transition + boosts.motif + boosts.edge;
+  const conf = 0.66
+    + obsBoost
+    + dirBoost
+    + viableBoost
+    - plPenalty
+    + boosts.prefix
+    + boosts.transition
+    + boosts.motif
+    + boosts.edge
+    + boosts.ambiguity;
   return clamp(conf, 0.45, 0.98);
 }

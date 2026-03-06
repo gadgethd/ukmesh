@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import type { Map as LeafletMap } from 'leaflet';
 import { MapView } from './components/Map/MapView.js';
 import { FilterPanel, type Filters } from './components/FilterPanel/FilterPanel.js';
@@ -24,6 +24,8 @@ const DEFAULT_FILTERS: Filters = {
   betaPaths: false,
   betaPathThreshold: 0.5,
   links: false,
+  hexClashes: false,
+  hexClashMaxHops: 3,
 };
 
 const DISCLAIMER_KEY = 'meshcore-disclaimer-dismissed';
@@ -43,6 +45,8 @@ export const App: React.FC = () => {
   });
   const [map, setMap] = useState<LeafletMap | null>(null);
   const [showDisclaimer, setShowDisclaimer] = useState(() => !localStorage.getItem(DISCLAIMER_KEY));
+  const clashRestoreRef = useRef<{ links: boolean; coverage: boolean; clientNodes: boolean } | null>(null);
+  const prevHexClashesRef = useRef<boolean>(DEFAULT_FILTERS.hexClashes);
 
   const {
     nodes,
@@ -84,7 +88,10 @@ export const App: React.FC = () => {
   const {
     packetPath,
     betaPacketPath,
+    betaLowConfidencePath,
+    betaCompletionPaths,
     betaPathConfidence,
+    betaPermutationCount,
     pathOpacity,
     pinnedPacketId,
     handlePacketPin,
@@ -107,6 +114,36 @@ export const App: React.FC = () => {
   useEffect(() => {
     localStorage.setItem(FILTERS_KEY, JSON.stringify(filters));
   }, [filters]);
+
+  useEffect(() => {
+    const wasHexClashes = prevHexClashesRef.current;
+    const isHexClashes = filters.hexClashes;
+
+    if (!wasHexClashes && isHexClashes) {
+      clashRestoreRef.current = {
+        links: filters.links,
+        coverage: filters.coverage,
+        clientNodes: filters.clientNodes,
+      };
+      setFilters((current) => ({
+        ...current,
+        links: false,
+        coverage: false,
+        clientNodes: false,
+      }));
+    } else if (wasHexClashes && !isHexClashes && clashRestoreRef.current) {
+      const restore = clashRestoreRef.current;
+      clashRestoreRef.current = null;
+      setFilters((current) => ({
+        ...current,
+        links: restore.links,
+        coverage: restore.coverage,
+        clientNodes: restore.clientNodes,
+      }));
+    }
+
+    prevHexClashesRef.current = isHexClashes;
+  }, [filters.hexClashes, filters.links, filters.coverage, filters.clientNodes]);
 
   useEffect(() => {
     const postError = (kind: string, message: string, stack?: string) => {
@@ -182,16 +219,25 @@ export const App: React.FC = () => {
         showCoverage={filters.coverage}
         showClientNodes={filters.clientNodes}
         showLinks={filters.links}
+        showHexClashes={filters.hexClashes}
+        maxHexClashHops={filters.hexClashMaxHops}
         viablePairsArr={viablePairsArr}
         linkMetrics={linkMetrics}
         packetPath={packetPath}
         betaPath={betaPacketPath}
+        betaLowPath={betaLowConfidencePath}
+        betaCompletionPaths={betaCompletionPaths}
         showBetaPaths={filters.betaPaths || pinnedPacketId !== null}
         pathOpacity={pathOpacity}
         onMapReady={setMap}
       />
 
-      <FilterPanel filters={filters} onChange={setFilters} betaPathConfidence={betaPathConfidence} />
+      <FilterPanel
+        filters={filters}
+        onChange={setFilters}
+        betaPathConfidence={betaPathConfidence}
+        betaPermutationCount={betaPermutationCount}
+      />
 
       {filters.livePackets && (
         <PacketFeed

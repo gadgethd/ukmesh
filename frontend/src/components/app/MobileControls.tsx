@@ -45,6 +45,22 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
           </div>
         ))}
       </div>
+      {filters.hexClashes && (
+        <div className="filter-slider" style={{ marginTop: 8 }}>
+          <span className="filter-slider__label">
+            Hex clash hops: {Math.round(filters.hexClashMaxHops)}
+          </span>
+          <input
+            className="filter-slider__input"
+            type="range"
+            min={0}
+            max={3}
+            step={1}
+            value={Math.round(filters.hexClashMaxHops)}
+            onChange={(e) => onFiltersChange({ ...filters, hexClashMaxHops: Number(e.target.value) })}
+          />
+        </div>
+      )}
       <button
         type="button"
         className="mobile-legend-toggle"

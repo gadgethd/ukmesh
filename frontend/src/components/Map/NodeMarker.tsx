@@ -9,6 +9,7 @@ const SEVEN_DAYS_MS  = 7  * 24 * 60 * 60 * 1000;
 const PREVIEW_TTL_MS = 20_000;
 
 type MarkerVariant = 'repeater' | 'companion' | 'room';
+type HexClashState = 'offender' | 'clear';
 
 // Build a custom Leaflet icon from HTML
 function buildIcon(
@@ -17,6 +18,8 @@ function buildIcon(
   isStale: boolean,
   variant: MarkerVariant,
   markerSize: number,
+  isRestoring: boolean,
+  hexClashState?: HexClashState,
 ): L.DivIcon {
   const size = Math.max(4, Math.round(markerSize));
   const border = size >= 10 ? 2 : 1;
@@ -28,6 +31,9 @@ function buildIcon(
     // Colour variant only shown when online and fresh
     isOnline && !isStale && variant === 'companion' ? 'node-marker--companion' : '',
     isOnline && !isStale && variant === 'room'      ? 'node-marker--room'      : '',
+    isRestoring ? 'node-marker--restore' : '',
+    hexClashState === 'offender' ? 'node-marker--hex-offender' : '',
+    hexClashState === 'clear' ? 'node-marker--hex-clear' : '',
   ].filter(Boolean).join(' ');
   const html = `
     <div class="${classes}" style="--marker-size:${size}px; --marker-border:${border}px;">
@@ -88,9 +94,26 @@ interface Props {
   isActive:      boolean;
   nodeCoverage?: NodeCoverage;
   markerSize?:   number;
+  isHighlighted?: boolean;
+  isRestoring?: boolean;
+  samePrefixRepeaterCount?: number;
+  samePrefixActive?: boolean;
+  onToggleSamePrefix?: (nodeId: string, enabled: boolean) => void;
+  hexClashState?: HexClashState;
 }
 
-export const NodeMarker: React.FC<Props> = React.memo(({ node, isActive, nodeCoverage, markerSize = 12 }) => {
+export const NodeMarker: React.FC<Props> = React.memo(({
+  node,
+  isActive,
+  nodeCoverage,
+  markerSize = 12,
+  isHighlighted = false,
+  isRestoring = false,
+  samePrefixRepeaterCount,
+  samePrefixActive = false,
+  onToggleSamePrefix,
+  hexClashState,
+}) => {
   const [showPreview, setShowPreview] = useState(false);
   const [links, setLinks]             = useState<NodeLink[] | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -119,12 +142,13 @@ export const NodeMarker: React.FC<Props> = React.memo(({ node, isActive, nodeCov
     : node.is_online ? 'var(--online)' : 'var(--offline)';
 
   const previewRings = showPreview && nodeCoverage ? coverageToRings(nodeCoverage) : [];
+  const showSamePrefixRow = (node.role === undefined || node.role === 2) && typeof samePrefixRepeaterCount === 'number';
 
   return (
     <>
       <Marker
         position={[node.lat, node.lon]}
-        icon={buildIcon(node.is_online, isActive, isStale, variant, markerSize)}
+        icon={buildIcon(node.is_online, isActive || isHighlighted, isStale, variant, markerSize, isRestoring, hexClashState)}
       >
         <Popup eventHandlers={{
           add: () => {
@@ -171,6 +195,20 @@ export const NodeMarker: React.FC<Props> = React.memo(({ node, isActive, nodeCov
               <div className="node-popup__row">
                 <span>Elevation</span>
                 <span>{Math.round(node.elevation_m)} m ASL</span>
+              </div>
+            )}
+            {showSamePrefixRow && (
+              <div className="node-popup__row node-popup__row--inline">
+                <span>Same 2-hex repeaters</span>
+                <span className="node-popup__inline-value">
+                  {samePrefixRepeaterCount}
+                  <button
+                    className={`node-popup__inline-btn${samePrefixActive ? ' node-popup__inline-btn--active' : ''}`}
+                    onClick={() => onToggleSamePrefix?.(node.node_id, !samePrefixActive)}
+                  >
+                    {samePrefixActive ? 'Hide' : 'Show locations'}
+                  </button>
+                </span>
               </div>
             )}
             {nodeCoverage && (

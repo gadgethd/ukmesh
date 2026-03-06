@@ -408,6 +408,30 @@ html, body, #root {
 }
 .node-marker--room .node-marker__pulse { background: var(--room-server); }
 
+.node-marker--restore .node-marker__core,
+.node-marker--restore .node-marker__pulse {
+  animation: node-restore-fade 1.2s ease;
+}
+
+.node-marker--hex-offender .node-marker__core {
+  background: #ef4444;
+  border-color: rgba(239, 68, 68, 0.85);
+  box-shadow: 0 0 10px rgba(239, 68, 68, 0.45);
+}
+.node-marker--hex-offender .node-marker__pulse { background: #ef4444; }
+
+.node-marker--hex-clear .node-marker__core {
+  background: #22c55e;
+  border-color: rgba(34, 197, 94, 0.85);
+  box-shadow: 0 0 8px rgba(34, 197, 94, 0.4);
+}
+.node-marker--hex-clear .node-marker__pulse { background: #22c55e; }
+
+@keyframes node-restore-fade {
+  0% { opacity: 0; }
+  100% { opacity: 1; }
+}
+
 /* ─── Node Popup ─────────────────────────────────────────────────────────── */
 .leaflet-popup-content-wrapper {
   background: var(--bg-panel) !important;
@@ -452,6 +476,37 @@ html, body, #root {
 .node-popup__row span:last-child {
   color: var(--text-primary);
   font-family: var(--font-mono);
+}
+
+.node-popup__row--inline {
+  align-items: center;
+}
+
+.node-popup__inline-value {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.node-popup__inline-btn {
+  border: 1px solid rgba(0, 196, 255, 0.5);
+  background: transparent;
+  color: var(--accent);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 10px;
+  font-family: var(--font-mono);
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+
+.node-popup__inline-btn:hover {
+  background: rgba(0, 196, 255, 0.14);
+}
+
+.node-popup__inline-btn--active {
+  border-color: rgba(0, 196, 255, 0.9);
+  background: rgba(0, 196, 255, 0.16);
 }
 
 .node-popup__coverage-btn {

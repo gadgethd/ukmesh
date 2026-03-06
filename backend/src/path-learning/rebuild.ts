@@ -35,6 +35,7 @@ const MAX_EDGE_CHOICES_PER_GROUP = 8;
 const MAX_MOTIF2_CHOICES_PER_GROUP = 6;
 const MAX_MOTIF3_CHOICES_PER_GROUP = 4;
 const HOUR_BUCKET_SIZE = 6;
+const PREFIX_AMBIGUITY_RADIUS_KM = 45;
 
 function linkKey(a: string, b: string): string {
   return a < b ? `${a}:${b}` : `${b}:${a}`;
@@ -70,6 +71,30 @@ function recencyScore(lastSeenMs: number | undefined, nowMs: number): number {
   return clamp(Math.exp(-ageDays / 21), 0.05, 1);
 }
 
+function localPrefixAmbiguityPenalty(
+  anchor: LearningNode,
+  target: LearningNode,
+  prefixMap: Map<string, LearningNode[]>,
+): number {
+  const prefix = target.node_id.slice(0, 2).toUpperCase();
+  const samePrefixNodes = prefixMap.get(prefix) ?? [];
+  if (samePrefixNodes.length <= 1) return 0;
+
+  const targetDist = distKm(anchor, target);
+  let raw = 0;
+  for (const candidate of samePrefixNodes) {
+    if (candidate.node_id === target.node_id) continue;
+    const candDist = distKm(anchor, candidate);
+    if (candDist > PREFIX_AMBIGUITY_RADIUS_KM) continue;
+    const distanceSimilarity = clamp(1 - Math.abs(candDist - targetDist) / PREFIX_AMBIGUITY_RADIUS_KM, 0, 1);
+    const proximity = clamp(1 - candDist / PREFIX_AMBIGUITY_RADIUS_KM, 0, 1);
+    raw += distanceSimilarity * proximity;
+  }
+
+  // Keep this bounded so we only nudge confidence down in ambiguous local clusters.
+  return clamp(raw * 0.12, 0, 0.24);
+}
+
 function resolvePathForPacket(
   pathHashes: string[],
   srcNode: LearningNode | undefined,
@@ -93,7 +118,8 @@ function resolvePathForPacket(
       const confirmed = confirmedLinks.has(linkKey(candidate.node_id, prev.node_id)) ? 1 : 0;
       const distanceScore = distancePrior(candidate, prev);
       const srcScore = srcNode ? (distKm(srcNode, prev) - distKm(srcNode, candidate)) / 100 : 0;
-      const score = confirmed * 2.5 + distanceScore * 1.3 + srcScore;
+      const ambiguityPenalty = localPrefixAmbiguityPenalty(prev, candidate, prefixMap);
+      const score = confirmed * 2.5 + distanceScore * 1.3 + srcScore - ambiguityPenalty;
       if (score > bestScore) {
         best = candidate;
         bestScore = score;
@@ -398,9 +424,12 @@ async function rebuildNetwork(modelNetwork: string, sourceNetwork: string | unde
       let consistencyPenalty = 0;
       const fromNode = nodesById.get(fromNodeId!);
       const toNode = nodesById.get(toNodeId);
-      if (fromNode && toNode && pathLoss != null) {
-        const dKm = distKm(fromNode, toNode);
-        if (dKm > 55 && pathLoss > 150) consistencyPenalty += 0.14;
+      if (fromNode && toNode) {
+        if (pathLoss != null) {
+          const dKm = distKm(fromNode, toNode);
+          if (dKm > 55 && pathLoss > 150) consistencyPenalty += 0.14;
+        }
+        consistencyPenalty += localPrefixAmbiguityPenalty(fromNode, toNode, prefixMap);
       }
       if (observed < 3 && missing >= 3) consistencyPenalty += 0.1;
       if (directional < 0.06 && observed >= 5) consistencyPenalty += 0.06;

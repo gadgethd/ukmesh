@@ -858,14 +858,14 @@ router.get('/stats/charts', async (req, res) => {
           ${filters.packets}
         GROUP BY hop_count ORDER BY hop_count
       `, filters.params),
-      // top repeated first-2-hex prefix collisions across known nodes
+      // top repeated first-2-hex prefix collisions across known repeaters
       query(`
         WITH prefix_counts AS (
           SELECT SUBSTRING(LOWER(n.node_id) FROM 1 FOR 2) AS prefix, COUNT(*)::int AS node_count
           FROM nodes n
           WHERE n.node_id ~ '^[0-9A-Fa-f]{64}$'
             AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
-            AND (n.role IS NULL OR n.role != 4)
+            AND (n.role IS NULL OR n.role = 2)
             ${filters.nodesAlias('n')}
           GROUP BY 1
           HAVING COUNT(*) > 1

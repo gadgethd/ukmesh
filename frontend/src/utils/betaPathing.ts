@@ -4,8 +4,10 @@ import { hasCoords, linkKey, type LinkMetrics } from './pathing.js';
 import { confirmedLinkConfidence, directionalSupport, minimumDirectionalSupport } from './betaLinks.js';
 export type { LinkMetrics } from './pathing.js';
 
-const MAX_BETA_HOPS = 15;
+const MAX_BETA_HOPS = 25;
 const R_EFF_M = 6_371_000 / (1 - 0.25);
+const PREFIX_AMBIGUITY_FLOOR_KM = 45;
+const WEAK_LINK_PATHLOSS_MAX_DB = 135;
 
 export type PathLearningModel = {
   prefixProbabilities: Map<string, number>;
@@ -68,6 +70,45 @@ function motifKey(receiverRegion: string, bucket: number, nodeIds: string[]): st
   return `${receiverRegion}|${bucket}|${nodeIds.length}|${nodeIds.join('>')}`;
 }
 
+function buildClashAdjacency(
+  candidates: MeshNode[],
+  linkPairs: Set<string>,
+  linkMetrics: Map<string, LinkMetrics>,
+): Map<string, Set<string>> {
+  const byId = new Map<string, MeshNode>();
+  for (const node of candidates) byId.set(node.node_id, node);
+
+  const adjacency = new Map<string, Set<string>>();
+  for (const key of linkPairs) {
+    const [aId, bId] = key.split(':');
+    if (!aId || !bId) continue;
+    if (!byId.has(aId) || !byId.has(bId)) continue;
+    const meta = linkMetrics.get(key);
+    const pathLoss = meta?.itm_path_loss_db;
+    if (pathLoss == null || pathLoss > WEAK_LINK_PATHLOSS_MAX_DB) continue;
+    if (!adjacency.has(aId)) adjacency.set(aId, new Set());
+    if (!adjacency.has(bId)) adjacency.set(bId, new Set());
+    adjacency.get(aId)!.add(bId);
+    adjacency.get(bId)!.add(aId);
+  }
+  return adjacency;
+}
+
+function isWeakOrBetter(meta: LinkMetrics | undefined): boolean {
+  const pathLoss = meta?.itm_path_loss_db;
+  return pathLoss != null && pathLoss <= WEAK_LINK_PATHLOSS_MAX_DB;
+}
+
+function strongConfirmedFloor(meta: LinkMetrics | undefined): number {
+  if (!meta) return 0;
+  const observed = meta.observed_count ?? 0;
+  const pathLoss = meta.itm_path_loss_db;
+  if (observed >= 120 && pathLoss != null && pathLoss <= 125) return 0.82;
+  if (observed >= 70 && pathLoss != null && pathLoss <= 130) return 0.76;
+  if (observed >= 35 && pathLoss != null && pathLoss <= 133) return 0.70;
+  return 0;
+}
+
 export function resolveBetaPath(
   pathHashes: string[],
   src: MeshNode | null,
@@ -77,7 +118,8 @@ export function resolveBetaPath(
   linkPairs: Set<string>,
   linkMetrics: Map<string, LinkMetrics>,
   learningModel?: PathLearningModel | null,
-): { path: [number, number][]; confidence: number } | null {
+  options?: { forceIncludeSource?: boolean },
+): { path: [number, number][]; confidence: number; segmentConfidence: number[]; nodeIds: string[] } | null {
   if (!hasCoords(rx) || pathHashes.length === 0) return null;
   if (pathHashes.length >= MAX_BETA_HOPS) return null;
   const rxLat = rx.lat;
@@ -88,13 +130,17 @@ export function resolveBetaPath(
     (n) => hasCoords(n) && (n.role === undefined || n.role === 2) && !n.name?.includes('🚫'),
   );
   const prefixCounts = new Map<string, number>();
+  const prefixBuckets = new Map<string, MeshNode[]>();
   for (const n of candidatesPool) {
     const p = n.node_id.slice(0, 2).toUpperCase();
     prefixCounts.set(p, (prefixCounts.get(p) ?? 0) + 1);
+    const existing = prefixBuckets.get(p);
+    if (existing) existing.push(n);
+    else prefixBuckets.set(p, [n]);
   }
 
   const totalDist = hasCoords(src) ? distKm(src, rx) : 0;
-  const corridorMaxKm = Math.max(8, Math.min(35, totalDist * 0.25));
+  const corridorMaxKm = Math.max(10, Math.min(45, totalDist * 0.33));
   const receiverRegion = rx.iata ?? 'unknown';
   const bucketHours = learningModel?.bucketHours ?? 6;
   const hourBucket = currentHourBucket(bucketHours);
@@ -156,6 +202,75 @@ export function resolveBetaPath(
     return 0.65 * distScore + 0.35 * elevScore;
   }
 
+  const clashAdjacency = buildClashAdjacency(candidatesPool, linkPairs, linkMetrics);
+  const hopCache = new Map<string, 1 | 2 | null>();
+
+  function twoHopDistance(aId: string, bId: string): 1 | 2 | null {
+    if (aId === bId) return null;
+    const key = aId < bId ? `${aId}:${bId}` : `${bId}:${aId}`;
+    const cached = hopCache.get(key);
+    if (cached !== undefined) return cached;
+    const neighbors = clashAdjacency.get(aId);
+    if (!neighbors || neighbors.size === 0) {
+      hopCache.set(key, null);
+      return null;
+    }
+    if (neighbors.has(bId)) {
+      hopCache.set(key, 1);
+      return 1;
+    }
+    for (const mid of neighbors) {
+      if (clashAdjacency.get(mid)?.has(bId)) {
+        hopCache.set(key, 2);
+        return 2;
+      }
+    }
+    hopCache.set(key, null);
+    return null;
+  }
+
+  function localPrefixAmbiguityPenalty(candidate: MeshNode, prevNode: MeshNode): number {
+    const prefix = candidate.node_id.slice(0, 2).toUpperCase();
+    const peers = prefixBuckets.get(prefix) ?? [];
+    if (peers.length <= 1) return 0;
+
+    const inRangeKm = Math.max(PREFIX_AMBIGUITY_FLOOR_KM, nodeRange(candidate.node_id, coverage), nodeRange(prevNode.node_id, coverage));
+    const candidateDist = distKm(candidate, prevNode);
+    let localRaw = 0;
+    let hopRaw = 0;
+    for (const peer of peers) {
+      if (peer.node_id === candidate.node_id) continue;
+      const peerDist = distKm(peer, prevNode);
+      if (peerDist > inRangeKm) continue;
+      const distanceSimilarity = clamp(1 - Math.abs(peerDist - candidateDist) / inRangeKm, 0, 1);
+      const proximity = clamp(1 - peerDist / inRangeKm, 0, 1);
+      localRaw += distanceSimilarity * proximity;
+
+      // Beta clash weighting:
+      // 1-hop same-prefix neighbors apply full penalty, 2-hop apply half penalty.
+      const hopDistance = twoHopDistance(candidate.node_id, peer.node_id);
+      if (hopDistance === 1) hopRaw += 1.0 * distanceSimilarity;
+      else if (hopDistance === 2) hopRaw += 0.5 * distanceSimilarity;
+    }
+    const localPenalty = clamp(localRaw * 0.08, 0, 0.14);
+    const hopPenalty = clamp(hopRaw * 0.07, 0, 0.16);
+    return clamp(localPenalty + hopPenalty, 0, 0.30);
+  }
+
+  function clashPressure(candidate: MeshNode): number {
+    const prefix = candidate.node_id.slice(0, 2).toUpperCase();
+    const peers = prefixBuckets.get(prefix) ?? [];
+    if (peers.length <= 1) return 0;
+    let raw = 0;
+    for (const peer of peers) {
+      if (peer.node_id === candidate.node_id) continue;
+      const hops = twoHopDistance(candidate.node_id, peer.node_id);
+      if (hops === 1) raw += 1;
+      else if (hops === 2) raw += 0.5;
+    }
+    return clamp(raw / 3, 0, 1);
+  }
+
   function inCorridor(candidate: MeshNode, prevNode: MeshNode): boolean {
     if (!hasCoords(src)) return true;
 
@@ -167,7 +282,9 @@ export function resolveBetaPath(
     const px = candidate.lon! - rxLon;
     const py = candidate.lat! - rxLat;
     const t = (px * bx + py * by) / segLen2;
-    if (t < -0.15 || t > 1.15) return false;
+    const pressure = clashPressure(candidate);
+    const tPadding = 0.15 + (1 - pressure) * 0.15;
+    if (t < -tPadding || t > 1 + tPadding) return false;
 
     const projx = rxLon + t * bx;
     const projy = rxLat + t * by;
@@ -176,7 +293,8 @@ export function resolveBetaPath(
     const dxKm = (candidate.lon! - projx) * kmPerLon;
     const dyKm = (candidate.lat! - projy) * 111;
     const crossTrackKm = Math.hypot(dxKm, dyKm);
-    if (crossTrackKm > corridorMaxKm) return false;
+    const corridorAllowance = corridorMaxKm * (1 + (1 - pressure) * 0.35);
+    if (crossTrackKm > corridorAllowance) return false;
 
     return distKm(candidate, src) <= distKm(prevNode, src) + 8;
   }
@@ -216,7 +334,8 @@ export function resolveBetaPath(
         if (!meta || meta.count_a_to_b == null || meta.count_b_to_a == null) return true;
         const dir = directionalSupport(meta, c.node_id, prevNode.node_id);
         const observed = meta.observed_count ?? 0;
-        return dir >= minimumDirectionalSupport(observed);
+        if (observed < 20) return true;
+        return dir >= minimumDirectionalSupport(observed) * 0.6;
       })
       .sort((a, b) => sortScore(b) - sortScore(a))
       .slice(0, 4)
@@ -228,19 +347,31 @@ export function resolveBetaPath(
         const motifBoost = motifPrior([c.node_id, prevNode.node_id]) * 0.2
           + (nextTowardRx ? motifPrior([c.node_id, prevNode.node_id, nextTowardRx]) * 0.25 : 0);
         const edgeBoost = edgePrior(c.node_id, prevNode.node_id) * 0.3;
+        const ambiguityPenalty = localPrefixAmbiguityPenalty(c, prevNode);
+        const confirmedFloor = strongConfirmedFloor(meta);
+        const baseConf = confirmedLinkConfidence(meta, c.node_id, prevNode.node_id, {
+          prefix: priorBoost,
+          transition: transitionBoost,
+          motif: motifBoost,
+          edge: edgeBoost,
+          ambiguity: -ambiguityPenalty,
+        });
         return {
           node: c,
-          conf: confirmedLinkConfidence(meta, c.node_id, prevNode.node_id, {
-            prefix: priorBoost,
-            transition: transitionBoost,
-            motif: motifBoost,
-            edge: edgeBoost,
-          }),
+          conf: Math.max(baseConf, confirmedFloor),
         };
       });
 
     const reachable = all
-      .filter((c) => !usedIds.has(c.node_id) && inCorridor(c, prevNode) && canReach(c, prevNode, coverage) && hasLoS(c, prevNode))
+      .filter((c) => {
+        if (usedIds.has(c.node_id)) return false;
+        if (!inCorridor(c, prevNode)) return false;
+        const meta = linkMetrics.get(linkKey(c.node_id, prevNode.node_id));
+        const reachOk = canReach(c, prevNode, coverage);
+        const losOk = hasLoS(c, prevNode);
+        // Loosen: accept if either physical model passes, or a weak-or-better learned link exists.
+        return (reachOk && losOk) || (reachOk && isWeakOrBetter(meta)) || (losOk && isWeakOrBetter(meta));
+      })
       .sort((a, b) => sortScore(b) - sortScore(a))
       .slice(0, 3)
       .map((c) => {
@@ -252,14 +383,21 @@ export function resolveBetaPath(
         const motifBoost = motifPrior([c.node_id, prevNode.node_id]) * 0.18
           + (nextTowardRx ? motifPrior([c.node_id, prevNode.node_id, nextTowardRx]) * 0.2 : 0);
         const edgeBoost = edgePrior(c.node_id, prevNode.node_id) * 0.28;
+        const ambiguityPenalty = localPrefixAmbiguityPenalty(c, prevNode);
         return {
           node: c,
-          conf: Math.max(0.08, 0.2 + prior * 0.34 + prefixBoost + transitionBoost + motifBoost + edgeBoost - distancePenalty - (all.length - 1) * 0.01),
+          conf: Math.max(0.08, 0.2 + prior * 0.34 + prefixBoost + transitionBoost + motifBoost + edgeBoost - distancePenalty - ambiguityPenalty - (all.length - 1) * 0.01),
         };
       });
 
     const fallback = all
-      .filter((c) => !usedIds.has(c.node_id) && inCorridor(c, prevNode) && distKm(c, prevNode) < 50 && hasLoS(c, prevNode))
+      .filter((c) => {
+        if (usedIds.has(c.node_id)) return false;
+        if (!inCorridor(c, prevNode)) return false;
+        if (distKm(c, prevNode) >= 65) return false;
+        const meta = linkMetrics.get(linkKey(c.node_id, prevNode.node_id));
+        return hasLoS(c, prevNode) || isWeakOrBetter(meta);
+      })
       .sort((a, b) => sortScore(b) - sortScore(a))
       .slice(0, 1)
       .map((c) => {
@@ -268,21 +406,22 @@ export function resolveBetaPath(
         const transitionBoost = transitionPrior(c.node_id, prevNode.node_id) * 0.16;
         const motifBoost = motifPrior([c.node_id, prevNode.node_id]) * 0.12;
         const edgeBoost = edgePrior(c.node_id, prevNode.node_id) * 0.18;
+        const ambiguityPenalty = localPrefixAmbiguityPenalty(c, prevNode);
         return {
           node: c,
-          conf: Math.max(0.03, 0.04 + prior * 0.2 + prefixBoost + transitionBoost + motifBoost + edgeBoost) / Math.max(1, all.length),
+          conf: Math.max(0.03, 0.04 + prior * 0.2 + prefixBoost + transitionBoost + motifBoost + edgeBoost - ambiguityPenalty) / Math.max(1, all.length),
         };
       });
 
     return [...confirmed, ...reachable, ...fallback];
   }
 
-  const maxSkips = Math.min(2, Math.floor(pathHashes.length / 3));
+  const maxSkips = Math.min(3, Math.floor(pathHashes.length / 2));
   const ambiguity = pathHashes.reduce(
     (sum, h) => sum + (prefixCounts.get(h.slice(0, 2).toUpperCase()) ?? 0),
     0,
   );
-  let budget = Math.max(180, Math.min(1600, 90 + pathHashes.length * 30 + ambiguity * 18));
+  let budget = Math.max(600, Math.min(12_000, 260 + pathHashes.length * 140 + ambiguity * 42));
 
   function solve(
     hopIdx: number,
@@ -328,12 +467,226 @@ export function resolveBetaPath(
   const calibratedConfidence = rawConfidence * (learningModel?.confidenceScale ?? 1) + (learningModel?.confidenceBias ?? 0);
   const confidence = clamp(calibratedConfidence, 0, 1);
 
+  const srcPrefix = hasCoords(src) ? src.node_id.slice(0, 2).toUpperCase() : null;
+  const firstHopPrefix = pathHashes[0]?.slice(0, 2).toUpperCase() ?? null;
+  const prependSource = Boolean(options?.forceIncludeSource
+    ? hasCoords(src)
+    : (hasCoords(src) && srcPrefix && srcPrefix !== firstHopPrefix));
+
   const pathNodes: MeshNode[] = [
-    ...(hasCoords(src) ? [src] : []),
+    ...(prependSource && hasCoords(src) ? [src] : []),
     ...hops.map((h) => h.node),
     rx,
   ];
   if (pathNodes.length < 2) return null;
 
-  return { path: pathNodes.map((n) => [n.lat!, n.lon!]), confidence };
+  const segmentConfidence: number[] = [];
+  const hasSource = prependSource;
+  for (let i = 0; i < pathNodes.length - 1; i++) {
+    // Use direct per-edge confidence instead of min-adjacent blending.
+    // This prevents low confidence later in the chain from turning early,
+    // high-confidence segments red.
+    if (hasSource && i === 0) {
+      segmentConfidence.push(hops[0]?.conf ?? confidence); // src -> first hop
+      continue;
+    }
+    const hopIdx = hasSource ? i : i;
+    segmentConfidence.push(hops[hopIdx]?.conf ?? hops[hops.length - 1]?.conf ?? confidence);
+  }
+
+  return { path: pathNodes.map((n) => [n.lat!, n.lon!]), confidence, segmentConfidence, nodeIds: pathNodes.map((n) => n.node_id) };
+}
+
+export function enumerateBetaCompletions(
+  startNodeId: string,
+  endNodeId: string,
+  stepsRemaining: number,
+  allNodes: Map<string, MeshNode>,
+  linkPairs: Set<string>,
+  linkMetrics: Map<string, LinkMetrics>,
+  maxPaths = 24,
+): [number, number][][] {
+  if (stepsRemaining <= 0 || startNodeId === endNodeId || maxPaths <= 0) return [];
+  const candidates = Array.from(allNodes.values()).filter(
+    (n) => hasCoords(n) && (n.role === undefined || n.role === 2) && !n.name?.includes('🚫'),
+  );
+  const byId = new Map<string, MeshNode>();
+  for (const n of candidates) byId.set(n.node_id, n);
+  if (!byId.has(startNodeId) || !byId.has(endNodeId)) return [];
+
+  const adjacency = buildClashAdjacency(candidates, linkPairs, linkMetrics);
+  const endNode = byId.get(endNodeId)!;
+  const results: string[][] = [];
+  let expansions = 0;
+  const maxExpansions = 8_000;
+
+  const dfs = (currentId: string, depth: number, path: string[], visited: Set<string>) => {
+    if (results.length >= maxPaths || expansions >= maxExpansions) return;
+    expansions += 1;
+    if (depth === stepsRemaining) {
+      if (currentId === endNodeId) results.push([...path]);
+      return;
+    }
+    const neighbors = Array.from(adjacency.get(currentId) ?? [])
+      .filter((id) => !visited.has(id))
+      .sort((a, b) => {
+        const an = byId.get(a);
+        const bn = byId.get(b);
+        if (!an || !bn) return 0;
+        return distKm(an, endNode) - distKm(bn, endNode);
+      });
+    for (const nextId of neighbors) {
+      if (!byId.has(nextId)) continue;
+      visited.add(nextId);
+      path.push(nextId);
+      dfs(nextId, depth + 1, path, visited);
+      path.pop();
+      visited.delete(nextId);
+      if (results.length >= maxPaths || expansions >= maxExpansions) return;
+    }
+  };
+
+  const startVisited = new Set<string>([startNodeId]);
+  dfs(startNodeId, 0, [startNodeId], startVisited);
+
+  return results
+    .map((ids) => ids.map((id) => byId.get(id)!).filter((n): n is MeshNode => Boolean(n)))
+    .filter((nodes) => nodes.length === stepsRemaining + 1)
+    .map((nodes) => nodes.map((n) => [n.lat!, n.lon!]));
+}
+
+export function buildNearestPrefixContinuation(
+  startNodeId: string,
+  remainingPrefixes: string[],
+  endNodeId: string,
+  allNodes: Map<string, MeshNode>,
+  options?: { dropStartIfNodeId?: string },
+): [number, number][] | null {
+  const candidates = Array.from(allNodes.values()).filter(
+    (n) => hasCoords(n) && (n.role === undefined || n.role === 2) && !n.name?.includes('🚫'),
+  );
+  const byId = new Map<string, MeshNode>();
+  for (const n of candidates) byId.set(n.node_id, n);
+
+  const start = byId.get(startNodeId);
+  const end = byId.get(endNodeId);
+  if (!start || !end) return null;
+
+  const pathNodes: MeshNode[] = [start];
+  const visited = new Set<string>([start.node_id]);
+  let current = start;
+
+  for (let idx = 0; idx < remainingPrefixes.length; idx++) {
+    const rawPrefix = remainingPrefixes[idx]!;
+    const isLastPrefix = idx === remainingPrefixes.length - 1;
+    const prefix = rawPrefix.slice(0, 2).toUpperCase();
+    const matches = candidates
+      .filter((n) => {
+        if (visited.has(n.node_id)) return false;
+        if (n.node_id.slice(0, 2).toUpperCase() !== prefix) return false;
+        // Hard rule: do not consume RX as an intermediate node.
+        if (n.node_id === end.node_id && !isLastPrefix) return false;
+        return true;
+      })
+      .sort((a, b) => distKm(a, current) - distKm(b, current));
+    const chosen = matches[0];
+    if (!chosen) continue;
+    pathNodes.push(chosen);
+    visited.add(chosen.node_id);
+    current = chosen;
+  }
+
+  if (pathNodes[pathNodes.length - 1]?.node_id !== end.node_id) {
+    // Hard rule: never repeat a node in the same rendered path.
+    if (visited.has(end.node_id)) return null;
+    pathNodes.push(end);
+    visited.add(end.node_id);
+  }
+  if (new Set(pathNodes.map((n) => n.node_id)).size !== pathNodes.length) return null;
+  const renderNodes = (options?.dropStartIfNodeId && pathNodes[0]?.node_id === options.dropStartIfNodeId)
+    ? pathNodes.slice(1)
+    : pathNodes;
+  if (renderNodes.length < 2) return null;
+  return renderNodes.map((n) => [n.lat!, n.lon!]);
+}
+
+export function enumeratePrefixContinuations(
+  startNodeId: string,
+  remainingPrefixes: string[],
+  endNodeId: string,
+  allNodes: Map<string, MeshNode>,
+  options?: { dropStartIfNodeId?: string; maxRenderPaths?: number; maxSearchStates?: number },
+): { paths: [number, number][][]; totalCount: number; truncated: boolean } {
+  const maxRenderPaths = Math.max(1, options?.maxRenderPaths ?? 320);
+  const maxSearchStates = Math.max(1000, options?.maxSearchStates ?? 120_000);
+
+  const candidates = Array.from(allNodes.values()).filter(
+    (n) => hasCoords(n) && (n.role === undefined || n.role === 2) && !n.name?.includes('🚫'),
+  );
+  const byId = new Map<string, MeshNode>();
+  const byPrefix = new Map<string, MeshNode[]>();
+  for (const n of candidates) {
+    byId.set(n.node_id, n);
+    const p = n.node_id.slice(0, 2).toUpperCase();
+    const arr = byPrefix.get(p);
+    if (arr) arr.push(n);
+    else byPrefix.set(p, [n]);
+  }
+
+  const start = byId.get(startNodeId);
+  const end = byId.get(endNodeId);
+  if (!start || !end) return { paths: [], totalCount: 0, truncated: false };
+
+  const discovered: string[][] = [];
+  let totalCount = 0;
+  let states = 0;
+  let truncated = false;
+
+  const dfs = (idx: number, current: MeshNode, path: string[], visited: Set<string>) => {
+    if (states++ >= maxSearchStates) {
+      truncated = true;
+      return;
+    }
+    if (idx >= remainingPrefixes.length) {
+      if (current.node_id !== end.node_id) {
+        if (visited.has(end.node_id)) return;
+        path.push(end.node_id);
+      }
+      totalCount += 1;
+      if (discovered.length < maxRenderPaths) discovered.push([...path]);
+      if (current.node_id !== end.node_id) path.pop();
+      return;
+    }
+
+    const prefix = remainingPrefixes[idx]!.slice(0, 2).toUpperCase();
+    const nodesForPrefix = (byPrefix.get(prefix) ?? [])
+      .filter((n) => !visited.has(n.node_id) && n.node_id !== end.node_id)
+      .sort((a, b) => distKm(a, current) - distKm(b, current));
+    for (const next of nodesForPrefix) {
+      visited.add(next.node_id);
+      path.push(next.node_id);
+      dfs(idx + 1, next, path, visited);
+      path.pop();
+      visited.delete(next.node_id);
+      if (states >= maxSearchStates) {
+        truncated = true;
+        return;
+      }
+    }
+  };
+
+  const visited = new Set<string>([start.node_id]);
+  dfs(0, start, [start.node_id], visited);
+
+  const paths = discovered
+    .map((ids) => {
+      const renderIds = (options?.dropStartIfNodeId && ids[0] === options.dropStartIfNodeId) ? ids.slice(1) : ids;
+      const nodes = renderIds.map((id) => byId.get(id)).filter((n): n is MeshNode => Boolean(n));
+      if (new Set(nodes.map((n) => n.node_id)).size !== nodes.length) return null;
+      if (nodes.length < 2) return null;
+      return nodes.map((n) => [n.lat!, n.lon!]) as [number, number][];
+    })
+    .filter((p): p is [number, number][] => Array.isArray(p));
+
+  return { paths, totalCount, truncated };
 }
