@@ -1,161 +1,109 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { AggregatedPacket, MeshNode } from './useNodes.js';
-import type { NodeCoverage } from './useCoverage.js';
 import { hasCoords, resolvePathWaypoints } from '../utils/pathing.js';
-import { buildNearestPrefixContinuation, resolveBetaPath, type LinkMetrics, type PathLearningModel } from '../utils/betaPathing.js';
+import { withNetworkParam, uncachedEndpoint } from '../utils/api.js';
 import type { Filters } from '../components/FilterPanel/FilterPanel.js';
 
 const PATH_TTL = 5_000;
+const PREDICTION_CACHE_TTL_MS = 120_000;
+const MAX_PREDICTION_CACHE = 1200;
+type PathSegment = [[number, number], [number, number]];
 
 type UsePacketPathOverlayParams = {
   packets: AggregatedPacket[];
   nodes: Map<string, MeshNode>;
-  coverage: NodeCoverage[];
-  linkPairs: Set<string>;
-  linkMetrics: Map<string, LinkMetrics>;
-  learningModel: PathLearningModel | null;
   filters: Filters;
+  network?: string;
 };
 
 type UsePacketPathOverlayResult = {
   packetPath: [number, number][] | null;
   betaPacketPath: [number, number][] | null;
+  betaExtraPurplePaths: [number, number][][];
   betaLowConfidencePath: [number, number][] | null;
+  betaLowConfidenceSegments: PathSegment[];
   betaCompletionPaths: [number, number][][];
   betaPathConfidence: number | null;
   betaPermutationCount: number | null;
+  betaRemainingHops: number | null;
   pathOpacity: number;
   pinnedPacketId: string | null;
   handlePacketPin: (packet: AggregatedPacket) => void;
 };
 
-function distKm(a: MeshNode, b: MeshNode): number {
-  const midLat = ((a.lat! + b.lat!) / 2) * (Math.PI / 180);
-  const dlat = (a.lat! - b.lat!) * 111;
-  const dlon = (a.lon! - b.lon!) * 111 * Math.cos(midLat);
-  return Math.hypot(dlat, dlon);
+type ServerBetaResponse = {
+  ok: boolean;
+  packetHash: string;
+  mode: 'resolved' | 'fallback' | 'none';
+  confidence: number | null;
+  permutationCount: number;
+  remainingHops: number | null;
+  purplePath: [number, number][] | null;
+  extraPurplePaths: [number, number][][];
+  redPath: [number, number][] | null;
+  redSegments: PathSegment[];
+  completionPaths: [number, number][][];
+};
+
+function segmentizePath(path: [number, number][] | null): PathSegment[] {
+  if (!path || path.length < 2) return [];
+  const segments: PathSegment[] = [];
+  for (let i = 0; i < path.length - 1; i++) {
+    const a = path[i];
+    const b = path[i + 1];
+    if (!a || !b) continue;
+    segments.push([a, b]);
+  }
+  return segments;
 }
 
-function buildFallbackPrefixPath(
-  hopHashes: string[],
-  src: MeshNode | null,
-  rx: MeshNode,
-  nodes: Map<string, MeshNode>,
-  forceIncludeSource = false,
-): [number, number][] | null {
-  const repeaters = Array.from(nodes.values()).filter(
-    (n) => hasCoords(n) && (n.role === undefined || n.role === 2) && !n.name?.includes('🚫'),
-  );
-
-  const pickedNearRx: MeshNode[] = [];
-  const visited = new Set<string>([rx.node_id]);
-  let prev = rx;
-  for (const h of [...hopHashes].reverse()) {
-    const prefix = h.slice(0, 2).toUpperCase();
-    const candidates = repeaters
-      .filter((n) => !visited.has(n.node_id) && n.node_id.slice(0, 2).toUpperCase() === prefix)
-      .sort((a, b) => distKm(a, prev) - distKm(b, prev));
-    const chosen = candidates[0];
-    if (!chosen) continue;
-    pickedNearRx.push(chosen);
-    visited.add(chosen.node_id);
-    prev = chosen;
-  }
-
-  const hopsFarToNear = [...pickedNearRx].reverse();
-  const pathNodes: MeshNode[] = [...(hasCoords(src) && forceIncludeSource ? [src] : []), ...hopsFarToNear, rx];
-  // Avoid +1 visual hop inflation in low-confidence fallback mode.
-  if (!forceIncludeSource && hasCoords(src) && pathNodes.length >= 2 && pathNodes[0]?.node_id === src.node_id) {
-    pathNodes.shift();
-  }
-  if (pathNodes.length < 2) return null;
-  return pathNodes.map((n) => [n.lat!, n.lon!]);
+async function fetchServerBeta(packetHash: string, network?: string, signal?: AbortSignal): Promise<ServerBetaResponse | null> {
+  const endpoint = withNetworkParam(`/api/path-beta/resolve?hash=${encodeURIComponent(packetHash)}`, network);
+  const response = await fetch(uncachedEndpoint(endpoint), { cache: 'no-store', signal });
+  if (!response.ok) return null;
+  return response.json() as Promise<ServerBetaResponse>;
 }
 
-function splitResolvedAndAlternatives(
-  result: ReturnType<typeof resolveBetaPath>,
-  hopHashes: string[],
-  srcNodeId: string | undefined,
-  forceIncludeSource: boolean,
-  threshold: number,
-  nodes: Map<string, MeshNode>,
-): { resolvedPath: [number, number][] | null; lowPath: [number, number][] | null; completionPaths: [number, number][][] } {
-  if (!result) return { resolvedPath: null, lowPath: null, completionPaths: [] };
-  const seg = result.segmentConfidence;
-  const firstLow = seg.findIndex((v) => v < threshold);
-  if (firstLow < 0) return { resolvedPath: result.path, lowPath: null, completionPaths: [] };
-
-  // Receiver-side confident suffix (contiguous from rx backwards).
-  let suffixStartEdge = seg.length;
-  for (let i = seg.length - 1; i >= 0; i--) {
-    if (seg[i]! >= threshold) suffixStartEdge = i;
-    else break;
-  }
-
-  const purpleFromStartEdges = Math.max(0, firstLow);
-  const purpleFromEndEdges = suffixStartEdge < seg.length ? (seg.length - suffixStartEdge) : 0;
-  const preferReceiverSide = purpleFromEndEdges > purpleFromStartEdges;
-
-  if (preferReceiverSide && suffixStartEdge < seg.length) {
-    const resolvedCandidate = result.path.slice(suffixStartEdge);
-    const resolvedPath = resolvedCandidate.length >= 2 ? resolvedCandidate : null;
-    const lowCandidate = result.path.slice(0, suffixStartEdge + 1);
-    const lowPath = lowCandidate.length >= 2 ? lowCandidate : null;
-    return { resolvedPath, lowPath, completionPaths: [] };
-  }
-
-  const resolvedCandidate = result.path.slice(0, firstLow + 1);
-  const resolvedPath = resolvedCandidate.length >= 2 ? resolvedCandidate : null;
-  const lowCandidate = result.path.slice(Math.max(0, firstLow));
-  const lowPath = lowCandidate.length >= 2 ? lowCandidate : null;
-  const stepsRemaining = result.path.length - 1 - firstLow;
-  const startNodeId = result.nodeIds[firstLow];
-  const endNodeId = result.nodeIds[result.nodeIds.length - 1];
-  if (!startNodeId || !endNodeId || stepsRemaining <= 0) {
-    return { resolvedPath, lowPath, completionPaths: [] };
-  }
-
-  const hasSource = Boolean(srcNodeId && result.nodeIds[0] === srcNodeId);
-  const confidentRelayCount = Math.max(0, Math.min(
-    hopHashes.length,
-    (resolvedPath?.length ?? 0) - (hasSource ? 1 : 0),
-  ));
-  const remainingPrefixes = hopHashes.slice(confidentRelayCount);
-  const nearestPrefixPath = buildNearestPrefixContinuation(
-    startNodeId,
-    remainingPrefixes,
-    endNodeId,
-    nodes,
-    { dropStartIfNodeId: forceIncludeSource ? undefined : srcNodeId },
-  );
-  if (nearestPrefixPath && nearestPrefixPath.length >= 2) {
-    return { resolvedPath, lowPath: nearestPrefixPath, completionPaths: [] };
-  }
-  return { resolvedPath, lowPath, completionPaths: [] };
+function cacheKey(packetHash: string, network?: string): string {
+  return `${network ?? 'teesside'}|${packetHash}`;
 }
 
 export function usePacketPathOverlay({
   packets,
   nodes,
-  coverage,
-  linkPairs,
-  linkMetrics,
-  learningModel,
   filters,
+  network,
 }: UsePacketPathOverlayParams): UsePacketPathOverlayResult {
   const [packetPath, setPacketPath] = useState<[number, number][] | null>(null);
   const [betaPacketPath, setBetaPacketPath] = useState<[number, number][] | null>(null);
+  const [betaExtraPurplePaths, setBetaExtraPurplePaths] = useState<[number, number][][]>([]);
   const [betaLowConfidencePath, setBetaLowConfidencePath] = useState<[number, number][] | null>(null);
+  const [betaLowConfidenceSegments, setBetaLowConfidenceSegments] = useState<PathSegment[]>([]);
   const [betaCompletionPaths, setBetaCompletionPaths] = useState<[number, number][][]>([]);
   const [betaPathConfidence, setBetaPathConfidence] = useState<number | null>(null);
   const [betaPermutationCount, setBetaPermutationCount] = useState<number | null>(null);
+  const [betaRemainingHops, setBetaRemainingHops] = useState<number | null>(null);
   const [pinnedPacketId, setPinnedPacketId] = useState<string | null>(null);
   const [pathOpacity, setPathOpacity] = useState(0.75);
 
   const pinnedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pathTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pathFadeRef = useRef<number | null>(null);
-  const recentPredictionsRef = useRef<Map<string, { path: [number, number][]; lowPath: [number, number][] | null; completionPaths: [number, number][][]; confidence: number | null; ts: number }>>(new Map());
+  const betaReqRef = useRef<AbortController | null>(null);
+  const predictionCacheRef = useRef<Map<string, { prediction: ServerBetaResponse | null; ts: number }>>(new Map());
+  const inFlightRef = useRef<Map<string, Promise<ServerBetaResponse | null>>>(new Map());
+  const activeReqSeqRef = useRef(0);
+  const recentPredictionsRef = useRef<Map<string, {
+    purplePath: [number, number][] | null;
+    extraPurplePaths: [number, number][][];
+    redPath: [number, number][] | null;
+    redSegments: PathSegment[];
+    completionPaths: [number, number][][];
+    confidence: number | null;
+    permutations: number | null;
+    remainingHops: number | null;
+    ts: number;
+  }>>(new Map());
 
   const stopPathTimers = useCallback(() => {
     if (pathTimerRef.current) {
@@ -166,17 +114,119 @@ export function usePacketPathOverlay({
       cancelAnimationFrame(pathFadeRef.current);
       pathFadeRef.current = null;
     }
+    if (betaReqRef.current) {
+      betaReqRef.current.abort();
+      betaReqRef.current = null;
+    }
   }, []);
 
   const clearPathState = useCallback(() => {
     setPacketPath(null);
     setBetaPacketPath(null);
+    setBetaExtraPurplePaths([]);
     setBetaLowConfidencePath(null);
+    setBetaLowConfidenceSegments([]);
     setBetaCompletionPaths([]);
     setBetaPathConfidence(null);
     setBetaPermutationCount(null);
+    setBetaRemainingHops(null);
     setPathOpacity(0.75);
   }, []);
+
+  const applyServerPrediction = useCallback((packetHash: string, prediction: ServerBetaResponse | null) => {
+    if (!prediction || !prediction.ok) {
+      const recent = recentPredictionsRef.current.get(packetHash);
+      if (!recent || Date.now() - recent.ts > 45_000) {
+        setBetaPacketPath(null);
+        setBetaExtraPurplePaths([]);
+        setBetaLowConfidencePath(null);
+        setBetaLowConfidenceSegments([]);
+        setBetaCompletionPaths([]);
+        setBetaPathConfidence(null);
+        setBetaPermutationCount(null);
+        setBetaRemainingHops(null);
+        return;
+      }
+      setBetaPacketPath(recent.purplePath);
+      setBetaExtraPurplePaths(recent.extraPurplePaths);
+      setBetaLowConfidencePath(recent.redPath);
+      setBetaLowConfidenceSegments(recent.redSegments);
+      setBetaCompletionPaths(recent.completionPaths);
+      setBetaPathConfidence(recent.confidence);
+      setBetaPermutationCount(recent.permutations);
+      setBetaRemainingHops(recent.remainingHops);
+      return;
+    }
+
+    const purplePath = prediction.purplePath && prediction.purplePath.length >= 2 ? prediction.purplePath : null;
+    const extraPurplePaths = (prediction.extraPurplePaths ?? []).filter((path) => path.length >= 2);
+    const redPath = prediction.redPath && prediction.redPath.length >= 2 ? prediction.redPath : null;
+    const redSegments = prediction.redSegments?.length ? prediction.redSegments : segmentizePath(redPath);
+    const completionPaths = prediction.completionPaths ?? [];
+    const permutations = Number.isFinite(prediction.permutationCount)
+      ? prediction.permutationCount
+      : ((redPath ? 1 : 0) + completionPaths.length);
+
+    setBetaPacketPath(purplePath);
+    setBetaExtraPurplePaths(extraPurplePaths);
+    setBetaLowConfidencePath(redPath);
+    setBetaLowConfidenceSegments(redSegments);
+    setBetaCompletionPaths(completionPaths);
+    setBetaPathConfidence(prediction.confidence);
+    setBetaPermutationCount(permutations);
+    setBetaRemainingHops(prediction.remainingHops);
+
+    recentPredictionsRef.current.set(packetHash, {
+      purplePath,
+      extraPurplePaths,
+      redPath,
+      redSegments,
+      completionPaths,
+      confidence: prediction.confidence,
+      permutations,
+      remainingHops: prediction.remainingHops,
+      ts: Date.now(),
+    });
+  }, []);
+
+  const prunePredictionCache = useCallback(() => {
+    const now = Date.now();
+    const cache = predictionCacheRef.current;
+    for (const [key, value] of cache) {
+      if (now - value.ts > PREDICTION_CACHE_TTL_MS) cache.delete(key);
+    }
+    if (cache.size <= MAX_PREDICTION_CACHE) return;
+    const sorted = Array.from(cache.entries()).sort((a, b) => a[1].ts - b[1].ts);
+    const removeCount = Math.max(0, cache.size - MAX_PREDICTION_CACHE);
+    for (let i = 0; i < removeCount; i++) {
+      const k = sorted[i]?.[0];
+      if (k) cache.delete(k);
+    }
+  }, []);
+
+  const resolvePrediction = useCallback((packetHash: string, networkName?: string): Promise<ServerBetaResponse | null> => {
+    prunePredictionCache();
+    const key = cacheKey(packetHash, networkName);
+    const cached = predictionCacheRef.current.get(key);
+    if (cached && Date.now() - cached.ts <= PREDICTION_CACHE_TTL_MS) {
+      return Promise.resolve(cached.prediction);
+    }
+
+    const inflight = inFlightRef.current.get(key);
+    if (inflight) return inflight;
+
+    const p = fetchServerBeta(packetHash, networkName)
+      .then((prediction) => {
+        predictionCacheRef.current.set(key, { prediction, ts: Date.now() });
+        return prediction;
+      })
+      .catch(() => null)
+      .finally(() => {
+        inFlightRef.current.delete(key);
+      });
+    inFlightRef.current.set(key, p);
+    return p;
+  }, [prunePredictionCache]);
 
   const latestId = packets[0]?.id;
   useEffect(() => {
@@ -197,78 +247,36 @@ export function usePacketPathOverlay({
       setPacketPath(null);
     }
 
-    if (filters.betaPaths && latest?.rxNodeId && latest.path?.length && hasCoords(rx)) {
-      const src = latest.srcNodeId ? (nodes.get(latest.srcNodeId) ?? null) : null;
-      const forceIncludeSource = latest.packetType === 4; // Advert packets should stay anchored to their source repeater.
-      const hops = latest.hopCount != null ? latest.path.slice(0, latest.hopCount) : latest.path;
-      const pairKey = `${src?.node_id ?? 'unknown'}>${rx.node_id}`;
-      const result = resolveBetaPath(
-        hops,
-        hasCoords(src) ? src : null,
-        rx,
-        nodes,
-        coverage,
-        linkPairs,
-        linkMetrics,
-        learningModel,
-        { forceIncludeSource },
-      );
-      if (result) {
-        const split = splitResolvedAndAlternatives(result, hops, src?.node_id, forceIncludeSource, filters.betaPathThreshold, nodes);
-        recentPredictionsRef.current.set(pairKey, {
-          path: split.resolvedPath ?? [],
-          lowPath: split.lowPath,
-          completionPaths: split.completionPaths,
-          confidence: result.confidence,
-          ts: Date.now(),
+    if (filters.betaPaths && latest?.packetHash && latest.path?.length) {
+      const reqSeq = ++activeReqSeqRef.current;
+      void resolvePrediction(latest.packetHash, network)
+        .then((prediction) => {
+          if (reqSeq !== activeReqSeqRef.current) return;
+          applyServerPrediction(latest.packetHash, prediction);
+        })
+        .catch(() => {
+          if (reqSeq !== activeReqSeqRef.current) return;
+          applyServerPrediction(latest.packetHash, null);
         });
-        setBetaPacketPath(split.resolvedPath);
-        setBetaLowConfidencePath(split.lowPath);
-        setBetaCompletionPaths(split.completionPaths);
-        setBetaPathConfidence(result.confidence);
-        setBetaPermutationCount((split.lowPath ? 1 : 0) + split.completionPaths.length);
-      } else {
-        const fallback = buildFallbackPrefixPath(hops, hasCoords(src) ? src : null, rx, nodes, forceIncludeSource);
-        if (fallback) {
-          setBetaPacketPath(null);
-          setBetaLowConfidencePath(fallback);
-          setBetaCompletionPaths([]);
-          setBetaPathConfidence(null);
-          setBetaPermutationCount(1);
-          recentPredictionsRef.current.set(pairKey, {
-            path: [],
-            lowPath: fallback,
-            completionPaths: [],
-            confidence: null,
-            ts: Date.now(),
-          });
-        } else {
-          const recent = recentPredictionsRef.current.get(pairKey);
-          if (recent && Date.now() - recent.ts < 45_000) {
-            setBetaPacketPath(recent.path.length > 1 ? recent.path : null);
-            setBetaLowConfidencePath(recent.lowPath);
-            setBetaCompletionPaths(recent.completionPaths);
-            setBetaPathConfidence(recent.confidence);
-            setBetaPermutationCount((recent.lowPath ? 1 : 0) + recent.completionPaths.length);
-          } else {
-            setBetaPacketPath(null);
-            setBetaLowConfidencePath(null);
-            setBetaCompletionPaths([]);
-            setBetaPathConfidence(null);
-            setBetaPermutationCount(null);
-          }
-        }
-      }
     } else {
       setBetaPacketPath(null);
+      setBetaExtraPurplePaths([]);
       setBetaLowConfidencePath(null);
+      setBetaLowConfidenceSegments([]);
       setBetaCompletionPaths([]);
       setBetaPathConfidence(null);
       setBetaPermutationCount(null);
+      setBetaRemainingHops(null);
     }
 
-    if (!filters.packetPaths && !filters.betaPaths) { setPathOpacity(0.75); return; }
-    if (!latest) { setPathOpacity(0.75); return; }
+    if (!filters.packetPaths && !filters.betaPaths) {
+      setPathOpacity(0.75);
+      return;
+    }
+    if (!latest) {
+      setPathOpacity(0.75);
+      return;
+    }
 
     setPathOpacity(0.75);
     pathTimerRef.current = setTimeout(() => {
@@ -287,7 +295,7 @@ export function usePacketPathOverlay({
       pathFadeRef.current = requestAnimationFrame(animate);
     }, PATH_TTL - 1_000);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [latestId, filters.packetPaths, filters.betaPaths, pinnedPacketId, linkMetrics, learningModel, filters.betaPathThreshold]);
+  }, [latestId, filters.packetPaths, filters.betaPaths, pinnedPacketId, network]);
 
   const handlePacketPin = useCallback((packet: AggregatedPacket) => {
     if (pinnedPacketId === packet.id) {
@@ -307,78 +315,28 @@ export function usePacketPathOverlay({
       pinnedTimerRef.current = null;
     }
 
-    const rx = packet.rxNodeId ? nodes.get(packet.rxNodeId) : undefined;
-
     setPacketPath(null);
 
-    if (packet.rxNodeId && packet.path?.length && hasCoords(rx)) {
-      const src = packet.srcNodeId ? (nodes.get(packet.srcNodeId) ?? null) : null;
-      const forceIncludeSource = packet.packetType === 4; // Advert packets should stay anchored to their source repeater.
-      const hops = packet.hopCount != null ? packet.path.slice(0, packet.hopCount) : packet.path;
-      const pairKey = `${src?.node_id ?? 'unknown'}>${rx.node_id}`;
-      const result = resolveBetaPath(
-        hops,
-        hasCoords(src) ? src : null,
-        rx,
-        nodes,
-        coverage,
-        linkPairs,
-        linkMetrics,
-        learningModel,
-        { forceIncludeSource },
-      );
-      if (result) {
-        const split = splitResolvedAndAlternatives(result, hops, src?.node_id, forceIncludeSource, filters.betaPathThreshold, nodes);
-        recentPredictionsRef.current.set(pairKey, {
-          path: split.resolvedPath ?? [],
-          lowPath: split.lowPath,
-          completionPaths: split.completionPaths,
-          confidence: result.confidence,
-          ts: Date.now(),
+    if (packet.packetHash && packet.path?.length) {
+      const reqSeq = ++activeReqSeqRef.current;
+      void resolvePrediction(packet.packetHash, network)
+        .then((prediction) => {
+          if (reqSeq !== activeReqSeqRef.current) return;
+          applyServerPrediction(packet.packetHash, prediction);
+        })
+        .catch(() => {
+          if (reqSeq !== activeReqSeqRef.current) return;
+          applyServerPrediction(packet.packetHash, null);
         });
-        setBetaPacketPath(split.resolvedPath);
-        setBetaLowConfidencePath(split.lowPath);
-        setBetaCompletionPaths(split.completionPaths);
-        setBetaPathConfidence(result.confidence);
-        setBetaPermutationCount((split.lowPath ? 1 : 0) + split.completionPaths.length);
-      } else {
-        const fallback = buildFallbackPrefixPath(hops, hasCoords(src) ? src : null, rx, nodes, forceIncludeSource);
-        if (fallback) {
-          setBetaPacketPath(null);
-          setBetaLowConfidencePath(fallback);
-          setBetaCompletionPaths([]);
-          setBetaPathConfidence(null);
-          setBetaPermutationCount(1);
-          recentPredictionsRef.current.set(pairKey, {
-            path: [],
-            lowPath: fallback,
-            completionPaths: [],
-            confidence: null,
-            ts: Date.now(),
-          });
-        } else {
-          const recent = recentPredictionsRef.current.get(pairKey);
-          if (recent && Date.now() - recent.ts < 45_000) {
-            setBetaPacketPath(recent.path.length > 1 ? recent.path : null);
-            setBetaLowConfidencePath(recent.lowPath);
-            setBetaCompletionPaths(recent.completionPaths);
-            setBetaPathConfidence(recent.confidence);
-            setBetaPermutationCount((recent.lowPath ? 1 : 0) + recent.completionPaths.length);
-          } else {
-            setBetaPacketPath(null);
-            setBetaLowConfidencePath(null);
-            setBetaCompletionPaths([]);
-            setBetaPathConfidence(null);
-            setBetaPermutationCount(null);
-          }
-        }
-      }
     } else {
       setBetaPacketPath(null);
+      setBetaExtraPurplePaths([]);
       setBetaLowConfidencePath(null);
+      setBetaLowConfidenceSegments([]);
       setBetaCompletionPaths([]);
       setBetaPathConfidence(null);
       setBetaPermutationCount(null);
+      setBetaRemainingHops(null);
     }
 
     setPathOpacity(0.75);
@@ -401,8 +359,7 @@ export function usePacketPathOverlay({
       };
       pathFadeRef.current = requestAnimationFrame(animate);
     }, 30_000);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pinnedPacketId, nodes, coverage, linkPairs, linkMetrics, learningModel, filters.betaPathThreshold, stopPathTimers, clearPathState]);
+  }, [pinnedPacketId, network, stopPathTimers, clearPathState, applyServerPrediction, resolvePrediction]);
 
   useEffect(() => () => {
     stopPathTimers();
@@ -412,10 +369,13 @@ export function usePacketPathOverlay({
   return {
     packetPath,
     betaPacketPath,
+    betaExtraPurplePaths,
     betaLowConfidencePath,
+    betaLowConfidenceSegments,
     betaCompletionPaths,
     betaPathConfidence,
     betaPermutationCount,
+    betaRemainingHops,
     pathOpacity,
     pinnedPacketId,
     handlePacketPin,

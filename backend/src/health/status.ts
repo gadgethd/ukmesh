@@ -86,6 +86,7 @@ async function currentWorkers(): Promise<WorkerSnapshot[]> {
     healthRecent,
     healthLast,
     backfillState,
+    pathSimLatest,
   ] = await Promise.all([
     r.llen('meshcore:viewshed_jobs'),
     r.llen('meshcore:link_jobs'),
@@ -109,6 +110,10 @@ async function currentWorkers(): Promise<WorkerSnapshot[]> {
       `SELECT COUNT(*)::text AS links, MAX(last_observed)::text AS last_observed
        FROM node_links`,
     ),
+    query<{ completed_at: string | null }>(
+      `SELECT MAX(completed_at)::text AS completed_at
+       FROM path_simulation_runs`,
+    ),
   ]);
 
   const stats = systemStats();
@@ -124,6 +129,8 @@ async function currentWorkers(): Promise<WorkerSnapshot[]> {
   const learningRecent = learningLast ? (Date.now() - Date.parse(learningLast)) <= 60 * 60_000 : false;
   const backfillLinks = Number(backfillState.rows[0]?.links ?? 0);
   const backfillLast = backfillState.rows[0]?.last_observed ?? null;
+  const pathSimLast = pathSimLatest.rows[0]?.completed_at ?? null;
+  const pathSimRecent = pathSimLast ? (Date.now() - Date.parse(pathSimLast)) <= 6 * 60 * 60_000 : false;
 
   return [
     {
@@ -172,6 +179,16 @@ async function currentWorkers(): Promise<WorkerSnapshot[]> {
       queue_depth: 0,
       processed_1h: 0,
       last_activity_at: backfillLast,
+      cpu_load_1m: load,
+      mem_used_pct: memPct,
+      disk_used_pct: diskPct,
+    },
+    {
+      worker_name: 'path-sim-worker',
+      status: pathSimRecent ? 'running' : 'idle',
+      queue_depth: 0,
+      processed_1h: pathSimLast && (Date.now() - Date.parse(pathSimLast)) <= 60 * 60_000 ? 1 : 0,
+      last_activity_at: pathSimLast,
       cpu_load_1m: load,
       mem_used_pct: memPct,
       disk_used_pct: diskPct,

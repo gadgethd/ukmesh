@@ -13,7 +13,6 @@ import { useDashboardStats } from './hooks/useDashboardStats.js';
 import { useLinkState } from './hooks/useLinkState.js';
 import { usePacketPathOverlay } from './hooks/usePacketPathOverlay.js';
 import { useAppMessageHandler } from './hooks/useAppMessageHandler.js';
-import { usePathLearningModel } from './hooks/usePathLearningModel.js';
 import { getCurrentSite } from './config/site.js';
 
 const DEFAULT_FILTERS: Filters = {
@@ -22,7 +21,7 @@ const DEFAULT_FILTERS: Filters = {
   clientNodes: false,
   packetPaths: false,
   betaPaths: false,
-  betaPathThreshold: 0.5,
+  betaPathThreshold: 0.45,
   links: false,
   hexClashes: false,
   hexClashMaxHops: 3,
@@ -38,7 +37,7 @@ export const App: React.FC = () => {
       const raw = localStorage.getItem(FILTERS_KEY);
       if (!raw) return DEFAULT_FILTERS;
       const parsed = JSON.parse(raw) as Partial<Filters>;
-      return { ...DEFAULT_FILTERS, ...parsed };
+      return { ...DEFAULT_FILTERS, ...parsed, betaPathThreshold: 0.45 };
     } catch {
       return DEFAULT_FILTERS;
     }
@@ -64,20 +63,7 @@ export const App: React.FC = () => {
 
   const { coverage, handleCoverageUpdate } = useCoverage(networkFilter);
   const stats = useDashboardStats(networkFilter);
-  const learningModelNetwork = import.meta.env['VITE_NETWORK'] === 'ukmesh' ? 'all' : site.network;
-  const learningModel = usePathLearningModel(learningModelNetwork);
-
-  useEffect(() => {
-    if (!learningModel) return;
-    setFilters((current) => {
-      const tuned = Math.min(0.9, Math.max(0.25, learningModel.recommendedThreshold));
-      if (Math.abs(current.betaPathThreshold - tuned) < 0.01) return current;
-      return { ...current, betaPathThreshold: tuned };
-    });
-  }, [learningModel]);
-
   const {
-    linkPairs,
     linkMetrics,
     viablePairsArr,
     applyInitialViablePairs,
@@ -88,21 +74,21 @@ export const App: React.FC = () => {
   const {
     packetPath,
     betaPacketPath,
+    betaExtraPurplePaths,
     betaLowConfidencePath,
+    betaLowConfidenceSegments,
     betaCompletionPaths,
     betaPathConfidence,
     betaPermutationCount,
+    betaRemainingHops,
     pathOpacity,
     pinnedPacketId,
     handlePacketPin,
   } = usePacketPathOverlay({
     packets,
     nodes,
-    coverage,
-    linkPairs,
-    linkMetrics,
-    learningModel,
     filters,
+    network: networkFilter,
   });
 
   useEffect(() => {
@@ -225,7 +211,9 @@ export const App: React.FC = () => {
         linkMetrics={linkMetrics}
         packetPath={packetPath}
         betaPath={betaPacketPath}
+        betaExtraPurplePaths={betaExtraPurplePaths}
         betaLowPath={betaLowConfidencePath}
+        betaLowSegments={betaLowConfidenceSegments}
         betaCompletionPaths={betaCompletionPaths}
         showBetaPaths={filters.betaPaths || pinnedPacketId !== null}
         pathOpacity={pathOpacity}
@@ -237,6 +225,7 @@ export const App: React.FC = () => {
         onChange={setFilters}
         betaPathConfidence={betaPathConfidence}
         betaPermutationCount={betaPermutationCount}
+        betaRemainingHops={betaRemainingHops}
       />
 
       {filters.livePackets && (
