@@ -1117,7 +1117,7 @@ export async function resolveBetaPathForPacketHash(packetHash: string, network: 
      WHERE packet_hash = $1
        AND ($2 = 'all' OR network = $2)
        ${observer ? 'AND LOWER(rx_node_id) = LOWER($3)' : ''}
-     ORDER BY time DESC
+     ORDER BY hop_count ASC NULLS LAST, time ASC
      LIMIT 1`,
     observer ? [packetHash, network, observer] : [packetHash, network],
   );

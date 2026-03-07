@@ -164,12 +164,35 @@ export function usePacketPathOverlay({
       }
       return paths;
     });
-    const redPaths = validPredictions.flatMap((prediction) => (
+    const allRedPaths = validPredictions.flatMap((prediction) => (
       prediction.redPath && prediction.redPath.length >= 2 ? [prediction.redPath] : []
     ));
-    const redSegments = validPredictions.flatMap((prediction) => (
+    const allRedSegments = validPredictions.flatMap((prediction) => (
       prediction.redSegments?.length ? prediction.redSegments : segmentizePath(prediction.redPath && prediction.redPath.length >= 2 ? prediction.redPath : null)
     ));
+
+    // Build a set of purple segment keys so red segments covering the same edge are suppressed
+    const purpleSegmentKeys = new Set<string>();
+    for (const path of purplePaths) {
+      for (let i = 0; i < path.length - 1; i++) {
+        const a = path[i]!; const b = path[i + 1]!;
+        purpleSegmentKeys.add(`${a[0]},${a[1]}|${b[0]},${b[1]}`);
+        purpleSegmentKeys.add(`${b[0]},${b[1]}|${a[0]},${a[1]}`);
+      }
+    }
+    const segKey = (a: [number, number], b: [number, number]) =>
+      `${a[0]},${a[1]}|${b[0]},${b[1]}`;
+    const redSegments = allRedSegments.filter(([a, b]) =>
+      !purpleSegmentKeys.has(segKey(a, b)) && !purpleSegmentKeys.has(segKey(b, a))
+    );
+    const redPaths = allRedPaths.filter((path) =>
+      path.some((_, i) => {
+        if (i >= path.length - 1) return false;
+        const a = path[i]!; const b = path[i + 1]!;
+        return !purpleSegmentKeys.has(segKey(a, b)) && !purpleSegmentKeys.has(segKey(b, a));
+      })
+    );
+
     const completionPaths = validPredictions.flatMap((prediction) => prediction.completionPaths ?? []);
     const permutations = validPredictions.reduce((sum, prediction) => {
       const fallbackCount = (prediction.redPath ? 1 : 0) + (prediction.completionPaths?.length ?? 0);
