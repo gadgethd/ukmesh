@@ -13,6 +13,8 @@ A real-time analytics platform for [MeshCore](https://meshcore.co.uk) networks. 
 - Decoded live packet feed (Advert, GroupText, DM, ACK, Path, Trace)
 - Stats pages and chart endpoints for packet rates, radios, hops, and activity
 - Public Health page with worker status/history + server resource metrics
+- Repeater owner portal with MQTT username/password login and encrypted cookie session
+- Owner dashboard with repeater summary, direct sender map, live packets, advert trend, heard-by list, link health, and alerts
 - Multi-network ingestion (`meshcore/*` and `ukmesh/*`) with per-site filtering
 - Multi-observer deduplication by packet hash
 
@@ -44,11 +46,12 @@ A real-time analytics platform for [MeshCore](https://meshcore.co.uk) networks. 
 - Public Health page with worker/system status and history
 - Click-to-explain worker cards
 
-### Phase 5 - Repeater owner portal (planned)
-- Ed25519 JWT authentication for repeater owners
-- Owner-facing dashboard: per-node packet history, advert counts, RSSI/SNR trends from observers that heard it
+### Phase 5 - Repeater owner portal (in progress)
+- MQTT username/password owner login with encrypted cookie session
+- Dedicated owner auth database for username → repeater ownership mapping
+- Owner-facing dashboard: repeater summary, packet history, advert counts, direct sender map, heard-by list, link health, and alerts
 - Planned node placement tool: drop a marker on the map, preview estimated RF coverage before deploying hardware
-- Repeater registration: owners automatically claim their node via their Ed25519 key (no manual login flow), with optional contact details and notes. Nodes must be actively publishing to MQTT to be claimable.
+- Planned repeater registration/claim workflow improvements
 
 ### Phase 6 - Network intelligence expansion (planned)
 - Network topology graph showing strongest relay relationships
@@ -71,6 +74,8 @@ A real-time analytics platform for [MeshCore](https://meshcore.co.uk) networks. 
   - `health-worker` (health snapshots)
   - `link-backfill-worker` (one-shot historical backfill)
 - Nginx frontend proxies use Docker DNS resolver-based upstreams to avoid stale backend IP issues after container recreates.
+- Owner authentication now uses MQTT credentials plus a separate owner-auth mapping database rather than public-key login.
+- Live coverage is currently served by the terrain-aware viewshed model.
 
 ---
 
@@ -122,6 +127,11 @@ Copy `.env.example` to `.env` and fill in your values. All variables used by the
 | `VITE_APP_HOSTNAME` | *(blank — always shows dashboard)* | If set, only this hostname serves the analytics dashboard; all others serve the public website layout |
 | `MESHCORE_CHANNEL_SECRETS` | *(blank)* | Comma-separated channel secrets for decrypting GroupText packets. Format: `name:hex` or bare hex. The default MeshCore public channel key is always included. |
 | `OPENTOPODATA_API` | `https://api.opentopodata.org` | Elevation API endpoint for viewshed computation |
+| `OWNER_DATABASE_URL` | *(optional)* | Separate Postgres database URL for owner portal username → repeater mappings |
+| `OWNER_COOKIE_SECRET` | *(optional but recommended)* | Secret used to encrypt/sign the owner session cookie |
+| `OWNER_MQTT_USERNAME_MAP` | *(optional fallback)* | Legacy static mapping in the format `user=nodeId1|nodeId2,...` |
+| `COVERAGE_MODEL` | `terrain_los` | Coverage model used by `viewshed-worker` |
+| `COVERAGE_MODEL_VERSION` | `2` | Coverage schema/version gate used to trigger recomputation |
 | `CLOUDFLARE_TUNNEL_TOKEN` | *(optional)* | Cloudflare Zero Trust tunnel token |
 | `PORT` | `3000` | Internal app port |
 
@@ -202,7 +212,7 @@ MeshCore Devices
      
  App/Web Frontends (Nginx + React)
      ├─ app / app-ukmesh (interactive dashboard)
-     └─ website / website-ukmesh (public site + health/stats pages)
+     └─ website / website-ukmesh (public site + health/stats + owner portal pages)
 
  Python Workers
      ├─ viewshed-worker (meshcore:viewshed_jobs)
@@ -214,6 +224,9 @@ MeshCore Devices
      ├─ path-learning-worker (hourly prior rebuild)
      ├─ health-worker (minute snapshots)
      └─ link-backfill-worker (one-shot historical backfill)
+
+ Owner Auth
+     └─ separate Postgres DB for MQTT username → repeater ownership mapping
 ```
 
 ---
