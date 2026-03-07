@@ -598,6 +598,12 @@ html, body, #root {
   margin-bottom: 6px;
 }
 
+.links-legend-inline__grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 3px;
+}
+
 .links-legend-inline__row {
   display: flex;
   align-items: center;
@@ -612,6 +618,7 @@ html, body, #root {
   height: 10px;
   border-radius: 2px;
   border: 1px solid rgba(255, 255, 255, 0.2);
+  flex-shrink: 0;
 }
 
 /* ─── Live packet feed (bottom left) ────────────────────────────────────── */
@@ -1795,6 +1802,12 @@ html, body, #root {
     padding: 4px 8px;
   }
   .mobile-filter-grid .filter-row { padding: 8px 6px; }
+  .mobile-filter-wrap {
+    border-top: 1px solid var(--border);
+  }
+  .mobile-filter-wrap--hidden {
+    display: none;
+  }
 
   /* ── Mobile search: shown below filter grid ──────────────────────────── */
 .mobile-search {
@@ -1823,6 +1836,16 @@ html, body, #root {
     letter-spacing: 0.06em;
     text-transform: uppercase;
     padding: 8px 12px;
+  }
+  .links-legend-inline--compact .links-legend-inline__grid {
+    grid-template-columns: 1fr 1fr;
+    column-gap: 10px;
+    row-gap: 5px;
+  }
+  .links-legend-inline--compact .links-legend-inline__row {
+    margin-bottom: 0;
+    min-width: 0;
+    font-size: 10px;
   }
   .mobile-search .node-search {
     position: static;

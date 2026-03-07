@@ -4,6 +4,7 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:
 import mqtt from 'mqtt';
 import { getNodes, getNodeHistory, getRecentPackets, query, MIN_LINK_OBSERVATIONS } from '../db/index.js';
 import { getWorkerHealthOverview } from '../health/status.js';
+import { resolveBetaPathForPacketHash } from '../path-beta/resolver.js';
 
 const router = Router();
 const OWNER_COOKIE_NAME = 'meshcore_owner_session';
@@ -297,6 +298,28 @@ router.get('/packets/recent', async (req, res) => {
   }
 });
 
+// GET /api/path-beta/resolve?hash=<packetHash>&network=teesside|ukmesh|all
+router.get('/path-beta/resolve', async (req, res) => {
+  try {
+    const packetHash = String(req.query['hash'] ?? '').trim();
+    if (!packetHash) {
+      res.status(400).json({ error: 'Missing hash query parameter' });
+      return;
+    }
+    const networkRaw = String(req.query['network'] ?? 'teesside').trim().toLowerCase();
+    const network = networkRaw === 'ukmesh' || networkRaw === 'all' ? networkRaw : 'teesside';
+    const resolved = await resolveBetaPathForPacketHash(packetHash, network);
+    if (!resolved) {
+      res.status(404).json({ error: 'Packet not found' });
+      return;
+    }
+    res.json(resolved);
+  } catch (err) {
+    console.error('[api] GET /path-beta/resolve', (err as Error).message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // GET /api/stats
 router.get('/stats', async (req, res) => {
   try {
@@ -492,6 +515,84 @@ router.get('/path-learning', async (req, res) => {
     });
   } catch (err) {
     console.error('[api] GET /path-learning', (err as Error).message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /api/path-sim/latest — latest path simulation run summary
+router.get('/path-sim/latest', async (req, res) => {
+  try {
+    const network = (req.query['network'] as string | undefined)?.trim().toLowerCase();
+    const hasNetwork = Boolean(network && network !== 'all');
+    const result = await query<{
+      id: number;
+      started_at: string;
+      completed_at: string | null;
+      network: string;
+      packets_total: number;
+      packets_eligible: number;
+      packets_fully_resolved: number;
+      packets_unresolved: number;
+      truncated_searches: number;
+      permutation_histogram: Record<string, number>;
+      remaining_hops_histogram: Record<string, number>;
+      summary: Record<string, unknown>;
+    }>(
+      `SELECT id, started_at::text, completed_at::text, network,
+              packets_total, packets_eligible, packets_fully_resolved, packets_unresolved, truncated_searches,
+              permutation_histogram, remaining_hops_histogram, summary
+       FROM path_simulation_runs
+       ${hasNetwork ? 'WHERE network = $1' : ''}
+       ORDER BY started_at DESC
+       LIMIT 1`,
+      hasNetwork ? [network] : [],
+    );
+    if (result.rows.length < 1) {
+      res.status(404).json({ error: 'No path simulation runs found yet' });
+      return;
+    }
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error('[api] GET /path-sim/latest', (err as Error).message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /api/path-sim/history?limit=20&network=all
+router.get('/path-sim/history', async (req, res) => {
+  try {
+    const network = (req.query['network'] as string | undefined)?.trim().toLowerCase();
+    const hasNetwork = Boolean(network && network !== 'all');
+    const limit = Math.min(200, Math.max(1, Number(req.query['limit'] ?? 20)));
+    const result = await query<{
+      id: number;
+      started_at: string;
+      completed_at: string | null;
+      network: string;
+      packets_total: number;
+      packets_eligible: number;
+      packets_fully_resolved: number;
+      packets_unresolved: number;
+      truncated_searches: number;
+      permutation_histogram: Record<string, number>;
+      remaining_hops_histogram: Record<string, number>;
+      summary: Record<string, unknown>;
+    }>(
+      `SELECT id, started_at::text, completed_at::text, network,
+              packets_total, packets_eligible, packets_fully_resolved, packets_unresolved, truncated_searches,
+              permutation_histogram, remaining_hops_histogram, summary
+       FROM path_simulation_runs
+       ${hasNetwork ? 'WHERE network = $1' : ''}
+       ORDER BY started_at DESC
+       LIMIT ${hasNetwork ? '$2' : '$1'}`,
+      hasNetwork ? [network, limit] : [limit],
+    );
+    res.json({
+      count: result.rows.length,
+      runs: result.rows,
+    });
+  } catch (err) {
+    console.error('[api] GET /path-sim/history', (err as Error).message);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

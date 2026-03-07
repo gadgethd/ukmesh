@@ -57,6 +57,10 @@ function hasCoords(node: MeshNode | null | undefined): node is MeshNode & { lat:
   return typeof node?.lat === 'number' && typeof node?.lon === 'number';
 }
 
+function isHiddenMapNode(node: MeshNode | null | undefined): boolean {
+  return Boolean(node?.name?.includes('🚫'));
+}
+
 // Raw outer rings from each coverage polygon — used for the green coverage display.
 // Using raw rings (not a union) with fillRule:'nonzero' means:
 //   - overlapping viewsheds: winding numbers add (+1 per CCW ring) → always filled ✓
@@ -94,7 +98,9 @@ interface MapViewProps {
   linkMetrics:     Map<string, LinkMetrics>;
   packetPath:      [number, number][] | null;
   betaPath:        [number, number][] | null;
+  betaExtraPurplePaths: [number, number][][];
   betaLowPath:     [number, number][] | null;
+  betaLowSegments: [[number, number], [number, number]][];
   betaCompletionPaths: [number, number][][];
   showBetaPaths:   boolean;
   pathOpacity:     number;
@@ -107,7 +113,7 @@ const DEFAULT_ZOOM = 11;
 
 export const MapView: React.FC<MapViewProps> = ({
   nodes, arcs, activeNodes, coverage, showPackets, showCoverage, showClientNodes,
-  showLinks, showHexClashes, maxHexClashHops, viablePairsArr, linkMetrics, packetPath, betaPath, betaLowPath, betaCompletionPaths, showBetaPaths, pathOpacity, onMapReady,
+  showLinks, showHexClashes, maxHexClashHops, viablePairsArr, linkMetrics, packetPath, betaPath, betaExtraPurplePaths, betaLowPath, betaCompletionPaths, showBetaPaths, pathOpacity, onMapReady,
 }) => {
   const [map, setMap] = useState<LeafletMap | null>(null);
   const [focusedPrefix, setFocusedPrefix] = useState<string | null>(null);
@@ -160,6 +166,8 @@ export const MapView: React.FC<MapViewProps> = ({
 
   // Refs to Leaflet Polyline instances for direct SVG attribute animation
   const regularPathRef = useRef<LeafletPolyline | null>(null);
+  const betaLowPathRef = useRef<LeafletPolyline | null>(null);
+  const betaPathRef = useRef<LeafletPolyline | null>(null);
   const aniFrameRef    = useRef<number | null>(null);
 
   // Animate marching dashes by incrementing stroke-dashoffset directly on the
@@ -167,9 +175,10 @@ export const MapView: React.FC<MapViewProps> = ({
   // calls _updateStyle (setAttribute) on every prop change, which can interrupt
   // CSS keyframe animations. Direct DOM manipulation in an rAF loop is stable.
   const hasRegular = !!packetPath;
+  const hasBeta = Boolean(showBetaPaths && (betaLowPath || betaPath || betaExtraPurplePaths.length > 0));
 
   useEffect(() => {
-    if (!hasRegular) {
+    if (!hasRegular && !hasBeta) {
       if (aniFrameRef.current !== null) {
         cancelAnimationFrame(aniFrameRef.current);
         aniFrameRef.current = null;
@@ -184,7 +193,13 @@ export const MapView: React.FC<MapViewProps> = ({
       const val = String(-offset);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const rp = (regularPathRef.current as any)?._path as SVGPathElement | null;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const bl = (betaLowPathRef.current as any)?._path as SVGPathElement | null;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const bp = (betaPathRef.current as any)?._path as SVGPathElement | null;
       if (hasRegular && rp) rp.setAttribute('stroke-dashoffset', val);
+      if (hasBeta && bl) bl.setAttribute('stroke-dashoffset', val);
+      if (hasBeta && bp) bp.setAttribute('stroke-dashoffset', val);
       aniFrameRef.current = requestAnimationFrame(tick);
     };
 
@@ -195,13 +210,12 @@ export const MapView: React.FC<MapViewProps> = ({
         aniFrameRef.current = null;
       }
     };
-  }, [hasRegular]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [hasRegular, hasBeta]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const FOURTEEN_DAYS_MS = 14 * 24 * 60 * 60 * 1000;
   const allNodesWithPos = useMemo(() => Array.from(nodes.values()).filter(
     (n) => hasCoords(n)
       && (Date.now() - new Date(n.last_seen).getTime()) < FOURTEEN_DAYS_MS
-      && !n.name?.includes('🚫')
   ), [nodes]); // eslint-disable-line react-hooks/exhaustive-deps
   const nodesWithPos   = useMemo(() => allNodesWithPos.filter((n) => n.role === undefined || n.role === 2), [allNodesWithPos]);
   const clientNodesArr = useMemo(() => allNodesWithPos.filter((n) => n.role === 1 || n.role === 3), [allNodesWithPos]);
@@ -437,8 +451,6 @@ export const MapView: React.FC<MapViewProps> = ({
         && hasCoords(b)
         && (Date.now() - new Date(a.last_seen).getTime()) < FOURTEEN_DAYS_MS
         && (Date.now() - new Date(b.last_seen).getTime()) < FOURTEEN_DAYS_MS
-        && !a.name?.includes('🚫')
-        && !b.name?.includes('🚫')
         && (a.role === undefined || a.role === 2)
         && (b.role === undefined || b.role === 2)
       ) {
@@ -560,6 +572,7 @@ export const MapView: React.FC<MapViewProps> = ({
 
         {/* Repeater markers — Leaflet default marker pane at zIndex 600 */}
         {nodesWithPos.map((node) => {
+          if (isHiddenMapNode(node)) return null;
           if (showHexClashes && !clashVisibleNodeIds.has(node.node_id)) return null;
           const isFocusVisible = clashVisibleNodeIds.has(node.node_id) || (focusedPrefixNodeIds?.has(node.node_id) ?? false);
           if (focusedPrefixNodeIds && focusHidePhase === 'hide' && !isFocusVisible) return null;
@@ -582,6 +595,7 @@ export const MapView: React.FC<MapViewProps> = ({
 
         {/* Companion radio + room server markers (toggled via filter) */}
         {showClientNodes && !showHexClashes && clientNodesArr.map((node) => {
+          if (isHiddenMapNode(node)) return null;
           const isFocusVisible = clashVisibleNodeIds.has(node.node_id);
           if (focusedPrefixNodeIds && focusHidePhase === 'hide' && !isFocusVisible) return null;
           return (
@@ -610,31 +624,48 @@ export const MapView: React.FC<MapViewProps> = ({
           />
         )}
 
-        {/* Beta path — coverage-validated, unambiguous hop resolution */}
-        {showBetaPaths && betaPath && (
-          <Polyline
-            positions={betaPath}
-            pathOptions={{
-              color:     '#a855f7',
-              weight:    2.2,
-              dashArray: '6 9',
-              opacity:   pathOpacity,
-            }}
-          />
-        )}
-
+        {/* Beta path — uncertain (red) drawn first so confident (purple) always renders on top */}
         {showBetaPaths && betaLowPath && (
           <Polyline
+            ref={betaLowPathRef}
             positions={betaLowPath}
             pathOptions={{
               color:     '#ef4444',
-              weight:    2.4,
+              weight:    2.6,
               dashArray: '6 9',
               opacity:   Math.min(0.9, pathOpacity),
             }}
             interactive={false}
           />
         )}
+
+        {/* Purple confident portion rendered last — highest z-order so it is never obscured by the red uncertain portion */}
+        {showBetaPaths && betaPath && (
+          <Polyline
+            ref={betaPathRef}
+            positions={betaPath}
+            pathOptions={{
+              color:     '#a855f7',
+              weight:    2.8,
+              dashArray: '6 9',
+              opacity:   pathOpacity,
+            }}
+          />
+        )}
+
+        {showBetaPaths && betaExtraPurplePaths.map((path, idx) => (
+          <Polyline
+            key={`beta-extra-purple-${idx}`}
+            positions={path}
+            pathOptions={{
+              color:     '#a855f7',
+              weight:    2.8,
+              dashArray: '6 9',
+              opacity:   pathOpacity,
+            }}
+            interactive={false}
+          />
+        ))}
 
         {showBetaPaths && betaCompletionPaths.length > 0 && (
           <Pane name="betaCompletionsPane" style={{ zIndex: 520 }}>
@@ -644,9 +675,9 @@ export const MapView: React.FC<MapViewProps> = ({
                 positions={path}
                 pathOptions={{
                   color: '#ef4444',
-                  weight: 1.2,
-                  dashArray: '3 9',
-                  opacity: Math.min(0.45, pathOpacity * 0.6),
+                  weight: 1.8,
+                  dashArray: '4 7',
+                  opacity: Math.min(0.78, pathOpacity * 0.95),
                 }}
                 interactive={false}
               />

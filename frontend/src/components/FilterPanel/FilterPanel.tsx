@@ -17,15 +17,18 @@ interface FilterPanelProps {
   onChange: (f: Filters) => void;
   betaPathConfidence?: number | null;
   betaPermutationCount?: number | null;
+  betaRemainingHops?: number | null;
 }
 
 export const LinksLegend: React.FC<{ compact?: boolean; muted?: boolean }> = ({ compact = false, muted = false }) => (
   <div className={`links-legend-inline${compact ? ' links-legend-inline--compact' : ''}${muted ? ' links-legend-inline--muted' : ''}`}>
     <div className="links-legend-inline__title">Links Legend</div>
-    <div className="links-legend-inline__row"><span className="links-legend__swatch" style={{ background: '#22c55e' }} /> Good (≤120 dB)</div>
-    <div className="links-legend-inline__row"><span className="links-legend__swatch" style={{ background: '#fbbf24' }} /> Marginal (121-135 dB)</div>
-    <div className="links-legend-inline__row"><span className="links-legend__swatch" style={{ background: '#ef4444' }} /> Weak (&gt;135 dB)</div>
-    <div className="links-legend-inline__row"><span className="links-legend__swatch" style={{ background: '#d1d5db' }} /> Unknown (no dB yet)</div>
+    <div className="links-legend-inline__grid">
+      <div className="links-legend-inline__row"><span className="links-legend__swatch" style={{ background: '#22c55e' }} /> Good (≤120 dB)</div>
+      <div className="links-legend-inline__row"><span className="links-legend__swatch" style={{ background: '#fbbf24' }} /> Marginal (121-135 dB)</div>
+      <div className="links-legend-inline__row"><span className="links-legend__swatch" style={{ background: '#ef4444' }} /> Weak (&gt;135 dB)</div>
+      <div className="links-legend-inline__row"><span className="links-legend__swatch" style={{ background: '#d1d5db' }} /> Unknown (no dB yet)</div>
+    </div>
   </div>
 );
 
@@ -39,7 +42,7 @@ export const FILTER_ROWS: Array<{ key: keyof Filters; label: string; color: stri
   { key: 'clientNodes',  label: 'Companion / Room', color: '#ff9800' },
 ];
 
-export const FilterPanel: React.FC<FilterPanelProps> = ({ filters, onChange, betaPathConfidence, betaPermutationCount }) => {
+export const FilterPanel: React.FC<FilterPanelProps> = ({ filters, onChange, betaPathConfidence, betaPermutationCount, betaRemainingHops }) => {
   const toggle = (key: keyof Filters) => {
     onChange({ ...filters, [key]: !filters[key] });
   };
@@ -52,6 +55,8 @@ export const FilterPanel: React.FC<FilterPanelProps> = ({ filters, onChange, bet
           Beta Confidence: <strong>{betaPathConfidence == null ? 'N/A' : `${Math.round(betaPathConfidence * 100)}%`}</strong>
           <br />
           Permutations: <strong>{betaPermutationCount == null ? 'N/A' : betaPermutationCount}</strong>
+          <br />
+          Remaining Hops: <strong>{betaRemainingHops == null ? 'N/A' : betaRemainingHops}</strong>
         </div>
       )}
       {FILTER_ROWS.map(({ key, label, color, hollow }) => (
@@ -80,22 +85,6 @@ export const FilterPanel: React.FC<FilterPanelProps> = ({ filters, onChange, bet
                   style={filters[key] ? { background: `${color}22`, borderColor: color } : {}}
             />
           </div>
-          {key === 'betaPaths' && filters.betaPaths && (
-            <div className="filter-slider" onClick={(e) => e.stopPropagation()}>
-              <span className="filter-slider__label">
-                Confidence: {Math.round(filters.betaPathThreshold * 100)}%
-              </span>
-              <input
-                className="filter-slider__input"
-                type="range"
-                min={0}
-                max={100}
-                step={5}
-                value={Math.round(filters.betaPathThreshold * 100)}
-                onChange={(e) => onChange({ ...filters, betaPathThreshold: Number(e.target.value) / 100 })}
-              />
-            </div>
-          )}
           {key === 'hexClashes' && filters.hexClashes && (
             <div className="filter-slider" onClick={(e) => e.stopPropagation()}>
               <span className="filter-slider__label">

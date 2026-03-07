@@ -30,7 +30,7 @@ export function resolvePathWaypoints(
   for (let i = 0; i < N; i++) {
     const prefix = pathHashes[i]!.toUpperCase();
     const candidates = Array.from(allNodes.values()).filter(
-      (n) => hasCoords(n) && !n.name?.includes('🚫') && n.node_id.toUpperCase().startsWith(prefix),
+      (n) => hasCoords(n) && n.node_id.toUpperCase().startsWith(prefix),
     );
     if (candidates.length === 0) continue;
 
