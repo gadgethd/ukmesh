@@ -394,7 +394,18 @@ router.get('/stats', async (req, res) => {
     const observer = normalizeObserverQuery(req.query['observer']);
     const filters = networkFilters(network, observer);
     const [mqttCount, packetCount, staleCount, mapNodeCount, totalNodeCount, longestHopCount] = await Promise.all([
-      query(`SELECT COUNT(DISTINCT rx_node_id) AS count FROM packets WHERE time > NOW() - INTERVAL '10 minutes' AND rx_node_id IS NOT NULL ${filters.packets}`, filters.params),
+      query(`
+        WITH test_active AS (
+          SELECT rx_node_id FROM packets WHERE rx_node_id IS NOT NULL AND rx_node_id <> ''
+          GROUP BY rx_node_id HAVING MAX(time) = MAX(time) FILTER (WHERE network = 'test')
+        )
+        SELECT COUNT(DISTINCT rx_node_id) AS count
+        FROM packets
+        WHERE time > NOW() - INTERVAL '10 minutes'
+          AND rx_node_id IS NOT NULL
+          AND rx_node_id NOT IN (SELECT rx_node_id FROM test_active)
+          ${filters.packets}
+      `, filters.params),
       query(`SELECT COUNT(*) AS count FROM packets WHERE time > NOW() - INTERVAL '24 hours' ${filters.packets}`, filters.params),
       query(`SELECT COUNT(*) AS count FROM nodes
              WHERE lat IS NOT NULL AND lon IS NOT NULL

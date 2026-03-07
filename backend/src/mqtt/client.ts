@@ -435,6 +435,7 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
       rssi,
       snr,
       payload:    innerPayload ?? json,
+      summary,
       rawHex,
       advertCount,
       pathHashes: path,

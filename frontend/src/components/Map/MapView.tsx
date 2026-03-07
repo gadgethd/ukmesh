@@ -425,6 +425,16 @@ export const MapView: React.FC<MapViewProps> = ({
   const effectiveShowCoverage = showCoverage && !clashModeActive;
   const effectiveShowLinks = showLinks && !clashModeActive;
 
+  // Stable fingerprint of linked nodes' position/role/last_seen — only changes when
+  // data relevant to link rendering changes, not on every node_update heartbeat.
+  const linkedNodesKey = useMemo(() => {
+    const ids = new Set(viablePairsArr.flatMap(([a, b]) => [a, b]));
+    return Array.from(ids).sort().map((id) => {
+      const n = nodes.get(id);
+      return n ? `${id}=${n.lat ?? ''},${n.lon ?? ''},${n.role ?? ''},${n.last_seen.slice(0, 13)}` : id;
+    }).join(';');
+  }, [viablePairsArr, nodes]);
+
   // Resolve viable link pairs to lat/lon polyline positions
   const linkLines = useMemo(() => {
     if (!showLinks || viablePairsArr.length === 0) return [];
@@ -464,7 +474,8 @@ export const MapView: React.FC<MapViewProps> = ({
     return lines
       .sort((a, b) => (b.observedCount - a.observedCount))
       .slice(0, 400);
-  }, [showLinks, viablePairsArr, nodes, linkMetrics, map]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showLinks, viablePairsArr, linkedNodesKey, linkMetrics, map]);
 
   const markerSize = useMemo(() => {
     const leafletZoom = deckViewState.zoom + 1;

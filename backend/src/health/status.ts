@@ -254,10 +254,18 @@ export async function getWorkerHealthOverview() {
            AND network IS DISTINCT FROM 'test'
          GROUP BY rx_node_id
        ),
+       test_active AS (
+         SELECT rx_node_id
+         FROM packets
+         WHERE rx_node_id IS NOT NULL AND rx_node_id <> ''
+         GROUP BY rx_node_id
+         HAVING MAX(time) = MAX(time) FILTER (WHERE network = 'test')
+       ),
        active_rx AS (
          SELECT rx_node_id, last_packet_at
          FROM latest_rx
          WHERE last_packet_at > NOW() - INTERVAL '7 days'
+           AND rx_node_id NOT IN (SELECT rx_node_id FROM test_active)
        )
        SELECT
          COUNT(*) FILTER (WHERE last_packet_at < NOW() - INTERVAL '15 minutes')::text AS stale_nodes,

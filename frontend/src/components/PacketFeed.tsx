@@ -17,13 +17,14 @@ const TYPE_LABELS: Record<number, string> = {
 interface Props {
   packets:        AggregatedPacket[];
   nodes:          Map<string, MeshNode>;
+  mqttObserverCount?: number;
   onPacketClick?: (packet: AggregatedPacket) => void;
   pinnedPacketId?: string | null;
 }
 
 const VISIBLE_ROWS = 8;
 
-export const PacketFeed: React.FC<Props> = React.memo(({ packets, nodes, onPacketClick, pinnedPacketId }) => {
+export const PacketFeed: React.FC<Props> = React.memo(({ packets, nodes, mqttObserverCount = 0, onPacketClick, pinnedPacketId }) => {
   const visible = useMemo(
     () => packets.slice(0, VISIBLE_ROWS).reverse(),
     [packets],
@@ -47,9 +48,9 @@ export const PacketFeed: React.FC<Props> = React.memo(({ packets, nodes, onPacke
         ? (TYPE_LABELS[p.packetType] ?? `T${p.packetType}`)
         : '???';
       const observerIata = p.rxNodeId ? nodes.get(p.rxNodeId)?.iata : undefined;
+      const allObserversHeard = mqttObserverCount > 1 && p.observerIds.length >= mqttObserverCount;
 
-      const rawContent = p.summary
-        ?? (p.rxNodeId ? nodes.get(p.rxNodeId)?.name : undefined);
+      const rawContent = p.summary;
       const content = rawContent?.includes('🚫') ? '[redacted]' : rawContent;
       const display = content && content.length > 28
         ? `${content.slice(0, 26)}…`
@@ -70,16 +71,18 @@ export const PacketFeed: React.FC<Props> = React.memo(({ packets, nodes, onPacke
           tabIndex={0}
           onKeyDown={(e) => e.key === 'Enter' && onPacketClick?.(p)}
         >
-          {observerIata && (
-            <span className="packet-item__iata">{observerIata}</span>
+          {(observerIata || allObserversHeard) && (
+            <span className={`packet-item__iata${allObserversHeard ? ' packet-item__iata--all' : ''}`}>
+              {allObserversHeard ? 'ALL' : observerIata}
+            </span>
           )}
           <span className="packet-item__type">{typeLabel}</span>
           {advertBadge && (
             <span className="packet-item__advert-badge">{advertBadge}</span>
           )}
-          {display && (
-            <span className="packet-item__summary">{display}</span>
-          )}
+          <span className={`packet-item__summary${display ? '' : ' packet-item__summary--empty'}`}>
+            {display ?? '\u00A0'}
+          </span>
           {p.hopCount !== undefined && p.hopCount > 0 && (
             <span className="packet-item__hops">↑{p.hopCount}</span>
           )}

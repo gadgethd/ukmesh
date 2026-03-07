@@ -716,6 +716,11 @@ html, body, #root {
   flex-shrink: 0;
 }
 
+.packet-item__iata--all {
+  color: var(--online);
+  font-weight: 700;
+}
+
 .packet-item__advert-badge {
   font-size: 11px;
   color: var(--amber);
@@ -731,6 +736,10 @@ html, body, #root {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.packet-item__summary--empty {
+  visibility: hidden;
 }
 
 .packet-item__counts {
