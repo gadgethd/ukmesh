@@ -3,6 +3,7 @@ import { rateLimit } from 'express-rate-limit';
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
 import mqtt from 'mqtt';
 import { getNodes, getNodeHistory, getRecentPackets, query, MIN_LINK_OBSERVATIONS } from '../db/index.js';
+import { getOwnerNodeIdsForUsername } from '../db/ownerAuth.js';
 import { getWorkerHealthOverview } from '../health/status.js';
 import { resolveBetaPathForPacketHash } from '../path-beta/resolver.js';
 
@@ -20,6 +21,7 @@ const OWNER_LOGIN_LIMITER = rateLimit({
 type OwnerSession = {
   nodeIds: string[];
   exp: number;
+  mqttUsername?: string;
 };
 
 function getOwnerCookieKey(): Buffer {
@@ -60,7 +62,8 @@ function decryptOwnerSession(token: string): OwnerSession | null {
       .map((value) => String(value).trim().toLowerCase())
       .filter((value) => /^[0-9a-f]{64}$/.test(value));
     if (nodeIds.length < 1) return null;
-    return { nodeIds, exp: parsed.exp };
+    const mqttUsername = typeof parsed.mqttUsername === 'string' ? parsed.mqttUsername.trim() : undefined;
+    return { nodeIds, exp: parsed.exp, mqttUsername: mqttUsername || undefined };
   } catch {
     return null;
   }
@@ -98,6 +101,13 @@ function parseOwnerMqttUsernameMap(): Map<string, string[]> {
     map.set(username, Array.from(new Set(nodeIds)));
   }
   return map;
+}
+
+async function resolveOwnerNodeIds(mqttUsername: string): Promise<string[]> {
+  const databaseNodeIds = await getOwnerNodeIdsForUsername(mqttUsername);
+  if (databaseNodeIds.length > 0) return databaseNodeIds;
+  const legacyMap = parseOwnerMqttUsernameMap();
+  return legacyMap.get(mqttUsername) ?? [];
 }
 
 function verifyMqttCredentials(mqttUsername: string, mqttPassword: string): Promise<boolean> {
@@ -379,7 +389,7 @@ router.get('/coverage', async (req, res) => {
     const network = req.query['network'] as string | undefined;
     const filters = networkFilters(network);
     const result = await query(
-      `SELECT nc.node_id, nc.geom, nc.antenna_height_m, nc.radius_m, nc.calculated_at
+      `SELECT nc.node_id, nc.geom, nc.strength_geoms, nc.antenna_height_m, nc.radius_m, nc.calculated_at
        FROM node_coverage nc
        JOIN nodes n ON n.node_id = nc.node_id
        WHERE (n.name IS NULL OR n.name NOT LIKE '%🚫%')
@@ -618,13 +628,8 @@ router.post('/owner/login', OWNER_LOGIN_LIMITER, async (req, res) => {
       res.status(400).json({ error: 'Missing MQTT username or password' });
       return;
     }
-    const usernameMap = parseOwnerMqttUsernameMap();
-    if (usernameMap.size < 1) {
-      res.status(503).json({ error: 'Owner login is not configured on the server' });
-      return;
-    }
-    const mappedNodeIds = usernameMap.get(mqttUsername);
-    if (!mappedNodeIds || mappedNodeIds.length < 1) {
+    const mappedNodeIds = await resolveOwnerNodeIds(mqttUsername);
+    if (mappedNodeIds.length < 1) {
       res.status(403).json({ error: 'Invalid MQTT credentials' });
       return;
     }
@@ -644,6 +649,7 @@ router.post('/owner/login', OWNER_LOGIN_LIMITER, async (req, res) => {
     const token = encryptOwnerSession({
       nodeIds: mappedNodeIds,
       exp: Date.now() + OWNER_SESSION_TTL_MS,
+      mqttUsername,
     });
     res.cookie(OWNER_COOKIE_NAME, token, {
       httpOnly: true,
@@ -662,7 +668,13 @@ router.post('/owner/login', OWNER_LOGIN_LIMITER, async (req, res) => {
 // GET /api/owner/session — resolve dashboard from encrypted cookie
 router.get('/owner/session', async (req, res) => {
   try {
-    const sessionNodeIds = await requireOwnerSession(req, res);
+    const session = getOwnerSession(req);
+    if (!session) {
+      res.clearCookie(OWNER_COOKIE_NAME, { path: '/' });
+      res.status(401).json({ error: 'Not logged in' });
+      return;
+    }
+    const sessionNodeIds = session.nodeIds;
     if (!sessionNodeIds) return;
 
     const dashboard = await buildOwnerDashboard(sessionNodeIds);
@@ -672,7 +684,7 @@ router.get('/owner/session', async (req, res) => {
       return;
     }
 
-    res.json({ ok: true, dashboard });
+    res.json({ ok: true, dashboard, mqttUsername: session.mqttUsername ?? null });
   } catch (err) {
     console.error('[api] GET /owner/session', (err as Error).message);
     res.status(500).json({ error: 'Internal server error' });
@@ -698,7 +710,14 @@ router.get('/owner/live', async (req, res) => {
       return;
     }
 
-    const [ownerNodeResult, incomingResult, packetResult] = await Promise.all([
+    const [
+      ownerNodeResult,
+      incomingResult,
+      packetResult,
+      heardByResult,
+      linkHealthResult,
+      advertTrendResult,
+    ] = await Promise.all([
       query<{
         node_id: string;
         name: string | null;
@@ -711,7 +730,7 @@ router.get('/owner/live', async (req, res) => {
       }>(
         `SELECT node_id, name, network, iata, advert_count, last_seen, lat, lon
          FROM nodes
-         WHERE node_id = $1
+         WHERE LOWER(node_id) = LOWER($1)
          LIMIT 1`,
         [selectedNodeId],
       ),
@@ -807,6 +826,90 @@ router.get('/owner/live', async (req, res) => {
          LIMIT 5`,
         [selectedNodeId],
       ),
+      query<{
+        node_id: string;
+        name: string | null;
+        network: string | null;
+        iata: string | null;
+        lat: number | null;
+        lon: number | null;
+        packets_24h: number;
+        packets_7d: number;
+        last_seen: string | null;
+        best_hops: number | null;
+      }>(
+        `SELECT
+           p.rx_node_id AS node_id,
+           n.name,
+           n.network,
+           n.iata,
+           n.lat,
+           n.lon,
+           COUNT(DISTINCT CASE WHEN p.time > NOW() - INTERVAL '24 hours' THEN p.packet_hash END)::int AS packets_24h,
+           COUNT(DISTINCT p.packet_hash)::int AS packets_7d,
+           MAX(p.time)::text AS last_seen,
+           MIN(p.hop_count) AS best_hops
+         FROM packets p
+         LEFT JOIN nodes n ON LOWER(n.node_id) = LOWER(p.rx_node_id)
+         WHERE LOWER(p.src_node_id) = LOWER($1)
+           AND p.rx_node_id IS NOT NULL
+           AND LOWER(p.rx_node_id) <> LOWER($1)
+           AND p.time > NOW() - INTERVAL '7 days'
+         GROUP BY p.rx_node_id, n.name, n.network, n.iata, n.lat, n.lon
+         ORDER BY packets_24h DESC, packets_7d DESC, last_seen DESC
+         LIMIT 20`,
+        [selectedNodeId],
+      ),
+      query<{
+        peer_node_id: string;
+        peer_name: string | null;
+        peer_network: string | null;
+        owner_to_peer: number;
+        peer_to_owner: number;
+        observed_count: number;
+        itm_path_loss_db: number | null;
+        itm_viable: boolean | null;
+        force_viable: boolean;
+        last_observed: string | null;
+      }>(
+        `SELECT
+           CASE WHEN LOWER(nl.node_a_id) = LOWER($1) THEN nl.node_b_id ELSE nl.node_a_id END AS peer_node_id,
+           peer.name AS peer_name,
+           peer.network AS peer_network,
+           CASE WHEN LOWER(nl.node_a_id) = LOWER($1) THEN nl.count_a_to_b ELSE nl.count_b_to_a END AS owner_to_peer,
+           CASE WHEN LOWER(nl.node_a_id) = LOWER($1) THEN nl.count_b_to_a ELSE nl.count_a_to_b END AS peer_to_owner,
+           nl.observed_count,
+           nl.itm_path_loss_db,
+           nl.itm_viable,
+           nl.force_viable,
+           nl.last_observed::text AS last_observed
+         FROM node_links nl
+         JOIN nodes peer ON LOWER(peer.node_id) = LOWER(CASE WHEN LOWER(nl.node_a_id) = LOWER($1) THEN nl.node_b_id ELSE nl.node_a_id END)
+         WHERE LOWER(nl.node_a_id) = LOWER($1)
+            OR LOWER(nl.node_b_id) = LOWER($1)
+         ORDER BY
+           COALESCE(nl.itm_viable, false) DESC,
+           nl.force_viable DESC,
+           nl.observed_count DESC,
+           nl.itm_path_loss_db ASC NULLS LAST
+         LIMIT 12`,
+        [selectedNodeId],
+      ),
+      query<{
+        bucket: string;
+        adverts: number;
+      }>(
+        `SELECT
+           time_bucket('1 hour', time)::text AS bucket,
+           COUNT(DISTINCT packet_hash)::int AS adverts
+         FROM packets
+         WHERE LOWER(src_node_id) = LOWER($1)
+           AND packet_type = 4
+           AND time > NOW() - INTERVAL '24 hours'
+         GROUP BY bucket
+         ORDER BY bucket`,
+        [selectedNodeId],
+      ),
     ]);
 
     const ownerNode = ownerNodeResult.rows[0];
@@ -814,6 +917,54 @@ router.get('/owner/live', async (req, res) => {
       res.status(404).json({ error: 'Owner node not found' });
       return;
     }
+
+    const heardBy = heardByResult.rows.map((row) => ({
+      ...row,
+      packets_24h: Number(row.packets_24h ?? 0),
+      packets_7d: Number(row.packets_7d ?? 0),
+      best_hops: row.best_hops == null ? null : Number(row.best_hops),
+      last_seen: row.last_seen ? new Date(row.last_seen).toISOString() : null,
+    }));
+
+    const linkHealth = linkHealthResult.rows.map((row) => ({
+      ...row,
+      owner_to_peer: Number(row.owner_to_peer ?? 0),
+      peer_to_owner: Number(row.peer_to_owner ?? 0),
+      observed_count: Number(row.observed_count ?? 0),
+      itm_path_loss_db: row.itm_path_loss_db == null ? null : Number(row.itm_path_loss_db),
+      itm_viable: row.itm_viable == null ? null : Boolean(row.itm_viable),
+      force_viable: Boolean(row.force_viable),
+      last_observed: row.last_observed ? new Date(row.last_observed).toISOString() : null,
+    }));
+
+    const advertTrend24h = (() => {
+      const byHour = new Map<string, number>();
+      for (const row of advertTrendResult.rows) {
+        byHour.set(new Date(row.bucket).toISOString(), Number(row.adverts ?? 0));
+      }
+      const series: Array<{ bucket: string; adverts: number }> = [];
+      const now = new Date();
+      now.setUTCMinutes(0, 0, 0);
+      for (let i = 23; i >= 0; i--) {
+        const bucket = new Date(now.getTime() - i * 60 * 60 * 1000).toISOString();
+        series.push({ bucket, adverts: byHour.get(bucket) ?? 0 });
+      }
+      return series;
+    })();
+
+    const alerts: Array<{ level: 'info' | 'warn' | 'error'; message: string }> = [];
+    const ownerLastSeenMs = ownerNode.last_seen ? new Date(ownerNode.last_seen).getTime() : 0;
+    const minsSinceSeen = ownerLastSeenMs ? Math.max(0, Math.round((Date.now() - ownerLastSeenMs) / 60000)) : null;
+    const adverts24h = advertTrend24h.reduce((sum, point) => sum + point.adverts, 0);
+    const viableLinks = linkHealth.filter((link) => link.itm_viable || link.force_viable);
+    if (minsSinceSeen == null) alerts.push({ level: 'error', message: 'No last-seen timestamp is available for this repeater.' });
+    else if (minsSinceSeen >= 120) alerts.push({ level: 'error', message: `Repeater has not been seen for ${minsSinceSeen} minutes.` });
+    else if (minsSinceSeen >= 30) alerts.push({ level: 'warn', message: `Repeater has been quiet for ${minsSinceSeen} minutes.` });
+    else alerts.push({ level: 'info', message: 'Repeater is active and has checked in recently.' });
+
+    if (adverts24h < 1) alerts.push({ level: 'warn', message: 'No advert packets from this repeater were recorded in the last 24 hours.' });
+    if (heardBy.length < 1) alerts.push({ level: 'warn', message: 'No other nodes have heard this repeater in the last 7 days.' });
+    if (viableLinks.length < 1) alerts.push({ level: 'warn', message: 'No viable RF links are currently stored for this repeater.' });
 
     res.json({
       nodeId: selectedNodeId,
@@ -827,6 +978,10 @@ router.get('/owner/live', async (req, res) => {
         packets_24h: Number(row.packets_24h ?? 0),
         last_seen: row.last_seen ? new Date(row.last_seen).toISOString() : null,
       })),
+      heardBy,
+      linkHealth,
+      advertTrend24h,
+      alerts,
       recentPackets: packetResult.rows.map((row) => ({
         ...row,
         time: new Date(row.time).toISOString(),

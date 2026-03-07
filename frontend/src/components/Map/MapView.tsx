@@ -48,9 +48,15 @@ const LeafletDeckSyncer: React.FC<SyncerProps> = ({ onViewStateChange }) => {
   return null;
 };
 
-// GeoJSON rings are [lon, lat]; Leaflet wants [lat, lon].
 function ringToLatLng(ring: number[][]): LatLngExpression[] {
   return ring.map(([lon, lat]) => [lat, lon] as LatLngExpression);
+}
+
+function geomToRings(geom: { type: string; coordinates: unknown } | null | undefined): LatLngExpression[][] {
+  if (!geom) return [];
+  if (geom.type === 'Polygon') return [ringToLatLng((geom.coordinates as number[][][])[0])];
+  if (geom.type === 'MultiPolygon') return (geom.coordinates as number[][][][]).map((poly) => ringToLatLng(poly[0]));
+  return [];
 }
 
 function hasCoords(node: MeshNode | null | undefined): node is MeshNode & { lat: number; lon: number } {
@@ -67,13 +73,11 @@ function isHiddenMapNode(node: MeshNode | null | undefined): boolean {
 //   - no opacity stacking: single SVG <path> element, one fill pass ✓
 function useCoverageDisplayRings(coverage: NodeCoverage[]): LatLngExpression[][] {
   return useMemo(() => {
-    return coverage.flatMap((c) => {
-      if (c.geom.type === 'Polygon')
-        return [ringToLatLng((c.geom.coordinates as number[][][])[0])];
-      if (c.geom.type === 'MultiPolygon')
-        return (c.geom.coordinates as number[][][][]).map((poly) => ringToLatLng(poly[0]));
-      return [];
-    });
+    const rings: LatLngExpression[][] = [];
+    for (const c of coverage) {
+      rings.push(...geomToRings(c.geom));
+    }
+    return rings;
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [coverage]);
 }
@@ -519,10 +523,10 @@ export const MapView: React.FC<MapViewProps> = ({
             <Polygon
               positions={coverageRings as LatLngExpression[][]}
               pathOptions={{
-                fillColor:   '#1ec850',
-                fillOpacity: 0.22,
-                weight:      0,
-                fillRule:    'nonzero',
+                fillColor: '#22c55e',
+                fillOpacity: 0.18,
+                weight: 0,
+                fillRule: 'nonzero',
               }}
               interactive={false}
             />

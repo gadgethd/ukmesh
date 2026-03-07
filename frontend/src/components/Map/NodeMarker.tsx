@@ -74,12 +74,16 @@ function ringToLatLng(ring: number[][]): LatLngExpression[] {
   return ring.map(([lon, lat]) => [lat, lon] as LatLngExpression);
 }
 
-function coverageToRings(cov: NodeCoverage): LatLngExpression[][] {
-  const geom = cov.geom;
-  if (geom.type === 'Polygon')
-    return [(geom.coordinates as number[][][])[0]!].map(ringToLatLng);
-  if (geom.type === 'MultiPolygon')
-    return (geom.coordinates as number[][][][]).map((poly) => ringToLatLng(poly[0]!));
+function coverageToPolygons(geom: { type: string; coordinates: unknown } | null | undefined): LatLngExpression[][][] {
+  if (!geom) return [];
+  if (geom.type === 'Polygon') {
+    const polygon = geom.coordinates as number[][][];
+    return [polygon.map((ring) => ringToLatLng(ring))];
+  }
+  if (geom.type === 'MultiPolygon') {
+    const multiPolygon = geom.coordinates as number[][][][];
+    return multiPolygon.map((polygon) => polygon.map((ring) => ringToLatLng(ring)));
+  }
   return [];
 }
 
@@ -141,7 +145,11 @@ export const NodeMarker: React.FC<Props> = React.memo(({
     ? 'var(--danger)'
     : node.is_online ? 'var(--online)' : 'var(--offline)';
 
-  const previewRings = showPreview && nodeCoverage ? coverageToRings(nodeCoverage) : [];
+  const previewBands = showPreview && nodeCoverage ? {
+    red: coverageToPolygons(nodeCoverage.strength_geoms?.red ?? nodeCoverage.geom),
+    amber: coverageToPolygons(nodeCoverage.strength_geoms?.amber),
+    green: coverageToPolygons(nodeCoverage.strength_geoms?.green),
+  } : { red: [], amber: [], green: [] };
   const showSamePrefixRow = (node.role === undefined || node.role === 2) && typeof samePrefixRepeaterCount === 'number';
 
   return (
@@ -243,20 +251,44 @@ export const NodeMarker: React.FC<Props> = React.memo(({
         </Popup>
       </Marker>
 
-      {previewRings.length > 0 && (
+      {(previewBands.red.length > 0 || previewBands.amber.length > 0 || previewBands.green.length > 0) && (
         <Pane name={`cov-preview-${node.node_id}`} style={{ zIndex: 351 }}>
-          <Polygon
-            positions={previewRings as LatLngExpression[][]}
-            pathOptions={{
-              fillColor:   '#1ec850',
-              fillOpacity: 0.10,
-              weight:      1,
-              color:       '#1ec850',
-              opacity:     0.5,
-              fillRule:    'nonzero',
-            }}
-            interactive={false}
-          />
+          {previewBands.red.length > 0 && (
+            <Polygon
+              positions={previewBands.red as unknown as LatLngExpression[][]}
+              pathOptions={{
+                fillColor:   '#ef4444',
+                fillOpacity: 0.12,
+                weight:      0,
+                fillRule:    'nonzero',
+              }}
+              interactive={false}
+            />
+          )}
+          {previewBands.amber.length > 0 && (
+            <Polygon
+              positions={previewBands.amber as unknown as LatLngExpression[][]}
+              pathOptions={{
+                fillColor:   '#f59e0b',
+                fillOpacity: 0.18,
+                weight:      0,
+                fillRule:    'nonzero',
+              }}
+              interactive={false}
+            />
+          )}
+          {previewBands.green.length > 0 && (
+            <Polygon
+              positions={previewBands.green as unknown as LatLngExpression[][]}
+              pathOptions={{
+                fillColor:   '#22c55e',
+                fillOpacity: 0.28,
+                weight:      0,
+                fillRule:    'nonzero',
+              }}
+              interactive={false}
+            />
+          )}
         </Pane>
       )}
     </>

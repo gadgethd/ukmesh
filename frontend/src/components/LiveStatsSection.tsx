@@ -62,7 +62,10 @@ export const LiveStatsSection: React.FC<LiveStatsSectionProps> = ({ network }) =
   return (
     <section className="site-stats-section">
       <div className="site-content">
-        <p className="site-stats-section__eyebrow">Live network stats · updates every 30s</p>
+        <div className="site-section__head">
+          <h2>Live network stats</h2>
+          <p>Updates every 30 seconds from the shared packet feed.</p>
+        </div>
         <div className="site-stats-grid">
           <StatCard value={stats.packetsDay} label="Packets in the last 24 hours" />
           <StatCard value={stats.totalNodes} label="Nodes ever heard on the network" />

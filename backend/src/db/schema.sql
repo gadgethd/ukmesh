@@ -143,10 +143,14 @@ ALTER TABLE node_links ADD COLUMN IF NOT EXISTS force_viable   BOOLEAN NOT NULL 
 CREATE TABLE IF NOT EXISTS node_coverage (
   node_id          TEXT PRIMARY KEY,
   geom             JSONB NOT NULL,            -- GeoJSON Polygon or MultiPolygon
+  strength_geoms   JSONB,
   antenna_height_m DOUBLE PRECISION DEFAULT 10,
   radius_m         DOUBLE PRECISION DEFAULT 30000,
+  model_version    INTEGER NOT NULL DEFAULT 1,
   calculated_at    TIMESTAMPTZ DEFAULT NOW()
 );
+ALTER TABLE node_coverage ADD COLUMN IF NOT EXISTS strength_geoms JSONB;
+ALTER TABLE node_coverage ADD COLUMN IF NOT EXISTS model_version INTEGER NOT NULL DEFAULT 1;
 
 -- ─── Learned path priors from historical packets ─────────────────────────────
 

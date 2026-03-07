@@ -22,10 +22,11 @@ export const DisclaimerModal: React.FC<DisclaimerModalProps> = ({ onClose }) => 
         <section>
           <h3>Coverage map</h3>
           <p>
-            The green coverage layer is a radio horizon estimate computed from SRTM terrain data.
-            It assumes each repeater antenna is mounted <strong>5 metres above ground level</strong>.
-            Actual coverage will vary with antenna height, local obstacles, foliage, and radio
-            conditions. Treat it as a rough guide, not a guarantee of connectivity.
+            The green coverage layer is a precomputed RF estimate built from terrain data and a
+            simplified diffraction/path-loss model. It assumes the source repeater and the receiving
+            repeater are both mounted <strong>5 metres above ground level</strong>. Actual coverage
+            will still vary with local obstacles, foliage, antenna placement, and radio settings, so
+            treat it as a guide rather than a guarantee of connectivity.
           </p>
         </section>
       </div>
@@ -33,4 +34,3 @@ export const DisclaimerModal: React.FC<DisclaimerModalProps> = ({ onClose }) => 
     </div>
   </div>
 );
-

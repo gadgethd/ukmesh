@@ -8,117 +8,142 @@ export const UKHomePage: React.FC = () => {
 
   return (
     <>
-      {/* ── Hero ─────────────────────────────────────────────────────── */}
-      <section className="site-hero">
-        <div className="site-hero__glow" aria-hidden />
-        <div className="site-content">
-          <div className="site-hero__badge">United Kingdom · LoRa 868 MHz</div>
-          <h1 className="site-hero__title">
-            UK<br />
-            <span className="site-hero__title--accent">Mesh Network</span>
-          </h1>
-          <p className="site-hero__sub">
-            A UK-wide off-grid communications network built on{' '}
-            <a href="https://meshcore.co.uk" target="_blank" rel="noopener noreferrer">MeshCore</a>,{' '}
-            a free, open-source LoRa mesh platform. No internet. No infrastructure. Just radio.
-          </p>
-          <div className="site-hero__actions">
-            <a href={site.appUrl} className="site-btn site-btn--primary">Open Live Map →</a>
-            <Link to="/about" className="site-btn site-btn--ghost">Learn more</Link>
+      <section className="site-home">
+        <div className="site-content site-home__grid">
+          <div className="site-home__intro">
+            <h1 className="site-home__title">UK Mesh Network</h1>
+            <p className="site-home__body">
+              The UK-wide public site for MeshCore traffic, repeater coverage, observer ingestion, and the
+              supporting documentation behind the live map. Teesside is part of this wider feed rather than a
+              separate stack.
+            </p>
+            <div className="site-home__actions">
+              <a href={site.appUrl} className="site-btn site-btn--primary">Open live map</a>
+              <Link to="/install" className="site-btn site-btn--ghost">Install MeshCore</Link>
+              <Link to="/mqtt" className="site-btn site-btn--ghost">Become an observer</Link>
+            </div>
           </div>
+
+          <section className="site-home__panel">
+            <h2>Network overview</h2>
+            <div className="site-home__meta">
+              <div className="site-home__meta-row">
+                <span>Coverage</span>
+                <strong>United Kingdom</strong>
+              </div>
+              <div className="site-home__meta-row">
+                <span>Band</span>
+                <strong>LoRa 868 MHz</strong>
+              </div>
+              <div className="site-home__meta-row">
+                <span>Channel</span>
+                <strong>Public</strong>
+              </div>
+              <div className="site-home__meta-row">
+                <span>Observer ingest</span>
+                <strong>Shared MQTT broker</strong>
+              </div>
+            </div>
+          </section>
         </div>
       </section>
 
       <LiveStatsSection />
 
-      {/* ── Radio config ─────────────────────────────────────────────── */}
-      <section className="site-stats-section site-stats-section--alt">
-        <div className="site-content">
-          <p className="site-stats-section__eyebrow">Network radio configuration</p>
-          <div className="site-stats-grid site-stats-grid--6">
-            <div className="site-stat">
-              <span className="site-stat__value">EU/UK Narrow</span>
-              <span className="site-stat__label">Profile</span>
-            </div>
-            <div className="site-stat">
-              <span className="site-stat__value">869.618</span>
-              <span className="site-stat__label">Frequency (MHz)</span>
-            </div>
-            <div className="site-stat">
-              <span className="site-stat__value">62.5<span className="site-stat__suffix">kHz</span></span>
-              <span className="site-stat__label">Bandwidth</span>
-            </div>
-            <div className="site-stat">
-              <span className="site-stat__value">SF8</span>
-              <span className="site-stat__label">Spreading Factor</span>
-            </div>
-            <div className="site-stat">
-              <span className="site-stat__value">CR8</span>
-              <span className="site-stat__label">Coding Rate</span>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* ── About cards ─────────────────────────────────────────────── */}
       <section className="site-section">
-        <div className="site-content site-cards-row">
-
-          <div className="site-card">
-            <div className="site-card__icon">📡</div>
-            <h2 className="site-card__title">What is MeshCore?</h2>
-            <p className="site-card__body">
-              MeshCore is open-source firmware for ESP32 LoRa hardware. Each node acts as
-              both a radio and a relay. Packets hop between nodes automatically, extending
-              range far beyond what a single radio can achieve.
-            </p>
-            <Link to="/about" className="site-card__link">Learn more →</Link>
+        <div className="site-content">
+          <div className="site-section__head">
+            <h2>Use the network</h2>
+            <p>The public site covers the national network, the observer feed, and the operational pages that sit around the live map.</p>
           </div>
+          <div className="site-home__cards">
+            <div className="site-home__card">
+              <h3>What MeshCore is</h3>
+              <p>
+                MeshCore is open-source firmware for LoRa hardware. Each node can forward packets, which is what
+                makes long regional chains and repeater coverage possible.
+              </p>
+              <Link to="/about">Read the overview</Link>
+            </div>
 
-          <div className="site-card">
-            <div className="site-card__icon">🔧</div>
-            <h2 className="site-card__title">Become an observer</h2>
-            <p className="site-card__body">
-              Connect your repeater node to the UK Mesh MQTT broker and contribute live
-              packet data from your area. All you need is a Linux device, a USB cable,
-              and about 15 minutes.
-            </p>
-            <Link to="/mqtt" className="site-card__link">Observer setup →</Link>
+            <div className="site-home__card">
+              <h3>Get on the air</h3>
+              <p>
+                Flash a supported device, pair it to your phone, and use the UK public profile. That gets you
+                onto the same channel used across the wider network.
+              </p>
+              <Link to="/install">Open the install guide</Link>
+            </div>
+
+            <div className="site-home__card">
+              <h3>Become an observer</h3>
+              <p>
+                Connect a repeater or room server to the broker, publish packets over MQTT, and add another view
+                of the network from your own location.
+              </p>
+              <Link to="/mqtt">Observer setup</Link>
+            </div>
+
+            <div className="site-home__card">
+              <h3>Inspect live traffic</h3>
+              <p>
+                The live app shows repeater positions, path predictions, coverage layers, decoded packets, and
+                the supporting stats for the UK feed.
+              </p>
+              <a href={site.appUrl}>Open the live map</a>
+            </div>
           </div>
-
-          <div className="site-card">
-            <div className="site-card__icon">🗺️</div>
-            <h2 className="site-card__title">Live map and analytics</h2>
-            <p className="site-card__body">
-              The live dashboard shows every packet heard across the UK in real time: node
-              positions, relay paths, RF coverage, and a decoded packet feed. Built entirely
-              on open source tools.
-            </p>
-            <a href={site.appUrl} className="site-card__link">Open map →</a>
-          </div>
-
         </div>
       </section>
 
-      {/* ── Discord CTA ─────────────────────────────────────────────── */}
       <section className="site-section site-section--dark">
-        <div className="site-content site-cta">
-          <div className="site-cta__text">
-            <h2 className="site-cta__title">Join the conversation</h2>
-            <p className="site-cta__body">
-              We hang out on the MeshCore Discord. Come say hello, ask questions, or
-              coordinate coverage with other UK operators. DM <strong>ibengr</strong> to
-              get set up as an observer.
-            </p>
+        <div className="site-content">
+          <div className="site-section__head">
+            <h2>Radio profile</h2>
+            <p>These are the network settings used across the UK public deployment.</p>
           </div>
-          <a
-            href="https://discord.gg/bSuST8xvet"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="site-btn site-btn--primary"
-          >
-            Join Discord →
-          </a>
+          <div className="site-home__specs">
+            <div className="site-home__spec-row">
+              <span>Profile</span>
+              <strong>EU/UK Narrow</strong>
+            </div>
+            <div className="site-home__spec-row">
+              <span>Frequency</span>
+              <strong>869.618 MHz</strong>
+            </div>
+            <div className="site-home__spec-row">
+              <span>Bandwidth</span>
+              <strong>62.5 kHz</strong>
+            </div>
+            <div className="site-home__spec-row">
+              <span>Spreading factor</span>
+              <strong>SF8</strong>
+            </div>
+            <div className="site-home__spec-row">
+              <span>Coding rate</span>
+              <strong>CR8</strong>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="site-section">
+        <div className="site-content">
+          <div className="site-home__join">
+            <div>
+              <h2>Join the conversation</h2>
+              <p>
+                Coverage, observer credentials, and repeater coordination all run through the MeshCore Discord.
+                That is where to go if you want to add another observer or compare notes with other UK operators.
+              </p>
+            </div>
+            <div className="site-home__join-actions">
+              <a href="https://discord.gg/bSuST8xvet" target="_blank" rel="noopener noreferrer" className="site-btn site-btn--primary">
+                Join Discord
+              </a>
+              <Link to="/open-source" className="site-btn site-btn--ghost">View source</Link>
+            </div>
+          </div>
         </div>
       </section>
     </>

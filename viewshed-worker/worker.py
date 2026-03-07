@@ -40,18 +40,29 @@ SRTM_DIR     = Path(os.environ.get('SRTM_DIR', '/data/srtm'))
 REDIS_URL    = os.environ.get('REDIS_URL', 'redis://redis:6379')
 DATABASE_URL = os.environ.get('DATABASE_URL')
 WORKER_MODE  = os.environ.get('WORKER_MODE', 'all').lower()
+COVERAGE_MODEL = os.environ.get('COVERAGE_MODEL', 'rf_radial_100m').lower()
 
 JOB_QUEUE      = 'meshcore:viewshed_jobs'
 LINK_JOB_QUEUE = 'meshcore:link_jobs'
 LIVE_CHANNEL   = 'meshcore:live'
 
-ANTENNA_HEIGHT_M     = 5    # observer height above ground (m) — fixed 5 m antenna
+ANTENNA_HEIGHT_M      = 5    # source repeater antenna above ground (m)
+COVERAGE_TARGET_HEIGHT_M = 5 # target repeater antenna above ground (m) for coverage polygons
+COVERAGE_MODEL_VERSION = int(os.environ.get(
+    'COVERAGE_MODEL_VERSION',
+    '3' if COVERAGE_MODEL == 'rf_radial_100m' else '2',
+))
 MIN_LINK_OBSERVATIONS = 5  # must match backend db/index.ts
 PREFIX_AMBIGUITY_RADIUS_KM = 45.0  # only penalize same-prefix ambiguity when nodes are realistically in range
 MAX_RADIUS_M     = 100_000  # absolute cap on viewshed radius (m)
 SIMPLIFY_DEG     = 0.001    # Douglas-Peucker tolerance (~100 m)
 N_RAYS           = 720      # number of radial rays cast from the observer
 STEP_M           = 50.0     # ray step size in metres
+ANGLE_EPS        = 1e-9     # numerical tolerance for horizon comparisons
+RF_RADIAL_STEP_M = 100.0    # radial search precision for RF coverage mode
+RF_N_RAYS        = 360      # 1-degree azimuth resolution keeps RF mode tractable
+RF_RADIUS_MULTIPLIER = 1.35 # search beyond geometric horizon to allow limited diffraction gain
+RF_MIN_RADIUS_M  = 20_000   # avoid under-searching low-elevation repeaters
 
 # Radio horizon parameters
 K_FACTOR  = 4 / 3        # effective Earth radius multiplier (standard troposphere)
@@ -64,6 +75,11 @@ LAMBDA_M        = 3e8 / (FREQ_MHZ * 1e6)   # wavelength ~0.345 m
 LINK_BUDGET_DB  = 148.0   # 17 dBm TX + ~130 dBm RX sensitivity (LoRa SF10 BW125) +1 dB SRTM DSM correction
 FADE_MARGIN_DB  = 10.0    # safety / link margin
 PROFILE_STEP_M  = 250.0   # terrain profile sample spacing (m)
+SIGNAL_THRESHOLDS_DB = {
+    'green': 120.0,
+    'amber': 135.0,
+    'red': LINK_BUDGET_DB - FADE_MARGIN_DB,
+}
 
 def compute_path_loss(lat1: float, lon1: float, elev1: float,
                       lat2: float, lon2: float, elev2: float,
@@ -82,7 +98,6 @@ def compute_path_loss(lat1: float, lon1: float, elev1: float,
     if d_total < 1.0:
         return 0.0, True
 
-    # Free-space path loss (dB)
     fspl = 20 * math.log10(4 * math.pi * d_total / LAMBDA_M)
 
     # Terrain profile: N evenly-spaced samples along the path
@@ -128,6 +143,46 @@ def compute_path_loss(lat1: float, lon1: float, elev1: float,
         v = excess_h * math.sqrt(2 * (d1 + d2) / (LAMBDA_M * d1 * d2))
         max_v = max(max_v, v)
 
+    return compute_path_loss_from_profile(
+        np.asarray(dists, dtype=np.float32),
+        np.asarray(heights, dtype=np.float32),
+        h_tx,
+        h_rx,
+    )
+
+
+def compute_path_loss_from_profile(dists: np.ndarray,
+                                   heights: np.ndarray,
+                                   h_tx: float,
+                                   h_rx: float) -> tuple[float, bool]:
+    d_total = float(dists[-1]) if len(dists) else 0.0
+    if d_total < 1.0:
+        return 0.0, True
+
+    # Free-space path loss (dB)
+    fspl = 20 * math.log10(4 * math.pi * d_total / LAMBDA_M)
+
+    if len(dists) <= 2:
+        viable = fspl < LINK_BUDGET_DB - FADE_MARGIN_DB
+        return fspl, viable
+
+    d1 = dists[1:-1].astype(np.float64)
+    d2 = d_total - d1
+    valid = (d1 > 0) & (d2 > 0)
+    if not np.any(valid):
+        viable = fspl < LINK_BUDGET_DB - FADE_MARGIN_DB
+        return fspl, viable
+
+    d1 = d1[valid]
+    d2 = d2[valid]
+    profile_h = heights[1:-1].astype(np.float64)[valid]
+    los_h = h_tx + (h_rx - h_tx) * (d1 / d_total)
+    earth_bulge = (d1 * d2) / (2 * K_FACTOR * R_EARTH_M)
+    excess_h = profile_h + earth_bulge - los_h
+    with np.errstate(divide='ignore', invalid='ignore'):
+        vs = excess_h * np.sqrt(2 * (d1 + d2) / (LAMBDA_M * d1 * d2))
+    max_v = float(np.max(vs)) if vs.size else -999.0
+
     # ITU-R P.526 knife-edge diffraction loss (dB)
     if max_v <= -0.78:
         diff_loss = 0.0
@@ -139,6 +194,112 @@ def compute_path_loss(lat1: float, lon1: float, elev1: float,
     total_loss = fspl + diff_loss
     viable     = total_loss < LINK_BUDGET_DB - FADE_MARGIN_DB
     return total_loss, viable
+
+
+def resolve_rf_radial_boundaries(lat: float,
+                                 lon: float,
+                                 elev: np.ndarray,
+                                 gt: tuple[float, float, float, float, float, float],
+                                 observer_h: float,
+                                 base_radius_m: float) -> tuple[dict[str, list[tuple[float, float]]], float]:
+    search_radius_m = min(MAX_RADIUS_M, max(base_radius_m * RF_RADIUS_MULTIPLIER, RF_MIN_RADIUS_M))
+    n_rows, n_cols = elev.shape
+    dpmlat = 1.0 / 111_320.0
+    dpmlon = 1.0 / (111_320.0 * math.cos(math.radians(lat)))
+    ds_arr = np.arange(RF_RADIAL_STEP_M, search_radius_m + RF_RADIAL_STEP_M, RF_RADIAL_STEP_M, dtype=np.float32)
+    thetas = np.linspace(0.0, 2.0 * math.pi, RF_N_RAYS, endpoint=False, dtype=np.float32)
+    cos_t = np.cos(thetas)
+    sin_t = np.sin(thetas)
+
+    boundaries: dict[str, list[tuple[float, float]]] = {key: [] for key in SIGNAL_THRESHOLDS_DB}
+    max_reached = 0.0
+
+    for theta_idx in range(RF_N_RAYS):
+        pt_lats = lat + sin_t[theta_idx] * ds_arr * dpmlat
+        pt_lons = lon + cos_t[theta_idx] * ds_arr * dpmlon
+        pxs = np.clip(((pt_lons - gt[0]) / gt[1]).astype(np.int32), 0, n_cols - 1)
+        pys = np.clip(((pt_lats - gt[3]) / gt[5]).astype(np.int32), 0, n_rows - 1)
+        hs = elev[pys, pxs].astype(np.float32)
+
+        losses: list[float] = []
+        for idx in range(len(ds_arr)):
+            dists = ds_arr[:idx + 1]
+            heights = hs[:idx + 1]
+            h_rx = float(heights[-1]) + COVERAGE_TARGET_HEIGHT_M
+            loss, _viable = compute_path_loss_from_profile(dists, heights, observer_h, h_rx)
+            losses.append(loss)
+        losses_arr = np.asarray(losses, dtype=np.float32)
+
+        for band, threshold in SIGNAL_THRESHOLDS_DB.items():
+            passing = np.where(losses_arr <= threshold)[0]
+            if passing.size < 1:
+                end_dist = float(ds_arr[0])
+            else:
+                end_dist = float(ds_arr[int(passing[-1])])
+            if band == 'red':
+                max_reached = max(max_reached, end_dist)
+            boundaries[band].append((
+                lon + float(cos_t[theta_idx]) * end_dist * dpmlon,
+                lat + float(sin_t[theta_idx]) * end_dist * dpmlat,
+            ))
+
+    for band_boundary in boundaries.values():
+        if band_boundary:
+            band_boundary.append(band_boundary[0])
+    return boundaries, max_reached
+
+
+def clip_and_simplify_polygon(poly) -> Optional[dict]:
+    if poly.is_empty:
+        return None
+    if not poly.is_valid:
+        poly = poly.buffer(0)
+    if UK_MAINLAND is not None:
+        poly = poly.intersection(UK_MAINLAND)
+        if poly.is_empty:
+            return None
+    result = poly.simplify(SIMPLIFY_DEG, preserve_topology=True)
+    if result.is_empty or result.geom_type not in ('Polygon', 'MultiPolygon'):
+        return None
+    return mapping(result)
+
+
+def build_exclusive_strength_geoms(band_polys: dict[str, ShapelyPolygon]) -> dict[str, dict]:
+    """Convert nested strength polygons into exclusive green/amber/red areas.
+
+    The strongest band should own the fill for a location. Without this, the
+    frontend ends up stacking green over amber over red and the center reads as
+    muddy yellow instead of a clean strength gradient.
+    """
+    exclusive: dict[str, dict] = {}
+
+    green_poly = band_polys.get('green')
+    if green_poly is not None and not green_poly.is_empty:
+        clipped_green = clip_and_simplify_polygon(green_poly)
+        if clipped_green is not None:
+            exclusive['green'] = clipped_green
+
+    amber_poly = band_polys.get('amber')
+    if amber_poly is not None and not amber_poly.is_empty:
+        amber_only = amber_poly
+        if green_poly is not None and not green_poly.is_empty:
+            amber_only = amber_only.difference(green_poly)
+        clipped_amber = clip_and_simplify_polygon(amber_only)
+        if clipped_amber is not None:
+            exclusive['amber'] = clipped_amber
+
+    red_poly = band_polys.get('red')
+    if red_poly is not None and not red_poly.is_empty:
+        red_only = red_poly
+        if amber_poly is not None and not amber_poly.is_empty:
+            red_only = red_only.difference(amber_poly)
+        elif green_poly is not None and not green_poly.is_empty:
+            red_only = red_only.difference(green_poly)
+        clipped_red = clip_and_simplify_polygon(red_only)
+        if clipped_red is not None:
+            exclusive['red'] = clipped_red
+
+    return exclusive
 
 
 def build_link_vrt(lat1: float, lon1: float, lat2: float, lon2: float,
@@ -260,7 +421,7 @@ def sample_elevation(vrt_path: str, lat: float, lon: float) -> float:
 
 # ── Viewshed calculation ──────────────────────────────────────────────────────
 
-def calculate_viewshed(node_id: str, lat: float, lon: float) -> Optional[tuple[dict, float]]:
+def calculate_viewshed(node_id: str, lat: float, lon: float) -> Optional[tuple[dict, dict[str, dict], float, float]]:
     with tempfile.TemporaryDirectory() as tmp:
         # 1. Download the observer's own tile and sample terrain elevation.
         #    This single tile is sufficient to determine node height; we need
@@ -338,106 +499,97 @@ def calculate_viewshed(node_id: str, lat: float, lon: float) -> Optional[tuple[d
             f'horizon={radius_m / 1000:.1f} km'
         )
 
-        # 6. Vectorised raycasting viewshed.
-        #
-        # For each of N_RAYS directions, walk outward in STEP_M increments tracking
-        # the maximum "elevation angle" seen so far (corrected for Earth curvature).
-        # When a step's angle falls below the running maximum, the terrain at that
-        # step is in the shadow of an earlier ridge → the ray terminates.
-        # The stop-point of each ray becomes a vertex of the coverage boundary.
-        #
-        # Elevation angle formula:
-        #   angle(d) = (terrain_h - observer_h - d² / (2·k·R)) / d
-        # where the d²/(2kR) term accounts for Earth's curvature under the ray.
-        # A ray is blocked when angle(d) < running_max — no wrap-around artefacts.
         observer_h = elevation_m + ANTENNA_HEIGHT_M
-        dpmlat = 1.0 / 111_320.0                                       # deg/m northward
-        dpmlon = 1.0 / (111_320.0 * math.cos(math.radians(lat)))       # deg/m eastward
-        R_eff_2 = 2.0 * K_FACTOR * R_EARTH_M                          # 2kR curvature denom
+        strength_geoms: dict[str, dict] = {}
+        if COVERAGE_MODEL == 'terrain_los':
+            # Vectorised raycasting terrain line-of-sight model.
+            dpmlat = 1.0 / 111_320.0                                       # deg/m northward
+            dpmlon = 1.0 / (111_320.0 * math.cos(math.radians(lat)))       # deg/m eastward
+            R_eff_2 = 2.0 * K_FACTOR * R_EARTH_M                          # 2kR curvature denom
 
-        n_steps = max(1, int(radius_m / STEP_M))
-        ds_arr  = np.linspace(STEP_M, radius_m, n_steps)    # (M,) distances in metres
-        thetas  = np.linspace(0.0, 2.0 * math.pi, N_RAYS, endpoint=False)   # (N,) angles
+            n_steps = max(1, int(radius_m / STEP_M))
+            ds_arr  = np.linspace(STEP_M, radius_m, n_steps)    # (M,) distances in metres
+            thetas  = np.linspace(0.0, 2.0 * math.pi, N_RAYS, endpoint=False)   # (N,) angles
 
-        # Ray sample coordinates: (N, M)
-        sin_t   = np.sin(thetas)[:, None]    # (N, 1)
-        cos_t   = np.cos(thetas)[:, None]    # (N, 1)
-        pt_lats = lat + sin_t * ds_arr[None, :] * dpmlat   # (N, M)
-        pt_lons = lon + cos_t * ds_arr[None, :] * dpmlon   # (N, M)
+            # Ray sample coordinates: (N, M)
+            sin_t   = np.sin(thetas)[:, None]    # (N, 1)
+            cos_t   = np.cos(thetas)[:, None]    # (N, 1)
+            pt_lats = lat + sin_t * ds_arr[None, :] * dpmlat   # (N, M)
+            pt_lons = lon + cos_t * ds_arr[None, :] * dpmlon   # (N, M)
 
-        # Pixel indices — clamped to raster bounds (N, M)
-        # gt[0]=x_origin (lon), gt[1]=px_width (deg/px), gt[3]=y_origin (lat), gt[5]=px_height (<0)
-        pxs = np.clip(((pt_lons - gt[0]) / gt[1]).astype(np.int32), 0, n_cols - 1)
-        pys = np.clip(((pt_lats - gt[3]) / gt[5]).astype(np.int32), 0, n_rows - 1)
+            # Pixel indices — clamped to raster bounds (N, M)
+            pxs = np.clip(((pt_lons - gt[0]) / gt[1]).astype(np.int32), 0, n_cols - 1)
+            pys = np.clip(((pt_lats - gt[3]) / gt[5]).astype(np.int32), 0, n_rows - 1)
 
-        # Terrain heights at each ray step: (N, M)
-        hs = elev[pys, pxs]
+            # Terrain heights at each ray step: (N, M)
+            hs = elev[pys, pxs]
 
-        # Elevation angles with Earth-curvature correction: (N, M)
-        angles = (hs - observer_h - ds_arr[None, :] ** 2 / R_eff_2) / ds_arr[None, :]
+            # Angles with Earth-curvature correction: (N, M)
+            curvature = ds_arr[None, :] ** 2 / R_eff_2
+            terrain_angles = (hs - observer_h - curvature) / ds_arr[None, :]
+            target_angles = ((hs + COVERAGE_TARGET_HEIGHT_M) - observer_h - curvature) / ds_arr[None, :]
 
-        # Running max along each ray — only terrain AT OR ABOVE the observer
-        # height can establish a blocking horizon.  Terrain below the observer
-        # always lets the ray "see past" it; coverage is only cut off when
-        # something taller than the node rises into the line of sight.
-        blocking    = np.where(hs >= observer_h, angles, -np.inf)   # (N, M)
-        running_max = np.maximum.accumulate(blocking, axis=1)        # (N, M)
+            running_max = np.maximum.accumulate(terrain_angles, axis=1)
+            prev_max  = np.concatenate([np.full((N_RAYS, 1), -np.inf), running_max[:, :-1]], axis=1)
+            in_shadow = target_angles + ANGLE_EPS < prev_max
 
-        # "Previous" running max — shift one step so we compare current angle with
-        # the max established BEFORE this step.  First column = -inf (never blocked).
-        prev_max   = np.concatenate([np.full((N_RAYS, 1), -np.inf), running_max[:, :-1]], axis=1)
-        in_shadow  = angles < prev_max   # (N, M): True where ray is terrain-blocked
+            has_shadow  = in_shadow.any(axis=1)
+            first_shad  = np.where(has_shadow, in_shadow.argmax(axis=1), n_steps)
+            last_js     = np.clip(first_shad - 1, 0, n_steps - 1)
+            last_ds     = ds_arr[last_js]
 
-        # Index of first shadow step per ray; n_steps if never shadowed.
-        has_shadow  = in_shadow.any(axis=1)                                          # (N,)
-        first_shad  = np.where(has_shadow, in_shadow.argmax(axis=1), n_steps)       # (N,)
-        last_js     = np.clip(first_shad - 1, 0, n_steps - 1)                       # (N,)
-        last_ds     = ds_arr[last_js]                                                # (N,)
-
-        # Build boundary ring in (lon, lat) GeoJSON order.
-        lons_b   = lon + np.cos(thetas) * last_ds * dpmlon   # (N,)
-        lats_b   = lat + np.sin(thetas) * last_ds * dpmlat   # (N,)
-        boundary = list(zip(lons_b.tolist(), lats_b.tolist()))
-        boundary.append(boundary[0])   # close ring
-
-        poly = ShapelyPolygon(boundary)
-        if not poly.is_valid:
-            poly = poly.buffer(0)
-
-        # 7. Clip to UK mainland — removes coverage that extends into the sea.
-        if UK_MAINLAND is not None:
-            poly = poly.intersection(UK_MAINLAND)
-            if poly.is_empty:
-                log.warning(f'{node_id}: viewshed entirely at sea — skipping')
+            lons_b = lon + np.cos(thetas) * last_ds * dpmlon
+            lats_b = lat + np.sin(thetas) * last_ds * dpmlat
+            boundary = list(zip(lons_b.tolist(), lats_b.tolist()))
+            boundary.append(boundary[0])
+            poly = ShapelyPolygon(boundary)
+            clipped = clip_and_simplify_polygon(poly)
+            if clipped is None:
+                log.warning(f'{node_id}: degenerate geometry after clipping — skipping')
                 return None
-
-        # 8. Simplify (~100 m tolerance) to reduce stored polygon size.
-        result = poly.simplify(SIMPLIFY_DEG, preserve_topology=True)
-
-        if result.is_empty or result.geom_type not in ('Polygon', 'MultiPolygon'):
-            log.warning(f'{node_id}: degenerate geometry after clipping — skipping')
-            return None
-
-        return mapping(result), radius_m, elevation_m
+            geom = clipped
+            strength_geoms = {'green': geom}
+        elif COVERAGE_MODEL == 'rf_radial_100m':
+            band_boundaries, radius_m = resolve_rf_radial_boundaries(lat, lon, elev, gt, observer_h, radius_m)
+            raw_band_polys: dict[str, ShapelyPolygon] = {}
+            for band, band_boundary in band_boundaries.items():
+                if len(band_boundary) < 4:
+                    continue
+                band_poly = ShapelyPolygon(band_boundary)
+                if not band_poly.is_empty:
+                    raw_band_polys[band] = band_poly
+            strength_geoms = build_exclusive_strength_geoms(raw_band_polys)
+            geom = clip_and_simplify_polygon(raw_band_polys.get('red')) if raw_band_polys.get('red') is not None else None
+            if geom is None:
+                log.warning(f'{node_id}: degenerate RF coverage geometry after clipping — skipping')
+                return None
+        else:
+            raise ValueError(f'Unknown COVERAGE_MODEL={COVERAGE_MODEL}')
+        return geom, strength_geoms, radius_m, elevation_m
 
 # ── DB helpers ────────────────────────────────────────────────────────────────
 
 def already_calculated(db, node_id: str) -> bool:
     with db.cursor() as cur:
-        cur.execute('SELECT 1 FROM node_coverage WHERE node_id = %s', (node_id,))
+        cur.execute(
+            'SELECT 1 FROM node_coverage WHERE node_id = %s AND model_version >= %s',
+            (node_id, COVERAGE_MODEL_VERSION),
+        )
         return cur.fetchone() is not None
 
-def store_coverage(db, node_id: str, geom: dict, radius_m: float, elevation_m: float):
+def store_coverage(db, node_id: str, geom: dict, strength_geoms: dict[str, dict], radius_m: float, elevation_m: float):
     with db.cursor() as cur:
         cur.execute(
-            '''INSERT INTO node_coverage (node_id, geom, antenna_height_m, radius_m)
-               VALUES (%s, %s::jsonb, %s, %s)
+            '''INSERT INTO node_coverage (node_id, geom, strength_geoms, antenna_height_m, radius_m, model_version)
+               VALUES (%s, %s::jsonb, %s::jsonb, %s, %s, %s)
                ON CONFLICT (node_id) DO UPDATE
                  SET geom = EXCLUDED.geom,
+                     strength_geoms = EXCLUDED.strength_geoms,
                      antenna_height_m = EXCLUDED.antenna_height_m,
                      radius_m = EXCLUDED.radius_m,
+                     model_version = EXCLUDED.model_version,
                      calculated_at = NOW()''',
-            (node_id, json.dumps(geom), ANTENNA_HEIGHT_M, radius_m),
+            (node_id, json.dumps(geom), json.dumps(strength_geoms), ANTENNA_HEIGHT_M, radius_m, COVERAGE_MODEL_VERSION),
         )
         cur.execute(
             'UPDATE nodes SET elevation_m = %s WHERE node_id = %s',
@@ -695,13 +847,13 @@ def enqueue_uncovered(db, r_client):
             FROM nodes n
             LEFT JOIN node_coverage nc ON n.node_id = nc.node_id
             WHERE n.lat IS NOT NULL AND n.lon IS NOT NULL
-              AND nc.node_id IS NULL
+              AND (nc.node_id IS NULL OR nc.model_version < %s)
               AND (n.name IS NULL OR n.name NOT LIKE %s)
               AND (n.role IS NULL OR n.role = 2)
-        ''', ('%🚫%',))
+        ''', (COVERAGE_MODEL_VERSION, '%🚫%',))
         rows = cur.fetchall()
     if rows:
-        log.info(f'Queuing {len(rows)} existing node(s) for viewshed calculation')
+        log.info(f'Queuing {len(rows)} existing node(s) for viewshed calculation (model v{COVERAGE_MODEL_VERSION})')
         for node_id, lat, lon in rows:
             r_client.lpush(JOB_QUEUE, json.dumps({'node_id': node_id, 'lat': lat, 'lon': lon}))
 
@@ -735,13 +887,13 @@ def process_job(db, r_client, job: dict):
     if result is None:
         return
 
-    geom, radius_m, elevation_m = result
-    store_coverage(db, node_id, geom, radius_m, elevation_m)
+    geom, strength_geoms, radius_m, elevation_m = result
+    store_coverage(db, node_id, geom, strength_geoms, radius_m, elevation_m)
     log.info(f'Done in {time.time() - t0:.1f}s — notifying frontend')
 
     r_client.publish(LIVE_CHANNEL, json.dumps({
         'type': 'coverage_update',
-        'data': {'node_id': node_id, 'geom': geom},
+        'data': {'node_id': node_id, 'geom': geom, 'strength_geoms': strength_geoms},
         'ts':   int(time.time() * 1000),
     }))
     r_client.publish(LIVE_CHANNEL, json.dumps({
@@ -805,7 +957,10 @@ def worker_loop():
             log.error(f'{name}: job error: {exc}', exc_info=True)
 
 def main():
-    log.info(f'Viewshed worker starting (mode={WORKER_MODE})')
+    log.info(
+        f'Viewshed worker starting (mode={WORKER_MODE}, '
+        f'coverage_model={COVERAGE_MODEL}, model_version={COVERAGE_MODEL_VERSION})'
+    )
     SRTM_DIR.mkdir(parents=True, exist_ok=True)
 
     # Connect once just to enqueue any nodes that lack coverage, then hand off

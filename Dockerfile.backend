@@ -12,5 +12,6 @@ COPY backend/package.json ./
 RUN npm install --omit=dev && npm cache clean --force
 COPY --from=backend-builder /build/backend/dist ./dist
 COPY --from=backend-builder /build/backend/src/db/schema.sql ./dist/db/schema.sql
+COPY --from=backend-builder /build/backend/src/db/owner-auth.sql ./dist/db/owner-auth.sql
 EXPOSE 3000
 CMD ["node", "dist/index.js"]

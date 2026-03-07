@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 
 type HealthPayload = {
   system: {
@@ -109,16 +109,6 @@ export const HealthPage: React.FC = () => {
     };
   }, []);
 
-  const historyByWorker = useMemo(() => {
-    const grouped = new Map<string, HealthPayload['history']>();
-    for (const row of data?.history ?? []) {
-      const list = grouped.get(row.worker_name) ?? [];
-      list.push(row);
-      grouped.set(row.worker_name, list);
-    }
-    return grouped;
-  }, [data]);
-
   return (
     <>
       <section className="site-page-hero">
@@ -147,9 +137,6 @@ export const HealthPage: React.FC = () => {
           <div className="health-workers-grid">
             {(data?.workers ?? []).map((worker) => {
               const statusClass = worker.status === 'running' ? 'health-pill health-pill--ok' : 'health-pill';
-              const hist = historyByWorker.get(worker.worker_name) ?? [];
-              const peakQueue = Math.max(1, ...hist.map((h) => h.queue_depth));
-              const queueBars = hist.slice(0, 48).reverse();
               const isExpanded = expandedWorker === worker.worker_name;
               const description = workerDescriptions[worker.worker_name] ?? 'No description available for this worker.';
 
@@ -176,16 +163,6 @@ export const HealthPage: React.FC = () => {
                     <div className="health-kv"><span>Queue</span><strong>{worker.queue_depth}</strong></div>
                     <div className="health-kv"><span>Processed 1h</span><strong>{worker.processed_1h}</strong></div>
                     <div className="health-kv"><span>Last Activity</span><strong>{timeAgo(worker.last_activity_at)}</strong></div>
-                  </div>
-                  <div className="health-spark" aria-label="Recent queue depth">
-                    {queueBars.map((row, idx) => (
-                      <span
-                        key={`${worker.worker_name}-${idx}`}
-                        className="health-spark__bar"
-                        style={{ height: `${Math.max(8, (row.queue_depth / peakQueue) * 100)}%` }}
-                        title={`${new Date(row.ts).toLocaleTimeString()} queue=${row.queue_depth}`}
-                      />
-                    ))}
                   </div>
                   {isExpanded && (
                     <p className="health-card__desc">{description}</p>

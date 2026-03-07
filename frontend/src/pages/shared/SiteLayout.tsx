@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Link, NavLink, Outlet, useNavigate } from 'react-router-dom';
 
 type SiteLayoutProps = {
@@ -15,6 +15,13 @@ type NavItem = {
   enabled: boolean;
 };
 
+const OWNER_SESSION_EVENT = 'meshcore-owner-session';
+
+type OwnerSessionSummary = {
+  ok: boolean;
+  mqttUsername?: string | null;
+};
+
 function navClassName({ isActive }: { isActive: boolean }): string {
   return isActive ? 'site-nav__link site-nav__link--active' : 'site-nav__link';
 }
@@ -27,6 +34,7 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
   showStats,
 }) => {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [ownerLabel, setOwnerLabel] = useState<string | null>(null);
   const navigate = useNavigate();
 
   const navItems: NavItem[] = [
@@ -45,6 +53,38 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
     closeMenu();
     navigate(to);
   };
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadOwnerSession = () => {
+      fetch('/api/owner/session', { cache: 'no-store' })
+        .then(async (res) => {
+          if (!res.ok) return null;
+          return (await res.json()) as OwnerSessionSummary;
+        })
+        .then((json) => {
+          if (cancelled) return;
+          setOwnerLabel(json?.mqttUsername?.trim() || null);
+        })
+        .catch(() => {
+          if (cancelled) return;
+          setOwnerLabel(null);
+        });
+    };
+
+    const handleOwnerSession = (event: Event) => {
+      const detail = (event as CustomEvent<{ mqttUsername?: string | null }>).detail;
+      setOwnerLabel(detail?.mqttUsername?.trim() || null);
+    };
+
+    loadOwnerSession();
+    window.addEventListener(OWNER_SESSION_EVENT, handleOwnerSession as EventListener);
+    return () => {
+      cancelled = true;
+      window.removeEventListener(OWNER_SESSION_EVENT, handleOwnerSession as EventListener);
+    };
+  }, []);
 
   return (
     <div className="site-layout">
@@ -72,7 +112,7 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
             onClick={() => handleNavClick('/login')}
             className={({ isActive }) => isActive ? 'site-nav__app-btn site-nav__app-btn--active' : 'site-nav__app-btn'}
           >
-            Login
+            {ownerLabel ?? 'Login'}
           </NavLink>
         </div>
 

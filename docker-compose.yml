@@ -50,9 +50,11 @@ services:
       OPENTOPODATA_API: ${OPENTOPODATA_API:-https://api.opentopodata.org}
       PORT: ${PORT:-3000}
       MESHCORE_CHANNEL_SECRETS: ${MESHCORE_CHANNEL_SECRETS:-}
+      OWNER_DATABASE_URL: ${OWNER_DATABASE_URL:-postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${OWNER_POSTGRES_DB:-meshcore_owner_auth}}
       OWNER_MQTT_USERNAME_MAP: ${OWNER_MQTT_USERNAME_MAP:-}
       OWNER_COOKIE_SECRET: ${OWNER_COOKIE_SECRET:-}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3001,http://localhost:3002}
+      COVERAGE_MODEL_VERSION: ${COVERAGE_MODEL_VERSION:-2}
       NODE_ENV: production
     depends_on:
       timescaledb:
@@ -451,6 +453,8 @@ services:
       SRTM_DIR: /data/srtm
       WORKER_MODE: viewshed
       NUM_WORKERS: '1'
+      COVERAGE_MODEL: ${COVERAGE_MODEL:-terrain_los}
+      COVERAGE_MODEL_VERSION: ${COVERAGE_MODEL_VERSION:-2}
     volumes:
       - srtm_data:/data/srtm
     deploy:

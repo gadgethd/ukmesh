@@ -26,7 +26,14 @@ type OwnerDashboard = {
 type OwnerSessionResponse = {
   ok: boolean;
   dashboard: OwnerDashboard;
+  mqttUsername?: string | null;
 };
+
+const OWNER_SESSION_EVENT = 'meshcore-owner-session';
+
+function publishOwnerSession(mqttUsername: string | null) {
+  window.dispatchEvent(new CustomEvent(OWNER_SESSION_EVENT, { detail: { mqttUsername } }));
+}
 
 type LivePeer = {
   node_id: string;
@@ -55,6 +62,21 @@ type OwnerLiveResponse = {
   nodeId: string;
   ownerNode: OwnerNode;
   incomingPeers: LivePeer[];
+  heardBy: Array<LivePeer & { packets_7d: number; best_hops: number | null }>;
+  linkHealth: Array<{
+    peer_node_id: string;
+    peer_name: string | null;
+    peer_network: string | null;
+    owner_to_peer: number;
+    peer_to_owner: number;
+    observed_count: number;
+    itm_path_loss_db: number | null;
+    itm_viable: boolean | null;
+    force_viable: boolean;
+    last_observed: string | null;
+  }>;
+  advertTrend24h: Array<{ bucket: string; adverts: number }>;
+  alerts: Array<{ level: 'info' | 'warn' | 'error'; message: string }>;
   recentPackets: LivePacket[];
 };
 
@@ -100,6 +122,53 @@ function cleanPacketBody(packet: LivePacket): string | null {
   return body;
 }
 
+function formatCompactTs(ts: string | null): string {
+  if (!ts) return '-';
+  return new Date(ts).toLocaleString([], {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function formatPathLoss(value: number | null): string {
+  if (value == null || !Number.isFinite(value)) return '-';
+  return `${value.toFixed(1)} dB`;
+}
+
+function linkBadge(link: OwnerLiveResponse['linkHealth'][number]): string {
+  if (link.force_viable) return 'Forced';
+  if (link.itm_viable) return 'Viable';
+  if (link.itm_path_loss_db != null && link.itm_path_loss_db <= 137.88) return 'Weak';
+  return 'Unproven';
+}
+
+const TrendBars: React.FC<{ points: Array<{ bucket: string; adverts: number }> }> = ({ points }) => {
+  const max = Math.max(1, ...points.map((point) => point.adverts));
+  return (
+    <div className="owner-trend">
+      <div className="owner-trend__bars" aria-label="Advert trend for the last 24 hours">
+        {points.map((point) => {
+          const height = Math.max(10, Math.round((point.adverts / max) * 100));
+          return (
+            <div
+              key={point.bucket}
+              className="owner-trend__bar"
+              title={`${formatCompactTs(point.bucket)} · ${point.adverts} advert${point.adverts === 1 ? '' : 's'}`}
+              style={{ height: `${height}%` }}
+            />
+          );
+        })}
+      </div>
+      <div className="owner-trend__meta">
+        <span>24h advert trend</span>
+        <strong>{points.reduce((sum, point) => sum + point.adverts, 0)}</strong>
+      </div>
+    </div>
+  );
+};
+
 const MAP_CENTER: LatLngExpression = [54.6, -1.2];
 
 const FitToNodes: React.FC<{ points: Array<{ lat: number; lon: number }> }> = ({ points }) => {
@@ -139,6 +208,7 @@ export const OwnerPortalPage: React.FC = () => {
       .then((json) => {
         if (cancelled) return;
         setDashboard(json?.dashboard ?? null);
+        publishOwnerSession(json?.mqttUsername ?? null);
         if (json?.dashboard?.nodes?.[0]?.node_id) {
           setSelectedNodeId(json.dashboard.nodes[0].node_id);
         }
@@ -147,6 +217,7 @@ export const OwnerPortalPage: React.FC = () => {
       .catch(() => {
         if (cancelled) return;
         setDashboard(null);
+        publishOwnerSession(null);
         setLoading(false);
       });
     return () => {
@@ -179,6 +250,7 @@ export const OwnerPortalPage: React.FC = () => {
       })
       .then((json) => {
         setDashboard(json.dashboard);
+        publishOwnerSession(json.mqttUsername ?? mqttUsername.trim());
         if (json.dashboard.nodes[0]?.node_id) {
           setSelectedNodeId(json.dashboard.nodes[0].node_id);
         }
@@ -197,6 +269,7 @@ export const OwnerPortalPage: React.FC = () => {
         setDashboard(null);
         setLive(null);
         setError(null);
+        publishOwnerSession(null);
       });
   };
 
@@ -258,6 +331,18 @@ export const OwnerPortalPage: React.FC = () => {
     [live],
   );
 
+  const strongestLink = useMemo(() => {
+    const links = live?.linkHealth ?? [];
+    return links
+      .filter((link) => link.itm_path_loss_db != null)
+      .sort((a, b) => (a.itm_path_loss_db ?? Number.POSITIVE_INFINITY) - (b.itm_path_loss_db ?? Number.POSITIVE_INFINITY))[0] ?? null;
+  }, [live]);
+
+  const viableLinkCount = useMemo(
+    () => (live?.linkHealth ?? []).filter((link) => link.itm_viable || link.force_viable).length,
+    [live],
+  );
+
   return (
     <>
       <section className="site-page-hero">
@@ -269,7 +354,7 @@ export const OwnerPortalPage: React.FC = () => {
         </div>
       </section>
 
-      <div className="site-content site-prose">
+      <div className="site-content site-prose site-prose--wide">
         {loading ? <p className="prose-note">Checking login session...</p> : null}
         {!loading && !dashboard ? (
           <section className="prose-section owner-login">
@@ -341,121 +426,182 @@ export const OwnerPortalPage: React.FC = () => {
                 <div className="site-stat"><span className="site-stat__value">{live?.ownerNode.advert_count ?? 0}</span><span className="site-stat__label">Adverts</span></div>
                 <div className="site-stat"><span className="site-stat__value">{fmtTs(live?.ownerNode.last_seen ?? null)}</span><span className="site-stat__label">Last Seen</span></div>
                 <div className="site-stat"><span className="site-stat__value">{live?.incomingPeers.length ?? 0}</span><span className="site-stat__label">Direct Senders (24h)</span></div>
+                <div className="site-stat"><span className="site-stat__value">{live?.heardBy.length ?? 0}</span><span className="site-stat__label">Heard By (7d)</span></div>
+                <div className="site-stat"><span className="site-stat__value">{viableLinkCount}</span><span className="site-stat__label">Viable Links</span></div>
+                <div className="site-stat"><span className="site-stat__value">{strongestLink?.peer_name ?? '-'}</span><span className="site-stat__label">Strongest Link</span></div>
+                <div className="site-stat"><span className="site-stat__value">{formatPathLoss(strongestLink?.itm_path_loss_db ?? null)}</span><span className="site-stat__label">Best Path Loss</span></div>
+                <div className="site-stat"><span className="site-stat__value">{(live?.advertTrend24h ?? []).reduce((sum, point) => sum + point.adverts, 0)}</span><span className="site-stat__label">Adverts (24h)</span></div>
+                <div className="site-stat"><span className="site-stat__value">{dashboard.totals.packets24h}</span><span className="site-stat__label">Packets Sent (24h)</span></div>
               </div>
               {liveError ? <p className="prose-note owner-login__error">Live data error: {liveError}</p> : null}
             </section>
 
-            <section className="prose-section">
-              <h2>Direct Sender Map</h2>
-              <p className="prose-note">Fixed view for 0-hop direct senders in the last 24 hours. Nodes at 0,0 are hidden from this map.</p>
-              <div className="owner-map-wrap">
-                <MapContainer
-                  center={MAP_CENTER}
-                  zoom={7}
-                  className="owner-map"
-                  zoomControl={false}
-                  dragging={false}
-                  scrollWheelZoom={false}
-                  doubleClickZoom={false}
-                  boxZoom={false}
-                  keyboard={false}
-                  touchZoom={false}
-                >
-                  <TileLayer
-                    attribution='&copy; OpenStreetMap contributors &copy; CARTO'
-                    url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
-                  />
-                  <FitToNodes points={mapPoints} />
-                  {ownerCoord ? (
-                    <CircleMarker center={[ownerCoord.lat, ownerCoord.lon]} radius={8} pathOptions={{ color: '#00c4ff', weight: 2 }}>
-                      <Popup>
-                        <strong>{live?.ownerNode.name ?? 'Owner repeater'}</strong><br />
-                        {live?.ownerNode.network} · {live?.ownerNode.iata ?? '-'}
-                      </Popup>
-                    </CircleMarker>
-                  ) : null}
-                  {mapPeers.map((peer) => (
-                    <CircleMarker key={peer.node_id} center={[peer.lat, peer.lon]} radius={6} pathOptions={{ color: '#ffb300', weight: 2 }}>
-                      <Popup>
-                        <strong>{peer.name ?? peer.node_id}</strong><br />
-                        {peer.network ?? 'Unknown'} · {peer.iata ?? '-'}<br />
-                        Packets 24h: {peer.packets_24h}
-                      </Popup>
-                    </CircleMarker>
-                  ))}
-                  {ownerCoord
-                    ? mapPeers.map((peer) => (
-                      <Polyline
-                        key={`link-${peer.node_id}`}
-                        positions={[
-                          [ownerCoord.lat, ownerCoord.lon],
-                          [peer.lat, peer.lon],
-                        ]}
-                        pathOptions={{ color: '#00c4ff', weight: 1.5, opacity: 0.6 }}
-                      />
-                    ))
-                    : null}
-                </MapContainer>
-              </div>
-            </section>
-
-            <section className="prose-section">
-              <h2>Direct Senders (24h)</h2>
-              <div className="owner-table-wrap">
-                <table className="owner-table">
-                  <thead>
-                    <tr>
-                      <th>Name</th>
-                      <th>Network</th>
-                      <th>IATA</th>
-                      <th>Packets 24h</th>
-                      <th>Last Seen</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(live?.incomingPeers ?? []).map((peer) => (
-                      <tr key={peer.node_id}>
-                        <td>{peer.name ?? peer.node_id}</td>
-                        <td>{peer.network ?? '-'}</td>
-                        <td>{peer.iata ?? '-'}</td>
-                        <td>{peer.packets_24h}</td>
-                        <td>{fmtTs(peer.last_seen)}</td>
-                      </tr>
-                    ))}
-                    {(live?.incomingPeers ?? []).length === 0 ? (
-                      <tr>
-                        <td colSpan={5}>No direct sender nodes found in the last 24 hours.</td>
-                      </tr>
+            <div className="owner-dashboard-grid">
+              <section className="prose-section owner-panel owner-panel--map">
+                <div className="owner-panel__head">
+                  <div>
+                    <h2>Direct Sender Map</h2>
+                    <p className="prose-note">0-hop direct senders in the last 24 hours. Nodes at 0,0 are hidden.</p>
+                  </div>
+                </div>
+                <div className="owner-map-wrap">
+                  <MapContainer
+                    center={MAP_CENTER}
+                    zoom={7}
+                    className="owner-map"
+                    zoomControl={false}
+                    dragging={false}
+                    scrollWheelZoom={false}
+                    doubleClickZoom={false}
+                    boxZoom={false}
+                    keyboard={false}
+                    touchZoom={false}
+                  >
+                    <TileLayer
+                      attribution='&copy; OpenStreetMap contributors &copy; CARTO'
+                      url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+                    />
+                    <FitToNodes points={mapPoints} />
+                    {ownerCoord ? (
+                      <CircleMarker center={[ownerCoord.lat, ownerCoord.lon]} radius={8} pathOptions={{ color: '#00c4ff', weight: 2 }}>
+                        <Popup>
+                          <strong>{live?.ownerNode.name ?? 'Owner repeater'}</strong><br />
+                          {live?.ownerNode.network} · {live?.ownerNode.iata ?? '-'}
+                        </Popup>
+                      </CircleMarker>
                     ) : null}
-                  </tbody>
-                </table>
-              </div>
-            </section>
+                    {mapPeers.map((peer) => (
+                      <CircleMarker key={peer.node_id} center={[peer.lat, peer.lon]} radius={6} pathOptions={{ color: '#ffb300', weight: 2 }}>
+                        <Popup>
+                          <strong>{peer.name ?? peer.node_id}</strong><br />
+                          {peer.network ?? 'Unknown'} · {peer.iata ?? '-'}<br />
+                          Packets 24h: {peer.packets_24h}
+                        </Popup>
+                      </CircleMarker>
+                    ))}
+                    {ownerCoord
+                      ? mapPeers.map((peer) => (
+                        <Polyline
+                          key={`link-${peer.node_id}`}
+                          positions={[
+                            [ownerCoord.lat, ownerCoord.lon],
+                            [peer.lat, peer.lon],
+                          ]}
+                          pathOptions={{ color: '#00c4ff', weight: 1.5, opacity: 0.6 }}
+                        />
+                      ))
+                      : null}
+                  </MapContainer>
+                </div>
+              </section>
 
-            <section className="prose-section">
-              <h2>Live Packets Received By Repeater</h2>
-              <div className="owner-packets">
-                {(live?.recentPackets ?? []).map((packet, idx) => (
-                  <article key={`${packet.time}-${packet.packet_hash ?? `row-${idx}`}`} className="owner-packet">
-                    <div className="owner-packet__head">
-                      <strong>{PACKET_LABELS[Number(packet.packet_type ?? -1)] ?? `Type ${packet.packet_type ?? '?'}`}</strong>
-                      <span>{fmtTs(packet.time)}</span>
-                    </div>
-                    <div className="owner-packet__meta">
-                      <span>From Node: {packet.src_node_name ?? packet.src_node_id ?? '-'}</span>
-                      <span>Sender: {packet.sender ?? '-'}</span>
-                      <span>Hops: {packet.hop_count ?? '-'}</span>
-                      <span>Route: {ROUTE_LABELS[Number(packet.route_type ?? -1)] ?? (packet.route_type ?? '-')}</span>
-                      <span>Hash: {packet.packet_hash ?? '-'}</span>
-                    </div>
-                    {cleanPacketBody(packet) ? <p className="owner-packet__body">{cleanPacketBody(packet)}</p> : null}
-                  </article>
-                ))}
-                {(live?.recentPackets ?? []).length === 0 ? (
-                  <p className="prose-note">No packets received by this repeater yet.</p>
-                ) : null}
-              </div>
-            </section>
+              <section className="prose-section owner-panel owner-panel--alerts">
+                <div className="owner-panel__head"><h2>Alerts</h2></div>
+                <div className="owner-alerts">
+                  {(live?.alerts ?? []).map((alert, idx) => (
+                    <article key={`${alert.level}-${idx}`} className={`owner-alert owner-alert--${alert.level}`}>
+                      <strong>{alert.level.toUpperCase()}</strong>
+                      <span>{alert.message}</span>
+                    </article>
+                  ))}
+                </div>
+              </section>
+
+              <section className="prose-section owner-panel owner-panel--trend">
+                <div className="owner-panel__head"><h2>Advert Trend</h2></div>
+                <TrendBars points={live?.advertTrend24h ?? []} />
+              </section>
+
+              <section className="prose-section owner-panel owner-panel--links">
+                <div className="owner-panel__head"><h2>RF Link Health</h2></div>
+                <div className="owner-list">
+                  {(live?.linkHealth ?? []).slice(0, 8).map((link) => (
+                    <article key={link.peer_node_id} className="owner-list__row">
+                      <div className="owner-list__primary">
+                        <strong>{link.peer_name ?? link.peer_node_id}</strong>
+                        <span>{link.peer_network ?? '-'}</span>
+                      </div>
+                      <div className="owner-list__metrics">
+                        <span>{linkBadge(link)}</span>
+                        <span>{formatPathLoss(link.itm_path_loss_db)}</span>
+                        <span>{link.owner_to_peer}/{link.peer_to_owner}</span>
+                        <span>{link.observed_count} obs</span>
+                      </div>
+                    </article>
+                  ))}
+                  {(live?.linkHealth ?? []).length === 0 ? (
+                    <p className="prose-note">No link health data has been calculated for this repeater yet.</p>
+                  ) : null}
+                </div>
+              </section>
+
+              <section className="prose-section owner-panel owner-panel--heard">
+                <div className="owner-panel__head"><h2>Heard By</h2></div>
+                <div className="owner-list">
+                  {(live?.heardBy ?? []).slice(0, 8).map((peer) => (
+                    <article key={peer.node_id} className="owner-list__row">
+                      <div className="owner-list__primary">
+                        <strong>{peer.name ?? peer.node_id}</strong>
+                        <span>{peer.network ?? '-'} · {peer.iata ?? '-'}</span>
+                      </div>
+                      <div className="owner-list__metrics">
+                        <span>{peer.packets_24h} / 24h</span>
+                        <span>{peer.packets_7d} / 7d</span>
+                        <span>{peer.best_hops == null ? '-' : `${peer.best_hops} hops`}</span>
+                      </div>
+                    </article>
+                  ))}
+                  {(live?.heardBy ?? []).length === 0 ? (
+                    <p className="prose-note">No nodes have heard this repeater in the last 7 days.</p>
+                  ) : null}
+                </div>
+              </section>
+
+              <section className="prose-section owner-panel owner-panel--senders">
+                <div className="owner-panel__head"><h2>Direct Senders</h2></div>
+                <div className="owner-list">
+                  {(live?.incomingPeers ?? []).slice(0, 8).map((peer) => (
+                    <article key={peer.node_id} className="owner-list__row">
+                      <div className="owner-list__primary">
+                        <strong>{peer.name ?? peer.node_id}</strong>
+                        <span>{peer.network ?? '-'} · {peer.iata ?? '-'}</span>
+                      </div>
+                      <div className="owner-list__metrics">
+                        <span>{peer.packets_24h} / 24h</span>
+                        <span>{formatCompactTs(peer.last_seen)}</span>
+                      </div>
+                    </article>
+                  ))}
+                  {(live?.incomingPeers ?? []).length === 0 ? (
+                    <p className="prose-note">No direct sender nodes found in the last 24 hours.</p>
+                  ) : null}
+                </div>
+              </section>
+
+              <section className="prose-section owner-panel owner-panel--packets">
+                <div className="owner-panel__head"><h2>Live Packets Received By Repeater</h2></div>
+                <div className="owner-packets">
+                  {(live?.recentPackets ?? []).map((packet, idx) => (
+                    <article key={`${packet.time}-${packet.packet_hash ?? `row-${idx}`}`} className="owner-packet">
+                      <div className="owner-packet__head">
+                        <strong>{PACKET_LABELS[Number(packet.packet_type ?? -1)] ?? `Type ${packet.packet_type ?? '?'}`}</strong>
+                        <span>{fmtTs(packet.time)}</span>
+                      </div>
+                      <div className="owner-packet__meta">
+                        <span>From: {packet.src_node_name ?? packet.src_node_id ?? '-'}</span>
+                        <span>Sender: {packet.sender ?? '-'}</span>
+                        <span>Hops: {packet.hop_count ?? '-'}</span>
+                        <span>Route: {ROUTE_LABELS[Number(packet.route_type ?? -1)] ?? (packet.route_type ?? '-')}</span>
+                      </div>
+                      {cleanPacketBody(packet) ? <p className="owner-packet__body">{cleanPacketBody(packet)}</p> : null}
+                    </article>
+                  ))}
+                  {(live?.recentPackets ?? []).length === 0 ? (
+                    <p className="prose-note">No packets received by this repeater yet.</p>
+                  ) : null}
+                </div>
+              </section>
+            </div>
 
           </>
         ) : null}

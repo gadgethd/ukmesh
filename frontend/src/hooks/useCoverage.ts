@@ -3,6 +3,7 @@ import { useState, useCallback, useEffect } from 'react';
 export interface NodeCoverage {
   node_id:          string;
   geom:             { type: string; coordinates: unknown };
+  strength_geoms?:  Partial<Record<'green' | 'amber' | 'red', { type: string; coordinates: unknown }>>;
   antenna_height_m?: number;
   radius_m?:        number;
   calculated_at?:   string;
@@ -21,10 +22,10 @@ export function useCoverage(network?: string) {
   }, [network]);
 
   // Called when a coverage_update WS message arrives
-  const handleCoverageUpdate = useCallback((update: { node_id: string; geom: NodeCoverage['geom'] }) => {
+  const handleCoverageUpdate = useCallback((update: { node_id: string; geom: NodeCoverage['geom']; strength_geoms?: NodeCoverage['strength_geoms'] }) => {
     setCoverage((prev) => {
       const filtered = prev.filter((c) => c.node_id !== update.node_id);
-      return [...filtered, { node_id: update.node_id, geom: update.geom }];
+      return [...filtered, { node_id: update.node_id, geom: update.geom, strength_geoms: update.strength_geoms }];
     });
   }, []);
 

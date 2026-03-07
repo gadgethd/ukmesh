@@ -21,7 +21,11 @@ type UseAppMessageHandlerParams = {
   handlePacket: (data: LivePacketData) => void;
   handleNodeUpdate: (data: { nodeId: string; ts: number }) => void;
   handleNodeUpsert: (data: Partial<MeshNode> & { node_id: string }) => void;
-  handleCoverageUpdate: (data: { node_id: string; geom: { type: string; coordinates: unknown } }) => void;
+  handleCoverageUpdate: (data: {
+    node_id: string;
+    geom: { type: string; coordinates: unknown };
+    strength_geoms?: Partial<Record<'green' | 'amber' | 'red', { type: string; coordinates: unknown }>>;
+  }) => void;
   applyInitialViablePairs: (pairs?: [string, string][]) => void;
   applyInitialViableLinks: (links?: ViableLinkSnapshot[]) => void;
   applyLinkUpdate: (update: {
@@ -76,7 +80,11 @@ export function useAppMessageHandler({
     }
 
     if (msg.type === 'coverage_update') {
-      handleCoverageUpdate(msg.data as { node_id: string; geom: { type: string; coordinates: unknown } });
+      handleCoverageUpdate(msg.data as {
+        node_id: string;
+        geom: { type: string; coordinates: unknown };
+        strength_geoms?: Partial<Record<'green' | 'amber' | 'red', { type: string; coordinates: unknown }>>;
+      });
       return;
     }
 
