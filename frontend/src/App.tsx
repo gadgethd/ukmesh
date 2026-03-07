@@ -120,6 +120,7 @@ export const App: React.FC = () => {
           src_node_id?: string;
           packet_type?: number;
           hop_count?: number;
+          summary?: string | null;
           payload?: Record<string, unknown>;
           advert_count?: number | null;
           path_hashes?: string[] | null;
@@ -269,12 +270,13 @@ export const App: React.FC = () => {
       />
 
       {filters.livePackets && (
-        <PacketFeed
-          packets={packets}
-          nodes={nodes}
-          onPacketClick={handlePacketPin}
-          pinnedPacketId={pinnedPacketId}
-        />
+      <PacketFeed
+        packets={packets}
+        nodes={nodes}
+        mqttObserverCount={stats.mqttNodes}
+        onPacketClick={handlePacketPin}
+        pinnedPacketId={pinnedPacketId}
+      />
       )}
 
       {showDisclaimer && <DisclaimerModal onClose={dismissDisclaimer} />}

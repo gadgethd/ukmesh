@@ -87,6 +87,7 @@ export function usePacketPathOverlay({
   const [pathOpacity, setPathOpacity] = useState(0.75);
 
   const pinnedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pinnedLastObserverIdsRef = useRef<string[]>([]);
   const pathTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pathFadeRef = useRef<number | null>(null);
   const betaReqRef = useRef<AbortController | null>(null);
@@ -239,7 +240,9 @@ export function usePacketPathOverlay({
 
     const p = fetchServerBeta(packetHash, networkName, observerId)
       .then((prediction) => {
-        predictionCacheRef.current.set(key, { prediction, ts: Date.now() });
+        if (prediction !== null) {
+          predictionCacheRef.current.set(key, { prediction, ts: Date.now() });
+        }
         return prediction;
       })
       .catch(() => null)
@@ -326,6 +329,7 @@ export function usePacketPathOverlay({
   const handlePacketPin = useCallback((packet: AggregatedPacket) => {
     if (pinnedPacketId === packet.id) {
       setPinnedPacketId(null);
+      pinnedLastObserverIdsRef.current = [];
       if (pinnedTimerRef.current) {
         clearTimeout(pinnedTimerRef.current);
         pinnedTimerRef.current = null;
@@ -365,6 +369,7 @@ export function usePacketPathOverlay({
       setBetaRemainingHops(null);
     }
 
+    pinnedLastObserverIdsRef.current = observerIds;
     setPathOpacity(0.75);
     setPinnedPacketId(packet.id);
 
@@ -380,12 +385,37 @@ export function usePacketPathOverlay({
           pathFadeRef.current = null;
           clearPathState();
           setPinnedPacketId(null);
+          pinnedLastObserverIdsRef.current = [];
           pinnedTimerRef.current = null;
         }
       };
       pathFadeRef.current = requestAnimationFrame(animate);
     }, 30_000);
   }, [pinnedPacketId, network, observer, stopPathTimers, clearPathState, applyServerPredictions, resolvePrediction, packetObserverIds]);
+
+  // Re-fetch beta paths when the pinned packet gains new observers
+  useEffect(() => {
+    if (!pinnedPacketId) return;
+    const pinnedPacket = packets.find((p) => p.id === pinnedPacketId);
+    if (!pinnedPacket?.packetHash || !pinnedPacket.path?.length) return;
+
+    const currentObserverIds = packetObserverIds(pinnedPacket);
+    const previousIds = pinnedLastObserverIdsRef.current;
+    const hasNewObservers = currentObserverIds.some((id) => !previousIds.includes(id));
+    if (!hasNewObservers) return;
+
+    pinnedLastObserverIdsRef.current = currentObserverIds;
+    const reqSeq = ++activeReqSeqRef.current;
+    void Promise.all(currentObserverIds.map((observerId) => resolvePrediction(pinnedPacket.packetHash, network, observerId)))
+      .then((predictions) => {
+        if (reqSeq !== activeReqSeqRef.current) return;
+        applyServerPredictions(pinnedPacket.packetHash, predictions);
+      })
+      .catch(() => {
+        if (reqSeq !== activeReqSeqRef.current) return;
+        applyServerPredictions(pinnedPacket.packetHash, []);
+      });
+  }, [pinnedPacketId, packets, network, packetObserverIds, resolvePrediction, applyServerPredictions]);
 
   useEffect(() => () => {
     stopPathTimers();

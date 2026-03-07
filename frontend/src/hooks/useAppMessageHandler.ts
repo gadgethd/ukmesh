@@ -13,6 +13,7 @@ type UseAppMessageHandlerParams = {
       src_node_id?: string;
       packet_type?: number;
       hop_count?: number;
+      summary?: string | null;
       payload?: Record<string, unknown>;
       advert_count?: number | null;
       path_hashes?: string[] | null;

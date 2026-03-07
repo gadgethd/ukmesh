@@ -159,11 +159,15 @@ export async function insertPacket(p: {
   rssi?: number;
   snr?: number;
   payload?: Record<string, unknown>;
+  summary?: string;
   rawHex: string;
   advertCount?: number;
   pathHashes?: string[];
   network?: string;
 }): Promise<void> {
+  const storedPayload = p.payload
+    ? (p.summary ? { ...p.payload, _summary: p.summary } : p.payload)
+    : (p.summary ? { _summary: p.summary } : null);
   await pool.query(
     `INSERT INTO packets
        (time, packet_hash, rx_node_id, src_node_id, topic, packet_type, route_type,
@@ -171,7 +175,7 @@ export async function insertPacket(p: {
      VALUES (NOW(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
     [p.packetHash, p.rxNodeId, p.srcNodeId, p.topic, p.packetType,
      p.routeType, p.hopCount, p.rssi, p.snr,
-     p.payload ? JSON.stringify(p.payload) : null, p.rawHex, p.advertCount ?? null,
+     storedPayload ? JSON.stringify(storedPayload) : null, p.rawHex, p.advertCount ?? null,
      p.pathHashes ?? null, p.network ?? 'teesside']
   );
 }
@@ -200,14 +204,51 @@ export async function getNodeHistory(nodeId: string, hours = 24) {
 
 export async function getRecentPackets(limit = 200, network?: string, observer?: string) {
   const scope = buildScopePlaceholders(2, network, observer);
+  const params: unknown[] = [limit, ...scope.params];
   const res = await pool.query(
-    `SELECT time, packet_hash, rx_node_id, src_node_id, topic,
-            packet_type, hop_count, rssi, snr, payload
-     FROM packets
-     WHERE time > NOW() - INTERVAL '5 minutes'
-     ${buildPacketScopeClause(scope)}
-     ORDER BY time DESC LIMIT $1`,
-    [limit, ...scope.params]
+    `SELECT * FROM (
+       SELECT DISTINCT ON (p.packet_hash)
+              p.time, p.packet_hash, p.rx_node_id, p.src_node_id, p.topic,
+              p.packet_type, p.hop_count, p.rssi, p.snr, p.payload,
+              p.payload->>'_summary' AS summary,
+              p.advert_count, p.path_hashes,
+              (
+                SELECT ARRAY_AGG(DISTINCT p2.rx_node_id ORDER BY p2.rx_node_id)
+                FROM packets p2
+                WHERE p2.packet_hash = p.packet_hash
+                  AND p2.time > NOW() - INTERVAL '5 minutes'
+                  AND p2.rx_node_id IS NOT NULL
+                  ${buildPacketScopeClause(scope, 'p2')}
+              ) AS observer_node_ids,
+              (
+                SELECT COUNT(*)::int
+                FROM packets p2
+                WHERE p2.packet_hash = p.packet_hash
+                  AND p2.time > NOW() - INTERVAL '5 minutes'
+                  AND COALESCE(p2.payload->>'direction', 'rx') <> 'tx'
+                  ${buildPacketScopeClause(scope, 'p2')}
+              ) AS rx_count,
+              (
+                SELECT COUNT(*)::int
+                FROM packets p2
+                WHERE p2.packet_hash = p.packet_hash
+                  AND p2.time > NOW() - INTERVAL '5 minutes'
+                  AND COALESCE(p2.payload->>'direction', 'rx') = 'tx'
+                  ${buildPacketScopeClause(scope, 'p2')}
+              ) AS tx_count
+       FROM packets p
+       WHERE p.time > NOW() - INTERVAL '5 minutes'
+         ${buildPacketScopeClause(scope, 'p')}
+       ORDER BY p.packet_hash,
+                CASE WHEN p.payload ? 'appData' THEN 1 ELSE 0 END DESC,
+                CASE WHEN p.src_node_id IS NOT NULL THEN 1 ELSE 0 END DESC,
+                CASE WHEN p.advert_count IS NOT NULL THEN 1 ELSE 0 END DESC,
+                CASE WHEN p.packet_type = 4 THEN 1 ELSE 0 END DESC,
+                p.time DESC
+     ) deduped
+     ORDER BY time DESC
+     LIMIT $1`,
+    params
   );
   return res.rows;
 }
@@ -220,7 +261,7 @@ export async function getLastNPackets(n: number, network?: string, observer?: st
   const res = await pool.query(
     `SELECT * FROM (
        SELECT DISTINCT ON (p.packet_hash) p.time, p.packet_hash, p.rx_node_id, p.src_node_id,
-              p.packet_type, p.hop_count, p.payload, p.advert_count, p.path_hashes,
+              p.packet_type, p.hop_count, p.payload, p.payload->>'_summary' AS summary, p.advert_count, p.path_hashes,
               (
                 SELECT ARRAY_AGG(DISTINCT p2.rx_node_id ORDER BY p2.rx_node_id)
                 FROM packets p2
@@ -228,12 +269,29 @@ export async function getLastNPackets(n: number, network?: string, observer?: st
                   AND p2.time > NOW() - INTERVAL '24 hours'
                   AND p2.rx_node_id IS NOT NULL
                   ${buildPacketScopeClause(scope, 'p2')}
-              ) AS observer_node_ids
+              ) AS observer_node_ids,
+              (
+                SELECT COUNT(*)::int
+                FROM packets p2
+                WHERE p2.packet_hash = p.packet_hash
+                  AND p2.time > NOW() - INTERVAL '24 hours'
+                  AND COALESCE(p2.payload->>'direction', 'rx') <> 'tx'
+                  ${buildPacketScopeClause(scope, 'p2')}
+              ) AS rx_count,
+              (
+                SELECT COUNT(*)::int
+                FROM packets p2
+                WHERE p2.packet_hash = p.packet_hash
+                  AND p2.time > NOW() - INTERVAL '24 hours'
+                  AND COALESCE(p2.payload->>'direction', 'rx') = 'tx'
+                  ${buildPacketScopeClause(scope, 'p2')}
+              ) AS tx_count
        FROM packets p
        WHERE p.time > NOW() - INTERVAL '24 hours' ${buildPacketScopeClause(scope, 'p')}
        ORDER BY p.packet_hash,
                 CASE WHEN payload ? 'appData' THEN 1 ELSE 0 END DESC,
                 CASE WHEN src_node_id IS NOT NULL THEN 1 ELSE 0 END DESC,
+                CASE WHEN advert_count IS NOT NULL THEN 1 ELSE 0 END DESC,
                 CASE WHEN packet_type = 4 THEN 1 ELSE 0 END DESC,
                 CASE WHEN payload->>'direction' = 'tx' THEN 1 ELSE 0 END DESC,
                 p.time DESC
