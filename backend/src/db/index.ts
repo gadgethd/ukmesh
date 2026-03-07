@@ -137,7 +137,7 @@ export async function getRecentPackets(limit = 200) {
 
 export async function getLastNPackets(n: number, network?: string) {
   // DISTINCT ON deduplicates by hash (same packet heard by multiple observers),
-  // picking the most recent observation per hash within the last 24 hours.
+  // preferring the richest observation per hash within the last 24 hours.
   const nFilter = network ? 'AND network = $2' : '';
   const params: unknown[] = network ? [n, network] : [n];
   const res = await pool.query(
@@ -146,7 +146,12 @@ export async function getLastNPackets(n: number, network?: string) {
               packet_type, hop_count, payload, advert_count, path_hashes
        FROM packets
        WHERE time > NOW() - INTERVAL '24 hours' ${nFilter}
-       ORDER BY packet_hash, time DESC
+       ORDER BY packet_hash,
+                CASE WHEN payload ? 'appData' THEN 1 ELSE 0 END DESC,
+                CASE WHEN src_node_id IS NOT NULL THEN 1 ELSE 0 END DESC,
+                CASE WHEN packet_type = 4 THEN 1 ELSE 0 END DESC,
+                CASE WHEN payload->>'direction' = 'tx' THEN 1 ELSE 0 END DESC,
+                time DESC
      ) deduped
      ORDER BY time DESC LIMIT $1`,
     params

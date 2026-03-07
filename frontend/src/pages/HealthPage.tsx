@@ -33,6 +33,15 @@ type HealthPayload = {
     stale_threshold_minutes: number;
     global_last_packet_at: string | null;
   };
+  path_hashes: {
+    last_24h_hops: {
+      one_byte: number;
+      two_byte: number;
+      three_byte: number;
+    };
+    multibyte_packets_24h: number;
+    latest_multibyte_at: string | null;
+  };
 };
 
 function timeAgo(ts: string | null): string {
@@ -190,6 +199,34 @@ export const HealthPage: React.FC = () => {
             <div className="health-kv"><span>CPU 1m Load</span><strong>{Number(data?.system.cpu.load_1m ?? 0).toFixed(2)} ({data?.system.cpu.count ?? 0} cores)</strong></div>
             <div className="health-kv"><span>Memory</span><strong>{fmtInt(data?.system.memory.used_mb)} / {fmtInt(data?.system.memory.total_mb)} MB</strong></div>
             <div className="health-kv"><span>Disk</span><strong>{fmtGb(data?.system.disk.used_gb)} / {fmtGb(data?.system.disk.total_gb)}</strong></div>
+          </div>
+        </section>
+
+        <section className="prose-section">
+          <h2>Path Hashes</h2>
+          <div className="site-stats-grid site-stats-grid--4 health-system-grid">
+            <div className="site-stat">
+              <span className="site-stat__value">{fmtInt(data?.path_hashes.last_24h_hops.one_byte)}</span>
+              <span className="site-stat__label">1-byte Hops (24h)</span>
+            </div>
+            <div className="site-stat">
+              <span className="site-stat__value">{fmtInt(data?.path_hashes.last_24h_hops.two_byte)}</span>
+              <span className="site-stat__label">2-byte Hops (24h)</span>
+            </div>
+            <div className="site-stat">
+              <span className="site-stat__value">{fmtInt(data?.path_hashes.last_24h_hops.three_byte)}</span>
+              <span className="site-stat__label">3-byte Hops (24h)</span>
+            </div>
+            <div className="site-stat">
+              <span className="site-stat__value">{fmtInt(data?.path_hashes.multibyte_packets_24h)}</span>
+              <span className="site-stat__label">Multibyte Packets (24h)</span>
+            </div>
+          </div>
+          <div className="health-meta">
+            <div className="health-kv">
+              <span>Latest Multibyte Packet</span>
+              <strong>{data?.path_hashes.latest_multibyte_at ? timeAgo(data.path_hashes.latest_multibyte_at) : 'not seen yet'}</strong>
+            </div>
           </div>
         </section>
       </div>

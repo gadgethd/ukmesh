@@ -1,5 +1,12 @@
 import 'node:process';
 import { initDb, query } from '../db/index.js';
+import {
+  buildNodePathHashIndex,
+  countNodesForPathHash,
+  getNodesForPathHash,
+  nodeMatchesPathHash,
+  normalizePathHash,
+} from '../path-hash/utils.js';
 
 const RUN_INTERVAL_MS = Number(process.env['PATH_SIM_INTERVAL_MS'] ?? 6 * 60 * 60 * 1000);
 const PERM_BUCKET_CAP = Number(process.env['PATH_SIM_PERM_BUCKET_CAP'] ?? 50);
@@ -274,14 +281,14 @@ function lookupCalibration(model: LearningModel, network: string): { scale: numb
 function localHexClashPenalty(
   candidate: SimNode,
   current: SimNode,
+  pathHash: string,
   prefixCounts: Map<string, number>,
   byPrefix: Map<string, SimNode[]>,
   weakAdjacency: Map<string, Set<string>>,
 ): number {
-  const prefix = candidate.node_id.slice(0, 2).toUpperCase();
-  const total = prefixCounts.get(prefix) ?? 0;
+  const total = prefixCounts.get(pathHash) ?? 0;
   if (total <= 1) return 0;
-  const peers = byPrefix.get(prefix) ?? [];
+  const peers = byPrefix.get(pathHash) ?? [];
   let raw = 0;
   const inRangeKm = 75;
   for (const peer of peers) {
@@ -316,7 +323,7 @@ function scoreCandidate(ctx: CandidateScoreContext, prefixCounts: Map<string, nu
     ? lookupMotifPrior(model, ctx.packetNetwork, ctx.receiverRegion, ctx.hourBucket, [candidate.node_id, current.node_id, ctx.nextTowardRx])
     : 0;
 
-  const ambiguityPenalty = localHexClashPenalty(candidate, current, prefixCounts, byPrefix, weakAdjacency);
+  const ambiguityPenalty = localHexClashPenalty(candidate, current, ctx.prefix, prefixCounts, byPrefix, weakAdjacency);
   const weakAdjacencyBoost = weakAdjacency.get(candidate.node_id)?.has(current.node_id) ? 0.04 : 0;
   const veryHighLossPenalty = pathLoss != null && pathLoss > 145 ? 0.12 : 0;
 
@@ -350,11 +357,11 @@ function getCandidatesForPrefix(
   receiverRegion: string,
   hourBucket: number,
 ): Array<{ node: SimNode; conf: number }> {
-  const pool = context.byPrefix.get(prefix) ?? [];
+  const pool = getNodesForPathHash(context.byPrefix, prefix);
   const scored: Array<{ node: SimNode; conf: number }> = [];
   for (const node of pool) {
     if (visited.has(node.node_id)) continue;
-    if (node.node_id === srcNodeId && prefix !== srcNodeId.slice(0, 2).toUpperCase()) continue;
+    if (node.node_id === srcNodeId && !nodeMatchesPathHash(srcNodeId, prefix)) continue;
     const d = distKm(node, current);
     if (d > strategy.maxHopKm) continue;
     const conf = scoreCandidate({
@@ -396,7 +403,7 @@ function enumerateContinuationsMl(
     return { fullCount: 0, partialCount: 0, longestPrefixDepth: 0, truncated: false, bestConfidence: 0 };
   }
 
-  const prefixes = pathHashes.map((h) => h.slice(0, 2).toUpperCase());
+  const prefixes = pathHashes.map(normalizePathHash).filter(Boolean);
   const receiverRegion = rx.iata ?? 'unknown';
   const hourBucket = currentHourBucket(packetTime, context.config);
   const calibration = lookupCalibration(context.model, packetNetwork);
@@ -500,16 +507,13 @@ async function loadNodes(): Promise<{ byId: Map<string, SimNode>; byPrefix: Map<
   );
 
   const byId = new Map<string, SimNode>();
-  const byPrefix = new Map<string, SimNode[]>();
-  const prefixCounts = new Map<string, number>();
   for (const row of nodeRows.rows) {
     byId.set(row.node_id, row);
-    const prefix = row.node_id.slice(0, 2).toUpperCase();
-    const arr = byPrefix.get(prefix);
-    if (arr) arr.push(row);
-    else byPrefix.set(prefix, [row]);
-    prefixCounts.set(prefix, (prefixCounts.get(prefix) ?? 0) + 1);
   }
+  const byPrefix = buildNodePathHashIndex(nodeRows.rows);
+  const prefixCounts = new Map<string, number>(
+    Array.from(byPrefix.entries()).map(([prefix, nodes]) => [prefix, nodes.length]),
+  );
   return { byId, byPrefix, prefixCounts };
 }
 
@@ -824,7 +828,7 @@ async function runOnce(
     bump(packetTypeTotals, String(row.packet_type ?? -1));
     const rx = row.rx_node_id ? context.byId.get(row.rx_node_id) : undefined;
     const src = row.src_node_id ? context.byId.get(row.src_node_id) : undefined;
-    const hashes = row.path_hashes ?? [];
+    const hashes = row.path_hashes?.map(normalizePathHash).filter(Boolean) ?? [];
     const hops = row.hop_count != null ? hashes.slice(0, Math.max(0, row.hop_count)) : hashes;
     const isDirectNoPath = hops.length === 0 && row.hop_count === 0;
     const packetNetwork = (row.network ?? NETWORK ?? 'teesside').trim().toLowerCase() || 'teesside';
@@ -838,7 +842,7 @@ async function runOnce(
       bump(skipReasons, 'no_path_hashes_for_multihop_or_unknown_hops');
       continue;
     }
-    if (hops.length > 0 && hops.some((h) => !context.byPrefix.has(h.slice(0, 2).toUpperCase()))) {
+    if (hops.length > 0 && hops.some((h) => countNodesForPathHash(context.byPrefix, h) < 1)) {
       bump(skipReasons, 'unmapped_prefix_no_logged_repeater');
       continue;
     }

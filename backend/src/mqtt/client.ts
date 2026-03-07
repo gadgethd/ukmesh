@@ -6,6 +6,7 @@ import type {
 } from '@michaelhart/meshcore-decoder';
 import { insertPacket, upsertNode, incrementAdvertCount, query } from '../db/index.js';
 import type { LivePacket } from '../types/index.js';
+import { decodePacketCompat } from './decodePacket.js';
 
 type PacketCallback      = (packet: LivePacket) => void;
 type NodeCallback        = (nodeId: string) => void;
@@ -127,7 +128,7 @@ const keyStore = MeshCoreDecoder.createKeyStore({
 /** Identify which channel a GroupText was sent on by trying each single-key keyStore. */
 function identifyChannel(rawHex: string): string | undefined {
   for (const entry of channelEntries) {
-    const d = MeshCoreDecoder.decode(rawHex, { keyStore: entry.keyStore });
+    const { decoded: d } = decodePacketCompat(rawHex, entry.keyStore);
     const p = d?.payload?.decoded as GroupTextPayload | undefined;
     if (p?.decrypted) return entry.name;
   }
@@ -174,6 +175,23 @@ function buildSummary(payloadType: number, decoded: unknown, rawHex?: string): s
     default:
       return undefined;
   }
+}
+
+function buildAdvertFallbackPayload(originId: string, originName?: string): Record<string, unknown> {
+  const appData: Record<string, unknown> = {
+    flags: 0,
+    deviceRole: 2,
+    hasLocation: false,
+    hasName: Boolean(originName),
+  };
+  if (originName) appData['name'] = originName;
+  return {
+    type: 4,
+    version: 0,
+    isValid: false,
+    publicKey: originId,
+    appData,
+  };
 }
 
 
@@ -223,9 +241,10 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
   }
 
   // ── Status: update observer node metadata ─────────────────────────────────
+  const origin   = json['origin']           as string | undefined;
+  const originId = json['origin_id']        as string | undefined;
+
   if (suffix === 'status') {
-    const origin   = json['origin']           as string | undefined;
-    const originId = json['origin_id']        as string | undefined;
     const model    = json['model']            as string | undefined;
     const firmware = json['firmware_version'] as string | undefined;
 
@@ -265,13 +284,13 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
 
   if (rawHex) {
     try {
-      const decoded = MeshCoreDecoder.decode(rawHex, { keyStore });
+      const { decoded, pathHashes, pathHashCount } = decodePacketCompat(rawHex, keyStore);
 
       if (decoded) {
         decodedHash = decoded.messageHash;
-        decodedHops = decoded.pathLength;
-        if (decoded.path && Array.isArray(decoded.path) && decoded.path.length > 0) {
-          path = decoded.path as string[];
+        decodedHops = pathHashCount ?? decoded.pathLength;
+        if (pathHashes && pathHashes.length > 0) {
+          path = pathHashes;
         }
 
         const decodedInner = decoded.payload?.decoded;
@@ -330,6 +349,27 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
     }
   }
 
+  // MeshCore v1.14.0 multibyte-path adverts can currently reach us with packet_type=4
+  // on the MQTT envelope while the community decoder still classifies the raw payload
+  // as another type. For self-originated TX adverts, use the MQTT origin metadata as a
+  // safe fallback so the repeater still appears correctly on the site.
+  const hasDecodedAdvertPayload = Boolean(
+    innerPayload
+      && typeof innerPayload === 'object'
+      && 'appData' in innerPayload
+      && srcNodeId
+  );
+  const useTxAdvertFallback = direction === 'tx'
+    && packetType === 4
+    && Boolean(originId)
+    && !hasDecodedAdvertPayload;
+
+  if (useTxAdvertFallback && originId) {
+    srcNodeId = originId;
+    summary ??= origin;
+    innerPayload = buildAdvertFallbackPayload(originId, origin);
+  }
+
   // Use decoder hash as primary key — it's derived from packet content and is the
   // same for TX and RX of the same packet, enabling frontend deduplication.
   // Fall back to mctomqtt hash (RX only) when decode fails, then UUID.
@@ -339,6 +379,27 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
   // Keep observer last-seen current
   void upsertNode(observerKey, { iata, network });
   emitNode(observerKey);
+
+  if (useTxAdvertFallback && originId) {
+    await upsertNode(originId, {
+      name: origin,
+      iata,
+      publicKey: originId,
+      network,
+    });
+    if (tryCountAdvert(finalHash)) {
+      advertCount = await incrementAdvertCount(originId);
+    }
+    emitNodeUpsert({
+      node_id: originId,
+      name: origin,
+      iata,
+      public_key: originId,
+      last_seen: new Date().toISOString(),
+      is_online: true,
+      advert_count: advertCount,
+    });
+  }
 
   {
     const livePacket: LivePacket = {
@@ -401,9 +462,9 @@ export async function backfillHistoricalLinks(
   let queued = 0;
   for (const row of res.rows) {
     try {
-      const decoded = MeshCoreDecoder.decode(row.raw_hex, { keyStore });
-      if (decoded?.path && Array.isArray(decoded.path) && decoded.path.length > 0) {
-        queueFn(row.rx_node_id, row.src_node_id ?? undefined, decoded.path as string[], decoded.pathLength);
+      const compat = decodePacketCompat(row.raw_hex, keyStore);
+      if (compat.pathHashes && compat.pathHashes.length > 0) {
+        queueFn(row.rx_node_id, row.src_node_id ?? undefined, compat.pathHashes, compat.pathHashCount);
         queued++;
       }
     } catch {

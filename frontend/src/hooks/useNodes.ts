@@ -26,7 +26,7 @@ export interface LivePacketData {
   direction?:   string;
   summary?:     string;
   payload?:     Record<string, unknown>;
-  path?:        string[];   // relay node 2-char hex prefixes in hop order
+  path?:        string[];   // relay hop hashes in packet order (1/2/3-byte => 2/4/6 hex chars)
   advertCount?: number;     // for Advert packets: persistent count from DB
   ts:           number;
 }
@@ -62,6 +62,18 @@ const FEED_MAX_PACKETS = 120;
 interface HashRecord {
   observers: string[];
   ts:        number;
+}
+
+function packetInfoScore(packet: Pick<AggregatedPacket, 'packetType' | 'srcNodeId' | 'summary' | 'hopCount' | 'path' | 'advertCount'>): number {
+  let score = 0;
+  if (packet.summary) score += 4;
+  if (packet.srcNodeId) score += 3;
+  if (packet.packetType === 4) score += 2;
+  else if (packet.packetType !== undefined) score += 1;
+  if (packet.hopCount !== undefined) score += 1;
+  if (packet.path && packet.path.length > 0) score += 1;
+  if ((packet.advertCount ?? 0) > 0) score += 1;
+  return score;
 }
 
 export function useNodes() {
@@ -106,9 +118,9 @@ export function useNodes() {
     for (const row of data.packets) {
       if (seen.has(row.packet_hash)) continue;
       seen.add(row.packet_hash);
-      // For Advert packets the payload stores the decoded inner payload with appData.name
       const appData = row.payload?.['appData'] as Record<string, unknown> | undefined;
-      const summary = row.packet_type === 4 ? appData?.['name'] as string | undefined : undefined;
+      const summary = (appData?.['name'] as string | undefined)
+        ?? (row.payload?.['origin'] as string | undefined);
       initialPackets.push({
         id:          row.packet_hash,
         packetHash:  row.packet_hash,
@@ -134,12 +146,24 @@ export function useNodes() {
 
       if (idx >= 0) {
         // Known packet — increment count, bubble to top
+        const current = prev[idx]!;
+        const candidate: AggregatedPacket = {
+          ...current,
+          packetType: packet.packetType ?? current.packetType,
+          srcNodeId:  packet.srcNodeId ?? current.srcNodeId,
+          summary:    packet.summary ?? (packet.payload?.['origin'] as string | undefined) ?? current.summary,
+          hopCount:   packet.hopCount ?? current.hopCount,
+          path:       packet.path ?? current.path,
+          advertCount: Math.max(current.advertCount ?? 0, packet.advertCount ?? 0) || undefined,
+          rxCount: current.rxCount + (packet.direction !== 'tx' ? 1 : 0),
+          txCount: current.txCount + (packet.direction === 'tx' ? 1 : 0),
+          ts: packet.ts,
+        };
+        const useCandidate = packetInfoScore(candidate) >= packetInfoScore(current);
         const entry: AggregatedPacket = {
-          ...prev[idx]!,
-          rxCount: prev[idx]!.rxCount + (packet.direction !== 'tx' ? 1 : 0),
-          txCount: prev[idx]!.txCount + (packet.direction === 'tx' ? 1 : 0),
-          // Adopt summary if we now have one and didn't before
-          summary: prev[idx]!.summary ?? packet.summary,
+          ...(useCandidate ? candidate : current),
+          rxCount: current.rxCount + (packet.direction !== 'tx' ? 1 : 0),
+          txCount: current.txCount + (packet.direction === 'tx' ? 1 : 0),
           ts: packet.ts,
         };
         const next = prev.filter((_, i) => i !== idx);
@@ -152,7 +176,7 @@ export function useNodes() {
         packetType: packet.packetType,
         rxNodeId:   packet.rxNodeId,
         srcNodeId:  packet.srcNodeId,
-        summary:    packet.summary,
+        summary:    packet.summary ?? (packet.payload?.['origin'] as string | undefined),
         hopCount:   packet.hopCount,
         path:       packet.path,
         rxCount:    packet.direction !== 'tx' ? 1 : 0,

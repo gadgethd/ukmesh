@@ -221,7 +221,7 @@ export async function captureWorkerHealthSnapshot(): Promise<void> {
 }
 
 export async function getWorkerHealthOverview() {
-  const [workers, history, errors1h, ingest] = await Promise.all([
+  const [workers, history, errors1h, ingest, pathHashWidths, multibyteSummary] = await Promise.all([
     currentWorkers(),
     query<{
       ts: string;
@@ -272,6 +272,38 @@ export async function getWorkerHealthOverview() {
          (SELECT MAX(time)::text FROM packets) AS global_last_packet_at
        FROM active_rx`,
     ),
+    query<{
+      hash_hex_len: string;
+      hop_count: string;
+    }>(
+      `SELECT length(h)::text AS hash_hex_len, COUNT(*)::text AS hop_count
+       FROM packets p
+       CROSS JOIN LATERAL unnest(p.path_hashes) AS h
+       WHERE p.time > NOW() - INTERVAL '24 hours'
+       GROUP BY 1`,
+    ),
+    query<{
+      latest_multibyte_at: string | null;
+      multibyte_packets_24h: string;
+    }>(
+      `SELECT
+         MAX(time) FILTER (
+           WHERE EXISTS (
+             SELECT 1
+             FROM unnest(path_hashes) AS h
+             WHERE length(h) > 2
+           )
+         )::text AS latest_multibyte_at,
+         COUNT(*) FILTER (
+           WHERE EXISTS (
+             SELECT 1
+             FROM unnest(path_hashes) AS h
+             WHERE length(h) > 2
+           )
+         )::text AS multibyte_packets_24h
+       FROM packets
+       WHERE time > NOW() - INTERVAL '24 hours'`,
+    ),
   ]);
 
   const ingestRow = ingest.rows[0];
@@ -279,6 +311,25 @@ export async function getWorkerHealthOverview() {
   const activeNodes = Number(ingestRow?.active_nodes ?? 0);
   const maxStaleMinutes = Number(ingestRow?.max_stale_minutes ?? 0);
   const staleThresholdMinutes = Number(ingestRow?.stale_threshold_minutes ?? 15);
+  const widthToBucket: Record<number, 'one_byte' | 'two_byte' | 'three_byte'> = {
+    2: 'one_byte',
+    4: 'two_byte',
+    6: 'three_byte',
+  };
+  const pathHashStats = {
+    one_byte: 0,
+    two_byte: 0,
+    three_byte: 0,
+  };
+
+  for (const row of pathHashWidths.rows) {
+    const width = Number(row.hash_hex_len ?? 0);
+    const bucket = widthToBucket[width];
+    if (!bucket) continue;
+    pathHashStats[bucket] += Number(row.hop_count ?? 0);
+  }
+
+  const multibyteRow = multibyteSummary.rows[0];
 
   return {
     system: systemStats(),
@@ -291,6 +342,11 @@ export async function getWorkerHealthOverview() {
       max_stale_minutes: staleNodes > 0 ? maxStaleMinutes : 0,
       stale_threshold_minutes: staleThresholdMinutes,
       global_last_packet_at: ingestRow?.global_last_packet_at ?? null,
+    },
+    path_hashes: {
+      last_24h_hops: pathHashStats,
+      multibyte_packets_24h: Number(multibyteRow?.multibyte_packets_24h ?? 0),
+      latest_multibyte_at: multibyteRow?.latest_multibyte_at ?? null,
     },
   };
 }

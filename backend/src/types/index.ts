@@ -58,7 +58,7 @@ export interface LivePacket {
   direction?: string;   // 'rx' | 'tx' from mctomqtt
   summary?: string;     // human-readable decoded content
   payload?: Record<string, unknown>;
-  path?: string[];      // relay node 2-char hex prefixes in hop order
+  path?: string[];      // relay hop hashes in packet order (1/2/3-byte => 2/4/6 hex chars)
   advertCount?: number; // for Advert packets: persistent DB count after this event
   ts: number;
 }

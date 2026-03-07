@@ -674,13 +674,19 @@ def process_link_job(db, r_client, job: dict):
             ((a['lon'] - b['lon']) * 111.32 * cos_m) ** 2
         )
 
-    def local_prefix_ambiguity_penalty(prefix: str, target_id: str, target_node: dict, anchor_node: dict, pool: list[tuple[str, dict]]) -> float:
+    def normalize_path_hash(value) -> str:
+        return str(value or '').strip().upper()
+
+    def node_matches_path_hash(node_id: str, path_hash: str) -> bool:
+        return bool(path_hash) and node_id.upper().startswith(path_hash)
+
+    def local_prefix_ambiguity_penalty(path_hash: str, target_id: str, target_node: dict, anchor_node: dict, pool: list[tuple[str, dict]]) -> float:
         target_dist = node_dist(target_node, anchor_node)
         raw = 0.0
         for cand_id, cand_node in pool:
             if cand_id == target_id:
                 continue
-            if not cand_id.upper().startswith(prefix):
+            if not node_matches_path_hash(cand_id, path_hash):
                 continue
             cand_dist = node_dist(cand_node, anchor_node)
             if cand_dist > PREFIX_AMBIGUITY_RADIUS_KM:
@@ -699,11 +705,13 @@ def process_link_job(db, r_client, job: dict):
     prev     = rx
     visited  = {rx_node_id}
 
-    for prefix in reversed(path_hashes):
-        prefix = prefix[:2].upper()
+    for raw_hash in reversed(path_hashes):
+        path_hash = normalize_path_hash(raw_hash)
+        if not path_hash:
+            continue
         candidates = [
             (nid, nd) for nid, nd in all_nodes.items()
-            if nid.upper().startswith(prefix)
+            if node_matches_path_hash(nid, path_hash)
             and nid not in visited
             and (nd['role'] is None or nd['role'] == 2)
             and nd['name'] and '🚫' not in nd['name']
@@ -719,7 +727,7 @@ def process_link_job(db, r_client, job: dict):
         for nid, nd in candidates:
             confirmed_bonus = 2.5 if confirmed_link(nid, prev_id) else 0.0
             distance_score = -node_dist(nd, prev) / 12.0
-            ambiguity_penalty = local_prefix_ambiguity_penalty(prefix, nid, nd, prev, candidates)
+            ambiguity_penalty = local_prefix_ambiguity_penalty(path_hash, nid, nd, prev, candidates)
             score = confirmed_bonus + distance_score - ambiguity_penalty
             if score > best_score:
                 best_score = score

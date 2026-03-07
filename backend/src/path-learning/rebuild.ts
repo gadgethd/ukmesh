@@ -1,4 +1,10 @@
 import { MIN_LINK_OBSERVATIONS, query } from '../db/index.js';
+import {
+  buildNodePathHashIndex,
+  getNodesForPathHash,
+  nodePathHash,
+  normalizePathHash,
+} from '../path-hash/utils.js';
 
 type LearningNode = {
   node_id: string;
@@ -74,10 +80,10 @@ function recencyScore(lastSeenMs: number | undefined, nowMs: number): number {
 function localPrefixAmbiguityPenalty(
   anchor: LearningNode,
   target: LearningNode,
-  prefixMap: Map<string, LearningNode[]>,
+  pathHash: string,
+  pathHashIndex: Map<string, LearningNode[]>,
 ): number {
-  const prefix = target.node_id.slice(0, 2).toUpperCase();
-  const samePrefixNodes = prefixMap.get(prefix) ?? [];
+  const samePrefixNodes = getNodesForPathHash(pathHashIndex, pathHash);
   if (samePrefixNodes.length <= 1) return 0;
 
   const targetDist = distKm(anchor, target);
@@ -99,7 +105,7 @@ function resolvePathForPacket(
   pathHashes: string[],
   srcNode: LearningNode | undefined,
   rxNode: LearningNode,
-  prefixMap: Map<string, LearningNode[]>,
+  pathHashIndex: Map<string, LearningNode[]>,
   confirmedLinks: Set<string>,
 ): ResolvedHop[] {
   const resolved: ResolvedHop[] = [];
@@ -107,8 +113,8 @@ function resolvePathForPacket(
   let prev = rxNode;
 
   for (let i = pathHashes.length - 1; i >= 0; i--) {
-    const prefix = pathHashes[i]!.slice(0, 2).toUpperCase();
-    const candidates = (prefixMap.get(prefix) ?? []).filter((n) => !visited.has(n.node_id));
+    const prefix = normalizePathHash(pathHashes[i]);
+    const candidates = getNodesForPathHash(pathHashIndex, prefix).filter((n) => !visited.has(n.node_id));
     if (candidates.length === 0) continue;
 
     let best: LearningNode | null = null;
@@ -118,7 +124,7 @@ function resolvePathForPacket(
       const confirmed = confirmedLinks.has(linkKey(candidate.node_id, prev.node_id)) ? 1 : 0;
       const distanceScore = distancePrior(candidate, prev);
       const srcScore = srcNode ? (distKm(srcNode, prev) - distKm(srcNode, candidate)) / 100 : 0;
-      const ambiguityPenalty = localPrefixAmbiguityPenalty(prev, candidate, prefixMap);
+      const ambiguityPenalty = localPrefixAmbiguityPenalty(prev, candidate, prefix, pathHashIndex);
       const score = confirmed * 2.5 + distanceScore * 1.3 + srcScore - ambiguityPenalty;
       if (score > bestScore) {
         best = candidate;
@@ -213,13 +219,7 @@ async function rebuildNetwork(modelNetwork: string, sourceNetwork: string | unde
   );
   const nodesById = new Map(nodesResult.rows.map((n) => [n.node_id, n]));
 
-  const prefixMap = new Map<string, LearningNode[]>();
-  for (const node of nodesResult.rows) {
-    const prefix = node.node_id.slice(0, 2).toUpperCase();
-    const existing = prefixMap.get(prefix);
-    if (existing) existing.push(node);
-    else prefixMap.set(prefix, [node]);
-  }
+  const pathHashIndex = buildNodePathHashIndex(nodesResult.rows);
 
   const linksResult = await query<LearningLink>(
     `SELECT nl.node_a_id, nl.node_b_id, nl.itm_path_loss_db, nl.count_a_to_b, nl.count_b_to_a
@@ -273,14 +273,14 @@ async function rebuildNetwork(modelNetwork: string, sourceNetwork: string | unde
   let confidenceSum = 0;
 
   for (const packet of packetsResult.rows) {
-    const hashes = packet.path_hashes?.map((h) => h.slice(0, 2).toUpperCase()) ?? [];
+    const hashes = packet.path_hashes?.map(normalizePathHash).filter(Boolean) ?? [];
     if (hashes.length === 0) continue;
     const rx = nodesById.get(packet.rx_node_id);
     if (!rx) continue;
 
     const src = packet.src_node_id ? nodesById.get(packet.src_node_id) : undefined;
     const region = rx.iata ?? 'unknown';
-    const resolved = resolvePathForPacket(hashes, src, rx, prefixMap, confirmedLinks);
+    const resolved = resolvePathForPacket(hashes, src, rx, pathHashIndex, confirmedLinks);
     if (resolved.length === 0) continue;
 
     const ts = new Date(packet.time);
@@ -429,7 +429,7 @@ async function rebuildNetwork(modelNetwork: string, sourceNetwork: string | unde
           const dKm = distKm(fromNode, toNode);
           if (dKm > 55 && pathLoss > 150) consistencyPenalty += 0.14;
         }
-        consistencyPenalty += localPrefixAmbiguityPenalty(fromNode, toNode, prefixMap);
+        consistencyPenalty += localPrefixAmbiguityPenalty(fromNode, toNode, nodePathHash(toNode.node_id, 2), pathHashIndex);
       }
       if (observed < 3 && missing >= 3) consistencyPenalty += 0.1;
       if (directional < 0.06 && observed >= 5) consistencyPenalty += 0.06;
