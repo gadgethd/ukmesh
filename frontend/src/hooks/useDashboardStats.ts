@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { statsEndpoint, uncachedEndpoint } from '../utils/api.js';
+import { statsEndpoint, uncachedEndpoint, type ApiScope } from '../utils/api.js';
 
 export type DashboardStats = {
   mqttNodes: number;
@@ -17,14 +17,14 @@ const EMPTY_STATS: DashboardStats = {
   totalNodes: 0,
 };
 
-export function useDashboardStats(network?: string): DashboardStats {
+export function useDashboardStats(scope: ApiScope = {}): DashboardStats {
   const [stats, setStats] = useState<DashboardStats>(EMPTY_STATS);
 
   useEffect(() => {
     const fetchStats = async () => {
       try {
         const response = await fetch(
-          uncachedEndpoint(statsEndpoint(network)),
+          uncachedEndpoint(statsEndpoint(scope)),
           { cache: 'no-store' }
         );
         if (response.ok) {
@@ -36,9 +36,23 @@ export function useDashboardStats(network?: string): DashboardStats {
     };
 
     fetchStats();
-    const interval = setInterval(fetchStats, 30_000);
+    const interval = setInterval(fetchStats, 10_000);
     return () => clearInterval(interval);
-  }, [network]);
+  }, [scope.network, scope.observer]);
+
+  useEffect(() => {
+    const handlePacketObserved = () => {
+      setStats((current) => ({
+        ...current,
+        packetsDay: current.packetsDay + 1,
+      }));
+    };
+
+    window.addEventListener('meshcore:packet-observed', handlePacketObserved as EventListener);
+    return () => {
+      window.removeEventListener('meshcore:packet-observed', handlePacketObserved as EventListener);
+    };
+  }, []);
 
   return stats;
 }

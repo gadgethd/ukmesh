@@ -14,6 +14,7 @@ import { useLinkState } from './hooks/useLinkState.js';
 import { usePacketPathOverlay } from './hooks/usePacketPathOverlay.js';
 import { useAppMessageHandler } from './hooks/useAppMessageHandler.js';
 import { getCurrentSite } from './config/site.js';
+import { uncachedEndpoint, withScopeParams } from './utils/api.js';
 
 const DEFAULT_FILTERS: Filters = {
   livePackets: true,
@@ -53,16 +54,17 @@ export const App: React.FC = () => {
     arcs,
     activeNodes,
     handleInitialState,
+    replaceRecentPackets,
     handlePacket,
     handleNodeUpdate,
     handleNodeUpsert,
   } = useNodes();
 
-  // 'ukmesh' build sees all data; teesside/default build filters to its own network
-  const networkFilter = import.meta.env['VITE_NETWORK'] === 'ukmesh' ? undefined : site.network;
+  const networkFilter = site.networkFilter;
+  const observerFilter = site.observerId;
 
-  const { coverage, handleCoverageUpdate } = useCoverage(networkFilter);
-  const stats = useDashboardStats(networkFilter);
+  const { coverage, handleCoverageUpdate } = useCoverage({ network: networkFilter, observer: observerFilter });
+  const stats = useDashboardStats({ network: networkFilter, observer: observerFilter });
   const {
     linkMetrics,
     viablePairsArr,
@@ -72,10 +74,9 @@ export const App: React.FC = () => {
   } = useLinkState();
 
   const {
-    packetPath,
-    betaPacketPath,
-    betaExtraPurplePaths,
-    betaLowConfidencePath,
+    packetPaths,
+    betaPacketPaths,
+    betaLowConfidencePaths,
     betaLowConfidenceSegments,
     betaCompletionPaths,
     betaPathConfidence,
@@ -89,6 +90,7 @@ export const App: React.FC = () => {
     nodes,
     filters,
     network: networkFilter,
+    observer: observerFilter,
   });
 
   useEffect(() => {
@@ -100,6 +102,42 @@ export const App: React.FC = () => {
   useEffect(() => {
     localStorage.setItem(FILTERS_KEY, JSON.stringify(filters));
   }, [filters]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const syncRecentPackets = async () => {
+      try {
+        const response = await fetch(
+          uncachedEndpoint(withScopeParams('/api/packets/recent?limit=40', { network: networkFilter, observer: observerFilter })),
+          { cache: 'no-store' },
+        );
+        if (!response.ok) return;
+        const rows = await response.json() as Array<{
+          time: string;
+          packet_hash: string;
+          rx_node_id?: string;
+          observer_node_ids?: string[] | null;
+          src_node_id?: string;
+          packet_type?: number;
+          hop_count?: number;
+          payload?: Record<string, unknown>;
+          advert_count?: number | null;
+          path_hashes?: string[] | null;
+        }>;
+        if (cancelled) return;
+        replaceRecentPackets(rows);
+      } catch {
+        // keep websocket as primary path; polling is only a feed repair/fallback
+      }
+    };
+
+    void syncRecentPackets();
+    const timer = window.setInterval(() => { void syncRecentPackets(); }, 4000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [networkFilter, observerFilter, replaceRecentPackets]);
 
   useEffect(() => {
     const wasHexClashes = prevHexClashesRef.current;
@@ -176,9 +214,12 @@ export const App: React.FC = () => {
     applyInitialViablePairs,
     applyInitialViableLinks,
     applyLinkUpdate,
+    onPacketObserved: () => {
+      window.dispatchEvent(new Event('meshcore:packet-observed'));
+    },
   });
 
-  const wsState = useWebSocket(handleMessage, networkFilter);
+  const wsState = useWebSocket(handleMessage, { network: networkFilter, observer: observerFilter });
 
   return (
     <div className="app-shell">
@@ -209,10 +250,9 @@ export const App: React.FC = () => {
         maxHexClashHops={filters.hexClashMaxHops}
         viablePairsArr={viablePairsArr}
         linkMetrics={linkMetrics}
-        packetPath={packetPath}
-        betaPath={betaPacketPath}
-        betaExtraPurplePaths={betaExtraPurplePaths}
-        betaLowPath={betaLowConfidencePath}
+        packetPaths={packetPaths}
+        betaPaths={betaPacketPaths}
+        betaLowPaths={betaLowConfidencePaths}
         betaLowSegments={betaLowConfidenceSegments}
         betaCompletionPaths={betaCompletionPaths}
         showBetaPaths={filters.betaPaths || pinnedPacketId !== null}

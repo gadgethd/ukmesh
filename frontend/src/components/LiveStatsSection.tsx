@@ -11,6 +11,7 @@ type SiteStats = {
 
 type LiveStatsSectionProps = {
   network?: string;
+  observer?: string;
 };
 
 const EMPTY_STATS: SiteStats = {
@@ -37,13 +38,14 @@ const StatCard: React.FC<{ value: number; label: string; suffix?: string }> = ({
   );
 };
 
-export const LiveStatsSection: React.FC<LiveStatsSectionProps> = ({ network }) => {
+export const LiveStatsSection: React.FC<LiveStatsSectionProps> = ({ network, observer }) => {
   const [stats, setStats] = useState<SiteStats>(EMPTY_STATS);
   const hopFlash = useFlash(stats.longestHop);
+  const refreshSeconds = 15;
 
   useEffect(() => {
     const loadStats = () => {
-      fetch(uncachedEndpoint(statsEndpoint(network)), { cache: 'no-store' })
+      fetch(uncachedEndpoint(statsEndpoint({ network, observer })), { cache: 'no-store' })
         .then((response) => response.json())
         .then((data) => setStats({
           packetsDay: data.packetsDay,
@@ -55,19 +57,25 @@ export const LiveStatsSection: React.FC<LiveStatsSectionProps> = ({ network }) =
     };
 
     loadStats();
-    const interval = setInterval(loadStats, 30_000);
+    const interval = setInterval(loadStats, refreshSeconds * 1000);
     return () => clearInterval(interval);
-  }, [network]);
+  }, [network, observer]);
 
   return (
     <section className="site-stats-section">
       <div className="site-content">
         <div className="site-section__head">
           <h2>Live network stats</h2>
-          <p>Updates every 30 seconds from the shared packet feed.</p>
+          <p>
+            {observer
+              ? `Updates every ${refreshSeconds} seconds from the selected observer feed.`
+              : network === 'test'
+              ? `Updates every ${refreshSeconds} seconds from the isolated test feed.`
+              : `Updates every ${refreshSeconds} seconds from the shared packet feed.`}
+          </p>
         </div>
         <div className="site-stats-grid">
-          <StatCard value={stats.packetsDay} label="Packets in the last 24 hours" />
+          <StatCard value={stats.packetsDay} label="Observed packets in the last 24 hours" />
           <StatCard value={stats.totalNodes} label="Nodes ever heard on the network" />
           <div className="site-stat">
             <span className={`site-stat__value${hopFlash ? ' tick-flash' : ''}`}>

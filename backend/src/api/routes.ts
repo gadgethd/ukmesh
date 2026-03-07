@@ -5,6 +5,7 @@ import mqtt from 'mqtt';
 import { getNodes, getNodeHistory, getRecentPackets, query, MIN_LINK_OBSERVATIONS } from '../db/index.js';
 import { getOwnerNodeIdsForUsername } from '../db/ownerAuth.js';
 import { getWorkerHealthOverview } from '../health/status.js';
+import { resolveRequestNetwork } from '../http/requestScope.js';
 import { resolveBetaPathForPacketHash } from '../path-beta/resolver.js';
 
 const router = Router();
@@ -235,19 +236,71 @@ type NetworkFilters = {
   nodesAlias: (alias: string) => string;
 };
 
-function networkFilters(network?: string): NetworkFilters {
+function normalizeObserverQuery(value: unknown): string | undefined {
+  const observer = String(value ?? '').trim().toLowerCase();
+  return observer && /^[0-9a-f]{64}$/.test(observer) ? observer : undefined;
+}
+
+function networkFilters(network?: string, observer?: string): NetworkFilters {
+  const params: string[] = [];
+  let networkParam: string | null = null;
+  let observerParam: string | null = null;
+
+  if (network) {
+    networkParam = `$${params.length + 1}`;
+    params.push(network);
+  }
+
+  if (observer) {
+    observerParam = `$${params.length + 1}`;
+    params.push(observer);
+  }
+
+  const packetConditions: string[] = [];
+  if (networkParam) packetConditions.push(`network = ${networkParam}`);
+  else packetConditions.push(`network IS DISTINCT FROM 'test'`);
+  if (observerParam) packetConditions.push(`LOWER(rx_node_id) = LOWER(${observerParam})`);
+
+  const nodeConditions = (alias?: string) => {
+    const prefix = alias ? `${alias}.` : '';
+    const conditions: string[] = [];
+    if (networkParam) conditions.push(`${prefix}network = ${networkParam}`);
+    else conditions.push(`${prefix}network IS DISTINCT FROM 'test'`);
+    if (observerParam) {
+      conditions.push(
+        `(
+          LOWER(${prefix}node_id) = LOWER(${observerParam})
+          OR EXISTS (
+            SELECT 1
+            FROM packets p
+            WHERE LOWER(p.rx_node_id) = LOWER(${observerParam})
+              ${networkParam ? `AND p.network = ${networkParam}` : ''}
+              AND LOWER(p.src_node_id) = LOWER(${prefix}node_id)
+          )
+        )`,
+      );
+    }
+    return conditions;
+  };
+
   return {
-    params: network ? [network] : [],
-    packets: network ? 'AND network = $1' : '',
-    nodes: network ? 'AND network = $1' : '',
-    nodesAlias: (alias: string) => (network ? `AND ${alias}.network = $1` : ''),
+    params,
+    packets: packetConditions.length > 0 ? `AND ${packetConditions.join(' AND ')}` : '',
+    nodes: nodeConditions().length > 0 ? `AND ${nodeConditions().join(' AND ')}` : '',
+    nodesAlias: (alias: string) => {
+      const conditions = nodeConditions(alias);
+      return conditions.length > 0 ? `AND ${conditions.join(' AND ')}` : '';
+    },
   };
 }
 
 // GET /api/nodes — all known nodes
-router.get('/nodes', async (_req, res) => {
+router.get('/nodes', async (req, res) => {
   try {
-    const nodes = await getNodes();
+    const requestedNetwork = resolveRequestNetwork(req.query['network'], req.headers);
+    const network = requestedNetwork === 'all' ? undefined : requestedNetwork;
+    const observer = normalizeObserverQuery(req.query['observer']);
+    const nodes = await getNodes(network, observer);
     res.json(nodes);
   } catch (err) {
     console.error('[api] GET /nodes', (err as Error).message);
@@ -300,7 +353,10 @@ router.get('/nodes/:id/history', async (req, res) => {
 router.get('/packets/recent', async (req, res) => {
   try {
     const limit = Math.min(Number(req.query['limit'] ?? 200), 1000);
-    const packets = await getRecentPackets(limit);
+    const requestedNetwork = resolveRequestNetwork(req.query['network'], req.headers);
+    const network = requestedNetwork === 'all' ? undefined : requestedNetwork;
+    const observer = normalizeObserverQuery(req.query['observer']);
+    const packets = await getRecentPackets(limit, network, observer);
     res.json(packets);
   } catch (err) {
     console.error('[api] GET /packets/recent', (err as Error).message);
@@ -316,9 +372,9 @@ router.get('/path-beta/resolve', async (req, res) => {
       res.status(400).json({ error: 'Missing hash query parameter' });
       return;
     }
-    const networkRaw = String(req.query['network'] ?? 'teesside').trim().toLowerCase();
-    const network = networkRaw === 'ukmesh' || networkRaw === 'all' ? networkRaw : 'teesside';
-    const resolved = await resolveBetaPathForPacketHash(packetHash, network);
+    const network = resolveRequestNetwork(req.query['network'], req.headers, 'teesside') ?? 'teesside';
+    const observer = normalizeObserverQuery(req.query['observer']);
+    const resolved = await resolveBetaPathForPacketHash(packetHash, network, observer);
     if (!resolved) {
       res.status(404).json({ error: 'Packet not found' });
       return;
@@ -333,11 +389,13 @@ router.get('/path-beta/resolve', async (req, res) => {
 // GET /api/stats
 router.get('/stats', async (req, res) => {
   try {
-    const network = req.query['network'] as string | undefined;
-    const filters = networkFilters(network);
+    const requestedNetwork = resolveRequestNetwork(req.query['network'], req.headers);
+    const network = requestedNetwork === 'all' ? undefined : requestedNetwork;
+    const observer = normalizeObserverQuery(req.query['observer']);
+    const filters = networkFilters(network, observer);
     const [mqttCount, packetCount, staleCount, mapNodeCount, totalNodeCount, longestHopCount] = await Promise.all([
       query(`SELECT COUNT(DISTINCT rx_node_id) AS count FROM packets WHERE time > NOW() - INTERVAL '10 minutes' AND rx_node_id IS NOT NULL ${filters.packets}`, filters.params),
-      query(`SELECT COUNT(DISTINCT packet_hash) AS count FROM packets WHERE time > NOW() - INTERVAL '24 hours' ${filters.packets}`, filters.params),
+      query(`SELECT COUNT(*) AS count FROM packets WHERE time > NOW() - INTERVAL '24 hours' ${filters.packets}`, filters.params),
       query(`SELECT COUNT(*) AS count FROM nodes
              WHERE lat IS NOT NULL AND lon IS NOT NULL
                AND (role IS NULL OR role = 2)
@@ -386,8 +444,10 @@ router.get('/stats', async (req, res) => {
 // GET /api/coverage — all stored viewshed polygons (excludes hidden 🚫 nodes)
 router.get('/coverage', async (req, res) => {
   try {
-    const network = req.query['network'] as string | undefined;
-    const filters = networkFilters(network);
+    const requestedNetwork = resolveRequestNetwork(req.query['network'], req.headers);
+    const network = requestedNetwork === 'all' ? undefined : requestedNetwork;
+    const observer = normalizeObserverQuery(req.query['observer']);
+    const filters = networkFilters(network, observer);
     const result = await query(
       `SELECT nc.node_id, nc.geom, nc.strength_geoms, nc.antenna_height_m, nc.radius_m, nc.calculated_at
        FROM node_coverage nc
@@ -420,7 +480,7 @@ router.get('/planned-nodes', async (_req, res) => {
 // GET /api/path-learning
 router.get('/path-learning', async (req, res) => {
   try {
-    const network = (req.query['network'] as string | undefined) ?? 'teesside';
+    const network = resolveRequestNetwork(req.query['network'], req.headers, 'teesside') ?? 'teesside';
     const limit = Math.min(12000, Math.max(1000, Number(req.query['limit'] ?? 6000)));
     const [prefixRows, transitionRows, edgeRows, motifRows, calibrationRows] = await Promise.all([
       query<{
@@ -532,7 +592,7 @@ router.get('/path-learning', async (req, res) => {
 // GET /api/path-sim/latest — latest path simulation run summary
 router.get('/path-sim/latest', async (req, res) => {
   try {
-    const network = (req.query['network'] as string | undefined)?.trim().toLowerCase();
+    const network = resolveRequestNetwork(req.query['network'], req.headers);
     const hasNetwork = Boolean(network && network !== 'all');
     const result = await query<{
       id: number;
@@ -571,7 +631,7 @@ router.get('/path-sim/latest', async (req, res) => {
 // GET /api/path-sim/history?limit=20&network=all
 router.get('/path-sim/history', async (req, res) => {
   try {
-    const network = (req.query['network'] as string | undefined)?.trim().toLowerCase();
+    const network = resolveRequestNetwork(req.query['network'], req.headers);
     const hasNetwork = Boolean(network && network !== 'all');
     const limit = Math.min(200, Math.max(1, Number(req.query['limit'] ?? 20)));
     const result = await query<{
@@ -1038,8 +1098,10 @@ router.post('/telemetry/frontend-error', async (req, res) => {
 // GET /api/stats/charts
 router.get('/stats/charts', async (req, res) => {
   try {
-    const network = req.query['network'] as string | undefined;
-    const filters = networkFilters(network);
+    const requestedNetwork = resolveRequestNetwork(req.query['network'], req.headers);
+    const network = requestedNetwork === 'all' ? undefined : requestedNetwork;
+    const observer = normalizeObserverQuery(req.query['observer']);
+    const filters = networkFilters(network, observer);
 
     const PAYLOAD_LABELS: Record<number, string> = {
       0: 'Request', 1: 'Response', 2: 'DM', 3: 'Ack',
@@ -1051,16 +1113,16 @@ router.get('/stats/charts', async (req, res) => {
       phResult, pdResult, rhResult, rdResult,
       ptResult, rpResult, hdResult, pcResult, sumResult,
     ] = await Promise.all([
-      // packets per hour — last 24h (deduplicated by hash)
+      // packets per hour — last 24h (all observed packet rows)
       query(`
-        SELECT time_bucket('1 hour', time) AS hour, COUNT(DISTINCT packet_hash) AS count
+        SELECT time_bucket('1 hour', time) AS hour, COUNT(*) AS count
         FROM packets
         WHERE time > NOW() - INTERVAL '24 hours' ${filters.packets}
         GROUP BY hour ORDER BY hour
       `, filters.params),
-      // packets per day — last 7d (deduplicated by hash)
+      // packets per day — last 7d (all observed packet rows)
       query(`
-        SELECT time_bucket('1 day', time) AS day, COUNT(DISTINCT packet_hash) AS count
+        SELECT time_bucket('1 day', time) AS day, COUNT(*) AS count
         FROM packets
         WHERE time > NOW() - INTERVAL '7 days' ${filters.packets}
         GROUP BY day ORDER BY day
@@ -1079,9 +1141,9 @@ router.get('/stats/charts', async (req, res) => {
         WHERE time > NOW() - INTERVAL '7 days' AND src_node_id IS NOT NULL ${filters.packets}
         GROUP BY day ORDER BY day
       `, filters.params),
-      // packet types — last 24h (deduplicated by hash)
+      // packet types — last 24h (all observed packet rows)
       query(`
-        SELECT packet_type, COUNT(DISTINCT packet_hash) AS count
+        SELECT packet_type, COUNT(*) AS count
         FROM packets
         WHERE time > NOW() - INTERVAL '24 hours' ${filters.packets}
         GROUP BY packet_type ORDER BY count DESC
@@ -1105,9 +1167,9 @@ router.get('/stats/charts', async (req, res) => {
         FROM hours h
         ORDER BY h.hour
       `, filters.params),
-      // hop count distribution — last 7d (deduplicated by hash)
+      // hop count distribution — last 7d (all observed packet rows)
       query(`
-        SELECT hop_count AS hops, COUNT(DISTINCT packet_hash) AS count
+        SELECT hop_count AS hops, COUNT(*) AS count
         FROM packets
         WHERE time > NOW() - INTERVAL '7 days'
           AND hop_count IS NOT NULL
@@ -1136,8 +1198,8 @@ router.get('/stats/charts', async (req, res) => {
       // summary
       query(`
         SELECT
-          (SELECT COUNT(DISTINCT packet_hash) FROM packets WHERE time > NOW() - INTERVAL '24 hours' ${filters.packets}) AS total_24h,
-          (SELECT COUNT(DISTINCT packet_hash) FROM packets WHERE time > NOW() - INTERVAL '7 days' ${filters.packets}) AS total_7d,
+          (SELECT COUNT(*) FROM packets WHERE time > NOW() - INTERVAL '24 hours' ${filters.packets}) AS total_24h,
+          (SELECT COUNT(*) FROM packets WHERE time > NOW() - INTERVAL '7 days' ${filters.packets}) AS total_7d,
           (SELECT COUNT(DISTINCT src_node_id) FROM packets WHERE time > NOW() - INTERVAL '24 hours' AND src_node_id IS NOT NULL ${filters.packets}) AS unique_radios_24h,
           (SELECT COUNT(*) FROM nodes n WHERE (n.role IS NULL OR n.role = 2) AND n.last_seen > NOW() - INTERVAL '7 days' ${filters.nodesAlias('n')}) AS active_repeaters,
           (SELECT COUNT(*) FROM nodes n WHERE (n.role IS NULL OR n.role = 2) AND n.last_seen <= NOW() - INTERVAL '7 days' AND n.last_seen > NOW() - INTERVAL '14 days' ${filters.nodesAlias('n')}) AS stale_repeaters

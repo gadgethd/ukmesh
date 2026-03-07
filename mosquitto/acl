@@ -2,6 +2,7 @@
 user backend
 topic readwrite meshcore/#
 topic readwrite ukmesh/#
+topic readwrite meshcore-test/#
 
 # teesside node observers — publish to meshcore/{IATA}/{PUBKEY}/packets
 user node1
@@ -10,3 +11,9 @@ topic write meshcore/#
 # ukmesh node observers — publish to ukmesh/{IATA}/{PUBKEY}/packets
 user node-ukmesh
 topic write ukmesh/#
+
+user test
+topic write meshcore-test/#
+
+user mrlm
+topic write meshcore/#

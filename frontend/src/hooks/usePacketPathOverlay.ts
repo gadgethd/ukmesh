@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { AggregatedPacket, MeshNode } from './useNodes.js';
 import { hasCoords, resolvePathWaypoints } from '../utils/pathing.js';
-import { withNetworkParam, uncachedEndpoint } from '../utils/api.js';
+import { withScopeParams, uncachedEndpoint } from '../utils/api.js';
 import type { Filters } from '../components/FilterPanel/FilterPanel.js';
 
 const PATH_TTL = 5_000;
@@ -14,13 +14,13 @@ type UsePacketPathOverlayParams = {
   nodes: Map<string, MeshNode>;
   filters: Filters;
   network?: string;
+  observer?: string;
 };
 
 type UsePacketPathOverlayResult = {
-  packetPath: [number, number][] | null;
-  betaPacketPath: [number, number][] | null;
-  betaExtraPurplePaths: [number, number][][];
-  betaLowConfidencePath: [number, number][] | null;
+  packetPaths: [number, number][][];
+  betaPacketPaths: [number, number][][];
+  betaLowConfidencePaths: [number, number][][];
   betaLowConfidenceSegments: PathSegment[];
   betaCompletionPaths: [number, number][][];
   betaPathConfidence: number | null;
@@ -57,15 +57,15 @@ function segmentizePath(path: [number, number][] | null): PathSegment[] {
   return segments;
 }
 
-async function fetchServerBeta(packetHash: string, network?: string, signal?: AbortSignal): Promise<ServerBetaResponse | null> {
-  const endpoint = withNetworkParam(`/api/path-beta/resolve?hash=${encodeURIComponent(packetHash)}`, network);
+async function fetchServerBeta(packetHash: string, network?: string, observer?: string, signal?: AbortSignal): Promise<ServerBetaResponse | null> {
+  const endpoint = withScopeParams(`/api/path-beta/resolve?hash=${encodeURIComponent(packetHash)}`, { network, observer });
   const response = await fetch(uncachedEndpoint(endpoint), { cache: 'no-store', signal });
   if (!response.ok) return null;
   return response.json() as Promise<ServerBetaResponse>;
 }
 
-function cacheKey(packetHash: string, network?: string): string {
-  return `${network ?? 'teesside'}|${packetHash}`;
+function cacheKey(packetHash: string, network?: string, observer?: string): string {
+  return `${network ?? 'all'}|${observer ?? 'all'}|${packetHash}`;
 }
 
 export function usePacketPathOverlay({
@@ -73,11 +73,11 @@ export function usePacketPathOverlay({
   nodes,
   filters,
   network,
+  observer,
 }: UsePacketPathOverlayParams): UsePacketPathOverlayResult {
-  const [packetPath, setPacketPath] = useState<[number, number][] | null>(null);
-  const [betaPacketPath, setBetaPacketPath] = useState<[number, number][] | null>(null);
-  const [betaExtraPurplePaths, setBetaExtraPurplePaths] = useState<[number, number][][]>([]);
-  const [betaLowConfidencePath, setBetaLowConfidencePath] = useState<[number, number][] | null>(null);
+  const [packetPaths, setPacketPaths] = useState<[number, number][][]>([]);
+  const [betaPacketPaths, setBetaPacketPaths] = useState<[number, number][][]>([]);
+  const [betaLowConfidencePaths, setBetaLowConfidencePaths] = useState<[number, number][][]>([]);
   const [betaLowConfidenceSegments, setBetaLowConfidenceSegments] = useState<PathSegment[]>([]);
   const [betaCompletionPaths, setBetaCompletionPaths] = useState<[number, number][][]>([]);
   const [betaPathConfidence, setBetaPathConfidence] = useState<number | null>(null);
@@ -94,9 +94,8 @@ export function usePacketPathOverlay({
   const inFlightRef = useRef<Map<string, Promise<ServerBetaResponse | null>>>(new Map());
   const activeReqSeqRef = useRef(0);
   const recentPredictionsRef = useRef<Map<string, {
-    purplePath: [number, number][] | null;
-    extraPurplePaths: [number, number][][];
-    redPath: [number, number][] | null;
+    purplePaths: [number, number][][];
+    redPaths: [number, number][][];
     redSegments: PathSegment[];
     completionPaths: [number, number][][];
     confidence: number | null;
@@ -121,10 +120,9 @@ export function usePacketPathOverlay({
   }, []);
 
   const clearPathState = useCallback(() => {
-    setPacketPath(null);
-    setBetaPacketPath(null);
-    setBetaExtraPurplePaths([]);
-    setBetaLowConfidencePath(null);
+    setPacketPaths([]);
+    setBetaPacketPaths([]);
+    setBetaLowConfidencePaths([]);
     setBetaLowConfidenceSegments([]);
     setBetaCompletionPaths([]);
     setBetaPathConfidence(null);
@@ -133,13 +131,13 @@ export function usePacketPathOverlay({
     setPathOpacity(0.75);
   }, []);
 
-  const applyServerPrediction = useCallback((packetHash: string, prediction: ServerBetaResponse | null) => {
-    if (!prediction || !prediction.ok) {
+  const applyServerPredictions = useCallback((packetHash: string, predictions: Array<ServerBetaResponse | null>) => {
+    const validPredictions = predictions.filter((prediction): prediction is ServerBetaResponse => Boolean(prediction?.ok));
+    if (validPredictions.length < 1) {
       const recent = recentPredictionsRef.current.get(packetHash);
       if (!recent || Date.now() - recent.ts > 45_000) {
-        setBetaPacketPath(null);
-        setBetaExtraPurplePaths([]);
-        setBetaLowConfidencePath(null);
+        setBetaPacketPaths([]);
+        setBetaLowConfidencePaths([]);
         setBetaLowConfidenceSegments([]);
         setBetaCompletionPaths([]);
         setBetaPathConfidence(null);
@@ -147,9 +145,8 @@ export function usePacketPathOverlay({
         setBetaRemainingHops(null);
         return;
       }
-      setBetaPacketPath(recent.purplePath);
-      setBetaExtraPurplePaths(recent.extraPurplePaths);
-      setBetaLowConfidencePath(recent.redPath);
+      setBetaPacketPaths(recent.purplePaths);
+      setBetaLowConfidencePaths(recent.redPaths);
       setBetaLowConfidenceSegments(recent.redSegments);
       setBetaCompletionPaths(recent.completionPaths);
       setBetaPathConfidence(recent.confidence);
@@ -158,33 +155,50 @@ export function usePacketPathOverlay({
       return;
     }
 
-    const purplePath = prediction.purplePath && prediction.purplePath.length >= 2 ? prediction.purplePath : null;
-    const extraPurplePaths = (prediction.extraPurplePaths ?? []).filter((path) => path.length >= 2);
-    const redPath = prediction.redPath && prediction.redPath.length >= 2 ? prediction.redPath : null;
-    const redSegments = prediction.redSegments?.length ? prediction.redSegments : segmentizePath(redPath);
-    const completionPaths = prediction.completionPaths ?? [];
-    const permutations = Number.isFinite(prediction.permutationCount)
-      ? prediction.permutationCount
-      : ((redPath ? 1 : 0) + completionPaths.length);
+    const purplePaths = validPredictions.flatMap((prediction) => {
+      const paths: [number, number][][] = [];
+      if (prediction.purplePath && prediction.purplePath.length >= 2) paths.push(prediction.purplePath);
+      for (const path of prediction.extraPurplePaths ?? []) {
+        if (path.length >= 2) paths.push(path);
+      }
+      return paths;
+    });
+    const redPaths = validPredictions.flatMap((prediction) => (
+      prediction.redPath && prediction.redPath.length >= 2 ? [prediction.redPath] : []
+    ));
+    const redSegments = validPredictions.flatMap((prediction) => (
+      prediction.redSegments?.length ? prediction.redSegments : segmentizePath(prediction.redPath && prediction.redPath.length >= 2 ? prediction.redPath : null)
+    ));
+    const completionPaths = validPredictions.flatMap((prediction) => prediction.completionPaths ?? []);
+    const permutations = validPredictions.reduce((sum, prediction) => {
+      const fallbackCount = (prediction.redPath ? 1 : 0) + (prediction.completionPaths?.length ?? 0);
+      return sum + (Number.isFinite(prediction.permutationCount) ? prediction.permutationCount : fallbackCount);
+    }, 0);
+    const bestConfidence = validPredictions.reduce<number | null>((best, prediction) => {
+      if (prediction.confidence == null) return best;
+      return best == null ? prediction.confidence : Math.max(best, prediction.confidence);
+    }, null);
+    const remainingHops = validPredictions.reduce<number | null>((best, prediction) => {
+      if (prediction.remainingHops == null) return best;
+      return best == null ? prediction.remainingHops : Math.max(best, prediction.remainingHops);
+    }, null);
 
-    setBetaPacketPath(purplePath);
-    setBetaExtraPurplePaths(extraPurplePaths);
-    setBetaLowConfidencePath(redPath);
+    setBetaPacketPaths(purplePaths);
+    setBetaLowConfidencePaths(redPaths);
     setBetaLowConfidenceSegments(redSegments);
     setBetaCompletionPaths(completionPaths);
-    setBetaPathConfidence(prediction.confidence);
+    setBetaPathConfidence(bestConfidence);
     setBetaPermutationCount(permutations);
-    setBetaRemainingHops(prediction.remainingHops);
+    setBetaRemainingHops(remainingHops);
 
     recentPredictionsRef.current.set(packetHash, {
-      purplePath,
-      extraPurplePaths,
-      redPath,
+      purplePaths,
+      redPaths,
       redSegments,
       completionPaths,
-      confidence: prediction.confidence,
+      confidence: bestConfidence,
       permutations,
-      remainingHops: prediction.remainingHops,
+      remainingHops,
       ts: Date.now(),
     });
   }, []);
@@ -204,9 +218,17 @@ export function usePacketPathOverlay({
     }
   }, []);
 
-  const resolvePrediction = useCallback((packetHash: string, networkName?: string): Promise<ServerBetaResponse | null> => {
+  const packetObserverIds = useCallback((packet: AggregatedPacket | undefined): string[] => {
+    if (!packet) return [];
+    return Array.from(new Set([
+      ...(packet.observerIds ?? []),
+      ...(packet.rxNodeId ? [packet.rxNodeId] : []),
+    ]));
+  }, []);
+
+  const resolvePrediction = useCallback((packetHash: string, networkName?: string, observerId?: string): Promise<ServerBetaResponse | null> => {
     prunePredictionCache();
-    const key = cacheKey(packetHash, networkName);
+    const key = cacheKey(packetHash, networkName, observerId);
     const cached = predictionCacheRef.current.get(key);
     if (cached && Date.now() - cached.ts <= PREDICTION_CACHE_TTL_MS) {
       return Promise.resolve(cached.prediction);
@@ -215,7 +237,7 @@ export function usePacketPathOverlay({
     const inflight = inFlightRef.current.get(key);
     if (inflight) return inflight;
 
-    const p = fetchServerBeta(packetHash, networkName)
+    const p = fetchServerBeta(packetHash, networkName, observerId)
       .then((prediction) => {
         predictionCacheRef.current.set(key, { prediction, ts: Date.now() });
         return prediction;
@@ -234,34 +256,38 @@ export function usePacketPathOverlay({
     stopPathTimers();
 
     const latest = packets[0];
-    const rx = latest?.rxNodeId ? nodes.get(latest.rxNodeId) : undefined;
+    const observerIds = packetObserverIds(latest);
 
-    if (filters.packetPaths && latest?.rxNodeId && (latest.path?.length || latest.srcNodeId) && hasCoords(rx)) {
+    if (filters.packetPaths && observerIds.length > 0 && latest && (latest.path?.length || latest.srcNodeId)) {
       const src = latest.srcNodeId ? (nodes.get(latest.srcNodeId) ?? null) : null;
       const srcWithPos = hasCoords(src) ? src : null;
-      const waypoints = latest.path?.length
-        ? resolvePathWaypoints(latest.path, srcWithPos, rx, nodes)
-        : [[srcWithPos!.lat!, srcWithPos!.lon!], [rx.lat, rx.lon]] as [number, number][];
-      setPacketPath(waypoints.length >= 2 ? waypoints : null);
+      const nextPaths = observerIds.flatMap((observerId) => {
+        const rx = nodes.get(observerId);
+        if (!hasCoords(rx)) return [];
+        const waypoints = latest.path?.length
+          ? resolvePathWaypoints(latest.path, srcWithPos, rx, nodes)
+          : (srcWithPos ? [[srcWithPos.lat, srcWithPos.lon], [rx.lat, rx.lon]] as [number, number][] : []);
+        return waypoints.length >= 2 ? [waypoints] : [];
+      });
+      setPacketPaths(nextPaths);
     } else {
-      setPacketPath(null);
+      setPacketPaths([]);
     }
 
-    if (filters.betaPaths && latest?.packetHash && latest.path?.length) {
+    if (filters.betaPaths && latest?.packetHash && latest.path?.length && observerIds.length > 0) {
       const reqSeq = ++activeReqSeqRef.current;
-      void resolvePrediction(latest.packetHash, network)
-        .then((prediction) => {
+      void Promise.all(observerIds.map((observerId) => resolvePrediction(latest.packetHash, network, observerId)))
+        .then((predictions) => {
           if (reqSeq !== activeReqSeqRef.current) return;
-          applyServerPrediction(latest.packetHash, prediction);
+          applyServerPredictions(latest.packetHash, predictions);
         })
         .catch(() => {
           if (reqSeq !== activeReqSeqRef.current) return;
-          applyServerPrediction(latest.packetHash, null);
+          applyServerPredictions(latest.packetHash, []);
         });
     } else {
-      setBetaPacketPath(null);
-      setBetaExtraPurplePaths([]);
-      setBetaLowConfidencePath(null);
+      setBetaPacketPaths([]);
+      setBetaLowConfidencePaths([]);
       setBetaLowConfidenceSegments([]);
       setBetaCompletionPaths([]);
       setBetaPathConfidence(null);
@@ -295,7 +321,7 @@ export function usePacketPathOverlay({
       pathFadeRef.current = requestAnimationFrame(animate);
     }, PATH_TTL - 1_000);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [latestId, filters.packetPaths, filters.betaPaths, pinnedPacketId, network]);
+  }, [latestId, filters.packetPaths, filters.betaPaths, pinnedPacketId, network, observer, nodes, packets, packetObserverIds, resolvePrediction, stopPathTimers, clearPathState, applyServerPredictions]);
 
   const handlePacketPin = useCallback((packet: AggregatedPacket) => {
     if (pinnedPacketId === packet.id) {
@@ -315,23 +341,23 @@ export function usePacketPathOverlay({
       pinnedTimerRef.current = null;
     }
 
-    setPacketPath(null);
+    setPacketPaths([]);
 
-    if (packet.packetHash && packet.path?.length) {
+    const observerIds = packetObserverIds(packet);
+    if (packet.packetHash && packet.path?.length && observerIds.length > 0) {
       const reqSeq = ++activeReqSeqRef.current;
-      void resolvePrediction(packet.packetHash, network)
-        .then((prediction) => {
+      void Promise.all(observerIds.map((observerId) => resolvePrediction(packet.packetHash, network, observerId)))
+        .then((predictions) => {
           if (reqSeq !== activeReqSeqRef.current) return;
-          applyServerPrediction(packet.packetHash, prediction);
+          applyServerPredictions(packet.packetHash, predictions);
         })
         .catch(() => {
           if (reqSeq !== activeReqSeqRef.current) return;
-          applyServerPrediction(packet.packetHash, null);
+          applyServerPredictions(packet.packetHash, []);
         });
     } else {
-      setBetaPacketPath(null);
-      setBetaExtraPurplePaths([]);
-      setBetaLowConfidencePath(null);
+      setBetaPacketPaths([]);
+      setBetaLowConfidencePaths([]);
       setBetaLowConfidenceSegments([]);
       setBetaCompletionPaths([]);
       setBetaPathConfidence(null);
@@ -359,7 +385,7 @@ export function usePacketPathOverlay({
       };
       pathFadeRef.current = requestAnimationFrame(animate);
     }, 30_000);
-  }, [pinnedPacketId, network, stopPathTimers, clearPathState, applyServerPrediction, resolvePrediction]);
+  }, [pinnedPacketId, network, observer, stopPathTimers, clearPathState, applyServerPredictions, resolvePrediction, packetObserverIds]);
 
   useEffect(() => () => {
     stopPathTimers();
@@ -367,10 +393,9 @@ export function usePacketPathOverlay({
   }, [stopPathTimers]);
 
   return {
-    packetPath,
-    betaPacketPath,
-    betaExtraPurplePaths,
-    betaLowConfidencePath,
+    packetPaths,
+    betaPacketPaths,
+    betaLowConfidencePaths,
     betaLowConfidenceSegments,
     betaCompletionPaths,
     betaPathConfidence,

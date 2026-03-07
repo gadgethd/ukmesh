@@ -1,6 +1,6 @@
 import React, { useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import { MapContainer, TileLayer, useMap, Pane, Polygon, Polyline } from 'react-leaflet';
-import type { LatLngExpression, Map as LeafletMap, Polyline as LeafletPolyline } from 'leaflet';
+import type { LatLngExpression, Map as LeafletMap } from 'leaflet';
 import type { MeshNode, PacketArc } from '../../hooks/useNodes.js';
 import type { NodeCoverage } from '../../hooks/useCoverage.js';
 import type { LinkMetrics } from '../../utils/pathing.js';
@@ -100,10 +100,9 @@ interface MapViewProps {
   maxHexClashHops: number;
   viablePairsArr:  [string, string][];
   linkMetrics:     Map<string, LinkMetrics>;
-  packetPath:      [number, number][] | null;
-  betaPath:        [number, number][] | null;
-  betaExtraPurplePaths: [number, number][][];
-  betaLowPath:     [number, number][] | null;
+  packetPaths:     [number, number][][];
+  betaPaths:       [number, number][][];
+  betaLowPaths:    [number, number][][];
   betaLowSegments: [[number, number], [number, number]][];
   betaCompletionPaths: [number, number][][];
   showBetaPaths:   boolean;
@@ -117,7 +116,7 @@ const DEFAULT_ZOOM = 11;
 
 export const MapView: React.FC<MapViewProps> = ({
   nodes, arcs, activeNodes, coverage, showPackets, showCoverage, showClientNodes,
-  showLinks, showHexClashes, maxHexClashHops, viablePairsArr, linkMetrics, packetPath, betaPath, betaExtraPurplePaths, betaLowPath, betaCompletionPaths, showBetaPaths, pathOpacity, onMapReady,
+  showLinks, showHexClashes, maxHexClashHops, viablePairsArr, linkMetrics, packetPaths, betaPaths, betaLowPaths, betaCompletionPaths, showBetaPaths, pathOpacity, onMapReady,
 }) => {
   const [map, setMap] = useState<LeafletMap | null>(null);
   const [focusedPrefix, setFocusedPrefix] = useState<string | null>(null);
@@ -168,18 +167,14 @@ export const MapView: React.FC<MapViewProps> = ({
     return () => mq.removeEventListener('change', update);
   }, []);
 
-  // Refs to Leaflet Polyline instances for direct SVG attribute animation
-  const regularPathRef = useRef<LeafletPolyline | null>(null);
-  const betaLowPathRef = useRef<LeafletPolyline | null>(null);
-  const betaPathRef = useRef<LeafletPolyline | null>(null);
   const aniFrameRef    = useRef<number | null>(null);
 
   // Animate marching dashes by incrementing stroke-dashoffset directly on the
   // Leaflet SVG path element. CSS animation is unreliable here because Leaflet
   // calls _updateStyle (setAttribute) on every prop change, which can interrupt
   // CSS keyframe animations. Direct DOM manipulation in an rAF loop is stable.
-  const hasRegular = !!packetPath;
-  const hasBeta = Boolean(showBetaPaths && (betaLowPath || betaPath || betaExtraPurplePaths.length > 0));
+  const hasRegular = packetPaths.length > 0;
+  const hasBeta = Boolean(showBetaPaths && (betaLowPaths.length > 0 || betaPaths.length > 0));
 
   useEffect(() => {
     if (!hasRegular && !hasBeta) {
@@ -190,22 +185,16 @@ export const MapView: React.FC<MapViewProps> = ({
       return;
     }
 
-    let offset = 0;
-    const tick = () => {
-      offset = (offset + DASH_STEP) % DASH_CYCLE;
-      // Negative dashoffset = dashes march forward (source → destination)
-      const val = String(-offset);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const rp = (regularPathRef.current as any)?._path as SVGPathElement | null;
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const bl = (betaLowPathRef.current as any)?._path as SVGPathElement | null;
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const bp = (betaPathRef.current as any)?._path as SVGPathElement | null;
-      if (hasRegular && rp) rp.setAttribute('stroke-dashoffset', val);
-      if (hasBeta && bl) bl.setAttribute('stroke-dashoffset', val);
-      if (hasBeta && bp) bp.setAttribute('stroke-dashoffset', val);
-      aniFrameRef.current = requestAnimationFrame(tick);
-    };
+      let offset = 0;
+      const tick = () => {
+        offset = (offset + DASH_STEP) % DASH_CYCLE;
+        const val = String(-offset);
+        const paths = map?.getContainer().querySelectorAll<SVGPathElement>(
+          '.packet-path-overlay, .beta-red-path-overlay, .beta-purple-path-overlay',
+        );
+        paths?.forEach((path) => path.setAttribute('stroke-dashoffset', val));
+        aniFrameRef.current = requestAnimationFrame(tick);
+      };
 
     aniFrameRef.current = requestAnimationFrame(tick);
     return () => {
@@ -214,7 +203,7 @@ export const MapView: React.FC<MapViewProps> = ({
         aniFrameRef.current = null;
       }
     };
-  }, [hasRegular, hasBeta]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [hasRegular, hasBeta, map]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const FOURTEEN_DAYS_MS = 14 * 24 * 60 * 60 * 1000;
   const allNodesWithPos = useMemo(() => Array.from(nodes.values()).filter(
@@ -615,59 +604,48 @@ export const MapView: React.FC<MapViewProps> = ({
         })}
 
         {/* Live packet path — marching dashes from source → observer */}
-        {packetPath && (
+        {packetPaths.map((path, idx) => (
           <Polyline
-            ref={regularPathRef}
-            positions={packetPath}
+            key={`packet-path-${idx}`}
+            positions={path}
             pathOptions={{
               color:     '#00c4ff',
               weight:    2,
               dashArray: '6 9',
               opacity:   pathOpacity,
+              className: 'packet-path-overlay',
             }}
           />
-        )}
+        ))}
 
         {/* Beta path — uncertain (red) drawn first so confident (purple) always renders on top */}
-        {showBetaPaths && betaLowPath && (
+        {showBetaPaths && betaLowPaths.map((path, idx) => (
           <Polyline
-            ref={betaLowPathRef}
-            positions={betaLowPath}
+            key={`beta-low-${idx}`}
+            positions={path}
             pathOptions={{
               color:     '#ef4444',
               weight:    2.6,
               dashArray: '6 9',
               opacity:   Math.min(0.9, pathOpacity),
+              className: 'beta-red-path-overlay',
             }}
             interactive={false}
           />
-        )}
+        ))}
 
         {/* Purple confident portion rendered last — highest z-order so it is never obscured by the red uncertain portion */}
-        {showBetaPaths && betaPath && (
+        {showBetaPaths && betaPaths.map((path, idx) => (
           <Polyline
-            ref={betaPathRef}
-            positions={betaPath}
-            pathOptions={{
-              color:     '#a855f7',
-              weight:    2.8,
-              dashArray: '6 9',
-              opacity:   pathOpacity,
-            }}
-          />
-        )}
-
-        {showBetaPaths && betaExtraPurplePaths.map((path, idx) => (
-          <Polyline
-            key={`beta-extra-purple-${idx}`}
+            key={`beta-purple-${idx}`}
             positions={path}
             pathOptions={{
               color:     '#a855f7',
               weight:    2.8,
               dashArray: '6 9',
               opacity:   pathOpacity,
+              className: 'beta-purple-path-overlay',
             }}
-            interactive={false}
           />
         ))}
 

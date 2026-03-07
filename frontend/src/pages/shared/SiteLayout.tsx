@@ -5,6 +5,12 @@ type SiteLayoutProps = {
   brandName: string;
   footerName: string;
   appUrl: string;
+  showLiveMap?: boolean;
+  showAbout?: boolean;
+  showInstall?: boolean;
+  showMqtt?: boolean;
+  showHealth?: boolean;
+  showOpenSource?: boolean;
   showPackets: boolean;
   showStats: boolean;
 };
@@ -30,6 +36,12 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
   brandName,
   footerName,
   appUrl,
+  showLiveMap = true,
+  showAbout = true,
+  showInstall = true,
+  showMqtt = true,
+  showHealth = true,
+  showOpenSource = true,
   showPackets,
   showStats,
 }) => {
@@ -39,12 +51,12 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
 
   const navItems: NavItem[] = [
     { to: '/', label: 'Home', enabled: true },
-    { to: '/about', label: 'What is MeshCore', enabled: true },
-    { to: '/install', label: 'Install', enabled: true },
-    { to: '/mqtt', label: 'MQTT', enabled: true },
-    { to: '/health', label: 'Health', enabled: true },
+    { to: '/about', label: 'What is MeshCore', enabled: showAbout },
+    { to: '/install', label: 'Install', enabled: showInstall },
+    { to: '/mqtt', label: 'MQTT', enabled: showMqtt },
+    { to: '/health', label: 'Health', enabled: showHealth },
     { to: '/packets', label: 'Packets', enabled: showPackets },
-    { to: '/open-source', label: 'Open Source', enabled: true },
+    { to: '/open-source', label: 'Open Source', enabled: showOpenSource },
     { to: '/stats', label: 'Stats', enabled: showStats },
   ];
 
@@ -106,7 +118,7 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
               {item.label}
             </NavLink>
           ))}
-          <a href={appUrl} className="site-nav__link">Live Map</a>
+          {showLiveMap && <a href={appUrl} className="site-nav__link">Live Map</a>}
           <NavLink
             to="/login"
             onClick={() => handleNavClick('/login')}
@@ -135,8 +147,12 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
         <a href="https://discord.gg/bSuST8xvet" target="_blank" rel="noopener noreferrer">Discord</a>
         <span className="site-footer__sep">·</span>
         <Link to="/open-source">Open Source</Link>
-        <span className="site-footer__sep">·</span>
-        <a href={appUrl}>Live Map</a>
+        {showLiveMap && (
+          <>
+            <span className="site-footer__sep">·</span>
+            <a href={appUrl}>Live Map</a>
+          </>
+        )}
       </footer>
     </div>
   );

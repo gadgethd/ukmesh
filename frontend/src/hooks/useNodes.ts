@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback } from 'react';
 
 export interface MeshNode {
   node_id:        string;
@@ -37,6 +37,7 @@ export interface AggregatedPacket {
   packetHash:   string;
   packetType?:  number;
   rxNodeId?:    string;     // observer — for node-name fallback
+  observerIds:  string[];
   srcNodeId?:   string;     // sender node id (from decoded payload)
   summary?:     string;
   hopCount?:    number;
@@ -56,13 +57,7 @@ export interface PacketArc {
   packetHash: string;
 }
 
-const ARC_TTL = 5000;
 const FEED_MAX_PACKETS = 120;
-
-interface HashRecord {
-  observers: string[];
-  ts:        number;
-}
 
 function packetInfoScore(packet: Pick<AggregatedPacket, 'packetType' | 'srcNodeId' | 'summary' | 'hopCount' | 'path' | 'advertCount'>): number {
   let score = 0;
@@ -79,18 +74,50 @@ function packetInfoScore(packet: Pick<AggregatedPacket, 'packetType' | 'srcNodeI
 export function useNodes() {
   const [nodes, setNodes]             = useState<Map<string, MeshNode>>(new Map());
   const [packets, setPackets]         = useState<AggregatedPacket[]>([]);
-  const [arcs, setArcs]               = useState<PacketArc[]>([]);
-  const [activeNodes, setActiveNodes] = useState<Set<string>>(new Set());
+  const [arcs]                        = useState<PacketArc[]>([]);
+  const [activeNodes] = useState<Set<string>>(new Set());
 
-  const hashRegistry = useRef<Map<string, HashRecord>>(new Map());
-
-  const pruneArcs = useCallback(() => {
-    const cutoff = Date.now() - ARC_TTL - 500;
-    setArcs((prev) => prev.filter((a) => a.ts > cutoff));
-    const regCutoff = Date.now() - 10_000;
-    for (const [k, v] of hashRegistry.current) {
-      if (v.ts < regCutoff) hashRegistry.current.delete(k);
+  const mapRecentRows = useCallback((rows: Array<{
+    time: string;
+    packet_hash: string;
+    rx_node_id?: string;
+    observer_node_ids?: string[] | null;
+    src_node_id?: string;
+    packet_type?: number;
+    hop_count?: number;
+    payload?: Record<string, unknown>;
+    advert_count?: number | null;
+    path_hashes?: string[] | null;
+  }>): AggregatedPacket[] => {
+    const seen = new Set<string>();
+    const mapped: AggregatedPacket[] = [];
+    for (const row of rows) {
+      if (seen.has(row.packet_hash)) continue;
+      seen.add(row.packet_hash);
+      const appData = row.payload?.['appData'] as Record<string, unknown> | undefined;
+      const summary = (appData?.['name'] as string | undefined)
+        ?? (row.payload?.['origin'] as string | undefined);
+      const observerIds = Array.from(new Set([
+        ...(row.observer_node_ids ?? []),
+        ...(row.rx_node_id ? [row.rx_node_id] : []),
+      ]));
+      mapped.push({
+        id:          row.packet_hash,
+        packetHash:  row.packet_hash,
+        packetType:  row.packet_type,
+        rxNodeId:    row.rx_node_id,
+        observerIds,
+        srcNodeId:   row.src_node_id,
+        summary,
+        hopCount:    row.hop_count,
+        path:        row.path_hashes ?? undefined,
+        rxCount:     1,
+        txCount:     0,
+        ts:          new Date(row.time).getTime(),
+        advertCount: row.advert_count ?? undefined,
+      });
     }
+    return mapped.slice(0, FEED_MAX_PACKETS);
   }, []);
 
   const handleInitialState = useCallback((data: {
@@ -99,6 +126,7 @@ export function useNodes() {
       time: string;
       packet_hash: string;
       rx_node_id?: string;
+      observer_node_ids?: string[] | null;
       src_node_id?: string;
       packet_type?: number;
       hop_count?: number;
@@ -110,34 +138,23 @@ export function useNodes() {
     const nodeMap = new Map<string, MeshNode>();
     for (const n of data.nodes) nodeMap.set(n.node_id, n);
     setNodes(nodeMap);
+    setPackets(mapRecentRows(data.packets));
+  }, [mapRecentRows]);
 
-    // Pre-populate the live feed with the last N packets from DB.
-    // Deduplicate by packet_hash in case the same packet was heard by multiple observers.
-    const seen = new Set<string>();
-    const initialPackets: AggregatedPacket[] = [];
-    for (const row of data.packets) {
-      if (seen.has(row.packet_hash)) continue;
-      seen.add(row.packet_hash);
-      const appData = row.payload?.['appData'] as Record<string, unknown> | undefined;
-      const summary = (appData?.['name'] as string | undefined)
-        ?? (row.payload?.['origin'] as string | undefined);
-      initialPackets.push({
-        id:          row.packet_hash,
-        packetHash:  row.packet_hash,
-        packetType:  row.packet_type,
-        rxNodeId:    row.rx_node_id,
-        srcNodeId:   row.src_node_id,
-        summary,
-        hopCount:    row.hop_count,
-        path:        row.path_hashes ?? undefined,
-        rxCount:     1,
-        txCount:     0,
-        ts:          new Date(row.time).getTime(),
-        advertCount: row.advert_count ?? undefined,
-      });
-    }
-    setPackets(initialPackets.slice(0, FEED_MAX_PACKETS));
-  }, []);
+  const replaceRecentPackets = useCallback((rows: Array<{
+    time: string;
+    packet_hash: string;
+    rx_node_id?: string;
+    observer_node_ids?: string[] | null;
+    src_node_id?: string;
+    packet_type?: number;
+    hop_count?: number;
+    payload?: Record<string, unknown>;
+    advert_count?: number | null;
+    path_hashes?: string[] | null;
+  }>) => {
+    setPackets(mapRecentRows(rows));
+  }, [mapRecentRows]);
 
   const handlePacket = useCallback((packet: LivePacketData) => {
     // ── Aggregate by packetHash ─────────────────────────────────────────────
@@ -147,9 +164,14 @@ export function useNodes() {
       if (idx >= 0) {
         // Known packet — increment count, bubble to top
         const current = prev[idx]!;
+        const observerIds = packet.rxNodeId
+          ? [packet.rxNodeId, ...current.observerIds.filter((id) => id !== packet.rxNodeId)]
+          : current.observerIds;
         const candidate: AggregatedPacket = {
           ...current,
           packetType: packet.packetType ?? current.packetType,
+          rxNodeId:   packet.rxNodeId ?? current.rxNodeId,
+          observerIds,
           srcNodeId:  packet.srcNodeId ?? current.srcNodeId,
           summary:    packet.summary ?? (packet.payload?.['origin'] as string | undefined) ?? current.summary,
           hopCount:   packet.hopCount ?? current.hopCount,
@@ -175,6 +197,7 @@ export function useNodes() {
         packetHash: packet.packetHash,
         packetType: packet.packetType,
         rxNodeId:   packet.rxNodeId,
+        observerIds: packet.rxNodeId ? [packet.rxNodeId] : [],
         srcNodeId:  packet.srcNodeId,
         summary:    packet.summary ?? (packet.payload?.['origin'] as string | undefined),
         hopCount:   packet.hopCount,
@@ -187,54 +210,7 @@ export function useNodes() {
       return [entry, ...prev].slice(0, FEED_MAX_PACKETS);
     });
 
-    // ── Pulse the observer node ─────────────────────────────────────────────
-    if (packet.rxNodeId) {
-      setActiveNodes((prev) => {
-        const next = new Set(prev);
-        next.add(packet.rxNodeId!);
-        setTimeout(() => setActiveNodes((s) => {
-          const n = new Set(s); n.delete(packet.rxNodeId!); return n;
-        }), 1200);
-        return next;
-      });
-    }
-
-    // ── Build hop-trail arcs via packetHash correlation ─────────────────────
-    if (packet.rxNodeId) {
-      const reg = hashRegistry.current;
-      const existing = reg.get(packet.packetHash);
-
-      if (existing) {
-        const prevObserverId = existing.observers[existing.observers.length - 1]!;
-        existing.observers.push(packet.rxNodeId);
-        existing.ts = packet.ts;
-
-        setNodes((currentNodes) => {
-          const prev = currentNodes.get(prevObserverId);
-          const curr = currentNodes.get(packet.rxNodeId!);
-          if (typeof prev?.lat === 'number' && typeof prev?.lon === 'number'
-            && typeof curr?.lat === 'number' && typeof curr?.lon === 'number') {
-            const arc: PacketArc = {
-              id:         packet.id,
-              from:       [prev.lon, prev.lat],
-              to:         [curr.lon, curr.lat],
-              hopCount:   packet.hopCount ?? existing.observers.length,
-              ts:         packet.ts,
-              packetHash: packet.packetHash,
-            };
-            setArcs((a) => [...a, arc]);
-            setTimeout(pruneArcs, ARC_TTL + 500);
-          }
-          return currentNodes;
-        });
-      } else {
-        reg.set(packet.packetHash, {
-          observers: [packet.rxNodeId],
-          ts:        packet.ts,
-        });
-      }
-    }
-  }, [pruneArcs]);
+  }, []);
 
   const handleNodeUpdate = useCallback((data: { nodeId: string; ts: number }) => {
     setNodes((prev) => {
@@ -269,6 +245,7 @@ export function useNodes() {
     arcs,
     activeNodes,
     handleInitialState,
+    replaceRecentPackets,
     handlePacket,
     handleNodeUpdate,
     handleNodeUpsert,

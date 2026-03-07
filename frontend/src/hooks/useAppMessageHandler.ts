@@ -37,6 +37,7 @@ type UseAppMessageHandlerParams = {
     count_a_to_b?: number;
     count_b_to_a?: number;
   }) => void;
+  onPacketObserved?: () => void;
 };
 
 export function useAppMessageHandler({
@@ -48,6 +49,7 @@ export function useAppMessageHandler({
   applyInitialViablePairs,
   applyInitialViableLinks,
   applyLinkUpdate,
+  onPacketObserved,
 }: UseAppMessageHandlerParams) {
   return useCallback((msg: WSMessage) => {
     if (msg.type === 'initial_state') {
@@ -65,6 +67,7 @@ export function useAppMessageHandler({
     }
 
     if (msg.type === 'packet') {
+      onPacketObserved?.();
       handlePacket(msg.data as LivePacketData);
       return;
     }
@@ -108,5 +111,6 @@ export function useAppMessageHandler({
     applyInitialViablePairs,
     applyInitialViableLinks,
     applyLinkUpdate,
+    onPacketObserved,
   ]);
 }

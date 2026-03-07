@@ -1,4 +1,5 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
+import type { ApiScope } from '../utils/api.js';
 
 export type WSReadyState = 'connecting' | 'connected' | 'disconnected';
 
@@ -10,7 +11,7 @@ export interface WSMessage {
 
 type MessageHandler = (msg: WSMessage) => void;
 
-export function useWebSocket(onMessage: MessageHandler, network?: string) {
+export function useWebSocket(onMessage: MessageHandler, scope: ApiScope = {}) {
   const [readyState, setReadyState] = useState<WSReadyState>('connecting');
   const wsRef   = useRef<WebSocket | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -29,7 +30,11 @@ export function useWebSocket(onMessage: MessageHandler, network?: string) {
     if (wsRef.current?.readyState === WebSocket.OPEN || wsRef.current?.readyState === WebSocket.CONNECTING) return;
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const suffix   = network ? `?network=${encodeURIComponent(network)}` : '';
+    const params = new URLSearchParams();
+    if (scope.network) params.set('network', scope.network);
+    if (scope.observer) params.set('observer', scope.observer);
+    const query = params.toString();
+    const suffix = query ? `?${query}` : '';
     const url = `${protocol}//${window.location.host}/ws${suffix}`;
     const ws = new WebSocket(url);
     wsRef.current = ws;
@@ -62,7 +67,7 @@ export function useWebSocket(onMessage: MessageHandler, network?: string) {
     ws.onerror = () => {
       ws.close();
     };
-  }, [network]);
+  }, [scope.network, scope.observer]);
 
   useEffect(() => {
     shouldReconnectRef.current = true;

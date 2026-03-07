@@ -72,6 +72,6 @@ export const StatsPanel: React.FC<StatsPanelProps> = ({
     <div className="topbar__divider" />
     <AnimatedStat label="Stale"         value={staleNodes}    variant="danger" />
     <div className="topbar__divider" />
-    <AnimatedStat label="Packets / 24h" value={packetsDay}    variant="amber" />
+    <AnimatedStat label="Observed / 24h" value={packetsDay}   variant="amber" />
   </div>
 );

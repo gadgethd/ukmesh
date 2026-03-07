@@ -5,8 +5,14 @@ import { fileURLToPath } from 'node:url';
 
 const { Pool } = pg;
 
+const databaseSchema = String(process.env['DATABASE_SCHEMA'] ?? '').trim();
+if (databaseSchema && !/^[a-z_][a-z0-9_]*$/i.test(databaseSchema)) {
+  throw new Error(`Invalid DATABASE_SCHEMA: ${databaseSchema}`);
+}
+
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
+  options: databaseSchema ? `-c search_path=${databaseSchema},public` : undefined,
   max: 20,
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 5000,
@@ -23,10 +29,76 @@ export async function query<T extends pg.QueryResultRow = pg.QueryResultRow>(
   return pool.query<T>(text, params);
 }
 
+type ScopePlaceholders = {
+  params: unknown[];
+  networkParam: string | null;
+  observerParam: string | null;
+};
+
+function buildScopePlaceholders(startIndex: number, network?: string, observer?: string): ScopePlaceholders {
+  const params: unknown[] = [];
+  let idx = startIndex;
+  const networkParam = network ? `$${idx++}` : null;
+  if (network) params.push(network);
+  const observerParam = observer ? `$${idx++}` : null;
+  if (observer) params.push(observer);
+  return { params, networkParam, observerParam };
+}
+
+function buildPacketScopeClause(
+  placeholders: ScopePlaceholders,
+  alias?: string,
+): string {
+  const prefix = alias ? `${alias}.` : '';
+  const conditions: string[] = [];
+  if (placeholders.networkParam) {
+    conditions.push(`${prefix}network = ${placeholders.networkParam}`);
+  } else {
+    conditions.push(`${prefix}network IS DISTINCT FROM 'test'`);
+  }
+  if (placeholders.observerParam) {
+    conditions.push(`LOWER(${prefix}rx_node_id) = LOWER(${placeholders.observerParam})`);
+  }
+  return conditions.length > 0 ? ` AND ${conditions.join(' AND ')}` : '';
+}
+
+function buildNodeScopeClause(
+  placeholders: ScopePlaceholders,
+  alias?: string,
+): string {
+  const prefix = alias ? `${alias}.` : '';
+  const conditions: string[] = [];
+
+  if (placeholders.networkParam) {
+    conditions.push(`${prefix}network = ${placeholders.networkParam}`);
+  } else {
+    conditions.push(`${prefix}network IS DISTINCT FROM 'test'`);
+  }
+
+  if (placeholders.observerParam) {
+    const observerNodeScope = [
+      `LOWER(${prefix}node_id) = LOWER(${placeholders.observerParam})`,
+      `EXISTS (
+         SELECT 1
+         FROM packets p
+         WHERE LOWER(p.rx_node_id) = LOWER(${placeholders.observerParam})`,
+      placeholders.networkParam ? `AND p.network = ${placeholders.networkParam}` : '',
+      `AND LOWER(p.src_node_id) = LOWER(${prefix}node_id)
+       )`,
+    ].filter(Boolean).join(' ');
+    conditions.push(`(${observerNodeScope})`);
+  }
+
+  return conditions.length > 0 ? ` AND ${conditions.join(' AND ')}` : '';
+}
+
 export async function initDb(): Promise<void> {
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const schemaPath = path.join(__dirname, 'schema.sql');
   const sql = fs.readFileSync(schemaPath, 'utf8');
+  if (databaseSchema) {
+    await pool.query(`CREATE SCHEMA IF NOT EXISTS "${databaseSchema}"`);
+  }
   await pool.query(sql);
   console.log('[db] schema initialised, no retention policy (data kept indefinitely)');
 }
@@ -63,7 +135,10 @@ export async function upsertNode(nodeId: string, updates: {
        firmware_version = COALESCE(EXCLUDED.firmware_version, nodes.firmware_version),
        public_key       = COALESCE(EXCLUDED.public_key, nodes.public_key),
        network          = CASE
-                            WHEN nodes.network = 'teesside' THEN 'teesside'
+                            WHEN nodes.network = 'teesside' AND COALESCE(EXCLUDED.network, nodes.network) <> 'test' THEN 'teesside'
+                            WHEN nodes.network IN ('ukmesh', 'teesside') AND EXCLUDED.network = 'test' THEN nodes.network
+                            WHEN nodes.network = 'test' AND EXCLUDED.network IN ('ukmesh', 'teesside') THEN EXCLUDED.network
+                            WHEN EXCLUDED.network = 'test' THEN 'test'
                             ELSE COALESCE(EXCLUDED.network, nodes.network)
                           END,
        last_seen        = NOW(),
@@ -101,13 +176,13 @@ export async function insertPacket(p: {
   );
 }
 
-export async function getNodes(network?: string) {
-  const whereClause = network ? 'WHERE network = $1' : '';
-  const params = network ? [network] : [];
+export async function getNodes(network?: string, observer?: string) {
+  const scope = buildScopePlaceholders(1, network, observer);
+  const whereClause = `WHERE 1=1${buildNodeScopeClause(scope)}`;
   const res = await pool.query(
     `SELECT node_id, name, lat, lon, iata, role, last_seen, is_online, hardware_model, public_key, advert_count, elevation_m
      FROM nodes ${whereClause} ORDER BY last_seen DESC`,
-    params
+    scope.params
   );
   return res.rows;
 }
@@ -123,35 +198,45 @@ export async function getNodeHistory(nodeId: string, hours = 24) {
   return res.rows;
 }
 
-export async function getRecentPackets(limit = 200) {
+export async function getRecentPackets(limit = 200, network?: string, observer?: string) {
+  const scope = buildScopePlaceholders(2, network, observer);
   const res = await pool.query(
     `SELECT time, packet_hash, rx_node_id, src_node_id, topic,
             packet_type, hop_count, rssi, snr, payload
      FROM packets
      WHERE time > NOW() - INTERVAL '5 minutes'
+     ${buildPacketScopeClause(scope)}
      ORDER BY time DESC LIMIT $1`,
-    [limit]
+    [limit, ...scope.params]
   );
   return res.rows;
 }
 
-export async function getLastNPackets(n: number, network?: string) {
+export async function getLastNPackets(n: number, network?: string, observer?: string) {
   // DISTINCT ON deduplicates by hash (same packet heard by multiple observers),
   // preferring the richest observation per hash within the last 24 hours.
-  const nFilter = network ? 'AND network = $2' : '';
-  const params: unknown[] = network ? [n, network] : [n];
+  const scope = buildScopePlaceholders(2, network, observer);
+  const params: unknown[] = [n, ...scope.params];
   const res = await pool.query(
     `SELECT * FROM (
-       SELECT DISTINCT ON (packet_hash) time, packet_hash, rx_node_id, src_node_id,
-              packet_type, hop_count, payload, advert_count, path_hashes
-       FROM packets
-       WHERE time > NOW() - INTERVAL '24 hours' ${nFilter}
-       ORDER BY packet_hash,
+       SELECT DISTINCT ON (p.packet_hash) p.time, p.packet_hash, p.rx_node_id, p.src_node_id,
+              p.packet_type, p.hop_count, p.payload, p.advert_count, p.path_hashes,
+              (
+                SELECT ARRAY_AGG(DISTINCT p2.rx_node_id ORDER BY p2.rx_node_id)
+                FROM packets p2
+                WHERE p2.packet_hash = p.packet_hash
+                  AND p2.time > NOW() - INTERVAL '24 hours'
+                  AND p2.rx_node_id IS NOT NULL
+                  ${buildPacketScopeClause(scope, 'p2')}
+              ) AS observer_node_ids
+       FROM packets p
+       WHERE p.time > NOW() - INTERVAL '24 hours' ${buildPacketScopeClause(scope, 'p')}
+       ORDER BY p.packet_hash,
                 CASE WHEN payload ? 'appData' THEN 1 ELSE 0 END DESC,
                 CASE WHEN src_node_id IS NOT NULL THEN 1 ELSE 0 END DESC,
                 CASE WHEN packet_type = 4 THEN 1 ELSE 0 END DESC,
                 CASE WHEN payload->>'direction' = 'tx' THEN 1 ELSE 0 END DESC,
-                time DESC
+                p.time DESC
      ) deduped
      ORDER BY time DESC LIMIT $1`,
     params
@@ -163,10 +248,9 @@ export async function getLastNPackets(n: number, network?: string) {
 export const MIN_LINK_OBSERVATIONS = 5;
 
 /** Returns only confirmed viable link pairs — compact for sending in initial WebSocket state. */
-export async function getViableLinkPairs(network?: string): Promise<[string, string][]> {
-  const params: unknown[] = [MIN_LINK_OBSERVATIONS];
-  const networkFilter = network ? 'AND a.network = $2 AND b.network = $2' : '';
-  if (network) params.push(network);
+export async function getViableLinkPairs(network?: string, observer?: string): Promise<[string, string][]> {
+  const scope = buildScopePlaceholders(2, network, observer);
+  const params: unknown[] = [MIN_LINK_OBSERVATIONS, ...scope.params];
 
   const res = await pool.query<{ node_a_id: string; node_b_id: string }>(
     `SELECT nl.node_a_id, nl.node_b_id
@@ -175,7 +259,8 @@ export async function getViableLinkPairs(network?: string): Promise<[string, str
      JOIN nodes b ON b.node_id = nl.node_b_id
      WHERE (nl.itm_viable = true OR nl.force_viable = true)
        AND nl.observed_count >= $1
-       ${networkFilter}`,
+       ${buildNodeScopeClause(scope, 'a')}
+       ${buildNodeScopeClause(scope, 'b')}`,
     params,
   );
   return res.rows.map((r) => [r.node_a_id, r.node_b_id]);
@@ -192,10 +277,9 @@ export type ViableLinkRow = {
 };
 
 /** Returns viable links with metrics so UI can render precomputed styles immediately. */
-export async function getViableLinks(network?: string): Promise<ViableLinkRow[]> {
-  const params: unknown[] = [MIN_LINK_OBSERVATIONS];
-  const networkFilter = network ? 'AND a.network = $2 AND b.network = $2' : '';
-  if (network) params.push(network);
+export async function getViableLinks(network?: string, observer?: string): Promise<ViableLinkRow[]> {
+  const scope = buildScopePlaceholders(2, network, observer);
+  const params: unknown[] = [MIN_LINK_OBSERVATIONS, ...scope.params];
 
   const res = await pool.query<ViableLinkRow>(
     `SELECT
@@ -211,7 +295,8 @@ export async function getViableLinks(network?: string): Promise<ViableLinkRow[]>
      JOIN nodes b ON b.node_id = nl.node_b_id
      WHERE (nl.itm_viable = true OR nl.force_viable = true)
        AND nl.observed_count >= $1
-       ${networkFilter}`,
+       ${buildNodeScopeClause(scope, 'a')}
+       ${buildNodeScopeClause(scope, 'b')}`,
     params,
   );
   return res.rows;

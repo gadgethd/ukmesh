@@ -9,7 +9,7 @@ import type { LivePacket } from '../types/index.js';
 import { decodePacketCompat } from './decodePacket.js';
 
 type PacketCallback      = (packet: LivePacket) => void;
-type NodeCallback        = (nodeId: string) => void;
+type NodeCallback        = (nodeId: string, meta?: { network?: string; observerId?: string }) => void;
 type NodeUpsertCallback  = (node: Record<string, unknown>) => void;
 
 const subscribers:       PacketCallback[]     = [];
@@ -23,8 +23,8 @@ export function onNodeUpsert(cb: NodeUpsertCallback) { upsertSubscribers.push(cb
 function emit(packet: LivePacket) {
   for (const cb of subscribers) cb(packet);
 }
-function emitNode(nodeId: string) {
-  for (const cb of nodeSubscribers) cb(nodeId);
+function emitNode(nodeId: string, meta?: { network?: string; observerId?: string }) {
+  for (const cb of nodeSubscribers) cb(nodeId, meta);
 }
 function emitNodeUpsert(node: Record<string, unknown>) {
   for (const cb of upsertSubscribers) cb(node);
@@ -34,10 +34,14 @@ function emitNodeUpsert(node: Record<string, unknown>) {
  * Topic formats:
  *   meshcore/{IATA}/{OBSERVER_PUBLIC_KEY}/{packets|status}
  *   ukmesh/{IATA}/{OBSERVER_PUBLIC_KEY}/{packets|status} (legacy, accepted during migration)
+ *   meshcore-test/{IATA}/{OBSERVER_PUBLIC_KEY}/{packets|status} (isolated dev/test ingest)
  *
- * Network assignment is now derived from observer IATA:
+ * Public-network assignment is derived from observer IATA:
  *   - MME => teesside
  *   - all other IATA => ukmesh/global
+ *
+ * Any non-public topic prefix is treated as isolated test/dev traffic so it can
+ * live in a separate schema/backend without contaminating the public dataset.
  *
  * mctomqtt JSON structure:
  *   status:  { origin, origin_id, model, firmware_version, radio, client_version }
@@ -45,7 +49,14 @@ function emitNodeUpsert(node: Record<string, unknown>) {
  *              payload_len, direction, origin, origin_id, timestamp, type }
  *   All numeric values arrive as strings from mctomqtt regex groups.
  */
-const TOPIC_PREFIXES = new Set(['meshcore', 'ukmesh']);
+const DEFAULT_TOPIC_PREFIXES = ['meshcore', 'ukmesh', 'meshcore-test'];
+const PUBLIC_TOPIC_PREFIXES = new Set(['meshcore', 'ukmesh']);
+const TOPIC_PREFIXES = new Set(
+  String(process.env['MQTT_TOPIC_PREFIXES'] ?? DEFAULT_TOPIC_PREFIXES.join(','))
+    .split(',')
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean),
+);
 const TEESSIDE_IATA = (process.env['TEESSIDE_IATA'] ?? 'MME').trim().toUpperCase();
 
 interface TopicParts {
@@ -62,7 +73,9 @@ function parseTopic(topic: string): TopicParts | null {
   if (!prefix || !TOPIC_PREFIXES.has(prefix)) return null;
   const iata = (parts[1] ?? '').trim().toUpperCase();
   if (!iata) return null;
-  const network = iata === TEESSIDE_IATA ? 'teesside' : 'ukmesh';
+  const network = PUBLIC_TOPIC_PREFIXES.has(prefix)
+    ? (iata === TEESSIDE_IATA ? 'teesside' : 'ukmesh')
+    : 'test';
   return { iata, observerKey: parts[2]!, suffix: parts[3]!, network };
 }
 
@@ -140,12 +153,12 @@ function buildSummary(payloadType: number, decoded: unknown, rawHex?: string): s
   if (!decoded) return undefined;
 
   switch (payloadType) {
-    case 4: { // Advert
+    case 4: {
       const p = decoded as AdvertPayload;
       const name = p.appData?.name;
       return name ? `${name}` : undefined;
     }
-    case 5: { // GroupText
+    case 5: {
       const p = decoded as GroupTextPayload;
       if (p.decrypted) {
         const sender  = p.decrypted.sender ?? '?';
@@ -155,20 +168,20 @@ function buildSummary(payloadType: number, decoded: unknown, rawHex?: string): s
       }
       return '[encrypted]';
     }
-    case 2: { // TextMessage (direct/private)
+    case 2: {
       const p = decoded as TextMessagePayload;
       if (p.decrypted?.message) return `${p.decrypted.message}`;
       return '[encrypted DM]';
     }
-    case 3: { // Ack
+    case 3: {
       const p = decoded as AckPayload;
       return `ACK ${p.checksum.slice(0, 4)}`;
     }
-    case 8: { // Path
+    case 8: {
       const p = decoded as PathPayload;
       return `${p.pathLength} hop path`;
     }
-    case 9: { // Trace
+    case 9: {
       const p = decoded as TracePayload;
       return `trace ${p.pathHashes.length} hops`;
     }
@@ -199,6 +212,7 @@ export function startMqttClient(): void {
   const brokerUrl = process.env['MQTT_BROKER_URL'] ?? 'ws://mosquitto:9001';
   console.log(`[mqtt] connecting to ${brokerUrl}`);
   console.log(`[mqtt] channels: ${channelEntries.map((e) => e.name).join(', ')}`);
+  console.log(`[mqtt] topic prefixes: ${Array.from(TOPIC_PREFIXES).join(', ')}`);
 
   const client = mqtt.connect(brokerUrl, {
     reconnectPeriod: 5000,
@@ -240,7 +254,6 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
     return;
   }
 
-  // ── Status: update observer node metadata ─────────────────────────────────
   const origin   = json['origin']           as string | undefined;
   const originId = json['origin_id']        as string | undefined;
 
@@ -257,22 +270,19 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
       firmwareVersion: (firmware && firmware !== 'unknown') ? firmware : undefined,
       network,
     });
-    emitNode(nodeId);
+    emitNode(nodeId, { network, observerId: observerKey });
     return;
   }
 
-  // ── Packets only below ─────────────────────────────────────────────────────
   if (suffix !== 'packets') return;
 
-  // mctomqtt fields (all arrive as strings)
   const packetHash = (json['hash'] as string | undefined) ?? crypto.randomUUID();
   const packetType = toNum(json['packet_type']);
   const rssi       = toNum(json['RSSI']);
   const snr        = toNum(json['SNR']);
   const rawHex     = (json['raw'] as string | undefined) ?? '';
-  const direction  = json['direction'] as string | undefined; // 'rx' | 'tx'
+  const direction  = json['direction'] as string | undefined;
 
-  // ── Decode raw hex with keyStore for all packet types ─────────────────────
   let innerPayload: Record<string, unknown> | undefined;
   let decodedHash: string | undefined;
   let decodedHops: number | undefined;
@@ -297,49 +307,48 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
         summary = buildSummary(decoded.payloadType, decodedInner, rawHex);
 
         if (decoded.payloadType === 4) {
-          // Advert: upsert the advertising node
           const inner     = decodedInner as unknown as Record<string, unknown> | undefined;
           const appData   = inner?.['appData'] as Record<string, unknown> | undefined;
           const loc       = appData?.['location'] as Record<string, number> | undefined;
           const senderKey = inner?.['publicKey'] as string | undefined;
           const nodeId    = senderKey ?? observerKey;
 
-          void upsertNode(nodeId, {
-            name:      appData?.['name']       as string | undefined,
-            lat:       loc?.['latitude'],
-            lon:       loc?.['longitude'],
-            role:      appData?.['deviceRole'] as number | undefined,
-            iata,
-            publicKey: senderKey,
-            network,
-          });
+          if (network !== 'test') {
+            void upsertNode(nodeId, {
+              name:      appData?.['name']       as string | undefined,
+              lat:       loc?.['latitude'],
+              lon:       loc?.['longitude'],
+              role:      appData?.['deviceRole'] as number | undefined,
+              iata,
+              publicKey: senderKey,
+              network,
+            });
 
-          // Only count each unique advert once — relay copies share the same decoded hash.
-          if (decodedHash && tryCountAdvert(decodedHash)) {
-            advertCount = await incrementAdvertCount(nodeId);
+            if (decodedHash && tryCountAdvert(decodedHash)) {
+              advertCount = await incrementAdvertCount(nodeId);
+            }
+
+            emitNodeUpsert({
+              node_id:     nodeId,
+              name:        appData?.['name']       as string | undefined,
+              lat:         loc?.['latitude'],
+              lon:         loc?.['longitude'],
+              role:        appData?.['deviceRole'] as number | undefined,
+              iata,
+              network,
+              observer_id: observerKey,
+              public_key:  senderKey,
+              last_seen:   new Date().toISOString(),
+              is_online:   true,
+              advert_count: advertCount,
+            });
           }
-
-          // Push full node data to frontend so map updates immediately
-          emitNodeUpsert({
-            node_id:     nodeId,
-            name:        appData?.['name']       as string | undefined,
-            lat:         loc?.['latitude'],
-            lon:         loc?.['longitude'],
-            role:        appData?.['deviceRole'] as number | undefined,
-            iata,
-            public_key:  senderKey,
-            last_seen:   new Date().toISOString(),
-            is_online:   true,
-            advert_count: advertCount,
-          });
 
           innerPayload = inner;
           srcNodeId = senderKey;
         } else if (decoded.payloadType === 5) {
-          // GroupText: store decoded payload so sender name is queryable from DB
           innerPayload = decodedInner as unknown as Record<string, unknown> | undefined;
         } else if (decoded.payloadType === 7) {
-          // AnonRequest: sender public key is exposed in clear
           const inner = decodedInner as unknown as Record<string, unknown> | undefined;
           srcNodeId = inner?.['senderPublicKey'] as string | undefined;
         }
@@ -349,10 +358,6 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
     }
   }
 
-  // MeshCore v1.14.0 multibyte-path adverts can currently reach us with packet_type=4
-  // on the MQTT envelope while the community decoder still classifies the raw payload
-  // as another type. For self-originated TX adverts, use the MQTT origin metadata as a
-  // safe fallback so the repeater still appears correctly on the site.
   const hasDecodedAdvertPayload = Boolean(
     innerPayload
       && typeof innerPayload === 'object'
@@ -370,15 +375,10 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
     innerPayload = buildAdvertFallbackPayload(originId, origin);
   }
 
-  // Use decoder hash as primary key — it's derived from packet content and is the
-  // same for TX and RX of the same packet, enabling frontend deduplication.
-  // Fall back to mctomqtt hash (RX only) when decode fails, then UUID.
-  // The 16-char mctomqtt hash remains accessible via payload->>'hash' in the DB.
   const finalHash = decodedHash ?? (json['hash'] as string | undefined) ?? crypto.randomUUID();
 
-  // Keep observer last-seen current
   void upsertNode(observerKey, { iata, network });
-  emitNode(observerKey);
+  emitNode(observerKey, { network, observerId: observerKey });
 
   if (useTxAdvertFallback && originId) {
     await upsertNode(originId, {
@@ -394,6 +394,8 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
       node_id: originId,
       name: origin,
       iata,
+      network,
+      observer_id: observerKey,
       public_key: originId,
       last_seen: new Date().toISOString(),
       is_online: true,
@@ -408,6 +410,7 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
       rxNodeId:   observerKey,
       srcNodeId,
       topic,
+      network,
       packetType,
       hopCount:   decodedHops,
       direction,
@@ -442,10 +445,6 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
   }
 }
 
-/**
- * Decode all historical packets with raw_hex and queue link jobs for those with
- * relay path data. Called once at startup when node_links is empty.
- */
 export async function backfillHistoricalLinks(
   queueFn: (rxNodeId: string, srcNodeId: string | undefined, path: string[], hopCount: number | undefined) => void,
 ): Promise<void> {

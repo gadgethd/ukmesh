@@ -95,10 +95,11 @@ export const StatsPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
   const site = getCurrentSite();
-  const statsNetwork = site.id === 'ukmesh' ? undefined : site.network;
+  const statsScope = { network: site.networkFilter, observer: site.observerId };
+  const refreshSeconds = 15;
 
   const load = () => {
-    fetch(uncachedEndpoint(chartStatsEndpoint(statsNetwork)), { cache: 'no-store' })
+    fetch(uncachedEndpoint(chartStatsEndpoint(statsScope)), { cache: 'no-store' })
       .then(r => r.json())
       .then((d: ChartData) => { setData(d); setLoading(false); setLastUpdate(new Date()); })
       .catch(() => setLoading(false));
@@ -106,9 +107,9 @@ export const StatsPage: React.FC = () => {
 
   useEffect(() => {
     load();
-    const t = setInterval(load, 60_000);
+    const t = setInterval(load, refreshSeconds * 1000);
     return () => clearInterval(t);
-  }, []);
+  }, [site.networkFilter, site.observerId]);
 
   const fmt = (n: number) => n.toLocaleString();
 
@@ -119,9 +120,11 @@ export const StatsPage: React.FC = () => {
         <div className="site-content">
           <h1 className="site-page-hero__title">Network Stats</h1>
           <p className="site-page-hero__sub">
-            {site.id === 'ukmesh'
-              ? 'Live analytics across all connected networks. Updates every 60 seconds.'
-              : `Live analytics from the ${site.displayName} network. Updates every 60 seconds.`}
+            {site.id === 'dev'
+              ? `Stats for the isolated test MQTT feed. Updates every ${refreshSeconds} seconds.`
+              : site.id === 'ukmesh'
+              ? `Live analytics across all connected networks. Updates every ${refreshSeconds} seconds.`
+              : `Live analytics from the ${site.displayName} network. Updates every ${refreshSeconds} seconds.`}
           </p>
           {lastUpdate && (
             <p style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>
@@ -143,8 +146,8 @@ export const StatsPage: React.FC = () => {
           <>
             {/* ── Summary row ─────────────────────────────────────────────── */}
             <div className="stats-page__summary">
-              <StatCard label="Packets (24h)"     value={fmt(data.summary.totalPackets24h)} />
-              <StatCard label="Packets (7 days)"  value={fmt(data.summary.totalPackets7d)} />
+              <StatCard label="Observed packets (24h)"     value={fmt(data.summary.totalPackets24h)} />
+              <StatCard label="Observed packets (7 days)"  value={fmt(data.summary.totalPackets7d)} />
               <StatCard label="Radios heard (24h)" value={fmt(data.summary.uniqueRadios24h)} color={C_GREEN} />
               <StatCard
                 label="Peak hour"
@@ -168,7 +171,7 @@ export const StatsPage: React.FC = () => {
 
             {/* ── Packets over time ────────────────────────────────────────── */}
             <div className="stats-page__row">
-              <ChartCard title="Packets per hour" sub="last 24 hours">
+              <ChartCard title="Observed packets per hour" sub="last 24 hours">
                 <ResponsiveContainer width="100%" height={220}>
                   <AreaChart data={data.packetsPerHour} margin={{ top: 8, right: 8, left: -20, bottom: 0 }}>
                     <defs>
@@ -186,7 +189,7 @@ export const StatsPage: React.FC = () => {
                 </ResponsiveContainer>
               </ChartCard>
 
-              <ChartCard title="Packets per day" sub="last 7 days">
+              <ChartCard title="Observed packets per day" sub="last 7 days">
                 <ResponsiveContainer width="100%" height={220}>
                   <BarChart data={data.packetsPerDay} margin={{ top: 8, right: 8, left: -20, bottom: 0 }}>
                     <CartesianGrid {...gridProps} />
@@ -252,7 +255,7 @@ export const StatsPage: React.FC = () => {
                 </ResponsiveContainer>
               </ChartCard>
 
-              <ChartCard title="Packet types" sub="last 24 hours">
+              <ChartCard title="Packet types" sub="last 24 hours · all observer hits">
                 <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
                   <ResponsiveContainer width="50%" height={220}>
                     <PieChart>
@@ -286,7 +289,7 @@ export const StatsPage: React.FC = () => {
 
             {/* ── Hop distribution + prefix collisions ─────────────────────── */}
             <div className="stats-page__row" style={{ marginBottom: 64 }}>
-              <ChartCard title="Hop count distribution" sub="last 7 days">
+              <ChartCard title="Hop count distribution" sub="last 7 days · all observer hits">
                 <ResponsiveContainer width="100%" height={220}>
                   <BarChart data={data.hopDistribution} margin={{ top: 8, right: 8, left: -20, bottom: 0 }}>
                     <CartesianGrid {...gridProps} />

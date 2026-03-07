@@ -1110,15 +1110,16 @@ export type BetaResolvedPayload = {
   };
 };
 
-export async function resolveBetaPathForPacketHash(packetHash: string, network: string): Promise<BetaResolvedPayload | null> {
+export async function resolveBetaPathForPacketHash(packetHash: string, network: string, observer?: string): Promise<BetaResolvedPayload | null> {
   const packetResult = await query<PathPacket>(
     `SELECT packet_hash, rx_node_id, src_node_id, packet_type, hop_count, path_hashes
      FROM packets
      WHERE packet_hash = $1
        AND ($2 = 'all' OR network = $2)
+       ${observer ? 'AND LOWER(rx_node_id) = LOWER($3)' : ''}
      ORDER BY time DESC
      LIMIT 1`,
-    [packetHash, network],
+    observer ? [packetHash, network, observer] : [packetHash, network],
   );
 
   const packet = packetResult.rows[0];

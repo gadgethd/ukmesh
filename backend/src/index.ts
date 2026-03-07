@@ -54,7 +54,7 @@ async function main() {
       queueLinkJob(packet.rxNodeId, packet.srcNodeId, packet.path, packet.hopCount);
     }
   });
-  onNodeSeen((nodeId) => broadcastNodeUpdate(nodeId));
+  onNodeSeen((nodeId, meta) => broadcastNodeUpdate(nodeId, meta));
   onNodeUpsert((node) => {
     broadcastNodeUpsert(node);
     // Queue a viewshed job only for visible repeaters (role=2 or unknown)

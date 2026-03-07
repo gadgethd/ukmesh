@@ -246,11 +246,12 @@ export async function getWorkerHealthOverview() {
       stale_threshold_minutes: string;
       global_last_packet_at: string | null;
     }>(
-      `WITH latest_rx AS (
+       `WITH latest_rx AS (
          SELECT rx_node_id, MAX(time) AS last_packet_at
          FROM packets
          WHERE rx_node_id IS NOT NULL
            AND rx_node_id <> ''
+           AND network IS DISTINCT FROM 'test'
          GROUP BY rx_node_id
        ),
        active_rx AS (
@@ -269,7 +270,7 @@ export async function getWorkerHealthOverview() {
            END
          )::text AS max_stale_minutes,
          '15'::text AS stale_threshold_minutes,
-         (SELECT MAX(time)::text FROM packets) AS global_last_packet_at
+         (SELECT MAX(time)::text FROM packets WHERE network IS DISTINCT FROM 'test') AS global_last_packet_at
        FROM active_rx`,
     ),
     query<{
@@ -280,6 +281,7 @@ export async function getWorkerHealthOverview() {
        FROM packets p
        CROSS JOIN LATERAL unnest(p.path_hashes) AS h
        WHERE p.time > NOW() - INTERVAL '24 hours'
+         AND p.network IS DISTINCT FROM 'test'
        GROUP BY 1`,
     ),
     query<{
@@ -302,7 +304,8 @@ export async function getWorkerHealthOverview() {
            )
          )::text AS multibyte_packets_24h
        FROM packets
-       WHERE time > NOW() - INTERVAL '24 hours'`,
+       WHERE time > NOW() - INTERVAL '24 hours'
+         AND network IS DISTINCT FROM 'test'`,
     ),
   ]);
 

@@ -28,24 +28,25 @@ export const PacketFeed: React.FC<Props> = React.memo(({ packets, nodes, onPacke
     () => packets.slice(0, VISIBLE_ROWS).reverse(),
     [packets],
   );
-  const [tickClass, setTickClass] = useState('');
+  const [newestVisibleId, setNewestVisibleId] = useState<string | null>(null);
   const latestIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     const latestId = packets[0]?.id ?? null;
     if (!latestId || latestIdRef.current === latestId) return;
     latestIdRef.current = latestId;
-    setTickClass(' packet-feed--tick');
-    const timer = setTimeout(() => setTickClass(''), 220);
+    setNewestVisibleId(latestId);
+    const timer = setTimeout(() => setNewestVisibleId((current) => (current === latestId ? null : current)), 220);
     return () => clearTimeout(timer);
   }, [packets]);
 
   return (
-  <div className={`packet-feed${tickClass}`}>
+  <div className="packet-feed">
     {visible.map((p) => {
       const typeLabel = p.packetType !== undefined
         ? (TYPE_LABELS[p.packetType] ?? `T${p.packetType}`)
         : '???';
+      const observerIata = p.rxNodeId ? nodes.get(p.rxNodeId)?.iata : undefined;
 
       const rawContent = p.summary
         ?? (p.rxNodeId ? nodes.get(p.rxNodeId)?.name : undefined);
@@ -63,12 +64,15 @@ export const PacketFeed: React.FC<Props> = React.memo(({ packets, nodes, onPacke
       return (
         <div
           key={p.id}
-          className={`packet-item packet-item--clickable${isPinned ? ' packet-item--pinned' : ''}`}
+          className={`packet-item packet-item--clickable${isPinned ? ' packet-item--pinned' : ''}${newestVisibleId === p.id ? ' packet-item--new' : ''}`}
           onClick={() => onPacketClick?.(p)}
           role="button"
           tabIndex={0}
           onKeyDown={(e) => e.key === 'Enter' && onPacketClick?.(p)}
         >
+          {observerIata && (
+            <span className="packet-item__iata">{observerIata}</span>
+          )}
           <span className="packet-item__type">{typeLabel}</span>
           {advertBadge && (
             <span className="packet-item__advert-badge">{advertBadge}</span>

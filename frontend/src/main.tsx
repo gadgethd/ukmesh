@@ -1,6 +1,6 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { App } from './App.js';
 import { Layout } from './pages/Layout.js';
 import { HomePage } from './pages/HomePage.js';
@@ -16,6 +16,8 @@ import { UKLayout } from './pages/ukmesh/UKLayout.js';
 import { UKHomePage } from './pages/ukmesh/UKHomePage.js';
 import { UKInstallPage } from './pages/ukmesh/UKInstallPage.js';
 import { UKMqttPage } from './pages/ukmesh/UKMqttPage.js';
+import { DevLayout } from './pages/dev/DevLayout.js';
+import { DevHomePage } from './pages/dev/DevHomePage.js';
 import { getCurrentSite } from './config/site.js';
 import './styles/globals.css';
 
@@ -33,6 +35,15 @@ ReactDOM.createRoot(root).render(
   <React.StrictMode>
     {isAppDomain ? (
       <App />
+    ) : site.id === 'dev' ? (
+      <BrowserRouter>
+        <Routes>
+          <Route element={<DevLayout />}>
+            <Route index element={<DevHomePage />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Route>
+        </Routes>
+      </BrowserRouter>
     ) : site.id === 'ukmesh' ? (
       <BrowserRouter>
         <Routes>

@@ -53,7 +53,7 @@ services:
       OWNER_DATABASE_URL: ${OWNER_DATABASE_URL:-postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${OWNER_POSTGRES_DB:-meshcore_owner_auth}}
       OWNER_MQTT_USERNAME_MAP: ${OWNER_MQTT_USERNAME_MAP:-}
       OWNER_COOKIE_SECRET: ${OWNER_COOKIE_SECRET:-}
-      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3001,http://localhost:3002}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3001,http://localhost:3002},https://test.ukmesh.com
       COVERAGE_MODEL_VERSION: ${COVERAGE_MODEL_VERSION:-2}
       NODE_ENV: production
     depends_on:
@@ -507,6 +507,7 @@ services:
       args:
         VITE_APP_HOSTNAME: app.ukmesh.com
         VITE_NETWORK: ukmesh
+        VITE_SITE: ukmesh
     restart: unless-stopped
     depends_on:
       - backend
@@ -526,6 +527,44 @@ services:
     depends_on:
       - backend
 
+  app-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.app
+      args:
+        VITE_APP_HOSTNAME: ${VITE_DEV_APP_HOSTNAME:-}
+        VITE_NETWORK: test
+        VITE_SITE: dev
+        VITE_OBSERVER_ID: ${VITE_DEV_OBSERVER_ID:-}
+        VITE_SITE_DISPLAY_NAME: ${VITE_DEV_SITE_DISPLAY_NAME:-UK Mesh Test}
+        VITE_SITE_FOOTER_NAME: ${VITE_DEV_SITE_FOOTER_NAME:-UK Mesh Test}
+        VITE_SITE_APP_URL: ${VITE_DEV_SITE_APP_URL:-https://test.ukmesh.com}
+        VITE_SITE_HOME_URL: ${VITE_DEV_SITE_HOME_URL:-https://test.ukmesh.com}
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "3005:80"
+
+  website-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.website
+      args:
+        VITE_APP_HOSTNAME: ${VITE_DEV_APP_HOSTNAME:-app-dev.ukmesh.com}
+        VITE_NETWORK: test
+        VITE_SITE: dev
+        VITE_OBSERVER_ID: ${VITE_DEV_OBSERVER_ID:-}
+        VITE_SITE_DISPLAY_NAME: ${VITE_DEV_SITE_DISPLAY_NAME:-UK Mesh Test}
+        VITE_SITE_FOOTER_NAME: ${VITE_DEV_SITE_FOOTER_NAME:-UK Mesh Test}
+        VITE_SITE_APP_URL: ${VITE_DEV_SITE_APP_URL:-https://test.ukmesh.com}
+        VITE_SITE_HOME_URL: ${VITE_DEV_SITE_HOME_URL:-https://test.ukmesh.com}
+    restart: unless-stopped
+    ports:
+      - "3006:80"
+    depends_on:
+      - backend
+
   cloudflared:
     image: cloudflare/cloudflared:latest
     restart: unless-stopped
@@ -539,6 +578,8 @@ services:
       - website
       - app-ukmesh
       - website-ukmesh
+      - app-dev
+      - website-dev
       - mosquitto
 
 volumes:

@@ -53,6 +53,7 @@ export interface LivePacket {
   rxNodeId?: string;
   srcNodeId?: string;
   topic: string;
+  network?: string;
   packetType?: number;
   hopCount?: number;
   direction?: string;   // 'rx' | 'tx' from mctomqtt

@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect } from 'react';
+import { withScopeParams, type ApiScope } from '../utils/api.js';
 
 export interface NodeCoverage {
   node_id:          string;
@@ -9,17 +10,17 @@ export interface NodeCoverage {
   calculated_at?:   string;
 }
 
-export function useCoverage(network?: string) {
+export function useCoverage(scope: ApiScope = {}) {
   const [coverage, setCoverage] = useState<NodeCoverage[]>([]);
 
   // Fetch all stored polygons on mount
   useEffect(() => {
-    const url = network ? `/api/coverage?network=${encodeURIComponent(network)}` : '/api/coverage';
+    const url = withScopeParams('/api/coverage', scope);
     fetch(url)
       .then((r) => r.json())
       .then((data: NodeCoverage[]) => setCoverage(data))
       .catch(() => { /* non-fatal */ });
-  }, [network]);
+  }, [scope.network, scope.observer]);
 
   // Called when a coverage_update WS message arrives
   const handleCoverageUpdate = useCallback((update: { node_id: string; geom: NodeCoverage['geom']; strength_geoms?: NodeCoverage['strength_geoms'] }) => {
