@@ -107,6 +107,7 @@ function isEmptyPacketEnvelope(json: Record<string, unknown>, rawHex: string, pa
  * Entries expire after 60 seconds (well beyond any realistic relay window).
  */
 const countedAdvertHashes = new Map<string, number>();
+const COUNTED_ADVERT_HASHES_MAX = 10_000;
 
 function tryCountAdvert(hash: string): boolean {
   const now = Date.now();
@@ -114,6 +115,10 @@ function tryCountAdvert(hash: string): boolean {
     if (now - ts > 60_000) countedAdvertHashes.delete(h);
   }
   if (countedAdvertHashes.has(hash)) return false;
+  if (countedAdvertHashes.size >= COUNTED_ADVERT_HASHES_MAX) {
+    const oldest = countedAdvertHashes.keys().next().value;
+    if (oldest !== undefined) countedAdvertHashes.delete(oldest);
+  }
   countedAdvertHashes.set(hash, now);
   return true;
 }

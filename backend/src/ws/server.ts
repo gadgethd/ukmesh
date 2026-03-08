@@ -11,6 +11,7 @@ const REDIS_CHANNEL = 'meshcore:live';
 let pub: Redis;
 let sub: Redis;
 const VIABLE_LINK_CACHE_TTL_MS = 30_000;
+const VIABLE_LINK_CACHE_MAX = 50;
 const viableLinksCache = new Map<string, { ts: number; data: Awaited<ReturnType<typeof getViableLinks>> }>();
 
 type ClientScope = {
@@ -33,6 +34,11 @@ async function getCachedViableLinks(network?: string, observer?: string) {
   const cached = viableLinksCache.get(key);
   if (cached && (Date.now() - cached.ts) < VIABLE_LINK_CACHE_TTL_MS) return cached.data;
   const data = await getViableLinks(network, observer);
+  if (viableLinksCache.size >= VIABLE_LINK_CACHE_MAX) {
+    // Evict the oldest entry
+    const oldest = Array.from(viableLinksCache.entries()).sort((a, b) => a[1].ts - b[1].ts)[0];
+    if (oldest) viableLinksCache.delete(oldest[0]);
+  }
   viableLinksCache.set(key, { ts: Date.now(), data });
   return data;
 }

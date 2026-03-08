@@ -26,13 +26,8 @@ type OwnerSession = {
 };
 
 function getOwnerCookieKey(): Buffer {
-  const secret = process.env['OWNER_COOKIE_SECRET']
-    ?? [
-      process.env['DATABASE_URL'],
-      process.env['MQTT_PASSWORD'],
-      process.env['CLOUDFLARE_TUNNEL_TOKEN'],
-      'meshcore-owner-cookie-fallback',
-    ].filter(Boolean).join('|');
+  const secret = process.env['OWNER_COOKIE_SECRET'];
+  if (!secret) throw new Error('OWNER_COOKIE_SECRET environment variable is not set');
   return createHash('sha256').update(secret).digest();
 }
 
@@ -176,7 +171,7 @@ function verifyMqttCredentials(mqttUsername: string, mqttPassword: string): Prom
 function isSecureRequest(req: { secure: boolean; headers: Record<string, string | string[] | undefined> }): boolean {
   if (req.secure) return true;
   const proto = String(req.headers['x-forwarded-proto'] ?? '').toLowerCase();
-  return proto.includes('https');
+  return proto === 'https';
 }
 
 async function buildOwnerDashboard(nodeIds: string[]) {
@@ -345,6 +340,10 @@ router.get('/nodes', async (req, res) => {
 router.get('/nodes/:id/links', async (req, res) => {
   try {
     const id = req.params['id']!;
+    if (!/^[0-9a-fA-F]{64}$/.test(id)) {
+      res.status(400).json({ error: 'Invalid node ID format' });
+      return;
+    }
     const result = await query<{
       peer_id: string; peer_name: string | null; observed_count: number;
       itm_path_loss_db: number | null;
@@ -373,8 +372,13 @@ router.get('/nodes/:id/links', async (req, res) => {
 // GET /api/nodes/:id/history?hours=24
 router.get('/nodes/:id/history', async (req, res) => {
   try {
+    const id = req.params['id']!;
+    if (!/^[0-9a-fA-F]{64}$/.test(id)) {
+      res.status(400).json({ error: 'Invalid node ID format' });
+      return;
+    }
     const hours = Math.min(Number(req.query['hours'] ?? 24), 672); // max 28 days
-    const history = await getNodeHistory(req.params['id']!, hours);
+    const history = await getNodeHistory(id, hours);
     res.json(history);
   } catch (err) {
     console.error('[api] GET /nodes/:id/history', (err as Error).message);
@@ -403,6 +407,10 @@ router.get('/path-beta/resolve', async (req, res) => {
     const packetHash = String(req.query['hash'] ?? '').trim();
     if (!packetHash) {
       res.status(400).json({ error: 'Missing hash query parameter' });
+      return;
+    }
+    if (!/^[0-9a-fA-F]{1,128}$/.test(packetHash)) {
+      res.status(400).json({ error: 'Invalid hash format' });
       return;
     }
     const network = resolveRequestNetwork(req.query['network'], req.headers, 'teesside') ?? 'teesside';
@@ -726,10 +734,14 @@ router.get('/health', async (_req, res) => {
 router.post('/owner/login', OWNER_LOGIN_LIMITER, async (req, res) => {
   try {
     const body = req.body as { mqttUsername?: string; mqttPassword?: string } | undefined;
-    const mqttUsername = String(body?.mqttUsername ?? '').trim();
-    const mqttPassword = String(body?.mqttPassword ?? '').trim();
+    const mqttUsername = String(body?.mqttUsername ?? '').trim().slice(0, 32);
+    const mqttPassword = String(body?.mqttPassword ?? '').trim().slice(0, 32);
     if (!mqttUsername || !mqttPassword) {
       res.status(400).json({ error: 'Missing MQTT username or password' });
+      return;
+    }
+    if (!/^[a-zA-Z0-9_\-.@]+$/.test(mqttUsername)) {
+      res.status(400).json({ error: 'Invalid MQTT username format' });
       return;
     }
     const authOk = await verifyMqttCredentials(mqttUsername, mqttPassword);
