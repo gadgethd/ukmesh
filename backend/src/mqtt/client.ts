@@ -332,6 +332,20 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
           path = pathHashes;
         }
 
+        if (
+          decodedPathHashSizeBytes != null
+          && decodedPathHashSizeBytes > 1
+          && decodedHops != null
+          && (decodedPathHashSizeBytes * decodedHops) > 64
+        ) {
+          console.warn(
+            `[mqtt] dropping impossible multibyte path metadata: hash=${decodedHash ?? 'unknown'} size=${decodedPathHashSizeBytes} hops=${decodedHops} raw=${rawHex.slice(0, 24)}…`,
+          );
+          decodedHops = undefined;
+          decodedPathHashSizeBytes = undefined;
+          path = undefined;
+        }
+
         const decodedInner = decoded.payload?.decoded;
         summary = buildSummary(decoded.payloadType, decodedInner, rawHex);
 

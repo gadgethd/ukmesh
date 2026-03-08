@@ -456,6 +456,37 @@ function reverseResolvedPath(
   };
 }
 
+function resolveExactMultibyteChain(
+  pathHashes: string[],
+  context: BetaResolveContext,
+): { path: [number, number][]; nodeIds: string[] } | null {
+  if (pathHashes.length < 2) return null;
+  const repeaters = Array.from(context.nodesById.values()).filter(
+    (n) => hasCoords(n) && (n.role === null || n.role === 2),
+  );
+  const pathHashIndex = buildNodePathHashIndex(repeaters, [pathHashes[0]?.length ?? 0]);
+  const nodes: MeshNode[] = [];
+  const visited = new Set<string>();
+
+  for (const rawHash of pathHashes) {
+    const pathHash = normalizePathHash(rawHash);
+    if (!pathHash) return null;
+    const matches = getNodesForPathHash(pathHashIndex, pathHash)
+      .filter((n) => hasCoords(n) && (n.role === null || n.role === 2));
+    if (matches.length !== 1) return null;
+    const node = matches[0]!;
+    if (visited.has(node.node_id)) return null;
+    visited.add(node.node_id);
+    nodes.push(node);
+  }
+
+  if (nodes.length < 2) return null;
+  return {
+    path: nodes.map((n) => [n.lat!, n.lon!]),
+    nodeIds: nodes.map((n) => n.node_id),
+  };
+}
+
 function resolveBetaPath(
   pathHashes: string[],
   src: MeshNode | null,
@@ -1145,6 +1176,36 @@ export async function resolveBetaPathForPacketHash(packetHash: string, network: 
         computedAt: new Date().toISOString(),
       },
     };
+  }
+
+  if ((packet.path_hash_size_bytes ?? 1) > 1) {
+    const exactMultibyte = resolveExactMultibyteChain(hops, context);
+    if (exactMultibyte) {
+      console.log(
+        `${logPrefix} mode=resolved color=purple-only reason=exact-multibyte-chain conf=1.0000 threshold=${BETA_PURPLE_THRESHOLD.toFixed(2)} hops=${hops.length} purpleEdges=${Math.max(0, exactMultibyte.path.length - 1)} redEdges=0 remaining=0 rx=${packet.rx_node_id ?? 'unknown'} src=${packet.src_node_id ?? 'unknown'}`,
+      );
+      return {
+        ok: true,
+        packetHash,
+        mode: 'resolved',
+        confidence: 1,
+        permutationCount: 0,
+        remainingHops: 0,
+        purplePath: exactMultibyte.path,
+        extraPurplePaths: [],
+        redPath: null,
+        redSegments: [],
+        completionPaths: [],
+        threshold: BETA_PURPLE_THRESHOLD,
+        debug: {
+          hopsRequested: hashes.length,
+          hopsUsed: hops.length,
+          rxNodeId: packet.rx_node_id,
+          srcNodeId: packet.src_node_id,
+          computedAt: new Date().toISOString(),
+        },
+      };
+    }
   }
 
   let result = resolveBetaPath(hops, hasCoords(src) ? src : null, rx, context, { forceIncludeSource, observerHopHints });
