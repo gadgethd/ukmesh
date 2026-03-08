@@ -108,7 +108,7 @@ export const App: React.FC = () => {
     const syncRecentPackets = async () => {
       try {
         const response = await fetch(
-          uncachedEndpoint(withScopeParams('/api/packets/recent?limit=40', { network: networkFilter, observer: observerFilter })),
+          uncachedEndpoint(withScopeParams('/api/packets/recent?limit=12', { network: networkFilter, observer: observerFilter })),
           { cache: 'no-store' },
         );
         if (!response.ok) return;

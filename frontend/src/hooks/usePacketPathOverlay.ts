@@ -84,6 +84,7 @@ export function usePacketPathOverlay({
   const [betaPermutationCount, setBetaPermutationCount] = useState<number | null>(null);
   const [betaRemainingHops, setBetaRemainingHops] = useState<number | null>(null);
   const [pinnedPacketId, setPinnedPacketId] = useState<string | null>(null);
+  const [pinnedPacketSnapshot, setPinnedPacketSnapshot] = useState<AggregatedPacket | null>(null);
   const [pathOpacity, setPathOpacity] = useState(0.75);
 
   const pinnedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -364,6 +365,7 @@ export function usePacketPathOverlay({
   const handlePacketPin = useCallback((packet: AggregatedPacket) => {
     if (pinnedPacketId === packet.id) {
       setPinnedPacketId(null);
+      setPinnedPacketSnapshot(null);
       pinnedOverlayKeyRef.current = '';
       if (pinnedTimerRef.current) {
         clearTimeout(pinnedTimerRef.current);
@@ -382,6 +384,7 @@ export function usePacketPathOverlay({
 
     setPathOpacity(0.75);
     setPinnedPacketId(packet.id);
+    setPinnedPacketSnapshot(packet);
 
     pinnedTimerRef.current = setTimeout(() => {
       const FADE_MS = 1_000;
@@ -395,6 +398,7 @@ export function usePacketPathOverlay({
           pathFadeRef.current = null;
           clearPathState();
           setPinnedPacketId(null);
+          setPinnedPacketSnapshot(null);
           pinnedOverlayKeyRef.current = '';
           pinnedTimerRef.current = null;
         }
@@ -409,7 +413,7 @@ export function usePacketPathOverlay({
       return;
     }
 
-    const pinnedPacket = packets.find((packet) => packet.id === pinnedPacketId);
+    const pinnedPacket = packets.find((packet) => packet.id === pinnedPacketId) ?? pinnedPacketSnapshot;
     if (!pinnedPacket) return;
 
     const observerIds = packetObserverIds(pinnedPacket);
@@ -457,6 +461,7 @@ export function usePacketPathOverlay({
   }, [
     pinnedPacketId,
     packets,
+    pinnedPacketSnapshot,
     filters.packetPaths,
     filters.betaPaths,
     network,

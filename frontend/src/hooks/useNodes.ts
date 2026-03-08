@@ -57,7 +57,7 @@ export interface PacketArc {
   packetHash: string;
 }
 
-const FEED_MAX_PACKETS = 120;
+const FEED_MAX_PACKETS = 12;
 
 function extractPacketSummary(payload?: Record<string, unknown>): string | undefined {
   if (!payload) return undefined;
