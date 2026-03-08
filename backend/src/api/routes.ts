@@ -10,6 +10,8 @@ import { resolveBetaPathForPacketHash } from '../path-beta/resolver.js';
 
 const router = Router();
 const OWNER_COOKIE_NAME = 'meshcore_owner_session';
+const OWNER_LIVE_CACHE_TTL_MS = 5_000;
+const ownerLiveCache = new Map<string, { ts: number; data: unknown }>();
 const OWNER_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const OWNER_LOGIN_LIMITER = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -825,6 +827,12 @@ router.get('/owner/live', async (req, res) => {
       return;
     }
 
+    const cacheEntry = ownerLiveCache.get(selectedNodeId);
+    if (cacheEntry && Date.now() - cacheEntry.ts < OWNER_LIVE_CACHE_TTL_MS) {
+      res.json(cacheEntry.data);
+      return;
+    }
+
     const [
       ownerNodeResult,
       incomingResult,
@@ -1086,7 +1094,7 @@ router.get('/owner/live', async (req, res) => {
     if (heardBy.length < 1) alerts.push({ level: 'warn', message: 'No other nodes have heard this repeater in the last 7 days.' });
     if (viableLinks.length < 1) alerts.push({ level: 'warn', message: 'No viable RF links are currently stored for this repeater.' });
 
-    res.json({
+    const responseData = {
       nodeId: selectedNodeId,
       ownerNode: {
         ...ownerNode,
@@ -1106,7 +1114,9 @@ router.get('/owner/live', async (req, res) => {
         ...row,
         time: new Date(row.time).toISOString(),
       })),
-    });
+    };
+    ownerLiveCache.set(selectedNodeId, { ts: Date.now(), data: responseData });
+    res.json(responseData);
   } catch (err) {
     console.error('[api] GET /owner/live', (err as Error).message);
     res.status(500).json({ error: 'Internal server error' });

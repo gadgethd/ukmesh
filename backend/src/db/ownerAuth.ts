@@ -80,19 +80,16 @@ export async function getOwnerNodeIdsForUsername(mqttUsername: string): Promise<
   const normalized = mqttUsername.trim();
   if (!normalized) return [];
   const res = await ownerPool.query<{ node_id: string }>(
-    `SELECT node_id
+    `SELECT DISTINCT LOWER(oan.node_id) AS node_id
      FROM owner_account_nodes oan
      JOIN owner_accounts oa ON oa.mqtt_username = oan.mqtt_username
      WHERE oa.is_active = true
        AND oan.mqtt_username = $1
-     ORDER BY oan.created_at ASC`,
+       AND oan.node_id ~ '^[0-9a-fA-F]{64}$'
+     ORDER BY LOWER(oan.node_id) ASC`,
     [normalized],
   );
-  return Array.from(new Set(
-    res.rows
-      .map((row) => row.node_id.trim().toLowerCase())
-      .filter((nodeId) => /^[0-9a-f]{64}$/.test(nodeId)),
-  ));
+  return res.rows.map((row) => row.node_id);
 }
 
 export async function ensureOwnerAccount(mqttUsername: string): Promise<void> {
@@ -122,12 +119,9 @@ export async function addOwnerNodeForUsername(mqttUsername: string, nodeId: stri
 
 export async function getMappedOwnerNodeIds(): Promise<string[]> {
   const res = await ownerPool.query<{ node_id: string }>(
-    `SELECT DISTINCT node_id
-     FROM owner_account_nodes`,
+    `SELECT DISTINCT LOWER(node_id) AS node_id
+     FROM owner_account_nodes
+     WHERE node_id ~ '^[0-9a-fA-F]{64}$'`,
   );
-  return Array.from(new Set(
-    res.rows
-      .map((row) => row.node_id.trim().toLowerCase())
-      .filter((nodeId) => /^[0-9a-f]{64}$/.test(nodeId)),
-  ));
+  return res.rows.map((row) => row.node_id);
 }

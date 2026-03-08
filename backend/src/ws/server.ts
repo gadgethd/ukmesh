@@ -14,6 +14,15 @@ const VIABLE_LINK_CACHE_TTL_MS = 30_000;
 const VIABLE_LINK_CACHE_MAX = 50;
 const viableLinksCache = new Map<string, { ts: number; data: Awaited<ReturnType<typeof getViableLinks>> }>();
 
+// Periodically evict stale cache entries so they don't persist indefinitely
+// when a network/observer combo stops being requested.
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of viableLinksCache) {
+    if (now - entry.ts > VIABLE_LINK_CACHE_TTL_MS) viableLinksCache.delete(key);
+  }
+}, VIABLE_LINK_CACHE_TTL_MS);
+
 type ClientScope = {
   network?: string;
   observer?: string;
