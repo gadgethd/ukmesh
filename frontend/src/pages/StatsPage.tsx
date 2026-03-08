@@ -147,7 +147,7 @@ export const StatsPage: React.FC = () => {
             {/* ── Summary row ─────────────────────────────────────────────── */}
             <div className="stats-page__summary">
               <StatCard label="Observed packets (24h)"     value={fmt(data.summary.totalPackets24h)} />
-              <StatCard label="Observed packets (7 days)"  value={fmt(data.summary.totalPackets7d)} />
+              <StatCard label="Observed packets (7D)"      value={fmt(data.summary.totalPackets7d)} />
               <StatCard label="Radios heard (24h)" value={fmt(data.summary.uniqueRadios24h)} color={C_GREEN} />
               <StatCard
                 label="Peak hour"

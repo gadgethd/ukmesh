@@ -5,6 +5,7 @@ type SiteLayoutProps = {
   brandName: string;
   footerName: string;
   appUrl: string;
+  showFeed?: boolean;
   showLiveMap?: boolean;
   showAbout?: boolean;
   showInstall?: boolean;
@@ -36,6 +37,7 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
   brandName,
   footerName,
   appUrl,
+  showFeed = false,
   showLiveMap = true,
   showAbout = true,
   showInstall = true,
@@ -51,6 +53,7 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
 
   const navItems: NavItem[] = [
     { to: '/', label: 'Home', enabled: true },
+    { to: '/feed', label: 'Feed', enabled: showFeed },
     { to: '/about', label: 'What is MeshCore', enabled: showAbout },
     { to: '/install', label: 'Install', enabled: showInstall },
     { to: '/mqtt', label: 'MQTT', enabled: showMqtt },

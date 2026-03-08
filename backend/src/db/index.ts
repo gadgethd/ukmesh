@@ -135,11 +135,10 @@ export async function upsertNode(nodeId: string, updates: {
        firmware_version = COALESCE(EXCLUDED.firmware_version, nodes.firmware_version),
        public_key       = COALESCE(EXCLUDED.public_key, nodes.public_key),
        network          = CASE
-                            WHEN nodes.network = 'teesside' AND COALESCE(EXCLUDED.network, nodes.network) <> 'test' THEN 'teesside'
-                            WHEN nodes.network IN ('ukmesh', 'teesside') AND EXCLUDED.network = 'test' THEN nodes.network
-                            WHEN nodes.network = 'test' AND EXCLUDED.network IN ('ukmesh', 'teesside') THEN EXCLUDED.network
-                            WHEN EXCLUDED.network = 'test' THEN 'test'
-                            ELSE COALESCE(EXCLUDED.network, nodes.network)
+                            WHEN EXCLUDED.network IS NULL THEN nodes.network
+                            WHEN EXCLUDED.network = 'test' AND nodes.network IN ('ukmesh', 'teesside') THEN nodes.network
+                            WHEN EXCLUDED.network IN ('ukmesh', 'teesside') THEN EXCLUDED.network
+                            ELSE EXCLUDED.network
                           END,
        last_seen        = NOW(),
        is_online        = TRUE`,

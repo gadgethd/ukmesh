@@ -20,6 +20,7 @@ from typing import Optional
 import numpy as np
 import psycopg2
 from scipy.ndimage import minimum_filter as _min_filter
+from scipy.spatial import cKDTree
 import redis
 import requests
 from osgeo import gdal
@@ -50,7 +51,7 @@ ANTENNA_HEIGHT_M      = 5    # source repeater antenna above ground (m)
 COVERAGE_TARGET_HEIGHT_M = 5 # target repeater antenna above ground (m) for coverage polygons
 COVERAGE_MODEL_VERSION = int(os.environ.get(
     'COVERAGE_MODEL_VERSION',
-    '3' if COVERAGE_MODEL == 'rf_radial_100m' else '2',
+    '5' if COVERAGE_MODEL == 'rf_radial_100m' else '2',
 ))
 MIN_LINK_OBSERVATIONS = 5  # must match backend db/index.ts
 PREFIX_AMBIGUITY_RADIUS_KM = 45.0  # only penalize same-prefix ambiguity when nodes are realistically in range
@@ -63,6 +64,22 @@ RF_RADIAL_STEP_M = 100.0    # radial search precision for RF coverage mode
 RF_N_RAYS        = 360      # 1-degree azimuth resolution keeps RF mode tractable
 RF_RADIUS_MULTIPLIER = 1.35 # search beyond geometric horizon to allow limited diffraction gain
 RF_MIN_RADIUS_M  = 20_000   # avoid under-searching low-elevation repeaters
+RF_SOURCE_LINK_RADIUS_MULTIPLIER = float(os.environ.get('RF_SOURCE_LINK_RADIUS_MULTIPLIER', '1.25'))
+SUPPORT_REFRESH_S = int(os.environ.get('COVERAGE_SUPPORT_REFRESH_S', '900'))
+SUPPORT_NEARBY_REPEATER_KM = float(os.environ.get('COVERAGE_SUPPORT_NEARBY_REPEATER_KM', '12'))
+SUPPORT_PENALTY_PER_KM_DB = float(os.environ.get('COVERAGE_SUPPORT_PENALTY_PER_KM_DB', '0.6'))
+SUPPORT_MAX_PENALTY_DB = float(os.environ.get('COVERAGE_SUPPORT_MAX_PENALTY_DB', '14'))
+SUPPORT_PROJECTION_LAT = float(os.environ.get('COVERAGE_SUPPORT_PROJECTION_LAT', '54.0'))
+
+DEFAULT_LINK_BUDGET_DB = 148.0
+DEFAULT_FADE_MARGIN_DB = 10.0
+DEFAULT_USABLE_PATH_LOSS_DB = DEFAULT_LINK_BUDGET_DB - DEFAULT_FADE_MARGIN_DB
+CALIBRATION_REFRESH_S = int(os.environ.get('COVERAGE_CALIBRATION_REFRESH_S', '900'))
+CALIBRATION_MIN_LINKS = int(os.environ.get('COVERAGE_CALIBRATION_MIN_LINKS', '24'))
+CALIBRATION_MIN_OBSERVED_COUNT = int(os.environ.get('COVERAGE_CALIBRATION_MIN_OBSERVED_COUNT', '3'))
+CALIBRATION_MAX_THRESHOLD_BOOST_DB = float(os.environ.get('COVERAGE_CALIBRATION_MAX_THRESHOLD_BOOST_DB', '8'))
+CALIBRATION_PERCENTILE = float(os.environ.get('COVERAGE_CALIBRATION_PERCENTILE', '0.9'))
+CALIBRATION_EXTRA_MARGIN_DB = float(os.environ.get('COVERAGE_CALIBRATION_EXTRA_MARGIN_DB', '1.5'))
 
 # Radio horizon parameters
 K_FACTOR  = 4 / 3        # effective Earth radius multiplier (standard troposphere)
@@ -72,14 +89,204 @@ R_EARTH_M = 6_371_000    # mean Earth radius (m)
 
 FREQ_MHZ        = 868.0
 LAMBDA_M        = 3e8 / (FREQ_MHZ * 1e6)   # wavelength ~0.345 m
-LINK_BUDGET_DB  = 148.0   # 17 dBm TX + ~130 dBm RX sensitivity (LoRa SF10 BW125) +1 dB SRTM DSM correction
-FADE_MARGIN_DB  = 10.0    # safety / link margin
 PROFILE_STEP_M  = 250.0   # terrain profile sample spacing (m)
-SIGNAL_THRESHOLDS_DB = {
-    'green': 120.0,
-    'amber': 135.0,
-    'red': LINK_BUDGET_DB - FADE_MARGIN_DB,
+
+RF_CALIBRATION = {
+    'usable_path_loss_db': DEFAULT_USABLE_PATH_LOSS_DB,
+    'signal_thresholds_db': {
+        'green': max(116.0, DEFAULT_USABLE_PATH_LOSS_DB - 16.0),
+        'amber': max(124.0, DEFAULT_USABLE_PATH_LOSS_DB - 8.0),
+        'red': DEFAULT_USABLE_PATH_LOSS_DB,
+    },
+    'samples': 0,
+    'updated_at': 0.0,
 }
+
+SUPPORT_CONTEXT = {
+    'tree': None,
+    'node_ids': [],
+    'node_index_by_id': {},
+    'max_link_km_by_node': {},
+    'updated_at': 0.0,
+}
+
+
+def current_usable_path_loss_db() -> float:
+    return float(RF_CALIBRATION['usable_path_loss_db'])
+
+
+def current_signal_thresholds_db() -> dict[str, float]:
+    return dict(RF_CALIBRATION['signal_thresholds_db'])
+
+
+def weighted_quantile(values: np.ndarray, weights: np.ndarray, q: float) -> float:
+    if values.size < 1:
+        raise ValueError('No values provided')
+    order = np.argsort(values)
+    v = values[order]
+    w = weights[order]
+    cumulative = np.cumsum(w)
+    target = float(np.clip(q, 0.0, 1.0)) * cumulative[-1]
+    idx = int(np.searchsorted(cumulative, target, side='left'))
+    idx = max(0, min(idx, len(v) - 1))
+    return float(v[idx])
+
+
+def project_xy_km(latitudes, longitudes) -> np.ndarray:
+    lats = np.asarray(latitudes, dtype=np.float64)
+    lons = np.asarray(longitudes, dtype=np.float64)
+    cos_ref = math.cos(math.radians(SUPPORT_PROJECTION_LAT))
+    return np.column_stack((lons * 111.32 * cos_ref, lats * 111.32))
+
+
+def refresh_rf_calibration(db, force: bool = False) -> None:
+    now = time.time()
+    if not force and now - float(RF_CALIBRATION['updated_at']) < CALIBRATION_REFRESH_S:
+        return
+
+    with db.cursor() as cur:
+        cur.execute(
+            '''
+            SELECT itm_path_loss_db, observed_count
+            FROM node_links
+            WHERE itm_path_loss_db IS NOT NULL
+              AND observed_count >= %s
+              AND force_viable = false
+            ''',
+            (CALIBRATION_MIN_OBSERVED_COUNT,),
+        )
+        rows = cur.fetchall()
+
+    if len(rows) < CALIBRATION_MIN_LINKS:
+        RF_CALIBRATION['usable_path_loss_db'] = DEFAULT_USABLE_PATH_LOSS_DB
+        RF_CALIBRATION['signal_thresholds_db'] = {
+            'green': max(116.0, DEFAULT_USABLE_PATH_LOSS_DB - 16.0),
+            'amber': max(124.0, DEFAULT_USABLE_PATH_LOSS_DB - 8.0),
+            'red': DEFAULT_USABLE_PATH_LOSS_DB,
+        }
+        RF_CALIBRATION['samples'] = len(rows)
+        RF_CALIBRATION['updated_at'] = now
+        log.info(
+            'RF calibration: insufficient observed links '
+            f'({len(rows)}/{CALIBRATION_MIN_LINKS}) — using default threshold {DEFAULT_USABLE_PATH_LOSS_DB:.1f} dB'
+        )
+        return
+
+    losses = np.asarray([float(row[0]) for row in rows], dtype=np.float64)
+    weights = np.asarray([min(16.0, max(1.0, math.sqrt(float(row[1])))) for row in rows], dtype=np.float64)
+    observed_tail = weighted_quantile(losses, weights, CALIBRATION_PERCENTILE)
+    usable_threshold = max(DEFAULT_USABLE_PATH_LOSS_DB, observed_tail + CALIBRATION_EXTRA_MARGIN_DB)
+    usable_threshold = min(DEFAULT_USABLE_PATH_LOSS_DB + CALIBRATION_MAX_THRESHOLD_BOOST_DB, usable_threshold)
+
+    RF_CALIBRATION['usable_path_loss_db'] = round(float(usable_threshold), 2)
+    RF_CALIBRATION['signal_thresholds_db'] = {
+        'green': round(max(116.0, usable_threshold - 16.0), 2),
+        'amber': round(max(124.0, usable_threshold - 8.0), 2),
+        'red': round(float(usable_threshold), 2),
+    }
+    RF_CALIBRATION['samples'] = len(rows)
+    RF_CALIBRATION['updated_at'] = now
+    log.info(
+        'RF calibration: '
+        f'samples={len(rows)}, p{int(CALIBRATION_PERCENTILE * 100)}={observed_tail:.1f} dB, '
+        f'usable={RF_CALIBRATION["usable_path_loss_db"]:.1f} dB, '
+        f'green={RF_CALIBRATION["signal_thresholds_db"]["green"]:.1f}, '
+        f'amber={RF_CALIBRATION["signal_thresholds_db"]["amber"]:.1f}'
+    )
+
+
+def refresh_support_context(db, force: bool = False) -> None:
+    now = time.time()
+    if not force and now - float(SUPPORT_CONTEXT['updated_at']) < SUPPORT_REFRESH_S:
+        return
+
+    with db.cursor() as cur:
+        cur.execute(
+            '''
+            SELECT node_id, lat, lon
+            FROM nodes
+            WHERE lat IS NOT NULL
+              AND lon IS NOT NULL
+              AND (name IS NULL OR name NOT LIKE %s)
+              AND (role IS NULL OR role = 2)
+            ''',
+            ('%🚫%',),
+        )
+        repeater_rows = cur.fetchall()
+        cur.execute(
+            '''
+            SELECT nl.node_a_id, nl.node_b_id,
+                   na.lat, na.lon, nb.lat, nb.lon
+            FROM node_links nl
+            JOIN nodes na ON na.node_id = nl.node_a_id
+            JOIN nodes nb ON nb.node_id = nl.node_b_id
+            WHERE na.lat IS NOT NULL
+              AND na.lon IS NOT NULL
+              AND nb.lat IS NOT NULL
+              AND nb.lon IS NOT NULL
+              AND nl.observed_count >= %s
+              AND (nl.itm_viable = true OR nl.force_viable = true)
+            ''',
+            (MIN_LINK_OBSERVATIONS,),
+        )
+        link_rows = cur.fetchall()
+
+    node_ids = [row[0] for row in repeater_rows]
+    xy = project_xy_km([row[1] for row in repeater_rows], [row[2] for row in repeater_rows]) if repeater_rows else np.empty((0, 2))
+    SUPPORT_CONTEXT['tree'] = cKDTree(xy) if len(node_ids) > 0 else None
+    SUPPORT_CONTEXT['node_ids'] = node_ids
+    SUPPORT_CONTEXT['node_index_by_id'] = {node_id: idx for idx, node_id in enumerate(node_ids)}
+
+    max_link_km_by_node: dict[str, float] = {}
+    for a_id, b_id, a_lat, a_lon, b_lat, b_lon in link_rows:
+      cos_mid = math.cos(math.radians((a_lat + b_lat) / 2))
+      dist_km = math.sqrt(
+          ((a_lat - b_lat) * 111.32) ** 2 +
+          ((a_lon - b_lon) * 111.32 * cos_mid) ** 2
+      )
+      if dist_km <= 0:
+          continue
+      max_link_km_by_node[a_id] = max(max_link_km_by_node.get(a_id, 0.0), dist_km)
+      max_link_km_by_node[b_id] = max(max_link_km_by_node.get(b_id, 0.0), dist_km)
+    SUPPORT_CONTEXT['max_link_km_by_node'] = max_link_km_by_node
+    SUPPORT_CONTEXT['updated_at'] = now
+    log.info(
+        f'Mesh support context: repeaters={len(node_ids)}, '
+        f'link-capped nodes={len(max_link_km_by_node)}'
+    )
+
+
+def source_support_radius_m(node_id: str, fallback_radius_m: float) -> float:
+    max_link_km = SUPPORT_CONTEXT['max_link_km_by_node'].get(node_id)
+    if not max_link_km:
+        return fallback_radius_m
+    return min(
+        fallback_radius_m,
+        max(RF_MIN_RADIUS_M, max_link_km * 1000.0 * RF_SOURCE_LINK_RADIUS_MULTIPLIER),
+    )
+
+
+def support_penalty_db(source_node_id: str, sample_lats: np.ndarray, sample_lons: np.ndarray) -> np.ndarray:
+    tree: Optional[cKDTree] = SUPPORT_CONTEXT['tree']
+    node_ids: list[str] = SUPPORT_CONTEXT['node_ids']
+    source_index = SUPPORT_CONTEXT['node_index_by_id'].get(source_node_id)
+    if tree is None or len(node_ids) < 1:
+        return np.zeros(sample_lats.shape[0], dtype=np.float32)
+
+    points_xy = project_xy_km(sample_lats, sample_lons)
+    k = 2 if source_index is not None and len(node_ids) > 1 else 1
+    distances, indices = tree.query(points_xy, k=k)
+
+    if k == 1:
+        nearest_km = np.asarray(distances, dtype=np.float32)
+    else:
+        d = np.asarray(distances, dtype=np.float32)
+        i = np.asarray(indices, dtype=np.int32)
+        primary_is_source = i[:, 0] == source_index
+        nearest_km = np.where(primary_is_source, d[:, 1], d[:, 0]).astype(np.float32)
+
+    penalty = np.maximum(0.0, nearest_km - SUPPORT_NEARBY_REPEATER_KM) * SUPPORT_PENALTY_PER_KM_DB
+    return np.clip(penalty, 0.0, SUPPORT_MAX_PENALTY_DB).astype(np.float32)
 
 def compute_path_loss(lat1: float, lon1: float, elev1: float,
                       lat2: float, lon2: float, elev2: float,
@@ -99,13 +306,14 @@ def compute_path_loss(lat1: float, lon1: float, elev1: float,
         return 0.0, True
 
     fspl = 20 * math.log10(4 * math.pi * d_total / LAMBDA_M)
+    usable_threshold_db = current_usable_path_loss_db()
 
     # Terrain profile: N evenly-spaced samples along the path
     N = max(20, min(200, int(d_total / PROFILE_STEP_M)))
 
     ds = gdal.Open(vrt_path)
     if ds is None:
-        viable = fspl < LINK_BUDGET_DB - FADE_MARGIN_DB
+        viable = fspl < usable_threshold_db
         return fspl, viable
 
     gt     = ds.GetGeoTransform()
@@ -156,6 +364,7 @@ def compute_path_loss_from_profile(dists: np.ndarray,
                                    h_tx: float,
                                    h_rx: float) -> tuple[float, bool]:
     d_total = float(dists[-1]) if len(dists) else 0.0
+    usable_threshold_db = current_usable_path_loss_db()
     if d_total < 1.0:
         return 0.0, True
 
@@ -163,14 +372,14 @@ def compute_path_loss_from_profile(dists: np.ndarray,
     fspl = 20 * math.log10(4 * math.pi * d_total / LAMBDA_M)
 
     if len(dists) <= 2:
-        viable = fspl < LINK_BUDGET_DB - FADE_MARGIN_DB
+        viable = fspl < usable_threshold_db
         return fspl, viable
 
     d1 = dists[1:-1].astype(np.float64)
     d2 = d_total - d1
     valid = (d1 > 0) & (d2 > 0)
     if not np.any(valid):
-        viable = fspl < LINK_BUDGET_DB - FADE_MARGIN_DB
+        viable = fspl < usable_threshold_db
         return fspl, viable
 
     d1 = d1[valid]
@@ -192,11 +401,12 @@ def compute_path_loss_from_profile(dists: np.ndarray,
         ))
 
     total_loss = fspl + diff_loss
-    viable     = total_loss < LINK_BUDGET_DB - FADE_MARGIN_DB
+    viable     = total_loss < usable_threshold_db
     return total_loss, viable
 
 
-def resolve_rf_radial_boundaries(lat: float,
+def resolve_rf_radial_boundaries(node_id: str,
+                                 lat: float,
                                  lon: float,
                                  elev: np.ndarray,
                                  gt: tuple[float, float, float, float, float, float],
@@ -211,7 +421,8 @@ def resolve_rf_radial_boundaries(lat: float,
     cos_t = np.cos(thetas)
     sin_t = np.sin(thetas)
 
-    boundaries: dict[str, list[tuple[float, float]]] = {key: [] for key in SIGNAL_THRESHOLDS_DB}
+    signal_thresholds = current_signal_thresholds_db()
+    boundaries: dict[str, list[tuple[float, float]]] = {key: [] for key in signal_thresholds}
     max_reached = 0.0
 
     for theta_idx in range(RF_N_RAYS):
@@ -229,9 +440,10 @@ def resolve_rf_radial_boundaries(lat: float,
             loss, _viable = compute_path_loss_from_profile(dists, heights, observer_h, h_rx)
             losses.append(loss)
         losses_arr = np.asarray(losses, dtype=np.float32)
+        effective_losses = losses_arr + support_penalty_db(node_id, pt_lats, pt_lons)
 
-        for band, threshold in SIGNAL_THRESHOLDS_DB.items():
-            passing = np.where(losses_arr <= threshold)[0]
+        for band, threshold in signal_thresholds.items():
+            passing = np.where(effective_losses <= threshold)[0]
             if passing.size < 1:
                 end_dist = float(ds_arr[0])
             else:
@@ -442,6 +654,7 @@ def calculate_viewshed(node_id: str, lat: float, lon: float) -> Optional[tuple[d
         # 2. Radio-horizon radius: node ASL + 5 m fixed antenna height.
         effective_height_m = elevation_m + ANTENNA_HEIGHT_M
         radius_m = min(radio_horizon_m(effective_height_m), MAX_RADIUS_M)
+        radius_m = source_support_radius_m(node_id, radius_m)
         log.info(
             f'  {node_id[:12]}…: elevation={elevation_m:.0f} m ASL, '
             f'antenna={effective_height_m:.0f} m, horizon={radius_m / 1000:.1f} km'
@@ -494,6 +707,7 @@ def calculate_viewshed(node_id: str, lat: float, lon: float) -> Optional[tuple[d
             elevation_m = dtm_elev
         effective_height_m = elevation_m + ANTENNA_HEIGHT_M
         radius_m = min(radio_horizon_m(effective_height_m), MAX_RADIUS_M)
+        radius_m = source_support_radius_m(node_id, radius_m)
         log.info(
             f'  {node_id[:12]}… DTM elevation={elevation_m:.0f} m ASL, '
             f'horizon={radius_m / 1000:.1f} km'
@@ -550,7 +764,7 @@ def calculate_viewshed(node_id: str, lat: float, lon: float) -> Optional[tuple[d
             geom = clipped
             strength_geoms = {'green': geom}
         elif COVERAGE_MODEL == 'rf_radial_100m':
-            band_boundaries, radius_m = resolve_rf_radial_boundaries(lat, lon, elev, gt, observer_h, radius_m)
+            band_boundaries, radius_m = resolve_rf_radial_boundaries(node_id, lat, lon, elev, gt, observer_h, radius_m)
             raw_band_polys: dict[str, ShapelyPolygon] = {}
             for band, band_boundary in band_boundaries.items():
                 if len(band_boundary) < 4:
@@ -643,7 +857,7 @@ def process_link_job(db, r_client, job: dict):
             'WHERE lat IS NOT NULL AND lon IS NOT NULL'
         )
         all_nodes = {
-            row[0]: {'lat': row[1], 'lon': row[2], 'elevation_m': row[3] or 0.0,
+            row[0]: {'lat': row[1], 'lon': row[2], 'elevation_m': row[3],
                      'name': row[4], 'role': row[5]}
             for row in cur.fetchall()
         }
@@ -794,13 +1008,32 @@ def process_link_job(db, r_client, job: dict):
             # Compute ITM path loss if not yet done and tiles are cached
             path_loss_db: Optional[float] = path_loss_db_db
             itm_viable:   Optional[bool]  = itm_viable_db
-            if itm_computed is None:
+            missing_endpoint_elev = a.get('elevation_m') is None or b.get('elevation_m') is None
+            if itm_computed is None or missing_endpoint_elev:
                 vrt = build_link_vrt(a['lat'], a['lon'], b['lat'], b['lon'], tmp)
                 if vrt:
                     try:
+                        a_elev = a.get('elevation_m')
+                        b_elev = b.get('elevation_m')
+                        if a_elev is None:
+                            a_elev = sample_elevation(vrt, a['lat'], a['lon'])
+                            a['elevation_m'] = a_elev
+                            with db.cursor() as cur:
+                                cur.execute(
+                                    'UPDATE nodes SET elevation_m = %s WHERE node_id = %s AND elevation_m IS NULL',
+                                    (round(a_elev, 1), a_id),
+                                )
+                        if b_elev is None:
+                            b_elev = sample_elevation(vrt, b['lat'], b['lon'])
+                            b['elevation_m'] = b_elev
+                            with db.cursor() as cur:
+                                cur.execute(
+                                    'UPDATE nodes SET elevation_m = %s WHERE node_id = %s AND elevation_m IS NULL',
+                                    (round(b_elev, 1), b_id),
+                                )
                         path_loss_db, itm_viable = compute_path_loss(
-                            a['lat'], a['lon'], a['elevation_m'],
-                            b['lat'], b['lon'], b['elevation_m'],
+                            a['lat'], a['lon'], a_elev,
+                            b['lat'], b['lon'], b_elev,
                             vrt,
                         )
                         with db.cursor() as cur:
@@ -931,10 +1164,14 @@ def worker_loop():
     name     = multiprocessing.current_process().name
     db       = wait_for_db()
     r_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+    refresh_rf_calibration(db, force=True)
+    refresh_support_context(db, force=True)
     log.info(f'{name} ready')
 
     while True:
         try:
+            refresh_rf_calibration(db)
+            refresh_support_context(db)
             if WORKER_MODE in ('all', 'link'):
                 # Drain pending link jobs first (fast) before blocking
                 while True:
@@ -975,6 +1212,8 @@ def main():
     # to the worker processes (each gets its own connection).
     db = wait_for_db()
     log.info('Connected to DB')
+    refresh_rf_calibration(db, force=True)
+    refresh_support_context(db, force=True)
     r = redis.Redis.from_url(REDIS_URL, decode_responses=True)
     r.ping()
     log.info('Connected to Redis')

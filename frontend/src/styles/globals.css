@@ -1816,6 +1816,47 @@ html, body, #root {
   color: var(--text-secondary);
 }
 
+.uk-feed-page {
+  max-width: 100%;
+}
+
+.uk-feed-grid {
+  margin-bottom: 16px;
+}
+
+.uk-feed-packets-card {
+  margin-bottom: 16px;
+}
+
+.uk-feed-packets-list {
+  display: grid;
+  gap: 10px;
+}
+
+.uk-feed-packet-row {
+  min-height: 72px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(8, 16, 25, 0.85);
+}
+
+.uk-feed-packet-row__meta {
+  display: grid;
+  grid-template-columns: 92px 70px 110px minmax(120px, 160px) 80px;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 8px;
+  color: var(--text-secondary);
+}
+
+.uk-feed-packet-row__summary {
+  margin: 0;
+  color: var(--text-primary);
+  line-height: 1.45;
+  min-height: 20px;
+}
+
 /* ── Page hero (inner pages) ───────────────────────────────────────────── */
 .site-page-hero {
   padding: 32px 0 20px;
@@ -2449,6 +2490,11 @@ html, body, #root {
   .owner-summary-grid.site-stats-grid--6 {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .uk-feed-packet-row__meta {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .owner-dashboard-grid {
     grid-template-columns: 1fr;
     grid-auto-rows: minmax(280px, auto);

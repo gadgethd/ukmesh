@@ -16,7 +16,7 @@ const ALLOWED_ORIGINS = (process.env['ALLOWED_ORIGINS'] ?? '')
   .filter(Boolean);
 
 const PORT = Number(process.env['PORT'] ?? 3000);
-const COVERAGE_MODEL_VERSION = Number(process.env['COVERAGE_MODEL_VERSION'] ?? 3);
+const COVERAGE_MODEL_VERSION = Number(process.env['COVERAGE_MODEL_VERSION'] ?? 5);
 
 async function main() {
   // 1. Initialise DB schema + retention policy

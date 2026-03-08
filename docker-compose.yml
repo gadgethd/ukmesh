@@ -54,7 +54,7 @@ services:
       OWNER_MQTT_USERNAME_MAP: ${OWNER_MQTT_USERNAME_MAP:-}
       OWNER_COOKIE_SECRET: ${OWNER_COOKIE_SECRET:-}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3001,http://localhost:3002},https://test.ukmesh.com
-      COVERAGE_MODEL_VERSION: ${COVERAGE_MODEL_VERSION:-2}
+      COVERAGE_MODEL_VERSION: ${COVERAGE_MODEL_VERSION:-5}
       NODE_ENV: production
     depends_on:
       timescaledb:
@@ -453,8 +453,8 @@ services:
       SRTM_DIR: /data/srtm
       WORKER_MODE: viewshed
       NUM_WORKERS: '1'
-      COVERAGE_MODEL: ${COVERAGE_MODEL:-terrain_los}
-      COVERAGE_MODEL_VERSION: ${COVERAGE_MODEL_VERSION:-2}
+      COVERAGE_MODEL: ${COVERAGE_MODEL:-rf_radial_100m}
+      COVERAGE_MODEL_VERSION: ${COVERAGE_MODEL_VERSION:-5}
     volumes:
       - srtm_data:/data/srtm
     deploy:

@@ -9,6 +9,7 @@ export const UKLayout: React.FC = () => {
       brandName={site.displayName}
       footerName={site.footerName}
       appUrl={site.appUrl}
+      showFeed
       showPackets={false}
       showStats
     />

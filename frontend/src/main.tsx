@@ -16,6 +16,7 @@ import { UKLayout } from './pages/ukmesh/UKLayout.js';
 import { UKHomePage } from './pages/ukmesh/UKHomePage.js';
 import { UKInstallPage } from './pages/ukmesh/UKInstallPage.js';
 import { UKMqttPage } from './pages/ukmesh/UKMqttPage.js';
+import { UKFeedPage } from './pages/ukmesh/UKFeedPage.js';
 import { DevLayout } from './pages/dev/DevLayout.js';
 import { DevHomePage } from './pages/dev/DevHomePage.js';
 import { getCurrentSite } from './config/site.js';
@@ -49,6 +50,7 @@ ReactDOM.createRoot(root).render(
         <Routes>
           <Route element={<UKLayout />}>
             <Route index element={<UKHomePage />} />
+            <Route path="feed" element={<UKFeedPage />} />
             <Route path="about" element={<AboutPage />} />
             <Route path="install" element={<UKInstallPage />} />
             <Route path="mqtt" element={<UKMqttPage />} />

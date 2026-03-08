@@ -956,8 +956,13 @@ router.get('/owner/live', async (req, res) => {
            nl.last_observed::text AS last_observed
          FROM node_links nl
          JOIN nodes peer ON LOWER(peer.node_id) = LOWER(CASE WHEN LOWER(nl.node_a_id) = LOWER($1) THEN nl.node_b_id ELSE nl.node_a_id END)
-         WHERE LOWER(nl.node_a_id) = LOWER($1)
-            OR LOWER(nl.node_b_id) = LOWER($1)
+         WHERE (LOWER(nl.node_a_id) = LOWER($1)
+            OR LOWER(nl.node_b_id) = LOWER($1))
+           AND (
+             nl.force_viable = true
+             OR nl.itm_viable = true
+             OR (nl.itm_path_loss_db IS NOT NULL AND nl.itm_path_loss_db <= 137.88)
+           )
          ORDER BY
            COALESCE(nl.itm_viable, false) DESC,
            nl.force_viable DESC,

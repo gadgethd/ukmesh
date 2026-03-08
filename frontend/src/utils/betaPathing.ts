@@ -9,6 +9,7 @@ const R_EFF_M = 6_371_000 / (1 - 0.25);
 const PREFIX_AMBIGUITY_FLOOR_KM = 45;
 // ML-optimised parameters (gen 4 / v01, fitness 0.93462)
 const WEAK_LINK_PATHLOSS_MAX_DB = 137.88;
+const LOOSE_LINK_PATHLOSS_MAX_DB = 146.0;
 const MAX_HOP_KM = 127.19 * 1.609344; // 127.19 miles ≈ 204.7 km
 const MAX_PERMUTATION_HOP_KM = MAX_HOP_KM;
 
@@ -100,6 +101,11 @@ function buildClashAdjacency(
 function isWeakOrBetter(meta: LinkMetrics | undefined): boolean {
   const pathLoss = meta?.itm_path_loss_db;
   return pathLoss != null && pathLoss <= WEAK_LINK_PATHLOSS_MAX_DB;
+}
+
+function isLooseOrBetter(meta: LinkMetrics | undefined): boolean {
+  const pathLoss = meta?.itm_path_loss_db;
+  return pathLoss != null && pathLoss <= LOOSE_LINK_PATHLOSS_MAX_DB;
 }
 
 function strongConfirmedFloor(meta: LinkMetrics | undefined): number {
@@ -399,7 +405,9 @@ export function resolveBetaPath(
         if (!inCorridor(c, prevNode)) return false;
         if (distKm(c, prevNode) >= MAX_HOP_KM * 0.5) return false;
         const meta = linkMetrics.get(linkKey(c.node_id, prevNode.node_id));
-        return hasLoS(c, prevNode) || isWeakOrBetter(meta);
+        const reachOk = canReach(c, prevNode, coverage);
+        const losOk = hasLoS(c, prevNode);
+        return (reachOk && losOk) || (reachOk && isLooseOrBetter(meta)) || isWeakOrBetter(meta);
       })
       .sort((a, b) => sortScore(b) - sortScore(a))
       .slice(0, 6)
