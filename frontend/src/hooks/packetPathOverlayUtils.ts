@@ -73,10 +73,42 @@ export function shouldAllowCompletionPaths(packet: AggregatedPacket | undefined,
 
 export function aggregateServerPredictions(
   predictions: Array<ServerBetaResponse | null>,
-  options?: { allowCompletionPaths?: boolean },
+  options?: {
+    allowCompletionPaths?: boolean;
+    collapseUnanchoredAdvertPartials?: boolean;
+  },
 ): Omit<AggregatedPredictionState, 'ts'> | null {
-  const validPredictions = predictions.filter((prediction): prediction is ServerBetaResponse => Boolean(prediction?.ok));
+  let validPredictions = predictions.filter((prediction): prediction is ServerBetaResponse => Boolean(prediction?.ok));
   if (validPredictions.length < 1) return null;
+
+  if (options?.collapseUnanchoredAdvertPartials && validPredictions.length > 1) {
+    const hasSourceAnchoredPartial = validPredictions.some((prediction) => (prediction.extraPurplePaths?.length ?? 0) > 0);
+    if (!hasSourceAnchoredPartial) {
+      validPredictions = [...validPredictions]
+        .sort((a, b) => {
+          const aResolved = a.mode === 'resolved' ? 1 : 0;
+          const bResolved = b.mode === 'resolved' ? 1 : 0;
+          if (aResolved !== bResolved) return bResolved - aResolved;
+
+          const aConfidence = a.confidence ?? -1;
+          const bConfidence = b.confidence ?? -1;
+          if (aConfidence !== bConfidence) return bConfidence - aConfidence;
+
+          const aPurpleEdges = Math.max(0, (a.purplePath?.length ?? 0) - 1);
+          const bPurpleEdges = Math.max(0, (b.purplePath?.length ?? 0) - 1);
+          if (aPurpleEdges !== bPurpleEdges) return bPurpleEdges - aPurpleEdges;
+
+          const aRedEdges = Math.max(0, (a.redPath?.length ?? 0) - 1);
+          const bRedEdges = Math.max(0, (b.redPath?.length ?? 0) - 1);
+          if (aRedEdges !== bRedEdges) return bRedEdges - aRedEdges;
+
+          const aRemaining = a.remainingHops ?? Number.POSITIVE_INFINITY;
+          const bRemaining = b.remainingHops ?? Number.POSITIVE_INFINITY;
+          return aRemaining - bRemaining;
+        })
+        .slice(0, 1);
+    }
+  }
 
   const purplePaths = validPredictions.flatMap((prediction) => {
     const paths: [number, number][][] = [];

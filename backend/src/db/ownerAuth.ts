@@ -94,3 +94,40 @@ export async function getOwnerNodeIdsForUsername(mqttUsername: string): Promise<
       .filter((nodeId) => /^[0-9a-f]{64}$/.test(nodeId)),
   ));
 }
+
+export async function ensureOwnerAccount(mqttUsername: string): Promise<void> {
+  const normalized = mqttUsername.trim();
+  if (!normalized) return;
+  await ownerPool.query(
+    `INSERT INTO owner_accounts (mqtt_username, is_active, updated_at)
+     VALUES ($1, true, NOW())
+     ON CONFLICT (mqtt_username)
+     DO UPDATE SET is_active = true, updated_at = NOW()`,
+    [normalized],
+  );
+}
+
+export async function addOwnerNodeForUsername(mqttUsername: string, nodeId: string): Promise<void> {
+  const normalizedUsername = mqttUsername.trim();
+  const normalizedNodeId = nodeId.trim().toLowerCase();
+  if (!normalizedUsername || !/^[0-9a-f]{64}$/.test(normalizedNodeId)) return;
+  await ensureOwnerAccount(normalizedUsername);
+  await ownerPool.query(
+    `INSERT INTO owner_account_nodes (mqtt_username, node_id)
+     VALUES ($1, $2)
+     ON CONFLICT (mqtt_username, node_id) DO NOTHING`,
+    [normalizedUsername, normalizedNodeId],
+  );
+}
+
+export async function getMappedOwnerNodeIds(): Promise<string[]> {
+  const res = await ownerPool.query<{ node_id: string }>(
+    `SELECT DISTINCT node_id
+     FROM owner_account_nodes`,
+  );
+  return Array.from(new Set(
+    res.rows
+      .map((row) => row.node_id.trim().toLowerCase())
+      .filter((nodeId) => /^[0-9a-f]{64}$/.test(nodeId)),
+  ));
+}

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { AggregatedPacket, MeshNode } from './useNodes.js';
 import { withScopeParams, uncachedEndpoint } from '../utils/api.js';
 import type { Filters } from '../components/FilterPanel/FilterPanel.js';
+import { hasCoords } from '../utils/pathing.js';
 import {
   aggregateServerPredictions,
   buildRegularPacketPaths,
@@ -107,7 +108,10 @@ export function usePacketPathOverlay({
   const applyServerPredictions = useCallback((
     packetHash: string,
     predictions: Array<ServerBetaResponse | null>,
-    options?: { allowCompletionPaths?: boolean },
+    options?: {
+      allowCompletionPaths?: boolean;
+      collapseUnanchoredAdvertPartials?: boolean;
+    },
   ) => {
     const validPredictions = predictions.filter((prediction): prediction is ServerBetaResponse => Boolean(prediction?.ok));
     if (validPredictions.length < 1) {
@@ -161,6 +165,12 @@ export function usePacketPathOverlay({
 
   const getPacketObserverIds = useCallback((packet: AggregatedPacket | undefined): string[] => packetObserverIds(packet), []);
 
+  const shouldCollapseAdvertObserverPartials = useCallback((packet: AggregatedPacket | undefined): boolean => {
+    if (!packet || packet.packetType !== 4 || !packet.srcNodeId) return false;
+    const src = nodes.get(packet.srcNodeId);
+    return !hasCoords(src);
+  }, [nodes]);
+
   const getRegularPacketPaths = useCallback((packet: AggregatedPacket | undefined, observerIds: string[]): [number, number][][] => {
     return buildRegularPacketPaths(packet, observerIds, nodes);
   }, [nodes]);
@@ -212,12 +222,14 @@ export function usePacketPathOverlay({
           if (reqSeq !== activeReqSeqRef.current) return;
           applyServerPredictions(latest.packetHash, predictions, {
             allowCompletionPaths: latest.packetType === 4,
+            collapseUnanchoredAdvertPartials: shouldCollapseAdvertObserverPartials(latest),
           });
         })
         .catch(() => {
           if (reqSeq !== activeReqSeqRef.current) return;
           applyServerPredictions(latest.packetHash, [], {
             allowCompletionPaths: latest.packetType === 4,
+            collapseUnanchoredAdvertPartials: shouldCollapseAdvertObserverPartials(latest),
           });
         });
     } else {
@@ -341,12 +353,14 @@ export function usePacketPathOverlay({
           if (reqSeq !== activeReqSeqRef.current) return;
           applyServerPredictions(pinnedPacket.packetHash!, predictions, {
             allowCompletionPaths: pinnedPacket.packetType === 4,
+            collapseUnanchoredAdvertPartials: shouldCollapseAdvertObserverPartials(pinnedPacket),
           });
         })
         .catch(() => {
           if (reqSeq !== activeReqSeqRef.current) return;
           applyServerPredictions(pinnedPacket.packetHash!, [], {
             allowCompletionPaths: pinnedPacket.packetType === 4,
+            collapseUnanchoredAdvertPartials: shouldCollapseAdvertObserverPartials(pinnedPacket),
           });
         });
     } else {
@@ -368,6 +382,7 @@ export function usePacketPathOverlay({
     observer,
     getPacketObserverIds,
     getRegularPacketPaths,
+    shouldCollapseAdvertObserverPartials,
     resolvePrediction,
     applyServerPredictions,
   ]);
