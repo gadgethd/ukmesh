@@ -56,6 +56,7 @@ export interface LivePacket {
   topic: string;
   network?: string;
   packetType?: number;
+  routeType?: number;   // 0=FLOOD, 1=DIRECT, 2=FLOOD+codes, 3=DIRECT+codes
   hopCount?: number;
   pathHashSizeBytes?: number;
   direction?: string;   // 'rx' | 'tx' from mctomqtt

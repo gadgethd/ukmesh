@@ -37,6 +37,7 @@ export type PathPacket = {
   packet_type: number | null;
   hop_count: number | null;
   path_hashes: string[] | null;
+  path_hash_size_bytes: number | null;
 };
 
 export type ObserverHopHint = {
