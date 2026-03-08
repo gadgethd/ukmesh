@@ -262,6 +262,7 @@ async function requireOwnerSession(req: Request, res: Response): Promise<string[
 type NetworkFilters = {
   params: string[];
   packets: string;
+  packetsAlias: (alias: string) => string;
   nodes: string;
   nodesAlias: (alias: string) => string;
 };
@@ -316,6 +317,14 @@ function networkFilters(network?: string, observer?: string): NetworkFilters {
   return {
     params,
     packets: packetConditions.length > 0 ? `AND ${packetConditions.join(' AND ')}` : '',
+    packetsAlias: (alias: string) => {
+      const prefix = `${alias}.`;
+      const conditions: string[] = [];
+      if (networkParam) conditions.push(`${prefix}network = ${networkParam}`);
+      else conditions.push(`${prefix}network IS DISTINCT FROM 'test'`);
+      if (observerParam) conditions.push(`LOWER(${prefix}rx_node_id) = LOWER(${observerParam})`);
+      return conditions.length > 0 ? `AND ${conditions.join(' AND ')}` : '';
+    },
     nodes: nodeConditions().length > 0 ? `AND ${nodeConditions().join(' AND ')}` : '',
     nodesAlias: (alias: string) => {
       const conditions = nodeConditions(alias);
@@ -1134,7 +1143,7 @@ router.get('/stats/charts', async (req, res) => {
 
     const [
       phResult, pdResult, rhResult, rdResult,
-      ptResult, rpResult, hdResult, pcResult, sumResult,
+      ptResult, rpResult, hdResult, pcResult, sumResult, orSummaryResult, orSeriesResult,
     ] = await Promise.all([
       // packets per hour — last 24h (all observed packet rows)
       query(`
@@ -1227,6 +1236,38 @@ router.get('/stats/charts', async (req, res) => {
           (SELECT COUNT(*) FROM nodes n WHERE (n.role IS NULL OR n.role = 2) AND n.last_seen > NOW() - INTERVAL '7 days' ${filters.nodesAlias('n')}) AS active_repeaters,
           (SELECT COUNT(*) FROM nodes n WHERE (n.role IS NULL OR n.role = 2) AND n.last_seen <= NOW() - INTERVAL '7 days' AND n.last_seen > NOW() - INTERVAL '14 days' ${filters.nodesAlias('n')}) AS stale_repeaters
       `, filters.params),
+      // observer regions summary — last 7d
+      query(`
+        SELECT
+          COALESCE(NULLIF(TRIM(UPPER(n.iata)), ''), 'UNK') AS iata,
+          COUNT(*) FILTER (WHERE p.time > NOW() - INTERVAL '24 hours') AS packets_24h,
+          COUNT(*) AS packets_7d,
+          COUNT(DISTINCT LOWER(p.rx_node_id)) AS observers,
+          MAX(p.time)::text AS last_packet_at
+        FROM packets p
+        LEFT JOIN nodes n ON LOWER(n.node_id) = LOWER(p.rx_node_id)
+        WHERE p.time > NOW() - INTERVAL '7 days'
+          AND p.rx_node_id IS NOT NULL
+          AND p.rx_node_id <> ''
+          ${filters.packetsAlias('p')}
+        GROUP BY 1
+        ORDER BY packets_7d DESC, iata ASC
+      `, filters.params),
+      // observer regions sparkline series — last 7d
+      query(`
+        SELECT
+          COALESCE(NULLIF(TRIM(UPPER(n.iata)), ''), 'UNK') AS iata,
+          time_bucket('1 day', p.time) AS day,
+          COUNT(*) AS count
+        FROM packets p
+        LEFT JOIN nodes n ON LOWER(n.node_id) = LOWER(p.rx_node_id)
+        WHERE p.time > NOW() - INTERVAL '7 days'
+          AND p.rx_node_id IS NOT NULL
+          AND p.rx_node_id <> ''
+          ${filters.packetsAlias('p')}
+        GROUP BY 1, 2
+        ORDER BY iata ASC, day ASC
+      `, filters.params),
     ]);
 
     const peakRow = phResult.rows.reduce(
@@ -1243,6 +1284,37 @@ router.get('/stats/charts', async (req, res) => {
       return d.toLocaleDateString('en-GB', { weekday: 'short', month: 'short', day: 'numeric' });
     };
 
+    const observerRegionsByIata = new Map<string, {
+      iata: string;
+      observers: number;
+      packets24h: number;
+      packets7d: number;
+      lastPacketAt: string | null;
+      series: { day: string; count: number }[];
+    }>();
+
+    for (const row of orSummaryResult.rows) {
+      const iata = String(row.iata ?? 'UNK');
+      observerRegionsByIata.set(iata, {
+        iata,
+        observers: Number(row.observers ?? 0),
+        packets24h: Number(row.packets_24h ?? 0),
+        packets7d: Number(row.packets_7d ?? 0),
+        lastPacketAt: row.last_packet_at ?? null,
+        series: [],
+      });
+    }
+
+    for (const row of orSeriesResult.rows) {
+      const iata = String(row.iata ?? 'UNK');
+      const region = observerRegionsByIata.get(iata);
+      if (!region) continue;
+      region.series.push({
+        day: fmtDay(row.day),
+        count: Number(row.count ?? 0),
+      });
+    }
+
     res.json({
       packetsPerHour:  phResult.rows.map(r => ({ hour: fmtHour(r.hour), count: Number(r.count) })),
       packetsPerDay:   pdResult.rows.map(r => ({ day: fmtDay(r.day), count: Number(r.count) })),
@@ -1257,6 +1329,7 @@ router.get('/stats/charts', async (req, res) => {
         prefix: String(r.prefix ?? '').toUpperCase(),
         repeats: Number(r.repeats),
       })),
+      observerRegions: Array.from(observerRegionsByIata.values()),
       summary: {
         totalPackets24h:  Number(sumResult.rows[0].total_24h),
         totalPackets7d:   Number(sumResult.rows[0].total_7d),

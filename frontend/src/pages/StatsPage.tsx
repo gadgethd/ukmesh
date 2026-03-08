@@ -54,6 +54,14 @@ interface ChartData {
   repeatersPerDay: { hour: string;  count: number }[];
   hopDistribution: { hops: number;  count: number }[];
   prefixCollisions:{ prefix: string; repeats: number }[];
+  observerRegions: {
+    iata: string;
+    observers: number;
+    packets24h: number;
+    packets7d: number;
+    lastPacketAt: string | null;
+    series: { day: string; count: number }[];
+  }[];
   summary: {
     totalPackets24h:  number;
     totalPackets7d:   number;
@@ -112,6 +120,15 @@ export const StatsPage: React.FC = () => {
   }, [site.networkFilter, site.observerId]);
 
   const fmt = (n: number) => n.toLocaleString();
+  const timeAgo = (ts: string | null) => {
+    if (!ts) return 'never';
+    const diff = Math.max(0, Date.now() - Date.parse(ts));
+    const sec = Math.floor(diff / 1000);
+    if (sec < 60) return `${sec}s ago`;
+    if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
+    if (sec < 86400) return `${Math.floor(sec / 3600)}h ago`;
+    return `${Math.floor(sec / 86400)}d ago`;
+  };
 
   return (
     <div className="site-layout__inner">
@@ -168,6 +185,64 @@ export const StatsPage: React.FC = () => {
                 color={C_AMBER}
               />
             </div>
+
+            {data.observerRegions.length > 0 && (
+              <div className="stats-page__observer-section">
+                <div className="stats-page__chart-header">
+                  <span className="stats-page__chart-title">Observer regions</span>
+                  <span className="stats-page__chart-sub">sorted by observed packets over the last 7 days</span>
+                </div>
+                <div className="stats-page__observer-grid">
+                  {data.observerRegions.map((region) => (
+                    <div key={region.iata} className="stats-page__observer-card">
+                      <div className="stats-page__observer-card-head">
+                        <span className="stats-page__observer-iata">{region.iata}</span>
+                        <span className="stats-page__observer-last">last packet {timeAgo(region.lastPacketAt)}</span>
+                      </div>
+                      <div className="stats-page__observer-metrics">
+                        <div className="stats-page__observer-metric">
+                          <span>Packets (7D)</span>
+                          <strong>{fmt(region.packets7d)}</strong>
+                        </div>
+                        <div className="stats-page__observer-metric">
+                          <span>Packets (24h)</span>
+                          <strong>{fmt(region.packets24h)}</strong>
+                        </div>
+                        <div className="stats-page__observer-metric">
+                          <span>Observers</span>
+                          <strong>{fmt(region.observers)}</strong>
+                        </div>
+                      </div>
+                      <div className="stats-page__observer-chart">
+                        <ResponsiveContainer width="100%" height={90}>
+                          <AreaChart data={region.series} margin={{ top: 4, right: 0, left: 0, bottom: 0 }}>
+                            <defs>
+                              <linearGradient id={`gObserver-${region.iata}`} x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="5%" stopColor={C_CYAN} stopOpacity={0.28} />
+                                <stop offset="95%" stopColor={C_CYAN} stopOpacity={0} />
+                              </linearGradient>
+                            </defs>
+                            <CartesianGrid vertical={false} {...gridProps} />
+                            <XAxis dataKey="day" hide />
+                            <YAxis hide />
+                            <Tooltip content={<CustomTooltip />} />
+                            <Area
+                              type="monotone"
+                              dataKey="count"
+                              name="Packets"
+                              stroke={C_CYAN}
+                              fill={`url(#gObserver-${region.iata})`}
+                              strokeWidth={2}
+                              dot={false}
+                            />
+                          </AreaChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* ── Packets over time ────────────────────────────────────────── */}
             <div className="stats-page__row">
