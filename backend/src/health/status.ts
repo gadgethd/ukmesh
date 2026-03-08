@@ -10,6 +10,7 @@ type WorkerSnapshot = {
   processed_1h: number;
   last_activity_at: string | null;
   cpu_load_1m: number;
+  cpu_usage_pct: number;
   mem_used_pct: number;
   disk_used_pct: number;
 };
@@ -29,9 +30,40 @@ function toPct(num: number): number {
   return Math.round(num * 1000) / 10;
 }
 
+type CpuSample = {
+  idle: number;
+  total: number;
+};
+
+let lastCpuSample: CpuSample | null = null;
+
+function readCpuSample(): CpuSample {
+  const cpus = os.cpus();
+  let idle = 0;
+  let total = 0;
+  for (const cpu of cpus) {
+    idle += cpu.times.idle;
+    total += cpu.times.user + cpu.times.nice + cpu.times.sys + cpu.times.idle + cpu.times.irq;
+  }
+  return { idle, total };
+}
+
+function cpuUsagePct(): number {
+  const current = readCpuSample();
+  const previous = lastCpuSample;
+  lastCpuSample = current;
+  if (!previous) return 0;
+
+  const idleDelta = Math.max(0, current.idle - previous.idle);
+  const totalDelta = Math.max(0, current.total - previous.total);
+  if (totalDelta <= 0) return 0;
+  return toPct(1 - idleDelta / totalDelta);
+}
+
 function systemStats() {
   const load1 = os.loadavg()[0] ?? 0;
   const cpuCount = os.cpus().length;
+  const usagePct = cpuUsagePct();
   const totalMem = os.totalmem();
   const freeMem = os.freemem();
   const usedMem = Math.max(0, totalMem - freeMem);
@@ -53,6 +85,7 @@ function systemStats() {
       load_1m: load1,
       count: cpuCount,
       load_pct: cpuCount > 0 ? toPct(load1 / cpuCount) : 0,
+      usage_pct: usagePct,
     },
     memory: {
       total_mb: Math.round(totalMem / 1_048_576),
@@ -140,6 +173,7 @@ async function currentWorkers(): Promise<WorkerSnapshot[]> {
       processed_1h: viewshedProcessed,
       last_activity_at: viewshedLast.rows[0]?.ts ?? null,
       cpu_load_1m: load,
+      cpu_usage_pct: stats.cpu.usage_pct,
       mem_used_pct: memPct,
       disk_used_pct: diskPct,
     },
@@ -150,6 +184,7 @@ async function currentWorkers(): Promise<WorkerSnapshot[]> {
       processed_1h: linkProcessed,
       last_activity_at: linkLast.rows[0]?.ts ?? null,
       cpu_load_1m: load,
+      cpu_usage_pct: stats.cpu.usage_pct,
       mem_used_pct: memPct,
       disk_used_pct: diskPct,
     },
@@ -160,6 +195,7 @@ async function currentWorkers(): Promise<WorkerSnapshot[]> {
       processed_1h: learningRecent ? 1 : 0,
       last_activity_at: learningLast,
       cpu_load_1m: load,
+      cpu_usage_pct: stats.cpu.usage_pct,
       mem_used_pct: memPct,
       disk_used_pct: diskPct,
     },
@@ -170,6 +206,7 @@ async function currentWorkers(): Promise<WorkerSnapshot[]> {
       processed_1h: healthProcessed,
       last_activity_at: healthLastTs,
       cpu_load_1m: load,
+      cpu_usage_pct: stats.cpu.usage_pct,
       mem_used_pct: memPct,
       disk_used_pct: diskPct,
     },
@@ -180,6 +217,7 @@ async function currentWorkers(): Promise<WorkerSnapshot[]> {
       processed_1h: 0,
       last_activity_at: backfillLast,
       cpu_load_1m: load,
+      cpu_usage_pct: stats.cpu.usage_pct,
       mem_used_pct: memPct,
       disk_used_pct: diskPct,
     },
@@ -190,6 +228,7 @@ async function currentWorkers(): Promise<WorkerSnapshot[]> {
       processed_1h: pathSimLast && (Date.now() - Date.parse(pathSimLast)) <= 60 * 60_000 ? 1 : 0,
       last_activity_at: pathSimLast,
       cpu_load_1m: load,
+      cpu_usage_pct: stats.cpu.usage_pct,
       mem_used_pct: memPct,
       disk_used_pct: diskPct,
     },

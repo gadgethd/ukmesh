@@ -22,6 +22,13 @@ interface DeckViewState {
   bearing:   number;
 }
 
+type ViewBounds = {
+  north: number;
+  south: number;
+  east: number;
+  west: number;
+};
+
 // Leaflet→deck.gl sync component
 const LeafletDeckSyncer: React.FC<SyncerProps> = ({ onViewStateChange }) => {
   const map = useMap();
@@ -116,6 +123,7 @@ export const MapView: React.FC<MapViewProps> = ({
   showLinks, showHexClashes, maxHexClashHops, viablePairsArr, linkMetrics, packetPaths, betaPaths, betaLowSegments, betaCompletionPaths, showBetaPaths, pathOpacity, onMapReady,
 }) => {
   const [map, setMap] = useState<LeafletMap | null>(null);
+  const [viewBounds, setViewBounds] = useState<ViewBounds | null>(null);
   const [focusedPrefix, setFocusedPrefix] = useState<string | null>(null);
   const [focusedNodeId, setFocusedNodeId] = useState<string | null>(null);
   const [focusedPrefixNodeIds, setFocusedPrefixNodeIds] = useState<Set<string> | null>(null);
@@ -139,6 +147,26 @@ export const MapView: React.FC<MapViewProps> = ({
   useEffect(() => {
     if (map && onMapReady) onMapReady(map);
   }, [map, onMapReady]);
+
+  useEffect(() => {
+    if (!map) return;
+    const syncBounds = () => {
+      const bounds = map.getBounds().pad(0.2);
+      setViewBounds({
+        north: bounds.getNorth(),
+        south: bounds.getSouth(),
+        east: bounds.getEast(),
+        west: bounds.getWest(),
+      });
+    };
+    map.on('moveend', syncBounds);
+    map.on('zoomend', syncBounds);
+    syncBounds();
+    return () => {
+      map.off('moveend', syncBounds);
+      map.off('zoomend', syncBounds);
+    };
+  }, [map]);
 
   const [deckViewState, setDeckViewState] = useState<DeckViewState>({
     longitude: DEFAULT_CENTER[1],
@@ -284,6 +312,33 @@ export const MapView: React.FC<MapViewProps> = ({
   }, [distKm]);
 
   const linkKey = (a: string, b: string) => (a < b ? `${a}:${b}` : `${b}:${a}`);
+
+  const inView = useCallback((lat: number, lon: number) => {
+    if (!viewBounds) return true;
+    return lat <= viewBounds.north
+      && lat >= viewBounds.south
+      && lon <= viewBounds.east
+      && lon >= viewBounds.west;
+  }, [viewBounds]);
+
+  const lineInView = useCallback((positions: [number, number][]) => {
+    if (!viewBounds || positions.length < 1) return true;
+    let minLat = Number.POSITIVE_INFINITY;
+    let maxLat = Number.NEGATIVE_INFINITY;
+    let minLon = Number.POSITIVE_INFINITY;
+    let maxLon = Number.NEGATIVE_INFINITY;
+    for (const [lat, lon] of positions) {
+      if (inView(lat, lon)) return true;
+      minLat = Math.min(minLat, lat);
+      maxLat = Math.max(maxLat, lat);
+      minLon = Math.min(minLon, lon);
+      maxLon = Math.max(maxLon, lon);
+    }
+    return !(maxLat < viewBounds.south
+      || minLat > viewBounds.north
+      || maxLon < viewBounds.west
+      || minLon > viewBounds.east);
+  }, [inView, viewBounds]);
 
   const linkColor = (pathLossDb: number | null | undefined) => {
     if (pathLossDb == null) return '#d1d5db';
@@ -467,12 +522,28 @@ export const MapView: React.FC<MapViewProps> = ({
       }
     }
     const zoom = map?.getZoom() ?? DEFAULT_ZOOM;
-    if (zoom >= 9 || lines.length <= 400) return lines;
-    return lines
+    const visibleLines = lines.filter((line) => lineInView(line.positions));
+    if (zoom >= 9 || visibleLines.length <= 400) return visibleLines;
+    return visibleLines
       .sort((a, b) => (b.observedCount - a.observedCount))
       .slice(0, 400);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showLinks, viablePairsArr, linkedNodesKey, linkMetrics, map]);
+  }, [showLinks, viablePairsArr, linkedNodesKey, linkMetrics, map, lineInView]);
+
+  const visibleClashPathLines = useMemo(
+    () => clashPathLines.filter((line) => lineInView(line.positions)),
+    [clashPathLines, lineInView],
+  );
+
+  const visibleRepeaterNodes = useMemo(
+    () => nodesWithPos.filter((node) => hasCoords(node) && inView(node.lat, node.lon)),
+    [nodesWithPos, inView],
+  );
+
+  const visibleClientNodes = useMemo(
+    () => clientNodesArr.filter((node) => hasCoords(node) && inView(node.lat, node.lon)),
+    [clientNodesArr, inView],
+  );
 
   const markerSize = useMemo(() => {
     const leafletZoom = deckViewState.zoom + 1;
@@ -556,7 +627,7 @@ export const MapView: React.FC<MapViewProps> = ({
 
         {clashModeActive && (
           <Pane name="hexClashPane" style={{ zIndex: 405 }}>
-            {clashPathLines.map((line) => (
+            {visibleClashPathLines.map((line) => (
               <Polyline
                 key={line.key}
                 positions={line.positions}
@@ -572,7 +643,7 @@ export const MapView: React.FC<MapViewProps> = ({
         )}
 
         {/* Repeater markers — Leaflet default marker pane at zIndex 600 */}
-        {nodesWithPos.map((node) => {
+        {visibleRepeaterNodes.map((node) => {
           if (isHiddenMapNode(node)) return null;
           if (showHexClashes && !clashVisibleNodeIds.has(node.node_id)) return null;
           const isFocusVisible = clashVisibleNodeIds.has(node.node_id) || (focusedPrefixNodeIds?.has(node.node_id) ?? false);
@@ -595,7 +666,7 @@ export const MapView: React.FC<MapViewProps> = ({
         })}
 
         {/* Companion radio + room server markers (toggled via filter) */}
-        {showClientNodes && !showHexClashes && clientNodesArr.map((node) => {
+        {showClientNodes && !showHexClashes && visibleClientNodes.map((node) => {
           if (isHiddenMapNode(node)) return null;
           const isFocusVisible = clashVisibleNodeIds.has(node.node_id);
           if (focusedPrefixNodeIds && focusHidePhase === 'hide' && !isFocusVisible) return null;

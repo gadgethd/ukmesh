@@ -3,7 +3,7 @@ import React, { useEffect, useState } from 'react';
 type HealthPayload = {
   system: {
     generated_at: string;
-    cpu: { load_1m: number; count: number; load_pct: number };
+    cpu: { load_1m: number; count: number; load_pct: number; usage_pct: number };
     memory: { total_mb: number; used_mb: number; used_pct: number };
     disk: { total_gb: number; used_gb: number; used_pct: number };
     runtime: { uptime_s: number; node_version: string; platform: string; arch: string };
@@ -185,7 +185,7 @@ export const HealthPage: React.FC = () => {
         <section className="prose-section">
           <h2>Server Stats</h2>
           <div className="site-stats-grid site-stats-grid--6 health-system-grid">
-            <div className="site-stat"><span className="site-stat__value">{fmtPct(data?.system.cpu.load_pct)}</span><span className="site-stat__label">CPU Load</span></div>
+            <div className="site-stat"><span className="site-stat__value">{fmtPct(data?.system.cpu.usage_pct)}</span><span className="site-stat__label">CPU Usage</span></div>
             <div className="site-stat"><span className="site-stat__value">{fmtPct(data?.system.memory.used_pct)}</span><span className="site-stat__label">Memory Used</span></div>
             <div className="site-stat"><span className="site-stat__value">{fmtPct(data?.system.disk.used_pct)}</span><span className="site-stat__label">Disk Used</span></div>
             <div className="site-stat"><span className="site-stat__value">{fmtInt(data?.frontend_errors_1h)}</span><span className="site-stat__label">Frontend Errors (1h)</span></div>
@@ -196,6 +196,7 @@ export const HealthPage: React.FC = () => {
             <div className="health-kv"><span>Updated</span><strong>{data?.system.generated_at ? timeAgo(data.system.generated_at) : 'just now'}</strong></div>
             <div className="health-kv"><span>Node Runtime</span><strong>{data?.system.runtime.node_version ?? '-'}</strong></div>
             <div className="health-kv"><span>Platform</span><strong>{data?.system.runtime.platform ?? '-'} / {data?.system.runtime.arch ?? '-'}</strong></div>
+            <div className="health-kv"><span>CPU Usage</span><strong>{fmtPct(data?.system.cpu.usage_pct)}</strong></div>
             <div className="health-kv"><span>CPU 1m Load</span><strong>{Number(data?.system.cpu.load_1m ?? 0).toFixed(2)} ({data?.system.cpu.count ?? 0} cores)</strong></div>
             <div className="health-kv"><span>Memory</span><strong>{fmtInt(data?.system.memory.used_mb)} / {fmtInt(data?.system.memory.total_mb)} MB</strong></div>
             <div className="health-kv"><span>Disk</span><strong>{fmtGb(data?.system.disk.used_gb)} / {fmtGb(data?.system.disk.total_gb)}</strong></div>
