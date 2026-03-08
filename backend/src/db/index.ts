@@ -13,7 +13,7 @@ if (databaseSchema && !/^[a-z_][a-z0-9_]*$/i.test(databaseSchema)) {
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   options: databaseSchema ? `-c search_path=${databaseSchema},public` : undefined,
-  max: 20,
+  max: Number(process.env['DATABASE_POOL_MAX'] ?? 8),
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 5000,
 });
@@ -162,20 +162,30 @@ export async function insertPacket(p: {
   rawHex: string;
   advertCount?: number;
   pathHashes?: string[];
+  pathHashSizeBytes?: number;
   network?: string;
 }): Promise<void> {
+  const inferredPathHashSizeBytes = (() => {
+    if (typeof p.pathHashSizeBytes === 'number' && Number.isFinite(p.pathHashSizeBytes) && p.pathHashSizeBytes > 0) {
+      return Math.trunc(p.pathHashSizeBytes);
+    }
+    const first = p.pathHashes?.[0];
+    if (!first) return null;
+    const len = String(first).trim().length;
+    return len === 2 || len === 4 || len === 6 ? len / 2 : null;
+  })();
   const storedPayload = p.payload
     ? (p.summary ? { ...p.payload, _summary: p.summary } : p.payload)
     : (p.summary ? { _summary: p.summary } : null);
   await pool.query(
     `INSERT INTO packets
        (time, packet_hash, rx_node_id, src_node_id, topic, packet_type, route_type,
-        hop_count, rssi, snr, payload, raw_hex, advert_count, path_hashes, network)
-     VALUES (NOW(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+        hop_count, rssi, snr, payload, raw_hex, advert_count, path_hashes, path_hash_size_bytes, network)
+     VALUES (NOW(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
     [p.packetHash, p.rxNodeId, p.srcNodeId, p.topic, p.packetType,
      p.routeType, p.hopCount, p.rssi, p.snr,
      storedPayload ? JSON.stringify(storedPayload) : null, p.rawHex, p.advertCount ?? null,
-     p.pathHashes ?? null, p.network ?? 'teesside']
+     p.pathHashes ?? null, inferredPathHashSizeBytes, p.network ?? 'teesside']
   );
 }
 

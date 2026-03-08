@@ -39,6 +39,12 @@ export type PathPacket = {
   path_hashes: string[] | null;
 };
 
+export type ObserverHopHint = {
+  observerNode: MeshNode;
+  hopCount: number;
+  hopDelta: number;
+};
+
 export type BetaResolveContext = {
   loadedAt: number;
   nodesById: Map<string, MeshNode>;

@@ -44,6 +44,7 @@ WORKER_MODE  = os.environ.get('WORKER_MODE', 'all').lower()
 COVERAGE_MODEL = os.environ.get('COVERAGE_MODEL', 'rf_radial_100m').lower()
 
 JOB_QUEUE      = 'meshcore:viewshed_jobs'
+JOB_PENDING_SET = 'meshcore:viewshed_pending'
 LINK_JOB_QUEUE = 'meshcore:link_jobs'
 LIVE_CHANNEL   = 'meshcore:live'
 
@@ -1096,7 +1097,25 @@ def enqueue_uncovered(db, r_client):
     if rows:
         log.info(f'Queuing {len(rows)} existing node(s) for viewshed calculation (model v{COVERAGE_MODEL_VERSION})')
         for node_id, lat, lon in rows:
-            r_client.lpush(JOB_QUEUE, json.dumps({'node_id': node_id, 'lat': lat, 'lon': lon}))
+            if r_client.sadd(JOB_PENDING_SET, node_id):
+                r_client.lpush(JOB_QUEUE, json.dumps({'node_id': node_id, 'lat': lat, 'lon': lon}))
+
+def rebuild_pending_viewshed_set(r_client):
+    """Rebuild the pending-node set from the current queue contents on startup."""
+    r_client.delete(JOB_PENDING_SET)
+    raw_jobs = r_client.lrange(JOB_QUEUE, 0, -1)
+    node_ids = []
+    for raw in raw_jobs:
+        try:
+            job = json.loads(raw)
+        except Exception:
+            continue
+        node_id = str(job.get('node_id') or '').strip()
+        if node_id:
+            node_ids.append(node_id)
+    if node_ids:
+        r_client.sadd(JOB_PENDING_SET, *node_ids)
+    log.info(f'Rebuilt viewshed pending set from queue ({len(set(node_ids))} unique node(s))')
 
 # ── Job processor ─────────────────────────────────────────────────────────────
 
@@ -1104,44 +1123,46 @@ def process_job(db, r_client, job: dict):
     node_id = job['node_id']
     lat     = float(job['lat'])
     lon     = float(job['lon'])
+    try:
+        # Skip hidden (🚫) or non-repeater nodes regardless of how the job arrived
+        with db.cursor() as cur:
+            cur.execute('SELECT name, role FROM nodes WHERE node_id = %s', (node_id,))
+            row = cur.fetchone()
+        if row:
+            name, role = row
+            if name and '🚫' in name:
+                log.info(f'Skipping hidden node {node_id[:12]}…')
+                return
+            if role is not None and role != 2:
+                log.info(f'Skipping non-repeater {node_id[:12]}… (role={role})')
+                return
 
-    # Skip hidden (🚫) or non-repeater nodes regardless of how the job arrived
-    with db.cursor() as cur:
-        cur.execute('SELECT name, role FROM nodes WHERE node_id = %s', (node_id,))
-        row = cur.fetchone()
-    if row:
-        name, role = row
-        if name and '🚫' in name:
-            log.info(f'Skipping hidden node {node_id[:12]}…')
+        if already_calculated(db, node_id):
+            log.info(f'Coverage already exists for {node_id[:12]}…, skipping')
             return
-        if role is not None and role != 2:
-            log.info(f'Skipping non-repeater {node_id[:12]}… (role={role})')
+
+        log.info(f'Viewshed: {node_id[:12]}… at ({lat:.4f}, {lon:.4f})')
+        t0     = time.time()
+        result = calculate_viewshed(node_id, lat, lon)
+        if result is None:
             return
 
-    if already_calculated(db, node_id):
-        log.info(f'Coverage already exists for {node_id[:12]}…, skipping')
-        return
+        geom, strength_geoms, radius_m, elevation_m = result
+        store_coverage(db, node_id, geom, strength_geoms, radius_m, elevation_m)
+        log.info(f'Done in {time.time() - t0:.1f}s — notifying frontend')
 
-    log.info(f'Viewshed: {node_id[:12]}… at ({lat:.4f}, {lon:.4f})')
-    t0     = time.time()
-    result = calculate_viewshed(node_id, lat, lon)
-    if result is None:
-        return
-
-    geom, strength_geoms, radius_m, elevation_m = result
-    store_coverage(db, node_id, geom, strength_geoms, radius_m, elevation_m)
-    log.info(f'Done in {time.time() - t0:.1f}s — notifying frontend')
-
-    r_client.publish(LIVE_CHANNEL, json.dumps({
-        'type': 'coverage_update',
-        'data': {'node_id': node_id, 'geom': geom, 'strength_geoms': strength_geoms},
-        'ts':   int(time.time() * 1000),
-    }))
-    r_client.publish(LIVE_CHANNEL, json.dumps({
-        'type': 'node_upsert',
-        'data': {'node_id': node_id, 'elevation_m': round(elevation_m, 1)},
-        'ts':   int(time.time() * 1000),
-    }))
+        r_client.publish(LIVE_CHANNEL, json.dumps({
+            'type': 'coverage_update',
+            'data': {'node_id': node_id, 'geom': geom, 'strength_geoms': strength_geoms},
+            'ts':   int(time.time() * 1000),
+        }))
+        r_client.publish(LIVE_CHANNEL, json.dumps({
+            'type': 'node_upsert',
+            'data': {'node_id': node_id, 'elevation_m': round(elevation_m, 1)},
+            'ts':   int(time.time() * 1000),
+        }))
+    finally:
+        r_client.srem(JOB_PENDING_SET, node_id)
 
 # ── Main loop ─────────────────────────────────────────────────────────────────
 
@@ -1218,6 +1239,7 @@ def main():
     r.ping()
     log.info('Connected to Redis')
     if WORKER_MODE in ('all', 'viewshed'):
+        rebuild_pending_viewshed_set(r)
         backfill_elevations(db)
         enqueue_uncovered(db, r)
     db.close()

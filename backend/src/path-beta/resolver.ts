@@ -40,7 +40,7 @@ import {
   trimPathBetweenStitches,
   trimRedToPurpleStitch,
 } from './fallback.js';
-import type { BetaResolveContext, LinkMetrics, MeshNode, NodeCoverage, PathLearningModel, PathPacket } from './types.js';
+import type { BetaResolveContext, LinkMetrics, MeshNode, NodeCoverage, ObserverHopHint, PathLearningModel, PathPacket } from './types.js';
 
 const contextCache = new Map<string, BetaResolveContext>();
 
@@ -75,6 +75,27 @@ function directionalSupport(meta: LinkMetrics, fromId: string, toId: string): nu
   if (total <= 0) return 0;
   const fromTo = fromId === aId ? ab : ba;
   return fromTo / total;
+}
+
+function observerHopPrior(candidate: MeshNode, prevNode: MeshNode, hints: ObserverHopHint[]): number {
+  if (hints.length < 1) return 0;
+  let weighted = 0;
+  let totalWeight = 0;
+  for (const hint of hints) {
+    const observer = hint.observerNode;
+    if (!hasCoords(observer) || hint.hopDelta === 0) continue;
+    const prevDist = distKm(prevNode, observer);
+    const candidateDist = distKm(candidate, observer);
+    const towardObserver = clamp((prevDist - candidateDist) / 25, -1, 1);
+    const weight = clamp(Math.abs(hint.hopDelta) / 4, 0.2, 1);
+    const contribution = hint.hopDelta < 0
+      ? towardObserver
+      : -towardObserver * 0.55;
+    weighted += contribution * weight;
+    totalWeight += weight;
+  }
+  if (totalWeight <= 0) return 0;
+  return clamp(weighted / totalWeight, -1, 1);
 }
 
 function confirmedLinkConfidence(
@@ -250,6 +271,7 @@ function buildFallbackPrefixPath(
   coverageByNode: Map<string, number>,
   linkMetrics: Map<string, LinkMetrics>,
   forceIncludeSource = false,
+  observerHopHints: ObserverHopHint[] = [],
 ): { path: [number, number][]; nodeIds: string[] } | null {
   const repeaters = Array.from(nodesById.values()).filter(
     (n) => hasCoords(n) && (n.role === null || n.role === 2),
@@ -262,20 +284,21 @@ function buildFallbackPrefixPath(
   let nextTowardRx: MeshNode | null = null;
   for (const h of [...hopHashes].reverse()) {
     const prefix = normalizePathHash(h);
+    const compareCandidates = (a: MeshNode, b: MeshNode): number => {
+      const hopBias = observerHopPrior(b, prev, observerHopHints) - observerHopPrior(a, prev, observerHopHints);
+      const base = compareFallbackCandidates(a, b, prev, src, nextTowardRx, coverageByNode, linkMetrics);
+      return base + hopBias * 0.6;
+    };
     let candidates = getNodesForPathHash(pathHashIndex, prefix)
       .filter((n) => !visited.has(n.node_id) && fallbackEdgeAllowed(n, prev, coverageByNode, linkMetrics))
-      .sort((a, b) => {
-        return compareFallbackCandidates(a, b, prev, src, nextTowardRx, coverageByNode, linkMetrics);
-      });
+      .sort(compareCandidates);
     if (candidates.length < 1) {
       candidates = getNodesForPathHash(pathHashIndex, prefix)
         .filter((n) => (
           !visited.has(n.node_id)
           && softFallbackCandidateAllowed(n, prev, src, nextTowardRx)
         ))
-        .sort((a, b) => {
-          return compareFallbackCandidates(a, b, prev, src, nextTowardRx, coverageByNode, linkMetrics);
-        });
+        .sort(compareCandidates);
     }
     const chosen = candidates[0];
     if (!chosen) continue;
@@ -438,7 +461,7 @@ function resolveBetaPath(
   src: MeshNode | null,
   rx: MeshNode,
   context: BetaResolveContext,
-  options?: { forceIncludeSource?: boolean; disableSourcePrepend?: boolean; blockedNodeIds?: string[] },
+  options?: { forceIncludeSource?: boolean; disableSourcePrepend?: boolean; blockedNodeIds?: string[]; observerHopHints?: ObserverHopHint[] },
 ): { path: [number, number][]; confidence: number; segmentConfidence: number[]; nodeIds: string[] } | null {
   const normalizedHashes = pathHashes.map(normalizePathHash).filter(Boolean);
   if (!hasCoords(rx) || normalizedHashes.length === 0) return null;
@@ -458,6 +481,7 @@ function resolveBetaPath(
   const receiverRegion = rx.iata ?? 'unknown';
   const bucketHours = context.learningModel.bucketHours ?? 6;
   const hourBucket = currentHourBucket(bucketHours);
+  const activeObserverHopHints = options?.observerHopHints ?? [];
 
   function prefixPrior(prefix: string, prevPrefix: string, nodeId: string): number {
     const exactKey = `${receiverRegion}|${prefix}|${prevPrefix}|${nodeId}`;
@@ -613,9 +637,13 @@ function resolveBetaPath(
         + turnContinuityScore(c, prevNode, nextTowardRxNode) * 0.95;
     }
 
+    function multiObserverPrior(c: MeshNode): number {
+      return observerHopPrior(c, prevNode, activeObserverHopHints);
+    }
+
     function sortScore(c: MeshNode): number {
       const corridorBonus = inCorridor(c, prevNode, prefix) ? 0.25 : -0.6;
-      return directionalPrior(c) - distKm(c, prevNode) / 50 + corridorBonus;
+      return directionalPrior(c) + multiObserverPrior(c) * 0.9 - distKm(c, prevNode) / 50 + corridorBonus;
     }
 
     const usedIds = new Set<string>();
@@ -643,9 +671,10 @@ function resolveBetaPath(
         const edgeBoost = edgePrior(c.node_id, prevNode.node_id) * 0.3;
         const ambiguityPenalty = localPrefixAmbiguityPenalty(c, prevNode, prefix);
         const directionalBoost = clamp(directionalPrior(c), -1, 1) * 0.08;
+        const observerHopBoost = clamp(multiObserverPrior(c), -1, 1) * 0.09;
         const confirmedFloor = strongConfirmedFloor(meta);
         const baseConf = confirmedLinkConfidence(meta, c.node_id, prevNode.node_id, {
-          prefix: priorBoost + directionalBoost,
+          prefix: priorBoost + directionalBoost + observerHopBoost,
           transition: transitionBoost,
           motif: motifBoost,
           edge: edgeBoost,
@@ -676,9 +705,10 @@ function resolveBetaPath(
         const edgeBoost = edgePrior(c.node_id, prevNode.node_id) * 0.28;
         const ambiguityPenalty = localPrefixAmbiguityPenalty(c, prevNode, prefix);
         const directionalBoost = clamp(directionalPrior(c), -1, 1) * 0.1;
+        const observerHopBoost = clamp(multiObserverPrior(c), -1, 1) * 0.11;
         return {
           node: c,
-          conf: Math.max(0.08, 0.2 + prior * 0.34 + prefixBoost + transitionBoost + motifBoost + edgeBoost + directionalBoost - distancePenalty - ambiguityPenalty - (all.length - 1) * 0.01),
+          conf: Math.max(0.08, 0.2 + prior * 0.34 + prefixBoost + transitionBoost + motifBoost + edgeBoost + directionalBoost + observerHopBoost - distancePenalty - ambiguityPenalty - (all.length - 1) * 0.01),
         };
       });
 
@@ -702,9 +732,10 @@ function resolveBetaPath(
         const edgeBoost = edgePrior(c.node_id, prevNode.node_id) * 0.18;
         const ambiguityPenalty = localPrefixAmbiguityPenalty(c, prevNode, prefix);
         const directionalBoost = clamp(directionalPrior(c), -1, 1) * 0.08;
+        const observerHopBoost = clamp(multiObserverPrior(c), -1, 1) * 0.1;
         return {
           node: c,
-          conf: Math.max(0.03, 0.04 + prior * 0.2 + prefixBoost + transitionBoost + motifBoost + edgeBoost + directionalBoost - ambiguityPenalty) / Math.max(1, all.length),
+          conf: Math.max(0.03, 0.04 + prior * 0.2 + prefixBoost + transitionBoost + motifBoost + edgeBoost + directionalBoost + observerHopBoost - ambiguityPenalty) / Math.max(1, all.length),
         };
       });
 
@@ -1005,16 +1036,27 @@ export type BetaResolvedPayload = {
 };
 
 export async function resolveBetaPathForPacketHash(packetHash: string, network: string, observer?: string): Promise<BetaResolvedPayload | null> {
-  const packetResult = await query<PathPacket>(
-    `SELECT packet_hash, rx_node_id, src_node_id, packet_type, hop_count, path_hashes
-     FROM packets
-     WHERE packet_hash = $1
-       AND ($2 = 'all' OR network = $2)
-       ${observer ? 'AND LOWER(rx_node_id) = LOWER($3)' : ''}
-     ORDER BY hop_count ASC NULLS LAST, time ASC
-     LIMIT 1`,
-    observer ? [packetHash, network, observer] : [packetHash, network],
-  );
+  const [packetResult, observerHopResult] = await Promise.all([
+    query<PathPacket>(
+      `SELECT packet_hash, rx_node_id, src_node_id, packet_type, hop_count, path_hashes
+       FROM packets
+       WHERE packet_hash = $1
+         AND ($2 = 'all' OR network = $2)
+         ${observer ? 'AND LOWER(rx_node_id) = LOWER($3)' : ''}
+       ORDER BY hop_count ASC NULLS LAST, time ASC
+       LIMIT 1`,
+      observer ? [packetHash, network, observer] : [packetHash, network],
+    ),
+    query<{ rx_node_id: string; hop_count: number | null }>(
+      `SELECT rx_node_id, MIN(hop_count) AS hop_count
+       FROM packets
+       WHERE packet_hash = $1
+         AND ($2 = 'all' OR network = $2)
+         AND rx_node_id IS NOT NULL
+       GROUP BY rx_node_id`,
+      [packetHash, network],
+    ),
+  ]);
 
   const packet = packetResult.rows[0];
   if (!packet) return null;
@@ -1051,6 +1093,17 @@ export async function resolveBetaPathForPacketHash(packetHash: string, network: 
   const hashes = packet.path_hashes ?? [];
   const hops = packet.hop_count != null ? hashes.slice(0, Math.max(0, packet.hop_count)) : hashes;
   const forceIncludeSource = packet.packet_type === 4;
+  const currentHopCount = Number(packet.hop_count ?? 0);
+  const observerHopHints: ObserverHopHint[] = currentHopCount > 0 && packet.rx_node_id
+    ? observerHopResult.rows.flatMap((row) => {
+      if (!row.rx_node_id || row.rx_node_id === packet.rx_node_id) return [];
+      const hopCount = Number(row.hop_count ?? 0);
+      if (hopCount <= 0) return [];
+      const observerNode = context.nodesById.get(row.rx_node_id);
+      if (!observerNode || !hasCoords(observerNode)) return [];
+      return [{ observerNode, hopCount, hopDelta: hopCount - currentHopCount }];
+    })
+    : [];
 
   if (hops.length < 1) {
     console.log(`${logPrefix} mode=none reason=no-hops rx=${packet.rx_node_id ?? 'unknown'} src=${packet.src_node_id ?? 'unknown'}`);
@@ -1077,7 +1130,7 @@ export async function resolveBetaPathForPacketHash(packetHash: string, network: 
     };
   }
 
-  let result = resolveBetaPath(hops, hasCoords(src) ? src : null, rx, context, { forceIncludeSource });
+  let result = resolveBetaPath(hops, hasCoords(src) ? src : null, rx, context, { forceIncludeSource, observerHopHints });
   let solvedHopCount = hops.length;
   let solverMode: 'full' | 'suffix-partial' = 'full';
   if (!result && hops.length > 1) {
@@ -1089,6 +1142,7 @@ export async function resolveBetaPathForPacketHash(packetHash: string, network: 
         forceIncludeSource: false,
         disableSourcePrepend: true,
         blockedNodeIds: hasCoords(src) ? [src.node_id] : [],
+        observerHopHints,
       });
       if (!partial) continue;
       result = partial;
@@ -1113,6 +1167,7 @@ export async function resolveBetaPathForPacketHash(packetHash: string, network: 
         context.coverageByNode,
         context.linkMetrics,
         forceIncludeSource,
+        observerHopHints,
       );
       redPath = trimRedToPurpleStitch(
         fallbackForUnresolved?.path ?? redPath,
@@ -1213,6 +1268,7 @@ export async function resolveBetaPathForPacketHash(packetHash: string, network: 
     context.coverageByNode,
     context.linkMetrics,
     forceIncludeSource,
+    observerHopHints,
   );
   if (fallback) {
     const redEdges = Math.max(0, fallback.path.length - 1);

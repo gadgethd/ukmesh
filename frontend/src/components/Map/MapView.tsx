@@ -616,12 +616,12 @@ export const MapView: React.FC<MapViewProps> = ({
           <Polyline
             key={`packet-path-${idx}`}
             positions={path}
+            className="packet-path-overlay"
             pathOptions={{
               color:     '#00c4ff',
               weight:    2,
               dashArray: '6 9',
               opacity:   pathOpacity,
-              className: 'packet-path-overlay',
             }}
           />
         ))}
@@ -632,12 +632,12 @@ export const MapView: React.FC<MapViewProps> = ({
           <Polyline
             key={`beta-low-seg-${idx}`}
             positions={[a, b]}
+            className="beta-red-path-overlay"
             pathOptions={{
               color:     '#ef4444',
               weight:    2.6,
               dashArray: '6 9',
               opacity:   Math.min(0.9, pathOpacity),
-              className: 'beta-red-path-overlay',
             }}
             interactive={false}
           />
@@ -648,12 +648,12 @@ export const MapView: React.FC<MapViewProps> = ({
           <Polyline
             key={`beta-purple-${idx}`}
             positions={path}
+            className="beta-purple-path-overlay"
             pathOptions={{
               color:     '#a855f7',
               weight:    2.8,
               dashArray: '6 9',
               opacity:   pathOpacity,
-              className: 'beta-purple-path-overlay',
             }}
           />
         ))}

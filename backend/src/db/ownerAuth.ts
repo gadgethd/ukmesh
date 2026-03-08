@@ -29,7 +29,7 @@ function getAdminDatabaseUrl(): string {
 
 const ownerPool = new Pool({
   connectionString: getOwnerDatabaseUrl(),
-  max: 10,
+  max: Number(process.env['OWNER_DATABASE_POOL_MAX'] ?? 3),
   idleTimeoutMillis: 30_000,
   connectionTimeoutMillis: 5_000,
 });

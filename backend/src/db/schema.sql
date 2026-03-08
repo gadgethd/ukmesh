@@ -84,7 +84,20 @@ END $$;
 
 ALTER TABLE packets ADD COLUMN IF NOT EXISTS advert_count INTEGER;
 ALTER TABLE packets ADD COLUMN IF NOT EXISTS path_hashes TEXT[];
+ALTER TABLE packets ADD COLUMN IF NOT EXISTS path_hash_size_bytes INTEGER;
 ALTER TABLE packets ADD COLUMN IF NOT EXISTS network      TEXT NOT NULL DEFAULT 'teesside';
+
+UPDATE packets
+SET path_hash_size_bytes = CASE
+  WHEN path_hashes IS NULL OR array_length(path_hashes, 1) IS NULL OR array_length(path_hashes, 1) = 0 THEN NULL
+  WHEN length(path_hashes[1]) IN (2, 4, 6) THEN length(path_hashes[1]) / 2
+  ELSE NULL
+END
+WHERE path_hash_size_bytes IS DISTINCT FROM CASE
+  WHEN path_hashes IS NULL OR array_length(path_hashes, 1) IS NULL OR array_length(path_hashes, 1) = 0 THEN NULL
+  WHEN length(path_hashes[1]) IN (2, 4, 6) THEN length(path_hashes[1]) / 2
+  ELSE NULL
+END;
 
 -- Reclassify legacy rows so Teesside is observer-IATA scoped (MME),
 -- with all other observer IATA values treated as the global/ukmesh side.
