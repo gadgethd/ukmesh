@@ -69,6 +69,7 @@ const MODEL_LIMIT = 6000;
 const MAX_PERMUTATION_HOP_KM = MAX_HOP_KM;
 const MAX_RENDER_PERMUTATIONS = 24;
 const MAX_PERMUTATION_STATES = 120_000;
+const SOFT_FALLBACK_HOP_KM = 75 * 1.609344;
 
 const contextCache = new Map<string, BetaResolveContext>();
 
@@ -76,8 +77,15 @@ function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
+function isValidMapCoord(lat: number | null | undefined, lon: number | null | undefined): boolean {
+  if (typeof lat !== 'number' || typeof lon !== 'number') return false;
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return false;
+  if (Math.abs(lat) < 5 && Math.abs(lon) < 5) return false;
+  return lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180;
+}
+
 function hasCoords(n: MeshNode | null | undefined): n is MeshNode {
-  return Boolean(n && typeof n.lat === 'number' && typeof n.lon === 'number');
+  return Boolean(n && isValidMapCoord(n.lat, n.lon));
 }
 
 function linkKey(a: string, b: string): string {
@@ -115,6 +123,95 @@ function nodeRange(nodeId: string, coverageByNode: Map<string, number>): number 
 function canReach(a: MeshNode, b: MeshNode, coverageByNode: Map<string, number>): boolean {
   const threshold = Math.max(nodeRange(a.node_id, coverageByNode), nodeRange(b.node_id, coverageByNode));
   return distKm(a, b) < threshold;
+}
+
+function cosine2d(ax: number, ay: number, bx: number, by: number): number {
+  const mag = Math.hypot(ax, ay) * Math.hypot(bx, by);
+  return mag > 1e-9 ? clamp((ax * bx + ay * by) / mag, -1, 1) : 0;
+}
+
+function sourceProgressScore(candidate: MeshNode, prev: MeshNode, src: MeshNode | null): number {
+  if (!hasCoords(src)) return 0;
+  const toSrcX = src.lon! - prev.lon!;
+  const toSrcY = src.lat! - prev.lat!;
+  const toCandidateX = candidate.lon! - prev.lon!;
+  const toCandidateY = candidate.lat! - prev.lat!;
+  const align = cosine2d(toCandidateX, toCandidateY, toSrcX, toSrcY);
+  const prevToSrc = distKm(prev, src);
+  const candidateToSrc = distKm(candidate, src);
+  const progress = prevToSrc > 1e-6 ? clamp((prevToSrc - candidateToSrc) / prevToSrc, -1, 1) : 0;
+  return align * 0.7 + progress * 0.6;
+}
+
+function turnContinuityScore(candidate: MeshNode, prev: MeshNode, nextTowardRx: MeshNode | null): number {
+  if (!hasCoords(nextTowardRx)) return 0;
+  const incomingX = prev.lon! - candidate.lon!;
+  const incomingY = prev.lat! - candidate.lat!;
+  const outgoingX = nextTowardRx.lon! - prev.lon!;
+  const outgoingY = nextTowardRx.lat! - prev.lat!;
+  return cosine2d(incomingX, incomingY, outgoingX, outgoingY);
+}
+
+function fallbackEdgeAllowed(
+  a: MeshNode,
+  b: MeshNode,
+  coverageByNode: Map<string, number>,
+  linkMetrics: Map<string, LinkMetrics>,
+): boolean {
+  const meta = linkMetrics.get(linkKey(a.node_id, b.node_id));
+  const reachOk = canReach(a, b, coverageByNode);
+  const losOk = hasLoS(a, b);
+  return (reachOk && losOk) || (reachOk && isLooseOrBetter(meta)) || isWeakOrBetter(meta);
+}
+
+function fallbackEdgeScore(
+  candidate: MeshNode,
+  prev: MeshNode,
+  src: MeshNode | null,
+  nextTowardRx: MeshNode | null,
+  coverageByNode: Map<string, number>,
+  linkMetrics: Map<string, LinkMetrics>,
+): number {
+  const meta = linkMetrics.get(linkKey(candidate.node_id, prev.node_id));
+  const pathLoss = meta?.itm_path_loss_db;
+  const reachOk = canReach(candidate, prev, coverageByNode);
+  const losOk = hasLoS(candidate, prev);
+  const distPenalty = distKm(candidate, prev) / 50;
+  const pathLossBoost = pathLoss == null ? 0 : clamp((LOOSE_LINK_PATHLOSS_MAX_DB - pathLoss) / 18, 0, 1.2);
+  const observedBoost = Math.min(0.35, Math.log10((meta?.observed_count ?? 0) + 1) * 0.18);
+  const physicalBoost = (reachOk ? 0.45 : 0) + (losOk ? 0.2 : 0);
+  const directionalBoost = sourceProgressScore(candidate, prev, src) * 0.45
+    + turnContinuityScore(candidate, prev, nextTowardRx) * 0.6;
+  return directionalBoost + pathLossBoost + observedBoost + physicalBoost - distPenalty;
+}
+
+function compareFallbackCandidates(
+  a: MeshNode,
+  b: MeshNode,
+  prev: MeshNode,
+  src: MeshNode | null,
+  nextTowardRx: MeshNode | null,
+  coverageByNode: Map<string, number>,
+  linkMetrics: Map<string, LinkMetrics>,
+): number {
+  const distA = distKm(a, prev);
+  const distB = distKm(b, prev);
+  if (Math.abs(distA - distB) > 0.25) return distA - distB;
+  return fallbackEdgeScore(b, prev, src, nextTowardRx, coverageByNode, linkMetrics)
+    - fallbackEdgeScore(a, prev, src, nextTowardRx, coverageByNode, linkMetrics);
+}
+
+function softFallbackCandidateAllowed(
+  candidate: MeshNode,
+  prev: MeshNode,
+  src: MeshNode | null,
+  nextTowardRx: MeshNode | null,
+): boolean {
+  const hopKm = distKm(candidate, prev);
+  if (hopKm > SOFT_FALLBACK_HOP_KM) return false;
+  const sourceProgress = sourceProgressScore(candidate, prev, src);
+  const turnContinuity = turnContinuityScore(candidate, prev, nextTowardRx);
+  return sourceProgress >= -0.15 && turnContinuity >= -0.35;
 }
 
 function currentHourBucket(bucketHours: number): number {
@@ -287,6 +384,18 @@ function trimPathBetweenStitches(
   return trimRedToPurpleStitch(trimPathToStartStitch(path, startStitch), endPath);
 }
 
+function retargetRedPathStart(
+  path: [number, number][] | null,
+  startStitch: [number, number] | null,
+): [number, number][] | null {
+  if (!path || path.length < 2 || !startStitch) return path;
+  const first = path[0];
+  if (!first) return path;
+  if (samePoint(first, startStitch)) return path;
+  const rewritten: [number, number][] = [startStitch, ...path.slice(1)];
+  return rewritten.length >= 2 ? rewritten : null;
+}
+
 function segmentizePath(path: [number, number][] | null): Array<[[number, number], [number, number]]> {
   if (!path || path.length < 2) return [];
   const segments: Array<[[number, number], [number, number]]> = [];
@@ -379,6 +488,8 @@ function buildFallbackPrefixPath(
   src: MeshNode | null,
   rx: MeshNode,
   nodesById: Map<string, MeshNode>,
+  coverageByNode: Map<string, number>,
+  linkMetrics: Map<string, LinkMetrics>,
   forceIncludeSource = false,
 ): { path: [number, number][]; nodeIds: string[] } | null {
   const repeaters = Array.from(nodesById.values()).filter(
@@ -389,29 +500,29 @@ function buildFallbackPrefixPath(
   const pickedNearRx: MeshNode[] = [];
   const visited = new Set<string>([rx.node_id]);
   let prev = rx;
+  let nextTowardRx: MeshNode | null = null;
   for (const h of [...hopHashes].reverse()) {
     const prefix = normalizePathHash(h);
-    const candidates = getNodesForPathHash(pathHashIndex, prefix)
-      .filter((n) => !visited.has(n.node_id))
+    let candidates = getNodesForPathHash(pathHashIndex, prefix)
+      .filter((n) => !visited.has(n.node_id) && fallbackEdgeAllowed(n, prev, coverageByNode, linkMetrics))
       .sort((a, b) => {
-        const score = (c: MeshNode) => {
-          const distPenalty = distKm(c, prev) / 50;
-          if (!src) return -distPenalty;
-          const dLat = src.lat! - prev.lat!;
-          const dLon = src.lon! - prev.lon!;
-          const cLat = c.lat! - prev.lat!;
-          const cLon = c.lon! - prev.lon!;
-          const dot = dLat * cLat + dLon * cLon;
-          const mag = Math.hypot(dLat, dLon) * Math.hypot(cLat, cLon);
-          const align = mag > 0 ? dot / mag : 0;
-          return align - distPenalty;
-        };
-        return score(b) - score(a);
+        return compareFallbackCandidates(a, b, prev, src, nextTowardRx, coverageByNode, linkMetrics);
       });
+    if (candidates.length < 1) {
+      candidates = getNodesForPathHash(pathHashIndex, prefix)
+        .filter((n) => (
+          !visited.has(n.node_id)
+          && softFallbackCandidateAllowed(n, prev, src, nextTowardRx)
+        ))
+        .sort((a, b) => {
+          return compareFallbackCandidates(a, b, prev, src, nextTowardRx, coverageByNode, linkMetrics);
+        });
+    }
     const chosen = candidates[0];
     if (!chosen) continue;
     pickedNearRx.push(chosen);
     visited.add(chosen.node_id);
+    nextTowardRx = prev;
     prev = chosen;
   }
 
@@ -419,6 +530,12 @@ function buildFallbackPrefixPath(
   const pathNodes: MeshNode[] = [...(hasCoords(src) && forceIncludeSource ? [src] : []), ...hopsFarToNear, rx];
   if (!forceIncludeSource && hasCoords(src) && pathNodes.length >= 2 && pathNodes[0]?.node_id === src.node_id) {
     pathNodes.shift();
+  }
+  for (let i = 0; i < pathNodes.length - 1; i++) {
+    const from = pathNodes[i];
+    const to = pathNodes[i + 1];
+    if (!from || !to) return null;
+    if (!fallbackEdgeAllowed(from, to, coverageByNode, linkMetrics)) return null;
   }
   if (pathNodes.length < 2) return null;
   return { path: pathNodes.map((n) => [n.lat!, n.lon!]), nodeIds: pathNodes.map((n) => n.node_id) };
@@ -429,6 +546,8 @@ function enumeratePrefixContinuations(
   remainingPrefixes: string[],
   endNodeId: string,
   nodesById: Map<string, MeshNode>,
+  coverageByNode: Map<string, number>,
+  linkMetrics: Map<string, LinkMetrics>,
   options?: { dropStartIfNodeId?: string; maxRenderPaths?: number; maxSearchStates?: number; blockedNodeIds?: string[] },
 ): { paths: [number, number][][]; totalCount: number; truncated: boolean; longestPrefixDepth: number } {
   const maxRenderPaths = Math.max(1, options?.maxRenderPaths ?? MAX_RENDER_PERMUTATIONS);
@@ -482,6 +601,10 @@ function enumeratePrefixContinuations(
           recordPartial(idx, path);
           return;
         }
+        if (!fallbackEdgeAllowed(current, end, coverageByNode, linkMetrics)) {
+          recordPartial(idx, path);
+          return;
+        }
         path.push(end.node_id);
       }
       totalCount += 1;
@@ -492,8 +615,14 @@ function enumeratePrefixContinuations(
 
     const prefix = normalizePathHash(remainingPrefixes[idx]);
     const nodesForPrefix = getNodesForPathHash(pathHashIndex, prefix)
-      .filter((n) => !visited.has(n.node_id) && !blocked.has(n.node_id) && n.node_id !== end.node_id && distKm(n, current) <= MAX_PERMUTATION_HOP_KM)
-      .sort((a, b) => distKm(a, current) - distKm(b, current));
+      .filter((n) => (
+        !visited.has(n.node_id)
+        && !blocked.has(n.node_id)
+        && n.node_id !== end.node_id
+        && distKm(n, current) <= MAX_PERMUTATION_HOP_KM
+        && fallbackEdgeAllowed(n, current, coverageByNode, linkMetrics)
+      ))
+      .sort((a, b) => compareFallbackCandidates(a, b, current, end, null, coverageByNode, linkMetrics));
     if (nodesForPrefix.length < 1) {
       recordPartial(idx, path);
       return;
@@ -718,21 +847,16 @@ function resolveBetaPath(
   function getCandidates(prefix: string, prevPrefix: string, prevNode: MeshNode, nextTowardRx: string | null): Array<{ node: MeshNode; conf: number }> {
     const all = getNodesForPathHash(pathHashIndex, prefix);
     if (all.length === 0) return [];
+    const nextTowardRxNode = nextTowardRx ? (context.nodesById.get(nextTowardRx) ?? null) : null;
 
-    function align(c: MeshNode): number {
-      if (!hasCoords(src)) return 0;
-      const dLat = src.lat! - prevNode.lat!;
-      const dLon = src.lon! - prevNode.lon!;
-      const cLat = c.lat! - prevNode.lat!;
-      const cLon = c.lon! - prevNode.lon!;
-      const dot = dLat * cLat + dLon * cLon;
-      const mag = Math.hypot(dLat, dLon) * Math.hypot(cLat, cLon);
-      return mag > 0 ? dot / mag : 0;
+    function directionalPrior(c: MeshNode): number {
+      return sourceProgressScore(c, prevNode, src) * 0.75
+        + turnContinuityScore(c, prevNode, nextTowardRxNode) * 0.95;
     }
 
     function sortScore(c: MeshNode): number {
       const corridorBonus = inCorridor(c, prevNode, prefix) ? 0.25 : -0.6;
-      return align(c) - distKm(c, prevNode) / 50 + corridorBonus;
+      return directionalPrior(c) - distKm(c, prevNode) / 50 + corridorBonus;
     }
 
     const usedIds = new Set<string>();
@@ -759,9 +883,10 @@ function resolveBetaPath(
           + (nextTowardRx ? motifPrior([c.node_id, prevNode.node_id, nextTowardRx]) * 0.25 : 0);
         const edgeBoost = edgePrior(c.node_id, prevNode.node_id) * 0.3;
         const ambiguityPenalty = localPrefixAmbiguityPenalty(c, prevNode, prefix);
+        const directionalBoost = clamp(directionalPrior(c), -1, 1) * 0.08;
         const confirmedFloor = strongConfirmedFloor(meta);
         const baseConf = confirmedLinkConfidence(meta, c.node_id, prevNode.node_id, {
-          prefix: priorBoost,
+          prefix: priorBoost + directionalBoost,
           transition: transitionBoost,
           motif: motifBoost,
           edge: edgeBoost,
@@ -791,9 +916,10 @@ function resolveBetaPath(
           + (nextTowardRx ? motifPrior([c.node_id, prevNode.node_id, nextTowardRx]) * 0.2 : 0);
         const edgeBoost = edgePrior(c.node_id, prevNode.node_id) * 0.28;
         const ambiguityPenalty = localPrefixAmbiguityPenalty(c, prevNode, prefix);
+        const directionalBoost = clamp(directionalPrior(c), -1, 1) * 0.1;
         return {
           node: c,
-          conf: Math.max(0.08, 0.2 + prior * 0.34 + prefixBoost + transitionBoost + motifBoost + edgeBoost - distancePenalty - ambiguityPenalty - (all.length - 1) * 0.01),
+          conf: Math.max(0.08, 0.2 + prior * 0.34 + prefixBoost + transitionBoost + motifBoost + edgeBoost + directionalBoost - distancePenalty - ambiguityPenalty - (all.length - 1) * 0.01),
         };
       });
 
@@ -816,9 +942,10 @@ function resolveBetaPath(
         const motifBoost = motifPrior([c.node_id, prevNode.node_id]) * 0.12;
         const edgeBoost = edgePrior(c.node_id, prevNode.node_id) * 0.18;
         const ambiguityPenalty = localPrefixAmbiguityPenalty(c, prevNode, prefix);
+        const directionalBoost = clamp(directionalPrior(c), -1, 1) * 0.08;
         return {
           node: c,
-          conf: Math.max(0.03, 0.04 + prior * 0.2 + prefixBoost + transitionBoost + motifBoost + edgeBoost - ambiguityPenalty) / Math.max(1, all.length),
+          conf: Math.max(0.03, 0.04 + prior * 0.2 + prefixBoost + transitionBoost + motifBoost + edgeBoost + directionalBoost - ambiguityPenalty) / Math.max(1, all.length),
         };
       });
 
@@ -1219,7 +1346,15 @@ export async function resolveBetaPathForPacketHash(packetHash: string, network: 
     const unresolvedBySolver = Math.max(0, hops.length - solvedHopCount);
     let redPath = attachSrcToPath(split.redPath, purplePath, hasCoords(src) ? src : null, forceIncludeSource);
     if (unresolvedBySolver > 0) {
-      const fallbackForUnresolved = buildFallbackPrefixPath(hops, hasCoords(src) ? src : null, rx, context.nodesById, forceIncludeSource);
+      const fallbackForUnresolved = buildFallbackPrefixPath(
+        hops,
+        hasCoords(src) ? src : null,
+        rx,
+        context.nodesById,
+        context.coverageByNode,
+        context.linkMetrics,
+        forceIncludeSource,
+      );
       redPath = trimRedToPurpleStitch(
         fallbackForUnresolved?.path ?? redPath,
         purplePath,
@@ -1254,11 +1389,15 @@ export async function resolveBetaPathForPacketHash(packetHash: string, network: 
         const sourcePurplePath = sourceSplit.purplePath;
         if (sourcePurplePath && sourcePurplePath.length >= 2) {
           extraPurplePaths.push(sourcePurplePath);
+          const sourceStitch = sourcePurplePath[sourcePurplePath.length - 1] ?? null;
           redPath = trimPathBetweenStitches(
             redPath,
-            sourcePurplePath[sourcePurplePath.length - 1] ?? null,
+            sourceStitch,
             purplePath,
           );
+          if (sourceStitch) {
+            redPath = retargetRedPathStart(redPath, sourceStitch);
+          }
         }
       }
     }
@@ -1307,7 +1446,15 @@ export async function resolveBetaPathForPacketHash(packetHash: string, network: 
     };
   }
 
-  const fallback = buildFallbackPrefixPath(hops, hasCoords(src) ? src : null, rx, context.nodesById, forceIncludeSource);
+  const fallback = buildFallbackPrefixPath(
+    hops,
+    hasCoords(src) ? src : null,
+    rx,
+    context.nodesById,
+    context.coverageByNode,
+    context.linkMetrics,
+    forceIncludeSource,
+  );
   if (fallback) {
     const redEdges = Math.max(0, fallback.path.length - 1);
     let completionPaths: [number, number][][] = [];
@@ -1318,6 +1465,8 @@ export async function resolveBetaPathForPacketHash(packetHash: string, network: 
         hops,
         rx.node_id,
         context.nodesById,
+        context.coverageByNode,
+        context.linkMetrics,
         {
           dropStartIfNodeId: forceIncludeSource ? undefined : src.node_id,
           maxRenderPaths: MAX_RENDER_PERMUTATIONS,

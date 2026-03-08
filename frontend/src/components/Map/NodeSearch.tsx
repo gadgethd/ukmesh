@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import type { Map as LeafletMap } from 'leaflet';
 import type { MeshNode } from '../../hooks/useNodes.js';
+import { isValidMapCoord } from '../../utils/pathing.js';
 
 interface NodeSearchProps {
   nodes: Map<string, MeshNode>;
@@ -16,7 +17,7 @@ export const NodeSearch: React.FC<NodeSearchProps> = ({ nodes, map }) => {
     if (!query.trim()) return [];
     const q = query.toLowerCase();
     return Array.from(nodes.values())
-      .filter((n) => typeof n.lat === 'number' && typeof n.lon === 'number' && n.name && !n.name.includes('🚫') && n.name.toLowerCase().includes(q))
+      .filter((n) => isValidMapCoord(n.lat, n.lon) && n.name && !n.name.includes('🚫') && n.name.toLowerCase().includes(q))
       .slice(0, 6);
   }, [query, nodes]);
 

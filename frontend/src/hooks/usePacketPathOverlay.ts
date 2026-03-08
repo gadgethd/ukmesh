@@ -133,7 +133,11 @@ export function usePacketPathOverlay({
     setPathOpacity(0.75);
   }, []);
 
-  const applyServerPredictions = useCallback((packetHash: string, predictions: Array<ServerBetaResponse | null>) => {
+  const applyServerPredictions = useCallback((
+    packetHash: string,
+    predictions: Array<ServerBetaResponse | null>,
+    options?: { allowCompletionPaths?: boolean },
+  ) => {
     const validPredictions = predictions.filter((prediction): prediction is ServerBetaResponse => Boolean(prediction?.ok));
     if (validPredictions.length < 1) {
       const recent = recentPredictionsRef.current.get(packetHash);
@@ -150,7 +154,7 @@ export function usePacketPathOverlay({
       setBetaPacketPaths(recent.purplePaths);
       setBetaLowConfidencePaths(recent.redPaths);
       setBetaLowConfidenceSegments(recent.redSegments);
-      setBetaCompletionPaths(recent.completionPaths);
+      setBetaCompletionPaths(options?.allowCompletionPaths === false ? [] : recent.completionPaths);
       setBetaPathConfidence(recent.confidence);
       setBetaPermutationCount(recent.permutations);
       setBetaRemainingHops(recent.remainingHops);
@@ -202,7 +206,9 @@ export function usePacketPathOverlay({
       })
     );
 
-    const completionPaths = validPredictions.flatMap((prediction) => prediction.completionPaths ?? []);
+    const completionPaths = options?.allowCompletionPaths === false
+      ? []
+      : validPredictions.flatMap((prediction) => prediction.completionPaths ?? []);
     const permutations = validPredictions.reduce((sum, prediction) => {
       const fallbackCount = (prediction.redPath ? 1 : 0) + (prediction.completionPaths?.length ?? 0);
       return sum + (Number.isFinite(prediction.permutationCount) ? prediction.permutationCount : fallbackCount);
@@ -318,11 +324,15 @@ export function usePacketPathOverlay({
       void Promise.all(observerIds.map((observerId) => resolvePrediction(latest.packetHash, network, observerId)))
         .then((predictions) => {
           if (reqSeq !== activeReqSeqRef.current) return;
-          applyServerPredictions(latest.packetHash, predictions);
+          applyServerPredictions(latest.packetHash, predictions, {
+            allowCompletionPaths: latest.packetType === 4,
+          });
         })
         .catch(() => {
           if (reqSeq !== activeReqSeqRef.current) return;
-          applyServerPredictions(latest.packetHash, []);
+          applyServerPredictions(latest.packetHash, [], {
+            allowCompletionPaths: latest.packetType === 4,
+          });
         });
     } else {
       setBetaPacketPaths([]);
@@ -443,11 +453,15 @@ export function usePacketPathOverlay({
       void Promise.all(observerIds.map((observerId) => resolvePrediction(pinnedPacket.packetHash!, network, observerId)))
         .then((predictions) => {
           if (reqSeq !== activeReqSeqRef.current) return;
-          applyServerPredictions(pinnedPacket.packetHash!, predictions);
+          applyServerPredictions(pinnedPacket.packetHash!, predictions, {
+            allowCompletionPaths: pinnedPacket.packetType === 4,
+          });
         })
         .catch(() => {
           if (reqSeq !== activeReqSeqRef.current) return;
-          applyServerPredictions(pinnedPacket.packetHash!, []);
+          applyServerPredictions(pinnedPacket.packetHash!, [], {
+            allowCompletionPaths: pinnedPacket.packetType === 4,
+          });
         });
     } else {
       setBetaPacketPaths([]);
