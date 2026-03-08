@@ -7,6 +7,7 @@ import {
   normalizePathHash,
 } from '../path-hash/utils.js';
 import {
+  ANCHOR_CONFIDENCE_DEFAULT,
   BETA_PURPLE_THRESHOLD,
   CONTEXT_TTL_MS,
   MAX_BETA_HOPS,
@@ -15,6 +16,9 @@ import {
   MAX_PERMUTATION_STATES,
   MAX_RENDER_PERMUTATIONS,
   MODEL_LIMIT,
+  OBSERVER_HOP_WEIGHT_CONFIRMED,
+  OBSERVER_HOP_WEIGHT_FALLBACK,
+  OBSERVER_HOP_WEIGHT_REACHABLE,
   PREFIX_AMBIGUITY_FLOOR_KM,
   WEAK_LINK_PATHLOSS_MAX_DB,
 } from './constants.js';
@@ -492,7 +496,14 @@ function resolveBetaPath(
   src: MeshNode | null,
   rx: MeshNode,
   context: BetaResolveContext,
-  options?: { forceIncludeSource?: boolean; disableSourcePrepend?: boolean; blockedNodeIds?: string[]; observerHopHints?: ObserverHopHint[] },
+  options?: {
+    forceIncludeSource?: boolean;
+    disableSourcePrepend?: boolean;
+    blockedNodeIds?: string[];
+    observerHopHints?: ObserverHopHint[];
+    anchorNodes?: Map<number, MeshNode>;
+    extraCorridorTargets?: MeshNode[];
+  },
 ): { path: [number, number][]; confidence: number; segmentConfidence: number[]; nodeIds: string[] } | null {
   const normalizedHashes = pathHashes.map(normalizePathHash).filter(Boolean);
   if (!hasCoords(rx) || normalizedHashes.length === 0) return null;
@@ -513,6 +524,8 @@ function resolveBetaPath(
   const bucketHours = context.learningModel.bucketHours ?? 6;
   const hourBucket = currentHourBucket(bucketHours);
   const activeObserverHopHints = options?.observerHopHints ?? [];
+  const extraCorridorTargets = options?.extraCorridorTargets ?? [];
+  const anchorNodes = options?.anchorNodes;
 
   function prefixPrior(prefix: string, prevPrefix: string, nodeId: string): number {
     const exactKey = `${receiverRegion}|${prefix}|${prevPrefix}|${nodeId}`;
@@ -632,30 +645,41 @@ function resolveBetaPath(
     return clamp(raw / 3, 0, 1);
   }
 
-  function inCorridor(candidate: MeshNode, prevNode: MeshNode, pathHash: string): boolean {
+  function corridorCheck(candidate: MeshNode, prevNode: MeshNode, pathHash: string, tgtLat: number, tgtLon: number, maxKm: number): boolean {
     if (!hasCoords(src)) return true;
-    const bx = src.lon! - rxLon;
-    const by = src.lat! - rxLat;
+    const bx = src.lon! - tgtLon;
+    const by = src.lat! - tgtLat;
     const segLen2 = bx * bx + by * by;
     if (segLen2 < 1e-9) return true;
-    const px = candidate.lon! - rxLon;
-    const py = candidate.lat! - rxLat;
+    const px = candidate.lon! - tgtLon;
+    const py = candidate.lat! - tgtLat;
     const t = (px * bx + py * by) / segLen2;
     const pressure = clashPressure(candidate, pathHash);
     const tPadding = 0.15 + (1 - pressure) * 0.15;
     if (t < -tPadding || t > 1 + tPadding) return false;
 
-    const projx = rxLon + t * bx;
-    const projy = rxLat + t * by;
+    const projx = tgtLon + t * bx;
+    const projy = tgtLat + t * by;
     const midLat = ((candidate.lat! + projy) / 2) * (Math.PI / 180);
     const kmPerLon = 111 * Math.cos(midLat);
     const dxKm = (candidate.lon! - projx) * kmPerLon;
     const dyKm = (candidate.lat! - projy) * 111;
     const crossTrackKm = Math.hypot(dxKm, dyKm);
-    const corridorAllowance = corridorMaxKm * (1 + (1 - pressure) * 0.35);
+    const corridorAllowance = maxKm * (1 + (1 - pressure) * 0.35);
     if (crossTrackKm > corridorAllowance) return false;
 
     return distKm(candidate, src) <= distKm(prevNode, src) + 8;
+  }
+
+  function inCorridor(candidate: MeshNode, prevNode: MeshNode, pathHash: string): boolean {
+    if (!hasCoords(src)) return true;
+    if (corridorCheck(candidate, prevNode, pathHash, rxLat, rxLon, corridorMaxKm)) return true;
+    for (const target of extraCorridorTargets) {
+      if (!hasCoords(target)) continue;
+      const td = distKm(src, target);
+      if (corridorCheck(candidate, prevNode, pathHash, target.lat!, target.lon!, Math.max(10, Math.min(80, td * 0.35)))) return true;
+    }
+    return false;
   }
 
   function getCandidates(prefix: string, prevPrefix: string, prevNode: MeshNode, nextTowardRx: string | null): Array<{ node: MeshNode; conf: number }> {
@@ -674,7 +698,7 @@ function resolveBetaPath(
 
     function sortScore(c: MeshNode): number {
       const corridorBonus = inCorridor(c, prevNode, prefix) ? 0.25 : -0.6;
-      return directionalPrior(c) + multiObserverPrior(c) * 0.9 - distKm(c, prevNode) / 50 + corridorBonus;
+      return directionalPrior(c) + multiObserverPrior(c) * 1.4 - distKm(c, prevNode) / 50 + corridorBonus;
     }
 
     const usedIds = new Set<string>();
@@ -702,7 +726,7 @@ function resolveBetaPath(
         const edgeBoost = edgePrior(c.node_id, prevNode.node_id) * 0.3;
         const ambiguityPenalty = localPrefixAmbiguityPenalty(c, prevNode, prefix);
         const directionalBoost = clamp(directionalPrior(c), -1, 1) * 0.08;
-        const observerHopBoost = clamp(multiObserverPrior(c), -1, 1) * 0.09;
+        const observerHopBoost = clamp(multiObserverPrior(c), -1, 1) * OBSERVER_HOP_WEIGHT_CONFIRMED;
         const confirmedFloor = strongConfirmedFloor(meta);
         const baseConf = confirmedLinkConfidence(meta, c.node_id, prevNode.node_id, {
           prefix: priorBoost + directionalBoost + observerHopBoost,
@@ -736,7 +760,7 @@ function resolveBetaPath(
         const edgeBoost = edgePrior(c.node_id, prevNode.node_id) * 0.28;
         const ambiguityPenalty = localPrefixAmbiguityPenalty(c, prevNode, prefix);
         const directionalBoost = clamp(directionalPrior(c), -1, 1) * 0.1;
-        const observerHopBoost = clamp(multiObserverPrior(c), -1, 1) * 0.11;
+        const observerHopBoost = clamp(multiObserverPrior(c), -1, 1) * OBSERVER_HOP_WEIGHT_REACHABLE;
         return {
           node: c,
           conf: Math.max(0.08, 0.2 + prior * 0.34 + prefixBoost + transitionBoost + motifBoost + edgeBoost + directionalBoost + observerHopBoost - distancePenalty - ambiguityPenalty - (all.length - 1) * 0.01),
@@ -763,7 +787,7 @@ function resolveBetaPath(
         const edgeBoost = edgePrior(c.node_id, prevNode.node_id) * 0.18;
         const ambiguityPenalty = localPrefixAmbiguityPenalty(c, prevNode, prefix);
         const directionalBoost = clamp(directionalPrior(c), -1, 1) * 0.08;
-        const observerHopBoost = clamp(multiObserverPrior(c), -1, 1) * 0.1;
+        const observerHopBoost = clamp(multiObserverPrior(c), -1, 1) * OBSERVER_HOP_WEIGHT_FALLBACK;
         return {
           node: c,
           conf: Math.max(0.03, 0.04 + prior * 0.2 + prefixBoost + transitionBoost + motifBoost + edgeBoost + directionalBoost + observerHopBoost - ambiguityPenalty) / Math.max(1, all.length),
@@ -780,11 +804,30 @@ function resolveBetaPath(
     if (hopIdx < 0) return [];
     if (--budget <= 0) return null;
 
+    // Anchor constraint: use pre-resolved node for this hop if available
+    const anchor = anchorNodes?.get(hopIdx);
+    if (anchor && hasCoords(anchor) && !visited.has(anchor.node_id)) {
+      const prefix = normalizedHashes[hopIdx]!;
+      const anchorHash = nodePathHash(anchor.node_id, prefix);
+      if (anchorHash === prefix) {
+        const key = linkKey(anchor.node_id, prevNode.node_id);
+        const meta = context.linkMetrics.get(key);
+        const conf = meta
+          ? confirmedLinkConfidence(meta, anchor.node_id, prevNode.node_id)
+          : edgeMetricConfidence(anchor.node_id, prevNode.node_id, context.linkMetrics) || ANCHOR_CONFIDENCE_DEFAULT;
+        const nextVisited = new Set(visited);
+        nextVisited.add(anchor.node_id);
+        const rest = solve(hopIdx - 1, anchor, prevNode.node_id, nextVisited);
+        if (rest !== null) return [{ node: anchor, conf }, ...rest];
+        // If anchor chain fails downstream, fall through to normal solve
+      }
+    }
+
     const prefix = normalizedHashes[hopIdx]!;
     const prevPrefix = hopIdx > 0 ? normalizedHashes[hopIdx - 1]! : '';
-    const options = getCandidates(prefix, prevPrefix, prevNode, nextTowardRx).filter((o) => !visited.has(o.node.node_id));
+    const candidateOptions = getCandidates(prefix, prevPrefix, prevNode, nextTowardRx).filter((o) => !visited.has(o.node.node_id));
 
-    for (const opt of options) {
+    for (const opt of candidateOptions) {
       const nextVisited = new Set(visited);
       nextVisited.add(opt.node.node_id);
       const rest = solve(hopIdx - 1, opt.node, prevNode.node_id, nextVisited);
@@ -1417,6 +1460,471 @@ export async function resolveBetaPathForPacketHash(packetHash: string, network: 
       hopsUsed: hops.length,
       rxNodeId: packet.rx_node_id,
       srcNodeId: packet.src_node_id,
+      computedAt: new Date().toISOString(),
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Multi-observer resolution (Phase 5)
+// ---------------------------------------------------------------------------
+
+function findSharedPathPrefix(pathsByObserver: string[][]): string[] {
+  if (pathsByObserver.length < 1) return [];
+  const first = pathsByObserver[0]!;
+  let len = first.length;
+  for (let i = 1; i < pathsByObserver.length; i++) {
+    const other = pathsByObserver[i]!;
+    len = Math.min(len, other.length);
+    for (let j = 0; j < len; j++) {
+      if (normalizePathHash(first[j]) !== normalizePathHash(other[j])) {
+        len = j;
+        break;
+      }
+    }
+  }
+  return first.slice(0, len);
+}
+
+export type MultiObserverResolvedPayload = {
+  ok: boolean;
+  packetHash: string;
+  observerCount: number;
+  sharedPrefixLength: number;
+  results: BetaResolvedPayload[];
+};
+
+export async function resolveMultiObserverBetaPath(
+  packetHash: string,
+  network: string,
+): Promise<MultiObserverResolvedPayload | null> {
+  // 1. Load ALL observations for this packet hash
+  const allResult = await query<PathPacket & { path_hash_size_bytes: number | null }>(
+    `SELECT packet_hash, rx_node_id, src_node_id, packet_type, hop_count, path_hashes, path_hash_size_bytes
+     FROM packets
+     WHERE packet_hash = $1
+       AND ($2 = 'all' OR network = $2)
+       AND rx_node_id IS NOT NULL
+     ORDER BY COALESCE(cardinality(path_hashes), 0) DESC,
+              CASE WHEN path_hash_size_bytes IS NOT NULL THEN 1 ELSE 0 END DESC,
+              CASE WHEN src_node_id IS NOT NULL THEN 1 ELSE 0 END DESC,
+              hop_count ASC NULLS LAST,
+              time ASC`,
+    [packetHash, network],
+  );
+
+  if (allResult.rows.length < 1) return null;
+
+  // 2. Group by observer, pick best row per observer
+  const byObserver = new Map<string, PathPacket & { path_hash_size_bytes: number | null }>();
+  for (const row of allResult.rows) {
+    if (!row.rx_node_id) continue;
+    if (!byObserver.has(row.rx_node_id)) {
+      byObserver.set(row.rx_node_id, row);
+    }
+  }
+
+  // Single observer — delegate to existing per-observer resolver
+  if (byObserver.size <= 1) {
+    const [observerId] = byObserver.keys();
+    const singleResult = await resolveBetaPathForPacketHash(packetHash, network, observerId);
+    return singleResult
+      ? { ok: true, packetHash, observerCount: 1, sharedPrefixLength: 0, results: [singleResult] }
+      : null;
+  }
+
+  const context = await loadContext(network);
+  const logPrefix = `[path-beta-multi] hash=${packetHash} network=${network}`;
+
+  // 3. Build per-observer data
+  type ObserverEntry = {
+    observerId: string;
+    packet: PathPacket;
+    rx: MeshNode;
+    hashes: string[];
+    hops: string[];
+  };
+
+  const entries: ObserverEntry[] = [];
+  for (const [observerId, packet] of byObserver) {
+    const rx = context.nodesById.get(observerId);
+    if (!hasCoords(rx)) continue;
+    const hashes = packet.path_hashes ?? [];
+
+    const expectedHexLen = packet.path_hash_size_bytes != null ? packet.path_hash_size_bytes * 2 : null;
+    const validatedHashes = expectedHexLen != null
+      ? hashes.filter((h) => h.length === expectedHexLen)
+      : hashes;
+
+    const hops = packet.hop_count != null
+      ? validatedHashes.slice(0, Math.max(0, packet.hop_count))
+      : validatedHashes;
+
+    if (hops.length < 1) continue;
+    entries.push({ observerId, packet, rx, hashes, hops });
+  }
+
+  if (entries.length < 1) return null;
+
+  if (entries.length === 1) {
+    const singleResult = await resolveBetaPathForPacketHash(packetHash, network, entries[0]!.observerId);
+    return singleResult
+      ? { ok: true, packetHash, observerCount: 1, sharedPrefixLength: 0, results: [singleResult] }
+      : null;
+  }
+
+  // 4. Find shared path hash prefix
+  const allHops = entries.map((e) => e.hops);
+  const sharedPrefix = findSharedPathPrefix(allHops);
+  const sharedPrefixLength = sharedPrefix.length;
+
+  console.log(
+    `${logPrefix} observers=${entries.length} sharedPrefix=${sharedPrefixLength} ` +
+    `observerIds=${entries.map((e) => e.observerId.slice(0, 8)).join(',')}`,
+  );
+
+  // 5. Pick anchor observer: most hops, most path data
+  const anchor = entries.reduce((best, entry) =>
+    entry.hops.length > best.hops.length ? entry : best,
+  );
+  const anchorIdx = entries.indexOf(anchor);
+
+  // Derive source from any entry that has it
+  const srcNodeId = entries.find((e) => e.packet.src_node_id)?.packet.src_node_id ?? null;
+  const src = srcNodeId ? (context.nodesById.get(srcNodeId) ?? null) : null;
+  const forceIncludeSource = entries.some((e) => e.packet.packet_type === 4);
+
+  // All observer rx nodes for corridor relaxation
+  const allRxNodes = entries.map((e) => e.rx);
+
+  // Observer hop hints from all observers
+  const observerHopHints: ObserverHopHint[] = entries.flatMap((entry) => {
+    const hopCount = Number(entry.packet.hop_count ?? 0);
+    if (hopCount <= 0) return [];
+    return entries
+      .filter((other) => other.observerId !== entry.observerId)
+      .map((other) => {
+        const otherHopCount = Number(other.packet.hop_count ?? 0);
+        return {
+          observerNode: other.rx,
+          hopCount: otherHopCount,
+          hopDelta: otherHopCount - hopCount,
+        };
+      })
+      .filter((h) => h.hopDelta !== 0);
+  });
+
+  // 6. Solve anchor path with relaxed corridor (all observers as extra corridor targets)
+  const extraCorridorTargets = allRxNodes.filter((n) => n.node_id !== anchor.rx.node_id);
+  const anchorResult = resolveBetaPath(
+    anchor.hops,
+    hasCoords(src) ? src : null,
+    anchor.rx,
+    context,
+    {
+      forceIncludeSource,
+      observerHopHints,
+      extraCorridorTargets,
+    },
+  );
+
+  // Build anchor node map: hop index → resolved MeshNode
+  const anchorNodeMap = new Map<number, MeshNode>();
+  if (anchorResult) {
+    // nodeIds = [src?, hop0, hop1, ..., hopN-1, rx]
+    const srcPrepended = anchorResult.nodeIds[0] === src?.node_id;
+    const hopStartIdx = srcPrepended ? 1 : 0;
+    const hopEndIdx = anchorResult.nodeIds.length - 1; // exclude rx
+    for (let i = hopStartIdx; i < hopEndIdx; i++) {
+      const nodeId = anchorResult.nodeIds[i]!;
+      const node = context.nodesById.get(nodeId);
+      if (node) anchorNodeMap.set(i - hopStartIdx, node);
+    }
+  }
+
+  // 7. Resolve each observer
+  const results: BetaResolvedPayload[] = [];
+
+  for (let ei = 0; ei < entries.length; ei++) {
+    const entry = entries[ei]!;
+
+    if (ei === anchorIdx && anchorResult) {
+      // Use anchor result directly — run through the same post-processing as resolveBetaPathForPacketHash
+      const result = buildResolvedPayload(
+        packetHash,
+        entry,
+        anchorResult,
+        src,
+        context,
+        forceIncludeSource,
+        observerHopHints,
+      );
+      results.push(result);
+      continue;
+    }
+
+    // Build anchor constraints for shared prefix hops
+    // The entry's hops may be shorter or same length as anchor's; shared prefix hops get anchored
+    const entryAnchorNodes = new Map<number, MeshNode>();
+    for (let i = 0; i < sharedPrefixLength && i < entry.hops.length; i++) {
+      const node = anchorNodeMap.get(i);
+      if (node) entryAnchorNodes.set(i, node);
+    }
+
+    // Extra corridor = all OTHER observers
+    const entryExtraCorridorTargets = allRxNodes.filter((n) => n.node_id !== entry.rx.node_id);
+
+    // Solve with anchor constraints for shared hops + relaxed corridor
+    const entryResult = resolveBetaPath(
+      entry.hops,
+      hasCoords(src) ? src : null,
+      entry.rx,
+      context,
+      {
+        forceIncludeSource,
+        observerHopHints,
+        anchorNodes: entryAnchorNodes.size > 0 ? entryAnchorNodes : undefined,
+        extraCorridorTargets: entryExtraCorridorTargets,
+      },
+    );
+
+    if (entryResult) {
+      const result = buildResolvedPayload(
+        packetHash,
+        entry,
+        entryResult,
+        src,
+        context,
+        forceIncludeSource,
+        observerHopHints,
+      );
+      results.push(result);
+      continue;
+    }
+
+    // Fallback: solve without anchor constraints
+    const fallbackResult = resolveBetaPath(
+      entry.hops,
+      hasCoords(src) ? src : null,
+      entry.rx,
+      context,
+      {
+        forceIncludeSource,
+        observerHopHints,
+        extraCorridorTargets: entryExtraCorridorTargets,
+      },
+    );
+
+    if (fallbackResult) {
+      const result = buildResolvedPayload(
+        packetHash,
+        entry,
+        fallbackResult,
+        src,
+        context,
+        forceIncludeSource,
+        observerHopHints,
+      );
+      results.push(result);
+      continue;
+    }
+
+    // Last resort: fallback prefix path
+    const prefixFallback = buildFallbackPrefixPath(
+      entry.hops,
+      hasCoords(src) ? src : null,
+      entry.rx,
+      context.nodesById,
+      context.coverageByNode,
+      context.linkMetrics,
+      forceIncludeSource,
+      observerHopHints,
+    );
+
+    if (prefixFallback) {
+      // Enumerate permutations from the fork point if we have a shared backbone
+      let completionPaths: [number, number][][] = [];
+      let permutationCount = 0;
+      const forkNodeId = sharedPrefixLength > 0
+        ? anchorNodeMap.get(sharedPrefixLength - 1)?.node_id
+        : (hasCoords(src) ? src.node_id : undefined);
+
+      if (forkNodeId) {
+        const divergentHashes = entry.hops.slice(sharedPrefixLength);
+        if (divergentHashes.length > 0) {
+          const permutations = enumeratePrefixContinuations(
+            forkNodeId,
+            divergentHashes,
+            entry.rx.node_id,
+            context.nodesById,
+            context.coverageByNode,
+            context.linkMetrics,
+            { maxRenderPaths: MAX_RENDER_PERMUTATIONS, maxSearchStates: MAX_PERMUTATION_STATES },
+          );
+          completionPaths = permutations.paths;
+          permutationCount = permutations.totalCount;
+        }
+      } else if (hasCoords(src)) {
+        const permutations = enumeratePrefixContinuations(
+          src.node_id,
+          entry.hops,
+          entry.rx.node_id,
+          context.nodesById,
+          context.coverageByNode,
+          context.linkMetrics,
+          {
+            dropStartIfNodeId: forceIncludeSource ? undefined : src.node_id,
+            maxRenderPaths: MAX_RENDER_PERMUTATIONS,
+            maxSearchStates: MAX_PERMUTATION_STATES,
+          },
+        );
+        completionPaths = permutations.paths;
+        permutationCount = permutations.totalCount;
+      }
+
+      results.push({
+        ok: true,
+        packetHash,
+        mode: 'fallback',
+        confidence: null,
+        permutationCount,
+        remainingHops: null,
+        purplePath: null,
+        extraPurplePaths: [],
+        redPath: prefixFallback.path,
+        redSegments: segmentizePath(prefixFallback.path),
+        completionPaths,
+        threshold: BETA_PURPLE_THRESHOLD,
+        debug: {
+          hopsRequested: entry.hashes.length,
+          hopsUsed: entry.hops.length,
+          rxNodeId: entry.observerId,
+          srcNodeId: srcNodeId,
+          computedAt: new Date().toISOString(),
+        },
+      });
+      continue;
+    }
+
+    // Complete failure for this observer
+    results.push({
+      ok: true,
+      packetHash,
+      mode: 'none',
+      confidence: null,
+      permutationCount: 0,
+      remainingHops: null,
+      purplePath: null,
+      extraPurplePaths: [],
+      redPath: null,
+      redSegments: [],
+      completionPaths: [],
+      threshold: BETA_PURPLE_THRESHOLD,
+      debug: {
+        hopsRequested: entry.hashes.length,
+        hopsUsed: entry.hops.length,
+        rxNodeId: entry.observerId,
+        srcNodeId: srcNodeId,
+        computedAt: new Date().toISOString(),
+      },
+    });
+  }
+
+  const resolvedCount = results.filter((r) => r.mode === 'resolved').length;
+  const bestConf = results.reduce<number | null>((best, r) => {
+    if (r.confidence == null) return best;
+    return best == null ? r.confidence : Math.max(best, r.confidence);
+  }, null);
+
+  console.log(
+    `${logPrefix} done observers=${entries.length} resolved=${resolvedCount}/${entries.length} ` +
+    `sharedPrefix=${sharedPrefixLength} bestConf=${bestConf?.toFixed(3) ?? 'null'}`,
+  );
+
+  return { ok: true, packetHash, observerCount: entries.length, sharedPrefixLength, results };
+}
+
+/** Build a BetaResolvedPayload from a successful resolveBetaPath result */
+function buildResolvedPayload(
+  packetHash: string,
+  entry: { observerId: string; packet: PathPacket; rx: MeshNode; hashes: string[]; hops: string[] },
+  result: { path: [number, number][]; confidence: number; segmentConfidence: number[]; nodeIds: string[] },
+  src: MeshNode | null,
+  context: BetaResolveContext,
+  forceIncludeSource: boolean,
+  observerHopHints: ObserverHopHint[],
+): BetaResolvedPayload {
+  const split = splitResolvedAndAlternatives(result, BETA_PURPLE_THRESHOLD, context.linkMetrics);
+  let purplePath = split.purplePath;
+  const extraPurplePaths: [number, number][][] = [];
+  let redPath = attachSrcToPath(split.redPath, purplePath, hasCoords(src) ? src : null, forceIncludeSource);
+
+  const unresolvedFrontEdges = split.remainingHops ?? 0;
+  if (entry.packet.packet_type === 4 && hasCoords(src) && unresolvedFrontEdges > 0) {
+    let sourcePartial: { path: [number, number][]; confidence: number; segmentConfidence: number[]; nodeIds: string[] } | null = null;
+    const maxSourcePrefixLen = Math.min(Math.max(1, unresolvedFrontEdges), Math.max(1, entry.hops.length - 1));
+    for (let prefixLen = maxSourcePrefixLen; prefixLen >= 1; prefixLen--) {
+      const prefix = entry.hops.slice(0, prefixLen);
+      const candidate = reverseResolvedPath(resolveBetaPath(
+        [...prefix].reverse(),
+        entry.rx,
+        src,
+        context,
+        {
+          forceIncludeSource: false,
+          disableSourcePrepend: true,
+          blockedNodeIds: [
+            entry.rx.node_id,
+            ...(purplePath ? result.nodeIds.slice(-Math.max(1, (purplePath.length - 1))) : []),
+          ],
+        },
+      ));
+      if (!candidate || candidate.path.length < 2) continue;
+      sourcePartial = candidate;
+      break;
+    }
+    if (sourcePartial) {
+      const sourceSplit = splitResolvedFromSource(sourcePartial, BETA_PURPLE_THRESHOLD, context.linkMetrics);
+      const sourcePurplePath = sourceSplit.purplePath;
+      if (sourcePurplePath && sourcePurplePath.length >= 2) {
+        extraPurplePaths.push(sourcePurplePath);
+        const sourceStitch = sourcePurplePath[sourcePurplePath.length - 1] ?? null;
+        redPath = trimPathBetweenStitches(redPath, sourceStitch, purplePath);
+        if (sourceStitch) {
+          redPath = retargetRedPathStart(redPath, sourceStitch);
+        }
+      }
+    }
+  }
+
+  const purpleEdges = Math.max(0, (purplePath?.length ?? 0) - 1);
+  const redEdges = Math.max(0, (redPath?.length ?? 0) - 1);
+  const colorMode = purpleEdges > 0 && redEdges > 0
+    ? 'mixed'
+    : purpleEdges > 0
+      ? 'purple-only'
+      : redEdges > 0
+        ? 'full-red'
+        : 'none';
+
+  return {
+    ok: true,
+    packetHash,
+    mode: 'resolved',
+    confidence: result.confidence,
+    permutationCount: 0,
+    remainingHops: split.remainingHops ?? 0,
+    purplePath,
+    extraPurplePaths,
+    redPath,
+    redSegments: segmentizePath(redPath),
+    completionPaths: [],
+    threshold: BETA_PURPLE_THRESHOLD,
+    debug: {
+      hopsRequested: entry.hashes.length,
+      hopsUsed: entry.hops.length,
+      rxNodeId: entry.observerId,
+      srcNodeId: entry.packet.src_node_id,
       computedAt: new Date().toISOString(),
     },
   };

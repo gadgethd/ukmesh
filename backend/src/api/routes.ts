@@ -6,7 +6,7 @@ import { getNodes, getNodeHistory, getRecentPacketEvents, getRecentPackets, quer
 import { addOwnerNodeForUsername, getMappedOwnerNodeIds, getOwnerNodeIdsForUsername } from '../db/ownerAuth.js';
 import { getWorkerHealthOverview } from '../health/status.js';
 import { resolveRequestNetwork } from '../http/requestScope.js';
-import { resolveBetaPathForPacketHash } from '../path-beta/resolver.js';
+import { resolveBetaPathForPacketHash, resolveMultiObserverBetaPath } from '../path-beta/resolver.js';
 
 const router = Router();
 const OWNER_COOKIE_NAME = 'meshcore_owner_session';
@@ -428,6 +428,31 @@ router.get('/path-beta/resolve', async (req, res) => {
     res.json(resolved);
   } catch (err) {
     console.error('[api] GET /path-beta/resolve', (err as Error).message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /api/path-beta/resolve-multi?hash=<packetHash>&network=teesside|ukmesh|all
+router.get('/path-beta/resolve-multi', async (req, res) => {
+  try {
+    const packetHash = String(req.query['hash'] ?? '').trim();
+    if (!packetHash) {
+      res.status(400).json({ error: 'Missing hash query parameter' });
+      return;
+    }
+    if (!/^[0-9a-fA-F]{1,128}$/.test(packetHash)) {
+      res.status(400).json({ error: 'Invalid hash format' });
+      return;
+    }
+    const network = resolveRequestNetwork(req.query['network'], req.headers, 'teesside') ?? 'teesside';
+    const resolved = await resolveMultiObserverBetaPath(packetHash, network);
+    if (!resolved) {
+      res.status(404).json({ error: 'Packet not found' });
+      return;
+    }
+    res.json(resolved);
+  } catch (err) {
+    console.error('[api] GET /path-beta/resolve-multi', (err as Error).message);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

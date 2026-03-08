@@ -18,6 +18,14 @@ export type ServerBetaResponse = {
   completionPaths: [number, number][][];
 };
 
+export type MultiObserverBetaResponse = {
+  ok: boolean;
+  packetHash: string;
+  observerCount: number;
+  sharedPrefixLength: number;
+  results: ServerBetaResponse[];
+};
+
 export type AggregatedPredictionState = {
   purplePaths: [number, number][][];
   redPaths: [number, number][][];

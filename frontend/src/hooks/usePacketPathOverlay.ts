@@ -8,6 +8,7 @@ import {
   buildRegularPacketPaths,
   packetObserverIds,
   type AggregatedPredictionState,
+  type MultiObserverBetaResponse,
   type PathSegment,
   type ServerBetaResponse,
 } from './packetPathOverlayUtils.js';
@@ -45,8 +46,19 @@ async function fetchServerBeta(packetHash: string, network?: string, observer?: 
   return response.json() as Promise<ServerBetaResponse>;
 }
 
+async function fetchServerBetaMulti(packetHash: string, network?: string, signal?: AbortSignal): Promise<MultiObserverBetaResponse | null> {
+  const endpoint = withScopeParams(`/api/path-beta/resolve-multi?hash=${encodeURIComponent(packetHash)}`, { network });
+  const response = await fetch(uncachedEndpoint(endpoint), { cache: 'no-store', signal });
+  if (!response.ok) return null;
+  return response.json() as Promise<MultiObserverBetaResponse>;
+}
+
 function cacheKey(packetHash: string, network?: string, observer?: string): string {
   return `${network ?? 'all'}|${observer ?? 'all'}|${packetHash}`;
+}
+
+function multiCacheKey(packetHash: string, observerIds: string[], network?: string): string {
+  return `multi|${network ?? 'all'}|${observerIds.sort().join(',')}|${packetHash}`;
 }
 
 export function usePacketPathOverlay({
@@ -201,6 +213,49 @@ export function usePacketPathOverlay({
     return p;
   }, [prunePredictionCache]);
 
+  const multiPredictionCacheRef = useRef<Map<string, { results: ServerBetaResponse[]; ts: number }>>(new Map());
+  const multiInflightRef = useRef<Map<string, Promise<ServerBetaResponse[]>>>(new Map());
+
+  const resolveMultiPrediction = useCallback((packetHash: string, observerIds: string[], networkName?: string): Promise<ServerBetaResponse[]> => {
+    prunePredictionCache();
+    const key = multiCacheKey(packetHash, observerIds, networkName);
+
+    const cached = multiPredictionCacheRef.current.get(key);
+    if (cached && Date.now() - cached.ts <= PREDICTION_CACHE_TTL_MS) {
+      return Promise.resolve(cached.results);
+    }
+
+    const inflight = multiInflightRef.current.get(key);
+    if (inflight) return inflight;
+
+    const p = fetchServerBetaMulti(packetHash, networkName)
+      .then((response) => {
+        const results = response?.ok ? response.results : [];
+        if (results.length > 0) {
+          multiPredictionCacheRef.current.set(key, { results, ts: Date.now() });
+          // Evict stale multi-cache entries
+          const now = Date.now();
+          for (const [k, v] of multiPredictionCacheRef.current) {
+            if (now - v.ts > PREDICTION_CACHE_TTL_MS) multiPredictionCacheRef.current.delete(k);
+          }
+          if (multiPredictionCacheRef.current.size > MAX_PREDICTION_CACHE) {
+            const sorted = Array.from(multiPredictionCacheRef.current.entries()).sort((a, b) => a[1].ts - b[1].ts);
+            for (let i = 0; i < Math.max(0, multiPredictionCacheRef.current.size - MAX_PREDICTION_CACHE); i++) {
+              const k2 = sorted[i]?.[0];
+              if (k2) multiPredictionCacheRef.current.delete(k2);
+            }
+          }
+        }
+        return results;
+      })
+      .catch(() => [] as ServerBetaResponse[])
+      .finally(() => {
+        multiInflightRef.current.delete(key);
+      });
+    multiInflightRef.current.set(key, p);
+    return p;
+  }, [prunePredictionCache]);
+
   const latestId = packets[0]?.id;
   useEffect(() => {
     if (pinnedPacketId !== null) return;
@@ -217,7 +272,10 @@ export function usePacketPathOverlay({
 
     if (filters.betaPaths && latest?.packetHash && latest.path?.length && observerIds.length > 0) {
       const reqSeq = ++activeReqSeqRef.current;
-      void Promise.all(observerIds.map((observerId) => resolvePrediction(latest.packetHash, network, observerId)))
+      const resolveFn = observerIds.length > 1
+        ? resolveMultiPrediction(latest.packetHash, observerIds, network)
+        : Promise.all(observerIds.map((observerId) => resolvePrediction(latest.packetHash, network, observerId)));
+      void resolveFn
         .then((predictions) => {
           if (reqSeq !== activeReqSeqRef.current) return;
           applyServerPredictions(latest.packetHash, predictions, {
@@ -268,7 +326,7 @@ export function usePacketPathOverlay({
       pathFadeRef.current = requestAnimationFrame(animate);
     }, PATH_TTL - 1_000);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [latestId, filters.packetPaths, filters.betaPaths, pinnedPacketId, network, observer, packets, getPacketObserverIds, resolvePrediction, stopPathTimers, clearPathState, applyServerPredictions, getRegularPacketPaths]);
+  }, [latestId, filters.packetPaths, filters.betaPaths, pinnedPacketId, network, observer, packets, getPacketObserverIds, resolvePrediction, resolveMultiPrediction, stopPathTimers, clearPathState, applyServerPredictions, getRegularPacketPaths]);
 
   const handlePacketPin = useCallback((packet: AggregatedPacket) => {
     if (pinnedPacketId === packet.id) {
@@ -348,7 +406,10 @@ export function usePacketPathOverlay({
 
     if (filters.betaPaths && pinnedPacket.packetHash && pinnedPacket.path?.length && observerIds.length > 0) {
       const reqSeq = ++activeReqSeqRef.current;
-      void Promise.all(observerIds.map((observerId) => resolvePrediction(pinnedPacket.packetHash!, network, observerId)))
+      const resolveFn = observerIds.length > 1
+        ? resolveMultiPrediction(pinnedPacket.packetHash!, observerIds, network)
+        : Promise.all(observerIds.map((observerId) => resolvePrediction(pinnedPacket.packetHash!, network, observerId)));
+      void resolveFn
         .then((predictions) => {
           if (reqSeq !== activeReqSeqRef.current) return;
           applyServerPredictions(pinnedPacket.packetHash!, predictions, {
@@ -384,6 +445,7 @@ export function usePacketPathOverlay({
     getRegularPacketPaths,
     shouldCollapseAdvertObserverPartials,
     resolvePrediction,
+    resolveMultiPrediction,
     applyServerPredictions,
   ]);
 
