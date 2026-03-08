@@ -3,7 +3,7 @@ import { rateLimit } from 'express-rate-limit';
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
 import mqtt from 'mqtt';
 import { getNodes, getNodeHistory, getRecentPackets, query, MIN_LINK_OBSERVATIONS } from '../db/index.js';
-import { getOwnerNodeIdsForUsername } from '../db/ownerAuth.js';
+import { addOwnerNodeForUsername, getMappedOwnerNodeIds, getOwnerNodeIdsForUsername } from '../db/ownerAuth.js';
 import { getWorkerHealthOverview } from '../health/status.js';
 import { resolveRequestNetwork } from '../http/requestScope.js';
 import { resolveBetaPathForPacketHash } from '../path-beta/resolver.js';
@@ -109,6 +109,39 @@ async function resolveOwnerNodeIds(mqttUsername: string): Promise<string[]> {
   if (databaseNodeIds.length > 0) return databaseNodeIds;
   const legacyMap = parseOwnerMqttUsernameMap();
   return legacyMap.get(mqttUsername) ?? [];
+}
+
+async function autoLinkOwnerNodeIds(mqttUsername: string): Promise<string[]> {
+  const existing = await resolveOwnerNodeIds(mqttUsername);
+  if (existing.length > 0) return existing;
+
+  const mappedNodeIds = await getMappedOwnerNodeIds();
+  const res = await query<{ node_id: string }>(
+    `SELECT n.node_id
+     FROM nodes n
+     WHERE n.role = 2
+       AND COALESCE(n.network, '') <> 'test'
+       AND n.last_seen > NOW() - INTERVAL '30 minutes'
+       AND NOT (LOWER(n.node_id) = ANY($1::text[]))
+       AND EXISTS (
+         SELECT 1
+         FROM packets p
+         WHERE p.rx_node_id = n.node_id
+           AND p.time > NOW() - INTERVAL '30 minutes'
+           AND p.topic LIKE ('%/' || n.node_id || '/packets')
+       )
+     ORDER BY n.last_seen DESC
+     LIMIT 2`,
+    [mappedNodeIds],
+  );
+
+  if (res.rows.length !== 1) return [];
+
+  const nodeId = res.rows[0]?.node_id?.trim().toLowerCase();
+  if (!nodeId || !/^[0-9a-f]{64}$/.test(nodeId)) return [];
+
+  await addOwnerNodeForUsername(mqttUsername, nodeId);
+  return [nodeId];
 }
 
 function verifyMqttCredentials(mqttUsername: string, mqttPassword: string): Promise<boolean> {
@@ -699,16 +732,15 @@ router.post('/owner/login', OWNER_LOGIN_LIMITER, async (req, res) => {
       res.status(400).json({ error: 'Missing MQTT username or password' });
       return;
     }
-    const mappedNodeIds = await resolveOwnerNodeIds(mqttUsername);
-    if (mappedNodeIds.length < 1) {
-      res.status(403).json({ error: 'Invalid MQTT credentials' });
-      return;
-    }
-
     const authOk = await verifyMqttCredentials(mqttUsername, mqttPassword);
     if (!authOk) {
       res.status(403).json({ error: 'Invalid MQTT credentials' });
       return;
+    }
+
+    let mappedNodeIds = await resolveOwnerNodeIds(mqttUsername);
+    if (mappedNodeIds.length < 1) {
+      mappedNodeIds = await autoLinkOwnerNodeIds(mqttUsername);
     }
 
     const dashboard = await buildOwnerDashboard(mappedNodeIds);

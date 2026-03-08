@@ -89,6 +89,18 @@ function toNum(v: unknown): number | undefined {
   return undefined;
 }
 
+function isEmptyPacketEnvelope(json: Record<string, unknown>, rawHex: string, packetType: number | undefined): boolean {
+  const hash = String(json['hash'] ?? '').trim();
+  const declaredLen = toNum(json['len']);
+  const payloadLen = toNum(json['payload_len']);
+
+  return rawHex.trim() === ''
+    && !hash
+    && packetType == null
+    && (declaredLen ?? 0) <= 0
+    && (payloadLen ?? 0) <= 0;
+}
+
 /**
  * Dedup map for advert counts — prevents relay copies of the same advert packet
  * from incrementing the count multiple times. Keyed by decoded message hash.
@@ -283,6 +295,12 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
   const rawHex     = (json['raw'] as string | undefined) ?? '';
   const direction  = json['direction'] as string | undefined;
 
+  if (isEmptyPacketEnvelope(json, rawHex, packetType)) {
+    return;
+  }
+
+  let resolvedPacketType = packetType;
+
   let innerPayload: Record<string, unknown> | undefined;
   let decodedHash: string | undefined;
   let decodedHops: number | undefined;
@@ -297,6 +315,7 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
       const { decoded, pathHashes, pathHashCount } = decodePacketCompat(rawHex, keyStore);
 
       if (decoded) {
+        resolvedPacketType = decoded.payloadType ?? resolvedPacketType;
         decodedHash = decoded.messageHash;
         decodedHops = pathHashCount ?? decoded.pathLength;
         if (pathHashes && pathHashes.length > 0) {
@@ -365,7 +384,7 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
       && srcNodeId
   );
   const useTxAdvertFallback = direction === 'tx'
-    && packetType === 4
+    && resolvedPacketType === 4
     && Boolean(originId)
     && !hasDecodedAdvertPayload;
 
@@ -373,6 +392,10 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
     srcNodeId = originId;
     summary ??= origin;
     innerPayload = buildAdvertFallbackPayload(originId, origin);
+  }
+
+  if (resolvedPacketType == null) {
+    return;
   }
 
   const finalHash = decodedHash ?? (json['hash'] as string | undefined) ?? crypto.randomUUID();
@@ -411,7 +434,7 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
       srcNodeId,
       topic,
       network,
-      packetType,
+      packetType: resolvedPacketType,
       hopCount:   decodedHops,
       direction,
       summary,
@@ -429,7 +452,7 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
       rxNodeId:   observerKey,
       srcNodeId,
       topic,
-      packetType,
+      packetType: resolvedPacketType,
       routeType:  undefined,
       hopCount:   decodedHops,
       rssi,
