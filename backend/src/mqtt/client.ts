@@ -102,6 +102,33 @@ function isEmptyPacketEnvelope(json: Record<string, unknown>, rawHex: string, pa
 }
 
 /**
+ * Per-observer packet dedup — prevents relay copies of the same packet from being
+ * ingested multiple times when they arrive at the same observer with the same hop count.
+ * Keyed by "packetHash:observerKey:hopCount". Entries expire after 120 seconds.
+ */
+const seenPackets = new Map<string, number>();
+const SEEN_PACKETS_MAX = 50_000;
+const SEEN_PACKETS_TTL_MS = 120_000;
+
+function isDuplicatePacket(packetHash: string, observerKey: string, hopCount: number | undefined): boolean {
+  const now = Date.now();
+  // Periodic cleanup
+  if (seenPackets.size > SEEN_PACKETS_MAX / 2) {
+    for (const [k, ts] of seenPackets) {
+      if (now - ts > SEEN_PACKETS_TTL_MS) seenPackets.delete(k);
+    }
+  }
+  const key = `${packetHash}:${observerKey}:${hopCount ?? '?'}`;
+  if (seenPackets.has(key)) return true;
+  if (seenPackets.size >= SEEN_PACKETS_MAX) {
+    const oldest = seenPackets.keys().next().value;
+    if (oldest !== undefined) seenPackets.delete(oldest);
+  }
+  seenPackets.set(key, now);
+  return false;
+}
+
+/**
  * Dedup map for advert counts — prevents relay copies of the same advert packet
  * from incrementing the count multiple times. Keyed by decoded message hash.
  * Entries expire after 60 seconds (well beyond any realistic relay window).
@@ -423,6 +450,10 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
   }
 
   const finalHash = decodedHash ?? (json['hash'] as string | undefined) ?? crypto.randomUUID();
+
+  if (isDuplicatePacket(finalHash, observerKey, decodedHops)) {
+    return;
+  }
 
   void upsertNode(observerKey, { iata, network });
   emitNode(observerKey, { network, observerId: observerKey });

@@ -2,6 +2,7 @@ services:
   timescaledb:
     image: timescale/timescaledb:latest-pg16
     restart: unless-stopped
+    command: ["postgres", "-c", "max_connections=300"]
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-meshcore}
       POSTGRES_USER: ${POSTGRES_USER:-meshcore}
