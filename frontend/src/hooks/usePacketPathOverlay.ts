@@ -87,13 +87,13 @@ export function usePacketPathOverlay({
   const [pathOpacity, setPathOpacity] = useState(0.75);
 
   const pinnedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pinnedLastObserverIdsRef = useRef<string[]>([]);
   const pathTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pathFadeRef = useRef<number | null>(null);
   const betaReqRef = useRef<AbortController | null>(null);
   const predictionCacheRef = useRef<Map<string, { prediction: ServerBetaResponse | null; ts: number }>>(new Map());
   const inFlightRef = useRef<Map<string, Promise<ServerBetaResponse | null>>>(new Map());
   const activeReqSeqRef = useRef(0);
+  const pinnedOverlayKeyRef = useRef('');
   const recentPredictionsRef = useRef<Map<string, {
     purplePaths: [number, number][][];
     redPaths: [number, number][][];
@@ -182,9 +182,17 @@ export function usePacketPathOverlay({
     }
     const segKey = (a: [number, number], b: [number, number]) =>
       `${a[0]},${a[1]}|${b[0]},${b[1]}`;
-    const redSegments = allRedSegments.filter(([a, b]) =>
-      !purpleSegmentKeys.has(segKey(a, b)) && !purpleSegmentKeys.has(segKey(b, a))
-    );
+    // Deduplicate red segments across observers (same edge drawn by multiple observers) and
+    // suppress any segment already covered by a purple path.
+    const seenRedKeys = new Set<string>();
+    const redSegments = allRedSegments.filter(([a, b]) => {
+      if (purpleSegmentKeys.has(segKey(a, b)) || purpleSegmentKeys.has(segKey(b, a))) return false;
+      const key = segKey(a, b);
+      const revKey = segKey(b, a);
+      if (seenRedKeys.has(key) || seenRedKeys.has(revKey)) return false;
+      seenRedKeys.add(key);
+      return true;
+    });
     const redPaths = allRedPaths.filter((path) =>
       path.some((_, i) => {
         if (i >= path.length - 1) return false;
@@ -250,6 +258,20 @@ export function usePacketPathOverlay({
     ]));
   }, []);
 
+  const buildRegularPacketPaths = useCallback((packet: AggregatedPacket | undefined, observerIds: string[]): [number, number][][] => {
+    if (!packet || observerIds.length < 1 || (!packet.path?.length && !packet.srcNodeId)) return [];
+    const src = packet.srcNodeId ? (nodes.get(packet.srcNodeId) ?? null) : null;
+    const srcWithPos = hasCoords(src) ? src : null;
+    return observerIds.flatMap((observerId) => {
+      const rx = nodes.get(observerId);
+      if (!hasCoords(rx)) return [];
+      const waypoints = packet.path?.length
+        ? resolvePathWaypoints(packet.path, srcWithPos, rx, nodes)
+        : (srcWithPos ? [[srcWithPos.lat, srcWithPos.lon], [rx.lat, rx.lon]] as [number, number][] : []);
+      return waypoints.length >= 2 ? [waypoints] : [];
+    });
+  }, [nodes]);
+
   const resolvePrediction = useCallback((packetHash: string, networkName?: string, observerId?: string): Promise<ServerBetaResponse | null> => {
     prunePredictionCache();
     const key = cacheKey(packetHash, networkName, observerId);
@@ -285,17 +307,7 @@ export function usePacketPathOverlay({
     const observerIds = packetObserverIds(latest);
 
     if (filters.packetPaths && observerIds.length > 0 && latest && (latest.path?.length || latest.srcNodeId)) {
-      const src = latest.srcNodeId ? (nodes.get(latest.srcNodeId) ?? null) : null;
-      const srcWithPos = hasCoords(src) ? src : null;
-      const nextPaths = observerIds.flatMap((observerId) => {
-        const rx = nodes.get(observerId);
-        if (!hasCoords(rx)) return [];
-        const waypoints = latest.path?.length
-          ? resolvePathWaypoints(latest.path, srcWithPos, rx, nodes)
-          : (srcWithPos ? [[srcWithPos.lat, srcWithPos.lon], [rx.lat, rx.lon]] as [number, number][] : []);
-        return waypoints.length >= 2 ? [waypoints] : [];
-      });
-      setPacketPaths(nextPaths);
+      setPacketPaths(buildRegularPacketPaths(latest, observerIds));
     } else {
       setPacketPaths([]);
     }
@@ -347,12 +359,12 @@ export function usePacketPathOverlay({
       pathFadeRef.current = requestAnimationFrame(animate);
     }, PATH_TTL - 1_000);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [latestId, filters.packetPaths, filters.betaPaths, pinnedPacketId, network, observer, nodes, packets, packetObserverIds, resolvePrediction, stopPathTimers, clearPathState, applyServerPredictions]);
+  }, [latestId, filters.packetPaths, filters.betaPaths, pinnedPacketId, network, observer, packets, packetObserverIds, resolvePrediction, stopPathTimers, clearPathState, applyServerPredictions, buildRegularPacketPaths]);
 
   const handlePacketPin = useCallback((packet: AggregatedPacket) => {
     if (pinnedPacketId === packet.id) {
       setPinnedPacketId(null);
-      pinnedLastObserverIdsRef.current = [];
+      pinnedOverlayKeyRef.current = '';
       if (pinnedTimerRef.current) {
         clearTimeout(pinnedTimerRef.current);
         pinnedTimerRef.current = null;
@@ -368,31 +380,6 @@ export function usePacketPathOverlay({
       pinnedTimerRef.current = null;
     }
 
-    setPacketPaths([]);
-
-    const observerIds = packetObserverIds(packet);
-    if (packet.packetHash && packet.path?.length && observerIds.length > 0) {
-      const reqSeq = ++activeReqSeqRef.current;
-      void Promise.all(observerIds.map((observerId) => resolvePrediction(packet.packetHash, network, observerId)))
-        .then((predictions) => {
-          if (reqSeq !== activeReqSeqRef.current) return;
-          applyServerPredictions(packet.packetHash, predictions);
-        })
-        .catch(() => {
-          if (reqSeq !== activeReqSeqRef.current) return;
-          applyServerPredictions(packet.packetHash, []);
-        });
-    } else {
-      setBetaPacketPaths([]);
-      setBetaLowConfidencePaths([]);
-      setBetaLowConfidenceSegments([]);
-      setBetaCompletionPaths([]);
-      setBetaPathConfidence(null);
-      setBetaPermutationCount(null);
-      setBetaRemainingHops(null);
-    }
-
-    pinnedLastObserverIdsRef.current = observerIds;
     setPathOpacity(0.75);
     setPinnedPacketId(packet.id);
 
@@ -408,37 +395,77 @@ export function usePacketPathOverlay({
           pathFadeRef.current = null;
           clearPathState();
           setPinnedPacketId(null);
-          pinnedLastObserverIdsRef.current = [];
+          pinnedOverlayKeyRef.current = '';
           pinnedTimerRef.current = null;
         }
       };
       pathFadeRef.current = requestAnimationFrame(animate);
     }, 30_000);
-  }, [pinnedPacketId, network, observer, stopPathTimers, clearPathState, applyServerPredictions, resolvePrediction, packetObserverIds]);
+  }, [pinnedPacketId, stopPathTimers, clearPathState]);
 
-  // Re-fetch beta paths when the pinned packet gains new observers
   useEffect(() => {
-    if (!pinnedPacketId) return;
-    const pinnedPacket = packets.find((p) => p.id === pinnedPacketId);
-    if (!pinnedPacket?.packetHash || !pinnedPacket.path?.length) return;
+    if (pinnedPacketId === null) {
+      pinnedOverlayKeyRef.current = '';
+      return;
+    }
 
-    const currentObserverIds = packetObserverIds(pinnedPacket);
-    const previousIds = pinnedLastObserverIdsRef.current;
-    const hasNewObservers = currentObserverIds.some((id) => !previousIds.includes(id));
-    if (!hasNewObservers) return;
+    const pinnedPacket = packets.find((packet) => packet.id === pinnedPacketId);
+    if (!pinnedPacket) return;
 
-    pinnedLastObserverIdsRef.current = currentObserverIds;
-    const reqSeq = ++activeReqSeqRef.current;
-    void Promise.all(currentObserverIds.map((observerId) => resolvePrediction(pinnedPacket.packetHash, network, observerId)))
-      .then((predictions) => {
-        if (reqSeq !== activeReqSeqRef.current) return;
-        applyServerPredictions(pinnedPacket.packetHash, predictions);
-      })
-      .catch(() => {
-        if (reqSeq !== activeReqSeqRef.current) return;
-        applyServerPredictions(pinnedPacket.packetHash, []);
-      });
-  }, [pinnedPacketId, packets, network, packetObserverIds, resolvePrediction, applyServerPredictions]);
+    const observerIds = packetObserverIds(pinnedPacket);
+    const overlayKey = [
+      pinnedPacket.id,
+      pinnedPacket.packetHash ?? '',
+      pinnedPacket.srcNodeId ?? '',
+      pinnedPacket.path?.join(',') ?? '',
+      observerIds.join(','),
+      filters.packetPaths ? 'paths-on' : 'paths-off',
+      filters.betaPaths ? 'beta-on' : 'beta-off',
+      network ?? 'all',
+      observer ?? 'all',
+    ].join('|');
+
+    if (overlayKey === pinnedOverlayKeyRef.current) return;
+    pinnedOverlayKeyRef.current = overlayKey;
+
+    if (filters.packetPaths) {
+      setPacketPaths(buildRegularPacketPaths(pinnedPacket, observerIds));
+    } else {
+      setPacketPaths([]);
+    }
+
+    if (filters.betaPaths && pinnedPacket.packetHash && pinnedPacket.path?.length && observerIds.length > 0) {
+      const reqSeq = ++activeReqSeqRef.current;
+      void Promise.all(observerIds.map((observerId) => resolvePrediction(pinnedPacket.packetHash!, network, observerId)))
+        .then((predictions) => {
+          if (reqSeq !== activeReqSeqRef.current) return;
+          applyServerPredictions(pinnedPacket.packetHash!, predictions);
+        })
+        .catch(() => {
+          if (reqSeq !== activeReqSeqRef.current) return;
+          applyServerPredictions(pinnedPacket.packetHash!, []);
+        });
+    } else {
+      setBetaPacketPaths([]);
+      setBetaLowConfidencePaths([]);
+      setBetaLowConfidenceSegments([]);
+      setBetaCompletionPaths([]);
+      setBetaPathConfidence(null);
+      setBetaPermutationCount(null);
+      setBetaRemainingHops(null);
+    }
+  }, [
+    pinnedPacketId,
+    packets,
+    filters.packetPaths,
+    filters.betaPaths,
+    network,
+    observer,
+    packetObserverIds,
+    buildRegularPacketPaths,
+    resolvePrediction,
+    applyServerPredictions,
+  ]);
 
   useEffect(() => () => {
     stopPathTimers();

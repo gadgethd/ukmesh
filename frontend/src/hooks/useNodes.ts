@@ -298,8 +298,7 @@ export function useNodes() {
           txCount: current.txCount + (packet.direction === 'tx' ? 1 : 0),
           ts: packet.ts,
         };
-        const next = prev.filter((_, i) => i !== idx);
-        return [entry, ...next];
+        return prev.map((p, i) => i === idx ? entry : p);
       }
 
       const entry: AggregatedPacket = {

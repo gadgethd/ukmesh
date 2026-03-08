@@ -116,7 +116,7 @@ const DEFAULT_ZOOM = 11;
 
 export const MapView: React.FC<MapViewProps> = ({
   nodes, arcs, activeNodes, coverage, showPackets, showCoverage, showClientNodes,
-  showLinks, showHexClashes, maxHexClashHops, viablePairsArr, linkMetrics, packetPaths, betaPaths, betaLowPaths, betaCompletionPaths, showBetaPaths, pathOpacity, onMapReady,
+  showLinks, showHexClashes, maxHexClashHops, viablePairsArr, linkMetrics, packetPaths, betaPaths, betaLowSegments, betaCompletionPaths, showBetaPaths, pathOpacity, onMapReady,
 }) => {
   const [map, setMap] = useState<LeafletMap | null>(null);
   const [focusedPrefix, setFocusedPrefix] = useState<string | null>(null);
@@ -174,7 +174,7 @@ export const MapView: React.FC<MapViewProps> = ({
   // calls _updateStyle (setAttribute) on every prop change, which can interrupt
   // CSS keyframe animations. Direct DOM manipulation in an rAF loop is stable.
   const hasRegular = packetPaths.length > 0;
-  const hasBeta = Boolean(showBetaPaths && (betaLowPaths.length > 0 || betaPaths.length > 0));
+  const hasBeta = Boolean(showBetaPaths && (betaLowSegments.length > 0 || betaPaths.length > 0));
 
   useEffect(() => {
     if (!hasRegular && !hasBeta) {
@@ -629,11 +629,12 @@ export const MapView: React.FC<MapViewProps> = ({
           />
         ))}
 
-        {/* Beta path — uncertain (red) drawn first so confident (purple) always renders on top */}
-        {showBetaPaths && betaLowPaths.map((path, idx) => (
+        {/* Beta path — uncertain (red) drawn first so confident (purple) always renders on top.
+            Renders individual filtered segments so purple-covered edges are never drawn in red. */}
+        {showBetaPaths && betaLowSegments.map(([a, b], idx) => (
           <Polyline
-            key={`beta-low-${idx}`}
-            positions={path}
+            key={`beta-low-seg-${idx}`}
+            positions={[a, b]}
             pathOptions={{
               color:     '#ef4444',
               weight:    2.6,
