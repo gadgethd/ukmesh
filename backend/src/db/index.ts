@@ -262,6 +262,25 @@ export async function getRecentPackets(limit = 200, network?: string, observer?:
   return res.rows;
 }
 
+export async function getRecentPacketEvents(limit = 200, network?: string, observer?: string) {
+  const scope = buildScopePlaceholders(2, network, observer);
+  const params: unknown[] = [limit, ...scope.params];
+  const res = await pool.query(
+    `SELECT
+        p.time, p.packet_hash, p.rx_node_id, p.src_node_id, p.topic,
+        p.packet_type, p.hop_count, p.rssi, p.snr, p.payload,
+        p.payload->>'_summary' AS summary,
+        p.advert_count, p.path_hashes, p.path_hash_size_bytes
+     FROM packets p
+     WHERE p.time > NOW() - INTERVAL '24 hours'
+       ${buildPacketScopeClause(scope, 'p')}
+     ORDER BY p.time DESC
+     LIMIT $1`,
+    params,
+  );
+  return res.rows;
+}
+
 export async function getLastNPackets(n: number, network?: string, observer?: string) {
   // DISTINCT ON deduplicates by hash (same packet heard by multiple observers),
   // preferring the richest observation per hash within the last 24 hours.

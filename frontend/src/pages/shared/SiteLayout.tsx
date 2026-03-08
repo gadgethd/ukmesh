@@ -47,8 +47,16 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
   showPackets,
   showStats,
 }) => {
+  const COOKIE_CONSENT_KEY = 'meshcore-cookie-consent-v1';
   const [menuOpen, setMenuOpen] = useState(false);
   const [ownerLabel, setOwnerLabel] = useState<string | null>(null);
+  const [cookieConsent, setCookieConsent] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(COOKIE_CONSENT_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
   const navigate = useNavigate();
 
   const navItems: NavItem[] = [
@@ -100,6 +108,15 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
       window.removeEventListener(OWNER_SESSION_EVENT, handleOwnerSession as EventListener);
     };
   }, []);
+
+  const acceptCookies = () => {
+    try {
+      localStorage.setItem(COOKIE_CONSENT_KEY, '1');
+    } catch {
+      // Ignore storage failures and just hide the banner for this session.
+    }
+    setCookieConsent(true);
+  };
 
   return (
     <div className="site-layout">
@@ -157,6 +174,16 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
           </>
         )}
       </footer>
+
+      {!cookieConsent && (
+        <div className="cookie-banner" role="dialog" aria-live="polite" aria-label="Cookie notice">
+          <div className="cookie-banner__body">
+            <strong>Cookies, sadly.</strong>
+            <p>We only use them for the boring useful bits, like keeping logins alive and remembering site choices. No secret biscuit syndicate.</p>
+          </div>
+          <button className="cookie-banner__button" onClick={acceptCookies}>Accept</button>
+        </div>
+      )}
     </div>
   );
 };

@@ -1745,7 +1745,7 @@ html, body, #root {
 }
 
 .dev-status-card--fixed {
-  height: 320px;
+  height: 560px;
   display: flex;
   flex-direction: column;
 }
@@ -2307,6 +2307,59 @@ html, body, #root {
 .site-footer a:hover { color: var(--text-secondary); }
 .site-footer__sep { color: var(--border); }
 
+.cookie-banner {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 1100;
+  max-width: 420px;
+  display: flex;
+  align-items: flex-end;
+  gap: 14px;
+  padding: 14px 16px;
+  border: 1px solid var(--border-bright);
+  border-radius: var(--radius-lg);
+  background: rgba(9, 17, 26, 0.96);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(10px);
+}
+
+.cookie-banner__body {
+  display: grid;
+  gap: 4px;
+}
+
+.cookie-banner__body strong {
+  color: var(--text-primary);
+  font-size: 14px;
+}
+
+.cookie-banner__body p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.cookie-banner__button {
+  flex-shrink: 0;
+  min-width: 88px;
+  padding: 9px 12px;
+  border: 1px solid var(--border-bright);
+  border-radius: var(--radius);
+  background: var(--accent-dim);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background var(--transition), border-color var(--transition);
+}
+
+.cookie-banner__button:hover {
+  background: rgba(0, 196, 255, 0.22);
+  border-color: var(--accent-glow);
+}
+
 /* ── Hamburger (hidden on desktop) ────────────────────────────────────────── */
 .site-nav__hamburger {
   display: none;
@@ -2450,6 +2503,16 @@ html, body, #root {
     font-family: var(--font-body);
     font-size: 14px;
   }
+
+  .cookie-banner {
+    left: 16px;
+    right: 16px;
+    bottom: 16px;
+    max-width: none;
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .cookie-banner__button { width: 100%; }
 
   /* ── Website content / sections ──────────────────────────────────────── */
   .site-content { padding: 0 16px; }

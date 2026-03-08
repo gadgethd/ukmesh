@@ -78,7 +78,7 @@ export const DevHomePage: React.FC = () => {
       try {
         const [nodesRes, packetsRes] = await Promise.all([
           fetch(uncachedEndpoint(withScopeParams('/api/nodes', scope)), { cache: 'no-store' }),
-          fetch(uncachedEndpoint(withScopeParams('/api/packets/recent?limit=40', scope)), { cache: 'no-store' }),
+          fetch(uncachedEndpoint(withScopeParams('/api/packets/recent?limit=15&raw=1', scope)), { cache: 'no-store' }),
         ]);
 
         if (!nodesRes.ok || !packetsRes.ok) {
@@ -119,19 +119,7 @@ export const DevHomePage: React.FC = () => {
 
   const latestPacket = packets[0];
   const latestObserver = latestPacket?.rx_node_id ? nodeMap.get(latestPacket.rx_node_id) : undefined;
-  const latestSeenByObserver = useMemo(() => {
-    return observerIds.map((observerId) => {
-      const observerNode = nodeMap.get(observerId);
-      const lastPacket = packets.find((packet) => packet.rx_node_id === observerId);
-      return {
-        observerId,
-        observerNode,
-        lastPacket,
-      };
-    }).slice(0, 5);
-  }, [nodeMap, observerIds, packets]);
-
-  const recentPackets = useMemo(() => packets.slice(0, 5), [packets]);
+  const recentPackets = useMemo(() => packets.slice(0, 15), [packets]);
 
   return (
     <section className="dev-status-page">
@@ -159,7 +147,7 @@ export const DevHomePage: React.FC = () => {
         <section className="dev-status-card">
           <h2>Latest packet</h2>
           <div className="dev-status-list">
-            <div><span>Observer</span><strong>{latestObserver?.name ?? shortNode(latestPacket?.rx_node_id)}</strong></div>
+            <div><span>Observer</span><strong>{latestObserver?.name ?? 'Unknown observer'}</strong></div>
             <div><span>Type</span><strong>{latestPacket?.packet_type !== undefined ? (TYPE_LABELS[latestPacket.packet_type] ?? `T${latestPacket.packet_type}`) : '—'}</strong></div>
             <div><span>Signal</span><strong>{latestPacket?.rssi !== undefined || latestPacket?.snr !== undefined ? `${latestPacket.rssi ?? '—'} / ${latestPacket.snr ?? '—'}` : '—'}</strong></div>
             <div><span>Hash</span><strong className="dev-status-mono">{latestPacket?.packet_hash ?? '—'}</strong></div>
@@ -167,36 +155,6 @@ export const DevHomePage: React.FC = () => {
           <p className="dev-status-note">{latestPacket ? packetSummary(latestPacket) : 'No test packets have arrived yet.'}</p>
         </section>
       </div>
-
-      <section className="dev-status-card dev-status-card--wide dev-status-card--fixed">
-        <h2>Observers</h2>
-        <div className="dev-status-table-wrap">
-          <table className="dev-status-table">
-            <thead>
-              <tr>
-                <th>Observer</th>
-                <th>Node ID</th>
-                <th>IATA</th>
-                <th>Last seen</th>
-              </tr>
-            </thead>
-            <tbody>
-              {latestSeenByObserver.length > 0 ? latestSeenByObserver.map(({ observerId, observerNode, lastPacket }) => (
-                <tr key={observerId}>
-                  <td>{observerNode?.name ?? 'Unnamed observer'}</td>
-                  <td className="dev-status-mono">{shortNode(observerId)}</td>
-                  <td>{observerNode?.iata ?? '—'}</td>
-                  <td>{lastPacket ? timeAgo(lastPacket.time) : timeAgo(observerNode?.last_seen)}</td>
-                </tr>
-              )) : (
-                <tr>
-                  <td colSpan={4} className="dev-status-empty">No observer traffic in the test feed yet.</td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </section>
 
       <section className="dev-status-card dev-status-card--wide dev-status-card--fixed">
         <h2>Live packets</h2>

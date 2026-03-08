@@ -2,7 +2,7 @@ import { Request, Response, Router } from 'express';
 import { rateLimit } from 'express-rate-limit';
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
 import mqtt from 'mqtt';
-import { getNodes, getNodeHistory, getRecentPackets, query, MIN_LINK_OBSERVATIONS } from '../db/index.js';
+import { getNodes, getNodeHistory, getRecentPacketEvents, getRecentPackets, query, MIN_LINK_OBSERVATIONS } from '../db/index.js';
 import { addOwnerNodeForUsername, getMappedOwnerNodeIds, getOwnerNodeIdsForUsername } from '../db/ownerAuth.js';
 import { getWorkerHealthOverview } from '../health/status.js';
 import { resolveRequestNetwork } from '../http/requestScope.js';
@@ -395,7 +395,10 @@ router.get('/packets/recent', async (req, res) => {
     const requestedNetwork = resolveRequestNetwork(req.query['network'], req.headers);
     const network = requestedNetwork === 'all' ? undefined : requestedNetwork;
     const observer = normalizeObserverQuery(req.query['observer']);
-    const packets = await getRecentPackets(limit, network, observer);
+    const raw = String(req.query['raw'] ?? '').trim();
+    const packets = raw === '1'
+      ? await getRecentPacketEvents(limit, network, observer)
+      : await getRecentPackets(limit, network, observer);
     res.json(packets);
   } catch (err) {
     console.error('[api] GET /packets/recent', (err as Error).message);
