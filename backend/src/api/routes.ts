@@ -1136,11 +1136,14 @@ router.post('/telemetry/frontend-error', async (req, res) => {
       return;
     }
 
+    const ALLOWED_KINDS = new Set(['error', 'warning', 'unhandledrejection', 'crash']);
+    const kind = ALLOWED_KINDS.has(String(body.kind)) ? String(body.kind) : 'error';
+
     await query(
       `INSERT INTO frontend_error_events (kind, message, stack, page, user_agent)
        VALUES ($1, $2, $3, $4, $5)`,
       [
-        String(body.kind ?? 'error').slice(0, 40),
+        kind,
         message,
         body.stack ? String(body.stack).slice(0, 4000) : null,
         body.page ? String(body.page).slice(0, 300) : null,

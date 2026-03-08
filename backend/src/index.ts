@@ -80,7 +80,15 @@ async function main() {
     },
   }));
 
-  app.use(express.json());
+  // Security headers
+  app.use((_req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    next();
+  });
+
+  app.use(express.json({ limit: '50kb' }));
 
   // Rate limit: 120 requests / IP / minute on all API endpoints
   app.use('/api', rateLimit({

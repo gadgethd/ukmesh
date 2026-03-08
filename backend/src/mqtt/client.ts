@@ -227,7 +227,8 @@ function buildAdvertFallbackPayload(originId: string, originName?: string): Reco
 
 export function startMqttClient(): void {
   const brokerUrl = process.env['MQTT_BROKER_URL'] ?? 'ws://mosquitto:9001';
-  console.log(`[mqtt] connecting to ${brokerUrl}`);
+  const redactedUrl = brokerUrl.replace(/\/\/[^@]*@/, '//***:***@');
+  console.log(`[mqtt] connecting to ${redactedUrl}`);
   console.log(`[mqtt] channels: ${channelEntries.map((e) => e.name).join(', ')}`);
   console.log(`[mqtt] topic prefixes: ${Array.from(TOPIC_PREFIXES).join(', ')}`);
 
