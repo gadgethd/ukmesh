@@ -1,0 +1,13 @@
+export const MAX_BETA_HOPS = 25;
+export const BETA_PURPLE_THRESHOLD = 0.45;
+export const R_EFF_M = 6_371_000 / (1 - 0.25);
+export const PREFIX_AMBIGUITY_FLOOR_KM = 45;
+export const WEAK_LINK_PATHLOSS_MAX_DB = 137.88;
+export const LOOSE_LINK_PATHLOSS_MAX_DB = 146.0;
+export const MAX_HOP_KM = 127.19 * 1.609344;
+export const CONTEXT_TTL_MS = 60_000;
+export const MODEL_LIMIT = 6000;
+export const MAX_PERMUTATION_HOP_KM = MAX_HOP_KM;
+export const MAX_RENDER_PERMUTATIONS = 24;
+export const MAX_PERMUTATION_STATES = 120_000;
+export const SOFT_FALLBACK_HOP_KM = 75 * 1.609344;

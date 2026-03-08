@@ -6,213 +6,43 @@ import {
   nodePathHash,
   normalizePathHash,
 } from '../path-hash/utils.js';
-
-type MeshNode = {
-  node_id: string;
-  name: string | null;
-  lat: number | null;
-  lon: number | null;
-  iata: string | null;
-  role: number | null;
-  elevation_m: number | null;
-};
-
-type NodeCoverage = {
-  node_id: string;
-  radius_m: number | null;
-};
-
-type LinkMetrics = {
-  observed_count: number;
-  itm_path_loss_db: number | null;
-  count_a_to_b: number | null;
-  count_b_to_a: number | null;
-};
-
-type PathLearningModel = {
-  prefixProbabilities: Map<string, number>;
-  transitionProbabilities: Map<string, number>;
-  edgeScores: Map<string, number>;
-  motifProbabilities: Map<string, number>;
-  confidenceScale: number;
-  confidenceBias: number;
-  bucketHours: number;
-};
-
-type PathPacket = {
-  packet_hash: string;
-  rx_node_id: string | null;
-  src_node_id: string | null;
-  packet_type: number | null;
-  hop_count: number | null;
-  path_hashes: string[] | null;
-};
-
-type BetaResolveContext = {
-  loadedAt: number;
-  nodesById: Map<string, MeshNode>;
-  coverageByNode: Map<string, number>;
-  linkPairs: Set<string>;
-  linkMetrics: Map<string, LinkMetrics>;
-  learningModel: PathLearningModel;
-};
-
-const MAX_BETA_HOPS = 25;
-const BETA_PURPLE_THRESHOLD = 0.45;
-const R_EFF_M = 6_371_000 / (1 - 0.25);
-const PREFIX_AMBIGUITY_FLOOR_KM = 45;
-const WEAK_LINK_PATHLOSS_MAX_DB = 137.88;
-const LOOSE_LINK_PATHLOSS_MAX_DB = 146.0;
-const MAX_HOP_KM = 127.19 * 1.609344;
-const CONTEXT_TTL_MS = 60_000;
-const MODEL_LIMIT = 6000;
-const MAX_PERMUTATION_HOP_KM = MAX_HOP_KM;
-const MAX_RENDER_PERMUTATIONS = 24;
-const MAX_PERMUTATION_STATES = 120_000;
-const SOFT_FALLBACK_HOP_KM = 75 * 1.609344;
+import {
+  BETA_PURPLE_THRESHOLD,
+  CONTEXT_TTL_MS,
+  MAX_BETA_HOPS,
+  MAX_HOP_KM,
+  MAX_PERMUTATION_HOP_KM,
+  MAX_PERMUTATION_STATES,
+  MAX_RENDER_PERMUTATIONS,
+  MODEL_LIMIT,
+  PREFIX_AMBIGUITY_FLOOR_KM,
+  WEAK_LINK_PATHLOSS_MAX_DB,
+} from './constants.js';
+import {
+  canReach,
+  clamp,
+  distKm,
+  hasCoords,
+  hasLoS,
+  linkKey,
+  nodeRange,
+  sourceProgressScore,
+  turnContinuityScore,
+} from './geometry.js';
+import {
+  compareFallbackCandidates,
+  fallbackEdgeAllowed,
+  isLooseOrBetter,
+  isWeakOrBetter,
+  retargetRedPathStart,
+  segmentizePath,
+  softFallbackCandidateAllowed,
+  trimPathBetweenStitches,
+  trimRedToPurpleStitch,
+} from './fallback.js';
+import type { BetaResolveContext, LinkMetrics, MeshNode, NodeCoverage, PathLearningModel, PathPacket } from './types.js';
 
 const contextCache = new Map<string, BetaResolveContext>();
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, value));
-}
-
-function isValidMapCoord(lat: number | null | undefined, lon: number | null | undefined): boolean {
-  if (typeof lat !== 'number' || typeof lon !== 'number') return false;
-  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return false;
-  if (Math.abs(lat) < 5 && Math.abs(lon) < 5) return false;
-  return lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180;
-}
-
-function hasCoords(n: MeshNode | null | undefined): n is MeshNode {
-  return Boolean(n && isValidMapCoord(n.lat, n.lon));
-}
-
-function linkKey(a: string, b: string): string {
-  return a < b ? `${a}:${b}` : `${b}:${a}`;
-}
-
-function distKm(a: MeshNode, b: MeshNode): number {
-  const midLat = ((a.lat! + b.lat!) / 2) * (Math.PI / 180);
-  const dlat = (a.lat! - b.lat!) * 111;
-  const dlon = (a.lon! - b.lon!) * 111 * Math.cos(midLat);
-  return Math.hypot(dlat, dlon);
-}
-
-function hasLoS(a: MeshNode, b: MeshNode): boolean {
-  const hA = (a.elevation_m ?? 0) + 5;
-  const hB = (b.elevation_m ?? 0) + 5;
-  const d = distKm(a, b) * 1000;
-  if (d < 1) return true;
-  for (let i = 1; i < 20; i++) {
-    const t = i / 20;
-    const x = t * d;
-    const los = hA + (hB - hA) * t;
-    const bulge = x * (d - x) / (2 * R_EFF_M);
-    if (los < bulge) return false;
-  }
-  return true;
-}
-
-function nodeRange(nodeId: string, coverageByNode: Map<string, number>): number {
-  const radiusM = coverageByNode.get(nodeId);
-  if (!radiusM) return 50;
-  return Math.min(80, Math.max(50, radiusM / 1000));
-}
-
-function canReach(a: MeshNode, b: MeshNode, coverageByNode: Map<string, number>): boolean {
-  const threshold = Math.max(nodeRange(a.node_id, coverageByNode), nodeRange(b.node_id, coverageByNode));
-  return distKm(a, b) < threshold;
-}
-
-function cosine2d(ax: number, ay: number, bx: number, by: number): number {
-  const mag = Math.hypot(ax, ay) * Math.hypot(bx, by);
-  return mag > 1e-9 ? clamp((ax * bx + ay * by) / mag, -1, 1) : 0;
-}
-
-function sourceProgressScore(candidate: MeshNode, prev: MeshNode, src: MeshNode | null): number {
-  if (!hasCoords(src)) return 0;
-  const toSrcX = src.lon! - prev.lon!;
-  const toSrcY = src.lat! - prev.lat!;
-  const toCandidateX = candidate.lon! - prev.lon!;
-  const toCandidateY = candidate.lat! - prev.lat!;
-  const align = cosine2d(toCandidateX, toCandidateY, toSrcX, toSrcY);
-  const prevToSrc = distKm(prev, src);
-  const candidateToSrc = distKm(candidate, src);
-  const progress = prevToSrc > 1e-6 ? clamp((prevToSrc - candidateToSrc) / prevToSrc, -1, 1) : 0;
-  return align * 0.7 + progress * 0.6;
-}
-
-function turnContinuityScore(candidate: MeshNode, prev: MeshNode, nextTowardRx: MeshNode | null): number {
-  if (!hasCoords(nextTowardRx)) return 0;
-  const incomingX = prev.lon! - candidate.lon!;
-  const incomingY = prev.lat! - candidate.lat!;
-  const outgoingX = nextTowardRx.lon! - prev.lon!;
-  const outgoingY = nextTowardRx.lat! - prev.lat!;
-  return cosine2d(incomingX, incomingY, outgoingX, outgoingY);
-}
-
-function fallbackEdgeAllowed(
-  a: MeshNode,
-  b: MeshNode,
-  coverageByNode: Map<string, number>,
-  linkMetrics: Map<string, LinkMetrics>,
-): boolean {
-  const meta = linkMetrics.get(linkKey(a.node_id, b.node_id));
-  const reachOk = canReach(a, b, coverageByNode);
-  const losOk = hasLoS(a, b);
-  return (reachOk && losOk) || (reachOk && isLooseOrBetter(meta)) || isWeakOrBetter(meta);
-}
-
-function fallbackEdgeScore(
-  candidate: MeshNode,
-  prev: MeshNode,
-  src: MeshNode | null,
-  nextTowardRx: MeshNode | null,
-  coverageByNode: Map<string, number>,
-  linkMetrics: Map<string, LinkMetrics>,
-): number {
-  const meta = linkMetrics.get(linkKey(candidate.node_id, prev.node_id));
-  const pathLoss = meta?.itm_path_loss_db;
-  const reachOk = canReach(candidate, prev, coverageByNode);
-  const losOk = hasLoS(candidate, prev);
-  const distPenalty = distKm(candidate, prev) / 50;
-  const pathLossBoost = pathLoss == null ? 0 : clamp((LOOSE_LINK_PATHLOSS_MAX_DB - pathLoss) / 18, 0, 1.2);
-  const observedBoost = Math.min(0.35, Math.log10((meta?.observed_count ?? 0) + 1) * 0.18);
-  const physicalBoost = (reachOk ? 0.45 : 0) + (losOk ? 0.2 : 0);
-  const directionalBoost = sourceProgressScore(candidate, prev, src) * 0.45
-    + turnContinuityScore(candidate, prev, nextTowardRx) * 0.6;
-  return directionalBoost + pathLossBoost + observedBoost + physicalBoost - distPenalty;
-}
-
-function compareFallbackCandidates(
-  a: MeshNode,
-  b: MeshNode,
-  prev: MeshNode,
-  src: MeshNode | null,
-  nextTowardRx: MeshNode | null,
-  coverageByNode: Map<string, number>,
-  linkMetrics: Map<string, LinkMetrics>,
-): number {
-  const distA = distKm(a, prev);
-  const distB = distKm(b, prev);
-  if (Math.abs(distA - distB) > 0.25) return distA - distB;
-  return fallbackEdgeScore(b, prev, src, nextTowardRx, coverageByNode, linkMetrics)
-    - fallbackEdgeScore(a, prev, src, nextTowardRx, coverageByNode, linkMetrics);
-}
-
-function softFallbackCandidateAllowed(
-  candidate: MeshNode,
-  prev: MeshNode,
-  src: MeshNode | null,
-  nextTowardRx: MeshNode | null,
-): boolean {
-  const hopKm = distKm(candidate, prev);
-  if (hopKm > SOFT_FALLBACK_HOP_KM) return false;
-  const sourceProgress = sourceProgressScore(candidate, prev, src);
-  const turnContinuity = turnContinuityScore(candidate, prev, nextTowardRx);
-  return sourceProgress >= -0.15 && turnContinuity >= -0.35;
-}
 
 function currentHourBucket(bucketHours: number): number {
   const now = new Date();
@@ -313,16 +143,6 @@ function buildClashAdjacency(
   return adjacency;
 }
 
-function isWeakOrBetter(meta: LinkMetrics | undefined): boolean {
-  const pathLoss = meta?.itm_path_loss_db;
-  return pathLoss != null && pathLoss <= WEAK_LINK_PATHLOSS_MAX_DB;
-}
-
-function isLooseOrBetter(meta: LinkMetrics | undefined): boolean {
-  const pathLoss = meta?.itm_path_loss_db;
-  return pathLoss != null && pathLoss <= LOOSE_LINK_PATHLOSS_MAX_DB;
-}
-
 function strongConfirmedFloor(meta: LinkMetrics | undefined): number {
   if (!meta) return 0;
   const observed = meta.observed_count ?? 0;
@@ -345,67 +165,6 @@ function attachSrcToPath(
   if (!anchor) return lowPath;
   if (Math.abs(anchor[0] - srcPt[0]) <= 0.0001 && Math.abs(anchor[1] - srcPt[1]) <= 0.0001) return lowPath;
   return lowPath ? ([srcPt, ...lowPath] as [number, number][]) : [srcPt, anchor];
-}
-
-function samePoint(a: [number, number], b: [number, number], epsilon = 1e-4): boolean {
-  return Math.abs(a[0] - b[0]) <= epsilon && Math.abs(a[1] - b[1]) <= epsilon;
-}
-
-function trimRedToPurpleStitch(
-  redPath: [number, number][] | null,
-  purplePath: [number, number][] | null,
-): [number, number][] | null {
-  if (!redPath || redPath.length < 2) return null;
-  if (!purplePath || purplePath.length < 2) return redPath;
-  const stitch = purplePath[0];
-  if (!stitch) return redPath;
-  const idx = redPath.findIndex((point) => samePoint(point, stitch));
-  if (idx <= 0) return redPath;
-  const trimmed = redPath.slice(0, idx + 1);
-  return trimmed.length >= 2 ? trimmed : null;
-}
-
-function trimPathToStartStitch(
-  path: [number, number][] | null,
-  startStitch: [number, number] | null,
-): [number, number][] | null {
-  if (!path || path.length < 2 || !startStitch) return path;
-  const idx = path.findIndex((point) => samePoint(point, startStitch));
-  if (idx < 0 || idx >= path.length - 1) return path;
-  const trimmed = path.slice(idx);
-  return trimmed.length >= 2 ? trimmed : null;
-}
-
-function trimPathBetweenStitches(
-  path: [number, number][] | null,
-  startStitch: [number, number] | null,
-  endPath: [number, number][] | null,
-): [number, number][] | null {
-  return trimRedToPurpleStitch(trimPathToStartStitch(path, startStitch), endPath);
-}
-
-function retargetRedPathStart(
-  path: [number, number][] | null,
-  startStitch: [number, number] | null,
-): [number, number][] | null {
-  if (!path || path.length < 2 || !startStitch) return path;
-  const first = path[0];
-  if (!first) return path;
-  if (samePoint(first, startStitch)) return path;
-  const rewritten: [number, number][] = [startStitch, ...path.slice(1)];
-  return rewritten.length >= 2 ? rewritten : null;
-}
-
-function segmentizePath(path: [number, number][] | null): Array<[[number, number], [number, number]]> {
-  if (!path || path.length < 2) return [];
-  const segments: Array<[[number, number], [number, number]]> = [];
-  for (let i = 0; i < path.length - 1; i++) {
-    const a = path[i];
-    const b = path[i + 1];
-    if (!a || !b) continue;
-    segments.push([a, b]);
-  }
-  return segments;
 }
 
 function edgeMetricConfidence(fromId: string, toId: string, linkMetrics: Map<string, LinkMetrics>): number {
