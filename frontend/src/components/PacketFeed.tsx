@@ -12,6 +12,7 @@ const TYPE_LABELS: Record<number, string> = {
   7:  'ANON',
   8:  'PATH',
   9:  'TRC',
+  11: 'CTL',
 };
 
 interface Props {

@@ -1207,7 +1207,7 @@ router.get('/stats/charts', async (req, res) => {
     const PAYLOAD_LABELS: Record<number, string> = {
       0: 'Request', 1: 'Response', 2: 'DM', 3: 'Ack',
       4: 'Advert', 5: 'GroupText', 6: 'GroupData',
-      7: 'AnonReq', 8: 'Path', 9: 'Trace',
+      7: 'AnonReq', 8: 'Path', 9: 'Trace', 11: 'Control',
     };
 
     const [
