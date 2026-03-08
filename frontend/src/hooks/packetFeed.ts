@@ -10,6 +10,7 @@ export type RecentPacketRow = {
   src_node_id?: string;
   packet_type?: number;
   hop_count?: number;
+  path_hash_size_bytes?: number;
   summary?: string | null;
   payload?: Record<string, unknown>;
   advert_count?: number | null;
@@ -62,6 +63,7 @@ export function mergeAggregatedPacket(current: AggregatedPacket, next: Aggregate
     srcNodeId: next.srcNodeId ?? current.srcNodeId,
     summary: next.summary ?? current.summary,
     hopCount: next.hopCount ?? current.hopCount,
+    pathHashSizeBytes: next.pathHashSizeBytes ?? current.pathHashSizeBytes,
     path: next.path ?? current.path,
     rxCount: Math.max(current.rxCount, next.rxCount),
     txCount: Math.max(current.txCount, next.txCount),
@@ -76,6 +78,7 @@ export function mergeAggregatedPacket(current: AggregatedPacket, next: Aggregate
     rxCount: Math.max(current.rxCount, next.rxCount),
     txCount: Math.max(current.txCount, next.txCount),
     ts: Math.max(current.ts, next.ts),
+    pathHashSizeBytes: next.pathHashSizeBytes ?? current.pathHashSizeBytes,
     advertCount: Math.max(current.advertCount ?? 0, next.advertCount ?? 0) || undefined,
   };
 }
@@ -97,6 +100,7 @@ export function mapRecentRows(rows: RecentPacketRow[]): AggregatedPacket[] {
       srcNodeId: row.src_node_id,
       summary,
       hopCount: row.hop_count,
+      pathHashSizeBytes: row.path_hash_size_bytes ?? undefined,
       path: row.path_hashes ?? undefined,
       rxCount: Number(row.rx_count ?? 1),
       txCount: Number(row.tx_count ?? 0),
@@ -133,6 +137,7 @@ export function createAggregatedPacketFromLive(packet: LivePacketData): Aggregat
     srcNodeId: packet.srcNodeId,
     summary: packet.summary ?? extractPacketSummary(packet.payload),
     hopCount: packet.hopCount,
+    pathHashSizeBytes: packet.pathHashSizeBytes,
     path: packet.path,
     rxCount: packet.direction !== 'tx' ? 1 : 0,
     txCount: packet.direction === 'tx' ? 1 : 0,

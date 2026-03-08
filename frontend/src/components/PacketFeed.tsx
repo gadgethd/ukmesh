@@ -76,6 +76,9 @@ export const PacketFeed: React.FC<Props> = React.memo(({ packets, nodes, mqttObs
               {allObserversHeard ? 'ALL' : observerIata}
             </span>
           )}
+          {p.pathHashSizeBytes !== undefined && p.pathHashSizeBytes > 0 && (
+            <span className="packet-item__path-bytes">{p.pathHashSizeBytes}</span>
+          )}
           <span className="packet-item__type">{typeLabel}</span>
           {advertBadge && (
             <span className="packet-item__advert-badge">{advertBadge}</span>

@@ -22,6 +22,7 @@ export interface StoredPacket {
   packetType?: number;
   routeType?: number;
   hopCount?: number;
+  pathHashSizeBytes?: number;
   rssi?: number;
   snr?: number;
   payload?: Record<string, unknown>;
@@ -56,6 +57,7 @@ export interface LivePacket {
   network?: string;
   packetType?: number;
   hopCount?: number;
+  pathHashSizeBytes?: number;
   direction?: string;   // 'rx' | 'tx' from mctomqtt
   summary?: string;     // human-readable decoded content
   payload?: Record<string, unknown>;

@@ -220,7 +220,7 @@ export async function getRecentPackets(limit = 200, network?: string, observer?:
               p.time, p.packet_hash, p.rx_node_id, p.src_node_id, p.topic,
               p.packet_type, p.hop_count, p.rssi, p.snr, p.payload,
               p.payload->>'_summary' AS summary,
-              p.advert_count, p.path_hashes,
+              p.advert_count, p.path_hashes, p.path_hash_size_bytes,
               (
                 SELECT ARRAY_AGG(DISTINCT p2.rx_node_id ORDER BY p2.rx_node_id)
                 FROM packets p2
@@ -270,7 +270,7 @@ export async function getLastNPackets(n: number, network?: string, observer?: st
   const res = await pool.query(
     `SELECT * FROM (
        SELECT DISTINCT ON (p.packet_hash) p.time, p.packet_hash, p.rx_node_id, p.src_node_id,
-              p.packet_type, p.hop_count, p.payload, p.payload->>'_summary' AS summary, p.advert_count, p.path_hashes,
+              p.packet_type, p.hop_count, p.payload, p.payload->>'_summary' AS summary, p.advert_count, p.path_hashes, p.path_hash_size_bytes,
               (
                 SELECT ARRAY_AGG(DISTINCT p2.rx_node_id ORDER BY p2.rx_node_id)
                 FROM packets p2

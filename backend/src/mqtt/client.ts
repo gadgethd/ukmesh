@@ -304,6 +304,7 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
   let innerPayload: Record<string, unknown> | undefined;
   let decodedHash: string | undefined;
   let decodedHops: number | undefined;
+  let decodedPathHashSizeBytes: number | undefined;
   let summary:     string | undefined;
   let srcNodeId:   string | undefined;
   let advertCount: number | undefined;
@@ -312,12 +313,13 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
 
   if (rawHex) {
     try {
-      const { decoded, pathHashes, pathHashCount } = decodePacketCompat(rawHex, keyStore);
+      const { decoded, pathHashes, pathHashCount, pathHashSize } = decodePacketCompat(rawHex, keyStore);
 
       if (decoded) {
         resolvedPacketType = decoded.payloadType ?? resolvedPacketType;
         decodedHash = decoded.messageHash;
         decodedHops = pathHashCount ?? decoded.pathLength;
+        decodedPathHashSizeBytes = pathHashSize;
         if (pathHashes && pathHashes.length > 0) {
           path = pathHashes;
         }
@@ -436,6 +438,7 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
       network,
       packetType: resolvedPacketType,
       hopCount:   decodedHops,
+      pathHashSizeBytes: decodedPathHashSizeBytes,
       direction,
       summary,
       payload:    innerPayload ?? json,
@@ -455,6 +458,7 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
       packetType: resolvedPacketType,
       routeType:  undefined,
       hopCount:   decodedHops,
+      pathHashSizeBytes: decodedPathHashSizeBytes,
       rssi,
       snr,
       payload:    innerPayload ?? json,

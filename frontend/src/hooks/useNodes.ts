@@ -33,6 +33,7 @@ export interface LivePacketData {
   topic:        string;
   packetType?:  number;
   hopCount?:    number;
+  pathHashSizeBytes?: number;
   direction?:   string;
   summary?:     string;
   payload?:     Record<string, unknown>;
@@ -51,6 +52,7 @@ export interface AggregatedPacket {
   srcNodeId?:   string;     // sender node id (from decoded payload)
   summary?:     string;
   hopCount?:    number;
+  pathHashSizeBytes?: number;
   path?:        string[];   // relay hop hashes from first observation
   rxCount:      number;
   txCount:      number;
@@ -106,6 +108,7 @@ export function useNodes() {
           srcNodeId:  packet.srcNodeId ?? current.srcNodeId,
           summary:    packet.summary ?? extractPacketSummary(packet.payload) ?? current.summary,
           hopCount:   packet.hopCount ?? current.hopCount,
+          pathHashSizeBytes: packet.pathHashSizeBytes ?? current.pathHashSizeBytes,
           path:       packet.path ?? current.path,
           advertCount: Math.max(current.advertCount ?? 0, packet.advertCount ?? 0) || undefined,
           rxCount: current.rxCount + (packet.direction !== 'tx' ? 1 : 0),
