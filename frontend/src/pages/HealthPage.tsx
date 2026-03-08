@@ -60,7 +60,6 @@ function workerLabel(name: string): string {
   if (name === 'path-learning') return 'Path Learning';
   if (name === 'health-worker') return 'Health Worker';
   if (name === 'link-backfill-worker') return 'Link Backfill Worker';
-  if (name === 'path-sim-worker') return 'Path Simulation Worker';
   return name;
 }
 
@@ -87,7 +86,6 @@ export const HealthPage: React.FC = () => {
     'path-learning': 'Rebuilds the beta path-learning priors from historical packet behavior so route predictions stay current.',
     'health-worker': 'Captures periodic worker/system health snapshots used by this Health page for live and historical status.',
     'link-backfill-worker': 'One-shot startup worker that backfills historical link observations when link tables are empty.',
-    'path-sim-worker': 'Replays historical packets through beta/red continuation logic and stores aggregate resolution/permutation diagnostics.',
   };
 
   useEffect(() => {
