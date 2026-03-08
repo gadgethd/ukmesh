@@ -4,6 +4,7 @@ import L from 'leaflet';
 import type { LatLngExpression } from 'leaflet';
 import type { MeshNode } from '../../hooks/useNodes.js';
 import type { NodeCoverage } from '../../hooks/useCoverage.js';
+import { isValidMapCoord } from '../../utils/pathing.js';
 
 const SEVEN_DAYS_MS  = 7  * 24 * 60 * 60 * 1000;
 const PREVIEW_TTL_MS = 20_000;
@@ -130,8 +131,10 @@ export const NodeMarker: React.FC<Props> = React.memo(({
     timerRef.current = setTimeout(() => setShowPreview(false), PREVIEW_TTL_MS);
   };
 
-  if (typeof node.lat !== 'number' || typeof node.lon !== 'number') return null;
+  if (!isValidMapCoord(node.lat, node.lon)) return null;
 
+  const lat = node.lat as number;
+  const lon = node.lon as number;
   const ageMs   = Date.now() - new Date(node.last_seen).getTime();
   const isStale = ageMs > SEVEN_DAYS_MS;
   const variant = roleVariant(node.role);
@@ -155,7 +158,7 @@ export const NodeMarker: React.FC<Props> = React.memo(({
   return (
     <>
       <Marker
-        position={[node.lat, node.lon]}
+        position={[lat, lon]}
         icon={buildIcon(node.is_online, isActive || isHighlighted, isStale, variant, markerSize, isRestoring, hexClashState)}
       >
         <Popup eventHandlers={{
@@ -197,7 +200,7 @@ export const NodeMarker: React.FC<Props> = React.memo(({
             )}
             <div className="node-popup__row">
               <span>Position</span>
-              <span>{node.lat.toFixed(5)}, {node.lon.toFixed(5)}</span>
+              <span>{lat.toFixed(5)}, {lon.toFixed(5)}</span>
             </div>
             {node.elevation_m !== undefined && node.elevation_m !== null && (
               <div className="node-popup__row">

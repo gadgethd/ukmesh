@@ -3,6 +3,7 @@ import { MapContainer, TileLayer, useMap, Pane, Polygon, Polyline } from 'react-
 import type { LatLngExpression, Map as LeafletMap } from 'leaflet';
 import type { MeshNode, PacketArc } from '../../hooks/useNodes.js';
 import type { NodeCoverage } from '../../hooks/useCoverage.js';
+import { hasCoords } from '../../utils/pathing.js';
 import type { LinkMetrics } from '../../utils/pathing.js';
 import { NodeMarker } from './NodeMarker.js';
 import { PacketArcLayer } from './PacketArcLayer.js';
@@ -59,12 +60,8 @@ function geomToRings(geom: { type: string; coordinates: unknown } | null | undef
   return [];
 }
 
-function hasCoords(node: MeshNode | null | undefined): node is MeshNode & { lat: number; lon: number } {
-  return typeof node?.lat === 'number' && typeof node?.lon === 'number';
-}
-
 function isHiddenMapNode(node: MeshNode | null | undefined): boolean {
-  return Boolean(node?.name?.includes('🚫'));
+  return !hasCoords(node) || Boolean(node?.name?.includes('🚫'));
 }
 
 // Raw outer rings from each coverage polygon — used for the green coverage display.
