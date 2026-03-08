@@ -1038,7 +1038,7 @@ export type BetaResolvedPayload = {
 export async function resolveBetaPathForPacketHash(packetHash: string, network: string, observer?: string): Promise<BetaResolvedPayload | null> {
   const [packetResult, observerHopResult] = await Promise.all([
     query<PathPacket>(
-      `SELECT packet_hash, rx_node_id, src_node_id, packet_type, hop_count, path_hashes
+      `SELECT packet_hash, rx_node_id, src_node_id, packet_type, hop_count, path_hashes, path_hash_size_bytes
        FROM packets
        WHERE packet_hash = $1
          AND ($2 = 'all' OR network = $2)
@@ -1095,7 +1095,20 @@ export async function resolveBetaPathForPacketHash(packetHash: string, network: 
 
   const src = packet.src_node_id ? (context.nodesById.get(packet.src_node_id) ?? null) : null;
   const hashes = packet.path_hashes ?? [];
-  const hops = packet.hop_count != null ? hashes.slice(0, Math.max(0, packet.hop_count)) : hashes;
+
+  // Validate path hash lengths against wire-format hash size when available (#4)
+  const expectedHexLen = packet.path_hash_size_bytes != null ? packet.path_hash_size_bytes * 2 : null;
+  const validatedHashes = expectedHexLen != null
+    ? hashes.filter((h) => {
+      if (h.length !== expectedHexLen) {
+        console.warn(`${logPrefix} hash length mismatch: expected ${expectedHexLen} hex chars, got ${h.length} ("${h}")`);
+        return false;
+      }
+      return true;
+    })
+    : hashes;
+
+  const hops = packet.hop_count != null ? validatedHashes.slice(0, Math.max(0, packet.hop_count)) : validatedHashes;
   const forceIncludeSource = packet.packet_type === 4;
   const currentHopCount = Number(packet.hop_count ?? 0);
   const observerHopHints: ObserverHopHint[] = currentHopCount > 0 && packet.rx_node_id
