@@ -1,6 +1,6 @@
 # MeshCore Analytics
 
-A real-time analytics platform for [MeshCore](https://meshcore.co.uk) networks. It ingests MQTT packets via `mctomqtt`, decodes them with `@michaelhart/meshcore-decoder`, stores them in TimescaleDB, and serves interactive dashboards plus public-facing site pages with live mapping, link intelligence, coverage modelling, packet analytics, and worker/system health.
+A real-time analytics platform for [MeshCore](https://meshcore.co.uk) networks. It ingests MQTT packets from `mctomqtt`-compatible observers, decodes them with `@michaelhart/meshcore-decoder`, stores them in TimescaleDB, and serves interactive dashboards plus public-facing site pages with live mapping, link intelligence, coverage modelling, packet analytics, and worker/system health.
 
 ---
 
@@ -10,12 +10,15 @@ A real-time analytics platform for [MeshCore](https://meshcore.co.uk) networks. 
 - RF coverage viewshed polygons per repeater using SRTM terrain data
 - Link intelligence overlay with directional observations and path-loss viability
 - Beta path prediction model with hourly path-learning prior rebuilds
+- Multibyte path-hash support (1-byte, 2-byte, 3-byte) throughout the live ingest and pathing stack
 - Decoded live packet feed (Advert, GroupText, DM, ACK, Path, Trace)
 - Stats pages and chart endpoints for packet rates, radios, hops, and activity
 - Public Health page with worker status/history + server resource metrics
+- UK site Feed page for public MQTT observer traffic visibility
 - Repeater owner portal with MQTT username/password login and encrypted cookie session
 - Owner dashboard with repeater summary, direct sender map, live packets, advert trend, heard-by list, link health, and alerts
 - Multi-network ingestion (`meshcore/*` and `ukmesh/*`) with per-site filtering
+- Isolated test-feed support via `meshcore-test/*` and `test.ukmesh.com`
 - Multi-observer deduplication by packet hash
 
 ---
@@ -40,11 +43,13 @@ A real-time analytics platform for [MeshCore](https://meshcore.co.uk) networks. 
 - Hourly path-learning prior rebuild worker
 - Beta path overlays and confidence scoring
 - Historical calibration using observed packet behavior
+- Multibyte path-hash aware path resolution
 
 ### Phase 4 - Public website and operations (complete)
 - Separate public-facing website pages (install, MQTT, packets, stats)
 - Public Health page with worker/system status and history
 - Click-to-explain worker cards
+- UK Feed page for live public observer traffic
 
 ### Phase 5 - Repeater owner portal (in progress)
 - MQTT username/password owner login with encrypted cookie session
@@ -75,7 +80,8 @@ A real-time analytics platform for [MeshCore](https://meshcore.co.uk) networks. 
   - `link-backfill-worker` (one-shot historical backfill)
 - Nginx frontend proxies use Docker DNS resolver-based upstreams to avoid stale backend IP issues after container recreates.
 - Owner authentication now uses MQTT credentials plus a separate owner-auth mapping database rather than public-key login.
-- Live coverage is currently served by the terrain-aware viewshed model.
+- Live coverage is currently served by an RF radial model calibrated against observed repeater links and terrain data.
+- Public/test feeds are isolated at the topic level, with `meshcore-test/*` excluded from the public sites.
 
 ---
 
@@ -176,16 +182,18 @@ To expose the app and MQTT broker publicly without opening firewall ports:
 
 ## MQTT Topic Structure
 
-The backend subscribes to both `meshcore/#` and `ukmesh/#`. MeshCore devices publish via `mctomqtt` to topics of the form:
+The backend subscribes to `meshcore/#`, `ukmesh/#`, and `meshcore-test/#`. MeshCore observers publish `mctomqtt`-compatible JSON envelopes to topics of the form:
 
 ```
 meshcore/<IATA>/<observer-public-key>/packets   # received/transmitted packets
 meshcore/<IATA>/<observer-public-key>/status    # node status advertisement
 ukmesh/<IATA>/<observer-public-key>/packets
 ukmesh/<IATA>/<observer-public-key>/status
+meshcore-test/<IATA>/<observer-public-key>/packets
+meshcore-test/<IATA>/<observer-public-key>/status
 ```
 
-Payloads are JSON envelopes containing a `raw` hex field (the MeshCore packet) plus metadata (RSSI, SNR, direction, hash, etc.).
+Payloads are JSON envelopes containing a `raw` hex field (the MeshCore packet) plus metadata such as RSSI, SNR, direction, and hash. The ingest path now supports 1-byte, 2-byte, and 3-byte path hashes carried inside the raw packet.
 
 ---
 
@@ -195,7 +203,7 @@ Payloads are JSON envelopes containing a `raw` hex field (the MeshCore packet) p
 MeshCore Devices
      │ LoRa RF
      ▼
- mctomqtt (on node machine)
+ mctomqtt-compatible observer
      │ MQTT over WebSocket/TLS
      ▼
  Mosquitto ─────────────────────────────── (optional Cloudflare Tunnel)
@@ -212,7 +220,7 @@ MeshCore Devices
      
  App/Web Frontends (Nginx + React)
      ├─ app / app-ukmesh (interactive dashboard)
-     └─ website / website-ukmesh (public site + health/stats + owner portal pages)
+     └─ website / website-ukmesh / website-dev (public site + health/stats + owner portal pages + isolated test feed)
 
  Python Workers
      ├─ viewshed-worker (meshcore:viewshed_jobs)
@@ -248,6 +256,7 @@ MeshCore Devices
 | `website` | Built from `Dockerfile.website` | Primary public website frontend |
 | `app-ukmesh` | Built from `Dockerfile.app` | Secondary interactive dashboard frontend (optional) |
 | `website-ukmesh` | Built from `Dockerfile.website` | Secondary public website frontend (optional) |
+| `website-dev` | Built from `Dockerfile.website` | Isolated test/status site for `meshcore-test/*` traffic |
 | `cloudflared` | `cloudflare/cloudflared` | Optional Cloudflare Tunnel (use `--profile tunnel`) |
 
 ---
