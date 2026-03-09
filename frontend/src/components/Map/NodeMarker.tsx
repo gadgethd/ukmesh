@@ -71,6 +71,12 @@ function roleVariant(role: number | undefined): MarkerVariant {
   return 'repeater';
 }
 
+function roleZIndexOffset(role: number | undefined): number {
+  if (role === 3) return 100;
+  if (role === 1) return 200;
+  return 300;
+}
+
 function ringToLatLng(ring: number[][]): LatLngExpression[] {
   return ring.map(([lon, lat]) => [lat, lon] as LatLngExpression);
 }
@@ -160,6 +166,7 @@ export const NodeMarker: React.FC<Props> = React.memo(({
       <Marker
         position={[lat, lon]}
         icon={buildIcon(node.is_online, isActive || isHighlighted, isStale, variant, markerSize, isRestoring, hexClashState)}
+        zIndexOffset={roleZIndexOffset(node.role)}
       >
         <Popup eventHandlers={{
           add: () => {
