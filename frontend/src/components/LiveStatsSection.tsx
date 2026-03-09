@@ -41,7 +41,7 @@ const StatCard: React.FC<{ value: number; label: string; suffix?: string }> = ({
 export const LiveStatsSection: React.FC<LiveStatsSectionProps> = ({ network, observer }) => {
   const [stats, setStats] = useState<SiteStats>(EMPTY_STATS);
   const hopFlash = useFlash(stats.longestHop);
-  const refreshSeconds = 15;
+  const refreshSeconds = 5 * 60;
 
   useEffect(() => {
     const loadStats = () => {
@@ -68,10 +68,10 @@ export const LiveStatsSection: React.FC<LiveStatsSectionProps> = ({ network, obs
           <h2>Live network stats</h2>
           <p>
             {observer
-              ? `Updates every ${refreshSeconds} seconds from the selected observer feed.`
+              ? `Updates every 5 minutes from the selected observer feed.`
               : network === 'test'
-              ? `Updates every ${refreshSeconds} seconds from the isolated test feed.`
-              : `Updates every ${refreshSeconds} seconds from the shared packet feed.`}
+              ? `Updates every 5 minutes from the isolated test feed.`
+              : `Updates every 5 minutes from the shared packet feed.`}
           </p>
         </div>
         <div className="site-stats-grid">

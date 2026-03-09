@@ -106,7 +106,7 @@ export const UKFeedPage: React.FC = () => {
     };
 
     void load();
-    const timer = setInterval(() => void load(), 4000);
+    const timer = setInterval(() => void load(), 5 * 60_000);
     return () => {
       cancelled = true;
       clearInterval(timer);

@@ -114,7 +114,7 @@ export const StatsPage: React.FC = () => {
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
   const site = getCurrentSite();
   const statsScope = { network: site.networkFilter, observer: site.observerId };
-  const refreshSeconds = 15;
+  const refreshSeconds = 30 * 60;
 
   const load = () => {
     fetch(uncachedEndpoint(chartStatsEndpoint(statsScope)), { cache: 'no-store' })
@@ -149,10 +149,10 @@ export const StatsPage: React.FC = () => {
           <h1 className="site-page-hero__title">Network Stats</h1>
           <p className="site-page-hero__sub">
             {site.id === 'dev'
-              ? `Stats for the isolated test MQTT feed. Updates every ${refreshSeconds} seconds.`
+              ? 'Stats for the isolated test MQTT feed. Updates every 30 minutes.'
               : site.id === 'ukmesh'
-              ? `Live analytics across all connected networks. Updates every ${refreshSeconds} seconds.`
-              : `Live analytics from the ${site.displayName} network. Updates every ${refreshSeconds} seconds.`}
+              ? 'Live analytics across all connected networks. Updates every 30 minutes.'
+              : `Live analytics from the ${site.displayName} network. Updates every 30 minutes.`}
           </p>
           {lastUpdate && (
             <p style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>

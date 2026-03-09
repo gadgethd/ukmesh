@@ -100,7 +100,7 @@ export const HealthPage: React.FC = () => {
     };
 
     load();
-    const timer = setInterval(load, 15_000);
+    const timer = setInterval(load, 5 * 60_000);
     return () => {
       cancelled = true;
       clearInterval(timer);
