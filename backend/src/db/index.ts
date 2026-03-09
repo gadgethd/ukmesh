@@ -48,13 +48,18 @@ function buildScopePlaceholders(startIndex: number, network?: string, observer?:
 function buildPacketScopeClause(
   placeholders: ScopePlaceholders,
   alias?: string,
+  network?: string,
 ): string {
   const prefix = alias ? `${alias}.` : '';
   const conditions: string[] = [];
   if (placeholders.networkParam) {
     conditions.push(`${prefix}network = ${placeholders.networkParam}`);
+    if (network !== 'test') {
+      conditions.push(`split_part(${prefix}topic, '/', 1) <> 'meshcore-test'`);
+    }
   } else {
     conditions.push(`${prefix}network IS DISTINCT FROM 'test'`);
+    conditions.push(`split_part(${prefix}topic, '/', 1) <> 'meshcore-test'`);
   }
   if (placeholders.observerParam) {
     conditions.push(`LOWER(${prefix}rx_node_id) = LOWER(${placeholders.observerParam})`);
@@ -227,7 +232,7 @@ export async function getRecentPackets(limit = 200, network?: string, observer?:
                 WHERE p2.packet_hash = p.packet_hash
                   AND p2.time > NOW() - INTERVAL '5 minutes'
                   AND p2.rx_node_id IS NOT NULL
-                  ${buildPacketScopeClause(scope, 'p2')}
+                  ${buildPacketScopeClause(scope, 'p2', network)}
               ) AS observer_node_ids,
               (
                 SELECT COUNT(*)::int
@@ -235,7 +240,7 @@ export async function getRecentPackets(limit = 200, network?: string, observer?:
                 WHERE p2.packet_hash = p.packet_hash
                   AND p2.time > NOW() - INTERVAL '5 minutes'
                   AND COALESCE(p2.payload->>'direction', 'rx') <> 'tx'
-                  ${buildPacketScopeClause(scope, 'p2')}
+                  ${buildPacketScopeClause(scope, 'p2', network)}
               ) AS rx_count,
               (
                 SELECT COUNT(*)::int
@@ -243,11 +248,11 @@ export async function getRecentPackets(limit = 200, network?: string, observer?:
                 WHERE p2.packet_hash = p.packet_hash
                   AND p2.time > NOW() - INTERVAL '5 minutes'
                   AND COALESCE(p2.payload->>'direction', 'rx') = 'tx'
-                  ${buildPacketScopeClause(scope, 'p2')}
+                  ${buildPacketScopeClause(scope, 'p2', network)}
               ) AS tx_count
        FROM packets p
        WHERE p.time > NOW() - INTERVAL '5 minutes'
-         ${buildPacketScopeClause(scope, 'p')}
+         ${buildPacketScopeClause(scope, 'p', network)}
        ORDER BY p.packet_hash,
                 CASE WHEN p.payload ? 'appData' THEN 1 ELSE 0 END DESC,
                 CASE WHEN p.src_node_id IS NOT NULL THEN 1 ELSE 0 END DESC,
@@ -273,7 +278,7 @@ export async function getRecentPacketEvents(limit = 200, network?: string, obser
         p.advert_count, p.path_hashes, p.path_hash_size_bytes
      FROM packets p
      WHERE p.time > NOW() - INTERVAL '24 hours'
-       ${buildPacketScopeClause(scope, 'p')}
+         ${buildPacketScopeClause(scope, 'p', network)}
      ORDER BY p.time DESC
      LIMIT $1`,
     params,
@@ -296,7 +301,7 @@ export async function getLastNPackets(n: number, network?: string, observer?: st
                 WHERE p2.packet_hash = p.packet_hash
                   AND p2.time > NOW() - INTERVAL '24 hours'
                   AND p2.rx_node_id IS NOT NULL
-                  ${buildPacketScopeClause(scope, 'p2')}
+                  ${buildPacketScopeClause(scope, 'p2', network)}
               ) AS observer_node_ids,
               (
                 SELECT COUNT(*)::int
@@ -304,7 +309,7 @@ export async function getLastNPackets(n: number, network?: string, observer?: st
                 WHERE p2.packet_hash = p.packet_hash
                   AND p2.time > NOW() - INTERVAL '24 hours'
                   AND COALESCE(p2.payload->>'direction', 'rx') <> 'tx'
-                  ${buildPacketScopeClause(scope, 'p2')}
+                  ${buildPacketScopeClause(scope, 'p2', network)}
               ) AS rx_count,
               (
                 SELECT COUNT(*)::int
@@ -312,10 +317,10 @@ export async function getLastNPackets(n: number, network?: string, observer?: st
                 WHERE p2.packet_hash = p.packet_hash
                   AND p2.time > NOW() - INTERVAL '24 hours'
                   AND COALESCE(p2.payload->>'direction', 'rx') = 'tx'
-                  ${buildPacketScopeClause(scope, 'p2')}
+                  ${buildPacketScopeClause(scope, 'p2', network)}
               ) AS tx_count
        FROM packets p
-       WHERE p.time > NOW() - INTERVAL '24 hours' ${buildPacketScopeClause(scope, 'p')}
+       WHERE p.time > NOW() - INTERVAL '24 hours' ${buildPacketScopeClause(scope, 'p', network)}
        ORDER BY p.packet_hash,
                 CASE WHEN payload ? 'appData' THEN 1 ELSE 0 END DESC,
                 CASE WHEN src_node_id IS NOT NULL THEN 1 ELSE 0 END DESC,
