@@ -9,9 +9,11 @@ const databaseSchema = String(process.env['DATABASE_SCHEMA'] ?? '').trim();
 if (databaseSchema && !/^[a-z_][a-z0-9_]*$/i.test(databaseSchema)) {
   throw new Error(`Invalid DATABASE_SCHEMA: ${databaseSchema}`);
 }
+const databaseApplicationName = String(process.env['DATABASE_APPLICATION_NAME'] ?? 'meshcore-backend').trim() || 'meshcore-backend';
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
+  application_name: databaseApplicationName,
   options: databaseSchema ? `-c search_path=${databaseSchema},public` : undefined,
   max: Number(process.env['DATABASE_POOL_MAX'] ?? 8),
   idleTimeoutMillis: 30000,

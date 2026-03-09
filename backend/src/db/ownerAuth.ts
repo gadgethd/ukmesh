@@ -5,6 +5,8 @@ import { fileURLToPath } from 'node:url';
 
 const { Pool } = pg;
 const OWNER_DB_NAME = process.env['OWNER_POSTGRES_DB'] ?? 'meshcore_owner_auth';
+const ownerDatabaseApplicationName = String(process.env['OWNER_DATABASE_APPLICATION_NAME'] ?? 'meshcore-owner-auth').trim() || 'meshcore-owner-auth';
+const ownerAdminDatabaseApplicationName = String(process.env['OWNER_DATABASE_ADMIN_APPLICATION_NAME'] ?? 'meshcore-owner-auth-admin').trim() || 'meshcore-owner-auth-admin';
 
 function getPrimaryDatabaseUrl(): string {
   const raw = String(process.env['DATABASE_URL'] ?? '').trim();
@@ -29,6 +31,7 @@ function getAdminDatabaseUrl(): string {
 
 const ownerPool = new Pool({
   connectionString: getOwnerDatabaseUrl(),
+  application_name: ownerDatabaseApplicationName,
   max: Number(process.env['OWNER_DATABASE_POOL_MAX'] ?? 3),
   idleTimeoutMillis: 30_000,
   connectionTimeoutMillis: 5_000,
@@ -49,6 +52,7 @@ async function ensureOwnerDatabase(): Promise<void> {
 
   const adminPool = new Pool({
     connectionString: getAdminDatabaseUrl(),
+    application_name: ownerAdminDatabaseApplicationName,
     max: 1,
     idleTimeoutMillis: 5_000,
     connectionTimeoutMillis: 5_000,

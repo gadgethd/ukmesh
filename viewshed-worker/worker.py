@@ -42,6 +42,10 @@ REDIS_URL    = os.environ.get('REDIS_URL', 'redis://redis:6379')
 DATABASE_URL = os.environ.get('DATABASE_URL')
 WORKER_MODE  = os.environ.get('WORKER_MODE', 'all').lower()
 COVERAGE_MODEL = os.environ.get('COVERAGE_MODEL', 'rf_radial_100m').lower()
+DB_APPLICATION_NAME = os.environ.get(
+    'DATABASE_APPLICATION_NAME',
+    f'meshcore-{WORKER_MODE if WORKER_MODE in ("viewshed", "link") else "viewshed-worker"}',
+)
 
 JOB_QUEUE      = 'meshcore:viewshed_jobs'
 JOB_PENDING_SET = 'meshcore:viewshed_pending'
@@ -1169,7 +1173,7 @@ def process_job(db, r_client, job: dict):
 def wait_for_db() -> psycopg2.extensions.connection:
     for attempt in range(30):
         try:
-            conn = psycopg2.connect(DATABASE_URL)
+            conn = psycopg2.connect(DATABASE_URL, application_name=DB_APPLICATION_NAME)
             # autocommit=True prevents SELECT queries from holding open transactions
             # that would block schema DDL (CREATE EXTENSION etc.) on app restart.
             conn.autocommit = True
