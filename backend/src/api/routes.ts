@@ -320,8 +320,13 @@ function networkFilters(network?: string, observer?: string): NetworkFilters {
     packetsAlias: (alias: string) => {
       const prefix = `${alias}.`;
       const conditions: string[] = [];
-      if (networkParam) conditions.push(`${prefix}network = ${networkParam}`);
-      else conditions.push(`${prefix}network IS DISTINCT FROM 'test'`);
+      if (networkParam) {
+        conditions.push(`${prefix}network = ${networkParam}`);
+        conditions.push(`split_part(${prefix}topic, '/', 1) <> 'meshcore-test'`);
+      } else {
+        conditions.push(`${prefix}network IS DISTINCT FROM 'test'`);
+        conditions.push(`split_part(${prefix}topic, '/', 1) <> 'meshcore-test'`);
+      }
       if (observerParam) conditions.push(`LOWER(${prefix}rx_node_id) = LOWER(${observerParam})`);
       return conditions.length > 0 ? `AND ${conditions.join(' AND ')}` : '';
     },
@@ -1144,13 +1149,27 @@ router.get('/stats/charts', async (req, res) => {
     const [
       phResult, pdResult, rhResult, rdResult,
       ptResult, rpResult, hdResult, pcResult, sumResult, orSummaryResult, orSeriesResult,
+      pathHashWidthsResult, multibyteSummaryResult,
     ] = await Promise.all([
-      // packets per hour — last 24h (all observed packet rows)
+      // packets per rolling hour — last 24h (sampled every 5 minutes)
       query(`
-        SELECT time_bucket('1 hour', time) AS hour, COUNT(*) AS count
-        FROM packets
-        WHERE time > NOW() - INTERVAL '24 hours' ${filters.packets}
-        GROUP BY hour ORDER BY hour
+        WITH buckets AS (
+          SELECT generate_series(
+            date_trunc('minute', NOW() - INTERVAL '24 hours'),
+            date_trunc('minute', NOW()),
+            INTERVAL '5 minutes'
+          ) AS bucket
+        )
+        SELECT b.bucket AS hour, COALESCE(c.count, 0) AS count
+        FROM buckets b
+        LEFT JOIN LATERAL (
+          SELECT COUNT(*)::int AS count
+          FROM packets p
+          WHERE p.time > b.bucket - INTERVAL '1 hour'
+            AND p.time <= b.bucket
+            ${filters.packetsAlias('p')}
+        ) c ON TRUE
+        ORDER BY b.bucket
       `, filters.params),
       // packets per day — last 7d (all observed packet rows)
       query(`
@@ -1159,12 +1178,26 @@ router.get('/stats/charts', async (req, res) => {
         WHERE time > NOW() - INTERVAL '7 days' ${filters.packets}
         GROUP BY day ORDER BY day
       `, filters.params),
-      // unique radios heard per hour — last 24h (distinct transmitting nodes)
+      // unique radios heard per rolling hour — last 24h (sampled every 5 minutes)
       query(`
-        SELECT time_bucket('1 hour', time) AS hour, COUNT(DISTINCT src_node_id) AS count
-        FROM packets
-        WHERE time > NOW() - INTERVAL '24 hours' AND src_node_id IS NOT NULL ${filters.packets}
-        GROUP BY hour ORDER BY hour
+        WITH buckets AS (
+          SELECT generate_series(
+            date_trunc('minute', NOW() - INTERVAL '24 hours'),
+            date_trunc('minute', NOW()),
+            INTERVAL '5 minutes'
+          ) AS bucket
+        )
+        SELECT b.bucket AS hour, COALESCE(c.count, 0) AS count
+        FROM buckets b
+        LEFT JOIN LATERAL (
+          SELECT COUNT(DISTINCT p.src_node_id)::int AS count
+          FROM packets p
+          WHERE p.time > b.bucket - INTERVAL '1 hour'
+            AND p.time <= b.bucket
+            AND p.src_node_id IS NOT NULL
+            ${filters.packetsAlias('p')}
+        ) c ON TRUE
+        ORDER BY b.bucket
       `, filters.params),
       // unique radios heard per day — last 7d
       query(`
@@ -1268,6 +1301,69 @@ router.get('/stats/charts', async (req, res) => {
         GROUP BY 1, 2
         ORDER BY iata ASC, day ASC
       `, filters.params),
+      query<{
+        hash_hex_len: string;
+        hop_count: string;
+      }>(
+        `SELECT length(h)::text AS hash_hex_len, COUNT(*)::text AS hop_count
+         FROM packets p
+         CROSS JOIN LATERAL unnest(p.path_hashes) AS h
+         WHERE p.time > NOW() - INTERVAL '24 hours'
+           ${filters.packetsAlias('p')}
+         GROUP BY 1`,
+        filters.params,
+      ),
+      query<{
+        latest_multibyte_at: string | null;
+        multibyte_packets_24h: string;
+        fully_decoded_multibyte_24h: string;
+      }>(
+        `WITH multibyte AS (
+           SELECT DISTINCT ON (p.packet_hash)
+             p.packet_hash,
+             p.time,
+             p.path_hashes
+           FROM packets p
+           WHERE p.time > NOW() - INTERVAL '24 hours'
+             AND p.path_hash_size_bytes > 1
+             AND COALESCE(array_length(p.path_hashes, 1), 0) > 0
+             ${filters.packetsAlias('p')}
+           ORDER BY p.packet_hash,
+                    COALESCE(array_length(p.path_hashes, 1), 0) DESC,
+                    COALESCE(p.hop_count, 0) DESC,
+                    p.time DESC
+         ),
+         hop_matches AS (
+           SELECT
+             m.packet_hash,
+             h.ord,
+             COUNT(DISTINCT n.node_id)::int AS match_count,
+             MIN(n.node_id) FILTER (WHERE n.node_id IS NOT NULL) AS matched_node_id
+           FROM multibyte m
+           CROSS JOIN LATERAL unnest(m.path_hashes) WITH ORDINALITY AS h(hash, ord)
+           LEFT JOIN nodes n
+             ON UPPER(LEFT(n.node_id, LENGTH(h.hash))) = UPPER(h.hash)
+            AND (n.role IS NULL OR n.role = 2)
+            AND n.lat IS NOT NULL
+            AND n.lon IS NOT NULL
+           GROUP BY 1, 2
+         ),
+         packet_eval AS (
+           SELECT
+             m.packet_hash,
+             BOOL_AND(hm.match_count = 1) AS all_unique,
+             COUNT(hm.ord)::int AS hop_count,
+             COUNT(DISTINCT hm.matched_node_id) FILTER (WHERE hm.matched_node_id IS NOT NULL)::int AS unique_nodes
+           FROM multibyte m
+           JOIN hop_matches hm ON hm.packet_hash = m.packet_hash
+           GROUP BY m.packet_hash
+         )
+         SELECT
+           (SELECT MAX(time)::text FROM multibyte) AS latest_multibyte_at,
+           (SELECT COUNT(*)::text FROM multibyte) AS multibyte_packets_24h,
+           (SELECT COUNT(*)::text FROM packet_eval WHERE all_unique AND unique_nodes = hop_count) AS fully_decoded_multibyte_24h`,
+        filters.params,
+      ),
     ]);
 
     const peakRow = phResult.rows.reduce(
@@ -1278,6 +1374,10 @@ router.get('/stats/charts', async (req, res) => {
     const fmtHour = (ts: Date | string) => {
       const d = new Date(ts);
       return `${d.getHours().toString().padStart(2, '0')}:00`;
+    };
+    const fmtHourMinute = (ts: Date | string) => {
+      const d = new Date(ts);
+      return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
     };
     const fmtDay = (ts: Date | string) => {
       const d = new Date(ts);
@@ -1315,10 +1415,30 @@ router.get('/stats/charts', async (req, res) => {
       });
     }
 
+    const widthToBucket: Record<number, 'one_byte' | 'two_byte' | 'three_byte'> = {
+      2: 'one_byte',
+      4: 'two_byte',
+      6: 'three_byte',
+    };
+    const pathHashStats = {
+      one_byte: 0,
+      two_byte: 0,
+      three_byte: 0,
+    };
+
+    for (const row of pathHashWidthsResult.rows) {
+      const width = Number(row.hash_hex_len ?? 0);
+      const bucket = widthToBucket[width];
+      if (!bucket) continue;
+      pathHashStats[bucket] += Number(row.hop_count ?? 0);
+    }
+
+    const multibyteRow = multibyteSummaryResult.rows[0];
+
     res.json({
-      packetsPerHour:  phResult.rows.map(r => ({ hour: fmtHour(r.hour), count: Number(r.count) })),
+      packetsPerHour:  phResult.rows.map(r => ({ hour: fmtHourMinute(r.hour), count: Number(r.count) })),
       packetsPerDay:   pdResult.rows.map(r => ({ day: fmtDay(r.day), count: Number(r.count) })),
-      radiosPerHour:   rhResult.rows.map(r => ({ hour: fmtHour(r.hour), count: Number(r.count) })),
+      radiosPerHour:   rhResult.rows.map(r => ({ hour: fmtHourMinute(r.hour), count: Number(r.count) })),
       radiosPerDay:    rdResult.rows.map(r => ({ day: fmtDay(r.day), count: Number(r.count) })),
       packetTypes:     ptResult.rows.map(r => ({ label: PAYLOAD_LABELS[Number(r.packet_type)] ?? `Type${r.packet_type}`, count: Number(r.count) })),
       repeatersPerDay: rpResult.rows.map(r => ({ hour: fmtDay(r.hour), count: Number(r.count ?? 0) })),
@@ -1330,6 +1450,12 @@ router.get('/stats/charts', async (req, res) => {
         repeats: Number(r.repeats),
       })),
       observerRegions: Array.from(observerRegionsByIata.values()),
+      pathHashes: {
+        last24hHops: pathHashStats,
+        multibytePackets24h: Number(multibyteRow?.multibyte_packets_24h ?? 0),
+        fullyDecodedMultibyte24h: Number(multibyteRow?.fully_decoded_multibyte_24h ?? 0),
+        latestMultibyteAt: multibyteRow?.latest_multibyte_at ?? null,
+      },
       summary: {
         totalPackets24h:  Number(sumResult.rows[0].total_24h),
         totalPackets7d:   Number(sumResult.rows[0].total_7d),

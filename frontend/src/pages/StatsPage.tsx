@@ -62,6 +62,16 @@ interface ChartData {
     lastPacketAt: string | null;
     series: { day: string; count: number }[];
   }[];
+  pathHashes: {
+    last24hHops: {
+      one_byte: number;
+      two_byte: number;
+      three_byte: number;
+    };
+    multibytePackets24h: number;
+    fullyDecodedMultibyte24h: number;
+    latestMultibyteAt: string | null;
+  };
   summary: {
     totalPackets24h:  number;
     totalPackets7d:   number;
@@ -120,6 +130,7 @@ export const StatsPage: React.FC = () => {
   }, [site.networkFilter, site.observerId]);
 
   const fmt = (n: number) => n.toLocaleString();
+  const pct = (num: number, den: number) => den > 0 ? `${Math.round((num / den) * 100)}%` : '0%';
   const timeAgo = (ts: string | null) => {
     if (!ts) return 'never';
     const diff = Math.max(0, Date.now() - Date.parse(ts));
@@ -243,6 +254,42 @@ export const StatsPage: React.FC = () => {
                 </div>
               </div>
             )}
+
+            <div className="stats-page__observer-section">
+              <div className="stats-page__chart-header">
+                <span className="stats-page__chart-title">Path hashes</span>
+                <span className="stats-page__chart-sub">observed hop widths across the last 24 hours</span>
+              </div>
+              <div className="site-stats-grid site-stats-grid--4 health-system-grid">
+                <div className="site-stat">
+                  <span className="site-stat__value">{fmt(data.pathHashes.last24hHops.one_byte)}</span>
+                  <span className="site-stat__label">1-byte Hops (24h)</span>
+                </div>
+                <div className="site-stat">
+                  <span className="site-stat__value">{fmt(data.pathHashes.last24hHops.two_byte)}</span>
+                  <span className="site-stat__label">2-byte Hops (24h)</span>
+                </div>
+                <div className="site-stat">
+                  <span className="site-stat__value">{fmt(data.pathHashes.last24hHops.three_byte)}</span>
+                  <span className="site-stat__label">3-byte Hops (24h)</span>
+                </div>
+                <div className="site-stat">
+                  <span className="site-stat__value">{fmt(data.pathHashes.multibytePackets24h)}</span>
+                  <span className="site-stat__label">Multibyte Packets (24h)</span>
+                </div>
+                <div className="site-stat">
+                  <span className="site-stat__value">{fmt(data.pathHashes.fullyDecodedMultibyte24h)}</span>
+                  <span className="site-stat__label">Fully Decoded (24h)</span>
+                  <span className="site-stat__sub">{pct(data.pathHashes.fullyDecodedMultibyte24h, data.pathHashes.multibytePackets24h)} of multibyte packets</span>
+                </div>
+              </div>
+              <div className="health-meta">
+                <div className="health-kv">
+                  <span>Latest Multibyte Packet</span>
+                  <strong>{data.pathHashes.latestMultibyteAt ? timeAgo(data.pathHashes.latestMultibyteAt) : 'not seen yet'}</strong>
+                </div>
+              </div>
+            </div>
 
             {/* ── Packets over time ────────────────────────────────────────── */}
             <div className="stats-page__row">
