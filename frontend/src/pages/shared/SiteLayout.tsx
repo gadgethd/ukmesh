@@ -139,6 +139,7 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
             </NavLink>
           ))}
           {showLiveMap && <a href={appUrl} className="site-nav__link">Live Map</a>}
+          <a href="https://flasher.ukmesh.com" className="site-nav__link">Flasher</a>
           <NavLink
             to="/login"
             onClick={() => handleNavClick('/login')}

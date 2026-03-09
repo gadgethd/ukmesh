@@ -77,7 +77,21 @@ function buildNodeScopeClause(
   const conditions: string[] = [];
 
   if (placeholders.networkParam) {
-    conditions.push(`${prefix}network = ${placeholders.networkParam}`);
+    conditions.push(
+      `(
+        ${prefix}network = ${placeholders.networkParam}
+        OR (
+          ${placeholders.networkParam} = 'teesside'
+          AND EXISTS (
+            SELECT 1
+            FROM packets p_scope
+            WHERE LOWER(p_scope.src_node_id) = LOWER(${prefix}node_id)
+              AND p_scope.network = 'teesside'
+              AND split_part(p_scope.topic, '/', 1) <> 'meshcore-test'
+          )
+        )
+      )`,
+    );
   } else {
     conditions.push(`${prefix}network IS DISTINCT FROM 'test'`);
   }
