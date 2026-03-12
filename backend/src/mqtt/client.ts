@@ -4,7 +4,7 @@ import type {
   AdvertPayload, GroupTextPayload, TextMessagePayload,
   TracePayload, PathPayload, AckPayload,
 } from '@michaelhart/meshcore-decoder';
-import { insertPacket, upsertNode, incrementAdvertCount, query } from '../db/index.js';
+import { insertNodeStatusSample, insertPacket, upsertNode, incrementAdvertCount, query } from '../db/index.js';
 import type { LivePacket } from '../types/index.js';
 import { decodePacketCompat } from './decodePacket.js';
 
@@ -99,6 +99,77 @@ function isEmptyPacketEnvelope(json: Record<string, unknown>, rawHex: string, pa
     && packetType == null
     && (declaredLen ?? 0) <= 0
     && (payloadLen ?? 0) <= 0;
+}
+
+function toRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function readNum(obj: Record<string, unknown> | undefined, ...keys: string[]): number | undefined {
+  if (!obj) return undefined;
+  for (const key of keys) {
+    if (!(key in obj)) continue;
+    const n = toNum(obj[key]);
+    if (n != null) return n;
+  }
+  return undefined;
+}
+
+type StatusTelemetrySample = {
+  batteryMv?: number;
+  uptimeSecs?: number;
+  txAirSecs?: number;
+  rxAirSecs?: number;
+  channelUtilization?: number;
+  airUtilTx?: number;
+  stats?: Record<string, unknown>;
+};
+
+function extractStatusTelemetry(json: Record<string, unknown>): StatusTelemetrySample | null {
+  const stats = toRecord(json['stats']);
+  const batteryMv = readNum(stats, 'battery_mv', 'batteryMv');
+  const uptimeSecs = readNum(stats, 'uptime_secs', 'uptimeSecs');
+  const txAirSecs = readNum(stats, 'tx_air_secs', 'txAirSecs');
+  const rxAirSecs = readNum(stats, 'rx_air_secs', 'rxAirSecs');
+  const channelUtilization = readNum(
+    stats,
+    'channel_utilization',
+    'channel_utilization_pct',
+    'channel_util',
+    'channelUtil',
+    'channelUtilization',
+  );
+  const airUtilTx = readNum(
+    stats,
+    'air_util_tx',
+    'air_util_tx_pct',
+    'tx_air_util',
+    'tx_air_utilization',
+    'airUtilTx',
+  );
+
+  if (
+    batteryMv == null
+    && uptimeSecs == null
+    && txAirSecs == null
+    && rxAirSecs == null
+    && channelUtilization == null
+    && airUtilTx == null
+  ) {
+    return null;
+  }
+
+  return {
+    batteryMv,
+    uptimeSecs,
+    txAirSecs,
+    rxAirSecs,
+    channelUtilization,
+    airUtilTx,
+    stats,
+  };
 }
 
 /**
@@ -314,7 +385,22 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
       hardwareModel:   (model    && model    !== 'unknown') ? model    : undefined,
       firmwareVersion: (firmware && firmware !== 'unknown') ? firmware : undefined,
       network,
+      allowTestOverride: network === 'test' && nodeId === observerKey,
     });
+    const telemetry = extractStatusTelemetry(json);
+    if (telemetry) {
+      void insertNodeStatusSample({
+        nodeId,
+        network,
+        batteryMv: telemetry.batteryMv,
+        uptimeSecs: telemetry.uptimeSecs,
+        txAirSecs: telemetry.txAirSecs,
+        rxAirSecs: telemetry.rxAirSecs,
+        channelUtilization: telemetry.channelUtilization,
+        airUtilTx: telemetry.airUtilTx,
+        stats: telemetry.stats,
+      });
+    }
     emitNode(nodeId, { network, observerId: observerKey });
     return;
   }
@@ -455,7 +541,11 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
     return;
   }
 
-  void upsertNode(observerKey, { iata, network });
+  void upsertNode(observerKey, {
+    iata,
+    network,
+    allowTestOverride: network === 'test',
+  });
   emitNode(observerKey, { network, observerId: observerKey });
 
   if (useTxAdvertFallback && originId) {

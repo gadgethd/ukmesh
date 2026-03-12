@@ -272,6 +272,7 @@ export async function getWorkerHealthOverview() {
          WHERE rx_node_id IS NOT NULL
            AND rx_node_id <> ''
            AND network IS DISTINCT FROM 'test'
+           AND split_part(topic, '/', 1) <> 'meshcore-test'
          GROUP BY rx_node_id
        ),
        test_active AS (
@@ -298,7 +299,10 @@ export async function getWorkerHealthOverview() {
            END
          )::text AS max_stale_minutes,
          '15'::text AS stale_threshold_minutes,
-         (SELECT MAX(time)::text FROM packets WHERE network IS DISTINCT FROM 'test') AS global_last_packet_at
+         (SELECT MAX(time)::text
+          FROM packets
+          WHERE network IS DISTINCT FROM 'test'
+            AND split_part(topic, '/', 1) <> 'meshcore-test') AS global_last_packet_at
        FROM active_rx`,
     ),
     query<{

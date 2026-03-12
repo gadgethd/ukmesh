@@ -7,6 +7,7 @@ const { Pool } = pg;
 const OWNER_DB_NAME = process.env['OWNER_POSTGRES_DB'] ?? 'meshcore_owner_auth';
 const ownerDatabaseApplicationName = String(process.env['OWNER_DATABASE_APPLICATION_NAME'] ?? 'meshcore-owner-auth').trim() || 'meshcore-owner-auth';
 const ownerAdminDatabaseApplicationName = String(process.env['OWNER_DATABASE_ADMIN_APPLICATION_NAME'] ?? 'meshcore-owner-auth-admin').trim() || 'meshcore-owner-auth-admin';
+const ownerDatabaseStatementTimeoutMs = Number(process.env['OWNER_DATABASE_STATEMENT_TIMEOUT_MS'] ?? 30_000);
 
 function getPrimaryDatabaseUrl(): string {
   const raw = String(process.env['DATABASE_URL'] ?? '').trim();
@@ -35,6 +36,8 @@ const ownerPool = new Pool({
   max: Number(process.env['OWNER_DATABASE_POOL_MAX'] ?? 3),
   idleTimeoutMillis: 30_000,
   connectionTimeoutMillis: 5_000,
+  statement_timeout: ownerDatabaseStatementTimeoutMs,
+  query_timeout: ownerDatabaseStatementTimeoutMs,
 });
 
 ownerPool.on('error', (err) => {
@@ -56,6 +59,8 @@ async function ensureOwnerDatabase(): Promise<void> {
     max: 1,
     idleTimeoutMillis: 5_000,
     connectionTimeoutMillis: 5_000,
+    statement_timeout: ownerDatabaseStatementTimeoutMs,
+    query_timeout: ownerDatabaseStatementTimeoutMs,
   });
 
   try {

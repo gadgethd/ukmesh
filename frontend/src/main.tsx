@@ -4,18 +4,14 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { App } from './App.js';
 import { Layout } from './pages/Layout.js';
 import { HomePage } from './pages/HomePage.js';
-import { AboutPage } from './pages/AboutPage.js';
 import { InstallPage } from './pages/InstallPage.js';
 import { OpenSourcePage } from './pages/OpenSourcePage.js';
-import { MqttPage } from './pages/MqttPage.js';
 import { StatsPage } from './pages/StatsPage.js';
 import { PacketsPage } from './pages/PacketsPage.js';
-import { HealthPage } from './pages/HealthPage.js';
 import { OwnerPortalPage } from './pages/OwnerPortalPage.js';
 import { UKLayout } from './pages/ukmesh/UKLayout.js';
 import { UKHomePage } from './pages/ukmesh/UKHomePage.js';
 import { UKInstallPage } from './pages/ukmesh/UKInstallPage.js';
-import { UKMqttPage } from './pages/ukmesh/UKMqttPage.js';
 import { UKFeedPage } from './pages/ukmesh/UKFeedPage.js';
 import { DevLayout } from './pages/dev/DevLayout.js';
 import { DevHomePage } from './pages/dev/DevHomePage.js';
@@ -51,10 +47,10 @@ ReactDOM.createRoot(root).render(
           <Route element={<UKLayout />}>
             <Route index element={<UKHomePage />} />
             <Route path="feed" element={<UKFeedPage />} />
-            <Route path="about" element={<AboutPage />} />
+            <Route path="about" element={<Navigate to="/" replace />} />
             <Route path="install" element={<UKInstallPage />} />
-            <Route path="mqtt" element={<UKMqttPage />} />
-            <Route path="health" element={<HealthPage />} />
+            <Route path="mqtt" element={<Navigate to="/install" replace />} />
+            <Route path="health" element={<Navigate to="/stats" replace />} />
             <Route path="login" element={<OwnerPortalPage />} />
             <Route path="open-source" element={<OpenSourcePage />} />
             <Route path="stats" element={<StatsPage />} />
@@ -66,10 +62,10 @@ ReactDOM.createRoot(root).render(
         <Routes>
           <Route element={<Layout />}>
             <Route index element={<HomePage />} />
-            <Route path="about" element={<AboutPage />} />
+            <Route path="about" element={<Navigate to="/" replace />} />
             <Route path="install" element={<InstallPage />} />
-            <Route path="mqtt" element={<MqttPage />} />
-            <Route path="health" element={<HealthPage />} />
+            <Route path="mqtt" element={<Navigate to="/install" replace />} />
+            <Route path="health" element={<Navigate to="/stats" replace />} />
             <Route path="login" element={<OwnerPortalPage />} />
             <Route path="packets" element={<PacketsPage />} />
             <Route path="open-source" element={<OpenSourcePage />} />

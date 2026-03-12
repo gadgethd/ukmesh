@@ -29,6 +29,7 @@
   --online:         #00e676;
   --offline:        #546e7a;
   --danger:         #ff1744;
+  --inferred:       #6ddc7a;
 
   /* Device-type colours */
   --companion:      #ff9800;   /* ChatNode (role 1) — orange */
@@ -407,6 +408,17 @@ html, body, #root {
   box-shadow: 0 0 8px rgba(206,147,216,0.35);
 }
 .node-marker--room .node-marker__pulse { background: var(--room-server); }
+
+.node-marker--inferred .node-marker__core {
+  background: rgba(109, 220, 122, 0.18);
+  border-color: rgba(109, 220, 122, 0.92);
+  box-shadow: 0 0 0 1px rgba(109, 220, 122, 0.28), 0 0 14px rgba(109, 220, 122, 0.18);
+}
+
+.node-marker--inferred .node-marker__pulse {
+  background: rgba(109, 220, 122, 0.7);
+  opacity: 0.32;
+}
 
 .node-marker--restore .node-marker__core,
 .node-marker--restore .node-marker__pulse {
@@ -1106,6 +1118,19 @@ html, body, #root {
 .owner-panel__head h2 {
   margin: 0;
 }
+.owner-panel__head--compact {
+  margin-bottom: 10px;
+}
+.owner-panel__head--compact h3 {
+  margin: 0;
+  font-size: 15px;
+}
+.owner-panel__head--compact p {
+  margin: 4px 0 0;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.45;
+}
 .owner-alerts {
   display: grid;
   gap: 10px;
@@ -1172,6 +1197,79 @@ html, body, #root {
 }
 .owner-trend__meta strong {
   color: var(--text-primary);
+  font-family: var(--font-mono);
+}
+.owner-telemetry-panel {
+  margin-bottom: 16px;
+  height: auto;
+  overflow: hidden;
+}
+.owner-telemetry-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+.owner-telemetry-metric {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-panel-alt);
+  overflow: hidden;
+}
+.owner-telemetry-metric__value {
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 15px;
+  white-space: nowrap;
+}
+.owner-telemetry-metric__chart {
+  height: 88px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01));
+  overflow: hidden;
+}
+.owner-telemetry-metric--stat {
+  justify-content: space-between;
+}
+.owner-telemetry-metric__stat {
+  min-height: 88px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01));
+}
+.owner-telemetry-metric__stat strong {
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 26px;
+  line-height: 1;
+}
+.owner-telemetry-metric__chart svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.owner-telemetry-metric__empty {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.owner-telemetry-metric__footer {
+  margin-top: 8px;
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--text-secondary);
+  font-size: 10px;
   font-family: var(--font-mono);
 }
 .owner-list {
@@ -2062,6 +2160,12 @@ html, body, #root {
   gap: 14px;
 }
 
+@media (min-width: 1500px) {
+  .health-workers-grid {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+}
+
 .health-workers-grid > * {
   min-width: 0;
 }
@@ -2544,6 +2648,7 @@ html, body, #root {
   .owner-list { grid-template-columns: 1fr; }
   .owner-list__row { grid-template-columns: 1fr; }
   .owner-list__metrics { justify-content: flex-start; }
+  .owner-telemetry-strip { grid-template-columns: 1fr; }
   .owner-roadmap { grid-template-columns: 1fr; }
   .owner-head { flex-direction: column; align-items: flex-start; }
   .owner-map { height: 260px; }

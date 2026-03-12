@@ -20,7 +20,7 @@ export const UKHomePage: React.FC = () => {
             <div className="site-home__actions">
               <a href={site.appUrl} className="site-btn site-btn--primary">Open live map</a>
               <Link to="/install" className="site-btn site-btn--ghost">Install MeshCore</Link>
-              <Link to="/mqtt" className="site-btn site-btn--ghost">Become an observer</Link>
+              <Link to="/stats" className="site-btn site-btn--ghost">Network stats</Link>
             </div>
           </div>
 
@@ -53,19 +53,23 @@ export const UKHomePage: React.FC = () => {
       <section className="site-section">
         <div className="site-content">
           <div className="site-section__head">
+            <h2>What MeshCore is</h2>
+            <p>
+              MeshCore is open-source firmware for LoRa hardware. Nodes forward packets between each other, which is
+              what makes long regional chains, repeater coverage, and the wider UK map possible. This site is the public
+              documentation and analytics layer around that shared network.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section className="site-section">
+        <div className="site-content">
+          <div className="site-section__head">
             <h2>Use the network</h2>
             <p>The public site covers the national network, the observer feed, and the operational pages that sit around the live map.</p>
           </div>
           <div className="site-home__cards">
-            <div className="site-home__card">
-              <h3>What MeshCore is</h3>
-              <p>
-                MeshCore is open-source firmware for LoRa hardware. Each node can forward packets, which is what
-                makes long regional chains and repeater coverage possible.
-              </p>
-              <Link to="/about">Read the overview</Link>
-            </div>
-
             <div className="site-home__card">
               <h3>Get on the air</h3>
               <p>
@@ -81,7 +85,7 @@ export const UKHomePage: React.FC = () => {
                 Connect a repeater or room server to the broker, publish packets over MQTT, and add another view
                 of the network from your own location.
               </p>
-              <Link to="/mqtt">Observer setup</Link>
+              <Link to="/install">Observer setup</Link>
             </div>
 
             <div className="site-home__card">

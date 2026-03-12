@@ -10,6 +10,7 @@ if (databaseSchema && !/^[a-z_][a-z0-9_]*$/i.test(databaseSchema)) {
   throw new Error(`Invalid DATABASE_SCHEMA: ${databaseSchema}`);
 }
 const databaseApplicationName = String(process.env['DATABASE_APPLICATION_NAME'] ?? 'meshcore-backend').trim() || 'meshcore-backend';
+const databaseStatementTimeoutMs = Number(process.env['DATABASE_STATEMENT_TIMEOUT_MS'] ?? 30_000);
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -18,6 +19,8 @@ const pool = new Pool({
   max: Number(process.env['DATABASE_POOL_MAX'] ?? 8),
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 5000,
+  statement_timeout: databaseStatementTimeoutMs,
+  query_timeout: databaseStatementTimeoutMs,
 });
 
 pool.on('error', (err) => {
@@ -142,6 +145,7 @@ export async function upsertNode(nodeId: string, updates: {
   firmwareVersion?: string;
   publicKey?: string;
   network?: string;
+  allowTestOverride?: boolean;
 }): Promise<void> {
   await pool.query(
     `INSERT INTO nodes (node_id, name, lat, lon, iata, role, hardware_model, firmware_version, public_key, last_seen, is_online, network)
@@ -157,6 +161,7 @@ export async function upsertNode(nodeId: string, updates: {
        public_key       = COALESCE(EXCLUDED.public_key, nodes.public_key),
        network          = CASE
                             WHEN EXCLUDED.network IS NULL THEN nodes.network
+                            WHEN EXCLUDED.network = 'test' AND $11 THEN 'test'
                             WHEN EXCLUDED.network = 'test' AND nodes.network IN ('ukmesh', 'teesside') THEN nodes.network
                             WHEN EXCLUDED.network IN ('ukmesh', 'teesside') THEN EXCLUDED.network
                             ELSE EXCLUDED.network
@@ -164,7 +169,7 @@ export async function upsertNode(nodeId: string, updates: {
        last_seen        = NOW(),
        is_online        = TRUE`,
     [nodeId, updates.name, updates.lat, updates.lon, updates.iata, updates.role,
-     updates.hardwareModel, updates.firmwareVersion, updates.publicKey, updates.network ?? null]
+     updates.hardwareModel, updates.firmwareVersion, updates.publicKey, updates.network ?? null, Boolean(updates.allowTestOverride)]
   );
 }
 
@@ -207,6 +212,35 @@ export async function insertPacket(p: {
      p.routeType, p.hopCount, p.rssi, p.snr,
      storedPayload ? JSON.stringify(storedPayload) : null, p.rawHex, p.advertCount ?? null,
      p.pathHashes ?? null, inferredPathHashSizeBytes, p.network ?? 'teesside']
+  );
+}
+
+export async function insertNodeStatusSample(sample: {
+  nodeId: string;
+  network?: string;
+  batteryMv?: number | null;
+  uptimeSecs?: number | null;
+  txAirSecs?: number | null;
+  rxAirSecs?: number | null;
+  channelUtilization?: number | null;
+  airUtilTx?: number | null;
+  stats?: Record<string, unknown> | null;
+}): Promise<void> {
+  await pool.query(
+    `INSERT INTO node_status_samples
+       (time, node_id, network, battery_mv, uptime_secs, tx_air_secs, rx_air_secs, channel_utilization, air_util_tx, stats)
+     VALUES (NOW(), $1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+    [
+      sample.nodeId,
+      sample.network ?? 'teesside',
+      sample.batteryMv ?? null,
+      sample.uptimeSecs ?? null,
+      sample.txAirSecs ?? null,
+      sample.rxAirSecs ?? null,
+      sample.channelUtilization ?? null,
+      sample.airUtilTx ?? null,
+      sample.stats ? JSON.stringify(sample.stats) : null,
+    ],
   );
 }
 
@@ -349,6 +383,97 @@ export async function getLastNPackets(n: number, network?: string, observer?: st
     params
   );
   return res.rows;
+}
+
+export type PathHistorySegmentRow = {
+  positions: [[number, number], [number, number]];
+  count: number;
+};
+
+export type PathHistoryCacheRow = {
+  scope: string;
+  window_start: string;
+  updated_at: string;
+  packet_count: number;
+  resolved_packet_count: number;
+  segment_counts: PathHistorySegmentRow[];
+};
+
+export async function getRecentPathHistoryPacketHashes(
+  hours = 1,
+  network?: string,
+  limit = 1200,
+): Promise<string[]> {
+  const scope = buildScopePlaceholders(3, network);
+  const params: unknown[] = [hours, limit, ...scope.params];
+  const res = await pool.query<{ packet_hash: string }>(
+    `SELECT packet_hash
+     FROM (
+       SELECT p.packet_hash, MAX(p.time) AS last_seen
+       FROM packets p
+       WHERE p.time > NOW() - INTERVAL '1 hour' * $1
+         AND p.path_hashes IS NOT NULL
+         AND cardinality(p.path_hashes) > 0
+         ${buildPacketScopeClause(scope, 'p', network)}
+       GROUP BY p.packet_hash
+     ) recent
+     ORDER BY last_seen DESC
+     LIMIT $2`,
+    params,
+  );
+  return res.rows.map((row) => row.packet_hash).filter(Boolean);
+}
+
+export async function upsertPathHistoryCache(entry: {
+  scope: string;
+  windowStart: Date;
+  packetCount: number;
+  resolvedPacketCount: number;
+  segmentCounts: PathHistorySegmentRow[];
+}): Promise<void> {
+  await pool.query(
+    `INSERT INTO path_history_cache (scope, window_start, updated_at, packet_count, resolved_packet_count, segment_counts)
+     VALUES ($1, $2, NOW(), $3, $4, $5::jsonb)
+     ON CONFLICT (scope) DO UPDATE SET
+       window_start = EXCLUDED.window_start,
+       updated_at = NOW(),
+       packet_count = EXCLUDED.packet_count,
+       resolved_packet_count = EXCLUDED.resolved_packet_count,
+       segment_counts = EXCLUDED.segment_counts`,
+    [
+      entry.scope,
+      entry.windowStart.toISOString(),
+      entry.packetCount,
+      entry.resolvedPacketCount,
+      JSON.stringify(entry.segmentCounts),
+    ],
+  );
+}
+
+export async function getPathHistoryCache(scope: string): Promise<PathHistoryCacheRow | null> {
+  const res = await pool.query<{
+    scope: string;
+    window_start: string;
+    updated_at: string;
+    packet_count: number;
+    resolved_packet_count: number;
+    segment_counts: PathHistorySegmentRow[] | null;
+  }>(
+    `SELECT scope, window_start, updated_at, packet_count, resolved_packet_count, segment_counts
+     FROM path_history_cache
+     WHERE scope = $1`,
+    [scope],
+  );
+  const row = res.rows[0];
+  if (!row) return null;
+  return {
+    scope: row.scope,
+    window_start: row.window_start,
+    updated_at: row.updated_at,
+    packet_count: row.packet_count,
+    resolved_packet_count: row.resolved_packet_count,
+    segment_counts: Array.isArray(row.segment_counts) ? row.segment_counts : [],
+  };
 }
 
 /** Minimum observations required before a link is considered confirmed. */

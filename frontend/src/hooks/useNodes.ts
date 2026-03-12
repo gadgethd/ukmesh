@@ -23,6 +23,13 @@ export interface MeshNode {
   public_key?:    string;
   advert_count?:  number;  // persistent DB count of times this node has advertised
   elevation_m?:   number;  // terrain elevation ASL from SRTM (set when viewshed computed)
+  is_inferred?:   boolean;
+  inferred_prefix?: string;
+  inferred_hash_size_bytes?: number;
+  inferred_observations?: number;
+  inferred_packet_count?: number;
+  inferred_prev_name?: string | null;
+  inferred_next_name?: string | null;
 }
 
 export interface LivePacketData {

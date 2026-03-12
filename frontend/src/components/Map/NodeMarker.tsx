@@ -9,7 +9,7 @@ import { isValidMapCoord } from '../../utils/pathing.js';
 const SEVEN_DAYS_MS  = 7  * 24 * 60 * 60 * 1000;
 const PREVIEW_TTL_MS = 20_000;
 
-type MarkerVariant = 'repeater' | 'companion' | 'room';
+type MarkerVariant = 'repeater' | 'companion' | 'room' | 'inferred';
 type HexClashState = 'offender' | 'clear';
 
 // Build a custom Leaflet icon from HTML
@@ -32,6 +32,7 @@ function buildIcon(
     // Colour variant only shown when online and fresh
     isOnline && !isStale && variant === 'companion' ? 'node-marker--companion' : '',
     isOnline && !isStale && variant === 'room'      ? 'node-marker--room'      : '',
+    isOnline && !isStale && variant === 'inferred'  ? 'node-marker--inferred'  : '',
     isRestoring ? 'node-marker--restore' : '',
     hexClashState === 'offender' ? 'node-marker--hex-offender' : '',
     hexClashState === 'clear' ? 'node-marker--hex-clear' : '',
@@ -103,6 +104,7 @@ interface NodeLink {
 interface Props {
   node:          MeshNode;
   isActive:      boolean;
+  isInferred?:   boolean;
   nodeCoverage?: NodeCoverage;
   markerSize?:   number;
   isHighlighted?: boolean;
@@ -116,6 +118,7 @@ interface Props {
 export const NodeMarker: React.FC<Props> = React.memo(({
   node,
   isActive,
+  isInferred = false,
   nodeCoverage,
   markerSize = 12,
   isHighlighted = false,
@@ -143,7 +146,7 @@ export const NodeMarker: React.FC<Props> = React.memo(({
   const lon = node.lon as number;
   const ageMs   = Date.now() - new Date(node.last_seen).getTime();
   const isStale = ageMs > SEVEN_DAYS_MS;
-  const variant = roleVariant(node.role);
+  const variant = (isInferred || node.is_inferred) ? 'inferred' : roleVariant(node.role);
 
   const fallbackName = ROLE_LABELS[node.role ?? 2] ?? 'Unknown Device';
 
@@ -184,6 +187,32 @@ export const NodeMarker: React.FC<Props> = React.memo(({
                 <span>Type</span>
                 <span>{ROLE_LABELS[node.role] ?? 'Unknown'}</span>
               </div>
+            )}
+            {(isInferred || node.is_inferred) && (
+              <>
+                <div className="node-popup__row">
+                  <span>Type</span>
+                  <span>{node.is_inferred ? 'Inferred repeater' : 'Inferred active'}</span>
+                </div>
+                {node.inferred_prefix && (
+                  <div className="node-popup__row">
+                    <span>Prefix</span>
+                    <span>{node.inferred_prefix}</span>
+                  </div>
+                )}
+                {(node.inferred_packet_count || node.inferred_observations) && (
+                  <div className="node-popup__row">
+                    <span>Evidence</span>
+                    <span>{node.inferred_packet_count ?? 0} packet(s) / {node.inferred_observations ?? 0} sighting(s)</span>
+                  </div>
+                )}
+                {(node.inferred_prev_name || node.inferred_next_name) && (
+                  <div className="node-popup__row">
+                    <span>Between</span>
+                    <span>{node.inferred_prev_name ?? 'unknown'} · {node.inferred_next_name ?? 'unknown'}</span>
+                  </div>
+                )}
+              </>
             )}
             <div className="node-popup__row">
               <span>Status</span>

@@ -93,6 +93,8 @@ const DASH_STEP  = 0.3;
 
 interface MapViewProps {
   nodes:           Map<string, MeshNode>;
+  inferredNodes:   MeshNode[];
+  inferredActiveNodeIds: Set<string>;
   arcs:            PacketArc[];
   activeNodes:     Set<string>;
   coverage:        NodeCoverage[];
@@ -104,7 +106,8 @@ interface MapViewProps {
   maxHexClashHops: number;
   viablePairsArr:  [string, string][];
   linkMetrics:     Map<string, LinkMetrics>;
-  packetPaths:     [number, number][][];
+  packetHistorySegments: Array<{ positions: [[number, number], [number, number]]; count: number }>;
+  showPacketHistory: boolean;
   betaPaths:       [number, number][][];
   betaLowPaths:    [number, number][][];
   betaLowSegments: [[number, number], [number, number]][];
@@ -117,10 +120,11 @@ interface MapViewProps {
 // Default UK centre (Teesside area)
 const DEFAULT_CENTER: [number, number] = [54.57, -1.23];
 const DEFAULT_ZOOM = 11;
+const STALE_MARKER_MS = 7 * 24 * 60 * 60 * 1000;
 
 export const MapView: React.FC<MapViewProps> = ({
-  nodes, arcs, activeNodes, coverage, showPackets, showCoverage, showClientNodes,
-  showLinks, showHexClashes, maxHexClashHops, viablePairsArr, linkMetrics, packetPaths, betaPaths, betaLowSegments, betaCompletionPaths, showBetaPaths, pathOpacity, onMapReady,
+  nodes, inferredNodes, inferredActiveNodeIds, arcs, activeNodes, coverage, showPackets, showCoverage, showClientNodes,
+  showLinks, showHexClashes, maxHexClashHops, viablePairsArr, linkMetrics, packetHistorySegments, showPacketHistory, betaPaths, betaLowSegments, betaCompletionPaths, showBetaPaths, pathOpacity, onMapReady,
 }) => {
   const [map, setMap] = useState<LeafletMap | null>(null);
   const [viewBounds, setViewBounds] = useState<ViewBounds | null>(null);
@@ -198,7 +202,7 @@ export const MapView: React.FC<MapViewProps> = ({
   // Leaflet SVG path element. CSS animation is unreliable here because Leaflet
   // calls _updateStyle (setAttribute) on every prop change, which can interrupt
   // CSS keyframe animations. Direct DOM manipulation in an rAF loop is stable.
-  const hasRegular = packetPaths.length > 0;
+  const hasRegular = false;
   const hasBeta = Boolean(showBetaPaths && (betaLowSegments.length > 0 || betaPaths.length > 0));
 
   useEffect(() => {
@@ -545,6 +549,21 @@ export const MapView: React.FC<MapViewProps> = ({
     [clientNodesArr, inView],
   );
 
+  const visibleInferredNodes = useMemo(
+    () => inferredNodes.filter((node) => hasCoords(node) && inView(node.lat, node.lon)),
+    [inferredNodes, inView],
+  );
+
+  const visiblePacketHistorySegments = useMemo(() => {
+    if (!showPacketHistory) return [];
+    const segments = packetHistorySegments.filter((segment) => lineInView(segment.positions));
+    const zoom = map?.getZoom() ?? DEFAULT_ZOOM;
+    const limited = (zoom >= 9 || segments.length <= 700) ? segments : [...segments]
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 700);
+    return [...limited].sort((a, b) => a.count - b.count);
+  }, [showPacketHistory, packetHistorySegments, lineInView, map]);
+
   const markerSize = useMemo(() => {
     const leafletZoom = deckViewState.zoom + 1;
     let size = 12;
@@ -648,11 +667,13 @@ export const MapView: React.FC<MapViewProps> = ({
           if (showHexClashes && !clashVisibleNodeIds.has(node.node_id)) return null;
           const isFocusVisible = clashVisibleNodeIds.has(node.node_id) || (focusedPrefixNodeIds?.has(node.node_id) ?? false);
           if (focusedPrefixNodeIds && focusHidePhase === 'hide' && !isFocusVisible) return null;
+          const isStaleNode = (Date.now() - new Date(node.last_seen).getTime()) > STALE_MARKER_MS;
           return (
             <NodeMarker
               key={node.node_id}
               node={node}
               isActive={activeNodes.has(node.node_id)}
+              isInferred={isStaleNode && inferredActiveNodeIds.has(node.node_id.toLowerCase()) && !activeNodes.has(node.node_id)}
               isHighlighted={!!focusedPrefix && node.node_id.slice(0, 2).toUpperCase() === focusedPrefix}
               isRestoring={!!focusedPrefixNodeIds && focusHidePhase === 'fade' && !isFocusVisible}
               hexClashState={clashModeActive ? (clashOffenderNodeIds.has(node.node_id) ? 'offender' : clashVisibleNodeIds.has(node.node_id) ? 'clear' : undefined) : undefined}
@@ -664,6 +685,17 @@ export const MapView: React.FC<MapViewProps> = ({
             />
           );
         })}
+
+        {/* Inferred multibyte repeaters — provisional layer only, never fed back into pathing */}
+        {!showHexClashes && visibleInferredNodes.map((node) => (
+            <NodeMarker
+              key={node.node_id}
+              node={node}
+              isActive={false}
+              isInferred
+              markerSize={Math.max(4, markerSize - 1)}
+            />
+          ))}
 
         {/* Companion radio + room server markers (toggled via filter) */}
         {showClientNodes && !showHexClashes && visibleClientNodes.map((node) => {
@@ -682,20 +714,29 @@ export const MapView: React.FC<MapViewProps> = ({
           );
         })}
 
-        {/* Live packet path — marching dashes from source → observer */}
-        {packetPaths.map((path, idx) => (
-          <Polyline
-            key={`packet-path-${idx}`}
-            positions={path}
-            className="packet-path-overlay"
-            pathOptions={{
-              color:     '#00c4ff',
-              weight:    2,
-              dashArray: '6 9',
-              opacity:   pathOpacity,
-            }}
-          />
-        ))}
+        {showPacketHistory && visiblePacketHistorySegments.length > 0 && (
+          <Pane name="packetHistoryPane" style={{ zIndex: 510 }}>
+            {visiblePacketHistorySegments.map((segment, idx) => {
+              const strength = Math.max(1, segment.count);
+              const weight = Math.min(6, 1.2 + Math.log2(strength + 1) * 1.05);
+              const opacity = Math.min(0.82, 0.12 + Math.log10(strength + 1) * 0.32);
+              return (
+                <Polyline
+                  key={`packet-history-${idx}`}
+                  positions={segment.positions}
+                  pathOptions={{
+                    color: '#a855f7',
+                    weight,
+                    opacity,
+                    lineCap: 'round',
+                    lineJoin: 'round',
+                  }}
+                  interactive={false}
+                />
+              );
+            })}
+          </Pane>
+        )}
 
         {/* Beta path — uncertain (red) drawn first so confident (purple) always renders on top.
             Renders individual filtered segments so purple-covered edges are never drawn in red. */}

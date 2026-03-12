@@ -17,6 +17,7 @@ const ALLOWED_ORIGINS = (process.env['ALLOWED_ORIGINS'] ?? '')
 
 const PORT = Number(process.env['PORT'] ?? 3000);
 const COVERAGE_MODEL_VERSION = Number(process.env['COVERAGE_MODEL_VERSION'] ?? 5);
+const HSTS_HEADER = 'max-age=31536000; includeSubDomains; preload';
 
 async function main() {
   // 1. Initialise DB schema + retention policy
@@ -82,6 +83,7 @@ async function main() {
 
   // Security headers
   app.use((_req, res, next) => {
+    res.setHeader('Strict-Transport-Security', HSTS_HEADER);
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('X-Frame-Options', 'DENY');
     res.setHeader('Referrer-Policy', 'no-referrer');

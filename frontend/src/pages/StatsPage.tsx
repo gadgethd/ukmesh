@@ -83,6 +83,53 @@ interface ChartData {
   };
 }
 
+interface HealthPayload {
+  system: {
+    generated_at: string;
+    cpu: { load_1m: number; count: number; load_pct: number; usage_pct: number };
+    memory: { total_mb: number; used_mb: number; used_pct: number };
+    disk: { total_gb: number; used_gb: number; used_pct: number };
+    runtime: { uptime_s: number; node_version: string; platform: string; arch: string };
+  };
+  workers: Array<{
+    worker_name: string;
+    status: string;
+    queue_depth: number;
+    processed_1h: number;
+    last_activity_at: string | null;
+  }>;
+  frontend_errors_1h: number;
+  ingest: {
+    stale_nodes: number;
+    active_nodes: number;
+    max_stale_minutes: number;
+    stale_threshold_minutes: number;
+    global_last_packet_at: string | null;
+  };
+}
+
+function workerLabel(name: string): string {
+  if (name === 'viewshed-worker') return 'Viewshed Worker';
+  if (name === 'link-worker') return 'Link Worker';
+  if (name === 'path-learning') return 'Path Learning';
+  if (name === 'health-worker') return 'Health Worker';
+  if (name === 'link-backfill-worker') return 'Link Backfill Worker';
+  if (name === 'path-history-worker') return 'Path History Worker';
+  return name;
+}
+
+function fmtInt(value: number | undefined): string {
+  return Number(value ?? 0).toLocaleString();
+}
+
+function fmtPct(value: number | undefined): string {
+  return `${Number(value ?? 0).toFixed(1)}%`;
+}
+
+function fmtGb(value: number | undefined): string {
+  return `${Number(value ?? 0).toFixed(1)} GB`;
+}
+
 // ── Stat card ─────────────────────────────────────────────────────────────────
 const StatCard: React.FC<{ label: string; value: string; sub?: string; color?: string }> = ({
   label, value, sub, color = C_CYAN,
@@ -110,11 +157,13 @@ const ChartCard: React.FC<{ title: string; sub?: string; children: React.ReactNo
 // ── Main page ─────────────────────────────────────────────────────────────────
 export const StatsPage: React.FC = () => {
   const [data, setData]       = useState<ChartData | null>(null);
+  const [health, setHealth]   = useState<HealthPayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
   const site = getCurrentSite();
   const statsScope = { network: site.networkFilter, observer: site.observerId };
   const refreshSeconds = 30 * 60;
+  const healthRefreshSeconds = 5 * 60;
 
   const load = () => {
     fetch(uncachedEndpoint(chartStatsEndpoint(statsScope)), { cache: 'no-store' })
@@ -123,11 +172,27 @@ export const StatsPage: React.FC = () => {
       .catch(() => setLoading(false));
   };
 
+  const loadHealth = () => {
+    fetch('/api/health', { cache: 'no-store' })
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then((d: HealthPayload) => setHealth(d))
+      .catch(() => undefined);
+  };
+
   useEffect(() => {
     load();
     const t = setInterval(load, refreshSeconds * 1000);
     return () => clearInterval(t);
   }, [site.networkFilter, site.observerId]);
+
+  useEffect(() => {
+    loadHealth();
+    const t = setInterval(loadHealth, healthRefreshSeconds * 1000);
+    return () => clearInterval(t);
+  }, []);
 
   const fmt = (n: number) => n.toLocaleString();
   const pct = (num: number, den: number) => den > 0 ? `${Math.round((num / den) * 100)}%` : '0%';
@@ -410,7 +475,7 @@ export const StatsPage: React.FC = () => {
             </div>
 
             {/* ── Hop distribution + prefix collisions ─────────────────────── */}
-            <div className="stats-page__row" style={{ marginBottom: 64 }}>
+            <div className="stats-page__row">
               <ChartCard title="Hop count distribution" sub="last 7 days · all observer hits">
                 <ResponsiveContainer width="100%" height={220}>
                   <BarChart data={data.hopDistribution} margin={{ top: 8, right: 8, left: -20, bottom: 0 }}>
@@ -448,6 +513,60 @@ export const StatsPage: React.FC = () => {
                 </ResponsiveContainer>
               </ChartCard>
             </div>
+
+            {health && (
+              <div className="stats-page__observer-section" style={{ marginBottom: 64 }}>
+                <div className="stats-page__chart-header">
+                  <span className="stats-page__chart-title">System Health</span>
+                  <span className="stats-page__chart-sub">workers and host stats, refreshed every 5 minutes</span>
+                </div>
+
+                <p className="prose-note">
+                  {health.ingest.stale_nodes < 1
+                    ? 'All ingest nodes are active.'
+                    : health.ingest.stale_nodes === 1
+                      ? `1 ingest node has not injected for ${fmtInt(health.ingest.max_stale_minutes)} minutes.`
+                      : `${fmtInt(health.ingest.stale_nodes)} ingest nodes have not injected for up to ${fmtInt(health.ingest.max_stale_minutes)} minutes.`}
+                </p>
+
+                <div className="health-workers-grid" style={{ marginBottom: 24 }}>
+                  {health.workers.map((worker) => {
+                    const statusClass = worker.status === 'running' ? 'health-pill health-pill--ok' : 'health-pill';
+                    return (
+                      <div key={worker.worker_name} className="site-card health-card">
+                        <div className="health-card__head">
+                          <h3 className="site-card__title">{workerLabel(worker.worker_name)}</h3>
+                          <span className={statusClass}>{worker.status.toUpperCase()}</span>
+                        </div>
+                        <div className="health-card__stats">
+                          <div className="health-kv"><span>Queue</span><strong>{worker.queue_depth}</strong></div>
+                          <div className="health-kv"><span>Processed 1h</span><strong>{worker.processed_1h}</strong></div>
+                          <div className="health-kv"><span>Last Activity</span><strong>{timeAgo(worker.last_activity_at)}</strong></div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div className="site-stats-grid site-stats-grid--6 health-system-grid">
+                  <div className="site-stat"><span className="site-stat__value">{fmtPct(health.system.cpu.usage_pct)}</span><span className="site-stat__label">CPU Usage</span></div>
+                  <div className="site-stat"><span className="site-stat__value">{fmtPct(health.system.memory.used_pct)}</span><span className="site-stat__label">Memory Used</span></div>
+                  <div className="site-stat"><span className="site-stat__value">{fmtPct(health.system.disk.used_pct)}</span><span className="site-stat__label">Disk Used</span></div>
+                  <div className="site-stat"><span className="site-stat__value">{fmtInt(health.frontend_errors_1h)}</span><span className="site-stat__label">Frontend Errors (1h)</span></div>
+                  <div className="site-stat"><span className="site-stat__value">{fmtInt(Math.floor(health.system.runtime.uptime_s / 3600))}h</span><span className="site-stat__label">Uptime</span></div>
+                  <div className="site-stat"><span className="site-stat__value">{fmtInt(health.workers.reduce((sum, worker) => sum + worker.queue_depth, 0))}</span><span className="site-stat__label">Queued Jobs</span></div>
+                </div>
+
+                <div className="health-meta">
+                  <div className="health-kv"><span>Updated</span><strong>{health.system.generated_at ? timeAgo(health.system.generated_at) : 'just now'}</strong></div>
+                  <div className="health-kv"><span>Node Runtime</span><strong>{health.system.runtime.node_version}</strong></div>
+                  <div className="health-kv"><span>Platform</span><strong>{health.system.runtime.platform} / {health.system.runtime.arch}</strong></div>
+                  <div className="health-kv"><span>CPU 1m Load</span><strong>{Number(health.system.cpu.load_1m ?? 0).toFixed(2)} ({health.system.cpu.count} cores)</strong></div>
+                  <div className="health-kv"><span>Memory</span><strong>{fmtInt(health.system.memory.used_mb)} / {fmtInt(health.system.memory.total_mb)} MB</strong></div>
+                  <div className="health-kv"><span>Disk</span><strong>{fmtGb(health.system.disk.used_gb)} / {fmtGb(health.system.disk.total_gb)}</strong></div>
+                </div>
+              </div>
+            )}
           </>
         )}
       </div>

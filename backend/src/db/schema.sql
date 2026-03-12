@@ -127,6 +127,41 @@ END;
 CREATE INDEX IF NOT EXISTS packets_hash_idx   ON packets (packet_hash, time DESC);
 CREATE INDEX IF NOT EXISTS packets_rx_idx     ON packets (rx_node_id, time DESC);
 CREATE INDEX IF NOT EXISTS packets_src_idx    ON packets (src_node_id, time DESC);
+CREATE INDEX IF NOT EXISTS packets_network_time_idx ON packets (network, time DESC);
+CREATE INDEX IF NOT EXISTS packets_path_hashes_idx ON packets USING GIN (path_hashes) WHERE path_hashes IS NOT NULL;
+
+-- ─── Observer / repeater status telemetry samples ───────────────────────────
+
+CREATE TABLE IF NOT EXISTS node_status_samples (
+  time                 TIMESTAMPTZ      NOT NULL DEFAULT NOW(),
+  node_id              TEXT             NOT NULL,
+  network              TEXT             NOT NULL DEFAULT 'teesside',
+  battery_mv           INTEGER,
+  uptime_secs          BIGINT,
+  tx_air_secs          BIGINT,
+  rx_air_secs          BIGINT,
+  channel_utilization  DOUBLE PRECISION,
+  air_util_tx          DOUBLE PRECISION,
+  stats                JSONB
+);
+
+SELECT create_hypertable('node_status_samples', 'time', if_not_exists => TRUE);
+
+CREATE INDEX IF NOT EXISTS node_status_samples_node_time_idx
+  ON node_status_samples (node_id, time DESC);
+CREATE INDEX IF NOT EXISTS node_status_samples_network_time_idx
+  ON node_status_samples (network, time DESC);
+
+-- ─── Cached beta-path history (pre-aggregated purple segments) ───────────────
+
+CREATE TABLE IF NOT EXISTS path_history_cache (
+  scope                  TEXT PRIMARY KEY,
+  window_start           TIMESTAMPTZ NOT NULL,
+  updated_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  packet_count           INTEGER NOT NULL DEFAULT 0,
+  resolved_packet_count  INTEGER NOT NULL DEFAULT 0,
+  segment_counts         JSONB NOT NULL DEFAULT '[]'::jsonb
+);
 
 -- ─── Coverage polygons (one row per node, recalculated on position change) ───
 

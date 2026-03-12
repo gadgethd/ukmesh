@@ -20,7 +20,7 @@ export const HomePage: React.FC = () => {
             <div className="site-home__actions">
               <a href={site.appUrl} className="site-btn site-btn--primary">Open live map</a>
               <Link to="/install" className="site-btn site-btn--ghost">Install MeshCore</Link>
-              <Link to="/mqtt" className="site-btn site-btn--ghost">MQTT observer setup</Link>
+              <Link to="/stats" className="site-btn site-btn--ghost">Network stats</Link>
             </div>
           </div>
 
@@ -57,19 +57,23 @@ export const HomePage: React.FC = () => {
       <section className="site-section">
         <div className="site-content">
           <div className="site-section__head">
+            <h2>What MeshCore is</h2>
+            <p>
+              MeshCore is open-source firmware for LoRa radios. Each node can relay packets, which is what lets
+              traffic move across repeaters long after it has left the original transmitter. This site tracks the
+              Teesside observer view, node positions, relay behaviour, and the public data that sits behind the live map.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section className="site-section">
+        <div className="site-content">
+          <div className="site-section__head">
             <h2>Use the network</h2>
             <p>Everything on the public site should answer one of three questions: what MeshCore is, how to join, and how to contribute useful coverage.</p>
           </div>
           <div className="site-home__cards">
-            <div className="site-home__card">
-              <h3>What MeshCore is</h3>
-              <p>
-                MeshCore is open-source firmware for ESP32 LoRa hardware. Nodes relay packets between each other,
-                so a message can keep moving after it has left the original transmitter.
-              </p>
-              <Link to="/about">Read the overview</Link>
-            </div>
-
             <div className="site-home__card">
               <h3>Get on the air</h3>
               <p>
@@ -85,7 +89,7 @@ export const HomePage: React.FC = () => {
                 Repeater owners can run `meshcoretomqtt` on a Pi or other Linux host, publish packets over MQTT,
                 and contribute live telemetry back into the map and stats pages.
               </p>
-              <Link to="/mqtt">MQTT setup</Link>
+              <Link to="/install">Observer setup</Link>
             </div>
 
             <div className="site-home__card">

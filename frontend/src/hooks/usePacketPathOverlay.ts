@@ -5,7 +5,6 @@ import type { Filters } from '../components/FilterPanel/FilterPanel.js';
 import { hasCoords } from '../utils/pathing.js';
 import {
   aggregateServerPredictions,
-  buildRegularPacketPaths,
   packetObserverIds,
   type AggregatedPredictionState,
   type MultiObserverBetaResponse,
@@ -183,10 +182,6 @@ export function usePacketPathOverlay({
     return !hasCoords(src);
   }, [nodes]);
 
-  const getRegularPacketPaths = useCallback((packet: AggregatedPacket | undefined, observerIds: string[]): [number, number][][] => {
-    return buildRegularPacketPaths(packet, observerIds, nodes);
-  }, [nodes]);
-
   const resolvePrediction = useCallback((packetHash: string, networkName?: string, observerId?: string): Promise<ServerBetaResponse | null> => {
     prunePredictionCache();
     const key = cacheKey(packetHash, networkName, observerId);
@@ -263,12 +258,7 @@ export function usePacketPathOverlay({
 
     const latest = packets[0];
     const observerIds = getPacketObserverIds(latest);
-
-    if (filters.packetPaths && observerIds.length > 0 && latest && (latest.path?.length || latest.srcNodeId)) {
-      setPacketPaths(getRegularPacketPaths(latest, observerIds));
-    } else {
-      setPacketPaths([]);
-    }
+    setPacketPaths([]);
 
     if (filters.betaPaths && latest?.packetHash && latest.path?.length && observerIds.length > 0) {
       const reqSeq = ++activeReqSeqRef.current;
@@ -300,7 +290,7 @@ export function usePacketPathOverlay({
       setBetaRemainingHops(null);
     }
 
-    if (!filters.packetPaths && !filters.betaPaths) {
+    if (!filters.betaPaths) {
       setPathOpacity(0.75);
       return;
     }
@@ -326,7 +316,7 @@ export function usePacketPathOverlay({
       pathFadeRef.current = requestAnimationFrame(animate);
     }, PATH_TTL - 1_000);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [latestId, filters.packetPaths, filters.betaPaths, pinnedPacketId, network, observer, packets, getPacketObserverIds, resolvePrediction, resolveMultiPrediction, stopPathTimers, clearPathState, applyServerPredictions, getRegularPacketPaths]);
+  }, [latestId, filters.betaPaths, pinnedPacketId, network, observer, packets, getPacketObserverIds, resolvePrediction, resolveMultiPrediction, stopPathTimers, clearPathState, applyServerPredictions]);
 
   const handlePacketPin = useCallback((packet: AggregatedPacket) => {
     if (pinnedPacketId === packet.id) {
@@ -389,7 +379,6 @@ export function usePacketPathOverlay({
       pinnedPacket.srcNodeId ?? '',
       pinnedPacket.path?.join(',') ?? '',
       observerIds.join(','),
-      filters.packetPaths ? 'paths-on' : 'paths-off',
       filters.betaPaths ? 'beta-on' : 'beta-off',
       network ?? 'all',
       observer ?? 'all',
@@ -398,11 +387,7 @@ export function usePacketPathOverlay({
     if (overlayKey === pinnedOverlayKeyRef.current) return;
     pinnedOverlayKeyRef.current = overlayKey;
 
-    if (filters.packetPaths) {
-      setPacketPaths(getRegularPacketPaths(pinnedPacket, observerIds));
-    } else {
-      setPacketPaths([]);
-    }
+    setPacketPaths([]);
 
     if (filters.betaPaths && pinnedPacket.packetHash && pinnedPacket.path?.length && observerIds.length > 0) {
       const reqSeq = ++activeReqSeqRef.current;
@@ -437,12 +422,10 @@ export function usePacketPathOverlay({
     pinnedPacketId,
     packets,
     pinnedPacketSnapshot,
-    filters.packetPaths,
     filters.betaPaths,
     network,
     observer,
     getPacketObserverIds,
-    getRegularPacketPaths,
     shouldCollapseAdvertObserverPartials,
     resolvePrediction,
     resolveMultiPrediction,

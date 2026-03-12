@@ -7,7 +7,7 @@ import { DisclaimerModal } from './components/app/DisclaimerModal.js';
 import { AppTopBar } from './components/app/AppTopBar.js';
 import { MobileControls } from './components/app/MobileControls.js';
 import { useWebSocket } from './hooks/useWebSocket.js';
-import { useNodes } from './hooks/useNodes.js';
+import { useNodes, type MeshNode } from './hooks/useNodes.js';
 import { useCoverage } from './hooks/useCoverage.js';
 import { useDashboardStats } from './hooks/useDashboardStats.js';
 import { useLinkState } from './hooks/useLinkState.js';
@@ -16,11 +16,16 @@ import { useAppMessageHandler } from './hooks/useAppMessageHandler.js';
 import { getCurrentSite } from './config/site.js';
 import { uncachedEndpoint, withScopeParams } from './utils/api.js';
 
+type PacketHistorySegment = {
+  positions: [[number, number], [number, number]];
+  count: number;
+};
+
 const DEFAULT_FILTERS: Filters = {
   livePackets: true,
   coverage: false,
   clientNodes: false,
-  packetPaths: false,
+  packetHistory: false,
   betaPaths: false,
   betaPathThreshold: 0.45,
   links: false,
@@ -29,7 +34,7 @@ const DEFAULT_FILTERS: Filters = {
 };
 
 const DISCLAIMER_KEY = 'meshcore-disclaimer-dismissed';
-const FILTERS_KEY = 'meshcore-app-filters-v2';
+const FILTERS_KEY = 'meshcore-app-filters-v3';
 
 export const App: React.FC = () => {
   const site = getCurrentSite();
@@ -45,6 +50,9 @@ export const App: React.FC = () => {
   });
   const [map, setMap] = useState<LeafletMap | null>(null);
   const [showDisclaimer, setShowDisclaimer] = useState(() => !localStorage.getItem(DISCLAIMER_KEY));
+  const [inferredNodes, setInferredNodes] = useState<MeshNode[]>([]);
+  const [inferredActiveNodeIds, setInferredActiveNodeIds] = useState<Set<string>>(new Set());
+  const [packetHistorySegments, setPacketHistorySegments] = useState<PacketHistorySegment[]>([]);
   const clashRestoreRef = useRef<{ links: boolean; coverage: boolean; clientNodes: boolean } | null>(null);
   const prevHexClashesRef = useRef<boolean>(DEFAULT_FILTERS.hexClashes);
 
@@ -74,7 +82,6 @@ export const App: React.FC = () => {
   } = useLinkState();
 
   const {
-    packetPaths,
     betaPacketPaths,
     betaLowConfidencePaths,
     betaLowConfidenceSegments,
@@ -139,6 +146,62 @@ export const App: React.FC = () => {
       window.clearInterval(timer);
     };
   }, [networkFilter, observerFilter, replaceRecentPackets]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const syncPacketHistory = async () => {
+      try {
+        const response = await fetch(
+          uncachedEndpoint(withScopeParams('/api/path-beta/history', { network: networkFilter })),
+          { cache: 'no-store' },
+        );
+        if (!response.ok) return;
+        const payload = await response.json() as {
+          segments?: PacketHistorySegment[];
+        };
+        if (cancelled) return;
+        setPacketHistorySegments(Array.isArray(payload.segments) ? payload.segments : []);
+      } catch {
+        // best-effort cached history layer only
+      }
+    };
+
+    void syncPacketHistory();
+    const timer = window.setInterval(() => { void syncPacketHistory(); }, 5 * 60 * 1000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [networkFilter]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const syncInferredNodes = async () => {
+      try {
+        const response = await fetch(
+          uncachedEndpoint(withScopeParams('/api/inferred-nodes', { network: networkFilter, observer: observerFilter })),
+          { cache: 'no-store' },
+        );
+        if (!response.ok) return;
+        const payload = await response.json() as {
+          inferredNodes: MeshNode[];
+          inferredActiveNodeIds: string[];
+        };
+        if (cancelled) return;
+        setInferredNodes(payload.inferredNodes ?? []);
+        setInferredActiveNodeIds(new Set((payload.inferredActiveNodeIds ?? []).map((value) => value.toLowerCase())));
+      } catch {
+        // best-effort visual hint layer only
+      }
+    };
+
+    void syncInferredNodes();
+    const timer = window.setInterval(() => { void syncInferredNodes(); }, 5 * 60 * 1000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [networkFilter, observerFilter]);
 
   useEffect(() => {
     const wasHexClashes = prevHexClashesRef.current;
@@ -240,6 +303,8 @@ export const App: React.FC = () => {
 
       <MapView
         nodes={nodes}
+        inferredNodes={inferredNodes}
+        inferredActiveNodeIds={inferredActiveNodeIds}
         arcs={arcs}
         activeNodes={activeNodes}
         coverage={coverage}
@@ -251,7 +316,8 @@ export const App: React.FC = () => {
         maxHexClashHops={filters.hexClashMaxHops}
         viablePairsArr={viablePairsArr}
         linkMetrics={linkMetrics}
-        packetPaths={packetPaths}
+        packetHistorySegments={packetHistorySegments}
+        showPacketHistory={filters.packetHistory}
         betaPaths={betaPacketPaths}
         betaLowPaths={betaLowConfidencePaths}
         betaLowSegments={betaLowConfidenceSegments}

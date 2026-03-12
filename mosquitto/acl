@@ -8,9 +8,6 @@ topic readwrite meshcore-test/#
 user node1
 topic write meshcore/#
 
-# ukmesh node observers — publish to ukmesh/{IATA}/{PUBKEY}/packets
-user node-ukmesh
-topic write ukmesh/#
 
 user test
 topic write meshcore-test/#
@@ -19,4 +16,7 @@ user mrlm
 topic write meshcore/#
 
 user jackster1337
+topic write meshcore/#
+
+user NE35
 topic write meshcore/#

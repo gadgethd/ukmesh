@@ -10,6 +10,9 @@ export const UKLayout: React.FC = () => {
       footerName={site.footerName}
       appUrl={site.appUrl}
       showFeed
+      showAbout={false}
+      showMqtt={false}
+      showHealth={false}
       showPackets={false}
       showStats
     />

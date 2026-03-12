@@ -148,6 +148,45 @@ export const UKInstallPage: React.FC = () => (
         </a>
       </section>
 
+      <section className="prose-section">
+        <h2>
+          <span className="prose-step">5</span>
+          Add an MQTT observer
+        </h2>
+        <p>
+          If you want your repeater or room server to feed the public dashboards, run an observer bridge on a Linux host
+          connected to the node over USB. The bridge publishes what the node hears to the shared UK Mesh broker.
+        </p>
+        <div className="prose-note">
+          <strong>Access is by request.</strong> Message <strong>ibengr</strong> on Discord to get MQTT credentials before setting this up.
+        </div>
+        <div className="code-block">
+          <pre>{'curl -fsSL https://raw.githubusercontent.com/Cisien/meshcoretomqtt/main/install.sh | bash'}</pre>
+        </div>
+        <p>
+          During setup, enable packet logging, choose the correct IATA code for your location, and add one extra broker with:
+        </p>
+        <div className="code-block">
+          <pre>{`Server hostname/IP: mqtt.ukmesh.com
+Port [1883]: 443
+Use WebSockets transport? [y/N]: y
+Use TLS/SSL encryption? [y/N]: y
+Verify TLS certificates? [Y/n]: y
+Choose authentication method [1-3] [1]: 1
+Username: <your username>
+Password: <your password>`}</pre>
+        </div>
+        <p className="prose-note">
+          Topic format:
+        </p>
+        <div className="code-block">
+          <pre>{'meshcore/<IATA>/{PUBLIC_KEY}/packets'}</pre>
+        </div>
+        <p>
+          Observers using <strong>MME</strong> also appear in the Teesside-specific views. All other IATA codes appear in the wider UK feed only.
+        </p>
+      </section>
+
     </div>
   </>
 );

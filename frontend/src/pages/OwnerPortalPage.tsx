@@ -1,6 +1,7 @@
 import React, { FormEvent, useEffect, useMemo, useState } from 'react';
 import { CircleMarker, MapContainer, Polyline, Popup, TileLayer, useMap } from 'react-leaflet';
 import type { LatLngExpression } from 'leaflet';
+import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 
 type OwnerNode = {
   node_id: string;
@@ -76,6 +77,14 @@ type OwnerLiveResponse = {
     last_observed: string | null;
   }>;
   advertTrend24h: Array<{ bucket: string; adverts: number }>;
+  telemetry24h: Array<{
+    bucket: string;
+    batteryPct: number | null;
+    batteryMv: number | null;
+    uptimeSecs: number | null;
+    channelUtilPct: number | null;
+    airUtilTxPct: number | null;
+  }>;
   alerts: Array<{ level: 'info' | 'warn' | 'error'; message: string }>;
   recentPackets: LivePacket[];
 };
@@ -114,6 +123,11 @@ const ROUTE_LABELS: Record<number, string> = {
   2: 'Guided',
   3: 'Opportunistic',
 };
+
+const AXIS_COLOR = '#3a5070';
+const LABEL_COLOR = '#6b8aaa';
+const TIP_BG = '#0d1520';
+const TIP_BORDER = 'rgba(0,196,255,0.25)';
 
 function cleanPacketBody(packet: LivePacket): string | null {
   const body = packet.body?.trim();
@@ -168,6 +182,144 @@ const TrendBars: React.FC<{ points: Array<{ bucket: string; adverts: number }> }
     </div>
   );
 };
+
+type TelemetryPoint = OwnerLiveResponse['telemetry24h'][number];
+
+const TELEMETRY_SERIES = [
+  {
+    key: 'batteryPct' as const,
+    title: 'Battery',
+    suffix: '%',
+    stroke: '#6ddc7a',
+    meta: (point: TelemetryPoint | null) => point?.batteryMv == null ? 'No data' : `${point.batteryMv} mV`,
+  },
+  {
+    key: 'channelUtilPct' as const,
+    title: 'Channel Utilization',
+    suffix: '%',
+    stroke: '#00c4ff',
+    meta: () => 'Rolling from status samples',
+  },
+  {
+    key: 'airUtilTxPct' as const,
+    title: 'Air Util TX',
+    suffix: '%',
+    stroke: '#ff9f43',
+    meta: () => 'Rolling TX air time',
+  },
+] as const;
+
+function formatUptime(seconds: number | null): string {
+  if (seconds == null || !Number.isFinite(seconds) || seconds < 0) return '—';
+  const total = Math.floor(seconds);
+  const days = Math.floor(total / 86400);
+  const hours = Math.floor((total % 86400) / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${minutes}m`;
+}
+
+const OwnerTelemetryTooltip: React.FC<{
+  active?: boolean;
+  payload?: Array<{ value: number }>;
+  label?: string;
+  suffix: string;
+}> = ({ active, payload, label, suffix }) => {
+  if (!active || !payload?.length) return null;
+  return (
+    <div style={{ background: TIP_BG, border: `1px solid ${TIP_BORDER}`, borderRadius: 6, padding: '8px 12px', fontSize: 12 }}>
+      {label ? <p style={{ color: LABEL_COLOR, margin: '0 0 4px' }}>{formatCompactTs(label)}</p> : null}
+      <p style={{ color: '#e8f0fb', margin: 0 }}>
+        <strong>{payload[0]?.value?.toFixed(1)}{suffix}</strong>
+      </p>
+    </div>
+  );
+};
+
+const TelemetryMiniChart: React.FC<{
+  title: string;
+  stroke: string;
+  suffix: string;
+  points: TelemetryPoint[];
+  metric: keyof Pick<TelemetryPoint, 'batteryPct' | 'channelUtilPct' | 'airUtilTxPct'>;
+  meta: (point: TelemetryPoint | null) => string;
+}> = ({ title, stroke, suffix, points, metric, meta }) => {
+  const chartData = points
+    .map((point) => ({ bucket: point.bucket, value: point[metric] }))
+    .filter((entry): entry is { bucket: string; value: number } => entry.value != null);
+  const latest = points.length > 0 ? points[points.length - 1]! : null;
+  const latestValue = latest?.[metric] ?? null;
+
+  return (
+    <article className="owner-telemetry-metric">
+      <div className="owner-panel__head owner-panel__head--compact">
+        <div>
+          <h3>{title}</h3>
+          <p>{meta(latest)}</p>
+        </div>
+        <strong className="owner-telemetry-metric__value">
+          {latestValue == null ? '—' : `${latestValue.toFixed(1)}${suffix}`}
+        </strong>
+      </div>
+      <div className="owner-telemetry-metric__chart">
+        {chartData.length > 0 ? (
+          <ResponsiveContainer width="100%" height="100%">
+            <AreaChart data={chartData} margin={{ top: 6, right: 6, left: 0, bottom: 0 }}>
+              <XAxis dataKey="bucket" hide />
+              <YAxis
+                hide
+                domain={[0, 100]}
+                axisLine={{ stroke: AXIS_COLOR }}
+                tickLine={false}
+                tick={{ fill: LABEL_COLOR, fontSize: 11 }}
+              />
+              <Tooltip content={<OwnerTelemetryTooltip suffix={suffix} />} />
+              <Area
+                type="monotone"
+                dataKey="value"
+                stroke={stroke}
+                fill={stroke}
+                fillOpacity={0.18}
+                strokeWidth={2}
+                dot={false}
+                isAnimationActive={false}
+              />
+            </AreaChart>
+          </ResponsiveContainer>
+        ) : (
+          <div className="owner-telemetry-metric__empty">No telemetry yet</div>
+        )}
+      </div>
+      <div className="owner-telemetry-metric__footer">
+        <span>Last 24h</span>
+        <span>{chartData.length} samples</span>
+      </div>
+    </article>
+  );
+};
+
+const TelemetryStatCard: React.FC<{
+  title: string;
+  value: string;
+  meta: string;
+}> = ({ title, value, meta }) => (
+  <article className="owner-telemetry-metric owner-telemetry-metric--stat">
+    <div className="owner-panel__head owner-panel__head--compact">
+      <div>
+        <h3>{title}</h3>
+        <p>{meta}</p>
+      </div>
+    </div>
+    <div className="owner-telemetry-metric__stat">
+      <strong>{value}</strong>
+    </div>
+    <div className="owner-telemetry-metric__footer">
+      <span>Last 24h</span>
+      <span>Latest sample</span>
+    </div>
+  </article>
+);
 
 const MAP_CENTER: LatLngExpression = [54.6, -1.2];
 
@@ -343,6 +495,11 @@ export const OwnerPortalPage: React.FC = () => {
     [live],
   );
 
+  const latestTelemetry = useMemo(() => {
+    const points = live?.telemetry24h ?? [];
+    return points.length > 0 ? points[points.length - 1]! : null;
+  }, [live]);
+
   return (
     <>
       <section className="site-page-hero">
@@ -434,6 +591,33 @@ export const OwnerPortalPage: React.FC = () => {
                 <div className="site-stat"><span className="site-stat__value">{dashboard.totals.packets24h}</span><span className="site-stat__label">Packets Sent (24h)</span></div>
               </div>
               {liveError ? <p className="prose-note owner-login__error">Live data error: {liveError}</p> : null}
+            </section>
+
+            <section className="owner-panel owner-telemetry-panel">
+              <div className="owner-panel__head">
+                <div>
+                  <h2>Node Telemetry</h2>
+                  <p className="prose-note">Battery level and rolling radio utilisation from MQTT status samples over the last 24 hours.</p>
+                </div>
+              </div>
+              <div className="owner-telemetry-strip">
+                {TELEMETRY_SERIES.map((series) => (
+                  <TelemetryMiniChart
+                    key={series.key}
+                    title={series.title}
+                    stroke={series.stroke}
+                    suffix={series.suffix}
+                    points={live?.telemetry24h ?? []}
+                    metric={series.key}
+                    meta={series.meta}
+                  />
+                ))}
+                <TelemetryStatCard
+                  title="Uptime"
+                  value={formatUptime(latestTelemetry?.uptimeSecs ?? null)}
+                  meta={latestTelemetry?.uptimeSecs == null ? 'No telemetry yet' : `${latestTelemetry.uptimeSecs}s reported`}
+                />
+              </div>
             </section>
 
             <div className="owner-dashboard-grid">

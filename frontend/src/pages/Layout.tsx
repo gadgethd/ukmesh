@@ -9,6 +9,9 @@ export const Layout: React.FC = () => {
       brandName={site.displayName}
       footerName={site.footerName}
       appUrl={site.appUrl}
+      showAbout={false}
+      showMqtt={false}
+      showHealth={false}
       showPackets
       showStats
     />

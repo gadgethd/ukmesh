@@ -460,6 +460,15 @@ function reverseResolvedPath(
   };
 }
 
+function trimObserverTerminalHop(hops: string[], rx: MeshNode | null | undefined): string[] {
+  if (!rx || rx.role !== 2 || hops.length <= 1) return hops;
+  const terminal = normalizePathHash(hops[hops.length - 1]);
+  if (!terminal) return hops;
+  return nodePathHash(rx.node_id, terminal) === terminal
+    ? hops.slice(0, -1)
+    : hops;
+}
+
 function resolveExactMultibyteChain(
   pathHashes: string[],
   context: BetaResolveContext,
@@ -1182,7 +1191,8 @@ export async function resolveBetaPathForPacketHash(packetHash: string, network: 
     })
     : hashes;
 
-  const hops = packet.hop_count != null ? validatedHashes.slice(0, Math.max(0, packet.hop_count)) : validatedHashes;
+  const rawHops = packet.hop_count != null ? validatedHashes.slice(0, Math.max(0, packet.hop_count)) : validatedHashes;
+  const hops = trimObserverTerminalHop(rawHops, rx);
   const forceIncludeSource = packet.packet_type === 4;
   const currentHopCount = Number(packet.hop_count ?? 0);
   const observerHopHints: ObserverHopHint[] = currentHopCount > 0 && packet.rx_node_id
@@ -1556,9 +1566,10 @@ export async function resolveMultiObserverBetaPath(
       ? hashes.filter((h) => h.length === expectedHexLen)
       : hashes;
 
-    const hops = packet.hop_count != null
+    const rawHops = packet.hop_count != null
       ? validatedHashes.slice(0, Math.max(0, packet.hop_count))
       : validatedHashes;
+    const hops = trimObserverTerminalHop(rawHops, rx);
 
     if (hops.length < 1) continue;
     entries.push({ observerId, packet, rx, hashes, hops });

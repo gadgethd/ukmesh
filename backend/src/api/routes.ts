@@ -2,7 +2,7 @@ import { Request, Response, Router } from 'express';
 import { rateLimit } from 'express-rate-limit';
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
 import mqtt from 'mqtt';
-import { getNodes, getNodeHistory, getRecentPacketEvents, getRecentPackets, query, MIN_LINK_OBSERVATIONS } from '../db/index.js';
+import { getNodes, getNodeHistory, getPathHistoryCache, getRecentPacketEvents, getRecentPackets, query, MIN_LINK_OBSERVATIONS } from '../db/index.js';
 import { addOwnerNodeForUsername, getMappedOwnerNodeIds, getOwnerNodeIdsForUsername } from '../db/ownerAuth.js';
 import { getWorkerHealthOverview } from '../health/status.js';
 import { resolveRequestNetwork } from '../http/requestScope.js';
@@ -13,12 +13,49 @@ const OWNER_COOKIE_NAME = 'meshcore_owner_session';
 const OWNER_LIVE_CACHE_TTL_MS = 5_000;
 const ownerLiveCache = new Map<string, { ts: number; data: unknown }>();
 const OWNER_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const MQTT_USERNAME_MAX_LEN = 128;
+const MQTT_PASSWORD_MAX_LEN = 128;
 const OWNER_LOGIN_LIMITER = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 8,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many login attempts, try again in 15 minutes' },
+});
+const PATH_BETA_LIMITER = rateLimit({
+  windowMs: 60_000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many path requests, slow down' },
+});
+const PATH_HISTORY_LIMITER = rateLimit({
+  windowMs: 60_000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many history requests, slow down' },
+});
+const COVERAGE_LIMITER = rateLimit({
+  windowMs: 60_000,
+  max: 12,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many coverage requests, slow down' },
+});
+const PATH_LEARNING_LIMITER = rateLimit({
+  windowMs: 60_000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many path learning requests, slow down' },
+});
+const STATS_CHARTS_LIMITER = rateLimit({
+  windowMs: 60_000,
+  max: 12,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many stats chart requests, slow down' },
 });
 
 type OwnerSession = {
@@ -76,6 +113,10 @@ function readCookieValue(cookieHeader: string | undefined, key: string): string 
     return decodeURIComponent(trimmed.slice(key.length + 1));
   }
   return null;
+}
+
+function hasControlChars(value: string): boolean {
+  return /[\u0000-\u001F\u007F]/.test(value);
 }
 
 function parseOwnerMqttUsernameMap(): Map<string, string[]> {
@@ -338,6 +379,27 @@ function networkFilters(network?: string, observer?: string): NetworkFilters {
   };
 }
 
+type InferredMultibyteNode = {
+  node_id: string;
+  name: string;
+  lat: number;
+  lon: number;
+  last_seen: string;
+  is_online: boolean;
+  role: number;
+  inferred_prefix: string;
+  inferred_hash_size_bytes: number;
+  inferred_observations: number;
+  inferred_packet_count: number;
+  inferred_prev_name?: string | null;
+  inferred_next_name?: string | null;
+};
+
+type InferredActiveResponse = {
+  inferredNodes: InferredMultibyteNode[];
+  inferredActiveNodeIds: string[];
+};
+
 // GET /api/nodes — all known nodes
 router.get('/nodes', async (req, res) => {
   try {
@@ -348,6 +410,179 @@ router.get('/nodes', async (req, res) => {
     res.json(nodes);
   } catch (err) {
     console.error('[api] GET /nodes', (err as Error).message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+router.get('/inferred-nodes', async (req, res) => {
+  try {
+    const requestedNetwork = resolveRequestNetwork(req.query['network'], req.headers);
+    const network = requestedNetwork === 'all' ? undefined : requestedNetwork;
+    const observer = normalizeObserverQuery(req.query['observer']);
+    const scope = networkFilters(network, observer);
+    const [visibleNodes, packetsResult] = await Promise.all([
+      getNodes(network, observer),
+      query<{
+        packet_hash: string;
+        time: string;
+        path_hashes: string[] | null;
+        path_hash_size_bytes: number | null;
+      }>(
+        `SELECT p.packet_hash, p.time::text, p.path_hashes, p.path_hash_size_bytes
+         FROM packets p
+         WHERE p.time > NOW() - INTERVAL '7 days'
+           ${scope.packetsAlias('p')}
+           AND p.path_hash_size_bytes > 1
+           AND p.path_hashes IS NOT NULL
+           AND array_length(p.path_hashes, 1) > 0
+         ORDER BY p.time DESC`,
+        scope.params,
+      ),
+    ]);
+
+    const exactNodes = visibleNodes.filter((node) =>
+      node.role === undefined || node.role === 2,
+    );
+
+    const inferredUnknowns = new Map<string, {
+      prefix: string;
+      hashSizeBytes: number;
+      packetHashes: Set<string>;
+      observations: number;
+      latestSeen: string;
+      sumLat: number;
+      sumLon: number;
+      prevNameCounts: Map<string, number>;
+      nextNameCounts: Map<string, number>;
+    }>();
+    const inferredKnowns = new Map<string, {
+      nodeId: string;
+      packetHashes: Set<string>;
+      observations: number;
+      latestSeen: string;
+    }>();
+
+    const exactMatch = (pathHash: string) => {
+      const normalized = pathHash.toUpperCase();
+      const matches = exactNodes.filter((node) =>
+        typeof node.lat === 'number'
+        && typeof node.lon === 'number'
+        && node.node_id.toUpperCase().startsWith(normalized),
+      );
+      return matches.length === 1 ? matches[0] : null;
+    };
+
+    for (const row of packetsResult.rows) {
+      const pathHashes = Array.isArray(row.path_hashes) ? row.path_hashes : [];
+      if (pathHashes.length < 3) continue;
+      const hashSizeBytes = Number(row.path_hash_size_bytes ?? 0);
+      if (hashSizeBytes < 2 || hashSizeBytes > 3) continue;
+
+      for (let idx = 1; idx < pathHashes.length - 1; idx += 1) {
+        const current = pathHashes[idx];
+        const prev = pathHashes[idx - 1];
+        const next = pathHashes[idx + 1];
+        if (!current || !prev || !next) continue;
+        if (current.length !== hashSizeBytes * 2) continue;
+
+        const currentMatch = exactMatch(current);
+        if (currentMatch) {
+          const key = currentMatch.node_id;
+          const existing = inferredKnowns.get(key) ?? {
+            nodeId: currentMatch.node_id,
+            packetHashes: new Set<string>(),
+            observations: 0,
+            latestSeen: row.time,
+          };
+          existing.packetHashes.add(row.packet_hash);
+          existing.observations += 1;
+          existing.latestSeen = existing.latestSeen > row.time ? existing.latestSeen : row.time;
+          inferredKnowns.set(key, existing);
+          continue;
+        }
+
+        const prevMatch = exactMatch(prev);
+        const nextMatch = exactMatch(next);
+        if (!prevMatch || !nextMatch) continue;
+
+        const estimateLat = (Number(prevMatch.lat) + Number(nextMatch.lat)) / 2;
+        const estimateLon = (Number(prevMatch.lon) + Number(nextMatch.lon)) / 2;
+        const key = `${hashSizeBytes}:${current.toUpperCase()}`;
+        const existing = inferredUnknowns.get(key) ?? {
+          prefix: current.toUpperCase(),
+          hashSizeBytes,
+          packetHashes: new Set<string>(),
+          observations: 0,
+          latestSeen: row.time,
+          sumLat: 0,
+          sumLon: 0,
+          prevNameCounts: new Map<string, number>(),
+          nextNameCounts: new Map<string, number>(),
+        };
+
+        existing.packetHashes.add(row.packet_hash);
+        existing.observations += 1;
+        existing.latestSeen = existing.latestSeen > row.time ? existing.latestSeen : row.time;
+        existing.sumLat += estimateLat;
+        existing.sumLon += estimateLon;
+        const prevLabel = prevMatch.name?.trim() || prevMatch.node_id.slice(0, 8);
+        const nextLabel = nextMatch.name?.trim() || nextMatch.node_id.slice(0, 8);
+        existing.prevNameCounts.set(prevLabel, (existing.prevNameCounts.get(prevLabel) ?? 0) + 1);
+        existing.nextNameCounts.set(nextLabel, (existing.nextNameCounts.get(nextLabel) ?? 0) + 1);
+        inferredUnknowns.set(key, existing);
+      }
+    }
+
+    const bestLabel = (counts: Map<string, number>): string | null => {
+      let best: string | null = null;
+      let bestCount = -1;
+      for (const [label, count] of counts) {
+        if (count > bestCount) {
+          best = label;
+          bestCount = count;
+        }
+      }
+      return best;
+    };
+
+    const inferredNodes: InferredMultibyteNode[] = Array.from(inferredUnknowns.values())
+      .filter((entry) => entry.packetHashes.size >= 2)
+      .map((entry) => ({
+        node_id: `inferred:${entry.hashSizeBytes}:${entry.prefix}`,
+        name: `Inferred ${entry.prefix}`,
+        lat: entry.sumLat / entry.observations,
+        lon: entry.sumLon / entry.observations,
+        last_seen: new Date(entry.latestSeen).toISOString(),
+        is_online: true,
+        role: 2,
+        inferred_prefix: entry.prefix,
+        inferred_hash_size_bytes: entry.hashSizeBytes,
+        inferred_observations: entry.observations,
+        inferred_packet_count: entry.packetHashes.size,
+        inferred_prev_name: bestLabel(entry.prevNameCounts),
+        inferred_next_name: bestLabel(entry.nextNameCounts),
+      }))
+      .sort((a, b) => (
+        b.inferred_packet_count - a.inferred_packet_count
+        || b.inferred_observations - a.inferred_observations
+        || b.last_seen.localeCompare(a.last_seen)
+      ));
+    const inferredActiveNodeIds = Array.from(inferredKnowns.values())
+      .filter((entry) => entry.packetHashes.size >= 2)
+      .sort((a, b) => (
+        b.packetHashes.size - a.packetHashes.size
+        || b.observations - a.observations
+        || b.latestSeen.localeCompare(a.latestSeen)
+      ))
+      .map((entry) => entry.nodeId);
+
+    const payload: InferredActiveResponse = {
+      inferredNodes,
+      inferredActiveNodeIds,
+    };
+    res.json(payload);
+  } catch (err) {
+    console.error('[api] GET /inferred-nodes', (err as Error).message);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -421,7 +656,7 @@ router.get('/packets/recent', async (req, res) => {
 });
 
 // GET /api/path-beta/resolve?hash=<packetHash>&network=teesside|ukmesh|all
-router.get('/path-beta/resolve', async (req, res) => {
+router.get('/path-beta/resolve', PATH_BETA_LIMITER, async (req, res) => {
   try {
     const packetHash = String(req.query['hash'] ?? '').trim();
     if (!packetHash) {
@@ -447,7 +682,7 @@ router.get('/path-beta/resolve', async (req, res) => {
 });
 
 // GET /api/path-beta/resolve-multi?hash=<packetHash>&network=teesside|ukmesh|all
-router.get('/path-beta/resolve-multi', async (req, res) => {
+router.get('/path-beta/resolve-multi', PATH_BETA_LIMITER, async (req, res) => {
   try {
     const packetHash = String(req.query['hash'] ?? '').trim();
     if (!packetHash) {
@@ -471,6 +706,45 @@ router.get('/path-beta/resolve-multi', async (req, res) => {
   }
 });
 
+// GET /api/path-beta/history?network=teesside|ukmesh|all
+router.get('/path-beta/history', PATH_HISTORY_LIMITER, async (req, res) => {
+  try {
+    const requestedNetwork = resolveRequestNetwork(req.query['network'], req.headers);
+    const scope = requestedNetwork === 'all' ? 'all' : (requestedNetwork ?? 'teesside');
+    const cached = await getPathHistoryCache(scope);
+    if (!cached) {
+      res.json({
+        ok: true,
+        scope,
+        windowStart: null,
+        updatedAt: null,
+        packetCount: 0,
+        resolvedPacketCount: 0,
+        maxCount: 0,
+        segments: [],
+      });
+      return;
+    }
+
+    const segments = Array.isArray(cached.segment_counts) ? cached.segment_counts : [];
+    const maxCount = segments.reduce((max, segment) => Math.max(max, Number(segment.count ?? 0)), 0);
+
+    res.json({
+      ok: true,
+      scope,
+      windowStart: cached.window_start,
+      updatedAt: cached.updated_at,
+      packetCount: cached.packet_count,
+      resolvedPacketCount: cached.resolved_packet_count,
+      maxCount,
+      segments,
+    });
+  } catch (err) {
+    console.error('[api] GET /path-beta/history', (err as Error).message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // GET /api/stats
 router.get('/stats', async (req, res) => {
   try {
@@ -488,7 +762,7 @@ router.get('/stats', async (req, res) => {
         FROM packets
         WHERE time > NOW() - INTERVAL '10 minutes'
           AND rx_node_id IS NOT NULL
-          AND rx_node_id NOT IN (SELECT rx_node_id FROM test_active)
+          ${network === 'test' ? '' : 'AND rx_node_id NOT IN (SELECT rx_node_id FROM test_active)'}
           ${filters.packets}
       `, filters.params),
       query(`SELECT COUNT(*) AS count FROM packets WHERE time > NOW() - INTERVAL '24 hours' ${filters.packets}`, filters.params),
@@ -538,7 +812,7 @@ router.get('/stats', async (req, res) => {
 
 
 // GET /api/coverage — all stored viewshed polygons (excludes hidden 🚫 nodes)
-router.get('/coverage', async (req, res) => {
+router.get('/coverage', COVERAGE_LIMITER, async (req, res) => {
   try {
     const requestedNetwork = resolveRequestNetwork(req.query['network'], req.headers);
     const network = requestedNetwork === 'all' ? undefined : requestedNetwork;
@@ -574,7 +848,7 @@ router.get('/planned-nodes', async (_req, res) => {
 });
 
 // GET /api/path-learning
-router.get('/path-learning', async (req, res) => {
+router.get('/path-learning', PATH_LEARNING_LIMITER, async (req, res) => {
   try {
     const network = resolveRequestNetwork(req.query['network'], req.headers, 'teesside') ?? 'teesside';
     const limit = Math.min(12000, Math.max(1000, Number(req.query['limit'] ?? 6000)));
@@ -700,10 +974,18 @@ router.get('/health', async (_req, res) => {
 router.post('/owner/login', OWNER_LOGIN_LIMITER, async (req, res) => {
   try {
     const body = req.body as { mqttUsername?: string; mqttPassword?: string } | undefined;
-    const mqttUsername = String(body?.mqttUsername ?? '').trim().slice(0, 32);
-    const mqttPassword = String(body?.mqttPassword ?? '').trim().slice(0, 32);
+    const mqttUsername = String(body?.mqttUsername ?? '').trim();
+    const mqttPassword = String(body?.mqttPassword ?? '').trim();
     if (!mqttUsername || !mqttPassword) {
       res.status(400).json({ error: 'Missing MQTT username or password' });
+      return;
+    }
+    if (mqttUsername.length > MQTT_USERNAME_MAX_LEN || mqttPassword.length > MQTT_PASSWORD_MAX_LEN) {
+      res.status(400).json({ error: 'MQTT username or password is too long' });
+      return;
+    }
+    if (hasControlChars(mqttUsername) || hasControlChars(mqttPassword)) {
+      res.status(400).json({ error: 'MQTT username or password contains invalid characters' });
       return;
     }
     if (!/^[a-zA-Z0-9_\-.@]+$/.test(mqttUsername)) {
@@ -804,6 +1086,7 @@ router.get('/owner/live', async (req, res) => {
       heardByResult,
       linkHealthResult,
       advertTrendResult,
+      telemetryResult,
     ] = await Promise.all([
       query<{
         node_id: string;
@@ -1002,6 +1285,29 @@ router.get('/owner/live', async (req, res) => {
          ORDER BY bucket`,
         [selectedNodeId],
       ),
+      query<{
+        time: string;
+        battery_mv: number | null;
+        uptime_secs: string | null;
+        tx_air_secs: string | null;
+        rx_air_secs: string | null;
+        channel_utilization: number | null;
+        air_util_tx: number | null;
+      }>(
+        `SELECT
+           time::text AS time,
+           battery_mv,
+           uptime_secs::text AS uptime_secs,
+           tx_air_secs::text AS tx_air_secs,
+           rx_air_secs::text AS rx_air_secs,
+           channel_utilization,
+           air_util_tx
+         FROM node_status_samples
+         WHERE LOWER(node_id) = LOWER($1)
+           AND time > NOW() - INTERVAL '24 hours'
+         ORDER BY time ASC`,
+        [selectedNodeId],
+      ),
     ]);
 
     const ownerNode = ownerNodeResult.rows[0];
@@ -1044,6 +1350,67 @@ router.get('/owner/live', async (req, res) => {
       return series;
     })();
 
+    const telemetry24h = (() => {
+      const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+      const bucketMs = 5 * 60 * 1000;
+      type Point = {
+        bucket: string;
+        batteryPct: number | null;
+        batteryMv: number | null;
+        uptimeSecs: number | null;
+        channelUtilPct: number | null;
+        airUtilTxPct: number | null;
+      };
+
+      const samples = telemetryResult.rows.map((row) => ({
+        timeMs: new Date(row.time).getTime(),
+        batteryMv: row.battery_mv == null ? null : Number(row.battery_mv),
+        uptimeSecs: row.uptime_secs == null ? null : Number(row.uptime_secs),
+        txAirSecs: row.tx_air_secs == null ? null : Number(row.tx_air_secs),
+        rxAirSecs: row.rx_air_secs == null ? null : Number(row.rx_air_secs),
+        channelUtilization: row.channel_utilization == null ? null : Number(row.channel_utilization),
+        airUtilTx: row.air_util_tx == null ? null : Number(row.air_util_tx),
+      }));
+
+      const bucketed = new Map<number, Point>();
+      for (let i = 0; i < samples.length; i++) {
+        const sample = samples[i]!;
+        const prev = i > 0 ? samples[i - 1]! : null;
+        const batteryPct = sample.batteryMv == null
+          ? null
+          : clamp(((sample.batteryMv - 3300) / 900) * 100, 0, 100);
+
+        let channelUtilPct = sample.channelUtilization;
+        let airUtilTxPct = sample.airUtilTx;
+
+        if ((channelUtilPct == null || airUtilTxPct == null) && prev) {
+          const uptimeDelta = (sample.uptimeSecs ?? 0) - (prev.uptimeSecs ?? 0);
+          const txDelta = (sample.txAirSecs ?? 0) - (prev.txAirSecs ?? 0);
+          const rxDelta = (sample.rxAirSecs ?? 0) - (prev.rxAirSecs ?? 0);
+          if (uptimeDelta > 0 && txDelta >= 0 && rxDelta >= 0) {
+            if (airUtilTxPct == null) {
+              airUtilTxPct = clamp((txDelta / uptimeDelta) * 100, 0, 100);
+            }
+            if (channelUtilPct == null) {
+              channelUtilPct = clamp(((txDelta + rxDelta) / uptimeDelta) * 100, 0, 100);
+            }
+          }
+        }
+
+        const bucketStartMs = Math.floor(sample.timeMs / bucketMs) * bucketMs;
+        bucketed.set(bucketStartMs, {
+          bucket: new Date(bucketStartMs).toISOString(),
+          batteryPct: batteryPct == null ? null : Number(batteryPct.toFixed(1)),
+          batteryMv: sample.batteryMv,
+          uptimeSecs: sample.uptimeSecs == null ? null : Math.max(0, Math.round(sample.uptimeSecs)),
+          channelUtilPct: channelUtilPct == null ? null : Number(channelUtilPct.toFixed(2)),
+          airUtilTxPct: airUtilTxPct == null ? null : Number(airUtilTxPct.toFixed(2)),
+        });
+      }
+
+      return Array.from(bucketed.values()).sort((a, b) => a.bucket.localeCompare(b.bucket));
+    })();
+
     const alerts: Array<{ level: 'info' | 'warn' | 'error'; message: string }> = [];
     const ownerLastSeenMs = ownerNode.last_seen ? new Date(ownerNode.last_seen).getTime() : 0;
     const minsSinceSeen = ownerLastSeenMs ? Math.max(0, Math.round((Date.now() - ownerLastSeenMs) / 60000)) : null;
@@ -1073,6 +1440,7 @@ router.get('/owner/live', async (req, res) => {
       heardBy,
       linkHealth,
       advertTrend24h,
+      telemetry24h,
       alerts,
       recentPackets: packetResult.rows.map((row) => ({
         ...row,
@@ -1133,7 +1501,7 @@ router.post('/telemetry/frontend-error', async (req, res) => {
 });
 
 // GET /api/stats/charts
-router.get('/stats/charts', async (req, res) => {
+router.get('/stats/charts', STATS_CHARTS_LIMITER, async (req, res) => {
   try {
     const requestedNetwork = resolveRequestNetwork(req.query['network'], req.headers);
     const network = requestedNetwork === 'all' ? undefined : requestedNetwork;
