@@ -4,6 +4,10 @@ export const MIN_LINK_OBSERVATIONS = 5; // must match backend db/index.ts
 export const HIDDEN_NODE_MASK_RADIUS_MILES = 1;
 export const HIDDEN_NODE_MASK_RADIUS_METERS = HIDDEN_NODE_MASK_RADIUS_MILES * 1609.344;
 const PROHIBITED_NODE_MARKER = '🚫';
+export type HiddenMaskGeometry = {
+  center: [number, number];
+  point: [number, number];
+};
 
 export type LinkMetrics = {
   observed_count: number;
@@ -72,28 +76,37 @@ function stablePointWithinMiles(
   return [lat + dLat, lon + dLon];
 }
 
-export function buildHiddenCoordMask(nodes: Iterable<MeshNode>): Map<string, [number, number]> {
-  const mask = new Map<string, [number, number]>();
+export function buildHiddenCoordMask(nodes: Iterable<MeshNode>): Map<string, HiddenMaskGeometry> {
+  const mask = new Map<string, HiddenMaskGeometry>();
   for (const node of nodes) {
     if (!hasCoords(node) || !isProhibitedMapNode(node)) continue;
+    const center = stablePointWithinMiles(node.lat, node.lon, node.node_id);
     const activityKey = node.last_seen ?? 'unknown';
-    const seed = `${node.node_id}|${activityKey}`;
-    mask.set(hiddenCoordKey(node.lat, node.lon), stablePointWithinMiles(node.lat, node.lon, seed));
+    const point = stablePointWithinMiles(center[0], center[1], `${node.node_id}|${activityKey}`);
+    mask.set(hiddenCoordKey(node.lat, node.lon), { center, point });
   }
   return mask;
 }
 
 export function maskPoint(
   point: [number, number],
-  hiddenCoordMask?: Map<string, [number, number]>,
+  hiddenCoordMask?: Map<string, HiddenMaskGeometry>,
 ): [number, number] {
   if (!hiddenCoordMask || hiddenCoordMask.size < 1) return point;
-  return hiddenCoordMask.get(hiddenCoordKey(point[0], point[1])) ?? point;
+  return hiddenCoordMask.get(hiddenCoordKey(point[0], point[1]))?.point ?? point;
+}
+
+export function maskCircleCenter(
+  point: [number, number],
+  hiddenCoordMask?: Map<string, HiddenMaskGeometry>,
+): [number, number] {
+  if (!hiddenCoordMask || hiddenCoordMask.size < 1) return point;
+  return hiddenCoordMask.get(hiddenCoordKey(point[0], point[1]))?.center ?? point;
 }
 
 export function maskNodePoint(
   node: MeshNode & { lat: number; lon: number },
-  hiddenCoordMask?: Map<string, [number, number]>,
+  hiddenCoordMask?: Map<string, HiddenMaskGeometry>,
 ): [number, number] {
   if (!isProhibitedMapNode(node)) return [node.lat, node.lon];
   return maskPoint([node.lat, node.lon], hiddenCoordMask);
@@ -104,7 +117,7 @@ export function resolvePathWaypoints(
   src: (MeshNode & { lat: number; lon: number }) | null,
   rx: MeshNode & { lat: number; lon: number },
   allNodes: Map<string, MeshNode>,
-  hiddenCoordMask?: Map<string, [number, number]>,
+  hiddenCoordMask?: Map<string, HiddenMaskGeometry>,
 ): [number, number][] {
   const waypoints: [number, number][] = src ? [maskNodePoint(src, hiddenCoordMask)] : [];
   const N = pathHashes.length;
