@@ -127,10 +127,20 @@ type StatusTelemetrySample = {
   stats?: Record<string, unknown>;
 };
 
-function extractStatusTelemetry(json: Record<string, unknown>): StatusTelemetrySample | null {
+function extractStatusTelemetry(
+  json: Record<string, unknown>,
+  options?: { allowRawStatsOnly?: boolean },
+): StatusTelemetrySample | null {
   const stats = toRecord(json['stats']);
+  const hasRawStats = Boolean(stats && Object.keys(stats).length > 0);
   const batteryMv = readNum(stats, 'battery_mv', 'batteryMv');
-  const uptimeSecs = readNum(stats, 'uptime_secs', 'uptimeSecs');
+  const uptimeSecs = (() => {
+    const direct = readNum(stats, 'uptime_secs', 'uptimeSecs');
+    if (direct != null) return direct;
+    const uptimeMs = readNum(stats, 'uptime_ms', 'uptimeMs');
+    if (uptimeMs == null) return undefined;
+    return Math.floor(uptimeMs / 1000);
+  })();
   const txAirSecs = readNum(stats, 'tx_air_secs', 'txAirSecs');
   const rxAirSecs = readNum(stats, 'rx_air_secs', 'rxAirSecs');
   const channelUtilization = readNum(
@@ -158,6 +168,17 @@ function extractStatusTelemetry(json: Record<string, unknown>): StatusTelemetryS
     && channelUtilization == null
     && airUtilTx == null
   ) {
+    if (options?.allowRawStatsOnly && hasRawStats) {
+      return {
+        batteryMv,
+        uptimeSecs,
+        txAirSecs,
+        rxAirSecs,
+        channelUtilization,
+        airUtilTx,
+        stats,
+      };
+    }
     return null;
   }
 
@@ -387,7 +408,9 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
       network,
       allowTestOverride: network === 'test' && nodeId === observerKey,
     });
-    const telemetry = extractStatusTelemetry(json);
+    const telemetry = extractStatusTelemetry(json, {
+      allowRawStatsOnly: network === 'test',
+    });
     if (telemetry) {
       void insertNodeStatusSample({
         nodeId,

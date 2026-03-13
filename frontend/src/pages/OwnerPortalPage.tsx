@@ -583,7 +583,6 @@ export const OwnerPortalPage: React.FC = () => {
                 <div className="site-stat"><span className="site-stat__value">{live?.ownerNode.advert_count ?? 0}</span><span className="site-stat__label">Adverts</span></div>
                 <div className="site-stat"><span className="site-stat__value">{fmtTs(live?.ownerNode.last_seen ?? null)}</span><span className="site-stat__label">Last Seen</span></div>
                 <div className="site-stat"><span className="site-stat__value">{live?.incomingPeers.length ?? 0}</span><span className="site-stat__label">Direct Senders (24h)</span></div>
-                <div className="site-stat"><span className="site-stat__value">{live?.heardBy.length ?? 0}</span><span className="site-stat__label">Heard By (7d)</span></div>
                 <div className="site-stat"><span className="site-stat__value">{viableLinkCount}</span><span className="site-stat__label">Viable Links</span></div>
                 <div className="site-stat"><span className="site-stat__value">{strongestLink?.peer_name ?? '-'}</span><span className="site-stat__label">Strongest Link</span></div>
                 <div className="site-stat"><span className="site-stat__value">{formatPathLoss(strongestLink?.itm_path_loss_db ?? null)}</span><span className="site-stat__label">Best Path Loss</span></div>
@@ -715,28 +714,6 @@ export const OwnerPortalPage: React.FC = () => {
                   ))}
                   {(live?.linkHealth ?? []).length === 0 ? (
                     <p className="prose-note">No link health data has been calculated for this repeater yet.</p>
-                  ) : null}
-                </div>
-              </section>
-
-              <section className="prose-section owner-panel owner-panel--heard">
-                <div className="owner-panel__head"><h2>Heard By</h2></div>
-                <div className="owner-list">
-                  {(live?.heardBy ?? []).slice(0, 8).map((peer) => (
-                    <article key={peer.node_id} className="owner-list__row">
-                      <div className="owner-list__primary">
-                        <strong>{peer.name ?? peer.node_id}</strong>
-                        <span>{peer.network ?? '-'} · {peer.iata ?? '-'}</span>
-                      </div>
-                      <div className="owner-list__metrics">
-                        <span>{peer.packets_24h} / 24h</span>
-                        <span>{peer.packets_7d} / 7d</span>
-                        <span>{peer.best_hops == null ? '-' : `${peer.best_hops} hops`}</span>
-                      </div>
-                    </article>
-                  ))}
-                  {(live?.heardBy ?? []).length === 0 ? (
-                    <p className="prose-note">No nodes have heard this repeater in the last 7 days.</p>
                   ) : null}
                 </div>
               </section>

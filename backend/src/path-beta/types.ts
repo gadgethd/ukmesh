@@ -6,6 +6,7 @@ export type MeshNode = {
   iata: string | null;
   role: number | null;
   elevation_m: number | null;
+  last_seen: string | null;
 };
 
 export type LinkMetrics = {

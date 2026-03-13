@@ -52,16 +52,31 @@ function buildArcLayers(arcs: PacketArc[], now: number, show: boolean) {
 
 export const PacketArcLayer: React.FC<Props> = ({ arcs, showArcs, viewState }) => {
   const [now, setNow] = useState<number>(() => Date.now());
+  const [isPageVisible, setIsPageVisible] = useState(
+    () => (typeof document === 'undefined' ? true : document.visibilityState === 'visible'),
+  );
   const rafRef = useRef<ReturnType<typeof requestAnimationFrame>>(0);
 
   useEffect(() => {
+    if (typeof document === 'undefined') return undefined;
+    const updateVisibility = () => setIsPageVisible(document.visibilityState === 'visible');
+    document.addEventListener('visibilitychange', updateVisibility);
+    return () => document.removeEventListener('visibilitychange', updateVisibility);
+  }, []);
+
+  useEffect(() => {
+    const hasVisibleArcs = showArcs && arcs.some((arc) => Date.now() - arc.ts < ARC_TTL);
+    if (!isPageVisible || !hasVisibleArcs) {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      return undefined;
+    }
     const tick = () => {
       setNow(Date.now());
       rafRef.current = requestAnimationFrame(tick);
     };
     rafRef.current = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(rafRef.current);
-  }, []);
+  }, [arcs, isPageVisible, showArcs]);
 
   const layers = buildArcLayers(arcs, now, showArcs);
 

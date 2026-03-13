@@ -15,6 +15,8 @@ import {
 const PATH_TTL = 5_000;
 const PREDICTION_CACHE_TTL_MS = 120_000;
 const MAX_PREDICTION_CACHE = 1200;
+const RECENT_PREDICTION_TTL_MS = 45_000;
+const MAX_RECENT_PREDICTIONS = 48;
 
 type UsePacketPathOverlayParams = {
   packets: AggregatedPacket[];
@@ -78,6 +80,9 @@ export function usePacketPathOverlay({
   const [pinnedPacketId, setPinnedPacketId] = useState<string | null>(null);
   const [pinnedPacketSnapshot, setPinnedPacketSnapshot] = useState<AggregatedPacket | null>(null);
   const [pathOpacity, setPathOpacity] = useState(0.75);
+  const [isPageVisible, setIsPageVisible] = useState(
+    () => (typeof document === 'undefined' ? true : document.visibilityState === 'visible'),
+  );
 
   const pinnedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pathTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -116,6 +121,27 @@ export function usePacketPathOverlay({
     setPathOpacity(0.75);
   }, []);
 
+  useEffect(() => {
+    if (typeof document === 'undefined') return undefined;
+    const updateVisibility = () => setIsPageVisible(document.visibilityState === 'visible');
+    document.addEventListener('visibilitychange', updateVisibility);
+    return () => document.removeEventListener('visibilitychange', updateVisibility);
+  }, []);
+
+  const pruneRecentPredictions = useCallback(() => {
+    const now = Date.now();
+    const recent = recentPredictionsRef.current;
+    for (const [key, value] of recent) {
+      if (now - value.ts > RECENT_PREDICTION_TTL_MS) recent.delete(key);
+    }
+    if (recent.size <= MAX_RECENT_PREDICTIONS) return;
+    const sorted = Array.from(recent.entries()).sort((a, b) => a[1].ts - b[1].ts);
+    for (let i = 0; i < Math.max(0, recent.size - MAX_RECENT_PREDICTIONS); i += 1) {
+      const key = sorted[i]?.[0];
+      if (key) recent.delete(key);
+    }
+  }, []);
+
   const applyServerPredictions = useCallback((
     packetHash: string,
     predictions: Array<ServerBetaResponse | null>,
@@ -126,8 +152,9 @@ export function usePacketPathOverlay({
   ) => {
     const validPredictions = predictions.filter((prediction): prediction is ServerBetaResponse => Boolean(prediction?.ok));
     if (validPredictions.length < 1) {
+      pruneRecentPredictions();
       const recent = recentPredictionsRef.current.get(packetHash);
-      if (!recent || Date.now() - recent.ts > 45_000) {
+      if (!recent || Date.now() - recent.ts > RECENT_PREDICTION_TTL_MS) {
         setBetaPacketPaths([]);
         setBetaLowConfidencePaths([]);
         setBetaLowConfidenceSegments([]);
@@ -157,7 +184,8 @@ export function usePacketPathOverlay({
     setBetaRemainingHops(aggregated.remainingHops);
 
     recentPredictionsRef.current.set(packetHash, { ...aggregated, ts: Date.now() });
-  }, []);
+    pruneRecentPredictions();
+  }, [pruneRecentPredictions]);
 
   const prunePredictionCache = useCallback(() => {
     const now = Date.now();
@@ -255,10 +283,16 @@ export function usePacketPathOverlay({
   useEffect(() => {
     if (pinnedPacketId !== null) return;
     stopPathTimers();
+    pruneRecentPredictions();
 
     const latest = packets[0];
     const observerIds = getPacketObserverIds(latest);
     setPacketPaths([]);
+
+    if (!isPageVisible) {
+      setPathOpacity(0.75);
+      return;
+    }
 
     if (filters.betaPaths && latest?.packetHash && latest.path?.length && observerIds.length > 0) {
       const reqSeq = ++activeReqSeqRef.current;
@@ -316,7 +350,7 @@ export function usePacketPathOverlay({
       pathFadeRef.current = requestAnimationFrame(animate);
     }, PATH_TTL - 1_000);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [latestId, filters.betaPaths, pinnedPacketId, network, observer, packets, getPacketObserverIds, resolvePrediction, resolveMultiPrediction, stopPathTimers, clearPathState, applyServerPredictions]);
+  }, [latestId, filters.betaPaths, pinnedPacketId, network, observer, packets, getPacketObserverIds, resolvePrediction, resolveMultiPrediction, stopPathTimers, clearPathState, applyServerPredictions, isPageVisible, pruneRecentPredictions]);
 
   const handlePacketPin = useCallback((packet: AggregatedPacket) => {
     if (pinnedPacketId === packet.id) {
@@ -368,6 +402,9 @@ export function usePacketPathOverlay({
       pinnedOverlayKeyRef.current = '';
       return;
     }
+    pruneRecentPredictions();
+
+    if (!isPageVisible) return;
 
     const pinnedPacket = packets.find((packet) => packet.id === pinnedPacketId) ?? pinnedPacketSnapshot;
     if (!pinnedPacket) return;
@@ -430,6 +467,8 @@ export function usePacketPathOverlay({
     resolvePrediction,
     resolveMultiPrediction,
     applyServerPredictions,
+    isPageVisible,
+    pruneRecentPredictions,
   ]);
 
   useEffect(() => () => {

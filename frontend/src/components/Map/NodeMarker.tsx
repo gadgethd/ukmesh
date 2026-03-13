@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Marker, Popup, Polygon, Pane } from 'react-leaflet';
+import { Circle, Marker, Popup, Polygon, Pane } from 'react-leaflet';
 import L from 'leaflet';
 import type { LatLngExpression } from 'leaflet';
 import type { MeshNode } from '../../hooks/useNodes.js';
 import type { NodeCoverage } from '../../hooks/useCoverage.js';
-import { isValidMapCoord } from '../../utils/pathing.js';
+import { HIDDEN_NODE_MASK_RADIUS_METERS, isProhibitedMapNode, isValidMapCoord } from '../../utils/pathing.js';
 
 const SEVEN_DAYS_MS  = 7  * 24 * 60 * 60 * 1000;
 const PREVIEW_TTL_MS = 20_000;
@@ -103,6 +103,7 @@ interface NodeLink {
 
 interface Props {
   node:          MeshNode;
+  displayPosition?: [number, number];
   isActive:      boolean;
   isInferred?:   boolean;
   nodeCoverage?: NodeCoverage;
@@ -117,6 +118,7 @@ interface Props {
 
 export const NodeMarker: React.FC<Props> = React.memo(({
   node,
+  displayPosition,
   isActive,
   isInferred = false,
   nodeCoverage,
@@ -140,15 +142,19 @@ export const NodeMarker: React.FC<Props> = React.memo(({
     timerRef.current = setTimeout(() => setShowPreview(false), PREVIEW_TTL_MS);
   };
 
-  if (!isValidMapCoord(node.lat, node.lon)) return null;
+  const prohibited = isProhibitedMapNode(node);
+  const markerLat = displayPosition?.[0] ?? node.lat;
+  const markerLon = displayPosition?.[1] ?? node.lon;
+  if (!isValidMapCoord(markerLat, markerLon)) return null;
 
-  const lat = node.lat as number;
-  const lon = node.lon as number;
+  const lat = markerLat as number;
+  const lon = markerLon as number;
   const ageMs   = Date.now() - new Date(node.last_seen).getTime();
   const isStale = ageMs > SEVEN_DAYS_MS;
   const variant = (isInferred || node.is_inferred) ? 'inferred' : roleVariant(node.role);
 
   const fallbackName = ROLE_LABELS[node.role ?? 2] ?? 'Unknown Device';
+  const displayName = prohibited ? `Redacted ${fallbackName}` : (node.name ?? `Unknown ${fallbackName}`);
 
   const statusLabel = isStale
     ? 'STALE'
@@ -181,7 +187,7 @@ export const NodeMarker: React.FC<Props> = React.memo(({
           },
         }}>
           <div className="node-popup">
-            <div className="node-popup__name">{node.name ?? `Unknown ${fallbackName}`}</div>
+            <div className="node-popup__name">{displayName}</div>
             {node.role !== undefined && node.role !== 2 && (
               <div className="node-popup__row">
                 <span>Type</span>
@@ -238,6 +244,12 @@ export const NodeMarker: React.FC<Props> = React.memo(({
               <span>Position</span>
               <span>{lat.toFixed(5)}, {lon.toFixed(5)}</span>
             </div>
+            {prohibited && (
+              <div className="node-popup__row">
+                <span>Location</span>
+                <span>Redacted within 1 mile radius</span>
+              </div>
+            )}
             {node.elevation_m !== undefined && node.elevation_m !== null && (
               <div className="node-popup__row">
                 <span>Elevation</span>
@@ -289,6 +301,22 @@ export const NodeMarker: React.FC<Props> = React.memo(({
           </div>
         </Popup>
       </Marker>
+
+      {prohibited && (
+        <Circle
+          center={[lat, lon]}
+          radius={HIDDEN_NODE_MASK_RADIUS_METERS}
+          pathOptions={{
+            color: '#f59e0b',
+            weight: 1.4,
+            opacity: 0.55,
+            fillColor: '#f59e0b',
+            fillOpacity: 0.05,
+            dashArray: '4 6',
+          }}
+          interactive={false}
+        />
+      )}
 
       {(previewBands.red.length > 0 || previewBands.amber.length > 0 || previewBands.green.length > 0) && (
         <Pane name={`cov-preview-${node.node_id}`} style={{ zIndex: 351 }}>
