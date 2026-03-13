@@ -3,7 +3,7 @@ import { MapContainer, TileLayer, useMap, Pane, Polygon, Polyline } from 'react-
 import type { LatLngExpression, Map as LeafletMap } from 'leaflet';
 import type { MeshNode, PacketArc } from '../../hooks/useNodes.js';
 import type { NodeCoverage } from '../../hooks/useCoverage.js';
-import { buildHiddenCoordMask, hasCoords, maskNodePoint, maskPoint } from '../../utils/pathing.js';
+import { buildHiddenCoordMask, hasCoords, maskCircleCenter, maskNodePoint, maskPoint } from '../../utils/pathing.js';
 import type { LinkMetrics } from '../../utils/pathing.js';
 import { NodeMarker } from './NodeMarker.js';
 import { PacketArcLayer } from './PacketArcLayer.js';
@@ -684,11 +684,13 @@ export const MapView: React.FC<MapViewProps> = ({
           if (focusedPrefixNodeIds && focusHidePhase === 'hide' && !isFocusVisible) return null;
           const isStaleNode = (Date.now() - new Date(node.last_seen).getTime()) > STALE_MARKER_MS;
           const displayPosition = maskNodePoint(node, hiddenCoordMask);
+          const circleCenterPosition = maskCircleCenter([node.lat, node.lon], hiddenCoordMask);
           return (
             <NodeMarker
               key={node.node_id}
               node={node}
               displayPosition={displayPosition}
+              circleCenterPosition={circleCenterPosition}
               isActive={activeNodes.has(node.node_id)}
               isInferred={isStaleNode && inferredActiveNodeIds.has(node.node_id.toLowerCase()) && !activeNodes.has(node.node_id)}
               isHighlighted={!!focusedPrefix && node.node_id.slice(0, 2).toUpperCase() === focusedPrefix}
@@ -724,6 +726,7 @@ export const MapView: React.FC<MapViewProps> = ({
               key={node.node_id}
               node={node}
               displayPosition={maskNodePoint(node, hiddenCoordMask)}
+              circleCenterPosition={maskCircleCenter([node.lat, node.lon], hiddenCoordMask)}
               isActive={activeNodes.has(node.node_id)}
               isRestoring={!!focusedPrefixNodeIds && focusHidePhase === 'fade' && !isFocusVisible}
               nodeCoverage={coverageByNodeId.get(node.node_id)}

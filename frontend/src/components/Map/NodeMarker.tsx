@@ -104,6 +104,7 @@ interface NodeLink {
 interface Props {
   node:          MeshNode;
   displayPosition?: [number, number];
+  circleCenterPosition?: [number, number];
   isActive:      boolean;
   isInferred?:   boolean;
   nodeCoverage?: NodeCoverage;
@@ -119,6 +120,7 @@ interface Props {
 export const NodeMarker: React.FC<Props> = React.memo(({
   node,
   displayPosition,
+  circleCenterPosition,
   isActive,
   isInferred = false,
   nodeCoverage,
@@ -145,6 +147,8 @@ export const NodeMarker: React.FC<Props> = React.memo(({
   const prohibited = isProhibitedMapNode(node);
   const markerLat = displayPosition?.[0] ?? node.lat;
   const markerLon = displayPosition?.[1] ?? node.lon;
+  const circleLat = circleCenterPosition?.[0] ?? markerLat;
+  const circleLon = circleCenterPosition?.[1] ?? markerLon;
   if (!isValidMapCoord(markerLat, markerLon)) return null;
 
   const lat = markerLat as number;
@@ -304,7 +308,7 @@ export const NodeMarker: React.FC<Props> = React.memo(({
 
       {prohibited && (
         <Circle
-          center={[lat, lon]}
+          center={[circleLat as number, circleLon as number]}
           radius={HIDDEN_NODE_MASK_RADIUS_METERS}
           pathOptions={{
             color: '#f59e0b',
