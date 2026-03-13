@@ -3,7 +3,7 @@ import { MapContainer, TileLayer, useMap, Pane, Polygon, Polyline } from 'react-
 import type { LatLngExpression, Map as LeafletMap } from 'leaflet';
 import type { MeshNode, PacketArc } from '../../hooks/useNodes.js';
 import type { NodeCoverage } from '../../hooks/useCoverage.js';
-import { hasCoords } from '../../utils/pathing.js';
+import { buildHiddenCoordMask, hasCoords, maskNodePoint, maskPoint } from '../../utils/pathing.js';
 import type { LinkMetrics } from '../../utils/pathing.js';
 import { NodeMarker } from './NodeMarker.js';
 import { PacketArcLayer } from './PacketArcLayer.js';
@@ -65,10 +65,6 @@ function geomToRings(geom: { type: string; coordinates: unknown } | null | undef
   if (geom.type === 'Polygon') return [ringToLatLng((geom.coordinates as number[][][])[0])];
   if (geom.type === 'MultiPolygon') return (geom.coordinates as number[][][][]).map((poly) => ringToLatLng(poly[0]));
   return [];
-}
-
-function isHiddenMapNode(node: MeshNode | null | undefined): boolean {
-  return !hasCoords(node) || Boolean(node?.name?.includes('🚫'));
 }
 
 // Raw outer rings from each coverage polygon — used for the green coverage display.
@@ -186,6 +182,9 @@ export const MapView: React.FC<MapViewProps> = ({
   const [isMobileViewport, setIsMobileViewport] = useState(
     () => (typeof window !== 'undefined' ? window.matchMedia('(max-width: 640px)').matches : false),
   );
+  const [isPageVisible, setIsPageVisible] = useState(
+    () => (typeof document === 'undefined' ? true : document.visibilityState === 'visible'),
+  );
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -194,6 +193,13 @@ export const MapView: React.FC<MapViewProps> = ({
     update();
     mq.addEventListener('change', update);
     return () => mq.removeEventListener('change', update);
+  }, []);
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return undefined;
+    const updateVisibility = () => setIsPageVisible(document.visibilityState === 'visible');
+    document.addEventListener('visibilitychange', updateVisibility);
+    return () => document.removeEventListener('visibilitychange', updateVisibility);
   }, []);
 
   const aniFrameRef    = useRef<number | null>(null);
@@ -206,7 +212,7 @@ export const MapView: React.FC<MapViewProps> = ({
   const hasBeta = Boolean(showBetaPaths && (betaLowSegments.length > 0 || betaPaths.length > 0));
 
   useEffect(() => {
-    if (!hasRegular && !hasBeta) {
+    if (!hasRegular && !hasBeta || !isPageVisible) {
       if (aniFrameRef.current !== null) {
         cancelAnimationFrame(aniFrameRef.current);
         aniFrameRef.current = null;
@@ -232,7 +238,7 @@ export const MapView: React.FC<MapViewProps> = ({
         aniFrameRef.current = null;
       }
     };
-  }, [hasRegular, hasBeta, map]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [hasRegular, hasBeta, isPageVisible, map]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const FOURTEEN_DAYS_MS = 14 * 24 * 60 * 60 * 1000;
   const allNodesWithPos = useMemo(() => Array.from(nodes.values()).filter(
@@ -286,6 +292,7 @@ export const MapView: React.FC<MapViewProps> = ({
     for (const c of coverage) m.set(c.node_id, c);
     return m;
   }, [coverage]);
+  const hiddenCoordMask = useMemo(() => buildHiddenCoordMask(nodes.values()), [nodes]);
 
   const distKm = useCallback((a: MeshNode, b: MeshNode) => {
     if (!hasCoords(a) || !hasCoords(b)) return Number.POSITIVE_INFINITY;
@@ -517,7 +524,7 @@ export const MapView: React.FC<MapViewProps> = ({
         const metrics = linkMetrics.get(key);
         lines.push({
           key,
-          positions: [[a.lat, a.lon], [b.lat, b.lon]],
+          positions: [maskNodePoint(a, hiddenCoordMask), maskNodePoint(b, hiddenCoordMask)],
           observedCount: metrics?.observed_count ?? 0,
           pathLossDb: metrics?.itm_path_loss_db,
           countAToB: metrics?.count_a_to_b ?? 0,
@@ -532,7 +539,7 @@ export const MapView: React.FC<MapViewProps> = ({
       .sort((a, b) => (b.observedCount - a.observedCount))
       .slice(0, 400);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showLinks, viablePairsArr, linkedNodesKey, linkMetrics, map, lineInView]);
+  }, [showLinks, viablePairsArr, linkedNodesKey, linkMetrics, map, lineInView, hiddenCoordMask]);
 
   const visibleClashPathLines = useMemo(
     () => clashPathLines.filter((line) => lineInView(line.positions)),
@@ -556,13 +563,21 @@ export const MapView: React.FC<MapViewProps> = ({
 
   const visiblePacketHistorySegments = useMemo(() => {
     if (!showPacketHistory) return [];
-    const segments = packetHistorySegments.filter((segment) => lineInView(segment.positions));
+    const segments = packetHistorySegments
+      .map((segment) => ({
+        ...segment,
+        positions: [
+          maskPoint(segment.positions[0], hiddenCoordMask),
+          maskPoint(segment.positions[1], hiddenCoordMask),
+        ] as [[number, number], [number, number]],
+      }))
+      .filter((segment) => lineInView(segment.positions));
     const zoom = map?.getZoom() ?? DEFAULT_ZOOM;
     const limited = (zoom >= 9 || segments.length <= 700) ? segments : [...segments]
       .sort((a, b) => b.count - a.count)
       .slice(0, 700);
     return [...limited].sort((a, b) => a.count - b.count);
-  }, [showPacketHistory, packetHistorySegments, lineInView, map]);
+  }, [showPacketHistory, packetHistorySegments, lineInView, map, hiddenCoordMask]);
 
   const markerSize = useMemo(() => {
     const leafletZoom = deckViewState.zoom + 1;
@@ -663,15 +678,17 @@ export const MapView: React.FC<MapViewProps> = ({
 
         {/* Repeater markers — Leaflet default marker pane at zIndex 600 */}
         {visibleRepeaterNodes.map((node) => {
-          if (isHiddenMapNode(node)) return null;
+          if (!hasCoords(node)) return null;
           if (showHexClashes && !clashVisibleNodeIds.has(node.node_id)) return null;
           const isFocusVisible = clashVisibleNodeIds.has(node.node_id) || (focusedPrefixNodeIds?.has(node.node_id) ?? false);
           if (focusedPrefixNodeIds && focusHidePhase === 'hide' && !isFocusVisible) return null;
           const isStaleNode = (Date.now() - new Date(node.last_seen).getTime()) > STALE_MARKER_MS;
+          const displayPosition = maskNodePoint(node, hiddenCoordMask);
           return (
             <NodeMarker
               key={node.node_id}
               node={node}
+              displayPosition={displayPosition}
               isActive={activeNodes.has(node.node_id)}
               isInferred={isStaleNode && inferredActiveNodeIds.has(node.node_id.toLowerCase()) && !activeNodes.has(node.node_id)}
               isHighlighted={!!focusedPrefix && node.node_id.slice(0, 2).toUpperCase() === focusedPrefix}
@@ -699,13 +716,14 @@ export const MapView: React.FC<MapViewProps> = ({
 
         {/* Companion radio + room server markers (toggled via filter) */}
         {showClientNodes && !showHexClashes && visibleClientNodes.map((node) => {
-          if (isHiddenMapNode(node)) return null;
+          if (!hasCoords(node)) return null;
           const isFocusVisible = clashVisibleNodeIds.has(node.node_id);
           if (focusedPrefixNodeIds && focusHidePhase === 'hide' && !isFocusVisible) return null;
           return (
             <NodeMarker
               key={node.node_id}
               node={node}
+              displayPosition={maskNodePoint(node, hiddenCoordMask)}
               isActive={activeNodes.has(node.node_id)}
               isRestoring={!!focusedPrefixNodeIds && focusHidePhase === 'fade' && !isFocusVisible}
               nodeCoverage={coverageByNodeId.get(node.node_id)}
@@ -743,7 +761,7 @@ export const MapView: React.FC<MapViewProps> = ({
         {showBetaPaths && betaLowSegments.map(([a, b], idx) => (
           <Polyline
             key={`beta-low-seg-${idx}`}
-            positions={[a, b]}
+            positions={[maskPoint(a, hiddenCoordMask), maskPoint(b, hiddenCoordMask)]}
             className="beta-red-path-overlay"
             pathOptions={{
               color:     '#ef4444',
@@ -759,7 +777,7 @@ export const MapView: React.FC<MapViewProps> = ({
         {showBetaPaths && betaPaths.map((path, idx) => (
           <Polyline
             key={`beta-purple-${idx}`}
-            positions={path}
+            positions={path.map((point) => maskPoint(point, hiddenCoordMask))}
             className="beta-purple-path-overlay"
             pathOptions={{
               color:     '#a855f7',
@@ -775,7 +793,7 @@ export const MapView: React.FC<MapViewProps> = ({
             {betaCompletionPaths.map((path, idx) => (
               <Polyline
                 key={`beta-completion-${idx}`}
-                positions={path}
+                positions={path.map((point) => maskPoint(point, hiddenCoordMask))}
                 pathOptions={{
                   color: '#ef4444',
                   weight: 1.8,

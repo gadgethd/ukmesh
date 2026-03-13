@@ -53,6 +53,9 @@ export const App: React.FC = () => {
   const [inferredNodes, setInferredNodes] = useState<MeshNode[]>([]);
   const [inferredActiveNodeIds, setInferredActiveNodeIds] = useState<Set<string>>(new Set());
   const [packetHistorySegments, setPacketHistorySegments] = useState<PacketHistorySegment[]>([]);
+  const [isPageVisible, setIsPageVisible] = useState(
+    () => (typeof document === 'undefined' ? true : document.visibilityState === 'visible'),
+  );
   const clashRestoreRef = useRef<{ links: boolean; coverage: boolean; clientNodes: boolean } | null>(null);
   const prevHexClashesRef = useRef<boolean>(DEFAULT_FILTERS.hexClashes);
 
@@ -107,6 +110,13 @@ export const App: React.FC = () => {
   }, []);
 
   useEffect(() => {
+    if (typeof document === 'undefined') return undefined;
+    const updateVisibility = () => setIsPageVisible(document.visibilityState === 'visible');
+    document.addEventListener('visibilitychange', updateVisibility);
+    return () => document.removeEventListener('visibilitychange', updateVisibility);
+  }, []);
+
+  useEffect(() => {
     localStorage.setItem(FILTERS_KEY, JSON.stringify(filters));
   }, [filters]);
 
@@ -140,16 +150,18 @@ export const App: React.FC = () => {
     };
 
     void syncRecentPackets();
-    const timer = window.setInterval(() => { void syncRecentPackets(); }, 4000);
+    const pollMs = isPageVisible ? 4000 : 30000;
+    const timer = window.setInterval(() => { void syncRecentPackets(); }, pollMs);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [networkFilter, observerFilter, replaceRecentPackets]);
+  }, [isPageVisible, networkFilter, observerFilter, replaceRecentPackets]);
 
   useEffect(() => {
     let cancelled = false;
     const syncPacketHistory = async () => {
+      if (!isPageVisible) return;
       try {
         const response = await fetch(
           uncachedEndpoint(withScopeParams('/api/path-beta/history', { network: networkFilter })),
@@ -172,11 +184,12 @@ export const App: React.FC = () => {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [networkFilter]);
+  }, [isPageVisible, networkFilter]);
 
   useEffect(() => {
     let cancelled = false;
     const syncInferredNodes = async () => {
+      if (!isPageVisible) return;
       try {
         const response = await fetch(
           uncachedEndpoint(withScopeParams('/api/inferred-nodes', { network: networkFilter, observer: observerFilter })),
@@ -201,7 +214,7 @@ export const App: React.FC = () => {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [networkFilter, observerFilter]);
+  }, [isPageVisible, networkFilter, observerFilter]);
 
   useEffect(() => {
     const wasHexClashes = prevHexClashesRef.current;

@@ -4,6 +4,7 @@ import {
   PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer,
 } from 'recharts';
+import { CircleMarker, MapContainer, Polyline, TileLayer, Tooltip as LeafletTooltip, useMap } from 'react-leaflet';
 import { getCurrentSite } from '../config/site.js';
 import { chartStatsEndpoint, uncachedEndpoint } from '../utils/api.js';
 
@@ -56,6 +57,7 @@ interface ChartData {
   prefixCollisions:{ prefix: string; repeats: number }[];
   observerRegions: {
     iata: string;
+    activeObservers: number;
     observers: number;
     packets24h: number;
     packets7d: number;
@@ -71,6 +73,29 @@ interface ChartData {
     multibytePackets24h: number;
     fullyDecodedMultibyte24h: number;
     latestMultibyteAt: string | null;
+    latestMultibyteHash: string | null;
+    latestFullyDecodedAt: string | null;
+    latestFullyDecodedHash: string | null;
+    latestFullyDecodedHops: number | null;
+    latestFullyDecodedPath: string | null;
+    latestFullyDecodedNodes: Array<{
+      ord: number;
+      node_id: string;
+      name: string | null;
+      lat: number | null;
+      lon: number | null;
+    }>;
+    longestFullyDecodedAt: string | null;
+    longestFullyDecodedHash: string | null;
+    longestFullyDecodedHops: number | null;
+    longestFullyDecodedPath: string | null;
+    longestFullyDecodedNodes: Array<{
+      ord: number;
+      node_id: string;
+      name: string | null;
+      lat: number | null;
+      lon: number | null;
+    }>;
   };
   summary: {
     totalPackets24h:  number;
@@ -154,12 +179,39 @@ const ChartCard: React.FC<{ title: string; sub?: string; children: React.ReactNo
   </div>
 );
 
+const FitDecodedPath: React.FC<{ points: [number, number][] }> = ({ points }) => {
+  const map = useMap();
+
+  useEffect(() => {
+    if (points.length < 1) return;
+    if (points.length === 1) {
+      map.setView(points[0], 11);
+      return;
+    }
+    map.fitBounds(points, { padding: [24, 24] });
+  }, [map, points]);
+
+  return null;
+};
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 export const StatsPage: React.FC = () => {
   const [data, setData]       = useState<ChartData | null>(null);
   const [health, setHealth]   = useState<HealthPayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
+  const [selectedDecodedPath, setSelectedDecodedPath] = useState<{
+    title: string;
+    hash: string | null;
+    hops: number | null;
+    nodes: Array<{
+      ord: number;
+      node_id: string;
+      name: string | null;
+      lat: number | null;
+      lon: number | null;
+    }>;
+  } | null>(null);
   const site = getCurrentSite();
   const statsScope = { network: site.networkFilter, observer: site.observerId };
   const refreshSeconds = 30 * 60;
@@ -205,11 +257,36 @@ export const StatsPage: React.FC = () => {
     if (sec < 86400) return `${Math.floor(sec / 3600)}h ago`;
     return `${Math.floor(sec / 86400)}d ago`;
   };
+  const decodedPathNodes = (data?.pathHashes.latestFullyDecodedNodes ?? []).filter(
+    (node) => Number.isFinite(node.lat) && Number.isFinite(node.lon),
+  );
+  const decodedPathStart = decodedPathNodes[0]?.name ?? decodedPathNodes[0]?.node_id ?? null;
+  const decodedPathEnd = decodedPathNodes[decodedPathNodes.length - 1]?.name ?? decodedPathNodes[decodedPathNodes.length - 1]?.node_id ?? null;
+  const decodedPathSummary = decodedPathStart && decodedPathEnd
+    ? decodedPathStart === decodedPathEnd
+      ? decodedPathStart
+      : `${decodedPathStart} -> ${decodedPathEnd}`
+    : data?.pathHashes.latestFullyDecodedPath ?? 'not decoded yet';
+  const longestDecodedPathNodes = (data?.pathHashes.longestFullyDecodedNodes ?? []).filter(
+    (node) => Number.isFinite(node.lat) && Number.isFinite(node.lon),
+  );
+  const longestDecodedPathStart = longestDecodedPathNodes[0]?.name ?? longestDecodedPathNodes[0]?.node_id ?? null;
+  const longestDecodedPathEnd = longestDecodedPathNodes[longestDecodedPathNodes.length - 1]?.name ?? longestDecodedPathNodes[longestDecodedPathNodes.length - 1]?.node_id ?? null;
+  const longestDecodedPathSummary = longestDecodedPathStart && longestDecodedPathEnd
+    ? longestDecodedPathStart === longestDecodedPathEnd
+      ? longestDecodedPathStart
+      : `${longestDecodedPathStart} -> ${longestDecodedPathEnd}`
+    : data?.pathHashes.longestFullyDecodedPath ?? 'not decoded yet';
+  const selectedDecodedPathNodes = (selectedDecodedPath?.nodes ?? []).filter(
+    (node) => Number.isFinite(node.lat) && Number.isFinite(node.lon),
+  );
+  const selectedDecodedPathPoints = selectedDecodedPathNodes.map((node) => [Number(node.lat), Number(node.lon)] as [number, number]);
+  const isRedactedDecodedNode = (node: { name: string | null }) => node.name === 'Redacted repeater';
 
   return (
     <div className="site-layout__inner">
       {/* ── Page hero ─────────────────────────────────────────────────────── */}
-      <section className="site-page-hero">
+      <section className="site-page-hero site-page-hero--stats">
         <div className="site-content">
           <h1 className="site-page-hero__title">Network Stats</h1>
           <p className="site-page-hero__sub">
@@ -286,7 +363,7 @@ export const StatsPage: React.FC = () => {
                         </div>
                         <div className="stats-page__observer-metric">
                           <span>Observers</span>
-                          <strong>{fmt(region.observers)}</strong>
+                          <strong>{fmt(region.activeObservers)}|{fmt(region.observers)}</strong>
                         </div>
                       </div>
                       <div className="stats-page__observer-chart">
@@ -351,7 +428,61 @@ export const StatsPage: React.FC = () => {
               <div className="health-meta">
                 <div className="health-kv">
                   <span>Latest Multibyte Packet</span>
-                  <strong>{data.pathHashes.latestMultibyteAt ? timeAgo(data.pathHashes.latestMultibyteAt) : 'not seen yet'}</strong>
+                  <strong>
+                    {data.pathHashes.latestMultibyteHash
+                      ? `${data.pathHashes.latestMultibyteHash} · ${timeAgo(data.pathHashes.latestMultibyteAt)}`
+                      : 'not seen yet'}
+                  </strong>
+                </div>
+                <div className="health-kv">
+                  <span>Last Fully Decoded Packet</span>
+                  <strong>
+                    {data.pathHashes.latestFullyDecodedHash
+                      ? `${data.pathHashes.latestFullyDecodedHash} · ${data.pathHashes.latestFullyDecodedHops ?? 0} hops · ${timeAgo(data.pathHashes.latestFullyDecodedAt)}`
+                      : 'not decoded yet'}
+                  </strong>
+                </div>
+                <div className="health-kv">
+                  <span>Decoded Path</span>
+                  {decodedPathNodes.length > 1 ? (
+                    <button
+                      type="button"
+                      className="stats-page__path-link"
+                      onClick={() => setSelectedDecodedPath({
+                        title: 'Last Fully Decoded Path',
+                        hash: data.pathHashes.latestFullyDecodedHash,
+                        hops: data.pathHashes.latestFullyDecodedHops,
+                        nodes: data.pathHashes.latestFullyDecodedNodes,
+                      })}
+                    >
+                      {decodedPathSummary}
+                    </button>
+                  ) : (
+                    <strong>{decodedPathSummary}</strong>
+                  )}
+                </div>
+                <div className="health-kv">
+                  <span>Longest Decoded Path</span>
+                  {longestDecodedPathNodes.length > 1 ? (
+                    <button
+                      type="button"
+                      className="stats-page__path-link"
+                      onClick={() => setSelectedDecodedPath({
+                        title: 'Longest Fully Decoded Path',
+                        hash: data.pathHashes.longestFullyDecodedHash,
+                        hops: data.pathHashes.longestFullyDecodedHops,
+                        nodes: data.pathHashes.longestFullyDecodedNodes,
+                      })}
+                    >
+                      {`${longestDecodedPathSummary} · ${data.pathHashes.longestFullyDecodedHops ?? 0} hops`}
+                    </button>
+                  ) : (
+                    <strong>
+                      {data.pathHashes.longestFullyDecodedHash
+                        ? `${longestDecodedPathSummary} · ${data.pathHashes.longestFullyDecodedHops ?? 0} hops`
+                        : 'not decoded yet'}
+                    </strong>
+                  )}
                 </div>
               </div>
             </div>
@@ -568,6 +699,72 @@ export const StatsPage: React.FC = () => {
               </div>
             )}
           </>
+        )}
+
+        {selectedDecodedPath && selectedDecodedPathPoints.length > 1 && (
+          <div
+            className="disclaimer-overlay"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Decoded path map"
+            onClick={() => setSelectedDecodedPath(null)}
+          >
+            <div className="stats-page__path-modal" onClick={(e) => e.stopPropagation()}>
+              <div className="stats-page__path-modal-header">
+                <div>
+                  <h2 className="stats-page__path-modal-title">{selectedDecodedPath.title}</h2>
+                  <p className="stats-page__path-modal-sub">
+                    {selectedDecodedPath.hash} · {selectedDecodedPath.hops ?? 0} hops
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className="disclaimer-modal__close stats-page__path-modal-close"
+                  onClick={() => setSelectedDecodedPath(null)}
+                >
+                  Close
+                </button>
+              </div>
+              <div className="stats-page__path-modal-map">
+                <MapContainer
+                  center={selectedDecodedPathPoints[0]}
+                  zoom={8}
+                  style={{ height: '100%', width: '100%' }}
+                  scrollWheelZoom
+                >
+                  <TileLayer
+                    url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+                    attribution="&copy; OpenStreetMap contributors &copy; CARTO"
+                  />
+                  <FitDecodedPath points={selectedDecodedPathPoints} />
+                  <Polyline positions={selectedDecodedPathPoints} pathOptions={{ color: C_PURPLE, weight: 4, opacity: 0.9 }} />
+                  {selectedDecodedPathNodes.map((node) => (
+                    <CircleMarker
+                      key={`${node.node_id}-${node.ord}`}
+                      center={[Number(node.lat), Number(node.lon)]}
+                      radius={10}
+                      pathOptions={{ color: C_CYAN, fillColor: '#0b1725', fillOpacity: 0.95, weight: 2 }}
+                    >
+                      <LeafletTooltip permanent direction="center" offset={[0, 0]} className="stats-page__path-node-label">
+                        {node.ord}
+                      </LeafletTooltip>
+                    </CircleMarker>
+                  ))}
+                </MapContainer>
+              </div>
+              <div className="stats-page__path-modal-list">
+                {selectedDecodedPathNodes.map((node) => (
+                  <div key={`${node.node_id}-label-${node.ord}`} className="stats-page__path-modal-node">
+                    <span>{node.ord}</span>
+                    <strong>
+                      {node.name ?? node.node_id}
+                      {isRedactedDecodedNode(node) ? ' · approximate within 1 mile' : ''}
+                    </strong>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
         )}
       </div>
     </div>

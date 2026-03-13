@@ -1,6 +1,6 @@
 import type { Filters } from '../components/FilterPanel/FilterPanel.js';
 import type { AggregatedPacket, MeshNode } from './useNodes.js';
-import { hasCoords, resolvePathWaypoints } from '../utils/pathing.js';
+import { buildHiddenCoordMask, hasCoords, maskNodePoint, resolvePathWaypoints } from '../utils/pathing.js';
 
 export type PathSegment = [[number, number], [number, number]];
 
@@ -63,14 +63,15 @@ export function buildRegularPacketPaths(
   nodes: Map<string, MeshNode>,
 ): [number, number][][] {
   if (!packet || observerIds.length < 1 || (!packet.path?.length && !packet.srcNodeId)) return [];
+  const hiddenCoordMask = buildHiddenCoordMask(nodes.values());
   const src = packet.srcNodeId ? (nodes.get(packet.srcNodeId) ?? null) : null;
   const srcWithPos = hasCoords(src) ? src : null;
   return observerIds.flatMap((observerId) => {
     const rx = nodes.get(observerId);
     if (!hasCoords(rx)) return [];
     const waypoints = packet.path?.length
-      ? resolvePathWaypoints(packet.path, srcWithPos, rx, nodes)
-      : (srcWithPos ? [[srcWithPos.lat, srcWithPos.lon], [rx.lat, rx.lon]] as [number, number][] : []);
+      ? resolvePathWaypoints(packet.path, srcWithPos, rx, nodes, hiddenCoordMask)
+      : (srcWithPos ? [maskNodePoint(srcWithPos, hiddenCoordMask), maskNodePoint(rx, hiddenCoordMask)] as [number, number][] : []);
     return waypoints.length >= 2 ? [waypoints] : [];
   });
 }

@@ -1,6 +1,7 @@
 import { Request, Response, Router } from 'express';
 import { rateLimit } from 'express-rate-limit';
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
+import { isIP } from 'node:net';
 import mqtt from 'mqtt';
 import { getNodes, getNodeHistory, getPathHistoryCache, getRecentPacketEvents, getRecentPackets, query, MIN_LINK_OBSERVATIONS } from '../db/index.js';
 import { addOwnerNodeForUsername, getMappedOwnerNodeIds, getOwnerNodeIdsForUsername } from '../db/ownerAuth.js';
@@ -57,6 +58,8 @@ const STATS_CHARTS_LIMITER = rateLimit({
   legacyHeaders: false,
   message: { error: 'Too many stats chart requests, slow down' },
 });
+const PROHIBITED_NODE_MARKER = '🚫';
+const HIDDEN_NODE_MASK_RADIUS_MILES = 1;
 
 type OwnerSession = {
   nodeIds: string[];
@@ -117,6 +120,92 @@ function readCookieValue(cookieHeader: string | undefined, key: string): string 
 
 function hasControlChars(value: string): boolean {
   return /[\u0000-\u001F\u007F]/.test(value);
+}
+
+function isProhibitedMapNode(node: { name?: string | null } | null | undefined): boolean {
+  return Boolean(node?.name?.includes(PROHIBITED_NODE_MARKER));
+}
+
+function hashSeed(input: string): number {
+  let hash = 2166136261;
+  for (let i = 0; i < input.length; i++) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function seededUnitPair(seed: string): [number, number] {
+  const distanceUnit = hashSeed(`${seed}:distance`) / 0xffffffff;
+  const bearingUnit = hashSeed(`${seed}:bearing`) / 0xffffffff;
+  return [distanceUnit, bearingUnit];
+}
+
+function stablePointWithinMiles(
+  lat: number,
+  lon: number,
+  seed: string,
+  radiusMiles = HIDDEN_NODE_MASK_RADIUS_MILES,
+): [number, number] {
+  const radiusKm = radiusMiles * 1.609344;
+  const [distanceUnit, bearingUnit] = seededUnitPair(seed);
+  const distanceKm = Math.sqrt(distanceUnit) * radiusKm;
+  const bearing = bearingUnit * Math.PI * 2;
+  const latRad = lat * (Math.PI / 180);
+  const dLat = (distanceKm / 111) * Math.cos(bearing);
+  const lonScale = Math.max(0.01, Math.cos(latRad));
+  const dLon = (distanceKm / (111 * lonScale)) * Math.sin(bearing);
+  return [lat + dLat, lon + dLon];
+}
+
+function maskDecodedPathNodes(
+  rawNodes: Array<{
+    ord: number;
+    node_id: string | null;
+    name: string | null;
+    lat: number | null;
+    lon: number | null;
+    last_seen?: string | null;
+  }> | null | undefined,
+): Array<{
+  ord: number;
+  node_id: string | null;
+  name: string | null;
+  lat: number | null;
+  lon: number | null;
+}> {
+  if (!Array.isArray(rawNodes)) return [];
+  return rawNodes.map((node) => {
+    if (!node || typeof node !== 'object') return node;
+    if (!isProhibitedMapNode(node)) {
+      return {
+        ord: Number(node.ord ?? 0),
+        node_id: node.node_id ?? null,
+        name: node.name ?? null,
+        lat: node.lat ?? null,
+        lon: node.lon ?? null,
+      };
+    }
+    if (typeof node.lat !== 'number' || typeof node.lon !== 'number') {
+      return {
+        ord: Number(node.ord ?? 0),
+        node_id: node.node_id ?? null,
+        name: 'Redacted repeater',
+        lat: node.lat ?? null,
+        lon: node.lon ?? null,
+      };
+    }
+    const activityKey = node.last_seen ?? 'unknown';
+    const seed = `${node.node_id ?? 'unknown'}|${activityKey}`;
+    const [maskedLat, maskedLon] = stablePointWithinMiles(node.lat, node.lon, seed);
+    return {
+      ord: Number(node.ord ?? 0),
+      node_id: node.node_id ?? null,
+      name: 'Redacted repeater',
+      lat: maskedLat,
+      lon: maskedLon,
+    };
+  });
 }
 
 function parseOwnerMqttUsernameMap(): Map<string, string[]> {
@@ -313,6 +402,42 @@ function normalizeObserverQuery(value: unknown): string | undefined {
   return observer && /^[0-9a-f]{64}$/.test(observer) ? observer : undefined;
 }
 
+function normalizeIp(value: string | undefined): string {
+  const raw = String(value ?? '').trim();
+  if (!raw) return '';
+  const first = raw.split(',')[0]?.trim() ?? '';
+  if (first.startsWith('::ffff:')) return first.slice(7);
+  return first;
+}
+
+function isPrivateClientIp(ip: string): boolean {
+  const normalized = normalizeIp(ip);
+  if (!normalized) return false;
+  if (normalized === '::1' || normalized === '127.0.0.1') return true;
+  if (normalized.startsWith('10.')) return true;
+  if (normalized.startsWith('192.168.')) return true;
+  if (/^172\.(1[6-9]|2\d|3[0-1])\./.test(normalized)) return true;
+  if (/^(fc|fd)/i.test(normalized)) return true;
+  if (/^fe80:/i.test(normalized)) return true;
+  return false;
+}
+
+function requireLocalOnly(req: Request, res: Response): boolean {
+  const candidates = [
+    req.ip,
+    normalizeIp(String(req.headers['cf-connecting-ip'] ?? '')),
+    normalizeIp(String(req.headers['x-forwarded-for'] ?? '')),
+    normalizeIp(req.socket.remoteAddress ?? ''),
+  ].filter(Boolean) as string[];
+
+  if (candidates.some((ip) => isPrivateClientIp(ip) || isIP(ip) === 0 && ip === 'localhost')) {
+    return true;
+  }
+
+  res.status(403).json({ error: 'Local access only' });
+  return false;
+}
+
 function networkFilters(network?: string, observer?: string): NetworkFilters {
   const params: string[] = [];
   let networkParam: string | null = null;
@@ -399,6 +524,419 @@ type InferredActiveResponse = {
   inferredNodes: InferredMultibyteNode[];
   inferredActiveNodeIds: string[];
 };
+
+// GET /api/node-status/latest — latest raw status telemetry per scoped node
+router.get('/node-status/latest', async (req, res) => {
+  try {
+    const requestedNetwork = resolveRequestNetwork(req.query['network'], req.headers);
+    const network = requestedNetwork === 'all' ? undefined : requestedNetwork;
+    const observer = normalizeObserverQuery(req.query['observer']);
+
+    const params: string[] = [];
+    const conditions: string[] = [];
+    if (network) {
+      params.push(network);
+      conditions.push(`nss.network = $${params.length}`);
+    } else {
+      conditions.push(`nss.network IS DISTINCT FROM 'test'`);
+    }
+    if (observer) {
+      params.push(observer);
+      conditions.push(`LOWER(nss.node_id) = LOWER($${params.length})`);
+    }
+
+    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    const result = await query<{
+      time: string;
+      node_id: string;
+      network: string | null;
+      battery_mv: number | null;
+      uptime_secs: number | null;
+      tx_air_secs: number | null;
+      rx_air_secs: number | null;
+      channel_utilization: number | null;
+      air_util_tx: number | null;
+      stats: Record<string, unknown> | null;
+      name: string | null;
+      iata: string | null;
+      hardware_model: string | null;
+      firmware_version: string | null;
+    }>(
+      `SELECT * FROM (
+         SELECT DISTINCT ON (nss.node_id)
+           nss.time::text,
+           nss.node_id,
+           nss.network,
+           nss.battery_mv,
+           nss.uptime_secs,
+           nss.tx_air_secs,
+           nss.rx_air_secs,
+           nss.channel_utilization,
+           nss.air_util_tx,
+           nss.stats,
+           n.name,
+           n.iata,
+           n.hardware_model,
+           n.firmware_version
+         FROM node_status_samples nss
+         LEFT JOIN nodes n ON n.node_id = nss.node_id
+         ${whereClause}
+         ORDER BY nss.node_id, nss.time DESC
+       ) latest
+       ORDER BY time DESC`,
+      params,
+    );
+
+    res.json(result.rows);
+  } catch (err) {
+    console.error('[api] GET /node-status/latest', (err as Error).message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /api/node-status/history — recent telemetry history for a scoped node
+router.get('/node-status/history', async (req, res) => {
+  try {
+    const ESTIMATED_AIRTIME_SECONDS_PER_PUBLISH = 0.12;
+    const requestedNetwork = resolveRequestNetwork(req.query['network'], req.headers);
+    const network = requestedNetwork === 'all' ? undefined : requestedNetwork;
+    const observer = normalizeObserverQuery(req.query['observer']);
+    const requestedNodeId = String(req.query['nodeId'] ?? '').trim();
+    const hours = Math.max(1, Math.min(Number(req.query['hours'] ?? 24), 168));
+
+    let nodeId = requestedNodeId;
+    if (nodeId && !/^[0-9a-fA-F]{64}$/.test(nodeId)) {
+      res.status(400).json({ error: 'Invalid nodeId format' });
+      return;
+    }
+
+    if (!nodeId) {
+      const params: string[] = [];
+      const conditions: string[] = [];
+      if (network) {
+        params.push(network);
+        conditions.push(`nss.network = $${params.length}`);
+      } else {
+        conditions.push(`nss.network IS DISTINCT FROM 'test'`);
+      }
+      if (observer) {
+        params.push(observer);
+        conditions.push(`LOWER(nss.node_id) = LOWER($${params.length})`);
+      }
+      const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+      const latestNode = await query<{ node_id: string }>(
+        `SELECT nss.node_id
+         FROM node_status_samples nss
+         ${whereClause}
+         ORDER BY nss.time DESC
+         LIMIT 1`,
+        params,
+      );
+      nodeId = latestNode.rows[0]?.node_id ?? '';
+      if (!nodeId) {
+        res.json({ nodeId: null, points: [] });
+        return;
+      }
+    }
+
+    const result = await query<{
+      time: string;
+      battery_mv: number | null;
+      uptime_secs: number | null;
+      channel_utilization: number | null;
+      air_util_tx: number | null;
+      heap_free: number | null;
+      heap_min_free: number | null;
+      uptime_ms: number | null;
+      rx_publish_calls: number | null;
+      tx_publish_calls: number | null;
+      tx_queue_depth: number | null;
+      tx_queue_depth_peak: number | null;
+    }>(
+      `SELECT
+         time::text,
+         battery_mv,
+         uptime_secs,
+         channel_utilization,
+         air_util_tx,
+         CASE
+           WHEN jsonb_typeof(stats->'heap_free') = 'number' THEN (stats->>'heap_free')::double precision
+           ELSE NULL
+         END AS heap_free,
+         CASE
+           WHEN jsonb_typeof(stats->'heap_min_free') = 'number' THEN (stats->>'heap_min_free')::double precision
+           ELSE NULL
+         END AS heap_min_free,
+         CASE
+           WHEN jsonb_typeof(stats->'uptime_ms') = 'number' THEN (stats->>'uptime_ms')::double precision
+           ELSE NULL
+         END AS uptime_ms,
+         CASE
+           WHEN jsonb_typeof(stats->'rx_publish_calls') = 'number' THEN (stats->>'rx_publish_calls')::double precision
+           ELSE NULL
+         END AS rx_publish_calls,
+         CASE
+           WHEN jsonb_typeof(stats->'tx_publish_calls') = 'number' THEN (stats->>'tx_publish_calls')::double precision
+           ELSE NULL
+         END AS tx_publish_calls,
+         CASE
+           WHEN jsonb_typeof(stats->'tx_queue_depth') = 'number' THEN (stats->>'tx_queue_depth')::double precision
+           ELSE NULL
+         END AS tx_queue_depth,
+         CASE
+           WHEN jsonb_typeof(stats->'tx_queue_depth_peak') = 'number' THEN (stats->>'tx_queue_depth_peak')::double precision
+           ELSE NULL
+         END AS tx_queue_depth_peak
+       FROM node_status_samples
+       WHERE LOWER(node_id) = LOWER($1)
+         AND time > NOW() - ($2::text || ' hours')::interval
+       ORDER BY time ASC`,
+      [nodeId, String(hours)],
+    );
+
+    const points = result.rows.map((row, index) => {
+      if (row.channel_utilization != null || row.air_util_tx != null) {
+        return row;
+      }
+
+      const previous = index > 0 ? result.rows[index - 1] : null;
+      const currentUptimeMs = row.uptime_ms;
+      const previousUptimeMs = previous?.uptime_ms ?? null;
+      const deltaUptimeSeconds =
+        currentUptimeMs != null && previousUptimeMs != null && currentUptimeMs > previousUptimeMs
+          ? (currentUptimeMs - previousUptimeMs) / 1000
+          : null;
+
+      if (!deltaUptimeSeconds || deltaUptimeSeconds <= 0) {
+        return row;
+      }
+
+      const deltaRxCalls =
+        row.rx_publish_calls != null && previous?.rx_publish_calls != null
+          ? Math.max(0, row.rx_publish_calls - previous.rx_publish_calls)
+          : 0;
+      const deltaTxCalls =
+        row.tx_publish_calls != null && previous?.tx_publish_calls != null
+          ? Math.max(0, row.tx_publish_calls - previous.tx_publish_calls)
+          : 0;
+
+      const estimatedTxPct = Math.min(
+        100,
+        (deltaTxCalls * ESTIMATED_AIRTIME_SECONDS_PER_PUBLISH / deltaUptimeSeconds) * 100,
+      );
+      const estimatedTotalPct = Math.min(
+        100,
+        ((deltaTxCalls + deltaRxCalls) * ESTIMATED_AIRTIME_SECONDS_PER_PUBLISH / deltaUptimeSeconds) * 100,
+      );
+
+      return {
+        ...row,
+        channel_utilization: estimatedTotalPct,
+        air_util_tx: estimatedTxPct,
+      };
+    });
+
+    res.json({
+      nodeId,
+      points,
+    });
+  } catch (err) {
+    console.error('[api] GET /node-status/history', (err as Error).message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /api/local/test-diagnostics — local-only consolidated test-site data
+router.get('/local/test-diagnostics', async (req, res) => {
+  try {
+    if (!requireLocalOnly(req, res)) return;
+
+    const [nodes, packetsResult, latestStatusRows, statusSamplesResult] = await Promise.all([
+      getNodes('test'),
+      query<{
+        time: string;
+        topic: string;
+        packet_hash: string | null;
+        packet_type: number | null;
+        route_type: number | null;
+        hop_count: number | null;
+        src_node_id: string | null;
+        rx_node_id: string | null;
+        rssi: number | null;
+        snr: number | null;
+        payload: Record<string, unknown> | null;
+        raw_hex: string | null;
+        path_hash_size_bytes: number | null;
+        path_hashes: string[] | null;
+      }>(
+        `SELECT
+           time::text,
+           topic,
+           packet_hash,
+           packet_type,
+           route_type,
+           hop_count,
+           src_node_id,
+           rx_node_id,
+           rssi,
+           snr,
+           payload,
+           raw_hex,
+           path_hash_size_bytes,
+           path_hashes
+         FROM packets
+         WHERE network = 'test'
+         ORDER BY time DESC`,
+        [],
+      ),
+      query<{
+        time: string;
+        node_id: string;
+        network: string | null;
+        battery_mv: number | null;
+        uptime_secs: number | null;
+        tx_air_secs: number | null;
+        rx_air_secs: number | null;
+        channel_utilization: number | null;
+        air_util_tx: number | null;
+        stats: Record<string, unknown> | null;
+        name: string | null;
+        iata: string | null;
+        hardware_model: string | null;
+        firmware_version: string | null;
+      }>(
+        `SELECT * FROM (
+           SELECT DISTINCT ON (nss.node_id)
+             nss.time::text,
+             nss.node_id,
+             nss.network,
+             nss.battery_mv,
+             nss.uptime_secs,
+             nss.tx_air_secs,
+             nss.rx_air_secs,
+             nss.channel_utilization,
+             nss.air_util_tx,
+             nss.stats,
+             n.name,
+             n.iata,
+             n.hardware_model,
+             n.firmware_version
+           FROM node_status_samples nss
+           LEFT JOIN nodes n ON n.node_id = nss.node_id
+           WHERE nss.network = 'test'
+           ORDER BY nss.node_id, nss.time DESC
+         ) latest
+         ORDER BY time DESC`,
+        [],
+      ),
+      query<{
+        time: string;
+        node_id: string;
+        network: string | null;
+        battery_mv: number | null;
+        uptime_secs: number | null;
+        tx_air_secs: number | null;
+        rx_air_secs: number | null;
+        channel_utilization: number | null;
+        air_util_tx: number | null;
+        stats: Record<string, unknown> | null;
+      }>(
+        `SELECT
+           time::text,
+           node_id,
+           network,
+           battery_mv,
+           uptime_secs,
+           tx_air_secs,
+           rx_air_secs,
+           channel_utilization,
+           air_util_tx,
+           stats
+         FROM node_status_samples
+         WHERE network = 'test'
+         ORDER BY time DESC`,
+        [],
+      ),
+    ]);
+
+    const packets = packetsResult.rows;
+    const latestStatuses = latestStatusRows.rows;
+    const statusSamples = statusSamplesResult.rows;
+    const latestStatus = latestStatusRows.rows[0] ?? null;
+    let history: unknown[] = [];
+    if (latestStatus?.node_id) {
+      const historyRows = await query<{
+        time: string;
+        battery_mv: number | null;
+        uptime_secs: number | null;
+        channel_utilization: number | null;
+        air_util_tx: number | null;
+        heap_free: number | null;
+        heap_min_free: number | null;
+        uptime_ms: number | null;
+        rx_publish_calls: number | null;
+        tx_publish_calls: number | null;
+        tx_queue_depth: number | null;
+        tx_queue_depth_peak: number | null;
+      }>(
+        `SELECT
+           time::text,
+           battery_mv,
+           uptime_secs,
+           channel_utilization,
+           air_util_tx,
+           CASE
+             WHEN jsonb_typeof(stats->'heap_free') = 'number' THEN (stats->>'heap_free')::double precision
+             ELSE NULL
+           END AS heap_free,
+           CASE
+             WHEN jsonb_typeof(stats->'heap_min_free') = 'number' THEN (stats->>'heap_min_free')::double precision
+             ELSE NULL
+           END AS heap_min_free,
+           CASE
+             WHEN jsonb_typeof(stats->'uptime_ms') = 'number' THEN (stats->>'uptime_ms')::double precision
+             ELSE NULL
+           END AS uptime_ms,
+           CASE
+             WHEN jsonb_typeof(stats->'rx_publish_calls') = 'number' THEN (stats->>'rx_publish_calls')::double precision
+             ELSE NULL
+           END AS rx_publish_calls,
+           CASE
+             WHEN jsonb_typeof(stats->'tx_publish_calls') = 'number' THEN (stats->>'tx_publish_calls')::double precision
+             ELSE NULL
+           END AS tx_publish_calls,
+           CASE
+             WHEN jsonb_typeof(stats->'tx_queue_depth') = 'number' THEN (stats->>'tx_queue_depth')::double precision
+             ELSE NULL
+           END AS tx_queue_depth,
+           CASE
+             WHEN jsonb_typeof(stats->'tx_queue_depth_peak') = 'number' THEN (stats->>'tx_queue_depth_peak')::double precision
+             ELSE NULL
+           END AS tx_queue_depth_peak
+         FROM node_status_samples
+         WHERE LOWER(node_id) = LOWER($1)
+           AND network = 'test'
+           AND time > NOW() - INTERVAL '24 hours'
+         ORDER BY time ASC`,
+        [latestStatus.node_id],
+      );
+      history = historyRows.rows;
+    }
+
+    res.json({
+      network: 'test',
+      nodes,
+      packets,
+      latestStatuses,
+      statusSamples,
+      latestStatus,
+      history,
+    });
+  } catch (err) {
+    console.error('[api] GET /local/test-diagnostics', (err as Error).message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
 
 // GET /api/nodes — all known nodes
 router.get('/nodes', async (req, res) => {
@@ -1293,6 +1831,9 @@ router.get('/owner/live', async (req, res) => {
         rx_air_secs: string | null;
         channel_utilization: number | null;
         air_util_tx: number | null;
+        uptime_ms: number | null;
+        rx_publish_calls: number | null;
+        tx_publish_calls: number | null;
       }>(
         `SELECT
            time::text AS time,
@@ -1301,7 +1842,19 @@ router.get('/owner/live', async (req, res) => {
            tx_air_secs::text AS tx_air_secs,
            rx_air_secs::text AS rx_air_secs,
            channel_utilization,
-           air_util_tx
+           air_util_tx,
+           CASE
+             WHEN jsonb_typeof(stats->'uptime_ms') = 'number' THEN (stats->>'uptime_ms')::double precision
+             ELSE NULL
+           END AS uptime_ms,
+           CASE
+             WHEN jsonb_typeof(stats->'rx_publish_calls') = 'number' THEN (stats->>'rx_publish_calls')::double precision
+             ELSE NULL
+           END AS rx_publish_calls,
+           CASE
+             WHEN jsonb_typeof(stats->'tx_publish_calls') = 'number' THEN (stats->>'tx_publish_calls')::double precision
+             ELSE NULL
+           END AS tx_publish_calls
          FROM node_status_samples
          WHERE LOWER(node_id) = LOWER($1)
            AND time > NOW() - INTERVAL '24 hours'
@@ -1351,6 +1904,7 @@ router.get('/owner/live', async (req, res) => {
     })();
 
     const telemetry24h = (() => {
+      const ESTIMATED_AIRTIME_SECONDS_PER_PUBLISH = 0.12;
       const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
       const bucketMs = 5 * 60 * 1000;
       type Point = {
@@ -1366,10 +1920,13 @@ router.get('/owner/live', async (req, res) => {
         timeMs: new Date(row.time).getTime(),
         batteryMv: row.battery_mv == null ? null : Number(row.battery_mv),
         uptimeSecs: row.uptime_secs == null ? null : Number(row.uptime_secs),
+        uptimeMs: row.uptime_ms == null ? null : Number(row.uptime_ms),
         txAirSecs: row.tx_air_secs == null ? null : Number(row.tx_air_secs),
         rxAirSecs: row.rx_air_secs == null ? null : Number(row.rx_air_secs),
         channelUtilization: row.channel_utilization == null ? null : Number(row.channel_utilization),
         airUtilTx: row.air_util_tx == null ? null : Number(row.air_util_tx),
+        rxPublishCalls: row.rx_publish_calls == null ? null : Number(row.rx_publish_calls),
+        txPublishCalls: row.tx_publish_calls == null ? null : Number(row.tx_publish_calls),
       }));
 
       const bucketed = new Map<number, Point>();
@@ -1393,6 +1950,40 @@ router.get('/owner/live', async (req, res) => {
             }
             if (channelUtilPct == null) {
               channelUtilPct = clamp(((txDelta + rxDelta) / uptimeDelta) * 100, 0, 100);
+            }
+          }
+        }
+
+        if ((channelUtilPct == null || airUtilTxPct == null) && prev) {
+          const currentUptimeMs = sample.uptimeMs;
+          const previousUptimeMs = prev.uptimeMs;
+          const deltaUptimeSeconds =
+            currentUptimeMs != null && previousUptimeMs != null && currentUptimeMs > previousUptimeMs
+              ? (currentUptimeMs - previousUptimeMs) / 1000
+              : 0;
+          const deltaRxCalls =
+            sample.rxPublishCalls != null && prev.rxPublishCalls != null
+              ? Math.max(0, sample.rxPublishCalls - prev.rxPublishCalls)
+              : 0;
+          const deltaTxCalls =
+            sample.txPublishCalls != null && prev.txPublishCalls != null
+              ? Math.max(0, sample.txPublishCalls - prev.txPublishCalls)
+              : 0;
+
+          if (deltaUptimeSeconds > 0) {
+            if (airUtilTxPct == null) {
+              airUtilTxPct = clamp(
+                (deltaTxCalls * ESTIMATED_AIRTIME_SECONDS_PER_PUBLISH / deltaUptimeSeconds) * 100,
+                0,
+                100,
+              );
+            }
+            if (channelUtilPct == null) {
+              channelUtilPct = clamp(
+                ((deltaTxCalls + deltaRxCalls) * ESTIMATED_AIRTIME_SECONDS_PER_PUBLISH / deltaUptimeSeconds) * 100,
+                0,
+                100,
+              );
             }
           }
         }
@@ -1643,6 +2234,7 @@ router.get('/stats/charts', STATS_CHARTS_LIMITER, async (req, res) => {
           COALESCE(NULLIF(TRIM(UPPER(n.iata)), ''), 'UNK') AS iata,
           COUNT(*) FILTER (WHERE p.time > NOW() - INTERVAL '24 hours') AS packets_24h,
           COUNT(*) AS packets_7d,
+          COUNT(DISTINCT LOWER(p.rx_node_id)) FILTER (WHERE p.time > NOW() - INTERVAL '1 minute') AS active_observers,
           COUNT(DISTINCT LOWER(p.rx_node_id)) AS observers,
           MAX(p.time)::text AS last_packet_at
         FROM packets p
@@ -1683,8 +2275,33 @@ router.get('/stats/charts', STATS_CHARTS_LIMITER, async (req, res) => {
       ),
       query<{
         latest_multibyte_at: string | null;
+        latest_multibyte_hash: string | null;
         multibyte_packets_24h: string;
         fully_decoded_multibyte_24h: string;
+        latest_fully_decoded_at: string | null;
+        latest_fully_decoded_hash: string | null;
+        latest_fully_decoded_hops: string | null;
+        latest_fully_decoded_path: string | null;
+        latest_fully_decoded_nodes: Array<{
+          ord: number;
+          node_id: string;
+          name: string | null;
+          lat: number | null;
+          lon: number | null;
+          last_seen: string | null;
+        }> | null;
+        longest_fully_decoded_at: string | null;
+        longest_fully_decoded_hash: string | null;
+        longest_fully_decoded_hops: string | null;
+        longest_fully_decoded_path: string | null;
+        longest_fully_decoded_nodes: Array<{
+          ord: number;
+          node_id: string;
+          name: string | null;
+          lat: number | null;
+          lon: number | null;
+          last_seen: string | null;
+        }> | null;
       }>(
         `WITH multibyte AS (
            SELECT DISTINCT ON (p.packet_hash)
@@ -1704,6 +2321,7 @@ router.get('/stats/charts', STATS_CHARTS_LIMITER, async (req, res) => {
          hop_matches AS (
            SELECT
              m.packet_hash,
+             h.hash,
              h.ord,
              COUNT(DISTINCT n.node_id)::int AS match_count,
              MIN(n.node_id) FILTER (WHERE n.node_id IS NOT NULL) AS matched_node_id
@@ -1714,22 +2332,67 @@ router.get('/stats/charts', STATS_CHARTS_LIMITER, async (req, res) => {
             AND (n.role IS NULL OR n.role = 2)
             AND n.lat IS NOT NULL
             AND n.lon IS NOT NULL
-           GROUP BY 1, 2
+           GROUP BY 1, 2, 3
          ),
          packet_eval AS (
            SELECT
              m.packet_hash,
+             MAX(m.time)::text AS packet_time,
              BOOL_AND(hm.match_count = 1) AS all_unique,
              COUNT(hm.ord)::int AS hop_count,
-             COUNT(DISTINCT hm.matched_node_id) FILTER (WHERE hm.matched_node_id IS NOT NULL)::int AS unique_nodes
+             COUNT(DISTINCT hm.matched_node_id) FILTER (WHERE hm.matched_node_id IS NOT NULL)::int AS unique_nodes,
+             string_agg(COALESCE(n.name, hm.matched_node_id, hm.hash), ' -> ' ORDER BY hm.ord) AS decoded_path,
+             jsonb_agg(
+               jsonb_build_object(
+                 'ord', hm.ord,
+                 'node_id', hm.matched_node_id,
+                 'name', n.name,
+                 'lat', n.lat,
+                 'lon', n.lon,
+                 'last_seen', n.last_seen::text
+               )
+               ORDER BY hm.ord
+             ) AS decoded_nodes
            FROM multibyte m
            JOIN hop_matches hm ON hm.packet_hash = m.packet_hash
+           LEFT JOIN nodes n ON LOWER(n.node_id) = LOWER(hm.matched_node_id)
            GROUP BY m.packet_hash
+         ),
+         latest_multibyte AS (
+           SELECT m.packet_hash, m.time
+           FROM multibyte m
+           ORDER BY m.time DESC, m.packet_hash DESC
+           LIMIT 1
+         ),
+         latest_fully_decoded AS (
+           SELECT pe.packet_hash, pe.packet_time, pe.hop_count, pe.decoded_path, pe.decoded_nodes
+           FROM packet_eval pe
+           WHERE pe.all_unique AND pe.unique_nodes = pe.hop_count
+           ORDER BY pe.packet_time DESC, pe.packet_hash DESC
+           LIMIT 1
+         ),
+         longest_fully_decoded AS (
+           SELECT pe.packet_hash, pe.packet_time, pe.hop_count, pe.decoded_path, pe.decoded_nodes
+           FROM packet_eval pe
+           WHERE pe.all_unique AND pe.unique_nodes = pe.hop_count
+           ORDER BY pe.hop_count DESC, pe.packet_time DESC, pe.packet_hash DESC
+           LIMIT 1
          )
          SELECT
            (SELECT MAX(time)::text FROM multibyte) AS latest_multibyte_at,
+           (SELECT packet_hash FROM latest_multibyte) AS latest_multibyte_hash,
            (SELECT COUNT(*)::text FROM multibyte) AS multibyte_packets_24h,
-           (SELECT COUNT(*)::text FROM packet_eval WHERE all_unique AND unique_nodes = hop_count) AS fully_decoded_multibyte_24h`,
+           (SELECT COUNT(*)::text FROM packet_eval WHERE all_unique AND unique_nodes = hop_count) AS fully_decoded_multibyte_24h,
+           (SELECT packet_time FROM latest_fully_decoded) AS latest_fully_decoded_at,
+           (SELECT packet_hash FROM latest_fully_decoded) AS latest_fully_decoded_hash,
+           (SELECT hop_count::text FROM latest_fully_decoded) AS latest_fully_decoded_hops,
+           (SELECT decoded_path FROM latest_fully_decoded) AS latest_fully_decoded_path,
+           (SELECT decoded_nodes FROM latest_fully_decoded) AS latest_fully_decoded_nodes,
+           (SELECT packet_time FROM longest_fully_decoded) AS longest_fully_decoded_at,
+           (SELECT packet_hash FROM longest_fully_decoded) AS longest_fully_decoded_hash,
+           (SELECT hop_count::text FROM longest_fully_decoded) AS longest_fully_decoded_hops,
+           (SELECT decoded_path FROM longest_fully_decoded) AS longest_fully_decoded_path,
+           (SELECT decoded_nodes FROM longest_fully_decoded) AS longest_fully_decoded_nodes`,
         filters.params,
       ),
     ]);
@@ -1754,6 +2417,7 @@ router.get('/stats/charts', STATS_CHARTS_LIMITER, async (req, res) => {
 
     const observerRegionsByIata = new Map<string, {
       iata: string;
+      activeObservers: number;
       observers: number;
       packets24h: number;
       packets7d: number;
@@ -1765,6 +2429,7 @@ router.get('/stats/charts', STATS_CHARTS_LIMITER, async (req, res) => {
       const iata = String(row.iata ?? 'UNK');
       observerRegionsByIata.set(iata, {
         iata,
+        activeObservers: Number(row.active_observers ?? 0),
         observers: Number(row.observers ?? 0),
         packets24h: Number(row.packets_24h ?? 0),
         packets7d: Number(row.packets_7d ?? 0),
@@ -1802,6 +2467,8 @@ router.get('/stats/charts', STATS_CHARTS_LIMITER, async (req, res) => {
     }
 
     const multibyteRow = multibyteSummaryResult.rows[0];
+    const latestFullyDecodedNodes = maskDecodedPathNodes(multibyteRow?.latest_fully_decoded_nodes);
+    const longestFullyDecodedNodes = maskDecodedPathNodes(multibyteRow?.longest_fully_decoded_nodes);
 
     res.json({
       packetsPerHour:  phResult.rows.map(r => ({ hour: fmtHourMinute(r.hour), count: Number(r.count) })),
@@ -1823,6 +2490,17 @@ router.get('/stats/charts', STATS_CHARTS_LIMITER, async (req, res) => {
         multibytePackets24h: Number(multibyteRow?.multibyte_packets_24h ?? 0),
         fullyDecodedMultibyte24h: Number(multibyteRow?.fully_decoded_multibyte_24h ?? 0),
         latestMultibyteAt: multibyteRow?.latest_multibyte_at ?? null,
+        latestMultibyteHash: multibyteRow?.latest_multibyte_hash ?? null,
+        latestFullyDecodedAt: multibyteRow?.latest_fully_decoded_at ?? null,
+        latestFullyDecodedHash: multibyteRow?.latest_fully_decoded_hash ?? null,
+        latestFullyDecodedHops: Number(multibyteRow?.latest_fully_decoded_hops ?? 0) || null,
+        latestFullyDecodedPath: multibyteRow?.latest_fully_decoded_path ?? null,
+        latestFullyDecodedNodes,
+        longestFullyDecodedAt: multibyteRow?.longest_fully_decoded_at ?? null,
+        longestFullyDecodedHash: multibyteRow?.longest_fully_decoded_hash ?? null,
+        longestFullyDecodedHops: Number(multibyteRow?.longest_fully_decoded_hops ?? 0) || null,
+        longestFullyDecodedPath: multibyteRow?.longest_fully_decoded_path ?? null,
+        longestFullyDecodedNodes,
       },
       summary: {
         totalPackets24h:  Number(sumResult.rows[0].total_24h),
