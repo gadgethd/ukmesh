@@ -48,8 +48,12 @@ export function useWebSocket(onMessage: MessageHandler, scope: ApiScope = {}) {
 
     ws.onmessage = (e: MessageEvent<string>) => {
       try {
-        const msg = JSON.parse(e.data) as WSMessage;
-        handlerRef.current(msg);
+        const raw = String(e.data ?? '');
+        const lines = raw.includes('\n') ? raw.split('\n').filter(Boolean) : [raw];
+        for (const line of lines) {
+          const msg = JSON.parse(line) as WSMessage;
+          handlerRef.current(msg);
+        }
       } catch {
         // ignore malformed messages
       }

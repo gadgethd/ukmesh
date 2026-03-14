@@ -212,7 +212,36 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
     });
   });
 
-  // Fan-out Redis messages to all connected WS clients
+  // Message queue for batching - flushes every 50ms instead of per-message
+  const messageQueue: Map<WebSocket, string[]> = new Map();
+  let flushTimeout: ReturnType<typeof setTimeout> | null = null;
+
+  const flushMessageQueue = () => {
+    if (messageQueue.size === 0) {
+      flushTimeout = null;
+      return;
+    }
+
+    for (const client of wss.clients) {
+      if (client.readyState !== WebSocket.OPEN) continue;
+      const messages = messageQueue.get(client);
+      if (!messages || messages.length === 0) continue;
+
+      // Send all queued messages - join with newlines for efficiency
+      const combined = messages.join('\n');
+      client.send(combined);
+    }
+
+    messageQueue.clear();
+    flushTimeout = null;
+  };
+
+  const scheduleFlush = () => {
+    if (flushTimeout !== null) return;
+    flushTimeout = setTimeout(flushMessageQueue, 50);
+  };
+
+  // Fan-out Redis messages to all connected WS clients - now batched
   sub.on('message', (_channel: string, messageStr: string) => {
     if (wss.clients.size === 0) return;
     let parsed: WSMessage | null = null;
@@ -221,15 +250,28 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
     } catch {
       return;
     }
+
+    // Log packet messages
+    if (parsed?.type === 'packet') {
+      console.log('[ws-sub] received packet:', (parsed.data as LivePacket)?.packetHash);
+    }
+
     for (const client of wss.clients) {
       if (client.readyState !== WebSocket.OPEN) continue;
       const scope = clientScopes.get(client);
       if (parsed && scope && !shouldSendMessage(parsed, scope)) continue;
       if (parsed && scope) trackScopedNodes(parsed, scope);
-      if (client.readyState === WebSocket.OPEN) {
-        client.send(messageStr);
+
+      // Queue message instead of sending immediately
+      const existing = messageQueue.get(client);
+      if (existing) {
+        existing.push(messageStr);
+      } else {
+        messageQueue.set(client, [messageStr]);
       }
     }
+    
+    scheduleFlush();
   });
 
   return wss;

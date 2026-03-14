@@ -455,7 +455,10 @@ function networkFilters(network?: string, observer?: string): NetworkFilters {
 
   const packetConditions: string[] = [];
   if (networkParam) packetConditions.push(`network = ${networkParam}`);
-  else packetConditions.push(`network IS DISTINCT FROM 'test'`);
+  else {
+    packetConditions.push(`network IS DISTINCT FROM 'test'`);
+    packetConditions.push(`LOWER(COALESCE(rx_node_id, '')) NOT IN (SELECT LOWER(node_id) FROM nodes WHERE network = 'test')`);
+  }
   if (observerParam) packetConditions.push(`LOWER(rx_node_id) = LOWER(${observerParam})`);
 
   const nodeConditions = (alias?: string) => {
@@ -492,6 +495,7 @@ function networkFilters(network?: string, observer?: string): NetworkFilters {
       } else {
         conditions.push(`${prefix}network IS DISTINCT FROM 'test'`);
         conditions.push(`split_part(${prefix}topic, '/', 1) <> 'meshcore-test'`);
+        conditions.push(`LOWER(COALESCE(${prefix}rx_node_id, '')) NOT IN (SELECT LOWER(node_id) FROM nodes WHERE network = 'test')`);
       }
       if (observerParam) conditions.push(`LOWER(${prefix}rx_node_id) = LOWER(${observerParam})`);
       return conditions.length > 0 ? `AND ${conditions.join(' AND ')}` : '';
@@ -1731,7 +1735,7 @@ router.get('/owner/live', async (req, res) => {
          LEFT JOIN nodes src ON src.node_id = r.src_node_id
          WHERE r.rn = 1
          ORDER BY r.time DESC
-         LIMIT 5`,
+         LIMIT 9`,
         [selectedNodeId],
       ),
       query<{
@@ -2234,7 +2238,7 @@ router.get('/stats/charts', STATS_CHARTS_LIMITER, async (req, res) => {
           COALESCE(NULLIF(TRIM(UPPER(n.iata)), ''), 'UNK') AS iata,
           COUNT(*) FILTER (WHERE p.time > NOW() - INTERVAL '24 hours') AS packets_24h,
           COUNT(*) AS packets_7d,
-          COUNT(DISTINCT LOWER(p.rx_node_id)) FILTER (WHERE p.time > NOW() - INTERVAL '1 minute') AS active_observers,
+          COUNT(DISTINCT LOWER(p.rx_node_id)) FILTER (WHERE n.last_seen > NOW() - INTERVAL '1 minute') AS active_observers,
           COUNT(DISTINCT LOWER(p.rx_node_id)) AS observers,
           MAX(p.time)::text AS last_packet_at
         FROM packets p
@@ -2242,6 +2246,7 @@ router.get('/stats/charts', STATS_CHARTS_LIMITER, async (req, res) => {
         WHERE p.time > NOW() - INTERVAL '7 days'
           AND p.rx_node_id IS NOT NULL
           AND p.rx_node_id <> ''
+          AND p.rx_node_id ~ '^[0-9A-Fa-f]{64}$'
           ${filters.packetsAlias('p')}
         GROUP BY 1
         ORDER BY packets_7d DESC, iata ASC
@@ -2257,6 +2262,7 @@ router.get('/stats/charts', STATS_CHARTS_LIMITER, async (req, res) => {
         WHERE p.time > NOW() - INTERVAL '7 days'
           AND p.rx_node_id IS NOT NULL
           AND p.rx_node_id <> ''
+          AND p.rx_node_id ~ '^[0-9A-Fa-f]{64}$'
           ${filters.packetsAlias('p')}
         GROUP BY 1, 2
         ORDER BY iata ASC, day ASC

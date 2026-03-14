@@ -32,11 +32,19 @@ export const PacketFeed: React.FC<Props> = React.memo(({ packets, nodes, mqttObs
   );
   const [newestVisibleId, setNewestVisibleId] = useState<string | null>(null);
   const latestIdRef = useRef<string | null>(null);
+  const animationThrottleRef = useRef<number | null>(null);
 
   useEffect(() => {
     const latestId = packets[0]?.id ?? null;
     if (!latestId || latestIdRef.current === latestId) return;
     latestIdRef.current = latestId;
+    
+    // Throttle animations to max once per 300ms
+    if (animationThrottleRef.current !== null) return;
+    animationThrottleRef.current = window.setTimeout(() => {
+      animationThrottleRef.current = null;
+    }, 300);
+    
     setNewestVisibleId(latestId);
     const timer = setTimeout(() => setNewestVisibleId((current) => (current === latestId ? null : current)), 220);
     return () => clearTimeout(timer);

@@ -68,13 +68,15 @@ export const App: React.FC = () => {
     replaceRecentPackets,
     handlePacket,
     handleNodeUpdate,
+    handleNodeUpdateBatch,
     handleNodeUpsert,
+    handleNodeUpsertBatch,
   } = useNodes();
 
   const networkFilter = site.networkFilter;
   const observerFilter = site.observerId;
 
-  const { coverage, handleCoverageUpdate } = useCoverage({ network: networkFilter, observer: observerFilter });
+  const { coverage, handleCoverageUpdate, handleCoverageUpdateBatch } = useCoverage({ network: networkFilter, observer: observerFilter });
   const stats = useDashboardStats({ network: networkFilter, observer: observerFilter });
   const {
     linkMetrics,
@@ -82,6 +84,7 @@ export const App: React.FC = () => {
     applyInitialViablePairs,
     applyInitialViableLinks,
     applyLinkUpdate,
+    applyLinkUpdateBatch,
   } = useLinkState();
 
   const {
@@ -120,16 +123,25 @@ export const App: React.FC = () => {
     localStorage.setItem(FILTERS_KEY, JSON.stringify(filters));
   }, [filters]);
 
+  // Consolidated polling - fetches all data in parallel with a single timer
   useEffect(() => {
     let cancelled = false;
-    const syncRecentPackets = async () => {
-      try {
-        const response = await fetch(
-          uncachedEndpoint(withScopeParams('/api/packets/recent?limit=12', { network: networkFilter, observer: observerFilter })),
-          { cache: 'no-store' },
-        );
-        if (!response.ok) return;
-        const rows = await response.json() as Array<{
+
+    const syncAllData = async () => {
+      if (!isPageVisible) return;
+
+      // Fetch all data in parallel
+      const [packetsRes, historyRes, inferredRes] = await Promise.allSettled([
+        fetch(uncachedEndpoint(withScopeParams('/api/packets/recent?limit=12', { network: networkFilter, observer: observerFilter })), { cache: 'no-store' }),
+        fetch(uncachedEndpoint(withScopeParams('/api/path-beta/history', { network: networkFilter })), { cache: 'no-store' }),
+        fetch(uncachedEndpoint(withScopeParams('/api/inferred-nodes', { network: networkFilter, observer: observerFilter })), { cache: 'no-store' }),
+      ]);
+
+      if (cancelled) return;
+
+      // Process packets
+      if (packetsRes.status === 'fulfilled' && packetsRes.value.ok) {
+        const rows = await packetsRes.value.json() as Array<{
           time: string;
           packet_hash: string;
           rx_node_id?: string;
@@ -142,49 +154,39 @@ export const App: React.FC = () => {
           advert_count?: number | null;
           path_hashes?: string[] | null;
         }>;
-        if (cancelled) return;
-        replaceRecentPackets(rows);
-      } catch {
-        // keep websocket as primary path; polling is only a feed repair/fallback
+        if (!cancelled) replaceRecentPackets(rows);
+      }
+
+      // Process history
+      if (historyRes.status === 'fulfilled' && historyRes.value.ok) {
+        const payload = await historyRes.value.json() as { segments?: PacketHistorySegment[] };
+        if (!cancelled) setPacketHistorySegments(Array.isArray(payload.segments) ? payload.segments : []);
+      }
+
+      // Process inferred nodes
+      if (inferredRes.status === 'fulfilled' && inferredRes.value.ok) {
+        const payload = await inferredRes.value.json() as {
+          inferredNodes: MeshNode[];
+          inferredActiveNodeIds: string[];
+        };
+        if (!cancelled) {
+          setInferredNodes(payload.inferredNodes ?? []);
+          setInferredActiveNodeIds(new Set((payload.inferredActiveNodeIds ?? []).map((value) => value.toLowerCase())));
+        }
       }
     };
 
-    void syncRecentPackets();
-    const pollMs = isPageVisible ? 4000 : 30000;
-    const timer = window.setInterval(() => { void syncRecentPackets(); }, pollMs);
+    void syncAllData();
+
+    // Single timer: 10s when visible, 60s when hidden (reduced from 4s/30s to lower load)
+    const pollMs = isPageVisible ? 10000 : 60000;
+    const timer = window.setInterval(() => { void syncAllData(); }, pollMs);
+
     return () => {
       cancelled = true;
       window.clearInterval(timer);
     };
   }, [isPageVisible, networkFilter, observerFilter, replaceRecentPackets]);
-
-  useEffect(() => {
-    let cancelled = false;
-    const syncPacketHistory = async () => {
-      if (!isPageVisible) return;
-      try {
-        const response = await fetch(
-          uncachedEndpoint(withScopeParams('/api/path-beta/history', { network: networkFilter })),
-          { cache: 'no-store' },
-        );
-        if (!response.ok) return;
-        const payload = await response.json() as {
-          segments?: PacketHistorySegment[];
-        };
-        if (cancelled) return;
-        setPacketHistorySegments(Array.isArray(payload.segments) ? payload.segments : []);
-      } catch {
-        // best-effort cached history layer only
-      }
-    };
-
-    void syncPacketHistory();
-    const timer = window.setInterval(() => { void syncPacketHistory(); }, 5 * 60 * 1000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [isPageVisible, networkFilter]);
 
   useEffect(() => {
     let cancelled = false;
@@ -286,11 +288,15 @@ export const App: React.FC = () => {
     handleInitialState,
     handlePacket,
     handleNodeUpdate,
+    handleNodeUpdateBatch,
     handleNodeUpsert,
+    handleNodeUpsertBatch,
     handleCoverageUpdate,
+    handleCoverageUpdateBatch,
     applyInitialViablePairs,
     applyInitialViableLinks,
     applyLinkUpdate,
+    applyLinkUpdateBatch,
     onPacketObserved: () => {
       window.dispatchEvent(new Event('meshcore:packet-observed'));
     },

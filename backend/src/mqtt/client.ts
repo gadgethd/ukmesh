@@ -51,6 +51,7 @@ function emitNodeUpsert(node: Record<string, unknown>) {
  */
 const DEFAULT_TOPIC_PREFIXES = ['meshcore', 'ukmesh', 'meshcore-test'];
 const PUBLIC_TOPIC_PREFIXES = new Set(['meshcore', 'ukmesh']);
+const BLOCKED_PUBLIC_IATAS = new Set(['TST']);
 const TOPIC_PREFIXES = new Set(
   String(process.env['MQTT_TOPIC_PREFIXES'] ?? DEFAULT_TOPIC_PREFIXES.join(','))
     .split(',')
@@ -73,6 +74,7 @@ function parseTopic(topic: string): TopicParts | null {
   if (!prefix || !TOPIC_PREFIXES.has(prefix)) return null;
   const iata = (parts[1] ?? '').trim().toUpperCase();
   if (!iata) return null;
+  if (PUBLIC_TOPIC_PREFIXES.has(prefix) && BLOCKED_PUBLIC_IATAS.has(iata)) return null;
   const network = PUBLIC_TOPIC_PREFIXES.has(prefix)
     ? (iata === TEESSIDE_IATA ? 'teesside' : 'ukmesh')
     : 'test';

@@ -93,6 +93,49 @@ export function useLinkState() {
     }
   }, []);
 
+  const applyLinkUpdateBatch = useCallback((updates: LinkUpdate[]) => {
+    if (updates.length === 0) return;
+    
+    setLinkMetrics((prev) => {
+      const next = new Map(prev);
+      for (const update of updates) {
+        const key = linkKey(update.node_a_id, update.node_b_id);
+        const existing = next.get(key);
+        next.set(key, {
+          observed_count: Math.max(existing?.observed_count ?? 0, update.observed_count ?? 0),
+          itm_viable: update.itm_viable ?? existing?.itm_viable ?? null,
+          itm_path_loss_db: update.itm_path_loss_db ?? existing?.itm_path_loss_db ?? null,
+          count_a_to_b: update.count_a_to_b ?? existing?.count_a_to_b,
+          count_b_to_a: update.count_b_to_a ?? existing?.count_b_to_a,
+        });
+      }
+      return next;
+    });
+
+    const newViable = updates.filter(u => u.itm_viable && u.observed_count >= MIN_LINK_OBSERVATIONS);
+    if (newViable.length > 0) {
+      setLinkPairs((prev) => {
+        const next = new Set(prev);
+        for (const update of newViable) {
+          next.add(linkKey(update.node_a_id, update.node_b_id));
+        }
+        return next;
+      });
+      setViablePairsArr((prev) => {
+        let changed = false;
+        const added: [string, string][] = [];
+        for (const update of newViable) {
+          const key = linkKey(update.node_a_id, update.node_b_id);
+          if (!prev.some(([a, b]) => linkKey(a, b) === key)) {
+            added.push([update.node_a_id, update.node_b_id]);
+            changed = true;
+          }
+        }
+        return changed ? [...prev, ...added] : prev;
+      });
+    }
+  }, []);
+
   return {
     linkPairs,
     linkMetrics,
@@ -100,5 +143,6 @@ export function useLinkState() {
     applyInitialViablePairs,
     applyInitialViableLinks,
     applyLinkUpdate,
+    applyLinkUpdateBatch,
   };
 }

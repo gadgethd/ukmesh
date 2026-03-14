@@ -1,20 +1,14 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useMemo, useCallback, useEffect, useState } from 'react';
 import { getCurrentSite } from '../../config/site.js';
-import { uncachedEndpoint, withScopeParams } from '../../utils/api.js';
-
-type FeedNode = {
-  node_id: string;
-  name?: string | null;
-  iata?: string | null;
-  lat?: number | null;
-  lon?: number | null;
-  last_seen?: string | null;
-  is_online?: boolean;
-};
+import { useWebSocket, type WSMessage } from '../../hooks/useWebSocket.js';
+import { useNodes, type MeshNode, type LivePacketData } from '../../hooks/useNodes.js';
+import type { RecentPacketRow } from '../../hooks/packetFeed.js';
+import { chartStatsEndpoint, uncachedEndpoint } from '../../utils/api.js';
 
 type FeedPacket = {
   time: string;
   packet_hash: string;
+  topic?: string;
   rx_node_id?: string | null;
   src_node_id?: string | null;
   packet_type?: number | null;
@@ -41,6 +35,8 @@ const TYPE_LABELS: Record<number, string> = {
   9: 'TRC',
   11: 'CTL',
 };
+
+const MAX_PACKETS = 100;
 
 function timeAgo(ts?: string | null): string {
   if (!ts) return 'never';
@@ -69,68 +65,163 @@ function packetSummary(packet: FeedPacket): string {
   return String(candidate ?? 'No decoded summary');
 }
 
+function packetObserverIds(packet: FeedPacket): string[] {
+  return packet.observer_node_ids?.length
+    ? packet.observer_node_ids.filter(Boolean)
+    : (packet.rx_node_id ? [packet.rx_node_id] : []);
+}
+
+function packetTopicIata(packet: FeedPacket): string | null {
+  const topic = String(packet.payload?.topic ?? packet.topic ?? '').trim();
+  if (!topic) return null;
+  const parts = topic.split('/');
+  if (parts.length < 2) return null;
+  const iata = String(parts[1] ?? '').trim().toUpperCase();
+  return /^[A-Z0-9]{2,8}$/.test(iata) ? iata : null;
+}
+
+function packetObserverIatas(packet: FeedPacket, nodeMap: Map<string, MeshNode>): string[] {
+  const topicIata = packetTopicIata(packet);
+  if (topicIata) return [topicIata];
+
+  const values = new Set<string>();
+  for (const observerId of packetObserverIds(packet)) {
+    const iata = String(nodeMap.get(observerId)?.iata ?? '').trim().toUpperCase();
+    if (iata) values.add(iata);
+  }
+  return Array.from(values);
+}
+
 export const UKFeedPage: React.FC = () => {
   const site = getCurrentSite();
   const scope = useMemo(() => ({ network: site.networkFilter, observer: site.observerId }), [site.networkFilter, site.observerId]);
-  const [nodes, setNodes] = useState<FeedNode[]>([]);
-  const [packets, setPackets] = useState<FeedPacket[]>([]);
-  const [error, setError] = useState<string | null>(null);
+  const [selectedIata, setSelectedIata] = useState<string>('all');
+  const [regionOptions, setRegionOptions] = useState<string[]>([]);
+  
+  // Use useNodes hook like the main App does
+  const {
+    nodes: nodeMap,
+    packets: packetsList,
+    handleInitialState,
+    handlePacket,
+    handleNodeUpdate,
+    handleNodeUpsert,
+  } = useNodes();
+
+  const handleWSMessage = useCallback((msg: WSMessage) => {
+    if (msg.type === 'initial_state') {
+      const data = msg.data as {
+        nodes?: MeshNode[];
+        packets?: RecentPacketRow[];
+      };
+      if (data.nodes && data.packets) {
+        handleInitialState({ nodes: data.nodes, packets: data.packets });
+      }
+      return;
+    }
+
+    if (msg.type === 'packet') {
+      handlePacket(msg.data as LivePacketData);
+      return;
+    }
+
+    if (msg.type === 'node_update') {
+      handleNodeUpdate(msg.data as { nodeId: string; ts: number });
+      return;
+    }
+
+    if (msg.type === 'node_upsert') {
+      handleNodeUpsert(msg.data as Partial<MeshNode> & { node_id: string });
+    }
+  }, [handleInitialState, handleNodeUpdate, handleNodeUpsert, handlePacket]);
+
+  // Connect to WebSocket
+  useWebSocket(handleWSMessage, scope);
 
   useEffect(() => {
     let cancelled = false;
 
-    const load = async () => {
+    const loadObserverRegions = async () => {
       try {
-        const [nodesRes, packetsRes] = await Promise.all([
-          fetch(uncachedEndpoint(withScopeParams('/api/nodes', scope)), { cache: 'no-store' }),
-          fetch(uncachedEndpoint(withScopeParams('/api/packets/recent?limit=100', scope)), { cache: 'no-store' }),
-        ]);
-
-        if (!nodesRes.ok || !packetsRes.ok) {
-          throw new Error(`HTTP ${nodesRes.status}/${packetsRes.status}`);
-        }
-
-        const [nodesJson, packetsJson] = await Promise.all([
-          nodesRes.json() as Promise<FeedNode[]>,
-          packetsRes.json() as Promise<FeedPacket[]>,
-        ]);
-
-        if (cancelled) return;
-        setNodes(nodesJson);
-        setPackets(packetsJson);
-        setError(null);
-      } catch (err) {
-        if (cancelled) return;
-        setError((err as Error).message);
+        const response = await fetch(uncachedEndpoint(chartStatsEndpoint(scope)), { cache: 'no-store' });
+        if (!response.ok) return;
+        const json = await response.json() as {
+          observerRegions?: Array<{ iata?: string | null; activeObservers?: number; observers?: number }>;
+        };
+        const values = (json.observerRegions ?? [])
+          .map((region) => String(region.iata ?? '').trim().toUpperCase())
+          .filter((iata) => /^[A-Z0-9]{2,8}$/.test(iata));
+        if (!cancelled) setRegionOptions(Array.from(new Set(values)).sort((a, b) => a.localeCompare(b)));
+      } catch {
+        // Leave the dropdown populated from live packet traffic only if stats fetch fails.
       }
     };
 
-    void load();
-    const timer = setInterval(() => void load(), 5 * 60_000);
+    void loadObserverRegions();
+    const timer = window.setInterval(() => {
+      void loadObserverRegions();
+    }, 60_000);
+
     return () => {
       cancelled = true;
-      clearInterval(timer);
+      window.clearInterval(timer);
     };
   }, [scope]);
 
-  const nodeMap = useMemo(() => new Map(nodes.map((node) => [node.node_id, node])), [nodes]);
+  // Convert live packets to FeedPacket format for display
+  const packets: FeedPacket[] = useMemo(() => {
+    return packetsList.slice(0, MAX_PACKETS).map(p => ({
+      time: new Date(p.ts).toISOString(),
+      packet_hash: p.packetHash,
+      rx_node_id: p.rxNodeId ?? null,
+      src_node_id: p.srcNodeId ?? null,
+      packet_type: p.packetType ?? null,
+      hop_count: p.hopCount ?? null,
+      rssi: null,
+      snr: null,
+      payload: p as any,
+      observer_node_ids: p.observerIds,
+      rx_count: p.rxCount,
+      tx_count: p.txCount,
+      summary: p.summary ?? null,
+    }));
+  }, [packetsList]);
+
+  const availableIatas = useMemo(() => {
+    return regionOptions;
+  }, [regionOptions]);
+
+  useEffect(() => {
+    if (selectedIata === 'all') return;
+    if (!availableIatas.includes(selectedIata)) {
+      setSelectedIata('all');
+    }
+  }, [availableIatas, selectedIata]);
+
+  const filteredPackets = useMemo(() => {
+    if (selectedIata === 'all') return packets;
+    return packets.filter((packet) => packetObserverIatas(packet, nodeMap).includes(selectedIata));
+  }, [nodeMap, packets, selectedIata]);
 
   const activeObserverCount = useMemo(() => {
     const ids = new Set<string>();
-    for (const packet of packets) {
-      const observerIds = packet.observer_node_ids?.length
-        ? packet.observer_node_ids
-        : (packet.rx_node_id ? [packet.rx_node_id] : []);
+    for (const packet of filteredPackets) {
+      const observerIds = packetObserverIds(packet);
       for (const observerId of observerIds) {
-        if (observerId) ids.add(observerId);
+        if (!observerId) continue;
+        if (selectedIata !== 'all') {
+          const packetIatas = packetObserverIatas(packet, nodeMap);
+          if (!packetIatas.includes(selectedIata)) continue;
+        }
+        ids.add(observerId);
       }
     }
     return ids.size;
-  }, [packets]);
+  }, [filteredPackets, nodeMap, selectedIata]);
 
-  const latestPacket = packets[0];
+  const latestPacket = filteredPackets[0];
   const latestObserver = latestPacket?.rx_node_id ? nodeMap.get(latestPacket.rx_node_id) : undefined;
-  const recentPackets = useMemo(() => packets.slice(0, 10), [packets]);
+  const recentPackets = useMemo(() => filteredPackets.slice(0, 10), [filteredPackets]);
 
   return (
     <>
@@ -144,14 +235,29 @@ export const UKFeedPage: React.FC = () => {
       </section>
 
       <div className="site-content site-prose">
-        {error && <p className="prose-note">Feed API error: {error}</p>}
-
         <section className="prose-section">
           <div className="dev-status-page uk-feed-page">
             <div className="dev-status-grid uk-feed-grid">
               <section className="dev-status-card">
                 <h2>Status</h2>
                 <div className="dev-status-list">
+                  <div>
+                    <span>Region</span>
+                    <strong className="uk-feed-region-control">
+                      <select
+                        className="uk-feed-region-select"
+                        value={selectedIata}
+                        onChange={(event) => setSelectedIata(event.target.value)}
+                        aria-label="Filter feed by observer region"
+                      >
+                        <option value="all">All regions</option>
+                        {availableIatas.map((iata) => (
+                          <option key={iata} value={iata}>{iata}</option>
+                        ))}
+                      </select>
+                      <span className="uk-feed-region-caret" aria-hidden="true">v</span>
+                    </strong>
+                  </div>
                   <div><span>Feed</span><strong>{latestPacket ? 'Receiving packets' : 'Waiting for packets'}</strong></div>
                   <div><span>Observers active</span><strong>{activeObserverCount.toLocaleString()}</strong></div>
                   <div><span>Last packet</span><strong>{latestPacket ? timeAgo(latestPacket.time) : 'never'}</strong></div>
@@ -173,18 +279,27 @@ export const UKFeedPage: React.FC = () => {
             <section className="dev-status-card uk-feed-packets-card">
               <h2>Live packets</h2>
               <div className="uk-feed-packets-list">
-                {recentPackets.length > 0 ? recentPackets.map((packet) => (
-                  <article className="uk-feed-packet-row" key={`${packet.packet_hash}-${packet.time}`}>
-                    <div className="uk-feed-packet-row__meta">
-                      <span>{new Date(packet.time).toLocaleTimeString()}</span>
-                      <span>{packet.packet_type != null ? (TYPE_LABELS[packet.packet_type] ?? `T${packet.packet_type}`) : '—'}</span>
-                      <span>{packet.rssi != null || packet.snr != null ? `${packet.rssi ?? '—'} / ${packet.snr ?? '—'}` : '—'}</span>
-                      <span className="dev-status-mono">{packet.packet_hash}</span>
-                      <span>{packet.rx_node_id ? (nodeMap.get(packet.rx_node_id)?.iata ?? shortNode(packet.rx_node_id)) : 'unknown'}</span>
-                    </div>
-                    <p className="uk-feed-packet-row__summary">{packetSummary(packet)}</p>
-                  </article>
-                )) : (
+                {recentPackets.length > 0 ? recentPackets.map((packet) => {
+                  const observerIds = packetObserverIds(packet).filter(() => {
+                    if (selectedIata === 'all') return true;
+                    return packetObserverIatas(packet, nodeMap).includes(selectedIata);
+                  });
+                  const observerDisplay = observerIds.length > 0 
+                    ? observerIds.map(id => nodeMap.get(id)?.name ?? shortNode(id)).join(', ')
+                    : 'unknown';
+                  return (
+                    <article className="uk-feed-packet-row" key={`${packet.packet_hash}-${packet.time}`}>
+                      <div className="uk-feed-packet-row__meta">
+                        <span>{new Date(packet.time).toLocaleTimeString()}</span>
+                        <span>{packet.packet_type != null ? (TYPE_LABELS[packet.packet_type] ?? `T${packet.packet_type}`) : '—'}</span>
+                        <span>{packet.rssi != null || packet.snr != null ? `${packet.rssi ?? '—'} / ${packet.snr ?? '—'}` : '—'}</span>
+                        <span className="dev-status-mono">{packet.packet_hash}</span>
+                        <span className="uk-feed-packet-row__observer">{observerDisplay}</span>
+                      </div>
+                      <p className="uk-feed-packet-row__summary">{packetSummary(packet)}</p>
+                    </article>
+                  );
+                }) : (
                   <p className="dev-status-empty">No public packets have arrived yet.</p>
                 )}
               </div>

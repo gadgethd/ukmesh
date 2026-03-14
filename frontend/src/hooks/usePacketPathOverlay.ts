@@ -280,8 +280,17 @@ export function usePacketPathOverlay({
   }, [prunePredictionCache]);
 
   const latestId = packets[0]?.id;
+  const betaEffectThrottleRef = useRef<number | null>(null);
+
   useEffect(() => {
     if (pinnedPacketId !== null) return;
+    
+    // Throttle beta path resolution to max once per 500ms
+    if (betaEffectThrottleRef.current !== null) return;
+    betaEffectThrottleRef.current = window.setTimeout(() => {
+      betaEffectThrottleRef.current = null;
+    }, 500);
+    
     stopPathTimers();
     pruneRecentPredictions();
 

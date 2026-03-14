@@ -1,5 +1,6 @@
 import React, { useState, useCallback, useMemo, useEffect, useRef } from 'react';
-import { MapContainer, TileLayer, useMap, Pane, Polygon, Polyline } from 'react-leaflet';
+import { MapContainer, TileLayer, useMap, Pane, Polygon, Polyline, Marker } from 'react-leaflet';
+import L from 'leaflet';
 import type { LatLngExpression, Map as LeafletMap } from 'leaflet';
 import type { MeshNode, PacketArc } from '../../hooks/useNodes.js';
 import type { NodeCoverage } from '../../hooks/useCoverage.js';
@@ -118,7 +119,34 @@ const DEFAULT_CENTER: [number, number] = [54.57, -1.23];
 const DEFAULT_ZOOM = 11;
 const STALE_MARKER_MS = 7 * 24 * 60 * 60 * 1000;
 
-export const MapView: React.FC<MapViewProps> = ({
+// Custom comparison - skip expensive checks for deeply equal arrays
+function propsAreEqual(prev: MapViewProps, next: MapViewProps): boolean {
+  if (prev.nodes !== next.nodes) return false;
+  if (prev.coverage !== next.coverage) return false;
+  if (prev.arcs !== next.arcs) return false;
+  if (prev.activeNodes !== next.activeNodes) return false;
+  if (prev.viablePairsArr !== next.viablePairsArr) return false;
+  if (prev.linkMetrics !== next.linkMetrics) return false;
+  if (prev.inferredNodes !== next.inferredNodes) return false;
+  if (prev.inferredActiveNodeIds !== next.inferredActiveNodeIds) return false;
+  if (prev.showPackets !== next.showPackets) return false;
+  if (prev.showCoverage !== next.showCoverage) return false;
+  if (prev.showClientNodes !== next.showClientNodes) return false;
+  if (prev.showLinks !== next.showLinks) return false;
+  if (prev.showHexClashes !== next.showHexClashes) return false;
+  if (prev.showPacketHistory !== next.showPacketHistory) return false;
+  if (prev.showBetaPaths !== next.showBetaPaths) return false;
+  if (prev.maxHexClashHops !== next.maxHexClashHops) return false;
+  if (prev.pathOpacity !== next.pathOpacity) return false;
+  if (prev.packetHistorySegments !== next.packetHistorySegments) return false;
+  if (prev.betaPaths !== next.betaPaths) return false;
+  if (prev.betaLowPaths !== next.betaLowPaths) return false;
+  if (prev.betaLowSegments !== next.betaLowSegments) return false;
+  if (prev.betaCompletionPaths !== next.betaCompletionPaths) return false;
+  return true;
+}
+
+export const MapView = React.memo(({
   nodes, inferredNodes, inferredActiveNodeIds, arcs, activeNodes, coverage, showPackets, showCoverage, showClientNodes,
   showLinks, showHexClashes, maxHexClashHops, viablePairsArr, linkMetrics, packetHistorySegments, showPacketHistory, betaPaths, betaLowSegments, betaCompletionPaths, showBetaPaths, pathOpacity, onMapReady,
 }) => {
@@ -593,6 +621,59 @@ export const MapView: React.FC<MapViewProps> = ({
     return Math.max(4, size);
   }, [deckViewState.zoom, isMobileViewport]);
 
+  // Clustering threshold - zoom level at which to start clustering
+  const CLUSTER_ZOOM_THRESHOLD = 8;
+  const leafletZoom = deckViewState.zoom + 1;
+  const MAX_REDUCED_MARKERS = 150;
+
+  // Cluster nodes when zoomed out - density-based distribution with centroids
+  const clusteredNodes = useMemo(() => {
+    const allVisibleNodes = [...visibleRepeaterNodes, ...visibleClientNodes, ...visibleInferredNodes];
+    if (leafletZoom > CLUSTER_ZOOM_THRESHOLD || allVisibleNodes.length === 0) {
+      return { nodes: [], totalCount: 0 };
+    }
+    
+    // Grid cells to count density - track all nodes in each cell for centroid
+    const cellSize = 0.15;
+    const clusterMap = new Map<string, { latSum: number; lonSum: number; count: number }>();
+    
+    for (const node of allVisibleNodes) {
+      if (!hasCoords(node)) continue;
+      const cellLat = Math.round(node.lat! / cellSize) * cellSize;
+      const cellLon = Math.round(node.lon! / cellSize) * cellSize;
+      const key = `${cellLat.toFixed(2)},${cellLon.toFixed(2)}`;
+      
+      const existing = clusterMap.get(key);
+      if (existing) {
+        existing.latSum += node.lat!;
+        existing.lonSum += node.lon!;
+        existing.count += 1;
+      } else {
+        clusterMap.set(key, { latSum: node.lat!, lonSum: node.lon!, count: 1 });
+      }
+    }
+    
+    // Calculate centroids and sort by density
+    const withCentroids = Array.from(clusterMap.entries()).map(([key, data]) => {
+      const [latStr, lonStr] = key.split(',');
+      const lat = parseFloat(latStr);
+      const lon = parseFloat(lonStr);
+      // Use grid cell as fallback, but prefer centroid of actual nodes
+      return { 
+        lat: data.count > 1 ? data.latSum / data.count : lat, 
+        lon: data.count > 1 ? data.lonSum / data.count : lon, 
+        count: data.count 
+      };
+    });
+    
+    const sorted = withCentroids.sort((a, b) => b.count - a.count);
+    const reduced = sorted.slice(0, MAX_REDUCED_MARKERS);
+    
+    return { nodes: reduced, totalCount: allVisibleNodes.length };
+  }, [leafletZoom, visibleRepeaterNodes, visibleClientNodes, visibleInferredNodes]);
+
+  const showReduced = leafletZoom <= CLUSTER_ZOOM_THRESHOLD && clusteredNodes.nodes.length > 0;
+
   return (
     <div className="map-area">
       <NodeSearch nodes={nodes} map={map} />
@@ -610,7 +691,7 @@ export const MapView: React.FC<MapViewProps> = ({
           attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>'
           subdomains="abcd"
           maxZoom={19}
-          keepBuffer={6}
+          keepBuffer={10}
           updateWhenIdle={false}
         />
 
@@ -676,8 +757,23 @@ export const MapView: React.FC<MapViewProps> = ({
           </Pane>
         )}
 
-        {/* Repeater markers — Leaflet default marker pane at zIndex 600 */}
-        {visibleRepeaterNodes.map((node) => {
+        {/* Reduced nodes - grey markers when zoomed out */}
+        {showReduced && clusteredNodes.nodes.map((cluster) => (
+          <Marker
+            key={`reduced-${cluster.lat}-${cluster.lon}`}
+            position={[cluster.lat, cluster.lon]}
+            icon={L.divIcon({
+              html: `<div class="node-marker node-marker--reduced" style="--marker-size:14px;--marker-border:1px;"><div class="node-marker__pulse"></div><div class="node-marker__core"></div></div>`,
+              className: '',
+              iconSize: [16, 16],
+              iconAnchor: [8, 8],
+            })}
+            zIndexOffset={400}
+          />
+        ))}
+
+        {/* Repeater markers — only shown when not reduced */}
+        {!showReduced && visibleRepeaterNodes.map((node) => {
           if (!hasCoords(node)) return null;
           if (showHexClashes && !clashVisibleNodeIds.has(node.node_id)) return null;
           const isFocusVisible = clashVisibleNodeIds.has(node.node_id) || (focusedPrefixNodeIds?.has(node.node_id) ?? false);
@@ -706,7 +802,7 @@ export const MapView: React.FC<MapViewProps> = ({
         })}
 
         {/* Inferred multibyte repeaters — provisional layer only, never fed back into pathing */}
-        {!showHexClashes && visibleInferredNodes.map((node) => (
+        {!showHexClashes && !showReduced && visibleInferredNodes.map((node) => (
             <NodeMarker
               key={node.node_id}
               node={node}
@@ -816,6 +912,13 @@ export const MapView: React.FC<MapViewProps> = ({
         showArcs={showPackets}
         viewState={deckViewState}
       />
+
+      {/* Zoom hint when nodes are reduced */}
+      {showReduced && (
+        <div className="map-zoom-hint">
+          Showing {clusteredNodes.nodes.length} of {clusteredNodes.totalCount} repeaters — zoom in to see all
+        </div>
+      )}
     </div>
   );
-};
+}, propsAreEqual);

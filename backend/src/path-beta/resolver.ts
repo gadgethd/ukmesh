@@ -1,4 +1,4 @@
-import { MIN_LINK_OBSERVATIONS, query } from '../db/index.js';
+import { MIN_LINK_OBSERVATIONS, query, touchNodesPredictedOnline } from '../db/index.js';
 import {
   buildNodePathHashIndex,
   countNodesForPathHash,
@@ -399,6 +399,7 @@ function enumeratePrefixContinuations(
       truncated = true;
       return;
     }
+
     if (idx >= remainingPrefixes.length) {
       if (current.node_id !== end.node_id) {
         if (visited.has(end.node_id)) {
@@ -485,6 +486,43 @@ function trimObserverTerminalHop(hops: string[], rx: MeshNode | null | undefined
   return nodePathHash(rx.node_id, terminal) === terminal
     ? hops.slice(0, -1)
     : hops;
+}
+
+type PreparedPacketObservation = {
+  packet: PathPacket;
+  rx: MeshNode | null;
+  hashes: string[];
+  rawHops: string[];
+  hops: string[];
+};
+
+function preparePacketObservation(packet: PathPacket, rx: MeshNode | null): PreparedPacketObservation {
+  const hashes = packet.path_hashes ?? [];
+  const expectedHexLen = packet.path_hash_size_bytes != null ? packet.path_hash_size_bytes * 2 : null;
+  const validatedHashes = expectedHexLen != null
+    ? hashes.filter((h) => h.length === expectedHexLen)
+    : hashes;
+  const rawHops = packet.hop_count != null
+    ? validatedHashes.slice(0, Math.max(0, packet.hop_count))
+    : validatedHashes;
+  const hops = trimObserverTerminalHop(rawHops, rx);
+  return { packet, rx, hashes, rawHops, hops };
+}
+
+function compareCanonicalObserverObservation(a: PreparedPacketObservation, b: PreparedPacketObservation): number {
+  return a.hops.length - b.hops.length
+    || a.rawHops.length - b.rawHops.length
+    || Number(Boolean(b.packet.path_hash_size_bytes)) - Number(Boolean(a.packet.path_hash_size_bytes))
+    || Number(Boolean(b.packet.src_node_id)) - Number(Boolean(a.packet.src_node_id))
+    || Number(a.packet.hop_count ?? Number.MAX_SAFE_INTEGER) - Number(b.packet.hop_count ?? Number.MAX_SAFE_INTEGER);
+}
+
+function comparePreferredResolvedObservation(a: PreparedPacketObservation, b: PreparedPacketObservation): number {
+  return b.hops.length - a.hops.length
+    || Number(Boolean(b.packet.path_hash_size_bytes)) - Number(Boolean(a.packet.path_hash_size_bytes))
+    || Number(Boolean(b.packet.src_node_id)) - Number(Boolean(a.packet.src_node_id))
+    || a.rawHops.length - b.rawHops.length
+    || Number(a.packet.hop_count ?? Number.MAX_SAFE_INTEGER) - Number(b.packet.hop_count ?? Number.MAX_SAFE_INTEGER);
 }
 
 function resolveExactMultibyteChain(
@@ -1243,6 +1281,11 @@ function maskResolvedPayload(
   };
 }
 
+async function recordPredictedOnline(nodeIds: string[] | null | undefined): Promise<void> {
+  if (!Array.isArray(nodeIds) || nodeIds.length < 1) return;
+  await touchNodesPredictedOnline(nodeIds);
+}
+
 export async function resolveBetaPathForPacketHash(packetHash: string, network: string, observer?: string): Promise<BetaResolvedPayload | null> {
   const [packetResult, observerHopResult] = await Promise.all([
     query<PathPacket>(
@@ -1256,7 +1299,7 @@ export async function resolveBetaPathForPacketHash(packetHash: string, network: 
                 CASE WHEN src_node_id IS NOT NULL THEN 1 ELSE 0 END DESC,
                 hop_count ASC NULLS LAST,
                 time ASC
-       LIMIT 1`,
+       LIMIT 32`,
       observer ? [packetHash, network, observer] : [packetHash, network],
     ),
     query<{ rx_node_id: string; hop_count: number | null }>(
@@ -1270,14 +1313,24 @@ export async function resolveBetaPathForPacketHash(packetHash: string, network: 
     ),
   ]);
 
-  const packet = packetResult.rows[0];
-  if (!packet) return null;
   const context = await loadContext(network);
+  const preparedByObserver = new Map<string, PreparedPacketObservation>();
+  for (const row of packetResult.rows) {
+    const key = row.rx_node_id ?? '__no_observer__';
+    const rxNode = row.rx_node_id ? (context.nodesById.get(row.rx_node_id) ?? null) : null;
+    const prepared = preparePacketObservation(row, rxNode);
+    const existing = preparedByObserver.get(key);
+    if (!existing || compareCanonicalObserverObservation(prepared, existing) < 0) {
+      preparedByObserver.set(key, prepared);
+    }
+  }
+  const packet = Array.from(preparedByObserver.values()).sort(comparePreferredResolvedObservation)[0];
+  if (!packet) return null;
   const hiddenCoordMask = buildHiddenCoordMask(context.nodesById);
   const applyHiddenMask = (payload: BetaResolvedPayload) => maskResolvedPayload(payload, hiddenCoordMask);
   const logPrefix = `[path-beta] hash=${packetHash} network=${network}`;
 
-  const rx = packet.rx_node_id ? context.nodesById.get(packet.rx_node_id) : undefined;
+  const rx = packet.rx ?? undefined;
   if (!hasCoords(rx)) {
     console.log(`${logPrefix} mode=none reason=missing-rx-coords`);
     return applyHiddenMask({
@@ -1294,20 +1347,20 @@ export async function resolveBetaPathForPacketHash(packetHash: string, network: 
       completionPaths: [],
       threshold: BETA_PURPLE_THRESHOLD,
       debug: {
-        hopsRequested: Number((packet.path_hashes ?? []).length),
+        hopsRequested: packet.hashes.length,
         hopsUsed: 0,
-        rxNodeId: packet.rx_node_id,
-        srcNodeId: packet.src_node_id,
+        rxNodeId: packet.packet.rx_node_id,
+        srcNodeId: packet.packet.src_node_id,
         computedAt: new Date().toISOString(),
       },
     });
   }
 
-  const src = packet.src_node_id ? (context.nodesById.get(packet.src_node_id) ?? null) : null;
-  const hashes = packet.path_hashes ?? [];
+  const src = packet.packet.src_node_id ? (context.nodesById.get(packet.packet.src_node_id) ?? null) : null;
+  const hashes = packet.hashes;
 
   // Validate path hash lengths against wire-format hash size when available (#4)
-  const expectedHexLen = packet.path_hash_size_bytes != null ? packet.path_hash_size_bytes * 2 : null;
+  const expectedHexLen = packet.packet.path_hash_size_bytes != null ? packet.packet.path_hash_size_bytes * 2 : null;
   const validatedHashes = expectedHexLen != null
     ? hashes.filter((h) => {
       if (h.length !== expectedHexLen) {
@@ -1318,13 +1371,13 @@ export async function resolveBetaPathForPacketHash(packetHash: string, network: 
     })
     : hashes;
 
-  const rawHops = packet.hop_count != null ? validatedHashes.slice(0, Math.max(0, packet.hop_count)) : validatedHashes;
+  const rawHops = packet.packet.hop_count != null ? validatedHashes.slice(0, Math.max(0, packet.packet.hop_count)) : validatedHashes;
   const hops = trimObserverTerminalHop(rawHops, rx);
-  const forceIncludeSource = packet.packet_type === 4;
-  const currentHopCount = Number(packet.hop_count ?? 0);
-  const observerHopHints: ObserverHopHint[] = currentHopCount > 0 && packet.rx_node_id
+  const forceIncludeSource = packet.packet.packet_type === 4;
+  const currentHopCount = Number(packet.packet.hop_count ?? 0);
+  const observerHopHints: ObserverHopHint[] = currentHopCount > 0 && packet.packet.rx_node_id
     ? observerHopResult.rows.flatMap((row) => {
-      if (!row.rx_node_id || row.rx_node_id === packet.rx_node_id) return [];
+      if (!row.rx_node_id || row.rx_node_id === packet.packet.rx_node_id) return [];
       const hopCount = Number(row.hop_count ?? 0);
       if (hopCount <= 0) return [];
       const observerNode = context.nodesById.get(row.rx_node_id);
@@ -1334,7 +1387,7 @@ export async function resolveBetaPathForPacketHash(packetHash: string, network: 
     : [];
 
   if (hops.length < 1) {
-    console.log(`${logPrefix} mode=none reason=no-hops rx=${packet.rx_node_id ?? 'unknown'} src=${packet.src_node_id ?? 'unknown'}`);
+    console.log(`${logPrefix} mode=none reason=no-hops rx=${packet.packet.rx_node_id ?? 'unknown'} src=${packet.packet.src_node_id ?? 'unknown'}`);
     return applyHiddenMask({
       ok: true,
       packetHash,
@@ -1351,18 +1404,19 @@ export async function resolveBetaPathForPacketHash(packetHash: string, network: 
       debug: {
         hopsRequested: hashes.length,
         hopsUsed: 0,
-        rxNodeId: packet.rx_node_id,
-        srcNodeId: packet.src_node_id,
+        rxNodeId: packet.packet.rx_node_id,
+        srcNodeId: packet.packet.src_node_id,
         computedAt: new Date().toISOString(),
       },
     });
   }
 
-  if ((packet.path_hash_size_bytes ?? 1) > 1) {
+  if ((packet.packet.path_hash_size_bytes ?? 1) > 1) {
     const exactMultibyte = resolveExactMultibyteChain(hops, context);
     if (exactMultibyte) {
+      await recordPredictedOnline(exactMultibyte.nodeIds);
       console.log(
-        `${logPrefix} mode=resolved color=purple-only reason=exact-multibyte-chain conf=1.0000 threshold=${BETA_PURPLE_THRESHOLD.toFixed(2)} hops=${hops.length} purpleEdges=${Math.max(0, exactMultibyte.path.length - 1)} redEdges=0 remaining=0 rx=${packet.rx_node_id ?? 'unknown'} src=${packet.src_node_id ?? 'unknown'}`,
+        `${logPrefix} mode=resolved color=purple-only reason=exact-multibyte-chain conf=1.0000 threshold=${BETA_PURPLE_THRESHOLD.toFixed(2)} hops=${hops.length} purpleEdges=${Math.max(0, exactMultibyte.path.length - 1)} redEdges=0 remaining=0 rx=${packet.packet.rx_node_id ?? 'unknown'} src=${packet.packet.src_node_id ?? 'unknown'}`,
       );
       return applyHiddenMask({
         ok: true,
@@ -1380,8 +1434,8 @@ export async function resolveBetaPathForPacketHash(packetHash: string, network: 
         debug: {
           hopsRequested: hashes.length,
           hopsUsed: hops.length,
-          rxNodeId: packet.rx_node_id,
-          srcNodeId: packet.src_node_id,
+          rxNodeId: packet.packet.rx_node_id,
+          srcNodeId: packet.packet.src_node_id,
           computedAt: new Date().toISOString(),
         },
       });
@@ -1411,6 +1465,7 @@ export async function resolveBetaPathForPacketHash(packetHash: string, network: 
   }
 
   if (result) {
+    await recordPredictedOnline(result.nodeIds);
     const split = splitResolvedAndAlternatives(result, BETA_PURPLE_THRESHOLD, context.linkMetrics);
     let purplePath = split.purplePath;
     const extraPurplePaths: [number, number][][] = [];
@@ -1433,7 +1488,7 @@ export async function resolveBetaPathForPacketHash(packetHash: string, network: 
       );
     }
     const unresolvedFrontEdges = (split.remainingHops ?? 0) + unresolvedBySolver;
-    if (packet.packet_type === 4 && hasCoords(src) && unresolvedFrontEdges > 0) {
+    if (packet.packet.packet_type === 4 && hasCoords(src) && unresolvedFrontEdges > 0) {
       let sourcePartial: { path: [number, number][]; confidence: number; segmentConfidence: number[]; nodeIds: string[] } | null = null;
       const maxSourcePrefixLen = Math.min(Math.max(1, unresolvedFrontEdges), Math.max(1, hops.length - 1));
       for (let prefixLen = maxSourcePrefixLen; prefixLen >= 1; prefixLen--) {
@@ -1493,7 +1548,7 @@ export async function resolveBetaPathForPacketHash(packetHash: string, network: 
       `${logPrefix} mode=resolved color=${colorMode} reason=${reason} conf=${result.confidence.toFixed(3)} threshold=${BETA_PURPLE_THRESHOLD.toFixed(2)} ` +
       `hops=${hops.length} solvedHops=${solvedHopCount} unresolvedBySolver=${unresolvedBySolver} ` +
       `purpleEdges=${purpleEdges} redEdges=${redEdges} remaining=${(split.remainingHops ?? 0) + unresolvedBySolver} ` +
-      `rx=${packet.rx_node_id ?? 'unknown'} src=${packet.src_node_id ?? 'unknown'}`,
+      `rx=${packet.packet.rx_node_id ?? 'unknown'} src=${packet.packet.src_node_id ?? 'unknown'}`,
     );
     return applyHiddenMask({
       ok: true,
@@ -1511,8 +1566,8 @@ export async function resolveBetaPathForPacketHash(packetHash: string, network: 
       debug: {
         hopsRequested: hashes.length,
         hopsUsed: hops.length,
-        rxNodeId: packet.rx_node_id,
-        srcNodeId: packet.src_node_id,
+        rxNodeId: packet.packet.rx_node_id,
+        srcNodeId: packet.packet.src_node_id,
         computedAt: new Date().toISOString(),
       },
     });
@@ -1529,6 +1584,7 @@ export async function resolveBetaPathForPacketHash(packetHash: string, network: 
     observerHopHints,
   );
   if (fallback) {
+    await recordPredictedOnline(fallback.nodeIds);
     const redEdges = Math.max(0, fallback.path.length - 1);
     let completionPaths: [number, number][][] = [];
     let permutationCount = 0;
@@ -1551,7 +1607,7 @@ export async function resolveBetaPathForPacketHash(packetHash: string, network: 
     }
     console.log(
       `${logPrefix} mode=fallback color=full-red reason=beta-solver-no-solution-prefix-fallback conf=null hops=${hops.length} purpleEdges=0 redEdges=${redEdges} ` +
-      `permutations=${permutationCount} remaining=unknown rx=${packet.rx_node_id ?? 'unknown'} src=${packet.src_node_id ?? 'unknown'}`,
+      `permutations=${permutationCount} remaining=unknown rx=${packet.packet.rx_node_id ?? 'unknown'} src=${packet.packet.src_node_id ?? 'unknown'}`,
     );
     return applyHiddenMask({
       ok: true,
@@ -1569,15 +1625,15 @@ export async function resolveBetaPathForPacketHash(packetHash: string, network: 
       debug: {
         hopsRequested: hashes.length,
         hopsUsed: hops.length,
-        rxNodeId: packet.rx_node_id,
-        srcNodeId: packet.src_node_id,
+        rxNodeId: packet.packet.rx_node_id,
+        srcNodeId: packet.packet.src_node_id,
         computedAt: new Date().toISOString(),
       },
     });
   }
 
   console.log(
-    `${logPrefix} mode=none reason=unresolved hops=${hops.length} rx=${packet.rx_node_id ?? 'unknown'} src=${packet.src_node_id ?? 'unknown'}`,
+    `${logPrefix} mode=none reason=unresolved hops=${hops.length} rx=${packet.packet.rx_node_id ?? 'unknown'} src=${packet.packet.src_node_id ?? 'unknown'}`,
   );
   return applyHiddenMask({
     ok: true,
@@ -1595,8 +1651,8 @@ export async function resolveBetaPathForPacketHash(packetHash: string, network: 
     debug: {
       hopsRequested: hashes.length,
       hopsUsed: hops.length,
-      rxNodeId: packet.rx_node_id,
-      srcNodeId: packet.src_node_id,
+      rxNodeId: packet.packet.rx_node_id,
+      srcNodeId: packet.packet.src_node_id,
       computedAt: new Date().toISOString(),
     },
   });
@@ -1652,12 +1708,17 @@ export async function resolveMultiObserverBetaPath(
 
   if (allResult.rows.length < 1) return null;
 
-  // 2. Group by observer, pick best row per observer
-  const byObserver = new Map<string, PathPacket & { path_hash_size_bytes: number | null }>();
+  const context = await loadContext(network);
+
+  // 2. Group by observer, pick canonical row per observer
+  const byObserver = new Map<string, PreparedPacketObservation>();
   for (const row of allResult.rows) {
     if (!row.rx_node_id) continue;
-    if (!byObserver.has(row.rx_node_id)) {
-      byObserver.set(row.rx_node_id, row);
+    const rxNode = context.nodesById.get(row.rx_node_id) ?? null;
+    const prepared = preparePacketObservation(row, rxNode);
+    const existing = byObserver.get(row.rx_node_id);
+    if (!existing || compareCanonicalObserverObservation(prepared, existing) < 0) {
+      byObserver.set(row.rx_node_id, prepared);
     }
   }
 
@@ -1670,7 +1731,6 @@ export async function resolveMultiObserverBetaPath(
       : null;
   }
 
-  const context = await loadContext(network);
   const hiddenCoordMask = buildHiddenCoordMask(context.nodesById);
   const logPrefix = `[path-beta-multi] hash=${packetHash} network=${network}`;
 
@@ -1684,23 +1744,13 @@ export async function resolveMultiObserverBetaPath(
   };
 
   const entries: ObserverEntry[] = [];
-  for (const [observerId, packet] of byObserver) {
-    const rx = context.nodesById.get(observerId);
+  for (const [observerId, prepared] of byObserver) {
+    const rx = prepared.rx;
     if (!hasCoords(rx)) continue;
-    const hashes = packet.path_hashes ?? [];
-
-    const expectedHexLen = packet.path_hash_size_bytes != null ? packet.path_hash_size_bytes * 2 : null;
-    const validatedHashes = expectedHexLen != null
-      ? hashes.filter((h) => h.length === expectedHexLen)
-      : hashes;
-
-    const rawHops = packet.hop_count != null
-      ? validatedHashes.slice(0, Math.max(0, packet.hop_count))
-      : validatedHashes;
-    const hops = trimObserverTerminalHop(rawHops, rx);
-
+    const hashes = prepared.hashes;
+    const hops = prepared.hops;
     if (hops.length < 1) continue;
-    entries.push({ observerId, packet, rx, hashes, hops });
+    entries.push({ observerId, packet: prepared.packet, rx, hashes, hops });
   }
 
   if (entries.length < 1) return null;
@@ -1789,6 +1839,7 @@ export async function resolveMultiObserverBetaPath(
 
     if (ei === anchorIdx && anchorResult) {
       // Use anchor result directly — run through the same post-processing as resolveBetaPathForPacketHash
+      await recordPredictedOnline(anchorResult.nodeIds);
       const result = buildResolvedPayload(
         packetHash,
         entry,
@@ -1828,6 +1879,7 @@ export async function resolveMultiObserverBetaPath(
     );
 
     if (entryResult) {
+      await recordPredictedOnline(entryResult.nodeIds);
       const result = buildResolvedPayload(
         packetHash,
         entry,
@@ -1855,6 +1907,7 @@ export async function resolveMultiObserverBetaPath(
     );
 
     if (fallbackResult) {
+      await recordPredictedOnline(fallbackResult.nodeIds);
       const result = buildResolvedPayload(
         packetHash,
         entry,
@@ -1881,6 +1934,7 @@ export async function resolveMultiObserverBetaPath(
     );
 
     if (prefixFallback) {
+      await recordPredictedOnline(prefixFallback.nodeIds);
       // Enumerate permutations from the fork point if we have a shared backbone
       let completionPaths: [number, number][][] = [];
       let permutationCount = 0;

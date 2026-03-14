@@ -45,6 +45,8 @@ ALTER TABLE nodes ADD COLUMN IF NOT EXISTS role INTEGER;
 ALTER TABLE nodes ADD COLUMN IF NOT EXISTS advert_count INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE nodes ADD COLUMN IF NOT EXISTS elevation_m DOUBLE PRECISION;
 ALTER TABLE nodes ADD COLUMN IF NOT EXISTS network TEXT NOT NULL DEFAULT 'teesside';
+ALTER TABLE nodes ADD COLUMN IF NOT EXISTS last_predicted_online_at TIMESTAMPTZ;
+ALTER TABLE nodes ADD COLUMN IF NOT EXISTS last_path_evidence_at TIMESTAMPTZ;
 
 -- ─── Packets hypertable (no retention — data kept indefinitely) ──────────
 

@@ -135,6 +135,63 @@ export async function incrementAdvertCount(nodeId: string): Promise<number> {
   return res.rows[0]?.advert_count ?? 1;
 }
 
+export async function touchNodesPredictedOnline(nodeIds: string[]): Promise<void> {
+  const ids = Array.from(new Set(nodeIds.map((id) => String(id).trim()).filter(Boolean)));
+  if (ids.length < 1) return;
+  await pool.query(
+    `UPDATE nodes
+     SET last_predicted_online_at = NOW()
+     WHERE node_id = ANY($1::text[])`,
+    [ids],
+  );
+}
+
+export async function refreshRecentPathEvidence(
+  hours = 1,
+  network?: string,
+): Promise<number> {
+  const scope = buildScopePlaceholders(2, network);
+  const params: unknown[] = [hours, ...scope.params];
+  const result = await pool.query<{ updated_count: string }>(
+    `WITH recent_hashes AS (
+       SELECT p.time,
+              p.path_hash_size_bytes,
+              UPPER(h.hash) AS hash
+       FROM packets p
+       CROSS JOIN LATERAL unnest(p.path_hashes) AS h(hash)
+       WHERE p.time > NOW() - INTERVAL '1 hour' * $1
+         AND p.path_hashes IS NOT NULL
+         AND cardinality(p.path_hashes) > 0
+         ${buildPacketScopeClause(scope, 'p', network)}
+     ),
+     matched AS (
+       SELECT n.node_id,
+              MAX(r.time) AS max_time
+       FROM recent_hashes r
+       JOIN nodes n
+         ON (
+           (r.path_hash_size_bytes = 1 AND r.hash = UPPER(LEFT(n.node_id, 2)))
+           OR (r.path_hash_size_bytes = 2 AND r.hash = UPPER(LEFT(n.node_id, 4)))
+           OR (r.path_hash_size_bytes = 3 AND r.hash = UPPER(LEFT(n.node_id, 6)))
+         )
+       GROUP BY n.node_id
+     ),
+     updated AS (
+       UPDATE nodes n
+       SET last_path_evidence_at = m.max_time
+       FROM matched m
+       WHERE n.node_id = m.node_id
+         AND n.last_path_evidence_at IS DISTINCT FROM m.max_time
+       RETURNING 1
+     )
+     SELECT COUNT(*)::text AS updated_count
+     FROM updated`,
+    params,
+  );
+
+  return Number(result.rows[0]?.updated_count ?? 0);
+}
+
 export async function upsertNode(nodeId: string, updates: {
   name?: string;
   lat?: number;
@@ -268,51 +325,47 @@ export async function getNodeHistory(nodeId: string, hours = 24) {
 
 export async function getRecentPackets(limit = 200, network?: string, observer?: string) {
   const scope = buildScopePlaceholders(2, network, observer);
-  const params: unknown[] = [limit, ...scope.params];
+  const fiveMinAgo = 'NOW() - INTERVAL \'5 minutes\'';
   const res = await pool.query(
-    `SELECT * FROM (
-       SELECT DISTINCT ON (p.packet_hash)
-              p.time, p.packet_hash, p.rx_node_id, p.src_node_id, p.topic,
-              p.packet_type, p.hop_count, p.rssi, p.snr, p.payload,
-              p.payload->>'_summary' AS summary,
-              p.advert_count, p.path_hashes, p.path_hash_size_bytes,
-              (
-                SELECT ARRAY_AGG(DISTINCT p2.rx_node_id ORDER BY p2.rx_node_id)
-                FROM packets p2
-                WHERE p2.packet_hash = p.packet_hash
-                  AND p2.time > NOW() - INTERVAL '5 minutes'
-                  AND p2.rx_node_id IS NOT NULL
-                  ${buildPacketScopeClause(scope, 'p2', network)}
-              ) AS observer_node_ids,
-              (
-                SELECT COUNT(*)::int
-                FROM packets p2
-                WHERE p2.packet_hash = p.packet_hash
-                  AND p2.time > NOW() - INTERVAL '5 minutes'
-                  AND COALESCE(p2.payload->>'direction', 'rx') <> 'tx'
-                  ${buildPacketScopeClause(scope, 'p2', network)}
-              ) AS rx_count,
-              (
-                SELECT COUNT(*)::int
-                FROM packets p2
-                WHERE p2.packet_hash = p.packet_hash
-                  AND p2.time > NOW() - INTERVAL '5 minutes'
-                  AND COALESCE(p2.payload->>'direction', 'rx') = 'tx'
-                  ${buildPacketScopeClause(scope, 'p2', network)}
-              ) AS tx_count
-       FROM packets p
-       WHERE p.time > NOW() - INTERVAL '5 minutes'
-         ${buildPacketScopeClause(scope, 'p', network)}
-       ORDER BY p.packet_hash,
-                CASE WHEN p.payload ? 'appData' THEN 1 ELSE 0 END DESC,
-                CASE WHEN p.src_node_id IS NOT NULL THEN 1 ELSE 0 END DESC,
-                CASE WHEN p.advert_count IS NOT NULL THEN 1 ELSE 0 END DESC,
-                CASE WHEN p.packet_type = 4 THEN 1 ELSE 0 END DESC,
-                p.time DESC
-     ) deduped
-     ORDER BY time DESC
-     LIMIT $1`,
-    params
+    `WITH recent_packets AS (
+      SELECT DISTINCT ON (p.packet_hash)
+             p.time, p.packet_hash, p.rx_node_id, p.src_node_id, p.topic,
+             p.packet_type, p.hop_count, p.rssi, p.snr, p.payload,
+             p.payload->>'_summary' AS summary,
+             p.advert_count, p.path_hashes, p.path_hash_size_bytes,
+             p.network
+      FROM packets p
+      WHERE p.time > ${fiveMinAgo}
+        ${buildPacketScopeClause(scope, 'p', network)}
+      ORDER BY p.packet_hash,
+               CASE WHEN p.payload ? 'appData' THEN 1 ELSE 0 END DESC,
+               CASE WHEN p.src_node_id IS NOT NULL THEN 1 ELSE 0 END DESC,
+               CASE WHEN p.advert_count IS NOT NULL THEN 1 ELSE 0 END DESC,
+               CASE WHEN p.packet_type = 4 THEN 1 ELSE 0 END DESC,
+               p.time DESC
+    ),
+    packet_stats AS (
+      SELECT 
+        packet_hash,
+        ARRAY_AGG(DISTINCT rx_node_id ORDER BY rx_node_id) FILTER (WHERE rx_node_id IS NOT NULL) AS observer_node_ids,
+        COUNT(*) FILTER (WHERE COALESCE(payload->>'direction', 'rx') <> 'tx')::int AS rx_count,
+        COUNT(*) FILTER (WHERE COALESCE(payload->>'direction', 'rx') = 'tx')::int AS tx_count
+      FROM packets
+      WHERE packet_hash = ANY(SELECT packet_hash FROM recent_packets)
+        AND time > ${fiveMinAgo}
+        ${buildPacketScopeClause(scope, '', network)}
+      GROUP BY packet_hash
+    )
+    SELECT 
+      rp.time, rp.packet_hash, rp.rx_node_id, rp.src_node_id, rp.topic,
+      rp.packet_type, rp.hop_count, rp.rssi, rp.snr, rp.payload,
+      rp.summary, rp.advert_count, rp.path_hashes, rp.path_hash_size_bytes,
+      ps.observer_node_ids, ps.rx_count, ps.tx_count
+    FROM recent_packets rp
+    LEFT JOIN packet_stats ps ON ps.packet_hash = rp.packet_hash
+    ORDER BY rp.time DESC
+    LIMIT $1`,
+    [limit, ...scope.params]
   );
   return res.rows;
 }

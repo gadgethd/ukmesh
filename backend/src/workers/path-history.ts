@@ -1,5 +1,5 @@
 import 'node:process';
-import { getRecentPathHistoryPacketHashes, initDb, upsertPathHistoryCache, type PathHistorySegmentRow } from '../db/index.js';
+import { getRecentPathHistoryPacketHashes, initDb, refreshRecentPathEvidence, upsertPathHistoryCache, type PathHistorySegmentRow } from '../db/index.js';
 import { resolveMultiObserverBetaPath, type BetaResolvedPayload } from '../path-beta/resolver.js';
 
 const REFRESH_INTERVAL_MS = 5 * 60 * 1000;
@@ -112,9 +112,14 @@ async function refreshAll(tag: 'initial' | 'scheduled') {
   }
   isRunning = true;
   try {
+    const publicEvidenceUpdates = await refreshRecentPathEvidence(WINDOW_HOURS);
+    const testEvidenceUpdates = await refreshRecentPathEvidence(WINDOW_HOURS, 'test');
     for (const scope of SCOPES) {
       await refreshScope(scope);
     }
+    console.log(
+      `[path-history] ${tag} path-evidence public=${publicEvidenceUpdates} test=${testEvidenceUpdates}`,
+    );
   } catch (err) {
     console.error(`[path-history] ${tag} refresh failed`, (err as Error).message);
   } finally {

@@ -17,7 +17,12 @@ export const NodeSearch: React.FC<NodeSearchProps> = ({ nodes, map }) => {
     if (!query.trim()) return [];
     const q = query.toLowerCase();
     return Array.from(nodes.values())
-      .filter((n) => isValidMapCoord(n.lat, n.lon) && n.name && !n.name.includes('🚫') && n.name.toLowerCase().includes(q))
+      .filter((n) => {
+        if (!isValidMapCoord(n.lat, n.lon)) return false;
+        const nameMatch = n.name && !n.name.includes('🚫') && n.name.toLowerCase().includes(q);
+        const keyMatch = n.public_key && n.public_key.toLowerCase().includes(q);
+        return nameMatch || keyMatch;
+      })
       .slice(0, 6);
   }, [query, nodes]);
 
@@ -51,7 +56,10 @@ export const NodeSearch: React.FC<NodeSearchProps> = ({ nodes, map }) => {
         <div className="node-search__results">
           {results.map((node) => (
             <div key={node.node_id} className="node-search__result" onMouseDown={() => select(node)}>
-              {node.name}
+              <span className="node-search__result-name">{node.name}</span>
+              {node.public_key && (
+                <span className="node-search__result-key">{node.public_key.slice(0, 8)}…</span>
+              )}
             </div>
           ))}
         </div>

@@ -30,5 +30,15 @@ export function useCoverage(scope: ApiScope = {}) {
     });
   }, []);
 
-  return { coverage, handleCoverageUpdate };
+  const handleCoverageUpdateBatch = useCallback((updates: { node_id: string; geom: NodeCoverage['geom']; strength_geoms?: NodeCoverage['strength_geoms'] }[]) => {
+    if (updates.length === 0) return;
+    setCoverage((prev) => {
+      const idsToRemove = new Set(updates.map(u => u.node_id));
+      const filtered = prev.filter((c) => !idsToRemove.has(c.node_id));
+      const added = updates.map(u => ({ node_id: u.node_id, geom: u.geom, strength_geoms: u.strength_geoms }));
+      return [...filtered, ...added];
+    });
+  }, []);
+
+  return { coverage, handleCoverageUpdate, handleCoverageUpdateBatch };
 }
