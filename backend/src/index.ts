@@ -8,7 +8,7 @@ import { initOwnerAuthDb } from './db/ownerAuth.js';
 import { startMqttClient, onPacket, onNodeSeen, onNodeUpsert } from './mqtt/client.js';
 import { initWebSocketServer, broadcastPacket, broadcastNodeUpdate, broadcastNodeUpsert } from './ws/server.js';
 import apiRoutes from './api/routes.js';
-import { queueViewshedJob, queueLinkJob } from './queue/publisher.js';
+import { isViewshedEligibleCoordinate, queueViewshedJob, queueLinkJob } from './queue/publisher.js';
 
 const ALLOWED_ORIGINS = (process.env['ALLOWED_ORIGINS'] ?? '')
   .split(',')
@@ -31,6 +31,9 @@ async function main() {
       `SELECT n.node_id, n.lat, n.lon FROM nodes n
        LEFT JOIN node_coverage nc ON n.node_id = nc.node_id
        WHERE n.lat IS NOT NULL AND n.lon IS NOT NULL
+         AND n.lat BETWEEN 49.5 AND 61.5
+         AND n.lon BETWEEN -8.5 AND 2.5
+         AND NOT (ABS(n.lat) < 1e-9 AND ABS(n.lon) < 1e-9)
          AND (nc.node_id IS NULL OR nc.model_version < $1)
          AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
          AND (n.role IS NULL OR n.role = 2)`,
@@ -61,7 +64,7 @@ async function main() {
     // Queue a viewshed job only for visible repeaters (role=2 or unknown)
     const isHidden      = typeof node.name === 'string' && node.name.includes('🚫');
     const isNonRepeater = typeof node.role === 'number' && node.role !== 2;
-    if (!isHidden && !isNonRepeater && typeof node.lat === 'number' && typeof node.lon === 'number') {
+    if (!isHidden && !isNonRepeater && typeof node.lat === 'number' && typeof node.lon === 'number' && isViewshedEligibleCoordinate(node.lat, node.lon)) {
       queueViewshedJob(node.node_id as string, node.lat, node.lon);
     }
   });

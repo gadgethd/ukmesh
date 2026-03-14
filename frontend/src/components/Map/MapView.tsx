@@ -718,7 +718,7 @@ export const MapView = React.memo(({
 
         {/* Confirmed link lines — ITM-viable node pairs */}
         {effectiveShowLinks && linkLines.length > 0 && (
-          <Pane name="linksPane" style={{ zIndex: 400 }}>
+          <Pane name="linksPane" style={{ zIndex: 650 }}>
             {linkLines.map((line) => {
               const obs = Math.max(1, line.observedCount);
               const strength = Math.log10(obs + 1);
@@ -741,7 +741,7 @@ export const MapView = React.memo(({
         )}
 
         {clashModeActive && (
-          <Pane name="hexClashPane" style={{ zIndex: 405 }}>
+          <Pane name="hexClashPane" style={{ zIndex: 660 }}>
             {visibleClashPathLines.map((line) => (
               <Polyline
                 key={line.key}

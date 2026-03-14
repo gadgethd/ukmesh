@@ -3,7 +3,7 @@ import { rateLimit } from 'express-rate-limit';
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
 import { isIP } from 'node:net';
 import mqtt from 'mqtt';
-import { getNodes, getNodeHistory, getPathHistoryCache, getRecentPacketEvents, getRecentPackets, query, MIN_LINK_OBSERVATIONS } from '../db/index.js';
+import { getNodes, getNodeHistory, getNodeAdverts, getPathHistoryCache, getRecentPacketEvents, getRecentPackets, query, MIN_LINK_OBSERVATIONS } from '../db/index.js';
 import { addOwnerNodeForUsername, getMappedOwnerNodeIds, getOwnerNodeIdsForUsername } from '../db/ownerAuth.js';
 import { getWorkerHealthOverview } from '../health/status.js';
 import { resolveRequestNetwork } from '../http/requestScope.js';
@@ -246,7 +246,7 @@ async function autoLinkOwnerNodeIds(mqttUsername: string): Promise<string[]> {
   const res = await query<{ node_id: string }>(
     `SELECT n.node_id
      FROM nodes n
-     WHERE n.role = 2
+     WHERE n.role IN (1, 2)
        AND COALESCE(n.network, '') <> 'test'
        AND n.last_seen > NOW() - INTERVAL '30 minutes'
        AND NOT (LOWER(n.node_id) = ANY($1::text[]))
@@ -1179,6 +1179,23 @@ router.get('/nodes/:id/history', async (req, res) => {
   }
 });
 
+// GET /api/nodes/:publicKey/adverts?hours=24 — advert packets for a node by public key
+router.get('/nodes/:id/adverts', async (req, res) => {
+  try {
+    const publicKey = req.params['id']!;
+    if (!/^[0-9a-fA-F]{64}$/.test(publicKey)) {
+      res.status(400).json({ error: 'Invalid public key format' });
+      return;
+    }
+    const hours = Math.min(Number(req.query['hours'] ?? 24), 672);
+    const adverts = await getNodeAdverts(publicKey, hours);
+    res.json(adverts);
+  } catch (err) {
+    console.error('[api] GET /nodes/:id/adverts', (err as Error).message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // GET /api/packets/recent?limit=200
 router.get('/packets/recent', async (req, res) => {
   try {
@@ -1939,7 +1956,7 @@ router.get('/owner/live', async (req, res) => {
         const prev = i > 0 ? samples[i - 1]! : null;
         const batteryPct = sample.batteryMv == null
           ? null
-          : clamp(((sample.batteryMv - 3300) / 900) * 100, 0, 100);
+          : clamp(((sample.batteryMv - 3000) / 1200) * 100, 0, 100);
 
         let channelUtilPct = sample.channelUtilization;
         let airUtilTxPct = sample.airUtilTx;

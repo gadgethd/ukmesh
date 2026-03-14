@@ -70,7 +70,9 @@ function nodeMatchesScope(nodeId: string | undefined, scope: ClientScope): boole
 
 function shouldSendMessage(msg: WSMessage, scope: ClientScope): boolean {
   if (msg.type === 'packet') {
-    return packetMatchesScope(msg.data as Partial<LivePacket>, scope);
+    const packet = msg.data as Partial<LivePacket>;
+    const matchesScope = packetMatchesScope(packet, scope);
+    return matchesScope;
   }
 
   if (msg.type === 'node_update') {

@@ -132,6 +132,11 @@ CREATE INDEX IF NOT EXISTS packets_src_idx    ON packets (src_node_id, time DESC
 CREATE INDEX IF NOT EXISTS packets_network_time_idx ON packets (network, time DESC);
 CREATE INDEX IF NOT EXISTS packets_path_hashes_idx ON packets USING GIN (path_hashes) WHERE path_hashes IS NOT NULL;
 
+-- Performance optimization indexes
+CREATE INDEX IF NOT EXISTS idx_nodes_last_seen ON nodes(last_seen DESC);
+CREATE INDEX IF NOT EXISTS idx_packets_time_hash ON packets(time DESC, packet_hash);
+CREATE INDEX IF NOT EXISTS idx_nodes_network_last_seen ON nodes(network, last_seen DESC) WHERE is_online = TRUE;
+
 -- ─── Observer / repeater status telemetry samples ───────────────────────────
 
 CREATE TABLE IF NOT EXISTS node_status_samples (

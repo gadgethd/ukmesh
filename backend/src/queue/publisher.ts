@@ -4,6 +4,11 @@ const VIEWSHED_JOB_QUEUE = 'meshcore:viewshed_jobs';
 const VIEWSHED_PENDING_SET = 'meshcore:viewshed_pending';
 const LINK_JOB_QUEUE = 'meshcore:link_jobs';
 
+const UK_LAT_MIN = 49.5;
+const UK_LAT_MAX = 61.5;
+const UK_LON_MIN = -8.5;
+const UK_LON_MAX = 2.5;
+
 let pub: Redis | null = null;
 
 function getPublisher(): Redis {
@@ -22,7 +27,15 @@ export async function closeQueuePublisher(): Promise<void> {
 }
 
 /** Push a viewshed calculation job for a node with a known position. */
+export function isViewshedEligibleCoordinate(lat: number, lon: number): boolean {
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return false;
+  if (Math.abs(lat) < 1e-9 && Math.abs(lon) < 1e-9) return false;
+  return lat >= UK_LAT_MIN && lat <= UK_LAT_MAX && lon >= UK_LON_MIN && lon <= UK_LON_MAX;
+}
+
+/** Push a viewshed calculation job for a node with a known position. */
 export function queueViewshedJob(nodeId: string, lat: number, lon: number): void {
+  if (!isViewshedEligibleCoordinate(lat, lon)) return;
   const publisher = getPublisher();
   const job = JSON.stringify({ node_id: nodeId, lat, lon });
   void publisher

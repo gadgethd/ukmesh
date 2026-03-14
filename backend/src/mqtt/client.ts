@@ -532,6 +532,10 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
         } else if (decoded.payloadType === 7) {
           const inner = decodedInner as unknown as Record<string, unknown> | undefined;
           srcNodeId = inner?.['senderPublicKey'] as string | undefined;
+        } else if (decoded.payloadType === 1) {
+          // Router/Advert packets - extract origin_id from payload
+          const inner = decodedInner as unknown as Record<string, unknown> | undefined;
+          srcNodeId = inner?.['origin_id'] as string | undefined;
         }
       }
     } catch {
@@ -554,6 +558,11 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
     srcNodeId = originId;
     summary ??= origin;
     innerPayload = buildAdvertFallbackPayload(originId, origin);
+  }
+
+  // For Router packets (type 1), also try originId as fallback
+  if (!srcNodeId && resolvedPacketType === 1 && originId) {
+    srcNodeId = originId;
   }
 
   if (resolvedPacketType == null) {

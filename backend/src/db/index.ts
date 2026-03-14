@@ -323,6 +323,22 @@ export async function getNodeHistory(nodeId: string, hours = 24) {
   return res.rows;
 }
 
+export async function getNodeAdverts(nodePublicKey: string, hours = 24, limit = 100) {
+  // Get location packets (packet_type = 4) where payload->>'publicKey' = this public key
+  // Location packets are sent as part of the advert broadcast
+  const res = await pool.query(
+    `SELECT time, packet_hash
+     FROM packets
+     WHERE packet_type = 4
+       AND payload->>'publicKey' = $1
+       AND time > NOW() - INTERVAL '1 hour' * $2
+     ORDER BY time DESC
+     LIMIT $3`,
+    [nodePublicKey, hours, limit]
+  );
+  return res.rows;
+}
+
 export async function getRecentPackets(limit = 200, network?: string, observer?: string) {
   const scope = buildScopePlaceholders(2, network, observer);
   const fiveMinAgo = 'NOW() - INTERVAL \'5 minutes\'';

@@ -9,6 +9,7 @@ dist/
 
 # Mosquitto credentials (generated file, not for source control)
 mosquitto/passwd
+mosquitto/acl
 
 # Key files
 scripts/keys/
@@ -33,3 +34,4 @@ __pycache__/
 CLAUDE.md
 AI_MEMORY.md
 knowledge.md
+multipath.md

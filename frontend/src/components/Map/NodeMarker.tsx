@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Circle, Marker, Popup, Polygon, Pane } from 'react-leaflet';
+import { Circle, CircleMarker, Marker, Popup, Polygon, Pane } from 'react-leaflet';
 import L from 'leaflet';
 import type { LatLngExpression } from 'leaflet';
 import type { MeshNode } from '../../hooks/useNodes.js';
@@ -76,6 +76,10 @@ function roleZIndexOffset(role: number | undefined): number {
   if (role === 3) return 100;
   if (role === 1) return 200;
   return 300;
+}
+
+function isRepeaterNode(role: number | undefined): boolean {
+  return role === undefined || role === 2;
 }
 
 function ringToLatLng(ring: number[][]): LatLngExpression[] {
@@ -172,26 +176,75 @@ export const NodeMarker: React.FC<Props> = React.memo(({
     amber: coverageToPolygons(nodeCoverage.strength_geoms?.amber),
     green: coverageToPolygons(nodeCoverage.strength_geoms?.green),
   } : { red: [], amber: [], green: [] };
-  const showSamePrefixRow = (node.role === undefined || node.role === 2) && typeof samePrefixRepeaterCount === 'number';
+  const showSamePrefixRow = isRepeaterNode(node.role) && typeof samePrefixRepeaterCount === 'number';
+  const isRepeater = isRepeaterNode(node.role);
+
+  // Simple popup content for repeaters - just name and coords (respecting privacy)
+  const repeaterPopupContent = (
+    <div className="node-popup">
+      <div className="node-popup__name">{displayName}</div>
+      {node.public_key && (
+        <div className="node-popup__row">
+          <span>Public key</span>
+          <span className="node-popup__mono">{node.public_key}</span>
+        </div>
+      )}
+      <div className="node-popup__row">
+        <span>Status</span>
+        <span style={{ color: statusColor }}>{statusLabel}</span>
+      </div>
+      <div className="node-popup__row">
+        <span>Position</span>
+        <span>{prohibited ? 'Redacted' : `${lat.toFixed(5)}, ${lon.toFixed(5)}`}</span>
+      </div>
+      {prohibited && (
+        <div className="node-popup__row">
+          <span>Location</span>
+          <span>Redacted within 1 mile radius</span>
+        </div>
+      )}
+    </div>
+  );
 
   return (
     <>
-      <Marker
-        position={[lat, lon]}
-        icon={buildIcon(node.is_online, isActive || isHighlighted, isStale, variant, markerSize, isRestoring, hexClashState)}
-        zIndexOffset={roleZIndexOffset(node.role)}
-      >
-        <Popup eventHandlers={{
-          add: () => {
-            if (links !== null) return; // already fetched
-            fetch(`/api/nodes/${node.node_id}/links`)
-              .then((r) => r.json())
-              .then((data: NodeLink[]) => setLinks(data))
-              .catch(() => setLinks([]));
-          },
-        }}>
+      {isRepeater ? (
+        // Lightweight CircleMarker for repeaters with simple popup
+        <CircleMarker
+          center={[lat, lon]}
+          radius={3}
+          pathOptions={{
+            color: isStale ? '#ff4444' : (node.is_online ? '#00c4ff' : '#666'),
+            fillColor: isStale ? '#ff4444' : (node.is_online ? '#00c4ff' : '#888'),
+            fillOpacity: 0.7,
+            weight: 1,
+          }}
+        >
+          <Popup>{repeaterPopupContent}</Popup>
+        </CircleMarker>
+      ) : (
+        <Marker
+          position={[lat, lon]}
+          icon={buildIcon(node.is_online, isActive || isHighlighted, isStale, variant, markerSize, isRestoring, hexClashState)}
+          zIndexOffset={roleZIndexOffset(node.role)}
+        >
+          <Popup eventHandlers={{
+            add: () => {
+              if (links !== null) return; // already fetched
+              fetch(`/api/nodes/${node.node_id}/links`)
+                .then((r) => r.json())
+                .then((data: NodeLink[]) => setLinks(data))
+                .catch(() => setLinks([]));
+            },
+          }}>
           <div className="node-popup">
             <div className="node-popup__name">{displayName}</div>
+            {node.public_key && (
+              <div className="node-popup__row">
+                <span>Public key</span>
+                <span className="node-popup__mono">{node.public_key}</span>
+              </div>
+            )}
             {node.role !== undefined && node.role !== 2 && (
               <div className="node-popup__row">
                 <span>Type</span>
@@ -304,7 +357,8 @@ export const NodeMarker: React.FC<Props> = React.memo(({
             )}
           </div>
         </Popup>
-      </Marker>
+        </Marker>
+      )}
 
       {prohibited && (
         <Circle

@@ -14,6 +14,7 @@ type SiteLayoutProps = {
   showOpenSource?: boolean;
   showPackets: boolean;
   showStats: boolean;
+  showRepeaterSearch?: boolean;
 };
 
 type NavItem = {
@@ -46,6 +47,7 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
   showOpenSource = true,
   showPackets,
   showStats,
+  showRepeaterSearch = false,
 }) => {
   const COOKIE_CONSENT_KEY = 'meshcore-cookie-consent-v1';
   const [menuOpen, setMenuOpen] = useState(false);
@@ -62,6 +64,7 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
   const navItems: NavItem[] = [
     { to: '/', label: 'Home', enabled: true },
     { to: '/feed', label: 'Feed', enabled: showFeed },
+    { to: '/repeater', label: 'Repeater Search', enabled: showRepeaterSearch },
     { to: '/about', label: 'What is MeshCore', enabled: showAbout },
     { to: '/install', label: 'Install', enabled: showInstall },
     { to: '/mqtt', label: 'MQTT', enabled: showMqtt },

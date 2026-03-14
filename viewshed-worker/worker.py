@@ -115,6 +115,19 @@ SUPPORT_CONTEXT = {
     'updated_at': 0.0,
 }
 
+UK_LAT_MIN = 49.5
+UK_LAT_MAX = 61.5
+UK_LON_MIN = -8.5
+UK_LON_MAX = 2.5
+
+
+def is_viewshed_eligible_coordinate(lat: float, lon: float) -> bool:
+    if not math.isfinite(lat) or not math.isfinite(lon):
+        return False
+    if abs(lat) < 1e-9 and abs(lon) < 1e-9:
+        return False
+    return UK_LAT_MIN <= lat <= UK_LAT_MAX and UK_LON_MIN <= lon <= UK_LON_MAX
+
 
 def current_usable_path_loss_db() -> float:
     return float(RF_CALIBRATION['usable_path_loss_db'])
@@ -212,10 +225,13 @@ def refresh_support_context(db, force: bool = False) -> None:
             FROM nodes
             WHERE lat IS NOT NULL
               AND lon IS NOT NULL
+              AND lat BETWEEN %s AND %s
+              AND lon BETWEEN %s AND %s
+              AND NOT (ABS(lat) < 1e-9 AND ABS(lon) < 1e-9)
               AND (name IS NULL OR name NOT LIKE %s)
               AND (role IS NULL OR role = 2)
             ''',
-            ('%🚫%',),
+            (UK_LAT_MIN, UK_LAT_MAX, UK_LON_MIN, UK_LON_MAX, '%🚫%',),
         )
         repeater_rows = cur.fetchall()
         cur.execute(
@@ -639,6 +655,9 @@ def sample_elevation(vrt_path: str, lat: float, lon: float) -> float:
 # ── Viewshed calculation ──────────────────────────────────────────────────────
 
 def calculate_viewshed(node_id: str, lat: float, lon: float) -> Optional[tuple[dict, dict[str, dict], float, float]]:
+    if not is_viewshed_eligible_coordinate(lat, lon):
+        log.info(f'Skipping viewshed for {node_id[:12]}… outside UK coverage bounds at ({lat:.4f}, {lon:.4f})')
+        return None
     with tempfile.TemporaryDirectory() as tmp:
         # 1. Download the observer's own tile and sample terrain elevation.
         #    This single tile is sufficient to determine node height; we need
@@ -1093,10 +1112,13 @@ def enqueue_uncovered(db, r_client):
             FROM nodes n
             LEFT JOIN node_coverage nc ON n.node_id = nc.node_id
             WHERE n.lat IS NOT NULL AND n.lon IS NOT NULL
+              AND n.lat BETWEEN %s AND %s
+              AND n.lon BETWEEN %s AND %s
+              AND NOT (ABS(n.lat) < 1e-9 AND ABS(n.lon) < 1e-9)
               AND (nc.node_id IS NULL OR nc.model_version < %s)
               AND (n.name IS NULL OR n.name NOT LIKE %s)
               AND (n.role IS NULL OR n.role = 2)
-        ''', (COVERAGE_MODEL_VERSION, '%🚫%',))
+        ''', (UK_LAT_MIN, UK_LAT_MAX, UK_LON_MIN, UK_LON_MAX, COVERAGE_MODEL_VERSION, '%🚫%',))
         rows = cur.fetchall()
     if rows:
         log.info(f'Queuing {len(rows)} existing node(s) for viewshed calculation (model v{COVERAGE_MODEL_VERSION})')
@@ -1128,6 +1150,9 @@ def process_job(db, r_client, job: dict):
     lat     = float(job['lat'])
     lon     = float(job['lon'])
     try:
+        if not is_viewshed_eligible_coordinate(lat, lon):
+            log.info(f'Skipping out-of-UK viewshed job {node_id[:12]}… at ({lat:.4f}, {lon:.4f})')
+            return
         # Skip hidden (🚫) or non-repeater nodes regardless of how the job arrived
         with db.cursor() as cur:
             cur.execute('SELECT name, role FROM nodes WHERE node_id = %s', (node_id,))

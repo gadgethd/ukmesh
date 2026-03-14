@@ -13,6 +13,7 @@ import { UKLayout } from './pages/ukmesh/UKLayout.js';
 import { UKHomePage } from './pages/ukmesh/UKHomePage.js';
 import { UKInstallPage } from './pages/ukmesh/UKInstallPage.js';
 import { UKFeedPage } from './pages/ukmesh/UKFeedPage.js';
+import { UKRepeaterSearchPage } from './pages/ukmesh/UKRepeaterSearchPage.js';
 import { DevLayout } from './pages/dev/DevLayout.js';
 import { DevHomePage } from './pages/dev/DevHomePage.js';
 import { getCurrentSite } from './config/site.js';
@@ -47,6 +48,7 @@ ReactDOM.createRoot(root).render(
           <Route element={<UKLayout />}>
             <Route index element={<UKHomePage />} />
             <Route path="feed" element={<UKFeedPage />} />
+            <Route path="repeater" element={<UKRepeaterSearchPage />} />
             <Route path="about" element={<Navigate to="/" replace />} />
             <Route path="install" element={<UKInstallPage />} />
             <Route path="mqtt" element={<Navigate to="/install" replace />} />
