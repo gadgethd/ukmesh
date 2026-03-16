@@ -28,10 +28,14 @@ export function distKm(a: MeshNode, b: MeshNode): number {
 }
 
 export function hasLoS(a: MeshNode, b: MeshNode): boolean {
-  const hA = (a.elevation_m ?? 0) + 5;
-  const hB = (b.elevation_m ?? 0) + 5;
+  const hA = Math.max(0, (a.elevation_m ?? 0)) + 5;
+  const hB = Math.max(0, (b.elevation_m ?? 0)) + 5;
   const d = distKm(a, b) * 1000;
   if (d < 1) return true;
+  // Radio horizon precheck: maximum geometric LoS distance for these antenna heights
+  const maxLoSM = Math.sqrt(2 * R_EFF_M * hA) + Math.sqrt(2 * R_EFF_M * hB);
+  if (d > maxLoSM) return false;
+  // Check LoS line clears Earth bulge at intermediate points
   for (let i = 1; i < 20; i++) {
     const t = i / 20;
     const x = t * d;

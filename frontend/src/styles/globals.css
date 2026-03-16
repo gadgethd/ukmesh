@@ -453,20 +453,6 @@ html, body, #root {
 }
 .node-marker--hex-clear .node-marker__pulse { background: #22c55e; }
 
-/* ─── Reduced Node Marker (grey) ─────────────────────────────────────────────── */
-.node-marker--reduced {
-  --marker-size: 14px;
-  --marker-border: 1px;
-}
-.node-marker--reduced .node-marker__core {
-  background: #374151 !important;
-  border: 1px solid #4b5563 !important;
-  box-shadow: 0 0 6px rgba(55, 65, 81, 0.5) !important;
-}
-.node-marker--reduced .node-marker__pulse {
-  background: #4b5563 !important;
-}
-
 /* ─── Node Cluster (unused now) ─────────────────────────────────────────────── */
 .node-cluster-container {
   background: transparent !important;
@@ -890,26 +876,22 @@ html, body, #root {
 /* ══════════════════════════════════════════════════════════════════════════ */
 
 /* App home button */
-.topbar__home-btn {
+.topbar__brand {
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 0 8px;
-  height: 28px;
-  color: var(--text-secondary);
-  font-size: 12px;
-  font-family: var(--font-mono);
+  gap: 6px;
   text-decoration: none;
-  border-radius: var(--radius);
-  border: 1px solid transparent;
-  transition: color var(--transition), background var(--transition), border-color var(--transition);
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 600;
   flex-shrink: 0;
   white-space: nowrap;
+  transition: color var(--transition);
 }
-.topbar__home-btn:hover {
-  color: var(--text-primary);
-  background: var(--bg-hover);
-  border-color: var(--border);
+.topbar__brand:hover { color: var(--accent); }
+.topbar__brand-icon {
+  color: var(--accent);
+  font-size: 16px;
 }
 
 /* Info button in topbar */
@@ -1188,6 +1170,10 @@ html, body, #root {
 .site-nav__link--active {
   color: var(--text-primary);
   background: rgba(0, 196, 255, 0.08);
+}
+.site-nav__link--map {
+  color: var(--accent);
+  font-weight: 500;
 }
 .site-nav__app-btn {
   padding: 8px 12px;
@@ -1816,14 +1802,14 @@ html, body, #root {
   margin: 0;
 }
 .site-card__link,
-.site-home__card a {
+.site-home__card a:not(.site-btn) {
   font-size: 13px;
   color: var(--accent);
   text-decoration: none;
   font-family: var(--font-mono);
 }
 .site-card__link:hover,
-.site-home__card a:hover { text-decoration: underline; }
+.site-home__card a:not(.site-btn):hover { text-decoration: underline; }
 .site-home__specs {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -2299,6 +2285,19 @@ html, body, #root {
 .uk-feed-region-select option {
   background: #0b121c;
   color: var(--text-primary);
+}
+
+.uk-feed-checkbox-label {
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+}
+
+.uk-feed-checkbox-label input[type='checkbox'] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: var(--accent);
 }
 
 .uk-feed-packets-card {
@@ -3456,8 +3455,19 @@ html, body, #root {
 .repeater-details-card__value {
   font-size: 14px;
   color: var(--text-primary);
-  word-break: break-all;
   line-height: 1.4;
+}
+
+.repeater-details-card__value--mono {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.02em;
+}
+
+.repeater-details-card__meta {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-top: 2px;
 }
 
 .repeater-details-card__loading {
@@ -3656,17 +3666,6 @@ html, body, #root {
   align-items: center;
 }
 
-/* Consistent text sizes for repeater stats */
-.repeater-details-card .site-stats-grid .site-stat__value {
-  font-size: 28px;
-  font-weight: 700;
-}
-
-.repeater-details-card .site-stats-grid .site-stat__label {
-  font-size: 14px;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
 
 .repeater-details-card__count-badge {
   display: inline-block;
@@ -3694,6 +3693,26 @@ html, body, #root {
 
 @keyframes repeater-spin {
   to { transform: rotate(360deg); }
+}
+
+/* Marching dashes on beta path overlays — GPU-animated, no JS rAF needed.
+   Speed matches former JS loop: 0.3px/frame × 60fps = 18px/s.
+   dashArray '6 9' = 15px cycle → period 15/18 ≈ 0.833s.
+   dashArray '4 7' = 11px cycle → period 11/18 ≈ 0.611s.
+   CSS animation beats SVG presentation attributes so Leaflet's _updateStyle
+   cannot interfere — it never sets stroke-dashoffset. */
+@keyframes march-dashes-15 {
+  to { stroke-dashoffset: -15px; }
+}
+@keyframes march-dashes-11 {
+  to { stroke-dashoffset: -11px; }
+}
+.beta-red-path-overlay,
+.beta-purple-path-overlay {
+  animation: march-dashes-15 0.833s linear infinite !important;
+}
+.beta-completion-path-overlay {
+  animation: march-dashes-11 0.611s linear infinite !important;
 }
 
 /* Packet type labels */

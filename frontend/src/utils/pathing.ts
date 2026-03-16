@@ -112,6 +112,56 @@ export function maskNodePoint(
   return maskPoint([node.lat, node.lon], hiddenCoordMask);
 }
 
+/**
+ * Resolve path hashes to specific node IDs using the same disambiguation logic
+ * as resolvePathWaypoints — when multiple nodes share a 2-char prefix (hex clash),
+ * pick the one closest to the interpolated position along the src→rx line.
+ */
+export function resolvePathNodeIds(
+  pathHashes: string[],
+  src: (MeshNode & { lat: number; lon: number }) | null,
+  rx: (MeshNode & { lat: number; lon: number }) | null,
+  allNodes: Map<string, MeshNode>,
+): Set<string> {
+  const ids = new Set<string>();
+  if (src) ids.add(src.node_id.toLowerCase());
+  if (rx) ids.add(rx.node_id.toLowerCase());
+  if (pathHashes.length === 0) return ids;
+
+  const N = pathHashes.length;
+  // Track last anchor for the no-src fallback (mirrors resolvePathWaypoints)
+  let anchorLat = rx?.lat ?? 0;
+  let anchorLon = rx?.lon ?? 0;
+
+  for (let i = 0; i < N; i++) {
+    const prefix = pathHashes[i]!.toUpperCase();
+    const candidates = Array.from(allNodes.values()).filter(
+      (n): n is MeshNode & { lat: number; lon: number } => hasCoords(n) && n.node_id.toUpperCase().startsWith(prefix),
+    );
+    if (candidates.length === 0) continue;
+
+    let best = candidates[0]!;
+    if (candidates.length > 1) {
+      if (src && rx) {
+        const t = (i + 1) / (N + 1);
+        const expLat = src.lat + t * (rx.lat - src.lat);
+        const expLon = src.lon + t * (rx.lon - src.lon);
+        best = candidates.reduce((a, b) =>
+          Math.hypot(a.lat - expLat, a.lon - expLon) <= Math.hypot(b.lat - expLat, b.lon - expLon) ? a : b,
+        );
+      } else {
+        best = candidates.reduce((a, b) =>
+          Math.hypot(a.lat - anchorLat, a.lon - anchorLon) <= Math.hypot(b.lat - anchorLat, b.lon - anchorLon) ? a : b,
+        );
+      }
+    }
+    ids.add(best.node_id.toLowerCase());
+    anchorLat = best.lat;
+    anchorLon = best.lon;
+  }
+  return ids;
+}
+
 export function resolvePathWaypoints(
   pathHashes: string[],
   src: (MeshNode & { lat: number; lon: number }) | null,

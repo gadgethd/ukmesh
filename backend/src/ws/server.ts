@@ -23,6 +23,49 @@ setInterval(() => {
   }
 }, VIABLE_LINK_CACHE_TTL_MS);
 
+/**
+ * Initial-state cache — all connecting clients share one cached snapshot per
+ * network/observer key, refreshed every 30 seconds in the background.
+ * Eliminates the DB pool spike caused by N clients each firing 3 queries on connect.
+ */
+const INITIAL_STATE_TTL_MS = 30_000;
+type InitialStateEntry = {
+  ts: number;
+  nodes: Awaited<ReturnType<typeof getNodes>>;
+  packets: Awaited<ReturnType<typeof getLastNPackets>>;
+  viableLinks: Awaited<ReturnType<typeof getViableLinks>>;
+};
+const initialStateCache = new Map<string, InitialStateEntry>();
+const initialStateInflight = new Map<string, Promise<InitialStateEntry>>();
+
+async function fetchInitialState(network: string | undefined, observer: string | undefined): Promise<InitialStateEntry> {
+  const key = `${network ?? ''}:${observer ?? ''}`;
+  const cached = initialStateCache.get(key);
+  if (cached && (Date.now() - cached.ts) < INITIAL_STATE_TTL_MS) return cached;
+
+  // If a fetch is already in flight for this key, share it — don't pile on the DB.
+  const existing = initialStateInflight.get(key);
+  if (existing) return existing;
+
+  const promise = (async () => {
+    try {
+      const [nodes, packets, viableLinks] = await Promise.all([
+        getNodes(network, observer),
+        getLastNPackets(7, network, observer),
+        getCachedViableLinks(network, observer),
+      ]);
+      const entry: InitialStateEntry = { ts: Date.now(), nodes, packets, viableLinks };
+      initialStateCache.set(key, entry);
+      return entry;
+    } finally {
+      initialStateInflight.delete(key);
+    }
+  })();
+
+  initialStateInflight.set(key, promise);
+  return promise;
+}
+
 type ClientScope = {
   network?: string;
   observer?: string;
@@ -178,11 +221,9 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
     };
     clientScopes.set(ws, scope);
 
-    // Send initial state: known nodes + last 5 minutes of packets
+    // Send initial state: served from cache so concurrent connects don't exhaust the DB pool.
     try {
-      const [nodes, packets, viableLinks] = await Promise.all([
-        getNodes(network, observer), getLastNPackets(7, network, observer), getCachedViableLinks(network, observer),
-      ]);
+      const { nodes, packets, viableLinks } = await fetchInitialState(network, observer);
       for (const node of nodes) {
         const nodeId = String((node as { node_id?: string }).node_id ?? '').toLowerCase();
         if (nodeId) scope.nodeIds.add(nodeId);

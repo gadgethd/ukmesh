@@ -7,7 +7,6 @@ export interface Filters {
   packetHistory:     boolean;
   betaPaths:         boolean;
   betaPathThreshold: number;  // 0–1
-  links:             boolean;
   hexClashes:        boolean;
   hexClashMaxHops:   number;  // 0–3 (0 = direct only)
 }
@@ -36,7 +35,6 @@ export const FILTER_ROWS: Array<{ key: keyof Filters; label: string; color: stri
   { key: 'livePackets',  label: 'Live Feed',        color: '#00c4ff' },
   { key: 'packetHistory', label: 'Paths',            color: '#00c4ff', hollow: true },
   { key: 'betaPaths',    label: 'Live Path',         color: '#a855f7', hollow: true },
-  { key: 'links',        label: 'Links (Beta)',     color: '#fbbf24' },
   { key: 'hexClashes',   label: 'Hex Clashes',      color: '#f97316' },
   { key: 'coverage',     label: 'Coverage',         color: '#00e676' },
   { key: 'clientNodes',  label: 'Companion / Room', color: '#ff9800' },
@@ -103,7 +101,6 @@ export const FilterPanel: React.FC<FilterPanelProps> = ({ filters, onChange, bet
           )}
         </React.Fragment>
       ))}
-      <LinksLegend muted={!filters.links} />
     </div>
   );
 };

@@ -175,6 +175,8 @@ export const UKRepeaterSearchPage: React.FC = () => {
       .filter(n => {
         // Exclude nodes marked as disabled (🚫 in name)
         if (n.name && n.name.includes('🚫')) return false;
+        // Repeaters only (role=2); exclude companion radios (role=1) and room servers (role=3)
+        if (n.role !== undefined && n.role !== 2) return false;
         const nameMatch = n.name && n.name.toLowerCase().includes(q);
         const keyMatch = n.public_key && n.public_key.toLowerCase().includes(q);
         const iataMatch = n.iata && n.iata.toLowerCase().includes(q);
@@ -306,11 +308,13 @@ export const UKRepeaterSearchPage: React.FC = () => {
                   </svg>
                   Details
                 </h3>
-                <div className="site-stats-grid">
-                  <div className="site-stat">
-                    <span className="site-stat__label">Public Key</span>
-                    <span className="site-stat__value" style={{ fontSize: '11px', wordBreak: 'break-all' as const }}>
-                      {selectedNode.public_key || 'N/A'}
+                <div className="repeater-details-card__grid">
+                  <div className="repeater-details-card__field">
+                    <span className="repeater-details-card__label">Public Key</span>
+                    <span className="repeater-details-card__value repeater-details-card__value--mono">
+                      {selectedNode.public_key
+                        ? `${selectedNode.public_key.slice(0, 16)}…${selectedNode.public_key.slice(-8)}`
+                        : 'N/A'}
                     </span>
                     {selectedNode.public_key && (
                       <button
@@ -336,51 +340,46 @@ export const UKRepeaterSearchPage: React.FC = () => {
                       </button>
                     )}
                   </div>
-                  <div className="site-stat">
-                    <span className="site-stat__label">Position</span>
-                    <span className="site-stat__value">
+                  <div className="repeater-details-card__field">
+                    <span className="repeater-details-card__label">Position</span>
+                    <span className="repeater-details-card__value">
                       {selectedNode.lat && selectedNode.lon
-                        ? (
-                          <>
-                            {selectedNode.lat.toFixed(5)}<br />
-                            {selectedNode.lon.toFixed(5)}
-                          </>
-                        )
+                        ? `${selectedNode.lat.toFixed(5)}, ${selectedNode.lon.toFixed(5)}`
                         : 'Unknown'}
                     </span>
                   </div>
-                  <div className="site-stat">
-                    <span className="site-stat__label">Elevation</span>
-                    <span className="site-stat__value">
+                  <div className="repeater-details-card__field">
+                    <span className="repeater-details-card__label">Elevation</span>
+                    <span className="repeater-details-card__value">
                       {selectedNode.elevation_m !== undefined && selectedNode.elevation_m !== null
                         ? `${Math.round(selectedNode.elevation_m)} m`
                         : 'N/A'}
                     </span>
                   </div>
-                  <div className="site-stat">
-                    <span className="site-stat__label">Network</span>
-                    <span className="site-stat__value">{selectedNode.iata || 'N/A'}</span>
+                  <div className="repeater-details-card__field">
+                    <span className="repeater-details-card__label">Network</span>
+                    <span className="repeater-details-card__value">{selectedNode.iata || 'N/A'}</span>
                   </div>
-                  <div className="site-stat">
-                    <span className="site-stat__label">Hardware</span>
-                    <span className="site-stat__value">{selectedNode.hardware_model || 'Unknown'}</span>
+                  <div className="repeater-details-card__field">
+                    <span className="repeater-details-card__label">Hardware</span>
+                    <span className="repeater-details-card__value">{selectedNode.hardware_model || 'Unknown'}</span>
                   </div>
-                  <div className="site-stat">
-                    <span className="site-stat__label">Last Seen</span>
-                    <span className="site-stat__value">{timeAgo(selectedNode.last_seen)}</span>
+                  <div className="repeater-details-card__field">
+                    <span className="repeater-details-card__label">Last Seen</span>
+                    <span className="repeater-details-card__value">{timeAgo(selectedNode.last_seen)}</span>
                   </div>
-                  <div className="site-stat">
-                    <span className="site-stat__label">Advert Count</span>
-                    <span className="site-stat__value">{selectedNode.advert_count?.toLocaleString() || '0'}</span>
+                  <div className="repeater-details-card__field">
+                    <span className="repeater-details-card__label">Advert Count</span>
+                    <span className="repeater-details-card__value">{selectedNode.advert_count?.toLocaleString() || '0'}</span>
                   </div>
                   {prediction && (
-                    <div className="site-stat">
-                      <span className="site-stat__label">Predicted Next Advert</span>
-                      <span className="site-stat__value">
-                        {prediction.samples >= 3 ? formatTimeUntil(prediction.nextAdvert) : 'Collecting data...'}
+                    <div className="repeater-details-card__field">
+                      <span className="repeater-details-card__label">Predicted Next Advert</span>
+                      <span className="repeater-details-card__value">
+                        {prediction.samples >= 3 ? formatTimeUntil(prediction.nextAdvert) : 'Collecting data…'}
                       </span>
-                      <span className="site-stat__hash">
-                        ~{formatInterval(prediction.avgInterval)} interval ({prediction.samples} samples{ prediction.samples < 3 ? ' - need 3+' : '' })
+                      <span className="repeater-details-card__meta">
+                        ~{formatInterval(prediction.avgInterval)} interval ({prediction.samples} samples{prediction.samples < 3 ? ' — need 3+' : ''})
                       </span>
                     </div>
                   )}
@@ -417,7 +416,7 @@ export const UKRepeaterSearchPage: React.FC = () => {
                                   {link.peer_name || `${link.peer_id.slice(0, 12)}...`}
                                 </span>
                                 <span className="repeater-details-card__neighbour-id">
-                                  {link.peer_id}
+                                  {link.peer_id.slice(0, 16)}…{link.peer_id.slice(-8)}
                                 </span>
                               </div>
                               <div className="repeater-details-card__neighbour-stats">

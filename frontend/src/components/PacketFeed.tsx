@@ -27,7 +27,7 @@ const VISIBLE_ROWS = 8;
 
 export const PacketFeed: React.FC<Props> = React.memo(({ packets, nodes, mqttObserverCount = 0, onPacketClick, pinnedPacketId }) => {
   const visible = useMemo(
-    () => packets.slice(0, VISIBLE_ROWS).reverse(),
+    () => packets.filter((p) => p.packetType === 4 || p.packetType === 5).slice(0, VISIBLE_ROWS).reverse(),
     [packets],
   );
   const [newestVisibleId, setNewestVisibleId] = useState<string | null>(null);
@@ -35,7 +35,7 @@ export const PacketFeed: React.FC<Props> = React.memo(({ packets, nodes, mqttObs
   const animationThrottleRef = useRef<number | null>(null);
 
   useEffect(() => {
-    const latestId = packets[0]?.id ?? null;
+    const latestId = packets.find((p) => p.packetType === 4 || p.packetType === 5)?.id ?? null;
     if (!latestId || latestIdRef.current === latestId) return;
     latestIdRef.current = latestId;
     

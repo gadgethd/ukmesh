@@ -62,9 +62,8 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
   const navigate = useNavigate();
 
   const navItems: NavItem[] = [
-    { to: '/', label: 'Home', enabled: true },
     { to: '/feed', label: 'Feed', enabled: showFeed },
-    { to: '/repeater', label: 'Repeater Search', enabled: showRepeaterSearch },
+    { to: '/repeater', label: 'Repeaters', enabled: showRepeaterSearch },
     { to: '/about', label: 'What is MeshCore', enabled: showAbout },
     { to: '/install', label: 'Install', enabled: showInstall },
     { to: '/mqtt', label: 'MQTT', enabled: showMqtt },
@@ -130,6 +129,7 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
         </Link>
 
         <div className={`site-nav__links${menuOpen ? ' site-nav__links--open' : ''}`}>
+          {showLiveMap && <a href={appUrl} className="site-nav__link site-nav__link--map">Live Map ↗</a>}
           {navItems.filter((item) => item.enabled).map((item) => (
             <NavLink
               key={item.to}
@@ -141,7 +141,6 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
               {item.label}
             </NavLink>
           ))}
-          {showLiveMap && <a href={appUrl} className="site-nav__link">Live Map</a>}
           <a href="https://flasher.ukmesh.com" className="site-nav__link">Flasher</a>
           <NavLink
             to="/login"

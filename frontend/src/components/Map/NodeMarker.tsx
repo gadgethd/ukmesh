@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Circle, CircleMarker, Marker, Popup, Polygon, Pane } from 'react-leaflet';
-import L from 'leaflet';
+import { Circle, CircleMarker, Popup, Polygon, Pane } from 'react-leaflet';
 import type { LatLngExpression } from 'leaflet';
 import type { MeshNode } from '../../hooks/useNodes.js';
 import type { NodeCoverage } from '../../hooks/useCoverage.js';
@@ -12,43 +11,16 @@ const PREVIEW_TTL_MS = 20_000;
 type MarkerVariant = 'repeater' | 'companion' | 'room' | 'inferred';
 type HexClashState = 'offender' | 'clear';
 
-// Build a custom Leaflet icon from HTML
-function buildIcon(
-  isOnline: boolean,
-  isActive: boolean,
-  isStale: boolean,
-  variant: MarkerVariant,
-  markerSize: number,
-  isRestoring: boolean,
-  hexClashState?: HexClashState,
-): L.DivIcon {
-  const size = Math.max(4, Math.round(markerSize));
-  const border = size >= 10 ? 2 : 1;
-  const classes = [
-    'node-marker',
-    isStale               ? 'node-marker--stale'     : '',
-    !isOnline && !isStale ? 'node-marker--offline'   : '',
-    isActive && !isStale  ? 'node-marker--active'    : '',
-    // Colour variant only shown when online and fresh
-    isOnline && !isStale && variant === 'companion' ? 'node-marker--companion' : '',
-    isOnline && !isStale && variant === 'room'      ? 'node-marker--room'      : '',
-    isOnline && !isStale && variant === 'inferred'  ? 'node-marker--inferred'  : '',
-    isRestoring ? 'node-marker--restore' : '',
-    hexClashState === 'offender' ? 'node-marker--hex-offender' : '',
-    hexClashState === 'clear' ? 'node-marker--hex-clear' : '',
-  ].filter(Boolean).join(' ');
-  const html = `
-    <div class="${classes}" style="--marker-size:${size}px; --marker-border:${border}px;">
-      <div class="node-marker__core"></div>
-      <div class="node-marker__pulse"></div>
-    </div>`;
-  return L.divIcon({
-    html,
-    className: '',
-    iconSize:    [size, size],
-    iconAnchor:  [Math.round(size / 2), Math.round(size / 2)],
-    popupAnchor: [0, -10],
-  });
+// Resolve the SVG stroke/fill colour for a CircleMarker based on node state and role
+function markerColor(variant: MarkerVariant, isOnline: boolean, isStale: boolean, hexClashState?: HexClashState): string {
+  if (hexClashState === 'offender') return '#ef4444';
+  if (hexClashState === 'clear')    return '#22c55e';
+  if (isStale)    return '#ff4444';
+  if (!isOnline)  return '#666';
+  if (variant === 'companion') return '#ff9800';
+  if (variant === 'room')      return '#ce93d8';
+  if (variant === 'inferred')  return 'rgba(109,220,122,0.9)';
+  return '#00c4ff'; // repeater default
 }
 
 function timeAgo(iso: string): string {
@@ -70,12 +42,6 @@ function roleVariant(role: number | undefined): MarkerVariant {
   if (role === 1) return 'companion';
   if (role === 3) return 'room';
   return 'repeater';
-}
-
-function roleZIndexOffset(role: number | undefined): number {
-  if (role === 3) return 100;
-  if (role === 1) return 200;
-  return 300;
 }
 
 function isRepeaterNode(role: number | undefined): boolean {
@@ -125,15 +91,15 @@ export const NodeMarker: React.FC<Props> = React.memo(({
   node,
   displayPosition,
   circleCenterPosition,
-  isActive,
+  isActive: _isActive,
   isInferred = false,
   nodeCoverage,
-  markerSize = 12,
+  markerSize: _markerSize,
   isHighlighted = false,
-  isRestoring = false,
-  samePrefixRepeaterCount,
-  samePrefixActive = false,
-  onToggleSamePrefix,
+  isRestoring: _isRestoring,
+  samePrefixRepeaterCount: _samePrefixRepeaterCount,
+  samePrefixActive: _samePrefixActive,
+  onToggleSamePrefix: _onToggleSamePrefix,
   hexClashState,
 }) => {
   const [showPreview, setShowPreview] = useState(false);
@@ -176,7 +142,6 @@ export const NodeMarker: React.FC<Props> = React.memo(({
     amber: coverageToPolygons(nodeCoverage.strength_geoms?.amber),
     green: coverageToPolygons(nodeCoverage.strength_geoms?.green),
   } : { red: [], amber: [], green: [] };
-  const showSamePrefixRow = isRepeaterNode(node.role) && typeof samePrefixRepeaterCount === 'number';
   const isRepeater = isRepeaterNode(node.role);
 
   // Simple popup content for repeaters - just name and coords (respecting privacy)
@@ -206,159 +171,128 @@ export const NodeMarker: React.FC<Props> = React.memo(({
     </div>
   );
 
+  const color = markerColor(variant, node.is_online, isStale, hexClashState);
+  const radius = isHighlighted ? 5 : 3;
+
   return (
     <>
-      {isRepeater ? (
-        // Lightweight CircleMarker for repeaters with simple popup
-        <CircleMarker
-          center={[lat, lon]}
-          radius={3}
-          pathOptions={{
-            color: isStale ? '#ff4444' : (node.is_online ? '#00c4ff' : '#666'),
-            fillColor: isStale ? '#ff4444' : (node.is_online ? '#00c4ff' : '#888'),
-            fillOpacity: 0.7,
-            weight: 1,
-          }}
-        >
-          <Popup>{repeaterPopupContent}</Popup>
-        </CircleMarker>
-      ) : (
-        <Marker
-          position={[lat, lon]}
-          icon={buildIcon(node.is_online, isActive || isHighlighted, isStale, variant, markerSize, isRestoring, hexClashState)}
-          zIndexOffset={roleZIndexOffset(node.role)}
-        >
-          <Popup eventHandlers={{
-            add: () => {
-              if (links !== null) return; // already fetched
-              fetch(`/api/nodes/${node.node_id}/links`)
-                .then((r) => r.json())
-                .then((data: NodeLink[]) => setLinks(data))
-                .catch(() => setLinks([]));
-            },
-          }}>
-          <div className="node-popup">
-            <div className="node-popup__name">{displayName}</div>
-            {node.public_key && (
-              <div className="node-popup__row">
-                <span>Public key</span>
-                <span className="node-popup__mono">{node.public_key}</span>
-              </div>
-            )}
-            {node.role !== undefined && node.role !== 2 && (
-              <div className="node-popup__row">
-                <span>Type</span>
-                <span>{ROLE_LABELS[node.role] ?? 'Unknown'}</span>
-              </div>
-            )}
-            {(isInferred || node.is_inferred) && (
-              <>
+      <CircleMarker
+        center={[lat, lon]}
+        radius={radius}
+        pathOptions={{ color, fillColor: color, fillOpacity: 0.7, weight: 1 }}
+      >
+        <Popup eventHandlers={!isRepeater ? {
+          add: () => {
+            if (links !== null) return;
+            fetch(`/api/nodes/${node.node_id}/links`)
+              .then((r) => r.json())
+              .then((data: NodeLink[]) => setLinks(data))
+              .catch(() => setLinks([]));
+          },
+        } : undefined}>
+          {isRepeater ? repeaterPopupContent : (
+            <div className="node-popup">
+              <div className="node-popup__name">{displayName}</div>
+              {node.public_key && (
+                <div className="node-popup__row">
+                  <span>Public key</span>
+                  <span className="node-popup__mono">{node.public_key}</span>
+                </div>
+              )}
+              {node.role !== undefined && node.role !== 2 && (
                 <div className="node-popup__row">
                   <span>Type</span>
-                  <span>{node.is_inferred ? 'Inferred repeater' : 'Inferred active'}</span>
+                  <span>{ROLE_LABELS[node.role] ?? 'Unknown'}</span>
                 </div>
-                {node.inferred_prefix && (
+              )}
+              {(isInferred || node.is_inferred) && (
+                <>
                   <div className="node-popup__row">
-                    <span>Prefix</span>
-                    <span>{node.inferred_prefix}</span>
+                    <span>Type</span>
+                    <span>{node.is_inferred ? 'Inferred repeater' : 'Inferred active'}</span>
                   </div>
-                )}
-                {(node.inferred_packet_count || node.inferred_observations) && (
-                  <div className="node-popup__row">
-                    <span>Evidence</span>
-                    <span>{node.inferred_packet_count ?? 0} packet(s) / {node.inferred_observations ?? 0} sighting(s)</span>
-                  </div>
-                )}
-                {(node.inferred_prev_name || node.inferred_next_name) && (
-                  <div className="node-popup__row">
-                    <span>Between</span>
-                    <span>{node.inferred_prev_name ?? 'unknown'} · {node.inferred_next_name ?? 'unknown'}</span>
-                  </div>
-                )}
-              </>
-            )}
-            <div className="node-popup__row">
-              <span>Status</span>
-              <span style={{ color: statusColor }}>{statusLabel}</span>
-            </div>
-            {node.hardware_model && (
-              <div className="node-popup__row">
-                <span>Hardware</span>
-                <span>{node.hardware_model}</span>
-              </div>
-            )}
-            <div className="node-popup__row">
-              <span>Last seen</span>
-              <span>{timeAgo(node.last_seen)}</span>
-            </div>
-            {node.advert_count !== undefined && (
-              <div className="node-popup__row">
-                <span>Times seen</span>
-                <span>{node.advert_count}</span>
-              </div>
-            )}
-            <div className="node-popup__row">
-              <span>Position</span>
-              <span>{lat.toFixed(5)}, {lon.toFixed(5)}</span>
-            </div>
-            {prohibited && (
-              <div className="node-popup__row">
-                <span>Location</span>
-                <span>Redacted within 1 mile radius</span>
-              </div>
-            )}
-            {node.elevation_m !== undefined && node.elevation_m !== null && (
-              <div className="node-popup__row">
-                <span>Elevation</span>
-                <span>{Math.round(node.elevation_m)} m ASL</span>
-              </div>
-            )}
-            {showSamePrefixRow && (
-              <div className="node-popup__row node-popup__row--inline">
-                <span>Same 2-hex repeaters</span>
-                <span className="node-popup__inline-value">
-                  {samePrefixRepeaterCount}
-                  <button
-                    className={`node-popup__inline-btn${samePrefixActive ? ' node-popup__inline-btn--active' : ''}`}
-                    onClick={() => onToggleSamePrefix?.(node.node_id, !samePrefixActive)}
-                  >
-                    {samePrefixActive ? 'Hide' : 'Show locations'}
-                  </button>
-                </span>
-              </div>
-            )}
-            {nodeCoverage && (
-              <button
-                className={`node-popup__coverage-btn${showPreview ? ' node-popup__coverage-btn--active' : ''}`}
-                onClick={handleShowCoverage}
-              >
-                {showPreview ? 'Showing coverage…' : 'Preview coverage'}
-              </button>
-            )}
-            {links === null && <div className="node-popup__neighbours-loading">Loading neighbours…</div>}
-            {links !== null && links.length > 0 && (
-              <div className="node-popup__neighbours">
-                <div className="node-popup__neighbours-title">Confirmed neighbours</div>
-                {links.map((lk) => {
-                  const tx = lk.count_this_to_peer > 0;
-                  const rx = lk.count_peer_to_this > 0;
-                  const arrow = tx && rx ? '↔' : tx ? '→' : '←';
-                  return (
-                    <div key={lk.peer_id} className="node-popup__neighbour-row">
-                      <span className="node-popup__neighbour-name">{arrow} {lk.peer_name ?? lk.peer_id.slice(0, 8)}</span>
-                      <span className="node-popup__neighbour-meta">
-                        {lk.observed_count}× seen
-                        {lk.itm_path_loss_db != null && <> &middot; {Math.round(lk.itm_path_loss_db)} dB</>}
-                      </span>
+                  {node.inferred_prefix && (
+                    <div className="node-popup__row">
+                      <span>Prefix</span>
+                      <span>{node.inferred_prefix}</span>
                     </div>
-                  );
-                })}
+                  )}
+                  {(node.inferred_packet_count || node.inferred_observations) && (
+                    <div className="node-popup__row">
+                      <span>Evidence</span>
+                      <span>{node.inferred_packet_count ?? 0} packet(s) / {node.inferred_observations ?? 0} sighting(s)</span>
+                    </div>
+                  )}
+                  {(node.inferred_prev_name || node.inferred_next_name) && (
+                    <div className="node-popup__row">
+                      <span>Between</span>
+                      <span>{node.inferred_prev_name ?? 'unknown'} · {node.inferred_next_name ?? 'unknown'}</span>
+                    </div>
+                  )}
+                </>
+              )}
+              <div className="node-popup__row">
+                <span>Status</span>
+                <span style={{ color: statusColor }}>{statusLabel}</span>
               </div>
-            )}
-          </div>
+              {node.hardware_model && (
+                <div className="node-popup__row">
+                  <span>Hardware</span>
+                  <span>{node.hardware_model}</span>
+                </div>
+              )}
+              <div className="node-popup__row">
+                <span>Last seen</span>
+                <span>{timeAgo(node.last_seen)}</span>
+              </div>
+              {node.advert_count !== undefined && (
+                <div className="node-popup__row">
+                  <span>Times seen</span>
+                  <span>{node.advert_count}</span>
+                </div>
+              )}
+              <div className="node-popup__row">
+                <span>Position</span>
+                <span>{prohibited ? 'Redacted' : `${lat.toFixed(5)}, ${lon.toFixed(5)}`}</span>
+              </div>
+              {node.elevation_m !== undefined && node.elevation_m !== null && (
+                <div className="node-popup__row">
+                  <span>Elevation</span>
+                  <span>{Math.round(node.elevation_m)} m ASL</span>
+                </div>
+              )}
+              {nodeCoverage && (
+                <button
+                  className={`node-popup__coverage-btn${showPreview ? ' node-popup__coverage-btn--active' : ''}`}
+                  onClick={handleShowCoverage}
+                >
+                  {showPreview ? 'Showing coverage…' : 'Preview coverage'}
+                </button>
+              )}
+              {links === null && <div className="node-popup__neighbours-loading">Loading neighbours…</div>}
+              {links !== null && links.length > 0 && (
+                <div className="node-popup__neighbours">
+                  <div className="node-popup__neighbours-title">Confirmed neighbours</div>
+                  {links.map((lk) => {
+                    const tx = lk.count_this_to_peer > 0;
+                    const rx = lk.count_peer_to_this > 0;
+                    const arrow = tx && rx ? '↔' : tx ? '→' : '←';
+                    return (
+                      <div key={lk.peer_id} className="node-popup__neighbour-row">
+                        <span className="node-popup__neighbour-name">{arrow} {lk.peer_name ?? lk.peer_id.slice(0, 8)}</span>
+                        <span className="node-popup__neighbour-meta">
+                          {lk.observed_count}× seen
+                          {lk.itm_path_loss_db != null && <> &middot; {Math.round(lk.itm_path_loss_db)} dB</>}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
         </Popup>
-        </Marker>
-      )}
+      </CircleMarker>
 
       {prohibited && (
         <Circle

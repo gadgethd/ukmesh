@@ -126,6 +126,31 @@ export async function addOwnerNodeForUsername(mqttUsername: string, nodeId: stri
   );
 }
 
+export async function upsertMqttNodeLogin(mqttUsername: string, nodeId: string): Promise<void> {
+  const normalizedUsername = mqttUsername.trim();
+  const normalizedNodeId = nodeId.trim().toLowerCase();
+  if (!normalizedUsername || !/^[0-9a-f]{64}$/.test(normalizedNodeId)) return;
+  await ownerPool.query(
+    `INSERT INTO mqtt_node_logins (mqtt_username, node_id, last_connected_at)
+     VALUES ($1, $2, NOW())
+     ON CONFLICT (mqtt_username, node_id) DO UPDATE SET last_connected_at = NOW()`,
+    [normalizedUsername, normalizedNodeId],
+  );
+}
+
+export async function getBestNodeForMqttUsername(mqttUsername: string): Promise<string | null> {
+  const normalized = mqttUsername.trim();
+  if (!normalized) return null;
+  const res = await ownerPool.query<{ node_id: string }>(
+    `SELECT node_id FROM mqtt_node_logins
+     WHERE mqtt_username = $1
+     ORDER BY last_connected_at DESC
+     LIMIT 1`,
+    [normalized],
+  );
+  return res.rows[0]?.node_id ?? null;
+}
+
 export async function getMappedOwnerNodeIds(): Promise<string[]> {
   const res = await ownerPool.query<{ node_id: string }>(
     `SELECT DISTINCT LOWER(node_id) AS node_id

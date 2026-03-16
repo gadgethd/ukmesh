@@ -5,6 +5,8 @@ import type {
   TracePayload, PathPayload, AckPayload,
 } from '@michaelhart/meshcore-decoder';
 import { insertNodeStatusSample, insertPacket, upsertNode, incrementAdvertCount, query } from '../db/index.js';
+import { invalidateResolveCache, setResolveCache } from '../path-beta/resolveCache.js';
+import { resolvePool } from '../path-beta/resolvePool.js';
 import type { LivePacket } from '../types/index.js';
 import { decodePacketCompat } from './decodePacket.js';
 
@@ -73,7 +75,7 @@ function parseTopic(topic: string): TopicParts | null {
   const prefix = parts[0]?.toLowerCase();
   if (!prefix || !TOPIC_PREFIXES.has(prefix)) return null;
   const iata = (parts[1] ?? '').trim().toUpperCase();
-  if (!iata) return null;
+  if (!iata || !/^[A-Z0-9]{2,8}$/.test(iata)) return null;
   if (PUBLIC_TOPIC_PREFIXES.has(prefix) && BLOCKED_PUBLIC_IATAS.has(iata)) return null;
   const network = PUBLIC_TOPIC_PREFIXES.has(prefix)
     ? (iata === TEESSIDE_IATA ? 'teesside' : 'ukmesh')
@@ -195,6 +197,9 @@ function extractStatusTelemetry(
   };
 }
 
+/** In-flight pre-resolve tracking — prevents duplicate concurrent resolutions for the same hash. */
+const preResolveInFlight = new Set<string>();
+
 /**
  * Per-observer packet dedup — prevents relay copies of the same packet from being
  * ingested multiple times when they arrive at the same observer with the same hop count.
@@ -204,21 +209,21 @@ const seenPackets = new Map<string, number>();
 const SEEN_PACKETS_MAX = 50_000;
 const SEEN_PACKETS_TTL_MS = 120_000;
 
-function isDuplicatePacket(packetHash: string, observerKey: string, hopCount: number | undefined): boolean {
-  const now = Date.now();
-  // Periodic cleanup
-  if (seenPackets.size > SEEN_PACKETS_MAX / 2) {
-    for (const [k, ts] of seenPackets) {
-      if (now - ts > SEEN_PACKETS_TTL_MS) seenPackets.delete(k);
-    }
+setInterval(() => {
+  const cutoff = Date.now() - SEEN_PACKETS_TTL_MS;
+  for (const [k, ts] of seenPackets) {
+    if (ts < cutoff) seenPackets.delete(k);
   }
+}, 60_000).unref();
+
+function isDuplicatePacket(packetHash: string, observerKey: string, hopCount: number | undefined): boolean {
   const key = `${packetHash}:${observerKey}:${hopCount ?? '?'}`;
   if (seenPackets.has(key)) return true;
   if (seenPackets.size >= SEEN_PACKETS_MAX) {
     const oldest = seenPackets.keys().next().value;
     if (oldest !== undefined) seenPackets.delete(oldest);
   }
-  seenPackets.set(key, now);
+  seenPackets.set(key, Date.now());
   return false;
 }
 
@@ -229,18 +234,22 @@ function isDuplicatePacket(packetHash: string, observerKey: string, hopCount: nu
  */
 const countedAdvertHashes = new Map<string, number>();
 const COUNTED_ADVERT_HASHES_MAX = 10_000;
+const COUNTED_ADVERT_TTL_MS = 60_000;
+
+setInterval(() => {
+  const cutoff = Date.now() - COUNTED_ADVERT_TTL_MS;
+  for (const [h, ts] of countedAdvertHashes) {
+    if (ts < cutoff) countedAdvertHashes.delete(h);
+  }
+}, 30_000).unref();
 
 function tryCountAdvert(hash: string): boolean {
-  const now = Date.now();
-  for (const [h, ts] of countedAdvertHashes) {
-    if (now - ts > 60_000) countedAdvertHashes.delete(h);
-  }
   if (countedAdvertHashes.has(hash)) return false;
   if (countedAdvertHashes.size >= COUNTED_ADVERT_HASHES_MAX) {
     const oldest = countedAdvertHashes.keys().next().value;
     if (oldest !== undefined) countedAdvertHashes.delete(oldest);
   }
-  countedAdvertHashes.set(hash, now);
+  countedAdvertHashes.set(hash, Date.now());
   return true;
 }
 
@@ -276,14 +285,29 @@ const keyStore = MeshCoreDecoder.createKeyStore({
   channelSecrets: channelEntries.map((e) => e.secret),
 });
 
+// Small cache so relay copies of the same GroupText don't trigger re-decodes
+const channelCache = new Map<string, string | null>();
+const CHANNEL_CACHE_MAX = 200;
+
 /** Identify which channel a GroupText was sent on by trying each single-key keyStore. */
 function identifyChannel(rawHex: string): string | undefined {
+  // Single channel — must be it, no re-decode needed
+  if (channelEntries.length === 1) return channelEntries[0]!.name;
+
+  if (channelCache.has(rawHex)) return channelCache.get(rawHex) ?? undefined;
+
+  let result: string | undefined;
   for (const entry of channelEntries) {
     const { decoded: d } = decodePacketCompat(rawHex, entry.keyStore);
     const p = d?.payload?.decoded as GroupTextPayload | undefined;
-    if (p?.decrypted) return entry.name;
+    if (p?.decrypted) { result = entry.name; break; }
   }
-  return undefined;
+
+  if (channelCache.size >= CHANNEL_CACHE_MAX) {
+    channelCache.delete(channelCache.keys().next().value!);
+  }
+  channelCache.set(rawHex, result ?? null);
+  return result;
 }
 
 /** Build a short human-readable summary from a decoded payload. */
@@ -506,7 +530,7 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
             });
 
             if (decodedHash && tryCountAdvert(decodedHash)) {
-              advertCount = await incrementAdvertCount(nodeId);
+              void incrementAdvertCount(nodeId);
             }
 
             emitNodeUpsert({
@@ -590,7 +614,7 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
       network,
     });
     if (tryCountAdvert(finalHash)) {
-      advertCount = await incrementAdvertCount(originId);
+      void incrementAdvertCount(originId);
     }
     emitNodeUpsert({
       node_id: originId,
@@ -646,6 +670,18 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
       pathHashes: path,
       network,
     });
+    invalidateResolveCache(finalHash);
+
+    // Pre-resolve path for ADV/GRP packets so the cache is warm before the browser requests it.
+    // Only runs if no resolution is already in-flight for this hash.
+    if ((resolvedPacketType === 4 || resolvedPacketType === 5) && !preResolveInFlight.has(finalHash)) {
+      preResolveInFlight.add(finalHash);
+      const ck = `m|${finalHash}|${network}`;
+      resolvePool.run<unknown>({ type: 'resolveMulti', packetHash: finalHash, network })
+        .then((result) => { if (result) setResolveCache(ck, result); })
+        .catch(() => { /* best-effort */ })
+        .finally(() => { preResolveInFlight.delete(finalHash); });
+    }
   } catch (err) {
     console.error('[mqtt] db insert failed', (err as Error).message);
   }

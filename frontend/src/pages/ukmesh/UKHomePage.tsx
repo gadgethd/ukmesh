@@ -76,7 +76,7 @@ export const UKHomePage: React.FC = () => {
                 Flash a supported device, pair it to your phone, and use the UK public profile. That gets you
                 onto the same channel used across the wider network.
               </p>
-              <Link to="/install">Open the install guide</Link>
+              <Link to="/install" className="site-btn site-btn--ghost">Install guide</Link>
             </div>
 
             <div className="site-home__card">
@@ -85,7 +85,7 @@ export const UKHomePage: React.FC = () => {
                 Connect a repeater or room server to the broker, publish packets over MQTT, and add another view
                 of the network from your own location.
               </p>
-              <Link to="/install">Observer setup</Link>
+              <Link to="/install" className="site-btn site-btn--ghost">Observer setup</Link>
             </div>
 
             <div className="site-home__card">
@@ -94,7 +94,7 @@ export const UKHomePage: React.FC = () => {
                 The live app shows repeater positions, path predictions, coverage layers, decoded packets, and
                 the supporting stats for the UK feed.
               </p>
-              <a href={site.appUrl}>Open the live map</a>
+              <a href={site.appUrl} className="site-btn site-btn--primary">Open live map ↗</a>
             </div>
           </div>
         </div>

@@ -4,10 +4,11 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:
 import { isIP } from 'node:net';
 import mqtt from 'mqtt';
 import { getNodes, getNodeHistory, getNodeAdverts, getPathHistoryCache, getRecentPacketEvents, getRecentPackets, query, MIN_LINK_OBSERVATIONS } from '../db/index.js';
-import { addOwnerNodeForUsername, getMappedOwnerNodeIds, getOwnerNodeIdsForUsername } from '../db/ownerAuth.js';
+import { addOwnerNodeForUsername, getBestNodeForMqttUsername, getOwnerNodeIdsForUsername } from '../db/ownerAuth.js';
 import { getWorkerHealthOverview } from '../health/status.js';
 import { resolveRequestNetwork } from '../http/requestScope.js';
-import { resolveBetaPathForPacketHash, resolveMultiObserverBetaPath } from '../path-beta/resolver.js';
+import { getResolveCache, setResolveCache } from '../path-beta/resolveCache.js';
+import { resolvePool } from '../path-beta/resolvePool.js';
 
 const router = Router();
 const OWNER_COOKIE_NAME = 'meshcore_owner_session';
@@ -25,7 +26,7 @@ const OWNER_LOGIN_LIMITER = rateLimit({
 });
 const PATH_BETA_LIMITER = rateLimit({
   windowMs: 60_000,
-  max: 30,
+  max: 60,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many path requests, slow down' },
@@ -242,30 +243,10 @@ async function autoLinkOwnerNodeIds(mqttUsername: string): Promise<string[]> {
   const existing = await resolveOwnerNodeIds(mqttUsername);
   if (existing.length > 0) return existing;
 
-  const mappedNodeIds = await getMappedOwnerNodeIds();
-  const res = await query<{ node_id: string }>(
-    `SELECT n.node_id
-     FROM nodes n
-     WHERE n.role IN (1, 2)
-       AND COALESCE(n.network, '') <> 'test'
-       AND n.last_seen > NOW() - INTERVAL '30 minutes'
-       AND NOT (LOWER(n.node_id) = ANY($1::text[]))
-       AND EXISTS (
-         SELECT 1
-         FROM packets p
-         WHERE p.rx_node_id = n.node_id
-           AND p.time > NOW() - INTERVAL '30 minutes'
-           AND p.topic LIKE ('%/' || n.node_id || '/packets')
-       )
-     ORDER BY n.last_seen DESC
-     LIMIT 2`,
-    [mappedNodeIds],
-  );
-
-  if (res.rows.length !== 1) return [];
-
-  const nodeId = res.rows[0]?.node_id?.trim().toLowerCase();
-  if (!nodeId || !/^[0-9a-f]{64}$/.test(nodeId)) return [];
+  // Look up the most recently connected node for this MQTT login.
+  // Populated by the connection monitor that tails the Mosquitto log.
+  const nodeId = await getBestNodeForMqttUsername(mqttUsername);
+  if (!nodeId) return [];
 
   await addOwnerNodeForUsername(mqttUsername, nodeId);
   return [nodeId];
@@ -314,6 +295,7 @@ async function buildOwnerDashboard(nodeIds: string[]) {
         ownedNodes: 0,
         packets24h: 0,
         packets7d: 0,
+        packetsReceived24h: 0,
       },
       roadmap: [
         'Per-node packet history for owner nodes',
@@ -324,7 +306,7 @@ async function buildOwnerDashboard(nodeIds: string[]) {
     };
   }
 
-  const [ownedNodes, packetSummary] = await Promise.all([
+  const [ownedNodes, packetSummary, rxSummary] = await Promise.all([
     query<{
       node_id: string;
       name: string | null;
@@ -349,6 +331,13 @@ async function buildOwnerDashboard(nodeIds: string[]) {
        WHERE LOWER(src_node_id) = ANY($1::text[])`,
       [nodeIds],
     ),
+    query<{ packets_24h: number }>(
+      `SELECT
+         COUNT(*) FILTER (WHERE time > NOW() - INTERVAL '24 hours')::int AS packets_24h
+       FROM packets
+       WHERE LOWER(rx_node_id) = ANY($1::text[])`,
+      [nodeIds],
+    ),
   ]);
 
   return {
@@ -361,6 +350,7 @@ async function buildOwnerDashboard(nodeIds: string[]) {
       ownedNodes: ownedNodes.rows.length,
       packets24h: Number(packetSummary.rows[0]?.packets_24h ?? 0),
       packets7d: Number(packetSummary.rows[0]?.packets_7d ?? 0),
+      packetsReceived24h: Number(rxSummary.rows[0]?.packets_24h ?? 0),
     },
     roadmap: [
       'Per-node packet history for owner nodes',
@@ -962,8 +952,9 @@ router.get('/inferred-nodes', async (req, res) => {
     const network = requestedNetwork === 'all' ? undefined : requestedNetwork;
     const observer = normalizeObserverQuery(req.query['observer']);
     const scope = networkFilters(network, observer);
-    const [visibleNodes, packetsResult] = await Promise.all([
+    const [visibleNodes, allNodeIds, packetsResult] = await Promise.all([
       getNodes(network, observer),
+      query<{ node_id: string }>('SELECT node_id FROM nodes'),
       query<{
         packet_hash: string;
         time: string;
@@ -1087,8 +1078,10 @@ router.get('/inferred-nodes', async (req, res) => {
       return best;
     };
 
+    const knownNodeIdSet = new Set(allNodeIds.rows.map((n) => n.node_id.toUpperCase()));
     const inferredNodes: InferredMultibyteNode[] = Array.from(inferredUnknowns.values())
-      .filter((entry) => entry.packetHashes.size >= 2)
+      .filter((entry) => entry.packetHashes.size >= 2
+        && !Array.from(knownNodeIdSet).some((id) => id.startsWith(entry.prefix.toUpperCase())))
       .map((entry) => ({
         node_id: `inferred:${entry.hashSizeBytes}:${entry.prefix}`,
         name: `Inferred ${entry.prefix}`,
@@ -1228,11 +1221,15 @@ router.get('/path-beta/resolve', PATH_BETA_LIMITER, async (req, res) => {
     }
     const network = resolveRequestNetwork(req.query['network'], req.headers, 'teesside') ?? 'teesside';
     const observer = normalizeObserverQuery(req.query['observer']);
-    const resolved = await resolveBetaPathForPacketHash(packetHash, network, observer);
+    const ck = `r|${packetHash}|${network}|${observer ?? ''}`;
+    const hit = getResolveCache(ck);
+    if (hit) { res.json(hit); return; }
+    const resolved = await resolvePool.run<unknown>({ type: 'resolve', packetHash, network, observer });
     if (!resolved) {
       res.status(404).json({ error: 'Packet not found' });
       return;
     }
+    setResolveCache(ck, resolved);
     res.json(resolved);
   } catch (err) {
     console.error('[api] GET /path-beta/resolve', (err as Error).message);
@@ -1253,11 +1250,15 @@ router.get('/path-beta/resolve-multi', PATH_BETA_LIMITER, async (req, res) => {
       return;
     }
     const network = resolveRequestNetwork(req.query['network'], req.headers, 'teesside') ?? 'teesside';
-    const resolved = await resolveMultiObserverBetaPath(packetHash, network);
+    const ck = `m|${packetHash}|${network}`;
+    const hit = getResolveCache(ck);
+    if (hit) { res.json(hit); return; }
+    const resolved = await resolvePool.run<unknown>({ type: 'resolveMulti', packetHash, network });
     if (!resolved) {
       res.status(404).json({ error: 'Packet not found' });
       return;
     }
+    setResolveCache(ck, resolved);
     res.json(resolved);
   } catch (err) {
     console.error('[api] GET /path-beta/resolve-multi', (err as Error).message);
@@ -1311,7 +1312,7 @@ router.get('/stats', async (req, res) => {
     const network = requestedNetwork === 'all' ? undefined : requestedNetwork;
     const observer = normalizeObserverQuery(req.query['observer']);
     const filters = networkFilters(network, observer);
-    const [mqttCount, packetCount, staleCount, mapNodeCount, totalNodeCount, longestHopCount] = await Promise.all([
+    const [mqttCount, packetCount, staleCount, mapNodeCount, totalNodeCount, longestHopCount, nodesDayCount] = await Promise.all([
       query(`
         WITH test_active AS (
           SELECT rx_node_id FROM packets WHERE rx_node_id IS NOT NULL AND rx_node_id <> ''
@@ -1353,12 +1354,18 @@ router.get('/stats', async (req, res) => {
                     OR packet_hash   ~ '^[0-9A-Fa-f]{16}$')
                ${filters.packets}
              ORDER BY hop_count DESC LIMIT 1`, filters.params),
+      query(`SELECT COUNT(DISTINCT src_node_id) AS count
+             FROM packets
+             WHERE time > NOW() - INTERVAL '24 hours'
+               AND src_node_id IS NOT NULL
+               ${filters.packets}`, filters.params),
     ]);
     res.json({
       mqttNodes:      Number(mqttCount.rows[0]?.count ?? 0),
       staleNodes:     Number(staleCount.rows[0]?.count ?? 0),
       packetsDay:     Number(packetCount.rows[0]?.count ?? 0),
       mapNodes:       Number(mapNodeCount.rows[0]?.count ?? 0),
+      nodesDay:       Number(nodesDayCount.rows[0]?.count ?? 0),
       totalNodes:     Number(totalNodeCount.rows[0]?.count ?? 0),
       longestHop:     Number(longestHopCount.rows[0]?.count ?? 0),
       longestHopHash: (longestHopCount.rows[0]?.hash as string | undefined) ?? null,
@@ -2538,6 +2545,132 @@ router.get('/stats/charts', STATS_CHARTS_LIMITER, async (req, res) => {
   } catch (err) {
     console.error('[api] GET /stats/charts', (err as Error).message);
     res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /api/observer-activity — MQTT observer nodes with 24h receive counts
+router.get('/observer-activity', async (req, res) => {
+  try {
+    const requestedNetwork = resolveRequestNetwork(req.query['network'], req.headers);
+    const network = requestedNetwork === 'all' ? undefined : requestedNetwork;
+    const params: unknown[] = [];
+    const conditions: string[] = [`p.time > NOW() - INTERVAL '24 hours'`];
+    if (network) {
+      params.push(network);
+      conditions.push(`n.network = $${params.length}`);
+    }
+    const where = conditions.join(' AND ');
+    const result = await query<{ node_id: string; name: string | null; rx_24h: string; tx_24h: string }>(
+      `SELECT
+         n.node_id,
+         n.name,
+         COUNT(p.packet_hash) FILTER (WHERE p.rx_node_id  = n.node_id) AS rx_24h,
+         COUNT(p.packet_hash) FILTER (WHERE p.src_node_id = n.node_id) AS tx_24h
+       FROM nodes n
+       JOIN packets p ON (p.rx_node_id = n.node_id OR p.src_node_id = n.node_id)
+       WHERE ${where}
+       GROUP BY n.node_id, n.name
+       HAVING COUNT(p.packet_hash) FILTER (WHERE p.rx_node_id = n.node_id) > 0
+       ORDER BY rx_24h DESC`,
+      params,
+    );
+    res.json(result.rows.map(r => ({ ...r, rx_24h: Number(r.rx_24h), tx_24h: Number(r.tx_24h) })));
+  } catch (err) {
+    console.error('[api] GET /observer-activity', (err as Error).message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /api/cross-network-connectivity
+// Detects real cross-network propagation by matching the same packet_hash seen on
+// both sides. Hop count determines origin side: fewer hops = closer to source.
+//   Outbound: MME observers see it with fewer hops, non-MME also received it within 120s
+//   Inbound:  non-MME observers see it with fewer hops, MME also received it within 120s
+router.get('/cross-network-connectivity', async (_req, res) => {
+  const hours = 2;
+  const maxPropagationSecs = 120;
+
+  const result = await query<{ last_inbound: string | null; last_outbound: string | null }>(`
+    WITH mme_observers AS (
+      SELECT DISTINCT rx_node_id AS node_id
+      FROM packets
+      WHERE time > NOW() - INTERVAL '24 hours'
+        AND network = 'teesside'
+        AND rx_node_id IS NOT NULL
+    ),
+    cross_heard AS (
+      SELECT
+        p.packet_hash,
+        MIN(p.hop_count) FILTER (WHERE p.rx_node_id IN (SELECT node_id FROM mme_observers))     AS mme_min_hops,
+        MIN(p.hop_count) FILTER (WHERE p.rx_node_id NOT IN (SELECT node_id FROM mme_observers)) AS other_min_hops,
+        MIN(p.time)      FILTER (WHERE p.rx_node_id IN (SELECT node_id FROM mme_observers))     AS mme_first_seen,
+        MIN(p.time)      FILTER (WHERE p.rx_node_id NOT IN (SELECT node_id FROM mme_observers)) AS other_first_seen
+      FROM packets p
+      WHERE p.time > NOW() - INTERVAL '${hours} hours'
+        AND p.hop_count IS NOT NULL
+        AND p.rx_node_id IS NOT NULL
+        AND p.packet_hash IS NOT NULL
+      GROUP BY p.packet_hash
+      HAVING
+        MIN(p.hop_count) FILTER (WHERE p.rx_node_id IN (SELECT node_id FROM mme_observers))     IS NOT NULL
+        AND MIN(p.hop_count) FILTER (WHERE p.rx_node_id NOT IN (SELECT node_id FROM mme_observers)) IS NOT NULL
+        AND ABS(EXTRACT(EPOCH FROM (
+          MIN(p.time) FILTER (WHERE p.rx_node_id IN (SELECT node_id FROM mme_observers)) -
+          MIN(p.time) FILTER (WHERE p.rx_node_id NOT IN (SELECT node_id FROM mme_observers))
+        ))) <= ${maxPropagationSecs}
+    )
+    SELECT
+      MAX(mme_first_seen)   FILTER (WHERE other_min_hops < mme_min_hops) AS last_inbound,
+      MAX(other_first_seen) FILTER (WHERE mme_min_hops  < other_min_hops) AS last_outbound
+    FROM cross_heard
+    WHERE mme_min_hops != other_min_hops
+  `);
+
+  const lastInbound  = result.rows[0]?.last_inbound  ?? null;
+  const lastOutbound = result.rows[0]?.last_outbound ?? null;
+
+  res.json({
+    inbound:     !!lastInbound,
+    outbound:    !!lastOutbound,
+    lastInbound,
+    lastOutbound,
+    windowHours: hours,
+    checkedAt:   new Date().toISOString(),
+  });
+});
+
+// GET /api/radio-history?target=<nodeName>&limit=<n> — proxies radio bot POST /history
+router.get('/radio-history', async (req, res) => {
+  const radioBotUrl = process.env['RADIO_BOT_URL'] ?? 'http://meshcore-radio-bot:3011';
+  const target = String(req.query['target'] ?? '').trim();
+  const limit  = Math.min(Number(req.query['limit'] ?? 168), 500);
+  if (!target) { res.status(400).json({ error: 'target required' }); return; }
+  try {
+    const upstream = await fetch(`${radioBotUrl}/history`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ target, limit }),
+    });
+    if (!upstream.ok) { res.status(502).json({ error: 'radio bot unavailable' }); return; }
+    res.json(await upstream.json());
+  } catch {
+    res.status(503).json({ error: 'radio bot unreachable' });
+  }
+});
+
+// GET /api/radio-stats — proxies radio bot GET /state (port 3011)
+router.get('/radio-stats', async (_req, res) => {
+  const radioBotUrl = process.env['RADIO_BOT_URL'] ?? 'http://meshcore-radio-bot:3011';
+  try {
+    const upstream = await fetch(`${radioBotUrl}/state`);
+    if (!upstream.ok) {
+      res.status(502).json({ error: 'radio bot unavailable' });
+      return;
+    }
+    const data = await upstream.json();
+    res.json(data);
+  } catch {
+    res.status(503).json({ error: 'radio bot unreachable' });
   }
 });
 

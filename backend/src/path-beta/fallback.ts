@@ -1,4 +1,4 @@
-import { LOOSE_LINK_PATHLOSS_MAX_DB, SOFT_FALLBACK_HOP_KM, WEAK_LINK_PATHLOSS_MAX_DB } from './constants.js';
+import { IMPOSSIBLE_LINK_PATHLOSS_DB, LOOSE_LINK_PATHLOSS_MAX_DB, SOFT_FALLBACK_HOP_KM, WEAK_LINK_PATHLOSS_MAX_DB } from './constants.js';
 import { canReach, clamp, distKm, hasLoS, linkKey, sourceProgressScore, turnContinuityScore } from './geometry.js';
 import type { LinkMetrics, MeshNode } from './types.js';
 
@@ -12,6 +12,10 @@ export function isLooseOrBetter(meta: LinkMetrics | undefined): boolean {
   return pathLoss != null && pathLoss <= LOOSE_LINK_PATHLOSS_MAX_DB;
 }
 
+export function isImpossibleLink(meta: LinkMetrics | undefined): boolean {
+  return meta?.itm_path_loss_db != null && meta.itm_path_loss_db >= IMPOSSIBLE_LINK_PATHLOSS_DB;
+}
+
 export function fallbackEdgeAllowed(
   a: MeshNode,
   b: MeshNode,
@@ -19,9 +23,10 @@ export function fallbackEdgeAllowed(
   linkMetrics: Map<string, LinkMetrics>,
 ): boolean {
   const meta = linkMetrics.get(linkKey(a.node_id, b.node_id));
+  if (isImpossibleLink(meta)) return false;
   const reachOk = canReach(a, b, coverageByNode);
   const losOk = hasLoS(a, b);
-  return (reachOk && losOk) || (reachOk && isLooseOrBetter(meta)) || isWeakOrBetter(meta);
+  return (reachOk && losOk) || (reachOk && isLooseOrBetter(meta)) || (isWeakOrBetter(meta) && losOk);
 }
 
 export function fallbackEdgeScore(

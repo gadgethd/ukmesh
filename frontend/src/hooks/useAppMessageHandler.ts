@@ -195,7 +195,7 @@ export function useAppMessageHandler({
     rafRef.current = null;
   }, [handlePacket, handleNodeUpdate, handleNodeUpsert, handleCoverageUpdate, applyLinkUpdate, onPacketObserved]);
 
-  // Throttle flush to every 100ms - prevents 60fps updates during high packet traffic
+  // Throttle flush — batches bursts from the WebSocket into single React renders
   const BATCH_INTERVAL_MS = 100;
   const scheduleFlush = useCallback(() => {
     if (rafRef.current !== null) return;

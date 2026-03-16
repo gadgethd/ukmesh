@@ -1,6 +1,7 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Map as LeafletMap } from 'leaflet';
-import { MapView } from './components/Map/MapView.js';
+import { MapView, type DeckViewState } from './components/Map/MapView.js';
+import { PacketArcLayer } from './components/Map/PacketArcLayer.js';
 import { FilterPanel, type Filters } from './components/FilterPanel/FilterPanel.js';
 import { PacketFeed } from './components/PacketFeed.js';
 import { DisclaimerModal } from './components/app/DisclaimerModal.js';
@@ -15,6 +16,7 @@ import { usePacketPathOverlay } from './hooks/usePacketPathOverlay.js';
 import { useAppMessageHandler } from './hooks/useAppMessageHandler.js';
 import { getCurrentSite } from './config/site.js';
 import { uncachedEndpoint, withScopeParams } from './utils/api.js';
+import { resolvePathNodeIds, hasCoords } from './utils/pathing.js';
 
 type PacketHistorySegment = {
   positions: [[number, number], [number, number]];
@@ -28,7 +30,6 @@ const DEFAULT_FILTERS: Filters = {
   packetHistory: false,
   betaPaths: false,
   betaPathThreshold: 0.45,
-  links: false,
   hexClashes: false,
   hexClashMaxHops: 3,
 };
@@ -49,6 +50,7 @@ export const App: React.FC = () => {
     }
   });
   const [map, setMap] = useState<LeafletMap | null>(null);
+  const [deckViewState, setDeckViewState] = useState<DeckViewState>({ longitude: -1.23, latitude: 54.57, zoom: 10, pitch: 0, bearing: 0 });
   const [showDisclaimer, setShowDisclaimer] = useState(() => !localStorage.getItem(DISCLAIMER_KEY));
   const [inferredNodes, setInferredNodes] = useState<MeshNode[]>([]);
   const [inferredActiveNodeIds, setInferredActiveNodeIds] = useState<Set<string>>(new Set());
@@ -56,7 +58,7 @@ export const App: React.FC = () => {
   const [isPageVisible, setIsPageVisible] = useState(
     () => (typeof document === 'undefined' ? true : document.visibilityState === 'visible'),
   );
-  const clashRestoreRef = useRef<{ links: boolean; coverage: boolean; clientNodes: boolean } | null>(null);
+  const clashRestoreRef = useRef<{ coverage: boolean; clientNodes: boolean } | null>(null);
   const prevHexClashesRef = useRef<boolean>(DEFAULT_FILTERS.hexClashes);
 
   const {
@@ -97,6 +99,7 @@ export const App: React.FC = () => {
     betaRemainingHops,
     pathOpacity,
     pinnedPacketId,
+    pinnedPacketSnapshot,
     handlePacketPin,
   } = usePacketPathOverlay({
     packets,
@@ -105,6 +108,28 @@ export const App: React.FC = () => {
     network: networkFilter,
     observer: observerFilter,
   });
+
+  // Compute the set of node IDs involved in the currently displayed path.
+  // Active when: a packet is pinned, OR the live-path toggle is on (auto-tracks packets[0]).
+  // Passed to MapView so it can hide unrelated repeaters.
+  const pathNodeIds = useMemo<Set<string> | null>(() => {
+    const activePacket = pinnedPacketSnapshot ?? (filters.betaPaths ? (packets.find((p) => p.packetType === 4 || p.packetType === 5) ?? null) : null);
+    if (!activePacket) return null;
+    const srcNode = activePacket.srcNodeId ? (nodes.get(activePacket.srcNodeId) ?? null) : null;
+    const rxNode = activePacket.rxNodeId ? (nodes.get(activePacket.rxNodeId) ?? null) : null;
+    const srcWithCoords = srcNode && hasCoords(srcNode) ? srcNode as MeshNode & { lat: number; lon: number } : null;
+    const rxWithCoords = rxNode && hasCoords(rxNode) ? rxNode as MeshNode & { lat: number; lon: number }
+      : (() => {
+          for (const id of activePacket.observerIds) {
+            const n = nodes.get(id);
+            if (n && hasCoords(n)) return n as MeshNode & { lat: number; lon: number };
+          }
+          return null;
+        })();
+    const ids = resolvePathNodeIds(activePacket.path ?? [], srcWithCoords, rxWithCoords, nodes);
+    for (const id of activePacket.observerIds) ids.add(id.toLowerCase());
+    return ids.size > 0 ? ids : null;
+  }, [pinnedPacketSnapshot, filters.betaPaths, packets, nodes]);
 
   useEffect(() => {
     if ('serviceWorker' in navigator) {
@@ -224,13 +249,11 @@ export const App: React.FC = () => {
 
     if (!wasHexClashes && isHexClashes) {
       clashRestoreRef.current = {
-        links: filters.links,
         coverage: filters.coverage,
         clientNodes: filters.clientNodes,
       };
       setFilters((current) => ({
         ...current,
-        links: false,
         coverage: false,
         clientNodes: false,
       }));
@@ -239,14 +262,13 @@ export const App: React.FC = () => {
       clashRestoreRef.current = null;
       setFilters((current) => ({
         ...current,
-        links: restore.links,
         coverage: restore.coverage,
         clientNodes: restore.clientNodes,
       }));
     }
 
     prevHexClashesRef.current = isHexClashes;
-  }, [filters.hexClashes, filters.links, filters.coverage, filters.clientNodes]);
+  }, [filters.hexClashes, filters.coverage, filters.clientNodes]);
 
   useEffect(() => {
     const postError = (kind: string, message: string, stack?: string) => {
@@ -324,13 +346,11 @@ export const App: React.FC = () => {
         nodes={nodes}
         inferredNodes={inferredNodes}
         inferredActiveNodeIds={inferredActiveNodeIds}
-        arcs={arcs}
         activeNodes={activeNodes}
         coverage={coverage}
-        showPackets={filters.livePackets}
+        onDeckViewStateChange={setDeckViewState}
         showCoverage={filters.coverage}
         showClientNodes={filters.clientNodes}
-        showLinks={filters.links}
         showHexClashes={filters.hexClashes}
         maxHexClashHops={filters.hexClashMaxHops}
         viablePairsArr={viablePairsArr}
@@ -343,8 +363,10 @@ export const App: React.FC = () => {
         betaCompletionPaths={betaCompletionPaths}
         showBetaPaths={filters.betaPaths || pinnedPacketId !== null}
         pathOpacity={pathOpacity}
+        pathNodeIds={pathNodeIds}
         onMapReady={setMap}
       />
+      <PacketArcLayer arcs={arcs} showArcs={filters.livePackets} viewState={deckViewState} />
 
       <FilterPanel
         filters={filters}

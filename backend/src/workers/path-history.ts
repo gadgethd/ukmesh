@@ -2,10 +2,11 @@ import 'node:process';
 import { getRecentPathHistoryPacketHashes, initDb, refreshRecentPathEvidence, upsertPathHistoryCache, type PathHistorySegmentRow } from '../db/index.js';
 import { resolveMultiObserverBetaPath, type BetaResolvedPayload } from '../path-beta/resolver.js';
 
-const REFRESH_INTERVAL_MS = 5 * 60 * 1000;
-const WINDOW_HOURS = 1;
-const MAX_PACKET_HASHES = 1200;
-const MAX_SEGMENTS = 1200;
+const REFRESH_INTERVAL_MS = 60 * 60 * 1000; // 1 hour — 3-day window changes slowly
+const WINDOW_HOURS = 72;
+const MIN_SEGMENT_COUNT = 30;
+const MAX_PACKET_HASHES = 22500;
+const MAX_SEGMENTS = 3000;
 const SCOPES = ['all', 'teesside', 'ukmesh', 'test'] as const;
 
 type ScopeName = (typeof SCOPES)[number];
@@ -83,6 +84,7 @@ async function refreshScope(scope: ScopeName): Promise<void> {
   }
 
   const segmentCounts: SegmentCount[] = Array.from(counts.entries())
+    .filter(([, count]) => count >= MIN_SEGMENT_COUNT)
     .map(([key, count]) => ({
       positions: segmentPositions(key),
       count,
@@ -112,14 +114,20 @@ async function refreshAll(tag: 'initial' | 'scheduled') {
   }
   isRunning = true;
   try {
-    const publicEvidenceUpdates = await refreshRecentPathEvidence(WINDOW_HOURS);
-    const testEvidenceUpdates = await refreshRecentPathEvidence(WINDOW_HOURS, 'test');
+    let publicEvidenceUpdates = 0;
+    let testEvidenceUpdates = 0;
+    try {
+      publicEvidenceUpdates = await refreshRecentPathEvidence(1);
+      testEvidenceUpdates = await refreshRecentPathEvidence(1, 'test');
+      console.log(
+        `[path-history] ${tag} path-evidence public=${publicEvidenceUpdates} test=${testEvidenceUpdates}`,
+      );
+    } catch (evidenceErr) {
+      console.warn(`[path-history] ${tag} path-evidence skipped:`, (evidenceErr as Error).message);
+    }
     for (const scope of SCOPES) {
       await refreshScope(scope);
     }
-    console.log(
-      `[path-history] ${tag} path-evidence public=${publicEvidenceUpdates} test=${testEvidenceUpdates}`,
-    );
   } catch (err) {
     console.error(`[path-history] ${tag} refresh failed`, (err as Error).message);
   } finally {

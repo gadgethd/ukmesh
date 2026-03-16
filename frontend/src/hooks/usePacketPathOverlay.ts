@@ -37,6 +37,7 @@ type UsePacketPathOverlayResult = {
   betaRemainingHops: number | null;
   pathOpacity: number;
   pinnedPacketId: string | null;
+  pinnedPacketSnapshot: AggregatedPacket | null;
   handlePacketPin: (packet: AggregatedPacket) => void;
 };
 
@@ -279,22 +280,22 @@ export function usePacketPathOverlay({
     return p;
   }, [prunePredictionCache]);
 
-  const latestId = packets[0]?.id;
+  const latestId = packets.find((p) => p.packetType === 4 || p.packetType === 5)?.id;
   const betaEffectThrottleRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (pinnedPacketId !== null) return;
-    
-    // Throttle beta path resolution to max once per 500ms
+
+    // Throttle beta path resolution to max once per 50ms
     if (betaEffectThrottleRef.current !== null) return;
     betaEffectThrottleRef.current = window.setTimeout(() => {
       betaEffectThrottleRef.current = null;
-    }, 500);
-    
+    }, 50);
+
     stopPathTimers();
     pruneRecentPredictions();
 
-    const latest = packets[0];
+    const latest = packets.find((p) => p.packetType === 4 || p.packetType === 5);
     const observerIds = getPacketObserverIds(latest);
     setPacketPaths([]);
 
@@ -496,6 +497,7 @@ export function usePacketPathOverlay({
     betaRemainingHops,
     pathOpacity,
     pinnedPacketId,
+    pinnedPacketSnapshot,
     handlePacketPin,
   };
 }

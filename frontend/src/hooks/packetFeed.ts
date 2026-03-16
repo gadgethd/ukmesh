@@ -1,6 +1,6 @@
 import type { AggregatedPacket, LivePacketData } from './useNodes.js';
 
-export const FEED_MAX_PACKETS = 12;
+export const FEED_MAX_PACKETS = 25;
 
 export type RecentPacketRow = {
   time: string;

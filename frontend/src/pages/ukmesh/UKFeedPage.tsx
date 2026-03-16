@@ -96,6 +96,7 @@ export const UKFeedPage: React.FC = () => {
   const site = getCurrentSite();
   const scope = useMemo(() => ({ network: site.networkFilter, observer: site.observerId }), [site.networkFilter, site.observerId]);
   const [selectedIata, setSelectedIata] = useState<string>('all');
+  const [messagesOnly, setMessagesOnly] = useState<boolean>(false);
   const [regionOptions, setRegionOptions] = useState<string[]>([]);
   
   // Use useNodes hook like the main App does
@@ -199,9 +200,15 @@ export const UKFeedPage: React.FC = () => {
   }, [availableIatas, selectedIata]);
 
   const filteredPackets = useMemo(() => {
-    if (selectedIata === 'all') return packets;
-    return packets.filter((packet) => packetObserverIatas(packet, nodeMap).includes(selectedIata));
-  }, [nodeMap, packets, selectedIata]);
+    let result = packets;
+    if (selectedIata !== 'all') {
+      result = result.filter((packet) => packetObserverIatas(packet, nodeMap).includes(selectedIata));
+    }
+    if (messagesOnly) {
+      result = result.filter((packet) => packet.packet_type === 2 || packet.packet_type === 5);
+    }
+    return result;
+  }, [messagesOnly, nodeMap, packets, selectedIata]);
 
   const activeObserverCount = useMemo(() => {
     const ids = new Set<string>();
@@ -221,7 +228,7 @@ export const UKFeedPage: React.FC = () => {
 
   const latestPacket = filteredPackets[0];
   const latestObserver = latestPacket?.rx_node_id ? nodeMap.get(latestPacket.rx_node_id) : undefined;
-  const recentPackets = useMemo(() => filteredPackets.slice(0, 10), [filteredPackets]);
+  const recentPackets = useMemo(() => filteredPackets.slice(0, 20), [filteredPackets]);
 
   return (
     <>
@@ -258,6 +265,18 @@ export const UKFeedPage: React.FC = () => {
                       <span className="uk-feed-region-caret" aria-hidden="true">v</span>
                     </strong>
                   </div>
+                  <div>
+                    <span>Messages only</span>
+                    <strong>
+                      <label className="uk-feed-checkbox-label">
+                        <input
+                          type="checkbox"
+                          checked={messagesOnly}
+                          onChange={(e) => setMessagesOnly(e.target.checked)}
+                        />
+                      </label>
+                    </strong>
+                  </div>
                   <div><span>Feed</span><strong>{latestPacket ? 'Receiving packets' : 'Waiting for packets'}</strong></div>
                   <div><span>Observers active</span><strong>{activeObserverCount.toLocaleString()}</strong></div>
                   <div><span>Last packet</span><strong>{latestPacket ? timeAgo(latestPacket.time) : 'never'}</strong></div>
@@ -284,14 +303,17 @@ export const UKFeedPage: React.FC = () => {
                     if (selectedIata === 'all') return true;
                     return packetObserverIatas(packet, nodeMap).includes(selectedIata);
                   });
-                  const observerDisplay = observerIds.length > 0 
-                    ? observerIds.map(id => nodeMap.get(id)?.name ?? shortNode(id)).join(', ')
-                    : 'unknown';
+                  const observerDisplay = observerIds.length > 1
+                    ? `heard by ${observerIds.length}`
+                    : observerIds.length === 1
+                      ? (nodeMap.get(observerIds[0])?.name ?? shortNode(observerIds[0]))
+                      : 'unknown';
                   return (
                     <article className="uk-feed-packet-row" key={`${packet.packet_hash}-${packet.time}`}>
                       <div className="uk-feed-packet-row__meta">
                         <span>{new Date(packet.time).toLocaleTimeString()}</span>
                         <span>{packet.packet_type != null ? (TYPE_LABELS[packet.packet_type] ?? `T${packet.packet_type}`) : '—'}</span>
+                        <span>{packet.hop_count != null ? `${packet.hop_count} hop${packet.hop_count !== 1 ? 's' : ''}` : '—'}</span>
                         <span>{packet.rssi != null || packet.snr != null ? `${packet.rssi ?? '—'} / ${packet.snr ?? '—'}` : '—'}</span>
                         <span className="dev-status-mono">{packet.packet_hash}</span>
                         <span className="uk-feed-packet-row__observer">{observerDisplay}</span>

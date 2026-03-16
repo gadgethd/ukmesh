@@ -6,6 +6,7 @@ import { rateLimit } from 'express-rate-limit';
 import { initDb, query } from './db/index.js';
 import { initOwnerAuthDb } from './db/ownerAuth.js';
 import { startMqttClient, onPacket, onNodeSeen, onNodeUpsert } from './mqtt/client.js';
+import { startMqttConnectionMonitor } from './mqtt/connectionMonitor.js';
 import { initWebSocketServer, broadcastPacket, broadcastNodeUpdate, broadcastNodeUpsert } from './ws/server.js';
 import apiRoutes from './api/routes.js';
 import { isViewshedEligibleCoordinate, queueViewshedJob, queueLinkJob } from './queue/publisher.js';
@@ -51,7 +52,10 @@ async function main() {
     }
   }
 
-  // 2. Wire up MQTT → WS broadcast
+  // 2. Start MQTT connection monitor (populates mqtt_node_logins for owner auto-link)
+  startMqttConnectionMonitor();
+
+  // 3. Wire up MQTT → WS broadcast
   onPacket((packet) => {
     broadcastPacket(packet);
     if (packet.path?.length && packet.rxNodeId) {

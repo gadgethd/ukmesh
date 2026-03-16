@@ -1152,6 +1152,19 @@ def process_job(db, r_client, job: dict):
     try:
         if not is_viewshed_eligible_coordinate(lat, lon):
             log.info(f'Skipping out-of-UK viewshed job {node_id[:12]}… at ({lat:.4f}, {lon:.4f})')
+            # Write placeholder so this node isn't re-queued on restart
+            with db.cursor() as cur:
+                cur.execute(
+                    '''INSERT INTO node_coverage (node_id, geom, strength_geoms, antenna_height_m, radius_m, model_version)
+                       VALUES (%s, '{"type":"Polygon","coordinates":[]}'::jsonb, NULL, %s, NULL, %s)
+                       ON CONFLICT (node_id) DO UPDATE
+                         SET geom = '{"type":"Polygon","coordinates":[]}'::jsonb,
+                             strength_geoms = NULL,
+                             model_version = EXCLUDED.model_version,
+                             calculated_at = NOW()''',
+                    (node_id, ANTENNA_HEIGHT_M, COVERAGE_MODEL_VERSION),
+                )
+            db.commit()
             return
         # Skip hidden (🚫) or non-repeater nodes regardless of how the job arrived
         with db.cursor() as cur:
@@ -1174,6 +1187,19 @@ def process_job(db, r_client, job: dict):
         t0     = time.time()
         result = calculate_viewshed(node_id, lat, lon)
         if result is None:
+            # Write an empty-geom placeholder so this node isn't re-queued on restart
+            with db.cursor() as cur:
+                cur.execute(
+                    '''INSERT INTO node_coverage (node_id, geom, strength_geoms, antenna_height_m, radius_m, model_version)
+                       VALUES (%s, '{"type":"Polygon","coordinates":[]}'::jsonb, NULL, %s, NULL, %s)
+                       ON CONFLICT (node_id) DO UPDATE
+                         SET geom = '{"type":"Polygon","coordinates":[]}'::jsonb,
+                             strength_geoms = NULL,
+                             model_version = EXCLUDED.model_version,
+                             calculated_at = NOW()''',
+                    (node_id, ANTENNA_HEIGHT_M, COVERAGE_MODEL_VERSION),
+                )
+            db.commit()
             return
 
         geom, strength_geoms, radius_m, elevation_m = result

@@ -1,21 +1,14 @@
 import React, { useState, useCallback, useMemo, useEffect, useRef } from 'react';
-import { MapContainer, TileLayer, useMap, Pane, Polygon, Polyline, Marker } from 'react-leaflet';
-import L from 'leaflet';
+import { MapContainer, TileLayer, useMap, Pane, Polygon, Polyline } from 'react-leaflet';
 import type { LatLngExpression, Map as LeafletMap } from 'leaflet';
-import type { MeshNode, PacketArc } from '../../hooks/useNodes.js';
+import type { MeshNode } from '../../hooks/useNodes.js';
 import type { NodeCoverage } from '../../hooks/useCoverage.js';
 import { buildHiddenCoordMask, hasCoords, maskCircleCenter, maskNodePoint, maskPoint } from '../../utils/pathing.js';
 import type { LinkMetrics } from '../../utils/pathing.js';
 import { NodeMarker } from './NodeMarker.js';
-import { PacketArcLayer } from './PacketArcLayer.js';
 import { NodeSearch } from './NodeSearch.js';
 
-// Sync Leaflet view state with deck.gl view state
-interface SyncerProps {
-  onViewStateChange: (vs: DeckViewState) => void;
-}
-
-interface DeckViewState {
+export interface DeckViewState {
   longitude: number;
   latitude:  number;
   zoom:      number;
@@ -29,6 +22,8 @@ type ViewBounds = {
   east: number;
   west: number;
 };
+
+interface SyncerProps { onViewStateChange: (vs: DeckViewState) => void; }
 
 // Leaflet→deck.gl sync component
 const LeafletDeckSyncer: React.FC<SyncerProps> = ({ onViewStateChange }) => {
@@ -57,14 +52,23 @@ const LeafletDeckSyncer: React.FC<SyncerProps> = ({ onViewStateChange }) => {
   return null;
 };
 
-function ringToLatLng(ring: number[][]): LatLngExpression[] {
+function ringToLatLng(ring: number[][] | undefined): LatLngExpression[] {
+  if (!ring) return [];
   return ring.map(([lon, lat]) => [lat, lon] as LatLngExpression);
 }
 
 function geomToRings(geom: { type: string; coordinates: unknown } | null | undefined): LatLngExpression[][] {
   if (!geom) return [];
-  if (geom.type === 'Polygon') return [ringToLatLng((geom.coordinates as number[][][])[0])];
-  if (geom.type === 'MultiPolygon') return (geom.coordinates as number[][][][]).map((poly) => ringToLatLng(poly[0]));
+  if (geom.type === 'Polygon') {
+    const ring = (geom.coordinates as number[][][])[0];
+    return ring ? [ringToLatLng(ring)] : [];
+  }
+  if (geom.type === 'MultiPolygon') {
+    return (geom.coordinates as number[][][][]).flatMap((poly) => {
+      const ring = poly[0];
+      return ring ? [ringToLatLng(ring)] : [];
+    });
+  }
   return [];
 }
 
@@ -83,22 +87,16 @@ function useCoverageDisplayRings(coverage: NodeCoverage[]): LatLngExpression[][]
   }, [coverage]);
 }
 
-// Dash pattern cycle length in px — must match dashArray below ('6 9' = 15px).
-const DASH_CYCLE = 15;
-// Pixels to advance per animation frame (~60fps → ~18px/s ≈ 1.2 cycles/s).
-const DASH_STEP  = 0.3;
 
 interface MapViewProps {
   nodes:           Map<string, MeshNode>;
   inferredNodes:   MeshNode[];
   inferredActiveNodeIds: Set<string>;
-  arcs:            PacketArc[];
   activeNodes:     Set<string>;
   coverage:        NodeCoverage[];
-  showPackets:     boolean;
+  onDeckViewStateChange: (vs: DeckViewState) => void;
   showCoverage:    boolean;
   showClientNodes: boolean;
-  showLinks:       boolean;
   showHexClashes:  boolean;
   maxHexClashHops: number;
   viablePairsArr:  [string, string][];
@@ -111,6 +109,7 @@ interface MapViewProps {
   betaCompletionPaths: [number, number][][];
   showBetaPaths:   boolean;
   pathOpacity:     number;
+  pathNodeIds:     Set<string> | null;
   onMapReady?:     (m: LeafletMap) => void;
 }
 
@@ -123,16 +122,13 @@ const STALE_MARKER_MS = 7 * 24 * 60 * 60 * 1000;
 function propsAreEqual(prev: MapViewProps, next: MapViewProps): boolean {
   if (prev.nodes !== next.nodes) return false;
   if (prev.coverage !== next.coverage) return false;
-  if (prev.arcs !== next.arcs) return false;
   if (prev.activeNodes !== next.activeNodes) return false;
   if (prev.viablePairsArr !== next.viablePairsArr) return false;
   if (prev.linkMetrics !== next.linkMetrics) return false;
   if (prev.inferredNodes !== next.inferredNodes) return false;
   if (prev.inferredActiveNodeIds !== next.inferredActiveNodeIds) return false;
-  if (prev.showPackets !== next.showPackets) return false;
   if (prev.showCoverage !== next.showCoverage) return false;
   if (prev.showClientNodes !== next.showClientNodes) return false;
-  if (prev.showLinks !== next.showLinks) return false;
   if (prev.showHexClashes !== next.showHexClashes) return false;
   if (prev.showPacketHistory !== next.showPacketHistory) return false;
   if (prev.showBetaPaths !== next.showBetaPaths) return false;
@@ -143,12 +139,13 @@ function propsAreEqual(prev: MapViewProps, next: MapViewProps): boolean {
   if (prev.betaLowPaths !== next.betaLowPaths) return false;
   if (prev.betaLowSegments !== next.betaLowSegments) return false;
   if (prev.betaCompletionPaths !== next.betaCompletionPaths) return false;
+  if (prev.pathNodeIds !== next.pathNodeIds) return false;
   return true;
 }
 
 export const MapView = React.memo(({
-  nodes, inferredNodes, inferredActiveNodeIds, arcs, activeNodes, coverage, showPackets, showCoverage, showClientNodes,
-  showLinks, showHexClashes, maxHexClashHops, viablePairsArr, linkMetrics, packetHistorySegments, showPacketHistory, betaPaths, betaLowSegments, betaCompletionPaths, showBetaPaths, pathOpacity, onMapReady,
+  nodes, inferredNodes, inferredActiveNodeIds, activeNodes, coverage, showCoverage, showClientNodes,
+  showHexClashes, maxHexClashHops, viablePairsArr, linkMetrics, packetHistorySegments, showPacketHistory, betaPaths, betaLowSegments, betaCompletionPaths, showBetaPaths, pathOpacity, pathNodeIds, onMapReady, onDeckViewStateChange,
 }) => {
   const [map, setMap] = useState<LeafletMap | null>(null);
   const [viewBounds, setViewBounds] = useState<ViewBounds | null>(null);
@@ -197,23 +194,11 @@ export const MapView = React.memo(({
   }, [map]);
 
   const [deckViewState, setDeckViewState] = useState<DeckViewState>({
-    longitude: DEFAULT_CENTER[1],
-    latitude:  DEFAULT_CENTER[0],
-    zoom:      DEFAULT_ZOOM,
-    pitch:     0,
-    bearing:   0,
+    longitude: DEFAULT_CENTER[1], latitude: DEFAULT_CENTER[0], zoom: DEFAULT_ZOOM, pitch: 0, bearing: 0,
   });
-
-  const handleViewStateChange = useCallback((vs: unknown) => {
-    setDeckViewState(vs as DeckViewState);
-  }, []);
   const [isMobileViewport, setIsMobileViewport] = useState(
     () => (typeof window !== 'undefined' ? window.matchMedia('(max-width: 640px)').matches : false),
   );
-  const [isPageVisible, setIsPageVisible] = useState(
-    () => (typeof document === 'undefined' ? true : document.visibilityState === 'visible'),
-  );
-
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const mq = window.matchMedia('(max-width: 640px)');
@@ -223,50 +208,7 @@ export const MapView = React.memo(({
     return () => mq.removeEventListener('change', update);
   }, []);
 
-  useEffect(() => {
-    if (typeof document === 'undefined') return undefined;
-    const updateVisibility = () => setIsPageVisible(document.visibilityState === 'visible');
-    document.addEventListener('visibilitychange', updateVisibility);
-    return () => document.removeEventListener('visibilitychange', updateVisibility);
-  }, []);
-
-  const aniFrameRef    = useRef<number | null>(null);
-
-  // Animate marching dashes by incrementing stroke-dashoffset directly on the
-  // Leaflet SVG path element. CSS animation is unreliable here because Leaflet
-  // calls _updateStyle (setAttribute) on every prop change, which can interrupt
-  // CSS keyframe animations. Direct DOM manipulation in an rAF loop is stable.
-  const hasRegular = false;
-  const hasBeta = Boolean(showBetaPaths && (betaLowSegments.length > 0 || betaPaths.length > 0));
-
-  useEffect(() => {
-    if (!hasRegular && !hasBeta || !isPageVisible) {
-      if (aniFrameRef.current !== null) {
-        cancelAnimationFrame(aniFrameRef.current);
-        aniFrameRef.current = null;
-      }
-      return;
-    }
-
-      let offset = 0;
-      const tick = () => {
-        offset = (offset + DASH_STEP) % DASH_CYCLE;
-        const val = String(-offset);
-        const paths = map?.getContainer().querySelectorAll<SVGPathElement>(
-          '.packet-path-overlay, .beta-red-path-overlay, .beta-purple-path-overlay',
-        );
-        paths?.forEach((path) => path.setAttribute('stroke-dashoffset', val));
-        aniFrameRef.current = requestAnimationFrame(tick);
-      };
-
-    aniFrameRef.current = requestAnimationFrame(tick);
-    return () => {
-      if (aniFrameRef.current !== null) {
-        cancelAnimationFrame(aniFrameRef.current);
-        aniFrameRef.current = null;
-      }
-    };
-  }, [hasRegular, hasBeta, isPageVisible, map]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Marching dashes are animated via CSS @keyframes in globals.css — no JS rAF needed.
 
   const FOURTEEN_DAYS_MS = 14 * 24 * 60 * 60 * 1000;
   const allNodesWithPos = useMemo(() => Array.from(nodes.values()).filter(
@@ -378,13 +320,6 @@ export const MapView = React.memo(({
       || maxLon < viewBounds.west
       || minLon > viewBounds.east);
   }, [inView, viewBounds]);
-
-  const linkColor = (pathLossDb: number | null | undefined) => {
-    if (pathLossDb == null) return '#d1d5db';
-    if (pathLossDb <= 120) return '#22c55e';
-    if (pathLossDb <= 135) return '#fbbf24';
-    return '#ef4444';
-  };
 
   const clashAdjacency = useMemo(() => {
     const adj = new Map<string, Set<string>>();
@@ -514,60 +449,6 @@ export const MapView = React.memo(({
 
   const clashModeActive = showHexClashes || !!focusedPrefixNodeIds;
   const effectiveShowCoverage = showCoverage && !clashModeActive;
-  const effectiveShowLinks = showLinks && !clashModeActive;
-
-  // Stable fingerprint of linked nodes' position/role/last_seen — only changes when
-  // data relevant to link rendering changes, not on every node_update heartbeat.
-  const linkedNodesKey = useMemo(() => {
-    const ids = new Set(viablePairsArr.flatMap(([a, b]) => [a, b]));
-    return Array.from(ids).sort().map((id) => {
-      const n = nodes.get(id);
-      return n ? `${id}=${n.lat ?? ''},${n.lon ?? ''},${n.role ?? ''},${n.last_seen.slice(0, 13)}` : id;
-    }).join(';');
-  }, [viablePairsArr, nodes]);
-
-  // Resolve viable link pairs to lat/lon polyline positions
-  const linkLines = useMemo(() => {
-    if (!showLinks || viablePairsArr.length === 0) return [];
-    const lines: Array<{
-      key: string;
-      positions: [number, number][];
-      observedCount: number;
-      pathLossDb: number | null | undefined;
-      countAToB: number;
-      countBToA: number;
-    }> = [];
-    for (const [aId, bId] of viablePairsArr) {
-      const a = nodes.get(aId);
-      const b = nodes.get(bId);
-      if (
-        hasCoords(a)
-        && hasCoords(b)
-        && (Date.now() - new Date(a.last_seen).getTime()) < FOURTEEN_DAYS_MS
-        && (Date.now() - new Date(b.last_seen).getTime()) < FOURTEEN_DAYS_MS
-        && (a.role === undefined || a.role === 2)
-        && (b.role === undefined || b.role === 2)
-      ) {
-        const key = linkKey(aId, bId);
-        const metrics = linkMetrics.get(key);
-        lines.push({
-          key,
-          positions: [maskNodePoint(a, hiddenCoordMask), maskNodePoint(b, hiddenCoordMask)],
-          observedCount: metrics?.observed_count ?? 0,
-          pathLossDb: metrics?.itm_path_loss_db,
-          countAToB: metrics?.count_a_to_b ?? 0,
-          countBToA: metrics?.count_b_to_a ?? 0,
-        });
-      }
-    }
-    const zoom = map?.getZoom() ?? DEFAULT_ZOOM;
-    const visibleLines = lines.filter((line) => lineInView(line.positions));
-    if (zoom >= 9 || visibleLines.length <= 400) return visibleLines;
-    return visibleLines
-      .sort((a, b) => (b.observedCount - a.observedCount))
-      .slice(0, 400);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showLinks, viablePairsArr, linkedNodesKey, linkMetrics, map, lineInView, hiddenCoordMask]);
 
   const visibleClashPathLines = useMemo(
     () => clashPathLines.filter((line) => lineInView(line.positions)),
@@ -621,59 +502,6 @@ export const MapView = React.memo(({
     return Math.max(4, size);
   }, [deckViewState.zoom, isMobileViewport]);
 
-  // Clustering threshold - zoom level at which to start clustering
-  const CLUSTER_ZOOM_THRESHOLD = 8;
-  const leafletZoom = deckViewState.zoom + 1;
-  const MAX_REDUCED_MARKERS = 150;
-
-  // Cluster nodes when zoomed out - density-based distribution with centroids
-  const clusteredNodes = useMemo(() => {
-    const allVisibleNodes = [...visibleRepeaterNodes, ...visibleClientNodes, ...visibleInferredNodes];
-    if (leafletZoom > CLUSTER_ZOOM_THRESHOLD || allVisibleNodes.length === 0) {
-      return { nodes: [], totalCount: 0 };
-    }
-    
-    // Grid cells to count density - track all nodes in each cell for centroid
-    const cellSize = 0.15;
-    const clusterMap = new Map<string, { latSum: number; lonSum: number; count: number }>();
-    
-    for (const node of allVisibleNodes) {
-      if (!hasCoords(node)) continue;
-      const cellLat = Math.round(node.lat! / cellSize) * cellSize;
-      const cellLon = Math.round(node.lon! / cellSize) * cellSize;
-      const key = `${cellLat.toFixed(2)},${cellLon.toFixed(2)}`;
-      
-      const existing = clusterMap.get(key);
-      if (existing) {
-        existing.latSum += node.lat!;
-        existing.lonSum += node.lon!;
-        existing.count += 1;
-      } else {
-        clusterMap.set(key, { latSum: node.lat!, lonSum: node.lon!, count: 1 });
-      }
-    }
-    
-    // Calculate centroids and sort by density
-    const withCentroids = Array.from(clusterMap.entries()).map(([key, data]) => {
-      const [latStr, lonStr] = key.split(',');
-      const lat = parseFloat(latStr);
-      const lon = parseFloat(lonStr);
-      // Use grid cell as fallback, but prefer centroid of actual nodes
-      return { 
-        lat: data.count > 1 ? data.latSum / data.count : lat, 
-        lon: data.count > 1 ? data.lonSum / data.count : lon, 
-        count: data.count 
-      };
-    });
-    
-    const sorted = withCentroids.sort((a, b) => b.count - a.count);
-    const reduced = sorted.slice(0, MAX_REDUCED_MARKERS);
-    
-    return { nodes: reduced, totalCount: allVisibleNodes.length };
-  }, [leafletZoom, visibleRepeaterNodes, visibleClientNodes, visibleInferredNodes]);
-
-  const showReduced = leafletZoom <= CLUSTER_ZOOM_THRESHOLD && clusteredNodes.nodes.length > 0;
-
   return (
     <div className="map-area">
       <NodeSearch nodes={nodes} map={map} />
@@ -696,7 +524,7 @@ export const MapView = React.memo(({
         />
 
         {/* Sync Leaflet map position to deck.gl */}
-        <LeafletDeckSyncer onViewStateChange={handleViewStateChange} />
+        <LeafletDeckSyncer onViewStateChange={(vs) => { setDeckViewState(vs); onDeckViewStateChange(vs); }} />
 
         {/* Coverage — raw outer rings from each viewshed, fillRule:'nonzero'.
             nonzero means overlapping CCW rings sum winding numbers (+1 each)
@@ -717,29 +545,6 @@ export const MapView = React.memo(({
         )}
 
         {/* Confirmed link lines — ITM-viable node pairs */}
-        {effectiveShowLinks && linkLines.length > 0 && (
-          <Pane name="linksPane" style={{ zIndex: 650 }}>
-            {linkLines.map((line) => {
-              const obs = Math.max(1, line.observedCount);
-              const strength = Math.log10(obs + 1);
-              const opacity = Math.min(0.85, 0.35 + strength * 0.22);
-              const weight = Math.min(3.2, 1.0 + strength * 1.1);
-              return (
-              <Polyline
-                key={line.key}
-                positions={line.positions}
-                pathOptions={{
-                  color: linkColor(line.pathLossDb),
-                  weight,
-                  opacity,
-                }}
-                interactive={false}
-              />
-              );
-            })}
-          </Pane>
-        )}
-
         {clashModeActive && (
           <Pane name="hexClashPane" style={{ zIndex: 660 }}>
             {visibleClashPathLines.map((line) => (
@@ -757,24 +562,10 @@ export const MapView = React.memo(({
           </Pane>
         )}
 
-        {/* Reduced nodes - grey markers when zoomed out */}
-        {showReduced && clusteredNodes.nodes.map((cluster) => (
-          <Marker
-            key={`reduced-${cluster.lat}-${cluster.lon}`}
-            position={[cluster.lat, cluster.lon]}
-            icon={L.divIcon({
-              html: `<div class="node-marker node-marker--reduced" style="--marker-size:14px;--marker-border:1px;"><div class="node-marker__pulse"></div><div class="node-marker__core"></div></div>`,
-              className: '',
-              iconSize: [16, 16],
-              iconAnchor: [8, 8],
-            })}
-            zIndexOffset={400}
-          />
-        ))}
-
-        {/* Repeater markers — only shown when not reduced */}
-        {!showReduced && visibleRepeaterNodes.map((node) => {
+        {/* Repeater markers */}
+        {visibleRepeaterNodes.map((node) => {
           if (!hasCoords(node)) return null;
+          if (pathNodeIds && !pathNodeIds.has(node.node_id.toLowerCase())) return null;
           if (showHexClashes && !clashVisibleNodeIds.has(node.node_id)) return null;
           const isFocusVisible = clashVisibleNodeIds.has(node.node_id) || (focusedPrefixNodeIds?.has(node.node_id) ?? false);
           if (focusedPrefixNodeIds && focusHidePhase === 'hide' && !isFocusVisible) return null;
@@ -802,7 +593,7 @@ export const MapView = React.memo(({
         })}
 
         {/* Inferred multibyte repeaters — provisional layer only, never fed back into pathing */}
-        {!showHexClashes && !showReduced && visibleInferredNodes.map((node) => (
+        {!showHexClashes && visibleInferredNodes.map((node) => (
             <NodeMarker
               key={node.node_id}
               node={node}
@@ -893,6 +684,7 @@ export const MapView = React.memo(({
               <Polyline
                 key={`beta-completion-${idx}`}
                 positions={path.map((point) => maskPoint(point, hiddenCoordMask))}
+                className="beta-completion-path-overlay"
                 pathOptions={{
                   color: '#ef4444',
                   weight: 1.8,
@@ -905,20 +697,6 @@ export const MapView = React.memo(({
           </Pane>
         )}
       </MapContainer>
-
-      {/* deck.gl overlay — arcs only */}
-      <PacketArcLayer
-        arcs={arcs}
-        showArcs={showPackets}
-        viewState={deckViewState}
-      />
-
-      {/* Zoom hint when nodes are reduced */}
-      {showReduced && (
-        <div className="map-zoom-hint">
-          Showing {clusteredNodes.nodes.length} of {clusteredNodes.totalCount} repeaters — zoom in to see all
-        </div>
-      )}
     </div>
   );
 }, propsAreEqual);

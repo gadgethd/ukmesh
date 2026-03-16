@@ -38,10 +38,14 @@ export const AppTopBar: React.FC<AppTopBarProps> = ({
   stats,
 }) => (
   <header className="topbar">
-    <a href={homeUrl} className="topbar__home-btn" title="Home">← Home</a>
+    <a href={homeUrl} className="topbar__brand" title="Home">
+      <span className="topbar__brand-icon">◈</span>
+      UK Mesh
+    </a>
+    <div className="topbar__divider" />
     <div className="topbar__logo">
       <MeshIcon />
-      MeshCore Analytics
+      Live Map
     </div>
     <div className="topbar__divider" />
     <ConnIndicator state={wsState} />

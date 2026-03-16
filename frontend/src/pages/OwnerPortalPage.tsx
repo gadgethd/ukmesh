@@ -20,6 +20,7 @@ type OwnerDashboard = {
     ownedNodes: number;
     packets24h: number;
     packets7d: number;
+    packetsReceived24h: number;
   };
   roadmap: string[];
 };
@@ -588,6 +589,7 @@ export const OwnerPortalPage: React.FC = () => {
                 <div className="site-stat"><span className="site-stat__value">{formatPathLoss(strongestLink?.itm_path_loss_db ?? null)}</span><span className="site-stat__label">Best Path Loss</span></div>
                 <div className="site-stat"><span className="site-stat__value">{(live?.advertTrend24h ?? []).reduce((sum, point) => sum + point.adverts, 0)}</span><span className="site-stat__label">Adverts (24h)</span></div>
                 <div className="site-stat"><span className="site-stat__value">{dashboard.totals.packets24h}</span><span className="site-stat__label">Packets Sent (24h)</span></div>
+                <div className="site-stat"><span className="site-stat__value">{dashboard.totals.packetsReceived24h}</span><span className="site-stat__label">Packets Received (24h)</span></div>
               </div>
               {liveError ? <p className="prose-note owner-login__error">Live data error: {liveError}</p> : null}
             </section>

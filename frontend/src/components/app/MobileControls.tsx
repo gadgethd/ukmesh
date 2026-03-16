@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import type { Map as LeafletMap } from 'leaflet';
 import { NodeSearch } from '../Map/NodeSearch.js';
-import { FILTER_ROWS, LinksLegend, type Filters } from '../FilterPanel/FilterPanel.js';
+import { FILTER_ROWS, type Filters } from '../FilterPanel/FilterPanel.js';
 import type { MeshNode } from '../../hooks/useNodes.js';
 
 type MobileControlsProps = {
@@ -18,7 +18,6 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
   onFiltersChange,
 }) => {
   const [showFilters, setShowFilters] = useState(false);
-  const [showLegend, setShowLegend] = useState(false);
 
   return (
     <div className="mobile-controls">
@@ -72,18 +71,6 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
             />
           </div>
         )}
-      </div>
-      <button
-        type="button"
-        className="mobile-legend-toggle"
-        onClick={() => setShowLegend((v) => !v)}
-        aria-expanded={showLegend}
-      >
-        <span>Links Legend</span>
-        <span>{showLegend ? 'Hide' : 'Show'}</span>
-      </button>
-      <div className={`mobile-links-legend-wrap${showLegend ? '' : ' mobile-links-legend-wrap--hidden'}`}>
-        <LinksLegend compact muted={!filters.links} />
       </div>
       <div className="mobile-search">
         <NodeSearch map={map} nodes={nodes} />
