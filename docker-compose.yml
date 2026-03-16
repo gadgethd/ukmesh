@@ -55,7 +55,7 @@ services:
       OWNER_MQTT_USERNAME_MAP: ${OWNER_MQTT_USERNAME_MAP:-}
       OWNER_COOKIE_SECRET: ${OWNER_COOKIE_SECRET:-}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3001,http://localhost:3002},https://test.ukmesh.com
-      RADIO_BOT_URL: ${RADIO_BOT_URL:-http://meshcore-radio-bot:3011}
+      RADIO_BOT_URL: ${RADIO_BOT_URL:-}
       COVERAGE_MODEL_VERSION: ${COVERAGE_MODEL_VERSION:-5}
       NODE_ENV: production
     depends_on:

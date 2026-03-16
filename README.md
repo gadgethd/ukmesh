@@ -141,7 +141,6 @@ Copy `.env.example` to `.env` and fill in your values. All variables used by the
 | `OWNER_DATABASE_URL` | *(optional)* | Separate Postgres database URL for owner portal username → repeater mappings |
 | `OWNER_COOKIE_SECRET` | *(optional but recommended)* | Secret used to encrypt/sign the owner session cookie |
 | `OWNER_MQTT_USERNAME_MAP` | *(optional fallback)* | Legacy static mapping in the format `user=nodeId1|nodeId2,...` |
-| `RADIO_BOT_URL` | `http://meshcore-radio-bot:3011` | URL for the companion radio bot HTTP API (battery/telemetry polling) |
 | `COVERAGE_MODEL` | `terrain_los` | Coverage model used by `viewshed-worker` |
 | `COVERAGE_MODEL_VERSION` | `2` | Coverage schema/version gate used to trigger recomputation |
 | `CLOUDFLARE_TUNNEL_TOKEN` | *(optional)* | Cloudflare Zero Trust tunnel token |
