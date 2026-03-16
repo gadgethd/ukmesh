@@ -35,3 +35,8 @@ CLAUDE.md
 AI_MEMORY.md
 knowledge.md
 multipath.md
+
+# Teesside Mesh site (separate project, not part of ukmesh.com)
+frontend/src/pages/teesside/
+frontend/src/styles/teesside-dashboard.css
+frontend/public/favicon-teesside.svg
