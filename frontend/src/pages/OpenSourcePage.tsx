@@ -21,6 +21,8 @@ const FRONTEND: LibEntry[] = [
   { name: 'react-leaflet',       role: 'React bindings for Leaflet',                                 url: 'https://react-leaflet.js.org' },
   { name: 'deck.gl',             role: 'WebGL overlay for animated packet arc trails',               url: 'https://deck.gl' },
   { name: 'react-router-dom',    role: 'Client-side routing between pages',                          url: 'https://reactrouter.com' },
+  { name: 'Recharts',            role: 'Chart components for stats and history graphs',              url: 'https://recharts.org' },
+  { name: 'polygon-clipping',    role: 'Coverage polygon clipping to UK mainland bounds',            url: 'https://github.com/mfogel/polygon-clipping' },
 ];
 
 const BACKEND: LibEntry[] = [
@@ -32,6 +34,8 @@ const BACKEND: LibEntry[] = [
   { name: 'ws',                               role: 'WebSocket server for live dashboard updates',              url: 'https://github.com/websockets/ws' },
   { name: 'ioredis',                          role: 'Redis pub/sub for cross-process live events',              url: 'https://github.com/redis/ioredis' },
   { name: 'pg',                               role: 'PostgreSQL client',                                        url: 'https://node-postgres.com' },
+  { name: 'cors',                             role: 'CORS middleware for cross-origin API access',              url: 'https://github.com/expressjs/cors' },
+  { name: 'express-rate-limit',               role: 'API rate limiting',                                        url: 'https://github.com/express-rate-limit/express-rate-limit' },
 ];
 
 const INFRA: LibEntry[] = [
@@ -43,12 +47,13 @@ const INFRA: LibEntry[] = [
 ];
 
 const GEOSPATIAL: LibEntry[] = [
-  { name: 'world-atlas',          role: 'Natural Earth 10m country boundary data',                   url: 'https://github.com/topojson/world-atlas' },
-  { name: 'topojson-client',      role: 'Decoding TopoJSON to GeoJSON coordinates',                  url: 'https://github.com/topojson/topojson-client' },
-  { name: 'scipy + numpy',        role: 'Viewshed raycasting for terrain line-of-sight calculations',  url: 'https://scipy.org' },
-  { name: 'Shapely',              role: 'Polygon intersection for terrain clip and gap detection',    url: 'https://shapely.readthedocs.io' },
-  { name: 'SRTM elevation data',  role: 'NASA shuttle radar terrain model via AWS Terrain Tiles',    url: 'https://registry.opendata.aws/terrain-tiles' },
-  { name: 'rasterio',            role: 'Reading SRTM .hgt raster elevation tiles',                  url: 'https://rasterio.readthedocs.io' },
+  { name: 'world-atlas',          role: 'Natural Earth 10m country boundary data (pre-processed into source)',  url: 'https://github.com/topojson/world-atlas' },
+  { name: 'scipy + numpy',        role: 'Viewshed raycasting for terrain line-of-sight calculations',           url: 'https://scipy.org' },
+  { name: 'Shapely',              role: 'Polygon intersection for terrain clip and gap detection',              url: 'https://shapely.readthedocs.io' },
+  { name: 'GDAL',                 role: 'Geospatial data abstraction for reading SRTM raster tiles',            url: 'https://gdal.org' },
+  { name: 'psycopg2',             role: 'PostgreSQL client for the Python viewshed worker',                     url: 'https://www.psycopg.org' },
+  { name: 'redis-py',             role: 'Redis client for viewshed job queue',                                  url: 'https://github.com/redis/redis-py' },
+  { name: 'SRTM elevation data',  role: 'NASA shuttle radar terrain model via AWS Terrain Tiles',               url: 'https://registry.opendata.aws/terrain-tiles' },
 ];
 
 const Section: React.FC<{ title: string; items: LibEntry[] }> = ({ title, items }) => (
@@ -84,7 +89,7 @@ export const OpenSourcePage: React.FC = () => (
               your own analytics instance, everything you need is there.
             </p>
             <a
-              href="https://github.com/gadgethd/teesside-mesh"
+              href="https://github.com/gadgethd/ukmesh"
               target="_blank"
               rel="noopener noreferrer"
               className="site-btn site-btn--primary"

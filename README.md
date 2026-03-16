@@ -9,7 +9,7 @@ A real-time analytics platform for [MeshCore](https://meshcore.co.uk) networks. 
 - Real-time node map with animated packet arcs and live WebSocket updates
 - RF coverage viewshed polygons per repeater using SRTM terrain data
 - Link intelligence overlay with directional observations and path-loss viability
-- Beta path prediction model with hourly path-learning prior rebuilds
+- Beta path prediction model with concurrent worker pool and hourly path-learning prior rebuilds
 - Multibyte path-hash support (1-byte, 2-byte, 3-byte) throughout the live ingest and pathing stack
 - Decoded live packet feed (Advert, GroupText, DM, ACK, Path, Trace)
 - Stats pages and chart endpoints for packet rates, radios, hops, and activity
@@ -20,6 +20,7 @@ A real-time analytics platform for [MeshCore](https://meshcore.co.uk) networks. 
 - Multi-network ingestion (`meshcore/*` and `ukmesh/*`) with per-site filtering
 - Isolated test-feed support via `meshcore-test/*` and `test.ukmesh.com`
 - Multi-observer deduplication by packet hash
+- MQTT connection monitor with Mosquitto log parsing and reconnect tracking
 
 ---
 
@@ -44,6 +45,7 @@ A real-time analytics platform for [MeshCore](https://meshcore.co.uk) networks. 
 - Beta path overlays and confidence scoring
 - Historical calibration using observed packet behavior
 - Multibyte path-hash aware path resolution
+- Concurrent resolve worker pool for high-throughput path matching
 
 ### Phase 4 - Public website and operations (complete)
 - Separate public-facing website pages (install, MQTT, packets, stats)
@@ -76,12 +78,15 @@ A real-time analytics platform for [MeshCore](https://meshcore.co.uk) networks. 
   - `viewshed-worker` (coverage compute)
   - `link-worker` (link/path-loss processing)
   - `path-learning-worker` (hourly model rebuild)
+  - `path-history-worker` (historical path resolution backfill)
   - `health-worker` (health snapshots)
   - `link-backfill-worker` (one-shot historical backfill)
+- Path resolver runs a concurrent worker pool (`resolveWorker`, `resolvePool`, `resolveCache`) to handle high packet volumes without blocking the main ingest loop.
 - Nginx frontend proxies use Docker DNS resolver-based upstreams to avoid stale backend IP issues after container recreates.
-- Owner authentication now uses MQTT credentials plus a separate owner-auth mapping database rather than public-key login.
+- Owner authentication uses MQTT credentials plus a separate owner-auth mapping database rather than public-key login.
 - Live coverage is currently served by an RF radial model calibrated against observed repeater links and terrain data.
 - Public/test feeds are isolated at the topic level, with `meshcore-test/*` excluded from the public sites.
+- MQTT connection state is tracked via Mosquitto log parsing — connect/disconnect events are available in the health feed.
 
 ---
 
@@ -89,8 +94,8 @@ A real-time analytics platform for [MeshCore](https://meshcore.co.uk) networks. 
 
 ```bash
 # 1. Clone and enter the project
-git clone https://github.com/gadgethd/meshcore-analytics.git
-cd meshcore-analytics
+git clone https://github.com/gadgethd/ukmesh.git
+cd ukmesh
 
 # 2. Copy and configure environment
 cp .env.example .env
@@ -106,10 +111,10 @@ docker compose logs -f backend
 Local endpoints:
 
 - Backend API/WS: `http://localhost:3000`
-- App frontend: `http://localhost:3001`
-- Website frontend: `http://localhost:3002`
-- Optional second app frontend: `http://localhost:3003`
-- Optional second website frontend: `http://localhost:3004`
+- App frontend: `http://localhost:3001` *(if configured)*
+- App (ukmesh): `http://localhost:3003`
+- Website (ukmesh): `http://localhost:3004`
+- Dev/test site: `http://localhost:3005` / `http://localhost:3006`
 
 To expose it publicly, configure a Cloudflare Tunnel (see below) or reverse proxy of your choice.
 
@@ -136,6 +141,7 @@ Copy `.env.example` to `.env` and fill in your values. All variables used by the
 | `OWNER_DATABASE_URL` | *(optional)* | Separate Postgres database URL for owner portal username → repeater mappings |
 | `OWNER_COOKIE_SECRET` | *(optional but recommended)* | Secret used to encrypt/sign the owner session cookie |
 | `OWNER_MQTT_USERNAME_MAP` | *(optional fallback)* | Legacy static mapping in the format `user=nodeId1|nodeId2,...` |
+| `RADIO_BOT_URL` | `http://meshcore-radio-bot:3011` | URL for the companion radio bot HTTP API (battery/telemetry polling) |
 | `COVERAGE_MODEL` | `terrain_los` | Coverage model used by `viewshed-worker` |
 | `COVERAGE_MODEL_VERSION` | `2` | Coverage schema/version gate used to trigger recomputation |
 | `CLOUDFLARE_TUNNEL_TOKEN` | *(optional)* | Cloudflare Zero Trust tunnel token |
@@ -172,10 +178,8 @@ To expose the app and MQTT broker publicly without opening firewall ports:
 3. Add to `.env`: `CLOUDFLARE_TUNNEL_TOKEN=<token>`
 4. Start with the tunnel profile: `docker compose --profile tunnel up -d`
 5. Configure public hostnames in the Cloudflare dashboard (example):
-   - `app.example.com` → `http://app:80`
-   - `www.example.com` → `http://website:80`
-   - `app-2.example.com` → `http://app-ukmesh:80`
-   - `www-2.example.com` → `http://website-ukmesh:80`
+   - `app.example.com` → `http://app-ukmesh:80`
+   - `www.example.com` → `http://website-ukmesh:80`
    - `mqtt.example.com` → `http://mosquitto:9001`
 
 ---
@@ -193,7 +197,7 @@ meshcore-test/<IATA>/<observer-public-key>/packets
 meshcore-test/<IATA>/<observer-public-key>/status
 ```
 
-Payloads are JSON envelopes containing a `raw` hex field (the MeshCore packet) plus metadata such as RSSI, SNR, direction, and hash. The ingest path now supports 1-byte, 2-byte, and 3-byte path hashes carried inside the raw packet.
+Payloads are JSON envelopes containing a `raw` hex field (the MeshCore packet) plus metadata such as RSSI, SNR, direction, and hash. The ingest path supports 1-byte, 2-byte, and 3-byte path hashes carried inside the raw packet.
 
 ---
 
@@ -213,14 +217,15 @@ MeshCore Devices
      │
      ├─ meshcore-decoder → TimescaleDB (packets, nodes, coverage, priors, health snapshots)
      │
+     ├─ Path resolver worker pool (concurrent resolve workers + LRU cache)
+     │
      ├─ Redis pub/sub
      │
      ├─ WebSocket → frontend live updates
      └─ REST API /api/*
-     
+
  App/Web Frontends (Nginx + React)
-     ├─ app / app-ukmesh (interactive dashboard)
-     └─ website / website-ukmesh / website-dev (public site + health/stats + owner portal pages + isolated test feed)
+     └─ app-ukmesh / website-ukmesh / website-dev (interactive dashboard + public site + owner portal)
 
  Python Workers
      ├─ viewshed-worker (meshcore:viewshed_jobs)
@@ -230,6 +235,7 @@ MeshCore Devices
 
  Backend Workers (Node.js)
      ├─ path-learning-worker (hourly prior rebuild)
+     ├─ path-history-worker (historical path resolution)
      ├─ health-worker (minute snapshots)
      └─ link-backfill-worker (one-shot historical backfill)
 
@@ -248,14 +254,14 @@ MeshCore Devices
 | `redis` | `redis:7-alpine` | WebSocket fan-out pub/sub and job queue |
 | `backend` | Built from `Dockerfile.backend` | MQTT ingest, decoding, API, WebSocket |
 | `path-learning-worker` | Built from `Dockerfile.backend` | Hourly path-learning model rebuilds |
+| `path-history-worker` | Built from `Dockerfile.backend` | Historical path resolution backfill |
 | `health-worker` | Built from `Dockerfile.backend` | Periodic health snapshot capture |
 | `link-backfill-worker` | Built from `Dockerfile.backend` | One-shot historical link backfill |
 | `viewshed-worker` | Built from `viewshed-worker/Dockerfile` | Terrain-aware RF coverage computation |
 | `link-worker` | Built from `viewshed-worker/Dockerfile` | Link/path-loss processing from observed paths |
-| `app` | Built from `Dockerfile.app` | Primary interactive dashboard frontend |
-| `website` | Built from `Dockerfile.website` | Primary public website frontend |
-| `app-ukmesh` | Built from `Dockerfile.app` | Secondary interactive dashboard frontend (optional) |
-| `website-ukmesh` | Built from `Dockerfile.website` | Secondary public website frontend (optional) |
+| `app-ukmesh` | Built from `Dockerfile.app` | Interactive dashboard frontend |
+| `website-ukmesh` | Built from `Dockerfile.website` | Public website frontend |
+| `app-dev` | Built from `Dockerfile.app` | Isolated test/dev dashboard frontend |
 | `website-dev` | Built from `Dockerfile.website` | Isolated test/status site for `meshcore-test/*` traffic |
 | `cloudflared` | `cloudflare/cloudflared` | Optional Cloudflare Tunnel (use `--profile tunnel`) |
 
@@ -320,7 +326,7 @@ This project is built on the following open source libraries and tools:
 | Source | License |
 |---|---|
 | [SRTM Elevation Data](https://registry.opendata.aws/terrain-tiles) | Public Domain (NASA) |
-| [Natural Earth](https://www.naturalearthdata.com) | Public Domain |
+| [Natural Earth / world-atlas](https://www.naturalearthdata.com) | Public Domain |
 
 ---
 
