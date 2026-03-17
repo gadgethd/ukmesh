@@ -69,6 +69,16 @@ export const PacketFeed: React.FC<Props> = React.memo(({ packets, nodes, mqttObs
         ? (p.advertCount === 1 ? 'NEW' : `${p.advertCount}`)
         : undefined;
 
+      // Resolve observer IDs to names for display
+      const MAX_OBSERVER_NAMES = 3;
+      const observerNames = p.observerIds.map((id) => {
+        const node = nodes.get(id);
+        return node?.name ?? node?.iata ?? id.slice(0, 6);
+      });
+      const observerDisplay = observerNames.length > MAX_OBSERVER_NAMES
+        ? [...observerNames.slice(0, MAX_OBSERVER_NAMES), `+${observerNames.length - MAX_OBSERVER_NAMES}`]
+        : observerNames;
+
       const isPinned = pinnedPacketId === p.id;
 
       return (
@@ -99,7 +109,9 @@ export const PacketFeed: React.FC<Props> = React.memo(({ packets, nodes, mqttObs
             <span className="packet-item__hops">↑{p.hopCount}</span>
           )}
           <span className="packet-item__counts">
-            {p.rxCount > 0 && <span className="count count--rx">{p.rxCount}rx</span>}
+            {observerDisplay.length > 0 && (
+              <span className="count count--rx">{observerDisplay.join(' · ')}</span>
+            )}
             {p.txCount > 0 && <span className="count count--tx">{p.txCount}tx</span>}
           </span>
           {isPinned && <span className="packet-item__pin">●</span>}

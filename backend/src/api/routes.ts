@@ -21,10 +21,13 @@ const STATS_CACHE_TTL_MS          = 15_000;  // stats don't need sub-second fres
 const INFERRED_NODES_CACHE_TTL_MS = 60_000;  // 7-day packet scan, changes slowly
 const PATH_HISTORY_CACHE_TTL_MS   = 60_000;  // history cache is rebuilt by worker, not real-time
 const COVERAGE_CACHE_TTL_MS       = 30_000;  // geometry changes only on coverage rebuild
+const CHARTS_CACHE_TTL_MS         = 30 * 60_000; // 30 min — background refresh keeps it warm
 const statsCache         = new Map<string, { ts: number; data: unknown }>();
 const inferredNodesCache = new Map<string, { ts: number; data: unknown }>();
 const pathHistoryCache   = new Map<string, { ts: number; data: unknown }>();
 const coverageCache      = new Map<string, { ts: number; data: unknown }>();
+const chartsCache        = new Map<string, { ts: number; data: unknown }>();
+const chartsInflight     = new Map<string, Promise<unknown>>();
 const OWNER_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const MQTT_USERNAME_MAX_LEN = 128;
 const MQTT_PASSWORD_MAX_LEN = 128;
@@ -2179,25 +2182,20 @@ router.post('/telemetry/frontend-error', async (req, res) => {
   }
 });
 
-// GET /api/stats/charts
-router.get('/stats/charts', STATS_CHARTS_LIMITER, async (req, res) => {
-  try {
-    const requestedNetwork = resolveRequestNetwork(req.query['network'], req.headers);
-    const network = requestedNetwork === 'all' ? undefined : requestedNetwork;
-    const observer = normalizeObserverQuery(req.query['observer']);
-    const filters = networkFilters(network, observer);
+async function computeChartsData(network: string | undefined, observer: string | undefined): Promise<unknown> {
+  const filters = networkFilters(network, observer);
 
-    const PAYLOAD_LABELS: Record<number, string> = {
-      0: 'Request', 1: 'Response', 2: 'DM', 3: 'Ack',
-      4: 'Advert', 5: 'GroupText', 6: 'GroupData',
-      7: 'AnonReq', 8: 'Path', 9: 'Trace', 11: 'Control',
-    };
+  const PAYLOAD_LABELS: Record<number, string> = {
+    0: 'Request', 1: 'Response', 2: 'DM', 3: 'Ack',
+    4: 'Advert', 5: 'GroupText', 6: 'GroupData',
+    7: 'AnonReq', 8: 'Path', 9: 'Trace', 11: 'Control',
+  };
 
-    const [
-      phResult, pdResult, rhResult, rdResult,
-      ptResult, rpResult, hdResult, pcResult, sumResult, orSummaryResult, orSeriesResult,
-      pathHashWidthsResult, multibyteSummaryResult,
-    ] = await Promise.all([
+  const [
+    phResult, pdResult, rhResult, rdResult,
+    ptResult, rpResult, hdResult, pcResult, sumResult, orSummaryResult, orSeriesResult,
+    pathHashWidthsResult, multibyteSummaryResult,
+  ] = await Promise.all([
       // packets per rolling hour — last 24h (sampled every 5 minutes)
       query(`
         WITH buckets AS (
@@ -2316,12 +2314,12 @@ router.get('/stats/charts', STATS_CHARTS_LIMITER, async (req, res) => {
           (SELECT COUNT(*) FROM nodes n WHERE (n.role IS NULL OR n.role = 2) AND n.last_seen > NOW() - INTERVAL '7 days' ${filters.nodesAlias('n')}) AS active_repeaters,
           (SELECT COUNT(*) FROM nodes n WHERE (n.role IS NULL OR n.role = 2) AND n.last_seen <= NOW() - INTERVAL '7 days' AND n.last_seen > NOW() - INTERVAL '14 days' ${filters.nodesAlias('n')}) AS stale_repeaters
       `, filters.params),
-      // observer regions summary — last 7d
+      // observer regions summary — last 7d (de-duped per region by packet_hash)
       query(`
         SELECT
           COALESCE(NULLIF(TRIM(UPPER(n.iata)), ''), 'UNK') AS iata,
-          COUNT(*) FILTER (WHERE p.time > NOW() - INTERVAL '24 hours') AS packets_24h,
-          COUNT(*) AS packets_7d,
+          COUNT(DISTINCT p.packet_hash) FILTER (WHERE p.time > NOW() - INTERVAL '24 hours') AS packets_24h,
+          COUNT(DISTINCT p.packet_hash) AS packets_7d,
           COUNT(DISTINCT LOWER(p.rx_node_id)) FILTER (WHERE n.last_seen > NOW() - INTERVAL '1 minute') AS active_observers,
           COUNT(DISTINCT LOWER(p.rx_node_id)) AS observers,
           MAX(p.time)::text AS last_packet_at
@@ -2335,12 +2333,12 @@ router.get('/stats/charts', STATS_CHARTS_LIMITER, async (req, res) => {
         GROUP BY 1
         ORDER BY packets_7d DESC, iata ASC
       `, filters.params),
-      // observer regions sparkline series — last 7d
+      // observer regions sparkline series — last 7d (de-duped per region by packet_hash)
       query(`
         SELECT
           COALESCE(NULLIF(TRIM(UPPER(n.iata)), ''), 'UNK') AS iata,
           time_bucket('1 day', p.time) AS day,
-          COUNT(*) AS count
+          COUNT(DISTINCT p.packet_hash) AS count
         FROM packets p
         LEFT JOIN nodes n ON LOWER(n.node_id) = LOWER(p.rx_node_id)
         WHERE p.time > NOW() - INTERVAL '7 days'
@@ -2560,48 +2558,95 @@ router.get('/stats/charts', STATS_CHARTS_LIMITER, async (req, res) => {
     const latestFullyDecodedNodes = maskDecodedPathNodes(multibyteRow?.latest_fully_decoded_nodes);
     const longestFullyDecodedNodes = maskDecodedPathNodes(multibyteRow?.longest_fully_decoded_nodes);
 
-    res.json({
-      packetsPerHour:  phResult.rows.map(r => ({ hour: fmtHourMinute(r.hour), count: Number(r.count) })),
-      packetsPerDay:   pdResult.rows.map(r => ({ day: fmtDay(r.day), count: Number(r.count) })),
-      radiosPerHour:   rhResult.rows.map(r => ({ hour: fmtHourMinute(r.hour), count: Number(r.count) })),
-      radiosPerDay:    rdResult.rows.map(r => ({ day: fmtDay(r.day), count: Number(r.count) })),
-      packetTypes:     ptResult.rows.map(r => ({ label: PAYLOAD_LABELS[Number(r.packet_type)] ?? `Type${r.packet_type}`, count: Number(r.count) })),
-      repeatersPerDay: rpResult.rows.map(r => ({ hour: fmtDay(r.hour), count: Number(r.count ?? 0) })),
-      hopDistribution: hdResult.rows.map(r => ({ hops: Number(r.hops), count: Number(r.count) })),
-      // Back-compat for cached older frontend bundles that still read topChatters.
-      topChatters: [],
-      prefixCollisions: pcResult.rows.map(r => ({
-        prefix: String(r.prefix ?? '').toUpperCase(),
-        repeats: Number(r.repeats),
-      })),
-      observerRegions: Array.from(observerRegionsByIata.values()),
-      pathHashes: {
-        last24hHops: pathHashStats,
-        multibytePackets24h: Number(multibyteRow?.multibyte_packets_24h ?? 0),
-        fullyDecodedMultibyte24h: Number(multibyteRow?.fully_decoded_multibyte_24h ?? 0),
-        latestMultibyteAt: multibyteRow?.latest_multibyte_at ?? null,
-        latestMultibyteHash: multibyteRow?.latest_multibyte_hash ?? null,
-        latestFullyDecodedAt: multibyteRow?.latest_fully_decoded_at ?? null,
-        latestFullyDecodedHash: multibyteRow?.latest_fully_decoded_hash ?? null,
-        latestFullyDecodedHops: Number(multibyteRow?.latest_fully_decoded_hops ?? 0) || null,
-        latestFullyDecodedPath: multibyteRow?.latest_fully_decoded_path ?? null,
-        latestFullyDecodedNodes,
-        longestFullyDecodedAt: multibyteRow?.longest_fully_decoded_at ?? null,
-        longestFullyDecodedHash: multibyteRow?.longest_fully_decoded_hash ?? null,
-        longestFullyDecodedHops: Number(multibyteRow?.longest_fully_decoded_hops ?? 0) || null,
-        longestFullyDecodedPath: multibyteRow?.longest_fully_decoded_path ?? null,
-        longestFullyDecodedNodes,
-      },
-      summary: {
-        totalPackets24h:  Number(sumResult.rows[0].total_24h),
-        totalPackets7d:   Number(sumResult.rows[0].total_7d),
-        uniqueRadios24h:  Number(sumResult.rows[0].unique_radios_24h),
-        activeRepeaters:  Number(sumResult.rows[0].active_repeaters ?? 0),
-        staleRepeaters:   Number(sumResult.rows[0].stale_repeaters ?? 0),
-        peakHour:         peakRow ? fmtHour(peakRow.hour) : null,
-        peakHourCount:    peakRow ? Number(peakRow.count) : 0,
-      },
-    });
+  return {
+    packetsPerHour:  phResult.rows.map(r => ({ hour: fmtHourMinute(r.hour), count: Number(r.count) })),
+    packetsPerDay:   pdResult.rows.map(r => ({ day: fmtDay(r.day), count: Number(r.count) })),
+    radiosPerHour:   rhResult.rows.map(r => ({ hour: fmtHourMinute(r.hour), count: Number(r.count) })),
+    radiosPerDay:    rdResult.rows.map(r => ({ day: fmtDay(r.day), count: Number(r.count) })),
+    packetTypes:     ptResult.rows.map(r => ({ label: PAYLOAD_LABELS[Number(r.packet_type)] ?? `Type${r.packet_type}`, count: Number(r.count) })),
+    repeatersPerDay: rpResult.rows.map(r => ({ hour: fmtDay(r.hour), count: Number(r.count ?? 0) })),
+    hopDistribution: hdResult.rows.map(r => ({ hops: Number(r.hops), count: Number(r.count) })),
+    topChatters: [],
+    prefixCollisions: pcResult.rows.map(r => ({
+      prefix: String(r.prefix ?? '').toUpperCase(),
+      repeats: Number(r.repeats),
+    })),
+    observerRegions: Array.from(observerRegionsByIata.values()),
+    pathHashes: {
+      last24hHops: pathHashStats,
+      multibytePackets24h: Number(multibyteRow?.multibyte_packets_24h ?? 0),
+      fullyDecodedMultibyte24h: Number(multibyteRow?.fully_decoded_multibyte_24h ?? 0),
+      latestMultibyteAt: multibyteRow?.latest_multibyte_at ?? null,
+      latestMultibyteHash: multibyteRow?.latest_multibyte_hash ?? null,
+      latestFullyDecodedAt: multibyteRow?.latest_fully_decoded_at ?? null,
+      latestFullyDecodedHash: multibyteRow?.latest_fully_decoded_hash ?? null,
+      latestFullyDecodedHops: Number(multibyteRow?.latest_fully_decoded_hops ?? 0) || null,
+      latestFullyDecodedPath: multibyteRow?.latest_fully_decoded_path ?? null,
+      latestFullyDecodedNodes,
+      longestFullyDecodedAt: multibyteRow?.longest_fully_decoded_at ?? null,
+      longestFullyDecodedHash: multibyteRow?.longest_fully_decoded_hash ?? null,
+      longestFullyDecodedHops: Number(multibyteRow?.longest_fully_decoded_hops ?? 0) || null,
+      longestFullyDecodedPath: multibyteRow?.longest_fully_decoded_path ?? null,
+      longestFullyDecodedNodes,
+    },
+    summary: {
+      totalPackets24h:  Number(sumResult.rows[0].total_24h),
+      totalPackets7d:   Number(sumResult.rows[0].total_7d),
+      uniqueRadios24h:  Number(sumResult.rows[0].unique_radios_24h),
+      activeRepeaters:  Number(sumResult.rows[0].active_repeaters ?? 0),
+      staleRepeaters:   Number(sumResult.rows[0].stale_repeaters ?? 0),
+      peakHour:         peakRow ? fmtHour(peakRow.hour) : null,
+      peakHourCount:    peakRow ? Number(peakRow.count) : 0,
+    },
+  };
+}
+
+async function getCachedChartsData(network: string | undefined, observer: string | undefined): Promise<unknown> {
+  const key = `${network ?? 'all'}:${observer ?? ''}`;
+  const cached = chartsCache.get(key);
+  if (cached && Date.now() - cached.ts < CHARTS_CACHE_TTL_MS) return cached.data;
+
+  // Deduplicate concurrent requests for the same key
+  const inflight = chartsInflight.get(key);
+  if (inflight) return inflight;
+
+  const promise = computeChartsData(network, observer).then((data) => {
+    chartsCache.set(key, { ts: Date.now(), data });
+    chartsInflight.delete(key);
+    return data;
+  }).catch((err) => {
+    chartsInflight.delete(key);
+    throw err;
+  });
+
+  chartsInflight.set(key, promise);
+  return promise;
+}
+
+// Pre-warm charts cache for common networks on startup, then refresh every 30 minutes.
+// This ensures the first visitor always gets a cached response.
+{
+  const CHARTS_WARMUP_NETWORKS = (process.env['WARMUP_NETWORKS'] ?? 'teesside,ukmesh')
+    .split(',').map((s: string) => s.trim()).filter(Boolean);
+
+  const warmCharts = () => {
+    for (const net of CHARTS_WARMUP_NETWORKS) {
+      getCachedChartsData(net, undefined).catch(() => { /* best-effort */ });
+    }
+  };
+
+  // Delay slightly so the DB pool is ready
+  setTimeout(warmCharts, 5_000);
+  setInterval(warmCharts, CHARTS_CACHE_TTL_MS);
+}
+
+// GET /api/stats/charts
+router.get('/stats/charts', STATS_CHARTS_LIMITER, async (req, res) => {
+  try {
+    const requestedNetwork = resolveRequestNetwork(req.query['network'], req.headers);
+    const network = requestedNetwork === 'all' ? undefined : requestedNetwork;
+    const observer = normalizeObserverQuery(req.query['observer']);
+    res.json(await getCachedChartsData(network, observer));
   } catch (err) {
     console.error('[api] GET /stats/charts', (err as Error).message);
     res.status(500).json({ error: 'Internal server error' });

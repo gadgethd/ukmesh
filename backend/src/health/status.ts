@@ -106,7 +106,7 @@ function systemStats() {
   };
 }
 
-async function currentWorkers(): Promise<WorkerSnapshot[]> {
+async function currentWorkers(precomputedStats?: ReturnType<typeof systemStats>): Promise<WorkerSnapshot[]> {
   const r = redis();
   const [
     viewshedDepth,
@@ -144,7 +144,7 @@ async function currentWorkers(): Promise<WorkerSnapshot[]> {
     ),
   ]);
 
-  const stats = systemStats();
+  const stats = precomputedStats ?? systemStats();
   const load = stats.cpu.load_1m;
   const memPct = stats.memory.used_pct;
   const diskPct = stats.disk.used_pct;
@@ -241,8 +241,11 @@ export async function captureWorkerHealthSnapshot(): Promise<void> {
 }
 
 export async function getWorkerHealthOverview() {
+  // Compute system stats once — cpuUsagePct() diffs against lastCpuSample,
+  // so calling it twice in one request gives a garbage near-zero second reading.
+  const sysStats = systemStats();
   const [workers, history, errors1h, ingest, pathHashWidths, multibyteSummary] = await Promise.all([
-    currentWorkers(),
+    currentWorkers(sysStats),
     query<{
       ts: string;
       worker_name: string;
@@ -367,7 +370,7 @@ export async function getWorkerHealthOverview() {
   const multibyteRow = multibyteSummary.rows[0];
 
   return {
-    system: systemStats(),
+    system: sysStats,
     workers,
     history: history.rows,
     frontend_errors_1h: Number(errors1h.rows[0]?.count ?? 0),

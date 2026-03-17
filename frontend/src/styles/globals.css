@@ -2330,6 +2330,7 @@ html, body, #root {
   color: var(--accent);
   font-weight: 500;
   font-size: 0.85rem;
+  grid-column: 1 / -1;
 }
 
 .uk-feed-packet-row__summary {

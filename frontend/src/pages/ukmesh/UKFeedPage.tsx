@@ -303,11 +303,11 @@ export const UKFeedPage: React.FC = () => {
                     if (selectedIata === 'all') return true;
                     return packetObserverIatas(packet, nodeMap).includes(selectedIata);
                   });
-                  const observerDisplay = observerIds.length > 1
-                    ? `heard by ${observerIds.length}`
-                    : observerIds.length === 1
-                      ? (nodeMap.get(observerIds[0])?.name ?? shortNode(observerIds[0]))
-                      : 'unknown';
+                  const names = observerIds.map((id) => {
+                    const node = nodeMap.get(id);
+                    return node?.name ?? node?.iata ?? shortNode(id);
+                  });
+                  const observerDisplay = names.length === 0 ? 'unknown' : names.join(' · ');
                   return (
                     <article className="uk-feed-packet-row" key={`${packet.packet_hash}-${packet.time}`}>
                       <div className="uk-feed-packet-row__meta">
