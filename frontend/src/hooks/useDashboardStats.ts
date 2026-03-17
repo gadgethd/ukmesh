@@ -1,5 +1,4 @@
-import { useEffect, useState } from 'react';
-import { statsEndpoint, uncachedEndpoint, type ApiScope } from '../utils/api.js';
+import { useEffect, useRef, useState } from 'react';
 
 export type DashboardStats = {
   mqttNodes: number;
@@ -9,7 +8,7 @@ export type DashboardStats = {
   totalNodes: number;
 };
 
-const EMPTY_STATS: DashboardStats = {
+export const EMPTY_STATS: DashboardStats = {
   mqttNodes: 0,
   staleNodes: 0,
   packetsDay: 0,
@@ -17,42 +16,35 @@ const EMPTY_STATS: DashboardStats = {
   totalNodes: 0,
 };
 
-export function useDashboardStats(scope: ApiScope = {}): DashboardStats {
-  const [stats, setStats] = useState<DashboardStats>(EMPTY_STATS);
+/**
+ * Wraps externally-fetched stats (from App.tsx consolidated poll) with a
+ * real-time `packetsDay` increment driven by the meshcore:packet-observed event.
+ * The interval counter resets each time fresh stats arrive from the server.
+ */
+export function useDashboardStats(externalStats: DashboardStats | null): DashboardStats {
+  const [localPacketsDay, setLocalPacketsDay] = useState(0);
+  const prevStatsRef = useRef<DashboardStats | null>(null);
 
+  // Reset local counter when the server sends a fresh packetsDay value
   useEffect(() => {
-    const fetchStats = async () => {
-      try {
-        const response = await fetch(
-          uncachedEndpoint(statsEndpoint(scope)),
-          { cache: 'no-store' }
-        );
-        if (response.ok) {
-          setStats(await response.json() as DashboardStats);
-        }
-      } catch {
-        // non-fatal
-      }
-    };
-
-    fetchStats();
-    const interval = setInterval(fetchStats, 10_000);
-    return () => clearInterval(interval);
-  }, [scope.network, scope.observer]);
+    if (externalStats && externalStats !== prevStatsRef.current) {
+      prevStatsRef.current = externalStats;
+      setLocalPacketsDay(0);
+    }
+  }, [externalStats]);
 
   useEffect(() => {
     const handlePacketObserved = () => {
-      setStats((current) => ({
-        ...current,
-        packetsDay: current.packetsDay + 1,
-      }));
+      setLocalPacketsDay((n) => n + 1);
     };
-
     window.addEventListener('meshcore:packet-observed', handlePacketObserved as EventListener);
     return () => {
       window.removeEventListener('meshcore:packet-observed', handlePacketObserved as EventListener);
     };
   }, []);
 
-  return stats;
+  const base = externalStats ?? EMPTY_STATS;
+  return localPacketsDay > 0
+    ? { ...base, packetsDay: base.packetsDay + localPacketsDay }
+    : base;
 }

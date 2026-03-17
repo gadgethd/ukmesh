@@ -3,14 +3,17 @@ import type { IncomingMessage } from 'node:http';
 import type { Server } from 'node:http';
 import { Redis } from 'ioredis';
 import type { WSMessage, LivePacket } from '../types/index.js';
-import { getNodes, getLastNPackets, getViableLinks } from '../db/index.js';
+import { getNodes, getRecentPackets, getViableLinks } from '../db/index.js';
 import { resolveRequestNetwork } from '../http/requestScope.js';
 
 const REDIS_CHANNEL = 'meshcore:live';
 
 let pub: Redis;
 let sub: Redis;
-const VIABLE_LINK_CACHE_TTL_MS = 30_000;
+// Viable links change slowly (based on historical packet accumulation).
+// 5-minute TTL means the expensive correlated-subquery runs at most once per
+// 5 minutes per network/observer combo instead of once per 30 seconds.
+const VIABLE_LINK_CACHE_TTL_MS = 5 * 60_000;
 const VIABLE_LINK_CACHE_MAX = 50;
 const viableLinksCache = new Map<string, { ts: number; data: Awaited<ReturnType<typeof getViableLinks>> }>();
 
@@ -28,11 +31,11 @@ setInterval(() => {
  * network/observer key, refreshed every 30 seconds in the background.
  * Eliminates the DB pool spike caused by N clients each firing 3 queries on connect.
  */
-const INITIAL_STATE_TTL_MS = 30_000;
+const INITIAL_STATE_TTL_MS = 60_000; // 60 s — live WS updates keep clients current
 type InitialStateEntry = {
   ts: number;
   nodes: Awaited<ReturnType<typeof getNodes>>;
-  packets: Awaited<ReturnType<typeof getLastNPackets>>;
+  packets: Awaited<ReturnType<typeof getRecentPackets>>;
   viableLinks: Awaited<ReturnType<typeof getViableLinks>>;
 };
 const initialStateCache = new Map<string, InitialStateEntry>();
@@ -49,9 +52,11 @@ async function fetchInitialState(network: string | undefined, observer: string |
 
   const promise = (async () => {
     try {
+      // getRecentPackets uses a 5-minute window with CTE aggregation (16 ms).
+      // getLastNPackets used 24-hour correlated subqueries (1,800 ms) — replaced here.
       const [nodes, packets, viableLinks] = await Promise.all([
         getNodes(network, observer),
-        getLastNPackets(7, network, observer),
+        getRecentPackets(7, network, observer),
         getCachedViableLinks(network, observer),
       ]);
       const entry: InitialStateEntry = { ts: Date.now(), nodes, packets, viableLinks };
@@ -99,23 +104,22 @@ function packetMatchesScope(packet: Partial<LivePacket>, scope: ClientScope): bo
   if (scope.network && packet.network && packet.network !== scope.network) return false;
   if (!scope.network && !scope.observer && packet.network === 'test') return false;
   if (scope.observer) {
-    return String(packet.rxNodeId ?? '').toLowerCase() === scope.observer;
+    // rxNodeId is a hex public key — always lowercase; no allocation needed
+    return (packet.rxNodeId ?? '') === scope.observer;
   }
   return true;
 }
 
 function nodeMatchesScope(nodeId: string | undefined, scope: ClientScope): boolean {
   if (!nodeId) return false;
-  const normalized = nodeId.toLowerCase();
-  if (scope.observer && normalized === scope.observer) return true;
-  return scope.nodeIds.has(normalized);
+  // IDs are pre-normalised to lowercase at broadcast time; no allocation needed
+  if (scope.observer && nodeId === scope.observer) return true;
+  return scope.nodeIds.has(nodeId);
 }
 
 function shouldSendMessage(msg: WSMessage, scope: ClientScope): boolean {
   if (msg.type === 'packet') {
-    const packet = msg.data as Partial<LivePacket>;
-    const matchesScope = packetMatchesScope(packet, scope);
-    return matchesScope;
+    return packetMatchesScope(msg.data as Partial<LivePacket>, scope);
   }
 
   if (msg.type === 'node_update') {
@@ -123,7 +127,7 @@ function shouldSendMessage(msg: WSMessage, scope: ClientScope): boolean {
     if (scope.network && data.network && data.network !== scope.network) return false;
     if (!scope.network && !scope.observer && data.network === 'test') return false;
     if (!scope.network && !scope.observer) return true;
-    if (scope.observer && data.observerId && data.observerId.toLowerCase() !== scope.observer && !nodeMatchesScope(data.nodeId, scope)) {
+    if (scope.observer && data.observerId && data.observerId !== scope.observer && !nodeMatchesScope(data.nodeId, scope)) {
       return false;
     }
     return nodeMatchesScope(data.nodeId, scope);
@@ -135,8 +139,8 @@ function shouldSendMessage(msg: WSMessage, scope: ClientScope): boolean {
     if (!scope.network && !scope.observer && data.network === 'test') return false;
     if (!scope.network && !scope.observer) return true;
     if (scope.observer) {
-      if (data.observer_id && data.observer_id.toLowerCase() === scope.observer) return true;
-      if (data.observer_id && data.observer_id.toLowerCase() !== scope.observer && !nodeMatchesScope(data.node_id, scope)) {
+      if (data.observer_id && data.observer_id === scope.observer) return true;
+      if (data.observer_id && data.observer_id !== scope.observer && !nodeMatchesScope(data.node_id, scope)) {
         return false;
       }
     }
@@ -158,15 +162,17 @@ function shouldSendMessage(msg: WSMessage, scope: ClientScope): boolean {
 
 function trackScopedNodes(msg: WSMessage, scope: ClientScope): void {
   if (msg.type === 'packet') {
+    // rxNodeId/srcNodeId are hex public keys — always lowercase
     const data = msg.data as Partial<LivePacket>;
-    if (data.rxNodeId) scope.nodeIds.add(data.rxNodeId.toLowerCase());
-    if (data.srcNodeId) scope.nodeIds.add(data.srcNodeId.toLowerCase());
+    if (data.rxNodeId)  scope.nodeIds.add(data.rxNodeId);
+    if (data.srcNodeId) scope.nodeIds.add(data.srcNodeId);
     return;
   }
 
   if (msg.type === 'node_upsert') {
+    // node_id is pre-normalised to lowercase at broadcast time
     const data = msg.data as { node_id?: string };
-    if (data.node_id) scope.nodeIds.add(data.node_id.toLowerCase());
+    if (data.node_id) scope.nodeIds.add(data.node_id);
   }
 }
 
@@ -194,6 +200,16 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
     .split(',')
     .map(s => s.trim())
     .filter(Boolean);
+
+  // Pre-warm the initial state cache for common networks at startup so the
+  // first connecting client doesn't pay the cold DB cost.
+  const WARMUP_NETWORKS = (process.env['WARMUP_NETWORKS'] ?? 'teesside,ukmesh')
+    .split(',').map(s => s.trim()).filter(Boolean);
+  process.nextTick(() => {
+    for (const net of WARMUP_NETWORKS) {
+      fetchInitialState(net, undefined).catch(() => { /* best-effort */ });
+    }
+  });
 
   const wss = new WebSocketServer({
     server: httpServer,
@@ -326,11 +342,28 @@ export function broadcastPacket(packet: LivePacket): void {
 }
 
 export function broadcastNodeUpdate(nodeId: string, meta?: { network?: string; observerId?: string }): void {
-  const msg: WSMessage = { type: 'node_update', data: { nodeId, network: meta?.network, observerId: meta?.observerId, ts: Date.now() }, ts: Date.now() };
+  // Normalise IDs to lowercase once here so shouldSendMessage() never needs to allocate
+  const msg: WSMessage = {
+    type: 'node_update',
+    data: {
+      nodeId:     nodeId.toLowerCase(),
+      network:    meta?.network,
+      observerId: meta?.observerId?.toLowerCase(),
+      ts:         Date.now(),
+    },
+    ts: Date.now(),
+  };
   void pub.publish(REDIS_CHANNEL, JSON.stringify(msg));
 }
 
 export function broadcastNodeUpsert(node: Record<string, unknown>): void {
-  const msg: WSMessage = { type: 'node_upsert', data: node, ts: Date.now() };
+  // Normalise IDs to lowercase once here so shouldSendMessage() never needs to allocate
+  const normalised: Record<string, unknown> = {
+    ...node,
+    node_id:     typeof node['node_id']     === 'string' ? node['node_id'].toLowerCase()     : node['node_id'],
+    observer_id: typeof node['observer_id'] === 'string' ? node['observer_id'].toLowerCase() : node['observer_id'],
+    public_key:  typeof node['public_key']  === 'string' ? node['public_key'].toLowerCase()  : node['public_key'],
+  };
+  const msg: WSMessage = { type: 'node_upsert', data: normalised, ts: Date.now() };
   void pub.publish(REDIS_CHANNEL, JSON.stringify(msg));
 }

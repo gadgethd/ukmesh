@@ -35,7 +35,8 @@ type UsePacketPathOverlayResult = {
   betaPathConfidence: number | null;
   betaPermutationCount: number | null;
   betaRemainingHops: number | null;
-  pathOpacity: number;
+  /** True during the 1-second CSS fade-out before paths are cleared. Use to apply a CSS transition class instead of animating opacity in React state. */
+  pathFadingOut: boolean;
   pinnedPacketId: string | null;
   pinnedPacketSnapshot: AggregatedPacket | null;
   handlePacketPin: (packet: AggregatedPacket) => void;
@@ -80,14 +81,16 @@ export function usePacketPathOverlay({
   const [betaRemainingHops, setBetaRemainingHops] = useState<number | null>(null);
   const [pinnedPacketId, setPinnedPacketId] = useState<string | null>(null);
   const [pinnedPacketSnapshot, setPinnedPacketSnapshot] = useState<AggregatedPacket | null>(null);
-  const [pathOpacity, setPathOpacity] = useState(0.75);
+  // CSS-based fade: instead of animating opacity via 60fps rAF (which caused ~60 MapView
+  // re-renders/second), we set a single boolean that triggers a CSS transition on the pane.
+  const [pathFadingOut, setPathFadingOut] = useState(false);
   const [isPageVisible, setIsPageVisible] = useState(
     () => (typeof document === 'undefined' ? true : document.visibilityState === 'visible'),
   );
 
   const pinnedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pathTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pathFadeRef = useRef<number | null>(null);
+  const pathFadeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const betaReqRef = useRef<AbortController | null>(null);
   const predictionCacheRef = useRef<Map<string, { prediction: ServerBetaResponse | null; ts: number }>>(new Map());
   const inFlightRef = useRef<Map<string, Promise<ServerBetaResponse | null>>>(new Map());
@@ -100,9 +103,9 @@ export function usePacketPathOverlay({
       clearTimeout(pathTimerRef.current);
       pathTimerRef.current = null;
     }
-    if (pathFadeRef.current !== null) {
-      cancelAnimationFrame(pathFadeRef.current);
-      pathFadeRef.current = null;
+    if (pathFadeTimerRef.current !== null) {
+      clearTimeout(pathFadeTimerRef.current);
+      pathFadeTimerRef.current = null;
     }
     if (betaReqRef.current) {
       betaReqRef.current.abort();
@@ -119,7 +122,7 @@ export function usePacketPathOverlay({
     setBetaPathConfidence(null);
     setBetaPermutationCount(null);
     setBetaRemainingHops(null);
-    setPathOpacity(0.75);
+    setPathFadingOut(false);
   }, []);
 
   useEffect(() => {
@@ -283,6 +286,12 @@ export function usePacketPathOverlay({
   const latestId = packets.find((p) => p.packetType === 4 || p.packetType === 5)?.id;
   const betaEffectThrottleRef = useRef<number | null>(null);
 
+  // Keep a ref to the latest packets so we can read them inside effects without
+  // adding `packets` to the dependency array (which would trigger on every packet
+  // arrival, not just when the active path packet changes).
+  const packetsRef = useRef(packets);
+  packetsRef.current = packets;
+
   useEffect(() => {
     if (pinnedPacketId !== null) return;
 
@@ -295,12 +304,14 @@ export function usePacketPathOverlay({
     stopPathTimers();
     pruneRecentPredictions();
 
-    const latest = packets.find((p) => p.packetType === 4 || p.packetType === 5);
+    // Use the ref so we always see the latest packets without re-triggering this
+    // effect on every packet arrival.
+    const latest = packetsRef.current.find((p) => p.packetType === 4 || p.packetType === 5);
     const observerIds = getPacketObserverIds(latest);
     setPacketPaths([]);
 
     if (!isPageVisible) {
-      setPathOpacity(0.75);
+      setPathFadingOut(false);
       return;
     }
 
@@ -334,33 +345,26 @@ export function usePacketPathOverlay({
       setBetaRemainingHops(null);
     }
 
-    if (!filters.betaPaths) {
-      setPathOpacity(0.75);
-      return;
-    }
-    if (!latest) {
-      setPathOpacity(0.75);
+    if (!filters.betaPaths || !latest) {
+      setPathFadingOut(false);
       return;
     }
 
-    setPathOpacity(0.75);
+    // Start a TTL timer: after PATH_TTL - FADE_MS, begin CSS fade-out (2 state updates total
+    // instead of 60 rAF updates). After FADE_MS more, clear paths entirely.
+    const FADE_MS = 1_000;
+    setPathFadingOut(false);
     pathTimerRef.current = setTimeout(() => {
-      const FADE_MS = 1_000;
-      const startTime = performance.now();
-      const animate = (now: number) => {
-        const t = Math.min(1, (now - startTime) / FADE_MS);
-        setPathOpacity(0.75 * (1 - t));
-        if (t < 1) {
-          pathFadeRef.current = requestAnimationFrame(animate);
-        } else {
-          pathFadeRef.current = null;
-          clearPathState();
-        }
-      };
-      pathFadeRef.current = requestAnimationFrame(animate);
-    }, PATH_TTL - 1_000);
+      setPathFadingOut(true);
+      pathFadeTimerRef.current = setTimeout(() => {
+        pathFadeTimerRef.current = null;
+        clearPathState();
+      }, FADE_MS);
+    }, PATH_TTL - FADE_MS);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [latestId, filters.betaPaths, pinnedPacketId, network, observer, packets, getPacketObserverIds, resolvePrediction, resolveMultiPrediction, stopPathTimers, clearPathState, applyServerPredictions, isPageVisible, pruneRecentPredictions]);
+  // `packets` intentionally omitted — accessed via packetsRef to avoid firing on every
+  // packet arrival. Effect only re-runs when latestId changes (a new distinct path packet).
+  }, [latestId, filters.betaPaths, pinnedPacketId, network, observer, getPacketObserverIds, resolvePrediction, resolveMultiPrediction, stopPathTimers, clearPathState, applyServerPredictions, isPageVisible, pruneRecentPredictions]);
 
   const handlePacketPin = useCallback((packet: AggregatedPacket) => {
     if (pinnedPacketId === packet.id) {
@@ -382,28 +386,21 @@ export function usePacketPathOverlay({
       pinnedTimerRef.current = null;
     }
 
-    setPathOpacity(0.75);
+    setPathFadingOut(false);
     setPinnedPacketId(packet.id);
     setPinnedPacketSnapshot(packet);
 
+    const FADE_MS = 1_000;
     pinnedTimerRef.current = setTimeout(() => {
-      const FADE_MS = 1_000;
-      const startTime = performance.now();
-      const animate = (now: number) => {
-        const t = Math.min(1, (now - startTime) / FADE_MS);
-        setPathOpacity(0.75 * (1 - t));
-        if (t < 1) {
-          pathFadeRef.current = requestAnimationFrame(animate);
-        } else {
-          pathFadeRef.current = null;
-          clearPathState();
-          setPinnedPacketId(null);
-          setPinnedPacketSnapshot(null);
-          pinnedOverlayKeyRef.current = '';
-          pinnedTimerRef.current = null;
-        }
-      };
-      pathFadeRef.current = requestAnimationFrame(animate);
+      setPathFadingOut(true);
+      pathFadeTimerRef.current = setTimeout(() => {
+        pathFadeTimerRef.current = null;
+        clearPathState();
+        setPinnedPacketId(null);
+        setPinnedPacketSnapshot(null);
+        pinnedOverlayKeyRef.current = '';
+        pinnedTimerRef.current = null;
+      }, FADE_MS);
     }, 30_000);
   }, [pinnedPacketId, stopPathTimers, clearPathState]);
 
@@ -495,7 +492,7 @@ export function usePacketPathOverlay({
     betaPathConfidence,
     betaPermutationCount,
     betaRemainingHops,
-    pathOpacity,
+    pathFadingOut,
     pinnedPacketId,
     pinnedPacketSnapshot,
     handlePacketPin,

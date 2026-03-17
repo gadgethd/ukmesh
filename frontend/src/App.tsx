@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Map as LeafletMap } from 'leaflet';
-import { MapView, type DeckViewState } from './components/Map/MapView.js';
-import { PacketArcLayer } from './components/Map/PacketArcLayer.js';
+import { MapView } from './components/Map/MapView.js';
+import type { DeckViewState, GPUNodeData } from './components/Map/DeckGLOverlay.js';
+import { DeckGLOverlay } from './components/Map/DeckGLOverlay.js';
 import { FilterPanel, type Filters } from './components/FilterPanel/FilterPanel.js';
 import { PacketFeed } from './components/PacketFeed.js';
 import { DisclaimerModal } from './components/app/DisclaimerModal.js';
@@ -10,13 +11,13 @@ import { MobileControls } from './components/app/MobileControls.js';
 import { useWebSocket } from './hooks/useWebSocket.js';
 import { useNodes, type MeshNode } from './hooks/useNodes.js';
 import { useCoverage } from './hooks/useCoverage.js';
-import { useDashboardStats } from './hooks/useDashboardStats.js';
+import { useDashboardStats, type DashboardStats } from './hooks/useDashboardStats.js';
 import { useLinkState } from './hooks/useLinkState.js';
 import { usePacketPathOverlay } from './hooks/usePacketPathOverlay.js';
 import { useAppMessageHandler } from './hooks/useAppMessageHandler.js';
 import { getCurrentSite } from './config/site.js';
 import { uncachedEndpoint, withScopeParams } from './utils/api.js';
-import { resolvePathNodeIds, hasCoords } from './utils/pathing.js';
+import { buildHiddenCoordMask, resolvePathNodeIds, hasCoords, maskNodePoint } from './utils/pathing.js';
 
 type PacketHistorySegment = {
   positions: [[number, number], [number, number]];
@@ -55,9 +56,11 @@ export const App: React.FC = () => {
   const [inferredNodes, setInferredNodes] = useState<MeshNode[]>([]);
   const [inferredActiveNodeIds, setInferredActiveNodeIds] = useState<Set<string>>(new Set());
   const [packetHistorySegments, setPacketHistorySegments] = useState<PacketHistorySegment[]>([]);
+  const [fetchedStats, setFetchedStats] = useState<DashboardStats | null>(null);
   const [isPageVisible, setIsPageVisible] = useState(
     () => (typeof document === 'undefined' ? true : document.visibilityState === 'visible'),
   );
+  const [prefixFocusActive, setPrefixFocusActive] = useState(false);
   const clashRestoreRef = useRef<{ coverage: boolean; clientNodes: boolean } | null>(null);
   const prevHexClashesRef = useRef<boolean>(DEFAULT_FILTERS.hexClashes);
 
@@ -78,8 +81,12 @@ export const App: React.FC = () => {
   const networkFilter = site.networkFilter;
   const observerFilter = site.observerId;
 
-  const { coverage, handleCoverageUpdate, handleCoverageUpdateBatch } = useCoverage({ network: networkFilter, observer: observerFilter });
-  const stats = useDashboardStats({ network: networkFilter, observer: observerFilter });
+  // Coordinate privacy mask — computed once here and shared with MapView (for node markers /
+  // clash lines) and DeckGLOverlay (for GPU-rendered path/history layers).
+  const hiddenCoordMask = useMemo(() => buildHiddenCoordMask(nodes.values()), [nodes]);
+
+  const { coverage, handleCoverageUpdate, handleCoverageUpdateBatch } = useCoverage({ network: networkFilter, observer: observerFilter }, filters.coverage);
+  const stats = useDashboardStats(fetchedStats);
   const {
     linkMetrics,
     viablePairsArr,
@@ -91,13 +98,12 @@ export const App: React.FC = () => {
 
   const {
     betaPacketPaths,
-    betaLowConfidencePaths,
     betaLowConfidenceSegments,
     betaCompletionPaths,
     betaPathConfidence,
     betaPermutationCount,
     betaRemainingHops,
-    pathOpacity,
+    pathFadingOut,
     pinnedPacketId,
     pinnedPacketSnapshot,
     handlePacketPin,
@@ -112,9 +118,17 @@ export const App: React.FC = () => {
   // Compute the set of node IDs involved in the currently displayed path.
   // Active when: a packet is pinned, OR the live-path toggle is on (auto-tracks packets[0]).
   // Passed to MapView so it can hide unrelated repeaters.
+  //
+  // Uses a ref-based stability guard: if the computed Set has identical contents to the
+  // previous result, the same reference is returned. This prevents MapView from re-rendering
+  // on every packet arrival when the active path packet hasn't actually changed.
+  const pathNodeIdsPrevRef = useRef<Set<string> | null>(null);
   const pathNodeIds = useMemo<Set<string> | null>(() => {
     const activePacket = pinnedPacketSnapshot ?? (filters.betaPaths ? (packets.find((p) => p.packetType === 4 || p.packetType === 5) ?? null) : null);
-    if (!activePacket) return null;
+    if (!activePacket) {
+      if (pathNodeIdsPrevRef.current !== null) pathNodeIdsPrevRef.current = null;
+      return null;
+    }
     const srcNode = activePacket.srcNodeId ? (nodes.get(activePacket.srcNodeId) ?? null) : null;
     const rxNode = activePacket.rxNodeId ? (nodes.get(activePacket.rxNodeId) ?? null) : null;
     const srcWithCoords = srcNode && hasCoords(srcNode) ? srcNode as MeshNode & { lat: number; lon: number } : null;
@@ -128,8 +142,69 @@ export const App: React.FC = () => {
         })();
     const ids = resolvePathNodeIds(activePacket.path ?? [], srcWithCoords, rxWithCoords, nodes);
     for (const id of activePacket.observerIds) ids.add(id.toLowerCase());
-    return ids.size > 0 ? ids : null;
+    const result = ids.size > 0 ? ids : null;
+    // Stabilise reference: return previous set when contents are identical, so MapView's
+    // propsAreEqual check passes and it doesn't re-render just because packets changed.
+    const prev = pathNodeIdsPrevRef.current;
+    if (prev && result && prev.size === result.size && [...result].every((id) => prev.has(id))) {
+      return prev;
+    }
+    pathNodeIdsPrevRef.current = result;
+    return result;
   }, [pinnedPacketSnapshot, filters.betaPaths, packets, nodes]);
+
+  // GPU node data — computed here so DeckGLOverlay can render dots without Leaflet SVG elements.
+  // Colors mirror the markerColor() logic in NodeMarker.tsx (hex-clash colours are never needed
+  // here because showGpuNodes=false during clash mode).
+  const FOURTEEN_DAYS_MS = 14 * 24 * 60 * 60 * 1000;
+  const SEVEN_DAYS_MS    =  7 * 24 * 60 * 60 * 1000;
+  const gpuNodes = useMemo<GPUNodeData[]>(() => {
+    const now    = Date.now();
+    const result: GPUNodeData[] = [];
+
+    const addNode = (node: MeshNode, isInferredVariant: boolean) => {
+      if (!hasCoords(node)) return;
+      if (now - new Date(node.last_seen).getTime() > FOURTEEN_DAYS_MS) return;
+      if (pathNodeIds && !pathNodeIds.has(node.node_id.toLowerCase())) return;
+
+      const isStale = now - new Date(node.last_seen).getTime() > SEVEN_DAYS_MS;
+      const variant = (isInferredVariant || node.is_inferred)
+        ? 'inferred'
+        : (node.role === 1 ? 'companion' : node.role === 3 ? 'room' : 'repeater');
+
+      const masked = maskNodePoint(node, hiddenCoordMask);
+      const maskedLat = masked?.[0] ?? node.lat!;
+      const maskedLon = masked?.[1] ?? node.lon!;
+
+      const alpha = 178; // 0.7 * 255
+      let color: [number, number, number, number];
+      if (isStale)                      color = [255,  68,  68, alpha];
+      else if (!node.is_online)         color = [102, 102, 102, alpha];
+      else if (variant === 'companion') color = [255, 152,   0, alpha];
+      else if (variant === 'room')      color = [206, 147, 216, alpha];
+      else if (variant === 'inferred')  color = [109, 220, 122,   230];
+      else                              color = [  0, 196, 255, alpha]; // repeater
+
+      result.push({ id: node.node_id, position: [maskedLon, maskedLat], color, radius: 3.5 });
+    };
+
+    for (const node of nodes.values()) {
+      const role = node.role;
+      if (role !== undefined && role !== 2 && role !== 1 && role !== 3) continue;
+      if ((role === 1 || role === 3) && !filters.clientNodes) continue;
+      addNode(node, false);
+    }
+    for (const node of inferredNodes) {
+      addNode(node, true);
+    }
+
+    return result;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nodes, inferredNodes, hiddenCoordMask, pathNodeIds, filters.clientNodes]);
+
+  const handlePrefixFocusActiveChange = useCallback((active: boolean) => {
+    setPrefixFocusActive(active);
+  }, []);
 
   useEffect(() => {
     if ('serviceWorker' in navigator) {
@@ -156,10 +231,11 @@ export const App: React.FC = () => {
       if (!isPageVisible) return;
 
       // Fetch all data in parallel
-      const [packetsRes, historyRes, inferredRes] = await Promise.allSettled([
+      const [packetsRes, historyRes, inferredRes, statsRes] = await Promise.allSettled([
         fetch(uncachedEndpoint(withScopeParams('/api/packets/recent?limit=12', { network: networkFilter, observer: observerFilter })), { cache: 'no-store' }),
         fetch(uncachedEndpoint(withScopeParams('/api/path-beta/history', { network: networkFilter })), { cache: 'no-store' }),
         fetch(uncachedEndpoint(withScopeParams('/api/inferred-nodes', { network: networkFilter, observer: observerFilter })), { cache: 'no-store' }),
+        fetch(uncachedEndpoint(withScopeParams('/api/stats', { network: networkFilter, observer: observerFilter })), { cache: 'no-store' }),
       ]);
 
       if (cancelled) return;
@@ -199,6 +275,12 @@ export const App: React.FC = () => {
           setInferredActiveNodeIds(new Set((payload.inferredActiveNodeIds ?? []).map((value) => value.toLowerCase())));
         }
       }
+
+      // Process stats (consolidates the previously separate 30s useDashboardStats poll)
+      if (statsRes.status === 'fulfilled' && statsRes.value.ok) {
+        const payload = await statsRes.value.json() as DashboardStats;
+        if (!cancelled) setFetchedStats(payload);
+      }
     };
 
     void syncAllData();
@@ -213,35 +295,9 @@ export const App: React.FC = () => {
     };
   }, [isPageVisible, networkFilter, observerFilter, replaceRecentPackets]);
 
-  useEffect(() => {
-    let cancelled = false;
-    const syncInferredNodes = async () => {
-      if (!isPageVisible) return;
-      try {
-        const response = await fetch(
-          uncachedEndpoint(withScopeParams('/api/inferred-nodes', { network: networkFilter, observer: observerFilter })),
-          { cache: 'no-store' },
-        );
-        if (!response.ok) return;
-        const payload = await response.json() as {
-          inferredNodes: MeshNode[];
-          inferredActiveNodeIds: string[];
-        };
-        if (cancelled) return;
-        setInferredNodes(payload.inferredNodes ?? []);
-        setInferredActiveNodeIds(new Set((payload.inferredActiveNodeIds ?? []).map((value) => value.toLowerCase())));
-      } catch {
-        // best-effort visual hint layer only
-      }
-    };
-
-    void syncInferredNodes();
-    const timer = window.setInterval(() => { void syncInferredNodes(); }, 5 * 60 * 1000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [isPageVisible, networkFilter, observerFilter]);
+  // Removed: redundant secondary inferred-nodes poll (5-min interval).
+  // The consolidated polling loop above already fetches inferred-nodes every 10s
+  // and the server caches the result for 60s, so a second timer is pure overhead.
 
   useEffect(() => {
     const wasHexClashes = prevHexClashesRef.current;
@@ -355,18 +411,26 @@ export const App: React.FC = () => {
         maxHexClashHops={filters.hexClashMaxHops}
         viablePairsArr={viablePairsArr}
         linkMetrics={linkMetrics}
+        hiddenCoordMask={hiddenCoordMask}
+        pathNodeIds={pathNodeIds}
+        onMapReady={setMap}
+        onPrefixFocusActiveChange={handlePrefixFocusActiveChange}
+      />
+      <DeckGLOverlay
+        arcs={arcs}
+        showArcs={filters.livePackets}
         packetHistorySegments={packetHistorySegments}
         showPacketHistory={filters.packetHistory}
         betaPaths={betaPacketPaths}
-        betaLowPaths={betaLowConfidencePaths}
         betaLowSegments={betaLowConfidenceSegments}
         betaCompletionPaths={betaCompletionPaths}
         showBetaPaths={filters.betaPaths || pinnedPacketId !== null}
-        pathOpacity={pathOpacity}
-        pathNodeIds={pathNodeIds}
-        onMapReady={setMap}
+        pathFadingOut={pathFadingOut}
+        gpuNodes={gpuNodes}
+        showGpuNodes={!filters.hexClashes && !prefixFocusActive}
+        viewState={deckViewState}
+        hiddenCoordMask={hiddenCoordMask}
       />
-      <PacketArcLayer arcs={arcs} showArcs={filters.livePackets} viewState={deckViewState} />
 
       <FilterPanel
         filters={filters}

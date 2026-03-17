@@ -579,6 +579,33 @@ export type ViableLinkRow = {
 
 /** Returns viable links with metrics so UI can render precomputed styles immediately. */
 export async function getViableLinks(network?: string, observer?: string): Promise<ViableLinkRow[]> {
+  // For network-scoped queries we pre-compute the set of nodes seen on that
+  // network in a CTE, then join on it — replacing the correlated EXISTS
+  // subquery in buildNodeScopeClause which ran once per row and caused
+  // full scans on the packets table (30 s+ for teesside).
+  if (network && !observer) {
+    const res = await pool.query<ViableLinkRow>(
+      `WITH net_nodes AS (
+         SELECT DISTINCT node_id FROM nodes WHERE network = $2
+       )
+       SELECT
+         nl.node_a_id,
+         nl.node_b_id,
+         nl.observed_count,
+         nl.itm_viable,
+         nl.itm_path_loss_db,
+         nl.count_a_to_b,
+         nl.count_b_to_a
+       FROM node_links nl
+       WHERE (nl.itm_viable = true OR nl.force_viable = true)
+         AND nl.observed_count >= $1
+         AND nl.node_a_id IN (SELECT node_id FROM net_nodes)
+         AND nl.node_b_id IN (SELECT node_id FROM net_nodes)`,
+      [MIN_LINK_OBSERVATIONS, network],
+    );
+    return res.rows;
+  }
+
   const scope = buildScopePlaceholders(2, network, observer);
   const params: unknown[] = [MIN_LINK_OBSERVATIONS, ...scope.params];
 

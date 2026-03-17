@@ -1,6 +1,7 @@
 import 'node:process';
 import http from 'node:http';
 import express from 'express';
+import compression from 'compression';
 import cors from 'cors';
 import { rateLimit } from 'express-rate-limit';
 import { initDb, query } from './db/index.js';
@@ -78,6 +79,9 @@ async function main() {
 
   // Trust Cloudflare's forwarded IP so rate limiting works correctly
   app.set('trust proxy', 1);
+
+  // Gzip compression for all responses — critical for large payloads like /api/coverage (~26 MB)
+  app.use(compression());
 
   // CORS — allow only our own domains for browser cross-origin requests
   app.use(cors({

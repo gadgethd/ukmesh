@@ -10,17 +10,20 @@ export interface NodeCoverage {
   calculated_at?:   string;
 }
 
-export function useCoverage(scope: ApiScope = {}) {
+export function useCoverage(scope: ApiScope = {}, enabled = false) {
   const [coverage, setCoverage] = useState<NodeCoverage[]>([]);
 
-  // Fetch all stored polygons on mount
+  // Fetch coverage lazily — only when the user enables the coverage toggle.
+  // The response is ~26 MB of GeoJSON; fetching it eagerly on every mount
+  // wastes ~700 ms of load time when coverage is never displayed.
   useEffect(() => {
+    if (!enabled) return;
     const url = withScopeParams('/api/coverage', scope);
     fetch(url)
       .then((r) => r.json())
       .then((data: NodeCoverage[]) => setCoverage(data))
       .catch(() => { /* non-fatal */ });
-  }, [scope.network, scope.observer]);
+  }, [enabled, scope.network, scope.observer]);
 
   // Called when a coverage_update WS message arrives
   const handleCoverageUpdate = useCallback((update: { node_id: string; geom: NodeCoverage['geom']; strength_geoms?: NodeCoverage['strength_geoms'] }) => {

@@ -25,11 +25,47 @@ export function onNodeUpsert(cb: NodeUpsertCallback) { upsertSubscribers.push(cb
 function emit(packet: LivePacket) {
   for (const cb of subscribers) cb(packet);
 }
-function emitNode(nodeId: string, meta?: { network?: string; observerId?: string }) {
-  for (const cb of nodeSubscribers) cb(nodeId, meta);
+
+// Debounced node update batching — 500 ms window
+// Coalesces rapid repeated emits for the same nodeId into a single callback
+// invocation, cutting Redis publishes 10–100× during active advert bursts.
+const NODE_DEBOUNCE_MS = 500;
+const pendingNodeUpdates  = new Map<string, { network?: string; observerId?: string }>();
+const pendingNodeUpserts  = new Map<string, Record<string, unknown>>();
+let nodeFlushTimer: ReturnType<typeof setTimeout> | null = null;
+
+function flushPendingNodeEmits(): void {
+  nodeFlushTimer = null;
+  for (const [nodeId, meta] of pendingNodeUpdates) {
+    for (const cb of nodeSubscribers) cb(nodeId, meta);
+  }
+  pendingNodeUpdates.clear();
+  for (const [, node] of pendingNodeUpserts) {
+    for (const cb of upsertSubscribers) cb(node);
+  }
+  pendingNodeUpserts.clear();
 }
-function emitNodeUpsert(node: Record<string, unknown>) {
-  for (const cb of upsertSubscribers) cb(node);
+
+function scheduleNodeFlush(): void {
+  if (nodeFlushTimer !== null) return;
+  nodeFlushTimer = setTimeout(flushPendingNodeEmits, NODE_DEBOUNCE_MS);
+}
+
+function emitNode(nodeId: string, meta?: { network?: string; observerId?: string }): void {
+  pendingNodeUpdates.set(nodeId, meta ?? {});
+  scheduleNodeFlush();
+}
+
+function emitNodeUpsert(node: Record<string, unknown>): void {
+  const nodeId = String(node['node_id'] ?? '');
+  if (nodeId) {
+    // Merge into pending, keeping latest data for this nodeId
+    pendingNodeUpserts.set(nodeId, node);
+  } else {
+    // No nodeId to deduplicate on — fire immediately
+    for (const cb of upsertSubscribers) cb(node);
+  }
+  scheduleNodeFlush();
 }
 
 /**

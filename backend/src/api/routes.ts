@@ -14,6 +14,17 @@ const router = Router();
 const OWNER_COOKIE_NAME = 'meshcore_owner_session';
 const OWNER_LIVE_CACHE_TTL_MS = 5_000;
 const ownerLiveCache = new Map<string, { ts: number; data: unknown }>();
+
+// Server-side response caches — shared across all clients for the same scope.
+// Reduces repeated DB hits when multiple browser tabs / users poll simultaneously.
+const STATS_CACHE_TTL_MS          = 15_000;  // stats don't need sub-second freshness
+const INFERRED_NODES_CACHE_TTL_MS = 60_000;  // 7-day packet scan, changes slowly
+const PATH_HISTORY_CACHE_TTL_MS   = 60_000;  // history cache is rebuilt by worker, not real-time
+const COVERAGE_CACHE_TTL_MS       = 30_000;  // geometry changes only on coverage rebuild
+const statsCache         = new Map<string, { ts: number; data: unknown }>();
+const inferredNodesCache = new Map<string, { ts: number; data: unknown }>();
+const pathHistoryCache   = new Map<string, { ts: number; data: unknown }>();
+const coverageCache      = new Map<string, { ts: number; data: unknown }>();
 const OWNER_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const MQTT_USERNAME_MAX_LEN = 128;
 const MQTT_PASSWORD_MAX_LEN = 128;
@@ -536,7 +547,8 @@ router.get('/node-status/latest', async (req, res) => {
     }
     if (observer) {
       params.push(observer);
-      conditions.push(`LOWER(nss.node_id) = LOWER($${params.length})`);
+      // observer is already lowercase from normalizeObserverQuery; node_id stored lowercase at insert
+      conditions.push(`nss.node_id = $${params.length}`);
     }
 
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
@@ -598,8 +610,8 @@ router.get('/node-status/history', async (req, res) => {
     const requestedNodeId = String(req.query['nodeId'] ?? '').trim();
     const hours = Math.max(1, Math.min(Number(req.query['hours'] ?? 24), 168));
 
-    let nodeId = requestedNodeId;
-    if (nodeId && !/^[0-9a-fA-F]{64}$/.test(nodeId)) {
+    let nodeId = requestedNodeId.toLowerCase();
+    if (nodeId && !/^[0-9a-f]{64}$/.test(nodeId)) {
       res.status(400).json({ error: 'Invalid nodeId format' });
       return;
     }
@@ -615,7 +627,8 @@ router.get('/node-status/history', async (req, res) => {
       }
       if (observer) {
         params.push(observer);
-        conditions.push(`LOWER(nss.node_id) = LOWER($${params.length})`);
+        // observer is already lowercase from normalizeObserverQuery; node_id stored lowercase at insert
+        conditions.push(`nss.node_id = $${params.length}`);
       }
       const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
       const latestNode = await query<{ node_id: string }>(
@@ -682,7 +695,7 @@ router.get('/node-status/history', async (req, res) => {
            ELSE NULL
          END AS tx_queue_depth_peak
        FROM node_status_samples
-       WHERE LOWER(node_id) = LOWER($1)
+       WHERE node_id = $1
          AND time > NOW() - ($2::text || ' hours')::interval
        ORDER BY time ASC`,
       [nodeId, String(hours)],
@@ -908,7 +921,7 @@ router.get('/local/test-diagnostics', async (req, res) => {
              ELSE NULL
            END AS tx_queue_depth_peak
          FROM node_status_samples
-         WHERE LOWER(node_id) = LOWER($1)
+         WHERE node_id = $1
            AND network = 'test'
            AND time > NOW() - INTERVAL '24 hours'
          ORDER BY time ASC`,
@@ -952,6 +965,14 @@ router.get('/inferred-nodes', async (req, res) => {
     const network = requestedNetwork === 'all' ? undefined : requestedNetwork;
     const observer = normalizeObserverQuery(req.query['observer']);
     const scope = networkFilters(network, observer);
+
+    const inferredCacheKey = `${network ?? 'all'}:${observer ?? ''}`;
+    const inferredCached = inferredNodesCache.get(inferredCacheKey);
+    if (inferredCached && Date.now() - inferredCached.ts < INFERRED_NODES_CACHE_TTL_MS) {
+      res.json(inferredCached.data);
+      return;
+    }
+
     const [visibleNodes, allNodeIds, packetsResult] = await Promise.all([
       getNodes(network, observer),
       query<{ node_id: string }>('SELECT node_id FROM nodes'),
@@ -1115,6 +1136,7 @@ router.get('/inferred-nodes', async (req, res) => {
       inferredNodes,
       inferredActiveNodeIds,
     };
+    inferredNodesCache.set(inferredCacheKey, { ts: Date.now(), data: payload });
     res.json(payload);
   } catch (err) {
     console.error('[api] GET /inferred-nodes', (err as Error).message);
@@ -1271,9 +1293,17 @@ router.get('/path-beta/history', PATH_HISTORY_LIMITER, async (req, res) => {
   try {
     const requestedNetwork = resolveRequestNetwork(req.query['network'], req.headers);
     const scope = requestedNetwork === 'all' ? 'all' : (requestedNetwork ?? 'teesside');
+
+    const historyCached = pathHistoryCache.get(scope);
+    if (historyCached && Date.now() - historyCached.ts < PATH_HISTORY_CACHE_TTL_MS) {
+      res.json(historyCached.data);
+      return;
+    }
+
     const cached = await getPathHistoryCache(scope);
+    let responseData: unknown;
     if (!cached) {
-      res.json({
+      responseData = {
         ok: true,
         scope,
         windowStart: null,
@@ -1282,23 +1312,24 @@ router.get('/path-beta/history', PATH_HISTORY_LIMITER, async (req, res) => {
         resolvedPacketCount: 0,
         maxCount: 0,
         segments: [],
-      });
-      return;
+      };
+    } else {
+      const segments = Array.isArray(cached.segment_counts) ? cached.segment_counts : [];
+      const maxCount = segments.reduce((max, segment) => Math.max(max, Number(segment.count ?? 0)), 0);
+      responseData = {
+        ok: true,
+        scope,
+        windowStart: cached.window_start,
+        updatedAt: cached.updated_at,
+        packetCount: cached.packet_count,
+        resolvedPacketCount: cached.resolved_packet_count,
+        maxCount,
+        segments,
+      };
     }
 
-    const segments = Array.isArray(cached.segment_counts) ? cached.segment_counts : [];
-    const maxCount = segments.reduce((max, segment) => Math.max(max, Number(segment.count ?? 0)), 0);
-
-    res.json({
-      ok: true,
-      scope,
-      windowStart: cached.window_start,
-      updatedAt: cached.updated_at,
-      packetCount: cached.packet_count,
-      resolvedPacketCount: cached.resolved_packet_count,
-      maxCount,
-      segments,
-    });
+    pathHistoryCache.set(scope, { ts: Date.now(), data: responseData });
+    res.json(responseData);
   } catch (err) {
     console.error('[api] GET /path-beta/history', (err as Error).message);
     res.status(500).json({ error: 'Internal server error' });
@@ -1312,19 +1343,37 @@ router.get('/stats', async (req, res) => {
     const network = requestedNetwork === 'all' ? undefined : requestedNetwork;
     const observer = normalizeObserverQuery(req.query['observer']);
     const filters = networkFilters(network, observer);
+    const statsCacheKey = `${network ?? 'all'}:${observer ?? ''}`;
+    const statsCached = statsCache.get(statsCacheKey);
+    if (statsCached && Date.now() - statsCached.ts < STATS_CACHE_TTL_MS) {
+      res.json(statsCached.data);
+      return;
+    }
+
     const [mqttCount, packetCount, staleCount, mapNodeCount, totalNodeCount, longestHopCount, nodesDayCount] = await Promise.all([
-      query(`
-        WITH test_active AS (
-          SELECT rx_node_id FROM packets WHERE rx_node_id IS NOT NULL AND rx_node_id <> ''
-          GROUP BY rx_node_id HAVING MAX(time) = MAX(time) FILTER (WHERE network = 'test')
-        )
-        SELECT COUNT(DISTINCT rx_node_id) AS count
-        FROM packets
-        WHERE time > NOW() - INTERVAL '10 minutes'
-          AND rx_node_id IS NOT NULL
-          ${network === 'test' ? '' : 'AND rx_node_id NOT IN (SELECT rx_node_id FROM test_active)'}
-          ${filters.packets}
-      `, filters.params),
+      // When a specific network is requested the outer filter already excludes all other networks,
+      // so the test_active CTE (designed to strip test-only nodes from a mixed-network view) is
+      // redundant and extremely expensive — it scans the entire rx_idx across all chunks.
+      // Only use it when fetching across all networks (network === undefined).
+      network != null
+        ? query(`SELECT COUNT(DISTINCT rx_node_id) AS count
+                 FROM packets
+                 WHERE time > NOW() - INTERVAL '10 minutes'
+                   AND rx_node_id IS NOT NULL
+                   ${filters.packets}`, filters.params)
+        : query(`
+          WITH test_active AS (
+            SELECT rx_node_id FROM packets WHERE rx_node_id IS NOT NULL AND rx_node_id <> ''
+              AND time > NOW() - INTERVAL '7 days'
+            GROUP BY rx_node_id HAVING MAX(time) = MAX(time) FILTER (WHERE network = 'test')
+          )
+          SELECT COUNT(DISTINCT rx_node_id) AS count
+          FROM packets
+          WHERE time > NOW() - INTERVAL '10 minutes'
+            AND rx_node_id IS NOT NULL
+            AND rx_node_id NOT IN (SELECT rx_node_id FROM test_active)
+            ${filters.packets}
+        `, filters.params),
       query(`SELECT COUNT(*) AS count FROM packets WHERE time > NOW() - INTERVAL '24 hours' ${filters.packets}`, filters.params),
       query(`SELECT COUNT(*) AS count FROM nodes
              WHERE lat IS NOT NULL AND lon IS NOT NULL
@@ -1343,15 +1392,13 @@ router.get('/stats', async (req, res) => {
              WHERE (name IS NULL OR name NOT LIKE '%🚫%')
                AND (role IS NULL OR role != 4)
                ${filters.nodes}`, filters.params),
-      query(`SELECT hop_count AS count,
-               COALESCE(
-                 CASE WHEN payload->>'hash' ~ '^[0-9A-Fa-f]{16}$' THEN payload->>'hash' END,
-                 CASE WHEN packet_hash   ~ '^[0-9A-Fa-f]{16}$' THEN packet_hash END
-               ) AS hash
+      // Regex-in-WHERE was forcing a full seq scan (payload->>'hash' can't be indexed).
+      // Just fetch payload->>'hash' without a WHERE regex — it's null for the rare rows
+      // that lack it, which is fine for a display-only stat.
+      query(`SELECT hop_count AS count, payload->>'hash' AS hash
              FROM packets
              WHERE hop_count IS NOT NULL
-               AND (payload->>'hash' ~ '^[0-9A-Fa-f]{16}$'
-                    OR packet_hash   ~ '^[0-9A-Fa-f]{16}$')
+               AND time > NOW() - INTERVAL '30 days'
                ${filters.packets}
              ORDER BY hop_count DESC LIMIT 1`, filters.params),
       query(`SELECT COUNT(DISTINCT src_node_id) AS count
@@ -1360,7 +1407,7 @@ router.get('/stats', async (req, res) => {
                AND src_node_id IS NOT NULL
                ${filters.packets}`, filters.params),
     ]);
-    res.json({
+    const statsData = {
       mqttNodes:      Number(mqttCount.rows[0]?.count ?? 0),
       staleNodes:     Number(staleCount.rows[0]?.count ?? 0),
       packetsDay:     Number(packetCount.rows[0]?.count ?? 0),
@@ -1369,7 +1416,9 @@ router.get('/stats', async (req, res) => {
       totalNodes:     Number(totalNodeCount.rows[0]?.count ?? 0),
       longestHop:     Number(longestHopCount.rows[0]?.count ?? 0),
       longestHopHash: (longestHopCount.rows[0]?.hash as string | undefined) ?? null,
-    });
+    };
+    statsCache.set(statsCacheKey, { ts: Date.now(), data: statsData });
+    res.json(statsData);
   } catch (err) {
     console.error('[api] GET /stats', (err as Error).message);
     res.status(500).json({ error: 'Internal server error' });
@@ -1383,6 +1432,14 @@ router.get('/coverage', COVERAGE_LIMITER, async (req, res) => {
     const requestedNetwork = resolveRequestNetwork(req.query['network'], req.headers);
     const network = requestedNetwork === 'all' ? undefined : requestedNetwork;
     const observer = normalizeObserverQuery(req.query['observer']);
+    const coverageCacheKey = `${network ?? 'all'}:${observer ?? ''}`;
+
+    const coverageCached = coverageCache.get(coverageCacheKey);
+    if (coverageCached && Date.now() - coverageCached.ts < COVERAGE_CACHE_TTL_MS) {
+      res.json(coverageCached.data);
+      return;
+    }
+
     const filters = networkFilters(network, observer);
     const result = await query(
       `SELECT nc.node_id, nc.geom, nc.strength_geoms, nc.antenna_height_m, nc.radius_m, nc.calculated_at
@@ -1393,6 +1450,7 @@ router.get('/coverage', COVERAGE_LIMITER, async (req, res) => {
          ${filters.nodesAlias('n')}`,
       filters.params
     );
+    coverageCache.set(coverageCacheKey, { ts: Date.now(), data: result.rows });
     res.json(result.rows);
   } catch (err) {
     console.error('[api] GET /coverage', (err as Error).message);
@@ -1663,8 +1721,9 @@ router.get('/owner/live', async (req, res) => {
         last_seen: string | null;
         lat: number | null;
         lon: number | null;
+        role: number | null;
       }>(
-        `SELECT node_id, name, network, iata, advert_count, last_seen, lat, lon
+        `SELECT node_id, name, network, iata, advert_count, last_seen, lat, lon, role
          FROM nodes
          WHERE LOWER(node_id) = LOWER($1)
          LIMIT 1`,
@@ -1963,7 +2022,7 @@ router.get('/owner/live', async (req, res) => {
         const prev = i > 0 ? samples[i - 1]! : null;
         const batteryPct = sample.batteryMv == null
           ? null
-          : clamp(((sample.batteryMv - 3000) / 1200) * 100, 0, 100);
+          : clamp(((sample.batteryMv - 3200) / 1000) * 100, 0, 100);
 
         let channelUtilPct = sample.channelUtilization;
         let airUtilTxPct = sample.airUtilTx;
@@ -2035,14 +2094,15 @@ router.get('/owner/live', async (req, res) => {
     const minsSinceSeen = ownerLastSeenMs ? Math.max(0, Math.round((Date.now() - ownerLastSeenMs) / 60000)) : null;
     const adverts24h = advertTrend24h.reduce((sum, point) => sum + point.adverts, 0);
     const viableLinks = linkHealth.filter((link) => link.itm_viable || link.force_viable);
-    if (minsSinceSeen == null) alerts.push({ level: 'error', message: 'No last-seen timestamp is available for this repeater.' });
-    else if (minsSinceSeen >= 120) alerts.push({ level: 'error', message: `Repeater has not been seen for ${minsSinceSeen} minutes.` });
-    else if (minsSinceSeen >= 30) alerts.push({ level: 'warn', message: `Repeater has been quiet for ${minsSinceSeen} minutes.` });
-    else alerts.push({ level: 'info', message: 'Repeater is active and has checked in recently.' });
+    const roleLabel = ownerNode.role === 1 ? 'Companion' : ownerNode.role === 3 ? 'Room Server' : 'Repeater';
+    if (minsSinceSeen == null) alerts.push({ level: 'error', message: `No last-seen timestamp is available for this ${roleLabel.toLowerCase()}.` });
+    else if (minsSinceSeen >= 120) alerts.push({ level: 'error', message: `${roleLabel} has not been seen for ${minsSinceSeen} minutes.` });
+    else if (minsSinceSeen >= 30) alerts.push({ level: 'warn', message: `${roleLabel} has been quiet for ${minsSinceSeen} minutes.` });
+    else alerts.push({ level: 'info', message: `${roleLabel} is active and has checked in recently.` });
 
-    if (adverts24h < 1) alerts.push({ level: 'warn', message: 'No advert packets from this repeater were recorded in the last 24 hours.' });
-    if (heardBy.length < 1) alerts.push({ level: 'warn', message: 'No other nodes have heard this repeater in the last 7 days.' });
-    if (viableLinks.length < 1) alerts.push({ level: 'warn', message: 'No viable RF links are currently stored for this repeater.' });
+    if (adverts24h < 1) alerts.push({ level: 'warn', message: `No advert packets from this ${roleLabel.toLowerCase()} were recorded in the last 24 hours.` });
+    if (heardBy.length < 1) alerts.push({ level: 'warn', message: `No other nodes have heard this ${roleLabel.toLowerCase()} in the last 7 days.` });
+    if (viableLinks.length < 1) alerts.push({ level: 'warn', message: `No viable RF links are currently stored for this ${roleLabel.toLowerCase()}.` });
 
     const responseData = {
       nodeId: selectedNodeId,

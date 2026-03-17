@@ -1,10 +1,10 @@
 import React, { useState, useCallback, useMemo, useEffect, useRef } from 'react';
-import { MapContainer, TileLayer, useMap, Pane, Polygon, Polyline } from 'react-leaflet';
-import type { LatLngExpression, Map as LeafletMap } from 'leaflet';
+import { MapContainer, TileLayer, useMap, Pane, Polygon, Polyline, Circle, Popup } from 'react-leaflet';
+import type { LatLngExpression, Map as LeafletMap, LeafletMouseEvent } from 'leaflet';
 import type { MeshNode } from '../../hooks/useNodes.js';
 import type { NodeCoverage } from '../../hooks/useCoverage.js';
-import { buildHiddenCoordMask, hasCoords, maskCircleCenter, maskNodePoint, maskPoint } from '../../utils/pathing.js';
-import type { LinkMetrics } from '../../utils/pathing.js';
+import { hasCoords, maskCircleCenter, maskNodePoint, isProhibitedMapNode, HIDDEN_NODE_MASK_RADIUS_METERS } from '../../utils/pathing.js';
+import type { HiddenMaskGeometry, LinkMetrics } from '../../utils/pathing.js';
 import { NodeMarker } from './NodeMarker.js';
 import { NodeSearch } from './NodeSearch.js';
 
@@ -51,6 +51,76 @@ const LeafletDeckSyncer: React.FC<SyncerProps> = ({ onViewStateChange }) => {
 
   return null;
 };
+
+// ── GPU popup helpers ──────────────────────────────────────────────────────────
+
+interface NodeLink {
+  peer_id: string; peer_name: string | null; observed_count: number;
+  itm_path_loss_db: number | null;
+  count_this_to_peer: number; count_peer_to_this: number;
+}
+
+const GPU_ROLE_LABELS: Record<number, string> = {
+  1: 'Companion Radio', 2: 'Repeater', 3: 'Room Server', 4: 'Sensor',
+};
+
+function gpuTimeAgo(iso: string): string {
+  const secs = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+  if (secs < 60)    return `${secs}s ago`;
+  if (secs < 3600)  return `${Math.floor(secs / 60)}m ago`;
+  if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`;
+  return `${Math.floor(secs / 86400)}d ago`;
+}
+
+function gpuIsRepeater(role: number | undefined): boolean {
+  return role === undefined || role === 2;
+}
+
+// Registers a single map.on('click') listener; uses refs so the handler is never
+// re-registered when node data updates — avoiding any click-listener churn.
+interface GPUClickHandlerProps {
+  allNodes: MeshNode[];
+  hiddenCoordMask: Map<string, HiddenMaskGeometry>;
+  onNodeClick: (node: MeshNode, lat: number, lon: number) => void;
+}
+const GPUClickHandler: React.FC<GPUClickHandlerProps> = ({ allNodes, hiddenCoordMask, onNodeClick }) => {
+  const map = useMap();
+  const nodesRef = useRef(allNodes);
+  const maskRef  = useRef(hiddenCoordMask);
+  const cbRef    = useRef(onNodeClick);
+
+  useEffect(() => { nodesRef.current = allNodes; },         [allNodes]);
+  useEffect(() => { maskRef.current  = hiddenCoordMask; },  [hiddenCoordMask]);
+  useEffect(() => { cbRef.current    = onNodeClick; },      [onNodeClick]);
+
+  useEffect(() => {
+    const handler = (e: LeafletMouseEvent) => {
+      const clickPt = map.latLngToContainerPoint(e.latlng);
+      let nearest: MeshNode | null = null;
+      let nearestDist = 16; // pixel threshold
+      for (const node of nodesRef.current) {
+        if (!hasCoords(node)) continue;
+        const masked = maskNodePoint(node as MeshNode & { lat: number; lon: number }, maskRef.current);
+        const lat = masked[0];
+        const lon = masked[1];
+        const pt = map.latLngToContainerPoint([lat, lon]);
+        const d = Math.hypot(clickPt.x - pt.x, clickPt.y - pt.y);
+        if (d < nearestDist) { nearestDist = d; nearest = node; }
+      }
+      if (nearest) {
+        // nearest is guaranteed to have coords (hasCoords check above)
+        const masked = maskNodePoint(nearest as MeshNode & { lat: number; lon: number }, maskRef.current);
+        cbRef.current(nearest, masked[0], masked[1]);
+      }
+    };
+    map.on('click', handler);
+    return () => { map.off('click', handler); };
+  }, [map]);
+
+  return null;
+};
+
+// ──────────────────────────────────────────────────────────────────────────────
 
 function ringToLatLng(ring: number[][] | undefined): LatLngExpression[] {
   if (!ring) return [];
@@ -101,16 +171,12 @@ interface MapViewProps {
   maxHexClashHops: number;
   viablePairsArr:  [string, string][];
   linkMetrics:     Map<string, LinkMetrics>;
-  packetHistorySegments: Array<{ positions: [[number, number], [number, number]]; count: number }>;
-  showPacketHistory: boolean;
-  betaPaths:       [number, number][][];
-  betaLowPaths:    [number, number][][];
-  betaLowSegments: [[number, number], [number, number]][];
-  betaCompletionPaths: [number, number][][];
-  showBetaPaths:   boolean;
-  pathOpacity:     number;
+  hiddenCoordMask: Map<string, HiddenMaskGeometry>;
   pathNodeIds:     Set<string> | null;
   onMapReady?:     (m: LeafletMap) => void;
+  /** Called when prefix-focus mode activates/deactivates, so DeckGLOverlay can hide GPU nodes
+   *  during the focus animation (which relies on Leaflet markers for show/hide transitions). */
+  onPrefixFocusActiveChange?: (active: boolean) => void;
 }
 
 // Default UK centre (Teesside area)
@@ -118,7 +184,8 @@ const DEFAULT_CENTER: [number, number] = [54.57, -1.23];
 const DEFAULT_ZOOM = 11;
 const STALE_MARKER_MS = 7 * 24 * 60 * 60 * 1000;
 
-// Custom comparison - skip expensive checks for deeply equal arrays
+// Custom comparison — only props that affect Leaflet SVG/marker rendering.
+// GPU overlay props (packet history, beta paths) are handled by DeckGLOverlay.
 function propsAreEqual(prev: MapViewProps, next: MapViewProps): boolean {
   if (prev.nodes !== next.nodes) return false;
   if (prev.coverage !== next.coverage) return false;
@@ -127,25 +194,20 @@ function propsAreEqual(prev: MapViewProps, next: MapViewProps): boolean {
   if (prev.linkMetrics !== next.linkMetrics) return false;
   if (prev.inferredNodes !== next.inferredNodes) return false;
   if (prev.inferredActiveNodeIds !== next.inferredActiveNodeIds) return false;
+  if (prev.hiddenCoordMask !== next.hiddenCoordMask) return false;
   if (prev.showCoverage !== next.showCoverage) return false;
   if (prev.showClientNodes !== next.showClientNodes) return false;
   if (prev.showHexClashes !== next.showHexClashes) return false;
-  if (prev.showPacketHistory !== next.showPacketHistory) return false;
-  if (prev.showBetaPaths !== next.showBetaPaths) return false;
   if (prev.maxHexClashHops !== next.maxHexClashHops) return false;
-  if (prev.pathOpacity !== next.pathOpacity) return false;
-  if (prev.packetHistorySegments !== next.packetHistorySegments) return false;
-  if (prev.betaPaths !== next.betaPaths) return false;
-  if (prev.betaLowPaths !== next.betaLowPaths) return false;
-  if (prev.betaLowSegments !== next.betaLowSegments) return false;
-  if (prev.betaCompletionPaths !== next.betaCompletionPaths) return false;
   if (prev.pathNodeIds !== next.pathNodeIds) return false;
+  if (prev.onPrefixFocusActiveChange !== next.onPrefixFocusActiveChange) return false;
   return true;
 }
 
 export const MapView = React.memo(({
   nodes, inferredNodes, inferredActiveNodeIds, activeNodes, coverage, showCoverage, showClientNodes,
-  showHexClashes, maxHexClashHops, viablePairsArr, linkMetrics, packetHistorySegments, showPacketHistory, betaPaths, betaLowSegments, betaCompletionPaths, showBetaPaths, pathOpacity, pathNodeIds, onMapReady, onDeckViewStateChange,
+  showHexClashes, maxHexClashHops, viablePairsArr, linkMetrics, hiddenCoordMask, pathNodeIds,
+  onMapReady, onDeckViewStateChange, onPrefixFocusActiveChange,
 }) => {
   const [map, setMap] = useState<LeafletMap | null>(null);
   const [viewBounds, setViewBounds] = useState<ViewBounds | null>(null);
@@ -155,6 +217,12 @@ export const MapView = React.memo(({
   const [focusHidePhase, setFocusHidePhase] = useState<'idle' | 'hide' | 'fade'>('idle');
   const hideTimerRef = useRef<number | null>(null);
   const fadeTimerRef = useRef<number | null>(null);
+
+  // GPU popup — one popup at a time driven by click handler
+  const [gpuPopupNode, setGpuPopupNode] = useState<MeshNode | null>(null);
+  const [gpuPopupLat,  setGpuPopupLat]  = useState<number>(0);
+  const [gpuPopupLon,  setGpuPopupLon]  = useState<number>(0);
+  const [gpuPopupLinks, setGpuPopupLinks] = useState<NodeLink[] | null>(null);
 
   const clearFocusTimers = useCallback(() => {
     if (hideTimerRef.current !== null) {
@@ -168,6 +236,31 @@ export const MapView = React.memo(({
   }, []);
 
   useEffect(() => () => clearFocusTimers(), [clearFocusTimers]);
+
+  // Fetch neighbour links when GPU popup opens for non-repeater nodes
+  useEffect(() => {
+    if (!gpuPopupNode || gpuIsRepeater(gpuPopupNode.role)) {
+      setGpuPopupLinks(null);
+      return;
+    }
+    setGpuPopupLinks(null);
+    fetch(`/api/nodes/${gpuPopupNode.node_id}/links`)
+      .then((r) => r.json())
+      .then((data: NodeLink[]) => setGpuPopupLinks(data))
+      .catch(() => setGpuPopupLinks([]));
+  }, [gpuPopupNode]);
+
+  const handleGpuNodeClick = useCallback((node: MeshNode, lat: number, lon: number) => {
+    setGpuPopupNode(node);
+    setGpuPopupLat(lat);
+    setGpuPopupLon(lon);
+  }, []);
+
+  // Notify App.tsx when prefix-focus mode activates/deactivates so it can pause GPU node
+  // rendering and let Leaflet handle the show/hide transition animation.
+  useEffect(() => {
+    onPrefixFocusActiveChange?.(focusHidePhase !== 'idle');
+  }, [focusHidePhase, onPrefixFocusActiveChange]);
 
   useEffect(() => {
     if (map && onMapReady) onMapReady(map);
@@ -262,7 +355,6 @@ export const MapView = React.memo(({
     for (const c of coverage) m.set(c.node_id, c);
     return m;
   }, [coverage]);
-  const hiddenCoordMask = useMemo(() => buildHiddenCoordMask(nodes.values()), [nodes]);
 
   const distKm = useCallback((a: MeshNode, b: MeshNode) => {
     if (!hasCoords(a) || !hasCoords(b)) return Number.POSITIVE_INFINITY;
@@ -447,8 +539,22 @@ export const MapView = React.memo(({
     return ids;
   }, [showHexClashes, clashPaths, focusedClashPaths]);
 
+  // Stable callback: without this, an inline arrow in JSX would create a new function reference
+  // on every render, causing LeafletDeckSyncer's effect to re-run and re-register the 'move'
+  // event listener every frame during pan — effectively listener churn at 60fps.
+  const handleViewStateChange = useCallback((vs: DeckViewState) => {
+    setDeckViewState(vs);
+    onDeckViewStateChange(vs);
+  }, [onDeckViewStateChange]);
+
   const clashModeActive = showHexClashes || !!focusedPrefixNodeIds;
   const effectiveShowCoverage = showCoverage && !clashModeActive;
+
+  // When GPU nodes are active, NodeMarkers are NOT rendered at all — zero React fibers for
+  // individual nodes. DeckGLOverlay's ScatterplotLayer draws the dots on the GPU, and a single
+  // GPUClickHandler does hit-testing on click. Fall back to full Leaflet markers during
+  // hex-clash mode (needs clash colours) and prefix-focus animations (show/hide transitions).
+  const gpuRendered = !clashModeActive && focusHidePhase === 'idle';
 
   const visibleClashPathLines = useMemo(
     () => clashPathLines.filter((line) => lineInView(line.positions)),
@@ -470,23 +576,12 @@ export const MapView = React.memo(({
     [inferredNodes, inView],
   );
 
-  const visiblePacketHistorySegments = useMemo(() => {
-    if (!showPacketHistory) return [];
-    const segments = packetHistorySegments
-      .map((segment) => ({
-        ...segment,
-        positions: [
-          maskPoint(segment.positions[0], hiddenCoordMask),
-          maskPoint(segment.positions[1], hiddenCoordMask),
-        ] as [[number, number], [number, number]],
-      }))
-      .filter((segment) => lineInView(segment.positions));
-    const zoom = map?.getZoom() ?? DEFAULT_ZOOM;
-    const limited = (zoom >= 9 || segments.length <= 700) ? segments : [...segments]
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 700);
-    return [...limited].sort((a, b) => a.count - b.count);
-  }, [showPacketHistory, packetHistorySegments, lineInView, map, hiddenCoordMask]);
+  // All visible nodes fed to the GPU click handler for hit-testing
+  const allVisibleGpuNodes = useMemo(() => {
+    const result = [...visibleRepeaterNodes, ...visibleInferredNodes];
+    if (showClientNodes) result.push(...visibleClientNodes);
+    return result;
+  }, [visibleRepeaterNodes, visibleInferredNodes, visibleClientNodes, showClientNodes]);
 
   const markerSize = useMemo(() => {
     const leafletZoom = deckViewState.zoom + 1;
@@ -524,7 +619,7 @@ export const MapView = React.memo(({
         />
 
         {/* Sync Leaflet map position to deck.gl */}
-        <LeafletDeckSyncer onViewStateChange={(vs) => { setDeckViewState(vs); onDeckViewStateChange(vs); }} />
+        <LeafletDeckSyncer onViewStateChange={handleViewStateChange} />
 
         {/* Coverage — raw outer rings from each viewshed, fillRule:'nonzero'.
             nonzero means overlapping CCW rings sum winding numbers (+1 each)
@@ -562,8 +657,131 @@ export const MapView = React.memo(({
           </Pane>
         )}
 
-        {/* Repeater markers */}
-        {visibleRepeaterNodes.map((node) => {
+        {/* ── GPU mode: zero NodeMarker fibers ─────────────────────────────────
+            The ScatterplotLayer in DeckGLOverlay renders all node dots on the GPU.
+            We only add Leaflet elements for nodes that need them:
+            - Privacy circles for prohibited nodes (visual mask ring)
+            - A single click handler that opens a popup for the nearest node
+            - The popup itself                                                    */}
+        {gpuRendered && visibleRepeaterNodes
+          .filter((n) => isProhibitedMapNode(n) && hasCoords(n))
+          .map((node) => {
+            const cp = maskCircleCenter([node.lat!, node.lon!], hiddenCoordMask);
+            return (
+              <Circle
+                key={`priv-${node.node_id}`}
+                center={[cp?.[0] ?? node.lat!, cp?.[1] ?? node.lon!]}
+                radius={HIDDEN_NODE_MASK_RADIUS_METERS}
+                pathOptions={{ color: '#f59e0b', weight: 1.4, opacity: 0.55, fillColor: '#f59e0b', fillOpacity: 0.05, dashArray: '4 6' }}
+                interactive={false}
+              />
+            );
+          })}
+
+        {gpuRendered && (
+          <GPUClickHandler
+            allNodes={allVisibleGpuNodes}
+            hiddenCoordMask={hiddenCoordMask}
+            onNodeClick={handleGpuNodeClick}
+          />
+        )}
+
+        {gpuRendered && gpuPopupNode && (() => {
+          const node = gpuPopupNode;
+          const prohibited = isProhibitedMapNode(node);
+          const fallbackName = GPU_ROLE_LABELS[node.role ?? 2] ?? 'Unknown Device';
+          const displayName = prohibited ? `Redacted ${fallbackName}` : (node.name ?? `Unknown ${fallbackName}`);
+          const ageMs = Date.now() - new Date(node.last_seen).getTime();
+          const isStale = ageMs > STALE_MARKER_MS;
+          const statusLabel = isStale ? 'STALE' : node.is_online ? 'ONLINE' : 'OFFLINE';
+          const statusColor = isStale ? 'var(--danger)' : node.is_online ? 'var(--online)' : 'var(--offline)';
+          const isRepeater = gpuIsRepeater(node.role);
+          return (
+            <Popup
+              position={[gpuPopupLat, gpuPopupLon]}
+              eventHandlers={{ remove: () => { setGpuPopupNode(null); setGpuPopupLinks(null); } }}
+            >
+              <div className="node-popup">
+                <div className="node-popup__name">{displayName}</div>
+                {node.public_key && (
+                  <div className="node-popup__row">
+                    <span>Public key</span>
+                    <span className="node-popup__mono">{node.public_key}</span>
+                  </div>
+                )}
+                {!isRepeater && node.role !== undefined && (
+                  <div className="node-popup__row">
+                    <span>Type</span>
+                    <span>{GPU_ROLE_LABELS[node.role] ?? 'Unknown'}</span>
+                  </div>
+                )}
+                <div className="node-popup__row">
+                  <span>Status</span>
+                  <span style={{ color: statusColor }}>{statusLabel}</span>
+                </div>
+                {node.hardware_model && (
+                  <div className="node-popup__row">
+                    <span>Hardware</span>
+                    <span>{node.hardware_model}</span>
+                  </div>
+                )}
+                <div className="node-popup__row">
+                  <span>Last seen</span>
+                  <span>{gpuTimeAgo(node.last_seen)}</span>
+                </div>
+                {node.advert_count !== undefined && (
+                  <div className="node-popup__row">
+                    <span>Times seen</span>
+                    <span>{node.advert_count}</span>
+                  </div>
+                )}
+                <div className="node-popup__row">
+                  <span>Position</span>
+                  <span>{prohibited ? 'Redacted' : `${gpuPopupLat.toFixed(5)}, ${gpuPopupLon.toFixed(5)}`}</span>
+                </div>
+                {prohibited && (
+                  <div className="node-popup__row">
+                    <span>Location</span>
+                    <span>Redacted within 1 mile radius</span>
+                  </div>
+                )}
+                {node.elevation_m !== undefined && node.elevation_m !== null && (
+                  <div className="node-popup__row">
+                    <span>Elevation</span>
+                    <span>{Math.round(node.elevation_m)} m ASL</span>
+                  </div>
+                )}
+                {!isRepeater && gpuPopupLinks === null && (
+                  <div className="node-popup__neighbours-loading">Loading neighbours…</div>
+                )}
+                {!isRepeater && gpuPopupLinks !== null && gpuPopupLinks.length > 0 && (
+                  <div className="node-popup__neighbours">
+                    <div className="node-popup__neighbours-title">Confirmed neighbours</div>
+                    {gpuPopupLinks.map((lk) => {
+                      const tx = lk.count_this_to_peer > 0;
+                      const rx = lk.count_peer_to_this > 0;
+                      const arrow = tx && rx ? '↔' : tx ? '→' : '←';
+                      return (
+                        <div key={lk.peer_id} className="node-popup__neighbour-row">
+                          <span className="node-popup__neighbour-name">{arrow} {lk.peer_name ?? lk.peer_id.slice(0, 8)}</span>
+                          <span className="node-popup__neighbour-meta">
+                            {lk.observed_count}× seen
+                            {lk.itm_path_loss_db != null && <> &middot; {Math.round(lk.itm_path_loss_db)} dB</>}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </Popup>
+          );
+        })()}
+
+        {/* ── Non-GPU mode: full Leaflet NodeMarkers ──────────────────────────
+            Active during hex-clash mode and prefix-focus animations, where we need
+            per-node Leaflet SVG styling (clash colours, show/hide transitions).   */}
+        {!gpuRendered && visibleRepeaterNodes.map((node) => {
           if (!hasCoords(node)) return null;
           if (pathNodeIds && !pathNodeIds.has(node.node_id.toLowerCase())) return null;
           if (showHexClashes && !clashVisibleNodeIds.has(node.node_id)) return null;
@@ -592,19 +810,17 @@ export const MapView = React.memo(({
           );
         })}
 
-        {/* Inferred multibyte repeaters — provisional layer only, never fed back into pathing */}
-        {!showHexClashes && visibleInferredNodes.map((node) => (
-            <NodeMarker
-              key={node.node_id}
-              node={node}
-              isActive={false}
-              isInferred
-              markerSize={Math.max(4, markerSize - 1)}
-            />
-          ))}
+        {!gpuRendered && !showHexClashes && visibleInferredNodes.map((node) => (
+          <NodeMarker
+            key={node.node_id}
+            node={node}
+            isActive={false}
+            isInferred
+            markerSize={Math.max(4, markerSize - 1)}
+          />
+        ))}
 
-        {/* Companion radio + room server markers (toggled via filter) */}
-        {showClientNodes && !showHexClashes && visibleClientNodes.map((node) => {
+        {!gpuRendered && showClientNodes && !showHexClashes && visibleClientNodes.map((node) => {
           if (!hasCoords(node)) return null;
           const isFocusVisible = clashVisibleNodeIds.has(node.node_id);
           if (focusedPrefixNodeIds && focusHidePhase === 'hide' && !isFocusVisible) return null;
@@ -622,80 +838,6 @@ export const MapView = React.memo(({
           );
         })}
 
-        {showPacketHistory && visiblePacketHistorySegments.length > 0 && (
-          <Pane name="packetHistoryPane" style={{ zIndex: 510 }}>
-            {visiblePacketHistorySegments.map((segment, idx) => {
-              const strength = Math.max(1, segment.count);
-              const weight = Math.min(6, 1.2 + Math.log2(strength + 1) * 1.05);
-              const opacity = Math.min(0.82, 0.12 + Math.log10(strength + 1) * 0.32);
-              return (
-                <Polyline
-                  key={`packet-history-${idx}`}
-                  positions={segment.positions}
-                  pathOptions={{
-                    color: '#a855f7',
-                    weight,
-                    opacity,
-                    lineCap: 'round',
-                    lineJoin: 'round',
-                  }}
-                  interactive={false}
-                />
-              );
-            })}
-          </Pane>
-        )}
-
-        {/* Beta path — uncertain (red) drawn first so confident (purple) always renders on top.
-            Renders individual filtered segments so purple-covered edges are never drawn in red. */}
-        {showBetaPaths && betaLowSegments.map(([a, b], idx) => (
-          <Polyline
-            key={`beta-low-seg-${idx}`}
-            positions={[maskPoint(a, hiddenCoordMask), maskPoint(b, hiddenCoordMask)]}
-            className="beta-red-path-overlay"
-            pathOptions={{
-              color:     '#ef4444',
-              weight:    2.6,
-              dashArray: '6 9',
-              opacity:   Math.min(0.9, pathOpacity),
-            }}
-            interactive={false}
-          />
-        ))}
-
-        {/* Purple confident portion rendered last — highest z-order so it is never obscured by the red uncertain portion */}
-        {showBetaPaths && betaPaths.map((path, idx) => (
-          <Polyline
-            key={`beta-purple-${idx}`}
-            positions={path.map((point) => maskPoint(point, hiddenCoordMask))}
-            className="beta-purple-path-overlay"
-            pathOptions={{
-              color:     '#a855f7',
-              weight:    2.8,
-              dashArray: '6 9',
-              opacity:   pathOpacity,
-            }}
-          />
-        ))}
-
-        {showBetaPaths && betaCompletionPaths.length > 0 && (
-          <Pane name="betaCompletionsPane" style={{ zIndex: 520 }}>
-            {betaCompletionPaths.map((path, idx) => (
-              <Polyline
-                key={`beta-completion-${idx}`}
-                positions={path.map((point) => maskPoint(point, hiddenCoordMask))}
-                className="beta-completion-path-overlay"
-                pathOptions={{
-                  color: '#ef4444',
-                  weight: 1.8,
-                  dashArray: '4 7',
-                  opacity: Math.min(0.78, pathOpacity * 0.95),
-                }}
-                interactive={false}
-              />
-            ))}
-          </Pane>
-        )}
       </MapContainer>
     </div>
   );

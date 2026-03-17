@@ -12,7 +12,14 @@ type OwnerNode = {
   lat: number | null;
   lon: number | null;
   iata: string | null;
+  role: number | null;
 };
+
+function nodeRoleLabel(role: number | null): string {
+  if (role === 1) return 'Companion';
+  if (role === 3) return 'Room Server';
+  return 'Repeater';
+}
 
 type OwnerDashboard = {
   nodes: OwnerNode[];
@@ -562,7 +569,7 @@ export const OwnerPortalPage: React.FC = () => {
               </div>
               {dashboard.nodes.length > 1 ? (
                 <div className="owner-select">
-                  <label htmlFor="owner-node-select">Repeater node</label>
+                  <label htmlFor="owner-node-select">Node</label>
                   <select
                     id="owner-node-select"
                     className="owner-select__input"
@@ -578,7 +585,7 @@ export const OwnerPortalPage: React.FC = () => {
                 </div>
               ) : null}
               <div className="site-stats-grid site-stats-grid--6 owner-summary-grid">
-                <div className="site-stat"><span className="site-stat__value">{live?.ownerNode.name ?? 'Unnamed'}</span><span className="site-stat__label">Repeater</span></div>
+                <div className="site-stat"><span className="site-stat__value">{live?.ownerNode.name ?? 'Unnamed'}</span><span className="site-stat__label">{nodeRoleLabel(live?.ownerNode.role ?? null)}</span></div>
                 <div className="site-stat"><span className="site-stat__value">{live?.ownerNode.network ?? '-'}</span><span className="site-stat__label">Network</span></div>
                 <div className="site-stat"><span className="site-stat__value">{live?.ownerNode.iata ?? '-'}</span><span className="site-stat__label">IATA</span></div>
                 <div className="site-stat"><span className="site-stat__value">{live?.ownerNode.advert_count ?? 0}</span><span className="site-stat__label">Adverts</span></div>
@@ -650,7 +657,7 @@ export const OwnerPortalPage: React.FC = () => {
                     {ownerCoord ? (
                       <CircleMarker center={[ownerCoord.lat, ownerCoord.lon]} radius={8} pathOptions={{ color: '#00c4ff', weight: 2 }}>
                         <Popup>
-                          <strong>{live?.ownerNode.name ?? 'Owner repeater'}</strong><br />
+                          <strong>{live?.ownerNode.name ?? `Owner ${nodeRoleLabel(live?.ownerNode.role ?? null).toLowerCase()}`}</strong><br />
                           {live?.ownerNode.network} · {live?.ownerNode.iata ?? '-'}
                         </Popup>
                       </CircleMarker>
@@ -715,7 +722,7 @@ export const OwnerPortalPage: React.FC = () => {
                     </article>
                   ))}
                   {(live?.linkHealth ?? []).length === 0 ? (
-                    <p className="prose-note">No link health data has been calculated for this repeater yet.</p>
+                    <p className="prose-note">No link health data has been calculated for this node yet.</p>
                   ) : null}
                 </div>
               </section>
@@ -742,7 +749,7 @@ export const OwnerPortalPage: React.FC = () => {
               </section>
 
               <section className="prose-section owner-panel owner-panel--packets">
-                <div className="owner-panel__head"><h2>Live Packets Received By Repeater</h2></div>
+                <div className="owner-panel__head"><h2>Live Packets Received By {nodeRoleLabel(live?.ownerNode.role ?? null)}</h2></div>
                 <div className="owner-packets">
                   {(live?.recentPackets ?? []).map((packet, idx) => (
                     <article key={`${packet.time}-${packet.packet_hash ?? `row-${idx}`}`} className="owner-packet">
@@ -760,7 +767,7 @@ export const OwnerPortalPage: React.FC = () => {
                     </article>
                   ))}
                   {(live?.recentPackets ?? []).length === 0 ? (
-                    <p className="prose-note">No packets received by this repeater yet.</p>
+                    <p className="prose-note">No packets received by this node yet.</p>
                   ) : null}
                 </div>
               </section>
