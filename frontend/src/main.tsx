@@ -16,7 +16,6 @@ import { UKFeedPage } from './pages/ukmesh/UKFeedPage.js';
 import { UKRepeaterSearchPage } from './pages/ukmesh/UKRepeaterSearchPage.js';
 import { DevLayout } from './pages/dev/DevLayout.js';
 import { DevHomePage } from './pages/dev/DevHomePage.js';
-import { TeessieDashboard } from './pages/teesside/TeessieDashboard.js';
 import { getCurrentSite } from './config/site.js';
 import './styles/globals.css';
 
@@ -58,13 +57,6 @@ ReactDOM.createRoot(root).render(
             <Route path="open-source" element={<OpenSourcePage />} />
             <Route path="stats" element={<StatsPage />} />
           </Route>
-        </Routes>
-      </BrowserRouter>
-    ) : site.id === 'teesside' ? (
-      <BrowserRouter>
-        <Routes>
-          <Route path="/" element={<TeessieDashboard />} />
-          <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>
     ) : (
