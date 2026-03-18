@@ -150,9 +150,16 @@ html, body, #root {
 }
 
 /* ─── Map Container ─────────────────────────────────────────────────────── */
+.map-layer {
+  position: relative;
+  overflow: hidden;
+  min-height: 0;
+}
+
 .map-area {
   position: relative;
   overflow: hidden;
+  height: 100%;
 }
 
 .leaflet-container {

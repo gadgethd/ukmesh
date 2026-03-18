@@ -398,39 +398,41 @@ export const App: React.FC = () => {
         onFiltersChange={setFilters}
       />
 
-      <MapView
-        nodes={nodes}
-        inferredNodes={inferredNodes}
-        inferredActiveNodeIds={inferredActiveNodeIds}
-        activeNodes={activeNodes}
-        coverage={coverage}
-        onDeckViewStateChange={setDeckViewState}
-        showCoverage={filters.coverage}
-        showClientNodes={filters.clientNodes}
-        showHexClashes={filters.hexClashes}
-        maxHexClashHops={filters.hexClashMaxHops}
-        viablePairsArr={viablePairsArr}
-        linkMetrics={linkMetrics}
-        hiddenCoordMask={hiddenCoordMask}
-        pathNodeIds={pathNodeIds}
-        onMapReady={setMap}
-        onPrefixFocusActiveChange={handlePrefixFocusActiveChange}
-      />
-      <DeckGLOverlay
-        arcs={arcs}
-        showArcs={filters.livePackets}
-        packetHistorySegments={packetHistorySegments}
-        showPacketHistory={filters.packetHistory}
-        betaPaths={betaPacketPaths}
-        betaLowSegments={betaLowConfidenceSegments}
-        betaCompletionPaths={betaCompletionPaths}
-        showBetaPaths={filters.betaPaths || pinnedPacketId !== null}
-        pathFadingOut={pathFadingOut}
-        gpuNodes={gpuNodes}
-        showGpuNodes={!filters.hexClashes && !prefixFocusActive}
-        viewState={deckViewState}
-        hiddenCoordMask={hiddenCoordMask}
-      />
+      <div className="map-layer">
+        <MapView
+          nodes={nodes}
+          inferredNodes={inferredNodes}
+          inferredActiveNodeIds={inferredActiveNodeIds}
+          activeNodes={activeNodes}
+          coverage={coverage}
+          onDeckViewStateChange={setDeckViewState}
+          showCoverage={filters.coverage}
+          showClientNodes={filters.clientNodes}
+          showHexClashes={filters.hexClashes}
+          maxHexClashHops={filters.hexClashMaxHops}
+          viablePairsArr={viablePairsArr}
+          linkMetrics={linkMetrics}
+          hiddenCoordMask={hiddenCoordMask}
+          pathNodeIds={pathNodeIds}
+          onMapReady={setMap}
+          onPrefixFocusActiveChange={handlePrefixFocusActiveChange}
+        />
+        <DeckGLOverlay
+          arcs={arcs}
+          showArcs={filters.livePackets}
+          packetHistorySegments={packetHistorySegments}
+          showPacketHistory={filters.packetHistory}
+          betaPaths={betaPacketPaths}
+          betaLowSegments={betaLowConfidenceSegments}
+          betaCompletionPaths={betaCompletionPaths}
+          showBetaPaths={filters.betaPaths || pinnedPacketId !== null}
+          pathFadingOut={pathFadingOut}
+          gpuNodes={gpuNodes}
+          showGpuNodes={!filters.hexClashes && !prefixFocusActive}
+          viewState={deckViewState}
+          hiddenCoordMask={hiddenCoordMask}
+        />
+      </div>
 
       <FilterPanel
         filters={filters}

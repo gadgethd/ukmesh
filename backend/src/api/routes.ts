@@ -66,6 +66,13 @@ const PATH_LEARNING_LIMITER = rateLimit({
   legacyHeaders: false,
   message: { error: 'Too many path learning requests, slow down' },
 });
+const EXPENSIVE_LIMITER = rateLimit({
+  windowMs: 60_000,
+  max: 12,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests, slow down' },
+});
 const STATS_CHARTS_LIMITER = rateLimit({
   windowMs: 60_000,
   max: 12,
@@ -1644,7 +1651,7 @@ router.post('/owner/login', OWNER_LOGIN_LIMITER, async (req, res) => {
     res.cookie(OWNER_COOKIE_NAME, token, {
       httpOnly: true,
       secure: isSecureRequest(req),
-      sameSite: 'lax',
+      sameSite: 'strict',
       path: '/',
       maxAge: OWNER_SESSION_TTL_MS,
     });
@@ -2654,7 +2661,7 @@ router.get('/stats/charts', STATS_CHARTS_LIMITER, async (req, res) => {
 });
 
 // GET /api/observer-activity — MQTT observer nodes with 24h receive counts
-router.get('/observer-activity', async (req, res) => {
+router.get('/observer-activity', EXPENSIVE_LIMITER, async (req, res) => {
   try {
     const requestedNetwork = resolveRequestNetwork(req.query['network'], req.headers);
     const network = requestedNetwork === 'all' ? undefined : requestedNetwork;
@@ -2691,10 +2698,7 @@ router.get('/observer-activity', async (req, res) => {
 // both sides. Hop count determines origin side: fewer hops = closer to source.
 //   Outbound: MME observers see it with fewer hops, non-MME also received it within 120s
 //   Inbound:  non-MME observers see it with fewer hops, MME also received it within 120s
-router.get('/cross-network-connectivity', async (_req, res) => {
-  const hours = 2;
-  const maxPropagationSecs = 120;
-
+router.get('/cross-network-connectivity', EXPENSIVE_LIMITER, async (_req, res) => {
   const result = await query<{ last_inbound: string | null; last_outbound: string | null }>(`
     WITH mme_observers AS (
       SELECT DISTINCT rx_node_id AS node_id
@@ -2711,7 +2715,7 @@ router.get('/cross-network-connectivity', async (_req, res) => {
         MIN(p.time)      FILTER (WHERE p.rx_node_id IN (SELECT node_id FROM mme_observers))     AS mme_first_seen,
         MIN(p.time)      FILTER (WHERE p.rx_node_id NOT IN (SELECT node_id FROM mme_observers)) AS other_first_seen
       FROM packets p
-      WHERE p.time > NOW() - INTERVAL '${hours} hours'
+      WHERE p.time > NOW() - INTERVAL '2 hours'
         AND p.hop_count IS NOT NULL
         AND p.rx_node_id IS NOT NULL
         AND p.packet_hash IS NOT NULL
@@ -2722,7 +2726,7 @@ router.get('/cross-network-connectivity', async (_req, res) => {
         AND ABS(EXTRACT(EPOCH FROM (
           MIN(p.time) FILTER (WHERE p.rx_node_id IN (SELECT node_id FROM mme_observers)) -
           MIN(p.time) FILTER (WHERE p.rx_node_id NOT IN (SELECT node_id FROM mme_observers))
-        ))) <= ${maxPropagationSecs}
+        ))) <= 120
     )
     SELECT
       MAX(mme_first_seen)   FILTER (WHERE other_min_hops < mme_min_hops) AS last_inbound,
@@ -2739,7 +2743,7 @@ router.get('/cross-network-connectivity', async (_req, res) => {
     outbound:    !!lastOutbound,
     lastInbound,
     lastOutbound,
-    windowHours: hours,
+    windowHours: 2,
     checkedAt:   new Date().toISOString(),
   });
 });
