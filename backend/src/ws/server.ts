@@ -297,7 +297,7 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
 
   const scheduleFlush = () => {
     if (flushTimeout !== null) return;
-    flushTimeout = setTimeout(flushMessageQueue, 50);
+    flushTimeout = setTimeout(flushMessageQueue, 16);
   };
 
   // Fan-out Redis messages to all connected WS clients - now batched

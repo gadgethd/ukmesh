@@ -286,6 +286,14 @@ export const MapView = React.memo(({
     };
   }, [map]);
 
+  const [tilePending, setTilePending] = useState(0);
+  const tilePendingRef = useRef(0);
+  const tileHandlers = useMemo(() => ({
+    tileloadstart: () => { tilePendingRef.current += 1; setTilePending(tilePendingRef.current); },
+    tileload:      () => { tilePendingRef.current = Math.max(0, tilePendingRef.current - 1); setTilePending(tilePendingRef.current); },
+    tileerror:     () => { tilePendingRef.current = Math.max(0, tilePendingRef.current - 1); setTilePending(tilePendingRef.current); },
+  }), []);
+
   const [deckViewState, setDeckViewState] = useState<DeckViewState>({
     longitude: DEFAULT_CENTER[1], latitude: DEFAULT_CENTER[0], zoom: DEFAULT_ZOOM, pitch: 0, bearing: 0,
   });
@@ -600,6 +608,12 @@ export const MapView = React.memo(({
   return (
     <div className="map-area">
       <NodeSearch nodes={nodes} map={map} />
+      {gpuRendered && tilePending > 0 && (
+        <div className="tile-loading-badge">
+          <span className="tile-loading-badge__spinner" />
+          {tilePending} tile{tilePending !== 1 ? 's' : ''} rendering
+        </div>
+      )}
       <MapContainer
         ref={setMap}
         center={DEFAULT_CENTER}
@@ -617,6 +631,18 @@ export const MapView = React.memo(({
           keepBuffer={10}
           updateWhenIdle={false}
         />
+
+        {/* Server-rendered node dot tiles */}
+        {gpuRendered && (
+          <TileLayer
+            url="/api/tiles/nodes/{z}/{x}/{y}.png"
+            tileSize={256}
+            zIndex={400}
+            updateWhenIdle={false}
+            keepBuffer={2}
+            eventHandlers={tileHandlers}
+          />
+        )}
 
         {/* Sync Leaflet map position to deck.gl */}
         <LeafletDeckSyncer onViewStateChange={handleViewStateChange} />

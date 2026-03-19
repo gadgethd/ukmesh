@@ -67,7 +67,7 @@ function buildPacketScopeClause(
     conditions.push(`split_part(${prefix}topic, '/', 1) <> 'meshcore-test'`);
   }
   if (placeholders.observerParam) {
-    conditions.push(`LOWER(${prefix}rx_node_id) = LOWER(${placeholders.observerParam})`);
+    conditions.push(`${prefix}rx_node_id = ${placeholders.observerParam}`);
   }
   return conditions.length > 0 ? ` AND ${conditions.join(' AND ')}` : '';
 }
@@ -87,10 +87,9 @@ function buildNodeScopeClause(
           ${placeholders.networkParam} = 'teesside'
           AND EXISTS (
             SELECT 1
-            FROM packets p_scope
-            WHERE LOWER(p_scope.src_node_id) = LOWER(${prefix}node_id)
-              AND p_scope.network = 'teesside'
-              AND split_part(p_scope.topic, '/', 1) <> 'meshcore-test'
+            FROM node_network_sightings s
+            WHERE s.node_id = ${prefix}node_id
+              AND s.network = 'teesside'
           )
         )
       )`,
@@ -101,13 +100,13 @@ function buildNodeScopeClause(
 
   if (placeholders.observerParam) {
     const observerNodeScope = [
-      `LOWER(${prefix}node_id) = LOWER(${placeholders.observerParam})`,
+      `${prefix}node_id = ${placeholders.observerParam}`,
       `EXISTS (
          SELECT 1
          FROM packets p
-         WHERE LOWER(p.rx_node_id) = LOWER(${placeholders.observerParam})`,
+         WHERE p.rx_node_id = ${placeholders.observerParam}`,
       placeholders.networkParam ? `AND p.network = ${placeholders.networkParam}` : '',
-      `AND LOWER(p.src_node_id) = LOWER(${prefix}node_id)
+      `AND p.src_node_id = ${prefix}node_id
        )`,
     ].filter(Boolean).join(' ');
     conditions.push(`(${observerNodeScope})`);
@@ -260,6 +259,7 @@ export async function insertPacket(p: {
   const storedPayload = p.payload
     ? (p.summary ? { ...p.payload, _summary: p.summary } : p.payload)
     : (p.summary ? { _summary: p.summary } : null);
+  const network = p.network ?? 'teesside';
   await pool.query(
     `INSERT INTO packets
        (time, packet_hash, rx_node_id, src_node_id, topic, packet_type, route_type,
@@ -268,8 +268,16 @@ export async function insertPacket(p: {
     [p.packetHash, p.rxNodeId, p.srcNodeId, p.topic, p.packetType,
      p.routeType, p.hopCount, p.rssi, p.snr,
      storedPayload ? JSON.stringify(storedPayload) : null, p.rawHex, p.advertCount ?? null,
-     p.pathHashes ?? null, inferredPathHashSizeBytes, p.network ?? 'teesside']
+     p.pathHashes ?? null, inferredPathHashSizeBytes, network]
   );
+  if (p.srcNodeId && network !== 'test') {
+    pool.query(
+      `INSERT INTO node_network_sightings (node_id, network, last_seen_at)
+       VALUES ($1, $2, NOW())
+       ON CONFLICT (node_id, network) DO UPDATE SET last_seen_at = NOW()`,
+      [p.srcNodeId, network]
+    ).catch(() => {}); // fire-and-forget, non-critical
+  }
 }
 
 export async function insertNodeStatusSample(sample: {

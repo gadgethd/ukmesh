@@ -25,7 +25,7 @@ interface Props {
 
 const VISIBLE_ROWS = 8;
 
-export const PacketFeed: React.FC<Props> = React.memo(({ packets, nodes, mqttObserverCount = 0, onPacketClick, pinnedPacketId }) => {
+export const PacketFeed: React.FC<Props> = React.memo(({ packets, nodes, onPacketClick, pinnedPacketId }) => {
   const visible = useMemo(
     () => packets.filter((p) => p.packetType === 4 || p.packetType === 5).slice(0, VISIBLE_ROWS).reverse(),
     [packets],
@@ -57,8 +57,6 @@ export const PacketFeed: React.FC<Props> = React.memo(({ packets, nodes, mqttObs
         ? (TYPE_LABELS[p.packetType] ?? `T${p.packetType}`)
         : '???';
       const observerIata = p.rxNodeId ? nodes.get(p.rxNodeId)?.iata : undefined;
-      const allObserversHeard = mqttObserverCount > 1 && p.observerIds.length >= mqttObserverCount;
-
       const rawContent = p.summary;
       const content = rawContent?.includes('🚫') ? '[redacted]' : rawContent;
       const display = content && content.length > 28
@@ -68,16 +66,6 @@ export const PacketFeed: React.FC<Props> = React.memo(({ packets, nodes, mqttObs
       const advertBadge = p.packetType === 4 && typeof p.advertCount === 'number'
         ? (p.advertCount === 1 ? 'NEW' : `${p.advertCount}`)
         : undefined;
-
-      // Resolve observer IDs to names for display
-      const MAX_OBSERVER_NAMES = 3;
-      const observerNames = p.observerIds.map((id) => {
-        const node = nodes.get(id);
-        return node?.name ?? node?.iata ?? id.slice(0, 6);
-      });
-      const observerDisplay = observerNames.length > MAX_OBSERVER_NAMES
-        ? [...observerNames.slice(0, MAX_OBSERVER_NAMES), `+${observerNames.length - MAX_OBSERVER_NAMES}`]
-        : observerNames;
 
       const isPinned = pinnedPacketId === p.id;
 
@@ -90,10 +78,8 @@ export const PacketFeed: React.FC<Props> = React.memo(({ packets, nodes, mqttObs
           tabIndex={0}
           onKeyDown={(e) => e.key === 'Enter' && onPacketClick?.(p)}
         >
-          {(observerIata || allObserversHeard) && (
-            <span className={`packet-item__iata${allObserversHeard ? ' packet-item__iata--all' : ''}`}>
-              {allObserversHeard ? 'ALL' : observerIata}
-            </span>
+          {observerIata && (
+            <span className="packet-item__iata">{observerIata}</span>
           )}
           {p.pathHashSizeBytes !== undefined && p.pathHashSizeBytes > 0 && (
             <span className="packet-item__path-bytes">{p.pathHashSizeBytes}</span>
@@ -109,8 +95,8 @@ export const PacketFeed: React.FC<Props> = React.memo(({ packets, nodes, mqttObs
             <span className="packet-item__hops">↑{p.hopCount}</span>
           )}
           <span className="packet-item__counts">
-            {observerDisplay.length > 0 && (
-              <span className="count count--rx">{observerDisplay.join(' · ')}</span>
+            {p.observerIds.length > 0 && (
+              <span className="count count--rx">{p.observerIds.length}rx</span>
             )}
             {p.txCount > 0 && <span className="count count--tx">{p.txCount}tx</span>}
           </span>

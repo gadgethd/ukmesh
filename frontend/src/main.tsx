@@ -3,12 +3,12 @@ import ReactDOM from 'react-dom/client';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { App } from './App.js';
 import { Layout } from './pages/Layout.js';
-import { HomePage } from './pages/HomePage.js';
 import { InstallPage } from './pages/InstallPage.js';
 import { OpenSourcePage } from './pages/OpenSourcePage.js';
 import { StatsPage } from './pages/StatsPage.js';
 import { PacketsPage } from './pages/PacketsPage.js';
 import { OwnerPortalPage } from './pages/OwnerPortalPage.js';
+import { TeessieDashboard } from './pages/teesside/TeessieDashboard.js';
 import { UKLayout } from './pages/ukmesh/UKLayout.js';
 import { UKHomePage } from './pages/ukmesh/UKHomePage.js';
 import { UKInstallPage } from './pages/ukmesh/UKInstallPage.js';
@@ -62,8 +62,8 @@ ReactDOM.createRoot(root).render(
     ) : (
       <BrowserRouter>
         <Routes>
+          <Route index element={<TeessieDashboard />} />
           <Route element={<Layout />}>
-            <Route index element={<HomePage />} />
             <Route path="about" element={<Navigate to="/" replace />} />
             <Route path="install" element={<InstallPage />} />
             <Route path="mqtt" element={<Navigate to="/install" replace />} />

@@ -26,8 +26,12 @@ async function processLine(line: string): Promise<void> {
   if (!m) return;
   const [, nodePrefix, mqttUsername] = m;
   if (!nodePrefix || !mqttUsername || mqttUsername === 'backend') return;
-  const nodeId = await resolveNodeId(nodePrefix);
-  if (nodeId) await upsertMqttNodeLogin(mqttUsername, nodeId);
+  try {
+    const nodeId = await resolveNodeId(nodePrefix);
+    if (nodeId) await upsertMqttNodeLogin(mqttUsername, nodeId);
+  } catch (err) {
+    console.error('[conn-monitor] processLine error:', (err as Error).message);
+  }
 }
 
 async function scanRange(start: number, end: number): Promise<void> {
@@ -76,7 +80,7 @@ export function startMqttConnectionMonitor(): void {
     }
   }
 
-  void init();
-  setInterval(() => void poll(), POLL_INTERVAL_MS);
+  init().catch((err: Error) => console.error('[conn-monitor] init error:', err.message));
+  setInterval(() => poll().catch((err: Error) => console.error('[conn-monitor] poll error:', err.message)), POLL_INTERVAL_MS);
   console.log('[conn-monitor] started, monitoring', LOG_PATH);
 }

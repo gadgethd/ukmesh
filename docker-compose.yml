@@ -122,6 +122,29 @@ services:
       redis:
         condition: service_healthy
 
+  tile-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    restart: unless-stopped
+    command: ["node", "dist/workers/tile.js"]
+    cpus: 1.0
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}
+      DATABASE_APPLICATION_NAME: meshcore-tile-worker
+      DATABASE_POOL_MAX: 2
+      DATABASE_STATEMENT_TIMEOUT_MS: 10000
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET required}
+      NODE_ENV: production
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_started
+
   link-backfill-worker:
     build:
       context: .

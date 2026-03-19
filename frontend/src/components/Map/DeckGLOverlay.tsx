@@ -10,7 +10,7 @@
  */
 import React, { useMemo } from 'react';
 import DeckGL from '@deck.gl/react';
-import { ArcLayer, LineLayer, PathLayer, ScatterplotLayer } from '@deck.gl/layers';
+import { ArcLayer, LineLayer, PathLayer } from '@deck.gl/layers';
 import { PathStyleExtension } from '@deck.gl/extensions';
 import type { PathStyleExtensionProps } from '@deck.gl/extensions';
 import type { PacketArc } from '../../hooks/useNodes.js';
@@ -38,13 +38,6 @@ type HistorySegmentWithColor = HistorySegment & {
   width: number;
 };
 
-export interface GPUNodeData {
-  id:       string;
-  position: [number, number]; // [lon, lat] — deck.gl / GeoJSON convention
-  color:    [number, number, number, number]; // RGBA fill
-  radius:   number; // pixels
-}
-
 interface Props {
   // Live arc trails
   arcs:             PacketArc[];
@@ -61,10 +54,6 @@ interface Props {
   showBetaPaths:       boolean;
   /** When true, opacity transitions to 0 (deck.gl handles the interpolation). */
   pathFadingOut:       boolean;
-
-  // GPU-rendered node markers (repeaters, companions, room servers, inferred)
-  gpuNodes:      GPUNodeData[];
-  showGpuNodes:  boolean;
 
   viewState:       DeckViewState;
   hiddenCoordMask: Map<string, HiddenMaskGeometry>;
@@ -92,34 +81,11 @@ function useDeckLayers(
   betaCompletionPaths: [number, number][][],
   showBetaPaths: boolean,
   pathFadingOut: boolean,
-  gpuNodes: GPUNodeData[],
-  showGpuNodes: boolean,
   hiddenCoordMask: Map<string, HiddenMaskGeometry>,
 ) {
   return useMemo(() => {
     const now    = Date.now();
     const layers = [];
-
-    // ── Node markers (replaces Leaflet CircleMarker SVG elements) ────────────
-    if (showGpuNodes && gpuNodes.length > 0) {
-      layers.push(
-        new ScatterplotLayer<GPUNodeData>({
-          id: 'node-markers',
-          data: gpuNodes,
-          getPosition: (d) => d.position,
-          getFillColor: (d) => d.color,
-          getLineColor: (d) => [d.color[0], d.color[1], d.color[2], 200] as [number, number, number, number],
-          getRadius: (d) => d.radius,
-          radiusUnits: 'pixels',
-          radiusMinPixels: 2,
-          stroked: true,
-          lineWidthUnits: 'pixels',
-          lineWidthMinPixels: 1,
-          getLineWidth: 1,
-          pickable: false,
-        }),
-      );
-    }
 
     // ── Arc trails ───────────────────────────────────────────────────────────
     if (showArcs && arcs.length > 0) {
@@ -253,7 +219,6 @@ function useDeckLayers(
     packetHistorySegments, showPacketHistory,
     betaPaths, betaLowSegments, betaCompletionPaths,
     showBetaPaths, pathFadingOut,
-    gpuNodes, showGpuNodes,
     hiddenCoordMask,
   ]);
 }
@@ -263,7 +228,6 @@ export const DeckGLOverlay: React.FC<Props> = React.memo(({
   packetHistorySegments, showPacketHistory,
   betaPaths, betaLowSegments, betaCompletionPaths,
   showBetaPaths, pathFadingOut,
-  gpuNodes, showGpuNodes,
   viewState, hiddenCoordMask,
 }) => {
   const layers = useDeckLayers(
@@ -271,7 +235,6 @@ export const DeckGLOverlay: React.FC<Props> = React.memo(({
     packetHistorySegments, showPacketHistory,
     betaPaths, betaLowSegments, betaCompletionPaths,
     showBetaPaths, pathFadingOut,
-    gpuNodes, showGpuNodes,
     hiddenCoordMask,
   );
 

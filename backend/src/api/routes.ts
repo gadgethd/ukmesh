@@ -3,7 +3,11 @@ import { rateLimit } from 'express-rate-limit';
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
 import { isIP } from 'node:net';
 import mqtt from 'mqtt';
+import { Redis } from 'ioredis';
 import { getNodes, getNodeHistory, getNodeAdverts, getPathHistoryCache, getRecentPacketEvents, getRecentPackets, query, MIN_LINK_OBSERVATIONS } from '../db/index.js';
+import { renderNodeTile } from '../tiles/renderer.js';
+import { getTileSnapshotNodes } from '../tiles/snapshot.js';
+import { isUkTile, UK_TILE_TTL_MS } from '../tiles/worker.js';
 import { addOwnerNodeForUsername, getBestNodeForMqttUsername, getOwnerNodeIdsForUsername } from '../db/ownerAuth.js';
 import { getWorkerHealthOverview } from '../health/status.js';
 import { resolveRequestNetwork } from '../http/requestScope.js';
@@ -22,11 +26,13 @@ const INFERRED_NODES_CACHE_TTL_MS = 60_000;  // 7-day packet scan, changes slowl
 const PATH_HISTORY_CACHE_TTL_MS   = 60_000;  // history cache is rebuilt by worker, not real-time
 const COVERAGE_CACHE_TTL_MS       = 30_000;  // geometry changes only on coverage rebuild
 const CHARTS_CACHE_TTL_MS         = 30 * 60_000; // 30 min — background refresh keeps it warm
+const CROSS_NETWORK_CACHE_TTL_MS  = 60_000;  // dashboard polls every minute; avoid re-running the join-heavy query
 const statsCache         = new Map<string, { ts: number; data: unknown }>();
 const inferredNodesCache = new Map<string, { ts: number; data: unknown }>();
 const pathHistoryCache   = new Map<string, { ts: number; data: unknown }>();
 const coverageCache      = new Map<string, { ts: number; data: unknown }>();
 const chartsCache        = new Map<string, { ts: number; data: unknown }>();
+const crossNetworkCache  = new Map<string, { ts: number; data: unknown }>();
 const chartsInflight     = new Map<string, Promise<unknown>>();
 const OWNER_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const MQTT_USERNAME_MAX_LEN = 128;
@@ -80,6 +86,19 @@ const STATS_CHARTS_LIMITER = rateLimit({
   legacyHeaders: false,
   message: { error: 'Too many stats chart requests, slow down' },
 });
+const TILE_CACHE_TTL_MS = 30_000;         // on-demand non-UK tiles
+const TILE_CACHE_TTL_UK_MS = UK_TILE_TTL_MS; // on-demand UK tiles (matches worker TTL)
+const TILE_LIMITER = rateLimit({ windowMs: 60_000, max: 600, standardHeaders: true, legacyHeaders: false });
+
+let tileRedis: Redis | null = null;
+function getTileRedis(): Redis {
+  if (tileRedis) return tileRedis;
+  const redisUrl = process.env['REDIS_URL'] ?? 'redis://redis:6379';
+  tileRedis = new Redis(redisUrl);
+  tileRedis.on('error', (e: Error) => console.error('[redis/tiles] error', e.message));
+  return tileRedis;
+}
+
 const PROHIBITED_NODE_MARKER = '🚫';
 const HIDDEN_NODE_MASK_RADIUS_MILES = 1;
 
@@ -119,8 +138,8 @@ function decryptOwnerSession(token: string): OwnerSession | null {
     const parsed = JSON.parse(decoded) as Partial<OwnerSession>;
     if (!Array.isArray(parsed.nodeIds) || typeof parsed.exp !== 'number') return null;
     const nodeIds = parsed.nodeIds
-      .map((value) => String(value).trim().toLowerCase())
-      .filter((value) => /^[0-9a-f]{64}$/.test(value));
+      .map((value) => String(value).trim().toUpperCase())
+      .filter((value) => /^[0-9A-F]{64}$/.test(value));
     if (nodeIds.length < 1) return null;
     const mqttUsername = typeof parsed.mqttUsername === 'string' ? parsed.mqttUsername.trim() : undefined;
     return { nodeIds, exp: parsed.exp, mqttUsername: mqttUsername || undefined };
@@ -340,7 +359,7 @@ async function buildOwnerDashboard(nodeIds: string[]) {
     }>(
       `SELECT node_id, name, network, last_seen, advert_count, lat, lon, iata
        FROM nodes
-       WHERE LOWER(node_id) = ANY($1::text[])
+       WHERE node_id = ANY($1::text[])
        ORDER BY last_seen DESC NULLS LAST`,
       [nodeIds],
     ),
@@ -349,14 +368,14 @@ async function buildOwnerDashboard(nodeIds: string[]) {
          COUNT(*) FILTER (WHERE time > NOW() - INTERVAL '24 hours')::int AS packets_24h,
          COUNT(*) FILTER (WHERE time > NOW() - INTERVAL '7 days')::int AS packets_7d
        FROM packets
-       WHERE LOWER(src_node_id) = ANY($1::text[])`,
+       WHERE src_node_id = ANY($1::text[])`,
       [nodeIds],
     ),
     query<{ packets_24h: number }>(
       `SELECT
          COUNT(*) FILTER (WHERE time > NOW() - INTERVAL '24 hours')::int AS packets_24h
        FROM packets
-       WHERE LOWER(rx_node_id) = ANY($1::text[])`,
+       WHERE rx_node_id = ANY($1::text[])`,
       [nodeIds],
     ),
   ]);
@@ -409,8 +428,8 @@ type NetworkFilters = {
 };
 
 function normalizeObserverQuery(value: unknown): string | undefined {
-  const observer = String(value ?? '').trim().toLowerCase();
-  return observer && /^[0-9a-f]{64}$/.test(observer) ? observer : undefined;
+  const observer = String(value ?? '').trim().toUpperCase();
+  return observer && /^[0-9A-F]{64}$/.test(observer) ? observer : undefined;
 }
 
 function normalizeIp(value: string | undefined): string {
@@ -468,9 +487,9 @@ function networkFilters(network?: string, observer?: string): NetworkFilters {
   if (networkParam) packetConditions.push(`network = ${networkParam}`);
   else {
     packetConditions.push(`network IS DISTINCT FROM 'test'`);
-    packetConditions.push(`LOWER(COALESCE(rx_node_id, '')) NOT IN (SELECT LOWER(node_id) FROM nodes WHERE network = 'test')`);
+    packetConditions.push(`COALESCE(rx_node_id, '') NOT IN (SELECT node_id FROM nodes WHERE network = 'test')`);
   }
-  if (observerParam) packetConditions.push(`LOWER(rx_node_id) = LOWER(${observerParam})`);
+  if (observerParam) packetConditions.push(`rx_node_id = ${observerParam}`);
 
   const nodeConditions = (alias?: string) => {
     const prefix = alias ? `${alias}.` : '';
@@ -480,13 +499,13 @@ function networkFilters(network?: string, observer?: string): NetworkFilters {
     if (observerParam) {
       conditions.push(
         `(
-          LOWER(${prefix}node_id) = LOWER(${observerParam})
+          ${prefix}node_id = ${observerParam}
           OR EXISTS (
             SELECT 1
             FROM packets p
-            WHERE LOWER(p.rx_node_id) = LOWER(${observerParam})
+            WHERE p.rx_node_id = ${observerParam}
               ${networkParam ? `AND p.network = ${networkParam}` : ''}
-              AND LOWER(p.src_node_id) = LOWER(${prefix}node_id)
+              AND p.src_node_id = ${prefix}node_id
           )
         )`,
       );
@@ -506,9 +525,9 @@ function networkFilters(network?: string, observer?: string): NetworkFilters {
       } else {
         conditions.push(`${prefix}network IS DISTINCT FROM 'test'`);
         conditions.push(`split_part(${prefix}topic, '/', 1) <> 'meshcore-test'`);
-        conditions.push(`LOWER(COALESCE(${prefix}rx_node_id, '')) NOT IN (SELECT LOWER(node_id) FROM nodes WHERE network = 'test')`);
+        conditions.push(`COALESCE(${prefix}rx_node_id, '') NOT IN (SELECT node_id FROM nodes WHERE network = 'test')`);
       }
-      if (observerParam) conditions.push(`LOWER(${prefix}rx_node_id) = LOWER(${observerParam})`);
+      if (observerParam) conditions.push(`${prefix}rx_node_id = ${observerParam}`);
       return conditions.length > 0 ? `AND ${conditions.join(' AND ')}` : '';
     },
     nodes: nodeConditions().length > 0 ? `AND ${nodeConditions().join(' AND ')}` : '',
@@ -1651,7 +1670,7 @@ router.post('/owner/login', OWNER_LOGIN_LIMITER, async (req, res) => {
     res.cookie(OWNER_COOKIE_NAME, token, {
       httpOnly: true,
       secure: isSecureRequest(req),
-      sameSite: 'strict',
+      sameSite: 'lax',
       path: '/',
       maxAge: OWNER_SESSION_TTL_MS,
     });
@@ -1698,9 +1717,9 @@ router.get('/owner/live', async (req, res) => {
       return;
     }
 
-    const requestedNodeId = String(req.query['nodeId'] ?? '').trim().toLowerCase();
+    const requestedNodeId = String(req.query['nodeId'] ?? '').trim().toUpperCase();
     const selectedNodeId = requestedNodeId
-      ? ownedNodeIds.find((id) => id.toLowerCase() === requestedNodeId)
+      ? ownedNodeIds.find((id) => id === requestedNodeId)
       : ownedNodeIds[0];
     if (!selectedNodeId) {
       res.status(403).json({ error: 'Node is not owned by this session' });
@@ -1735,7 +1754,7 @@ router.get('/owner/live', async (req, res) => {
       }>(
         `SELECT node_id, name, network, iata, advert_count, last_seen, lat, lon, role
          FROM nodes
-         WHERE LOWER(node_id) = LOWER($1)
+         WHERE node_id = $1
          LIMIT 1`,
         [selectedNodeId],
       ),
@@ -1760,10 +1779,10 @@ router.get('/owner/live', async (req, res) => {
            MAX(p.time)::text AS last_seen
          FROM packets p
          LEFT JOIN nodes n ON n.node_id = p.src_node_id
-         WHERE LOWER(p.rx_node_id) = LOWER($1)
+         WHERE p.rx_node_id = $1
            AND p.hop_count = 0
            AND p.src_node_id IS NOT NULL
-           AND LOWER(p.src_node_id) <> LOWER($1)
+           AND p.src_node_id <> $1
            AND p.time > NOW() - INTERVAL '24 hours'
          GROUP BY p.src_node_id, n.name, n.network, n.iata, n.lat, n.lon
          ORDER BY packets_24h DESC
@@ -1806,7 +1825,7 @@ router.get('/owner/live', async (req, res) => {
                ORDER BY p.time DESC
              ) AS rn
            FROM packets p
-           WHERE LOWER(p.rx_node_id) = LOWER($1)
+           WHERE p.rx_node_id = $1
          )
          SELECT
            r.time::text AS time,
@@ -1855,10 +1874,10 @@ router.get('/owner/live', async (req, res) => {
            MAX(p.time)::text AS last_seen,
            MIN(p.hop_count) AS best_hops
          FROM packets p
-         LEFT JOIN nodes n ON LOWER(n.node_id) = LOWER(p.rx_node_id)
-         WHERE LOWER(p.src_node_id) = LOWER($1)
+         LEFT JOIN nodes n ON n.node_id = p.rx_node_id
+         WHERE p.src_node_id = $1
            AND p.rx_node_id IS NOT NULL
-           AND LOWER(p.rx_node_id) <> LOWER($1)
+           AND p.rx_node_id <> $1
            AND p.time > NOW() - INTERVAL '7 days'
          GROUP BY p.rx_node_id, n.name, n.network, n.iata, n.lat, n.lon
          ORDER BY packets_24h DESC, packets_7d DESC, last_seen DESC
@@ -1878,20 +1897,20 @@ router.get('/owner/live', async (req, res) => {
         last_observed: string | null;
       }>(
         `SELECT
-           CASE WHEN LOWER(nl.node_a_id) = LOWER($1) THEN nl.node_b_id ELSE nl.node_a_id END AS peer_node_id,
+           CASE WHEN nl.node_a_id = $1 THEN nl.node_b_id ELSE nl.node_a_id END AS peer_node_id,
            peer.name AS peer_name,
            peer.network AS peer_network,
-           CASE WHEN LOWER(nl.node_a_id) = LOWER($1) THEN nl.count_a_to_b ELSE nl.count_b_to_a END AS owner_to_peer,
-           CASE WHEN LOWER(nl.node_a_id) = LOWER($1) THEN nl.count_b_to_a ELSE nl.count_a_to_b END AS peer_to_owner,
+           CASE WHEN nl.node_a_id = $1 THEN nl.count_a_to_b ELSE nl.count_b_to_a END AS owner_to_peer,
+           CASE WHEN nl.node_a_id = $1 THEN nl.count_b_to_a ELSE nl.count_a_to_b END AS peer_to_owner,
            nl.observed_count,
            nl.itm_path_loss_db,
            nl.itm_viable,
            nl.force_viable,
            nl.last_observed::text AS last_observed
          FROM node_links nl
-         JOIN nodes peer ON LOWER(peer.node_id) = LOWER(CASE WHEN LOWER(nl.node_a_id) = LOWER($1) THEN nl.node_b_id ELSE nl.node_a_id END)
-         WHERE (LOWER(nl.node_a_id) = LOWER($1)
-            OR LOWER(nl.node_b_id) = LOWER($1))
+         JOIN nodes peer ON peer.node_id = CASE WHEN nl.node_a_id = $1 THEN nl.node_b_id ELSE nl.node_a_id END
+         WHERE (nl.node_a_id = $1
+            OR nl.node_b_id = $1)
            AND (
              nl.force_viable = true
              OR nl.itm_viable = true
@@ -1913,7 +1932,7 @@ router.get('/owner/live', async (req, res) => {
            time_bucket('1 hour', time)::text AS bucket,
            COUNT(DISTINCT packet_hash)::int AS adverts
          FROM packets
-         WHERE LOWER(src_node_id) = LOWER($1)
+         WHERE src_node_id = $1
            AND packet_type = 4
            AND time > NOW() - INTERVAL '24 hours'
          GROUP BY bucket
@@ -1953,7 +1972,7 @@ router.get('/owner/live', async (req, res) => {
              ELSE NULL
            END AS tx_publish_calls
          FROM node_status_samples
-         WHERE LOWER(node_id) = LOWER($1)
+         WHERE node_id = $1
            AND time > NOW() - INTERVAL '24 hours'
          ORDER BY time ASC`,
         [selectedNodeId],
@@ -2296,7 +2315,7 @@ async function computeChartsData(network: string | undefined, observer: string |
       // top repeated first-2-hex prefix collisions across known repeaters
       query(`
         WITH prefix_counts AS (
-          SELECT SUBSTRING(LOWER(n.node_id) FROM 1 FOR 2) AS prefix, COUNT(*)::int AS node_count
+          SELECT LEFT(n.node_id, 2) AS prefix, COUNT(*)::int AS node_count
           FROM nodes n
           WHERE n.node_id ~ '^[0-9A-Fa-f]{64}$'
             AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
@@ -2327,11 +2346,11 @@ async function computeChartsData(network: string | undefined, observer: string |
           COALESCE(NULLIF(TRIM(UPPER(n.iata)), ''), 'UNK') AS iata,
           COUNT(DISTINCT p.packet_hash) FILTER (WHERE p.time > NOW() - INTERVAL '24 hours') AS packets_24h,
           COUNT(DISTINCT p.packet_hash) AS packets_7d,
-          COUNT(DISTINCT LOWER(p.rx_node_id)) FILTER (WHERE n.last_seen > NOW() - INTERVAL '1 minute') AS active_observers,
-          COUNT(DISTINCT LOWER(p.rx_node_id)) AS observers,
+          COUNT(DISTINCT p.rx_node_id) FILTER (WHERE n.last_seen > NOW() - INTERVAL '1 minute') AS active_observers,
+          COUNT(DISTINCT p.rx_node_id) AS observers,
           MAX(p.time)::text AS last_packet_at
         FROM packets p
-        LEFT JOIN nodes n ON LOWER(n.node_id) = LOWER(p.rx_node_id)
+        LEFT JOIN nodes n ON n.node_id = p.rx_node_id
         WHERE p.time > NOW() - INTERVAL '7 days'
           AND p.rx_node_id IS NOT NULL
           AND p.rx_node_id <> ''
@@ -2347,7 +2366,7 @@ async function computeChartsData(network: string | undefined, observer: string |
           time_bucket('1 day', p.time) AS day,
           COUNT(DISTINCT p.packet_hash) AS count
         FROM packets p
-        LEFT JOIN nodes n ON LOWER(n.node_id) = LOWER(p.rx_node_id)
+        LEFT JOIN nodes n ON n.node_id = p.rx_node_id
         WHERE p.time > NOW() - INTERVAL '7 days'
           AND p.rx_node_id IS NOT NULL
           AND p.rx_node_id <> ''
@@ -2450,7 +2469,7 @@ async function computeChartsData(network: string | undefined, observer: string |
              ) AS decoded_nodes
            FROM multibyte m
            JOIN hop_matches hm ON hm.packet_hash = m.packet_hash
-           LEFT JOIN nodes n ON LOWER(n.node_id) = LOWER(hm.matched_node_id)
+           LEFT JOIN nodes n ON n.node_id = hm.matched_node_id
            GROUP BY m.packet_hash
          ),
          latest_multibyte AS (
@@ -2699,7 +2718,21 @@ router.get('/observer-activity', EXPENSIVE_LIMITER, async (req, res) => {
 //   Outbound: MME observers see it with fewer hops, non-MME also received it within 120s
 //   Inbound:  non-MME observers see it with fewer hops, MME also received it within 120s
 router.get('/cross-network-connectivity', EXPENSIVE_LIMITER, async (_req, res) => {
-  const result = await query<{ last_inbound: string | null; last_outbound: string | null }>(`
+  const cacheKey = 'teesside';
+  const cached = crossNetworkCache.get(cacheKey);
+  if (cached && Date.now() - cached.ts < CROSS_NETWORK_CACHE_TTL_MS) {
+    res.json(cached.data);
+    return;
+  }
+
+  let result: Awaited<ReturnType<typeof query<{ last_inbound: string | null; last_outbound: string | null }>>>;
+  let historyResult: Awaited<ReturnType<typeof query<{
+    bucket: string;
+    inbound_count: string;
+    outbound_count: string;
+  }>>>;
+  try {
+    result = await query<{ last_inbound: string | null; last_outbound: string | null }>(`
     WITH mme_observers AS (
       SELECT DISTINCT rx_node_id AS node_id
       FROM packets
@@ -2734,18 +2767,89 @@ router.get('/cross-network-connectivity', EXPENSIVE_LIMITER, async (_req, res) =
     FROM cross_heard
     WHERE mme_min_hops != other_min_hops
   `);
+    historyResult = await query<{
+      bucket: string;
+      inbound_count: string;
+      outbound_count: string;
+    }>(`
+    WITH mme_observers AS (
+      SELECT DISTINCT rx_node_id AS node_id
+      FROM packets
+      WHERE time > NOW() - INTERVAL '24 hours'
+        AND network = 'teesside'
+        AND rx_node_id IS NOT NULL
+    ),
+    cross_heard AS (
+      SELECT
+        p.packet_hash,
+        MIN(p.hop_count) FILTER (WHERE p.rx_node_id IN (SELECT node_id FROM mme_observers))     AS mme_min_hops,
+        MIN(p.hop_count) FILTER (WHERE p.rx_node_id NOT IN (SELECT node_id FROM mme_observers)) AS other_min_hops,
+        MIN(p.time)      FILTER (WHERE p.rx_node_id IN (SELECT node_id FROM mme_observers))     AS mme_first_seen,
+        MIN(p.time)      FILTER (WHERE p.rx_node_id NOT IN (SELECT node_id FROM mme_observers)) AS other_first_seen
+      FROM packets p
+      WHERE p.time > NOW() - INTERVAL '7 days'
+        AND p.hop_count IS NOT NULL
+        AND p.rx_node_id IS NOT NULL
+        AND p.packet_hash IS NOT NULL
+      GROUP BY p.packet_hash
+      HAVING
+        MIN(p.hop_count) FILTER (WHERE p.rx_node_id IN (SELECT node_id FROM mme_observers)) IS NOT NULL
+        AND MIN(p.hop_count) FILTER (WHERE p.rx_node_id NOT IN (SELECT node_id FROM mme_observers)) IS NOT NULL
+        AND ABS(EXTRACT(EPOCH FROM (
+          MIN(p.time) FILTER (WHERE p.rx_node_id IN (SELECT node_id FROM mme_observers)) -
+          MIN(p.time) FILTER (WHERE p.rx_node_id NOT IN (SELECT node_id FROM mme_observers))
+        ))) <= 120
+    ),
+    classified AS (
+      SELECT
+        date_trunc('hour', mme_first_seen) AS bucket,
+        CASE WHEN other_min_hops < mme_min_hops THEN 1 ELSE 0 END AS inbound_count,
+        CASE WHEN mme_min_hops < other_min_hops THEN 1 ELSE 0 END AS outbound_count
+      FROM cross_heard
+      WHERE mme_min_hops != other_min_hops
+        AND mme_first_seen IS NOT NULL
+    ),
+    buckets AS (
+      SELECT generate_series(
+        date_trunc('hour', NOW() - INTERVAL '7 days'),
+        date_trunc('hour', NOW()),
+        INTERVAL '1 hour'
+      ) AS bucket
+    )
+    SELECT
+      to_char(b.bucket, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS bucket,
+      COALESCE(SUM(c.inbound_count), 0)::text AS inbound_count,
+      COALESCE(SUM(c.outbound_count), 0)::text AS outbound_count
+    FROM buckets b
+    LEFT JOIN classified c ON c.bucket = b.bucket
+    GROUP BY b.bucket
+    ORDER BY b.bucket
+  `);
+  } catch (err) {
+    console.error('[api] GET /cross-network-connectivity', (err as Error).message);
+    res.status(500).end();
+    return;
+  }
 
   const lastInbound  = result.rows[0]?.last_inbound  ?? null;
   const lastOutbound = result.rows[0]?.last_outbound ?? null;
 
-  res.json({
+  const responseData = {
     inbound:     !!lastInbound,
     outbound:    !!lastOutbound,
     lastInbound,
     lastOutbound,
     windowHours: 2,
+    historyWindowHours: 7 * 24,
+    history: historyResult.rows.map((row) => ({
+      bucket: row.bucket,
+      inboundCount: Number(row.inbound_count ?? 0),
+      outboundCount: Number(row.outbound_count ?? 0),
+    })),
     checkedAt:   new Date().toISOString(),
-  });
+  };
+  crossNetworkCache.set(cacheKey, { ts: Date.now(), data: responseData });
+  res.json(responseData);
 });
 
 // GET /api/radio-history?target=<nodeName>&limit=<n> — proxies radio bot POST /history
@@ -2764,6 +2868,42 @@ router.get('/radio-history', async (req, res) => {
     res.json(await upstream.json());
   } catch {
     res.status(503).json({ error: 'radio bot unreachable' });
+  }
+});
+
+// GET /api/tiles/nodes/:z/:x/:y.png — server-side node tile rendering
+router.get('/tiles/nodes/:z/:x/:y.png', TILE_LIMITER, async (req: Request, res: Response) => {
+  const network = resolveRequestNetwork(req.query['network'], req.headers);
+  const z = parseInt(req.params.z!, 10);
+  const x = parseInt(req.params.x!, 10);
+  const y = parseInt((req.params.y ?? '').replace('.png', ''), 10);
+  if (isNaN(z) || isNaN(x) || isNaN(y) || z < 0 || z > 18) { res.status(400).end(); return; }
+
+  const cacheKey = `tile:nodes:${network ?? 'all'}:${z}:${x}:${y}`;
+  const redis = getTileRedis();
+  const cached = await redis.getBuffer(cacheKey).catch(() => null);
+  if (cached) {
+    res.set('Content-Type', 'image/png');
+    res.set('Cache-Control', 'public, max-age=30');
+    res.send(cached);
+    return;
+  }
+
+  try {
+    // 'all' means no network filter — pass undefined so buildNodeScopeClause
+    // falls back to "IS DISTINCT FROM 'test'" rather than network = 'all'.
+    const nodeNetwork = network === 'all' ? undefined : network;
+    const snapshotNodes = await getTileSnapshotNodes(nodeNetwork);
+    const nodes = snapshotNodes.length > 0 ? snapshotNodes : await getNodes(nodeNetwork);
+    const png = await renderNodeTile(z, x, y, nodes);
+    const ttl = isUkTile(z, x, y) ? TILE_CACHE_TTL_UK_MS : TILE_CACHE_TTL_MS;
+    await redis.set(cacheKey, png, 'PX', ttl).catch(() => {});
+    res.set('Content-Type', 'image/png');
+    res.set('Cache-Control', 'public, max-age=30');
+    res.send(png);
+  } catch (err) {
+    console.error('[api] GET /tiles/nodes', (err as Error).message);
+    res.status(500).end();
   }
 });
 

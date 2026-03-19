@@ -1343,7 +1343,7 @@ export async function resolveBetaPathForPacketHash(packetHash: string, network: 
        FROM packets
        WHERE packet_hash = $1
          AND ($2 = 'all' OR network = $2)
-         ${observer ? 'AND LOWER(rx_node_id) = LOWER($3)' : ''}
+         ${observer ? 'AND rx_node_id = $3' : ''}
        ORDER BY COALESCE(cardinality(path_hashes), 0) DESC,
                 CASE WHEN path_hash_size_bytes IS NOT NULL THEN 1 ELSE 0 END DESC,
                 CASE WHEN src_node_id IS NOT NULL THEN 1 ELSE 0 END DESC,

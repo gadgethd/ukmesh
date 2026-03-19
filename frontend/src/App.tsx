@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Map as LeafletMap } from 'leaflet';
 import { MapView } from './components/Map/MapView.js';
-import type { DeckViewState, GPUNodeData } from './components/Map/DeckGLOverlay.js';
+import type { DeckViewState } from './components/Map/DeckGLOverlay.js';
 import { DeckGLOverlay } from './components/Map/DeckGLOverlay.js';
 import { FilterPanel, type Filters } from './components/FilterPanel/FilterPanel.js';
 import { PacketFeed } from './components/PacketFeed.js';
@@ -17,7 +17,7 @@ import { usePacketPathOverlay } from './hooks/usePacketPathOverlay.js';
 import { useAppMessageHandler } from './hooks/useAppMessageHandler.js';
 import { getCurrentSite } from './config/site.js';
 import { uncachedEndpoint, withScopeParams } from './utils/api.js';
-import { buildHiddenCoordMask, resolvePathNodeIds, hasCoords, maskNodePoint } from './utils/pathing.js';
+import { buildHiddenCoordMask, resolvePathNodeIds, hasCoords } from './utils/pathing.js';
 
 type PacketHistorySegment = {
   positions: [[number, number], [number, number]];
@@ -60,7 +60,6 @@ export const App: React.FC = () => {
   const [isPageVisible, setIsPageVisible] = useState(
     () => (typeof document === 'undefined' ? true : document.visibilityState === 'visible'),
   );
-  const [prefixFocusActive, setPrefixFocusActive] = useState(false);
   const clashRestoreRef = useRef<{ coverage: boolean; clientNodes: boolean } | null>(null);
   const prevHexClashesRef = useRef<boolean>(DEFAULT_FILTERS.hexClashes);
 
@@ -153,58 +152,6 @@ export const App: React.FC = () => {
     return result;
   }, [pinnedPacketSnapshot, filters.betaPaths, packets, nodes]);
 
-  // GPU node data — computed here so DeckGLOverlay can render dots without Leaflet SVG elements.
-  // Colors mirror the markerColor() logic in NodeMarker.tsx (hex-clash colours are never needed
-  // here because showGpuNodes=false during clash mode).
-  const FOURTEEN_DAYS_MS = 14 * 24 * 60 * 60 * 1000;
-  const SEVEN_DAYS_MS    =  7 * 24 * 60 * 60 * 1000;
-  const gpuNodes = useMemo<GPUNodeData[]>(() => {
-    const now    = Date.now();
-    const result: GPUNodeData[] = [];
-
-    const addNode = (node: MeshNode, isInferredVariant: boolean) => {
-      if (!hasCoords(node)) return;
-      if (now - new Date(node.last_seen).getTime() > FOURTEEN_DAYS_MS) return;
-      if (pathNodeIds && !pathNodeIds.has(node.node_id.toLowerCase())) return;
-
-      const isStale = now - new Date(node.last_seen).getTime() > SEVEN_DAYS_MS;
-      const variant = (isInferredVariant || node.is_inferred)
-        ? 'inferred'
-        : (node.role === 1 ? 'companion' : node.role === 3 ? 'room' : 'repeater');
-
-      const masked = maskNodePoint(node, hiddenCoordMask);
-      const maskedLat = masked?.[0] ?? node.lat!;
-      const maskedLon = masked?.[1] ?? node.lon!;
-
-      const alpha = 178; // 0.7 * 255
-      let color: [number, number, number, number];
-      if (isStale)                      color = [255,  68,  68, alpha];
-      else if (!node.is_online)         color = [102, 102, 102, alpha];
-      else if (variant === 'companion') color = [255, 152,   0, alpha];
-      else if (variant === 'room')      color = [206, 147, 216, alpha];
-      else if (variant === 'inferred')  color = [109, 220, 122,   230];
-      else                              color = [  0, 196, 255, alpha]; // repeater
-
-      result.push({ id: node.node_id, position: [maskedLon, maskedLat], color, radius: 3.5 });
-    };
-
-    for (const node of nodes.values()) {
-      const role = node.role;
-      if (role !== undefined && role !== 2 && role !== 1 && role !== 3) continue;
-      if ((role === 1 || role === 3) && !filters.clientNodes) continue;
-      addNode(node, false);
-    }
-    for (const node of inferredNodes) {
-      addNode(node, true);
-    }
-
-    return result;
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [nodes, inferredNodes, hiddenCoordMask, pathNodeIds, filters.clientNodes]);
-
-  const handlePrefixFocusActiveChange = useCallback((active: boolean) => {
-    setPrefixFocusActive(active);
-  }, []);
 
   useEffect(() => {
     if ('serviceWorker' in navigator) {
@@ -415,7 +362,6 @@ export const App: React.FC = () => {
           hiddenCoordMask={hiddenCoordMask}
           pathNodeIds={pathNodeIds}
           onMapReady={setMap}
-          onPrefixFocusActiveChange={handlePrefixFocusActiveChange}
         />
         <DeckGLOverlay
           arcs={arcs}
@@ -427,8 +373,6 @@ export const App: React.FC = () => {
           betaCompletionPaths={betaCompletionPaths}
           showBetaPaths={filters.betaPaths || pinnedPacketId !== null}
           pathFadingOut={pathFadingOut}
-          gpuNodes={gpuNodes}
-          showGpuNodes={!filters.hexClashes && !prefixFocusActive}
           viewState={deckViewState}
           hiddenCoordMask={hiddenCoordMask}
         />

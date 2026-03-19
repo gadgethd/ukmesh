@@ -11,6 +11,7 @@ import { startMqttConnectionMonitor } from './mqtt/connectionMonitor.js';
 import { initWebSocketServer, broadcastPacket, broadcastNodeUpdate, broadcastNodeUpsert } from './ws/server.js';
 import apiRoutes from './api/routes.js';
 import { isViewshedEligibleCoordinate, queueViewshedJob, queueLinkJob } from './queue/publisher.js';
+import { rebuildTileSnapshotFromDb, upsertTileSnapshotNode } from './tiles/snapshot.js';
 
 const ALLOWED_ORIGINS = (process.env['ALLOWED_ORIGINS'] ?? '')
   .split(',')
@@ -25,6 +26,8 @@ async function main() {
   // 1. Initialise DB schema + retention policy
   await initDb();
   await initOwnerAuthDb();
+  const tileSnapshotCount = await rebuildTileSnapshotFromDb();
+  console.log(`[app] tile snapshot initialised (${tileSnapshotCount} nodes)`);
 
   // Queue viewshed jobs for any node with a position but no coverage yet
   // (catches nodes that existed before the worker was added)
@@ -66,6 +69,7 @@ async function main() {
   onNodeSeen((nodeId, meta) => broadcastNodeUpdate(nodeId, meta));
   onNodeUpsert((node) => {
     broadcastNodeUpsert(node);
+    void upsertTileSnapshotNode(node).catch((err: Error) => console.error('[tile-snapshot] upsert failed:', err.message));
     // Queue a viewshed job only for visible repeaters (role=2 or unknown)
     const isHidden      = typeof node.name === 'string' && node.name.includes('🚫');
     const isNonRepeater = typeof node.role === 'number' && node.role !== 2;

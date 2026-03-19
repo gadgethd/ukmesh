@@ -20,6 +20,17 @@ CREATE TABLE IF NOT EXISTS nodes (
   created_at       TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Tracks which networks each node has been heard on (maintained by insertPacket).
+-- Used for cross-network node visibility (e.g. showing ukmesh nodes on teesside site).
+-- Replaces expensive correlated EXISTS subquery against the packets hypertable.
+CREATE TABLE IF NOT EXISTS node_network_sightings (
+  node_id       TEXT NOT NULL,
+  network       TEXT NOT NULL,
+  first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  last_seen_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (node_id, network)
+);
+
 CREATE TABLE IF NOT EXISTS planned_nodes (
   id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   owner_pubkey TEXT NOT NULL,

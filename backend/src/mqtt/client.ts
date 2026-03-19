@@ -7,6 +7,7 @@ import type {
 import { insertNodeStatusSample, insertPacket, upsertNode, incrementAdvertCount, query } from '../db/index.js';
 import { invalidateResolveCache, setResolveCache } from '../path-beta/resolveCache.js';
 import { resolvePool } from '../path-beta/resolvePool.js';
+import { upsertTileSnapshotNode } from '../tiles/snapshot.js';
 import type { LivePacket } from '../types/index.js';
 import { decodePacketCompat } from './decodePacket.js';
 
@@ -461,7 +462,7 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
     const firmware = json['firmware_version'] as string | undefined;
 
     const nodeId = originId ?? observerKey;
-    void upsertNode(nodeId, {
+    upsertNode(nodeId, {
       name:            origin,
       iata,
       publicKey:       originId,
@@ -469,12 +470,21 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
       firmwareVersion: (firmware && firmware !== 'unknown') ? firmware : undefined,
       network,
       allowTestOverride: network === 'test' && nodeId === observerKey,
-    });
+    }).catch((err: Error) => console.error('[mqtt] upsertNode error:', err.message));
+    void upsertTileSnapshotNode({
+      node_id: nodeId,
+      name: origin,
+      iata,
+      public_key: originId,
+      network,
+      last_seen: new Date().toISOString(),
+      is_online: true,
+    }).catch((err: Error) => console.error('[tile-snapshot] upsert failed:', err.message));
     const telemetry = extractStatusTelemetry(json, {
       allowRawStatsOnly: network === 'test',
     });
     if (telemetry) {
-      void insertNodeStatusSample({
+      insertNodeStatusSample({
         nodeId,
         network,
         batteryMv: telemetry.batteryMv,
@@ -484,7 +494,7 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
         channelUtilization: telemetry.channelUtilization,
         airUtilTx: telemetry.airUtilTx,
         stats: telemetry.stats,
-      });
+      }).catch((err: Error) => console.error('[mqtt] insertNodeStatusSample error:', err.message));
     }
     emitNode(nodeId, { network, observerId: observerKey });
     return;
@@ -555,7 +565,7 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
           const nodeId    = senderKey ?? observerKey;
 
           if (network !== 'test') {
-            void upsertNode(nodeId, {
+            upsertNode(nodeId, {
               name:      appData?.['name']       as string | undefined,
               lat:       loc?.['latitude'],
               lon:       loc?.['longitude'],
@@ -563,10 +573,10 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
               iata,
               publicKey: senderKey,
               network,
-            });
+            }).catch((err: Error) => console.error('[mqtt] upsertNode error:', err.message));
 
             if (decodedHash && tryCountAdvert(decodedHash)) {
-              void incrementAdvertCount(nodeId);
+              incrementAdvertCount(nodeId).catch((err: Error) => console.error('[mqtt] incrementAdvertCount error:', err.message));
             }
 
             emitNodeUpsert({
@@ -583,6 +593,18 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
               is_online:   true,
               advert_count: advertCount,
             });
+            void upsertTileSnapshotNode({
+              node_id:     nodeId,
+              name:        appData?.['name']       as string | undefined,
+              lat:         loc?.['latitude'],
+              lon:         loc?.['longitude'],
+              role:        appData?.['deviceRole'] as number | undefined,
+              iata,
+              network,
+              public_key:  senderKey,
+              last_seen:   new Date().toISOString(),
+              is_online:   true,
+            }).catch((err: Error) => console.error('[tile-snapshot] upsert failed:', err.message));
           }
 
           innerPayload = inner;
@@ -635,22 +657,22 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
     return;
   }
 
-  void upsertNode(observerKey, {
+  upsertNode(observerKey, {
     iata,
     network,
     allowTestOverride: network === 'test',
-  });
+  }).catch((err: Error) => console.error('[mqtt] upsertNode error:', err.message));
   emitNode(observerKey, { network, observerId: observerKey });
 
   if (useTxAdvertFallback && originId) {
-    await upsertNode(originId, {
+    upsertNode(originId, {
       name: origin,
       iata,
       publicKey: originId,
       network,
-    });
+    }).catch((err: Error) => console.error('[mqtt] upsertNode error:', err.message));
     if (tryCountAdvert(finalHash)) {
-      void incrementAdvertCount(originId);
+      incrementAdvertCount(originId).catch((err: Error) => console.error('[mqtt] incrementAdvertCount error:', err.message));
     }
     emitNodeUpsert({
       node_id: originId,
@@ -663,6 +685,15 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
       is_online: true,
       advert_count: advertCount,
     });
+    void upsertTileSnapshotNode({
+      node_id: originId,
+      name: origin,
+      iata,
+      network,
+      public_key: originId,
+      last_seen: new Date().toISOString(),
+      is_online: true,
+    }).catch((err: Error) => console.error('[tile-snapshot] upsert failed:', err.message));
   }
 
   {
