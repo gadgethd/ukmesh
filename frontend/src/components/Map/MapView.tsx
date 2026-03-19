@@ -558,10 +558,10 @@ export const MapView = React.memo(({
   const clashModeActive = showHexClashes || !!focusedPrefixNodeIds;
   const effectiveShowCoverage = showCoverage && !clashModeActive;
 
-  // When GPU nodes are active, NodeMarkers are NOT rendered at all — zero React fibers for
-  // individual nodes. DeckGLOverlay's ScatterplotLayer draws the dots on the GPU, and a single
-  // GPUClickHandler does hit-testing on click. Fall back to full Leaflet markers during
-  // hex-clash mode (needs clash colours) and prefix-focus animations (show/hide transitions).
+  // When gpuRendered is true, NodeMarkers are NOT rendered at all — zero React fibers for
+  // individual nodes. Server-side PNG tiles (/api/tiles/nodes/{z}/{x}/{y}.png) render node dots,
+  // and GPUClickHandler does nearest-node hit-testing on click. Fall back to full Leaflet markers
+  // during hex-clash mode (needs clash colours) and prefix-focus animations (show/hide transitions).
   const gpuRendered = !clashModeActive && focusHidePhase === 'idle';
 
   const visibleClashPathLines = useMemo(
@@ -684,7 +684,7 @@ export const MapView = React.memo(({
         )}
 
         {/* ── GPU mode: zero NodeMarker fibers ─────────────────────────────────
-            The ScatterplotLayer in DeckGLOverlay renders all node dots on the GPU.
+            Server-side PNG tiles render all node dots; no Leaflet NodeMarkers exist.
             We only add Leaflet elements for nodes that need them:
             - Privacy circles for prohibited nodes (visual mask ring)
             - A single click handler that opens a popup for the nearest node
