@@ -1690,10 +1690,14 @@ router.get('/owner/session', async (req, res) => {
       res.status(401).json({ error: 'Not logged in' });
       return;
     }
-    const sessionNodeIds = session.nodeIds;
-    if (!sessionNodeIds) return;
+    // Re-fetch node IDs from DB so that changes to owner_account_nodes (e.g. node public key
+    // change) are reflected immediately without requiring a re-login.
+    const freshNodeIds = session.mqttUsername
+      ? await resolveOwnerNodeIds(session.mqttUsername)
+      : [];
+    const nodeIds = freshNodeIds.length > 0 ? freshNodeIds : session.nodeIds;
 
-    const dashboard = await buildOwnerDashboard(sessionNodeIds);
+    const dashboard = await buildOwnerDashboard(nodeIds);
     if (dashboard.totals.ownedNodes < 1) {
       res.clearCookie(OWNER_COOKIE_NAME, { path: '/' });
       res.status(401).json({ error: 'No active node found for this MQTT username yet' });
