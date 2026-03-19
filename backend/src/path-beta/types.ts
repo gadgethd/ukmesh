@@ -11,6 +11,7 @@ export type MeshNode = {
 
 export type LinkMetrics = {
   observed_count: number;
+  multibyte_observed_count: number;
   itm_path_loss_db: number | null;
   itm_viable: boolean | null;
   count_a_to_b: number | null;

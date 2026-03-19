@@ -1,7 +1,9 @@
 import React from 'react';
+import { useOverlayStore } from '../../store/overlayStore.js';
 
 export interface Filters {
   livePackets:       boolean;
+  links:             boolean;
   coverage:          boolean;
   clientNodes:       boolean;
   packetHistory:     boolean;
@@ -23,9 +25,9 @@ export const LinksLegend: React.FC<{ compact?: boolean; muted?: boolean }> = ({ 
   <div className={`links-legend-inline${compact ? ' links-legend-inline--compact' : ''}${muted ? ' links-legend-inline--muted' : ''}`}>
     <div className="links-legend-inline__title">Links Legend</div>
     <div className="links-legend-inline__grid">
-      <div className="links-legend-inline__row"><span className="links-legend__swatch" style={{ background: '#22c55e' }} /> Good (≤120 dB)</div>
-      <div className="links-legend-inline__row"><span className="links-legend__swatch" style={{ background: '#fbbf24' }} /> Marginal (121-135 dB)</div>
-      <div className="links-legend-inline__row"><span className="links-legend__swatch" style={{ background: '#ef4444' }} /> Weak (&gt;135 dB)</div>
+      <div className="links-legend-inline__row"><span className="links-legend__swatch" style={{ background: '#22c55e' }} /> Good (≤130 dB)</div>
+      <div className="links-legend-inline__row"><span className="links-legend__swatch" style={{ background: '#fbbf24' }} /> Marginal (131-138 dB)</div>
+      <div className="links-legend-inline__row"><span className="links-legend__swatch" style={{ background: '#ef4444' }} /> Weak (&gt;138 dB)</div>
       <div className="links-legend-inline__row"><span className="links-legend__swatch" style={{ background: '#d1d5db' }} /> Unknown (no dB yet)</div>
     </div>
   </div>
@@ -33,6 +35,7 @@ export const LinksLegend: React.FC<{ compact?: boolean; muted?: boolean }> = ({ 
 
 export const FILTER_ROWS: Array<{ key: keyof Filters; label: string; color: string; hollow?: boolean }> = [
   { key: 'livePackets',  label: 'Live Feed',        color: '#00c4ff' },
+  { key: 'links',        label: 'Links',            color: '#22c55e', hollow: true },
   { key: 'packetHistory', label: 'Paths',            color: '#00c4ff', hollow: true },
   { key: 'betaPaths',    label: 'Live Path',         color: '#a855f7', hollow: true },
   { key: 'hexClashes',   label: 'Hex Clashes',      color: '#f97316' },
@@ -41,6 +44,12 @@ export const FILTER_ROWS: Array<{ key: keyof Filters; label: string; color: stri
 ];
 
 export const FilterPanel: React.FC<FilterPanelProps> = ({ filters, onChange, betaPathConfidence, betaPermutationCount, betaRemainingHops }) => {
+  const liveBetaPathConfidence = useOverlayStore((state) => state.betaPathConfidence);
+  const liveBetaPermutationCount = useOverlayStore((state) => state.betaPermutationCount);
+  const liveBetaRemainingHops = useOverlayStore((state) => state.betaRemainingHops);
+  const resolvedConfidence = betaPathConfidence ?? liveBetaPathConfidence;
+  const resolvedPermutations = betaPermutationCount ?? liveBetaPermutationCount;
+  const resolvedRemainingHops = betaRemainingHops ?? liveBetaRemainingHops;
   const toggle = (key: keyof Filters) => {
     onChange({ ...filters, [key]: !filters[key] });
   };
@@ -50,11 +59,11 @@ export const FilterPanel: React.FC<FilterPanelProps> = ({ filters, onChange, bet
       <div className="filter-panel__title">Layers</div>
       {filters.betaPaths && (
         <div className="filter-beta-note">
-          Beta Confidence: <strong>{betaPathConfidence == null ? 'N/A' : `${Math.round(betaPathConfidence * 100)}%`}</strong>
+          Beta Confidence: <strong>{resolvedConfidence == null ? 'N/A' : `${Math.round(resolvedConfidence * 100)}%`}</strong>
           <br />
-          Permutations: <strong>{betaPermutationCount == null ? 'N/A' : betaPermutationCount}</strong>
+          Permutations: <strong>{resolvedPermutations == null ? 'N/A' : resolvedPermutations}</strong>
           <br />
-          Remaining Hops: <strong>{betaRemainingHops == null ? 'N/A' : betaRemainingHops}</strong>
+          Remaining Hops: <strong>{resolvedRemainingHops == null ? 'N/A' : resolvedRemainingHops}</strong>
         </div>
       )}
       {FILTER_ROWS.map(({ key, label, color, hollow }) => (

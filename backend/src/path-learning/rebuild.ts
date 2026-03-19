@@ -1,4 +1,4 @@
-import { MIN_LINK_OBSERVATIONS, query } from '../db/index.js';
+import { query } from '../db/index.js';
 import {
   buildNodePathHashIndex,
   getNodesForPathHash,
@@ -202,10 +202,9 @@ async function rebuildNetwork(modelNetwork: string, sourceNetwork: string | unde
   const nodeNetworkFilter = sourceNetwork ? 'AND network = $1' : '';
   const packetNetworkFilter = sourceNetwork ? 'AND network = $1' : '';
   const linkNetworkFilter = sourceNetwork ? 'AND a.network = $1 AND b.network = $1' : '';
-  const linkObsParam = sourceNetwork ? '$2' : '$1';
   const nodeParams: unknown[] = sourceNetwork ? [sourceNetwork] : [];
   const packetParams: unknown[] = sourceNetwork ? [sourceNetwork, MAX_TRAINING_PACKETS] : [MAX_TRAINING_PACKETS];
-  const linkParams: unknown[] = sourceNetwork ? [sourceNetwork, MIN_LINK_OBSERVATIONS] : [MIN_LINK_OBSERVATIONS];
+  const linkParams: unknown[] = sourceNetwork ? [sourceNetwork] : [];
 
   const nodesResult = await query<LearningNode>(
     `SELECT node_id, lat, lon, elevation_m, iata
@@ -227,7 +226,6 @@ async function rebuildNetwork(modelNetwork: string, sourceNetwork: string | unde
      JOIN nodes a ON a.node_id = nl.node_a_id
      JOIN nodes b ON b.node_id = nl.node_b_id
      WHERE (nl.itm_viable = true OR nl.force_viable = true)
-       AND nl.observed_count >= ${linkObsParam}
        ${linkNetworkFilter}`,
     linkParams,
   );

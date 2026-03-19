@@ -13,8 +13,8 @@ async function main() {
   }
 
   console.log('[backfill] node_links empty, starting historical link backfill');
-  await backfillHistoricalLinks((rxNodeId, srcNodeId, path, hopCount) => {
-    queueLinkJob(rxNodeId, srcNodeId, path, hopCount);
+  await backfillHistoricalLinks((rxNodeId, srcNodeId, path, hopCount, pathHashSizeBytes) => {
+    queueLinkJob(rxNodeId, srcNodeId, path, hopCount, pathHashSizeBytes);
   });
 }
 

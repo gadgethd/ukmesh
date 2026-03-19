@@ -7,7 +7,6 @@ import type {
 import { insertNodeStatusSample, insertPacket, upsertNode, incrementAdvertCount, query } from '../db/index.js';
 import { invalidateResolveCache, setResolveCache } from '../path-beta/resolveCache.js';
 import { resolvePool } from '../path-beta/resolvePool.js';
-import { upsertTileSnapshotNode } from '../tiles/snapshot.js';
 import type { LivePacket } from '../types/index.js';
 import { decodePacketCompat } from './decodePacket.js';
 
@@ -471,15 +470,6 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
       network,
       allowTestOverride: network === 'test' && nodeId === observerKey,
     }).catch((err: Error) => console.error('[mqtt] upsertNode error:', err.message));
-    void upsertTileSnapshotNode({
-      node_id: nodeId,
-      name: origin,
-      iata,
-      public_key: originId,
-      network,
-      last_seen: new Date().toISOString(),
-      is_online: true,
-    }).catch((err: Error) => console.error('[tile-snapshot] upsert failed:', err.message));
     const telemetry = extractStatusTelemetry(json, {
       allowRawStatsOnly: network === 'test',
     });
@@ -593,18 +583,6 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
               is_online:   true,
               advert_count: advertCount,
             });
-            void upsertTileSnapshotNode({
-              node_id:     nodeId,
-              name:        appData?.['name']       as string | undefined,
-              lat:         loc?.['latitude'],
-              lon:         loc?.['longitude'],
-              role:        appData?.['deviceRole'] as number | undefined,
-              iata,
-              network,
-              public_key:  senderKey,
-              last_seen:   new Date().toISOString(),
-              is_online:   true,
-            }).catch((err: Error) => console.error('[tile-snapshot] upsert failed:', err.message));
           }
 
           innerPayload = inner;
@@ -685,15 +663,6 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
       is_online: true,
       advert_count: advertCount,
     });
-    void upsertTileSnapshotNode({
-      node_id: originId,
-      name: origin,
-      iata,
-      network,
-      public_key: originId,
-      last_seen: new Date().toISOString(),
-      is_online: true,
-    }).catch((err: Error) => console.error('[tile-snapshot] upsert failed:', err.message));
   }
 
   {
@@ -755,7 +724,13 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
 }
 
 export async function backfillHistoricalLinks(
-  queueFn: (rxNodeId: string, srcNodeId: string | undefined, path: string[], hopCount: number | undefined) => void,
+  queueFn: (
+    rxNodeId: string,
+    srcNodeId: string | undefined,
+    path: string[],
+    hopCount: number | undefined,
+    pathHashSizeBytes: number | undefined,
+  ) => void,
 ): Promise<void> {
   const res = await query<{
     rx_node_id: string; src_node_id: string | null; hop_count: number | null; raw_hex: string;
@@ -771,8 +746,14 @@ export async function backfillHistoricalLinks(
   for (const row of res.rows) {
     try {
       const compat = decodePacketCompat(row.raw_hex, keyStore);
-      if (compat.pathHashes && compat.pathHashes.length > 0) {
-        queueFn(row.rx_node_id, row.src_node_id ?? undefined, compat.pathHashes, compat.pathHashCount);
+      if ((compat.pathHashSize ?? 1) > 1 && compat.pathHashes && compat.pathHashes.length > 0) {
+        queueFn(
+          row.rx_node_id,
+          row.src_node_id ?? undefined,
+          compat.pathHashes,
+          compat.pathHashCount,
+          compat.pathHashSize,
+        );
         queued++;
       }
     } catch {

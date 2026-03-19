@@ -3,11 +3,7 @@ import { rateLimit } from 'express-rate-limit';
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
 import { isIP } from 'node:net';
 import mqtt from 'mqtt';
-import { Redis } from 'ioredis';
-import { getNodes, getNodeHistory, getNodeAdverts, getPathHistoryCache, getRecentPacketEvents, getRecentPackets, query, MIN_LINK_OBSERVATIONS } from '../db/index.js';
-import { renderNodeTile } from '../tiles/renderer.js';
-import { getTileSnapshotNodes } from '../tiles/snapshot.js';
-import { isUkTile, UK_TILE_TTL_MS } from '../tiles/worker.js';
+import { getNodes, getNodeHistory, getNodeAdverts, getPathHistoryCache, getRecentPacketEvents, getRecentPackets, query } from '../db/index.js';
 import { addOwnerNodeForUsername, getBestNodeForMqttUsername, getOwnerNodeIdsForUsername } from '../db/ownerAuth.js';
 import { getWorkerHealthOverview } from '../health/status.js';
 import { resolveRequestNetwork } from '../http/requestScope.js';
@@ -86,18 +82,6 @@ const STATS_CHARTS_LIMITER = rateLimit({
   legacyHeaders: false,
   message: { error: 'Too many stats chart requests, slow down' },
 });
-const TILE_CACHE_TTL_MS = 30_000;         // on-demand non-UK tiles
-const TILE_CACHE_TTL_UK_MS = UK_TILE_TTL_MS; // on-demand UK tiles (matches worker TTL)
-const TILE_LIMITER = rateLimit({ windowMs: 60_000, max: 600, standardHeaders: true, legacyHeaders: false });
-
-let tileRedis: Redis | null = null;
-function getTileRedis(): Redis {
-  if (tileRedis) return tileRedis;
-  const redisUrl = process.env['REDIS_URL'] ?? 'redis://redis:6379';
-  tileRedis = new Redis(redisUrl);
-  tileRedis.on('error', (e: Error) => console.error('[redis/tiles] error', e.message));
-  return tileRedis;
-}
 
 const PROHIBITED_NODE_MARKER = '🚫';
 const HIDDEN_NODE_MASK_RADIUS_MILES = 1;
@@ -1195,9 +1179,10 @@ router.get('/nodes/:id/links', async (req, res) => {
          CASE WHEN node_a_id = $1 THEN count_b_to_a ELSE count_a_to_b END AS count_peer_to_this
        FROM node_links
        LEFT JOIN nodes n ON n.node_id = CASE WHEN node_a_id = $1 THEN node_b_id ELSE node_a_id END
-       WHERE (node_a_id = $1 OR node_b_id = $1) AND (itm_viable = true OR force_viable = true) AND observed_count >= $2
+       WHERE (node_a_id = $1 OR node_b_id = $1)
+         AND (itm_viable = true OR force_viable = true)
        ORDER BY observed_count DESC`,
-      [id, MIN_LINK_OBSERVATIONS],
+      [id],
     );
     res.json(result.rows);
   } catch (err) {
@@ -1918,7 +1903,7 @@ router.get('/owner/live', async (req, res) => {
            AND (
              nl.force_viable = true
              OR nl.itm_viable = true
-             OR (nl.itm_path_loss_db IS NOT NULL AND nl.itm_path_loss_db <= 137.88)
+             OR (nl.itm_path_loss_db IS NOT NULL AND nl.itm_path_loss_db <= 145.0)
            )
          ORDER BY
            COALESCE(nl.itm_viable, false) DESC,
@@ -2695,12 +2680,14 @@ router.get('/observer-activity', EXPENSIVE_LIMITER, async (req, res) => {
       conditions.push(`n.network = $${params.length}`);
     }
     const where = conditions.join(' AND ');
-    const result = await query<{ node_id: string; name: string | null; rx_24h: string; tx_24h: string }>(
+    const result = await query<{ node_id: string; name: string | null; rx_24h: string; tx_24h: string; last_tx: string | null; last_rx: string | null }>(
       `SELECT
          n.node_id,
          n.name,
          COUNT(p.packet_hash) FILTER (WHERE p.rx_node_id  = n.node_id) AS rx_24h,
-         COUNT(p.packet_hash) FILTER (WHERE p.src_node_id = n.node_id) AS tx_24h
+         COUNT(p.packet_hash) FILTER (WHERE p.src_node_id = n.node_id) AS tx_24h,
+         MAX(p.time)          FILTER (WHERE p.src_node_id = n.node_id)::text AS last_tx,
+         MAX(p.time)          FILTER (WHERE p.rx_node_id  = n.node_id)::text AS last_rx
        FROM nodes n
        JOIN packets p ON (p.rx_node_id = n.node_id OR p.src_node_id = n.node_id)
        WHERE ${where}
@@ -2875,41 +2862,6 @@ router.get('/radio-history', async (req, res) => {
   }
 });
 
-// GET /api/tiles/nodes/:z/:x/:y.png — server-side node tile rendering
-router.get('/tiles/nodes/:z/:x/:y.png', TILE_LIMITER, async (req: Request, res: Response) => {
-  const network = resolveRequestNetwork(req.query['network'], req.headers);
-  const z = parseInt(req.params.z!, 10);
-  const x = parseInt(req.params.x!, 10);
-  const y = parseInt((req.params.y ?? '').replace('.png', ''), 10);
-  if (isNaN(z) || isNaN(x) || isNaN(y) || z < 0 || z > 18) { res.status(400).end(); return; }
-
-  const cacheKey = `tile:nodes:${network ?? 'all'}:${z}:${x}:${y}`;
-  const redis = getTileRedis();
-  const cached = await redis.getBuffer(cacheKey).catch(() => null);
-  if (cached) {
-    res.set('Content-Type', 'image/png');
-    res.set('Cache-Control', 'public, max-age=30');
-    res.send(cached);
-    return;
-  }
-
-  try {
-    // 'all' means no network filter — pass undefined so buildNodeScopeClause
-    // falls back to "IS DISTINCT FROM 'test'" rather than network = 'all'.
-    const nodeNetwork = network === 'all' ? undefined : network;
-    const snapshotNodes = await getTileSnapshotNodes(nodeNetwork);
-    const nodes = snapshotNodes.length > 0 ? snapshotNodes : await getNodes(nodeNetwork);
-    const png = await renderNodeTile(z, x, y, nodes);
-    const ttl = isUkTile(z, x, y) ? TILE_CACHE_TTL_UK_MS : TILE_CACHE_TTL_MS;
-    await redis.set(cacheKey, png, 'PX', ttl).catch(() => {});
-    res.set('Content-Type', 'image/png');
-    res.set('Cache-Control', 'public, max-age=30');
-    res.send(png);
-  } catch (err) {
-    console.error('[api] GET /tiles/nodes', (err as Error).message);
-    res.status(500).end();
-  }
-});
 
 // GET /api/radio-stats — proxies radio bot GET /state (port 3011)
 router.get('/radio-stats', async (_req, res) => {

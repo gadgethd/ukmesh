@@ -10,19 +10,19 @@
   },
   "dependencies": {
     "@deck.gl/core": "^9.1.0",
+    "@deck.gl/extensions": "^9.1.0",
     "@deck.gl/geo-layers": "^9.1.0",
     "@deck.gl/layers": "^9.1.0",
-    "@deck.gl/react": "^9.1.0",
-    "leaflet": "^1.9.4",
+    "@deck.gl/mapbox": "^9.1.0",
+    "maplibre-gl": "^4.7.1",
     "polygon-clipping": "^0.15.7",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "react-leaflet": "^4.2.1",
     "react-router-dom": "^7.13.1",
-    "recharts": "^2.15.0"
+    "recharts": "^2.15.0",
+    "zustand": "^5.0.3"
   },
   "devDependencies": {
-    "@types/leaflet": "^1.9.14",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.3",

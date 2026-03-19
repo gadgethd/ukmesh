@@ -11,6 +11,7 @@ export type HiddenMaskGeometry = {
 
 export type LinkMetrics = {
   observed_count: number;
+  multibyte_observed_count?: number;
   itm_viable?: boolean | null;
   itm_path_loss_db?: number | null;
   count_a_to_b?: number;

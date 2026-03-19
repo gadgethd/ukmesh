@@ -1,17 +1,18 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import type { Map as LeafletMap } from 'leaflet';
+import type maplibregl from 'maplibre-gl';
 import type { MeshNode } from '../../hooks/useNodes.js';
+import { useNodeMap } from '../../hooks/useNodes.js';
 import { isValidMapCoord } from '../../utils/pathing.js';
 
 interface NodeSearchProps {
-  nodes: Map<string, MeshNode>;
-  map: LeafletMap | null;
+  map: maplibregl.Map | null;
 }
 
-export const NodeSearch: React.FC<NodeSearchProps> = ({ nodes, map }) => {
+export const NodeSearch: React.FC<NodeSearchProps> = ({ map }) => {
+  const nodes = useNodeMap();
   const [query, setQuery] = useState('');
-  const [open, setOpen]   = useState(false);
-  const containerRef      = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
 
   const results = useMemo(() => {
     if (!query.trim()) return [];
@@ -36,7 +37,8 @@ export const NodeSearch: React.FC<NodeSearchProps> = ({ nodes, map }) => {
   }, []);
 
   const select = (node: MeshNode) => {
-    map?.flyTo([node.lat!, node.lon!], 15);
+    // MapLibre flyTo: center is [lon, lat]
+    map?.flyTo({ center: [node.lon!, node.lat!], zoom: 15 });
     setQuery('');
     setOpen(false);
   };

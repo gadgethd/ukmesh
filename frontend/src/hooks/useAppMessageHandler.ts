@@ -193,7 +193,18 @@ export function useAppMessageHandler({
       packetObserved: false,
     };
     rafRef.current = null;
-  }, [handlePacket, handleNodeUpdate, handleNodeUpsert, handleCoverageUpdate, applyLinkUpdate, onPacketObserved]);
+  }, [
+    handlePacket,
+    handleNodeUpdate,
+    handleNodeUpdateBatch,
+    handleNodeUpsert,
+    handleNodeUpsertBatch,
+    handleCoverageUpdate,
+    handleCoverageUpdateBatch,
+    applyLinkUpdate,
+    applyLinkUpdateBatch,
+    onPacketObserved,
+  ]);
 
   // Throttle flush — batches bursts from the WebSocket into single React renders
   const BATCH_INTERVAL_MS = 16;

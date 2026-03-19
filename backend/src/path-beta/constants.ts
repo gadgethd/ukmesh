@@ -2,7 +2,7 @@ export const MAX_BETA_HOPS = 25;
 export const BETA_PURPLE_THRESHOLD = 0.45;
 export const R_EFF_M = 6_371_000 / (1 - 0.25);
 export const PREFIX_AMBIGUITY_FLOOR_KM = 45;
-export const WEAK_LINK_PATHLOSS_MAX_DB = 137.88;
+export const WEAK_LINK_PATHLOSS_MAX_DB = 145.0;
 export const LOOSE_LINK_PATHLOSS_MAX_DB = 146.0;
 // Hard block threshold: path loss high enough to indicate a genuine terrain barrier
 // (well above the loose threshold — links just over 138dB may still work in practice)

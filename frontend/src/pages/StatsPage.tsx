@@ -4,7 +4,8 @@ import {
   PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer,
 } from 'recharts';
-import { CircleMarker, MapContainer, Polyline, TileLayer, Tooltip as LeafletTooltip, useMap } from 'react-leaflet';
+import maplibregl from 'maplibre-gl';
+import 'maplibre-gl/dist/maplibre-gl.css';
 import { getCurrentSite } from '../config/site.js';
 import { chartStatsEndpoint, uncachedEndpoint } from '../utils/api.js';
 
@@ -179,19 +180,115 @@ const ChartCard: React.FC<{ title: string; sub?: string; children: React.ReactNo
   </div>
 );
 
-const FitDecodedPath: React.FC<{ points: [number, number][] }> = ({ points }) => {
-  const map = useMap();
+const CARTO_DARK_TILES = 'https://{a-d}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
+
+const DecodedPathMapView: React.FC<{
+  nodes: Array<{
+    ord: number;
+    node_id: string;
+    name: string | null;
+    lat: number | null;
+    lon: number | null;
+  }>;
+}> = ({ nodes }) => {
+  const containerRef = React.useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (points.length < 1) return;
-    if (points.length === 1) {
-      map.setView(points[0], 11);
-      return;
-    }
-    map.fitBounds(points, { padding: [24, 24] });
-  }, [map, points]);
+    if (!containerRef.current || nodes.length < 2) return;
 
-  return null;
+    const map = new maplibregl.Map({
+      container: containerRef.current,
+      style: {
+        version: 8,
+        sources: {
+          tiles: {
+            type: 'raster',
+            tiles: [CARTO_DARK_TILES],
+            tileSize: 256,
+            maxzoom: 19,
+            attribution: '© OpenStreetMap © CARTO',
+          },
+        },
+        layers: [{ id: 'bg', type: 'raster', source: 'tiles' }],
+      },
+      center: [Number(nodes[0]!.lon), Number(nodes[0]!.lat)],
+      zoom: 8,
+      attributionControl: false,
+    });
+
+    map.on('load', () => {
+      const lineData: GeoJSON.FeatureCollection<GeoJSON.LineString> = {
+        type: 'FeatureCollection',
+        features: [{
+          type: 'Feature',
+          geometry: {
+            type: 'LineString',
+            coordinates: nodes.map((node) => [Number(node.lon), Number(node.lat)] as [number, number]),
+          },
+          properties: {},
+        }],
+      };
+
+      const pointData: GeoJSON.FeatureCollection<GeoJSON.Point, { ord: string }> = {
+        type: 'FeatureCollection',
+        features: nodes.map((node) => ({
+          type: 'Feature',
+          geometry: { type: 'Point', coordinates: [Number(node.lon), Number(node.lat)] },
+          properties: { ord: String(node.ord) },
+        })),
+      };
+
+      map.addSource('decoded-path-line', { type: 'geojson', data: lineData });
+      map.addSource('decoded-path-nodes', { type: 'geojson', data: pointData });
+
+      map.addLayer({
+        id: 'decoded-path-line-layer',
+        type: 'line',
+        source: 'decoded-path-line',
+        paint: {
+          'line-color': C_PURPLE,
+          'line-width': 4,
+          'line-opacity': 0.9,
+        },
+      });
+
+      map.addLayer({
+        id: 'decoded-path-node-circles',
+        type: 'circle',
+        source: 'decoded-path-nodes',
+        paint: {
+          'circle-radius': 10,
+          'circle-color': '#0b1725',
+          'circle-stroke-color': C_CYAN,
+          'circle-stroke-width': 2,
+        },
+      });
+
+      map.addLayer({
+        id: 'decoded-path-node-labels',
+        type: 'symbol',
+        source: 'decoded-path-nodes',
+        layout: {
+          'text-field': ['get', 'ord'],
+          'text-size': 12,
+          'text-font': ['Open Sans Bold', 'Arial Unicode MS Bold'],
+        },
+        paint: {
+          'text-color': '#ffffff',
+        },
+      });
+
+      const bounds = new maplibregl.LngLatBounds();
+      for (const node of nodes) bounds.extend([Number(node.lon), Number(node.lat)]);
+      map.fitBounds(bounds, { padding: 24, animate: false });
+    });
+
+    return () => {
+      map.remove();
+    };
+  }, [nodes]);
+
+  return <div ref={containerRef} style={{ height: '100%', width: '100%' }} />;
 };
 
 // ── Main page ─────────────────────────────────────────────────────────────────
@@ -280,7 +377,6 @@ export const StatsPage: React.FC = () => {
   const selectedDecodedPathNodes = (selectedDecodedPath?.nodes ?? []).filter(
     (node) => Number.isFinite(node.lat) && Number.isFinite(node.lon),
   );
-  const selectedDecodedPathPoints = selectedDecodedPathNodes.map((node) => [Number(node.lat), Number(node.lon)] as [number, number]);
   const isRedactedDecodedNode = (node: { name: string | null }) => node.name === 'Redacted repeater';
 
   return (
@@ -701,7 +797,7 @@ export const StatsPage: React.FC = () => {
           </>
         )}
 
-        {selectedDecodedPath && selectedDecodedPathPoints.length > 1 && (
+        {selectedDecodedPath && selectedDecodedPathNodes.length > 1 && (
           <div
             className="disclaimer-overlay"
             role="dialog"
@@ -726,31 +822,7 @@ export const StatsPage: React.FC = () => {
                 </button>
               </div>
               <div className="stats-page__path-modal-map">
-                <MapContainer
-                  center={selectedDecodedPathPoints[0]}
-                  zoom={8}
-                  style={{ height: '100%', width: '100%' }}
-                  scrollWheelZoom
-                >
-                  <TileLayer
-                    url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
-                    attribution="&copy; OpenStreetMap contributors &copy; CARTO"
-                  />
-                  <FitDecodedPath points={selectedDecodedPathPoints} />
-                  <Polyline positions={selectedDecodedPathPoints} pathOptions={{ color: C_PURPLE, weight: 4, opacity: 0.9 }} />
-                  {selectedDecodedPathNodes.map((node) => (
-                    <CircleMarker
-                      key={`${node.node_id}-${node.ord}`}
-                      center={[Number(node.lat), Number(node.lon)]}
-                      radius={10}
-                      pathOptions={{ color: C_CYAN, fillColor: '#0b1725', fillOpacity: 0.95, weight: 2 }}
-                    >
-                      <LeafletTooltip permanent direction="center" offset={[0, 0]} className="stats-page__path-node-label">
-                        {node.ord}
-                      </LeafletTooltip>
-                    </CircleMarker>
-                  ))}
-                </MapContainer>
+                <DecodedPathMapView nodes={selectedDecodedPathNodes} />
               </div>
               <div className="stats-page__path-modal-list">
                 {selectedDecodedPathNodes.map((node) => (

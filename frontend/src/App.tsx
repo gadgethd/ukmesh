@@ -1,23 +1,20 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { Map as LeafletMap } from 'leaflet';
-import { MapView } from './components/Map/MapView.js';
-import type { DeckViewState } from './components/Map/DeckGLOverlay.js';
-import { DeckGLOverlay } from './components/Map/DeckGLOverlay.js';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import type maplibregl from 'maplibre-gl';
+import { MapLibreMap } from './components/Map/MapLibreMap.js';
+import { LiveOverlayController } from './components/Map/LiveOverlayController.js';
 import { FilterPanel, type Filters } from './components/FilterPanel/FilterPanel.js';
 import { PacketFeed } from './components/PacketFeed.js';
 import { DisclaimerModal } from './components/app/DisclaimerModal.js';
 import { AppTopBar } from './components/app/AppTopBar.js';
 import { MobileControls } from './components/app/MobileControls.js';
 import { useWebSocket } from './hooks/useWebSocket.js';
-import { useNodes, type MeshNode } from './hooks/useNodes.js';
-import { useCoverage } from './hooks/useCoverage.js';
+import { nodeStore, type MeshNode } from './hooks/useNodes.js';
+import { coverageStore, useCoverageLoader } from './hooks/useCoverage.js';
 import { useDashboardStats, type DashboardStats } from './hooks/useDashboardStats.js';
-import { useLinkState } from './hooks/useLinkState.js';
-import { usePacketPathOverlay } from './hooks/usePacketPathOverlay.js';
+import { linkStateStore } from './hooks/useLinkState.js';
 import { useAppMessageHandler } from './hooks/useAppMessageHandler.js';
 import { getCurrentSite } from './config/site.js';
 import { uncachedEndpoint, withScopeParams } from './utils/api.js';
-import { buildHiddenCoordMask, resolvePathNodeIds, hasCoords } from './utils/pathing.js';
 
 type PacketHistorySegment = {
   positions: [[number, number], [number, number]];
@@ -26,6 +23,7 @@ type PacketHistorySegment = {
 
 const DEFAULT_FILTERS: Filters = {
   livePackets: true,
+  links: false,
   coverage: false,
   clientNodes: false,
   packetHistory: false,
@@ -50,8 +48,8 @@ export const App: React.FC = () => {
       return DEFAULT_FILTERS;
     }
   });
-  const [map, setMap] = useState<LeafletMap | null>(null);
-  const [deckViewState, setDeckViewState] = useState<DeckViewState>({ longitude: -1.23, latitude: 54.57, zoom: 10, pitch: 0, bearing: 0 });
+  // MapLibre map instance — used by MobileControls/NodeSearch for flyTo
+  const [mlMap, setMlMap] = useState<maplibregl.Map | null>(null);
   const [showDisclaimer, setShowDisclaimer] = useState(() => !localStorage.getItem(DISCLAIMER_KEY));
   const [inferredNodes, setInferredNodes] = useState<MeshNode[]>([]);
   const [inferredActiveNodeIds, setInferredActiveNodeIds] = useState<Set<string>>(new Set());
@@ -63,95 +61,14 @@ export const App: React.FC = () => {
   const clashRestoreRef = useRef<{ coverage: boolean; clientNodes: boolean } | null>(null);
   const prevHexClashesRef = useRef<boolean>(DEFAULT_FILTERS.hexClashes);
 
-  const {
-    nodes,
-    packets,
-    arcs,
-    activeNodes,
-    handleInitialState,
-    replaceRecentPackets,
-    handlePacket,
-    handleNodeUpdate,
-    handleNodeUpdateBatch,
-    handleNodeUpsert,
-    handleNodeUpsertBatch,
-  } = useNodes();
-
   const networkFilter = site.networkFilter;
   const observerFilter = site.observerId;
 
-  // Coordinate privacy mask — computed once here and shared with MapView (for node markers /
-  // clash lines) and DeckGLOverlay (for GPU-rendered path/history layers).
-  const hiddenCoordMask = useMemo(() => buildHiddenCoordMask(nodes.values()), [nodes]);
-
-  const { coverage, handleCoverageUpdate, handleCoverageUpdateBatch } = useCoverage({ network: networkFilter, observer: observerFilter }, filters.coverage);
+  useCoverageLoader(
+    { network: networkFilter, observer: observerFilter },
+    filters.coverage,
+  );
   const stats = useDashboardStats(fetchedStats);
-  const {
-    linkMetrics,
-    viablePairsArr,
-    applyInitialViablePairs,
-    applyInitialViableLinks,
-    applyLinkUpdate,
-    applyLinkUpdateBatch,
-  } = useLinkState();
-
-  const {
-    betaPacketPaths,
-    betaLowConfidenceSegments,
-    betaCompletionPaths,
-    betaPathConfidence,
-    betaPermutationCount,
-    betaRemainingHops,
-    pathFadingOut,
-    pinnedPacketId,
-    pinnedPacketSnapshot,
-    handlePacketPin,
-  } = usePacketPathOverlay({
-    packets,
-    nodes,
-    filters,
-    network: networkFilter,
-    observer: observerFilter,
-  });
-
-  // Compute the set of node IDs involved in the currently displayed path.
-  // Active when: a packet is pinned, OR the live-path toggle is on (auto-tracks packets[0]).
-  // Passed to MapView so it can hide unrelated repeaters.
-  //
-  // Uses a ref-based stability guard: if the computed Set has identical contents to the
-  // previous result, the same reference is returned. This prevents MapView from re-rendering
-  // on every packet arrival when the active path packet hasn't actually changed.
-  const pathNodeIdsPrevRef = useRef<Set<string> | null>(null);
-  const pathNodeIds = useMemo<Set<string> | null>(() => {
-    const activePacket = pinnedPacketSnapshot ?? (filters.betaPaths ? (packets.find((p) => p.packetType === 4 || p.packetType === 5) ?? null) : null);
-    if (!activePacket) {
-      if (pathNodeIdsPrevRef.current !== null) pathNodeIdsPrevRef.current = null;
-      return null;
-    }
-    const srcNode = activePacket.srcNodeId ? (nodes.get(activePacket.srcNodeId) ?? null) : null;
-    const rxNode = activePacket.rxNodeId ? (nodes.get(activePacket.rxNodeId) ?? null) : null;
-    const srcWithCoords = srcNode && hasCoords(srcNode) ? srcNode as MeshNode & { lat: number; lon: number } : null;
-    const rxWithCoords = rxNode && hasCoords(rxNode) ? rxNode as MeshNode & { lat: number; lon: number }
-      : (() => {
-          for (const id of activePacket.observerIds) {
-            const n = nodes.get(id);
-            if (n && hasCoords(n)) return n as MeshNode & { lat: number; lon: number };
-          }
-          return null;
-        })();
-    const ids = resolvePathNodeIds(activePacket.path ?? [], srcWithCoords, rxWithCoords, nodes);
-    for (const id of activePacket.observerIds) ids.add(id.toLowerCase());
-    const result = ids.size > 0 ? ids : null;
-    // Stabilise reference: return previous set when contents are identical, so MapView's
-    // propsAreEqual check passes and it doesn't re-render just because packets changed.
-    const prev = pathNodeIdsPrevRef.current;
-    if (prev && result && prev.size === result.size && [...result].every((id) => prev.has(id))) {
-      return prev;
-    }
-    pathNodeIdsPrevRef.current = result;
-    return result;
-  }, [pinnedPacketSnapshot, filters.betaPaths, packets, nodes]);
-
 
   useEffect(() => {
     if ('serviceWorker' in navigator) {
@@ -170,14 +87,13 @@ export const App: React.FC = () => {
     localStorage.setItem(FILTERS_KEY, JSON.stringify(filters));
   }, [filters]);
 
-  // Consolidated polling - fetches all data in parallel with a single timer
+  // Consolidated polling
   useEffect(() => {
     let cancelled = false;
 
     const syncAllData = async () => {
       if (!isPageVisible) return;
 
-      // Fetch all data in parallel
       const [packetsRes, historyRes, inferredRes, statsRes] = await Promise.allSettled([
         fetch(uncachedEndpoint(withScopeParams('/api/packets/recent?limit=12', { network: networkFilter, observer: observerFilter })), { cache: 'no-store' }),
         fetch(uncachedEndpoint(withScopeParams('/api/path-beta/history', { network: networkFilter })), { cache: 'no-store' }),
@@ -187,87 +103,60 @@ export const App: React.FC = () => {
 
       if (cancelled) return;
 
-      // Process packets
       if (packetsRes.status === 'fulfilled' && packetsRes.value.ok) {
         const rows = await packetsRes.value.json() as Array<{
-          time: string;
-          packet_hash: string;
-          rx_node_id?: string;
-          observer_node_ids?: string[] | null;
-          src_node_id?: string;
-          packet_type?: number;
-          hop_count?: number;
-          summary?: string | null;
-          payload?: Record<string, unknown>;
-          advert_count?: number | null;
+          time: string; packet_hash: string; rx_node_id?: string;
+          observer_node_ids?: string[] | null; src_node_id?: string;
+          packet_type?: number; hop_count?: number; summary?: string | null;
+          payload?: Record<string, unknown>; advert_count?: number | null;
           path_hashes?: string[] | null;
         }>;
-        if (!cancelled) replaceRecentPackets(rows);
+        if (!cancelled) nodeStore.replaceRecentPackets(rows);
       }
 
-      // Process history
       if (historyRes.status === 'fulfilled' && historyRes.value.ok) {
-        const payload = await historyRes.value.json() as { segments?: PacketHistorySegment[] };
+          const payload = await historyRes.value.json() as { segments?: PacketHistorySegment[] };
         if (!cancelled) setPacketHistorySegments(Array.isArray(payload.segments) ? payload.segments : []);
       }
 
-      // Process inferred nodes
       if (inferredRes.status === 'fulfilled' && inferredRes.value.ok) {
         const payload = await inferredRes.value.json() as {
-          inferredNodes: MeshNode[];
-          inferredActiveNodeIds: string[];
+          inferredNodes: MeshNode[]; inferredActiveNodeIds: string[];
         };
         if (!cancelled) {
           setInferredNodes(payload.inferredNodes ?? []);
-          setInferredActiveNodeIds(new Set((payload.inferredActiveNodeIds ?? []).map((value) => value.toLowerCase())));
+          setInferredActiveNodeIds(new Set((payload.inferredActiveNodeIds ?? []).map((v) => v.toLowerCase())));
         }
       }
 
-      // Process stats (consolidates the previously separate 30s useDashboardStats poll)
       if (statsRes.status === 'fulfilled' && statsRes.value.ok) {
         const payload = await statsRes.value.json() as DashboardStats;
         if (!cancelled) setFetchedStats(payload);
       }
     };
 
-    void syncAllData();
+      void syncAllData();
 
-    // Single timer: 10s when visible, 60s when hidden (reduced from 4s/30s to lower load)
-    const pollMs = isPageVisible ? 10000 : 60000;
-    const timer = window.setInterval(() => { void syncAllData(); }, pollMs);
+      const pollMs = isPageVisible ? 10000 : 60000;
+      const timer = window.setInterval(() => { void syncAllData(); }, pollMs);
 
     return () => {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [isPageVisible, networkFilter, observerFilter, replaceRecentPackets]);
-
-  // Removed: redundant secondary inferred-nodes poll (5-min interval).
-  // The consolidated polling loop above already fetches inferred-nodes every 10s
-  // and the server caches the result for 60s, so a second timer is pure overhead.
+  }, [isPageVisible, networkFilter, observerFilter]);
 
   useEffect(() => {
     const wasHexClashes = prevHexClashesRef.current;
     const isHexClashes = filters.hexClashes;
 
     if (!wasHexClashes && isHexClashes) {
-      clashRestoreRef.current = {
-        coverage: filters.coverage,
-        clientNodes: filters.clientNodes,
-      };
-      setFilters((current) => ({
-        ...current,
-        coverage: false,
-        clientNodes: false,
-      }));
+      clashRestoreRef.current = { coverage: filters.coverage, clientNodes: filters.clientNodes };
+      setFilters((current) => ({ ...current, coverage: false, clientNodes: false }));
     } else if (wasHexClashes && !isHexClashes && clashRestoreRef.current) {
       const restore = clashRestoreRef.current;
       clashRestoreRef.current = null;
-      setFilters((current) => ({
-        ...current,
-        coverage: restore.coverage,
-        clientNodes: restore.clientNodes,
-      }));
+      setFilters((current) => ({ ...current, coverage: restore.coverage, clientNodes: restore.clientNodes }));
     }
 
     prevHexClashesRef.current = isHexClashes;
@@ -278,13 +167,7 @@ export const App: React.FC = () => {
       void fetch('/api/telemetry/frontend-error', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          kind,
-          message,
-          stack,
-          page: window.location.href,
-          userAgent: navigator.userAgent,
-        }),
+        body: JSON.stringify({ kind, message, stack, page: window.location.href, userAgent: navigator.userAgent }),
       }).catch(() => {});
     };
 
@@ -310,18 +193,18 @@ export const App: React.FC = () => {
   }, []);
 
   const handleMessage = useAppMessageHandler({
-    handleInitialState,
-    handlePacket,
-    handleNodeUpdate,
-    handleNodeUpdateBatch,
-    handleNodeUpsert,
-    handleNodeUpsertBatch,
-    handleCoverageUpdate,
-    handleCoverageUpdateBatch,
-    applyInitialViablePairs,
-    applyInitialViableLinks,
-    applyLinkUpdate,
-    applyLinkUpdateBatch,
+    handleInitialState: nodeStore.handleInitialState,
+    handlePacket: nodeStore.handlePacket,
+    handleNodeUpdate: nodeStore.handleNodeUpdate,
+    handleNodeUpdateBatch: nodeStore.handleNodeUpdateBatch,
+    handleNodeUpsert: nodeStore.handleNodeUpsert,
+    handleNodeUpsertBatch: nodeStore.handleNodeUpsertBatch,
+    handleCoverageUpdate: coverageStore.handleCoverageUpdate,
+    handleCoverageUpdateBatch: coverageStore.handleCoverageUpdateBatch,
+    applyInitialViablePairs: linkStateStore.applyInitialViablePairs,
+    applyInitialViableLinks: linkStateStore.applyInitialViableLinks,
+    applyLinkUpdate: linkStateStore.applyLinkUpdate,
+    applyLinkUpdateBatch: linkStateStore.applyLinkUpdateBatch,
     onPacketObserved: () => {
       window.dispatchEvent(new Event('meshcore:packet-observed'));
     },
@@ -339,62 +222,37 @@ export const App: React.FC = () => {
       />
 
       <MobileControls
-        map={map}
-        nodes={nodes}
+        map={mlMap}
         filters={filters}
         onFiltersChange={setFilters}
       />
 
       <div className="map-layer">
-        <MapView
-          nodes={nodes}
+        <MapLibreMap
           inferredNodes={inferredNodes}
           inferredActiveNodeIds={inferredActiveNodeIds}
-          activeNodes={activeNodes}
-          coverage={coverage}
-          onDeckViewStateChange={setDeckViewState}
+          showLinks={filters.links}
           showCoverage={filters.coverage}
           showClientNodes={filters.clientNodes}
           showHexClashes={filters.hexClashes}
           maxHexClashHops={filters.hexClashMaxHops}
-          viablePairsArr={viablePairsArr}
-          linkMetrics={linkMetrics}
-          hiddenCoordMask={hiddenCoordMask}
-          pathNodeIds={pathNodeIds}
-          onMapReady={setMap}
+          onMapReady={setMlMap}
         />
-        <DeckGLOverlay
-          arcs={arcs}
-          showArcs={filters.livePackets}
+        <LiveOverlayController
+          map={mlMap}
+          filters={filters}
+          network={networkFilter}
+          observer={observerFilter}
           packetHistorySegments={packetHistorySegments}
-          showPacketHistory={filters.packetHistory}
-          betaPaths={betaPacketPaths}
-          betaLowSegments={betaLowConfidenceSegments}
-          betaCompletionPaths={betaCompletionPaths}
-          showBetaPaths={filters.betaPaths || pinnedPacketId !== null}
-          pathFadingOut={pathFadingOut}
-          viewState={deckViewState}
-          hiddenCoordMask={hiddenCoordMask}
         />
       </div>
 
       <FilterPanel
         filters={filters}
         onChange={setFilters}
-        betaPathConfidence={betaPathConfidence}
-        betaPermutationCount={betaPermutationCount}
-        betaRemainingHops={betaRemainingHops}
       />
 
-      {filters.livePackets && (
-      <PacketFeed
-        packets={packets}
-        nodes={nodes}
-        mqttObserverCount={stats.mqttNodes}
-        onPacketClick={handlePacketPin}
-        pinnedPacketId={pinnedPacketId}
-      />
-      )}
+      {filters.livePackets && <PacketFeed />}
 
       {showDisclaimer && <DisclaimerModal onClose={dismissDisclaimer} />}
     </div>

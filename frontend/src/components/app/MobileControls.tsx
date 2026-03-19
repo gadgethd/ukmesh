@@ -1,19 +1,16 @@
 import React, { useState } from 'react';
-import type { Map as LeafletMap } from 'leaflet';
+import type maplibregl from 'maplibre-gl';
 import { NodeSearch } from '../Map/NodeSearch.js';
 import { FILTER_ROWS, type Filters } from '../FilterPanel/FilterPanel.js';
-import type { MeshNode } from '../../hooks/useNodes.js';
 
 type MobileControlsProps = {
-  map: LeafletMap | null;
-  nodes: Map<string, MeshNode>;
+  map: maplibregl.Map | null;
   filters: Filters;
   onFiltersChange: (next: Filters) => void;
 };
 
 export const MobileControls: React.FC<MobileControlsProps> = ({
   map,
-  nodes,
   filters,
   onFiltersChange,
 }) => {
@@ -73,7 +70,7 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
         )}
       </div>
       <div className="mobile-search">
-        <NodeSearch map={map} nodes={nodes} />
+        <NodeSearch map={map} />
       </div>
     </div>
   );

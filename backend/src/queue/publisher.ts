@@ -55,12 +55,26 @@ export function queueLinkJob(
   srcNodeId: string | undefined,
   pathHashes: string[],
   hopCount: number | undefined,
+  pathHashSizeBytes: number | undefined,
 ): void {
-  if (!pathHashes.length) return;
+  if (!pathHashes.length || (pathHashSizeBytes ?? 1) <= 1) return;
   void getPublisher().lpush(LINK_JOB_QUEUE, JSON.stringify({
+    type: 'observe',
     rx_node_id: rxNodeId,
     src_node_id: srcNodeId,
     path_hashes: pathHashes,
     hop_count: hopCount,
+    path_hash_size_bytes: pathHashSizeBytes,
+  }));
+}
+
+/** Push a physical pair evaluation job for two positioned repeater nodes. */
+export function queuePhysicalLinkJob(nodeAId: string, nodeBId: string): void {
+  if (!nodeAId || !nodeBId || nodeAId === nodeBId) return;
+  const [aId, bId] = nodeAId < nodeBId ? [nodeAId, nodeBId] : [nodeBId, nodeAId];
+  void getPublisher().lpush(LINK_JOB_QUEUE, JSON.stringify({
+    type: 'physical_pair',
+    node_a_id: aId,
+    node_b_id: bId,
   }));
 }

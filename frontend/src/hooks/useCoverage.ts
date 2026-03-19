@@ -1,47 +1,125 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useEffect, useSyncExternalStore } from 'react';
 import { withScopeParams, type ApiScope } from '../utils/api.js';
 
 export interface NodeCoverage {
-  node_id:          string;
-  geom:             { type: string; coordinates: unknown };
-  strength_geoms?:  Partial<Record<'green' | 'amber' | 'red', { type: string; coordinates: unknown }>>;
+  node_id: string;
+  geom: { type: string; coordinates: unknown };
+  strength_geoms?: Partial<Record<'green' | 'amber' | 'red', { type: string; coordinates: unknown }>>;
   antenna_height_m?: number;
-  radius_m?:        number;
-  calculated_at?:   string;
+  radius_m?: number;
+  calculated_at?: string;
 }
 
-export function useCoverage(scope: ApiScope = {}, enabled = false) {
-  const [coverage, setCoverage] = useState<NodeCoverage[]>([]);
+type CoverageState = {
+  coverage: NodeCoverage[];
+  loadedScopeKey: string | null;
+};
 
-  // Fetch coverage lazily — only when the user enables the coverage toggle.
-  // The response is ~26 MB of GeoJSON; fetching it eagerly on every mount
-  // wastes ~700 ms of load time when coverage is never displayed.
+let state: CoverageState = {
+  coverage: [],
+  loadedScopeKey: null,
+};
+
+const listeners = new Set<() => void>();
+
+function emit(): void {
+  for (const listener of listeners) listener();
+}
+
+function subscribe(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
+function setState(next: CoverageState): void {
+  state = next;
+  emit();
+}
+
+function scopeKey(scope: ApiScope = {}): string {
+  return `${scope.network ?? 'all'}|${scope.observer ?? 'all'}`;
+}
+
+function replaceCoverage(coverage: NodeCoverage[], key: string): void {
+  setState({
+    coverage,
+    loadedScopeKey: key,
+  });
+}
+
+function upsertCoverageBatch(
+  updates: Array<{
+    node_id: string;
+    geom: NodeCoverage['geom'];
+    strength_geoms?: NodeCoverage['strength_geoms'];
+  }>,
+): void {
+  if (updates.length === 0) return;
+  const idsToRemove = new Set(updates.map((update) => update.node_id));
+  const filtered = state.coverage.filter((entry) => !idsToRemove.has(entry.node_id));
+  const added = updates.map((update) => ({
+    node_id: update.node_id,
+    geom: update.geom,
+    strength_geoms: update.strength_geoms,
+  }));
+  setState({
+    ...state,
+    coverage: [...filtered, ...added],
+  });
+}
+
+function handleCoverageUpdate(update: {
+  node_id: string;
+  geom: NodeCoverage['geom'];
+  strength_geoms?: NodeCoverage['strength_geoms'];
+}): void {
+  upsertCoverageBatch([update]);
+}
+
+function handleCoverageUpdateBatch(updates: Array<{
+  node_id: string;
+  geom: NodeCoverage['geom'];
+  strength_geoms?: NodeCoverage['strength_geoms'];
+}>): void {
+  upsertCoverageBatch(updates);
+}
+
+function getState(): CoverageState {
+  return state;
+}
+
+export const coverageStore = {
+  subscribe,
+  getState,
+  replaceCoverage,
+  handleCoverageUpdate,
+  handleCoverageUpdateBatch,
+  scopeKey,
+};
+
+export function useCoverageData(): NodeCoverage[] {
+  return useSyncExternalStore(subscribe, () => state.coverage);
+}
+
+export function useCoverageLoader(scope: ApiScope = {}, enabled = false): void {
   useEffect(() => {
     if (!enabled) return;
+
+    const key = scopeKey(scope);
+    if (state.loadedScopeKey === key && state.coverage.length > 0) return;
+
+    const controller = new AbortController();
     const url = withScopeParams('/api/coverage', scope);
-    fetch(url)
-      .then((r) => r.json())
-      .then((data: NodeCoverage[]) => setCoverage(data))
-      .catch(() => { /* non-fatal */ });
+
+    fetch(url, { signal: controller.signal })
+      .then((response) => response.json())
+      .then((coverage: NodeCoverage[]) => {
+        if (!controller.signal.aborted) replaceCoverage(coverage, key);
+      })
+      .catch(() => {
+        // non-fatal
+      });
+
+    return () => controller.abort();
   }, [enabled, scope.network, scope.observer]);
-
-  // Called when a coverage_update WS message arrives
-  const handleCoverageUpdate = useCallback((update: { node_id: string; geom: NodeCoverage['geom']; strength_geoms?: NodeCoverage['strength_geoms'] }) => {
-    setCoverage((prev) => {
-      const filtered = prev.filter((c) => c.node_id !== update.node_id);
-      return [...filtered, { node_id: update.node_id, geom: update.geom, strength_geoms: update.strength_geoms }];
-    });
-  }, []);
-
-  const handleCoverageUpdateBatch = useCallback((updates: { node_id: string; geom: NodeCoverage['geom']; strength_geoms?: NodeCoverage['strength_geoms'] }[]) => {
-    if (updates.length === 0) return;
-    setCoverage((prev) => {
-      const idsToRemove = new Set(updates.map(u => u.node_id));
-      const filtered = prev.filter((c) => !idsToRemove.has(c.node_id));
-      const added = updates.map(u => ({ node_id: u.node_id, geom: u.geom, strength_geoms: u.strength_geoms }));
-      return [...filtered, ...added];
-    });
-  }, []);
-
-  return { coverage, handleCoverageUpdate, handleCoverageUpdateBatch };
 }

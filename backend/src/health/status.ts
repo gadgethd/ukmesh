@@ -111,7 +111,6 @@ async function currentWorkers(precomputedStats?: ReturnType<typeof systemStats>)
   const [
     viewshedDepth,
     linkDepth,
-    tileState,
     viewshedRecent,
     linkRecent,
     viewshedLast,
@@ -123,7 +122,6 @@ async function currentWorkers(precomputedStats?: ReturnType<typeof systemStats>)
   ] = await Promise.all([
     r.llen('meshcore:viewshed_jobs'),
     r.llen('meshcore:link_jobs'),
-    r.hgetall('meshcore:tile_worker:state'),
     query<{ count: string }>(`SELECT COUNT(*) AS count FROM node_coverage WHERE calculated_at > NOW() - INTERVAL '1 hour'`),
     query<{ count: string }>(`SELECT COUNT(*) AS count FROM node_links WHERE itm_computed_at > NOW() - INTERVAL '1 hour'`),
     query<{ ts: string | null }>(`SELECT MAX(calculated_at)::text AS ts FROM node_coverage`),
@@ -159,19 +157,6 @@ async function currentWorkers(precomputedStats?: ReturnType<typeof systemStats>)
   const learningRecent = learningLast ? (Date.now() - Date.parse(learningLast)) <= 60 * 60_000 : false;
   const backfillLinks = Number(backfillState.rows[0]?.links ?? 0);
   const backfillLast = backfillState.rows[0]?.last_observed ?? null;
-  const tileStatus = tileState.status || 'idle';
-  const tileDone = Number(tileState.done_tiles ?? 0);
-  const tileTotal = Number(tileState.total_tiles ?? 0);
-  const tileRemaining = tileStatus === 'running'
-    ? Math.max(0, Number.isFinite(Number(tileState.remaining_tiles)) ? Number(tileState.remaining_tiles) : tileTotal - tileDone)
-    : 0;
-  const tileLastActivity = tileState.updated_at || tileState.last_pass_finished_at || tileState.started_at || null;
-  const tileLastPassFinished = tileState.last_pass_finished_at ? Date.parse(tileState.last_pass_finished_at) : Number.NaN;
-  const tileProcessed1h = (
-    Number.isFinite(tileLastPassFinished) && (Date.now() - tileLastPassFinished) <= 60 * 60_000
-  )
-    ? Number(tileState.last_pass_tiles ?? 0)
-    : (tileStatus === 'running' ? tileDone : 0);
   return [
     {
       worker_name: 'viewshed-worker',
@@ -190,17 +175,6 @@ async function currentWorkers(precomputedStats?: ReturnType<typeof systemStats>)
       queue_depth: Number(linkDepth ?? 0),
       processed_1h: linkProcessed,
       last_activity_at: linkLast.rows[0]?.ts ?? null,
-      cpu_load_1m: load,
-      cpu_usage_pct: stats.cpu.usage_pct,
-      mem_used_pct: memPct,
-      disk_used_pct: diskPct,
-    },
-    {
-      worker_name: 'tile-worker',
-      status: tileStatus,
-      queue_depth: tileRemaining,
-      processed_1h: tileProcessed1h,
-      last_activity_at: tileLastActivity,
       cpu_load_1m: load,
       cpu_usage_pct: stats.cpu.usage_pct,
       mem_used_pct: memPct,

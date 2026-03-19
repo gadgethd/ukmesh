@@ -1,7 +1,6 @@
 import 'node:process';
 import { initDb } from '../db/index.js';
 import { captureWorkerHealthSnapshot } from '../health/status.js';
-import { startTileWorker } from '../tiles/worker.js';
 
 const SNAPSHOT_INTERVAL_MS = 60 * 1000;
 
@@ -20,8 +19,6 @@ async function main() {
   setInterval(() => {
     void captureOnce('scheduled');
   }, SNAPSHOT_INTERVAL_MS);
-
-  startTileWorker();
 }
 
 main().catch((err) => {

@@ -1,16 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { AggregatedPacket, MeshNode } from './useNodes.js';
+import type { AggregatedPacket } from './useNodes.js';
+import { useNodeMap, usePackets } from './useNodes.js';
 import { withScopeParams, uncachedEndpoint } from '../utils/api.js';
 import type { Filters } from '../components/FilterPanel/FilterPanel.js';
 import { hasCoords } from '../utils/pathing.js';
 import {
   aggregateServerPredictions,
+  buildRegularPacketPaths,
   packetObserverIds,
   type AggregatedPredictionState,
   type MultiObserverBetaResponse,
   type PathSegment,
   type ServerBetaResponse,
 } from './packetPathOverlayUtils.js';
+import { useOverlayStore } from '../store/overlayStore.js';
 
 const PATH_TTL = 5_000;
 const PREDICTION_CACHE_TTL_MS = 120_000;
@@ -19,8 +22,6 @@ const RECENT_PREDICTION_TTL_MS = 45_000;
 const MAX_RECENT_PREDICTIONS = 48;
 
 type UsePacketPathOverlayParams = {
-  packets: AggregatedPacket[];
-  nodes: Map<string, MeshNode>;
   filters: Filters;
   network?: string;
   observer?: string;
@@ -39,6 +40,7 @@ type UsePacketPathOverlayResult = {
   pathFadingOut: boolean;
   pinnedPacketId: string | null;
   pinnedPacketSnapshot: AggregatedPacket | null;
+  activePacketSnapshot: AggregatedPacket | null;
   handlePacketPin: (packet: AggregatedPacket) => void;
 };
 
@@ -61,16 +63,34 @@ function cacheKey(packetHash: string, network?: string, observer?: string): stri
 }
 
 function multiCacheKey(packetHash: string, observerIds: string[], network?: string): string {
-  return `multi|${network ?? 'all'}|${observerIds.sort().join(',')}|${packetHash}`;
+  return `multi|${network ?? 'all'}|${[...observerIds].sort().join(',')}|${packetHash}`;
+}
+
+function packetResolutionKey(packet: AggregatedPacket | null | undefined, network?: string, observer?: string): string | null {
+  if (!packet) return null;
+  return [
+    packet.id,
+    packet.packetHash,
+    packet.packetType ?? '',
+    packet.srcNodeId ?? '',
+    packet.rxNodeId ?? '',
+    packet.hopCount ?? '',
+    packet.pathHashSizeBytes ?? '',
+    packet.path?.join(',') ?? '',
+    [...packet.observerIds].sort().join(','),
+    packet.ts,
+    network ?? 'all',
+    observer ?? 'all',
+  ].join('|');
 }
 
 export function usePacketPathOverlay({
-  packets,
-  nodes,
   filters,
   network,
   observer,
 }: UsePacketPathOverlayParams): UsePacketPathOverlayResult {
+  const packets = usePackets();
+  const nodes = useNodeMap();
   const [packetPaths, setPacketPaths] = useState<[number, number][][]>([]);
   const [betaPacketPaths, setBetaPacketPaths] = useState<[number, number][][]>([]);
   const [betaLowConfidencePaths, setBetaLowConfidencePaths] = useState<[number, number][][]>([]);
@@ -79,8 +99,10 @@ export function usePacketPathOverlay({
   const [betaPathConfidence, setBetaPathConfidence] = useState<number | null>(null);
   const [betaPermutationCount, setBetaPermutationCount] = useState<number | null>(null);
   const [betaRemainingHops, setBetaRemainingHops] = useState<number | null>(null);
-  const [pinnedPacketId, setPinnedPacketId] = useState<string | null>(null);
-  const [pinnedPacketSnapshot, setPinnedPacketSnapshot] = useState<AggregatedPacket | null>(null);
+  const pinnedPacketId = useOverlayStore((state) => state.pinnedPacketId);
+  const pinnedPacketSnapshot = useOverlayStore((state) => state.pinnedPacketSnapshot);
+  const togglePinnedPacket = useOverlayStore((state) => state.togglePinnedPacket);
+  const clearPinnedPacket = useOverlayStore((state) => state.clearPinnedPacket);
   // CSS-based fade: instead of animating opacity via 60fps rAF (which caused ~60 MapView
   // re-renders/second), we set a single boolean that triggers a CSS transition on the pane.
   const [pathFadingOut, setPathFadingOut] = useState(false);
@@ -208,17 +230,21 @@ export function usePacketPathOverlay({
 
   const getPacketObserverIds = useCallback((packet: AggregatedPacket | undefined): string[] => packetObserverIds(packet), []);
 
+  const buildLocalPaths = useCallback((packet: AggregatedPacket | undefined, observerIds: string[]) => (
+    buildRegularPacketPaths(packet, observerIds, nodes)
+  ), [nodes]);
+
   const shouldCollapseAdvertObserverPartials = useCallback((packet: AggregatedPacket | undefined): boolean => {
     if (!packet || packet.packetType !== 4 || !packet.srcNodeId) return false;
     const src = nodes.get(packet.srcNodeId);
     return !hasCoords(src);
   }, [nodes]);
 
-  const resolvePrediction = useCallback((packetHash: string, networkName?: string, observerId?: string): Promise<ServerBetaResponse | null> => {
+  const resolvePrediction = useCallback((packetHash: string, networkName?: string, observerId?: string, minFreshTs = 0): Promise<ServerBetaResponse | null> => {
     prunePredictionCache();
     const key = cacheKey(packetHash, networkName, observerId);
     const cached = predictionCacheRef.current.get(key);
-    if (cached && Date.now() - cached.ts <= PREDICTION_CACHE_TTL_MS) {
+    if (cached && cached.ts >= minFreshTs && Date.now() - cached.ts <= PREDICTION_CACHE_TTL_MS) {
       return Promise.resolve(cached.prediction);
     }
 
@@ -243,12 +269,12 @@ export function usePacketPathOverlay({
   const multiPredictionCacheRef = useRef<Map<string, { results: ServerBetaResponse[]; ts: number }>>(new Map());
   const multiInflightRef = useRef<Map<string, Promise<ServerBetaResponse[]>>>(new Map());
 
-  const resolveMultiPrediction = useCallback((packetHash: string, observerIds: string[], networkName?: string): Promise<ServerBetaResponse[]> => {
+  const resolveMultiPrediction = useCallback((packetHash: string, observerIds: string[], networkName?: string, minFreshTs = 0): Promise<ServerBetaResponse[]> => {
     prunePredictionCache();
     const key = multiCacheKey(packetHash, observerIds, networkName);
 
     const cached = multiPredictionCacheRef.current.get(key);
-    if (cached && Date.now() - cached.ts <= PREDICTION_CACHE_TTL_MS) {
+    if (cached && cached.ts >= minFreshTs && Date.now() - cached.ts <= PREDICTION_CACHE_TTL_MS) {
       return Promise.resolve(cached.results);
     }
 
@@ -283,7 +309,11 @@ export function usePacketPathOverlay({
     return p;
   }, [prunePredictionCache]);
 
-  const latestId = packets.find((p) => p.packetType === 4 || p.packetType === 5)?.id;
+  const latestPacket = packets.find((p) => p.packetType === 4 || p.packetType === 5) ?? null;
+  const latestResolutionKey = packetResolutionKey(latestPacket, network, observer);
+  const activePacketSnapshot = pinnedPacketId !== null
+    ? (packets.find((packet) => packet.id === pinnedPacketId) ?? pinnedPacketSnapshot)
+    : (filters.betaPaths ? latestPacket : null);
   const betaEffectThrottleRef = useRef<number | null>(null);
 
   // Keep a ref to the latest packets so we can read them inside effects without
@@ -308,7 +338,7 @@ export function usePacketPathOverlay({
     // effect on every packet arrival.
     const latest = packetsRef.current.find((p) => p.packetType === 4 || p.packetType === 5);
     const observerIds = getPacketObserverIds(latest);
-    setPacketPaths([]);
+    setPacketPaths(buildLocalPaths(latest, observerIds));
 
     if (!isPageVisible) {
       setPathFadingOut(false);
@@ -318,8 +348,8 @@ export function usePacketPathOverlay({
     if (filters.betaPaths && latest?.packetHash && latest.path?.length && observerIds.length > 0) {
       const reqSeq = ++activeReqSeqRef.current;
       const resolveFn = observerIds.length > 1
-        ? resolveMultiPrediction(latest.packetHash, observerIds, network)
-        : Promise.all(observerIds.map((observerId) => resolvePrediction(latest.packetHash, network, observerId)));
+        ? resolveMultiPrediction(latest.packetHash, observerIds, network, latest.ts)
+        : Promise.all(observerIds.map((observerId) => resolvePrediction(latest.packetHash, network, observerId, latest.ts)));
       void resolveFn
         .then((predictions) => {
           if (reqSeq !== activeReqSeqRef.current) return;
@@ -364,51 +394,41 @@ export function usePacketPathOverlay({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   // `packets` intentionally omitted — accessed via packetsRef to avoid firing on every
   // packet arrival. Effect only re-runs when latestId changes (a new distinct path packet).
-  }, [latestId, filters.betaPaths, pinnedPacketId, network, observer, getPacketObserverIds, resolvePrediction, resolveMultiPrediction, stopPathTimers, clearPathState, applyServerPredictions, isPageVisible, pruneRecentPredictions]);
+  }, [latestResolutionKey, filters.betaPaths, pinnedPacketId, network, observer, getPacketObserverIds, buildLocalPaths, resolvePrediction, resolveMultiPrediction, stopPathTimers, clearPathState, applyServerPredictions, isPageVisible, pruneRecentPredictions]);
 
   const handlePacketPin = useCallback((packet: AggregatedPacket) => {
-    if (pinnedPacketId === packet.id) {
-      setPinnedPacketId(null);
-      setPinnedPacketSnapshot(null);
-      pinnedOverlayKeyRef.current = '';
-      if (pinnedTimerRef.current) {
-        clearTimeout(pinnedTimerRef.current);
-        pinnedTimerRef.current = null;
-      }
-      stopPathTimers();
-      clearPathState();
-      return;
-    }
+    togglePinnedPacket(packet);
+  }, [togglePinnedPacket]);
 
-    stopPathTimers();
+  useEffect(() => {
     if (pinnedTimerRef.current) {
       clearTimeout(pinnedTimerRef.current);
       pinnedTimerRef.current = null;
     }
 
-    setPathFadingOut(false);
-    setPinnedPacketId(packet.id);
-    setPinnedPacketSnapshot(packet);
+    if (pinnedPacketId === null) {
+      pinnedOverlayKeyRef.current = '';
+      stopPathTimers();
+      clearPathState();
+      return;
+    }
 
+    setPathFadingOut(false);
     const FADE_MS = 1_000;
     pinnedTimerRef.current = setTimeout(() => {
       setPathFadingOut(true);
       pathFadeTimerRef.current = setTimeout(() => {
         pathFadeTimerRef.current = null;
         clearPathState();
-        setPinnedPacketId(null);
-        setPinnedPacketSnapshot(null);
+        clearPinnedPacket();
         pinnedOverlayKeyRef.current = '';
         pinnedTimerRef.current = null;
       }, FADE_MS);
     }, 30_000);
-  }, [pinnedPacketId, stopPathTimers, clearPathState]);
+  }, [clearPathState, clearPinnedPacket, pinnedPacketId, stopPathTimers]);
 
   useEffect(() => {
-    if (pinnedPacketId === null) {
-      pinnedOverlayKeyRef.current = '';
-      return;
-    }
+    if (pinnedPacketId === null) return;
     pruneRecentPredictions();
 
     if (!isPageVisible) return;
@@ -426,18 +446,19 @@ export function usePacketPathOverlay({
       filters.betaPaths ? 'beta-on' : 'beta-off',
       network ?? 'all',
       observer ?? 'all',
+      pinnedPacket.ts,
     ].join('|');
 
     if (overlayKey === pinnedOverlayKeyRef.current) return;
     pinnedOverlayKeyRef.current = overlayKey;
 
-    setPacketPaths([]);
+    setPacketPaths(buildLocalPaths(pinnedPacket, observerIds));
 
     if (filters.betaPaths && pinnedPacket.packetHash && pinnedPacket.path?.length && observerIds.length > 0) {
       const reqSeq = ++activeReqSeqRef.current;
       const resolveFn = observerIds.length > 1
-        ? resolveMultiPrediction(pinnedPacket.packetHash!, observerIds, network)
-        : Promise.all(observerIds.map((observerId) => resolvePrediction(pinnedPacket.packetHash!, network, observerId)));
+        ? resolveMultiPrediction(pinnedPacket.packetHash!, observerIds, network, pinnedPacket.ts)
+        : Promise.all(observerIds.map((observerId) => resolvePrediction(pinnedPacket.packetHash!, network, observerId, pinnedPacket.ts)));
       void resolveFn
         .then((predictions) => {
           if (reqSeq !== activeReqSeqRef.current) return;
@@ -470,6 +491,7 @@ export function usePacketPathOverlay({
     network,
     observer,
     getPacketObserverIds,
+    buildLocalPaths,
     shouldCollapseAdvertObserverPartials,
     resolvePrediction,
     resolveMultiPrediction,
@@ -495,6 +517,7 @@ export function usePacketPathOverlay({
     pathFadingOut,
     pinnedPacketId,
     pinnedPacketSnapshot,
+    activePacketSnapshot,
     handlePacketPin,
   };
 }

@@ -13,8 +13,8 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks: {
-          'deck': ['@deck.gl/core', '@deck.gl/layers', '@deck.gl/geo-layers', '@deck.gl/react'],
-          'leaflet': ['leaflet', 'react-leaflet'],
+          'deck': ['@deck.gl/core', '@deck.gl/layers', '@deck.gl/geo-layers', '@deck.gl/mapbox'],
+          'maplibre': ['maplibre-gl'],
           'react': ['react', 'react-dom'],
         },
       },

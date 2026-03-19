@@ -70,21 +70,23 @@ RF_N_RAYS        = 360      # 1-degree azimuth resolution keeps RF mode tractabl
 RF_RADIUS_MULTIPLIER = 1.35 # search beyond geometric horizon to allow limited diffraction gain
 RF_MIN_RADIUS_M  = 20_000   # avoid under-searching low-elevation repeaters
 RF_SOURCE_LINK_RADIUS_MULTIPLIER = float(os.environ.get('RF_SOURCE_LINK_RADIUS_MULTIPLIER', '1.25'))
+DEFAULT_PHYSICAL_LINK_RADIUS_KM = float(os.environ.get('DEFAULT_PHYSICAL_LINK_RADIUS_KM', '60'))
+MIN_PHYSICAL_LINK_RADIUS_KM = float(os.environ.get('MIN_PHYSICAL_LINK_RADIUS_KM', '20'))
+MAX_PHYSICAL_LINK_RADIUS_KM = float(os.environ.get('MAX_PHYSICAL_LINK_RADIUS_KM', '100'))
 SUPPORT_REFRESH_S = int(os.environ.get('COVERAGE_SUPPORT_REFRESH_S', '900'))
 SUPPORT_NEARBY_REPEATER_KM = float(os.environ.get('COVERAGE_SUPPORT_NEARBY_REPEATER_KM', '12'))
 SUPPORT_PENALTY_PER_KM_DB = float(os.environ.get('COVERAGE_SUPPORT_PENALTY_PER_KM_DB', '0.6'))
 SUPPORT_MAX_PENALTY_DB = float(os.environ.get('COVERAGE_SUPPORT_MAX_PENALTY_DB', '14'))
 SUPPORT_PROJECTION_LAT = float(os.environ.get('COVERAGE_SUPPORT_PROJECTION_LAT', '54.0'))
 
-DEFAULT_LINK_BUDGET_DB = 148.0
-DEFAULT_FADE_MARGIN_DB = 10.0
-DEFAULT_USABLE_PATH_LOSS_DB = DEFAULT_LINK_BUDGET_DB - DEFAULT_FADE_MARGIN_DB
+DEFAULT_USABLE_PATH_LOSS_DB = float(os.environ.get('DEFAULT_USABLE_PATH_LOSS_DB', '145'))
 CALIBRATION_REFRESH_S = int(os.environ.get('COVERAGE_CALIBRATION_REFRESH_S', '900'))
 CALIBRATION_MIN_LINKS = int(os.environ.get('COVERAGE_CALIBRATION_MIN_LINKS', '24'))
 CALIBRATION_MIN_OBSERVED_COUNT = int(os.environ.get('COVERAGE_CALIBRATION_MIN_OBSERVED_COUNT', '3'))
-CALIBRATION_MAX_THRESHOLD_BOOST_DB = float(os.environ.get('COVERAGE_CALIBRATION_MAX_THRESHOLD_BOOST_DB', '8'))
+CALIBRATION_MAX_THRESHOLD_BOOST_DB = float(os.environ.get('COVERAGE_CALIBRATION_MAX_THRESHOLD_BOOST_DB', '2'))
 CALIBRATION_PERCENTILE = float(os.environ.get('COVERAGE_CALIBRATION_PERCENTILE', '0.9'))
-CALIBRATION_EXTRA_MARGIN_DB = float(os.environ.get('COVERAGE_CALIBRATION_EXTRA_MARGIN_DB', '1.5'))
+CALIBRATION_EXTRA_MARGIN_DB = float(os.environ.get('COVERAGE_CALIBRATION_EXTRA_MARGIN_DB', '0.5'))
+LINK_LOS_MAX_V = float(os.environ.get('LINK_LOS_MAX_V', '-0.78'))
 
 # Radio horizon parameters
 K_FACTOR  = 4 / 3        # effective Earth radius multiplier (standard troposphere)
@@ -157,6 +159,19 @@ def project_xy_km(latitudes, longitudes) -> np.ndarray:
     return np.column_stack((lons * 111.32 * cos_ref, lats * 111.32))
 
 
+def node_dist_km(a: dict, b: dict) -> float:
+    cos_m = math.cos(math.radians((a['lat'] + b['lat']) / 2))
+    return math.sqrt(
+        ((a['lat'] - b['lat']) * 111.32) ** 2 +
+        ((a['lon'] - b['lon']) * 111.32 * cos_m) ** 2
+    )
+
+
+def physical_candidate_radius_km(radius_m: Optional[float]) -> float:
+    derived = (radius_m / 1000.0) * RF_SOURCE_LINK_RADIUS_MULTIPLIER if radius_m is not None else DEFAULT_PHYSICAL_LINK_RADIUS_KM
+    return min(MAX_PHYSICAL_LINK_RADIUS_KM, max(MIN_PHYSICAL_LINK_RADIUS_KM, derived))
+
+
 def refresh_rf_calibration(db, force: bool = False) -> None:
     now = time.time()
     if not force and now - float(RF_CALIBRATION['updated_at']) < CALIBRATION_REFRESH_S:
@@ -165,13 +180,12 @@ def refresh_rf_calibration(db, force: bool = False) -> None:
     with db.cursor() as cur:
         cur.execute(
             '''
-            SELECT itm_path_loss_db, observed_count
+            SELECT itm_path_loss_db, multibyte_observed_count
             FROM node_links
             WHERE itm_path_loss_db IS NOT NULL
-              AND observed_count >= %s
+              AND multibyte_observed_count > 0
               AND force_viable = false
-            ''',
-            (CALIBRATION_MIN_OBSERVED_COUNT,),
+            '''
         )
         rows = cur.fetchall()
 
@@ -245,10 +259,8 @@ def refresh_support_context(db, force: bool = False) -> None:
               AND na.lon IS NOT NULL
               AND nb.lat IS NOT NULL
               AND nb.lon IS NOT NULL
-              AND nl.observed_count >= %s
               AND (nl.itm_viable = true OR nl.force_viable = true)
-            ''',
-            (MIN_LINK_OBSERVATIONS,),
+            '''
         )
         link_rows = cur.fetchall()
 
@@ -422,7 +434,8 @@ def compute_path_loss_from_profile(dists: np.ndarray,
         ))
 
     total_loss = fspl + diff_loss
-    viable     = total_loss < usable_threshold_db
+    clear_los = max_v <= LINK_LOS_MAX_V
+    viable = clear_los and total_loss < usable_threshold_db
     return total_loss, viable
 
 
@@ -859,58 +872,186 @@ def backfill_elevations(db):
             log.info(f'  {node_id[:12]}…: elevation={elevation_m:.0f} m ASL (from radius {radius_m/1000:.1f} km)')
     db.commit()
 
-def process_link_job(db, r_client, job: dict):
-    """Resolve relay path prefixes to known nodes (backwards from the receiver),
-    record observations in node_links, and compute RF path loss for new pairs.
-
-    Uses accumulated confirmed-link knowledge (node_links) to prefer known
-    neighbours over purely geographic proximity — the algorithm improves as
-    more packets are observed.
-    """
-    rx_node_id  = job.get('rx_node_id')
-    src_node_id = job.get('src_node_id')
-    path_hashes = job.get('path_hashes', [])
-
-    if not rx_node_id or not path_hashes:
-        return
-
-    # Load all positioned repeater nodes
+def load_positioned_repeaters(db) -> dict[str, dict]:
     with db.cursor() as cur:
         cur.execute(
-            'SELECT node_id, lat, lon, elevation_m, name, role FROM nodes '
-            'WHERE lat IS NOT NULL AND lon IS NOT NULL'
+            '''
+            SELECT n.node_id, n.lat, n.lon, n.elevation_m, n.name, n.role, nc.radius_m
+            FROM nodes n
+            LEFT JOIN node_coverage nc ON nc.node_id = n.node_id
+            WHERE n.lat IS NOT NULL
+              AND n.lon IS NOT NULL
+              AND n.lat BETWEEN %s AND %s
+              AND n.lon BETWEEN %s AND %s
+              AND NOT (ABS(n.lat) < 1e-9 AND ABS(n.lon) < 1e-9)
+              AND (n.name IS NULL OR n.name NOT LIKE %s)
+              AND (n.role IS NULL OR n.role = 2)
+            ''',
+            (UK_LAT_MIN, UK_LAT_MAX, UK_LON_MIN, UK_LON_MAX, '%🚫%'),
         )
-        all_nodes = {
-            row[0]: {'lat': row[1], 'lon': row[2], 'elevation_m': row[3],
-                     'name': row[4], 'role': row[5]}
+        return {
+            row[0]: {
+                'lat': row[1],
+                'lon': row[2],
+                'elevation_m': row[3],
+                'name': row[4],
+                'role': row[5],
+                'radius_m': row[6],
+            }
             for row in cur.fetchall()
         }
 
-    # Load confirmed link pairs so we can prefer known neighbours when resolving
-    # relay hashes — forms the self-improving feedback loop.
+
+def publish_link_update(r_client, a_id: str, b_id: str, obs_count: int, path_loss_db: Optional[float],
+                        itm_viable: Optional[bool], count_a_to_b: int, count_b_to_a: int,
+                        multibyte_obs: int) -> None:
+    r_client.publish(LIVE_CHANNEL, json.dumps({
+        'type': 'link_update',
+        'data': {
+            'node_a_id': a_id,
+            'node_b_id': b_id,
+            'observed_count': obs_count,
+            'itm_path_loss_db': path_loss_db,
+            'itm_viable': itm_viable,
+            'count_a_to_b': count_a_to_b,
+            'count_b_to_a': count_b_to_a,
+            'multibyte_observed_count': multibyte_obs,
+        },
+        'ts': int(time.time() * 1000),
+    }))
+
+
+def upsert_link_pair(db, a_id: str, b_id: str, inc_atob: int, inc_btoa: int, inc_multibyte: int):
+    obs_delta = inc_atob + inc_btoa
     with db.cursor() as cur:
         cur.execute(
-            'SELECT node_a_id, node_b_id FROM node_links '
-            'WHERE itm_viable = true AND observed_count >= %s',
-            (MIN_LINK_OBSERVATIONS,),
+            '''INSERT INTO node_links
+                   (node_a_id, node_b_id, observed_count, last_observed,
+                    count_a_to_b, count_b_to_a, multibyte_observed_count)
+               VALUES (%s, %s, %s, NOW(), %s, %s, %s)
+               ON CONFLICT (node_a_id, node_b_id) DO UPDATE
+                 SET observed_count = node_links.observed_count + %s,
+                     last_observed = CASE WHEN %s > 0 THEN NOW() ELSE node_links.last_observed END,
+                     count_a_to_b = node_links.count_a_to_b + %s,
+                     count_b_to_a = node_links.count_b_to_a + %s,
+                     multibyte_observed_count = node_links.multibyte_observed_count + %s
+               RETURNING observed_count, itm_computed_at, itm_path_loss_db, itm_viable,
+                         count_a_to_b, count_b_to_a, multibyte_observed_count''',
+            (
+                a_id, b_id, obs_delta, inc_atob, inc_btoa, inc_multibyte,
+                obs_delta, obs_delta, inc_atob, inc_btoa, inc_multibyte,
+            ),
         )
-        confirmed_pairs: set[tuple[str, str]] = {
+        return cur.fetchone()
+
+
+def ensure_physical_link_metrics(db, a_id: str, a: dict, b_id: str, b: dict):
+    row = upsert_link_pair(db, a_id, b_id, 0, 0, 0)
+    obs_count = row[0] if row else 0
+    itm_computed = row[1] if row else None
+    path_loss_db = row[2] if row else None
+    itm_viable = row[3] if row else None
+    count_a_to_b = row[4] if row else 0
+    count_b_to_a = row[5] if row else 0
+    multibyte_obs = row[6] if row else 0
+
+    missing_endpoint_elev = a.get('elevation_m') is None or b.get('elevation_m') is None
+    if itm_computed is not None and not missing_endpoint_elev:
+        return obs_count, path_loss_db, itm_viable, count_a_to_b, count_b_to_a, multibyte_obs
+
+    with tempfile.TemporaryDirectory() as tmp:
+        vrt = build_link_vrt(a['lat'], a['lon'], b['lat'], b['lon'], tmp)
+        if not vrt:
+            return obs_count, path_loss_db, itm_viable, count_a_to_b, count_b_to_a, multibyte_obs
+        try:
+            a_elev = a.get('elevation_m')
+            b_elev = b.get('elevation_m')
+            if a_elev is None:
+                a_elev = sample_elevation(vrt, a['lat'], a['lon'])
+                a['elevation_m'] = a_elev
+                with db.cursor() as cur:
+                    cur.execute(
+                        'UPDATE nodes SET elevation_m = %s WHERE node_id = %s AND elevation_m IS NULL',
+                        (round(a_elev, 1), a_id),
+                    )
+            if b_elev is None:
+                b_elev = sample_elevation(vrt, b['lat'], b['lon'])
+                b['elevation_m'] = b_elev
+                with db.cursor() as cur:
+                    cur.execute(
+                        'UPDATE nodes SET elevation_m = %s WHERE node_id = %s AND elevation_m IS NULL',
+                        (round(b_elev, 1), b_id),
+                    )
+            path_loss_db, itm_viable = compute_path_loss(
+                a['lat'], a['lon'], a_elev,
+                b['lat'], b['lon'], b_elev,
+                vrt,
+            )
+            path_loss_db = round(path_loss_db, 1)
+            with db.cursor() as cur:
+                cur.execute(
+                    '''UPDATE node_links
+                       SET itm_path_loss_db = %s,
+                           itm_viable = %s,
+                           itm_computed_at = NOW()
+                       WHERE node_a_id = %s AND node_b_id = %s''',
+                    (path_loss_db, itm_viable, a_id, b_id),
+                )
+            log.info(
+                f'Link {a_id[:8]}…↔{b_id[:8]}…: '
+                f'{path_loss_db:.1f} dB {"✓" if itm_viable else "✗"} '
+                f'(obs={obs_count})'
+            )
+        except Exception as exc:
+            log.warning(f'Path loss computation failed: {exc}')
+
+    return obs_count, path_loss_db, itm_viable, count_a_to_b, count_b_to_a, multibyte_obs
+
+
+def process_physical_link_job(db, r_client, job: dict):
+    node_a_id = job.get('node_a_id')
+    node_b_id = job.get('node_b_id')
+    if not node_a_id or not node_b_id or node_a_id == node_b_id:
+        return
+
+    nodes = load_positioned_repeaters(db)
+    a = nodes.get(node_a_id)
+    b = nodes.get(node_b_id)
+    if not a or not b:
+        return
+
+    obs_count, path_loss_db, itm_viable, count_a_to_b, count_b_to_a, multibyte_obs = ensure_physical_link_metrics(
+        db, node_a_id, a, node_b_id, b,
+    )
+    publish_link_update(r_client, node_a_id, node_b_id, obs_count, path_loss_db, itm_viable, count_a_to_b, count_b_to_a, multibyte_obs)
+
+
+def process_observation_link_job(db, r_client, job: dict):
+    """Resolve multibyte packet paths and annotate already-physical links."""
+    rx_node_id = job.get('rx_node_id')
+    src_node_id = job.get('src_node_id')
+    path_hashes = job.get('path_hashes', [])
+    path_hash_size_bytes = int(job.get('path_hash_size_bytes') or 1)
+
+    if not rx_node_id or not path_hashes or path_hash_size_bytes <= 1:
+        return
+
+    all_nodes = load_positioned_repeaters(db)
+
+    with db.cursor() as cur:
+        cur.execute(
+            'SELECT node_a_id, node_b_id FROM node_links WHERE itm_viable = true OR force_viable = true',
+        )
+        physical_pairs: set[tuple[str, str]] = {
             (min(a, b), max(a, b)) for a, b in cur.fetchall()
         }
 
-    def confirmed_link(a_id: str, b_id: str) -> bool:
-        return (min(a_id, b_id), max(a_id, b_id)) in confirmed_pairs
+    def physical_link(a_id: str, b_id: str) -> bool:
+        return (min(a_id, b_id), max(a_id, b_id)) in physical_pairs
 
     rx = all_nodes.get(rx_node_id)
     if not rx:
         return
-
-    def node_dist(a: dict, b: dict) -> float:
-        cos_m = math.cos(math.radians((a['lat'] + b['lat']) / 2))
-        return math.sqrt(
-            ((a['lat'] - b['lat']) * 111.32) ** 2 +
-            ((a['lon'] - b['lon']) * 111.32 * cos_m) ** 2
-        )
 
     def normalize_path_hash(value) -> str:
         return str(value or '').strip().upper()
@@ -918,30 +1059,27 @@ def process_link_job(db, r_client, job: dict):
     def node_matches_path_hash(node_id: str, path_hash: str) -> bool:
         return bool(path_hash) and node_id.upper().startswith(path_hash)
 
-    def local_prefix_ambiguity_penalty(path_hash: str, target_id: str, target_node: dict, anchor_node: dict, pool: list[tuple[str, dict]]) -> float:
-        target_dist = node_dist(target_node, anchor_node)
+    def local_prefix_ambiguity_penalty(path_hash: str, target_id: str, target_node: dict, anchor_node: dict,
+                                       pool: list[tuple[str, dict]]) -> float:
+        target_dist = node_dist_km(target_node, anchor_node)
         raw = 0.0
         for cand_id, cand_node in pool:
             if cand_id == target_id:
                 continue
             if not node_matches_path_hash(cand_id, path_hash):
                 continue
-            cand_dist = node_dist(cand_node, anchor_node)
+            cand_dist = node_dist_km(cand_node, anchor_node)
             if cand_dist > PREFIX_AMBIGUITY_RADIUS_KM:
                 continue
             dist_similarity = max(0.0, 1.0 - abs(cand_dist - target_dist) / PREFIX_AMBIGUITY_RADIUS_KM)
             proximity = max(0.0, 1.0 - cand_dist / PREFIX_AMBIGUITY_RADIUS_KM)
             raw += dist_similarity * proximity
-        # Bound so this is only a modest confidence deduction in clustered regions.
         return min(0.24, raw * 0.12)
 
-    # Resolve path working backwards from rx (known position anchor).
-    # Each node can only appear once — MeshCore nodes never relay the same
-    # packet twice.
     resolved: list[tuple[str, dict]] = []
-    prev_id  = rx_node_id
-    prev     = rx
-    visited  = {rx_node_id}
+    prev_id = rx_node_id
+    prev = rx
+    visited = {rx_node_id}
 
     for raw_hash in reversed(path_hashes):
         path_hash = normalize_path_hash(raw_hash)
@@ -951,20 +1089,16 @@ def process_link_job(db, r_client, job: dict):
             (nid, nd) for nid, nd in all_nodes.items()
             if node_matches_path_hash(nid, path_hash)
             and nid not in visited
-            and (nd['role'] is None or nd['role'] == 2)
-            and nd['name'] and '🚫' not in nd['name']
         ]
         if not candidates:
             continue
 
-        # Prefer confirmed neighbours of the previous node, but deduct confidence
-        # when same-prefix repeaters cluster near the same anchor (possible ambiguity).
         best_id = None
         best = None
         best_score = float('-inf')
         for nid, nd in candidates:
-            confirmed_bonus = 2.5 if confirmed_link(nid, prev_id) else 0.0
-            distance_score = -node_dist(nd, prev) / 12.0
+            confirmed_bonus = 2.5 if physical_link(nid, prev_id) else 0.0
+            distance_score = -node_dist_km(nd, prev) / 12.0
             ambiguity_penalty = local_prefix_ambiguity_penalty(path_hash, nid, nd, prev, candidates)
             score = confirmed_bonus + distance_score - ambiguity_penalty
             if score > best_score:
@@ -977,121 +1111,92 @@ def process_link_job(db, r_client, job: dict):
         resolved.insert(0, (best_id, best))
         visited.add(best_id)
         prev_id = best_id
-        prev    = best
+        prev = best
 
-    # Build adjacency list: src → relays → rx
     full: list[tuple[str, dict]] = []
     if src_node_id and src_node_id in all_nodes:
         full.append((src_node_id, all_nodes[src_node_id]))
     full.extend(resolved)
     full.append((rx_node_id, rx))
-
     if len(full) < 2:
         return
 
-    # Upsert observations and compute path loss for each adjacent pair.
-    # full[i] → full[i+1] means full[i] transmitted, full[i+1] received.
-    with tempfile.TemporaryDirectory() as tmp:
-        for i in range(len(full) - 1):
-            src_id, src = full[i]    # transmitted
-            dst_id, dst = full[i + 1]  # received
-            if src['lat'] is None or src['lon'] is None or dst['lat'] is None or dst['lon'] is None:
-                continue
+    for i in range(len(full) - 1):
+        src_id, src = full[i]
+        dst_id, dst = full[i + 1]
+        if src_id == dst_id:
+            continue
+        if src['lat'] is None or src['lon'] is None or dst['lat'] is None or dst['lon'] is None:
+            continue
 
-            # Canonical ordering (lower ID first) → unique primary key
-            if src_id < dst_id:
-                a_id, a, b_id, b = src_id, src, dst_id, dst
-                inc_atob, inc_btoa = 1, 0   # src==a transmitted to dst==b
-            else:
-                a_id, a, b_id, b = dst_id, dst, src_id, src
-                inc_atob, inc_btoa = 0, 1   # src==b transmitted to dst==a
+        if src_id < dst_id:
+            a_id, a, b_id, b = src_id, src, dst_id, dst
+            inc_atob, inc_btoa = 1, 0
+        else:
+            a_id, a, b_id, b = dst_id, dst, src_id, src
+            inc_atob, inc_btoa = 0, 1
 
-            # Upsert observation with directional counts; check whether ITM already computed
-            with db.cursor() as cur:
-                cur.execute(
-                    '''INSERT INTO node_links
-                           (node_a_id, node_b_id, observed_count, last_observed,
-                            count_a_to_b, count_b_to_a)
-                       VALUES (%s, %s, 1, NOW(), %s, %s)
-                       ON CONFLICT (node_a_id, node_b_id) DO UPDATE
-                         SET observed_count = node_links.observed_count + 1,
-                             last_observed  = NOW(),
-                             count_a_to_b   = node_links.count_a_to_b + %s,
-                             count_b_to_a   = node_links.count_b_to_a + %s
-                       RETURNING observed_count, itm_computed_at, itm_path_loss_db, itm_viable, count_a_to_b, count_b_to_a''',
-                    (a_id, b_id, inc_atob, inc_btoa, inc_atob, inc_btoa),
-                )
-                row = cur.fetchone()
-            obs_count       = row[0] if row else 1
-            itm_computed    = row[1] if row else None
-            path_loss_db_db = row[2] if row else None
-            itm_viable_db   = row[3] if row else None
-            count_a_to_b    = row[4] if row else inc_atob
-            count_b_to_a    = row[5] if row else inc_btoa
+        if not physical_link(a_id, b_id):
+            continue
 
-            # Compute ITM path loss if not yet done and tiles are cached
-            path_loss_db: Optional[float] = path_loss_db_db
-            itm_viable:   Optional[bool]  = itm_viable_db
-            missing_endpoint_elev = a.get('elevation_m') is None or b.get('elevation_m') is None
-            if itm_computed is None or missing_endpoint_elev:
-                vrt = build_link_vrt(a['lat'], a['lon'], b['lat'], b['lon'], tmp)
-                if vrt:
-                    try:
-                        a_elev = a.get('elevation_m')
-                        b_elev = b.get('elevation_m')
-                        if a_elev is None:
-                            a_elev = sample_elevation(vrt, a['lat'], a['lon'])
-                            a['elevation_m'] = a_elev
-                            with db.cursor() as cur:
-                                cur.execute(
-                                    'UPDATE nodes SET elevation_m = %s WHERE node_id = %s AND elevation_m IS NULL',
-                                    (round(a_elev, 1), a_id),
-                                )
-                        if b_elev is None:
-                            b_elev = sample_elevation(vrt, b['lat'], b['lon'])
-                            b['elevation_m'] = b_elev
-                            with db.cursor() as cur:
-                                cur.execute(
-                                    'UPDATE nodes SET elevation_m = %s WHERE node_id = %s AND elevation_m IS NULL',
-                                    (round(b_elev, 1), b_id),
-                                )
-                        path_loss_db, itm_viable = compute_path_loss(
-                            a['lat'], a['lon'], a_elev,
-                            b['lat'], b['lon'], b_elev,
-                            vrt,
-                        )
-                        with db.cursor() as cur:
-                            cur.execute(
-                                '''UPDATE node_links
-                                   SET itm_path_loss_db = %s,
-                                       itm_viable       = %s,
-                                       itm_computed_at  = NOW()
-                                   WHERE node_a_id = %s AND node_b_id = %s''',
-                                (round(path_loss_db, 1), itm_viable, a_id, b_id),
-                            )
-                        path_loss_db = round(path_loss_db, 1)
-                        log.info(
-                            f'Link {a_id[:8]}…↔{b_id[:8]}…: '
-                            f'{path_loss_db:.1f} dB {"✓" if itm_viable else "✗"} '
-                            f'(obs={obs_count})'
-                        )
-                    except Exception as exc:
-                        log.warning(f'Path loss computation failed: {exc}')
+        row = upsert_link_pair(db, a_id, b_id, inc_atob, inc_btoa, 1)
+        obs_count = row[0] if row else 1
+        path_loss_db = row[2] if row else None
+        itm_viable = row[3] if row else None
+        count_a_to_b = row[4] if row else inc_atob
+        count_b_to_a = row[5] if row else inc_btoa
+        multibyte_obs = row[6] if row else 1
 
-            # Notify frontend
-            r_client.publish(LIVE_CHANNEL, json.dumps({
-                'type': 'link_update',
-                'data': {
-                    'node_a_id':        a_id,
-                    'node_b_id':        b_id,
-                    'observed_count':   obs_count,
-                    'itm_path_loss_db': path_loss_db,
-                    'itm_viable':       itm_viable,
-                    'count_a_to_b':     count_a_to_b,
-                    'count_b_to_a':     count_b_to_a,
-                },
-                'ts': int(time.time() * 1000),
-            }))
+        if itm_viable is None:
+            obs_count, path_loss_db, itm_viable, count_a_to_b, count_b_to_a, multibyte_obs = ensure_physical_link_metrics(
+                db, a_id, a, b_id, b,
+            )
+        publish_link_update(r_client, a_id, b_id, obs_count, path_loss_db, itm_viable, count_a_to_b, count_b_to_a, multibyte_obs)
+
+
+def process_link_job(db, r_client, job: dict):
+    job_type = str(job.get('type') or 'observe').strip().lower()
+    if job_type == 'physical_pair':
+        process_physical_link_job(db, r_client, job)
+        return
+    process_observation_link_job(db, r_client, job)
+
+
+def enqueue_physical_link_jobs_for_node(db, r_client, node_id: str, lat: float, lon: float, radius_m: Optional[float]) -> int:
+    origin = {'lat': lat, 'lon': lon, 'radius_m': radius_m}
+    origin_radius_km = physical_candidate_radius_km(radius_m)
+    with db.cursor() as cur:
+        cur.execute(
+            '''
+            SELECT n.node_id, n.lat, n.lon, nc.radius_m
+            FROM nodes n
+            LEFT JOIN node_coverage nc ON nc.node_id = n.node_id
+            WHERE n.node_id <> %s
+              AND n.lat IS NOT NULL
+              AND n.lon IS NOT NULL
+              AND n.lat BETWEEN %s AND %s
+              AND n.lon BETWEEN %s AND %s
+              AND NOT (ABS(n.lat) < 1e-9 AND ABS(n.lon) < 1e-9)
+              AND (n.name IS NULL OR n.name NOT LIKE %s)
+              AND (n.role IS NULL OR n.role = 2)
+            ''',
+            (node_id, UK_LAT_MIN, UK_LAT_MAX, UK_LON_MIN, UK_LON_MAX, '%🚫%'),
+        )
+        rows = cur.fetchall()
+
+    queued = 0
+    for peer_id, peer_lat, peer_lon, peer_radius_m in rows:
+        peer = {'lat': peer_lat, 'lon': peer_lon, 'radius_m': peer_radius_m}
+        if node_dist_km(origin, peer) > max(origin_radius_km, physical_candidate_radius_km(peer_radius_m)):
+            continue
+        [a_id, b_id] = sorted((node_id, peer_id))
+        r_client.lpush(LINK_JOB_QUEUE, json.dumps({
+            'type': 'physical_pair',
+            'node_a_id': a_id,
+            'node_b_id': b_id,
+        }))
+        queued += 1
+    return queued
 
 
 def enqueue_uncovered(db, r_client):
@@ -1204,6 +1309,10 @@ def process_job(db, r_client, job: dict):
 
         geom, strength_geoms, radius_m, elevation_m = result
         store_coverage(db, node_id, geom, strength_geoms, radius_m, elevation_m)
+        if WORKER_MODE in ('all', 'link'):
+            queued_links = enqueue_physical_link_jobs_for_node(db, r_client, node_id, lat, lon, radius_m)
+            if queued_links > 0:
+                log.info(f'Queued {queued_links} physical link job(s) for {node_id[:12]}…')
         log.info(f'Done in {time.time() - t0:.1f}s — notifying frontend')
 
         r_client.publish(LIVE_CHANNEL, json.dumps({

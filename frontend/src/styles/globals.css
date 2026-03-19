@@ -488,7 +488,8 @@ html, body, #root {
 }
 
 /* ─── Node Popup ─────────────────────────────────────────────────────────── */
-.leaflet-popup-content-wrapper {
+.leaflet-popup-content-wrapper,
+.maplibregl-popup-content {
   background: var(--bg-panel) !important;
   border: 1px solid var(--border-bright) !important;
   border-radius: var(--radius-lg) !important;
@@ -497,12 +498,30 @@ html, body, #root {
   padding: 0 !important;
 }
 
-.leaflet-popup-content {
+.leaflet-popup-content,
+.maplibregl-popup-content {
   margin: 0 !important;
 }
 
-.leaflet-popup-tip {
+.leaflet-popup-tip,
+.maplibregl-popup-tip {
   background: var(--bg-panel) !important;
+}
+
+.maplibregl-popup-content {
+  min-width: 200px;
+}
+
+.maplibregl-popup-close-button {
+  color: var(--text-muted);
+  font-size: 16px;
+  line-height: 1;
+  padding: 6px 8px;
+}
+
+.maplibregl-popup-close-button:hover {
+  color: var(--text-primary);
+  background: transparent;
 }
 
 .node-popup {
@@ -569,6 +588,26 @@ html, body, #root {
 .node-popup__inline-btn--active {
   border-color: rgba(0, 196, 255, 0.9);
   background: rgba(0, 196, 255, 0.16);
+}
+
+.node-popup__action-btn {
+  display: block;
+  width: 100%;
+  padding: 6px 8px;
+  background: transparent;
+  border: 1px solid rgba(0, 196, 255, 0.45);
+  border-radius: 4px;
+  color: var(--accent);
+  font-size: 11px;
+  font-family: var(--font-mono);
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.node-popup__action-btn:hover {
+  background: rgba(0, 196, 255, 0.14);
+  border-color: rgba(0, 196, 255, 0.85);
 }
 
 .node-popup__coverage-btn {

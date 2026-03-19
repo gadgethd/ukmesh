@@ -1,6 +1,6 @@
 import React, { FormEvent, useEffect, useMemo, useState } from 'react';
-import { CircleMarker, MapContainer, Polyline, Popup, TileLayer, useMap } from 'react-leaflet';
-import type { LatLngExpression } from 'leaflet';
+import maplibregl from 'maplibre-gl';
+import 'maplibre-gl/dist/maplibre-gl.css';
 import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 
 type OwnerNode = {
@@ -162,7 +162,7 @@ function formatPathLoss(value: number | null): string {
 function linkBadge(link: OwnerLiveResponse['linkHealth'][number]): string {
   if (link.force_viable) return 'Forced';
   if (link.itm_viable) return 'Viable';
-  if (link.itm_path_loss_db != null && link.itm_path_loss_db <= 137.88) return 'Weak';
+  if (link.itm_path_loss_db != null && link.itm_path_loss_db <= 145.0) return 'Weak';
   return 'Unproven';
 }
 
@@ -329,22 +329,98 @@ const TelemetryStatCard: React.FC<{
   </article>
 );
 
-const MAP_CENTER: LatLngExpression = [54.6, -1.2];
+const CARTO_DARK_TILES = 'https://{a-d}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
 
-const FitToNodes: React.FC<{ points: Array<{ lat: number; lon: number }> }> = ({ points }) => {
-  const map = useMap();
+const OwnerMapView: React.FC<{
+  ownerCoord: { lat: number; lon: number } | null;
+  peers: MappedPeer[];
+  allPoints: Array<{ lat: number; lon: number }>;
+}> = ({ ownerCoord, peers, allPoints }) => {
+  const containerRef = React.useRef<HTMLDivElement>(null);
+
   useEffect(() => {
-    if (points.length === 0) return;
-    if (points.length === 1) {
-      map.setView([points[0].lat, points[0].lon], 10, { animate: false });
-      return;
-    }
-    map.fitBounds(
-      points.map((p) => [p.lat, p.lon] as [number, number]),
-      { padding: [24, 24], animate: false },
-    );
-  }, [map, points]);
-  return null;
+    if (!containerRef.current) return;
+
+    const map = new maplibregl.Map({
+      container: containerRef.current,
+      style: {
+        version: 8,
+        sources: { tiles: { type: 'raster', tiles: [CARTO_DARK_TILES], tileSize: 256, maxzoom: 19, attribution: '© OpenStreetMap © CARTO' } },
+        layers: [{ id: 'bg', type: 'raster', source: 'tiles' }],
+      },
+      center: [-1.2, 54.6],
+      zoom: 7,
+      attributionControl: false,
+    });
+
+    // Disable interaction — purely static display
+    map.scrollZoom.disable();
+    map.dragPan.disable();
+    map.boxZoom.disable();
+    map.doubleClickZoom.disable();
+    map.keyboard.disable();
+    map.touchZoomRotate.disable();
+
+    const EMPTY: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: [] };
+
+    const buildNodeFC = (): GeoJSON.FeatureCollection => ({
+      type: 'FeatureCollection',
+      features: [
+        ...(ownerCoord ? [{
+          type: 'Feature' as const,
+          geometry: { type: 'Point' as const, coordinates: [ownerCoord.lon, ownerCoord.lat] },
+          properties: { kind: 'owner' },
+        }] : []),
+        ...peers.map((p) => ({
+          type: 'Feature' as const,
+          geometry: { type: 'Point' as const, coordinates: [p.lon, p.lat] },
+          properties: { kind: 'peer' },
+        })),
+      ],
+    });
+
+    const buildLineFC = (): GeoJSON.FeatureCollection => ({
+      type: 'FeatureCollection',
+      features: ownerCoord ? peers.map((p) => ({
+        type: 'Feature' as const,
+        geometry: { type: 'LineString' as const, coordinates: [[ownerCoord.lon, ownerCoord.lat], [p.lon, p.lat]] },
+        properties: {},
+      })) : [],
+    });
+
+    map.on('load', () => {
+      map.addSource('owner-lines', { type: 'geojson', data: buildLineFC() });
+      map.addSource('owner-nodes', { type: 'geojson', data: buildNodeFC() });
+
+      map.addLayer({ id: 'owner-lines-layer', type: 'line', source: 'owner-lines',
+        paint: { 'line-color': '#00c4ff', 'line-width': 1.5, 'line-opacity': 0.6 } });
+      map.addLayer({ id: 'owner-nodes-layer', type: 'circle', source: 'owner-nodes',
+        paint: {
+          'circle-radius': ['case', ['==', ['get', 'kind'], 'owner'], 8, 6],
+          'circle-color': 'transparent',
+          'circle-stroke-width': 2,
+          'circle-stroke-color': ['case', ['==', ['get', 'kind'], 'owner'], '#00c4ff', '#ffb300'],
+        } });
+
+      if (allPoints.length === 1) {
+        map.setCenter([allPoints[0].lon, allPoints[0].lat]);
+        map.setZoom(10);
+      } else if (allPoints.length > 1) {
+        const bounds = new maplibregl.LngLatBounds();
+        for (const pt of allPoints) bounds.extend([pt.lon, pt.lat]);
+        map.fitBounds(bounds, { padding: 24, animate: false });
+      }
+    });
+
+    return () => {
+      map.remove();
+      void EMPTY; // silence unused warning
+    };
+  // Re-create map whenever data changes (static display map, re-creation is fine)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ownerCoord, peers, allPoints]);
+
+  return <div ref={containerRef} className="owner-map" />;
 };
 
 export const OwnerPortalPage: React.FC = () => {
@@ -637,53 +713,7 @@ export const OwnerPortalPage: React.FC = () => {
                   </div>
                 </div>
                 <div className="owner-map-wrap">
-                  <MapContainer
-                    center={MAP_CENTER}
-                    zoom={7}
-                    className="owner-map"
-                    zoomControl={false}
-                    dragging={false}
-                    scrollWheelZoom={false}
-                    doubleClickZoom={false}
-                    boxZoom={false}
-                    keyboard={false}
-                    touchZoom={false}
-                  >
-                    <TileLayer
-                      attribution='&copy; OpenStreetMap contributors &copy; CARTO'
-                      url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
-                    />
-                    <FitToNodes points={mapPoints} />
-                    {ownerCoord ? (
-                      <CircleMarker center={[ownerCoord.lat, ownerCoord.lon]} radius={8} pathOptions={{ color: '#00c4ff', weight: 2 }}>
-                        <Popup>
-                          <strong>{live?.ownerNode.name ?? `Owner ${nodeRoleLabel(live?.ownerNode.role ?? null).toLowerCase()}`}</strong><br />
-                          {live?.ownerNode.network} · {live?.ownerNode.iata ?? '-'}
-                        </Popup>
-                      </CircleMarker>
-                    ) : null}
-                    {mapPeers.map((peer) => (
-                      <CircleMarker key={peer.node_id} center={[peer.lat, peer.lon]} radius={6} pathOptions={{ color: '#ffb300', weight: 2 }}>
-                        <Popup>
-                          <strong>{peer.name ?? peer.node_id}</strong><br />
-                          {peer.network ?? 'Unknown'} · {peer.iata ?? '-'}<br />
-                          Packets 24h: {peer.packets_24h}
-                        </Popup>
-                      </CircleMarker>
-                    ))}
-                    {ownerCoord
-                      ? mapPeers.map((peer) => (
-                        <Polyline
-                          key={`link-${peer.node_id}`}
-                          positions={[
-                            [ownerCoord.lat, ownerCoord.lon],
-                            [peer.lat, peer.lon],
-                          ]}
-                          pathOptions={{ color: '#00c4ff', weight: 1.5, opacity: 0.6 }}
-                        />
-                      ))
-                      : null}
-                  </MapContainer>
+                  <OwnerMapView ownerCoord={ownerCoord} peers={mapPeers} allPoints={mapPoints} />
                 </div>
               </section>
 

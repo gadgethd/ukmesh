@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import type { AggregatedPacket, MeshNode } from '../hooks/useNodes.js';
+import { useNodeMap, usePackets } from '../hooks/useNodes.js';
+import { useOverlayStore } from '../store/overlayStore.js';
 
 const TYPE_LABELS: Record<number, string> = {
   0:  'REQ',
@@ -15,17 +16,13 @@ const TYPE_LABELS: Record<number, string> = {
   11: 'CTL',
 };
 
-interface Props {
-  packets:        AggregatedPacket[];
-  nodes:          Map<string, MeshNode>;
-  mqttObserverCount?: number;
-  onPacketClick?: (packet: AggregatedPacket) => void;
-  pinnedPacketId?: string | null;
-}
-
 const VISIBLE_ROWS = 8;
 
-export const PacketFeed: React.FC<Props> = React.memo(({ packets, nodes, onPacketClick, pinnedPacketId }) => {
+export const PacketFeed: React.FC = React.memo(() => {
+  const packets = usePackets();
+  const nodes = useNodeMap();
+  const pinnedPacketId = useOverlayStore((state) => state.pinnedPacketId);
+  const togglePinnedPacket = useOverlayStore((state) => state.togglePinnedPacket);
   const visible = useMemo(
     () => packets.filter((p) => p.packetType === 4 || p.packetType === 5).slice(0, VISIBLE_ROWS).reverse(),
     [packets],
@@ -73,10 +70,10 @@ export const PacketFeed: React.FC<Props> = React.memo(({ packets, nodes, onPacke
         <div
           key={p.id}
           className={`packet-item packet-item--clickable${isPinned ? ' packet-item--pinned' : ''}${newestVisibleId === p.id ? ' packet-item--new' : ''}`}
-          onClick={() => onPacketClick?.(p)}
+          onClick={() => togglePinnedPacket(p)}
           role="button"
           tabIndex={0}
-          onKeyDown={(e) => e.key === 'Enter' && onPacketClick?.(p)}
+          onKeyDown={(e) => e.key === 'Enter' && togglePinnedPacket(p)}
         >
           {observerIata && (
             <span className="packet-item__iata">{observerIata}</span>

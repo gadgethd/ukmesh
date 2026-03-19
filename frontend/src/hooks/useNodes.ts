@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useSyncExternalStore } from 'react';
 import {
   createAggregatedPacketFromLive,
   extractPacketSummary,
@@ -21,8 +21,8 @@ export interface MeshNode {
   is_online:      boolean;
   hardware_model?: string;
   public_key?:    string;
-  advert_count?:  number;  // persistent DB count of times this node has advertised
-  elevation_m?:   number;  // terrain elevation ASL from SRTM (set when viewshed computed)
+  advert_count?:  number;
+  elevation_m?:   number;
   is_inferred?:   boolean;
   inferred_prefix?: string;
   inferred_hash_size_bytes?: number;
@@ -44,27 +44,26 @@ export interface LivePacketData {
   direction?:   string;
   summary?:     string;
   payload?:     Record<string, unknown>;
-  path?:        string[];   // relay hop hashes in packet order (1/2/3-byte => 2/4/6 hex chars)
-  advertCount?: number;     // for Advert packets: persistent count from DB
+  path?:        string[];
+  advertCount?: number;
   ts:           number;
 }
 
-/** Deduplicated packet entry shown in the live feed. */
 export interface AggregatedPacket {
-  id:           string;     // stable React key (first seen)
+  id:           string;
   packetHash:   string;
   packetType?:  number;
-  rxNodeId?:    string;     // observer — for node-name fallback
+  rxNodeId?:    string;
   observerIds:  string[];
-  srcNodeId?:   string;     // sender node id (from decoded payload)
+  srcNodeId?:   string;
   summary?:     string;
   hopCount?:    number;
   pathHashSizeBytes?: number;
-  path?:        string[];   // relay hop hashes from first observation
+  path?:        string[];
   rxCount:      number;
   txCount:      number;
-  ts:           number;     // most recent activity
-  advertCount?: number;     // for Advert packets: how many times this node has advertised this session
+  ts:           number;
+  advertCount?: number;
 }
 
 export interface PacketArc {
@@ -76,145 +75,234 @@ export interface PacketArc {
   packetHash: string;
 }
 
+type NodeStoreState = {
+  nodes: Map<string, MeshNode>;
+  packets: AggregatedPacket[];
+  arcs: PacketArc[];
+  activeNodes: Set<string>;
+};
+
+let state: NodeStoreState = {
+  nodes: new Map(),
+  packets: [],
+  arcs: [],
+  activeNodes: new Set(),
+};
+
+const listeners = new Set<() => void>();
+
+function emit(): void {
+  for (const listener of listeners) listener();
+}
+
+function subscribe(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
+function setState(next: NodeStoreState): void {
+  state = next;
+  emit();
+}
+
+function getState(): NodeStoreState {
+  return state;
+}
+
+function handleInitialState(data: { nodes: MeshNode[]; packets: RecentPacketRow[] }) {
+  const nodeMap = new Map<string, MeshNode>();
+  for (const n of data.nodes) nodeMap.set(n.node_id, n);
+  setState({
+    ...state,
+    nodes: nodeMap,
+    packets: mapRecentRows(data.packets),
+  });
+}
+
+function replaceRecentPackets(rows: RecentPacketRow[]) {
+  const mapped = mapRecentRows(rows);
+  setState({
+    ...state,
+    packets: mergePackets(state.packets, mapped),
+  });
+}
+
+function matchesObserverPathHash(observerId: string | undefined, hash: string | undefined): boolean {
+  if (!observerId || !hash) return false;
+  const normalizedHash = hash.trim().toUpperCase();
+  if (!normalizedHash) return false;
+  return observerId.slice(0, normalizedHash.length).toUpperCase() === normalizedHash;
+}
+
+function isObserverSelfEchoLoop(packet: LivePacketData, nodes: Map<string, MeshNode>): boolean {
+  if (!packet.rxNodeId || !packet.path || packet.path.length < 3) return false;
+  const observer = nodes.get(packet.rxNodeId);
+  if (!observer || observer.role !== 2) return false;
+  return matchesObserverPathHash(packet.rxNodeId, packet.path[0]) && matchesObserverPathHash(packet.rxNodeId, packet.path[packet.path.length - 1]);
+}
+
+function handlePacket(packetOrArray: LivePacketData | LivePacketData[]) {
+  const incomingPackets = Array.isArray(packetOrArray) ? packetOrArray : [packetOrArray];
+  if (incomingPackets.length === 0) return;
+
+  let next = state.packets;
+  for (const packet of incomingPackets) {
+    const idx = next.findIndex((p) => p.packetHash === packet.packetHash);
+
+    if (idx >= 0) {
+      const current = next[idx]!;
+      if (packet.rxNodeId && current.observerIds.includes(packet.rxNodeId) && isObserverSelfEchoLoop(packet, state.nodes)) {
+        continue;
+      }
+      const observerIds = packet.rxNodeId
+        ? [packet.rxNodeId, ...current.observerIds.filter((id) => id !== packet.rxNodeId)]
+        : current.observerIds;
+      const candidate: AggregatedPacket = {
+        ...current,
+        packetType: packet.packetType ?? current.packetType,
+        rxNodeId: packet.rxNodeId ?? current.rxNodeId,
+        observerIds,
+        srcNodeId: packet.srcNodeId ?? current.srcNodeId,
+        summary: packet.summary ?? extractPacketSummary(packet.payload) ?? current.summary,
+        hopCount: packet.hopCount ?? current.hopCount,
+        pathHashSizeBytes: packet.pathHashSizeBytes ?? current.pathHashSizeBytes,
+        path: packet.path ?? current.path,
+        advertCount: Math.max(current.advertCount ?? 0, packet.advertCount ?? 0) || undefined,
+        rxCount: current.rxCount + (packet.direction !== 'tx' ? 1 : 0),
+        txCount: current.txCount + (packet.direction === 'tx' ? 1 : 0),
+        ts: packet.ts,
+      };
+      const entry: AggregatedPacket = {
+        ...(packetInfoScore(candidate) >= packetInfoScore(current)
+          ? candidate
+          : mergeAggregatedPacket(current, {
+              ...createAggregatedPacketFromLive(packet),
+              observerIds,
+              rxCount: current.rxCount + (packet.direction !== 'tx' ? 1 : 0),
+              txCount: current.txCount + (packet.direction === 'tx' ? 1 : 0),
+            })),
+        rxCount: current.rxCount + (packet.direction !== 'tx' ? 1 : 0),
+        txCount: current.txCount + (packet.direction === 'tx' ? 1 : 0),
+        ts: packet.ts,
+      };
+      next = next.map((p, i) => i === idx ? entry : p);
+    } else {
+      const entry = createAggregatedPacketFromLive(packet);
+      next = [entry, ...next].slice(0, FEED_MAX_PACKETS);
+    }
+  }
+
+  setState({
+    ...state,
+    packets: next,
+  });
+}
+
+function handleNodeUpdate(data: { nodeId: string; ts: number }) {
+  const existing = state.nodes.get(data.nodeId);
+  const next = new Map(state.nodes);
+  next.set(data.nodeId, {
+    node_id: data.nodeId,
+    ...(existing ?? {}),
+    last_seen: new Date(data.ts).toISOString(),
+    is_online: true,
+  });
+  setState({
+    ...state,
+    nodes: next,
+  });
+}
+
+function handleNodeUpdateBatch(updates: { nodeId: string; ts: number }[]) {
+  if (updates.length === 0) return;
+  const next = new Map(state.nodes);
+  for (const data of updates) {
+    const existing = state.nodes.get(data.nodeId);
+    next.set(data.nodeId, {
+      node_id: data.nodeId,
+      ...(existing ?? {}),
+      last_seen: new Date(data.ts).toISOString(),
+      is_online: true,
+    });
+  }
+  setState({
+    ...state,
+    nodes: next,
+  });
+}
+
+function handleNodeUpsert(node: Partial<MeshNode> & { node_id: string }) {
+  const existing = state.nodes.get(node.node_id) ?? {
+    node_id: node.node_id,
+    last_seen: new Date().toISOString(),
+    is_online: true,
+  };
+  const updates = Object.fromEntries(
+    Object.entries(node).filter(([, value]) => value !== undefined),
+  ) as Partial<MeshNode> & { node_id: string };
+  const next = new Map(state.nodes);
+  next.set(node.node_id, { ...existing, ...updates });
+  setState({
+    ...state,
+    nodes: next,
+  });
+}
+
+function handleNodeUpsertBatch(nodes: (Partial<MeshNode> & { node_id: string })[]) {
+  if (nodes.length === 0) return;
+  const next = new Map(state.nodes);
+  const nowIso = new Date().toISOString();
+  for (const node of nodes) {
+    const existing = state.nodes.get(node.node_id) ?? {
+      node_id: node.node_id,
+      last_seen: nowIso,
+      is_online: true,
+    };
+    const updates = Object.fromEntries(
+      Object.entries(node).filter(([, value]) => value !== undefined),
+    ) as Partial<MeshNode> & { node_id: string };
+    next.set(node.node_id, { ...existing, ...updates });
+  }
+  setState({
+    ...state,
+    nodes: next,
+  });
+}
+
+export const nodeStore = {
+  subscribe,
+  getState,
+  handleInitialState,
+  replaceRecentPackets,
+  handlePacket,
+  handleNodeUpdate,
+  handleNodeUpdateBatch,
+  handleNodeUpsert,
+  handleNodeUpsertBatch,
+};
+
+export function useNodeMap(): Map<string, MeshNode> {
+  return useSyncExternalStore(subscribe, () => state.nodes);
+}
+
+export function usePackets(): AggregatedPacket[] {
+  return useSyncExternalStore(subscribe, () => state.packets);
+}
+
+export function useArcs(): PacketArc[] {
+  return useSyncExternalStore(subscribe, () => state.arcs);
+}
+
+export function useActiveNodes(): Set<string> {
+  return useSyncExternalStore(subscribe, () => state.activeNodes);
+}
+
 export function useNodes() {
-  const [nodes, setNodes]             = useState<Map<string, MeshNode>>(new Map());
-  const [packets, setPackets]         = useState<AggregatedPacket[]>([]);
-  const [arcs]                        = useState<PacketArc[]>([]);
-  const [activeNodes] = useState<Set<string>>(new Set());
-
-  const handleInitialState = useCallback((data: {
-    nodes: MeshNode[];
-    packets: RecentPacketRow[];
-  }) => {
-    const nodeMap = new Map<string, MeshNode>();
-    for (const n of data.nodes) nodeMap.set(n.node_id, n);
-    setNodes(nodeMap);
-    setPackets(mapRecentRows(data.packets));
-  }, []);
-
-  const replaceRecentPackets = useCallback((rows: RecentPacketRow[]) => {
-    const mapped = mapRecentRows(rows);
-    setPackets((prev) => mergePackets(prev, mapped));
-  }, []);
-
-  const handlePacket = useCallback((packetOrArray: LivePacketData | LivePacketData[]) => {
-    const packets = Array.isArray(packetOrArray) ? packetOrArray : [packetOrArray];
-    if (packets.length === 0) return;
-
-    setPackets((prev) => {
-      let next = prev;
-      for (const packet of packets) {
-        const idx = next.findIndex((p) => p.packetHash === packet.packetHash);
-
-        if (idx >= 0) {
-          const current = next[idx]!;
-          const observerIds = packet.rxNodeId
-            ? [packet.rxNodeId, ...current.observerIds.filter((id) => id !== packet.rxNodeId)]
-            : current.observerIds;
-          const candidate: AggregatedPacket = {
-            ...current,
-            packetType: packet.packetType ?? current.packetType,
-            rxNodeId:   packet.rxNodeId ?? current.rxNodeId,
-            observerIds,
-            srcNodeId:  packet.srcNodeId ?? current.srcNodeId,
-            summary:    packet.summary ?? extractPacketSummary(packet.payload) ?? current.summary,
-            hopCount:   packet.hopCount ?? current.hopCount,
-            pathHashSizeBytes: packet.pathHashSizeBytes ?? current.pathHashSizeBytes,
-            path:       packet.path ?? current.path,
-            advertCount: Math.max(current.advertCount ?? 0, packet.advertCount ?? 0) || undefined,
-            rxCount: current.rxCount + (packet.direction !== 'tx' ? 1 : 0),
-            txCount: current.txCount + (packet.direction === 'tx' ? 1 : 0),
-            ts: packet.ts,
-          };
-          const entry: AggregatedPacket = {
-            ...(packetInfoScore(candidate) >= packetInfoScore(current)
-              ? candidate
-              : mergeAggregatedPacket(current, {
-                  ...createAggregatedPacketFromLive(packet),
-                  observerIds,
-                  rxCount: current.rxCount + (packet.direction !== 'tx' ? 1 : 0),
-                  txCount: current.txCount + (packet.direction === 'tx' ? 1 : 0),
-                })),
-            rxCount: current.rxCount + (packet.direction !== 'tx' ? 1 : 0),
-            txCount: current.txCount + (packet.direction === 'tx' ? 1 : 0),
-            ts: packet.ts,
-          };
-          next = next.map((p, i) => i === idx ? entry : p);
-        } else {
-          const entry = createAggregatedPacketFromLive(packet);
-          next = [entry, ...next].slice(0, FEED_MAX_PACKETS);
-        }
-      }
-      return next;
-    });
-
-  }, []);
-
-  const handleNodeUpdate = useCallback((data: { nodeId: string; ts: number }) => {
-    setNodes((prev) => {
-      const existing = prev.get(data.nodeId);
-      const next = new Map(prev);
-      next.set(data.nodeId, {
-        node_id:   data.nodeId,
-        ...(existing ?? {}),
-        last_seen: new Date(data.ts).toISOString(),
-        is_online: true,
-      });
-      return next;
-    });
-  }, []);
-
-  const handleNodeUpdateBatch = useCallback((updates: { nodeId: string; ts: number }[]) => {
-    if (updates.length === 0) return;
-    setNodes((prev) => {
-      const next = new Map(prev);
-      for (const data of updates) {
-        const existing = prev.get(data.nodeId);
-        next.set(data.nodeId, {
-          node_id:   data.nodeId,
-          ...(existing ?? {}),
-          last_seen: new Date(data.ts).toISOString(),
-          is_online: true,
-        });
-      }
-      return next;
-    });
-  }, []);
-
-  const handleNodeUpsert = useCallback((node: Partial<MeshNode> & { node_id: string }) => {
-    setNodes((prev) => {
-      const existing = prev.get(node.node_id) ?? { node_id: node.node_id, last_seen: new Date().toISOString(), is_online: true };
-      const next = new Map(prev);
-      // Filter out undefined values so they don't overwrite existing lat/lon/name etc.
-      const updates = Object.fromEntries(
-        Object.entries(node).filter(([, v]) => v !== undefined)
-      ) as Partial<MeshNode> & { node_id: string };
-      next.set(node.node_id, { ...existing, ...updates });
-      return next;
-    });
-  }, []);
-
-  const handleNodeUpsertBatch = useCallback((nodes: (Partial<MeshNode> & { node_id: string })[]) => {
-    if (nodes.length === 0) return;
-    setNodes((prev) => {
-      const next = new Map(prev);
-      const now = new Date();
-      for (const node of nodes) {
-        const existing = prev.get(node.node_id) ?? { node_id: node.node_id, last_seen: now.toISOString(), is_online: true };
-        const updates = Object.fromEntries(
-          Object.entries(node).filter(([, v]) => v !== undefined)
-        ) as Partial<MeshNode> & { node_id: string };
-        next.set(node.node_id, { ...existing, ...updates });
-      }
-      return next;
-    });
-  }, []);
-
   return {
-    nodes,
-    packets,
-    arcs,
-    activeNodes,
+    nodes: useNodeMap(),
+    packets: usePackets(),
+    arcs: useArcs(),
+    activeNodes: useActiveNodes(),
     handleInitialState,
     replaceRecentPackets,
     handlePacket,

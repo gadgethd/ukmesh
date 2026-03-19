@@ -203,6 +203,7 @@ CREATE INDEX IF NOT EXISTS node_links_b_idx ON node_links(node_b_id);
 ALTER TABLE node_links ADD COLUMN IF NOT EXISTS count_a_to_b  INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE node_links ADD COLUMN IF NOT EXISTS count_b_to_a  INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE node_links ADD COLUMN IF NOT EXISTS force_viable   BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE node_links ADD COLUMN IF NOT EXISTS multibyte_observed_count INTEGER NOT NULL DEFAULT 0;
 
 -- ─── Coverage polygons (one row per node, recalculated on position change) ───
 

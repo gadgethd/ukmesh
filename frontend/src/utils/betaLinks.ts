@@ -1,4 +1,4 @@
-import { MIN_LINK_OBSERVATIONS, type LinkMetrics } from './pathing.js';
+import type { LinkMetrics } from './pathing.js';
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
@@ -30,7 +30,7 @@ export function confirmedLinkConfidence(
     ambiguity: number;
   },
 ): number {
-  const observed = meta?.observed_count ?? MIN_LINK_OBSERVATIONS;
+  const observed = meta?.multibyte_observed_count ?? meta?.observed_count ?? 1;
   const obsBoost = Math.min(0.18, Math.log10(1 + observed) * 0.12);
   const pathLoss = meta?.itm_path_loss_db;
   const plPenalty = pathLoss == null ? 0 : Math.min(0.12, Math.max(0, (pathLoss - 130) / 120));
