@@ -162,39 +162,6 @@ html, body, #root {
   height: 100%;
 }
 
-.tile-loading-badge {
-  position: absolute;
-  bottom: 14px;
-  right: 14px;
-  z-index: 1000;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  background: rgba(15, 15, 20, 0.82);
-  border: 1px solid rgba(34, 211, 238, 0.25);
-  border-radius: 6px;
-  padding: 5px 10px;
-  font-size: 11px;
-  color: var(--text-muted);
-  backdrop-filter: blur(4px);
-  pointer-events: none;
-  white-space: nowrap;
-}
-
-.tile-loading-badge__spinner {
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  border: 1.5px solid rgba(34, 211, 238, 0.3);
-  border-top-color: rgba(34, 211, 238, 0.9);
-  border-radius: 50%;
-  animation: tile-spin 0.7s linear infinite;
-  flex-shrink: 0;
-}
-
-@keyframes tile-spin {
-  to { transform: rotate(360deg); }
-}
 
 .leaflet-container {
   width: 100%;

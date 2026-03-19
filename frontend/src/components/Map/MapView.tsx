@@ -286,13 +286,7 @@ export const MapView = React.memo(({
     };
   }, [map]);
 
-  const [tilePending, setTilePending] = useState(0);
-  const tilePendingRef = useRef(0);
-  const tileHandlers = useMemo(() => ({
-    tileloadstart: () => { tilePendingRef.current += 1; setTilePending(tilePendingRef.current); },
-    tileload:      () => { tilePendingRef.current = Math.max(0, tilePendingRef.current - 1); setTilePending(tilePendingRef.current); },
-    tileerror:     () => { tilePendingRef.current = Math.max(0, tilePendingRef.current - 1); setTilePending(tilePendingRef.current); },
-  }), []);
+  const tileHandlers = useMemo(() => ({}), []);
 
   const [deckViewState, setDeckViewState] = useState<DeckViewState>({
     longitude: DEFAULT_CENTER[1], latitude: DEFAULT_CENTER[0], zoom: DEFAULT_ZOOM, pitch: 0, bearing: 0,
@@ -608,12 +602,6 @@ export const MapView = React.memo(({
   return (
     <div className="map-area">
       <NodeSearch nodes={nodes} map={map} />
-      {gpuRendered && tilePending > 0 && (
-        <div className="tile-loading-badge">
-          <span className="tile-loading-badge__spinner" />
-          {tilePending} tile{tilePending !== 1 ? 's' : ''} rendering
-        </div>
-      )}
       <MapContainer
         ref={setMap}
         center={DEFAULT_CENTER}
