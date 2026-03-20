@@ -9,6 +9,7 @@ import { getWorkerHealthOverview } from '../health/status.js';
 import { resolveRequestNetwork } from '../http/requestScope.js';
 import { getResolveCache, setResolveCache } from '../path-beta/resolveCache.js';
 import { resolvePool } from '../path-beta/resolvePool.js';
+import { isViewshedEligibleCoordinate, queueViewshedJob } from '../queue/publisher.js';
 
 const router = Router();
 const OWNER_COOKIE_NAME = 'meshcore_owner_session';
@@ -1472,6 +1473,61 @@ router.get('/coverage', COVERAGE_LIMITER, async (req, res) => {
   }
 });
 
+router.get('/coverage/:nodeId', COVERAGE_LIMITER, async (req, res) => {
+  try {
+    const nodeId = String(req.params.nodeId ?? '').trim().toUpperCase();
+    if (!/^[0-9A-F]{64}$/.test(nodeId)) {
+      res.status(400).json({ error: 'invalid node id' });
+      return;
+    }
+
+    const existing = await query<{
+      node_id: string;
+      geom: unknown;
+      strength_geoms: unknown;
+      antenna_height_m: number | null;
+      radius_m: number | null;
+      calculated_at: string | null;
+    }>(
+      `SELECT nc.node_id, nc.geom, nc.strength_geoms, nc.antenna_height_m, nc.radius_m, nc.calculated_at::text AS calculated_at
+       FROM node_coverage nc
+       JOIN nodes n ON n.node_id = nc.node_id
+       WHERE nc.node_id = $1
+         AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
+       LIMIT 1`,
+      [nodeId],
+    );
+    if (existing.rows[0]) {
+      res.json({ status: 'ready', coverage: existing.rows[0] });
+      return;
+    }
+
+    const nodeResult = await query<{ lat: number | null; lon: number | null }>(
+      `SELECT lat, lon
+       FROM nodes
+       WHERE node_id = $1
+       LIMIT 1`,
+      [nodeId],
+    );
+    const node = nodeResult.rows[0];
+    if (!node) {
+      res.status(404).json({ error: 'node not found' });
+      return;
+    }
+
+    if (typeof node.lat === 'number' && typeof node.lon === 'number' && isViewshedEligibleCoordinate(node.lat, node.lon)) {
+      queueViewshedJob(nodeId, node.lat, node.lon);
+      res.status(202).json({ status: 'queued' });
+      return;
+    }
+
+    res.status(404).json({ status: 'unavailable' });
+  } catch (err) {
+    console.error('[api] GET /coverage/:nodeId', (err as Error).message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // GET /api/planned-nodes
 router.get('/planned-nodes', async (_req, res) => {
   try {
@@ -1903,7 +1959,7 @@ router.get('/owner/live', async (req, res) => {
            AND (
              nl.force_viable = true
              OR nl.itm_viable = true
-             OR (nl.itm_path_loss_db IS NOT NULL AND nl.itm_path_loss_db <= 145.0)
+             OR (nl.itm_path_loss_db IS NOT NULL AND nl.itm_path_loss_db <= 137.5)
            )
          ORDER BY
            COALESCE(nl.itm_viable, false) DESC,

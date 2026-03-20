@@ -9,7 +9,7 @@ import { AppTopBar } from './components/app/AppTopBar.js';
 import { MobileControls } from './components/app/MobileControls.js';
 import { useWebSocket } from './hooks/useWebSocket.js';
 import { nodeStore, type MeshNode } from './hooks/useNodes.js';
-import { coverageStore, useCoverageLoader } from './hooks/useCoverage.js';
+import { coverageStore } from './hooks/useCoverage.js';
 import { useDashboardStats, type DashboardStats } from './hooks/useDashboardStats.js';
 import { linkStateStore } from './hooks/useLinkState.js';
 import { useAppMessageHandler } from './hooks/useAppMessageHandler.js';
@@ -24,7 +24,6 @@ type PacketHistorySegment = {
 const DEFAULT_FILTERS: Filters = {
   livePackets: true,
   links: false,
-  coverage: false,
   clientNodes: false,
   packetHistory: false,
   betaPaths: false,
@@ -58,16 +57,12 @@ export const App: React.FC = () => {
   const [isPageVisible, setIsPageVisible] = useState(
     () => (typeof document === 'undefined' ? true : document.visibilityState === 'visible'),
   );
-  const clashRestoreRef = useRef<{ coverage: boolean; clientNodes: boolean } | null>(null);
+  const clashRestoreRef = useRef<{ clientNodes: boolean } | null>(null);
   const prevHexClashesRef = useRef<boolean>(DEFAULT_FILTERS.hexClashes);
 
   const networkFilter = site.networkFilter;
   const observerFilter = site.observerId;
 
-  useCoverageLoader(
-    { network: networkFilter, observer: observerFilter },
-    filters.coverage,
-  );
   const stats = useDashboardStats(fetchedStats);
 
   useEffect(() => {
@@ -151,16 +146,16 @@ export const App: React.FC = () => {
     const isHexClashes = filters.hexClashes;
 
     if (!wasHexClashes && isHexClashes) {
-      clashRestoreRef.current = { coverage: filters.coverage, clientNodes: filters.clientNodes };
-      setFilters((current) => ({ ...current, coverage: false, clientNodes: false }));
+      clashRestoreRef.current = { clientNodes: filters.clientNodes };
+      setFilters((current) => ({ ...current, clientNodes: false }));
     } else if (wasHexClashes && !isHexClashes && clashRestoreRef.current) {
       const restore = clashRestoreRef.current;
       clashRestoreRef.current = null;
-      setFilters((current) => ({ ...current, coverage: restore.coverage, clientNodes: restore.clientNodes }));
+      setFilters((current) => ({ ...current, clientNodes: restore.clientNodes }));
     }
 
     prevHexClashesRef.current = isHexClashes;
-  }, [filters.hexClashes, filters.coverage, filters.clientNodes]);
+  }, [filters.hexClashes, filters.clientNodes]);
 
   useEffect(() => {
     const postError = (kind: string, message: string, stack?: string) => {
@@ -232,7 +227,6 @@ export const App: React.FC = () => {
           inferredNodes={inferredNodes}
           inferredActiveNodeIds={inferredActiveNodeIds}
           showLinks={filters.links}
-          showCoverage={filters.coverage}
           showClientNodes={filters.clientNodes}
           showHexClashes={filters.hexClashes}
           maxHexClashHops={filters.hexClashMaxHops}

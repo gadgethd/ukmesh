@@ -162,7 +162,7 @@ function formatPathLoss(value: number | null): string {
 function linkBadge(link: OwnerLiveResponse['linkHealth'][number]): string {
   if (link.force_viable) return 'Forced';
   if (link.itm_viable) return 'Viable';
-  if (link.itm_path_loss_db != null && link.itm_path_loss_db <= 145.0) return 'Weak';
+  if (link.itm_path_loss_db != null && link.itm_path_loss_db <= 137.5) return 'Weak';
   return 'Unproven';
 }
 

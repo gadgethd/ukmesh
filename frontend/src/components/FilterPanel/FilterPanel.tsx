@@ -4,7 +4,6 @@ import { useOverlayStore } from '../../store/overlayStore.js';
 export interface Filters {
   livePackets:       boolean;
   links:             boolean;
-  coverage:          boolean;
   clientNodes:       boolean;
   packetHistory:     boolean;
   betaPaths:         boolean;
@@ -25,9 +24,9 @@ export const LinksLegend: React.FC<{ compact?: boolean; muted?: boolean }> = ({ 
   <div className={`links-legend-inline${compact ? ' links-legend-inline--compact' : ''}${muted ? ' links-legend-inline--muted' : ''}`}>
     <div className="links-legend-inline__title">Links Legend</div>
     <div className="links-legend-inline__grid">
-      <div className="links-legend-inline__row"><span className="links-legend__swatch" style={{ background: '#22c55e' }} /> Good (≤130 dB)</div>
-      <div className="links-legend-inline__row"><span className="links-legend__swatch" style={{ background: '#fbbf24' }} /> Marginal (131-138 dB)</div>
-      <div className="links-legend-inline__row"><span className="links-legend__swatch" style={{ background: '#ef4444' }} /> Weak (&gt;138 dB)</div>
+      <div className="links-legend-inline__row"><span className="links-legend__swatch" style={{ background: '#22c55e' }} /> Good (≤121.5 dB)</div>
+      <div className="links-legend-inline__row"><span className="links-legend__swatch" style={{ background: '#fbbf24' }} /> Marginal (121.5-129.5 dB)</div>
+      <div className="links-legend-inline__row"><span className="links-legend__swatch" style={{ background: '#ef4444' }} /> Weak (&gt;129.5 dB)</div>
       <div className="links-legend-inline__row"><span className="links-legend__swatch" style={{ background: '#d1d5db' }} /> Unknown (no dB yet)</div>
     </div>
   </div>
@@ -39,7 +38,6 @@ export const FILTER_ROWS: Array<{ key: keyof Filters; label: string; color: stri
   { key: 'packetHistory', label: 'Paths',            color: '#00c4ff', hollow: true },
   { key: 'betaPaths',    label: 'Live Path',         color: '#a855f7', hollow: true },
   { key: 'hexClashes',   label: 'Hex Clashes',      color: '#f97316' },
-  { key: 'coverage',     label: 'Coverage',         color: '#00e676' },
   { key: 'clientNodes',  label: 'Companion / Room', color: '#ff9800' },
 ];
 

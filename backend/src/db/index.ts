@@ -579,6 +579,8 @@ export type ViableLinkRow = {
   node_b_id: string;
   observed_count: number;
   multibyte_observed_count: number;
+  neighbor_report_count: number;
+  neighbor_best_snr_db: number | null;
   itm_viable: boolean | null;
   itm_path_loss_db: number | null;
   count_a_to_b: number;
@@ -601,11 +603,21 @@ export async function getViableLinks(network?: string, observer?: string): Promi
          nl.node_b_id,
          nl.observed_count,
          nl.multibyte_observed_count,
+         COALESCE(nr.neighbor_report_count, 0) AS neighbor_report_count,
+         nr.neighbor_best_snr_db,
          nl.itm_viable,
          nl.itm_path_loss_db,
          nl.count_a_to_b,
          nl.count_b_to_a
        FROM node_links nl
+       LEFT JOIN LATERAL (
+         SELECT
+           SUM(sample_count)::int AS neighbor_report_count,
+           MAX(best_snr_db) AS neighbor_best_snr_db
+         FROM node_link_radio_reports rr
+         WHERE rr.node_a_id = nl.node_a_id
+           AND rr.node_b_id = nl.node_b_id
+       ) nr ON TRUE
        WHERE (nl.itm_viable = true OR nl.force_viable = true)
          AND nl.node_a_id IN (SELECT node_id FROM net_nodes)
          AND nl.node_b_id IN (SELECT node_id FROM net_nodes)`,
@@ -623,11 +635,21 @@ export async function getViableLinks(network?: string, observer?: string): Promi
        nl.node_b_id,
        nl.observed_count,
        nl.multibyte_observed_count,
+       COALESCE(nr.neighbor_report_count, 0) AS neighbor_report_count,
+       nr.neighbor_best_snr_db,
        nl.itm_viable,
        nl.itm_path_loss_db,
        nl.count_a_to_b,
        nl.count_b_to_a
      FROM node_links nl
+     LEFT JOIN LATERAL (
+       SELECT
+         SUM(sample_count)::int AS neighbor_report_count,
+         MAX(best_snr_db) AS neighbor_best_snr_db
+       FROM node_link_radio_reports rr
+       WHERE rr.node_a_id = nl.node_a_id
+         AND rr.node_b_id = nl.node_b_id
+     ) nr ON TRUE
      JOIN nodes a ON a.node_id = nl.node_a_id
      JOIN nodes b ON b.node_id = nl.node_b_id
      WHERE (nl.itm_viable = true OR nl.force_viable = true)

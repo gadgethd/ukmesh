@@ -107,9 +107,23 @@ function linkColorPreference(meta: LinkMetrics | undefined): number {
   if (!meta) return -0.08;
   const pathLoss = meta.itm_path_loss_db;
   if (pathLoss == null) return -0.04;
-  if (pathLoss <= 130) return 0.28; // green
-  if (pathLoss <= 138) return 0.14; // yellow/amber
+  if (pathLoss <= 121.5) return 0.28; // green
+  if (pathLoss <= 129.5) return 0.14; // yellow/amber
   return 0.02; // red
+}
+
+function radioNeighborPreference(meta: LinkMetrics | undefined): number {
+  if (!meta) return 0;
+  const reports = Number(meta.neighbor_report_count ?? 0);
+  const snr = meta.neighbor_best_snr_db;
+  if (reports <= 0 || snr == null || !Number.isFinite(snr)) return 0;
+  const snrScore = snr >= 8 ? 1.0
+    : snr >= 2 ? 0.62
+      : snr >= 0 ? 0.40
+        : snr >= -4 ? 0.20
+          : 0.08;
+  const reportScore = Math.min(1, Math.log2(1 + reports) / 4);
+  return 0.10 + snrScore * 0.18 + reportScore * 0.08;
 }
 
 function confirmedLinkConfidence(
@@ -125,15 +139,13 @@ function confirmedLinkConfidence(
   let base: number;
   if (pathLoss == null) {
     base = observed >= 60 ? 0.68 : observed >= 30 ? 0.56 : 0.34;
-  } else if (pathLoss <= 130) {
+  } else if (pathLoss <= 121.5) {
     base = 0.95;
-  } else if (pathLoss <= 134) {
+  } else if (pathLoss <= 129.5) {
     base = 0.9;
-  } else if (pathLoss <= 138) {
+  } else if (pathLoss <= 137.5) {
     base = 0.84;
-  } else if (pathLoss <= 142) {
-    base = 0.78;
-  } else if (pathLoss <= 145) {
+  } else if (pathLoss <= 140) {
     base = 0.7;
   } else {
     base = 0.56;
@@ -151,7 +163,8 @@ function confirmedLinkConfidence(
     + Number(prior?.motif ?? 0)
     + Number(prior?.edge ?? 0)
     + Number(prior?.ambiguity ?? 0)
-    + linkColorPreference(meta);
+    + linkColorPreference(meta)
+    + radioNeighborPreference(meta);
   return clamp(confidence + priorBoost, 0, 1);
 }
 
@@ -184,16 +197,18 @@ function strongConfirmedFloor(meta: LinkMetrics | undefined): number {
   const observed = meta.observed_count ?? 0;
   const pathLoss = meta.itm_path_loss_db;
   if (pathLoss == null) return 0;
-  if (pathLoss <= 130) {
-    if (observed >= 120) return 0.95;
-    if (observed >= 70) return 0.90;
-    if (observed >= 35) return 0.84;
+  const radioBoost = radioNeighborPreference(meta);
+  if (pathLoss <= 121.5) {
+    if (observed >= 120) return Math.min(0.99, 0.95 + radioBoost * 0.25);
+    if (observed >= 70) return Math.min(0.98, 0.90 + radioBoost * 0.22);
+    if (observed >= 35) return Math.min(0.96, 0.84 + radioBoost * 0.18);
   }
-  if (pathLoss <= 145) {
-    if (observed >= 120) return 0.86;
-    if (observed >= 70) return 0.80;
-    if (observed >= 35) return 0.72;
+  if (pathLoss <= 129.5) {
+    if (observed >= 120) return Math.min(0.95, 0.86 + radioBoost * 0.22);
+    if (observed >= 70) return Math.min(0.90, 0.80 + radioBoost * 0.20);
+    if (observed >= 35) return Math.min(0.84, 0.72 + radioBoost * 0.18);
   }
+  if (radioBoost > 0.18 && pathLoss <= 137.5) return Math.min(0.78, 0.52 + radioBoost * 0.4);
   if (observed >= 120) return 0.68;
   if (observed >= 70) return 0.62;
   if (observed >= 35) return 0.56;
@@ -221,17 +236,18 @@ function edgeMetricConfidence(fromId: string, toId: string, linkMetrics: Map<str
   const pathLoss = meta.itm_path_loss_db;
   let base: number;
   if (pathLoss == null) base = observed >= 60 ? 0.72 : observed >= 30 ? 0.62 : 0.45;
-  else if (observed >= 120 && pathLoss <= 134) base = 0.86;
-  else if (observed >= 70 && pathLoss <= 138) base = 0.80;
-  else if (observed >= 35 && pathLoss <= 142) base = 0.74;
-  else if (pathLoss <= 145) base = Math.min(0.72, 0.48 + Math.log10(1 + observed) * 0.10);
+  else if (observed >= 120 && pathLoss <= 121.5) base = 0.86;
+  else if (observed >= 70 && pathLoss <= 129.5) base = 0.80;
+  else if (observed >= 35 && pathLoss <= 137.5) base = 0.74;
+  else if (pathLoss <= 137.5) base = Math.min(0.72, 0.48 + Math.log10(1 + observed) * 0.10);
   else base = Math.min(0.58, 0.40 + Math.log10(1 + observed) * 0.08);
 
-  if (observed >= 120) return Math.max(base + linkColorPreference(meta), 0.82);
-  if (observed >= 70) return Math.max(base + linkColorPreference(meta), 0.74);
-  if (observed >= 35) return Math.max(base + linkColorPreference(meta), 0.62);
-  if (observed >= 20) return Math.max(base + linkColorPreference(meta), 0.56);
-  return clamp(base + linkColorPreference(meta), 0, 1);
+  const radioBoost = radioNeighborPreference(meta);
+  if (observed >= 120) return Math.max(base + linkColorPreference(meta) + radioBoost, 0.82);
+  if (observed >= 70) return Math.max(base + linkColorPreference(meta) + radioBoost, 0.74);
+  if (observed >= 35) return Math.max(base + linkColorPreference(meta) + radioBoost, 0.62);
+  if (observed >= 20) return Math.max(base + linkColorPreference(meta) + radioBoost, 0.56);
+  return clamp(base + linkColorPreference(meta) + radioBoost, 0, 1);
 }
 
 function purpleEdgeAllowed(

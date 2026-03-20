@@ -83,6 +83,7 @@ interface NodeFeatureProps {
   role: number;
   is_online: boolean;
   is_stale: boolean;
+  is_link_only_stale: boolean;
   is_prohibited: boolean;
   is_inferred: boolean;
   hex_clash_state: 'offender' | 'relay' | null;
@@ -98,7 +99,6 @@ export interface MapLibreMapProps {
   inferredNodes: MeshNode[];
   inferredActiveNodeIds: Set<string>;
   showLinks: boolean;
-  showCoverage: boolean;
   showClientNodes: boolean;
   showHexClashes: boolean;
   maxHexClashHops: number;
@@ -136,6 +136,8 @@ function buildNodeGeoJSON(
   inferredNodes: MeshNode[],
   hiddenCoordMask: Map<string, HiddenMaskGeometry>,
   showClientNodes: boolean,
+  showLinks: boolean,
+  viableLinkNodeIds: Set<string>,
   clashOffenderIds: Set<string>,
   clashRelayIds: Set<string>,
   showHexClashes: boolean,
@@ -147,7 +149,8 @@ function buildNodeGeoJSON(
   const addNode = (node: MeshNode, isInferred: boolean) => {
     if (!hasCoords(node)) return;
     const ageMs = now - new Date(node.last_seen).getTime();
-    if (ageMs > FOURTEEN_DAYS_MS) return;
+    const isLinkOnlyStale = ageMs > FOURTEEN_DAYS_MS && showLinks && viableLinkNodeIds.has(node.node_id.toLowerCase());
+    if (ageMs > FOURTEEN_DAYS_MS && !isLinkOnlyStale) return;
 
     const isClientNode = node.role === 1 || node.role === 3;
     if (isClientNode && !showClientNodes) return;
@@ -179,6 +182,7 @@ function buildNodeGeoJSON(
       role: node.role ?? 2,
       is_online: node.is_online,
       is_stale: isStale,
+      is_link_only_stale: isLinkOnlyStale,
       is_prohibited: isProhibited,
       is_inferred: isInferred,
       hex_clash_state: hexClashState,
@@ -220,11 +224,26 @@ function buildCoverageGeoJSON(coverage: NodeCoverage[]): GeoJSON.FeatureCollecti
   if (coverage.length === 0) return EMPTY_FC;
   const features: GeoJSON.Feature[] = [];
   for (const c of coverage) {
+    const strengthGeoms = c.strength_geoms;
+    if (strengthGeoms) {
+      for (const band of ['red', 'amber', 'green'] as const) {
+        const geom = strengthGeoms[band];
+        if (!geom) continue;
+        if (geom.type === 'Polygon' || geom.type === 'MultiPolygon') {
+          features.push({
+            type: 'Feature',
+            geometry: geom as GeoJSON.Geometry,
+            properties: { node_id: c.node_id, band },
+          });
+        }
+      }
+      continue;
+    }
     if (c.geom.type === 'Polygon' || c.geom.type === 'MultiPolygon') {
       features.push({
         type: 'Feature',
         geometry: c.geom as GeoJSON.Geometry,
-        properties: { node_id: c.node_id },
+        properties: { node_id: c.node_id, band: 'green' },
       });
     }
   }
@@ -272,9 +291,9 @@ function buildLinksGeoJSON(
     const distance = distKm(a, b);
     const color = pathLoss == null
       ? '#d1d5db'
-      : pathLoss <= 130
+      : pathLoss <= 121.5
         ? '#22c55e'
-        : pathLoss <= 138
+        : pathLoss <= 129.5
           ? '#fbbf24'
           : '#ef4444';
 
@@ -288,8 +307,8 @@ function buildLinksGeoJSON(
       properties: {
         key: edgeId,
         color,
-        width: pathLoss == null ? 1.2 : pathLoss <= 130 ? 2.2 : pathLoss <= 138 ? 1.8 : 1.4,
-        opacity: pathLoss == null ? 0.38 : pathLoss <= 130 ? 0.72 : pathLoss <= 138 ? 0.62 : 0.5,
+        width: pathLoss == null ? 1.2 : pathLoss <= 121.5 ? 2.2 : pathLoss <= 129.5 ? 1.8 : 1.4,
+        opacity: pathLoss == null ? 0.38 : pathLoss <= 121.5 ? 0.72 : pathLoss <= 129.5 ? 0.62 : 0.5,
       },
     });
   }
@@ -488,9 +507,24 @@ const NodePopupContent: React.FC<{
   lat: number;
   lon: number;
   links: NodeLink[] | null;
+  coverageActive: boolean;
+  coverageLoading: boolean;
+  coverageMessage: string | null;
+  onToggleCoverage: (nodeId: string) => void;
   onFocusSamePrefix: (nodeId: string) => void;
   samePrefixCount: number;
-}> = ({ props, lat, lon, links, onFocusSamePrefix, samePrefixCount }) => {
+}> = ({
+  props,
+  lat,
+  lon,
+  links,
+  coverageActive,
+  coverageLoading,
+  coverageMessage,
+  onToggleCoverage,
+  onFocusSamePrefix,
+  samePrefixCount,
+}) => {
   const isRepeater = props.role === undefined || props.role === 2;
   const ageMs = Date.now() - new Date(props.last_seen).getTime();
   const isStale = ageMs > SEVEN_DAYS_MS;
@@ -552,6 +586,24 @@ const NodePopupContent: React.FC<{
           <span>{Math.round(props.elevation_m)} m ASL</span>
         </div>
       )}
+      {isRepeater && !props.is_prohibited && (
+        <div className="node-popup__row" style={{ marginTop: 6 }}>
+          <button
+            type="button"
+            className={`node-popup__coverage-btn${coverageActive ? ' node-popup__coverage-btn--active' : ''}`}
+            onClick={() => onToggleCoverage(props.node_id)}
+            disabled={coverageLoading}
+          >
+            {coverageLoading ? 'Loading coverage…' : coverageActive ? 'Hide coverage' : 'Show coverage'}
+          </button>
+        </div>
+      )}
+      {coverageMessage && (
+        <div className="node-popup__row">
+          <span>Coverage</span>
+          <span>{coverageMessage}</span>
+        </div>
+      )}
       {isRepeater && samePrefixCount > 1 && (
         <div className="node-popup__row" style={{ marginTop: 6 }}>
           <button
@@ -597,7 +649,6 @@ export const MapLibreMap: React.FC<MapLibreMapProps> = ({
   inferredNodes,
   inferredActiveNodeIds: _inferredActiveNodeIds,
   showLinks,
-  showCoverage,
   showClientNodes,
   showHexClashes,
   maxHexClashHops,
@@ -610,11 +661,11 @@ export const MapLibreMap: React.FC<MapLibreMapProps> = ({
   const popupContainerRef = useRef<HTMLDivElement>(document.createElement('div'));
   const nodesRef = useRef(nodeStore.getState().nodes);
   const coverageRef = useRef(coverageStore.getState().coverage);
+  const selectedCoverageRef = useRef<NodeCoverage | null>(null);
   const viablePairsRef = useRef(linkStateStore.getState().viablePairsArr);
   const linkMetricsRef = useRef(linkStateStore.getState().linkMetrics);
   const inferredNodesRef = useRef(inferredNodes);
   const showLinksRef = useRef(showLinks);
-  const showCoverageRef = useRef(showCoverage);
   const showClientNodesRef = useRef(showClientNodes);
   const showHexClashesRef = useRef(showHexClashes);
   const maxHexClashHopsRef = useRef(maxHexClashHops);
@@ -625,6 +676,9 @@ export const MapLibreMap: React.FC<MapLibreMapProps> = ({
 
   const [popupState, setPopupState] = useState<PopupState | null>(null);
   const [popupLinks, setPopupLinks] = useState<NodeLink[] | null>(null);
+  const [selectedCoverageNodeId, setSelectedCoverageNodeId] = useState<string | null>(null);
+  const [coverageLoadingNodeId, setCoverageLoadingNodeId] = useState<string | null>(null);
+  const [coverageMessage, setCoverageMessage] = useState<string | null>(null);
   const [focusedPrefix, setFocusedPrefix] = useState<string | null>(null);
   const [focusedNodeId, setFocusedNodeId] = useState<string | null>(null);
   const [focusedPrefixNodeIds, setFocusedPrefixNodeIds] = useState<Set<string> | null>(null);
@@ -667,6 +721,8 @@ export const MapLibreMap: React.FC<MapLibreMapProps> = ({
       inferredNodesRef.current,
       currentHiddenCoordMask,
       showClientNodesRef.current,
+      showLinksRef.current,
+      new Set(viablePairsArr.flatMap(([aId, bId]) => [aId.toLowerCase(), bId.toLowerCase()])),
       clash.clashOffenderNodeIds,
       clash.clashRelayIds,
       clash.clashModeActive,
@@ -683,12 +739,12 @@ export const MapLibreMap: React.FC<MapLibreMapProps> = ({
     (mapRef.current.getSource('viable-links') as maplibregl.GeoJSONSource | undefined)?.setData(linksGeoJSON);
     mapRef.current.setLayoutProperty('viable-links-layer', 'visibility', showLinksRef.current ? 'visible' : 'none');
 
-    const coverageGeoJSON = showCoverageRef.current && !clash.clashModeActive
-      ? buildCoverageGeoJSON(coverage)
+    const coverageGeoJSON = selectedCoverageRef.current && !clash.clashModeActive
+      ? buildCoverageGeoJSON([selectedCoverageRef.current])
       : EMPTY_FC;
     (mapRef.current.getSource('coverage') as maplibregl.GeoJSONSource | undefined)?.setData(coverageGeoJSON);
     mapRef.current.setLayoutProperty('coverage-fill', 'visibility',
-      showCoverageRef.current && !clash.clashModeActive ? 'visible' : 'none');
+      selectedCoverageRef.current && !clash.clashModeActive ? 'visible' : 'none');
 
     const clashGeoJSON = clash.clashModeActive && clash.clashPathLines.length > 0
       ? buildClashLinesGeoJSON(clash.clashPathLines)
@@ -766,7 +822,7 @@ export const MapLibreMap: React.FC<MapLibreMapProps> = ({
             'case',
             ['==', ['get', 'hex_clash_state'], 'offender'], '#ef4444',
             ['==', ['get', 'hex_clash_state'], 'relay'], '#22c55e',
-            ['get', 'is_prohibited'], '#f59e0b',
+            ['get', 'is_link_only_stale'], '#4b5563',
             ['get', 'is_inferred'], '#7dd3fc',
             ['get', 'is_stale'], '#6b7280',
             ['!', ['get', 'is_online']], '#6b7280',
@@ -777,17 +833,14 @@ export const MapLibreMap: React.FC<MapLibreMapProps> = ({
           ],
           'circle-opacity': [
             'case',
+            ['get', 'is_link_only_stale'], 0.22,
             ['get', 'is_stale'], 0.4,
             ['!', ['get', 'is_online']], 0.4,
             ['get', 'is_inferred'], 0.7,
             1.0,
           ],
-          'circle-stroke-width': [
-            'case',
-            ['get', 'is_prohibited'], 1.4,
-            0,
-          ],
-          'circle-stroke-color': '#f59e0b',
+          'circle-stroke-width': 0,
+          'circle-stroke-color': '#00c4ff',
           'circle-stroke-opacity': 0.7,
         },
       });
@@ -832,8 +885,20 @@ export const MapLibreMap: React.FC<MapLibreMapProps> = ({
         source: 'coverage',
         layout: { visibility: 'none' },
         paint: {
-          'fill-color': '#22c55e',
-          'fill-opacity': 0.18,
+          'fill-color': [
+            'match', ['get', 'band'],
+            'green', '#22c55e',
+            'amber', '#fbbf24',
+            'red', '#ef4444',
+            '#22c55e',
+          ],
+          'fill-opacity': [
+            'match', ['get', 'band'],
+            'green', 0.22,
+            'amber', 0.16,
+            'red', 0.10,
+            0.18,
+          ],
         },
       });
 
@@ -896,11 +961,6 @@ export const MapLibreMap: React.FC<MapLibreMapProps> = ({
   }, [showLinks, scheduleRefresh]);
 
   useEffect(() => {
-    showCoverageRef.current = showCoverage;
-    scheduleRefresh();
-  }, [showCoverage, scheduleRefresh]);
-
-  useEffect(() => {
     showClientNodesRef.current = showClientNodes;
     scheduleRefresh();
   }, [showClientNodes, scheduleRefresh]);
@@ -952,6 +1012,43 @@ export const MapLibreMap: React.FC<MapLibreMapProps> = ({
   useEffect(() => {
     scheduleRefresh();
   }, [focusedNodeId, focusedPrefixNodeIds, scheduleRefresh]);
+
+  const toggleCoverageForNode = useCallback((nodeId: string) => {
+    if (coverageLoadingNodeId === nodeId) return;
+    if (selectedCoverageNodeId === nodeId) {
+      selectedCoverageRef.current = null;
+      setSelectedCoverageNodeId(null);
+      setCoverageMessage(null);
+      scheduleRefresh();
+      return;
+    }
+
+    setCoverageLoadingNodeId(nodeId);
+    setCoverageMessage(null);
+    void fetch(`/api/coverage/${encodeURIComponent(nodeId)}`, { cache: 'no-store' })
+      .then(async (response) => {
+        const payload = await response.json().catch(() => ({})) as { status?: string; coverage?: NodeCoverage };
+        if (response.status === 202 || payload.status === 'queued') {
+          selectedCoverageRef.current = null;
+          setSelectedCoverageNodeId(null);
+          setCoverageMessage('Coverage is being calculated.');
+          return;
+        }
+        if (!response.ok || !payload.coverage) throw new Error('coverage unavailable');
+        selectedCoverageRef.current = payload.coverage;
+        setSelectedCoverageNodeId(nodeId);
+        setCoverageMessage(null);
+      })
+      .catch(() => {
+        selectedCoverageRef.current = null;
+        setSelectedCoverageNodeId(null);
+        setCoverageMessage('Coverage unavailable.');
+      })
+      .finally(() => {
+        setCoverageLoadingNodeId(null);
+        scheduleRefresh();
+      });
+  }, [coverageLoadingNodeId, selectedCoverageNodeId, scheduleRefresh]);
 
   // -- Popup management ------------------------------------------------------
 
@@ -1046,6 +1143,10 @@ export const MapLibreMap: React.FC<MapLibreMapProps> = ({
           lat={(popupNodeProps as NodeFeatureProps & { _maskedLat: number })._maskedLat}
           lon={(popupNodeProps as NodeFeatureProps & { _maskedLon: number })._maskedLon}
           links={popupLinks}
+          coverageActive={selectedCoverageNodeId === popupNodeProps.node_id}
+          coverageLoading={coverageLoadingNodeId === popupNodeProps.node_id}
+          coverageMessage={popupState?.nodeId === popupNodeProps.node_id ? coverageMessage : null}
+          onToggleCoverage={toggleCoverageForNode}
           onFocusSamePrefix={handleFocusSamePrefix}
           samePrefixCount={popupSamePrefixCount}
         />,

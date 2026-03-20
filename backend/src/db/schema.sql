@@ -100,41 +100,13 @@ ALTER TABLE packets ADD COLUMN IF NOT EXISTS path_hashes TEXT[];
 ALTER TABLE packets ADD COLUMN IF NOT EXISTS path_hash_size_bytes INTEGER;
 ALTER TABLE packets ADD COLUMN IF NOT EXISTS network      TEXT NOT NULL DEFAULT 'teesside';
 
-UPDATE packets
-SET path_hash_size_bytes = CASE
-  WHEN path_hashes IS NULL OR array_length(path_hashes, 1) IS NULL OR array_length(path_hashes, 1) = 0 THEN NULL
-  WHEN length(path_hashes[1]) IN (2, 4, 6) THEN length(path_hashes[1]) / 2
-  ELSE NULL
-END
-WHERE path_hash_size_bytes IS DISTINCT FROM CASE
-  WHEN path_hashes IS NULL OR array_length(path_hashes, 1) IS NULL OR array_length(path_hashes, 1) = 0 THEN NULL
-  WHEN length(path_hashes[1]) IN (2, 4, 6) THEN length(path_hashes[1]) / 2
-  ELSE NULL
-END;
-
--- Reclassify legacy rows so Teesside is observer-IATA scoped (MME),
--- with all other observer IATA values treated as the global/ukmesh side.
-UPDATE packets
-SET network = CASE
-  WHEN UPPER(split_part(topic, '/', 2)) = 'MME' THEN 'teesside'
-  ELSE 'ukmesh'
-END
-WHERE topic IS NOT NULL
-  AND topic <> ''
-  AND network <> CASE
-    WHEN UPPER(split_part(topic, '/', 2)) = 'MME' THEN 'teesside'
-    ELSE 'ukmesh'
-  END;
-
-UPDATE nodes
-SET network = CASE
-  WHEN UPPER(COALESCE(iata, '')) = 'MME' THEN 'teesside'
-  ELSE 'ukmesh'
-END
-WHERE network <> CASE
-  WHEN UPPER(COALESCE(iata, '')) = 'MME' THEN 'teesside'
-  ELSE 'ukmesh'
-END;
+-- Legacy whole-table backfills were previously run here on every app startup:
+--   * packets.path_hash_size_bytes
+--   * packets.network
+--   * nodes.network
+-- On a large production database they can exceed the app statement timeout and
+-- prevent the backend from booting at all. Leave startup schema init idempotent
+-- and cheap; run any full historical backfill as a one-off maintenance task.
 
 -- Indexes for common query patterns
 CREATE INDEX IF NOT EXISTS packets_hash_idx   ON packets (packet_hash, time DESC);
@@ -204,6 +176,22 @@ ALTER TABLE node_links ADD COLUMN IF NOT EXISTS count_a_to_b  INTEGER NOT NULL D
 ALTER TABLE node_links ADD COLUMN IF NOT EXISTS count_b_to_a  INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE node_links ADD COLUMN IF NOT EXISTS force_viable   BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE node_links ADD COLUMN IF NOT EXISTS multibyte_observed_count INTEGER NOT NULL DEFAULT 0;
+
+CREATE TABLE IF NOT EXISTS node_link_radio_reports (
+  node_a_id         TEXT        NOT NULL,
+  node_b_id         TEXT        NOT NULL,
+  reporter_node_id  TEXT        NOT NULL,
+  peer_node_id      TEXT        NOT NULL,
+  last_snr_db       DOUBLE PRECISION,
+  best_snr_db       DOUBLE PRECISION,
+  last_seen         TIMESTAMPTZ NOT NULL,
+  sample_count      INTEGER     NOT NULL DEFAULT 1,
+  PRIMARY KEY (node_a_id, node_b_id, reporter_node_id)
+);
+CREATE INDEX IF NOT EXISTS node_link_radio_reports_pair_idx
+  ON node_link_radio_reports (node_a_id, node_b_id);
+CREATE INDEX IF NOT EXISTS node_link_radio_reports_last_seen_idx
+  ON node_link_radio_reports (last_seen DESC);
 
 -- ─── Coverage polygons (one row per node, recalculated on position change) ───
 

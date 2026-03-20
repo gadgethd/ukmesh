@@ -5,6 +5,7 @@ viewshed, clips to the UK mainland, stores the result polygon in
 node_coverage, then notifies the frontend.
 """
 
+import argparse
 import gzip
 import json
 import logging
@@ -14,6 +15,7 @@ import os
 import subprocess
 import tempfile
 import time
+import datetime as dt
 from pathlib import Path
 from typing import Optional
 
@@ -40,6 +42,7 @@ log = logging.getLogger(__name__)
 SRTM_DIR     = Path(os.environ.get('SRTM_DIR', '/data/srtm'))
 REDIS_URL    = os.environ.get('REDIS_URL', 'redis://redis:6379')
 DATABASE_URL = os.environ.get('DATABASE_URL')
+RADIO_BOT_URL = os.environ.get('RADIO_BOT_URL', 'http://meshcore-radio-bot:3011')
 WORKER_MODE  = os.environ.get('WORKER_MODE', 'all').lower()
 COVERAGE_MODEL = os.environ.get('COVERAGE_MODEL', 'rf_radial_100m').lower()
 DB_APPLICATION_NAME = os.environ.get(
@@ -79,14 +82,16 @@ SUPPORT_PENALTY_PER_KM_DB = float(os.environ.get('COVERAGE_SUPPORT_PENALTY_PER_K
 SUPPORT_MAX_PENALTY_DB = float(os.environ.get('COVERAGE_SUPPORT_MAX_PENALTY_DB', '14'))
 SUPPORT_PROJECTION_LAT = float(os.environ.get('COVERAGE_SUPPORT_PROJECTION_LAT', '54.0'))
 
-DEFAULT_USABLE_PATH_LOSS_DB = float(os.environ.get('DEFAULT_USABLE_PATH_LOSS_DB', '145'))
+DEFAULT_USABLE_PATH_LOSS_DB = float(os.environ.get('DEFAULT_USABLE_PATH_LOSS_DB', '137.5'))
 CALIBRATION_REFRESH_S = int(os.environ.get('COVERAGE_CALIBRATION_REFRESH_S', '900'))
 CALIBRATION_MIN_LINKS = int(os.environ.get('COVERAGE_CALIBRATION_MIN_LINKS', '24'))
 CALIBRATION_MIN_OBSERVED_COUNT = int(os.environ.get('COVERAGE_CALIBRATION_MIN_OBSERVED_COUNT', '3'))
 CALIBRATION_MAX_THRESHOLD_BOOST_DB = float(os.environ.get('COVERAGE_CALIBRATION_MAX_THRESHOLD_BOOST_DB', '2'))
 CALIBRATION_PERCENTILE = float(os.environ.get('COVERAGE_CALIBRATION_PERCENTILE', '0.9'))
 CALIBRATION_EXTRA_MARGIN_DB = float(os.environ.get('COVERAGE_CALIBRATION_EXTRA_MARGIN_DB', '0.5'))
-LINK_LOS_MAX_V = float(os.environ.get('LINK_LOS_MAX_V', '-0.78'))
+LINK_LOS_MAX_V = float(os.environ.get('LINK_LOS_MAX_V', '1.12'))
+RADIO_NEIGHBOR_REFRESH_S = int(os.environ.get('RADIO_NEIGHBOR_REFRESH_S', '300'))
+RADIO_NEIGHBOR_MAX_AGE_HOURS = float(os.environ.get('RADIO_NEIGHBOR_MAX_AGE_HOURS', '72'))
 
 # Radio horizon parameters
 K_FACTOR  = 4 / 3        # effective Earth radius multiplier (standard troposphere)
@@ -106,6 +111,10 @@ RF_CALIBRATION = {
         'red': DEFAULT_USABLE_PATH_LOSS_DB,
     },
     'samples': 0,
+    'updated_at': 0.0,
+}
+
+RADIO_NEIGHBOR_SYNC = {
     'updated_at': 0.0,
 }
 
@@ -137,6 +146,19 @@ def current_usable_path_loss_db() -> float:
 
 def current_signal_thresholds_db() -> dict[str, float]:
     return dict(RF_CALIBRATION['signal_thresholds_db'])
+
+
+def radio_snr_band(snr_db: Optional[float]) -> str:
+    if snr_db is None or not math.isfinite(float(snr_db)):
+        return 'unknown'
+    snr = float(snr_db)
+    if snr >= 8.0:
+        return 'strong'
+    if snr >= 2.0:
+        return 'medium'
+    if snr >= 0.0:
+        return 'weak'
+    return 'poor'
 
 
 def weighted_quantile(values: np.ndarray, weights: np.ndarray, q: float) -> float:
@@ -180,12 +202,21 @@ def refresh_rf_calibration(db, force: bool = False) -> None:
     with db.cursor() as cur:
         cur.execute(
             '''
-            SELECT itm_path_loss_db, multibyte_observed_count
-            FROM node_links
-            WHERE itm_path_loss_db IS NOT NULL
-              AND multibyte_observed_count > 0
-              AND force_viable = false
-            '''
+            SELECT
+              nl.itm_path_loss_db,
+              COALESCE(SUM(rr.sample_count), 0) AS neighbor_report_count,
+              MAX(rr.best_snr_db) AS neighbor_best_snr_db
+            FROM node_links nl
+            LEFT JOIN node_link_radio_reports rr
+              ON rr.node_a_id = nl.node_a_id
+             AND rr.node_b_id = nl.node_b_id
+             AND rr.last_seen > NOW() - (%s * INTERVAL '1 hour')
+            WHERE nl.itm_path_loss_db IS NOT NULL
+              AND nl.force_viable = false
+            GROUP BY nl.node_a_id, nl.node_b_id, nl.itm_path_loss_db
+            HAVING COALESCE(SUM(rr.sample_count), 0) > 0
+            ''',
+            (RADIO_NEIGHBOR_MAX_AGE_HOURS,),
         )
         rows = cur.fetchall()
 
@@ -205,26 +236,151 @@ def refresh_rf_calibration(db, force: bool = False) -> None:
         return
 
     losses = np.asarray([float(row[0]) for row in rows], dtype=np.float64)
-    weights = np.asarray([min(16.0, max(1.0, math.sqrt(float(row[1])))) for row in rows], dtype=np.float64)
+    counts = np.asarray([max(1.0, float(row[1])) for row in rows], dtype=np.float64)
+    snrs = np.asarray([float(row[2]) if row[2] is not None else -6.0 for row in rows], dtype=np.float64)
+    snr_weights = np.asarray([
+        1.75 if radio_snr_band(snr) == 'strong'
+        else 1.35 if radio_snr_band(snr) == 'medium'
+        else 1.10 if radio_snr_band(snr) == 'weak'
+        else 0.75
+        for snr in snrs
+    ], dtype=np.float64)
+    weights = np.clip(np.sqrt(counts) * snr_weights, 0.5, 24.0)
+
+    green_threshold = weighted_quantile(losses, weights, 0.35)
+    amber_threshold = weighted_quantile(losses, weights, 0.65)
     observed_tail = weighted_quantile(losses, weights, CALIBRATION_PERCENTILE)
-    usable_threshold = max(DEFAULT_USABLE_PATH_LOSS_DB, observed_tail + CALIBRATION_EXTRA_MARGIN_DB)
+    usable_threshold = observed_tail + CALIBRATION_EXTRA_MARGIN_DB
     usable_threshold = min(DEFAULT_USABLE_PATH_LOSS_DB + CALIBRATION_MAX_THRESHOLD_BOOST_DB, usable_threshold)
+    usable_threshold = max(110.0, usable_threshold)
+    green_threshold = min(green_threshold, usable_threshold)
+    amber_threshold = min(max(green_threshold, amber_threshold), usable_threshold)
 
     RF_CALIBRATION['usable_path_loss_db'] = round(float(usable_threshold), 2)
     RF_CALIBRATION['signal_thresholds_db'] = {
-        'green': round(max(116.0, usable_threshold - 16.0), 2),
-        'amber': round(max(124.0, usable_threshold - 8.0), 2),
+        'green': round(float(green_threshold), 2),
+        'amber': round(float(amber_threshold), 2),
         'red': round(float(usable_threshold), 2),
     }
     RF_CALIBRATION['samples'] = len(rows)
     RF_CALIBRATION['updated_at'] = now
     log.info(
         'RF calibration: '
-        f'samples={len(rows)}, p{int(CALIBRATION_PERCENTILE * 100)}={observed_tail:.1f} dB, '
+        f'samples={len(rows)}, q35={green_threshold:.1f} dB, q65={amber_threshold:.1f} dB, '
+        f'p{int(CALIBRATION_PERCENTILE * 100)}={observed_tail:.1f} dB, '
         f'usable={RF_CALIBRATION["usable_path_loss_db"]:.1f} dB, '
         f'green={RF_CALIBRATION["signal_thresholds_db"]["green"]:.1f}, '
         f'amber={RF_CALIBRATION["signal_thresholds_db"]["amber"]:.1f}'
     )
+
+
+def refresh_radio_neighbor_reports(db, r_client, force: bool = False) -> None:
+    now = time.time()
+    if not force and now - float(RADIO_NEIGHBOR_SYNC['updated_at']) < RADIO_NEIGHBOR_REFRESH_S:
+        return
+
+    try:
+        response = requests.get(f'{RADIO_BOT_URL}/state', timeout=10)
+        response.raise_for_status()
+        payload = response.json()
+    except Exception as exc:
+        log.warning(f'Radio neighbour sync failed: {exc}')
+        RADIO_NEIGHBOR_SYNC['updated_at'] = now
+        return
+
+    monitors = payload.get('monitors') if isinstance(payload, dict) else None
+    if not isinstance(monitors, list):
+        RADIO_NEIGHBOR_SYNC['updated_at'] = now
+        return
+
+    imported = 0
+    queued = 0
+    with db.cursor() as cur:
+        for monitor in monitors:
+            if not isinstance(monitor, dict):
+                continue
+            reporter_id = str(monitor.get('fullPublicKey') or monitor.get('targetHex') or '').strip().lower()
+            if len(reporter_id) != 64:
+                continue
+
+            neighbours_at_raw = monitor.get('lastNeighboursAt') or monitor.get('lastSuccessAt')
+            base_seen_at: Optional[dt.datetime] = None
+            if neighbours_at_raw:
+                try:
+                    base_seen_at = dt.datetime.fromisoformat(str(neighbours_at_raw).replace('Z', '+00:00'))
+                except Exception:
+                    base_seen_at = None
+
+            last_neighbours = monitor.get('lastNeighbours')
+            if not isinstance(last_neighbours, list):
+                continue
+
+            for neighbour in last_neighbours:
+                if not isinstance(neighbour, dict):
+                    continue
+                peer_id = str(neighbour.get('fullPublicKey') or '').strip().lower()
+                if len(peer_id) != 64 or peer_id == reporter_id:
+                    continue
+                snr_db = neighbour.get('snrDb')
+                if not isinstance(snr_db, (int, float)):
+                    continue
+
+                seen_at = base_seen_at
+                heard_seconds_ago = neighbour.get('heardSecondsAgo')
+                if seen_at is not None and isinstance(heard_seconds_ago, (int, float)):
+                    seen_at = seen_at - dt.timedelta(seconds=float(heard_seconds_ago))
+                if seen_at is None:
+                    seen_at = dt.datetime.now(dt.timezone.utc)
+
+                a_id, b_id = sorted((reporter_id, peer_id))
+                cur.execute(
+                    '''
+                    INSERT INTO node_links (
+                      node_a_id, node_b_id, observed_count, last_observed, count_a_to_b, count_b_to_a
+                    )
+                    VALUES (%s, %s, 0, NOW(), 0, 0)
+                    ON CONFLICT (node_a_id, node_b_id) DO NOTHING
+                    ''',
+                    (a_id, b_id),
+                )
+                cur.execute(
+                    '''
+                    INSERT INTO node_link_radio_reports (
+                      node_a_id, node_b_id, reporter_node_id, peer_node_id,
+                      last_snr_db, best_snr_db, last_seen, sample_count
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, 1)
+                    ON CONFLICT (node_a_id, node_b_id, reporter_node_id) DO UPDATE
+                    SET peer_node_id = EXCLUDED.peer_node_id,
+                        last_snr_db = CASE
+                          WHEN EXCLUDED.last_seen >= node_link_radio_reports.last_seen
+                            THEN EXCLUDED.last_snr_db
+                          ELSE node_link_radio_reports.last_snr_db
+                        END,
+                        best_snr_db = GREATEST(
+                          COALESCE(node_link_radio_reports.best_snr_db, EXCLUDED.best_snr_db),
+                          EXCLUDED.best_snr_db
+                        ),
+                        last_seen = GREATEST(node_link_radio_reports.last_seen, EXCLUDED.last_seen),
+                        sample_count = CASE
+                          WHEN EXCLUDED.last_seen > node_link_radio_reports.last_seen
+                            THEN node_link_radio_reports.sample_count + 1
+                          ELSE node_link_radio_reports.sample_count
+                        END
+                    ''',
+                    (a_id, b_id, reporter_id, peer_id, float(snr_db), float(snr_db), seen_at),
+                )
+                r_client.rpush(LINK_JOB_QUEUE, json.dumps({
+                    'type': 'physical_pair',
+                    'node_a_id': a_id,
+                    'node_b_id': b_id,
+                }))
+                imported += 1
+                queued += 1
+    db.commit()
+    RADIO_NEIGHBOR_SYNC['updated_at'] = now
+    if imported > 0:
+        log.info(f'Radio neighbour sync: imported {imported} report(s), queued {queued} physical link job(s)')
 
 
 def refresh_support_context(db, force: bool = False) -> None:
@@ -1349,12 +1505,17 @@ def worker_loop():
     name     = multiprocessing.current_process().name
     db       = wait_for_db()
     r_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+    sync_radio_neighbors = name in ('MainProcess', 'Worker-1')
+    if sync_radio_neighbors and WORKER_MODE in ('all', 'link'):
+        refresh_radio_neighbor_reports(db, r_client, force=True)
     refresh_rf_calibration(db, force=True)
     refresh_support_context(db, force=True)
     log.info(f'{name} ready')
 
     while True:
         try:
+            if sync_radio_neighbors and WORKER_MODE in ('all', 'link'):
+                refresh_radio_neighbor_reports(db, r_client)
             refresh_rf_calibration(db)
             refresh_support_context(db)
             if WORKER_MODE in ('all', 'link'):
@@ -1386,7 +1547,223 @@ def worker_loop():
         except Exception as exc:
             log.error(f'{name}: job error: {exc}', exc_info=True)
 
+
+def resolve_node_ref(db, ref: str) -> dict:
+    ref = str(ref or '').strip()
+    if not ref:
+        raise ValueError('Empty node reference')
+
+    with db.cursor() as cur:
+        if len(ref) == 64 and all(ch in '0123456789abcdefABCDEF' for ch in ref):
+            cur.execute(
+                'SELECT node_id, name, lat, lon, elevation_m FROM nodes WHERE lower(node_id) = lower(%s)',
+                (ref,),
+            )
+            rows = cur.fetchall()
+        elif len(ref) >= 6 and all(ch in '0123456789abcdefABCDEF' for ch in ref):
+            cur.execute(
+                'SELECT node_id, name, lat, lon, elevation_m FROM nodes WHERE lower(node_id) LIKE lower(%s) ORDER BY node_id LIMIT 2',
+                (f'{ref}%',),
+            )
+            rows = cur.fetchall()
+        else:
+            cur.execute(
+                '''
+                SELECT node_id, name, lat, lon, elevation_m
+                FROM nodes
+                WHERE lower(coalesce(name, '')) = lower(%s)
+                   OR lower(coalesce(name, '')) LIKE lower(%s)
+                ORDER BY node_id
+                LIMIT 2
+                ''',
+                (ref, f'%{ref}%'),
+            )
+            rows = cur.fetchall()
+
+    if len(rows) < 1:
+        raise ValueError(f'No node matched "{ref}"')
+    if len(rows) > 1:
+        raise ValueError(f'Ambiguous node reference "{ref}"')
+    node_id, name, lat, lon, elevation_m = rows[0]
+    return {
+        'node_id': node_id,
+        'name': name,
+        'lat': lat,
+        'lon': lon,
+        'elevation_m': elevation_m,
+    }
+
+
+def compute_pair_diagnostics(a: dict, b: dict) -> dict:
+    if a.get('lat') is None or a.get('lon') is None or b.get('lat') is None or b.get('lon') is None:
+        raise ValueError('Both nodes need coordinates')
+
+    elev_a = float(a.get('elevation_m') or 0.0)
+    elev_b = float(b.get('elevation_m') or 0.0)
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        vrt = build_link_vrt(float(a['lat']), float(a['lon']), float(b['lat']), float(b['lon']), tmp_dir)
+        if vrt is None:
+            raise RuntimeError('No SRTM tiles available for this path')
+
+        cos_mid = math.cos(math.radians((float(a['lat']) + float(b['lat'])) / 2))
+        dlat = (float(b['lat']) - float(a['lat'])) * 111_320
+        dlon = (float(b['lon']) - float(a['lon'])) * 111_320 * cos_mid
+        d_total = math.sqrt(dlat ** 2 + dlon ** 2)
+        n_samples = max(20, min(200, int(d_total / PROFILE_STEP_M)))
+
+        ds = gdal.Open(vrt)
+        if ds is None:
+            raise RuntimeError('Failed to open generated VRT')
+        gt = ds.GetGeoTransform()
+        inv_gt = gdal.InvGeoTransform(gt)
+        band = ds.GetRasterBand(1)
+
+        heights: list[float] = []
+        dists: list[float] = []
+        for i in range(n_samples + 1):
+            t = i / n_samples
+            la = float(a['lat']) + t * (float(b['lat']) - float(a['lat']))
+            lo = float(a['lon']) + t * (float(b['lon']) - float(a['lon']))
+            px, py = gdal.ApplyGeoTransform(inv_gt, lo, la)
+            px = int(np.clip(px, 0, ds.RasterXSize - 1))
+            py = int(np.clip(py, 0, ds.RasterYSize - 1))
+            data = band.ReadAsArray(px, py, 1, 1)
+            h = max(0.0, float(data[0][0])) if data is not None else 0.0
+            heights.append(h)
+            dists.append(t * d_total)
+        ds = None
+
+    dists_arr = np.asarray(dists, dtype=np.float64)
+    heights_arr = np.asarray(heights, dtype=np.float64)
+    h_tx = elev_a + ANTENNA_HEIGHT_M
+    h_rx = elev_b + ANTENNA_HEIGHT_M
+    fspl = 20 * math.log10(4 * math.pi * d_total / LAMBDA_M)
+
+    d1 = dists_arr[1:-1]
+    d2 = d_total - d1
+    valid = (d1 > 0) & (d2 > 0)
+    d1 = d1[valid]
+    d2 = d2[valid]
+    profile_h = heights_arr[1:-1][valid]
+    los_h = h_tx + (h_rx - h_tx) * (d1 / d_total)
+    earth_bulge = (d1 * d2) / (2 * K_FACTOR * R_EARTH_M)
+    excess_h = profile_h + earth_bulge - los_h
+    with np.errstate(divide='ignore', invalid='ignore'):
+        vs = excess_h * np.sqrt(2 * (d1 + d2) / (LAMBDA_M * d1 * d2))
+    max_v = float(np.max(vs)) if vs.size else -999.0
+
+    if max_v <= -0.78:
+        diff_loss = 0.0
+    else:
+        diff_loss = max(0.0, 6.9 + 20 * math.log10(
+            math.sqrt((max_v - 0.1) ** 2 + 1) + max_v - 0.1
+        ))
+
+    total_loss = fspl + diff_loss
+    clear_los = max_v <= LINK_LOS_MAX_V
+    usable_threshold_db = current_usable_path_loss_db()
+    return {
+        'node_a_id': a['node_id'],
+        'node_a_name': a.get('name'),
+        'node_b_id': b['node_id'],
+        'node_b_name': b.get('name'),
+        'distance_km': round(d_total / 1000.0, 3),
+        'fspl_db': round(fspl, 3),
+        'diffraction_loss_db': round(diff_loss, 3),
+        'total_path_loss_db': round(total_loss, 3),
+        'max_v': round(max_v, 6),
+        'los_limit_v': LINK_LOS_MAX_V,
+        'clear_los': clear_los,
+        'usable_threshold_db': usable_threshold_db,
+        'viable': bool(clear_los and total_loss < usable_threshold_db),
+    }
+
+
+def run_test_mode(args) -> None:
+    db = wait_for_db()
+    try:
+        refresh_rf_calibration(db, force=True)
+        refs: list[tuple[str, str, Optional[dict]]] = []
+
+        if args.test_pairs:
+            for raw in args.test_pairs.split(','):
+                raw = raw.strip()
+                if not raw:
+                    continue
+                left, sep, right = raw.partition(':')
+                if not sep:
+                    raise ValueError(f'Invalid pair "{raw}" — expected A:B')
+                refs.append((left.strip(), right.strip(), None))
+
+        if args.test_from_node:
+            response = requests.get(f'{RADIO_BOT_URL}/state', timeout=10)
+            response.raise_for_status()
+            payload = response.json()
+            monitors = payload.get('monitors') if isinstance(payload, dict) else None
+            if not isinstance(monitors, list):
+                raise RuntimeError('Radio bot state missing monitors list')
+            source_ref = str(args.test_from_node).strip().lower()
+            selected = None
+            for monitor in monitors:
+                if not isinstance(monitor, dict):
+                    continue
+                candidates = [
+                    str(monitor.get('fullPublicKey') or '').strip().lower(),
+                    str(monitor.get('targetHex') or '').strip().lower(),
+                    str(monitor.get('nodeName') or '').strip().lower(),
+                    str(monitor.get('label') or '').strip().lower(),
+                ]
+                if any(source_ref and source_ref in candidate for candidate in candidates if candidate):
+                    selected = monitor
+                    break
+            if selected is None:
+                raise ValueError(f'No radio monitor matched "{args.test_from_node}"')
+            reporter_ref = str(selected.get('fullPublicKey') or selected.get('targetHex') or '').strip()
+            neighbours = selected.get('lastNeighbours')
+            if not reporter_ref or not isinstance(neighbours, list):
+                raise RuntimeError('Selected radio monitor has no neighbour data')
+            for neighbour in neighbours:
+                if not isinstance(neighbour, dict):
+                    continue
+                peer_ref = str(neighbour.get('fullPublicKey') or '').strip()
+                if len(peer_ref) != 64:
+                    continue
+                refs.append((reporter_ref, peer_ref, neighbour))
+
+        if not refs:
+            raise ValueError('No test pairs were provided')
+
+        results = []
+        for left_ref, right_ref, neighbour_meta in refs:
+            a = resolve_node_ref(db, left_ref)
+            b = resolve_node_ref(db, right_ref)
+            result = compute_pair_diagnostics(a, b)
+            if neighbour_meta is not None:
+                reported_snr = neighbour_meta.get('snrDb')
+                result['reported_snr_db'] = reported_snr
+                result['reported_quality_band'] = radio_snr_band(reported_snr if isinstance(reported_snr, (int, float)) else None)
+                result['reported_heard_seconds_ago'] = neighbour_meta.get('heardSecondsAgo')
+                result['reported_adv_name'] = neighbour_meta.get('advName')
+            results.append(result)
+
+        print(json.dumps({
+            'usable_threshold_db': current_usable_path_loss_db(),
+            'signal_thresholds_db': current_signal_thresholds_db(),
+            'results': results,
+        }, indent=2))
+    finally:
+        db.close()
+
 def main():
+    parser = argparse.ArgumentParser(description='MeshCore viewshed/link worker')
+    parser.add_argument('--test-pairs', help='Comma-separated node pairs in the form A:B,C:D')
+    parser.add_argument('--test-from-node', help='Evaluate all current radio-bot neighbours for one repeater')
+    args = parser.parse_args()
+    if args.test_pairs or args.test_from_node:
+        run_test_mode(args)
+        return
+
     log.info(
         f'Viewshed worker starting (mode={WORKER_MODE}, '
         f'coverage_model={COVERAGE_MODEL}, model_version={COVERAGE_MODEL_VERSION})'
@@ -1397,11 +1774,13 @@ def main():
     # to the worker processes (each gets its own connection).
     db = wait_for_db()
     log.info('Connected to DB')
-    refresh_rf_calibration(db, force=True)
-    refresh_support_context(db, force=True)
     r = redis.Redis.from_url(REDIS_URL, decode_responses=True)
     r.ping()
     log.info('Connected to Redis')
+    if WORKER_MODE in ('all', 'link'):
+        refresh_radio_neighbor_reports(db, r, force=True)
+    refresh_rf_calibration(db, force=True)
+    refresh_support_context(db, force=True)
     if WORKER_MODE in ('all', 'viewshed'):
         rebuild_pending_viewshed_set(r)
         backfill_elevations(db)

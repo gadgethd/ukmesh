@@ -177,6 +177,7 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      RADIO_BOT_URL: ${RADIO_BOT_URL:-http://meshcore-radio-bot:3011}
       SRTM_DIR: /data/srtm
       WORKER_MODE: link
       NUM_WORKERS: '1'
