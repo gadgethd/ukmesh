@@ -1,26 +1,20 @@
 import pg from 'pg';
 import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { databaseConfig } from '../platform/config/database.js';
+import { resolveDbAssetPath } from './assets.js';
+import { runMigrations } from './migrations.js';
 
 const { Pool } = pg;
 
-const databaseSchema = String(process.env['DATABASE_SCHEMA'] ?? '').trim();
-if (databaseSchema && !/^[a-z_][a-z0-9_]*$/i.test(databaseSchema)) {
-  throw new Error(`Invalid DATABASE_SCHEMA: ${databaseSchema}`);
-}
-const databaseApplicationName = String(process.env['DATABASE_APPLICATION_NAME'] ?? 'meshcore-backend').trim() || 'meshcore-backend';
-const databaseStatementTimeoutMs = Number(process.env['DATABASE_STATEMENT_TIMEOUT_MS'] ?? 30_000);
-
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  application_name: databaseApplicationName,
-  options: databaseSchema ? `-c search_path=${databaseSchema},public` : undefined,
-  max: Number(process.env['DATABASE_POOL_MAX'] ?? 8),
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 5000,
-  statement_timeout: databaseStatementTimeoutMs,
-  query_timeout: databaseStatementTimeoutMs,
+  application_name: databaseConfig.applicationName,
+  options: databaseConfig.schema ? `-c search_path=${databaseConfig.schema},public` : undefined,
+  max: databaseConfig.poolMax,
+  idleTimeoutMillis: databaseConfig.idleTimeoutMs,
+  connectionTimeoutMillis: databaseConfig.connectionTimeoutMs,
+  statement_timeout: databaseConfig.statementTimeoutMs,
+  query_timeout: databaseConfig.statementTimeoutMs,
 });
 
 pool.on('error', (err) => {
@@ -116,14 +110,32 @@ function buildNodeScopeClause(
 }
 
 export async function initDb(): Promise<void> {
-  const __dirname = path.dirname(fileURLToPath(import.meta.url));
-  const schemaPath = path.join(__dirname, 'schema.sql');
+  const schemaPath = resolveDbAssetPath('schema', 'base.sql');
   const sql = fs.readFileSync(schemaPath, 'utf8');
-  if (databaseSchema) {
-    await pool.query(`CREATE SCHEMA IF NOT EXISTS "${databaseSchema}"`);
+  const startupPool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    application_name: `${databaseConfig.applicationName}-startup`,
+    options: databaseConfig.schema ? `-c search_path=${databaseConfig.schema},public` : undefined,
+    max: 1,
+    idleTimeoutMillis: databaseConfig.idleTimeoutMs,
+    connectionTimeoutMillis: databaseConfig.connectionTimeoutMs,
+    statement_timeout: 0,
+    query_timeout: 0,
+  });
+
+  let executedMigrations: string[] = [];
+  try {
+    if (databaseConfig.schema) {
+      await startupPool.query(`CREATE SCHEMA IF NOT EXISTS "${databaseConfig.schema}"`);
+    }
+    await startupPool.query(sql);
+    executedMigrations = await runMigrations(startupPool);
+  } finally {
+    await startupPool.end();
   }
-  await pool.query(sql);
-  console.log('[db] schema initialised, no retention policy (data kept indefinitely)');
+  console.log(
+    `[db] base schema initialised${executedMigrations.length > 0 ? `, migrations applied: ${executedMigrations.join(', ')}` : ', no pending migrations'}`,
+  );
 }
 
 export async function incrementAdvertCount(nodeId: string): Promise<number> {

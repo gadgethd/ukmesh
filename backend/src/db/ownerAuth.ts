@@ -1,7 +1,6 @@
 import pg from 'pg';
 import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { resolveDbAssetPath } from './assets.js';
 
 const { Pool } = pg;
 const OWNER_DB_NAME = process.env['OWNER_POSTGRES_DB'] ?? 'meshcore_owner_auth';
@@ -78,8 +77,7 @@ async function ensureOwnerDatabase(): Promise<void> {
 
 export async function initOwnerAuthDb(): Promise<void> {
   await ensureOwnerDatabase();
-  const __dirname = path.dirname(fileURLToPath(import.meta.url));
-  const schemaPath = path.join(__dirname, 'owner-auth.sql');
+  const schemaPath = resolveDbAssetPath('owner-auth.sql');
   const sql = fs.readFileSync(schemaPath, 'utf8');
   await ownerPool.query(sql);
   console.log('[owner-auth] schema initialised');
