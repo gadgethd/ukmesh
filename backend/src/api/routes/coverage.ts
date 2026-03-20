@@ -2,12 +2,8 @@ import type { Router } from 'express';
 import type { QueryResultRow } from 'pg';
 import { resolveRequestNetwork } from '../../http/requestScope.js';
 import { isViewshedEligibleCoordinate, queueViewshedJob } from '../../queue/publisher.js';
+import type { NetworkFilters } from '../utils/networkFilters.js';
 import { normalizeObserverQuery } from '../utils/observer.js';
-
-type NetworkFilters = {
-  params: string[];
-  nodesAlias: (alias: string) => string;
-};
 
 type QueryFn = <T extends QueryResultRow = QueryResultRow>(
   text: string,
