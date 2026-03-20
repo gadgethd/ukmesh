@@ -1434,6 +1434,12 @@ html, body, #root {
   background: var(--bg-panel-alt);
   overflow: hidden;
 }
+.owner-telemetry-metric--wide {
+  grid-column: 1 / -1;
+}
+.owner-telemetry-metric--tall .owner-telemetry-metric__chart {
+  height: 220px;
+}
 .owner-telemetry-metric__value {
   color: var(--text-primary);
   font-family: var(--font-mono);
@@ -1486,6 +1492,31 @@ html, body, #root {
   color: var(--text-secondary);
   font-size: 10px;
   font-family: var(--font-mono);
+}
+.owner-telemetry-metric__series-list {
+  margin-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.owner-telemetry-metric__series-btn {
+  border: 1px solid var(--border);
+  background: rgba(255,255,255,0.03);
+  color: var(--text-secondary);
+  border-radius: 999px;
+  padding: 5px 10px;
+  font-size: 10px;
+  font-family: var(--font-mono);
+  cursor: pointer;
+}
+.owner-telemetry-metric__series-btn:hover {
+  border-color: var(--border-bright);
+  color: var(--text-primary);
+}
+.owner-telemetry-metric__series-btn--active {
+  border-color: rgba(0,196,255,0.45);
+  background: rgba(0,196,255,0.12);
+  color: var(--text-primary);
 }
 .owner-list {
   display: grid;

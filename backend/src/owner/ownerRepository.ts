@@ -14,6 +14,138 @@ export type OwnerRepository = ReturnType<typeof createOwnerRepository>;
 export function createOwnerRepository(deps: OwnerRepositoryDeps) {
   const { query } = deps;
 
+  async function fetchLastHopStrength(ownerNodeIds: string[]) {
+    return query<{
+      bucket: string;
+      last_hop_node_id: string | null;
+      last_hop_name: string;
+      resolution: 'direct' | 'resolved' | 'inferred' | 'unresolved';
+      avg_snr: number | null;
+      avg_rssi: number | null;
+      sample_count: number;
+    }>(
+      `WITH owner_packets AS (
+         SELECT
+           p.time,
+           p.packet_hash,
+           p.rx_node_id,
+           p.src_node_id,
+           p.hop_count,
+           p.rssi,
+           p.snr,
+           CASE
+             WHEN COALESCE(array_length(p.path_hashes, 1), 0) > 0
+           THEN UPPER(p.path_hashes[array_length(p.path_hashes, 1)])
+           ELSE NULL
+           END AS receiver_side_hash
+         FROM packets p
+         WHERE p.rx_node_id = ANY($1::text[])
+           AND p.time > NOW() - INTERVAL '7 days'
+           AND (p.snr IS NOT NULL OR p.rssi IS NOT NULL)
+       ),
+       unique_receiver_targets AS (
+         SELECT DISTINCT rx_node_id, receiver_side_hash
+         FROM owner_packets
+         WHERE receiver_side_hash IS NOT NULL
+           AND hop_count IS NOT NULL
+           AND hop_count > 0
+       ),
+       resolved_last_hop AS (
+         SELECT
+           uh.rx_node_id,
+           uh.receiver_side_hash,
+           n.node_id,
+           COALESCE(n.name, n.node_id) AS name,
+           COUNT(*) OVER (PARTITION BY uh.rx_node_id, uh.receiver_side_hash) AS match_count,
+           ROW_NUMBER() OVER (PARTITION BY uh.rx_node_id, uh.receiver_side_hash ORDER BY n.node_id) AS rn
+         FROM unique_receiver_targets uh
+         JOIN nodes n
+           ON (n.role IS NULL OR n.role = 2)
+          AND UPPER(n.node_id) LIKE uh.receiver_side_hash || '%'
+       ),
+       inferred_last_hop AS (
+         SELECT
+           uh.rx_node_id,
+           uh.receiver_side_hash,
+           n.node_id,
+           COALESCE(n.name, n.node_id) AS name,
+           ROW_NUMBER() OVER (
+             PARTITION BY uh.rx_node_id, uh.receiver_side_hash
+             ORDER BY
+               CASE
+                 WHEN nl.force_viable = true OR nl.itm_viable = true THEN 0
+                 WHEN nl.itm_path_loss_db IS NOT NULL AND nl.itm_path_loss_db <= 137.5 THEN 1
+                 ELSE 2
+               END,
+               ((COALESCE(n.lat, 0) - COALESCE(rx.lat, 0)) * (COALESCE(n.lat, 0) - COALESCE(rx.lat, 0)))
+               + ((COALESCE(n.lon, 0) - COALESCE(rx.lon, 0)) * (COALESCE(n.lon, 0) - COALESCE(rx.lon, 0))),
+               n.node_id
+           ) AS rn
+         FROM unique_receiver_targets uh
+         JOIN nodes rx ON rx.node_id = uh.rx_node_id
+         JOIN nodes n
+           ON (n.role IS NULL OR n.role = 2)
+          AND UPPER(LEFT(n.node_id, 2)) = UPPER(LEFT(uh.receiver_side_hash, 2))
+         LEFT JOIN node_links nl
+           ON (
+             (nl.node_a_id = uh.rx_node_id AND nl.node_b_id = n.node_id)
+             OR (nl.node_b_id = uh.rx_node_id AND nl.node_a_id = n.node_id)
+           )
+         WHERE (
+           nl.force_viable = true
+           OR nl.itm_viable = true
+           OR (nl.itm_path_loss_db IS NOT NULL AND nl.itm_path_loss_db <= 137.5)
+         )
+       ),
+       classified AS (
+         SELECT
+           time_bucket('1 hour', op.time)::text AS bucket,
+           CASE
+             WHEN op.hop_count = 0 AND op.src_node_id IS NOT NULL AND NOT (op.src_node_id = ANY($1::text[])) THEN op.src_node_id
+             WHEN rl.match_count = 1 AND rl.rn = 1 THEN rl.node_id
+             WHEN ilh.rn = 1 THEN ilh.node_id
+             ELSE NULL
+           END AS last_hop_node_id,
+           CASE
+             WHEN op.hop_count = 0 AND op.src_node_id IS NOT NULL AND NOT (op.src_node_id = ANY($1::text[])) THEN COALESCE(src.name, op.src_node_id)
+             WHEN rl.match_count = 1 AND rl.rn = 1 THEN rl.name
+             WHEN ilh.rn = 1 THEN ilh.name
+             ELSE 'Unresolved'
+           END AS last_hop_name,
+           CASE
+             WHEN op.hop_count = 0 AND op.src_node_id IS NOT NULL AND NOT (op.src_node_id = ANY($1::text[])) THEN 'direct'
+             WHEN rl.match_count = 1 AND rl.rn = 1 THEN 'resolved'
+             WHEN ilh.rn = 1 THEN 'inferred'
+             ELSE 'unresolved'
+           END AS resolution,
+           op.snr,
+           op.rssi
+         FROM owner_packets op
+         LEFT JOIN nodes src ON src.node_id = op.src_node_id
+         LEFT JOIN resolved_last_hop rl
+           ON rl.rx_node_id = op.rx_node_id
+          AND rl.receiver_side_hash = op.receiver_side_hash
+          AND rl.rn = 1
+         LEFT JOIN inferred_last_hop ilh
+           ON ilh.rx_node_id = op.rx_node_id
+          AND ilh.receiver_side_hash = op.receiver_side_hash
+          AND ilh.rn = 1
+       )
+       SELECT
+         bucket,
+         last_hop_node_id,
+         last_hop_name,
+         resolution,
+         AVG(snr)::double precision AS avg_snr,
+         AVG(rssi)::double precision AS avg_rssi,
+         COUNT(*)::int AS sample_count
+       FROM classified
+       GROUP BY bucket, last_hop_node_id, last_hop_name, resolution
+       ORDER BY bucket ASC, sample_count DESC, last_hop_name ASC`,
+      [ownerNodeIds],
+    );
+  }
+
   async function fetchOwnerLiveData(selectedNodeId: string) {
     const [
       ownerNodeResult,
@@ -253,7 +385,7 @@ export function createOwnerRepository(deps: OwnerRepositoryDeps) {
          FROM node_status_samples
          WHERE node_id = $1
            AND time > NOW() - INTERVAL '24 hours'
-         ORDER BY time ASC`,
+        ORDER BY time ASC`,
         [selectedNodeId],
       ),
     ]);
@@ -271,5 +403,6 @@ export function createOwnerRepository(deps: OwnerRepositoryDeps) {
 
   return {
     fetchOwnerLiveData,
+    fetchLastHopStrength,
   };
 }

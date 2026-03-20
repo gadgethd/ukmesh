@@ -1,7 +1,7 @@
 // Map tile service worker — caches CartoDB tiles so zooming/panning
 // to previously visited areas loads instantly.
-const TILE_CACHE_NAME = 'meshcore-tiles-v3';
-const APP_CACHE_NAME = 'meshcore-app-v3';
+const TILE_CACHE_NAME = 'meshcore-tiles-v4';
+const APP_CACHE_NAME = 'meshcore-app-v4';
 const MAX_TILE_ENTRIES = 8000; // ~120 MB at ~15 KB per tile
 const ACTIVE_CACHES = new Set([TILE_CACHE_NAME, APP_CACHE_NAME]);
 

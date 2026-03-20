@@ -12,6 +12,16 @@ type OwnerLiveCacheEntry = {
   data: unknown;
 };
 
+type LastHopStrengthPoint = {
+  bucket: string;
+  lastHopNodeId: string | null;
+  lastHopName: string;
+  resolution: 'direct' | 'resolved' | 'inferred' | 'unresolved';
+  avgSnr: number | null;
+  avgRssi: number | null;
+  sampleCount: number;
+};
+
 type OwnerServiceDeps = {
   ownerLiveCacheTtlMs: number;
   ownerLiveCache: Map<string, OwnerLiveCacheEntry>;
@@ -34,6 +44,7 @@ export function createOwnerService(deps: OwnerServiceDeps) {
     buildOwnerDashboard,
     repository,
   } = deps;
+  const ownerLastHopCache = new Map<string, OwnerLiveCacheEntry>();
 
   async function authenticateOwner(mqttUsername: string, mqttPassword: string): Promise<{ dashboard: OwnerDashboard; nodeIds: string[] }> {
     const authOk = await verifyMqttCredentials(mqttUsername, mqttPassword);
@@ -272,9 +283,45 @@ export function createOwnerService(deps: OwnerServiceDeps) {
     return responseData;
   }
 
+  async function getOwnerLastHopStrength(ownedNodeIds: string[], requestedNodeId?: string): Promise<{ points: LastHopStrengthPoint[] }> {
+    if (ownedNodeIds.length < 1) {
+      throw new Error('NO_OWNED_NODES');
+    }
+
+    const selectedNodeId = requestedNodeId
+      ? ownedNodeIds.find((id) => id === requestedNodeId)
+      : ownedNodeIds[0];
+    if (!selectedNodeId) {
+      throw new Error('NODE_NOT_OWNED');
+    }
+
+    const cacheKey = ownedNodeIds.slice().sort().join(',');
+    const cacheEntry = ownerLastHopCache.get(cacheKey);
+    if (cacheEntry && Date.now() - cacheEntry.ts < 60_000) {
+      return cacheEntry.data as { points: LastHopStrengthPoint[] };
+    }
+
+    const lastHopStrengthResult = await repository.fetchLastHopStrength(ownedNodeIds);
+    const responseData = {
+      points: lastHopStrengthResult.rows.map((row) => ({
+        bucket: new Date(row.bucket).toISOString(),
+        lastHopNodeId: row.last_hop_node_id,
+        lastHopName: row.last_hop_name,
+        resolution: row.resolution,
+        avgSnr: row.avg_snr == null ? null : Number(row.avg_snr.toFixed(2)),
+        avgRssi: row.avg_rssi == null ? null : Number(row.avg_rssi.toFixed(2)),
+        sampleCount: Number(row.sample_count ?? 0),
+      })),
+    };
+
+    ownerLastHopCache.set(cacheKey, { ts: Date.now(), data: responseData });
+    return responseData;
+  }
+
   return {
     authenticateOwner,
     getSessionDashboard,
     getOwnerLiveData,
+    getOwnerLastHopStrength,
   };
 }

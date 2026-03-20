@@ -1,7 +1,7 @@
 import React, { FormEvent, useEffect, useMemo, useState } from 'react';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import { Area, AreaChart, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 
 type OwnerNode = {
   node_id: string;
@@ -95,6 +95,20 @@ type OwnerLiveResponse = {
   }>;
   alerts: Array<{ level: 'info' | 'warn' | 'error'; message: string }>;
   recentPackets: LivePacket[];
+};
+
+type LastHopStrengthPoint = {
+  bucket: string;
+  lastHopNodeId: string | null;
+  lastHopName: string;
+  resolution: 'direct' | 'resolved' | 'inferred' | 'unresolved';
+  avgSnr: number | null;
+  avgRssi: number | null;
+  sampleCount: number;
+};
+
+type OwnerLastHopStrengthResponse = {
+  points: LastHopStrengthPoint[];
 };
 
 type MappedPeer = LivePeer & { lat: number; lon: number };
@@ -242,6 +256,185 @@ const OwnerTelemetryTooltip: React.FC<{
         <strong>{payload[0]?.value?.toFixed(1)}{suffix}</strong>
       </p>
     </div>
+  );
+};
+
+const LAST_HOP_COLORS = ['#00c4ff', '#6ddc7a', '#ff9f43', '#f472b6', '#a78bfa', '#facc15'];
+
+const LastHopStrengthTooltip: React.FC<{
+  active?: boolean;
+  payload?: Array<{ dataKey: string; value: number; color: string; payload: Record<string, unknown> }>;
+  label?: string;
+  seriesByKey: Map<string, { label: string; totalSamples: number }>;
+}> = ({ active, payload, label, seriesByKey }) => {
+  if (!active || !payload?.length) return null;
+  return (
+    <div style={{ background: TIP_BG, border: `1px solid ${TIP_BORDER}`, borderRadius: 6, padding: '8px 12px', fontSize: 12 }}>
+      {label ? <p style={{ color: LABEL_COLOR, margin: '0 0 6px' }}>{formatCompactTs(label)}</p> : null}
+      {payload.map((entry) => {
+        const series = seriesByKey.get(entry.dataKey);
+        const sampleCount = Number((entry.payload?.[`${entry.dataKey}__samples`] as number | undefined) ?? 0);
+        return (
+          <p key={entry.dataKey} style={{ color: '#e8f0fb', margin: '2px 0' }}>
+            <strong style={{ color: entry.color }}>{series?.label ?? entry.dataKey}</strong>
+            {`: ${Number(entry.value).toFixed(1)} dB`}
+            {sampleCount > 0 ? ` (${sampleCount} sample${sampleCount === 1 ? '' : 's'})` : ''}
+          </p>
+        );
+      })}
+    </div>
+  );
+};
+
+const LastHopStrengthChart: React.FC<{ points: LastHopStrengthPoint[] }> = ({ points }) => {
+  const [selectedSeriesKey, setSelectedSeriesKey] = useState<string | null>(null);
+  const visiblePoints = useMemo(
+    () => points.filter((point) => point.resolution !== 'unresolved'),
+    [points],
+  );
+
+  const chartState = useMemo(() => {
+    const totals = new Map<string, { key: string; label: string; totalSamples: number; resolution: LastHopStrengthPoint['resolution'] }>();
+    for (const point of visiblePoints) {
+      const key = point.lastHopNodeId ?? `unresolved:${point.lastHopName}`;
+      const existing = totals.get(key);
+      if (existing) {
+        existing.totalSamples += point.sampleCount;
+      } else {
+        totals.set(key, {
+          key,
+          label: point.lastHopName,
+          totalSamples: point.sampleCount,
+          resolution: point.resolution,
+        });
+      }
+    }
+
+    const allSeries = Array.from(totals.values())
+      .sort((a, b) => b.totalSamples - a.totalSamples || a.label.localeCompare(b.label))
+    const selected = selectedSeriesKey
+      ? allSeries.filter((series) => series.key === selectedSeriesKey)
+      : allSeries.slice(0, 6);
+    const selectedKeys = new Set(selected.map((series) => series.key));
+    const seriesByKey = new Map(allSeries.map((series) => [series.key, series] as const));
+
+    const bucketed = new Map<string, Record<string, string | number | null>>();
+    for (const point of visiblePoints) {
+      const key = point.lastHopNodeId ?? `unresolved:${point.lastHopName}`;
+      if (!selectedKeys.has(key)) continue;
+      const entry = bucketed.get(point.bucket) ?? { bucket: point.bucket };
+      entry[key] = point.avgSnr;
+      entry[`${key}__samples`] = point.sampleCount;
+      bucketed.set(point.bucket, entry);
+    }
+
+    return {
+      allSeries,
+      series: selected,
+      seriesByKey,
+      data: Array.from(bucketed.values()).sort((a, b) => String(a.bucket).localeCompare(String(b.bucket))),
+    };
+  }, [selectedSeriesKey, visiblePoints]);
+
+  useEffect(() => {
+    if (selectedSeriesKey && !chartState.allSeries.some((series) => series.key === selectedSeriesKey)) {
+      setSelectedSeriesKey(null);
+    }
+  }, [chartState.allSeries, selectedSeriesKey]);
+
+  if (chartState.series.length < 1 || chartState.data.length < 1) {
+    return (
+      <article className="owner-telemetry-metric">
+        <div className="owner-panel__head owner-panel__head--compact">
+          <div>
+            <h3>RX Strength by Last Hop</h3>
+            <p>Average SNR over the last 7 days</p>
+          </div>
+        </div>
+        <div className="owner-telemetry-metric__chart">
+          <div className="owner-telemetry-metric__empty">No received signal samples yet</div>
+        </div>
+        <div className="owner-telemetry-metric__footer">
+          <span>Last 7d</span>
+          <span>No samples</span>
+        </div>
+      </article>
+    );
+  }
+
+  const latestBucket = chartState.data[chartState.data.length - 1];
+  const latestActive = chartState.series
+    .map((series) => {
+      const value = latestBucket?.[series.key];
+      return typeof value === 'number'
+        ? `${series.label}: ${value.toFixed(1)} dB`
+        : null;
+    })
+    .filter(Boolean)
+    .slice(0, 2)
+    .join(' · ');
+
+  return (
+      <article className="owner-telemetry-metric owner-telemetry-metric--wide owner-telemetry-metric--tall">
+        <div className="owner-panel__head owner-panel__head--compact">
+          <div>
+            <h3>RX Strength by Last Hop</h3>
+            <p>{latestActive || 'Average SNR over the last 7 days'}</p>
+          </div>
+          <strong className="owner-telemetry-metric__value">{chartState.series.length}</strong>
+        </div>
+        <div className="owner-telemetry-metric__chart">
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={chartState.data} margin={{ top: 6, right: 10, left: 0, bottom: 0 }}>
+              <XAxis dataKey="bucket" hide />
+            <YAxis
+              width={28}
+              axisLine={{ stroke: AXIS_COLOR }}
+              tickLine={false}
+              tick={{ fill: LABEL_COLOR, fontSize: 11 }}
+              domain={['auto', 'auto']}
+              />
+              <Tooltip content={<LastHopStrengthTooltip seriesByKey={chartState.seriesByKey} />} />
+              {chartState.series.map((series, index) => (
+                <Line
+                  key={series.key}
+                type="monotone"
+                dataKey={series.key}
+                stroke={LAST_HOP_COLORS[index % LAST_HOP_COLORS.length]}
+                strokeWidth={2}
+                dot={false}
+                connectNulls
+                isAnimationActive={false}
+              />
+            ))}
+          </LineChart>
+        </ResponsiveContainer>
+        </div>
+        <div className="owner-telemetry-metric__footer">
+          <span>Last 7d</span>
+          <span>{selectedSeriesKey ? 'Filtered to one repeater' : `${chartState.allSeries.length} repeaters`}</span>
+        </div>
+        <div className="owner-telemetry-metric__series-list">
+          <button
+            type="button"
+            className={`owner-telemetry-metric__series-btn${selectedSeriesKey == null ? ' owner-telemetry-metric__series-btn--active' : ''}`}
+            onClick={() => setSelectedSeriesKey(null)}
+          >
+            All
+          </button>
+          {chartState.allSeries.map((series) => (
+            <button
+              key={series.key}
+              type="button"
+              className={`owner-telemetry-metric__series-btn${selectedSeriesKey === series.key ? ' owner-telemetry-metric__series-btn--active' : ''}`}
+              onClick={() => setSelectedSeriesKey(series.key)}
+              title={`${series.label} (${series.totalSamples} samples)`}
+            >
+              {series.label} ({series.totalSamples})
+            </button>
+          ))}
+        </div>
+      </article>
   );
 };
 
@@ -433,6 +626,7 @@ export const OwnerPortalPage: React.FC = () => {
   const [selectedNodeId, setSelectedNodeId] = useState<string>('');
   const [live, setLive] = useState<OwnerLiveResponse | null>(null);
   const [liveError, setLiveError] = useState<string | null>(null);
+  const [lastHopStrength, setLastHopStrength] = useState<LastHopStrengthPoint[]>([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -504,6 +698,7 @@ export const OwnerPortalPage: React.FC = () => {
       .finally(() => {
         setDashboard(null);
         setLive(null);
+        setLastHopStrength([]);
         setError(null);
         publishOwnerSession(null);
       });
@@ -533,6 +728,35 @@ export const OwnerPortalPage: React.FC = () => {
 
     load();
     const timer = setInterval(load, 10_000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [dashboard, selectedNodeId]);
+
+  useEffect(() => {
+    if (!dashboard || !selectedNodeId) return;
+    let cancelled = false;
+
+    const load = () => {
+      fetch(`/api/owner/live-last-hop?nodeId=${encodeURIComponent(selectedNodeId)}`, { cache: 'no-store' })
+        .then(async (res) => {
+          const json = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(String(json.error ?? `HTTP ${res.status}`));
+          return json as OwnerLastHopStrengthResponse;
+        })
+        .then((json) => {
+          if (cancelled) return;
+          setLastHopStrength(json.points ?? []);
+        })
+        .catch(() => {
+          if (cancelled) return;
+        });
+    };
+
+    setLastHopStrength([]);
+    load();
+    const timer = setInterval(load, 60_000);
     return () => {
       cancelled = true;
       clearInterval(timer);
@@ -701,6 +925,7 @@ export const OwnerPortalPage: React.FC = () => {
                   value={formatUptime(latestTelemetry?.uptimeSecs ?? null)}
                   meta={latestTelemetry?.uptimeSecs == null ? 'No telemetry yet' : `${latestTelemetry.uptimeSecs}s reported`}
                 />
+                <LastHopStrengthChart points={lastHopStrength} />
               </div>
             </section>
 

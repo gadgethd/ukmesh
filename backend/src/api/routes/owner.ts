@@ -155,6 +155,27 @@ export function registerOwnerRoutes(router: Router, deps: OwnerRouteDeps): void 
     }
   });
 
+  router.get('/owner/live-last-hop', async (req, res) => {
+    try {
+      const ownedNodeIds = await deps.requireOwnerSession(req, res);
+      if (!ownedNodeIds) return;
+      const requestedNodeId = String(req.query['nodeId'] ?? '').trim().toUpperCase() || undefined;
+      res.json(await service.getOwnerLastHopStrength(ownedNodeIds, requestedNodeId));
+    } catch (err) {
+      const message = (err as Error).message;
+      if (message === 'NO_OWNED_NODES') {
+        res.status(404).json({ error: 'No owned nodes found' });
+        return;
+      }
+      if (message === 'NODE_NOT_OWNED') {
+        res.status(403).json({ error: 'Node is not owned by this session' });
+        return;
+      }
+      console.error('[api] GET /owner/live-last-hop', message);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  });
+
   router.post('/owner/logout', async (_req, res) => {
     res.clearCookie(deps.ownerCookieName, { path: '/' });
     res.json({ ok: true });
