@@ -1,6 +1,8 @@
 import type { Router } from 'express';
 import { resolveRequestNetwork } from '../../http/requestScope.js';
+import { createStatsRepository } from '../../stats/statsRepository.js';
 import { createStatsService } from '../../stats/statsService.js';
+import type { NetworkFilters } from '../utils/networkFilters.js';
 import { normalizeObserverQuery } from '../utils/observer.js';
 import type { QueryResultRow } from 'pg';
 
@@ -8,14 +10,6 @@ type QueryFn = <T extends QueryResultRow = QueryResultRow>(
   text: string,
   params?: unknown[],
 ) => Promise<{ rows: T[] }>;
-
-type NetworkFilters = {
-  params: string[];
-  packets: string;
-  packetsAlias: (alias: string) => string;
-  nodes: string;
-  nodesAlias: (alias: string) => string;
-};
 
 type MaskDecodedPathNodesFn = (
   rawNodes: Array<{
@@ -50,6 +44,11 @@ type StatsRouteDeps = {
 };
 
 export function registerStatsRoutes(router: Router, deps: StatsRouteDeps): void {
+  const repository = createStatsRepository({
+    networkFilters: deps.networkFilters,
+    query: deps.query,
+  });
+
   const service = createStatsService({
     statsCache: deps.statsCache,
     statsCacheTtlMs: deps.statsCacheTtlMs,
@@ -58,8 +57,7 @@ export function registerStatsRoutes(router: Router, deps: StatsRouteDeps): void 
     chartsInflight: deps.chartsInflight,
     crossNetworkCache: deps.crossNetworkCache,
     crossNetworkCacheTtlMs: deps.crossNetworkCacheTtlMs,
-    networkFilters: deps.networkFilters,
-    query: deps.query,
+    repository,
     maskDecodedPathNodes: deps.maskDecodedPathNodes,
   });
 

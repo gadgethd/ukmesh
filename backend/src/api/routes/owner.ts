@@ -1,16 +1,12 @@
 import type { Request, Response, Router } from 'express';
+import { createOwnerRepository } from '../../owner/ownerRepository.js';
 import { createOwnerService } from '../../owner/ownerService.js';
+import type { OwnerSession } from '../../owner/ownerSession.js';
 
 type OwnerDashboard = {
   totals: {
     ownedNodes: number;
   };
-};
-
-type OwnerSession = {
-  nodeIds: string[];
-  exp: number;
-  mqttUsername?: string;
 };
 
 type OwnerLiveCacheEntry = {
@@ -48,6 +44,10 @@ type OwnerRouteDeps = {
 };
 
 export function registerOwnerRoutes(router: Router, deps: OwnerRouteDeps): void {
+  const repository = createOwnerRepository({
+    query: deps.query,
+  });
+
   const service = createOwnerService({
     ownerLiveCacheTtlMs: deps.ownerLiveCacheTtlMs,
     ownerLiveCache: deps.ownerLiveCache,
@@ -55,7 +55,7 @@ export function registerOwnerRoutes(router: Router, deps: OwnerRouteDeps): void 
     resolveOwnerNodeIds: deps.resolveOwnerNodeIds,
     autoLinkOwnerNodeIds: deps.autoLinkOwnerNodeIds,
     buildOwnerDashboard: deps.buildOwnerDashboard,
-    query: deps.query,
+    repository,
   });
 
   router.post('/owner/login', deps.ownerLoginLimiter, async (req, res) => {

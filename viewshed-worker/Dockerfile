@@ -14,5 +14,6 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY worker.py uk_mainland.json ./
+COPY rf ./rf
 
 CMD ["python3", "-u", "worker.py"]

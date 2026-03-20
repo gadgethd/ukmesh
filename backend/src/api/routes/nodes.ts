@@ -1,6 +1,7 @@
 import type { Request, Response, Router } from 'express';
 import type { QueryResultRow } from 'pg';
 import { resolveRequestNetwork } from '../../http/requestScope.js';
+import type { NetworkFilters } from '../utils/networkFilters.js';
 import { normalizeObserverQuery } from '../utils/observer.js';
 
 type QueryFn = <T extends QueryResultRow = QueryResultRow>(
@@ -20,11 +21,6 @@ type GetNodesFn = (network?: string, observer?: string) => Promise<NodeRecord[]>
 type GetNodeHistoryFn = (nodeId: string, hours: number) => Promise<unknown>;
 type GetNodeAdvertsFn = (publicKey: string, hours: number) => Promise<unknown>;
 type RequireLocalOnlyFn = (req: Request, res: Response) => boolean;
-
-type NetworkFilters = {
-  params: string[];
-  packetsAlias: (alias: string) => string;
-};
 
 type InferredMultibyteNode = {
   node_id: string;

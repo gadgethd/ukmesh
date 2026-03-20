@@ -6,7 +6,6 @@ node_coverage, then notifies the frontend.
 """
 
 import argparse
-import gzip
 import json
 import logging
 import math
@@ -24,9 +23,39 @@ import psycopg2
 from scipy.ndimage import minimum_filter as _min_filter
 from scipy.spatial import cKDTree
 import redis
-import requests
 from osgeo import gdal
 from shapely.geometry import mapping, Polygon as ShapelyPolygon
+from rf.config import (
+    ANTENNA_HEIGHT_M,
+    CALIBRATION_EXTRA_MARGIN_DB,
+    CALIBRATION_MAX_THRESHOLD_BOOST_DB,
+    CALIBRATION_MIN_LINKS,
+    CALIBRATION_MIN_OBSERVED_COUNT,
+    CALIBRATION_PERCENTILE,
+    CALIBRATION_REFRESH_S,
+    COVERAGE_TARGET_HEIGHT_M,
+    DEFAULT_USABLE_PATH_LOSS_DB,
+    FREQ_MHZ,
+    K_FACTOR,
+    LAMBDA_M,
+    LINK_LOS_MAX_V,
+    PROFILE_STEP_M,
+    RADIO_NEIGHBOR_SYNC,
+    RF_CALIBRATION,
+    R_EARTH_M,
+    current_signal_thresholds_db,
+    current_usable_path_loss_db,
+    radio_snr_band,
+)
+from rf.loss import compute_path_loss, compute_path_loss_from_profile
+from rf.terrain import (
+    build_link_vrt,
+    download_tile,
+    load_uk_mainland,
+    radio_horizon_m,
+    sample_elevation,
+    tiles_for_radius,
+)
 
 gdal.UseExceptions()
 
@@ -55,8 +84,6 @@ JOB_PENDING_SET = 'meshcore:viewshed_pending'
 LINK_JOB_QUEUE = 'meshcore:link_jobs'
 LIVE_CHANNEL   = 'meshcore:live'
 
-ANTENNA_HEIGHT_M      = 5    # source repeater antenna above ground (m)
-COVERAGE_TARGET_HEIGHT_M = 5 # target repeater antenna above ground (m) for coverage polygons
 COVERAGE_MODEL_VERSION = int(os.environ.get(
     'COVERAGE_MODEL_VERSION',
     '5' if COVERAGE_MODEL == 'rf_radial_100m' else '2',
@@ -82,41 +109,12 @@ SUPPORT_PENALTY_PER_KM_DB = float(os.environ.get('COVERAGE_SUPPORT_PENALTY_PER_K
 SUPPORT_MAX_PENALTY_DB = float(os.environ.get('COVERAGE_SUPPORT_MAX_PENALTY_DB', '14'))
 SUPPORT_PROJECTION_LAT = float(os.environ.get('COVERAGE_SUPPORT_PROJECTION_LAT', '54.0'))
 
-DEFAULT_USABLE_PATH_LOSS_DB = float(os.environ.get('DEFAULT_USABLE_PATH_LOSS_DB', '137.5'))
-CALIBRATION_REFRESH_S = int(os.environ.get('COVERAGE_CALIBRATION_REFRESH_S', '900'))
-CALIBRATION_MIN_LINKS = int(os.environ.get('COVERAGE_CALIBRATION_MIN_LINKS', '24'))
-CALIBRATION_MIN_OBSERVED_COUNT = int(os.environ.get('COVERAGE_CALIBRATION_MIN_OBSERVED_COUNT', '3'))
-CALIBRATION_MAX_THRESHOLD_BOOST_DB = float(os.environ.get('COVERAGE_CALIBRATION_MAX_THRESHOLD_BOOST_DB', '2'))
-CALIBRATION_PERCENTILE = float(os.environ.get('COVERAGE_CALIBRATION_PERCENTILE', '0.9'))
-CALIBRATION_EXTRA_MARGIN_DB = float(os.environ.get('COVERAGE_CALIBRATION_EXTRA_MARGIN_DB', '0.5'))
-LINK_LOS_MAX_V = float(os.environ.get('LINK_LOS_MAX_V', '1.12'))
 RADIO_NEIGHBOR_REFRESH_S = int(os.environ.get('RADIO_NEIGHBOR_REFRESH_S', '300'))
 RADIO_NEIGHBOR_MAX_AGE_HOURS = float(os.environ.get('RADIO_NEIGHBOR_MAX_AGE_HOURS', '72'))
 
 # Radio horizon parameters
-K_FACTOR  = 4 / 3        # effective Earth radius multiplier (standard troposphere)
-R_EARTH_M = 6_371_000    # mean Earth radius (m)
-
-# ── RF propagation model parameters (LoRa 868 MHz) ───────────────────────────
-
-FREQ_MHZ        = 868.0
-LAMBDA_M        = 3e8 / (FREQ_MHZ * 1e6)   # wavelength ~0.345 m
-PROFILE_STEP_M  = 250.0   # terrain profile sample spacing (m)
-
-RF_CALIBRATION = {
-    'usable_path_loss_db': DEFAULT_USABLE_PATH_LOSS_DB,
-    'signal_thresholds_db': {
-        'green': max(116.0, DEFAULT_USABLE_PATH_LOSS_DB - 16.0),
-        'amber': max(124.0, DEFAULT_USABLE_PATH_LOSS_DB - 8.0),
-        'red': DEFAULT_USABLE_PATH_LOSS_DB,
-    },
-    'samples': 0,
-    'updated_at': 0.0,
-}
-
-RADIO_NEIGHBOR_SYNC = {
-    'updated_at': 0.0,
-}
+# K-factor, wavelength, RF calibration state, and path-loss thresholds now
+# live in rf.config so the RF model can be reused outside the worker loop.
 
 SUPPORT_CONTEXT = {
     'tree': None,
@@ -138,28 +136,6 @@ def is_viewshed_eligible_coordinate(lat: float, lon: float) -> bool:
     if abs(lat) < 1e-9 and abs(lon) < 1e-9:
         return False
     return UK_LAT_MIN <= lat <= UK_LAT_MAX and UK_LON_MIN <= lon <= UK_LON_MAX
-
-
-def current_usable_path_loss_db() -> float:
-    return float(RF_CALIBRATION['usable_path_loss_db'])
-
-
-def current_signal_thresholds_db() -> dict[str, float]:
-    return dict(RF_CALIBRATION['signal_thresholds_db'])
-
-
-def radio_snr_band(snr_db: Optional[float]) -> str:
-    if snr_db is None or not math.isfinite(float(snr_db)):
-        return 'unknown'
-    snr = float(snr_db)
-    if snr >= 8.0:
-        return 'strong'
-    if snr >= 2.0:
-        return 'medium'
-    if snr >= 0.0:
-        return 'weak'
-    return 'poor'
-
 
 def weighted_quantile(values: np.ndarray, weights: np.ndarray, q: float) -> float:
     if values.size < 1:
@@ -477,124 +453,6 @@ def support_penalty_db(source_node_id: str, sample_lats: np.ndarray, sample_lons
     penalty = np.maximum(0.0, nearest_km - SUPPORT_NEARBY_REPEATER_KM) * SUPPORT_PENALTY_PER_KM_DB
     return np.clip(penalty, 0.0, SUPPORT_MAX_PENALTY_DB).astype(np.float32)
 
-def compute_path_loss(lat1: float, lon1: float, elev1: float,
-                      lat2: float, lon2: float, elev2: float,
-                      vrt_path: str) -> tuple[float, bool]:
-    """Estimate RF path loss (dB) between two points.
-
-    Uses free-space path loss plus ITU-R P.526 single knife-edge diffraction
-    over the dominant terrain obstruction, corrected for Earth curvature.
-    Returns (path_loss_db, is_viable).
-    """
-    cos_mid = math.cos(math.radians((lat1 + lat2) / 2))
-    dlat    = (lat2 - lat1) * 111_320
-    dlon    = (lon2 - lon1) * 111_320 * cos_mid
-    d_total = math.sqrt(dlat ** 2 + dlon ** 2)
-
-    if d_total < 1.0:
-        return 0.0, True
-
-    fspl = 20 * math.log10(4 * math.pi * d_total / LAMBDA_M)
-    usable_threshold_db = current_usable_path_loss_db()
-
-    # Terrain profile: N evenly-spaced samples along the path
-    N = max(20, min(200, int(d_total / PROFILE_STEP_M)))
-
-    ds = gdal.Open(vrt_path)
-    if ds is None:
-        viable = fspl < usable_threshold_db
-        return fspl, viable
-
-    gt     = ds.GetGeoTransform()
-    inv_gt = gdal.InvGeoTransform(gt)
-    band   = ds.GetRasterBand(1)
-
-    heights: list[float] = []
-    dists:   list[float] = []
-    for i in range(N + 1):
-        t    = i / N
-        la   = lat1 + t * (lat2 - lat1)
-        lo   = lon1 + t * (lon2 - lon1)
-        px, py = gdal.ApplyGeoTransform(inv_gt, lo, la)
-        px   = int(np.clip(px, 0, ds.RasterXSize - 1))
-        py   = int(np.clip(py, 0, ds.RasterYSize - 1))
-        data = band.ReadAsArray(px, py, 1, 1)
-        h    = max(0.0, float(data[0][0])) if data is not None else 0.0
-        heights.append(h)
-        dists.append(t * d_total)
-    ds = None
-
-    h_tx = elev1 + ANTENNA_HEIGHT_M   # transmitter height ASL + antenna
-    h_rx = elev2 + ANTENNA_HEIGHT_M
-
-    # Find dominant obstruction via Fresnel-Kirchhoff diffraction parameter
-    max_v = -999.0
-    for i in range(1, N):
-        d1 = dists[i]
-        d2 = d_total - dists[i]
-        if d1 <= 0 or d2 <= 0:
-            continue
-        los_h       = h_tx + (h_rx - h_tx) * (d1 / d_total)
-        earth_bulge = (d1 * d2) / (2 * K_FACTOR * R_EARTH_M)
-        excess_h    = heights[i] + earth_bulge - los_h
-        v = excess_h * math.sqrt(2 * (d1 + d2) / (LAMBDA_M * d1 * d2))
-        max_v = max(max_v, v)
-
-    return compute_path_loss_from_profile(
-        np.asarray(dists, dtype=np.float32),
-        np.asarray(heights, dtype=np.float32),
-        h_tx,
-        h_rx,
-    )
-
-
-def compute_path_loss_from_profile(dists: np.ndarray,
-                                   heights: np.ndarray,
-                                   h_tx: float,
-                                   h_rx: float) -> tuple[float, bool]:
-    d_total = float(dists[-1]) if len(dists) else 0.0
-    usable_threshold_db = current_usable_path_loss_db()
-    if d_total < 1.0:
-        return 0.0, True
-
-    # Free-space path loss (dB)
-    fspl = 20 * math.log10(4 * math.pi * d_total / LAMBDA_M)
-
-    if len(dists) <= 2:
-        viable = fspl < usable_threshold_db
-        return fspl, viable
-
-    d1 = dists[1:-1].astype(np.float64)
-    d2 = d_total - d1
-    valid = (d1 > 0) & (d2 > 0)
-    if not np.any(valid):
-        viable = fspl < usable_threshold_db
-        return fspl, viable
-
-    d1 = d1[valid]
-    d2 = d2[valid]
-    profile_h = heights[1:-1].astype(np.float64)[valid]
-    los_h = h_tx + (h_rx - h_tx) * (d1 / d_total)
-    earth_bulge = (d1 * d2) / (2 * K_FACTOR * R_EARTH_M)
-    excess_h = profile_h + earth_bulge - los_h
-    with np.errstate(divide='ignore', invalid='ignore'):
-        vs = excess_h * np.sqrt(2 * (d1 + d2) / (LAMBDA_M * d1 * d2))
-    max_v = float(np.max(vs)) if vs.size else -999.0
-
-    # ITU-R P.526 knife-edge diffraction loss (dB)
-    if max_v <= -0.78:
-        diff_loss = 0.0
-    else:
-        diff_loss = max(0.0, 6.9 + 20 * math.log10(
-            math.sqrt((max_v - 0.1) ** 2 + 1) + max_v - 0.1
-        ))
-
-    total_loss = fspl + diff_loss
-    clear_los = max_v <= LINK_LOS_MAX_V
-    viable = clear_los and total_loss < usable_threshold_db
-    return total_loss, viable
-
-
 def resolve_rf_radial_boundaries(node_id: str,
                                  lat: float,
                                  lon: float,
@@ -704,121 +562,7 @@ def build_exclusive_strength_geoms(band_polys: dict[str, ShapelyPolygon]) -> dic
     return exclusive
 
 
-def build_link_vrt(lat1: float, lon1: float, lat2: float, lon2: float,
-                   tmp_dir: str) -> Optional[str]:
-    """Build a GDAL VRT from already-cached SRTM tiles covering the path.
-    Returns None if no tiles are available (will be retried later once
-    nearby viewsheds have triggered tile downloads)."""
-    min_lat = math.floor(min(lat1, lat2))
-    max_lat = math.floor(max(lat1, lat2))
-    min_lon = math.floor(min(lon1, lon2))
-    max_lon = math.floor(max(lon1, lon2))
-    paths   = [
-        str(SRTM_DIR / f'{tile_name(lt, ln)}.hgt')
-        for lt in range(min_lat, max_lat + 1)
-        for ln in range(min_lon, max_lon + 1)
-        if (SRTM_DIR / f'{tile_name(lt, ln)}.hgt').exists()
-    ]
-    if not paths:
-        return None
-    vrt = f'{tmp_dir}/link.vrt'
-    r   = subprocess.run(['gdalbuildvrt', vrt] + paths, capture_output=True, text=True)
-    return vrt if r.returncode == 0 else None
-
-# ── UK mainland polygon (loaded once at startup for ocean clipping) ───────────
-
-def _load_uk_mainland():
-    path = Path(__file__).parent / 'uk_mainland.json'
-    if not path.exists():
-        log.warning('uk_mainland.json not found — ocean clipping disabled')
-        return None
-    with open(path) as f:
-        data = json.load(f)
-    from shapely.geometry import shape as _shape
-    poly = _shape(data)
-    if not poly.is_valid:
-        poly = poly.buffer(0)
-    if data['type'] == 'MultiPolygon':
-        total_pts = sum(len(ring) for poly in data['coordinates'] for ring in poly)
-        log.info(f'UK mainland MultiPolygon loaded ({len(data["coordinates"])} polygons, {total_pts} total points)')
-    else:
-        log.info(f'UK mainland polygon loaded ({len(data["coordinates"][0])} points)')
-    return poly
-
-UK_MAINLAND = _load_uk_mainland()
-
-# ── SRTM tile download (AWS Terrain Tiles — public, no auth) ─────────────────
-
-def tile_name(lat: int, lon: int) -> str:
-    ns = 'N' if lat >= 0 else 'S'
-    ew = 'E' if lon >= 0 else 'W'
-    return f'{ns}{abs(lat):02d}{ew}{abs(lon):03d}'
-
-def download_tile(lat: int, lon: int) -> Optional[Path]:
-    name = tile_name(lat, lon)
-    path = SRTM_DIR / f'{name}.hgt'
-    if path.exists():
-        return path
-
-    url = (
-        f'https://s3.amazonaws.com/elevation-tiles-prod/skadi/'
-        f'{name[:3]}/{name}.hgt.gz'
-    )
-    log.info(f'Downloading {name} ...')
-    try:
-        resp = requests.get(url, timeout=60, stream=True)
-        if resp.status_code == 404:
-            log.debug(f'{name} not found (ocean / outside coverage)')
-            return None
-        resp.raise_for_status()
-        data = gzip.decompress(resp.content)
-        SRTM_DIR.mkdir(parents=True, exist_ok=True)
-        # Atomic write: temp file → rename prevents partial-read races between workers
-        tmp = path.with_suffix('.tmp')
-        tmp.write_bytes(data)
-        tmp.rename(path)
-        log.info(f'Saved {name}.hgt ({len(data) // 1024} KB)')
-        return path
-    except Exception as exc:
-        log.error(f'Failed to download {name}: {exc}')
-        return None
-
-def tiles_for_radius(lat: float, lon: float, radius_m: float) -> list[tuple[int, int]]:
-    """All 1°×1° SRTM tiles that overlap a bounding box around (lat, lon)."""
-    d_lat = radius_m / 111_320
-    d_lon = radius_m / (111_320 * math.cos(math.radians(lat)))
-    return [
-        (lt, ln)
-        for lt in range(math.floor(lat - d_lat), math.floor(lat + d_lat) + 1)
-        for ln in range(math.floor(lon - d_lon), math.floor(lon + d_lon) + 1)
-    ]
-
-def radio_horizon_m(height_asl_m: float) -> float:
-    """One-way radio horizon distance (m) for an antenna at height_asl_m above sea level.
-
-    Uses the standard 4/3-Earth-radius model for tropospheric refraction.
-    Formula: d = sqrt(2 * k * R * h)
-    """
-    h = max(1.0, height_asl_m)  # clamp: 1 m minimum to avoid zero
-    return math.sqrt(2 * K_FACTOR * R_EARTH_M * h)
-
-
-def sample_elevation(vrt_path: str, lat: float, lon: float) -> float:
-    """Return terrain elevation (m ASL) at (lat, lon) sampled from a GDAL VRT."""
-    ds = gdal.Open(vrt_path)
-    if ds is None:
-        return 0.0
-    gt  = ds.GetGeoTransform()
-    inv = gdal.InvGeoTransform(gt)
-    if inv is None:
-        ds = None
-        return 0.0
-    px, py = gdal.ApplyGeoTransform(inv, lon, lat)
-    px = max(0, min(int(px), ds.RasterXSize - 1))
-    py = max(0, min(int(py), ds.RasterYSize - 1))
-    data = ds.GetRasterBand(1).ReadAsArray(px, py, 1, 1)
-    ds   = None
-    return max(0.0, float(data[0][0])) if data is not None else 0.0
+UK_MAINLAND = load_uk_mainland(Path(__file__).parent, log)
 
 
 # ── Viewshed calculation ──────────────────────────────────────────────────────
@@ -832,7 +576,7 @@ def calculate_viewshed(node_id: str, lat: float, lon: float) -> Optional[tuple[d
         #    This single tile is sufficient to determine node height; we need
         #    it before we know how far to reach for surrounding tiles.
         obs_tile = (math.floor(lat), math.floor(lon))
-        obs_path = download_tile(*obs_tile)
+        obs_path = download_tile(SRTM_DIR, *obs_tile, log)
         if not obs_path:
             log.error(f'No SRTM tile for observer at {node_id} ({lat:.4f}, {lon:.4f})')
             return None
@@ -855,7 +599,7 @@ def calculate_viewshed(node_id: str, lat: float, lon: float) -> Optional[tuple[d
 
         # 3. Download all tiles covering the computed horizon radius
         needed = tiles_for_radius(lat, lon, radius_m)
-        paths  = [p for t in needed if (p := download_tile(*t))]
+        paths  = [p for t in needed if (p := download_tile(SRTM_DIR, *t, log))]
         if not paths:
             log.error(f'No SRTM tiles for {node_id} ({lat:.4f}, {lon:.4f})')
             return None
@@ -1116,7 +860,7 @@ def ensure_physical_link_metrics(db, a_id: str, a: dict, b_id: str, b: dict):
         return obs_count, path_loss_db, itm_viable, count_a_to_b, count_b_to_a, multibyte_obs
 
     with tempfile.TemporaryDirectory() as tmp:
-        vrt = build_link_vrt(a['lat'], a['lon'], b['lat'], b['lon'], tmp)
+        vrt = build_link_vrt(a['lat'], a['lon'], b['lat'], b['lon'], tmp, SRTM_DIR)
         if not vrt:
             return obs_count, path_loss_db, itm_viable, count_a_to_b, count_b_to_a, multibyte_obs
         try:
@@ -1602,7 +1346,7 @@ def compute_pair_diagnostics(a: dict, b: dict) -> dict:
     elev_b = float(b.get('elevation_m') or 0.0)
 
     with tempfile.TemporaryDirectory() as tmp_dir:
-        vrt = build_link_vrt(float(a['lat']), float(a['lon']), float(b['lat']), float(b['lon']), tmp_dir)
+        vrt = build_link_vrt(float(a['lat']), float(a['lon']), float(b['lat']), float(b['lon']), tmp_dir, SRTM_DIR)
         if vrt is None:
             raise RuntimeError('No SRTM tiles available for this path')
 
