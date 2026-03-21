@@ -2,6 +2,7 @@ import React, { FormEvent, useEffect, useMemo, useState } from 'react';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { Area, AreaChart, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import { DEFAULT_CENTER, MAP_STYLE } from '../components/Map/mapConfig';
 
 type OwnerNode = {
   node_id: string;
@@ -260,12 +261,13 @@ const OwnerTelemetryTooltip: React.FC<{
 };
 
 const LAST_HOP_COLORS = ['#00c4ff', '#6ddc7a', '#ff9f43', '#f472b6', '#a78bfa', '#facc15'];
+const MIN_LAST_HOP_SAMPLES = 10;
 
 const LastHopStrengthTooltip: React.FC<{
   active?: boolean;
   payload?: Array<{ dataKey: string; value: number; color: string; payload: Record<string, unknown> }>;
   label?: string;
-  seriesByKey: Map<string, { label: string; totalSamples: number }>;
+  seriesByKey: Map<string, { label: string; totalSamples: number; bucketCount: number }>;
 }> = ({ active, payload, label, seriesByKey }) => {
   if (!active || !payload?.length) return null;
   return (
@@ -294,23 +296,35 @@ const LastHopStrengthChart: React.FC<{ points: LastHopStrengthPoint[] }> = ({ po
   );
 
   const chartState = useMemo(() => {
-    const totals = new Map<string, { key: string; label: string; totalSamples: number; resolution: LastHopStrengthPoint['resolution'] }>();
+    const totals = new Map<string, {
+      key: string;
+      label: string;
+      totalSamples: number;
+      bucketCount: number;
+      buckets: Set<string>;
+      resolution: LastHopStrengthPoint['resolution'];
+    }>();
     for (const point of visiblePoints) {
       const key = point.lastHopNodeId ?? `unresolved:${point.lastHopName}`;
       const existing = totals.get(key);
       if (existing) {
         existing.totalSamples += point.sampleCount;
+        existing.buckets.add(point.bucket);
+        existing.bucketCount = existing.buckets.size;
       } else {
         totals.set(key, {
           key,
           label: point.lastHopName,
           totalSamples: point.sampleCount,
+          bucketCount: 1,
+          buckets: new Set([point.bucket]),
           resolution: point.resolution,
         });
       }
     }
 
     const allSeries = Array.from(totals.values())
+      .filter((series) => series.totalSamples >= MIN_LAST_HOP_SAMPLES)
       .sort((a, b) => b.totalSamples - a.totalSamples || a.label.localeCompare(b.label))
     const selected = selectedSeriesKey
       ? allSeries.filter((series) => series.key === selectedSeriesKey)
@@ -352,11 +366,11 @@ const LastHopStrengthChart: React.FC<{ points: LastHopStrengthPoint[] }> = ({ po
           </div>
         </div>
         <div className="owner-telemetry-metric__chart">
-          <div className="owner-telemetry-metric__empty">No received signal samples yet</div>
+          <div className="owner-telemetry-metric__empty">No last-hop repeaters with 10+ samples yet</div>
         </div>
         <div className="owner-telemetry-metric__footer">
           <span>Last 7d</span>
-          <span>No samples</span>
+          <span>Minimum 10 samples</span>
         </div>
       </article>
     );
@@ -412,7 +426,7 @@ const LastHopStrengthChart: React.FC<{ points: LastHopStrengthPoint[] }> = ({ po
         </div>
         <div className="owner-telemetry-metric__footer">
           <span>Last 7d</span>
-          <span>{selectedSeriesKey ? 'Filtered to one repeater' : `${chartState.allSeries.length} repeaters`}</span>
+          <span>{selectedSeriesKey ? 'Filtered to one repeater' : `${chartState.allSeries.length} repeaters with 10+ samples`}</span>
         </div>
         <div className="owner-telemetry-metric__series-list">
           <button
@@ -428,9 +442,9 @@ const LastHopStrengthChart: React.FC<{ points: LastHopStrengthPoint[] }> = ({ po
               type="button"
               className={`owner-telemetry-metric__series-btn${selectedSeriesKey === series.key ? ' owner-telemetry-metric__series-btn--active' : ''}`}
               onClick={() => setSelectedSeriesKey(series.key)}
-              title={`${series.label} (${series.totalSamples} samples)`}
+              title={`${series.label} · ${series.bucketCount} hourly point${series.bucketCount === 1 ? '' : 's'} · ${series.totalSamples} packets in last 7d`}
             >
-              {series.label} ({series.totalSamples})
+              {series.label} ({series.bucketCount}h)
             </button>
           ))}
         </div>
@@ -522,8 +536,6 @@ const TelemetryStatCard: React.FC<{
   </article>
 );
 
-const CARTO_DARK_TILES = 'https://{a-d}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
-
 const OwnerMapView: React.FC<{
   ownerCoord: { lat: number; lon: number } | null;
   peers: MappedPeer[];
@@ -536,25 +548,60 @@ const OwnerMapView: React.FC<{
 
     const map = new maplibregl.Map({
       container: containerRef.current,
-      style: {
-        version: 8,
-        sources: { tiles: { type: 'raster', tiles: [CARTO_DARK_TILES], tileSize: 256, maxzoom: 19, attribution: '© OpenStreetMap © CARTO' } },
-        layers: [{ id: 'bg', type: 'raster', source: 'tiles' }],
-      },
-      center: [-1.2, 54.6],
+      style: MAP_STYLE,
+      center: [DEFAULT_CENTER[1], DEFAULT_CENTER[0]],
       zoom: 7,
       attributionControl: false,
     });
 
-    // Disable interaction — purely static display
+    // Keep the map as a static regional backdrop while preserving marker clicks.
     map.scrollZoom.disable();
-    map.dragPan.disable();
     map.boxZoom.disable();
+    map.dragPan.disable();
+    map.dragRotate.disable();
     map.doubleClickZoom.disable();
     map.keyboard.disable();
     map.touchZoomRotate.disable();
 
     const EMPTY: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: [] };
+    const popup = new maplibregl.Popup({
+      closeButton: true,
+      closeOnClick: true,
+      offset: 14,
+      maxWidth: '260px',
+    });
+
+    const applyViewport = () => {
+      map.resize();
+      if (allPoints.length === 1) {
+        map.setCenter([allPoints[0].lon, allPoints[0].lat]);
+        map.setZoom(8);
+        return;
+      }
+      if (allPoints.length > 1) {
+        const centerPoints = peers.length > 0 ? peers : allPoints;
+        const centerLons = centerPoints.map((pt) => pt.lon);
+        const centerLats = centerPoints.map((pt) => pt.lat);
+        const centerLon = (Math.min(...centerLons) + Math.max(...centerLons)) / 2;
+        const centerLat = (Math.min(...centerLats) + Math.max(...centerLats)) / 2;
+        const maxLonDelta = Math.max(...allPoints.map((pt) => Math.abs(pt.lon - centerLon)));
+        const maxLatDelta = Math.max(...allPoints.map((pt) => Math.abs(pt.lat - centerLat)));
+        const lonExtent = Math.max(0.02, maxLonDelta * 2.25);
+        const latExtent = Math.max(0.02, maxLatDelta * 2.25);
+        const paddedBounds = new maplibregl.LngLatBounds(
+          [centerLon - lonExtent, centerLat - latExtent],
+          [centerLon + lonExtent, centerLat + latExtent],
+        );
+        const padding = { top: 24, right: 24, bottom: 24, left: 24 };
+        const camera = map.cameraForBounds(paddedBounds, { padding });
+        map.jumpTo({
+          center: [centerLon, centerLat],
+          zoom: camera?.zoom ?? map.getZoom(),
+          bearing: 0,
+          pitch: 0,
+        });
+      }
+    };
 
     const buildNodeFC = (): GeoJSON.FeatureCollection => ({
       type: 'FeatureCollection',
@@ -562,12 +609,20 @@ const OwnerMapView: React.FC<{
         ...(ownerCoord ? [{
           type: 'Feature' as const,
           geometry: { type: 'Point' as const, coordinates: [ownerCoord.lon, ownerCoord.lat] },
-          properties: { kind: 'owner' },
+          properties: {
+            kind: 'owner',
+            name: 'Selected owner node',
+            details: ownerCoord ? `${ownerCoord.lat.toFixed(4)}, ${ownerCoord.lon.toFixed(4)}` : '',
+          },
         }] : []),
         ...peers.map((p) => ({
           type: 'Feature' as const,
           geometry: { type: 'Point' as const, coordinates: [p.lon, p.lat] },
-          properties: { kind: 'peer' },
+          properties: {
+            kind: 'peer',
+            name: p.name ?? p.node_id,
+            details: `${p.packets_24h} packets / 24h${p.iata ? ` · ${p.iata}` : ''}${p.network ? ` · ${p.network}` : ''}`,
+          },
         })),
       ],
     });
@@ -589,23 +644,42 @@ const OwnerMapView: React.FC<{
         paint: { 'line-color': '#00c4ff', 'line-width': 1.5, 'line-opacity': 0.6 } });
       map.addLayer({ id: 'owner-nodes-layer', type: 'circle', source: 'owner-nodes',
         paint: {
-          'circle-radius': ['case', ['==', ['get', 'kind'], 'owner'], 8, 6],
-          'circle-color': 'transparent',
+          'circle-radius': ['case', ['==', ['get', 'kind'], 'owner'], 8, 6.5],
+          'circle-color': ['case', ['==', ['get', 'kind'], 'owner'], 'rgba(0,196,255,0.18)', 'rgba(255,179,0,0.18)'],
           'circle-stroke-width': 2,
           'circle-stroke-color': ['case', ['==', ['get', 'kind'], 'owner'], '#00c4ff', '#ffb300'],
         } });
 
-      if (allPoints.length === 1) {
-        map.setCenter([allPoints[0].lon, allPoints[0].lat]);
-        map.setZoom(10);
-      } else if (allPoints.length > 1) {
-        const bounds = new maplibregl.LngLatBounds();
-        for (const pt of allPoints) bounds.extend([pt.lon, pt.lat]);
-        map.fitBounds(bounds, { padding: 24, animate: false });
-      }
+      map.on('mouseenter', 'owner-nodes-layer', () => {
+        map.getCanvas().style.cursor = 'pointer';
+      });
+      map.on('mouseleave', 'owner-nodes-layer', () => {
+        map.getCanvas().style.cursor = '';
+      });
+      map.on('click', 'owner-nodes-layer', (event) => {
+        const feature = event.features?.[0];
+        if (!feature || feature.geometry.type !== 'Point') return;
+        const coordinates = feature.geometry.coordinates.slice() as [number, number];
+        const name = String(feature.properties?.name ?? 'Node');
+        const details = String(feature.properties?.details ?? '');
+        popup
+          .setLngLat(coordinates)
+          .setHTML(`<div class="node-popup"><div class="node-popup__title">${name}</div><div class="node-popup__meta">${details}</div></div>`)
+          .addTo(map);
+      });
+
+      applyViewport();
+      requestAnimationFrame(applyViewport);
     });
 
+    const resizeObserver = new ResizeObserver(() => {
+      applyViewport();
+    });
+    resizeObserver.observe(containerRef.current);
+
     return () => {
+      resizeObserver.disconnect();
+      popup.remove();
       map.remove();
       void EMPTY; // silence unused warning
     };
@@ -932,10 +1006,7 @@ export const OwnerPortalPage: React.FC = () => {
             <div className="owner-dashboard-grid">
               <section className="prose-section owner-panel owner-panel--map">
                 <div className="owner-panel__head">
-                  <div>
-                    <h2>Direct Sender Map</h2>
-                    <p className="prose-note">0-hop direct senders in the last 24 hours. Nodes at 0,0 are hidden.</p>
-                  </div>
+                  <div><h2>Direct Sender Map</h2></div>
                 </div>
                 <div className="owner-map-wrap">
                   <OwnerMapView ownerCoord={ownerCoord} peers={mapPeers} allPoints={mapPoints} />

@@ -25,9 +25,11 @@ type LastHopStrengthPoint = {
 type OwnerServiceDeps = {
   ownerLiveCacheTtlMs: number;
   ownerLiveCache: Map<string, OwnerLiveCacheEntry>;
+  ownerLastHopCacheTtlMs: number;
   verifyMqttCredentials: (mqttUsername: string, mqttPassword: string) => Promise<boolean>;
   resolveOwnerNodeIds: (mqttUsername: string) => Promise<string[]>;
   autoLinkOwnerNodeIds: (mqttUsername: string) => Promise<string[]>;
+  listMappedOwnerNodeIds: () => Promise<string[]>;
   buildOwnerDashboard: (nodeIds: string[]) => Promise<OwnerDashboard>;
   repository: OwnerRepository;
 };
@@ -38,13 +40,59 @@ export function createOwnerService(deps: OwnerServiceDeps) {
   const {
     ownerLiveCacheTtlMs,
     ownerLiveCache,
+    ownerLastHopCacheTtlMs,
     verifyMqttCredentials,
     resolveOwnerNodeIds,
     autoLinkOwnerNodeIds,
+    listMappedOwnerNodeIds,
     buildOwnerDashboard,
     repository,
   } = deps;
   const ownerLastHopCache = new Map<string, OwnerLiveCacheEntry>();
+  let ownerLastHopRefreshInFlight = false;
+
+  async function buildOwnerLastHopResponse(nodeId: string): Promise<{ points: LastHopStrengthPoint[] }> {
+    const lastHopStrengthResult = await repository.fetchLastHopStrength([nodeId]);
+    return {
+      points: lastHopStrengthResult.rows.map((row) => ({
+        bucket: new Date(row.bucket).toISOString(),
+        lastHopNodeId: row.last_hop_node_id,
+        lastHopName: row.last_hop_name,
+        resolution: row.resolution,
+        avgSnr: row.avg_snr == null ? null : Number(row.avg_snr.toFixed(2)),
+        avgRssi: row.avg_rssi == null ? null : Number(row.avg_rssi.toFixed(2)),
+        sampleCount: Number(row.sample_count ?? 0),
+      })),
+    };
+  }
+
+  async function refreshOwnerLastHopCacheForNode(nodeId: string): Promise<void> {
+    const responseData = await buildOwnerLastHopResponse(nodeId);
+    ownerLastHopCache.set(nodeId, { ts: Date.now(), data: responseData });
+  }
+
+  async function refreshAllOwnerLastHopCaches(tag: 'initial' | 'scheduled'): Promise<void> {
+    if (ownerLastHopRefreshInFlight) {
+      console.warn(`[owner-last-hop] ${tag} refresh skipped; previous refresh still running`);
+      return;
+    }
+    ownerLastHopRefreshInFlight = true;
+    try {
+      const nodeIds = Array.from(new Set((await listMappedOwnerNodeIds()).map((nodeId) => nodeId.trim().toUpperCase()).filter(Boolean)));
+      for (const nodeId of nodeIds) {
+        try {
+          await refreshOwnerLastHopCacheForNode(nodeId);
+        } catch (err) {
+          console.error(`[owner-last-hop] failed to refresh ${nodeId}:`, (err as Error).message);
+        }
+      }
+      console.log(`[owner-last-hop] ${tag} refresh complete for ${nodeIds.length} node(s)`);
+    } catch (err) {
+      console.error(`[owner-last-hop] ${tag} refresh failed`, (err as Error).message);
+    } finally {
+      ownerLastHopRefreshInFlight = false;
+    }
+  }
 
   async function authenticateOwner(mqttUsername: string, mqttPassword: string): Promise<{ dashboard: OwnerDashboard; nodeIds: string[] }> {
     const authOk = await verifyMqttCredentials(mqttUsername, mqttPassword);
@@ -295,28 +343,22 @@ export function createOwnerService(deps: OwnerServiceDeps) {
       throw new Error('NODE_NOT_OWNED');
     }
 
-    const cacheKey = ownedNodeIds.slice().sort().join(',');
+    const cacheKey = selectedNodeId;
     const cacheEntry = ownerLastHopCache.get(cacheKey);
-    if (cacheEntry && Date.now() - cacheEntry.ts < 60_000) {
+    if (cacheEntry && Date.now() - cacheEntry.ts < ownerLastHopCacheTtlMs) {
       return cacheEntry.data as { points: LastHopStrengthPoint[] };
     }
 
-    const lastHopStrengthResult = await repository.fetchLastHopStrength(ownedNodeIds);
-    const responseData = {
-      points: lastHopStrengthResult.rows.map((row) => ({
-        bucket: new Date(row.bucket).toISOString(),
-        lastHopNodeId: row.last_hop_node_id,
-        lastHopName: row.last_hop_name,
-        resolution: row.resolution,
-        avgSnr: row.avg_snr == null ? null : Number(row.avg_snr.toFixed(2)),
-        avgRssi: row.avg_rssi == null ? null : Number(row.avg_rssi.toFixed(2)),
-        sampleCount: Number(row.sample_count ?? 0),
-      })),
-    };
-
+    const responseData = await buildOwnerLastHopResponse(selectedNodeId);
     ownerLastHopCache.set(cacheKey, { ts: Date.now(), data: responseData });
     return responseData;
   }
+
+  void refreshAllOwnerLastHopCaches('initial');
+  const ownerLastHopRefreshTimer = setInterval(() => {
+    void refreshAllOwnerLastHopCaches('scheduled');
+  }, ownerLastHopCacheTtlMs);
+  ownerLastHopRefreshTimer.unref?.();
 
   return {
     authenticateOwner,

@@ -1,6 +1,6 @@
 import mqtt from 'mqtt';
 import { randomBytes } from 'node:crypto';
-import { addOwnerNodeForUsername, getBestNodeForMqttUsername, getOwnerNodeIdsForUsername } from '../db/ownerAuth.js';
+import { addOwnerNodeForUsername, getBestNodeForMqttUsername, getMappedOwnerNodeIds, getOwnerNodeIdsForUsername } from '../db/ownerAuth.js';
 import { query } from '../db/index.js';
 
 function parseOwnerMqttUsernameMap(): Map<string, string[]> {
@@ -42,6 +42,10 @@ export async function autoLinkOwnerNodeIds(mqttUsername: string): Promise<string
 
   await addOwnerNodeForUsername(mqttUsername, nodeId);
   return [nodeId];
+}
+
+export async function listMappedOwnerNodeIds(): Promise<string[]> {
+  return getMappedOwnerNodeIds();
 }
 
 export function verifyMqttCredentials(mqttUsername: string, mqttPassword: string): Promise<boolean> {

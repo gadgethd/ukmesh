@@ -60,7 +60,7 @@ export function createOwnerRepository(deps: OwnerRepositoryDeps) {
            ROW_NUMBER() OVER (PARTITION BY uh.rx_node_id, uh.receiver_side_hash ORDER BY n.node_id) AS rn
          FROM unique_receiver_targets uh
          JOIN nodes n
-           ON (n.role IS NULL OR n.role = 2)
+           ON (n.role IS NULL OR n.role NOT IN (1, 3))
           AND UPPER(n.node_id) LIKE uh.receiver_side_hash || '%'
        ),
        inferred_last_hop AS (
@@ -84,7 +84,7 @@ export function createOwnerRepository(deps: OwnerRepositoryDeps) {
          FROM unique_receiver_targets uh
          JOIN nodes rx ON rx.node_id = uh.rx_node_id
          JOIN nodes n
-           ON (n.role IS NULL OR n.role = 2)
+           ON (n.role IS NULL OR n.role NOT IN (1, 3))
           AND UPPER(LEFT(n.node_id, 2)) = UPPER(LEFT(uh.receiver_side_hash, 2))
          LEFT JOIN node_links nl
            ON (
@@ -101,19 +101,34 @@ export function createOwnerRepository(deps: OwnerRepositoryDeps) {
          SELECT
            time_bucket('1 hour', op.time)::text AS bucket,
            CASE
-             WHEN op.hop_count = 0 AND op.src_node_id IS NOT NULL AND NOT (op.src_node_id = ANY($1::text[])) THEN op.src_node_id
+             WHEN op.hop_count = 0
+               AND op.src_node_id IS NOT NULL
+               AND NOT (op.src_node_id = ANY($1::text[]))
+               AND src.node_id IS NOT NULL
+               AND (src.role IS NULL OR src.role NOT IN (1, 3))
+             THEN op.src_node_id
              WHEN rl.match_count = 1 AND rl.rn = 1 THEN rl.node_id
              WHEN ilh.rn = 1 THEN ilh.node_id
              ELSE NULL
            END AS last_hop_node_id,
            CASE
-             WHEN op.hop_count = 0 AND op.src_node_id IS NOT NULL AND NOT (op.src_node_id = ANY($1::text[])) THEN COALESCE(src.name, op.src_node_id)
+             WHEN op.hop_count = 0
+               AND op.src_node_id IS NOT NULL
+               AND NOT (op.src_node_id = ANY($1::text[]))
+               AND src.node_id IS NOT NULL
+               AND (src.role IS NULL OR src.role NOT IN (1, 3))
+             THEN COALESCE(src.name, op.src_node_id)
              WHEN rl.match_count = 1 AND rl.rn = 1 THEN rl.name
              WHEN ilh.rn = 1 THEN ilh.name
              ELSE 'Unresolved'
            END AS last_hop_name,
            CASE
-             WHEN op.hop_count = 0 AND op.src_node_id IS NOT NULL AND NOT (op.src_node_id = ANY($1::text[])) THEN 'direct'
+             WHEN op.hop_count = 0
+               AND op.src_node_id IS NOT NULL
+               AND NOT (op.src_node_id = ANY($1::text[]))
+               AND src.node_id IS NOT NULL
+               AND (src.role IS NULL OR src.role NOT IN (1, 3))
+             THEN 'direct'
              WHEN rl.match_count = 1 AND rl.rn = 1 THEN 'resolved'
              WHEN ilh.rn = 1 THEN 'inferred'
              ELSE 'unresolved'

@@ -18,7 +18,7 @@ import {
 } from './bootstrap/caches.js';
 import { getNodes, getNodeHistory, getNodeAdverts, getPathHistoryCache, getRecentPacketEvents, getRecentPackets, query } from '../db/index.js';
 import { resolveRequestNetwork } from '../http/requestScope.js';
-import { autoLinkOwnerNodeIds, buildOwnerDashboard, resolveOwnerNodeIds, verifyMqttCredentials } from '../owner/ownerAccess.js';
+import { autoLinkOwnerNodeIds, buildOwnerDashboard, listMappedOwnerNodeIds, resolveOwnerNodeIds, verifyMqttCredentials } from '../owner/ownerAccess.js';
 import { encryptOwnerSession, getOwnerSession, isSecureRequest } from '../owner/ownerSession.js';
 import { getResolveCache, setResolveCache } from '../path-beta/resolveCache.js';
 import { resolvePool } from '../path-beta/resolvePool.js';
@@ -52,6 +52,7 @@ router.use(nodeStatusRoutes);
 router.use(radioRoutes);
 const OWNER_COOKIE_NAME = 'meshcore_owner_session';
 const OWNER_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const OWNER_LAST_HOP_CACHE_TTL_MS = 60 * 60 * 1000;
 const MQTT_USERNAME_MAX_LEN = 128;
 const MQTT_PASSWORD_MAX_LEN = 128;
 
@@ -99,6 +100,7 @@ registerOwnerRoutes(router, {
   ownerCookieName: OWNER_COOKIE_NAME,
   ownerLiveCacheTtlMs: OWNER_LIVE_CACHE_TTL_MS,
   ownerLiveCache,
+  ownerLastHopCacheTtlMs: OWNER_LAST_HOP_CACHE_TTL_MS,
   ownerSessionTtlMs: OWNER_SESSION_TTL_MS,
   mqttUsernameMaxLen: MQTT_USERNAME_MAX_LEN,
   mqttPasswordMaxLen: MQTT_PASSWORD_MAX_LEN,
@@ -107,6 +109,7 @@ registerOwnerRoutes(router, {
   verifyMqttCredentials,
   resolveOwnerNodeIds,
   autoLinkOwnerNodeIds,
+  listMappedOwnerNodeIds,
   buildOwnerDashboard,
   encryptOwnerSession,
   isSecureRequest,

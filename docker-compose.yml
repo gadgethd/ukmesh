@@ -54,7 +54,7 @@ services:
       OWNER_DATABASE_URL: ${OWNER_DATABASE_URL:-postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${OWNER_POSTGRES_DB:-meshcore_owner_auth}}
       OWNER_MQTT_USERNAME_MAP: ${OWNER_MQTT_USERNAME_MAP:-}
       OWNER_COOKIE_SECRET: ${OWNER_COOKIE_SECRET:-}
-      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3001,http://localhost:3002},https://test.ukmesh.com
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3001,http://localhost:3002,https://ukmesh.com,https://www.ukmesh.com,https://app.ukmesh.com,https://teessidemesh.com,https://www.teessidemesh.com,https://app.teessidemesh.com,https://test.ukmesh.com}
       RADIO_BOT_URL: ${RADIO_BOT_URL:-}
       COVERAGE_MODEL_VERSION: ${COVERAGE_MODEL_VERSION:-5}
       NODE_ENV: production

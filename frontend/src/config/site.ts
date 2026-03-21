@@ -38,7 +38,7 @@ const SITE_CONFIGS: Record<SiteId, SiteConfig> = {
     network: 'ukmesh',
     networkFilter: 'ukmesh',
     appUrl: 'https://app.ukmesh.com',
-    appHomeUrl: 'https://www.ukmesh.com',
+    appHomeUrl: 'https://ukmesh.com',
     mapHomeUrl: 'https://app.ukmesh.com',
   },
   dev: {
