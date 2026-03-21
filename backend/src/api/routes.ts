@@ -18,7 +18,7 @@ import {
 } from './bootstrap/caches.js';
 import { getNodes, getNodeHistory, getNodeAdverts, getPathHistoryCache, getRecentPacketEvents, getRecentPackets, query } from '../db/index.js';
 import { resolveRequestNetwork } from '../http/requestScope.js';
-import { autoLinkOwnerNodeIds, buildOwnerDashboard, listMappedOwnerNodeIds, resolveOwnerNodeIds, verifyMqttCredentials } from '../owner/ownerAccess.js';
+import { autoLinkOwnerNodeIds, buildOwnerDashboard, resolveOwnerNodeIds, verifyMqttCredentials } from '../owner/ownerAccess.js';
 import { encryptOwnerSession, getOwnerSession, isSecureRequest } from '../owner/ownerSession.js';
 import { getResolveCache, setResolveCache } from '../path-beta/resolveCache.js';
 import { resolvePool } from '../path-beta/resolvePool.js';
@@ -109,7 +109,6 @@ registerOwnerRoutes(router, {
   verifyMqttCredentials,
   resolveOwnerNodeIds,
   autoLinkOwnerNodeIds,
-  listMappedOwnerNodeIds,
   buildOwnerDashboard,
   encryptOwnerSession,
   isSecureRequest,

@@ -14,7 +14,13 @@ export type OwnerRepository = ReturnType<typeof createOwnerRepository>;
 export function createOwnerRepository(deps: OwnerRepositoryDeps) {
   const { query } = deps;
 
-  async function fetchLastHopStrength(ownerNodeIds: string[]) {
+  async function fetchLastHopStrength(ownerNodeIds: string[], since?: string) {
+    const params: unknown[] = [ownerNodeIds];
+    const timeFilter = since
+      ? `p.time >= $2::timestamptz`
+      : `p.time > NOW() - INTERVAL '7 days'`;
+    if (since) params.push(since);
+
     return query<{
       bucket: string;
       last_hop_node_id: string | null;
@@ -40,7 +46,7 @@ export function createOwnerRepository(deps: OwnerRepositoryDeps) {
            END AS receiver_side_hash
          FROM packets p
          WHERE p.rx_node_id = ANY($1::text[])
-           AND p.time > NOW() - INTERVAL '7 days'
+           AND ${timeFilter}
            AND (p.snr IS NOT NULL OR p.rssi IS NOT NULL)
        ),
        unique_receiver_targets AS (
@@ -157,7 +163,7 @@ export function createOwnerRepository(deps: OwnerRepositoryDeps) {
        FROM classified
        GROUP BY bucket, last_hop_node_id, last_hop_name, resolution
        ORDER BY bucket ASC, sample_count DESC, last_hop_name ASC`,
-      [ownerNodeIds],
+      params,
     );
   }
 

@@ -36,7 +36,6 @@ type OwnerRouteDeps = {
   verifyMqttCredentials: VerifyMqttCredentialsFn;
   resolveOwnerNodeIds: ResolveOwnerNodeIdsFn;
   autoLinkOwnerNodeIds: ResolveOwnerNodeIdsFn;
-  listMappedOwnerNodeIds: () => Promise<string[]>;
   buildOwnerDashboard: BuildOwnerDashboardFn;
   encryptOwnerSession: EncryptOwnerSessionFn;
   isSecureRequest: IsSecureRequestFn;
@@ -57,7 +56,6 @@ export function registerOwnerRoutes(router: Router, deps: OwnerRouteDeps): void 
     verifyMqttCredentials: deps.verifyMqttCredentials,
     resolveOwnerNodeIds: deps.resolveOwnerNodeIds,
     autoLinkOwnerNodeIds: deps.autoLinkOwnerNodeIds,
-    listMappedOwnerNodeIds: deps.listMappedOwnerNodeIds,
     buildOwnerDashboard: deps.buildOwnerDashboard,
     repository,
   });

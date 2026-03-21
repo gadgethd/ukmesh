@@ -22,6 +22,16 @@ type LastHopStrengthPoint = {
   sampleCount: number;
 };
 
+type OwnerLastHopResponse = {
+  points: LastHopStrengthPoint[];
+};
+
+type OwnerLastHopCacheEntry = {
+  ts: number;
+  data: OwnerLastHopResponse;
+  latestBucket: string | null;
+};
+
 type OwnerServiceDeps = {
   ownerLiveCacheTtlMs: number;
   ownerLiveCache: Map<string, OwnerLiveCacheEntry>;
@@ -29,7 +39,6 @@ type OwnerServiceDeps = {
   verifyMqttCredentials: (mqttUsername: string, mqttPassword: string) => Promise<boolean>;
   resolveOwnerNodeIds: (mqttUsername: string) => Promise<string[]>;
   autoLinkOwnerNodeIds: (mqttUsername: string) => Promise<string[]>;
-  listMappedOwnerNodeIds: () => Promise<string[]>;
   buildOwnerDashboard: (nodeIds: string[]) => Promise<OwnerDashboard>;
   repository: OwnerRepository;
 };
@@ -44,17 +53,22 @@ export function createOwnerService(deps: OwnerServiceDeps) {
     verifyMqttCredentials,
     resolveOwnerNodeIds,
     autoLinkOwnerNodeIds,
-    listMappedOwnerNodeIds,
     buildOwnerDashboard,
     repository,
   } = deps;
-  const ownerLastHopCache = new Map<string, OwnerLiveCacheEntry>();
-  let ownerLastHopRefreshInFlight = false;
+  const ownerLastHopCache = new Map<string, OwnerLastHopCacheEntry>();
 
-  async function buildOwnerLastHopResponse(nodeId: string): Promise<{ points: LastHopStrengthPoint[] }> {
-    const lastHopStrengthResult = await repository.fetchLastHopStrength([nodeId]);
+  function mapLastHopRows(rows: Array<{
+    bucket: string;
+    last_hop_node_id: string | null;
+    last_hop_name: string;
+    resolution: 'direct' | 'resolved' | 'inferred' | 'unresolved';
+    avg_snr: number | null;
+    avg_rssi: number | null;
+    sample_count: number;
+  }>): OwnerLastHopResponse {
     return {
-      points: lastHopStrengthResult.rows.map((row) => ({
+      points: rows.map((row) => ({
         bucket: new Date(row.bucket).toISOString(),
         lastHopNodeId: row.last_hop_node_id,
         lastHopName: row.last_hop_name,
@@ -66,32 +80,31 @@ export function createOwnerService(deps: OwnerServiceDeps) {
     };
   }
 
-  async function refreshOwnerLastHopCacheForNode(nodeId: string): Promise<void> {
-    const responseData = await buildOwnerLastHopResponse(nodeId);
-    ownerLastHopCache.set(nodeId, { ts: Date.now(), data: responseData });
+  function trimLastHopPoints(points: LastHopStrengthPoint[]): LastHopStrengthPoint[] {
+    const cutoff = Date.now() - (7 * 24 * 60 * 60 * 1000);
+    return points
+      .filter((point) => Date.parse(point.bucket) >= cutoff)
+      .sort((a, b) => a.bucket.localeCompare(b.bucket));
   }
 
-  async function refreshAllOwnerLastHopCaches(tag: 'initial' | 'scheduled'): Promise<void> {
-    if (ownerLastHopRefreshInFlight) {
-      console.warn(`[owner-last-hop] ${tag} refresh skipped; previous refresh still running`);
-      return;
+  function mergeLastHopPoints(existing: LastHopStrengthPoint[], recent: LastHopStrengthPoint[]): LastHopStrengthPoint[] {
+    const merged = new Map<string, LastHopStrengthPoint>();
+    for (const point of existing) {
+      merged.set(`${point.bucket}|${point.lastHopNodeId ?? ''}|${point.lastHopName}|${point.resolution}`, point);
     }
-    ownerLastHopRefreshInFlight = true;
-    try {
-      const nodeIds = Array.from(new Set((await listMappedOwnerNodeIds()).map((nodeId) => nodeId.trim().toUpperCase()).filter(Boolean)));
-      for (const nodeId of nodeIds) {
-        try {
-          await refreshOwnerLastHopCacheForNode(nodeId);
-        } catch (err) {
-          console.error(`[owner-last-hop] failed to refresh ${nodeId}:`, (err as Error).message);
-        }
-      }
-      console.log(`[owner-last-hop] ${tag} refresh complete for ${nodeIds.length} node(s)`);
-    } catch (err) {
-      console.error(`[owner-last-hop] ${tag} refresh failed`, (err as Error).message);
-    } finally {
-      ownerLastHopRefreshInFlight = false;
+    for (const point of recent) {
+      merged.set(`${point.bucket}|${point.lastHopNodeId ?? ''}|${point.lastHopName}|${point.resolution}`, point);
     }
+    return trimLastHopPoints(Array.from(merged.values()));
+  }
+
+  function latestBucketOf(points: LastHopStrengthPoint[]): string | null {
+    return points.length > 0 ? points[points.length - 1]!.bucket : null;
+  }
+
+  async function buildOwnerLastHopResponse(nodeId: string, since?: string): Promise<OwnerLastHopResponse> {
+    const lastHopStrengthResult = await repository.fetchLastHopStrength([nodeId], since);
+    return mapLastHopRows(lastHopStrengthResult.rows);
   }
 
   async function authenticateOwner(mqttUsername: string, mqttPassword: string): Promise<{ dashboard: OwnerDashboard; nodeIds: string[] }> {
@@ -331,7 +344,7 @@ export function createOwnerService(deps: OwnerServiceDeps) {
     return responseData;
   }
 
-  async function getOwnerLastHopStrength(ownedNodeIds: string[], requestedNodeId?: string): Promise<{ points: LastHopStrengthPoint[] }> {
+  async function getOwnerLastHopStrength(ownedNodeIds: string[], requestedNodeId?: string): Promise<OwnerLastHopResponse> {
     if (ownedNodeIds.length < 1) {
       throw new Error('NO_OWNED_NODES');
     }
@@ -346,19 +359,26 @@ export function createOwnerService(deps: OwnerServiceDeps) {
     const cacheKey = selectedNodeId;
     const cacheEntry = ownerLastHopCache.get(cacheKey);
     if (cacheEntry && Date.now() - cacheEntry.ts < ownerLastHopCacheTtlMs) {
-      return cacheEntry.data as { points: LastHopStrengthPoint[] };
+      return cacheEntry.data;
     }
 
-    const responseData = await buildOwnerLastHopResponse(selectedNodeId);
-    ownerLastHopCache.set(cacheKey, { ts: Date.now(), data: responseData });
+    let responseData: OwnerLastHopResponse;
+    if (!cacheEntry || !cacheEntry.latestBucket) {
+      responseData = await buildOwnerLastHopResponse(selectedNodeId);
+    } else {
+      const recent = await buildOwnerLastHopResponse(selectedNodeId, cacheEntry.latestBucket);
+      responseData = {
+        points: mergeLastHopPoints(cacheEntry.data.points, recent.points),
+      };
+    }
+
+    ownerLastHopCache.set(cacheKey, {
+      ts: Date.now(),
+      data: responseData,
+      latestBucket: latestBucketOf(responseData.points),
+    });
     return responseData;
   }
-
-  void refreshAllOwnerLastHopCaches('initial');
-  const ownerLastHopRefreshTimer = setInterval(() => {
-    void refreshAllOwnerLastHopCaches('scheduled');
-  }, ownerLastHopCacheTtlMs);
-  ownerLastHopRefreshTimer.unref?.();
 
   return {
     authenticateOwner,
