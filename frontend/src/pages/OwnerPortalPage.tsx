@@ -361,7 +361,7 @@ const LastHopStrengthChart: React.FC<{ points: LastHopStrengthPoint[] }> = ({ po
       <article className="owner-telemetry-metric">
         <div className="owner-panel__head owner-panel__head--compact">
           <div>
-            <h3>RX Strength by Last Hop</h3>
+            <h3>RX Strength by Last Hop <span style={{ fontSize: '0.6em', opacity: 0.6 }}>(Node names are predicted based on the first two hex characters in the path)</span></h3>
             <p>Average SNR over the last 7 days</p>
           </div>
         </div>
@@ -392,7 +392,7 @@ const LastHopStrengthChart: React.FC<{ points: LastHopStrengthPoint[] }> = ({ po
       <article className="owner-telemetry-metric owner-telemetry-metric--wide owner-telemetry-metric--tall">
         <div className="owner-panel__head owner-panel__head--compact">
           <div>
-            <h3>RX Strength by Last Hop</h3>
+            <h3>RX Strength by Last Hop <span style={{ fontSize: '0.6em', opacity: 0.6 }}>(Node names are predicted based on the first two hex characters in the path)</span></h3>
             <p>{latestActive || 'Average SNR over the last 7 days'}</p>
           </div>
           <strong className="owner-telemetry-metric__value">{chartState.series.length}</strong>
@@ -442,9 +442,9 @@ const LastHopStrengthChart: React.FC<{ points: LastHopStrengthPoint[] }> = ({ po
               type="button"
               className={`owner-telemetry-metric__series-btn${selectedSeriesKey === series.key ? ' owner-telemetry-metric__series-btn--active' : ''}`}
               onClick={() => setSelectedSeriesKey(series.key)}
-              title={`${series.label} · ${series.bucketCount} hourly point${series.bucketCount === 1 ? '' : 's'} · ${series.totalSamples} packets in last 7d`}
+              title={`${series.label} · ${series.bucketCount} hourly buckets · ${series.totalSamples} packets in last 7d`}
             >
-              {series.label} ({series.bucketCount}h)
+              {series.label} ({series.totalSamples})
             </button>
           ))}
         </div>

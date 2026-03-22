@@ -14,12 +14,15 @@ type WorkerMessage = {
   packetHash: string;
   network: string;
   observer?: string;
+  stickyMap?: Record<string, string>;
+  stickyAgeFraction?: number;
 };
 
 parentPort.on('message', (msg: WorkerMessage) => {
+  const stickyMap = msg.stickyMap ? new Map(Object.entries(msg.stickyMap)) : undefined;
   const run = msg.type === 'resolveMulti'
-    ? resolveMultiObserverBetaPath(msg.packetHash, msg.network)
-    : resolveBetaPathForPacketHash(msg.packetHash, msg.network, msg.observer);
+    ? resolveMultiObserverBetaPath(msg.packetHash, msg.network, stickyMap, msg.stickyAgeFraction)
+    : resolveBetaPathForPacketHash(msg.packetHash, msg.network, msg.observer, stickyMap, msg.stickyAgeFraction);
 
   run
     .then((result) => { parentPort!.postMessage({ id: msg.id, ok: true, result: result ?? null }); })

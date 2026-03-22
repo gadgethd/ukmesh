@@ -82,7 +82,7 @@ function directionalSupport(meta: LinkMetrics, fromId: string, toId: string): nu
   return fromTo / total;
 }
 
-function observerHopPrior(candidate: MeshNode, prevNode: MeshNode, hints: ObserverHopHint[]): number {
+function observerHopPrior(candidate: MeshNode, prevNode: MeshNode, hints: ObserverHopHint[], typicalHopKm = 25): number {
   if (hints.length < 1) return 0;
   let weighted = 0;
   let totalWeight = 0;
@@ -91,7 +91,9 @@ function observerHopPrior(candidate: MeshNode, prevNode: MeshNode, hints: Observ
     if (!hasCoords(observer) || hint.hopDelta === 0) continue;
     const prevDist = distKm(prevNode, observer);
     const candidateDist = distKm(candidate, observer);
-    const towardObserver = clamp((prevDist - candidateDist) / 25, -1, 1);
+    // Normalise by typical hop spacing so the hint stays meaningful across
+    // both dense (5 km) and wide-area (40 km) networks instead of saturating at ±1.
+    const towardObserver = clamp((prevDist - candidateDist) / typicalHopKm, -1, 1);
     const weight = clamp(Math.abs(hint.hopDelta) / 4, 0.2, 1);
     const contribution = hint.hopDelta < 0
       ? towardObserver
@@ -288,7 +290,10 @@ function splitResolvedAndAlternatives(
     const toId = result.nodeIds[i + 1];
     if (!fromId || !toId) return v;
     if (!purpleEdgeAllowed(fromId, toId, nodesById, coverageByNode, linkMetrics)) return 0;
-    return Math.max(v, edgeMetricConfidence(fromId, toId, linkMetrics));
+    // Only boost with edgeMetricConfidence for links with real observed traffic.
+    // Unobserved ITM-viable links keep the Viterbi confidence as-is (capped below purple).
+    const observed = linkMetrics.get(linkKey(fromId, toId))?.observed_count ?? 0;
+    return observed > 0 ? Math.max(v, edgeMetricConfidence(fromId, toId, linkMetrics)) : v;
   });
 
   let splitIdx = -1;
@@ -322,7 +327,8 @@ function splitResolvedFromSource(
     const toId = result.nodeIds[i + 1];
     if (!fromId || !toId) return v;
     if (!purpleEdgeAllowed(fromId, toId, nodesById, coverageByNode, linkMetrics)) return 0;
-    return Math.max(v, edgeMetricConfidence(fromId, toId, linkMetrics));
+    const observed = linkMetrics.get(linkKey(fromId, toId))?.observed_count ?? 0;
+    return observed > 0 ? Math.max(v, edgeMetricConfidence(fromId, toId, linkMetrics)) : v;
   });
   let keepEdges = 0;
   for (let i = 0; i < seg.length; i++) {
@@ -706,6 +712,8 @@ function resolveBetaPath(
     observerHopHints?: ObserverHopHint[];
     anchorNodes?: Map<number, MeshNode>;
     extraCorridorTargets?: MeshNode[];
+    /** Age of sticky anchors as fraction of their TTL (0=fresh, 1=expired). Used to decay confidence. */
+    stickyAgeFraction?: number;
   },
 ): { path: [number, number][]; confidence: number; segmentConfidence: number[]; nodeIds: string[] } | null {
   const normalizedHashes = pathHashes.map(normalizePathHash).filter(Boolean);
@@ -723,12 +731,19 @@ function resolveBetaPath(
 
   const totalDist = hasCoords(src) ? distKm(src, rx) : 0;
   const corridorMaxKm = Math.max(10, Math.min(80, totalDist * 0.35));
+  // Typical per-hop spacing used to normalise observer hint directionality.
+  // Clamped 5–40 km so hints remain meaningful in both dense and sparse networks.
+  const typicalHopKm = normalizedHashes.length > 0
+    ? Math.max(5, Math.min(40, totalDist / normalizedHashes.length))
+    : 25;
   const receiverRegion = rx.iata ?? 'unknown';
   const bucketHours = context.learningModel.bucketHours ?? 6;
   const hourBucket = currentHourBucket(bucketHours);
   const activeObserverHopHints = options?.observerHopHints ?? [];
   const extraCorridorTargets = options?.extraCorridorTargets ?? [];
   const anchorNodes = options?.anchorNodes;
+  // Decay sticky anchor weight as they age: fresh=1.0, at TTL boundary=0.7
+  const stickyConfidenceScale = 1.0 - Math.max(0, Math.min(1, options?.stickyAgeFraction ?? 0)) * 0.3;
 
   function prefixPrior(prefix: string, prevPrefix: string, nodeId: string): number {
     const exactKey = `${receiverRegion}|${prefix}|${prevPrefix}|${nodeId}`;
@@ -907,218 +922,164 @@ function resolveBetaPath(
     return false;
   }
 
-  function getCandidates(prefix: string, prevPrefix: string, prevNode: MeshNode, nextTowardRx: string | null): Array<{ node: MeshNode; conf: number }> {
-    const all = getNodesForPathHash(pathHashIndex, prefix);
-    if (all.length === 0) return [];
-    const nextTowardRxNode = nextTowardRx ? (context.nodesById.get(nextTowardRx) ?? null) : null;
-    const observerOwnPrefix = rx.role === 2 ? nodePathHash(rx.node_id, prefix) : null;
-    const isObserverTerminalCollision = (candidate: MeshNode): boolean => (
-      prevNode.node_id === rx.node_id
-      && observerOwnPrefix === prefix
-      && candidate.node_id !== rx.node_id
-    );
-    const allowTerminalCollisionCandidate = (candidate: MeshNode): boolean => {
-      if (!isObserverTerminalCollision(candidate)) return true;
-      const meta = context.linkMetrics.get(linkKey(candidate.node_id, rx.node_id));
-      const observed = Number(meta?.observed_count ?? 0);
-      const pathLoss = meta?.itm_path_loss_db;
-      return observed >= 120 && pathLoss != null && pathLoss <= 125;
-    };
+  // --- Viterbi HMM decoder ---
+  // Replaces the budget-limited DFS. Finds the globally optimal node assignment
+  // across all hop positions simultaneously in O(K²·N) time.
 
-    function directionalPrior(c: MeshNode): number {
-      return sourceProgressScore(c, prevNode, src) * 0.75
-        + turnContinuityScore(c, prevNode, nextTowardRxNode) * 0.95;
+  const N = normalizedHashes.length;
+
+  // Precompute total hash-match counts for ambiguity scoring (per hop)
+  const hashMatchCounts = normalizedHashes.map((h) => getNodesForPathHash(pathHashIndex, h).length);
+
+  // Build trellis: trellis[hopIdx] = candidate nodes at that hop.
+  // hopIdx N-1 is adjacent to rx; hopIdx 0 is adjacent to src.
+  function buildColumn(hopIdx: number): MeshNode[] {
+    const prefix = normalizedHashes[hopIdx]!;
+    const anchor = anchorNodes?.get(hopIdx);
+    if (anchor && hasCoords(anchor) && !blockedNodeIds.has(anchor.node_id)) {
+      if (nodePathHash(anchor.node_id, prefix) === prefix) return [anchor];
     }
-
-    function multiObserverPrior(c: MeshNode): number {
-      return observerHopPrior(c, prevNode, activeObserverHopHints);
-    }
-
-    function sortScore(c: MeshNode): number {
-      const corridorBonus = inCorridor(c, prevNode, prefix) ? 0.25 : -0.6;
-      const observerCollisionPenalty = isObserverTerminalCollision(c) ? 3.5 : 0;
-      const meta = context.linkMetrics.get(linkKey(c.node_id, prevNode.node_id));
-      const linkBias = context.linkPairs.has(linkKey(c.node_id, prevNode.node_id)) ? 1.8 : -0.7;
-      const colorBias = linkColorPreference(meta) * 4.5;
-      return directionalPrior(c) + multiObserverPrior(c) * 1.4 - distKm(c, prevNode) / 50 + corridorBonus + linkBias + colorBias - observerCollisionPenalty;
-    }
-
-    const usedIds = new Set<string>();
-
-    const confirmed = all
-      .filter((c) => {
-        if (!allowTerminalCollisionCandidate(c)) return false;
-        const key = linkKey(c.node_id, prevNode.node_id);
-        if (!context.linkPairs.has(key)) return false;
-        const meta = context.linkMetrics.get(key);
-        if (!meta || meta.count_a_to_b == null || meta.count_b_to_a == null) return true;
-        const dir = directionalSupport(meta, c.node_id, prevNode.node_id);
-        const observed = meta.observed_count ?? 0;
-        if (observed < 20) return true;
-        return dir >= minimumDirectionalSupport(observed) * 0.6;
-      })
-      .sort((a, b) => sortScore(b) - sortScore(a))
-      .slice(0, 16)
-      .map((c) => {
-        usedIds.add(c.node_id);
-        const meta = context.linkMetrics.get(linkKey(c.node_id, prevNode.node_id));
-        const priorBoost = prefixPrior(prefix, prevPrefix, c.node_id) * 0.2;
-        const transitionBoost = transitionPrior(c.node_id, prevNode.node_id) * 0.24;
-        const motifBoost = motifPrior([c.node_id, prevNode.node_id]) * 0.2
-          + (nextTowardRx ? motifPrior([c.node_id, prevNode.node_id, nextTowardRx]) * 0.25 : 0);
-        const edgeBoost = edgePrior(c.node_id, prevNode.node_id) * 0.3;
-        const ambiguityPenalty = localPrefixAmbiguityPenalty(c, prevNode, prefix);
-        const uniquenessBoost = hashUniquenessBoost(prefix);
-        const directionalBoost = clamp(directionalPrior(c), -1, 1) * 0.08;
-        const observerHopBoost = clamp(multiObserverPrior(c), -1, 1) * OBSERVER_HOP_WEIGHT_CONFIRMED;
-        const confirmedFloor = strongConfirmedFloor(meta);
-        const multibyteFloor = multibyteConfidenceFloor(prefix);
-        const linkedPathBonus = 0.16;
-        const baseConf = confirmedLinkConfidence(meta, c.node_id, prevNode.node_id, {
-          prefix: priorBoost + directionalBoost + observerHopBoost + uniquenessBoost + linkedPathBonus,
-          transition: transitionBoost,
-          motif: motifBoost,
-          edge: edgeBoost,
-          ambiguity: -ambiguityPenalty,
-        });
-        return { node: c, conf: Math.max(baseConf, confirmedFloor, multibyteFloor) };
-      });
-
-    const reachable = all
-      .filter((c) => {
-        if (!allowTerminalCollisionCandidate(c)) return false;
-        if (usedIds.has(c.node_id)) return false;
-        if (!inCorridor(c, prevNode, prefix)) return false;
-        if (distKm(c, prevNode) > MAX_HOP_KM) return false;
-        const meta = context.linkMetrics.get(linkKey(c.node_id, prevNode.node_id));
-        if (isImpossibleLink(meta)) return false;
-        const reachOk = canReach(c, prevNode, context.coverageByNode);
-        const losOk = hasLoS(c, prevNode);
-        const itmOk = isWeakOrBetter(meta);
-        // ITM quality can substitute for coverage range, but geometric LoS is always required
-        return (reachOk || itmOk) && (losOk || itmOk);
-      })
-      .sort((a, b) => sortScore(b) - sortScore(a))
-      .slice(0, 10)
-      .map((c) => {
-        const edgeKey = linkKey(c.node_id, prevNode.node_id);
-        const isLinked = context.linkPairs.has(edgeKey);
-        usedIds.add(c.node_id);
-        const distancePenalty = Math.min(0.12, distKm(c, prevNode) / 120);
-        const prior = distanceElevationPrior(c, prevNode);
-        const prefixBoost = prefixPrior(prefix, prevPrefix, c.node_id) * 0.22;
-        const transitionBoost = transitionPrior(c.node_id, prevNode.node_id) * 0.25;
-        const motifBoost = motifPrior([c.node_id, prevNode.node_id]) * 0.18
-          + (nextTowardRx ? motifPrior([c.node_id, prevNode.node_id, nextTowardRx]) * 0.2 : 0);
-        const edgeBoost = edgePrior(c.node_id, prevNode.node_id) * 0.28;
-        const ambiguityPenalty = localPrefixAmbiguityPenalty(c, prevNode, prefix);
-        const uniquenessBoost = hashUniquenessBoost(prefix);
-        const multibyteFloor = multibyteConfidenceFloor(prefix);
-        const directionalBoost = clamp(directionalPrior(c), -1, 1) * 0.1;
-        const observerHopBoost = clamp(multiObserverPrior(c), -1, 1) * OBSERVER_HOP_WEIGHT_REACHABLE;
-        const rawConf = Math.max(
-          multibyteFloor,
-          0.08,
-          0.2 + prior * 0.34 + prefixBoost + transitionBoost + motifBoost + edgeBoost + directionalBoost + observerHopBoost + uniquenessBoost - distancePenalty - ambiguityPenalty - (all.length - 1) * 0.01,
-        );
-        const nonLinkCap = 0.41;
-        return {
-          node: c,
-          conf: isLinked || multibyteFloor >= BETA_PURPLE_THRESHOLD ? rawConf : Math.min(rawConf, nonLinkCap),
-        };
-      });
-
-    const fallback = all
-      .filter((c) => {
-        if (!allowTerminalCollisionCandidate(c)) return false;
-        if (usedIds.has(c.node_id)) return false;
-        if (!inCorridor(c, prevNode, prefix)) return false;
-        if (distKm(c, prevNode) >= MAX_HOP_KM * 0.5) return false;
-        const meta = context.linkMetrics.get(linkKey(c.node_id, prevNode.node_id));
-        if (isImpossibleLink(meta)) return false;
-        const reachOk = canReach(c, prevNode, context.coverageByNode);
-        const losOk = hasLoS(c, prevNode);
-        return (reachOk && losOk) || (reachOk && isLooseOrBetter(meta)) || (isWeakOrBetter(meta) && losOk);
-      })
-      .sort((a, b) => sortScore(b) - sortScore(a))
-      .slice(0, 6)
-      .map((c) => {
-        const edgeKey = linkKey(c.node_id, prevNode.node_id);
-        const isLinked = context.linkPairs.has(edgeKey);
-        const prior = distanceElevationPrior(c, prevNode);
-        const prefixBoost = prefixPrior(prefix, prevPrefix, c.node_id) * 0.16;
-        const transitionBoost = transitionPrior(c.node_id, prevNode.node_id) * 0.16;
-        const motifBoost = motifPrior([c.node_id, prevNode.node_id]) * 0.12;
-        const edgeBoost = edgePrior(c.node_id, prevNode.node_id) * 0.18;
-        const ambiguityPenalty = localPrefixAmbiguityPenalty(c, prevNode, prefix);
-        const uniquenessBoost = hashUniquenessBoost(prefix);
-        const multibyteFloor = multibyteConfidenceFloor(prefix);
-        const directionalBoost = clamp(directionalPrior(c), -1, 1) * 0.08;
-        const observerHopBoost = clamp(multiObserverPrior(c), -1, 1) * OBSERVER_HOP_WEIGHT_FALLBACK;
-        const rawConf = Math.max(
-          multibyteFloor,
-          Math.max(0.03, 0.04 + prior * 0.2 + prefixBoost + transitionBoost + motifBoost + edgeBoost + directionalBoost + observerHopBoost + uniquenessBoost - ambiguityPenalty) / Math.max(1, all.length),
-        );
-        const nonLinkCap = 0.28;
-        return {
-          node: c,
-          conf: isLinked || multibyteFloor >= BETA_PURPLE_THRESHOLD ? rawConf : Math.min(rawConf, nonLinkCap),
-        };
-      });
-
-    return [...confirmed, ...reachable, ...fallback];
+    return getNodesForPathHash(pathHashIndex, prefix).filter((n) => !blockedNodeIds.has(n.node_id));
   }
 
-  const ambiguity = normalizedHashes.reduce((sum, h) => sum + countNodesForPathHash(pathHashIndex, h), 0);
-  let budget = Math.max(3_000, Math.min(308_232, 1_000 + normalizedHashes.length * 3_000 + ambiguity * 800));
+  const trellis: MeshNode[][] = [];
+  for (let h = N - 1; h >= 0; h--) trellis[h] = buildColumn(h);
 
-  function solve(hopIdx: number, prevNode: MeshNode, nextTowardRx: string | null, visited: Set<string>): HopResult[] | null {
-    if (hopIdx < 0) return [];
-    if (--budget <= 0) return null;
+  // Compute the confidence score for assigning `candidate` to hopIdx,
+  // given that the next-closer-to-rx node is `prevNode`.
+  // Returns -Infinity when the transition is physically impossible.
+  //
+  // Only links present in context.linkPairs (itm_viable OR force_viable from the link worker)
+  // are valid hops. Everything else is impossible regardless of geometry.
+  function hopScore(
+    candidate: MeshNode,
+    prevNode: MeshNode,
+    hopIdx: number,
+  ): number {
+    const mKey = linkKey(candidate.node_id, prevNode.node_id);
 
-    // Anchor constraint: use pre-resolved node for this hop if available
-    const anchor = anchorNodes?.get(hopIdx);
-    if (anchor && hasCoords(anchor) && !visited.has(anchor.node_id)) {
-      const prefix = normalizedHashes[hopIdx]!;
-      const anchorHash = nodePathHash(anchor.node_id, prefix);
-      if (anchorHash === prefix) {
-        const key = linkKey(anchor.node_id, prevNode.node_id);
-        const meta = context.linkMetrics.get(key);
-        const ambiguityPenalty = localPrefixAmbiguityPenalty(anchor, prevNode, prefix);
-        const uniquenessBoost = hashUniquenessBoost(prefix);
-        const multibyteFloor = multibyteConfidenceFloor(prefix);
-        const rawConf = meta
-          ? confirmedLinkConfidence(meta, anchor.node_id, prevNode.node_id, { ambiguity: -ambiguityPenalty + uniquenessBoost })
-          : (edgeMetricConfidence(anchor.node_id, prevNode.node_id, context.linkMetrics) || ANCHOR_CONFIDENCE_DEFAULT) - ambiguityPenalty + uniquenessBoost;
-        const conf = Math.max(0.03, rawConf, multibyteFloor);
-        const nextVisited = new Set(visited);
-        nextVisited.add(anchor.node_id);
-        const rest = solve(hopIdx - 1, anchor, prevNode.node_id, nextVisited);
-        if (rest !== null) return [{ node: anchor, conf }, ...rest];
-        // If anchor chain fails downstream, fall through to normal solve
+    // Link worker verdict is the sole gate: only ITM-viable links are valid hops.
+    if (!context.linkPairs.has(mKey)) return -Infinity;
+
+    const meta = context.linkMetrics.get(mKey);
+    if (isImpossibleLink(meta)) return -Infinity;
+
+    const prefix = normalizedHashes[hopIdx]!;
+    const prevPrefix = hopIdx < N - 1 ? normalizedHashes[hopIdx + 1]! : '';
+
+    // Terminal-collision guard: when prevNode is rx and the hash matches rx's own prefix,
+    // only allow this candidate if the link has sufficient confirmed observations.
+    if (prevNode.node_id === rx.node_id && candidate.node_id !== rx.node_id) {
+      const observerOwnPrefix = rx.role === 2 ? nodePathHash(rx.node_id, prefix) : null;
+      if (observerOwnPrefix === prefix) {
+        const observed = Number(meta?.observed_count ?? 0);
+        const pathLoss = meta?.itm_path_loss_db;
+        if (!(observed >= 120 && pathLoss != null && pathLoss <= 125)) return -Infinity;
       }
     }
 
-    const prefix = normalizedHashes[hopIdx]!;
-    const prevPrefix = hopIdx > 0 ? normalizedHashes[hopIdx - 1]! : '';
-    const candidateOptions = getCandidates(prefix, prevPrefix, prevNode, nextTowardRx).filter((o) => !visited.has(o.node.node_id));
+    const multibyteFloor = multibyteConfidenceFloor(prefix);
+    const ambiguityPenalty = localPrefixAmbiguityPenalty(candidate, prevNode, prefix);
+    const uniquenessBoost = hashUniquenessBoost(prefix);
+    const dirBoost = sourceProgressScore(candidate, prevNode, src) * 0.75;
+    const obsBoost = observerHopPrior(candidate, prevNode, activeObserverHopHints, typicalHopKm);
+    const prior = distanceElevationPrior(candidate, prevNode);
+    const prefixBoost = prefixPrior(prefix, prevPrefix, candidate.node_id);
+    const transBoost = transitionPrior(candidate.node_id, prevNode.node_id);
+    const motifBoost = motifPrior([candidate.node_id, prevNode.node_id]);
+    const edgeBoost = edgePrior(candidate.node_id, prevNode.node_id);
 
-    for (const opt of candidateOptions) {
-      const nextVisited = new Set(visited);
-      nextVisited.add(opt.node.node_id);
-      const rest = solve(hopIdx - 1, opt.node, prevNode.node_id, nextVisited);
-      if (rest !== null) return [opt, ...rest];
+    // --- Confirmed tier: link has real observed packet traffic ---
+    if (context.observedLinkPairs.has(mKey)) {
+      const confirmedFloor = strongConfirmedFloor(meta);
+      const baseConf = confirmedLinkConfidence(meta, candidate.node_id, prevNode.node_id, {
+        prefix: prefixBoost * 0.2 + clamp(dirBoost, -1, 1) * 0.08 + clamp(obsBoost, -1, 1) * OBSERVER_HOP_WEIGHT_CONFIRMED + uniquenessBoost + 0.16,
+        transition: transBoost * 0.24,
+        motif: motifBoost * 0.2,
+        edge: edgeBoost * 0.3,
+        ambiguity: -ambiguityPenalty,
+      });
+      return Math.max(baseConf, confirmedFloor, multibyteFloor);
     }
-    return null;
+
+    // --- ITM-viable but unobserved: valid link, lower confidence ---
+    // linkColorPreference encodes path-loss quality: green (+0.28) > amber (+0.14) > red (+0.02),
+    // so the Viterbi naturally prefers paths through lower-loss (stronger) links.
+    const dist = distKm(candidate, prevNode);
+    const distancePenalty = Math.min(0.12, dist / 120);
+    const linkQuality = linkColorPreference(meta) + radioNeighborPreference(meta);
+    const rawConf = Math.max(
+      multibyteFloor,
+      0.08,
+      0.2 + prior * 0.34
+        + prefixBoost * 0.22 + transBoost * 0.25 + motifBoost * 0.18 + edgeBoost * 0.28
+        + clamp(dirBoost, -1, 1) * 0.1 + clamp(obsBoost, -1, 1) * OBSERVER_HOP_WEIGHT_REACHABLE
+        + linkQuality + uniquenessBoost - distancePenalty - ambiguityPenalty
+        - (hashMatchCounts[hopIdx]! - 1) * 0.01,
+    );
+    const priorStrength = prefixBoost * 0.22 + transBoost * 0.25 + edgeBoost * 0.28 + motifBoost * 0.18;
+    const nonLinkCap = Math.min(0.50, 0.41 + priorStrength * 0.25);
+    return multibyteFloor >= BETA_PURPLE_THRESHOLD ? rawConf : Math.min(rawConf, nonLinkCap);
   }
 
-  const raw = solve(normalizedHashes.length - 1, rx, null, new Set([rx.node_id]));
-  if (!raw) return null;
+  // dp[hopIdx][j] = best total score of path from rx through trellis[hopIdx][j]
+  // back[hopIdx][j] = index into trellis[hopIdx+1] (or -1 for hopIdx=N-1 which uses rx)
+  const dp: number[][] = trellis.map((col) => new Array(col.length).fill(-Infinity));
+  const back: number[][] = trellis.map((col) => new Array(col.length).fill(-1));
 
-  const hops = [...raw].reverse();
+  // Initialise: hopIdx = N-1 (adjacent to rx), prevNode = rx
+  for (let j = 0; j < trellis[N - 1].length; j++) {
+    const s = hopScore(trellis[N - 1][j]!, rx, N - 1);
+    if (isFinite(s)) dp[N - 1][j] = s;
+  }
+
+  // Forward pass: hopIdx = N-2 down to 0
+  for (let hopIdx = N - 2; hopIdx >= 0; hopIdx--) {
+    const prevHopIdx = hopIdx + 1;
+    for (let j = 0; j < trellis[hopIdx].length; j++) {
+      const candidate = trellis[hopIdx][j]!;
+      for (let k = 0; k < trellis[prevHopIdx].length; k++) {
+        if (!isFinite(dp[prevHopIdx][k]!)) continue;
+        const prevNode = trellis[prevHopIdx][k]!;
+        if (prevNode.node_id === candidate.node_id) continue; // no self-loops
+        const s = hopScore(candidate, prevNode, hopIdx);
+        if (!isFinite(s)) continue;
+        const total = dp[prevHopIdx][k]! + s;
+        if (total > dp[hopIdx][j]!) {
+          dp[hopIdx][j] = total;
+          back[hopIdx][j] = k;
+        }
+      }
+    }
+  }
+
+  // Find best terminal at hopIdx = 0 (closest to src)
+  let bestJ = -1;
+  let bestTotal = -Infinity;
+  for (let j = 0; j < trellis[0].length; j++) {
+    if (!isFinite(dp[0][j]!)) continue;
+    let score = dp[0][j]!;
+    // Small bonus when this node is also reachable from src
+    if (src && hasCoords(src) && distKm(trellis[0][j]!, src) <= MAX_HOP_KM) score += 0.05;
+    if (score > bestTotal) { bestTotal = score; bestJ = j; }
+  }
+
+  if (bestJ === -1) return null;
+
+  // Backtrack: reconstruct hops in src→rx order (hopIdx 0 → N-1)
+  const hops: HopResult[] = new Array(N);
+  let idx = bestJ;
+  for (let hopIdx = 0; hopIdx < N; hopIdx++) {
+    const node = trellis[hopIdx][idx]!;
+    // Conf = score of this hop relative to its closer-to-rx neighbour
+    const prevNode = hopIdx === N - 1 ? rx : trellis[hopIdx + 1][back[hopIdx][idx]!]!;
+    const conf = Math.max(0.03, hopScore(node, prevNode, hopIdx));
+    hops[hopIdx] = { node, conf };
+    if (hopIdx < N - 1) idx = back[hopIdx][idx]!;
+  }
   if (hops.length === 0) return null;
 
-  const totalHops = raw.length;
+  const totalHops = N;
   const meanHopConfidence = hops.reduce((sum, h) => sum + h.conf, 0) / hops.length;
   const resolvedRatio = hops.length / totalHops;
   const rawConfidence = meanHopConfidence * resolvedRatio;
@@ -1341,10 +1302,16 @@ async function loadContext(network: string): Promise<BetaResolveContext> {
   }
 
   const linkPairs = new Set<string>();
+  const observedLinkPairs = new Set<string>();
   const linkMetrics = new Map<string, LinkMetrics>();
   for (const row of linkRows.rows) {
     const key = linkKey(row.node_a_id, row.node_b_id);
     if (row.itm_viable === true || row.force_viable === true) linkPairs.add(key);
+    // observedLinkPairs only contains links proven by real packet observations.
+    // These are the only links that qualify for the confirmed (highest-confidence) candidate tier.
+    if ((row.itm_viable === true || row.force_viable === true) && Number(row.observed_count ?? 0) > 0) {
+      observedLinkPairs.add(key);
+    }
     linkMetrics.set(key, {
       observed_count: Number(row.observed_count ?? 0),
       multibyte_observed_count: Number(row.multibyte_observed_count ?? 0),
@@ -1360,6 +1327,7 @@ async function loadContext(network: string): Promise<BetaResolveContext> {
     nodesById,
     coverageByNode,
     linkPairs,
+    observedLinkPairs,
     linkMetrics,
     learningModel,
   };
@@ -1484,7 +1452,7 @@ async function recordPredictedOnline(nodeIds: string[] | null | undefined): Prom
   await touchNodesPredictedOnline(nodeIds);
 }
 
-export async function resolveBetaPathForPacketHash(packetHash: string, network: string, observer?: string): Promise<BetaResolvedPayload | null> {
+export async function resolveBetaPathForPacketHash(packetHash: string, network: string, observer?: string, stickyMap?: Map<string, string>, stickyAgeFraction?: number): Promise<BetaResolvedPayload | null> {
   const [packetResult, observerHopResult] = await Promise.all([
     query<PathPacket>(
       `SELECT packet_hash, rx_node_id, src_node_id, packet_type, hop_count, path_hashes, path_hash_size_bytes
@@ -1677,11 +1645,25 @@ export async function resolveBetaPathForPacketHash(packetHash: string, network: 
   for (const [hopIdx, node] of hashAnchors) {
     anchorNodes.set(hopIdx, node);
   }
+  // Inject sticky nodes for hops not already anchored
+  if (stickyMap) {
+    for (let i = 0; i < hops.length; i++) {
+      if (!anchorNodes.has(i)) {
+        const normalized = normalizePathHash(hops[i]);
+        const stickyNodeId = normalized ? stickyMap.get(normalized) : undefined;
+        if (stickyNodeId) {
+          const node = context.nodesById.get(stickyNodeId);
+          if (node && hasCoords(node)) anchorNodes.set(i, node);
+        }
+      }
+    }
+  }
 
   let result = resolveBetaPath(hops, hasCoords(src) ? src : null, rx, context, {
     forceIncludeSource,
     observerHopHints,
     anchorNodes: anchorNodes.size > 0 ? anchorNodes : undefined,
+    stickyAgeFraction,
   });
   let solvedHopCount = hops.length;
   let solverMode: 'full' | 'suffix-partial' = 'full';
@@ -1931,17 +1913,30 @@ function findSharedPathPrefix(pathsByObserver: string[][]): string[] {
   return first.slice(0, len);
 }
 
+export type RegionLink = {
+  fromIata: string;
+  toIata: string;
+  /** Coordinate [lat, lon] of the bridge node where the two regional paths meet. */
+  bridgeCoord: [number, number];
+};
+
 export type MultiObserverResolvedPayload = {
   ok: boolean;
   packetHash: string;
   observerCount: number;
   sharedPrefixLength: number;
   results: BetaResolvedPayload[];
+  /** Cross-region connection points: where one IATA region's path hands off to another. */
+  regionLinks?: RegionLink[];
+  /** High-confidence hash→nodeId assignments from this resolution, for sticky anchor persistence. Internal use only — stripped before sending to clients. */
+  stickyUpdates?: Record<string, string>;
 };
 
 export async function resolveMultiObserverBetaPath(
   packetHash: string,
   network: string,
+  stickyMap?: Map<string, string>,
+  stickyAgeFraction?: number,
 ): Promise<MultiObserverResolvedPayload | null> {
   // 1. Load ALL observations for this packet hash
   const allResult = await query<PathPacket & { path_hash_size_bytes: number | null }>(
@@ -1978,7 +1973,7 @@ export async function resolveMultiObserverBetaPath(
   // Single observer — delegate to existing per-observer resolver
   if (byObserver.size <= 1) {
     const [observerId] = byObserver.keys();
-    const singleResult = await resolveBetaPathForPacketHash(packetHash, network, observerId);
+    const singleResult = await resolveBetaPathForPacketHash(packetHash, network, observerId, stickyMap, stickyAgeFraction);
     return singleResult
       ? { ok: true, packetHash, observerCount: 1, sharedPrefixLength: 0, results: [singleResult] }
       : null;
@@ -2009,7 +2004,7 @@ export async function resolveMultiObserverBetaPath(
   if (entries.length < 1) return null;
 
   if (entries.length === 1) {
-    const singleResult = await resolveBetaPathForPacketHash(packetHash, network, entries[0]!.observerId);
+    const singleResult = await resolveBetaPathForPacketHash(packetHash, network, entries[0]!.observerId, stickyMap, stickyAgeFraction);
     return singleResult
       ? { ok: true, packetHash, observerCount: 1, sharedPrefixLength: 0, results: [singleResult] }
       : null;
@@ -2039,12 +2034,17 @@ export async function resolveMultiObserverBetaPath(
   // All observer rx nodes for corridor relaxation
   const allRxNodes = entries.map((e) => e.rx);
 
-  // Observer hop hints from all observers
+  // Group entries by IATA region so cross-region observers don't distort each other's paths
+  const anchorIata = anchor.rx.iata ?? 'unknown';
+  const isMultiRegion = entries.some((e) => (e.rx.iata ?? 'unknown') !== anchorIata);
+
+  // Observer hop hints — restricted to same-IATA observers only to avoid cross-region distortion
   const observerHopHints: ObserverHopHint[] = entries.flatMap((entry) => {
+    const entryIata = entry.rx.iata ?? 'unknown';
     const hopCount = Number(entry.packet.hop_count ?? 0);
     if (hopCount <= 0) return [];
     return entries
-      .filter((other) => other.observerId !== entry.observerId)
+      .filter((other) => other.observerId !== entry.observerId && (other.rx.iata ?? 'unknown') === entryIata)
       .map((other) => {
         const otherHopCount = Number(other.packet.hop_count ?? 0);
         return {
@@ -2056,11 +2056,26 @@ export async function resolveMultiObserverBetaPath(
       .filter((h) => h.hopDelta !== 0);
   });
 
-  // 6. Solve anchor path with relaxed corridor (all observers as extra corridor targets)
-  const extraCorridorTargets = allRxNodes.filter((n) => n.node_id !== anchor.rx.node_id);
+  // 6. Solve anchor path — corridor restricted to same-IATA observers
+  const extraCorridorTargets = allRxNodes.filter(
+    (n) => n.node_id !== anchor.rx.node_id && (context.nodesById.get(n.node_id)?.iata ?? 'unknown') === anchorIata,
+  );
   const anchorExclude = new Set([anchor.rx.node_id, ...(src ? [src.node_id] : [])]);
   const anchorOtherObservers = entries.filter((e) => e.observerId !== anchor.observerId).map((e) => e.rx).filter((n): n is MeshNode => n !== null && hasCoords(n));
   const anchorHashAnchors = buildHashMatchedAnchors(anchor.hops, anchorOtherObservers, anchorExclude);
+  // Inject sticky nodes for hops not already anchored by hash-matched observers
+  if (stickyMap) {
+    for (let i = 0; i < anchor.hops.length; i++) {
+      if (!anchorHashAnchors.has(i)) {
+        const normalized = normalizePathHash(anchor.hops[i]);
+        const stickyNodeId = normalized ? stickyMap.get(normalized) : undefined;
+        if (stickyNodeId) {
+          const node = context.nodesById.get(stickyNodeId);
+          if (node && hasCoords(node)) anchorHashAnchors.set(i, node);
+        }
+      }
+    }
+  }
   const anchorResult = resolveBetaPath(
     anchor.hops,
     hasCoords(src) ? src : null,
@@ -2071,11 +2086,16 @@ export async function resolveMultiObserverBetaPath(
       observerHopHints,
       extraCorridorTargets,
       anchorNodes: anchorHashAnchors.size > 0 ? anchorHashAnchors : undefined,
+      stickyAgeFraction,
     },
   );
 
   // Build anchor node map: hop index → resolved MeshNode
+  // Also extract sticky updates: high-confidence hops that should be reused on re-resolution
   const anchorNodeMap = new Map<number, MeshNode>();
+  const stickyUpdates: Record<string, string> = {};
+  // Bridge node: last intermediate hop in the anchor path — the handoff point to cross-region observers
+  let bridgeNode: MeshNode | null = null;
   if (anchorResult) {
     // nodeIds = [src?, hop0, hop1, ..., hopN-1, rx]
     const srcPrepended = anchorResult.nodeIds[0] === src?.node_id;
@@ -2085,7 +2105,17 @@ export async function resolveMultiObserverBetaPath(
       const nodeId = anchorResult.nodeIds[i]!;
       const node = context.nodesById.get(nodeId);
       if (node) anchorNodeMap.set(i - hopStartIdx, node);
+      // Save hop as sticky anchor if confidence is above purple threshold
+      const hopIdx = i - hopStartIdx;
+      const hash = hopIdx < anchor.hops.length ? normalizePathHash(anchor.hops[hopIdx]) : null;
+      const conf = anchorResult.segmentConfidence[i] ?? 0;
+      if (hash && nodeId && conf >= BETA_PURPLE_THRESHOLD) {
+        stickyUpdates[hash] = nodeId;
+      }
     }
+    // The bridge is the last resolved hop before the anchor's rx — this is where cross-region paths branch from
+    const bridgeNodeId = hopEndIdx > 0 ? anchorResult.nodeIds[hopEndIdx - 1] : null;
+    bridgeNode = bridgeNodeId ? (context.nodesById.get(bridgeNodeId) ?? null) : null;
   }
 
   // 7. Resolve each observer
@@ -2126,10 +2156,13 @@ export async function resolveMultiObserverBetaPath(
       if (!entryAnchorNodes.has(i)) entryAnchorNodes.set(i, node);
     }
 
-    // Extra corridor = all OTHER observers
-    const entryExtraCorridorTargets = allRxNodes.filter((n) => n.node_id !== entry.rx.node_id);
+    // Extra corridor — same-IATA observers only to avoid cross-region distortion
+    const entryIata = entry.rx.iata ?? 'unknown';
+    const entryExtraCorridorTargets = allRxNodes.filter(
+      (n) => n.node_id !== entry.rx.node_id && (context.nodesById.get(n.node_id)?.iata ?? 'unknown') === entryIata,
+    );
 
-    // Solve with anchor constraints for shared hops + relaxed corridor
+    // Solve with anchor constraints for shared hops + same-IATA corridor
     const entryResult = resolveBetaPath(
       entry.hops,
       hasCoords(src) ? src : null,
@@ -2140,6 +2173,7 @@ export async function resolveMultiObserverBetaPath(
         observerHopHints,
         anchorNodes: entryAnchorNodes.size > 0 ? entryAnchorNodes : undefined,
         extraCorridorTargets: entryExtraCorridorTargets,
+        stickyAgeFraction,
       },
     );
 
@@ -2184,6 +2218,35 @@ export async function resolveMultiObserverBetaPath(
       );
       results.push(maskResolvedPayload(result, hiddenCoordMask));
       continue;
+    }
+
+    // Suffix partial solve: progressively shorter RX-side suffixes to get at least some resolved segment
+    if (entry.hops.length > 1) {
+      let suffixPartialResult: ReturnType<typeof resolveBetaPath> = null;
+      for (let suffixLen = entry.hops.length - 1; suffixLen >= 1; suffixLen--) {
+        const suffix = entry.hops.slice(entry.hops.length - suffixLen);
+        const partial = resolveBetaPath(suffix, hasCoords(src) ? src : null, entry.rx, context, {
+          forceIncludeSource: false,
+          disableSourcePrepend: true,
+          blockedNodeIds: hasCoords(src) ? [src.node_id] : [],
+          observerHopHints,
+        });
+        if (partial) { suffixPartialResult = partial; break; }
+      }
+      if (suffixPartialResult) {
+        await recordPredictedOnline(suffixPartialResult.nodeIds);
+        const result = buildResolvedPayload(
+          packetHash,
+          entry,
+          suffixPartialResult,
+          src,
+          context,
+          forceIncludeSource,
+          observerHopHints,
+        );
+        results.push(maskResolvedPayload(result, hiddenCoordMask));
+        continue;
+      }
     }
 
     // Last resort: fallback prefix path
@@ -2294,12 +2357,28 @@ export async function resolveMultiObserverBetaPath(
     return best == null ? r.confidence : Math.max(best, r.confidence);
   }, null);
 
+  // Build region link descriptors: one per cross-region IATA, pointing at the bridge coord
+  const regionLinks: RegionLink[] = [];
+  if (isMultiRegion && bridgeNode && hasCoords(bridgeNode)) {
+    const seenIatas = new Set<string>();
+    for (const entry of entries) {
+      const entryIata = entry.rx.iata ?? 'unknown';
+      if (entryIata !== anchorIata && !seenIatas.has(entryIata)) {
+        seenIatas.add(entryIata);
+        regionLinks.push({ fromIata: anchorIata, toIata: entryIata, bridgeCoord: [bridgeNode.lat!, bridgeNode.lon!] });
+      }
+    }
+  }
+
+  const multiRegionSuffix = isMultiRegion
+    ? ` regions=${[anchorIata, ...regionLinks.map((l) => l.toIata)].join(',')}`
+    : '';
   console.log(
     `${logPrefix} done observers=${entries.length} resolved=${resolvedCount}/${entries.length} ` +
-    `sharedPrefix=${sharedPrefixLength} bestConf=${bestConf?.toFixed(3) ?? 'null'}`,
+    `sharedPrefix=${sharedPrefixLength} bestConf=${bestConf?.toFixed(3) ?? 'null'}${multiRegionSuffix}`,
   );
 
-  return { ok: true, packetHash, observerCount: entries.length, sharedPrefixLength, results };
+  return { ok: true, packetHash, observerCount: entries.length, sharedPrefixLength, results, regionLinks: regionLinks.length > 0 ? regionLinks : undefined, stickyUpdates };
 }
 
 /** Build a BetaResolvedPayload from a successful resolveBetaPath result */

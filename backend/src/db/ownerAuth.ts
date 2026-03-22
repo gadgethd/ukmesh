@@ -136,17 +136,16 @@ export async function upsertMqttNodeLogin(mqttUsername: string, nodeId: string):
   );
 }
 
-export async function getBestNodeForMqttUsername(mqttUsername: string): Promise<string | null> {
+export async function getAllNodesForMqttUsername(mqttUsername: string): Promise<string[]> {
   const normalized = mqttUsername.trim();
-  if (!normalized) return null;
+  if (!normalized) return [];
   const res = await ownerPool.query<{ node_id: string }>(
     `SELECT node_id FROM mqtt_node_logins
      WHERE mqtt_username = $1
-     ORDER BY last_connected_at DESC
-     LIMIT 1`,
+     ORDER BY last_connected_at DESC`,
     [normalized],
   );
-  return res.rows[0]?.node_id ?? null;
+  return res.rows.map((r) => r.node_id);
 }
 
 export async function getMappedOwnerNodeIds(): Promise<string[]> {

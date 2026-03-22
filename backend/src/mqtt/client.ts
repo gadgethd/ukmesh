@@ -5,7 +5,7 @@ import type {
   TracePayload, PathPayload, AckPayload,
 } from '@michaelhart/meshcore-decoder';
 import { insertNodeStatusSample, insertPacket, upsertNode, incrementAdvertCount, query } from '../db/index.js';
-import { invalidateResolveCache, setResolveCache } from '../path-beta/resolveCache.js';
+import { invalidateResolveCache, setResolveCache, getStickyNodeMap, mergeStickyNodes } from '../path-beta/resolveCache.js';
 import { resolvePool } from '../path-beta/resolvePool.js';
 import type { LivePacket } from '../types/index.js';
 import { decodePacketCompat } from './decodePacket.js';
@@ -713,8 +713,20 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
     if ((resolvedPacketType === 4 || resolvedPacketType === 5) && !preResolveInFlight.has(finalHash)) {
       preResolveInFlight.add(finalHash);
       const ck = `m|${finalHash}|${network}`;
-      resolvePool.run<unknown>({ type: 'resolveMulti', packetHash: finalHash, network })
-        .then((result) => { if (result) setResolveCache(ck, result); })
+      // Pass any previously resolved high-confidence hop assignments so the solver reuses them
+      const stickyEntry = getStickyNodeMap(finalHash, network);
+      const stickyMap = stickyEntry ? Object.fromEntries(stickyEntry.hashToNodeId) : undefined;
+      const stickyAgeFraction = stickyEntry?.ageFraction;
+      resolvePool.run<{ stickyUpdates?: Record<string, string> } | null>({ type: 'resolveMulti', packetHash: finalHash, network, ...(stickyMap ? { stickyMap, stickyAgeFraction } : {}) })
+        .then((result) => {
+          if (result) {
+            const { stickyUpdates, ...cacheableResult } = result;
+            setResolveCache(ck, cacheableResult);
+            if (stickyUpdates && Object.keys(stickyUpdates).length > 0) {
+              mergeStickyNodes(finalHash, network, stickyUpdates);
+            }
+          }
+        })
         .catch(() => { /* best-effort */ })
         .finally(() => { preResolveInFlight.delete(finalHash); });
     }

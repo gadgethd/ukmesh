@@ -35,3 +35,52 @@ export function invalidateResolveCache(packetHash: string): void {
     }
   }
 }
+
+/**
+ * Sticky node anchors — persists across resolve cache invalidations so that
+ * re-resolutions triggered by new observations reuse the same high-confidence
+ * hop assignments instead of picking different nodes each time.
+ *
+ * Keyed by `${packetHash}|${network}`, value is a map of normalizedHash → nodeId
+ * for every hop that was resolved with confidence >= the purple threshold.
+ * New high-confidence assignments are merged in (never overwritten with lower ones).
+ */
+const STICKY_NODE_TTL_MS = 30 * 60 * 1000; // 30 minutes
+type StickyEntry = { hashToNodeId: Map<string, string>; updatedAt: number };
+const stickyNodeCache = new Map<string, StickyEntry>();
+
+export function getStickyNodeMap(
+  packetHash: string,
+  network: string,
+): { hashToNodeId: Map<string, string>; ageFraction: number } | undefined {
+  const key = `${packetHash}|${network}`;
+  const entry = stickyNodeCache.get(key);
+  if (!entry) return undefined;
+  const ageMs = Date.now() - entry.updatedAt;
+  if (ageMs > STICKY_NODE_TTL_MS) {
+    stickyNodeCache.delete(key);
+    return undefined;
+  }
+  // ageFraction: 0 = brand new, 1 = at TTL boundary
+  const ageFraction = ageMs / STICKY_NODE_TTL_MS;
+  return { hashToNodeId: entry.hashToNodeId, ageFraction };
+}
+
+/** Save a pre-filtered hash→nodeId map of confident hops for this packet. */
+export function mergeStickyNodes(
+  packetHash: string,
+  network: string,
+  updates: Record<string, string>,
+): void {
+  if (Object.keys(updates).length === 0) return;
+  const key = `${packetHash}|${network}`;
+  let entry = stickyNodeCache.get(key);
+  if (!entry) {
+    entry = { hashToNodeId: new Map(), updatedAt: Date.now() };
+    stickyNodeCache.set(key, entry);
+  }
+  for (const [hash, nodeId] of Object.entries(updates)) {
+    if (hash && nodeId) entry.hashToNodeId.set(hash, nodeId);
+  }
+  entry.updatedAt = Date.now();
+}

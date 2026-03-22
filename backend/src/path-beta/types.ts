@@ -55,7 +55,10 @@ export type BetaResolveContext = {
   loadedAt: number;
   nodesById: Map<string, MeshNode>;
   coverageByNode: Map<string, number>;
+  /** Links with itm_viable=true OR force_viable=true — theoretical viability from ITM model. */
   linkPairs: Set<string>;
+  /** Subset of linkPairs where observed_count > 0 — links confirmed by actual packet observations. */
+  observedLinkPairs: Set<string>;
   linkMetrics: Map<string, LinkMetrics>;
   learningModel: PathLearningModel;
 };

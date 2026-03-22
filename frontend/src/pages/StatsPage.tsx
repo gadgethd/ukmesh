@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   AreaChart, Area, BarChart, Bar,
   PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid,
@@ -180,7 +180,12 @@ const ChartCard: React.FC<{ title: string; sub?: string; children: React.ReactNo
   </div>
 );
 
-const CARTO_DARK_TILES = 'https://{a-d}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
+const CARTO_DARK_TILES = [
+  'https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+  'https://b.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+  'https://c.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+  'https://d.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+];
 
 const DecodedPathMapView: React.FC<{
   nodes: Array<{
@@ -203,7 +208,7 @@ const DecodedPathMapView: React.FC<{
         sources: {
           tiles: {
             type: 'raster',
-            tiles: [CARTO_DARK_TILES],
+            tiles: CARTO_DARK_TILES,
             tileSize: 256,
             maxzoom: 19,
             attribution: '© OpenStreetMap © CARTO',
@@ -374,8 +379,11 @@ export const StatsPage: React.FC = () => {
       ? longestDecodedPathStart
       : `${longestDecodedPathStart} -> ${longestDecodedPathEnd}`
     : data?.pathHashes.longestFullyDecodedPath ?? 'not decoded yet';
-  const selectedDecodedPathNodes = (selectedDecodedPath?.nodes ?? []).filter(
-    (node) => Number.isFinite(node.lat) && Number.isFinite(node.lon),
+  const selectedDecodedPathNodes = useMemo(
+    () => (selectedDecodedPath?.nodes ?? []).filter(
+      (node) => Number.isFinite(node.lat) && Number.isFinite(node.lon),
+    ),
+    [selectedDecodedPath],
   );
   const isRedactedDecodedNode = (node: { name: string | null }) => node.name === 'Redacted repeater';
 

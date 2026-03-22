@@ -299,15 +299,8 @@ export const UKFeedPage: React.FC = () => {
               <h2>Live packets</h2>
               <div className="uk-feed-packets-list">
                 {recentPackets.length > 0 ? recentPackets.map((packet) => {
-                  const observerIds = packetObserverIds(packet).filter(() => {
-                    if (selectedIata === 'all') return true;
-                    return packetObserverIatas(packet, nodeMap).includes(selectedIata);
-                  });
-                  const names = observerIds.map((id) => {
-                    const node = nodeMap.get(id);
-                    return node?.name ?? node?.iata ?? shortNode(id);
-                  });
-                  const observerDisplay = names.length === 0 ? 'unknown' : names.join(' · ');
+                  const iatas = packetObserverIatas(packet, nodeMap);
+                  const observerDisplay = iatas.length === 0 ? 'unknown' : iatas.join(' · ');
                   return (
                     <article className="uk-feed-packet-row" key={`${packet.packet_hash}-${packet.time}`}>
                       <div className="uk-feed-packet-row__meta">

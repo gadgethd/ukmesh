@@ -30,8 +30,17 @@ export function createOwnerRepository(deps: OwnerRepositoryDeps) {
       avg_rssi: number | null;
       sample_count: number;
     }>(
-      `WITH owner_packets AS (
-         SELECT
+      `WITH clashing_prefixes AS (
+         SELECT LEFT(node_id, 2) AS prefix
+         FROM nodes
+         WHERE role IN (1, 3)
+         INTERSECT
+         SELECT LEFT(node_id, 2) AS prefix
+         FROM nodes
+         WHERE role = 2
+       ),
+       owner_packets AS (
+         SELECT DISTINCT ON (p.rx_node_id, COALESCE(p.packet_hash, p.time::text))
            p.time,
            p.packet_hash,
            p.rx_node_id,
@@ -40,14 +49,30 @@ export function createOwnerRepository(deps: OwnerRepositoryDeps) {
            p.rssi,
            p.snr,
            CASE
-             WHEN COALESCE(array_length(p.path_hashes, 1), 0) > 0
-           THEN UPPER(p.path_hashes[array_length(p.path_hashes, 1)])
-           ELSE NULL
+             WHEN p.hop_count = 0
+               AND p.src_node_id IS NOT NULL
+               AND p.src_node_id != p.rx_node_id
+             THEN UPPER(LEFT(p.src_node_id, 2))
+             WHEN p.src_node_id = p.rx_node_id
+               AND COALESCE(array_length(p.path_hashes, 1), 0) >= 2
+             THEN UPPER(p.path_hashes[array_length(p.path_hashes, 1) - 1])
+             WHEN p.src_node_id IS NOT NULL
+               AND COALESCE(array_length(p.path_hashes, 1), 0) >= 1
+             THEN UPPER(p.path_hashes[array_length(p.path_hashes, 1)])
+             ELSE NULL
            END AS receiver_side_hash
          FROM packets p
          WHERE p.rx_node_id = ANY($1::text[])
            AND ${timeFilter}
+           AND p.packet_type NOT IN (8, 9)
+           AND p.src_node_id != p.rx_node_id
            AND (p.snr IS NOT NULL OR p.rssi IS NOT NULL)
+           AND NOT (
+             p.hop_count <= 1
+             AND COALESCE(array_length(p.path_hashes, 1), 0) >= 1
+             AND UPPER(p.path_hashes[array_length(p.path_hashes, 1)]) IN (SELECT prefix FROM clashing_prefixes)
+           )
+         ORDER BY p.rx_node_id, COALESCE(p.packet_hash, p.time::text), p.time ASC
        ),
        unique_receiver_targets AS (
          SELECT DISTINCT rx_node_id, receiver_side_hash
