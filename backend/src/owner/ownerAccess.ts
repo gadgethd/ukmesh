@@ -2,6 +2,7 @@ import mqtt from 'mqtt';
 import { randomBytes } from 'node:crypto';
 import { addOwnerNodeForUsername, getAllNodesForMqttUsername, getMappedOwnerNodeIds, getOwnerNodeIdsForUsername } from '../db/ownerAuth.js';
 import { query } from '../db/index.js';
+import { reloadMosquitto, updateUserAclBlock } from '../mqtt/aclManager.js';
 
 function parseOwnerMqttUsernameMap(): Map<string, string[]> {
   const raw = String(process.env['OWNER_MQTT_USERNAME_MAP'] ?? '').trim();
@@ -34,14 +35,13 @@ export async function resolveOwnerNodeIds(mqttUsername: string): Promise<string[
 }
 
 export async function autoLinkOwnerNodeIds(mqttUsername: string): Promise<string[]> {
-  const existing = await resolveOwnerNodeIds(mqttUsername);
-  if (existing.length > 0) return existing;
-
   const nodeIds = await getAllNodesForMqttUsername(mqttUsername);
-  if (nodeIds.length === 0) return [];
-
-  await Promise.all(nodeIds.map((id) => addOwnerNodeForUsername(mqttUsername, id)));
-  return nodeIds;
+  if (nodeIds.length > 0) {
+    await Promise.all(nodeIds.map((id) => addOwnerNodeForUsername(mqttUsername, id)));
+    updateUserAclBlock(mqttUsername, nodeIds);
+    reloadMosquitto().catch((err: Error) => console.error('[acl-manager] reload error:', err.message));
+  }
+  return resolveOwnerNodeIds(mqttUsername);
 }
 
 export async function listMappedOwnerNodeIds(): Promise<string[]> {

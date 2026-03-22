@@ -71,7 +71,7 @@ async function requireOwnerSession(req: Request, res: Response): Promise<string[
     res.status(401).json({ error: 'Not logged in' });
     return null;
   }
-  return session.nodeIds;
+  return session.mqttUsername ? resolveOwnerNodeIds(session.mqttUsername) : session.nodeIds;
 }
 
 registerCoverageRoutes(router, {
