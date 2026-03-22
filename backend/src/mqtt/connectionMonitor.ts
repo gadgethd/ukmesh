@@ -5,7 +5,7 @@ import { query } from '../db/index.js';
 
 const LOG_PATH = process.env['MOSQUITTO_LOG_PATH'] ?? '/mosquitto/log/mosquitto.log';
 const POLL_INTERVAL_MS = 5_000;
-const HISTORICAL_SCAN_BYTES = 2_000_000; // last 2 MB on startup
+const HISTORICAL_SCAN_BYTES = 50_000_000; // last 50 MB on startup
 
 // Matches: as meshcore_NODEIDPREFIX_N or meshcore_client_NODEIDPREFIX_N (... u'USERNAME')
 const CONNECT_RE = /as meshcore_(?:client_)?([0-9A-F]+)_\d+ \([^)]*u'([^']+)'\)/i;
@@ -35,15 +35,15 @@ async function processLine(line: string): Promise<void> {
 }
 
 async function scanRange(start: number, end: number): Promise<void> {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const stream = fs.createReadStream(LOG_PATH, { start, end });
     const rl = createInterface({ input: stream, crlfDelay: Infinity });
-    const lines: string[] = [];
-    rl.on('line', (line) => lines.push(line));
-    rl.on('close', async () => {
-      for (const line of lines) await processLine(line);
-      resolve();
+    let chain = Promise.resolve();
+    rl.on('line', (line) => {
+      chain = chain.then(() => processLine(line));
     });
+    rl.on('close', () => { chain.then(resolve).catch(reject); });
+    rl.on('error', reject);
   });
 }
 

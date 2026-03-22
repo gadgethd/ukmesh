@@ -406,6 +406,55 @@ export async function getRecentPackets(limit = 200, network?: string, observer?:
   return res.rows;
 }
 
+/**
+ * Fetch the last N GroupText (type=5) messages from the last 24 hours.
+ * Used to pre-populate the channel feed on page load so it isn't blank.
+ * Returns rows with the same shape as getRecentPackets.
+ */
+export async function getRecentMessages(limit = 50, network?: string, observer?: string) {
+  const scope = buildScopePlaceholders(2, network, observer);
+  const res = await pool.query(
+    `WITH recent_msgs AS (
+      SELECT DISTINCT ON (p.packet_hash)
+             p.time, p.packet_hash, p.rx_node_id, p.src_node_id, p.topic,
+             p.packet_type, p.hop_count, p.rssi, p.snr, p.payload,
+             p.payload->>'_summary' AS summary,
+             p.advert_count, p.path_hashes, p.path_hash_size_bytes,
+             p.network
+      FROM packets p
+      WHERE p.packet_type = 5
+        AND p.time > NOW() - INTERVAL '24 hours'
+        ${buildPacketScopeClause(scope, 'p', network)}
+      ORDER BY p.packet_hash,
+               CASE WHEN p.src_node_id IS NOT NULL THEN 1 ELSE 0 END DESC,
+               p.time DESC
+    ),
+    msg_stats AS (
+      SELECT
+        packet_hash,
+        ARRAY_AGG(DISTINCT rx_node_id ORDER BY rx_node_id) FILTER (WHERE rx_node_id IS NOT NULL) AS observer_node_ids,
+        COUNT(*) FILTER (WHERE COALESCE(payload->>'direction', 'rx') <> 'tx')::int AS rx_count,
+        COUNT(*) FILTER (WHERE COALESCE(payload->>'direction', 'rx') = 'tx')::int AS tx_count
+      FROM packets
+      WHERE packet_hash = ANY(SELECT packet_hash FROM recent_msgs)
+        AND time > NOW() - INTERVAL '24 hours'
+        ${buildPacketScopeClause(scope, '', network)}
+      GROUP BY packet_hash
+    )
+    SELECT
+      m.time, m.packet_hash, m.rx_node_id, m.src_node_id, m.topic,
+      m.packet_type, m.hop_count, m.rssi, m.snr, m.payload,
+      m.summary, m.advert_count, m.path_hashes, m.path_hash_size_bytes,
+      ms.observer_node_ids, ms.rx_count, ms.tx_count
+    FROM recent_msgs m
+    LEFT JOIN msg_stats ms ON ms.packet_hash = m.packet_hash
+    ORDER BY m.time DESC
+    LIMIT $1`,
+    [limit, ...scope.params],
+  );
+  return res.rows;
+}
+
 export async function getRecentPacketEvents(limit = 200, network?: string, observer?: string) {
   const scope = buildScopePlaceholders(2, network, observer);
   const params: unknown[] = [limit, ...scope.params];
@@ -423,6 +472,59 @@ export async function getRecentPacketEvents(limit = 200, network?: string, obser
     params,
   );
   return res.rows;
+}
+
+export async function getPacketDetail(hash: string, network?: string) {
+  const netParam = network ?? null;
+  const [primary, observations] = await Promise.all([
+    pool.query(
+      `SELECT p.time, p.packet_hash, p.rx_node_id, p.src_node_id, p.topic,
+              p.packet_type, p.route_type, p.hop_count, p.rssi, p.snr,
+              p.payload, p.path_hashes, p.path_hash_size_bytes, p.raw_hex
+       FROM packets p
+       WHERE p.packet_hash = $1
+         AND ($2::text IS NULL OR p.network = $2)
+       ORDER BY
+         CASE WHEN p.src_node_id IS NOT NULL THEN 1 ELSE 0 END DESC,
+         CASE WHEN p.raw_hex IS NOT NULL THEN 1 ELSE 0 END DESC,
+         p.time DESC
+       LIMIT 1`,
+      [hash, netParam],
+    ),
+    pool.query(
+      `SELECT p.rx_node_id, p.time, p.rssi, p.snr, p.hop_count
+       FROM packets p
+       WHERE p.packet_hash = $1
+         AND ($2::text IS NULL OR p.network = $2)
+       ORDER BY p.time ASC`,
+      [hash, netParam],
+    ),
+  ]);
+  const row = primary.rows[0];
+  if (!row) return null;
+  return {
+    time: row.time as Date,
+    packetHash: row.packet_hash as string,
+    rxNodeId: row.rx_node_id as string | null,
+    srcNodeId: row.src_node_id as string | null,
+    topic: row.topic as string,
+    packetType: row.packet_type as number | null,
+    routeType: row.route_type as number | null,
+    hopCount: row.hop_count as number | null,
+    rssi: row.rssi as number | null,
+    snr: row.snr as number | null,
+    payload: row.payload as Record<string, unknown> | null,
+    pathHashes: row.path_hashes as string[] | null,
+    pathHashSizeBytes: row.path_hash_size_bytes as number | null,
+    rawHex: row.raw_hex as string | null,
+    observations: observations.rows.map((r) => ({
+      rxNodeId: r.rx_node_id as string | null,
+      time: r.time as Date,
+      rssi: r.rssi as number | null,
+      snr: r.snr as number | null,
+      hopCount: r.hop_count as number | null,
+    })),
+  };
 }
 
 export async function getLastNPackets(n: number, network?: string, observer?: string) {

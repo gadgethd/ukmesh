@@ -1,0 +1,83 @@
+{
+  "uid": "ma-mqtt",
+  "title": "MQTT — Mosquitto",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-1h", "to": "now" },
+  "templating": { "list": [] },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Connection Events",
+      "type": "logs",
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 12 },
+      "datasource": { "type": "loki", "uid": "loki-main" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "loki-main" },
+          "expr": "{project=\"meshcore-analytics\", service=\"mosquitto\"} |~ \"connected|disconnect\""
+        }
+      ],
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": {
+        "sortOrder": "Descending",
+        "enableLogDetails": false,
+        "showTime": true,
+        "showCommonLabels": false,
+        "wrapLogMessage": false,
+        "prettifyLogMessage": false,
+        "dedupStrategy": "none"
+      }
+    },
+    {
+      "id": 2,
+      "title": "Denied Publishes",
+      "type": "logs",
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 12 },
+      "datasource": { "type": "loki", "uid": "loki-main" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "loki-main" },
+          "expr": "{project=\"meshcore-analytics\", service=\"mosquitto\"} |= \"Denied\""
+        }
+      ],
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": {
+        "sortOrder": "Descending",
+        "enableLogDetails": false,
+        "showTime": true,
+        "showCommonLabels": false,
+        "wrapLogMessage": false,
+        "prettifyLogMessage": false,
+        "dedupStrategy": "none"
+      }
+    },
+    {
+      "id": 3,
+      "title": "All Mosquitto Logs",
+      "type": "logs",
+      "gridPos": { "x": 0, "y": 12, "w": 24, "h": 16 },
+      "datasource": { "type": "loki", "uid": "loki-main" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "loki-main" },
+          "expr": "{project=\"meshcore-analytics\", service=\"mosquitto\"}"
+        }
+      ],
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": {
+        "sortOrder": "Descending",
+        "enableLogDetails": true,
+        "showTime": true,
+        "showCommonLabels": false,
+        "wrapLogMessage": false,
+        "prettifyLogMessage": false,
+        "dedupStrategy": "none"
+      }
+    }
+  ]
+}

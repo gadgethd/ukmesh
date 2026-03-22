@@ -3,7 +3,7 @@ import type { IncomingMessage } from 'node:http';
 import type { Server } from 'node:http';
 import { Redis } from 'ioredis';
 import type { WSMessage, LivePacket } from '../types/index.js';
-import { getNodes, getRecentPackets, getViableLinks } from '../db/index.js';
+import { getNodes, getRecentPackets, getRecentMessages, getViableLinks } from '../db/index.js';
 import { resolveRequestNetwork } from '../http/requestScope.js';
 
 const REDIS_CHANNEL = 'meshcore:live';
@@ -52,14 +52,19 @@ async function fetchInitialState(network: string | undefined, observer: string |
 
   const promise = (async () => {
     try {
-      // getRecentPackets uses a 5-minute window with CTE aggregation (16 ms).
-      // getLastNPackets used 24-hour correlated subqueries (1,800 ms) — replaced here.
-      const [nodes, packets, viableLinks] = await Promise.all([
+      // getRecentPackets: 5-minute window, all types (fast, CTE aggregation ~16 ms).
+      // getRecentMessages: last 50 GRP (type=5) from last 24h so the channel feed
+      //   is never blank when the page first loads.
+      const [nodes, packets, messages, viableLinks] = await Promise.all([
         getNodes(network, observer),
         getRecentPackets(7, network, observer),
+        getRecentMessages(50, network, observer),
         getCachedViableLinks(network, observer),
       ]);
-      const entry: InitialStateEntry = { ts: Date.now(), nodes, packets, viableLinks };
+      // Merge: recent packets take priority; messages fill in anything not already present.
+      const seen = new Set(packets.map((p) => (p as { packet_hash: string }).packet_hash));
+      const merged = [...packets, ...messages.filter((m) => !seen.has((m as { packet_hash: string }).packet_hash))];
+      const entry: InitialStateEntry = { ts: Date.now(), nodes, packets: merged, viableLinks };
       initialStateCache.set(key, entry);
       return entry;
     } finally {

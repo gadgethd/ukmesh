@@ -2,12 +2,15 @@ import { useSyncExternalStore } from 'react';
 import {
   createAggregatedPacketFromLive,
   extractPacketSummary,
+  mapMessageRows,
   mapRecentRows,
   mergeAggregatedPacket,
   mergePackets,
   packetInfoScore,
   type RecentPacketRow,
+  FEED_MAX_MESSAGES,
   FEED_MAX_PACKETS,
+  mergeMessages,
 } from './packetFeed.js';
 
 export interface MeshNode {
@@ -56,6 +59,7 @@ export interface AggregatedPacket {
   rxNodeId?:    string;
   observerIds:  string[];
   srcNodeId?:   string;
+  topic?:       string;
   summary?:     string;
   hopCount?:    number;
   pathHashSizeBytes?: number;
@@ -78,6 +82,7 @@ export interface PacketArc {
 type NodeStoreState = {
   nodes: Map<string, MeshNode>;
   packets: AggregatedPacket[];
+  messages: AggregatedPacket[]; // type=5 GRP only, protected from ADV eviction
   arcs: PacketArc[];
   activeNodes: Set<string>;
 };
@@ -85,6 +90,7 @@ type NodeStoreState = {
 let state: NodeStoreState = {
   nodes: new Map(),
   packets: [],
+  messages: [],
   arcs: [],
   activeNodes: new Set(),
 };
@@ -112,10 +118,17 @@ function getState(): NodeStoreState {
 function handleInitialState(data: { nodes: MeshNode[]; packets: RecentPacketRow[] }) {
   const nodeMap = new Map<string, MeshNode>();
   for (const n of data.nodes) nodeMap.set(n.node_id, n);
+  const serverMessages = mapMessageRows(data.packets);
+  // Merge with any messages already in state so that a WS reconnect with a
+  // stale server-side cache doesn't wipe messages received via live packets.
+  const messages = state.messages.length > 0
+    ? mergeMessages(state.messages, serverMessages)
+    : serverMessages;
   setState({
     ...state,
     nodes: nodeMap,
     packets: mapRecentRows(data.packets),
+    messages,
   });
 }
 
@@ -192,9 +205,36 @@ function handlePacket(packetOrArray: LivePacketData | LivePacketData[]) {
     }
   }
 
+  // Also maintain the messages (type=5 only) array separately so GRP messages
+  // are never evicted by a flood of ADV packets.
+  let nextMessages = state.messages;
+  for (const packet of incomingPackets) {
+    if (packet.packetType !== 5) continue;
+    const msgIdx = nextMessages.findIndex((m) => m.packetHash === packet.packetHash);
+    if (msgIdx >= 0) {
+      const cur = nextMessages[msgIdx]!;
+      const updated: AggregatedPacket = {
+        ...cur,
+        summary: packet.summary ?? extractPacketSummary(packet.payload) ?? cur.summary,
+        rxNodeId: packet.rxNodeId ?? cur.rxNodeId,
+        observerIds: packet.rxNodeId
+          ? [packet.rxNodeId, ...cur.observerIds.filter((id) => id !== packet.rxNodeId)]
+          : cur.observerIds,
+        rxCount: cur.rxCount + (packet.direction !== 'tx' ? 1 : 0),
+        txCount: cur.txCount + (packet.direction === 'tx' ? 1 : 0),
+        ts: packet.ts,
+      };
+      nextMessages = nextMessages.map((m, i) => (i === msgIdx ? updated : m));
+    } else {
+      const entry = createAggregatedPacketFromLive(packet);
+      nextMessages = [entry, ...nextMessages].slice(0, FEED_MAX_MESSAGES);
+    }
+  }
+
   setState({
     ...state,
     packets: next,
+    messages: nextMessages,
   });
 }
 
@@ -287,6 +327,10 @@ export function useNodeMap(): Map<string, MeshNode> {
 
 export function usePackets(): AggregatedPacket[] {
   return useSyncExternalStore(subscribe, () => state.packets);
+}
+
+export function useMessages(): AggregatedPacket[] {
+  return useSyncExternalStore(subscribe, () => state.messages);
 }
 
 export function useArcs(): PacketArc[] {

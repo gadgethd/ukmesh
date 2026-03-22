@@ -14,6 +14,51 @@ function buildUserBlock(mqttUsername: string, nodeIds: string[]): string {
   return lines.join('\n');
 }
 
+export function getNodeIdsForUser(mqttUsername: string): string[] {
+  let content: string;
+  try {
+    content = fs.readFileSync(ACL_PATH, 'utf8');
+  } catch {
+    return [];
+  }
+  const lines = content.split('\n');
+  const userLine = `user ${mqttUsername}`.toLowerCase();
+  const userIdx = lines.findIndex((l) => l.trim().toLowerCase() === userLine);
+  if (userIdx === -1) return [];
+
+  const nodeIds: string[] = [];
+  for (let i = userIdx + 1; i < lines.length; i++) {
+    const trimmed = lines[i]?.trim() ?? '';
+    if (trimmed === '' || trimmed.toLowerCase().startsWith('user ') || trimmed.startsWith('#')) break;
+    const m = trimmed.match(/topic write .+\/([A-F0-9]{64})\//i);
+    if (m) {
+      const id = m[1]!.toUpperCase();
+      if (!nodeIds.includes(id)) nodeIds.push(id);
+    }
+  }
+  return nodeIds;
+}
+
+export function userExistsInAcl(mqttUsername: string): boolean {
+  let content: string;
+  try {
+    content = fs.readFileSync(ACL_PATH, 'utf8');
+  } catch {
+    return false;
+  }
+  return new RegExp(`^user ${mqttUsername}$`, 'im').test(content);
+}
+
+export function nodeExistsInAcl(nodeId: string): boolean {
+  let content: string;
+  try {
+    content = fs.readFileSync(ACL_PATH, 'utf8');
+  } catch {
+    return false;
+  }
+  return content.toUpperCase().includes(nodeId.toUpperCase());
+}
+
 export function updateUserAclBlock(mqttUsername: string, nodeIds: string[]): void {
   if (nodeIds.length === 0) return;
 

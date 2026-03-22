@@ -1,6 +1,7 @@
 import type { AggregatedPacket, LivePacketData } from './useNodes.js';
 
-export const FEED_MAX_PACKETS = 25;
+export const FEED_MAX_PACKETS = 50;
+export const FEED_MAX_MESSAGES = 50;
 
 export type RecentPacketRow = {
   time: string;
@@ -8,6 +9,7 @@ export type RecentPacketRow = {
   rx_node_id?: string;
   observer_node_ids?: string[] | null;
   src_node_id?: string;
+  topic?: string;
   packet_type?: number;
   hop_count?: number;
   path_hash_size_bytes?: number;
@@ -98,6 +100,7 @@ export function mapRecentRows(rows: RecentPacketRow[]): AggregatedPacket[] {
       rxNodeId: row.rx_node_id,
       observerIds,
       srcNodeId: row.src_node_id,
+      topic: row.topic,
       summary,
       hopCount: row.hop_count,
       pathHashSizeBytes: row.path_hash_size_bytes ?? undefined,
@@ -113,6 +116,54 @@ export function mapRecentRows(rows: RecentPacketRow[]): AggregatedPacket[] {
   return Array.from(mapped.values())
     .sort((a, b) => b.ts - a.ts)
     .slice(0, FEED_MAX_PACKETS);
+}
+
+export function mapMessageRows(rows: RecentPacketRow[]): AggregatedPacket[] {
+  const type5 = rows.filter((r) => r.packet_type === 5);
+  const mapped = new Map<string, AggregatedPacket>();
+  for (const row of type5) {
+    const summary = row.summary ?? extractPacketSummary(row.payload);
+    const observerIds = Array.from(new Set([
+      ...(row.observer_node_ids ?? []),
+      ...(row.rx_node_id ? [row.rx_node_id] : []),
+    ]));
+    const next: AggregatedPacket = {
+      id: row.packet_hash,
+      packetHash: row.packet_hash,
+      packetType: row.packet_type,
+      rxNodeId: row.rx_node_id,
+      observerIds,
+      srcNodeId: row.src_node_id,
+      topic: row.topic,
+      summary,
+      hopCount: row.hop_count,
+      pathHashSizeBytes: row.path_hash_size_bytes ?? undefined,
+      path: row.path_hashes ?? undefined,
+      rxCount: Number(row.rx_count ?? 1),
+      txCount: Number(row.tx_count ?? 0),
+      ts: new Date(row.time).getTime(),
+      advertCount: row.advert_count ?? undefined,
+    };
+    const current = mapped.get(row.packet_hash);
+    mapped.set(row.packet_hash, current ? mergeAggregatedPacket(current, next) : next);
+  }
+  return Array.from(mapped.values())
+    .sort((a, b) => b.ts - a.ts)
+    .slice(0, FEED_MAX_MESSAGES);
+}
+
+/** Merge two message lists (type=5 only). Client-side messages take priority so
+ *  a WS reconnect with a stale server cache doesn't wipe recently received messages. */
+export function mergeMessages(clientMessages: AggregatedPacket[], serverMessages: AggregatedPacket[]): AggregatedPacket[] {
+  const merged = new Map<string, AggregatedPacket>();
+  for (const m of serverMessages) merged.set(m.packetHash, m);
+  for (const m of clientMessages) {
+    const existing = merged.get(m.packetHash);
+    merged.set(m.packetHash, existing ? mergeAggregatedPacket(existing, m) : m);
+  }
+  return Array.from(merged.values())
+    .sort((a, b) => b.ts - a.ts)
+    .slice(0, FEED_MAX_MESSAGES);
 }
 
 export function mergePackets(existing: AggregatedPacket[], incoming: AggregatedPacket[]): AggregatedPacket[] {
@@ -135,6 +186,7 @@ export function createAggregatedPacketFromLive(packet: LivePacketData): Aggregat
     rxNodeId: packet.rxNodeId,
     observerIds: packet.rxNodeId ? [packet.rxNodeId] : [],
     srcNodeId: packet.srcNodeId,
+    topic: packet.topic,
     summary: packet.summary ?? extractPacketSummary(packet.payload),
     hopCount: packet.hopCount,
     pathHashSizeBytes: packet.pathHashSizeBytes,

@@ -10,11 +10,13 @@ type QueryFn = <T extends QueryResultRow = QueryResultRow>(
 
 type GetRecentPacketsFn = (limit: number, network?: string, observer?: string) => Promise<unknown>;
 type GetRecentPacketEventsFn = (limit: number, network?: string, observer?: string) => Promise<unknown>;
+type GetPacketDetailFn = (hash: string, network?: string) => Promise<unknown>;
 
 type MiscRouteDeps = {
   query: QueryFn;
   getRecentPackets: GetRecentPacketsFn;
   getRecentPacketEvents: GetRecentPacketEventsFn;
+  getPacketDetail: GetPacketDetailFn;
 };
 
 export function registerMiscRoutes(router: Router, deps: MiscRouteDeps): void {
@@ -22,6 +24,7 @@ export function registerMiscRoutes(router: Router, deps: MiscRouteDeps): void {
     query,
     getRecentPackets,
     getRecentPacketEvents,
+    getPacketDetail,
   } = deps;
 
   router.get('/packets/recent', async (req, res) => {
@@ -37,6 +40,27 @@ export function registerMiscRoutes(router: Router, deps: MiscRouteDeps): void {
       res.json(packets);
     } catch (err) {
       console.error('[api] GET /packets/recent', (err as Error).message);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  });
+
+  router.get('/packets/:hash', async (req, res) => {
+    try {
+      const hash = String(req.params['hash'] ?? '').trim();
+      if (!hash || !/^[0-9a-fA-F]{1,128}$/.test(hash)) {
+        res.status(400).json({ error: 'Invalid packet hash' });
+        return;
+      }
+      const requestedNetwork = resolveRequestNetwork(req.query['network'], req.headers);
+      const network = requestedNetwork === 'all' ? undefined : requestedNetwork;
+      const detail = await getPacketDetail(hash, network);
+      if (!detail) {
+        res.status(404).json({ error: 'Packet not found' });
+        return;
+      }
+      res.json(detail);
+    } catch (err) {
+      console.error('[api] GET /packets/:hash', (err as Error).message);
       res.status(500).json({ error: 'Internal server error' });
     }
   });

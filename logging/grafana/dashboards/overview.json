@@ -1,0 +1,133 @@
+{
+  "uid": "ma-overview",
+  "title": "Overview — All Services",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-1h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "service",
+        "label": "Service",
+        "type": "query",
+        "datasource": { "type": "loki", "uid": "loki-main" },
+        "query": {
+          "refId": "LokiVariableQueryEditor-VariableQuery",
+          "type": 1,
+          "label": "service",
+          "stream": "{project=\"meshcore-analytics\"}"
+        },
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".+",
+        "sort": 1,
+        "refresh": 2,
+        "current": {}
+      },
+      {
+        "name": "search",
+        "label": "Search",
+        "type": "textbox",
+        "query": "",
+        "current": { "value": "", "text": "" }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Log Rate by Service",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 0, "w": 24, "h": 8 },
+      "datasource": { "type": "loki", "uid": "loki-main" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "loki-main" },
+          "expr": "sum by(service) (count_over_time({project=\"meshcore-analytics\", service=~\"$service\"}[$__interval]))",
+          "legendFormat": "{{service}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 15,
+            "stacking": { "mode": "normal", "group": "A" }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      }
+    },
+    {
+      "id": 2,
+      "title": "Errors & Warnings",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 8, "w": 24, "h": 6 },
+      "datasource": { "type": "loki", "uid": "loki-main" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "loki-main" },
+          "expr": "sum(count_over_time({project=\"meshcore-analytics\"} |~ \"(?i)(error|fatal|exception)\" [$__interval]))",
+          "legendFormat": "errors"
+        },
+        {
+          "refId": "B",
+          "datasource": { "type": "loki", "uid": "loki-main" },
+          "expr": "sum(count_over_time({project=\"meshcore-analytics\"} |~ \"(?i)warn\" [$__interval]))",
+          "legendFormat": "warnings"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "errors" },
+            "properties": [
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "warnings" },
+            "properties": [
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "orange" } }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      }
+    },
+    {
+      "id": 3,
+      "title": "Logs",
+      "type": "logs",
+      "gridPos": { "x": 0, "y": 14, "w": 24, "h": 20 },
+      "datasource": { "type": "loki", "uid": "loki-main" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "loki-main" },
+          "expr": "{project=\"meshcore-analytics\", service=~\"$service\"} |~ \"$search\""
+        }
+      ],
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": {
+        "sortOrder": "Descending",
+        "enableLogDetails": true,
+        "showTime": true,
+        "showCommonLabels": true,
+        "wrapLogMessage": false,
+        "prettifyLogMessage": false,
+        "dedupStrategy": "none"
+      }
+    }
+  ]
+}

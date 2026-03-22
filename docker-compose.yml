@@ -72,6 +72,22 @@ services:
       - ./mosquitto:/mosquitto/config
       - /var/run/docker.sock:/var/run/docker.sock
 
+  acl-watcher:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    restart: unless-stopped
+    command: ["node", "dist/workers/acl-watcher.js"]
+    environment:
+      MOSQUITTO_ACL_PATH: /mosquitto/config/acl
+      MOSQUITTO_CONTAINER_NAME: mosquitto
+      NODE_ENV: production
+    depends_on:
+      - mosquitto
+    volumes:
+      - ./mosquitto:/mosquitto/config
+      - /var/run/docker.sock:/var/run/docker.sock
+
   path-learning-worker:
     build:
       context: .
@@ -285,9 +301,45 @@ services:
       - website-dev
       - mosquitto
 
+  loki:
+    image: grafana/loki:3.4
+    restart: unless-stopped
+    command: -config.file=/etc/loki/loki.yaml
+    volumes:
+      - ./logging/loki.yaml:/etc/loki/loki.yaml:ro
+      - loki_data:/loki
+
+  promtail:
+    image: grafana/promtail:3.4
+    restart: unless-stopped
+    command: -config.file=/etc/promtail/promtail.yaml
+    volumes:
+      - ./logging/promtail.yaml:/etc/promtail/promtail.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      - loki
+
+  grafana:
+    image: grafana/grafana:11.5.0
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD required}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+    volumes:
+      - ./logging/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./logging/grafana/dashboards:/etc/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "3010:3000"
+    depends_on:
+      - loki
+
 volumes:
   timescaledb_data:
   mosquitto_data:
   mosquitto_log:
   redis_data:
   srtm_data:
+  loki_data:
+  grafana_data:

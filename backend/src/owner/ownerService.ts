@@ -113,10 +113,7 @@ export function createOwnerService(deps: OwnerServiceDeps) {
       throw new Error('INVALID_MQTT_CREDENTIALS');
     }
 
-    let mappedNodeIds = await resolveOwnerNodeIds(mqttUsername);
-    if (mappedNodeIds.length < 1) {
-      mappedNodeIds = await autoLinkOwnerNodeIds(mqttUsername);
-    }
+    const mappedNodeIds = await autoLinkOwnerNodeIds(mqttUsername);
 
     const dashboard = await buildOwnerDashboard(mappedNodeIds);
     if (dashboard.totals.ownedNodes < 1) {

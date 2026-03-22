@@ -16,7 +16,7 @@ import {
   pathHistoryCache,
   statsCache,
 } from './bootstrap/caches.js';
-import { getNodes, getNodeHistory, getNodeAdverts, getPathHistoryCache, getRecentPacketEvents, getRecentPackets, query } from '../db/index.js';
+import { getNodes, getNodeHistory, getNodeAdverts, getPacketDetail, getPathHistoryCache, getRecentPacketEvents, getRecentPackets, query } from '../db/index.js';
 import { resolveRequestNetwork } from '../http/requestScope.js';
 import { autoLinkOwnerNodeIds, buildOwnerDashboard, resolveOwnerNodeIds, verifyMqttCredentials } from '../owner/ownerAccess.js';
 import { encryptOwnerSession, getOwnerSession, isSecureRequest } from '../owner/ownerSession.js';
@@ -95,6 +95,7 @@ registerMiscRoutes(router, {
   query,
   getRecentPackets,
   getRecentPacketEvents,
+  getPacketDetail,
 });
 registerOwnerRoutes(router, {
   ownerCookieName: OWNER_COOKIE_NAME,

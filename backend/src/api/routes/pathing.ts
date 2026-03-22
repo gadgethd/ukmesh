@@ -1,5 +1,6 @@
 import type { Router } from 'express';
 import { resolveRequestNetwork } from '../../http/requestScope.js';
+import { lazyResolvePath } from '../../path-lazy/lazyResolver.js';
 import { createPathingRepository } from '../../pathing/pathingRepository.js';
 import { createPathingService } from '../../pathing/pathingService.js';
 import { normalizeObserverQuery } from '../utils/observer.js';
@@ -99,6 +100,27 @@ export function registerPathingRoutes(router: Router, deps: PathingRouteDeps): v
       res.json(await service.getPathHistory(scope));
     } catch (err) {
       console.error('[api] GET /path-beta/history', (err as Error).message);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  });
+
+  router.get('/path-lazy/resolve', deps.pathBetaLimiter, async (req, res) => {
+    try {
+      const packetHash = String(req.query['hash'] ?? '').trim();
+      if (!packetHash || !/^[0-9a-fA-F]{1,128}$/.test(packetHash)) {
+        res.status(400).json({ error: 'Invalid or missing hash' });
+        return;
+      }
+      const requestedNetwork = resolveRequestNetwork(req.query['network'], req.headers);
+      const network = (!requestedNetwork || requestedNetwork === 'all') ? null : requestedNetwork;
+      const result = await lazyResolvePath(packetHash, network, deps.query);
+      if (!result) {
+        res.status(404).json({ error: 'No path data found for this packet' });
+        return;
+      }
+      res.json(result);
+    } catch (err) {
+      console.error('[api] GET /path-lazy/resolve', (err as Error).message);
       res.status(500).json({ error: 'Internal server error' });
     }
   });
