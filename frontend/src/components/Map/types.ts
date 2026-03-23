@@ -43,6 +43,7 @@ export interface MapLibreMapProps {
   inferredNodes: import('../../hooks/useNodes.js').MeshNode[];
   inferredActiveNodeIds: Set<string>;
   showLinks: boolean;
+  showTerrain: boolean;
   showClientNodes: boolean;
   showHexClashes: boolean;
   maxHexClashHops: number;

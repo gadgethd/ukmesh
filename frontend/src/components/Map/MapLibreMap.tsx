@@ -30,6 +30,7 @@ import {
   MAP_REFRESH_INTERVAL_MS,
   MAP_STYLE,
   SEVEN_DAYS_MS,
+  TERRAIN_CONFIG,
 } from './mapConfig.js';
 import {
   buildClashLinesGeoJSON,
@@ -55,6 +56,7 @@ export function MapLibreMap({
   inferredNodes,
   inferredActiveNodeIds: _inferredActiveNodeIds,
   showLinks,
+  showTerrain,
   showClientNodes,
   showHexClashes,
   maxHexClashHops,
@@ -205,11 +207,29 @@ export function MapLibreMap({
       style: MAP_STYLE,
       center: [DEFAULT_CENTER[1], DEFAULT_CENTER[0]], // [lon, lat]
       zoom: DEFAULT_ZOOM,
+      maxPitch: 0,
       attributionControl: false,
     });
 
     map.on('load', () => {
       mapLoadedRef.current = true;
+
+      // ── Sky layer (for 3D terrain mode) ────────────────────────────────────
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      map.addLayer({ id: 'sky', type: 'sky', paint: { 'sky-type': 'atmosphere', 'sky-atmosphere-sun': [0, 90], 'sky-atmosphere-sun-intensity': 15 } } as any);
+
+      // ── Hillshade layer ────────────────────────────────────────────────────
+      map.addLayer({
+        id: 'hillshade',
+        type: 'hillshade',
+        source: 'terrain-dem',
+        paint: {
+          'hillshade-exaggeration': 0.7,
+          'hillshade-shadow-color': '#000000',
+          'hillshade-highlight-color': '#ffffff',
+          'hillshade-illumination-anchor': 'viewport',
+        },
+      });
 
       // ── Node dots source + layer ───────────────────────────────────────────
       map.addSource('nodes', { type: 'geojson', data: EMPTY_FC });
@@ -365,6 +385,20 @@ export function MapLibreMap({
     showLinksRef.current = showLinks;
     scheduleRefresh();
   }, [showLinks, scheduleRefresh]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapLoadedRef.current) return;
+    if (showTerrain) {
+      map.setMaxPitch(85);
+      map.setTerrain(TERRAIN_CONFIG);
+      map.easeTo({ pitch: 45, duration: 600 });
+    } else {
+      map.easeTo({ pitch: 0, duration: 400 });
+      setTimeout(() => map.setMaxPitch(0), 400);
+      map.setTerrain(null);
+    }
+  }, [showTerrain]);
 
   useEffect(() => {
     showClientNodesRef.current = showClientNodes;

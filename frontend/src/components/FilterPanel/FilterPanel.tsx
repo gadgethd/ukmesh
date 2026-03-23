@@ -4,6 +4,7 @@ import { useOverlayStore } from '../../store/overlayStore.js';
 export interface Filters {
   livePackets:       boolean;
   links:             boolean;
+  terrain:           boolean;
   clientNodes:       boolean;
   packetHistory:     boolean;
   betaPaths:         boolean;
@@ -34,7 +35,7 @@ export const LinksLegend: React.FC<{ compact?: boolean; muted?: boolean }> = ({ 
 
 export const FILTER_ROWS: Array<{ key: keyof Filters; label: string; color: string; hollow?: boolean }> = [
   { key: 'livePackets',  label: 'Live Feed',        color: '#00c4ff' },
-  { key: 'links',        label: 'Links',            color: '#22c55e', hollow: true },
+  { key: 'terrain',      label: '3D Terrain',       color: '#60a5fa' },
   { key: 'packetHistory', label: 'Paths',            color: '#00c4ff', hollow: true },
   { key: 'betaPaths',    label: 'Live Path',         color: '#a855f7', hollow: true },
   { key: 'hexClashes',   label: 'Hex Clashes',      color: '#f97316' },

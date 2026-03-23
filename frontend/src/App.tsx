@@ -24,6 +24,7 @@ type PacketHistorySegment = {
 const DEFAULT_FILTERS: Filters = {
   livePackets: true,
   links: false,
+  terrain: false,
   clientNodes: false,
   packetHistory: false,
   betaPaths: false,
@@ -227,6 +228,7 @@ export const App: React.FC = () => {
           inferredNodes={inferredNodes}
           inferredActiveNodeIds={inferredActiveNodeIds}
           showLinks={filters.links}
+          showTerrain={filters.terrain}
           showClientNodes={filters.clientNodes}
           showHexClashes={filters.hexClashes}
           maxHexClashHops={filters.hexClashMaxHops}
