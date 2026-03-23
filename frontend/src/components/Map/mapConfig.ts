@@ -14,7 +14,15 @@ export const EMPTY_FC: GeoJSON.FeatureCollection = {
   features: [],
 };
 
-export const TERRAIN_CONFIG = { source: 'terrain-dem', exaggeration: 4 };
+export const TERRAIN_CONFIG = { source: 'terrain-dem', exaggeration: 3 };
+
+export const TERRAIN_DEM_SOURCE: maplibregl.RasterDEMSourceSpecification = {
+  type: 'raster-dem',
+  tiles: ['https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'],
+  encoding: 'terrarium',
+  tileSize: 256,
+  maxzoom: 15,
+};
 
 export const MAP_STYLE: maplibregl.StyleSpecification = {
   version: 8,
@@ -31,13 +39,6 @@ export const MAP_STYLE: maplibregl.StyleSpecification = {
       attribution:
         '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
       maxzoom: 19,
-    },
-    'terrain-dem': {
-      type: 'raster-dem',
-      tiles: ['https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'],
-      encoding: 'terrarium',
-      tileSize: 256,
-      maxzoom: 15,
     },
   },
   layers: [
