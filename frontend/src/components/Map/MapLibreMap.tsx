@@ -31,6 +31,7 @@ import {
   MAP_STYLE,
   SEVEN_DAYS_MS,
   TERRAIN_CONFIG,
+  TERRAIN_DEM_SOURCE,
 } from './mapConfig.js';
 import {
   buildClashLinesGeoJSON,
@@ -74,6 +75,7 @@ export function MapLibreMap({
   const linkMetricsRef = useRef(linkStateStore.getState().linkMetrics);
   const inferredNodesRef = useRef(inferredNodes);
   const showLinksRef = useRef(showLinks);
+  const showTerrainRef = useRef(showTerrain);
   const showClientNodesRef = useRef(showClientNodes);
   const showHexClashesRef = useRef(showHexClashes);
   const maxHexClashHopsRef = useRef(maxHexClashHops);
@@ -208,28 +210,12 @@ export function MapLibreMap({
       center: [DEFAULT_CENTER[1], DEFAULT_CENTER[0]], // [lon, lat]
       zoom: DEFAULT_ZOOM,
       maxPitch: 0,
+      minZoom: 6,
       attributionControl: false,
     });
 
     map.on('load', () => {
       mapLoadedRef.current = true;
-
-      // ── Sky layer (for 3D terrain mode) ────────────────────────────────────
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      map.addLayer({ id: 'sky', type: 'sky', paint: { 'sky-type': 'atmosphere', 'sky-atmosphere-sun': [0, 90], 'sky-atmosphere-sun-intensity': 15 } } as any);
-
-      // ── Hillshade layer ────────────────────────────────────────────────────
-      map.addLayer({
-        id: 'hillshade',
-        type: 'hillshade',
-        source: 'terrain-dem',
-        paint: {
-          'hillshade-exaggeration': 0.7,
-          'hillshade-shadow-color': '#000000',
-          'hillshade-highlight-color': '#ffffff',
-          'hillshade-illumination-anchor': 'viewport',
-        },
-      });
 
       // ── Node dots source + layer ───────────────────────────────────────────
       map.addSource('nodes', { type: 'geojson', data: EMPTY_FC });
@@ -365,6 +351,20 @@ export function MapLibreMap({
       mapRef.current = map;
       onMapReady?.(map);
       refreshMapSources();
+
+      // Restore terrain if it was saved in preferences
+      if (showTerrainRef.current) {
+        map.addSource('terrain-dem', TERRAIN_DEM_SOURCE);
+        map.addLayer({
+          id: 'hillshade', type: 'hillshade', source: 'terrain-dem', minzoom: 7,
+          paint: { 'hillshade-exaggeration': 0.7, 'hillshade-shadow-color': '#000000', 'hillshade-highlight-color': '#ffffff', 'hillshade-illumination-anchor': 'viewport' },
+        }, 'node-dots');
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        map.addLayer({ id: 'sky', type: 'sky', paint: { 'sky-type': 'atmosphere', 'sky-atmosphere-sun': [0, 90], 'sky-atmosphere-sun-intensity': 15 } } as any);
+        map.setMaxPitch(85);
+        if (map.getZoom() >= 7) map.setTerrain(TERRAIN_CONFIG);
+        map.easeTo({ pitch: 45, duration: 600 });
+      }
     });
 
     return () => {
@@ -387,16 +387,27 @@ export function MapLibreMap({
   }, [showLinks, scheduleRefresh]);
 
   useEffect(() => {
+    showTerrainRef.current = showTerrain;
     const map = mapRef.current;
     if (!map || !mapLoadedRef.current) return;
     if (showTerrain) {
+      if (!map.getSource('terrain-dem')) map.addSource('terrain-dem', TERRAIN_DEM_SOURCE);
+      if (!map.getLayer('hillshade')) map.addLayer({
+        id: 'hillshade', type: 'hillshade', source: 'terrain-dem', minzoom: 7,
+        paint: { 'hillshade-exaggeration': 0.7, 'hillshade-shadow-color': '#000000', 'hillshade-highlight-color': '#ffffff', 'hillshade-illumination-anchor': 'viewport' },
+      }, 'node-dots');
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      if (!map.getLayer('sky')) map.addLayer({ id: 'sky', type: 'sky', paint: { 'sky-type': 'atmosphere', 'sky-atmosphere-sun': [0, 90], 'sky-atmosphere-sun-intensity': 15 } } as any);
       map.setMaxPitch(85);
-      map.setTerrain(TERRAIN_CONFIG);
+      if (map.getZoom() >= 7) map.setTerrain(TERRAIN_CONFIG);
       map.easeTo({ pitch: 45, duration: 600 });
     } else {
+      map.setTerrain(null);
+      if (map.getLayer('hillshade')) map.removeLayer('hillshade');
+      if (map.getLayer('sky')) map.removeLayer('sky');
+      if (map.getSource('terrain-dem')) map.removeSource('terrain-dem');
       map.easeTo({ pitch: 0, duration: 400 });
       setTimeout(() => map.setMaxPitch(0), 400);
-      map.setTerrain(null);
     }
   }, [showTerrain]);
 
