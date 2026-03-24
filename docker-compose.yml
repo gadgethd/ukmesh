@@ -234,7 +234,7 @@ services:
     ports:
       - "3003:80"
     volumes:
-      - /home/ben/terrain-pipeline/tiles:/terrain-tiles:ro
+      - ${TERRAIN_TILES_PATH:-./terrain-tiles}:/terrain-tiles:ro
 
   website-ukmesh:
     build:
