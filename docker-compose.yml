@@ -233,6 +233,8 @@ services:
       - backend
     ports:
       - "3003:80"
+    volumes:
+      - /home/ben/terrain-pipeline/tiles:/terrain-tiles:ro
 
   website-ukmesh:
     build:

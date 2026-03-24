@@ -39,6 +39,25 @@ export interface ClashComputation {
   clashModeActive: boolean;
 }
 
+export interface LosProfile {
+  peer_id: string;
+  peer_name: string | null;
+  itm_path_loss_db: number | null;
+  itm_viable: boolean;
+  profile: [number, number, number][];  // [lon, lat, elev_m]
+}
+
+export interface CustomLosPoint {
+  lat: number;
+  lon: number;
+  elevation_m: number;
+}
+
+export interface CustomLosSegment {
+  path: [number, number, number][];
+  obstructed: boolean;
+}
+
 export interface MapLibreMapProps {
   inferredNodes: import('../../hooks/useNodes.js').MeshNode[];
   inferredActiveNodeIds: Set<string>;

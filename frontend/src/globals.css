@@ -504,6 +504,18 @@ html, body, #root {
   background: var(--bg-panel) !important;
 }
 
+/* Ensure MapLibre popups render above deck.gl canvas overlay */
+.maplibregl-popup {
+  z-index: 10;
+}
+
+/* Custom LOS button — desktop only (hidden on touch/mobile) */
+@media (max-width: 640px), (pointer: coarse) {
+  .custom-los-btn {
+    display: none !important;
+  }
+}
+
 .node-popup {
   padding: 12px 14px;
   min-width: 200px;

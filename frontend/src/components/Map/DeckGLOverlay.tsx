@@ -7,7 +7,7 @@
  */
 import React, { useEffect, useRef, useMemo } from 'react';
 import { MapboxOverlay } from '@deck.gl/mapbox';
-import { ArcLayer, LineLayer, PathLayer } from '@deck.gl/layers';
+import { ArcLayer, LineLayer, PathLayer, ScatterplotLayer } from '@deck.gl/layers';
 import { PathStyleExtension } from '@deck.gl/extensions';
 import type { PathStyleExtensionProps } from '@deck.gl/extensions';
 import type { Layer } from '@deck.gl/core';
@@ -15,6 +15,7 @@ import type maplibregl from 'maplibre-gl';
 import type { PacketArc } from '../../hooks/useNodes.js';
 import type { HiddenMaskGeometry } from '../../utils/pathing.js';
 import { maskPoint } from '../../utils/pathing.js';
+import type { CustomLosPoint, CustomLosSegment, LosProfile } from './types.js';
 
 const ARC_TTL_MS = 5_000;
 const FADE_DURATION_MS = 1_000;
@@ -48,6 +49,9 @@ interface Props {
   pathFadingOut: boolean;
 
   hiddenCoordMask: Map<string, HiddenMaskGeometry>;
+  losProfiles: LosProfile[] | null;
+  customLosSegments: CustomLosSegment[];
+  customLosStart: CustomLosPoint | null;
 }
 
 // Lat/lon [lat, lon] (Leaflet convention) → deck.gl [lon, lat] (GeoJSON convention)
@@ -73,6 +77,9 @@ function buildLayers(
   showBetaPaths: boolean,
   pathFadingOut: boolean,
   hiddenCoordMask: Map<string, HiddenMaskGeometry>,
+  losProfiles: LosProfile[] | null,
+  customLosSegments: CustomLosSegment[],
+  customLosStart: CustomLosPoint | null,
 ): Layer[] {
   const now = Date.now();
   const layers: Layer[] = [];
@@ -200,6 +207,99 @@ function buildLayers(
     }
   }
 
+  // ── LOS terrain profiles ───────────────────────────────────────────────────
+  if (losProfiles && losProfiles.length > 0) {
+    type LosEndpoint = { position: [number, number, number]; viable: boolean };
+    const losEndpoints: LosEndpoint[] = losProfiles.flatMap((p) => [
+      { position: p.profile[0] as [number, number, number], viable: p.itm_viable },
+      { position: p.profile[p.profile.length - 1] as [number, number, number], viable: p.itm_viable },
+    ]);
+
+    layers.push(
+      // Outer glow — wide + transparent for tube feel
+      new PathLayer<LosProfile>({
+        id: 'los-bloom',
+        data: losProfiles,
+        getPath: (d) => d.profile,
+        getColor: (d) => d.itm_viable ? [34, 197, 94, 55] : [239, 68, 68, 55],
+        getWidth: 14,
+        widthUnits: 'pixels',
+        pickable: false,
+      }),
+      // Bright core line
+      new PathLayer<LosProfile>({
+        id: 'los-core',
+        data: losProfiles,
+        getPath: (d) => d.profile,
+        getColor: (d) => d.itm_viable ? [34, 197, 94, 230] : [239, 68, 68, 230],
+        getWidth: 4,
+        widthUnits: 'pixels',
+        pickable: false,
+      }),
+      // Endpoint markers — rendered last so they appear above the lines
+      new ScatterplotLayer<LosEndpoint>({
+        id: 'los-endpoints',
+        data: losEndpoints,
+        getPosition: (d) => d.position,
+        getFillColor: (d) => d.viable ? [34, 197, 94, 255] : [239, 68, 68, 255],
+        getLineColor: [255, 255, 255, 200],
+        getRadius: 7,
+        radiusUnits: 'pixels',
+        stroked: true,
+        lineWidthUnits: 'pixels',
+        getLineWidth: 2,
+        pickable: false,
+      }),
+    );
+  }
+
+  // ── Custom LOS segments ────────────────────────────────────────────────────
+  if (customLosSegments.length > 0) {
+    layers.push(
+      // Glow layer
+      new PathLayer<CustomLosSegment>({
+        id: 'custom-los-bloom',
+        data: customLosSegments,
+        getPath: (d) => d.path,
+        getColor: (d) => d.obstructed ? [239, 68, 68, 50] : [34, 197, 94, 50],
+        getWidth: 14,
+        widthUnits: 'pixels',
+        pickable: false,
+      }),
+      // Core line
+      new PathLayer<CustomLosSegment>({
+        id: 'custom-los-core',
+        data: customLosSegments,
+        getPath: (d) => d.path,
+        getColor: (d) => d.obstructed ? [239, 68, 68, 230] : [34, 197, 94, 230],
+        getWidth: 4,
+        widthUnits: 'pixels',
+        pickable: false,
+      }),
+    );
+  }
+
+  // ── Custom LOS start marker (waiting for second point) ─────────────────────
+  if (customLosStart) {
+    const EXAG = 2; // matches TERRAIN_CONFIG.exaggeration
+    const ANTENNA_H = 10;
+    layers.push(
+      new ScatterplotLayer<CustomLosPoint>({
+        id: 'custom-los-start',
+        data: [customLosStart],
+        getPosition: (d) => [d.lon, d.lat, (d.elevation_m + ANTENNA_H) * EXAG],
+        getFillColor: [59, 130, 246, 255],
+        getLineColor: [255, 255, 255, 200],
+        getRadius: 9,
+        radiusUnits: 'pixels',
+        stroked: true,
+        lineWidthUnits: 'pixels',
+        getLineWidth: 2,
+        pickable: false,
+      }),
+    );
+  }
+
   return layers;
 }
 
@@ -210,6 +310,9 @@ export const DeckGLOverlay: React.FC<Props> = ({
   betaPaths, betaLowSegments, betaCompletionPaths,
   showBetaPaths, pathFadingOut,
   hiddenCoordMask,
+  losProfiles,
+  customLosSegments,
+  customLosStart,
 }) => {
   const overlayRef = useRef<MapboxOverlay | null>(null);
 
@@ -236,10 +339,14 @@ export const DeckGLOverlay: React.FC<Props> = ({
       betaPaths, betaLowSegments, betaCompletionPaths,
       showBetaPaths, pathFadingOut,
       hiddenCoordMask,
+      losProfiles,
+      customLosSegments,
+      customLosStart,
     ),
     [arcs, showArcs, packetHistorySegments, showPacketHistory,
       betaPaths, betaLowSegments, betaCompletionPaths,
-      showBetaPaths, pathFadingOut, hiddenCoordMask],
+      showBetaPaths, pathFadingOut, hiddenCoordMask, losProfiles,
+      customLosSegments, customLosStart],
   );
 
   // Push updated layers to the overlay imperatively

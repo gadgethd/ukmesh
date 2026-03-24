@@ -27,6 +27,13 @@ export const LiveOverlayController: React.FC<LiveOverlayControllerProps> = ({
   observer,
   packetHistorySegments,
 }) => {
+  const losProfilesByNodeId = useOverlayStore((state) => state.losProfilesByNodeId);
+  const customLosSegments = useOverlayStore((state) => state.customLosSegments);
+  const customLosStart = useOverlayStore((state) => state.customLosStart);
+  const losProfiles = useMemo(
+    () => Object.values(losProfilesByNodeId).flat(),
+    [losProfilesByNodeId],
+  );
   const nodes = useNodeMap();
   const hiddenCoordMask = useMemo(() => buildHiddenCoordMask(nodes.values()), [nodes]);
   const setPathNodeIds = useOverlayStore((state) => state.setPathNodeIds);
@@ -142,6 +149,9 @@ export const LiveOverlayController: React.FC<LiveOverlayControllerProps> = ({
       showBetaPaths={filters.betaPaths || pinnedPacketId !== null}
       pathFadingOut={pathFadingOut}
       hiddenCoordMask={hiddenCoordMask}
+      losProfiles={losProfiles}
+      customLosSegments={customLosSegments}
+      customLosStart={customLosStart}
     />
   );
 };

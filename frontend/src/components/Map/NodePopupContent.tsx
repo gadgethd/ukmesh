@@ -25,6 +25,9 @@ export const NodePopupContent: React.FC<{
   onToggleCoverage: (nodeId: string) => void;
   onFocusSamePrefix: (nodeId: string) => void;
   samePrefixCount: number;
+  losActive: boolean;
+  losLoading: boolean;
+  onToggleLos: (nodeId: string) => void;
 }> = ({
   props,
   lat,
@@ -36,6 +39,9 @@ export const NodePopupContent: React.FC<{
   onToggleCoverage,
   onFocusSamePrefix,
   samePrefixCount,
+  losActive,
+  losLoading,
+  onToggleLos,
 }) => {
   const isRepeater = props.role === undefined || props.role === 2;
   const ageMs = Date.now() - new Date(props.last_seen).getTime();
@@ -114,6 +120,18 @@ export const NodePopupContent: React.FC<{
         <div className="node-popup__row">
           <span>Coverage</span>
           <span>{coverageMessage}</span>
+        </div>
+      )}
+      {isRepeater && !props.is_prohibited && (
+        <div className="node-popup__row" style={{ marginTop: 6 }}>
+          <button
+            type="button"
+            className={`node-popup__coverage-btn${losActive ? ' node-popup__coverage-btn--active' : ''}`}
+            onClick={() => onToggleLos(props.node_id)}
+            disabled={losLoading}
+          >
+            {losLoading ? 'Loading LOS…' : losActive ? 'Hide LOS' : 'Show LOS'}
+          </button>
         </div>
       )}
       {isRepeater && samePrefixCount > 1 && (
