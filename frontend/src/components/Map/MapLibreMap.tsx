@@ -44,12 +44,16 @@ import {
 } from './geojsonBuilders.js';
 import { NodePopupContent } from './NodePopupContent.js';
 import type {
+  CustomLosPoint,
+  LosProfile,
   MapLibreMapProps,
   NodeFeatureProps,
   NodeLink,
   PopupNodeView,
   PopupState,
 } from './types.js';
+import { sampleElevationAt } from '../../utils/terrainSampler.js';
+import { computeCustomLos } from '../../utils/customLos.js';
 
 // ── Main Component ────────────────────────────────────────────────────────────
 
@@ -84,6 +88,11 @@ export function MapLibreMap({
   const refreshTimerRef = useRef<number | null>(null);
   const popupStateRef = useRef<PopupState | null>(null);
 
+  const customLosNodeClickedRef = useRef(false);
+  // handleCustomLosPointRef is assigned after handleCustomLosPoint is defined below
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const handleCustomLosPointRef = useRef<(point: CustomLosPoint) => Promise<void>>(null as any);
+
   const [popupState, setPopupState] = useState<PopupState | null>(null);
   const [popupLinks, setPopupLinks] = useState<NodeLink[] | null>(null);
   const [selectedCoverageNodeId, setSelectedCoverageNodeId] = useState<string | null>(null);
@@ -94,6 +103,124 @@ export function MapLibreMap({
   const [focusedPrefixNodeIds, setFocusedPrefixNodeIds] = useState<Set<string> | null>(null);
   const [popupVersion, setPopupVersion] = useState(0);
   const focusTimerRef = useRef<number | null>(null);
+
+  // -- LOS profiles (client-side, multi-node, auto-expire) -------------------
+
+  const addLosLoading = useOverlayStore((state) => state.addLosLoading);
+  const setLosProfilesForNode = useOverlayStore((state) => state.setLosProfilesForNode);
+  const removeLosNode = useOverlayStore((state) => state.removeLosNode);
+
+  // Targeted selectors — only re-render MapLibreMap when the POPUP node's LOS
+  // status changes (boolean equality), not every time any node's Set changes.
+  const popupNodeId = popupState?.nodeId ?? null;
+  const popupLosActive = useOverlayStore((state) => popupNodeId != null && state.losNodeIds.has(popupNodeId));
+  const popupLosLoading = useOverlayStore((state) => popupNodeId != null && state.losLoadingIds.has(popupNodeId));
+
+  // Timers for auto-expiry: nodeId → setTimeout handle
+  const losTimersRef = useRef<Map<string, number>>(new Map());
+
+  const clearLosTimer = useCallback((nodeId: string) => {
+    const handle = losTimersRef.current.get(nodeId);
+    if (handle !== undefined) {
+      window.clearTimeout(handle);
+      losTimersRef.current.delete(nodeId);
+    }
+  }, []);
+
+  const handleToggleLos = useCallback(async (nodeId: string) => {
+    // Read current state imperatively — avoids stale closure from useCallback deps.
+    if (useOverlayStore.getState().losNodeIds.has(nodeId)) {
+      clearLosTimer(nodeId);
+      removeLosNode(nodeId);
+      return;
+    }
+    addLosLoading(nodeId);
+    // deck.gl renders at actual altitude; MapLibre terrain is visually exaggerated.
+    // Multiply altitude by the terrain exaggeration factor so lines appear
+    // above the terrain mesh rather than inside it.
+    const ANTENNA_H = 10;
+    const EXAG = TERRAIN_CONFIG.exaggeration;
+    try {
+      const links = await fetch(`/api/nodes/${nodeId}/links`)
+        .then((r) => r.json()) as NodeLink[];
+      const sourceNode = nodesRef.current.get(nodeId);
+      if (!sourceNode || !hasCoords(sourceNode)) {
+        setLosProfilesForNode(nodeId, []);
+      } else {
+        const srcElev = ((sourceNode.elevation_m ?? 0) + ANTENNA_H) * EXAG;
+        const profiles = links
+          .map((link): LosProfile | null => {
+            const peer = nodesRef.current.get(link.peer_id);
+            if (!peer || !hasCoords(peer)) return null;
+            const peerElev = ((peer.elevation_m ?? 0) + ANTENNA_H) * EXAG;
+            return {
+              peer_id: link.peer_id,
+              peer_name: link.peer_name,
+              itm_path_loss_db: link.itm_path_loss_db,
+              itm_viable: link.itm_path_loss_db != null && link.itm_path_loss_db <= 129.5,
+              profile: [
+                [sourceNode.lon, sourceNode.lat, srcElev],
+                [peer.lon, peer.lat, peerElev],
+              ],
+            };
+          })
+          .filter((p): p is LosProfile => p !== null);
+        setLosProfilesForNode(nodeId, profiles);
+      }
+    } catch {
+      setLosProfilesForNode(nodeId, []);
+    }
+    // Auto-expire after 15 seconds
+    clearLosTimer(nodeId);
+    const handle = window.setTimeout(() => {
+      losTimersRef.current.delete(nodeId);
+      removeLosNode(nodeId);
+    }, 15_000);
+    losTimersRef.current.set(nodeId, handle);
+  }, [addLosLoading, setLosProfilesForNode, removeLosNode, clearLosTimer]);
+
+  // -- Custom LOS (two-point terrain-sampled LOS) ----------------------------
+
+  const customLosMode = useOverlayStore((state) => state.customLosMode);
+  const customLosStart = useOverlayStore((state) => state.customLosStart);
+  const setCustomLosMode = useOverlayStore((state) => state.setCustomLosMode);
+  const setCustomLosStart = useOverlayStore((state) => state.setCustomLosStart);
+  const setCustomLosResult = useOverlayStore((state) => state.setCustomLosResult);
+  const clearCustomLos = useOverlayStore((state) => state.clearCustomLos);
+
+  // Stable async handler called by map click handlers (reads state via getState())
+  const handleCustomLosPoint = useCallback(async (point: CustomLosPoint) => {
+    const { customLosStart: currentStart } = useOverlayStore.getState();
+    if (!currentStart) {
+      setCustomLosStart(point);
+    } else {
+      setCustomLosStart(null);
+      const segments = await computeCustomLos(currentStart, point);
+      setCustomLosResult(segments);
+    }
+  }, [setCustomLosStart, setCustomLosResult]);
+
+  // Keep ref in sync so map event handlers always call the latest version
+  useEffect(() => {
+    handleCustomLosPointRef.current = handleCustomLosPoint;
+  }, [handleCustomLosPoint]);
+
+  // Cursor crosshair while in custom LOS mode
+  useEffect(() => {
+    const canvas = mapRef.current?.getCanvas();
+    if (!canvas) return;
+    canvas.style.cursor = customLosMode ? 'crosshair' : '';
+  }, [customLosMode]);
+
+  // Escape key clears custom LOS mode
+  useEffect(() => {
+    if (!customLosMode) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') clearCustomLos();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [customLosMode, clearCustomLos]);
 
   // -- Focus mode (same-prefix highlight) ------------------------------------
 
@@ -333,11 +460,37 @@ export function MapLibreMap({
         const feature = e.features?.[0];
         if (!feature) return;
         const props = feature.properties as NodeFeatureProps;
+
+        // In custom LOS mode, intercept node clicks as point picks
+        if (useOverlayStore.getState().customLosMode) {
+          customLosNodeClickedRef.current = true; // always consume to prevent map-click firing
+          if (!props.is_prohibited) {
+            const node = nodesRef.current.get(props.node_id);
+            if (node && hasCoords(node)) {
+              void handleCustomLosPointRef.current({ lat: node.lat, lon: node.lon, elevation_m: node.elevation_m ?? 0 });
+            }
+          }
+          return;
+        }
+
         // MapLibre serialises properties to JSON strings for non-primitive types,
         // but all our props are primitives so this is safe.
         const coords = (feature.geometry as GeoJSON.Point).coordinates as [number, number];
         setPopupLinks(null);
         setPopupState({ nodeId: props.node_id, lngLat: { lng: coords[0], lat: coords[1] } });
+      });
+
+      // General map click — used only in custom LOS mode for non-node points
+      map.on('click', (e) => {
+        if (!useOverlayStore.getState().customLosMode) return;
+        if (customLosNodeClickedRef.current) {
+          customLosNodeClickedRef.current = false;
+          return; // Node dot already handled above
+        }
+        const { lng, lat } = e.lngLat;
+        void sampleElevationAt(lng, lat).then((elevation_m) => {
+          void handleCustomLosPointRef.current({ lat, lon: lng, elevation_m });
+        });
       });
 
       // Make cursor a pointer over node dots
@@ -588,6 +741,40 @@ export function MapLibreMap({
       <NodeSearch map={mapRef.current} />
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
 
+      {/* Custom LOS mode toggle button */}
+      <button
+        type="button"
+        className="custom-los-btn"
+        onClick={(e) => { e.stopPropagation(); if (customLosMode) clearCustomLos(); else setCustomLosMode(true); }}
+        onMouseDown={(e) => e.stopPropagation()}
+        onMouseUp={(e) => e.stopPropagation()}
+        style={{
+          position: 'absolute', top: 10, left: 10, zIndex: 10,
+          background: customLosMode ? '#3b82f6' : 'rgba(0,0,0,0.7)',
+          color: '#fff', border: 'none', borderRadius: 4,
+          padding: '6px 10px', fontSize: 12, cursor: 'pointer',
+          fontWeight: customLosMode ? 600 : 400,
+        }}
+      >
+        ⌖ LOS
+      </button>
+
+      {/* Custom LOS status hint */}
+      {customLosMode && (
+        <div
+          style={{
+            position: 'absolute', bottom: 40, left: '50%', transform: 'translateX(-50%)',
+            background: 'rgba(0,0,0,0.75)', color: '#fff', padding: '6px 14px',
+            borderRadius: 4, fontSize: 12, pointerEvents: 'none', zIndex: 10,
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {customLosStart
+            ? 'Click map or repeater to set end point — Esc to cancel'
+            : 'Click map or repeater to set start point — Esc to cancel'}
+        </div>
+      )}
+
       {/* Popup content rendered into the MapLibre popup's DOM node via portal */}
       {popupState && popupNodeProps && createPortal(
         <NodePopupContent
@@ -601,6 +788,9 @@ export function MapLibreMap({
           onToggleCoverage={toggleCoverageForNode}
           onFocusSamePrefix={handleFocusSamePrefix}
           samePrefixCount={popupSamePrefixCount}
+          losActive={popupLosActive}
+          losLoading={popupLosLoading}
+          onToggleLos={handleToggleLos}
         />,
         popupContainerRef.current,
       )}

@@ -176,6 +176,7 @@ ALTER TABLE node_links ADD COLUMN IF NOT EXISTS count_a_to_b  INTEGER NOT NULL D
 ALTER TABLE node_links ADD COLUMN IF NOT EXISTS count_b_to_a  INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE node_links ADD COLUMN IF NOT EXISTS force_viable   BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE node_links ADD COLUMN IF NOT EXISTS multibyte_observed_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE node_links ADD COLUMN IF NOT EXISTS terrain_profile_json JSONB;
 
 CREATE TABLE IF NOT EXISTS node_link_radio_reports (
   node_a_id         TEXT        NOT NULL,

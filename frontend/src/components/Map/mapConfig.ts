@@ -14,14 +14,14 @@ export const EMPTY_FC: GeoJSON.FeatureCollection = {
   features: [],
 };
 
-export const TERRAIN_CONFIG = { source: 'terrain-dem', exaggeration: 3 };
+export const TERRAIN_CONFIG = { source: 'terrain-dem', exaggeration: 2 };
 
 export const TERRAIN_DEM_SOURCE: maplibregl.RasterDEMSourceSpecification = {
   type: 'raster-dem',
-  tiles: ['https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'],
+  tiles: ['/terrain-tiles/{z}/{x}/{y}.png'],
   encoding: 'terrarium',
-  tileSize: 256,
-  maxzoom: 15,
+  tileSize: 512,
+  maxzoom: 12,
 };
 
 export const MAP_STYLE: maplibregl.StyleSpecification = {
