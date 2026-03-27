@@ -8,7 +8,6 @@ import { OpenSourcePage } from './pages/OpenSourcePage.js';
 import { StatsPage } from './pages/StatsPage.js';
 import { PacketsPage } from './pages/PacketsPage.js';
 import { OwnerPortalPage } from './pages/OwnerPortalPage.js';
-import { TeessieDashboard } from './pages/teesside/TeessieDashboard.js';
 import { UKLayout } from './pages/ukmesh/UKLayout.js';
 import { UKHomePage } from './pages/ukmesh/UKHomePage.js';
 import { UKInstallPage } from './pages/ukmesh/UKInstallPage.js';
@@ -25,9 +24,8 @@ const APP_HOSTNAME = import.meta.env['VITE_APP_HOSTNAME'];
 const site = getCurrentSite();
 const isAppDomain  = !APP_HOSTNAME || hostname === APP_HOSTNAME;
 
-document.title = isAppDomain
-  ? 'MeshCore Analytics'
-  : site.footerName;
+// Title is managed per-route by SeoHead; only set a fallback for the app domain
+if (isAppDomain) document.title = 'MeshCore Analytics';
 
 ReactDOM.createRoot(root).render(
   <React.StrictMode>
@@ -62,8 +60,8 @@ ReactDOM.createRoot(root).render(
     ) : (
       <BrowserRouter>
         <Routes>
-          <Route index element={<TeessieDashboard />} />
           <Route element={<Layout />}>
+            <Route index element={<Navigate to="/install" replace />} />
             <Route path="about" element={<Navigate to="/" replace />} />
             <Route path="install" element={<InstallPage />} />
             <Route path="mqtt" element={<Navigate to="/install" replace />} />
