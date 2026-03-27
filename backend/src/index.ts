@@ -97,7 +97,7 @@ async function main() {
     res.setHeader('Strict-Transport-Security', HSTS_HEADER);
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('X-Frame-Options', 'DENY');
-    res.setHeader('Referrer-Policy', 'no-referrer');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
     res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob: https:; connect-src 'self' wss: https:; font-src 'self' data:");
     res.setHeader('Permissions-Policy', 'geolocation=(), camera=(), microphone=()');
     next();

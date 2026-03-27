@@ -36,6 +36,7 @@ type InitialStateEntry = {
   ts: number;
   nodes: Awaited<ReturnType<typeof getNodes>>;
   packets: Awaited<ReturnType<typeof getRecentPackets>>;
+  messages: Awaited<ReturnType<typeof getRecentMessages>>;
   viableLinks: Awaited<ReturnType<typeof getViableLinks>>;
 };
 const initialStateCache = new Map<string, InitialStateEntry>();
@@ -53,18 +54,15 @@ async function fetchInitialState(network: string | undefined, observer: string |
   const promise = (async () => {
     try {
       // getRecentPackets: 5-minute window, all types (fast, CTE aggregation ~16 ms).
-      // getRecentMessages: last 50 GRP (type=5) from last 24h so the channel feed
-      //   is never blank when the page first loads.
+      // getRecentMessages: last 200 GRP (type=5) from Postgres so the feed can
+      //   seed a proper message cache on first load instead of relying on live traffic.
       const [nodes, packets, messages, viableLinks] = await Promise.all([
         getNodes(network, observer),
         getRecentPackets(7, network, observer),
-        getRecentMessages(50, network, observer),
+        getRecentMessages(200, network, observer),
         getCachedViableLinks(network, observer),
       ]);
-      // Merge: recent packets take priority; messages fill in anything not already present.
-      const seen = new Set(packets.map((p) => (p as { packet_hash: string }).packet_hash));
-      const merged = [...packets, ...messages.filter((m) => !seen.has((m as { packet_hash: string }).packet_hash))];
-      const entry: InitialStateEntry = { ts: Date.now(), nodes, packets: merged, viableLinks };
+      const entry: InitialStateEntry = { ts: Date.now(), nodes, packets, messages, viableLinks };
       initialStateCache.set(key, entry);
       return entry;
     } finally {
@@ -244,7 +242,7 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
 
     // Send initial state: served from cache so concurrent connects don't exhaust the DB pool.
     try {
-      const { nodes, packets, viableLinks } = await fetchInitialState(network, observer);
+      const { nodes, packets, messages, viableLinks } = await fetchInitialState(network, observer);
       for (const node of nodes) {
         const nodeId = String((node as { node_id?: string }).node_id ?? '').toLowerCase();
         if (nodeId) scope.nodeIds.add(nodeId);
@@ -258,7 +256,7 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
       const viablePairs = viableLinks.map((l) => [l.node_a_id, l.node_b_id] as [string, string]);
       const initMsg: WSMessage = {
         type: 'initial_state',
-        data: { nodes, packets, viable_pairs: viablePairs, viable_links: viableLinks },
+        data: { nodes, packets, messages, viable_pairs: viablePairs, viable_links: viableLinks },
         ts: Date.now(),
       };
       ws.send(JSON.stringify(initMsg));

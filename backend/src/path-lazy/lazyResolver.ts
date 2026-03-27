@@ -283,43 +283,73 @@ export async function lazyResolvePath(
     hash: string,
     anchors: Array<{ lat: number; lon: number }>,
     neighborIds: string[] = [],
+    prevHash: string | null = null,
+    resolvedNeighborIds: string[] = [],
   ): { nodeId: string; name: string | null; lat: number; lon: number; ambiguous: boolean } | null {
     const candidates = nodesByHash.get(hash) ?? [];
     if (candidates.length === 0) return null;
 
+    // Score each candidate with tiered evidence:
+    //   Tier 0: prefix prior confirms this node for hash+prevHash context
+    //   Tier 1: edge prior confirms a link to a resolved neighbor
+    //   Tier 2: node_links confirms a link to any neighbor
+    //   Tier 3: distance only (no evidence)
+    type ScoredCandidate = {
+      nodeId: string; name: string | null; lat: number; lon: number;
+      dist: number; tier: number; priorCount: number; edgeScore: number;
+    };
+
+    const scored: ScoredCandidate[] = [];
+    for (const c of candidates) {
+      const dist = anchors.length > 0 ? minDistToSet(c, anchors) : Infinity;
+      if (anchors.length > 0 && dist > MAX_HOP_KM) continue;
+
+      const priorCount = getPrefixPriorCount(c.nodeId, hash, prevHash);
+      const edgeScore = resolvedNeighborIds.length > 0
+        ? Math.max(...resolvedNeighborIds.map((nId) => getEdgePriorScore(c.nodeId, nId)), 0)
+        : 0;
+      const hasLinkEvidence = neighborIds.length > 0
+        && neighborIds.some((nId) => hasLink(c.nodeId, nId));
+
+      let tier = 3;
+      if (priorCount > 0) tier = 0;
+      else if (edgeScore > 0) tier = 1;
+      else if (hasLinkEvidence) tier = 2;
+
+      scored.push({ nodeId: c.nodeId, name: c.name, lat: c.lat, lon: c.lon,
+                     dist, tier, priorCount, edgeScore });
+    }
+
+    if (scored.length === 0) return null;
+
+    // Sort: best tier → highest prior count → highest edge score → closest
+    scored.sort((a, b) =>
+      a.tier - b.tier
+      || b.priorCount - a.priorCount
+      || b.edgeScore - a.edgeScore
+      || a.dist - b.dist,
+    );
+
+    const best = scored[0]!;
+
+    // No anchors: only return if single candidate or evidence-backed
     if (anchors.length === 0) {
       if (candidates.length === 1) return { ...candidates[0]!, ambiguous: false };
-      // No distance anchor but we have link data — use it alone.
-      if (neighborIds.length > 0) {
-        const linked = candidates.filter((c) => neighborIds.some((nId) => hasLink(c.nodeId, nId)));
-        if (linked.length === 1) return { ...linked[0]!, ambiguous: false };
+      if (best.tier <= 1) return { nodeId: best.nodeId, name: best.name, lat: best.lat, lon: best.lon, ambiguous: false };
+      if (best.tier === 2 && (scored[1] == null || scored[1].tier > 2)) {
+        return { nodeId: best.nodeId, name: best.name, lat: best.lat, lon: best.lon, ambiguous: false };
       }
       return null;
     }
 
-    const scored = candidates
-      .map((c) => ({ ...c, dist: minDistToSet(c, anchors) }))
-      .filter((c) => c.dist <= MAX_HOP_KM)
-      .sort((a, b) => a.dist - b.dist);
+    // High ambiguity with no evidence — don't guess
+    if (best.tier === 3 && scored.length > 2) return null;
 
-    if (scored.length === 0) return null;
+    const second = scored[1];
+    const ambiguous = second != null && second.tier === best.tier
+      && (best.tier >= 2 ? (second.dist - best.dist) < 20 : second.priorCount >= best.priorCount * 0.8);
 
-    // Prefer candidates that have a confirmed link to an adjacent resolved node.
-    // This eliminates impossible hops where a geometrically-close node is chosen
-    // that has never been observed communicating with the neighbour.
-    if (neighborIds.length > 0) {
-      const linked = scored.filter((c) => neighborIds.some((nId) => hasLink(c.nodeId, nId)));
-      if (linked.length > 0) {
-        const best = linked[0]!;
-        const closeSecond = linked[1] != null && (linked[1].dist - best.dist) < 20;
-        return { nodeId: best.nodeId, name: best.name, lat: best.lat, lon: best.lon, ambiguous: closeSecond };
-      }
-      // No link-confirmed candidate within range — fall back to distance-only.
-    }
-
-    const best = scored[0]!;
-    const closeSecond = scored[1] != null && (scored[1].dist - best.dist) < 20;
-    return { nodeId: best.nodeId, name: best.name, lat: best.lat, lon: best.lon, ambiguous: closeSecond };
+    return { nodeId: best.nodeId, name: best.name, lat: best.lat, lon: best.lon, ambiguous };
   }
 
   // ── 8. Global cross-group direct anchor map ─────────────────────────────
@@ -348,34 +378,91 @@ export async function lazyResolvePath(
     }
   }
 
-  // ── 8.5 Fetch recorded links for candidate + observer nodes ─────────────
-  // Used in pickBest to prefer candidates that have a confirmed radio link
-  // to an adjacent resolved node over candidates that are merely within range.
+  // ── 8.5 Fetch recorded links + path-learning priors ──────────────────────
+  // Prior data comes from historical 2/3-byte hash resolutions — it tells us
+  // which node typically appears at a given hash position given the previous hash.
   const allCandidateNodeIds: string[] = [];
   for (const candidates of nodesByHash.values()) {
     for (const c of candidates) allCandidateNodeIds.push(c.nodeId);
   }
   for (const obsId of observerPositions.keys()) allCandidateNodeIds.push(obsId);
 
-  const knownLinks = new Set<string>(); // normalised "${min}:${max}"
-  if (allCandidateNodeIds.length > 0) {
-    const linkResult = await query<{ node_a_id: string; node_b_id: string }>(
-      `SELECT node_a_id, node_b_id FROM node_links
-        WHERE (node_a_id = ANY($1) OR node_b_id = ANY($1))
-          AND observed_count >= 2`,
-      [allCandidateNodeIds],
-    );
-    for (const row of linkResult.rows) {
-      const mn = row.node_a_id < row.node_b_id ? row.node_a_id : row.node_b_id;
-      const mx = row.node_a_id < row.node_b_id ? row.node_b_id : row.node_a_id;
-      knownLinks.add(`${mn}:${mx}`);
-    }
+  // Run all three lookups in parallel
+  const [linkResult, prefixPriorRows, edgePriorRows] = await Promise.all([
+    allCandidateNodeIds.length > 0
+      ? query<{ node_a_id: string; node_b_id: string }>(
+          `SELECT node_a_id, node_b_id FROM node_links
+            WHERE (node_a_id = ANY($1) OR node_b_id = ANY($1))
+              AND observed_count >= 2`,
+          [allCandidateNodeIds],
+        )
+      : Promise.resolve({ rows: [] as { node_a_id: string; node_b_id: string }[] }),
+    allUniqueHashes.length > 0
+      ? query<{ prefix: string; prev_prefix: string | null; node_id: string; total_count: string }>(
+          `SELECT prefix, prev_prefix, node_id, SUM(count)::text as total_count
+             FROM path_prefix_priors
+            WHERE ($1::text IS NULL OR network = $1)
+              AND prefix = ANY($2)
+            GROUP BY prefix, prev_prefix, node_id`,
+          [network, allUniqueHashes],
+        )
+      : Promise.resolve({ rows: [] as { prefix: string; prev_prefix: string | null; node_id: string; total_count: string }[] }),
+    allCandidateNodeIds.length > 0
+      ? query<{ from_node_id: string; to_node_id: string; best_score: string }>(
+          `SELECT from_node_id, to_node_id, MAX(score)::text as best_score
+             FROM path_edge_priors
+            WHERE ($1::text IS NULL OR network = $1)
+              AND (from_node_id = ANY($2) OR to_node_id = ANY($2))
+            GROUP BY from_node_id, to_node_id`,
+          [network, allCandidateNodeIds],
+        )
+      : Promise.resolve({ rows: [] as { from_node_id: string; to_node_id: string; best_score: string }[] }),
+  ]);
+
+  // Build known-links set (existing logic)
+  const knownLinks = new Set<string>();
+  for (const row of linkResult.rows) {
+    const mn = row.node_a_id < row.node_b_id ? row.node_a_id : row.node_b_id;
+    const mx = row.node_a_id < row.node_b_id ? row.node_b_id : row.node_a_id;
+    knownLinks.add(`${mn}:${mx}`);
   }
 
   function hasLink(a: string, b: string): boolean {
     const mn = a < b ? a : b;
     const mx = a < b ? b : a;
     return knownLinks.has(`${mn}:${mx}`);
+  }
+
+  // Build prefix-prior map: "HASH|PREV_HASH" → Map<nodeId, totalCount>
+  // Aggregated across receiver_regions via SUM(count) in SQL
+  const prefixPriors = new Map<string, Map<string, number>>();
+  for (const row of prefixPriorRows.rows) {
+    const key = `${row.prefix.toUpperCase()}|${(row.prev_prefix ?? '').toUpperCase()}`;
+    if (!prefixPriors.has(key)) prefixPriors.set(key, new Map());
+    const nodeCount = Number(row.total_count) || 0;
+    const existing = prefixPriors.get(key)!.get(row.node_id) ?? 0;
+    prefixPriors.get(key)!.set(row.node_id, existing + nodeCount);
+  }
+
+  function getPrefixPriorCount(nodeId: string, hash: string, prevHash: string | null): number {
+    const key = `${hash.toUpperCase()}|${(prevHash ?? '').toUpperCase()}`;
+    return prefixPriors.get(key)?.get(nodeId) ?? 0;
+  }
+
+  // Build edge-prior map: "min:max" → best score
+  const edgePriors = new Map<string, number>();
+  for (const row of edgePriorRows.rows) {
+    const mn = row.from_node_id < row.to_node_id ? row.from_node_id : row.to_node_id;
+    const mx = row.from_node_id < row.to_node_id ? row.to_node_id : row.from_node_id;
+    const k = `${mn}:${mx}`;
+    const score = Number(row.best_score) || 0;
+    edgePriors.set(k, Math.max(edgePriors.get(k) ?? 0, score));
+  }
+
+  function getEdgePriorScore(a: string, b: string): number {
+    const mn = a < b ? a : b;
+    const mx = a < b ? b : a;
+    return edgePriors.get(`${mn}:${mx}`) ?? 0;
   }
 
   // ── 9. Resolve each group into a LazyPath ───────────────────────────────
@@ -423,10 +510,9 @@ export async function lazyResolvePath(
     // the same relay hash at the same position also contribute.
     for (const { position, hash } of canonicalHashEntries) {
       const anchors = globalDirectAnchors.get(`${position}:${hash}`) ?? [];
-      // The observers that anchor this relay are its immediate neighbours —
-      // pass their IDs so pickBest can prefer link-confirmed candidates.
       const neighborIds = anchors.map((a) => a.nodeId);
-      const result = pickBest(hash, anchors, neighborIds);
+      const prevHash = position > 0 ? (canonicalHashes[position - 1] ?? null) : null;
+      const result = pickBest(hash, anchors, neighborIds, prevHash, []);
       resolved.set(position, {
         hash,
         nodeId: result?.nodeId ?? null,
@@ -468,9 +554,17 @@ export async function lazyResolvePath(
           const directAnchors = globalDirectAnchors.get(`${position}:${hash}`) ?? [];
           for (const a of directAnchors) neighborIds.push(a.nodeId);
           const allAnchors = [...directAnchors, ...neighborAnchors];
-          if (allAnchors.length === 0) continue;
 
-          const result = pickBest(hash, allAnchors, neighborIds);
+          const prevHash = position > 0 ? (canonicalHashes[position - 1] ?? null) : null;
+          // Resolved relay nodeIds for edge-prior lookup (separate from observer neighborIds)
+          const resolvedNeighborIds: string[] = [];
+          if (prev?.nodeId) resolvedNeighborIds.push(prev.nodeId);
+          if (next?.nodeId) resolvedNeighborIds.push(next.nodeId);
+
+          // With priors, we can resolve even without geographic anchors
+          if (allAnchors.length === 0 && prevHash === null && resolvedNeighborIds.length === 0) continue;
+
+          const result = pickBest(hash, allAnchors, neighborIds, prevHash, resolvedNeighborIds);
           if (result && current.nodeId === null) {
             // Only count as progress when a previously-unresolved position gets resolved.
             // Ambiguous→unambiguous transitions happen via post-validation, not here.

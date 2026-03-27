@@ -40,9 +40,67 @@ type OwnerSessionResponse = {
 };
 
 const OWNER_SESSION_EVENT = 'meshcore-owner-session';
+const LAST_HOP_EXCLUDED_COOKIE = 'meshcore-owner-last-hop-hidden-v1';
+const LAST_HOP_COOKIE_MAX_AGE = 60 * 60 * 24 * 365;
 
 function publishOwnerSession(mqttUsername: string | null) {
   window.dispatchEvent(new CustomEvent(OWNER_SESSION_EVENT, { detail: { mqttUsername } }));
+}
+
+function readCookieValue(key: string): string | null {
+  if (typeof document === 'undefined') return null;
+  const prefix = `${key}=`;
+  for (const entry of document.cookie.split(';')) {
+    const trimmed = entry.trim();
+    if (trimmed.startsWith(prefix)) {
+      return decodeURIComponent(trimmed.slice(prefix.length));
+    }
+  }
+  return null;
+}
+
+function readExcludedLastHopSeries(nodeId: string): string[] {
+  if (!nodeId) return [];
+  try {
+    const raw = readCookieValue(LAST_HOP_EXCLUDED_COOKIE);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const keys = parsed[nodeId];
+    return Array.isArray(keys)
+      ? keys.filter((value): value is string => typeof value === 'string' && value.length > 0)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeExcludedLastHopSeries(nodeId: string, seriesKeys: string[]) {
+  if (typeof document === 'undefined' || !nodeId) return;
+  let parsed: Record<string, unknown> = {};
+  try {
+    const raw = readCookieValue(LAST_HOP_EXCLUDED_COOKIE);
+    if (raw) {
+      const decoded = JSON.parse(raw) as Record<string, unknown>;
+      if (decoded && typeof decoded === 'object') {
+        parsed = decoded;
+      }
+    }
+  } catch {
+    parsed = {};
+  }
+
+  if (seriesKeys.length > 0) {
+    parsed[nodeId] = Array.from(new Set(seriesKeys)).sort();
+  } else {
+    delete parsed[nodeId];
+  }
+
+  document.cookie = [
+    `${LAST_HOP_EXCLUDED_COOKIE}=${encodeURIComponent(JSON.stringify(parsed))}`,
+    'Path=/',
+    'SameSite=Lax',
+    `Max-Age=${LAST_HOP_COOKIE_MAX_AGE}`,
+  ].join('; ');
 }
 
 type LivePeer = {
@@ -288,12 +346,19 @@ const LastHopStrengthTooltip: React.FC<{
   );
 };
 
-const LastHopStrengthChart: React.FC<{ points: LastHopStrengthPoint[] }> = ({ points }) => {
+const LastHopStrengthChart: React.FC<{ nodeId: string; points: LastHopStrengthPoint[] }> = ({ nodeId, points }) => {
   const [selectedSeriesKey, setSelectedSeriesKey] = useState<string | null>(null);
+  const [excludedSeriesKeys, setExcludedSeriesKeys] = useState<string[]>(() => readExcludedLastHopSeries(nodeId));
   const visiblePoints = useMemo(
     () => points.filter((point) => point.resolution !== 'unresolved'),
     [points],
   );
+  const excludedSet = useMemo(() => new Set(excludedSeriesKeys), [excludedSeriesKeys]);
+
+  useEffect(() => {
+    setExcludedSeriesKeys(readExcludedLastHopSeries(nodeId));
+    setSelectedSeriesKey(null);
+  }, [nodeId]);
 
   const chartState = useMemo(() => {
     const totals = new Map<string, {
@@ -325,10 +390,11 @@ const LastHopStrengthChart: React.FC<{ points: LastHopStrengthPoint[] }> = ({ po
 
     const allSeries = Array.from(totals.values())
       .filter((series) => series.totalSamples >= MIN_LAST_HOP_SAMPLES)
-      .sort((a, b) => b.totalSamples - a.totalSamples || a.label.localeCompare(b.label))
+      .sort((a, b) => b.totalSamples - a.totalSamples || a.label.localeCompare(b.label));
+    const includedSeries = allSeries.filter((series) => !excludedSet.has(series.key));
     const selected = selectedSeriesKey
-      ? allSeries.filter((series) => series.key === selectedSeriesKey)
-      : allSeries.slice(0, 6);
+      ? includedSeries.filter((series) => series.key === selectedSeriesKey)
+      : includedSeries.slice(0, 6);
     const selectedKeys = new Set(selected.map((series) => series.key));
     const seriesByKey = new Map(allSeries.map((series) => [series.key, series] as const));
 
@@ -344,11 +410,13 @@ const LastHopStrengthChart: React.FC<{ points: LastHopStrengthPoint[] }> = ({ po
 
     return {
       allSeries,
+      includedSeries,
+      excludedCount: allSeries.length - includedSeries.length,
       series: selected,
       seriesByKey,
       data: Array.from(bucketed.values()).sort((a, b) => String(a.bucket).localeCompare(String(b.bucket))),
     };
-  }, [selectedSeriesKey, visiblePoints]);
+  }, [excludedSet, selectedSeriesKey, visiblePoints]);
 
   useEffect(() => {
     if (selectedSeriesKey && !chartState.allSeries.some((series) => series.key === selectedSeriesKey)) {
@@ -356,7 +424,34 @@ const LastHopStrengthChart: React.FC<{ points: LastHopStrengthPoint[] }> = ({ po
     }
   }, [chartState.allSeries, selectedSeriesKey]);
 
-  if (chartState.series.length < 1 || chartState.data.length < 1) {
+  useEffect(() => {
+    if (selectedSeriesKey && excludedSet.has(selectedSeriesKey)) {
+      setSelectedSeriesKey(null);
+    }
+  }, [excludedSet, selectedSeriesKey]);
+
+  useEffect(() => {
+    writeExcludedLastHopSeries(nodeId, excludedSeriesKeys);
+  }, [excludedSeriesKeys, nodeId]);
+
+  const toggleSeriesExclusion = (seriesKey: string) => {
+    setExcludedSeriesKeys((current) => (
+      current.includes(seriesKey)
+        ? current.filter((key) => key !== seriesKey)
+        : [...current, seriesKey]
+    ));
+  };
+
+  const hideSelectedSeries = () => {
+    if (!selectedSeriesKey) return;
+    toggleSeriesExclusion(selectedSeriesKey);
+  };
+
+  const clearExcludedSeries = () => {
+    setExcludedSeriesKeys([]);
+  };
+
+  if (chartState.allSeries.length < 1) {
     return (
       <article className="owner-telemetry-metric">
         <div className="owner-panel__head owner-panel__head--compact">
@@ -393,40 +488,51 @@ const LastHopStrengthChart: React.FC<{ points: LastHopStrengthPoint[] }> = ({ po
         <div className="owner-panel__head owner-panel__head--compact">
           <div>
             <h3>RX Strength by Last Hop <span style={{ fontSize: '0.6em', opacity: 0.6 }}>(Node names are predicted based on the first two hex characters in the path)</span></h3>
-            <p>{latestActive || 'Average SNR over the last 7 days'}</p>
+            <p>{latestActive || (chartState.includedSeries.length > 0 ? 'Average SNR over the last 7 days' : 'All eligible repeaters are currently hidden')}</p>
           </div>
           <strong className="owner-telemetry-metric__value">{chartState.series.length}</strong>
         </div>
         <div className="owner-telemetry-metric__chart">
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={chartState.data} margin={{ top: 6, right: 10, left: 0, bottom: 0 }}>
-              <XAxis dataKey="bucket" hide />
-            <YAxis
-              width={28}
-              axisLine={{ stroke: AXIS_COLOR }}
-              tickLine={false}
-              tick={{ fill: LABEL_COLOR, fontSize: 11 }}
-              domain={['auto', 'auto']}
-              />
-              <Tooltip content={<LastHopStrengthTooltip seriesByKey={chartState.seriesByKey} />} />
-              {chartState.series.map((series, index) => (
-                <Line
-                  key={series.key}
-                type="monotone"
-                dataKey={series.key}
-                stroke={LAST_HOP_COLORS[index % LAST_HOP_COLORS.length]}
-                strokeWidth={2}
-                dot={false}
-                connectNulls
-                isAnimationActive={false}
-              />
-            ))}
-          </LineChart>
-        </ResponsiveContainer>
+          {chartState.series.length > 0 && chartState.data.length > 0 ? (
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={chartState.data} margin={{ top: 6, right: 10, left: 0, bottom: 0 }}>
+                <XAxis dataKey="bucket" hide />
+                <YAxis
+                  width={28}
+                  axisLine={{ stroke: AXIS_COLOR }}
+                  tickLine={false}
+                  tick={{ fill: LABEL_COLOR, fontSize: 11 }}
+                  domain={['auto', 'auto']}
+                />
+                <Tooltip content={<LastHopStrengthTooltip seriesByKey={chartState.seriesByKey} />} />
+                {chartState.series.map((series, index) => (
+                  <Line
+                    key={series.key}
+                    type="monotone"
+                    dataKey={series.key}
+                    stroke={LAST_HOP_COLORS[index % LAST_HOP_COLORS.length]}
+                    strokeWidth={2}
+                    dot={false}
+                    connectNulls
+                    isAnimationActive={false}
+                  />
+                ))}
+              </LineChart>
+            </ResponsiveContainer>
+          ) : (
+            <div className="owner-telemetry-metric__empty">
+              {chartState.includedSeries.length > 0 ? 'No chartable last-hop samples yet' : 'All repeaters are hidden. Show one below or reset exclusions.'}
+            </div>
+          )}
         </div>
         <div className="owner-telemetry-metric__footer">
           <span>Last 7d</span>
-          <span>{selectedSeriesKey ? 'Filtered to one repeater' : `${chartState.allSeries.length} repeaters with 10+ samples`}</span>
+          <span>
+            {selectedSeriesKey
+              ? 'Focused on one repeater'
+              : `${chartState.includedSeries.length} shown of ${chartState.allSeries.length}`}
+            {chartState.excludedCount > 0 ? ` · ${chartState.excludedCount} hidden` : ''}
+          </span>
         </div>
         <div className="owner-telemetry-metric__series-list">
           <button
@@ -436,7 +542,25 @@ const LastHopStrengthChart: React.FC<{ points: LastHopStrengthPoint[] }> = ({ po
           >
             All
           </button>
-          {chartState.allSeries.map((series) => (
+          {chartState.excludedCount > 0 ? (
+            <button
+              type="button"
+              className="owner-telemetry-metric__series-btn owner-telemetry-metric__series-btn--secondary"
+              onClick={clearExcludedSeries}
+            >
+              Show Hidden
+            </button>
+          ) : null}
+          {selectedSeriesKey ? (
+            <button
+              type="button"
+              className="owner-telemetry-metric__series-btn owner-telemetry-metric__series-btn--secondary"
+              onClick={hideSelectedSeries}
+            >
+              Hide Selected
+            </button>
+          ) : null}
+          {chartState.includedSeries.map((series) => (
             <button
               key={series.key}
               type="button"
@@ -999,7 +1123,7 @@ export const OwnerPortalPage: React.FC = () => {
                   value={formatUptime(latestTelemetry?.uptimeSecs ?? null)}
                   meta={latestTelemetry?.uptimeSecs == null ? 'No telemetry yet' : `${latestTelemetry.uptimeSecs}s reported`}
                 />
-                <LastHopStrengthChart points={lastHopStrength} />
+                <LastHopStrengthChart nodeId={selectedNodeId} points={lastHopStrength} />
               </div>
             </section>
 

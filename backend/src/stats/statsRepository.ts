@@ -133,14 +133,13 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
       `, filters.params),
       query(`
         SELECT
-          COALESCE(NULLIF(TRIM(UPPER(n.iata)), ''), 'UNK') AS iata,
+          COALESCE(NULLIF(TRIM(UPPER(split_part(p.topic, '/', 2))), ''), 'UNK') AS iata,
           COUNT(DISTINCT p.packet_hash) FILTER (WHERE p.time > NOW() - INTERVAL '24 hours') AS packets_24h,
           COUNT(DISTINCT p.packet_hash) AS packets_7d,
-          COUNT(DISTINCT p.rx_node_id) FILTER (WHERE n.last_seen > NOW() - INTERVAL '1 minute') AS active_observers,
+          COUNT(DISTINCT p.rx_node_id) FILTER (WHERE p.time > NOW() - INTERVAL '1 minute') AS active_observers,
           COUNT(DISTINCT p.rx_node_id) AS observers,
           MAX(p.time)::text AS last_packet_at
         FROM packets p
-        LEFT JOIN nodes n ON n.node_id = p.rx_node_id
         WHERE p.time > NOW() - INTERVAL '7 days'
           AND p.rx_node_id IS NOT NULL
           AND p.rx_node_id <> ''
@@ -151,11 +150,10 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
       `, filters.params),
       query(`
         SELECT
-          COALESCE(NULLIF(TRIM(UPPER(n.iata)), ''), 'UNK') AS iata,
+          COALESCE(NULLIF(TRIM(UPPER(split_part(p.topic, '/', 2))), ''), 'UNK') AS iata,
           time_bucket('1 day', p.time) AS day,
           COUNT(DISTINCT p.packet_hash) AS count
         FROM packets p
-        LEFT JOIN nodes n ON n.node_id = p.rx_node_id
         WHERE p.time > NOW() - INTERVAL '7 days'
           AND p.rx_node_id IS NOT NULL
           AND p.rx_node_id <> ''

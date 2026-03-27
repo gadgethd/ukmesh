@@ -325,8 +325,54 @@ export async function getNodes(network?: string, observer?: string) {
   const scope = buildScopePlaceholders(1, network, observer);
   const whereClause = `WHERE 1=1${buildNodeScopeClause(scope)}`;
   const res = await pool.query(
-    `SELECT node_id, name, lat, lon, iata, role, last_seen, is_online, hardware_model, public_key, advert_count, elevation_m
-     FROM nodes ${whereClause} ORDER BY last_seen DESC`,
+    `SELECT
+       n.node_id,
+       n.name,
+       n.lat,
+       n.lon,
+       COALESCE(observer_meta.observer_iata, n.iata) AS iata,
+       n.role,
+       COALESCE(observer_meta.observer_last_seen, n.last_seen) AS last_seen,
+       COALESCE(
+         CASE
+           WHEN observer_meta.observer_last_seen IS NOT NULL
+           THEN observer_meta.observer_last_seen > NOW() - INTERVAL '15 minutes'
+           ELSE NULL
+         END,
+         n.is_online
+       ) AS is_online,
+       n.hardware_model,
+       n.public_key,
+       n.advert_count,
+       n.elevation_m
+     FROM nodes n
+     LEFT JOIN LATERAL (
+       SELECT
+         latest_topic.observer_iata,
+         GREATEST(
+           COALESCE(latest_topic.seen_at, '-infinity'::timestamptz),
+           COALESCE(latest_status.seen_at, '-infinity'::timestamptz)
+         ) AS observer_last_seen
+       FROM LATERAL (
+         SELECT
+           p.time AS seen_at,
+           UPPER(NULLIF(split_part(p.topic, '/', 2), '')) AS observer_iata
+         FROM packets p
+         WHERE p.rx_node_id = n.node_id
+           AND split_part(p.topic, '/', 1) IN ('meshcore', 'ukmesh')
+         ORDER BY p.time DESC
+         LIMIT 1
+       ) latest_topic
+       FULL OUTER JOIN LATERAL (
+         SELECT nss.time AS seen_at
+         FROM node_status_samples nss
+         WHERE nss.node_id = n.node_id
+         ORDER BY nss.time DESC
+         LIMIT 1
+       ) latest_status ON TRUE
+     ) observer_meta ON TRUE
+     ${whereClause}
+     ORDER BY COALESCE(observer_meta.observer_last_seen, n.last_seen) DESC`,
     scope.params
   );
   return res.rows;

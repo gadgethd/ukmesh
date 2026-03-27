@@ -1,7 +1,7 @@
 import type { AggregatedPacket, LivePacketData } from './useNodes.js';
 
 export const FEED_MAX_PACKETS = 50;
-export const FEED_MAX_MESSAGES = 50;
+export const FEED_MAX_MESSAGES = 200;
 
 export type RecentPacketRow = {
   time: string;
@@ -59,6 +59,7 @@ export function packetInfoScore(packet: Pick<AggregatedPacket, 'packetType' | 's
 export function mergeAggregatedPacket(current: AggregatedPacket, next: AggregatedPacket): AggregatedPacket {
   const mergedCandidate: AggregatedPacket = {
     ...current,
+    firstSeenTs: Math.min(current.firstSeenTs ?? current.ts, next.firstSeenTs ?? next.ts),
     packetType: next.packetType ?? current.packetType,
     rxNodeId: next.rxNodeId ?? current.rxNodeId,
     observerIds: Array.from(new Set([...current.observerIds, ...next.observerIds])),
@@ -76,6 +77,7 @@ export function mergeAggregatedPacket(current: AggregatedPacket, next: Aggregate
   if (packetInfoScore(mergedCandidate) >= packetInfoScore(current)) return mergedCandidate;
   return {
     ...current,
+    firstSeenTs: Math.min(current.firstSeenTs ?? current.ts, next.firstSeenTs ?? next.ts),
     observerIds: Array.from(new Set([...current.observerIds, ...next.observerIds])),
     rxCount: Math.max(current.rxCount, next.rxCount),
     txCount: Math.max(current.txCount, next.txCount),
@@ -97,6 +99,7 @@ export function mapRecentRows(rows: RecentPacketRow[]): AggregatedPacket[] {
       id: row.packet_hash,
       packetHash: row.packet_hash,
       packetType: row.packet_type,
+      firstSeenTs: new Date(row.time).getTime(),
       rxNodeId: row.rx_node_id,
       observerIds,
       srcNodeId: row.src_node_id,
@@ -131,6 +134,7 @@ export function mapMessageRows(rows: RecentPacketRow[]): AggregatedPacket[] {
       id: row.packet_hash,
       packetHash: row.packet_hash,
       packetType: row.packet_type,
+      firstSeenTs: new Date(row.time).getTime(),
       rxNodeId: row.rx_node_id,
       observerIds,
       srcNodeId: row.src_node_id,
@@ -183,6 +187,7 @@ export function createAggregatedPacketFromLive(packet: LivePacketData): Aggregat
     id: packet.id,
     packetHash: packet.packetHash,
     packetType: packet.packetType,
+    firstSeenTs: packet.ts,
     rxNodeId: packet.rxNodeId,
     observerIds: packet.rxNodeId ? [packet.rxNodeId] : [],
     srcNodeId: packet.srcNodeId,

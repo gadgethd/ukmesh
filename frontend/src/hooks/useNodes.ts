@@ -56,6 +56,7 @@ export interface AggregatedPacket {
   id:           string;
   packetHash:   string;
   packetType?:  number;
+  firstSeenTs?: number;
   rxNodeId?:    string;
   observerIds:  string[];
   srcNodeId?:   string;
@@ -115,10 +116,10 @@ function getState(): NodeStoreState {
   return state;
 }
 
-function handleInitialState(data: { nodes: MeshNode[]; packets: RecentPacketRow[] }) {
+function handleInitialState(data: { nodes: MeshNode[]; packets: RecentPacketRow[]; messages?: RecentPacketRow[] }) {
   const nodeMap = new Map<string, MeshNode>();
   for (const n of data.nodes) nodeMap.set(n.node_id, n);
-  const serverMessages = mapMessageRows(data.packets);
+  const serverMessages = mapMessageRows(data.messages ?? data.packets);
   // Merge with any messages already in state so that a WS reconnect with a
   // stale server-side cache doesn't wipe messages received via live packets.
   const messages = state.messages.length > 0
@@ -173,6 +174,7 @@ function handlePacket(packetOrArray: LivePacketData | LivePacketData[]) {
       const candidate: AggregatedPacket = {
         ...current,
         packetType: packet.packetType ?? current.packetType,
+        firstSeenTs: current.firstSeenTs ?? current.ts,
         rxNodeId: packet.rxNodeId ?? current.rxNodeId,
         observerIds,
         srcNodeId: packet.srcNodeId ?? current.srcNodeId,
@@ -196,6 +198,7 @@ function handlePacket(packetOrArray: LivePacketData | LivePacketData[]) {
             })),
         rxCount: current.rxCount + (packet.direction !== 'tx' ? 1 : 0),
         txCount: current.txCount + (packet.direction === 'tx' ? 1 : 0),
+        firstSeenTs: current.firstSeenTs ?? current.ts,
         ts: packet.ts,
       };
       next = next.map((p, i) => i === idx ? entry : p);
@@ -215,6 +218,7 @@ function handlePacket(packetOrArray: LivePacketData | LivePacketData[]) {
       const cur = nextMessages[msgIdx]!;
       const updated: AggregatedPacket = {
         ...cur,
+        firstSeenTs: cur.firstSeenTs ?? cur.ts,
         summary: packet.summary ?? extractPacketSummary(packet.payload) ?? cur.summary,
         rxNodeId: packet.rxNodeId ?? cur.rxNodeId,
         observerIds: packet.rxNodeId

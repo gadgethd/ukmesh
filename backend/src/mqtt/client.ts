@@ -119,6 +119,11 @@ function parseTopic(topic: string): TopicParts | null {
   return { iata, observerKey: parts[2]!, suffix: parts[3]!, network };
 }
 
+function topicIataForNode(nodeId: string | undefined, observerKey: string, iata: string): string | undefined {
+  if (!nodeId) return undefined;
+  return nodeId.trim().toUpperCase() === observerKey.trim().toUpperCase() ? iata : undefined;
+}
+
 /** Coerce a string or number field to number, returning undefined if not parseable. */
 function toNum(v: unknown): number | undefined {
   if (typeof v === 'number') return v;
@@ -461,9 +466,10 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
     const firmware = json['firmware_version'] as string | undefined;
 
     const nodeId = originId ?? observerKey;
+    const nodeIata = topicIataForNode(nodeId, observerKey, iata);
     upsertNode(nodeId, {
       name:            origin,
-      iata,
+      iata:            nodeIata,
       publicKey:       originId,
       hardwareModel:   (model    && model    !== 'unknown') ? model    : undefined,
       firmwareVersion: (firmware && firmware !== 'unknown') ? firmware : undefined,
@@ -553,6 +559,7 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
           const loc       = appData?.['location'] as Record<string, number> | undefined;
           const senderKey = inner?.['publicKey'] as string | undefined;
           const nodeId    = senderKey ?? observerKey;
+          const nodeIata  = topicIataForNode(nodeId, observerKey, iata);
 
           if (network !== 'test') {
             upsertNode(nodeId, {
@@ -560,7 +567,7 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
               lat:       loc?.['latitude'],
               lon:       loc?.['longitude'],
               role:      appData?.['deviceRole'] as number | undefined,
-              iata,
+              iata:      nodeIata,
               publicKey: senderKey,
               network,
             }).catch((err: Error) => console.error('[mqtt] upsertNode error:', err.message));
@@ -643,9 +650,10 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
   emitNode(observerKey, { network, observerId: observerKey });
 
   if (useTxAdvertFallback && originId) {
+    const nodeIata = topicIataForNode(originId, observerKey, iata);
     upsertNode(originId, {
       name: origin,
-      iata,
+      iata: nodeIata,
       publicKey: originId,
       network,
     }).catch((err: Error) => console.error('[mqtt] upsertNode error:', err.message));
@@ -655,7 +663,7 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
     emitNodeUpsert({
       node_id: originId,
       name: origin,
-      iata,
+      iata: nodeIata,
       network,
       observer_id: observerKey,
       public_key: originId,

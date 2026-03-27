@@ -22,6 +22,8 @@ def compute_path_loss(
     lon2: float,
     elev2: float,
     vrt_path: str,
+    antenna_height_m_tx: float = ANTENNA_HEIGHT_M,
+    antenna_height_m_rx: float = ANTENNA_HEIGHT_M,
 ) -> tuple[float, bool]:
     cos_mid = math.cos(math.radians((lat1 + lat2) / 2))
     dlat = (lat2 - lat1) * 111_320
@@ -60,8 +62,8 @@ def compute_path_loss(
         dists.append(t * d_total)
     ds = None
 
-    h_tx = elev1 + ANTENNA_HEIGHT_M
-    h_rx = elev2 + ANTENNA_HEIGHT_M
+    h_tx = elev1 + antenna_height_m_tx
+    h_rx = elev2 + antenna_height_m_rx
 
     return compute_path_loss_from_profile(
         np.asarray(dists, dtype=np.float32),

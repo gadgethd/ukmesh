@@ -1,7 +1,7 @@
 import React, { useMemo, useCallback, useEffect, useState, useRef } from 'react';
 import { getCurrentSite } from '../../config/site.js';
 import { useWebSocket, type WSMessage } from '../../hooks/useWebSocket.js';
-import { useNodes, type MeshNode, type LivePacketData } from '../../hooks/useNodes.js';
+import { useMessages, useNodes, type MeshNode, type LivePacketData, type AggregatedPacket } from '../../hooks/useNodes.js';
 import type { RecentPacketRow } from '../../hooks/packetFeed.js';
 import { chartStatsEndpoint, uncachedEndpoint } from '../../utils/api.js';
 import { PathMap } from './PacketDetailPanel.js';
@@ -9,6 +9,7 @@ import type { LazyPathResult, LazyPath } from './PacketDetailPanel.js';
 
 export type FeedPacket = {
   time: string;
+  first_seen_time?: string;
   packet_hash: string;
   topic?: string;
   rx_node_id?: string | null;
@@ -40,7 +41,7 @@ const TYPE_LABELS: Record<number, string> = {
 };
 
 const MAX_PACKETS = 500;
-const MAX_CHANNEL_MESSAGES = 30;
+type MessageScope = 'all' | 'public' | 'test';
 
 function timeAgo(ts?: string | null): string {
   if (!ts) return 'never';
@@ -119,6 +120,34 @@ function packetChannel(packet: FeedPacket): string | null {
   return null;
 }
 
+function packetMatchesMessageScope(packet: FeedPacket, scope: MessageScope): boolean {
+  if (scope === 'all') return true;
+  const channel = packetChannel(packet)?.trim().toLowerCase();
+  if (!channel) return false;
+  return channel === scope;
+}
+
+function aggregatedPacketToFeedPacket(packet: AggregatedPacket): FeedPacket {
+  return {
+    time: new Date(packet.ts).toISOString(),
+    first_seen_time: new Date(packet.firstSeenTs ?? packet.ts).toISOString(),
+    packet_hash: packet.packetHash,
+    rx_node_id: packet.rxNodeId ?? null,
+    src_node_id: packet.srcNodeId ?? null,
+    topic: packet.topic,
+    packet_type: packet.packetType ?? null,
+    hop_count: packet.hopCount ?? null,
+    rssi: null,
+    snr: null,
+    payload: packet as unknown as Record<string, unknown>,
+    observer_node_ids: packet.observerIds,
+    rx_count: packet.rxCount,
+    tx_count: packet.txCount,
+    summary: packet.summary ?? null,
+    path_hashes: (packet.path as string[] | undefined) ?? null,
+  };
+}
+
 function packetObserverIatas(packet: FeedPacket, nodeMap: Map<string, MeshNode>): string[] {
   const values = new Set<string>();
   for (const observerId of packetObserverIds(packet)) {
@@ -138,7 +167,9 @@ const FeedMapPanel: React.FC<{
   packet: FeedPacket | null;
   nodeMap: Map<string, MeshNode>;
   cachedLazyPath: LazyPathResult | null;
-}> = ({ packet, nodeMap, cachedLazyPath }) => {
+  isLoading?: boolean;
+}> = ({ packet, nodeMap, cachedLazyPath, isLoading = false }) => {
+  // Stable by coordinate values — only changes when actual lat/lon changes, not on every nodeMap update
   const observerPositions = useMemo((): [number, number][] => {
     if (!packet) return [];
     const candidates: string[] = packet.observer_node_ids?.length
@@ -154,7 +185,12 @@ const FeedMapPanel: React.FC<{
     }
     return positions;
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [packet?.observer_node_ids, packet?.rx_node_id, nodeMap]);
+  }, [
+    packet?.observer_node_ids?.join(','),
+    packet?.rx_node_id,
+    // Only recompute when the actual coordinates of observer nodes change
+    packet?.observer_node_ids?.map((id) => { const n = nodeMap.get(id); return n ? `${n.lat},${n.lon}` : ''; }).join('|'),
+  ]);
 
   if (!packet) {
     return (
@@ -170,6 +206,7 @@ const FeedMapPanel: React.FC<{
       observerPositions={observerPositions}
       lazyPaths={(cachedLazyPath?.paths ?? []) as LazyPath[]}
       nodeMap={nodeMap}
+      isLoading={isLoading}
     />
   );
 };
@@ -178,12 +215,16 @@ export const UKFeedPage: React.FC = () => {
   const site = getCurrentSite();
   const scope = useMemo(() => ({ network: site.networkFilter, observer: site.observerId }), [site.networkFilter, site.observerId]);
   const [selectedIata, setSelectedIata] = useState<string>(() => localStorage.getItem('uk-feed-iata') ?? 'all');
-  const [selectedChannel, setSelectedChannel] = useState<string | null>(null);
+  const [selectedMessageScope, setSelectedMessageScope] = useState<MessageScope>(() => {
+    const stored = localStorage.getItem('uk-feed-message-scope');
+    return stored === 'public' || stored === 'test' ? stored : 'all';
+  });
   const [messagesOnly, setMessagesOnly] = useState<boolean>(() => localStorage.getItem('uk-feed-messages-only') === '1');
   const [regionOptions, setRegionOptions] = useState<string[]>([]);
   const [selectedPacketHash, setSelectedPacketHash] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [now, setNow] = useState(() => Date.now());
+  const [viewportHeight, setViewportHeight] = useState(() => window.innerHeight);
 
   // Use useNodes hook like the main App does
   const {
@@ -194,15 +235,17 @@ export const UKFeedPage: React.FC = () => {
     handleNodeUpdate,
     handleNodeUpsert,
   } = useNodes();
+  const messagesList = useMessages();
 
   const handleWSMessage = useCallback((msg: WSMessage) => {
     if (msg.type === 'initial_state') {
       const data = msg.data as {
         nodes?: MeshNode[];
         packets?: RecentPacketRow[];
+        messages?: RecentPacketRow[];
       };
       if (data.nodes && data.packets) {
-        handleInitialState({ nodes: data.nodes, packets: data.packets });
+        handleInitialState({ nodes: data.nodes, packets: data.packets, messages: data.messages });
       }
       return;
     }
@@ -227,12 +270,19 @@ export const UKFeedPage: React.FC = () => {
 
   // Persist filters
   useEffect(() => { localStorage.setItem('uk-feed-iata', selectedIata); }, [selectedIata]);
+  useEffect(() => { localStorage.setItem('uk-feed-message-scope', selectedMessageScope); }, [selectedMessageScope]);
   useEffect(() => { localStorage.setItem('uk-feed-messages-only', messagesOnly ? '1' : '0'); }, [messagesOnly]);
 
   // Clock tick for live connection indicator and stats
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 5000);
     return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    const handleResize = () => setViewportHeight(window.innerHeight);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
   }, []);
 
   // ── Background lazy path cache ────────────────────────────────────────────
@@ -276,52 +326,44 @@ export const UKFeedPage: React.FC = () => {
 
   // Convert live packets to FeedPacket format for display
   const packets: FeedPacket[] = useMemo(() => {
-    return packetsList.slice(0, MAX_PACKETS).map(p => ({
-      time: new Date(p.ts).toISOString(),
-      packet_hash: p.packetHash,
-      rx_node_id: p.rxNodeId ?? null,
-      src_node_id: p.srcNodeId ?? null,
-      topic: p.topic,
-      packet_type: p.packetType ?? null,
-      hop_count: p.hopCount ?? null,
-      rssi: null,
-      snr: null,
-      payload: p as any,
-      observer_node_ids: p.observerIds,
-      rx_count: p.rxCount,
-      tx_count: p.txCount,
-      summary: p.summary ?? null,
-      path_hashes: (p.path as string[] | undefined) ?? null,
-    }));
+    return packetsList.slice(0, MAX_PACKETS).map(aggregatedPacketToFeedPacket);
   }, [packetsList]);
+
+  const messagePackets: FeedPacket[] = useMemo(() => {
+    return messagesList.slice(0, MAX_PACKETS).map(aggregatedPacketToFeedPacket);
+  }, [messagesList]);
+
+  const retainedMessagePackets = useMemo(() => {
+    const byHash = new Map<string, FeedPacket>();
+    for (const packet of [...messagePackets, ...packets]) {
+      if (packet.packet_type !== 2 && packet.packet_type !== 5) continue;
+      const existing = byHash.get(packet.packet_hash);
+      if (!existing) {
+        byHash.set(packet.packet_hash, packet);
+        continue;
+      }
+      const existingFirstSeen = Date.parse(existing.first_seen_time ?? existing.time);
+      const packetFirstSeen = Date.parse(packet.first_seen_time ?? packet.time);
+      byHash.set(packet.packet_hash, {
+        ...(Date.parse(packet.time) >= Date.parse(existing.time) ? packet : existing),
+        first_seen_time: new Date(Math.min(existingFirstSeen, packetFirstSeen)).toISOString(),
+      });
+    }
+    return Array.from(byHash.values()).sort(
+      (a, b) => Date.parse(b.first_seen_time ?? b.time) - Date.parse(a.first_seen_time ?? a.time),
+    );
+  }, [messagePackets, packets]);
+
+  const visiblePacketLimit = useMemo(() => {
+    // Layout height: calc(100vh - 140px); chat header ~55px; rows vary 50–80px
+    // Use 80px to guarantee no scrollbar when observers wrap to two lines
+    const listHeight = Math.max(400, viewportHeight - 200);
+    return Math.max(6, Math.floor(listHeight / 80));
+  }, [viewportHeight]);
 
   const availableIatas = useMemo(() => {
     return regionOptions;
   }, [regionOptions]);
-
-  const availableChannels = useMemo(() => {
-    const seen = new Set<string>();
-    for (const p of packets) {
-      const ch = packetChannel(p);
-      if (ch) seen.add(ch);
-    }
-    return Array.from(seen).sort((a, b) => a.localeCompare(b));
-  }, [packets]);
-
-  // Per-channel message history (last 30 per channel, newest first)
-  const channelMessages = useMemo(() => {
-    const map = new Map<string, FeedPacket[]>();
-    for (const p of packets) {
-      const ch = packetChannel(p);
-      if (!ch) continue;
-      const list = map.get(ch) ?? [];
-      if (list.length < MAX_CHANNEL_MESSAGES) {
-        list.push(p);
-        map.set(ch, list);
-      }
-    }
-    return map;
-  }, [packets]);
 
   useEffect(() => {
     if (selectedIata === 'all') return;
@@ -331,9 +373,10 @@ export const UKFeedPage: React.FC = () => {
   }, [availableIatas, selectedIata]);
 
   const filteredPackets = useMemo(() => {
-    let result = packets;
-    if (selectedChannel !== null) {
-      result = result.filter((packet) => packetChannel(packet) === selectedChannel);
+    const messageViewActive = selectedMessageScope !== 'all' || messagesOnly;
+    let result = messageViewActive ? retainedMessagePackets : packets;
+    if (selectedMessageScope !== 'all') {
+      result = result.filter((packet) => packetMatchesMessageScope(packet, selectedMessageScope));
     }
     if (selectedIata !== 'all') {
       result = result.filter((packet) => packetObserverIatas(packet, nodeMap).includes(selectedIata));
@@ -352,7 +395,7 @@ export const UKFeedPage: React.FC = () => {
       );
     }
     return result;
-  }, [messagesOnly, nodeMap, packets, selectedIata, selectedChannel, searchQuery]);
+  }, [messagesOnly, nodeMap, packets, retainedMessagePackets, searchQuery, selectedIata, selectedMessageScope]);
 
   const activeObserverCount = useMemo(() => {
     const ids = new Set<string>();
@@ -373,28 +416,23 @@ export const UKFeedPage: React.FC = () => {
   const latestPacket = filteredPackets[0] ?? null;
   const globalLatestPacket = packets[0] ?? null; // unfiltered, for connection status
   const recentPackets = useMemo(() => {
-    if (selectedChannel !== null) {
-      // Show channel history (last 30), optionally filtered by region + search
-      let msgs = channelMessages.get(selectedChannel) ?? [];
-      if (selectedIata !== 'all') {
-        msgs = msgs.filter((p) => packetObserverIatas(p, nodeMap).includes(selectedIata));
-      }
-      if (searchQuery.trim()) {
-        const q = searchQuery.trim().toLowerCase();
-        msgs = msgs.filter((p) =>
-          packetSummary(p, nodeMap).toLowerCase().includes(q) ||
-          p.packet_hash.toLowerCase().startsWith(q),
-        );
-      }
-      return msgs;
-    }
-    return searchQuery.trim() ? filteredPackets : filteredPackets.slice(0, 20);
-  }, [selectedChannel, channelMessages, selectedIata, nodeMap, searchQuery, filteredPackets]);
+    if (searchQuery.trim()) return filteredPackets;
+    const messageViewActive = selectedMessageScope !== 'all' || messagesOnly;
+    // Message views: show up to 50 messages (scrollable)
+    // All-packets view: cap to viewport rows so there's no pointless scrollbar
+    return messageViewActive
+      ? filteredPackets.slice(0, 50)
+      : filteredPackets.slice(0, visiblePacketLimit);
+  }, [filteredPackets, messagesOnly, searchQuery, selectedMessageScope, visiblePacketLimit]);
 
   // Always derive selectedPacket from the live list so new MQTT observers are picked up
   const selectedPacket = useMemo(
-    () => selectedPacketHash ? (packets.find((p) => p.packet_hash === selectedPacketHash) ?? null) : null,
-    [selectedPacketHash, packets],
+    () => selectedPacketHash
+      ? (packets.find((p) => p.packet_hash === selectedPacketHash)
+        ?? retainedMessagePackets.find((p) => p.packet_hash === selectedPacketHash)
+        ?? null)
+      : null,
+    [selectedPacketHash, packets, retainedMessagePackets],
   );
 
   // Live connection status
@@ -475,26 +513,29 @@ export const UKFeedPage: React.FC = () => {
         </div>
       </section>
 
-      <div className="uk-feed-layout">
+      <div className={`uk-feed-layout${selectedPacketHash ? ' uk-feed-layout--has-selection' : ''}`}>
 
         {/* ── Channels sidebar ───────────────────────────────────────── */}
         <nav className="uk-feed-channels">
           <div className="uk-feed-channels__header">Channels</div>
           <button
-            className={`uk-feed-channel-item${selectedChannel === null ? ' uk-feed-channel-item--active' : ''}`}
-            onClick={() => setSelectedChannel(null)}
+            className={`uk-feed-channel-item${selectedMessageScope === 'all' ? ' uk-feed-channel-item--active' : ''}`}
+            onClick={() => setSelectedMessageScope('all')}
           >
             All
           </button>
-          {availableChannels.map((ch) => (
-            <button
-              key={ch}
-              className={`uk-feed-channel-item${selectedChannel === ch ? ' uk-feed-channel-item--active' : ''}`}
-              onClick={() => setSelectedChannel(ch)}
-            >
-              {ch}
-            </button>
-          ))}
+          <button
+            className={`uk-feed-channel-item${selectedMessageScope === 'public' ? ' uk-feed-channel-item--active' : ''}`}
+            onClick={() => setSelectedMessageScope('public')}
+          >
+            Public
+          </button>
+          <button
+            className={`uk-feed-channel-item${selectedMessageScope === 'test' ? ' uk-feed-channel-item--active' : ''}`}
+            onClick={() => setSelectedMessageScope('test')}
+          >
+            Test
+          </button>
 
           <div className="uk-feed-channels__divider" />
           <div className="uk-feed-channels__header">Regions</div>
@@ -541,21 +582,34 @@ export const UKFeedPage: React.FC = () => {
               const iatas = packetObserverIatas(packet, nodeMap);
               const observerDisplay = iatas.length === 0 ? 'unknown' : iatas.join(' · ');
               const isSelected = selectedPacketHash === packet.packet_hash;
+              const cachedLazyPath = isSelected ? (lazyCache.get(packet.packet_hash) ?? null) : null;
               return (
-                <article
-                  className={`uk-feed-packet-row${isSelected ? ' uk-feed-packet-row--selected' : ''}`}
-                  key={`${packet.packet_hash}-${packet.time}`}
-                  onClick={() => setSelectedPacketHash(isSelected ? null : packet.packet_hash)}
-                >
-                  <div className="uk-feed-packet-row__meta">
-                    <span>{new Date(packet.time).toLocaleTimeString()}</span>
-                    <span>{packet.packet_type != null ? (TYPE_LABELS[packet.packet_type] ?? `T${packet.packet_type}`) : '—'}</span>
-                    <span>{packet.hop_count != null ? `${packet.hop_count} hop${packet.hop_count !== 1 ? 's' : ''}` : '—'}</span>
-                    <span className="dev-status-mono">{packet.packet_hash}</span>
-                    <span className="uk-feed-packet-row__observer">{observerDisplay}</span>
-                  </div>
-                  <p className="uk-feed-packet-row__summary">{packetSummary(packet, nodeMap)}</p>
-                </article>
+                <React.Fragment key={`${packet.packet_hash}-${packet.time}`}>
+                  <article
+                    className={`uk-feed-packet-row${isSelected ? ' uk-feed-packet-row--selected' : ''}`}
+                    onClick={() => setSelectedPacketHash(isSelected ? null : packet.packet_hash)}
+                  >
+                    <div className="uk-feed-packet-row__meta">
+                      <span>{new Date(packet.time).toLocaleTimeString()}</span>
+                      <span>{packet.packet_type != null ? (TYPE_LABELS[packet.packet_type] ?? `T${packet.packet_type}`) : '—'}</span>
+                      <span className="uk-feed-packet-row__hops">{packet.hop_count != null ? `${packet.hop_count} hop${packet.hop_count !== 1 ? 's' : ''}` : '—'}</span>
+                      <span className="uk-feed-packet-row__hash dev-status-mono">{packet.packet_hash}</span>
+                      <span className="uk-feed-packet-row__observer">{observerDisplay}</span>
+                    </div>
+                    <p className="uk-feed-packet-row__summary">{packetSummary(packet, nodeMap)}</p>
+                  </article>
+                  {isSelected && (
+                    <div className="uk-feed-inline-map">
+                      <FeedMapPanel
+                        key={packet.packet_hash}
+                        packet={packet}
+                        nodeMap={nodeMap}
+                        cachedLazyPath={cachedLazyPath}
+                        isLoading={cachedLazyPath === null}
+                      />
+                    </div>
+                  )}
+                </React.Fragment>
               );
             }) : (
               <p className="dev-status-empty">No public packets have arrived yet.</p>
@@ -569,9 +623,11 @@ export const UKFeedPage: React.FC = () => {
           {/* Map panel */}
           <div className="uk-feed-map">
             <FeedMapPanel
+              key={selectedPacket?.packet_hash ?? 'none'}
               packet={selectedPacket}
               nodeMap={nodeMap}
               cachedLazyPath={selectedPacket ? (lazyCache.get(selectedPacket.packet_hash) ?? null) : null}
+              isLoading={selectedPacket !== null && !lazyCache.has(selectedPacket.packet_hash)}
             />
           </div>
 

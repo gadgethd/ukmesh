@@ -178,21 +178,34 @@ def refresh_rf_calibration(db, force: bool = False) -> None:
     with db.cursor() as cur:
         cur.execute(
             '''
+            WITH link_packet_stats AS (
+              SELECT
+                LEAST(p.rx_node_id, p.src_node_id)    AS node_a_id,
+                GREATEST(p.rx_node_id, p.src_node_id) AS node_b_id,
+                PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY p.snr) AS median_snr_db,
+                COUNT(*)                               AS packet_count
+              FROM packets p
+              WHERE p.snr IS NOT NULL
+                AND p.rx_node_id IS NOT NULL
+                AND p.src_node_id IS NOT NULL
+                AND p.rx_node_id <> p.src_node_id
+                AND p.hop_count = 0
+                AND p.time > NOW() - (%s * INTERVAL \'1 hour\')
+              GROUP BY node_a_id, node_b_id
+              HAVING COUNT(*) >= %s
+            )
             SELECT
               nl.itm_path_loss_db,
-              COALESCE(SUM(rr.sample_count), 0) AS neighbor_report_count,
-              MAX(rr.best_snr_db) AS neighbor_best_snr_db
+              lps.packet_count    AS neighbor_report_count,
+              lps.median_snr_db   AS neighbor_best_snr_db
             FROM node_links nl
-            LEFT JOIN node_link_radio_reports rr
-              ON rr.node_a_id = nl.node_a_id
-             AND rr.node_b_id = nl.node_b_id
-             AND rr.last_seen > NOW() - (%s * INTERVAL '1 hour')
+            JOIN link_packet_stats lps
+              ON lps.node_a_id = nl.node_a_id
+             AND lps.node_b_id = nl.node_b_id
             WHERE nl.itm_path_loss_db IS NOT NULL
               AND nl.force_viable = false
-            GROUP BY nl.node_a_id, nl.node_b_id, nl.itm_path_loss_db
-            HAVING COALESCE(SUM(rr.sample_count), 0) > 0
             ''',
-            (RADIO_NEIGHBOR_MAX_AGE_HOURS,),
+            (RADIO_NEIGHBOR_MAX_AGE_HOURS, CALIBRATION_MIN_OBSERVED_COUNT),
         )
         rows = cur.fetchall()
 
@@ -567,7 +580,7 @@ UK_MAINLAND = load_uk_mainland(Path(__file__).parent, log)
 
 # ── Viewshed calculation ──────────────────────────────────────────────────────
 
-def calculate_viewshed(node_id: str, lat: float, lon: float) -> Optional[tuple[dict, dict[str, dict], float, float]]:
+def calculate_viewshed(node_id: str, lat: float, lon: float, antenna_height_m: float = ANTENNA_HEIGHT_M) -> Optional[tuple[dict, dict[str, dict], float, float]]:
     if not is_viewshed_eligible_coordinate(lat, lon):
         log.info(f'Skipping viewshed for {node_id[:12]}… outside UK coverage bounds at ({lat:.4f}, {lon:.4f})')
         return None
@@ -588,8 +601,8 @@ def calculate_viewshed(node_id: str, lat: float, lon: float) -> Optional[tuple[d
         )
         elevation_m = sample_elevation(obs_vrt, lat, lon)
 
-        # 2. Radio-horizon radius: node ASL + 5 m fixed antenna height.
-        effective_height_m = elevation_m + ANTENNA_HEIGHT_M
+        # 2. Radio-horizon radius: node ASL + per-node antenna height.
+        effective_height_m = elevation_m + antenna_height_m
         radius_m = min(radio_horizon_m(effective_height_m), MAX_RADIUS_M)
         radius_m = source_support_radius_m(node_id, radius_m)
         log.info(
@@ -642,7 +655,7 @@ def calculate_viewshed(node_id: str, lat: float, lon: float) -> Optional[tuple[d
         # (ocean NODATA) even for land pixels.  Fall back to raw SRTM in that case.
         if dtm_elev > 0.0 or elevation_m <= 0.0:
             elevation_m = dtm_elev
-        effective_height_m = elevation_m + ANTENNA_HEIGHT_M
+        effective_height_m = elevation_m + antenna_height_m
         radius_m = min(radio_horizon_m(effective_height_m), MAX_RADIUS_M)
         radius_m = source_support_radius_m(node_id, radius_m)
         log.info(
@@ -650,7 +663,7 @@ def calculate_viewshed(node_id: str, lat: float, lon: float) -> Optional[tuple[d
             f'horizon={radius_m / 1000:.1f} km'
         )
 
-        observer_h = elevation_m + ANTENNA_HEIGHT_M
+        observer_h = elevation_m + antenna_height_m
         strength_geoms: dict[str, dict] = {}
         if COVERAGE_MODEL == 'terrain_los':
             # Vectorised raycasting terrain line-of-sight model.
@@ -728,7 +741,7 @@ def already_calculated(db, node_id: str) -> bool:
         )
         return cur.fetchone() is not None
 
-def store_coverage(db, node_id: str, geom: dict, strength_geoms: dict[str, dict], radius_m: float, elevation_m: float):
+def store_coverage(db, node_id: str, geom: dict, strength_geoms: dict[str, dict], radius_m: float, elevation_m: float, antenna_height_m: float = ANTENNA_HEIGHT_M):
     with db.cursor() as cur:
         cur.execute(
             '''INSERT INTO node_coverage (node_id, geom, strength_geoms, antenna_height_m, radius_m, model_version)
@@ -740,7 +753,7 @@ def store_coverage(db, node_id: str, geom: dict, strength_geoms: dict[str, dict]
                      radius_m = EXCLUDED.radius_m,
                      model_version = EXCLUDED.model_version,
                      calculated_at = NOW()''',
-            (node_id, json.dumps(geom), json.dumps(strength_geoms), ANTENNA_HEIGHT_M, radius_m, COVERAGE_MODEL_VERSION),
+            (node_id, json.dumps(geom), json.dumps(strength_geoms), antenna_height_m, radius_m, COVERAGE_MODEL_VERSION),
         )
         cur.execute(
             'UPDATE nodes SET elevation_m = %s WHERE node_id = %s',
@@ -776,7 +789,7 @@ def load_positioned_repeaters(db) -> dict[str, dict]:
     with db.cursor() as cur:
         cur.execute(
             '''
-            SELECT n.node_id, n.lat, n.lon, n.elevation_m, n.name, n.role, nc.radius_m
+            SELECT n.node_id, n.lat, n.lon, n.elevation_m, n.name, n.role, nc.radius_m, nc.antenna_height_m
             FROM nodes n
             LEFT JOIN node_coverage nc ON nc.node_id = n.node_id
             WHERE n.lat IS NOT NULL
@@ -797,6 +810,7 @@ def load_positioned_repeaters(db) -> dict[str, dict]:
                 'name': row[4],
                 'role': row[5],
                 'radius_m': row[6],
+                'antenna_height_m': row[7] if row[7] is not None else ANTENNA_HEIGHT_M,
             }
             for row in cur.fetchall()
         }
@@ -886,6 +900,8 @@ def ensure_physical_link_metrics(db, a_id: str, a: dict, b_id: str, b: dict):
                 a['lat'], a['lon'], a_elev,
                 b['lat'], b['lon'], b_elev,
                 vrt,
+                antenna_height_m_tx=a.get('antenna_height_m', ANTENNA_HEIGHT_M),
+                antenna_height_m_rx=b.get('antenna_height_m', ANTENNA_HEIGHT_M),
             )
             path_loss_db = round(path_loss_db, 1)
             with db.cursor() as cur:
@@ -1173,10 +1189,19 @@ def process_job(db, r_client, job: dict):
             return
         # Skip hidden (🚫) or non-repeater nodes regardless of how the job arrived
         with db.cursor() as cur:
-            cur.execute('SELECT name, role FROM nodes WHERE node_id = %s', (node_id,))
+            cur.execute(
+                '''SELECT n.name, n.role, nc.antenna_height_m
+                   FROM nodes n
+                   LEFT JOIN node_coverage nc ON nc.node_id = n.node_id
+                   WHERE n.node_id = %s''',
+                (node_id,),
+            )
             row = cur.fetchone()
+        node_antenna_height_m = ANTENNA_HEIGHT_M
         if row:
-            name, role = row
+            name, role, stored_antenna_h = row
+            if stored_antenna_h is not None:
+                node_antenna_height_m = float(stored_antenna_h)
             if name and '🚫' in name:
                 log.info(f'Skipping hidden node {node_id[:12]}…')
                 return
@@ -1190,7 +1215,7 @@ def process_job(db, r_client, job: dict):
 
         log.info(f'Viewshed: {node_id[:12]}… at ({lat:.4f}, {lon:.4f})')
         t0     = time.time()
-        result = calculate_viewshed(node_id, lat, lon)
+        result = calculate_viewshed(node_id, lat, lon, antenna_height_m=node_antenna_height_m)
         if result is None:
             # Write an empty-geom placeholder so this node isn't re-queued on restart
             with db.cursor() as cur:
@@ -1202,13 +1227,13 @@ def process_job(db, r_client, job: dict):
                              strength_geoms = NULL,
                              model_version = EXCLUDED.model_version,
                              calculated_at = NOW()''',
-                    (node_id, ANTENNA_HEIGHT_M, COVERAGE_MODEL_VERSION),
+                    (node_id, node_antenna_height_m, COVERAGE_MODEL_VERSION),
                 )
             db.commit()
             return
 
         geom, strength_geoms, radius_m, elevation_m = result
-        store_coverage(db, node_id, geom, strength_geoms, radius_m, elevation_m)
+        store_coverage(db, node_id, geom, strength_geoms, radius_m, elevation_m, antenna_height_m=node_antenna_height_m)
         if WORKER_MODE in ('all', 'link'):
             queued_links = enqueue_physical_link_jobs_for_node(db, r_client, node_id, lat, lon, radius_m)
             if queued_links > 0:

@@ -177,122 +177,96 @@ export const PathMap: React.FC<{
   observerPositions?: [number, number][];
   lazyPaths?: LazyPath[];
   nodeMap?: Map<string, MeshNode>;
-}> = ({ results, observerPositions = [], lazyPaths = [], nodeMap }) => {
+  isLoading?: boolean;
+}> = ({ results, observerPositions = [], lazyPaths = [], nodeMap, isLoading = false }) => {
   const containerRef = useRef<HTMLDivElement>(null);
+  const mapRef = useRef<maplibregl.Map | null>(null);
+  const mapReadyRef = useRef(false);
   const nodeMapRef = useRef(nodeMap);
   nodeMapRef.current = nodeMap;
 
+  // Keep latest prop values accessible inside stable callbacks without causing rerenders
+  const lazyPathsRef = useRef(lazyPaths);
+  const resultsRef = useRef(results);
+  const observerPositionsRef = useRef(observerPositions);
+  lazyPathsRef.current = lazyPaths;
+  resultsRef.current = results;
+  observerPositionsRef.current = observerPositions;
+
   const toLngLat = ([lat, lon]: [number, number]): [number, number] => [lon, lat];
 
-  const allPoints = useMemo((): [number, number][] => {
-    const pts: [number, number][] = [];
-    for (const r of results) {
-      if (r.purplePath) pts.push(...r.purplePath);
-      if (r.redPath) pts.push(...r.redPath);
-      if (r.redSegments) r.redSegments.forEach(([a, b]) => { pts.push(a); pts.push(b); });
-    }
-    pts.push(...observerPositions);
-    for (const path of lazyPaths) pts.push(...path.coordinates);
-    return pts.filter(([lat, lon]) => Number.isFinite(lat) && Number.isFinite(lon));
-  }, [results, observerPositions, lazyPaths]);
+  const hasData = useMemo(() => {
+    if (results.some((r) => r.purplePath?.length || r.redPath?.length || r.redSegments?.length)) return true;
+    if (lazyPaths.some((p) => p.canonicalPath.some((n) => n.lat != null && n.lon != null))) return true;
+    if (observerPositions.some(([lat, lon]) => Number.isFinite(lat) && Number.isFinite(lon))) return true;
+    return false;
+  }, [results, lazyPaths, observerPositions]);
 
-  // Stable string key — prevents map recreation when array refs change but coordinate values are identical
-  const mapKey = useMemo(
-    () => allPoints.map(([lat, lon]) => `${lat.toFixed(5)},${lon.toFixed(5)}`).join('|'),
-    [allPoints],
-  );
+  // Imperatively add or update all map sources/layers without recreating the map.
+  // Reads from refs so it can be a stable useCallback reference.
+  const applyData = React.useCallback((map: maplibregl.Map, fitBounds: boolean) => {
+    const lazys = lazyPathsRef.current;
+    const res = resultsRef.current;
+    const obs = observerPositionsRef.current;
+    const bounds = new maplibregl.LngLatBounds();
 
-  useEffect(() => {
-    if (!containerRef.current || allPoints.length === 0) return;
-
-    const firstPt = toLngLat(allPoints[0]!);
-    const map = new maplibregl.Map({
-      container: containerRef.current,
-      style: {
-        version: 8,
-        sources: {
-          tiles: { type: 'raster', tiles: CARTO_TILES, tileSize: 256, maxzoom: 19, attribution: '© OpenStreetMap © CARTO' },
-        },
-        layers: [{ id: 'bg', type: 'raster', source: 'tiles' }],
-      },
-      center: firstPt,
-      zoom: 8,
-      attributionControl: false,
-    });
-
-    map.on('load', () => {
-      const bounds = new maplibregl.LngLatBounds();
-      const allPurpleCoords: [number, number][][] = [];
-      const allRedCoords: [number, number][][] = [];
-      const allNodeCoords: [number, number][] = [];
-
-      for (const r of results) {
-        if (r.purplePath && r.purplePath.length >= 2) {
-          const coords = r.purplePath.map(toLngLat);
-          allPurpleCoords.push(coords);
-          allNodeCoords.push(...coords);
-          coords.forEach((c) => bounds.extend(c));
-        }
-        if (r.redPath && r.redPath.length >= 2) {
-          allRedCoords.push(r.redPath.map(toLngLat));
-        }
-        if (r.redSegments && r.redSegments.length > 0) {
-          r.redSegments.forEach(([a, b]) => allRedCoords.push([toLngLat(a), toLngLat(b)]));
-        }
-        if (r.redPath) r.redPath.forEach((pt) => bounds.extend(toLngLat(pt)));
-        if (r.redSegments) r.redSegments.forEach(([a, b]) => { bounds.extend(toLngLat(a)); bounds.extend(toLngLat(b)); });
+    // ── Beta results (purple / red paths) ────────────────────────────────
+    const allPurpleCoords: [number, number][][] = [];
+    const allRedCoords: [number, number][][] = [];
+    const allNodeCoords: [number, number][] = [];
+    for (const r of res) {
+      if (r.purplePath && r.purplePath.length >= 2) {
+        const coords = r.purplePath.map(toLngLat);
+        allPurpleCoords.push(coords);
+        allNodeCoords.push(...coords);
+        coords.forEach((c) => bounds.extend(c));
       }
-
-      if (allPurpleCoords.length > 0) {
-        map.addSource('purple-lines', {
-          type: 'geojson',
-          data: {
-            type: 'FeatureCollection',
-            features: allPurpleCoords.map((coords) => ({ type: 'Feature', geometry: { type: 'LineString', coordinates: coords }, properties: {} })),
-          },
-        });
+      if (r.redPath && r.redPath.length >= 2) allRedCoords.push(r.redPath.map(toLngLat));
+      if (r.redSegments?.length) r.redSegments.forEach(([a, b]) => allRedCoords.push([toLngLat(a), toLngLat(b)]));
+      if (r.redPath) r.redPath.forEach((pt) => bounds.extend(toLngLat(pt)));
+      if (r.redSegments) r.redSegments.forEach(([a, b]) => { bounds.extend(toLngLat(a)); bounds.extend(toLngLat(b)); });
+    }
+    if (allPurpleCoords.length > 0) {
+      const purpleLinesData = { type: 'FeatureCollection' as const, features: allPurpleCoords.map((coords) => ({ type: 'Feature' as const, geometry: { type: 'LineString' as const, coordinates: coords }, properties: {} })) };
+      const purpleNodesData = { type: 'FeatureCollection' as const, features: allNodeCoords.map((c) => ({ type: 'Feature' as const, geometry: { type: 'Point' as const, coordinates: c }, properties: {} })) };
+      const plSrc = map.getSource('purple-lines') as maplibregl.GeoJSONSource | undefined;
+      if (plSrc) { plSrc.setData(purpleLinesData); } else {
+        map.addSource('purple-lines', { type: 'geojson', data: purpleLinesData });
         map.addLayer({ id: 'purple-lines-layer', type: 'line', source: 'purple-lines', paint: { 'line-color': C_PURPLE, 'line-width': 2.5, 'line-opacity': 0.85 } });
-        map.addSource('purple-nodes', {
-          type: 'geojson',
-          data: { type: 'FeatureCollection', features: allNodeCoords.map((c) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: c }, properties: {} })) },
-        });
+        map.addSource('purple-nodes', { type: 'geojson', data: purpleNodesData });
         map.addLayer({ id: 'purple-node-circles', type: 'circle', source: 'purple-nodes', paint: { 'circle-radius': 5, 'circle-color': '#0b1725', 'circle-stroke-color': C_CYAN, 'circle-stroke-width': 2 } });
       }
-
-      if (allRedCoords.length > 0) {
-        map.addSource('red-lines', {
-          type: 'geojson',
-          data: {
-            type: 'FeatureCollection',
-            features: allRedCoords.map((coords) => ({ type: 'Feature', geometry: { type: 'LineString', coordinates: coords }, properties: {} })),
-          },
-        });
+    }
+    if (allRedCoords.length > 0) {
+      const redData = { type: 'FeatureCollection' as const, features: allRedCoords.map((coords) => ({ type: 'Feature' as const, geometry: { type: 'LineString' as const, coordinates: coords }, properties: {} })) };
+      const rlSrc = map.getSource('red-lines') as maplibregl.GeoJSONSource | undefined;
+      if (rlSrc) { rlSrc.setData(redData); } else {
+        map.addSource('red-lines', { type: 'geojson', data: redData });
         map.addLayer({ id: 'red-lines-layer', type: 'line', source: 'red-lines', paint: { 'line-color': C_RED, 'line-width': 1.5, 'line-opacity': 0.65, 'line-dasharray': [4, 4] } });
       }
+    }
 
-      lazyPaths.forEach((lazyPath, pi) => {
-        const color = LAZY_PATH_COLORS[pi % LAZY_PATH_COLORS.length]!;
-        const validNodes = lazyPath.canonicalPath.filter(
-          (n) => n.lat != null && n.lon != null && Number.isFinite(n.lat) && Number.isFinite(n.lon),
-        );
-        if (validNodes.length < 2) return;
-        const lngLat = validNodes.map((n) => [n.lon!, n.lat!] as [number, number]);
-        lngLat.forEach((c) => bounds.extend(c));
-        const lineId = `lazy-line-${pi}`;
-        const nodeLayerId = `lazy-nodes-${pi}`;
-        map.addSource(lineId, { type: 'geojson', data: { type: 'Feature', geometry: { type: 'LineString', coordinates: lngLat }, properties: {} } });
+    // ── Lazy paths ───────────────────────────────────────────────────────
+    lazys.forEach((lazyPath, pi) => {
+      const color = LAZY_PATH_COLORS[pi % LAZY_PATH_COLORS.length]!;
+      const validNodes = lazyPath.canonicalPath.filter(
+        (n) => n.lat != null && n.lon != null && Number.isFinite(n.lat) && Number.isFinite(n.lon),
+      );
+      if (validNodes.length < 2) return;
+      const lngLat = validNodes.map((n) => [n.lon!, n.lat!] as [number, number]);
+      lngLat.forEach((c) => bounds.extend(c));
+      const lineId = `lazy-line-${pi}`;
+      const nodeLayerId = `lazy-nodes-${pi}`;
+      const lineData = { type: 'Feature' as const, geometry: { type: 'LineString' as const, coordinates: lngLat }, properties: {} };
+      const nodeData = { type: 'FeatureCollection' as const, features: validNodes.map((n, ni) => ({ type: 'Feature' as const, geometry: { type: 'Point' as const, coordinates: lngLat[ni]! }, properties: { nodeId: n.nodeId ?? '', name: n.name ?? '', isObserver: n.isObserver } })) };
+      const existingLine = map.getSource(lineId) as maplibregl.GeoJSONSource | undefined;
+      if (existingLine) {
+        existingLine.setData(lineData);
+        (map.getSource(nodeLayerId) as maplibregl.GeoJSONSource | undefined)?.setData(nodeData);
+      } else {
+        map.addSource(lineId, { type: 'geojson', data: lineData });
         map.addLayer({ id: `${lineId}-layer`, type: 'line', source: lineId, paint: { 'line-color': color, 'line-width': 3, 'line-opacity': 0.9 } });
-        map.addSource(nodeLayerId, {
-          type: 'geojson',
-          data: {
-            type: 'FeatureCollection',
-            features: validNodes.map((n, ni) => ({
-              type: 'Feature' as const,
-              geometry: { type: 'Point' as const, coordinates: lngLat[ni]! },
-              properties: { nodeId: n.nodeId ?? '', name: n.name ?? '', isObserver: n.isObserver },
-            })),
-          },
-        });
+        map.addSource(nodeLayerId, { type: 'geojson', data: nodeData });
         map.addLayer({ id: `${nodeLayerId}-layer`, type: 'circle', source: nodeLayerId, paint: { 'circle-radius': 6, 'circle-color': '#0b1725', 'circle-stroke-color': color, 'circle-stroke-width': 2.5 } });
         map.on('click', `${nodeLayerId}-layer`, (e) => {
           const feat = e.features?.[0];
@@ -313,31 +287,97 @@ export const PathMap: React.FC<{
         });
         map.on('mouseenter', `${nodeLayerId}-layer`, () => { map.getCanvas().style.cursor = 'pointer'; });
         map.on('mouseleave', `${nodeLayerId}-layer`, () => { map.getCanvas().style.cursor = ''; });
-      });
-
-      const validObservers = observerPositions.filter(([lat, lon]) => Number.isFinite(lat) && Number.isFinite(lon));
-      if (validObservers.length > 0) {
-        const obsFeatures = validObservers.map(([lat, lon]) => ({
-          type: 'Feature' as const,
-          geometry: { type: 'Point' as const, coordinates: [lon, lat] as [number, number] },
-          properties: {},
-        }));
-        map.addSource('observer-pos', { type: 'geojson', data: { type: 'FeatureCollection', features: obsFeatures } });
-        map.addLayer({ id: 'observer-pos-layer', type: 'circle', source: 'observer-pos', paint: { 'circle-radius': 8, 'circle-color': '#ffb300', 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 2 } });
-        obsFeatures.forEach((f) => bounds.extend(f.geometry.coordinates));
       }
-
-      if (!bounds.isEmpty()) map.fitBounds(bounds, { padding: 24, animate: false });
     });
 
-    return () => { map.remove(); };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mapKey]);
+    // ── Observer positions ────────────────────────────────────────────────
+    const validObs = obs.filter(([lat, lon]) => Number.isFinite(lat) && Number.isFinite(lon));
+    if (validObs.length > 0) {
+      const obsFeatures = validObs.map(([lat, lon]) => ({
+        type: 'Feature' as const,
+        geometry: { type: 'Point' as const, coordinates: [lon, lat] as [number, number] },
+        properties: {},
+      }));
+      const obsData = { type: 'FeatureCollection' as const, features: obsFeatures };
+      const existingObs = map.getSource('observer-pos') as maplibregl.GeoJSONSource | undefined;
+      if (existingObs) {
+        existingObs.setData(obsData);
+      } else {
+        map.addSource('observer-pos', { type: 'geojson', data: obsData });
+        map.addLayer({ id: 'observer-pos-layer', type: 'circle', source: 'observer-pos', paint: { 'circle-radius': 8, 'circle-color': '#ffb300', 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 2 } });
+      }
+      obsFeatures.forEach((f) => bounds.extend(f.geometry.coordinates));
+    }
 
-  if (allPoints.length === 0) {
-    return <div className="feed-detail__no-map">Path could not be resolved</div>;
-  }
-  return <div ref={containerRef} style={{ height: '100%', width: '100%' }} />;
+    if (fitBounds && !bounds.isEmpty()) map.fitBounds(bounds, { padding: 24, animate: false });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // stable — all data accessed via refs
+
+  // Create map once on mount; never recreate it for data changes
+  useEffect(() => {
+    if (!containerRef.current) return;
+    const map = new maplibregl.Map({
+      container: containerRef.current,
+      style: {
+        version: 8,
+        sources: { tiles: { type: 'raster', tiles: CARTO_TILES, tileSize: 256, maxzoom: 19, attribution: '© OpenStreetMap © CARTO' } },
+        layers: [{ id: 'bg', type: 'raster', source: 'tiles' }],
+      },
+      center: [0, 51.5],
+      zoom: 6,
+      attributionControl: false,
+    });
+    mapRef.current = map;
+    map.on('load', () => {
+      mapReadyRef.current = true;
+      applyData(map, true);
+    });
+    return () => {
+      mapRef.current = null;
+      mapReadyRef.current = false;
+      map.remove();
+    };
+  }, [applyData]);
+
+  // Track the path geometry key so we can refit bounds when paths change
+  // but not on every observer-position update (which would refit constantly).
+  const prevPathKeyRef = useRef('');
+  const prevIsLoadingRef = useRef(isLoading);
+
+  // Update sources imperatively when data changes — no map recreation, no flash.
+  // Suppress fitBounds while loading; refit once loading completes so the full
+  // path is in view before the user sees the map.
+  useEffect(() => {
+    if (!mapReadyRef.current || !mapRef.current) return;
+    const loadingComplete = prevIsLoadingRef.current && !isLoading;
+    prevIsLoadingRef.current = isLoading;
+
+    const pathKey = [
+      ...lazyPaths.flatMap((p) => p.canonicalPath.filter((n) => n.lat != null).map((n) => `${n.lat?.toFixed(4)},${n.lon?.toFixed(4)}`)),
+      ...results.flatMap((r) => (r.purplePath ?? []).map(([lat, lon]) => `${lat.toFixed(4)},${lon.toFixed(4)}`)),
+    ].join('|');
+    const pathsChanged = pathKey !== prevPathKeyRef.current;
+    prevPathKeyRef.current = pathKey;
+
+    // Fit when: paths just changed, or loading just completed (lazy paths arrived)
+    applyData(mapRef.current, !isLoading && (pathsChanged || loadingComplete));
+  }, [lazyPaths, results, observerPositions, isLoading, applyData]);
+
+  return (
+    <div style={{ position: 'relative', height: '100%', width: '100%' }}>
+      <div ref={containerRef} style={{ height: '100%', width: '100%' }} />
+      {isLoading && (
+        <div className="path-map-loading-overlay">
+          <span className="path-map-loading-pill">Resolving path…</span>
+        </div>
+      )}
+      {!hasData && !isLoading && (
+        <div className="feed-detail__no-map" style={{ position: 'absolute', inset: 0 }}>
+          Path could not be resolved
+        </div>
+      )}
+    </div>
+  );
 };
 
 // ── Byte breakdown section ────────────────────────────────────────────────────
@@ -773,10 +813,12 @@ export const PacketDetailPanel: React.FC<{
         <div className="feed-detail__map">
           {!loading && (
             <PathMap
+              key={packet.packet_hash}
               results={resolvedPaths}
               observerPositions={observerPositions}
               lazyPaths={lazyPath?.paths ?? []}
               nodeMap={nodeMap}
+              isLoading={lazyStatus === 'settling' || lazyStatus === 'loading'}
             />
           )}
         </div>

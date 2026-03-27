@@ -1522,6 +1522,9 @@ html, body, #root {
   background: rgba(0,196,255,0.12);
   color: var(--text-primary);
 }
+.owner-telemetry-metric__series-btn--secondary {
+  border-style: dashed;
+}
 .owner-list {
   display: grid;
   gap: 10px;
@@ -2325,16 +2328,56 @@ html, body, #root {
 /* ── Feed: main layout ─────────────────────────────────────────────────── */
 .uk-feed-layout {
   display: grid;
-  grid-template-columns: 180px 840px 1fr;
+  grid-template-columns: 180px minmax(0, 840px) 1fr;
   grid-template-rows: 1fr;
   height: calc(100vh - 140px);
   min-width: 0;
-  overflow-x: auto;
+  overflow: hidden;
+}
+
+/* Lazy path loading — full overlay while new packet loads */
+@keyframes path-map-spin {
+  to { transform: rotate(360deg); }
+}
+
+.path-map-loading-overlay {
+  position: absolute;
+  inset: 0;
+  background: var(--bg-primary);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  pointer-events: none;
+}
+
+.path-map-loading-overlay::before {
+  content: '';
+  width: 28px;
+  height: 28px;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: path-map-spin 0.8s linear infinite;
+}
+
+.path-map-loading-pill {
+  color: var(--text-secondary);
+  font-size: 13px;
+  white-space: nowrap;
+  letter-spacing: 0.01em;
+}
+
+/* Inline map — only visible on mobile, pops up below the selected row */
+.uk-feed-inline-map {
+  display: none;
 }
 
 /* ── Feed: channels sidebar ────────────────────────────────────────────── */
 .uk-feed-channels {
   overflow-y: auto;
+  min-width: 0;
   border-right: 1px solid var(--border);
   padding: 8px 0;
 }
@@ -2400,6 +2443,8 @@ html, body, #root {
 .uk-feed-chat {
   display: flex;
   flex-direction: column;
+  min-height: 0;
+  min-width: 0;
   overflow: hidden;
   border-right: 1px solid var(--border);
 }
@@ -2414,6 +2459,7 @@ html, body, #root {
   display: grid;
   gap: 0;
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
   align-content: start;
@@ -2514,7 +2560,6 @@ html, body, #root {
 }
 
 .uk-feed-packet-row {
-  min-height: 48px;
   padding: 8px 12px;
   border: none;
   border-bottom: 1px solid var(--border);
@@ -2522,7 +2567,6 @@ html, body, #root {
   cursor: pointer;
   transition: background var(--transition);
   min-width: 0;
-  overflow-x: hidden;
 }
 
 .uk-feed-packet-row:hover {
@@ -2542,17 +2586,15 @@ html, body, #root {
   margin-bottom: 4px;
   color: var(--text-secondary);
   min-width: 0;
-  overflow: hidden;
 }
 
 .uk-feed-packet-row__observer {
   color: var(--accent);
   font-weight: 500;
   font-size: 0.85rem;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
   min-width: 0;
+  white-space: normal;
+  word-break: break-word;
 }
 
 .uk-feed-packet-row__summary {
@@ -2560,9 +2602,10 @@ html, body, #root {
   font-size: 13px;
   color: var(--text-primary);
   line-height: 1.4;
-  white-space: normal;
-  overflow-wrap: break-word;
-  word-break: break-word;
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 /* ── Packet detail slide-in panel ───────────────────────────────────────── */
@@ -3734,16 +3777,14 @@ html, body, #root {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .uk-feed-packet-row__meta {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
+  /* ── Feed: mobile layout ─────────────────────────────────────── */
   .uk-feed-layout {
     grid-template-columns: 1fr;
     grid-template-rows: auto;
     height: auto;
   }
 
+  /* Channels sidebar → horizontal filter pills */
   .uk-feed-channels {
     border-right: none;
     border-bottom: 1px solid var(--border);
@@ -3751,8 +3792,10 @@ html, body, #root {
     flex-direction: row;
     flex-wrap: wrap;
     align-items: center;
-    padding: 4px 8px;
+    padding: 6px 8px;
     gap: 4px;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
   }
 
   .uk-feed-channels__header { display: none; }
@@ -3760,29 +3803,56 @@ html, body, #root {
 
   .uk-feed-channel-item {
     width: auto;
-    padding: 4px 10px;
+    padding: 6px 12px;
     border-radius: 999px;
     border: 1px solid var(--border);
-    font-size: 12px;
+    font-size: 13px;
+    flex-shrink: 0;
   }
 
+  .uk-feed-channel-toggle {
+    font-size: 13px;
+    padding: 6px 8px;
+  }
+
+  /* Packet list — full height, no cap */
   .uk-feed-chat {
     border-right: none;
-    max-height: 60vh;
-  }
-
-  .uk-feed-right {
-    height: auto;
-  }
-
-  .uk-feed-map {
-    flex: none;
-    height: 280px;
-  }
-
-  .uk-feed-stats {
-    flex: none;
     max-height: none;
+  }
+
+  /* Packet rows — bigger touch targets, simplified meta */
+  .uk-feed-packet-row {
+    min-height: 56px;
+    padding: 10px 12px;
+  }
+
+  .uk-feed-packet-row__meta {
+    grid-template-columns: auto auto auto 1fr;
+    gap: 6px;
+  }
+
+  /* Hide hash on mobile — too long to be useful */
+  .uk-feed-packet-row__hash {
+    display: none;
+  }
+
+  /* Observer spans to the last grid cell and wraps naturally */
+  .uk-feed-packet-row__observer {
+    font-size: 0.8rem;
+  }
+
+  /* Inline map — shown on mobile below selected row */
+  .uk-feed-inline-map {
+    display: block;
+    height: 240px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-secondary);
+  }
+
+  /* Hide the desktop right column entirely on mobile */
+  .uk-feed-right {
+    display: none;
   }
 
   .owner-dashboard-grid {
