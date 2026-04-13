@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="darkreader-lock">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>__APP_HTML_TITLE__</title>
+    <meta name="description" content="__APP_META_DESCRIPTION__">
+    <meta property="og:type" content="website">
+    <meta property="og:title" content="__APP_META_TITLE__">
+    <meta property="og:description" content="__APP_META_DESCRIPTION__">
+    <meta property="og:url" content="__APP_META_URL__">
+    <meta property="og:image" content="__APP_META_IMAGE__">
+    <meta property="og:image:alt" content="__APP_META_TITLE__">
+    <meta name="twitter:card" content="summary">
+    <meta name="twitter:title" content="__APP_META_TITLE__">
+    <meta name="twitter:description" content="__APP_META_DESCRIPTION__">
+    <meta name="twitter:image" content="__APP_META_IMAGE__">
+    <link rel="icon" type="image/png" href="/logo.png">
+    <link rel="apple-touch-icon" href="/logo.png">
+    <link rel="manifest" href="/manifest.webmanifest">
+    <meta name="theme-color" content="#080d14">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <link rel="stylesheet" href="/vendor/leaflet/leaflet.css">
+    <link rel="stylesheet" href="/styles.css">
+    <link rel="stylesheet" href="/ukmesh-theme.css">
+  </head>
+  <body>
+    <header class="ukmesh-topbar">
+      <a href="https://ukmesh.com" class="ukmesh-topbar__brand">
+        <span class="ukmesh-topbar__brand-icon">◈</span>
+        UK Mesh
+      </a>
+      <div class="ukmesh-topbar__divider"></div>
+      <div class="ukmesh-topbar__section">
+        <svg class="ukmesh-topbar__icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <circle cx="10" cy="4"  r="2" fill="currentColor"/>
+          <circle cx="3"  cy="16" r="2" fill="currentColor"/>
+          <circle cx="17" cy="16" r="2" fill="currentColor"/>
+          <line x1="10" y1="6" x2="3"  y2="14" stroke="currentColor" stroke-width="1.2"/>
+          <line x1="10" y1="6" x2="17" y2="14" stroke="currentColor" stroke-width="1.2"/>
+          <line x1="3"  y1="16" x2="17" y2="16" stroke="currentColor" stroke-width="1.2"/>
+          <circle cx="10" cy="10" r="1.5" fill="currentColor" opacity="0.6"/>
+        </svg>
+        Health Check
+      </div>
+      <div class="ukmesh-topbar__spacer"></div>
+      <a href="https://ukmesh.com" class="ukmesh-topbar__nav-link">ukmesh.com</a>
+    </header>
+
+    <main class="shell">
+      <section class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow" id="hero-eyebrow">MeshCore Observer Coverage</p>
+          <h1 id="hero-title">Check your mesh reach.</h1>
+          <p class="lede">
+            <span id="hero-description-prefix">Generate a test code, send it to</span>
+            <strong id="hero-channel">#health-check</strong>
+            <span id="hero-description-suffix">and watch the observers that receive the message report back in real time.</span>
+          </p>
+        </div>
+        <div class="hero-card" id="session-card">
+          <div class="hero-topline">
+            <span class="pill" id="mqtt-pill">MQTT offline</span>
+            <div class="hero-actions">
+              <button class="ghost-button hidden" id="install-app-button" type="button">
+                Install App
+              </button>
+              <a class="ghost-button hidden" href="#" id="external-link" rel="noopener noreferrer" target="_blank">External Link</a>
+              <button class="ghost-button" id="new-session-button" type="button">
+                New Code
+              </button>
+            </div>
+          </div>
+          <div class="session-code-row">
+            <div class="session-code" id="session-code">...</div>
+            <div class="session-code-actions">
+              <button class="ghost-button copy-button" id="copy-session-code" type="button">
+                Copy
+              </button>
+              <button class="ghost-button copy-button" id="share-session" type="button">
+                Share
+              </button>
+            </div>
+          </div>
+          <p class="session-instructions" id="session-instructions">
+            Loading session…
+          </p>
+          <p class="small-note session-share-note" id="session-share-note">
+            Shared links are kept for one week by default.
+          </p>
+          <div class="session-meta">
+            <div>
+              <span class="meta-label">Status</span>
+              <strong id="session-status">Waiting</strong>
+            </div>
+            <div>
+              <span class="meta-label">Message Hash</span>
+              <strong><a class="hash-link pending" id="session-hash" href="#" rel="noopener noreferrer" target="_blank">Pending</a></strong>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="dashboard">
+        <article class="panel score-panel">
+          <div class="panel-header">
+            <div>
+              <p class="panel-label">Current Health</p>
+              <h2 id="health-label">Waiting</h2>
+            </div>
+            <div class="score-ring">
+              <svg class="score-ring__svg" viewBox="0 0 120 120" aria-hidden="true">
+                <circle class="score-ring__track" cx="60" cy="60" r="50"/>
+                <circle class="score-ring__fill" cx="60" cy="60" r="50"/>
+              </svg>
+              <span id="health-percent"><span class="score-num">0</span><span class="score-unit">%</span></span>
+            </div>
+          </div>
+          <div class="score-grid">
+            <div class="metric-card">
+              <span class="metric-label">Observers Reached</span>
+              <strong id="observed-count">0 / 0</strong>
+            </div>
+            <div class="metric-card">
+              <span class="metric-label">Sender</span>
+              <strong id="sender-name">Pending</strong>
+            </div>
+            <div class="metric-card">
+              <span class="metric-label">Channel</span>
+              <strong id="channel-name">#health-check</strong>
+            </div>
+            <div class="metric-card">
+              <span class="metric-label">Broker</span>
+              <strong id="broker-name">Loading</strong>
+            </div>
+          </div>
+          <div class="message-preview">
+            <span class="meta-label">Matched Message</span>
+            <p id="message-preview">Waiting for your #health-check message.</p>
+          </div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-header slim">
+            <div>
+              <p class="panel-label">Observer Set</p>
+              <h2>Observers</h2>
+            </div>
+            <button class="ghost-button" id="observer-allowlist-clear" type="button">
+              Default Set
+            </button>
+          </div>
+          <p class="small-note allowlist-note" id="observer-allowlist-note">
+            Default: 0 observers.
+          </p>
+          <div class="observer-selector" id="observer-allowlist"></div>
+          <div class="panel-divider hidden"></div>
+          <div class="panel-header slim hidden">
+            <div>
+              <p class="panel-label">Target</p>
+              <h2>Score Against</h2>
+            </div>
+            <p class="small-note" id="expected-source">Default</p>
+          </div>
+          <div class="observer-badges hidden" id="expected-observers"></div>
+        </article>
+
+        <article class="panel wide">
+          <div class="panel-header slim">
+            <div>
+              <p class="panel-label">Coverage Map</p>
+              <h2>Where the observers are</h2>
+            </div>
+            <button class="ghost-button" id="map-theme-toggle" type="button">
+              Light Map
+            </button>
+          </div>
+          <p class="small-note" id="map-observer-note">Waiting for observer coordinates.</p>
+          <div class="empty-state compact hidden" id="map-empty">
+            No saved observer coordinates yet. The app will learn them from MQTT metadata and store them in <code>observer.json</code>.
+          </div>
+          <div class="observer-map" id="observer-map"></div>
+        </article>
+
+        <article class="panel wide">
+          <div class="panel-header slim">
+            <div>
+              <p class="panel-label">Observer Reports</p>
+              <h2>Who saw the message</h2>
+            </div>
+            <p class="small-note" id="active-observer-note">0 active observers</p>
+          </div>
+          <div class="timeline-block">
+            <div class="panel-header slim">
+              <div>
+                <p class="panel-label">Timeline</p>
+                <h3>When each observer saw it</h3>
+              </div>
+              <p class="small-note" id="timeline-summary">Waiting for observer reports</p>
+            </div>
+            <div class="timeline-scale hidden" id="timeline-scale">
+              <span id="timeline-start-label">First receipt</span>
+              <span id="timeline-end-label">Latest receipt</span>
+            </div>
+            <div class="empty-state compact" id="receipt-timeline-empty">
+              Timeline appears after the first observer report.
+            </div>
+            <div class="receipt-timeline" id="receipt-timeline"></div>
+          </div>
+          <div class="empty-state" id="receipts-empty">
+            No observer reports yet.
+          </div>
+          <div class="receipts" id="receipts"></div>
+        </article>
+
+        <article class="panel wide">
+          <div class="panel-header slim">
+            <div>
+              <p class="panel-label">Recent Sessions</p>
+              <h2>Previous checks</h2>
+            </div>
+          </div>
+          <div class="history-list" id="session-history"></div>
+        </article>
+      </section>
+      <footer class="site-footer">
+        <p class="small-note">
+          Source:
+          <a href="https://github.com/yellowcooln/meshcore-health-check" id="repo-note-link" rel="noopener noreferrer" target="_blank">yellowcooln/meshcore-health-check</a>
+        </p>
+      </footer>
+    </main>
+
+    <script src="/vendor/leaflet/leaflet.js" defer></script>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
