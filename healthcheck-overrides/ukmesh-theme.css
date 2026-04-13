@@ -1,0 +1,263 @@
+/* ─── UKMesh Theme Override for Mesh Health Check ────────────────────────── */
+/* Applies the UKMesh blue/cyan design system over the health check's defaults */
+
+/* ─── Design tokens ──────────────────────────────────────────────────────── */
+:root {
+  --bg:           #080d14;
+  --panel:        #0d1520;
+  --panel-strong: #111c2b;
+  --panel-soft:   rgba(0, 196, 255, 0.04);
+  --line:         rgba(32, 80, 140, 0.35);
+  --text:         #d6e8ff;
+  --muted:        #6b8aaa;
+  --accent:       #00c4ff;
+  --accent-strong:#33d4ff;
+  --good:         #00e676;
+  --fair:         #ffb300;
+  --poor:         #ff1744;
+  --shadow:       0 8px 32px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(32, 80, 140, 0.35);
+  --radius:       8px;
+  font-family: 'Inter', 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
+}
+
+/* ─── Body / background ─────────────────────────────────────────────────── */
+body {
+  background: #080d14;
+}
+
+/* ─── UKMesh topbar ─────────────────────────────────────────────────────── */
+.ukmesh-topbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 20px;
+  height: 48px;
+  background: #0d1520;
+  border-bottom: 1px solid rgba(32, 80, 140, 0.35);
+  position: sticky;
+  top: 0;
+  z-index: 1000;
+}
+
+.ukmesh-topbar__brand {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  text-decoration: none;
+  color: #d6e8ff;
+  font-size: 14px;
+  font-weight: 600;
+  flex-shrink: 0;
+  white-space: nowrap;
+  transition: color 150ms ease;
+}
+
+.ukmesh-topbar__brand:hover {
+  color: #00c4ff;
+}
+
+.ukmesh-topbar__brand-icon {
+  color: #00c4ff;
+  font-size: 16px;
+}
+
+.ukmesh-topbar__divider {
+  width: 1px;
+  height: 20px;
+  background: rgba(32, 80, 140, 0.35);
+  flex-shrink: 0;
+}
+
+.ukmesh-topbar__section {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: 'Share Tech Mono', 'Courier New', monospace;
+  font-size: 13px;
+  color: #00c4ff;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.ukmesh-topbar__icon {
+  width: 18px;
+  height: 18px;
+  color: #00c4ff;
+  flex-shrink: 0;
+}
+
+.ukmesh-topbar__spacer {
+  flex: 1;
+}
+
+.ukmesh-topbar__nav-link {
+  font-size: 13px;
+  color: #6b8aaa;
+  text-decoration: none;
+  font-weight: 500;
+  transition: color 150ms ease;
+  white-space: nowrap;
+}
+
+.ukmesh-topbar__nav-link:hover {
+  color: #d6e8ff;
+}
+
+/* ─── Typography ─────────────────────────────────────────────────────────── */
+.hero h1,
+.panel h2,
+.timeline-block h3 {
+  font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+  letter-spacing: -0.01em;
+}
+
+.lede {
+  color: #a0b8d4;
+}
+
+.eyebrow,
+.panel-label,
+.meta-label,
+.small-note {
+  font-family: 'Share Tech Mono', 'Courier New', monospace;
+  letter-spacing: 0.1em;
+}
+
+/* ─── Panels & cards ─────────────────────────────────────────────────────── */
+.hero-card,
+.panel {
+  background: #0d1520;
+  border: 1px solid rgba(32, 80, 140, 0.35);
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+  backdrop-filter: none;
+}
+
+.metric-card,
+.history-item,
+.receipt-card {
+  background: rgba(0, 196, 255, 0.04);
+  border: 1px solid rgba(32, 80, 140, 0.35);
+  border-radius: 6px;
+}
+
+.observer-option,
+.observer-pill {
+  border-radius: 6px;
+  border-color: rgba(32, 80, 140, 0.35);
+  background: rgba(0, 196, 255, 0.03);
+}
+
+.observer-option.active {
+  border-color: rgba(0, 230, 118, 0.3);
+}
+
+.observer-pill.seen {
+  border-color: rgba(0, 230, 118, 0.35);
+  background: rgba(0, 230, 118, 0.07);
+}
+
+.receipt-path {
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.4);
+}
+
+.timeline-block {
+  border-radius: 6px;
+  border-color: rgba(32, 80, 140, 0.35);
+  background: rgba(0, 196, 255, 0.02);
+}
+
+/* ─── Buttons & pills ────────────────────────────────────────────────────── */
+.pill,
+.ghost-button {
+  border-radius: 4px;
+  border-color: rgba(32, 80, 140, 0.35);
+  font-family: inherit;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+}
+
+.pill.online {
+  border-color: rgba(0, 230, 118, 0.35);
+}
+
+.ghost-button:hover {
+  background: rgba(0, 196, 255, 0.08);
+  border-color: rgba(0, 196, 255, 0.3);
+  color: #00c4ff;
+}
+
+/* ─── Session code display ───────────────────────────────────────────────── */
+.session-code {
+  border-radius: 6px;
+  background: rgba(0, 196, 255, 0.07);
+  border: 1px solid rgba(0, 196, 255, 0.2);
+}
+
+/* ─── Score ring ─────────────────────────────────────────────────────────── */
+.score-ring__track {
+  stroke: rgba(32, 80, 140, 0.25);
+}
+
+/* ─── Map ────────────────────────────────────────────────────────────────── */
+.observer-map {
+  border-radius: 6px;
+  border-color: rgba(32, 80, 140, 0.35);
+}
+
+.observer-map .leaflet-control-attribution,
+.observer-map .leaflet-popup-content-wrapper,
+.observer-map .leaflet-popup-tip {
+  background: rgba(13, 21, 32, 0.97);
+  color: #d6e8ff;
+}
+
+/* ─── Hash links ─────────────────────────────────────────────────────────── */
+.hash-link {
+  color: #00c4ff;
+}
+
+.hash-link:hover {
+  color: #33d4ff;
+}
+
+/* ─── Timeline dot ───────────────────────────────────────────────────────── */
+.timeline-dot {
+  background: var(--accent-strong);
+  border-color: rgba(8, 13, 20, 0.96);
+  box-shadow: 0 0 0 2px rgba(0, 196, 255, 0.2);
+}
+
+.timeline-fill {
+  background: linear-gradient(90deg, rgba(0, 196, 255, 0.3), rgba(0, 196, 255, 0.75));
+}
+
+/* ─── Footer ─────────────────────────────────────────────────────────────── */
+.site-footer a {
+  color: #00c4ff;
+}
+
+.site-footer a:hover {
+  color: #33d4ff;
+}
+
+/* ─── Empty states ───────────────────────────────────────────────────────── */
+.empty-state {
+  border-color: rgba(32, 80, 140, 0.4);
+  border-radius: 6px;
+}
+
+/* ─── Hide "Score Against" section ──────────────────────────────────────── */
+/* The heading/divider are hidden via class="hidden" in the HTML template.   */
+/* Belt-and-braces: also hide by ID in case JS or class removal re-shows them */
+#expected-observers,
+.panel-header:has(#expected-source) {
+  display: none !important;
+}
+
+/* ─── Scrollbar ──────────────────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(32, 80, 140, 0.5); border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(0, 196, 255, 0.4); }
