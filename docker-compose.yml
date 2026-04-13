@@ -249,6 +249,57 @@ services:
     depends_on:
       - backend
 
+  mesh-health-check:
+    build:
+      context: .
+      dockerfile: Dockerfile.mesh-health-check
+      args:
+        MESH_HEALTH_CHECK_REF: main
+    restart: unless-stopped
+    environment:
+      PORT: "3090"
+      APP_TITLE: ${HEALTHCHECK_APP_TITLE:-UKMesh Health Check}
+      APP_EYEBROW: ${HEALTHCHECK_APP_EYEBROW:-MeshCore Observer Coverage}
+      APP_HEADLINE: ${HEALTHCHECK_APP_HEADLINE:-Check your UK mesh reach.}
+      APP_DESCRIPTION: ${HEALTHCHECK_APP_DESCRIPTION:-Generate a test code, send it to the configured channel, and watch observer coverage build in real time.}
+      EXTERNAL_LINK_URL: ${HEALTHCHECK_EXTERNAL_LINK_URL:-https://ukmesh.com}
+      EXTERNAL_LINK_LABEL: ${HEALTHCHECK_EXTERNAL_LINK_LABEL:-UKMesh}
+      LOG_LEVEL: ${HEALTHCHECK_LOG_LEVEL:-info}
+      TRUST_PROXY: "1"
+      MQTT_HOST: mosquitto
+      MQTT_PORT: "9001"
+      MQTT_USERNAME: ${MQTT_USERNAME:-backend}
+      MQTT_PASSWORD: ${MQTT_PASSWORD}
+      MQTT_TOPIC: ${HEALTHCHECK_MQTT_TOPIC:-meshcore/+/+/packets,meshcore/+/+/status,meshcore/+/+/internal}
+      MQTT_TRANSPORT: websockets
+      MQTT_WS_PATH: /
+      MQTT_TLS: "false"
+      DASH_BROKER_HOST: ${HEALTHCHECK_DASH_BROKER_HOST:-mqtt.ukmesh.com}
+      TEST_CHANNEL_NAME: ${HEALTHCHECK_TEST_CHANNEL_NAME:-ukmeshtest}
+      TEST_CHANNEL_SECRET: ${HEALTHCHECK_TEST_CHANNEL_SECRET:-}
+      TEST_CHANNEL_SECRET_SOURCE_NAME: ${HEALTHCHECK_TEST_CHANNEL_SECRET_SOURCE_NAME:-test}
+      TEST_CHANNEL_HASH: ${HEALTHCHECK_TEST_CHANNEL_HASH:-}
+      MESHCORE_CHANNEL_SECRETS: ${MESHCORE_CHANNEL_SECRETS:-}
+      SESSION_TTL_SECONDS: ${HEALTHCHECK_SESSION_TTL_SECONDS:-600}
+      RESULT_RETENTION_SECONDS: ${HEALTHCHECK_RESULT_RETENTION_SECONDS:-604800}
+      MAX_USES_PER_CODE: ${HEALTHCHECK_MAX_USES_PER_CODE:-3}
+      KNOWN_OBSERVERS: ${HEALTHCHECK_KNOWN_OBSERVERS:-}
+      OBSERVER_ACTIVE_WINDOW_SECONDS: ${HEALTHCHECK_OBSERVER_ACTIVE_WINDOW_SECONDS:-900}
+      OBSERVERS_FILE: /app/data/observer.json
+      RESULTS_FILE: /app/data/session-results.json
+      TURNSTILE_ENABLED: ${HEALTHCHECK_TURNSTILE_ENABLED:-false}
+      TURNSTILE_SITE_KEY: ${HEALTHCHECK_TURNSTILE_SITE_KEY:-}
+      TURNSTILE_SECRET_KEY: ${HEALTHCHECK_TURNSTILE_SECRET_KEY:-}
+    depends_on:
+      - mosquitto
+    ports:
+      - "3090:3090"
+    volumes:
+      - mesh_health_check_data:/app/data
+      - ./healthcheck-overrides/index.html:/app/public/index.html:ro
+      - ./healthcheck-overrides/share.html:/app/public/share.html:ro
+      - ./healthcheck-overrides/ukmesh-theme.css:/app/public/ukmesh-theme.css:ro
+
   app-dev:
     build:
       context: .
@@ -301,6 +352,7 @@ services:
       - website-teesside
       - app-dev
       - website-dev
+      - mesh-health-check
       - mosquitto
 
   loki:
@@ -345,3 +397,4 @@ volumes:
   srtm_data:
   loki_data:
   grafana_data:
+  mesh_health_check_data:
