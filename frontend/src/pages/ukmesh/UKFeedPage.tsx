@@ -5,7 +5,7 @@ import { useMessages, useNodes, type MeshNode, type LivePacketData, type Aggrega
 import type { RecentPacketRow } from '../../hooks/packetFeed.js';
 import { chartStatsEndpoint, uncachedEndpoint } from '../../utils/api.js';
 import { PathMap } from './PacketDetailPanel.js';
-import type { LazyPathResult, LazyPath } from './PacketDetailPanel.js';
+import type { LazyPathResult, LazyPath, LazyPathNode } from './PacketDetailPanel.js';
 
 export type FeedPacket = {
   time: string;
@@ -42,6 +42,12 @@ const TYPE_LABELS: Record<number, string> = {
 
 const MAX_PACKETS = 500;
 type MessageScope = 'all' | 'public' | 'test';
+type PathTreeStatus = 'idle' | 'loading' | 'done' | 'notfound' | 'error';
+type PathTreeBranchNode = LazyPathNode & {
+  treeKey: string;
+  branchIndexes: Set<number>;
+  children: PathTreeBranchNode[];
+};
 
 function timeAgo(ts?: string | null): string {
   if (!ts) return 'never';
@@ -211,6 +217,176 @@ const FeedMapPanel: React.FC<{
   );
 };
 
+function lazyPathNodeKey(node: LazyPathNode): string {
+  const identity = node.nodeId ?? node.hash;
+  return `${node.position}:${identity}:${node.isObserver ? 'observer' : 'hop'}`;
+}
+
+function buildLazyPathTree(paths: LazyPath[]): PathTreeBranchNode[] {
+  const roots: PathTreeBranchNode[] = [];
+
+  paths.forEach((path, branchIndex) => {
+    let siblings = roots;
+
+    for (const step of path.canonicalPath) {
+      const treeKey = lazyPathNodeKey(step);
+      let node = siblings.find((candidate) => candidate.treeKey === treeKey);
+
+      if (!node) {
+        node = {
+          ...step,
+          treeKey,
+          branchIndexes: new Set<number>(),
+          children: [],
+        };
+        siblings.push(node);
+      }
+
+      node.branchIndexes.add(branchIndex);
+      siblings = node.children;
+    }
+  });
+
+  return roots;
+}
+
+const PathTreeNodeView: React.FC<{
+  node: PathTreeBranchNode;
+  nodeMap: Map<string, MeshNode>;
+  totalBranches: number;
+}> = ({ node, nodeMap, totalBranches }) => {
+  const mapNode = node.nodeId ? nodeMap.get(node.nodeId) : undefined;
+  const iata = mapNode?.iata?.trim().toUpperCase() ?? null;
+  const branchIndexes = Array.from(node.branchIndexes).sort((a, b) => a - b);
+  const branchLabel = totalBranches > 1
+    ? branchIndexes.length === totalBranches
+      ? 'all branches'
+      : `branch ${branchIndexes.map((index) => index + 1).join(', ')}`
+    : null;
+  const nodeLabel = node.name
+    ?? mapNode?.name
+    ?? (node.nodeId ? node.nodeId.slice(0, 10) : null)
+    ?? (node.isObserver ? 'Observer' : 'Unmatched repeater');
+  const roleLabel = node.isObserver
+    ? 'observer'
+    : node.ambiguous
+      ? 'ambiguous repeater'
+      : node.nodeId
+        ? 'predicted repeater'
+        : 'unmatched repeater';
+  const seenLabel = !node.isObserver && node.totalObservations > 0
+    ? `${node.appearances}/${node.totalObservations} seen`
+    : null;
+  const meta = [
+    roleLabel,
+    iata,
+    node.nodeId ? node.nodeId.slice(0, 8) : null,
+    !node.isObserver ? node.hash : null,
+    seenLabel,
+  ].filter((value): value is string => Boolean(value));
+
+  return (
+    <li className="uk-feed-path-tree__node">
+      <div className="uk-feed-path-tree__step">
+        <span className={`uk-feed-path-tree__dot${node.isObserver ? ' uk-feed-path-tree__dot--observer' : ''}`}>
+          {node.isObserver ? 'RX' : node.position + 1}
+        </span>
+        <div className="uk-feed-path-tree__body">
+          <div className="uk-feed-path-tree__title-row">
+            <span className="uk-feed-path-tree__name">{nodeLabel}</span>
+            {branchLabel && <span className="uk-feed-path-tree__branch-label">{branchLabel}</span>}
+          </div>
+          <div className="uk-feed-path-tree__meta">
+            {meta.map((item, index) => (
+              <span key={`${item}-${index}`}>{item}</span>
+            ))}
+          </div>
+        </div>
+      </div>
+      {node.children.length > 0 && (
+        <ol className="uk-feed-path-tree__children">
+          {node.children.map((child) => (
+            <PathTreeNodeView
+              key={child.treeKey}
+              node={child}
+              nodeMap={nodeMap}
+              totalBranches={totalBranches}
+            />
+          ))}
+        </ol>
+      )}
+    </li>
+  );
+};
+
+const PacketPathTree: React.FC<{
+  lazyPath: LazyPathResult | null;
+  nodeMap: Map<string, MeshNode>;
+  status: PathTreeStatus;
+  onRetry: () => void;
+}> = ({ lazyPath, nodeMap, status, onRetry }) => {
+  const paths = useMemo(
+    () => lazyPath?.paths.filter((path) => path.canonicalPath.length > 0) ?? [],
+    [lazyPath],
+  );
+  const tree = useMemo(() => buildLazyPathTree(paths), [paths]);
+  const matchedHops = paths.reduce((sum, path) => sum + path.matchedHops, 0);
+  const totalHops = paths.reduce((sum, path) => sum + path.totalHops, 0);
+
+  if (status === 'loading' && !lazyPath) {
+    return (
+      <div className="uk-feed-path-tree uk-feed-path-tree--message">
+        <span className="uk-feed-path-tree__status">Resolving predicted repeaters...</span>
+      </div>
+    );
+  }
+
+  if (status === 'notfound' && !lazyPath) {
+    return (
+      <div className="uk-feed-path-tree uk-feed-path-tree--message">
+        <span className="uk-feed-path-tree__status">No trace hashes were captured for this packet.</span>
+      </div>
+    );
+  }
+
+  if (status === 'error' && !lazyPath) {
+    return (
+      <div className="uk-feed-path-tree uk-feed-path-tree--message">
+        <span className="uk-feed-path-tree__status">Route lookup failed.</span>
+        <button className="uk-feed-path-tree__retry" onClick={onRetry}>Try again</button>
+      </div>
+    );
+  }
+
+  if (!lazyPath || tree.length === 0) {
+    return (
+      <div className="uk-feed-path-tree uk-feed-path-tree--message">
+        <span className="uk-feed-path-tree__status">No predicted repeater path is available yet.</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="uk-feed-path-tree">
+      <div className="uk-feed-path-tree__header">
+        <span>Predicted repeaters</span>
+        <span>{paths.length} branch{paths.length !== 1 ? 'es' : ''}</span>
+        {totalHops > 0 && <span>{matchedHops}/{totalHops} hops matched</span>}
+      </div>
+      <ol className="uk-feed-path-tree__list">
+        {tree.map((node) => (
+          <PathTreeNodeView
+            key={node.treeKey}
+            node={node}
+            nodeMap={nodeMap}
+            totalBranches={paths.length}
+          />
+        ))}
+      </ol>
+    </div>
+  );
+};
+
 export const UKFeedPage: React.FC = () => {
   const site = getCurrentSite();
   const scope = useMemo(() => ({ network: site.networkFilter, observer: site.observerId }), [site.networkFilter, site.observerId]);
@@ -222,6 +398,9 @@ export const UKFeedPage: React.FC = () => {
   const [messagesOnly, setMessagesOnly] = useState<boolean>(() => localStorage.getItem('uk-feed-messages-only') === '1');
   const [regionOptions, setRegionOptions] = useState<string[]>([]);
   const [selectedPacketHash, setSelectedPacketHash] = useState<string | null>(null);
+  const selectedPacketHashRef = useRef<string | null>(selectedPacketHash);
+  const [pathTreeOpen, setPathTreeOpen] = useState(false);
+  const [pathTreeStatus, setPathTreeStatus] = useState<PathTreeStatus>('idle');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [now, setNow] = useState(() => Date.now());
   const [viewportHeight, setViewportHeight] = useState(() => window.innerHeight);
@@ -293,6 +472,7 @@ export const UKFeedPage: React.FC = () => {
   const lazyCacheRef = useRef<Map<string, LazyPathResult>>(new Map());
   const lazyTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const observerKeysRef = useRef<Map<string, string>>(new Map());
+  const pathTreeRequestsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     let cancelled = false;
@@ -434,6 +614,69 @@ export const UKFeedPage: React.FC = () => {
       : null,
     [selectedPacketHash, packets, retainedMessagePackets],
   );
+  const selectedLazyPath = selectedPacket ? (lazyCache.get(selectedPacket.packet_hash) ?? null) : null;
+
+  useEffect(() => {
+    selectedPacketHashRef.current = selectedPacketHash;
+    setPathTreeOpen(false);
+    setPathTreeStatus('idle');
+  }, [selectedPacketHash]);
+
+  const fetchSelectedLazyPath = useCallback(async (packet: FeedPacket) => {
+    const hash = packet.packet_hash;
+    const setStatusForSelected = (status: PathTreeStatus) => {
+      if (selectedPacketHashRef.current === hash) setPathTreeStatus(status);
+    };
+
+    if (!packet.path_hashes?.length) {
+      setStatusForSelected('notfound');
+      return;
+    }
+
+    if (lazyCacheRef.current.has(hash)) {
+      setStatusForSelected('done');
+      return;
+    }
+
+    if (pathTreeRequestsRef.current.has(hash)) {
+      setStatusForSelected('loading');
+      return;
+    }
+
+    pathTreeRequestsRef.current.add(hash);
+    setStatusForSelected('loading');
+
+    try {
+      const network = site.networkFilter ?? null;
+      const netParam = network ? `&network=${encodeURIComponent(network)}` : '';
+      const response = await fetch(`/api/path-lazy/resolve?hash=${hash}${netParam}`, { cache: 'no-store' });
+
+      if (response.status === 404) {
+        setStatusForSelected('notfound');
+        return;
+      }
+      if (!response.ok) {
+        setStatusForSelected('error');
+        return;
+      }
+
+      const result = await response.json() as LazyPathResult;
+      lazyCacheRef.current.set(hash, result);
+      setLazyCache(new Map(lazyCacheRef.current));
+      setStatusForSelected('done');
+    } catch {
+      setStatusForSelected('error');
+    } finally {
+      pathTreeRequestsRef.current.delete(hash);
+    }
+  }, [site.networkFilter]);
+
+  const openPathTree = useCallback(() => {
+    if (!selectedPacket) return;
+    selectedPacketHashRef.current = selectedPacket.packet_hash;
+    setPathTreeOpen(true);
+    void fetchSelectedLazyPath(selectedPacket);
+  }, [fetchSelectedLazyPath, selectedPacket]);
 
   // Live connection status
   const lastPacketAgeMs = globalLatestPacket ? now - Date.parse(globalLatestPacket.time) : Infinity;
@@ -626,8 +869,8 @@ export const UKFeedPage: React.FC = () => {
               key={selectedPacket?.packet_hash ?? 'none'}
               packet={selectedPacket}
               nodeMap={nodeMap}
-              cachedLazyPath={selectedPacket ? (lazyCache.get(selectedPacket.packet_hash) ?? null) : null}
-              isLoading={selectedPacket !== null && !lazyCache.has(selectedPacket.packet_hash)}
+              cachedLazyPath={selectedLazyPath}
+              isLoading={selectedPacket !== null && selectedLazyPath === null}
             />
           </div>
 
@@ -667,6 +910,14 @@ export const UKFeedPage: React.FC = () => {
                   <button className="uk-feed-stats__close" onClick={() => setSelectedPacketHash(null)}>✕</button>
                 </div>
                 <p className="uk-feed-stats__selected-summary">{packetSummary(selectedPacket, nodeMap)}</p>
+                <div className="uk-feed-stats__actions">
+                  <button
+                    className="uk-feed-stats__tree-toggle"
+                    onClick={openPathTree}
+                  >
+                    Repeater tree
+                  </button>
+                </div>
               </div>
             )}
             {latestPacket && !selectedPacket && (
@@ -676,6 +927,42 @@ export const UKFeedPage: React.FC = () => {
         </div>
 
       </div>
+      {pathTreeOpen && selectedPacket && (
+        <div
+          className="disclaimer-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Predicted repeater tree"
+          onClick={() => setPathTreeOpen(false)}
+        >
+          <div className="stats-page__path-modal uk-feed-path-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="stats-page__path-modal-header">
+              <div>
+                <h2 className="stats-page__path-modal-title">Predicted Repeater Tree</h2>
+                <p className="stats-page__path-modal-sub">
+                  {selectedPacket.packet_hash}
+                  {selectedPacket.hop_count != null && ` · ${selectedPacket.hop_count} hop${selectedPacket.hop_count !== 1 ? 's' : ''}`}
+                </p>
+              </div>
+              <button
+                type="button"
+                className="disclaimer-modal__close stats-page__path-modal-close"
+                onClick={() => setPathTreeOpen(false)}
+              >
+                Close
+              </button>
+            </div>
+            <div className="uk-feed-path-modal__body">
+              <PacketPathTree
+                lazyPath={selectedLazyPath}
+                nodeMap={nodeMap}
+                status={selectedLazyPath ? 'done' : pathTreeStatus}
+                onRetry={() => { void fetchSelectedLazyPath(selectedPacket); }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 };
