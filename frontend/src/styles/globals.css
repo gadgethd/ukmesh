@@ -2550,6 +2550,207 @@ html, body, #root {
   color: var(--text-secondary);
 }
 
+.uk-feed-stats__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+.uk-feed-stats__tree-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 30px;
+  padding: 5px 10px;
+  border: 1px solid var(--border-bright);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  transition: background var(--transition), border-color var(--transition), color var(--transition);
+}
+
+.uk-feed-stats__tree-toggle:hover,
+.uk-feed-stats__tree-toggle--active {
+  background: var(--bg-hover);
+  border-color: var(--accent-glow);
+  color: var(--text-primary);
+}
+
+.uk-feed-path-tree {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.uk-feed-path-tree--message {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.uk-feed-path-tree__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.uk-feed-path-tree__header span:first-child {
+  color: var(--text-primary);
+  font-weight: 700;
+}
+
+.uk-feed-path-tree__list,
+.uk-feed-path-tree__children {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.uk-feed-path-tree__children {
+  margin-left: 12px;
+  padding-left: 16px;
+  border-left: 1px solid var(--border);
+}
+
+.uk-feed-path-tree__node {
+  position: relative;
+  margin: 0;
+  padding: 0 0 8px;
+}
+
+.uk-feed-path-tree__children > .uk-feed-path-tree__node::before {
+  content: '';
+  position: absolute;
+  top: 15px;
+  left: -16px;
+  width: 12px;
+  border-top: 1px solid var(--border-bright);
+}
+
+.uk-feed-path-tree__step {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  min-width: 0;
+}
+
+.uk-feed-path-tree__dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 24px;
+  border: 1px solid var(--border-bright);
+  border-radius: 6px;
+  background: var(--bg-panel);
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.uk-feed-path-tree__dot--observer {
+  color: var(--online);
+  border-color: rgba(16, 185, 129, 0.35);
+}
+
+.uk-feed-path-tree__body {
+  min-width: 0;
+}
+
+.uk-feed-path-tree__title-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.uk-feed-path-tree__name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.uk-feed-path-tree__branch-label {
+  flex: 0 0 auto;
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.uk-feed-path-tree__meta {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 3px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.uk-feed-path-tree__status {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.uk-feed-path-tree__retry {
+  min-height: 26px;
+  padding: 4px 8px;
+  border: 1px solid var(--border-bright);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.uk-feed-path-tree__retry:hover {
+  border-color: var(--accent-glow);
+  color: var(--text-primary);
+}
+
+.uk-feed-path-modal {
+  width: min(1180px, calc(100vw - 32px));
+  max-height: min(90vh, 920px);
+}
+
+.uk-feed-path-modal__body {
+  min-height: 0;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.uk-feed-path-modal__body .uk-feed-path-tree {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+  min-width: min(760px, 100%);
+}
+
+.uk-feed-path-modal .uk-feed-path-tree__title-row {
+  flex-wrap: wrap;
+}
+
+.uk-feed-path-modal .uk-feed-path-tree__meta span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .uk-feed-stats__latest {
   margin: 8px 0 0;
   font-size: 13px;
