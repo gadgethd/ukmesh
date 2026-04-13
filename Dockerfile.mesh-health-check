@@ -1,0 +1,34 @@
+FROM node:22-slim
+
+ARG MESH_HEALTH_CHECK_REPO=https://github.com/gadgethd/meshcore-health-check.git
+ARG MESH_HEALTH_CHECK_REF=92792e1b7c8bd0a1561a4cbfe09de0b4cf5d7494
+
+WORKDIR /app
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates git \
+  && rm -rf /var/lib/apt/lists/* \
+  && git init /tmp/mesh-health-check \
+  && git -C /tmp/mesh-health-check remote add origin "$MESH_HEALTH_CHECK_REPO" \
+  && git -C /tmp/mesh-health-check fetch --depth 1 origin "$MESH_HEALTH_CHECK_REF" \
+  && git -C /tmp/mesh-health-check checkout --detach FETCH_HEAD \
+  && cp /tmp/mesh-health-check/package.json /tmp/mesh-health-check/package-lock.json ./ \
+  && mkdir -p ./scripts \
+  && cp /tmp/mesh-health-check/scripts/patch-meshcore-decoder.js ./scripts/patch-meshcore-decoder.js \
+  && npm install --omit=dev --no-audit --fund=false \
+  && cp /tmp/mesh-health-check/server.js ./ \
+  && cp -a /tmp/mesh-health-check/lib ./lib \
+  && cp -a /tmp/mesh-health-check/public ./public \
+  && cp /tmp/mesh-health-check/README.md /tmp/mesh-health-check/HOWTO.md /tmp/mesh-health-check/AGENTS.md /tmp/mesh-health-check/CHANGES.md ./ \
+  && rm -rf /tmp/mesh-health-check \
+  && apt-get purge -y --auto-remove git \
+  && rm -rf /var/lib/apt/lists/*
+
+COPY docker/mesh-health-check-entrypoint.sh /usr/local/bin/mesh-health-check-entrypoint.sh
+RUN chmod +x /usr/local/bin/mesh-health-check-entrypoint.sh
+
+ENV NODE_ENV=production
+EXPOSE 3090
+
+ENTRYPOINT ["mesh-health-check-entrypoint.sh"]
+CMD ["node", "server.js"]
