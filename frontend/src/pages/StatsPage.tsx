@@ -53,6 +53,7 @@ interface ChartData {
   radiosPerHour:   { hour: string;  count: number }[];
   radiosPerDay:    { day: string;   count: number }[];
   packetTypes:     { label: string; count: number }[];
+  channelTraffic:  { channel: string; count: number; pct: number; allPct: number }[];
   repeatersPerDay: { hour: string;  count: number }[];
   hopDistribution: { hops: number;  count: number }[];
   prefixCollisions:{ prefix: string; repeats: number }[];
@@ -154,6 +155,17 @@ function fmtPct(value: number | undefined): string {
 
 function fmtGb(value: number | undefined): string {
   return `${Number(value ?? 0).toFixed(1)} GB`;
+}
+
+function channelLabel(channel: string): string {
+  const clean = channel.trim() || 'Unknown';
+  if (clean.toLowerCase() === 'encrypted') return 'Encrypted';
+  if (clean.toLowerCase() === 'unknown') return 'Unknown';
+  return clean.startsWith('#') ? clean : `#${clean}`;
+}
+
+function fmtTrafficPct(value: number | undefined): string {
+  return `${Number(value ?? 0).toFixed(1)}%`;
 }
 
 // ── Stat card ─────────────────────────────────────────────────────────────────
@@ -386,6 +398,8 @@ export const StatsPage: React.FC = () => {
     [selectedDecodedPath],
   );
   const isRedactedDecodedNode = (node: { name: string | null }) => node.name === 'Redacted repeater';
+  const channelTraffic = data?.channelTraffic ?? [];
+  const maxChannelTraffic = Math.max(1, ...channelTraffic.map((channel) => channel.count));
 
   return (
     <div className="site-layout__inner">
@@ -442,6 +456,41 @@ export const StatsPage: React.FC = () => {
                 color={C_AMBER}
               />
             </div>
+
+            {channelTraffic.length > 0 && (
+              <div className="stats-page__observer-section">
+                <div className="stats-page__chart-header">
+                  <span className="stats-page__chart-title">Channel traffic</span>
+                  <span className="stats-page__chart-sub">GroupText packets in the last 24 hours</span>
+                </div>
+                <div className="stats-page__channel-traffic">
+                  {channelTraffic.map((channel, i) => (
+                    <div key={channel.channel} className="stats-page__channel-row">
+                      <div className="stats-page__channel-head">
+                        <span className="stats-page__channel-name">
+                          <span className="stats-page__pie-dot" style={{ background: PIE_COLORS[i % PIE_COLORS.length] }} />
+                          {channelLabel(channel.channel)}
+                        </span>
+                        <span className="stats-page__channel-pct">{fmtTrafficPct(channel.pct)}</span>
+                      </div>
+                      <div className="stats-page__channel-track" aria-hidden="true">
+                        <span
+                          className="stats-page__channel-fill"
+                          style={{
+                            width: `${Math.max(3, (channel.count / maxChannelTraffic) * 100)}%`,
+                            background: PIE_COLORS[i % PIE_COLORS.length],
+                          }}
+                        />
+                      </div>
+                      <div className="stats-page__channel-meta">
+                        <span>{fmt(channel.count)} observed packets</span>
+                        <span>{fmtTrafficPct(channel.allPct)} of all packet traffic</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {data.observerRegions.length > 0 && (
               <div className="stats-page__observer-section">

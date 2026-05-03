@@ -4,25 +4,65 @@
 /* ─── Design tokens ──────────────────────────────────────────────────────── */
 :root {
   --bg:           #080d14;
+  --bg-deep:      #070b11;
+  --bg-alt:       #0a121c;
   --panel:        #0d1520;
   --panel-strong: #111c2b;
   --panel-soft:   rgba(0, 196, 255, 0.04);
+  --panel-overlay: linear-gradient(180deg, rgba(0, 196, 255, 0.045), rgba(0, 0, 0, 0));
   --line:         rgba(32, 80, 140, 0.35);
+  --line-strong:  rgba(0, 196, 255, 0.25);
   --text:         #d6e8ff;
   --muted:        #6b8aaa;
+  --muted-strong: #a0b8d4;
   --accent:       #00c4ff;
   --accent-strong:#33d4ff;
   --good:         #00e676;
+  --good-glow:    rgba(0, 230, 118, 0.28);
   --fair:         #ffb300;
+  --fair-glow:    rgba(255, 179, 0, 0.25);
   --poor:         #ff1744;
+  --poor-glow:    rgba(255, 23, 68, 0.25);
   --shadow:       0 8px 32px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(32, 80, 140, 0.35);
   --radius:       8px;
+  --radius-xl:    8px;
+  --radius-lg:    8px;
+  --radius-md:    8px;
+  --radius-sm:    6px;
+  --font-sans:    'Inter', 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
+  --font-mono:    'Share Tech Mono', 'Courier New', ui-monospace, monospace;
+  --ring-color:   var(--accent-strong);
   font-family: 'Inter', 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
 }
 
 /* ─── Body / background ─────────────────────────────────────────────────── */
-body {
-  background: #080d14;
+body,
+body.noc-body {
+  background:
+    radial-gradient(circle at 16% 0%, rgba(0, 196, 255, 0.12), transparent 28%),
+    radial-gradient(circle at 86% 10%, rgba(0, 230, 118, 0.07), transparent 24%),
+    linear-gradient(180deg, #080d14 0%, #0a111a 48%, #070b11 100%);
+  color: var(--text);
+}
+
+body::before {
+  background:
+    linear-gradient(rgba(0, 196, 255, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 196, 255, 0.03) 1px, transparent 1px);
+  background-size: 96px 96px;
+}
+
+body::after,
+.screen-glow {
+  background: radial-gradient(circle, rgba(0, 196, 255, 0.13), transparent 72%);
+}
+
+body[data-ui-theme="light"] {
+  background:
+    radial-gradient(circle at 16% 0%, rgba(0, 196, 255, 0.12), transparent 28%),
+    radial-gradient(circle at 86% 10%, rgba(0, 230, 118, 0.07), transparent 24%),
+    linear-gradient(180deg, #080d14 0%, #0a111a 48%, #070b11 100%);
+  color: var(--text);
 }
 
 /* ─── UKMesh topbar ─────────────────────────────────────────────────────── */
@@ -37,6 +77,10 @@ body {
   position: sticky;
   top: 0;
   z-index: 1000;
+}
+
+.noc-shell {
+  padding-top: 20px;
 }
 
 .ukmesh-topbar__brand {
@@ -105,6 +149,9 @@ body {
 
 /* ─── Typography ─────────────────────────────────────────────────────────── */
 .hero h1,
+.brand-copy h1,
+.toolbar-copy h2,
+.control-center-head h2,
 .panel h2,
 .timeline-block h3 {
   font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
@@ -117,14 +164,31 @@ body {
 
 .eyebrow,
 .panel-label,
+.toolbar-label,
 .meta-label,
 .small-note {
   font-family: 'Share Tech Mono', 'Courier New', monospace;
   letter-spacing: 0.1em;
 }
 
+.eyebrow,
+.panel-label,
+.toolbar-label,
+.meta-label {
+  color: var(--accent);
+}
+
+#ui-theme-toggle {
+  display: none;
+}
+
 /* ─── Panels & cards ─────────────────────────────────────────────────────── */
 .hero-card,
+.hero-panel,
+.glance-card,
+.command-dock,
+.toolbar,
+.detail-drawer,
 .panel {
   background: #0d1520;
   border: 1px solid rgba(32, 80, 140, 0.35);
@@ -133,7 +197,79 @@ body {
   backdrop-filter: none;
 }
 
+.hero-panel::before,
+.glance-card::before,
+.command-dock::before,
+.toolbar::before,
+.detail-drawer::before,
+.panel::before {
+  border-color: rgba(0, 196, 255, 0.08);
+  background: linear-gradient(180deg, rgba(0, 196, 255, 0.035), rgba(0, 0, 0, 0));
+}
+
+body[data-ui-theme="light"] .hero-panel,
+body[data-ui-theme="light"] .glance-card,
+body[data-ui-theme="light"] .command-dock,
+body[data-ui-theme="light"] .toolbar,
+body[data-ui-theme="light"] .detail-drawer,
+body[data-ui-theme="light"] .panel {
+  background: #0d1520;
+  border-color: rgba(32, 80, 140, 0.35);
+  color: var(--text);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+}
+
+body[data-ui-theme="light"] .hero-panel::before,
+body[data-ui-theme="light"] .glance-card::before,
+body[data-ui-theme="light"] .command-dock::before,
+body[data-ui-theme="light"] .toolbar::before,
+body[data-ui-theme="light"] .detail-drawer::before,
+body[data-ui-theme="light"] .panel::before {
+  border-color: rgba(0, 196, 255, 0.08);
+  background: linear-gradient(180deg, rgba(0, 196, 255, 0.035), rgba(0, 0, 0, 0));
+}
+
+.intro-panel,
+.summary-panel,
+.hero-stage__lead,
+.hero-stage__brief {
+  background:
+    radial-gradient(circle at top left, rgba(0, 196, 255, 0.12), transparent 34%),
+    linear-gradient(180deg, rgba(13, 21, 32, 0.98), rgba(8, 13, 20, 0.98));
+}
+
+.intro-panel::after,
+.hero-stage__lead::after {
+  background: radial-gradient(circle, rgba(0, 230, 118, 0.09), transparent 72%);
+}
+
+.brand-orb {
+  border-color: rgba(0, 196, 255, 0.24);
+  border-radius: 8px;
+  background:
+    linear-gradient(145deg, rgba(0, 196, 255, 0.18), rgba(0, 230, 118, 0.08)),
+    rgba(0, 196, 255, 0.04);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 0 26px rgba(0, 196, 255, 0.16);
+}
+
+.splash-scene {
+  opacity: 0.72;
+}
+
+.splash-scene__mesh,
+.splash-scene__beam,
+.splash-scene__grid {
+  border-color: rgba(0, 196, 255, 0.18);
+}
+
+.splash-scene__badge {
+  border-color: rgba(0, 196, 255, 0.22);
+  background: rgba(13, 21, 32, 0.82);
+  color: var(--muted-strong);
+}
+
 .metric-card,
+.dock-note,
 .history-item,
 .receipt-card {
   background: rgba(0, 196, 255, 0.04);
@@ -146,6 +282,27 @@ body {
   border-radius: 6px;
   border-color: rgba(32, 80, 140, 0.35);
   background: rgba(0, 196, 255, 0.03);
+}
+
+body[data-ui-theme="light"] .metric-card,
+body[data-ui-theme="light"] .dock-note,
+body[data-ui-theme="light"] .history-item,
+body[data-ui-theme="light"] .receipt-card,
+body[data-ui-theme="light"] .observer-option,
+body[data-ui-theme="light"] .observer-pill,
+body[data-ui-theme="light"] .timeline-block,
+body[data-ui-theme="light"] .empty-state,
+body[data-ui-theme="light"] .message-preview {
+  background: rgba(0, 196, 255, 0.04);
+  border-color: rgba(32, 80, 140, 0.35);
+  color: var(--text);
+}
+
+body[data-ui-theme="light"] .small-note,
+body[data-ui-theme="light"] .lede,
+body[data-ui-theme="light"] .metric-label,
+body[data-ui-theme="light"] .observer-option-copy span {
+  color: var(--muted-strong);
 }
 
 .observer-option.active {
@@ -170,7 +327,9 @@ body {
 
 /* ─── Buttons & pills ────────────────────────────────────────────────────── */
 .pill,
-.ghost-button {
+.ghost-button,
+.primary-button,
+.control-button {
   border-radius: 4px;
   border-color: rgba(32, 80, 140, 0.35);
   font-family: inherit;
@@ -178,8 +337,22 @@ body {
   letter-spacing: 0.04em;
 }
 
+.primary-button {
+  background: linear-gradient(180deg, #33d4ff, #00a8e0);
+  border-color: rgba(0, 196, 255, 0.6);
+  color: #031018;
+  box-shadow: 0 12px 28px rgba(0, 196, 255, 0.16);
+}
+
+.primary-button:hover {
+  background: linear-gradient(180deg, #63e0ff, #00c4ff);
+  color: #031018;
+}
+
 .pill.online {
   border-color: rgba(0, 230, 118, 0.35);
+  background: rgba(0, 230, 118, 0.08);
+  color: var(--good);
 }
 
 .ghost-button:hover {
@@ -193,6 +366,19 @@ body {
   border-radius: 6px;
   background: rgba(0, 196, 255, 0.07);
   border: 1px solid rgba(0, 196, 255, 0.2);
+  color: var(--accent-strong);
+}
+
+.sparkline span {
+  background: linear-gradient(180deg, rgba(51, 212, 255, 0.95), rgba(0, 196, 255, 0.35));
+}
+
+.score-ring__fill {
+  stroke: var(--ring-color);
+}
+
+.score-ring__track {
+  stroke: rgba(32, 80, 140, 0.32);
 }
 
 /* ─── Map ────────────────────────────────────────────────────────────────── */
@@ -247,7 +433,8 @@ body {
 /* The heading/divider are hidden via class="hidden" in the HTML template.   */
 /* Belt-and-braces: also hide by ID in case JS or class removal re-shows them */
 #expected-observers,
-.panel-header:has(#expected-source) {
+.panel-header:has(#expected-source),
+.observer-panel .panel-divider {
   display: none !important;
 }
 

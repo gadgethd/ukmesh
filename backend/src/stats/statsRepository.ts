@@ -16,6 +16,66 @@ export type StatsRepository = ReturnType<typeof createStatsRepository>;
 export function createStatsRepository(deps: StatsRepositoryDeps) {
   const { networkFilters, query } = deps;
 
+  async function fetchObserverRegionSummary(network: string | undefined, observer: string | undefined) {
+    const filters = networkFilters(network, observer);
+    return query(`
+      SELECT
+        COALESCE(NULLIF(TRIM(UPPER(split_part(p.topic, '/', 2))), ''), 'UNK') AS iata,
+        COUNT(DISTINCT p.packet_hash) FILTER (WHERE p.time > NOW() - INTERVAL '24 hours') AS packets_24h,
+        COUNT(DISTINCT p.packet_hash) AS packets_7d,
+        COUNT(DISTINCT p.rx_node_id) FILTER (WHERE p.time > NOW() - INTERVAL '1 minute') AS active_observers,
+        COUNT(DISTINCT p.rx_node_id) AS observers,
+        MAX(p.time)::text AS last_packet_at
+      FROM packets p
+      WHERE p.time > NOW() - INTERVAL '7 days'
+        AND p.rx_node_id IS NOT NULL
+        AND p.rx_node_id <> ''
+        AND p.rx_node_id ~ '^[0-9A-Fa-f]{64}$'
+        ${filters.packetsAlias('p')}
+      GROUP BY 1
+      ORDER BY packets_7d DESC, iata ASC
+    `, filters.params);
+  }
+
+  async function fetchChannelTraffic(network: string | undefined, observer: string | undefined) {
+    const filters = networkFilters(network, observer);
+    return query<{ channel: string; count: string; total_count: string }>(`
+      WITH decoded_group_packets AS (
+        SELECT
+          COALESCE(p.payload->>'_summary', '') AS summary,
+          NULLIF(TRIM((regexp_match(COALESCE(p.payload->>'_summary', ''), '^\\[([^\\]]+)\\]'))[1]), '') AS parsed_channel
+        FROM packets p
+        WHERE p.time > NOW() - INTERVAL '24 hours'
+          AND p.packet_type = 5
+          ${filters.packetsAlias('p')}
+      ),
+      group_packets AS (
+        SELECT
+          COALESCE(
+            CASE
+              WHEN parsed_channel IS NOT NULL
+                AND LOWER(parsed_channel) NOT IN ('encrypted', 'unknown')
+                THEN parsed_channel
+            END,
+            CASE
+              WHEN summary ILIKE '%encrypted%' THEN 'Encrypted'
+              ELSE 'Unknown'
+            END
+          ) AS channel
+        FROM decoded_group_packets
+      ),
+      channel_counts AS (
+        SELECT channel, COUNT(*)::text AS count
+        FROM group_packets
+        GROUP BY channel
+      )
+      SELECT channel, count, SUM(count::bigint) OVER ()::text AS total_count
+      FROM channel_counts
+      ORDER BY count::bigint DESC, channel ASC
+      LIMIT 12
+    `, filters.params);
+  }
+
   async function fetchChartsData(network: string | undefined, observer: string | undefined) {
     const filters = networkFilters(network, observer);
 
@@ -131,23 +191,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
           (SELECT COUNT(*) FROM nodes n WHERE (n.role IS NULL OR n.role = 2) AND n.last_seen > NOW() - INTERVAL '7 days' ${filters.nodesAlias('n')}) AS active_repeaters,
           (SELECT COUNT(*) FROM nodes n WHERE (n.role IS NULL OR n.role = 2) AND n.last_seen <= NOW() - INTERVAL '7 days' AND n.last_seen > NOW() - INTERVAL '14 days' ${filters.nodesAlias('n')}) AS stale_repeaters
       `, filters.params),
-      query(`
-        SELECT
-          COALESCE(NULLIF(TRIM(UPPER(split_part(p.topic, '/', 2))), ''), 'UNK') AS iata,
-          COUNT(DISTINCT p.packet_hash) FILTER (WHERE p.time > NOW() - INTERVAL '24 hours') AS packets_24h,
-          COUNT(DISTINCT p.packet_hash) AS packets_7d,
-          COUNT(DISTINCT p.rx_node_id) FILTER (WHERE p.time > NOW() - INTERVAL '1 minute') AS active_observers,
-          COUNT(DISTINCT p.rx_node_id) AS observers,
-          MAX(p.time)::text AS last_packet_at
-        FROM packets p
-        WHERE p.time > NOW() - INTERVAL '7 days'
-          AND p.rx_node_id IS NOT NULL
-          AND p.rx_node_id <> ''
-          AND p.rx_node_id ~ '^[0-9A-Fa-f]{64}$'
-          ${filters.packetsAlias('p')}
-        GROUP BY 1
-        ORDER BY packets_7d DESC, iata ASC
-      `, filters.params),
+      fetchObserverRegionSummary(network, observer),
       query(`
         SELECT
           COALESCE(NULLIF(TRIM(UPPER(split_part(p.topic, '/', 2))), ''), 'UNK') AS iata,
@@ -284,7 +328,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
   async function fetchStatsSummary(network: string | undefined, observer: string | undefined) {
     const filters = networkFilters(network, observer);
 
-    const [mqttCount, packetCount, staleCount, mapNodeCount, totalNodeCount, longestHopCount, nodesDayCount] = await Promise.all([
+    const [mqttCount, packetCount, staleCount, mapNodeCount, totalNodeCount, longestHopCount, nodesDayCount, internationalCount] = await Promise.all([
       network != null
         ? query(`SELECT COUNT(DISTINCT rx_node_id) AS count
                  FROM packets
@@ -333,6 +377,36 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
              WHERE time > NOW() - INTERVAL '24 hours'
                AND src_node_id IS NOT NULL
                ${filters.packets}`, filters.params),
+      query(`WITH intl AS (
+               SELECT lat, lon, last_seen, advert_count
+               FROM nodes
+               WHERE lat IS NOT NULL AND lon IS NOT NULL
+                 AND lat != 0 AND lon != 0
+                 AND last_seen > NOW() - INTERVAL '7 days'
+                 AND NOT (lat >= 49.8 AND lat <= 60.9 AND lon >= -8.7 AND lon <= 1.8)
+                 AND (
+                   (lat >= 50.75 AND lat <= 53.60 AND lon >= 3.35 AND lon <= 7.22) OR
+                   (lat >= 49.50 AND lat <= 51.51 AND lon >= 2.54 AND lon <= 6.41) OR
+                   (lat >= 47.27 AND lat <= 55.07 AND lon >= 5.87 AND lon <= 15.04) OR
+                   (lat >= 54.56 AND lat <= 57.75 AND lon >= 8.07 AND lon <= 15.20) OR
+                   (lat >= 51.44 AND lat <= 55.39 AND lon >= -10.48 AND lon <= -5.34) OR
+                   (lat >= 41.33 AND lat <= 51.12 AND lon >= -5.14 AND lon <= 9.56)  OR
+                   (lat >= 35.92 AND lat <= 43.79 AND lon >= -9.30 AND lon <= 4.29)  OR
+                   (lat >= 36.62 AND lat <= 47.10 AND lon >= 6.61 AND lon <= 18.52)  OR
+                   (lat >= 55.34 AND lat <= 69.06 AND lon >= 11.12 AND lon <= 24.17) OR
+                   (lat >= 57.98 AND lat <= 71.19 AND lon >= 4.50 AND lon <= 31.10)  OR
+                   (lat >= 59.81 AND lat <= 70.09 AND lon >= 19.09 AND lon <= 31.59) OR
+                   (lat >= 46.37 AND lat <= 54.84 AND lon >= 14.12 AND lon <= 24.15)
+                 )
+                 ${filters.nodes}
+             )
+             SELECT
+               COUNT(*) FILTER (WHERE last_seen > NOW() - INTERVAL '1 hour') AS count_connected,
+               SUM(advert_count) AS total_adverts,
+               MAX(last_seen)::text AS last_seen_at,
+               (SELECT lat FROM intl ORDER BY last_seen DESC LIMIT 1) AS last_lat,
+               (SELECT lon FROM intl ORDER BY last_seen DESC LIMIT 1) AS last_lon
+             FROM intl`, filters.params),
     ]);
 
     return {
@@ -343,6 +417,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
       totalNodeCount,
       longestHopCount,
       nodesDayCount,
+      internationalCount,
     };
   }
 
@@ -351,7 +426,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
     const conditions: string[] = [`p.time > NOW() - INTERVAL '24 hours'`];
     if (network) {
       params.push(network);
-      conditions.push(`n.network = $${params.length}`);
+      conditions.push(`p.network = $${params.length}`);
     }
     const where = conditions.join(' AND ');
     return query<{ node_id: string; name: string | null; rx_24h: string; tx_24h: string; last_tx: string | null; last_rx: string | null }>(
@@ -467,6 +542,8 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
   }
 
   return {
+    fetchObserverRegionSummary,
+    fetchChannelTraffic,
     fetchChartsData,
     fetchStatsSummary,
     fetchObserverActivity,

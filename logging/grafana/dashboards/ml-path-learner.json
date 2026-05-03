@@ -1,0 +1,213 @@
+{
+  "uid": "ml-path-learner",
+  "title": "ML Path Learner",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-3h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Full Path Accuracy by Network (generation winners)",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "datasource": { "type": "loki", "uid": "loki-main" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "loki-main" },
+          "expr": "max_over_time({project=\"meshcore-analytics\", service=\"ml-path-learner\"} |~ \"Generation.*winner\" | regexp `network=(?P<network>[a-z]+).*val_full_path=(?P<full_path>[0-9.]+)` | unwrap full_path [$__interval]) by (network)",
+          "legendFormat": "{{network}} full path"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 1,
+          "unit": "percentunit",
+          "custom": { "fillOpacity": 10 }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      }
+    },
+    {
+      "id": 2,
+      "title": "Hop Accuracy by Network (generation winners)",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "datasource": { "type": "loki", "uid": "loki-main" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "loki-main" },
+          "expr": "max_over_time({project=\"meshcore-analytics\", service=\"ml-path-learner\"} |~ \"Generation.*winner\" | regexp `network=(?P<network>[a-z]+).*val_hop=(?P<hop>[0-9.]+)` | unwrap hop [$__interval]) by (network)",
+          "legendFormat": "{{network}} hop"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 1,
+          "unit": "percentunit",
+          "custom": { "fillOpacity": 10 }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      }
+    },
+    {
+      "id": 3,
+      "title": "Variant Scores This Generation (all 10 variants)",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 8, "w": 24, "h": 8 },
+      "datasource": { "type": "loki", "uid": "loki-main" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "loki-main" },
+          "expr": "max_over_time({project=\"meshcore-analytics\", service=\"ml-path-learner\"} |~ \"Generation.*variant.*val_full_path\" | regexp `variant (?P<variant>[0-9]+)/[0-9]+.*network=(?P<network>[a-z]+).*val_full_path=[0-9]+/[0-9]+ (?P<full_path>[0-9.]+)` | unwrap full_path [$__interval]) by (network, variant)",
+          "legendFormat": "{{network}} v{{variant}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 1,
+          "unit": "percentunit",
+          "custom": { "fillOpacity": 0, "lineWidth": 1 }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "list", "placement": "right" }
+      }
+    },
+    {
+      "id": 4,
+      "title": "Gold Paths Extracted",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 16, "w": 12, "h": 7 },
+      "datasource": { "type": "loki", "uid": "loki-main" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "loki-main" },
+          "expr": "max_over_time({project=\"meshcore-analytics\", service=\"ml-path-learner\"} |~ \"Gold extraction: inserted\" | regexp `inserted (?P<inserted>[0-9]+) new hop rows` | unwrap inserted [$__interval])",
+          "legendFormat": "hop rows inserted"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "fillOpacity": 15 }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      }
+    },
+    {
+      "id": 5,
+      "title": "Ambiguous Hops Evaluated per Generation",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 16, "w": 12, "h": 7 },
+      "datasource": { "type": "loki", "uid": "loki-main" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "loki-main" },
+          "expr": "max_over_time({project=\"meshcore-analytics\", service=\"ml-path-learner\"} |~ \"ambiguous_hops\" | regexp `network=(?P<network>[a-z]+).*ambiguous_hops=(?P<hops>[0-9]+)` | unwrap hops [$__interval]) by (network)",
+          "legendFormat": "{{network}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "fillOpacity": 10 }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      }
+    },
+    {
+      "id": 6,
+      "title": "Champion Promotions",
+      "type": "logs",
+      "gridPos": { "x": 0, "y": 23, "w": 24, "h": 7 },
+      "datasource": { "type": "loki", "uid": "loki-main" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "loki-main" },
+          "expr": "{project=\"meshcore-analytics\", service=\"ml-path-learner\"} |~ \"Champion promoted\""
+        }
+      ],
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": {
+        "sortOrder": "Descending",
+        "enableLogDetails": true,
+        "showTime": true,
+        "wrapLogMessage": true,
+        "prettifyLogMessage": false,
+        "dedupStrategy": "none"
+      }
+    },
+    {
+      "id": 7,
+      "title": "Errors & Warnings",
+      "type": "logs",
+      "gridPos": { "x": 0, "y": 30, "w": 24, "h": 7 },
+      "datasource": { "type": "loki", "uid": "loki-main" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "loki-main" },
+          "expr": "{project=\"meshcore-analytics\", service=\"ml-path-learner\"} |~ \"(?i)(error|warning|exception|traceback)\""
+        }
+      ],
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": {
+        "sortOrder": "Descending",
+        "enableLogDetails": true,
+        "showTime": true,
+        "wrapLogMessage": true,
+        "prettifyLogMessage": false,
+        "dedupStrategy": "none"
+      }
+    },
+    {
+      "id": 8,
+      "title": "All Logs",
+      "type": "logs",
+      "gridPos": { "x": 0, "y": 37, "w": 24, "h": 14 },
+      "datasource": { "type": "loki", "uid": "loki-main" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "loki-main" },
+          "expr": "{project=\"meshcore-analytics\", service=\"ml-path-learner\"}"
+        }
+      ],
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": {
+        "sortOrder": "Descending",
+        "enableLogDetails": true,
+        "showTime": true,
+        "wrapLogMessage": false,
+        "prettifyLogMessage": false,
+        "dedupStrategy": "none"
+      }
+    }
+  ]
+}

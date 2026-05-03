@@ -2466,6 +2466,12 @@ html, body, #root {
   min-width: 0;
 }
 
+/* Mobile-only elements — hidden on desktop */
+.uk-feed-mobile-stats,
+.uk-feed-mobile-detail {
+  display: none;
+}
+
 /* ── Feed: right column ────────────────────────────────────────────────── */
 .uk-feed-right {
   display: flex;
@@ -4056,6 +4062,26 @@ html, body, #root {
     display: none;
   }
 
+  /* Mobile stats bar — connection status + type tags, shown between channels and chat */
+  .uk-feed-mobile-stats {
+    display: block;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-panel);
+  }
+
+  .uk-feed-mobile-stats .uk-feed-stats__row {
+    margin-bottom: 6px;
+  }
+
+  /* Mobile detail strip — shown below inline map for selected packet */
+  .uk-feed-mobile-detail {
+    display: block;
+    padding: 10px 12px;
+    background: var(--bg-panel-alt);
+    border-bottom: 1px solid var(--border);
+  }
+
   .owner-dashboard-grid {
     grid-template-columns: 1fr;
     grid-auto-rows: minmax(280px, auto);
@@ -4181,6 +4207,68 @@ html, body, #root {
 
 .stats-page__observer-chart {
   margin-top: auto;
+}
+
+.stats-page__channel-traffic {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.stats-page__channel-row {
+  border: 1px solid rgba(0, 196, 255, 0.12);
+  background: rgba(10, 20, 32, 0.55);
+  border-radius: var(--radius-md);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.stats-page__channel-head,
+.stats-page__channel-meta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.stats-page__channel-name {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.stats-page__channel-pct {
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 18px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.stats-page__channel-track {
+  height: 8px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.stats-page__channel-fill {
+  display: block;
+  height: 100%;
+  border-radius: 6px;
+}
+
+.stats-page__channel-meta {
+  color: var(--text-muted);
+  font-size: 11px;
+  flex-wrap: wrap;
 }
 
 .stats-page__chart {
@@ -4693,6 +4781,65 @@ html, body, #root {
   animation: march-dashes-11 0.611s linear infinite !important;
 }
 
+/* ── Map tool buttons (top-left cluster) ──────────────────────────────────── */
+.map-tools {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.map-tools__btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  letter-spacing: 0.04em;
+  color: var(--text-primary);
+  background: rgba(8, 13, 20, 0.8);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: background var(--transition), border-color var(--transition), color var(--transition);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  white-space: nowrap;
+  line-height: 1;
+}
+
+.map-tools__btn:hover {
+  background: var(--bg-hover);
+  border-color: var(--border-bright);
+}
+
+.map-tools__btn--active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #080d14;
+  font-weight: 600;
+}
+
+.map-tools__btn--active:hover {
+  background: #33cfff;
+  border-color: #33cfff;
+  color: #080d14;
+}
+
+.map-tools__btn svg {
+  flex-shrink: 0;
+}
+
+@media (max-width: 640px), (pointer: coarse) {
+  .map-tools {
+    display: none !important;
+  }
+}
+
 /* Packet type labels */
 .repeater-details-card__packet-type {
   display: inline-block;
@@ -4702,4 +4849,89 @@ html, body, #root {
   background: var(--bg-tertiary);
   color: var(--text-primary);
   border-radius: 4px;
+}
+
+/* ── Companion Leaderboard ──────────────────────────────────────────────── */
+.companion-leaderboard {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.companion-row {
+  display: grid;
+  grid-template-columns: 40px 1fr 80px;
+  align-items: center;
+  gap: 12px;
+  background: var(--bg-panel-alt);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 16px;
+}
+.companion-row__rank {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-align: center;
+}
+.companion-row:nth-child(1) .companion-row__rank { color: var(--accent); }
+.companion-row:nth-child(2) .companion-row__rank { color: var(--text-secondary); }
+.companion-row:nth-child(3) .companion-row__rank { color: var(--text-secondary); }
+.companion-row__main {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.companion-row__header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.companion-row__name {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.companion-row__count {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.companion-row__bar-track {
+  height: 3px;
+  background: var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.companion-row__bar {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+  transition: width 0.4s ease;
+}
+.companion-row__last {
+  font-size: 11px;
+  color: var(--text-muted);
+  text-align: right;
+  white-space: nowrap;
+}
+.companion-updated {
+  margin-top: 20px;
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: right;
+}
+@media (max-width: 480px) {
+  .companion-row { grid-template-columns: 32px 1fr; }
+  .companion-row__last { display: none; }
+}
+.companion-updated__live {
+  color: var(--accent);
+  font-weight: 600;
 }

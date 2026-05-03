@@ -29,6 +29,7 @@ import {
   EMPTY_FC,
   MAP_REFRESH_INTERVAL_MS,
   MAP_STYLE,
+  MAP_STYLE_LIGHT,
   SEVEN_DAYS_MS,
   TERRAIN_CONFIG,
   TERRAIN_DEM_SOURCE,
@@ -39,6 +40,8 @@ import {
   buildHiddenMask,
   buildLinksGeoJSON,
   buildNodeGeoJSON,
+  buildPlannedCoverageGeoJSON,
+  buildPlannedPinGeoJSON,
   buildPrivacyRingsGeoJSON,
   computeClashData,
 } from './geojsonBuilders.js';
@@ -49,6 +52,7 @@ import type {
   MapLibreMapProps,
   NodeFeatureProps,
   NodeLink,
+  PlannedRepeater,
   PopupNodeView,
   PopupState,
 } from './types.js';
@@ -92,6 +96,13 @@ export function MapLibreMap({
   // handleCustomLosPointRef is assigned after handleCustomLosPoint is defined below
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const handleCustomLosPointRef = useRef<(point: CustomLosPoint) => Promise<void>>(null as any);
+  // Planned repeater placement
+  const plannedRepeatersRef = useRef<PlannedRepeater[]>([]);
+  const plannedPollRefs = useRef<Map<string, number>>(new Map());
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const handleRemovePlannedRepeaterRef = useRef<(planId: string) => void>(null as any);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const placePlannedRepeaterRef = useRef<(lat: number, lon: number) => Promise<void>>(null as any);
 
   const [popupState, setPopupState] = useState<PopupState | null>(null);
   const [popupLinks, setPopupLinks] = useState<NodeLink[] | null>(null);
@@ -103,6 +114,46 @@ export function MapLibreMap({
   const [focusedPrefixNodeIds, setFocusedPrefixNodeIds] = useState<Set<string> | null>(null);
   const [popupVersion, setPopupVersion] = useState(0);
   const focusTimerRef = useRef<number | null>(null);
+
+  // -- Map theme (light/dark) -------------------------------------------------
+  const [mapLight, setMapLight] = useState(() => localStorage.getItem('map-theme') === 'light');
+
+  const toggleMapTheme = useCallback(() => {
+    setMapLight((prev) => {
+      const next = !prev;
+      localStorage.setItem('map-theme', next ? 'light' : 'dark');
+      const map = mapRef.current;
+      if (map && mapLoadedRef.current) {
+        const oldId = next ? 'carto-dark' : 'carto-light';
+        const newId = next ? 'carto-light' : 'carto-dark';
+        const variant = next ? 'light_all' : 'dark_all';
+        if (map.getLayer('background')) map.removeLayer('background');
+        if (map.getLayer('bg-fill')) map.removeLayer('bg-fill');
+        if (map.getSource(oldId)) map.removeSource(oldId);
+        map.addSource(newId, {
+          type: 'raster',
+          tiles: ['a', 'b', 'c', 'd'].map(
+            (s) => `https://${s}.basemaps.cartocdn.com/${variant}/{z}/{x}/{y}{r}.png`,
+          ),
+          tileSize: 256,
+          attribution:
+            '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
+          maxzoom: 19,
+        });
+        // Insert bg-fill + basemap at the very bottom
+        const firstLayer = map.getStyle().layers[0]?.id;
+        map.addLayer(
+          { id: 'bg-fill', type: 'background', paint: { 'background-color': next ? '#e8e8e8' : '#080d14' } },
+          firstLayer,
+        );
+        map.addLayer(
+          { id: 'background', type: 'raster', source: newId },
+          map.getStyle().layers[1]?.id,  // after bg-fill, before everything else
+        );
+      }
+      return next;
+    });
+  }, []);
 
   // -- LOS profiles (client-side, multi-node, auto-expire) -------------------
 
@@ -187,6 +238,9 @@ export function MapLibreMap({
   const setCustomLosStart = useOverlayStore((state) => state.setCustomLosStart);
   const setCustomLosResult = useOverlayStore((state) => state.setCustomLosResult);
   const clearCustomLos = useOverlayStore((state) => state.clearCustomLos);
+  const planRepeaterMode = useOverlayStore((state) => state.planRepeaterMode);
+  const plannedRepeaters = useOverlayStore((state) => state.plannedRepeaters);
+  const setPlanRepeaterMode = useOverlayStore((state) => state.setPlanRepeaterMode);
 
   // Stable async handler called by map click handlers (reads state via getState())
   const handleCustomLosPoint = useCallback(async (point: CustomLosPoint) => {
@@ -205,22 +259,101 @@ export function MapLibreMap({
     handleCustomLosPointRef.current = handleCustomLosPoint;
   }, [handleCustomLosPoint]);
 
-  // Cursor crosshair while in custom LOS mode
+  // -- Planned repeater placement --------------------------------------------
+
+  const pollPlannedCoverage = useCallback((planId: string) => {
+    const iv = window.setInterval(() => {
+      void fetch(`/api/coverage/planned/${planId}`)
+        .then((r) => r.json() as Promise<{ status: string; coverage?: PlannedRepeater['coverage'] }>)
+        .then((data) => {
+          if (data.status === 'ready') {
+            window.clearInterval(iv);
+            plannedPollRefs.current.delete(planId);
+            useOverlayStore.getState().updatePlannedRepeater(planId, { status: 'ready', coverage: data.coverage });
+          }
+        })
+        .catch(() => {});
+    }, 2000);
+    plannedPollRefs.current.set(planId, iv);
+  }, []);
+
+  const handleRemovePlannedRepeater = useCallback((planId: string) => {
+    const iv = plannedPollRefs.current.get(planId);
+    if (iv !== undefined) {
+      window.clearInterval(iv);
+      plannedPollRefs.current.delete(planId);
+    }
+    useOverlayStore.getState().removePlannedRepeater(planId);
+    void fetch(`/api/coverage/planned/${planId}`, { method: 'DELETE' }).catch(() => {});
+  }, []);
+
+  const placePlannedRepeater = useCallback(async (lat: number, lon: number) => {
+    try {
+      const res = await fetch('/api/coverage/planned', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lat, lon }),
+      });
+      if (!res.ok) return;
+      const data = await res.json() as { plan_id: string };
+      useOverlayStore.getState().addPlannedRepeater({ id: data.plan_id, lat, lon, status: 'queued' });
+      pollPlannedCoverage(data.plan_id);
+    } catch {
+      // non-fatal
+    }
+  }, [pollPlannedCoverage]);
+
+  // Keep handler refs in sync for map event handlers
+  useEffect(() => {
+    handleRemovePlannedRepeaterRef.current = handleRemovePlannedRepeater;
+  }, [handleRemovePlannedRepeater]);
+
+  useEffect(() => {
+    placePlannedRepeaterRef.current = placePlannedRepeater;
+  }, [placePlannedRepeater]);
+
+  // Keep planned repeaters ref in sync
+  useEffect(() => {
+    plannedRepeatersRef.current = plannedRepeaters;
+  }, [plannedRepeaters]);
+
+  // Update planned coverage and pin layers when planned repeaters change
+  useEffect(() => {
+    if (!mapLoadedRef.current || !mapRef.current) return;
+    (mapRef.current.getSource('planned-coverage') as maplibregl.GeoJSONSource | undefined)
+      ?.setData(buildPlannedCoverageGeoJSON(plannedRepeaters));
+    (mapRef.current.getSource('planned-pins') as maplibregl.GeoJSONSource | undefined)
+      ?.setData(buildPlannedPinGeoJSON(plannedRepeaters));
+  }, [plannedRepeaters]);
+
+  // Clean up all planned repeaters and intervals on unmount
+  useEffect(() => () => {
+    for (const [planId, iv] of plannedPollRefs.current) {
+      window.clearInterval(iv);
+      void fetch(`/api/coverage/planned/${planId}`, { method: 'DELETE' }).catch(() => {});
+    }
+    plannedPollRefs.current.clear();
+  }, []);
+
+  // Cursor crosshair while in custom LOS mode or plan repeater mode
   useEffect(() => {
     const canvas = mapRef.current?.getCanvas();
     if (!canvas) return;
-    canvas.style.cursor = customLosMode ? 'crosshair' : '';
-  }, [customLosMode]);
+    canvas.style.cursor = (customLosMode || planRepeaterMode) ? 'crosshair' : '';
+  }, [customLosMode, planRepeaterMode]);
 
-  // Escape key clears custom LOS mode
+  // Escape key clears custom LOS mode or plan repeater mode
   useEffect(() => {
-    if (!customLosMode) return;
+    if (!customLosMode && !planRepeaterMode) return;
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') clearCustomLos();
+      if (e.key === 'Escape') {
+        if (customLosMode) clearCustomLos();
+        if (planRepeaterMode) setPlanRepeaterMode(false);
+      }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [customLosMode, clearCustomLos]);
+  }, [customLosMode, planRepeaterMode, clearCustomLos, setPlanRepeaterMode]);
 
   // -- Focus mode (same-prefix highlight) ------------------------------------
 
@@ -255,7 +388,6 @@ export function MapLibreMap({
 
     const nodeGeoJSON = buildNodeGeoJSON(
       nodes,
-      inferredNodesRef.current,
       currentHiddenCoordMask,
       showClientNodesRef.current,
       showLinksRef.current,
@@ -333,7 +465,7 @@ export function MapLibreMap({
 
     const map = new maplibregl.Map({
       container: containerRef.current,
-      style: MAP_STYLE,
+      style: localStorage.getItem('map-theme') === 'light' ? MAP_STYLE_LIGHT : MAP_STYLE,
       center: [DEFAULT_CENTER[1], DEFAULT_CENTER[0]], // [lon, lat]
       zoom: DEFAULT_ZOOM,
       maxPitch: 0,
@@ -455,11 +587,143 @@ export function MapLibreMap({
         },
       });
 
+      // ── Planned coverage source + layers ──────────────────────────────────
+      map.addSource('planned-coverage', { type: 'geojson', data: EMPTY_FC });
+      map.addLayer({
+        id: 'planned-coverage-fill',
+        type: 'fill',
+        source: 'planned-coverage',
+        paint: {
+          'fill-color': [
+            'match', ['get', 'band'],
+            'green', '#2dd4bf',   // teal-400
+            'amber', '#818cf8',   // indigo-400
+            'red',   '#c084fc',   // purple-400
+            '#2dd4bf',
+          ],
+          'fill-opacity': [
+            'match', ['get', 'band'],
+            'green', 0.30,
+            'amber', 0.25,
+            'red',   0.20,
+            0.25,
+          ],
+        },
+      });
+      map.addLayer({
+        id: 'planned-coverage-outline',
+        type: 'line',
+        source: 'planned-coverage',
+        paint: {
+          'line-color': '#22d3ee', // cyan-400
+          'line-width': 1.5,
+          'line-opacity': 0.6,
+        },
+      });
+
+      // ── Planned repeater pins source + layers ──────────────────────────────
+      // Styled to match real repeater nodes (role 2, #00c4ff) but visually
+      // distinct via white stroke + glow halo + "Planned" label.
+      map.addSource('planned-pins', { type: 'geojson', data: EMPTY_FC });
+
+      // Halo: soft glow behind the pin
+      map.addLayer({
+        id: 'planned-pins-halo',
+        type: 'circle',
+        source: 'planned-pins',
+        paint: {
+          'circle-radius': [
+            'interpolate', ['linear'], ['zoom'],
+            6, 8, 9, 11, 11, 14, 13, 18, 16, 22,
+          ],
+          'circle-color': '#22d3ee',
+          'circle-opacity': [
+            'match', ['get', 'status'],
+            'ready', 0.20,
+            0.10,
+          ],
+          'circle-stroke-width': 0,
+        },
+      });
+
+      // Core dot: same size/colour as a real online repeater, white stroke to mark as planned
+      map.addLayer({
+        id: 'planned-pins-dot',
+        type: 'circle',
+        source: 'planned-pins',
+        paint: {
+          'circle-radius': [
+            'interpolate', ['linear'], ['zoom'],
+            6, 3, 9, 4, 11, 5, 13, 7, 16, 9,
+          ],
+          'circle-color': [
+            'match', ['get', 'status'],
+            'ready', '#00c4ff',   // identical to real online repeater
+            '#4b5563',            // dark grey while computing
+          ],
+          'circle-opacity': [
+            'match', ['get', 'status'],
+            'ready', 1.0,
+            0.6,
+          ],
+          'circle-stroke-color': '#ffffff',
+          'circle-stroke-width': 2,
+          'circle-stroke-opacity': 0.95,
+        },
+      });
+
+      // Label: "Planned" below the dot, or "Computing…" while pending
+      map.addLayer({
+        id: 'planned-pins-label',
+        type: 'symbol',
+        source: 'planned-pins',
+        layout: {
+          'text-field': [
+            'match', ['get', 'status'],
+            'ready', 'Planned',
+            'Computing…',
+          ],
+          'text-size': 10,
+          'text-anchor': 'top',
+          'text-offset': [0, 1.0],
+          'text-allow-overlap': true,
+          'text-ignore-placement': true,
+        },
+        paint: {
+          'text-color': '#22d3ee',
+          'text-halo-color': 'rgba(0,0,0,0.8)',
+          'text-halo-width': 1.2,
+        },
+      });
+
       // ── Click handler ──────────────────────────────────────────────────────
+      map.on('click', 'planned-pins-dot', (e) => {
+        // Click on a planned repeater pin — remove it
+        if (!useOverlayStore.getState().planRepeaterMode) return;
+        const feature = e.features?.[0];
+        if (!feature) return;
+        const planId = (feature.properties as { plan_id: string }).plan_id;
+        customLosNodeClickedRef.current = true; // prevent general map-click from firing
+        // handleRemovePlannedRepeater is stable via useCallback; read from ref to avoid stale closure
+        handleRemovePlannedRepeaterRef.current(planId);
+      });
+
       map.on('click', 'node-dots', (e) => {
         const feature = e.features?.[0];
         if (!feature) return;
         const props = feature.properties as NodeFeatureProps;
+
+        // In plan repeater mode, node clicks place a repeater on the node's location
+        if (useOverlayStore.getState().planRepeaterMode) {
+          customLosNodeClickedRef.current = true;
+          if (plannedRepeatersRef.current.length < 5) {
+            const node = nodesRef.current.get(props.node_id);
+            if (node && hasCoords(node)) {
+              void placePlannedRepeaterRef.current(node.lat, node.lon);
+            }
+          }
+          return;
+        }
 
         // In custom LOS mode, intercept node clicks as point picks
         if (useOverlayStore.getState().customLosMode) {
@@ -480,25 +744,43 @@ export function MapLibreMap({
         setPopupState({ nodeId: props.node_id, lngLat: { lng: coords[0], lat: coords[1] } });
       });
 
-      // General map click — used only in custom LOS mode for non-node points
+      // General map click — used for custom LOS mode and plan repeater placement on empty areas
       map.on('click', (e) => {
+        const { lng, lat } = e.lngLat;
+
+        if (useOverlayStore.getState().planRepeaterMode) {
+          if (customLosNodeClickedRef.current) {
+            customLosNodeClickedRef.current = false;
+            return;
+          }
+          if (plannedRepeatersRef.current.length < 5) {
+            void placePlannedRepeaterRef.current(lat, lng);
+          }
+          return;
+        }
+
         if (!useOverlayStore.getState().customLosMode) return;
         if (customLosNodeClickedRef.current) {
           customLosNodeClickedRef.current = false;
           return; // Node dot already handled above
         }
-        const { lng, lat } = e.lngLat;
         void sampleElevationAt(lng, lat).then((elevation_m) => {
           void handleCustomLosPointRef.current({ lat, lon: lng, elevation_m });
         });
       });
 
-      // Make cursor a pointer over node dots
+      // Make cursor a pointer over node dots and planned pins
       map.on('mouseenter', 'node-dots', () => {
         map.getCanvas().style.cursor = 'pointer';
       });
       map.on('mouseleave', 'node-dots', () => {
-        map.getCanvas().style.cursor = '';
+        map.getCanvas().style.cursor = useOverlayStore.getState().planRepeaterMode || useOverlayStore.getState().customLosMode ? 'crosshair' : '';
+      });
+      map.on('mouseenter', 'planned-pins-dot', () => {
+        map.getCanvas().style.cursor = 'pointer';
+      });
+      map.on('mouseleave', 'planned-pins-dot', () => {
+        map.getCanvas().style.cursor = useOverlayStore.getState().planRepeaterMode ? 'crosshair' : '';
       });
 
       mapRef.current = map;
@@ -741,23 +1023,44 @@ export function MapLibreMap({
       <NodeSearch map={mapRef.current} />
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
 
-      {/* Custom LOS mode toggle button */}
-      <button
-        type="button"
-        className="custom-los-btn"
-        onClick={(e) => { e.stopPropagation(); if (customLosMode) clearCustomLos(); else setCustomLosMode(true); }}
-        onMouseDown={(e) => e.stopPropagation()}
-        onMouseUp={(e) => e.stopPropagation()}
-        style={{
-          position: 'absolute', top: 10, left: 10, zIndex: 10,
-          background: customLosMode ? '#3b82f6' : 'rgba(0,0,0,0.7)',
-          color: '#fff', border: 'none', borderRadius: 4,
-          padding: '6px 10px', fontSize: 12, cursor: 'pointer',
-          fontWeight: customLosMode ? 600 : 400,
-        }}
-      >
-        ⌖ LOS
-      </button>
+      {/* Map tool buttons */}
+      <div className="map-tools">
+        <button
+          type="button"
+          className={`map-tools__btn${customLosMode ? ' map-tools__btn--active' : ''}`}
+          onClick={(e) => { e.stopPropagation(); if (customLosMode) clearCustomLos(); else { setPlanRepeaterMode(false); setCustomLosMode(true); } }}
+          onMouseDown={(e) => e.stopPropagation()}
+          onMouseUp={(e) => e.stopPropagation()}
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/><line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/></svg>
+          LOS
+        </button>
+        <button
+          type="button"
+          className={`map-tools__btn${planRepeaterMode ? ' map-tools__btn--active' : ''}`}
+          onClick={(e) => {
+            e.stopPropagation();
+            if (planRepeaterMode) { setPlanRepeaterMode(false); } else { clearCustomLos(); setPlanRepeaterMode(true); }
+          }}
+          onMouseDown={(e) => e.stopPropagation()}
+          onMouseUp={(e) => e.stopPropagation()}
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          Repeater
+        </button>
+        <button
+          type="button"
+          className={`map-tools__btn${mapLight ? ' map-tools__btn--active' : ''}`}
+          onClick={(e) => { e.stopPropagation(); toggleMapTheme(); }}
+          onMouseDown={(e) => e.stopPropagation()}
+          onMouseUp={(e) => e.stopPropagation()}
+        >
+          {mapLight
+            ? <><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>Light</>
+            : <><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>Dark</>
+          }
+        </button>
+      </div>
 
       {/* Custom LOS status hint */}
       {customLosMode && (
@@ -772,6 +1075,35 @@ export function MapLibreMap({
           {customLosStart
             ? 'Click map or repeater to set end point — Esc to cancel'
             : 'Click map or repeater to set start point — Esc to cancel'}
+        </div>
+      )}
+
+      {/* Plan repeater mode hint */}
+      {planRepeaterMode && (
+        <div
+          style={{
+            position: 'absolute', bottom: 40, left: '50%', transform: 'translateX(-50%)',
+            background: 'rgba(0,0,0,0.75)', color: '#22d3ee', padding: '6px 14px',
+            borderRadius: 4, fontSize: 12, pointerEvents: 'none', zIndex: 10,
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {plannedRepeaters.length >= 5
+            ? 'Max 5 repeaters placed — click a pin to remove it — Esc to cancel'
+            : 'Click map to place a planned repeater — click a pin to remove it — Esc to cancel'}
+        </div>
+      )}
+
+      {/* Computing coverage indicator */}
+      {plannedRepeaters.some((r) => r.status === 'queued') && (
+        <div
+          style={{
+            position: 'absolute', top: 10, right: 10, zIndex: 10,
+            background: 'rgba(0,0,0,0.75)', color: '#22d3ee', padding: '4px 10px',
+            borderRadius: 4, fontSize: 11, pointerEvents: 'none',
+          }}
+        >
+          Computing planned coverage…
         </div>
       )}
 

@@ -16,7 +16,7 @@ import {
   LINK_AMBER_THRESHOLD_DB,
   LINK_GREEN_THRESHOLD_DB,
 } from './mapConfig.js';
-import type { ClashComputation, NodeFeatureProps } from './types.js';
+import type { ClashComputation, NodeFeatureProps, PlannedRepeater } from './types.js';
 
 function circleLineString(
   lat: number,
@@ -45,7 +45,6 @@ export function distKm(a: MeshNode, b: MeshNode): number {
 
 export function buildNodeGeoJSON(
   nodes: Map<string, MeshNode>,
-  inferredNodes: MeshNode[],
   hiddenCoordMask: Map<string, HiddenMaskGeometry>,
   showClientNodes: boolean,
   showLinks: boolean,
@@ -58,7 +57,7 @@ export function buildNodeGeoJSON(
 ): GeoJSON.FeatureCollection {
   const features: GeoJSON.Feature[] = [];
 
-  const addNode = (node: MeshNode, isInferred: boolean) => {
+  const addNode = (node: MeshNode) => {
     if (!hasCoords(node)) return;
     const ageMs = staleCutoffMs - new Date(node.last_seen).getTime();
     const isLinkOnlyStale = ageMs > FOURTEEN_DAYS_MS
@@ -96,7 +95,7 @@ export function buildNodeGeoJSON(
       is_stale: ageMs > 7 * 24 * 60 * 60 * 1000,
       is_link_only_stale: isLinkOnlyStale,
       is_prohibited: isProhibited,
-      is_inferred: isInferred,
+      is_inferred: false,
       hex_clash_state: hexClashState,
       visible,
       last_seen: node.last_seen,
@@ -113,8 +112,7 @@ export function buildNodeGeoJSON(
     });
   };
 
-  for (const node of nodes.values()) addNode(node, false);
-  for (const node of inferredNodes) addNode(node, true);
+  for (const node of nodes.values()) addNode(node);
 
   return { type: 'FeatureCollection', features };
 }
@@ -161,6 +159,52 @@ export function buildCoverageGeoJSON(coverage: NodeCoverage[]): GeoJSON.FeatureC
     }
   }
   return { type: 'FeatureCollection', features };
+}
+
+/** GeoJSON for planned coverage polygons — rendered in teal/indigo/purple to distinguish from real coverage. */
+export function buildPlannedCoverageGeoJSON(repeaters: PlannedRepeater[]): GeoJSON.FeatureCollection {
+  const ready = repeaters.filter((r) => r.status === 'ready' && r.coverage);
+  if (ready.length === 0) return EMPTY_FC;
+  const features: GeoJSON.Feature[] = [];
+  for (const repeater of ready) {
+    const item = repeater.coverage!;
+    const strengthGeoms = item.strength_geoms;
+    if (strengthGeoms) {
+      for (const band of ['red', 'amber', 'green'] as const) {
+        const geom = strengthGeoms[band];
+        if (!geom) continue;
+        if (geom.type === 'Polygon' || geom.type === 'MultiPolygon') {
+          features.push({
+            type: 'Feature',
+            geometry: geom as GeoJSON.Geometry,
+            properties: { plan_id: repeater.id, band },
+          });
+        }
+      }
+      continue;
+    }
+    if (item.geom.type === 'Polygon' || item.geom.type === 'MultiPolygon') {
+      features.push({
+        type: 'Feature',
+        geometry: item.geom as GeoJSON.Geometry,
+        properties: { plan_id: repeater.id, band: 'green' },
+      });
+    }
+  }
+  return { type: 'FeatureCollection', features };
+}
+
+/** GeoJSON point features for planned repeater pins on the map. */
+export function buildPlannedPinGeoJSON(repeaters: PlannedRepeater[]): GeoJSON.FeatureCollection {
+  if (repeaters.length === 0) return EMPTY_FC;
+  return {
+    type: 'FeatureCollection',
+    features: repeaters.map((r) => ({
+      type: 'Feature',
+      geometry: { type: 'Point', coordinates: [r.lon, r.lat] },
+      properties: { plan_id: r.id, status: r.status },
+    })),
+  };
 }
 
 export function buildClashLinesGeoJSON(

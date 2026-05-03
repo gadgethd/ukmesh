@@ -64,7 +64,7 @@ export const InstallPage: React.FC = () => (
         <ol className="prose-steps">
           <li>
             Connect your board to your PC via USB and open the{' '}
-            <a href="https://flasher.meshcore.co.uk/" target="_blank" rel="noopener noreferrer">
+            <a href="https://flasher.meshcore.io/" target="_blank" rel="noopener noreferrer">
               MeshCore web flasher
             </a>.
           </li>
@@ -147,7 +147,7 @@ export const InstallPage: React.FC = () => (
           DM <strong>ibengr</strong> if you have any questions.
         </p>
         <a
-          href="https://discord.gg/bSuST8xvet"
+          href="https://meshcore.gg/"
           target="_blank"
           rel="noopener noreferrer"
           className="site-btn site-btn--primary"

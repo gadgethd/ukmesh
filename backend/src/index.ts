@@ -11,6 +11,7 @@ import { startMqttConnectionMonitor } from './mqtt/connectionMonitor.js';
 import { initWebSocketServer, broadcastPacket, broadcastNodeUpdate, broadcastNodeUpsert } from './ws/server.js';
 import apiRoutes from './api/routes.js';
 import { isViewshedEligibleCoordinate, queueViewshedJob, queueLinkJob } from './queue/publisher.js';
+import { createBackendSiteRoutes } from './backend-site/routes.js';
 
 const ALLOWED_ORIGINS = (process.env['ALLOWED_ORIGINS'] ?? '')
   .split(',')
@@ -20,6 +21,11 @@ const ALLOWED_ORIGINS = (process.env['ALLOWED_ORIGINS'] ?? '')
 const PORT = Number(process.env['PORT'] ?? 3000);
 const COVERAGE_MODEL_VERSION = Number(process.env['COVERAGE_MODEL_VERSION'] ?? 5);
 const HSTS_HEADER = 'max-age=31536000; includeSubDomains; preload';
+const MQTT_INGEST_ENABLED = !['0', 'false', 'no'].includes(
+  String(process.env['MQTT_INGEST_ENABLED'] ?? 'true').trim().toLowerCase(),
+);
+const COVERAGE_STARTUP_BACKFILL_ENABLED = process.env['COVERAGE_STARTUP_BACKFILL_ENABLED'] === '1';
+const WS_ENABLED = process.env['WS_ENABLED'] !== '0';
 
 async function main() {
   // 1. Initialise DB schema + retention policy
@@ -28,7 +34,7 @@ async function main() {
 
   // Queue viewshed jobs for any node with a position but no coverage yet
   // (catches nodes that existed before the worker was added)
-  {
+  if (COVERAGE_STARTUP_BACKFILL_ENABLED) {
     const uncovered = await query<{ node_id: string; lat: number; lon: number }>(
       `SELECT n.node_id, n.lat, n.lon FROM nodes n
        LEFT JOIN node_coverage nc ON n.node_id = nc.node_id
@@ -51,10 +57,16 @@ async function main() {
         }
       });
     }
+  } else {
+    console.log('[app] startup viewshed backfill disabled');
   }
 
   // 2. Start MQTT connection monitor (populates mqtt_node_logins for owner auto-link)
-  startMqttConnectionMonitor();
+  if (MQTT_INGEST_ENABLED) {
+    startMqttConnectionMonitor();
+  } else {
+    console.warn('[mqtt] ingest disabled by MQTT_INGEST_ENABLED');
+  }
 
   // 3. Wire up MQTT → WS broadcast
   onPacket((packet) => {
@@ -77,8 +89,9 @@ async function main() {
   // 3. Express app
   const app = express();
 
-  // Trust Cloudflare's forwarded IP so rate limiting works correctly
-  app.set('trust proxy', 1);
+  // Trust the private Docker proxy chain so rate limiting keys on the real
+  // public client IP from X-Forwarded-For, not a shared nginx/anubis hop.
+  app.set('trust proxy', ['loopback', 'linklocal', 'uniquelocal']);
 
   // Gzip compression for all responses — critical for large payloads like /api/coverage (~26 MB)
   app.use(compression());
@@ -105,6 +118,9 @@ async function main() {
 
   app.use(express.json({ limit: '50kb' }));
 
+  // Local-only backend/operator site.
+  app.use('/', createBackendSiteRoutes({ query }));
+
   // Rate limit: 120 requests / IP / minute on all API endpoints
   app.use('/api', rateLimit({
     windowMs: 60_000,
@@ -122,10 +138,16 @@ async function main() {
 
   // 4. HTTP server + WebSocket
   const httpServer = http.createServer(app);
-  initWebSocketServer(httpServer);
+  if (WS_ENABLED) {
+    initWebSocketServer(httpServer);
+  } else {
+    console.warn('[ws] disabled by WS_ENABLED');
+  }
 
   // 5. Start MQTT client
-  startMqttClient();
+  if (MQTT_INGEST_ENABLED) {
+    startMqttClient();
+  }
 
   httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`[app] listening on http://0.0.0.0:${PORT}`);

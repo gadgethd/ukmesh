@@ -1,6 +1,6 @@
 # MeshCore Analytics
 
-A real-time analytics platform for [MeshCore](https://meshcore.co.uk) networks. It ingests MQTT packets from `mctomqtt`-compatible observers, decodes them with `@michaelhart/meshcore-decoder`, stores them in TimescaleDB, and serves interactive dashboards plus public-facing site pages with live mapping, link intelligence, coverage modelling, packet analytics, and worker/system health.
+A real-time analytics platform for [MeshCore](https://meshcore.io) networks. It ingests MQTT packets from `mctomqtt`-compatible observers, decodes them with `@michaelhart/meshcore-decoder`, stores them in TimescaleDB, and serves interactive dashboards plus public-facing site pages with live mapping, link intelligence, coverage modelling, packet analytics, and worker/system health.
 
 ---
 
@@ -180,6 +180,15 @@ To expose the app and MQTT broker publicly without opening firewall ports:
    - `app.example.com` → `http://app-ukmesh:80`
    - `www.example.com` → `http://website-ukmesh:80`
    - `mqtt.example.com` → `http://mosquitto:9001`
+   - `healthcheck.example.com` → `http://mesh-health-check:3090`
+
+For UKMesh health checks, point `healthcheck.ukmesh.com` at
+`http://mesh-health-check:3090` in the same tunnel. The container uses the
+internal Mosquitto WebSocket listener and persists observer/result state in the
+`mesh_health_check_data` Docker volume. By default it uses
+`HEALTHCHECK_TEST_CHANNEL_NAME=ukmeshtest` and reuses the existing `test:...`
+entry from `MESHCORE_CHANNEL_SECRETS` via
+`HEALTHCHECK_TEST_CHANNEL_SECRET_SOURCE_NAME=test`.
 
 ---
 
@@ -260,6 +269,7 @@ MeshCore Devices
 | `link-worker` | Built from `viewshed-worker/Dockerfile` | Link/path-loss processing from observed paths |
 | `app-ukmesh` | Built from `Dockerfile.app` | Interactive dashboard frontend |
 | `website-ukmesh` | Built from `Dockerfile.website` | Public website frontend |
+| `mesh-health-check` | Built from pinned `yellowcooln/meshcore-health-check` source | MeshCore observer coverage health-check app |
 | `app-dev` | Built from `Dockerfile.app` | Isolated test/dev dashboard frontend |
 | `website-dev` | Built from `Dockerfile.website` | Isolated test/status site for `meshcore-test/*` traffic |
 | `cloudflared` | `cloudflare/cloudflared` | Optional Cloudflare Tunnel (use `--profile tunnel`) |

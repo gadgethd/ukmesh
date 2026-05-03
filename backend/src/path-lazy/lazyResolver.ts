@@ -64,6 +64,13 @@ export type LazyPathResult = {
 
 // Generous but realistic upper bound for a single LoRa hop.
 const MAX_HOP_KM = 150;
+const COMBINED_UKMESH_NETWORKS = new Set(['teesside', 'ukmesh']);
+
+function networkScope(network: string | null): string[] | null {
+  if (network == null) return null;
+  if (COMBINED_UKMESH_NETWORKS.has(network)) return ['teesside', 'ukmesh'];
+  return [network];
+}
 
 function distKm(
   a: { lat: number; lon: number },
@@ -142,6 +149,7 @@ export async function lazyResolvePath(
   network: string | null,
   query: QueryFn,
 ): Promise<LazyPathResult | null> {
+  const scopedNetworks = networkScope(network);
 
   // ── 1. Canonical path-hash observations (one richest row per observer) ──
   const canonicalObs = await query<{
@@ -153,12 +161,12 @@ export async function lazyResolvePath(
             rx_node_id, path_hashes, path_hash_size_bytes
        FROM packets
       WHERE packet_hash = $1
-        AND ($2::text IS NULL OR network = $2)
+        AND ($2::text[] IS NULL OR network = ANY($2))
         AND rx_node_id IS NOT NULL
       ORDER BY rx_node_id,
                COALESCE(cardinality(path_hashes), 0) DESC,
                time ASC`,
-    [packetHash, network],
+    [packetHash, scopedNetworks],
   );
 
   if (canonicalObs.rows.length === 0) return null;
@@ -174,10 +182,10 @@ export async function lazyResolvePath(
     `SELECT rx_node_id, hop_count
        FROM packets
       WHERE packet_hash = $1
-        AND ($2::text IS NULL OR network = $2)
+        AND ($2::text[] IS NULL OR network = ANY($2))
         AND rx_node_id IS NOT NULL
         AND hop_count IS NOT NULL`,
-    [packetHash, network],
+    [packetHash, scopedNetworks],
   );
 
   // ── 3. Observer node positions + names ──────────────────────────────────
@@ -256,9 +264,9 @@ export async function lazyResolvePath(
     }>(
       `SELECT node_id, name, lat, lon
          FROM nodes
-        WHERE ($1::text IS NULL OR network = $1)
+        WHERE ($1::text[] IS NULL OR network = ANY($1))
           AND (${whereClauses.join(' OR ')})`,
-      [network, ...allUniqueHashes.map((h) => h + '%')],
+      [scopedNetworks, ...allUniqueHashes.map((h) => h + '%')],
     );
 
     for (const node of nodeResult.rows) {
@@ -290,20 +298,23 @@ export async function lazyResolvePath(
     if (candidates.length === 0) return null;
 
     // Score each candidate with tiered evidence:
+    //   Tier -1: ML model high-confidence mapping (score >= 0.85)
     //   Tier 0: prefix prior confirms this node for hash+prevHash context
     //   Tier 1: edge prior confirms a link to a resolved neighbor
     //   Tier 2: node_links confirms a link to any neighbor
     //   Tier 3: distance only (no evidence)
     type ScoredCandidate = {
       nodeId: string; name: string | null; lat: number; lon: number;
-      dist: number; tier: number; priorCount: number; edgeScore: number;
+      dist: number; tier: number; priorCount: number; edgeScore: number; mlScore: number;
     };
 
+    const hash2char = hash.slice(0, 2).toUpperCase();
     const scored: ScoredCandidate[] = [];
     for (const c of candidates) {
       const dist = anchors.length > 0 ? minDistToSet(c, anchors) : Infinity;
       if (anchors.length > 0 && dist > MAX_HOP_KM) continue;
 
+      const mlScore = mlScores.get(`${hash2char}:${c.nodeId}`) ?? 0;
       const priorCount = getPrefixPriorCount(c.nodeId, hash, prevHash);
       const edgeScore = resolvedNeighborIds.length > 0
         ? Math.max(...resolvedNeighborIds.map((nId) => getEdgePriorScore(c.nodeId, nId)), 0)
@@ -312,21 +323,33 @@ export async function lazyResolvePath(
         && neighborIds.some((nId) => hasLink(c.nodeId, nId));
 
       let tier = 3;
-      if (priorCount > 0) tier = 0;
+      // ML Tier -1 only wins when it has strong evidence AND isn't overriding a
+      // well-established prior for a different node.  If another candidate has
+      // a prior count more than 5× this node's ML observations, defer to the prior.
+      const bestRivalPriorCount = candidates
+        .filter((r) => r.nodeId !== c.nodeId)
+        .reduce((max, r) => Math.max(max, getPrefixPriorCount(r.nodeId, hash, prevHash)), 0);
+      const mlObsCount = mlObsCounts.get(`${hash2char}:${c.nodeId}`) ?? 0;
+      const mlDominant = mlScore >= 0.85 && (bestRivalPriorCount === 0 || mlObsCount >= bestRivalPriorCount / 5);
+      if (mlDominant) tier = -1;
+      else if (priorCount > 0) tier = 0;
       else if (edgeScore > 0) tier = 1;
       else if (hasLinkEvidence) tier = 2;
 
       scored.push({ nodeId: c.nodeId, name: c.name, lat: c.lat, lon: c.lon,
-                     dist, tier, priorCount, edgeScore });
+                     dist, tier, priorCount, edgeScore, mlScore });
     }
 
     if (scored.length === 0) return null;
 
-    // Sort: best tier → highest prior count → highest edge score → closest
+    // Sort: best tier first. ML score only leads inside the dominant ML tier;
+    // otherwise historical priors and edge evidence should not be displaced by
+    // a weaker model hint.
     scored.sort((a, b) =>
       a.tier - b.tier
       || b.priorCount - a.priorCount
       || b.edgeScore - a.edgeScore
+      || (a.tier === -1 && b.tier === -1 ? b.mlScore - a.mlScore : 0)
       || a.dist - b.dist,
     );
 
@@ -346,8 +369,13 @@ export async function lazyResolvePath(
     if (best.tier === 3 && scored.length > 2) return null;
 
     const second = scored[1];
-    const ambiguous = second != null && second.tier === best.tier
-      && (best.tier >= 2 ? (second.dist - best.dist) < 20 : second.priorCount >= best.priorCount * 0.8);
+    const ambiguous = second != null && second.tier === best.tier && (
+      best.tier === -1
+        ? (second.mlScore >= best.mlScore - 0.05)
+        : best.tier >= 2
+          ? (second.dist - best.dist) < 20
+          : second.priorCount >= best.priorCount * 0.8
+    );
 
     return { nodeId: best.nodeId, name: best.name, lat: best.lat, lon: best.lon, ambiguous };
   }
@@ -387,8 +415,11 @@ export async function lazyResolvePath(
   }
   for (const obsId of observerPositions.keys()) allCandidateNodeIds.push(obsId);
 
-  // Run all three lookups in parallel
-  const [linkResult, prefixPriorRows, edgePriorRows] = await Promise.all([
+  // Derive 2-char (1-byte) prefixes for ML score lookup
+  const allUnique2charHashes = [...new Set(allUniqueHashes.map((h) => h.slice(0, 2)))];
+
+  // Run all four lookups in parallel
+  const [linkResult, prefixPriorRows, edgePriorRows, mlScoreRows] = await Promise.all([
     allCandidateNodeIds.length > 0
       ? query<{ node_a_id: string; node_b_id: string }>(
           `SELECT node_a_id, node_b_id FROM node_links
@@ -401,22 +432,30 @@ export async function lazyResolvePath(
       ? query<{ prefix: string; prev_prefix: string | null; node_id: string; total_count: string }>(
           `SELECT prefix, prev_prefix, node_id, SUM(count)::text as total_count
              FROM path_prefix_priors
-            WHERE ($1::text IS NULL OR network = $1)
+            WHERE ($1::text[] IS NULL OR network = ANY($1))
               AND prefix = ANY($2)
             GROUP BY prefix, prev_prefix, node_id`,
-          [network, allUniqueHashes],
+          [scopedNetworks, allUniqueHashes],
         )
       : Promise.resolve({ rows: [] as { prefix: string; prev_prefix: string | null; node_id: string; total_count: string }[] }),
     allCandidateNodeIds.length > 0
       ? query<{ from_node_id: string; to_node_id: string; best_score: string }>(
           `SELECT from_node_id, to_node_id, MAX(score)::text as best_score
              FROM path_edge_priors
-            WHERE ($1::text IS NULL OR network = $1)
+            WHERE ($1::text[] IS NULL OR network = ANY($1))
               AND (from_node_id = ANY($2) OR to_node_id = ANY($2))
             GROUP BY from_node_id, to_node_id`,
-          [network, allCandidateNodeIds],
+          [scopedNetworks, allCandidateNodeIds],
         )
       : Promise.resolve({ rows: [] as { from_node_id: string; to_node_id: string; best_score: string }[] }),
+    allUnique2charHashes.length > 0
+      ? query<{ hash_2char: string; node_id: string; score: string; observation_count: string }>(
+          `SELECT hash_2char, node_id, score::text, observation_count::text
+             FROM ml_path_prefix_scores
+            WHERE ($1::text[] IS NULL OR network = ANY($1)) AND hash_2char = ANY($2) AND score >= 0.80`,
+          [scopedNetworks, allUnique2charHashes],
+        )
+      : Promise.resolve({ rows: [] as { hash_2char: string; node_id: string; score: string; observation_count: string }[] }),
   ]);
 
   // Build known-links set (existing logic)
@@ -463,6 +502,15 @@ export async function lazyResolvePath(
     const mn = a < b ? a : b;
     const mx = a < b ? b : a;
     return edgePriors.get(`${mn}:${mx}`) ?? 0;
+  }
+
+  // Build ML score and observation-count maps: `${hash_2char}:${node_id}` → value
+  const mlScores = new Map<string, number>();
+  const mlObsCounts = new Map<string, number>();
+  for (const row of mlScoreRows.rows) {
+    const key = `${row.hash_2char.toUpperCase()}:${row.node_id}`;
+    mlScores.set(key, Number(row.score) || 0);
+    mlObsCounts.set(key, Number(row.observation_count) || 0);
   }
 
   // ── 9. Resolve each group into a LazyPath ───────────────────────────────

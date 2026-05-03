@@ -1,4 +1,4 @@
-export const STATS_CACHE_TTL_MS = 15_000;
+export const STATS_CACHE_TTL_MS = 60_000;
 export const INFERRED_NODES_CACHE_TTL_MS = 60_000;
 export const PATH_HISTORY_CACHE_TTL_MS = 60_000;
 export const COVERAGE_CACHE_TTL_MS = 30_000;

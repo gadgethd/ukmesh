@@ -102,8 +102,8 @@ export function createOwnerService(deps: OwnerServiceDeps) {
     return points.length > 0 ? points[points.length - 1]!.bucket : null;
   }
 
-  async function buildOwnerLastHopResponse(nodeId: string, since?: string): Promise<OwnerLastHopResponse> {
-    const lastHopStrengthResult = await repository.fetchLastHopStrength([nodeId], since);
+  async function buildOwnerLastHopResponse(nodeId: string, allOwnedNodeIds: string[], since?: string): Promise<OwnerLastHopResponse> {
+    const lastHopStrengthResult = await repository.fetchLastHopStrength([nodeId], allOwnedNodeIds, since);
     return mapLastHopRows(lastHopStrengthResult.rows);
   }
 
@@ -361,9 +361,9 @@ export function createOwnerService(deps: OwnerServiceDeps) {
 
     let responseData: OwnerLastHopResponse;
     if (!cacheEntry || !cacheEntry.latestBucket) {
-      responseData = await buildOwnerLastHopResponse(selectedNodeId);
+      responseData = await buildOwnerLastHopResponse(selectedNodeId, ownedNodeIds);
     } else {
-      const recent = await buildOwnerLastHopResponse(selectedNodeId, cacheEntry.latestBucket);
+      const recent = await buildOwnerLastHopResponse(selectedNodeId, ownedNodeIds, cacheEntry.latestBucket);
       responseData = {
         points: mergeLastHopPoints(cacheEntry.data.points, recent.points),
       };

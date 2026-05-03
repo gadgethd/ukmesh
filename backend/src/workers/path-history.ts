@@ -5,7 +5,7 @@ import { resolveMultiObserverBetaPath, type BetaResolvedPayload } from '../path-
 const REFRESH_INTERVAL_MS = 60 * 60 * 1000; // 1 hour — 3-day window changes slowly
 const WINDOW_HOURS = 72;
 const MIN_SEGMENT_COUNT = 30;
-const MAX_PACKET_HASHES = 22500;
+const MAX_PACKET_HASHES = 5000;
 const MAX_SEGMENTS = 3000;
 const SCOPES = ['all', 'teesside', 'ukmesh', 'test'] as const;
 

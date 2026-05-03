@@ -14,10 +14,13 @@ export type OwnerRepository = ReturnType<typeof createOwnerRepository>;
 export function createOwnerRepository(deps: OwnerRepositoryDeps) {
   const { query } = deps;
 
-  async function fetchLastHopStrength(ownerNodeIds: string[], since?: string) {
-    const params: unknown[] = [ownerNodeIds];
+  async function fetchLastHopStrength(rxNodeIds: string[], allOwnerNodeIds: string[], since?: string) {
+    // $1 = rxNodeIds (the selected node to filter received packets)
+    // $2 = allOwnerNodeIds (all owned nodes to exclude from last-hop analysis)
+    // $3 = since (optional time filter)
+    const params: unknown[] = [rxNodeIds, allOwnerNodeIds];
     const timeFilter = since
-      ? `p.time >= $2::timestamptz`
+      ? `p.time >= $3::timestamptz`
       : `p.time > NOW() - INTERVAL '7 days'`;
     if (since) params.push(since);
 
@@ -134,7 +137,7 @@ export function createOwnerRepository(deps: OwnerRepositoryDeps) {
            CASE
              WHEN op.hop_count = 0
                AND op.src_node_id IS NOT NULL
-               AND NOT (op.src_node_id = ANY($1::text[]))
+               AND NOT (op.src_node_id = ANY($2::text[]))
                AND src.node_id IS NOT NULL
                AND (src.role IS NULL OR src.role NOT IN (1, 3))
              THEN op.src_node_id
@@ -145,7 +148,7 @@ export function createOwnerRepository(deps: OwnerRepositoryDeps) {
            CASE
              WHEN op.hop_count = 0
                AND op.src_node_id IS NOT NULL
-               AND NOT (op.src_node_id = ANY($1::text[]))
+               AND NOT (op.src_node_id = ANY($2::text[]))
                AND src.node_id IS NOT NULL
                AND (src.role IS NULL OR src.role NOT IN (1, 3))
              THEN COALESCE(src.name, op.src_node_id)
@@ -156,7 +159,7 @@ export function createOwnerRepository(deps: OwnerRepositoryDeps) {
            CASE
              WHEN op.hop_count = 0
                AND op.src_node_id IS NOT NULL
-               AND NOT (op.src_node_id = ANY($1::text[]))
+               AND NOT (op.src_node_id = ANY($2::text[]))
                AND src.node_id IS NOT NULL
                AND (src.role IS NULL OR src.role NOT IN (1, 3))
              THEN 'direct'

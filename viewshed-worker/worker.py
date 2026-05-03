@@ -943,7 +943,14 @@ def process_physical_link_job(db, r_client, job: dict):
 
 
 def process_observation_link_job(db, r_client, job: dict):
-    """Resolve multibyte packet paths and annotate already-physical links."""
+    """Resolve multibyte packet paths and annotate links.
+
+    When both endpoints of a hop are uniquely resolved (exactly one node
+    matched the hash prefix), the link is upserted even if it has no prior
+    physical-link entry — multibyte evidence is precise enough to bootstrap
+    new links directly.  Ambiguously-resolved hops retain the conservative
+    behaviour of only annotating pre-existing physical links.
+    """
     rx_node_id = job.get('rx_node_id')
     src_node_id = job.get('src_node_id')
     path_hashes = job.get('path_hashes', [])
@@ -992,7 +999,9 @@ def process_observation_link_job(db, r_client, job: dict):
             raw += dist_similarity * proximity
         return min(0.24, raw * 0.12)
 
-    resolved: list[tuple[str, dict]] = []
+    # Each entry: (node_id, node_data, is_unique)
+    # is_unique=True means exactly one node matched the hash — high-confidence.
+    resolved: list[tuple[str, dict, bool]] = []
     prev_id = rx_node_id
     prev = rx
     visited = {rx_node_id}
@@ -1009,6 +1018,8 @@ def process_observation_link_job(db, r_client, job: dict):
         if not candidates:
             continue
 
+        is_unique = len(candidates) == 1
+
         best_id = None
         best = None
         best_score = float('-inf')
@@ -1024,22 +1035,24 @@ def process_observation_link_job(db, r_client, job: dict):
         if best_id is None or best is None:
             continue
 
-        resolved.insert(0, (best_id, best))
+        resolved.insert(0, (best_id, best, is_unique))
         visited.add(best_id)
         prev_id = best_id
         prev = best
 
-    full: list[tuple[str, dict]] = []
+    # rx_node_id is always uniquely known (it's the observer), so mark it unique.
+    # src_node_id from the packet header is also authoritative if present.
+    full: list[tuple[str, dict, bool]] = []
     if src_node_id and src_node_id in all_nodes:
-        full.append((src_node_id, all_nodes[src_node_id]))
+        full.append((src_node_id, all_nodes[src_node_id], True))
     full.extend(resolved)
-    full.append((rx_node_id, rx))
+    full.append((rx_node_id, rx, True))
     if len(full) < 2:
         return
 
     for i in range(len(full) - 1):
-        src_id, src = full[i]
-        dst_id, dst = full[i + 1]
+        src_id, src, src_unique = full[i]
+        dst_id, dst, dst_unique = full[i + 1]
         if src_id == dst_id:
             continue
         if src['lat'] is None or src['lon'] is None or dst['lat'] is None or dst['lon'] is None:
@@ -1052,7 +1065,10 @@ def process_observation_link_job(db, r_client, job: dict):
             a_id, a, b_id, b = dst_id, dst, src_id, src
             inc_atob, inc_btoa = 0, 1
 
-        if not physical_link(a_id, b_id):
+        # Allow new link creation only when both endpoints were uniquely resolved.
+        # For ambiguous hops, stay conservative and only annotate existing links.
+        both_unique = src_unique and dst_unique
+        if not both_unique and not physical_link(a_id, b_id):
             continue
 
         row = upsert_link_pair(db, a_id, b_id, inc_atob, inc_btoa, 1)

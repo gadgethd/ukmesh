@@ -1,0 +1,1929 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Teesside MeshCore</title>
+  <meta name="description" content="Teesside MeshCore network — live repeater status and network stats." />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:          #0c0c0e;
+      --panel:       #131316;
+      --panel-hover: #1a1a1f;
+      --border:      #26262e;
+      --accent:      #f59e0b;
+      --accent-dim:  #b45309;
+      --online:      #22c55e;
+      --warn:        #f59e0b;
+      --danger:      #ef4444;
+      --text:        #e4e4e8;
+      --muted:       #5c5c6b;
+      --muted2:      #3a3a46;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: ui-monospace, 'Cascadia Code', 'Fira Mono', monospace;
+      font-size: 14px;
+      min-height: 100vh;
+    }
+
+    /* ── Header ── */
+    header {
+      border-bottom: 1px solid var(--border);
+      padding: 16px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .logo-icon {
+      width: 32px;
+      height: 32px;
+      background: var(--accent);
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+      flex-shrink: 0;
+    }
+
+    .logo-text {
+      line-height: 1.2;
+    }
+
+    .logo-title {
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--text);
+      letter-spacing: 0.03em;
+    }
+
+    .logo-sub {
+      font-size: 11px;
+      color: var(--muted);
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+
+    .header-right {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .refresh-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--muted2);
+      display: inline-block;
+      transition: background 0.3s;
+    }
+
+    .refresh-dot.active { background: var(--online); }
+
+    /* ── Tabs ── */
+    .top-tabs {
+      border-bottom: 1px solid var(--border);
+      background: #101012;
+    }
+
+    .top-tabs-inner {
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 0 20px;
+      display: flex;
+      gap: 6px;
+    }
+
+    .tab-button {
+      appearance: none;
+      border: 0;
+      border-bottom: 2px solid transparent;
+      background: transparent;
+      color: var(--muted);
+      font: inherit;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      padding: 13px 14px 11px;
+      cursor: pointer;
+    }
+
+    .tab-button:hover {
+      color: var(--text);
+    }
+
+    .tab-button.active {
+      color: var(--accent);
+      border-bottom-color: var(--accent);
+    }
+
+    .view-panel[hidden] {
+      display: none !important;
+    }
+
+    /* ── Main layout ── */
+    main {
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 24px 20px 48px;
+    }
+
+    /* ── Connectivity banner ── */
+    #connectivity-banner {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px 16px;
+      margin-bottom: 24px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 13px;
+      background: var(--panel);
+      min-height: 48px;
+    }
+
+    #connectivity-banner.connected   { border-color: var(--online); }
+    #connectivity-banner.degraded    { border-color: var(--warn); }
+    #connectivity-banner.offline     { border-color: var(--danger); }
+
+    .banner-indicator {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      flex-shrink: 0;
+      background: var(--muted2);
+    }
+
+    .banner-indicator.online  { background: var(--online); box-shadow: 0 0 6px var(--online); }
+    .banner-indicator.warn    { background: var(--warn); box-shadow: 0 0 6px var(--warn); }
+    .banner-indicator.offline { background: var(--danger); box-shadow: 0 0 6px var(--danger); }
+
+    .banner-text { flex: 1; }
+    .banner-meta { color: var(--muted); font-size: 12px; flex-shrink: 0; }
+
+    /* ── Radio controller strip ── */
+    .status-strip {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px 16px;
+      margin-bottom: 24px;
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      background: var(--panel);
+    }
+
+    .status-strip.connected { border-color: rgba(34,197,94,0.35); }
+    .status-strip.offline { border-color: rgba(239,68,68,0.45); }
+
+    .strip-item {
+      min-width: 0;
+      border-left: 1px solid var(--border);
+      padding-left: 12px;
+    }
+
+    .strip-item:first-child {
+      border-left: 0;
+      padding-left: 0;
+    }
+
+    .strip-label {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+      margin-bottom: 4px;
+    }
+
+    .strip-value {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--text);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .strip-value.online { color: var(--online); }
+    .strip-value.warn { color: var(--warn); }
+    .strip-value.offline { color: var(--danger); }
+    .strip-sub {
+      color: var(--muted);
+      font-size: 11px;
+      margin-top: 3px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    /* ── Stats row ── */
+    .stats-row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 12px;
+      margin-bottom: 28px;
+    }
+
+    .stat-card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 14px 16px;
+    }
+
+    .stat-label {
+      font-size: 11px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-bottom: 6px;
+    }
+
+    .stat-value {
+      font-size: 22px;
+      font-weight: 700;
+      color: var(--accent);
+      line-height: 1;
+    }
+
+    .stat-unit {
+      font-size: 12px;
+      color: var(--muted);
+      margin-top: 3px;
+    }
+
+    /* ── Section heading ── */
+    .section-heading {
+      font-size: 11px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 12px;
+      padding-bottom: 6px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    /* ── Repeater cards ── */
+    .repeater-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+      gap: 16px;
+      margin-bottom: 32px;
+    }
+
+    .repeater-card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow: hidden;
+    }
+
+    .repeater-header {
+      padding: 16px 18px 12px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .repeater-name {
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--text);
+      line-height: 1.2;
+    }
+
+    .repeater-id {
+      font-size: 11px;
+      color: var(--muted);
+      margin-top: 3px;
+      font-family: inherit;
+    }
+
+    .status-badge {
+      padding: 3px 9px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      flex-shrink: 0;
+    }
+
+    .status-badge.online  { background: rgba(34,197,94,0.15);  color: var(--online);  border: 1px solid rgba(34,197,94,0.3);  }
+    .status-badge.warn    { background: rgba(245,158,11,0.15); color: var(--warn);    border: 1px solid rgba(245,158,11,0.3); }
+    .status-badge.offline { background: rgba(239,68,68,0.15);  color: var(--danger);  border: 1px solid rgba(239,68,68,0.3);  }
+    .status-badge.unknown { background: rgba(92,92,107,0.15);  color: var(--muted);   border: 1px solid rgba(92,92,107,0.3);  }
+
+    /* ── Metrics grid inside card ── */
+    .repeater-metrics {
+      padding: 14px 18px;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .metric { }
+
+    .metric-label {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+      margin-bottom: 4px;
+    }
+
+    .metric-value {
+      font-size: 18px;
+      font-weight: 700;
+      color: var(--text);
+      line-height: 1;
+    }
+
+    .metric-value.accent { color: var(--accent); }
+    .metric-value.online  { color: var(--online); }
+    .metric-value.warn    { color: var(--warn); }
+    .metric-value.danger  { color: var(--danger); }
+    .metric-value.muted   { color: var(--muted); }
+
+    .metric-sub {
+      font-size: 11px;
+      color: var(--muted);
+      margin-top: 2px;
+    }
+
+    /* ── Battery bar ── */
+    .batt-bar-wrap {
+      margin-top: 6px;
+      height: 4px;
+      background: var(--muted2);
+      border-radius: 2px;
+      overflow: hidden;
+      width: 100%;
+    }
+
+    .batt-bar {
+      height: 100%;
+      border-radius: 2px;
+      transition: width 0.4s ease;
+    }
+
+    /* ── Last-seen row ── */
+    .repeater-timing {
+      padding: 10px 18px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      font-size: 12px;
+      color: var(--muted);
+      border-bottom: 1px solid var(--border);
+      flex-wrap: wrap;
+    }
+
+    .timing-item { display: flex; flex-direction: column; gap: 2px; }
+    .timing-item strong { color: var(--text); font-size: 12px; font-weight: 600; }
+
+    .error-row {
+      padding: 8px 18px;
+      font-size: 11px;
+      color: var(--danger);
+      border-bottom: 1px solid var(--border);
+      display: none;
+    }
+
+    .error-row.visible { display: block; }
+
+    /* ── Loading / error states ── */
+    .loading-card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 32px 24px;
+      text-align: center;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    /* ── MQTT node cards ── */
+    .mqtt-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+      gap: 14px;
+      margin-bottom: 32px;
+    }
+
+    .mqtt-card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow: hidden;
+    }
+
+    .mqtt-card.online  { border-color: rgba(34,197,94,0.3); }
+    .mqtt-card.offline { border-color: rgba(239,68,68,0.3); }
+
+    .mqtt-card-header {
+      padding: 13px 16px 10px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .mqtt-card-name {
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--text);
+      line-height: 1.2;
+      word-break: break-word;
+    }
+
+    .mqtt-card-id {
+      font-size: 10px;
+      color: var(--muted);
+      margin-top: 3px;
+      font-family: inherit;
+    }
+
+    .mqtt-card-pub {
+      padding: 14px 16px 10px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .mqtt-card-pub-label {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+      margin-bottom: 4px;
+    }
+
+    .mqtt-card-pub-value {
+      font-size: 28px;
+      font-weight: 700;
+      color: var(--accent);
+      line-height: 1;
+    }
+
+    .mqtt-card-pub-value.muted { font-size: 20px; color: var(--muted); }
+
+    .mqtt-card-metrics {
+      padding: 12px 16px;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+    }
+
+    /* ── Feed ── */
+    .feed-hero {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+      margin-bottom: 16px;
+      background: var(--panel);
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+    }
+
+    .feed-title {
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--text);
+      margin-bottom: 6px;
+    }
+
+    .feed-subtitle {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .feed-filter {
+      flex-shrink: 0;
+      border: 1px solid rgba(245,158,11,0.3);
+      color: var(--accent);
+      border-radius: 4px;
+      padding: 5px 8px;
+      font-size: 11px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .feed-meta-row {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+
+    .feed-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .feed-event {
+      display: block;
+    }
+
+    .feed-event > summary {
+      list-style: none;
+    }
+
+    .feed-event > summary::-webkit-details-marker {
+      display: none;
+    }
+
+    .feed-row {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 11px 12px;
+      background: var(--panel);
+      display: grid;
+      grid-template-columns: 86px 52px minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: start;
+      cursor: pointer;
+    }
+
+    .feed-row:hover {
+      background: var(--panel-hover);
+    }
+
+    .feed-event[open] .feed-row {
+      border-bottom-left-radius: 0;
+      border-bottom-right-radius: 0;
+    }
+
+    .feed-time {
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.4;
+    }
+
+    .feed-type {
+      color: var(--accent);
+      border: 1px solid rgba(245,158,11,0.25);
+      border-radius: 4px;
+      padding: 3px 6px;
+      font-size: 11px;
+      font-weight: 700;
+      text-align: center;
+    }
+
+    .feed-main {
+      min-width: 0;
+    }
+
+    .feed-summary {
+      color: var(--text);
+      font-size: 13px;
+      line-height: 1.4;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .feed-summary.muted {
+      color: var(--muted);
+    }
+
+    .feed-details {
+      margin-top: 5px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 10px;
+    }
+
+    .feed-observers {
+      margin-top: 7px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      align-items: center;
+      color: var(--muted);
+      font-size: 10px;
+    }
+
+    .feed-observers-label {
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    .feed-pill {
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 2px 5px;
+      white-space: nowrap;
+    }
+
+    .feed-pill--observer {
+      color: var(--online);
+      border-color: rgba(34,197,94,0.28);
+      max-width: 220px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .feed-pill--more {
+      color: var(--accent);
+      border-color: rgba(245,158,11,0.28);
+    }
+
+    .feed-receive-panel {
+      border: 1px solid var(--border);
+      border-top: 0;
+      border-bottom-left-radius: 8px;
+      border-bottom-right-radius: 8px;
+      background: rgba(15,23,42,0.42);
+      padding: 12px;
+    }
+
+    .feed-receive-title {
+      color: var(--text);
+      font-size: 12px;
+      font-weight: 700;
+      margin-bottom: 3px;
+    }
+
+    .feed-receive-note {
+      color: var(--muted);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-bottom: 10px;
+    }
+
+    .feed-receive-table {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .feed-receive-header,
+    .feed-receive-row {
+      display: grid;
+      grid-template-columns: minmax(140px, 1.4fr) 92px 116px minmax(150px, 1fr);
+      gap: 10px;
+      align-items: center;
+    }
+
+    .feed-receive-header {
+      color: var(--muted2);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      padding: 0 8px 2px;
+    }
+
+    .feed-receive-row {
+      border: 1px solid rgba(148,163,184,0.18);
+      border-radius: 6px;
+      background: rgba(2,6,23,0.22);
+      padding: 7px 8px;
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .feed-receive-node {
+      color: var(--text);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .feed-receive-cell {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .feed-receive-delta {
+      color: var(--accent);
+      font-weight: 700;
+    }
+
+    .feed-receive-label {
+      display: none;
+    }
+
+    .feed-receive-muted {
+      color: var(--muted2);
+    }
+
+    .feed-signal {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 4px;
+      color: var(--muted);
+      font-size: 11px;
+      white-space: nowrap;
+    }
+
+    .feed-signal strong {
+      color: var(--text);
+      font-size: 12px;
+    }
+
+    /* ── Footer ── */
+    footer {
+      text-align: center;
+      padding: 24px;
+      font-size: 11px;
+      color: var(--muted);
+      border-top: 1px solid var(--border);
+    }
+
+    footer a { color: var(--accent); text-decoration: none; }
+    footer a:hover { text-decoration: underline; }
+
+    @media (max-width: 600px) {
+      header { padding: 14px 16px; }
+      .top-tabs-inner { padding: 0 14px; }
+      main { padding: 18px 14px 40px; }
+      #connectivity-banner { align-items: flex-start; }
+      .banner-meta { width: 100%; padding-left: 22px; }
+      .status-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .strip-item:nth-child(3) { border-left: 0; padding-left: 0; }
+      .repeater-grid { grid-template-columns: 1fr; }
+      .stats-row { grid-template-columns: repeat(2, 1fr); }
+      .repeater-metrics { grid-template-columns: repeat(2, 1fr); }
+      .feed-hero { flex-direction: column; }
+      .feed-filter { white-space: normal; }
+      .feed-meta-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .feed-row {
+        grid-template-columns: 58px 46px minmax(0, 1fr);
+      }
+      .feed-signal {
+        grid-column: 1 / -1;
+        flex-direction: row;
+        align-items: center;
+        justify-content: flex-start;
+      }
+      .feed-receive-header {
+        display: none;
+      }
+      .feed-receive-row {
+        grid-template-columns: minmax(0, 1fr) minmax(88px, auto);
+        gap: 6px 10px;
+      }
+      .feed-receive-node,
+      .feed-receive-row .feed-receive-muted:last-child {
+        grid-column: 1 / -1;
+      }
+      .feed-receive-label {
+        display: block;
+        color: var(--muted2);
+        font-size: 9px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        margin-bottom: 2px;
+      }
+    }
+
+    @media (max-width: 420px) {
+      .stats-row,
+      .status-strip,
+      .feed-meta-row,
+      .repeater-metrics {
+        grid-template-columns: 1fr;
+      }
+
+      .strip-item {
+        border-left: 0;
+        border-top: 1px solid var(--border);
+        padding-left: 0;
+        padding-top: 10px;
+      }
+
+      .strip-item:first-child {
+        border-top: 0;
+        padding-top: 0;
+      }
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <div class="logo-icon">📡</div>
+    <div class="logo-text">
+      <div class="logo-title">Teesside MeshCore</div>
+      <div class="logo-sub">Network Status</div>
+    </div>
+  </div>
+  <div class="header-right">
+    <span class="refresh-dot" id="dot"></span>
+    <span id="last-updated">—</span>
+  </div>
+</header>
+
+<nav class="top-tabs" aria-label="Site sections">
+  <div class="top-tabs-inner">
+    <button class="tab-button active" type="button" data-tab="home">Home</button>
+    <button class="tab-button" type="button" data-tab="feed">Feed</button>
+  </div>
+</nav>
+
+<main>
+<section class="view-panel" id="home-panel" data-panel="home">
+
+  <!-- Connectivity banner -->
+  <div id="connectivity-banner">
+    <div class="banner-indicator" id="banner-dot"></div>
+    <div class="banner-text" id="banner-text">Loading cross-network connectivity…</div>
+    <div class="banner-meta" id="banner-meta"></div>
+  </div>
+
+  <!-- Radio controller -->
+  <div class="status-strip" id="radio-strip">
+    <div class="strip-item">
+      <div class="strip-label">Radio Controller</div>
+      <div class="strip-value" id="radio-state">Loading</div>
+      <div class="strip-sub" id="radio-port">—</div>
+    </div>
+    <div class="strip-item">
+      <div class="strip-label">Current Poll</div>
+      <div class="strip-value" id="radio-job">—</div>
+      <div class="strip-sub" id="radio-stage">—</div>
+    </div>
+    <div class="strip-item">
+      <div class="strip-label">Next Slot</div>
+      <div class="strip-value" id="radio-next">—</div>
+      <div class="strip-sub" id="radio-queue">—</div>
+    </div>
+    <div class="strip-item">
+      <div class="strip-label">Monitor Count</div>
+      <div class="strip-value" id="radio-monitors">—</div>
+      <div class="strip-sub">configured repeaters</div>
+    </div>
+  </div>
+
+  <!-- Network stats -->
+  <div class="stats-row" id="stats-row">
+    <div class="stat-card">
+      <div class="stat-label">Active Nodes</div>
+      <div class="stat-value" id="stat-mqtt">—</div>
+      <div class="stat-unit">on MQTT now</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Packets Today</div>
+      <div class="stat-value" id="stat-packets">—</div>
+      <div class="stat-unit">last 24 h</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Nodes Seen Today</div>
+      <div class="stat-value" id="stat-nodes-day">—</div>
+      <div class="stat-unit">unique nodes</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Total Known</div>
+      <div class="stat-value" id="stat-total">—</div>
+      <div class="stat-unit">all-time nodes</div>
+    </div>
+  </div>
+
+  <!-- Repeater cards -->
+  <div class="section-heading">Repeater Uptime</div>
+  <div class="repeater-grid" id="repeater-grid">
+    <div class="loading-card">Loading repeater data…</div>
+  </div>
+
+  <!-- MQTT node status -->
+  <div class="section-heading">Active MQTT Nodes</div>
+  <div class="mqtt-grid" id="mqtt-grid">
+    <div class="loading-card">Loading MQTT node status…</div>
+  </div>
+
+</section>
+
+<section class="view-panel" id="feed-panel" data-panel="feed" hidden>
+  <div class="feed-hero">
+    <div>
+      <div class="feed-title">MME MQTT Feed</div>
+      <div class="feed-subtitle">Recent packet events received from Teesside MQTT observers.</div>
+    </div>
+    <div class="feed-filter">meshcore/MME/+/packets</div>
+  </div>
+
+  <div class="feed-meta-row">
+    <div class="stat-card">
+      <div class="stat-label">Packets</div>
+      <div class="stat-value" id="feed-count">—</div>
+      <div class="stat-unit">grouped by hash</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Observers</div>
+      <div class="stat-value" id="feed-observers">—</div>
+      <div class="stat-unit">MME nodes</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Latest</div>
+      <div class="stat-value" id="feed-latest">—</div>
+      <div class="stat-unit">last packet</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">TX Events</div>
+      <div class="stat-value" id="feed-tx">—</div>
+      <div class="stat-unit">reported by observers</div>
+    </div>
+  </div>
+
+  <div class="section-heading" id="feed-heading">Packet Events</div>
+  <div class="feed-list" id="feed-list">
+    <div class="loading-card">Loading MME packet feed…</div>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <p>Teesside MeshCore &mdash; <a href="https://meshcore.io" target="_blank" rel="noopener">meshcore.io</a> &mdash; Home refreshes every 60 s; feed updates live</p>
+</footer>
+
+<script>
+  // ── Utilities ─────────────────────────────────────────────────────────────
+
+  const SECOND_MS = 1000;
+  const MINUTE_MS = 60 * SECOND_MS;
+  const HOUR_MS = 60 * MINUTE_MS;
+  const DAY_MS = 24 * HOUR_MS;
+  const FEED_URL = '/api/packets/recent?network=teesside&limit=120&raw=1';
+  const NODES_URL = '/api/nodes?network=teesside';
+  const NODE_NAME_CACHE_MS = 5 * MINUTE_MS;
+  const FEED_POLL_MS = 15_000;
+  const FEED_LIVE_REFRESH_DELAY_MS = 500;
+  let activeTab = 'home';
+  let feedLoaded = false;
+  const openFeedPackets = new Set();
+  let feedUpdateInFlight = false;
+  let feedUpdateQueued = false;
+  let feedRefreshTimer = null;
+  let feedSocket = null;
+  let feedSocketReconnectTimer = null;
+  let feedSocketRetryMs = 3000;
+  let nodeNameCache = new Map();
+  let nodeNameFetchedAt = 0;
+
+  const PACKET_TYPES = {
+    0: 'REQ',
+    1: 'RSP',
+    2: 'DM',
+    3: 'ACK',
+    4: 'ADV',
+    5: 'GRP',
+    6: 'DAT',
+    7: 'ANON',
+    8: 'PATH',
+    9: 'TRC',
+    11: 'CTL',
+  };
+
+  function timestamp(isoStr) {
+    if (!isoStr) return null;
+    const ts = new Date(isoStr).getTime();
+    return Number.isFinite(ts) ? ts : null;
+  }
+
+  function durationShort(ms) {
+    const abs = Math.abs(ms);
+    if (abs < 45 * SECOND_MS) return 'now';
+    if (abs < 90 * SECOND_MS) return '1m';
+    if (abs < 45 * MINUTE_MS) return `${Math.round(abs / MINUTE_MS)}m`;
+    if (abs < 90 * MINUTE_MS) return '1h';
+    if (abs < 36 * HOUR_MS) return `${Math.round(abs / HOUR_MS)}h`;
+    if (abs < 10 * DAY_MS) return `${Math.round(abs / DAY_MS)}d`;
+    const weeks = Math.round(abs / (7 * DAY_MS));
+    return `${weeks}w`;
+  }
+
+  function relTime(isoStr) {
+    const ts = timestamp(isoStr);
+    if (ts === null) return '—';
+    const diff = ts - Date.now();
+    const duration = durationShort(diff);
+    if (duration === 'now') return 'now';
+    if (diff > 0) return `in ${duration}`;
+    if (Math.abs(diff) < 7 * DAY_MS) return `${duration} ago`;
+    return new Date(isoStr).toLocaleDateString('en-GB', {day:'numeric',month:'short'});
+  }
+
+  function absTime(isoStr) {
+    if (!isoStr) return '—';
+    return new Date(isoStr).toLocaleString('en-GB', {
+      day:'numeric', month:'short', hour:'2-digit', minute:'2-digit'
+    });
+  }
+
+  function absTimeWithSeconds(isoStr) {
+    if (!isoStr) return '—';
+    return new Date(isoStr).toLocaleTimeString('en-GB', {
+      hour:'2-digit', minute:'2-digit', second:'2-digit', fractionalSecondDigits: 3
+    });
+  }
+
+  function formatReceiveDelta(ms) {
+    const value = Number(ms);
+    if (!Number.isFinite(value)) return '—';
+    if (Math.abs(value) < 1) return 'first';
+    if (Math.abs(value) < 1000) return `+${Math.round(value)} ms`;
+    if (Math.abs(value) < 60 * SECOND_MS) return `+${(value / 1000).toFixed(2)} s`;
+    return `+${(value / MINUTE_MS).toFixed(1)} m`;
+  }
+
+  function staleness(isoStr) {
+    const ts = timestamp(isoStr);
+    if (ts === null) return Infinity;
+    return (Date.now() - ts) / 1000;
+  }
+
+  function toNumber(value) {
+    const num = Number(value);
+    return Number.isFinite(num) ? num : null;
+  }
+
+  function clamp(value, min, max) {
+    return Math.max(min, Math.min(max, value));
+  }
+
+  function formatNumber(value) {
+    const num = toNumber(value);
+    return num === null ? '—' : num.toLocaleString('en-GB');
+  }
+
+  function formatPollInterval(minutes) {
+    const mins = toNumber(minutes);
+    if (mins === null || mins <= 0) return '—';
+    if (mins % 60 === 0) return `${mins / 60}h`;
+    if (mins > 60) return `${Math.floor(mins / 60)}h ${mins % 60}m`;
+    return `${mins}m`;
+  }
+
+  function formatNextPoll(isoStr) {
+    const ts = timestamp(isoStr);
+    if (ts === null) return '—';
+    const diff = ts - Date.now();
+    const duration = durationShort(diff);
+    if (duration === 'now') return 'due now';
+    return diff > 0 ? `in ${duration}` : `overdue by ${duration}`;
+  }
+
+  function formatAvailableAt(isoStr) {
+    const ts = timestamp(isoStr);
+    if (ts === null) return '—';
+    const diff = ts - Date.now();
+    const duration = durationShort(diff);
+    if (diff <= 0 || duration === 'now') return 'available now';
+    return `available in ${duration}`;
+  }
+
+  function formatRoute(routeText, viaHex) {
+    if (routeText) return routeText;
+    if (viaHex) return `via ${viaHex}`;
+    return 'direct';
+  }
+
+  function stageLabel(stage) {
+    if (!stage) return 'polling';
+    return String(stage).replace(/[-_]/g, ' ');
+  }
+
+  function battColor(pct) {
+    if (pct === null || pct === undefined) return 'var(--muted2)';
+    if (pct >= 60) return 'var(--online)';
+    if (pct >= 30) return 'var(--warn)';
+    return 'var(--danger)';
+  }
+
+  function battClass(pct) {
+    if (pct === null || pct === undefined) return 'muted';
+    if (pct >= 60) return 'online';
+    if (pct >= 30) return 'warn';
+    return 'danger';
+  }
+
+  function snrColor(snr) {
+    const value = toNumber(snr);
+    if (value === null) return 'var(--muted2)';
+    if (value >= 8)  return 'var(--online)';
+    if (value >= 0)  return 'var(--accent)';
+    if (value >= -8) return 'var(--warn)';
+    return 'var(--danger)';
+  }
+
+  // Map SNR (-20 … +14 dB) to 0-100%
+  function snrPct(snr) {
+    const value = toNumber(snr);
+    if (value === null) return 0;
+    return clamp(((value + 20) / 34) * 100, 0, 100);
+  }
+
+  function statusFromMonitor(m) {
+    const ageSec = staleness(m.lastSuccessAt);
+    if (!m.lastSuccessAt) return 'unknown';
+    if (m.lastError && ageSec > 86400 * 3) return 'offline'; // error + >3 days stale
+    if (ageSec < 3600 * 6) return 'online';  // success within 6h
+    if (ageSec < 86400 * 2) return 'warn';   // 6h–2d
+    return 'offline';
+  }
+
+  function statusLabel(s) {
+    return { online: 'Online', warn: 'Degraded', offline: 'Offline', unknown: 'Unknown' }[s] || 'Unknown';
+  }
+
+  function formatHz(hz) {
+    if (!hz) return '—';
+    if (hz >= 1e9) return (hz/1e9).toFixed(3) + ' GHz';
+    if (hz >= 1e6) return (hz/1e6).toFixed(1) + ' MHz';
+    return hz + ' Hz';
+  }
+
+  function esc(str) {
+    return String(str ?? '')
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  function attr(str) {
+    return esc(str).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  function shortId(id) {
+    return id ? String(id).slice(0, 8) : '—';
+  }
+
+  function packetTypeLabel(type) {
+    const value = toNumber(type);
+    if (value === null) return '???';
+    return PACKET_TYPES[value] || `T${value}`;
+  }
+
+  function packetTopicParts(topic) {
+    const parts = String(topic || '').split('/');
+    return {
+      prefix: parts[0] || '',
+      iata: (parts[1] || '').toUpperCase(),
+      observer: parts[2] || '',
+      suffix: parts[3] || '',
+    };
+  }
+
+  function packetDirection(packet) {
+    const direction = String(packet?.payload?.direction || '').toLowerCase();
+    if (direction === 'tx') return 'TX';
+    if (direction === 'rx') return 'RX';
+    return 'RX';
+  }
+
+  function packetObserverId(packet) {
+    const topic = packetTopicParts(packet.topic);
+    return topic.observer || packet.rx_node_id || '';
+  }
+
+  function normalizeNodeId(id) {
+    return String(id || '').trim().toUpperCase();
+  }
+
+  function observerDisplayName(id, nodeNames) {
+    const normalized = normalizeNodeId(id);
+    const name = nodeNames.get(normalized);
+    return name || shortId(normalized);
+  }
+
+  function packetSummary(packet) {
+    const summary = packet.summary
+      || packet.payload?._summary
+      || packet.payload?.origin
+      || packet.payload?.decrypted?.sender
+      || null;
+    return summary ? String(summary).replace(/\s+/g, ' ').trim() : '';
+  }
+
+  function packetTimestamp(packet) {
+    return timestamp(packet?.time) ?? 0;
+  }
+
+  function shouldPreferPacket(current, candidate) {
+    if (!current) return true;
+    const currentSummary = packetSummary(current);
+    const candidateSummary = packetSummary(candidate);
+    if (!currentSummary && candidateSummary) return true;
+    if (!current.src_node_id && candidate.src_node_id) return true;
+    if (packetTimestamp(candidate) > packetTimestamp(current) && Boolean(candidateSummary) === Boolean(currentSummary)) return true;
+    return false;
+  }
+
+  function rememberOpenFeedPackets() {
+    document.querySelectorAll('.feed-event[data-packet-hash]').forEach((item) => {
+      const packetHash = item.dataset.packetHash;
+      if (!packetHash) return;
+      if (item.open) {
+        openFeedPackets.add(packetHash);
+      } else {
+        openFeedPackets.delete(packetHash);
+      }
+    });
+  }
+
+  function scheduleFeedRefresh(delayMs = 0) {
+    if (activeTab !== 'feed') return;
+    if (feedRefreshTimer) clearTimeout(feedRefreshTimer);
+    feedRefreshTimer = setTimeout(() => {
+      feedRefreshTimer = null;
+      updateFeed();
+    }, delayMs);
+  }
+
+  function isMmePacketMessage(data) {
+    if (!data || typeof data !== 'object') return false;
+    if (data.network && data.network !== 'teesside') return false;
+    const parts = packetTopicParts(data.topic);
+    return parts.prefix === 'meshcore' && parts.iata === 'MME' && parts.suffix === 'packets';
+  }
+
+  function handleFeedSocketMessage(raw) {
+    const lines = String(raw || '').split('\n').filter(Boolean);
+    for (const line of lines) {
+      let msg;
+      try {
+        msg = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (msg.type === 'initial_state' && activeTab === 'feed') {
+        scheduleFeedRefresh(0);
+        continue;
+      }
+      if (msg.type !== 'packet' || !isMmePacketMessage(msg.data)) continue;
+      scheduleFeedRefresh(FEED_LIVE_REFRESH_DELAY_MS);
+    }
+  }
+
+  function connectFeedSocket() {
+    if (feedSocket && (feedSocket.readyState === WebSocket.OPEN || feedSocket.readyState === WebSocket.CONNECTING)) return;
+    if (feedSocketReconnectTimer) {
+      clearTimeout(feedSocketReconnectTimer);
+      feedSocketReconnectTimer = null;
+    }
+
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    feedSocket = new WebSocket(`${protocol}//${window.location.host}/ws?network=teesside`);
+
+    feedSocket.onopen = () => {
+      feedSocketRetryMs = 3000;
+    };
+
+    feedSocket.onmessage = (event) => {
+      handleFeedSocketMessage(event.data);
+    };
+
+    feedSocket.onclose = () => {
+      feedSocket = null;
+      feedSocketReconnectTimer = setTimeout(connectFeedSocket, feedSocketRetryMs);
+      feedSocketRetryMs = Math.min(15000, Math.round(feedSocketRetryMs * 1.5));
+    };
+
+    feedSocket.onerror = () => {
+      feedSocket?.close();
+    };
+  }
+
+  function groupFeedPackets(packets) {
+    const groups = new Map();
+
+    for (const packet of packets) {
+      const hash = packet.packet_hash || `${packet.time}-${packet.topic}`;
+      let group = groups.get(hash);
+      if (!group) {
+        group = {
+          packetHash: hash,
+          primary: packet,
+          rows: [],
+          observers: new Map(),
+          txEvents: 0,
+          latestTime: packet.time,
+        };
+        groups.set(hash, group);
+      }
+
+      group.rows.push(packet);
+      if (shouldPreferPacket(group.primary, packet)) group.primary = packet;
+      if (packetTimestamp(packet) > packetTimestamp({ time: group.latestTime })) group.latestTime = packet.time;
+
+      const direction = packetDirection(packet);
+      if (direction === 'TX') {
+        group.txEvents++;
+        continue;
+      }
+
+      const observerId = packetObserverId(packet);
+      if (!observerId) continue;
+
+      const existing = group.observers.get(observerId);
+      if (!existing) {
+        group.observers.set(observerId, { id: observerId, packet, firstPacket: packet, latestPacket: packet });
+        continue;
+      }
+
+      if (packetTimestamp(packet) < packetTimestamp(existing.firstPacket)) {
+        existing.firstPacket = packet;
+      }
+      if (packetTimestamp(packet) > packetTimestamp(existing.latestPacket)) {
+        existing.latestPacket = packet;
+        existing.packet = packet;
+      }
+    }
+
+    return Array.from(groups.values())
+      .sort((a, b) => packetTimestamp({ time: b.latestTime }) - packetTimestamp({ time: a.latestTime }));
+  }
+
+  async function getNodeNames() {
+    if (nodeNameCache.size && Date.now() - nodeNameFetchedAt < NODE_NAME_CACHE_MS) {
+      return nodeNameCache;
+    }
+
+    try {
+      const rows = await fetchJSON(NODES_URL, 15000);
+      const next = new Map();
+      for (const node of Array.isArray(rows) ? rows : []) {
+        const id = normalizeNodeId(node.node_id);
+        const name = String(node.name || '').trim();
+        if (id && name) next.set(id, name);
+      }
+      nodeNameCache = next;
+      nodeNameFetchedAt = Date.now();
+    } catch (e) {
+      console.warn('node name fetch failed', e);
+    }
+
+    return nodeNameCache;
+  }
+
+  function text(id, value) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = value;
+  }
+
+  function className(id, value) {
+    const el = document.getElementById(id);
+    if (el) el.className = value;
+  }
+
+  // ── Render helpers ────────────────────────────────────────────────────────
+
+  function renderRadioStatus(d) {
+    const connected = Boolean(d.connected);
+    const currentJob = d.currentJob || null;
+    const queue = Array.isArray(d.pendingManualQueue) ? d.pendingManualQueue.length : 0;
+    const monitors = Array.isArray(d.monitors) ? d.monitors.length : 0;
+
+    className('radio-strip', `status-strip ${connected ? 'connected' : 'offline'}`);
+    className('radio-state', `strip-value ${connected ? 'online' : 'offline'}`);
+    text('radio-state', connected ? 'Connected' : 'Offline');
+    text('radio-port', d.serialPort ? String(d.serialPort).split('/').pop() : 'serial port unavailable');
+    text('radio-monitors', formatNumber(monitors));
+
+    if (currentJob) {
+      const label = currentJob.label || currentJob.target || 'Repeater';
+      className('radio-job', 'strip-value warn');
+      text('radio-job', String(label));
+      text('radio-stage', `${stageLabel(currentJob.stage)} · ${formatRoute(currentJob.routeText, currentJob.viaHex)} · started ${relTime(currentJob.startedAt)}`);
+    } else {
+      className('radio-job', 'strip-value');
+      text('radio-job', d.inFlight ? 'Poll running' : 'Idle');
+      text('radio-stage', d.inFlight ? 'waiting for job details' : 'ready for scheduled polls');
+    }
+
+    text('radio-next', formatAvailableAt(d.nextAllowedPollAt));
+    text('radio-queue', queue ? `${queue} manual poll${queue === 1 ? '' : 's'} queued` : 'no manual polls queued');
+  }
+
+  function renderRadioError(message) {
+    className('radio-strip', 'status-strip offline');
+    className('radio-state', 'strip-value offline');
+    text('radio-state', 'Unavailable');
+    text('radio-port', message);
+    text('radio-job', '—');
+    text('radio-stage', 'radio state could not be loaded');
+    text('radio-next', '—');
+    text('radio-queue', '—');
+    text('radio-monitors', '—');
+  }
+
+  function renderRepeaterCard(m) {
+    const status = statusFromMonitor(m);
+    const sample = m.lastSample;
+    const batt   = toNumber(sample?.batt_percent);
+    const battWidth = batt === null ? 0 : clamp(batt, 0, 100);
+    const temp   = toNumber(sample?.telemetry_temperature_c);
+    const millivolts = toNumber(sample?.batt_milli_volts);
+    const voltV  = millivolts === null ? null : (millivolts / 1000).toFixed(2);
+    const targetShort = m.targetHex ? `${esc(String(m.targetHex).slice(0, 8))}…` : 'target unknown';
+
+    const errorHtml = m.lastError
+      ? `<div class="error-row visible">⚠ Last poll: ${esc(m.lastError)}</div>`
+      : '<div class="error-row"></div>';
+
+    return `
+      <div class="repeater-card">
+        <div class="repeater-header">
+          <div>
+            <div class="repeater-name">${esc(m.nodeName || m.label)}</div>
+            <div class="repeater-id">${targetShort}</div>
+          </div>
+          <div class="status-badge ${status}">${statusLabel(status)}</div>
+        </div>
+
+        <div class="repeater-metrics">
+          <div class="metric">
+            <div class="metric-label">Battery</div>
+            <div class="metric-value ${battClass(batt)}">${batt !== null ? batt + '%' : '—'}</div>
+            ${batt !== null ? `<div class="batt-bar-wrap"><div class="batt-bar" style="width:${battWidth}%;background:${battColor(batt)};"></div></div>` : ''}
+            ${voltV !== null ? `<div class="metric-sub">${voltV} V</div>` : ''}
+          </div>
+
+          <div class="metric">
+            <div class="metric-label">Temperature</div>
+            <div class="metric-value ${temp !== null && temp < 0 ? 'warn' : ''}">${temp !== null ? temp + '°C' : '—'}</div>
+            <div class="metric-sub">${sample ? 'from telemetry' : 'no data'}</div>
+          </div>
+
+          <div class="metric">
+            <div class="metric-label">Poll Every</div>
+            <div class="metric-value accent">${formatPollInterval(m.pollMinutes)}</div>
+            <div class="metric-sub">${formatNextPoll(m.nextPollAt)}</div>
+          </div>
+        </div>
+
+        <div class="repeater-timing">
+          <div class="timing-item">
+            <span class="metric-label" style="font-size:10px;">Last Success</span>
+            <strong>${relTime(m.lastSuccessAt)}</strong>
+          </div>
+          <div class="timing-item">
+            <span class="metric-label" style="font-size:10px;">Last Polled</span>
+            <strong>${relTime(m.lastPolledAt)}</strong>
+          </div>
+          ${m.lastHealthyAt ? `
+          <div class="timing-item">
+            <span class="metric-label" style="font-size:10px;">Last Healthy</span>
+            <strong>${relTime(m.lastHealthyAt)}</strong>
+          </div>` : ''}
+        </div>
+
+        ${errorHtml}
+      </div>
+    `;
+  }
+
+  function renderFeedRow(group, nodeNames) {
+    const packet = group.primary;
+    const topic = packetTopicParts(packet.topic);
+    const snr = toNumber(packet.snr);
+    const rssi = toNumber(packet.rssi);
+    const hopCount = toNumber(packet.hop_count);
+    const pathBytes = toNumber(packet.path_hash_size_bytes);
+    const summary = packetSummary(packet);
+    const pathHashes = Array.isArray(packet.path_hashes) ? packet.path_hashes : [];
+    const observerEntries = Array.from(group.observers.values())
+      .sort((a, b) => packetTimestamp(b.packet) - packetTimestamp(a.packet));
+    const receiveEntries = Array.from(group.observers.values())
+      .map((observer) => ({
+        ...observer,
+        firstPacket: observer.firstPacket ?? observer.packet,
+        latestPacket: observer.latestPacket ?? observer.packet,
+      }))
+      .sort((a, b) => packetTimestamp(a.firstPacket) - packetTimestamp(b.firstPacket));
+    const firstReceiveTs = receiveEntries.length ? packetTimestamp(receiveEntries[0].firstPacket) : null;
+    const visibleObservers = observerEntries.slice(0, 8);
+    const hiddenObserverCount = Math.max(0, observerEntries.length - visibleObservers.length);
+    const details = [
+      `${esc(topic.iata || 'MME')} MQTT`,
+      `hash ${esc(shortId(group.packetHash))}`,
+      packet.src_node_id ? `src ${esc(shortId(packet.src_node_id))}` : '',
+      hopCount !== null ? `${hopCount} hop${hopCount === 1 ? '' : 's'}` : '',
+      pathBytes !== null ? `${pathBytes}B path` : '',
+      pathHashes.length ? `${pathHashes.slice(0, 6).map(esc).join(' ')}` : '',
+      receiveEntries.length > 1 ? 'click for rx timing' : '',
+    ].filter(Boolean);
+    const receiveRows = receiveEntries.map((observer) => {
+      const firstPacket = observer.firstPacket ?? observer.packet;
+      const latestPacket = observer.latestPacket ?? observer.packet;
+      const firstTs = packetTimestamp(firstPacket);
+      const latestTs = packetTimestamp(latestPacket);
+      const receiveDelta = firstReceiveTs === null || firstTs === 0 ? null : firstTs - firstReceiveTs;
+      const duplicateCount = group.rows.filter((row) => packetObserverId(row) === observer.id && packetDirection(row) !== 'TX').length;
+      const snrValue = toNumber(firstPacket.snr);
+      const rssiValue = toNumber(firstPacket.rssi);
+      const signalText = [
+        snrValue !== null ? `${snrValue > 0 ? '+' : ''}${snrValue} dB` : '',
+        rssiValue !== null ? `${rssiValue} RSSI` : '',
+      ].filter(Boolean).join(' · ') || 'signal —';
+      const spreadText = duplicateCount > 1 && latestTs > firstTs
+        ? `${duplicateCount} copies over ${formatReceiveDelta(latestTs - firstTs).replace(/^\+/, '')}`
+        : `${duplicateCount} ${duplicateCount === 1 ? 'copy' : 'copies'}`;
+      return `
+        <div class="feed-receive-row">
+          <div class="feed-receive-node" title="${attr(observer.id)}"><span class="feed-receive-label">MQTT node</span>${esc(observerDisplayName(observer.id, nodeNames))}</div>
+          <div class="feed-receive-cell"><span class="feed-receive-label">Delta</span><span class="feed-receive-delta">${formatReceiveDelta(receiveDelta)}</span></div>
+          <div class="feed-receive-cell"><span class="feed-receive-label">Received</span>${absTimeWithSeconds(firstPacket.time)}</div>
+          <div class="feed-receive-cell feed-receive-muted"><span class="feed-receive-label">Signal</span>${esc(signalText)} · ${esc(spreadText)}</div>
+        </div>
+      `;
+    }).join('');
+    const isOpen = openFeedPackets.has(String(group.packetHash));
+
+    return `
+      <details class="feed-event" data-packet-hash="${attr(group.packetHash)}"${isOpen ? ' open' : ''}>
+        <summary class="feed-row">
+          <div class="feed-time">
+            <div>${relTime(group.latestTime)}</div>
+            <div>${absTime(group.latestTime)}</div>
+          </div>
+          <div class="feed-type">${packetTypeLabel(packet.packet_type)}</div>
+          <div class="feed-main">
+            <div class="feed-summary${summary ? '' : ' muted'}">${summary ? esc(summary) : 'raw packet event'}</div>
+            <div class="feed-details">
+              ${details.map(item => `<span class="feed-pill">${item}</span>`).join('')}
+            </div>
+            <div class="feed-observers">
+              <span class="feed-observers-label">Received by</span>
+              ${visibleObservers.map((observer) => {
+                const label = observerDisplayName(observer.id, nodeNames);
+                return `<span class="feed-pill feed-pill--observer" title="${esc(observer.id)}">${esc(label)}</span>`;
+              }).join('')}
+              ${hiddenObserverCount ? `<span class="feed-pill feed-pill--more">+${hiddenObserverCount} more</span>` : ''}
+            </div>
+          </div>
+          <div class="feed-signal">
+            <strong>${formatNumber(observerEntries.length)} rx</strong>
+            <span>${snr !== null ? `${snr > 0 ? '+' : ''}${snr} dB` : 'SNR —'}</span>
+            <span>${rssi !== null ? `${rssi} RSSI` : 'RSSI —'}</span>
+            ${group.txEvents ? `<span>${group.txEvents} tx</span>` : ''}
+          </div>
+        </summary>
+        <div class="feed-receive-panel">
+          <div class="feed-receive-title">MQTT receive timing</div>
+          <div class="feed-receive-note">Differences are measured from the first observer for this packet hash.</div>
+          <div class="feed-receive-header">
+            <div>MQTT node</div>
+            <div>Delta</div>
+            <div>Received</div>
+            <div>Signal</div>
+          </div>
+          <div class="feed-receive-table">
+            ${receiveRows || '<div class="feed-receive-muted">No receiving observers for this event.</div>'}
+          </div>
+        </div>
+      </details>
+    `;
+  }
+
+  // ── Data fetching ─────────────────────────────────────────────────────────
+
+  async function fetchJSON(url, timeoutMs = 15000) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const r = await fetch(url, { cache: 'no-store', signal: controller.signal });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  async function updateConnectivity() {
+    try {
+      const d = await fetchJSON('/api/cross-network-connectivity');
+      const banner  = document.getElementById('connectivity-banner');
+      const dot     = document.getElementById('banner-dot');
+      const text    = document.getElementById('banner-text');
+      const meta    = document.getElementById('banner-meta');
+
+      const inAge  = staleness(d.lastInbound);
+      const outAge = staleness(d.lastOutbound);
+      const windowSec = (d.windowHours || 2) * 3600;
+
+      let cls, dotCls, msg;
+      if (d.inbound && d.outbound) {
+        cls = 'connected'; dotCls = 'online';
+        msg = `Cross-network active — packets flowing in both directions`;
+      } else if (d.inbound || d.outbound) {
+        cls = 'degraded'; dotCls = 'warn';
+        msg = `Cross-network partial — ${d.inbound ? 'inbound' : 'outbound'} only in the last ${d.windowHours}h`;
+      } else {
+        cls = 'offline'; dotCls = 'offline';
+        msg = `No cross-network packets in the last ${d.windowHours}h`;
+      }
+
+      banner.className = cls;
+      dot.className = `banner-indicator ${dotCls}`;
+      text.textContent = msg;
+      meta.textContent = d.lastInbound ? `Last in: ${relTime(d.lastInbound)}` : '';
+    } catch (e) {
+      console.warn('connectivity fetch failed', e);
+    }
+  }
+
+  async function updateStats() {
+    try {
+      const d = await fetchJSON('/api/stats?network=teesside');
+      document.getElementById('stat-mqtt').textContent      = formatNumber(d.mqttNodes);
+      document.getElementById('stat-packets').textContent   = formatNumber(d.packetsDay);
+      document.getElementById('stat-nodes-day').textContent = formatNumber(d.nodesDay);
+      document.getElementById('stat-total').textContent     = formatNumber(d.totalNodes);
+    } catch (e) {
+      console.warn('stats fetch failed', e);
+    }
+  }
+
+  async function updateRepeaters() {
+    const grid = document.getElementById('repeater-grid');
+    try {
+      const d = await fetchJSON('/api/radio-stats');
+      renderRadioStatus(d);
+      const monitors = Array.isArray(d.monitors) ? d.monitors : [];
+
+      if (!monitors.length) {
+        grid.innerHTML = '<div class="loading-card">No repeater monitors configured.</div>';
+        return;
+      }
+
+      grid.innerHTML = monitors.map(renderRepeaterCard).join('');
+    } catch (e) {
+      console.warn('radio-stats fetch failed', e);
+      renderRadioError(e.name === 'AbortError' ? 'request timed out' : e.message);
+      grid.innerHTML = `<div class="loading-card">Failed to load repeater data — ${esc(e.message)}</div>`;
+    }
+  }
+
+  async function updateFeed() {
+    if (feedUpdateInFlight) {
+      feedUpdateQueued = true;
+      return;
+    }
+    feedUpdateInFlight = true;
+    const list = document.getElementById('feed-list');
+    rememberOpenFeedPackets();
+    try {
+      const [rows, nodeNames] = await Promise.all([
+        fetchJSON(FEED_URL, 15000),
+        getNodeNames(),
+      ]);
+      const packets = (Array.isArray(rows) ? rows : [])
+        .filter((packet) => {
+          const topic = packetTopicParts(packet.topic);
+          return topic.prefix === 'meshcore' && topic.iata === 'MME' && topic.suffix === 'packets';
+        });
+
+      const groups = groupFeedPackets(packets);
+      const visiblePacketHashes = new Set(groups.map((group) => String(group.packetHash)));
+      openFeedPackets.forEach((packetHash) => {
+        if (!visiblePacketHashes.has(packetHash)) openFeedPackets.delete(packetHash);
+      });
+      const observers = new Set();
+      groups.forEach((group) => group.observers.forEach((observer) => observers.add(observer.id)));
+      const txEvents = groups.reduce((sum, group) => sum + group.txEvents, 0);
+      const latest = groups[0]?.latestTime;
+
+      text('feed-count', formatNumber(groups.length));
+      text('feed-observers', formatNumber(observers.size));
+      text('feed-latest', latest ? relTime(latest) : '—');
+      text('feed-tx', formatNumber(txEvents));
+      text('feed-heading', 'Packet Events · Updated ' + new Date().toLocaleTimeString('en-GB', {hour:'2-digit',minute:'2-digit',second:'2-digit'}));
+      if (activeTab === 'feed') {
+        text('last-updated', 'Updated ' + new Date().toLocaleTimeString('en-GB', {hour:'2-digit',minute:'2-digit',second:'2-digit'}));
+      }
+
+      if (!groups.length) {
+        list.innerHTML = '<div class="loading-card">No recent MME packet events.</div>';
+        return;
+      }
+
+      list.innerHTML = groups.map((group) => renderFeedRow(group, nodeNames)).join('');
+      feedLoaded = true;
+    } catch (e) {
+      console.warn('feed fetch failed', e);
+      list.innerHTML = `<div class="loading-card">Failed to load MME packet feed — ${esc(e.name === 'AbortError' ? 'request timed out' : e.message)}</div>`;
+    } finally {
+      feedUpdateInFlight = false;
+      if (feedUpdateQueued) {
+        feedUpdateQueued = false;
+        scheduleFeedRefresh(100);
+      }
+    }
+  }
+
+  function formatUptime(secs) {
+    const s = Number(secs);
+    if (!Number.isFinite(s) || s < 0) return '—';
+    const d = Math.floor(s / 86400);
+    const h = Math.floor((s % 86400) / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    if (d > 0) return `${d}d ${h}h`;
+    if (h > 0) return `${h}h ${m}m`;
+    return `${m}m`;
+  }
+
+  function formatMv(mv) {
+    const v = Number(mv);
+    if (!Number.isFinite(v) || v <= 0) return '—';
+    return (v / 1000).toFixed(2) + ' V';
+  }
+
+  function formatPct(val) {
+    const v = Number(val);
+    if (!Number.isFinite(v)) return '—';
+    return v.toFixed(1) + '%';
+  }
+
+  function formatCount(val) {
+    const v = Number(val);
+    if (!Number.isFinite(v)) return '—';
+    return v.toLocaleString('en-GB');
+  }
+
+  function renderMqttCard(node) {
+    const stats = node.stats || {};
+    const mqtt = stats.mqtt || null;
+    const uptimeSecs = node.uptime_secs ?? stats.uptime_secs ?? null;
+    const battMv = node.battery_mv ?? stats.battery_mv ?? null;
+    const mqttConn = mqtt ? Boolean(mqtt.connected) : null;
+    const publishCount = node.packets_24h !== undefined ? Number(node.packets_24h) : null;
+
+    const ageSec = staleness(node.last_seen);
+    const isOnline = ageSec < 120;
+    const statusCls = isOnline ? 'online' : 'offline';
+
+    const battNum = Number(battMv);
+    const battOk = Number.isFinite(battNum) && battNum > 0;
+    const battClass = battOk ? (battNum >= 3800 ? 'online' : battNum >= 3500 ? 'warn' : 'danger') : 'muted';
+    const battText = battOk ? formatMv(battNum) : '—';
+    const battSub  = battOk ? (battNum / 1000).toFixed(3) + ' V' : 'no data';
+
+    const uptimeText = uptimeSecs !== null ? formatUptime(Number(uptimeSecs)) : '—';
+    const uptimeSub  = uptimeSecs !== null ? 'last seen ' + relTime(node.last_seen) : 'no data';
+
+    const mqttText  = mqttConn === null ? '—' : mqttConn ? 'Connected' : 'Disconnected';
+    const mqttClass = mqttConn === null ? 'muted' : mqttConn ? 'online' : 'danger';
+    const mqttSub   = mqttConn === null ? 'not reported' : '';
+
+    const pubText  = publishCount !== null ? formatCount(publishCount) : '—';
+    const pubClass = (publishCount !== null && publishCount > 0) ? '' : 'muted';
+
+    return `
+      <div class="mqtt-card ${statusCls}">
+        <div class="mqtt-card-header">
+          <div>
+            <div class="mqtt-card-name">${esc(node.name || shortId(node.node_id))}</div>
+            <div class="mqtt-card-id">${esc(String(node.node_id).slice(0, 16))}…</div>
+          </div>
+          <div class="status-badge ${statusCls}">${isOnline ? 'Online' : 'Stale'}</div>
+        </div>
+
+        <div class="mqtt-card-pub">
+          <div class="mqtt-card-pub-label">Packets Received (24 h)</div>
+          <div class="mqtt-card-pub-value ${pubClass}">${pubText}</div>
+        </div>
+
+        <div class="mqtt-card-metrics">
+          <div class="metric">
+            <div class="metric-label">Uptime</div>
+            <div class="metric-value accent">${uptimeText}</div>
+            <div class="metric-sub">${uptimeSub}</div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">Battery</div>
+            <div class="metric-value ${battClass}">${battText}</div>
+            <div class="metric-sub">${battSub}</div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">MQTT</div>
+            <div class="metric-value ${mqttClass}">${mqttText}</div>
+            <div class="metric-sub">${mqttSub}</div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  async function updateMqttNodes() {
+    const grid = document.getElementById('mqtt-grid');
+    try {
+      const nodes = await fetchJSON('/api/mqtt-nodes?network=teesside');
+      if (!Array.isArray(nodes) || !nodes.length) {
+        grid.innerHTML = '<div class="loading-card">No active MQTT nodes.</div>';
+        return;
+      }
+      const sorted = nodes.slice().sort((a, b) => Number(b.packets_24h) - Number(a.packets_24h));
+      grid.innerHTML = sorted.map(renderMqttCard).join('');
+    } catch (e) {
+      console.warn('mqtt-nodes fetch failed', e);
+      grid.innerHTML = `<div class="loading-card">Failed to load MQTT node status — ${esc(e.message)}</div>`;
+    }
+  }
+
+  function flashDot() {
+    const dot = document.getElementById('dot');
+    dot.classList.add('active');
+    setTimeout(() => dot.classList.remove('active'), 800);
+  }
+
+  async function refresh() {
+    flashDot();
+    await Promise.all([
+      updateConnectivity(),
+      updateStats(),
+      updateRepeaters(),
+      updateMqttNodes(),
+    ]);
+    document.getElementById('last-updated').textContent = 'Updated ' + new Date().toLocaleTimeString('en-GB', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  }
+
+  function setActiveTab(tab, updateHash = true) {
+    activeTab = tab === 'feed' ? 'feed' : 'home';
+
+    document.querySelectorAll('[data-tab]').forEach((button) => {
+      button.classList.toggle('active', button.dataset.tab === activeTab);
+      button.setAttribute('aria-selected', button.dataset.tab === activeTab ? 'true' : 'false');
+    });
+
+    document.querySelectorAll('[data-panel]').forEach((panel) => {
+      panel.hidden = panel.dataset.panel !== activeTab;
+    });
+
+    if (updateHash) {
+      const hash = activeTab === 'feed' ? '#feed' : '#home';
+      if (window.location.hash !== hash) history.replaceState(null, '', hash);
+    }
+
+    if (activeTab === 'feed') {
+      connectFeedSocket();
+      if (!feedLoaded) {
+        updateFeed();
+      } else {
+        scheduleFeedRefresh(0);
+      }
+    }
+  }
+
+  document.querySelectorAll('[data-tab]').forEach((button) => {
+    button.addEventListener('click', () => setActiveTab(button.dataset.tab));
+  });
+
+  document.getElementById('feed-list').addEventListener('toggle', (event) => {
+    const item = event.target;
+    if (!(item instanceof HTMLDetailsElement) || !item.classList.contains('feed-event')) return;
+    const packetHash = item.dataset.packetHash;
+    if (!packetHash) return;
+    if (item.open) {
+      openFeedPackets.add(packetHash);
+      scheduleFeedRefresh(0);
+    } else {
+      openFeedPackets.delete(packetHash);
+    }
+  }, true);
+
+  window.addEventListener('hashchange', () => {
+    setActiveTab(window.location.hash === '#feed' ? 'feed' : 'home', false);
+  });
+
+  // Initial load then poll every 60s
+  setActiveTab(window.location.hash === '#feed' ? 'feed' : 'home', false);
+  refresh();
+  setInterval(refresh, 60_000);
+  setInterval(() => {
+    if (activeTab === 'feed') scheduleFeedRefresh(0);
+  }, FEED_POLL_MS);
+</script>
+</body>
+</html>

@@ -288,7 +288,7 @@ export async function getWorkerHealthOverview() {
        active_rx AS (
          SELECT rx_node_id, last_packet_at
          FROM latest_rx
-         WHERE last_packet_at > NOW() - INTERVAL '7 days'
+         WHERE last_packet_at > NOW() - INTERVAL '3 days'
            AND rx_node_id NOT IN (SELECT rx_node_id FROM test_active)
        )
        SELECT

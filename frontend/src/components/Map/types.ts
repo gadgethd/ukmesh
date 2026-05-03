@@ -74,3 +74,11 @@ export interface PopupNodeView {
   maskedLat: number;
   maskedLon: number;
 }
+
+export interface PlannedRepeater {
+  id: string;        // plan_<16hex>
+  lat: number;
+  lon: number;
+  status: 'queued' | 'ready' | 'error';
+  coverage?: import('../../hooks/useCoverage.js').NodeCoverage;
+}

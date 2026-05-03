@@ -809,6 +809,29 @@ export const UKFeedPage: React.FC = () => {
           </label>
         </nav>
 
+        {/* ── Mobile stats bar (hidden on desktop) ──────────────────── */}
+        <div className="uk-feed-mobile-stats">
+          <div className="uk-feed-stats__row">
+            <span className={`uk-feed-live-dot uk-feed-live-dot--${connStatus}`} />
+            <span className="uk-feed-stats__label">
+              {connStatus === 'live' ? 'Live' : globalLatestPacket ? 'Active' : 'Waiting…'}
+            </span>
+            <span className="uk-feed-stats__sep">·</span>
+            <span className="uk-feed-stats__label">{activeObserverCount} observer{activeObserverCount !== 1 ? 's' : ''}</span>
+            <span className="uk-feed-stats__sep">·</span>
+            <span className="uk-feed-stats__label">{networkStats.packetsLastMin} pkt/min</span>
+            <span className="uk-feed-stats__sep">·</span>
+            <span className="uk-feed-stats__label">last: {timeAgo(globalLatestPacket?.time)}</span>
+          </div>
+          {networkStats.topTypes.length > 0 && (
+            <div className="uk-feed-type-tags">
+              {networkStats.topTypes.map(({ label, count, type }) => (
+                <span key={type} className="uk-feed-type-tag">{label} <strong>{count}</strong></span>
+              ))}
+            </div>
+          )}
+        </div>
+
         {/* ── Chat (packet list) ─────────────────────────────────────── */}
         <div className="uk-feed-chat">
           <div className="uk-feed-chat__header">
@@ -842,15 +865,39 @@ export const UKFeedPage: React.FC = () => {
                     <p className="uk-feed-packet-row__summary">{packetSummary(packet, nodeMap)}</p>
                   </article>
                   {isSelected && (
-                    <div className="uk-feed-inline-map">
-                      <FeedMapPanel
-                        key={packet.packet_hash}
-                        packet={packet}
-                        nodeMap={nodeMap}
-                        cachedLazyPath={cachedLazyPath}
-                        isLoading={cachedLazyPath === null}
-                      />
-                    </div>
+                    <>
+                      <div className="uk-feed-inline-map">
+                        <FeedMapPanel
+                          key={packet.packet_hash}
+                          packet={packet}
+                          nodeMap={nodeMap}
+                          cachedLazyPath={cachedLazyPath}
+                          isLoading={cachedLazyPath === null}
+                        />
+                      </div>
+                      <div className="uk-feed-mobile-detail">
+                        <div className="uk-feed-stats__selected-meta">
+                          <code className="feed-detail__hash">{packet.packet_hash}</code>
+                          <span className="feed-detail__badge">
+                            {packet.packet_type != null ? (TYPE_LABELS[packet.packet_type] ?? `T${packet.packet_type}`) : '—'}
+                          </span>
+                          {packet.hop_count != null && (
+                            <span className="feed-detail__badge feed-detail__badge--muted">
+                              {packet.hop_count} hop{packet.hop_count !== 1 ? 's' : ''}
+                            </span>
+                          )}
+                        </div>
+                        <p className="uk-feed-stats__selected-summary">{packetSummary(packet, nodeMap)}</p>
+                        <div className="uk-feed-stats__actions">
+                          <button
+                            className="uk-feed-stats__tree-toggle"
+                            onClick={openPathTree}
+                          >
+                            Repeater tree
+                          </button>
+                        </div>
+                      </div>
+                    </>
                   )}
                 </React.Fragment>
               );

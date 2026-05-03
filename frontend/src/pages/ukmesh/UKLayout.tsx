@@ -16,6 +16,7 @@ export const UKLayout: React.FC = () => {
       appUrl={site.appUrl}
       showFeed
       showRepeaterSearch
+      showCompanion
       showAbout={false}
       showMqtt={false}
       showHealth={false}

@@ -34,17 +34,38 @@ async function processLine(line: string): Promise<void> {
   }
 }
 
+// Collect unique (username, nodePrefix) pairs from a range, then resolve + upsert in batch.
+// This avoids building a massive promise chain when scanning large historical log sections.
 async function scanRange(start: number, end: number): Promise<void> {
-  return new Promise((resolve, reject) => {
+  // Collect the last-seen nodePrefix per (username+prefix) key so we deduplicate
+  // and only upsert once per unique pairing found in this range.
+  const seen = new Map<string, { nodePrefix: string; mqttUsername: string }>();
+
+  await new Promise<void>((resolve, reject) => {
     const stream = fs.createReadStream(LOG_PATH, { start, end });
     const rl = createInterface({ input: stream, crlfDelay: Infinity });
-    let chain = Promise.resolve();
     rl.on('line', (line) => {
-      chain = chain.then(() => processLine(line));
+      if (!line.includes('New client connected')) return;
+      const m = CONNECT_RE.exec(line);
+      if (!m) return;
+      const [, nodePrefix, mqttUsername] = m;
+      if (!nodePrefix || !mqttUsername || mqttUsername === 'backend') return;
+      // Key by username+prefix — overwrite keeps the last occurrence (most recent)
+      seen.set(`${mqttUsername}:${nodePrefix.toUpperCase()}`, { nodePrefix, mqttUsername });
     });
-    rl.on('close', () => { chain.then(resolve).catch(reject); });
+    rl.on('close', resolve);
     rl.on('error', reject);
   });
+
+  // Process the small deduplicated set sequentially
+  for (const { nodePrefix, mqttUsername } of seen.values()) {
+    try {
+      const nodeId = await resolveNodeId(nodePrefix);
+      if (nodeId) await upsertMqttNodeLogin(mqttUsername, nodeId);
+    } catch (err) {
+      console.error('[conn-monitor] processLine error:', (err as Error).message);
+    }
+  }
 }
 
 export function startMqttConnectionMonitor(): void {
@@ -59,11 +80,12 @@ export function startMqttConnectionMonitor(): void {
   async function init(): Promise<void> {
     const { size } = fs.statSync(LOG_PATH);
     const start = Math.max(0, size - HISTORICAL_SCAN_BYTES);
+    // Set position before scanning so concurrent poll() calls skip this range
+    position = size;
     if (start < size) {
       console.log('[conn-monitor] scanning historical log entries...');
       await scanRange(start, size - 1);
     }
-    position = size;
     console.log('[conn-monitor] ready, polling every', POLL_INTERVAL_MS / 1000, 's');
   }
 

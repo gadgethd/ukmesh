@@ -119,6 +119,9 @@ CREATE INDEX IF NOT EXISTS packets_path_hashes_idx ON packets USING GIN (path_ha
 CREATE INDEX IF NOT EXISTS idx_nodes_last_seen ON nodes(last_seen DESC);
 CREATE INDEX IF NOT EXISTS idx_packets_time_hash ON packets(time DESC, packet_hash);
 CREATE INDEX IF NOT EXISTS idx_nodes_network_last_seen ON nodes(network, last_seen DESC) WHERE is_online = TRUE;
+CREATE INDEX IF NOT EXISTS idx_nodes_path_hash_1 ON nodes((UPPER(LEFT(node_id, 2))));
+CREATE INDEX IF NOT EXISTS idx_nodes_path_hash_2 ON nodes((UPPER(LEFT(node_id, 4))));
+CREATE INDEX IF NOT EXISTS idx_nodes_path_hash_3 ON nodes((UPPER(LEFT(node_id, 6))));
 
 -- ─── Observer / repeater status telemetry samples ───────────────────────────
 

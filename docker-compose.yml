@@ -1,3 +1,9 @@
+x-anubis-base: &anubis-base
+  image: ghcr.io/techarohq/anubis:v1.25.0
+  restart: unless-stopped
+  volumes:
+    - ./anubis/botPolicy.yaml:/data/botPolicy.yaml:ro
+
 services:
   timescaledb:
     image: timescale/timescaledb:latest-pg16
@@ -9,7 +15,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD required}
     volumes:
       - timescaledb_data:/var/lib/postgresql/data
-      - ./backend/src/db/schema.sql:/docker-entrypoint-initdb.d/001_schema.sql:ro
+      - ./backend/src/db/schema/base.sql:/docker-entrypoint-initdb.d/001_schema.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-meshcore} -d ${POSTGRES_DB:-meshcore}"]
       interval: 10s
@@ -57,6 +63,10 @@ services:
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3001,http://localhost:3002,https://ukmesh.com,https://www.ukmesh.com,https://app.ukmesh.com,https://teessidemesh.com,https://www.teessidemesh.com,https://app.teessidemesh.com,https://test.ukmesh.com}
       RADIO_BOT_URL: ${RADIO_BOT_URL:-}
       COVERAGE_MODEL_VERSION: ${COVERAGE_MODEL_VERSION:-5}
+      DATABASE_STATEMENT_TIMEOUT_MS: 300000
+      DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-20}
+      DATABASE_SKIP_SCHEMA_INIT: "true"
+      WS_INITIAL_STATE_ENABLED: "1"
       NODE_ENV: production
     depends_on:
       timescaledb:
@@ -98,6 +108,8 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET required}
+      DATABASE_STATEMENT_TIMEOUT_MS: 300000
+      DATABASE_SKIP_SCHEMA_INIT: "true"
       NODE_ENV: production
     depends_on:
       timescaledb:
@@ -115,8 +127,9 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET required}
-      NODE_ENV: production
       DATABASE_STATEMENT_TIMEOUT_MS: 300000
+      DATABASE_SKIP_SCHEMA_INIT: "true"
+      NODE_ENV: production
     depends_on:
       timescaledb:
         condition: service_healthy
@@ -133,6 +146,8 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET required}
+      DATABASE_STATEMENT_TIMEOUT_MS: 300000
+      DATABASE_SKIP_SCHEMA_INIT: "true"
       NODE_ENV: production
     depends_on:
       timescaledb:
@@ -151,6 +166,7 @@ services:
       MQTT_BROKER_URL: ${MQTT_BROKER_URL:-ws://mosquitto:9001}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       MESHCORE_CHANNEL_SECRETS: ${MESHCORE_CHANNEL_SECRETS:-}
+      DATABASE_SKIP_SCHEMA_INIT: "true"
       NODE_ENV: production
     depends_on:
       timescaledb:
@@ -207,13 +223,27 @@ services:
       redis:
         condition: service_healthy
 
+  ml-path-learner:
+    build:
+      context: ./ml-path-learner
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    cpus: 2.0
+    mem_limit: '2g'
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}
+      GOLD_EXTRACTION_INTERVAL_MINS: '15'
+      TRAINING_INTERVAL_MINS: '30'
+      MIN_GOLD_PATHS: '100'
+      CONFIDENCE_THRESHOLD: '0.85'
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+
   website-teesside:
     build:
-      context: .
-      dockerfile: Dockerfile.website
-      args:
-        VITE_APP_HOSTNAME: app.teessidemesh.com
-        VITE_SITE: teesside
+      context: ./teesside-site
+      dockerfile: Dockerfile
     restart: unless-stopped
     ports:
       - "3002:80"
@@ -254,7 +284,7 @@ services:
       context: .
       dockerfile: Dockerfile.mesh-health-check
       args:
-        MESH_HEALTH_CHECK_REF: main
+        MESH_HEALTH_CHECK_REF: ${HEALTHCHECK_SOURCE_REF:-main}
     restart: unless-stopped
     environment:
       PORT: "3090"
@@ -285,8 +315,10 @@ services:
       MAX_USES_PER_CODE: ${HEALTHCHECK_MAX_USES_PER_CODE:-3}
       KNOWN_OBSERVERS: ${HEALTHCHECK_KNOWN_OBSERVERS:-}
       OBSERVER_ACTIVE_WINDOW_SECONDS: ${HEALTHCHECK_OBSERVER_ACTIVE_WINDOW_SECONDS:-900}
+      OBSERVER_RETENTION_SECONDS: ${HEALTHCHECK_OBSERVER_RETENTION_SECONDS:-14400}
       OBSERVERS_FILE: /app/data/observer.json
       RESULTS_FILE: /app/data/session-results.json
+      REGIONS_FILE: ${HEALTHCHECK_REGIONS_FILE:-regions/uk.geojson}
       TURNSTILE_ENABLED: ${HEALTHCHECK_TURNSTILE_ENABLED:-false}
       TURNSTILE_SITE_KEY: ${HEALTHCHECK_TURNSTILE_SITE_KEY:-}
       TURNSTILE_SECRET_KEY: ${HEALTHCHECK_TURNSTILE_SECRET_KEY:-}
@@ -298,6 +330,7 @@ services:
       - mesh_health_check_data:/app/data
       - ./healthcheck-overrides/index.html:/app/public/index.html:ro
       - ./healthcheck-overrides/share.html:/app/public/share.html:ro
+      - ./healthcheck-overrides/sw.js:/app/public/sw.js:ro
       - ./healthcheck-overrides/ukmesh-theme.css:/app/public/ukmesh-theme.css:ro
 
   app-dev:
@@ -338,6 +371,83 @@ services:
     depends_on:
       - backend
 
+  # ── Anubis bot protection ─────────────────────────────────────────────────────
+  # One sidecar per public HTTP service. Cloudflare Tunnel routes to these
+  # containers (port 8923) instead of the origin services directly.
+  # MQTT (mosquitto:9001) is intentionally excluded — non-browser clients.
+  # Dev services are intentionally excluded — low value.
+
+  anubis-website-ukmesh:
+    <<: *anubis-base
+    environment:
+      ED25519_PRIVATE_KEY_HEX: "${ANUBIS_ED25519_PRIVATE_KEY_HEX:?ANUBIS_ED25519_PRIVATE_KEY_HEX required}"
+      BIND: ":8923"
+      TARGET: "http://website-ukmesh:80"
+      COOKIE_DOMAIN: "ukmesh.com"
+      COOKIE_SECURE: "true"
+      COOKIE_SAME_SITE: "Lax"
+      COOKIE_EXPIRATION_TIME: "168h"
+      POLICY_FNAME: "/data/botPolicy.yaml"
+      SLOG_LEVEL: "INFO"
+      CUSTOM_REAL_IP_HEADER: "CF-Connecting-IP"
+    depends_on:
+      - website-ukmesh
+
+  anubis-app-ukmesh:
+    <<: *anubis-base
+    environment:
+      ED25519_PRIVATE_KEY_HEX: "${ANUBIS_ED25519_PRIVATE_KEY_HEX:?ANUBIS_ED25519_PRIVATE_KEY_HEX required}"
+      BIND: ":8923"
+      TARGET: "http://app-ukmesh:80"
+      COOKIE_DOMAIN: "app.ukmesh.com"
+      COOKIE_SECURE: "true"
+      COOKIE_SAME_SITE: "Lax"
+      COOKIE_EXPIRATION_TIME: "168h"
+      POLICY_FNAME: "/data/botPolicy.yaml"
+      SLOG_LEVEL: "INFO"
+      CUSTOM_REAL_IP_HEADER: "CF-Connecting-IP"
+    depends_on:
+      - app-ukmesh
+
+  anubis-website-teesside:
+    <<: *anubis-base
+    environment:
+      ED25519_PRIVATE_KEY_HEX: "${ANUBIS_ED25519_PRIVATE_KEY_HEX:?ANUBIS_ED25519_PRIVATE_KEY_HEX required}"
+      BIND: ":8923"
+      TARGET: "http://website-teesside:80"
+      COOKIE_DOMAIN: "teessidemesh.com"
+      COOKIE_SECURE: "true"
+      COOKIE_SAME_SITE: "Lax"
+      COOKIE_EXPIRATION_TIME: "168h"
+      POLICY_FNAME: "/data/botPolicy.yaml"
+      SLOG_LEVEL: "INFO"
+      CUSTOM_REAL_IP_HEADER: "CF-Connecting-IP"
+    depends_on:
+      - website-teesside
+
+  anubis-health-check:
+    <<: *anubis-base
+    environment:
+      ED25519_PRIVATE_KEY_HEX: "${ANUBIS_ED25519_PRIVATE_KEY_HEX:?ANUBIS_ED25519_PRIVATE_KEY_HEX required}"
+      BIND: ":8923"
+      TARGET: "http://mesh-health-check:3090"
+      COOKIE_DOMAIN: "healthcheck.ukmesh.com"
+      COOKIE_SECURE: "true"
+      COOKIE_SAME_SITE: "Lax"
+      COOKIE_EXPIRATION_TIME: "168h"
+      POLICY_FNAME: "/data/botPolicy.yaml"
+      SLOG_LEVEL: "INFO"
+      CUSTOM_REAL_IP_HEADER: "CF-Connecting-IP"
+    depends_on:
+      - mesh-health-check
+    networks:
+      default:
+        # Cloudflare Tunnel currently routes healthcheck.ukmesh.com to
+        # http://anubis-mesh-health-check:8923. Keep this alias unless the
+        # tunnel ingress config is changed at Cloudflare too.
+        aliases:
+          - anubis-mesh-health-check
+
   cloudflared:
     image: cloudflare/cloudflared:latest
     restart: unless-stopped
@@ -347,12 +457,12 @@ services:
       TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
     depends_on:
       - backend
-      - app-ukmesh
-      - website-ukmesh
-      - website-teesside
+      - anubis-website-ukmesh
+      - anubis-app-ukmesh
+      - anubis-website-teesside
+      - anubis-health-check
       - app-dev
       - website-dev
-      - mesh-health-check
       - mosquitto
 
   loki:

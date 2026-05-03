@@ -7,6 +7,8 @@ import { getNodes, getRecentPackets, getRecentMessages, getViableLinks } from '.
 import { resolveRequestNetwork } from '../http/requestScope.js';
 
 const REDIS_CHANNEL = 'meshcore:live';
+const LOG_WS_PACKETS = process.env['LOG_WS_PACKETS'] === '1';
+const WS_INITIAL_STATE_ENABLED = process.env['WS_INITIAL_STATE_ENABLED'] === '1';
 
 let pub: Redis;
 let sub: Redis;
@@ -206,13 +208,19 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
 
   // Pre-warm the initial state cache for common networks at startup so the
   // first connecting client doesn't pay the cold DB cost.
-  const WARMUP_NETWORKS = (process.env['WARMUP_NETWORKS'] ?? 'teesside,ukmesh')
+  const WARMUP_NETWORKS = (process.env['WARMUP_NETWORKS'] ?? '')
     .split(',').map(s => s.trim()).filter(Boolean);
-  process.nextTick(() => {
+
+  const warmInitialState = () => {
     for (const net of WARMUP_NETWORKS) {
       fetchInitialState(net, undefined).catch(() => { /* best-effort */ });
     }
-  });
+  };
+
+  if (WARMUP_NETWORKS.length > 0) {
+    setTimeout(warmInitialState, 10_000).unref();
+    setInterval(warmInitialState, INITIAL_STATE_TTL_MS).unref();
+  }
 
   const wss = new WebSocketServer({
     server: httpServer,
@@ -240,28 +248,36 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
     };
     clientScopes.set(ws, scope);
 
-    // Send initial state: served from cache so concurrent connects don't exhaust the DB pool.
-    try {
-      const { nodes, packets, messages, viableLinks } = await fetchInitialState(network, observer);
-      for (const node of nodes) {
-        const nodeId = String((node as { node_id?: string }).node_id ?? '').toLowerCase();
-        if (nodeId) scope.nodeIds.add(nodeId);
+    if (WS_INITIAL_STATE_ENABLED) {
+      // Send initial state: served from cache so concurrent connects don't exhaust the DB pool.
+      try {
+        const { nodes, packets, messages, viableLinks } = await fetchInitialState(network, observer);
+        for (const node of nodes) {
+          const nodeId = String((node as { node_id?: string }).node_id ?? '').toLowerCase();
+          if (nodeId) scope.nodeIds.add(nodeId);
+        }
+        for (const packet of packets) {
+          const rxNodeId = String((packet as { rx_node_id?: string }).rx_node_id ?? '').toLowerCase();
+          const srcNodeId = String((packet as { src_node_id?: string }).src_node_id ?? '').toLowerCase();
+          if (rxNodeId) scope.nodeIds.add(rxNodeId);
+          if (srcNodeId) scope.nodeIds.add(srcNodeId);
+        }
+        const viablePairs = viableLinks.map((l) => [l.node_a_id, l.node_b_id] as [string, string]);
+        const initMsg: WSMessage = {
+          type: 'initial_state',
+          data: { nodes, packets, messages, viable_pairs: viablePairs, viable_links: viableLinks },
+          ts: Date.now(),
+        };
+        ws.send(JSON.stringify(initMsg));
+      } catch (err) {
+        console.error('[ws] initial state error', (err as Error).message);
       }
-      for (const packet of packets) {
-        const rxNodeId = String((packet as { rx_node_id?: string }).rx_node_id ?? '').toLowerCase();
-        const srcNodeId = String((packet as { src_node_id?: string }).src_node_id ?? '').toLowerCase();
-        if (rxNodeId) scope.nodeIds.add(rxNodeId);
-        if (srcNodeId) scope.nodeIds.add(srcNodeId);
-      }
-      const viablePairs = viableLinks.map((l) => [l.node_a_id, l.node_b_id] as [string, string]);
-      const initMsg: WSMessage = {
+    } else {
+      ws.send(JSON.stringify({
         type: 'initial_state',
-        data: { nodes, packets, messages, viable_pairs: viablePairs, viable_links: viableLinks },
+        data: { nodes: [], packets: [], messages: [], viable_pairs: [], viable_links: [] },
         ts: Date.now(),
-      };
-      ws.send(JSON.stringify(initMsg));
-    } catch (err) {
-      console.error('[ws] initial state error', (err as Error).message);
+      } satisfies WSMessage));
     }
 
     ws.on('close', () => {
@@ -313,8 +329,7 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
       return;
     }
 
-    // Log packet messages
-    if (parsed?.type === 'packet') {
+    if (LOG_WS_PACKETS && parsed?.type === 'packet') {
       console.log('[ws-sub] received packet:', (parsed.data as LivePacket)?.packetHash);
     }
 

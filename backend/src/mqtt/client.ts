@@ -238,8 +238,21 @@ function extractStatusTelemetry(
   };
 }
 
-/** In-flight pre-resolve tracking — prevents duplicate concurrent resolutions for the same hash. */
+/** In-flight pre-resolve tracking — prevents duplicate concurrent resolutions for the same hash/network. */
 const preResolveInFlight = new Set<string>();
+const preResolveLastStarted = new Map<string, number>();
+const PRE_RESOLVE_ENABLED = process.env['PATH_BETA_PRERESOLVE_ENABLED'] === '1';
+const PRE_RESOLVE_MIN_INTERVAL_MS = Math.max(
+  1_000,
+  Number(process.env['PATH_BETA_PRERESOLVE_MIN_INTERVAL_MS'] ?? 10_000),
+);
+
+setInterval(() => {
+  const cutoff = Date.now() - PRE_RESOLVE_MIN_INTERVAL_MS * 6;
+  for (const [key, ts] of preResolveLastStarted) {
+    if (ts < cutoff) preResolveLastStarted.delete(key);
+  }
+}, 60_000).unref();
 
 /**
  * Per-observer packet dedup — prevents relay copies of the same packet from being
@@ -717,9 +730,18 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
     invalidateResolveCache(finalHash);
 
     // Pre-resolve path for ADV/GRP packets so the cache is warm before the browser requests it.
-    // Only runs if no resolution is already in-flight for this hash.
-    if ((resolvedPacketType === 4 || resolvedPacketType === 5) && !preResolveInFlight.has(finalHash)) {
-      preResolveInFlight.add(finalHash);
+    // Bursty multi-observer packets can arrive repeatedly for the same hash; throttle those
+    // warmups so live ingest cannot monopolise the shared path resolver pool.
+    const preResolveKey = `${finalHash}|${network}`;
+    const lastPreResolve = preResolveLastStarted.get(preResolveKey) ?? 0;
+    const shouldPreResolve =
+      PRE_RESOLVE_ENABLED
+      && (resolvedPacketType === 4 || resolvedPacketType === 5)
+      && !preResolveInFlight.has(preResolveKey)
+      && Date.now() - lastPreResolve >= PRE_RESOLVE_MIN_INTERVAL_MS;
+    if (shouldPreResolve) {
+      preResolveInFlight.add(preResolveKey);
+      preResolveLastStarted.set(preResolveKey, Date.now());
       const ck = `m|${finalHash}|${network}`;
       // Pass any previously resolved high-confidence hop assignments so the solver reuses them
       const stickyEntry = getStickyNodeMap(finalHash, network);
@@ -736,7 +758,7 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
           }
         })
         .catch(() => { /* best-effort */ })
-        .finally(() => { preResolveInFlight.delete(finalHash); });
+        .finally(() => { preResolveInFlight.delete(preResolveKey); });
     }
   } catch (err) {
     console.error('[mqtt] db insert failed', (err as Error).message);

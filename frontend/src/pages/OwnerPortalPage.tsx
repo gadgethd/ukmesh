@@ -346,7 +346,7 @@ const LastHopStrengthTooltip: React.FC<{
   );
 };
 
-const LastHopStrengthChart: React.FC<{ nodeId: string; points: LastHopStrengthPoint[] }> = ({ nodeId, points }) => {
+const LastHopStrengthChart: React.FC<{ nodeId: string; points: LastHopStrengthPoint[]; isPassiveRepeater?: boolean }> = ({ nodeId, points, isPassiveRepeater }) => {
   const [selectedSeriesKey, setSelectedSeriesKey] = useState<string | null>(null);
   const [excludedSeriesKeys, setExcludedSeriesKeys] = useState<string[]>(() => readExcludedLastHopSeries(nodeId));
   const visiblePoints = useMemo(
@@ -461,7 +461,11 @@ const LastHopStrengthChart: React.FC<{ nodeId: string; points: LastHopStrengthPo
           </div>
         </div>
         <div className="owner-telemetry-metric__chart">
-          <div className="owner-telemetry-metric__empty">No last-hop repeaters with 10+ samples yet</div>
+          <div className="owner-telemetry-metric__empty">
+            {isPassiveRepeater
+              ? 'This node does not report received packets via MQTT — rx signal data is captured by its companion node'
+              : 'No last-hop repeaters with 10+ samples yet'}
+          </div>
         </div>
         <div className="owner-telemetry-metric__footer">
           <span>Last 7d</span>
@@ -905,6 +909,8 @@ export const OwnerPortalPage: React.FC = () => {
   useEffect(() => {
     if (!dashboard || !selectedNodeId) return;
     let cancelled = false;
+    setLive(null);
+    setLiveError(null);
 
     const load = () => {
       fetch(`/api/owner/live?nodeId=${encodeURIComponent(selectedNodeId)}`, { cache: 'no-store' })
@@ -1123,7 +1129,7 @@ export const OwnerPortalPage: React.FC = () => {
                   value={formatUptime(latestTelemetry?.uptimeSecs ?? null)}
                   meta={latestTelemetry?.uptimeSecs == null ? 'No telemetry yet' : `${latestTelemetry.uptimeSecs}s reported`}
                 />
-                <LastHopStrengthChart nodeId={selectedNodeId} points={lastHopStrength} />
+                <LastHopStrengthChart nodeId={selectedNodeId} points={lastHopStrength} isPassiveRepeater={live !== null && (live.incomingPeers.length === 0 && live.recentPackets.length === 0 && live.heardBy.length > 0)} />
               </div>
             </section>
 
@@ -1194,6 +1200,34 @@ export const OwnerPortalPage: React.FC = () => {
                   ))}
                   {(live?.incomingPeers ?? []).length === 0 ? (
                     <p className="prose-note">No direct sender nodes found in the last 24 hours.</p>
+                  ) : null}
+                </div>
+              </section>
+
+              <section className="prose-section owner-panel owner-panel--senders">
+                <div className="owner-panel__head">
+                  <div>
+                    <h2>Nodes That Heard This Repeater</h2>
+                    <p className="prose-note" style={{ marginTop: 0 }}>Other nodes that received packets transmitted by this repeater (last 7d)</p>
+                  </div>
+                </div>
+                <div className="owner-list">
+                  {(live?.heardBy ?? []).slice(0, 8).map((peer) => (
+                    <article key={peer.node_id} className="owner-list__row">
+                      <div className="owner-list__primary">
+                        <strong>{peer.name ?? peer.node_id}</strong>
+                        <span>{peer.network ?? '-'} · {peer.iata ?? '-'}</span>
+                      </div>
+                      <div className="owner-list__metrics">
+                        <span>{peer.packets_24h} / 24h</span>
+                        <span>{peer.packets_7d} / 7d</span>
+                        <span>{peer.best_hops != null ? `${peer.best_hops} hops` : '-'}</span>
+                        <span>{formatCompactTs(peer.last_seen)}</span>
+                      </div>
+                    </article>
+                  ))}
+                  {(live?.heardBy ?? []).length === 0 ? (
+                    <p className="prose-note">No nodes have received packets from this node in the last 7 days.</p>
                   ) : null}
                 </div>
               </section>

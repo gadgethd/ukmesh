@@ -1,7 +1,7 @@
 FROM node:22-slim
 
 ARG MESH_HEALTH_CHECK_REPO=https://github.com/gadgethd/meshcore-health-check.git
-ARG MESH_HEALTH_CHECK_REF=92792e1b7c8bd0a1561a4cbfe09de0b4cf5d7494
+ARG MESH_HEALTH_CHECK_REF=main
 
 WORKDIR /app
 
@@ -19,6 +19,7 @@ RUN apt-get update \
   && cp /tmp/mesh-health-check/server.js ./ \
   && cp -a /tmp/mesh-health-check/lib ./lib \
   && cp -a /tmp/mesh-health-check/public ./public \
+  && cp -a /tmp/mesh-health-check/regions ./regions \
   && cp /tmp/mesh-health-check/README.md /tmp/mesh-health-check/HOWTO.md /tmp/mesh-health-check/AGENTS.md /tmp/mesh-health-check/CHANGES.md ./ \
   && rm -rf /tmp/mesh-health-check \
   && apt-get purge -y --auto-remove git \

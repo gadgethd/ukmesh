@@ -35,16 +35,22 @@ const BACKEND: LibEntry[] = [
   { name: 'ws',                               role: 'WebSocket server for live dashboard updates',              url: 'https://github.com/websockets/ws' },
   { name: 'ioredis',                          role: 'Redis pub/sub for cross-process live events',              url: 'https://github.com/redis/ioredis' },
   { name: 'pg',                               role: 'PostgreSQL client',                                        url: 'https://node-postgres.com' },
+  { name: 'compression',                      role: 'Gzip compression for API responses',                       url: 'https://github.com/expressjs/compression' },
   { name: 'cors',                             role: 'CORS middleware for cross-origin API access',              url: 'https://github.com/expressjs/cors' },
   { name: 'express-rate-limit',               role: 'API rate limiting',                                        url: 'https://github.com/express-rate-limit/express-rate-limit' },
+  { name: 'dockerode',                        role: 'Docker API client for dynamic Mosquitto ACL management',   url: 'https://github.com/apocas/dockerode' },
 ];
 
 const INFRA: LibEntry[] = [
-  { name: 'TimescaleDB',          role: 'Time-series PostgreSQL for packet, node, and link storage', url: 'https://www.timescale.com' },
-  { name: 'Redis',                role: 'Pub/sub bus for real-time updates between processes',       url: 'https://redis.io' },
-  { name: 'Mosquitto',            role: 'Lightweight MQTT broker',                                  url: 'https://mosquitto.org' },
-  { name: 'Docker + Compose',     role: 'Service containerisation and orchestration',                url: 'https://docs.docker.com/compose' },
-  { name: 'Cloudflare Tunnel',    role: 'Zero-config secure public access without open ports',       url: 'https://developers.cloudflare.com/cloudflare-one/connections/connect-networks' },
+  { name: 'TimescaleDB',                        role: 'Time-series PostgreSQL for packet, node, and link storage',  url: 'https://www.timescale.com' },
+  { name: 'Redis',                              role: 'Pub/sub bus for real-time updates between processes',        url: 'https://redis.io' },
+  { name: 'Mosquitto',                          role: 'Lightweight MQTT broker',                                    url: 'https://mosquitto.org' },
+  { name: 'Docker + Compose',                   role: 'Service containerisation and orchestration',                 url: 'https://docs.docker.com/compose' },
+  { name: 'Cloudflare Tunnel',                  role: 'Zero-config secure public access without open ports',        url: 'https://developers.cloudflare.com/cloudflare-one/connections/connect-networks' },
+  { name: 'Grafana',                            role: 'Log and metrics dashboards',                                 url: 'https://grafana.com' },
+  { name: 'Loki',                               role: 'Log aggregation backend',                                    url: 'https://grafana.com/oss/loki' },
+  { name: 'Promtail',                           role: 'Log collector and shipper to Loki',                          url: 'https://grafana.com/docs/loki/latest/send-data/promtail' },
+  { name: 'meshcore-health-check',              role: 'Observer coverage tool powering healthcheck.ukmesh.com',     url: 'https://github.com/yellowcooln/meshcore-health-check' },
 ];
 
 const GEOSPATIAL: LibEntry[] = [
@@ -121,8 +127,8 @@ export const OpenSourcePage: React.FC = () => (
         </p>
         <p>
           The MeshCore community Discord is at{' '}
-          <a href="https://discord.gg/bSuST8xvet" target="_blank" rel="noopener noreferrer">
-            discord.gg/bSuST8xvet
+          <a href="https://meshcore.gg/" target="_blank" rel="noopener noreferrer">
+            meshcore.gg
           </a>.
         </p>
       </section>

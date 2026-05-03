@@ -15,6 +15,7 @@ type SiteLayoutProps = {
   showPackets: boolean;
   showStats: boolean;
   showRepeaterSearch?: boolean;
+  showCompanion?: boolean;
 };
 
 type NavItem = {
@@ -48,6 +49,7 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
   showPackets,
   showStats,
   showRepeaterSearch = false,
+  showCompanion = false,
 }) => {
   const COOKIE_CONSENT_KEY = 'meshcore-cookie-consent-v1';
   const [menuOpen, setMenuOpen] = useState(false);
@@ -64,6 +66,7 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
   const navItems: NavItem[] = [
     { to: '/feed', label: 'Feed', enabled: showFeed },
     { to: '/repeater', label: 'Repeaters', enabled: showRepeaterSearch },
+    { to: '/companion', label: 'Companions', enabled: showCompanion },
     { to: '/about', label: 'What is MeshCore', enabled: showAbout },
     { to: '/install', label: 'Install', enabled: showInstall },
     { to: '/mqtt', label: 'MQTT', enabled: showMqtt },
@@ -141,6 +144,7 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
               {item.label}
             </NavLink>
           ))}
+          <a href="https://healthcheck.ukmesh.com" className="site-nav__link">Health Check</a>
           <a href="https://flasher.ukmesh.com" className="site-nav__link">Flasher</a>
           <NavLink
             to="/login"
@@ -167,7 +171,7 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
       <footer className="site-footer">
         <span>{footerName}</span>
         <span className="site-footer__sep">·</span>
-        <a href="https://discord.gg/bSuST8xvet" target="_blank" rel="noopener noreferrer">Discord</a>
+        <a href="https://meshcore.gg/" target="_blank" rel="noopener noreferrer">Discord</a>
         <span className="site-footer__sep">·</span>
         <Link to="/open-source">Open Source</Link>
         {showLiveMap && (

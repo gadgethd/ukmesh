@@ -509,12 +509,7 @@ html, body, #root {
   z-index: 10;
 }
 
-/* Custom LOS button — desktop only (hidden on touch/mobile) */
-@media (max-width: 640px), (pointer: coarse) {
-  .custom-los-btn {
-    display: none !important;
-  }
-}
+/* Map tool buttons are in src/styles/globals.css */
 
 .node-popup {
   padding: 12px 14px;
@@ -908,6 +903,19 @@ html, body, #root {
   transition: color var(--transition);
 }
 .topbar__brand:hover { color: var(--accent); }
+
+.topbar__nav-link {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  text-decoration: none;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: color var(--transition);
+}
+.topbar__nav-link:hover { color: var(--accent); }
 .topbar__brand-icon {
   color: var(--accent);
   font-size: 16px;

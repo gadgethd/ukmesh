@@ -1,12 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import { statsEndpoint, uncachedEndpoint } from '../utils/api.js';
-import { useFlash } from '../hooks/useFlash.js';
+import { useFlash } from '../hooks/useFlash.js'; // used by StatCard
 
 type SiteStats = {
   packetsDay: number;
   totalNodes: number;
-  longestHop: number;
-  longestHopHash: string | null;
+  internationalNodes: number;
+  internationalLastSeen: string | null;
+  internationalLastCountry: string | null;
 };
 
 type LiveStatsSectionProps = {
@@ -17,8 +18,18 @@ type LiveStatsSectionProps = {
 const EMPTY_STATS: SiteStats = {
   packetsDay: 0,
   totalNodes: 0,
-  longestHop: 0,
-  longestHopHash: null,
+  internationalNodes: 0,
+  internationalLastSeen: null,
+  internationalLastCountry: null,
+};
+
+const timeAgo = (ts: string | null): string => {
+  if (!ts) return '';
+  const sec = Math.round((Date.now() - new Date(ts).getTime()) / 1000);
+  if (sec < 60) return `${sec}s ago`;
+  if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
+  if (sec < 86400) return `${Math.floor(sec / 3600)}h ago`;
+  return `${Math.floor(sec / 86400)}d ago`;
 };
 
 const StatCard: React.FC<{ value: number; label: string; suffix?: string }> = ({
@@ -40,7 +51,6 @@ const StatCard: React.FC<{ value: number; label: string; suffix?: string }> = ({
 
 export const LiveStatsSection: React.FC<LiveStatsSectionProps> = ({ network, observer }) => {
   const [stats, setStats] = useState<SiteStats>(EMPTY_STATS);
-  const hopFlash = useFlash(stats.longestHop);
   const refreshSeconds = 5 * 60;
 
   useEffect(() => {
@@ -50,8 +60,9 @@ export const LiveStatsSection: React.FC<LiveStatsSectionProps> = ({ network, obs
         .then((data) => setStats({
           packetsDay: data.packetsDay,
           totalNodes: data.totalNodes,
-          longestHop: data.longestHop,
-          longestHopHash: data.longestHopHash ?? null,
+          internationalNodes: data.internationalNodes ?? 0,
+          internationalLastSeen: data.internationalLastSeen ?? null,
+          internationalLastCountry: data.internationalLastCountry ?? null,
         }))
         .catch(() => {});
     };
@@ -78,13 +89,26 @@ export const LiveStatsSection: React.FC<LiveStatsSectionProps> = ({ network, obs
           <StatCard value={stats.packetsDay} label="Observed packets in the last 24 hours" />
           <StatCard value={stats.totalNodes} label="Nodes ever heard on the network" />
           <div className="site-stat">
-            <span className={`site-stat__value${hopFlash ? ' tick-flash' : ''}`}>
-              {stats.longestHop.toLocaleString()}<span className="site-stat__suffix"> hops</span>
-            </span>
-            <span className="site-stat__label">Longest relay chain ever recorded</span>
-            {stats.longestHopHash && (
-              <span className="site-stat__hash" title={stats.longestHopHash}>
-                {stats.longestHopHash}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <span
+                className={`conn-dot${stats.internationalNodes > 0 ? ' conn-dot--connected' : ''}`}
+                style={{
+                  width: '12px', height: '12px', flexShrink: 0,
+                  background: stats.internationalNodes > 0 ? undefined : 'var(--danger)',
+                }}
+              />
+              <span
+                className="site-stat__value"
+                style={{ color: stats.internationalNodes > 0 ? 'var(--online)' : 'var(--danger)' }}
+              >
+                {stats.internationalNodes > 0 ? 'Active' : 'None'}
+              </span>
+            </div>
+            <span className="site-stat__label">International contacts</span>
+            {stats.internationalLastSeen && (
+              <span className="site-stat__hash">
+                last contact {timeAgo(stats.internationalLastSeen)}
+                {stats.internationalLastCountry && ` (${stats.internationalLastCountry})`}
               </span>
             )}
           </div>

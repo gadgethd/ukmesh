@@ -21,6 +21,23 @@ pool.on('error', (err) => {
   console.error('[db] unexpected pool error', err.message);
 });
 
+// Dedicated pool for long-running analytical queries (e.g. refreshRecentPathEvidence).
+// Kept separate so slow analytics can never exhaust the OLTP pool and take down the API.
+const analyticsPool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  application_name: `${databaseConfig.applicationName}-analytics`,
+  options: databaseConfig.schema ? `-c search_path=${databaseConfig.schema},public` : undefined,
+  max: 2,
+  idleTimeoutMillis: databaseConfig.idleTimeoutMs,
+  connectionTimeoutMillis: databaseConfig.connectionTimeoutMs,
+  statement_timeout: 300_000, // 5 minutes — analytics queries are intentionally slow
+  query_timeout: 300_000,
+});
+
+analyticsPool.on('error', (err) => {
+  console.error('[db] unexpected analytics pool error', err.message);
+});
+
 export async function query<T extends pg.QueryResultRow = pg.QueryResultRow>(
   text: string,
   params?: unknown[]
@@ -110,6 +127,11 @@ function buildNodeScopeClause(
 }
 
 export async function initDb(): Promise<void> {
+  if (databaseConfig.skipSchemaInit) {
+    console.log('[db] schema initialisation skipped by DATABASE_SKIP_SCHEMA_INIT');
+    return;
+  }
+
   const schemaPath = resolveDbAssetPath('schema', 'base.sql');
   const sql = fs.readFileSync(schemaPath, 'utf8');
   const startupPool = new Pool({
@@ -163,7 +185,7 @@ export async function refreshRecentPathEvidence(
 ): Promise<number> {
   const scope = buildScopePlaceholders(2, network);
   const params: unknown[] = [hours, ...scope.params];
-  const result = await pool.query<{ updated_count: string }>(
+  const result = await analyticsPool.query<{ updated_count: string }>(
     `WITH recent_hashes AS (
        SELECT p.time,
               p.path_hash_size_bytes,
@@ -175,17 +197,24 @@ export async function refreshRecentPathEvidence(
          AND cardinality(p.path_hashes) > 0
          ${buildPacketScopeClause(scope, 'p', network)}
      ),
+     node_hashes AS (
+       SELECT 1 AS path_hash_size_bytes, UPPER(LEFT(node_id, 2)) AS hash, node_id
+       FROM nodes
+       UNION ALL
+       SELECT 2 AS path_hash_size_bytes, UPPER(LEFT(node_id, 4)) AS hash, node_id
+       FROM nodes
+       UNION ALL
+       SELECT 3 AS path_hash_size_bytes, UPPER(LEFT(node_id, 6)) AS hash, node_id
+       FROM nodes
+     ),
      matched AS (
-       SELECT n.node_id,
+       SELECT nh.node_id,
               MAX(r.time) AS max_time
        FROM recent_hashes r
-       JOIN nodes n
-         ON (
-           (r.path_hash_size_bytes = 1 AND r.hash = UPPER(LEFT(n.node_id, 2)))
-           OR (r.path_hash_size_bytes = 2 AND r.hash = UPPER(LEFT(n.node_id, 4)))
-           OR (r.path_hash_size_bytes = 3 AND r.hash = UPPER(LEFT(n.node_id, 6)))
-         )
-       GROUP BY n.node_id
+       JOIN node_hashes nh
+         ON nh.path_hash_size_bytes = r.path_hash_size_bytes
+        AND nh.hash = r.hash
+       GROUP BY nh.node_id
      ),
      updated AS (
        UPDATE nodes n
@@ -360,6 +389,7 @@ export async function getNodes(network?: string, observer?: string) {
          FROM packets p
          WHERE p.rx_node_id = n.node_id
            AND split_part(p.topic, '/', 1) IN ('meshcore', 'ukmesh')
+           AND p.time > NOW() - INTERVAL '7 days'
          ORDER BY p.time DESC
          LIMIT 1
        ) latest_topic
@@ -367,6 +397,7 @@ export async function getNodes(network?: string, observer?: string) {
          SELECT nss.time AS seen_at
          FROM node_status_samples nss
          WHERE nss.node_id = n.node_id
+           AND nss.time > NOW() - INTERVAL '7 days'
          ORDER BY nss.time DESC
          LIMIT 1
        ) latest_status ON TRUE
@@ -770,14 +801,13 @@ export async function getViableLinks(network?: string, observer?: string): Promi
          nl.count_a_to_b,
          nl.count_b_to_a
        FROM node_links nl
-       LEFT JOIN LATERAL (
-         SELECT
+       LEFT JOIN (
+         SELECT node_a_id, node_b_id,
            SUM(sample_count)::int AS neighbor_report_count,
            MAX(best_snr_db) AS neighbor_best_snr_db
-         FROM node_link_radio_reports rr
-         WHERE rr.node_a_id = nl.node_a_id
-           AND rr.node_b_id = nl.node_b_id
-       ) nr ON TRUE
+         FROM node_link_radio_reports
+         GROUP BY node_a_id, node_b_id
+       ) nr ON nr.node_a_id = nl.node_a_id AND nr.node_b_id = nl.node_b_id
        WHERE (nl.itm_viable = true OR nl.force_viable = true)
          AND nl.node_a_id IN (SELECT node_id FROM net_nodes)
          AND nl.node_b_id IN (SELECT node_id FROM net_nodes)`,
@@ -802,14 +832,13 @@ export async function getViableLinks(network?: string, observer?: string): Promi
        nl.count_a_to_b,
        nl.count_b_to_a
      FROM node_links nl
-     LEFT JOIN LATERAL (
-       SELECT
+     LEFT JOIN (
+       SELECT node_a_id, node_b_id,
          SUM(sample_count)::int AS neighbor_report_count,
          MAX(best_snr_db) AS neighbor_best_snr_db
-       FROM node_link_radio_reports rr
-       WHERE rr.node_a_id = nl.node_a_id
-         AND rr.node_b_id = nl.node_b_id
-     ) nr ON TRUE
+       FROM node_link_radio_reports
+       GROUP BY node_a_id, node_b_id
+     ) nr ON nr.node_a_id = nl.node_a_id AND nr.node_b_id = nl.node_b_id
      JOIN nodes a ON a.node_id = nl.node_a_id
      JOIN nodes b ON b.node_id = nl.node_b_id
      WHERE (nl.itm_viable = true OR nl.force_viable = true)

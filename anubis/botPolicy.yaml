@@ -1,0 +1,107 @@
+## Anubis bot policy — shared across all protected services
+##
+## Rule evaluation: first match wins within the bots section.
+## Thresholds apply after all WEIGH rules have accumulated.
+
+bots:
+  # ── WebSocket paths: always allow, no challenge ────────────────────────────
+  # Upgrade requests to /ws must bypass the challenge gate. By the time the
+  # browser JS opens the WebSocket, the page-load challenge is already solved
+  # and the cookie is set. This ALLOW ensures reconnects and edge-cases are
+  # safe regardless. Bots do not open WebSocket connections.
+  - name: websocket-paths
+    path_regex: ^/ws(/.*)?$
+    action: ALLOW
+
+  # ── Built-in deny rules for pathological bots ──────────────────────────────
+  - import: (data)/bots/_deny-pathological.yaml
+  - import: (data)/bots/aggressive-brazilian-scrapers.yaml
+
+  # ── Block AI/LLM crawlers aggressively ────────────────────────────────────
+  - import: (data)/meta/ai-block-aggressive.yaml
+
+  # ── Allow known good search crawlers ──────────────────────────────────────
+  # Covers: Google, Apple, Bing, DuckDuckGo, Qwant, Internet Archive,
+  #         Kagi, Marginalia, Mojeek, CommonCrawl, Yandex
+  - import: (data)/crawlers/_allow-good.yaml
+
+  # ── Allow common maintenance routes ───────────────────────────────────────
+  # Covers: /.well-known/, /robots.txt, /sitemap.xml, /favicon.*
+  - import: (data)/common/keep-internet-working.yaml
+
+  # ── Deny additional hostile SEO/scraper bots ──────────────────────────────
+  - name: deny-semrush
+    user_agent_regex: SemrushBot
+    action: DENY
+  - name: deny-ahrefsbot
+    user_agent_regex: AhrefsBot
+    action: DENY
+  - name: deny-majestic
+    user_agent_regex: MJ12bot
+    action: DENY
+  - name: deny-dotbot
+    user_agent_regex: DotBot
+    action: DENY
+  - name: deny-petalbot
+    user_agent_regex: PetalBot
+    action: DENY
+  - name: deny-uptimerobot-scrape
+    # UptimeRobot monitoring is fine; this pattern targets known abusive variants
+    user_agent_regex: "(?i)zgrab|masscan|nuclei|nmap"
+    action: DENY
+
+  # ── Generic browser: add weight, challenge via thresholds ─────────────────
+  - name: generic-browser
+    user_agent_regex: >-
+      Mozilla|Opera
+    action: WEIGH
+    weight:
+      adjust: 10
+
+dnsbl: false
+
+status_codes:
+  CHALLENGE: 200
+  DENY: 200
+
+store:
+  backend: memory
+  parameters: {}
+
+thresholds:
+  - name: minimal-suspicion
+    expression: weight <= 0
+    action: ALLOW
+  - name: mild-suspicion
+    expression:
+      all:
+        - weight > 0
+        - weight < 10
+    action: CHALLENGE
+    challenge:
+      algorithm: metarefresh
+      difficulty: 1
+  - name: moderate-suspicion
+    expression:
+      all:
+        - weight >= 10
+        - weight < 20
+    action: CHALLENGE
+    challenge:
+      algorithm: fast
+      difficulty: 2
+  - name: mild-proof-of-work
+    expression:
+      all:
+        - weight >= 20
+        - weight < 30
+    action: CHALLENGE
+    challenge:
+      algorithm: fast
+      difficulty: 4
+  - name: extreme-suspicion
+    expression: weight >= 30
+    action: CHALLENGE
+    challenge:
+      algorithm: fast
+      difficulty: 6

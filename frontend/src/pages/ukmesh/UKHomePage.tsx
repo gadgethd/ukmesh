@@ -142,7 +142,7 @@ export const UKHomePage: React.FC = () => {
               </p>
             </div>
             <div className="site-home__join-actions">
-              <a href="https://discord.gg/bSuST8xvet" target="_blank" rel="noopener noreferrer" className="site-btn site-btn--primary">
+              <a href="https://meshcore.gg/" target="_blank" rel="noopener noreferrer" className="site-btn site-btn--primary">
                 Join Discord
               </a>
               <Link to="/open-source" className="site-btn site-btn--ghost">View source</Link>

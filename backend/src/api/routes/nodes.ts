@@ -308,6 +308,16 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
       const exactNodes = visibleNodes.filter((node) =>
         node.role === undefined || node.role === 2,
       );
+      const exactNodePrefixes = new Map<string, (typeof exactNodes)[number] | null>();
+      for (const node of exactNodes) {
+        if (typeof node.lat !== 'number' || typeof node.lon !== 'number') continue;
+        const nodeId = node.node_id.toUpperCase();
+        for (const prefixLength of [4, 6]) {
+          const prefix = nodeId.slice(0, prefixLength);
+          if (prefix.length !== prefixLength) continue;
+          exactNodePrefixes.set(prefix, exactNodePrefixes.has(prefix) ? null : node);
+        }
+      }
 
       const inferredUnknowns = new Map<string, {
         prefix: string;
@@ -329,12 +339,7 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
 
       const exactMatch = (pathHash: string) => {
         const normalized = pathHash.toUpperCase();
-        const matches = exactNodes.filter((node) =>
-          typeof node.lat === 'number'
-          && typeof node.lon === 'number'
-          && node.node_id.toUpperCase().startsWith(normalized),
-        );
-        return matches.length === 1 ? matches[0] : null;
+        return exactNodePrefixes.get(normalized) ?? null;
       };
 
       for (const row of packetsResult.rows) {
@@ -410,10 +415,15 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
         return best;
       };
 
-      const knownNodeIdSet = new Set(allNodeIds.rows.map((n) => n.node_id.toUpperCase()));
+      const knownNodePrefixes = new Set<string>();
+      for (const node of allNodeIds.rows) {
+        const nodeId = node.node_id.toUpperCase();
+        if (nodeId.length >= 4) knownNodePrefixes.add(nodeId.slice(0, 4));
+        if (nodeId.length >= 6) knownNodePrefixes.add(nodeId.slice(0, 6));
+      }
       const inferredNodes: InferredMultibyteNode[] = Array.from(inferredUnknowns.values())
         .filter((entry) => entry.packetHashes.size >= 2
-          && !Array.from(knownNodeIdSet).some((id) => id.startsWith(entry.prefix.toUpperCase())))
+          && !knownNodePrefixes.has(entry.prefix.toUpperCase()))
         .map((entry) => ({
           node_id: `inferred:${entry.hashSizeBytes}:${entry.prefix}`,
           name: `Inferred ${entry.prefix}`,

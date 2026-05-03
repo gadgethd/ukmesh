@@ -42,6 +42,30 @@ export const MAP_STYLE: maplibregl.StyleSpecification = {
     },
   },
   layers: [
+    { id: 'bg-fill', type: 'background', paint: { 'background-color': '#080d14' } },
     { id: 'background', type: 'raster', source: 'carto-dark' },
+  ],
+};
+
+export const MAP_STYLE_LIGHT: maplibregl.StyleSpecification = {
+  version: 8,
+  sources: {
+    'carto-light': {
+      type: 'raster',
+      tiles: [
+        'https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
+        'https://b.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
+        'https://c.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
+        'https://d.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
+      ],
+      tileSize: 256,
+      attribution:
+        '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
+      maxzoom: 19,
+    },
+  },
+  layers: [
+    { id: 'bg-fill', type: 'background', paint: { 'background-color': '#e8e8e8' } },
+    { id: 'background', type: 'raster', source: 'carto-light' },
   ],
 };

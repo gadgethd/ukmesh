@@ -38,6 +38,7 @@ import { registerNodeRoutes } from './routes/nodes.js';
 import nodeStatusRoutes from './routes/nodeStatus.js';
 import radioRoutes from './routes/radio.js';
 import { registerCoverageRoutes } from './routes/coverage.js';
+import { registerPlannedCoverageRoutes } from './routes/plannedCoverage.js';
 import { registerOwnerRoutes } from './routes/owner.js';
 import { registerPathingRoutes } from './routes/pathing.js';
 import { registerStatsRoutes } from './routes/stats.js';
@@ -79,6 +80,10 @@ registerCoverageRoutes(router, {
   coverageCacheTtlMs: COVERAGE_CACHE_TTL_MS,
   coverageLimiter: COVERAGE_LIMITER,
   networkFilters,
+  query,
+});
+registerPlannedCoverageRoutes(router, {
+  coverageLimiter: COVERAGE_LIMITER,
   query,
 });
 registerNodeRoutes(router, {

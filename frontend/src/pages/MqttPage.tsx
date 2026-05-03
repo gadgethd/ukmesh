@@ -34,7 +34,7 @@ export const MqttPage: React.FC = () => (
         </p>
         <div className="prose-note">
           <strong>Access is by request.</strong> Message <strong>ibengr</strong> on the{' '}
-          <a href="https://discord.gg/bSuST8xvet" target="_blank" rel="noopener noreferrer">Discord</a>{' '}
+          <a href="https://meshcore.gg/" target="_blank" rel="noopener noreferrer">Discord</a>{' '}
           to get your credentials before going through this setup. We're in the{' '}
           <strong>North East England</strong> regional channel.
         </div>
@@ -225,7 +225,7 @@ Password: <your password>`}</pre>
           get you set up with credentials for the global broker.
         </p>
         <a
-          href="https://discord.gg/bSuST8xvet"
+          href="https://meshcore.gg/"
           target="_blank"
           rel="noopener noreferrer"
           className="site-btn site-btn--primary"

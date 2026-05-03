@@ -24,6 +24,8 @@ type PathingServiceDeps = {
 
 export type PathingService = ReturnType<typeof createPathingService>;
 
+const resolveInflight = new Map<string, Promise<unknown>>();
+
 export function createPathingService(deps: PathingServiceDeps) {
   const {
     pathHistoryCache,
@@ -38,37 +40,61 @@ export function createPathingService(deps: PathingServiceDeps) {
     const cacheKey = `r|${packetHash}|${network}|${observer ?? ''}`;
     const cached = getResolveCache(cacheKey);
     if (cached) return cached;
+    const inflight = resolveInflight.get(cacheKey);
+    if (inflight) return inflight;
 
-    const resolved = await resolvePool.run<unknown>({
-      type: 'resolve',
-      packetHash,
-      network,
-      observer,
-    });
-    if (!resolved) {
-      throw new Error('PACKET_NOT_FOUND');
+    const promise = (async () => {
+      const resolved = await resolvePool.run<unknown>({
+        type: 'resolve',
+        packetHash,
+        network,
+        observer,
+      });
+      if (!resolved) {
+        throw new Error('PACKET_NOT_FOUND');
+      }
+
+      setResolveCache(cacheKey, resolved);
+      return resolved;
+    })();
+    resolveInflight.set(cacheKey, promise);
+    try {
+      return await promise;
+    } finally {
+      if (resolveInflight.get(cacheKey) === promise) {
+        resolveInflight.delete(cacheKey);
+      }
     }
-
-    setResolveCache(cacheKey, resolved);
-    return resolved;
   }
 
   async function resolvePacketMulti(packetHash: string, network: string): Promise<unknown> {
     const cacheKey = `m|${packetHash}|${network}`;
     const cached = getResolveCache(cacheKey);
     if (cached) return cached;
+    const inflight = resolveInflight.get(cacheKey);
+    if (inflight) return inflight;
 
-    const resolved = await resolvePool.run<unknown>({
-      type: 'resolveMulti',
-      packetHash,
-      network,
-    });
-    if (!resolved) {
-      throw new Error('PACKET_NOT_FOUND');
+    const promise = (async () => {
+      const resolved = await resolvePool.run<unknown>({
+        type: 'resolveMulti',
+        packetHash,
+        network,
+      });
+      if (!resolved) {
+        throw new Error('PACKET_NOT_FOUND');
+      }
+
+      setResolveCache(cacheKey, resolved);
+      return resolved;
+    })();
+    resolveInflight.set(cacheKey, promise);
+    try {
+      return await promise;
+    } finally {
+      if (resolveInflight.get(cacheKey) === promise) {
+        resolveInflight.delete(cacheKey);
+      }
     }
-
-    setResolveCache(cacheKey, resolved);
-    return resolved;
   }
 
   async function getPathHistory(scope: string): Promise<unknown> {

@@ -1,7 +1,9 @@
 import { create } from 'zustand';
 import type { AggregatedPacket } from '../hooks/useNodes.js';
-import type { LosProfile } from '../components/Map/types.js';
+import type { LosProfile, PlannedRepeater } from '../components/Map/types.js';
 import type { CustomLosPoint, CustomLosSegment } from '../components/Map/types.js';
+
+export type { PlannedRepeater };
 
 type OverlayStoreState = {
   pinnedPacketId: string | null;
@@ -32,6 +34,13 @@ type OverlayStoreState = {
   setCustomLosStart: (point: CustomLosPoint | null) => void;
   setCustomLosResult: (segments: CustomLosSegment[]) => void;
   clearCustomLos: () => void;
+  // Planned repeater placement
+  planRepeaterMode: boolean;
+  plannedRepeaters: PlannedRepeater[];
+  setPlanRepeaterMode: (active: boolean) => void;
+  addPlannedRepeater: (repeater: PlannedRepeater) => void;
+  updatePlannedRepeater: (id: string, patch: Partial<PlannedRepeater>) => void;
+  removePlannedRepeater: (id: string) => void;
 };
 
 export const useOverlayStore = create<OverlayStoreState>((set) => ({
@@ -89,4 +98,17 @@ export const useOverlayStore = create<OverlayStoreState>((set) => ({
   setCustomLosStart: (point) => set({ customLosStart: point }),
   setCustomLosResult: (segments) => set({ customLosSegments: segments }),
   clearCustomLos: () => set({ customLosMode: false, customLosStart: null, customLosSegments: [] }),
+  // Planned repeater placement
+  planRepeaterMode: false,
+  plannedRepeaters: [],
+  setPlanRepeaterMode: (active) => set({ planRepeaterMode: active }),
+  addPlannedRepeater: (repeater) => set((state) => ({
+    plannedRepeaters: [...state.plannedRepeaters, repeater],
+  })),
+  updatePlannedRepeater: (id, patch) => set((state) => ({
+    plannedRepeaters: state.plannedRepeaters.map((r) => r.id === id ? { ...r, ...patch } : r),
+  })),
+  removePlannedRepeater: (id) => set((state) => ({
+    plannedRepeaters: state.plannedRepeaters.filter((r) => r.id !== id),
+  })),
 }));

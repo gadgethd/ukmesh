@@ -31,6 +31,31 @@ type StatsServiceDeps = {
 
 export type StatsService = ReturnType<typeof createStatsService>;
 
+const CHANNEL_TRAFFIC_CACHE_TTL_MS = 60 * 60_000;
+
+type CachedChannelTraffic = Array<{
+  channel: string;
+  count: number;
+  pct: number;
+}>;
+
+function countryFromLatLon(lat: number, lon: number): string | null {
+  // Ordered smallest/most-specific first to reduce overlap ambiguity
+  if (lat >= 50.75 && lat <= 53.60 && lon >= 3.35 && lon <= 7.22) return 'Netherlands';
+  if (lat >= 49.50 && lat <= 51.51 && lon >= 2.54 && lon <= 6.41) return 'Belgium';
+  if (lat >= 47.27 && lat <= 55.07 && lon >= 5.87 && lon <= 15.04) return 'Germany';
+  if (lat >= 54.56 && lat <= 57.75 && lon >= 8.07 && lon <= 15.20) return 'Denmark';
+  if (lat >= 51.44 && lat <= 55.39 && lon >= -10.48 && lon <= -5.34) return 'Ireland';
+  if (lat >= 41.33 && lat <= 51.12 && lon >= -5.14 && lon <= 9.56) return 'France';
+  if (lat >= 35.92 && lat <= 43.79 && lon >= -9.30 && lon <= 4.29) return 'Spain';
+  if (lat >= 36.62 && lat <= 47.10 && lon >= 6.61 && lon <= 18.52) return 'Italy';
+  if (lat >= 55.34 && lat <= 69.06 && lon >= 11.12 && lon <= 24.17) return 'Sweden';
+  if (lat >= 57.98 && lat <= 71.19 && lon >= 4.50 && lon <= 31.10) return 'Norway';
+  if (lat >= 59.81 && lat <= 70.09 && lon >= 19.09 && lon <= 31.59) return 'Finland';
+  if (lat >= 46.37 && lat <= 54.84 && lon >= 14.12 && lon <= 24.15) return 'Poland';
+  return null;
+}
+
 export function createStatsService(deps: StatsServiceDeps) {
   const {
     statsCache,
@@ -49,6 +74,8 @@ export function createStatsService(deps: StatsServiceDeps) {
     4: 'Advert', 5: 'GroupText', 6: 'GroupData',
     7: 'AnonReq', 8: 'Path', 9: 'Trace', 11: 'Control',
   };
+  const channelTrafficCache = new Map<string, { ts: number; data: CachedChannelTraffic }>();
+  const statsInflight = new Map<string, Promise<unknown>>();
 
   const fmtHour = (ts: Date | string) => {
     const d = new Date(ts);
@@ -62,6 +89,65 @@ export function createStatsService(deps: StatsServiceDeps) {
     const d = new Date(ts);
     return d.toLocaleDateString('en-GB', { weekday: 'short', month: 'short', day: 'numeric' });
   };
+
+  function mergeObserverRegionSummary(
+    data: unknown,
+    summaryRows: Array<{
+      iata?: string | null;
+      active_observers?: string | number | null;
+      observers?: string | number | null;
+      packets_24h?: string | number | null;
+      packets_7d?: string | number | null;
+      last_packet_at?: string | null;
+    }>,
+  ): unknown {
+    if (!data || typeof data !== 'object') return data;
+    const current = data as {
+      observerRegions?: Array<{
+        iata: string;
+        series?: { day: string; count: number }[];
+      }>;
+    };
+    const seriesByIata = new Map(
+      Array.isArray(current.observerRegions)
+        ? current.observerRegions.map((region) => [region.iata, Array.isArray(region.series) ? region.series : []] as const)
+        : [],
+    );
+    return {
+      ...current,
+      observerRegions: summaryRows.map((row) => {
+        const iata = String(row.iata ?? 'UNK');
+        return {
+          iata,
+          activeObservers: Number(row.active_observers ?? 0),
+          observers: Number(row.observers ?? 0),
+          packets24h: Number(row.packets_24h ?? 0),
+          packets7d: Number(row.packets_7d ?? 0),
+          lastPacketAt: row.last_packet_at ?? null,
+          series: seriesByIata.get(iata) ?? [],
+        };
+      }),
+    };
+  }
+
+  async function getChannelTraffic(network: string | undefined, observer: string | undefined): Promise<CachedChannelTraffic> {
+    const key = `${network ?? 'all'}:${observer ?? ''}`;
+    const cached = channelTrafficCache.get(key);
+    if (cached && Date.now() - cached.ts < CHANNEL_TRAFFIC_CACHE_TTL_MS) return cached.data;
+
+    const result = await repository.fetchChannelTraffic(network, observer);
+    const data = result.rows.map((r) => {
+      const count = Number(r.count ?? 0);
+      const total = Number(r.total_count ?? 0);
+      return {
+        channel: String(r.channel ?? 'Unknown'),
+        count,
+        pct: total > 0 ? Number(((count / total) * 100).toFixed(1)) : 0,
+      };
+    });
+    channelTrafficCache.set(key, { ts: Date.now(), data });
+    return data;
+  }
 
   async function computeChartsData(network: string | undefined, observer: string | undefined): Promise<unknown> {
     const {
@@ -117,6 +203,8 @@ export function createStatsService(deps: StatsServiceDeps) {
     const multibyteRow = multibyteSummaryResult.rows[0];
     const latestFullyDecodedNodes = maskDecodedPathNodes(multibyteRow?.latest_fully_decoded_nodes);
     const longestFullyDecodedNodes = maskDecodedPathNodes(multibyteRow?.longest_fully_decoded_nodes);
+    const totalPackets24h = Number((sumResult.rows[0] as any).total_24h ?? 0);
+    const channelTrafficRows = await getChannelTraffic(network, observer);
 
     return {
       packetsPerHour: phResult.rows.map(r => ({ hour: fmtHourMinute((r as any).hour), count: Number((r as any).count) })),
@@ -128,6 +216,10 @@ export function createStatsService(deps: StatsServiceDeps) {
       hopDistribution: hdResult.rows.map(r => ({ hops: Number((r as any).hops), count: Number((r as any).count) })),
       topChatters: [],
       prefixCollisions: pcResult.rows.map(r => ({ prefix: String((r as any).prefix ?? '').toUpperCase(), repeats: Number((r as any).repeats) })),
+      channelTraffic: channelTrafficRows.map((row) => ({
+        ...row,
+        allPct: totalPackets24h > 0 ? Number(((row.count / totalPackets24h) * 100).toFixed(1)) : 0,
+      })),
       observerRegions: Array.from(observerRegionsByIata.values()),
       pathHashes: {
         last24hHops: pathHashStats,
@@ -147,7 +239,7 @@ export function createStatsService(deps: StatsServiceDeps) {
         longestFullyDecodedNodes,
       },
       summary: {
-        totalPackets24h: Number((sumResult.rows[0] as any).total_24h),
+        totalPackets24h,
         totalPackets7d: Number((sumResult.rows[0] as any).total_7d),
         uniqueRadios24h: Number((sumResult.rows[0] as any).unique_radios_24h),
         activeRepeaters: Number((sumResult.rows[0] as any).active_repeaters ?? 0),
@@ -161,7 +253,22 @@ export function createStatsService(deps: StatsServiceDeps) {
   async function getCharts(network: string | undefined, observer: string | undefined): Promise<unknown> {
     const key = `${network ?? 'all'}:${observer ?? ''}`;
     const cached = chartsCache.get(key);
-    if (cached && Date.now() - cached.ts < chartsCacheTtlMs) return cached.data;
+    if (cached && Date.now() - cached.ts < chartsCacheTtlMs) {
+      const observerRegionSummary = await repository.fetchObserverRegionSummary(network, observer);
+      const refreshed = mergeObserverRegionSummary(
+        cached.data,
+        observerRegionSummary.rows as Array<{
+          iata?: string | null;
+          active_observers?: string | number | null;
+          observers?: string | number | null;
+          packets_24h?: string | number | null;
+          packets_7d?: string | number | null;
+          last_packet_at?: string | null;
+        }>,
+      );
+      chartsCache.set(key, { ts: cached.ts, data: refreshed });
+      return refreshed;
+    }
 
     const inflight = chartsInflight.get(key);
     if (inflight) return inflight;
@@ -183,23 +290,26 @@ export function createStatsService(deps: StatsServiceDeps) {
     const warmupNetworks = (process.env['WARMUP_NETWORKS'] ?? 'teesside,ukmesh')
       .split(',').map((s: string) => s.trim()).filter(Boolean);
 
-    const warmCharts = () => {
+    const warmCharts = async () => {
       for (const net of warmupNetworks) {
-        getCharts(net, undefined).catch(() => { /* best-effort */ });
+        await getCharts(net, undefined).catch(() => { /* best-effort */ });
       }
     };
 
     setTimeout(warmCharts, 5_000);
     setInterval(warmCharts, chartsCacheTtlMs);
+
+    const warmStats = async () => {
+      for (const net of warmupNetworks) {
+        await getStatsSummary(net, undefined).catch(() => { /* best-effort */ });
+      }
+    };
+
+    setTimeout(warmStats, 6_000);
+    setInterval(warmStats, statsCacheTtlMs);
   }
 
-  async function getStatsSummary(network: string | undefined, observer: string | undefined): Promise<unknown> {
-    const statsCacheKey = `${network ?? 'all'}:${observer ?? ''}`;
-    const statsCached = statsCache.get(statsCacheKey);
-    if (statsCached && Date.now() - statsCached.ts < statsCacheTtlMs) {
-      return statsCached.data;
-    }
-
+  async function computeStatsSummary(network: string | undefined, observer: string | undefined): Promise<unknown> {
     const {
       mqttCount,
       packetCount,
@@ -208,9 +318,19 @@ export function createStatsService(deps: StatsServiceDeps) {
       totalNodeCount,
       longestHopCount,
       nodesDayCount,
+      internationalCount,
     } = await repository.fetchStatsSummary(network, observer);
 
-    const statsData = {
+    const intlRow = (internationalCount.rows[0] as any);
+    const intlTotalAdverts = Number(intlRow?.total_adverts ?? 0);
+    const intlConfirmed = intlTotalAdverts >= 20;
+    const intlLat = intlRow?.last_lat != null ? Number(intlRow.last_lat) : null;
+    const intlLon = intlRow?.last_lon != null ? Number(intlRow.last_lon) : null;
+    const intlCountry = intlConfirmed && intlLat != null && intlLon != null
+      ? countryFromLatLon(intlLat, intlLon)
+      : null;
+
+    return {
       mqttNodes: Number((mqttCount.rows[0] as any)?.count ?? 0),
       staleNodes: Number((staleCount.rows[0] as any)?.count ?? 0),
       packetsDay: Number((packetCount.rows[0] as any)?.count ?? 0),
@@ -219,9 +339,33 @@ export function createStatsService(deps: StatsServiceDeps) {
       totalNodes: Number((totalNodeCount.rows[0] as any)?.count ?? 0),
       longestHop: Number((longestHopCount.rows[0] as any)?.count ?? 0),
       longestHopHash: ((longestHopCount.rows[0] as any)?.hash as string | undefined) ?? null,
+      internationalNodes: intlConfirmed ? Number(intlRow?.count_connected ?? 0) : 0,
+      internationalLastSeen: intlConfirmed ? ((intlRow?.last_seen_at as string | null) ?? null) : null,
+      internationalLastCountry: intlCountry,
     };
-    statsCache.set(statsCacheKey, { ts: Date.now(), data: statsData });
-    return statsData;
+  }
+
+  async function getStatsSummary(network: string | undefined, observer: string | undefined): Promise<unknown> {
+    const key = `${network ?? 'all'}:${observer ?? ''}`;
+    const cached = statsCache.get(key);
+    if (cached && Date.now() - cached.ts < statsCacheTtlMs) {
+      return cached.data;
+    }
+
+    const inflight = statsInflight.get(key);
+    if (inflight) return inflight;
+
+    const promise = computeStatsSummary(network, observer).then((data) => {
+      statsCache.set(key, { ts: Date.now(), data });
+      statsInflight.delete(key);
+      return data;
+    }).catch((err) => {
+      statsInflight.delete(key);
+      throw err;
+    });
+
+    statsInflight.set(key, promise);
+    return promise;
   }
 
   async function getObserverActivity(network: string | undefined): Promise<unknown> {
