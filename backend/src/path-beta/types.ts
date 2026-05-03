@@ -35,6 +35,14 @@ export type PathLearningModel = {
   bucketHours: number;
 };
 
+export type NeighborAffinityMetrics = {
+  count: number;
+  observerCount: number;
+  avgSnr: number | null;
+  lastSeen: string | null;
+  score: number;
+};
+
 export type PathPacket = {
   packet_hash: string;
   rx_node_id: string | null;
@@ -60,5 +68,9 @@ export type BetaResolveContext = {
   /** Subset of linkPairs where observed_count > 0 — links confirmed by actual packet observations. */
   observedLinkPairs: Set<string>;
   linkMetrics: Map<string, LinkMetrics>;
+  /** Packet-derived first-hop affinity, resolved only when both endpoints are known full node IDs. */
+  neighborAffinity: Map<string, NeighborAffinityMetrics>;
+  /** Adjacency built from packet-derived first-hop affinity for shared-neighbor scoring. */
+  neighborAffinityNeighbors: Map<string, Set<string>>;
   learningModel: PathLearningModel;
 };
