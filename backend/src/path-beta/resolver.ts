@@ -45,6 +45,7 @@ import {
   trimPathBetweenStitches,
   trimRedToPurpleStitch,
 } from './fallback.js';
+import { buildNeighborAffinityAdjacency, buildNeighborAffinityMap, neighborAffinityPreference } from './affinity.js';
 import type { BetaResolveContext, LinkMetrics, MeshNode, NodeCoverage, ObserverHopHint, PathLearningModel, PathPacket } from './types.js';
 
 const contextCache = new Map<string, BetaResolveContext>();
@@ -132,7 +133,7 @@ function confirmedLinkConfidence(
   meta: LinkMetrics | undefined,
   fromId: string,
   toId: string,
-  prior?: { prefix?: number; transition?: number; motif?: number; edge?: number; ambiguity?: number },
+  prior?: { prefix?: number; transition?: number; motif?: number; edge?: number; ambiguity?: number; affinity?: number },
 ): number {
   if (!meta) return 0;
 
@@ -165,6 +166,7 @@ function confirmedLinkConfidence(
     + Number(prior?.motif ?? 0)
     + Number(prior?.edge ?? 0)
     + Number(prior?.ambiguity ?? 0)
+    + Number(prior?.affinity ?? 0)
     + linkColorPreference(meta)
     + radioNeighborPreference(meta);
   return clamp(confidence + priorBoost, 0, 1);
@@ -988,6 +990,12 @@ function resolveBetaPath(
     const transBoost = transitionPrior(candidate.node_id, prevNode.node_id);
     const motifBoost = motifPrior([candidate.node_id, prevNode.node_id]);
     const edgeBoost = edgePrior(candidate.node_id, prevNode.node_id);
+    const affinityBoost = neighborAffinityPreference(
+      context.neighborAffinity,
+      context.neighborAffinityNeighbors,
+      candidate.node_id,
+      prevNode.node_id,
+    );
 
     // --- Confirmed tier: link has real observed packet traffic ---
     if (context.observedLinkPairs.has(mKey)) {
@@ -997,6 +1005,7 @@ function resolveBetaPath(
         transition: transBoost * 0.24,
         motif: motifBoost * 0.2,
         edge: edgeBoost * 0.3,
+        affinity: affinityBoost * 0.55,
         ambiguity: -ambiguityPenalty,
       });
       return Math.max(baseConf, confirmedFloor, multibyteFloor);
@@ -1014,11 +1023,11 @@ function resolveBetaPath(
       0.2 + prior * 0.34
         + prefixBoost * 0.22 + transBoost * 0.25 + motifBoost * 0.18 + edgeBoost * 0.28
         + clamp(dirBoost, -1, 1) * 0.1 + clamp(obsBoost, -1, 1) * OBSERVER_HOP_WEIGHT_REACHABLE
-        + linkQuality + uniquenessBoost - distancePenalty - ambiguityPenalty
+        + linkQuality + affinityBoost + uniquenessBoost - distancePenalty - ambiguityPenalty
         - (hashMatchCounts[hopIdx]! - 1) * 0.01,
     );
     const priorStrength = prefixBoost * 0.22 + transBoost * 0.25 + edgeBoost * 0.28 + motifBoost * 0.18;
-    const nonLinkCap = Math.min(0.50, 0.41 + priorStrength * 0.25);
+    const nonLinkCap = Math.min(0.62, 0.41 + priorStrength * 0.25 + affinityBoost * 0.35);
     return multibyteFloor >= BETA_PURPLE_THRESHOLD ? rawConf : Math.min(rawConf, nonLinkCap);
   }
 
@@ -1257,7 +1266,7 @@ async function loadContext(network: string): Promise<BetaResolveContext> {
   const cached = contextCache.get(network);
   if (cached && now - cached.loadedAt < CONTEXT_TTL_MS) return cached;
 
-  const [nodeRows, coverageRows, linkRows, learningModel] = await Promise.all([
+  const [nodeRows, coverageRows, linkRows, learningModel, neighborAffinity] = await Promise.all([
     query<MeshNode>(
       `SELECT node_id, name, lat, lon, iata, role, elevation_m, last_seen::text AS last_seen
        FROM nodes
@@ -1291,6 +1300,7 @@ async function loadContext(network: string): Promise<BetaResolveContext> {
       [network],
     ),
     buildLearningModel(network),
+    buildNeighborAffinityMap(network, query),
   ]);
 
   const nodesById = new Map<string, MeshNode>();
@@ -1322,6 +1332,8 @@ async function loadContext(network: string): Promise<BetaResolveContext> {
     });
   }
 
+  const neighborAffinityNeighbors = buildNeighborAffinityAdjacency(neighborAffinity);
+
   const context: BetaResolveContext = {
     loadedAt: now,
     nodesById,
@@ -1329,6 +1341,8 @@ async function loadContext(network: string): Promise<BetaResolveContext> {
     linkPairs,
     observedLinkPairs,
     linkMetrics,
+    neighborAffinity,
+    neighborAffinityNeighbors,
     learningModel,
   };
   contextCache.set(network, context);
