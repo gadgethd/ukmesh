@@ -1,7 +1,7 @@
 import type { IncomingHttpHeaders } from 'node:http';
 
 type NetworkScope = 'teesside' | 'ukmesh' | 'test' | 'all';
-type ForcedScope = Exclude<NetworkScope, 'ukmesh'>;
+type ForcedScope = Exclude<NetworkScope, 'all'>;
 
 function firstHeaderValue(value: string | string[] | undefined): string {
   return Array.isArray(value) ? String(value[0] ?? '') : String(value ?? '');
@@ -32,7 +32,7 @@ export function inferForcedNetwork(headers: IncomingHttpHeaders): ForcedScope | 
   const candidates = [host, origin, referer];
 
   if (candidates.some((value) => value === 'test.ukmesh.com' || value.endsWith('.test.ukmesh.com'))) return 'test';
-  if (candidates.some((value) => value === 'app.ukmesh.com' || value === 'www.ukmesh.com' || value === 'ukmesh.com')) return 'all';
+  if (candidates.some((value) => value === 'app.ukmesh.com' || value === 'www.ukmesh.com' || value === 'ukmesh.com')) return 'ukmesh';
   if (candidates.some((value) => value === 'app.teessidemesh.com' || value === 'www.teessidemesh.com' || value === 'teessidemesh.com')) return 'teesside';
   return undefined;
 }

@@ -5,6 +5,7 @@ import { Redis } from 'ioredis';
 import type { WSMessage, LivePacket } from '../types/index.js';
 import { getNodes, getRecentPackets, getRecentMessages, getViableLinks } from '../db/index.js';
 import { resolveRequestNetwork } from '../http/requestScope.js';
+import { networkMatchesScope } from '../networks.js';
 
 const REDIS_CHANNEL = 'meshcore:live';
 const LOG_WS_PACKETS = process.env['LOG_WS_PACKETS'] === '1';
@@ -106,7 +107,7 @@ async function getCachedViableLinks(network?: string, observer?: string) {
 }
 
 function packetMatchesScope(packet: Partial<LivePacket>, scope: ClientScope): boolean {
-  if (scope.network && packet.network && packet.network !== scope.network) return false;
+  if (scope.network && packet.network && !networkMatchesScope(packet.network, scope.network)) return false;
   if (!scope.network && !scope.observer && packet.network === 'test') return false;
   if (scope.observer) {
     // rxNodeId is a hex public key — always lowercase; no allocation needed
@@ -129,7 +130,7 @@ function shouldSendMessage(msg: WSMessage, scope: ClientScope): boolean {
 
   if (msg.type === 'node_update') {
     const data = msg.data as { nodeId?: string; network?: string; observerId?: string };
-    if (scope.network && data.network && data.network !== scope.network) return false;
+    if (scope.network && data.network && !networkMatchesScope(data.network, scope.network)) return false;
     if (!scope.network && !scope.observer && data.network === 'test') return false;
     if (!scope.network && !scope.observer) return true;
     if (scope.observer && data.observerId && data.observerId !== scope.observer && !nodeMatchesScope(data.nodeId, scope)) {
@@ -140,7 +141,7 @@ function shouldSendMessage(msg: WSMessage, scope: ClientScope): boolean {
 
   if (msg.type === 'node_upsert') {
     const data = msg.data as { node_id?: string; network?: string; observer_id?: string };
-    if (scope.network && data.network && data.network !== scope.network) return false;
+    if (scope.network && data.network && !networkMatchesScope(data.network, scope.network)) return false;
     if (!scope.network && !scope.observer && data.network === 'test') return false;
     if (!scope.network && !scope.observer) return true;
     if (scope.observer) {

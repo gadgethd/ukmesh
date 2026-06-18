@@ -3,8 +3,11 @@ import fs from 'node:fs';
 import { databaseConfig } from '../platform/config/database.js';
 import { resolveDbAssetPath } from './assets.js';
 import { runMigrations } from './migrations.js';
+import { UKMESH_NETWORKS } from '../networks.js';
 
 const { Pool } = pg;
+const COORDINATE_RECALC_THRESHOLD_M = Number(process.env['NODE_COORDINATE_RECALC_THRESHOLD_M'] ?? 25);
+const MAX_MULTIBYTE_PATH_SEGMENT_KM = 150;
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -38,6 +41,23 @@ analyticsPool.on('error', (err) => {
   console.error('[db] unexpected analytics pool error', err.message);
 });
 
+function validCoordinatePair(lat?: number | null, lon?: number | null): boolean {
+  return (
+    typeof lat === 'number'
+    && typeof lon === 'number'
+    && Number.isFinite(lat)
+    && Number.isFinite(lon)
+    && !(Math.abs(lat) < 1e-9 && Math.abs(lon) < 1e-9)
+  );
+}
+
+function distanceMeters(aLat: number, aLon: number, bLat: number, bLon: number): number {
+  const midLat = ((aLat + bLat) / 2) * Math.PI / 180;
+  const dLat = (bLat - aLat) * 111_320;
+  const dLon = (bLon - aLon) * 111_320 * Math.cos(midLat);
+  return Math.sqrt(dLat ** 2 + dLon ** 2);
+}
+
 export async function query<T extends pg.QueryResultRow = pg.QueryResultRow>(
   text: string,
   params?: unknown[]
@@ -48,17 +68,27 @@ export async function query<T extends pg.QueryResultRow = pg.QueryResultRow>(
 type ScopePlaceholders = {
   params: unknown[];
   networkParam: string | null;
+  networkIsMulti: boolean;
   observerParam: string | null;
 };
 
 function buildScopePlaceholders(startIndex: number, network?: string, observer?: string): ScopePlaceholders {
   const params: unknown[] = [];
   let idx = startIndex;
-  const networkParam = network ? `$${idx++}` : null;
-  if (network) params.push(network);
+  let networkParam: string | null = null;
+  let networkIsMulti = false;
+  if (network) {
+    networkParam = `$${idx++}`;
+    if (network === 'ukmesh') {
+      params.push(UKMESH_NETWORKS);
+      networkIsMulti = true;
+    } else {
+      params.push(network);
+    }
+  }
   const observerParam = observer ? `$${idx++}` : null;
   if (observer) params.push(observer);
-  return { params, networkParam, observerParam };
+  return { params, networkParam, networkIsMulti, observerParam };
 }
 
 function buildPacketScopeClause(
@@ -69,7 +99,10 @@ function buildPacketScopeClause(
   const prefix = alias ? `${alias}.` : '';
   const conditions: string[] = [];
   if (placeholders.networkParam) {
-    conditions.push(`${prefix}network = ${placeholders.networkParam}`);
+    const netCond = placeholders.networkIsMulti
+      ? `${prefix}network = ANY(${placeholders.networkParam})`
+      : `${prefix}network = ${placeholders.networkParam}`;
+    conditions.push(netCond);
     if (network !== 'test') {
       conditions.push(`split_part(${prefix}topic, '/', 1) <> 'meshcore-test'`);
     }
@@ -88,19 +121,31 @@ function buildNodeScopeClause(
   alias?: string,
 ): string {
   const prefix = alias ? `${alias}.` : '';
+  // The outer node_id reference inside EXISTS must be qualified: an unqualified
+  // node_id there resolves to s.node_id (always true). Callers without an alias
+  // must be querying the nodes table directly.
+  const nodeRef = alias ? `${alias}.node_id` : 'nodes.node_id';
   const conditions: string[] = [];
 
   if (placeholders.networkParam) {
+    const netMatch = placeholders.networkIsMulti
+      ? `= ANY(${placeholders.networkParam})`
+      : `= ${placeholders.networkParam}`;
+    // nodes.network is last-writer-wins across observers, so a node heard on
+    // two networks flip-flops between them and randomly drops off each map.
+    // node_network_sightings records every network a node is active on, so
+    // also include nodes recently sighted on the requested network(s).
     conditions.push(
       `(
-        ${prefix}network = ${placeholders.networkParam}
+        ${prefix}network ${netMatch}
         OR (
-          ${placeholders.networkParam} = 'teesside'
+          ${prefix}network IS DISTINCT FROM 'test'
           AND EXISTS (
             SELECT 1
             FROM node_network_sightings s
-            WHERE s.node_id = ${prefix}node_id
-              AND s.network = 'teesside'
+            WHERE s.node_id = ${nodeRef}
+              AND s.network ${netMatch}
+              AND s.last_seen_at > NOW() - INTERVAL '30 days'
           )
         )
       )`,
@@ -110,15 +155,25 @@ function buildNodeScopeClause(
   }
 
   if (placeholders.observerParam) {
+    const netCond = placeholders.networkParam
+      ? (placeholders.networkIsMulti
+          ? `AND p.network = ANY(${placeholders.networkParam})`
+          : `AND p.network = ${placeholders.networkParam}`)
+      : '';
+    // IN (uncorrelated subquery) so the planner hashes the observer's heard-node
+    // set once; a correlated EXISTS here runs per node row (minutes, not ms).
+    // 7-day window matches the observer_meta lookback and keeps the packet
+    // scan inside recent chunks (~700ms vs 5min unbounded).
     const observerNodeScope = [
       `${prefix}node_id = ${placeholders.observerParam}`,
-      `EXISTS (
-         SELECT 1
+      `OR ${nodeRef} IN (
+         SELECT p.src_node_id
          FROM packets p
-         WHERE p.rx_node_id = ${placeholders.observerParam}`,
-      placeholders.networkParam ? `AND p.network = ${placeholders.networkParam}` : '',
-      `AND p.src_node_id = ${prefix}node_id
-       )`,
+         WHERE p.rx_node_id = ${placeholders.observerParam}
+           AND p.time > NOW() - INTERVAL '7 days'
+           AND p.src_node_id IS NOT NULL`,
+      netCond,
+      `)`,
     ].filter(Boolean).join(' ');
     conditions.push(`(${observerNodeScope})`);
   }
@@ -243,31 +298,70 @@ export async function upsertNode(nodeId: string, updates: {
   publicKey?: string;
   network?: string;
   allowTestOverride?: boolean;
-}): Promise<void> {
-  await pool.query(
-    `INSERT INTO nodes (node_id, name, lat, lon, iata, role, hardware_model, firmware_version, public_key, last_seen, is_online, network)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), TRUE, $10)
-     ON CONFLICT (node_id) DO UPDATE SET
-       name             = COALESCE(EXCLUDED.name, nodes.name),
-       lat              = COALESCE(NULLIF(EXCLUDED.lat, 0), nodes.lat),
-       lon              = COALESCE(NULLIF(EXCLUDED.lon, 0), nodes.lon),
-       iata             = COALESCE(EXCLUDED.iata, nodes.iata),
-       role             = COALESCE(EXCLUDED.role, nodes.role),
-       hardware_model   = COALESCE(EXCLUDED.hardware_model, nodes.hardware_model),
-       firmware_version = COALESCE(EXCLUDED.firmware_version, nodes.firmware_version),
-       public_key       = COALESCE(EXCLUDED.public_key, nodes.public_key),
-       network          = CASE
-                            WHEN EXCLUDED.network IS NULL THEN nodes.network
-                            WHEN EXCLUDED.network = 'test' AND $11 THEN 'test'
-                            WHEN EXCLUDED.network = 'test' AND nodes.network IN ('ukmesh', 'teesside') THEN nodes.network
-                            WHEN EXCLUDED.network IN ('ukmesh', 'teesside') THEN EXCLUDED.network
-                            ELSE EXCLUDED.network
-                          END,
-       last_seen        = NOW(),
-       is_online        = TRUE`,
-    [nodeId, updates.name, updates.lat, updates.lon, updates.iata, updates.role,
-     updates.hardwareModel, updates.firmwareVersion, updates.publicKey, updates.network ?? null, Boolean(updates.allowTestOverride)]
-  );
+}): Promise<{ coordinatesChanged: boolean }> {
+  const incomingLat = typeof updates.lat === 'number' && updates.lat !== 0 ? updates.lat : null;
+  const incomingLon = typeof updates.lon === 'number' && updates.lon !== 0 ? updates.lon : null;
+  const hasIncomingPosition = validCoordinatePair(incomingLat, incomingLon);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const existing = hasIncomingPosition
+      ? await client.query<{ lat: number | null; lon: number | null }>(
+          'SELECT lat, lon FROM nodes WHERE node_id = $1 FOR UPDATE',
+          [nodeId],
+        )
+      : null;
+
+    await client.query(
+      `INSERT INTO nodes (node_id, name, lat, lon, iata, role, hardware_model, firmware_version, public_key, last_seen, is_online, network)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), TRUE, $10)
+       ON CONFLICT (node_id) DO UPDATE SET
+         name             = COALESCE(EXCLUDED.name, nodes.name),
+         lat              = COALESCE(NULLIF(EXCLUDED.lat, 0), nodes.lat),
+         lon              = COALESCE(NULLIF(EXCLUDED.lon, 0), nodes.lon),
+         iata             = COALESCE(EXCLUDED.iata, nodes.iata),
+         role             = COALESCE(EXCLUDED.role, nodes.role),
+         hardware_model   = COALESCE(EXCLUDED.hardware_model, nodes.hardware_model),
+         firmware_version = COALESCE(EXCLUDED.firmware_version, nodes.firmware_version),
+         public_key       = COALESCE(EXCLUDED.public_key, nodes.public_key),
+         network          = CASE
+                              WHEN EXCLUDED.network IS NULL THEN nodes.network
+                              WHEN EXCLUDED.network = 'test' AND $11 THEN 'test'
+                              WHEN EXCLUDED.network = 'test' AND nodes.network IN ('ukmesh', 'northeast', 'teesside') THEN nodes.network
+                              WHEN EXCLUDED.network IN ('ukmesh', 'teesside') THEN EXCLUDED.network
+                              ELSE EXCLUDED.network
+                            END,
+         last_seen        = NOW(),
+         is_online        = TRUE`,
+      [nodeId, updates.name, updates.lat, updates.lon, updates.iata, updates.role,
+       updates.hardwareModel, updates.firmwareVersion, updates.publicKey, updates.network ?? null, Boolean(updates.allowTestOverride)]
+    );
+
+    const row = existing?.rows[0];
+    const coordinatesChanged = Boolean(
+      hasIncomingPosition
+      && row
+      && validCoordinatePair(row.lat, row.lon)
+      && incomingLat !== null
+      && incomingLon !== null
+      && row.lat !== null
+      && row.lon !== null
+      && distanceMeters(row.lat, row.lon, incomingLat, incomingLon) >= COORDINATE_RECALC_THRESHOLD_M
+    );
+
+    if (coordinatesChanged) {
+      await client.query('UPDATE nodes SET elevation_m = NULL WHERE node_id = $1', [nodeId]);
+      await client.query('DELETE FROM node_coverage WHERE node_id = $1', [nodeId]);
+    }
+
+    await client.query('COMMIT');
+    return { coordinatesChanged };
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
 export async function insertPacket(p: {
@@ -287,6 +381,8 @@ export async function insertPacket(p: {
   pathHashes?: string[];
   pathHashSizeBytes?: number;
   network?: string;
+  transportCodes?: string;
+  regionScope?: string;
 }): Promise<void> {
   const inferredPathHashSizeBytes = (() => {
     if (typeof p.pathHashSizeBytes === 'number' && Number.isFinite(p.pathHashSizeBytes) && p.pathHashSizeBytes > 0) {
@@ -304,12 +400,14 @@ export async function insertPacket(p: {
   await pool.query(
     `INSERT INTO packets
        (time, packet_hash, rx_node_id, src_node_id, topic, packet_type, route_type,
-        hop_count, rssi, snr, payload, raw_hex, advert_count, path_hashes, path_hash_size_bytes, network)
-     VALUES (NOW(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+        hop_count, rssi, snr, payload, raw_hex, advert_count, path_hashes, path_hash_size_bytes, network,
+        transport_codes, region_scope)
+     VALUES (NOW(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
     [p.packetHash, p.rxNodeId, p.srcNodeId, p.topic, p.packetType,
      p.routeType, p.hopCount, p.rssi, p.snr,
      storedPayload ? JSON.stringify(storedPayload) : null, p.rawHex, p.advertCount ?? null,
-     p.pathHashes ?? null, inferredPathHashSizeBytes, network]
+     p.pathHashes ?? null, inferredPathHashSizeBytes, network,
+     p.transportCodes ?? null, p.regionScope ?? null]
   );
   if (p.srcNodeId && network !== 'test') {
     pool.query(
@@ -352,7 +450,7 @@ export async function insertNodeStatusSample(sample: {
 
 export async function getNodes(network?: string, observer?: string) {
   const scope = buildScopePlaceholders(1, network, observer);
-  const whereClause = `WHERE 1=1${buildNodeScopeClause(scope)}`;
+  const whereClause = `WHERE 1=1${buildNodeScopeClause(scope, 'n')}`;
   const res = await pool.query(
     `SELECT
        n.node_id,
@@ -744,6 +842,68 @@ export async function getPathHistoryCache(scope: string): Promise<PathHistoryCac
   };
 }
 
+export type MultibytePathSegmentRow = {
+  positions: [[number, number], [number, number]];
+  count: number;
+};
+
+export async function getMultibytePathSegments(network?: string, observer?: string): Promise<{
+  maxCount: number;
+  segments: MultibytePathSegmentRow[];
+}> {
+  const scope = buildScopePlaceholders(1, network, observer);
+  const params: unknown[] = [...scope.params];
+
+  const res = await pool.query<{
+    a_lat: number;
+    a_lon: number;
+    b_lat: number;
+    b_lon: number;
+    count: number;
+  }>(
+    `SELECT
+       a.lat AS a_lat,
+       a.lon AS a_lon,
+       b.lat AS b_lat,
+       b.lon AS b_lon,
+       nl.multibyte_observed_count AS count
+     FROM node_links nl
+     JOIN nodes a ON a.node_id = nl.node_a_id
+     JOIN nodes b ON b.node_id = nl.node_b_id
+     WHERE nl.multibyte_observed_count > 0
+       AND nl.itm_viable = true
+       AND a.lat IS NOT NULL
+       AND a.lon IS NOT NULL
+       AND b.lat IS NOT NULL
+       AND b.lon IS NOT NULL
+       AND a.lat BETWEEN -90 AND 90
+       AND b.lat BETWEEN -90 AND 90
+       AND a.lon BETWEEN -180 AND 180
+       AND b.lon BETWEEN -180 AND 180
+       AND NOT (ABS(a.lat) < 5 AND ABS(a.lon) < 5)
+       AND NOT (ABS(b.lat) < 5 AND ABS(b.lon) < 5)
+       AND SQRT(
+         POWER((a.lat - b.lat) * 111, 2)
+         + POWER((a.lon - b.lon) * 111 * COS(RADIANS((a.lat + b.lat) / 2)), 2)
+       ) <= ${MAX_MULTIBYTE_PATH_SEGMENT_KM}
+       ${buildNodeScopeClause(scope, 'a')}
+       ${buildNodeScopeClause(scope, 'b')}
+     ORDER BY nl.multibyte_observed_count DESC`,
+    params,
+  );
+
+  const segments = res.rows.map((row) => ({
+    positions: [
+      [Number(row.a_lat), Number(row.a_lon)],
+      [Number(row.b_lat), Number(row.b_lon)],
+    ] as [[number, number], [number, number]],
+    count: Number(row.count ?? 0),
+  }));
+
+  const maxCount = segments.reduce((max, segment) => Math.max(max, segment.count), 0);
+  return { maxCount, segments };
+}
+
 /** Minimum observations required before a link is considered confirmed. */
 export const MIN_LINK_OBSERVATIONS = 5;
 
@@ -849,4 +1009,252 @@ export async function getViableLinks(network?: string, observer?: string): Promi
   return res.rows;
 }
 
-export { pool };
+export { pool, analyticsPool };
+
+// ---------------------------------------------------------------------------
+// Spam detection
+// ---------------------------------------------------------------------------
+
+export interface SpamSuspectRow {
+  srcNodeId: string;
+  spoofedName: string;
+  publicKey?: string;
+  claimedLat?: number;
+  claimedLon?: number;
+  canonicalKey?: string;
+  verdict: string;
+  signals: Array<{ name: string; score: number; detail: string }>;
+  totalScore: number;
+  network: string;
+}
+
+export async function insertOrUpdateSpamSuspect(s: SpamSuspectRow): Promise<void> {
+  await pool.query(
+    `INSERT INTO spam_suspects
+       (time, first_seen, src_node_id, spoofed_name, public_key, claimed_lat, claimed_lon,
+        canonical_key, verdict, signals, total_score, network)
+     VALUES (NOW(), NOW(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+     ON CONFLICT (src_node_id) DO UPDATE SET
+       time        = NOW(),
+       first_seen  = COALESCE(spam_suspects.first_seen, EXCLUDED.first_seen),
+       verdict     = EXCLUDED.verdict,
+       signals     = EXCLUDED.signals,
+       total_score = EXCLUDED.total_score,
+       claimed_lat = COALESCE(EXCLUDED.claimed_lat, spam_suspects.claimed_lat),
+       claimed_lon = COALESCE(EXCLUDED.claimed_lon, spam_suspects.claimed_lon)`,
+    [s.srcNodeId, s.spoofedName, s.publicKey ?? null, s.claimedLat ?? null, s.claimedLon ?? null,
+     s.canonicalKey ?? null, s.verdict, JSON.stringify(s.signals), s.totalScore, s.network]
+  );
+}
+
+export async function replaceSpamSuspects(suspects: SpamSuspectRow[]): Promise<void> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('DELETE FROM spam_suspects');
+    for (const s of suspects) {
+      await client.query(
+        `INSERT INTO spam_suspects
+           (time, first_seen, src_node_id, spoofed_name, public_key, claimed_lat, claimed_lon,
+            canonical_key, verdict, signals, total_score, network)
+         VALUES (NOW(), NOW(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+        [s.srcNodeId, s.spoofedName, s.publicKey ?? null, s.claimedLat ?? null, s.claimedLon ?? null,
+         s.canonicalKey ?? null, s.verdict, JSON.stringify(s.signals), s.totalScore, s.network]
+      );
+    }
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+export interface SpamSuspectQueryOptions {
+  hours?: number;
+  verdict?: 'spam' | 'suspect';
+  minScore?: number;
+  limit?: number;
+  offset?: number;
+  includePacketCounts?: boolean;
+}
+
+function buildSpamSuspectWhere(options: SpamSuspectQueryOptions, params: unknown[]): string {
+  const clauses = [`ss.time > NOW() - ($1 * INTERVAL '1 hour')`];
+
+  if (options.verdict) {
+    params.push(options.verdict);
+    clauses.push(`ss.verdict = $${params.length}`);
+  }
+
+  if (options.minScore != null) {
+    params.push(options.minScore);
+    clauses.push(`ss.total_score >= $${params.length}`);
+  }
+
+  return clauses.join(' AND ');
+}
+
+export async function getSpamSuspects(options: number | SpamSuspectQueryOptions = 48) {
+  const queryOptions: SpamSuspectQueryOptions = typeof options === 'number' ? { hours: options } : options;
+  const params: unknown[] = [queryOptions.hours ?? 48];
+  const where = buildSpamSuspectWhere(queryOptions, params);
+  const limit = Math.max(1, Math.min(200, Math.floor(queryOptions.limit ?? 100)));
+  const offset = Math.max(0, Math.floor(queryOptions.offset ?? 0));
+  params.push(limit, offset);
+  const limitParam = params.length - 1;
+  const offsetParam = params.length;
+
+  if (!queryOptions.includePacketCounts) {
+    const res = await pool.query(
+      `SELECT
+         ss.src_node_id,
+         ss.spoofed_name,
+         ss.public_key,
+         ss.claimed_lat,
+         ss.claimed_lon,
+         ss.canonical_key,
+         ss.verdict,
+         ss.signals,
+         ss.total_score,
+         ss.network,
+         ss.time AS detected_at,
+         ss.first_seen,
+         NULL::int AS packet_count,
+         NULL::timestamptz AS first_packet,
+         NULL::timestamptz AS last_packet
+       FROM spam_suspects ss
+       WHERE ${where}
+       ORDER BY ss.total_score DESC, ss.time DESC
+       LIMIT $${limitParam} OFFSET $${offsetParam}`,
+      params
+    );
+    return res.rows;
+  }
+
+  const res = await pool.query(
+    `WITH filtered AS (
+       SELECT
+         ss.src_node_id,
+         ss.spoofed_name,
+         ss.public_key,
+         ss.claimed_lat,
+         ss.claimed_lon,
+         ss.canonical_key,
+         ss.verdict,
+         ss.signals,
+         ss.total_score,
+         ss.network,
+         ss.time,
+         ss.first_seen
+       FROM spam_suspects ss
+       WHERE ${where}
+       ORDER BY ss.total_score DESC, ss.time DESC
+       LIMIT $${limitParam} OFFSET $${offsetParam}
+     )
+     SELECT
+       f.src_node_id,
+       f.spoofed_name,
+       f.public_key,
+       f.claimed_lat,
+       f.claimed_lon,
+       f.canonical_key,
+       f.verdict,
+       f.signals,
+       f.total_score,
+       f.network,
+       f.time AS detected_at,
+       f.first_seen,
+       COUNT(p.packet_hash) AS packet_count,
+       MIN(p.time) AS first_packet,
+       MAX(p.time) AS last_packet
+     FROM filtered f
+     LEFT JOIN packets p ON p.src_node_id = f.src_node_id
+       AND p.time > NOW() - INTERVAL '1 hour' * $1
+     GROUP BY f.src_node_id, f.spoofed_name, f.public_key, f.claimed_lat, f.claimed_lon,
+              f.canonical_key, f.verdict, f.signals, f.total_score, f.network, f.time, f.first_seen
+     ORDER BY f.total_score DESC, f.time DESC`,
+    params
+  );
+  return res.rows;
+}
+
+export async function getSpamSuspectSummary(options: SpamSuspectQueryOptions = {}) {
+  const params: unknown[] = [options.hours ?? 48];
+  const where = buildSpamSuspectWhere(options, params);
+  const res = await pool.query(
+    `SELECT verdict, COUNT(*)::int AS count
+     FROM spam_suspects ss
+     WHERE ${where}
+     GROUP BY verdict`,
+    params
+  );
+
+  const summary = { total: 0, spam: 0, suspect: 0 };
+  for (const row of res.rows) {
+    const count = Number(row.count ?? 0);
+    summary.total += count;
+    if (row.verdict === 'spam') summary.spam = count;
+    if (row.verdict === 'suspect') summary.suspect = count;
+  }
+  return summary;
+}
+
+export async function getSpamPacketObservers(srcNodeId: string) {
+  const res = await pool.query(
+    `SELECT DISTINCT ON (p.rx_node_id)
+       p.rx_node_id AS node_id,
+       n.name,
+       n.iata,
+       n.lat,
+       n.lon,
+       p.hop_count,
+       p.rssi,
+       p.time,
+       ss.claimed_lat,
+       ss.claimed_lon,
+       ss.spoofed_name
+     FROM packets p
+     LEFT JOIN nodes n ON n.node_id = p.rx_node_id
+     LEFT JOIN spam_suspects ss ON ss.src_node_id = p.src_node_id
+     WHERE p.src_node_id = $1
+       AND p.packet_type = 4
+       AND p.time > NOW() - INTERVAL '30 days'
+     ORDER BY p.rx_node_id, p.hop_count ASC NULLS LAST, p.time ASC`,
+    [srcNodeId]
+  );
+  return res.rows;
+}
+
+export async function getSpamAllObservers() {
+  const res = await pool.query(
+    `SELECT
+       ss.src_node_id,
+       ss.claimed_lat,
+       ss.claimed_lon,
+       ss.spoofed_name,
+       p.rx_node_id        AS observer_id,
+       n.name              AS observer_name,
+       n.lat               AS observer_lat,
+       n.lon               AS observer_lon,
+       MIN(p.hop_count)    AS hop_count,
+       MAX(p.rssi)         AS rssi
+     FROM spam_suspects ss
+     JOIN packets p
+       ON  p.src_node_id = ss.src_node_id
+       AND p.packet_type  = 4
+       AND p.time > NOW() - INTERVAL '30 days'
+       AND p.rx_node_id   IS NOT NULL
+     JOIN nodes n ON n.node_id = p.rx_node_id
+     WHERE ss.claimed_lat IS NOT NULL
+       AND ss.claimed_lon IS NOT NULL
+       AND n.lat IS NOT NULL
+       AND n.lon IS NOT NULL
+     GROUP BY
+       ss.src_node_id, ss.claimed_lat, ss.claimed_lon, ss.spoofed_name,
+       p.rx_node_id, n.name, n.lat, n.lon
+     ORDER BY ss.src_node_id, MIN(p.hop_count) ASC NULLS LAST`
+  );
+  return res.rows;
+}

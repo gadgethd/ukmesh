@@ -270,9 +270,12 @@ export async function getWorkerHealthOverview() {
       global_last_packet_at: string | null;
     }>(
        `WITH latest_rx AS (
+         -- Bounded to the active_rx window below; an unbounded scan of the
+         -- packets hypertable here takes 20s+ and gives identical results.
          SELECT rx_node_id, MAX(time) AS last_packet_at
          FROM packets
-         WHERE rx_node_id IS NOT NULL
+         WHERE time > NOW() - INTERVAL '3 days'
+           AND rx_node_id IS NOT NULL
            AND rx_node_id <> ''
            AND network IS DISTINCT FROM 'test'
            AND split_part(topic, '/', 1) <> 'meshcore-test'
@@ -281,7 +284,8 @@ export async function getWorkerHealthOverview() {
        test_active AS (
          SELECT rx_node_id
          FROM packets
-         WHERE rx_node_id IS NOT NULL AND rx_node_id <> ''
+         WHERE time > NOW() - INTERVAL '3 days'
+           AND rx_node_id IS NOT NULL AND rx_node_id <> ''
          GROUP BY rx_node_id
          HAVING MAX(time) = MAX(time) FILTER (WHERE network = 'test')
        ),
