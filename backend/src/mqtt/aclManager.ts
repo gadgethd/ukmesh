@@ -1,5 +1,4 @@
 import fs from 'node:fs';
-import path from 'node:path';
 import Docker from 'dockerode';
 
 const ACL_PATH = process.env['MOSQUITTO_ACL_PATH'] ?? '/mosquitto/config/acl';

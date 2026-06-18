@@ -10,6 +10,10 @@ const HISTORICAL_SCAN_BYTES = 50_000_000; // last 50 MB on startup
 // Matches: as meshcore_NODEIDPREFIX_N or meshcore_client_NODEIDPREFIX_N (... u'USERNAME')
 const CONNECT_RE = /as meshcore_(?:client_)?([0-9A-F]+)_\d+ \([^)]*u'([^']+)'\)/i;
 
+// Prefix → mqttUsername pairs that couldn't be resolved yet (node not in nodes table).
+// Retried on every poll tick so new nodes link automatically once they publish their first packet.
+const pendingLinks = new Map<string, string>();
+
 async function resolveNodeId(prefix: string): Promise<string | null> {
   if (prefix.length < 4) return null;
   const res = await query<{ node_id: string }>(
@@ -20,17 +24,25 @@ async function resolveNodeId(prefix: string): Promise<string | null> {
   return res.rows.length === 1 ? (res.rows[0]?.node_id ?? null) : null;
 }
 
-async function processLine(line: string): Promise<void> {
-  if (!line.includes('New client connected')) return;
-  const m = CONNECT_RE.exec(line);
-  if (!m) return;
-  const [, nodePrefix, mqttUsername] = m;
-  if (!nodePrefix || !mqttUsername || mqttUsername === 'backend') return;
-  try {
-    const nodeId = await resolveNodeId(nodePrefix);
-    if (nodeId) await upsertMqttNodeLogin(mqttUsername, nodeId);
-  } catch (err) {
-    console.error('[conn-monitor] processLine error:', (err as Error).message);
+async function resolveAndMaybeLink(mqttUsername: string, nodePrefix: string): Promise<boolean> {
+  const nodeId = await resolveNodeId(nodePrefix);
+  if (!nodeId) return false;
+  await upsertMqttNodeLogin(mqttUsername, nodeId);
+  return true;
+}
+
+async function retryPendingLinks(): Promise<void> {
+  if (pendingLinks.size === 0) return;
+  for (const [prefix, username] of pendingLinks.entries()) {
+    try {
+      const resolved = await resolveAndMaybeLink(username, prefix);
+      if (resolved) {
+        pendingLinks.delete(prefix);
+        console.log('[conn-monitor] resolved pending link:', username, prefix);
+      }
+    } catch (err) {
+      console.error('[conn-monitor] retry pending error:', (err as Error).message);
+    }
   }
 }
 
@@ -60,8 +72,8 @@ async function scanRange(start: number, end: number): Promise<void> {
   // Process the small deduplicated set sequentially
   for (const { nodePrefix, mqttUsername } of seen.values()) {
     try {
-      const nodeId = await resolveNodeId(nodePrefix);
-      if (nodeId) await upsertMqttNodeLogin(mqttUsername, nodeId);
+      const resolved = await resolveAndMaybeLink(mqttUsername, nodePrefix);
+      if (!resolved) pendingLinks.set(nodePrefix.toUpperCase(), mqttUsername);
     } catch (err) {
       console.error('[conn-monitor] processLine error:', (err as Error).message);
     }
@@ -100,6 +112,7 @@ export function startMqttConnectionMonitor(): void {
     } catch {
       // log temporarily unavailable
     }
+    await retryPendingLinks();
   }
 
   init().catch((err: Error) => console.error('[conn-monitor] init error:', err.message));
