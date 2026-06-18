@@ -43,6 +43,11 @@ export type NeighborAffinityMetrics = {
   score: number;
 };
 
+export type MlPrefixScore = {
+  score: number;
+  observationCount: number;
+};
+
 export type PathPacket = {
   packet_hash: string;
   rx_node_id: string | null;
@@ -67,10 +72,16 @@ export type BetaResolveContext = {
   linkPairs: Set<string>;
   /** Subset of linkPairs where observed_count > 0 — links confirmed by actual packet observations. */
   observedLinkPairs: Set<string>;
+  /** Highest-trust observed multibyte links that are also terrain/radio viable. */
+  trustedPathPairs: Set<string>;
+  /** Adjacency for trustedPathPairs, used to keep live path candidate sets small. */
+  trustedPathNeighbors: Map<string, Set<string>>;
   linkMetrics: Map<string, LinkMetrics>;
   /** Packet-derived first-hop affinity, resolved only when both endpoints are known full node IDs. */
   neighborAffinity: Map<string, NeighborAffinityMetrics>;
   /** Adjacency built from packet-derived first-hop affinity for shared-neighbor scoring. */
   neighborAffinityNeighbors: Map<string, Set<string>>;
+  /** High-confidence ML mapping from 1-byte path hash prefix to likely node IDs. */
+  mlPrefixScores: Map<string, Map<string, MlPrefixScore>>;
   learningModel: PathLearningModel;
 };

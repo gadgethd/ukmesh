@@ -2,10 +2,10 @@ import 'node:process';
 import { getRecentPathHistoryPacketHashes, initDb, refreshRecentPathEvidence, upsertPathHistoryCache, type PathHistorySegmentRow } from '../db/index.js';
 import { resolveMultiObserverBetaPath, type BetaResolvedPayload } from '../path-beta/resolver.js';
 
-const REFRESH_INTERVAL_MS = 60 * 60 * 1000; // 1 hour — 3-day window changes slowly
-const WINDOW_HOURS = 72;
+const REFRESH_INTERVAL_MS = 60 * 60 * 1000; // 1 hour — 7-day window changes slowly
+const WINDOW_HOURS = 168;
 const MIN_SEGMENT_COUNT = 30;
-const MAX_PACKET_HASHES = 5000;
+const MAX_PACKET_HASHES = 12000;
 const MAX_SEGMENTS = 3000;
 const SCOPES = ['all', 'teesside', 'ukmesh', 'test'] as const;
 

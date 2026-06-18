@@ -509,7 +509,7 @@ async function rebuildNetwork(modelNetwork: string, sourceNetwork: string | unde
 
   let motifRowsInserted = 0;
   for (const [groupKey, rows] of groupedMotif2) {
-    const [region, bucketText, fromNodeId] = groupKey.split('|');
+    const [region, bucketText] = groupKey.split('|');
     const bucket = Number(bucketText);
     const total = motif2GroupTotals.get(groupKey) ?? 1;
     for (const row of truncateBest(rows.map((r) => ({ key: r.nodeIds, count: r.count })), MAX_MOTIF2_CHOICES_PER_GROUP)) {
