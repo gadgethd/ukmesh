@@ -74,6 +74,28 @@ export function createStatsService(deps: StatsServiceDeps) {
     4: 'Advert', 5: 'GroupText', 6: 'GroupData',
     7: 'AnonReq', 8: 'Path', 9: 'Trace', 11: 'Control',
   };
+  const ROUTE_LABELS: Record<string, { label: string; description: string }> = {
+    '0': {
+      label: 'Transport Flood',
+      description: 'Flood packet with region/scope transport codes',
+    },
+    '1': {
+      label: 'Flood',
+      description: 'Broadcast flood packet without transport codes',
+    },
+    '2': {
+      label: 'Direct',
+      description: 'Directed route packet without transport codes',
+    },
+    '3': {
+      label: 'Transport Direct',
+      description: 'Directed route packet with region/scope transport codes',
+    },
+    Unknown: {
+      label: 'Unknown',
+      description: 'Route type was not decoded from the raw packet',
+    },
+  };
   const channelTrafficCache = new Map<string, { ts: number; data: CachedChannelTraffic }>();
   const statsInflight = new Map<string, Promise<unknown>>();
 
@@ -88,6 +110,27 @@ export function createStatsService(deps: StatsServiceDeps) {
   const fmtDay = (ts: Date | string) => {
     const d = new Date(ts);
     return d.toLocaleDateString('en-GB', { weekday: 'short', month: 'short', day: 'numeric' });
+  };
+  const decodeTransportCodes = (raw: unknown) => {
+    const hex = String(raw ?? '').trim().toUpperCase();
+    if (!/^[0-9A-F]{8}$/.test(hex)) {
+      return {
+        raw: hex || 'Unknown',
+        scopeCode: null,
+        scopeCodeHex: null,
+        returnCode: null,
+        returnCodeHex: null,
+      };
+    }
+    const scopeCode = Number.parseInt(`${hex.slice(2, 4)}${hex.slice(0, 2)}`, 16);
+    const returnCode = Number.parseInt(`${hex.slice(6, 8)}${hex.slice(4, 6)}`, 16);
+    return {
+      raw: hex,
+      scopeCode,
+      scopeCodeHex: `0x${scopeCode.toString(16).toUpperCase().padStart(4, '0')}`,
+      returnCode,
+      returnCodeHex: `0x${returnCode.toString(16).toUpperCase().padStart(4, '0')}`,
+    };
   };
 
   function mergeObserverRegionSummary(
@@ -152,8 +195,9 @@ export function createStatsService(deps: StatsServiceDeps) {
   async function computeChartsData(network: string | undefined, observer: string | undefined): Promise<unknown> {
     const {
       phResult, pdResult, rhResult, rdResult,
-      ptResult, rpResult, hdResult, pcResult, sumResult, orSummaryResult, orSeriesResult,
-      pathHashWidthsResult, multibyteSummaryResult,
+      ptResult, hdResult, pcResult, sumResult, orSummaryResult, orSeriesResult,
+      pathHashWidthsResult, multibyteSummaryResult, observerDiversityResult, signalSummaryResult,
+      routeTypesResult, transportCodesResult, pathDecodeTrendResult,
     } = await repository.fetchChartsData(network, observer);
 
     const peakRow = phResult.rows.reduce(
@@ -205,6 +249,10 @@ export function createStatsService(deps: StatsServiceDeps) {
     const longestFullyDecodedNodes = maskDecodedPathNodes(multibyteRow?.longest_fully_decoded_nodes);
     const totalPackets24h = Number((sumResult.rows[0] as any).total_24h ?? 0);
     const channelTrafficRows = await getChannelTraffic(network, observer);
+    const observerDiversityRow = observerDiversityResult.rows[0] as any;
+    const signalSummaryRow = signalSummaryResult.rows[0] as any;
+    const totalDiversityPackets = Number(observerDiversityRow?.total_packets ?? 0);
+    const singleObserverPackets = Number(observerDiversityRow?.single_observer_packets ?? 0);
 
     return {
       packetsPerHour: phResult.rows.map(r => ({ hour: fmtHourMinute((r as any).hour), count: Number((r as any).count) })),
@@ -212,7 +260,6 @@ export function createStatsService(deps: StatsServiceDeps) {
       radiosPerHour: rhResult.rows.map(r => ({ hour: fmtHourMinute((r as any).hour), count: Number((r as any).count) })),
       radiosPerDay: rdResult.rows.map(r => ({ day: fmtDay((r as any).day), count: Number((r as any).count) })),
       packetTypes: ptResult.rows.map(r => ({ label: PAYLOAD_LABELS[Number((r as any).packet_type)] ?? `Type${(r as any).packet_type}`, count: Number((r as any).count) })),
-      repeatersPerDay: rpResult.rows.map(r => ({ hour: fmtDay((r as any).hour), count: Number((r as any).count ?? 0) })),
       hopDistribution: hdResult.rows.map(r => ({ hops: Number((r as any).hops), count: Number((r as any).count) })),
       topChatters: [],
       prefixCollisions: pcResult.rows.map(r => ({ prefix: String((r as any).prefix ?? '').toUpperCase(), repeats: Number((r as any).repeats) })),
@@ -238,12 +285,60 @@ export function createStatsService(deps: StatsServiceDeps) {
         longestFullyDecodedPath: multibyteRow?.longest_fully_decoded_path ?? null,
         longestFullyDecodedNodes,
       },
+      observerDiversity: {
+        averageObserversPerPacket: Number(Number(observerDiversityRow?.avg_observers ?? 0).toFixed(2)),
+        maxObserversPerPacket: Number(observerDiversityRow?.max_observers ?? 0),
+        totalPackets24h: totalDiversityPackets,
+        singleObserverPackets24h: singleObserverPackets,
+        singleObserverPct24h: totalDiversityPackets > 0
+          ? Number(((singleObserverPackets / totalDiversityPackets) * 100).toFixed(1))
+          : 0,
+      },
+      signalSummary: {
+        avgRssi: signalSummaryRow?.avg_rssi == null ? null : Number(Number(signalSummaryRow.avg_rssi).toFixed(1)),
+        medianRssi: signalSummaryRow?.median_rssi == null ? null : Number(Number(signalSummaryRow.median_rssi).toFixed(1)),
+        avgSnr: signalSummaryRow?.avg_snr == null ? null : Number(Number(signalSummaryRow.avg_snr).toFixed(1)),
+        medianSnr: signalSummaryRow?.median_snr == null ? null : Number(Number(signalSummaryRow.median_snr).toFixed(1)),
+        rssiSamples24h: Number(signalSummaryRow?.rssi_samples ?? 0),
+        snrSamples24h: Number(signalSummaryRow?.snr_samples ?? 0),
+      },
+      routeTypes: routeTypesResult.rows.map((r: any) => ({
+        label: ROUTE_LABELS[String(r.route_type ?? 'Unknown')]?.label ?? `Route ${r.route_type}`,
+        description: ROUTE_LABELS[String(r.route_type ?? 'Unknown')]?.description ?? 'Unrecognised route type',
+        routeType: r.route_type,
+        count: Number(r.count ?? 0),
+      })),
+      transportCodes: transportCodesResult.rows.map((r: any) => {
+        const decoded = decodeTransportCodes(r.transport_code);
+        const regionScope = r.region_scope == null ? null : String(r.region_scope);
+        return {
+          ...decoded,
+          regionScope,
+          label: regionScope
+            ? `${regionScope} scope`
+            : decoded.scopeCodeHex
+              ? `Scope ${decoded.scopeCodeHex}`
+              : decoded.raw,
+          description: decoded.returnCode && decoded.returnCode > 0
+            ? `Return/home ${decoded.returnCodeHex}`
+            : 'No return/home region code',
+          count: Number(r.count ?? 0),
+        };
+      }),
+      pathDecodeTrend: pathDecodeTrendResult.rows.map((r: any) => {
+        const multibyte = Number(r.multibyte_count ?? 0);
+        const fullyDecoded = Number(r.fully_decoded_count ?? 0);
+        return {
+          day: fmtDay(r.day),
+          multibyte,
+          fullyDecoded,
+          decodedPct: multibyte > 0 ? Number(((fullyDecoded / multibyte) * 100).toFixed(1)) : 0,
+        };
+      }),
       summary: {
         totalPackets24h,
         totalPackets7d: Number((sumResult.rows[0] as any).total_7d),
         uniqueRadios24h: Number((sumResult.rows[0] as any).unique_radios_24h),
-        activeRepeaters: Number((sumResult.rows[0] as any).active_repeaters ?? 0),
-        staleRepeaters: Number((sumResult.rows[0] as any).stale_repeaters ?? 0),
         peakHour: peakRow ? fmtHour((peakRow as any).hour) : null,
         peakHourCount: peakRow ? Number((peakRow as any).count) : 0,
       },

@@ -160,12 +160,33 @@ export function createOwnerService(deps: OwnerServiceDeps) {
       linkHealthResult,
       advertTrendResult,
       telemetryResult,
+      packetsSentResult,
+      packetsReceivedResult,
     } = await repository.fetchOwnerLiveData(selectedNodeId);
 
     const ownerNode = ownerNodeResult.rows[0];
     if (!ownerNode) {
       throw new Error('OWNER_NODE_NOT_FOUND');
     }
+
+    // LoRa cannot reach beyond ~250 km direct — filter out senders with known coords that are further away.
+    const MAX_DIRECT_SENDER_KM = 150;
+    const filteredIncomingRows = (() => {
+      const ownerLat = ownerNode.lat;
+      const ownerLon = ownerNode.lon;
+      if (ownerLat == null || ownerLon == null) return incomingResult.rows;
+      return incomingResult.rows.filter((row) => {
+        if (row.lat == null || row.lon == null) return true;
+        const toRad = (d: number) => (d * Math.PI) / 180;
+        const dLat = toRad(row.lat - ownerLat);
+        const dLon = toRad(row.lon - ownerLon);
+        const a =
+          Math.sin(dLat / 2) ** 2 +
+          Math.cos(toRad(ownerLat)) * Math.cos(toRad(row.lat)) * Math.sin(dLon / 2) ** 2;
+        const distKm = 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+        return distKm <= MAX_DIRECT_SENDER_KM;
+      });
+    })();
 
     const heardBy = heardByResult.rows.map((row) => ({
       ...row,
@@ -322,7 +343,7 @@ export function createOwnerService(deps: OwnerServiceDeps) {
         advert_count: Number(ownerNode.advert_count ?? 0),
         last_seen: ownerNode.last_seen ? new Date(ownerNode.last_seen).toISOString() : null,
       },
-      incomingPeers: incomingResult.rows.map((row) => ({
+      incomingPeers: filteredIncomingRows.map((row) => ({
         ...row,
         packets_24h: Number(row.packets_24h ?? 0),
         last_seen: row.last_seen ? new Date(row.last_seen).toISOString() : null,
@@ -331,6 +352,8 @@ export function createOwnerService(deps: OwnerServiceDeps) {
       linkHealth,
       advertTrend24h,
       telemetry24h,
+      packetsSent24h: Number(packetsSentResult.rows[0]?.packets_24h ?? 0),
+      packetsReceived24h: Number(packetsReceivedResult.rows[0]?.packets_24h ?? 0),
       alerts,
       recentPackets: packetResult.rows.map((row) => ({
         ...row,
