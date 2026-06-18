@@ -25,6 +25,13 @@ type PathingRouteDeps = {
     resolved_packet_count: number;
     segment_counts: Array<{ count?: number }> | null;
   } | null>;
+  getMultibytePathSegments: (network?: string, observer?: string) => Promise<{
+    maxCount: number;
+    segments: Array<{
+      positions: [[number, number], [number, number]];
+      count: number;
+    }>;
+  }>;
   query: <T extends import('pg').QueryResultRow = import('pg').QueryResultRow>(
     text: string,
     params?: unknown[],
@@ -100,6 +107,24 @@ export function registerPathingRoutes(router: Router, deps: PathingRouteDeps): v
       res.json(await service.getPathHistory(scope));
     } catch (err) {
       console.error('[api] GET /path-beta/history', (err as Error).message);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  });
+
+  router.get('/path-beta/multibyte-paths', deps.pathHistoryLimiter, async (req, res) => {
+    try {
+      const requestedNetwork = resolveRequestNetwork(req.query['network'], req.headers);
+      const network = requestedNetwork === 'all' ? undefined : (requestedNetwork ?? 'teesside');
+      const observer = normalizeObserverQuery(req.query['observer']);
+      const { maxCount, segments } = await deps.getMultibytePathSegments(network, observer ?? undefined);
+      res.json({
+        ok: true,
+        scope: requestedNetwork === 'all' ? 'all' : (requestedNetwork ?? 'teesside'),
+        maxCount,
+        segments,
+      });
+    } catch (err) {
+      console.error('[api] GET /path-beta/multibyte-paths', (err as Error).message);
       res.status(500).json({ error: 'Internal server error' });
     }
   });

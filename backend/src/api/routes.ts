@@ -16,8 +16,17 @@ import {
   pathHistoryCache,
   statsCache,
 } from './bootstrap/caches.js';
-import { getNodes, getNodeHistory, getNodeAdverts, getPacketDetail, getPathHistoryCache, getRecentPacketEvents, getRecentPackets, query } from '../db/index.js';
-import { resolveRequestNetwork } from '../http/requestScope.js';
+import {
+  getMultibytePathSegments,
+  getNodes,
+  getNodeHistory,
+  getNodeAdverts,
+  getPacketDetail,
+  getPathHistoryCache,
+  getRecentPacketEvents,
+  getRecentPackets,
+  query,
+} from '../db/index.js';
 import { autoLinkOwnerNodeIds, buildOwnerDashboard, resolveOwnerNodeIds, verifyMqttCredentials } from '../owner/ownerAccess.js';
 import { encryptOwnerSession, getOwnerSession, isSecureRequest } from '../owner/ownerSession.js';
 import { getResolveCache, setResolveCache } from '../path-beta/resolveCache.js';
@@ -43,9 +52,9 @@ import { registerOwnerRoutes } from './routes/owner.js';
 import { registerPathingRoutes } from './routes/pathing.js';
 import { registerStatsRoutes } from './routes/stats.js';
 import { registerTelemetryRoutes } from './routes/telemetry.js';
+import { registerSpamRoutes } from './routes/spam.js';
 import { requireLocalOnly } from './utils/localOnly.js';
 import { networkFilters } from './utils/networkFilters.js';
-import { normalizeObserverQuery } from './utils/observer.js';
 
 const router = Router();
 router.use(healthRoutes);
@@ -132,6 +141,7 @@ registerPathingRoutes(router, {
   setResolveCache,
   resolvePool,
   getPathHistoryCache,
+  getMultibytePathSegments,
   query,
 });
 registerStatsRoutes(router, {
@@ -149,5 +159,6 @@ registerStatsRoutes(router, {
   maskDecodedPathNodes,
 });
 registerTelemetryRoutes(router, { query });
+registerSpamRoutes(router, { expensiveLimiter: EXPENSIVE_LIMITER });
 
 export default router;

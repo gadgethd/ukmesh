@@ -1,10 +1,11 @@
 import mqtt from 'mqtt';
-import { MeshCoreDecoder } from '@michaelhart/meshcore-decoder';
+import { MeshCoreDecoder, calcRegionKey, transportCodeMatchesRegion } from '@michaelhart/meshcore-decoder';
 import type {
   AdvertPayload, GroupTextPayload, TextMessagePayload,
   TracePayload, PathPayload, AckPayload,
 } from '@michaelhart/meshcore-decoder';
-import { insertNodeStatusSample, insertPacket, upsertNode, incrementAdvertCount, query } from '../db/index.js';
+import { insertNodeStatusSample, insertPacket, upsertNode, incrementAdvertCount, query, insertOrUpdateSpamSuspect } from '../db/index.js';
+import { evaluateAdvert, initSpamDetector } from './spamDetector.js';
 import { invalidateResolveCache, setResolveCache, getStickyNodeMap, mergeStickyNodes } from '../path-beta/resolveCache.js';
 import { resolvePool } from '../path-beta/resolvePool.js';
 import type { LivePacket } from '../types/index.js';
@@ -97,6 +98,20 @@ const TOPIC_PREFIXES = new Set(
     .filter(Boolean),
 );
 const TEESSIDE_IATA = (process.env['TEESSIDE_IATA'] ?? 'MME').trim().toUpperCase();
+
+// Region probe list — built once at startup from MESHCORE_REGION_NAMES env var.
+// Names are normalised to '#Name' by the decoder; keys are precomputed SHA256 slices.
+// Only used for packets with routeType 0 (TransportFlood) or 3 (TransportDirect).
+const REGION_PROBE_LIST: Array<{ name: string }> = (
+  process.env['MESHCORE_REGION_NAMES'] ?? 'Europe,Global'
+)
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean)
+  .map((name) => {
+    calcRegionKey(name); // pre-warm internal key derivation (crypto-js is lazy)
+    return { name: name.startsWith('#') ? name : `#${name}` };
+  });
 
 interface TopicParts {
   iata:        string;
@@ -424,7 +439,11 @@ function buildAdvertFallbackPayload(originId: string, originName?: string): Reco
 }
 
 
-export function startMqttClient(): void {
+export async function startMqttClient(): Promise<void> {
+  // Must complete before connecting to MQTT — the broker replays buffered
+  // messages immediately on connect, and knownNodeIds must be populated first.
+  await initSpamDetector();
+
   const brokerUrl = process.env['MQTT_BROKER_URL'] ?? 'ws://mosquitto:9001';
   const redactedUrl = brokerUrl.replace(/\/\/[^@]*@/, '//***:***@');
   console.log(`[mqtt] connecting to ${redactedUrl}`);
@@ -452,7 +471,7 @@ export function startMqttClient(): void {
   client.on('error',     (err) => console.error('[mqtt] error', err.message));
   client.on('reconnect', ()    => console.log('[mqtt] reconnecting…'));
   client.on('message',   (topic: string, rawPayload: Buffer) => {
-    void handleMessage(topic, rawPayload);
+    void handleMessage(topic, rawPayload).catch((err: Error) => console.error('[mqtt] handleMessage error:', err.message));
   });
 }
 
@@ -511,7 +530,6 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
 
   if (suffix !== 'packets') return;
 
-  const packetHash = (json['hash'] as string | undefined) ?? crypto.randomUUID();
   const packetType = toNum(json['packet_type']);
   const rssi       = toNum(json['RSSI']);
   const snr        = toNum(json['SNR']);
@@ -529,6 +547,8 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
   let decodedHops: number | undefined;
   let decodedPathHashSizeBytes: number | undefined;
   let decodedRouteType: number | undefined;
+  let decodedTransportCodes: string | undefined;
+  let decodedRegionScope: string | undefined;
   let summary:     string | undefined;
   let srcNodeId:   string | undefined;
   let advertCount: number | undefined;
@@ -537,7 +557,7 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
 
   if (rawHex) {
     try {
-      const { decoded, pathHashes, pathHashCount, pathHashSize, routeType: decodedRT } = decodePacketCompat(rawHex, keyStore);
+      const { decoded, pathHashes, pathHashCount, pathHashSize, routeType: decodedRT, transportCodes } = decodePacketCompat(rawHex, keyStore);
 
       if (decoded) {
         resolvedPacketType = decoded.payloadType ?? resolvedPacketType;
@@ -547,6 +567,21 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
         decodedRouteType = decodedRT;
         if (pathHashes && pathHashes.length > 0) {
           path = pathHashes;
+        }
+
+        // Region scope — only present on TransportFlood (0) / TransportDirect (3) packets
+        if (transportCodes && decoded.payload?.raw && REGION_PROBE_LIST.length > 0) {
+          decodedTransportCodes = transportCodes;
+          const tcBuf = Buffer.from(transportCodes, 'hex');
+          if (tcBuf.length >= 2) {
+            const tc0 = tcBuf[0]! | (tcBuf[1]! << 8);
+            for (const { name } of REGION_PROBE_LIST) {
+              if (transportCodeMatchesRegion(name, decoded.payloadType, decoded.payload.raw, tc0)) {
+                decodedRegionScope = name;
+                break;
+              }
+            }
+          }
         }
 
         if (
@@ -575,34 +610,76 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
           const nodeIata  = topicIataForNode(nodeId, observerKey, iata);
 
           if (network !== 'test') {
-            upsertNode(nodeId, {
-              name:      appData?.['name']       as string | undefined,
-              lat:       loc?.['latitude'],
-              lon:       loc?.['longitude'],
-              role:      appData?.['deviceRole'] as number | undefined,
-              iata:      nodeIata,
-              publicKey: senderKey,
-              network,
-            }).catch((err: Error) => console.error('[mqtt] upsertNode error:', err.message));
+            const advertName = appData?.['name'] as string | undefined;
+            const advertLat  = loc?.['latitude'];
+            const advertLon  = loc?.['longitude'];
 
-            if (decodedHash && tryCountAdvert(decodedHash)) {
-              incrementAdvertCount(nodeId).catch((err: Error) => console.error('[mqtt] incrementAdvertCount error:', err.message));
+            const evalResult = advertName && senderKey
+              ? await evaluateAdvert({
+                  name: advertName,
+                  publicKey: senderKey,
+                  srcNodeId: nodeId,
+                  lat: advertLat,
+                  lon: advertLon,
+                  hopCount: decodedHops,
+                  payloadTimestamp: inner?.['timestamp'] as number | undefined,
+                  network,
+                })
+              : null;
+
+            const isSpam    = evalResult?.verdict === 'spam';
+            const isSuspect = evalResult?.verdict === 'suspect';
+
+            if (evalResult && (isSpam || isSuspect)) {
+              insertOrUpdateSpamSuspect({
+                srcNodeId:    nodeId,
+                spoofedName:  advertName ?? '',
+                publicKey:    senderKey,
+                claimedLat:   advertLat,
+                claimedLon:   advertLon,
+                canonicalKey: evalResult.canonicalKey,
+                verdict:      evalResult.verdict,
+                signals:      evalResult.signals,
+                totalScore:   evalResult.totalScore,
+                network,
+              }).catch((err: Error) => console.error('[spam-detect] insertOrUpdateSpamSuspect error:', err.message));
+              console.warn(
+                `[spam-detect] ${evalResult.verdict.toUpperCase()} score=${evalResult.totalScore} ` +
+                `name="${advertName}" key=${senderKey?.slice(0, 16)}… ` +
+                `signals=${evalResult.signals.map((s) => s.name).join(',')}`
+              );
             }
 
-            emitNodeUpsert({
-              node_id:     nodeId,
-              name:        appData?.['name']       as string | undefined,
-              lat:         loc?.['latitude'],
-              lon:         loc?.['longitude'],
-              role:        appData?.['deviceRole'] as number | undefined,
-              iata,
-              network,
-              observer_id: observerKey,
-              public_key:  senderKey,
-              last_seen:   new Date().toISOString(),
-              is_online:   true,
-              advert_count: advertCount,
-            });
+            if (!isSpam) {
+              await upsertNode(nodeId, {
+                name:      advertName,
+                lat:       advertLat,
+                lon:       advertLon,
+                role:      appData?.['deviceRole'] as number | undefined,
+                iata:      nodeIata,
+                publicKey: senderKey,
+                network,
+              });
+
+              if (decodedHash && tryCountAdvert(decodedHash)) {
+                incrementAdvertCount(nodeId).catch((err: Error) => console.error('[mqtt] incrementAdvertCount error:', err.message));
+              }
+
+              emitNodeUpsert({
+                node_id:      nodeId,
+                name:         advertName,
+                lat:          advertLat,
+                lon:          advertLon,
+                role:         appData?.['deviceRole'] as number | undefined,
+                iata,
+                network,
+                observer_id:  observerKey,
+                public_key:   senderKey,
+                last_seen:    new Date().toISOString(),
+                is_online:    true,
+                advert_count: advertCount,
+              });
+            }
           }
 
           innerPayload = inner;
@@ -703,6 +780,8 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
       payload:    innerPayload ?? json,
       path,
       advertCount,
+      transportCodes: decodedTransportCodes,
+      regionScope:    decodedRegionScope,
       ts:         Date.now(),
     };
     emit(livePacket);
@@ -726,6 +805,8 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
       advertCount,
       pathHashes: path,
       network,
+      transportCodes: decodedTransportCodes,
+      regionScope:    decodedRegionScope,
     });
     invalidateResolveCache(finalHash);
 

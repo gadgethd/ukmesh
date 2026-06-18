@@ -10,6 +10,7 @@ import { startMqttClient, onPacket, onNodeSeen, onNodeUpsert } from './mqtt/clie
 import { startMqttConnectionMonitor } from './mqtt/connectionMonitor.js';
 import { initWebSocketServer, broadcastPacket, broadcastNodeUpdate, broadcastNodeUpsert } from './ws/server.js';
 import apiRoutes from './api/routes.js';
+import { initSpamMessageAnalyzer } from './spam/analyzer.js';
 import { isViewshedEligibleCoordinate, queueViewshedJob, queueLinkJob } from './queue/publisher.js';
 import { createBackendSiteRoutes } from './backend-site/routes.js';
 
@@ -42,7 +43,7 @@ async function main() {
          AND n.lat BETWEEN 49.5 AND 61.5
          AND n.lon BETWEEN -8.5 AND 2.5
          AND NOT (ABS(n.lat) < 1e-9 AND ABS(n.lon) < 1e-9)
-         AND (nc.node_id IS NULL OR nc.model_version < $1)
+         AND (nc.node_id IS NULL OR nc.model_version < $1 OR n.elevation_m IS NULL)
          AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
          AND (n.role IS NULL OR n.role = 2)`,
       [COVERAGE_MODEL_VERSION],
@@ -144,13 +145,19 @@ async function main() {
     console.warn('[ws] disabled by WS_ENABLED');
   }
 
-  // 5. Start MQTT client
+  // 5. Start MQTT client (awaited so spam detector loads before broker replay)
   if (MQTT_INGEST_ENABLED) {
-    startMqttClient();
+    await startMqttClient();
   }
 
   httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`[app] listening on http://0.0.0.0:${PORT}`);
+  });
+
+  // 6. Periodic message-spam analyzer (decoded channel messages -> incidents).
+  //    Fire-and-forget so the heavy first pass never delays the listen above.
+  void initSpamMessageAnalyzer().catch((err: unknown) => {
+    console.error('[spam-msg] failed to start analyzer:', err instanceof Error ? err.message : err);
   });
 }
 
