@@ -30,6 +30,9 @@ __pycache__/
 *.pyc
 *.pyo
 
+# Runtime logs (operational, not for source control)
+*.log
+
 # Claude context file (may contain deployment-specific details)
 CLAUDE.md
 AI_MEMORY.md

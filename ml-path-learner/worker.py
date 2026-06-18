@@ -53,6 +53,9 @@ MIN_GOLD_ROWS = int(os.environ.get('MIN_GOLD_PATHS', '100'))
 CONFIDENCE_THRESHOLD = float(os.environ.get('CONFIDENCE_THRESHOLD', '0.85'))
 MIN_OBSERVATION_COUNT = int(os.environ.get('MIN_OBSERVATION_COUNT', '1'))
 PROMOTION_MIN_DELTA = float(os.environ.get('PROMOTION_MIN_DELTA', '0.0'))
+RETAIN_VARIANT_RESULT_GENERATIONS = int(os.environ.get('ML_RETAIN_VARIANT_RESULT_GENERATIONS', '96'))
+RETAIN_MODEL_ARTIFACT_GENERATIONS = int(os.environ.get('ML_RETAIN_MODEL_ARTIFACT_GENERATIONS', '96'))
+CLEANUP_GENERATION_BATCH_SIZE = int(os.environ.get('ML_CLEANUP_GENERATION_BATCH_SIZE', '24'))
 MAX_HOP_KM = 150.0
 GOLD_BATCH = 5000
 CHECKPOINT_KEY = 'gold_extraction_checkpoint'
@@ -987,6 +990,82 @@ def promote_model(db, model, val_metrics: dict, all_metrics: dict, gold_count: i
     )
 
 
+def cleanup_training_artifacts(db):
+    """Keep recent diagnostics and active model artifacts; trim old bulk data."""
+    deleted_packet_results = 0
+    cleared_model_artifacts = 0
+    cleaned_generations: list[int] = []
+
+    with db.cursor() as cur:
+        if RETAIN_VARIANT_RESULT_GENERATIONS > 0:
+            cur.execute(
+                """
+                WITH bounds AS (
+                  SELECT GREATEST(0, COALESCE(MAX(generation), 0) - %s + 1) AS min_generation
+                    FROM ml_model_variant_runs
+                ),
+                active_generations AS (
+                  SELECT DISTINCT generation
+                    FROM ml_model_versions
+                   WHERE is_active = TRUE
+                )
+                SELECT r.generation
+                  FROM ml_model_variant_runs r, bounds b
+                 WHERE b.min_generation > 0
+                   AND r.generation < b.min_generation
+                   AND NOT EXISTS (
+                         SELECT 1
+                           FROM active_generations a
+                          WHERE a.generation = r.generation
+                       )
+                 GROUP BY r.generation
+                 ORDER BY r.generation
+                 LIMIT %s
+                """,
+                [RETAIN_VARIANT_RESULT_GENERATIONS, max(1, CLEANUP_GENERATION_BATCH_SIZE)],
+            )
+            cleaned_generations = [int(row['generation']) for row in cur.fetchall()]
+
+        if cleaned_generations:
+            cur.execute(
+                """
+                DELETE FROM ml_model_variant_packet_results
+                 WHERE generation = ANY(%s)
+                """,
+                [cleaned_generations],
+            )
+            deleted_packet_results = cur.rowcount
+
+        if RETAIN_MODEL_ARTIFACT_GENERATIONS > 0:
+            cur.execute(
+                """
+                WITH bounds AS (
+                  SELECT GREATEST(0, COALESCE(MAX(generation), 0) - %s + 1) AS min_generation
+                    FROM ml_model_versions
+                )
+                UPDATE ml_model_versions m
+                   SET model_artifact = NULL
+                  FROM bounds b
+                 WHERE b.min_generation > 0
+                   AND m.generation < b.min_generation
+                   AND m.is_active = FALSE
+                   AND m.model_artifact IS NOT NULL
+                """,
+                [RETAIN_MODEL_ARTIFACT_GENERATIONS],
+            )
+            cleared_model_artifacts = cur.rowcount
+
+    db.commit()
+
+    if deleted_packet_results or cleared_model_artifacts:
+        log.info(
+            'Cleaned ML training artifacts: deleted_packet_results=%d cleared_model_artifacts=%d cleaned_generations=%s retain_variant_generations=%d retain_artifact_generations=%d',
+            deleted_packet_results, cleared_model_artifacts,
+            cleaned_generations,
+            RETAIN_VARIANT_RESULT_GENERATIONS, RETAIN_MODEL_ARTIFACT_GENERATIONS,
+        )
+
+
 # ── Main loop ─────────────────────────────────────────────────────────────────
 
 def run_training_cycle(db):
@@ -1208,6 +1287,7 @@ def main():
             now = time.time()
             if now - last_train >= TRAIN_INTERVAL_SECS:
                 run_training_cycle(db)
+                cleanup_training_artifacts(db)
                 last_train = now
 
         except KeyboardInterrupt:

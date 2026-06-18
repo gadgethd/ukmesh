@@ -20,6 +20,7 @@ from typing import Optional
 
 import numpy as np
 import psycopg2
+import requests
 from scipy.ndimage import minimum_filter as _min_filter
 from scipy.spatial import cKDTree
 import redis
@@ -71,7 +72,7 @@ log = logging.getLogger(__name__)
 SRTM_DIR     = Path(os.environ.get('SRTM_DIR', '/data/srtm'))
 REDIS_URL    = os.environ.get('REDIS_URL', 'redis://redis:6379')
 DATABASE_URL = os.environ.get('DATABASE_URL')
-RADIO_BOT_URL = os.environ.get('RADIO_BOT_URL', 'http://meshcore-radio-bot:3011')
+RADIO_BOT_URL = os.environ.get('RADIO_BOT_URL', '').strip()
 WORKER_MODE  = os.environ.get('WORKER_MODE', 'all').lower()
 COVERAGE_MODEL = os.environ.get('COVERAGE_MODEL', 'rf_radial_100m').lower()
 DB_APPLICATION_NAME = os.environ.get(
@@ -264,6 +265,9 @@ def refresh_rf_calibration(db, force: bool = False) -> None:
 
 
 def refresh_radio_neighbor_reports(db, r_client, force: bool = False) -> None:
+    if not RADIO_BOT_URL:
+        return
+
     now = time.time()
     if not force and now - float(RADIO_NEIGHBOR_SYNC['updated_at']) < RADIO_NEIGHBOR_REFRESH_S:
         return
@@ -736,7 +740,12 @@ def calculate_viewshed(node_id: str, lat: float, lon: float, antenna_height_m: f
 def already_calculated(db, node_id: str) -> bool:
     with db.cursor() as cur:
         cur.execute(
-            'SELECT 1 FROM node_coverage WHERE node_id = %s AND model_version >= %s',
+            '''SELECT 1
+               FROM node_coverage nc
+               LEFT JOIN nodes n ON n.node_id = nc.node_id
+               WHERE nc.node_id = %s
+                 AND nc.model_version >= %s
+                 AND (n.node_id IS NULL OR n.elevation_m IS NOT NULL)''',
             (node_id, COVERAGE_MODEL_VERSION),
         )
         return cur.fetchone() is not None
@@ -762,28 +771,13 @@ def store_coverage(db, node_id: str, geom: dict, strength_geoms: dict[str, dict]
     db.commit()
 
 def backfill_elevations(db):
-    """For nodes that already have a computed viewshed but no elevation stored,
-    reverse-compute elevation from radius_m: h = r² / (2·k·R) - antenna_height."""
-    with db.cursor() as cur:
-        cur.execute('''
-            SELECT nc.node_id, nc.radius_m
-            FROM node_coverage nc
-            JOIN nodes n ON n.node_id = nc.node_id
-            WHERE n.elevation_m IS NULL AND nc.radius_m IS NOT NULL
-        ''')
-        rows = cur.fetchall()
-    if not rows:
-        return
-    log.info(f'Backfilling elevation for {len(rows)} node(s) from stored radius_m')
-    with db.cursor() as cur:
-        for node_id, radius_m in rows:
-            elevation_m = max(0.0, (radius_m ** 2) / (2 * K_FACTOR * R_EARTH_M) - ANTENNA_HEIGHT_M)
-            cur.execute(
-                'UPDATE nodes SET elevation_m = %s WHERE node_id = %s',
-                (round(elevation_m, 1), node_id),
-            )
-            log.info(f'  {node_id[:12]}…: elevation={elevation_m:.0f} m ASL (from radius {radius_m/1000:.1f} km)')
-    db.commit()
+    """Legacy placeholder.
+
+    Elevation must come from sampled terrain at the node coordinates. Reversing
+    stored radius_m is unsafe because coverage radii may be capped, support
+    limited, or model-adjusted.
+    """
+    return
 
 def load_positioned_repeaters(db) -> dict[str, dict]:
     with db.cursor() as cur:
@@ -1152,7 +1146,7 @@ def enqueue_uncovered(db, r_client):
               AND n.lat BETWEEN %s AND %s
               AND n.lon BETWEEN %s AND %s
               AND NOT (ABS(n.lat) < 1e-9 AND ABS(n.lon) < 1e-9)
-              AND (nc.node_id IS NULL OR nc.model_version < %s)
+              AND (nc.node_id IS NULL OR nc.model_version < %s OR n.elevation_m IS NULL)
               AND (n.name IS NULL OR n.name NOT LIKE %s)
               AND (n.role IS NULL OR n.role = 2)
         ''', (UK_LAT_MIN, UK_LAT_MAX, UK_LON_MIN, UK_LON_MAX, COVERAGE_MODEL_VERSION, '%🚫%',))
