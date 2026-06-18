@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useWebSocket } from '../../hooks/useWebSocket.js';
 import type { WSMessage } from '../../hooks/useWebSocket.js';
+import { LoadingIndicator } from '../../components/LoadingIndicator.js';
 
 interface CompanionEntry {
   sender: string;
@@ -108,7 +109,7 @@ export const UKCompanionPage: React.FC = () => {
       <section className="site-section site-section--dark">
         <div className="site-content">
           {loading ? (
-            <p style={{ color: 'var(--text-muted)', textAlign: 'center', padding: '48px 0' }}>Loading…</p>
+            <LoadingIndicator label="Loading companion activity..." variant="block" />
           ) : entries.length === 0 ? (
             <p style={{ color: 'var(--text-muted)', textAlign: 'center', padding: '48px 0' }}>No data available.</p>
           ) : (

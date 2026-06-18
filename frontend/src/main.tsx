@@ -14,6 +14,8 @@ import { UKInstallPage } from './pages/ukmesh/UKInstallPage.js';
 import { UKFeedPage } from './pages/ukmesh/UKFeedPage.js';
 import { UKRepeaterSearchPage } from './pages/ukmesh/UKRepeaterSearchPage.js';
 import { UKCompanionPage } from './pages/ukmesh/UKCompanionPage.js';
+import { UKBestPracticePage } from './pages/ukmesh/UKBestPracticePage.js';
+import { SpamPage } from './pages/SpamTransparencyPage.js';
 import { DevLayout } from './pages/dev/DevLayout.js';
 import { DevHomePage } from './pages/dev/DevHomePage.js';
 import { getCurrentSite } from './config/site.js';
@@ -49,13 +51,16 @@ ReactDOM.createRoot(root).render(
             <Route path="feed" element={<UKFeedPage />} />
             <Route path="repeater" element={<UKRepeaterSearchPage />} />
             <Route path="companion" element={<UKCompanionPage />} />
+            <Route path="regions" element={<Navigate to="/" replace />} />
             <Route path="about" element={<Navigate to="/" replace />} />
             <Route path="install" element={<UKInstallPage />} />
+            <Route path="docs" element={<UKBestPracticePage />} />
             <Route path="mqtt" element={<Navigate to="/install" replace />} />
             <Route path="health" element={<Navigate to="/stats" replace />} />
             <Route path="login" element={<OwnerPortalPage />} />
             <Route path="open-source" element={<OpenSourcePage />} />
             <Route path="stats" element={<StatsPage />} />
+            <Route path="spam" element={<SpamPage />} />
           </Route>
         </Routes>
       </BrowserRouter>
@@ -72,6 +77,7 @@ ReactDOM.createRoot(root).render(
             <Route path="packets" element={<PacketsPage />} />
             <Route path="open-source" element={<OpenSourcePage />} />
             <Route path="stats" element={<StatsPage />} />
+            <Route path="spam" element={<SpamPage />} />
           </Route>
         </Routes>
       </BrowserRouter>

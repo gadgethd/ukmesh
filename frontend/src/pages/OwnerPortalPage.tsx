@@ -2,6 +2,7 @@ import React, { FormEvent, useEffect, useMemo, useState } from 'react';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { Area, AreaChart, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import { LoadingIndicator } from '../components/LoadingIndicator.js';
 import { DEFAULT_CENTER, MAP_STYLE } from '../components/Map/mapConfig';
 
 type OwnerNode = {
@@ -152,6 +153,8 @@ type OwnerLiveResponse = {
     channelUtilPct: number | null;
     airUtilTxPct: number | null;
   }>;
+  packetsSent24h: number;
+  packetsReceived24h: number;
   alerts: Array<{ level: 'info' | 'warn' | 'error'; message: string }>;
   recentPackets: LivePacket[];
 };
@@ -1014,17 +1017,9 @@ export const OwnerPortalPage: React.FC = () => {
 
   return (
     <>
-      <section className="site-page-hero">
-        <div className="site-content">
-          <h1 className="site-page-hero__title">Repeater Owner Portal</h1>
-          <p className="site-page-hero__sub">
-            Login with your MQTT username and password. Sessions are kept in an encrypted cookie.
-          </p>
-        </div>
-      </section>
 
       <div className="site-content site-prose site-prose--wide">
-        {loading ? <p className="prose-note">Checking login session...</p> : null}
+        {loading ? <LoadingIndicator label="Checking login session..." variant="block" /> : null}
         {!loading && !dashboard ? (
           <section className="prose-section owner-login">
             <h2>Login</h2>
@@ -1055,7 +1050,7 @@ export const OwnerPortalPage: React.FC = () => {
                 maxLength={256}
               />
               <button className="site-btn site-btn--primary owner-login__button" type="submit" disabled={submitting}>
-                {submitting ? 'Logging in...' : 'Login'}
+                {submitting ? <LoadingIndicator label="Logging in..." variant="inline" /> : 'Login'}
               </button>
             </form>
             {error ? <p className="prose-note owner-login__error">{error}</p> : null}
@@ -1099,8 +1094,8 @@ export const OwnerPortalPage: React.FC = () => {
                 <div className="site-stat"><span className="site-stat__value">{strongestLink?.peer_name ?? '-'}</span><span className="site-stat__label">Strongest Link</span></div>
                 <div className="site-stat"><span className="site-stat__value">{formatPathLoss(strongestLink?.itm_path_loss_db ?? null)}</span><span className="site-stat__label">Best Path Loss</span></div>
                 <div className="site-stat"><span className="site-stat__value">{(live?.advertTrend24h ?? []).reduce((sum, point) => sum + point.adverts, 0)}</span><span className="site-stat__label">Adverts (24h)</span></div>
-                <div className="site-stat"><span className="site-stat__value">{dashboard.totals.packets24h}</span><span className="site-stat__label">Packets Sent (24h)</span></div>
-                <div className="site-stat"><span className="site-stat__value">{dashboard.totals.packetsReceived24h}</span><span className="site-stat__label">Packets Received (24h)</span></div>
+                <div className="site-stat"><span className="site-stat__value">{live?.packetsSent24h ?? 0}</span><span className="site-stat__label">Packets Sent (24h)</span></div>
+                <div className="site-stat"><span className="site-stat__value">{live?.packetsReceived24h ?? 0}</span><span className="site-stat__label">Packets Received (24h)</span></div>
               </div>
               {liveError ? <p className="prose-note owner-login__error">Live data error: {liveError}</p> : null}
             </section>

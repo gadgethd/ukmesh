@@ -33,10 +33,25 @@ export const SEO_META: Record<SiteId, Record<string, RouteMeta>> = {
       description:
         'Search and browse MeshCore repeater nodes across the UK network. View coverage, uptime, and connection details.',
     },
+    '/regions': {
+      title: 'Regions — UK Mesh Network',
+      description:
+        'Browse MeshCore mesh network regions across the UK.',
+    },
+    '/docs': {
+      title: 'Docs — UK Mesh Network',
+      description:
+        'Radio settings, repeater placement, network etiquette, and troubleshooting guidance for UK MeshCore operators.',
+    },
     '/open-source': {
       title: 'Open Source — UK Mesh Network',
       description:
         'Libraries and open-source technologies powering the UK Mesh analytics platform.',
+    },
+    '/spam': {
+      title: 'Spam Watch — UK Mesh Network',
+      description:
+        'Live detection of suspected message-spam clusters on the UK MeshCore network: repeated near-duplicate messages, rotating sender names, and coarse origin estimates. Sanitized, privacy-safe abuse mitigation.',
     },
     '/login': {
       title: 'Repeater Owner Portal — UK Mesh Network',
@@ -105,7 +120,7 @@ export const SITE_SEO_DEFAULTS: Record<SiteId, { siteName: string; baseUrl: stri
 
 /** Routes to include in the sitemap for each site. Order = priority (descending). */
 export const SITEMAP_ROUTES: Record<SiteId, string[]> = {
-  ukmesh: ['/', '/install', '/stats', '/feed', '/repeater', '/open-source'],
+  ukmesh: ['/', '/install', '/docs', '/feed', '/repeater', '/regions', '/stats', '/spam', '/open-source'],
   teesside: ['/', '/install', '/stats', '/packets', '/open-source'],
   dev: ['/'],
 };

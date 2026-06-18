@@ -35,7 +35,6 @@ import {
   TERRAIN_DEM_SOURCE,
 } from './mapConfig.js';
 import {
-  buildClashLinesGeoJSON,
   buildCoverageGeoJSON,
   buildHiddenMask,
   buildLinksGeoJSON,
@@ -88,6 +87,7 @@ export function MapLibreMap({
   const showHexClashesRef = useRef(showHexClashes);
   const maxHexClashHopsRef = useRef(maxHexClashHops);
   const pathNodeIdsRef = useRef(useOverlayStore.getState().pathNodeIds);
+  const setClashPathLines = useOverlayStore((state) => state.setClashPathLines);
   const hiddenCoordMaskRef = useRef<Map<string, HiddenMaskGeometry>>(new Map());
   const refreshTimerRef = useRef<number | null>(null);
   const popupStateRef = useRef<PopupState | null>(null);
@@ -415,13 +415,10 @@ export function MapLibreMap({
     mapRef.current.setLayoutProperty('coverage-fill', 'visibility',
       selectedCoverageRef.current && !clash.clashModeActive ? 'visible' : 'none');
 
-    const clashGeoJSON = clash.clashModeActive && clash.clashPathLines.length > 0
-      ? buildClashLinesGeoJSON(clash.clashPathLines)
-      : EMPTY_FC;
-    (mapRef.current.getSource('clash-lines') as maplibregl.GeoJSONSource | undefined)?.setData(clashGeoJSON);
-    mapRef.current.setLayoutProperty('clash-lines-layer', 'visibility',
-      clash.clashModeActive && clash.clashPathLines.length > 0 ? 'visible' : 'none');
-  }, [focusedNodeId, focusedPrefixNodeIds]);
+    setClashPathLines(clash.clashModeActive ? clash.clashPathLines : []);
+    (mapRef.current.getSource('clash-lines') as maplibregl.GeoJSONSource | undefined)?.setData(EMPTY_FC);
+    mapRef.current.setLayoutProperty('clash-lines-layer', 'visibility', 'none');
+  }, [focusedNodeId, focusedPrefixNodeIds, setClashPathLines]);
 
   const scheduleRefresh = useCallback(() => {
     if (refreshTimerRef.current !== null) return;
@@ -789,25 +786,33 @@ export function MapLibreMap({
 
       // Restore terrain if it was saved in preferences
       if (showTerrainRef.current) {
-        map.addSource('terrain-dem', TERRAIN_DEM_SOURCE);
-        map.addLayer({
-          id: 'hillshade', type: 'hillshade', source: 'terrain-dem', minzoom: 7,
-          paint: { 'hillshade-exaggeration': 0.7, 'hillshade-shadow-color': '#000000', 'hillshade-highlight-color': '#ffffff', 'hillshade-illumination-anchor': 'viewport' },
-        }, 'node-dots');
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        map.addLayer({ id: 'sky', type: 'sky', paint: { 'sky-type': 'atmosphere', 'sky-atmosphere-sun': [0, 90], 'sky-atmosphere-sun-intensity': 15 } } as any);
-        map.setMaxPitch(85);
-        if (map.getZoom() >= 7) map.setTerrain(TERRAIN_CONFIG);
-        map.easeTo({ pitch: 45, duration: 600 });
+        console.log('[terrain] restoring on load, config:', JSON.stringify(TERRAIN_DEM_SOURCE));
+        try {
+          map.addSource('terrain-dem', TERRAIN_DEM_SOURCE);
+          const src = map.getSource('terrain-dem') as maplibregl.RasterDEMTileSource | undefined;
+          src?.on('error', (e: ErrorEvent) => console.error('[terrain] source error (load):', e));
+          map.addLayer({
+            id: 'hillshade', type: 'hillshade', source: 'terrain-dem', minzoom: 7,
+            paint: { 'hillshade-exaggeration': 0.7, 'hillshade-shadow-color': '#000000', 'hillshade-highlight-color': '#ffffff', 'hillshade-illumination-anchor': 'viewport' },
+          }, 'node-dots');
+          map.setSky({ 'atmosphere-blend': 0.5 });
+          map.setMaxPitch(85);
+          map.setTerrain(TERRAIN_CONFIG);
+          console.log('[terrain] restored on load, getTerrain()=', JSON.stringify(map.getTerrain()));
+          map.easeTo({ pitch: 45, duration: 600 });
+        } catch (err) {
+          console.error('[terrain] restore on load failed:', err);
+        }
       }
     });
 
     return () => {
       mapLoadedRef.current = false;
+      setClashPathLines([]);
       map.remove();
       mapRef.current = null;
     };
-  }, [onMapReady, refreshMapSources]);
+  }, [onMapReady, refreshMapSources, setClashPathLines]);
 
   // -- Imperative source updates ---------------------------------------------
 
@@ -824,22 +829,36 @@ export function MapLibreMap({
   useEffect(() => {
     showTerrainRef.current = showTerrain;
     const map = mapRef.current;
+    console.log('[terrain] effect: showTerrain=', showTerrain, 'map=', !!map, 'loaded=', mapLoadedRef.current);
     if (!map || !mapLoadedRef.current) return;
     if (showTerrain) {
-      if (!map.getSource('terrain-dem')) map.addSource('terrain-dem', TERRAIN_DEM_SOURCE);
-      if (!map.getLayer('hillshade')) map.addLayer({
-        id: 'hillshade', type: 'hillshade', source: 'terrain-dem', minzoom: 7,
-        paint: { 'hillshade-exaggeration': 0.7, 'hillshade-shadow-color': '#000000', 'hillshade-highlight-color': '#ffffff', 'hillshade-illumination-anchor': 'viewport' },
-      }, 'node-dots');
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      if (!map.getLayer('sky')) map.addLayer({ id: 'sky', type: 'sky', paint: { 'sky-type': 'atmosphere', 'sky-atmosphere-sun': [0, 90], 'sky-atmosphere-sun-intensity': 15 } } as any);
-      map.setMaxPitch(85);
-      if (map.getZoom() >= 7) map.setTerrain(TERRAIN_CONFIG);
-      map.easeTo({ pitch: 45, duration: 600 });
+      try {
+        if (!map.getSource('terrain-dem')) {
+          map.addSource('terrain-dem', TERRAIN_DEM_SOURCE);
+          console.log('[terrain] source added, config:', JSON.stringify(TERRAIN_DEM_SOURCE));
+          const src = map.getSource('terrain-dem') as maplibregl.RasterDEMTileSource | undefined;
+          src?.on('error', (e: ErrorEvent) => console.error('[terrain] source error:', e));
+        }
+        if (!map.getLayer('hillshade')) {
+          map.addLayer({
+            id: 'hillshade', type: 'hillshade', source: 'terrain-dem', minzoom: 7,
+            paint: { 'hillshade-exaggeration': 0.7, 'hillshade-shadow-color': '#000000', 'hillshade-highlight-color': '#ffffff', 'hillshade-illumination-anchor': 'viewport' },
+          }, 'node-dots');
+          console.log('[terrain] hillshade layer added');
+        }
+        map.setSky({ 'atmosphere-blend': 0.5 });
+        map.setMaxPitch(85);
+        console.log('[terrain] calling setTerrain with:', JSON.stringify(TERRAIN_CONFIG));
+        map.setTerrain(TERRAIN_CONFIG);
+        console.log('[terrain] setTerrain complete, getTerrain()=', JSON.stringify(map.getTerrain()));
+        map.easeTo({ pitch: 45, duration: 600 });
+      } catch (err) {
+        console.error('[terrain] setup failed:', err);
+      }
     } else {
       map.setTerrain(null);
       if (map.getLayer('hillshade')) map.removeLayer('hillshade');
-      if (map.getLayer('sky')) map.removeLayer('sky');
+      map.setSky({});
       if (map.getSource('terrain-dem')) map.removeSource('terrain-dem');
       map.easeTo({ pitch: 0, duration: 400 });
       setTimeout(() => map.setMaxPitch(0), 400);

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { AggregatedPacket } from './useNodes.js';
-import { useNodeMap, usePackets } from './useNodes.js';
+import { useNodeMap, useMessages, usePackets } from './useNodes.js';
 import { withScopeParams, uncachedEndpoint } from '../utils/api.js';
 import type { Filters } from '../components/FilterPanel/FilterPanel.js';
 import { hasCoords } from '../utils/pathing.js';
@@ -90,6 +90,7 @@ export function usePacketPathOverlay({
   observer,
 }: UsePacketPathOverlayParams): UsePacketPathOverlayResult {
   const packets = usePackets();
+  const messages = useMessages();
   const nodes = useNodeMap();
   const [packetPaths, setPacketPaths] = useState<[number, number][][]>([]);
   const [betaPacketPaths, setBetaPacketPaths] = useState<[number, number][][]>([]);
@@ -309,18 +310,20 @@ export function usePacketPathOverlay({
     return p;
   }, [prunePredictionCache]);
 
-  const latestPacket = packets.find((p) => p.packetType === 4 || p.packetType === 5) ?? null;
+  const latestPacket = messages[0] ?? null;
   const latestResolutionKey = packetResolutionKey(latestPacket, network, observer);
   const activePacketSnapshot = pinnedPacketId !== null
     ? (packets.find((packet) => packet.id === pinnedPacketId) ?? pinnedPacketSnapshot)
     : (filters.betaPaths ? latestPacket : null);
   const betaEffectThrottleRef = useRef<number | null>(null);
 
-  // Keep a ref to the latest packets so we can read them inside effects without
-  // adding `packets` to the dependency array (which would trigger on every packet
+  // Keep refs to the latest packets/messages so we can read them inside effects without
+  // adding them to the dependency array (which would trigger on every packet
   // arrival, not just when the active path packet changes).
   const packetsRef = useRef(packets);
   packetsRef.current = packets;
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
 
   useEffect(() => {
     if (pinnedPacketId !== null) return;
@@ -334,9 +337,9 @@ export function usePacketPathOverlay({
     stopPathTimers();
     pruneRecentPredictions();
 
-    // Use the ref so we always see the latest packets without re-triggering this
+    // Use the ref so we always see the latest messages without re-triggering this
     // effect on every packet arrival.
-    const latest = packetsRef.current.find((p) => p.packetType === 4 || p.packetType === 5);
+    const latest = messagesRef.current[0];
     const observerIds = getPacketObserverIds(latest);
     setPacketPaths(buildLocalPaths(latest, observerIds));
 

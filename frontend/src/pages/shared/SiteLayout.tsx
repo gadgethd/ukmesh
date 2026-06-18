@@ -12,10 +12,12 @@ type SiteLayoutProps = {
   showMqtt?: boolean;
   showHealth?: boolean;
   showOpenSource?: boolean;
+  showBestPractice?: boolean;
   showPackets: boolean;
   showStats: boolean;
   showRepeaterSearch?: boolean;
   showCompanion?: boolean;
+  showRegions?: boolean;
 };
 
 type NavItem = {
@@ -46,10 +48,12 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
   showMqtt = true,
   showHealth = true,
   showOpenSource = true,
+  showBestPractice = false,
   showPackets,
   showStats,
   showRepeaterSearch = false,
   showCompanion = false,
+  showRegions = false,
 }) => {
   const COOKIE_CONSENT_KEY = 'meshcore-cookie-consent-v1';
   const [menuOpen, setMenuOpen] = useState(false);
@@ -67,6 +71,7 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
     { to: '/feed', label: 'Feed', enabled: showFeed },
     { to: '/repeater', label: 'Repeaters', enabled: showRepeaterSearch },
     { to: '/companion', label: 'Companions', enabled: showCompanion },
+    { to: '/regions', label: 'Regions', enabled: showRegions },
     { to: '/about', label: 'What is MeshCore', enabled: showAbout },
     { to: '/install', label: 'Install', enabled: showInstall },
     { to: '/mqtt', label: 'MQTT', enabled: showMqtt },
@@ -74,6 +79,7 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
     { to: '/packets', label: 'Packets', enabled: showPackets },
     { to: '/open-source', label: 'Open Source', enabled: showOpenSource },
     { to: '/stats', label: 'Stats', enabled: showStats },
+    { to: '/docs', label: 'Docs', enabled: showBestPractice },
   ];
 
   const closeMenu = () => setMenuOpen(false);
@@ -145,7 +151,6 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
             </NavLink>
           ))}
           <a href="https://healthcheck.ukmesh.com" className="site-nav__link">Health Check</a>
-          <a href="https://flasher.ukmesh.com" className="site-nav__link">Flasher</a>
           <NavLink
             to="/login"
             onClick={() => handleNavClick('/login')}
@@ -172,6 +177,8 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
         <span>{footerName}</span>
         <span className="site-footer__sep">·</span>
         <a href="https://meshcore.gg/" target="_blank" rel="noopener noreferrer">Discord</a>
+        <span className="site-footer__sep">·</span>
+        <Link to="/stats">Stats</Link>
         <span className="site-footer__sep">·</span>
         <Link to="/open-source">Open Source</Link>
         {showLiveMap && (

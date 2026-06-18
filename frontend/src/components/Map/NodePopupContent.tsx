@@ -1,4 +1,5 @@
 import React from 'react';
+import { LoadingIndicator } from '../LoadingIndicator.js';
 import { SEVEN_DAYS_MS } from './mapConfig.js';
 import type { NodeFeatureProps, NodeLink } from './types.js';
 
@@ -112,7 +113,7 @@ export const NodePopupContent: React.FC<{
             onClick={() => onToggleCoverage(props.node_id)}
             disabled={coverageLoading}
           >
-            {coverageLoading ? 'Loading coverage…' : coverageActive ? 'Hide coverage' : 'Show coverage'}
+            {coverageLoading ? <LoadingIndicator label="Loading coverage..." variant="inline" /> : coverageActive ? 'Hide coverage' : 'Show coverage'}
           </button>
         </div>
       )}
@@ -130,7 +131,7 @@ export const NodePopupContent: React.FC<{
             onClick={() => onToggleLos(props.node_id)}
             disabled={losLoading}
           >
-            {losLoading ? 'Loading LOS…' : losActive ? 'Hide LOS' : 'Show LOS'}
+            {losLoading ? <LoadingIndicator label="Loading LOS..." variant="inline" /> : losActive ? 'Hide LOS' : 'Show LOS'}
           </button>
         </div>
       )}
@@ -146,7 +147,9 @@ export const NodePopupContent: React.FC<{
         </div>
       )}
       {!isRepeater && links === null && (
-        <div className="node-popup__neighbours-loading">Loading neighbours…</div>
+        <div className="node-popup__neighbours-loading">
+          <LoadingIndicator label="Loading neighbours..." variant="inline" />
+        </div>
       )}
       {!isRepeater && links !== null && links.length > 0 && (
         <div className="node-popup__neighbours">

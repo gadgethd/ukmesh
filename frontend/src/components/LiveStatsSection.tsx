@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { statsEndpoint, uncachedEndpoint } from '../utils/api.js';
 import { useFlash } from '../hooks/useFlash.js'; // used by StatCard
+import { LoadingIndicator } from './LoadingIndicator.js';
 
 type SiteStats = {
   packetsDay: number;
@@ -51,26 +52,43 @@ const StatCard: React.FC<{ value: number; label: string; suffix?: string }> = ({
 
 export const LiveStatsSection: React.FC<LiveStatsSectionProps> = ({ network, observer }) => {
   const [stats, setStats] = useState<SiteStats>(EMPTY_STATS);
+  const [hasLoaded, setHasLoaded] = useState(false);
+  const [loading, setLoading] = useState(true);
   const refreshSeconds = 5 * 60;
 
   useEffect(() => {
+    let cancelled = false;
+
     const loadStats = () => {
+      setLoading(true);
       fetch(uncachedEndpoint(statsEndpoint({ network, observer })), { cache: 'no-store' })
         .then((response) => response.json())
-        .then((data) => setStats({
-          packetsDay: data.packetsDay,
-          totalNodes: data.totalNodes,
-          internationalNodes: data.internationalNodes ?? 0,
-          internationalLastSeen: data.internationalLastSeen ?? null,
-          internationalLastCountry: data.internationalLastCountry ?? null,
-        }))
-        .catch(() => {});
+        .then((data) => {
+          if (cancelled) return;
+          setStats({
+            packetsDay: data.packetsDay,
+            totalNodes: data.totalNodes,
+            internationalNodes: data.internationalNodes ?? 0,
+            internationalLastSeen: data.internationalLastSeen ?? null,
+            internationalLastCountry: data.internationalLastCountry ?? null,
+          });
+          setHasLoaded(true);
+        })
+        .catch(() => {})
+        .finally(() => {
+          if (!cancelled) setLoading(false);
+        });
     };
 
     loadStats();
     const interval = setInterval(loadStats, refreshSeconds * 1000);
-    return () => clearInterval(interval);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
   }, [network, observer]);
+
+  const initialLoading = loading && !hasLoaded;
 
   return (
     <section className="site-stats-section">
@@ -86,9 +104,23 @@ export const LiveStatsSection: React.FC<LiveStatsSectionProps> = ({ network, obs
           </p>
         </div>
         <div className="site-stats-grid">
-          <StatCard value={stats.packetsDay} label="Observed packets in the last 24 hours" />
-          <StatCard value={stats.totalNodes} label="Nodes ever heard on the network" />
-          <div className="site-stat">
+          {initialLoading ? (
+            <>
+              <div className="site-stat site-stat--loading">
+                <LoadingIndicator label="Loading packet stats..." variant="block" />
+              </div>
+              <div className="site-stat site-stat--loading">
+                <LoadingIndicator label="Loading node stats..." variant="block" />
+              </div>
+              <div className="site-stat site-stat--loading">
+                <LoadingIndicator label="Checking contacts..." variant="block" />
+              </div>
+            </>
+          ) : (
+            <>
+              <StatCard value={stats.packetsDay} label="Observed packets in the last 24 hours" />
+              <StatCard value={stats.totalNodes} label="Nodes ever heard on the network" />
+              <div className="site-stat">
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
               <span
                 className={`conn-dot${stats.internationalNodes > 0 ? ' conn-dot--connected' : ''}`}
@@ -111,7 +143,9 @@ export const LiveStatsSection: React.FC<LiveStatsSectionProps> = ({ network, obs
                 {stats.internationalLastCountry && ` (${stats.internationalLastCountry})`}
               </span>
             )}
-          </div>
+              </div>
+            </>
+          )}
         </div>
       </div>
     </section>

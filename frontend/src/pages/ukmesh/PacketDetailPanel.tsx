@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useMemo, useCallback } from 'react';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
+import { LoadingIndicator } from '../../components/LoadingIndicator.js';
 import type { MeshNode } from '../../hooks/useNodes.js';
 import type { FeedPacket } from './UKFeedPage.js';
 
@@ -77,7 +78,7 @@ const PAYLOAD_NAMES: Record<number, string> = {
 };
 
 const ROUTE_NAMES: Record<number, string> = {
-  0: 'Flood', 1: 'Direct', 2: 'Flood+Codes', 3: 'Direct+Codes',
+  0: 'Transport Flood', 1: 'Flood', 2: 'Direct', 3: 'Transport Direct',
 };
 
 const CARTO_TILES = [
@@ -367,9 +368,7 @@ export const PathMap: React.FC<{
     <div style={{ position: 'relative', height: '100%', width: '100%' }}>
       <div ref={containerRef} style={{ height: '100%', width: '100%' }} />
       {isLoading && (
-        <div className="path-map-loading-overlay">
-          <span className="path-map-loading-pill">Resolving path…</span>
-        </div>
+        <LoadingIndicator label="Resolving path..." variant="overlay" className="path-map-loading-overlay" />
       )}
       {!hasData && !isLoading && (
         <div className="feed-detail__no-map" style={{ position: 'absolute', inset: 0 }}>
@@ -651,7 +650,11 @@ export const PacketDetailPanel: React.FC<{
         <button type="button" className="feed-detail__close" onClick={onClose}>✕</button>
       </div>
 
-      {loading && <p className="feed-detail__loading">Loading…</p>}
+      {loading && (
+        <div className="feed-detail__loading">
+          <LoadingIndicator label="Loading packet details..." variant="inline" />
+        </div>
+      )}
 
       {/* Info grid */}
       <div className="feed-detail__section">
@@ -732,7 +735,10 @@ export const PacketDetailPanel: React.FC<{
             <span className="feed-detail__section-note"> — settling ({lazyCountdown}s)</span>
           )}
           {lazyStatus === 'loading' && (
-            <span className="feed-detail__section-note"> — resolving…</span>
+            <span className="feed-detail__section-note">
+              {' '}
+              <LoadingIndicator label="Resolving..." variant="inline" />
+            </span>
           )}
           {lazyStatus === 'done' && lazyPath && (() => {
             const totalMatched = lazyPath.paths.reduce((s, p) => s + p.matchedHops, 0);
@@ -805,7 +811,12 @@ export const PacketDetailPanel: React.FC<{
       <div className="feed-detail__section">
         <div className="feed-detail__section-title">
           Resolved path
-          {pathLoading && <span className="feed-detail__section-note"> — updating…</span>}
+          {pathLoading && (
+            <span className="feed-detail__section-note">
+              {' '}
+              <LoadingIndicator label="Updating..." variant="inline" />
+            </span>
+          )}
           {!pathLoading && totalHops != null && resolvedHopCount > 0 && (
             <span className="feed-detail__section-note"> — {resolvedHopCount} of {totalHops} hops located</span>
           )}

@@ -11,7 +11,6 @@
   "dependencies": {
     "@deck.gl/core": "^9.1.0",
     "@deck.gl/extensions": "^9.1.0",
-    "@deck.gl/geo-layers": "^9.1.0",
     "@deck.gl/layers": "^9.1.0",
     "@deck.gl/mapbox": "^9.1.0",
     "maplibre-gl": "^4.7.1",

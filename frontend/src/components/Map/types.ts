@@ -32,10 +32,17 @@ export interface NodeFeatureProps {
   hardware_model: string | null;
 }
 
+export type LatLonPosition = [number, number];
+
+export interface ClashPathLine {
+  key: string;
+  positions: LatLonPosition[];
+}
+
 export interface ClashComputation {
   clashOffenderNodeIds: Set<string>;
   clashRelayIds: Set<string>;
-  clashPathLines: Array<{ key: string; positions: [number, number][] }>;
+  clashPathLines: ClashPathLine[];
   clashModeActive: boolean;
 }
 

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   AreaChart, Area, BarChart, Bar,
   PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid,
@@ -6,6 +7,7 @@ import {
 } from 'recharts';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
+import { LoadingIndicator } from '../components/LoadingIndicator.js';
 import { getCurrentSite } from '../config/site.js';
 import { chartStatsEndpoint, uncachedEndpoint } from '../utils/api.js';
 
@@ -40,6 +42,9 @@ const CustomTooltip: React.FC<{ active?: boolean; payload?: any[]; label?: strin
       {payload.map((p, i) => (
         <p key={i} style={{ color: p.color ?? C_CYAN, margin: '2px 0' }}>
           {p.name}: <strong>{p.value}</strong>
+          {p.payload?.percent !== undefined && (
+            <span style={{ color: LABEL_COLOR }}> ({(p.payload.percent * 100).toFixed(1)}%)</span>
+          )}
         </p>
       ))}
     </div>
@@ -54,7 +59,6 @@ interface ChartData {
   radiosPerDay:    { day: string;   count: number }[];
   packetTypes:     { label: string; count: number }[];
   channelTraffic:  { channel: string; count: number; pct: number; allPct: number }[];
-  repeatersPerDay: { hour: string;  count: number }[];
   hopDistribution: { hops: number;  count: number }[];
   prefixCollisions:{ prefix: string; repeats: number }[];
   observerRegions: {
@@ -99,62 +103,55 @@ interface ChartData {
       lon: number | null;
     }>;
   };
+  observerDiversity: {
+    averageObserversPerPacket: number;
+    maxObserversPerPacket: number;
+    totalPackets24h: number;
+    singleObserverPackets24h: number;
+    singleObserverPct24h: number;
+  };
+  signalSummary: {
+    avgRssi: number | null;
+    medianRssi: number | null;
+    avgSnr: number | null;
+    medianSnr: number | null;
+    rssiSamples24h: number;
+    snrSamples24h: number;
+  };
+  routeTypes: { label: string; description: string; routeType: string; count: number }[];
+  transportCodes: {
+    raw: string;
+    label: string;
+    description: string;
+    regionScope: string | null;
+    scopeCode: number | null;
+    scopeCodeHex: string | null;
+    returnCode: number | null;
+    returnCodeHex: string | null;
+    count: number;
+  }[];
+  pathDecodeTrend: { day: string; multibyte: number; fullyDecoded: number; decodedPct: number }[];
   summary: {
     totalPackets24h:  number;
     totalPackets7d:   number;
     uniqueRadios24h:  number;
-    activeRepeaters:  number;
-    staleRepeaters:   number;
     peakHour:         string | null;
     peakHourCount:    number;
   };
 }
 
-interface HealthPayload {
-  system: {
-    generated_at: string;
-    cpu: { load_1m: number; count: number; load_pct: number; usage_pct: number };
-    memory: { total_mb: number; used_mb: number; used_pct: number };
-    disk: { total_gb: number; used_gb: number; used_pct: number };
-    runtime: { uptime_s: number; node_version: string; platform: string; arch: string };
-  };
-  workers: Array<{
-    worker_name: string;
-    status: string;
-    queue_depth: number;
-    processed_1h: number;
-    last_activity_at: string | null;
-  }>;
-  frontend_errors_1h: number;
-  ingest: {
-    stale_nodes: number;
-    active_nodes: number;
-    max_stale_minutes: number;
-    stale_threshold_minutes: number;
-    global_last_packet_at: string | null;
-  };
-}
+const STATS_TABS = [
+  { id: 'overview', label: 'Overview' },
+  { id: 'traffic', label: 'Traffic' },
+  { id: 'observers', label: 'Observers' },
+  { id: 'paths', label: 'Paths' },
+  { id: 'signal', label: 'Signal' },
+] as const;
 
-function workerLabel(name: string): string {
-  if (name === 'viewshed-worker') return 'Viewshed Worker';
-  if (name === 'link-worker') return 'Link Worker';
-  if (name === 'path-learning') return 'Path Learning';
-  if (name === 'health-worker') return 'Health Worker';
-  if (name === 'link-backfill-worker') return 'Link Backfill Worker';
-  if (name === 'path-history-worker') return 'Path History Worker';
-  return name;
-}
+type StatsTabId = typeof STATS_TABS[number]['id'];
 
-function fmtInt(value: number | undefined): string {
-  return Number(value ?? 0).toLocaleString();
-}
-
-function fmtPct(value: number | undefined): string {
-  return `${Number(value ?? 0).toFixed(1)}%`;
-}
-
-function fmtGb(value: number | undefined): string {
-  return `${Number(value ?? 0).toFixed(1)} GB`;
+function isStatsTabId(value: string | null): value is StatsTabId {
+  return STATS_TABS.some((tab) => tab.id === value);
 }
 
 function channelLabel(channel: string): string {
@@ -190,6 +187,10 @@ const ChartCard: React.FC<{ title: string; sub?: string; children: React.ReactNo
     </div>
     {children}
   </div>
+);
+
+const EmptyPacketState: React.FC<{ label?: string }> = ({ label = 'No packet data in this window.' }) => (
+  <div className="stats-page__empty">{label}</div>
 );
 
 const CARTO_DARK_TILES = [
@@ -311,9 +312,8 @@ const DecodedPathMapView: React.FC<{
 // ── Main page ─────────────────────────────────────────────────────────────────
 export const StatsPage: React.FC = () => {
   const [data, setData]       = useState<ChartData | null>(null);
-  const [health, setHealth]   = useState<HealthPayload | null>(null);
   const [loading, setLoading] = useState(true);
-  const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
+  const [searchParams, setSearchParams] = useSearchParams();
   const [selectedDecodedPath, setSelectedDecodedPath] = useState<{
     title: string;
     hash: string | null;
@@ -329,23 +329,14 @@ export const StatsPage: React.FC = () => {
   const site = getCurrentSite();
   const statsScope = { network: site.networkFilter, observer: site.observerId };
   const refreshSeconds = 30 * 60;
-  const healthRefreshSeconds = 5 * 60;
+  const requestedTab = searchParams.get('tab');
+  const activeTab: StatsTabId = isStatsTabId(requestedTab) ? requestedTab : 'overview';
 
   const load = () => {
     fetch(uncachedEndpoint(chartStatsEndpoint(statsScope)), { cache: 'no-store' })
       .then(r => r.json())
-      .then((d: ChartData) => { setData(d); setLoading(false); setLastUpdate(new Date()); })
+      .then((d: ChartData) => { setData(d); setLoading(false); })
       .catch(() => setLoading(false));
-  };
-
-  const loadHealth = () => {
-    fetch('/api/health', { cache: 'no-store' })
-      .then((r) => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json();
-      })
-      .then((d: HealthPayload) => setHealth(d))
-      .catch(() => undefined);
   };
 
   useEffect(() => {
@@ -354,14 +345,17 @@ export const StatsPage: React.FC = () => {
     return () => clearInterval(t);
   }, [site.networkFilter, site.observerId]);
 
-  useEffect(() => {
-    loadHealth();
-    const t = setInterval(loadHealth, healthRefreshSeconds * 1000);
-    return () => clearInterval(t);
-  }, []);
-
   const fmt = (n: number) => n.toLocaleString();
   const pct = (num: number, den: number) => den > 0 ? `${Math.round((num / den) * 100)}%` : '0%';
+  const setActiveTab = (tab: StatsTabId) => {
+    const next = new URLSearchParams(searchParams);
+    if (tab === 'overview') {
+      next.delete('tab');
+    } else {
+      next.set('tab', tab);
+    }
+    setSearchParams(next, { replace: true });
+  };
   const timeAgo = (ts: string | null) => {
     if (!ts) return 'never';
     const diff = Math.max(0, Date.now() - Date.parse(ts));
@@ -400,456 +394,504 @@ export const StatsPage: React.FC = () => {
   const isRedactedDecodedNode = (node: { name: string | null }) => node.name === 'Redacted repeater';
   const channelTraffic = data?.channelTraffic ?? [];
   const maxChannelTraffic = Math.max(1, ...channelTraffic.map((channel) => channel.count));
+  const routeTypes = data?.routeTypes ?? [];
+  const maxRouteTypeCount = Math.max(1, ...routeTypes.map((route) => route.count));
+  const transportCodes = data?.transportCodes ?? [];
+  const maxTransportCodeCount = Math.max(1, ...transportCodes.map((code) => code.count));
 
   return (
     <div className="site-layout__inner">
       {/* ── Page hero ─────────────────────────────────────────────────────── */}
-      <section className="site-page-hero site-page-hero--stats">
-        <div className="site-content">
-          <h1 className="site-page-hero__title">Network Stats</h1>
-          <p className="site-page-hero__sub">
-            {site.id === 'dev'
-              ? 'Stats for the isolated test MQTT feed. Updates every 30 minutes.'
-              : site.id === 'ukmesh'
-              ? 'Live analytics across all connected networks. Updates every 30 minutes.'
-              : `Live analytics from the ${site.displayName} network. Updates every 30 minutes.`}
-          </p>
-          {lastUpdate && (
-            <p style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>
-              Last updated {lastUpdate.toLocaleTimeString()}
-            </p>
-          )}
-        </div>
-      </section>
 
       <div className="site-content">
 
         {loading && (
-          <div style={{ padding: '80px 0', textAlign: 'center', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
-            Loading stats…
-          </div>
+          <LoadingIndicator label="Loading stats..." variant="block" />
         )}
 
         {data && (
           <>
-            {/* ── Summary row ─────────────────────────────────────────────── */}
-            <div className="stats-page__summary">
-              <StatCard label="Observed packets (24h)"     value={fmt(data.summary.totalPackets24h)} />
-              <StatCard label="Observed packets (7D)"      value={fmt(data.summary.totalPackets7d)} />
-              <StatCard label="Radios heard (24h)" value={fmt(data.summary.uniqueRadios24h)} color={C_GREEN} />
-              <StatCard
-                label="Peak hour"
-                value={data.summary.peakHour ?? '—'}
-                sub={data.summary.peakHour ? `${fmt(data.summary.peakHourCount)} packets` : undefined}
-                color={C_AMBER}
-              />
-              <StatCard
-                label="Active repeaters"
-                value={fmt(data.summary.activeRepeaters)}
-                sub="seen in last 7 days"
-                color={C_GREEN}
-              />
-              <StatCard
-                label="Stale repeaters"
-                value={fmt(data.summary.staleRepeaters)}
-                sub="not seen in 7 days"
-                color={C_AMBER}
-              />
+            <div className="stats-page__tabs" role="tablist" aria-label="Stats sections">
+              {STATS_TABS.map((tab) => (
+                <button
+                  key={tab.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={activeTab === tab.id}
+                  className={`stats-page__tab${activeTab === tab.id ? ' stats-page__tab--active' : ''}`}
+                  onClick={() => setActiveTab(tab.id)}
+                >
+                  {tab.label}
+                </button>
+              ))}
             </div>
 
-            {channelTraffic.length > 0 && (
-              <div className="stats-page__observer-section">
-                <div className="stats-page__chart-header">
-                  <span className="stats-page__chart-title">Channel traffic</span>
-                  <span className="stats-page__chart-sub">GroupText packets in the last 24 hours</span>
+            {activeTab === 'overview' && (
+              <>
+                <div className="stats-page__summary">
+                  <StatCard label="Observed packets (24h)" value={fmt(data.summary.totalPackets24h)} />
+                  <StatCard label="Observed packets (7D)" value={fmt(data.summary.totalPackets7d)} />
+                  <StatCard label="Radios heard (24h)" value={fmt(data.summary.uniqueRadios24h)} color={C_GREEN} />
+                  <StatCard
+                    label="Peak hour"
+                    value={data.summary.peakHour ?? '—'}
+                    sub={data.summary.peakHour ? `${fmt(data.summary.peakHourCount)} packets` : undefined}
+                    color={C_AMBER}
+                  />
+                  <StatCard
+                    label="Avg observers"
+                    value={data.observerDiversity.averageObserversPerPacket.toFixed(2)}
+                    sub="per packet · 24h"
+                    color={C_PURPLE}
+                  />
+                  <StatCard
+                    label="Single-observer packets"
+                    value={fmtTrafficPct(data.observerDiversity.singleObserverPct24h)}
+                    sub={`${fmt(data.observerDiversity.singleObserverPackets24h)} packets`}
+                    color={C_ORANGE}
+                  />
                 </div>
-                <div className="stats-page__channel-traffic">
-                  {channelTraffic.map((channel, i) => (
-                    <div key={channel.channel} className="stats-page__channel-row">
-                      <div className="stats-page__channel-head">
-                        <span className="stats-page__channel-name">
-                          <span className="stats-page__pie-dot" style={{ background: PIE_COLORS[i % PIE_COLORS.length] }} />
-                          {channelLabel(channel.channel)}
-                        </span>
-                        <span className="stats-page__channel-pct">{fmtTrafficPct(channel.pct)}</span>
-                      </div>
-                      <div className="stats-page__channel-track" aria-hidden="true">
-                        <span
-                          className="stats-page__channel-fill"
-                          style={{
-                            width: `${Math.max(3, (channel.count / maxChannelTraffic) * 100)}%`,
-                            background: PIE_COLORS[i % PIE_COLORS.length],
-                          }}
-                        />
-                      </div>
-                      <div className="stats-page__channel-meta">
-                        <span>{fmt(channel.count)} observed packets</span>
-                        <span>{fmtTrafficPct(channel.allPct)} of all packet traffic</span>
-                      </div>
-                    </div>
-                  ))}
+
+                <div className="stats-page__row">
+                  <ChartCard title="Observed packets per hour" sub="rolling 1h window · last 24 hours">
+                    <ResponsiveContainer width="100%" height={220}>
+                      <AreaChart data={data.packetsPerHour} margin={{ top: 8, right: 8, left: -20, bottom: 0 }}>
+                        <defs>
+                          <linearGradient id="gCyan" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor={C_CYAN} stopOpacity={0.3} />
+                            <stop offset="95%" stopColor={C_CYAN} stopOpacity={0} />
+                          </linearGradient>
+                        </defs>
+                        <CartesianGrid {...gridProps} />
+                        <XAxis dataKey="hour" {...axisProps} interval="preserveStartEnd" />
+                        <YAxis {...axisProps} />
+                        <Tooltip content={<CustomTooltip />} />
+                        <Area type="monotone" dataKey="count" name="Packets" stroke={C_CYAN} fill="url(#gCyan)" strokeWidth={2} dot={false} />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  </ChartCard>
+
+                  <ChartCard title="Observed packets per day" sub="last 7 days">
+                    <ResponsiveContainer width="100%" height={220}>
+                      <BarChart data={data.packetsPerDay} margin={{ top: 8, right: 8, left: -20, bottom: 0 }}>
+                        <CartesianGrid {...gridProps} />
+                        <XAxis dataKey="day" {...axisProps} />
+                        <YAxis {...axisProps} />
+                        <Tooltip content={<CustomTooltip />} />
+                        <Bar dataKey="count" name="Packets" fill={C_CYAN} fillOpacity={0.8} radius={[3, 3, 0, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </ChartCard>
                 </div>
-              </div>
+
+                <div className="stats-page__row">
+                  <ChartCard title="Unique radios heard per hour" sub="distinct transmitting nodes · last 24 hours">
+                    <ResponsiveContainer width="100%" height={220}>
+                      <AreaChart data={data.radiosPerHour} margin={{ top: 8, right: 8, left: -20, bottom: 0 }}>
+                        <defs>
+                          <linearGradient id="gGreen" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor={C_GREEN} stopOpacity={0.3} />
+                            <stop offset="95%" stopColor={C_GREEN} stopOpacity={0} />
+                          </linearGradient>
+                        </defs>
+                        <CartesianGrid {...gridProps} />
+                        <XAxis dataKey="hour" {...axisProps} interval="preserveStartEnd" />
+                        <YAxis {...axisProps} allowDecimals={false} />
+                        <Tooltip content={<CustomTooltip />} />
+                        <Area type="monotone" dataKey="count" name="Radios" stroke={C_GREEN} fill="url(#gGreen)" strokeWidth={2} dot={false} />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  </ChartCard>
+
+                  <ChartCard title="Unique radios heard per day" sub="distinct transmitting nodes · last 7 days">
+                    <ResponsiveContainer width="100%" height={220}>
+                      <BarChart data={data.radiosPerDay} margin={{ top: 8, right: 8, left: -20, bottom: 0 }}>
+                        <CartesianGrid {...gridProps} />
+                        <XAxis dataKey="day" {...axisProps} />
+                        <YAxis {...axisProps} allowDecimals={false} />
+                        <Tooltip content={<CustomTooltip />} />
+                        <Bar dataKey="count" name="Radios" fill={C_GREEN} fillOpacity={0.8} radius={[3, 3, 0, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </ChartCard>
+                </div>
+              </>
             )}
 
-            {data.observerRegions.length > 0 && (
-              <div className="stats-page__observer-section">
-                <div className="stats-page__chart-header">
-                  <span className="stats-page__chart-title">Observer regions</span>
-                  <span className="stats-page__chart-sub">sorted by observed packets over the last 7 days</span>
-                </div>
-                <div className="stats-page__observer-grid">
-                  {data.observerRegions.map((region) => (
-                    <div key={region.iata} className="stats-page__observer-card">
-                      <div className="stats-page__observer-card-head">
-                        <span className="stats-page__observer-iata">{region.iata}</span>
-                        <span className="stats-page__observer-last">last packet {timeAgo(region.lastPacketAt)}</span>
-                      </div>
-                      <div className="stats-page__observer-metrics">
-                        <div className="stats-page__observer-metric">
-                          <span>Packets (7D)</span>
-                          <strong>{fmt(region.packets7d)}</strong>
-                        </div>
-                        <div className="stats-page__observer-metric">
-                          <span>Packets (24h)</span>
-                          <strong>{fmt(region.packets24h)}</strong>
-                        </div>
-                        <div className="stats-page__observer-metric">
-                          <span>Observers</span>
-                          <strong>{fmt(region.activeObservers)}|{fmt(region.observers)}</strong>
-                        </div>
-                      </div>
-                      <div className="stats-page__observer-chart">
-                        <ResponsiveContainer width="100%" height={90}>
-                          <AreaChart data={region.series} margin={{ top: 4, right: 0, left: 0, bottom: 0 }}>
-                            <defs>
-                              <linearGradient id={`gObserver-${region.iata}`} x1="0" y1="0" x2="0" y2="1">
-                                <stop offset="5%" stopColor={C_CYAN} stopOpacity={0.28} />
-                                <stop offset="95%" stopColor={C_CYAN} stopOpacity={0} />
-                              </linearGradient>
-                            </defs>
-                            <CartesianGrid vertical={false} {...gridProps} />
-                            <XAxis dataKey="day" hide />
-                            <YAxis hide />
-                            <Tooltip content={<CustomTooltip />} />
-                            <Area
-                              type="monotone"
+            {activeTab === 'traffic' && (
+              <>
+                <div className="stats-page__row">
+                  <ChartCard title="Packet types" sub="last 24 hours · all observer hits">
+                    {data.packetTypes.length > 0 ? (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+                        <ResponsiveContainer width="50%" height={220}>
+                          <PieChart>
+                            <Pie
+                              data={data.packetTypes}
                               dataKey="count"
-                              name="Packets"
-                              stroke={C_CYAN}
-                              fill={`url(#gObserver-${region.iata})`}
-                              strokeWidth={2}
-                              dot={false}
-                            />
-                          </AreaChart>
+                              nameKey="label"
+                              cx="50%" cy="50%"
+                              innerRadius={55} outerRadius={85}
+                              paddingAngle={2}
+                            >
+                              {data.packetTypes.map((_, i) => (
+                                <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
+                              ))}
+                            </Pie>
+                            <Tooltip content={<CustomTooltip />} />
+                          </PieChart>
                         </ResponsiveContainer>
+                        <div className="stats-page__pie-legend">
+                          {data.packetTypes.map((t, i) => (
+                            <div key={i} className="stats-page__pie-item">
+                              <span className="stats-page__pie-dot" style={{ background: PIE_COLORS[i % PIE_COLORS.length] }} />
+                              <span className="stats-page__pie-label">{t.label}</span>
+                              <span className="stats-page__pie-count">{fmt(t.count)}</span>
+                            </div>
+                          ))}
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    ) : (
+                      <EmptyPacketState />
+                    )}
+                  </ChartCard>
+
+                  <ChartCard title="Route types" sub="last 24 hours">
+                    {routeTypes.length > 0 ? (
+                      <div className="stats-page__channel-traffic stats-page__channel-traffic--stacked">
+                        {routeTypes.map((route, i) => (
+                          <div key={route.routeType} className="stats-page__channel-row">
+                            <div className="stats-page__channel-head">
+                              <span className="stats-page__channel-name">
+                                <span className="stats-page__pie-dot" style={{ background: PIE_COLORS[i % PIE_COLORS.length] }} />
+                                {route.label}
+                              </span>
+                              <span className="stats-page__channel-pct">{fmt(route.count)}</span>
+                            </div>
+                            <div className="stats-page__channel-track" aria-hidden="true">
+                              <span
+                                className="stats-page__channel-fill"
+                                style={{
+                                  width: `${Math.max(3, (route.count / maxRouteTypeCount) * 100)}%`,
+                                  background: PIE_COLORS[i % PIE_COLORS.length],
+                                }}
+                              />
+                            </div>
+                            <div className="stats-page__channel-meta">
+                              <span>{route.description}</span>
+                              <span>raw {route.routeType}</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <EmptyPacketState />
+                    )}
+                  </ChartCard>
                 </div>
-              </div>
+
+                <div className="stats-page__observer-section">
+                  <div className="stats-page__chart-header">
+                    <span className="stats-page__chart-title">Channel traffic</span>
+                    <span className="stats-page__chart-sub">GroupText packets in the last 24 hours</span>
+                  </div>
+                  {channelTraffic.length > 0 ? (
+                    <div className="stats-page__channel-traffic">
+                      {channelTraffic.map((channel, i) => (
+                        <div key={channel.channel} className="stats-page__channel-row">
+                          <div className="stats-page__channel-head">
+                            <span className="stats-page__channel-name">
+                              <span className="stats-page__pie-dot" style={{ background: PIE_COLORS[i % PIE_COLORS.length] }} />
+                              {channelLabel(channel.channel)}
+                            </span>
+                            <span className="stats-page__channel-pct">{fmtTrafficPct(channel.pct)}</span>
+                          </div>
+                          <div className="stats-page__channel-track" aria-hidden="true">
+                            <span
+                              className="stats-page__channel-fill"
+                              style={{
+                                width: `${Math.max(3, (channel.count / maxChannelTraffic) * 100)}%`,
+                                background: PIE_COLORS[i % PIE_COLORS.length],
+                              }}
+                            />
+                          </div>
+                          <div className="stats-page__channel-meta">
+                            <span>{fmt(channel.count)} observed packets</span>
+                            <span>{fmtTrafficPct(channel.allPct)} of all packet traffic</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <EmptyPacketState />
+                  )}
+                </div>
+
+                <div className="stats-page__observer-section">
+                  <div className="stats-page__chart-header">
+                    <span className="stats-page__chart-title">Transport codes</span>
+                    <span className="stats-page__chart-sub">decoded from packet route metadata · last 24 hours</span>
+                  </div>
+                  {transportCodes.length > 0 ? (
+                    <div className="stats-page__channel-traffic">
+                      {transportCodes.map((code, i) => (
+                        <div key={code.raw} className="stats-page__channel-row">
+                          <div className="stats-page__channel-head">
+                            <span className="stats-page__channel-name">
+                              <span className="stats-page__pie-dot" style={{ background: PIE_COLORS[i % PIE_COLORS.length] }} />
+                              {code.label}
+                            </span>
+                            <span className="stats-page__channel-pct">{fmt(code.count)}</span>
+                          </div>
+                          <div className="stats-page__channel-track" aria-hidden="true">
+                            <span
+                              className="stats-page__channel-fill"
+                              style={{
+                                width: `${Math.max(3, (code.count / maxTransportCodeCount) * 100)}%`,
+                                background: PIE_COLORS[i % PIE_COLORS.length],
+                              }}
+                            />
+                          </div>
+                          <div className="stats-page__channel-meta">
+                            <span>{code.description}</span>
+                            <span>raw {code.raw}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <EmptyPacketState label="No transport-code packet data in this window." />
+                  )}
+                </div>
+              </>
             )}
 
-            <div className="stats-page__observer-section">
-              <div className="stats-page__chart-header">
-                <span className="stats-page__chart-title">Path hashes</span>
-                <span className="stats-page__chart-sub">observed hop widths across the last 24 hours</span>
-              </div>
-              <div className="site-stats-grid site-stats-grid--4 health-system-grid">
-                <div className="site-stat">
-                  <span className="site-stat__value">{fmt(data.pathHashes.last24hHops.one_byte)}</span>
-                  <span className="site-stat__label">1-byte Hops (24h)</span>
+            {activeTab === 'observers' && (
+              <>
+                <div className="stats-page__summary">
+                  <StatCard label="Avg observers per packet" value={data.observerDiversity.averageObserversPerPacket.toFixed(2)} color={C_PURPLE} />
+                  <StatCard label="Max observers on one packet" value={fmt(data.observerDiversity.maxObserversPerPacket)} color={C_GREEN} />
+                  <StatCard label="Unique packets measured" value={fmt(data.observerDiversity.totalPackets24h)} />
+                  <StatCard label="Single-observer packets" value={fmt(data.observerDiversity.singleObserverPackets24h)} color={C_ORANGE} />
+                  <StatCard label="Single-observer share" value={fmtTrafficPct(data.observerDiversity.singleObserverPct24h)} color={C_AMBER} />
                 </div>
-                <div className="site-stat">
-                  <span className="site-stat__value">{fmt(data.pathHashes.last24hHops.two_byte)}</span>
-                  <span className="site-stat__label">2-byte Hops (24h)</span>
-                </div>
-                <div className="site-stat">
-                  <span className="site-stat__value">{fmt(data.pathHashes.last24hHops.three_byte)}</span>
-                  <span className="site-stat__label">3-byte Hops (24h)</span>
-                </div>
-                <div className="site-stat">
-                  <span className="site-stat__value">{fmt(data.pathHashes.multibytePackets24h)}</span>
-                  <span className="site-stat__label">Multibyte Packets (24h)</span>
-                </div>
-                <div className="site-stat">
-                  <span className="site-stat__value">{fmt(data.pathHashes.fullyDecodedMultibyte24h)}</span>
-                  <span className="site-stat__label">Fully Decoded (24h)</span>
-                  <span className="site-stat__sub">{pct(data.pathHashes.fullyDecodedMultibyte24h, data.pathHashes.multibytePackets24h)} of multibyte packets</span>
-                </div>
-              </div>
-              <div className="health-meta">
-                <div className="health-kv">
-                  <span>Latest Multibyte Packet</span>
-                  <strong>
-                    {data.pathHashes.latestMultibyteHash
-                      ? `${data.pathHashes.latestMultibyteHash} · ${timeAgo(data.pathHashes.latestMultibyteAt)}`
-                      : 'not seen yet'}
-                  </strong>
-                </div>
-                <div className="health-kv">
-                  <span>Last Fully Decoded Packet</span>
-                  <strong>
-                    {data.pathHashes.latestFullyDecodedHash
-                      ? `${data.pathHashes.latestFullyDecodedHash} · ${data.pathHashes.latestFullyDecodedHops ?? 0} hops · ${timeAgo(data.pathHashes.latestFullyDecodedAt)}`
-                      : 'not decoded yet'}
-                  </strong>
-                </div>
-                <div className="health-kv">
-                  <span>Decoded Path</span>
-                  {decodedPathNodes.length > 1 ? (
-                    <button
-                      type="button"
-                      className="stats-page__path-link"
-                      onClick={() => setSelectedDecodedPath({
-                        title: 'Last Fully Decoded Path',
-                        hash: data.pathHashes.latestFullyDecodedHash,
-                        hops: data.pathHashes.latestFullyDecodedHops,
-                        nodes: data.pathHashes.latestFullyDecodedNodes,
-                      })}
-                    >
-                      {decodedPathSummary}
-                    </button>
+
+                <div className="stats-page__observer-section">
+                  <div className="stats-page__chart-header">
+                    <span className="stats-page__chart-title">Observer regions</span>
+                    <span className="stats-page__chart-sub">sorted by observed packets over the last 7 days</span>
+                  </div>
+                  {data.observerRegions.length > 0 ? (
+                    <div className="stats-page__observer-grid">
+                      {data.observerRegions.map((region) => (
+                        <div key={region.iata} className="stats-page__observer-card">
+                          <div className="stats-page__observer-card-head">
+                            <span className="stats-page__observer-iata">{region.iata}</span>
+                            <span className="stats-page__observer-last">last packet {timeAgo(region.lastPacketAt)}</span>
+                          </div>
+                          <div className="stats-page__observer-metrics">
+                            <div className="stats-page__observer-metric">
+                              <span>Packets (7D)</span>
+                              <strong>{fmt(region.packets7d)}</strong>
+                            </div>
+                            <div className="stats-page__observer-metric">
+                              <span>Packets (24h)</span>
+                              <strong>{fmt(region.packets24h)}</strong>
+                            </div>
+                            <div className="stats-page__observer-metric">
+                              <span>Observers</span>
+                              <strong>{fmt(region.activeObservers)}|{fmt(region.observers)}</strong>
+                            </div>
+                          </div>
+                          <div className="stats-page__observer-chart">
+                            <ResponsiveContainer width="100%" height={90}>
+                              <AreaChart data={region.series} margin={{ top: 4, right: 0, left: 0, bottom: 0 }}>
+                                <defs>
+                                  <linearGradient id={`gObserver-${region.iata}`} x1="0" y1="0" x2="0" y2="1">
+                                    <stop offset="5%" stopColor={C_CYAN} stopOpacity={0.28} />
+                                    <stop offset="95%" stopColor={C_CYAN} stopOpacity={0} />
+                                  </linearGradient>
+                                </defs>
+                                <CartesianGrid vertical={false} {...gridProps} />
+                                <XAxis dataKey="day" hide />
+                                <YAxis hide />
+                                <Tooltip content={<CustomTooltip />} />
+                                <Area
+                                  type="monotone"
+                                  dataKey="count"
+                                  name="Packets"
+                                  stroke={C_CYAN}
+                                  fill={`url(#gObserver-${region.iata})`}
+                                  strokeWidth={2}
+                                  dot={false}
+                                />
+                              </AreaChart>
+                            </ResponsiveContainer>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
                   ) : (
-                    <strong>{decodedPathSummary}</strong>
+                    <EmptyPacketState />
                   )}
                 </div>
-                <div className="health-kv">
-                  <span>Longest Decoded Path</span>
-                  {longestDecodedPathNodes.length > 1 ? (
-                    <button
-                      type="button"
-                      className="stats-page__path-link"
-                      onClick={() => setSelectedDecodedPath({
-                        title: 'Longest Fully Decoded Path',
-                        hash: data.pathHashes.longestFullyDecodedHash,
-                        hops: data.pathHashes.longestFullyDecodedHops,
-                        nodes: data.pathHashes.longestFullyDecodedNodes,
-                      })}
-                    >
-                      {`${longestDecodedPathSummary} · ${data.pathHashes.longestFullyDecodedHops ?? 0} hops`}
-                    </button>
-                  ) : (
-                    <strong>
-                      {data.pathHashes.longestFullyDecodedHash
-                        ? `${longestDecodedPathSummary} · ${data.pathHashes.longestFullyDecodedHops ?? 0} hops`
-                        : 'not decoded yet'}
-                    </strong>
-                  )}
-                </div>
-              </div>
-            </div>
+              </>
+            )}
 
-            {/* ── Packets over time ────────────────────────────────────────── */}
-            <div className="stats-page__row">
-              <ChartCard title="Observed packets per hour" sub="last 24 hours">
-                <ResponsiveContainer width="100%" height={220}>
-                  <AreaChart data={data.packetsPerHour} margin={{ top: 8, right: 8, left: -20, bottom: 0 }}>
-                    <defs>
-                      <linearGradient id="gCyan" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%"  stopColor={C_CYAN} stopOpacity={0.3} />
-                        <stop offset="95%" stopColor={C_CYAN} stopOpacity={0} />
-                      </linearGradient>
-                    </defs>
-                    <CartesianGrid {...gridProps} />
-                    <XAxis dataKey="hour" {...axisProps} interval="preserveStartEnd" />
-                    <YAxis {...axisProps} />
-                    <Tooltip content={<CustomTooltip />} />
-                    <Area type="monotone" dataKey="count" name="Packets" stroke={C_CYAN} fill="url(#gCyan)" strokeWidth={2} dot={false} />
-                  </AreaChart>
-                </ResponsiveContainer>
-              </ChartCard>
-
-              <ChartCard title="Observed packets per day" sub="last 7 days">
-                <ResponsiveContainer width="100%" height={220}>
-                  <BarChart data={data.packetsPerDay} margin={{ top: 8, right: 8, left: -20, bottom: 0 }}>
-                    <CartesianGrid {...gridProps} />
-                    <XAxis dataKey="day" {...axisProps} />
-                    <YAxis {...axisProps} />
-                    <Tooltip content={<CustomTooltip />} />
-                    <Bar dataKey="count" name="Packets" fill={C_CYAN} fillOpacity={0.8} radius={[3, 3, 0, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
-              </ChartCard>
-            </div>
-
-            {/* ── Unique radios heard over time ────────────────────────────── */}
-            <div className="stats-page__row">
-              <ChartCard title="Unique radios heard per hour" sub="distinct transmitting nodes · last 24 hours">
-                <ResponsiveContainer width="100%" height={220}>
-                  <AreaChart data={data.radiosPerHour} margin={{ top: 8, right: 8, left: -20, bottom: 0 }}>
-                    <defs>
-                      <linearGradient id="gGreen" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%"  stopColor={C_GREEN} stopOpacity={0.3} />
-                        <stop offset="95%" stopColor={C_GREEN} stopOpacity={0} />
-                      </linearGradient>
-                    </defs>
-                    <CartesianGrid {...gridProps} />
-                    <XAxis dataKey="hour" {...axisProps} interval="preserveStartEnd" />
-                    <YAxis {...axisProps} allowDecimals={false} />
-                    <Tooltip content={<CustomTooltip />} />
-                    <Area type="monotone" dataKey="count" name="Radios" stroke={C_GREEN} fill="url(#gGreen)" strokeWidth={2} dot={false} />
-                  </AreaChart>
-                </ResponsiveContainer>
-              </ChartCard>
-
-              <ChartCard title="Unique radios heard per day" sub="distinct transmitting nodes · last 7 days">
-                <ResponsiveContainer width="100%" height={220}>
-                  <BarChart data={data.radiosPerDay} margin={{ top: 8, right: 8, left: -20, bottom: 0 }}>
-                    <CartesianGrid {...gridProps} />
-                    <XAxis dataKey="day" {...axisProps} />
-                    <YAxis {...axisProps} allowDecimals={false} />
-                    <Tooltip content={<CustomTooltip />} />
-                    <Bar dataKey="count" name="Radios" fill={C_GREEN} fillOpacity={0.8} radius={[3, 3, 0, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
-              </ChartCard>
-            </div>
-
-            {/* ── Repeaters per day + packet types ─────────────────────────── */}
-            <div className="stats-page__row">
-              <ChartCard title="Active repeaters over the last 7 days" sub="total known repeater nodes in network">
-                <ResponsiveContainer width="100%" height={220}>
-                  <AreaChart data={data.repeatersPerDay} margin={{ top: 8, right: 8, left: -20, bottom: 0 }}>
-                    <defs>
-                      <linearGradient id="gAmber" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%"  stopColor={C_AMBER} stopOpacity={0.3} />
-                        <stop offset="95%" stopColor={C_AMBER} stopOpacity={0} />
-                      </linearGradient>
-                    </defs>
-                    <CartesianGrid {...gridProps} />
-                    <XAxis dataKey="hour" {...axisProps} interval={23} />
-                    <YAxis {...axisProps} allowDecimals={false} />
-                    <Tooltip content={<CustomTooltip />} />
-                    <Area type="monotone" dataKey="count" name="Repeaters" stroke={C_AMBER} fill="url(#gAmber)" strokeWidth={2} dot={false} />
-                  </AreaChart>
-                </ResponsiveContainer>
-              </ChartCard>
-
-              <ChartCard title="Packet types" sub="last 24 hours · all observer hits">
-                <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-                  <ResponsiveContainer width="50%" height={220}>
-                    <PieChart>
-                      <Pie
-                        data={data.packetTypes}
-                        dataKey="count"
-                        nameKey="label"
-                        cx="50%" cy="50%"
-                        innerRadius={55} outerRadius={85}
-                        paddingAngle={2}
-                      >
-                        {data.packetTypes.map((_, i) => (
-                          <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
-                        ))}
-                      </Pie>
-                      <Tooltip content={<CustomTooltip />} />
-                    </PieChart>
-                  </ResponsiveContainer>
-                  <div className="stats-page__pie-legend">
-                    {data.packetTypes.map((t, i) => (
-                      <div key={i} className="stats-page__pie-item">
-                        <span className="stats-page__pie-dot" style={{ background: PIE_COLORS[i % PIE_COLORS.length] }} />
-                        <span className="stats-page__pie-label">{t.label}</span>
-                        <span className="stats-page__pie-count">{fmt(t.count)}</span>
-                      </div>
-                    ))}
+            {activeTab === 'paths' && (
+              <>
+                <div className="stats-page__observer-section">
+                  <div className="stats-page__chart-header">
+                    <span className="stats-page__chart-title">Path hashes</span>
+                    <span className="stats-page__chart-sub">observed hop widths across the last 24 hours</span>
+                  </div>
+                  <div className="site-stats-grid site-stats-grid--4 health-system-grid">
+                    <div className="site-stat">
+                      <span className="site-stat__value">{fmt(data.pathHashes.last24hHops.one_byte)}</span>
+                      <span className="site-stat__label">1-byte Hops (24h)</span>
+                    </div>
+                    <div className="site-stat">
+                      <span className="site-stat__value">{fmt(data.pathHashes.last24hHops.two_byte)}</span>
+                      <span className="site-stat__label">2-byte Hops (24h)</span>
+                    </div>
+                    <div className="site-stat">
+                      <span className="site-stat__value">{fmt(data.pathHashes.last24hHops.three_byte)}</span>
+                      <span className="site-stat__label">3-byte Hops (24h)</span>
+                    </div>
+                    <div className="site-stat">
+                      <span className="site-stat__value">{fmt(data.pathHashes.multibytePackets24h)}</span>
+                      <span className="site-stat__label">Multibyte Packets (24h)</span>
+                    </div>
+                    <div className="site-stat">
+                      <span className="site-stat__value">{fmt(data.pathHashes.fullyDecodedMultibyte24h)}</span>
+                      <span className="site-stat__label">Fully Decoded (24h)</span>
+                      <span className="site-stat__sub">{pct(data.pathHashes.fullyDecodedMultibyte24h, data.pathHashes.multibytePackets24h)} of multibyte packets</span>
+                    </div>
+                  </div>
+                  <div className="health-meta">
+                    <div className="health-kv">
+                      <span>Latest Multibyte Packet</span>
+                      <strong>
+                        {data.pathHashes.latestMultibyteHash
+                          ? `${data.pathHashes.latestMultibyteHash} · ${timeAgo(data.pathHashes.latestMultibyteAt)}`
+                          : 'not seen yet'}
+                      </strong>
+                    </div>
+                    <div className="health-kv">
+                      <span>Last Fully Decoded Packet</span>
+                      <strong>
+                        {data.pathHashes.latestFullyDecodedHash
+                          ? `${data.pathHashes.latestFullyDecodedHash} · ${data.pathHashes.latestFullyDecodedHops ?? 0} hops · ${timeAgo(data.pathHashes.latestFullyDecodedAt)}`
+                          : 'not decoded yet'}
+                      </strong>
+                    </div>
+                    <div className="health-kv">
+                      <span>Decoded Path</span>
+                      {decodedPathNodes.length > 1 ? (
+                        <button
+                          type="button"
+                          className="stats-page__path-link"
+                          onClick={() => setSelectedDecodedPath({
+                            title: 'Last Fully Decoded Path',
+                            hash: data.pathHashes.latestFullyDecodedHash,
+                            hops: data.pathHashes.latestFullyDecodedHops,
+                            nodes: data.pathHashes.latestFullyDecodedNodes,
+                          })}
+                        >
+                          {decodedPathSummary}
+                        </button>
+                      ) : (
+                        <strong>{decodedPathSummary}</strong>
+                      )}
+                    </div>
+                    <div className="health-kv">
+                      <span>Longest Decoded Path</span>
+                      {longestDecodedPathNodes.length > 1 ? (
+                        <button
+                          type="button"
+                          className="stats-page__path-link"
+                          onClick={() => setSelectedDecodedPath({
+                            title: 'Longest Fully Decoded Path',
+                            hash: data.pathHashes.longestFullyDecodedHash,
+                            hops: data.pathHashes.longestFullyDecodedHops,
+                            nodes: data.pathHashes.longestFullyDecodedNodes,
+                          })}
+                        >
+                          {`${longestDecodedPathSummary} · ${data.pathHashes.longestFullyDecodedHops ?? 0} hops`}
+                        </button>
+                      ) : (
+                        <strong>
+                          {data.pathHashes.longestFullyDecodedHash
+                            ? `${longestDecodedPathSummary} · ${data.pathHashes.longestFullyDecodedHops ?? 0} hops`
+                            : 'not decoded yet'}
+                        </strong>
+                      )}
+                    </div>
                   </div>
                 </div>
-              </ChartCard>
-            </div>
 
-            {/* ── Hop distribution + prefix collisions ─────────────────────── */}
-            <div className="stats-page__row">
-              <ChartCard title="Hop count distribution" sub="last 7 days · all observer hits">
-                <ResponsiveContainer width="100%" height={220}>
-                  <BarChart data={data.hopDistribution} margin={{ top: 8, right: 8, left: -20, bottom: 0 }}>
-                    <CartesianGrid {...gridProps} />
-                    <XAxis dataKey="hops" {...axisProps} label={{ value: 'hops', position: 'insideBottom', offset: -2, fill: LABEL_COLOR, fontSize: 10 }} />
-                    <YAxis {...axisProps} />
-                    <Tooltip content={<CustomTooltip labelSuffix=" hops" />} />
-                    <Bar dataKey="count" name="Packets" fill={C_AMBER} fillOpacity={0.8} radius={[3, 3, 0, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
-              </ChartCard>
+                <div className="stats-page__row">
+                  <ChartCard title="Hop count distribution" sub="last 7 days · all observer hits">
+                    <ResponsiveContainer width="100%" height={220}>
+                      <BarChart data={data.hopDistribution} margin={{ top: 8, right: 8, left: -20, bottom: 0 }}>
+                        <CartesianGrid {...gridProps} />
+                        <XAxis dataKey="hops" {...axisProps} label={{ value: 'hops', position: 'insideBottom', offset: -2, fill: LABEL_COLOR, fontSize: 10 }} />
+                        <YAxis {...axisProps} />
+                        <Tooltip content={<CustomTooltip labelSuffix=" hops" />} />
+                        <Bar dataKey="count" name="Packets" fill={C_AMBER} fillOpacity={0.8} radius={[3, 3, 0, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </ChartCard>
 
-              <ChartCard
-                title="Repeated first-2-hex prefixes"
-                sub="Top 10 by repeat count"
-                tall
-              >
-                <ResponsiveContainer width="100%" height={220}>
-                  <BarChart data={data.prefixCollisions} margin={{ top: 8, right: 8, left: -20, bottom: 0 }}>
-                    <CartesianGrid {...gridProps} />
-                    <XAxis
-                      dataKey="prefix"
-                      {...axisProps}
-                    />
-                    <YAxis
-                      {...axisProps}
-                      allowDecimals={false}
-                    />
-                    <Tooltip
-                      content={<CustomTooltip />}
-                      formatter={(value: number) => [value, 'Repeats']}
-                    />
-                    <Bar dataKey="repeats" name="Repeats" fill={C_PURPLE} fillOpacity={0.8} radius={[3, 3, 0, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
-              </ChartCard>
-            </div>
-
-            {health && (
-              <div className="stats-page__observer-section" style={{ marginBottom: 64 }}>
-                <div className="stats-page__chart-header">
-                  <span className="stats-page__chart-title">System Health</span>
-                  <span className="stats-page__chart-sub">workers and host stats, refreshed every 5 minutes</span>
+                  <ChartCard title="Multibyte path-hash trend" sub="packet-inferred path hashes · last 7 days">
+                    <ResponsiveContainer width="100%" height={220}>
+                      <BarChart data={data.pathDecodeTrend} margin={{ top: 8, right: 8, left: -20, bottom: 0 }}>
+                        <CartesianGrid {...gridProps} />
+                        <XAxis dataKey="day" {...axisProps} />
+                        <YAxis {...axisProps} />
+                        <Tooltip content={<CustomTooltip />} />
+                        <Bar dataKey="multibyte" name="Multibyte" fill={C_CYAN} fillOpacity={0.75} radius={[3, 3, 0, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </ChartCard>
                 </div>
 
-                <p className="prose-note">
-                  {health.ingest.stale_nodes < 1
-                    ? 'All ingest nodes are active.'
-                    : health.ingest.stale_nodes === 1
-                      ? `1 ingest node has not injected for ${fmtInt(health.ingest.max_stale_minutes)} minutes.`
-                      : `${fmtInt(health.ingest.stale_nodes)} ingest nodes have not injected for up to ${fmtInt(health.ingest.max_stale_minutes)} minutes.`}
-                </p>
-
-                <div className="health-workers-grid" style={{ marginBottom: 24 }}>
-                  {health.workers.map((worker) => {
-                    const statusClass = worker.status === 'running' ? 'health-pill health-pill--ok' : 'health-pill';
-                    return (
-                      <div key={worker.worker_name} className="site-card health-card">
-                        <div className="health-card__head">
-                          <h3 className="site-card__title">{workerLabel(worker.worker_name)}</h3>
-                          <span className={statusClass}>{worker.status.toUpperCase()}</span>
-                        </div>
-                        <div className="health-card__stats">
-                          <div className="health-kv"><span>Queue</span><strong>{worker.queue_depth}</strong></div>
-                          <div className="health-kv"><span>Processed 1h</span><strong>{worker.processed_1h}</strong></div>
-                          <div className="health-kv"><span>Last Activity</span><strong>{timeAgo(worker.last_activity_at)}</strong></div>
-                        </div>
-                      </div>
-                    );
-                  })}
+                <div className="stats-page__row">
+                  <ChartCard title="Repeated observed path hashes" sub="Top 10 path-hash values over the last 7 days" tall>
+                    <ResponsiveContainer width="100%" height={220}>
+                      <BarChart data={data.prefixCollisions} margin={{ top: 8, right: 8, left: -20, bottom: 0 }}>
+                        <CartesianGrid {...gridProps} />
+                        <XAxis dataKey="prefix" {...axisProps} />
+                        <YAxis {...axisProps} allowDecimals={false} />
+                        <Tooltip content={<CustomTooltip />} formatter={(value: number) => [value, 'Repeats']} />
+                        <Bar dataKey="repeats" name="Repeats" fill={C_PURPLE} fillOpacity={0.8} radius={[3, 3, 0, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </ChartCard>
                 </div>
+              </>
+            )}
 
-                <div className="site-stats-grid site-stats-grid--6 health-system-grid">
-                  <div className="site-stat"><span className="site-stat__value">{fmtPct(health.system.cpu.usage_pct)}</span><span className="site-stat__label">CPU Usage</span></div>
-                  <div className="site-stat"><span className="site-stat__value">{fmtPct(health.system.memory.used_pct)}</span><span className="site-stat__label">Memory Used</span></div>
-                  <div className="site-stat"><span className="site-stat__value">{fmtPct(health.system.disk.used_pct)}</span><span className="site-stat__label">Disk Used</span></div>
-                  <div className="site-stat"><span className="site-stat__value">{fmtInt(health.frontend_errors_1h)}</span><span className="site-stat__label">Frontend Errors (1h)</span></div>
-                  <div className="site-stat"><span className="site-stat__value">{fmtInt(Math.floor(health.system.runtime.uptime_s / 3600))}h</span><span className="site-stat__label">Uptime</span></div>
-                  <div className="site-stat"><span className="site-stat__value">{fmtInt(health.workers.reduce((sum, worker) => sum + worker.queue_depth, 0))}</span><span className="site-stat__label">Queued Jobs</span></div>
+            {activeTab === 'signal' && (
+              <>
+                <div className="stats-page__summary">
+                  <StatCard
+                    label="Mean RSSI"
+                    value={data.signalSummary.avgRssi == null ? '—' : `${data.signalSummary.avgRssi.toFixed(1)} dBm`}
+                    color={C_CYAN}
+                  />
+                  <StatCard
+                    label="Mean SNR"
+                    value={data.signalSummary.avgSnr == null ? '—' : `${data.signalSummary.avgSnr.toFixed(1)} dB`}
+                    color={C_GREEN}
+                  />
+                  <StatCard label="RSSI samples" value={fmt(data.signalSummary.rssiSamples24h)} sub="last 24 hours" />
+                  <StatCard label="SNR samples" value={fmt(data.signalSummary.snrSamples24h)} sub="last 24 hours" />
                 </div>
-
-                <div className="health-meta">
-                  <div className="health-kv"><span>Updated</span><strong>{health.system.generated_at ? timeAgo(health.system.generated_at) : 'just now'}</strong></div>
-                  <div className="health-kv"><span>Node Runtime</span><strong>{health.system.runtime.node_version}</strong></div>
-                  <div className="health-kv"><span>Platform</span><strong>{health.system.runtime.platform} / {health.system.runtime.arch}</strong></div>
-                  <div className="health-kv"><span>CPU 1m Load</span><strong>{Number(health.system.cpu.load_1m ?? 0).toFixed(2)} ({health.system.cpu.count} cores)</strong></div>
-                  <div className="health-kv"><span>Memory</span><strong>{fmtInt(health.system.memory.used_mb)} / {fmtInt(health.system.memory.total_mb)} MB</strong></div>
-                  <div className="health-kv"><span>Disk</span><strong>{fmtGb(health.system.disk.used_gb)} / {fmtGb(health.system.disk.total_gb)}</strong></div>
-                </div>
-              </div>
+                {data.signalSummary.rssiSamples24h < 1 && data.signalSummary.snrSamples24h < 1 && (
+                  <EmptyPacketState label="No RSSI or SNR packet data in this window." />
+                )}
+              </>
             )}
           </>
         )}

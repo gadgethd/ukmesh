@@ -7,6 +7,7 @@ import { PacketFeed } from './components/PacketFeed.js';
 import { DisclaimerModal } from './components/app/DisclaimerModal.js';
 import { AppTopBar } from './components/app/AppTopBar.js';
 import { MobileControls } from './components/app/MobileControls.js';
+import { LoadingIndicator } from './components/LoadingIndicator.js';
 import { useWebSocket } from './hooks/useWebSocket.js';
 import { nodeStore, type MeshNode } from './hooks/useNodes.js';
 import { coverageStore } from './hooks/useCoverage.js';
@@ -43,7 +44,10 @@ export const App: React.FC = () => {
       const raw = localStorage.getItem(FILTERS_KEY);
       if (!raw) return DEFAULT_FILTERS;
       const parsed = JSON.parse(raw) as Partial<Filters>;
-      return { ...DEFAULT_FILTERS, ...parsed, betaPathThreshold: 0.45 };
+      // 'links' no longer has a toggle row, but storage written while the old
+      // "Links (Beta)" toggle existed may still have it enabled — force it off
+      // so stale state can't render link lines that no toggle can remove.
+      return { ...DEFAULT_FILTERS, ...parsed, betaPathThreshold: 0.45, links: false };
     } catch {
       return DEFAULT_FILTERS;
     }
@@ -55,6 +59,9 @@ export const App: React.FC = () => {
   const [inferredActiveNodeIds, setInferredActiveNodeIds] = useState<Set<string>>(new Set());
   const [packetHistorySegments, setPacketHistorySegments] = useState<PacketHistorySegment[]>([]);
   const [fetchedStats, setFetchedStats] = useState<DashboardStats | null>(null);
+  const [initialStateLoaded, setInitialStateLoaded] = useState(false);
+  const [initialPollLoaded, setInitialPollLoaded] = useState(false);
+  const [pollRefreshing, setPollRefreshing] = useState(false);
   const [isPageVisible, setIsPageVisible] = useState(
     () => (typeof document === 'undefined' ? true : document.visibilityState === 'visible'),
   );
@@ -89,45 +96,53 @@ export const App: React.FC = () => {
 
     const syncAllData = async () => {
       if (!isPageVisible) return;
+      setPollRefreshing(true);
 
-      const [packetsRes, historyRes, inferredRes, statsRes] = await Promise.allSettled([
-        fetch(uncachedEndpoint(withScopeParams('/api/packets/recent?limit=12', { network: networkFilter, observer: observerFilter })), { cache: 'no-store' }),
-        fetch(uncachedEndpoint(withScopeParams('/api/path-beta/history', { network: networkFilter })), { cache: 'no-store' }),
-        fetch(uncachedEndpoint(withScopeParams('/api/inferred-nodes', { network: networkFilter, observer: observerFilter })), { cache: 'no-store' }),
-        fetch(uncachedEndpoint(withScopeParams('/api/stats', { network: networkFilter, observer: observerFilter })), { cache: 'no-store' }),
-      ]);
+      try {
+        const [packetsRes, historyRes, inferredRes, statsRes] = await Promise.allSettled([
+          fetch(uncachedEndpoint(withScopeParams('/api/packets/recent?limit=12', { network: networkFilter, observer: observerFilter })), { cache: 'no-store' }),
+          fetch(uncachedEndpoint(withScopeParams('/api/path-beta/multibyte-paths', { network: networkFilter, observer: observerFilter })), { cache: 'no-store' }),
+          fetch(uncachedEndpoint(withScopeParams('/api/inferred-nodes', { network: networkFilter, observer: observerFilter })), { cache: 'no-store' }),
+          fetch(uncachedEndpoint(withScopeParams('/api/stats', { network: networkFilter, observer: observerFilter })), { cache: 'no-store' }),
+        ]);
 
-      if (cancelled) return;
+        if (cancelled) return;
 
-      if (packetsRes.status === 'fulfilled' && packetsRes.value.ok) {
-        const rows = await packetsRes.value.json() as Array<{
-          time: string; packet_hash: string; rx_node_id?: string;
-          observer_node_ids?: string[] | null; src_node_id?: string;
-          packet_type?: number; hop_count?: number; summary?: string | null;
-          payload?: Record<string, unknown>; advert_count?: number | null;
-          path_hashes?: string[] | null;
-        }>;
-        if (!cancelled) nodeStore.replaceRecentPackets(rows);
-      }
-
-      if (historyRes.status === 'fulfilled' && historyRes.value.ok) {
-          const payload = await historyRes.value.json() as { segments?: PacketHistorySegment[] };
-        if (!cancelled) setPacketHistorySegments(Array.isArray(payload.segments) ? payload.segments : []);
-      }
-
-      if (inferredRes.status === 'fulfilled' && inferredRes.value.ok) {
-        const payload = await inferredRes.value.json() as {
-          inferredNodes: MeshNode[]; inferredActiveNodeIds: string[];
-        };
-        if (!cancelled) {
-          setInferredNodes(payload.inferredNodes ?? []);
-          setInferredActiveNodeIds(new Set((payload.inferredActiveNodeIds ?? []).map((v) => v.toLowerCase())));
+        if (packetsRes.status === 'fulfilled' && packetsRes.value.ok) {
+          const rows = await packetsRes.value.json() as Array<{
+            time: string; packet_hash: string; rx_node_id?: string;
+            observer_node_ids?: string[] | null; src_node_id?: string;
+            packet_type?: number; hop_count?: number; summary?: string | null;
+            payload?: Record<string, unknown>; advert_count?: number | null;
+            path_hashes?: string[] | null;
+          }>;
+          if (!cancelled) nodeStore.replaceRecentPackets(rows);
         }
-      }
 
-      if (statsRes.status === 'fulfilled' && statsRes.value.ok) {
-        const payload = await statsRes.value.json() as DashboardStats;
-        if (!cancelled) setFetchedStats(payload);
+        if (historyRes.status === 'fulfilled' && historyRes.value.ok) {
+          const payload = await historyRes.value.json() as { segments?: PacketHistorySegment[] };
+          if (!cancelled) setPacketHistorySegments(Array.isArray(payload.segments) ? payload.segments : []);
+        }
+
+        if (inferredRes.status === 'fulfilled' && inferredRes.value.ok) {
+          const payload = await inferredRes.value.json() as {
+            inferredNodes: MeshNode[]; inferredActiveNodeIds: string[];
+          };
+          if (!cancelled) {
+            setInferredNodes(payload.inferredNodes ?? []);
+            setInferredActiveNodeIds(new Set((payload.inferredActiveNodeIds ?? []).map((v) => v.toLowerCase())));
+          }
+        }
+
+        if (statsRes.status === 'fulfilled' && statsRes.value.ok) {
+          const payload = await statsRes.value.json() as DashboardStats;
+          if (!cancelled) setFetchedStats(payload);
+        }
+      } finally {
+        if (!cancelled) {
+          setInitialPollLoaded(true);
+          setPollRefreshing(false);
+        }
       }
     };
 
@@ -188,8 +203,13 @@ export const App: React.FC = () => {
     setShowDisclaimer(false);
   }, []);
 
+  const handleInitialState = useCallback((data: Parameters<typeof nodeStore.handleInitialState>[0]) => {
+    nodeStore.handleInitialState(data);
+    setInitialStateLoaded(true);
+  }, []);
+
   const handleMessage = useAppMessageHandler({
-    handleInitialState: nodeStore.handleInitialState,
+    handleInitialState,
     handlePacket: nodeStore.handlePacket,
     handleNodeUpdate: nodeStore.handleNodeUpdate,
     handleNodeUpdateBatch: nodeStore.handleNodeUpdateBatch,
@@ -241,6 +261,17 @@ export const App: React.FC = () => {
           observer={observerFilter}
           packetHistorySegments={packetHistorySegments}
         />
+        {(!initialStateLoaded || !initialPollLoaded) && (
+          <LoadingIndicator
+            label={!initialStateLoaded ? 'Loading network nodes...' : 'Loading route data...'}
+            variant="overlay"
+          />
+        )}
+        {initialPollLoaded && pollRefreshing && (
+          <div className="app-refresh-status">
+            <LoadingIndicator label="Refreshing map data..." variant="inline" />
+          </div>
+        )}
       </div>
 
       <FilterPanel

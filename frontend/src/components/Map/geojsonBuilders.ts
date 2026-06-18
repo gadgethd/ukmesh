@@ -13,6 +13,7 @@ import {
 import {
   EMPTY_FC,
   FOURTEEN_DAYS_MS,
+  SEVEN_DAYS_MS,
   LINK_AMBER_THRESHOLD_DB,
   LINK_GREEN_THRESHOLD_DB,
 } from './mapConfig.js';
@@ -92,7 +93,7 @@ export function buildNodeGeoJSON(
       name: node.name ?? null,
       role: node.role ?? 2,
       is_online: node.is_online,
-      is_stale: ageMs > 7 * 24 * 60 * 60 * 1000,
+      is_stale: ageMs > (isClientNode ? SEVEN_DAYS_MS : FOURTEEN_DAYS_MS),
       is_link_only_stale: isLinkOnlyStale,
       is_prohibited: isProhibited,
       is_inferred: false,

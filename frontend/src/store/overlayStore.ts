@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import type { AggregatedPacket } from '../hooks/useNodes.js';
-import type { LosProfile, PlannedRepeater } from '../components/Map/types.js';
+import type { ClashPathLine, LosProfile, PlannedRepeater } from '../components/Map/types.js';
 import type { CustomLosPoint, CustomLosSegment } from '../components/Map/types.js';
 
 export type { PlannedRepeater };
@@ -9,6 +9,7 @@ type OverlayStoreState = {
   pinnedPacketId: string | null;
   pinnedPacketSnapshot: AggregatedPacket | null;
   pathNodeIds: Set<string> | null;
+  clashPathLines: ClashPathLine[];
   betaPathConfidence: number | null;
   betaPermutationCount: number | null;
   betaRemainingHops: number | null;
@@ -19,6 +20,7 @@ type OverlayStoreState = {
   togglePinnedPacket: (packet: AggregatedPacket) => void;
   clearPinnedPacket: () => void;
   setPathNodeIds: (nodeIds: Set<string> | null) => void;
+  setClashPathLines: (lines: ClashPathLine[]) => void;
   setBetaMetrics: (metrics: {
     betaPathConfidence: number | null;
     betaPermutationCount: number | null;
@@ -47,6 +49,7 @@ export const useOverlayStore = create<OverlayStoreState>((set) => ({
   pinnedPacketId: null,
   pinnedPacketSnapshot: null,
   pathNodeIds: null,
+  clashPathLines: [],
   betaPathConfidence: null,
   betaPermutationCount: null,
   betaRemainingHops: null,
@@ -69,6 +72,7 @@ export const useOverlayStore = create<OverlayStoreState>((set) => ({
     pinnedPacketSnapshot: null,
   }),
   setPathNodeIds: (pathNodeIds) => set({ pathNodeIds }),
+  setClashPathLines: (clashPathLines) => set({ clashPathLines }),
   setBetaMetrics: (metrics) => set(metrics),
   addLosLoading: (nodeId) => set((state) => ({
     losNodeIds: new Set([...state.losNodeIds, nodeId]),

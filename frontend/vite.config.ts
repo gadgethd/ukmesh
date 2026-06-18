@@ -19,7 +19,7 @@ export default defineConfig({
         chunkFileNames: `assets/[name]-[hash]-${buildTime}.js`,
         assetFileNames: `assets/[name]-[hash]-${buildTime}.[ext]`,
         manualChunks: {
-          'deck': ['@deck.gl/core', '@deck.gl/layers', '@deck.gl/geo-layers', '@deck.gl/mapbox'],
+          'deck': ['@deck.gl/core', '@deck.gl/layers', '@deck.gl/mapbox'],
           'maplibre': ['maplibre-gl'],
           'react': ['react', 'react-dom'],
         },

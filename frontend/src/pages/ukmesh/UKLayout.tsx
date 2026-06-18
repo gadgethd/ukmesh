@@ -17,11 +17,15 @@ export const UKLayout: React.FC = () => {
       showFeed
       showRepeaterSearch
       showCompanion
+      showRegions={false}
       showAbout={false}
+      showInstall
+      showBestPractice
       showMqtt={false}
       showHealth={false}
       showPackets={false}
-      showStats
+      showOpenSource={false}
+      showStats={false}
     />
     </>
   );

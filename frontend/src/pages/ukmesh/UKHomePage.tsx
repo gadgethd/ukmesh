@@ -14,8 +14,7 @@ export const UKHomePage: React.FC = () => {
             <h1 className="site-home__title">UK Mesh Network</h1>
             <p className="site-home__body">
               The UK-wide public site for MeshCore traffic, repeater coverage, observer ingestion, and the
-              supporting documentation behind the live map. Teesside is part of this wider feed rather than a
-              separate stack.
+              supporting documentation behind the live map.
             </p>
             <div className="site-home__actions">
               <a href={site.appUrl} className="site-btn site-btn--primary">Open live map</a>
