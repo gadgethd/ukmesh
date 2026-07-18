@@ -1,5 +1,5 @@
-import React, { useEffect, useState } from 'react';
-import { Link, NavLink, Outlet, useNavigate } from 'react-router-dom';
+import React, { useEffect, useRef, useState } from 'react';
+import { Link, NavLink, Outlet } from 'react-router-dom';
 
 type SiteLayoutProps = {
   brandName: string;
@@ -53,6 +53,7 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
 }) => {
   const COOKIE_CONSENT_KEY = 'meshcore-cookie-consent-v1';
   const [menuOpen, setMenuOpen] = useState(false);
+  const navRef = useRef<HTMLElement>(null);
   const [ownerLabel, setOwnerLabel] = useState<string | null>(null);
   const [cookieConsent, setCookieConsent] = useState<boolean>(() => {
     try {
@@ -61,8 +62,6 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
       return false;
     }
   });
-  const navigate = useNavigate();
-
   const navItems: NavItem[] = [
     { to: '/feed', label: 'Feed', enabled: showFeed },
     { to: '/repeater', label: 'Repeaters', enabled: showRepeaterSearch },
@@ -77,10 +76,24 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
   ];
 
   const closeMenu = () => setMenuOpen(false);
-  const handleNavClick = (to: string) => {
-    closeMenu();
-    navigate(to);
-  };
+
+  useEffect(() => {
+    if (!menuOpen) return undefined;
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') closeMenu();
+    };
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!navRef.current?.contains(event.target as Node)) closeMenu();
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    document.addEventListener('pointerdown', handlePointerDown);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+      document.removeEventListener('pointerdown', handlePointerDown);
+    };
+  }, [menuOpen]);
 
   useEffect(() => {
     let cancelled = false;
@@ -125,20 +138,23 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
 
   return (
     <div className="site-layout">
-      <nav className="site-nav">
+      <nav ref={navRef} className="site-nav">
         <Link to="/" className="site-nav__brand" onClick={closeMenu}>
           <span className="site-nav__icon">◈</span>
           <span className="site-nav__name">{brandName}</span>
         </Link>
 
-        <div className={`site-nav__links${menuOpen ? ' site-nav__links--open' : ''}`}>
+        <div
+          id="site-navigation"
+          className={`site-nav__links${menuOpen ? ' site-nav__links--open' : ''}`}
+        >
           {showLiveMap && <a href={appUrl} className="site-nav__link site-nav__link--map">Live Map ↗</a>}
           {navItems.filter((item) => item.enabled).map((item) => (
             <NavLink
               key={item.to}
               to={item.to}
               end={item.to === '/'}
-              onClick={() => handleNavClick(item.to)}
+              onClick={closeMenu}
               className={navClassName}
             >
               {item.label}
@@ -148,7 +164,7 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
           <a href="https://flasher.ukmesh.com" className="site-nav__link">Flasher</a>
           <NavLink
             to="/login"
-            onClick={() => handleNavClick('/login')}
+            onClick={closeMenu}
             className={({ isActive }) => isActive ? 'site-nav__app-btn site-nav__app-btn--active' : 'site-nav__app-btn'}
           >
             {ownerLabel ?? 'Login'}
@@ -156,8 +172,11 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
         </div>
 
         <button
+          type="button"
           className="site-nav__hamburger"
           aria-label={menuOpen ? 'Close menu' : 'Open menu'}
+          aria-controls="site-navigation"
+          aria-expanded={menuOpen}
           onClick={() => setMenuOpen((open) => !open)}
         >
           {menuOpen ? '✕' : '☰'}
