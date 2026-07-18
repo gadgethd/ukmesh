@@ -208,7 +208,10 @@ html, body, #root {
   background: var(--bg-panel);
   border: 1px solid var(--border);
   border-radius: 6px;
-  overflow: hidden;
+  max-height: min(280px, 40dvh);
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .node-search__result {
@@ -978,6 +981,7 @@ html, body, #root {
   justify-content: center;
   z-index: 2000;
   padding: 16px;
+  box-sizing: border-box;
 }
 .disclaimer-modal {
   background: var(--bg-panel);
@@ -986,6 +990,10 @@ html, body, #root {
   padding: 28px 32px;
   max-width: 520px;
   width: 100%;
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  box-sizing: border-box;
 }
 .disclaimer-modal__title {
   font-family: var(--font-mono);
@@ -1066,6 +1074,9 @@ html, body, #root {
   display: flex;
   flex-direction: column;
   gap: 16px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  box-sizing: border-box;
 }
 
 .stats-page__path-modal-header {
@@ -1088,6 +1099,7 @@ html, body, #root {
   margin: 6px 0 0;
   color: var(--text-muted);
   font-size: 13px;
+  overflow-wrap: anywhere;
 }
 
 .stats-page__path-modal-close {
@@ -3780,6 +3792,51 @@ html, body, #root {
 }
 .site-nav__hamburger:hover { color: var(--text-primary); background: var(--bg-hover); }
 
+/* Switch the shared navigation to a compact popover before links start
+   wrapping. The two-column layout keeps every site journey reachable without
+   covering the page on phone-sized or small-tablet viewports. */
+@media (max-width: 860px) {
+  .site-nav__hamburger { display: flex; }
+
+  .site-nav__links {
+    display: none;
+    position: absolute;
+    top: calc(100% + 8px);
+    right: 12px;
+    width: min(360px, calc(100vw - 24px));
+    max-height: min(56dvh, 360px);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: stretch;
+    gap: 4px;
+    padding: 8px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    background: var(--bg-panel);
+    border: 1px solid var(--border-bright);
+    border-radius: 10px;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55);
+    z-index: 999;
+  }
+
+  .site-nav__links--open { display: grid; }
+
+  .site-nav__link,
+  .site-nav__links .site-nav__app-btn {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+    min-height: 42px;
+    margin: 0;
+    padding: 9px 10px;
+    border: 0;
+    border-radius: 6px;
+    font-family: var(--font-body);
+    font-size: 13px;
+    line-height: 1.25;
+    overflow-wrap: anywhere;
+  }
+}
+
 /* ══════════════════════════════════════════════════════════════════════════ */
 /* ─── Mobile (≤640px) ────────────────────────────────────────────────────── */
 /* ══════════════════════════════════════════════════════════════════════════ */
@@ -3810,6 +3867,9 @@ html, body, #root {
   .mobile-filter-grid .filter-row { padding: 8px 6px; }
   .mobile-filter-wrap {
     border-top: 1px solid var(--border);
+    max-height: min(40dvh, 280px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
   }
   .mobile-filter-wrap--hidden {
     display: none;
@@ -3867,42 +3927,12 @@ html, body, #root {
   /* ── Packet feed: full width at bottom, max 4 items ─────────────────── */
   .packet-feed { width: calc(100% - 32px); max-height: 180px; }
 
-  /* ── Website nav: keep bar fixed height, dropdown pops below it ─────── */
+  /* ── Website nav ────────────────────────────────────────────────────── */
   .site-nav {
     height: 52px;
     padding: 0 16px;
     gap: 12px;
-    position: sticky; /* already sticky — needed for dropdown anchor */
-  }
-  .site-nav__hamburger { display: flex; }
-
-  /* Dropdown pops out absolutely below the nav bar */
-  .site-nav__links {
-    display: none;
-    position: absolute;
-    top: 52px;
-    left: 0;
-    right: 0;
-    flex-direction: column;
-    background: var(--bg-panel);
-    border-bottom: 1px solid var(--border);
-    padding: 8px 16px 14px;
-    gap: 0;
-    z-index: 999;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
-  }
-  .site-nav__links--open { display: flex; }
-  .site-nav__link { padding: 12px 4px; font-size: 14px; border-bottom: 1px solid var(--border); }
-  /* App button inside dropdown: reset to plain link style */
-  .site-nav__links .site-nav__app-btn {
-    margin-left: 0;
-    background: transparent;
-    border: none;
-    border-bottom: 1px solid var(--border);
-    border-radius: 0;
-    padding: 12px 4px;
-    font-family: var(--font-body);
-    font-size: 14px;
+    position: sticky;
   }
 
   .cookie-banner {
@@ -3945,7 +3975,7 @@ html, body, #root {
   .dev-status-list > div { flex-direction: column; align-items: flex-start; }
   .dev-status-list strong { text-align: left; }
   .dev-status-card--fixed { height: auto; }
-  .site-prose { padding: 24px 0 56px; }
+  .site-prose { padding: 24px 16px 56px; }
   .site-prose--wide { max-width: 100%; }
   .prose-section--muted { padding: 20px; }
   .owner-summary-grid { grid-template-columns: 1fr; }
@@ -3960,6 +3990,30 @@ html, body, #root {
   .owner-roadmap { grid-template-columns: 1fr; }
   .owner-head { flex-direction: column; align-items: flex-start; }
   .owner-map { height: 260px; }
+  .packet-grid { grid-template-columns: minmax(0, 1fr); }
+  .site-footer { justify-content: flex-start; padding: 12px 16px; }
+
+  .disclaimer-overlay { padding: 10px; }
+  .disclaimer-modal {
+    max-height: calc(100dvh - 20px);
+    padding: 20px;
+  }
+  .stats-page__path-modal {
+    max-height: calc(100dvh - 20px);
+    padding: 14px;
+    gap: 12px;
+  }
+  .stats-page__path-modal-header {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+  .stats-page__path-modal-close {
+    width: 100%;
+    min-width: 0;
+  }
+  .stats-page__path-modal-map { height: min(46dvh, 320px); }
+  .stats-page__path-modal-list { grid-template-columns: minmax(0, 1fr); }
 }
 
 @media (max-width: 1180px) {
@@ -4306,6 +4360,13 @@ html, body, #root {
   overflow-y: auto;
 }
 
+.stats-page__pie-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(140px, 1fr);
+  align-items: center;
+  gap: 16px;
+}
+
 .stats-page__pie-item {
   display: flex;
   align-items: center;
@@ -4357,6 +4418,14 @@ html, body, #root {
   .stats-page__observer-metrics {
     grid-template-columns: 1fr;
   }
+  .stats-page__pie-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .stats-page__chart-header {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
 }
 
 /* Repeater Search Page */
@@ -4391,8 +4460,9 @@ html, body, #root {
   border: 1px solid var(--border);
   border-top: none;
   border-radius: 0 0 8px 8px;
-  max-height: 320px;
+  max-height: min(320px, 46dvh);
   overflow-y: auto;
+  overscroll-behavior: contain;
   z-index: 100;
 }
 

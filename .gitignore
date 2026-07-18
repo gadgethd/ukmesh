@@ -3,6 +3,8 @@ node_modules/
 
 # Build output
 dist/
+frontend/test-results/
+frontend/playwright-report/
 
 # Environment variables — never commit real credentials
 .env
