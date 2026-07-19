@@ -3838,6 +3838,54 @@ html, body, #root {
     line-height: 1.25;
     overflow-wrap: anywhere;
   }
+
+  /* Route-level desktop CSS may be injected after the global bundle. Keep
+     mobile content layouts explicit and more specific so narrow screens never
+     retain fixed desktop rails or columns. */
+  html .site-content {
+    padding-right: 16px;
+    padding-left: 16px;
+  }
+
+  html .site-home { padding: 30px 0 24px; }
+  html .site-home__grid { grid-template-columns: minmax(0, 1fr); }
+  html .site-home__intro,
+  html .site-home__panel { min-width: 0; }
+  html .site-home__join { align-items: flex-start; }
+
+  html .site-footer {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: center;
+    gap: 4px 16px;
+    padding: 14px 16px;
+  }
+  html .site-footer > span:first-child {
+    grid-column: 1 / -1;
+    padding-bottom: 4px;
+  }
+  html .site-footer__sep { display: none; }
+  html .site-footer a {
+    display: flex;
+    align-items: center;
+    min-height: 36px;
+  }
+}
+
+@media (max-width: 480px) {
+  html .site-home__title { font-size: clamp(32px, 10vw, 38px); }
+  html .site-home__body {
+    font-size: 15px;
+    line-height: 1.65;
+  }
+  html .site-home__panel,
+  html .site-home__card,
+  html .site-home__join,
+  html .site-card { padding: 16px; }
+  html .site-home__actions,
+  html .site-home__join-actions { width: 100%; }
+  html .site-home__actions .site-btn,
+  html .site-home__join-actions .site-btn { flex: 1 1 100%; }
 }
 
 /* ══════════════════════════════════════════════════════════════════════════ */
@@ -4042,72 +4090,96 @@ html, body, #root {
   }
 
   /* ── Feed: mobile layout ─────────────────────────────────────── */
-  .uk-feed-layout {
-    grid-template-columns: 1fr;
+  html .uk-feed-layout {
+    grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto;
+    grid-auto-rows: max-content;
+    align-content: start;
     height: auto;
+    min-height: calc(100dvh - 52px);
+    min-width: 0;
+    overflow: visible;
   }
 
   /* Channels sidebar → horizontal filter pills */
-  .uk-feed-channels {
-    border-right: none;
-    border-bottom: 1px solid var(--border);
+  html .uk-feed-channels {
     display: flex;
-    flex-direction: row;
-    flex-wrap: wrap;
+    flex-flow: row nowrap;
     align-items: center;
-    padding: 6px 8px;
-    gap: 4px;
+    align-self: start;
+    gap: 6px;
+    width: 100%;
+    padding: 8px 12px;
     overflow-x: auto;
+    overflow-y: hidden;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
     -webkit-overflow-scrolling: touch;
   }
 
-  .uk-feed-channels__header { display: none; }
-  .uk-feed-channels__divider { display: none; }
+  html .uk-feed-channels::-webkit-scrollbar { display: none; }
+  html .uk-feed-channels__header,
+  html .uk-feed-channels__divider { display: none; }
 
-  .uk-feed-channel-item {
+  html .uk-feed-channel-item {
+    flex: 0 0 auto;
     width: auto;
-    padding: 6px 12px;
-    border-radius: 999px;
+    min-height: 40px;
+    padding: 8px 14px;
     border: 1px solid var(--border);
-    font-size: 13px;
-    flex-shrink: 0;
+    border-radius: 999px;
+    font-size: 14px;
   }
 
-  .uk-feed-channel-toggle {
-    font-size: 13px;
-    padding: 6px 8px;
+  html .uk-feed-channel-toggle {
+    flex: 0 0 auto;
+    min-height: 40px;
+    padding: 8px 10px;
+    font-size: 14px;
+    white-space: nowrap;
   }
 
   /* Packet list — full height, no cap */
-  .uk-feed-chat {
-    border-right: none;
+  html .uk-feed-chat {
+    width: 100%;
+    min-height: max(360px, calc(100dvh - 260px));
     max-height: none;
+    border-right: 0;
+  }
+
+  html .uk-feed-chat__header { padding: 10px 12px; }
+  html .uk-feed-search {
+    width: 100%;
+    min-width: 0;
+    min-height: 42px;
+    font-size: 16px;
   }
 
   /* Packet rows — bigger touch targets, simplified meta */
-  .uk-feed-packet-row {
-    min-height: 56px;
+  html .uk-feed-packet-row {
+    min-height: 60px;
     padding: 10px 12px;
   }
 
-  .uk-feed-packet-row__meta {
-    grid-template-columns: auto auto auto 1fr;
+  html .uk-feed-packet-row__meta {
+    grid-template-columns: auto auto auto minmax(0, 1fr);
     gap: 6px;
   }
 
   /* Hide hash on mobile — too long to be useful */
-  .uk-feed-packet-row__hash {
+  html .uk-feed-packet-row__hash {
     display: none;
   }
 
   /* Observer spans to the last grid cell and wraps naturally */
-  .uk-feed-packet-row__observer {
+  html .uk-feed-packet-row__observer {
     font-size: 0.8rem;
   }
 
   /* Inline map — shown on mobile below selected row */
-  .uk-feed-inline-map {
+  html .uk-feed-inline-map {
     display: block;
     height: 240px;
     border-bottom: 1px solid var(--border);
@@ -4115,24 +4187,24 @@ html, body, #root {
   }
 
   /* Hide the desktop right column entirely on mobile */
-  .uk-feed-right {
+  html .uk-feed-right {
     display: none;
   }
 
   /* Mobile stats bar — connection status + type tags, shown between channels and chat */
-  .uk-feed-mobile-stats {
+  html .uk-feed-mobile-stats {
     display: block;
     padding: 8px 12px;
     border-bottom: 1px solid var(--border);
     background: var(--bg-panel);
   }
 
-  .uk-feed-mobile-stats .uk-feed-stats__row {
+  html .uk-feed-mobile-stats .uk-feed-stats__row {
     margin-bottom: 6px;
   }
 
   /* Mobile detail strip — shown below inline map for selected packet */
-  .uk-feed-mobile-detail {
+  html .uk-feed-mobile-detail {
     display: block;
     padding: 10px 12px;
     background: var(--bg-panel-alt);
