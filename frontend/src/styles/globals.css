@@ -3796,9 +3796,12 @@ html, body, #root {
    wrapping. The two-column layout keeps every site journey reachable without
    covering the page on phone-sized or small-tablet viewports. */
 @media (max-width: 860px) {
-  .site-nav__hamburger { display: flex; }
+  /* The navigation can also be consumed from a lazy route stylesheet. Keep
+     these selectors more specific than route-level desktop defaults so CSS
+     chunk insertion order cannot force the mobile menu permanently open. */
+  html .site-nav__hamburger { display: flex; }
 
-  .site-nav__links {
+  html .site-nav__links {
     display: none;
     position: absolute;
     top: calc(100% + 8px);
@@ -3818,10 +3821,10 @@ html, body, #root {
     z-index: 999;
   }
 
-  .site-nav__links--open { display: grid; }
+  html .site-nav__links.site-nav__links--open { display: grid; }
 
-  .site-nav__link,
-  .site-nav__links .site-nav__app-btn {
+  html .site-nav__links .site-nav__link,
+  html .site-nav__links .site-nav__app-btn {
     display: flex;
     align-items: center;
     min-width: 0;

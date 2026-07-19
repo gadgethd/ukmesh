@@ -173,6 +173,22 @@ test('shared navigation stays compact and dismisses without navigation', async (
   await expect(menu).toBeHidden();
 });
 
+test('shared navigation collapses before tablet links can wrap', async ({ page }) => {
+  await page.setViewportSize({ width: 768, height: 667 });
+  await installApiFixtures(page);
+  await page.goto('http://127.0.0.1:4173/feed', { waitUntil: 'networkidle' });
+
+  const menu = page.locator('#site-navigation');
+  const openMenu = page.getByRole('button', { name: 'Open menu' });
+  await expect(openMenu).toBeVisible();
+  await expect(menu).toBeHidden();
+
+  await openMenu.click();
+  await expect(menu).toBeVisible();
+  await page.getByRole('button', { name: 'Close menu' }).click();
+  await expect(menu).toBeHidden();
+});
+
 test('map controls and disclaimer leave the map usable on a phone', async ({ page }) => {
   await page.setViewportSize(PHONE);
   await installApiFixtures(page);
