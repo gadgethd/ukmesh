@@ -189,6 +189,44 @@ test('shared navigation collapses before tablet links can wrap', async ({ page }
   await expect(menu).toBeHidden();
 });
 
+test('phone home and feed give primary content the full available width', async ({ page }) => {
+  await page.setViewportSize(PHONE);
+  await installApiFixtures(page);
+  await page.goto('http://127.0.0.1:4173/', { waitUntil: 'networkidle' });
+
+  const introBox = await page.locator('.site-home__intro').boundingBox();
+  const panelBox = await page.locator('.site-home__panel').boundingBox();
+  expect(introBox?.width ?? 0).toBeGreaterThan(330);
+  expect(panelBox?.width ?? 0).toBeGreaterThan(330);
+  expect(await page.locator('.site-home__grid').evaluate(
+    (element) => getComputedStyle(element).gridTemplateColumns.split(' ').length,
+  )).toBe(1);
+  await expectNoViewportOverflow(page);
+
+  await page.goto('http://127.0.0.1:4173/feed', { waitUntil: 'networkidle' });
+  const channelsBox = await page.locator('.uk-feed-channels').boundingBox();
+  const chatBox = await page.locator('.uk-feed-chat').boundingBox();
+  expect(channelsBox?.height ?? PHONE.height).toBeLessThan(64);
+  expect(chatBox?.width ?? 0).toBeGreaterThan(360);
+  await expect(page.locator('.uk-feed-right')).toBeHidden();
+  await expectNoViewportOverflow(page);
+});
+
+test('tablet home and feed avoid squeezed desktop columns', async ({ page }) => {
+  await page.setViewportSize({ width: 768, height: 667 });
+  await installApiFixtures(page);
+  await page.goto('http://127.0.0.1:4173/', { waitUntil: 'networkidle' });
+
+  expect(await page.locator('.site-home__grid').evaluate(
+    (element) => getComputedStyle(element).gridTemplateColumns.split(' ').length,
+  )).toBe(1);
+  expect((await page.locator('.site-home__intro').boundingBox())?.width ?? 0).toBeGreaterThan(720);
+
+  await page.goto('http://127.0.0.1:4173/feed', { waitUntil: 'networkidle' });
+  expect((await page.locator('.uk-feed-chat').boundingBox())?.width ?? 0).toBeGreaterThan(740);
+  await expect(page.locator('.uk-feed-right')).toBeHidden();
+});
+
 test('map controls and disclaimer leave the map usable on a phone', async ({ page }) => {
   await page.setViewportSize(PHONE);
   await installApiFixtures(page);
