@@ -1,4 +1,5 @@
 import React, { useMemo, useCallback, useEffect, useState, useRef } from 'react';
+import './feed-page.css';
 import { getCurrentSite } from '../../config/site.js';
 import { useWebSocket, type WSMessage } from '../../hooks/useWebSocket.js';
 import { useMessages, useNodes, type MeshNode, type LivePacketData, type AggregatedPacket } from '../../hooks/useNodes.js';

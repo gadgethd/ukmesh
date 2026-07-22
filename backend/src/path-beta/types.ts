@@ -67,6 +67,10 @@ export type ObserverHopHint = {
 export type BetaResolveContext = {
   loadedAt: number;
   nodesById: Map<string, MeshNode>;
+  /** Repeater candidates with valid coordinates, prefiltered once per context refresh. */
+  repeaterNodes: MeshNode[];
+  /** Node IDs indexed by their supported path-hash prefixes. */
+  repeaterPathHashIndex: Map<string, MeshNode[]>;
   coverageByNode: Map<string, number>;
   /** Links with itm_viable=true OR force_viable=true — theoretical viability from ITM model. */
   linkPairs: Set<string>;
@@ -77,6 +81,8 @@ export type BetaResolveContext = {
   /** Adjacency for trustedPathPairs, used to keep live path candidate sets small. */
   trustedPathNeighbors: Map<string, Set<string>>;
   linkMetrics: Map<string, LinkMetrics>;
+  /** Candidate adjacency used by the clash penalty in the path solver. */
+  clashAdjacency: Map<string, Set<string>>;
   /** Packet-derived first-hop affinity, resolved only when both endpoints are known full node IDs. */
   neighborAffinity: Map<string, NeighborAffinityMetrics>;
   /** Adjacency built from packet-derived first-hop affinity for shared-neighbor scoring. */

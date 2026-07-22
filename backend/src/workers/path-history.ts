@@ -7,7 +7,8 @@ const WINDOW_HOURS = 168;
 const MIN_SEGMENT_COUNT = 30;
 const MAX_PACKET_HASHES = 12000;
 const MAX_SEGMENTS = 3000;
-const SCOPES = ['all', 'teesside', 'ukmesh', 'test'] as const;
+const MIN_HISTORY_PATH_HASH_BYTES = 2;
+const SCOPES = ['all', 'ukmesh'] as const;
 
 type ScopeName = (typeof SCOPES)[number];
 
@@ -63,12 +64,20 @@ function collectPurpleSegments(result: BetaResolvedPayload, sink: Set<string>): 
 }
 
 async function refreshScope(scope: ScopeName): Promise<void> {
-  const packetHashes = await getRecentPathHistoryPacketHashes(WINDOW_HOURS, scope === 'all' ? undefined : scope, MAX_PACKET_HASHES);
+  const packetHashes = await getRecentPathHistoryPacketHashes(
+    WINDOW_HOURS,
+    scope === 'all' ? undefined : scope,
+    MAX_PACKET_HASHES,
+    MIN_HISTORY_PATH_HASH_BYTES,
+  );
   const counts = new Map<string, number>();
   let resolvedPacketCount = 0;
 
   for (const packetHash of packetHashes) {
-    const resolved = await resolveMultiObserverBetaPath(packetHash, scope);
+    const resolved = await resolveMultiObserverBetaPath(packetHash, scope, undefined, undefined, {
+      touchPredictedOnline: false,
+      log: false,
+    });
     if (!resolved?.ok || resolved.results.length < 1) continue;
 
     const packetSegments = new Set<string>();

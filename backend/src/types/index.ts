@@ -1,34 +1,3 @@
-export interface DecodedMeshPacket {
-  messageHash: string;
-  routeType: number;
-  payloadType: number;
-  payloadVersion: number;
-  pathLength: number;
-  path: null | unknown[];
-  payload: {
-    raw: string;
-    decoded: Record<string, unknown> | null;
-  };
-  totalBytes: number;
-  isValid: boolean;
-}
-
-export interface StoredPacket {
-  time: Date;
-  packetHash: string;
-  rxNodeId?: string;
-  srcNodeId?: string;
-  topic: string;
-  packetType?: number;
-  routeType?: number;
-  hopCount?: number;
-  pathHashSizeBytes?: number;
-  rssi?: number;
-  snr?: number;
-  payload?: Record<string, unknown>;
-  rawHex: string;
-}
-
 export interface Node {
   nodeId: string;
   name?: string;

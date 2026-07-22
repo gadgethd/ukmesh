@@ -5,11 +5,12 @@ import {
   PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer,
 } from 'recharts';
-import maplibregl from 'maplibre-gl';
-import 'maplibre-gl/dist/maplibre-gl.css';
+import type maplibregl from 'maplibre-gl';
 import { LoadingIndicator } from '../components/LoadingIndicator.js';
 import { getCurrentSite } from '../config/site.js';
 import { chartStatsEndpoint, uncachedEndpoint } from '../utils/api.js';
+import { useWatchlist } from '../hooks/useWatchlist.js';
+import './stats-page.css';
 
 // ── Colours ───────────────────────────────────────────────────────────────────
 const C_CYAN   = '#00c4ff';
@@ -68,6 +69,11 @@ interface ChartData {
     packets24h: number;
     packets7d: number;
     lastPacketAt: string | null;
+    health: {
+      score: number;
+      status: 'healthy' | 'watch' | 'poor';
+      factors: Record<string, number>;
+    };
     series: { day: string; count: number }[];
   }[];
   pathHashes: {
@@ -214,95 +220,106 @@ const DecodedPathMapView: React.FC<{
   useEffect(() => {
     if (!containerRef.current || nodes.length < 2) return;
 
-    const map = new maplibregl.Map({
-      container: containerRef.current,
-      style: {
-        version: 8,
-        sources: {
-          tiles: {
-            type: 'raster',
-            tiles: CARTO_DARK_TILES,
-            tileSize: 256,
-            maxzoom: 19,
-            attribution: '© OpenStreetMap © CARTO',
+    let cancelled = false;
+    let map: maplibregl.Map | null = null;
+    void Promise.all([
+      import('maplibre-gl'),
+      import('maplibre-gl/dist/maplibre-gl.css'),
+    ]).then(([maplibreModule]) => {
+      if (cancelled || !containerRef.current) return;
+      const maplibre = maplibreModule.default;
+      map = new maplibre.Map({
+        container: containerRef.current,
+        style: {
+          version: 8,
+          sources: {
+            tiles: {
+              type: 'raster',
+              tiles: CARTO_DARK_TILES,
+              tileSize: 256,
+              maxzoom: 19,
+              attribution: '© OpenStreetMap © CARTO',
+            },
           },
+          layers: [{ id: 'bg', type: 'raster', source: 'tiles' }],
         },
-        layers: [{ id: 'bg', type: 'raster', source: 'tiles' }],
-      },
-      center: [Number(nodes[0]!.lon), Number(nodes[0]!.lat)],
-      zoom: 8,
-      attributionControl: false,
-    });
+        center: [Number(nodes[0]!.lon), Number(nodes[0]!.lat)],
+        zoom: 8,
+        attributionControl: false,
+      });
 
-    map.on('load', () => {
-      const lineData: GeoJSON.FeatureCollection<GeoJSON.LineString> = {
-        type: 'FeatureCollection',
-        features: [{
-          type: 'Feature',
-          geometry: {
-            type: 'LineString',
-            coordinates: nodes.map((node) => [Number(node.lon), Number(node.lat)] as [number, number]),
+      map.on('load', () => {
+        if (cancelled || !map) return;
+        const lineData: GeoJSON.FeatureCollection<GeoJSON.LineString> = {
+          type: 'FeatureCollection',
+          features: [{
+            type: 'Feature',
+            geometry: {
+              type: 'LineString',
+              coordinates: nodes.map((node) => [Number(node.lon), Number(node.lat)] as [number, number]),
+            },
+            properties: {},
+          }],
+        };
+
+        const pointData: GeoJSON.FeatureCollection<GeoJSON.Point, { ord: string }> = {
+          type: 'FeatureCollection',
+          features: nodes.map((node) => ({
+            type: 'Feature',
+            geometry: { type: 'Point', coordinates: [Number(node.lon), Number(node.lat)] },
+            properties: { ord: String(node.ord) },
+          })),
+        };
+
+        map.addSource('decoded-path-line', { type: 'geojson', data: lineData });
+        map.addSource('decoded-path-nodes', { type: 'geojson', data: pointData });
+
+        map.addLayer({
+          id: 'decoded-path-line-layer',
+          type: 'line',
+          source: 'decoded-path-line',
+          paint: {
+            'line-color': C_PURPLE,
+            'line-width': 4,
+            'line-opacity': 0.9,
           },
-          properties: {},
-        }],
-      };
+        });
 
-      const pointData: GeoJSON.FeatureCollection<GeoJSON.Point, { ord: string }> = {
-        type: 'FeatureCollection',
-        features: nodes.map((node) => ({
-          type: 'Feature',
-          geometry: { type: 'Point', coordinates: [Number(node.lon), Number(node.lat)] },
-          properties: { ord: String(node.ord) },
-        })),
-      };
+        map.addLayer({
+          id: 'decoded-path-node-circles',
+          type: 'circle',
+          source: 'decoded-path-nodes',
+          paint: {
+            'circle-radius': 10,
+            'circle-color': '#0b1725',
+            'circle-stroke-color': C_CYAN,
+            'circle-stroke-width': 2,
+          },
+        });
 
-      map.addSource('decoded-path-line', { type: 'geojson', data: lineData });
-      map.addSource('decoded-path-nodes', { type: 'geojson', data: pointData });
+        map.addLayer({
+          id: 'decoded-path-node-labels',
+          type: 'symbol',
+          source: 'decoded-path-nodes',
+          layout: {
+            'text-field': ['get', 'ord'],
+            'text-size': 12,
+            'text-font': ['Open Sans Bold', 'Arial Unicode MS Bold'],
+          },
+          paint: {
+            'text-color': '#ffffff',
+          },
+        });
 
-      map.addLayer({
-        id: 'decoded-path-line-layer',
-        type: 'line',
-        source: 'decoded-path-line',
-        paint: {
-          'line-color': C_PURPLE,
-          'line-width': 4,
-          'line-opacity': 0.9,
-        },
+        const bounds = new maplibre.LngLatBounds();
+        for (const node of nodes) bounds.extend([Number(node.lon), Number(node.lat)]);
+        map.fitBounds(bounds, { padding: 24, animate: false });
       });
-
-      map.addLayer({
-        id: 'decoded-path-node-circles',
-        type: 'circle',
-        source: 'decoded-path-nodes',
-        paint: {
-          'circle-radius': 10,
-          'circle-color': '#0b1725',
-          'circle-stroke-color': C_CYAN,
-          'circle-stroke-width': 2,
-        },
-      });
-
-      map.addLayer({
-        id: 'decoded-path-node-labels',
-        type: 'symbol',
-        source: 'decoded-path-nodes',
-        layout: {
-          'text-field': ['get', 'ord'],
-          'text-size': 12,
-          'text-font': ['Open Sans Bold', 'Arial Unicode MS Bold'],
-        },
-        paint: {
-          'text-color': '#ffffff',
-        },
-      });
-
-      const bounds = new maplibregl.LngLatBounds();
-      for (const node of nodes) bounds.extend([Number(node.lon), Number(node.lat)]);
-      map.fitBounds(bounds, { padding: 24, animate: false });
     });
 
     return () => {
-      map.remove();
+      cancelled = true;
+      map?.remove();
     };
   }, [nodes]);
 
@@ -311,6 +328,7 @@ const DecodedPathMapView: React.FC<{
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 export const StatsPage: React.FC = () => {
+  const watchlist = useWatchlist();
   const [data, setData]       = useState<ChartData | null>(null);
   const [loading, setLoading] = useState(true);
   const [searchParams, setSearchParams] = useSearchParams();
@@ -687,7 +705,14 @@ export const StatsPage: React.FC = () => {
                         <div key={region.iata} className="stats-page__observer-card">
                           <div className="stats-page__observer-card-head">
                             <span className="stats-page__observer-iata">{region.iata}</span>
+                            <span className={`stats-page__health stats-page__health--${region.health?.status ?? 'poor'}`} title="Weighted from ingest freshness, active observers, packet volume, and observer diversity">
+                              {region.health?.score ?? 0}% {region.health?.status ?? 'poor'}
+                            </span>
                             <span className="stats-page__observer-last">last packet {timeAgo(region.lastPacketAt)}</span>
+                          </div>
+                          <div className="stats-page__observer-watch">
+                            <button type="button" onClick={() => watchlist.toggle('region', region.iata, `${region.iata} region`)}>{watchlist.isWatched('region', region.iata) ? '★ Region' : '☆ Region'}</button>
+                            <button type="button" onClick={() => watchlist.toggle('observer', region.iata, `${region.iata} observers`)}>{watchlist.isWatched('observer', region.iata) ? '★ Observers' : '☆ Observers'}</button>
                           </div>
                           <div className="stats-page__observer-metrics">
                             <div className="stats-page__observer-metric">

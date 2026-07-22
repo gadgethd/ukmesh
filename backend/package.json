@@ -8,7 +8,11 @@
     "dev": "tsx watch src/index.ts",
     "spam:recompute": "node dist/tools/recomputeSpamSuspects.js",
     "spam:messages": "node dist/tools/recomputeSpamMessages.js",
-    "test": "node --import tsx --test src/spam/*.test.ts",
+    "db:migrate": "node dist/tools/migrate.js",
+    "stats:backfill-rollups": "node dist/tools/backfillStatsRollups.js",
+    "bench:decode": "tsx src/tools/benchmarkPacketDecode.ts",
+    "load:realtime": "tsx src/tools/loadRealtime.ts",
+    "test": "node --import tsx --test $(find src -name '*.test.ts' -print)",
     "typecheck": "tsc --noEmit",
     "start": "node dist/index.js"
   },

@@ -120,10 +120,3 @@ export async function initSpamMessageAnalyzer(cfg: SpamMessageConfig = loadSpamM
   timer = setInterval(run, cfg.analyzerIntervalMs);
   if (typeof timer.unref === 'function') timer.unref();
 }
-
-export function stopSpamMessageAnalyzer(): void {
-  if (timer) {
-    clearInterval(timer);
-    timer = null;
-  }
-}

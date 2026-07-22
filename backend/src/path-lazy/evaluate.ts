@@ -164,7 +164,7 @@ function fmt(name: string, a: Acc): string {
 }
 
 async function main() {
-  const network = process.argv[2] ?? 'teesside';
+  const network = process.argv[2] ?? 'ukmesh';
   const sampleSize = Number(process.argv[3] ?? 400);
 
   const gold = await loadGoldPackets(network, sampleSize);

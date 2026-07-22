@@ -18,6 +18,7 @@ type SiteLayoutProps = {
   showRepeaterSearch?: boolean;
   showCompanion?: boolean;
   showRegions?: boolean;
+  showTopology?: boolean;
 };
 
 type NavItem = {
@@ -54,6 +55,7 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
   showRepeaterSearch = false,
   showCompanion = false,
   showRegions = false,
+  showTopology = false,
 }) => {
   const COOKIE_CONSENT_KEY = 'meshcore-cookie-consent-v1';
   const [menuOpen, setMenuOpen] = useState(false);
@@ -72,6 +74,7 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
     { to: '/repeater', label: 'Repeaters', enabled: showRepeaterSearch },
     { to: '/companion', label: 'Companions', enabled: showCompanion },
     { to: '/regions', label: 'Regions', enabled: showRegions },
+    { to: '/topology', label: 'Topology', enabled: showTopology },
     { to: '/about', label: 'What is MeshCore', enabled: showAbout },
     { to: '/install', label: 'Install', enabled: showInstall },
     { to: '/mqtt', label: 'MQTT', enabled: showMqtt },
@@ -120,6 +123,17 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
     };
   }, []);
 
+  useEffect(() => {
+    if (!menuOpen) return;
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMenuOpen(false);
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [menuOpen]);
+
   const acceptCookies = () => {
     try {
       localStorage.setItem(COOKIE_CONSENT_KEY, '1');
@@ -137,7 +151,10 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
           <span className="site-nav__name">{brandName}</span>
         </Link>
 
-        <div className={`site-nav__links${menuOpen ? ' site-nav__links--open' : ''}`}>
+        <div
+          id="site-navigation"
+          className={`site-nav__links${menuOpen ? ' site-nav__links--open' : ''}`}
+        >
           {showLiveMap && <a href={appUrl} className="site-nav__link site-nav__link--map">Live Map ↗</a>}
           {navItems.filter((item) => item.enabled).map((item) => (
             <NavLink
@@ -163,6 +180,8 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
         <button
           className="site-nav__hamburger"
           aria-label={menuOpen ? 'Close menu' : 'Open menu'}
+          aria-controls="site-navigation"
+          aria-expanded={menuOpen}
           onClick={() => setMenuOpen((open) => !open)}
         >
           {menuOpen ? '✕' : '☰'}

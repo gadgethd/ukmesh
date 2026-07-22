@@ -104,7 +104,11 @@ export function networkFilters(network?: string, observer?: string): NetworkFilt
         conditions.push(networkIsMulti
           ? `${prefix}network = ANY(${networkParam})`
           : `${prefix}network = ${networkParam}`);
-        conditions.push(`split_part(${prefix}topic, '/', 1) <> 'meshcore-test'`);
+        // `test` explicitly requests test traffic. Public scopes exclude the
+        // legacy test topic marker as a defence-in-depth check for old rows.
+        if (network !== 'test') {
+          conditions.push(`split_part(${prefix}topic, '/', 1) <> 'meshcore-test'`);
+        }
       } else {
         conditions.push(`${prefix}network IS DISTINCT FROM 'test'`);
         conditions.push(`split_part(${prefix}topic, '/', 1) <> 'meshcore-test'`);

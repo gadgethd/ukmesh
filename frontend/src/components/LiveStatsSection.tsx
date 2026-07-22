@@ -66,9 +66,9 @@ export const LiveStatsSection: React.FC<LiveStatsSectionProps> = ({ network, obs
         .then((data) => {
           if (cancelled) return;
           setStats({
-            packetsDay: data.packetsDay,
-            totalNodes: data.totalNodes,
-            internationalNodes: data.internationalNodes ?? 0,
+            packetsDay: Number.isFinite(Number(data.packetsDay)) ? Number(data.packetsDay) : 0,
+            totalNodes: Number.isFinite(Number(data.totalNodes)) ? Number(data.totalNodes) : 0,
+            internationalNodes: Number.isFinite(Number(data.internationalNodes)) ? Number(data.internationalNodes) : 0,
             internationalLastSeen: data.internationalLastSeen ?? null,
             internationalLastCountry: data.internationalLastCountry ?? null,
           });
@@ -98,8 +98,6 @@ export const LiveStatsSection: React.FC<LiveStatsSectionProps> = ({ network, obs
           <p>
             {observer
               ? `Updates every 5 minutes from the selected observer feed.`
-              : network === 'test'
-              ? `Updates every 5 minutes from the isolated test feed.`
               : `Updates every 5 minutes from the shared packet feed.`}
           </p>
         </div>

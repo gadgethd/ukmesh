@@ -3,6 +3,9 @@ import { Link } from 'react-router-dom';
 import { LiveStatsSection } from '../../components/LiveStatsSection.js';
 import { getCurrentSite } from '../../config/site.js';
 
+const meshcoreDonationUrl = 'https://givealittle.co.nz/cause/help-us-save-meshcore';
+const meshcoreSupportPostUrl = 'https://blog.meshcore.io/2026/07/04/help-us-save-meshcore';
+
 export const UKHomePage: React.FC = () => {
   const site = getCurrentSite();
 
@@ -48,6 +51,29 @@ export const UKHomePage: React.FC = () => {
       </section>
 
       <LiveStatsSection />
+
+      <section className="site-section">
+        <div className="site-content">
+          <div className="site-home__support">
+            <div>
+              <h2>Support the creators of MeshCore</h2>
+              <p>
+                The MeshCore team is crowdfunding legal costs to protect the project name and keep the core
+                firmware free, open-source, and community driven. Donations go through Givealittle, and the
+                MeshCore blog explains the background.
+              </p>
+            </div>
+            <div className="site-home__support-actions">
+              <a href={meshcoreDonationUrl} target="_blank" rel="noopener noreferrer" className="site-btn site-btn--primary">
+                Donate on Givealittle
+              </a>
+              <a href={meshcoreSupportPostUrl} target="_blank" rel="noopener noreferrer" className="site-btn site-btn--ghost">
+                Read the blog post
+              </a>
+            </div>
+          </div>
+        </div>
+      </section>
 
       <section className="site-section">
         <div className="site-content">

@@ -1,18 +1,24 @@
 import fs from 'node:fs';
 import { createInterface } from 'node:readline';
-import { upsertMqttNodeLogin } from '../db/ownerAuth.js';
+import { addOwnerNodeForUsername, upsertMqttNodeLogin } from '../db/ownerAuth.js';
 import { query } from '../db/index.js';
+import {
+  parseDeniedOwnerPublish,
+  parseMeshcoreClientNodePrefix,
+  parseMosquittoConnection,
+} from './brokerLog.js';
 
 const LOG_PATH = process.env['MOSQUITTO_LOG_PATH'] ?? '/mosquitto/log/mosquitto.log';
 const POLL_INTERVAL_MS = 5_000;
 const HISTORICAL_SCAN_BYTES = 50_000_000; // last 50 MB on startup
 
-// Matches: as meshcore_NODEIDPREFIX_N or meshcore_client_NODEIDPREFIX_N (... u'USERNAME')
-const CONNECT_RE = /as meshcore_(?:client_)?([0-9A-F]+)_\d+ \([^)]*u'([^']+)'\)/i;
+// Client IDs are needed to associate a denied PUBLISH topic with its authenticated
+// username. The topic supplies the exact public key; no prefix guessing is needed.
+const clientToUsername = new Map<string, string>();
 
-// Prefix → mqttUsername pairs that couldn't be resolved yet (node not in nodes table).
+// Username + prefix pairs that couldn't be resolved yet (node not in nodes table).
 // Retried on every poll tick so new nodes link automatically once they publish their first packet.
-const pendingLinks = new Map<string, string>();
+const pendingLinks = new Map<string, { nodePrefix: string; mqttUsername: string }>();
 
 async function resolveNodeId(prefix: string): Promise<string | null> {
   if (prefix.length < 4) return null;
@@ -24,21 +30,29 @@ async function resolveNodeId(prefix: string): Promise<string | null> {
   return res.rows.length === 1 ? (res.rows[0]?.node_id ?? null) : null;
 }
 
+async function recordOwnerNode(mqttUsername: string, nodeId: string): Promise<void> {
+  // Persist both the observed login and the dashboard mapping. Writing the owner
+  // mapping here lets an existing dashboard session discover newly published
+  // nodes on its next refresh, without requiring another login.
+  await addOwnerNodeForUsername(mqttUsername, nodeId);
+  await upsertMqttNodeLogin(mqttUsername, nodeId);
+}
+
 async function resolveAndMaybeLink(mqttUsername: string, nodePrefix: string): Promise<boolean> {
   const nodeId = await resolveNodeId(nodePrefix);
   if (!nodeId) return false;
-  await upsertMqttNodeLogin(mqttUsername, nodeId);
+  await recordOwnerNode(mqttUsername, nodeId);
   return true;
 }
 
 async function retryPendingLinks(): Promise<void> {
   if (pendingLinks.size === 0) return;
-  for (const [prefix, username] of pendingLinks.entries()) {
+  for (const [key, pending] of pendingLinks.entries()) {
     try {
-      const resolved = await resolveAndMaybeLink(username, prefix);
+      const resolved = await resolveAndMaybeLink(pending.mqttUsername, pending.nodePrefix);
       if (resolved) {
-        pendingLinks.delete(prefix);
-        console.log('[conn-monitor] resolved pending link:', username, prefix);
+        pendingLinks.delete(key);
+        console.log('[conn-monitor] resolved pending link:', pending.mqttUsername, pending.nodePrefix);
       }
     } catch (err) {
       console.error('[conn-monitor] retry pending error:', (err as Error).message);
@@ -49,31 +63,55 @@ async function retryPendingLinks(): Promise<void> {
 // Collect unique (username, nodePrefix) pairs from a range, then resolve + upsert in batch.
 // This avoids building a massive promise chain when scanning large historical log sections.
 async function scanRange(start: number, end: number): Promise<void> {
-  // Collect the last-seen nodePrefix per (username+prefix) key so we deduplicate
-  // and only upsert once per unique pairing found in this range.
-  const seen = new Map<string, { nodePrefix: string; mqttUsername: string }>();
+  const seenPrefixes = new Map<string, { nodePrefix: string; mqttUsername: string }>();
+  const exactTopicLinks = new Map<string, { nodeId: string; mqttUsername: string }>();
 
   await new Promise<void>((resolve, reject) => {
     const stream = fs.createReadStream(LOG_PATH, { start, end });
     const rl = createInterface({ input: stream, crlfDelay: Infinity });
     rl.on('line', (line) => {
-      if (!line.includes('New client connected')) return;
-      const m = CONNECT_RE.exec(line);
-      if (!m) return;
-      const [, nodePrefix, mqttUsername] = m;
-      if (!nodePrefix || !mqttUsername || mqttUsername === 'backend') return;
-      // Key by username+prefix — overwrite keeps the last occurrence (most recent)
-      seen.set(`${mqttUsername}:${nodePrefix.toUpperCase()}`, { nodePrefix, mqttUsername });
+      const connection = parseMosquittoConnection(line);
+      if (connection) {
+        clientToUsername.set(connection.clientId, connection.mqttUsername);
+        const nodePrefix = parseMeshcoreClientNodePrefix(connection.clientId);
+        if (nodePrefix && connection.mqttUsername !== 'backend') {
+          seenPrefixes.set(`${connection.mqttUsername}:${nodePrefix}`, {
+            nodePrefix,
+            mqttUsername: connection.mqttUsername,
+          });
+        }
+        return;
+      }
+
+      const denied = parseDeniedOwnerPublish(line);
+      if (!denied) return;
+      const mqttUsername = clientToUsername.get(denied.clientId);
+      if (!mqttUsername || mqttUsername === 'backend') return;
+      exactTopicLinks.set(`${mqttUsername}:${denied.nodeId}`, { nodeId: denied.nodeId, mqttUsername });
     });
     rl.on('close', resolve);
     rl.on('error', reject);
   });
 
-  // Process the small deduplicated set sequentially
-  for (const { nodePrefix, mqttUsername } of seen.values()) {
+  // A denied first publish is the authoritative keyless-signup path: Mosquitto
+  // gives us the authenticated client ID and the exact public key in its topic.
+  for (const { nodeId, mqttUsername } of exactTopicLinks.values()) {
+    try {
+      await recordOwnerNode(mqttUsername, nodeId);
+      console.log('[conn-monitor] learned owner node from MQTT topic:', mqttUsername, nodeId);
+    } catch (err) {
+      console.error('[conn-monitor] exact topic link error:', (err as Error).message);
+    }
+  }
+
+  // Keep the mctomqtt client-ID-prefix path as a fallback for accounts that were
+  // provisioned with an explicit ACL and therefore never produce a denial.
+  for (const { nodePrefix, mqttUsername } of seenPrefixes.values()) {
     try {
       const resolved = await resolveAndMaybeLink(mqttUsername, nodePrefix);
-      if (!resolved) pendingLinks.set(nodePrefix.toUpperCase(), mqttUsername);
+      if (!resolved) {
+        pendingLinks.set(`${mqttUsername}:${nodePrefix}`, { nodePrefix, mqttUsername });
+      }
     } catch (err) {
       console.error('[conn-monitor] processLine error:', (err as Error).message);
     }

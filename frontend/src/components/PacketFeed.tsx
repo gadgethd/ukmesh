@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useMessages, useNodeMap } from '../hooks/useNodes.js';
 import { useOverlayStore } from '../store/overlayStore.js';
+import { useWatchlist } from '../hooks/useWatchlist.js';
 
 const TYPE_LABELS: Record<number, string> = {
   0:  'REQ',
@@ -28,6 +29,7 @@ export const PacketFeed: React.FC = React.memo(() => {
   const latestIdRef = useRef<string | null>(null);
   const animationThrottleRef = useRef<number | null>(null);
   const feedRef = useRef<HTMLDivElement>(null);
+  const watchlist = useWatchlist();
 
   useEffect(() => {
     const latestId = messages[0]?.id ?? null;
@@ -104,6 +106,12 @@ export const PacketFeed: React.FC = React.memo(() => {
             )}
             {p.txCount > 0 && <span className="count count--tx">{p.txCount}tx</span>}
           </span>
+          <button
+            type="button"
+            className="packet-item__watch"
+            aria-label={`${watchlist.isWatched('packet_type', String(p.packetType ?? 'unknown')) ? 'Stop watching' : 'Watch'} ${typeLabel} packets`}
+            onClick={(event) => { event.stopPropagation(); watchlist.toggle('packet_type', String(p.packetType ?? 'unknown'), `${typeLabel} packets`); }}
+          >{watchlist.isWatched('packet_type', String(p.packetType ?? 'unknown')) ? '★' : '☆'}</button>
           {isPinned && <span className="packet-item__pin">●</span>}
         </div>
       );

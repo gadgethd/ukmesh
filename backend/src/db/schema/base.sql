@@ -55,7 +55,7 @@ ALTER TABLE nodes ADD COLUMN IF NOT EXISTS iata TEXT;
 ALTER TABLE nodes ADD COLUMN IF NOT EXISTS role INTEGER;
 ALTER TABLE nodes ADD COLUMN IF NOT EXISTS advert_count INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE nodes ADD COLUMN IF NOT EXISTS elevation_m DOUBLE PRECISION;
-ALTER TABLE nodes ADD COLUMN IF NOT EXISTS network TEXT NOT NULL DEFAULT 'teesside';
+ALTER TABLE nodes ADD COLUMN IF NOT EXISTS network TEXT NOT NULL DEFAULT 'ukmesh';
 ALTER TABLE nodes ADD COLUMN IF NOT EXISTS last_predicted_online_at TIMESTAMPTZ;
 ALTER TABLE nodes ADD COLUMN IF NOT EXISTS last_path_evidence_at TIMESTAMPTZ;
 
@@ -98,7 +98,7 @@ END $$;
 ALTER TABLE packets ADD COLUMN IF NOT EXISTS advert_count INTEGER;
 ALTER TABLE packets ADD COLUMN IF NOT EXISTS path_hashes TEXT[];
 ALTER TABLE packets ADD COLUMN IF NOT EXISTS path_hash_size_bytes INTEGER;
-ALTER TABLE packets ADD COLUMN IF NOT EXISTS network      TEXT NOT NULL DEFAULT 'teesside';
+ALTER TABLE packets ADD COLUMN IF NOT EXISTS network      TEXT NOT NULL DEFAULT 'ukmesh';
 
 -- Legacy whole-table backfills were previously run here on every app startup:
 --   * packets.path_hash_size_bytes
@@ -123,12 +123,48 @@ CREATE INDEX IF NOT EXISTS idx_nodes_path_hash_1 ON nodes((UPPER(LEFT(node_id, 2
 CREATE INDEX IF NOT EXISTS idx_nodes_path_hash_2 ON nodes((UPPER(LEFT(node_id, 4))));
 CREATE INDEX IF NOT EXISTS idx_nodes_path_hash_3 ON nodes((UPPER(LEFT(node_id, 6))));
 
+-- ─── Small rollups for hot API stats ────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS packet_daily_stats (
+  network         TEXT NOT NULL,
+  day             DATE NOT NULL,
+  max_hop_count   INTEGER,
+  max_hop_hash    TEXT,
+  max_hop_seen_at TIMESTAMPTZ,
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (network, day)
+);
+CREATE INDEX IF NOT EXISTS packet_daily_stats_network_max_hop_idx
+  ON packet_daily_stats (network, max_hop_count DESC NULLS LAST, day DESC);
+
+CREATE TABLE IF NOT EXISTS observer_region_packet_sightings (
+  network     TEXT NOT NULL,
+  iata        TEXT NOT NULL,
+  packet_hash TEXT NOT NULL,
+  first_seen  TIMESTAMPTZ NOT NULL,
+  last_seen   TIMESTAMPTZ NOT NULL,
+  PRIMARY KEY (network, iata, packet_hash)
+);
+CREATE INDEX IF NOT EXISTS observer_region_packet_sightings_network_last_seen_idx
+  ON observer_region_packet_sightings (network, last_seen DESC, iata);
+
+CREATE TABLE IF NOT EXISTS observer_region_observer_sightings (
+  network    TEXT NOT NULL,
+  iata       TEXT NOT NULL,
+  rx_node_id TEXT NOT NULL,
+  first_seen TIMESTAMPTZ NOT NULL,
+  last_seen  TIMESTAMPTZ NOT NULL,
+  PRIMARY KEY (network, iata, rx_node_id)
+);
+CREATE INDEX IF NOT EXISTS observer_region_observer_sightings_network_last_seen_idx
+  ON observer_region_observer_sightings (network, last_seen DESC, iata);
+
 -- ─── Observer / repeater status telemetry samples ───────────────────────────
 
 CREATE TABLE IF NOT EXISTS node_status_samples (
   time                 TIMESTAMPTZ      NOT NULL DEFAULT NOW(),
   node_id              TEXT             NOT NULL,
-  network              TEXT             NOT NULL DEFAULT 'teesside',
+  network              TEXT             NOT NULL DEFAULT 'ukmesh',
   battery_mv           INTEGER,
   uptime_secs          BIGINT,
   tx_air_secs          BIGINT,
@@ -210,6 +246,9 @@ CREATE TABLE IF NOT EXISTS node_coverage (
 );
 ALTER TABLE node_coverage ADD COLUMN IF NOT EXISTS strength_geoms JSONB;
 ALTER TABLE node_coverage ADD COLUMN IF NOT EXISTS model_version INTEGER NOT NULL DEFAULT 1;
+-- Predicted RF links from a planned (hypothetical) repeater to nearby real
+-- repeaters, computed by the viewshed worker. Only populated for plan_ rows.
+ALTER TABLE node_coverage ADD COLUMN IF NOT EXISTS predicted_links JSONB;
 
 -- ─── Learned path priors from historical packets ─────────────────────────────
 
@@ -318,3 +357,25 @@ CREATE TABLE IF NOT EXISTS frontend_error_events (
 );
 CREATE INDEX IF NOT EXISTS frontend_error_events_time_idx
   ON frontend_error_events(time DESC);
+
+CREATE TABLE IF NOT EXISTS operational_check_results (
+  ts          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  check_name  TEXT        NOT NULL,
+  status      TEXT        NOT NULL CHECK (status IN ('ok', 'failed')),
+  latency_ms  INTEGER     NOT NULL CHECK (latency_ms >= 0),
+  detail      TEXT
+);
+CREATE INDEX IF NOT EXISTS operational_check_results_check_ts_idx
+  ON operational_check_results(check_name, ts DESC);
+
+CREATE TABLE IF NOT EXISTS network_unification_runs (
+  run_id           TEXT PRIMARY KEY,
+  started_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  completed_at     TIMESTAMPTZ,
+  status           TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed')),
+  backup_reference TEXT NOT NULL,
+  detail           JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+CREATE UNIQUE INDEX IF NOT EXISTS network_unification_one_running_idx
+  ON network_unification_runs ((status))
+  WHERE status = 'running';

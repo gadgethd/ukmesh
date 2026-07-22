@@ -388,11 +388,13 @@ function buildFallbackPrefixPath(
   linkMetrics: Map<string, LinkMetrics>,
   forceIncludeSource = false,
   observerHopHints: ObserverHopHint[] = [],
+  cachedPathHashIndex?: Map<string, MeshNode[]>,
 ): { path: [number, number][]; nodeIds: string[] } | null {
-  const repeaters = Array.from(nodesById.values()).filter(
-    (n) => hasCoords(n) && (n.role === null || n.role === 2),
+  const pathHashIndex = cachedPathHashIndex ?? buildNodePathHashIndex(
+    Array.from(nodesById.values()).filter(
+      (n) => hasCoords(n) && (n.role === null || n.role === 2),
+    ),
   );
-  const pathHashIndex = buildNodePathHashIndex(repeaters);
 
   const pickedNearRx: MeshNode[] = [];
   const visited = new Set<string>([rx.node_id]);
@@ -464,21 +466,28 @@ function enumeratePrefixContinuations(
   nodesById: Map<string, MeshNode>,
   coverageByNode: Map<string, number>,
   linkMetrics: Map<string, LinkMetrics>,
-  options?: { dropStartIfNodeId?: string; maxRenderPaths?: number; maxSearchStates?: number; blockedNodeIds?: string[] },
+  options?: {
+    dropStartIfNodeId?: string;
+    maxRenderPaths?: number;
+    maxSearchStates?: number;
+    blockedNodeIds?: string[];
+    pathHashIndex?: Map<string, MeshNode[]>;
+  },
 ): { paths: [number, number][][]; totalCount: number; truncated: boolean; longestPrefixDepth: number } {
   const maxRenderPaths = Math.max(1, options?.maxRenderPaths ?? MAX_RENDER_PERMUTATIONS);
   const maxSearchStates = Math.max(1000, options?.maxSearchStates ?? MAX_PERMUTATION_STATES);
-  const candidates = Array.from(nodesById.values()).filter(
-    (n) => hasCoords(n) && (n.role === null || n.role === 2),
-  );
-  const pathHashIndex = buildNodePathHashIndex(candidates);
+  const blocked = new Set(options?.blockedNodeIds ?? []);
+  const pathHashIndex = blocked.size === 0 && options?.pathHashIndex
+    ? options.pathHashIndex
+    : buildNodePathHashIndex(Array.from(nodesById.values()).filter(
+      (n) => hasCoords(n) && (n.role === null || n.role === 2),
+    ));
 
   const start = nodesById.get(startNodeId);
   const end = nodesById.get(endNodeId);
   if (!start || !end || !hasCoords(start) || !hasCoords(end)) {
     return { paths: [], totalCount: 0, truncated: false, longestPrefixDepth: 0 };
   }
-  const blocked = new Set(options?.blockedNodeIds ?? []);
   if (blocked.has(start.node_id) || blocked.has(end.node_id)) {
     return { paths: [], totalCount: 0, truncated: false, longestPrefixDepth: 0 };
   }
@@ -750,10 +759,7 @@ function resolveExactMultibyteChain(
   context: BetaResolveContext,
 ): { path: [number, number][]; nodeIds: string[] } | null {
   if (pathHashes.length < 2) return null;
-  const repeaters = Array.from(context.nodesById.values()).filter(
-    (n) => hasCoords(n) && (n.role === null || n.role === 2),
-  );
-  const pathHashIndex = buildNodePathHashIndex(repeaters, [pathHashes[0]?.length ?? 0]);
+  const pathHashIndex = buildNodePathHashIndex(context.repeaterNodes, [pathHashes[0]?.length ?? 0]);
   const nodes: MeshNode[] = [];
   const visited = new Set<string>();
 
@@ -799,10 +805,13 @@ function resolveBetaPath(
 
   type HopResult = { node: MeshNode; conf: number };
   const blockedNodeIds = new Set(options?.blockedNodeIds ?? []);
-  const candidatesPool = Array.from(context.nodesById.values()).filter(
-    (n) => hasCoords(n) && (n.role === null || n.role === 2) && !blockedNodeIds.has(n.node_id),
-  );
-  const pathHashIndex = buildNodePathHashIndex(candidatesPool);
+  const hasBlockedNodes = blockedNodeIds.size > 0;
+  const candidatesPool = hasBlockedNodes
+    ? context.repeaterNodes.filter((node) => !blockedNodeIds.has(node.node_id))
+    : context.repeaterNodes;
+  const pathHashIndex = hasBlockedNodes
+    ? buildNodePathHashIndex(candidatesPool)
+    : context.repeaterPathHashIndex;
 
   const totalDist = hasCoords(src) ? distKm(src, rx) : 0;
   // Typical per-hop spacing used to normalise observer hint directionality.
@@ -891,7 +900,9 @@ function resolveBetaPath(
     return 0.65 * distScore + 0.35 * elevScore;
   }
 
-  const clashAdjacency = buildClashAdjacency(candidatesPool, context.linkPairs, context.linkMetrics);
+  const clashAdjacency = hasBlockedNodes
+    ? buildClashAdjacency(candidatesPool, context.linkPairs, context.linkMetrics)
+    : context.clashAdjacency;
   const hopCache = new Map<string, 1 | 2 | null>();
 
   function twoHopDistance(aId: string, bId: string): 1 | 2 | null {
@@ -1504,15 +1515,24 @@ async function loadContext(network: string): Promise<BetaResolveContext> {
     });
   }
 
+  const repeaterNodes = Array.from(nodesById.values()).filter(
+    (node) => hasCoords(node) && (node.role === null || node.role === 2),
+  );
+  const repeaterPathHashIndex = buildNodePathHashIndex(repeaterNodes);
+  const clashAdjacency = buildClashAdjacency(repeaterNodes, linkPairs, linkMetrics);
+
   const context: BetaResolveContext = {
     loadedAt: now,
     nodesById,
+    repeaterNodes,
+    repeaterPathHashIndex,
     coverageByNode,
     linkPairs,
     observedLinkPairs,
     trustedPathPairs,
     trustedPathNeighbors,
     linkMetrics,
+    clashAdjacency,
     neighborAffinity,
     neighborAffinityNeighbors,
     mlPrefixScores,
@@ -1639,7 +1659,33 @@ async function recordPredictedOnline(nodeIds: string[] | null | undefined): Prom
   await touchNodesPredictedOnline(nodeIds);
 }
 
-export async function resolveBetaPathForPacketHash(packetHash: string, network: string, observer?: string, stickyMap?: Map<string, string>, stickyAgeFraction?: number): Promise<BetaResolvedPayload | null> {
+export type PathResolutionOptions = {
+  /** Historical rebuilds must not turn old paths into a current online signal. */
+  touchPredictedOnline?: boolean;
+  /** Bulk rebuilds emit their own summary and should not log each packet. */
+  log?: boolean;
+};
+
+function shouldTouchPredictedOnline(options?: PathResolutionOptions): boolean {
+  return options?.touchPredictedOnline !== false;
+}
+
+function logPathResolution(options: PathResolutionOptions | undefined, message: string): void {
+  if (options?.log !== false) console.log(message);
+}
+
+function warnPathResolution(options: PathResolutionOptions | undefined, message: string): void {
+  if (options?.log !== false) console.warn(message);
+}
+
+export async function resolveBetaPathForPacketHash(
+  packetHash: string,
+  network: string,
+  observer?: string,
+  stickyMap?: Map<string, string>,
+  stickyAgeFraction?: number,
+  options?: PathResolutionOptions,
+): Promise<BetaResolvedPayload | null> {
   const [packetResult, observerHopResult] = await Promise.all([
     query<PathPacket>(
       `SELECT packet_hash, rx_node_id, src_node_id, packet_type, hop_count, path_hashes, path_hash_size_bytes
@@ -1680,7 +1726,7 @@ export async function resolveBetaPathForPacketHash(packetHash: string, network: 
   }
   const packet = Array.from(preparedByObserver.values()).sort(comparePreferredResolvedObservation)[0];
   if (!packet) {
-    console.log(`[path-beta] hash=${packetHash} network=${network} mode=none reason=all-observations-ignored-self-echo`);
+    logPathResolution(options, `[path-beta] hash=${packetHash} network=${network} mode=none reason=all-observations-ignored-self-echo`);
     return null;
   }
   const hiddenCoordMask = buildHiddenCoordMask(context.nodesById);
@@ -1689,7 +1735,7 @@ export async function resolveBetaPathForPacketHash(packetHash: string, network: 
 
   const rx = packet.rx ?? undefined;
   if (!hasCoords(rx)) {
-    console.log(`${logPrefix} mode=none reason=missing-rx-coords`);
+    logPathResolution(options, `${logPrefix} mode=none reason=missing-rx-coords`);
     return applyHiddenMask({
       ok: true,
       packetHash,
@@ -1721,7 +1767,7 @@ export async function resolveBetaPathForPacketHash(packetHash: string, network: 
   const validatedHashes = expectedHexLen != null
     ? hashes.filter((h) => {
       if (h.length !== expectedHexLen) {
-        console.warn(`${logPrefix} hash length mismatch: expected ${expectedHexLen} hex chars, got ${h.length} ("${h}")`);
+        warnPathResolution(options, `${logPrefix} hash length mismatch: expected ${expectedHexLen} hex chars, got ${h.length} ("${h}")`);
         return false;
       }
       return true;
@@ -1752,7 +1798,7 @@ export async function resolveBetaPathForPacketHash(packetHash: string, network: 
   );
 
   if (hops.length < 1) {
-    console.log(`${logPrefix} mode=none reason=no-hops rx=${packet.packet.rx_node_id ?? 'unknown'} src=${packet.packet.src_node_id ?? 'unknown'}`);
+    logPathResolution(options, `${logPrefix} mode=none reason=no-hops rx=${packet.packet.rx_node_id ?? 'unknown'} src=${packet.packet.src_node_id ?? 'unknown'}`);
     return applyHiddenMask({
       ok: true,
       packetHash,
@@ -1779,7 +1825,7 @@ export async function resolveBetaPathForPacketHash(packetHash: string, network: 
   if ((packet.packet.path_hash_size_bytes ?? 1) > 1) {
     const exactMultibyte = resolveExactMultibyteChain(hops, context);
     if (exactMultibyte) {
-      await recordPredictedOnline(exactMultibyte.nodeIds);
+      if (shouldTouchPredictedOnline(options)) await recordPredictedOnline(exactMultibyte.nodeIds);
       const exactSplit = splitResolvedAndAlternatives(
         {
           path: exactMultibyte.path,
@@ -1801,7 +1847,7 @@ export async function resolveBetaPathForPacketHash(packetHash: string, network: 
           : redEdges > 0
             ? 'full-red'
             : 'none';
-      console.log(
+      logPathResolution(options,
         `${logPrefix} mode=resolved color=${colorMode} reason=exact-multibyte-chain conf=1.0000 threshold=${BETA_PURPLE_THRESHOLD.toFixed(2)} hops=${hops.length} purpleEdges=${purpleEdges} redEdges=${redEdges} remaining=${exactSplit.remainingHops} rx=${packet.packet.rx_node_id ?? 'unknown'} src=${packet.packet.src_node_id ?? 'unknown'}`,
       );
       return applyHiddenMask({
@@ -1884,7 +1930,7 @@ export async function resolveBetaPathForPacketHash(packetHash: string, network: 
   }
 
   if (result) {
-    await recordPredictedOnline(result.nodeIds);
+    if (shouldTouchPredictedOnline(options)) await recordPredictedOnline(result.nodeIds);
     const split = splitResolvedAndAlternatives(
       result,
       BETA_PURPLE_THRESHOLD,
@@ -1907,6 +1953,7 @@ export async function resolveBetaPathForPacketHash(packetHash: string, network: 
         context.linkMetrics,
         forceIncludeSource,
         observerHopHints,
+        context.repeaterPathHashIndex,
       );
       redPath = trimRedToPurpleStitch(
         fallbackForUnresolved?.path ?? redPath,
@@ -1977,7 +2024,7 @@ export async function resolveBetaPathForPacketHash(packetHash: string, network: 
         : colorMode === 'full-red'
           ? (solverMode === 'suffix-partial' ? 'partial-suffix-but-no-purple-after-threshold' : 'first-segment-below-threshold')
           : 'no-renderable-segments';
-    console.log(
+    logPathResolution(options,
       `${logPrefix} mode=resolved color=${colorMode} reason=${reason} conf=${result.confidence.toFixed(3)} threshold=${BETA_PURPLE_THRESHOLD.toFixed(2)} ` +
       `hops=${hops.length} solvedHops=${solvedHopCount} unresolvedBySolver=${unresolvedBySolver} ` +
       `purpleEdges=${purpleEdges} redEdges=${redEdges} remaining=${(split.remainingHops ?? 0) + unresolvedBySolver} ` +
@@ -2015,9 +2062,10 @@ export async function resolveBetaPathForPacketHash(packetHash: string, network: 
     context.linkMetrics,
     forceIncludeSource,
     observerHopHints,
+    context.repeaterPathHashIndex,
   );
   if (fallback) {
-    await recordPredictedOnline(fallback.nodeIds);
+    if (shouldTouchPredictedOnline(options)) await recordPredictedOnline(fallback.nodeIds);
     const redEdges = Math.max(0, fallback.path.length - 1);
     let completionPaths: [number, number][][] = [];
     let permutationCount = 0;
@@ -2033,12 +2081,13 @@ export async function resolveBetaPathForPacketHash(packetHash: string, network: 
           dropStartIfNodeId: forceIncludeSource ? undefined : src.node_id,
           maxRenderPaths: MAX_RENDER_PERMUTATIONS,
           maxSearchStates: MAX_PERMUTATION_STATES,
+          pathHashIndex: context.repeaterPathHashIndex,
         },
       );
       completionPaths = permutations.paths;
       permutationCount = permutations.totalCount;
     }
-    console.log(
+    logPathResolution(options,
       `${logPrefix} mode=fallback color=full-red reason=beta-solver-no-solution-prefix-fallback conf=null hops=${hops.length} purpleEdges=0 redEdges=${redEdges} ` +
       `permutations=${permutationCount} remaining=unknown rx=${packet.packet.rx_node_id ?? 'unknown'} src=${packet.packet.src_node_id ?? 'unknown'}`,
     );
@@ -2065,7 +2114,7 @@ export async function resolveBetaPathForPacketHash(packetHash: string, network: 
     });
   }
 
-  console.log(
+  logPathResolution(options,
     `${logPrefix} mode=none reason=unresolved hops=${hops.length} rx=${packet.packet.rx_node_id ?? 'unknown'} src=${packet.packet.src_node_id ?? 'unknown'}`,
   );
   return applyHiddenMask({
@@ -2136,6 +2185,7 @@ export async function resolveMultiObserverBetaPath(
   network: string,
   stickyMap?: Map<string, string>,
   stickyAgeFraction?: number,
+  options?: PathResolutionOptions,
 ): Promise<MultiObserverResolvedPayload | null> {
   // 1. Load ALL observations for this packet hash
   const allResult = await query<PathPacket & { path_hash_size_bytes: number | null }>(
@@ -2172,7 +2222,7 @@ export async function resolveMultiObserverBetaPath(
   // Single observer — delegate to existing per-observer resolver
   if (byObserver.size <= 1) {
     const [observerId] = byObserver.keys();
-    const singleResult = await resolveBetaPathForPacketHash(packetHash, network, observerId, stickyMap, stickyAgeFraction);
+    const singleResult = await resolveBetaPathForPacketHash(packetHash, network, observerId, stickyMap, stickyAgeFraction, options);
     return singleResult
       ? { ok: true, packetHash, observerCount: 1, sharedPrefixLength: 0, results: [singleResult] }
       : null;
@@ -2203,7 +2253,7 @@ export async function resolveMultiObserverBetaPath(
   if (entries.length < 1) return null;
 
   if (entries.length === 1) {
-    const singleResult = await resolveBetaPathForPacketHash(packetHash, network, entries[0]!.observerId, stickyMap, stickyAgeFraction);
+    const singleResult = await resolveBetaPathForPacketHash(packetHash, network, entries[0]!.observerId, stickyMap, stickyAgeFraction, options);
     return singleResult
       ? { ok: true, packetHash, observerCount: 1, sharedPrefixLength: 0, results: [singleResult] }
       : null;
@@ -2222,7 +2272,7 @@ export async function resolveMultiObserverBetaPath(
   const sharedPrefix = findSharedPathPrefix(allHops);
   const sharedPrefixLength = sharedPrefix.length;
 
-  console.log(
+  logPathResolution(options,
     `${logPrefix} observers=${entries.length} sharedPrefix=${sharedPrefixLength} ` +
     `directAnchors=${directAnchorCount} observerIds=${entries.map((e) => e.observerId.slice(0, 8)).join(',')}`,
   );
@@ -2328,13 +2378,17 @@ export async function resolveMultiObserverBetaPath(
 
   // 7. Resolve each observer
   const results: BetaResolvedPayload[] = [];
+  const predictedOnlineNodeIds = new Set<string>();
+  const collectPredictedOnline = (nodeIds: string[] | null | undefined): void => {
+    for (const nodeId of nodeIds ?? []) predictedOnlineNodeIds.add(nodeId);
+  };
 
   for (let ei = 0; ei < entries.length; ei++) {
     const entry = entries[ei]!;
 
     if (ei === anchorIdx && anchorResult) {
       // Use anchor result directly — run through the same post-processing as resolveBetaPathForPacketHash
-      await recordPredictedOnline(anchorResult.nodeIds);
+      collectPredictedOnline(anchorResult.nodeIds);
       const result = buildResolvedPayload(
         packetHash,
         entry,
@@ -2386,7 +2440,7 @@ export async function resolveMultiObserverBetaPath(
     );
 
     if (entryResult) {
-      await recordPredictedOnline(entryResult.nodeIds);
+      collectPredictedOnline(entryResult.nodeIds);
       const result = buildResolvedPayload(
         packetHash,
         entry,
@@ -2413,7 +2467,7 @@ export async function resolveMultiObserverBetaPath(
     );
 
     if (fallbackResult) {
-      await recordPredictedOnline(fallbackResult.nodeIds);
+      collectPredictedOnline(fallbackResult.nodeIds);
       const result = buildResolvedPayload(
         packetHash,
         entry,
@@ -2440,7 +2494,7 @@ export async function resolveMultiObserverBetaPath(
         if (partial) { suffixPartialResult = partial; break; }
       }
       if (suffixPartialResult) {
-        await recordPredictedOnline(suffixPartialResult.nodeIds);
+        collectPredictedOnline(suffixPartialResult.nodeIds);
         const result = buildResolvedPayload(
           packetHash,
           entry,
@@ -2464,10 +2518,11 @@ export async function resolveMultiObserverBetaPath(
       context.linkMetrics,
       forceIncludeSource,
       observerHopHints,
+      context.repeaterPathHashIndex,
     );
 
     if (prefixFallback) {
-      await recordPredictedOnline(prefixFallback.nodeIds);
+      collectPredictedOnline(prefixFallback.nodeIds);
       // Enumerate permutations from the fork point if we have a shared backbone
       let completionPaths: [number, number][][] = [];
       let permutationCount = 0;
@@ -2485,7 +2540,11 @@ export async function resolveMultiObserverBetaPath(
             context.nodesById,
             context.coverageByNode,
             context.linkMetrics,
-            { maxRenderPaths: MAX_RENDER_PERMUTATIONS, maxSearchStates: MAX_PERMUTATION_STATES },
+            {
+              maxRenderPaths: MAX_RENDER_PERMUTATIONS,
+              maxSearchStates: MAX_PERMUTATION_STATES,
+              pathHashIndex: context.repeaterPathHashIndex,
+            },
           );
           completionPaths = permutations.paths;
           permutationCount = permutations.totalCount;
@@ -2502,6 +2561,7 @@ export async function resolveMultiObserverBetaPath(
             dropStartIfNodeId: forceIncludeSource ? undefined : src.node_id,
             maxRenderPaths: MAX_RENDER_PERMUTATIONS,
             maxSearchStates: MAX_PERMUTATION_STATES,
+            pathHashIndex: context.repeaterPathHashIndex,
           },
         );
         completionPaths = permutations.paths;
@@ -2557,6 +2617,9 @@ export async function resolveMultiObserverBetaPath(
   }
 
   const resolvedCount = results.filter((r) => r.mode === 'resolved').length;
+  if (shouldTouchPredictedOnline(options)) {
+    await recordPredictedOnline(Array.from(predictedOnlineNodeIds));
+  }
   const bestConf = results.reduce<number | null>((best, r) => {
     if (r.confidence == null) return best;
     return best == null ? r.confidence : Math.max(best, r.confidence);
@@ -2578,7 +2641,7 @@ export async function resolveMultiObserverBetaPath(
   const multiRegionSuffix = isMultiRegion
     ? ` regions=${[anchorIata, ...regionLinks.map((l) => l.toIata)].join(',')}`
     : '';
-  console.log(
+  logPathResolution(options,
     `${logPrefix} done observers=${entries.length} resolved=${resolvedCount}/${entries.length} ` +
     `sharedPrefix=${sharedPrefixLength} bestConf=${bestConf?.toFixed(3) ?? 'null'}${multiRegionSuffix}`,
   );

@@ -69,11 +69,20 @@ log = logging.getLogger(__name__)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
+def env_flag_enabled(name: str, default: bool = True) -> bool:
+    value = os.environ.get(name)
+    if value is None or value.strip() == '':
+        return default
+    return value.strip().lower() not in ('0', 'false', 'no', 'off', 'disabled')
+
+
 SRTM_DIR     = Path(os.environ.get('SRTM_DIR', '/data/srtm'))
 REDIS_URL    = os.environ.get('REDIS_URL', 'redis://redis:6379')
+REDIS_PASSWORD = os.environ.get('REDIS_PASSWORD') or None
 DATABASE_URL = os.environ.get('DATABASE_URL')
 RADIO_BOT_URL = os.environ.get('RADIO_BOT_URL', '').strip()
 WORKER_MODE  = os.environ.get('WORKER_MODE', 'all').lower()
+VIEWSHED_ENABLED = env_flag_enabled('VIEWSHED_ENABLED', False)
 COVERAGE_MODEL = os.environ.get('COVERAGE_MODEL', 'rf_radial_100m').lower()
 DB_APPLICATION_NAME = os.environ.get(
     'DATABASE_APPLICATION_NAME',
@@ -105,6 +114,7 @@ DEFAULT_PHYSICAL_LINK_RADIUS_KM = float(os.environ.get('DEFAULT_PHYSICAL_LINK_RA
 MIN_PHYSICAL_LINK_RADIUS_KM = float(os.environ.get('MIN_PHYSICAL_LINK_RADIUS_KM', '20'))
 MAX_PHYSICAL_LINK_RADIUS_KM = float(os.environ.get('MAX_PHYSICAL_LINK_RADIUS_KM', '100'))
 SUPPORT_REFRESH_S = int(os.environ.get('COVERAGE_SUPPORT_REFRESH_S', '900'))
+LINK_TOPOLOGY_REFRESH_S = max(5, int(os.environ.get('LINK_TOPOLOGY_REFRESH_S', '60')))
 SUPPORT_NEARBY_REPEATER_KM = float(os.environ.get('COVERAGE_SUPPORT_NEARBY_REPEATER_KM', '12'))
 SUPPORT_PENALTY_PER_KM_DB = float(os.environ.get('COVERAGE_SUPPORT_PENALTY_PER_KM_DB', '0.6'))
 SUPPORT_MAX_PENALTY_DB = float(os.environ.get('COVERAGE_SUPPORT_MAX_PENALTY_DB', '14'))
@@ -122,6 +132,14 @@ SUPPORT_CONTEXT = {
     'node_ids': [],
     'node_index_by_id': {},
     'max_link_km_by_node': {},
+    'updated_at': 0.0,
+}
+
+# Link observations can arrive much faster than topology changes. Keep a short-lived
+# process-local snapshot so each job does not reload every repeater and viable pair.
+LINK_TOPOLOGY = {
+    'nodes': {},
+    'physical_pairs': set(),
     'updated_at': 0.0,
 }
 
@@ -810,6 +828,112 @@ def load_positioned_repeaters(db) -> dict[str, dict]:
         }
 
 
+def link_pair_key(a_id: str, b_id: str) -> tuple[str, str]:
+    return (a_id, b_id) if a_id < b_id else (b_id, a_id)
+
+
+def refresh_link_topology(db, force: bool = False) -> None:
+    now = time.time()
+    if not force and now - float(LINK_TOPOLOGY['updated_at']) < LINK_TOPOLOGY_REFRESH_S:
+        return
+
+    nodes = load_positioned_repeaters(db)
+    with db.cursor() as cur:
+        cur.execute(
+            'SELECT node_a_id, node_b_id FROM node_links WHERE itm_viable = true OR force_viable = true',
+        )
+        physical_pairs = {link_pair_key(a_id, b_id) for a_id, b_id in cur.fetchall()}
+
+    LINK_TOPOLOGY['nodes'] = nodes
+    LINK_TOPOLOGY['physical_pairs'] = physical_pairs
+    LINK_TOPOLOGY['updated_at'] = now
+
+
+def get_link_topology(db, required_node_ids: tuple[str, ...] = ()) -> tuple[dict[str, dict], set[tuple[str, str]]]:
+    refresh_link_topology(db)
+    nodes = LINK_TOPOLOGY['nodes']
+    if any(node_id and node_id not in nodes for node_id in required_node_ids):
+        refresh_link_topology(db, force=True)
+        nodes = LINK_TOPOLOGY['nodes']
+    return nodes, LINK_TOPOLOGY['physical_pairs']
+
+
+# Cap how many nearby repeaters a planned repeater is path-loss tested against,
+# to bound the synchronous compute performed inside a single viewshed job.
+MAX_PLANNED_LINK_PEERS = int(os.environ.get('MAX_PLANNED_LINK_PEERS', '60'))
+
+
+def compute_planned_links(db, lat: float, lon: float, elevation_m: float,
+                          radius_m: Optional[float],
+                          antenna_height_m: float = ANTENNA_HEIGHT_M) -> list[dict]:
+    """Predict viable RF links from a hypothetical repeater at (lat, lon) to nearby
+    real positioned repeaters, using the same ITM path-loss model as physical links.
+
+    Returns a list of {peer_id, peer_name, itm_path_loss_db, itm_viable, distance_km}
+    for peers the planned repeater would reach, ordered best (lowest loss) first.
+    """
+    origin = {'lat': lat, 'lon': lon, 'radius_m': radius_m, 'elevation_m': elevation_m}
+    origin_radius_km = physical_candidate_radius_km(radius_m)
+
+    candidates: list[tuple[float, str, dict]] = []
+    for peer_id, peer in load_positioned_repeaters(db).items():
+        if peer.get('lat') is None or peer.get('lon') is None:
+            continue
+        dist_km = node_dist_km(origin, peer)
+        reach_km = max(origin_radius_km, physical_candidate_radius_km(peer.get('radius_m')))
+        if dist_km > reach_km:
+            continue
+        candidates.append((dist_km, peer_id, peer))
+    candidates.sort(key=lambda c: c[0])
+    candidates = candidates[:MAX_PLANNED_LINK_PEERS]
+
+    links: list[dict] = []
+    with tempfile.TemporaryDirectory() as tmp:
+        for dist_km, peer_id, peer in candidates:
+            try:
+                # Ensure SRTM tiles spanning the link bbox are available locally.
+                lat_lo, lat_hi = math.floor(min(lat, peer['lat'])), math.floor(max(lat, peer['lat']))
+                lon_lo, lon_hi = math.floor(min(lon, peer['lon'])), math.floor(max(lon, peer['lon']))
+                for lt in range(lat_lo, lat_hi + 1):
+                    for ln in range(lon_lo, lon_hi + 1):
+                        download_tile(SRTM_DIR, lt, ln, log)
+                vrt = build_link_vrt(lat, lon, peer['lat'], peer['lon'], tmp, SRTM_DIR)
+                if not vrt:
+                    continue
+                peer_elev = peer.get('elevation_m')
+                if peer_elev is None:
+                    peer_elev = sample_elevation(vrt, peer['lat'], peer['lon'])
+                path_loss_db, itm_viable = compute_path_loss(
+                    lat, lon, elevation_m,
+                    peer['lat'], peer['lon'], peer_elev,
+                    vrt,
+                    antenna_height_m_tx=antenna_height_m,
+                    antenna_height_m_rx=peer.get('antenna_height_m', ANTENNA_HEIGHT_M),
+                )
+                if not itm_viable:
+                    continue
+                links.append({
+                    'peer_id': peer_id,
+                    'peer_name': peer.get('name'),
+                    'itm_path_loss_db': round(float(path_loss_db), 1),
+                    'itm_viable': True,
+                    'distance_km': round(dist_km, 1),
+                })
+            except Exception as exc:
+                log.warning(f'Planned link {peer_id[:8]}…: path loss failed: {exc}')
+    links.sort(key=lambda link: link['itm_path_loss_db'])
+    return links
+
+
+def store_planned_links(db, node_id: str, links: list[dict]) -> None:
+    with db.cursor() as cur:
+        cur.execute(
+            'UPDATE node_coverage SET predicted_links = %s::jsonb WHERE node_id = %s',
+            (json.dumps(links), node_id),
+        )
+    db.commit()
+
+
 def publish_link_update(r_client, a_id: str, b_id: str, obs_count: int, path_loss_db: Optional[float],
                         itm_viable: Optional[bool], count_a_to_b: int, count_b_to_a: int,
                         multibyte_obs: int) -> None:
@@ -924,7 +1048,7 @@ def process_physical_link_job(db, r_client, job: dict):
     if not node_a_id or not node_b_id or node_a_id == node_b_id:
         return
 
-    nodes = load_positioned_repeaters(db)
+    nodes, physical_pairs = get_link_topology(db, (node_a_id, node_b_id))
     a = nodes.get(node_a_id)
     b = nodes.get(node_b_id)
     if not a or not b:
@@ -933,6 +1057,8 @@ def process_physical_link_job(db, r_client, job: dict):
     obs_count, path_loss_db, itm_viable, count_a_to_b, count_b_to_a, multibyte_obs = ensure_physical_link_metrics(
         db, node_a_id, a, node_b_id, b,
     )
+    if itm_viable:
+        physical_pairs.add(link_pair_key(node_a_id, node_b_id))
     publish_link_update(r_client, node_a_id, node_b_id, obs_count, path_loss_db, itm_viable, count_a_to_b, count_b_to_a, multibyte_obs)
 
 
@@ -953,18 +1079,10 @@ def process_observation_link_job(db, r_client, job: dict):
     if not rx_node_id or not path_hashes or path_hash_size_bytes <= 1:
         return
 
-    all_nodes = load_positioned_repeaters(db)
-
-    with db.cursor() as cur:
-        cur.execute(
-            'SELECT node_a_id, node_b_id FROM node_links WHERE itm_viable = true OR force_viable = true',
-        )
-        physical_pairs: set[tuple[str, str]] = {
-            (min(a, b), max(a, b)) for a, b in cur.fetchall()
-        }
+    all_nodes, physical_pairs = get_link_topology(db, (rx_node_id,))
 
     def physical_link(a_id: str, b_id: str) -> bool:
-        return (min(a_id, b_id), max(a_id, b_id)) in physical_pairs
+        return link_pair_key(a_id, b_id) in physical_pairs
 
     rx = all_nodes.get(rx_node_id)
     if not rx:
@@ -1065,7 +1183,9 @@ def process_observation_link_job(db, r_client, job: dict):
         if not both_unique and not physical_link(a_id, b_id):
             continue
 
-        row = upsert_link_pair(db, a_id, b_id, inc_atob, inc_btoa, 1)
+        # Keep directional observations, but reserve multibyte evidence for exact
+        # endpoint matches so ambiguous two-byte prefixes do not inflate path history.
+        row = upsert_link_pair(db, a_id, b_id, inc_atob, inc_btoa, 1 if both_unique else 0)
         obs_count = row[0] if row else 1
         path_loss_db = row[2] if row else None
         itm_viable = row[3] if row else None
@@ -1077,6 +1197,8 @@ def process_observation_link_job(db, r_client, job: dict):
             obs_count, path_loss_db, itm_viable, count_a_to_b, count_b_to_a, multibyte_obs = ensure_physical_link_metrics(
                 db, a_id, a, b_id, b,
             )
+        if itm_viable:
+            physical_pairs.add(link_pair_key(a_id, b_id))
         publish_link_update(r_client, a_id, b_id, obs_count, path_loss_db, itm_viable, count_a_to_b, count_b_to_a, multibyte_obs)
 
 
@@ -1244,7 +1366,18 @@ def process_job(db, r_client, job: dict):
 
         geom, strength_geoms, radius_m, elevation_m = result
         store_coverage(db, node_id, geom, strength_geoms, radius_m, elevation_m, antenna_height_m=node_antenna_height_m)
-        if WORKER_MODE in ('all', 'link'):
+        if node_id.startswith('plan_'):
+            # Planned (hypothetical) repeater: predict viable links to nearby real
+            # repeaters in-line so the result is ready when the user polls coverage.
+            try:
+                predicted = compute_planned_links(
+                    db, lat, lon, elevation_m, radius_m, antenna_height_m=node_antenna_height_m,
+                )
+                store_planned_links(db, node_id, predicted)
+                log.info(f'Planned repeater {node_id}: {len(predicted)} predicted link(s)')
+            except Exception as exc:
+                log.warning(f'Planned link computation failed for {node_id}: {exc}')
+        elif WORKER_MODE in ('all', 'link'):
             queued_links = enqueue_physical_link_jobs_for_node(db, r_client, node_id, lat, lon, radius_m)
             if queued_links > 0:
                 log.info(f'Queued {queued_links} physical link job(s) for {node_id[:12]}…')
@@ -1283,7 +1416,7 @@ def worker_loop():
     """Single worker process: owns its own DB and Redis connections."""
     name     = multiprocessing.current_process().name
     db       = wait_for_db()
-    r_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+    r_client = redis.Redis.from_url(REDIS_URL, decode_responses=True, password=REDIS_PASSWORD)
     sync_radio_neighbors = name in ('MainProcess', 'Worker-1')
     if sync_radio_neighbors and WORKER_MODE in ('all', 'link'):
         refresh_radio_neighbor_reports(db, r_client, force=True)
@@ -1293,6 +1426,10 @@ def worker_loop():
 
     while True:
         try:
+            if WORKER_MODE == 'viewshed' and not VIEWSHED_ENABLED:
+                time.sleep(300)
+                continue
+
             if sync_radio_neighbors and WORKER_MODE in ('all', 'link'):
                 refresh_radio_neighbor_reports(db, r_client)
             refresh_rf_calibration(db)
@@ -1310,7 +1447,7 @@ def worker_loop():
             elif WORKER_MODE == 'link':
                 wait_queues = [LINK_JOB_QUEUE]
             else:
-                wait_queues = [JOB_QUEUE, LINK_JOB_QUEUE]
+                wait_queues = [JOB_QUEUE, LINK_JOB_QUEUE] if VIEWSHED_ENABLED else [LINK_JOB_QUEUE]
 
             item = r_client.brpop(wait_queues, timeout=30)
             if item is None:
@@ -1545,7 +1682,8 @@ def main():
 
     log.info(
         f'Viewshed worker starting (mode={WORKER_MODE}, '
-        f'coverage_model={COVERAGE_MODEL}, model_version={COVERAGE_MODEL_VERSION})'
+        f'coverage_model={COVERAGE_MODEL}, model_version={COVERAGE_MODEL_VERSION}, '
+        f'viewshed_enabled={VIEWSHED_ENABLED})'
     )
     SRTM_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -1553,17 +1691,19 @@ def main():
     # to the worker processes (each gets its own connection).
     db = wait_for_db()
     log.info('Connected to DB')
-    r = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+    r = redis.Redis.from_url(REDIS_URL, decode_responses=True, password=REDIS_PASSWORD)
     r.ping()
     log.info('Connected to Redis')
     if WORKER_MODE in ('all', 'link'):
         refresh_radio_neighbor_reports(db, r, force=True)
     refresh_rf_calibration(db, force=True)
     refresh_support_context(db, force=True)
-    if WORKER_MODE in ('all', 'viewshed'):
+    if WORKER_MODE in ('all', 'viewshed') and VIEWSHED_ENABLED:
         rebuild_pending_viewshed_set(r)
         backfill_elevations(db)
         enqueue_uncovered(db, r)
+    elif WORKER_MODE == 'viewshed':
+        log.info('Viewshed disabled; skipping startup coverage backfill')
     db.close()
 
     num_workers = int(os.environ.get('NUM_WORKERS', '2'))

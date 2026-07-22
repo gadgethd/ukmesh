@@ -23,13 +23,9 @@ type StatsServiceDeps = {
   chartsCache: Map<string, { ts: number; data: unknown }>;
   chartsCacheTtlMs: number;
   chartsInflight: Map<string, Promise<unknown>>;
-  crossNetworkCache: Map<string, { ts: number; data: unknown }>;
-  crossNetworkCacheTtlMs: number;
   repository: StatsRepository;
   maskDecodedPathNodes: MaskDecodedPathNodesFn;
 };
-
-export type StatsService = ReturnType<typeof createStatsService>;
 
 const CHANNEL_TRAFFIC_CACHE_TTL_MS = 60 * 60_000;
 
@@ -56,6 +52,26 @@ function countryFromLatLon(lat: number, lon: number): string | null {
   return null;
 }
 
+export function computeRegionHealth(input: {
+  activeObservers: number;
+  observers: number;
+  packets24h: number;
+  lastPacketAt: string | null;
+}, nowMs = Date.now()): { score: number; status: 'healthy' | 'watch' | 'poor'; factors: Record<string, number> } {
+  const parsedLastPacket = input.lastPacketAt ? Date.parse(input.lastPacketAt) : Number.NaN;
+  const ageMinutes = Number.isFinite(parsedLastPacket) ? Math.max(0, (nowMs - parsedLastPacket) / 60_000) : Number.POSITIVE_INFINITY;
+  const freshness = ageMinutes <= 5 ? 100 : ageMinutes >= 60 ? 0 : Math.round(100 * (1 - ((ageMinutes - 5) / 55)));
+  const observerAvailability = input.activeObservers <= 0 ? 0 : input.activeObservers === 1 ? 60 : 100;
+  const traffic = Math.min(100, Math.round((Math.log10(Math.max(0, input.packets24h) + 1) / 4) * 100));
+  const observerDiversity = Math.min(100, Math.round((input.observers / 3) * 100));
+  const score = Math.round(freshness * 0.4 + observerAvailability * 0.3 + traffic * 0.2 + observerDiversity * 0.1);
+  return {
+    score,
+    status: score >= 75 ? 'healthy' : score >= 45 ? 'watch' : 'poor',
+    factors: { freshness, observerAvailability, traffic, observerDiversity },
+  };
+}
+
 export function createStatsService(deps: StatsServiceDeps) {
   const {
     statsCache,
@@ -63,8 +79,6 @@ export function createStatsService(deps: StatsServiceDeps) {
     chartsCache,
     chartsCacheTtlMs,
     chartsInflight,
-    crossNetworkCache,
-    crossNetworkCacheTtlMs,
     repository,
     maskDecodedPathNodes,
   } = deps;
@@ -160,13 +174,18 @@ export function createStatsService(deps: StatsServiceDeps) {
       ...current,
       observerRegions: summaryRows.map((row) => {
         const iata = String(row.iata ?? 'UNK');
+        const activeObservers = Number(row.active_observers ?? 0);
+        const observers = Number(row.observers ?? 0);
+        const packets24h = Number(row.packets_24h ?? 0);
+        const lastPacketAt = row.last_packet_at ?? null;
         return {
           iata,
-          activeObservers: Number(row.active_observers ?? 0),
-          observers: Number(row.observers ?? 0),
-          packets24h: Number(row.packets_24h ?? 0),
+          activeObservers,
+          observers,
+          packets24h,
           packets7d: Number(row.packets_7d ?? 0),
-          lastPacketAt: row.last_packet_at ?? null,
+          lastPacketAt,
+          health: computeRegionHealth({ activeObservers, observers, packets24h, lastPacketAt }),
           series: seriesByIata.get(iata) ?? [],
         };
       }),
@@ -213,6 +232,7 @@ export function createStatsService(deps: StatsServiceDeps) {
       packets7d: number;
       lastPacketAt: string | null;
       series: { day: string; count: number }[];
+      health: ReturnType<typeof computeRegionHealth>;
     }>();
 
     for (const row of orSummaryResult.rows) {
@@ -225,6 +245,12 @@ export function createStatsService(deps: StatsServiceDeps) {
         packets7d: Number(row.packets_7d ?? 0),
         lastPacketAt: row.last_packet_at ?? null,
         series: [],
+        health: computeRegionHealth({
+          activeObservers: Number(row.active_observers ?? 0),
+          observers: Number(row.observers ?? 0),
+          packets24h: Number(row.packets_24h ?? 0),
+          lastPacketAt: row.last_packet_at ?? null,
+        }),
       });
     }
 
@@ -468,40 +494,10 @@ export function createStatsService(deps: StatsServiceDeps) {
     return result.rows.map((r) => ({ ...r, rx_24h: Number(r.rx_24h), tx_24h: Number(r.tx_24h) }));
   }
 
-  async function getCrossNetworkConnectivity(): Promise<unknown> {
-    const cacheKey = 'teesside';
-    const cached = crossNetworkCache.get(cacheKey);
-    if (cached && Date.now() - cached.ts < crossNetworkCacheTtlMs) {
-      return cached.data;
-    }
-
-    const { result, historyResult } = await repository.fetchCrossNetworkConnectivity();
-
-    const lastInbound = result.rows[0]?.last_inbound ?? null;
-    const lastOutbound = result.rows[0]?.last_outbound ?? null;
-    const responseData = {
-      inbound: !!lastInbound,
-      outbound: !!lastOutbound,
-      lastInbound,
-      lastOutbound,
-      windowHours: 2,
-      historyWindowHours: 7 * 24,
-      history: historyResult.rows.map((row) => ({
-        bucket: row.bucket,
-        inboundCount: Number(row.inbound_count ?? 0),
-        outboundCount: Number(row.outbound_count ?? 0),
-      })),
-      checkedAt: new Date().toISOString(),
-    };
-    crossNetworkCache.set(cacheKey, { ts: Date.now(), data: responseData });
-    return responseData;
-  }
-
   return {
     startChartsWarmup,
     getCharts,
     getStatsSummary,
     getObserverActivity,
-    getCrossNetworkConnectivity,
   };
 }

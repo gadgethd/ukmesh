@@ -6,7 +6,7 @@ import cors from 'cors';
 import { rateLimit } from 'express-rate-limit';
 import { initDb, query } from './db/index.js';
 import { initOwnerAuthDb } from './db/ownerAuth.js';
-import { startMqttClient, onPacket, onNodeSeen, onNodeUpsert } from './mqtt/client.js';
+import { getMqttRuntimeStatus, startMqttClient, onPacket, onNodeSeen, onNodeUpsert } from './mqtt/client.js';
 import { startMqttConnectionMonitor } from './mqtt/connectionMonitor.js';
 import { initWebSocketServer, broadcastPacket, broadcastNodeUpdate, broadcastNodeUpsert } from './ws/server.js';
 import apiRoutes from './api/routes.js';
@@ -27,6 +27,14 @@ const MQTT_INGEST_ENABLED = !['0', 'false', 'no'].includes(
 );
 const COVERAGE_STARTUP_BACKFILL_ENABLED = process.env['COVERAGE_STARTUP_BACKFILL_ENABLED'] === '1';
 const WS_ENABLED = process.env['WS_ENABLED'] !== '0';
+
+// The MQTT/WS/DB paths are full of fire-and-forget work (`.catch()` loggers).
+// On Node 15+ a single rejection that slips past a `.catch()` would otherwise
+// terminate the whole real-time platform for every user. Log it and keep
+// serving — a stray background rejection must not take down ingestion + WS + API.
+process.on('unhandledRejection', (reason) => {
+  console.error('[app] unhandledRejection:', reason instanceof Error ? reason.stack ?? reason.message : reason);
+});
 
 async function main() {
   // 1. Initialise DB schema + retention policy
@@ -83,7 +91,7 @@ async function main() {
     const isHidden      = typeof node.name === 'string' && node.name.includes('🚫');
     const isNonRepeater = typeof node.role === 'number' && node.role !== 2;
     if (!isHidden && !isNonRepeater && typeof node.lat === 'number' && typeof node.lon === 'number' && isViewshedEligibleCoordinate(node.lat, node.lon)) {
-      queueViewshedJob(node.node_id as string, node.lat, node.lon);
+      queueViewshedJob(node.node_id as string, node.lat, node.lon, node['coordinates_changed'] === true);
     }
   });
 
@@ -136,6 +144,20 @@ async function main() {
 
   // Health check
   app.get('/healthz', (_req, res) => res.json({ status: 'ok', ts: Date.now() }));
+  app.get('/readyz', async (_req, res) => {
+    const checks = {
+      database: false,
+      mqtt: MQTT_INGEST_ENABLED ? getMqttRuntimeStatus() : { state: 'disabled', changedAt: new Date().toISOString() },
+    };
+    try {
+      await query('SELECT 1');
+      checks.database = true;
+    } catch (err) {
+      console.error('[readyz] database check failed:', (err as Error).message);
+    }
+    const ready = checks.database && (!MQTT_INGEST_ENABLED || checks.mqtt.state === 'connected');
+    res.status(ready ? 200 : 503).json({ status: ready ? 'ready' : 'degraded', checks, ts: Date.now() });
+  });
 
   // 4. HTTP server + WebSocket
   const httpServer = http.createServer(app);
@@ -145,14 +167,18 @@ async function main() {
     console.warn('[ws] disabled by WS_ENABLED');
   }
 
-  // 5. Start MQTT client (awaited so spam detector loads before broker replay)
-  if (MQTT_INGEST_ENABLED) {
-    await startMqttClient();
-  }
-
+  // 5. Serve the API before long-running ingest warmup. Spam detector caches
+  // may scan historical packets, and coupling that work to the listener made
+  // otherwise healthy deploys fail their HTTP checks for minutes.
   httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`[app] listening on http://0.0.0.0:${PORT}`);
   });
+
+  if (MQTT_INGEST_ENABLED) {
+    void startMqttClient().catch((err: unknown) => {
+      console.error('[mqtt] failed to start client:', err instanceof Error ? err.message : err);
+    });
+  }
 
   // 6. Periodic message-spam analyzer (decoded channel messages -> incidents).
   //    Fire-and-forget so the heavy first pass never delays the listen above.

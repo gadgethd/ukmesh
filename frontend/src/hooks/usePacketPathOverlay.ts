@@ -145,6 +145,7 @@ export function usePacketPathOverlay({
     setBetaPathConfidence(null);
     setBetaPermutationCount(null);
     setBetaRemainingHops(null);
+    useOverlayStore.getState().setPathExplanation(null);
     setPathFadingOut(false);
   }, []);
 
@@ -189,6 +190,7 @@ export function usePacketPathOverlay({
         setBetaPathConfidence(null);
         setBetaPermutationCount(null);
         setBetaRemainingHops(null);
+        useOverlayStore.getState().setPathExplanation(null);
         return;
       }
       setBetaPacketPaths(recent.purplePaths);
@@ -201,7 +203,10 @@ export function usePacketPathOverlay({
       return;
     }
     const aggregated = aggregateServerPredictions(validPredictions, options);
-    if (!aggregated) return;
+    if (!aggregated) {
+      useOverlayStore.getState().setPathExplanation(null);
+      return;
+    }
     setBetaPacketPaths(aggregated.purplePaths);
     setBetaLowConfidencePaths(aggregated.redPaths);
     setBetaLowConfidenceSegments(aggregated.redSegments);
@@ -209,6 +214,10 @@ export function usePacketPathOverlay({
     setBetaPathConfidence(aggregated.confidence);
     setBetaPermutationCount(aggregated.permutations);
     setBetaRemainingHops(aggregated.remainingHops);
+    const explained = [...validPredictions]
+      .sort((a, b) => (b.confidence ?? -1) - (a.confidence ?? -1))
+      .find((prediction) => prediction.explanation)?.explanation ?? null;
+    useOverlayStore.getState().setPathExplanation(explained);
 
     recentPredictionsRef.current.set(packetHash, { ...aggregated, ts: Date.now() });
     pruneRecentPredictions();

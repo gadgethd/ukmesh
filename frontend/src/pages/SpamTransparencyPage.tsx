@@ -4,6 +4,7 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 import { LoadingIndicator } from '../components/LoadingIndicator.js';
 import { MAP_STYLE } from '../components/Map/mapConfig.js';
 import './spam-page.css';
+import { useWatchlist } from '../hooks/useWatchlist.js';
 
 // ---------------------------------------------------------------------------
 // Spam Watch — message-spam dashboard.
@@ -232,6 +233,7 @@ function IncidentCard({ incident }: { incident: PublicIncident }) {
   const [showMap, setShowMap] = useState(false);
   const [detail, setDetail] = useState<IncidentDetail | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
+  const watchlist = useWatchlist();
 
   const toggle = useCallback(() => {
     const next = !expanded;
@@ -259,6 +261,9 @@ function IncidentCard({ incident }: { incident: PublicIncident }) {
         <span className={confidenceClass(incident.confidence)} title="Detection confidence">
           {confidenceLabel(incident.confidence)} · {Math.round(incident.confidence * 100)}%
         </span>
+        <button type="button" className="sm-watch" onClick={() => watchlist.toggle('spam_incident', incident.id, `Spam incident ${incident.id.slice(0, 8)}`)}>
+          {watchlist.isWatched('spam_incident', incident.id) ? '★ Watching' : '☆ Watch'}
+        </button>
       </div>
 
       <blockquote className="sm-sample">“{incident.sampleMessage}”</blockquote>

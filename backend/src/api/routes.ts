@@ -1,16 +1,12 @@
 import { Request, Response, Router } from 'express';
 import {
   CHARTS_CACHE_TTL_MS,
-  COVERAGE_CACHE_TTL_MS,
-  CROSS_NETWORK_CACHE_TTL_MS,
   INFERRED_NODES_CACHE_TTL_MS,
   OWNER_LIVE_CACHE_TTL_MS,
   PATH_HISTORY_CACHE_TTL_MS,
   STATS_CACHE_TTL_MS,
   chartsCache,
   chartsInflight,
-  coverageCache,
-  crossNetworkCache,
   inferredNodesCache,
   ownerLiveCache,
   pathHistoryCache,
@@ -53,6 +49,10 @@ import { registerPathingRoutes } from './routes/pathing.js';
 import { registerStatsRoutes } from './routes/stats.js';
 import { registerTelemetryRoutes } from './routes/telemetry.js';
 import { registerSpamRoutes } from './routes/spam.js';
+import { registerTopologyRoutes } from './routes/topology.js';
+import { registerActivityTimelineRoutes } from './routes/activityTimeline.js';
+import { registerRfValidationRoutes } from './routes/rfValidation.js';
+import { registerExportRoutes } from './routes/exports.js';
 import { requireLocalOnly } from './utils/localOnly.js';
 import { networkFilters } from './utils/networkFilters.js';
 
@@ -85,8 +85,6 @@ async function requireOwnerSession(req: Request, res: Response): Promise<string[
 }
 
 registerCoverageRoutes(router, {
-  coverageCache,
-  coverageCacheTtlMs: COVERAGE_CACHE_TTL_MS,
   coverageLimiter: COVERAGE_LIMITER,
   networkFilters,
   query,
@@ -150,8 +148,6 @@ registerStatsRoutes(router, {
   chartsCache,
   chartsCacheTtlMs: CHARTS_CACHE_TTL_MS,
   chartsInflight,
-  crossNetworkCache,
-  crossNetworkCacheTtlMs: CROSS_NETWORK_CACHE_TTL_MS,
   expensiveLimiter: EXPENSIVE_LIMITER,
   statsChartsLimiter: STATS_CHARTS_LIMITER,
   networkFilters,
@@ -160,5 +156,25 @@ registerStatsRoutes(router, {
 });
 registerTelemetryRoutes(router, { query });
 registerSpamRoutes(router, { expensiveLimiter: EXPENSIVE_LIMITER });
+registerTopologyRoutes(router, {
+  query,
+  networkFilters,
+  limiter: EXPENSIVE_LIMITER,
+});
+registerActivityTimelineRoutes(router, {
+  query,
+  networkFilters,
+  limiter: STATS_CHARTS_LIMITER,
+});
+registerRfValidationRoutes(router, {
+  query,
+  networkFilters,
+  limiter: EXPENSIVE_LIMITER,
+});
+registerExportRoutes(router, {
+  query,
+  networkFilters,
+  limiter: EXPENSIVE_LIMITER,
+});
 
 export default router;

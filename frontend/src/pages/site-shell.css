@@ -1,0 +1,194 @@
+/* ── Layout shell ──────────────────────────────────────────────────────── */
+.site-layout {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  background: var(--bg-base);
+  color: var(--text-primary);
+}
+.site-main { flex: 1; }
+.site-content {
+  max-width: 1240px;
+  margin: 0 auto;
+  padding: 0 24px;
+}
+
+/* ── Navigation ────────────────────────────────────────────────────────── */
+.site-nav {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  min-height: 60px;
+  padding: 10px 24px;
+  background: #09111a;
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 1000;
+}
+.site-nav__brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-decoration: none;
+  color: var(--text-primary);
+  font-size: 15px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+.site-nav__brand:hover { color: var(--accent); }
+.site-nav__icon {
+  color: var(--accent);
+  font-size: 18px;
+}
+.site-nav__links {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  flex-wrap: wrap;
+}
+.site-nav__link {
+  padding: 8px 10px;
+  color: var(--text-secondary);
+  text-decoration: none;
+  font-size: 13px;
+  border-radius: 6px;
+  transition: color var(--transition), background var(--transition);
+}
+.site-nav__link:hover { color: var(--text-primary); background: var(--bg-hover); }
+.site-nav__link--active {
+  color: var(--text-primary);
+  background: rgba(0, 196, 255, 0.08);
+}
+.site-nav__link--map {
+  color: var(--accent);
+  font-weight: 500;
+}
+.site-nav__app-btn {
+  padding: 8px 12px;
+  background: transparent;
+  border: 1px solid var(--border-bright);
+  color: var(--text-primary);
+  text-decoration: none;
+  font-size: 13px;
+  font-family: var(--font-mono);
+  border-radius: 6px;
+  flex-shrink: 0;
+  margin-left: auto;
+  transition: background var(--transition), border-color var(--transition);
+}
+.site-nav__app-btn:hover {
+  background: var(--bg-hover);
+  border-color: var(--accent-glow);
+}
+.site-nav__app-btn--active {
+  background: rgba(0, 196, 255, 0.08);
+  border-color: var(--border-bright);
+}
+
+.site-nav__hamburger {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.site-nav__hamburger:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+@media (max-width: 860px) {
+  html .site-content {
+    padding-right: 16px;
+    padding-left: 16px;
+  }
+
+  .site-nav {
+    min-height: 52px;
+    padding: 8px 12px;
+    gap: 12px;
+  }
+
+  .site-nav__hamburger {
+    display: flex;
+  }
+
+  .site-nav__links {
+    display: none;
+    position: absolute;
+    top: calc(100% + 8px);
+    right: 12px;
+    width: min(360px, calc(100vw - 24px));
+    max-height: min(56dvh, 360px);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: stretch;
+    gap: 4px;
+    padding: 8px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    background: var(--bg-panel);
+    border: 1px solid var(--border-bright);
+    border-radius: 10px;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55);
+    z-index: 999;
+  }
+
+  .site-nav__links--open {
+    display: grid;
+  }
+
+  .site-nav__link,
+  .site-nav__links .site-nav__app-btn {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+    min-height: 42px;
+    margin: 0;
+    padding: 9px 10px;
+    border: 0;
+    border-radius: 6px;
+    font-family: var(--font-body);
+    font-size: 13px;
+    line-height: 1.25;
+    overflow-wrap: anywhere;
+  }
+
+  html .site-footer {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: center;
+    gap: 4px 16px;
+    padding: 14px 16px;
+  }
+
+  html .site-footer > span:first-child {
+    grid-column: 1 / -1;
+    padding-bottom: 4px;
+  }
+
+  html .site-footer__sep {
+    display: none;
+  }
+
+  html .site-footer a {
+    display: flex;
+    align-items: center;
+    min-height: 36px;
+  }
+}
+
+/* Mobile controls wrapper (filter grid + search) — hidden on desktop */
+.mobile-controls { display: none; }
+.mobile-search { display: none; }

@@ -191,7 +191,7 @@ async function refreshEstablishedNodes(): Promise<void> {
       GROUP BY n.node_id, n.advert_count
       HAVING
         STDDEV(NULLIF(p.payload->'appData'->'location'->>'latitude', '')::double precision) < 0.3
-        AND COUNT(*) >= $1
+        AND COUNT(DISTINCT p.packet_hash) >= $1
     `, [ESTABLISHED_MIN_ADVERTS]);
 
     establishedNodes.clear();
@@ -235,6 +235,7 @@ async function refreshIdentityEvidence(): Promise<void> {
         SELECT
           payload->>'_summary' AS name,
           upper(payload->>'publicKey') AS public_key,
+          packet_hash,
           rx_node_id,
           time
         FROM packets
@@ -248,7 +249,7 @@ async function refreshIdentityEvidence(): Promise<void> {
         SELECT
           name,
           public_key,
-          COUNT(*) AS advert_count,
+          COUNT(DISTINCT packet_hash) AS advert_count,
           COUNT(DISTINCT rx_node_id) AS observer_count,
           MIN(time) AS first_seen,
           MAX(time) AS last_seen
@@ -256,7 +257,7 @@ async function refreshIdentityEvidence(): Promise<void> {
         GROUP BY name, public_key
       ),
       minute_stats AS (
-        SELECT name, public_key, date_trunc('minute', time) AS minute, COUNT(*) AS adverts
+        SELECT name, public_key, date_trunc('minute', time) AS minute, COUNT(DISTINCT packet_hash) AS adverts
         FROM base
         GROUP BY name, public_key, date_trunc('minute', time)
       ),
@@ -282,6 +283,7 @@ async function refreshIdentityEvidence(): Promise<void> {
         SELECT
           payload->>'_summary' AS name,
           upper(payload->>'publicKey') AS public_key,
+          packet_hash,
           rx_node_id,
           date_trunc('hour', time) AS hour_bucket
         FROM packets
@@ -296,7 +298,7 @@ async function refreshIdentityEvidence(): Promise<void> {
           name,
           public_key,
           hour_bucket,
-          COUNT(*) AS adverts,
+          COUNT(DISTINCT packet_hash) AS adverts,
           COUNT(DISTINCT rx_node_id) AS observers
         FROM base
         GROUP BY name, public_key, hour_bucket
@@ -323,7 +325,7 @@ async function refreshIdentityEvidence(): Promise<void> {
       SELECT
         upper(payload->>'publicKey') AS public_key,
         COUNT(DISTINCT payload->>'_summary') AS name_count,
-        COUNT(*) AS advert_count,
+        COUNT(DISTINCT packet_hash) AS advert_count,
         array_agg(DISTINCT left(payload->>'_summary', 32)) AS sample_names
       FROM packets
       WHERE packet_type = 4

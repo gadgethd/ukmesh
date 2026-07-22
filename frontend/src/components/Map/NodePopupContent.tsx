@@ -23,6 +23,7 @@ export const NodePopupContent: React.FC<{
   coverageActive: boolean;
   coverageLoading: boolean;
   coverageMessage: string | null;
+  viewshedEnabled: boolean;
   onToggleCoverage: (nodeId: string) => void;
   onFocusSamePrefix: (nodeId: string) => void;
   samePrefixCount: number;
@@ -37,6 +38,7 @@ export const NodePopupContent: React.FC<{
   coverageActive,
   coverageLoading,
   coverageMessage,
+  viewshedEnabled,
   onToggleCoverage,
   onFocusSamePrefix,
   samePrefixCount,
@@ -85,7 +87,7 @@ export const NodePopupContent: React.FC<{
       </div>
       {props.advert_count !== null && props.advert_count !== undefined && (
         <div className="node-popup__row">
-          <span>Times seen</span>
+          <span>Adverts seen</span>
           <span>{props.advert_count}</span>
         </div>
       )}
@@ -105,7 +107,7 @@ export const NodePopupContent: React.FC<{
           <span>{Math.round(props.elevation_m)} m ASL</span>
         </div>
       )}
-      {isRepeater && !props.is_prohibited && (
+      {viewshedEnabled && isRepeater && !props.is_prohibited && (
         <div className="node-popup__row" style={{ marginTop: 6 }}>
           <button
             type="button"
@@ -117,7 +119,7 @@ export const NodePopupContent: React.FC<{
           </button>
         </div>
       )}
-      {coverageMessage && (
+      {viewshedEnabled && coverageMessage && (
         <div className="node-popup__row">
           <span>Coverage</span>
           <span>{coverageMessage}</span>

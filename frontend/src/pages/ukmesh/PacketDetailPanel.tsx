@@ -1,6 +1,5 @@
 import React, { useEffect, useRef, useMemo, useCallback } from 'react';
-import maplibregl from 'maplibre-gl';
-import 'maplibre-gl/dist/maplibre-gl.css';
+import type maplibregl from 'maplibre-gl';
 import { LoadingIndicator } from '../../components/LoadingIndicator.js';
 import type { MeshNode } from '../../hooks/useNodes.js';
 import type { FeedPacket } from './UKFeedPage.js';
@@ -182,6 +181,7 @@ export const PathMap: React.FC<{
 }> = ({ results, observerPositions = [], lazyPaths = [], nodeMap, isLoading = false }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
+  const maplibreRef = useRef<typeof maplibregl | null>(null);
   const mapReadyRef = useRef(false);
   const nodeMapRef = useRef(nodeMap);
   nodeMapRef.current = nodeMap;
@@ -206,10 +206,12 @@ export const PathMap: React.FC<{
   // Imperatively add or update all map sources/layers without recreating the map.
   // Reads from refs so it can be a stable useCallback reference.
   const applyData = React.useCallback((map: maplibregl.Map, fitBounds: boolean) => {
+    const maplibre = maplibreRef.current;
+    if (!maplibre) return;
     const lazys = lazyPathsRef.current;
     const res = resultsRef.current;
     const obs = observerPositionsRef.current;
-    const bounds = new maplibregl.LngLatBounds();
+    const bounds = new maplibre.LngLatBounds();
 
     // ── Beta results (purple / red paths) ────────────────────────────────
     const allPurpleCoords: [number, number][][] = [];
@@ -276,7 +278,7 @@ export const PathMap: React.FC<{
           const fullNode = props.nodeId ? nodeMapRef.current?.get(props.nodeId) : undefined;
           const displayName = props.name || props.nodeId.slice(0, 12) || '—';
           const pubKey = fullNode?.public_key ?? props.nodeId ?? '—';
-          new maplibregl.Popup({ closeButton: true, maxWidth: '320px' })
+          new maplibre.Popup({ closeButton: true, maxWidth: '320px' })
             .setLngLat(e.lngLat)
             .setHTML(
               `<div style="font-family:monospace;font-size:12px;line-height:1.6">` +
@@ -317,26 +319,40 @@ export const PathMap: React.FC<{
   // Create map once on mount; never recreate it for data changes
   useEffect(() => {
     if (!containerRef.current) return;
-    const map = new maplibregl.Map({
-      container: containerRef.current,
-      style: {
-        version: 8,
-        sources: { tiles: { type: 'raster', tiles: CARTO_TILES, tileSize: 256, maxzoom: 19, attribution: '© OpenStreetMap © CARTO' } },
-        layers: [{ id: 'bg', type: 'raster', source: 'tiles' }],
-      },
-      center: [0, 51.5],
-      zoom: 6,
-      attributionControl: false,
-    });
-    mapRef.current = map;
-    map.on('load', () => {
-      mapReadyRef.current = true;
-      applyData(map, true);
+    let cancelled = false;
+    let map: maplibregl.Map | null = null;
+    void Promise.all([
+      import('maplibre-gl'),
+      import('maplibre-gl/dist/maplibre-gl.css'),
+    ]).then(([maplibreModule]) => {
+      if (cancelled || !containerRef.current) return;
+      const maplibre = maplibreModule.default;
+      maplibreRef.current = maplibre;
+      const nextMap = new maplibre.Map({
+        container: containerRef.current,
+        style: {
+          version: 8,
+          sources: { tiles: { type: 'raster', tiles: CARTO_TILES, tileSize: 256, maxzoom: 19, attribution: '© OpenStreetMap © CARTO' } },
+          layers: [{ id: 'bg', type: 'raster', source: 'tiles' }],
+        },
+        center: [0, 51.5],
+        zoom: 6,
+        attributionControl: false,
+      });
+      map = nextMap;
+      mapRef.current = nextMap;
+      nextMap.on('load', () => {
+        if (cancelled) return;
+        mapReadyRef.current = true;
+        applyData(nextMap, true);
+      });
     });
     return () => {
-      mapRef.current = null;
+      cancelled = true;
+      if (mapRef.current === map) mapRef.current = null;
       mapReadyRef.current = false;
-      map.remove();
+      maplibreRef.current = null;
+      map?.remove();
     };
   }, [applyData]);
 

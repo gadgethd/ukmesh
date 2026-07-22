@@ -40,11 +40,13 @@ import {
   buildLinksGeoJSON,
   buildNodeGeoJSON,
   buildPlannedCoverageGeoJSON,
+  buildPlannedLinksGeoJSON,
   buildPlannedPinGeoJSON,
   buildPrivacyRingsGeoJSON,
   computeClashData,
 } from './geojsonBuilders.js';
 import { NodePopupContent } from './NodePopupContent.js';
+import { PlannedRepeaterPopup } from './PlannedRepeaterPopup.js';
 import type {
   CustomLosPoint,
   LosProfile,
@@ -68,6 +70,9 @@ export function MapLibreMap({
   showClientNodes,
   showHexClashes,
   maxHexClashHops,
+  viewshedEnabled,
+  initialView,
+  onNodeSelect,
   onMapReady,
 }: MapLibreMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -86,7 +91,9 @@ export function MapLibreMap({
   const showClientNodesRef = useRef(showClientNodes);
   const showHexClashesRef = useRef(showHexClashes);
   const maxHexClashHopsRef = useRef(maxHexClashHops);
+  const viewshedEnabledRef = useRef(viewshedEnabled);
   const pathNodeIdsRef = useRef(useOverlayStore.getState().pathNodeIds);
+  const replayNodeIdsRef = useRef(useOverlayStore.getState().replayNodeIds);
   const setClashPathLines = useOverlayStore((state) => state.setClashPathLines);
   const hiddenCoordMaskRef = useRef<Map<string, HiddenMaskGeometry>>(new Map());
   const refreshTimerRef = useRef<number | null>(null);
@@ -99,12 +106,19 @@ export function MapLibreMap({
   // Planned repeater placement
   const plannedRepeatersRef = useRef<PlannedRepeater[]>([]);
   const plannedPollRefs = useRef<Map<string, number>>(new Map());
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const handleRemovePlannedRepeaterRef = useRef<(planId: string) => void>(null as any);
+  // Plans whose LOS overlay has already been auto-applied (so we don't re-apply
+  // it or fight a user who manually hid it from the popup).
+  const plannedLosAppliedRef = useRef<Set<string>>(new Set());
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const placePlannedRepeaterRef = useRef<(lat: number, lon: number) => Promise<void>>(null as any);
+  // Planned-repeater popup (parallel to the normal node popup)
+  const plannedPopupRef = useRef<maplibregl.Popup | null>(null);
+  const plannedPopupContainerRef = useRef<HTMLDivElement>(document.createElement('div'));
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const openPlannedPopupRef = useRef<(planId: string, lngLat: maplibregl.LngLatLike) => void>(null as any);
 
   const [popupState, setPopupState] = useState<PopupState | null>(null);
+  const [plannedPopupState, setPlannedPopupState] = useState<{ planId: string; lngLat: maplibregl.LngLatLike } | null>(null);
   const [popupLinks, setPopupLinks] = useState<NodeLink[] | null>(null);
   const [selectedCoverageNodeId, setSelectedCoverageNodeId] = useState<string | null>(null);
   const [coverageLoadingNodeId, setCoverageLoadingNodeId] = useState<string | null>(null);
@@ -166,6 +180,11 @@ export function MapLibreMap({
   const popupNodeId = popupState?.nodeId ?? null;
   const popupLosActive = useOverlayStore((state) => popupNodeId != null && state.losNodeIds.has(popupNodeId));
   const popupLosLoading = useOverlayStore((state) => popupNodeId != null && state.losLoadingIds.has(popupNodeId));
+
+  // Same targeted LOS selectors for the open planned-repeater popup.
+  const plannedPopupId = plannedPopupState?.planId ?? null;
+  const plannedPopupLosActive = useOverlayStore((state) => plannedPopupId != null && state.losNodeIds.has(plannedPopupId));
+  const plannedPopupLosLoading = useOverlayStore((state) => plannedPopupId != null && state.losLoadingIds.has(plannedPopupId));
 
   // Timers for auto-expiry: nodeId → setTimeout handle
   const losTimersRef = useRef<Map<string, number>>(new Map());
@@ -240,6 +259,7 @@ export function MapLibreMap({
   const clearCustomLos = useOverlayStore((state) => state.clearCustomLos);
   const planRepeaterMode = useOverlayStore((state) => state.planRepeaterMode);
   const plannedRepeaters = useOverlayStore((state) => state.plannedRepeaters);
+  const requestedPlanCoordinates = useOverlayStore((state) => state.requestedPlanCoordinates);
   const setPlanRepeaterMode = useOverlayStore((state) => state.setPlanRepeaterMode);
 
   // Stable async handler called by map click handlers (reads state via getState())
@@ -262,9 +282,13 @@ export function MapLibreMap({
   // -- Planned repeater placement --------------------------------------------
 
   const pollPlannedCoverage = useCallback((planId: string) => {
+    if (!viewshedEnabledRef.current) return;
     const iv = window.setInterval(() => {
       void fetch(`/api/coverage/planned/${planId}`)
-        .then((r) => r.json() as Promise<{ status: string; coverage?: PlannedRepeater['coverage'] }>)
+        .then((r) => {
+          if (!r.ok) throw new Error('planned coverage unavailable');
+          return r.json() as Promise<{ status: string; coverage?: PlannedRepeater['coverage'] }>;
+        })
         .then((data) => {
           if (data.status === 'ready') {
             window.clearInterval(iv);
@@ -283,11 +307,103 @@ export function MapLibreMap({
       window.clearInterval(iv);
       plannedPollRefs.current.delete(planId);
     }
+    setPlannedPopupState((prev) => (prev?.planId === planId ? null : prev));
+    plannedLosAppliedRef.current.delete(planId);
+    useOverlayStore.getState().removeLosNode(planId);
     useOverlayStore.getState().removePlannedRepeater(planId);
-    void fetch(`/api/coverage/planned/${planId}`, { method: 'DELETE' }).catch(() => {});
+    if (viewshedEnabledRef.current) {
+      void fetch(`/api/coverage/planned/${planId}`, { method: 'DELETE' }).catch(() => {});
+    }
   }, []);
 
+  // Rebuild the planned-link lines from the current plans + live node positions,
+  // and toggle their visibility with the global Links toggle.
+  const updatePlannedLinks = useCallback(() => {
+    if (!mapLoadedRef.current || !mapRef.current) return;
+    const data = viewshedEnabledRef.current && showLinksRef.current
+      ? buildPlannedLinksGeoJSON(plannedRepeatersRef.current, nodesRef.current, hiddenCoordMaskRef.current)
+      : EMPTY_FC;
+    (mapRef.current.getSource('planned-links') as maplibregl.GeoJSONSource | undefined)?.setData(data);
+    mapRef.current.setLayoutProperty('planned-links-layer', 'visibility', viewshedEnabledRef.current && showLinksRef.current ? 'visible' : 'none');
+  }, []);
+
+  const openPlannedPopup = useCallback((planId: string, lngLat: maplibregl.LngLatLike) => {
+    if (!viewshedEnabledRef.current) return;
+    setPopupState(null); // close any normal node popup
+    setPlannedPopupState({ planId, lngLat });
+  }, []);
+
+  useEffect(() => {
+    openPlannedPopupRef.current = openPlannedPopup;
+  }, [openPlannedPopup]);
+
+  // Build 3D LOS sight-lines for a planned repeater from its server-predicted
+  // links: plan location → each viable peer, at antenna-tip altitude (same
+  // representation the normal "Show LOS" overlay uses).
+  const buildPlannedLosProfiles = useCallback(async (repeater: PlannedRepeater): Promise<LosProfile[]> => {
+    if (!viewshedEnabledRef.current) return [];
+    const links = repeater.coverage?.predicted_links;
+    if (!links || links.length === 0) return [];
+    const ANTENNA_H = 10;
+    const EXAG = TERRAIN_CONFIG.exaggeration;
+    const srcElevRaw = await sampleElevationAt(repeater.lon, repeater.lat).catch(() => 0);
+    const srcElev = ((srcElevRaw ?? 0) + ANTENNA_H) * EXAG;
+    const profiles: LosProfile[] = [];
+    for (const link of links) {
+      const peer = nodesRef.current.get(link.peer_id);
+      if (!peer || !hasCoords(peer)) continue;
+      const [peerLat, peerLon] = maskNodePoint(peer, hiddenCoordMaskRef.current);
+      const peerElev = ((peer.elevation_m ?? 0) + ANTENNA_H) * EXAG;
+      profiles.push({
+        peer_id: link.peer_id,
+        peer_name: link.peer_name,
+        itm_path_loss_db: link.itm_path_loss_db,
+        itm_viable: link.itm_viable,
+        profile: [
+          [repeater.lon, repeater.lat, srcElev],
+          [peerLon, peerLat, peerElev],
+        ],
+      });
+    }
+    return profiles;
+  }, []);
+
+  const handleTogglePlannedLos = useCallback(async (planId: string) => {
+    if (!viewshedEnabledRef.current) return;
+    if (useOverlayStore.getState().losNodeIds.has(planId)) {
+      useOverlayStore.getState().removeLosNode(planId);
+      return;
+    }
+    const repeater = plannedRepeatersRef.current.find((r) => r.id === planId);
+    if (!repeater) return;
+    useOverlayStore.getState().addLosLoading(planId);
+    const profiles = await buildPlannedLosProfiles(repeater);
+    useOverlayStore.getState().setLosProfilesForNode(planId, profiles);
+  }, [buildPlannedLosProfiles]);
+
+  // Auto-show LOS for ready plans (no toggle needed) and clean up removed ones.
+  useEffect(() => {
+    if (!viewshedEnabled) return;
+    const liveIds = new Set(plannedRepeaters.map((r) => r.id));
+    for (const id of Array.from(plannedLosAppliedRef.current)) {
+      if (!liveIds.has(id)) {
+        plannedLosAppliedRef.current.delete(id);
+        useOverlayStore.getState().removeLosNode(id);
+      }
+    }
+    for (const repeater of plannedRepeaters) {
+      if (repeater.status !== 'ready') continue;
+      if (plannedLosAppliedRef.current.has(repeater.id)) continue;
+      plannedLosAppliedRef.current.add(repeater.id);
+      useOverlayStore.getState().addLosLoading(repeater.id);
+      void buildPlannedLosProfiles(repeater).then((profiles) => {
+        useOverlayStore.getState().setLosProfilesForNode(repeater.id, profiles);
+      });
+    }
+  }, [viewshedEnabled, plannedRepeaters, buildPlannedLosProfiles]);
+
   const placePlannedRepeater = useCallback(async (lat: number, lon: number) => {
+    if (!viewshedEnabledRef.current) return;
     try {
       const res = await fetch('/api/coverage/planned', {
         method: 'POST',
@@ -305,55 +421,68 @@ export function MapLibreMap({
 
   // Keep handler refs in sync for map event handlers
   useEffect(() => {
-    handleRemovePlannedRepeaterRef.current = handleRemovePlannedRepeater;
-  }, [handleRemovePlannedRepeater]);
-
-  useEffect(() => {
     placePlannedRepeaterRef.current = placePlannedRepeater;
   }, [placePlannedRepeater]);
 
+  useEffect(() => {
+    if (!viewshedEnabled || requestedPlanCoordinates.length === 0) return;
+    const available = Math.max(0, 5 - useOverlayStore.getState().plannedRepeaters.length);
+    for (const coordinate of requestedPlanCoordinates.slice(0, available)) {
+      void placePlannedRepeater(coordinate.lat, coordinate.lon);
+    }
+    useOverlayStore.getState().clearPlanRestoreRequest();
+  }, [placePlannedRepeater, requestedPlanCoordinates, viewshedEnabled]);
+
   // Keep planned repeaters ref in sync
   useEffect(() => {
-    plannedRepeatersRef.current = plannedRepeaters;
-  }, [plannedRepeaters]);
+    plannedRepeatersRef.current = viewshedEnabled ? plannedRepeaters : [];
+  }, [viewshedEnabled, plannedRepeaters]);
 
-  // Update planned coverage and pin layers when planned repeaters change
+  // Update planned coverage, pin, and predicted-link layers when plans change
   useEffect(() => {
     if (!mapLoadedRef.current || !mapRef.current) return;
+    const visiblePlans = viewshedEnabled ? plannedRepeaters : [];
     (mapRef.current.getSource('planned-coverage') as maplibregl.GeoJSONSource | undefined)
-      ?.setData(buildPlannedCoverageGeoJSON(plannedRepeaters));
+      ?.setData(buildPlannedCoverageGeoJSON(visiblePlans));
     (mapRef.current.getSource('planned-pins') as maplibregl.GeoJSONSource | undefined)
-      ?.setData(buildPlannedPinGeoJSON(plannedRepeaters));
-  }, [plannedRepeaters]);
+      ?.setData(buildPlannedPinGeoJSON(visiblePlans));
+    updatePlannedLinks();
+  }, [viewshedEnabled, plannedRepeaters, updatePlannedLinks]);
 
-  // Clean up all planned repeaters and intervals on unmount
+  // Clean up all planned repeaters, intervals, and LOS overlays on unmount
   useEffect(() => () => {
     for (const [planId, iv] of plannedPollRefs.current) {
       window.clearInterval(iv);
-      void fetch(`/api/coverage/planned/${planId}`, { method: 'DELETE' }).catch(() => {});
+      if (viewshedEnabledRef.current) {
+        void fetch(`/api/coverage/planned/${planId}`, { method: 'DELETE' }).catch(() => {});
+      }
     }
     plannedPollRefs.current.clear();
+    for (const planId of plannedLosAppliedRef.current) {
+      useOverlayStore.getState().removeLosNode(planId);
+    }
+    plannedLosAppliedRef.current.clear();
   }, []);
 
   // Cursor crosshair while in custom LOS mode or plan repeater mode
   useEffect(() => {
     const canvas = mapRef.current?.getCanvas();
     if (!canvas) return;
-    canvas.style.cursor = (customLosMode || planRepeaterMode) ? 'crosshair' : '';
-  }, [customLosMode, planRepeaterMode]);
+    canvas.style.cursor = (customLosMode || (viewshedEnabled && planRepeaterMode)) ? 'crosshair' : '';
+  }, [viewshedEnabled, customLosMode, planRepeaterMode]);
 
   // Escape key clears custom LOS mode or plan repeater mode
   useEffect(() => {
-    if (!customLosMode && !planRepeaterMode) return;
+    if (!customLosMode && !(viewshedEnabled && planRepeaterMode)) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         if (customLosMode) clearCustomLos();
-        if (planRepeaterMode) setPlanRepeaterMode(false);
+        if (viewshedEnabled && planRepeaterMode) setPlanRepeaterMode(false);
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [customLosMode, planRepeaterMode, clearCustomLos, setPlanRepeaterMode]);
+  }, [viewshedEnabled, customLosMode, planRepeaterMode, clearCustomLos, setPlanRepeaterMode]);
 
   // -- Focus mode (same-prefix highlight) ------------------------------------
 
@@ -368,7 +497,7 @@ export function MapLibreMap({
     if (!mapLoadedRef.current || !mapRef.current) return;
 
     const nodes = nodesRef.current;
-    const coverage = coverageRef.current;
+    const coverage = viewshedEnabled ? coverageRef.current : [];
     const viablePairsArr = viablePairsRef.current;
     const linkMetrics = linkMetricsRef.current;
     const currentPathNodeIds = pathNodeIdsRef.current;
@@ -396,6 +525,7 @@ export function MapLibreMap({
       clash.clashRelayIds,
       clash.clashModeActive,
       clash.clashModeActive ? null : currentPathNodeIds,
+      replayNodeIdsRef.current,
     );
     (mapRef.current.getSource('nodes') as maplibregl.GeoJSONSource | undefined)?.setData(nodeGeoJSON);
 
@@ -408,17 +538,20 @@ export function MapLibreMap({
     (mapRef.current.getSource('viable-links') as maplibregl.GeoJSONSource | undefined)?.setData(linksGeoJSON);
     mapRef.current.setLayoutProperty('viable-links-layer', 'visibility', showLinksRef.current ? 'visible' : 'none');
 
-    const coverageGeoJSON = selectedCoverageRef.current && !clash.clashModeActive
+    const coverageGeoJSON = viewshedEnabled && selectedCoverageRef.current && !clash.clashModeActive
       ? buildCoverageGeoJSON([selectedCoverageRef.current])
       : EMPTY_FC;
     (mapRef.current.getSource('coverage') as maplibregl.GeoJSONSource | undefined)?.setData(coverageGeoJSON);
     mapRef.current.setLayoutProperty('coverage-fill', 'visibility',
-      selectedCoverageRef.current && !clash.clashModeActive ? 'visible' : 'none');
+      viewshedEnabled && selectedCoverageRef.current && !clash.clashModeActive ? 'visible' : 'none');
 
     setClashPathLines(clash.clashModeActive ? clash.clashPathLines : []);
     (mapRef.current.getSource('clash-lines') as maplibregl.GeoJSONSource | undefined)?.setData(EMPTY_FC);
     mapRef.current.setLayoutProperty('clash-lines-layer', 'visibility', 'none');
-  }, [focusedNodeId, focusedPrefixNodeIds, setClashPathLines]);
+
+    // Rebuild planned-link lines against the freshly-updated node positions/mask.
+    updatePlannedLinks();
+  }, [viewshedEnabled, focusedNodeId, focusedPrefixNodeIds, setClashPathLines, updatePlannedLinks]);
 
   const scheduleRefresh = useCallback(() => {
     if (refreshTimerRef.current !== null) return;
@@ -427,6 +560,29 @@ export function MapLibreMap({
       refreshMapSources();
     }, MAP_REFRESH_INTERVAL_MS);
   }, [refreshMapSources]);
+
+  useEffect(() => {
+    viewshedEnabledRef.current = viewshedEnabled;
+    if (!viewshedEnabled) {
+      selectedCoverageRef.current = null;
+      setSelectedCoverageNodeId(null);
+      setCoverageLoadingNodeId(null);
+      setCoverageMessage(null);
+      setPlanRepeaterMode(false);
+      setPlannedPopupState(null);
+      plannedPopupRef.current?.remove();
+      for (const [, iv] of plannedPollRefs.current) {
+        window.clearInterval(iv);
+      }
+      plannedPollRefs.current.clear();
+      for (const repeater of useOverlayStore.getState().plannedRepeaters) {
+        useOverlayStore.getState().removeLosNode(repeater.id);
+        useOverlayStore.getState().removePlannedRepeater(repeater.id);
+      }
+      plannedLosAppliedRef.current.clear();
+    }
+    scheduleRefresh();
+  }, [viewshedEnabled, scheduleRefresh, setPlanRepeaterMode]);
 
   const handleFocusSamePrefix = useCallback((nodeId: string) => {
     const prefix = nodeId.slice(0, 2).toUpperCase();
@@ -463,8 +619,8 @@ export function MapLibreMap({
     const map = new maplibregl.Map({
       container: containerRef.current,
       style: localStorage.getItem('map-theme') === 'light' ? MAP_STYLE_LIGHT : MAP_STYLE,
-      center: [DEFAULT_CENTER[1], DEFAULT_CENTER[0]], // [lon, lat]
-      zoom: DEFAULT_ZOOM,
+      center: initialView ? [initialView.lon, initialView.lat] : [DEFAULT_CENTER[1], DEFAULT_CENTER[0]],
+      zoom: initialView?.zoom ?? DEFAULT_ZOOM,
       maxPitch: 0,
       minZoom: 6,
       attributionControl: false,
@@ -490,6 +646,7 @@ export function MapLibreMap({
             'case',
             ['==', ['get', 'hex_clash_state'], 'offender'], '#ef4444',
             ['==', ['get', 'hex_clash_state'], 'relay'], '#22c55e',
+            ['get', 'replay_active'], '#fbbf24',
             ['get', 'is_link_only_stale'], '#4b5563',
             ['get', 'is_inferred'], '#7dd3fc',
             ['get', 'is_stale'], '#6b7280',
@@ -501,6 +658,7 @@ export function MapLibreMap({
           ],
           'circle-opacity': [
             'case',
+            ['all', ['get', 'replay_mode'], ['!', ['get', 'replay_active']]], 0.12,
             ['get', 'is_link_only_stale'], 0.22,
             ['get', 'is_stale'], 0.4,
             ['!', ['get', 'is_online']], 0.4,
@@ -618,6 +776,28 @@ export function MapLibreMap({
         },
       });
 
+      // ── Predicted planned-repeater links source + layer ───────────────────
+      // Dashed lines (coloured by predicted path loss) so they read as
+      // hypothetical, distinct from the solid observed-link lines. Visibility
+      // follows the global Links toggle.
+      map.addSource('planned-links', { type: 'geojson', data: EMPTY_FC });
+      map.addLayer({
+        id: 'planned-links-layer',
+        type: 'line',
+        source: 'planned-links',
+        layout: {
+          visibility: showLinksRef.current ? 'visible' : 'none',
+          'line-cap': 'round',
+          'line-join': 'round',
+        },
+        paint: {
+          'line-color': ['get', 'color'],
+          'line-width': ['get', 'width'],
+          'line-opacity': 0.9,
+          'line-dasharray': [2, 1.5],
+        },
+      });
+
       // ── Planned repeater pins source + layers ──────────────────────────────
       // Styled to match real repeater nodes (role 2, #00c4ff) but visually
       // distinct via white stroke + glow halo + "Planned" label.
@@ -669,17 +849,13 @@ export function MapLibreMap({
         },
       });
 
-      // Label: "Planned" below the dot, or "Computing…" while pending
+      // Label: status ("Planned"/"Computing…") + the placement coordinates below the dot
       map.addLayer({
         id: 'planned-pins-label',
         type: 'symbol',
         source: 'planned-pins',
         layout: {
-          'text-field': [
-            'match', ['get', 'status'],
-            'ready', 'Planned',
-            'Computing…',
-          ],
+          'text-field': ['get', 'label'],
           'text-size': 10,
           'text-anchor': 'top',
           'text-offset': [0, 1.0],
@@ -695,14 +871,15 @@ export function MapLibreMap({
 
       // ── Click handler ──────────────────────────────────────────────────────
       map.on('click', 'planned-pins-dot', (e) => {
-        // Click on a planned repeater pin — remove it
-        if (!useOverlayStore.getState().planRepeaterMode) return;
+        if (!viewshedEnabledRef.current) return;
+        // Click a planned pin (in any mode) to open its popup with coords,
+        // predicted links, and a remove action.
         const feature = e.features?.[0];
         if (!feature) return;
         const planId = (feature.properties as { plan_id: string }).plan_id;
-        customLosNodeClickedRef.current = true; // prevent general map-click from firing
-        // handleRemovePlannedRepeater is stable via useCallback; read from ref to avoid stale closure
-        handleRemovePlannedRepeaterRef.current(planId);
+        const coords = (feature.geometry as GeoJSON.Point).coordinates as [number, number];
+        customLosNodeClickedRef.current = true; // prevent general map-click from placing a new pin
+        openPlannedPopupRef.current(planId, { lng: coords[0], lat: coords[1] });
       });
 
       map.on('click', 'node-dots', (e) => {
@@ -711,7 +888,7 @@ export function MapLibreMap({
         const props = feature.properties as NodeFeatureProps;
 
         // In plan repeater mode, node clicks place a repeater on the node's location
-        if (useOverlayStore.getState().planRepeaterMode) {
+        if (viewshedEnabledRef.current && useOverlayStore.getState().planRepeaterMode) {
           customLosNodeClickedRef.current = true;
           if (plannedRepeatersRef.current.length < 5) {
             const node = nodesRef.current.get(props.node_id);
@@ -736,6 +913,7 @@ export function MapLibreMap({
 
         // MapLibre serialises properties to JSON strings for non-primitive types,
         // but all our props are primitives so this is safe.
+        onNodeSelect?.(props.node_id);
         const coords = (feature.geometry as GeoJSON.Point).coordinates as [number, number];
         setPopupLinks(null);
         setPopupState({ nodeId: props.node_id, lngLat: { lng: coords[0], lat: coords[1] } });
@@ -744,12 +922,13 @@ export function MapLibreMap({
       // General map click — used for custom LOS mode and plan repeater placement on empty areas
       map.on('click', (e) => {
         const { lng, lat } = e.lngLat;
+        // A node/pin layer click already handled this event — read and clear the
+        // flag up-front so it can never persist into a later background click.
+        const consumed = customLosNodeClickedRef.current;
+        customLosNodeClickedRef.current = false;
 
-        if (useOverlayStore.getState().planRepeaterMode) {
-          if (customLosNodeClickedRef.current) {
-            customLosNodeClickedRef.current = false;
-            return;
-          }
+        if (viewshedEnabledRef.current && useOverlayStore.getState().planRepeaterMode) {
+          if (consumed) return;
           if (plannedRepeatersRef.current.length < 5) {
             void placePlannedRepeaterRef.current(lat, lng);
           }
@@ -757,10 +936,7 @@ export function MapLibreMap({
         }
 
         if (!useOverlayStore.getState().customLosMode) return;
-        if (customLosNodeClickedRef.current) {
-          customLosNodeClickedRef.current = false;
-          return; // Node dot already handled above
-        }
+        if (consumed) return; // Node dot / planned pin already handled above
         void sampleElevationAt(lng, lat).then((elevation_m) => {
           void handleCustomLosPointRef.current({ lat, lon: lng, elevation_m });
         });
@@ -771,13 +947,13 @@ export function MapLibreMap({
         map.getCanvas().style.cursor = 'pointer';
       });
       map.on('mouseleave', 'node-dots', () => {
-        map.getCanvas().style.cursor = useOverlayStore.getState().planRepeaterMode || useOverlayStore.getState().customLosMode ? 'crosshair' : '';
+        map.getCanvas().style.cursor = (viewshedEnabledRef.current && useOverlayStore.getState().planRepeaterMode) || useOverlayStore.getState().customLosMode ? 'crosshair' : '';
       });
       map.on('mouseenter', 'planned-pins-dot', () => {
         map.getCanvas().style.cursor = 'pointer';
       });
       map.on('mouseleave', 'planned-pins-dot', () => {
-        map.getCanvas().style.cursor = useOverlayStore.getState().planRepeaterMode ? 'crosshair' : '';
+        map.getCanvas().style.cursor = viewshedEnabledRef.current && useOverlayStore.getState().planRepeaterMode ? 'crosshair' : '';
       });
 
       mapRef.current = map;
@@ -812,7 +988,7 @@ export function MapLibreMap({
       map.remove();
       mapRef.current = null;
     };
-  }, [onMapReady, refreshMapSources, setClashPathLines]);
+  }, [initialView, onMapReady, onNodeSelect, refreshMapSources, setClashPathLines]);
 
   // -- Imperative source updates ---------------------------------------------
 
@@ -823,8 +999,9 @@ export function MapLibreMap({
 
   useEffect(() => {
     showLinksRef.current = showLinks;
+    updatePlannedLinks();
     scheduleRefresh();
-  }, [showLinks, scheduleRefresh]);
+  }, [showLinks, scheduleRefresh, updatePlannedLinks]);
 
   useEffect(() => {
     showTerrainRef.current = showTerrain;
@@ -891,6 +1068,7 @@ export function MapLibreMap({
       if (popupStateRef.current) setPopupVersion((value) => value + 1);
     });
     const unsubscribeCoverage = coverageStore.subscribe(() => {
+      if (!viewshedEnabledRef.current) return;
       coverageRef.current = coverageStore.getState().coverage;
       scheduleRefresh();
     });
@@ -901,8 +1079,12 @@ export function MapLibreMap({
       scheduleRefresh();
     });
     const unsubscribeOverlay = useOverlayStore.subscribe((overlayState) => {
-      if (overlayState.pathNodeIds === pathNodeIdsRef.current) return;
+      if (
+        overlayState.pathNodeIds === pathNodeIdsRef.current
+        && overlayState.replayNodeIds === replayNodeIdsRef.current
+      ) return;
       pathNodeIdsRef.current = overlayState.pathNodeIds;
+      replayNodeIdsRef.current = overlayState.replayNodeIds;
       scheduleRefresh();
     });
 
@@ -919,6 +1101,7 @@ export function MapLibreMap({
   }, [focusedNodeId, focusedPrefixNodeIds, scheduleRefresh]);
 
   const toggleCoverageForNode = useCallback((nodeId: string) => {
+    if (!viewshedEnabled) return;
     if (coverageLoadingNodeId === nodeId) return;
     if (selectedCoverageNodeId === nodeId) {
       selectedCoverageRef.current = null;
@@ -953,7 +1136,7 @@ export function MapLibreMap({
         setCoverageLoadingNodeId(null);
         scheduleRefresh();
       });
-  }, [coverageLoadingNodeId, selectedCoverageNodeId, scheduleRefresh]);
+  }, [viewshedEnabled, coverageLoadingNodeId, selectedCoverageNodeId, scheduleRefresh]);
 
   // -- Popup management ------------------------------------------------------
 
@@ -994,6 +1177,36 @@ export function MapLibreMap({
     mlPopupRef.current.setLngLat(popupState.lngLat).addTo(map);
   }, [popupState]);
 
+  // Show/update/close the planned-repeater popup when its state changes
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapLoadedRef.current) return;
+
+    if (!plannedPopupState) {
+      plannedPopupRef.current?.remove();
+      return;
+    }
+
+    if (!plannedPopupRef.current) {
+      plannedPopupRef.current = new maplibregl.Popup({ maxWidth: '280px', closeOnClick: false })
+        .setDOMContent(plannedPopupContainerRef.current)
+        .on('close', () => setPlannedPopupState(null));
+    }
+
+    plannedPopupRef.current.setLngLat(plannedPopupState.lngLat).addTo(map);
+  }, [plannedPopupState]);
+
+  // The currently open planned repeater (re-derived as plans/coverage update)
+  const plannedPopupRepeater = useMemo(
+    () => viewshedEnabled ? plannedRepeaters.find((r) => r.id === plannedPopupState?.planId) ?? null : null,
+    [viewshedEnabled, plannedRepeaters, plannedPopupState],
+  );
+
+  // Auto-close the planned popup if its repeater is gone
+  useEffect(() => {
+    if (plannedPopupState && !plannedPopupRepeater) setPlannedPopupState(null);
+  }, [plannedPopupState, plannedPopupRepeater]);
+
   // Resolve popup props from current nodes map
   const popupNodeProps = useMemo((): PopupNodeView | null => {
     if (!popupState) return null;
@@ -1012,6 +1225,8 @@ export function MapLibreMap({
         is_link_only_stale: false,
         is_prohibited: isProhibitedMapNode(node),
         is_inferred: !!node.is_inferred,
+        replay_active: replayNodeIdsRef.current?.has(node.node_id.toLowerCase()) ?? false,
+        replay_mode: replayNodeIdsRef.current !== null,
         hex_clash_state: null,
         visible: true,
         last_seen: node.last_seen,
@@ -1039,7 +1254,7 @@ export function MapLibreMap({
 
   return (
     <div className="map-area" style={{ position: 'relative', width: '100%', height: '100%' }}>
-      <NodeSearch map={mapRef.current} />
+      <NodeSearch map={mapRef.current} onNodeSelect={onNodeSelect} />
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
 
       {/* Map tool buttons */}
@@ -1054,19 +1269,21 @@ export function MapLibreMap({
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/><line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/></svg>
           LOS
         </button>
-        <button
-          type="button"
-          className={`map-tools__btn${planRepeaterMode ? ' map-tools__btn--active' : ''}`}
-          onClick={(e) => {
-            e.stopPropagation();
-            if (planRepeaterMode) { setPlanRepeaterMode(false); } else { clearCustomLos(); setPlanRepeaterMode(true); }
-          }}
-          onMouseDown={(e) => e.stopPropagation()}
-          onMouseUp={(e) => e.stopPropagation()}
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-          Repeater
-        </button>
+        {viewshedEnabled && (
+          <button
+            type="button"
+            className={`map-tools__btn${planRepeaterMode ? ' map-tools__btn--active' : ''}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              if (planRepeaterMode) { setPlanRepeaterMode(false); } else { clearCustomLos(); setPlanRepeaterMode(true); }
+            }}
+            onMouseDown={(e) => e.stopPropagation()}
+            onMouseUp={(e) => e.stopPropagation()}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            Repeater
+          </button>
+        )}
         <button
           type="button"
           className={`map-tools__btn${mapLight ? ' map-tools__btn--active' : ''}`}
@@ -1098,7 +1315,7 @@ export function MapLibreMap({
       )}
 
       {/* Plan repeater mode hint */}
-      {planRepeaterMode && (
+      {viewshedEnabled && planRepeaterMode && (
         <div
           style={{
             position: 'absolute', bottom: 40, left: '50%', transform: 'translateX(-50%)',
@@ -1108,13 +1325,13 @@ export function MapLibreMap({
           }}
         >
           {plannedRepeaters.length >= 5
-            ? 'Max 5 repeaters placed — click a pin to remove it — Esc to cancel'
-            : 'Click map to place a planned repeater — click a pin to remove it — Esc to cancel'}
+            ? 'Max 5 repeaters placed — click a pin for details — Esc to cancel'
+            : 'Click map to place a planned repeater — click a pin for details — Esc to cancel'}
         </div>
       )}
 
       {/* Computing coverage indicator */}
-      {plannedRepeaters.some((r) => r.status === 'queued') && (
+      {viewshedEnabled && plannedRepeaters.some((r) => r.status === 'queued') && (
         <div
           style={{
             position: 'absolute', top: 10, right: 10, zIndex: 10,
@@ -1136,6 +1353,7 @@ export function MapLibreMap({
           coverageActive={selectedCoverageNodeId === popupNodeProps.props.node_id}
           coverageLoading={coverageLoadingNodeId === popupNodeProps.props.node_id}
           coverageMessage={popupState?.nodeId === popupNodeProps.props.node_id ? coverageMessage : null}
+          viewshedEnabled={viewshedEnabled}
           onToggleCoverage={toggleCoverageForNode}
           onFocusSamePrefix={handleFocusSamePrefix}
           samePrefixCount={popupSamePrefixCount}
@@ -1144,6 +1362,23 @@ export function MapLibreMap({
           onToggleLos={handleToggleLos}
         />,
         popupContainerRef.current,
+      )}
+
+      {/* Planned repeater popup rendered into its MapLibre popup DOM node via portal */}
+      {viewshedEnabled && plannedPopupState && plannedPopupRepeater && createPortal(
+        <PlannedRepeaterPopup
+          planId={plannedPopupRepeater.id}
+          lat={plannedPopupRepeater.lat}
+          lon={plannedPopupRepeater.lon}
+          status={plannedPopupRepeater.status}
+          links={plannedPopupRepeater.coverage?.predicted_links}
+          getPeerName={(peerId) => nodesRef.current.get(peerId)?.name ?? peerId.slice(0, 8)}
+          onRemove={handleRemovePlannedRepeater}
+          losActive={plannedPopupLosActive}
+          losLoading={plannedPopupLosLoading}
+          onToggleLos={handleTogglePlannedLos}
+        />,
+        plannedPopupContainerRef.current,
       )}
 
       {/* Focus mode indicator */}

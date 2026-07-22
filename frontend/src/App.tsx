@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import './styles/map-app.css';
 import type maplibregl from 'maplibre-gl';
 import { MapLibreMap } from './components/Map/MapLibreMap.js';
 import { LiveOverlayController } from './components/Map/LiveOverlayController.js';
@@ -14,8 +15,17 @@ import { coverageStore } from './hooks/useCoverage.js';
 import { useDashboardStats, type DashboardStats } from './hooks/useDashboardStats.js';
 import { linkStateStore } from './hooks/useLinkState.js';
 import { useAppMessageHandler } from './hooks/useAppMessageHandler.js';
+import { VIEWSHED_ENABLED } from './config/features.js';
 import { getCurrentSite } from './config/site.js';
+import { filtersForMapMode, isMapMode, type MapMode } from './config/mapModes.js';
+import { useOverlayStore } from './store/overlayStore.js';
 import { uncachedEndpoint, withScopeParams } from './utils/api.js';
+import {
+  filtersFromUrl,
+  initialMapViewFromUrl,
+  writeFiltersToUrl,
+  writeMapViewToUrl,
+} from './utils/mapUrlState.js';
 
 type PacketHistorySegment = {
   positions: [[number, number], [number, number]];
@@ -36,22 +46,34 @@ const DEFAULT_FILTERS: Filters = {
 
 const DISCLAIMER_KEY = 'meshcore-disclaimer-dismissed';
 const FILTERS_KEY = 'meshcore-app-filters-v3';
+const ignoreCoverageUpdate = () => {};
+const NodeDetailDrawer = React.lazy(() => import('./components/app/NodeDetailDrawer.js').then((module) => ({ default: module.NodeDetailDrawer })));
+const TimelineControl = React.lazy(() => import('./components/app/TimelineControl.js').then((module) => ({ default: module.TimelineControl })));
+const PlannerComparison = React.lazy(() => import('./components/app/PlannerComparison.js').then((module) => ({ default: module.PlannerComparison })));
 
 export const App: React.FC = () => {
   const site = getCurrentSite();
   const [filters, setFilters] = useState<Filters>(() => {
+    let stored = DEFAULT_FILTERS;
     try {
       const raw = localStorage.getItem(FILTERS_KEY);
-      if (!raw) return DEFAULT_FILTERS;
-      const parsed = JSON.parse(raw) as Partial<Filters>;
-      // 'links' no longer has a toggle row, but storage written while the old
-      // "Links (Beta)" toggle existed may still have it enabled — force it off
-      // so stale state can't render link lines that no toggle can remove.
-      return { ...DEFAULT_FILTERS, ...parsed, betaPathThreshold: 0.45, links: false };
+      if (raw) stored = { ...DEFAULT_FILTERS, ...JSON.parse(raw) as Partial<Filters>, betaPathThreshold: 0.45 };
     } catch {
-      return DEFAULT_FILTERS;
+      stored = DEFAULT_FILTERS;
     }
+    const requestedMode = new URLSearchParams(window.location.search).get('mode');
+    const modeFilters = isMapMode(requestedMode) && (requestedMode !== 'plan' || VIEWSHED_ENABLED)
+      ? filtersForMapMode(requestedMode, stored)
+      : stored;
+    return filtersFromUrl(modeFilters);
   });
+  const [activeMode, setActiveMode] = useState<MapMode | null>(() => {
+    const requested = new URLSearchParams(window.location.search).get('mode');
+    return isMapMode(requested) && (requested !== 'plan' || VIEWSHED_ENABLED) ? requested : null;
+  });
+  const [initialMapView] = useState(() => initialMapViewFromUrl());
+  const [shareLabel, setShareLabel] = useState('Copy view link');
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(() => new URLSearchParams(window.location.search).get('node'));
   // MapLibre map instance — used by MobileControls/NodeSearch for flyTo
   const [mlMap, setMlMap] = useState<maplibregl.Map | null>(null);
   const [showDisclaimer, setShowDisclaimer] = useState(() => !localStorage.getItem(DISCLAIMER_KEY));
@@ -88,22 +110,77 @@ export const App: React.FC = () => {
 
   useEffect(() => {
     localStorage.setItem(FILTERS_KEY, JSON.stringify(filters));
-  }, [filters]);
+    writeFiltersToUrl(filters, activeMode);
+  }, [activeMode, filters]);
 
-  // Consolidated polling
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    if (selectedNodeId) url.searchParams.set('node', selectedNodeId);
+    else url.searchParams.delete('node');
+    window.history.replaceState(null, '', url);
+  }, [selectedNodeId]);
+
+  useEffect(() => {
+    if (!mlMap) return undefined;
+    const syncMapUrl = () => {
+      const center = mlMap.getCenter();
+      writeMapViewToUrl({ lat: center.lat, lon: center.lng, zoom: mlMap.getZoom() });
+    };
+    mlMap.on('moveend', syncMapUrl);
+    return () => { mlMap.off('moveend', syncMapUrl); };
+  }, [mlMap]);
+
+  const handleFiltersChange = useCallback((next: Filters) => {
+    setActiveMode(null);
+    useOverlayStore.getState().setPlanRepeaterMode(false);
+    setFilters(next);
+  }, []);
+
+  const handleModeChange = useCallback((mode: MapMode) => {
+    setActiveMode(mode);
+    setFilters((current) => filtersForMapMode(mode, current));
+    useOverlayStore.getState().setPlanRepeaterMode(mode === 'plan');
+  }, []);
+
+  const handleShare = useCallback(async () => {
+    if (mlMap) {
+      const center = mlMap.getCenter();
+      writeMapViewToUrl({ lat: center.lat, lon: center.lng, zoom: mlMap.getZoom() });
+    }
+    try {
+      await navigator.clipboard.writeText(window.location.href);
+      setShareLabel('Link copied');
+    } catch {
+      setShareLabel('Copy failed');
+    }
+    window.setTimeout(() => setShareLabel('Copy view link'), 1800);
+  }, [mlMap]);
+
+  // Keep the fast poll to live data that changes independently of the socket.
+  // Expensive inferred/path overlays use their own, slower conditional polls.
   useEffect(() => {
     let cancelled = false;
+    let timer: number | null = null;
+    let controller: AbortController | null = null;
 
-    const syncAllData = async () => {
-      if (!isPageVisible) return;
+    const scheduleNext = () => {
+      if (cancelled || !isPageVisible) return;
+      timer = window.setTimeout(() => { void syncLiveData(); }, 10_000);
+    };
+
+    const syncLiveData = async () => {
+      if (cancelled || !isPageVisible) return;
+      controller = new AbortController();
       setPollRefreshing(true);
 
       try {
-        const [packetsRes, historyRes, inferredRes, statsRes] = await Promise.allSettled([
-          fetch(uncachedEndpoint(withScopeParams('/api/packets/recent?limit=12', { network: networkFilter, observer: observerFilter })), { cache: 'no-store' }),
-          fetch(uncachedEndpoint(withScopeParams('/api/path-beta/multibyte-paths', { network: networkFilter, observer: observerFilter })), { cache: 'no-store' }),
-          fetch(uncachedEndpoint(withScopeParams('/api/inferred-nodes', { network: networkFilter, observer: observerFilter })), { cache: 'no-store' }),
-          fetch(uncachedEndpoint(withScopeParams('/api/stats', { network: networkFilter, observer: observerFilter })), { cache: 'no-store' }),
+        const [packetsRes, statsRes] = await Promise.allSettled([
+          fetch(uncachedEndpoint(withScopeParams('/api/packets/recent?limit=12', { network: networkFilter, observer: observerFilter })), {
+            cache: 'no-store', signal: controller.signal,
+          }),
+          fetch(uncachedEndpoint(withScopeParams('/api/stats', { network: networkFilter, observer: observerFilter })), {
+            cache: 'no-store', signal: controller.signal,
+          }),
         ]);
 
         if (cancelled) return;
@@ -119,21 +196,6 @@ export const App: React.FC = () => {
           if (!cancelled) nodeStore.replaceRecentPackets(rows);
         }
 
-        if (historyRes.status === 'fulfilled' && historyRes.value.ok) {
-          const payload = await historyRes.value.json() as { segments?: PacketHistorySegment[] };
-          if (!cancelled) setPacketHistorySegments(Array.isArray(payload.segments) ? payload.segments : []);
-        }
-
-        if (inferredRes.status === 'fulfilled' && inferredRes.value.ok) {
-          const payload = await inferredRes.value.json() as {
-            inferredNodes: MeshNode[]; inferredActiveNodeIds: string[];
-          };
-          if (!cancelled) {
-            setInferredNodes(payload.inferredNodes ?? []);
-            setInferredActiveNodeIds(new Set((payload.inferredActiveNodeIds ?? []).map((v) => v.toLowerCase())));
-          }
-        }
-
         if (statsRes.status === 'fulfilled' && statsRes.value.ok) {
           const payload = await statsRes.value.json() as DashboardStats;
           if (!cancelled) setFetchedStats(payload);
@@ -143,19 +205,107 @@ export const App: React.FC = () => {
           setInitialPollLoaded(true);
           setPollRefreshing(false);
         }
+        controller = null;
+        scheduleNext();
       }
     };
 
-      void syncAllData();
-
-      const pollMs = isPageVisible ? 10000 : 60000;
-      const timer = window.setInterval(() => { void syncAllData(); }, pollMs);
+    void syncLiveData();
 
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
+      controller?.abort();
+      if (timer) window.clearTimeout(timer);
     };
   }, [isPageVisible, networkFilter, observerFilter]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer: number | null = null;
+    let controller: AbortController | null = null;
+
+    const scheduleNext = () => {
+      if (cancelled || !isPageVisible) return;
+      timer = window.setTimeout(() => { void syncInferredNodes(); }, 60_000);
+    };
+
+    const syncInferredNodes = async () => {
+      if (cancelled || !isPageVisible) return;
+      controller = new AbortController();
+      try {
+        const response = await fetch(
+          uncachedEndpoint(withScopeParams('/api/inferred-nodes', { network: networkFilter, observer: observerFilter })),
+          { cache: 'no-store', signal: controller.signal },
+        );
+        if (!response.ok || cancelled) return;
+        const payload = await response.json() as {
+          inferredNodes: MeshNode[]; inferredActiveNodeIds: string[];
+        };
+        if (!cancelled) {
+          setInferredNodes(payload.inferredNodes ?? []);
+          setInferredActiveNodeIds(new Set((payload.inferredActiveNodeIds ?? []).map((value) => value.toLowerCase())));
+        }
+      } catch (err) {
+        if (!cancelled && (err as DOMException).name !== 'AbortError') {
+          console.warn('[app] inferred nodes refresh failed');
+        }
+      } finally {
+        controller = null;
+        scheduleNext();
+      }
+    };
+
+    void syncInferredNodes();
+    return () => {
+      cancelled = true;
+      controller?.abort();
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [isPageVisible, networkFilter, observerFilter]);
+
+  useEffect(() => {
+    if (!filters.packetHistory) {
+      setPacketHistorySegments([]);
+      return undefined;
+    }
+
+    let cancelled = false;
+    let timer: number | null = null;
+    let controller: AbortController | null = null;
+
+    const scheduleNext = () => {
+      if (cancelled || !isPageVisible) return;
+      timer = window.setTimeout(() => { void syncPacketHistory(); }, 60_000);
+    };
+
+    const syncPacketHistory = async () => {
+      if (cancelled || !isPageVisible) return;
+      controller = new AbortController();
+      try {
+        const response = await fetch(
+          uncachedEndpoint(withScopeParams('/api/path-beta/multibyte-paths', { network: networkFilter, observer: observerFilter })),
+          { cache: 'no-store', signal: controller.signal },
+        );
+        if (!response.ok || cancelled) return;
+        const payload = await response.json() as { segments?: PacketHistorySegment[] };
+        if (!cancelled) setPacketHistorySegments(Array.isArray(payload.segments) ? payload.segments : []);
+      } catch (err) {
+        if (!cancelled && (err as DOMException).name !== 'AbortError') {
+          console.warn('[app] path history refresh failed');
+        }
+      } finally {
+        controller = null;
+        scheduleNext();
+      }
+    };
+
+    void syncPacketHistory();
+    return () => {
+      cancelled = true;
+      controller?.abort();
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [filters.packetHistory, isPageVisible, networkFilter, observerFilter]);
 
   useEffect(() => {
     const wasHexClashes = prevHexClashesRef.current;
@@ -215,8 +365,8 @@ export const App: React.FC = () => {
     handleNodeUpdateBatch: nodeStore.handleNodeUpdateBatch,
     handleNodeUpsert: nodeStore.handleNodeUpsert,
     handleNodeUpsertBatch: nodeStore.handleNodeUpsertBatch,
-    handleCoverageUpdate: coverageStore.handleCoverageUpdate,
-    handleCoverageUpdateBatch: coverageStore.handleCoverageUpdateBatch,
+    handleCoverageUpdate: VIEWSHED_ENABLED ? coverageStore.handleCoverageUpdate : ignoreCoverageUpdate,
+    handleCoverageUpdateBatch: VIEWSHED_ENABLED ? coverageStore.handleCoverageUpdateBatch : ignoreCoverageUpdate,
     applyInitialViablePairs: linkStateStore.applyInitialViablePairs,
     applyInitialViableLinks: linkStateStore.applyInitialViableLinks,
     applyLinkUpdate: linkStateStore.applyLinkUpdate,
@@ -240,7 +390,13 @@ export const App: React.FC = () => {
       <MobileControls
         map={mlMap}
         filters={filters}
-        onFiltersChange={setFilters}
+        onFiltersChange={handleFiltersChange}
+        activeMode={activeMode}
+        viewshedEnabled={VIEWSHED_ENABLED}
+        onModeChange={handleModeChange}
+        onShare={handleShare}
+        shareLabel={shareLabel}
+        onNodeSelect={setSelectedNodeId}
       />
 
       <div className="map-layer">
@@ -252,6 +408,9 @@ export const App: React.FC = () => {
           showClientNodes={filters.clientNodes}
           showHexClashes={filters.hexClashes}
           maxHexClashHops={filters.hexClashMaxHops}
+          viewshedEnabled={VIEWSHED_ENABLED}
+          initialView={initialMapView}
+          onNodeSelect={setSelectedNodeId}
           onMapReady={setMlMap}
         />
         <LiveOverlayController
@@ -263,7 +422,7 @@ export const App: React.FC = () => {
         />
         {(!initialStateLoaded || !initialPollLoaded) && (
           <LoadingIndicator
-            label={!initialStateLoaded ? 'Loading network nodes...' : 'Loading route data...'}
+            label={!initialStateLoaded ? 'Loading network nodes...' : 'Loading dashboard data...'}
             variant="overlay"
           />
         )}
@@ -276,12 +435,32 @@ export const App: React.FC = () => {
 
       <FilterPanel
         filters={filters}
-        onChange={setFilters}
+        onChange={handleFiltersChange}
+        activeMode={activeMode}
+        viewshedEnabled={VIEWSHED_ENABLED}
+        onModeChange={handleModeChange}
+        onShare={handleShare}
+        shareLabel={shareLabel}
       />
+
+      {selectedNodeId && (
+        <React.Suspense fallback={null}>
+          <NodeDetailDrawer
+            nodeId={selectedNodeId}
+            network={networkFilter}
+            observer={observerFilter}
+            onClose={() => setSelectedNodeId(null)}
+          />
+        </React.Suspense>
+      )}
+      <React.Suspense fallback={null}>
+        <TimelineControl network={networkFilter} observer={observerFilter} />
+        {VIEWSHED_ENABLED && <PlannerComparison enabled />}
+      </React.Suspense>
 
       {filters.livePackets && <PacketFeed />}
 
-      {showDisclaimer && <DisclaimerModal onClose={dismissDisclaimer} />}
+      {showDisclaimer && <DisclaimerModal viewshedEnabled={VIEWSHED_ENABLED} onClose={dismissDisclaimer} />}
     </div>
   );
 };

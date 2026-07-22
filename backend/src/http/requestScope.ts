@@ -1,39 +1,22 @@
 import type { IncomingHttpHeaders } from 'node:http';
 
-type NetworkScope = 'teesside' | 'ukmesh' | 'test' | 'all';
+type NetworkScope = 'ukmesh' | 'test' | 'all';
 type ForcedScope = Exclude<NetworkScope, 'all'>;
-
-function firstHeaderValue(value: string | string[] | undefined): string {
-  return Array.isArray(value) ? String(value[0] ?? '') : String(value ?? '');
-}
-
-function extractHostname(raw: string): string {
-  const trimmed = raw.trim().toLowerCase();
-  if (!trimmed) return '';
-  try {
-    return new URL(trimmed).hostname.toLowerCase();
-  } catch {
-    return trimmed.split(',')[0]?.trim().split(':')[0]?.toLowerCase() ?? '';
-  }
-}
 
 export function normalizeNetworkValue(value: unknown): NetworkScope | undefined {
   const normalized = String(value ?? '').trim().toLowerCase();
-  if (normalized === 'ukmesh' || normalized === 'teesside' || normalized === 'test' || normalized === 'all') {
-    return normalized;
+  if (normalized === 'all') return 'all';
+  // Legacy production labels stay compatible with the unified UKMesh scope.
+  if (normalized === 'ukmesh' || normalized === 'teesside' || normalized === 'northeast') {
+    return 'ukmesh';
   }
+  if (normalized === 'test') return 'test';
   return undefined;
 }
 
-export function inferForcedNetwork(headers: IncomingHttpHeaders): ForcedScope | undefined {
-  const host = extractHostname(firstHeaderValue(headers['x-forwarded-host']) || firstHeaderValue(headers['host']));
-  const origin = extractHostname(firstHeaderValue(headers['origin']));
-  const referer = extractHostname(firstHeaderValue(headers['referer']));
-  const candidates = [host, origin, referer];
-
-  if (candidates.some((value) => value === 'test.ukmesh.com' || value.endsWith('.test.ukmesh.com'))) return 'test';
-  if (candidates.some((value) => value === 'app.ukmesh.com' || value === 'www.ukmesh.com' || value === 'ukmesh.com')) return 'ukmesh';
-  if (candidates.some((value) => value === 'app.teessidemesh.com' || value === 'www.teessidemesh.com' || value === 'teessidemesh.com')) return 'teesside';
+export function inferForcedNetwork(_headers: IncomingHttpHeaders): ForcedScope | undefined {
+  // With a single unified network there is no host-based network forcing; the
+  // explicit query param or the caller's fallback decides scope.
   return undefined;
 }
 

@@ -18,5 +18,3 @@ export const MAX_PERMUTATION_STATES = pathingConfig.maxPermutationStates; // Inc
 export const SOFT_FALLBACK_HOP_KM = pathingConfig.softFallbackHopKm;
 export const OBSERVER_HOP_WEIGHT_CONFIRMED = pathingConfig.observerHopWeightConfirmed;
 export const OBSERVER_HOP_WEIGHT_REACHABLE = pathingConfig.observerHopWeightReachable;
-export const OBSERVER_HOP_WEIGHT_FALLBACK = pathingConfig.observerHopWeightFallback;
-export const ANCHOR_CONFIDENCE_DEFAULT = pathingConfig.anchorConfidenceDefault;

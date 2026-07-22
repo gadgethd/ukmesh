@@ -13,13 +13,7 @@ function buildUserBlock(mqttUsername: string, nodeIds: string[]): string {
   return lines.join('\n');
 }
 
-export function getNodeIdsForUser(mqttUsername: string): string[] {
-  let content: string;
-  try {
-    content = fs.readFileSync(ACL_PATH, 'utf8');
-  } catch {
-    return [];
-  }
+export function getNodeIdsForUserInAcl(content: string, mqttUsername: string): string[] {
   const lines = content.split('\n');
   const userLine = `user ${mqttUsername}`.toLowerCase();
   const userIdx = lines.findIndex((l) => l.trim().toLowerCase() === userLine);
@@ -38,6 +32,21 @@ export function getNodeIdsForUser(mqttUsername: string): string[] {
   return nodeIds;
 }
 
+export function getNodeIdsForUser(mqttUsername: string): string[] {
+  let content: string;
+  try {
+    content = fs.readFileSync(ACL_PATH, 'utf8');
+  } catch {
+    return [];
+  }
+  return getNodeIdsForUserInAcl(content, mqttUsername);
+}
+
+export function userExistsInAclContent(content: string, mqttUsername: string): boolean {
+  const expected = `user ${mqttUsername}`.toLowerCase();
+  return content.split('\n').some((line) => line.trim().toLowerCase() === expected);
+}
+
 export function userExistsInAcl(mqttUsername: string): boolean {
   let content: string;
   try {
@@ -45,17 +54,29 @@ export function userExistsInAcl(mqttUsername: string): boolean {
   } catch {
     return false;
   }
-  return new RegExp(`^user ${mqttUsername}$`, 'im').test(content);
+  return userExistsInAclContent(content, mqttUsername);
 }
 
-export function nodeExistsInAcl(nodeId: string): boolean {
-  let content: string;
-  try {
-    content = fs.readFileSync(ACL_PATH, 'utf8');
-  } catch {
-    return false;
+export function updateUserAclContent(content: string, mqttUsername: string, nodeIds: string[]): string {
+  const lines = content.split('\n');
+  const userLine = `user ${mqttUsername}`;
+  const userIdx = lines.findIndex((l) => l.trim().toLowerCase() === userLine.toLowerCase());
+
+  if (userIdx === -1) {
+    // Append new block at end, ensuring file ends with a blank line separator
+    const trimmed = content.trimEnd();
+    return `${trimmed}\n\n${buildUserBlock(mqttUsername, nodeIds)}\n`;
   }
-  return content.toUpperCase().includes(nodeId.toUpperCase());
+
+  // Find end of this user's block (next blank line or next `user ` line or EOF)
+  let endIdx = userIdx + 1;
+  while (endIdx < lines.length) {
+    const trimmed = lines[endIdx]?.trim() ?? '';
+    if (trimmed === '' || trimmed.toLowerCase().startsWith('user ') || trimmed.startsWith('#')) break;
+    endIdx++;
+  }
+  const newBlock = buildUserBlock(mqttUsername, nodeIds).split('\n');
+  return [...lines.slice(0, userIdx), ...newBlock, ...lines.slice(endIdx)].join('\n');
 }
 
 export function updateUserAclBlock(mqttUsername: string, nodeIds: string[]): void {
@@ -69,29 +90,7 @@ export function updateUserAclBlock(mqttUsername: string, nodeIds: string[]): voi
     return;
   }
 
-  const lines = content.split('\n');
-  const userLine = `user ${mqttUsername}`;
-  const userIdx = lines.findIndex((l) => l.trim().toLowerCase() === userLine.toLowerCase());
-
-  let newLines: string[];
-  if (userIdx === -1) {
-    // Append new block at end, ensuring file ends with a blank line separator
-    const trimmed = content.trimEnd();
-    const newContent = `${trimmed}\n\n${buildUserBlock(mqttUsername, nodeIds)}\n`;
-    newLines = newContent.split('\n');
-  } else {
-    // Find end of this user's block (next blank line or next `user ` line or EOF)
-    let endIdx = userIdx + 1;
-    while (endIdx < lines.length) {
-      const trimmed = lines[endIdx]?.trim() ?? '';
-      if (trimmed === '' || trimmed.toLowerCase().startsWith('user ') || trimmed.startsWith('#')) break;
-      endIdx++;
-    }
-    const newBlock = buildUserBlock(mqttUsername, nodeIds).split('\n');
-    newLines = [...lines.slice(0, userIdx), ...newBlock, ...lines.slice(endIdx)];
-  }
-
-  const newContent = newLines.join('\n');
+  const newContent = updateUserAclContent(content, mqttUsername, nodeIds);
   const tmpPath = `${ACL_PATH}.tmp`;
   try {
     fs.writeFileSync(tmpPath, newContent, 'utf8');

@@ -189,6 +189,8 @@
   justify-content: space-between;
   gap: 12px;
 }
+.sm-watch { margin-left: auto; padding: 4px 7px; border: 1px solid var(--border); border-radius: 4px; background: transparent; color: var(--amber); font: 10px var(--font-mono); cursor: pointer; }
+.sm-watch:hover { border-color: var(--amber); }
 .sm-card__title { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .sm-card__label { font-size: 15px; font-weight: 600; color: var(--text-primary); }
 
@@ -419,6 +421,30 @@
 
 @media (max-width: 560px) {
   .sm-page { padding: 24px 16px 56px; }
-  .sm-status { padding: 14px; }
+  .sm-status {
+    align-items: flex-start;
+    padding: 14px;
+  }
+  .sm-status__meta {
+    flex-wrap: wrap;
+    white-space: normal;
+  }
+  .sm-card {
+    padding: 16px;
+  }
+  .sm-card__head {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+  .sm-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px 12px;
+  }
+  .sm-k { font-size: 10px; }
+  .sm-origin { padding: 12px; }
   .sm-map { height: 300px; }
+}
+
+@media (max-width: 340px) {
+  .sm-grid { grid-template-columns: 1fr; }
 }

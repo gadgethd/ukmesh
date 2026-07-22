@@ -1,0 +1,59 @@
+openapi: 3.1.0
+info:
+  title: MeshCore Analytics Public API
+  version: 1.0.0
+  description: Privacy-filtered, read-only UKMesh analytics endpoints. Versioned integrations should use the /api/v1 namespace.
+servers:
+  - url: https://ukmesh.com
+paths:
+  /api/v1:
+    get:
+      summary: API discovery document
+      responses:
+        '200': { description: API version and resources }
+  /api/v1/openapi.yaml:
+    get:
+      summary: This OpenAPI document
+      responses: { '200': { description: OpenAPI YAML } }
+  /api/v1/exports/nodes.csv:
+    get:
+      summary: Export positioned nodes as CSV
+      parameters:
+        - $ref: '#/components/parameters/network'
+        - $ref: '#/components/parameters/limit'
+      responses:
+        '200':
+          description: Privacy-filtered CSV
+          content: { text/csv: {} }
+  /api/v1/exports/nodes.geojson:
+    get:
+      summary: Export positioned nodes as GeoJSON
+      parameters:
+        - $ref: '#/components/parameters/network'
+        - $ref: '#/components/parameters/limit'
+      responses:
+        '200':
+          description: Privacy-filtered GeoJSON FeatureCollection
+          content: { application/geo+json: {} }
+  /api/topology:
+    get:
+      summary: Recent viable repeater relationships
+      responses: { '200': { description: Bounded topology graph } }
+  /api/activity/timeline:
+    get:
+      summary: Bounded activity replay buckets
+      responses: { '200': { description: Packet counts and most-active node IDs by bucket } }
+  /api/rf-validation:
+    get:
+      summary: Observed versus modelled RF mismatches
+      responses: { '200': { description: Ranked RF validation evidence } }
+components:
+  parameters:
+    network:
+      name: network
+      in: query
+      schema: { type: string, enum: [ukmesh, all] }
+    limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 5000, default: 5000 }

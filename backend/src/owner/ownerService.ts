@@ -43,8 +43,6 @@ type OwnerServiceDeps = {
   repository: OwnerRepository;
 };
 
-export type OwnerService = ReturnType<typeof createOwnerService>;
-
 export function createOwnerService(deps: OwnerServiceDeps) {
   const {
     ownerLiveCacheTtlMs,
@@ -335,6 +333,23 @@ export function createOwnerService(deps: OwnerServiceDeps) {
     if (adverts24h < 1) alerts.push({ level: 'warn', message: `No advert packets from this ${roleLabel.toLowerCase()} were recorded in the last 24 hours.` });
     if (heardBy.length < 1) alerts.push({ level: 'warn', message: `No other nodes have heard this ${roleLabel.toLowerCase()} in the last 7 days.` });
     if (viableLinks.length < 1) alerts.push({ level: 'warn', message: `No viable RF links are currently stored for this ${roleLabel.toLowerCase()}.` });
+    const latestTelemetry = telemetry24h[telemetry24h.length - 1];
+    if (latestTelemetry?.batteryPct != null && latestTelemetry.batteryPct < 10) {
+      alerts.push({ level: 'error', message: `Battery estimate is critically low at ${latestTelemetry.batteryPct.toFixed(0)}%.` });
+    } else if (latestTelemetry?.batteryPct != null && latestTelemetry.batteryPct < 20) {
+      alerts.push({ level: 'warn', message: `Battery estimate is low at ${latestTelemetry.batteryPct.toFixed(0)}%.` });
+    }
+    const staleViableLinks = viableLinks.filter((link) => (
+      !link.last_observed || Date.now() - Date.parse(link.last_observed) > 7 * 24 * 60 * 60 * 1_000
+    ));
+    if (viableLinks.length > 0 && staleViableLinks.length === viableLinks.length) {
+      alerts.push({ level: 'warn', message: 'All stored viable neighbours are based on evidence older than seven days.' });
+    }
+    const recentAdverts = advertTrend24h.slice(-6).reduce((sum, point) => sum + point.adverts, 0);
+    const previousAdverts = advertTrend24h.slice(-12, -6).reduce((sum, point) => sum + point.adverts, 0);
+    if (previousAdverts >= 3 && recentAdverts <= previousAdverts * 0.25) {
+      alerts.push({ level: 'warn', message: `Advert activity dropped from ${previousAdverts} to ${recentAdverts} over the latest six-hour window.` });
+    }
 
     const responseData = {
       nodeId: selectedNodeId,

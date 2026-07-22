@@ -34,8 +34,6 @@ type StatsRouteDeps = {
   chartsCache: Map<string, { ts: number; data: unknown }>;
   chartsCacheTtlMs: number;
   chartsInflight: Map<string, Promise<unknown>>;
-  crossNetworkCache: Map<string, { ts: number; data: unknown }>;
-  crossNetworkCacheTtlMs: number;
   expensiveLimiter: ReturnType<typeof import('express-rate-limit').rateLimit>;
   statsChartsLimiter: ReturnType<typeof import('express-rate-limit').rateLimit>;
   networkFilters: (network?: string, observer?: string) => NetworkFilters;
@@ -55,8 +53,6 @@ export function registerStatsRoutes(router: Router, deps: StatsRouteDeps): void 
     chartsCache: deps.chartsCache,
     chartsCacheTtlMs: deps.chartsCacheTtlMs,
     chartsInflight: deps.chartsInflight,
-    crossNetworkCache: deps.crossNetworkCache,
-    crossNetworkCacheTtlMs: deps.crossNetworkCacheTtlMs,
     repository,
     maskDecodedPathNodes: deps.maskDecodedPathNodes,
   });
@@ -95,15 +91,6 @@ export function registerStatsRoutes(router: Router, deps: StatsRouteDeps): void 
     } catch (err) {
       console.error('[api] GET /observer-activity', (err as Error).message);
       res.status(500).json({ error: 'Internal server error' });
-    }
-  });
-
-  router.get('/cross-network-connectivity', deps.expensiveLimiter, async (_req, res) => {
-    try {
-      res.json(await service.getCrossNetworkConnectivity());
-    } catch (err) {
-      console.error('[api] GET /cross-network-connectivity', (err as Error).message);
-      res.status(500).end();
     }
   });
 }

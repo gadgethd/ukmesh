@@ -1,4 +1,3 @@
-import type { Filters } from '../components/FilterPanel/FilterPanel.js';
 import type { AggregatedPacket, MeshNode } from './useNodes.js';
 import { buildHiddenCoordMask, hasCoords, maskNodePoint, resolvePathWaypoints } from '../utils/pathing.js';
 
@@ -16,6 +15,13 @@ export type ServerBetaResponse = {
   redPath: [number, number][] | null;
   redSegments: PathSegment[];
   completionPaths: [number, number][][];
+  explanation?: {
+    evidenceLevel: 'high' | 'medium' | 'low';
+    summary: string;
+    reasons: string[];
+    alternativesConsidered: number;
+    limitations?: string[];
+  };
 };
 
 export type MultiObserverBetaResponse = {
@@ -74,10 +80,6 @@ export function buildRegularPacketPaths(
       : (srcWithPos ? [maskNodePoint(srcWithPos, hiddenCoordMask), maskNodePoint(rx, hiddenCoordMask)] as [number, number][] : []);
     return waypoints.length >= 2 ? [waypoints] : [];
   });
-}
-
-export function shouldAllowCompletionPaths(packet: AggregatedPacket | undefined, filters: Filters): boolean {
-  return Boolean(filters.betaPaths && packet?.packetType === 4);
 }
 
 export function aggregateServerPredictions(

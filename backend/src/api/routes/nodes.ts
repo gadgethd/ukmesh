@@ -106,7 +106,8 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
              path_hashes
            FROM packets
            WHERE network = 'test'
-           ORDER BY time DESC`,
+           ORDER BY time DESC
+           LIMIT 2000`,
           [],
         ),
         query<{

@@ -6,10 +6,21 @@ import type { WSMessage, LivePacket } from '../types/index.js';
 import { getNodes, getRecentPackets, getRecentMessages, getViableLinks } from '../db/index.js';
 import { resolveRequestNetwork } from '../http/requestScope.js';
 import { networkMatchesScope } from '../networks.js';
+import { getRedisConnectionOptions, getRedisUrl } from '../platform/config/redis.js';
 
 const REDIS_CHANNEL = 'meshcore:live';
 const LOG_WS_PACKETS = process.env['LOG_WS_PACKETS'] === '1';
 const WS_INITIAL_STATE_ENABLED = process.env['WS_INITIAL_STATE_ENABLED'] === '1';
+
+function boundedEnvInteger(name: string, fallback: number, min: number, max: number): number {
+  const parsed = Number(process.env[name]);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, Math.trunc(parsed)));
+}
+
+const WS_MAX_PAYLOAD_BYTES = boundedEnvInteger('WS_MAX_PAYLOAD_BYTES', 64 * 1024, 1_024, 1_048_576);
+const WS_MAX_QUEUE_BYTES = boundedEnvInteger('WS_MAX_QUEUE_BYTES', 8 * 1_048_576, 16 * 1024, 32 * 1_048_576);
+const WS_MAX_BUFFERED_BYTES = boundedEnvInteger('WS_MAX_BUFFERED_BYTES', 32 * 1_048_576, WS_MAX_QUEUE_BYTES, 128 * 1_048_576);
 
 let pub: Redis;
 let sub: Redis;
@@ -183,12 +194,10 @@ function trackScopedNodes(msg: WSMessage, scope: ClientScope): void {
 }
 
 export function initWebSocketServer(httpServer: Server): WebSocketServer {
-  const redisUrl = process.env['REDIS_URL'] ?? 'redis://redis:6379';
-
   // Two separate clients: one for pub, one for sub
   // Do NOT use lazyConnect — let ioredis manage the connect lifecycle
-  pub = new Redis(redisUrl);
-  sub = new Redis(redisUrl);
+  pub = new Redis(getRedisUrl(), getRedisConnectionOptions());
+  sub = new Redis(getRedisUrl(), getRedisConnectionOptions());
 
   pub.on('error', (e: Error) => console.error('[redis/pub] error', e.message));
   sub.on('error', (e: Error) => console.error('[redis/sub] error', e.message));
@@ -226,6 +235,7 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
   const wss = new WebSocketServer({
     server: httpServer,
     path: '/ws',
+    maxPayload: WS_MAX_PAYLOAD_BYTES,
     verifyClient: ({ origin }: { origin: string }) => {
       // No origin header = non-browser client (allow); otherwise must be whitelisted
       return !origin || ALLOWED_ORIGINS.includes(origin);
@@ -233,6 +243,18 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
   });
 
   const clientScopes = new Map<WebSocket, ClientScope>();
+  type QueuedClientMessages = {
+    messages: string[];
+    byteLength: number;
+  };
+  const messageQueue = new Map<WebSocket, QueuedClientMessages>();
+  let flushTimeout: ReturnType<typeof setTimeout> | null = null;
+
+  const disconnectSlowClient = (client: WebSocket, reason: string) => {
+    messageQueue.delete(client);
+    console.warn(`[ws] disconnecting slow client: ${reason}`);
+    client.terminate();
+  };
 
   wss.on('connection', async (ws: WebSocket, req: IncomingMessage) => {
     console.log('[ws] client connected, total:', wss.clients.size);
@@ -269,20 +291,23 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
           data: { nodes, packets, messages, viable_pairs: viablePairs, viable_links: viableLinks },
           ts: Date.now(),
         };
-        ws.send(JSON.stringify(initMsg));
+        if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(initMsg));
       } catch (err) {
         console.error('[ws] initial state error', (err as Error).message);
       }
     } else {
-      ws.send(JSON.stringify({
-        type: 'initial_state',
-        data: { nodes: [], packets: [], messages: [], viable_pairs: [], viable_links: [] },
-        ts: Date.now(),
-      } satisfies WSMessage));
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          type: 'initial_state',
+          data: { nodes: [], packets: [], messages: [], viable_pairs: [], viable_links: [] },
+          ts: Date.now(),
+        } satisfies WSMessage));
+      }
     }
 
     ws.on('close', () => {
       clientScopes.delete(ws);
+      messageQueue.delete(ws);
       console.log('[ws] client disconnected, total:', wss.clients.size);
     });
 
@@ -291,24 +316,21 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
     });
   });
 
-  // Message queue for batching - flushes every 50ms instead of per-message
-  const messageQueue: Map<WebSocket, string[]> = new Map();
-  let flushTimeout: ReturnType<typeof setTimeout> | null = null;
-
   const flushMessageQueue = () => {
     if (messageQueue.size === 0) {
       flushTimeout = null;
       return;
     }
 
-    for (const client of wss.clients) {
-      if (client.readyState !== WebSocket.OPEN) continue;
-      const messages = messageQueue.get(client);
-      if (!messages || messages.length === 0) continue;
+    for (const [client, queued] of messageQueue) {
+      if (client.readyState !== WebSocket.OPEN || queued.messages.length === 0) continue;
+      if (client.bufferedAmount > WS_MAX_BUFFERED_BYTES) {
+        disconnectSlowClient(client, `socket buffer exceeded ${WS_MAX_BUFFERED_BYTES} bytes`);
+        continue;
+      }
 
       // Send all queued messages - join with newlines for efficiency
-      const combined = messages.join('\n');
-      client.send(combined);
+      client.send(queued.messages.join('\n'));
     }
 
     messageQueue.clear();
@@ -334,18 +356,33 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
       console.log('[ws-sub] received packet:', (parsed.data as LivePacket)?.packetHash);
     }
 
+    const messageByteLength = Buffer.byteLength(messageStr);
+    if (messageByteLength > WS_MAX_QUEUE_BYTES) {
+      console.warn(`[ws] skipping oversized live message (${messageByteLength} bytes)`);
+      return;
+    }
+
     for (const client of wss.clients) {
       if (client.readyState !== WebSocket.OPEN) continue;
       const scope = clientScopes.get(client);
       if (parsed && scope && !shouldSendMessage(parsed, scope)) continue;
       if (parsed && scope) trackScopedNodes(parsed, scope);
 
-      // Queue message instead of sending immediately
+      // Queue messages briefly for batched fan-out, with per-client bounds so
+      // a stalled browser cannot retain an unbounded live-event backlog.
       const existing = messageQueue.get(client);
+      if (
+        client.bufferedAmount > WS_MAX_BUFFERED_BYTES
+        || (existing?.byteLength ?? 0) + messageByteLength > WS_MAX_QUEUE_BYTES
+      ) {
+        disconnectSlowClient(client, `live queue exceeded ${WS_MAX_QUEUE_BYTES} bytes`);
+        continue;
+      }
       if (existing) {
-        existing.push(messageStr);
+        existing.messages.push(messageStr);
+        existing.byteLength += messageByteLength;
       } else {
-        messageQueue.set(client, [messageStr]);
+        messageQueue.set(client, { messages: [messageStr], byteLength: messageByteLength });
       }
     }
     

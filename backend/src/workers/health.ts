@@ -16,9 +16,12 @@ async function main() {
   await initDb();
   await captureOnce('initial');
 
-  setInterval(() => {
-    void captureOnce('scheduled');
-  }, SNAPSHOT_INTERVAL_MS);
+  const scheduleNext = () => {
+    setTimeout(() => {
+      void captureOnce('scheduled').finally(scheduleNext);
+    }, SNAPSHOT_INTERVAL_MS);
+  };
+  scheduleNext();
 }
 
 main().catch((err) => {

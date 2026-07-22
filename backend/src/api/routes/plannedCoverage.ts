@@ -1,6 +1,7 @@
 import { randomBytes } from 'crypto';
 import type { Router } from 'express';
 import type { QueryResultRow } from 'pg';
+import { isViewshedFeatureEnabled } from '../../features.js';
 import { isViewshedEligibleCoordinate, queueViewshedJob } from '../../queue/publisher.js';
 
 type QueryFn = <T extends QueryResultRow = QueryResultRow>(
@@ -20,6 +21,11 @@ export function registerPlannedCoverageRoutes(router: Router, deps: PlannedCover
 
   /** Queue a viewshed job for a hypothetical repeater location. Returns a plan_id to poll. */
   router.post('/coverage/planned', coverageLimiter, async (req, res) => {
+    if (!isViewshedFeatureEnabled()) {
+      res.status(404).json({ error: 'planned coverage disabled' });
+      return;
+    }
+
     try {
       const body = req.body as Record<string, unknown>;
       const lat = body['lat'];
@@ -33,7 +39,7 @@ export function registerPlannedCoverageRoutes(router: Router, deps: PlannedCover
         return;
       }
       const planId = `plan_${randomBytes(8).toString('hex')}`;
-      queueViewshedJob(planId, lat, lon);
+      queueViewshedJob(planId, lat, lon, true);
       res.json({ plan_id: planId });
     } catch (err) {
       console.error('[api] POST /coverage/planned', (err as Error).message);
@@ -43,6 +49,11 @@ export function registerPlannedCoverageRoutes(router: Router, deps: PlannedCover
 
   /** Poll for a planned coverage result. Returns {status:'ready',coverage:{...}} or {status:'pending'}. */
   router.get('/coverage/planned/:planId', coverageLimiter, async (req, res) => {
+    if (!isViewshedFeatureEnabled()) {
+      res.status(404).json({ error: 'planned coverage disabled' });
+      return;
+    }
+
     try {
       const planId = String(req.params['planId'] ?? '').trim();
       if (!PLAN_ID_RE.test(planId)) {
@@ -55,9 +66,11 @@ export function registerPlannedCoverageRoutes(router: Router, deps: PlannedCover
         strength_geoms: unknown;
         antenna_height_m: number | null;
         radius_m: number | null;
+        predicted_links: unknown;
         calculated_at: string | null;
       }>(
-        `SELECT node_id, geom, strength_geoms, antenna_height_m, radius_m, calculated_at::text AS calculated_at
+        `SELECT node_id, geom, strength_geoms, antenna_height_m, radius_m, predicted_links,
+                calculated_at::text AS calculated_at
          FROM node_coverage
          WHERE node_id = $1
          LIMIT 1`,
@@ -76,6 +89,11 @@ export function registerPlannedCoverageRoutes(router: Router, deps: PlannedCover
 
   /** Remove a planned repeater's coverage data. */
   router.delete('/coverage/planned/:planId', coverageLimiter, async (req, res) => {
+    if (!isViewshedFeatureEnabled()) {
+      res.status(404).json({ error: 'planned coverage disabled' });
+      return;
+    }
+
     try {
       const planId = String(req.params['planId'] ?? '').trim();
       if (!PLAN_ID_RE.test(planId)) {

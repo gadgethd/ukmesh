@@ -221,21 +221,21 @@ lower-confidence clusters (the dashboard's "show lower-confidence" toggle).
 
 The derived tables are created by migration
 `backend/src/db/migrations/005_spam_message_incidents.sql` (additive, no
-destructive changes). On deployments with `DATABASE_SKIP_SCHEMA_INIT=true`
-(production), apply it manually like prior migrations:
+destructive changes). The one-shot `db-migrate` service applies unrecorded
+migrations before the backend starts. Do not apply the SQL file or insert its
+migration-ledger row manually.
+
+For a normal deployment, use:
 
 ```bash
-docker compose exec -T timescaledb psql -U meshcore -d meshcore -v ON_ERROR_STOP=1 \
-  < backend/src/db/migrations/005_spam_message_incidents.sql
-docker compose exec -T timescaledb psql -U meshcore -d meshcore \
-  -c "INSERT INTO schema_migrations (name) VALUES ('005_spam_message_incidents.sql') ON CONFLICT DO NOTHING;"
+docker compose up -d --build
 ```
 
-Then rebuild and restart:
+To inspect or apply pending migrations manually after building the image:
 
 ```bash
-docker compose build backend app-ukmesh website-ukmesh
-docker compose --profile tunnel up -d backend app-ukmesh website-ukmesh
+docker compose build db-migrate
+docker compose run --rm db-migrate
 ```
 
 The in-process analyzer starts automatically. To backfill historical incidents
@@ -254,5 +254,5 @@ Pure logic (normalization, fuzzy matching, username similarity, clustering,
 ongoing/closed status, origin scoring, sanitization) is covered by unit tests:
 
 ```bash
-cd backend && npm test
+cd backend && npm ci && npm test
 ```

@@ -1,4 +1,5 @@
 import type { QueryResultRow } from 'pg';
+import { UKMESH_NETWORKS } from '../networks.js';
 import type { NetworkFilters } from '../api/utils/networkFilters.js';
 
 type QueryFn = <T extends QueryResultRow = QueryResultRow>(
@@ -13,10 +14,62 @@ type StatsRepositoryDeps = {
 
 export type StatsRepository = ReturnType<typeof createStatsRepository>;
 
+function rollupNetworkFilter(alias: string, network: string | undefined, params: unknown[]): string {
+  const prefix = alias ? `${alias}.` : '';
+  if (network === 'ukmesh') {
+    params.push(UKMESH_NETWORKS);
+    return `${prefix}network = ANY($${params.length})`;
+  }
+  if (network) {
+    params.push(network);
+    return `${prefix}network = $${params.length}`;
+  }
+  return `${prefix}network IS DISTINCT FROM 'test'`;
+}
+
 export function createStatsRepository(deps: StatsRepositoryDeps) {
   const { networkFilters, query } = deps;
 
   async function fetchObserverRegionSummary(network: string | undefined, observer: string | undefined) {
+    if (!observer) {
+      const params: unknown[] = [];
+      const packetNetworkWhere = rollupNetworkFilter('orp', network, params);
+      const observerNetworkWhere = rollupNetworkFilter('oro', network, params);
+      return query(`
+        WITH packet_counts AS (
+          SELECT
+            orp.iata,
+            COUNT(*) FILTER (WHERE orp.last_seen > NOW() - INTERVAL '24 hours') AS packets_24h,
+            COUNT(*) AS packets_7d,
+            MAX(orp.last_seen)::text AS last_packet_at
+          FROM observer_region_packet_sightings orp
+          WHERE orp.last_seen > NOW() - INTERVAL '7 days'
+            AND ${packetNetworkWhere}
+          GROUP BY orp.iata
+        ),
+        observer_counts AS (
+          SELECT
+            oro.iata,
+            COUNT(*) FILTER (WHERE oro.last_seen > NOW() - INTERVAL '1 minute') AS active_observers,
+            COUNT(*) AS observers
+          FROM observer_region_observer_sightings oro
+          WHERE oro.last_seen > NOW() - INTERVAL '7 days'
+            AND ${observerNetworkWhere}
+          GROUP BY oro.iata
+        )
+        SELECT
+          pc.iata,
+          pc.packets_24h,
+          pc.packets_7d,
+          COALESCE(oc.active_observers, 0) AS active_observers,
+          COALESCE(oc.observers, 0) AS observers,
+          pc.last_packet_at
+        FROM packet_counts pc
+        LEFT JOIN observer_counts oc ON oc.iata = pc.iata
+        ORDER BY pc.packets_7d DESC, pc.iata ASC
+      `, params);
+    }
+
     const filters = networkFilters(network, observer);
     return query(`
       SELECT
@@ -161,8 +214,6 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
             WHERE p.time > NOW() - INTERVAL '24 hours'
               AND COALESCE(array_length(p.path_hashes, 1), 0) > 0
               ${filters.packetsAlias('p')}
-            ORDER BY p.time DESC
-            LIMIT 50000
           ) p
           CROSS JOIN LATERAL unnest(p.path_hashes) AS h
           WHERE NULLIF(TRIM(h), '') IS NOT NULL
@@ -203,8 +254,6 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
            WHERE p.time > NOW() - INTERVAL '24 hours'
              AND COALESCE(array_length(p.path_hashes, 1), 0) > 0
              ${filters.packetsAlias('p')}
-           ORDER BY p.time DESC
-           LIMIT 50000
          ) p
          CROSS JOIN LATERAL unnest(p.path_hashes) AS h
          GROUP BY 1`,
@@ -243,8 +292,6 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
              AND p.path_hash_size_bytes > 1
              AND COALESCE(array_length(p.path_hashes, 1), 0) > 0
              ${filters.packetsAlias('p')}
-           ORDER BY p.time DESC
-           LIMIT 50000
          ),
          prepared AS (
            SELECT m.*,
@@ -410,13 +457,11 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
            SELECT packet_hash, COUNT(DISTINCT rx_node_id)::int AS observer_count
            FROM (
              SELECT p.packet_hash, p.rx_node_id
-             FROM packets p
-             WHERE p.time > NOW() - INTERVAL '24 hours'
-               AND p.packet_hash IS NOT NULL
-               AND p.rx_node_id IS NOT NULL
-               ${filters.packetsAlias('p')}
-             ORDER BY p.time DESC
-             LIMIT 50000
+           FROM packets p
+           WHERE p.time > NOW() - INTERVAL '24 hours'
+             AND p.packet_hash IS NOT NULL
+             AND p.rx_node_id IS NOT NULL
+             ${filters.packetsAlias('p')}
            ) recent
            GROUP BY packet_hash
          )
@@ -438,20 +483,15 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
       }>(
         `SELECT
            AVG(p.rssi)::text AS avg_rssi,
-           AVG(p.rssi)::text AS median_rssi,
+           percentile_cont(0.5) WITHIN GROUP (ORDER BY p.rssi)::text AS median_rssi,
            AVG(p.snr)::text AS avg_snr,
-           AVG(p.snr)::text AS median_snr,
+           percentile_cont(0.5) WITHIN GROUP (ORDER BY p.snr)::text AS median_snr,
            COUNT(p.rssi)::text AS rssi_samples,
            COUNT(p.snr)::text AS snr_samples
-         FROM (
-           SELECT p.rssi, p.snr
-           FROM packets p
-           WHERE p.time > NOW() - INTERVAL '24 hours'
-             AND (p.rssi IS NOT NULL OR p.snr IS NOT NULL)
-             ${filters.packetsAlias('p')}
-           ORDER BY p.time DESC
-           LIMIT 50000
-         ) p`,
+         FROM packets p
+         WHERE p.time > NOW() - INTERVAL '24 hours'
+           AND (p.rssi IS NOT NULL OR p.snr IS NOT NULL)
+           ${filters.packetsAlias('p')}`,
         filters.params,
       ),
       query<{ route_type: string; count: string }>(
@@ -639,6 +679,26 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
 
   async function fetchStatsSummary(network: string | undefined, observer: string | undefined) {
     const filters = networkFilters(network, observer);
+    const longestHopResult = () => {
+      if (observer) {
+        return query(`SELECT hop_count AS count, packet_hash AS hash
+               FROM packets
+               WHERE hop_count IS NOT NULL
+                 AND time > NOW() - INTERVAL '30 days'
+                 ${filters.packets}
+               ORDER BY hop_count DESC LIMIT 1`, filters.params);
+      }
+
+      const params: unknown[] = [];
+      const networkWhere = rollupNetworkFilter('pds', network, params);
+      return query(`SELECT max_hop_count AS count, max_hop_hash AS hash
+             FROM packet_daily_stats pds
+             WHERE pds.day >= CURRENT_DATE - 30
+               AND pds.max_hop_count IS NOT NULL
+               AND ${networkWhere}
+             ORDER BY pds.max_hop_count DESC NULLS LAST, pds.max_hop_seen_at DESC NULLS LAST
+             LIMIT 1`, params);
+    };
 
     const [mqttCount, packetCount, staleCount, mapNodeCount, totalNodeCount, longestHopCount, nodesDayCount, internationalCount] = await Promise.all([
       network != null
@@ -678,12 +738,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
              WHERE (name IS NULL OR name NOT LIKE '%🚫%')
                AND (role IS NULL OR role != 4)
                ${filters.nodes}`, filters.params),
-      query(`SELECT hop_count AS count, payload->>'hash' AS hash
-             FROM packets
-             WHERE hop_count IS NOT NULL
-               AND time > NOW() - INTERVAL '30 days'
-               ${filters.packets}
-             ORDER BY hop_count DESC LIMIT 1`, filters.params),
+      longestHopResult(),
       query(`SELECT COUNT(DISTINCT src_node_id) AS count
              FROM packets
              WHERE time > NOW() - INTERVAL '24 hours'
@@ -759,106 +814,11 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
     );
   }
 
-  async function fetchCrossNetworkConnectivity() {
-    const [result, historyResult] = await Promise.all([
-      query<{ last_inbound: string | null; last_outbound: string | null }>(`
-        WITH mme_observers AS (
-          SELECT DISTINCT rx_node_id AS node_id
-          FROM packets
-          WHERE time > NOW() - INTERVAL '24 hours'
-            AND network = 'teesside'
-            AND rx_node_id IS NOT NULL
-        ),
-        cross_heard AS (
-          SELECT
-            p.packet_hash,
-            MIN(p.hop_count) FILTER (WHERE p.rx_node_id IN (SELECT node_id FROM mme_observers)) AS mme_min_hops,
-            MIN(p.hop_count) FILTER (WHERE p.rx_node_id NOT IN (SELECT node_id FROM mme_observers)) AS other_min_hops,
-            MIN(p.time) FILTER (WHERE p.rx_node_id IN (SELECT node_id FROM mme_observers)) AS mme_first_seen,
-            MIN(p.time) FILTER (WHERE p.rx_node_id NOT IN (SELECT node_id FROM mme_observers)) AS other_first_seen
-          FROM packets p
-          WHERE p.time > NOW() - INTERVAL '2 hours'
-            AND p.hop_count IS NOT NULL
-            AND p.rx_node_id IS NOT NULL
-            AND p.packet_hash IS NOT NULL
-          GROUP BY p.packet_hash
-          HAVING MIN(p.hop_count) FILTER (WHERE p.rx_node_id IN (SELECT node_id FROM mme_observers)) IS NOT NULL
-            AND MIN(p.hop_count) FILTER (WHERE p.rx_node_id NOT IN (SELECT node_id FROM mme_observers)) IS NOT NULL
-            AND ABS(EXTRACT(EPOCH FROM (
-              MIN(p.time) FILTER (WHERE p.rx_node_id IN (SELECT node_id FROM mme_observers)) -
-              MIN(p.time) FILTER (WHERE p.rx_node_id NOT IN (SELECT node_id FROM mme_observers))
-            ))) <= 120
-        )
-        SELECT
-          MAX(mme_first_seen) FILTER (WHERE other_min_hops < mme_min_hops) AS last_inbound,
-          MAX(other_first_seen) FILTER (WHERE mme_min_hops < other_min_hops) AS last_outbound
-        FROM cross_heard
-        WHERE mme_min_hops != other_min_hops
-      `),
-      query<{ bucket: string; inbound_count: string; outbound_count: string }>(`
-        WITH mme_observers AS (
-          SELECT DISTINCT rx_node_id AS node_id
-          FROM packets
-          WHERE time > NOW() - INTERVAL '24 hours'
-            AND network = 'teesside'
-            AND rx_node_id IS NOT NULL
-        ),
-        cross_heard AS (
-          SELECT
-            p.packet_hash,
-            MIN(p.hop_count) FILTER (WHERE p.rx_node_id IN (SELECT node_id FROM mme_observers)) AS mme_min_hops,
-            MIN(p.hop_count) FILTER (WHERE p.rx_node_id NOT IN (SELECT node_id FROM mme_observers)) AS other_min_hops,
-            MIN(p.time) FILTER (WHERE p.rx_node_id IN (SELECT node_id FROM mme_observers)) AS mme_first_seen,
-            MIN(p.time) FILTER (WHERE p.rx_node_id NOT IN (SELECT node_id FROM mme_observers)) AS other_first_seen
-          FROM packets p
-          WHERE p.time > NOW() - INTERVAL '7 days'
-            AND p.hop_count IS NOT NULL
-            AND p.rx_node_id IS NOT NULL
-            AND p.packet_hash IS NOT NULL
-          GROUP BY p.packet_hash
-          HAVING MIN(p.hop_count) FILTER (WHERE p.rx_node_id IN (SELECT node_id FROM mme_observers)) IS NOT NULL
-            AND MIN(p.hop_count) FILTER (WHERE p.rx_node_id NOT IN (SELECT node_id FROM mme_observers)) IS NOT NULL
-            AND ABS(EXTRACT(EPOCH FROM (
-              MIN(p.time) FILTER (WHERE p.rx_node_id IN (SELECT node_id FROM mme_observers)) -
-              MIN(p.time) FILTER (WHERE p.rx_node_id NOT IN (SELECT node_id FROM mme_observers))
-            ))) <= 120
-        ),
-        classified AS (
-          SELECT
-            date_trunc('hour', mme_first_seen) AS bucket,
-            CASE WHEN other_min_hops < mme_min_hops THEN 1 ELSE 0 END AS inbound_count,
-            CASE WHEN mme_min_hops < other_min_hops THEN 1 ELSE 0 END AS outbound_count
-          FROM cross_heard
-          WHERE mme_min_hops != other_min_hops
-            AND mme_first_seen IS NOT NULL
-        ),
-        buckets AS (
-          SELECT generate_series(
-            date_trunc('hour', NOW() - INTERVAL '7 days'),
-            date_trunc('hour', NOW()),
-            INTERVAL '1 hour'
-          ) AS bucket
-        )
-        SELECT
-          to_char(b.bucket, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS bucket,
-          COALESCE(SUM(c.inbound_count), 0)::text AS inbound_count,
-          COALESCE(SUM(c.outbound_count), 0)::text AS outbound_count
-        FROM buckets b
-        LEFT JOIN classified c ON c.bucket = b.bucket
-        GROUP BY b.bucket
-        ORDER BY b.bucket
-      `),
-    ]);
-
-    return { result, historyResult };
-  }
-
   return {
     fetchObserverRegionSummary,
     fetchChannelTraffic,
     fetchChartsData,
     fetchStatsSummary,
     fetchObserverActivity,
-    fetchCrossNetworkConnectivity,
   };
 }

@@ -1,86 +1,71 @@
-import React from 'react';
+import React, { Suspense, lazy } from 'react';
 import ReactDOM from 'react-dom/client';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
-import { App } from './App.js';
-import { Layout } from './pages/Layout.js';
-import { InstallPage } from './pages/InstallPage.js';
-import { OpenSourcePage } from './pages/OpenSourcePage.js';
-import { StatsPage } from './pages/StatsPage.js';
-import { PacketsPage } from './pages/PacketsPage.js';
-import { OwnerPortalPage } from './pages/OwnerPortalPage.js';
-import { UKLayout } from './pages/ukmesh/UKLayout.js';
-import { UKHomePage } from './pages/ukmesh/UKHomePage.js';
-import { UKInstallPage } from './pages/ukmesh/UKInstallPage.js';
-import { UKFeedPage } from './pages/ukmesh/UKFeedPage.js';
-import { UKRepeaterSearchPage } from './pages/ukmesh/UKRepeaterSearchPage.js';
-import { UKCompanionPage } from './pages/ukmesh/UKCompanionPage.js';
-import { UKBestPracticePage } from './pages/ukmesh/UKBestPracticePage.js';
-import { SpamPage } from './pages/SpamTransparencyPage.js';
-import { DevLayout } from './pages/dev/DevLayout.js';
-import { DevHomePage } from './pages/dev/DevHomePage.js';
-import { getCurrentSite } from './config/site.js';
+import { LoadingIndicator } from './components/LoadingIndicator.js';
+import { AppErrorBoundary } from './components/app/AppErrorBoundary.js';
 import './styles/globals.css';
 
+const App = lazy(() => import('./App.js').then(({ App: Component }) => ({ default: Component })));
+const OpenSourcePage = lazy(() => import('./pages/OpenSourcePage.js').then(({ OpenSourcePage: Component }) => ({ default: Component })));
+const StatsPage = lazy(() => import('./pages/StatsPage.js').then(({ StatsPage: Component }) => ({ default: Component })));
+const OwnerPortalPage = lazy(() => import('./pages/OwnerPortalPage.js').then(({ OwnerPortalPage: Component }) => ({ default: Component })));
+const UKLayout = lazy(() => import('./pages/ukmesh/UKLayout.js').then(({ UKLayout: Component }) => ({ default: Component })));
+const UKHomePage = lazy(() => import('./pages/ukmesh/UKHomePage.js').then(({ UKHomePage: Component }) => ({ default: Component })));
+const UKInstallPage = lazy(() => import('./pages/ukmesh/UKInstallPage.js').then(({ UKInstallPage: Component }) => ({ default: Component })));
+const UKFeedPage = lazy(() => import('./pages/ukmesh/UKFeedPage.js').then(({ UKFeedPage: Component }) => ({ default: Component })));
+const UKRepeaterSearchPage = lazy(() => import('./pages/ukmesh/UKRepeaterSearchPage.js').then(({ UKRepeaterSearchPage: Component }) => ({ default: Component })));
+const UKCompanionPage = lazy(() => import('./pages/ukmesh/UKCompanionPage.js').then(({ UKCompanionPage: Component }) => ({ default: Component })));
+const UKBestPracticePage = lazy(() => import('./pages/ukmesh/UKBestPracticePage.js').then(({ UKBestPracticePage: Component }) => ({ default: Component })));
+const SpamPage = lazy(() => import('./pages/SpamTransparencyPage.js').then(({ SpamPage: Component }) => ({ default: Component })));
+const TopologyPage = lazy(() => import('./pages/TopologyPage.js').then(({ TopologyPage: Component }) => ({ default: Component })));
+const StatusPage = lazy(() => import('./pages/StatusPage.js').then(({ StatusPage: Component }) => ({ default: Component })));
+
 const root = document.getElementById('root')!;
-const { hostname } = window.location;
-const APP_HOSTNAME = import.meta.env['VITE_APP_HOSTNAME'];
-const site = getCurrentSite();
-const isAppDomain  = !APP_HOSTNAME || hostname === APP_HOSTNAME;
+const hostname = window.location.hostname.toLowerCase();
+const appHostname = String(import.meta.env['VITE_APP_HOSTNAME'] ?? '').trim().toLowerCase();
+const buildSite = String(import.meta.env['VITE_SITE'] ?? '').trim().toLowerCase();
+const buildNetwork = String(import.meta.env['VITE_NETWORK'] ?? '').trim().toLowerCase();
+const isLocalhost = hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]';
+// Dockerfile.app supplies the ukmesh pair; the public website leaves
+// VITE_NETWORK blank and the test website uses test. This keeps localhost:3003
+// on the dashboard without turning either website container into the dashboard.
+const isDashboardBuild = buildSite === 'ukmesh' && buildNetwork === 'ukmesh';
+const isAppDomain = !appHostname || hostname === appHostname || (isLocalhost && isDashboardBuild);
 
 // Title is managed per-route by SeoHead; only set a fallback for the app domain
 if (isAppDomain) document.title = 'MeshCore Analytics';
 
 ReactDOM.createRoot(root).render(
   <React.StrictMode>
-    {isAppDomain ? (
-      <App />
-    ) : site.id === 'dev' ? (
-      <BrowserRouter>
-        <Routes>
-          <Route element={<DevLayout />}>
-            <Route index element={<DevHomePage />} />
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Route>
-        </Routes>
-      </BrowserRouter>
-    ) : site.id === 'ukmesh' ? (
-      <BrowserRouter>
-        <Routes>
-          <Route element={<UKLayout />}>
-            <Route index element={<UKHomePage />} />
-            <Route path="feed" element={<UKFeedPage />} />
-            <Route path="repeater" element={<UKRepeaterSearchPage />} />
-            <Route path="companion" element={<UKCompanionPage />} />
-            <Route path="regions" element={<Navigate to="/" replace />} />
-            <Route path="about" element={<Navigate to="/" replace />} />
-            <Route path="install" element={<UKInstallPage />} />
-            <Route path="docs" element={<UKBestPracticePage />} />
-            <Route path="mqtt" element={<Navigate to="/install" replace />} />
-            <Route path="health" element={<Navigate to="/stats" replace />} />
-            <Route path="login" element={<OwnerPortalPage />} />
-            <Route path="open-source" element={<OpenSourcePage />} />
-            <Route path="stats" element={<StatsPage />} />
-            <Route path="spam" element={<SpamPage />} />
-          </Route>
-        </Routes>
-      </BrowserRouter>
-    ) : (
-      <BrowserRouter>
-        <Routes>
-          <Route element={<Layout />}>
-            <Route index element={<Navigate to="/install" replace />} />
-            <Route path="about" element={<Navigate to="/" replace />} />
-            <Route path="install" element={<InstallPage />} />
-            <Route path="mqtt" element={<Navigate to="/install" replace />} />
-            <Route path="health" element={<Navigate to="/stats" replace />} />
-            <Route path="login" element={<OwnerPortalPage />} />
-            <Route path="packets" element={<PacketsPage />} />
-            <Route path="open-source" element={<OpenSourcePage />} />
-            <Route path="stats" element={<StatsPage />} />
-            <Route path="spam" element={<SpamPage />} />
-          </Route>
-        </Routes>
-      </BrowserRouter>
-    )}
+    <AppErrorBoundary>
+      <Suspense fallback={<LoadingIndicator label="Loading..." variant="overlay" />}>
+        {isAppDomain ? (
+          <App />
+        ) : (
+          <BrowserRouter>
+            <Routes>
+            <Route element={<UKLayout />}>
+              <Route index element={<UKHomePage />} />
+              <Route path="feed" element={<UKFeedPage />} />
+              <Route path="repeater" element={<UKRepeaterSearchPage />} />
+              <Route path="companion" element={<UKCompanionPage />} />
+              <Route path="regions" element={<Navigate to="/" replace />} />
+              <Route path="about" element={<Navigate to="/" replace />} />
+              <Route path="install" element={<UKInstallPage />} />
+              <Route path="docs" element={<UKBestPracticePage />} />
+              <Route path="mqtt" element={<Navigate to="/install" replace />} />
+              <Route path="health" element={<StatusPage />} />
+              <Route path="status" element={<Navigate to="/health" replace />} />
+              <Route path="login" element={<OwnerPortalPage />} />
+              <Route path="open-source" element={<OpenSourcePage />} />
+              <Route path="stats" element={<StatsPage />} />
+              <Route path="spam" element={<SpamPage />} />
+              <Route path="topology" element={<TopologyPage />} />
+            </Route>
+            </Routes>
+          </BrowserRouter>
+        )}
+      </Suspense>
+    </AppErrorBoundary>
   </React.StrictMode>
 );
