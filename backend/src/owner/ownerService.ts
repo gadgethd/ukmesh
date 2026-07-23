@@ -35,6 +35,7 @@ type OwnerLastHopCacheEntry = {
 type OwnerServiceDeps = {
   ownerLiveCacheTtlMs: number;
   ownerLiveCache: Map<string, OwnerLiveCacheEntry>;
+  ownerDashboardCacheTtlMs: number;
   ownerLastHopCacheTtlMs: number;
   verifyMqttCredentials: (mqttUsername: string, mqttPassword: string) => Promise<boolean>;
   resolveOwnerNodeIds: (mqttUsername: string) => Promise<string[]>;
@@ -47,6 +48,7 @@ export function createOwnerService(deps: OwnerServiceDeps) {
   const {
     ownerLiveCacheTtlMs,
     ownerLiveCache,
+    ownerDashboardCacheTtlMs,
     ownerLastHopCacheTtlMs,
     verifyMqttCredentials,
     resolveOwnerNodeIds,
@@ -55,6 +57,30 @@ export function createOwnerService(deps: OwnerServiceDeps) {
     repository,
   } = deps;
   const ownerLastHopCache = new Map<string, OwnerLastHopCacheEntry>();
+  const ownerDashboardCache = new Map<string, { ts: number; dashboard: OwnerDashboard; nodeIds: string[] }>();
+
+  // Stable per-session cache key: prefer the MQTT username (survives node changes)
+  // and fall back to the sorted node-id set for legacy sessions without a username.
+  function dashboardCacheKey(mqttUsername: string | undefined, nodeIds: string[]): string {
+    const username = mqttUsername?.trim();
+    return username ? `u:${username}` : `n:${[...nodeIds].sort().join(',')}`;
+  }
+
+  // Best-effort background warm of the per-node live cache after login so the first
+  // switch to each owned node is instant instead of running 9 cold queries. Sequential
+  // to avoid a burst of DB load; failures are ignored (the endpoint retries on demand).
+  const PREWARM_MAX_NODES = 6;
+  async function prewarmOwnerLiveData(ownedNodeIds: string[]): Promise<void> {
+    for (const nodeId of ownedNodeIds.slice(0, PREWARM_MAX_NODES)) {
+      const cached = ownerLiveCache.get(nodeId);
+      if (cached && Date.now() - cached.ts < ownerLiveCacheTtlMs) continue;
+      try {
+        await getOwnerLiveData(ownedNodeIds, nodeId);
+      } catch {
+        // ignore prewarm failures
+      }
+    }
+  }
 
   function mapLastHopRows(rows: Array<{
     bucket: string;
@@ -118,10 +144,25 @@ export function createOwnerService(deps: OwnerServiceDeps) {
       throw new Error('NO_ACTIVE_OWNER_NODE');
     }
 
+    // Seed the session-dashboard cache so the first /owner/session poll (15s later)
+    // is a hit, and warm the live cache so the first node switch is instant.
+    ownerDashboardCache.set(dashboardCacheKey(mqttUsername, mappedNodeIds), {
+      ts: Date.now(),
+      dashboard,
+      nodeIds: mappedNodeIds,
+    });
+    void prewarmOwnerLiveData(mappedNodeIds);
+
     return { dashboard, nodeIds: mappedNodeIds };
   }
 
   async function getSessionDashboard(session: OwnerSession): Promise<{ dashboard: OwnerDashboard; nodeIds: string[] }> {
+    const cacheKey = dashboardCacheKey(session.mqttUsername, session.nodeIds);
+    const cached = ownerDashboardCache.get(cacheKey);
+    if (cached && Date.now() - cached.ts < ownerDashboardCacheTtlMs) {
+      return { dashboard: cached.dashboard, nodeIds: cached.nodeIds };
+    }
+
     const freshNodeIds = session.mqttUsername
       ? await resolveOwnerNodeIds(session.mqttUsername)
       : [];
@@ -130,6 +171,7 @@ export function createOwnerService(deps: OwnerServiceDeps) {
     if (dashboard.totals.ownedNodes < 1) {
       throw new Error('NO_ACTIVE_OWNER_NODE');
     }
+    ownerDashboardCache.set(cacheKey, { ts: Date.now(), dashboard, nodeIds });
     return { dashboard, nodeIds };
   }
 

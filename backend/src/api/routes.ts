@@ -2,6 +2,7 @@ import { Request, Response, Router } from 'express';
 import {
   CHARTS_CACHE_TTL_MS,
   INFERRED_NODES_CACHE_TTL_MS,
+  OWNER_DASHBOARD_CACHE_TTL_MS,
   OWNER_LIVE_CACHE_TTL_MS,
   PATH_HISTORY_CACHE_TTL_MS,
   STATS_CACHE_TTL_MS,
@@ -113,6 +114,7 @@ registerOwnerRoutes(router, {
   ownerCookieName: OWNER_COOKIE_NAME,
   ownerLiveCacheTtlMs: OWNER_LIVE_CACHE_TTL_MS,
   ownerLiveCache,
+  ownerDashboardCacheTtlMs: OWNER_DASHBOARD_CACHE_TTL_MS,
   ownerLastHopCacheTtlMs: OWNER_LAST_HOP_CACHE_TTL_MS,
   ownerSessionTtlMs: OWNER_SESSION_TTL_MS,
   mqttUsernameMaxLen: MQTT_USERNAME_MAX_LEN,

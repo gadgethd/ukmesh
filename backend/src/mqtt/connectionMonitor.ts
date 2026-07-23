@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import { createInterface } from 'node:readline';
 import { addOwnerNodeForUsername, upsertMqttNodeLogin } from '../db/ownerAuth.js';
+import { invalidateOwnerNodeIdCache } from '../owner/ownerAccess.js';
 import { query } from '../db/index.js';
 import {
   parseDeniedOwnerPublish,
@@ -9,7 +10,10 @@ import {
 } from './brokerLog.js';
 
 const LOG_PATH = process.env['MOSQUITTO_LOG_PATH'] ?? '/mosquitto/log/mosquitto.log';
-const POLL_INTERVAL_MS = 5_000;
+// Lower poll interval = newly published nodes are linked (and appear in the
+// owner dashboard) sooner after their first packet. Reading only appended bytes
+// keeps each tick cheap. Configurable so it can be tuned without a rebuild.
+const POLL_INTERVAL_MS = Number(process.env['MQTT_CONN_MONITOR_POLL_MS'] ?? 2_000);
 const HISTORICAL_SCAN_BYTES = 50_000_000; // last 50 MB on startup
 
 // Client IDs are needed to associate a denied PUBLISH topic with its authenticated
@@ -36,6 +40,9 @@ async function recordOwnerNode(mqttUsername: string, nodeId: string): Promise<vo
   // nodes on its next refresh, without requiring another login.
   await addOwnerNodeForUsername(mqttUsername, nodeId);
   await upsertMqttNodeLogin(mqttUsername, nodeId);
+  // A newly linked node must show up in the owner dashboard promptly, so drop
+  // any cached (pre-link) resolution for this username.
+  invalidateOwnerNodeIdCache(mqttUsername);
 }
 
 async function resolveAndMaybeLink(mqttUsername: string, nodePrefix: string): Promise<boolean> {
