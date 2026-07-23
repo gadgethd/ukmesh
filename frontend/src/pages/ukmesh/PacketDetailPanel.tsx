@@ -283,7 +283,7 @@ export const PathMap: React.FC<{
             .setHTML(
               `<div style="font-family:monospace;font-size:12px;line-height:1.6">` +
               `<strong style="font-size:13px;font-family:sans-serif">${displayName}${props.isObserver ? ' <span style="color:#ffb300">[observer]</span>' : ''}</strong><br>` +
-              `<span style="color:#aaa">Public key</span><br><span style="word-break:break-all">${pubKey}</span>` +
+              `<span style="color:var(--text-muted)">Public key</span><br><span style="word-break:break-all">${pubKey}</span>` +
               `</div>`,
             )
             .addTo(map);

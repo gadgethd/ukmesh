@@ -349,7 +349,7 @@
   margin-top: 3px;
   color: var(--text-muted);
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 12px;
   line-height: 1.4;
 }
 
@@ -537,7 +537,7 @@
 
 .feed-detail__section-title {
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: 12px;
   text-transform: uppercase;
   letter-spacing: 0.08em;
   margin-bottom: 8px;
@@ -545,7 +545,7 @@
 
 .feed-detail__section-note {
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: 12px;
   text-transform: none;
   letter-spacing: 0;
   font-weight: 400;
@@ -712,7 +712,7 @@
 .feed-detail__bit-table td:first-child {
   color: var(--text-muted);
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 12px;
   white-space: nowrap;
 }
 
