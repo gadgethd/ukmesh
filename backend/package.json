@@ -20,23 +20,23 @@
     "@michaelhart/meshcore-decoder": "^0.3.0",
     "compression": "^1.7.4",
     "cors": "^2.8.5",
-    "dockerode": "^4.0.10",
-    "express": "^4.19.2",
-    "express-rate-limit": "^7.4.1",
+    "dockerode": "^5.0.1",
+    "express": "^5.2.1",
+    "express-rate-limit": "^8.6.0",
     "ioredis": "^5.4.1",
     "mqtt": "^5.10.1",
     "pg": "^8.13.1",
-    "ws": "^8.18.0"
+    "ws": "^8.21.1"
   },
   "devDependencies": {
     "@types/compression": "^1.7.5",
     "@types/cors": "^2.8.17",
     "@types/dockerode": "^4.0.1",
-    "@types/express": "^4.17.21",
-    "@types/node": "^20.17.6",
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.1.1",
     "@types/pg": "^8.11.10",
     "@types/ws": "^8.5.12",
-    "tsx": "^4.19.1",
-    "typescript": "^5.6.3"
+    "tsx": "^4.23.1",
+    "typescript": "^7.0.2"
   }
 }
