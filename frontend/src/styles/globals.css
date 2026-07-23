@@ -23,7 +23,7 @@
   /* Text */
   --text-primary:   #d6e8ff;
   --text-secondary: #8aa6c4;
-  --text-muted:     #71839b;
+  --text-muted:     #8697b0;
 
   /* Status */
   --online:         #00e676;
@@ -121,7 +121,7 @@ html, body, #root {
 }
 
 .stat__label {
-  font-size: 9px;
+  font-size: 11px;
   letter-spacing: 0.15em;
   text-transform: uppercase;
   color: var(--text-muted);

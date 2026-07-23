@@ -134,3 +134,21 @@ test('public site exposes its primary journeys', async ({ page }) => {
     .filter((violation) => violation.impact === 'critical' || violation.impact === 'serious')
     .map((violation) => ({ id: violation.id, targets: violation.nodes.map((node) => node.target.join(' ')) }))).toEqual([]);
 });
+
+// Guards issue #3 (contrast): the feed chrome renders the muted/secondary text
+// tokens (--text-muted / --text-secondary) that the repeater-tree window reuses,
+// so a colour-contrast-scoped scan here catches any regression in those tokens.
+test('feed page text meets WCAG AA colour contrast', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('meshcore-cookie-consent-v1', '1'));
+  await page.route('**/api/**', (route) => route.fulfill({ json: {} }));
+
+  await page.goto('/feed');
+  await expect(page.locator('.uk-feed-channels')).toBeVisible();
+
+  const contrast = await new AxeBuilder({ page })
+    .withRules(['color-contrast'])
+    .exclude('.maplibregl-canvas')
+    .analyze();
+  expect(contrast.violations
+    .map((violation) => ({ id: violation.id, targets: violation.nodes.map((node) => node.target.join(' ')) }))).toEqual([]);
+});
