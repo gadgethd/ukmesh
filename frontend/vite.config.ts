@@ -2,8 +2,6 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import viteSeoPlugin from './src/plugins/vite-seo.js';
 
-const buildTime = Date.now();
-
 export default defineConfig({
   plugins: [react(), viteSeoPlugin()],
   server: {
@@ -15,12 +13,13 @@ export default defineConfig({
   build: {
     rollupOptions: {
       output: {
-        entryFileNames: `assets/[name]-[hash]-${buildTime}.js`,
-        chunkFileNames: `assets/[name]-[hash]-${buildTime}.js`,
-        assetFileNames: `assets/[name]-[hash]-${buildTime}.[ext]`,
+        entryFileNames: 'assets/[name]-[hash].js',
+        chunkFileNames: 'assets/[name]-[hash].js',
+        assetFileNames: 'assets/[name]-[hash].[ext]',
         manualChunks: {
-          'deck': ['@deck.gl/core', '@deck.gl/layers', '@deck.gl/geo-layers', '@deck.gl/mapbox'],
-          'maplibre': ['maplibre-gl'],
+          // Keep Vite's dynamic-import helper out of the large Deck chunk so
+          // public-site routes do not preload Deck just to load a lazy route.
+          'vite-preload': ['\0vite/preload-helper.js'],
           'react': ['react', 'react-dom'],
         },
       },

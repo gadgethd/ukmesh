@@ -18,20 +18,6 @@ export function nodePathHash(nodeId: string, pathHashOrLength: string | number):
   return nodeId.slice(0, length).toUpperCase();
 }
 
-export function nodeMatchesPathHash(nodeId: string, pathHash: string | null | undefined): boolean {
-  const normalized = normalizePathHash(pathHash);
-  return normalized.length > 0 && nodeId.toUpperCase().startsWith(normalized);
-}
-
-export function collectPathHashLengths(pathHashes: Iterable<string | null | undefined>): number[] {
-  const lengths = new Set<number>();
-  for (const pathHash of pathHashes) {
-    const normalized = normalizePathHash(pathHash);
-    if (normalized.length > 0) lengths.add(normalized.length);
-  }
-  return Array.from(lengths).sort((a, b) => a - b);
-}
-
 export function buildNodePathHashIndex<T extends NodeWithId>(
   nodes: Iterable<T>,
   hashLengths: Iterable<number> = SUPPORTED_PATH_HASH_HEX_LENGTHS,
@@ -61,11 +47,4 @@ export function getNodesForPathHash<T extends NodeWithId>(
   pathHash: string | null | undefined,
 ): T[] {
   return index.get(normalizePathHash(pathHash)) ?? [];
-}
-
-export function countNodesForPathHash<T extends NodeWithId>(
-  index: NodePathHashIndex<T>,
-  pathHash: string | null | undefined,
-): number {
-  return getNodesForPathHash(index, pathHash).length;
 }

@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useMemo, useCallback } from 'react';
-import maplibregl from 'maplibre-gl';
-import 'maplibre-gl/dist/maplibre-gl.css';
+import type maplibregl from 'maplibre-gl';
+import { LoadingIndicator } from '../../components/LoadingIndicator.js';
 import type { MeshNode } from '../../hooks/useNodes.js';
 import type { FeedPacket } from './UKFeedPage.js';
 
@@ -77,7 +77,7 @@ const PAYLOAD_NAMES: Record<number, string> = {
 };
 
 const ROUTE_NAMES: Record<number, string> = {
-  0: 'Flood', 1: 'Direct', 2: 'Flood+Codes', 3: 'Direct+Codes',
+  0: 'Transport Flood', 1: 'Flood', 2: 'Direct', 3: 'Transport Direct',
 };
 
 const CARTO_TILES = [
@@ -181,6 +181,7 @@ export const PathMap: React.FC<{
 }> = ({ results, observerPositions = [], lazyPaths = [], nodeMap, isLoading = false }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
+  const maplibreRef = useRef<typeof maplibregl | null>(null);
   const mapReadyRef = useRef(false);
   const nodeMapRef = useRef(nodeMap);
   nodeMapRef.current = nodeMap;
@@ -205,10 +206,12 @@ export const PathMap: React.FC<{
   // Imperatively add or update all map sources/layers without recreating the map.
   // Reads from refs so it can be a stable useCallback reference.
   const applyData = React.useCallback((map: maplibregl.Map, fitBounds: boolean) => {
+    const maplibre = maplibreRef.current;
+    if (!maplibre) return;
     const lazys = lazyPathsRef.current;
     const res = resultsRef.current;
     const obs = observerPositionsRef.current;
-    const bounds = new maplibregl.LngLatBounds();
+    const bounds = new maplibre.LngLatBounds();
 
     // ── Beta results (purple / red paths) ────────────────────────────────
     const allPurpleCoords: [number, number][][] = [];
@@ -275,7 +278,7 @@ export const PathMap: React.FC<{
           const fullNode = props.nodeId ? nodeMapRef.current?.get(props.nodeId) : undefined;
           const displayName = props.name || props.nodeId.slice(0, 12) || '—';
           const pubKey = fullNode?.public_key ?? props.nodeId ?? '—';
-          new maplibregl.Popup({ closeButton: true, maxWidth: '320px' })
+          new maplibre.Popup({ closeButton: true, maxWidth: '320px' })
             .setLngLat(e.lngLat)
             .setHTML(
               `<div style="font-family:monospace;font-size:12px;line-height:1.6">` +
@@ -316,26 +319,40 @@ export const PathMap: React.FC<{
   // Create map once on mount; never recreate it for data changes
   useEffect(() => {
     if (!containerRef.current) return;
-    const map = new maplibregl.Map({
-      container: containerRef.current,
-      style: {
-        version: 8,
-        sources: { tiles: { type: 'raster', tiles: CARTO_TILES, tileSize: 256, maxzoom: 19, attribution: '© OpenStreetMap © CARTO' } },
-        layers: [{ id: 'bg', type: 'raster', source: 'tiles' }],
-      },
-      center: [0, 51.5],
-      zoom: 6,
-      attributionControl: false,
-    });
-    mapRef.current = map;
-    map.on('load', () => {
-      mapReadyRef.current = true;
-      applyData(map, true);
+    let cancelled = false;
+    let map: maplibregl.Map | null = null;
+    void Promise.all([
+      import('maplibre-gl'),
+      import('maplibre-gl/dist/maplibre-gl.css'),
+    ]).then(([maplibreModule]) => {
+      if (cancelled || !containerRef.current) return;
+      const maplibre = maplibreModule.default;
+      maplibreRef.current = maplibre;
+      const nextMap = new maplibre.Map({
+        container: containerRef.current,
+        style: {
+          version: 8,
+          sources: { tiles: { type: 'raster', tiles: CARTO_TILES, tileSize: 256, maxzoom: 19, attribution: '© OpenStreetMap © CARTO' } },
+          layers: [{ id: 'bg', type: 'raster', source: 'tiles' }],
+        },
+        center: [0, 51.5],
+        zoom: 6,
+        attributionControl: false,
+      });
+      map = nextMap;
+      mapRef.current = nextMap;
+      nextMap.on('load', () => {
+        if (cancelled) return;
+        mapReadyRef.current = true;
+        applyData(nextMap, true);
+      });
     });
     return () => {
-      mapRef.current = null;
+      cancelled = true;
+      if (mapRef.current === map) mapRef.current = null;
       mapReadyRef.current = false;
-      map.remove();
+      maplibreRef.current = null;
+      map?.remove();
     };
   }, [applyData]);
 
@@ -367,9 +384,7 @@ export const PathMap: React.FC<{
     <div style={{ position: 'relative', height: '100%', width: '100%' }}>
       <div ref={containerRef} style={{ height: '100%', width: '100%' }} />
       {isLoading && (
-        <div className="path-map-loading-overlay">
-          <span className="path-map-loading-pill">Resolving path…</span>
-        </div>
+        <LoadingIndicator label="Resolving path..." variant="overlay" className="path-map-loading-overlay" />
       )}
       {!hasData && !isLoading && (
         <div className="feed-detail__no-map" style={{ position: 'absolute', inset: 0 }}>
@@ -651,7 +666,11 @@ export const PacketDetailPanel: React.FC<{
         <button type="button" className="feed-detail__close" onClick={onClose}>✕</button>
       </div>
 
-      {loading && <p className="feed-detail__loading">Loading…</p>}
+      {loading && (
+        <div className="feed-detail__loading">
+          <LoadingIndicator label="Loading packet details..." variant="inline" />
+        </div>
+      )}
 
       {/* Info grid */}
       <div className="feed-detail__section">
@@ -732,7 +751,10 @@ export const PacketDetailPanel: React.FC<{
             <span className="feed-detail__section-note"> — settling ({lazyCountdown}s)</span>
           )}
           {lazyStatus === 'loading' && (
-            <span className="feed-detail__section-note"> — resolving…</span>
+            <span className="feed-detail__section-note">
+              {' '}
+              <LoadingIndicator label="Resolving..." variant="inline" />
+            </span>
           )}
           {lazyStatus === 'done' && lazyPath && (() => {
             const totalMatched = lazyPath.paths.reduce((s, p) => s + p.matchedHops, 0);
@@ -805,7 +827,12 @@ export const PacketDetailPanel: React.FC<{
       <div className="feed-detail__section">
         <div className="feed-detail__section-title">
           Resolved path
-          {pathLoading && <span className="feed-detail__section-note"> — updating…</span>}
+          {pathLoading && (
+            <span className="feed-detail__section-note">
+              {' '}
+              <LoadingIndicator label="Updating..." variant="inline" />
+            </span>
+          )}
           {!pathLoading && totalHops != null && resolvedHopCount > 0 && (
             <span className="feed-detail__section-note"> — {resolvedHopCount} of {totalHops} hops located</span>
           )}

@@ -22,13 +22,19 @@ If in doubt, keep it out of Git and add it to `.gitignore`.
 
 ## DB changes
 
-- schema creation goes in base schema or migrations
-- heavy historical fixes go in maintenance scripts, never startup
+- `backend/src/db/schema/base.sql` represents a fresh database. Any schema
+  change required by an existing deployment must be added as a new, ordered
+  migration as well; do not edit a migration that may already be recorded.
+- whole-history or destructive fixes go in explicit maintenance scripts, never
+  migrations or startup
+- apply pending migrations with `docker compose run --rm db-migrate`, not by
+  running individual migration files or inserting migration-ledger rows by hand
 
 ## Testing expectations
 
 Before finishing a refactor or behavior change:
-- build `backend`
-- build `frontend`
-- if worker code changed, run Python syntax checks
+- use Node 20 and run `cd backend && npm ci && npm run typecheck && npm test && npm run build`
+- run `cd frontend && npm ci && npm run build`
+- if worker code changed, run `python3 -m py_compile viewshed-worker/worker.py viewshed-worker/backfill_profiles.py viewshed-worker/rf/*.py`
+- run `docker compose config --quiet`
 - rebuild affected containers and check `http://localhost:3000/healthz`

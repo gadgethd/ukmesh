@@ -1,14 +1,16 @@
 import mqtt from 'mqtt';
-import { MeshCoreDecoder } from '@michaelhart/meshcore-decoder';
+import { MeshCoreDecoder, calcRegionKey, transportCodeMatchesRegion } from '@michaelhart/meshcore-decoder';
 import type {
   AdvertPayload, GroupTextPayload, TextMessagePayload,
   TracePayload, PathPayload, AckPayload,
 } from '@michaelhart/meshcore-decoder';
-import { insertNodeStatusSample, insertPacket, upsertNode, incrementAdvertCount, query } from '../db/index.js';
+import { insertNodeStatusSample, insertPacket, upsertNode, incrementAdvertCount, query, insertOrUpdateSpamSuspect, recordMultibyteEvidence } from '../db/index.js';
+import { evaluateAdvert, initSpamDetector } from './spamDetector.js';
 import { invalidateResolveCache, setResolveCache, getStickyNodeMap, mergeStickyNodes } from '../path-beta/resolveCache.js';
 import { resolvePool } from '../path-beta/resolvePool.js';
 import type { LivePacket } from '../types/index.js';
 import { decodePacketCompat } from './decodePacket.js';
+import { parseMqttTopic } from './topic.js';
 
 type PacketCallback      = (packet: LivePacket) => void;
 type NodeCallback        = (nodeId: string, meta?: { network?: string; observerId?: string }) => void;
@@ -17,6 +19,26 @@ type NodeUpsertCallback  = (node: Record<string, unknown>) => void;
 const subscribers:       PacketCallback[]     = [];
 const nodeSubscribers:   NodeCallback[]       = [];
 const upsertSubscribers: NodeUpsertCallback[] = [];
+
+type MqttRuntimeStatus = {
+  state: 'starting' | 'connected' | 'disconnected' | 'reconnecting' | 'error';
+  changedAt: string;
+  lastError?: string;
+};
+
+let mqttRuntimeStatus: MqttRuntimeStatus = { state: 'starting', changedAt: new Date().toISOString() };
+
+function setMqttRuntimeStatus(state: MqttRuntimeStatus['state'], lastError?: string): void {
+  mqttRuntimeStatus = {
+    state,
+    changedAt: new Date().toISOString(),
+    ...(lastError ? { lastError: lastError.slice(0, 200) } : {}),
+  };
+}
+
+export function getMqttRuntimeStatus(): MqttRuntimeStatus {
+  return { ...mqttRuntimeStatus };
+}
 
 export function onPacket(cb: PacketCallback)         { subscribers.push(cb); }
 export function onNodeSeen(cb: NodeCallback)         { nodeSubscribers.push(cb); }
@@ -88,7 +110,7 @@ function emitNodeUpsert(node: Record<string, unknown>): void {
  *   All numeric values arrive as strings from mctomqtt regex groups.
  */
 const DEFAULT_TOPIC_PREFIXES = ['meshcore', 'ukmesh', 'meshcore-test'];
-const PUBLIC_TOPIC_PREFIXES = new Set(['meshcore', 'ukmesh']);
+// Junk/test-marker IATAs are dropped at ingest regardless of topic prefix.
 const BLOCKED_PUBLIC_IATAS = new Set(['TST']);
 const TOPIC_PREFIXES = new Set(
   String(process.env['MQTT_TOPIC_PREFIXES'] ?? DEFAULT_TOPIC_PREFIXES.join(','))
@@ -96,28 +118,20 @@ const TOPIC_PREFIXES = new Set(
     .map((value) => value.trim().toLowerCase())
     .filter(Boolean),
 );
-const TEESSIDE_IATA = (process.env['TEESSIDE_IATA'] ?? 'MME').trim().toUpperCase();
 
-interface TopicParts {
-  iata:        string;
-  observerKey: string;
-  suffix:      string;
-  network:     string;
-}
-
-function parseTopic(topic: string): TopicParts | null {
-  const parts = topic.split('/');
-  if (parts.length !== 4) return null;
-  const prefix = parts[0]?.toLowerCase();
-  if (!prefix || !TOPIC_PREFIXES.has(prefix)) return null;
-  const iata = (parts[1] ?? '').trim().toUpperCase();
-  if (!iata || !/^[A-Z0-9]{2,8}$/.test(iata)) return null;
-  if (PUBLIC_TOPIC_PREFIXES.has(prefix) && BLOCKED_PUBLIC_IATAS.has(iata)) return null;
-  const network = PUBLIC_TOPIC_PREFIXES.has(prefix)
-    ? (iata === TEESSIDE_IATA ? 'teesside' : 'ukmesh')
-    : 'test';
-  return { iata, observerKey: parts[2]!, suffix: parts[3]!, network };
-}
+// Region probe list — built once at startup from MESHCORE_REGION_NAMES env var.
+// Names are normalised to '#Name' by the decoder; keys are precomputed SHA256 slices.
+// Only used for packets with routeType 0 (TransportFlood) or 3 (TransportDirect).
+const REGION_PROBE_LIST: Array<{ name: string }> = (
+  process.env['MESHCORE_REGION_NAMES'] ?? 'Europe,Global'
+)
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean)
+  .map((name) => {
+    calcRegionKey(name); // pre-warm internal key derivation (crypto-js is lazy)
+    return { name: name.startsWith('#') ? name : `#${name}` };
+  });
 
 function topicIataForNode(nodeId: string | undefined, observerKey: string, iata: string): string | undefined {
   if (!nodeId) return undefined;
@@ -126,12 +140,25 @@ function topicIataForNode(nodeId: string | undefined, observerKey: string, iata:
 
 /** Coerce a string or number field to number, returning undefined if not parseable. */
 function toNum(v: unknown): number | undefined {
-  if (typeof v === 'number') return v;
+  if (typeof v === 'number') return Number.isFinite(v) ? v : undefined;
   if (typeof v === 'string' && v.trim() !== '') {
     const n = Number(v);
-    return isNaN(n) ? undefined : n;
+    return Number.isFinite(n) ? n : undefined;
   }
   return undefined;
+}
+
+/** Accept only a stable, bounded upstream packet identifier as a fallback. */
+function upstreamPacketHash(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const hash = value.trim();
+  return /^[0-9A-Fa-f]{16,128}$/.test(hash) ? hash.toUpperCase() : undefined;
+}
+
+function normalizeNodeId(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const nodeId = value.trim().toUpperCase();
+  return /^[0-9A-F]{64}$/.test(nodeId) ? nodeId : undefined;
 }
 
 function isEmptyPacketEnvelope(json: Record<string, unknown>, rawHex: string, packetType: number | undefined): boolean {
@@ -343,6 +370,57 @@ const keyStore = MeshCoreDecoder.createKeyStore({
 const channelCache = new Map<string, string | null>();
 const CHANNEL_CACHE_MAX = 200;
 
+function boundedEnvInteger(name: string, fallback: number, min: number, max: number): number {
+  const parsed = Number(process.env[name]);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, Math.trunc(parsed)));
+}
+
+const MQTT_MAX_PAYLOAD_BYTES = boundedEnvInteger('MQTT_MAX_PAYLOAD_BYTES', 64 * 1024, 1_024, 1_048_576);
+const MQTT_INGEST_CONCURRENCY = boundedEnvInteger('MQTT_INGEST_CONCURRENCY', 8, 1, 32);
+const MQTT_INGEST_QUEUE_MAX = boundedEnvInteger('MQTT_INGEST_QUEUE_MAX', 1_000, 10, 20_000);
+
+type MqttIngestTask = {
+  topic: string;
+  rawPayload: Buffer;
+};
+
+const mqttIngestQueue: MqttIngestTask[] = [];
+let activeMqttIngests = 0;
+let droppedMqttMessages = 0;
+let lastMqttDropLogAt = 0;
+
+function reportDroppedMqttMessage(reason: string): void {
+  droppedMqttMessages += 1;
+  const now = Date.now();
+  if (now - lastMqttDropLogAt < 5_000) return;
+  console.warn(`[mqtt] dropped ${droppedMqttMessages} message(s): ${reason}`);
+  droppedMqttMessages = 0;
+  lastMqttDropLogAt = now;
+}
+
+function drainMqttIngestQueue(): void {
+  while (activeMqttIngests < MQTT_INGEST_CONCURRENCY && mqttIngestQueue.length > 0) {
+    const task = mqttIngestQueue.shift()!;
+    activeMqttIngests += 1;
+    void handleMessage(task.topic, task.rawPayload)
+      .catch((err: Error) => console.error('[mqtt] handleMessage error:', err.message))
+      .finally(() => {
+        activeMqttIngests -= 1;
+        drainMqttIngestQueue();
+      });
+  }
+}
+
+function enqueueMqttMessage(topic: string, rawPayload: Buffer): void {
+  if (mqttIngestQueue.length >= MQTT_INGEST_QUEUE_MAX) {
+    reportDroppedMqttMessage(`ingest queue full (${MQTT_INGEST_QUEUE_MAX})`);
+    return;
+  }
+  mqttIngestQueue.push({ topic, rawPayload });
+  drainMqttIngestQueue();
+}
+
 /** Identify which channel a GroupText was sent on by trying each single-key keyStore. */
 function identifyChannel(rawHex: string): string | undefined {
   // Single channel — must be it, no re-decode needed
@@ -352,7 +430,8 @@ function identifyChannel(rawHex: string): string | undefined {
 
   let result: string | undefined;
   for (const entry of channelEntries) {
-    const { decoded: d } = decodePacketCompat(rawHex, entry.keyStore);
+    const { decoded: d, metadataValid } = decodePacketCompat(rawHex, entry.keyStore);
+    if (!metadataValid) continue;
     const p = d?.payload?.decoded as GroupTextPayload | undefined;
     if (p?.decrypted) { result = entry.name; break; }
   }
@@ -424,12 +503,17 @@ function buildAdvertFallbackPayload(originId: string, originName?: string): Reco
 }
 
 
-export function startMqttClient(): void {
+export async function startMqttClient(): Promise<void> {
+  // Must complete before connecting to MQTT — the broker replays buffered
+  // messages immediately on connect, and knownNodeIds must be populated first.
+  await initSpamDetector();
+
   const brokerUrl = process.env['MQTT_BROKER_URL'] ?? 'ws://mosquitto:9001';
   const redactedUrl = brokerUrl.replace(/\/\/[^@]*@/, '//***:***@');
   console.log(`[mqtt] connecting to ${redactedUrl}`);
   console.log(`[mqtt] channels: ${channelEntries.map((e) => e.name).join(', ')}`);
   console.log(`[mqtt] topic prefixes: ${Array.from(TOPIC_PREFIXES).join(', ')}`);
+  console.log(`[mqtt] ingest concurrency=${MQTT_INGEST_CONCURRENCY} queue=${MQTT_INGEST_QUEUE_MAX} maxPayload=${MQTT_MAX_PAYLOAD_BYTES}`);
 
   const client = mqtt.connect(brokerUrl, {
     reconnectPeriod: 5000,
@@ -440,6 +524,7 @@ export function startMqttClient(): void {
   });
 
   client.on('connect', () => {
+    setMqttRuntimeStatus('connected');
     console.log('[mqtt] connected');
     for (const prefix of TOPIC_PREFIXES) {
       client.subscribe(`${prefix}/#`, { qos: 0 }, (err) => {
@@ -449,15 +534,31 @@ export function startMqttClient(): void {
     }
   });
 
-  client.on('error',     (err) => console.error('[mqtt] error', err.message));
-  client.on('reconnect', ()    => console.log('[mqtt] reconnecting…'));
+  client.on('error', (err) => {
+    setMqttRuntimeStatus('error', err.message);
+    console.error('[mqtt] error', err.message);
+  });
+  client.on('offline', () => setMqttRuntimeStatus('disconnected'));
+  client.on('close', () => setMqttRuntimeStatus('disconnected'));
+  client.on('reconnect', () => {
+    setMqttRuntimeStatus('reconnecting');
+    console.log('[mqtt] reconnecting…');
+  });
   client.on('message',   (topic: string, rawPayload: Buffer) => {
-    void handleMessage(topic, rawPayload);
+    if (rawPayload.length > MQTT_MAX_PAYLOAD_BYTES) {
+      reportDroppedMqttMessage(`payload exceeds ${MQTT_MAX_PAYLOAD_BYTES} bytes`);
+      return;
+    }
+    if (topic.length > 512) {
+      reportDroppedMqttMessage('topic exceeds 512 characters');
+      return;
+    }
+    enqueueMqttMessage(topic, rawPayload);
   });
 }
 
 async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
-  const topicParts = parseTopic(topic);
+  const topicParts = parseMqttTopic(topic, TOPIC_PREFIXES, BLOCKED_PUBLIC_IATAS);
   if (!topicParts) return;
 
   const { iata, observerKey, suffix, network } = topicParts;
@@ -471,8 +572,8 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
     return;
   }
 
-  const origin   = json['origin']           as string | undefined;
-  const originId = json['origin_id']        as string | undefined;
+  const origin   = typeof json['origin'] === 'string' ? json['origin'] : undefined;
+  const originId = normalizeNodeId(json['origin_id']);
 
   if (suffix === 'status') {
     const model    = json['model']            as string | undefined;
@@ -480,7 +581,7 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
 
     const nodeId = originId ?? observerKey;
     const nodeIata = topicIataForNode(nodeId, observerKey, iata);
-    upsertNode(nodeId, {
+    const writes: Promise<unknown>[] = [upsertNode(nodeId, {
       name:            origin,
       iata:            nodeIata,
       publicKey:       originId,
@@ -488,12 +589,12 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
       firmwareVersion: (firmware && firmware !== 'unknown') ? firmware : undefined,
       network,
       allowTestOverride: network === 'test' && nodeId === observerKey,
-    }).catch((err: Error) => console.error('[mqtt] upsertNode error:', err.message));
+    })];
     const telemetry = extractStatusTelemetry(json, {
       allowRawStatsOnly: network === 'test',
     });
     if (telemetry) {
-      insertNodeStatusSample({
+      writes.push(insertNodeStatusSample({
         nodeId,
         network,
         batteryMv: telemetry.batteryMv,
@@ -503,7 +604,13 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
         channelUtilization: telemetry.channelUtilization,
         airUtilTx: telemetry.airUtilTx,
         stats: telemetry.stats,
-      }).catch((err: Error) => console.error('[mqtt] insertNodeStatusSample error:', err.message));
+      }));
+    }
+    const writeResults = await Promise.allSettled(writes);
+    for (const result of writeResults) {
+      if (result.status === 'rejected') {
+        console.error('[mqtt] status persistence error:', (result.reason as Error).message);
+      }
     }
     emitNode(nodeId, { network, observerId: observerKey });
     return;
@@ -511,12 +618,14 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
 
   if (suffix !== 'packets') return;
 
-  const packetHash = (json['hash'] as string | undefined) ?? crypto.randomUUID();
   const packetType = toNum(json['packet_type']);
   const rssi       = toNum(json['RSSI']);
   const snr        = toNum(json['SNR']);
-  const rawHex     = (json['raw'] as string | undefined) ?? '';
-  const direction  = json['direction'] as string | undefined;
+  const rawHex     = typeof json['raw'] === 'string' ? json['raw'] : '';
+  const directionValue = typeof json['direction'] === 'string'
+    ? json['direction'].trim().toLowerCase()
+    : undefined;
+  const direction = directionValue === 'rx' || directionValue === 'tx' ? directionValue : undefined;
 
   if (isEmptyPacketEnvelope(json, rawHex, packetType)) {
     return;
@@ -525,10 +634,12 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
   let resolvedPacketType = packetType;
 
   let innerPayload: Record<string, unknown> | undefined;
-  let decodedHash: string | undefined;
+  let canonicalPacketId: string | undefined;
   let decodedHops: number | undefined;
   let decodedPathHashSizeBytes: number | undefined;
   let decodedRouteType: number | undefined;
+  let decodedTransportCodes: string | undefined;
+  let decodedRegionScope: string | undefined;
   let summary:     string | undefined;
   let srcNodeId:   string | undefined;
   let advertCount: number | undefined;
@@ -537,16 +648,41 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
 
   if (rawHex) {
     try {
-      const { decoded, pathHashes, pathHashCount, pathHashSize, routeType: decodedRT } = decodePacketCompat(rawHex, keyStore);
+      const compat = decodePacketCompat(rawHex, keyStore);
+      const {
+        decoded,
+        pathHashes,
+        pathHashCount,
+        pathHashSize,
+        routeType: decodedRT,
+        transportCodes,
+      } = compat;
 
-      if (decoded) {
+      // A malformed path-length framing can shift the payload boundary. Do not
+      // let metadata or payload decoded from such a frame affect persistence.
+      if (decoded && compat.metadataValid) {
         resolvedPacketType = decoded.payloadType ?? resolvedPacketType;
-        decodedHash = decoded.messageHash;
-        decodedHops = pathHashCount ?? decoded.pathLength;
+        canonicalPacketId = compat.canonicalPacketId;
+        decodedHops = pathHashCount;
         decodedPathHashSizeBytes = pathHashSize;
         decodedRouteType = decodedRT;
         if (pathHashes && pathHashes.length > 0) {
           path = pathHashes;
+        }
+
+        // Region scope — only present on TransportFlood (0) / TransportDirect (3) packets
+        if (transportCodes && decoded.payload?.raw && REGION_PROBE_LIST.length > 0) {
+          decodedTransportCodes = transportCodes;
+          const tcBuf = Buffer.from(transportCodes, 'hex');
+          if (tcBuf.length >= 2) {
+            const tc0 = tcBuf[0]! | (tcBuf[1]! << 8);
+            for (const { name } of REGION_PROBE_LIST) {
+              if (transportCodeMatchesRegion(name, decoded.payloadType, decoded.payload.raw, tc0)) {
+                decodedRegionScope = name;
+                break;
+              }
+            }
+          }
         }
 
         if (
@@ -556,7 +692,7 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
           && (decodedPathHashSizeBytes * decodedHops) > 64
         ) {
           console.warn(
-            `[mqtt] dropping impossible multibyte path metadata: hash=${decodedHash ?? 'unknown'} size=${decodedPathHashSizeBytes} hops=${decodedHops} raw=${rawHex.slice(0, 24)}…`,
+            `[mqtt] dropping impossible multibyte path metadata: hash=${canonicalPacketId ?? 'unknown'} size=${decodedPathHashSizeBytes} hops=${decodedHops} raw=${rawHex.slice(0, 24)}…`,
           );
           decodedHops = undefined;
           decodedPathHashSizeBytes = undefined;
@@ -570,39 +706,86 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
           const inner     = decodedInner as unknown as Record<string, unknown> | undefined;
           const appData   = inner?.['appData'] as Record<string, unknown> | undefined;
           const loc       = appData?.['location'] as Record<string, number> | undefined;
-          const senderKey = inner?.['publicKey'] as string | undefined;
+          const senderKey = normalizeNodeId(inner?.['publicKey']);
           const nodeId    = senderKey ?? observerKey;
           const nodeIata  = topicIataForNode(nodeId, observerKey, iata);
 
           if (network !== 'test') {
-            upsertNode(nodeId, {
-              name:      appData?.['name']       as string | undefined,
-              lat:       loc?.['latitude'],
-              lon:       loc?.['longitude'],
-              role:      appData?.['deviceRole'] as number | undefined,
-              iata:      nodeIata,
-              publicKey: senderKey,
-              network,
-            }).catch((err: Error) => console.error('[mqtt] upsertNode error:', err.message));
+            const advertName = appData?.['name'] as string | undefined;
+            const advertLat  = loc?.['latitude'];
+            const advertLon  = loc?.['longitude'];
 
-            if (decodedHash && tryCountAdvert(decodedHash)) {
-              incrementAdvertCount(nodeId).catch((err: Error) => console.error('[mqtt] incrementAdvertCount error:', err.message));
+            const evalResult = advertName && senderKey
+              ? await evaluateAdvert({
+                  name: advertName,
+                  publicKey: senderKey,
+                  srcNodeId: nodeId,
+                  lat: advertLat,
+                  lon: advertLon,
+                  hopCount: decodedHops,
+                  payloadTimestamp: inner?.['timestamp'] as number | undefined,
+                  network,
+                })
+              : null;
+
+            const isSpam    = evalResult?.verdict === 'spam';
+            const isSuspect = evalResult?.verdict === 'suspect';
+
+            if (evalResult && (isSpam || isSuspect)) {
+              insertOrUpdateSpamSuspect({
+                srcNodeId:    nodeId,
+                spoofedName:  advertName ?? '',
+                publicKey:    senderKey,
+                claimedLat:   advertLat,
+                claimedLon:   advertLon,
+                canonicalKey: evalResult.canonicalKey,
+                verdict:      evalResult.verdict,
+                signals:      evalResult.signals,
+                totalScore:   evalResult.totalScore,
+                network,
+              }).catch((err: Error) => console.error('[spam-detect] insertOrUpdateSpamSuspect error:', err.message));
+              console.warn(
+                `[spam-detect] ${evalResult.verdict.toUpperCase()} score=${evalResult.totalScore} ` +
+                `name="${advertName}" key=${senderKey?.slice(0, 16)}… ` +
+                `signals=${evalResult.signals.map((s) => s.name).join(',')}`
+              );
             }
 
-            emitNodeUpsert({
-              node_id:     nodeId,
-              name:        appData?.['name']       as string | undefined,
-              lat:         loc?.['latitude'],
-              lon:         loc?.['longitude'],
-              role:        appData?.['deviceRole'] as number | undefined,
-              iata,
-              network,
-              observer_id: observerKey,
-              public_key:  senderKey,
-              last_seen:   new Date().toISOString(),
-              is_online:   true,
-              advert_count: advertCount,
-            });
+            if (!isSpam) {
+              const nodeUpdate = await upsertNode(nodeId, {
+                name:      advertName,
+                lat:       advertLat,
+                lon:       advertLon,
+                role:      appData?.['deviceRole'] as number | undefined,
+                iata:      nodeIata,
+                publicKey: senderKey,
+                network,
+              });
+
+              if (canonicalPacketId && tryCountAdvert(canonicalPacketId)) {
+                try {
+                  advertCount = await incrementAdvertCount(nodeId);
+                } catch (err) {
+                  console.error('[mqtt] incrementAdvertCount error:', (err as Error).message);
+                }
+              }
+
+              emitNodeUpsert({
+                node_id:      nodeId,
+                name:         advertName,
+                lat:          advertLat,
+                lon:          advertLon,
+                role:         appData?.['deviceRole'] as number | undefined,
+                iata,
+                network,
+                observer_id:  observerKey,
+                public_key:   senderKey,
+                last_seen:    new Date().toISOString(),
+                is_online:    true,
+                advert_count: advertCount,
+                coordinates_changed: nodeUpdate.coordinatesChanged,
+              });
+            }
           }
 
           innerPayload = inner;
@@ -611,11 +794,11 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
           innerPayload = decodedInner as unknown as Record<string, unknown> | undefined;
         } else if (decoded.payloadType === 7) {
           const inner = decodedInner as unknown as Record<string, unknown> | undefined;
-          srcNodeId = inner?.['senderPublicKey'] as string | undefined;
+          srcNodeId = normalizeNodeId(inner?.['senderPublicKey']);
         } else if (decoded.payloadType === 1) {
           // Router/Advert packets - extract origin_id from payload
           const inner = decodedInner as unknown as Record<string, unknown> | undefined;
-          srcNodeId = inner?.['origin_id'] as string | undefined;
+          srcNodeId = normalizeNodeId(inner?.['origin_id']);
         }
       }
     } catch {
@@ -649,29 +832,40 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
     return;
   }
 
-  const finalHash = decodedHash ?? (json['hash'] as string | undefined) ?? crypto.randomUUID();
+  // Decoder messageHash is deliberately not used here: it is only a 32-bit
+  // display hash and collides at normal packet volumes. The canonical identity
+  // comes from validated route/path-invariant wire content.
+  const finalHash = canonicalPacketId ?? upstreamPacketHash(json['hash']) ?? crypto.randomUUID();
 
   if (isDuplicatePacket(finalHash, observerKey, decodedHops)) {
     return;
   }
 
-  upsertNode(observerKey, {
+  const observerUpsert = upsertNode(observerKey, {
     iata,
     network,
     allowTestOverride: network === 'test',
-  }).catch((err: Error) => console.error('[mqtt] upsertNode error:', err.message));
+  }).catch((err: Error) => console.error('[mqtt] observer upsert error:', err.message));
   emitNode(observerKey, { network, observerId: observerKey });
 
-  if (useTxAdvertFallback && originId) {
+  if (useTxAdvertFallback && originId && network !== 'test') {
     const nodeIata = topicIataForNode(originId, observerKey, iata);
-    upsertNode(originId, {
-      name: origin,
-      iata: nodeIata,
-      publicKey: originId,
-      network,
-    }).catch((err: Error) => console.error('[mqtt] upsertNode error:', err.message));
+    try {
+      await upsertNode(originId, {
+        name: origin,
+        iata: nodeIata,
+        publicKey: originId,
+        network,
+      });
+    } catch (err) {
+      console.error('[mqtt] upsertNode error:', (err as Error).message);
+    }
     if (tryCountAdvert(finalHash)) {
-      incrementAdvertCount(originId).catch((err: Error) => console.error('[mqtt] incrementAdvertCount error:', err.message));
+      try {
+        advertCount = await incrementAdvertCount(originId);
+      } catch (err) {
+        console.error('[mqtt] incrementAdvertCount error:', (err as Error).message);
+      }
     }
     emitNodeUpsert({
       node_id: originId,
@@ -685,6 +879,12 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
       advert_count: advertCount,
     });
   }
+
+  // Decoded payloads omit mctomqtt's envelope direction. Keep that metadata in
+  // the stored JSON so RX/TX counts do not classify every decoded packet as RX.
+  const packetPayload = innerPayload && direction
+    ? { ...innerPayload, direction }
+    : (innerPayload ?? json);
 
   {
     const livePacket: LivePacket = {
@@ -700,9 +900,11 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
       pathHashSizeBytes: decodedPathHashSizeBytes,
       direction,
       summary,
-      payload:    innerPayload ?? json,
+      payload:    packetPayload,
       path,
       advertCount,
+      transportCodes: decodedTransportCodes,
+      regionScope:    decodedRegionScope,
       ts:         Date.now(),
     };
     emit(livePacket);
@@ -720,14 +922,35 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
       pathHashSizeBytes: decodedPathHashSizeBytes,
       rssi,
       snr,
-      payload:    innerPayload ?? json,
+      payload:    packetPayload,
       summary,
       rawHex,
       advertCount,
       pathHashes: path,
       network,
+      transportCodes: decodedTransportCodes,
+      regionScope:    decodedRegionScope,
     });
     invalidateResolveCache(finalHash);
+
+    // A repeater appearing in a multibyte (2–3 byte) path hash almost certainly
+    // relayed this packet, so treat it as proof it is online right now: refresh its
+    // last_path_evidence_at and broadcast a live "seen now" update. Non-MQTT
+    // repeaters (no direct reception) only get refreshed this way. Best-effort.
+    if (decodedPathHashSizeBytes != null && decodedPathHashSizeBytes >= 2 && path && path.length > 0) {
+      try {
+        const nodeIds = await recordMultibyteEvidence(
+          path,
+          decodedPathHashSizeBytes,
+          new Date(),
+          decodedRouteType,
+          network,
+        );
+        for (const nodeId of nodeIds) emitNode(nodeId, { network });
+      } catch (err) {
+        console.error('[mqtt] recordMultibyteEvidence error:', (err as Error).message);
+      }
+    }
 
     // Pre-resolve path for ADV/GRP packets so the cache is warm before the browser requests it.
     // Bursty multi-observer packets can arrive repeatedly for the same hash; throttle those
@@ -747,7 +970,7 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
       const stickyEntry = getStickyNodeMap(finalHash, network);
       const stickyMap = stickyEntry ? Object.fromEntries(stickyEntry.hashToNodeId) : undefined;
       const stickyAgeFraction = stickyEntry?.ageFraction;
-      resolvePool.run<{ stickyUpdates?: Record<string, string> } | null>({ type: 'resolveMulti', packetHash: finalHash, network, ...(stickyMap ? { stickyMap, stickyAgeFraction } : {}) })
+      resolvePool.runBackground<{ stickyUpdates?: Record<string, string> }>({ type: 'resolveMulti', packetHash: finalHash, network, ...(stickyMap ? { stickyMap, stickyAgeFraction } : {}) })
         .then((result) => {
           if (result) {
             const { stickyUpdates, ...cacheableResult } = result;
@@ -762,6 +985,10 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
     }
   } catch (err) {
     console.error('[mqtt] db insert failed', (err as Error).message);
+  } finally {
+    // Keep observer writes within the MQTT worker's bounded lifetime. Without
+    // this await, a traffic burst can create unlimited detached pool queries.
+    await observerUpsert;
   }
 }
 
@@ -788,7 +1015,7 @@ export async function backfillHistoricalLinks(
   for (const row of res.rows) {
     try {
       const compat = decodePacketCompat(row.raw_hex, keyStore);
-      if ((compat.pathHashSize ?? 1) > 1 && compat.pathHashes && compat.pathHashes.length > 0) {
+      if (compat.metadataValid && (compat.pathHashSize ?? 1) > 1 && compat.pathHashes && compat.pathHashes.length > 0) {
         queueFn(
           row.rx_node_id,
           row.src_node_id ?? undefined,

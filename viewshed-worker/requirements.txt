@@ -2,4 +2,9 @@ redis==5.0.8
 psycopg2-binary==2.9.10
 shapely==2.0.6
 requests==2.32.3
-scipy
+# Pin numpy to the GDAL base image's system numpy (1.26.4). The osgeo gdal_array
+# C extension is built against that ABI; letting scipy pull numpy 2.x into the
+# venv breaks `from osgeo import gdal_array` ("numpy.core.multiarray failed to
+# import") and thus all elevation sampling / coverage computation.
+numpy==1.26.4
+scipy==1.13.1

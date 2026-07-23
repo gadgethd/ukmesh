@@ -1,5 +1,5 @@
-export type NetworkId = 'teesside' | 'ukmesh' | 'test';
-export type SiteId = 'teesside' | 'ukmesh' | 'dev';
+export type NetworkId = 'ukmesh' | 'test';
+export type SiteId = 'ukmesh' | 'dev';
 
 export type SiteConfig = {
   id: SiteId;
@@ -21,16 +21,6 @@ function envValue(key: keyof ImportMetaEnv, fallback: string): string {
 const DEV_OBSERVER_ID = String(import.meta.env['VITE_OBSERVER_ID'] ?? '').trim().toLowerCase() || undefined;
 
 const SITE_CONFIGS: Record<SiteId, SiteConfig> = {
-  teesside: {
-    id: 'teesside',
-    displayName: 'Teesside Mesh',
-    footerName: 'Teesside Mesh Network',
-    network: 'teesside',
-    networkFilter: 'teesside',
-    appUrl: 'https://app.teessidemesh.com',
-    appHomeUrl: 'https://www.teessidemesh.com',
-    mapHomeUrl: 'https://app.teessidemesh.com',
-  },
   ukmesh: {
     id: 'ukmesh',
     displayName: 'UK Mesh',
@@ -55,22 +45,20 @@ const SITE_CONFIGS: Record<SiteId, SiteConfig> = {
 };
 
 export function getCurrentSite(): SiteConfig {
-  const siteEnv = import.meta.env['VITE_SITE'];
+  const siteEnv = String(import.meta.env['VITE_SITE'] ?? '').trim().toLowerCase();
   if (siteEnv === 'dev') return SITE_CONFIGS.dev;
   if (siteEnv === 'ukmesh') return SITE_CONFIGS.ukmesh;
-  if (siteEnv === 'teesside') return SITE_CONFIGS.teesside;
 
-  const networkEnv = import.meta.env['VITE_NETWORK'];
-  if (networkEnv === 'ukmesh') return SITE_CONFIGS.ukmesh;
-  if (networkEnv === 'teesside') return SITE_CONFIGS.teesside;
+  const networkEnv = String(import.meta.env['VITE_NETWORK'] ?? '').trim().toLowerCase();
   if (networkEnv === 'test') return SITE_CONFIGS.dev;
+  if (networkEnv === 'ukmesh') return SITE_CONFIGS.ukmesh;
 
   if (typeof window !== 'undefined') {
     const host = window.location.hostname.toLowerCase();
-    if (host === 'test.ukmesh.com' || host.includes('app-dev.ukmesh.com') || host === 'dev.ukmesh.com') return SITE_CONFIGS.dev;
-    if (host.includes('ukmesh.com')) return SITE_CONFIGS.ukmesh;
-    if (host.includes('teessidemesh.com')) return SITE_CONFIGS.teesside;
+    if (host === 'test.ukmesh.com' || host.includes('app-dev.ukmesh.com') || host === 'dev.ukmesh.com') {
+      return SITE_CONFIGS.dev;
+    }
   }
 
-  return SITE_CONFIGS.teesside;
+  return SITE_CONFIGS.ukmesh;
 }

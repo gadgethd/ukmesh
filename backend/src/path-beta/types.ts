@@ -43,6 +43,11 @@ export type NeighborAffinityMetrics = {
   score: number;
 };
 
+export type MlPrefixScore = {
+  score: number;
+  observationCount: number;
+};
+
 export type PathPacket = {
   packet_hash: string;
   rx_node_id: string | null;
@@ -62,15 +67,27 @@ export type ObserverHopHint = {
 export type BetaResolveContext = {
   loadedAt: number;
   nodesById: Map<string, MeshNode>;
+  /** Repeater candidates with valid coordinates, prefiltered once per context refresh. */
+  repeaterNodes: MeshNode[];
+  /** Node IDs indexed by their supported path-hash prefixes. */
+  repeaterPathHashIndex: Map<string, MeshNode[]>;
   coverageByNode: Map<string, number>;
   /** Links with itm_viable=true OR force_viable=true — theoretical viability from ITM model. */
   linkPairs: Set<string>;
   /** Subset of linkPairs where observed_count > 0 — links confirmed by actual packet observations. */
   observedLinkPairs: Set<string>;
+  /** Highest-trust observed multibyte links that are also terrain/radio viable. */
+  trustedPathPairs: Set<string>;
+  /** Adjacency for trustedPathPairs, used to keep live path candidate sets small. */
+  trustedPathNeighbors: Map<string, Set<string>>;
   linkMetrics: Map<string, LinkMetrics>;
+  /** Candidate adjacency used by the clash penalty in the path solver. */
+  clashAdjacency: Map<string, Set<string>>;
   /** Packet-derived first-hop affinity, resolved only when both endpoints are known full node IDs. */
   neighborAffinity: Map<string, NeighborAffinityMetrics>;
   /** Adjacency built from packet-derived first-hop affinity for shared-neighbor scoring. */
   neighborAffinityNeighbors: Map<string, Set<string>>;
+  /** High-confidence ML mapping from 1-byte path hash prefix to likely node IDs. */
+  mlPrefixScores: Map<string, Map<string, MlPrefixScore>>;
   learningModel: PathLearningModel;
 };

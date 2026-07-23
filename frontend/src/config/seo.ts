@@ -6,7 +6,8 @@ export type RouteMeta = {
 };
 
 /** Per-site, per-route SEO metadata. Used by both the Vite build plugin and the runtime SeoHead component. */
-export const SEO_META: Record<SiteId, Record<string, RouteMeta>> = {
+// Dev/test builds are deliberately no-index and have no public metadata.
+export const SEO_META: Partial<Record<SiteId, Record<string, RouteMeta>>> = {
   ukmesh: {
     '/': {
       title: 'UK Mesh Network — MeshCore LoRa Coverage & Live Map',
@@ -33,10 +34,34 @@ export const SEO_META: Record<SiteId, Record<string, RouteMeta>> = {
       description:
         'Search and browse MeshCore repeater nodes across the UK network. View coverage, uptime, and connection details.',
     },
+    '/regions': {
+      title: 'Regions — UK Mesh Network',
+      description:
+        'Browse MeshCore mesh network regions across the UK.',
+    },
+    '/docs': {
+      title: 'Docs — UK Mesh Network',
+      description:
+        'Radio settings, repeater placement, network etiquette, and troubleshooting guidance for UK MeshCore operators.',
+    },
     '/open-source': {
       title: 'Open Source — UK Mesh Network',
       description:
         'Libraries and open-source technologies powering the UK Mesh analytics platform.',
+    },
+    '/spam': {
+      title: 'Spam Watch — UK Mesh Network',
+      description:
+        'Live detection of suspected message-spam clusters on the UK MeshCore network: repeated near-duplicate messages, rotating sender names, and coarse origin estimates. Sanitized, privacy-safe abuse mitigation.',
+    },
+    '/topology': {
+      title: 'Repeater Topology — UK Mesh Network',
+      description:
+        'Explore recent viable repeater relationships, highly connected relay hubs, and observed MeshCore network topology across the UK.',
+    },
+    '/health': {
+      title: 'Platform Status — UK Mesh Network',
+      description: 'Public platform health, packet-ingest freshness, synthetic journeys, and background-worker status for UKMesh analytics.',
     },
     '/login': {
       title: 'Repeater Owner Portal — UK Mesh Network',
@@ -44,68 +69,18 @@ export const SEO_META: Record<SiteId, Record<string, RouteMeta>> = {
         'Log in to manage your MeshCore repeater node on the UK Mesh network.',
     },
   },
-  teesside: {
-    '/': {
-      title: 'Teesside Mesh — MeshCore LoRa Network Dashboard',
-      description:
-        'Live dashboard for the Teesside MeshCore LoRa mesh network. Real-time node map, packet feed, network statistics, and install guides.',
-    },
-    '/install': {
-      title: 'Install MeshCore — Teesside Mesh',
-      description:
-        'Get a companion node on the air in about 10 minutes. Flash MeshCore firmware on a LoRa board and join the Teesside mesh network.',
-    },
-    '/stats': {
-      title: 'Network Statistics — Teesside Mesh',
-      description:
-        'Live statistics for the Teesside MeshCore network: active nodes, packet counts, repeater uptime, and coverage trends.',
-    },
-    '/packets': {
-      title: 'Packet Types — Teesside Mesh',
-      description:
-        'Reference guide to MeshCore packet types: adverts, messages, traceroutes, and more. Understand what flows through the mesh.',
-    },
-    '/open-source': {
-      title: 'Open Source — Teesside Mesh',
-      description:
-        'Libraries and open-source technologies powering the Teesside Mesh analytics platform.',
-    },
-    '/login': {
-      title: 'Repeater Owner Portal — Teesside Mesh',
-      description:
-        'Log in to manage your MeshCore repeater node on the Teesside mesh network.',
-    },
-  },
-  dev: {
-    '/': {
-      title: 'UK Mesh Test — Development Environment',
-      description: 'Development and testing environment for the UK Mesh network analytics platform.',
-    },
-  },
 };
 
 /** Site-level defaults used for OG tags and the base index.html. */
-export const SITE_SEO_DEFAULTS: Record<SiteId, { siteName: string; baseUrl: string; themeColor: string }> = {
+export const SITE_SEO_DEFAULTS: Partial<Record<SiteId, { siteName: string; baseUrl: string; themeColor: string }>> = {
   ukmesh: {
     siteName: 'UK Mesh Network',
     baseUrl: 'https://ukmesh.com',
     themeColor: '#0a1628',
   },
-  teesside: {
-    siteName: 'Teesside Mesh',
-    baseUrl: 'https://www.teessidemesh.com',
-    themeColor: '#0a1628',
-  },
-  dev: {
-    siteName: 'UK Mesh Test',
-    baseUrl: 'https://test.ukmesh.com',
-    themeColor: '#0a1628',
-  },
 };
 
 /** Routes to include in the sitemap for each site. Order = priority (descending). */
-export const SITEMAP_ROUTES: Record<SiteId, string[]> = {
-  ukmesh: ['/', '/install', '/stats', '/feed', '/repeater', '/open-source'],
-  teesside: ['/', '/install', '/stats', '/packets', '/open-source'],
-  dev: ['/'],
+export const SITEMAP_ROUTES: Partial<Record<SiteId, string[]>> = {
+  ukmesh: ['/', '/install', '/docs', '/feed', '/repeater', '/topology', '/health', '/regions', '/stats', '/spam', '/open-source'],
 };

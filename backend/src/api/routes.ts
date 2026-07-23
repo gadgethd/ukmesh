@@ -1,23 +1,29 @@
 import { Request, Response, Router } from 'express';
 import {
   CHARTS_CACHE_TTL_MS,
-  COVERAGE_CACHE_TTL_MS,
-  CROSS_NETWORK_CACHE_TTL_MS,
   INFERRED_NODES_CACHE_TTL_MS,
+  OWNER_DASHBOARD_CACHE_TTL_MS,
   OWNER_LIVE_CACHE_TTL_MS,
   PATH_HISTORY_CACHE_TTL_MS,
   STATS_CACHE_TTL_MS,
   chartsCache,
   chartsInflight,
-  coverageCache,
-  crossNetworkCache,
   inferredNodesCache,
   ownerLiveCache,
   pathHistoryCache,
   statsCache,
 } from './bootstrap/caches.js';
-import { getNodes, getNodeHistory, getNodeAdverts, getPacketDetail, getPathHistoryCache, getRecentPacketEvents, getRecentPackets, query } from '../db/index.js';
-import { resolveRequestNetwork } from '../http/requestScope.js';
+import {
+  getMultibytePathSegments,
+  getNodes,
+  getNodeHistory,
+  getNodeAdverts,
+  getPacketDetail,
+  getPathHistoryCache,
+  getRecentPacketEvents,
+  getRecentPackets,
+  query,
+} from '../db/index.js';
 import { autoLinkOwnerNodeIds, buildOwnerDashboard, resolveOwnerNodeIds, verifyMqttCredentials } from '../owner/ownerAccess.js';
 import { encryptOwnerSession, getOwnerSession, isSecureRequest } from '../owner/ownerSession.js';
 import { getResolveCache, setResolveCache } from '../path-beta/resolveCache.js';
@@ -43,9 +49,13 @@ import { registerOwnerRoutes } from './routes/owner.js';
 import { registerPathingRoutes } from './routes/pathing.js';
 import { registerStatsRoutes } from './routes/stats.js';
 import { registerTelemetryRoutes } from './routes/telemetry.js';
+import { registerSpamRoutes } from './routes/spam.js';
+import { registerTopologyRoutes } from './routes/topology.js';
+import { registerActivityTimelineRoutes } from './routes/activityTimeline.js';
+import { registerRfValidationRoutes } from './routes/rfValidation.js';
+import { registerExportRoutes } from './routes/exports.js';
 import { requireLocalOnly } from './utils/localOnly.js';
 import { networkFilters } from './utils/networkFilters.js';
-import { normalizeObserverQuery } from './utils/observer.js';
 
 const router = Router();
 router.use(healthRoutes);
@@ -76,8 +86,6 @@ async function requireOwnerSession(req: Request, res: Response): Promise<string[
 }
 
 registerCoverageRoutes(router, {
-  coverageCache,
-  coverageCacheTtlMs: COVERAGE_CACHE_TTL_MS,
   coverageLimiter: COVERAGE_LIMITER,
   networkFilters,
   query,
@@ -106,6 +114,7 @@ registerOwnerRoutes(router, {
   ownerCookieName: OWNER_COOKIE_NAME,
   ownerLiveCacheTtlMs: OWNER_LIVE_CACHE_TTL_MS,
   ownerLiveCache,
+  ownerDashboardCacheTtlMs: OWNER_DASHBOARD_CACHE_TTL_MS,
   ownerLastHopCacheTtlMs: OWNER_LAST_HOP_CACHE_TTL_MS,
   ownerSessionTtlMs: OWNER_SESSION_TTL_MS,
   mqttUsernameMaxLen: MQTT_USERNAME_MAX_LEN,
@@ -132,6 +141,7 @@ registerPathingRoutes(router, {
   setResolveCache,
   resolvePool,
   getPathHistoryCache,
+  getMultibytePathSegments,
   query,
 });
 registerStatsRoutes(router, {
@@ -140,8 +150,6 @@ registerStatsRoutes(router, {
   chartsCache,
   chartsCacheTtlMs: CHARTS_CACHE_TTL_MS,
   chartsInflight,
-  crossNetworkCache,
-  crossNetworkCacheTtlMs: CROSS_NETWORK_CACHE_TTL_MS,
   expensiveLimiter: EXPENSIVE_LIMITER,
   statsChartsLimiter: STATS_CHARTS_LIMITER,
   networkFilters,
@@ -149,5 +157,26 @@ registerStatsRoutes(router, {
   maskDecodedPathNodes,
 });
 registerTelemetryRoutes(router, { query });
+registerSpamRoutes(router, { expensiveLimiter: EXPENSIVE_LIMITER });
+registerTopologyRoutes(router, {
+  query,
+  networkFilters,
+  limiter: EXPENSIVE_LIMITER,
+});
+registerActivityTimelineRoutes(router, {
+  query,
+  networkFilters,
+  limiter: STATS_CHARTS_LIMITER,
+});
+registerRfValidationRoutes(router, {
+  query,
+  networkFilters,
+  limiter: EXPENSIVE_LIMITER,
+});
+registerExportRoutes(router, {
+  query,
+  networkFilters,
+  limiter: EXPENSIVE_LIMITER,
+});
 
 export default router;

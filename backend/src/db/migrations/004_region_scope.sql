@@ -1,0 +1,2 @@
+ALTER TABLE packets ADD COLUMN IF NOT EXISTS transport_codes TEXT;
+ALTER TABLE packets ADD COLUMN IF NOT EXISTS region_scope TEXT;

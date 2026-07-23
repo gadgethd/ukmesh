@@ -27,6 +27,7 @@ type OwnerRouteDeps = {
   ownerCookieName: string;
   ownerLiveCacheTtlMs: number;
   ownerLiveCache: Map<string, OwnerLiveCacheEntry>;
+  ownerDashboardCacheTtlMs: number;
   ownerLastHopCacheTtlMs: number;
   ownerSessionTtlMs: number;
   mqttUsernameMaxLen: number;
@@ -52,6 +53,7 @@ export function registerOwnerRoutes(router: Router, deps: OwnerRouteDeps): void 
   const service = createOwnerService({
     ownerLiveCacheTtlMs: deps.ownerLiveCacheTtlMs,
     ownerLiveCache: deps.ownerLiveCache,
+    ownerDashboardCacheTtlMs: deps.ownerDashboardCacheTtlMs,
     ownerLastHopCacheTtlMs: deps.ownerLastHopCacheTtlMs,
     verifyMqttCredentials: deps.verifyMqttCredentials,
     resolveOwnerNodeIds: deps.resolveOwnerNodeIds,

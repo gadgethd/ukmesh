@@ -25,6 +25,13 @@ type PathingRouteDeps = {
     resolved_packet_count: number;
     segment_counts: Array<{ count?: number }> | null;
   } | null>;
+  getMultibytePathSegments: (network?: string, observer?: string) => Promise<{
+    maxCount: number;
+    segments: Array<{
+      positions: [[number, number], [number, number]];
+      count: number;
+    }>;
+  }>;
   query: <T extends import('pg').QueryResultRow = import('pg').QueryResultRow>(
     text: string,
     params?: unknown[],
@@ -57,7 +64,7 @@ export function registerPathingRoutes(router: Router, deps: PathingRouteDeps): v
         res.status(400).json({ error: 'Invalid hash format' });
         return;
       }
-      const network = resolveRequestNetwork(req.query['network'], req.headers, 'teesside') ?? 'teesside';
+      const network = resolveRequestNetwork(req.query['network'], req.headers, 'ukmesh') ?? 'ukmesh';
       const observer = normalizeObserverQuery(req.query['observer']);
       res.json(await service.resolvePacket(packetHash, network, observer));
     } catch (err) {
@@ -81,7 +88,7 @@ export function registerPathingRoutes(router: Router, deps: PathingRouteDeps): v
         res.status(400).json({ error: 'Invalid hash format' });
         return;
       }
-      const network = resolveRequestNetwork(req.query['network'], req.headers, 'teesside') ?? 'teesside';
+      const network = resolveRequestNetwork(req.query['network'], req.headers, 'ukmesh') ?? 'ukmesh';
       res.json(await service.resolvePacketMulti(packetHash, network));
     } catch (err) {
       if ((err as Error).message === 'PACKET_NOT_FOUND') {
@@ -96,10 +103,28 @@ export function registerPathingRoutes(router: Router, deps: PathingRouteDeps): v
   router.get('/path-beta/history', deps.pathHistoryLimiter, async (req, res) => {
     try {
       const requestedNetwork = resolveRequestNetwork(req.query['network'], req.headers);
-      const scope = requestedNetwork === 'all' ? 'all' : (requestedNetwork ?? 'teesside');
+      const scope = requestedNetwork === 'all' ? 'all' : (requestedNetwork ?? 'ukmesh');
       res.json(await service.getPathHistory(scope));
     } catch (err) {
       console.error('[api] GET /path-beta/history', (err as Error).message);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  });
+
+  router.get('/path-beta/multibyte-paths', deps.pathHistoryLimiter, async (req, res) => {
+    try {
+      const requestedNetwork = resolveRequestNetwork(req.query['network'], req.headers);
+      const network = requestedNetwork === 'all' ? undefined : (requestedNetwork ?? 'ukmesh');
+      const observer = normalizeObserverQuery(req.query['observer']);
+      const { maxCount, segments } = await deps.getMultibytePathSegments(network, observer ?? undefined);
+      res.json({
+        ok: true,
+        scope: requestedNetwork === 'all' ? 'all' : (requestedNetwork ?? 'ukmesh'),
+        maxCount,
+        segments,
+      });
+    } catch (err) {
+      console.error('[api] GET /path-beta/multibyte-paths', (err as Error).message);
       res.status(500).json({ error: 'Internal server error' });
     }
   });
@@ -127,7 +152,7 @@ export function registerPathingRoutes(router: Router, deps: PathingRouteDeps): v
 
   router.get('/path-learning', deps.pathLearningLimiter, async (req, res) => {
     try {
-      const network = resolveRequestNetwork(req.query['network'], req.headers, 'teesside') ?? 'teesside';
+      const network = resolveRequestNetwork(req.query['network'], req.headers, 'ukmesh') ?? 'ukmesh';
       const limit = Math.min(12000, Math.max(1000, Number(req.query['limit'] ?? 6000)));
       res.json(await service.getPathLearning(network, limit));
     } catch (err) {

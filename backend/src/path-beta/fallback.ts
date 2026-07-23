@@ -43,11 +43,15 @@ export function fallbackEdgeScore(
   const losOk = hasLoS(candidate, prev);
   const distPenalty = distKm(candidate, prev) / 50;
   const pathLossBoost = pathLoss == null ? 0 : clamp((LOOSE_LINK_PATHLOSS_MAX_DB - pathLoss) / 18, 0, 1.2);
-  const observedBoost = Math.min(0.35, Math.log10((meta?.observed_count ?? 0) + 1) * 0.18);
+  const observed = Math.max(Number(meta?.observed_count ?? 0), Number(meta?.multibyte_observed_count ?? 0));
+  const observedBoost = Math.min(0.35, Math.log10(observed + 1) * 0.18);
+  const multibyteBoost = meta?.itm_viable === true
+    ? Math.min(0.24, Math.log10(Number(meta.multibyte_observed_count ?? 0) + 1) * 0.08)
+    : 0;
   const physicalBoost = (reachOk ? 0.45 : 0) + (losOk ? 0.2 : 0);
   const directionalBoost = sourceProgressScore(candidate, prev, src) * 0.45
     + turnContinuityScore(candidate, prev, nextTowardRx) * 0.6;
-  return directionalBoost + pathLossBoost + observedBoost + physicalBoost - distPenalty;
+  return directionalBoost + pathLossBoost + observedBoost + multibyteBoost + physicalBoost - distPenalty;
 }
 
 export function compareFallbackCandidates(

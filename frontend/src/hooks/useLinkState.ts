@@ -1,4 +1,3 @@
-import { useSyncExternalStore } from 'react';
 import { linkKey, type LinkMetrics } from '../utils/pathing.js';
 
 type LinkUpdate = {
@@ -11,7 +10,6 @@ type LinkUpdate = {
   count_a_to_b?: number;
   count_b_to_a?: number;
 };
-
 export type ViableLinkSnapshot = {
   node_a_id: string;
   node_b_id: string;
@@ -147,15 +145,3 @@ export const linkStateStore = {
   applyLinkUpdate,
   applyLinkUpdateBatch,
 };
-
-export function useLinkPairs(): Set<string> {
-  return useSyncExternalStore(subscribe, () => state.linkPairs);
-}
-
-export function useLinkMetrics(): Map<string, LinkMetrics> {
-  return useSyncExternalStore(subscribe, () => state.linkMetrics);
-}
-
-export function useViablePairsArr(): [string, string][] {
-  return useSyncExternalStore(subscribe, () => state.viablePairsArr);
-}

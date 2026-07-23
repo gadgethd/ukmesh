@@ -22,9 +22,64 @@ type PathingServiceDeps = {
   repository: PathingRepository;
 };
 
-export type PathingService = ReturnType<typeof createPathingService>;
-
 const resolveInflight = new Map<string, Promise<unknown>>();
+
+type ResolvePayload = {
+  mode?: 'resolved' | 'fallback' | 'none';
+  confidence?: number | null;
+  threshold?: number;
+  permutationCount?: number;
+  remainingHops?: number | null;
+  debug?: { hopsRequested?: number; hopsUsed?: number };
+  results?: ResolvePayload[];
+} & Record<string, unknown>;
+
+export function addPathExplanation(value: unknown): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const payload = value as ResolvePayload;
+  if (Array.isArray(payload.results)) {
+    const results = payload.results.map((result) => addPathExplanation(result) as ResolvePayload);
+    const resolved = results.filter((result) => result.mode === 'resolved').length;
+    return {
+      ...payload,
+      results,
+      explanation: {
+        evidenceLevel: resolved > 0 ? 'mixed' : 'low',
+        summary: `${resolved} of ${results.length} observer views produced a resolved candidate path.`,
+        reasons: ['Observer views are solved independently before their overlays are combined.'],
+        alternativesConsidered: results.reduce((sum, result) => sum + Number(result.permutationCount ?? 0), 0),
+      },
+    };
+  }
+  if (!payload.mode) return value;
+  const confidence = payload.confidence ?? null;
+  const threshold = Number(payload.threshold ?? 0.45);
+  const requested = Number(payload.debug?.hopsRequested ?? 0);
+  const used = Number(payload.debug?.hopsUsed ?? 0);
+  const reasons: string[] = [];
+  if (payload.mode === 'resolved') {
+    reasons.push('Hash-prefix candidates were ranked using observed topology, terrain viability, direction, and learned path priors.');
+    if (confidence != null && confidence >= threshold) reasons.push('The calibrated confidence met the displayed-path threshold.');
+    if ((payload.remainingHops ?? 0) > 0) reasons.push(`${payload.remainingHops} hop(s) remain below the confidence threshold.`);
+  } else if (payload.mode === 'fallback') {
+    reasons.push('No complete high-confidence candidate chain was found; the red path shows bounded fallback possibilities.');
+  } else {
+    reasons.push('Available packet, node, and link evidence was insufficient to draw a candidate path.');
+  }
+  if (requested > used) reasons.push(`${requested - used} requested hop hash(es) could not be used safely.`);
+  return {
+    ...payload,
+    explanation: {
+      evidenceLevel: confidence != null && confidence >= threshold ? 'high' : payload.mode === 'resolved' ? 'medium' : 'low',
+      summary: payload.mode === 'resolved'
+        ? `Resolved ${used} of ${requested} requested hops at ${Math.round((confidence ?? 0) * 100)}% calibrated confidence.`
+        : payload.mode === 'fallback' ? 'Showing fallback path evidence.' : 'No defensible path was resolved.',
+      reasons,
+      alternativesConsidered: Number(payload.permutationCount ?? 0),
+      limitations: ['Predictions are inferred from recent network evidence and are not proof that every relay handled this packet.'],
+    },
+  };
+}
 
 export function createPathingService(deps: PathingServiceDeps) {
   const {
@@ -39,7 +94,7 @@ export function createPathingService(deps: PathingServiceDeps) {
   async function resolvePacket(packetHash: string, network: string, observer?: string | null): Promise<unknown> {
     const cacheKey = `r|${packetHash}|${network}|${observer ?? ''}`;
     const cached = getResolveCache(cacheKey);
-    if (cached) return cached;
+    if (cached) return addPathExplanation(cached);
     const inflight = resolveInflight.get(cacheKey);
     if (inflight) return inflight;
 
@@ -54,8 +109,9 @@ export function createPathingService(deps: PathingServiceDeps) {
         throw new Error('PACKET_NOT_FOUND');
       }
 
-      setResolveCache(cacheKey, resolved);
-      return resolved;
+      const explained = addPathExplanation(resolved);
+      setResolveCache(cacheKey, explained);
+      return explained;
     })();
     resolveInflight.set(cacheKey, promise);
     try {
@@ -70,7 +126,7 @@ export function createPathingService(deps: PathingServiceDeps) {
   async function resolvePacketMulti(packetHash: string, network: string): Promise<unknown> {
     const cacheKey = `m|${packetHash}|${network}`;
     const cached = getResolveCache(cacheKey);
-    if (cached) return cached;
+    if (cached) return addPathExplanation(cached);
     const inflight = resolveInflight.get(cacheKey);
     if (inflight) return inflight;
 
@@ -84,8 +140,9 @@ export function createPathingService(deps: PathingServiceDeps) {
         throw new Error('PACKET_NOT_FOUND');
       }
 
-      setResolveCache(cacheKey, resolved);
-      return resolved;
+      const explained = addPathExplanation(resolved);
+      setResolveCache(cacheKey, explained);
+      return explained;
     })();
     resolveInflight.set(cacheKey, promise);
     try {

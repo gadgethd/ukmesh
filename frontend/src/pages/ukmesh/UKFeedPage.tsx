@@ -1,9 +1,11 @@
 import React, { useMemo, useCallback, useEffect, useState, useRef } from 'react';
+import './feed-page.css';
 import { getCurrentSite } from '../../config/site.js';
 import { useWebSocket, type WSMessage } from '../../hooks/useWebSocket.js';
 import { useMessages, useNodes, type MeshNode, type LivePacketData, type AggregatedPacket } from '../../hooks/useNodes.js';
 import type { RecentPacketRow } from '../../hooks/packetFeed.js';
 import { chartStatsEndpoint, uncachedEndpoint } from '../../utils/api.js';
+import { LoadingIndicator } from '../../components/LoadingIndicator.js';
 import { PathMap } from './PacketDetailPanel.js';
 import type { LazyPathResult, LazyPath, LazyPathNode } from './PacketDetailPanel.js';
 
@@ -336,7 +338,7 @@ const PacketPathTree: React.FC<{
   if (status === 'loading' && !lazyPath) {
     return (
       <div className="uk-feed-path-tree uk-feed-path-tree--message">
-        <span className="uk-feed-path-tree__status">Resolving predicted repeaters...</span>
+        <LoadingIndicator label="Resolving predicted repeaters..." variant="inline" />
       </div>
     );
   }
@@ -747,14 +749,6 @@ export const UKFeedPage: React.FC = () => {
 
   return (
     <>
-      <section className="site-page-hero">
-        <div className="site-content">
-          <h1 className="site-page-hero__title">Public Feed</h1>
-          <p className="site-page-hero__sub">
-            Live MQTT observer activity across the public UK Mesh feed.
-          </p>
-        </div>
-      </section>
 
       <div className={`uk-feed-layout${selectedPacketHash ? ' uk-feed-layout--has-selection' : ''}`}>
 

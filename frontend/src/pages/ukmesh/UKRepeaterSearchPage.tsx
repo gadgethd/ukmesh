@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { LoadingIndicator } from '../../components/LoadingIndicator.js';
 
 interface MeshNode {
   node_id: string;
@@ -141,6 +142,7 @@ export const UKRepeaterSearchPage: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [showResults, setShowResults] = useState(false);
   const [nodes, setNodes] = useState<MeshNode[]>([]);
+  const [loadingNodes, setLoadingNodes] = useState(true);
   const [selectedNode, setSelectedNode] = useState<MeshNode | null>(null);
   const [links, setLinks] = useState<NodeLink[]>([]);
   const [history, setHistory] = useState<PacketHistory[]>([]);
@@ -151,10 +153,21 @@ export const UKRepeaterSearchPage: React.FC = () => {
 
   // Load nodes on mount
   useEffect(() => {
+    let cancelled = false;
     fetch('/api/nodes?network=ukmesh')
       .then(r => r.json())
-      .then(data => setNodes(Array.isArray(data) ? data : []))
-      .catch(() => setNodes([]));
+      .then(data => {
+        if (!cancelled) setNodes(Array.isArray(data) ? data : []);
+      })
+      .catch(() => {
+        if (!cancelled) setNodes([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingNodes(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // Click outside to close search dropdown
@@ -232,12 +245,6 @@ export const UKRepeaterSearchPage: React.FC = () => {
 
   return (
     <>
-      <section className="site-page-hero">
-        <div className="site-content">
-          <h1>Repeater Search</h1>
-          <p>Search for a repeater by name or public key to view detailed information.</p>
-        </div>
-      </section>
 
       <section className="site-section">
         <div className="site-content">
@@ -253,7 +260,11 @@ export const UKRepeaterSearchPage: React.FC = () => {
             />
             {showResults && (
               <div className="repeater-search-box__results">
-                {searchQuery && searchResults.length === 0 ? (
+                {loadingNodes ? (
+                  <div className="repeater-search-box__no-results">
+                    <LoadingIndicator label="Loading repeaters..." variant="inline" />
+                  </div>
+                ) : searchQuery && searchResults.length === 0 ? (
                   <div className="repeater-search-box__no-results">
                     No repeaters found matching "{searchQuery}"
                   </div>
@@ -282,14 +293,18 @@ export const UKRepeaterSearchPage: React.FC = () => {
 
           {!selectedNode ? (
             <div className="repeater-details-card">
-              <div className="repeater-details-card__empty">
-                <svg className="repeater-details-card__empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                  <circle cx="11" cy="11" r="8" />
-                  <path d="m21 21-4.35-4.35" />
-                </svg>
-                <h3>Select a Repeater</h3>
-                <p>Search for a repeater above to view its details, neighbours, and packet history.</p>
-              </div>
+              {loadingNodes ? (
+                <LoadingIndicator label="Loading repeater index..." variant="block" />
+              ) : (
+                <div className="repeater-details-card__empty">
+                  <svg className="repeater-details-card__empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                    <circle cx="11" cy="11" r="8" />
+                    <path d="m21 21-4.35-4.35" />
+                  </svg>
+                  <h3>Select a Repeater</h3>
+                  <p>Search for a repeater above to view its details, neighbours, and packet history.</p>
+                </div>
+              )}
             </div>
           ) : (
             <div className="repeater-details-card">
@@ -388,8 +403,7 @@ export const UKRepeaterSearchPage: React.FC = () => {
 
               {loadingDetails ? (
                 <div className="repeater-details-card__loading">
-                  <div className="repeater-details-card__spinner"></div>
-                  Loading details...
+                  <LoadingIndicator label="Loading repeater details..." variant="inline" />
                 </div>
               ) : (
                 <>

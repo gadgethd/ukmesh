@@ -2,22 +2,43 @@ import React, { useState } from 'react';
 import type maplibregl from 'maplibre-gl';
 import { NodeSearch } from '../Map/NodeSearch.js';
 import { FILTER_ROWS, type Filters } from '../FilterPanel/FilterPanel.js';
+import type { MapMode } from '../../config/mapModes.js';
+import { MapModeSelector } from './MapModeSelector.js';
 
 type MobileControlsProps = {
   map: maplibregl.Map | null;
   filters: Filters;
   onFiltersChange: (next: Filters) => void;
+  activeMode: MapMode | null;
+  viewshedEnabled: boolean;
+  onModeChange: (mode: MapMode) => void;
+  onShare: () => void;
+  shareLabel: string;
+  onNodeSelect: (nodeId: string) => void;
 };
 
 export const MobileControls: React.FC<MobileControlsProps> = ({
   map,
   filters,
   onFiltersChange,
+  activeMode,
+  viewshedEnabled,
+  onModeChange,
+  onShare,
+  shareLabel,
+  onNodeSelect,
 }) => {
   const [showFilters, setShowFilters] = useState(false);
 
   return (
     <div className="mobile-controls">
+      <MapModeSelector
+        activeMode={activeMode}
+        viewshedEnabled={viewshedEnabled}
+        onChange={onModeChange}
+        onShare={onShare}
+        shareLabel={shareLabel}
+      />
       <button
         type="button"
         className="mobile-legend-toggle"
@@ -30,11 +51,11 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
       <div className={`mobile-filter-wrap${showFilters ? '' : ' mobile-filter-wrap--hidden'}`}>
         <div className="mobile-filter-grid">
           {FILTER_ROWS.map(({ key, label, color, hollow }) => (
-            <div
+            <button
+              type="button"
               key={key}
               className={`filter-row${filters[key] ? ' filter-row--on' : ''}`}
               onClick={() => onFiltersChange({ ...filters, [key]: !filters[key] })}
-              role="button"
               aria-pressed={!!filters[key]}
             >
               <span className="filter-row__label">
@@ -49,7 +70,7 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
                 className={`filter-toggle${filters[key] ? ' filter-toggle--on' : ''}`}
                 style={filters[key] ? { background: `${color}22`, borderColor: color } : {}}
               />
-            </div>
+            </button>
           ))}
         </div>
         {filters.hexClashes && (
@@ -70,7 +91,7 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
         )}
       </div>
       <div className="mobile-search">
-        <NodeSearch map={map} />
+        <NodeSearch map={map} onNodeSelect={onNodeSelect} />
       </div>
     </div>
   );

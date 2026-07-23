@@ -9,6 +9,12 @@ A real-time analytics platform for [MeshCore](https://meshcore.io) networks. It 
 - Real-time node map with animated packet arcs and live WebSocket updates
 - RF coverage viewshed polygons per repeater using SRTM terrain data
 - Link intelligence overlay with directional observations and path-loss viability
+- Public repeater-topology explorer with hub ranking, graph components, likely bridge repeaters, isolated nodes, and multibyte-evidence filtering
+- Map modes, shareable viewport/filter URLs, node detail drawer, and bounded activity replay
+- Planned-repeater comparison with saved scenarios, share links, and overlap estimates
+- Regional health scoring and predicted-versus-observed RF validation
+- Local saved searches/watchlists for nodes, observers, regions, packet types, and incidents
+- Privacy-filtered CSV/GeoJSON exports with a versioned OpenAPI contract
 - Beta path prediction model with concurrent worker pool and hourly path-learning prior rebuilds
 - Multibyte path-hash support (1-byte, 2-byte, 3-byte) throughout the live ingest and pathing stack
 - Decoded live packet feed (Advert, GroupText, DM, ACK, Path, Trace)
@@ -53,22 +59,31 @@ A real-time analytics platform for [MeshCore](https://meshcore.io) networks. It 
 - Click-to-explain worker cards
 - UK Feed page for live public observer traffic
 
-### Phase 5 - Repeater owner portal (in progress)
+### Phase 5 - Repeater owner portal (complete)
 - MQTT username/password owner login with encrypted cookie session
 - Dedicated owner auth database for username → repeater ownership mapping
 - Owner-facing dashboard: repeater summary, packet history, advert counts, direct sender map, heard-by list, link health, and alerts
 - Planned node placement tool: drop a marker on the map, preview estimated RF coverage before deploying hardware
 - Planned repeater registration/claim workflow improvements
+- In-app owner alerts for low battery, stale links, advert drops, silence, and missing observers
 
-### Phase 6 - Network intelligence expansion (planned)
-- Network topology graph showing strongest relay relationships
-- Better cross-network correlation and packet-hearing analysis
-- Operator-facing diagnostics for path model explainability
+### Phase 6 - Network intelligence expansion (complete)
+- Bounded topology graph with hubs, graph components, isolated repeaters, and likely bridge nodes
+- Regional health scoring based on traffic freshness and observer redundancy
+- Timeline replay, map modes, shareable views, node details, and planning comparisons
+- Path explanations with confidence, evidence, alternatives, and limitations
+- Saved searches/watchlists plus versioned CSV and GeoJSON exports
 
-### Phase 7 - Predicted vs observed RF model validation (planned)
+### Phase 7 - Predicted vs observed RF model validation (complete)
 - Compare terrain-predicted links against real observed relay behavior
 - Highlight high-confidence mismatches for network tuning
-- Improve viability heuristics from observed false-positive/false-negative links
+- Separate operator overrides and weak evidence from likely model mismatches
+
+### Phase 8 - Reliability and operations (complete)
+- CI for backend, frontend, browser journeys, Python workers, and Compose configuration
+- Independent synthetic HTTP/WebSocket monitoring with failure and recovery webhooks
+- Liveness/readiness split, public status page, DB maintenance telemetry, and bounded load tooling
+- Restartable, audited production-network label migration with snapshot-based rollback guidance
 
 ---
 
@@ -99,7 +114,8 @@ cd ukmesh
 
 # 2. Copy and configure environment
 cp .env.example .env
-# Edit .env — at minimum set POSTGRES_PASSWORD, JWT_SECRET, MQTT_PASSWORD
+# Edit .env — at minimum set POSTGRES_PASSWORD, JWT_SECRET, MQTT_PASSWORD,
+# and REDIS_PASSWORD.
 
 # 3. Start everything
 docker compose up -d
@@ -108,13 +124,22 @@ docker compose up -d
 docker compose logs -f backend
 ```
 
+RF coverage and planned-repeater analysis are opt-in because terrain processing
+is resource-intensive. Set `VIEWSHED_ENABLED=true` and start its worker only
+when needed:
+
+```bash
+docker compose --profile viewshed up -d viewshed-worker
+```
+
 Local endpoints:
 
 - Backend API/WS: `http://localhost:3000`
-- App frontend: `http://localhost:3001` *(if configured)*
 - App (ukmesh): `http://localhost:3003`
 - Website (ukmesh): `http://localhost:3004`
-- Dev/test site: `http://localhost:3005` / `http://localhost:3006`
+- Dev/test site: `http://localhost:3006`
+- Liveness/readiness: `http://localhost:3000/healthz` and `http://localhost:3000/readyz`
+- API discovery/OpenAPI: `http://localhost:3000/api/v1` and `http://localhost:3000/api/v1/openapi.yaml`
 
 To expose it publicly, configure a Cloudflare Tunnel (see below) or reverse proxy of your choice.
 
@@ -132,6 +157,7 @@ Copy `.env.example` to `.env` and fill in your values. All variables used by the
 | `MQTT_BROKER_URL` | `ws://mosquitto:9001` | Mosquitto WebSocket URL (internal) |
 | `MQTT_USERNAME` | `backend` | MQTT client username |
 | `MQTT_PASSWORD` | *(required)* | MQTT client password |
+| `REDIS_PASSWORD` | *(required)* | Password for the bundled Redis service; passed separately from the URL so reserved characters are safe |
 | `REDIS_URL` | `redis://redis:6379` | Redis URL for WebSocket pub/sub |
 | `JWT_SECRET` | *(required)* | Secret for JWT verification |
 | `ALLOWED_ORIGINS` | `http://localhost:3001,http://localhost:3002` | Comma-separated browser origins allowed for CORS and WebSocket |
@@ -141,8 +167,9 @@ Copy `.env.example` to `.env` and fill in your values. All variables used by the
 | `OWNER_DATABASE_URL` | *(optional)* | Separate Postgres database URL for owner portal username → repeater mappings |
 | `OWNER_COOKIE_SECRET` | *(optional but recommended)* | Secret used to encrypt/sign the owner session cookie |
 | `OWNER_MQTT_USERNAME_MAP` | *(optional fallback)* | Legacy static mapping in the format `user=nodeId1|nodeId2,...` |
-| `COVERAGE_MODEL` | `terrain_los` | Coverage model used by `viewshed-worker` |
-| `COVERAGE_MODEL_VERSION` | `2` | Coverage schema/version gate used to trigger recomputation |
+| `VIEWSHED_ENABLED` | `false` | Enable coverage/planned-repeater API only when the profile-gated viewshed worker is running |
+| `COVERAGE_MODEL` | `rf_radial_100m` | Coverage model used by `viewshed-worker` |
+| `COVERAGE_MODEL_VERSION` | `5` | Coverage schema/version gate used to trigger recomputation |
 | `CLOUDFLARE_TUNNEL_TOKEN` | *(optional)* | Cloudflare Zero Trust tunnel token |
 | `PORT` | `3000` | Internal app port |
 
@@ -150,21 +177,27 @@ Copy `.env.example` to `.env` and fill in your values. All variables used by the
 
 ## Mosquitto Setup
 
-Mosquitto is configured for WebSocket-only access with password authentication. After first starting the stack, add a password for the backend client and any node clients:
+Mosquitto is configured for WebSocket-only access with password authentication.
+After first starting the stack, add the backend service password:
 
 ```bash
 # Add the backend client password (must match MQTT_PASSWORD in .env)
 docker exec meshcore-analytics-mosquitto-1 \
   mosquitto_passwd -b /mosquitto/config/passwd backend your_password
 
-# Add a node client
-docker exec meshcore-analytics-mosquitto-1 \
-  mosquitto_passwd -b /mosquitto/config/passwd node1 another_password
-
 docker compose restart mosquitto
 ```
 
-Edit `mosquitto/acl` to grant the appropriate topic permissions to each user.
+Do not create observer passwords manually. Provision every observer with
+`~/bin/newuser`; it installs and verifies the publish ACL before enabling the
+credentials.
+
+The host helper at `~/bin/newuser` requires one or more full 64-character node
+public keys. It validates the keys, writes and verifies exact per-key publish
+ACLs, and only then creates the MQTT password. This ordering prevents an account
+from authenticating successfully while all of its publishes are silently denied.
+In MeshCore-HA, keep `{PUBLIC_KEY}` in the topic template; the helper requires the
+actual key only to provision the server-side ACL.
 
 ---
 
@@ -265,12 +298,12 @@ MeshCore Devices
 | `path-history-worker` | Built from `Dockerfile.backend` | Historical path resolution backfill |
 | `health-worker` | Built from `Dockerfile.backend` | Periodic health snapshot capture |
 | `link-backfill-worker` | Built from `Dockerfile.backend` | One-shot historical link backfill |
+| `synthetic-monitor` | Built from `Dockerfile.backend` | Independent HTTP/WebSocket journey checks and alert delivery |
 | `viewshed-worker` | Built from `viewshed-worker/Dockerfile` | Terrain-aware RF coverage computation |
 | `link-worker` | Built from `viewshed-worker/Dockerfile` | Link/path-loss processing from observed paths |
 | `app-ukmesh` | Built from `Dockerfile.app` | Interactive dashboard frontend |
 | `website-ukmesh` | Built from `Dockerfile.website` | Public website frontend |
-| `mesh-health-check` | Built from pinned `yellowcooln/meshcore-health-check` source | MeshCore observer coverage health-check app |
-| `app-dev` | Built from `Dockerfile.app` | Isolated test/dev dashboard frontend |
+| `mesh-health-check` | Built from the configured `gadgethd/meshcore-health-check` ref | MeshCore observer coverage health-check app |
 | `website-dev` | Built from `Dockerfile.website` | Isolated test/status site for `meshcore-test/*` traffic |
 | `cloudflared` | `cloudflare/cloudflared` | Optional Cloudflare Tunnel (use `--profile tunnel`) |
 
@@ -280,6 +313,7 @@ MeshCore Devices
 
 - Packet retention policy is currently disabled. Historical data is kept indefinitely unless explicitly pruned.
 - Node/link/coverage/path-learning/health tables are also retained indefinitely by default.
+- Synthetic journey results are pruned to 14 days by the monitor.
 
 ---
 
@@ -293,8 +327,7 @@ This project is built on the following open source libraries and tools:
 | [React](https://react.dev) | MIT |
 | [Vite](https://vitejs.dev) | MIT |
 | [TypeScript](https://www.typescriptlang.org) | Apache 2.0 |
-| [Leaflet](https://leafletjs.com) | BSD 2-Clause |
-| [react-leaflet](https://react-leaflet.js.org) | Hippocratic 2.1 |
+| [MapLibre GL JS](https://maplibre.org/maplibre-gl-js/docs/) | BSD 3-Clause |
 | [deck.gl](https://deck.gl) | MIT |
 | [react-router-dom](https://reactrouter.com) | MIT |
 | [Recharts](https://recharts.org) | MIT |
@@ -343,4 +376,4 @@ This project is built on the following open source libraries and tools:
 
 This project is licensed under MIT — see [LICENSE](LICENSE).
 
-**Note on dependencies:** react-leaflet (Hippocratic License 2.1) and Eclipse Mosquitto (EPL 2.0) are used as dependencies but not modified or redistributed. All other runtime dependencies use MIT, BSD, or Apache 2.0 licenses. The Hippocratic License adds ethical use clauses not present in standard open source licenses.
+**Note on dependencies:** Eclipse Mosquitto (EPL 2.0) is used as a dependency but not modified. Other runtime dependencies use MIT, BSD, or Apache 2.0 licenses.

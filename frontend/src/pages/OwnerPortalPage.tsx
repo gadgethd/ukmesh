@@ -1,7 +1,9 @@
 import React, { FormEvent, useEffect, useMemo, useState } from 'react';
+import './owner-portal.css';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { Area, AreaChart, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import { LoadingIndicator } from '../components/LoadingIndicator.js';
 import { DEFAULT_CENTER, MAP_STYLE } from '../components/Map/mapConfig';
 
 type OwnerNode = {
@@ -152,6 +154,8 @@ type OwnerLiveResponse = {
     channelUtilPct: number | null;
     airUtilTxPct: number | null;
   }>;
+  packetsSent24h: number;
+  packetsReceived24h: number;
   alerts: Array<{ level: 'info' | 'warn' | 'error'; message: string }>;
   recentPackets: LivePacket[];
 };
@@ -857,6 +861,45 @@ export const OwnerPortalPage: React.FC = () => {
     };
   }, []);
 
+  // Keep the node list in sync with keys learned from MQTT after login. The
+  // backend resolves the username on every session request, so a newly attached
+  // observer appears without making the owner log out and back in.
+  const hasDashboard = dashboard !== null;
+  useEffect(() => {
+    if (!hasDashboard) return;
+    let cancelled = false;
+
+    const refreshDashboard = () => {
+      fetch('/api/owner/session', { cache: 'no-store' })
+        .then(async (res) => {
+          if (!res.ok) throw new Error(res.status === 401 ? 'SESSION_EXPIRED' : `HTTP ${res.status}`);
+          return (await res.json()) as OwnerSessionResponse;
+        })
+        .then((json) => {
+          if (cancelled) return;
+          setDashboard(json.dashboard);
+          setSelectedNodeId((current) => (
+            json.dashboard.nodes.some((node) => node.node_id === current)
+              ? current
+              : (json.dashboard.nodes[0]?.node_id ?? '')
+          ));
+        })
+        .catch((err: Error) => {
+          if (cancelled || err.message !== 'SESSION_EXPIRED') return;
+          setDashboard(null);
+          setLive(null);
+          setLastHopStrength([]);
+          publishOwnerSession(null);
+        });
+    };
+
+    const timer = window.setInterval(refreshDashboard, 15_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [hasDashboard]);
+
   const handleLogin = (event: FormEvent) => {
     event.preventDefault();
     if (!mqttUsername.trim() || !mqttPassword.trim()) {
@@ -907,7 +950,7 @@ export const OwnerPortalPage: React.FC = () => {
   };
 
   useEffect(() => {
-    if (!dashboard || !selectedNodeId) return;
+    if (!hasDashboard || !selectedNodeId) return;
     let cancelled = false;
     setLive(null);
     setLiveError(null);
@@ -936,10 +979,13 @@ export const OwnerPortalPage: React.FC = () => {
       cancelled = true;
       clearInterval(timer);
     };
-  }, [dashboard, selectedNodeId]);
+  // Session polling replaces the dashboard snapshot every 15 seconds. Key this
+  // effect to authentication state and the selected node so a snapshot refresh
+  // does not clear the live data and restart its request interval.
+  }, [hasDashboard, selectedNodeId]);
 
   useEffect(() => {
-    if (!dashboard || !selectedNodeId) return;
+    if (!hasDashboard || !selectedNodeId) return;
     let cancelled = false;
 
     const load = () => {
@@ -965,7 +1011,8 @@ export const OwnerPortalPage: React.FC = () => {
       cancelled = true;
       clearInterval(timer);
     };
-  }, [dashboard, selectedNodeId]);
+  // As above, dashboard snapshots are not a reason to reset this chart.
+  }, [hasDashboard, selectedNodeId]);
 
   const mapPoints = useMemo(() => {
     const ownerNode = live?.ownerNode;
@@ -1014,17 +1061,9 @@ export const OwnerPortalPage: React.FC = () => {
 
   return (
     <>
-      <section className="site-page-hero">
-        <div className="site-content">
-          <h1 className="site-page-hero__title">Repeater Owner Portal</h1>
-          <p className="site-page-hero__sub">
-            Login with your MQTT username and password. Sessions are kept in an encrypted cookie.
-          </p>
-        </div>
-      </section>
 
       <div className="site-content site-prose site-prose--wide">
-        {loading ? <p className="prose-note">Checking login session...</p> : null}
+        {loading ? <LoadingIndicator label="Checking login session..." variant="block" /> : null}
         {!loading && !dashboard ? (
           <section className="prose-section owner-login">
             <h2>Login</h2>
@@ -1055,7 +1094,7 @@ export const OwnerPortalPage: React.FC = () => {
                 maxLength={256}
               />
               <button className="site-btn site-btn--primary owner-login__button" type="submit" disabled={submitting}>
-                {submitting ? 'Logging in...' : 'Login'}
+                {submitting ? <LoadingIndicator label="Logging in..." variant="inline" /> : 'Login'}
               </button>
             </form>
             {error ? <p className="prose-note owner-login__error">{error}</p> : null}
@@ -1099,8 +1138,8 @@ export const OwnerPortalPage: React.FC = () => {
                 <div className="site-stat"><span className="site-stat__value">{strongestLink?.peer_name ?? '-'}</span><span className="site-stat__label">Strongest Link</span></div>
                 <div className="site-stat"><span className="site-stat__value">{formatPathLoss(strongestLink?.itm_path_loss_db ?? null)}</span><span className="site-stat__label">Best Path Loss</span></div>
                 <div className="site-stat"><span className="site-stat__value">{(live?.advertTrend24h ?? []).reduce((sum, point) => sum + point.adverts, 0)}</span><span className="site-stat__label">Adverts (24h)</span></div>
-                <div className="site-stat"><span className="site-stat__value">{dashboard.totals.packets24h}</span><span className="site-stat__label">Packets Sent (24h)</span></div>
-                <div className="site-stat"><span className="site-stat__value">{dashboard.totals.packetsReceived24h}</span><span className="site-stat__label">Packets Received (24h)</span></div>
+                <div className="site-stat"><span className="site-stat__value">{live?.packetsSent24h ?? 0}</span><span className="site-stat__label">Packets Sent (24h)</span></div>
+                <div className="site-stat"><span className="site-stat__value">{live?.packetsReceived24h ?? 0}</span><span className="site-stat__label">Packets Received (24h)</span></div>
               </div>
               {liveError ? <p className="prose-note owner-login__error">Live data error: {liveError}</p> : null}
             </section>

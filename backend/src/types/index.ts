@@ -1,34 +1,3 @@
-export interface DecodedMeshPacket {
-  messageHash: string;
-  routeType: number;
-  payloadType: number;
-  payloadVersion: number;
-  pathLength: number;
-  path: null | unknown[];
-  payload: {
-    raw: string;
-    decoded: Record<string, unknown> | null;
-  };
-  totalBytes: number;
-  isValid: boolean;
-}
-
-export interface StoredPacket {
-  time: Date;
-  packetHash: string;
-  rxNodeId?: string;
-  srcNodeId?: string;
-  topic: string;
-  packetType?: number;
-  routeType?: number;
-  hopCount?: number;
-  pathHashSizeBytes?: number;
-  rssi?: number;
-  snr?: number;
-  payload?: Record<string, unknown>;
-  rawHex: string;
-}
-
 export interface Node {
   nodeId: string;
   name?: string;
@@ -56,7 +25,7 @@ export interface LivePacket {
   topic: string;
   network?: string;
   packetType?: number;
-  routeType?: number;   // 0=FLOOD, 1=DIRECT, 2=FLOOD+codes, 3=DIRECT+codes
+  routeType?: number;   // 0=TransportFlood, 1=Flood, 2=Direct, 3=TransportDirect
   hopCount?: number;
   pathHashSizeBytes?: number;
   direction?: string;   // 'rx' | 'tx' from mctomqtt
@@ -64,5 +33,7 @@ export interface LivePacket {
   payload?: Record<string, unknown>;
   path?: string[];      // relay hop hashes in packet order (1/2/3-byte => 2/4/6 hex chars)
   advertCount?: number; // for Advert packets: persistent DB count after this event
+  transportCodes?: string; // raw 4-byte hex for TransportFlood/TransportDirect packets
+  regionScope?: string;    // matched region name e.g. '#Europe', or undefined if no match
   ts: number;
 }

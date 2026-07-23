@@ -23,6 +23,8 @@ export interface NodeFeatureProps {
   is_link_only_stale: boolean;
   is_prohibited: boolean;
   is_inferred: boolean;
+  replay_active: boolean;
+  replay_mode: boolean;
   hex_clash_state: 'offender' | 'relay' | null;
   visible: boolean;
   last_seen: string;
@@ -32,10 +34,17 @@ export interface NodeFeatureProps {
   hardware_model: string | null;
 }
 
+export type LatLonPosition = [number, number];
+
+export interface ClashPathLine {
+  key: string;
+  positions: LatLonPosition[];
+}
+
 export interface ClashComputation {
   clashOffenderNodeIds: Set<string>;
   clashRelayIds: Set<string>;
-  clashPathLines: Array<{ key: string; positions: [number, number][] }>;
+  clashPathLines: ClashPathLine[];
   clashModeActive: boolean;
 }
 
@@ -66,6 +75,9 @@ export interface MapLibreMapProps {
   showClientNodes: boolean;
   showHexClashes: boolean;
   maxHexClashHops: number;
+  viewshedEnabled: boolean;
+  initialView?: { lat: number; lon: number; zoom: number } | null;
+  onNodeSelect?: (nodeId: string) => void;
   onMapReady?: (map: maplibregl.Map) => void;
 }
 
@@ -73,6 +85,14 @@ export interface PopupNodeView {
   props: NodeFeatureProps;
   maskedLat: number;
   maskedLon: number;
+}
+
+export interface PredictedLink {
+  peer_id: string;
+  peer_name: string | null;
+  itm_path_loss_db: number | null;
+  itm_viable: boolean;
+  distance_km: number | null;
 }
 
 export interface PlannedRepeater {

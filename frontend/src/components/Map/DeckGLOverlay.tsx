@@ -15,7 +15,8 @@ import type maplibregl from 'maplibre-gl';
 import type { PacketArc } from '../../hooks/useNodes.js';
 import type { HiddenMaskGeometry } from '../../utils/pathing.js';
 import { maskPoint } from '../../utils/pathing.js';
-import type { CustomLosPoint, CustomLosSegment, LosProfile } from './types.js';
+import type { ClashPathLine, CustomLosPoint, CustomLosSegment, LosProfile } from './types.js';
+import { TERRAIN_CONFIG } from './mapConfig.js';
 
 const ARC_TTL_MS = 5_000;
 const FADE_DURATION_MS = 1_000;
@@ -45,26 +46,50 @@ interface Props {
   betaPaths: [number, number][][];
   betaLowSegments: [[number, number], [number, number]][];
   betaCompletionPaths: [number, number][][];
+  clashPathLines: ClashPathLine[];
   showBetaPaths: boolean;
   pathFadingOut: boolean;
 
   hiddenCoordMask: Map<string, HiddenMaskGeometry>;
+  positionElevations: Map<string, number>;
+  useTerrainElevation: boolean;
   losProfiles: LosProfile[] | null;
   customLosSegments: CustomLosSegment[];
   customLosStart: CustomLosPoint | null;
 }
 
 // Lat/lon [lat, lon] (Leaflet convention) → deck.gl [lon, lat] (GeoJSON convention)
-function toXY(
+const ANTENNA_H = 10;
+
+function positionKey(lat: number, lon: number): string {
+  return `${Math.round(lat * 1_000_000) / 1_000_000},${Math.round(lon * 1_000_000) / 1_000_000}`;
+}
+
+function toXYZ(
   pt: [number, number],
   mask: Map<string, HiddenMaskGeometry>,
-): [number, number] {
+  positionElevations: Map<string, number>,
+  useTerrainElevation: boolean,
+): [number, number, number] {
+  const [rawLat, rawLon] = pt;
   const [lat, lon] = maskPoint(pt, mask);
-  return [lon, lat];
+  const elevation = useTerrainElevation
+    ? (positionElevations.get(positionKey(rawLat, rawLon)) ?? positionElevations.get(positionKey(lat, lon)) ?? 0)
+    : 0;
+  const z = useTerrainElevation ? (elevation + ANTENNA_H) * TERRAIN_CONFIG.exaggeration : 0;
+  return [lon, lat, z];
 }
 
 // Shared PathStyleExtension instance for dashed paths — created once outside the component.
 const DASH_EXT = [new PathStyleExtension({ dash: true, highPrecisionDash: true })];
+
+function observedPathColor(count: number, maxCount: number, alpha: number): [number, number, number, number] {
+  if (maxCount <= 1) return [239, 68, 68, alpha];
+  const normalized = Math.log(Math.max(1, count)) / Math.log(maxCount);
+  if (normalized >= 2 / 3) return [34, 197, 94, alpha];
+  if (normalized >= 1 / 3) return [251, 191, 36, alpha];
+  return [239, 68, 68, alpha];
+}
 
 function buildLayers(
   arcs: PacketArc[],
@@ -74,6 +99,9 @@ function buildLayers(
   betaPaths: [number, number][][],
   betaLowSegments: [[number, number], [number, number]][],
   betaCompletionPaths: [number, number][][],
+  clashPathLines: ClashPathLine[],
+  positionElevations: Map<string, number>,
+  useTerrainElevation: boolean,
   showBetaPaths: boolean,
   pathFadingOut: boolean,
   hiddenCoordMask: Map<string, HiddenMaskGeometry>,
@@ -116,29 +144,30 @@ function buildLayers(
 
   // ── Packet history heat map ────────────────────────────────────────────────
   if (showPacketHistory && packetHistorySegments.length > 0) {
+    const maxCount = packetHistorySegments.reduce((max, segment) => Math.max(max, segment.count), 0);
     const historyWithColors: HistorySegmentWithColor[] = packetHistorySegments.map((d) => {
       const s = Math.max(1, d.count);
-      const alpha = Math.min(0.82, 0.12 + Math.log10(s + 1) * 0.32);
+      const alpha = Math.min(0.55, 0.10 + Math.log10(s + 1) * 0.20);
       return {
         ...d,
-        color: [168, 85, 247, Math.round(alpha * 255)] as [number, number, number, number],
-        width: Math.min(6, 1.2 + Math.log2(s + 1) * 1.05),
+        color: observedPathColor(s, maxCount, Math.round(alpha * 255)),
+        width: Math.min(2.2, 0.8 + Math.log2(s + 1) * 0.45),
       };
     });
     layers.push(
       new LineLayer<HistorySegmentWithColor>({
         id: 'packet-history',
         data: historyWithColors,
-        getSourcePosition: (d) => toXY(d.positions[0], hiddenCoordMask),
-        getTargetPosition: (d) => toXY(d.positions[1], hiddenCoordMask),
+        getSourcePosition: (d) => toXYZ(d.positions[0], hiddenCoordMask, positionElevations, useTerrainElevation),
+        getTargetPosition: (d) => toXYZ(d.positions[1], hiddenCoordMask, positionElevations, useTerrainElevation),
         getColor: (d) => d.color,
         getWidth: (d) => d.width,
         widthUnits: 'pixels',
         widthMinPixels: 1,
         pickable: false,
         updateTriggers: {
-          getSourcePosition: hiddenCoordMask,
-          getTargetPosition: hiddenCoordMask,
+          getSourcePosition: [hiddenCoordMask, positionElevations, useTerrainElevation],
+          getTargetPosition: [hiddenCoordMask, positionElevations, useTerrainElevation],
         },
       }),
     );
@@ -154,7 +183,7 @@ function buildLayers(
         new PathLayer<[[number, number], [number, number]], PathStyleExtensionProps>({
           id: 'beta-low-segs',
           data: betaLowSegments,
-          getPath: (d) => [toXY(d[0], hiddenCoordMask), toXY(d[1], hiddenCoordMask)],
+          getPath: (d) => [toXYZ(d[0], hiddenCoordMask, positionElevations, useTerrainElevation), toXYZ(d[1], hiddenCoordMask, positionElevations, useTerrainElevation)],
           getColor: [239, 68, 68, 230],
           getWidth: 2.6,
           widthUnits: 'pixels',
@@ -163,7 +192,7 @@ function buildLayers(
           transitions: { opacity: opacityTransition },
           extensions: DASH_EXT,
           pickable: false,
-          updateTriggers: { getPath: hiddenCoordMask },
+          updateTriggers: { getPath: [hiddenCoordMask, positionElevations, useTerrainElevation] },
         }),
       );
     }
@@ -173,7 +202,7 @@ function buildLayers(
         new PathLayer<[number, number][], PathStyleExtensionProps>({
           id: 'beta-purple',
           data: betaPaths,
-          getPath: (d) => d.map((pt) => toXY(pt, hiddenCoordMask)),
+          getPath: (d) => d.map((pt) => toXYZ(pt, hiddenCoordMask, positionElevations, useTerrainElevation)),
           getColor: [168, 85, 247, 255],
           getWidth: 2.8,
           widthUnits: 'pixels',
@@ -182,7 +211,7 @@ function buildLayers(
           transitions: { opacity: opacityTransition },
           extensions: DASH_EXT,
           pickable: false,
-          updateTriggers: { getPath: hiddenCoordMask },
+          updateTriggers: { getPath: [hiddenCoordMask, positionElevations, useTerrainElevation] },
         }),
       );
     }
@@ -192,7 +221,7 @@ function buildLayers(
         new PathLayer<[number, number][], PathStyleExtensionProps>({
           id: 'beta-completion',
           data: betaCompletionPaths,
-          getPath: (d) => d.map((pt) => toXY(pt, hiddenCoordMask)),
+          getPath: (d) => d.map((pt) => toXYZ(pt, hiddenCoordMask, positionElevations, useTerrainElevation)),
           getColor: [239, 68, 68, 255],
           getWidth: 1.8,
           widthUnits: 'pixels',
@@ -201,10 +230,26 @@ function buildLayers(
           transitions: { opacity: opacityTransition },
           extensions: DASH_EXT,
           pickable: false,
-          updateTriggers: { getPath: hiddenCoordMask },
+          updateTriggers: { getPath: [hiddenCoordMask, positionElevations, useTerrainElevation] },
         }),
       );
     }
+  }
+
+  // ── Hex clash paths ───────────────────────────────────────────────────────
+  if (clashPathLines.length > 0) {
+    layers.push(
+      new PathLayer<ClashPathLine>({
+        id: 'hex-clash-lines',
+        data: clashPathLines,
+        getPath: (d) => d.positions.map((pt) => toXYZ(pt, hiddenCoordMask, positionElevations, useTerrainElevation)),
+        getColor: [249, 115, 22, 230],
+        getWidth: 2.2,
+        widthUnits: 'pixels',
+        pickable: false,
+        updateTriggers: { getPath: [hiddenCoordMask, positionElevations, useTerrainElevation] },
+      }),
+    );
   }
 
   // ── LOS terrain profiles ───────────────────────────────────────────────────
@@ -281,8 +326,7 @@ function buildLayers(
 
   // ── Custom LOS start marker (waiting for second point) ─────────────────────
   if (customLosStart) {
-    const EXAG = 2; // matches TERRAIN_CONFIG.exaggeration
-    const ANTENNA_H = 10;
+    const EXAG = TERRAIN_CONFIG.exaggeration;
     layers.push(
       new ScatterplotLayer<CustomLosPoint>({
         id: 'custom-los-start',
@@ -307,9 +351,11 @@ export const DeckGLOverlay: React.FC<Props> = ({
   map,
   arcs, showArcs,
   packetHistorySegments, showPacketHistory,
-  betaPaths, betaLowSegments, betaCompletionPaths,
+  betaPaths, betaLowSegments, betaCompletionPaths, clashPathLines,
   showBetaPaths, pathFadingOut,
   hiddenCoordMask,
+  positionElevations,
+  useTerrainElevation,
   losProfiles,
   customLosSegments,
   customLosStart,
@@ -336,7 +382,8 @@ export const DeckGLOverlay: React.FC<Props> = ({
     () => buildLayers(
       arcs, showArcs,
       packetHistorySegments, showPacketHistory,
-      betaPaths, betaLowSegments, betaCompletionPaths,
+      betaPaths, betaLowSegments, betaCompletionPaths, clashPathLines,
+      positionElevations, useTerrainElevation,
       showBetaPaths, pathFadingOut,
       hiddenCoordMask,
       losProfiles,
@@ -344,8 +391,8 @@ export const DeckGLOverlay: React.FC<Props> = ({
       customLosStart,
     ),
     [arcs, showArcs, packetHistorySegments, showPacketHistory,
-      betaPaths, betaLowSegments, betaCompletionPaths,
-      showBetaPaths, pathFadingOut, hiddenCoordMask, losProfiles,
+      betaPaths, betaLowSegments, betaCompletionPaths, clashPathLines,
+      showBetaPaths, pathFadingOut, hiddenCoordMask, positionElevations, useTerrainElevation, losProfiles,
       customLosSegments, customLosStart],
   );
 

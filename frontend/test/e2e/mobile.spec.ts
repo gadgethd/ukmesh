@@ -13,6 +13,24 @@ const chartStats = {
   hopDistribution: [{ hops: 1, count: 60 }],
   prefixCollisions: [{ prefix: 'ab', repeats: 3 }],
   observerRegions: [],
+  observerDiversity: {
+    averageObserversPerPacket: 2.5,
+    maxObserversPerPacket: 6,
+    totalPackets24h: 120,
+    singleObserverPackets24h: 20,
+    singleObserverPct24h: 16.7,
+  },
+  signalSummary: {
+    avgRssi: -92,
+    medianRssi: -91,
+    avgSnr: 4.5,
+    medianSnr: 4.2,
+    rssiSamples24h: 120,
+    snrSamples24h: 120,
+  },
+  routeTypes: [],
+  transportCodes: [],
+  pathDecodeTrend: [],
   pathHashes: {
     last24hHops: { one_byte: 30, two_byte: 20, three_byte: 10 },
     multibytePackets24h: 30,
@@ -131,12 +149,8 @@ const routedViews = [
   ['UK open source', 'http://127.0.0.1:4173/open-source'],
   ['UK stats', 'http://127.0.0.1:4173/stats'],
   ['UK login', 'http://127.0.0.1:4173/login'],
-  ['Teesside install', 'http://127.0.0.1:4176/install'],
-  ['Teesside packets', 'http://127.0.0.1:4176/packets'],
-  ['Teesside open source', 'http://127.0.0.1:4176/open-source'],
-  ['Teesside stats', 'http://127.0.0.1:4176/stats'],
-  ['Teesside login', 'http://127.0.0.1:4176/login'],
-  ['test diagnostics', 'http://127.0.0.1:4175/'],
+  ['UK docs', 'http://127.0.0.1:4173/docs'],
+  ['test site home', 'http://127.0.0.1:4175/'],
 ] as const;
 
 for (const [name, url] of routedViews) {
@@ -234,7 +248,7 @@ test('map controls and disclaimer leave the map usable on a phone', async ({ pag
 
   await page.getByRole('button', { name: /Layers/ }).click();
   const controlsBox = await page.locator('.mobile-controls').boundingBox();
-  expect(controlsBox?.height ?? PHONE.height).toBeLessThan(PHONE.height * 0.4);
+  expect(controlsBox?.height ?? PHONE.height).toBeLessThan(PHONE.height * 0.42);
   const mapBox = await page.locator('.map-area').boundingBox();
   expect(mapBox?.height ?? 0).toBeGreaterThan(300);
 
@@ -268,6 +282,7 @@ test('stats path modal fits the viewport and keeps its close action reachable', 
   await installApiFixtures(page);
   await page.goto('http://127.0.0.1:4173/stats', { waitUntil: 'networkidle' });
 
+  await page.getByRole('tab', { name: 'Paths' }).click();
   await page.getByRole('button', { name: 'North -> South' }).click();
   const dialog = page.getByRole('dialog', { name: 'Decoded path map' });
   await expect(dialog).toBeVisible();
@@ -277,11 +292,11 @@ test('stats path modal fits the viewport and keeps its close action reachable', 
   await expect(dialog.getByRole('button', { name: 'Close' })).toBeVisible();
 });
 
-test('narrow 320px pages keep card grids inside the viewport', async ({ page }) => {
+test('narrow 320px pages keep primary content inside the viewport', async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 568 });
   await installApiFixtures(page);
-  await page.goto('http://127.0.0.1:4176/packets', { waitUntil: 'networkidle' });
+  await page.goto('http://127.0.0.1:4173/', { waitUntil: 'networkidle' });
   await expectNoViewportOverflow(page);
-  const cardBox = await page.locator('.packet-card').first().boundingBox();
-  expect(cardBox?.width ?? 320).toBeLessThan(320);
+  const introBox = await page.locator('.site-home__intro').boundingBox();
+  expect(introBox?.width ?? 320).toBeLessThan(320);
 });

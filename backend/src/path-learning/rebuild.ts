@@ -1,4 +1,5 @@
-import { query } from '../db/index.js';
+import type { PoolClient } from 'pg';
+import { pool, query } from '../db/index.js';
 import {
   buildNodePathHashIndex,
   getNodesForPathHash,
@@ -32,6 +33,12 @@ type LearningLink = {
 type ResolvedHop = {
   prefix: string;
   node: LearningNode;
+  isUnique: boolean;
+};
+
+type LearningPathNode = {
+  node: LearningNode;
+  isVerified: boolean;
 };
 
 const MAX_TRAINING_PACKETS = 120_000;
@@ -42,6 +49,49 @@ const MAX_MOTIF2_CHOICES_PER_GROUP = 6;
 const MAX_MOTIF3_CHOICES_PER_GROUP = 4;
 const HOUR_BUCKET_SIZE = 6;
 const PREFIX_AMBIGUITY_RADIUS_KM = 45;
+const WRITE_BATCH_SIZE = 1_000;
+
+type PrefixPriorWriteRow = {
+  prefix: string;
+  receiver_region: string;
+  prev_prefix: string;
+  node_id: string;
+  count: number;
+  probability: number;
+};
+
+type TransitionPriorWriteRow = {
+  from_node_id: string;
+  to_node_id: string;
+  receiver_region: string;
+  count: number;
+  probability: number;
+};
+
+type EdgePriorWriteRow = {
+  from_node_id: string;
+  to_node_id: string;
+  receiver_region: string;
+  hour_bucket: number;
+  observed_count: number;
+  expected_count: number;
+  missing_count: number;
+  directional_support: number;
+  recency_score: number;
+  reliability: number;
+  itm_path_loss_db: number | null;
+  score: number;
+  consistency_penalty: number;
+};
+
+type MotifPriorWriteRow = {
+  receiver_region: string;
+  hour_bucket: number;
+  motif_len: number;
+  node_ids: string;
+  count: number;
+  probability: number;
+};
 
 function linkKey(a: string, b: string): string {
   return a < b ? `${a}:${b}` : `${b}:${a}`;
@@ -114,7 +164,8 @@ function resolvePathForPacket(
 
   for (let i = pathHashes.length - 1; i >= 0; i--) {
     const prefix = normalizePathHash(pathHashes[i]);
-    const candidates = getNodesForPathHash(pathHashIndex, prefix).filter((n) => !visited.has(n.node_id));
+    const allCandidates = getNodesForPathHash(pathHashIndex, prefix);
+    const candidates = allCandidates.filter((n) => !visited.has(n.node_id));
     if (candidates.length === 0) continue;
 
     let best: LearningNode | null = null;
@@ -133,7 +184,7 @@ function resolvePathForPacket(
     }
 
     if (best) {
-      resolved.unshift({ prefix, node: best });
+      resolved.unshift({ prefix, node: best, isUnique: allCandidates.length === 1 });
       visited.add(best.node_id);
       prev = best;
     }
@@ -176,6 +227,139 @@ function directionalSupport(link: LearningLink, fromId: string, toId: string): n
   const total = forward + reverse;
   if (total <= 0) return 0.5;
   return forward / total;
+}
+
+async function insertJsonBatches<T extends object>(
+  client: PoolClient,
+  statement: string,
+  network: string,
+  rows: T[],
+): Promise<void> {
+  for (let offset = 0; offset < rows.length; offset += WRITE_BATCH_SIZE) {
+    await client.query(statement, [network, JSON.stringify(rows.slice(offset, offset + WRITE_BATCH_SIZE))]);
+  }
+}
+
+async function replacePathLearningRows(
+  network: string,
+  prefixRows: PrefixPriorWriteRow[],
+  transitionRows: TransitionPriorWriteRow[],
+  edgeRows: EdgePriorWriteRow[],
+  motifRows: MotifPriorWriteRow[],
+  calibration: {
+    evaluatedPackets: number;
+    top1Accuracy: number;
+    meanPredConfidence: number;
+    confidenceScale: number;
+    confidenceBias: number;
+    recommendedThreshold: number;
+  },
+): Promise<void> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('DELETE FROM path_prefix_priors WHERE network = $1', [network]);
+    await client.query('DELETE FROM path_transition_priors WHERE network = $1', [network]);
+    await client.query('DELETE FROM path_edge_priors WHERE network = $1', [network]);
+    await client.query('DELETE FROM path_motif_priors WHERE network = $1', [network]);
+
+    await insertJsonBatches(client,
+      `INSERT INTO path_prefix_priors
+         (network, prefix, receiver_region, prev_prefix, node_id, count, probability, updated_at)
+       SELECT $1, row.prefix, row.receiver_region, row.prev_prefix, row.node_id, row.count, row.probability, NOW()
+       FROM jsonb_to_recordset($2::jsonb) AS row(
+         prefix text, receiver_region text, prev_prefix text, node_id text, count integer, probability double precision
+       )
+       ON CONFLICT (network, prefix, receiver_region, prev_prefix, node_id) DO UPDATE SET
+         count = EXCLUDED.count,
+         probability = EXCLUDED.probability,
+         updated_at = NOW()`,
+      network,
+      prefixRows,
+    );
+    await insertJsonBatches(client,
+      `INSERT INTO path_transition_priors
+         (network, from_node_id, to_node_id, receiver_region, count, probability, updated_at)
+       SELECT $1, row.from_node_id, row.to_node_id, row.receiver_region, row.count, row.probability, NOW()
+       FROM jsonb_to_recordset($2::jsonb) AS row(
+         from_node_id text, to_node_id text, receiver_region text, count integer, probability double precision
+       )
+       ON CONFLICT (network, from_node_id, to_node_id, receiver_region) DO UPDATE SET
+         count = EXCLUDED.count,
+         probability = EXCLUDED.probability,
+         updated_at = NOW()`,
+      network,
+      transitionRows,
+    );
+    await insertJsonBatches(client,
+      `INSERT INTO path_edge_priors
+         (network, from_node_id, to_node_id, receiver_region, hour_bucket, observed_count, expected_count, missing_count,
+          directional_support, recency_score, reliability, itm_path_loss_db, score, consistency_penalty, updated_at)
+       SELECT $1, row.from_node_id, row.to_node_id, row.receiver_region, row.hour_bucket, row.observed_count,
+              row.expected_count, row.missing_count, row.directional_support, row.recency_score, row.reliability,
+              row.itm_path_loss_db, row.score, row.consistency_penalty, NOW()
+       FROM jsonb_to_recordset($2::jsonb) AS row(
+         from_node_id text, to_node_id text, receiver_region text, hour_bucket integer, observed_count integer,
+         expected_count integer, missing_count integer, directional_support double precision, recency_score double precision,
+         reliability double precision, itm_path_loss_db double precision, score double precision, consistency_penalty double precision
+       )
+       ON CONFLICT (network, receiver_region, hour_bucket, from_node_id, to_node_id) DO UPDATE SET
+         observed_count = EXCLUDED.observed_count,
+         expected_count = EXCLUDED.expected_count,
+         missing_count = EXCLUDED.missing_count,
+         directional_support = EXCLUDED.directional_support,
+         recency_score = EXCLUDED.recency_score,
+         reliability = EXCLUDED.reliability,
+         itm_path_loss_db = EXCLUDED.itm_path_loss_db,
+         score = EXCLUDED.score,
+         consistency_penalty = EXCLUDED.consistency_penalty,
+         updated_at = NOW()`,
+      network,
+      edgeRows,
+    );
+    await insertJsonBatches(client,
+      `INSERT INTO path_motif_priors
+         (network, receiver_region, hour_bucket, motif_len, node_ids, count, probability, updated_at)
+       SELECT $1, row.receiver_region, row.hour_bucket, row.motif_len, row.node_ids, row.count, row.probability, NOW()
+       FROM jsonb_to_recordset($2::jsonb) AS row(
+         receiver_region text, hour_bucket integer, motif_len integer, node_ids text, count integer, probability double precision
+       )
+       ON CONFLICT (network, receiver_region, hour_bucket, motif_len, node_ids) DO UPDATE SET
+         count = EXCLUDED.count,
+         probability = EXCLUDED.probability,
+         updated_at = NOW()`,
+      network,
+      motifRows,
+    );
+    await client.query(
+      `INSERT INTO path_model_calibration
+         (network, evaluated_packets, top1_accuracy, mean_pred_confidence, confidence_scale, confidence_bias, recommended_threshold, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+       ON CONFLICT (network) DO UPDATE SET
+         evaluated_packets = EXCLUDED.evaluated_packets,
+         top1_accuracy = EXCLUDED.top1_accuracy,
+         mean_pred_confidence = EXCLUDED.mean_pred_confidence,
+         confidence_scale = EXCLUDED.confidence_scale,
+         confidence_bias = EXCLUDED.confidence_bias,
+         recommended_threshold = EXCLUDED.recommended_threshold,
+         updated_at = NOW()`,
+      [
+        network,
+        calibration.evaluatedPackets,
+        calibration.top1Accuracy,
+        calibration.meanPredConfidence,
+        calibration.confidenceScale,
+        calibration.confidenceBias,
+        calibration.recommendedThreshold,
+      ],
+    );
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
 export async function rebuildPathLearningModels(): Promise<void> {
@@ -246,6 +430,7 @@ async function rebuildNetwork(modelNetwork: string, sourceNetwork: string | unde
      WHERE rx_node_id IS NOT NULL
        AND path_hashes IS NOT NULL
        AND cardinality(path_hashes) > 0
+       AND path_hash_size_bytes >= 2
        AND time > NOW() - INTERVAL '120 days'
        ${packetNetworkFilter}
      ORDER BY time DESC
@@ -284,23 +469,30 @@ async function rebuildNetwork(modelNetwork: string, sourceNetwork: string | unde
     const ts = new Date(packet.time);
     const bucket = hourBucket(ts);
 
-    evaluatedPackets++;
-
-    const fullNodes = [...(src ? [src] : []), ...resolved.map((r) => r.node), rx];
+    const fullNodes: LearningPathNode[] = [
+      ...(src ? [{ node: src, isVerified: true }] : []),
+      ...resolved.map((hop) => ({ node: hop.node, isVerified: hop.isUnique })),
+      { node: rx, isVerified: true },
+    ];
     let successfulEdges = 0;
     let totalEdges = 0;
     for (let i = 0; i < fullNodes.length - 1; i++) {
       const from = fullNodes[i]!;
       const to = fullNodes[i + 1]!;
+      if (!from.isVerified || !to.isVerified) continue;
       totalEdges++;
-      if (confirmedLinks.has(linkKey(from.node_id, to.node_id))) successfulEdges++;
+      if (confirmedLinks.has(linkKey(from.node.node_id, to.node.node_id))) successfulEdges++;
     }
-    const packetConfidence = totalEdges > 0 ? successfulEdges / totalEdges : 0;
-    confidenceSum += packetConfidence;
-    if (packetConfidence >= 0.6) successPackets++;
+    if (totalEdges > 0) {
+      const packetConfidence = successfulEdges / totalEdges;
+      evaluatedPackets++;
+      confidenceSum += packetConfidence;
+      if (packetConfidence >= 0.6) successPackets++;
+    }
 
     for (let i = 0; i < resolved.length; i++) {
       const hop = resolved[i]!;
+      if (!hop.isUnique) continue;
       const prevPrefix = i > 0 ? resolved[i - 1]!.prefix : '';
       const prefixGroup = `${hop.prefix}|${region}|${prevPrefix}`;
       const choiceKey = `${prefixGroup}|${hop.node.node_id}`;
@@ -311,36 +503,33 @@ async function rebuildNetwork(modelNetwork: string, sourceNetwork: string | unde
     for (let i = 0; i < fullNodes.length - 1; i++) {
       const from = fullNodes[i]!;
       const to = fullNodes[i + 1]!;
-      const group = `${from.node_id}|${region}`;
-      const edgeKey = `${group}|${to.node_id}`;
+      if (!from.isVerified || !to.isVerified) continue;
+      const group = `${from.node.node_id}|${region}`;
+      const edgeKey = `${group}|${to.node.node_id}`;
       increment(transitionCounts, edgeKey);
       increment(transitionGroupTotals, group);
 
-      const fromGroup = `${region}|${bucket}|${from.node_id}`;
-      const directedEdgeKey = `${fromGroup}|${to.node_id}`;
+      const fromGroup = `${region}|${bucket}|${from.node.node_id}`;
+      const directedEdgeKey = `${fromGroup}|${to.node.node_id}`;
       increment(activeFromCounts, fromGroup);
       increment(edgeObservedCounts, directedEdgeKey);
       edgeLastSeenMs.set(directedEdgeKey, ts.getTime());
 
-      const motif2Group = `${region}|${bucket}|${from.node_id}`;
-      const motif2Key = `${motif2Group}|${from.node_id}>${to.node_id}`;
+      const motif2Group = `${region}|${bucket}|${from.node.node_id}`;
+      const motif2Key = `${motif2Group}|${from.node.node_id}>${to.node.node_id}`;
       increment(motif2Counts, motif2Key);
       increment(motif2GroupTotals, motif2Group);
 
       if (i < fullNodes.length - 2) {
         const next = fullNodes[i + 2]!;
-        const motif3Group = `${region}|${bucket}|${from.node_id}>${to.node_id}`;
-        const motif3Key = `${motif3Group}|${from.node_id}>${to.node_id}>${next.node_id}`;
+        if (!next.isVerified) continue;
+        const motif3Group = `${region}|${bucket}|${from.node.node_id}>${to.node.node_id}`;
+        const motif3Key = `${motif3Group}|${from.node.node_id}>${to.node.node_id}>${next.node.node_id}`;
         increment(motif3Counts, motif3Key);
         increment(motif3GroupTotals, motif3Group);
       }
     }
   }
-
-  await query('DELETE FROM path_prefix_priors WHERE network = $1', [modelNetwork]);
-  await query('DELETE FROM path_transition_priors WHERE network = $1', [modelNetwork]);
-  await query('DELETE FROM path_edge_priors WHERE network = $1', [modelNetwork]);
-  await query('DELETE FROM path_motif_priors WHERE network = $1', [modelNetwork]);
 
   const groupedPrefix = new Map<string, Array<{ nodeId: string; count: number }>>();
   for (const [key, count] of prefixChoiceCounts) {
@@ -351,20 +540,19 @@ async function rebuildNetwork(modelNetwork: string, sourceNetwork: string | unde
     groupedPrefix.set(groupKey, row);
   }
 
+  const prefixRows: PrefixPriorWriteRow[] = [];
   for (const [groupKey, rows] of groupedPrefix) {
     const [prefix, region, prevPrefix] = groupKey.split('|');
     const total = prefixGroupTotals.get(groupKey) ?? 1;
     for (const row of truncateBest(rows.map((r) => ({ key: r.nodeId, count: r.count })), MAX_PREFIX_CHOICES_PER_GROUP)) {
-      await query(
-        `INSERT INTO path_prefix_priors
-           (network, prefix, receiver_region, prev_prefix, node_id, count, probability, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
-         ON CONFLICT (network, prefix, receiver_region, prev_prefix, node_id) DO UPDATE SET
-           count = EXCLUDED.count,
-           probability = EXCLUDED.probability,
-           updated_at = NOW()`,
-        [modelNetwork, prefix, region, prevPrefix || '', row.key, row.count, row.count / total],
-      );
+      prefixRows.push({
+        prefix: prefix!,
+        receiver_region: region!,
+        prev_prefix: prevPrefix || '',
+        node_id: row.key,
+        count: row.count,
+        probability: row.count / total,
+      });
     }
   }
 
@@ -377,20 +565,18 @@ async function rebuildNetwork(modelNetwork: string, sourceNetwork: string | unde
     groupedTransitions.set(groupKey, row);
   }
 
+  const transitionRows: TransitionPriorWriteRow[] = [];
   for (const [groupKey, rows] of groupedTransitions) {
     const [fromNodeId, region] = groupKey.split('|');
     const total = transitionGroupTotals.get(groupKey) ?? 1;
     for (const row of truncateBest(rows.map((r) => ({ key: r.toNodeId, count: r.count })), MAX_TRANSITIONS_PER_GROUP)) {
-      await query(
-        `INSERT INTO path_transition_priors
-           (network, from_node_id, to_node_id, receiver_region, count, probability, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, NOW())
-         ON CONFLICT (network, from_node_id, to_node_id, receiver_region) DO UPDATE SET
-           count = EXCLUDED.count,
-           probability = EXCLUDED.probability,
-           updated_at = NOW()`,
-        [modelNetwork, fromNodeId, row.key, region, row.count, row.count / total],
-      );
+      transitionRows.push({
+        from_node_id: fromNodeId!,
+        to_node_id: row.key,
+        receiver_region: region!,
+        count: row.count,
+        probability: row.count / total,
+      });
     }
   }
 
@@ -456,45 +642,26 @@ async function rebuildNetwork(modelNetwork: string, sourceNetwork: string | unde
     groupedEdges.set(`${region}|${bucket}|${fromNodeId}`, rows);
   }
 
-  let edgeRowsInserted = 0;
+  const edgeRows: EdgePriorWriteRow[] = [];
   for (const [groupKey, rows] of groupedEdges) {
     const [region, bucketText, fromNodeId] = groupKey.split('|');
     const bucket = Number(bucketText);
     for (const row of rows.sort((a, b) => b.score - a.score).slice(0, MAX_EDGE_CHOICES_PER_GROUP)) {
-      await query(
-        `INSERT INTO path_edge_priors
-           (network, from_node_id, to_node_id, receiver_region, hour_bucket, observed_count, expected_count, missing_count,
-            directional_support, recency_score, reliability, itm_path_loss_db, score, consistency_penalty, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW())
-         ON CONFLICT (network, receiver_region, hour_bucket, from_node_id, to_node_id) DO UPDATE SET
-           observed_count = EXCLUDED.observed_count,
-           expected_count = EXCLUDED.expected_count,
-           missing_count = EXCLUDED.missing_count,
-           directional_support = EXCLUDED.directional_support,
-           recency_score = EXCLUDED.recency_score,
-           reliability = EXCLUDED.reliability,
-           itm_path_loss_db = EXCLUDED.itm_path_loss_db,
-           score = EXCLUDED.score,
-           consistency_penalty = EXCLUDED.consistency_penalty,
-           updated_at = NOW()`,
-        [
-          modelNetwork,
-          fromNodeId,
-          row.toNodeId,
-          region,
-          bucket,
-          row.observed,
-          row.expected,
-          row.missing,
-          row.directional,
-          row.recency,
-          row.reliability,
-          row.pathLoss,
-          row.score,
-          row.consistencyPenalty,
-        ],
-      );
-      edgeRowsInserted++;
+      edgeRows.push({
+        from_node_id: fromNodeId!,
+        to_node_id: row.toNodeId,
+        receiver_region: region!,
+        hour_bucket: bucket,
+        observed_count: row.observed,
+        expected_count: row.expected,
+        missing_count: row.missing,
+        directional_support: row.directional,
+        recency_score: row.recency,
+        reliability: row.reliability,
+        itm_path_loss_db: row.pathLoss,
+        score: row.score,
+        consistency_penalty: row.consistencyPenalty,
+      });
     }
   }
 
@@ -507,23 +674,20 @@ async function rebuildNetwork(modelNetwork: string, sourceNetwork: string | unde
     groupedMotif2.set(groupKey, row);
   }
 
-  let motifRowsInserted = 0;
+  const motifRows: MotifPriorWriteRow[] = [];
   for (const [groupKey, rows] of groupedMotif2) {
-    const [region, bucketText, fromNodeId] = groupKey.split('|');
+    const [region, bucketText] = groupKey.split('|');
     const bucket = Number(bucketText);
     const total = motif2GroupTotals.get(groupKey) ?? 1;
     for (const row of truncateBest(rows.map((r) => ({ key: r.nodeIds, count: r.count })), MAX_MOTIF2_CHOICES_PER_GROUP)) {
-      await query(
-        `INSERT INTO path_motif_priors
-           (network, receiver_region, hour_bucket, motif_len, node_ids, count, probability, updated_at)
-         VALUES ($1, $2, $3, 2, $4, $5, $6, NOW())
-         ON CONFLICT (network, receiver_region, hour_bucket, motif_len, node_ids) DO UPDATE SET
-           count = EXCLUDED.count,
-           probability = EXCLUDED.probability,
-           updated_at = NOW()`,
-        [modelNetwork, region, bucket, row.key, row.count, row.count / total],
-      );
-      motifRowsInserted++;
+      motifRows.push({
+        receiver_region: region!,
+        hour_bucket: bucket,
+        motif_len: 2,
+        node_ids: row.key,
+        count: row.count,
+        probability: row.count / total,
+      });
     }
   }
 
@@ -541,17 +705,14 @@ async function rebuildNetwork(modelNetwork: string, sourceNetwork: string | unde
     const bucket = Number(bucketText);
     const total = motif3GroupTotals.get(groupKey) ?? 1;
     for (const row of truncateBest(rows.map((r) => ({ key: r.nodeIds, count: r.count })), MAX_MOTIF3_CHOICES_PER_GROUP)) {
-      await query(
-        `INSERT INTO path_motif_priors
-           (network, receiver_region, hour_bucket, motif_len, node_ids, count, probability, updated_at)
-         VALUES ($1, $2, $3, 3, $4, $5, $6, NOW())
-         ON CONFLICT (network, receiver_region, hour_bucket, motif_len, node_ids) DO UPDATE SET
-           count = EXCLUDED.count,
-           probability = EXCLUDED.probability,
-           updated_at = NOW()`,
-        [modelNetwork, region, bucket, row.key, row.count, row.count / total],
-      );
-      motifRowsInserted++;
+      motifRows.push({
+        receiver_region: region!,
+        hour_bucket: bucket,
+        motif_len: 3,
+        node_ids: row.key,
+        count: row.count,
+        probability: row.count / total,
+      });
     }
   }
 
@@ -561,23 +722,17 @@ async function rebuildNetwork(modelNetwork: string, sourceNetwork: string | unde
   const confidenceBias = clamp(top1Accuracy - meanPredConfidence * confidenceScale, -0.2, 0.2);
   const recommendedThreshold = clamp(0.35 + (1 - top1Accuracy) * 0.2, 0.3, 0.88);
 
-  await query(
-    `INSERT INTO path_model_calibration
-       (network, evaluated_packets, top1_accuracy, mean_pred_confidence, confidence_scale, confidence_bias, recommended_threshold, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
-     ON CONFLICT (network) DO UPDATE SET
-       evaluated_packets = EXCLUDED.evaluated_packets,
-       top1_accuracy = EXCLUDED.top1_accuracy,
-       mean_pred_confidence = EXCLUDED.mean_pred_confidence,
-       confidence_scale = EXCLUDED.confidence_scale,
-       confidence_bias = EXCLUDED.confidence_bias,
-       recommended_threshold = EXCLUDED.recommended_threshold,
-       updated_at = NOW()`,
-    [modelNetwork, evaluatedPackets, top1Accuracy, meanPredConfidence, confidenceScale, confidenceBias, recommendedThreshold],
-  );
+  await replacePathLearningRows(modelNetwork, prefixRows, transitionRows, edgeRows, motifRows, {
+    evaluatedPackets,
+    top1Accuracy,
+    meanPredConfidence,
+    confidenceScale,
+    confidenceBias,
+    recommendedThreshold,
+  });
 
   console.log(
     `[path-learning] model=${modelNetwork} source=${sourceNetwork ?? 'all'} packets=${evaluatedPackets} ` +
-    `top1=${top1Accuracy.toFixed(3)} scale=${confidenceScale.toFixed(3)} edges=${edgeRowsInserted} motifs=${motifRowsInserted}`,
+    `top1=${top1Accuracy.toFixed(3)} scale=${confidenceScale.toFixed(3)} edges=${edgeRows.length} motifs=${motifRows.length}`,
   );
 }
