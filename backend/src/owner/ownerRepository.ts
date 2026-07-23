@@ -204,6 +204,8 @@ export function createOwnerRepository(deps: OwnerRepositoryDeps) {
       linkHealthResult,
       advertTrendResult,
       telemetryResult,
+      packetsSentResult,
+      packetsReceivedResult,
     ] = await Promise.all([
       query<{
         node_id: string;
@@ -437,6 +439,20 @@ export function createOwnerRepository(deps: OwnerRepositoryDeps) {
         ORDER BY time ASC`,
         [selectedNodeId],
       ),
+      query<{ packets_24h: number }>(
+        `SELECT COUNT(*)::int AS packets_24h
+         FROM packets
+         WHERE src_node_id = $1
+           AND time > NOW() - INTERVAL '24 hours'`,
+        [selectedNodeId],
+      ),
+      query<{ packets_24h: number }>(
+        `SELECT COUNT(*)::int AS packets_24h
+         FROM packets
+         WHERE rx_node_id = $1
+           AND time > NOW() - INTERVAL '24 hours'`,
+        [selectedNodeId],
+      ),
     ]);
 
     return {
@@ -447,6 +463,8 @@ export function createOwnerRepository(deps: OwnerRepositoryDeps) {
       linkHealthResult,
       advertTrendResult,
       telemetryResult,
+      packetsSentResult,
+      packetsReceivedResult,
     };
   }
 

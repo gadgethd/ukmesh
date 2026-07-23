@@ -13,7 +13,6 @@ function getPrimaryDatabaseUrl(): string {
   if (!raw) throw new Error('DATABASE_URL is required');
   return raw;
 }
-
 function withDatabaseName(connectionString: string, databaseName: string): string {
   const url = new URL(connectionString);
   url.pathname = `/${databaseName}`;
@@ -146,13 +145,4 @@ export async function getAllNodesForMqttUsername(mqttUsername: string): Promise<
     [normalized],
   );
   return res.rows.map((r) => r.node_id);
-}
-
-export async function getMappedOwnerNodeIds(): Promise<string[]> {
-  const res = await ownerPool.query<{ node_id: string }>(
-    `SELECT DISTINCT node_id
-     FROM owner_account_nodes
-     WHERE node_id ~ '^[0-9A-F]{64}$'`,
-  );
-  return res.rows.map((row) => row.node_id);
 }

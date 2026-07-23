@@ -3,16 +3,19 @@ import type maplibregl from 'maplibre-gl';
 import type { MeshNode } from '../../hooks/useNodes.js';
 import { useNodeMap } from '../../hooks/useNodes.js';
 import { isValidMapCoord } from '../../utils/pathing.js';
+import { useWatchlist } from '../../hooks/useWatchlist.js';
 
 interface NodeSearchProps {
   map: maplibregl.Map | null;
+  onNodeSelect?: (nodeId: string) => void;
 }
 
-export const NodeSearch: React.FC<NodeSearchProps> = ({ map }) => {
+export const NodeSearch: React.FC<NodeSearchProps> = ({ map, onNodeSelect }) => {
   const nodes = useNodeMap();
   const [query, setQuery] = useState('');
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  const watchlist = useWatchlist();
 
   const results = useMemo(() => {
     if (!query.trim()) return [];
@@ -39,6 +42,7 @@ export const NodeSearch: React.FC<NodeSearchProps> = ({ map }) => {
   const select = (node: MeshNode) => {
     // MapLibre flyTo: center is [lon, lat]
     map?.flyTo({ center: [node.lon!, node.lat!], zoom: 15 });
+    onNodeSelect?.(node.node_id);
     setQuery('');
     setOpen(false);
   };
@@ -57,13 +61,16 @@ export const NodeSearch: React.FC<NodeSearchProps> = ({ map }) => {
       {open && results.length > 0 && (
         <div className="node-search__results">
           {results.map((node) => (
-            <div key={node.node_id} className="node-search__result" onMouseDown={() => select(node)}>
+            <button type="button" key={node.node_id} className="node-search__result" onClick={() => select(node)}>
               <span className="node-search__result-name">{node.name}</span>
               {node.public_key && (
                 <span className="node-search__result-key">{node.public_key.slice(0, 8)}…</span>
               )}
-            </div>
+            </button>
           ))}
+          <button type="button" className="node-search__save" onClick={() => { watchlist.toggle('search', query.trim().toLowerCase(), query.trim()); setOpen(false); }}>
+            {watchlist.isWatched('search', query.trim().toLowerCase()) ? '★ Saved search' : '☆ Save this search'}
+          </button>
         </div>
       )}
     </div>

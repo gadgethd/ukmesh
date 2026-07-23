@@ -74,14 +74,6 @@ const Section: React.FC<{ title: string; items: LibEntry[] }> = ({ title, items 
 
 export const OpenSourcePage: React.FC = () => (
   <>
-    <section className="site-page-hero">
-      <div className="site-content">
-        <h1 className="site-page-hero__title">Open Source</h1>
-        <p className="site-page-hero__sub">
-          This project is built entirely on free, open-source software, and the full source code is available on GitHub.
-        </p>
-      </div>
-    </section>
 
     <div className="site-content site-prose">
 

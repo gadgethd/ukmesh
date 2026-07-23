@@ -3,6 +3,7 @@ import type { QueryResultRow } from 'pg';
 import { resolveRequestNetwork } from '../../http/requestScope.js';
 import type { NetworkFilters } from '../utils/networkFilters.js';
 import { normalizeObserverQuery } from '../utils/observer.js';
+import { isPrivateNode, redactPrivateNode } from '../utils/privateNode.js';
 
 type QueryFn = <T extends QueryResultRow = QueryResultRow>(
   text: string,
@@ -105,7 +106,8 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
              path_hashes
            FROM packets
            WHERE network = 'test'
-           ORDER BY time DESC`,
+           ORDER BY time DESC
+           LIMIT 2000`,
           [],
         ),
         query<{
@@ -263,7 +265,7 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
       const network = requestedNetwork === 'all' ? undefined : requestedNetwork;
       const observer = normalizeObserverQuery(req.query['observer']);
       const nodes = await getNodes(network, observer);
-      res.json(nodes);
+      res.json(nodes.map(redactPrivateNode));
     } catch (err) {
       console.error('[api] GET /nodes', (err as Error).message);
       res.status(500).json({ error: 'Internal server error' });
@@ -494,7 +496,10 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
          ORDER BY observed_count DESC`,
         [id],
       );
-      res.json(result.rows);
+      res.json(result.rows.map((row) => ({
+        ...row,
+        peer_name: isPrivateNode(row.peer_name) ? 'Private Node' : row.peer_name,
+      })));
     } catch (err) {
       console.error('[api] GET /nodes/:id/links', (err as Error).message);
       res.status(500).json({ error: 'Internal server error' });

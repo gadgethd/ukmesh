@@ -3,8 +3,8 @@ node_modules/
 
 # Build output
 dist/
-frontend/test-results/
-frontend/playwright-report/
+playwright-report/
+test-results/
 
 # Environment variables — never commit real credentials
 .env
@@ -31,6 +31,9 @@ mosquitto/log/
 __pycache__/
 *.pyc
 *.pyo
+
+# Runtime logs (operational, not for source control)
+*.log
 
 # Claude context file (may contain deployment-specific details)
 CLAUDE.md

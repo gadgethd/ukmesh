@@ -9,26 +9,51 @@
  * at the end of each path they belong to.  Observers with incompatible
  * path_hashes (no shared prefix) produce separate paths.
  *
+ * Resolution is a global per-group Viterbi (max-product) decode over the
+ * group's canonical hash chain — NOT greedy per-position selection. Each hop
+ * position is a trellis column of candidate nodes (the nodes whose IDs start
+ * with that hash, bounded to the observer region); the decoder finds the
+ * highest-scoring *coherent chain* using:
+ *
+ *   Emission (node fit):      prefix priors, ML prefix scores, direct-receiver
+ *                             observer-anchor proximity.
+ *   Transition (hop fit):     hop-distance feasibility (infeasible = -Inf),
+ *                             edge/transition/2-gram-motif priors, node_links.
+ *
+ * Forward/backward marginals from the same trellis drive the per-node
+ * `ambiguous` flag (a position is ambiguous when an alternative node yields a
+ * near-equal best chain). A synthetic "unresolved" candidate with a small
+ * baseline score sits in every column so the decoder leaves a hop unresolved
+ * rather than guess on geography alone.
+ *
  * Key constraints:
  *
  * 1. OBSERVER BOUNDING BOX: All relay nodes must lie within the geographic
  *    region defined by the MQTT observer positions (+ MAX_HOP_KM padding).
  *
  * 2. DIRECT-RECEIVER ANCHORS: An observer with hop_count=N received directly
- *    from relay[N-1].  That relay must be within MAX_HOP_KM of that observer.
+ *    from relay[N-1].  That relay must be within MAX_HOP_KM of that observer
+ *    (enforced as a hard emission gate when an anchor exists for the position).
  *
- * 3. NEIGHBOR ANCHORS: For positions not covered by direct-receiver anchors,
- *    pass 2 uses already-resolved adjacent relays (and adjacent observer nodes)
- *    as geographic constraints.
- *
- * 4. POST-VALIDATION: Adjacent resolved relay nodes are checked for impossible
- *    hops (> MAX_HOP_KM). Outlier nodes are removed until stable.
- *
- * 5. OBSERVER NODES: Each observer with a known position is inserted into the
+ * 3. OBSERVER NODES: Each observer with a known position is inserted into the
  *    path at position = path_hashes.length (i.e. right after the last relay
- *    it heard through).  Observer positions are ground-truth and are never
- *    removed by post-validation.
+ *    it heard through).  Observer positions are ground-truth.
+ *
+ * Scoring weights and prior key-formats live in ../path-shared/scoring.ts so
+ * the lazy and beta resolvers cannot silently drift apart.
  */
+import {
+  MAX_HOP_KM,
+  SCORE,
+  ML_DOMINANT_THRESHOLD,
+  DIST_DECAY_KM,
+  NULL_BASELINE,
+  AMBIG_DELTA,
+  MAX_COL,
+  transitionKey,
+  motif2Key,
+} from '../path-shared/scoring.js';
+import { expandResolverScope } from '../networks.js';
 
 type QueryFn = <T extends Record<string, unknown> = Record<string, unknown>>(
   text: string,
@@ -62,14 +87,19 @@ export type LazyPathResult = {
   paths: LazyPath[];
 };
 
-// Generous but realistic upper bound for a single LoRa hop.
-const MAX_HOP_KM = 150;
-const COMBINED_UKMESH_NETWORKS = new Set(['teesside', 'ukmesh']);
+// Diagnostics only: when set, the node-id-keyed + ML signals (transition / motif
+// / edge / node_links / ML prefix scores) are forced to zero. Used by the
+// accuracy harness to measure the leakage-free floor (structural + prefix-prior
+// + geographic anchoring only). Never set in production.
+const ABLATE_LEAKY_PRIORS = process.env['LAZY_ABLATE_PRIORS'] === '1';
+
+function expectedHashHexLength(pathHashSizeBytes: number | null): number | null {
+  if (pathHashSizeBytes !== 1 && pathHashSizeBytes !== 2 && pathHashSizeBytes !== 3) return null;
+  return pathHashSizeBytes * 2;
+}
 
 function networkScope(network: string | null): string[] | null {
-  if (network == null) return null;
-  if (COMBINED_UKMESH_NETWORKS.has(network)) return ['teesside', 'ukmesh'];
-  return [network];
+  return network == null ? null : expandResolverScope(network);
 }
 
 function distKm(
@@ -165,6 +195,7 @@ export async function lazyResolvePath(
         AND rx_node_id IS NOT NULL
       ORDER BY rx_node_id,
                COALESCE(cardinality(path_hashes), 0) DESC,
+               COALESCE(path_hash_size_bytes, 0) DESC,
                time ASC`,
     [packetHash, scopedNetworks],
   );
@@ -228,7 +259,14 @@ export async function lazyResolvePath(
 
   // ── 5. Group observers by prefix-compatible path_hashes ─────────────────
   const obsEntries: ObsEntry[] = canonicalObs.rows.map((row) => {
-    let hashes = (row.path_hashes ?? []).map((h) => h.toUpperCase());
+    const expectedHexLen = expectedHashHexLength(row.path_hash_size_bytes);
+    const pathHashSizeBytes = expectedHexLen == null ? null : row.path_hash_size_bytes;
+    let hashes = (row.path_hashes ?? [])
+      .map((h) => String(h).trim().toUpperCase())
+      .filter((h) => h.length > 0);
+    if (expectedHexLen != null) {
+      hashes = hashes.filter((h) => h.length === expectedHexLen);
+    }
     // Trim the observer's own trailing hash (meshcore appends the receiver's
     // own prefix as the last path_hashes entry). Mirrors trimObserverTerminalHop
     // in resolver.ts.
@@ -242,7 +280,7 @@ export async function lazyResolvePath(
     return {
       rx_node_id: row.rx_node_id,
       path_hashes: hashes,
-      path_hash_size_bytes: row.path_hash_size_bytes,
+      path_hash_size_bytes: pathHashSizeBytes,
     };
   });
 
@@ -283,109 +321,11 @@ export async function lazyResolvePath(
     }
   }
 
-  // ── 7. Geographic resolution helper ─────────────────────────────────────
-  // neighborIds: node IDs of adjacent already-resolved nodes (prev + next relay
-  // or observer). When provided, candidates with a confirmed link to any of
-  // these are strongly preferred over candidates that are merely within range.
-  function pickBest(
-    hash: string,
-    anchors: Array<{ lat: number; lon: number }>,
-    neighborIds: string[] = [],
-    prevHash: string | null = null,
-    resolvedNeighborIds: string[] = [],
-  ): { nodeId: string; name: string | null; lat: number; lon: number; ambiguous: boolean } | null {
-    const candidates = nodesByHash.get(hash) ?? [];
-    if (candidates.length === 0) return null;
-
-    // Score each candidate with tiered evidence:
-    //   Tier -1: ML model high-confidence mapping (score >= 0.85)
-    //   Tier 0: prefix prior confirms this node for hash+prevHash context
-    //   Tier 1: edge prior confirms a link to a resolved neighbor
-    //   Tier 2: node_links confirms a link to any neighbor
-    //   Tier 3: distance only (no evidence)
-    type ScoredCandidate = {
-      nodeId: string; name: string | null; lat: number; lon: number;
-      dist: number; tier: number; priorCount: number; edgeScore: number; mlScore: number;
-    };
-
-    const hash2char = hash.slice(0, 2).toUpperCase();
-    const scored: ScoredCandidate[] = [];
-    for (const c of candidates) {
-      const dist = anchors.length > 0 ? minDistToSet(c, anchors) : Infinity;
-      if (anchors.length > 0 && dist > MAX_HOP_KM) continue;
-
-      const mlScore = mlScores.get(`${hash2char}:${c.nodeId}`) ?? 0;
-      const priorCount = getPrefixPriorCount(c.nodeId, hash, prevHash);
-      const edgeScore = resolvedNeighborIds.length > 0
-        ? Math.max(...resolvedNeighborIds.map((nId) => getEdgePriorScore(c.nodeId, nId)), 0)
-        : 0;
-      const hasLinkEvidence = neighborIds.length > 0
-        && neighborIds.some((nId) => hasLink(c.nodeId, nId));
-
-      let tier = 3;
-      // ML Tier -1 only wins when it has strong evidence AND isn't overriding a
-      // well-established prior for a different node.  If another candidate has
-      // a prior count more than 5× this node's ML observations, defer to the prior.
-      const bestRivalPriorCount = candidates
-        .filter((r) => r.nodeId !== c.nodeId)
-        .reduce((max, r) => Math.max(max, getPrefixPriorCount(r.nodeId, hash, prevHash)), 0);
-      const mlObsCount = mlObsCounts.get(`${hash2char}:${c.nodeId}`) ?? 0;
-      const mlDominant = mlScore >= 0.85 && (bestRivalPriorCount === 0 || mlObsCount >= bestRivalPriorCount / 5);
-      if (mlDominant) tier = -1;
-      else if (priorCount > 0) tier = 0;
-      else if (edgeScore > 0) tier = 1;
-      else if (hasLinkEvidence) tier = 2;
-
-      scored.push({ nodeId: c.nodeId, name: c.name, lat: c.lat, lon: c.lon,
-                     dist, tier, priorCount, edgeScore, mlScore });
-    }
-
-    if (scored.length === 0) return null;
-
-    // Sort: best tier first. ML score only leads inside the dominant ML tier;
-    // otherwise historical priors and edge evidence should not be displaced by
-    // a weaker model hint.
-    scored.sort((a, b) =>
-      a.tier - b.tier
-      || b.priorCount - a.priorCount
-      || b.edgeScore - a.edgeScore
-      || (a.tier === -1 && b.tier === -1 ? b.mlScore - a.mlScore : 0)
-      || a.dist - b.dist,
-    );
-
-    const best = scored[0]!;
-
-    // No anchors: only return if single candidate or evidence-backed
-    if (anchors.length === 0) {
-      if (candidates.length === 1) return { ...candidates[0]!, ambiguous: false };
-      if (best.tier <= 1) return { nodeId: best.nodeId, name: best.name, lat: best.lat, lon: best.lon, ambiguous: false };
-      if (best.tier === 2 && (scored[1] == null || scored[1].tier > 2)) {
-        return { nodeId: best.nodeId, name: best.name, lat: best.lat, lon: best.lon, ambiguous: false };
-      }
-      return null;
-    }
-
-    // High ambiguity with no evidence — don't guess
-    if (best.tier === 3 && scored.length > 2) return null;
-
-    const second = scored[1];
-    const ambiguous = second != null && second.tier === best.tier && (
-      best.tier === -1
-        ? (second.mlScore >= best.mlScore - 0.05)
-        : best.tier >= 2
-          ? (second.dist - best.dist) < 20
-          : second.priorCount >= best.priorCount * 0.8
-    );
-
-    return { nodeId: best.nodeId, name: best.name, lat: best.lat, lon: best.lon, ambiguous };
-  }
-
-  // ── 8. Global cross-group direct anchor map ─────────────────────────────
+  // ── 7. Global cross-group direct anchor map ─────────────────────────────
   // Key: `${position}:${hash}`.  An observer with hop_count = P+1 received
   // directly from the relay at position P, so its position anchors that relay.
-  // By keying on (position, hash) we can share anchors across groups that
-  // share the same relay at a given position, dramatically improving resolution
-  // for the common prefix hops.
+  // By keying on (position, hash) we share anchors across groups that use the
+  // same relay at a given position, improving resolution of common prefix hops.
   const obsEntryByNodeId = new Map(obsEntries.map((e) => [e.rx_node_id, e]));
   const globalDirectAnchors = new Map<string, Array<{ lat: number; lon: number; nodeId: string }>>();
 
@@ -406,9 +346,10 @@ export async function lazyResolvePath(
     }
   }
 
-  // ── 8.5 Fetch recorded links + path-learning priors ──────────────────────
-  // Prior data comes from historical 2/3-byte hash resolutions — it tells us
-  // which node typically appears at a given hash position given the previous hash.
+  // ── 8. Fetch recorded links + path-learning priors ──────────────────────
+  // Prior data comes from historical resolutions and tells us which node
+  // typically appears at a hash position (prefix prior), and which node→node
+  // hops are real (transition / edge / motif priors + node_links).
   const allCandidateNodeIds: string[] = [];
   for (const candidates of nodesByHash.values()) {
     for (const c of candidates) allCandidateNodeIds.push(c.nodeId);
@@ -418,47 +359,75 @@ export async function lazyResolvePath(
   // Derive 2-char (1-byte) prefixes for ML score lookup
   const allUnique2charHashes = [...new Set(allUniqueHashes.map((h) => h.slice(0, 2)))];
 
-  // Run all four lookups in parallel
-  const [linkResult, prefixPriorRows, edgePriorRows, mlScoreRows] = await Promise.all([
-    allCandidateNodeIds.length > 0
-      ? query<{ node_a_id: string; node_b_id: string }>(
-          `SELECT node_a_id, node_b_id FROM node_links
-            WHERE (node_a_id = ANY($1) OR node_b_id = ANY($1))
-              AND observed_count >= 2`,
-          [allCandidateNodeIds],
-        )
-      : Promise.resolve({ rows: [] as { node_a_id: string; node_b_id: string }[] }),
-    allUniqueHashes.length > 0
-      ? query<{ prefix: string; prev_prefix: string | null; node_id: string; total_count: string }>(
-          `SELECT prefix, prev_prefix, node_id, SUM(count)::text as total_count
-             FROM path_prefix_priors
-            WHERE ($1::text[] IS NULL OR network = ANY($1))
-              AND prefix = ANY($2)
-            GROUP BY prefix, prev_prefix, node_id`,
-          [scopedNetworks, allUniqueHashes],
-        )
-      : Promise.resolve({ rows: [] as { prefix: string; prev_prefix: string | null; node_id: string; total_count: string }[] }),
-    allCandidateNodeIds.length > 0
-      ? query<{ from_node_id: string; to_node_id: string; best_score: string }>(
-          `SELECT from_node_id, to_node_id, MAX(score)::text as best_score
-             FROM path_edge_priors
-            WHERE ($1::text[] IS NULL OR network = ANY($1))
-              AND (from_node_id = ANY($2) OR to_node_id = ANY($2))
-            GROUP BY from_node_id, to_node_id`,
-          [scopedNetworks, allCandidateNodeIds],
-        )
-      : Promise.resolve({ rows: [] as { from_node_id: string; to_node_id: string; best_score: string }[] }),
-    allUnique2charHashes.length > 0
-      ? query<{ hash_2char: string; node_id: string; score: string; observation_count: string }>(
-          `SELECT hash_2char, node_id, score::text, observation_count::text
-             FROM ml_path_prefix_scores
-            WHERE ($1::text[] IS NULL OR network = ANY($1)) AND hash_2char = ANY($2) AND score >= 0.80`,
-          [scopedNetworks, allUnique2charHashes],
-        )
-      : Promise.resolve({ rows: [] as { hash_2char: string; node_id: string; score: string; observation_count: string }[] }),
-  ]);
+  const [linkResult, prefixPriorRows, edgePriorRows, mlScoreRows, transitionPriorRows, motifPriorRows, calibrationRows] =
+    await Promise.all([
+      allCandidateNodeIds.length > 0
+        ? query<{ node_a_id: string; node_b_id: string }>(
+            `SELECT node_a_id, node_b_id FROM node_links
+              WHERE (node_a_id = ANY($1) OR node_b_id = ANY($1))
+                AND observed_count >= 2`,
+            [allCandidateNodeIds],
+          )
+        : Promise.resolve({ rows: [] as { node_a_id: string; node_b_id: string }[] }),
+      allUniqueHashes.length > 0
+        ? query<{ prefix: string; prev_prefix: string | null; node_id: string; max_prob: string }>(
+            `SELECT prefix, prev_prefix, node_id, MAX(probability)::text as max_prob
+               FROM path_prefix_priors
+              WHERE ($1::text[] IS NULL OR network = ANY($1))
+                AND prefix = ANY($2)
+              GROUP BY prefix, prev_prefix, node_id`,
+            [scopedNetworks, allUniqueHashes],
+          )
+        : Promise.resolve({ rows: [] as { prefix: string; prev_prefix: string | null; node_id: string; max_prob: string }[] }),
+      allCandidateNodeIds.length > 0
+        ? query<{ from_node_id: string; to_node_id: string; best_score: string }>(
+            `SELECT from_node_id, to_node_id, MAX(score)::text as best_score
+               FROM path_edge_priors
+              WHERE ($1::text[] IS NULL OR network = ANY($1))
+                AND (from_node_id = ANY($2) OR to_node_id = ANY($2))
+              GROUP BY from_node_id, to_node_id`,
+            [scopedNetworks, allCandidateNodeIds],
+          )
+        : Promise.resolve({ rows: [] as { from_node_id: string; to_node_id: string; best_score: string }[] }),
+      allUnique2charHashes.length > 0
+        ? query<{ hash_2char: string; node_id: string; score: string; observation_count: string }>(
+            `SELECT hash_2char, node_id, score::text, observation_count::text
+               FROM ml_path_prefix_scores
+              WHERE ($1::text[] IS NULL OR network = ANY($1)) AND hash_2char = ANY($2) AND score >= 0.80`,
+            [scopedNetworks, allUnique2charHashes],
+          )
+        : Promise.resolve({ rows: [] as { hash_2char: string; node_id: string; score: string; observation_count: string }[] }),
+      allCandidateNodeIds.length > 0
+        ? query<{ from_node_id: string; to_node_id: string; prob: string }>(
+            `SELECT from_node_id, to_node_id, MAX(probability)::text as prob
+               FROM path_transition_priors
+              WHERE ($1::text[] IS NULL OR network = ANY($1))
+                AND (from_node_id = ANY($2) OR to_node_id = ANY($2))
+              GROUP BY from_node_id, to_node_id`,
+            [scopedNetworks, allCandidateNodeIds],
+          )
+        : Promise.resolve({ rows: [] as { from_node_id: string; to_node_id: string; prob: string }[] }),
+      allCandidateNodeIds.length > 0
+        ? query<{ node_ids: string; prob: string }>(
+            `SELECT node_ids, MAX(probability)::text as prob
+               FROM path_motif_priors
+              WHERE ($1::text[] IS NULL OR network = ANY($1))
+                AND motif_len = 2
+                AND split_part(node_ids, '>', 1) = ANY($2)
+                AND split_part(node_ids, '>', 2) = ANY($2)
+              GROUP BY node_ids`,
+            [scopedNetworks, allCandidateNodeIds],
+          )
+        : Promise.resolve({ rows: [] as { node_ids: string; prob: string }[] }),
+      query<{ network: string; confidence_scale: string; confidence_bias: string; recommended_threshold: string }>(
+        `SELECT network, confidence_scale::text, confidence_bias::text, recommended_threshold::text
+           FROM path_model_calibration
+          WHERE ($1::text[] IS NULL OR network = ANY($1) OR network = 'all')`,
+        [scopedNetworks],
+      ),
+    ]);
 
-  // Build known-links set (existing logic)
+  // Build known-links set
   const knownLinks = new Set<string>();
   for (const row of linkResult.rows) {
     const mn = row.node_a_id < row.node_b_id ? row.node_a_id : row.node_b_id;
@@ -467,60 +436,235 @@ export async function lazyResolvePath(
   }
 
   function hasLink(a: string, b: string): boolean {
+    if (ABLATE_LEAKY_PRIORS) return false;
     const mn = a < b ? a : b;
     const mx = a < b ? b : a;
     return knownLinks.has(`${mn}:${mx}`);
   }
 
-  // Build prefix-prior map: "HASH|PREV_HASH" → Map<nodeId, totalCount>
-  // Aggregated across receiver_regions via SUM(count) in SQL
-  const prefixPriors = new Map<string, Map<string, number>>();
+  // Prefix-prior probability: "HASH|PREV_HASH" → Map<nodeId, probability>.
+  // MAX(probability) aggregates across receiver_region (best-case evidence).
+  const prefixProb = new Map<string, Map<string, number>>();
   for (const row of prefixPriorRows.rows) {
     const key = `${row.prefix.toUpperCase()}|${(row.prev_prefix ?? '').toUpperCase()}`;
-    if (!prefixPriors.has(key)) prefixPriors.set(key, new Map());
-    const nodeCount = Number(row.total_count) || 0;
-    const existing = prefixPriors.get(key)!.get(row.node_id) ?? 0;
-    prefixPriors.get(key)!.set(row.node_id, existing + nodeCount);
+    if (!prefixProb.has(key)) prefixProb.set(key, new Map());
+    const p = Number(row.max_prob) || 0;
+    const inner = prefixProb.get(key)!;
+    inner.set(row.node_id, Math.max(inner.get(row.node_id) ?? 0, p));
   }
 
-  function getPrefixPriorCount(nodeId: string, hash: string, prevHash: string | null): number {
-    const key = `${hash.toUpperCase()}|${(prevHash ?? '').toUpperCase()}`;
-    return prefixPriors.get(key)?.get(nodeId) ?? 0;
+  function getPrefixProb(nodeId: string, hash: string, prevHash: string | null): number {
+    const h = hash.toUpperCase();
+    const withPrev = prefixProb.get(`${h}|${(prevHash ?? '').toUpperCase()}`)?.get(nodeId);
+    if (withPrev != null) return withPrev;
+    return prefixProb.get(`${h}|`)?.get(nodeId) ?? 0;
   }
 
-  // Build edge-prior map: "min:max" → best score
-  const edgePriors = new Map<string, number>();
+  // Directed edge score: from (source-side) → to (receiver-side).
+  const edgeDirected = new Map<string, number>();
   for (const row of edgePriorRows.rows) {
-    const mn = row.from_node_id < row.to_node_id ? row.from_node_id : row.to_node_id;
-    const mx = row.from_node_id < row.to_node_id ? row.to_node_id : row.from_node_id;
-    const k = `${mn}:${mx}`;
-    const score = Number(row.best_score) || 0;
-    edgePriors.set(k, Math.max(edgePriors.get(k) ?? 0, score));
+    const k = transitionKey(row.from_node_id, row.to_node_id);
+    edgeDirected.set(k, Math.max(edgeDirected.get(k) ?? 0, Number(row.best_score) || 0));
   }
+  const getEdgeDirected = (a: string, b: string): number =>
+    ABLATE_LEAKY_PRIORS ? 0 : edgeDirected.get(transitionKey(a, b)) ?? 0;
 
-  function getEdgePriorScore(a: string, b: string): number {
-    const mn = a < b ? a : b;
-    const mx = a < b ? b : a;
-    return edgePriors.get(`${mn}:${mx}`) ?? 0;
+  // Directed transition probability.
+  const transitionProb = new Map<string, number>();
+  for (const row of transitionPriorRows.rows) {
+    const k = transitionKey(row.from_node_id, row.to_node_id);
+    transitionProb.set(k, Math.max(transitionProb.get(k) ?? 0, Number(row.prob) || 0));
   }
+  const getTransitionProb = (a: string, b: string): number =>
+    ABLATE_LEAKY_PRIORS ? 0 : transitionProb.get(transitionKey(a, b)) ?? 0;
 
-  // Build ML score and observation-count maps: `${hash_2char}:${node_id}` → value
+  // Directed 2-gram motif probability ("FROM>TO").
+  const motif2Prob = new Map<string, number>();
+  for (const row of motifPriorRows.rows) {
+    motif2Prob.set(row.node_ids, Math.max(motif2Prob.get(row.node_ids) ?? 0, Number(row.prob) || 0));
+  }
+  const getMotif2 = (a: string, b: string): number =>
+    ABLATE_LEAKY_PRIORS ? 0 : motif2Prob.get(motif2Key(a, b)) ?? 0;
+
+  // ML prefix scores: `${hash_2char}:${node_id}` → score
   const mlScores = new Map<string, number>();
-  const mlObsCounts = new Map<string, number>();
   for (const row of mlScoreRows.rows) {
-    const key = `${row.hash_2char.toUpperCase()}:${row.node_id}`;
-    mlScores.set(key, Number(row.score) || 0);
-    mlObsCounts.set(key, Number(row.observation_count) || 0);
+    mlScores.set(`${row.hash_2char.toUpperCase()}:${row.node_id}`, Number(row.score) || 0);
+  }
+  const getMlScore = (hash: string, nodeId: string): number =>
+    ABLATE_LEAKY_PRIORS ? 0 : mlScores.get(`${hash.slice(0, 2).toUpperCase()}:${nodeId}`) ?? 0;
+
+  // Model calibration (prefer exact network, fall back to 'all').
+  let confidenceScale = 1;
+  let confidenceBias = 0;
+  if (calibrationRows.rows.length > 0) {
+    const preferred = scopedNetworks
+      ? calibrationRows.rows.find((r) => scopedNetworks.includes(r.network))
+      : undefined;
+    const chosen = preferred ?? calibrationRows.rows.find((r) => r.network === 'all') ?? calibrationRows.rows[0]!;
+    confidenceScale = Number(chosen.confidence_scale) || 1;
+    confidenceBias = Number(chosen.confidence_bias) || 0;
   }
 
-  // ── 9. Resolve each group into a LazyPath ───────────────────────────────
+  // ── 9. Decode each group into a LazyPath via a per-group Viterbi ─────────
+  type Cand = { nodeId: string | null; name: string | null; lat: number | null; lon: number | null };
+  const NULL_CAND: Cand = { nodeId: null, name: null, lat: null, lon: null };
+
+  type ResolvedEntry = {
+    hash: string;
+    nodeId: string | null;
+    name: string | null;
+    lat: number | null;
+    lon: number | null;
+    ambiguous: boolean;
+  };
+
+  // Emission: how well `cand` fits the hash on its own.
+  function emission(hash: string, prevHash: string | null, cand: Cand, anchors: Array<{ lat: number; lon: number }>): number {
+    if (cand.nodeId === null) return NULL_BASELINE;
+    const positioned = cand.lat != null && cand.lon != null;
+    // Hard direct-receiver gate: when an anchor exists for this position the
+    // relay must be positioned and within one hop of the observer.
+    if (anchors.length > 0) {
+      if (!positioned) return -Infinity;
+      if (minDistToSet({ lat: cand.lat!, lon: cand.lon! }, anchors) > MAX_HOP_KM) return -Infinity;
+    }
+    let e = 0;
+    e += SCORE.prefix * getPrefixProb(cand.nodeId, hash, prevHash);
+    const ml = getMlScore(hash, cand.nodeId);
+    e += ml >= ML_DOMINANT_THRESHOLD ? Math.min(SCORE.mlDominantCap, ml * SCORE.mlDominantCap)
+                                     : Math.min(SCORE.mlWeakCap, ml * SCORE.mlWeakCap);
+    if (anchors.length > 0 && positioned) {
+      const d = minDistToSet({ lat: cand.lat!, lon: cand.lon! }, anchors);
+      e += SCORE.anchor * Math.max(0, 1 - d / MAX_HOP_KM);
+    }
+    return e;
+  }
+
+  // Transition: how well `cur` (receiver-side) follows `prev` (source-side).
+  function transition(prev: Cand, cur: Cand): number {
+    if (prev.nodeId === null || cur.nodeId === null) return 0; // unresolved wildcard, neutral
+    let t = 0;
+    if (prev.lat != null && prev.lon != null && cur.lat != null && cur.lon != null) {
+      const d = distKm({ lat: prev.lat, lon: prev.lon }, { lat: cur.lat, lon: cur.lon });
+      if (d > MAX_HOP_KM) return -Infinity; // physically impossible hop
+      t += SCORE.dist * Math.exp(-d / DIST_DECAY_KM);
+    }
+    t += SCORE.edge * getEdgeDirected(prev.nodeId, cur.nodeId);
+    t += SCORE.transition * getTransitionProb(prev.nodeId, cur.nodeId);
+    t += SCORE.motif * getMotif2(prev.nodeId, cur.nodeId);
+    if (hasLink(prev.nodeId, cur.nodeId)) t += SCORE.link;
+    return t;
+  }
+
+  function buildColumn(pos: number, hash: string, prevHash: string | null): Cand[] {
+    const raw = nodesByHash.get(hash) ?? [];
+    let cands: Cand[] = raw.map((c) => ({ nodeId: c.nodeId, name: c.name, lat: c.lat, lon: c.lon }));
+    if (cands.length > MAX_COL) {
+      // Keep the strongest by standalone evidence when a 1-byte prefix is shared widely.
+      const anchors = globalDirectAnchors.get(`${pos}:${hash}`) ?? [];
+      cands = cands
+        .map((c) => ({ c, s: emission(hash, prevHash, c, anchors) }))
+        .sort((a, b) => b.s - a.s)
+        .slice(0, MAX_COL)
+        .map((x) => x.c);
+    }
+    cands.push(NULL_CAND);
+    return cands;
+  }
+
+  // Run the max-product Viterbi over canonicalHashes[0..N-1] and return the
+  // best coherent assignment per position (+ ambiguity from marginal gaps).
+  function decodeChain(canonicalHashes: string[]): Map<number, ResolvedEntry> {
+    const N = canonicalHashes.length;
+    const resolved = new Map<number, ResolvedEntry>();
+    if (N === 0) return resolved;
+
+    const cols: Cand[][] = [];
+    const emiss: number[][] = [];
+    const anchorsByPos: Array<Array<{ lat: number; lon: number }>> = [];
+    for (let pos = 0; pos < N; pos++) {
+      const hash = canonicalHashes[pos]!;
+      const prevHash = pos > 0 ? (canonicalHashes[pos - 1] ?? null) : null;
+      const anchors = globalDirectAnchors.get(`${pos}:${hash}`) ?? [];
+      anchorsByPos.push(anchors);
+      const col = buildColumn(pos, hash, prevHash);
+      cols.push(col);
+      emiss.push(col.map((c) => emission(hash, prevHash, c, anchors)));
+    }
+
+    // Forward max-product: best score of a prefix ending at cols[pos][j].
+    // The NULL_CAND in every column (neutral, finite transitions) guarantees a
+    // connected path, so an infeasible real→real hop simply isn't taken — the
+    // chain routes through the unresolved wildcard instead of teleporting.
+    const fwd: number[][] = cols.map((c) => new Array(c.length).fill(-Infinity));
+    for (let j = 0; j < cols[0]!.length; j++) fwd[0]![j] = emiss[0]![j]!;
+    for (let pos = 1; pos < N; pos++) {
+      for (let j = 0; j < cols[pos]!.length; j++) {
+        const ej = emiss[pos]![j]!;
+        if (!isFinite(ej)) continue;
+        let best = -Infinity;
+        for (let k = 0; k < cols[pos - 1]!.length; k++) {
+          if (!isFinite(fwd[pos - 1]![k]!)) continue;
+          const t = transition(cols[pos - 1]![k]!, cols[pos]![j]!);
+          if (!isFinite(t)) continue;
+          const total = fwd[pos - 1]![k]! + t;
+          if (total > best) best = total;
+        }
+        if (isFinite(best)) fwd[pos]![j] = best + ej;
+      }
+    }
+
+    // Backward max-product: best score of a suffix starting at cols[pos][j].
+    const bwd: number[][] = cols.map((c) => new Array(c.length).fill(-Infinity));
+    for (let j = 0; j < cols[N - 1]!.length; j++) bwd[N - 1]![j] = 0;
+    for (let pos = N - 2; pos >= 0; pos--) {
+      for (let j = 0; j < cols[pos]!.length; j++) {
+        let best = -Infinity;
+        for (let k = 0; k < cols[pos + 1]!.length; k++) {
+          const ek = emiss[pos + 1]![k]!;
+          if (!isFinite(ek) || !isFinite(bwd[pos + 1]![k]!)) continue;
+          const t = transition(cols[pos]![j]!, cols[pos + 1]![k]!);
+          if (!isFinite(t)) continue;
+          const total = t + ek + bwd[pos + 1]![k]!;
+          if (total > best) best = total;
+        }
+        bwd[pos]![j] = isFinite(best) ? best : 0; // suffix may end here
+      }
+    }
+
+    for (let pos = 0; pos < N; pos++) {
+      const hash = canonicalHashes[pos]!;
+      // Best-path-through marginal for each candidate at this position.
+      let bestJ = -1, bestM = -Infinity, secondNodeM = -Infinity;
+      for (let j = 0; j < cols[pos]!.length; j++) {
+        if (!isFinite(fwd[pos]![j]!) || !isFinite(bwd[pos]![j]!)) continue;
+        const m = fwd[pos]![j]! + bwd[pos]![j]!;
+        if (m > bestM) { secondNodeM = bestM; bestM = m; bestJ = j; }
+        else if (m > secondNodeM) { secondNodeM = m; }
+      }
+      const best = bestJ >= 0 ? cols[pos]![bestJ]! : NULL_CAND;
+      const ambiguous = best.nodeId !== null && isFinite(secondNodeM) && (bestM - secondNodeM) < AMBIG_DELTA;
+      resolved.set(pos, {
+        hash,
+        nodeId: best.nodeId,
+        name: best.name,
+        lat: best.lat,
+        lon: best.lon,
+        ambiguous,
+      });
+    }
+
+    return resolved;
+  }
+
   const paths: LazyPath[] = [];
 
   for (const group of groups) {
     const { canonicalHashes, members } = group;
     const maxHops = canonicalHashes.length;
 
-    // Build positionScores from this group's members' path_hashes
+    // Per-hash appearance weights from this group's members (for diagnostics).
     const positionScores = new Map<number, Map<string, number>>();
     for (const member of members) {
       const weight = Math.max(1, member.path_hash_size_bytes ?? 1);
@@ -532,7 +676,6 @@ export async function lazyResolvePath(
       }
     }
 
-    // Canonical hash entries for relay positions 0..maxHops-1
     const canonicalHashEntries: Array<{ position: number; hash: string; appearances: number }> = [];
     for (let i = 0; i < maxHops; i++) {
       const h = canonicalHashes[i];
@@ -542,114 +685,7 @@ export async function lazyResolvePath(
       canonicalHashEntries.push({ position: i, hash: h, appearances });
     }
 
-    type ResolvedEntry = {
-      hash: string;
-      nodeId: string | null;
-      name: string | null;
-      lat: number | null;
-      lon: number | null;
-      ambiguous: boolean;
-    };
-
-    const resolved = new Map<number, ResolvedEntry>();
-
-    // Pass 1: resolve relay nodes using direct-receiver observer anchors.
-    // Uses the global anchor map so observers from other groups that share
-    // the same relay hash at the same position also contribute.
-    for (const { position, hash } of canonicalHashEntries) {
-      const anchors = globalDirectAnchors.get(`${position}:${hash}`) ?? [];
-      const neighborIds = anchors.map((a) => a.nodeId);
-      const prevHash = position > 0 ? (canonicalHashes[position - 1] ?? null) : null;
-      const result = pickBest(hash, anchors, neighborIds, prevHash, []);
-      resolved.set(position, {
-        hash,
-        nodeId: result?.nodeId ?? null,
-        name: result?.name ?? null,
-        lat: result?.lat ?? null,
-        lon: result?.lon ?? null,
-        ambiguous: result?.ambiguous ?? (nodesByHash.get(hash)?.length ?? 0) > 1,
-      });
-    }
-
-    // Pass 2: propagate resolution using neighboring resolved nodes.
-    // Runs repeatedly (both forward and backward) until no new positions resolve.
-    // This allows resolution to propagate through chains of unresolved hops, e.g.
-    // if only the tail is anchored, backward propagation fills in earlier positions.
-    let pass2Changed = true;
-    while (pass2Changed) {
-      pass2Changed = false;
-      // Run forward then backward each iteration for bidirectional propagation
-      const orders = [canonicalHashEntries, [...canonicalHashEntries].reverse()];
-      for (const order of orders) {
-        for (const { position, hash } of order) {
-          const current = resolved.get(position)!;
-          if (current.nodeId !== null && !current.ambiguous) continue;
-
-          const neighborAnchors: Array<{ lat: number; lon: number }> = [];
-          const neighborIds: string[] = [];
-
-          const prev = resolved.get(position - 1);
-          if (prev?.lat != null && prev?.lon != null) neighborAnchors.push({ lat: prev.lat, lon: prev.lon });
-          if (prev?.nodeId) neighborIds.push(prev.nodeId);
-
-          const next = resolved.get(position + 1);
-          if (next?.lat != null && next?.lon != null) neighborAnchors.push({ lat: next.lat, lon: next.lon });
-          if (next?.nodeId) neighborIds.push(next.nodeId);
-
-          // Also include the global direct anchor for this position/hash — it may
-          // not have been enough on its own in pass 1 but combined with neighbors it helps.
-          // Observer nodeIds from direct anchors are also valid neighbours.
-          const directAnchors = globalDirectAnchors.get(`${position}:${hash}`) ?? [];
-          for (const a of directAnchors) neighborIds.push(a.nodeId);
-          const allAnchors = [...directAnchors, ...neighborAnchors];
-
-          const prevHash = position > 0 ? (canonicalHashes[position - 1] ?? null) : null;
-          // Resolved relay nodeIds for edge-prior lookup (separate from observer neighborIds)
-          const resolvedNeighborIds: string[] = [];
-          if (prev?.nodeId) resolvedNeighborIds.push(prev.nodeId);
-          if (next?.nodeId) resolvedNeighborIds.push(next.nodeId);
-
-          // With priors, we can resolve even without geographic anchors
-          if (allAnchors.length === 0 && prevHash === null && resolvedNeighborIds.length === 0) continue;
-
-          const result = pickBest(hash, allAnchors, neighborIds, prevHash, resolvedNeighborIds);
-          if (result && current.nodeId === null) {
-            // Only count as progress when a previously-unresolved position gets resolved.
-            // Ambiguous→unambiguous transitions happen via post-validation, not here.
-            resolved.set(position, {
-              hash,
-              nodeId: result.nodeId,
-              name: result.name,
-              lat: result.lat,
-              lon: result.lon,
-              ambiguous: result.ambiguous,
-            });
-            pass2Changed = true;
-          }
-        }
-      }
-    }
-
-    // Post-validation: remove relay nodes creating impossible adjacent hops
-    let changed = true;
-    while (changed) {
-      changed = false;
-      for (const { position } of canonicalHashEntries) {
-        const cur = resolved.get(position);
-        if (!cur?.lat || !cur?.lon) continue;
-
-        const prev = resolved.get(position - 1);
-        const next = resolved.get(position + 1);
-
-        const prevOk = !prev?.lat || distKm({ lat: cur.lat, lon: cur.lon }, { lat: prev.lat!, lon: prev.lon! }) <= MAX_HOP_KM;
-        const nextOk = !next?.lat || distKm({ lat: cur.lat, lon: cur.lon }, { lat: next.lat!, lon: next.lon! }) <= MAX_HOP_KM;
-
-        if (!prevOk || !nextOk) {
-          resolved.set(position, { hash: cur.hash, nodeId: null, name: null, lat: null, lon: null, ambiguous: false });
-          changed = true;
-        }
-      }
-    }
+    const resolved = decodeChain(canonicalHashes);
 
     // ── Build canonicalPath: relay nodes + observer nodes ──────────────────
     const canonicalPath: LazyPathNode[] = canonicalHashEntries.map(({ position, hash, appearances }) => {
@@ -669,7 +705,6 @@ export async function lazyResolvePath(
     });
 
     // Add observer nodes at position = path_hashes.length (after their last relay).
-    // Multiple observers at the same position each get their own node row.
     const obsAtPosition = new Map<number, ObsEntry[]>();
     for (const member of members) {
       const pos = member.path_hashes.length;
@@ -723,6 +758,11 @@ export async function lazyResolvePath(
   }
 
   if (paths.length === 0) return null;
+
+  // confidenceScale/confidenceBias are loaded for future per-path confidence
+  // reporting; node selection does not depend on them. Referenced here to keep
+  // them live until the confidence field is surfaced.
+  void confidenceScale; void confidenceBias;
 
   return { packetHash, observerCount: totalObs, paths };
 }

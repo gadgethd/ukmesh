@@ -2,6 +2,8 @@ import os from 'node:os';
 import fs from 'node:fs';
 import { Redis } from 'ioredis';
 import { query } from '../db/index.js';
+import { isViewshedFeatureEnabled } from '../features.js';
+import { getRedisConnectionOptions, getRedisUrl } from '../platform/config/redis.js';
 
 type WorkerSnapshot = {
   worker_name: string;
@@ -15,15 +17,49 @@ type WorkerSnapshot = {
   disk_used_pct: number;
 };
 
+type RetentionTarget = {
+  table: 'worker_health_snapshots' | 'frontend_error_events' | 'operational_check_results' | 'observer_region_packet_sightings' | 'observer_region_observer_sightings';
+  timestampColumn: 'ts' | 'time' | 'last_seen';
+  retention: string;
+  batchSize: number;
+};
+
+const RETENTION_TARGETS: RetentionTarget[] = [
+  { table: 'worker_health_snapshots', timestampColumn: 'ts', retention: '14 days', batchSize: 10_000 },
+  { table: 'frontend_error_events', timestampColumn: 'time', retention: '30 days', batchSize: 2_000 },
+  { table: 'operational_check_results', timestampColumn: 'ts', retention: '14 days', batchSize: 2_000 },
+  // This rollup is intentionally limited to the 7-day dashboard window. Deleting
+  // it in batches avoids long transactions and lets live ingest continue.
+  { table: 'observer_region_packet_sightings', timestampColumn: 'last_seen', retention: '8 days', batchSize: 25_000 },
+  { table: 'observer_region_observer_sightings', timestampColumn: 'last_seen', retention: '8 days', batchSize: 2_000 },
+];
+
 let redisClient: Redis | null = null;
 
 function redis(): Redis {
   if (!redisClient) {
-    const redisUrl = process.env['REDIS_URL'] ?? 'redis://redis:6379';
-    redisClient = new Redis(redisUrl);
+    redisClient = new Redis(getRedisUrl(), getRedisConnectionOptions());
     redisClient.on('error', (err) => console.error('[health] redis error', err.message));
   }
   return redisClient;
+}
+
+async function deleteExpiredRows(target: RetentionTarget): Promise<void> {
+  // Identifiers come from the closed RetentionTarget union above. PostgreSQL
+  // cannot parameterize identifiers, but the retention interval and batch size
+  // remain parameters.
+  await query(
+    `WITH expired AS (
+       SELECT ctid
+       FROM ${target.table}
+       WHERE ${target.timestampColumn} < NOW() - $1::interval
+       LIMIT $2
+     )
+     DELETE FROM ${target.table} AS target
+     USING expired
+     WHERE target.ctid = expired.ctid`,
+    [target.retention, target.batchSize],
+  );
 }
 
 function toPct(num: number): number {
@@ -108,6 +144,7 @@ function systemStats() {
 
 async function currentWorkers(precomputedStats?: ReturnType<typeof systemStats>): Promise<WorkerSnapshot[]> {
   const r = redis();
+  const viewshedEnabled = isViewshedFeatureEnabled();
   const [
     viewshedDepth,
     linkDepth,
@@ -149,7 +186,7 @@ async function currentWorkers(precomputedStats?: ReturnType<typeof systemStats>)
   const memPct = stats.memory.used_pct;
   const diskPct = stats.disk.used_pct;
 
-  const viewshedProcessed = Number(viewshedRecent.rows[0]?.count ?? 0);
+  const viewshedProcessed = viewshedEnabled ? Number(viewshedRecent.rows[0]?.count ?? 0) : 0;
   const linkProcessed = Number(linkRecent.rows[0]?.count ?? 0);
   const healthProcessed = Number(healthRecent.rows[0]?.count ?? 0);
   const healthLastTs = healthLast.rows[0]?.ts ?? null;
@@ -160,10 +197,10 @@ async function currentWorkers(precomputedStats?: ReturnType<typeof systemStats>)
   return [
     {
       worker_name: 'viewshed-worker',
-      status: viewshedDepth > 0 || viewshedProcessed > 0 ? 'running' : 'idle',
-      queue_depth: Number(viewshedDepth ?? 0),
+      status: viewshedEnabled ? (viewshedDepth > 0 || viewshedProcessed > 0 ? 'running' : 'idle') : 'disabled',
+      queue_depth: viewshedEnabled ? Number(viewshedDepth ?? 0) : 0,
       processed_1h: viewshedProcessed,
-      last_activity_at: viewshedLast.rows[0]?.ts ?? null,
+      last_activity_at: viewshedEnabled ? (viewshedLast.rows[0]?.ts ?? null) : null,
       cpu_load_1m: load,
       cpu_usage_pct: stats.cpu.usage_pct,
       mem_used_pct: memPct,
@@ -236,15 +273,16 @@ export async function captureWorkerHealthSnapshot(): Promise<void> {
     );
   }
 
-  await query(`DELETE FROM worker_health_snapshots WHERE ts < NOW() - INTERVAL '14 days'`);
-  await query(`DELETE FROM frontend_error_events WHERE time < NOW() - INTERVAL '30 days'`);
+  for (const target of RETENTION_TARGETS) {
+    await deleteExpiredRows(target);
+  }
 }
 
 export async function getWorkerHealthOverview() {
   // Compute system stats once — cpuUsagePct() diffs against lastCpuSample,
   // so calling it twice in one request gives a garbage near-zero second reading.
   const sysStats = systemStats();
-  const [workers, history, errors1h, ingest, pathHashWidths, multibyteSummary] = await Promise.all([
+  const [workers, history, errors1h, ingest, pathHashWidths, multibyteSummary, operationalChecks, databaseMaintenance] = await Promise.all([
     currentWorkers(sysStats),
     query<{
       ts: string;
@@ -270,9 +308,12 @@ export async function getWorkerHealthOverview() {
       global_last_packet_at: string | null;
     }>(
        `WITH latest_rx AS (
+         -- Bounded to the active_rx window below; an unbounded scan of the
+         -- packets hypertable here takes 20s+ and gives identical results.
          SELECT rx_node_id, MAX(time) AS last_packet_at
-         FROM packets
-         WHERE rx_node_id IS NOT NULL
+      FROM packets
+         WHERE time > NOW() - INTERVAL '3 days'
+           AND rx_node_id IS NOT NULL
            AND rx_node_id <> ''
            AND network IS DISTINCT FROM 'test'
            AND split_part(topic, '/', 1) <> 'meshcore-test'
@@ -281,7 +322,8 @@ export async function getWorkerHealthOverview() {
        test_active AS (
          SELECT rx_node_id
          FROM packets
-         WHERE rx_node_id IS NOT NULL AND rx_node_id <> ''
+         WHERE time > NOW() - INTERVAL '3 days'
+           AND rx_node_id IS NOT NULL AND rx_node_id <> ''
          GROUP BY rx_node_id
          HAVING MAX(time) = MAX(time) FILTER (WHERE network = 'test')
        ),
@@ -340,7 +382,35 @@ export async function getWorkerHealthOverview() {
          )::text AS multibyte_packets_24h
        FROM packets
        WHERE time > NOW() - INTERVAL '24 hours'
-         AND network IS DISTINCT FROM 'test'`,
+        AND network IS DISTINCT FROM 'test'`,
+    ),
+    query<{
+      check_name: string;
+      status: string;
+      latency_ms: number;
+      detail: string | null;
+      ts: string;
+    }>(
+      `SELECT DISTINCT ON (check_name)
+         check_name, status, latency_ms, detail, ts::text
+       FROM operational_check_results
+       ORDER BY check_name, ts DESC`,
+    ),
+    query<{
+      database_size_bytes: string;
+      dead_rows: string;
+      oldest_vacuum_at: string | null;
+      tables_needing_vacuum: string;
+    }>(
+      `SELECT
+         pg_database_size(current_database())::text AS database_size_bytes,
+         COALESCE(SUM(n_dead_tup), 0)::text AS dead_rows,
+         MIN(last_autovacuum)::text AS oldest_vacuum_at,
+         COUNT(*) FILTER (
+           WHERE n_live_tup > 10000
+             AND n_dead_tup > GREATEST(10000, n_live_tup * 0.1)
+         )::text AS tables_needing_vacuum
+       FROM pg_stat_user_tables`,
     ),
   ]);
 
@@ -368,18 +438,86 @@ export async function getWorkerHealthOverview() {
   }
 
   const multibyteRow = multibyteSummary.rows[0];
+  const problems: Array<{ code: string; severity: 'warning' | 'critical'; message: string }> = [];
+  const lastPacketAt = ingestRow?.global_last_packet_at ? Date.parse(ingestRow.global_last_packet_at) : Number.NaN;
+  const packetAgeMinutes = Number.isFinite(lastPacketAt) ? Math.floor((Date.now() - lastPacketAt) / 60_000) : null;
+  if (packetAgeMinutes == null || packetAgeMinutes > 30) {
+    problems.push({
+      code: 'ingest_stale',
+      severity: packetAgeMinutes == null || packetAgeMinutes > 60 ? 'critical' : 'warning',
+      message: packetAgeMinutes == null ? 'No public packet ingest timestamp is available' : `Public ingest is ${packetAgeMinutes} minutes stale`,
+    });
+  }
+  if (sysStats.disk.used_pct >= 90) {
+    problems.push({ code: 'disk_pressure', severity: 'critical', message: `Disk usage is ${sysStats.disk.used_pct}%` });
+  } else if (sysStats.disk.used_pct >= 80) {
+    problems.push({ code: 'disk_pressure', severity: 'warning', message: `Disk usage is ${sysStats.disk.used_pct}%` });
+  }
+  for (const worker of workers) {
+    if (worker.queue_depth >= 1_000) {
+      problems.push({
+        code: 'worker_queue_backlog',
+        severity: worker.queue_depth >= 5_000 ? 'critical' : 'warning',
+        message: `${worker.worker_name} queue contains ${worker.queue_depth} jobs`,
+      });
+    }
+  }
+  const frontendErrors = Number(errors1h.rows[0]?.count ?? 0);
+  if (frontendErrors >= 25) {
+    problems.push({
+      code: 'frontend_error_spike',
+      severity: frontendErrors >= 100 ? 'critical' : 'warning',
+      message: `${frontendErrors} frontend errors were recorded in the last hour`,
+    });
+  }
+  const latestChecks = operationalChecks.rows;
+  for (const check of latestChecks) {
+    const ageMinutes = Math.floor((Date.now() - Date.parse(check.ts)) / 60_000);
+    if (check.status !== 'ok' || ageMinutes > 5) {
+      problems.push({
+        code: check.status !== 'ok' ? 'synthetic_check_failed' : 'synthetic_check_stale',
+        severity: check.status !== 'ok' || ageMinutes > 15 ? 'critical' : 'warning',
+        message: `${check.check_name}: ${check.status !== 'ok' ? check.detail ?? 'failed' : `last result is ${ageMinutes} minutes old`}`,
+      });
+    }
+  }
+  const maintenance = databaseMaintenance.rows[0];
+  const tablesNeedingVacuum = Number(maintenance?.tables_needing_vacuum ?? 0);
+  if (tablesNeedingVacuum > 0) {
+    problems.push({
+      code: 'database_vacuum_backlog',
+      severity: tablesNeedingVacuum >= 3 ? 'critical' : 'warning',
+      message: `${tablesNeedingVacuum} database table(s) exceed the dead-row vacuum threshold`,
+    });
+  }
 
   return {
+    status: problems.some((problem) => problem.severity === 'critical')
+      ? 'critical'
+      : problems.length > 0 ? 'degraded' : 'healthy',
+    problems,
+    maintenance: {
+      active: process.env['MAINTENANCE_ACTIVE'] === '1',
+      message: String(process.env['MAINTENANCE_MESSAGE'] ?? '').slice(0, 300) || null,
+    },
+    operational_checks: latestChecks,
+    database: {
+      size_bytes: Number(maintenance?.database_size_bytes ?? 0),
+      dead_rows: Number(maintenance?.dead_rows ?? 0),
+      oldest_vacuum_at: maintenance?.oldest_vacuum_at ?? null,
+      tables_needing_vacuum: tablesNeedingVacuum,
+    },
     system: sysStats,
     workers,
     history: history.rows,
-    frontend_errors_1h: Number(errors1h.rows[0]?.count ?? 0),
+    frontend_errors_1h: frontendErrors,
     ingest: {
       stale_nodes: staleNodes,
       active_nodes: activeNodes,
       max_stale_minutes: staleNodes > 0 ? maxStaleMinutes : 0,
       stale_threshold_minutes: staleThresholdMinutes,
       global_last_packet_at: ingestRow?.global_last_packet_at ?? null,
+      packet_age_minutes: packetAgeMinutes,
     },
     path_hashes: {
       last_24h_hops: pathHashStats,

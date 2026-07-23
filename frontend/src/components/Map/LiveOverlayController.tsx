@@ -4,13 +4,17 @@ import { DeckGLOverlay } from './DeckGLOverlay.js';
 import { useNodeMap } from '../../hooks/useNodes.js';
 import { usePacketPathOverlay } from '../../hooks/usePacketPathOverlay.js';
 import type { Filters } from '../FilterPanel/FilterPanel.js';
-import { buildHiddenCoordMask, hasCoords } from '../../utils/pathing.js';
+import { buildHiddenCoordMask, hasCoords, maskNodePoint } from '../../utils/pathing.js';
 import { useOverlayStore } from '../../store/overlayStore.js';
 
 type PacketHistorySegment = {
   positions: [[number, number], [number, number]];
   count: number;
 };
+
+function positionKey(lat: number, lon: number): string {
+  return `${Math.round(lat * 1_000_000) / 1_000_000},${Math.round(lon * 1_000_000) / 1_000_000}`;
+}
 
 type LiveOverlayControllerProps = {
   map: maplibregl.Map | null;
@@ -30,12 +34,24 @@ export const LiveOverlayController: React.FC<LiveOverlayControllerProps> = ({
   const losProfilesByNodeId = useOverlayStore((state) => state.losProfilesByNodeId);
   const customLosSegments = useOverlayStore((state) => state.customLosSegments);
   const customLosStart = useOverlayStore((state) => state.customLosStart);
+  const clashPathLines = useOverlayStore((state) => state.clashPathLines);
   const losProfiles = useMemo(
     () => Object.values(losProfilesByNodeId).flat(),
     [losProfilesByNodeId],
   );
   const nodes = useNodeMap();
   const hiddenCoordMask = useMemo(() => buildHiddenCoordMask(nodes.values()), [nodes]);
+  const positionElevations = useMemo(() => {
+    const elevations = new Map<string, number>();
+    for (const node of nodes.values()) {
+      if (!hasCoords(node)) continue;
+      const elevation = node.elevation_m ?? 0;
+      elevations.set(positionKey(node.lat, node.lon), elevation);
+      const [maskedLat, maskedLon] = maskNodePoint(node, hiddenCoordMask);
+      elevations.set(positionKey(maskedLat, maskedLon), elevation);
+    }
+    return elevations;
+  }, [hiddenCoordMask, nodes]);
   const setPathNodeIds = useOverlayStore((state) => state.setPathNodeIds);
   const setBetaMetrics = useOverlayStore((state) => state.setBetaMetrics);
 
@@ -146,9 +162,12 @@ export const LiveOverlayController: React.FC<LiveOverlayControllerProps> = ({
       betaPaths={renderedPaths}
       betaLowSegments={betaLowConfidenceSegments}
       betaCompletionPaths={betaCompletionPaths}
+      clashPathLines={clashPathLines}
       showBetaPaths={filters.betaPaths || pinnedPacketId !== null}
       pathFadingOut={pathFadingOut}
       hiddenCoordMask={hiddenCoordMask}
+      positionElevations={positionElevations}
+      useTerrainElevation={filters.terrain}
       losProfiles={losProfiles}
       customLosSegments={customLosSegments}
       customLosStart={customLosStart}

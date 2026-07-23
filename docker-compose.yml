@@ -1,14 +1,28 @@
 x-anubis-base: &anubis-base
   image: ghcr.io/techarohq/anubis:v1.25.0
-  restart: unless-stopped
+  restart: always
+  logging: &json-log-limits
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
   volumes:
     - ./anubis/botPolicy.yaml:/data/botPolicy.yaml:ro
+
+x-internal-hosts: &internal-hosts
+  {}  # Docker's internal DNS handles service name resolution
 
 services:
   timescaledb:
     image: timescale/timescaledb:latest-pg16
-    restart: unless-stopped
-    command: ["postgres", "-c", "max_connections=300"]
+    restart: always
+    logging: *json-log-limits
+    mem_limit: "4g"
+    memswap_limit: "4g"
+    stop_grace_period: 2m
+    command: ["postgres", "-c", "max_connections=300", "-c", "max_parallel_workers_per_gather=0"]
+    ports:
+      - "${INFRA_BIND_ADDRESS:-127.0.0.1}:5432:5432"
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-meshcore}
       POSTGRES_USER: ${POSTGRES_USER:-meshcore}
@@ -18,41 +32,88 @@ services:
       - ./backend/src/db/schema/base.sql:/docker-entrypoint-initdb.d/001_schema.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-meshcore} -d ${POSTGRES_DB:-meshcore}"]
-      interval: 10s
-      timeout: 5s
+      interval: 30s
+      timeout: 10s
       retries: 10
       start_period: 30s
 
   mosquitto:
+    <<: *internal-hosts
     image: eclipse-mosquitto:2
-    restart: unless-stopped
+    restart: always
+    logging: *json-log-limits
+    mem_limit: "128m"
+    memswap_limit: "128m"
+    ports:
+      - "${INFRA_BIND_ADDRESS:-127.0.0.1}:9001:9001"
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep mosquitto >/dev/null && nc -z 127.0.0.1 9001"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 10s
     volumes:
       - ./mosquitto:/mosquitto/config
       - mosquitto_data:/mosquitto/data
       - mosquitto_log:/mosquitto/log
 
   redis:
+    <<: *internal-hosts
     image: redis:7-alpine
-    restart: unless-stopped
+    restart: always
+    logging: *json-log-limits
+    mem_limit: "512m"
+    memswap_limit: "512m"
+    command: redis-server --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD required}
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    ports:
+      - "${INFRA_BIND_ADDRESS:-127.0.0.1}:6379:6379"
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
+      test: ["CMD-SHELL", "redis-cli -a $REDIS_PASSWORD --no-auth-warning ping"]
+      interval: 30s
+      timeout: 10s
       retries: 5
 
-  backend:
+  # Apply additive, versioned migrations once before the application starts.
+  # Base schema creation remains in the database init hook for fresh volumes;
+  # this service keeps existing volumes current while backend startup stays fast.
+  db-migrate:
+    <<: *internal-hosts
     build:
       context: .
       dockerfile: Dockerfile.backend
-    restart: unless-stopped
+    restart: "no"
+    logging: *json-log-limits
+    mem_limit: "256m"
+    memswap_limit: "256m"
+    command: ["node", "dist/tools/migrate.js"]
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}
+      DATABASE_STATEMENT_TIMEOUT_MS: 0
+      NODE_ENV: production
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+
+  backend:
+    <<: *internal-hosts
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    restart: always
+    logging: *json-log-limits
+    mem_limit: "1g"
+    memswap_limit: "1g"
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}
       MQTT_BROKER_URL: ${MQTT_BROKER_URL:-ws://mosquitto:9001}
       MQTT_USERNAME: ${MQTT_USERNAME:-backend}
       MQTT_PASSWORD: ${MQTT_PASSWORD}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD required}
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET required}
       OPENTOPODATA_API: ${OPENTOPODATA_API:-https://api.opentopodata.org}
       PORT: ${PORT:-3000}
@@ -60,53 +121,81 @@ services:
       OWNER_DATABASE_URL: ${OWNER_DATABASE_URL:-postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${OWNER_POSTGRES_DB:-meshcore_owner_auth}}
       OWNER_MQTT_USERNAME_MAP: ${OWNER_MQTT_USERNAME_MAP:-}
       OWNER_COOKIE_SECRET: ${OWNER_COOKIE_SECRET:-}
-      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3001,http://localhost:3002,https://ukmesh.com,https://www.ukmesh.com,https://app.ukmesh.com,https://teessidemesh.com,https://www.teessidemesh.com,https://app.teessidemesh.com,https://test.ukmesh.com}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3003,http://localhost:3004,https://ukmesh.com,https://www.ukmesh.com,https://app.ukmesh.com,https://test.ukmesh.com}
       RADIO_BOT_URL: ${RADIO_BOT_URL:-}
+      VIEWSHED_ENABLED: ${VIEWSHED_ENABLED:-false}
       COVERAGE_MODEL_VERSION: ${COVERAGE_MODEL_VERSION:-5}
       DATABASE_STATEMENT_TIMEOUT_MS: 300000
       DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-20}
       DATABASE_SKIP_SCHEMA_INIT: "true"
       WS_INITIAL_STATE_ENABLED: "1"
+      MQTT_MAX_PAYLOAD_BYTES: ${MQTT_MAX_PAYLOAD_BYTES:-65536}
+      MQTT_INGEST_CONCURRENCY: ${MQTT_INGEST_CONCURRENCY:-8}
+      MQTT_INGEST_QUEUE_MAX: ${MQTT_INGEST_QUEUE_MAX:-1000}
+      WS_MAX_PAYLOAD_BYTES: ${WS_MAX_PAYLOAD_BYTES:-65536}
+      WS_MAX_QUEUE_BYTES: ${WS_MAX_QUEUE_BYTES:-8388608}
+      WS_MAX_BUFFERED_BYTES: ${WS_MAX_BUFFERED_BYTES:-33554432}
+      MAINTENANCE_ACTIVE: ${MAINTENANCE_ACTIVE:-0}
+      MAINTENANCE_MESSAGE: ${MAINTENANCE_MESSAGE:-}
+      VIEWSHED_JOB_COOLDOWN_SECONDS: ${VIEWSHED_JOB_COOLDOWN_SECONDS:-300}
       NODE_ENV: production
     depends_on:
       timescaledb:
         condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
       mosquitto:
-        condition: service_started
+        condition: service_healthy
     ports:
       - "3000:3000"
     volumes:
       - mosquitto_log:/mosquitto/log:ro
       - ./mosquitto:/mosquitto/config
       - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/healthz >/dev/null"]
+      interval: 30s
+      timeout: 10s
+      retries: 6
+      start_period: 30s
 
   acl-watcher:
+    <<: *internal-hosts
     build:
       context: .
       dockerfile: Dockerfile.backend
-    restart: unless-stopped
+    restart: always
+    logging: *json-log-limits
+    mem_limit: "256m"
+    memswap_limit: "256m"
     command: ["node", "dist/workers/acl-watcher.js"]
     environment:
       MOSQUITTO_ACL_PATH: /mosquitto/config/acl
       MOSQUITTO_CONTAINER_NAME: mosquitto
       NODE_ENV: production
     depends_on:
-      - mosquitto
+      mosquitto:
+        condition: service_healthy
     volumes:
       - ./mosquitto:/mosquitto/config
       - /var/run/docker.sock:/var/run/docker.sock
 
   path-learning-worker:
+    <<: *internal-hosts
     build:
       context: .
       dockerfile: Dockerfile.backend
-    restart: unless-stopped
+    restart: always
+    logging: *json-log-limits
+    mem_limit: "512m"
+    memswap_limit: "512m"
     command: ["node", "dist/workers/path-learning.js"]
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD required}
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET required}
       DATABASE_STATEMENT_TIMEOUT_MS: 300000
       DATABASE_SKIP_SCHEMA_INIT: "true"
@@ -114,18 +203,25 @@ services:
     depends_on:
       timescaledb:
         condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
 
   path-history-worker:
+    <<: *internal-hosts
     build:
       context: .
       dockerfile: Dockerfile.backend
-    restart: unless-stopped
+    restart: always
+    logging: *json-log-limits
+    mem_limit: "512m"
+    memswap_limit: "512m"
     command: ["node", "dist/workers/path-history.js"]
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD required}
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET required}
       DATABASE_STATEMENT_TIMEOUT_MS: 300000
       DATABASE_SKIP_SCHEMA_INIT: "true"
@@ -133,18 +229,31 @@ services:
     depends_on:
       timescaledb:
         condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
 
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+
   health-worker:
+    <<: *internal-hosts
     build:
       context: .
       dockerfile: Dockerfile.backend
-    restart: unless-stopped
+    restart: always
+    logging: *json-log-limits
+    mem_limit: "512m"
+    memswap_limit: "512m"
     command: ["node", "dist/workers/health.js"]
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD required}
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET required}
       DATABASE_STATEMENT_TIMEOUT_MS: 300000
       DATABASE_SKIP_SCHEMA_INIT: "true"
@@ -152,40 +261,82 @@ services:
     depends_on:
       timescaledb:
         condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
 
+  synthetic-monitor:
+    <<: *internal-hosts
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    restart: always
+    logging: *json-log-limits
+    mem_limit: "256m"
+    memswap_limit: "256m"
+    command: ["node", "dist/workers/synthetic-monitor.js"]
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}
+      DATABASE_SKIP_SCHEMA_INIT: "true"
+      SYNTHETIC_BASE_URL: http://backend:3000
+      SYNTHETIC_WS_URL: ws://backend:3000
+      SYNTHETIC_INTERVAL_MS: ${SYNTHETIC_INTERVAL_MS:-60000}
+      SYNTHETIC_TIMEOUT_MS: ${SYNTHETIC_TIMEOUT_MS:-10000}
+      SYNTHETIC_FAILURE_THRESHOLD: ${SYNTHETIC_FAILURE_THRESHOLD:-3}
+      ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
+      NODE_ENV: production
+    depends_on:
+      db-migrate:
+        condition: service_completed_successfully
+      backend:
+        condition: service_healthy
+
   link-backfill-worker:
+    <<: *internal-hosts
     build:
       context: .
       dockerfile: Dockerfile.backend
     restart: "no"
+    logging: *json-log-limits
+    mem_limit: "512m"
+    memswap_limit: "512m"
     command: ["node", "dist/workers/link-backfill.js"]
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}
       MQTT_BROKER_URL: ${MQTT_BROKER_URL:-ws://mosquitto:9001}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD required}
       MESHCORE_CHANNEL_SECRETS: ${MESHCORE_CHANNEL_SECRETS:-}
       DATABASE_SKIP_SCHEMA_INIT: "true"
       NODE_ENV: production
     depends_on:
       timescaledb:
         condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
       backend:
-        condition: service_started
+        condition: service_healthy
 
   viewshed-worker:
+    <<: *internal-hosts
+    profiles: [viewshed]
     build:
       context: ./viewshed-worker
       dockerfile: Dockerfile
-    restart: unless-stopped
+    restart: always
+    logging: *json-log-limits
+    mem_limit: "5g"
+    memswap_limit: "5g"
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD required}
       SRTM_DIR: /data/srtm
       WORKER_MODE: viewshed
+      VIEWSHED_ENABLED: ${VIEWSHED_ENABLED:-false}
       NUM_WORKERS: '1'
       COVERAGE_MODEL: ${COVERAGE_MODEL:-rf_radial_100m}
       COVERAGE_MODEL_VERSION: ${COVERAGE_MODEL_VERSION:-5}
@@ -199,19 +350,26 @@ services:
     depends_on:
       timescaledb:
         condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
 
   link-worker:
+    <<: *internal-hosts
     build:
       context: ./viewshed-worker
       dockerfile: Dockerfile
-    restart: unless-stopped
+    restart: always
+    logging: *json-log-limits
+    mem_limit: "2g"
+    memswap_limit: "2g"
     cpus: 2.0
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
-      RADIO_BOT_URL: ${RADIO_BOT_URL:-http://meshcore-radio-bot:3011}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD required}
+      RADIO_BOT_URL: ${LINK_WORKER_RADIO_BOT_URL:-}
       SRTM_DIR: /data/srtm
       WORKER_MODE: link
       NUM_WORKERS: '1'
@@ -220,37 +378,34 @@ services:
     depends_on:
       timescaledb:
         condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
 
-  ml-path-learner:
-    build:
-      context: ./ml-path-learner
-      dockerfile: Dockerfile
-    restart: unless-stopped
-    cpus: 2.0
-    mem_limit: '2g'
-    environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}
-      GOLD_EXTRACTION_INTERVAL_MINS: '15'
-      TRAINING_INTERVAL_MINS: '30'
-      MIN_GOLD_PATHS: '100'
-      CONFIDENCE_THRESHOLD: '0.85'
-    depends_on:
-      timescaledb:
-        condition: service_healthy
-
-  website-teesside:
-    build:
-      context: ./teesside-site
-      dockerfile: Dockerfile
-    restart: unless-stopped
-    ports:
-      - "3002:80"
-    depends_on:
-      - backend
+#   ml-path-learner:
+#     build:
+#       context: ./ml-path-learner
+#       dockerfile: Dockerfile
+#     restart: always
+#     logging: *json-log-limits
+#     cpus: 2.0
+#     mem_limit: '2g'
+#     environment:
+#       DATABASE_URL: postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}
+#       GOLD_EXTRACTION_INTERVAL_MINS: '15'
+#       TRAINING_INTERVAL_MINS: '30'
+#       MIN_GOLD_PATHS: '100'
+#       CONFIDENCE_THRESHOLD: '0.85'
+#       ML_RETAIN_VARIANT_RESULT_GENERATIONS: ${ML_RETAIN_VARIANT_RESULT_GENERATIONS:-96}
+#       ML_RETAIN_MODEL_ARTIFACT_GENERATIONS: ${ML_RETAIN_MODEL_ARTIFACT_GENERATIONS:-96}
+#       ML_CLEANUP_GENERATION_BATCH_SIZE: ${ML_CLEANUP_GENERATION_BATCH_SIZE:-24}
+#     depends_on:
+#       timescaledb:
+#         condition: service_healthy
 
   app-ukmesh:
+    <<: *internal-hosts
     build:
       context: .
       dockerfile: Dockerfile.app
@@ -258,34 +413,61 @@ services:
         VITE_APP_HOSTNAME: app.ukmesh.com
         VITE_NETWORK: ukmesh
         VITE_SITE: ukmesh
-    restart: unless-stopped
+        VITE_VIEWSHED_ENABLED: ${VIEWSHED_ENABLED:-false}
+    restart: always
+    logging: *json-log-limits
+    mem_limit: "128m"
+    memswap_limit: "128m"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     ports:
       - "3003:80"
     volumes:
       - ${TERRAIN_TILES_PATH:-./terrain-tiles}:/terrain-tiles:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/ >/dev/null"]
+      interval: 30s
+      timeout: 10s
+      retries: 6
+      start_period: 15s
 
   website-ukmesh:
+    <<: *internal-hosts
     build:
       context: .
       dockerfile: Dockerfile.website
       args:
         VITE_APP_HOSTNAME: app.ukmesh.com
         VITE_SITE: ukmesh
-    restart: unless-stopped
+        VITE_VIEWSHED_ENABLED: ${VIEWSHED_ENABLED:-false}
+    restart: always
+    logging: *json-log-limits
+    mem_limit: "128m"
+    memswap_limit: "128m"
     ports:
       - "3004:80"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/ >/dev/null"]
+      interval: 30s
+      timeout: 10s
+      retries: 6
+      start_period: 15s
 
   mesh-health-check:
+    <<: *internal-hosts
     build:
       context: .
       dockerfile: Dockerfile.mesh-health-check
       args:
         MESH_HEALTH_CHECK_REF: ${HEALTHCHECK_SOURCE_REF:-main}
-    restart: unless-stopped
+    restart: always
+    logging: *json-log-limits
+    mem_limit: "512m"
+    memswap_limit: "512m"
     environment:
       PORT: "3090"
       APP_TITLE: ${HEALTHCHECK_APP_TITLE:-UKMesh Health Check}
@@ -323,7 +505,8 @@ services:
       TURNSTILE_SITE_KEY: ${HEALTHCHECK_TURNSTILE_SITE_KEY:-}
       TURNSTILE_SECRET_KEY: ${HEALTHCHECK_TURNSTILE_SECRET_KEY:-}
     depends_on:
-      - mosquitto
+      mosquitto:
+        condition: service_healthy
     ports:
       - "3090:3090"
     volumes:
@@ -332,27 +515,17 @@ services:
       - ./healthcheck-overrides/share.html:/app/public/share.html:ro
       - ./healthcheck-overrides/sw.js:/app/public/sw.js:ro
       - ./healthcheck-overrides/ukmesh-theme.css:/app/public/ukmesh-theme.css:ro
-
-  app-dev:
-    build:
-      context: .
-      dockerfile: Dockerfile.app
-      args:
-        VITE_APP_HOSTNAME: ${VITE_DEV_APP_HOSTNAME:-}
-        VITE_NETWORK: test
-        VITE_SITE: dev
-        VITE_OBSERVER_ID: ${VITE_DEV_OBSERVER_ID:-}
-        VITE_SITE_DISPLAY_NAME: ${VITE_DEV_SITE_DISPLAY_NAME:-UK Mesh Test}
-        VITE_SITE_FOOTER_NAME: ${VITE_DEV_SITE_FOOTER_NAME:-UK Mesh Test}
-        VITE_SITE_APP_URL: ${VITE_DEV_SITE_APP_URL:-https://test.ukmesh.com}
-        VITE_SITE_HOME_URL: ${VITE_DEV_SITE_HOME_URL:-https://test.ukmesh.com}
-    restart: unless-stopped
-    depends_on:
-      - backend
-    ports:
-      - "3005:80"
+    healthcheck:
+      # The upstream app has no /healthz route; its SPA fallback returns 200
+      # there even when the API is unavailable. Probe a real JSON endpoint.
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3090/api/bootstrap').then(r=>process.exit(r.ok && (r.headers.get('content-type') || '').includes('application/json') ? 0 : 1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 10s
+      retries: 6
+      start_period: 30s
 
   website-dev:
+    <<: *internal-hosts
     build:
       context: .
       dockerfile: Dockerfile.website
@@ -365,11 +538,22 @@ services:
         VITE_SITE_FOOTER_NAME: ${VITE_DEV_SITE_FOOTER_NAME:-UK Mesh Test}
         VITE_SITE_APP_URL: ${VITE_DEV_SITE_APP_URL:-https://test.ukmesh.com}
         VITE_SITE_HOME_URL: ${VITE_DEV_SITE_HOME_URL:-https://test.ukmesh.com}
-    restart: unless-stopped
+        VITE_VIEWSHED_ENABLED: ${VIEWSHED_ENABLED:-false}
+    restart: always
+    logging: *json-log-limits
+    mem_limit: "128m"
+    memswap_limit: "128m"
     ports:
       - "3006:80"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/ >/dev/null"]
+      interval: 30s
+      timeout: 10s
+      retries: 6
+      start_period: 15s
 
   # ── Anubis bot protection ─────────────────────────────────────────────────────
   # One sidecar per public HTTP service. Cloudflare Tunnel routes to these
@@ -378,7 +562,9 @@ services:
   # Dev services are intentionally excluded — low value.
 
   anubis-website-ukmesh:
-    <<: *anubis-base
+    <<: [*anubis-base, *internal-hosts]
+    mem_limit: "128m"
+    memswap_limit: "128m"
     environment:
       ED25519_PRIVATE_KEY_HEX: "${ANUBIS_ED25519_PRIVATE_KEY_HEX:?ANUBIS_ED25519_PRIVATE_KEY_HEX required}"
       BIND: ":8923"
@@ -391,15 +577,18 @@ services:
       SLOG_LEVEL: "INFO"
       CUSTOM_REAL_IP_HEADER: "CF-Connecting-IP"
     depends_on:
-      - website-ukmesh
+      website-ukmesh:
+        condition: service_healthy
 
   anubis-app-ukmesh:
-    <<: *anubis-base
+    <<: [*anubis-base, *internal-hosts]
+    mem_limit: "128m"
+    memswap_limit: "128m"
     environment:
       ED25519_PRIVATE_KEY_HEX: "${ANUBIS_ED25519_PRIVATE_KEY_HEX:?ANUBIS_ED25519_PRIVATE_KEY_HEX required}"
       BIND: ":8923"
       TARGET: "http://app-ukmesh:80"
-      COOKIE_DOMAIN: "app.ukmesh.com"
+      COOKIE_DOMAIN: "ukmesh.com"
       COOKIE_SECURE: "true"
       COOKIE_SAME_SITE: "Lax"
       COOKIE_EXPIRATION_TIME: "168h"
@@ -407,31 +596,18 @@ services:
       SLOG_LEVEL: "INFO"
       CUSTOM_REAL_IP_HEADER: "CF-Connecting-IP"
     depends_on:
-      - app-ukmesh
-
-  anubis-website-teesside:
-    <<: *anubis-base
-    environment:
-      ED25519_PRIVATE_KEY_HEX: "${ANUBIS_ED25519_PRIVATE_KEY_HEX:?ANUBIS_ED25519_PRIVATE_KEY_HEX required}"
-      BIND: ":8923"
-      TARGET: "http://website-teesside:80"
-      COOKIE_DOMAIN: "teessidemesh.com"
-      COOKIE_SECURE: "true"
-      COOKIE_SAME_SITE: "Lax"
-      COOKIE_EXPIRATION_TIME: "168h"
-      POLICY_FNAME: "/data/botPolicy.yaml"
-      SLOG_LEVEL: "INFO"
-      CUSTOM_REAL_IP_HEADER: "CF-Connecting-IP"
-    depends_on:
-      - website-teesside
+      app-ukmesh:
+        condition: service_healthy
 
   anubis-health-check:
-    <<: *anubis-base
+    <<: [*anubis-base, *internal-hosts]
+    mem_limit: "128m"
+    memswap_limit: "128m"
     environment:
       ED25519_PRIVATE_KEY_HEX: "${ANUBIS_ED25519_PRIVATE_KEY_HEX:?ANUBIS_ED25519_PRIVATE_KEY_HEX required}"
       BIND: ":8923"
       TARGET: "http://mesh-health-check:3090"
-      COOKIE_DOMAIN: "healthcheck.ukmesh.com"
+      COOKIE_DOMAIN: "ukmesh.com"
       COOKIE_SECURE: "true"
       COOKIE_SAME_SITE: "Lax"
       COOKIE_EXPIRATION_TIME: "168h"
@@ -439,7 +615,8 @@ services:
       SLOG_LEVEL: "INFO"
       CUSTOM_REAL_IP_HEADER: "CF-Connecting-IP"
     depends_on:
-      - mesh-health-check
+      mesh-health-check:
+        condition: service_healthy
     networks:
       default:
         # Cloudflare Tunnel currently routes healthcheck.ukmesh.com to
@@ -450,32 +627,46 @@ services:
 
   cloudflared:
     image: cloudflare/cloudflared:latest
-    restart: unless-stopped
+    restart: always
+    logging: *json-log-limits
+    mem_limit: "256m"
+    memswap_limit: "256m"
     command: tunnel run
     profiles: [tunnel]
+    networks:
+      - default
+      - meshcore-beacon-ukmesh
     environment:
       TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
     depends_on:
-      - backend
-      - anubis-website-ukmesh
-      - anubis-app-ukmesh
-      - anubis-website-teesside
-      - anubis-health-check
-      - app-dev
-      - website-dev
-      - mosquitto
+      backend:
+        condition: service_healthy
+      anubis-website-ukmesh:
+        condition: service_started
+      anubis-app-ukmesh:
+        condition: service_started
+      anubis-health-check:
+        condition: service_started
 
   loki:
+    <<: *internal-hosts
     image: grafana/loki:3.4
-    restart: unless-stopped
+    restart: always
+    logging: *json-log-limits
+    mem_limit: "512m"
+    memswap_limit: "512m"
     command: -config.file=/etc/loki/loki.yaml
     volumes:
       - ./logging/loki.yaml:/etc/loki/loki.yaml:ro
       - loki_data:/loki
 
   promtail:
+    <<: *internal-hosts
     image: grafana/promtail:3.4
-    restart: unless-stopped
+    restart: always
+    logging: *json-log-limits
+    mem_limit: "256m"
+    memswap_limit: "256m"
     command: -config.file=/etc/promtail/promtail.yaml
     volumes:
       - ./logging/promtail.yaml:/etc/promtail/promtail.yaml:ro
@@ -484,8 +675,12 @@ services:
       - loki
 
   grafana:
+    <<: *internal-hosts
     image: grafana/grafana:11.5.0
-    restart: unless-stopped
+    restart: always
+    logging: *json-log-limits
+    mem_limit: "512m"
+    memswap_limit: "512m"
     environment:
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD required}
       GF_USERS_ALLOW_SIGN_UP: "false"
@@ -498,6 +693,11 @@ services:
       - "3010:3000"
     depends_on:
       - loki
+
+networks:
+  meshcore-beacon-ukmesh:
+    external: true
+    name: meshcore-beacon-ukmesh_default
 
 volumes:
   timescaledb_data:

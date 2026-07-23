@@ -10,21 +10,12 @@ import Docker from 'dockerode';
 import {
   getNodeIdsForUser,
   userExistsInAcl,
-  nodeExistsInAcl,
   updateUserAclBlock,
   reloadMosquitto,
 } from '../mqtt/aclManager.js';
+import { parseDeniedOwnerPublish, parseMosquittoConnection } from '../mqtt/brokerLog.js';
 
 const MOSQUITTO_CONTAINER_LABEL = process.env['MOSQUITTO_CONTAINER_NAME'] ?? 'mosquitto';
-
-// "New client connected from X as <clientId> (p4, c1, k60, u'<username>')."
-const CONNECT_RE = /New client connected from .+ as (\S+) \(.*u'([^']+)'\)/;
-
-// "Denied PUBLISH from <clientId> (d0, q0, r0, m0, '<topic>', ..."
-const DENIED_RE = /Denied PUBLISH from (\S+) \([^']*'([^']+)'/;
-
-// topic: meshcore/{IATA}/{64-char nodeId}/{packets|status}
-const TOPIC_NODE_RE = /^(?:meshcore|ukmesh)\/[A-Z0-9]+\/([A-F0-9]{64})\//i;
 
 // clientId → MQTT username, populated from connection log events
 const clientToUser = new Map<string, string>();
@@ -36,12 +27,14 @@ let flushTimer: ReturnType<typeof setTimeout> | null = null;
 function scheduleDeniedNode(username: string, nodeId: string): void {
   const upper = nodeId.toUpperCase();
 
-  if (nodeExistsInAcl(upper)) return; // already present
-
   if (!userExistsInAcl(username)) {
     console.log(`[acl-watcher] ignoring denied node for unknown user '${username}'`);
     return;
   }
+
+  // Public keys may legitimately be shared by more than one MQTT account. Only
+  // this user's block determines whether an ACL addition is still required.
+  if (getNodeIdsForUser(username).some((existing) => existing.toUpperCase() === upper)) return;
 
   console.log(`[acl-watcher] queuing new node ${upper} for user '${username}'`);
   const set = pendingByUser.get(username) ?? new Set();
@@ -78,25 +71,17 @@ async function flush(): Promise<void> {
 }
 
 function handleLogLine(line: string): void {
-  const connMatch = CONNECT_RE.exec(line);
-  if (connMatch) {
-    clientToUser.set(connMatch[1]!, connMatch[2]!);
+  const connection = parseMosquittoConnection(line);
+  if (connection) {
+    clientToUser.set(connection.clientId, connection.mqttUsername);
     return;
   }
 
-  const deniedMatch = DENIED_RE.exec(line);
-  if (!deniedMatch) return;
-
-  const clientId = deniedMatch[1]!;
-  const topic    = deniedMatch[2]!;
-
-  const username = clientToUser.get(clientId);
+  const denied = parseDeniedOwnerPublish(line);
+  if (!denied) return;
+  const username = clientToUser.get(denied.clientId);
   if (!username) return; // haven't seen this client connect yet
-
-  const topicMatch = TOPIC_NODE_RE.exec(topic);
-  if (!topicMatch) return;
-
-  scheduleDeniedNode(username, topicMatch[1]!);
+  scheduleDeniedNode(username, denied.nodeId);
 }
 
 async function streamLogs(): Promise<void> {

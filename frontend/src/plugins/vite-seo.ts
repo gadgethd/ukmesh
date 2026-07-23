@@ -2,7 +2,7 @@ import { type Plugin } from 'vite';
 import fs from 'node:fs';
 import path from 'node:path';
 
-type SiteId = 'teesside' | 'ukmesh' | 'dev';
+type SiteId = 'ukmesh';
 
 type RouteMeta = { title: string; description: string };
 
@@ -43,71 +43,31 @@ const SEO_META: Record<SiteId, Record<string, RouteMeta>> = {
       description: 'Log in to manage your MeshCore repeater node on the UK Mesh network.',
     },
   },
-  teesside: {
-    '/': {
-      title: 'Teesside Mesh — MeshCore LoRa Network Dashboard',
-      description:
-        'Live dashboard for the Teesside MeshCore LoRa mesh network. Real-time node map, packet feed, network statistics, and install guides.',
-    },
-    '/install': {
-      title: 'Install MeshCore — Teesside Mesh',
-      description:
-        'Get a companion node on the air in about 10 minutes. Flash MeshCore firmware on a LoRa board and join the Teesside mesh network.',
-    },
-    '/stats': {
-      title: 'Network Statistics — Teesside Mesh',
-      description:
-        'Live statistics for the Teesside MeshCore network: active nodes, packet counts, repeater uptime, and coverage trends.',
-    },
-    '/packets': {
-      title: 'Packet Types — Teesside Mesh',
-      description:
-        'Reference guide to MeshCore packet types: adverts, messages, traceroutes, and more. Understand what flows through the mesh.',
-    },
-    '/open-source': {
-      title: 'Open Source — Teesside Mesh',
-      description:
-        'Libraries and open-source technologies powering the Teesside Mesh analytics platform.',
-    },
-    '/login': {
-      title: 'Repeater Owner Portal — Teesside Mesh',
-      description: 'Log in to manage your MeshCore repeater node on the Teesside mesh network.',
-    },
-  },
-  dev: {
-    '/': {
-      title: 'UK Mesh Test — Development Environment',
-      description: 'Development and testing environment for the UK Mesh network analytics platform.',
-    },
-  },
 };
 
 const SITE_DEFAULTS: Record<SiteId, { siteName: string; baseUrl: string; themeColor: string }> = {
   ukmesh: { siteName: 'UK Mesh Network', baseUrl: 'https://ukmesh.com', themeColor: '#0a1628' },
-  teesside: { siteName: 'Teesside Mesh', baseUrl: 'https://www.teessidemesh.com', themeColor: '#0a1628' },
-  dev: { siteName: 'UK Mesh Test', baseUrl: 'https://test.ukmesh.com', themeColor: '#0a1628' },
 };
 
 const SITEMAP_ROUTES: Record<SiteId, string[]> = {
   ukmesh: ['/', '/install', '/stats', '/feed', '/repeater', '/open-source'],
-  teesside: ['/', '/install', '/stats', '/packets', '/open-source'],
-  dev: ['/'],
 };
 
 function getSiteId(): SiteId {
-  const env = process.env['VITE_SITE'] ?? '';
-  if (env === 'ukmesh' || env === 'teesside' || env === 'dev') return env;
-  const net = process.env['VITE_NETWORK'] ?? '';
-  if (net === 'ukmesh') return 'ukmesh';
-  if (net === 'teesside') return 'teesside';
-  if (net === 'test') return 'dev';
-  return 'teesside';
+  return 'ukmesh';
 }
 
-function isAppBuild(): boolean {
-  const hostname = process.env['VITE_APP_HOSTNAME'] ?? '';
-  // App builds set VITE_APP_HOSTNAME to the app domain; website builds leave it empty or set VITE_SITE
-  return hostname !== '';
+type BuildTarget = 'app' | 'public-website' | 'dev-website';
+
+function buildTarget(): BuildTarget {
+  const site = String(process.env['VITE_SITE'] ?? '').trim().toLowerCase();
+  const network = String(process.env['VITE_NETWORK'] ?? '').trim().toLowerCase();
+
+  // Dockerfile.app supplies both values. The public website needs the same
+  // VITE_APP_HOSTNAME at runtime, so hostname alone cannot identify the build.
+  if (site === 'ukmesh' && network === 'ukmesh') return 'app';
+  if (site === 'dev' || network === 'test') return 'dev-website';
+  return 'public-website';
 }
 
 function buildMetaTags(meta: RouteMeta, routePath: string, site: SiteId): string {
@@ -178,14 +138,19 @@ function generateManifestJson(site: SiteId): string {
 
 export default function viteSeoPlugin(): Plugin {
   const site = getSiteId();
-  const isApp = isAppBuild();
+  const target = buildTarget();
+  const isPublicWebsite = target === 'public-website';
   const homeMeta = SEO_META[site]['/'];
 
   return {
     name: 'vite-seo',
 
     transformIndexHtml(html) {
-      if (isApp || !homeMeta) return html;
+      if (!isPublicWebsite || !homeMeta) {
+        // Only public website builds emit a manifest. Otherwise nginx's SPA
+        // fallback turns a missing manifest into HTML with a 200 response.
+        return html.replace(/\s*<link rel="manifest" href="\/manifest\.json">/, '');
+      }
 
       const metaTags = buildMetaTags(homeMeta, '/', site);
 
@@ -195,11 +160,13 @@ export default function viteSeoPlugin(): Plugin {
         metaTags,
       );
 
-      // Add manifest link after favicon
-      html = html.replace(
-        /(<link rel="icon"[^>]*>)/,
-        '$1\n    <link rel="manifest" href="/manifest.json">',
-      );
+      // Add a manifest only when the base template does not already have one.
+      if (!html.includes('rel="manifest"')) {
+        html = html.replace(
+          /(<link rel="icon"[^>]*>)/,
+          '$1\n    <link rel="manifest" href="/manifest.json">',
+        );
+      }
 
       return html;
     },
@@ -208,10 +175,11 @@ export default function viteSeoPlugin(): Plugin {
       const outDir = path.resolve(process.cwd(), 'dist');
       if (!fs.existsSync(outDir)) return;
 
-      // Write robots.txt
-      fs.writeFileSync(path.join(outDir, 'robots.txt'), generateRobotsTxt(site, isApp));
+      // Dashboard and dev/test builds must not be indexed. Public website
+      // builds get the sitemap, manifest, and route-specific static HTML.
+      fs.writeFileSync(path.join(outDir, 'robots.txt'), generateRobotsTxt(site, !isPublicWebsite));
 
-      if (isApp) return; // App builds don't need sitemap or per-route HTML
+      if (!isPublicWebsite) return;
 
       // Write sitemap.xml
       fs.writeFileSync(path.join(outDir, 'sitemap.xml'), generateSitemapXml(site));

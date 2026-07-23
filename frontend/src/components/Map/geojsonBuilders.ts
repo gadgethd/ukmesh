@@ -13,6 +13,7 @@ import {
 import {
   EMPTY_FC,
   FOURTEEN_DAYS_MS,
+  SEVEN_DAYS_MS,
   LINK_AMBER_THRESHOLD_DB,
   LINK_GREEN_THRESHOLD_DB,
 } from './mapConfig.js';
@@ -53,6 +54,7 @@ export function buildNodeGeoJSON(
   clashRelayIds: Set<string>,
   showHexClashes: boolean,
   pathNodeIds: Set<string> | null,
+  replayNodeIds: Set<string> | null = null,
   staleCutoffMs = Date.now(),
 ): GeoJSON.FeatureCollection {
   const features: GeoJSON.Feature[] = [];
@@ -92,10 +94,12 @@ export function buildNodeGeoJSON(
       name: node.name ?? null,
       role: node.role ?? 2,
       is_online: node.is_online,
-      is_stale: ageMs > 7 * 24 * 60 * 60 * 1000,
+      is_stale: ageMs > (isClientNode ? SEVEN_DAYS_MS : FOURTEEN_DAYS_MS),
       is_link_only_stale: isLinkOnlyStale,
       is_prohibited: isProhibited,
       is_inferred: false,
+      replay_active: replayNodeIds?.has(node.node_id.toLowerCase()) ?? false,
+      replay_mode: replayNodeIds !== null,
       hex_clash_state: hexClashState,
       visible,
       last_seen: node.last_seen,
@@ -199,28 +203,64 @@ export function buildPlannedPinGeoJSON(repeaters: PlannedRepeater[]): GeoJSON.Fe
   if (repeaters.length === 0) return EMPTY_FC;
   return {
     type: 'FeatureCollection',
-    features: repeaters.map((r) => ({
-      type: 'Feature',
-      geometry: { type: 'Point', coordinates: [r.lon, r.lat] },
-      properties: { plan_id: r.id, status: r.status },
-    })),
+    features: repeaters.map((r) => {
+      const head = r.status === 'ready' ? 'Planned' : r.status === 'error' ? 'Failed' : 'Computing…';
+      return {
+        type: 'Feature',
+        geometry: { type: 'Point', coordinates: [r.lon, r.lat] },
+        properties: {
+          plan_id: r.id,
+          status: r.status,
+          // Coordinates shown directly under the pin so the placement is visible at a glance.
+          label: `${head}\n${r.lat.toFixed(5)}, ${r.lon.toFixed(5)}`,
+        },
+      };
+    }),
   };
 }
 
-export function buildClashLinesGeoJSON(
-  lines: { key: string; positions: [number, number][] }[],
+/**
+ * GeoJSON link lines from planned repeaters to their predicted peer repeaters.
+ * Peer endpoints are resolved (and privacy-masked) from the live node map so the
+ * lines honour the same redaction rules as real links.
+ */
+export function buildPlannedLinksGeoJSON(
+  repeaters: PlannedRepeater[],
+  nodes: Map<string, MeshNode>,
+  hiddenCoordMask: Map<string, HiddenMaskGeometry>,
 ): GeoJSON.FeatureCollection {
-  return {
-    type: 'FeatureCollection',
-    features: lines.map((line) => ({
-      type: 'Feature',
-      geometry: {
-        type: 'LineString',
-        coordinates: line.positions.map(([lat, lon]) => [lon, lat]),
-      },
-      properties: { key: line.key },
-    })),
-  };
+  const features: GeoJSON.Feature[] = [];
+  for (const repeater of repeaters) {
+    if (repeater.status !== 'ready') continue;
+    const links = repeater.coverage?.predicted_links;
+    if (!links || links.length === 0) continue;
+    for (const link of links) {
+      const peer = nodes.get(link.peer_id);
+      if (!hasCoords(peer)) continue;
+      const peerMasked = maskNodePoint(peer, hiddenCoordMask);
+      const pathLoss = link.itm_path_loss_db;
+      const color = pathLoss == null
+        ? '#a78bfa'
+        : pathLoss <= LINK_GREEN_THRESHOLD_DB
+          ? '#22c55e'
+          : pathLoss <= LINK_AMBER_THRESHOLD_DB
+            ? '#fbbf24'
+            : '#ef4444';
+      features.push({
+        type: 'Feature',
+        geometry: {
+          type: 'LineString',
+          coordinates: [[repeater.lon, repeater.lat], [peerMasked[1], peerMasked[0]]],
+        },
+        properties: {
+          key: `${repeater.id}:${link.peer_id}`,
+          color,
+          width: pathLoss == null ? 1.6 : pathLoss <= LINK_GREEN_THRESHOLD_DB ? 2.4 : pathLoss <= LINK_AMBER_THRESHOLD_DB ? 2.0 : 1.6,
+        },
+      });
+    }
+  }
+  return features.length > 0 ? { type: 'FeatureCollection', features } : EMPTY_FC;
 }
 
 export function buildLinksGeoJSON(

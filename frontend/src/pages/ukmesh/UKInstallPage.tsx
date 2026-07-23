@@ -2,14 +2,6 @@ import React from 'react';
 
 export const UKInstallPage: React.FC = () => (
   <>
-    <section className="site-page-hero">
-      <div className="site-content">
-        <h1 className="site-page-hero__title">Install MeshCore</h1>
-        <p className="site-page-hero__sub">
-          Get a companion node on the air in about 10 minutes. No soldering, no special tools. Just a browser, a USB cable, and a phone.
-        </p>
-      </div>
-    </section>
 
     <div className="site-content site-prose">
 
@@ -182,9 +174,11 @@ Password: <your password>`}</pre>
         <div className="code-block">
           <pre>{'meshcore/<IATA>/{PUBLIC_KEY}/packets'}</pre>
         </div>
-        <p>
-          Observers using <strong>MME</strong> also appear in the Teesside-specific views. All other IATA codes appear in the wider UK feed only.
-        </p>
+        <div className="prose-note">
+          <strong>Alternative: no Raspberry Pi?</strong> Use the{' '}
+          <a href="https://flasher.ukmesh.com" target="_blank" rel="noopener noreferrer">Flasher ↗</a>{' '}
+          to flash a firmware build with the MQTT bridge built in directly to your repeater node — no separate Linux device needed.
+        </div>
       </section>
 
     </div>

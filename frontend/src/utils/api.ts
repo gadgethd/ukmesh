@@ -13,10 +13,6 @@ export function withScopeParams(path: string, scope: ApiScope = {}): string {
   return `${path}${sep}${query}`;
 }
 
-export function withNetworkParam(path: string, network?: string): string {
-  return withScopeParams(path, { network });
-}
-
 export function statsEndpoint(scope: ApiScope = {}): string {
   return withScopeParams('/api/stats', scope);
 }

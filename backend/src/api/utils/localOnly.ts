@@ -22,11 +22,27 @@ function isPrivateClientIp(ip: string): boolean {
 }
 
 export function requireLocalOnly(req: Request, res: Response): boolean {
-  const candidates = [
-    req.ip,
+  // Forwarded headers are set by the proxy chain for public traffic. A genuine
+  // local request has none of these, or only carries private hop addresses.
+  // If ANY forwarded address is a public IP, this is proxied public traffic —
+  // reject it before falling through to the candidate check. Without this guard
+  // an attacker could spoof X-Forwarded-For: 192.168.x.x to pass the check, and
+  // req.socket.remoteAddress is always the private proxy container anyway.
+  const forwarded = [
     normalizeIp(String(req.headers['cf-connecting-ip'] ?? '')),
     normalizeIp(String(req.headers['x-forwarded-for'] ?? '')),
+    normalizeIp(String(req.headers['x-real-ip'] ?? '')),
+  ].filter(Boolean);
+
+  if (forwarded.some((ip) => !isPrivateClientIp(ip))) {
+    res.status(403).json({ error: 'Local access only' });
+    return false;
+  }
+
+  const candidates = [
+    normalizeIp(req.ip ?? ''),
     normalizeIp(req.socket.remoteAddress ?? ''),
+    ...forwarded,
   ].filter(Boolean) as string[];
 
   if (candidates.some((ip) => isPrivateClientIp(ip) || (isIP(ip) === 0 && ip === 'localhost'))) {

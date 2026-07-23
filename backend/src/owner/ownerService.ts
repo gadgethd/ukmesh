@@ -35,6 +35,7 @@ type OwnerLastHopCacheEntry = {
 type OwnerServiceDeps = {
   ownerLiveCacheTtlMs: number;
   ownerLiveCache: Map<string, OwnerLiveCacheEntry>;
+  ownerDashboardCacheTtlMs: number;
   ownerLastHopCacheTtlMs: number;
   verifyMqttCredentials: (mqttUsername: string, mqttPassword: string) => Promise<boolean>;
   resolveOwnerNodeIds: (mqttUsername: string) => Promise<string[]>;
@@ -43,12 +44,11 @@ type OwnerServiceDeps = {
   repository: OwnerRepository;
 };
 
-export type OwnerService = ReturnType<typeof createOwnerService>;
-
 export function createOwnerService(deps: OwnerServiceDeps) {
   const {
     ownerLiveCacheTtlMs,
     ownerLiveCache,
+    ownerDashboardCacheTtlMs,
     ownerLastHopCacheTtlMs,
     verifyMqttCredentials,
     resolveOwnerNodeIds,
@@ -57,6 +57,30 @@ export function createOwnerService(deps: OwnerServiceDeps) {
     repository,
   } = deps;
   const ownerLastHopCache = new Map<string, OwnerLastHopCacheEntry>();
+  const ownerDashboardCache = new Map<string, { ts: number; dashboard: OwnerDashboard; nodeIds: string[] }>();
+
+  // Stable per-session cache key: prefer the MQTT username (survives node changes)
+  // and fall back to the sorted node-id set for legacy sessions without a username.
+  function dashboardCacheKey(mqttUsername: string | undefined, nodeIds: string[]): string {
+    const username = mqttUsername?.trim();
+    return username ? `u:${username}` : `n:${[...nodeIds].sort().join(',')}`;
+  }
+
+  // Best-effort background warm of the per-node live cache after login so the first
+  // switch to each owned node is instant instead of running 9 cold queries. Sequential
+  // to avoid a burst of DB load; failures are ignored (the endpoint retries on demand).
+  const PREWARM_MAX_NODES = 6;
+  async function prewarmOwnerLiveData(ownedNodeIds: string[]): Promise<void> {
+    for (const nodeId of ownedNodeIds.slice(0, PREWARM_MAX_NODES)) {
+      const cached = ownerLiveCache.get(nodeId);
+      if (cached && Date.now() - cached.ts < ownerLiveCacheTtlMs) continue;
+      try {
+        await getOwnerLiveData(ownedNodeIds, nodeId);
+      } catch {
+        // ignore prewarm failures
+      }
+    }
+  }
 
   function mapLastHopRows(rows: Array<{
     bucket: string;
@@ -120,10 +144,25 @@ export function createOwnerService(deps: OwnerServiceDeps) {
       throw new Error('NO_ACTIVE_OWNER_NODE');
     }
 
+    // Seed the session-dashboard cache so the first /owner/session poll (15s later)
+    // is a hit, and warm the live cache so the first node switch is instant.
+    ownerDashboardCache.set(dashboardCacheKey(mqttUsername, mappedNodeIds), {
+      ts: Date.now(),
+      dashboard,
+      nodeIds: mappedNodeIds,
+    });
+    void prewarmOwnerLiveData(mappedNodeIds);
+
     return { dashboard, nodeIds: mappedNodeIds };
   }
 
   async function getSessionDashboard(session: OwnerSession): Promise<{ dashboard: OwnerDashboard; nodeIds: string[] }> {
+    const cacheKey = dashboardCacheKey(session.mqttUsername, session.nodeIds);
+    const cached = ownerDashboardCache.get(cacheKey);
+    if (cached && Date.now() - cached.ts < ownerDashboardCacheTtlMs) {
+      return { dashboard: cached.dashboard, nodeIds: cached.nodeIds };
+    }
+
     const freshNodeIds = session.mqttUsername
       ? await resolveOwnerNodeIds(session.mqttUsername)
       : [];
@@ -132,6 +171,7 @@ export function createOwnerService(deps: OwnerServiceDeps) {
     if (dashboard.totals.ownedNodes < 1) {
       throw new Error('NO_ACTIVE_OWNER_NODE');
     }
+    ownerDashboardCache.set(cacheKey, { ts: Date.now(), dashboard, nodeIds });
     return { dashboard, nodeIds };
   }
 
@@ -160,12 +200,33 @@ export function createOwnerService(deps: OwnerServiceDeps) {
       linkHealthResult,
       advertTrendResult,
       telemetryResult,
+      packetsSentResult,
+      packetsReceivedResult,
     } = await repository.fetchOwnerLiveData(selectedNodeId);
 
     const ownerNode = ownerNodeResult.rows[0];
     if (!ownerNode) {
       throw new Error('OWNER_NODE_NOT_FOUND');
     }
+
+    // LoRa cannot reach beyond ~250 km direct — filter out senders with known coords that are further away.
+    const MAX_DIRECT_SENDER_KM = 150;
+    const filteredIncomingRows = (() => {
+      const ownerLat = ownerNode.lat;
+      const ownerLon = ownerNode.lon;
+      if (ownerLat == null || ownerLon == null) return incomingResult.rows;
+      return incomingResult.rows.filter((row) => {
+        if (row.lat == null || row.lon == null) return true;
+        const toRad = (d: number) => (d * Math.PI) / 180;
+        const dLat = toRad(row.lat - ownerLat);
+        const dLon = toRad(row.lon - ownerLon);
+        const a =
+          Math.sin(dLat / 2) ** 2 +
+          Math.cos(toRad(ownerLat)) * Math.cos(toRad(row.lat)) * Math.sin(dLon / 2) ** 2;
+        const distKm = 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+        return distKm <= MAX_DIRECT_SENDER_KM;
+      });
+    })();
 
     const heardBy = heardByResult.rows.map((row) => ({
       ...row,
@@ -314,6 +375,23 @@ export function createOwnerService(deps: OwnerServiceDeps) {
     if (adverts24h < 1) alerts.push({ level: 'warn', message: `No advert packets from this ${roleLabel.toLowerCase()} were recorded in the last 24 hours.` });
     if (heardBy.length < 1) alerts.push({ level: 'warn', message: `No other nodes have heard this ${roleLabel.toLowerCase()} in the last 7 days.` });
     if (viableLinks.length < 1) alerts.push({ level: 'warn', message: `No viable RF links are currently stored for this ${roleLabel.toLowerCase()}.` });
+    const latestTelemetry = telemetry24h[telemetry24h.length - 1];
+    if (latestTelemetry?.batteryPct != null && latestTelemetry.batteryPct < 10) {
+      alerts.push({ level: 'error', message: `Battery estimate is critically low at ${latestTelemetry.batteryPct.toFixed(0)}%.` });
+    } else if (latestTelemetry?.batteryPct != null && latestTelemetry.batteryPct < 20) {
+      alerts.push({ level: 'warn', message: `Battery estimate is low at ${latestTelemetry.batteryPct.toFixed(0)}%.` });
+    }
+    const staleViableLinks = viableLinks.filter((link) => (
+      !link.last_observed || Date.now() - Date.parse(link.last_observed) > 7 * 24 * 60 * 60 * 1_000
+    ));
+    if (viableLinks.length > 0 && staleViableLinks.length === viableLinks.length) {
+      alerts.push({ level: 'warn', message: 'All stored viable neighbours are based on evidence older than seven days.' });
+    }
+    const recentAdverts = advertTrend24h.slice(-6).reduce((sum, point) => sum + point.adverts, 0);
+    const previousAdverts = advertTrend24h.slice(-12, -6).reduce((sum, point) => sum + point.adverts, 0);
+    if (previousAdverts >= 3 && recentAdverts <= previousAdverts * 0.25) {
+      alerts.push({ level: 'warn', message: `Advert activity dropped from ${previousAdverts} to ${recentAdverts} over the latest six-hour window.` });
+    }
 
     const responseData = {
       nodeId: selectedNodeId,
@@ -322,7 +400,7 @@ export function createOwnerService(deps: OwnerServiceDeps) {
         advert_count: Number(ownerNode.advert_count ?? 0),
         last_seen: ownerNode.last_seen ? new Date(ownerNode.last_seen).toISOString() : null,
       },
-      incomingPeers: incomingResult.rows.map((row) => ({
+      incomingPeers: filteredIncomingRows.map((row) => ({
         ...row,
         packets_24h: Number(row.packets_24h ?? 0),
         last_seen: row.last_seen ? new Date(row.last_seen).toISOString() : null,
@@ -331,6 +409,8 @@ export function createOwnerService(deps: OwnerServiceDeps) {
       linkHealth,
       advertTrend24h,
       telemetry24h,
+      packetsSent24h: Number(packetsSentResult.rows[0]?.packets_24h ?? 0),
+      packetsReceived24h: Number(packetsReceivedResult.rows[0]?.packets_24h ?? 0),
       alerts,
       recentPackets: packetResult.rows.map((row) => ({
         ...row,

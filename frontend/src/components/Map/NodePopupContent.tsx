@@ -1,4 +1,5 @@
 import React from 'react';
+import { LoadingIndicator } from '../LoadingIndicator.js';
 import { SEVEN_DAYS_MS } from './mapConfig.js';
 import type { NodeFeatureProps, NodeLink } from './types.js';
 
@@ -22,6 +23,7 @@ export const NodePopupContent: React.FC<{
   coverageActive: boolean;
   coverageLoading: boolean;
   coverageMessage: string | null;
+  viewshedEnabled: boolean;
   onToggleCoverage: (nodeId: string) => void;
   onFocusSamePrefix: (nodeId: string) => void;
   samePrefixCount: number;
@@ -36,6 +38,7 @@ export const NodePopupContent: React.FC<{
   coverageActive,
   coverageLoading,
   coverageMessage,
+  viewshedEnabled,
   onToggleCoverage,
   onFocusSamePrefix,
   samePrefixCount,
@@ -84,7 +87,7 @@ export const NodePopupContent: React.FC<{
       </div>
       {props.advert_count !== null && props.advert_count !== undefined && (
         <div className="node-popup__row">
-          <span>Times seen</span>
+          <span>Adverts seen</span>
           <span>{props.advert_count}</span>
         </div>
       )}
@@ -104,7 +107,7 @@ export const NodePopupContent: React.FC<{
           <span>{Math.round(props.elevation_m)} m ASL</span>
         </div>
       )}
-      {isRepeater && !props.is_prohibited && (
+      {viewshedEnabled && isRepeater && !props.is_prohibited && (
         <div className="node-popup__row" style={{ marginTop: 6 }}>
           <button
             type="button"
@@ -112,11 +115,11 @@ export const NodePopupContent: React.FC<{
             onClick={() => onToggleCoverage(props.node_id)}
             disabled={coverageLoading}
           >
-            {coverageLoading ? 'Loading coverage…' : coverageActive ? 'Hide coverage' : 'Show coverage'}
+            {coverageLoading ? <LoadingIndicator label="Loading coverage..." variant="inline" /> : coverageActive ? 'Hide coverage' : 'Show coverage'}
           </button>
         </div>
       )}
-      {coverageMessage && (
+      {viewshedEnabled && coverageMessage && (
         <div className="node-popup__row">
           <span>Coverage</span>
           <span>{coverageMessage}</span>
@@ -130,7 +133,7 @@ export const NodePopupContent: React.FC<{
             onClick={() => onToggleLos(props.node_id)}
             disabled={losLoading}
           >
-            {losLoading ? 'Loading LOS…' : losActive ? 'Hide LOS' : 'Show LOS'}
+            {losLoading ? <LoadingIndicator label="Loading LOS..." variant="inline" /> : losActive ? 'Hide LOS' : 'Show LOS'}
           </button>
         </div>
       )}
@@ -146,7 +149,9 @@ export const NodePopupContent: React.FC<{
         </div>
       )}
       {!isRepeater && links === null && (
-        <div className="node-popup__neighbours-loading">Loading neighbours…</div>
+        <div className="node-popup__neighbours-loading">
+          <LoadingIndicator label="Loading neighbours..." variant="inline" />
+        </div>
       )}
       {!isRepeater && links !== null && links.length > 0 && (
         <div className="node-popup__neighbours">

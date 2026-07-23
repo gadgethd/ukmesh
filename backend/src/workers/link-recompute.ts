@@ -3,6 +3,7 @@ import { Redis } from 'ioredis';
 import { initDb, pool, query } from '../db/index.js';
 import { backfillHistoricalLinks } from '../mqtt/client.js';
 import { queueLinkJob, queuePhysicalLinkJob, closeQueuePublisher } from '../queue/publisher.js';
+import { getRedisConnectionOptions, getRedisUrl } from '../platform/config/redis.js';
 
 const LINK_JOB_QUEUE = 'meshcore:link_jobs';
 const DEFAULT_PHYSICAL_RADIUS_KM = 60;
@@ -32,8 +33,7 @@ function candidateRadiusKm(node: PhysicalNodeRow): number {
 async function main() {
   await initDb();
 
-  const redisUrl = process.env['REDIS_URL'] ?? 'redis://redis:6379';
-  const redis = new Redis(redisUrl);
+  const redis = new Redis(getRedisUrl(), getRedisConnectionOptions());
   redis.on('error', (err: Error) => console.error('[link-recompute/redis] error:', err.message));
 
   try {

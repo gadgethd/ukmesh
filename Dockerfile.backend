@@ -1,18 +1,19 @@
 # Backend only — API, WebSocket, MQTT ingestion, DB
 FROM node:20-alpine AS backend-builder
 WORKDIR /build/backend
-COPY backend/package.json ./
-RUN npm install
+COPY backend/package.json backend/package-lock.json ./
+RUN npm ci
 COPY backend/ ./
 RUN npm run build
 
 FROM node:20-alpine AS runtime
 WORKDIR /app
-COPY backend/package.json ./
-RUN npm install --omit=dev && npm cache clean --force
+COPY backend/package.json backend/package-lock.json ./
+RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=backend-builder /build/backend/dist ./dist
 COPY --from=backend-builder /build/backend/src/db/schema ./dist/db/schema
 COPY --from=backend-builder /build/backend/src/db/migrations ./dist/db/migrations
 COPY --from=backend-builder /build/backend/src/db/owner-auth.sql ./dist/db/owner-auth.sql
+COPY docs/openapi.yaml ./openapi.yaml
 EXPOSE 3000
 CMD ["node", "dist/index.js"]

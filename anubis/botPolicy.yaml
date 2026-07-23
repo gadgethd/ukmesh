@@ -13,6 +13,14 @@ bots:
     path_regex: ^/ws(/.*)?$
     action: ALLOW
 
+  # ── Terrain tile paths: always allow, no challenge ─────────────────────────
+  # Static elevation tiles are public read-only data (no sensitive content).
+  # Bypassing Anubis here lets Cloudflare cache them without cookie headers
+  # in the request, which is required for CDN caching to work correctly.
+  - name: terrain-tile-paths
+    path_regex: ^/terrain-tiles/
+    action: ALLOW
+
   # ── Built-in deny rules for pathological bots ──────────────────────────────
   - import: (data)/bots/_deny-pathological.yaml
   - import: (data)/bots/aggressive-brazilian-scrapers.yaml

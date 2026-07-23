@@ -1,0 +1,13 @@
+.git
+.env
+.env.*
+!.env.example
+**/node_modules
+**/dist
+**/.vite
+**/__pycache__
+**/.pytest_cache
+coverage
+npm-debug.log*
+terrain-tiles
+*.log

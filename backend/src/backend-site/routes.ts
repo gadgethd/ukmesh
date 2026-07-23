@@ -242,7 +242,7 @@ export function createBackendSiteRoutes(deps: BackendSiteDeps): Router {
           FROM node_prefixes n
           FULL JOIN gold_prefixes g USING (network)
           FULL JOIN score_prefixes s USING (network)
-         WHERE COALESCE(n.network, g.network, s.network) IN ('teesside', 'ukmesh')
+         WHERE COALESCE(n.network, g.network, s.network) = 'ukmesh'
          ORDER BY network`,
     );
 

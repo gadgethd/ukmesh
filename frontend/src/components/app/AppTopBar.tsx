@@ -11,7 +11,7 @@ type AppTopBarProps = {
 };
 
 const ConnIndicator: React.FC<{ state: WSReadyState }> = ({ state }) => (
-  <div className="conn-indicator">
+  <div className="conn-indicator" role="status" aria-live="polite" aria-label={`Live connection: ${state}`}>
     <span className={`conn-dot ${state === 'connected' ? 'conn-dot--connected' : ''}`} />
     <span style={{ color: state === 'connected' ? 'var(--online)' : 'var(--text-muted)' }}>
       {state === 'connected' ? 'LIVE' : state === 'connecting' ? 'CONNECTING' : 'OFFLINE'}

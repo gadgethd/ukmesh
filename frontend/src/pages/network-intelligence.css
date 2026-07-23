@@ -1,0 +1,107 @@
+.topology-page { padding-top: 48px; padding-bottom: 64px; }
+.topology-page__header { display: flex; align-items: flex-end; justify-content: space-between; gap: 32px; margin-bottom: 24px; }
+.topology-page__header h1 { margin: 4px 0 10px; }
+.topology-page__header p { max-width: 760px; color: var(--text-secondary); }
+.topology-page__eyebrow { color: var(--accent) !important; font: 600 11px/1 var(--font-mono); letter-spacing: 0.13em; text-transform: uppercase; }
+.topology-page__toggle { display: flex; align-items: center; gap: 8px; white-space: nowrap; color: var(--text-secondary); font-size: 12px; cursor: pointer; }
+.topology-page__stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 12px; }
+.topology-page__stats--six { grid-template-columns: repeat(3, 1fr); }
+.topology-page__stats > div { display: flex; flex-direction: column; padding: 14px 16px; background: var(--bg-panel); border: 1px solid var(--border); border-radius: var(--radius-lg); }
+.topology-page__stats strong { color: var(--text-primary); font: 600 22px/1.2 var(--font-mono); }
+.topology-page__stats span { margin-top: 4px; color: var(--text-muted); font-size: 11px; }
+.topology-page__workspace { display: grid; grid-template-columns: minmax(0, 1fr) 250px; gap: 12px; }
+.topology-page__graph,
+.topology-page__hubs { background: #07101d; border: 1px solid var(--border); border-radius: var(--radius-lg); }
+.topology-page__graph { position: relative; min-height: 520px; overflow: hidden; }
+.topology-page__graph svg { display: block; width: 100%; height: 100%; min-height: 520px; }
+.topology-page__link { stroke: #247390; opacity: 0.28; transition: opacity var(--transition), stroke var(--transition); }
+.topology-page__link--active { stroke: #22d3ee; opacity: 0.9; }
+.topology-page__node { fill: #7dd3fc; stroke: #06101c; stroke-width: 1.5; cursor: pointer; transition: fill var(--transition), stroke var(--transition); }
+.topology-page__node:hover,
+.topology-page__node:focus,
+.topology-page__node--active { fill: #f8fafc; stroke: #22d3ee; outline: none; }
+.topology-page__node--bridge { stroke: #f59e0b; stroke-width: 2.5; }
+.topology-page__node--isolated { fill: transparent; stroke: #94a3b8; stroke-dasharray: 2 1; }
+.topology-page__legend { position: absolute; left: 12px; bottom: 10px; padding: 5px 8px; border-radius: var(--radius); background: rgba(2, 8, 16, 0.82); color: var(--text-muted); font: 10px/1.2 var(--font-mono); }
+.topology-page__hubs { padding: 18px; }
+.topology-page__hubs h2 { margin: 0 0 12px; font-size: 15px; }
+.topology-page__hubs ol { margin: 0; padding: 0; list-style: none; counter-reset: topology-hub; }
+.topology-page__hubs li { counter-increment: topology-hub; }
+.topology-page__hubs li button { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; align-items: center; gap: 7px; width: 100%; padding: 8px 5px; border: 0; border-bottom: 1px solid var(--border); background: transparent; color: var(--text-secondary); text-align: left; cursor: pointer; }
+.topology-page__hubs li button::before { content: counter(topology-hub); color: var(--text-muted); font: 10px var(--font-mono); }
+.topology-page__hubs li button:hover { color: var(--accent); background: var(--bg-hover); }
+.topology-page__hubs li span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.topology-page__hubs li strong { color: var(--text-primary); font: 11px var(--font-mono); }
+.topology-page__selected { display: flex; flex-direction: column; gap: 7px; color: var(--text-secondary); font-size: 12px; }
+.topology-page__selected strong { color: var(--accent); font-size: 14px; overflow-wrap: anywhere; }
+.topology-page__flag { padding: 6px 8px; border: 1px solid #7c5d18; border-radius: var(--radius); color: #fbbf24; font: 10px/1.4 var(--font-mono); }
+.topology-page__selected button { margin-top: 8px; padding: 7px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-active); color: var(--text-secondary); cursor: pointer; }
+.topology-page__note { margin-top: 14px; color: var(--text-muted); font-size: 10px; }
+.topology-page__error { padding: 14px; border: 1px solid #7f1d1d; border-radius: var(--radius); color: #fca5a5; }
+.topology-page__validation { margin-top: 14px; padding: 20px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg-panel); }
+.topology-page__validation-head { display: flex; justify-content: space-between; gap: 30px; }
+.topology-page__validation-head h2 { margin: 4px 0 0; font-size: 18px; }
+.topology-page__validation-head > p { max-width: 620px; color: var(--text-muted); font-size: 11px; }
+.topology-page__validation-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 15px; }
+.topology-page__validation-stats div { display: flex; flex-direction: column; padding: 10px; border-radius: var(--radius); background: var(--bg-panel-alt); }
+.topology-page__validation-stats strong { color: var(--amber); font: 18px var(--font-mono); }
+.topology-page__validation-stats span { color: var(--text-muted); font-size: 9px; }
+.topology-page__validation-table { margin-top: 14px; border-top: 1px solid var(--border); }
+.topology-page__validation-table [role='row'] { display: grid; grid-template-columns: minmax(180px, 1fr) 150px 100px 170px; gap: 10px; padding: 8px 4px; border-bottom: 1px solid var(--border); color: var(--text-secondary); font-size: 10px; }
+.topology-page__validation-table strong { color: var(--amber); font: 9px var(--font-mono); text-transform: uppercase; }
+
+.status-page { padding-top: 48px; padding-bottom: 64px; }
+.status-page > header { margin-bottom: 22px; }
+.status-page > header h1 { margin: 4px 0 8px; }
+.status-page > header > p:last-child { color: var(--text-secondary); }
+.status-page__banner { display: flex; justify-content: space-between; gap: 15px; padding: 14px 18px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg-panel); }
+.status-page__banner strong { color: var(--text-primary); }
+.status-page__banner span { color: var(--text-muted); font: 10px var(--font-mono); }
+.status-page__banner--healthy { border-color: rgba(0, 230, 118, 0.45); }
+.status-page__banner--degraded { border-color: rgba(255, 179, 0, 0.55); }
+.status-page__banner--critical { border-color: rgba(255, 23, 68, 0.6); color: #fca5a5; }
+.status-page__maintenance { display: flex; gap: 16px; margin-top: 10px; padding: 11px 16px; border-radius: var(--radius); background: var(--amber-dim); color: var(--amber); }
+.status-page__maintenance span { color: var(--text-secondary); }
+.status-page__problems { margin-top: 20px; }
+.status-page__problems h2 { margin-bottom: 8px; font-size: 15px; }
+.status-page__problem { display: flex; gap: 14px; padding: 9px 12px; border-left: 3px solid var(--amber); background: var(--bg-panel); }
+.status-page__problem + .status-page__problem { margin-top: 4px; }
+.status-page__problem strong { min-width: 180px; color: var(--amber); font: 10px var(--font-mono); text-transform: uppercase; }
+.status-page__problem span { color: var(--text-secondary); font-size: 11px; }
+.status-page__problem--critical { border-left-color: var(--danger); }
+.status-page__problem--critical strong { color: var(--danger); }
+.status-page__grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 20px; }
+.status-page__grid > section { padding: 18px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg-panel); }
+.status-page__grid h2 { margin: 0 0 12px; font-size: 14px; }
+.status-page__grid dl div { display: flex; justify-content: space-between; gap: 12px; padding: 7px 0; border-bottom: 1px solid var(--border); }
+.status-page__grid dt { color: var(--text-muted); }
+.status-page__grid dd { color: var(--text-primary); font-family: var(--font-mono); }
+.status-page__checks > div { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 7px 0; border-bottom: 1px solid var(--border); }
+.status-page__checks strong { overflow: hidden; color: var(--text-secondary); font: 10px var(--font-mono); text-overflow: ellipsis; text-transform: uppercase; white-space: nowrap; }
+.status-page__checks small { color: var(--text-muted); }
+.status-page__dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); }
+.status-page__dot--ok { background: var(--online); box-shadow: 0 0 8px rgba(0, 230, 118, 0.45); }
+.status-page__dot--failed,
+.status-page__dot--disabled { background: var(--danger); }
+.status-page__privacy { margin-top: 16px; color: var(--text-muted); font-size: 10px; }
+
+@media (max-width: 860px) {
+  .topology-page__workspace { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 640px) {
+  .topology-page { padding-top: 28px; }
+  .topology-page__header { align-items: flex-start; flex-direction: column; gap: 12px; }
+  .topology-page__stats { grid-template-columns: 1fr 1fr; }
+  .topology-page__workspace { grid-template-columns: 1fr; }
+  .topology-page__graph,
+  .topology-page__graph svg { min-height: 380px; }
+  .topology-page__validation-head { flex-direction: column; gap: 8px; }
+  .topology-page__validation-stats { grid-template-columns: 1fr 1fr; }
+  .topology-page__validation-table [role='row'] { grid-template-columns: 1fr 1fr; }
+  .status-page { padding-top: 28px; }
+  .status-page__banner,
+  .status-page__maintenance,
+  .status-page__problem { flex-direction: column; gap: 5px; }
+  .status-page__grid { grid-template-columns: 1fr; }
+}
