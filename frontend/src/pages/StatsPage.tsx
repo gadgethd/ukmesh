@@ -541,8 +541,8 @@ export const StatsPage: React.FC = () => {
                 <div className="stats-page__row">
                   <ChartCard title="Packet types" sub="last 24 hours · all observer hits">
                     {data.packetTypes.length > 0 ? (
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-                        <ResponsiveContainer width="50%" height={220}>
+                      <div className="stats-page__pie-layout">
+                        <ResponsiveContainer width="100%" height={220}>
                           <PieChart>
                             <Pie
                               data={data.packetTypes}

@@ -894,21 +894,24 @@
 }
 
 @media (max-width: 860px) {
-  .uk-feed-layout {
+  html .uk-feed-layout {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto;
     grid-auto-rows: max-content;
     align-content: start;
     height: auto;
     min-height: calc(100dvh - 52px);
+    min-width: 0;
     overflow: visible;
   }
 
-  .uk-feed-channels {
+  html .uk-feed-channels {
     display: flex;
     flex-flow: row nowrap;
     align-items: center;
+    align-self: start;
     gap: 6px;
+    width: 100%;
     padding: 8px 12px;
     overflow-x: auto;
     border-right: 0;
@@ -918,16 +921,16 @@
     -webkit-overflow-scrolling: touch;
   }
 
-  .uk-feed-channels::-webkit-scrollbar {
+  html .uk-feed-channels::-webkit-scrollbar {
     display: none;
   }
 
-  .uk-feed-channels__header,
-  .uk-feed-channels__divider {
+  html .uk-feed-channels__header,
+  html .uk-feed-channels__divider {
     display: none;
   }
 
-  .uk-feed-channel-item {
+  html .uk-feed-channel-item {
     flex: 0 0 auto;
     width: auto;
     min-height: 40px;
@@ -937,7 +940,7 @@
     font-size: 14px;
   }
 
-  .uk-feed-channel-toggle {
+  html .uk-feed-channel-toggle {
     flex: 0 0 auto;
     min-height: 40px;
     padding: 8px 10px;
@@ -945,65 +948,65 @@
     white-space: nowrap;
   }
 
-  .uk-feed-chat {
+  html .uk-feed-chat {
     width: 100%;
     min-height: max(360px, calc(100dvh - 260px));
     max-height: none;
     border-right: 0;
   }
 
-  .uk-feed-chat__header {
+  html .uk-feed-chat__header {
     padding: 10px 12px;
   }
 
-  .uk-feed-search {
+  html .uk-feed-search {
     width: 100%;
     min-width: 0;
     min-height: 42px;
     font-size: 16px;
   }
 
-  .uk-feed-packet-row {
+  html .uk-feed-packet-row {
     min-height: 60px;
     padding: 10px 12px;
   }
 
-  .uk-feed-packet-row__meta {
+  html .uk-feed-packet-row__meta {
     grid-template-columns: auto auto auto minmax(0, 1fr);
     gap: 6px;
   }
 
-  .uk-feed-packet-row__hash {
+  html .uk-feed-packet-row__hash {
     display: none;
   }
 
-  .uk-feed-packet-row__observer {
+  html .uk-feed-packet-row__observer {
     font-size: 0.8rem;
   }
 
-  .uk-feed-inline-map {
+  html .uk-feed-inline-map {
     display: block;
     height: 240px;
     border-bottom: 1px solid var(--border);
     background: var(--bg-secondary);
   }
 
-  .uk-feed-right {
+  html .uk-feed-right {
     display: none;
   }
 
-  .uk-feed-mobile-stats {
+  html .uk-feed-mobile-stats {
     display: block;
     padding: 8px 12px;
     border-bottom: 1px solid var(--border);
     background: var(--bg-panel);
   }
 
-  .uk-feed-mobile-stats .uk-feed-stats__row {
+  html .uk-feed-mobile-stats .uk-feed-stats__row {
     margin-bottom: 6px;
   }
 
-  .uk-feed-mobile-detail {
+  html .uk-feed-mobile-detail {
     display: block;
     padding: 10px 12px;
     background: var(--bg-panel-alt);

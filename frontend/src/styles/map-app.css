@@ -71,7 +71,10 @@
   background: var(--bg-panel);
   border: 1px solid var(--border);
   border-radius: 6px;
-  overflow: hidden;
+  max-height: min(280px, 40dvh);
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .node-search__result {

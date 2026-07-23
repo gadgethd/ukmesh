@@ -26,6 +26,11 @@ export default defineConfig({
       testMatch: /dashboard\.spec\.ts/,
       use: { ...devices['Pixel 7'], baseURL: 'http://127.0.0.1:4174' },
     },
+    {
+      name: 'mobile-regression',
+      testMatch: /mobile\.spec\.ts/,
+      use: { ...devices['Desktop Chrome'] },
+    },
   ],
   webServer: [
     {
@@ -36,6 +41,11 @@ export default defineConfig({
     {
       command: 'VITE_APP_HOSTNAME=127.0.0.1 VITE_SITE=ukmesh VITE_NETWORK=ukmesh npm run dev -- --host 127.0.0.1 --port 4174',
       port: 4174,
+      reuseExistingServer: !process.env['CI'],
+    },
+    {
+      command: 'VITE_APP_HOSTNAME=app.invalid VITE_SITE=dev npm run dev -- --host 127.0.0.1 --port 4175',
+      port: 4175,
       reuseExistingServer: !process.env['CI'],
     },
   ],

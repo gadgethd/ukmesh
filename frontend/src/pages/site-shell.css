@@ -121,11 +121,11 @@
     gap: 12px;
   }
 
-  .site-nav__hamburger {
+  html .site-nav__hamburger {
     display: flex;
   }
 
-  .site-nav__links {
+  html .site-nav__links {
     display: none;
     position: absolute;
     top: calc(100% + 8px);
@@ -145,12 +145,12 @@
     z-index: 999;
   }
 
-  .site-nav__links--open {
+  html .site-nav__links.site-nav__links--open {
     display: grid;
   }
 
-  .site-nav__link,
-  .site-nav__links .site-nav__app-btn {
+  html .site-nav__links .site-nav__link,
+  html .site-nav__links .site-nav__app-btn {
     display: flex;
     align-items: center;
     min-width: 0;

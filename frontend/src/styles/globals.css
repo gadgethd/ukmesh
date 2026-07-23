@@ -309,6 +309,8 @@ button .loading-indicator--inline,
      "Got it" button reachable by scrolling inside the modal. */
   max-height: calc(100dvh - 32px);
   overflow-y: auto;
+  overscroll-behavior: contain;
+  box-sizing: border-box;
 }
 .disclaimer-modal__title {
   font-family: var(--font-mono);
@@ -389,6 +391,9 @@ button .loading-indicator--inline,
   display: flex;
   flex-direction: column;
   gap: 16px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  box-sizing: border-box;
 }
 
 .stats-page__path-modal-header {
@@ -411,6 +416,7 @@ button .loading-indicator--inline,
   margin: 6px 0 0;
   color: var(--text-muted);
   font-size: 13px;
+  overflow-wrap: anywhere;
 }
 
 .stats-page__path-modal-close {
@@ -544,6 +550,9 @@ button .loading-indicator--inline,
   .mobile-filter-grid .filter-row { padding: 8px 6px; }
   .mobile-filter-wrap {
     border-top: 1px solid var(--border);
+    max-height: min(40dvh, 280px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
   }
   .mobile-filter-wrap--hidden {
     display: none;
@@ -680,7 +689,7 @@ button .loading-indicator--inline,
   .dev-status-list > div { flex-direction: column; align-items: flex-start; }
   .dev-status-list strong { text-align: left; }
   .dev-status-card--fixed { height: auto; }
-  .site-prose { padding: 24px 0 56px; }
+  .site-prose { padding: 24px 16px 56px; }
   .site-prose--wide { max-width: 100%; }
   .prose-section--muted { padding: 20px; }
   .owner-summary-grid { grid-template-columns: 1fr; }
@@ -855,9 +864,54 @@ button .loading-indicator--inline,
   border: 1px solid var(--border);
   border-top: none;
   border-radius: 0 0 8px 8px;
-  max-height: 320px;
+  max-height: min(320px, 46dvh);
   overflow-y: auto;
+  overscroll-behavior: contain;
   z-index: 100;
+}
+
+.stats-page__pie-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(140px, 1fr);
+  align-items: center;
+  gap: 16px;
+}
+
+@media (max-width: 640px) {
+  .disclaimer-overlay {
+    padding: 10px;
+  }
+
+  .disclaimer-modal {
+    max-height: calc(100dvh - 20px);
+    padding: 20px;
+  }
+
+  .stats-page__path-modal {
+    max-height: calc(100dvh - 20px);
+    padding: 14px;
+    gap: 12px;
+  }
+
+  .stats-page__path-modal-header {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+
+  .stats-page__path-modal-close {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .stats-page__path-modal-map {
+    height: min(46dvh, 320px);
+  }
+
+  .stats-page__path-modal-list,
+  .stats-page__pie-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .repeater-search-box__result {

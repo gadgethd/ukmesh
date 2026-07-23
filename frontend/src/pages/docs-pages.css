@@ -348,6 +348,10 @@
 }
 
 @media (max-width: 560px) {
+  .packet-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .health-system-grid.site-stats-grid--6 {
     grid-template-columns: 1fr;
   }
