@@ -13,6 +13,8 @@ import apiRoutes from './api/routes.js';
 import { initSpamMessageAnalyzer } from './spam/analyzer.js';
 import { isViewshedEligibleCoordinate, queueViewshedJob, queueLinkJob } from './queue/publisher.js';
 import { createBackendSiteRoutes } from './backend-site/routes.js';
+import { startOwnerAclReconciler } from './owner/ownerAccess.js';
+import { isTrustedProxyPeer, refreshTrustedProxyPeers } from './http/trustedProxy.js';
 
 const ALLOWED_ORIGINS = (process.env['ALLOWED_ORIGINS'] ?? '')
   .split(',')
@@ -27,6 +29,29 @@ const MQTT_INGEST_ENABLED = !['0', 'false', 'no'].includes(
 );
 const COVERAGE_STARTUP_BACKFILL_ENABLED = process.env['COVERAGE_STARTUP_BACKFILL_ENABLED'] === '1';
 const WS_ENABLED = process.env['WS_ENABLED'] !== '0';
+let readinessCache: { expiresAt: number; database: boolean } | null = null;
+let readinessInflight: Promise<boolean> | null = null;
+
+function checkDatabaseReadiness(): Promise<boolean> {
+  const now = Date.now();
+  if (readinessCache && readinessCache.expiresAt > now) return Promise.resolve(readinessCache.database);
+  if (readinessInflight) return readinessInflight;
+  const tracked = query('SELECT 1')
+    .then(() => true)
+    .catch((err: unknown) => {
+      console.error('[readyz] database check failed:', (err as Error).message);
+      return false;
+    })
+    .then((database) => {
+      readinessCache = { database, expiresAt: Date.now() + 1_000 };
+      return database;
+    })
+    .finally(() => {
+      if (readinessInflight === tracked) readinessInflight = null;
+    });
+  readinessInflight = tracked;
+  return tracked;
+}
 
 // The MQTT/WS/DB paths are full of fire-and-forget work (`.catch()` loggers).
 // On Node 15+ a single rejection that slips past a `.catch()` would otherwise
@@ -40,6 +65,7 @@ async function main() {
   // 1. Initialise DB schema + retention policy
   await initDb();
   await initOwnerAuthDb();
+  startOwnerAclReconciler();
 
   // Queue viewshed jobs for any node with a position but no coverage yet
   // (catches nodes that existed before the worker was added)
@@ -70,7 +96,8 @@ async function main() {
     console.log('[app] startup viewshed backfill disabled');
   }
 
-  // 2. Start MQTT connection monitor (populates mqtt_node_logins for owner auto-link)
+  // 2. Start the audit-only MQTT connection monitor. It never changes owner
+  // grants or broker ACLs.
   if (MQTT_INGEST_ENABLED) {
     startMqttConnectionMonitor();
   } else {
@@ -96,11 +123,20 @@ async function main() {
   });
 
   // 3. Express app
-  const app = express();
+const app = express();
 
-  // Trust the private Docker proxy chain so rate limiting keys on the real
-  // public client IP from X-Forwarded-For, not a shared nginx/anubis hop.
-  app.set('trust proxy', ['loopback', 'linklocal', 'uniquelocal']);
+  // Trust only explicitly configured immediate proxy peers. Broad private
+  // network classes let a directly exposed backend accept spoofed identity
+  // headers. Resolve only the named bundled proxy containers, refresh their
+  // dynamic Docker addresses, and keep explicit IPs for external deployments.
+  await refreshTrustedProxyPeers();
+  const proxyRefreshTimer = setInterval(
+    () => void refreshTrustedProxyPeers().catch((err: Error) =>
+      console.error('[proxy] trusted-peer refresh failed:', err.message)),
+    30_000,
+  );
+  proxyRefreshTimer.unref();
+  app.set('trust proxy', (ip: string) => isTrustedProxyPeer(ip));
 
   // Gzip compression for all responses — critical for large payloads like /api/coverage (~26 MB)
   app.use(compression());
@@ -149,12 +185,7 @@ async function main() {
       database: false,
       mqtt: MQTT_INGEST_ENABLED ? getMqttRuntimeStatus() : { state: 'disabled', changedAt: new Date().toISOString() },
     };
-    try {
-      await query('SELECT 1');
-      checks.database = true;
-    } catch (err) {
-      console.error('[readyz] database check failed:', (err as Error).message);
-    }
+    checks.database = await checkDatabaseReadiness();
     const ready = checks.database && (!MQTT_INGEST_ENABLED || checks.mqtt.state === 'connected');
     res.status(ready ? 200 : 503).json({ status: ready ? 'ready' : 'degraded', checks, ts: Date.now() });
   });

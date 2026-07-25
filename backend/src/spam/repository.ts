@@ -52,35 +52,46 @@ export async function loadRecentMessages(cfg: SpamMessageConfig): Promise<Messag
   const hours = cfg.analysisWindowHours;
 
   const msgRes = await analyticsPool.query<MsgRow>(
-    `SELECT DISTINCT ON (p.packet_hash)
-        p.packet_hash,
-        p.network,
-        p.payload->'decrypted'->>'sender'    AS sender,
-        p.payload->'decrypted'->>'message'   AS message,
-        p.payload->>'channelHash'            AS channel_hash,
-        p.payload->>'_summary'               AS summary,
-        p.payload->'decrypted'->>'timestamp' AS claimed_ts,
-        p.time                               AS observed_at
-     FROM packets p
-     WHERE p.packet_type = 5
-       AND p.time > NOW() - ($1 * INTERVAL '1 hour')
-       AND p.network = ANY($2)
-       AND p.payload ? 'decrypted'
-       AND p.payload->'decrypted' ? 'message'
-     ORDER BY p.packet_hash, p.time ASC`,
-    [hours, NETWORKS],
+    `WITH logical_messages AS (
+       SELECT DISTINCT ON (p.packet_hash)
+          p.packet_hash,
+          p.network,
+          p.payload->'decrypted'->>'sender'    AS sender,
+          p.payload->'decrypted'->>'message'   AS message,
+          p.payload->>'channelHash'            AS channel_hash,
+          p.payload->>'_summary'               AS summary,
+          p.payload->'decrypted'->>'timestamp' AS claimed_ts,
+          p.time                               AS observed_at
+       FROM packets p
+       WHERE packet_type = 5
+         AND time > NOW() - ($1 * INTERVAL '1 hour')
+         AND network = ANY($2)
+         AND payload ? 'decrypted'
+         AND payload->'decrypted' ? 'message'
+       ORDER BY p.packet_hash, p.time ASC
+     )
+     SELECT *
+     FROM logical_messages
+     ORDER BY observed_at DESC, packet_hash
+     LIMIT $3`,
+    [hours, NETWORKS, cfg.maxCandidatePacketRows],
   );
 
   if (msgRes.rows.length === 0) return [];
 
-  const hashes = msgRes.rows.map((r) => r.packet_hash);
+  const hashes = msgRes.rows.slice(0, cfg.maxMessagesPerRun).map((r) => r.packet_hash);
   const obsRes = await analyticsPool.query<ObsRow>(
-    `SELECT p.packet_hash,
+    `WITH ranked_observers AS (
+       SELECT p.packet_hash,
             p.rx_node_id        AS observer_id,
             n.lat, n.lon,
             MIN(p.hop_count)    AS min_hop,
             MAX(p.rssi)         AS best_rssi,
-            MAX(p.snr)          AS best_snr
+            MAX(p.snr)          AS best_snr,
+            ROW_NUMBER() OVER (
+              PARTITION BY p.packet_hash
+              ORDER BY MAX(p.snr) DESC NULLS LAST, p.rx_node_id
+            ) AS observer_rank
      FROM packets p
      JOIN nodes n ON n.node_id = p.rx_node_id
      WHERE p.packet_type = 5
@@ -89,8 +100,13 @@ export async function loadRecentMessages(cfg: SpamMessageConfig): Promise<Messag
        AND p.rx_node_id IS NOT NULL
        AND n.lat IS NOT NULL AND n.lon IS NOT NULL
        AND p.packet_hash = ANY($3)
-     GROUP BY p.packet_hash, p.rx_node_id, n.lat, n.lon`,
-    [hours, NETWORKS, hashes],
+       AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
+     GROUP BY p.packet_hash, p.rx_node_id, n.lat, n.lon
+     )
+     SELECT packet_hash, observer_id, lat, lon, min_hop, best_rssi, best_snr
+     FROM ranked_observers
+     WHERE observer_rank <= $4`,
+    [hours, NETWORKS, hashes, cfg.maxObserversPerMessage],
   );
 
   const obsByHash = new Map<string, ObserverObservation[]>();
@@ -108,8 +124,8 @@ export async function loadRecentMessages(cfg: SpamMessageConfig): Promise<Messag
   }
 
   const records: MessageRecord[] = [];
-  for (const r of msgRes.rows) {
-    const text = r.message ?? '';
+  for (const r of msgRes.rows.slice(0, cfg.maxMessagesPerRun)) {
+    const text = (r.message ?? '').slice(0, cfg.maxNormalizedChars);
     if (text.trim().length === 0) continue;
     const claimed = r.claimed_ts != null && /^\d+$/.test(r.claimed_ts) ? Number(r.claimed_ts) : undefined;
     records.push({
@@ -141,6 +157,25 @@ export interface PersistableIncident {
   publicJson: PublicIncident;
 }
 
+export async function withSpamAnalyzerLease<T>(task: () => Promise<T>): Promise<T | null> {
+  const client = await pool.connect();
+  const leaseKey = 'ukmesh-spam-message-analyzer-v1';
+  try {
+    const acquired = await client.query<{ acquired: boolean }>(
+      'SELECT pg_try_advisory_lock(hashtext($1)) AS acquired',
+      [leaseKey],
+    );
+    if (!acquired.rows[0]?.acquired) return null;
+    try {
+      return await task();
+    } finally {
+      await client.query('SELECT pg_advisory_unlock(hashtext($1))', [leaseKey]);
+    }
+  } finally {
+    client.release();
+  }
+}
+
 /**
  * Replace the in-window incidents with a freshly computed set.
  * - Upserts each incident, preserving the earliest `first_seen` ever recorded.
@@ -154,12 +189,11 @@ export async function persistIncidents(
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    await client.query(`SET LOCAL statement_timeout = '${Math.trunc(cfg.dbStatementTimeoutMs)}ms'`);
 
-    const keptKeys: string[] = [];
     let active = 0;
 
     for (const { incident, origin, status, publicJson } of items) {
-      keptKeys.push(incident.key);
       if (status === 'active') active += 1;
 
       await client.query(
@@ -219,7 +253,7 @@ export async function persistIncidents(
 
       // Replace members for this incident.
       await client.query('DELETE FROM spam_message_members WHERE incident_key = $1', [incident.key]);
-      for (const m of incident.members) {
+      for (const m of incident.members.slice(0, cfg.maxEvidenceMembersPerIncident)) {
         const obs = m.observers;
         const minHop = obs.reduce<number | null>((acc, o) => {
           if (o.hopCount == null) return acc;
@@ -256,24 +290,9 @@ export async function persistIncidents(
       }
     }
 
-    // Remove in-window incidents that no longer cluster (stale), keep history.
-    let removed = 0;
-    if (keptKeys.length > 0) {
-      const del = await client.query(
-        `DELETE FROM spam_message_incidents
-         WHERE last_seen > NOW() - ($1 * INTERVAL '1 hour')
-           AND incident_key <> ALL($2)`,
-        [cfg.analysisWindowHours, keptKeys],
-      );
-      removed = del.rowCount ?? 0;
-    } else {
-      const del = await client.query(
-        `DELETE FROM spam_message_incidents
-         WHERE last_seen > NOW() - ($1 * INTERVAL '1 hour')`,
-        [cfg.analysisWindowHours],
-      );
-      removed = del.rowCount ?? 0;
-    }
+    // Bounded passes are not complete snapshots, so absence is never deletion
+    // evidence. Age-based status transitions below remain authoritative.
+    const removed = 0;
 
     // Re-evaluate active/closed for ALL incidents based on age (covers ones that
     // aged out of the window this run and should now flip to closed).

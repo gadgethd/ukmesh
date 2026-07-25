@@ -9,31 +9,69 @@
  */
 
 const RESOLVE_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const RESOLVE_CACHE_MAX_ENTRIES = 512;
+const RESOLVE_CACHE_MAX_BYTES = 64 * 1024 * 1024;
 
-type CacheEntry = { data: unknown; cachedAt: number };
+type CacheEntry = { data: unknown; cachedAt: number; weight: number; packetHash: string };
 const cache = new Map<string, CacheEntry>();
+const cacheKeysByPacketHash = new Map<string, Set<string>>();
+let cacheBytes = 0;
+
+function packetHashFromKey(key: string): string {
+  return key.split('|')[1] ?? '';
+}
+
+function removeResolveEntry(key: string): void {
+  const entry = cache.get(key);
+  if (!entry) return;
+  cache.delete(key);
+  cacheBytes = Math.max(0, cacheBytes - entry.weight);
+  const indexed = cacheKeysByPacketHash.get(entry.packetHash);
+  indexed?.delete(key);
+  if (indexed?.size === 0) cacheKeysByPacketHash.delete(entry.packetHash);
+}
+
+function sweepResolveCache(now = Date.now()): void {
+  for (const [key, entry] of cache) {
+    if (now - entry.cachedAt > RESOLVE_CACHE_TTL_MS) removeResolveEntry(key);
+  }
+}
+
+const resolveSweepTimer = setInterval(sweepResolveCache, 60_000);
+resolveSweepTimer.unref();
 
 export function getResolveCache(key: string): unknown | undefined {
   const entry = cache.get(key);
   if (!entry) return undefined;
   if (Date.now() - entry.cachedAt > RESOLVE_CACHE_TTL_MS) {
-    cache.delete(key);
+    removeResolveEntry(key);
     return undefined;
   }
   return entry.data;
 }
 
 export function setResolveCache(key: string, result: unknown): void {
-  cache.set(key, { data: result, cachedAt: Date.now() });
+  const serialized = JSON.stringify(result);
+  const weight = Buffer.byteLength(serialized);
+  if (weight > RESOLVE_CACHE_MAX_BYTES) return;
+  sweepResolveCache();
+  removeResolveEntry(key);
+  const packetHash = packetHashFromKey(key);
+  cache.set(key, { data: result, cachedAt: Date.now(), weight, packetHash });
+  cacheBytes += weight;
+  const indexed = cacheKeysByPacketHash.get(packetHash) ?? new Set<string>();
+  indexed.add(key);
+  cacheKeysByPacketHash.set(packetHash, indexed);
+  while (cache.size > RESOLVE_CACHE_MAX_ENTRIES || cacheBytes > RESOLVE_CACHE_MAX_BYTES) {
+    const oldest = cache.keys().next().value as string | undefined;
+    if (!oldest) break;
+    removeResolveEntry(oldest);
+  }
 }
 
 /** Invalidate all cached results for a given packet hash (all networks/observers). */
 export function invalidateResolveCache(packetHash: string): void {
-  for (const key of cache.keys()) {
-    if (key.includes(`|${packetHash}|`) || key.endsWith(`|${packetHash}`)) {
-      cache.delete(key);
-    }
-  }
+  for (const key of cacheKeysByPacketHash.get(packetHash) ?? []) removeResolveEntry(key);
 }
 
 /**
@@ -48,6 +86,17 @@ export function invalidateResolveCache(packetHash: string): void {
 const STICKY_NODE_TTL_MS = 30 * 60 * 1000; // 30 minutes
 type StickyEntry = { hashToNodeId: Map<string, string>; updatedAt: number };
 const stickyNodeCache = new Map<string, StickyEntry>();
+const STICKY_NODE_CACHE_MAX_ENTRIES = 512;
+const STICKY_NODE_MAX_ANCHORS = 64;
+
+function sweepStickyNodeCache(now = Date.now()): void {
+  for (const [key, entry] of stickyNodeCache) {
+    if (now - entry.updatedAt > STICKY_NODE_TTL_MS) stickyNodeCache.delete(key);
+  }
+}
+
+const stickySweepTimer = setInterval(sweepStickyNodeCache, 60_000);
+stickySweepTimer.unref();
 
 export function getStickyNodeMap(
   packetHash: string,
@@ -73,6 +122,7 @@ export function mergeStickyNodes(
   updates: Record<string, string>,
 ): void {
   if (Object.keys(updates).length === 0) return;
+  sweepStickyNodeCache();
   const key = `${packetHash}|${network}`;
   let entry = stickyNodeCache.get(key);
   if (!entry) {
@@ -80,7 +130,14 @@ export function mergeStickyNodes(
     stickyNodeCache.set(key, entry);
   }
   for (const [hash, nodeId] of Object.entries(updates)) {
-    if (hash && nodeId) entry.hashToNodeId.set(hash, nodeId);
+    if (hash && nodeId && entry.hashToNodeId.size < STICKY_NODE_MAX_ANCHORS) {
+      entry.hashToNodeId.set(hash, nodeId);
+    }
   }
   entry.updatedAt = Date.now();
+  while (stickyNodeCache.size > STICKY_NODE_CACHE_MAX_ENTRIES) {
+    const oldest = stickyNodeCache.keys().next().value as string | undefined;
+    if (!oldest) break;
+    stickyNodeCache.delete(oldest);
+  }
 }

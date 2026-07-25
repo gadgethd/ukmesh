@@ -3,6 +3,7 @@ import { Worker } from 'worker_threads';
 type JobCallback = {
   resolve: (result: unknown) => void;
   reject: (err: Error) => void;
+  timeout?: NodeJS.Timeout;
 };
 
 type QueuedJob = {
@@ -10,6 +11,20 @@ type QueuedJob = {
   msg: object;
   cb: JobCallback;
 };
+
+export class WorkerPoolOverloadedError extends Error {
+  constructor() {
+    super('PATH_RESOLVE_OVERLOADED');
+    this.name = 'WorkerPoolOverloadedError';
+  }
+}
+
+export class WorkerPoolTimeoutError extends Error {
+  constructor() {
+    super('PATH_RESOLVE_TIMEOUT');
+    this.name = 'WorkerPoolTimeoutError';
+  }
+}
 
 /**
  * Small worker pool shared by HTTP path queries and best-effort MQTT warmups.
@@ -28,6 +43,8 @@ export class WorkerPool {
     private readonly scriptUrl: URL,
     size = 2,
     private readonly maxBackgroundQueue = 128,
+    private readonly maxInteractiveQueue = 32,
+    private readonly jobTimeoutMs = 15_000,
   ) {
     for (let i = 0; i < size; i++) this.spawnWorker();
   }
@@ -45,6 +62,7 @@ export class WorkerPool {
       const cb = this.pendingJobs.get(msg.id);
       this.pendingJobs.delete(msg.id);
       if (cb) {
+        if (cb.timeout) clearTimeout(cb.timeout);
         if (msg.ok) cb.resolve(msg.result ?? null);
         else cb.reject(new Error(msg.error ?? 'Worker error'));
       }
@@ -75,6 +93,7 @@ export class WorkerPool {
     if (jobId != null) {
       const cb = this.pendingJobs.get(jobId);
       this.pendingJobs.delete(jobId);
+      if (cb?.timeout) clearTimeout(cb.timeout);
       cb?.reject(error);
     }
 
@@ -94,17 +113,30 @@ export class WorkerPool {
   private startJob(worker: Worker, job: QueuedJob): void {
     this.workerJobs.set(worker, job.id);
     this.pendingJobs.set(job.id, job.cb);
+    job.cb.timeout = setTimeout(() => {
+      if (this.workerJobs.get(worker) !== job.id) return;
+      this.retireWorker(worker, new WorkerPoolTimeoutError());
+      void worker.terminate();
+    }, this.jobTimeoutMs);
+    job.cb.timeout.unref();
     try {
       worker.postMessage(job.msg);
     } catch (err) {
       this.workerJobs.delete(worker);
       this.pendingJobs.delete(job.id);
+      if (job.cb.timeout) clearTimeout(job.cb.timeout);
       job.cb.reject(err instanceof Error ? err : new Error(String(err)));
       this.dispatchNext(worker);
     }
   }
 
   private enqueue<T>(msg: object, background: boolean): Promise<T> {
+    if (
+      (background && this.backgroundQueue.length >= this.maxBackgroundQueue)
+      || (!background && this.interactiveQueue.length >= this.maxInteractiveQueue)
+    ) {
+      return Promise.reject(new WorkerPoolOverloadedError());
+    }
     return new Promise<T>((resolve, reject) => {
       const id = ++this.jobId;
       const job: QueuedJob = {
@@ -129,6 +161,17 @@ export class WorkerPool {
    */
   runBackground<T>(msg: object): Promise<T | null> {
     if (this.backgroundQueue.length >= this.maxBackgroundQueue) return Promise.resolve(null);
-    return this.enqueue<T | null>(msg, true);
+    return this.enqueue<T | null>(msg, true).catch((err: unknown) => {
+      if (err instanceof WorkerPoolOverloadedError) return null;
+      throw err;
+    });
+  }
+
+  snapshot(): { active: number; interactiveQueued: number; backgroundQueued: number } {
+    return {
+      active: this.workerJobs.size,
+      interactiveQueued: this.interactiveQueue.length,
+      backgroundQueued: this.backgroundQueue.length,
+    };
   }
 }

@@ -122,6 +122,8 @@ services:
       OWNER_MQTT_USERNAME_MAP: ${OWNER_MQTT_USERNAME_MAP:-}
       OWNER_COOKIE_SECRET: ${OWNER_COOKIE_SECRET:-}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3003,http://localhost:3004,https://ukmesh.com,https://www.ukmesh.com,https://app.ukmesh.com,https://test.ukmesh.com}
+      TRUSTED_PROXY_HOSTS: ${TRUSTED_PROXY_HOSTS:-app-ukmesh,website-ukmesh}
+      TRUSTED_PROXY_IPS: ${TRUSTED_PROXY_IPS:-127.0.0.1,::1}
       RADIO_BOT_URL: ${RADIO_BOT_URL:-}
       VIEWSHED_ENABLED: ${VIEWSHED_ENABLED:-false}
       COVERAGE_MODEL_VERSION: ${COVERAGE_MODEL_VERSION:-5}
@@ -132,12 +134,18 @@ services:
       MQTT_MAX_PAYLOAD_BYTES: ${MQTT_MAX_PAYLOAD_BYTES:-65536}
       MQTT_INGEST_CONCURRENCY: ${MQTT_INGEST_CONCURRENCY:-8}
       MQTT_INGEST_QUEUE_MAX: ${MQTT_INGEST_QUEUE_MAX:-1000}
+      LINK_JOB_QUEUE_MAX: ${LINK_JOB_QUEUE_MAX:-5000}
+      LINK_JOB_MAX_BYTES: ${LINK_JOB_MAX_BYTES:-16384}
+      LINK_JOB_QUEUE_MAX_BYTES: ${LINK_JOB_QUEUE_MAX_BYTES:-67108864}
+      LINK_JOB_MAX_DELTA: ${LINK_JOB_MAX_DELTA:-10000}
       WS_MAX_PAYLOAD_BYTES: ${WS_MAX_PAYLOAD_BYTES:-65536}
       WS_MAX_QUEUE_BYTES: ${WS_MAX_QUEUE_BYTES:-8388608}
       WS_MAX_BUFFERED_BYTES: ${WS_MAX_BUFFERED_BYTES:-33554432}
       MAINTENANCE_ACTIVE: ${MAINTENANCE_ACTIVE:-0}
       MAINTENANCE_MESSAGE: ${MAINTENANCE_MESSAGE:-}
       VIEWSHED_JOB_COOLDOWN_SECONDS: ${VIEWSHED_JOB_COOLDOWN_SECONDS:-300}
+      PLANNED_COVERAGE_QUEUE_MAX: ${PLANNED_COVERAGE_QUEUE_MAX:-128}
+      PLANNED_COVERAGE_RESULT_TTL_SECONDS: ${PLANNED_COVERAGE_RESULT_TTL_SECONDS:-3600}
       NODE_ENV: production
     depends_on:
       timescaledb:
@@ -149,7 +157,7 @@ services:
       mosquitto:
         condition: service_healthy
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     volumes:
       - mosquitto_log:/mosquitto/log:ro
       - ./mosquitto:/mosquitto/config
@@ -160,27 +168,6 @@ services:
       timeout: 10s
       retries: 6
       start_period: 30s
-
-  acl-watcher:
-    <<: *internal-hosts
-    build:
-      context: .
-      dockerfile: Dockerfile.backend
-    restart: always
-    logging: *json-log-limits
-    mem_limit: "256m"
-    memswap_limit: "256m"
-    command: ["node", "dist/workers/acl-watcher.js"]
-    environment:
-      MOSQUITTO_ACL_PATH: /mosquitto/config/acl
-      MOSQUITTO_CONTAINER_NAME: mosquitto
-      NODE_ENV: production
-    depends_on:
-      mosquitto:
-        condition: service_healthy
-    volumes:
-      - ./mosquitto:/mosquitto/config
-      - /var/run/docker.sock:/var/run/docker.sock
 
   path-learning-worker:
     <<: *internal-hosts
@@ -338,8 +325,16 @@ services:
       WORKER_MODE: viewshed
       VIEWSHED_ENABLED: ${VIEWSHED_ENABLED:-false}
       NUM_WORKERS: '1'
+      LINK_JOB_QUEUE_MAX: ${LINK_JOB_QUEUE_MAX:-5000}
+      LINK_JOB_MAX_BYTES: ${LINK_JOB_MAX_BYTES:-16384}
+      LINK_JOB_QUEUE_MAX_BYTES: ${LINK_JOB_QUEUE_MAX_BYTES:-67108864}
+      LINK_JOB_MAX_DELTA: ${LINK_JOB_MAX_DELTA:-10000}
+      LINK_JOB_MAX_RETRIES: ${LINK_JOB_MAX_RETRIES:-5}
+      LINK_JOB_DEAD_LETTER_MAX: ${LINK_JOB_DEAD_LETTER_MAX:-128}
+      LINK_JOB_LEASE_SECONDS: ${LINK_JOB_LEASE_SECONDS:-3600}
       COVERAGE_MODEL: ${COVERAGE_MODEL:-rf_radial_100m}
       COVERAGE_MODEL_VERSION: ${COVERAGE_MODEL_VERSION:-5}
+      PLANNED_COVERAGE_RESULT_TTL_SECONDS: ${PLANNED_COVERAGE_RESULT_TTL_SECONDS:-3600}
     volumes:
       - srtm_data:/data/srtm
     deploy:
@@ -373,6 +368,13 @@ services:
       SRTM_DIR: /data/srtm
       WORKER_MODE: link
       NUM_WORKERS: '1'
+      LINK_JOB_QUEUE_MAX: ${LINK_JOB_QUEUE_MAX:-5000}
+      LINK_JOB_MAX_BYTES: ${LINK_JOB_MAX_BYTES:-16384}
+      LINK_JOB_QUEUE_MAX_BYTES: ${LINK_JOB_QUEUE_MAX_BYTES:-67108864}
+      LINK_JOB_MAX_DELTA: ${LINK_JOB_MAX_DELTA:-10000}
+      LINK_JOB_MAX_RETRIES: ${LINK_JOB_MAX_RETRIES:-5}
+      LINK_JOB_DEAD_LETTER_MAX: ${LINK_JOB_DEAD_LETTER_MAX:-128}
+      LINK_JOB_LEASE_SECONDS: ${LINK_JOB_LEASE_SECONDS:-3600}
     volumes:
       - srtm_data:/data/srtm
     depends_on:
@@ -422,7 +424,7 @@ services:
       backend:
         condition: service_healthy
     ports:
-      - "3003:80"
+      - "127.0.0.1:3003:80"
     volumes:
       - ${TERRAIN_TILES_PATH:-./terrain-tiles}:/terrain-tiles:ro
     healthcheck:
@@ -446,7 +448,7 @@ services:
     mem_limit: "128m"
     memswap_limit: "128m"
     ports:
-      - "3004:80"
+      - "127.0.0.1:3004:80"
     depends_on:
       backend:
         condition: service_healthy

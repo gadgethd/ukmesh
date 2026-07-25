@@ -27,7 +27,7 @@ type QueryFn = <T extends Record<string, unknown> = Record<string, unknown>>(
   params?: unknown[],
 ) => Promise<{ rows: T[] }>;
 
-type Resolver = (packetHash: string, network: string | null, q: QueryFn) => Promise<LazyPathResult | null>;
+type Resolver = (packetHash: string, network: string, q: QueryFn) => Promise<LazyPathResult | null>;
 
 function trimTerminalHop(rxNodeId: string, hashes: string[]): string[] {
   if (hashes.length === 0) return hashes;

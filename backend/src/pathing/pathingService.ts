@@ -1,4 +1,10 @@
 import type { PathingRepository } from './pathingRepository.js';
+import {
+  toPublicBetaResultDto,
+  toPublicMultiObserverDto,
+  type PublicBetaResultDto,
+  type PublicMultiObserverDto,
+} from './pathingPublicDto.js';
 
 type ResolvePoolFn = {
   run<T>(
@@ -22,7 +28,18 @@ type PathingServiceDeps = {
   repository: PathingRepository;
 };
 
-const resolveInflight = new Map<string, Promise<unknown>>();
+const resolveInflightSingle = new Map<string, Promise<PublicBetaResultDto>>();
+const resolveInflightMulti = new Map<string, Promise<PublicMultiObserverDto>>();
+const RESOLVE_UNIQUE_INFLIGHT_MAX = Math.min(
+  258,
+  Math.max(1, Number(process.env['PATH_RESOLVE_UNIQUE_INFLIGHT_MAX'] ?? 34) || 34),
+);
+
+function reserveUniqueResolve(): void {
+  if (resolveInflightSingle.size + resolveInflightMulti.size >= RESOLVE_UNIQUE_INFLIGHT_MAX) {
+    throw new Error('PATH_RESOLVE_OVERLOADED');
+  }
+}
 
 type ResolvePayload = {
   mode?: 'resolved' | 'fallback' | 'none';
@@ -91,12 +108,13 @@ export function createPathingService(deps: PathingServiceDeps) {
     repository,
   } = deps;
 
-  async function resolvePacket(packetHash: string, network: string, observer?: string | null): Promise<unknown> {
+  async function resolvePacket(packetHash: string, network: string, observer?: string | null): Promise<PublicBetaResultDto> {
     const cacheKey = `r|${packetHash}|${network}|${observer ?? ''}`;
-    const cached = getResolveCache(cacheKey);
-    if (cached) return addPathExplanation(cached);
-    const inflight = resolveInflight.get(cacheKey);
+    const cached = observer ? undefined : getResolveCache(cacheKey);
+    if (cached) return toPublicBetaResultDto(cached);
+    const inflight = resolveInflightSingle.get(cacheKey);
     if (inflight) return inflight;
+    reserveUniqueResolve();
 
     const promise = (async () => {
       const resolved = await resolvePool.run<unknown>({
@@ -109,26 +127,27 @@ export function createPathingService(deps: PathingServiceDeps) {
         throw new Error('PACKET_NOT_FOUND');
       }
 
-      const explained = addPathExplanation(resolved);
-      setResolveCache(cacheKey, explained);
-      return explained;
+      const projected = toPublicBetaResultDto(addPathExplanation(resolved));
+      if (!observer) setResolveCache(cacheKey, projected);
+      return projected;
     })();
-    resolveInflight.set(cacheKey, promise);
+    resolveInflightSingle.set(cacheKey, promise);
     try {
       return await promise;
     } finally {
-      if (resolveInflight.get(cacheKey) === promise) {
-        resolveInflight.delete(cacheKey);
+      if (resolveInflightSingle.get(cacheKey) === promise) {
+        resolveInflightSingle.delete(cacheKey);
       }
     }
   }
 
-  async function resolvePacketMulti(packetHash: string, network: string): Promise<unknown> {
+  async function resolvePacketMulti(packetHash: string, network: string): Promise<PublicMultiObserverDto> {
     const cacheKey = `m|${packetHash}|${network}`;
     const cached = getResolveCache(cacheKey);
-    if (cached) return addPathExplanation(cached);
-    const inflight = resolveInflight.get(cacheKey);
+    if (cached) return toPublicMultiObserverDto(cached);
+    const inflight = resolveInflightMulti.get(cacheKey);
     if (inflight) return inflight;
+    reserveUniqueResolve();
 
     const promise = (async () => {
       const resolved = await resolvePool.run<unknown>({
@@ -140,16 +159,16 @@ export function createPathingService(deps: PathingServiceDeps) {
         throw new Error('PACKET_NOT_FOUND');
       }
 
-      const explained = addPathExplanation(resolved);
-      setResolveCache(cacheKey, explained);
-      return explained;
+      const projected = toPublicMultiObserverDto(addPathExplanation(resolved));
+      setResolveCache(cacheKey, projected);
+      return projected;
     })();
-    resolveInflight.set(cacheKey, promise);
+    resolveInflightMulti.set(cacheKey, promise);
     try {
       return await promise;
     } finally {
-      if (resolveInflight.get(cacheKey) === promise) {
-        resolveInflight.delete(cacheKey);
+      if (resolveInflightMulti.get(cacheKey) === promise) {
+        resolveInflightMulti.delete(cacheKey);
       }
     }
   }

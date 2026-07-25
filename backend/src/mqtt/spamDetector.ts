@@ -1,4 +1,5 @@
 import { query } from '../db/index.js';
+import { UKMESH_NETWORKS, networkMatchesScope } from '../networks.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -186,13 +187,15 @@ async function refreshEstablishedNodes(): Promise<void> {
       JOIN packets p ON p.src_node_id = n.node_id
       WHERE n.advert_count >= $1
         AND p.packet_type = 4
+        AND p.network = ANY($2)
+        AND split_part(p.topic, '/', 1) <> 'meshcore-test'
         AND p.time > NOW() - INTERVAL '30 days'
         AND p.payload->'appData'->'location'->>'latitude' IS NOT NULL
       GROUP BY n.node_id, n.advert_count
       HAVING
         STDDEV(NULLIF(p.payload->'appData'->'location'->>'latitude', '')::double precision) < 0.3
         AND COUNT(DISTINCT p.packet_hash) >= $1
-    `, [ESTABLISHED_MIN_ADVERTS]);
+    `, [ESTABLISHED_MIN_ADVERTS, UKMESH_NETWORKS]);
 
     establishedNodes.clear();
     knownNodeIds.clear();
@@ -210,7 +213,12 @@ async function refreshEstablishedNodes(): Promise<void> {
 
     // Also load all known node IDs (even without stable location) for slow-burn detection
     const allIds = await query<{ node_id: string }>(
-      `SELECT node_id FROM nodes`
+      `SELECT DISTINCT p.src_node_id AS node_id
+       FROM packets p
+       WHERE p.src_node_id IS NOT NULL
+         AND p.network = ANY($1)
+         AND split_part(p.topic, '/', 1) <> 'meshcore-test'`,
+      [UKMESH_NETWORKS],
     );
     for (const row of allIds.rows) knownNodeIds.add(row.node_id);
 
@@ -241,6 +249,8 @@ async function refreshIdentityEvidence(): Promise<void> {
         FROM packets
         WHERE packet_type = 4
           AND time > NOW() - ($1 * INTERVAL '1 day')
+          AND network = ANY($2)
+          AND split_part(topic, '/', 1) <> 'meshcore-test'
           AND payload ? 'publicKey'
           AND payload->>'_summary' IS NOT NULL
           AND payload->>'publicKey' ~* '^[0-9a-f]{64}$'
@@ -276,7 +286,7 @@ async function refreshIdentityEvidence(): Promise<void> {
         COALESCE(mm.max_adverts_per_minute, 0) AS max_adverts_per_minute
       FROM key_stats ks
       LEFT JOIN max_minute mm ON mm.name = ks.name AND mm.public_key = ks.public_key
-    `, [IDENTITY_WINDOW_DAYS]);
+    `, [IDENTITY_WINDOW_DAYS, UKMESH_NETWORKS]);
 
     const burstRows = await query<{ name: string; max_evidenced_keys_per_hour: string }>(`
       WITH base AS (
@@ -289,6 +299,8 @@ async function refreshIdentityEvidence(): Promise<void> {
         FROM packets
         WHERE packet_type = 4
           AND time > NOW() - ($1 * INTERVAL '1 day')
+          AND network = ANY($4)
+          AND split_part(topic, '/', 1) <> 'meshcore-test'
           AND payload ? 'publicKey'
           AND payload->>'_summary' IS NOT NULL
           AND payload->>'publicKey' ~* '^[0-9a-f]{64}$'
@@ -314,7 +326,7 @@ async function refreshIdentityEvidence(): Promise<void> {
       SELECT name, MAX(evidenced_keys) AS max_evidenced_keys_per_hour
       FROM evidenced_hour
       GROUP BY name
-    `, [IDENTITY_WINDOW_DAYS, EVIDENCED_KEY_MIN_ADVERTS, EVIDENCED_KEY_MIN_OBSERVERS]);
+    `, [IDENTITY_WINDOW_DAYS, EVIDENCED_KEY_MIN_ADVERTS, EVIDENCED_KEY_MIN_OBSERVERS, UKMESH_NETWORKS]);
 
     const rotationRows = await query<{
       public_key: string;
@@ -330,12 +342,14 @@ async function refreshIdentityEvidence(): Promise<void> {
       FROM packets
       WHERE packet_type = 4
         AND time > NOW() - ($1 * INTERVAL '1 day')
+        AND network = ANY($2)
+        AND split_part(topic, '/', 1) <> 'meshcore-test'
         AND payload ? 'publicKey'
         AND payload->>'_summary' IS NOT NULL
         AND payload->>'publicKey' ~* '^[0-9a-f]{64}$'
       GROUP BY upper(payload->>'publicKey')
       HAVING COUNT(DISTINCT payload->>'_summary') >= 2
-    `, [IDENTITY_WINDOW_DAYS]);
+    `, [IDENTITY_WINDOW_DAYS, UKMESH_NETWORKS]);
 
     const burstByName = new Map<string, number>();
     for (const row of burstRows.rows) {
@@ -579,7 +593,10 @@ export async function evaluateAdvert(advert: {
   payloadTimestamp?: number;
   network: string;
 }): Promise<EvalResult> {
-  const { name, publicKey, srcNodeId, lat, lon, hopCount, payloadTimestamp } = advert;
+  const { name, publicKey, srcNodeId, lat, lon, hopCount, payloadTimestamp, network } = advert;
+  if (!networkMatchesScope(network, 'ukmesh')) {
+    return { signals: [], totalScore: 0, verdict: 'clean', canonicalKey: publicKey };
+  }
   const normalizedKey = publicKey.toUpperCase();
 
   if (!name || !isFullPublicKey(normalizedKey)) {

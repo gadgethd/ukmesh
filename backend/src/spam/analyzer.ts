@@ -4,7 +4,13 @@ import { clusterMessages, incidentStatus } from './cluster.js';
 import { estimateOrigin } from './origin.js';
 import { resolveSpamOrigin } from './spamResolver.js';
 import { sanitizeIncident } from './sanitize.js';
-import { loadRecentMessages, persistIncidents, type PersistableIncident, type PersistResult } from './repository.js';
+import {
+  loadRecentMessages,
+  persistIncidents,
+  withSpamAnalyzerLease,
+  type PersistableIncident,
+  type PersistResult,
+} from './repository.js';
 import type { Incident, MessageRecord, OriginEstimate } from './types.js';
 
 type SpamQueryFn = <T extends Record<string, unknown> = Record<string, unknown>>(
@@ -89,13 +95,26 @@ export interface AnalyzeResult extends PersistResult {
 
 /** Run one full analysis pass and persist the results. */
 export async function analyzeOnce(cfg: SpamMessageConfig = loadSpamMessageConfig()): Promise<AnalyzeResult> {
-  const records = await loadRecentMessages(cfg);
-  const items = await buildIncidentsWithPaths(records, Date.now(), dbQuery, cfg);
-  const persisted = await persistIncidents(items, cfg);
-  return { ...persisted, messages: records.length, incidents: items.length };
+  const result = await withSpamAnalyzerLease(async () => {
+    const records = await loadRecentMessages(cfg);
+    const items = await buildIncidentsWithPaths(records, Date.now(), dbQuery, cfg);
+    const persisted = await persistIncidents(items, cfg);
+    return { ...persisted, messages: records.length, incidents: items.length };
+  });
+  return result ?? { upserted: 0, removed: 0, active: 0, messages: 0, incidents: 0 };
 }
 
 let timer: NodeJS.Timeout | null = null;
+let inFlight: Promise<AnalyzeResult> | null = null;
+
+export function analyzeSingleFlight(cfg: SpamMessageConfig): Promise<AnalyzeResult> {
+  if (inFlight) return inFlight;
+  const tracked = analyzeOnce(cfg).finally(() => {
+    if (inFlight === tracked) inFlight = null;
+  });
+  inFlight = tracked;
+  return tracked;
+}
 
 /** Start the periodic in-process analyzer (no-op if disabled by config). */
 export async function initSpamMessageAnalyzer(cfg: SpamMessageConfig = loadSpamMessageConfig()): Promise<void> {
@@ -103,10 +122,11 @@ export async function initSpamMessageAnalyzer(cfg: SpamMessageConfig = loadSpamM
     console.log('[spam-msg] analyzer disabled by SPAM_MESSAGE_ANALYZER_ENABLED');
     return;
   }
+  if (timer || inFlight) return;
 
   const run = async () => {
     try {
-      const res = await analyzeOnce(cfg);
+      const res = await analyzeSingleFlight(cfg);
       console.log(
         `[spam-msg] analyzed ${res.messages} messages -> ${res.incidents} incidents ` +
           `(${res.active} active, ${res.removed} stale removed)`,
@@ -116,7 +136,14 @@ export async function initSpamMessageAnalyzer(cfg: SpamMessageConfig = loadSpamM
     }
   };
 
+  const schedule = () => {
+    timer = setTimeout(async () => {
+      timer = null;
+      await run();
+      schedule();
+    }, cfg.analyzerIntervalMs);
+    timer.unref();
+  };
   await run();
-  timer = setInterval(run, cfg.analyzerIntervalMs);
-  if (typeof timer.unref === 'function') timer.unref();
+  schedule();
 }

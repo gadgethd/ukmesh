@@ -2,7 +2,7 @@ import type { Router } from 'express';
 import type { QueryResultRow } from 'pg';
 import { resolveRequestNetwork } from '../../http/requestScope.js';
 import type { NetworkFilters } from '../utils/networkFilters.js';
-import { redactPrivateNode } from '../utils/privateNode.js';
+import { isPrivateNode } from '../utils/privateNode.js';
 
 type QueryFn = <T extends QueryResultRow = QueryResultRow>(
   text: string,
@@ -108,7 +108,6 @@ export function shapeTopology(rows: TopologyRow[], standaloneRows: StandaloneNod
   const links: TopologyLink[] = [];
 
   const addNode = (nodeId: string, name: string | null, lat: number | null, lon: number | null, observations: number) => {
-    const redacted = redactPrivateNode({ node_id: nodeId, name, lat, lon });
     const existing = nodes.get(nodeId);
     if (existing) {
       existing.degree += 1;
@@ -117,15 +116,16 @@ export function shapeTopology(rows: TopologyRow[], standaloneRows: StandaloneNod
     }
     nodes.set(nodeId, {
       nodeId,
-      name: redacted.name ?? null,
-      lat: redacted.lat ?? null,
-      lon: redacted.lon ?? null,
+      name,
+      lat,
+      lon,
       degree: 1,
       observations,
     });
   };
 
   for (const row of rows) {
+    if (isPrivateNode(row.name_a) || isPrivateNode(row.name_b)) continue;
     const observations = Number(row.observed_count) || 0;
     addNode(row.node_a_id, row.name_a, row.lat_a, row.lon_a, observations);
     addNode(row.node_b_id, row.name_b, row.lat_b, row.lon_b, observations);
@@ -140,13 +140,13 @@ export function shapeTopology(rows: TopologyRow[], standaloneRows: StandaloneNod
   }
 
   for (const row of standaloneRows) {
+    if (isPrivateNode(row.name)) continue;
     if (nodes.has(row.node_id)) continue;
-    const redacted = redactPrivateNode({ node_id: row.node_id, name: row.name, lat: row.lat, lon: row.lon });
     nodes.set(row.node_id, {
       nodeId: row.node_id,
-      name: redacted.name ?? null,
-      lat: redacted.lat ?? null,
-      lon: redacted.lon ?? null,
+      name: row.name,
+      lat: row.lat,
+      lon: row.lon,
       degree: 0,
       observations: 0,
     });
@@ -171,7 +171,7 @@ export function registerTopologyRoutes(router: Router, deps: TopologyRouteDeps):
   router.get('/topology', deps.limiter, async (req, res) => {
     try {
       const requestedNetwork = resolveRequestNetwork(req.query['network'], req.headers, 'ukmesh');
-      const network = requestedNetwork === 'all' ? undefined : requestedNetwork;
+      const network = requestedNetwork === 'test' ? 'test' : 'ukmesh';
       const requestedLimit = Number(req.query['limit'] ?? 300);
       const limit = Number.isInteger(requestedLimit) ? Math.min(500, Math.max(50, requestedLimit)) : 300;
       const filters = deps.networkFilters(network);
@@ -197,6 +197,8 @@ export function registerTopologyRoutes(router: Router, deps: TopologyRouteDeps):
            AND nl.last_observed > NOW() - INTERVAL '30 days'
            AND (a.role IS NULL OR a.role = 2)
            AND (b.role IS NULL OR b.role = 2)
+           AND (a.name IS NULL OR a.name NOT LIKE '%🚫%')
+           AND (b.name IS NULL OR b.name NOT LIKE '%🚫%')
            ${filters.nodesAlias('a')}
            ${filters.nodesAlias('b')}
          ORDER BY nl.multibyte_observed_count DESC, nl.observed_count DESC, nl.last_observed DESC
@@ -208,6 +210,7 @@ export function registerTopologyRoutes(router: Router, deps: TopologyRouteDeps):
          FROM nodes n
          WHERE n.last_seen > NOW() - INTERVAL '30 days'
            AND (n.role IS NULL OR n.role = 2)
+           AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
            ${filters.nodesAlias('n')}
            AND NOT EXISTS (
              SELECT 1

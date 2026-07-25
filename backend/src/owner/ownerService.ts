@@ -1,3 +1,4 @@
+import { BoundedTtlMap } from '../cache/boundedTtlMap.js';
 import type { OwnerRepository } from './ownerRepository.js';
 import type { OwnerSession } from './ownerSession.js';
 
@@ -56,14 +57,25 @@ export function createOwnerService(deps: OwnerServiceDeps) {
     buildOwnerDashboard,
     repository,
   } = deps;
-  const ownerLastHopCache = new Map<string, OwnerLastHopCacheEntry>();
-  const ownerDashboardCache = new Map<string, { ts: number; dashboard: OwnerDashboard; nodeIds: string[] }>();
+  const ownerLastHopCache = new BoundedTtlMap<string, OwnerLastHopCacheEntry>({
+    maxEntries: 512,
+    maxWeight: 64 * 1024 * 1024,
+    ttlMs: ownerLastHopCacheTtlMs,
+  });
+  const ownerDashboardCache = new BoundedTtlMap<string, { ts: number; dashboard: OwnerDashboard; nodeIds: string[] }>({
+    maxEntries: 512,
+    maxWeight: 64 * 1024 * 1024,
+    ttlMs: ownerDashboardCacheTtlMs,
+  });
 
-  // Stable per-session cache key: prefer the MQTT username (survives node changes)
-  // and fall back to the sorted node-id set for legacy sessions without a username.
-  function dashboardCacheKey(mqttUsername: string | undefined, nodeIds: string[]): string {
-    const username = mqttUsername?.trim();
-    return username ? `u:${username}` : `n:${[...nodeIds].sort().join(',')}`;
+  function normalizeNodeIds(nodeIds: string[]): string[] {
+    return Array.from(new Set(nodeIds
+      .map((nodeId) => nodeId.trim().toUpperCase())
+      .filter((nodeId) => /^[0-9A-F]{64}$/.test(nodeId)))).sort();
+  }
+
+  function dashboardCacheKey(mqttUsername: string, nodeIds: string[]): string {
+    return `u:${mqttUsername.trim()}:nodes:${normalizeNodeIds(nodeIds).join(',')}`;
   }
 
   // Best-effort background warm of the per-node live cache after login so the first
@@ -157,16 +169,20 @@ export function createOwnerService(deps: OwnerServiceDeps) {
   }
 
   async function getSessionDashboard(session: OwnerSession): Promise<{ dashboard: OwnerDashboard; nodeIds: string[] }> {
-    const cacheKey = dashboardCacheKey(session.mqttUsername, session.nodeIds);
+    const mqttUsername = session.mqttUsername.trim();
+    if (!mqttUsername) throw new Error('INVALID_OWNER_SESSION');
+
+    const nodeIds = normalizeNodeIds(await resolveOwnerNodeIds(mqttUsername));
+    if (nodeIds.length === 0) {
+      throw new Error('NO_ACTIVE_OWNER_NODE');
+    }
+
+    const cacheKey = dashboardCacheKey(mqttUsername, nodeIds);
     const cached = ownerDashboardCache.get(cacheKey);
     if (cached && Date.now() - cached.ts < ownerDashboardCacheTtlMs) {
       return { dashboard: cached.dashboard, nodeIds: cached.nodeIds };
     }
 
-    const freshNodeIds = session.mqttUsername
-      ? await resolveOwnerNodeIds(session.mqttUsername)
-      : [];
-    const nodeIds = freshNodeIds.length > 0 ? freshNodeIds : session.nodeIds;
     const dashboard = await buildOwnerDashboard(nodeIds);
     if (dashboard.totals.ownedNodes < 1) {
       throw new Error('NO_ACTIVE_OWNER_NODE');

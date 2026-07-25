@@ -1,7 +1,7 @@
 import type { PoolClient } from 'pg';
 import { pool, query } from '../db/index.js';
+import { UKMESH_NETWORKS } from '../networks.js';
 import {
-  buildNodePathHashIndex,
   getNodesForPathHash,
   nodePathHash,
   normalizePathHash,
@@ -50,6 +50,37 @@ const MAX_MOTIF3_CHOICES_PER_GROUP = 4;
 const HOUR_BUCKET_SIZE = 6;
 const PREFIX_AMBIGUITY_RADIUS_KM = 45;
 const WRITE_BATCH_SIZE = 1_000;
+const MAX_ELIGIBLE_NODES = 100_000;
+const MAX_PREFIX_BUCKET = 128;
+const MAX_HASHES_PER_PACKET = 32;
+const MAX_MODEL_MS = 120_000;
+const MAX_MODEL_OUTPUT_ROWS = 250_000;
+const MAX_ELIGIBLE_LINKS = 250_000;
+
+export function buildBoundedLearningPathHashIndex<T extends { node_id: string }>(
+  nodes: Iterable<T>,
+): Map<string, T[]> {
+  const index = new Map<string, T[]>();
+  const overflowed = new Set<string>();
+  for (const node of nodes) {
+    if (!/^[0-9a-f]{64}$/i.test(node.node_id)) continue;
+    for (const length of [2, 4, 6]) {
+      const key = nodePathHash(node.node_id, length);
+      if (overflowed.has(key)) continue;
+      const bucket = index.get(key) ?? [];
+      if (bucket.some((entry) => entry.node_id === node.node_id)) continue;
+      if (bucket.length >= MAX_PREFIX_BUCKET) {
+        bucket.length = 0;
+        overflowed.add(key);
+        index.set(key, bucket);
+        continue;
+      }
+      bucket.push(node);
+      index.set(key, bucket);
+    }
+  }
+  return index;
+}
 
 type PrefixPriorWriteRow = {
   prefix: string;
@@ -363,32 +394,27 @@ async function replacePathLearningRows(
 }
 
 export async function rebuildPathLearningModels(): Promise<void> {
-  const networksResult = await query<{ network: string }>(
-    `SELECT DISTINCT network
-     FROM (
-       SELECT network FROM packets
-       UNION
-       SELECT network FROM nodes
-     ) t
-     WHERE network IS NOT NULL`,
+  await rebuildNetwork('ukmesh', UKMESH_NETWORKS);
+  const testEvidence = await query<{ present: boolean }>(
+    `SELECT EXISTS (SELECT 1 FROM packets WHERE network = 'test') AS present`,
   );
-  const networks = networksResult.rows.map((r) => r.network).filter(Boolean);
-  if (networks.length === 0) return;
-
-  for (const network of networks) {
-    await rebuildNetwork(network, network);
-  }
-  await rebuildNetwork('all', undefined);
+  if (testEvidence.rows[0]?.present) await rebuildNetwork('test', ['test']);
 }
 
-async function rebuildNetwork(modelNetwork: string, sourceNetwork: string | undefined): Promise<void> {
+async function rebuildNetwork(modelNetwork: 'ukmesh' | 'test', sourceNetworks: readonly string[]): Promise<void> {
+  if (sourceNetworks.length === 0) throw new Error('PATH_MODEL_SOURCE_SCOPE_REQUIRED');
   const nowMs = Date.now();
-  const nodeNetworkFilter = sourceNetwork ? 'AND network = $1' : '';
-  const packetNetworkFilter = sourceNetwork ? 'AND network = $1' : '';
-  const linkNetworkFilter = sourceNetwork ? 'AND a.network = $1 AND b.network = $1' : '';
-  const nodeParams: unknown[] = sourceNetwork ? [sourceNetwork] : [];
-  const packetParams: unknown[] = sourceNetwork ? [sourceNetwork, MAX_TRAINING_PACKETS] : [MAX_TRAINING_PACKETS];
-  const linkParams: unknown[] = sourceNetwork ? [sourceNetwork] : [];
+  const deadline = nowMs + MAX_MODEL_MS;
+  let derivedBudgetTicks = 0;
+  const enforceDerivedBudget = () => {
+    derivedBudgetTicks += 1;
+    if ((derivedBudgetTicks & 1023) === 0 && Date.now() > deadline) {
+      throw new Error('PATH_LEARNING_TIME_BUDGET');
+    }
+  };
+  const nodeParams: unknown[] = [sourceNetworks, modelNetwork];
+  const packetParams: unknown[] = [sourceNetworks, MAX_TRAINING_PACKETS, modelNetwork];
+  const linkParams: unknown[] = [sourceNetworks, modelNetwork];
 
   const nodesResult = await query<LearningNode>(
     `SELECT node_id, lat, lon, elevation_m, iata
@@ -397,12 +423,26 @@ async function rebuildNetwork(modelNetwork: string, sourceNetwork: string | unde
        AND lon IS NOT NULL
        AND (name IS NULL OR name NOT LIKE '%🚫%')
        AND (role IS NULL OR role = 2)
-       ${nodeNetworkFilter}`,
+       AND ($2 = 'test' OR network IS DISTINCT FROM 'test')
+       AND (
+         network = ANY($1)
+         OR EXISTS (
+           SELECT 1 FROM node_network_sightings sighting
+           WHERE sighting.node_id = nodes.node_id
+             AND sighting.network = ANY($1)
+             AND sighting.last_seen_at > NOW() - INTERVAL '30 days'
+         )
+       )
+     ORDER BY node_id
+     LIMIT ${MAX_ELIGIBLE_NODES + 1}`,
     nodeParams,
   );
+  if (nodesResult.rows.length > MAX_ELIGIBLE_NODES) {
+    throw new Error('PATH_LEARNING_NODE_BUDGET');
+  }
   const nodesById = new Map(nodesResult.rows.map((n) => [n.node_id, n]));
 
-  const pathHashIndex = buildNodePathHashIndex(nodesResult.rows);
+  const pathHashIndex = buildBoundedLearningPathHashIndex(nodesResult.rows);
 
   const linksResult = await query<LearningLink>(
     `SELECT nl.node_a_id, nl.node_b_id, nl.itm_path_loss_db, nl.count_a_to_b, nl.count_b_to_a
@@ -410,14 +450,47 @@ async function rebuildNetwork(modelNetwork: string, sourceNetwork: string | unde
      JOIN nodes a ON a.node_id = nl.node_a_id
      JOIN nodes b ON b.node_id = nl.node_b_id
      WHERE (nl.itm_viable = true OR nl.force_viable = true)
-       ${linkNetworkFilter}`,
+       AND (a.name IS NULL OR a.name NOT LIKE '%🚫%')
+       AND (b.name IS NULL OR b.name NOT LIKE '%🚫%')
+       AND ($2 = 'test' OR a.network IS DISTINCT FROM 'test')
+       AND ($2 = 'test' OR b.network IS DISTINCT FROM 'test')
+       AND (
+         a.network = ANY($1)
+         OR EXISTS (
+           SELECT 1 FROM node_network_sightings sa
+           WHERE sa.node_id = a.node_id
+             AND sa.network = ANY($1)
+             AND sa.last_seen_at > NOW() - INTERVAL '30 days'
+         )
+       )
+       AND (
+         b.network = ANY($1)
+         OR EXISTS (
+           SELECT 1 FROM node_network_sightings sb
+           WHERE sb.node_id = b.node_id
+             AND sb.network = ANY($1)
+             AND sb.last_seen_at > NOW() - INTERVAL '30 days'
+         )
+       )
+     ORDER BY nl.node_a_id, nl.node_b_id
+     LIMIT ${MAX_ELIGIBLE_LINKS + 1}`,
     linkParams,
   );
+  if (linksResult.rows.length > MAX_ELIGIBLE_LINKS) {
+    throw new Error('PATH_LEARNING_LINK_BUDGET');
+  }
+  if (Date.now() > deadline) throw new Error('PATH_LEARNING_TIME_BUDGET');
 
-  const confirmedLinks = new Set(linksResult.rows.map((r) => linkKey(r.node_a_id, r.node_b_id)));
-  const linkMetaByPair = new Map(linksResult.rows.map((r) => [linkKey(r.node_a_id, r.node_b_id), r]));
+  const eligibleLinks = linksResult.rows.filter((link) =>
+    nodesById.has(link.node_a_id) && nodesById.has(link.node_b_id));
+  const confirmedLinks = new Set(eligibleLinks.map((r) => linkKey(r.node_a_id, r.node_b_id)));
+  const linkMetaByPair = new Map(eligibleLinks.map((r) => [linkKey(r.node_a_id, r.node_b_id), r]));
   const adjacency = new Map<string, Set<string>>();
-  for (const link of linksResult.rows) {
+  for (let linkIndex = 0; linkIndex < eligibleLinks.length; linkIndex += 1) {
+    if ((linkIndex & 1023) === 0 && Date.now() > deadline) {
+      throw new Error('PATH_LEARNING_TIME_BUDGET');
+    }
+    const link = eligibleLinks[linkIndex]!;
     if (!adjacency.has(link.node_a_id)) adjacency.set(link.node_a_id, new Set());
     if (!adjacency.has(link.node_b_id)) adjacency.set(link.node_b_id, new Set());
     adjacency.get(link.node_a_id)!.add(link.node_b_id);
@@ -432,9 +505,10 @@ async function rebuildNetwork(modelNetwork: string, sourceNetwork: string | unde
        AND cardinality(path_hashes) > 0
        AND path_hash_size_bytes >= 2
        AND time > NOW() - INTERVAL '120 days'
-       ${packetNetworkFilter}
+       AND network = ANY($1)
+       AND ($3 = 'test' OR split_part(topic, '/', 1) <> 'meshcore-test')
      ORDER BY time DESC
-     LIMIT $${sourceNetwork ? 2 : 1}`,
+     LIMIT $2`,
     packetParams,
   );
 
@@ -456,7 +530,12 @@ async function rebuildNetwork(modelNetwork: string, sourceNetwork: string | unde
   let confidenceSum = 0;
 
   for (const packet of packetsResult.rows) {
-    const hashes = packet.path_hashes?.map(normalizePathHash).filter(Boolean) ?? [];
+    if (Date.now() > deadline) throw new Error('PATH_LEARNING_TIME_BUDGET');
+    if ((packet.path_hashes?.length ?? 0) > MAX_HASHES_PER_PACKET) continue;
+    const hashes = packet.path_hashes
+      ?.map(normalizePathHash)
+      .filter((hash) => /^(?:[0-9A-F]{4}|[0-9A-F]{6})$/.test(hash))
+      ?? [];
     if (hashes.length === 0) continue;
     const rx = nodesById.get(packet.rx_node_id);
     if (!rx) continue;
@@ -533,6 +612,7 @@ async function rebuildNetwork(modelNetwork: string, sourceNetwork: string | unde
 
   const groupedPrefix = new Map<string, Array<{ nodeId: string; count: number }>>();
   for (const [key, count] of prefixChoiceCounts) {
+    enforceDerivedBudget();
     const [prefix, region, prevPrefix, nodeId] = key.split('|');
     const groupKey = `${prefix}|${region}|${prevPrefix}`;
     const row = groupedPrefix.get(groupKey) ?? [];
@@ -542,6 +622,7 @@ async function rebuildNetwork(modelNetwork: string, sourceNetwork: string | unde
 
   const prefixRows: PrefixPriorWriteRow[] = [];
   for (const [groupKey, rows] of groupedPrefix) {
+    enforceDerivedBudget();
     const [prefix, region, prevPrefix] = groupKey.split('|');
     const total = prefixGroupTotals.get(groupKey) ?? 1;
     for (const row of truncateBest(rows.map((r) => ({ key: r.nodeId, count: r.count })), MAX_PREFIX_CHOICES_PER_GROUP)) {
@@ -558,6 +639,7 @@ async function rebuildNetwork(modelNetwork: string, sourceNetwork: string | unde
 
   const groupedTransitions = new Map<string, Array<{ toNodeId: string; count: number }>>();
   for (const [key, count] of transitionCounts) {
+    enforceDerivedBudget();
     const [fromNodeId, region, toNodeId] = key.split('|');
     const groupKey = `${fromNodeId}|${region}`;
     const row = groupedTransitions.get(groupKey) ?? [];
@@ -567,6 +649,7 @@ async function rebuildNetwork(modelNetwork: string, sourceNetwork: string | unde
 
   const transitionRows: TransitionPriorWriteRow[] = [];
   for (const [groupKey, rows] of groupedTransitions) {
+    enforceDerivedBudget();
     const [fromNodeId, region] = groupKey.split('|');
     const total = transitionGroupTotals.get(groupKey) ?? 1;
     for (const row of truncateBest(rows.map((r) => ({ key: r.toNodeId, count: r.count })), MAX_TRANSITIONS_PER_GROUP)) {
@@ -583,6 +666,7 @@ async function rebuildNetwork(modelNetwork: string, sourceNetwork: string | unde
   const groupedEdges = new Map<string, Array<{ toNodeId: string; score: number; observed: number; expected: number; missing: number; directional: number; recency: number; reliability: number; pathLoss: number | null; consistencyPenalty: number }>>();
 
   for (const [fromGroup, activeCount] of activeFromCounts) {
+    enforceDerivedBudget();
     const [region, bucketText, fromNodeId] = fromGroup.split('|');
     const bucket = Number(bucketText);
     const neighbors = Array.from(adjacency.get(fromNodeId!) ?? []);
@@ -592,6 +676,7 @@ async function rebuildNetwork(modelNetwork: string, sourceNetwork: string | unde
     const rows: Array<{ toNodeId: string; score: number; observed: number; expected: number; missing: number; directional: number; recency: number; reliability: number; pathLoss: number | null; consistencyPenalty: number }> = [];
 
     for (const toNodeId of neighbors) {
+      enforceDerivedBudget();
       const directedEdgeKey = `${fromGroup}|${toNodeId}`;
       const observed = edgeObservedCounts.get(directedEdgeKey) ?? 0;
       const expected = Math.max(observed, uniformExpected);
@@ -644,6 +729,7 @@ async function rebuildNetwork(modelNetwork: string, sourceNetwork: string | unde
 
   const edgeRows: EdgePriorWriteRow[] = [];
   for (const [groupKey, rows] of groupedEdges) {
+    enforceDerivedBudget();
     const [region, bucketText, fromNodeId] = groupKey.split('|');
     const bucket = Number(bucketText);
     for (const row of rows.sort((a, b) => b.score - a.score).slice(0, MAX_EDGE_CHOICES_PER_GROUP)) {
@@ -667,6 +753,7 @@ async function rebuildNetwork(modelNetwork: string, sourceNetwork: string | unde
 
   const groupedMotif2 = new Map<string, Array<{ nodeIds: string; count: number }>>();
   for (const [key, count] of motif2Counts) {
+    enforceDerivedBudget();
     const [region, bucket, fromNodeId, nodeIds] = key.split('|');
     const groupKey = `${region}|${bucket}|${fromNodeId}`;
     const row = groupedMotif2.get(groupKey) ?? [];
@@ -676,6 +763,7 @@ async function rebuildNetwork(modelNetwork: string, sourceNetwork: string | unde
 
   const motifRows: MotifPriorWriteRow[] = [];
   for (const [groupKey, rows] of groupedMotif2) {
+    enforceDerivedBudget();
     const [region, bucketText] = groupKey.split('|');
     const bucket = Number(bucketText);
     const total = motif2GroupTotals.get(groupKey) ?? 1;
@@ -693,6 +781,7 @@ async function rebuildNetwork(modelNetwork: string, sourceNetwork: string | unde
 
   const groupedMotif3 = new Map<string, Array<{ nodeIds: string; count: number }>>();
   for (const [key, count] of motif3Counts) {
+    enforceDerivedBudget();
     const [region, bucket, head, nodeIds] = key.split('|');
     const groupKey = `${region}|${bucket}|${head}`;
     const row = groupedMotif3.get(groupKey) ?? [];
@@ -701,6 +790,7 @@ async function rebuildNetwork(modelNetwork: string, sourceNetwork: string | unde
   }
 
   for (const [groupKey, rows] of groupedMotif3) {
+    enforceDerivedBudget();
     const [region, bucketText] = groupKey.split('|');
     const bucket = Number(bucketText);
     const total = motif3GroupTotals.get(groupKey) ?? 1;
@@ -721,6 +811,13 @@ async function rebuildNetwork(modelNetwork: string, sourceNetwork: string | unde
   const confidenceScale = meanPredConfidence > 0 ? clamp(top1Accuracy / meanPredConfidence, 0.55, 1.7) : 1;
   const confidenceBias = clamp(top1Accuracy - meanPredConfidence * confidenceScale, -0.2, 0.2);
   const recommendedThreshold = clamp(0.35 + (1 - top1Accuracy) * 0.2, 0.3, 0.88);
+  if (
+    prefixRows.length
+    + transitionRows.length
+    + edgeRows.length
+    + motifRows.length > MAX_MODEL_OUTPUT_ROWS
+  ) throw new Error('PATH_LEARNING_OUTPUT_BUDGET');
+  if (Date.now() > deadline) throw new Error('PATH_LEARNING_TIME_BUDGET');
 
   await replacePathLearningRows(modelNetwork, prefixRows, transitionRows, edgeRows, motifRows, {
     evaluatedPackets,
@@ -732,7 +829,7 @@ async function rebuildNetwork(modelNetwork: string, sourceNetwork: string | unde
   });
 
   console.log(
-    `[path-learning] model=${modelNetwork} source=${sourceNetwork ?? 'all'} packets=${evaluatedPackets} ` +
+    `[path-learning] model=${modelNetwork} sources=${sourceNetworks.join(',')} packets=${evaluatedPackets} ` +
     `top1=${top1Accuracy.toFixed(3)} scale=${confidenceScale.toFixed(3)} edges=${edgeRows.length} motifs=${motifRows.length}`,
   );
 }

@@ -49,4 +49,11 @@ test('24-hour chart aggregates use the complete scoped window and true signal me
   assert.doesNotMatch(signalSql, /AVG\(p\.rssi\)::text\s+AS median_rssi/i);
   assert.doesNotMatch(signalSql, /AVG\(p\.snr\)::text\s+AS median_snr/i);
   assert.match(sqlFor('WITH prefix_counts'), /LIMIT 10/i);
+
+  const decodedPathSql = sqlFor('fully_decoded_multibyte_24h');
+  assert.match(
+    decodedPathSql,
+    /n\.name IS NULL OR n\.name NOT LIKE '%🚫%'/,
+    'private nodes must never participate in public decoded-path resolution',
+  );
 });

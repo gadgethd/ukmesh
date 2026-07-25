@@ -25,6 +25,16 @@ export interface SpamMessageConfig {
   analyzerIntervalMs: number;
   /** Whether the in-process periodic analyzer runs at all. */
   analyzerEnabled: boolean;
+  /** Hard per-pass candidate/materialization budget. */
+  maxCandidatePacketRows: number;
+  maxMessagesPerRun: number;
+  maxObserversPerMessage: number;
+  maxNormalizedChars: number;
+  maxIncidentsPerRun: number;
+  maxCandidateClusters: number;
+  maxEvidenceMembersPerIncident: number;
+  analysisBudgetMs: number;
+  dbStatementTimeoutMs: number;
 
   // --- clustering ---
   /** Min normalized-text similarity (0..1) for two messages to join a cluster. */
@@ -100,6 +110,15 @@ export function loadSpamMessageConfig(): SpamMessageConfig {
     analysisWindowHours: envNum('SPAM_MESSAGE_WINDOW_HOURS', 24),
     analyzerIntervalMs: envNum('SPAM_MESSAGE_INTERVAL_MS', 5 * 60 * 1000),
     analyzerEnabled: envBool('SPAM_MESSAGE_ANALYZER_ENABLED', true),
+    maxCandidatePacketRows: Math.min(50_000, Math.max(100, envNum('SPAM_MESSAGE_MAX_CANDIDATE_ROWS', 10_000))),
+    maxMessagesPerRun: Math.min(10_000, Math.max(100, envNum('SPAM_MESSAGE_MAX_MESSAGES', 2_000))),
+    maxObserversPerMessage: Math.min(256, Math.max(1, envNum('SPAM_MESSAGE_MAX_OBSERVERS', 32))),
+    maxNormalizedChars: Math.min(4_096, Math.max(64, envNum('SPAM_MESSAGE_MAX_NORMALIZED_CHARS', 512))),
+    maxIncidentsPerRun: Math.min(1_000, Math.max(1, envNum('SPAM_MESSAGE_MAX_INCIDENTS', 100))),
+    maxCandidateClusters: Math.min(256, Math.max(1, envNum('SPAM_MESSAGE_MAX_CANDIDATE_CLUSTERS', 64))),
+    maxEvidenceMembersPerIncident: Math.min(2_000, Math.max(1, envNum('SPAM_MESSAGE_MAX_EVIDENCE_MEMBERS', 256))),
+    analysisBudgetMs: Math.min(60_000, Math.max(100, envNum('SPAM_MESSAGE_ANALYSIS_BUDGET_MS', 5_000))),
+    dbStatementTimeoutMs: Math.min(120_000, Math.max(1_000, envNum('SPAM_MESSAGE_DB_TIMEOUT_MS', 15_000))),
 
     textSimThreshold: envNum('SPAM_MESSAGE_TEXT_SIM', 0.82),
     textSimThresholdWithName: envNum('SPAM_MESSAGE_TEXT_SIM_NAME', 0.6),
@@ -122,7 +141,7 @@ export function loadSpamMessageConfig(): SpamMessageConfig {
     ongoingWindowMs: envNum('SPAM_MESSAGE_ONGOING_WINDOW_MIN', 30) * 60 * 1000,
 
     originUsePaths: envBool('SPAM_MESSAGE_ORIGIN_USE_PATHS', true),
-    originPathMaxPackets: envNum('SPAM_MESSAGE_ORIGIN_PATH_MAX_PACKETS', 40),
+    originPathMaxPackets: Math.min(100, Math.max(1, envNum('SPAM_MESSAGE_ORIGIN_PATH_MAX_PACKETS', 40))),
     originPathMinVotes: envNum('SPAM_MESSAGE_ORIGIN_PATH_MIN_VOTES', 3),
     originPathClusterKm: envNum('SPAM_MESSAGE_ORIGIN_PATH_CLUSTER_KM', 45),
     originPathAmbiguousWeight: envNum('SPAM_MESSAGE_ORIGIN_PATH_AMBIGUOUS_WEIGHT', 0.4),

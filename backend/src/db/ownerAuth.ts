@@ -1,5 +1,6 @@
 import pg from 'pg';
 import fs from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { resolveDbAssetPath } from './assets.js';
 
 const { Pool } = pg;
@@ -92,10 +93,44 @@ export async function getOwnerNodeIdsForUsername(mqttUsername: string): Promise<
      WHERE oa.is_active = true
        AND oan.mqtt_username = $1
        AND oan.node_id ~ '^[0-9A-F]{64}$'
+       AND oan.verified_at IS NOT NULL
+       AND oan.verification_method IS NOT NULL
+       AND oan.revoked_at IS NULL
      ORDER BY oan.node_id ASC`,
     [normalized],
   );
   return res.rows.map((row) => row.node_id);
+}
+
+export async function getOwnerAuthorizationSnapshot(): Promise<Array<{
+  mqttUsername: string;
+  nodeIds: string[];
+}>> {
+  const res = await ownerPool.query<{
+    mqtt_username: string;
+    node_ids: string[] | null;
+  }>(
+    `SELECT
+       oa.mqtt_username,
+       COALESCE(
+         ARRAY_AGG(oan.node_id ORDER BY oan.node_id) FILTER (
+           WHERE oa.is_active = TRUE
+             AND oan.node_id ~ '^[0-9A-F]{64}$'
+             AND oan.verified_at IS NOT NULL
+             AND oan.verification_method IS NOT NULL
+             AND oan.revoked_at IS NULL
+         ),
+         ARRAY[]::text[]
+       ) AS node_ids
+     FROM owner_accounts oa
+     LEFT JOIN owner_account_nodes oan ON oan.mqtt_username = oa.mqtt_username
+     GROUP BY oa.mqtt_username
+     ORDER BY oa.mqtt_username`,
+  );
+  return res.rows.map((row) => ({
+    mqttUsername: row.mqtt_username,
+    nodeIds: row.node_ids ?? [],
+  }));
 }
 
 export async function ensureOwnerAccount(mqttUsername: string): Promise<void> {
@@ -110,20 +145,107 @@ export async function ensureOwnerAccount(mqttUsername: string): Promise<void> {
   );
 }
 
-export async function addOwnerNodeForUsername(mqttUsername: string, nodeId: string): Promise<void> {
+export type OwnerGrantVerificationMethod = 'operator-config' | 'operator-database';
+
+export async function upsertVerifiedOwnerGrant(
+  mqttUsername: string,
+  nodeId: string,
+  verificationMethod: OwnerGrantVerificationMethod,
+): Promise<void> {
   const normalizedUsername = mqttUsername.trim();
   const normalizedNodeId = nodeId.trim().toUpperCase();
-  if (!normalizedUsername || !/^[0-9A-F]{64}$/.test(normalizedNodeId)) return;
+  if (!normalizedUsername || !/^[0-9A-F]{64}$/.test(normalizedNodeId)) {
+    throw new Error('INVALID_OWNER_GRANT');
+  }
   await ensureOwnerAccount(normalizedUsername);
   await ownerPool.query(
-    `INSERT INTO owner_account_nodes (mqtt_username, node_id)
-     VALUES ($1, $2)
-     ON CONFLICT (mqtt_username, node_id) DO NOTHING`,
-    [normalizedUsername, normalizedNodeId],
+    `INSERT INTO owner_account_nodes (
+       mqtt_username, node_id, verification_method, verified_at, grant_id, revoked_at
+     )
+     VALUES ($1, $2, $3, NOW(), $4, NULL)
+     ON CONFLICT (mqtt_username, node_id)
+     DO UPDATE SET
+       verification_method = EXCLUDED.verification_method,
+       verified_at = NOW(),
+       grant_id = EXCLUDED.grant_id,
+       revoked_at = NULL`,
+    [normalizedUsername, normalizedNodeId, verificationMethod, randomUUID()],
   );
 }
 
-export async function upsertMqttNodeLogin(mqttUsername: string, nodeId: string): Promise<void> {
+export async function syncOperatorConfiguredOwnerGrants(
+  grants: Array<{ mqttUsername: string; nodeId: string }>,
+): Promise<void> {
+  const desired = grants
+    .map((grant) => ({
+      mqtt_username: grant.mqttUsername.trim(),
+      node_id: grant.nodeId.trim().toUpperCase(),
+      grant_id: randomUUID(),
+    }))
+    .filter((grant) => grant.mqtt_username && /^[0-9A-F]{64}$/.test(grant.node_id));
+  const client = await ownerPool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(
+      `INSERT INTO owner_accounts (mqtt_username, is_active, updated_at)
+       SELECT DISTINCT row.mqtt_username, TRUE, NOW()
+       FROM jsonb_to_recordset($1::jsonb) AS row(mqtt_username text, node_id text, grant_id text)
+       ON CONFLICT (mqtt_username)
+       DO UPDATE SET is_active = TRUE, updated_at = NOW()`,
+      [JSON.stringify(desired)],
+    );
+    await client.query(
+      `INSERT INTO owner_account_nodes (
+         mqtt_username, node_id, verification_method, verified_at, grant_id, revoked_at
+       )
+       SELECT row.mqtt_username, row.node_id, 'operator-config', NOW(), row.grant_id, NULL
+       FROM jsonb_to_recordset($1::jsonb) AS row(mqtt_username text, node_id text, grant_id text)
+       ON CONFLICT (mqtt_username, node_id)
+       DO UPDATE SET
+         verification_method = CASE
+           WHEN owner_account_nodes.verification_method = 'operator-database'
+             AND owner_account_nodes.revoked_at IS NULL
+           THEN owner_account_nodes.verification_method
+           ELSE 'operator-config'
+         END,
+         verified_at = CASE
+           WHEN owner_account_nodes.verification_method = 'operator-database'
+             AND owner_account_nodes.revoked_at IS NULL
+           THEN owner_account_nodes.verified_at
+           ELSE NOW()
+         END,
+         grant_id = CASE
+           WHEN owner_account_nodes.verification_method = 'operator-database'
+             AND owner_account_nodes.revoked_at IS NULL
+           THEN owner_account_nodes.grant_id
+           ELSE EXCLUDED.grant_id
+         END,
+         revoked_at = NULL`,
+      [JSON.stringify(desired)],
+    );
+    await client.query(
+      `UPDATE owner_account_nodes existing
+       SET revoked_at = NOW()
+       WHERE existing.verification_method = 'operator-config'
+         AND existing.revoked_at IS NULL
+         AND NOT EXISTS (
+           SELECT 1
+           FROM jsonb_to_recordset($1::jsonb) AS row(mqtt_username text, node_id text, grant_id text)
+           WHERE row.mqtt_username = existing.mqtt_username
+             AND row.node_id = existing.node_id
+         )`,
+      [JSON.stringify(desired)],
+    );
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+export async function recordUntrustedMqttNodeObservation(mqttUsername: string, nodeId: string): Promise<void> {
   const normalizedUsername = mqttUsername.trim();
   const normalizedNodeId = nodeId.trim().toUpperCase();
   if (!normalizedUsername || !/^[0-9A-F]{64}$/.test(normalizedNodeId)) return;
@@ -135,14 +257,15 @@ export async function upsertMqttNodeLogin(mqttUsername: string, nodeId: string):
   );
 }
 
-export async function getAllNodesForMqttUsername(mqttUsername: string): Promise<string[]> {
-  const normalized = mqttUsername.trim();
-  if (!normalized) return [];
-  const res = await ownerPool.query<{ node_id: string }>(
-    `SELECT node_id FROM mqtt_node_logins
-     WHERE mqtt_username = $1
-     ORDER BY last_connected_at DESC`,
-    [normalized],
+export async function revokeOwnerGrant(mqttUsername: string, nodeId: string): Promise<void> {
+  const normalizedUsername = mqttUsername.trim();
+  const normalizedNodeId = nodeId.trim().toUpperCase();
+  if (!normalizedUsername || !/^[0-9A-F]{64}$/.test(normalizedNodeId)) return;
+  await ownerPool.query(
+    `UPDATE owner_account_nodes
+        SET revoked_at = NOW()
+      WHERE mqtt_username = $1
+        AND node_id = $2`,
+    [normalizedUsername, normalizedNodeId],
   );
-  return res.rows.map((r) => r.node_id);
 }

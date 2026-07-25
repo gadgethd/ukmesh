@@ -1,6 +1,7 @@
 import type { Router } from 'express';
 import type { QueryResultRow } from 'pg';
 import { resolveRequestNetwork } from '../../http/requestScope.js';
+import { UKMESH_NETWORKS } from '../../networks.js';
 import { normalizeObserverQuery } from '../utils/observer.js';
 
 type QueryFn = <T extends QueryResultRow = QueryResultRow>(
@@ -31,7 +32,7 @@ export function registerMiscRoutes(router: Router, deps: MiscRouteDeps): void {
     try {
       const limit = Math.min(Number(req.query['limit'] ?? 200), 1000);
       const requestedNetwork = resolveRequestNetwork(req.query['network'], req.headers);
-      const network = requestedNetwork === 'all' ? undefined : requestedNetwork;
+      const network = requestedNetwork === 'test' ? 'test' : 'ukmesh';
       const observer = normalizeObserverQuery(req.query['observer']);
       const raw = String(req.query['raw'] ?? '').trim();
       const packets = raw === '1'
@@ -52,7 +53,7 @@ export function registerMiscRoutes(router: Router, deps: MiscRouteDeps): void {
         return;
       }
       const requestedNetwork = resolveRequestNetwork(req.query['network'], req.headers);
-      const network = requestedNetwork === 'all' ? undefined : requestedNetwork;
+      const network = requestedNetwork === 'test' ? 'test' : 'ukmesh';
       const detail = await getPacketDetail(hash, network);
       if (!detail) {
         res.status(404).json({ error: 'Packet not found' });
@@ -68,9 +69,10 @@ export function registerMiscRoutes(router: Router, deps: MiscRouteDeps): void {
   router.get('/companion-activity', async (req, res) => {
     try {
       const requestedNetwork = resolveRequestNetwork(req.query['network'], req.headers);
-      const network = requestedNetwork === 'all' ? undefined : requestedNetwork;
-      const params: unknown[] = [];
-      const networkClause = network ? `AND network = $${params.push(network)}` : '';
+      const network = requestedNetwork === 'test' ? 'test' : 'ukmesh';
+      const params: unknown[] = [network === 'ukmesh' ? UKMESH_NETWORKS : [network]];
+      const networkClause = `AND p.network = ANY($1)`;
+      const topicClause = network === 'test' ? '' : `AND split_part(p.topic, '/', 1) <> 'meshcore-test'`;
       const result = await query<{
         sender: string;
         message_count: string;
@@ -80,16 +82,17 @@ export function registerMiscRoutes(router: Router, deps: MiscRouteDeps): void {
           payload->'decrypted'->>'sender' AS sender,
           COUNT(DISTINCT packet_hash)::text AS message_count,
           MAX(time) AS last_message_at
-        FROM packets
+        FROM packets p
         WHERE
-          packet_type = 5
-          AND payload->'decrypted' IS NOT NULL
-          AND payload->'decrypted'->>'sender' IS NOT NULL
-          AND payload->'decrypted'->>'sender' != ''
-          AND time > NOW() - INTERVAL '24 hours'
+          p.packet_type = 5
+          AND p.payload->'decrypted' IS NOT NULL
+          AND p.payload->'decrypted'->>'sender' IS NOT NULL
+          AND p.payload->'decrypted'->>'sender' != ''
+          AND p.time > NOW() - INTERVAL '24 hours'
           ${networkClause}
-        GROUP BY payload->'decrypted'->>'sender'
-        ORDER BY COUNT(DISTINCT packet_hash) DESC
+          ${topicClause}
+        GROUP BY p.payload->'decrypted'->>'sender'
+        ORDER BY COUNT(DISTINCT p.packet_hash) DESC
         LIMIT 100`,
         params,
       );
@@ -119,11 +122,11 @@ export function registerMiscRoutes(router: Router, deps: MiscRouteDeps): void {
   router.get('/mqtt-nodes', async (req, res) => {
     try {
       const requestedNetwork = resolveRequestNetwork(req.query['network'], req.headers);
-      const network = requestedNetwork === 'all' ? undefined : requestedNetwork;
-      const params: unknown[] = [];
-      const networkClause = network ? `AND nss.network = $${params.push(network)}` : `AND nss.network IS DISTINCT FROM 'test'`;
-      const packetNetworkClause = network ? `AND network = $${params.length + 1}` : `AND network IS DISTINCT FROM 'test'`;
-      if (network) params.push(network);
+      const network = requestedNetwork === 'test' ? 'test' : 'ukmesh';
+      const params: unknown[] = [network === 'ukmesh' ? UKMESH_NETWORKS : [network]];
+      const networkClause = `AND nss.network = ANY($1)`;
+      const packetNetworkClause = `AND network = ANY($1)`;
+      const packetTopicClause = network === 'test' ? '' : `AND split_part(topic, '/', 1) <> 'meshcore-test'`;
       const result = await query<{
         node_id: string;
         name: string | null;
@@ -158,9 +161,11 @@ export function registerMiscRoutes(router: Router, deps: MiscRouteDeps): void {
            WHERE time > NOW() - INTERVAL '24 hours'
              AND rx_node_id IS NOT NULL
              ${packetNetworkClause}
+             ${packetTopicClause}
            GROUP BY rx_node_id
          ) pc ON pc.rx_node_id = nss.node_id
          WHERE nss.time > NOW() - INTERVAL '15 minutes'
+           AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
            ${networkClause}
          ORDER BY nss.node_id, COALESCE(nss.uptime_secs, 0) DESC, nss.time DESC`,
         params,

@@ -84,9 +84,9 @@ export function registerOwnerRoutes(router: Router, deps: OwnerRouteDeps): void 
         return;
       }
 
-      const { dashboard, nodeIds } = await service.authenticateOwner(mqttUsername, mqttPassword);
+      const { dashboard } = await service.authenticateOwner(mqttUsername, mqttPassword);
       const token = deps.encryptOwnerSession({
-        nodeIds,
+        v: 2,
         exp: Date.now() + deps.ownerSessionTtlMs,
         mqttUsername,
       });
@@ -122,9 +122,24 @@ export function registerOwnerRoutes(router: Router, deps: OwnerRouteDeps): void 
       }
 
       const { dashboard } = await service.getSessionDashboard(session);
-      res.json({ ok: true, dashboard, mqttUsername: session.mqttUsername ?? null });
+      if (session.legacy) {
+        const remainingMs = Math.max(0, session.exp - Date.now());
+        const token = deps.encryptOwnerSession({
+          v: 2,
+          mqttUsername: session.mqttUsername,
+          exp: session.exp,
+        });
+        res.cookie(deps.ownerCookieName, token, {
+          httpOnly: true,
+          secure: deps.isSecureRequest(req),
+          sameSite: 'lax',
+          path: '/',
+          maxAge: remainingMs,
+        });
+      }
+      res.json({ ok: true, dashboard, mqttUsername: session.mqttUsername });
     } catch (err) {
-      if ((err as Error).message === 'NO_ACTIVE_OWNER_NODE') {
+      if (['NO_ACTIVE_OWNER_NODE', 'INVALID_OWNER_SESSION'].includes((err as Error).message)) {
         res.clearCookie(deps.ownerCookieName, { path: '/' });
         res.status(401).json({ error: 'No active node found for this MQTT username yet' });
         return;

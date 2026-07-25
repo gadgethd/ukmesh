@@ -1,15 +1,5 @@
-// Nodes with 🚫 in their name have opted out of public display.
-// Their name is replaced with "Private Node", coordinates are fuzzed
-// deterministically (~500 m), and identifying fields are cleared.
-
-function deterministicFuzz(nodeId: string): { dlat: number; dlon: number } {
-  const a = parseInt(nodeId.slice(0, 6), 16);
-  const b = parseInt(nodeId.slice(6, 12), 16);
-  return {
-    dlat: ((a % 1000) - 500) / 100000,
-    dlon: ((b % 1000) - 500) / 100000,
-  };
-}
+// Nodes with 🚫 in their name have opted out of anonymous public display.
+// Public geometry must never be derived from their exact coordinates.
 
 export function isPrivateNode(name: string | null | undefined): boolean {
   return typeof name === 'string' && name.includes('🚫');
@@ -24,13 +14,15 @@ export function redactPrivateNode<T extends {
   public_key?: string | null;
 }>(node: T): T {
   if (!isPrivateNode(node.name)) return node;
-  const { dlat, dlon } = deterministicFuzz(node.node_id);
   return {
-    ...node,
+    // Private rows are omitted from current public collections. Keep this
+    // fallback fail-closed for future callers: no stable identifier, activity
+    // metadata, or newly added database field crosses the boundary.
+    node_id:    'private',
     name:       'Private Node',
     iata:       null,
     public_key: null,
-    lat:  node.lat != null ? node.lat  + dlat : node.lat,
-    lon:  node.lon != null ? node.lon  + dlon : node.lon,
-  };
+    lat:        null,
+    lon:        null,
+  } as T;
 }

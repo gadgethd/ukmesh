@@ -6,11 +6,13 @@ node_coverage, then notifies the frontend.
 """
 
 import argparse
+import hashlib
 import json
 import logging
 import math
 import multiprocessing
 import os
+import secrets
 import subprocess
 import tempfile
 import time
@@ -91,7 +93,142 @@ DB_APPLICATION_NAME = os.environ.get(
 
 JOB_QUEUE      = 'meshcore:viewshed_jobs'
 JOB_PENDING_SET = 'meshcore:viewshed_pending'
-LINK_JOB_QUEUE = 'meshcore:link_jobs'
+PLANNED_JOB_QUEUE = 'meshcore:planned_viewshed_jobs:v1'
+PLANNED_OUTSTANDING = 'meshcore:planned_viewshed:outstanding:v1'
+PLANNED_FINGERPRINT_PREFIX = 'meshcore:planned_viewshed:fingerprint:v1:'
+PLANNED_META_PREFIX = 'meshcore:planned_viewshed:meta:v1:'
+PLANNED_WORKER_HEARTBEAT = 'meshcore:planned_viewshed:worker_heartbeat:v1'
+PLANNED_RESULT_TTL_SECONDS = max(
+    60,
+    min(24 * 60 * 60, int(os.environ.get('PLANNED_COVERAGE_RESULT_TTL_SECONDS', '3600'))),
+)
+LEGACY_LINK_JOB_QUEUE = 'meshcore:link_jobs'
+LINK_JOB_QUEUE = 'meshcore:link_jobs:v3'
+LINK_JOB_PROCESSING = 'meshcore:link_jobs:v3:processing'
+LINK_JOB_PAYLOADS = 'meshcore:link_jobs:v3:payloads'
+LINK_JOB_DELTAS = 'meshcore:link_jobs:v3:deltas'
+LINK_JOB_STATES = 'meshcore:link_jobs:v3:states'
+LINK_JOB_OUTSTANDING = 'meshcore:link_jobs:v3:outstanding'
+LINK_JOB_BYTES = 'meshcore:link_jobs:v3:bytes'
+LINK_JOB_RETRIES = 'meshcore:link_jobs:v3:retries'
+LINK_JOB_CLAIMED_DELTAS = 'meshcore:link_jobs:v3:claimed_deltas'
+LINK_JOB_LEASES = 'meshcore:link_jobs:v3:leases'
+LINK_JOB_DEAD_LETTER = 'meshcore:link_jobs:v3:dead_letter'
+LINK_JOB_QUEUE_MAX = max(100, min(100_000, int(os.environ.get('LINK_JOB_QUEUE_MAX', '5000'))))
+LINK_JOB_MAX_BYTES = max(1_024, min(262_144, int(os.environ.get('LINK_JOB_MAX_BYTES', '16384'))))
+LINK_JOB_QUEUE_MAX_BYTES = max(
+    1 * 1024 * 1024,
+    min(512 * 1024 * 1024, int(os.environ.get('LINK_JOB_QUEUE_MAX_BYTES', str(64 * 1024 * 1024)))),
+)
+LINK_JOB_MAX_DELTA = max(1, min(1_000_000, int(os.environ.get('LINK_JOB_MAX_DELTA', '10000'))))
+LINK_JOB_MAX_RETRIES = max(0, min(20, int(os.environ.get('LINK_JOB_MAX_RETRIES', '5'))))
+LINK_JOB_DEAD_LETTER_MAX = max(1, min(10_000, int(os.environ.get('LINK_JOB_DEAD_LETTER_MAX', '128'))))
+LINK_JOB_LEASE_MS = max(
+    60_000,
+    min(6 * 60 * 60_000, int(os.environ.get('LINK_JOB_LEASE_SECONDS', '3600')) * 1000),
+)
+LINK_JOB_ADMISSION_SCRIPT = '''
+local existing = redis.call('HGET', KEYS[2], ARGV[1])
+if existing then
+  local delta = tonumber(redis.call('HGET', KEYS[3], ARGV[1]) or '0')
+  local increment = tonumber(ARGV[4])
+  local nextDelta = math.min(tonumber(ARGV[7]), delta + increment)
+  redis.call('HSET', KEYS[3], ARGV[1], nextDelta)
+  return 2
+end
+local outstanding = redis.call('ZCARD', KEYS[5])
+local allocatedBytes = tonumber(redis.call('GET', KEYS[6]) or '0')
+if outstanding >= tonumber(ARGV[5]) then return 0 end
+if redis.call('LLEN', KEYS[1]) >= tonumber(ARGV[5]) then return 0 end
+if allocatedBytes + tonumber(ARGV[3]) > tonumber(ARGV[6]) then return 0 end
+redis.call('HSET', KEYS[2], ARGV[1], ARGV[2])
+redis.call('HSET', KEYS[3], ARGV[1], 1)
+redis.call('HSET', KEYS[4], ARGV[1], 'queued')
+redis.call('HSET', KEYS[7], ARGV[1], 0)
+redis.call('ZADD', KEYS[5], tonumber(ARGV[8]), ARGV[1])
+redis.call('INCRBY', KEYS[6], tonumber(ARGV[3]))
+redis.call('LPUSH', KEYS[1], ARGV[1])
+return 1
+'''
+LINK_JOB_CLAIM_SCRIPT = '''
+local payload = redis.call('HGET', KEYS[1], ARGV[1])
+if not payload then
+  redis.call('LREM', KEYS[5], 1, ARGV[1])
+  redis.call('ZREM', KEYS[7], ARGV[1])
+  return nil
+end
+local delta = tonumber(redis.call('HGET', KEYS[2], ARGV[1]) or '1')
+redis.call('HSET', KEYS[2], ARGV[1], 0)
+redis.call('HSET', KEYS[3], ARGV[1], 'in_flight:' .. ARGV[2])
+redis.call('HSET', KEYS[6], ARGV[1], delta)
+redis.call('ZADD', KEYS[7], tonumber(ARGV[3]), ARGV[1])
+return {payload, tostring(delta)}
+'''
+LINK_JOB_ACK_SCRIPT = '''
+local payload = redis.call('HGET', KEYS[2], ARGV[1])
+if not payload then
+  redis.call('LREM', KEYS[1], 1, ARGV[1])
+  redis.call('HDEL', KEYS[3], ARGV[1])
+  redis.call('HDEL', KEYS[4], ARGV[1])
+  redis.call('HDEL', KEYS[7], ARGV[1])
+  redis.call('HDEL', KEYS[10], ARGV[1])
+  redis.call('ZREM', KEYS[5], ARGV[1])
+  redis.call('ZREM', KEYS[11], ARGV[1])
+  return 'missing'
+end
+local state = redis.call('HGET', KEYS[4], ARGV[1])
+if ARGV[2] == 'recovery' then
+  if not state or string.sub(state, 1, 10) ~= 'in_flight:' then return 'stale' end
+  local lease = tonumber(redis.call('ZSCORE', KEYS[11], ARGV[1]) or '0')
+  if lease > tonumber(ARGV[8]) then return 'live' end
+elseif state ~= 'in_flight:' .. ARGV[7] then
+  return 'stale'
+end
+local pending = tonumber(redis.call('HGET', KEYS[3], ARGV[1]) or '0')
+local function release()
+  local payloadBytes = string.len(payload)
+  redis.call('HDEL', KEYS[2], ARGV[1])
+  redis.call('HDEL', KEYS[3], ARGV[1])
+  redis.call('HDEL', KEYS[4], ARGV[1])
+  redis.call('HDEL', KEYS[7], ARGV[1])
+  redis.call('HDEL', KEYS[10], ARGV[1])
+  redis.call('ZREM', KEYS[5], ARGV[1])
+  redis.call('ZREM', KEYS[11], ARGV[1])
+  local remaining = tonumber(redis.call('GET', KEYS[6]) or '0') - payloadBytes
+  redis.call('SET', KEYS[6], math.max(0, remaining))
+  redis.call('LREM', KEYS[1], 1, ARGV[1])
+end
+if ARGV[2] == 'success' then
+  redis.call('HSET', KEYS[7], ARGV[1], 0)
+  redis.call('HDEL', KEYS[10], ARGV[1])
+  redis.call('LREM', KEYS[1], 1, ARGV[1])
+  redis.call('ZREM', KEYS[11], ARGV[1])
+  if pending > 0 then
+    redis.call('HSET', KEYS[4], ARGV[1], 'queued')
+    redis.call('LPUSH', KEYS[8], ARGV[1])
+    return 'requeued'
+  end
+  release()
+  return 'completed'
+end
+local retries = redis.call('HINCRBY', KEYS[7], ARGV[1], 1)
+local restored = math.min(tonumber(ARGV[4]), pending + tonumber(ARGV[3]))
+redis.call('HSET', KEYS[3], ARGV[1], restored)
+redis.call('HDEL', KEYS[10], ARGV[1])
+redis.call('LREM', KEYS[1], 1, ARGV[1])
+redis.call('ZREM', KEYS[11], ARGV[1])
+if retries <= tonumber(ARGV[5]) then
+  redis.call('HSET', KEYS[4], ARGV[1], 'queued')
+  redis.call('LPUSH', KEYS[8], ARGV[1])
+  return 'retried'
+end
+redis.call('LPUSH', KEYS[9], cjson.encode({
+  key=ARGV[1], payload=payload, delta=restored, retries=retries
+}))
+redis.call('LTRIM', KEYS[9], 0, tonumber(ARGV[6]) - 1)
+release()
+return 'dead_lettered'
+'''
 LIVE_CHANNEL   = 'meshcore:live'
 
 COVERAGE_MODEL_VERSION = int(os.environ.get(
@@ -155,6 +292,156 @@ def is_viewshed_eligible_coordinate(lat: float, lon: float) -> bool:
     if abs(lat) < 1e-9 and abs(lon) < 1e-9:
         return False
     return UK_LAT_MIN <= lat <= UK_LAT_MAX and UK_LON_MIN <= lon <= UK_LON_MAX
+
+
+def canonical_link_job_key(job: dict) -> str:
+    job_type = str(job.get('type') or '')
+    if job_type == 'physical_pair':
+        canonical = '|'.join((
+            'physical_pair',
+            str(job.get('node_a_id') or ''),
+            str(job.get('node_b_id') or ''),
+        ))
+    else:
+        path_hashes = job.get('path_hashes')
+        canonical = '|'.join((
+            'observe',
+            str(job.get('rx_node_id') or ''),
+            str(job.get('src_node_id') or ''),
+            str(job.get('path_hash_size_bytes') or ''),
+            str(job.get('hop_count') if job.get('hop_count') is not None else ''),
+            ','.join(str(value) for value in path_hashes) if isinstance(path_hashes, list) else '',
+        ))
+    return hashlib.sha256(canonical.encode('utf-8')).hexdigest()
+
+
+def enqueue_bounded_link_job(r_client, job: dict) -> str:
+    payload = json.dumps(job, separators=(',', ':'))
+    payload_bytes = len(payload.encode('utf-8'))
+    if payload_bytes > LINK_JOB_MAX_BYTES:
+        return 'invalid'
+    logical_key = canonical_link_job_key(job)
+    increment = 1 if job.get('type') == 'observe' else 0
+    result = int(r_client.eval(
+        LINK_JOB_ADMISSION_SCRIPT,
+        7,
+        LINK_JOB_QUEUE,
+        LINK_JOB_PAYLOADS,
+        LINK_JOB_DELTAS,
+        LINK_JOB_STATES,
+        LINK_JOB_OUTSTANDING,
+        LINK_JOB_BYTES,
+        LINK_JOB_RETRIES,
+        logical_key,
+        payload,
+        payload_bytes,
+        increment,
+        LINK_JOB_QUEUE_MAX,
+        LINK_JOB_QUEUE_MAX_BYTES,
+        LINK_JOB_MAX_DELTA,
+        int(time.time() * 1000),
+    ))
+    return 'queued' if result == 1 else 'coalesced' if result == 2 else 'full'
+
+
+def claim_bounded_link_job(r_client, timeout: int = 1):
+    logical_key = (
+        r_client.rpoplpush(LINK_JOB_QUEUE, LINK_JOB_PROCESSING)
+        if timeout <= 0
+        else r_client.brpoplpush(LINK_JOB_QUEUE, LINK_JOB_PROCESSING, timeout=timeout)
+    )
+    if logical_key is None:
+        return None
+    claim_token = secrets.token_hex(16)
+    claimed = r_client.eval(
+        LINK_JOB_CLAIM_SCRIPT,
+        7,
+        LINK_JOB_PAYLOADS,
+        LINK_JOB_DELTAS,
+        LINK_JOB_STATES,
+        LINK_JOB_RETRIES,
+        LINK_JOB_PROCESSING,
+        LINK_JOB_CLAIMED_DELTAS,
+        LINK_JOB_LEASES,
+        logical_key,
+        claim_token,
+        int(time.time() * 1000) + LINK_JOB_LEASE_MS,
+    )
+    if not claimed:
+        return None
+    payload, raw_delta = claimed
+    job = json.loads(payload)
+    delta = max(1, min(LINK_JOB_MAX_DELTA, int(raw_delta)))
+    job['occurrence_delta'] = delta
+    return logical_key, job, delta, claim_token
+
+
+def acknowledge_bounded_link_job(
+    r_client,
+    logical_key: str,
+    delta: int,
+    claim_token: str,
+    success: bool,
+    recover_at_ms: int = 0,
+) -> str:
+    return str(r_client.eval(
+        LINK_JOB_ACK_SCRIPT,
+        11,
+        LINK_JOB_PROCESSING,
+        LINK_JOB_PAYLOADS,
+        LINK_JOB_DELTAS,
+        LINK_JOB_STATES,
+        LINK_JOB_OUTSTANDING,
+        LINK_JOB_BYTES,
+        LINK_JOB_RETRIES,
+        LINK_JOB_QUEUE,
+        LINK_JOB_DEAD_LETTER,
+        LINK_JOB_CLAIMED_DELTAS,
+        LINK_JOB_LEASES,
+        logical_key,
+        'recovery' if recover_at_ms > 0 else ('success' if success else 'failure'),
+        delta,
+        LINK_JOB_MAX_DELTA,
+        LINK_JOB_MAX_RETRIES,
+        LINK_JOB_DEAD_LETTER_MAX,
+        claim_token,
+        recover_at_ms,
+    ))
+
+
+def recover_bounded_link_jobs(r_client) -> int:
+    recovered = 0
+    now_ms = int(time.time() * 1000)
+    for logical_key in r_client.lrange(LINK_JOB_PROCESSING, 0, -1):
+        claimed_delta = int(r_client.hget(LINK_JOB_CLAIMED_DELTAS, logical_key) or 1)
+        result = acknowledge_bounded_link_job(
+            r_client,
+            logical_key,
+            max(1, min(LINK_JOB_MAX_DELTA, claimed_delta)),
+            '',
+            False,
+            recover_at_ms=now_ms,
+        )
+        if result not in ('stale', 'live'):
+            recovered += 1
+    return recovered
+
+
+def enqueue_physical_pair_job(r_client, node_a_id: str, node_b_id: str) -> str:
+    a_id, b_id = sorted((str(node_a_id or '').lower(), str(node_b_id or '').lower()))
+    if (
+        a_id == b_id
+        or len(a_id) != 64
+        or len(b_id) != 64
+        or any(ch not in '0123456789abcdef' for ch in a_id + b_id)
+    ):
+        return 'invalid'
+    return enqueue_bounded_link_job(r_client, {
+        'type': 'physical_pair',
+        'node_a_id': a_id,
+        'node_b_id': b_id,
+    })
+
 
 def weighted_quantile(values: np.ndarray, weights: np.ndarray, q: float) -> float:
     if values.size < 1:
@@ -381,13 +668,10 @@ def refresh_radio_neighbor_reports(db, r_client, force: bool = False) -> None:
                     ''',
                     (a_id, b_id, reporter_id, peer_id, float(snr_db), float(snr_db), seen_at),
                 )
-                r_client.rpush(LINK_JOB_QUEUE, json.dumps({
-                    'type': 'physical_pair',
-                    'node_a_id': a_id,
-                    'node_b_id': b_id,
-                }))
+                admission = enqueue_physical_pair_job(r_client, a_id, b_id)
                 imported += 1
-                queued += 1
+                if admission == 'queued':
+                    queued += 1
     db.commit()
     RADIO_NEIGHBOR_SYNC['updated_at'] = now
     if imported > 0:
@@ -763,24 +1047,37 @@ def already_calculated(db, node_id: str) -> bool:
                LEFT JOIN nodes n ON n.node_id = nc.node_id
                WHERE nc.node_id = %s
                  AND nc.model_version >= %s
+                 AND (nc.is_planned = FALSE OR nc.expires_at > NOW())
                  AND (n.node_id IS NULL OR n.elevation_m IS NOT NULL)''',
             (node_id, COVERAGE_MODEL_VERSION),
         )
         return cur.fetchone() is not None
 
-def store_coverage(db, node_id: str, geom: dict, strength_geoms: dict[str, dict], radius_m: float, elevation_m: float, antenna_height_m: float = ANTENNA_HEIGHT_M):
+def store_coverage(db, node_id: str, geom: dict, strength_geoms: dict[str, dict], radius_m: float, elevation_m: float, antenna_height_m: float = ANTENNA_HEIGHT_M, planned: bool = False):
     with db.cursor() as cur:
         cur.execute(
-            '''INSERT INTO node_coverage (node_id, geom, strength_geoms, antenna_height_m, radius_m, model_version)
-               VALUES (%s, %s::jsonb, %s::jsonb, %s, %s, %s)
+            '''INSERT INTO node_coverage (
+                 node_id, geom, strength_geoms, antenna_height_m, radius_m,
+                 model_version, is_planned, expires_at
+               )
+               VALUES (
+                 %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s,
+                 CASE WHEN %s THEN NOW() + make_interval(secs => %s) ELSE NULL END
+               )
                ON CONFLICT (node_id) DO UPDATE
                  SET geom = EXCLUDED.geom,
                      strength_geoms = EXCLUDED.strength_geoms,
                      antenna_height_m = EXCLUDED.antenna_height_m,
                      radius_m = EXCLUDED.radius_m,
                      model_version = EXCLUDED.model_version,
+                     is_planned = EXCLUDED.is_planned,
+                     expires_at = EXCLUDED.expires_at,
                      calculated_at = NOW()''',
-            (node_id, json.dumps(geom), json.dumps(strength_geoms), antenna_height_m, radius_m, COVERAGE_MODEL_VERSION),
+            (
+                node_id, json.dumps(geom), json.dumps(strength_geoms),
+                antenna_height_m, radius_m, COVERAGE_MODEL_VERSION, planned,
+                planned, PLANNED_RESULT_TTL_SECONDS,
+            ),
         )
         cur.execute(
             'UPDATE nodes SET elevation_m = %s WHERE node_id = %s',
@@ -1075,6 +1372,10 @@ def process_observation_link_job(db, r_client, job: dict):
     src_node_id = job.get('src_node_id')
     path_hashes = job.get('path_hashes', [])
     path_hash_size_bytes = int(job.get('path_hash_size_bytes') or 1)
+    occurrence_delta = max(
+        1,
+        min(LINK_JOB_MAX_DELTA, int(job.get('occurrence_delta') or 1)),
+    )
 
     if not rx_node_id or not path_hashes or path_hash_size_bytes <= 1:
         return
@@ -1172,10 +1473,10 @@ def process_observation_link_job(db, r_client, job: dict):
 
         if src_id < dst_id:
             a_id, a, b_id, b = src_id, src, dst_id, dst
-            inc_atob, inc_btoa = 1, 0
+            inc_atob, inc_btoa = occurrence_delta, 0
         else:
             a_id, a, b_id, b = dst_id, dst, src_id, src
-            inc_atob, inc_btoa = 0, 1
+            inc_atob, inc_btoa = 0, occurrence_delta
 
         # Allow new link creation only when both endpoints were uniquely resolved.
         # For ambiguous hops, stay conservative and only annotate existing links.
@@ -1185,13 +1486,20 @@ def process_observation_link_job(db, r_client, job: dict):
 
         # Keep directional observations, but reserve multibyte evidence for exact
         # endpoint matches so ambiguous two-byte prefixes do not inflate path history.
-        row = upsert_link_pair(db, a_id, b_id, inc_atob, inc_btoa, 1 if both_unique else 0)
+        row = upsert_link_pair(
+            db,
+            a_id,
+            b_id,
+            inc_atob,
+            inc_btoa,
+            occurrence_delta if both_unique else 0,
+        )
         obs_count = row[0] if row else 1
         path_loss_db = row[2] if row else None
         itm_viable = row[3] if row else None
         count_a_to_b = row[4] if row else inc_atob
         count_b_to_a = row[5] if row else inc_btoa
-        multibyte_obs = row[6] if row else 1
+        multibyte_obs = row[6] if row else occurrence_delta
 
         if itm_viable is None:
             obs_count, path_loss_db, itm_viable, count_a_to_b, count_b_to_a, multibyte_obs = ensure_physical_link_metrics(
@@ -1237,13 +1545,9 @@ def enqueue_physical_link_jobs_for_node(db, r_client, node_id: str, lat: float, 
         peer = {'lat': peer_lat, 'lon': peer_lon, 'radius_m': peer_radius_m}
         if node_dist_km(origin, peer) > max(origin_radius_km, physical_candidate_radius_km(peer_radius_m)):
             continue
-        [a_id, b_id] = sorted((node_id, peer_id))
-        r_client.lpush(LINK_JOB_QUEUE, json.dumps({
-            'type': 'physical_pair',
-            'node_a_id': a_id,
-            'node_b_id': b_id,
-        }))
-        queued += 1
+        admission = enqueue_physical_pair_job(r_client, node_id, peer_id)
+        if admission == 'queued':
+            queued += 1
     return queued
 
 
@@ -1298,7 +1602,49 @@ def rebuild_pending_viewshed_set(r_client):
 
 # ── Job processor ─────────────────────────────────────────────────────────────
 
-def process_job(db, r_client, job: dict):
+def update_planned_job_state(r_client, job: dict, state: str):
+    """Transition bounded planned-work metadata without retaining coordinates."""
+    plan_id = str(job.get('node_id') or '').strip()
+    fingerprint = str(job.get('fingerprint') or '').strip()
+    if not plan_id:
+        return
+    meta_key = f'{PLANNED_META_PREFIX}{plan_id}'
+    metadata = {
+        'planId': plan_id,
+        'fingerprint': fingerprint,
+        'state': state,
+        'updatedAt': dt.datetime.now(dt.timezone.utc).isoformat(),
+    }
+    if state == 'failed':
+        r_client.zrem(PLANNED_OUTSTANDING, plan_id)
+        fingerprint_key = f'{PLANNED_FINGERPRINT_PREFIX}{fingerprint}'
+        if fingerprint and r_client.get(fingerprint_key) == plan_id:
+            r_client.delete(fingerprint_key)
+        r_client.setex(meta_key, 300, json.dumps(metadata))
+        return
+    r_client.zadd(
+        PLANNED_OUTSTANDING,
+        {plan_id: int(time.time() * 1000) + (PLANNED_RESULT_TTL_SECONDS * 1000)},
+    )
+    if fingerprint:
+        r_client.setex(
+            f'{PLANNED_FINGERPRINT_PREFIX}{fingerprint}',
+            PLANNED_RESULT_TTL_SECONDS,
+            plan_id,
+        )
+    r_client.setex(meta_key, PLANNED_RESULT_TTL_SECONDS, json.dumps(metadata))
+
+
+def cleanup_expired_planned_coverage(db):
+    with db.cursor() as cur:
+        cur.execute(
+            '''DELETE FROM node_coverage
+               WHERE is_planned = TRUE
+                 AND expires_at IS NOT NULL
+                 AND expires_at <= NOW()'''
+        )
+
+def process_job(db, r_client, job: dict, planned: bool = False):
     node_id = job['node_id']
     lat     = float(job['lat'])
     lon     = float(job['lon'])
@@ -1308,14 +1654,25 @@ def process_job(db, r_client, job: dict):
             # Write placeholder so this node isn't re-queued on restart
             with db.cursor() as cur:
                 cur.execute(
-                    '''INSERT INTO node_coverage (node_id, geom, strength_geoms, antenna_height_m, radius_m, model_version)
-                       VALUES (%s, '{"type":"Polygon","coordinates":[]}'::jsonb, NULL, %s, NULL, %s)
+                    '''INSERT INTO node_coverage (
+                         node_id, geom, strength_geoms, antenna_height_m, radius_m,
+                         model_version, is_planned, expires_at
+                       )
+                       VALUES (
+                         %s, '{"type":"Polygon","coordinates":[]}'::jsonb, NULL, %s, NULL, %s, %s,
+                         CASE WHEN %s THEN NOW() + make_interval(secs => %s) ELSE NULL END
+                       )
                        ON CONFLICT (node_id) DO UPDATE
                          SET geom = '{"type":"Polygon","coordinates":[]}'::jsonb,
                              strength_geoms = NULL,
                              model_version = EXCLUDED.model_version,
+                             is_planned = EXCLUDED.is_planned,
+                             expires_at = EXCLUDED.expires_at,
                              calculated_at = NOW()''',
-                    (node_id, ANTENNA_HEIGHT_M, COVERAGE_MODEL_VERSION),
+                    (
+                        node_id, ANTENNA_HEIGHT_M, COVERAGE_MODEL_VERSION,
+                        planned, planned, PLANNED_RESULT_TTL_SECONDS,
+                    ),
                 )
             db.commit()
             return
@@ -1352,21 +1709,35 @@ def process_job(db, r_client, job: dict):
             # Write an empty-geom placeholder so this node isn't re-queued on restart
             with db.cursor() as cur:
                 cur.execute(
-                    '''INSERT INTO node_coverage (node_id, geom, strength_geoms, antenna_height_m, radius_m, model_version)
-                       VALUES (%s, '{"type":"Polygon","coordinates":[]}'::jsonb, NULL, %s, NULL, %s)
+                    '''INSERT INTO node_coverage (
+                         node_id, geom, strength_geoms, antenna_height_m, radius_m,
+                         model_version, is_planned, expires_at
+                       )
+                       VALUES (
+                         %s, '{"type":"Polygon","coordinates":[]}'::jsonb, NULL, %s, NULL, %s, %s,
+                         CASE WHEN %s THEN NOW() + make_interval(secs => %s) ELSE NULL END
+                       )
                        ON CONFLICT (node_id) DO UPDATE
                          SET geom = '{"type":"Polygon","coordinates":[]}'::jsonb,
                              strength_geoms = NULL,
                              model_version = EXCLUDED.model_version,
+                             is_planned = EXCLUDED.is_planned,
+                             expires_at = EXCLUDED.expires_at,
                              calculated_at = NOW()''',
-                    (node_id, node_antenna_height_m, COVERAGE_MODEL_VERSION),
+                    (
+                        node_id, node_antenna_height_m, COVERAGE_MODEL_VERSION,
+                        planned, planned, PLANNED_RESULT_TTL_SECONDS,
+                    ),
                 )
             db.commit()
             return
 
         geom, strength_geoms, radius_m, elevation_m = result
-        store_coverage(db, node_id, geom, strength_geoms, radius_m, elevation_m, antenna_height_m=node_antenna_height_m)
-        if node_id.startswith('plan_'):
+        store_coverage(
+            db, node_id, geom, strength_geoms, radius_m, elevation_m,
+            antenna_height_m=node_antenna_height_m, planned=planned,
+        )
+        if planned:
             # Planned (hypothetical) repeater: predict viable links to nearby real
             # repeaters in-line so the result is ready when the user polls coverage.
             try:
@@ -1394,7 +1765,8 @@ def process_job(db, r_client, job: dict):
             'ts':   int(time.time() * 1000),
         }))
     finally:
-        r_client.srem(JOB_PENDING_SET, node_id)
+        if not planned:
+            r_client.srem(JOB_PENDING_SET, node_id)
 
 # ── Main loop ─────────────────────────────────────────────────────────────────
 
@@ -1419,10 +1791,15 @@ def worker_loop():
     r_client = redis.Redis.from_url(REDIS_URL, decode_responses=True, password=REDIS_PASSWORD)
     sync_radio_neighbors = name in ('MainProcess', 'Worker-1')
     if sync_radio_neighbors and WORKER_MODE in ('all', 'link'):
+        recovered_link_jobs = recover_bounded_link_jobs(r_client)
+        if recovered_link_jobs:
+            log.warning(f'Recovered {recovered_link_jobs} interrupted link job(s)')
+    if sync_radio_neighbors and WORKER_MODE in ('all', 'link'):
         refresh_radio_neighbor_reports(db, r_client, force=True)
     refresh_rf_calibration(db, force=True)
     refresh_support_context(db, force=True)
     log.info(f'{name} ready')
+    last_planned_cleanup = 0.0
 
     while True:
         try:
@@ -1434,29 +1811,70 @@ def worker_loop():
                 refresh_radio_neighbor_reports(db, r_client)
             refresh_rf_calibration(db)
             refresh_support_context(db)
+            if VIEWSHED_ENABLED and WORKER_MODE in ('all', 'viewshed'):
+                r_client.setex(PLANNED_WORKER_HEARTBEAT, 60, str(int(time.time())))
+                if time.time() - last_planned_cleanup >= 600:
+                    cleanup_expired_planned_coverage(db)
+                    last_planned_cleanup = time.time()
             if WORKER_MODE in ('all', 'link'):
-                # Drain pending link jobs first (fast) before blocking
+                # Claim and acknowledge bounded v3 work before considering
+                # legacy jobs. Arrivals during processing remain in the delta
+                # counter and are atomically requeued on acknowledgement.
                 while True:
-                    raw = r_client.rpop(LINK_JOB_QUEUE)
-                    if raw is None:
+                    claimed = claim_bounded_link_job(r_client, timeout=0)
+                    if claimed is None:
                         break
-                    process_link_job(db, r_client, json.loads(raw))
+                    logical_key, job, delta, claim_token = claimed
+                    try:
+                        process_link_job(db, r_client, job)
+                    except Exception:
+                        acknowledge_bounded_link_job(r_client, logical_key, delta, claim_token, False)
+                        raise
+                    else:
+                        acknowledge_bounded_link_job(r_client, logical_key, delta, claim_token, True)
 
             if WORKER_MODE == 'viewshed':
-                wait_queues = [JOB_QUEUE]
+                wait_queues = [JOB_QUEUE, PLANNED_JOB_QUEUE]
             elif WORKER_MODE == 'link':
-                wait_queues = [LINK_JOB_QUEUE]
+                claimed = claim_bounded_link_job(r_client, timeout=1)
+                if claimed is not None:
+                    logical_key, job, delta, claim_token = claimed
+                    try:
+                        process_link_job(db, r_client, job)
+                    except Exception:
+                        acknowledge_bounded_link_job(r_client, logical_key, delta, claim_token, False)
+                        raise
+                    else:
+                        acknowledge_bounded_link_job(r_client, logical_key, delta, claim_token, True)
+                    continue
+                wait_queues = [LEGACY_LINK_JOB_QUEUE]
             else:
-                wait_queues = [JOB_QUEUE, LINK_JOB_QUEUE] if VIEWSHED_ENABLED else [LINK_JOB_QUEUE]
+                wait_queues = (
+                    [JOB_QUEUE, PLANNED_JOB_QUEUE, LEGACY_LINK_JOB_QUEUE]
+                    if VIEWSHED_ENABLED
+                    else [LEGACY_LINK_JOB_QUEUE]
+                )
 
-            item = r_client.brpop(wait_queues, timeout=30)
+            item = r_client.brpop(wait_queues, timeout=1)
             if item is None:
                 continue
             queue_name, raw = item
-            if queue_name == LINK_JOB_QUEUE:
+            if queue_name == LEGACY_LINK_JOB_QUEUE:
                 process_link_job(db, r_client, json.loads(raw))
             else:
-                process_job(db, r_client, json.loads(raw))
+                job = json.loads(raw)
+                planned = queue_name == PLANNED_JOB_QUEUE
+                if planned:
+                    update_planned_job_state(r_client, job, 'leased')
+                try:
+                    process_job(db, r_client, job, planned=planned)
+                except Exception:
+                    if planned:
+                        update_planned_job_state(r_client, job, 'failed')
+                    raise
+                else:
+                    if planned:
+                        update_planned_job_state(r_client, job, 'ready')
         except psycopg2.OperationalError:
             log.warning(f'{name}: DB connection lost — reconnecting')
             db = wait_for_db()

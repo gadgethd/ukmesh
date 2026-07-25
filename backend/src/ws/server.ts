@@ -7,6 +7,9 @@ import { getNodes, getRecentPackets, getRecentMessages, getViableLinks } from '.
 import { resolveRequestNetwork } from '../http/requestScope.js';
 import { networkMatchesScope } from '../networks.js';
 import { getRedisConnectionOptions, getRedisUrl } from '../platform/config/redis.js';
+import { isPrivateNode, redactPrivateNode } from '../api/utils/privateNode.js';
+import { trustedClientIp } from '../http/trustedProxy.js';
+import { BoundedTtlMap } from '../cache/boundedTtlMap.js';
 
 const REDIS_CHANNEL = 'meshcore:live';
 const LOG_WS_PACKETS = process.env['LOG_WS_PACKETS'] === '1';
@@ -21,6 +24,14 @@ function boundedEnvInteger(name: string, fallback: number, min: number, max: num
 const WS_MAX_PAYLOAD_BYTES = boundedEnvInteger('WS_MAX_PAYLOAD_BYTES', 64 * 1024, 1_024, 1_048_576);
 const WS_MAX_QUEUE_BYTES = boundedEnvInteger('WS_MAX_QUEUE_BYTES', 8 * 1_048_576, 16 * 1024, 32 * 1_048_576);
 const WS_MAX_BUFFERED_BYTES = boundedEnvInteger('WS_MAX_BUFFERED_BYTES', 32 * 1_048_576, WS_MAX_QUEUE_BYTES, 128 * 1_048_576);
+const WS_MAX_CONNECTIONS = boundedEnvInteger('WS_MAX_CONNECTIONS', 500, 1, 10_000);
+const WS_MAX_CONNECTIONS_PER_IP = boundedEnvInteger('WS_MAX_CONNECTIONS_PER_IP', 20, 1, 1_000);
+const WS_HANDSHAKES_PER_IP_PER_MINUTE = boundedEnvInteger('WS_HANDSHAKES_PER_IP_PER_MINUTE', 30, 1, 10_000);
+const WS_MAX_PENDING_HANDSHAKES = boundedEnvInteger('WS_MAX_PENDING_HANDSHAKES', 32, 1, 1_000);
+const WS_INITIAL_STATE_CONCURRENCY = boundedEnvInteger('WS_INITIAL_STATE_CONCURRENCY', 8, 1, 128);
+const WS_INITIAL_STATE_QUEUE_MAX = boundedEnvInteger('WS_INITIAL_STATE_QUEUE_MAX', 64, 1, 1_000);
+const WS_INITIAL_STATE_MAX_BYTES = boundedEnvInteger('WS_INITIAL_STATE_MAX_BYTES', 4 * 1_048_576, 16 * 1024, 32 * 1_048_576);
+const WS_HEARTBEAT_INTERVAL_MS = boundedEnvInteger('WS_HEARTBEAT_INTERVAL_MS', 30_000, 5_000, 120_000);
 
 let pub: Redis;
 let sub: Redis;
@@ -53,12 +64,71 @@ type InitialStateEntry = {
   messages: Awaited<ReturnType<typeof getRecentMessages>>;
   viableLinks: Awaited<ReturnType<typeof getViableLinks>>;
 };
-const initialStateCache = new Map<string, InitialStateEntry>();
+const initialStateCache = new BoundedTtlMap<string, InitialStateEntry>({
+  maxEntries: 128,
+  maxWeight: 48 * 1024 * 1024,
+  ttlMs: INITIAL_STATE_TTL_MS,
+});
 const initialStateInflight = new Map<string, Promise<InitialStateEntry>>();
+const privateNodeIds = new Set<string>();
+const privateNodePrefixes = new Set<string>();
+let privacyIndexReady = false;
+let privacyRefreshInFlight: Promise<void> | null = null;
+
+function rememberPrivateNode(nodeId: string): void {
+  const normalized = nodeId.trim().toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(normalized)) return;
+  privateNodeIds.add(normalized);
+  privateNodePrefixes.add(normalized.slice(0, 2));
+  privateNodePrefixes.add(normalized.slice(0, 4));
+  privateNodePrefixes.add(normalized.slice(0, 6));
+}
+
+function packetHasPrivateParticipant(packet: Partial<LivePacket>): boolean {
+  if (
+    privateNodeIds.has(String(packet.rxNodeId ?? '').toLowerCase())
+    || privateNodeIds.has(String(packet.srcNodeId ?? '').toLowerCase())
+  ) return true;
+  if (packet.path == null) return false;
+  if (!Array.isArray(packet.path)) return true;
+  const size = Number(packet.pathHashSizeBytes ?? 0);
+  // Malformed/legacy path metadata cannot be checked safely. Treat a non-empty
+  // path as private and suppress it rather than publishing raw relay prefixes.
+  if (packet.path.length > 0 && (!Number.isInteger(size) || size < 1 || size > 3)) return true;
+  if (size < 1 || size > 3) return false;
+  for (const hash of packet.path) {
+    if (
+      typeof hash !== 'string'
+      || hash.length !== size * 2
+      || !/^[0-9a-f]+$/i.test(hash)
+    ) return true;
+    if (privateNodePrefixes.has(hash.toLowerCase())) return true;
+  }
+  return false;
+}
+
+function refreshPrivacyIndex(): Promise<void> {
+  if (privacyRefreshInFlight) return privacyRefreshInFlight;
+  const tracked = Promise.all([getNodes('ukmesh'), getNodes('test')])
+    .then(([productionNodes, testNodes]) => {
+      for (const node of [...productionNodes, ...testNodes]) {
+        if (isPrivateNode(node.name)) rememberPrivateNode(String(node.node_id));
+      }
+      privacyIndexReady = true;
+    })
+    .catch((err: unknown) => {
+      console.error('[ws] privacy index refresh failed:', (err as Error).message);
+    })
+    .finally(() => {
+      if (privacyRefreshInFlight === tracked) privacyRefreshInFlight = null;
+    });
+  privacyRefreshInFlight = tracked;
+  return tracked;
+}
 
 async function fetchInitialState(network: string | undefined, observer: string | undefined): Promise<InitialStateEntry> {
   const key = `${network ?? ''}:${observer ?? ''}`;
-  const cached = initialStateCache.get(key);
+  const cached = observer ? undefined : initialStateCache.get(key);
   if (cached && (Date.now() - cached.ts) < INITIAL_STATE_TTL_MS) return cached;
 
   // If a fetch is already in flight for this key, share it — don't pile on the DB.
@@ -70,14 +140,24 @@ async function fetchInitialState(network: string | undefined, observer: string |
       // getRecentPackets: 5-minute window, all types (fast, CTE aggregation ~16 ms).
       // getRecentMessages: last 200 GRP (type=5) from Postgres so the feed can
       //   seed a proper message cache on first load instead of relying on live traffic.
-      const [nodes, packets, messages, viableLinks] = await Promise.all([
+      const [rawNodes, packets, messages, rawViableLinks] = await Promise.all([
         getNodes(network, observer),
         getRecentPackets(7, network, observer),
         getRecentMessages(200, network, observer),
         getCachedViableLinks(network, observer),
       ]);
+      for (const node of rawNodes) {
+        if (isPrivateNode(node.name)) rememberPrivateNode(String(node.node_id));
+      }
+      const nodes = rawNodes
+        .filter((node) => !isPrivateNode(node.name))
+        .map(redactPrivateNode);
+      const viableLinks = rawViableLinks.filter((link) => (
+        !privateNodeIds.has(String(link.node_a_id).toLowerCase())
+        && !privateNodeIds.has(String(link.node_b_id).toLowerCase())
+      ));
       const entry: InitialStateEntry = { ts: Date.now(), nodes, packets, messages, viableLinks };
-      initialStateCache.set(key, entry);
+      if (!observer) initialStateCache.set(key, entry);
       return entry;
     } finally {
       initialStateInflight.delete(key);
@@ -104,6 +184,7 @@ function cacheKey(network?: string, observer?: string): string {
 }
 
 async function getCachedViableLinks(network?: string, observer?: string) {
+  if (observer) return getViableLinks(network, observer);
   const key = cacheKey(network, observer);
   const cached = viableLinksCache.get(key);
   if (cached && (Date.now() - cached.ts) < VIABLE_LINK_CACHE_TTL_MS) return cached.data;
@@ -194,6 +275,9 @@ function trackScopedNodes(msg: WSMessage, scope: ClientScope): void {
 }
 
 export function initWebSocketServer(httpServer: Server): WebSocketServer {
+  void refreshPrivacyIndex();
+  const privacyRefreshTimer = setInterval(() => void refreshPrivacyIndex(), 5 * 60_000);
+  privacyRefreshTimer.unref();
   // Two separate clients: one for pub, one for sub
   // Do NOT use lazyConnect — let ioredis manage the connect lifecycle
   pub = new Redis(getRedisUrl(), getRedisConnectionOptions());
@@ -215,6 +299,38 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
     .split(',')
     .map(s => s.trim())
     .filter(Boolean);
+  const connectionsByPeer = new Map<string, number>();
+  const handshakeWindows = new Map<string, { startedAt: number; count: number }>();
+  const pendingHandshakeTimers = new WeakMap<IncomingMessage['socket'], NodeJS.Timeout>();
+  let pendingHandshakes = 0;
+  let initialStateActive = 0;
+  const initialStateQueue: Array<() => void> = [];
+  const missedPongs = new WeakMap<WebSocket, number>();
+
+  const normalizedPeer = (req: IncomingMessage): string => {
+    return trustedClientIp(req);
+  };
+
+  const releasePendingHandshake = (req: IncomingMessage): void => {
+    const timer = pendingHandshakeTimers.get(req.socket);
+    if (!timer) return;
+    clearTimeout(timer);
+    pendingHandshakeTimers.delete(req.socket);
+    pendingHandshakes = Math.max(0, pendingHandshakes - 1);
+  };
+
+  const runInitialStateTask = <T>(task: () => Promise<T>): Promise<T> => new Promise<T>((resolve, reject) => {
+    const start = () => {
+      initialStateActive += 1;
+      task().then(resolve, reject).finally(() => {
+        initialStateActive = Math.max(0, initialStateActive - 1);
+        initialStateQueue.shift()?.();
+      });
+    };
+    if (initialStateActive < WS_INITIAL_STATE_CONCURRENCY) start();
+    else if (initialStateQueue.length < WS_INITIAL_STATE_QUEUE_MAX) initialStateQueue.push(start);
+    else reject(new Error('WS_INITIAL_STATE_OVERLOADED'));
+  });
 
   // Pre-warm the initial state cache for common networks at startup so the
   // first connecting client doesn't pay the cold DB cost.
@@ -236,9 +352,40 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
     server: httpServer,
     path: '/ws',
     maxPayload: WS_MAX_PAYLOAD_BYTES,
-    verifyClient: ({ origin }: { origin: string }) => {
-      // No origin header = non-browser client (allow); otherwise must be whitelisted
-      return !origin || ALLOWED_ORIGINS.includes(origin);
+    verifyClient: (info, done) => {
+      const origin = info.origin;
+      if (origin && !ALLOWED_ORIGINS.includes(origin)) {
+        done(false, 403, 'Forbidden');
+        return;
+      }
+      const peer = normalizedPeer(info.req);
+      const now = Date.now();
+      if (handshakeWindows.size >= 4_096 && !handshakeWindows.has(peer)) {
+        const oldest = handshakeWindows.keys().next().value as string | undefined;
+        if (oldest) handshakeWindows.delete(oldest);
+      }
+      let window = handshakeWindows.get(peer);
+      if (!window || now - window.startedAt >= 60_000) {
+        window = { startedAt: now, count: 0 };
+        handshakeWindows.set(peer, window);
+      }
+      window.count += 1;
+      if (
+        window.count > WS_HANDSHAKES_PER_IP_PER_MINUTE
+        || (connectionsByPeer.get(peer) ?? 0) >= WS_MAX_CONNECTIONS_PER_IP
+      ) {
+        done(false, 429, 'Too Many Requests', { 'Retry-After': '5' });
+        return;
+      }
+      if (wss.clients.size + pendingHandshakes >= WS_MAX_CONNECTIONS || pendingHandshakes >= WS_MAX_PENDING_HANDSHAKES) {
+        done(false, 503, 'Service Unavailable', { 'Retry-After': '5' });
+        return;
+      }
+      pendingHandshakes += 1;
+      const timer = setTimeout(() => releasePendingHandshake(info.req), 10_000);
+      timer.unref();
+      pendingHandshakeTimers.set(info.req.socket, timer);
+      done(true);
     },
   });
 
@@ -257,12 +404,35 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
   };
 
   wss.on('connection', async (ws: WebSocket, req: IncomingMessage) => {
+    releasePendingHandshake(req);
+    const peer = normalizedPeer(req);
+    connectionsByPeer.set(peer, (connectionsByPeer.get(peer) ?? 0) + 1);
+    missedPongs.set(ws, 0);
+    ws.on('pong', () => missedPongs.set(ws, 0));
+    let cleanedUp = false;
+    ws.on('close', () => {
+      if (cleanedUp) return;
+      cleanedUp = true;
+      clientScopes.delete(ws);
+      messageQueue.delete(ws);
+      const remaining = Math.max(0, (connectionsByPeer.get(peer) ?? 1) - 1);
+      if (remaining === 0) connectionsByPeer.delete(peer);
+      else connectionsByPeer.set(peer, remaining);
+      console.log('[ws] client disconnected, total:', wss.clients.size);
+    });
+    ws.on('error', (err) => {
+      console.error('[ws] client error', err.message);
+    });
     console.log('[ws] client connected, total:', wss.clients.size);
 
     // Derive scope from query params (?network=teesside&observer=<pubkey>)
     const reqUrl  = new URL(req.url ?? '/', 'http://localhost');
     const requestedNetwork = resolveRequestNetwork(reqUrl.searchParams.get('network'), req.headers);
-    const network = requestedNetwork === 'all' ? undefined : requestedNetwork;
+    if (requestedNetwork === 'all') {
+      ws.close(1008, 'all-network scope is not available');
+      return;
+    }
+    const network = requestedNetwork;
     const observer = normalizeObserver(reqUrl.searchParams.get('observer'));
     const scope: ClientScope = {
       network,
@@ -274,7 +444,9 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
     if (WS_INITIAL_STATE_ENABLED) {
       // Send initial state: served from cache so concurrent connects don't exhaust the DB pool.
       try {
-        const { nodes, packets, messages, viableLinks } = await fetchInitialState(network, observer);
+        const { nodes, packets, messages, viableLinks } = await runInitialStateTask(
+          () => fetchInitialState(network, observer),
+        );
         for (const node of nodes) {
           const nodeId = String((node as { node_id?: string }).node_id ?? '').toLowerCase();
           if (nodeId) scope.nodeIds.add(nodeId);
@@ -291,9 +463,17 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
           data: { nodes, packets, messages, viable_pairs: viablePairs, viable_links: viableLinks },
           ts: Date.now(),
         };
-        if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(initMsg));
+        const serialized = JSON.stringify(initMsg);
+        if (Buffer.byteLength(serialized) > WS_INITIAL_STATE_MAX_BYTES) {
+          ws.close(1013, 'initial state is temporarily unavailable');
+          return;
+        }
+        if (ws.readyState === WebSocket.OPEN) ws.send(serialized);
       } catch (err) {
         console.error('[ws] initial state error', (err as Error).message);
+        if ((err as Error).message === 'WS_INITIAL_STATE_OVERLOADED') {
+          ws.close(1013, 'initial state is busy');
+        }
       }
     } else {
       if (ws.readyState === WebSocket.OPEN) {
@@ -305,16 +485,21 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
       }
     }
 
-    ws.on('close', () => {
-      clientScopes.delete(ws);
-      messageQueue.delete(ws);
-      console.log('[ws] client disconnected, total:', wss.clients.size);
-    });
-
-    ws.on('error', (err) => {
-      console.error('[ws] client error', err.message);
-    });
   });
+
+  const heartbeatTimer = setInterval(() => {
+    for (const client of wss.clients) {
+      if (client.readyState !== WebSocket.OPEN) continue;
+      const missed = (missedPongs.get(client) ?? 0) + 1;
+      if (missed > 2) {
+        client.terminate();
+        continue;
+      }
+      missedPongs.set(client, missed);
+      client.ping();
+    }
+  }, WS_HEARTBEAT_INTERVAL_MS);
+  heartbeatTimer.unref();
 
   const flushMessageQueue = () => {
     if (messageQueue.size === 0) {
@@ -351,6 +536,9 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
     } catch {
       return;
     }
+    parsed = toPublicWsMessage(parsed);
+    if (!parsed) return;
+    messageStr = JSON.stringify(parsed);
 
     if (LOG_WS_PACKETS && parsed?.type === 'packet') {
       console.log('[ws-sub] received packet:', (parsed.data as LivePacket)?.packetHash);
@@ -393,11 +581,15 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
 }
 
 export function broadcastPacket(packet: LivePacket): void {
+  if (!privacyIndexReady) return;
+  if (packetHasPrivateParticipant(packet)) return;
   const msg: WSMessage = { type: 'packet', data: packet, ts: Date.now() };
   void pub.publish(REDIS_CHANNEL, JSON.stringify(msg));
 }
 
 export function broadcastNodeUpdate(nodeId: string, meta?: { network?: string; observerId?: string }): void {
+  if (!privacyIndexReady) return;
+  if (privateNodeIds.has(nodeId.toLowerCase())) return;
   // Normalise IDs to lowercase once here so shouldSendMessage() never needs to allocate
   const msg: WSMessage = {
     type: 'node_update',
@@ -413,13 +605,57 @@ export function broadcastNodeUpdate(nodeId: string, meta?: { network?: string; o
 }
 
 export function broadcastNodeUpsert(node: Record<string, unknown>): void {
+  const nodeId = typeof node['node_id'] === 'string' ? node['node_id'].toLowerCase() : '';
+  const privateNode = isPrivateNode(typeof node['name'] === 'string' ? node['name'] : null);
+  if (privateNode || privateNodeIds.has(nodeId)) {
+    if (nodeId) rememberPrivateNode(nodeId);
+    return;
+  }
+  const publicNode: Record<string, unknown> = node;
   // Normalise IDs to lowercase once here so shouldSendMessage() never needs to allocate
   const normalised: Record<string, unknown> = {
-    ...node,
-    node_id:     typeof node['node_id']     === 'string' ? node['node_id'].toLowerCase()     : node['node_id'],
-    observer_id: typeof node['observer_id'] === 'string' ? node['observer_id'].toLowerCase() : node['observer_id'],
-    public_key:  typeof node['public_key']  === 'string' ? node['public_key'].toLowerCase()  : node['public_key'],
+    ...publicNode,
+    node_id:     typeof publicNode['node_id']     === 'string' ? publicNode['node_id'].toLowerCase()     : publicNode['node_id'],
+    observer_id: typeof publicNode['observer_id'] === 'string' ? publicNode['observer_id'].toLowerCase() : publicNode['observer_id'],
+    public_key:  typeof publicNode['public_key']  === 'string' ? publicNode['public_key'].toLowerCase()  : publicNode['public_key'],
   };
   const msg: WSMessage = { type: 'node_upsert', data: normalised, ts: Date.now() };
   void pub.publish(REDIS_CHANNEL, JSON.stringify(msg));
+}
+
+export function toPublicWsMessage(message: WSMessage): WSMessage | null {
+  if (message.type === 'packet') {
+    if (!privacyIndexReady) return null;
+    const packet = message.data as Partial<LivePacket>;
+    if (packetHasPrivateParticipant(packet)) return null;
+    return message;
+  }
+  if (message.type === 'node_update') {
+    if (!privacyIndexReady) return null;
+    const nodeId = String((message.data as { nodeId?: string }).nodeId ?? '').toLowerCase();
+    return privateNodeIds.has(nodeId) ? null : message;
+  }
+  if (message.type === 'node_upsert') {
+    const node = message.data as Record<string, unknown>;
+    const nodeId = String(node['node_id'] ?? '').toLowerCase();
+    if (!isPrivateNode(typeof node['name'] === 'string' ? node['name'] : null) && !privateNodeIds.has(nodeId)) {
+      return message;
+    }
+    if (nodeId) rememberPrivateNode(nodeId);
+    return null;
+  }
+  if (message.type === 'coverage_update') {
+    if (!privacyIndexReady) return null;
+    const nodeId = String((message.data as { node_id?: string }).node_id ?? '').toLowerCase();
+    return privateNodeIds.has(nodeId) ? null : message;
+  }
+  if (message.type === 'link_update') {
+    if (!privacyIndexReady) return null;
+    const data = message.data as { node_a_id?: string; node_b_id?: string };
+    return (
+      privateNodeIds.has(String(data.node_a_id ?? '').toLowerCase())
+      || privateNodeIds.has(String(data.node_b_id ?? '').toLowerCase())
+    ) ? null : message;
+  }
+  return message;
 }

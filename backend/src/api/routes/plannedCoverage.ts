@@ -1,8 +1,13 @@
-import { randomBytes } from 'crypto';
 import type { Router } from 'express';
 import type { QueryResultRow } from 'pg';
 import { isViewshedFeatureEnabled } from '../../features.js';
-import { isViewshedEligibleCoordinate, queueViewshedJob } from '../../queue/publisher.js';
+import {
+  getPlannedCoverageState,
+  isViewshedEligibleCoordinate,
+  queuePlannedViewshedJob,
+  releasePlannedCoverage,
+  resolvePlannedCoverageHandle,
+} from '../../queue/publisher.js';
 
 type QueryFn = <T extends QueryResultRow = QueryResultRow>(
   text: string,
@@ -15,6 +20,14 @@ export type PlannedCoverageRouteDeps = {
 };
 
 const PLAN_ID_RE = /^plan_[0-9a-f]{16}$/;
+
+export function toPublicPlannedCoverage<T extends { node_id: string }>(
+  planId: string,
+  row: T,
+): Omit<T, 'node_id'> & { node_id: string } {
+  const { node_id: _internalJobId, ...coverage } = row;
+  return { ...coverage, node_id: planId };
+}
 
 export function registerPlannedCoverageRoutes(router: Router, deps: PlannedCoverageRouteDeps): void {
   const { coverageLimiter, query } = deps;
@@ -38,9 +51,13 @@ export function registerPlannedCoverageRoutes(router: Router, deps: PlannedCover
         res.status(400).json({ error: 'Location must be within the UK' });
         return;
       }
-      const planId = `plan_${randomBytes(8).toString('hex')}`;
-      queueViewshedJob(planId, lat, lon, true);
-      res.json({ plan_id: planId });
+      const admission = await queuePlannedViewshedJob(lat, lon);
+      if (!('planId' in admission)) {
+        res.setHeader('Retry-After', String(admission.retryAfterSeconds));
+        res.status(503).json({ error: 'planned coverage capacity is temporarily unavailable' });
+        return;
+      }
+      res.status(202).json({ plan_id: admission.planId, status: admission.status });
     } catch (err) {
       console.error('[api] POST /coverage/planned', (err as Error).message);
       res.status(500).json({ error: 'Internal server error' });
@@ -60,6 +77,11 @@ export function registerPlannedCoverageRoutes(router: Router, deps: PlannedCover
         res.status(400).json({ error: 'invalid plan id' });
         return;
       }
+      const jobId = await resolvePlannedCoverageHandle(planId);
+      if (!jobId) {
+        res.status(404).json({ status: 'expired' });
+        return;
+      }
       const result = await query<{
         node_id: string;
         geom: unknown;
@@ -73,13 +95,25 @@ export function registerPlannedCoverageRoutes(router: Router, deps: PlannedCover
                 calculated_at::text AS calculated_at
          FROM node_coverage
          WHERE node_id = $1
+           AND is_planned = TRUE
+           AND expires_at > NOW()
          LIMIT 1`,
-        [planId],
+        [jobId],
       );
       if (result.rows[0]) {
-        res.json({ status: 'ready', coverage: result.rows[0] });
+        res.json({
+          status: 'ready',
+          coverage: toPublicPlannedCoverage(planId, result.rows[0]),
+        });
       } else {
-        res.json({ status: 'pending' });
+        const state = await getPlannedCoverageState(planId);
+        if (state === 'queued' || state === 'leased') {
+          res.json({ status: 'pending' });
+        } else if (state === 'failed') {
+          res.status(503).json({ status: 'failed' });
+        } else {
+          res.status(404).json({ status: 'expired' });
+        }
       }
     } catch (err) {
       console.error('[api] GET /coverage/planned/:planId', (err as Error).message);
@@ -100,7 +134,7 @@ export function registerPlannedCoverageRoutes(router: Router, deps: PlannedCover
         res.status(400).json({ error: 'invalid plan id' });
         return;
       }
-      await query('DELETE FROM node_coverage WHERE node_id = $1', [planId]);
+      await releasePlannedCoverage(planId);
       res.status(204).send();
     } catch (err) {
       console.error('[api] DELETE /coverage/planned/:planId', (err as Error).message);

@@ -68,6 +68,19 @@ export function registerPathingRoutes(router: Router, deps: PathingRouteDeps): v
       const observer = normalizeObserverQuery(req.query['observer']);
       res.json(await service.resolvePacket(packetHash, network, observer));
     } catch (err) {
+      if ((err as Error).message === 'PATH_RESOLVE_OVERLOADED') {
+        res.setHeader('Retry-After', '5');
+        res.status(503).json({ error: 'Path resolver is busy' });
+        return;
+      }
+      if ((err as Error).message === 'PATH_RESOLVE_TIMEOUT') {
+        res.status(504).json({ error: 'Path resolver timed out' });
+        return;
+      }
+      if ((err as Error).message === 'PATH_HISTORY_LIMIT') {
+        res.status(422).json({ error: 'HISTORY_LIMIT', retryable: false });
+        return;
+      }
       if ((err as Error).message === 'PACKET_NOT_FOUND') {
         res.status(404).json({ error: 'Packet not found' });
         return;
@@ -91,6 +104,19 @@ export function registerPathingRoutes(router: Router, deps: PathingRouteDeps): v
       const network = resolveRequestNetwork(req.query['network'], req.headers, 'ukmesh') ?? 'ukmesh';
       res.json(await service.resolvePacketMulti(packetHash, network));
     } catch (err) {
+      if ((err as Error).message === 'PATH_RESOLVE_OVERLOADED') {
+        res.setHeader('Retry-After', '5');
+        res.status(503).json({ error: 'Path resolver is busy' });
+        return;
+      }
+      if ((err as Error).message === 'PATH_RESOLVE_TIMEOUT') {
+        res.status(504).json({ error: 'Path resolver timed out' });
+        return;
+      }
+      if ((err as Error).message === 'PATH_HISTORY_LIMIT') {
+        res.status(422).json({ error: 'HISTORY_LIMIT', retryable: false });
+        return;
+      }
       if ((err as Error).message === 'PACKET_NOT_FOUND') {
         res.status(404).json({ error: 'Packet not found' });
         return;
@@ -103,7 +129,7 @@ export function registerPathingRoutes(router: Router, deps: PathingRouteDeps): v
   router.get('/path-beta/history', deps.pathHistoryLimiter, async (req, res) => {
     try {
       const requestedNetwork = resolveRequestNetwork(req.query['network'], req.headers);
-      const scope = requestedNetwork === 'all' ? 'all' : (requestedNetwork ?? 'ukmesh');
+      const scope = requestedNetwork === 'test' ? 'test' : 'ukmesh';
       res.json(await service.getPathHistory(scope));
     } catch (err) {
       console.error('[api] GET /path-beta/history', (err as Error).message);
@@ -114,12 +140,12 @@ export function registerPathingRoutes(router: Router, deps: PathingRouteDeps): v
   router.get('/path-beta/multibyte-paths', deps.pathHistoryLimiter, async (req, res) => {
     try {
       const requestedNetwork = resolveRequestNetwork(req.query['network'], req.headers);
-      const network = requestedNetwork === 'all' ? undefined : (requestedNetwork ?? 'ukmesh');
+      const network = requestedNetwork === 'test' ? 'test' : 'ukmesh';
       const observer = normalizeObserverQuery(req.query['observer']);
       const { maxCount, segments } = await deps.getMultibytePathSegments(network, observer ?? undefined);
       res.json({
         ok: true,
-        scope: requestedNetwork === 'all' ? 'all' : (requestedNetwork ?? 'ukmesh'),
+        scope: network,
         maxCount,
         segments,
       });
@@ -136,8 +162,8 @@ export function registerPathingRoutes(router: Router, deps: PathingRouteDeps): v
         res.status(400).json({ error: 'Invalid or missing hash' });
         return;
       }
-      const requestedNetwork = resolveRequestNetwork(req.query['network'], req.headers);
-      const network = (!requestedNetwork || requestedNetwork === 'all') ? null : requestedNetwork;
+      const requestedNetwork = resolveRequestNetwork(req.query['network'], req.headers, 'ukmesh');
+      const network = requestedNetwork === 'test' ? 'test' : 'ukmesh';
       const result = await lazyResolvePath(packetHash, network, deps.query);
       if (!result) {
         res.status(404).json({ error: 'No path data found for this packet' });

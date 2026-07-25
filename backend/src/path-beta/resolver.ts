@@ -1,4 +1,5 @@
 import { query, touchNodesPredictedOnline } from '../db/index.js';
+import { expandResolverScope } from '../networks.js';
 import {
   buildNodePathHashIndex,
   getNodesForPathHash,
@@ -49,6 +50,18 @@ const TRUSTED_PATH_MAX_KM = 150;
 const ML_PREFIX_SCORE_MIN = 0.80;
 const ML_PREFIX_DOMINANT_SCORE = 0.85;
 const DIRECT_ANCHOR_MAX_KM = 150;
+const PATH_MULTI_HISTORY_WINDOW_HOURS = Math.min(
+  24 * 30,
+  Math.max(1, Number(process.env['PATH_MULTI_HISTORY_WINDOW_HOURS'] ?? 168) || 168),
+);
+const PATH_MULTI_MAX_SCAN_ROWS = Math.min(
+  10_000,
+  Math.max(32, Number(process.env['PATH_MULTI_MAX_SCAN_ROWS'] ?? 2_048) || 2_048),
+);
+const PATH_MULTI_MAX_OBSERVERS = Math.min(
+  1_000,
+  Math.max(1, Number(process.env['PATH_MULTI_MAX_OBSERVERS'] ?? 128) || 128),
+);
 
 type DirectObserverAnchor = {
   observerNode: MeshNode;
@@ -1401,20 +1414,23 @@ async function loadContext(network: string): Promise<BetaResolveContext> {
   const now = Date.now();
   const cached = contextCache.get(network);
   if (cached && now - cached.loadedAt < CONTEXT_TTL_MS) return cached;
+  const sourceNetworks = expandResolverScope(network);
 
   const [nodeRows, coverageRows, linkRows, mlScoreRows, learningModel, neighborAffinity] = await Promise.all([
     query<MeshNode>(
       `SELECT node_id, name, lat, lon, iata, role, elevation_m, last_seen::text AS last_seen
        FROM nodes
-       WHERE ($1 = 'all' OR network = $1)`,
-      [network],
+       WHERE network = ANY($1)
+         AND (name IS NULL OR name NOT LIKE '%🚫%')`,
+      [sourceNetworks],
     ),
     query<NodeCoverage>(
       `SELECT nc.node_id, nc.radius_m
        FROM node_coverage nc
        JOIN nodes n ON n.node_id = nc.node_id
-       WHERE ($1 = 'all' OR n.network = $1)`,
-      [network],
+       WHERE n.network = ANY($1)
+         AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')`,
+      [sourceNetworks],
     ),
     query<{
       node_a_id: string;
@@ -1432,8 +1448,11 @@ async function loadContext(network: string): Promise<BetaResolveContext> {
        JOIN nodes a ON a.node_id = nl.node_a_id
        JOIN nodes b ON b.node_id = nl.node_b_id
        WHERE (nl.itm_viable IS NOT NULL OR nl.force_viable = true)
-         AND ($1 = 'all' OR (a.network = $1 AND b.network = $1))`,
-      [network],
+         AND a.network = ANY($1)
+         AND b.network = ANY($1)
+         AND (a.name IS NULL OR a.name NOT LIKE '%🚫%')
+         AND (b.name IS NULL OR b.name NOT LIKE '%🚫%')`,
+      [sourceNetworks],
     ),
     query<{
       hash_2char: string;
@@ -1443,7 +1462,7 @@ async function loadContext(network: string): Promise<BetaResolveContext> {
     }>(
       `SELECT hash_2char, node_id, score, observation_count
        FROM ml_path_prefix_scores
-       WHERE ($1 = 'all' OR network = $1)
+       WHERE network = $1
          AND score >= $2
        ORDER BY score DESC, observation_count DESC
        LIMIT $3`,
@@ -1564,96 +1583,6 @@ export type BetaResolvedPayload = {
   };
 };
 
-const PROHIBITED_NODE_MARKER = '🚫';
-const HIDDEN_NODE_MASK_RADIUS_MILES = 1;
-
-function isProhibitedMapNode(node: MeshNode | null | undefined): boolean {
-  return Boolean(node?.name?.includes(PROHIBITED_NODE_MARKER));
-}
-
-function roundCoord(value: number): number {
-  return Math.round(value * 1_000_000) / 1_000_000;
-}
-
-function hiddenCoordKey(lat: number, lon: number): string {
-  return `${roundCoord(lat)},${roundCoord(lon)}`;
-}
-
-function hashSeed(input: string): number {
-  let hash = 2166136261;
-  for (let i = 0; i < input.length; i++) {
-    hash ^= input.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
-  }
-  return hash >>> 0;
-}
-
-function seededUnitPair(seed: string): [number, number] {
-  const distanceUnit = hashSeed(`${seed}:distance`) / 0xffffffff;
-  const bearingUnit = hashSeed(`${seed}:bearing`) / 0xffffffff;
-  return [distanceUnit, bearingUnit];
-}
-
-function stablePointWithinMiles(
-  lat: number,
-  lon: number,
-  seed: string,
-  radiusMiles = HIDDEN_NODE_MASK_RADIUS_MILES,
-): [number, number] {
-  const radiusKm = radiusMiles * 1.609344;
-  const [distanceUnit, bearingUnit] = seededUnitPair(seed);
-  const distanceKm = Math.sqrt(distanceUnit) * radiusKm;
-  const bearing = bearingUnit * Math.PI * 2;
-  const latRad = lat * (Math.PI / 180);
-  const dLat = (distanceKm / 111) * Math.cos(bearing);
-  const lonScale = Math.max(0.01, Math.cos(latRad));
-  const dLon = (distanceKm / (111 * lonScale)) * Math.sin(bearing);
-  return [lat + dLat, lon + dLon];
-}
-
-function buildHiddenCoordMask(nodesById: Map<string, MeshNode>): Map<string, [number, number]> {
-  const mask = new Map<string, [number, number]>();
-  for (const node of nodesById.values()) {
-    if (!hasCoords(node) || !isProhibitedMapNode(node)) continue;
-    const activityKey = node.last_seen ?? 'unknown';
-    const seed = `${node.node_id}|${activityKey}`;
-    mask.set(hiddenCoordKey(node.lat!, node.lon!), stablePointWithinMiles(node.lat!, node.lon!, seed));
-  }
-  return mask;
-}
-
-function maskPoint(point: [number, number], hiddenCoordMask: Map<string, [number, number]>): [number, number] {
-  return hiddenCoordMask.get(hiddenCoordKey(point[0], point[1])) ?? point;
-}
-
-function maskPath(path: [number, number][] | null, hiddenCoordMask: Map<string, [number, number]>): [number, number][] | null {
-  if (!path || path.length < 1 || hiddenCoordMask.size < 1) return path;
-  return path.map((point) => maskPoint(point, hiddenCoordMask));
-}
-
-function maskSegments(
-  segments: Array<[[number, number], [number, number]]>,
-  hiddenCoordMask: Map<string, [number, number]>,
-): Array<[[number, number], [number, number]]> {
-  if (segments.length < 1 || hiddenCoordMask.size < 1) return segments;
-  return segments.map(([a, b]) => [maskPoint(a, hiddenCoordMask), maskPoint(b, hiddenCoordMask)]);
-}
-
-function maskResolvedPayload(
-  payload: BetaResolvedPayload,
-  hiddenCoordMask: Map<string, [number, number]>,
-): BetaResolvedPayload {
-  if (hiddenCoordMask.size < 1) return payload;
-  return {
-    ...payload,
-    purplePath: maskPath(payload.purplePath, hiddenCoordMask),
-    extraPurplePaths: payload.extraPurplePaths.map((path) => maskPath(path, hiddenCoordMask) ?? path),
-    redPath: maskPath(payload.redPath, hiddenCoordMask),
-    redSegments: maskSegments(payload.redSegments, hiddenCoordMask),
-    completionPaths: payload.completionPaths.map((path) => maskPath(path, hiddenCoordMask) ?? path),
-  };
-}
-
 async function recordPredictedOnline(nodeIds: string[] | null | undefined): Promise<void> {
   if (!Array.isArray(nodeIds) || nodeIds.length < 1) return;
   await touchNodesPredictedOnline(nodeIds);
@@ -1686,29 +1615,42 @@ export async function resolveBetaPathForPacketHash(
   stickyAgeFraction?: number,
   options?: PathResolutionOptions,
 ): Promise<BetaResolvedPayload | null> {
+  const sourceNetworks = expandResolverScope(network);
   const [packetResult, observerHopResult] = await Promise.all([
     query<PathPacket>(
       `SELECT packet_hash, rx_node_id, src_node_id, packet_type, hop_count, path_hashes, path_hash_size_bytes
        FROM packets
        WHERE packet_hash = $1
-         AND ($2 = 'all' OR network = $2)
-         ${observer ? 'AND rx_node_id = $3' : ''}
+         AND network = ANY($2)
+         AND ($3 = 'test' OR split_part(topic, '/', 1) <> 'meshcore-test')
+         AND NOT EXISTS (
+           SELECT 1 FROM nodes private_node
+           WHERE private_node.name LIKE '%🚫%'
+             AND private_node.node_id IN (packets.rx_node_id, packets.src_node_id)
+         )
+         ${observer ? 'AND rx_node_id = $4' : ''}
        ORDER BY COALESCE(cardinality(path_hashes), 0) DESC,
                 CASE WHEN path_hash_size_bytes IS NOT NULL THEN 1 ELSE 0 END DESC,
                 CASE WHEN src_node_id IS NOT NULL THEN 1 ELSE 0 END DESC,
                 hop_count ASC NULLS LAST,
                 time ASC
        LIMIT 32`,
-      observer ? [packetHash, network, observer] : [packetHash, network],
+      observer ? [packetHash, sourceNetworks, network, observer] : [packetHash, sourceNetworks, network],
     ),
     query<{ rx_node_id: string; hop_count: number | null }>(
       `SELECT rx_node_id, MIN(hop_count) AS hop_count
        FROM packets
        WHERE packet_hash = $1
-         AND ($2 = 'all' OR network = $2)
+         AND network = ANY($2)
+         AND ($3 = 'test' OR split_part(topic, '/', 1) <> 'meshcore-test')
+         AND NOT EXISTS (
+           SELECT 1 FROM nodes private_node
+           WHERE private_node.name LIKE '%🚫%'
+             AND private_node.node_id IN (packets.rx_node_id, packets.src_node_id)
+         )
          AND rx_node_id IS NOT NULL
        GROUP BY rx_node_id`,
-      [packetHash, network],
+      [packetHash, sourceNetworks, network],
     ),
   ]);
 
@@ -1729,8 +1671,11 @@ export async function resolveBetaPathForPacketHash(
     logPathResolution(options, `[path-beta] hash=${packetHash} network=${network} mode=none reason=all-observations-ignored-self-echo`);
     return null;
   }
-  const hiddenCoordMask = buildHiddenCoordMask(context.nodesById);
-  const applyHiddenMask = (payload: BetaResolvedPayload) => maskResolvedPayload(payload, hiddenCoordMask);
+  // Private nodes are removed while loading the resolver context, before any
+  // path geometry can be derived. Keep this boundary as an identity projection
+  // so every return path remains explicit and cannot reintroduce reversible
+  // coordinate masking.
+  const applyHiddenMask = (payload: BetaResolvedPayload) => payload;
   const logPrefix = `[path-beta] hash=${packetHash} network=${network}`;
 
   const rx = packet.rx ?? undefined;
@@ -2187,22 +2132,35 @@ export async function resolveMultiObserverBetaPath(
   stickyAgeFraction?: number,
   options?: PathResolutionOptions,
 ): Promise<MultiObserverResolvedPayload | null> {
+  const sourceNetworks = expandResolverScope(network);
   // 1. Load ALL observations for this packet hash
   const allResult = await query<PathPacket & { path_hash_size_bytes: number | null }>(
     `SELECT packet_hash, rx_node_id, src_node_id, packet_type, hop_count, path_hashes, path_hash_size_bytes
      FROM packets
      WHERE packet_hash = $1
-       AND ($2 = 'all' OR network = $2)
+       AND network = ANY($2)
+       AND ($3 = 'test' OR split_part(topic, '/', 1) <> 'meshcore-test')
+       AND NOT EXISTS (
+         SELECT 1 FROM nodes private_node
+         WHERE private_node.name LIKE '%🚫%'
+           AND private_node.node_id IN (packets.rx_node_id, packets.src_node_id)
+       )
        AND rx_node_id IS NOT NULL
-     ORDER BY COALESCE(cardinality(path_hashes), 0) DESC,
+       AND time >= NOW() - ($4::int * INTERVAL '1 hour')
+     ORDER BY time DESC,
+              COALESCE(cardinality(path_hashes), 0) DESC,
               CASE WHEN path_hash_size_bytes IS NOT NULL THEN 1 ELSE 0 END DESC,
               CASE WHEN src_node_id IS NOT NULL THEN 1 ELSE 0 END DESC,
               hop_count ASC NULLS LAST,
-              time ASC`,
-    [packetHash, network],
+              rx_node_id
+     LIMIT $5`,
+    [packetHash, sourceNetworks, network, PATH_MULTI_HISTORY_WINDOW_HOURS, PATH_MULTI_MAX_SCAN_ROWS + 1],
   );
 
   if (allResult.rows.length < 1) return null;
+  if (allResult.rows.length > PATH_MULTI_MAX_SCAN_ROWS) {
+    throw new Error('PATH_HISTORY_LIMIT');
+  }
 
   const context = await loadContext(network);
 
@@ -2218,6 +2176,9 @@ export async function resolveMultiObserverBetaPath(
       byObserver.set(row.rx_node_id, prepared);
     }
   }
+  if (byObserver.size > PATH_MULTI_MAX_OBSERVERS) {
+    throw new Error('PATH_HISTORY_LIMIT');
+  }
 
   // Single observer — delegate to existing per-observer resolver
   if (byObserver.size <= 1) {
@@ -2228,7 +2189,6 @@ export async function resolveMultiObserverBetaPath(
       : null;
   }
 
-  const hiddenCoordMask = buildHiddenCoordMask(context.nodesById);
   const logPrefix = `[path-beta-multi] hash=${packetHash} network=${network}`;
 
   // 3. Build per-observer data
@@ -2397,7 +2357,7 @@ export async function resolveMultiObserverBetaPath(
         context,
         forceIncludeSource,
       );
-      results.push(maskResolvedPayload(result, hiddenCoordMask));
+      results.push(result);
       continue;
     }
 
@@ -2449,7 +2409,7 @@ export async function resolveMultiObserverBetaPath(
         context,
         forceIncludeSource,
       );
-      results.push(maskResolvedPayload(result, hiddenCoordMask));
+      results.push(result);
       continue;
     }
 
@@ -2476,7 +2436,7 @@ export async function resolveMultiObserverBetaPath(
         context,
         forceIncludeSource,
       );
-      results.push(maskResolvedPayload(result, hiddenCoordMask));
+      results.push(result);
       continue;
     }
 
@@ -2503,7 +2463,7 @@ export async function resolveMultiObserverBetaPath(
           context,
           forceIncludeSource,
         );
-        results.push(maskResolvedPayload(result, hiddenCoordMask));
+        results.push(result);
         continue;
       }
     }
@@ -2568,7 +2528,7 @@ export async function resolveMultiObserverBetaPath(
         permutationCount = permutations.totalCount;
       }
 
-      results.push(maskResolvedPayload({
+      results.push({
         ok: true,
         packetHash,
         mode: 'fallback',
@@ -2588,12 +2548,12 @@ export async function resolveMultiObserverBetaPath(
           srcNodeId: srcNodeId,
           computedAt: new Date().toISOString(),
         },
-      }, hiddenCoordMask));
+      });
       continue;
     }
 
     // Complete failure for this observer
-    results.push(maskResolvedPayload({
+    results.push({
       ok: true,
       packetHash,
       mode: 'none',
@@ -2613,7 +2573,7 @@ export async function resolveMultiObserverBetaPath(
         srcNodeId: srcNodeId,
         computedAt: new Date().toISOString(),
       },
-    }, hiddenCoordMask));
+    });
   }
 
   const resolvedCount = results.filter((r) => r.mode === 'resolved').length;

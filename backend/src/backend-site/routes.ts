@@ -1,5 +1,4 @@
 import { Router, type Request, type Response } from 'express';
-import { isIP } from 'node:net';
 import type { QueryResultRow } from 'pg';
 
 type QueryFn = <T extends QueryResultRow = QueryResultRow>(
@@ -11,54 +10,22 @@ type BackendSiteDeps = {
   query: QueryFn;
 };
 
-function firstHeaderIp(value: unknown): string {
-  const raw = Array.isArray(value) ? value[0] : value;
-  return String(raw ?? '').split(',')[0]?.trim() ?? '';
-}
-
-function normalizeIp(value: string | undefined): string {
+export function normalizeBackendPeerIp(value: string | undefined): string {
   const raw = String(value ?? '').trim();
   if (!raw) return '';
   if (raw.startsWith('::ffff:')) return raw.slice(7);
   return raw;
 }
 
-function isPrivateOrLoopback(ip: string): boolean {
-  const normalized = normalizeIp(ip);
-  if (!normalized) return false;
-  if (normalized === 'localhost' || normalized === '::1' || normalized === '127.0.0.1') return true;
-  if (normalized.startsWith('10.')) return true;
-  if (normalized.startsWith('192.168.')) return true;
-  if (/^172\.(1[6-9]|2\d|3[0-1])\./.test(normalized)) return true;
-  if (/^(fc|fd)/i.test(normalized)) return true;
-  if (/^fe80:/i.test(normalized)) return true;
-  return false;
+export function isBackendSiteLocalAddress(ip: string | undefined): boolean {
+  const normalized = normalizeBackendPeerIp(ip);
+  return normalized === '::1' || normalized === '127.0.0.1';
 }
 
-function requireBackendSiteLocalOnly(req: Request, res: Response): boolean {
-  const forwarded = [
-    firstHeaderIp(req.headers['cf-connecting-ip']),
-    firstHeaderIp(req.headers['x-forwarded-for']),
-    firstHeaderIp(req.headers['x-real-ip']),
-  ].filter(Boolean);
-
-  // Public proxy traffic carries forwarded client IPs.  Do not allow a private
-  // cloudflared/docker socket address to satisfy the local-only check.
-  if (forwarded.some((ip) => !isPrivateOrLoopback(ip))) {
-    res.status(403).type('text/plain').send('Local access only');
-    return false;
-  }
-
-  const candidates = [
-    normalizeIp(req.ip),
-    normalizeIp(req.socket.remoteAddress ?? ''),
-    ...forwarded.map(normalizeIp),
-  ].filter(Boolean);
-
-  if (candidates.some((ip) => isPrivateOrLoopback(ip) || (isIP(ip) === 0 && ip === 'localhost'))) {
-    return true;
-  }
-
+export function requireBackendSiteLocalOnly(req: Request, res: Response): boolean {
+  // Forwarding headers are intentionally ignored. The operator site is
+  // available only over the backend's loopback-bound host port.
+  if (isBackendSiteLocalAddress(req.socket.remoteAddress)) return true;
   res.status(403).type('text/plain').send('Local access only');
   return false;
 }

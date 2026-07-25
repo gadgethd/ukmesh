@@ -1013,3 +1013,25 @@
     border-bottom: 1px solid var(--border);
   }
 }
+.path-node-popup {
+  font-family: monospace;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.path-node-popup__title {
+  font-family: sans-serif;
+  font-size: 13px;
+}
+
+.path-node-popup__observer {
+  color: #ffb300;
+}
+
+.path-node-popup__label {
+  color: var(--text-muted);
+}
+
+.path-node-popup__key {
+  word-break: break-all;
+}

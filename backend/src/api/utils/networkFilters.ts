@@ -34,8 +34,12 @@ export function networkFilters(network?: string, observer?: string): NetworkFilt
     : null;
 
   const packetConditions: string[] = [];
-  if (netEq) packetConditions.push(netEq);
-  else {
+  if (netEq) {
+    packetConditions.push(netEq);
+    if (network !== 'test') {
+      packetConditions.push(`split_part(topic, '/', 1) <> 'meshcore-test'`);
+    }
+  } else {
     packetConditions.push(`network IS DISTINCT FROM 'test'`);
     packetConditions.push(`COALESCE(rx_node_id, '') NOT IN (SELECT node_id FROM nodes WHERE network = 'test')`);
   }

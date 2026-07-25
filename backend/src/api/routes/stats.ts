@@ -1,7 +1,7 @@
 import type { Router } from 'express';
 import { resolveRequestNetwork } from '../../http/requestScope.js';
 import { createStatsRepository } from '../../stats/statsRepository.js';
-import { createStatsService } from '../../stats/statsService.js';
+import { createStatsService, StatsWorkOverloadedError } from '../../stats/statsService.js';
 import type { NetworkFilters } from '../utils/networkFilters.js';
 import { normalizeObserverQuery } from '../utils/observer.js';
 import type { QueryResultRow } from 'pg';
@@ -62,11 +62,16 @@ export function registerStatsRoutes(router: Router, deps: StatsRouteDeps): void 
   router.get('/stats', async (req, res) => {
     try {
       const requestedNetwork = resolveRequestNetwork(req.query['network'], req.headers);
-      const network = requestedNetwork === 'all' ? undefined : requestedNetwork;
+      const network = requestedNetwork === 'test' ? 'test' : 'ukmesh';
       const observer = normalizeObserverQuery(req.query['observer']);
       res.json(await service.getStatsSummary(network, observer));
     } catch (err) {
       console.error('[api] GET /stats', (err as Error).message);
+      if (err instanceof StatsWorkOverloadedError) {
+        res.setHeader('Retry-After', '5');
+        res.status(503).json({ error: 'Statistics service is busy' });
+        return;
+      }
       res.status(500).json({ error: 'Internal server error' });
     }
   });
@@ -74,11 +79,16 @@ export function registerStatsRoutes(router: Router, deps: StatsRouteDeps): void 
   router.get('/stats/charts', deps.statsChartsLimiter, async (req, res) => {
     try {
       const requestedNetwork = resolveRequestNetwork(req.query['network'], req.headers);
-      const network = requestedNetwork === 'all' ? undefined : requestedNetwork;
+      const network = requestedNetwork === 'test' ? 'test' : 'ukmesh';
       const observer = normalizeObserverQuery(req.query['observer']);
       res.json(await service.getCharts(network, observer));
     } catch (err) {
       console.error('[api] GET /stats/charts', (err as Error).message);
+      if (err instanceof StatsWorkOverloadedError) {
+        res.setHeader('Retry-After', '5');
+        res.status(503).json({ error: 'Statistics service is busy' });
+        return;
+      }
       res.status(500).json({ error: 'Internal server error' });
     }
   });
@@ -86,7 +96,7 @@ export function registerStatsRoutes(router: Router, deps: StatsRouteDeps): void 
   router.get('/observer-activity', deps.expensiveLimiter, async (req, res) => {
     try {
       const requestedNetwork = resolveRequestNetwork(req.query['network'], req.headers);
-      const network = requestedNetwork === 'all' ? undefined : requestedNetwork;
+      const network = requestedNetwork === 'test' ? 'test' : 'ukmesh';
       res.json(await service.getObserverActivity(network));
     } catch (err) {
       console.error('[api] GET /observer-activity', (err as Error).message);

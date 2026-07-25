@@ -28,6 +28,41 @@ export function createPathingRepository(deps: PathingRepositoryDeps) {
   }
 
   async function fetchPathLearning(network: string, limit: number) {
+    const eligibleNodesCte = `eligible_nodes AS MATERIALIZED (
+      SELECT n.node_id
+      FROM nodes n
+      WHERE n.lat IS NOT NULL
+        AND n.lon IS NOT NULL
+        AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
+        AND (n.role IS NULL OR n.role = 2)
+        AND (
+          (
+            $1 = 'test'
+            AND (
+              n.network = 'test'
+              OR EXISTS (
+                SELECT 1 FROM node_network_sightings s
+                WHERE s.node_id = n.node_id
+                  AND s.network = 'test'
+                  AND s.last_seen_at > NOW() - INTERVAL '30 days'
+              )
+            )
+          )
+          OR (
+            $1 = 'ukmesh'
+            AND n.network IS DISTINCT FROM 'test'
+            AND (
+              n.network IN ('ukmesh', 'northeast', 'teesside')
+              OR EXISTS (
+                SELECT 1 FROM node_network_sightings s
+                WHERE s.node_id = n.node_id
+                  AND s.network IN ('ukmesh', 'northeast', 'teesside')
+                  AND s.last_seen_at > NOW() - INTERVAL '30 days'
+              )
+            )
+          )
+        )
+    )`;
     const [prefixRows, transitionRows, edgeRows, motifRows, calibrationRows] = await Promise.all([
       query<{
         prefix: string;
@@ -37,10 +72,12 @@ export function createPathingRepository(deps: PathingRepositoryDeps) {
         probability: number;
         count: number;
       }>(
-        `SELECT prefix, receiver_region, prev_prefix, node_id, probability, count
-         FROM path_prefix_priors
-         WHERE network = $1
-         ORDER BY count DESC
+        `WITH ${eligibleNodesCte}
+         SELECT p.prefix, p.receiver_region, p.prev_prefix, p.node_id, p.probability, p.count
+         FROM path_prefix_priors p
+         JOIN eligible_nodes n ON n.node_id = p.node_id
+         WHERE p.network = $1
+         ORDER BY p.count DESC
          LIMIT $2`,
         [network, limit],
       ),
@@ -51,10 +88,13 @@ export function createPathingRepository(deps: PathingRepositoryDeps) {
         probability: number;
         count: number;
       }>(
-        `SELECT from_node_id, to_node_id, receiver_region, probability, count
-         FROM path_transition_priors
-         WHERE network = $1
-         ORDER BY count DESC
+        `WITH ${eligibleNodesCte}
+         SELECT p.from_node_id, p.to_node_id, p.receiver_region, p.probability, p.count
+         FROM path_transition_priors p
+         JOIN eligible_nodes source ON source.node_id = p.from_node_id
+         JOIN eligible_nodes target ON target.node_id = p.to_node_id
+         WHERE p.network = $1
+         ORDER BY p.count DESC
          LIMIT $2`,
         [network, limit],
       ),
@@ -73,12 +113,15 @@ export function createPathingRepository(deps: PathingRepositoryDeps) {
         score: number;
         consistency_penalty: number;
       }>(
-        `SELECT from_node_id, to_node_id, receiver_region, hour_bucket,
-                observed_count, expected_count, missing_count, directional_support,
-                recency_score, reliability, itm_path_loss_db, score, consistency_penalty
-         FROM path_edge_priors
-         WHERE network = $1
-         ORDER BY score DESC, observed_count DESC
+        `WITH ${eligibleNodesCte}
+         SELECT p.from_node_id, p.to_node_id, p.receiver_region, p.hour_bucket,
+                p.observed_count, p.expected_count, p.missing_count, p.directional_support,
+                p.recency_score, p.reliability, p.itm_path_loss_db, p.score, p.consistency_penalty
+         FROM path_edge_priors p
+         JOIN eligible_nodes source ON source.node_id = p.from_node_id
+         JOIN eligible_nodes target ON target.node_id = p.to_node_id
+         WHERE p.network = $1
+         ORDER BY p.score DESC, p.observed_count DESC
          LIMIT $2`,
         [network, limit],
       ),
@@ -90,10 +133,17 @@ export function createPathingRepository(deps: PathingRepositoryDeps) {
         probability: number;
         count: number;
       }>(
-        `SELECT receiver_region, hour_bucket, motif_len, node_ids, probability, count
-         FROM path_motif_priors
-         WHERE network = $1
-         ORDER BY count DESC
+        `WITH ${eligibleNodesCte}
+         SELECT p.receiver_region, p.hour_bucket, p.motif_len, p.node_ids, p.probability, p.count
+         FROM path_motif_priors p
+         WHERE p.network = $1
+           AND NOT EXISTS (
+             SELECT 1
+             FROM unnest(string_to_array(p.node_ids, '>')) AS motif_node(node_id)
+             LEFT JOIN eligible_nodes n ON n.node_id = motif_node.node_id
+             WHERE n.node_id IS NULL
+           )
+         ORDER BY p.count DESC
          LIMIT $2`,
         [network, limit],
       ),

@@ -344,6 +344,8 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
            WHERE n.lat IS NOT NULL
              AND n.lon IS NOT NULL
              AND (n.role IS NULL OR n.role = 2)
+             AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
+             ${filters.nodesAlias('n')}
            GROUP BY UPPER(LEFT(n.node_id, 4))
            UNION ALL
            SELECT
@@ -357,6 +359,8 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
            WHERE n.lat IS NOT NULL
              AND n.lon IS NOT NULL
              AND (n.role IS NULL OR n.role = 2)
+             AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
+             ${filters.nodesAlias('n')}
            GROUP BY UPPER(LEFT(n.node_id, 6))
          ),
          hop_eval AS (
@@ -603,6 +607,8 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
            WHERE n.lat IS NOT NULL
              AND n.lon IS NOT NULL
              AND (n.role IS NULL OR n.role = 2)
+             AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
+             ${filters.nodesAlias('n')}
            GROUP BY UPPER(LEFT(n.node_id, 4))
            UNION ALL
            SELECT
@@ -616,6 +622,8 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
            WHERE n.lat IS NOT NULL
              AND n.lon IS NOT NULL
              AND (n.role IS NULL OR n.role = 2)
+             AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
+             ${filters.nodesAlias('n')}
            GROUP BY UPPER(LEFT(n.node_id, 6))
          ),
          hop_eval AS (
@@ -789,13 +797,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
   }
 
   async function fetchObserverActivity(network: string | undefined) {
-    const params: unknown[] = [];
-    const conditions: string[] = [`p.time > NOW() - INTERVAL '24 hours'`];
-    if (network) {
-      params.push(network);
-      conditions.push(`p.network = $${params.length}`);
-    }
-    const where = conditions.join(' AND ');
+    const filters = networkFilters(network);
     return query<{ node_id: string; name: string | null; rx_24h: string; tx_24h: string; last_tx: string | null; last_rx: string | null }>(
       `SELECT
          n.node_id,
@@ -806,11 +808,14 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
          MAX(p.time)          FILTER (WHERE p.rx_node_id  = n.node_id)::text AS last_rx
        FROM nodes n
        JOIN packets p ON (p.rx_node_id = n.node_id OR p.src_node_id = n.node_id)
-       WHERE ${where}
+       WHERE p.time > NOW() - INTERVAL '24 hours'
+         AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
+         ${filters.packetsAlias('p')}
+         ${filters.nodesAlias('n')}
        GROUP BY n.node_id, n.name
        HAVING COUNT(p.packet_hash) FILTER (WHERE p.rx_node_id = n.node_id) > 0
        ORDER BY rx_24h DESC`,
-      params,
+      filters.params,
     );
   }
 

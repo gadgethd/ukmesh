@@ -39,7 +39,7 @@ export function registerCoverageRoutes(router: Router, deps: CoverageRouteDeps):
 
     try {
       const requestedNetwork = resolveRequestNetwork(req.query['network'], req.headers);
-      const network = requestedNetwork === 'all' ? undefined : requestedNetwork;
+      const network = requestedNetwork === 'test' ? 'test' : 'ukmesh';
       const observer = normalizeObserverQuery(req.query['observer']);
       const bounds = parseCoverageBounds(req.query['bbox']);
       if (!bounds) {
@@ -141,6 +141,7 @@ export function registerCoverageRoutes(router: Router, deps: CoverageRouteDeps):
         `SELECT lat, lon
          FROM nodes
          WHERE node_id = $1
+           AND (name IS NULL OR name NOT LIKE '%🚫%')
          LIMIT 1`,
         [nodeId],
       );

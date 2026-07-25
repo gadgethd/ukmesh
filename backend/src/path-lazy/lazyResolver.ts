@@ -55,6 +55,11 @@ import {
 } from '../path-shared/scoring.js';
 import { expandResolverScope } from '../networks.js';
 
+const LAZY_MAX_UNIQUE_PREFIXES = 63;
+const LAZY_MAX_CANDIDATES_TOTAL = 512;
+const LAZY_MAX_CANDIDATES_PER_PREFIX = Math.min(MAX_COL, 24);
+const LAZY_MAX_PRIOR_ROWS = 4_096;
+
 type QueryFn = <T extends Record<string, unknown> = Record<string, unknown>>(
   text: string,
   params?: unknown[],
@@ -98,10 +103,6 @@ function expectedHashHexLength(pathHashSizeBytes: number | null): number | null 
   return pathHashSizeBytes * 2;
 }
 
-function networkScope(network: string | null): string[] | null {
-  return network == null ? null : expandResolverScope(network);
-}
-
 function distKm(
   a: { lat: number; lon: number },
   b: { lat: number; lon: number },
@@ -126,11 +127,6 @@ function minDistToSet(
 }
 
 type Bounds = { minLat: number; maxLat: number; minLon: number; maxLon: number };
-
-function inBounds(pt: { lat: number; lon: number }, b: Bounds): boolean {
-  return pt.lat >= b.minLat && pt.lat <= b.maxLat &&
-         pt.lon >= b.minLon && pt.lon <= b.maxLon;
-}
 
 type ObsEntry = {
   rx_node_id: string;
@@ -176,10 +172,10 @@ function groupByPathHashes(entries: ObsEntry[]): ObsGroup[] {
 
 export async function lazyResolvePath(
   packetHash: string,
-  network: string | null,
+  network: string,
   query: QueryFn,
 ): Promise<LazyPathResult | null> {
-  const scopedNetworks = networkScope(network);
+  const scopedNetworks = expandResolverScope(network);
 
   // ── 1. Canonical path-hash observations (one richest row per observer) ──
   const canonicalObs = await query<{
@@ -191,13 +187,40 @@ export async function lazyResolvePath(
             rx_node_id, path_hashes, path_hash_size_bytes
        FROM packets
       WHERE packet_hash = $1
-        AND ($2::text[] IS NULL OR network = ANY($2))
+        AND network = ANY($2)
+        AND ($3 = 'test' OR split_part(topic, '/', 1) <> 'meshcore-test')
+        AND (
+          COALESCE(cardinality(path_hashes), 0) = 0
+          OR path_hash_size_bytes BETWEEN 1 AND 3
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM unnest(COALESCE(path_hashes, ARRAY[]::text[])) AS malformed_path_hash
+          WHERE malformed_path_hash IS NULL
+             OR length(malformed_path_hash) <> path_hash_size_bytes * 2
+             OR malformed_path_hash !~ '^[0-9A-Fa-f]+$'
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM nodes private_node
+          WHERE private_node.name LIKE '%🚫%'
+            AND (
+              private_node.node_id IN (packets.rx_node_id, packets.src_node_id)
+              OR EXISTS (
+                SELECT 1
+                FROM unnest(COALESCE(packets.path_hashes, ARRAY[]::text[])) AS path_hash
+                WHERE packets.path_hash_size_bytes BETWEEN 1 AND 3
+                  AND length(path_hash) = packets.path_hash_size_bytes * 2
+                  AND UPPER(private_node.node_id) LIKE UPPER(path_hash) || '%'
+              )
+            )
+        )
         AND rx_node_id IS NOT NULL
       ORDER BY rx_node_id,
                COALESCE(cardinality(path_hashes), 0) DESC,
                COALESCE(path_hash_size_bytes, 0) DESC,
-               time ASC`,
-    [packetHash, scopedNetworks],
+               time ASC
+      LIMIT 1024`,
+    [packetHash, scopedNetworks, network],
   );
 
   if (canonicalObs.rows.length === 0) return null;
@@ -213,10 +236,38 @@ export async function lazyResolvePath(
     `SELECT rx_node_id, hop_count
        FROM packets
       WHERE packet_hash = $1
-        AND ($2::text[] IS NULL OR network = ANY($2))
+        AND network = ANY($2)
+        AND ($3 = 'test' OR split_part(topic, '/', 1) <> 'meshcore-test')
+        AND (
+          COALESCE(cardinality(path_hashes), 0) = 0
+          OR path_hash_size_bytes BETWEEN 1 AND 3
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM unnest(COALESCE(path_hashes, ARRAY[]::text[])) AS malformed_path_hash
+          WHERE malformed_path_hash IS NULL
+             OR length(malformed_path_hash) <> path_hash_size_bytes * 2
+             OR malformed_path_hash !~ '^[0-9A-Fa-f]+$'
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM nodes private_node
+          WHERE private_node.name LIKE '%🚫%'
+            AND (
+              private_node.node_id IN (packets.rx_node_id, packets.src_node_id)
+              OR EXISTS (
+                SELECT 1
+                FROM unnest(COALESCE(packets.path_hashes, ARRAY[]::text[])) AS path_hash
+                WHERE packets.path_hash_size_bytes BETWEEN 1 AND 3
+                  AND length(path_hash) = packets.path_hash_size_bytes * 2
+                  AND UPPER(private_node.node_id) LIKE UPPER(path_hash) || '%'
+              )
+            )
+        )
         AND rx_node_id IS NOT NULL
-        AND hop_count IS NOT NULL`,
-    [packetHash, scopedNetworks],
+        AND hop_count IS NOT NULL
+      ORDER BY time DESC
+      LIMIT 2048`,
+    [packetHash, scopedNetworks, network],
   );
 
   // ── 3. Observer node positions + names ──────────────────────────────────
@@ -229,7 +280,8 @@ export async function lazyResolvePath(
     `SELECT node_id, lat, lon, name FROM nodes
       WHERE node_id = ANY($1)
         AND lat IS NOT NULL AND lon IS NOT NULL
-        AND lat != 0 AND lon != 0`,
+        AND lat != 0 AND lon != 0
+        AND (name IS NULL OR name NOT LIKE '%🚫%')`,
     [allObserverIds],
   );
 
@@ -289,34 +341,103 @@ export async function lazyResolvePath(
 
   // ── 6. Batch node lookup for all canonical hashes across all groups ──────
   const allUniqueHashes = [...new Set(groups.flatMap((g) => g.canonicalHashes))];
+  if (
+    !observerBounds
+    || allUniqueHashes.length > LAZY_MAX_UNIQUE_PREFIXES
+    || allUniqueHashes.some((hash) => !/^(?:[0-9A-F]{2}|[0-9A-F]{4}|[0-9A-F]{6})$/.test(hash))
+  ) return null;
+  const perPrefix = Math.max(
+    1,
+    Math.min(LAZY_MAX_CANDIDATES_PER_PREFIX, Math.floor(LAZY_MAX_CANDIDATES_TOTAL / Math.max(1, allUniqueHashes.length))),
+  );
+  const fetchPerPrefix = perPrefix + 1;
 
   const nodesByHash = new Map<string, Array<{ nodeId: string; name: string | null; lat: number; lon: number }>>();
 
   if (allUniqueHashes.length > 0) {
-    const whereClauses = allUniqueHashes.map((_, i) => `upper(node_id) LIKE $${i + 2}`);
     const nodeResult = await query<{
+      prefix: string;
       node_id: string;
       name: string | null;
       lat: number | null;
       lon: number | null;
     }>(
-      `SELECT node_id, name, lat, lon
-         FROM nodes
-        WHERE ($1::text[] IS NULL OR network = ANY($1))
-          AND (${whereClauses.join(' OR ')})`,
-      [scopedNetworks, ...allUniqueHashes.map((h) => h + '%')],
+      `WITH requested(prefix, ordinal) AS (
+         SELECT prefix, ordinal
+         FROM unnest($2::text[]) WITH ORDINALITY AS requested(prefix, ordinal)
+       ),
+       candidates AS (
+         SELECT r.prefix, r.ordinal, n.node_id, n.name, n.lat, n.lon
+         FROM requested r
+         CROSS JOIN LATERAL (
+           SELECT node_id, name, lat, lon
+           FROM nodes
+           WHERE length(r.prefix) = 2
+             AND upper(left(node_id, 2)) = r.prefix
+             AND network = ANY($1)
+             AND (name IS NULL OR name NOT LIKE '%🚫%')
+             AND lat BETWEEN $4 AND $5
+             AND lon BETWEEN $6 AND $7
+           ORDER BY node_id
+           LIMIT $3
+         ) n
+         UNION ALL
+         SELECT r.prefix, r.ordinal, n.node_id, n.name, n.lat, n.lon
+         FROM requested r
+         CROSS JOIN LATERAL (
+           SELECT node_id, name, lat, lon
+           FROM nodes
+           WHERE length(r.prefix) = 4
+             AND upper(left(node_id, 4)) = r.prefix
+             AND network = ANY($1)
+             AND (name IS NULL OR name NOT LIKE '%🚫%')
+             AND lat BETWEEN $4 AND $5
+             AND lon BETWEEN $6 AND $7
+           ORDER BY node_id
+           LIMIT $3
+         ) n
+         UNION ALL
+         SELECT r.prefix, r.ordinal, n.node_id, n.name, n.lat, n.lon
+         FROM requested r
+         CROSS JOIN LATERAL (
+           SELECT node_id, name, lat, lon
+           FROM nodes
+           WHERE length(r.prefix) = 6
+             AND upper(left(node_id, 6)) = r.prefix
+             AND network = ANY($1)
+             AND (name IS NULL OR name NOT LIKE '%🚫%')
+             AND lat BETWEEN $4 AND $5
+             AND lon BETWEEN $6 AND $7
+           ORDER BY node_id
+           LIMIT $3
+         ) n
+       )
+       SELECT prefix, node_id, name, lat, lon
+       FROM candidates
+       ORDER BY ordinal, node_id`,
+      [
+        scopedNetworks,
+        allUniqueHashes,
+        fetchPerPrefix,
+        observerBounds.minLat,
+        observerBounds.maxLat,
+        observerBounds.minLon,
+        observerBounds.maxLon,
+      ],
     );
 
+    const rowsByPrefix = new Map<string, typeof nodeResult.rows>();
     for (const node of nodeResult.rows) {
+      const rows = rowsByPrefix.get(node.prefix) ?? [];
+      rows.push(node);
+      rowsByPrefix.set(node.prefix, rows);
+    }
+    for (const [prefix, rows] of rowsByPrefix) {
+      if (rows.length > perPrefix) continue;
+      for (const node of rows) {
       if (node.lat == null || node.lon == null || node.lat === 0 || node.lon === 0) continue;
-      if (observerBounds && !inBounds(node as { lat: number; lon: number }, observerBounds)) continue;
-      const id = node.node_id.toUpperCase();
-      for (const hash of allUniqueHashes) {
-        if (id.startsWith(hash)) {
-          if (!nodesByHash.has(hash)) nodesByHash.set(hash, []);
-          nodesByHash.get(hash)!.push({ nodeId: node.node_id, name: node.name, lat: node.lat!, lon: node.lon! });
-          break;
-        }
+        if (!nodesByHash.has(prefix)) nodesByHash.set(prefix, []);
+        nodesByHash.get(prefix)!.push({ nodeId: node.node_id, name: node.name, lat: node.lat, lon: node.lon });
       }
     }
   }
@@ -373,9 +494,10 @@ export async function lazyResolvePath(
         ? query<{ prefix: string; prev_prefix: string | null; node_id: string; max_prob: string }>(
             `SELECT prefix, prev_prefix, node_id, MAX(probability)::text as max_prob
                FROM path_prefix_priors
-              WHERE ($1::text[] IS NULL OR network = ANY($1))
+              WHERE network = ANY($1)
                 AND prefix = ANY($2)
-              GROUP BY prefix, prev_prefix, node_id`,
+              GROUP BY prefix, prev_prefix, node_id
+              LIMIT ${LAZY_MAX_PRIOR_ROWS + 1}`,
             [scopedNetworks, allUniqueHashes],
           )
         : Promise.resolve({ rows: [] as { prefix: string; prev_prefix: string | null; node_id: string; max_prob: string }[] }),
@@ -383,9 +505,10 @@ export async function lazyResolvePath(
         ? query<{ from_node_id: string; to_node_id: string; best_score: string }>(
             `SELECT from_node_id, to_node_id, MAX(score)::text as best_score
                FROM path_edge_priors
-              WHERE ($1::text[] IS NULL OR network = ANY($1))
+              WHERE network = ANY($1)
                 AND (from_node_id = ANY($2) OR to_node_id = ANY($2))
-              GROUP BY from_node_id, to_node_id`,
+              GROUP BY from_node_id, to_node_id
+              LIMIT ${LAZY_MAX_PRIOR_ROWS + 1}`,
             [scopedNetworks, allCandidateNodeIds],
           )
         : Promise.resolve({ rows: [] as { from_node_id: string; to_node_id: string; best_score: string }[] }),
@@ -393,7 +516,8 @@ export async function lazyResolvePath(
         ? query<{ hash_2char: string; node_id: string; score: string; observation_count: string }>(
             `SELECT hash_2char, node_id, score::text, observation_count::text
                FROM ml_path_prefix_scores
-              WHERE ($1::text[] IS NULL OR network = ANY($1)) AND hash_2char = ANY($2) AND score >= 0.80`,
+              WHERE network = ANY($1) AND hash_2char = ANY($2) AND score >= 0.80
+              LIMIT ${LAZY_MAX_PRIOR_ROWS + 1}`,
             [scopedNetworks, allUnique2charHashes],
           )
         : Promise.resolve({ rows: [] as { hash_2char: string; node_id: string; score: string; observation_count: string }[] }),
@@ -401,9 +525,10 @@ export async function lazyResolvePath(
         ? query<{ from_node_id: string; to_node_id: string; prob: string }>(
             `SELECT from_node_id, to_node_id, MAX(probability)::text as prob
                FROM path_transition_priors
-              WHERE ($1::text[] IS NULL OR network = ANY($1))
+              WHERE network = ANY($1)
                 AND (from_node_id = ANY($2) OR to_node_id = ANY($2))
-              GROUP BY from_node_id, to_node_id`,
+              GROUP BY from_node_id, to_node_id
+              LIMIT ${LAZY_MAX_PRIOR_ROWS + 1}`,
             [scopedNetworks, allCandidateNodeIds],
           )
         : Promise.resolve({ rows: [] as { from_node_id: string; to_node_id: string; prob: string }[] }),
@@ -411,21 +536,25 @@ export async function lazyResolvePath(
         ? query<{ node_ids: string; prob: string }>(
             `SELECT node_ids, MAX(probability)::text as prob
                FROM path_motif_priors
-              WHERE ($1::text[] IS NULL OR network = ANY($1))
+              WHERE network = ANY($1)
                 AND motif_len = 2
                 AND split_part(node_ids, '>', 1) = ANY($2)
                 AND split_part(node_ids, '>', 2) = ANY($2)
-              GROUP BY node_ids`,
+              GROUP BY node_ids
+              LIMIT ${LAZY_MAX_PRIOR_ROWS + 1}`,
             [scopedNetworks, allCandidateNodeIds],
           )
         : Promise.resolve({ rows: [] as { node_ids: string; prob: string }[] }),
       query<{ network: string; confidence_scale: string; confidence_bias: string; recommended_threshold: string }>(
         `SELECT network, confidence_scale::text, confidence_bias::text, recommended_threshold::text
            FROM path_model_calibration
-          WHERE ($1::text[] IS NULL OR network = ANY($1) OR network = 'all')`,
+          WHERE network = ANY($1)`,
         [scopedNetworks],
       ),
     ]);
+  for (const result of [prefixPriorRows, edgePriorRows, mlScoreRows, transitionPriorRows, motifPriorRows]) {
+    if (result.rows.length > LAZY_MAX_PRIOR_ROWS) result.rows.length = 0;
+  }
 
   // Build known-links set
   const knownLinks = new Set<string>();
@@ -494,14 +623,11 @@ export async function lazyResolvePath(
   const getMlScore = (hash: string, nodeId: string): number =>
     ABLATE_LEAKY_PRIORS ? 0 : mlScores.get(`${hash.slice(0, 2).toUpperCase()}:${nodeId}`) ?? 0;
 
-  // Model calibration (prefer exact network, fall back to 'all').
+  // Model calibration is exact-scope only; mixed legacy "all" rows are never consumed.
   let confidenceScale = 1;
   let confidenceBias = 0;
   if (calibrationRows.rows.length > 0) {
-    const preferred = scopedNetworks
-      ? calibrationRows.rows.find((r) => scopedNetworks.includes(r.network))
-      : undefined;
-    const chosen = preferred ?? calibrationRows.rows.find((r) => r.network === 'all') ?? calibrationRows.rows[0]!;
+    const chosen = calibrationRows.rows.find((r) => r.network === network) ?? calibrationRows.rows[0]!;
     confidenceScale = Number(chosen.confidence_scale) || 1;
     confidenceBias = Number(chosen.confidence_bias) || 0;
   }

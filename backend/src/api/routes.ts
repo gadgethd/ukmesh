@@ -56,8 +56,21 @@ import { registerRfValidationRoutes } from './routes/rfValidation.js';
 import { registerExportRoutes } from './routes/exports.js';
 import { requireLocalOnly } from './utils/localOnly.js';
 import { networkFilters } from './utils/networkFilters.js';
+import { PublicAllScopeForbiddenError, resolvePublicNetworkScope } from '../http/requestScope.js';
 
 const router = Router();
+// Anonymous cross-network aggregation is not a public API capability. Keep
+// operator diagnostics on separately protected local routes.
+router.use((req, res, next) => {
+  try {
+    resolvePublicNetworkScope(req.query['network'], req.headers);
+  } catch (err) {
+    if (!(err instanceof PublicAllScopeForbiddenError)) throw err;
+    res.status(400).json({ error: 'The all-network scope is not available on public endpoints' });
+    return;
+  }
+  next();
+});
 router.use(healthRoutes);
 router.use(nodeStatusRoutes);
 router.use(radioRoutes);
@@ -82,7 +95,13 @@ async function requireOwnerSession(req: Request, res: Response): Promise<string[
     res.status(401).json({ error: 'Not logged in' });
     return null;
   }
-  return session.mqttUsername ? resolveOwnerNodeIds(session.mqttUsername) : session.nodeIds;
+  const nodeIds = await resolveOwnerNodeIds(session.mqttUsername);
+  if (nodeIds.length === 0) {
+    res.clearCookie(OWNER_COOKIE_NAME, { path: '/' });
+    res.status(401).json({ error: 'Owner authorization has been revoked' });
+    return null;
+  }
+  return nodeIds;
 }
 
 registerCoverageRoutes(router, {

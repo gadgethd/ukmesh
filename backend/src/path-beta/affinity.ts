@@ -1,6 +1,7 @@
 import type { QueryResultRow } from 'pg';
 import { clamp, linkKey } from './geometry.js';
 import type { NeighborAffinityMetrics } from './types.js';
+import { expandResolverScope } from '../networks.js';
 
 type QueryFn = <T extends QueryResultRow = QueryResultRow>(
   text: string,
@@ -63,32 +64,36 @@ export async function buildNeighborAffinityMap(
   const windowDays = envInt('PATH_BETA_AFFINITY_WINDOW_DAYS', DEFAULT_WINDOW_DAYS, 1, 90);
   const minObservations = envInt('PATH_BETA_AFFINITY_MIN_OBSERVATIONS', DEFAULT_MIN_OBSERVATIONS, 1, 100);
   const maxEdges = envInt('PATH_BETA_AFFINITY_MAX_EDGES', DEFAULT_MAX_EDGES, 100, 200_000);
+  const sourceNetworks = expandResolverScope(network);
 
   const result = await query<AffinityRow>(
     `WITH node_prefixes AS (
        SELECT
-         CASE WHEN $1 = 'all' THEN 'all' ELSE network END AS scope,
+         $5::text AS scope,
          UPPER(LEFT(node_id, 2)) AS prefix,
          node_id
        FROM nodes
        WHERE LENGTH(node_id) >= 2
-         AND ($1 = 'all' OR network = $1)
+         AND network = ANY($1)
+         AND (name IS NULL OR name NOT LIKE '%🚫%')
        UNION ALL
        SELECT
-         CASE WHEN $1 = 'all' THEN 'all' ELSE network END AS scope,
+         $5::text AS scope,
          UPPER(LEFT(node_id, 4)) AS prefix,
          node_id
        FROM nodes
        WHERE LENGTH(node_id) >= 4
-         AND ($1 = 'all' OR network = $1)
+         AND network = ANY($1)
+         AND (name IS NULL OR name NOT LIKE '%🚫%')
        UNION ALL
        SELECT
-         CASE WHEN $1 = 'all' THEN 'all' ELSE network END AS scope,
+         $5::text AS scope,
          UPPER(LEFT(node_id, 6)) AS prefix,
          node_id
        FROM nodes
        WHERE LENGTH(node_id) >= 6
-         AND ($1 = 'all' OR network = $1)
+         AND network = ANY($1)
+         AND (name IS NULL OR name NOT LIKE '%🚫%')
      ),
      prefix_candidates AS (
        SELECT scope, prefix, COUNT(*)::int AS candidate_count, MIN(node_id) AS node_id
@@ -97,7 +102,7 @@ export async function buildNeighborAffinityMap(
      ),
      scoped_packets AS (
        SELECT
-         CASE WHEN $1 = 'all' THEN 'all' ELSE p.network END AS scope,
+         $5::text AS scope,
          p.packet_type,
          p.src_node_id,
          p.rx_node_id,
@@ -107,7 +112,13 @@ export async function buildNeighborAffinityMap(
        FROM packets p
        WHERE p.time > NOW() - ($2::int * INTERVAL '1 day')
          AND p.rx_node_id IS NOT NULL
-         AND ($1 = 'all' OR p.network = $1)
+         AND p.network = ANY($1)
+         AND ($5 = 'test' OR split_part(p.topic, '/', 1) <> 'meshcore-test')
+         AND NOT EXISTS (
+           SELECT 1 FROM nodes private_node
+           WHERE private_node.name LIKE '%🚫%'
+             AND private_node.node_id IN (p.rx_node_id, p.src_node_id)
+         )
      ),
      direct_edges AS (
        SELECT
@@ -186,7 +197,7 @@ export async function buildNeighborAffinityMap(
      HAVING COUNT(*) >= $3::int
      ORDER BY observed_count DESC, last_seen DESC
      LIMIT $4::int`,
-    [network, windowDays, minObservations, maxEdges],
+    [sourceNetworks, windowDays, minObservations, maxEdges, network],
   );
 
   const map = new Map<string, NeighborAffinityMetrics>();

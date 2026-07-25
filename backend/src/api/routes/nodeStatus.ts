@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { query } from '../../db/index.js';
 import { resolveRequestNetwork } from '../../http/requestScope.js';
+import { UKMESH_NETWORKS } from '../../networks.js';
 import { normalizeObserverQuery } from '../utils/observer.js';
 
 const router = Router();
@@ -8,21 +9,18 @@ const router = Router();
 router.get('/node-status/latest', async (req, res) => {
   try {
     const requestedNetwork = resolveRequestNetwork(req.query['network'], req.headers);
-    const network = requestedNetwork === 'all' ? undefined : requestedNetwork;
+    const network = requestedNetwork === 'test' ? 'test' : 'ukmesh';
     const observer = normalizeObserverQuery(req.query['observer']);
 
-    const params: string[] = [];
+    const params: unknown[] = [];
     const conditions: string[] = [];
-    if (network) {
-      params.push(network);
-      conditions.push(`nss.network = $${params.length}`);
-    } else {
-      conditions.push(`nss.network IS DISTINCT FROM 'test'`);
-    }
+    params.push(network === 'ukmesh' ? UKMESH_NETWORKS : [network]);
+    conditions.push(`nss.network = ANY($${params.length})`);
     if (observer) {
       params.push(observer);
       conditions.push(`nss.node_id = $${params.length}`);
     }
+    conditions.push(`(n.name IS NULL OR n.name NOT LIKE '%🚫%')`);
 
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
     const result = await query<{
@@ -77,7 +75,8 @@ router.get('/node-status/history', async (req, res) => {
   try {
     const ESTIMATED_AIRTIME_SECONDS_PER_PUBLISH = 0.12;
     const requestedNetwork = resolveRequestNetwork(req.query['network'], req.headers);
-    const network = requestedNetwork === 'all' ? undefined : requestedNetwork;
+    const network = requestedNetwork === 'test' ? 'test' : 'ukmesh';
+    const networkScopes = network === 'ukmesh' ? UKMESH_NETWORKS : [network];
     const observer = normalizeObserverQuery(req.query['observer']);
     const requestedNodeId = String(req.query['nodeId'] ?? '').trim();
     const hours = Math.max(1, Math.min(Number(req.query['hours'] ?? 24), 168));
@@ -89,23 +88,20 @@ router.get('/node-status/history', async (req, res) => {
     }
 
     if (!nodeId) {
-      const params: string[] = [];
+      const params: unknown[] = [];
       const conditions: string[] = [];
-      if (network) {
-        params.push(network);
-        conditions.push(`nss.network = $${params.length}`);
-      } else {
-        conditions.push(`nss.network IS DISTINCT FROM 'test'`);
-      }
+      params.push(networkScopes);
+      conditions.push(`nss.network = ANY($${params.length})`);
       if (observer) {
         params.push(observer);
         conditions.push(`nss.node_id = $${params.length}`);
       }
-      const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
       const latestNode = await query<{ node_id: string }>(
         `SELECT nss.node_id
          FROM node_status_samples nss
-         ${whereClause}
+         LEFT JOIN nodes n ON n.node_id = nss.node_id
+         WHERE (n.name IS NULL OR n.name NOT LIKE '%🚫%')
+         ${conditions.length > 0 ? `AND ${conditions.join(' AND ')}` : ''}
          ORDER BY nss.time DESC
          LIMIT 1`,
         params,
@@ -165,11 +161,14 @@ router.get('/node-status/history', async (req, res) => {
            WHEN jsonb_typeof(stats->'tx_queue_depth_peak') = 'number' THEN (stats->>'tx_queue_depth_peak')::double precision
            ELSE NULL
          END AS tx_queue_depth_peak
-       FROM node_status_samples
-       WHERE node_id = $1
+       FROM node_status_samples nss
+       JOIN nodes n ON n.node_id = nss.node_id
+       WHERE nss.node_id = $1
+         AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
          AND time > NOW() - ($2::text || ' hours')::interval
+         AND nss.network = ANY($3)
        ORDER BY time ASC`,
-      [nodeId, String(hours)],
+      [nodeId, String(hours), networkScopes],
     );
 
     const points = result.rows.map((row, index) => {

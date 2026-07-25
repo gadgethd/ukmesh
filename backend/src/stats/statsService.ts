@@ -1,4 +1,5 @@
 import type { StatsRepository } from './statsRepository.js';
+import { BoundedTtlMap } from '../cache/boundedTtlMap.js';
 
 type MaskDecodedPathNodesFn = (
   rawNodes: Array<{
@@ -28,6 +29,14 @@ type StatsServiceDeps = {
 };
 
 const CHANNEL_TRAFFIC_CACHE_TTL_MS = 60 * 60_000;
+const MAX_UNIQUE_STATS_INFLIGHT = 32;
+
+export class StatsWorkOverloadedError extends Error {
+  constructor() {
+    super('Too many unique statistics computations are already in progress');
+    this.name = 'StatsWorkOverloadedError';
+  }
+}
 
 type CachedChannelTraffic = Array<{
   channel: string;
@@ -76,8 +85,6 @@ export function createStatsService(deps: StatsServiceDeps) {
   const {
     statsCache,
     statsCacheTtlMs,
-    chartsCache,
-    chartsCacheTtlMs,
     chartsInflight,
     repository,
     maskDecodedPathNodes,
@@ -110,8 +117,14 @@ export function createStatsService(deps: StatsServiceDeps) {
       description: 'Route type was not decoded from the raw packet',
     },
   };
-  const channelTrafficCache = new Map<string, { ts: number; data: CachedChannelTraffic }>();
+  const channelTrafficCache = new BoundedTtlMap<string, { ts: number; data: CachedChannelTraffic }>({
+    maxEntries: 256,
+    maxWeight: 16 * 1024 * 1024,
+    ttlMs: CHANNEL_TRAFFIC_CACHE_TTL_MS,
+  });
   const statsInflight = new Map<string, Promise<unknown>>();
+  let activeObserverCharts = 0;
+  let activeObserverStats = 0;
 
   const fmtHour = (ts: Date | string) => {
     const d = new Date(ts);
@@ -146,51 +159,6 @@ export function createStatsService(deps: StatsServiceDeps) {
       returnCodeHex: `0x${returnCode.toString(16).toUpperCase().padStart(4, '0')}`,
     };
   };
-
-  function mergeObserverRegionSummary(
-    data: unknown,
-    summaryRows: Array<{
-      iata?: string | null;
-      active_observers?: string | number | null;
-      observers?: string | number | null;
-      packets_24h?: string | number | null;
-      packets_7d?: string | number | null;
-      last_packet_at?: string | null;
-    }>,
-  ): unknown {
-    if (!data || typeof data !== 'object') return data;
-    const current = data as {
-      observerRegions?: Array<{
-        iata: string;
-        series?: { day: string; count: number }[];
-      }>;
-    };
-    const seriesByIata = new Map(
-      Array.isArray(current.observerRegions)
-        ? current.observerRegions.map((region) => [region.iata, Array.isArray(region.series) ? region.series : []] as const)
-        : [],
-    );
-    return {
-      ...current,
-      observerRegions: summaryRows.map((row) => {
-        const iata = String(row.iata ?? 'UNK');
-        const activeObservers = Number(row.active_observers ?? 0);
-        const observers = Number(row.observers ?? 0);
-        const packets24h = Number(row.packets_24h ?? 0);
-        const lastPacketAt = row.last_packet_at ?? null;
-        return {
-          iata,
-          activeObservers,
-          observers,
-          packets24h,
-          packets7d: Number(row.packets_7d ?? 0),
-          lastPacketAt,
-          health: computeRegionHealth({ activeObservers, observers, packets24h, lastPacketAt }),
-          series: seriesByIata.get(iata) ?? [],
-        };
-      }),
-    };
-  }
 
   async function getChannelTraffic(network: string | undefined, observer: string | undefined): Promise<CachedChannelTraffic> {
     const key = `${network ?? 'all'}:${observer ?? ''}`;
@@ -271,8 +239,17 @@ export function createStatsService(deps: StatsServiceDeps) {
     }
 
     const multibyteRow = multibyteSummaryResult.rows[0];
-    const latestFullyDecodedNodes = maskDecodedPathNodes(multibyteRow?.latest_fully_decoded_nodes);
-    const longestFullyDecodedNodes = maskDecodedPathNodes(multibyteRow?.longest_fully_decoded_nodes);
+    const containsPrivateNode = (
+      nodes: Array<{ name?: string | null }> | null | undefined,
+    ): boolean => Boolean(nodes?.some((node) => node?.name?.includes('🚫')));
+    const latestPathIsPrivate = containsPrivateNode(multibyteRow?.latest_fully_decoded_nodes);
+    const longestPathIsPrivate = containsPrivateNode(multibyteRow?.longest_fully_decoded_nodes);
+    const latestFullyDecodedNodes = latestPathIsPrivate
+      ? []
+      : maskDecodedPathNodes(multibyteRow?.latest_fully_decoded_nodes);
+    const longestFullyDecodedNodes = longestPathIsPrivate
+      ? []
+      : maskDecodedPathNodes(multibyteRow?.longest_fully_decoded_nodes);
     const totalPackets24h = Number((sumResult.rows[0] as any).total_24h ?? 0);
     const channelTrafficRows = await getChannelTraffic(network, observer);
     const observerDiversityRow = observerDiversityResult.rows[0] as any;
@@ -300,15 +277,23 @@ export function createStatsService(deps: StatsServiceDeps) {
         fullyDecodedMultibyte24h: Number(multibyteRow?.fully_decoded_multibyte_24h ?? 0),
         latestMultibyteAt: multibyteRow?.latest_multibyte_at ?? null,
         latestMultibyteHash: multibyteRow?.latest_multibyte_hash ?? null,
-        latestFullyDecodedAt: multibyteRow?.latest_fully_decoded_at ?? null,
-        latestFullyDecodedHash: multibyteRow?.latest_fully_decoded_hash ?? null,
-        latestFullyDecodedHops: Number(multibyteRow?.latest_fully_decoded_hops ?? 0) || null,
-        latestFullyDecodedPath: multibyteRow?.latest_fully_decoded_path ?? null,
+        latestFullyDecodedAt: latestPathIsPrivate ? null : (multibyteRow?.latest_fully_decoded_at ?? null),
+        latestFullyDecodedHash: latestPathIsPrivate ? null : (multibyteRow?.latest_fully_decoded_hash ?? null),
+        latestFullyDecodedHops: latestPathIsPrivate
+          ? null
+          : (Number(multibyteRow?.latest_fully_decoded_hops ?? 0) || null),
+        latestFullyDecodedPath: latestPathIsPrivate
+          ? null
+          : (multibyteRow?.latest_fully_decoded_path ?? null),
         latestFullyDecodedNodes,
-        longestFullyDecodedAt: multibyteRow?.longest_fully_decoded_at ?? null,
-        longestFullyDecodedHash: multibyteRow?.longest_fully_decoded_hash ?? null,
-        longestFullyDecodedHops: Number(multibyteRow?.longest_fully_decoded_hops ?? 0) || null,
-        longestFullyDecodedPath: multibyteRow?.longest_fully_decoded_path ?? null,
+        longestFullyDecodedAt: longestPathIsPrivate ? null : (multibyteRow?.longest_fully_decoded_at ?? null),
+        longestFullyDecodedHash: longestPathIsPrivate ? null : (multibyteRow?.longest_fully_decoded_hash ?? null),
+        longestFullyDecodedHops: longestPathIsPrivate
+          ? null
+          : (Number(multibyteRow?.longest_fully_decoded_hops ?? 0) || null),
+        longestFullyDecodedPath: longestPathIsPrivate
+          ? null
+          : (multibyteRow?.longest_fully_decoded_path ?? null),
         longestFullyDecodedNodes,
       },
       observerDiversity: {
@@ -372,30 +357,28 @@ export function createStatsService(deps: StatsServiceDeps) {
   }
 
   async function getCharts(network: string | undefined, observer: string | undefined): Promise<unknown> {
-    const key = `${network ?? 'all'}:${observer ?? ''}`;
-    const cached = chartsCache.get(key);
-    if (cached && Date.now() - cached.ts < chartsCacheTtlMs) {
-      const observerRegionSummary = await repository.fetchObserverRegionSummary(network, observer);
-      const refreshed = mergeObserverRegionSummary(
-        cached.data,
-        observerRegionSummary.rows as Array<{
-          iata?: string | null;
-          active_observers?: string | number | null;
-          observers?: string | number | null;
-          packets_24h?: string | number | null;
-          packets_7d?: string | number | null;
-          last_packet_at?: string | null;
-        }>,
-      );
-      chartsCache.set(key, { ts: cached.ts, data: refreshed });
-      return refreshed;
+    // Observer IDs are public attacker input and the known-observer population
+    // changes continuously. Never persist observer-keyed cache entries.
+    if (observer) {
+      if (activeObserverCharts >= MAX_UNIQUE_STATS_INFLIGHT) {
+        throw new StatsWorkOverloadedError();
+      }
+      activeObserverCharts += 1;
+      try {
+        return await computeChartsData(network, observer);
+      } finally {
+        activeObserverCharts -= 1;
+      }
     }
 
+    const key = `${network ?? 'all'}:${observer ?? ''}`;
     const inflight = chartsInflight.get(key);
     if (inflight) return inflight;
+    if (chartsInflight.size >= MAX_UNIQUE_STATS_INFLIGHT) {
+      throw new StatsWorkOverloadedError();
+    }
 
     const promise = computeChartsData(network, observer).then((data) => {
-      chartsCache.set(key, { ts: Date.now(), data });
       chartsInflight.delete(key);
       return data;
     }).catch((err) => {
@@ -408,17 +391,8 @@ export function createStatsService(deps: StatsServiceDeps) {
   }
 
   function startChartsWarmup(): void {
-    const warmupNetworks = (process.env['WARMUP_NETWORKS'] ?? 'teesside,ukmesh')
+    const warmupNetworks = (process.env['WARMUP_NETWORKS'] ?? 'ukmesh')
       .split(',').map((s: string) => s.trim()).filter(Boolean);
-
-    const warmCharts = async () => {
-      for (const net of warmupNetworks) {
-        await getCharts(net, undefined).catch(() => { /* best-effort */ });
-      }
-    };
-
-    setTimeout(warmCharts, 5_000);
-    setInterval(warmCharts, chartsCacheTtlMs);
 
     const warmStats = async () => {
       for (const net of warmupNetworks) {
@@ -467,6 +441,18 @@ export function createStatsService(deps: StatsServiceDeps) {
   }
 
   async function getStatsSummary(network: string | undefined, observer: string | undefined): Promise<unknown> {
+    if (observer) {
+      if (activeObserverStats >= MAX_UNIQUE_STATS_INFLIGHT) {
+        throw new StatsWorkOverloadedError();
+      }
+      activeObserverStats += 1;
+      try {
+        return await computeStatsSummary(network, observer);
+      } finally {
+        activeObserverStats -= 1;
+      }
+    }
+
     const key = `${network ?? 'all'}:${observer ?? ''}`;
     const cached = statsCache.get(key);
     if (cached && Date.now() - cached.ts < statsCacheTtlMs) {
@@ -475,6 +461,9 @@ export function createStatsService(deps: StatsServiceDeps) {
 
     const inflight = statsInflight.get(key);
     if (inflight) return inflight;
+    if (statsInflight.size >= MAX_UNIQUE_STATS_INFLIGHT) {
+      throw new StatsWorkOverloadedError();
+    }
 
     const promise = computeStatsSummary(network, observer).then((data) => {
       statsCache.set(key, { ts: Date.now(), data });

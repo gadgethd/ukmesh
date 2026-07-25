@@ -10,6 +10,7 @@ import { invalidateResolveCache, setResolveCache, getStickyNodeMap, mergeStickyN
 import { resolvePool } from '../path-beta/resolvePool.js';
 import type { LivePacket } from '../types/index.js';
 import { decodePacketCompat } from './decodePacket.js';
+import { shouldDiscardUnverifiedTxAdvert, statusEnvelopeTargetsObserver } from './identityBinding.js';
 import { parseMqttTopic } from './topic.js';
 
 type PacketCallback      = (packet: LivePacket) => void;
@@ -80,6 +81,13 @@ function emitNode(nodeId: string, meta?: { network?: string; observerId?: string
 
 function emitNodeUpsert(node: Record<string, unknown>): void {
   const nodeId = String(node['node_id'] ?? '');
+  if (typeof node['name'] === 'string' && node['name'].includes('🚫')) {
+    // Privacy state must reach the final WebSocket boundary before the advert
+    // packet from this node can be published; do not wait for debounce.
+    if (nodeId) pendingNodeUpserts.delete(nodeId);
+    for (const cb of upsertSubscribers) cb(node);
+    return;
+  }
   if (nodeId) {
     // Merge into pending, keeping latest data for this nodeId
     pendingNodeUpserts.set(nodeId, node);
@@ -485,24 +493,6 @@ function buildSummary(payloadType: number, decoded: unknown, rawHex?: string): s
   }
 }
 
-function buildAdvertFallbackPayload(originId: string, originName?: string): Record<string, unknown> {
-  const appData: Record<string, unknown> = {
-    flags: 0,
-    deviceRole: 2,
-    hasLocation: false,
-    hasName: Boolean(originName),
-  };
-  if (originName) appData['name'] = originName;
-  return {
-    type: 4,
-    version: 0,
-    isValid: false,
-    publicKey: originId,
-    appData,
-  };
-}
-
-
 export async function startMqttClient(): Promise<void> {
   // Must complete before connecting to MQTT — the broker replays buffered
   // messages immediately on connect, and knownNodeIds must be populated first.
@@ -573,18 +563,21 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
   }
 
   const origin   = typeof json['origin'] === 'string' ? json['origin'] : undefined;
-  const originId = normalizeNodeId(json['origin_id']);
 
   if (suffix === 'status') {
     const model    = json['model']            as string | undefined;
     const firmware = json['firmware_version'] as string | undefined;
 
-    const nodeId = originId ?? observerKey;
+    if (!statusEnvelopeTargetsObserver(observerKey, json)) {
+      console.warn('[mqtt] rejected status envelope with identity mismatch');
+      return;
+    }
+    const nodeId = observerKey;
     const nodeIata = topicIataForNode(nodeId, observerKey, iata);
     const writes: Promise<unknown>[] = [upsertNode(nodeId, {
       name:            origin,
       iata:            nodeIata,
-      publicKey:       originId,
+      publicKey:       observerKey,
       hardwareModel:   (model    && model    !== 'unknown') ? model    : undefined,
       firmwareVersion: (firmware && firmware !== 'unknown') ? firmware : undefined,
       network,
@@ -611,6 +604,16 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
       if (result.status === 'rejected') {
         console.error('[mqtt] status persistence error:', (result.reason as Error).message);
       }
+    }
+    if (typeof origin === 'string' && origin.includes('🚫')) {
+      emitNodeUpsert({
+        node_id: nodeId,
+        name: origin,
+        iata: nodeIata,
+        public_key: observerKey,
+        network,
+        observer_id: observerKey,
+      });
     }
     emitNode(nodeId, { network, observerId: observerKey });
     return;
@@ -812,20 +815,18 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
       && 'appData' in innerPayload
       && srcNodeId
   );
-  const useTxAdvertFallback = direction === 'tx'
-    && resolvedPacketType === 4
-    && Boolean(originId)
-    && !hasDecodedAdvertPayload;
+  const useTxAdvertFallback = shouldDiscardUnverifiedTxAdvert({
+    direction,
+    packetType: resolvedPacketType,
+    decodedAdvertPayload: hasDecodedAdvertPayload,
+  });
 
-  if (useTxAdvertFallback && originId) {
-    srcNodeId = originId;
-    summary ??= origin;
-    innerPayload = buildAdvertFallbackPayload(originId, origin);
-  }
-
-  // For Router packets (type 1), also try originId as fallback
-  if (!srcNodeId && resolvedPacketType === 1 && originId) {
-    srcNodeId = originId;
+  // Envelope claims are not authenticated advert evidence. Rawless or
+  // undecodable adverts cannot create a source identity or synthetic advert.
+  if (useTxAdvertFallback) {
+    srcNodeId = undefined;
+    summary = undefined;
+    innerPayload = undefined;
   }
 
   if (resolvedPacketType == null) {
@@ -847,38 +848,6 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
     allowTestOverride: network === 'test',
   }).catch((err: Error) => console.error('[mqtt] observer upsert error:', err.message));
   emitNode(observerKey, { network, observerId: observerKey });
-
-  if (useTxAdvertFallback && originId && network !== 'test') {
-    const nodeIata = topicIataForNode(originId, observerKey, iata);
-    try {
-      await upsertNode(originId, {
-        name: origin,
-        iata: nodeIata,
-        publicKey: originId,
-        network,
-      });
-    } catch (err) {
-      console.error('[mqtt] upsertNode error:', (err as Error).message);
-    }
-    if (tryCountAdvert(finalHash)) {
-      try {
-        advertCount = await incrementAdvertCount(originId);
-      } catch (err) {
-        console.error('[mqtt] incrementAdvertCount error:', (err as Error).message);
-      }
-    }
-    emitNodeUpsert({
-      node_id: originId,
-      name: origin,
-      iata: nodeIata,
-      network,
-      observer_id: observerKey,
-      public_key: originId,
-      last_seen: new Date().toISOString(),
-      is_online: true,
-      advert_count: advertCount,
-    });
-  }
 
   // Decoded payloads omit mctomqtt's envelope direction. Keep that metadata in
   // the stored JSON so RX/TX counts do not classify every decoded packet as RX.

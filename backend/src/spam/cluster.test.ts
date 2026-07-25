@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { clusterMessages, incidentStatus } from './cluster.js';
+import { clusterMessages, incidentStatus, SpamAnalysisBudgetExceededError } from './cluster.js';
 import { messageSimilarity } from './similarity.js';
 import { normalizeMessage } from './normalize.js';
 import { DEFAULT_SPAM_MESSAGE_CONFIG, type SpamMessageConfig } from './config.js';
@@ -217,4 +217,14 @@ test('incidentStatus reflects ongoing vs cooled-down incidents', () => {
   const conf = cfg({ ongoingWindowMs: 30 * MIN });
   assert.equal(incidentStatus(now - 5 * MIN, now, conf), 'active');
   assert.equal(incidentStatus(now - 60 * MIN, now, conf), 'closed');
+});
+
+test('clustering aborts instead of exceeding its analysis budget', () => {
+  assert.throws(
+    () => clusterMessages(
+      [rec('bounded hostile input', 'sender', 0)],
+      cfg({ analysisBudgetMs: -1_000 }),
+    ),
+    SpamAnalysisBudgetExceededError,
+  );
 });

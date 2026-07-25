@@ -1,5 +1,6 @@
 import { evaluateAdvert, refreshSpamDetectorCaches } from '../mqtt/spamDetector.js';
 import { pool, query, replaceSpamSuspects, type SpamSuspectRow } from '../db/index.js';
+import { expandResolverScope } from '../networks.js';
 
 type CandidateRow = {
   src_node_id: string;
@@ -14,6 +15,8 @@ type CandidateRow = {
 
 const APPLY = process.argv.includes('--apply');
 const WINDOW_DAYS = Number(process.env['SPAM_RECOMPUTE_WINDOW_DAYS'] ?? 7);
+const MODEL_SCOPE = process.env['SPAM_RECOMPUTE_NETWORK'] === 'test' ? 'test' : 'ukmesh';
+const SOURCE_NETWORKS = expandResolverScope(MODEL_SCOPE);
 
 function toNumber(value: unknown): number | undefined {
   if (value == null) return undefined;
@@ -46,11 +49,13 @@ async function main(): Promise<void> {
     FROM packets p
     WHERE p.packet_type = 4
       AND p.time > NOW() - ($1 * INTERVAL '1 day')
+      AND p.network = ANY($2)
+      AND ($3 = 'test' OR split_part(p.topic, '/', 1) <> 'meshcore-test')
       AND p.payload ? 'publicKey'
       AND p.payload->>'publicKey' ~* '^[0-9a-f]{64}$'
       AND p.payload->>'_summary' IS NOT NULL
     ORDER BY p.src_node_id, p.time DESC
-  `, [WINDOW_DAYS]);
+  `, [WINDOW_DAYS, SOURCE_NETWORKS, MODEL_SCOPE]);
 
   const suspects: SpamSuspectRow[] = [];
   const verdictCounts = new Map<string, number>();
@@ -65,7 +70,7 @@ async function main(): Promise<void> {
       lon: row.claimed_lon ?? undefined,
       hopCount: row.hop_count ?? undefined,
       payloadTimestamp: toNumber(row.payload_timestamp),
-      network: row.network ?? 'ukmesh',
+      network: MODEL_SCOPE,
     });
 
     verdictCounts.set(result.verdict, (verdictCounts.get(result.verdict) ?? 0) + 1);
@@ -84,7 +89,7 @@ async function main(): Promise<void> {
       verdict: result.verdict,
       signals: result.signals,
       totalScore: result.totalScore,
-      network: row.network ?? 'ukmesh',
+      network: MODEL_SCOPE,
     });
   }
 
@@ -107,7 +112,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  await replaceSpamSuspects(suspects);
+  await replaceSpamSuspects(SOURCE_NETWORKS, suspects);
   console.log(`[spam-recompute] replaced spam_suspects with ${suspects.length} row(s)`);
 }
 

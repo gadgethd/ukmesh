@@ -123,6 +123,36 @@ function buildPacketScopeClause(
   return conditions.length > 0 ? ` AND ${conditions.join(' AND ')}` : '';
 }
 
+function buildPublicPacketPrivacyClause(alias?: string): string {
+  const prefix = alias ? `${alias}.` : '';
+  return ` AND (
+    COALESCE(cardinality(${prefix}path_hashes), 0) = 0
+    OR ${prefix}path_hash_size_bytes BETWEEN 1 AND 3
+  )
+  AND NOT EXISTS (
+    SELECT 1
+    FROM unnest(COALESCE(${prefix}path_hashes, ARRAY[]::text[])) AS malformed_path_hash
+    WHERE malformed_path_hash IS NULL
+       OR length(malformed_path_hash) <> ${prefix}path_hash_size_bytes * 2
+       OR malformed_path_hash !~ '^[0-9A-Fa-f]+$'
+  )
+  AND NOT EXISTS (
+    SELECT 1
+    FROM nodes private_node
+    WHERE private_node.name LIKE '%🚫%'
+      AND (
+        private_node.node_id IN (${prefix}rx_node_id, ${prefix}src_node_id)
+        OR EXISTS (
+          SELECT 1
+          FROM unnest(COALESCE(${prefix}path_hashes, ARRAY[]::text[])) AS path_hash
+          WHERE ${prefix}path_hash_size_bytes BETWEEN 1 AND 3
+            AND length(path_hash) = ${prefix}path_hash_size_bytes * 2
+            AND UPPER(private_node.node_id) LIKE UPPER(path_hash) || '%'
+        )
+      )
+  )`;
+}
+
 function buildNodeScopeClause(
   placeholders: ScopePlaceholders,
   alias?: string,
@@ -723,29 +753,35 @@ export async function getNodes(network?: string, observer?: string) {
   return res.rows;
 }
 
-export async function getNodeHistory(nodeId: string, hours = 24) {
+export async function getNodeHistory(nodeId: string, hours = 24, network = 'ukmesh') {
+  const scope = buildScopePlaceholders(3, network);
   const res = await pool.query(
     `SELECT time, packet_hash, src_node_id, topic, packet_type, hop_count, rssi, snr, payload
-     FROM packets
-     WHERE rx_node_id = $1 AND time > NOW() - INTERVAL '1 hour' * $2
+     FROM packets p
+     WHERE p.rx_node_id = $1 AND p.time > NOW() - INTERVAL '1 hour' * $2
+       ${buildPacketScopeClause(scope, 'p', network)}
+       ${buildPublicPacketPrivacyClause('p')}
      ORDER BY time DESC LIMIT 500`,
-    [nodeId, hours]
+    [nodeId, hours, ...scope.params]
   );
   return res.rows;
 }
 
-export async function getNodeAdverts(nodePublicKey: string, hours = 24, limit = 100) {
+export async function getNodeAdverts(nodePublicKey: string, hours = 24, limit = 100, network = 'ukmesh') {
+  const scope = buildScopePlaceholders(4, network);
   // Get location packets (packet_type = 4) where payload->>'publicKey' = this public key
   // Location packets are sent as part of the advert broadcast
   const res = await pool.query(
     `SELECT time, packet_hash
-     FROM packets
-     WHERE packet_type = 4
-       AND payload->>'publicKey' = $1
-       AND time > NOW() - INTERVAL '1 hour' * $2
+     FROM packets p
+     WHERE p.packet_type = 4
+       AND p.payload->>'publicKey' = $1
+       AND p.time > NOW() - INTERVAL '1 hour' * $2
+       ${buildPacketScopeClause(scope, 'p', network)}
+       ${buildPublicPacketPrivacyClause('p')}
      ORDER BY time DESC
      LIMIT $3`,
-    [nodePublicKey, hours, limit]
+    [nodePublicKey, hours, limit, ...scope.params]
   );
   return res.rows;
 }
@@ -764,6 +800,7 @@ export async function getRecentPackets(limit = 200, network?: string, observer?:
       FROM packets p
       WHERE p.time > ${fiveMinAgo}
         ${buildPacketScopeClause(scope, 'p', network)}
+        ${buildPublicPacketPrivacyClause('p')}
       ORDER BY p.packet_hash,
                CASE WHEN p.payload ? 'appData' THEN 1 ELSE 0 END DESC,
                CASE WHEN p.src_node_id IS NOT NULL THEN 1 ELSE 0 END DESC,
@@ -781,6 +818,7 @@ export async function getRecentPackets(limit = 200, network?: string, observer?:
       WHERE packet_hash = ANY(SELECT packet_hash FROM recent_packets)
         AND time > ${fiveMinAgo}
         ${buildPacketScopeClause(scope, '', network)}
+        ${buildPublicPacketPrivacyClause('packets')}
       GROUP BY packet_hash
     )
     SELECT 
@@ -816,6 +854,7 @@ export async function getRecentMessages(limit = 50, network?: string, observer?:
       WHERE p.packet_type = 5
         AND p.time > NOW() - INTERVAL '24 hours'
         ${buildPacketScopeClause(scope, 'p', network)}
+        ${buildPublicPacketPrivacyClause('p')}
       ORDER BY p.packet_hash,
                CASE WHEN p.src_node_id IS NOT NULL THEN 1 ELSE 0 END DESC,
                p.time DESC
@@ -830,6 +869,7 @@ export async function getRecentMessages(limit = 50, network?: string, observer?:
       WHERE packet_hash = ANY(SELECT packet_hash FROM recent_msgs)
         AND time > NOW() - INTERVAL '24 hours'
         ${buildPacketScopeClause(scope, '', network)}
+        ${buildPublicPacketPrivacyClause('packets')}
       GROUP BY packet_hash
     )
     SELECT
@@ -858,6 +898,7 @@ export async function getRecentPacketEvents(limit = 200, network?: string, obser
      FROM packets p
      WHERE p.time > NOW() - INTERVAL '24 hours'
          ${buildPacketScopeClause(scope, 'p', network)}
+         ${buildPublicPacketPrivacyClause('p')}
      ORDER BY p.time DESC
      LIMIT $1`,
     params,
@@ -865,8 +906,8 @@ export async function getRecentPacketEvents(limit = 200, network?: string, obser
   return res.rows;
 }
 
-export async function getPacketDetail(hash: string, network?: string) {
-  const netParam = network ?? null;
+export async function getPacketDetail(hash: string, network = 'ukmesh') {
+  const scope = buildScopePlaceholders(2, network);
   const [primary, observations] = await Promise.all([
     pool.query(
       `SELECT p.time, p.packet_hash, p.rx_node_id, p.src_node_id, p.topic,
@@ -874,21 +915,23 @@ export async function getPacketDetail(hash: string, network?: string) {
               p.payload, p.path_hashes, p.path_hash_size_bytes, p.raw_hex
        FROM packets p
        WHERE p.packet_hash = $1
-         AND ($2::text IS NULL OR p.network = $2)
+         ${buildPacketScopeClause(scope, 'p', network)}
+         ${buildPublicPacketPrivacyClause('p')}
        ORDER BY
          CASE WHEN p.src_node_id IS NOT NULL THEN 1 ELSE 0 END DESC,
          CASE WHEN p.raw_hex IS NOT NULL THEN 1 ELSE 0 END DESC,
          p.time DESC
        LIMIT 1`,
-      [hash, netParam],
+      [hash, ...scope.params],
     ),
     pool.query(
       `SELECT p.rx_node_id, p.time, p.rssi, p.snr, p.hop_count
        FROM packets p
        WHERE p.packet_hash = $1
-         AND ($2::text IS NULL OR p.network = $2)
+         ${buildPacketScopeClause(scope, 'p', network)}
+         ${buildPublicPacketPrivacyClause('p')}
        ORDER BY p.time ASC`,
-      [hash, netParam],
+      [hash, ...scope.params],
     ),
   ]);
   const row = primary.rows[0];
@@ -1185,7 +1228,7 @@ export async function insertOrUpdateSpamSuspect(s: SpamSuspectRow): Promise<void
        (time, first_seen, src_node_id, spoofed_name, public_key, claimed_lat, claimed_lon,
         canonical_key, verdict, signals, total_score, network)
      VALUES (NOW(), NOW(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-     ON CONFLICT (src_node_id) DO UPDATE SET
+     ON CONFLICT (network, src_node_id) DO UPDATE SET
        time        = NOW(),
        first_seen  = COALESCE(spam_suspects.first_seen, EXCLUDED.first_seen),
        verdict     = EXCLUDED.verdict,
@@ -1198,11 +1241,12 @@ export async function insertOrUpdateSpamSuspect(s: SpamSuspectRow): Promise<void
   );
 }
 
-export async function replaceSpamSuspects(suspects: SpamSuspectRow[]): Promise<void> {
+export async function replaceSpamSuspects(sourceNetworks: readonly string[], suspects: SpamSuspectRow[]): Promise<void> {
+  if (sourceNetworks.length === 0) throw new Error('SPAM_SOURCE_SCOPE_REQUIRED');
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    await client.query('DELETE FROM spam_suspects');
+    await client.query('DELETE FROM spam_suspects WHERE network = ANY($1)', [sourceNetworks]);
     for (const s of suspects) {
       await client.query(
         `INSERT INTO spam_suspects
@@ -1232,7 +1276,16 @@ export interface SpamSuspectQueryOptions {
 }
 
 function buildSpamSuspectWhere(options: SpamSuspectQueryOptions, params: unknown[]): string {
-  const clauses = [`ss.time > NOW() - ($1 * INTERVAL '1 hour')`];
+  const clauses = [
+    `ss.time > NOW() - ($1 * INTERVAL '1 hour')`,
+    `ss.network = ANY($2)`,
+    `ss.spoofed_name NOT LIKE '%🚫%'`,
+    `NOT EXISTS (
+       SELECT 1 FROM nodes private_node
+       WHERE private_node.node_id = ss.src_node_id
+         AND private_node.name LIKE '%🚫%'
+     )`,
+  ];
 
   if (options.verdict) {
     params.push(options.verdict);
@@ -1249,7 +1302,7 @@ function buildSpamSuspectWhere(options: SpamSuspectQueryOptions, params: unknown
 
 export async function getSpamSuspects(options: number | SpamSuspectQueryOptions = 48) {
   const queryOptions: SpamSuspectQueryOptions = typeof options === 'number' ? { hours: options } : options;
-  const params: unknown[] = [queryOptions.hours ?? 48];
+  const params: unknown[] = [queryOptions.hours ?? 48, UKMESH_NETWORKS];
   const where = buildSpamSuspectWhere(queryOptions, params);
   const limit = Math.max(1, Math.min(200, Math.floor(queryOptions.limit ?? 100)));
   const offset = Math.max(0, Math.floor(queryOptions.offset ?? 0));
@@ -1322,6 +1375,7 @@ export async function getSpamSuspects(options: number | SpamSuspectQueryOptions 
        MAX(p.time) AS last_packet
      FROM filtered f
      LEFT JOIN packets p ON p.src_node_id = f.src_node_id
+       AND p.network = f.network
        AND p.time > NOW() - INTERVAL '1 hour' * $1
      GROUP BY f.src_node_id, f.spoofed_name, f.public_key, f.claimed_lat, f.claimed_lon,
               f.canonical_key, f.verdict, f.signals, f.total_score, f.network, f.time, f.first_seen
@@ -1332,7 +1386,7 @@ export async function getSpamSuspects(options: number | SpamSuspectQueryOptions 
 }
 
 export async function getSpamSuspectSummary(options: SpamSuspectQueryOptions = {}) {
-  const params: unknown[] = [options.hours ?? 48];
+  const params: unknown[] = [options.hours ?? 48, UKMESH_NETWORKS];
   const where = buildSpamSuspectWhere(options, params);
   const res = await pool.query(
     `SELECT verdict, COUNT(*)::int AS count
@@ -1369,11 +1423,16 @@ export async function getSpamPacketObservers(srcNodeId: string) {
      FROM packets p
      LEFT JOIN nodes n ON n.node_id = p.rx_node_id
      LEFT JOIN spam_suspects ss ON ss.src_node_id = p.src_node_id
+       AND ss.network = p.network
      WHERE p.src_node_id = $1
+       AND p.network = ANY($2)
+       AND split_part(p.topic, '/', 1) <> 'meshcore-test'
        AND p.packet_type = 4
        AND p.time > NOW() - INTERVAL '30 days'
+       AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
+       AND (ss.spoofed_name IS NULL OR ss.spoofed_name NOT LIKE '%🚫%')
      ORDER BY p.rx_node_id, p.hop_count ASC NULLS LAST, p.time ASC`,
-    [srcNodeId]
+    [srcNodeId, UKMESH_NETWORKS]
   );
   return res.rows;
 }
@@ -1394,18 +1453,23 @@ export async function getSpamAllObservers() {
      FROM spam_suspects ss
      JOIN packets p
        ON  p.src_node_id = ss.src_node_id
+       AND p.network = ss.network
        AND p.packet_type  = 4
        AND p.time > NOW() - INTERVAL '30 days'
        AND p.rx_node_id   IS NOT NULL
      JOIN nodes n ON n.node_id = p.rx_node_id
      WHERE ss.claimed_lat IS NOT NULL
        AND ss.claimed_lon IS NOT NULL
+       AND ss.network = ANY($1)
+       AND split_part(p.topic, '/', 1) <> 'meshcore-test'
        AND n.lat IS NOT NULL
        AND n.lon IS NOT NULL
+       AND ss.spoofed_name NOT LIKE '%🚫%'
+       AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
      GROUP BY
        ss.src_node_id, ss.claimed_lat, ss.claimed_lon, ss.spoofed_name,
        p.rx_node_id, n.name, n.lat, n.lon
      ORDER BY ss.src_node_id, MIN(p.hop_count) ASC NULLS LAST`
-  );
+  , [UKMESH_NETWORKS]);
   return res.rows;
 }

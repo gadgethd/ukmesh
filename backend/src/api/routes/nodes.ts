@@ -19,8 +19,8 @@ type NodeRecord = {
 };
 
 type GetNodesFn = (network?: string, observer?: string) => Promise<NodeRecord[]>;
-type GetNodeHistoryFn = (nodeId: string, hours: number) => Promise<unknown>;
-type GetNodeAdvertsFn = (publicKey: string, hours: number) => Promise<unknown>;
+type GetNodeHistoryFn = (nodeId: string, hours: number, network: string) => Promise<unknown>;
+type GetNodeAdvertsFn = (publicKey: string, hours: number, limit: number, network: string) => Promise<unknown>;
 type RequireLocalOnlyFn = (req: Request, res: Response) => boolean;
 
 type InferredMultibyteNode = {
@@ -66,6 +66,9 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
     inferredNodesCache,
     inferredNodesCacheTtlMs,
   } = deps;
+  const MAX_INFERRED_WORK = 8;
+  const MAX_INFERRED_PACKET_ROWS = 5_000;
+  let inferredWorkActive = 0;
 
   router.get('/local/test-diagnostics', async (req, res) => {
     try {
@@ -262,10 +265,10 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
   router.get('/nodes', async (req, res) => {
     try {
       const requestedNetwork = resolveRequestNetwork(req.query['network'], req.headers);
-      const network = requestedNetwork === 'all' ? undefined : requestedNetwork;
+      const network = requestedNetwork === 'test' ? 'test' : 'ukmesh';
       const observer = normalizeObserverQuery(req.query['observer']);
       const nodes = await getNodes(network, observer);
-      res.json(nodes.map(redactPrivateNode));
+      res.json(nodes.filter((node) => !isPrivateNode(node.name)).map(redactPrivateNode));
     } catch (err) {
       console.error('[api] GET /nodes', (err as Error).message);
       res.status(500).json({ error: 'Internal server error' });
@@ -273,22 +276,44 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
   });
 
   router.get('/inferred-nodes', async (req, res) => {
+    let workAdmitted = false;
     try {
       const requestedNetwork = resolveRequestNetwork(req.query['network'], req.headers);
-      const network = requestedNetwork === 'all' ? undefined : requestedNetwork;
+      const network = requestedNetwork === 'test' ? 'test' : 'ukmesh';
       const observer = normalizeObserverQuery(req.query['observer']);
       const scope = networkFilters(network, observer);
+      // Identity suppression must cover every node in the selected network,
+      // including opted-out and intermediate-only relays.  Observer scoping is
+      // appropriate for coordinate anchors, but using it here would turn a
+      // known private relay into an "inferred" point.
+      const identityScope = networkFilters(network);
 
       const inferredCacheKey = `${network ?? 'all'}:${observer ?? ''}`;
-      const inferredCached = inferredNodesCache.get(inferredCacheKey);
+      // Observer IDs are attacker-controlled. Do not retain one cache entry per
+      // observer; the process-wide work budget below still bounds misses.
+      const inferredCached = observer ? undefined : inferredNodesCache.get(inferredCacheKey);
       if (inferredCached && Date.now() - inferredCached.ts < inferredNodesCacheTtlMs) {
         res.json(inferredCached.data);
         return;
       }
+      if (inferredWorkActive >= MAX_INFERRED_WORK) {
+        res.setHeader('Retry-After', '5');
+        res.status(503).json({ error: 'Inferred-node service is busy' });
+        return;
+      }
+      inferredWorkActive += 1;
+      workAdmitted = true;
 
-      const [visibleNodes, allNodeIds, packetsResult] = await Promise.all([
-        getNodes(network, observer),
-        query<{ node_id: string }>('SELECT node_id FROM nodes'),
+      const [visibleNodes, knownNodeRows, packetsResult] = await Promise.all([
+        getNodes(network, observer).then((nodes) =>
+          nodes.filter((node) => !isPrivateNode(node.name)).map(redactPrivateNode)),
+        query<{ node_id: string }>(
+          `SELECT n.node_id
+           FROM nodes n
+           WHERE n.node_id ~ '^[0-9A-Fa-f]{64}$'
+             ${identityScope.nodesAlias('n')}`,
+          identityScope.params,
+        ),
         query<{
           packet_hash: string;
           time: string;
@@ -302,10 +327,15 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
              AND p.path_hash_size_bytes > 1
              AND p.path_hashes IS NOT NULL
              AND array_length(p.path_hashes, 1) > 0
-           ORDER BY p.time DESC`,
+           ORDER BY p.time DESC
+           LIMIT ${MAX_INFERRED_PACKET_ROWS + 1}`,
           scope.params,
         ),
       ]);
+      if (packetsResult.rows.length > MAX_INFERRED_PACKET_ROWS) {
+        res.status(422).json({ error: 'INFERRED_HISTORY_LIMIT', retryable: false });
+        return;
+      }
 
       const exactNodes = visibleNodes.filter((node) =>
         node.role === undefined || node.role === 2,
@@ -418,7 +448,7 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
       };
 
       const knownNodePrefixes = new Set<string>();
-      for (const node of allNodeIds.rows) {
+      for (const node of knownNodeRows.rows) {
         const nodeId = node.node_id.toUpperCase();
         if (nodeId.length >= 4) knownNodePrefixes.add(nodeId.slice(0, 4));
         if (nodeId.length >= 6) knownNodePrefixes.add(nodeId.slice(0, 6));
@@ -459,11 +489,15 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
         inferredNodes,
         inferredActiveNodeIds,
       };
-      inferredNodesCache.set(inferredCacheKey, { ts: Date.now(), data: payload });
+      if (!observer) {
+        inferredNodesCache.set(inferredCacheKey, { ts: Date.now(), data: payload });
+      }
       res.json(payload);
     } catch (err) {
       console.error('[api] GET /inferred-nodes', (err as Error).message);
       res.status(500).json({ error: 'Internal server error' });
+    } finally {
+      if (workAdmitted) inferredWorkActive -= 1;
     }
   });
 
@@ -493,13 +527,17 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
          LEFT JOIN nodes n ON n.node_id = CASE WHEN node_a_id = $1 THEN node_b_id ELSE node_a_id END
          WHERE (node_a_id = $1 OR node_b_id = $1)
            AND (itm_viable = true OR force_viable = true)
+           AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
+           AND NOT EXISTS (
+             SELECT 1
+             FROM nodes source_node
+             WHERE source_node.node_id = $1
+               AND source_node.name LIKE '%🚫%'
+           )
          ORDER BY observed_count DESC`,
         [id],
       );
-      res.json(result.rows.map((row) => ({
-        ...row,
-        peer_name: isPrivateNode(row.peer_name) ? 'Private Node' : row.peer_name,
-      })));
+      res.json(result.rows);
     } catch (err) {
       console.error('[api] GET /nodes/:id/links', (err as Error).message);
       res.status(500).json({ error: 'Internal server error' });
@@ -514,7 +552,9 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
         return;
       }
       const hours = Math.min(Number(req.query['hours'] ?? 24), 672);
-      const history = await getNodeHistory(id, hours);
+      const requestedNetwork = resolveRequestNetwork(req.query['network'], req.headers, 'ukmesh');
+      const network = requestedNetwork === 'test' ? 'test' : 'ukmesh';
+      const history = await getNodeHistory(id, hours, network);
       res.json(history);
     } catch (err) {
       console.error('[api] GET /nodes/:id/history', (err as Error).message);
@@ -530,7 +570,9 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
         return;
       }
       const hours = Math.min(Number(req.query['hours'] ?? 24), 672);
-      const adverts = await getNodeAdverts(publicKey, hours);
+      const requestedNetwork = resolveRequestNetwork(req.query['network'], req.headers, 'ukmesh');
+      const network = requestedNetwork === 'test' ? 'test' : 'ukmesh';
+      const adverts = await getNodeAdverts(publicKey, hours, 100, network);
       res.json(adverts);
     } catch (err) {
       console.error('[api] GET /nodes/:id/adverts', (err as Error).message);

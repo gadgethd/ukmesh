@@ -41,15 +41,13 @@ test('shapeTopology includes bounded standalone repeater candidates', () => {
   assert.deepEqual(topology.analysis.isolatedNodeIds, ['solo']);
 });
 
-test('shapeTopology redacts opted-out node names and coordinates deterministically', () => {
+test('shapeTopology omits opted-out nodes and their dependent links', () => {
   const id = 'D'.repeat(64);
   const topology = shapeTopology([{
     node_a_id: id, node_b_id: 'E'.repeat(64),
     name_a: 'Secret 🚫', name_b: 'Public', lat_a: 52, lon_a: -1, lat_b: 53, lon_b: -2,
     observed_count: 1, multibyte_observed_count: 1, last_observed: '2026-07-11', itm_path_loss_db: null,
   }]);
-  const privateNode = topology.nodes.find((node) => node.nodeId === id)!;
-  assert.equal(privateNode.name, 'Private Node');
-  assert.notEqual(privateNode.lat, 52);
-  assert.notEqual(privateNode.lon, -1);
+  assert.equal(topology.nodes.some((node) => node.nodeId === id), false);
+  assert.deepEqual(topology.links, []);
 });
