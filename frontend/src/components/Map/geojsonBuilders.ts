@@ -12,8 +12,8 @@ import {
 } from '../../utils/pathing.js';
 import {
   EMPTY_FC,
-  FOURTEEN_DAYS_MS,
-  SEVEN_DAYS_MS,
+  NODE_HIDE_AFTER_MS,
+  NODE_STALE_AFTER_MS,
   LINK_AMBER_THRESHOLD_DB,
   LINK_GREEN_THRESHOLD_DB,
 } from './mapConfig.js';
@@ -62,10 +62,10 @@ export function buildNodeGeoJSON(
   const addNode = (node: MeshNode) => {
     if (!hasCoords(node)) return;
     const ageMs = staleCutoffMs - new Date(node.last_seen).getTime();
-    const isLinkOnlyStale = ageMs > FOURTEEN_DAYS_MS
+    const isLinkOnlyStale = ageMs > NODE_HIDE_AFTER_MS
       && showLinks
       && viableLinkNodeIds.has(node.node_id.toLowerCase());
-    if (ageMs > FOURTEEN_DAYS_MS && !isLinkOnlyStale) return;
+    if (ageMs > NODE_HIDE_AFTER_MS && !isLinkOnlyStale) return;
 
     const isClientNode = node.role === 1 || node.role === 3;
     if (isClientNode && !showClientNodes) return;
@@ -94,7 +94,7 @@ export function buildNodeGeoJSON(
       name: node.name ?? null,
       role: node.role ?? 2,
       is_online: node.is_online,
-      is_stale: ageMs > (isClientNode ? SEVEN_DAYS_MS : FOURTEEN_DAYS_MS),
+      is_stale: ageMs > NODE_STALE_AFTER_MS,
       is_link_only_stale: isLinkOnlyStale,
       is_prohibited: isProhibited,
       is_inferred: false,
@@ -352,7 +352,7 @@ export function computeClashData(
   const nodesWithPos = Array.from(nodes.values()).filter(
     (node) => hasCoords(node)
       && (node.role === undefined || node.role === 2)
-      && (staleCutoffMs - new Date(node.last_seen).getTime()) < FOURTEEN_DAYS_MS,
+      && (staleCutoffMs - new Date(node.last_seen).getTime()) < NODE_STALE_AFTER_MS,
   );
 
   const repeaterPrefixIds = new Map<string, string[]>();

@@ -30,7 +30,7 @@ import {
   MAP_REFRESH_INTERVAL_MS,
   MAP_STYLE,
   MAP_STYLE_LIGHT,
-  SEVEN_DAYS_MS,
+  NODE_STALE_AFTER_MS,
   TERRAIN_CONFIG,
   TERRAIN_DEM_SOURCE,
 } from './mapConfig.js';
@@ -1221,7 +1221,7 @@ export function MapLibreMap({
         name: node.name ?? null,
         role: node.role ?? 2,
         is_online: node.is_online,
-        is_stale: ageMs > SEVEN_DAYS_MS,
+        is_stale: ageMs > NODE_STALE_AFTER_MS,
         is_link_only_stale: false,
         is_prohibited: isProhibitedMapNode(node),
         is_inferred: !!node.is_inferred,

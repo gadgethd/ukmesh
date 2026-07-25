@@ -1,6 +1,6 @@
 import React from 'react';
 import { LoadingIndicator } from '../LoadingIndicator.js';
-import { SEVEN_DAYS_MS } from './mapConfig.js';
+import { NODE_STALE_AFTER_MS } from './mapConfig.js';
 import type { NodeFeatureProps, NodeLink } from './types.js';
 
 const GPU_ROLE_LABELS: Record<number, string> = {
@@ -48,7 +48,7 @@ export const NodePopupContent: React.FC<{
 }) => {
   const isRepeater = props.role === undefined || props.role === 2;
   const ageMs = Date.now() - new Date(props.last_seen).getTime();
-  const isStale = ageMs > SEVEN_DAYS_MS;
+  const isStale = ageMs > NODE_STALE_AFTER_MS;
   const statusLabel = isStale ? 'STALE' : props.is_online ? 'ONLINE' : 'OFFLINE';
   const statusColor = isStale ? 'var(--danger)' : props.is_online ? 'var(--online)' : 'var(--offline)';
   const fallbackName = GPU_ROLE_LABELS[props.role ?? 2] ?? 'Unknown Device';

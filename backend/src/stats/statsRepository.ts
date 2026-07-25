@@ -722,17 +722,19 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
         `, filters.params),
       query(`SELECT COUNT(*) AS count FROM packets WHERE time > NOW() - INTERVAL '24 hours' ${filters.packets}`, filters.params),
       query(`SELECT COUNT(*) AS count FROM nodes
-             WHERE lat IS NOT NULL AND lon IS NOT NULL
-               AND (role IS NULL OR role = 2)
-               AND (name IS NULL OR name NOT LIKE '%🚫%')
-               AND last_seen <= NOW() - INTERVAL '7 days'
-               AND last_seen >  NOW() - INTERVAL '14 days'
+             WHERE lat BETWEEN -90 AND 90
+               AND lon BETWEEN -180 AND 180
+               AND NOT (ABS(lat) < 5 AND ABS(lon) < 5)
+               AND (role IS NULL OR role NOT IN (1, 3))
+               AND GREATEST(last_seen, last_path_evidence_at) <= NOW() - INTERVAL '14 days'
+               AND GREATEST(last_seen, last_path_evidence_at) >  NOW() - INTERVAL '28 days'
                ${filters.nodes}`, filters.params),
       query(`SELECT COUNT(*) AS count FROM nodes
-             WHERE lat IS NOT NULL AND lon IS NOT NULL
-               AND (role IS NULL OR role = 2)
-               AND (name IS NULL OR name NOT LIKE '%🚫%')
-               AND last_seen > NOW() - INTERVAL '14 days'
+             WHERE lat BETWEEN -90 AND 90
+               AND lon BETWEEN -180 AND 180
+               AND NOT (ABS(lat) < 5 AND ABS(lon) < 5)
+               AND (role IS NULL OR role NOT IN (1, 3))
+               AND GREATEST(last_seen, last_path_evidence_at) > NOW() - INTERVAL '28 days'
                ${filters.nodes}`, filters.params),
       query(`SELECT COUNT(*) AS count FROM nodes
              WHERE (name IS NULL OR name NOT LIKE '%🚫%')

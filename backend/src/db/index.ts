@@ -663,12 +663,14 @@ export async function getNodes(network?: string, observer?: string) {
        n.lon,
        COALESCE(observer_meta.observer_iata, n.iata) AS iata,
        n.role,
-       -- For non-MQTT repeaters (no direct reception) a recent multibyte path-hash
-       -- sighting is proof the node relayed a packet, so it counts as "last seen".
-       -- GREATEST ignores a NULL last_path_evidence_at, leaving advert-based last_seen.
-       COALESCE(
+       -- Advert/status writes, direct observer reception, and trustworthy
+       -- multibyte relay evidence are independent proofs of presence. Always
+       -- expose the newest proof; preferring observer metadata with COALESCE
+       -- could make a freshly advertised node appear days older on the map.
+       GREATEST(
+         n.last_seen,
          observer_meta.observer_last_seen,
-         GREATEST(n.last_seen, n.last_path_evidence_at)
+         n.last_path_evidence_at
        ) AS last_seen,
        COALESCE(
          CASE
@@ -717,7 +719,7 @@ export async function getNodes(network?: string, observer?: string) {
        ) latest_status ON TRUE
      ) observer_meta ON TRUE
      ${whereClause}
-     ORDER BY COALESCE(observer_meta.observer_last_seen, GREATEST(n.last_seen, n.last_path_evidence_at)) DESC`,
+     ORDER BY GREATEST(n.last_seen, observer_meta.observer_last_seen, n.last_path_evidence_at) DESC`,
     scope.params
   );
   return res.rows;
