@@ -74,6 +74,47 @@ test('completed canonical charts are reused while observer-scoped charts are nev
   assert.equal(chartsCache.size, 1);
 });
 
+test('expired canonical charts are served while one refresh runs in the background', async () => {
+  let resolveRefresh!: (value: ReturnType<typeof emptyChartsData>) => void;
+  const refresh = new Promise<ReturnType<typeof emptyChartsData>>((resolve) => {
+    resolveRefresh = resolve;
+  });
+  let chartCalls = 0;
+  const repository = {
+    fetchChartsData: async () => {
+      chartCalls += 1;
+      return refresh;
+    },
+    fetchChannelTraffic: async () => ({ rows: [] }),
+  } as unknown as StatsRepository;
+  const stale = { snapshot: { generatedAt: '2026-07-11T12:00:00Z' } };
+  const chartsCache = new BoundedTtlMap<string, { ts: number; data: unknown }>({
+    maxEntries: 2,
+    maxWeight: 1024 * 1024,
+    ttlMs: 60_000,
+  });
+  const chartsInflight = new Map<string, Promise<unknown>>();
+  chartsCache.set('ukmesh', { ts: 0, data: stale });
+  const service = createStatsService({
+    statsCache: new Map(),
+    statsCacheTtlMs: 60_000,
+    chartsCache,
+    chartsCacheTtlMs: 1,
+    chartsInflight,
+    repository,
+    maskDecodedPathNodes: () => [],
+  });
+
+  assert.equal(await service.getCharts('ukmesh', undefined), stale);
+  assert.equal(await service.getCharts('ukmesh', undefined), stale);
+  assert.equal(chartCalls, 1);
+
+  resolveRefresh(emptyChartsData());
+  await chartsInflight.get('ukmesh');
+  assert.notEqual(chartsCache.get('ukmesh')?.data, stale);
+  chartsCache.shutdown();
+});
+
 test('expired canonical stats are served while one refresh runs in the background', async () => {
   let resolveRefresh!: (value: Awaited<ReturnType<StatsRepository['fetchStatsSummary']>>) => void;
   const refresh = new Promise<Awaited<ReturnType<StatsRepository['fetchStatsSummary']>>>((resolve) => {

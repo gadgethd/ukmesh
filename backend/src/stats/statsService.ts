@@ -392,8 +392,13 @@ export function createStatsService(deps: StatsServiceDeps) {
     }
 
     const inflight = chartsInflight.get(key);
-    if (inflight) return inflight;
-    if (chartsInflight.size >= MAX_UNIQUE_STATS_INFLIGHT) throw new StatsWorkOverloadedError();
+    if (inflight) {
+      return cached ? refreshCachedRegionHealth(cached.data) : inflight;
+    }
+    if (chartsInflight.size >= MAX_UNIQUE_STATS_INFLIGHT) {
+      if (cached) return refreshCachedRegionHealth(cached.data);
+      throw new StatsWorkOverloadedError();
+    }
 
     const promise = computeChartsData(network, observer).then((data) => {
       chartsCache.set(key, { ts: Date.now(), data });
@@ -405,6 +410,12 @@ export function createStatsService(deps: StatsServiceDeps) {
     });
 
     chartsInflight.set(key, promise);
+    if (cached) {
+      // The canonical snapshot is already privacy-filtered. Serve it while the
+      // single coalesced refresh runs, and retain it if that refresh fails.
+      void promise.catch(() => { /* retain the last successful value */ });
+      return refreshCachedRegionHealth(cached.data);
+    }
     return promise;
   }
 

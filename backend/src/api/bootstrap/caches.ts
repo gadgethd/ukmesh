@@ -5,6 +5,11 @@ export const STATS_CACHE_STALE_TTL_MS = 15 * 60_000;
 export const INFERRED_NODES_CACHE_TTL_MS = 60_000;
 export const PATH_HISTORY_CACHE_TTL_MS = 60_000;
 export const CHARTS_CACHE_TTL_MS = 30 * 60_000;
+// A chart snapshot is refreshed every 30 minutes, but remains usable for six
+// hours if a refresh is slow or fails. Keeping the storage TTL longer than the
+// freshness TTL lets callers receive the last complete, privacy-filtered
+// snapshot while exactly one bounded refresh runs in the background.
+export const CHARTS_CACHE_STALE_TTL_MS = 6 * 60 * 60_000;
 // The owner dashboard polls /owner/live every 10s. A 5s TTL meant every poll (and
 // every node switch) re-ran 9 DB queries cold. Keep it just above the poll interval
 // so consecutive polls hit, and switching back to a recently viewed node is instant.
@@ -23,7 +28,7 @@ export const pathHistoryCache = new BoundedTtlMap<string, { ts: number; data: un
   maxEntries: 8, maxWeight: 8 * 1024 * 1024, ttlMs: PATH_HISTORY_CACHE_TTL_MS,
 });
 export const chartsCache = new BoundedTtlMap<string, { ts: number; data: unknown }>({
-  maxEntries: 256, maxWeight: 32 * 1024 * 1024, ttlMs: CHARTS_CACHE_TTL_MS,
+  maxEntries: 256, maxWeight: 32 * 1024 * 1024, ttlMs: CHARTS_CACHE_STALE_TTL_MS,
 });
 export const chartsInflight = new Map<string, Promise<unknown>>();
 export const ownerLiveCache = new BoundedTtlMap<string, { ts: number; data: unknown }>({
