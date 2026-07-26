@@ -7,6 +7,12 @@ import { getNodes, getRecentPackets, getRecentMessages, getViableLinks } from '.
 import { resolveRequestNetwork } from '../http/requestScope.js';
 import { networkMatchesScope } from '../networks.js';
 import { getRedisConnectionOptions, getRedisUrl } from '../platform/config/redis.js';
+import { BoundedTtlMap } from '../cache/boundedTtlMap.js';
+import {
+  BoundedAsyncGate,
+  BoundedTaskQueueFullError,
+  websocketAdmissionDecision,
+} from './limits.js';
 
 const REDIS_CHANNEL = 'meshcore:live';
 const LOG_WS_PACKETS = process.env['LOG_WS_PACKETS'] === '1';
@@ -21,6 +27,12 @@ function boundedEnvInteger(name: string, fallback: number, min: number, max: num
 const WS_MAX_PAYLOAD_BYTES = boundedEnvInteger('WS_MAX_PAYLOAD_BYTES', 64 * 1024, 1_024, 1_048_576);
 const WS_MAX_QUEUE_BYTES = boundedEnvInteger('WS_MAX_QUEUE_BYTES', 8 * 1_048_576, 16 * 1024, 32 * 1_048_576);
 const WS_MAX_BUFFERED_BYTES = boundedEnvInteger('WS_MAX_BUFFERED_BYTES', 32 * 1_048_576, WS_MAX_QUEUE_BYTES, 128 * 1_048_576);
+const WS_MAX_CONNECTIONS = boundedEnvInteger('WS_MAX_CONNECTIONS', 500, 1, 10_000);
+const WS_MAX_PENDING_HANDSHAKES = boundedEnvInteger('WS_MAX_PENDING_HANDSHAKES', 32, 1, 1_000);
+const WS_INITIAL_STATE_CONCURRENCY = boundedEnvInteger('WS_INITIAL_STATE_CONCURRENCY', 8, 1, 128);
+const WS_INITIAL_STATE_QUEUE_MAX = boundedEnvInteger('WS_INITIAL_STATE_QUEUE_MAX', 64, 0, 1_000);
+const WS_INITIAL_STATE_MAX_BYTES = boundedEnvInteger('WS_INITIAL_STATE_MAX_BYTES', 4 * 1_048_576, 16 * 1024, 32 * 1_048_576);
+const WS_HEARTBEAT_INTERVAL_MS = boundedEnvInteger('WS_HEARTBEAT_INTERVAL_MS', 30_000, 5_000, 120_000);
 
 let pub: Redis;
 let sub: Redis;
@@ -53,7 +65,11 @@ type InitialStateEntry = {
   messages: Awaited<ReturnType<typeof getRecentMessages>>;
   viableLinks: Awaited<ReturnType<typeof getViableLinks>>;
 };
-const initialStateCache = new Map<string, InitialStateEntry>();
+const initialStateCache = new BoundedTtlMap<string, InitialStateEntry>({
+  maxEntries: 128,
+  maxWeight: 48 * 1024 * 1024,
+  ttlMs: INITIAL_STATE_TTL_MS,
+});
 const initialStateInflight = new Map<string, Promise<InitialStateEntry>>();
 
 async function fetchInitialState(network: string | undefined, observer: string | undefined): Promise<InitialStateEntry> {
@@ -215,6 +231,21 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
     .split(',')
     .map(s => s.trim())
     .filter(Boolean);
+  const initialStateGate = new BoundedAsyncGate(
+    WS_INITIAL_STATE_CONCURRENCY,
+    WS_INITIAL_STATE_QUEUE_MAX,
+  );
+  let pendingHandshakes = 0;
+  const pendingHandshakeTimers = new WeakMap<IncomingMessage['socket'], NodeJS.Timeout>();
+  const missedPongs = new WeakMap<WebSocket, number>();
+
+  const releasePendingHandshake = (req: IncomingMessage): void => {
+    const timer = pendingHandshakeTimers.get(req.socket);
+    if (!timer) return;
+    clearTimeout(timer);
+    pendingHandshakeTimers.delete(req.socket);
+    pendingHandshakes = Math.max(0, pendingHandshakes - 1);
+  };
 
   // Pre-warm the initial state cache for common networks at startup so the
   // first connecting client doesn't pay the cold DB cost.
@@ -236,9 +267,28 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
     server: httpServer,
     path: '/ws',
     maxPayload: WS_MAX_PAYLOAD_BYTES,
-    verifyClient: ({ origin }: { origin: string }) => {
-      // No origin header = non-browser client (allow); otherwise must be whitelisted
-      return !origin || ALLOWED_ORIGINS.includes(origin);
+    verifyClient: (info, done) => {
+      const origin = info.origin;
+      if (origin && !ALLOWED_ORIGINS.includes(origin)) {
+        done(false, 403, 'Forbidden');
+        return;
+      }
+      const admission = websocketAdmissionDecision(
+        { activeConnections: wss.clients.size, pendingHandshakes },
+        {
+          maxConnections: WS_MAX_CONNECTIONS,
+          maxPendingHandshakes: WS_MAX_PENDING_HANDSHAKES,
+        },
+      );
+      if (!admission.allowed) {
+        done(false, admission.statusCode, admission.reason, { 'Retry-After': '5' });
+        return;
+      }
+      pendingHandshakes += 1;
+      const timer = setTimeout(() => releasePendingHandshake(info.req), 10_000);
+      timer.unref();
+      pendingHandshakeTimers.set(info.req.socket, timer);
+      done(true);
     },
   });
 
@@ -257,6 +307,9 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
   };
 
   wss.on('connection', async (ws: WebSocket, req: IncomingMessage) => {
+    releasePendingHandshake(req);
+    missedPongs.set(ws, 0);
+    ws.on('pong', () => missedPongs.set(ws, 0));
     console.log('[ws] client connected, total:', wss.clients.size);
 
     // Derive scope from query params (?network=teesside&observer=<pubkey>)
@@ -274,7 +327,9 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
     if (WS_INITIAL_STATE_ENABLED) {
       // Send initial state: served from cache so concurrent connects don't exhaust the DB pool.
       try {
-        const { nodes, packets, messages, viableLinks } = await fetchInitialState(network, observer);
+        const { nodes, packets, messages, viableLinks } = await initialStateGate.run(
+          () => fetchInitialState(network, observer),
+        );
         for (const node of nodes) {
           const nodeId = String((node as { node_id?: string }).node_id ?? '').toLowerCase();
           if (nodeId) scope.nodeIds.add(nodeId);
@@ -291,9 +346,17 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
           data: { nodes, packets, messages, viable_pairs: viablePairs, viable_links: viableLinks },
           ts: Date.now(),
         };
-        if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(initMsg));
+        const serialized = JSON.stringify(initMsg);
+        if (Buffer.byteLength(serialized) > WS_INITIAL_STATE_MAX_BYTES) {
+          ws.close(1013, 'initial state is temporarily unavailable');
+          return;
+        }
+        if (ws.readyState === WebSocket.OPEN) ws.send(serialized);
       } catch (err) {
         console.error('[ws] initial state error', (err as Error).message);
+        if (err instanceof BoundedTaskQueueFullError) {
+          ws.close(1013, 'initial state is busy');
+        }
       }
     } else {
       if (ws.readyState === WebSocket.OPEN) {
@@ -315,6 +378,21 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
       console.error('[ws] client error', err.message);
     });
   });
+
+  const heartbeatTimer = setInterval(() => {
+    for (const client of wss.clients) {
+      if (client.readyState !== WebSocket.OPEN) continue;
+      const missed = (missedPongs.get(client) ?? 0) + 1;
+      if (missed > 2) {
+        client.terminate();
+        continue;
+      }
+      missedPongs.set(client, missed);
+      client.ping();
+    }
+  }, WS_HEARTBEAT_INTERVAL_MS);
+  heartbeatTimer.unref();
+  wss.on('close', () => clearInterval(heartbeatTimer));
 
   const flushMessageQueue = () => {
     if (messageQueue.size === 0) {

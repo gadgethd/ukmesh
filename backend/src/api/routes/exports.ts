@@ -5,6 +5,8 @@ import type { NetworkFilters } from '../utils/networkFilters.js';
 import { redactPrivateNode } from '../utils/privateNode.js';
 import fs from 'node:fs';
 import path from 'node:path';
+import { csvRow } from '../utils/csv.js';
+export { csvCell } from '../utils/csv.js';
 
 type QueryFn = <T extends QueryResultRow = QueryResultRow>(text: string, params?: unknown[]) => Promise<{ rows: T[] }>;
 type Deps = {
@@ -12,12 +14,6 @@ type Deps = {
   networkFilters: (network?: string, observer?: string) => NetworkFilters;
   limiter: ReturnType<typeof import('express-rate-limit').rateLimit>;
 };
-
-export function csvCell(value: unknown): string {
-  if (value == null) return '';
-  const text = String(value);
-  return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
-}
 
 export function registerExportRoutes(router: Router, deps: Deps): void {
   router.get('/v1', (_req, res) => {
@@ -88,7 +84,10 @@ export function registerExportRoutes(router: Router, deps: Deps): void {
         return;
       }
       const columns = ['node_id', 'name', 'lat', 'lon', 'role', 'iata', 'last_seen', 'hardware_model'] as const;
-      const lines = [columns.join(','), ...nodes.map((node) => columns.map((column) => csvCell(node[column])).join(','))];
+      const lines = [
+        csvRow(columns),
+        ...nodes.map((node) => csvRow(columns.map((column) => node[column]))),
+      ];
       res.setHeader('Content-Disposition', 'attachment; filename="ukmesh-nodes.csv"');
       res.type('text/csv').send(`${lines.join('\n')}\n`);
     } catch (err) {
