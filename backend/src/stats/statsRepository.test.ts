@@ -89,7 +89,7 @@ test('map summary uses the same coordinate, role, and 14-day freshness rules as 
     assert.match(sql, /NOT \(ABS\(lat\) < 5 AND ABS\(lon\) < 5\)/);
     assert.match(sql, /\(role IS NULL OR role NOT IN \(1, 3\)\)/);
     assert.match(sql, /GREATEST\(last_seen, last_path_evidence_at\)/);
-    assert.doesNotMatch(sql, /name NOT LIKE/);
+    assert.match(sql, /name NOT LIKE/);
     assert.doesNotMatch(sql, /INTERVAL '7 days'/);
   }
 

@@ -67,6 +67,12 @@ export async function loadRecentMessages(cfg: SpamMessageConfig): Promise<Messag
        AND p.network = ANY($2)
        AND p.payload ? 'decrypted'
        AND p.payload->'decrypted' ? 'message'
+       AND COALESCE(p.payload->'decrypted'->>'sender', '') NOT LIKE '%🚫%'
+       AND NOT EXISTS (
+         SELECT 1 FROM nodes private_node
+         WHERE private_node.name LIKE '%🚫%'
+           AND private_node.node_id IN (p.rx_node_id, p.src_node_id)
+       )
      ORDER BY p.packet_hash, p.time ASC`,
     [hours, NETWORKS],
   );
@@ -88,6 +94,7 @@ export async function loadRecentMessages(cfg: SpamMessageConfig): Promise<Messag
        AND p.network = ANY($2)
        AND p.rx_node_id IS NOT NULL
        AND n.lat IS NOT NULL AND n.lon IS NOT NULL
+       AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
        AND p.packet_hash = ANY($3)
      GROUP BY p.packet_hash, p.rx_node_id, n.lat, n.lon`,
     [hours, NETWORKS, hashes],

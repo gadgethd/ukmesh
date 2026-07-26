@@ -1,7 +1,8 @@
 import type { Router } from 'express';
 import type { QueryResultRow } from 'pg';
-import { resolveRequestNetwork } from '../../http/requestScope.js';
+import { resolvePublicNetworkScope } from '../../http/requestScope.js';
 import { normalizeObserverQuery } from '../utils/observer.js';
+import { expandResolverScope } from '../../networks.js';
 
 type QueryFn = <T extends QueryResultRow = QueryResultRow>(
   text: string,
@@ -30,8 +31,7 @@ export function registerMiscRoutes(router: Router, deps: MiscRouteDeps): void {
   router.get('/packets/recent', async (req, res) => {
     try {
       const limit = Math.min(Number(req.query['limit'] ?? 200), 1000);
-      const requestedNetwork = resolveRequestNetwork(req.query['network'], req.headers);
-      const network = requestedNetwork === 'all' ? undefined : requestedNetwork;
+      const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const observer = normalizeObserverQuery(req.query['observer']);
       const raw = String(req.query['raw'] ?? '').trim();
       const packets = raw === '1'
@@ -51,8 +51,7 @@ export function registerMiscRoutes(router: Router, deps: MiscRouteDeps): void {
         res.status(400).json({ error: 'Invalid packet hash' });
         return;
       }
-      const requestedNetwork = resolveRequestNetwork(req.query['network'], req.headers);
-      const network = requestedNetwork === 'all' ? undefined : requestedNetwork;
+      const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const detail = await getPacketDetail(hash, network);
       if (!detail) {
         res.status(404).json({ error: 'Packet not found' });
@@ -67,10 +66,9 @@ export function registerMiscRoutes(router: Router, deps: MiscRouteDeps): void {
 
   router.get('/companion-activity', async (req, res) => {
     try {
-      const requestedNetwork = resolveRequestNetwork(req.query['network'], req.headers);
-      const network = requestedNetwork === 'all' ? undefined : requestedNetwork;
-      const params: unknown[] = [];
-      const networkClause = network ? `AND network = $${params.push(network)}` : '';
+      const network = resolvePublicNetworkScope(req.query['network'], req.headers);
+      const params: unknown[] = [expandResolverScope(network)];
+      const networkClause = 'AND network = ANY($1::text[])';
       const result = await query<{
         sender: string;
         message_count: string;
@@ -86,6 +84,7 @@ export function registerMiscRoutes(router: Router, deps: MiscRouteDeps): void {
           AND payload->'decrypted' IS NOT NULL
           AND payload->'decrypted'->>'sender' IS NOT NULL
           AND payload->'decrypted'->>'sender' != ''
+          AND payload->'decrypted'->>'sender' NOT LIKE '%🚫%'
           AND time > NOW() - INTERVAL '24 hours'
           ${networkClause}
         GROUP BY payload->'decrypted'->>'sender'
@@ -118,12 +117,11 @@ export function registerMiscRoutes(router: Router, deps: MiscRouteDeps): void {
 
   router.get('/mqtt-nodes', async (req, res) => {
     try {
-      const requestedNetwork = resolveRequestNetwork(req.query['network'], req.headers);
-      const network = requestedNetwork === 'all' ? undefined : requestedNetwork;
-      const params: unknown[] = [];
-      const networkClause = network ? `AND nss.network = $${params.push(network)}` : `AND nss.network IS DISTINCT FROM 'test'`;
-      const packetNetworkClause = network ? `AND network = $${params.length + 1}` : `AND network IS DISTINCT FROM 'test'`;
-      if (network) params.push(network);
+      const network = resolvePublicNetworkScope(req.query['network'], req.headers);
+      const networkValues = expandResolverScope(network);
+      const params: unknown[] = [networkValues, networkValues];
+      const networkClause = 'AND nss.network = ANY($1::text[])';
+      const packetNetworkClause = 'AND network = ANY($2::text[])';
       const result = await query<{
         node_id: string;
         name: string | null;
@@ -161,6 +159,7 @@ export function registerMiscRoutes(router: Router, deps: MiscRouteDeps): void {
            GROUP BY rx_node_id
          ) pc ON pc.rx_node_id = nss.node_id
          WHERE nss.time > NOW() - INTERVAL '15 minutes'
+           AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
            ${networkClause}
          ORDER BY nss.node_id, COALESCE(nss.uptime_secs, 0) DESC, nss.time DESC`,
         params,

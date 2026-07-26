@@ -1406,14 +1406,16 @@ async function loadContext(network: string): Promise<BetaResolveContext> {
     query<MeshNode>(
       `SELECT node_id, name, lat, lon, iata, role, elevation_m, last_seen::text AS last_seen
        FROM nodes
-       WHERE ($1 = 'all' OR network = $1)`,
+       WHERE ($1 = 'all' OR network = $1)
+         AND (name IS NULL OR name NOT LIKE '%🚫%')`,
       [network],
     ),
     query<NodeCoverage>(
       `SELECT nc.node_id, nc.radius_m
        FROM node_coverage nc
        JOIN nodes n ON n.node_id = nc.node_id
-       WHERE ($1 = 'all' OR n.network = $1)`,
+       WHERE ($1 = 'all' OR n.network = $1)
+         AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')`,
       [network],
     ),
     query<{
@@ -1432,6 +1434,8 @@ async function loadContext(network: string): Promise<BetaResolveContext> {
        JOIN nodes a ON a.node_id = nl.node_a_id
        JOIN nodes b ON b.node_id = nl.node_b_id
        WHERE (nl.itm_viable IS NOT NULL OR nl.force_viable = true)
+         AND (a.name IS NULL OR a.name NOT LIKE '%🚫%')
+         AND (b.name IS NULL OR b.name NOT LIKE '%🚫%')
          AND ($1 = 'all' OR (a.network = $1 AND b.network = $1))`,
       [network],
     ),
@@ -1693,6 +1697,19 @@ export async function resolveBetaPathForPacketHash(
        WHERE packet_hash = $1
          AND ($2 = 'all' OR network = $2)
          ${observer ? 'AND rx_node_id = $3' : ''}
+         AND NOT EXISTS (
+           SELECT 1 FROM nodes private_node
+           WHERE private_node.name LIKE '%🚫%'
+             AND (
+               private_node.node_id IN (packets.rx_node_id, packets.src_node_id)
+               OR EXISTS (
+                 SELECT 1
+                 FROM unnest(COALESCE(packets.path_hashes, ARRAY[]::text[])) AS path_hash
+                 WHERE packets.path_hash_size_bytes BETWEEN 1 AND 3
+                   AND UPPER(private_node.node_id) LIKE UPPER(path_hash) || '%'
+               )
+             )
+         )
        ORDER BY COALESCE(cardinality(path_hashes), 0) DESC,
                 CASE WHEN path_hash_size_bytes IS NOT NULL THEN 1 ELSE 0 END DESC,
                 CASE WHEN src_node_id IS NOT NULL THEN 1 ELSE 0 END DESC,
@@ -1707,6 +1724,11 @@ export async function resolveBetaPathForPacketHash(
        WHERE packet_hash = $1
          AND ($2 = 'all' OR network = $2)
          AND rx_node_id IS NOT NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM nodes private_node
+           WHERE private_node.name LIKE '%🚫%'
+             AND private_node.node_id IN (packets.rx_node_id, packets.src_node_id)
+         )
        GROUP BY rx_node_id`,
       [packetHash, network],
     ),
@@ -2194,6 +2216,19 @@ export async function resolveMultiObserverBetaPath(
      WHERE packet_hash = $1
        AND ($2 = 'all' OR network = $2)
        AND rx_node_id IS NOT NULL
+       AND NOT EXISTS (
+         SELECT 1 FROM nodes private_node
+         WHERE private_node.name LIKE '%🚫%'
+           AND (
+             private_node.node_id IN (packets.rx_node_id, packets.src_node_id)
+             OR EXISTS (
+               SELECT 1
+               FROM unnest(COALESCE(packets.path_hashes, ARRAY[]::text[])) AS path_hash
+               WHERE packets.path_hash_size_bytes BETWEEN 1 AND 3
+                 AND UPPER(private_node.node_id) LIKE UPPER(path_hash) || '%'
+             )
+           )
+       )
      ORDER BY COALESCE(cardinality(path_hashes), 0) DESC,
               CASE WHEN path_hash_size_bytes IS NOT NULL THEN 1 ELSE 0 END DESC,
               CASE WHEN src_node_id IS NOT NULL THEN 1 ELSE 0 END DESC,

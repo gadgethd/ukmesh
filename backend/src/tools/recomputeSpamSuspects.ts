@@ -1,5 +1,6 @@
 import { evaluateAdvert, refreshSpamDetectorCaches } from '../mqtt/spamDetector.js';
 import { pool, query, replaceSpamSuspects, type SpamSuspectRow } from '../db/index.js';
+import { UKMESH_NETWORKS } from '../networks.js';
 
 type CandidateRow = {
   src_node_id: string;
@@ -107,7 +108,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  await replaceSpamSuspects(suspects);
+  await replaceSpamSuspects(UKMESH_NETWORKS, suspects);
   console.log(`[spam-recompute] replaced spam_suspects with ${suspects.length} row(s)`);
 }
 

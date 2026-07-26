@@ -1,8 +1,7 @@
 import type { Router } from 'express';
 import type { QueryResultRow } from 'pg';
-import { resolveRequestNetwork } from '../../http/requestScope.js';
+import { resolvePublicNetworkScope } from '../../http/requestScope.js';
 import type { NetworkFilters } from '../utils/networkFilters.js';
-import { redactPrivateNode } from '../utils/privateNode.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { csvRow } from '../utils/csv.js';
@@ -43,8 +42,7 @@ export function registerExportRoutes(router: Router, deps: Deps): void {
         res.status(404).json({ error: 'Supported formats are csv and geojson' });
         return;
       }
-      const requestedNetwork = resolveRequestNetwork(req.query['network'], req.headers, 'ukmesh');
-      const network = requestedNetwork === 'all' ? undefined : requestedNetwork;
+      const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const requestedLimit = Number(req.query['limit'] ?? 5_000);
       const limit = Number.isFinite(requestedLimit) ? Math.min(5_000, Math.max(1, Math.round(requestedLimit))) : 5_000;
       const filters = deps.networkFilters(network);
@@ -56,12 +54,13 @@ export function registerExportRoutes(router: Router, deps: Deps): void {
         `SELECT node_id, name, lat, lon, role, iata, last_seen::text, hardware_model
          FROM nodes
          WHERE lat IS NOT NULL AND lon IS NOT NULL
+           AND (name IS NULL OR name NOT LIKE '%🚫%')
            ${filters.nodes}
          ORDER BY last_seen DESC NULLS LAST, node_id
          LIMIT ${limitParam}`,
         [...filters.params, limit],
       );
-      const nodes = result.rows.map((node) => redactPrivateNode(node));
+      const nodes = result.rows;
       res.setHeader('X-API-Version', '1');
       res.setHeader('Cache-Control', 'public, max-age=300, stale-while-revalidate=600');
       if (format === 'geojson') {

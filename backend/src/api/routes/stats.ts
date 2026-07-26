@@ -1,5 +1,5 @@
 import type { Router } from 'express';
-import { resolveRequestNetwork } from '../../http/requestScope.js';
+import { resolvePublicNetworkScope } from '../../http/requestScope.js';
 import { createStatsRepository } from '../../stats/statsRepository.js';
 import { createStatsService } from '../../stats/statsService.js';
 import type { NetworkFilters } from '../utils/networkFilters.js';
@@ -61,8 +61,7 @@ export function registerStatsRoutes(router: Router, deps: StatsRouteDeps): void 
 
   router.get('/stats', async (req, res) => {
     try {
-      const requestedNetwork = resolveRequestNetwork(req.query['network'], req.headers);
-      const network = requestedNetwork === 'all' ? undefined : requestedNetwork;
+      const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const observer = normalizeObserverQuery(req.query['observer']);
       res.json(await service.getStatsSummary(network, observer));
     } catch (err) {
@@ -73,8 +72,7 @@ export function registerStatsRoutes(router: Router, deps: StatsRouteDeps): void 
 
   router.get('/stats/charts', deps.statsChartsLimiter, async (req, res) => {
     try {
-      const requestedNetwork = resolveRequestNetwork(req.query['network'], req.headers);
-      const network = requestedNetwork === 'all' ? undefined : requestedNetwork;
+      const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const observer = normalizeObserverQuery(req.query['observer']);
       res.json(await service.getCharts(network, observer));
     } catch (err) {
@@ -85,8 +83,7 @@ export function registerStatsRoutes(router: Router, deps: StatsRouteDeps): void 
 
   router.get('/observer-activity', deps.expensiveLimiter, async (req, res) => {
     try {
-      const requestedNetwork = resolveRequestNetwork(req.query['network'], req.headers);
-      const network = requestedNetwork === 'all' ? undefined : requestedNetwork;
+      const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       res.json(await service.getObserverActivity(network));
     } catch (err) {
       console.error('[api] GET /observer-activity', (err as Error).message);

@@ -1,5 +1,5 @@
 import type { Router } from 'express';
-import { resolveRequestNetwork } from '../../http/requestScope.js';
+import { resolvePublicNetworkScope } from '../../http/requestScope.js';
 import { lazyResolvePath } from '../../path-lazy/lazyResolver.js';
 import { createPathingRepository } from '../../pathing/pathingRepository.js';
 import { createPathingService } from '../../pathing/pathingService.js';
@@ -64,7 +64,7 @@ export function registerPathingRoutes(router: Router, deps: PathingRouteDeps): v
         res.status(400).json({ error: 'Invalid hash format' });
         return;
       }
-      const network = resolveRequestNetwork(req.query['network'], req.headers, 'ukmesh') ?? 'ukmesh';
+      const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const observer = normalizeObserverQuery(req.query['observer']);
       res.json(await service.resolvePacket(packetHash, network, observer));
     } catch (err) {
@@ -88,7 +88,7 @@ export function registerPathingRoutes(router: Router, deps: PathingRouteDeps): v
         res.status(400).json({ error: 'Invalid hash format' });
         return;
       }
-      const network = resolveRequestNetwork(req.query['network'], req.headers, 'ukmesh') ?? 'ukmesh';
+      const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       res.json(await service.resolvePacketMulti(packetHash, network));
     } catch (err) {
       if ((err as Error).message === 'PACKET_NOT_FOUND') {
@@ -102,9 +102,8 @@ export function registerPathingRoutes(router: Router, deps: PathingRouteDeps): v
 
   router.get('/path-beta/history', deps.pathHistoryLimiter, async (req, res) => {
     try {
-      const requestedNetwork = resolveRequestNetwork(req.query['network'], req.headers);
-      const scope = requestedNetwork === 'all' ? 'all' : (requestedNetwork ?? 'ukmesh');
-      res.json(await service.getPathHistory(scope));
+      const network = resolvePublicNetworkScope(req.query['network'], req.headers);
+      res.json(await service.getPathHistory(network));
     } catch (err) {
       console.error('[api] GET /path-beta/history', (err as Error).message);
       res.status(500).json({ error: 'Internal server error' });
@@ -113,13 +112,12 @@ export function registerPathingRoutes(router: Router, deps: PathingRouteDeps): v
 
   router.get('/path-beta/multibyte-paths', deps.pathHistoryLimiter, async (req, res) => {
     try {
-      const requestedNetwork = resolveRequestNetwork(req.query['network'], req.headers);
-      const network = requestedNetwork === 'all' ? undefined : (requestedNetwork ?? 'ukmesh');
+      const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const observer = normalizeObserverQuery(req.query['observer']);
       const { maxCount, segments } = await deps.getMultibytePathSegments(network, observer ?? undefined);
       res.json({
         ok: true,
-        scope: requestedNetwork === 'all' ? 'all' : (requestedNetwork ?? 'ukmesh'),
+        scope: network,
         maxCount,
         segments,
       });
@@ -136,8 +134,7 @@ export function registerPathingRoutes(router: Router, deps: PathingRouteDeps): v
         res.status(400).json({ error: 'Invalid or missing hash' });
         return;
       }
-      const requestedNetwork = resolveRequestNetwork(req.query['network'], req.headers);
-      const network = (!requestedNetwork || requestedNetwork === 'all') ? null : requestedNetwork;
+      const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const result = await lazyResolvePath(packetHash, network, deps.query);
       if (!result) {
         res.status(404).json({ error: 'No path data found for this packet' });
@@ -152,7 +149,7 @@ export function registerPathingRoutes(router: Router, deps: PathingRouteDeps): v
 
   router.get('/path-learning', deps.pathLearningLimiter, async (req, res) => {
     try {
-      const network = resolveRequestNetwork(req.query['network'], req.headers, 'ukmesh') ?? 'ukmesh';
+      const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const limit = Math.min(12000, Math.max(1000, Number(req.query['limit'] ?? 6000)));
       res.json(await service.getPathLearning(network, limit));
     } catch (err) {

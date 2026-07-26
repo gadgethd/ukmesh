@@ -170,7 +170,22 @@ export async function resolveSpamOrigin(
         AND ($2::text[] IS NULL OR p.network = ANY($2))
         AND p.path_hashes IS NOT NULL AND cardinality(p.path_hashes) > 0
         AND p.hop_count IS NOT NULL
-        AND n.lat IS NOT NULL AND n.lon IS NOT NULL AND n.lat <> 0 AND n.lon <> 0`,
+        AND n.lat IS NOT NULL AND n.lon IS NOT NULL AND n.lat <> 0 AND n.lon <> 0
+        AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
+        AND NOT EXISTS (
+          SELECT 1
+          FROM nodes private_node
+          WHERE private_node.name LIKE '%🚫%'
+            AND (
+              private_node.node_id IN (p.rx_node_id, p.src_node_id)
+              OR EXISTS (
+                SELECT 1
+                FROM unnest(COALESCE(p.path_hashes, ARRAY[]::text[])) AS path_hash
+                WHERE p.path_hash_size_bytes BETWEEN 1 AND 3
+                  AND UPPER(private_node.node_id) LIKE UPPER(path_hash) || '%'
+              )
+            )
+        )`,
     [ids, scope],
   );
   if (recRes.rows.length === 0) return null;
@@ -188,6 +203,7 @@ export async function resolveSpamOrigin(
     `SELECT node_id, name, lat, lon FROM nodes
       WHERE ($1::text[] IS NULL OR network = ANY($1))
         AND lat IS NOT NULL AND lon IS NOT NULL AND lat <> 0 AND lon <> 0
+        AND (name IS NULL OR name NOT LIKE '%🚫%')
         AND length(node_id) >= 2`,
     [scope],
   );

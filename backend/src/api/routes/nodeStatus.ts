@@ -1,24 +1,21 @@
 import { Router } from 'express';
 import { query } from '../../db/index.js';
-import { resolveRequestNetwork } from '../../http/requestScope.js';
+import { resolvePublicNetworkScope } from '../../http/requestScope.js';
 import { normalizeObserverQuery } from '../utils/observer.js';
+import { expandResolverScope } from '../../networks.js';
 
 const router = Router();
 
 router.get('/node-status/latest', async (req, res) => {
   try {
-    const requestedNetwork = resolveRequestNetwork(req.query['network'], req.headers);
-    const network = requestedNetwork === 'all' ? undefined : requestedNetwork;
+    const network = resolvePublicNetworkScope(req.query['network'], req.headers);
+    const networkValues = expandResolverScope(network);
     const observer = normalizeObserverQuery(req.query['observer']);
 
-    const params: string[] = [];
+    const params: unknown[] = [];
     const conditions: string[] = [];
-    if (network) {
-      params.push(network);
-      conditions.push(`nss.network = $${params.length}`);
-    } else {
-      conditions.push(`nss.network IS DISTINCT FROM 'test'`);
-    }
+    params.push(networkValues);
+    conditions.push(`nss.network = ANY($${params.length}::text[])`);
     if (observer) {
       params.push(observer);
       conditions.push(`nss.node_id = $${params.length}`);
@@ -60,6 +57,7 @@ router.get('/node-status/latest', async (req, res) => {
          FROM node_status_samples nss
          LEFT JOIN nodes n ON n.node_id = nss.node_id
          ${whereClause}
+         ${whereClause ? 'AND' : 'WHERE'} (n.name IS NULL OR n.name NOT LIKE '%🚫%')
          ORDER BY nss.node_id, nss.time DESC
        ) latest
        ORDER BY time DESC`,
@@ -76,8 +74,8 @@ router.get('/node-status/latest', async (req, res) => {
 router.get('/node-status/history', async (req, res) => {
   try {
     const ESTIMATED_AIRTIME_SECONDS_PER_PUBLISH = 0.12;
-    const requestedNetwork = resolveRequestNetwork(req.query['network'], req.headers);
-    const network = requestedNetwork === 'all' ? undefined : requestedNetwork;
+    const network = resolvePublicNetworkScope(req.query['network'], req.headers);
+    const networkValues = expandResolverScope(network);
     const observer = normalizeObserverQuery(req.query['observer']);
     const requestedNodeId = String(req.query['nodeId'] ?? '').trim();
     const hours = Math.max(1, Math.min(Number(req.query['hours'] ?? 24), 168));
@@ -89,14 +87,10 @@ router.get('/node-status/history', async (req, res) => {
     }
 
     if (!nodeId) {
-      const params: string[] = [];
+      const params: unknown[] = [];
       const conditions: string[] = [];
-      if (network) {
-        params.push(network);
-        conditions.push(`nss.network = $${params.length}`);
-      } else {
-        conditions.push(`nss.network IS DISTINCT FROM 'test'`);
-      }
+      params.push(networkValues);
+      conditions.push(`nss.network = ANY($${params.length}::text[])`);
       if (observer) {
         params.push(observer);
         conditions.push(`nss.node_id = $${params.length}`);
@@ -105,7 +99,9 @@ router.get('/node-status/history', async (req, res) => {
       const latestNode = await query<{ node_id: string }>(
         `SELECT nss.node_id
          FROM node_status_samples nss
+         JOIN nodes n ON n.node_id = nss.node_id
          ${whereClause}
+           AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
          ORDER BY nss.time DESC
          LIMIT 1`,
         params,
@@ -165,11 +161,14 @@ router.get('/node-status/history', async (req, res) => {
            WHEN jsonb_typeof(stats->'tx_queue_depth_peak') = 'number' THEN (stats->>'tx_queue_depth_peak')::double precision
            ELSE NULL
          END AS tx_queue_depth_peak
-       FROM node_status_samples
-       WHERE node_id = $1
-         AND time > NOW() - ($2::text || ' hours')::interval
+       FROM node_status_samples nss
+       JOIN nodes n ON n.node_id = nss.node_id
+       WHERE nss.node_id = $1
+         AND nss.network = ANY($3::text[])
+         AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
+         AND nss.time > NOW() - ($2::text || ' hours')::interval
        ORDER BY time ASC`,
-      [nodeId, String(hours)],
+      [nodeId, String(hours), networkValues],
     );
 
     const points = result.rows.map((row, index) => {

@@ -4,7 +4,10 @@ import type { Server } from 'node:http';
 import { Redis } from 'ioredis';
 import type { WSMessage, LivePacket } from '../types/index.js';
 import { getNodes, getRecentPackets, getRecentMessages, getViableLinks } from '../db/index.js';
-import { resolveRequestNetwork } from '../http/requestScope.js';
+import {
+  PublicAllScopeForbiddenError,
+  resolvePublicNetworkScope,
+} from '../http/requestScope.js';
 import { networkMatchesScope } from '../networks.js';
 import { getRedisConnectionOptions, getRedisUrl } from '../platform/config/redis.js';
 import { BoundedTtlMap } from '../cache/boundedTtlMap.js';
@@ -13,6 +16,8 @@ import {
   BoundedTaskQueueFullError,
   websocketAdmissionDecision,
 } from './limits.js';
+import { isPrivateNode } from '../api/utils/privateNode.js';
+import { PublicWsPrivacyIndex } from './privacy.js';
 
 const REDIS_CHANNEL = 'meshcore:live';
 const LOG_WS_PACKETS = process.env['LOG_WS_PACKETS'] === '1';
@@ -71,6 +76,24 @@ const initialStateCache = new BoundedTtlMap<string, InitialStateEntry>({
   ttlMs: INITIAL_STATE_TTL_MS,
 });
 const initialStateInflight = new Map<string, Promise<InitialStateEntry>>();
+const publicPrivacy = new PublicWsPrivacyIndex();
+let privacyRefreshInFlight: Promise<void> | null = null;
+
+function refreshPrivacyIndex(): Promise<void> {
+  if (privacyRefreshInFlight) return privacyRefreshInFlight;
+  const tracked = Promise.all([getNodes('ukmesh'), getNodes('test')])
+    .then(([productionNodes, testNodes]) => {
+      publicPrivacy.replace([...productionNodes, ...testNodes]);
+    })
+    .catch((error: unknown) => {
+      console.error('[ws] privacy index refresh failed:', (error as Error).message);
+    })
+    .finally(() => {
+      if (privacyRefreshInFlight === tracked) privacyRefreshInFlight = null;
+    });
+  privacyRefreshInFlight = tracked;
+  return tracked;
+}
 
 async function fetchInitialState(network: string | undefined, observer: string | undefined): Promise<InitialStateEntry> {
   const key = `${network ?? ''}:${observer ?? ''}`;
@@ -86,12 +109,17 @@ async function fetchInitialState(network: string | undefined, observer: string |
       // getRecentPackets: 5-minute window, all types (fast, CTE aggregation ~16 ms).
       // getRecentMessages: last 200 GRP (type=5) from Postgres so the feed can
       //   seed a proper message cache on first load instead of relying on live traffic.
-      const [nodes, packets, messages, viableLinks] = await Promise.all([
+      const [rawNodes, packets, messages, rawViableLinks] = await Promise.all([
         getNodes(network, observer),
         getRecentPackets(7, network, observer),
         getRecentMessages(200, network, observer),
         getCachedViableLinks(network, observer),
       ]);
+      const nodes = rawNodes.filter((node) => !isPrivateNode(node.name));
+      const viableLinks = rawViableLinks.filter((link) => (
+        !publicPrivacy.hasNode(link.node_a_id)
+        && !publicPrivacy.hasNode(link.node_b_id)
+      ));
       const entry: InitialStateEntry = { ts: Date.now(), nodes, packets, messages, viableLinks };
       initialStateCache.set(key, entry);
       return entry;
@@ -210,6 +238,9 @@ function trackScopedNodes(msg: WSMessage, scope: ClientScope): void {
 }
 
 export function initWebSocketServer(httpServer: Server): WebSocketServer {
+  void refreshPrivacyIndex();
+  const privacyRefreshTimer = setInterval(() => void refreshPrivacyIndex(), 5 * 60_000);
+  privacyRefreshTimer.unref();
   // Two separate clients: one for pub, one for sub
   // Do NOT use lazyConnect — let ioredis manage the connect lifecycle
   pub = new Redis(getRedisUrl(), getRedisConnectionOptions());
@@ -273,6 +304,14 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
         done(false, 403, 'Forbidden');
         return;
       }
+      try {
+        const reqUrl = new URL(info.req.url ?? '/', 'http://localhost');
+        resolvePublicNetworkScope(reqUrl.searchParams.get('network'), info.req.headers);
+      } catch (error) {
+        if (!(error instanceof PublicAllScopeForbiddenError)) throw error;
+        done(false, 400, 'The all-network scope is not available');
+        return;
+      }
       const admission = websocketAdmissionDecision(
         { activeConnections: wss.clients.size, pendingHandshakes },
         {
@@ -314,8 +353,7 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
 
     // Derive scope from query params (?network=teesside&observer=<pubkey>)
     const reqUrl  = new URL(req.url ?? '/', 'http://localhost');
-    const requestedNetwork = resolveRequestNetwork(reqUrl.searchParams.get('network'), req.headers);
-    const network = requestedNetwork === 'all' ? undefined : requestedNetwork;
+    const network = resolvePublicNetworkScope(reqUrl.searchParams.get('network'), req.headers);
     const observer = normalizeObserver(reqUrl.searchParams.get('observer'));
     const scope: ClientScope = {
       network,
@@ -392,7 +430,10 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
     }
   }, WS_HEARTBEAT_INTERVAL_MS);
   heartbeatTimer.unref();
-  wss.on('close', () => clearInterval(heartbeatTimer));
+  wss.on('close', () => {
+    clearInterval(heartbeatTimer);
+    clearInterval(privacyRefreshTimer);
+  });
 
   const flushMessageQueue = () => {
     if (messageQueue.size === 0) {
@@ -429,6 +470,9 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
     } catch {
       return;
     }
+    parsed = publicPrivacy.filterMessage(parsed);
+    if (!parsed) return;
+    messageStr = JSON.stringify(parsed);
 
     if (LOG_WS_PACKETS && parsed?.type === 'packet') {
       console.log('[ws-sub] received packet:', (parsed.data as LivePacket)?.packetHash);
@@ -471,11 +515,13 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
 }
 
 export function broadcastPacket(packet: LivePacket): void {
+  if (publicPrivacy.packetHasPrivateParticipant(packet)) return;
   const msg: WSMessage = { type: 'packet', data: packet, ts: Date.now() };
   void pub.publish(REDIS_CHANNEL, JSON.stringify(msg));
 }
 
 export function broadcastNodeUpdate(nodeId: string, meta?: { network?: string; observerId?: string }): void {
+  if (!publicPrivacy.isReady || publicPrivacy.hasNode(nodeId)) return;
   // Normalise IDs to lowercase once here so shouldSendMessage() never needs to allocate
   const msg: WSMessage = {
     type: 'node_update',
@@ -491,6 +537,8 @@ export function broadcastNodeUpdate(nodeId: string, meta?: { network?: string; o
 }
 
 export function broadcastNodeUpsert(node: Record<string, unknown>): void {
+  const candidate = { type: 'node_upsert', data: node, ts: Date.now() } as WSMessage;
+  if (!publicPrivacy.filterMessage(candidate)) return;
   // Normalise IDs to lowercase once here so shouldSendMessage() never needs to allocate
   const normalised: Record<string, unknown> = {
     ...node,

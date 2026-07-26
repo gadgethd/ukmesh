@@ -193,6 +193,19 @@ export async function lazyResolvePath(
       WHERE packet_hash = $1
         AND ($2::text[] IS NULL OR network = ANY($2))
         AND rx_node_id IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM nodes private_node
+          WHERE private_node.name LIKE '%🚫%'
+            AND (
+              private_node.node_id IN (packets.rx_node_id, packets.src_node_id)
+              OR EXISTS (
+                SELECT 1
+                FROM unnest(COALESCE(packets.path_hashes, ARRAY[]::text[])) AS path_hash
+                WHERE packets.path_hash_size_bytes BETWEEN 1 AND 3
+                  AND UPPER(private_node.node_id) LIKE UPPER(path_hash) || '%'
+              )
+            )
+        )
       ORDER BY rx_node_id,
                COALESCE(cardinality(path_hashes), 0) DESC,
                COALESCE(path_hash_size_bytes, 0) DESC,
@@ -229,7 +242,8 @@ export async function lazyResolvePath(
     `SELECT node_id, lat, lon, name FROM nodes
       WHERE node_id = ANY($1)
         AND lat IS NOT NULL AND lon IS NOT NULL
-        AND lat != 0 AND lon != 0`,
+        AND lat != 0 AND lon != 0
+        AND (name IS NULL OR name NOT LIKE '%🚫%')`,
     [allObserverIds],
   );
 
@@ -303,6 +317,7 @@ export async function lazyResolvePath(
       `SELECT node_id, name, lat, lon
          FROM nodes
         WHERE ($1::text[] IS NULL OR network = ANY($1))
+          AND (name IS NULL OR name NOT LIKE '%🚫%')
           AND (${whereClauses.join(' OR ')})`,
       [scopedNetworks, ...allUniqueHashes.map((h) => h + '%')],
     );

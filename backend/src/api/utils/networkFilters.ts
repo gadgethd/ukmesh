@@ -1,4 +1,5 @@
 import { UKMESH_NETWORKS } from '../../networks.js';
+import type { VisibilityScope } from '../../http/requestScope.js';
 
 export type NetworkFilters = {
   params: unknown[];
@@ -7,6 +8,37 @@ export type NetworkFilters = {
   nodes: string;
   nodesAlias: (alias: string) => string;
 };
+
+function publicPacketPrivacyConditions(prefix: string): string[] {
+  return [
+    `(
+      COALESCE(cardinality(${prefix}path_hashes), 0) = 0
+      OR ${prefix}path_hash_size_bytes BETWEEN 1 AND 3
+    )`,
+    `NOT EXISTS (
+      SELECT 1
+      FROM unnest(COALESCE(${prefix}path_hashes, ARRAY[]::text[])) AS malformed_path_hash
+      WHERE malformed_path_hash IS NULL
+         OR length(malformed_path_hash) <> ${prefix}path_hash_size_bytes * 2
+         OR malformed_path_hash !~ '^[0-9A-Fa-f]+$'
+    )`,
+    `NOT EXISTS (
+      SELECT 1
+      FROM nodes private_node
+      WHERE private_node.name LIKE '%🚫%'
+        AND (
+          private_node.node_id IN (${prefix}rx_node_id, ${prefix}src_node_id)
+          OR EXISTS (
+            SELECT 1
+            FROM unnest(COALESCE(${prefix}path_hashes, ARRAY[]::text[])) AS path_hash
+            WHERE ${prefix}path_hash_size_bytes BETWEEN 1 AND 3
+              AND length(path_hash) = ${prefix}path_hash_size_bytes * 2
+              AND UPPER(private_node.node_id) LIKE UPPER(path_hash) || '%'
+          )
+        )
+    )`,
+  ];
+}
 
 export function networkFilters(network?: string, observer?: string): NetworkFilters {
   const params: unknown[] = [];
@@ -34,12 +66,17 @@ export function networkFilters(network?: string, observer?: string): NetworkFilt
     : null;
 
   const packetConditions: string[] = [];
-  if (netEq) packetConditions.push(netEq);
-  else {
+  if (netEq) {
+    packetConditions.push(netEq);
+    if (network !== 'test') {
+      packetConditions.push(`split_part(topic, '/', 1) <> 'meshcore-test'`);
+    }
+  } else {
     packetConditions.push(`network IS DISTINCT FROM 'test'`);
     packetConditions.push(`COALESCE(rx_node_id, '') NOT IN (SELECT node_id FROM nodes WHERE network = 'test')`);
   }
   if (observerParam) packetConditions.push(`rx_node_id = ${observerParam}`);
+  packetConditions.push(...publicPacketPrivacyConditions(''));
 
   const nodeConditions = (alias?: string) => {
     const prefix = alias ? `${alias}.` : '';
@@ -115,6 +152,7 @@ export function networkFilters(network?: string, observer?: string): NetworkFilt
         conditions.push(`COALESCE(${prefix}rx_node_id, '') NOT IN (SELECT node_id FROM nodes WHERE network = 'test')`);
       }
       if (observerParam) conditions.push(`${prefix}rx_node_id = ${observerParam}`);
+      conditions.push(...publicPacketPrivacyConditions(prefix));
       return conditions.length > 0 ? `AND ${conditions.join(' AND ')}` : '';
     },
     nodes: nodeConditions().length > 0 ? `AND ${nodeConditions().join(' AND ')}` : '',
@@ -123,4 +161,8 @@ export function networkFilters(network?: string, observer?: string): NetworkFilt
       return conditions.length > 0 ? `AND ${conditions.join(' AND ')}` : '';
     },
   };
+}
+
+export function publicNetworkFilters(scope: VisibilityScope): NetworkFilters {
+  return networkFilters(scope.network, scope.observer);
 }

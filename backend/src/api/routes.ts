@@ -56,8 +56,27 @@ import { registerRfValidationRoutes } from './routes/rfValidation.js';
 import { registerExportRoutes } from './routes/exports.js';
 import { requireLocalOnly } from './utils/localOnly.js';
 import { networkFilters } from './utils/networkFilters.js';
+import {
+  PublicAllScopeForbiddenError,
+  resolvePublicNetworkScope,
+} from '../http/requestScope.js';
 
 const router = Router();
+// Anonymous cross-network aggregation is not a public API capability. Operator
+// diagnostics must use separately authenticated/local-only entry points.
+router.use((req, res, next) => {
+  try {
+    resolvePublicNetworkScope(req.query['network'], req.headers);
+  } catch (error) {
+    if (!(error instanceof PublicAllScopeForbiddenError)) {
+      next(error);
+      return;
+    }
+    res.status(400).json({ error: 'The all-network scope is not available on public endpoints' });
+    return;
+  }
+  next();
+});
 router.use(healthRoutes);
 router.use(nodeStatusRoutes);
 router.use(radioRoutes);

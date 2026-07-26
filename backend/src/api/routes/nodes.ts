@@ -1,6 +1,6 @@
 import type { Request, Response, Router } from 'express';
 import type { QueryResultRow } from 'pg';
-import { resolveRequestNetwork } from '../../http/requestScope.js';
+import { resolvePublicNetworkScope } from '../../http/requestScope.js';
 import type { NetworkFilters } from '../utils/networkFilters.js';
 import { normalizeObserverQuery } from '../utils/observer.js';
 import { isPrivateNode, redactPrivateNode } from '../utils/privateNode.js';
@@ -19,8 +19,8 @@ type NodeRecord = {
 };
 
 type GetNodesFn = (network?: string, observer?: string) => Promise<NodeRecord[]>;
-type GetNodeHistoryFn = (nodeId: string, hours: number) => Promise<unknown>;
-type GetNodeAdvertsFn = (publicKey: string, hours: number) => Promise<unknown>;
+type GetNodeHistoryFn = (nodeId: string, hours: number, network: string) => Promise<unknown>;
+type GetNodeAdvertsFn = (publicKey: string, hours: number, limit: number, network: string) => Promise<unknown>;
 type RequireLocalOnlyFn = (req: Request, res: Response) => boolean;
 
 type InferredMultibyteNode = {
@@ -261,11 +261,10 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
 
   router.get('/nodes', async (req, res) => {
     try {
-      const requestedNetwork = resolveRequestNetwork(req.query['network'], req.headers);
-      const network = requestedNetwork === 'all' ? undefined : requestedNetwork;
+      const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const observer = normalizeObserverQuery(req.query['observer']);
       const nodes = await getNodes(network, observer);
-      res.json(nodes.map(redactPrivateNode));
+      res.json(nodes.filter((node) => !isPrivateNode(node.name)).map(redactPrivateNode));
     } catch (err) {
       console.error('[api] GET /nodes', (err as Error).message);
       res.status(500).json({ error: 'Internal server error' });
@@ -274,8 +273,7 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
 
   router.get('/inferred-nodes', async (req, res) => {
     try {
-      const requestedNetwork = resolveRequestNetwork(req.query['network'], req.headers);
-      const network = requestedNetwork === 'all' ? undefined : requestedNetwork;
+      const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const observer = normalizeObserverQuery(req.query['observer']);
       const scope = networkFilters(network, observer);
 
@@ -287,7 +285,8 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
       }
 
       const [visibleNodes, allNodeIds, packetsResult] = await Promise.all([
-        getNodes(network, observer),
+        getNodes(network, observer).then((nodes) =>
+          nodes.filter((node) => !isPrivateNode(node.name)).map(redactPrivateNode)),
         query<{ node_id: string }>('SELECT node_id FROM nodes'),
         query<{
           packet_hash: string;
@@ -474,6 +473,9 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
         res.status(400).json({ error: 'Invalid node ID format' });
         return;
       }
+      const network = resolvePublicNetworkScope(req.query['network'], req.headers);
+      const filters = networkFilters(network);
+      const idParam = `$${filters.params.length + 1}`;
       const result = await query<{
         peer_id: string;
         peer_name: string | null;
@@ -483,23 +485,25 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
         count_peer_to_this: number;
       }>(
         `SELECT
-           CASE WHEN node_a_id = $1 THEN node_b_id ELSE node_a_id END AS peer_id,
+           CASE WHEN node_a_id = ${idParam} THEN node_b_id ELSE node_a_id END AS peer_id,
            n.name AS peer_name,
            observed_count,
            itm_path_loss_db,
-           CASE WHEN node_a_id = $1 THEN count_a_to_b ELSE count_b_to_a END AS count_this_to_peer,
-           CASE WHEN node_a_id = $1 THEN count_b_to_a ELSE count_a_to_b END AS count_peer_to_this
+           CASE WHEN node_a_id = ${idParam} THEN count_a_to_b ELSE count_b_to_a END AS count_this_to_peer,
+           CASE WHEN node_a_id = ${idParam} THEN count_b_to_a ELSE count_a_to_b END AS count_peer_to_this
          FROM node_links
-         LEFT JOIN nodes n ON n.node_id = CASE WHEN node_a_id = $1 THEN node_b_id ELSE node_a_id END
-         WHERE (node_a_id = $1 OR node_b_id = $1)
+         JOIN nodes source_node ON source_node.node_id = ${idParam}
+         JOIN nodes n ON n.node_id = CASE WHEN node_a_id = ${idParam} THEN node_b_id ELSE node_a_id END
+         WHERE (node_a_id = ${idParam} OR node_b_id = ${idParam})
            AND (itm_viable = true OR force_viable = true)
+           AND (source_node.name IS NULL OR source_node.name NOT LIKE '%🚫%')
+           AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
+           ${filters.nodesAlias('source_node')}
+           ${filters.nodesAlias('n')}
          ORDER BY observed_count DESC`,
-        [id],
+        [...filters.params, id],
       );
-      res.json(result.rows.map((row) => ({
-        ...row,
-        peer_name: isPrivateNode(row.peer_name) ? 'Private Node' : row.peer_name,
-      })));
+      res.json(result.rows);
     } catch (err) {
       console.error('[api] GET /nodes/:id/links', (err as Error).message);
       res.status(500).json({ error: 'Internal server error' });
@@ -514,7 +518,8 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
         return;
       }
       const hours = Math.min(Number(req.query['hours'] ?? 24), 672);
-      const history = await getNodeHistory(id, hours);
+      const network = resolvePublicNetworkScope(req.query['network'], req.headers);
+      const history = await getNodeHistory(id, hours, network);
       res.json(history);
     } catch (err) {
       console.error('[api] GET /nodes/:id/history', (err as Error).message);
@@ -530,7 +535,8 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
         return;
       }
       const hours = Math.min(Number(req.query['hours'] ?? 24), 672);
-      const adverts = await getNodeAdverts(publicKey, hours);
+      const network = resolvePublicNetworkScope(req.query['network'], req.headers);
+      const adverts = await getNodeAdverts(publicKey, hours, 100, network);
       res.json(adverts);
     } catch (err) {
       console.error('[api] GET /nodes/:id/adverts', (err as Error).message);
