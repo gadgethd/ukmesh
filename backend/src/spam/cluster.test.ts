@@ -218,3 +218,21 @@ test('incidentStatus reflects ongoing vs cooled-down incidents', () => {
   assert.equal(incidentStatus(now - 5 * MIN, now, conf), 'active');
   assert.equal(incidentStatus(now - 60 * MIN, now, conf), 'closed');
 });
+
+test('exact repeated spam cannot be evicted by newer unrelated candidate clusters', () => {
+  const target = 'persistent promotional flood visit target.example.com now';
+  const records: MessageRecord[] = [rec(target, 'TargetBot', 0)];
+  for (let minute = 1; minute <= 20; minute += 1) {
+    records.push(rec(`unrelated decoy message number ${minute}`, `Decoy${minute}`, minute));
+  }
+  records.push(rec(target, 'TargetBot', 21), rec(target, 'TargetBot', 22));
+  const incidents = clusterMessages(records, cfg({
+    maxCandidateClusters: 1,
+    joinWindowMs: 60 * MIN,
+    burstWindowMs: 60 * MIN,
+  }));
+  const targetIncident = incidents.find((incident) =>
+    incident.members.some((member) => member.text === target));
+  assert.ok(targetIncident);
+  assert.equal(targetIncident.messageCount, 3);
+});

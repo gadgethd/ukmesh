@@ -68,11 +68,20 @@ export function registerPathingRoutes(router: Router, deps: PathingRouteDeps): v
       const observer = normalizeObserverQuery(req.query['observer']);
       res.json(await service.resolvePacket(packetHash, network, observer));
     } catch (err) {
-      if ((err as Error).message === 'PACKET_NOT_FOUND') {
+      const message = (err as Error).message;
+      if (message === 'PACKET_NOT_FOUND') {
         res.status(404).json({ error: 'Packet not found' });
         return;
       }
-      console.error('[api] GET /path-beta/resolve', (err as Error).message);
+      if (message === 'PATH_HISTORY_LIMIT') {
+        res.status(422).json({ error: 'HISTORY_LIMIT', retryable: false });
+        return;
+      }
+      if (message === 'PATH_RESOLVE_OVERLOADED' || message === 'PATH_RESOLVE_TIMEOUT') {
+        res.status(503).json({ error: 'Path resolver is busy', retryable: true });
+        return;
+      }
+      console.error('[api] GET /path-beta/resolve', message);
       res.status(500).json({ error: 'Internal server error' });
     }
   });
@@ -91,11 +100,20 @@ export function registerPathingRoutes(router: Router, deps: PathingRouteDeps): v
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       res.json(await service.resolvePacketMulti(packetHash, network));
     } catch (err) {
-      if ((err as Error).message === 'PACKET_NOT_FOUND') {
+      const message = (err as Error).message;
+      if (message === 'PACKET_NOT_FOUND') {
         res.status(404).json({ error: 'Packet not found' });
         return;
       }
-      console.error('[api] GET /path-beta/resolve-multi', (err as Error).message);
+      if (message === 'PATH_HISTORY_LIMIT') {
+        res.status(422).json({ error: 'HISTORY_LIMIT', retryable: false });
+        return;
+      }
+      if (message === 'PATH_RESOLVE_OVERLOADED' || message === 'PATH_RESOLVE_TIMEOUT') {
+        res.status(503).json({ error: 'Path resolver is busy', retryable: true });
+        return;
+      }
+      console.error('[api] GET /path-beta/resolve-multi', message);
       res.status(500).json({ error: 'Internal server error' });
     }
   });
@@ -142,6 +160,10 @@ export function registerPathingRoutes(router: Router, deps: PathingRouteDeps): v
       }
       res.json(result);
     } catch (err) {
+      if ((err as Error).message === 'PATH_HISTORY_LIMIT') {
+        res.status(422).json({ error: 'HISTORY_LIMIT', retryable: false });
+        return;
+      }
       console.error('[api] GET /path-lazy/resolve', (err as Error).message);
       res.status(500).json({ error: 'Internal server error' });
     }

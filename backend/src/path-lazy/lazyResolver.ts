@@ -92,6 +92,26 @@ export type LazyPathResult = {
 // accuracy harness to measure the leakage-free floor (structural + prefix-prior
 // + geographic anchoring only). Never set in production.
 const ABLATE_LEAKY_PRIORS = process.env['LAZY_ABLATE_PRIORS'] === '1';
+const LAZY_HISTORY_WINDOW_HOURS = Math.min(
+  24 * 365,
+  Math.max(1, Number(process.env['LAZY_PATH_HISTORY_WINDOW_HOURS'] ?? 168) || 168),
+);
+const LAZY_MAX_OBSERVATIONS = Math.min(
+  10_000,
+  Math.max(32, Number(process.env['LAZY_PATH_MAX_OBSERVATIONS'] ?? 2_048) || 2_048),
+);
+const LAZY_MAX_OBSERVERS = Math.min(
+  512,
+  Math.max(1, Number(process.env['LAZY_PATH_MAX_OBSERVERS'] ?? 128) || 128),
+);
+const LAZY_MAX_UNIQUE_HASHES = Math.min(
+  256,
+  Math.max(1, Number(process.env['LAZY_PATH_MAX_UNIQUE_HASHES'] ?? 64) || 64),
+);
+const LAZY_MAX_CANDIDATE_NODES = Math.min(
+  20_000,
+  Math.max(32, Number(process.env['LAZY_PATH_MAX_CANDIDATE_NODES'] ?? 2_048) || 2_048),
+);
 
 function expectedHashHexLength(pathHashSizeBytes: number | null): number | null {
   if (pathHashSizeBytes !== 1 && pathHashSizeBytes !== 2 && pathHashSizeBytes !== 3) return null;
@@ -192,6 +212,7 @@ export async function lazyResolvePath(
        FROM packets
       WHERE packet_hash = $1
         AND ($2::text[] IS NULL OR network = ANY($2))
+        AND time >= NOW() - ($3::int * INTERVAL '1 hour')
         AND rx_node_id IS NOT NULL
         AND NOT EXISTS (
           SELECT 1 FROM nodes private_node
@@ -209,11 +230,13 @@ export async function lazyResolvePath(
       ORDER BY rx_node_id,
                COALESCE(cardinality(path_hashes), 0) DESC,
                COALESCE(path_hash_size_bytes, 0) DESC,
-               time ASC`,
-    [packetHash, scopedNetworks],
+               time ASC
+      LIMIT $4`,
+    [packetHash, scopedNetworks, LAZY_HISTORY_WINDOW_HOURS, LAZY_MAX_OBSERVERS + 1],
   );
 
   if (canonicalObs.rows.length === 0) return null;
+  if (canonicalObs.rows.length > LAZY_MAX_OBSERVERS) throw new Error('PATH_HISTORY_LIMIT');
 
   const totalObs = canonicalObs.rows.length;
   const allObserverIds = canonicalObs.rows.map((r) => r.rx_node_id);
@@ -227,10 +250,14 @@ export async function lazyResolvePath(
        FROM packets
       WHERE packet_hash = $1
         AND ($2::text[] IS NULL OR network = ANY($2))
+        AND time >= NOW() - ($3::int * INTERVAL '1 hour')
         AND rx_node_id IS NOT NULL
-        AND hop_count IS NOT NULL`,
-    [packetHash, scopedNetworks],
+        AND hop_count IS NOT NULL
+      ORDER BY time DESC, rx_node_id
+      LIMIT $4`,
+    [packetHash, scopedNetworks, LAZY_HISTORY_WINDOW_HOURS, LAZY_MAX_OBSERVATIONS + 1],
   );
+  if (allHopRows.rows.length > LAZY_MAX_OBSERVATIONS) throw new Error('PATH_HISTORY_LIMIT');
 
   // ── 3. Observer node positions + names ──────────────────────────────────
   const obsNodeResult = await query<{
@@ -303,6 +330,7 @@ export async function lazyResolvePath(
 
   // ── 6. Batch node lookup for all canonical hashes across all groups ──────
   const allUniqueHashes = [...new Set(groups.flatMap((g) => g.canonicalHashes))];
+  if (allUniqueHashes.length > LAZY_MAX_UNIQUE_HASHES) throw new Error('PATH_HISTORY_LIMIT');
 
   const nodesByHash = new Map<string, Array<{ nodeId: string; name: string | null; lat: number; lon: number }>>();
 
@@ -318,9 +346,12 @@ export async function lazyResolvePath(
          FROM nodes
         WHERE ($1::text[] IS NULL OR network = ANY($1))
           AND (name IS NULL OR name NOT LIKE '%🚫%')
-          AND (${whereClauses.join(' OR ')})`,
-      [scopedNetworks, ...allUniqueHashes.map((h) => h + '%')],
+          AND (${whereClauses.join(' OR ')})
+        ORDER BY node_id
+        LIMIT $${allUniqueHashes.length + 2}`,
+      [scopedNetworks, ...allUniqueHashes.map((h) => h + '%'), LAZY_MAX_CANDIDATE_NODES + 1],
     );
+    if (nodeResult.rows.length > LAZY_MAX_CANDIDATE_NODES) throw new Error('PATH_HISTORY_LIMIT');
 
     for (const node of nodeResult.rows) {
       if (node.lat == null || node.lon == null || node.lat === 0 || node.lon === 0) continue;
@@ -370,18 +401,20 @@ export async function lazyResolvePath(
     for (const c of candidates) allCandidateNodeIds.push(c.nodeId);
   }
   for (const obsId of observerPositions.keys()) allCandidateNodeIds.push(obsId);
+  const uniqueCandidateNodeIds = [...new Set(allCandidateNodeIds)];
+  if (uniqueCandidateNodeIds.length > LAZY_MAX_CANDIDATE_NODES) throw new Error('PATH_HISTORY_LIMIT');
 
   // Derive 2-char (1-byte) prefixes for ML score lookup
   const allUnique2charHashes = [...new Set(allUniqueHashes.map((h) => h.slice(0, 2)))];
 
   const [linkResult, prefixPriorRows, edgePriorRows, mlScoreRows, transitionPriorRows, motifPriorRows, calibrationRows] =
     await Promise.all([
-      allCandidateNodeIds.length > 0
+      uniqueCandidateNodeIds.length > 0
         ? query<{ node_a_id: string; node_b_id: string }>(
             `SELECT node_a_id, node_b_id FROM node_links
               WHERE (node_a_id = ANY($1) OR node_b_id = ANY($1))
                 AND observed_count >= 2`,
-            [allCandidateNodeIds],
+            [uniqueCandidateNodeIds],
           )
         : Promise.resolve({ rows: [] as { node_a_id: string; node_b_id: string }[] }),
       allUniqueHashes.length > 0
@@ -394,14 +427,14 @@ export async function lazyResolvePath(
             [scopedNetworks, allUniqueHashes],
           )
         : Promise.resolve({ rows: [] as { prefix: string; prev_prefix: string | null; node_id: string; max_prob: string }[] }),
-      allCandidateNodeIds.length > 0
+      uniqueCandidateNodeIds.length > 0
         ? query<{ from_node_id: string; to_node_id: string; best_score: string }>(
             `SELECT from_node_id, to_node_id, MAX(score)::text as best_score
                FROM path_edge_priors
               WHERE ($1::text[] IS NULL OR network = ANY($1))
                 AND (from_node_id = ANY($2) OR to_node_id = ANY($2))
               GROUP BY from_node_id, to_node_id`,
-            [scopedNetworks, allCandidateNodeIds],
+            [scopedNetworks, uniqueCandidateNodeIds],
           )
         : Promise.resolve({ rows: [] as { from_node_id: string; to_node_id: string; best_score: string }[] }),
       allUnique2charHashes.length > 0
@@ -412,17 +445,17 @@ export async function lazyResolvePath(
             [scopedNetworks, allUnique2charHashes],
           )
         : Promise.resolve({ rows: [] as { hash_2char: string; node_id: string; score: string; observation_count: string }[] }),
-      allCandidateNodeIds.length > 0
+      uniqueCandidateNodeIds.length > 0
         ? query<{ from_node_id: string; to_node_id: string; prob: string }>(
             `SELECT from_node_id, to_node_id, MAX(probability)::text as prob
                FROM path_transition_priors
               WHERE ($1::text[] IS NULL OR network = ANY($1))
                 AND (from_node_id = ANY($2) OR to_node_id = ANY($2))
               GROUP BY from_node_id, to_node_id`,
-            [scopedNetworks, allCandidateNodeIds],
+            [scopedNetworks, uniqueCandidateNodeIds],
           )
         : Promise.resolve({ rows: [] as { from_node_id: string; to_node_id: string; prob: string }[] }),
-      allCandidateNodeIds.length > 0
+      uniqueCandidateNodeIds.length > 0
         ? query<{ node_ids: string; prob: string }>(
             `SELECT node_ids, MAX(probability)::text as prob
                FROM path_motif_priors
@@ -431,7 +464,7 @@ export async function lazyResolvePath(
                 AND split_part(node_ids, '>', 1) = ANY($2)
                 AND split_part(node_ids, '>', 2) = ANY($2)
               GROUP BY node_ids`,
-            [scopedNetworks, allCandidateNodeIds],
+            [scopedNetworks, uniqueCandidateNodeIds],
           )
         : Promise.resolve({ rows: [] as { node_ids: string; prob: string }[] }),
       query<{ network: string; confidence_scale: string; confidence_bias: string; recommended_threshold: string }>(

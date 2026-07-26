@@ -15,6 +15,7 @@ import { isViewshedEligibleCoordinate, queueViewshedJob, queueLinkJob } from './
 import { createBackendSiteRoutes } from './backend-site/routes.js';
 import { isTrustedProxyPeer } from './http/trustedProxy.js';
 import { startOwnerAuthorizationReconciler } from './owner/ownerAclReconciler.js';
+import { getAnalysisWorkloadStates } from './analysis/runState.js';
 
 const ALLOWED_ORIGINS = (process.env['ALLOWED_ORIGINS'] ?? '')
   .split(',')
@@ -160,11 +161,13 @@ async function main() {
         lastVerifiedAt: null as string | null,
         lastError: null as string | null,
       },
+      analysis: [] as Awaited<ReturnType<typeof getAnalysisWorkloadStates>>,
     };
     try {
       await query('SELECT 1');
       checks.database = true;
       Object.assign(checks.ownerAuthorization, await getOwnerAclReadiness());
+      checks.analysis = await getAnalysisWorkloadStates();
     } catch (err) {
       console.error('[readyz] database check failed:', (err as Error).message);
     }

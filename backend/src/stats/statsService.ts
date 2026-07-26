@@ -28,6 +28,17 @@ type StatsServiceDeps = {
 };
 
 const CHANNEL_TRAFFIC_CACHE_TTL_MS = 60 * 60_000;
+const MAX_UNIQUE_STATS_INFLIGHT = Math.min(
+  128,
+  Math.max(1, Number(process.env['STATS_UNIQUE_INFLIGHT_MAX'] ?? 32) || 32),
+);
+
+export class StatsWorkOverloadedError extends Error {
+  constructor() {
+    super('STATS_WORK_OVERLOADED');
+    this.name = 'StatsWorkOverloadedError';
+  }
+}
 
 type CachedChannelTraffic = Array<{
   channel: string;
@@ -112,6 +123,7 @@ export function createStatsService(deps: StatsServiceDeps) {
   };
   const channelTrafficCache = new Map<string, { ts: number; data: CachedChannelTraffic }>();
   const statsInflight = new Map<string, Promise<unknown>>();
+  let activeObserverWork = 0;
 
   const fmtHour = (ts: Date | string) => {
     const d = new Date(ts);
@@ -194,7 +206,7 @@ export function createStatsService(deps: StatsServiceDeps) {
 
   async function getChannelTraffic(network: string | undefined, observer: string | undefined): Promise<CachedChannelTraffic> {
     const key = `${network ?? 'all'}:${observer ?? ''}`;
-    const cached = channelTrafficCache.get(key);
+    const cached = observer ? undefined : channelTrafficCache.get(key);
     if (cached && Date.now() - cached.ts < CHANNEL_TRAFFIC_CACHE_TTL_MS) return cached.data;
 
     const result = await repository.fetchChannelTraffic(network, observer);
@@ -207,7 +219,7 @@ export function createStatsService(deps: StatsServiceDeps) {
         pct: total > 0 ? Number(((count / total) * 100).toFixed(1)) : 0,
       };
     });
-    channelTrafficCache.set(key, { ts: Date.now(), data });
+    if (!observer) channelTrafficCache.set(key, { ts: Date.now(), data });
     return data;
   }
 
@@ -281,6 +293,11 @@ export function createStatsService(deps: StatsServiceDeps) {
     const singleObserverPackets = Number(observerDiversityRow?.single_observer_packets ?? 0);
 
     return {
+      snapshot: {
+        status: 'complete',
+        generatedAt: new Date().toISOString(),
+        scope: network ?? 'ukmesh',
+      },
       packetsPerHour: phResult.rows.map(r => ({ hour: fmtHourMinute((r as any).hour), count: Number((r as any).count) })),
       packetsPerDay: pdResult.rows.map(r => ({ day: fmtDay((r as any).day), count: Number((r as any).count) })),
       radiosPerHour: rhResult.rows.map(r => ({ hour: fmtHourMinute((r as any).hour), count: Number((r as any).count) })),
@@ -372,7 +389,16 @@ export function createStatsService(deps: StatsServiceDeps) {
   }
 
   async function getCharts(network: string | undefined, observer: string | undefined): Promise<unknown> {
-    const key = `${network ?? 'all'}:${observer ?? ''}`;
+    if (observer) {
+      if (activeObserverWork >= MAX_UNIQUE_STATS_INFLIGHT) throw new StatsWorkOverloadedError();
+      activeObserverWork += 1;
+      try {
+        return await computeChartsData(network, observer);
+      } finally {
+        activeObserverWork -= 1;
+      }
+    }
+    const key = `${network ?? 'ukmesh'}`;
     const cached = chartsCache.get(key);
     if (cached && Date.now() - cached.ts < chartsCacheTtlMs) {
       const observerRegionSummary = await repository.fetchObserverRegionSummary(network, observer);
@@ -393,6 +419,7 @@ export function createStatsService(deps: StatsServiceDeps) {
 
     const inflight = chartsInflight.get(key);
     if (inflight) return inflight;
+    if (chartsInflight.size >= MAX_UNIQUE_STATS_INFLIGHT) throw new StatsWorkOverloadedError();
 
     const promise = computeChartsData(network, observer).then((data) => {
       chartsCache.set(key, { ts: Date.now(), data });
@@ -408,7 +435,7 @@ export function createStatsService(deps: StatsServiceDeps) {
   }
 
   function startChartsWarmup(): void {
-    const warmupNetworks = (process.env['WARMUP_NETWORKS'] ?? 'teesside,ukmesh')
+    const warmupNetworks = (process.env['WARMUP_NETWORKS'] ?? 'ukmesh,test')
       .split(',').map((s: string) => s.trim()).filter(Boolean);
 
     const warmCharts = async () => {
@@ -467,7 +494,16 @@ export function createStatsService(deps: StatsServiceDeps) {
   }
 
   async function getStatsSummary(network: string | undefined, observer: string | undefined): Promise<unknown> {
-    const key = `${network ?? 'all'}:${observer ?? ''}`;
+    if (observer) {
+      if (activeObserverWork >= MAX_UNIQUE_STATS_INFLIGHT) throw new StatsWorkOverloadedError();
+      activeObserverWork += 1;
+      try {
+        return await computeStatsSummary(network, observer);
+      } finally {
+        activeObserverWork -= 1;
+      }
+    }
+    const key = `${network ?? 'ukmesh'}`;
     const cached = statsCache.get(key);
     if (cached && Date.now() - cached.ts < statsCacheTtlMs) {
       return cached.data;
@@ -475,6 +511,7 @@ export function createStatsService(deps: StatsServiceDeps) {
 
     const inflight = statsInflight.get(key);
     if (inflight) return inflight;
+    if (statsInflight.size >= MAX_UNIQUE_STATS_INFLIGHT) throw new StatsWorkOverloadedError();
 
     const promise = computeStatsSummary(network, observer).then((data) => {
       statsCache.set(key, { ts: Date.now(), data });

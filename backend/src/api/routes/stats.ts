@@ -1,7 +1,7 @@
 import type { Router } from 'express';
 import { resolvePublicNetworkScope } from '../../http/requestScope.js';
 import { createStatsRepository } from '../../stats/statsRepository.js';
-import { createStatsService } from '../../stats/statsService.js';
+import { createStatsService, StatsWorkOverloadedError } from '../../stats/statsService.js';
 import type { NetworkFilters } from '../utils/networkFilters.js';
 import { normalizeObserverQuery } from '../utils/observer.js';
 import type { QueryResultRow } from 'pg';
@@ -65,6 +65,10 @@ export function registerStatsRoutes(router: Router, deps: StatsRouteDeps): void 
       const observer = normalizeObserverQuery(req.query['observer']);
       res.json(await service.getStatsSummary(network, observer));
     } catch (err) {
+      if (err instanceof StatsWorkOverloadedError) {
+        res.status(503).json({ error: 'Statistics are busy', retryable: true });
+        return;
+      }
       console.error('[api] GET /stats', (err as Error).message);
       res.status(500).json({ error: 'Internal server error' });
     }
@@ -76,6 +80,10 @@ export function registerStatsRoutes(router: Router, deps: StatsRouteDeps): void 
       const observer = normalizeObserverQuery(req.query['observer']);
       res.json(await service.getCharts(network, observer));
     } catch (err) {
+      if (err instanceof StatsWorkOverloadedError) {
+        res.status(503).json({ error: 'Statistics are busy', retryable: true });
+        return;
+      }
       console.error('[api] GET /stats/charts', (err as Error).message);
       res.status(500).json({ error: 'Internal server error' });
     }

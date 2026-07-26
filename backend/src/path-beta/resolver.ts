@@ -46,6 +46,26 @@ import type { BetaResolveContext, LinkMetrics, MeshNode, MlPrefixScore, NodeCove
 const contextCache = new Map<string, BetaResolveContext>();
 const MAX_TRELLIS_CANDIDATES_PER_HOP = 24;
 const TRUSTED_PATH_MAX_KM = 150;
+const PATH_SINGLE_HISTORY_HOURS = Math.min(
+  24 * 365,
+  Math.max(1, Number(process.env['PATH_SINGLE_HISTORY_HOURS'] ?? 168) || 168),
+);
+const PATH_SINGLE_MAX_OBSERVERS = Math.min(
+  2_048,
+  Math.max(8, Number(process.env['PATH_SINGLE_MAX_OBSERVERS'] ?? 128) || 128),
+);
+const PATH_MULTI_HISTORY_WINDOW_HOURS = Math.min(
+  24 * 365,
+  Math.max(1, Number(process.env['PATH_MULTI_HISTORY_WINDOW_HOURS'] ?? 168) || 168),
+);
+const PATH_MULTI_MAX_SCAN_ROWS = Math.min(
+  10_000,
+  Math.max(32, Number(process.env['PATH_MULTI_MAX_SCAN_ROWS'] ?? 2_048) || 2_048),
+);
+const PATH_MULTI_MAX_OBSERVERS = Math.min(
+  512,
+  Math.max(1, Number(process.env['PATH_MULTI_MAX_OBSERVERS'] ?? 128) || 128),
+);
 const ML_PREFIX_SCORE_MIN = 0.80;
 const ML_PREFIX_DOMINANT_SCORE = 0.85;
 const DIRECT_ANCHOR_MAX_KM = 150;
@@ -1690,8 +1710,7 @@ export async function resolveBetaPathForPacketHash(
   stickyAgeFraction?: number,
   options?: PathResolutionOptions,
 ): Promise<BetaResolvedPayload | null> {
-  const [packetResult, observerHopResult] = await Promise.all([
-    query<PathPacket>(
+  const packetResult = await query<PathPacket>(
       `SELECT packet_hash, rx_node_id, src_node_id, packet_type, hop_count, path_hashes, path_hash_size_bytes
        FROM packets
        WHERE packet_hash = $1
@@ -1717,22 +1736,38 @@ export async function resolveBetaPathForPacketHash(
                 time ASC
        LIMIT 32`,
       observer ? [packetHash, network, observer] : [packetHash, network],
-    ),
-    query<{ rx_node_id: string; hop_count: number | null }>(
-      `SELECT rx_node_id, MIN(hop_count) AS hop_count
-       FROM packets
-       WHERE packet_hash = $1
-         AND ($2 = 'all' OR network = $2)
-         AND rx_node_id IS NOT NULL
-         AND NOT EXISTS (
-           SELECT 1 FROM nodes private_node
-           WHERE private_node.name LIKE '%🚫%'
-             AND private_node.node_id IN (packets.rx_node_id, packets.src_node_id)
-         )
-       GROUP BY rx_node_id`,
-      [packetHash, network],
-    ),
-  ]);
+    );
+  // A syntactically valid but unrelated observer must not trigger the
+  // observer-independent retained-history aggregate.
+  if (packetResult.rows.length === 0) return null;
+  // Observer-scoped variants deliberately skip observer-independent history:
+  // it is only useful as cross-observer hinting, and repeating it for every
+  // selected receiver recreates the public fan-out sink.
+  const observerHopResult = observer
+    ? { rows: [] as Array<{ rx_node_id: string; hop_count: number | null }> }
+    : await query<{ rx_node_id: string; hop_count: number | null }>(
+      `SELECT rx_node_id, hop_count
+         FROM (
+           SELECT rx_node_id, MIN(hop_count) AS hop_count
+             FROM packets
+            WHERE packet_hash = $1
+              AND ($2 = 'all' OR network = $2)
+              AND time >= NOW() - ($3::int * INTERVAL '1 hour')
+              AND rx_node_id IS NOT NULL
+              AND NOT EXISTS (
+                SELECT 1 FROM nodes private_node
+                 WHERE private_node.name LIKE '%🚫%'
+                   AND private_node.node_id IN (packets.rx_node_id, packets.src_node_id)
+              )
+            GROUP BY rx_node_id
+            ORDER BY rx_node_id
+            LIMIT $4
+         ) bounded_observers`,
+      [packetHash, network, PATH_SINGLE_HISTORY_HOURS, PATH_SINGLE_MAX_OBSERVERS + 1],
+    );
+  if (observerHopResult.rows.length > PATH_SINGLE_MAX_OBSERVERS) {
+    throw new Error('PATH_HISTORY_LIMIT');
+  }
 
   const context = await loadContext(network);
   const preparedByObserver = new Map<string, PreparedPacketObservation>();
@@ -2215,6 +2250,7 @@ export async function resolveMultiObserverBetaPath(
      FROM packets
      WHERE packet_hash = $1
        AND ($2 = 'all' OR network = $2)
+       AND time >= NOW() - ($3::int * INTERVAL '1 hour')
        AND rx_node_id IS NOT NULL
        AND NOT EXISTS (
          SELECT 1 FROM nodes private_node
@@ -2233,11 +2269,13 @@ export async function resolveMultiObserverBetaPath(
               CASE WHEN path_hash_size_bytes IS NOT NULL THEN 1 ELSE 0 END DESC,
               CASE WHEN src_node_id IS NOT NULL THEN 1 ELSE 0 END DESC,
               hop_count ASC NULLS LAST,
-              time ASC`,
-    [packetHash, network],
+              time ASC
+     LIMIT $4`,
+    [packetHash, network, PATH_MULTI_HISTORY_WINDOW_HOURS, PATH_MULTI_MAX_SCAN_ROWS + 1],
   );
 
   if (allResult.rows.length < 1) return null;
+  if (allResult.rows.length > PATH_MULTI_MAX_SCAN_ROWS) throw new Error('PATH_HISTORY_LIMIT');
 
   const context = await loadContext(network);
 
@@ -2253,6 +2291,7 @@ export async function resolveMultiObserverBetaPath(
       byObserver.set(row.rx_node_id, prepared);
     }
   }
+  if (byObserver.size > PATH_MULTI_MAX_OBSERVERS) throw new Error('PATH_HISTORY_LIMIT');
 
   // Single observer — delegate to existing per-observer resolver
   if (byObserver.size <= 1) {

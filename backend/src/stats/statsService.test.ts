@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { computeRegionHealth } from './statsService.js';
+import { computeRegionHealth, createStatsService } from './statsService.js';
+import type { StatsRepository } from './statsRepository.js';
 
 const NOW = Date.parse('2026-07-11T16:00:00Z');
 
@@ -22,4 +23,47 @@ test('region health identifies stale regions without active observers', () => {
   assert.equal(result.status, 'poor');
   assert.ok(result.score < 30);
   assert.equal(result.factors.freshness, 0);
+});
+
+function emptyChartsData() {
+  const result = { rows: [] };
+  return {
+    phResult: result, pdResult: result, rhResult: result, rdResult: result,
+    ptResult: result, hdResult: result, pcResult: result, sumResult: { rows: [{}] },
+    orSummaryResult: result, orSeriesResult: result, pathHashWidthsResult: result,
+    multibyteSummaryResult: result, observerDiversityResult: result, signalSummaryResult: result,
+    routeTypesResult: result, transportCodesResult: result, pathDecodeTrendResult: result,
+  };
+}
+
+test('completed canonical charts are reused while observer-scoped charts are never persisted', async () => {
+  let chartCalls = 0;
+  const repository = {
+    fetchChartsData: async () => {
+      chartCalls += 1;
+      return emptyChartsData();
+    },
+    fetchChannelTraffic: async () => ({ rows: [] }),
+    fetchObserverRegionSummary: async () => ({ rows: [] }),
+  } as unknown as StatsRepository;
+  const chartsCache = new Map<string, { ts: number; data: unknown }>();
+  const service = createStatsService({
+    statsCache: new Map(),
+    statsCacheTtlMs: 60_000,
+    chartsCache,
+    chartsCacheTtlMs: 60_000,
+    chartsInflight: new Map(),
+    repository,
+    maskDecodedPathNodes: () => [],
+  });
+
+  await service.getCharts('ukmesh', undefined);
+  await service.getCharts('ukmesh', undefined);
+  assert.equal(chartCalls, 1);
+  assert.equal(chartsCache.size, 1);
+
+  await service.getCharts('ukmesh', 'A'.repeat(64));
+  await service.getCharts('ukmesh', 'A'.repeat(64));
+  assert.equal(chartCalls, 3);
+  assert.equal(chartsCache.size, 1);
 });
