@@ -1,6 +1,7 @@
 import { BoundedTtlMap } from '../../cache/boundedTtlMap.js';
 
 export const STATS_CACHE_TTL_MS = 60_000;
+export const STATS_CACHE_STALE_TTL_MS = 15 * 60_000;
 export const INFERRED_NODES_CACHE_TTL_MS = 60_000;
 export const PATH_HISTORY_CACHE_TTL_MS = 60_000;
 export const CHARTS_CACHE_TTL_MS = 30 * 60_000;
@@ -13,7 +14,7 @@ export const OWNER_LIVE_CACHE_TTL_MS = Number(process.env['OWNER_LIVE_CACHE_TTL_
 export const OWNER_DASHBOARD_CACHE_TTL_MS = Number(process.env['OWNER_DASHBOARD_CACHE_TTL_MS'] ?? 20_000);
 
 export const statsCache = new BoundedTtlMap<string, { ts: number; data: unknown }>({
-  maxEntries: 256, maxWeight: 16 * 1024 * 1024, ttlMs: STATS_CACHE_TTL_MS,
+  maxEntries: 256, maxWeight: 16 * 1024 * 1024, ttlMs: STATS_CACHE_STALE_TTL_MS,
 });
 export const inferredNodesCache = new BoundedTtlMap<string, { ts: number; data: unknown }>({
   maxEntries: 128, maxWeight: 16 * 1024 * 1024, ttlMs: INFERRED_NODES_CACHE_TTL_MS,

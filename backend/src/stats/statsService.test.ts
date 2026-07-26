@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { BoundedTtlMap } from '../cache/boundedTtlMap.js';
 import { computeRegionHealth, createStatsService } from './statsService.js';
 import type { StatsRepository } from './statsRepository.js';
 
@@ -81,9 +82,12 @@ test('expired canonical stats are served while one refresh runs in the backgroun
     },
   } as unknown as StatsRepository;
   const stale = { totalNodes: 6 };
-  const statsCache = new Map<string, { ts: number; data: unknown }>([
-    ['ukmesh', { ts: 0, data: stale }],
-  ]);
+  const statsCache = new BoundedTtlMap<string, { ts: number; data: unknown }>({
+    maxEntries: 2,
+    maxWeight: 1024,
+    ttlMs: 60_000,
+  });
+  statsCache.set('ukmesh', { ts: 0, data: stale });
   const service = createStatsService({
     statsCache,
     statsCacheTtlMs: 1,
@@ -112,4 +116,5 @@ test('expired canonical stats are served while one refresh runs in the backgroun
   await refresh;
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal((statsCache.get('ukmesh')?.data as { totalNodes: number }).totalNodes, 7);
+  statsCache.shutdown();
 });
