@@ -19,11 +19,11 @@ const MAX_SEGMENTS = 3000;
 const MIN_HISTORY_PATH_HASH_BYTES = 2;
 const RUN_DEADLINE_MS = Math.max(
   60_000,
-  Number(process.env['PATH_HISTORY_RUN_DEADLINE_MS'] ?? 45 * 60_000) || 45 * 60_000,
+  Number(process.env['PATH_HISTORY_RUN_DEADLINE_MS'] ?? 90 * 60_000) || 90 * 60_000,
 );
 const CONCURRENCY = Math.max(
   1,
-  Math.min(16, Math.trunc(Number(process.env['PATH_HISTORY_CONCURRENCY'] ?? 4) || 4)),
+  Math.min(16, Math.trunc(Number(process.env['PATH_HISTORY_CONCURRENCY'] ?? 2) || 2)),
 );
 const SCOPES = ['ukmesh', 'test'] as const;
 
