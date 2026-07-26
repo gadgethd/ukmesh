@@ -124,6 +124,8 @@ async function refreshScope(scope: ScopeName): Promise<void> {
         const resolved = await resolveMultiObserverBetaPath(packetHash, scope, undefined, undefined, {
           touchPredictedOnline: false,
           log: false,
+          pinContextForBatch: true,
+          requiredVisibilityGeneration: visibilityGeneration,
         });
         if (!resolved?.ok || resolved.results.length < 1) {
           return;

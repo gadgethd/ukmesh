@@ -1422,14 +1422,40 @@ async function buildLearningModel(network: string): Promise<PathLearningModel> {
   };
 }
 
-async function loadContext(network: string, visibilityRetry = 0): Promise<BetaResolveContext> {
+export function canReusePathContext(input: {
+  cachedVisibilityGeneration: number;
+  currentVisibilityGeneration: number;
+  ageMs: number;
+  pinForBatch: boolean;
+}): boolean {
+  return (
+    input.cachedVisibilityGeneration === input.currentVisibilityGeneration
+    && (input.pinForBatch || input.ageMs < CONTEXT_TTL_MS)
+  );
+}
+
+async function loadContext(
+  network: string,
+  visibilityRetry = 0,
+  options?: { pinForBatch?: boolean; requiredVisibilityGeneration?: number },
+): Promise<BetaResolveContext> {
   const now = Date.now();
   const visibilityGeneration = await getPublicVisibilityGeneration();
+  if (
+    options?.requiredVisibilityGeneration != null
+    && visibilityGeneration !== options.requiredVisibilityGeneration
+  ) {
+    throw new Error('PUBLIC_VISIBILITY_CHANGED_DURING_RESOLUTION');
+  }
   const cached = contextCache.get(network);
   if (
     cached
-    && cached.visibilityGeneration === visibilityGeneration
-    && now - cached.loadedAt < CONTEXT_TTL_MS
+    && canReusePathContext({
+      cachedVisibilityGeneration: cached.visibilityGeneration,
+      currentVisibilityGeneration: visibilityGeneration,
+      ageMs: now - cached.loadedAt,
+      pinForBatch: options?.pinForBatch === true,
+    })
   ) return cached;
 
   const [nodeRows, coverageRows, linkRows, mlScoreRows, learningModel, neighborAffinity] = await Promise.all([
@@ -1578,7 +1604,7 @@ async function loadContext(network: string, visibilityRetry = 0): Promise<BetaRe
     if (visibilityRetry >= 1) {
       throw new Error('PUBLIC_VISIBILITY_CHANGED_DURING_CONTEXT_LOAD');
     }
-    return loadContext(network, visibilityRetry + 1);
+    return loadContext(network, visibilityRetry + 1, options);
   }
   contextCache.set(network, context);
   return context;
@@ -1706,6 +1732,10 @@ export type PathResolutionOptions = {
   touchPredictedOnline?: boolean;
   /** Bulk rebuilds emit their own summary and should not log each packet. */
   log?: boolean;
+  /** Reuse one generation-bound topology context for a long atomic batch. */
+  pinContextForBatch?: boolean;
+  /** Abort instead of mixing public visibility generations within a batch. */
+  requiredVisibilityGeneration?: number;
 };
 
 function shouldTouchPredictedOnline(options?: PathResolutionOptions): boolean {
@@ -1789,7 +1819,10 @@ export async function resolveBetaPathForPacketHash(
     throw new Error('PATH_HISTORY_LIMIT');
   }
 
-  const context = await loadContext(network);
+  const context = await loadContext(network, 0, {
+    pinForBatch: options?.pinContextForBatch,
+    requiredVisibilityGeneration: options?.requiredVisibilityGeneration,
+  });
   const preparedByObserver = new Map<string, PreparedPacketObservation>();
   for (const row of packetResult.rows) {
     const key = row.rx_node_id ?? '__no_observer__';
@@ -2298,7 +2331,10 @@ export async function resolveMultiObserverBetaPath(
   if (allResult.rows.length < 1) return null;
   if (allResult.rows.length > PATH_MULTI_MAX_SCAN_ROWS) throw new Error('PATH_HISTORY_LIMIT');
 
-  const context = await loadContext(network);
+  const context = await loadContext(network, 0, {
+    pinForBatch: options?.pinContextForBatch,
+    requiredVisibilityGeneration: options?.requiredVisibilityGeneration,
+  });
 
   // 2. Group by observer, pick canonical row per observer
   const byObserver = new Map<string, PreparedPacketObservation>();
