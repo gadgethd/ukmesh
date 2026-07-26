@@ -12,6 +12,7 @@ test-results/
 # Mosquitto credentials (generated file, not for source control)
 mosquitto/passwd
 mosquitto/acl
+mosquitto/acl.lkg
 
 # Key files
 scripts/keys/

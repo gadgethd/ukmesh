@@ -1657,7 +1657,7 @@ def worker_loop():
     heartbeat_stop = threading.Event()
     if WORKER_MODE in ('all', 'link'):
         link_queue_v3.start_worker_heartbeat(redis_connection, heartbeat_stop)
-    if WORKER_MODE in ('all', 'viewshed') and VIEWSHED_ENABLED:
+    if WORKER_MODE in ('all', 'viewshed'):
         def viewshed_heartbeat():
             heartbeat_client = None
             while not heartbeat_stop.is_set():
