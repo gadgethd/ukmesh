@@ -56,3 +56,20 @@ test('bounded run caps concurrency and preserves input order in results', async 
   assert.equal(maxActive, 3);
   assert.deepEqual(result.results, [2, 4, 6, 8, 10, 12]);
 });
+
+test('bounded run can discard successful values without changing completion accounting', async () => {
+  const result = await runBoundedItems([1, 2, 3], async (value) => {
+    if (value === 2) throw new Error('sentinel');
+    return { large: 'x'.repeat(1000) };
+  }, {
+    windowStart: new Date(0),
+    windowEnd: new Date(1),
+    deadlineMs: 1_000,
+    collectResults: false,
+  });
+
+  assert.equal(result.status, 'partial');
+  assert.equal(result.checkpoint, 3);
+  assert.deepEqual(result.results, []);
+  assert.deepEqual(result.errors, [{ index: 1, message: 'sentinel' }]);
+});

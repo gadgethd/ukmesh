@@ -23,6 +23,7 @@ export async function runBoundedItems<TInput, TOutput>(
     windowEnd: Date;
     deadlineMs: number;
     concurrency?: number;
+    collectResults?: boolean;
     maxErrors?: number;
     now?: () => number;
     runId?: string;
@@ -40,6 +41,7 @@ export async function runBoundedItems<TInput, TOutput>(
   const concurrency = Math.max(1, Math.min(items.length || 1, requestedConcurrency));
   let nextIndex = 0;
   let checkpoint = 0;
+  let successfulItems = 0;
   let timedOut = false;
 
   const worker = async () => {
@@ -51,7 +53,9 @@ export async function runBoundedItems<TInput, TOutput>(
       const index = nextIndex;
       nextIndex += 1;
       try {
-        indexedResults.push({ index, value: await work(items[index]!, index) });
+        const value = await work(items[index]!, index);
+        successfulItems += 1;
+        if (options.collectResults !== false) indexedResults.push({ index, value });
       } catch (error) {
         errors.push({
           index,
@@ -69,7 +73,7 @@ export async function runBoundedItems<TInput, TOutput>(
   const status: BoundedRunStatus = timedOut
     ? 'timed_out'
     : errors.length > 0
-      ? (results.length > 0 ? 'partial' : 'failed')
+      ? (successfulItems > 0 ? 'partial' : 'failed')
       : checkpoint === items.length
         ? 'complete'
         : 'partial';

@@ -9,6 +9,7 @@ import {
 } from '../db/index.js';
 import { resolveMultiObserverBetaPath, type BetaResolvedPayload } from '../path-beta/resolver.js';
 import { runBoundedItems } from '../analysis/boundedRun.js';
+import { BoundedSegmentCounter } from '../analysis/boundedSegmentCounter.js';
 import { analysisGeneration, beginAnalysisRun, finishAnalysisRun } from '../analysis/runState.js';
 
 const REFRESH_INTERVAL_MS = 60 * 60 * 1000; // 1 hour — 7-day window changes slowly
@@ -16,6 +17,13 @@ const WINDOW_HOURS = 168;
 const MIN_SEGMENT_COUNT = 30;
 const MAX_PACKET_HASHES = 12000;
 const MAX_SEGMENTS = 3000;
+const SEGMENT_COUNTER_CAPACITY = Math.max(
+  MAX_SEGMENTS,
+  Math.min(
+    131_072,
+    Math.trunc(Number(process.env['PATH_HISTORY_SEGMENT_COUNTER_CAPACITY'] ?? 65_536) || 65_536),
+  ),
+);
 const MIN_HISTORY_PATH_HASH_BYTES = 2;
 const RUN_DEADLINE_MS = Math.max(
   60_000,
@@ -88,7 +96,7 @@ async function refreshScope(scope: ScopeName): Promise<void> {
     MAX_PACKET_HASHES,
     MIN_HISTORY_PATH_HASH_BYTES,
   );
-  const counts = new Map<string, number>();
+  const counts = new BoundedSegmentCounter(SEGMENT_COUNTER_CAPACITY);
   let resolvedPacketCount = 0;
   let skippedPacketCount = 0;
 
@@ -124,7 +132,7 @@ async function refreshScope(scope: ScopeName): Promise<void> {
         for (const result of resolved.results) collectPurpleSegments(result, packetSegments);
         if (packetSegments.size > 0) {
           resolvedPacketCount += 1;
-          for (const key of packetSegments) counts.set(key, (counts.get(key) ?? 0) + 1);
+          for (const key of packetSegments) counts.observe(key);
         }
         return;
       } catch (error) {
@@ -139,6 +147,7 @@ async function refreshScope(scope: ScopeName): Promise<void> {
       windowEnd,
       deadlineMs: RUN_DEADLINE_MS,
       concurrency: CONCURRENCY,
+      collectResults: false,
       maxErrors: 100,
       runId: run.runId,
     });
@@ -159,13 +168,11 @@ async function refreshScope(scope: ScopeName): Promise<void> {
       return;
     }
 
-    const segmentCounts: SegmentCount[] = Array.from(counts.entries())
-      .filter(([, count]) => count >= MIN_SEGMENT_COUNT)
-      .map(([key, count]) => ({
+    const segmentCounts: SegmentCount[] = counts.candidates(MIN_SEGMENT_COUNT)
+      .map(({ key, count }) => ({
         positions: segmentPositions(key),
         count,
       }))
-      .sort((a, b) => b.count - a.count)
       .slice(0, MAX_SEGMENTS);
 
     const published = await upsertPathHistoryCache({
@@ -197,7 +204,13 @@ async function refreshScope(scope: ScopeName): Promise<void> {
       status: 'complete',
       checkpoint: outcome.checkpoint,
       generation,
-      metadata: { skippedPacketCount, resolvedPacketCount, segmentCount: segmentCounts.length },
+      metadata: {
+        skippedPacketCount,
+        resolvedPacketCount,
+        segmentCount: segmentCounts.length,
+        trackedSegmentCount: counts.size(),
+        segmentCounterReplacements: counts.replacementCount(),
+      },
     });
 
     console.log(
