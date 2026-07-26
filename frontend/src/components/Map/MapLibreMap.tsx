@@ -286,7 +286,13 @@ export function MapLibreMap({
     const iv = window.setInterval(() => {
       void fetch(`/api/coverage/planned/${planId}`)
         .then((r) => {
-          if (!r.ok) throw new Error('planned coverage unavailable');
+          if (r.status === 404 || r.status === 410) {
+            return {
+              status: 'failed',
+              coverage: undefined,
+            } satisfies { status: string; coverage?: PlannedRepeater['coverage'] };
+          }
+          if (!r.ok) throw new Error('planned coverage temporarily unavailable');
           return r.json() as Promise<{ status: string; coverage?: PlannedRepeater['coverage'] }>;
         })
         .then((data) => {
@@ -294,6 +300,10 @@ export function MapLibreMap({
             window.clearInterval(iv);
             plannedPollRefs.current.delete(planId);
             useOverlayStore.getState().updatePlannedRepeater(planId, { status: 'ready', coverage: data.coverage });
+          } else if (data.status === 'failed') {
+            window.clearInterval(iv);
+            plannedPollRefs.current.delete(planId);
+            useOverlayStore.getState().updatePlannedRepeater(planId, { status: 'error' });
           }
         })
         .catch(() => {});

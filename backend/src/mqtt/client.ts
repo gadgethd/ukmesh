@@ -943,40 +943,56 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
 
 export async function backfillHistoricalLinks(
   queueFn: (
+    packetHash: string,
     rxNodeId: string,
     srcNodeId: string | undefined,
     path: string[],
     hopCount: number | undefined,
     pathHashSizeBytes: number | undefined,
-  ) => void,
+  ) => void | Promise<unknown>,
+  options: { windowEnd?: Date; batchSize?: number } = {},
 ): Promise<void> {
-  const res = await query<{
-    rx_node_id: string; src_node_id: string | null; hop_count: number | null; raw_hex: string;
-  }>(
-    `SELECT DISTINCT ON (packet_hash)
-       rx_node_id, src_node_id, hop_count, raw_hex
-     FROM packets
-     WHERE rx_node_id IS NOT NULL AND raw_hex IS NOT NULL AND raw_hex != ''
-     ORDER BY packet_hash, time DESC`,
-  );
-
+  const windowEnd = options.windowEnd ?? new Date();
+  const batchSize = Math.min(10_000, Math.max(100, Math.floor(options.batchSize ?? 2_000)));
+  let cursor = '';
   let queued = 0;
-  for (const row of res.rows) {
-    try {
-      const compat = decodePacketCompat(row.raw_hex, keyStore);
-      if (compat.metadataValid && (compat.pathHashSize ?? 1) > 1 && compat.pathHashes && compat.pathHashes.length > 0) {
-        queueFn(
-          row.rx_node_id,
-          row.src_node_id ?? undefined,
-          compat.pathHashes,
-          compat.pathHashCount,
-          compat.pathHashSize,
-        );
-        queued++;
+  while (true) {
+    const res = await query<{
+      packet_hash: string; rx_node_id: string; src_node_id: string | null; hop_count: number | null; raw_hex: string;
+    }>(
+      `SELECT DISTINCT ON (packet_hash)
+         packet_hash, rx_node_id, src_node_id, hop_count, raw_hex
+       FROM packets
+       WHERE time < $1
+         AND packet_hash > $2
+         AND rx_node_id IS NOT NULL
+         AND raw_hex IS NOT NULL
+         AND raw_hex != ''
+       ORDER BY packet_hash, time DESC
+       LIMIT $3`,
+      [windowEnd, cursor, batchSize],
+    );
+    if (res.rows.length === 0) break;
+    for (const row of res.rows) {
+      try {
+        const compat = decodePacketCompat(row.raw_hex, keyStore);
+        if (compat.metadataValid && (compat.pathHashSize ?? 1) > 1 && compat.pathHashes && compat.pathHashes.length > 0) {
+          await queueFn(
+            row.packet_hash,
+            row.rx_node_id,
+            row.src_node_id ?? undefined,
+            compat.pathHashes,
+            compat.pathHashCount,
+            compat.pathHashSize,
+          );
+          queued++;
+        }
+      } catch {
+        // Skip undecipherable packets
       }
-    } catch {
-      // Skip undecipherable packets
     }
+    cursor = res.rows.at(-1)!.packet_hash;
+    if (res.rows.length < batchSize) break;
   }
   console.log(`[app] historical link backfill: queued ${queued} packets`);
 }

@@ -5,4 +5,4 @@ DELETE FROM path_history_cache;
 
 -- Public incident JSON can contain origin estimates derived from private
 -- observers. The analyzer recreates this derived table from filtered evidence.
-TRUNCATE TABLE spam_message_incident_members, spam_message_incidents;
+TRUNCATE TABLE spam_message_members, spam_message_incidents;

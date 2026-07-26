@@ -29,10 +29,10 @@ test('worker pool bounds queued interactive work without losing accepted jobs', 
 });
 
 test('worker pool timeout includes queue and execution time and replaces the worker', async () => {
-  const pool = new WorkerPool(fixtureUrl, 1, 1, 1, 150);
+  const pool = new WorkerPool(fixtureUrl, 1, 1, 1, 750);
   try {
     await assert.rejects(
-      pool.run({ value: 'late', delayMs: 300 }),
+      pool.run({ value: 'late', delayMs: 1_500 }),
       WorkerPoolTimeoutError,
     );
     assert.equal(await pool.run<string>({ value: 'recovered', delayMs: 1 }), 'recovered');

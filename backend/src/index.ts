@@ -85,7 +85,18 @@ async function main() {
   onPacket((packet) => {
     broadcastPacket(packet);
     if (packet.path?.length && packet.rxNodeId) {
-      queueLinkJob(packet.rxNodeId, packet.srcNodeId, packet.path, packet.hopCount, packet.pathHashSizeBytes);
+      void queueLinkJob(
+        packet.packetHash,
+        packet.rxNodeId,
+        packet.srcNodeId,
+        packet.path,
+        packet.hopCount,
+        packet.pathHashSizeBytes,
+      ).then((admission) => {
+        if (admission && ['full', 'oversized', 'worker_unavailable'].includes(admission.status)) {
+          console.warn('[link-queue] live observation not admitted', admission.status, packet.packetHash);
+        }
+      }).catch((error: Error) => console.error('[link-queue] live admission failed', error.message));
     }
   });
   onNodeSeen((nodeId, meta) => broadcastNodeUpdate(nodeId, meta));

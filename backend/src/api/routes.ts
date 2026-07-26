@@ -22,6 +22,7 @@ import {
   getPathHistoryCache,
   getRecentPacketEvents,
   getRecentPackets,
+  pool,
   query,
 } from '../db/index.js';
 import { autoLinkOwnerNodeIds, buildOwnerDashboard, resolveOwnerNodeIds, verifyMqttCredentials } from '../owner/ownerAccess.js';
@@ -117,7 +118,7 @@ registerCoverageRoutes(router, {
 });
 registerPlannedCoverageRoutes(router, {
   coverageLimiter: COVERAGE_LIMITER,
-  query,
+  pool,
 });
 registerNodeRoutes(router, {
   getNodes,

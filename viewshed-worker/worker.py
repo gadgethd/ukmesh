@@ -6,6 +6,7 @@ node_coverage, then notifies the frontend.
 """
 
 import argparse
+import hashlib
 import json
 import logging
 import math
@@ -13,6 +14,7 @@ import multiprocessing
 import os
 import subprocess
 import tempfile
+import threading
 import time
 import datetime as dt
 from pathlib import Path
@@ -24,6 +26,7 @@ import requests
 from scipy.ndimage import minimum_filter as _min_filter
 from scipy.spatial import cKDTree
 import redis
+from psycopg2 import sql
 from osgeo import gdal
 from shapely.geometry import mapping, Polygon as ShapelyPolygon
 from rf.config import (
@@ -57,6 +60,7 @@ from rf.terrain import (
     sample_elevation,
     tiles_for_radius,
 )
+import link_queue_v3
 
 gdal.UseExceptions()
 
@@ -93,6 +97,15 @@ JOB_QUEUE      = 'meshcore:viewshed_jobs'
 JOB_PENDING_SET = 'meshcore:viewshed_pending'
 LINK_JOB_QUEUE = 'meshcore:link_jobs'
 LIVE_CHANNEL   = 'meshcore:live'
+VIEWSHED_WORKER_HEARTBEAT = 'meshcore:viewshed:worker_heartbeat'
+PLANNED_RESULT_TTL_S = max(
+    3600,
+    min(7 * 24 * 3600, int(os.environ.get('PLANNED_COVERAGE_TTL_SECONDS', '86400'))),
+)
+PLANNED_COVERAGE_QUEUE_MAX = max(
+    1,
+    min(1000, int(os.environ.get('PLANNED_COVERAGE_QUEUE_MAX', '100'))),
+)
 
 COVERAGE_MODEL_VERSION = int(os.environ.get(
     'COVERAGE_MODEL_VERSION',
@@ -381,13 +394,12 @@ def refresh_radio_neighbor_reports(db, r_client, force: bool = False) -> None:
                     ''',
                     (a_id, b_id, reporter_id, peer_id, float(snr_db), float(snr_db), seen_at),
                 )
-                r_client.rpush(LINK_JOB_QUEUE, json.dumps({
-                    'type': 'physical_pair',
-                    'node_a_id': a_id,
-                    'node_b_id': b_id,
-                }))
+                status, _ = link_queue_v3.admit_physical(r_client, a_id, b_id)
+                if status not in ('accepted', 'coalesced', 'duplicate'):
+                    log.warning(f'Radio neighbour link job not admitted: {status}')
                 imported += 1
-                queued += 1
+                if status in ('accepted', 'coalesced', 'duplicate'):
+                    queued += 1
     db.commit()
     RADIO_NEIGHBOR_SYNC['updated_at'] = now
     if imported > 0:
@@ -1210,6 +1222,81 @@ def process_link_job(db, r_client, job: dict):
     process_observation_link_job(db, r_client, job)
 
 
+def redis_connection():
+    return redis.Redis.from_url(
+        REDIS_URL,
+        decode_responses=True,
+        password=REDIS_PASSWORD,
+    )
+
+
+def process_claimed_link_job(db, r_client, claimed) -> None:
+    job_id, token, job, _attempt = claimed
+    try:
+        with link_queue_v3.LeaseRenewer(redis_connection, job_id, token):
+            db.autocommit = False
+            try:
+                with db.cursor() as cur:
+                    cur.execute(
+                        'SELECT 1 FROM public.link_job_commits WHERE job_id = %s',
+                        (job_id,),
+                    )
+                    already_committed = cur.fetchone() is not None
+                    if not already_committed:
+                        generation = str(job.get('generation') or '').strip()
+                        if generation:
+                            generation_suffix = generation.removeprefix('link_rebuild_')
+                            if (
+                                not generation.startswith('link_rebuild_')
+                                or len(generation_suffix) != 16
+                                or not all(ch in '0123456789abcdef' for ch in generation_suffix)
+                            ):
+                                raise ValueError('Invalid link rebuild generation')
+                            cur.execute(
+                                sql.SQL('SET LOCAL search_path = {}, public').format(
+                                    sql.Identifier(generation),
+                                )
+                            )
+                            # Physical-pair membership is graph-generation
+                            # specific; never reuse the process-global public
+                            # cache while building a staging graph.
+                            LINK_TOPOLOGY['updated_at'] = 0.0
+                        cur.execute(
+                            "SELECT pg_advisory_xact_lock(hashtext('meshcore-link-graph-write'))"
+                        )
+                        process_link_job(db, r_client, job)
+                        payload_hash = hashlib.sha256(
+                            json.dumps(job, separators=(',', ':'), sort_keys=True).encode()
+                        ).hexdigest()
+                        cur.execute(
+                            '''INSERT INTO public.link_job_commits
+                                 (job_id, job_type, generation, logical_job_id, payload_hash)
+                               VALUES (%s, %s, %s, %s, %s)
+                               ON CONFLICT (job_id) DO NOTHING''',
+                            (
+                                job_id,
+                                str(job.get('type') or 'observe'),
+                                generation or None,
+                                job.get('logical_job_id'),
+                                payload_hash,
+                            ),
+                        )
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
+            finally:
+                db.autocommit = True
+                if job.get('generation'):
+                    LINK_TOPOLOGY['updated_at'] = 0.0
+        if not link_queue_v3.ack(r_client, job_id, token):
+            log.warning(f'Link v3 ACK rejected for {job_id}')
+    except Exception:
+        result = link_queue_v3.nack(r_client, job_id, token)
+        log.exception(f'Link v3 job {job_id} failed; transition={result}')
+        raise
+
+
 def enqueue_physical_link_jobs_for_node(db, r_client, node_id: str, lat: float, lon: float, radius_m: Optional[float]) -> int:
     origin = {'lat': lat, 'lon': lon, 'radius_m': radius_m}
     origin_radius_km = physical_candidate_radius_km(radius_m)
@@ -1238,12 +1325,11 @@ def enqueue_physical_link_jobs_for_node(db, r_client, node_id: str, lat: float, 
         if node_dist_km(origin, peer) > max(origin_radius_km, physical_candidate_radius_km(peer_radius_m)):
             continue
         [a_id, b_id] = sorted((node_id, peer_id))
-        r_client.lpush(LINK_JOB_QUEUE, json.dumps({
-            'type': 'physical_pair',
-            'node_a_id': a_id,
-            'node_b_id': b_id,
-        }))
-        queued += 1
+        status, _ = link_queue_v3.admit_physical(r_client, a_id, b_id)
+        if status in ('accepted', 'coalesced', 'duplicate'):
+            queued += 1
+        else:
+            log.warning(f'Physical link job not admitted for {a_id[:8]}…↔{b_id[:8]}…: {status}')
     return queued
 
 
@@ -1295,6 +1381,157 @@ def rebuild_pending_viewshed_set(r_client):
     if node_ids:
         r_client.sadd(JOB_PENDING_SET, *node_ids)
     log.info(f'Rebuilt viewshed pending set from queue ({len(set(node_ids))} unique node(s))')
+
+
+def recover_planned_coverage_jobs(db, r_client) -> int:
+    available = max(0, PLANNED_COVERAGE_QUEUE_MAX - int(r_client.llen(JOB_QUEUE)))
+    with db.cursor() as cur:
+        cur.execute('DELETE FROM planned_coverage_handles WHERE expires_at <= NOW()')
+        cur.execute(
+            '''SELECT job_id, lat, lon
+                 FROM planned_coverage_jobs
+                WHERE (
+                        status = 'queued'
+                        OR (status = 'running' AND heartbeat_at < NOW() - INTERVAL '60 seconds')
+                      )
+                  AND expires_at > NOW()
+                ORDER BY created_at
+                LIMIT %s''',
+            (available,),
+        )
+        rows = cur.fetchall()
+        cur.execute(
+            '''UPDATE planned_coverage_jobs
+                  SET status = 'queued', heartbeat_at = NULL, updated_at = NOW()
+                WHERE status = 'running'
+                  AND heartbeat_at < NOW() - INTERVAL '60 seconds'
+                  AND expires_at > NOW()'''
+        )
+        cur.execute(
+            '''DELETE FROM node_coverage coverage
+                USING planned_coverage_jobs jobs
+               WHERE coverage.node_id = jobs.job_id
+                 AND coverage.is_planned = TRUE
+                 AND jobs.expires_at <= NOW()'''
+        )
+        cur.execute(
+            '''DELETE FROM planned_coverage_jobs jobs
+                WHERE jobs.expires_at <= NOW()
+                  AND NOT EXISTS (
+                    SELECT 1 FROM planned_coverage_handles handles
+                     WHERE handles.job_id = jobs.job_id
+                  )'''
+        )
+    db.commit()
+    queued = 0
+    for job_id, lat, lon in rows:
+        if r_client.sadd(JOB_PENDING_SET, job_id):
+            r_client.lpush(JOB_QUEUE, json.dumps({
+                'node_id': job_id,
+                'planned_job_id': job_id,
+                'lat': lat,
+                'lon': lon,
+            }))
+            queued += 1
+    if queued:
+        log.warning(f'Recovered {queued} durable planned coverage job(s)')
+    return queued
+
+
+class PlannedJobHeartbeat:
+    def __init__(self, job_id: str):
+        self.job_id = job_id
+        self.stop_event = threading.Event()
+        self.thread = threading.Thread(target=self._run, name=f'planned-{job_id[:8]}', daemon=True)
+
+    def _renew(self, conn) -> None:
+        with conn.cursor() as cur:
+            cur.execute(
+                '''UPDATE planned_coverage_jobs
+                      SET heartbeat_at = NOW(),
+                          expires_at = GREATEST(expires_at, NOW() + (%s * INTERVAL '1 second')),
+                          updated_at = NOW()
+                    WHERE job_id = %s AND status = 'running' ''',
+                (PLANNED_RESULT_TTL_S, self.job_id),
+            )
+            cur.execute(
+                '''UPDATE planned_coverage_handles
+                      SET expires_at = GREATEST(expires_at, NOW() + (%s * INTERVAL '1 second'))
+                    WHERE job_id = %s''',
+                (PLANNED_RESULT_TTL_S, self.job_id),
+            )
+
+    def _run(self):
+        conn = None
+        while not self.stop_event.wait(15):
+            try:
+                if conn is None or conn.closed:
+                    conn = wait_for_db()
+                self._renew(conn)
+            except Exception as exc:
+                log.warning(f'Planned job heartbeat reconnecting: {exc}')
+                if conn is not None:
+                    conn.close()
+                conn = None
+        if conn is not None:
+            conn.close()
+
+    def __enter__(self):
+        self.thread.start()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.stop_event.set()
+        self.thread.join(timeout=5)
+
+
+def process_planned_job(db, r_client, job: dict) -> None:
+    job_id = str(job['planned_job_id'])
+    with db.cursor() as cur:
+        cur.execute(
+            '''UPDATE planned_coverage_jobs
+                  SET status = 'running', heartbeat_at = NOW(), error = NULL, updated_at = NOW()
+                WHERE job_id = %s AND expires_at > NOW()
+              RETURNING job_id''',
+            (job_id,),
+        )
+        if cur.fetchone() is None:
+            r_client.srem(JOB_PENDING_SET, job_id)
+            return
+    db.commit()
+    try:
+        with PlannedJobHeartbeat(job_id):
+            process_job(db, r_client, job)
+        expires_at = dt.datetime.now(dt.timezone.utc) + dt.timedelta(seconds=PLANNED_RESULT_TTL_S)
+        with db.cursor() as cur:
+            cur.execute(
+                '''UPDATE planned_coverage_jobs
+                      SET status = 'ready', heartbeat_at = NOW(), expires_at = %s,
+                          error = NULL, updated_at = NOW()
+                    WHERE job_id = %s''',
+                (expires_at, job_id),
+            )
+            cur.execute(
+                '''UPDATE planned_coverage_handles SET expires_at = %s WHERE job_id = %s''',
+                (expires_at, job_id),
+            )
+            cur.execute(
+                '''UPDATE node_coverage
+                      SET is_planned = TRUE, expires_at = %s
+                    WHERE node_id = %s''',
+                (expires_at, job_id),
+            )
+        db.commit()
+    except Exception as exc:
+        with db.cursor() as cur:
+            cur.execute(
+                '''UPDATE planned_coverage_jobs
+                      SET status = 'failed', error = %s, heartbeat_at = NOW(), updated_at = NOW()
+                    WHERE job_id = %s''',
+                (str(exc)[:500], job_id),
+            )
+        db.commit()
+        raise
 
 # ── Job processor ─────────────────────────────────────────────────────────────
 
@@ -1366,7 +1603,7 @@ def process_job(db, r_client, job: dict):
 
         geom, strength_geoms, radius_m, elevation_m = result
         store_coverage(db, node_id, geom, strength_geoms, radius_m, elevation_m, antenna_height_m=node_antenna_height_m)
-        if node_id.startswith('plan_'):
+        if node_id.startswith('plan_') or job.get('planned_job_id'):
             # Planned (hypothetical) repeater: predict viable links to nearby real
             # repeaters in-line so the result is ready when the user polls coverage.
             try:
@@ -1416,47 +1653,95 @@ def worker_loop():
     """Single worker process: owns its own DB and Redis connections."""
     name     = multiprocessing.current_process().name
     db       = wait_for_db()
-    r_client = redis.Redis.from_url(REDIS_URL, decode_responses=True, password=REDIS_PASSWORD)
+    r_client = redis_connection()
+    heartbeat_stop = threading.Event()
+    if WORKER_MODE in ('all', 'link'):
+        link_queue_v3.start_worker_heartbeat(redis_connection, heartbeat_stop)
+    if WORKER_MODE in ('all', 'viewshed') and VIEWSHED_ENABLED:
+        def viewshed_heartbeat():
+            heartbeat_client = None
+            while not heartbeat_stop.is_set():
+                try:
+                    if heartbeat_client is None:
+                        heartbeat_client = redis_connection()
+                    heartbeat_client.set(VIEWSHED_WORKER_HEARTBEAT, str(int(time.time())), ex=45)
+                    heartbeat_stop.wait(10)
+                except Exception as exc:
+                    log.warning(f'Viewshed heartbeat reconnecting: {exc}')
+                    if heartbeat_client is not None:
+                        heartbeat_client.close()
+                    heartbeat_client = None
+                    heartbeat_stop.wait(2)
+            if heartbeat_client is not None:
+                heartbeat_client.close()
+        threading.Thread(target=viewshed_heartbeat, name='viewshed-worker-heartbeat', daemon=True).start()
     sync_radio_neighbors = name in ('MainProcess', 'Worker-1')
     if sync_radio_neighbors and WORKER_MODE in ('all', 'link'):
         refresh_radio_neighbor_reports(db, r_client, force=True)
     refresh_rf_calibration(db, force=True)
     refresh_support_context(db, force=True)
     log.info(f'{name} ready')
+    last_link_reap = 0.0
+    last_planned_recovery = 0.0
 
     while True:
         try:
             if WORKER_MODE == 'viewshed' and not VIEWSHED_ENABLED:
                 time.sleep(300)
                 continue
+            if WORKER_MODE in ('all', 'viewshed') and VIEWSHED_ENABLED:
+                now = time.time()
+                if now - last_planned_recovery >= 30:
+                    recover_planned_coverage_jobs(db, r_client)
+                    last_planned_recovery = now
 
             if sync_radio_neighbors and WORKER_MODE in ('all', 'link'):
                 refresh_radio_neighbor_reports(db, r_client)
             refresh_rf_calibration(db)
             refresh_support_context(db)
             if WORKER_MODE in ('all', 'link'):
-                # Drain pending link jobs first (fast) before blocking
+                now = time.time()
+                if now - last_link_reap >= 5:
+                    recovered = link_queue_v3.reap(r_client)
+                    if recovered:
+                        log.warning(f'Recovered {recovered} expired link lease(s)')
+                    link_queue_v3.cleanup_completed(r_client)
+                    last_link_reap = now
+                # Drain v3 first. Claim removes a ready entry and installs its
+                # token/lease in one Lua transition.
                 while True:
-                    raw = r_client.rpop(LINK_JOB_QUEUE)
-                    if raw is None:
+                    claimed = link_queue_v3.claim(r_client)
+                    if claimed is None:
                         break
-                    process_link_job(db, r_client, json.loads(raw))
+                    process_claimed_link_job(db, r_client, claimed)
+                # Compatible cutover: drain legacy jobs only after v3.
+                if not r_client.exists(link_queue_v3.REBUILD):
+                    while True:
+                        raw = r_client.rpop(LINK_JOB_QUEUE)
+                        if raw is None:
+                            break
+                        process_link_job(db, r_client, json.loads(raw))
 
             if WORKER_MODE == 'viewshed':
                 wait_queues = [JOB_QUEUE]
             elif WORKER_MODE == 'link':
-                wait_queues = [LINK_JOB_QUEUE]
+                time.sleep(0.5)
+                continue
             else:
                 wait_queues = [JOB_QUEUE, LINK_JOB_QUEUE] if VIEWSHED_ENABLED else [LINK_JOB_QUEUE]
 
-            item = r_client.brpop(wait_queues, timeout=30)
+            item = r_client.brpop(wait_queues, timeout=1)
             if item is None:
                 continue
             queue_name, raw = item
             if queue_name == LINK_JOB_QUEUE:
                 process_link_job(db, r_client, json.loads(raw))
             else:
-                process_job(db, r_client, json.loads(raw))
+                job = json.loads(raw)
+                if job.get('planned_job_id'):
+                    process_planned_job(db, r_client, job)
+                else:
+                    process_job(db, r_client, job)
         except psycopg2.OperationalError:
             log.warning(f'{name}: DB connection lost — reconnecting')
             db = wait_for_db()
@@ -1700,6 +1985,7 @@ def main():
     refresh_support_context(db, force=True)
     if WORKER_MODE in ('all', 'viewshed') and VIEWSHED_ENABLED:
         rebuild_pending_viewshed_set(r)
+        recover_planned_coverage_jobs(db, r)
         backfill_elevations(db)
         enqueue_uncovered(db, r)
     elif WORKER_MODE == 'viewshed':

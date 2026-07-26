@@ -167,6 +167,12 @@ services:
       SPAM_MESSAGE_ANALYSIS_BUDGET_MS: ${SPAM_MESSAGE_ANALYSIS_BUDGET_MS:-5000}
       SPAM_MESSAGE_DB_TIMEOUT_MS: ${SPAM_MESSAGE_DB_TIMEOUT_MS:-15000}
       STATS_UNIQUE_INFLIGHT_MAX: ${STATS_UNIQUE_INFLIGHT_MAX:-32}
+      LINK_QUEUE_V3_PRODUCER_ENABLED: ${LINK_QUEUE_V3_PRODUCER_ENABLED:-1}
+      LINK_QUEUE_V3_MAX_JOBS: ${LINK_QUEUE_V3_MAX_JOBS:-5000}
+      LINK_QUEUE_V3_MAX_BYTES: ${LINK_QUEUE_V3_MAX_BYTES:-67108864}
+      LINK_QUEUE_V3_MAX_PAYLOAD_BYTES: ${LINK_QUEUE_V3_MAX_PAYLOAD_BYTES:-32768}
+      PLANNED_COVERAGE_TTL_MS: ${PLANNED_COVERAGE_TTL_MS:-86400000}
+      PLANNED_COVERAGE_QUEUE_MAX: ${PLANNED_COVERAGE_QUEUE_MAX:-100}
       WS_MAX_PAYLOAD_BYTES: ${WS_MAX_PAYLOAD_BYTES:-65536}
       WS_MAX_QUEUE_BYTES: ${WS_MAX_QUEUE_BYTES:-8388608}
       WS_MAX_BUFFERED_BYTES: ${WS_MAX_BUFFERED_BYTES:-33554432}
@@ -342,6 +348,8 @@ services:
         condition: service_healthy
       backend:
         condition: service_healthy
+      link-worker:
+        condition: service_healthy
 
   viewshed-worker:
     <<: *internal-hosts
@@ -363,8 +371,16 @@ services:
       NUM_WORKERS: '1'
       COVERAGE_MODEL: ${COVERAGE_MODEL:-rf_radial_100m}
       COVERAGE_MODEL_VERSION: ${COVERAGE_MODEL_VERSION:-5}
+      PLANNED_COVERAGE_TTL_SECONDS: ${PLANNED_COVERAGE_TTL_SECONDS:-86400}
+      PLANNED_COVERAGE_QUEUE_MAX: ${PLANNED_COVERAGE_QUEUE_MAX:-100}
     volumes:
       - srtm_data:/data/srtm
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import os,redis; r=redis.Redis.from_url(os.environ['REDIS_URL'],password=os.environ.get('REDIS_PASSWORD')); raise SystemExit(0 if r.exists('meshcore:viewshed:worker_heartbeat') else 1)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
     deploy:
       resources:
         limits:
@@ -396,8 +412,19 @@ services:
       SRTM_DIR: /data/srtm
       WORKER_MODE: link
       NUM_WORKERS: '1'
+      LINK_QUEUE_V3_MAX_JOBS: ${LINK_QUEUE_V3_MAX_JOBS:-5000}
+      LINK_QUEUE_V3_MAX_BYTES: ${LINK_QUEUE_V3_MAX_BYTES:-67108864}
+      LINK_QUEUE_V3_MAX_PAYLOAD_BYTES: ${LINK_QUEUE_V3_MAX_PAYLOAD_BYTES:-32768}
+      LINK_QUEUE_V3_MAX_ATTEMPTS: ${LINK_QUEUE_V3_MAX_ATTEMPTS:-5}
+      LINK_QUEUE_V3_LEASE_MS: ${LINK_QUEUE_V3_LEASE_MS:-120000}
     volumes:
       - srtm_data:/data/srtm
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import os,redis; r=redis.Redis.from_url(os.environ['REDIS_URL'],password=os.environ.get('REDIS_PASSWORD')); raise SystemExit(0 if r.exists('meshcore:link:v3:worker_heartbeat') else 1)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
     depends_on:
       timescaledb:
         condition: service_healthy
