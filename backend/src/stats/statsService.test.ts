@@ -67,3 +67,49 @@ test('completed canonical charts are reused while observer-scoped charts are nev
   assert.equal(chartCalls, 3);
   assert.equal(chartsCache.size, 1);
 });
+
+test('expired canonical stats are served while one refresh runs in the background', async () => {
+  let resolveRefresh!: (value: Awaited<ReturnType<StatsRepository['fetchStatsSummary']>>) => void;
+  const refresh = new Promise<Awaited<ReturnType<StatsRepository['fetchStatsSummary']>>>((resolve) => {
+    resolveRefresh = resolve;
+  });
+  let summaryCalls = 0;
+  const repository = {
+    fetchStatsSummary: async () => {
+      summaryCalls += 1;
+      return refresh;
+    },
+  } as unknown as StatsRepository;
+  const stale = { totalNodes: 6 };
+  const statsCache = new Map<string, { ts: number; data: unknown }>([
+    ['ukmesh', { ts: 0, data: stale }],
+  ]);
+  const service = createStatsService({
+    statsCache,
+    statsCacheTtlMs: 1,
+    chartsCache: new Map(),
+    chartsCacheTtlMs: 60_000,
+    chartsInflight: new Map(),
+    repository,
+    maskDecodedPathNodes: () => [],
+  });
+
+  assert.equal(await service.getStatsSummary('ukmesh', undefined), stale);
+  assert.equal(await service.getStatsSummary('ukmesh', undefined), stale);
+  assert.equal(summaryCalls, 1);
+
+  const empty = { rows: [] };
+  resolveRefresh({
+    mqttCount: empty,
+    packetCount: empty,
+    staleCount: empty,
+    mapNodeCount: empty,
+    totalNodeCount: { rows: [{ count: '7' }] },
+    longestHopCount: empty,
+    nodesDayCount: empty,
+    internationalCount: empty,
+  });
+  await refresh;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal((statsCache.get('ukmesh')?.data as { totalNodes: number }).totalNodes, 7);
+});

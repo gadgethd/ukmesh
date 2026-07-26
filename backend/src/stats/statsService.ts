@@ -510,8 +510,11 @@ export function createStatsService(deps: StatsServiceDeps) {
     }
 
     const inflight = statsInflight.get(key);
-    if (inflight) return inflight;
-    if (statsInflight.size >= MAX_UNIQUE_STATS_INFLIGHT) throw new StatsWorkOverloadedError();
+    if (inflight) return cached ? cached.data : inflight;
+    if (statsInflight.size >= MAX_UNIQUE_STATS_INFLIGHT) {
+      if (cached) return cached.data;
+      throw new StatsWorkOverloadedError();
+    }
 
     const promise = computeStatsSummary(network, observer).then((data) => {
       statsCache.set(key, { ts: Date.now(), data });
@@ -523,6 +526,10 @@ export function createStatsService(deps: StatsServiceDeps) {
     });
 
     statsInflight.set(key, promise);
+    if (cached) {
+      void promise.catch(() => { /* retain the last successful value */ });
+      return cached.data;
+    }
     return promise;
   }
 
