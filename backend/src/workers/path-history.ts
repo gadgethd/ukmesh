@@ -116,10 +116,20 @@ async function refreshScope(scope: ScopeName): Promise<void> {
           touchPredictedOnline: false,
           log: false,
         });
-        return { packetHash, resolved, skipped: false };
+        if (!resolved?.ok || resolved.results.length < 1) {
+          return { packetHash, segmentKeys: [] as string[], resolved: false, skipped: false };
+        }
+        const packetSegments = new Set<string>();
+        for (const result of resolved.results) collectPurpleSegments(result, packetSegments);
+        return {
+          packetHash,
+          segmentKeys: Array.from(packetSegments),
+          resolved: packetSegments.size > 0,
+          skipped: false,
+        };
       } catch (error) {
         if ((error as Error).message === 'PATH_HISTORY_LIMIT') {
-          return { packetHash, resolved: null, skipped: true };
+          return { packetHash, segmentKeys: [] as string[], resolved: false, skipped: true };
         }
         throw error;
       }
@@ -153,12 +163,9 @@ async function refreshScope(scope: ScopeName): Promise<void> {
         skippedPacketCount += 1;
         continue;
       }
-      if (!item.resolved?.ok || item.resolved.results.length < 1) continue;
-      const packetSegments = new Set<string>();
-      for (const result of item.resolved.results) collectPurpleSegments(result, packetSegments);
-      if (packetSegments.size < 1) continue;
+      if (!item.resolved || item.segmentKeys.length < 1) continue;
       resolvedPacketCount += 1;
-      for (const key of packetSegments) counts.set(key, (counts.get(key) ?? 0) + 1);
+      for (const key of item.segmentKeys) counts.set(key, (counts.get(key) ?? 0) + 1);
     }
 
     const segmentCounts: SegmentCount[] = Array.from(counts.entries())
