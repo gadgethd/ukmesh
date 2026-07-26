@@ -153,10 +153,13 @@ export function renderOwnerAcl(
   unmanagedUsers: Iterable<string>,
   allowedEmptyUsers: Iterable<string> = [],
 ): OwnerAclRenderResult {
+  const unmanaged = new Set([...unmanagedUsers].map((value) => normalizeUsername(value)));
   const normalized = grants.map((grant) => ({
     mqttUsername: normalizeUsername(grant.mqttUsername),
     nodeIds: normalizeNodeIds(grant.nodeIds),
-  })).sort((a, b) => a.mqttUsername.localeCompare(b.mqttUsername));
+  }))
+    .filter((grant) => !unmanaged.has(grant.mqttUsername))
+    .sort((a, b) => a.mqttUsername.localeCompare(b.mqttUsername));
   const usernames = new Set(normalized.map((grant) => grant.mqttUsername));
   if (usernames.size !== normalized.length) throw new Error('DUPLICATE_OWNER_GRANT_USERNAME');
 
@@ -167,7 +170,6 @@ export function renderOwnerAcl(
   const parsed = parseAcl(stripped.content);
   parsed.managedSectionFound = stripped.found;
   parsed.errors.push(...stripped.errors);
-  const unmanaged = new Set([...unmanagedUsers].map((value) => normalizeUsername(value)));
   const allowedEmpty = new Set([...allowedEmptyUsers].map((value) => normalizeUsername(value)));
   const ambiguousUsers = Array.from(new Set(
     parsed.stanzas

@@ -82,6 +82,25 @@ test('canonical renderer is deterministic and readback validation detects tamper
   );
 });
 
+test('unmanaged users are retained only once even when present in the owner snapshot', () => {
+  const existing = [
+    'user test',
+    'topic write meshcore/#',
+    '',
+  ].join('\n');
+
+  const rendered = renderOwnerAcl(
+    existing,
+    [{ mqttUsername: 'test', nodeIds: [] }],
+    ['test'],
+  );
+
+  assert.equal(rendered.validation.ok, true);
+  assert.equal((rendered.content.match(/^user test$/gm) ?? []).length, 1);
+  assert.match(rendered.content, /topic write meshcore\/#/);
+  assert.deepEqual(rendered.semantic, []);
+});
+
 test('cutover validation blocks empty managed accounts unless explicitly reviewed', () => {
   const blocked = renderOwnerAcl('', [{ mqttUsername: 'revoked', nodeIds: [] }], []);
   assert.equal(blocked.validation.ok, false);
