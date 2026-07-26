@@ -254,6 +254,7 @@ services:
     command: ["node", "dist/workers/path-history.js"]
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}
+      DATABASE_APPLICATION_NAME: meshcore-path-history
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD required}
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET required}

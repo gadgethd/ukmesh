@@ -418,17 +418,20 @@ export function createStatsService(deps: StatsServiceDeps) {
       }
     };
 
-    setTimeout(warmCharts, 5_000);
-    setInterval(warmCharts, chartsCacheTtlMs);
-
     const warmStats = async () => {
       for (const net of warmupNetworks) {
         await getStatsSummary(net, undefined).catch(() => { /* best-effort */ });
       }
     };
 
-    setTimeout(warmStats, 6_000);
+    // Populate the lightweight summary before starting the much larger chart
+    // snapshot. This keeps /api/stats responsive during a cold restart while
+    // the bounded chart queries continue in the background.
+    setTimeout(() => {
+      void warmStats().finally(() => warmCharts());
+    }, 5_000);
     setInterval(warmStats, statsCacheTtlMs);
+    setInterval(warmCharts, chartsCacheTtlMs);
   }
 
   async function computeStatsSummary(network: string | undefined, observer: string | undefined): Promise<unknown> {
