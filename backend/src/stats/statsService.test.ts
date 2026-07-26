@@ -115,6 +115,62 @@ test('expired canonical charts are served while one refresh runs in the backgrou
   chartsCache.shutdown();
 });
 
+test('startup chart work waits for the lightweight summary warmup', async () => {
+  let resolveSummary!: (value: Awaited<ReturnType<StatsRepository['fetchStatsSummary']>>) => void;
+  const summary = new Promise<Awaited<ReturnType<StatsRepository['fetchStatsSummary']>>>((resolve) => {
+    resolveSummary = resolve;
+  });
+  let chartCalls = 0;
+  const repository = {
+    fetchStatsSummary: async () => summary,
+    fetchChartsData: async () => {
+      chartCalls += 1;
+      return emptyChartsData();
+    },
+    fetchChannelTraffic: async () => ({ rows: [] }),
+  } as unknown as StatsRepository;
+  const service = createStatsService({
+    statsCache: new Map(),
+    statsCacheTtlMs: 60_000,
+    chartsCache: new Map(),
+    chartsCacheTtlMs: 60_000,
+    chartsInflight: new Map(),
+    repository,
+    maskDecodedPathNodes: () => [],
+  });
+
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalSetInterval = globalThis.setInterval;
+  globalThis.setTimeout = ((callback: (...args: unknown[]) => void) => {
+    queueMicrotask(callback);
+    return { unref() {} } as unknown as NodeJS.Timeout;
+  }) as typeof setTimeout;
+  globalThis.setInterval = (() => ({ unref() {} } as unknown as NodeJS.Timeout)) as typeof setInterval;
+  try {
+    service.startChartsWarmup();
+    const charts = service.getCharts('ukmesh', undefined);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(chartCalls, 0);
+
+    const empty = { rows: [] };
+    resolveSummary({
+      mqttCount: empty,
+      packetCount: empty,
+      staleCount: empty,
+      mapNodeCount: empty,
+      totalNodeCount: empty,
+      longestHopCount: empty,
+      nodesDayCount: empty,
+      internationalCount: empty,
+    });
+    await charts;
+    assert.ok(chartCalls >= 1);
+  } finally {
+    globalThis.setTimeout = originalSetTimeout;
+    globalThis.setInterval = originalSetInterval;
+  }
+});
+
 test('expired canonical stats are served while one refresh runs in the background', async () => {
   let resolveRefresh!: (value: Awaited<ReturnType<StatsRepository['fetchStatsSummary']>>) => void;
   const refresh = new Promise<Awaited<ReturnType<StatsRepository['fetchStatsSummary']>>>((resolve) => {

@@ -123,6 +123,7 @@ export function createStatsService(deps: StatsServiceDeps) {
   };
   const channelTrafficCache = new Map<string, { ts: number; data: CachedChannelTraffic }>();
   const statsInflight = new Map<string, Promise<unknown>>();
+  let initialStatsWarmup: Promise<void> | undefined;
   let activeObserverWork = 0;
 
   const fmtHour = (ts: Date | string) => {
@@ -379,6 +380,13 @@ export function createStatsService(deps: StatsServiceDeps) {
         activeObserverWork -= 1;
       }
     }
+    // Route registration precedes the delayed startup warmup. A browser can
+    // therefore request charts during that short window and fill every stats
+    // query slot with long scans before the lightweight summary is cached.
+    // Hold canonical chart work behind the one startup summary warmup.
+    if (initialStatsWarmup) {
+      await initialStatsWarmup.catch(() => { /* charts may still warm independently */ });
+    }
     const key = `${network ?? 'ukmesh'}`;
     const cached = chartsCache.get(key);
     if (cached && Date.now() - cached.ts < chartsCacheTtlMs) {
@@ -438,9 +446,10 @@ export function createStatsService(deps: StatsServiceDeps) {
     // Populate the lightweight summary before starting the much larger chart
     // snapshot. This keeps /api/stats responsive during a cold restart while
     // the bounded chart queries continue in the background.
-    setTimeout(() => {
-      void warmStats().finally(() => warmCharts());
-    }, 5_000);
+    initialStatsWarmup = new Promise<void>((resolve) => {
+      setTimeout(resolve, 5_000);
+    }).then(warmStats);
+    void initialStatsWarmup.finally(warmCharts);
     setInterval(warmStats, statsCacheTtlMs);
     setInterval(warmCharts, chartsCacheTtlMs);
   }
