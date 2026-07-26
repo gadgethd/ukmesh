@@ -42,6 +42,7 @@
  * Scoring weights and prior key-formats live in ../path-shared/scoring.ts so
  * the lazy and beta resolvers cannot silently drift apart.
  */
+import { privateNodePacketNetworkMatchSql } from '../privacy/networkScope.js';
 import {
   MAX_HOP_KM,
   SCORE,
@@ -217,6 +218,7 @@ export async function lazyResolvePath(
         AND NOT EXISTS (
           SELECT 1 FROM nodes private_node
           WHERE private_node.name LIKE '%🚫%'
+            AND ${privateNodePacketNetworkMatchSql('private_node', 'packets')}
             AND (
               private_node.node_id IN (packets.rx_node_id, packets.src_node_id)
               OR EXISTS (

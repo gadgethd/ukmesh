@@ -236,3 +236,35 @@ test('exact repeated spam cannot be evicted by newer unrelated candidate cluster
   assert.ok(targetIncident);
   assert.equal(targetIncident.messageCount, 3);
 });
+
+test('canonical URL index prevents interleaved decoys evicting variant spam', () => {
+  const records: MessageRecord[] = [];
+  let minute = 0;
+  for (let targetIndex = 0; targetIndex < 8; targetIndex += 1) {
+    records.push(rec(
+      `limited offer code ${targetIndex} visit https://spam.example/deal`,
+      'TargetBot',
+      minute++,
+    ));
+    if (targetIndex === 7) continue;
+    for (let decoyIndex = 0; decoyIndex < 65; decoyIndex += 1) {
+      records.push(rec(
+        `unrelated digest ${targetIndex}-${decoyIndex} weather radio update`,
+        `Decoy${targetIndex}-${decoyIndex}`,
+        minute++,
+      ));
+    }
+  }
+
+  const incidents = clusterMessages(records, cfg({
+    minTransmissions: 8,
+    minBurst: 8,
+    maxCandidateClusters: 64,
+    joinWindowMs: 1_000 * MIN,
+    burstWindowMs: 1_000 * MIN,
+  }));
+  const target = incidents.find((incident) => incident.members.some((member) =>
+    member.norm.urls.includes('spam.example/deal')));
+  assert.ok(target);
+  assert.equal(target.messageCount, 8);
+});

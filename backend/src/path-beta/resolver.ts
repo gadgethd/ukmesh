@@ -1,4 +1,9 @@
-import { query, touchNodesPredictedOnline } from '../db/index.js';
+import {
+  getPublicVisibilityGeneration,
+  query,
+  touchNodesPredictedOnline,
+} from '../db/index.js';
+import { privateNodePacketNetworkMatchSql } from '../privacy/networkScope.js';
 import {
   buildNodePathHashIndex,
   getNodesForPathHash,
@@ -1417,10 +1422,15 @@ async function buildLearningModel(network: string): Promise<PathLearningModel> {
   };
 }
 
-async function loadContext(network: string): Promise<BetaResolveContext> {
+async function loadContext(network: string, visibilityRetry = 0): Promise<BetaResolveContext> {
   const now = Date.now();
+  const visibilityGeneration = await getPublicVisibilityGeneration();
   const cached = contextCache.get(network);
-  if (cached && now - cached.loadedAt < CONTEXT_TTL_MS) return cached;
+  if (
+    cached
+    && cached.visibilityGeneration === visibilityGeneration
+    && now - cached.loadedAt < CONTEXT_TTL_MS
+  ) return cached;
 
   const [nodeRows, coverageRows, linkRows, mlScoreRows, learningModel, neighborAffinity] = await Promise.all([
     query<MeshNode>(
@@ -1547,6 +1557,7 @@ async function loadContext(network: string): Promise<BetaResolveContext> {
 
   const context: BetaResolveContext = {
     loadedAt: now,
+    visibilityGeneration,
     nodesById,
     repeaterNodes,
     repeaterPathHashIndex,
@@ -1562,6 +1573,13 @@ async function loadContext(network: string): Promise<BetaResolveContext> {
     mlPrefixScores,
     learningModel,
   };
+  const confirmedGeneration = await getPublicVisibilityGeneration();
+  if (confirmedGeneration !== visibilityGeneration) {
+    if (visibilityRetry >= 1) {
+      throw new Error('PUBLIC_VISIBILITY_CHANGED_DURING_CONTEXT_LOAD');
+    }
+    return loadContext(network, visibilityRetry + 1);
+  }
   contextCache.set(network, context);
   return context;
 }
@@ -1719,6 +1737,7 @@ export async function resolveBetaPathForPacketHash(
          AND NOT EXISTS (
            SELECT 1 FROM nodes private_node
            WHERE private_node.name LIKE '%🚫%'
+             AND ${privateNodePacketNetworkMatchSql('private_node', 'packets')}
              AND (
                private_node.node_id IN (packets.rx_node_id, packets.src_node_id)
                OR EXISTS (
@@ -1757,6 +1776,7 @@ export async function resolveBetaPathForPacketHash(
               AND NOT EXISTS (
                 SELECT 1 FROM nodes private_node
                  WHERE private_node.name LIKE '%🚫%'
+                   AND ${privateNodePacketNetworkMatchSql('private_node', 'packets')}
                    AND private_node.node_id IN (packets.rx_node_id, packets.src_node_id)
               )
             GROUP BY rx_node_id
@@ -2255,6 +2275,7 @@ export async function resolveMultiObserverBetaPath(
        AND NOT EXISTS (
          SELECT 1 FROM nodes private_node
          WHERE private_node.name LIKE '%🚫%'
+           AND ${privateNodePacketNetworkMatchSql('private_node', 'packets')}
            AND (
              private_node.node_id IN (packets.rx_node_id, packets.src_node_id)
              OR EXISTS (

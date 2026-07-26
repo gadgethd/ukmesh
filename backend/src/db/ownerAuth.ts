@@ -8,6 +8,14 @@ const OWNER_DB_NAME = process.env['OWNER_POSTGRES_DB'] ?? 'meshcore_owner_auth';
 const ownerDatabaseApplicationName = String(process.env['OWNER_DATABASE_APPLICATION_NAME'] ?? 'meshcore-owner-auth').trim() || 'meshcore-owner-auth';
 const ownerAdminDatabaseApplicationName = String(process.env['OWNER_DATABASE_ADMIN_APPLICATION_NAME'] ?? 'meshcore-owner-auth-admin').trim() || 'meshcore-owner-auth-admin';
 const ownerDatabaseStatementTimeoutMs = Number(process.env['OWNER_DATABASE_STATEMENT_TIMEOUT_MS'] ?? 30_000);
+const mqttAuditMaxNodesPerUser = Math.min(
+  4_096,
+  Math.max(16, Number(process.env['MQTT_AUDIT_MAX_NODES_PER_USER'] ?? 256) || 256),
+);
+const mqttAuditRetentionDays = Math.min(
+  365,
+  Math.max(1, Number(process.env['MQTT_AUDIT_RETENTION_DAYS'] ?? 30) || 30),
+);
 
 function getPrimaryDatabaseUrl(): string {
   const raw = String(process.env['DATABASE_URL'] ?? '').trim();
@@ -392,12 +400,49 @@ export async function recordUntrustedMqttNodeObservation(mqttUsername: string, n
   const normalizedUsername = mqttUsername.trim();
   const normalizedNodeId = nodeId.trim().toUpperCase();
   if (!normalizedUsername || !/^[0-9A-F]{64}$/.test(normalizedNodeId)) return;
-  await ownerPool.query(
-    `INSERT INTO mqtt_node_logins (mqtt_username, node_id, last_connected_at)
-     VALUES ($1, $2, NOW())
-     ON CONFLICT (mqtt_username, node_id) DO UPDATE SET last_connected_at = NOW()`,
-    [normalizedUsername, normalizedNodeId],
-  );
+  const client = await ownerPool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(
+      'SELECT pg_advisory_xact_lock(hashtext($1))',
+      [`mqtt-audit:${normalizedUsername}`],
+    );
+    await client.query(
+      `INSERT INTO mqtt_node_logins (mqtt_username, node_id, last_connected_at)
+       VALUES ($1, $2, NOW())
+       ON CONFLICT (mqtt_username, node_id) DO UPDATE SET last_connected_at = NOW()`,
+      [normalizedUsername, normalizedNodeId],
+    );
+    await client.query(
+      `DELETE FROM mqtt_node_logins
+        WHERE last_connected_at < NOW() - ($1 * INTERVAL '1 day')`,
+      [mqttAuditRetentionDays],
+    );
+    await client.query(
+      `WITH ranked AS (
+         SELECT mqtt_username,
+                node_id,
+                ROW_NUMBER() OVER (
+                  PARTITION BY mqtt_username
+                  ORDER BY last_connected_at DESC, node_id
+                ) AS retained_rank
+           FROM mqtt_node_logins
+          WHERE mqtt_username = $1
+       )
+       DELETE FROM mqtt_node_logins target
+        USING ranked
+        WHERE target.mqtt_username = ranked.mqtt_username
+          AND target.node_id = ranked.node_id
+          AND ranked.retained_rank > $2`,
+      [normalizedUsername, mqttAuditMaxNodesPerUser],
+    );
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 export type OwnerAclStateUpdate = {

@@ -126,7 +126,8 @@ export function createPathingService(deps: PathingServiceDeps) {
   } = deps;
 
   async function resolvePacket(packetHash: string, network: string, observer?: string | null): Promise<PublicBetaResultDto> {
-    const cacheKey = `r|${packetHash}|${network}|${observer ?? ''}`;
+    const visibilityGeneration = await repository.fetchVisibilityGeneration();
+    const cacheKey = `r|${packetHash}|${network}|${observer ?? ''}|v${visibilityGeneration}`;
     const cached = getResolveCache(cacheKey);
     if (cached) return toPublicBetaResultDto(cached);
     const inflight = resolveInflightSingle.get(cacheKey);
@@ -160,7 +161,8 @@ export function createPathingService(deps: PathingServiceDeps) {
   }
 
   async function resolvePacketMulti(packetHash: string, network: string): Promise<PublicMultiObserverDto> {
-    const cacheKey = `m|${packetHash}|${network}`;
+    const visibilityGeneration = await repository.fetchVisibilityGeneration();
+    const cacheKey = `m|${packetHash}|${network}|v${visibilityGeneration}`;
     const cached = getResolveCache(cacheKey);
     if (cached) return toPublicMultiObserverDto(cached);
     const inflight = resolveInflightMulti.get(cacheKey);
@@ -193,12 +195,14 @@ export function createPathingService(deps: PathingServiceDeps) {
   }
 
   async function getPathHistory(scope: string): Promise<unknown> {
-    const memoryCached = pathHistoryCache.get(scope);
+    const visibilityGeneration = await repository.fetchVisibilityGeneration();
+    const cacheKey = `${scope}|v${visibilityGeneration}`;
+    const memoryCached = pathHistoryCache.get(cacheKey);
     if (memoryCached && Date.now() - memoryCached.ts < pathHistoryCacheTtlMs) {
       return memoryCached.data;
     }
 
-    const cached = await repository.fetchPathHistory(scope);
+    const cached = await repository.fetchPathHistory(scope, visibilityGeneration);
     let responseData: unknown;
     if (!cached) {
       responseData = {
@@ -226,7 +230,7 @@ export function createPathingService(deps: PathingServiceDeps) {
       };
     }
 
-    pathHistoryCache.set(scope, { ts: Date.now(), data: responseData });
+    pathHistoryCache.set(cacheKey, { ts: Date.now(), data: responseData });
     return responseData;
   }
 

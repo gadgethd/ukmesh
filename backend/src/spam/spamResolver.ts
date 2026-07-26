@@ -15,6 +15,7 @@
  */
 import { MAX_HOP_KM } from '../path-shared/scoring.js';
 import { expandResolverScope } from '../networks.js';
+import { privateNodePacketNetworkMatchSql } from '../privacy/networkScope.js';
 import {
   buildNodePathHashIndex,
   getNodesForPathHash,
@@ -176,6 +177,7 @@ export async function resolveSpamOrigin(
           SELECT 1
           FROM nodes private_node
           WHERE private_node.name LIKE '%🚫%'
+            AND ${privateNodePacketNetworkMatchSql('private_node', 'p')}
             AND (
               private_node.node_id IN (p.rx_node_id, p.src_node_id)
               OR EXISTS (

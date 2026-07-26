@@ -129,14 +129,17 @@ export function reconcileOwnerAuthorization(): Promise<void> {
   return run;
 }
 
-export function startOwnerAuthorizationReconciler(): void {
+export async function startOwnerAuthorizationReconciler(): Promise<void> {
   const intervalMs = Number(process.env['OWNER_ACL_RECONCILE_INTERVAL_MS'] ?? 60_000);
   const execute = () => {
     void reconcileOwnerAuthorization().catch((error: Error) => {
       console.error('[owner-acl] reconciliation failed:', error.message);
     });
   };
-  execute();
+  // The persisted ACL may reflect an older deployment. Reconcile it before
+  // the HTTP listener can serve owner-protected data; subsequent refreshes may
+  // retry in the background because the startup invariant is already current.
+  await reconcileOwnerAuthorization();
   const timer = setInterval(execute, Math.max(10_000, intervalMs));
   timer.unref();
 }

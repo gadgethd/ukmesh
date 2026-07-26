@@ -43,7 +43,7 @@ async function main() {
   // 1. Initialise DB schema + retention policy
   await initDb();
   await initOwnerAuthDb();
-  startOwnerAuthorizationReconciler();
+  await startOwnerAuthorizationReconciler();
 
   // Queue viewshed jobs for any node with a position but no coverage yet
   // (catches nodes that existed before the worker was added)

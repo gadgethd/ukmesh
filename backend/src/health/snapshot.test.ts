@@ -50,6 +50,26 @@ test('failed refresh preserves the last successful snapshot until its hard TTL',
   assert.deepEqual(cache.read(), {
     ready: false,
     generatedAt: 0,
-    lastError: 'database unavailable',
+    lastError: 'health snapshot unavailable',
+  });
+});
+
+test('failed health snapshots never expose raw dependency diagnostics', async () => {
+  const cache = new HealthSnapshotCache(
+    async () => {
+      throw new Error('connect ECONNREFUSED 172.30.0.2:5432');
+    },
+    100,
+    () => 10,
+  );
+
+  await cache.refresh();
+  const publicRead = cache.read();
+  assert.equal(publicRead.ready, false);
+  assert.equal(JSON.stringify(publicRead).includes('172.30.0.2'), false);
+  assert.deepEqual(publicRead, {
+    ready: false,
+    generatedAt: null,
+    lastError: 'health snapshot unavailable',
   });
 });

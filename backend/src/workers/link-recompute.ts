@@ -11,6 +11,7 @@ import {
 import {
   LINK_V3_KEYS,
   releaseDeferredLinkJobs,
+  renewLinkRebuildLease,
   type LinkQueueAdmission,
 } from '../queue/linkQueueV3.js';
 import { getRedisConnectionOptions, getRedisUrl } from '../platform/config/redis.js';
@@ -35,6 +36,10 @@ const MAX_REBUILD_NODES = Math.min(
 const MAX_REBUILD_PHYSICAL_JOBS = Math.min(
   1_000_000,
   Math.max(1_000, Number(process.env['LINK_REBUILD_MAX_PHYSICAL_JOBS'] ?? 200_000) || 200_000),
+);
+const REBUILD_LEASE_MS = Math.min(
+  10 * 60_000,
+  Math.max(30_000, Number(process.env['LINK_REBUILD_LEASE_MS'] ?? 120_000) || 120_000),
 );
 
 type PhysicalNodeRow = {
@@ -148,15 +153,46 @@ async function main(): Promise<void> {
 
   let published = false;
   let rebuildHeld = false;
+  let leaseLost = false;
+  let renewalInFlight = false;
+  let renewalTimer: NodeJS.Timeout | null = null;
+  const ensureLease = async (): Promise<void> => {
+    if (leaseLost || await redis.get(LINK_V3_KEYS.rebuild) !== rebuildValue) {
+      leaseLost = true;
+      throw new Error('LINK_REBUILD_LEASE_LOST');
+    }
+  };
   try {
     const heartbeat = await redis.exists(LINK_V3_KEYS.workerHeartbeat);
     if (heartbeat !== 1) throw new Error('LINK_REBUILD_WORKER_UNAVAILABLE');
 
     await waitForPreexistingDrain(redis, Date.now() + ADMISSION_TIMEOUT_MS);
-    const acquired = await redis.set(LINK_V3_KEYS.rebuild, rebuildValue, 'NX');
+    const acquired = await redis.set(
+      LINK_V3_KEYS.rebuild,
+      rebuildValue,
+      'PX',
+      REBUILD_LEASE_MS,
+      'NX',
+    );
     if (acquired !== 'OK') throw new Error('LINK_REBUILD_ALREADY_ACTIVE');
     rebuildHeld = true;
+    renewalTimer = setInterval(() => {
+      if (renewalInFlight || leaseLost) return;
+      renewalInFlight = true;
+      void renewLinkRebuildLease(redis, rebuildValue, REBUILD_LEASE_MS)
+        .then((renewed) => {
+          if (!renewed) leaseLost = true;
+        })
+        .catch(() => {
+          leaseLost = true;
+        })
+        .finally(() => {
+          renewalInFlight = false;
+        });
+    }, Math.max(10_000, Math.floor(REBUILD_LEASE_MS / 3)));
+    renewalTimer.unref();
     await waitForV3DrainAfterFreeze(redis, Date.now() + ADMISSION_TIMEOUT_MS);
+    await ensureLease();
     windowEnd = new Date();
     await query(`CREATE SCHEMA ${schemaName}`);
     await query(`CREATE TABLE ${schemaName}.node_links (LIKE public.node_links INCLUDING ALL)`);
@@ -186,6 +222,7 @@ async function main(): Promise<void> {
     const jobIds = new Set<string>();
     const admissionDeadline = Date.now() + ADMISSION_TIMEOUT_MS;
     for (let i = 0; i < nodes.rows.length; i += 1) {
+      await ensureLease();
       const a = nodes.rows[i]!;
       const aRadiusKm = candidateRadiusKm(a);
       for (let j = i + 1; j < nodes.rows.length; j += 1) {
@@ -210,6 +247,7 @@ async function main(): Promise<void> {
       hopCount,
       pathHashSizeBytes,
     ) => {
+      if (leaseLost) throw new Error('LINK_REBUILD_LEASE_LOST');
       const jobId = await waitForAdmission(
         () => queueLinkJob(
           packetHash,
@@ -225,6 +263,7 @@ async function main(): Promise<void> {
       if (jobId) jobIds.add(jobId);
     }, { windowEnd });
 
+    await ensureLease();
     await query(
       `UPDATE link_rebuild_runs
           SET status = 'processing',
@@ -235,6 +274,7 @@ async function main(): Promise<void> {
       [generation, jobIds.size],
     );
     await waitForGeneration(redis, generation, jobIds.size, Date.now() + COMPLETION_TIMEOUT_MS);
+    await ensureLease();
 
     if (await redis.llen(LEGACY_LINK_JOB_QUEUE) > 0) {
       throw new Error('LINK_REBUILD_LEGACY_PRODUCER_ACTIVE');
@@ -242,6 +282,7 @@ async function main(): Promise<void> {
 
     const client = await pool.connect();
     try {
+      await ensureLease();
       await client.query('BEGIN');
       await client.query("SELECT pg_advisory_xact_lock(hashtext('meshcore-link-graph-write'))");
       await client.query(`CREATE SCHEMA ${rollbackSchema}`);
@@ -284,22 +325,25 @@ async function main(): Promise<void> {
       client.release();
     }
 
-    const released = await releaseDeferredLinkJobs(redis);
+    const released = await releaseDeferredLinkJobs(redis, 1_000, rebuildValue);
+    rebuildHeld = false;
     console.log(
       `[link-recompute] published generation=${generation} jobs=${jobIds.size} deferred_released=${released} rollback_schema=${rollbackSchema}`,
     );
   } catch (error) {
-    await query(
-      `UPDATE link_rebuild_runs
-          SET status = 'failed', error = $2, updated_at = NOW()
-        WHERE generation = $1`,
-      [generation, error instanceof Error ? error.message : String(error)],
-    ).catch(() => undefined);
+    if (!published) {
+      await query(
+        `UPDATE link_rebuild_runs
+            SET status = 'failed', error = $2, updated_at = NOW()
+          WHERE generation = $1`,
+        [generation, error instanceof Error ? error.message : String(error)],
+      ).catch(() => undefined);
+    }
     throw error;
   } finally {
-    if (!published && rebuildHeld) {
-      await redis.del(LINK_V3_KEYS.rebuild).catch(() => 0);
-      await releaseDeferredLinkJobs(redis).catch(() => 0);
+    if (renewalTimer) clearInterval(renewalTimer);
+    if (rebuildHeld) {
+      await releaseDeferredLinkJobs(redis, 1_000, rebuildValue).catch(() => 0);
     }
     await redis.quit().catch(() => undefined);
   }

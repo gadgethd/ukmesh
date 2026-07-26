@@ -166,6 +166,12 @@ export async function admitLinkV3Job(
 }
 
 const RELEASE_DEFERRED_SCRIPT = `
+local current_owner = redis.call('GET', KEYS[4])
+if ARGV[2] ~= '' then
+  if current_owner ~= ARGV[2] then return -1 end
+elseif current_owner then
+  return -1
+end
 local released = 0
 while released < tonumber(ARGV[1]) do
   local job_id = redis.call('RPOP', KEYS[1])
@@ -175,11 +181,37 @@ while released < tonumber(ARGV[1]) do
     released = released + 1
   end
 end
-if redis.call('LLEN', KEYS[1]) == 0 then redis.call('DEL', KEYS[4]) end
+if redis.call('LLEN', KEYS[1]) == 0 and ARGV[2] ~= '' then
+  if redis.call('GET', KEYS[4]) == ARGV[2] then redis.call('DEL', KEYS[4]) end
+end
 return released
 `;
 
-export async function releaseDeferredLinkJobs(redis: Redis, batchSize = 1_000): Promise<number> {
+export const RENEW_LINK_REBUILD_LEASE_SCRIPT = `
+if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
+redis.call('PEXPIRE', KEYS[1], ARGV[2])
+return 1
+`;
+
+export async function renewLinkRebuildLease(
+  redis: Redis,
+  ownerToken: string,
+  ttlMs: number,
+): Promise<boolean> {
+  return Number(await redis.eval(
+    RENEW_LINK_REBUILD_LEASE_SCRIPT,
+    1,
+    LINK_V3_KEYS.rebuild,
+    ownerToken,
+    ttlMs,
+  )) === 1;
+}
+
+export async function releaseDeferredLinkJobs(
+  redis: Redis,
+  batchSize = 1_000,
+  ownerToken?: string,
+): Promise<number> {
   let total = 0;
   while (true) {
     const released = Number(await redis.eval(
@@ -190,7 +222,12 @@ export async function releaseDeferredLinkJobs(redis: Redis, batchSize = 1_000): 
       LINK_V3_KEYS.ready,
       LINK_V3_KEYS.rebuild,
       batchSize,
+      ownerToken ?? '',
     ));
+    if (released === -1) {
+      if (ownerToken) throw new Error('LINK_REBUILD_LEASE_LOST');
+      return total;
+    }
     total += released;
     if (released < batchSize) return total;
   }

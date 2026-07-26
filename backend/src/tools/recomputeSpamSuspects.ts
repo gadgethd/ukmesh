@@ -27,7 +27,7 @@ async function main(): Promise<void> {
   await refreshSpamDetectorCaches();
 
   const candidates = await query<CandidateRow>(`
-    SELECT DISTINCT ON (p.src_node_id)
+    SELECT DISTINCT ON (p.network, p.src_node_id)
       p.src_node_id,
       p.payload->>'_summary' AS spoofed_name,
       upper(p.payload->>'publicKey') AS public_key,
@@ -50,8 +50,9 @@ async function main(): Promise<void> {
       AND p.payload ? 'publicKey'
       AND p.payload->>'publicKey' ~* '^[0-9a-f]{64}$'
       AND p.payload->>'_summary' IS NOT NULL
-    ORDER BY p.src_node_id, p.time DESC
-  `, [WINDOW_DAYS]);
+      AND p.network = ANY($2)
+    ORDER BY p.network, p.src_node_id, p.time DESC
+  `, [WINDOW_DAYS, UKMESH_NETWORKS]);
 
   const suspects: SpamSuspectRow[] = [];
   const verdictCounts = new Map<string, number>();

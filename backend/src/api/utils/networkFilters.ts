@@ -1,5 +1,6 @@
 import { UKMESH_NETWORKS } from '../../networks.js';
 import type { VisibilityScope } from '../../http/requestScope.js';
+import { privateNodePacketNetworkMatchSql } from '../../privacy/networkScope.js';
 
 export type NetworkFilters = {
   params: unknown[];
@@ -10,6 +11,7 @@ export type NetworkFilters = {
 };
 
 function publicPacketPrivacyConditions(prefix: string): string[] {
+  const packetAlias = prefix.endsWith('.') ? prefix.slice(0, -1) : 'packets';
   return [
     `(
       COALESCE(cardinality(${prefix}path_hashes), 0) = 0
@@ -26,6 +28,7 @@ function publicPacketPrivacyConditions(prefix: string): string[] {
       SELECT 1
       FROM nodes private_node
       WHERE private_node.name LIKE '%🚫%'
+        AND ${privateNodePacketNetworkMatchSql('private_node', packetAlias)}
         AND (
           private_node.node_id IN (${prefix}rx_node_id, ${prefix}src_node_id)
           OR EXISTS (

@@ -66,6 +66,17 @@ return {'accepted', ARGV[1]}
 """
 
 CLAIM_SCRIPT = """
+if redis.call('EXISTS', KEYS[8]) == 0 then
+  local recovered = 0
+  while recovered < 1000 do
+    local deferred_id = redis.call('RPOP', KEYS[7])
+    if not deferred_id then break end
+    if redis.call('HGET', KEYS[3], deferred_id) == 'queued' then
+      redis.call('LPUSH', KEYS[1], deferred_id)
+      recovered = recovered + 1
+    end
+  end
+end
 while true do
   local job_id = redis.call('RPOP', KEYS[1])
   if not job_id then return nil end
@@ -201,7 +212,8 @@ def admit_physical(client, node_a_id: str, node_b_id: str, generation: str | Non
 def claim(client) -> tuple[str, str, dict, int] | None:
     token = secrets.token_hex(16)
     result = client.eval(
-        CLAIM_SCRIPT, 6, READY, PAYLOADS, STATES, ATTEMPTS, LEASES, TOKENS,
+        CLAIM_SCRIPT, 8, READY, PAYLOADS, STATES, ATTEMPTS, LEASES, TOKENS,
+        DEFERRED, REBUILD,
         token, int(time.time() * 1000) + LEASE_MS,
     )
     if not result:

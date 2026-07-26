@@ -19,6 +19,44 @@ const PLAN_TTL_MS = Math.min(
   7 * 24 * 60 * 60_000,
   Math.max(60 * 60_000, Number(process.env['PLANNED_COVERAGE_TTL_MS'] ?? 24 * 60 * 60_000) || 24 * 60 * 60_000),
 );
+const MAX_OUTSTANDING_JOBS = Math.min(
+  1_000,
+  Math.max(1, Number(process.env['PLANNED_COVERAGE_MAX_OUTSTANDING_JOBS'] ?? 100) || 100),
+);
+const MAX_OUTSTANDING_HANDLES = Math.min(
+  100_000,
+  Math.max(1, Number(process.env['PLANNED_COVERAGE_MAX_OUTSTANDING_HANDLES'] ?? 10_000) || 10_000),
+);
+const MAX_HANDLES_PER_JOB = Math.min(
+  10_000,
+  Math.max(1, Number(process.env['PLANNED_COVERAGE_MAX_HANDLES_PER_JOB'] ?? 256) || 256),
+);
+
+type PlannedCoverageCapacityReason = 'jobs' | 'handles' | 'job_handles';
+
+class PlannedCoverageCapacityError extends Error {
+  constructor(readonly reason: PlannedCoverageCapacityReason) {
+    super(`PLANNED_COVERAGE_CAPACITY_${reason.toUpperCase()}`);
+  }
+}
+
+export function plannedCoverageAdmissionDecision(input: {
+  creatingJob: boolean;
+  outstandingJobs: number;
+  outstandingHandles: number;
+  handlesForJob: number;
+  maxJobs?: number;
+  maxHandles?: number;
+  maxHandlesPerJob?: number;
+}): PlannedCoverageCapacityReason | null {
+  const maxJobs = input.maxJobs ?? MAX_OUTSTANDING_JOBS;
+  const maxHandles = input.maxHandles ?? MAX_OUTSTANDING_HANDLES;
+  const maxHandlesPerJob = input.maxHandlesPerJob ?? MAX_HANDLES_PER_JOB;
+  if (input.creatingJob && input.outstandingJobs >= maxJobs) return 'jobs';
+  if (input.outstandingHandles >= maxHandles) return 'handles';
+  if (input.handlesForJob >= maxHandlesPerJob) return 'job_handles';
+  return null;
+}
 
 export function plannedCoverageHandleDigest(handle: string): {
   hash: string;
@@ -106,6 +144,12 @@ export function registerPlannedCoverageRoutes(router: Router, deps: PlannedCover
       let created = false;
       try {
         await client.query('BEGIN');
+        // This lock owns every durable admission decision. The fingerprint
+        // lock remains second so all callers acquire locks in one order.
+        await client.query(
+          'SELECT pg_advisory_xact_lock(hashtext($1))',
+          ['planned:global-admission'],
+        );
         await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`planned:${fingerprint}`]);
         const reusable = await client.query<{ job_id: string }>(
           `SELECT job_id
@@ -116,18 +160,47 @@ export function registerPlannedCoverageRoutes(router: Router, deps: PlannedCover
             LIMIT 1`,
           [fingerprint],
         );
+        const counts = await client.query<{
+          outstanding_jobs: number;
+          outstanding_handles: number;
+        }>(
+          `SELECT
+             (
+               SELECT COUNT(*)::int
+                 FROM planned_coverage_jobs
+                WHERE expires_at > NOW()
+                  AND status IN ('queued', 'running')
+             ) AS outstanding_jobs,
+             (
+               SELECT COUNT(*)::int
+                 FROM planned_coverage_handles
+                WHERE expires_at > NOW()
+             ) AS outstanding_handles`,
+        );
+        const reusableJobId = reusable.rows[0]?.job_id;
+        const jobHandleCount = reusableJobId
+          ? await client.query<{ count: number }>(
+            `SELECT COUNT(*)::int AS count
+               FROM planned_coverage_handles
+              WHERE job_id = $1
+                AND expires_at > NOW()`,
+            [reusableJobId],
+          )
+          : { rows: [{ count: 0 }] };
+        const capacityReason = plannedCoverageAdmissionDecision({
+          creatingJob: !reusableJobId,
+          outstandingJobs: Number(counts.rows[0]?.outstanding_jobs ?? 0),
+          outstandingHandles: Number(counts.rows[0]?.outstanding_handles ?? 0),
+          handlesForJob: Number(jobHandleCount.rows[0]?.count ?? 0),
+        });
+        if (capacityReason) throw new PlannedCoverageCapacityError(capacityReason);
+
         if (reusable.rows[0]) {
           jobId = reusable.rows[0].job_id;
           await client.query(
             `UPDATE planned_coverage_jobs
                 SET expires_at = GREATEST(expires_at, $2),
                     updated_at = NOW()
-              WHERE job_id = $1`,
-            [jobId, expiresAt],
-          );
-          await client.query(
-            `UPDATE planned_coverage_handles
-                SET expires_at = GREATEST(expires_at, $2)
               WHERE job_id = $1`,
             [jobId, expiresAt],
           );
@@ -169,6 +242,14 @@ export function registerPlannedCoverageRoutes(router: Router, deps: PlannedCover
       }
       res.status(202).json({ plan_id: handle, expires_at: expiresAt.toISOString() });
     } catch (error) {
+      if (error instanceof PlannedCoverageCapacityError) {
+        res.status(429).json({
+          error: 'planned coverage capacity reached',
+          retryable: true,
+          reason: error.reason,
+        });
+        return;
+      }
       console.error('[api] POST /coverage/planned', (error as Error).message);
       res.status(500).json({ error: 'Internal server error' });
     }

@@ -34,6 +34,22 @@ export class PublicWsPrivacyIndex {
 
   packetHasPrivateParticipant(packet: Partial<LivePacket>): boolean {
     if (!this.ready) return true;
+    if (packet.packetType === 4) {
+      const payload = packet.payload;
+      const appData = payload?.['appData'];
+      const name = (
+        appData && typeof appData === 'object'
+          ? (appData as Record<string, unknown>)['name']
+          : payload?.['name']
+      );
+      if (isPrivateNode(typeof name === 'string' ? name : null)) {
+        // Advert payload privacy is authoritative for this packet. Remember a
+        // valid identity for later events, but suppress even malformed adverts
+        // so the first opt-out packet cannot race the batched node upsert.
+        this.remember(String(packet.srcNodeId ?? ''));
+        return true;
+      }
+    }
     if (this.hasNode(packet.rxNodeId) || this.hasNode(packet.srcNodeId)) return true;
     if (packet.path == null) return false;
     if (!Array.isArray(packet.path)) return true;

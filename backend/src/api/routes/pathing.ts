@@ -18,12 +18,14 @@ type PathingRouteDeps = {
   getResolveCache: (key: string) => unknown;
   setResolveCache: (key: string, value: unknown) => void;
   resolvePool: ResolvePoolFn;
-  getPathHistoryCache: (scope: string) => Promise<{
+  getPublicVisibilityGeneration: () => Promise<number>;
+  getPathHistoryCache: (scope: string, visibilityGeneration: number) => Promise<{
     window_start: string | null;
     updated_at: string | null;
     packet_count: number;
     resolved_packet_count: number;
     segment_counts: Array<{ count?: number }> | null;
+    visibility_generation: number;
   } | null>;
   getMultibytePathSegments: (network?: string, observer?: string) => Promise<{
     maxCount: number;
@@ -41,6 +43,7 @@ type PathingRouteDeps = {
 export function registerPathingRoutes(router: Router, deps: PathingRouteDeps): void {
   const repository = createPathingRepository({
     getPathHistoryCache: deps.getPathHistoryCache,
+    getPublicVisibilityGeneration: deps.getPublicVisibilityGeneration,
     query: deps.query,
   });
 

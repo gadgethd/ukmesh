@@ -1,5 +1,12 @@
 import 'node:process';
-import { getRecentPathHistoryPacketHashes, initDb, refreshRecentPathEvidence, upsertPathHistoryCache, type PathHistorySegmentRow } from '../db/index.js';
+import {
+  getPublicVisibilityGeneration,
+  getRecentPathHistoryPacketHashes,
+  initDb,
+  refreshRecentPathEvidence,
+  upsertPathHistoryCache,
+  type PathHistorySegmentRow,
+} from '../db/index.js';
 import { resolveMultiObserverBetaPath, type BetaResolvedPayload } from '../path-beta/resolver.js';
 import { runBoundedItems } from '../analysis/boundedRun.js';
 import { analysisGeneration, beginAnalysisRun, finishAnalysisRun } from '../analysis/runState.js';
@@ -70,6 +77,7 @@ function collectPurpleSegments(result: BetaResolvedPayload, sink: Set<string>): 
 }
 
 async function refreshScope(scope: ScopeName): Promise<void> {
+  const visibilityGeneration = await getPublicVisibilityGeneration();
   const packetHashes = await getRecentPathHistoryPacketHashes(
     WINDOW_HOURS,
     scope,
@@ -157,13 +165,26 @@ async function refreshScope(scope: ScopeName): Promise<void> {
       .sort((a, b) => b.count - a.count)
       .slice(0, MAX_SEGMENTS);
 
-    await upsertPathHistoryCache({
+    const published = await upsertPathHistoryCache({
       scope,
       windowStart,
       packetCount: packetHashes.length,
       resolvedPacketCount,
       segmentCounts: segmentCounts as PathHistorySegmentRow[],
+      visibilityGeneration,
     });
+    if (!published) {
+      await finishAnalysisRun(run, {
+        status: 'stale',
+        checkpoint: outcome.checkpoint,
+        error: 'public visibility changed during generation',
+        metadata: { visibilityGeneration },
+      });
+      console.warn(
+        `[path-history] scope=${scope} visibility changed during run; preserving the current snapshot`,
+      );
+      return;
+    }
     const generation = analysisGeneration({
       scope,
       windowStart: windowStart.toISOString(),

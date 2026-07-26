@@ -28,6 +28,7 @@ interface OpenCluster {
   normalizedCounts: Map<string, number>;
   representativeCount: number;
   signatureKeys: Set<string>;
+  signalKeys: Set<string>;
 }
 
 export class SpamAnalysisBudgetExceededError extends Error {
@@ -43,6 +44,13 @@ function assertWithinBudget(deadline: number): void {
 
 function exactSignature(record: MessageRecord): string {
   return `${record.network}\u0000${record.norm.normalized}`;
+}
+
+function strongSignalKeys(record: MessageRecord): Set<string> {
+  const keys = new Set<string>();
+  for (const url of record.norm.urls) keys.add(`${record.network}\u0000url:${url}`);
+  if (record.norm.hasSpamMarker) keys.add(`${record.network}\u0000marker:ukmesh-spam`);
+  return keys;
 }
 
 function combinedJoinScore(
@@ -325,6 +333,23 @@ export function clusterMessages(records: MessageRecord[], cfg: SpamMessageConfig
   const open: OpenCluster[] = [];
   const closed: OpenCluster[] = [];
   const exactIndex = new Map<string, OpenCluster>();
+  const signalIndex = new Map<string, Set<OpenCluster>>();
+
+  const addSignals = (cluster: OpenCluster, keys: Set<string>) => {
+    for (const key of keys) {
+      cluster.signalKeys.add(key);
+      const indexed = signalIndex.get(key) ?? new Set<OpenCluster>();
+      indexed.add(cluster);
+      signalIndex.set(key, indexed);
+    }
+  };
+  const removeSignals = (cluster: OpenCluster) => {
+    for (const key of cluster.signalKeys) {
+      const indexed = signalIndex.get(key);
+      indexed?.delete(cluster);
+      if (indexed?.size === 0) signalIndex.delete(key);
+    }
+  };
 
   for (const rec of sorted) {
     assertWithinBudget(deadline);
@@ -336,6 +361,7 @@ export function clusterMessages(records: MessageRecord[], cfg: SpamMessageConfig
         for (const signature of retired.signatureKeys) {
           if (exactIndex.get(signature) === retired) exactIndex.delete(signature);
         }
+        removeSignals(retired);
         open.splice(i, 1);
       }
     }
@@ -346,6 +372,21 @@ export function clusterMessages(records: MessageRecord[], cfg: SpamMessageConfig
     if (exact) {
       bestIdx = open.indexOf(exact);
       bestScore = bestIdx >= 0 ? 1 : 0;
+    }
+    if (bestIdx < 0) {
+      const signalCandidates = new Set<OpenCluster>();
+      for (const key of strongSignalKeys(rec)) {
+        for (const cluster of signalIndex.get(key) ?? []) signalCandidates.add(cluster);
+      }
+      for (const cluster of signalCandidates) {
+        const index = open.indexOf(cluster);
+        if (index < 0 || cluster.representative.network !== rec.network) continue;
+        const score = combinedJoinScore(rec, cluster, cfg);
+        if (score > bestScore) {
+          bestScore = score;
+          bestIdx = index;
+        }
+      }
     }
     const candidateIndexes = open
       .map((cluster, index) => ({ cluster, index }))
@@ -373,6 +414,7 @@ export function clusterMessages(records: MessageRecord[], cfg: SpamMessageConfig
       cl.normalizedCounts.set(normalized, count);
       cl.signatureKeys.add(exactSignature(rec));
       exactIndex.set(exactSignature(rec), cl);
+      addSignals(cl, strongSignalKeys(rec));
       if (
         count > cl.representativeCount
         || (count === cl.representativeCount && rec.observedAt < cl.representative.observedAt)
@@ -388,9 +430,11 @@ export function clusterMessages(records: MessageRecord[], cfg: SpamMessageConfig
         normalizedCounts: new Map([[rec.norm.normalized, 1]]),
         representativeCount: 1,
         signatureKeys: new Set([exactSignature(rec)]),
+        signalKeys: new Set(),
       };
       open.push(cluster);
       exactIndex.set(exactSignature(rec), cluster);
+      addSignals(cluster, strongSignalKeys(rec));
     }
   }
 

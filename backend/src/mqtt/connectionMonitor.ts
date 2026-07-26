@@ -12,6 +12,10 @@ const POLL_INTERVAL_MS = Number(process.env['MQTT_CONN_MONITOR_POLL_MS'] ?? 2_00
 const HISTORICAL_SCAN_BYTES = 50_000_000;
 const MAX_TRACKED_CLIENTS = Number(process.env['MQTT_CONN_MONITOR_MAX_CLIENTS'] ?? 4_096);
 const CLIENT_TTL_MS = Number(process.env['MQTT_CONN_MONITOR_CLIENT_TTL_MS'] ?? 15 * 60_000);
+const MAX_AUDIT_OBSERVATIONS_PER_SCAN = Math.min(
+  65_536,
+  Math.max(1, Number(process.env['MQTT_AUDIT_MAX_OBSERVATIONS_PER_SCAN'] ?? 4_096) || 4_096),
+);
 
 type ClientObservation = {
   mqttUsername: string;
@@ -71,26 +75,45 @@ export function observeBrokerLogLine(line: string, now = Date.now()): BrokerSecu
 }
 
 async function scanRange(start: number, end: number): Promise<void> {
-  const observations: BrokerSecurityObservation[] = [];
+  const denied = new Map<string, { mqttUsername: string; claimedNodeId: string }>();
+  let connectionCount = 0;
+  let deniedPublishCount = 0;
   await new Promise<void>((resolve, reject) => {
     const stream = fs.createReadStream(LOG_PATH, { start, end });
     const reader = createInterface({ input: stream, crlfDelay: Infinity });
     reader.on('line', (line) => {
       const observation = observeBrokerLogLine(line);
-      if (observation) observations.push(observation);
+      if (observation?.kind === 'connection') {
+        connectionCount += 1;
+      } else if (observation?.kind === 'denied-publish') {
+        deniedPublishCount += 1;
+        if (observation.mqttUsername && denied.size < MAX_AUDIT_OBSERVATIONS_PER_SCAN) {
+          const key = `${observation.mqttUsername}\u0000${observation.claimedNodeId}`;
+          denied.set(key, {
+            mqttUsername: observation.mqttUsername,
+            claimedNodeId: observation.claimedNodeId,
+          });
+        }
+      }
     });
     reader.on('close', resolve);
     reader.on('error', reject);
   });
 
-  for (const observation of observations) {
-    if (observation.kind !== 'denied-publish' || !observation.mqttUsername) continue;
-    await recordUntrustedMqttNodeObservation(observation.mqttUsername, observation.claimedNodeId);
+  for (const observation of denied.values()) {
+    try {
+      await recordUntrustedMqttNodeObservation(observation.mqttUsername, observation.claimedNodeId);
+    } catch (error) {
+      // One failed audit row must not replay the entire broker-log range.
+      console.error('[conn-monitor] audit observation write failed:', (error as Error).message);
+    }
   }
-  if (observations.length > 0) {
+  if (connectionCount > 0 || deniedPublishCount > 0) {
     console.log('[conn-monitor] audit-only broker observations', {
-      connections: observations.filter((item) => item.kind === 'connection').length,
-      deniedPublishes: observations.filter((item) => item.kind === 'denied-publish').length,
+      connections: connectionCount,
+      deniedPublishes: deniedPublishCount,
+      retainedDeniedObservations: denied.size,
+      droppedDeniedObservations: Math.max(0, deniedPublishCount - denied.size),
     });
   }
 }
@@ -104,11 +127,13 @@ export function startMqttConnectionMonitor(): void {
   }
 
   let position = 0;
+  let pollInFlight = false;
+  let timer: NodeJS.Timeout | null = null;
   async function init(): Promise<void> {
     const { size } = fs.statSync(LOG_PATH);
     const start = Math.max(0, size - HISTORICAL_SCAN_BYTES);
-    position = size;
     if (start < size) await scanRange(start, size - 1);
+    position = size;
     console.log('[conn-monitor] ready in audit-only mode; logs cannot grant ownership');
   }
 
@@ -126,9 +151,20 @@ export function startMqttConnectionMonitor(): void {
     }
   }
 
-  void init().catch((error: Error) => console.error('[conn-monitor] init error:', error.message));
-  const timer = setInterval(() => {
-    void poll().catch((error: Error) => console.error('[conn-monitor] poll error:', error.message));
-  }, POLL_INTERVAL_MS);
-  timer.unref();
+  void init().then(() => {
+    timer = setInterval(() => {
+      if (pollInFlight) return;
+      pollInFlight = true;
+      void poll()
+        .catch((error: Error) => console.error('[conn-monitor] poll error:', error.message))
+        .finally(() => {
+          pollInFlight = false;
+        });
+    }, POLL_INTERVAL_MS);
+    timer.unref();
+  }).catch((error: Error) => {
+    console.error('[conn-monitor] init error:', error.message);
+    const retry = setTimeout(startMqttConnectionMonitor, 30_000);
+    retry.unref();
+  });
 }

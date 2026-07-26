@@ -20,6 +20,7 @@ import {
   getNodeAdverts,
   getPacketDetail,
   getPathHistoryCache,
+  getPublicVisibilityGeneration,
   getRecentPacketEvents,
   getRecentPackets,
   pool,
@@ -167,6 +168,7 @@ registerPathingRoutes(router, {
   setResolveCache,
   resolvePool,
   getPathHistoryCache,
+  getPublicVisibilityGeneration,
   getMultibytePathSegments,
   query,
 });

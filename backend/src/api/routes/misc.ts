@@ -3,6 +3,7 @@ import type { QueryResultRow } from 'pg';
 import { resolvePublicNetworkScope } from '../../http/requestScope.js';
 import { normalizeObserverQuery } from '../utils/observer.js';
 import { expandResolverScope } from '../../networks.js';
+import { networkFilters } from '../utils/networkFilters.js';
 
 type QueryFn = <T extends QueryResultRow = QueryResultRow>(
   text: string,
@@ -67,30 +68,29 @@ export function registerMiscRoutes(router: Router, deps: MiscRouteDeps): void {
   router.get('/companion-activity', async (req, res) => {
     try {
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
-      const params: unknown[] = [expandResolverScope(network)];
-      const networkClause = 'AND network = ANY($1::text[])';
+      const filters = networkFilters(network);
       const result = await query<{
         sender: string;
         message_count: string;
         last_message_at: string;
       }>(
         `SELECT
-          payload->'decrypted'->>'sender' AS sender,
-          COUNT(DISTINCT packet_hash)::text AS message_count,
-          MAX(time) AS last_message_at
-        FROM packets
+          p.payload->'decrypted'->>'sender' AS sender,
+          COUNT(DISTINCT p.packet_hash)::text AS message_count,
+          MAX(p.time) AS last_message_at
+        FROM packets p
         WHERE
-          packet_type = 5
-          AND payload->'decrypted' IS NOT NULL
-          AND payload->'decrypted'->>'sender' IS NOT NULL
-          AND payload->'decrypted'->>'sender' != ''
-          AND payload->'decrypted'->>'sender' NOT LIKE '%🚫%'
-          AND time > NOW() - INTERVAL '24 hours'
-          ${networkClause}
-        GROUP BY payload->'decrypted'->>'sender'
-        ORDER BY COUNT(DISTINCT packet_hash) DESC
+          p.packet_type = 5
+          AND p.payload->'decrypted' IS NOT NULL
+          AND p.payload->'decrypted'->>'sender' IS NOT NULL
+          AND p.payload->'decrypted'->>'sender' != ''
+          AND p.payload->'decrypted'->>'sender' NOT LIKE '%🚫%'
+          AND p.time > NOW() - INTERVAL '24 hours'
+          ${filters.packetsAlias('p')}
+        GROUP BY p.payload->'decrypted'->>'sender'
+        ORDER BY COUNT(DISTINCT p.packet_hash) DESC
         LIMIT 100`,
-        params,
+        filters.params,
       );
       res.json(result.rows.map(r => ({
         sender: r.sender,

@@ -4,6 +4,7 @@ import { normalizeMessage } from './normalize.js';
 import type { Incident, IncidentStatus, MessageRecord, ObserverObservation, OriginEstimate } from './types.js';
 import type { PublicIncident } from './sanitize.js';
 import type { SpamMessageConfig } from './config.js';
+import { privateNodePacketNetworkMatchSql } from '../privacy/networkScope.js';
 
 // ---------------------------------------------------------------------------
 // Persistence layer for message-spam detection.
@@ -95,26 +96,50 @@ export async function loadRecentMessages(
          AND NOT EXISTS (
            SELECT 1 FROM nodes private_node
             WHERE private_node.name LIKE '%🚫%'
+              AND ${privateNodePacketNetworkMatchSql('private_node', 'p')}
               AND private_node.node_id IN (p.rx_node_id, p.src_node_id)
          )
        ORDER BY p.packet_hash, p.time ASC
      ),
-     signature_ranked AS (
+     signature_keys AS (
        SELECT logical_messages.*,
-              COUNT(*) OVER (
-                PARTITION BY network,
-                  MD5(LOWER(BTRIM(COALESCE(message, ''))))
-              ) AS signature_count
+              MD5(LOWER(BTRIM(COALESCE(message, '')))) AS signature,
+              LOWER(BTRIM(COALESCE(sender, ''))) AS normalized_sender
          FROM logical_messages
+     ),
+     signature_stats AS (
+       SELECT network,
+              signature,
+              COUNT(*) AS signature_count,
+              COUNT(DISTINCT normalized_sender) AS distinct_sender_count
+         FROM signature_keys
+        GROUP BY network, signature
+     ),
+     signature_ranked AS (
+       SELECT signature_keys.*,
+              signature_stats.signature_count,
+              signature_stats.distinct_sender_count
+         FROM signature_keys
+         JOIN signature_stats USING (network, signature)
      )
      SELECT packet_hash, network, sender, message, channel_hash, summary, claimed_ts, observed_at
        FROM signature_ranked
-      ORDER BY (signature_count >= $4) DESC,
+      ORDER BY (
+                 signature_count >= $4
+                 AND distinct_sender_count <= $5
+               ) DESC,
                signature_count DESC,
                observed_at DESC,
                packet_hash
-      LIMIT $5`,
-    [windowStart, windowEnd, NETWORKS, cfg.minTransmissions, cfg.maxCandidatePacketRows],
+      LIMIT $6`,
+    [
+      windowStart,
+      windowEnd,
+      NETWORKS,
+      cfg.minTransmissions,
+      cfg.maxIndependentSenders,
+      cfg.maxCandidatePacketRows,
+    ],
   );
 
   if (msgRes.rows.length === 0) return [];
@@ -140,7 +165,8 @@ export async function loadRecentMessages(
        AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
        AND NOT EXISTS (
          SELECT 1 FROM nodes private_node
-          WHERE private_node.name LIKE '%🚫%'
+         WHERE private_node.name LIKE '%🚫%'
+            AND ${privateNodePacketNetworkMatchSql('private_node', 'p')}
             AND private_node.node_id IN (p.rx_node_id, p.src_node_id)
        )
        AND p.packet_hash = ANY($4)

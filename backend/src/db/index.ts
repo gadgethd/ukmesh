@@ -4,6 +4,7 @@ import { databaseConfig } from '../platform/config/database.js';
 import { resolveDbAssetPath } from './assets.js';
 import { runMigrations } from './migrations.js';
 import { UKMESH_NETWORKS } from '../networks.js';
+import { privateNodePacketNetworkMatchSql } from '../privacy/networkScope.js';
 
 const { Pool } = pg;
 const COORDINATE_RECALC_THRESHOLD_M = Number(process.env['NODE_COORDINATE_RECALC_THRESHOLD_M'] ?? 25);
@@ -140,6 +141,7 @@ function buildPublicPacketPrivacyClause(alias?: string): string {
     SELECT 1
     FROM nodes private_node
     WHERE private_node.name LIKE '%🚫%'
+      AND ${privateNodePacketNetworkMatchSql('private_node', alias ?? 'packets')}
       AND (
         private_node.node_id IN (${prefix}rx_node_id, ${prefix}src_node_id)
         OR EXISTS (
@@ -975,7 +977,21 @@ export type PathHistoryCacheRow = {
   packet_count: number;
   resolved_packet_count: number;
   segment_counts: PathHistorySegmentRow[];
+  visibility_generation: number;
 };
+
+export async function getPublicVisibilityGeneration(): Promise<number> {
+  const result = await pool.query<{ generation: string }>(
+    `SELECT generation::text AS generation
+       FROM public_visibility_state
+      WHERE singleton = TRUE`,
+  );
+  const generation = Number(result.rows[0]?.generation);
+  if (!Number.isSafeInteger(generation) || generation < 1) {
+    throw new Error('PUBLIC_VISIBILITY_GENERATION_UNAVAILABLE');
+  }
+  return generation;
+}
 
 export async function getRecentPathHistoryPacketHashes(
   hours = 1,
@@ -1014,27 +1030,43 @@ export async function upsertPathHistoryCache(entry: {
   packetCount: number;
   resolvedPacketCount: number;
   segmentCounts: PathHistorySegmentRow[];
-}): Promise<void> {
-  await pool.query(
-    `INSERT INTO path_history_cache (scope, window_start, updated_at, packet_count, resolved_packet_count, segment_counts)
-     VALUES ($1, $2, NOW(), $3, $4, $5::jsonb)
+  visibilityGeneration: number;
+}): Promise<boolean> {
+  const result = await pool.query(
+    `INSERT INTO path_history_cache
+       (scope, window_start, updated_at, packet_count, resolved_packet_count, segment_counts, visibility_generation)
+     SELECT $1, $2, NOW(), $3, $4, $5::jsonb, $6
+       FROM (
+         SELECT generation
+           FROM public_visibility_state
+          WHERE singleton = TRUE
+            AND generation = $6
+          FOR SHARE
+       ) current_visibility
      ON CONFLICT (scope) DO UPDATE SET
        window_start = EXCLUDED.window_start,
        updated_at = NOW(),
        packet_count = EXCLUDED.packet_count,
        resolved_packet_count = EXCLUDED.resolved_packet_count,
-       segment_counts = EXCLUDED.segment_counts`,
+       segment_counts = EXCLUDED.segment_counts,
+       visibility_generation = EXCLUDED.visibility_generation
+     RETURNING scope`,
     [
       entry.scope,
       entry.windowStart.toISOString(),
       entry.packetCount,
       entry.resolvedPacketCount,
       JSON.stringify(entry.segmentCounts),
+      entry.visibilityGeneration,
     ],
   );
+  return (result.rowCount ?? 0) === 1;
 }
 
-export async function getPathHistoryCache(scope: string): Promise<PathHistoryCacheRow | null> {
+export async function getPathHistoryCache(
+  scope: string,
+  visibilityGeneration: number,
+): Promise<PathHistoryCacheRow | null> {
   const res = await pool.query<{
     scope: string;
     window_start: string;
@@ -1042,11 +1074,14 @@ export async function getPathHistoryCache(scope: string): Promise<PathHistoryCac
     packet_count: number;
     resolved_packet_count: number;
     segment_counts: PathHistorySegmentRow[] | null;
+    visibility_generation: string;
   }>(
-    `SELECT scope, window_start, updated_at, packet_count, resolved_packet_count, segment_counts
+    `SELECT scope, window_start, updated_at, packet_count, resolved_packet_count,
+            segment_counts, visibility_generation::text AS visibility_generation
      FROM path_history_cache
-     WHERE scope = $1`,
-    [scope],
+     WHERE scope = $1
+       AND visibility_generation = $2`,
+    [scope, visibilityGeneration],
   );
   const row = res.rows[0];
   if (!row) return null;
@@ -1057,6 +1092,7 @@ export async function getPathHistoryCache(scope: string): Promise<PathHistoryCac
     packet_count: row.packet_count,
     resolved_packet_count: row.resolved_packet_count,
     segment_counts: Array.isArray(row.segment_counts) ? row.segment_counts : [],
+    visibility_generation: Number(row.visibility_generation),
   };
 }
 
@@ -1256,6 +1292,7 @@ export async function replaceSpamSuspects(
   suspects: SpamSuspectRow[],
 ): Promise<void> {
   if (sourceNetworks.length === 0) throw new Error('SPAM_SOURCE_SCOPE_REQUIRED');
+  assertSpamSuspectScope(sourceNetworks, suspects);
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -1276,6 +1313,16 @@ export async function replaceSpamSuspects(
     throw err;
   } finally {
     client.release();
+  }
+}
+
+export function assertSpamSuspectScope(
+  sourceNetworks: readonly string[],
+  suspects: ReadonlyArray<Pick<SpamSuspectRow, 'network'>>,
+): void {
+  const allowed = new Set(sourceNetworks);
+  if (suspects.some((suspect) => !allowed.has(suspect.network))) {
+    throw new Error('SPAM_SUSPECT_OUT_OF_SCOPE');
   }
 }
 

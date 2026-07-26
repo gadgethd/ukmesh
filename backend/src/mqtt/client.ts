@@ -974,21 +974,25 @@ export async function backfillHistoricalLinks(
     );
     if (res.rows.length === 0) break;
     for (const row of res.rows) {
+      let compat: ReturnType<typeof decodePacketCompat>;
       try {
-        const compat = decodePacketCompat(row.raw_hex, keyStore);
-        if (compat.metadataValid && (compat.pathHashSize ?? 1) > 1 && compat.pathHashes && compat.pathHashes.length > 0) {
-          await queueFn(
-            row.packet_hash,
-            row.rx_node_id,
-            row.src_node_id ?? undefined,
-            compat.pathHashes,
-            compat.pathHashCount,
-            compat.pathHashSize,
-          );
-          queued++;
-        }
+        compat = decodePacketCompat(row.raw_hex, keyStore);
       } catch {
         // Skip undecipherable packets
+        continue;
+      }
+      if (compat.metadataValid && (compat.pathHashSize ?? 1) > 1 && compat.pathHashes && compat.pathHashes.length > 0) {
+        // Admission failures are operational failures, not decode failures.
+        // Let the privileged caller abort rather than publish a partial graph.
+        await queueFn(
+          row.packet_hash,
+          row.rx_node_id,
+          row.src_node_id ?? undefined,
+          compat.pathHashes,
+          compat.pathHashCount,
+          compat.pathHashSize,
+        );
+        queued++;
       }
     }
     cursor = res.rows.at(-1)!.packet_hash;

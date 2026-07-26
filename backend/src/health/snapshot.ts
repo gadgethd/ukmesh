@@ -22,6 +22,7 @@ export class HealthSnapshotCache<T> {
       })
       .catch((err: unknown) => {
         this.lastError = err instanceof Error ? err.message : String(err);
+        console.error('[health] snapshot refresh failed:', this.lastError);
       })
       .finally(() => {
         if (this.inflight === tracked) this.inflight = null;
@@ -36,7 +37,9 @@ export class HealthSnapshotCache<T> {
       return {
         ready: false,
         generatedAt: current?.generatedAt ?? null,
-        lastError: this.lastError,
+        // The public health endpoint must not serialize dependency addresses,
+        // query text, or other internal diagnostics.
+        lastError: this.lastError == null ? null : 'health snapshot unavailable',
       };
     }
     return { ready: true, generatedAt: current.generatedAt, data: current.data };

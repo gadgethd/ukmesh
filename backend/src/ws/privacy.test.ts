@@ -43,3 +43,23 @@ test('private node and link events are suppressed and live opt-outs update the i
   } as WSMessage;
   assert.equal(privacy.filterMessage(link), null);
 });
+
+test('a first-seen private advert is suppressed before its node upsert arrives', () => {
+  const privacy = new PublicWsPrivacyIndex();
+  privacy.replace([]);
+
+  assert.equal(privacy.packetHasPrivateParticipant({
+    packetType: 4,
+    srcNodeId: privateId,
+    payload: {
+      appData: {
+        name: 'Fresh private node 🚫',
+        latitude: 54.1,
+        longitude: -1.2,
+      },
+    },
+  }), true);
+
+  // The advert also seeds subsequent suppression synchronously.
+  assert.equal(privacy.hasNode(privateId), true);
+});
