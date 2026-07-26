@@ -120,6 +120,13 @@ services:
       MESHCORE_CHANNEL_SECRETS: ${MESHCORE_CHANNEL_SECRETS:-}
       OWNER_DATABASE_URL: ${OWNER_DATABASE_URL:-postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${OWNER_POSTGRES_DB:-meshcore_owner_auth}}
       OWNER_MQTT_USERNAME_MAP: ${OWNER_MQTT_USERNAME_MAP:-}
+      OWNER_AUTHORIZATION_MODE: ${OWNER_AUTHORIZATION_MODE:-shadow}
+      OWNER_ACL_MODE: ${OWNER_ACL_MODE:-shadow}
+      OWNER_ACL_UNMANAGED_USERS: ${OWNER_ACL_UNMANAGED_USERS:-backend,test,test2}
+      OWNER_ACL_ALLOW_EMPTY_USERS: ${OWNER_ACL_ALLOW_EMPTY_USERS:-}
+      OWNER_ACL_SHADOW_PATH: /tmp/meshcore-owner-acl.shadow
+      MOSQUITTO_ACL_PATH: /mosquitto/config/acl
+      MOSQUITTO_CONTAINER_NAME: mosquitto
       OWNER_COOKIE_SECRET: ${OWNER_COOKIE_SECRET:-}
       OPERATOR_SITE_TOKEN: ${OPERATOR_SITE_TOKEN:?OPERATOR_SITE_TOKEN required}
       TRUSTED_PROXY_PEERS: ${TRUSTED_PROXY_PEERS:-172.30.0.10,172.30.0.11,172.30.0.12}
@@ -162,27 +169,6 @@ services:
       timeout: 10s
       retries: 6
       start_period: 30s
-
-  acl-watcher:
-    <<: *internal-hosts
-    build:
-      context: .
-      dockerfile: Dockerfile.backend
-    restart: always
-    logging: *json-log-limits
-    mem_limit: "256m"
-    memswap_limit: "256m"
-    command: ["node", "dist/workers/acl-watcher.js"]
-    environment:
-      MOSQUITTO_ACL_PATH: /mosquitto/config/acl
-      MOSQUITTO_CONTAINER_NAME: mosquitto
-      NODE_ENV: production
-    depends_on:
-      mosquitto:
-        condition: service_healthy
-    volumes:
-      - ./mosquitto:/mosquitto/config
-      - /var/run/docker.sock:/var/run/docker.sock
 
   path-learning-worker:
     <<: *internal-hosts

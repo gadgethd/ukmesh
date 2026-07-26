@@ -101,7 +101,13 @@ async function requireOwnerSession(req: Request, res: Response): Promise<string[
     res.status(401).json({ error: 'Not logged in' });
     return null;
   }
-  return session.mqttUsername ? resolveOwnerNodeIds(session.mqttUsername) : session.nodeIds;
+  const nodeIds = await resolveOwnerNodeIds(session.mqttUsername);
+  if (nodeIds.length < 1) {
+    res.clearCookie(OWNER_COOKIE_NAME, { path: '/' });
+    res.status(401).json({ error: 'Owner authorization has been revoked' });
+    return null;
+  }
+  return nodeIds;
 }
 
 registerCoverageRoutes(router, {

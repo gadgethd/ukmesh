@@ -10,6 +10,7 @@
     "spam:messages": "node dist/tools/recomputeSpamMessages.js",
     "db:migrate": "node dist/tools/migrate.js",
     "stats:backfill-rollups": "node dist/tools/backfillStatsRollups.js",
+    "owner-auth:inventory": "node dist/tools/inventoryOwnerAuthorization.js",
     "bench:decode": "tsx src/tools/benchmarkPacketDecode.ts",
     "load:realtime": "tsx src/tools/loadRealtime.ts",
     "test": "node --import tsx --test $(find src -name '*.test.ts' -print)",
