@@ -27,7 +27,7 @@ const SEGMENT_COUNTER_CAPACITY = Math.max(
 const MIN_HISTORY_PATH_HASH_BYTES = 2;
 const RUN_DEADLINE_MS = Math.max(
   60_000,
-  Number(process.env['PATH_HISTORY_RUN_DEADLINE_MS'] ?? 90 * 60_000) || 90 * 60_000,
+  Number(process.env['PATH_HISTORY_RUN_DEADLINE_MS'] ?? 120 * 60_000) || 120 * 60_000,
 );
 const CONCURRENCY = Math.max(
   1,
