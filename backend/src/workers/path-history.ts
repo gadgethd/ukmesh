@@ -90,6 +90,7 @@ async function refreshScope(scope: ScopeName): Promise<void> {
   );
   const counts = new Map<string, number>();
   let resolvedPacketCount = 0;
+  let skippedPacketCount = 0;
 
   const windowEnd = new Date();
   const windowStart = new Date(windowEnd.getTime() - WINDOW_HOURS * 60 * 60 * 1000);
@@ -117,19 +118,19 @@ async function refreshScope(scope: ScopeName): Promise<void> {
           log: false,
         });
         if (!resolved?.ok || resolved.results.length < 1) {
-          return { packetHash, segmentKeys: [] as string[], resolved: false, skipped: false };
+          return;
         }
         const packetSegments = new Set<string>();
         for (const result of resolved.results) collectPurpleSegments(result, packetSegments);
-        return {
-          packetHash,
-          segmentKeys: Array.from(packetSegments),
-          resolved: packetSegments.size > 0,
-          skipped: false,
-        };
+        if (packetSegments.size > 0) {
+          resolvedPacketCount += 1;
+          for (const key of packetSegments) counts.set(key, (counts.get(key) ?? 0) + 1);
+        }
+        return;
       } catch (error) {
         if ((error as Error).message === 'PATH_HISTORY_LIMIT') {
-          return { packetHash, segmentKeys: [] as string[], resolved: false, skipped: true };
+          skippedPacketCount += 1;
+          return;
         }
         throw error;
       }
@@ -156,16 +157,6 @@ async function refreshScope(scope: ScopeName): Promise<void> {
         errors: outcome.errors.slice(0, 5),
       });
       return;
-    }
-    let skippedPacketCount = 0;
-    for (const item of outcome.results) {
-      if (item.skipped) {
-        skippedPacketCount += 1;
-        continue;
-      }
-      if (!item.resolved || item.segmentKeys.length < 1) continue;
-      resolvedPacketCount += 1;
-      for (const key of item.segmentKeys) counts.set(key, (counts.get(key) ?? 0) + 1);
     }
 
     const segmentCounts: SegmentCount[] = Array.from(counts.entries())
