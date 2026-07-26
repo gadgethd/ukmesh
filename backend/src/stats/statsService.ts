@@ -159,48 +159,29 @@ export function createStatsService(deps: StatsServiceDeps) {
     };
   };
 
-  function mergeObserverRegionSummary(
-    data: unknown,
-    summaryRows: Array<{
-      iata?: string | null;
-      active_observers?: string | number | null;
-      observers?: string | number | null;
-      packets_24h?: string | number | null;
-      packets_7d?: string | number | null;
-      last_packet_at?: string | null;
-    }>,
-  ): unknown {
+  function refreshCachedRegionHealth(data: unknown): unknown {
     if (!data || typeof data !== 'object') return data;
     const current = data as {
       observerRegions?: Array<{
-        iata: string;
-        series?: { day: string; count: number }[];
+        activeObservers: number;
+        observers: number;
+        packets24h: number;
+        lastPacketAt: string | null;
+        [key: string]: unknown;
       }>;
     };
-    const seriesByIata = new Map(
-      Array.isArray(current.observerRegions)
-        ? current.observerRegions.map((region) => [region.iata, Array.isArray(region.series) ? region.series : []] as const)
-        : [],
-    );
+    if (!Array.isArray(current.observerRegions)) return data;
     return {
       ...current,
-      observerRegions: summaryRows.map((row) => {
-        const iata = String(row.iata ?? 'UNK');
-        const activeObservers = Number(row.active_observers ?? 0);
-        const observers = Number(row.observers ?? 0);
-        const packets24h = Number(row.packets_24h ?? 0);
-        const lastPacketAt = row.last_packet_at ?? null;
-        return {
-          iata,
-          activeObservers,
-          observers,
-          packets24h,
-          packets7d: Number(row.packets_7d ?? 0),
-          lastPacketAt,
-          health: computeRegionHealth({ activeObservers, observers, packets24h, lastPacketAt }),
-          series: seriesByIata.get(iata) ?? [],
-        };
-      }),
+      observerRegions: current.observerRegions.map((region) => ({
+        ...region,
+        health: computeRegionHealth({
+          activeObservers: region.activeObservers,
+          observers: region.observers,
+          packets24h: region.packets24h,
+          lastPacketAt: region.lastPacketAt,
+        }),
+      })),
     };
   }
 
@@ -401,18 +382,11 @@ export function createStatsService(deps: StatsServiceDeps) {
     const key = `${network ?? 'ukmesh'}`;
     const cached = chartsCache.get(key);
     if (cached && Date.now() - cached.ts < chartsCacheTtlMs) {
-      const observerRegionSummary = await repository.fetchObserverRegionSummary(network, observer);
-      const refreshed = mergeObserverRegionSummary(
-        cached.data,
-        observerRegionSummary.rows as Array<{
-          iata?: string | null;
-          active_observers?: string | number | null;
-          observers?: string | number | null;
-          packets_24h?: string | number | null;
-          packets_7d?: string | number | null;
-          last_packet_at?: string | null;
-        }>,
-      );
+      // Region counts and series are part of the canonical 30-minute charts
+      // snapshot. Re-querying the seven-day packet window on every cache hit
+      // allowed concurrent page loads to pile up multi-minute scans. Only the
+      // time-dependent health score needs recalculating between snapshots.
+      const refreshed = refreshCachedRegionHealth(cached.data);
       chartsCache.set(key, { ts: cached.ts, data: refreshed });
       return refreshed;
     }

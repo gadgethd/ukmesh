@@ -21,6 +21,10 @@ const RUN_DEADLINE_MS = Math.max(
   60_000,
   Number(process.env['PATH_HISTORY_RUN_DEADLINE_MS'] ?? 45 * 60_000) || 45 * 60_000,
 );
+const CONCURRENCY = Math.max(
+  1,
+  Math.min(16, Math.trunc(Number(process.env['PATH_HISTORY_CONCURRENCY'] ?? 4) || 4)),
+);
 const SCOPES = ['ukmesh', 'test'] as const;
 
 type ScopeName = (typeof SCOPES)[number];
@@ -123,6 +127,7 @@ async function refreshScope(scope: ScopeName): Promise<void> {
       windowStart,
       windowEnd,
       deadlineMs: RUN_DEADLINE_MS,
+      concurrency: CONCURRENCY,
       maxErrors: 100,
       runId: run.runId,
     });

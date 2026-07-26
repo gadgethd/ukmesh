@@ -14,7 +14,42 @@ type StatsRepositoryDeps = {
 export type StatsRepository = ReturnType<typeof createStatsRepository>;
 
 export function createStatsRepository(deps: StatsRepositoryDeps) {
-  const { networkFilters, query } = deps;
+  const { networkFilters } = deps;
+  const queryConcurrency = Math.max(
+    1,
+    Math.min(8, Math.trunc(Number(process.env['STATS_DB_QUERY_CONCURRENCY'] ?? 2) || 2)),
+  );
+  let activeQueries = 0;
+  const queryWaiters: Array<() => void> = [];
+
+  const acquireQuerySlot = async (): Promise<void> => {
+    if (activeQueries < queryConcurrency) {
+      activeQueries += 1;
+      return;
+    }
+    await new Promise<void>((resolve) => queryWaiters.push(resolve));
+  };
+
+  const releaseQuerySlot = (): void => {
+    const next = queryWaiters.shift();
+    if (next) {
+      next();
+      return;
+    }
+    activeQueries = Math.max(0, activeQueries - 1);
+  };
+
+  const query: QueryFn = async <T extends QueryResultRow = QueryResultRow>(
+    text: string,
+    params?: unknown[],
+  ) => {
+    await acquireQuerySlot();
+    try {
+      return await deps.query<T>(text, params);
+    } finally {
+      releaseQuerySlot();
+    }
+  };
 
   async function fetchObserverRegionSummary(network: string | undefined, observer: string | undefined) {
     // Public aggregates are computed from privacy-filtered source rows. Legacy

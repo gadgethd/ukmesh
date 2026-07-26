@@ -39,13 +39,17 @@ function emptyChartsData() {
 
 test('completed canonical charts are reused while observer-scoped charts are never persisted', async () => {
   let chartCalls = 0;
+  let regionSummaryCalls = 0;
   const repository = {
     fetchChartsData: async () => {
       chartCalls += 1;
       return emptyChartsData();
     },
     fetchChannelTraffic: async () => ({ rows: [] }),
-    fetchObserverRegionSummary: async () => ({ rows: [] }),
+    fetchObserverRegionSummary: async () => {
+      regionSummaryCalls += 1;
+      return { rows: [] };
+    },
   } as unknown as StatsRepository;
   const chartsCache = new Map<string, { ts: number; data: unknown }>();
   const service = createStatsService({
@@ -61,6 +65,7 @@ test('completed canonical charts are reused while observer-scoped charts are nev
   await service.getCharts('ukmesh', undefined);
   await service.getCharts('ukmesh', undefined);
   assert.equal(chartCalls, 1);
+  assert.equal(regionSummaryCalls, 0);
   assert.equal(chartsCache.size, 1);
 
   await service.getCharts('ukmesh', 'A'.repeat(64));

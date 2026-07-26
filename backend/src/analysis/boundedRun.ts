@@ -22,6 +22,7 @@ export async function runBoundedItems<TInput, TOutput>(
     windowStart: Date;
     windowEnd: Date;
     deadlineMs: number;
+    concurrency?: number;
     maxErrors?: number;
     now?: () => number;
     runId?: string;
@@ -31,31 +32,40 @@ export async function runBoundedItems<TInput, TOutput>(
   const startedAtMs = now();
   const deadline = startedAtMs + Math.max(1, options.deadlineMs);
   const maxErrors = Math.max(1, options.maxErrors ?? 100);
-  const results: TOutput[] = [];
+  const indexedResults: Array<{ index: number; value: TOutput }> = [];
   const errors: Array<{ index: number; message: string }> = [];
+  const requestedConcurrency = Number.isFinite(options.concurrency)
+    ? Math.trunc(options.concurrency ?? 1)
+    : 1;
+  const concurrency = Math.max(1, Math.min(items.length || 1, requestedConcurrency));
+  let nextIndex = 0;
   let checkpoint = 0;
   let timedOut = false;
 
-  for (let index = 0; index < items.length; index += 1) {
-    if (now() >= deadline) {
-      timedOut = true;
-      break;
-    }
-    try {
-      results.push(await work(items[index]!, index));
-    } catch (error) {
-      errors.push({
-        index,
-        message: error instanceof Error ? error.message : String(error),
-      });
-      if (errors.length >= maxErrors) {
-        checkpoint = index + 1;
-        break;
+  const worker = async () => {
+    while (nextIndex < items.length && errors.length < maxErrors) {
+      if (now() >= deadline) {
+        timedOut = true;
+        return;
       }
+      const index = nextIndex;
+      nextIndex += 1;
+      try {
+        indexedResults.push({ index, value: await work(items[index]!, index) });
+      } catch (error) {
+        errors.push({
+          index,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+      checkpoint += 1;
     }
-    checkpoint = index + 1;
-  }
+  };
+  await Promise.all(Array.from({ length: concurrency }, () => worker()));
 
+  const results = indexedResults
+    .sort((left, right) => left.index - right.index)
+    .map((entry) => entry.value);
   const status: BoundedRunStatus = timedOut
     ? 'timed_out'
     : errors.length > 0

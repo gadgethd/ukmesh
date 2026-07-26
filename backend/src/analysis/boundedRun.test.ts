@@ -34,3 +34,25 @@ test('bounded run reports timeout without claiming the unprocessed suffix', asyn
   assert.equal(result.checkpoint, 2);
   assert.deepEqual(result.results, [1, 2]);
 });
+
+test('bounded run caps concurrency and preserves input order in results', async () => {
+  let active = 0;
+  let maxActive = 0;
+  const result = await runBoundedItems([1, 2, 3, 4, 5, 6], async (value) => {
+    active += 1;
+    maxActive = Math.max(maxActive, active);
+    await new Promise((resolve) => setImmediate(resolve));
+    active -= 1;
+    return value * 2;
+  }, {
+    windowStart: new Date(0),
+    windowEnd: new Date(1),
+    deadlineMs: 1_000,
+    concurrency: 3,
+  });
+
+  assert.equal(result.status, 'complete');
+  assert.equal(result.checkpoint, 6);
+  assert.equal(maxActive, 3);
+  assert.deepEqual(result.results, [2, 4, 6, 8, 10, 12]);
+});
