@@ -18,6 +18,7 @@ import {
 } from './limits.js';
 import { isPrivateNode } from '../api/utils/privateNode.js';
 import { PublicWsPrivacyIndex } from './privacy.js';
+import { trustedClientIp } from '../http/trustedProxy.js';
 
 const REDIS_CHANNEL = 'meshcore:live';
 const LOG_WS_PACKETS = process.env['LOG_WS_PACKETS'] === '1';
@@ -33,6 +34,8 @@ const WS_MAX_PAYLOAD_BYTES = boundedEnvInteger('WS_MAX_PAYLOAD_BYTES', 64 * 1024
 const WS_MAX_QUEUE_BYTES = boundedEnvInteger('WS_MAX_QUEUE_BYTES', 8 * 1_048_576, 16 * 1024, 32 * 1_048_576);
 const WS_MAX_BUFFERED_BYTES = boundedEnvInteger('WS_MAX_BUFFERED_BYTES', 32 * 1_048_576, WS_MAX_QUEUE_BYTES, 128 * 1_048_576);
 const WS_MAX_CONNECTIONS = boundedEnvInteger('WS_MAX_CONNECTIONS', 500, 1, 10_000);
+const WS_MAX_CONNECTIONS_PER_IP = boundedEnvInteger('WS_MAX_CONNECTIONS_PER_IP', 20, 1, 1_000);
+const WS_HANDSHAKES_PER_IP_PER_MINUTE = boundedEnvInteger('WS_HANDSHAKES_PER_IP_PER_MINUTE', 30, 1, 10_000);
 const WS_MAX_PENDING_HANDSHAKES = boundedEnvInteger('WS_MAX_PENDING_HANDSHAKES', 32, 1, 1_000);
 const WS_INITIAL_STATE_CONCURRENCY = boundedEnvInteger('WS_INITIAL_STATE_CONCURRENCY', 8, 1, 128);
 const WS_INITIAL_STATE_QUEUE_MAX = boundedEnvInteger('WS_INITIAL_STATE_QUEUE_MAX', 64, 0, 1_000);
@@ -267,6 +270,8 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
     WS_INITIAL_STATE_QUEUE_MAX,
   );
   let pendingHandshakes = 0;
+  const connectionsByPeer = new Map<string, number>();
+  const handshakeWindows = new Map<string, { startedAt: number; count: number }>();
   const pendingHandshakeTimers = new WeakMap<IncomingMessage['socket'], NodeJS.Timeout>();
   const missedPongs = new WeakMap<WebSocket, number>();
 
@@ -312,6 +317,25 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
         done(false, 400, 'The all-network scope is not available');
         return;
       }
+      const peer = trustedClientIp(info.req);
+      const now = Date.now();
+      if (handshakeWindows.size >= 4_096 && !handshakeWindows.has(peer)) {
+        const oldest = handshakeWindows.keys().next().value as string | undefined;
+        if (oldest) handshakeWindows.delete(oldest);
+      }
+      let peerWindow = handshakeWindows.get(peer);
+      if (!peerWindow || now - peerWindow.startedAt >= 60_000) {
+        peerWindow = { startedAt: now, count: 0 };
+        handshakeWindows.set(peer, peerWindow);
+      }
+      peerWindow.count += 1;
+      if (
+        peerWindow.count > WS_HANDSHAKES_PER_IP_PER_MINUTE
+        || (connectionsByPeer.get(peer) ?? 0) >= WS_MAX_CONNECTIONS_PER_IP
+      ) {
+        done(false, 429, 'Too Many Requests', { 'Retry-After': '5' });
+        return;
+      }
       const admission = websocketAdmissionDecision(
         { activeConnections: wss.clients.size, pendingHandshakes },
         {
@@ -347,6 +371,13 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
 
   wss.on('connection', async (ws: WebSocket, req: IncomingMessage) => {
     releasePendingHandshake(req);
+    const peer = trustedClientIp(req);
+    connectionsByPeer.set(peer, (connectionsByPeer.get(peer) ?? 0) + 1);
+    ws.once('close', () => {
+      const remaining = Math.max(0, (connectionsByPeer.get(peer) ?? 1) - 1);
+      if (remaining === 0) connectionsByPeer.delete(peer);
+      else connectionsByPeer.set(peer, remaining);
+    });
     missedPongs.set(ws, 0);
     ws.on('pong', () => missedPongs.set(ws, 0));
     console.log('[ws] client connected, total:', wss.clients.size);

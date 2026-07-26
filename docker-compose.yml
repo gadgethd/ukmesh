@@ -121,6 +121,8 @@ services:
       OWNER_DATABASE_URL: ${OWNER_DATABASE_URL:-postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${OWNER_POSTGRES_DB:-meshcore_owner_auth}}
       OWNER_MQTT_USERNAME_MAP: ${OWNER_MQTT_USERNAME_MAP:-}
       OWNER_COOKIE_SECRET: ${OWNER_COOKIE_SECRET:-}
+      OPERATOR_SITE_TOKEN: ${OPERATOR_SITE_TOKEN:?OPERATOR_SITE_TOKEN required}
+      TRUSTED_PROXY_PEERS: ${TRUSTED_PROXY_PEERS:-172.30.0.10,172.30.0.11,172.30.0.12}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3003,http://localhost:3004,https://ukmesh.com,https://www.ukmesh.com,https://app.ukmesh.com,https://test.ukmesh.com}
       RADIO_BOT_URL: ${RADIO_BOT_URL:-}
       VIEWSHED_ENABLED: ${VIEWSHED_ENABLED:-false}
@@ -149,7 +151,7 @@ services:
       mosquitto:
         condition: service_healthy
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     volumes:
       - mosquitto_log:/mosquitto/log:ro
       - ./mosquitto:/mosquitto/config
@@ -422,11 +424,14 @@ services:
       backend:
         condition: service_healthy
     ports:
-      - "3003:80"
+      - "127.0.0.1:3003:80"
+    networks:
+      default:
+        ipv4_address: 172.30.0.10
     volumes:
       - ${TERRAIN_TILES_PATH:-./terrain-tiles}:/terrain-tiles:ro
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/ >/dev/null"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/ >/dev/null && wget -qO- http://127.0.0.1/readyz >/dev/null"]
       interval: 30s
       timeout: 10s
       retries: 6
@@ -446,12 +451,15 @@ services:
     mem_limit: "128m"
     memswap_limit: "128m"
     ports:
-      - "3004:80"
+      - "127.0.0.1:3004:80"
+    networks:
+      default:
+        ipv4_address: 172.30.0.11
     depends_on:
       backend:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/ >/dev/null"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/ >/dev/null && wget -qO- http://127.0.0.1/readyz >/dev/null"]
       interval: 30s
       timeout: 10s
       retries: 6
@@ -508,7 +516,7 @@ services:
       mosquitto:
         condition: service_healthy
     ports:
-      - "3090:3090"
+      - "127.0.0.1:3090:3090"
     volumes:
       - mesh_health_check_data:/app/data
       - ./healthcheck-overrides/index.html:/app/public/index.html:ro
@@ -540,11 +548,15 @@ services:
         VITE_SITE_HOME_URL: ${VITE_DEV_SITE_HOME_URL:-https://test.ukmesh.com}
         VITE_VIEWSHED_ENABLED: ${VIEWSHED_ENABLED:-false}
     restart: always
+    profiles: [dev]
     logging: *json-log-limits
     mem_limit: "128m"
     memswap_limit: "128m"
     ports:
-      - "3006:80"
+      - "127.0.0.1:3006:80"
+    networks:
+      default:
+        ipv4_address: 172.30.0.12
     depends_on:
       backend:
         condition: service_healthy
@@ -579,6 +591,9 @@ services:
     depends_on:
       website-ukmesh:
         condition: service_healthy
+    networks:
+      default:
+        ipv4_address: 172.30.0.20
 
   anubis-app-ukmesh:
     <<: [*anubis-base, *internal-hosts]
@@ -598,6 +613,9 @@ services:
     depends_on:
       app-ukmesh:
         condition: service_healthy
+    networks:
+      default:
+        ipv4_address: 172.30.0.21
 
   anubis-health-check:
     <<: [*anubis-base, *internal-hosts]
@@ -619,6 +637,7 @@ services:
         condition: service_healthy
     networks:
       default:
+        ipv4_address: 172.30.0.22
         # Cloudflare Tunnel currently routes healthcheck.ukmesh.com to
         # http://anubis-mesh-health-check:8923. Keep this alias unless the
         # tunnel ingress config is changed at Cloudflare too.
@@ -634,8 +653,9 @@ services:
     command: tunnel run
     profiles: [tunnel]
     networks:
-      - default
-      - meshcore-beacon-ukmesh
+      default:
+        ipv4_address: 172.30.0.30
+      meshcore-beacon-ukmesh: {}
     environment:
       TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
     depends_on:
@@ -690,11 +710,16 @@ services:
       - ./logging/grafana/dashboards:/etc/grafana/dashboards:ro
       - grafana_data:/var/lib/grafana
     ports:
-      - "3010:3000"
+      - "127.0.0.1:3010:3000"
     depends_on:
       - loki
 
 networks:
+  default:
+    ipam:
+      config:
+        # Fixed proxy addresses make the backend's immediate-peer trust exact.
+        - subnet: 172.30.0.0/24
   meshcore-beacon-ukmesh:
     external: true
     name: meshcore-beacon-ukmesh_default

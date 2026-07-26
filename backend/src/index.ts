@@ -13,6 +13,7 @@ import apiRoutes from './api/routes.js';
 import { initSpamMessageAnalyzer } from './spam/analyzer.js';
 import { isViewshedEligibleCoordinate, queueViewshedJob, queueLinkJob } from './queue/publisher.js';
 import { createBackendSiteRoutes } from './backend-site/routes.js';
+import { isTrustedProxyPeer } from './http/trustedProxy.js';
 
 const ALLOWED_ORIGINS = (process.env['ALLOWED_ORIGINS'] ?? '')
   .split(',')
@@ -98,9 +99,9 @@ async function main() {
   // 3. Express app
   const app = express();
 
-  // Trust the private Docker proxy chain so rate limiting keys on the real
-  // public client IP from X-Forwarded-For, not a shared nginx/anubis hop.
-  app.set('trust proxy', ['loopback', 'linklocal', 'uniquelocal']);
+  // Only the fixed Compose Nginx peers may supply client identity. Broad
+  // private-range trust lets a direct container or host caller spoof quotas.
+  app.set('trust proxy', (ip: string) => isTrustedProxyPeer(ip));
 
   // Gzip compression for all responses — critical for large payloads like /api/coverage (~26 MB)
   app.use(compression());
