@@ -41,7 +41,26 @@ type LearningPathNode = {
   isVerified: boolean;
 };
 
-const MAX_TRAINING_PACKETS = 120_000;
+const MAX_TRAINING_PACKETS = Math.min(
+  500_000,
+  Math.max(1_000, Number(process.env['PATH_LEARNING_MAX_TRAINING_PACKETS'] ?? 120_000) || 120_000),
+);
+const MAX_LEARNING_NODES = Math.min(
+  200_000,
+  Math.max(1_000, Number(process.env['PATH_LEARNING_MAX_NODES'] ?? 50_000) || 50_000),
+);
+const MAX_LEARNING_LINKS = Math.min(
+  1_000_000,
+  Math.max(1_000, Number(process.env['PATH_LEARNING_MAX_LINKS'] ?? 200_000) || 200_000),
+);
+const MAX_AGGREGATE_KEYS = Math.min(
+  5_000_000,
+  Math.max(10_000, Number(process.env['PATH_LEARNING_MAX_AGGREGATE_KEYS'] ?? 1_000_000) || 1_000_000),
+);
+const LEARNING_RUN_DEADLINE_MS = Math.max(
+  60_000,
+  Number(process.env['PATH_LEARNING_RUN_DEADLINE_MS'] ?? 45 * 60_000) || 45 * 60_000,
+);
 const MAX_PREFIX_CHOICES_PER_GROUP = 3;
 const MAX_TRANSITIONS_PER_GROUP = 5;
 const MAX_EDGE_CHOICES_PER_GROUP = 8;
@@ -370,8 +389,11 @@ export async function rebuildPathLearningModels(): Promise<void> {
        UNION
        SELECT network FROM nodes
      ) t
-     WHERE network IS NOT NULL`,
+     WHERE network IS NOT NULL
+     ORDER BY network
+     LIMIT 33`,
   );
+  if (networksResult.rows.length > 32) throw new Error('PATH_LEARNING_NETWORK_LIMIT');
   const networks = networksResult.rows.map((r) => r.network).filter(Boolean);
   if (networks.length === 0) return;
 
@@ -383,12 +405,13 @@ export async function rebuildPathLearningModels(): Promise<void> {
 
 async function rebuildNetwork(modelNetwork: string, sourceNetwork: string | undefined): Promise<void> {
   const nowMs = Date.now();
+  const deadline = nowMs + LEARNING_RUN_DEADLINE_MS;
   const nodeNetworkFilter = sourceNetwork ? 'AND network = $1' : '';
   const packetNetworkFilter = sourceNetwork ? 'AND network = $1' : '';
   const linkNetworkFilter = sourceNetwork ? 'AND a.network = $1 AND b.network = $1' : '';
-  const nodeParams: unknown[] = sourceNetwork ? [sourceNetwork] : [];
+  const nodeParams: unknown[] = sourceNetwork ? [sourceNetwork, MAX_LEARNING_NODES + 1] : [MAX_LEARNING_NODES + 1];
   const packetParams: unknown[] = sourceNetwork ? [sourceNetwork, MAX_TRAINING_PACKETS] : [MAX_TRAINING_PACKETS];
-  const linkParams: unknown[] = sourceNetwork ? [sourceNetwork] : [];
+  const linkParams: unknown[] = sourceNetwork ? [sourceNetwork, MAX_LEARNING_LINKS + 1] : [MAX_LEARNING_LINKS + 1];
 
   const nodesResult = await query<LearningNode>(
     `SELECT node_id, lat, lon, elevation_m, iata
@@ -397,9 +420,12 @@ async function rebuildNetwork(modelNetwork: string, sourceNetwork: string | unde
        AND lon IS NOT NULL
        AND (name IS NULL OR name NOT LIKE '%🚫%')
        AND (role IS NULL OR role = 2)
-       ${nodeNetworkFilter}`,
+       ${nodeNetworkFilter}
+     ORDER BY node_id
+     LIMIT $${sourceNetwork ? 2 : 1}`,
     nodeParams,
   );
+  if (nodesResult.rows.length > MAX_LEARNING_NODES) throw new Error('PATH_LEARNING_NODE_LIMIT');
   const nodesById = new Map(nodesResult.rows.map((n) => [n.node_id, n]));
 
   const pathHashIndex = buildNodePathHashIndex(nodesResult.rows);
@@ -410,9 +436,12 @@ async function rebuildNetwork(modelNetwork: string, sourceNetwork: string | unde
      JOIN nodes a ON a.node_id = nl.node_a_id
      JOIN nodes b ON b.node_id = nl.node_b_id
      WHERE (nl.itm_viable = true OR nl.force_viable = true)
-       ${linkNetworkFilter}`,
+       ${linkNetworkFilter}
+     ORDER BY nl.node_a_id, nl.node_b_id
+     LIMIT $${sourceNetwork ? 2 : 1}`,
     linkParams,
   );
+  if (linksResult.rows.length > MAX_LEARNING_LINKS) throw new Error('PATH_LEARNING_LINK_LIMIT');
 
   const confirmedLinks = new Set(linksResult.rows.map((r) => linkKey(r.node_a_id, r.node_b_id)));
   const linkMetaByPair = new Map(linksResult.rows.map((r) => [linkKey(r.node_a_id, r.node_b_id), r]));
@@ -455,7 +484,9 @@ async function rebuildNetwork(modelNetwork: string, sourceNetwork: string | unde
   let successPackets = 0;
   let confidenceSum = 0;
 
-  for (const packet of packetsResult.rows) {
+  for (let packetIndex = 0; packetIndex < packetsResult.rows.length; packetIndex += 1) {
+    if (packetIndex % 256 === 0 && Date.now() >= deadline) throw new Error('PATH_LEARNING_TIMEOUT');
+    const packet = packetsResult.rows[packetIndex]!;
     const hashes = packet.path_hashes?.map(normalizePathHash).filter(Boolean) ?? [];
     if (hashes.length === 0) continue;
     const rx = nodesById.get(packet.rx_node_id);
@@ -529,7 +560,17 @@ async function rebuildNetwork(modelNetwork: string, sourceNetwork: string | unde
         increment(motif3GroupTotals, motif3Group);
       }
     }
+    if (
+      prefixChoiceCounts.size + prefixGroupTotals.size + transitionCounts.size
+      + transitionGroupTotals.size + edgeObservedCounts.size + edgeLastSeenMs.size
+      + activeFromCounts.size + motif2Counts.size + motif2GroupTotals.size
+      + motif3Counts.size + motif3GroupTotals.size > MAX_AGGREGATE_KEYS
+    ) {
+      throw new Error('PATH_LEARNING_AGGREGATE_LIMIT');
+    }
   }
+
+  if (Date.now() >= deadline) throw new Error('PATH_LEARNING_TIMEOUT');
 
   const groupedPrefix = new Map<string, Array<{ nodeId: string; count: number }>>();
   for (const [key, count] of prefixChoiceCounts) {
@@ -722,6 +763,7 @@ async function rebuildNetwork(modelNetwork: string, sourceNetwork: string | unde
   const confidenceBias = clamp(top1Accuracy - meanPredConfidence * confidenceScale, -0.2, 0.2);
   const recommendedThreshold = clamp(0.35 + (1 - top1Accuracy) * 0.2, 0.3, 0.88);
 
+  if (Date.now() >= deadline) throw new Error('PATH_LEARNING_TIMEOUT');
   await replacePathLearningRows(modelNetwork, prefixRows, transitionRows, edgeRows, motifRows, {
     evaluatedPackets,
     top1Accuracy,

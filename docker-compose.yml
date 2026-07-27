@@ -120,18 +120,68 @@ services:
       MESHCORE_CHANNEL_SECRETS: ${MESHCORE_CHANNEL_SECRETS:-}
       OWNER_DATABASE_URL: ${OWNER_DATABASE_URL:-postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${OWNER_POSTGRES_DB:-meshcore_owner_auth}}
       OWNER_MQTT_USERNAME_MAP: ${OWNER_MQTT_USERNAME_MAP:-}
+      OWNER_AUTHORIZATION_MODE: ${OWNER_AUTHORIZATION_MODE:-shadow}
+      OWNER_ACL_MODE: ${OWNER_ACL_MODE:-shadow}
+      OWNER_ACL_UNMANAGED_USERS: ${OWNER_ACL_UNMANAGED_USERS:-backend,test,test2}
+      OWNER_ACL_ALLOW_EMPTY_USERS: ${OWNER_ACL_ALLOW_EMPTY_USERS:-}
+      OWNER_ACL_SHADOW_PATH: /tmp/meshcore-owner-acl.shadow
+      MOSQUITTO_ACL_PATH: /mosquitto/config/acl
+      MOSQUITTO_CONTAINER_NAME: mosquitto
       OWNER_COOKIE_SECRET: ${OWNER_COOKIE_SECRET:-}
+      OPERATOR_SITE_TOKEN: ${OPERATOR_SITE_TOKEN:?OPERATOR_SITE_TOKEN required}
+      TRUSTED_PROXY_PEERS: ${TRUSTED_PROXY_PEERS:-172.30.0.10,172.30.0.11,172.30.0.12}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3003,http://localhost:3004,https://ukmesh.com,https://www.ukmesh.com,https://app.ukmesh.com,https://test.ukmesh.com}
       RADIO_BOT_URL: ${RADIO_BOT_URL:-}
       VIEWSHED_ENABLED: ${VIEWSHED_ENABLED:-false}
       COVERAGE_MODEL_VERSION: ${COVERAGE_MODEL_VERSION:-5}
       DATABASE_STATEMENT_TIMEOUT_MS: 300000
       DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-20}
+      STATS_DB_QUERY_CONCURRENCY: ${STATS_DB_QUERY_CONCURRENCY:-2}
       DATABASE_SKIP_SCHEMA_INIT: "true"
       WS_INITIAL_STATE_ENABLED: "1"
+      WS_INITIAL_STATE_MAX_BYTES: ${WS_INITIAL_STATE_MAX_BYTES:-16777216}
       MQTT_MAX_PAYLOAD_BYTES: ${MQTT_MAX_PAYLOAD_BYTES:-65536}
       MQTT_INGEST_CONCURRENCY: ${MQTT_INGEST_CONCURRENCY:-8}
       MQTT_INGEST_QUEUE_MAX: ${MQTT_INGEST_QUEUE_MAX:-1000}
+      PATH_RESOLVE_WORKERS: ${PATH_RESOLVE_WORKERS:-2}
+      PATH_RESOLVE_BACKGROUND_QUEUE_MAX: ${PATH_RESOLVE_BACKGROUND_QUEUE_MAX:-128}
+      PATH_RESOLVE_INTERACTIVE_QUEUE_MAX: ${PATH_RESOLVE_INTERACTIVE_QUEUE_MAX:-32}
+      PATH_RESOLVE_END_TO_END_TIMEOUT_MS: ${PATH_RESOLVE_END_TO_END_TIMEOUT_MS:-15000}
+      PATH_RESOLVE_UNIQUE_INFLIGHT_MAX: ${PATH_RESOLVE_UNIQUE_INFLIGHT_MAX:-34}
+      PATH_RESOLVE_OBSERVER_VARIANTS_PER_PACKET_MAX: ${PATH_RESOLVE_OBSERVER_VARIANTS_PER_PACKET_MAX:-4}
+      PATH_SINGLE_HISTORY_HOURS: ${PATH_SINGLE_HISTORY_HOURS:-168}
+      PATH_SINGLE_MAX_OBSERVERS: ${PATH_SINGLE_MAX_OBSERVERS:-128}
+      PATH_MULTI_HISTORY_WINDOW_HOURS: ${PATH_MULTI_HISTORY_WINDOW_HOURS:-168}
+      PATH_MULTI_MAX_SCAN_ROWS: ${PATH_MULTI_MAX_SCAN_ROWS:-2048}
+      PATH_MULTI_MAX_OBSERVERS: ${PATH_MULTI_MAX_OBSERVERS:-128}
+      LAZY_PATH_HISTORY_WINDOW_HOURS: ${LAZY_PATH_HISTORY_WINDOW_HOURS:-168}
+      LAZY_PATH_MAX_OBSERVATIONS: ${LAZY_PATH_MAX_OBSERVATIONS:-2048}
+      LAZY_PATH_MAX_OBSERVERS: ${LAZY_PATH_MAX_OBSERVERS:-128}
+      LAZY_PATH_MAX_UNIQUE_HASHES: ${LAZY_PATH_MAX_UNIQUE_HASHES:-64}
+      LAZY_PATH_MAX_CANDIDATE_NODES: ${LAZY_PATH_MAX_CANDIDATE_NODES:-2048}
+      SPAM_MESSAGE_MAX_CANDIDATE_ROWS: ${SPAM_MESSAGE_MAX_CANDIDATE_ROWS:-10000}
+      SPAM_MESSAGE_MAX_MESSAGES: ${SPAM_MESSAGE_MAX_MESSAGES:-2000}
+      SPAM_MESSAGE_MAX_OBSERVERS: ${SPAM_MESSAGE_MAX_OBSERVERS:-32}
+      SPAM_MESSAGE_MAX_NORMALIZED_CHARS: ${SPAM_MESSAGE_MAX_NORMALIZED_CHARS:-512}
+      SPAM_MESSAGE_MAX_INCIDENTS: ${SPAM_MESSAGE_MAX_INCIDENTS:-100}
+      SPAM_MESSAGE_MAX_CANDIDATE_CLUSTERS: ${SPAM_MESSAGE_MAX_CANDIDATE_CLUSTERS:-64}
+      SPAM_MESSAGE_MAX_EVIDENCE_MEMBERS: ${SPAM_MESSAGE_MAX_EVIDENCE_MEMBERS:-256}
+      SPAM_MESSAGE_ANALYSIS_BUDGET_MS: ${SPAM_MESSAGE_ANALYSIS_BUDGET_MS:-5000}
+      SPAM_MESSAGE_DB_TIMEOUT_MS: ${SPAM_MESSAGE_DB_TIMEOUT_MS:-15000}
+      STATS_UNIQUE_INFLIGHT_MAX: ${STATS_UNIQUE_INFLIGHT_MAX:-32}
+      LINK_QUEUE_V3_PRODUCER_ENABLED: ${LINK_QUEUE_V3_PRODUCER_ENABLED:-1}
+      LINK_QUEUE_V3_MAX_JOBS: ${LINK_QUEUE_V3_MAX_JOBS:-5000}
+      LINK_QUEUE_V3_MAX_BYTES: ${LINK_QUEUE_V3_MAX_BYTES:-67108864}
+      LINK_QUEUE_V3_MAX_PAYLOAD_BYTES: ${LINK_QUEUE_V3_MAX_PAYLOAD_BYTES:-32768}
+      PLANNED_COVERAGE_TTL_MS: ${PLANNED_COVERAGE_TTL_MS:-86400000}
+      PLANNED_COVERAGE_QUEUE_MAX: ${PLANNED_COVERAGE_QUEUE_MAX:-100}
+      PLANNED_COVERAGE_MAX_OUTSTANDING_JOBS: ${PLANNED_COVERAGE_MAX_OUTSTANDING_JOBS:-100}
+      PLANNED_COVERAGE_MAX_OUTSTANDING_HANDLES: ${PLANNED_COVERAGE_MAX_OUTSTANDING_HANDLES:-10000}
+      PLANNED_COVERAGE_MAX_HANDLES_PER_JOB: ${PLANNED_COVERAGE_MAX_HANDLES_PER_JOB:-256}
+      MQTT_AUDIT_MAX_OBSERVATIONS_PER_SCAN: ${MQTT_AUDIT_MAX_OBSERVATIONS_PER_SCAN:-4096}
+      MQTT_AUDIT_MAX_NODES_PER_USER: ${MQTT_AUDIT_MAX_NODES_PER_USER:-256}
+      MQTT_AUDIT_RETENTION_DAYS: ${MQTT_AUDIT_RETENTION_DAYS:-30}
+      LINK_REBUILD_LEASE_MS: ${LINK_REBUILD_LEASE_MS:-120000}
       WS_MAX_PAYLOAD_BYTES: ${WS_MAX_PAYLOAD_BYTES:-65536}
       WS_MAX_QUEUE_BYTES: ${WS_MAX_QUEUE_BYTES:-8388608}
       WS_MAX_BUFFERED_BYTES: ${WS_MAX_BUFFERED_BYTES:-33554432}
@@ -149,7 +199,7 @@ services:
       mosquitto:
         condition: service_healthy
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     volumes:
       - mosquitto_log:/mosquitto/log:ro
       - ./mosquitto:/mosquitto/config
@@ -160,27 +210,6 @@ services:
       timeout: 10s
       retries: 6
       start_period: 30s
-
-  acl-watcher:
-    <<: *internal-hosts
-    build:
-      context: .
-      dockerfile: Dockerfile.backend
-    restart: always
-    logging: *json-log-limits
-    mem_limit: "256m"
-    memswap_limit: "256m"
-    command: ["node", "dist/workers/acl-watcher.js"]
-    environment:
-      MOSQUITTO_ACL_PATH: /mosquitto/config/acl
-      MOSQUITTO_CONTAINER_NAME: mosquitto
-      NODE_ENV: production
-    depends_on:
-      mosquitto:
-        condition: service_healthy
-    volumes:
-      - ./mosquitto:/mosquitto/config
-      - /var/run/docker.sock:/var/run/docker.sock
 
   path-learning-worker:
     <<: *internal-hosts
@@ -199,6 +228,11 @@ services:
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET required}
       DATABASE_STATEMENT_TIMEOUT_MS: 300000
       DATABASE_SKIP_SCHEMA_INIT: "true"
+      PATH_LEARNING_MAX_TRAINING_PACKETS: ${PATH_LEARNING_MAX_TRAINING_PACKETS:-120000}
+      PATH_LEARNING_MAX_NODES: ${PATH_LEARNING_MAX_NODES:-50000}
+      PATH_LEARNING_MAX_LINKS: ${PATH_LEARNING_MAX_LINKS:-200000}
+      PATH_LEARNING_MAX_AGGREGATE_KEYS: ${PATH_LEARNING_MAX_AGGREGATE_KEYS:-1000000}
+      PATH_LEARNING_RUN_DEADLINE_MS: ${PATH_LEARNING_RUN_DEADLINE_MS:-2700000}
       NODE_ENV: production
     depends_on:
       timescaledb:
@@ -220,11 +254,18 @@ services:
     command: ["node", "dist/workers/path-history.js"]
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}
+      DATABASE_APPLICATION_NAME: meshcore-path-history
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD required}
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET required}
       DATABASE_STATEMENT_TIMEOUT_MS: 300000
       DATABASE_SKIP_SCHEMA_INIT: "true"
+      PATH_HISTORY_RUN_DEADLINE_MS: ${PATH_HISTORY_RUN_DEADLINE_MS:-7200000}
+      PATH_HISTORY_CONCURRENCY: ${PATH_HISTORY_CONCURRENCY:-2}
+      PATH_HISTORY_SEGMENT_COUNTER_CAPACITY: ${PATH_HISTORY_SEGMENT_COUNTER_CAPACITY:-65536}
+      PATH_MULTI_HISTORY_WINDOW_HOURS: ${PATH_MULTI_HISTORY_WINDOW_HOURS:-168}
+      PATH_MULTI_MAX_SCAN_ROWS: ${PATH_MULTI_MAX_SCAN_ROWS:-2048}
+      PATH_MULTI_MAX_OBSERVERS: ${PATH_MULTI_MAX_OBSERVERS:-128}
       NODE_ENV: production
     depends_on:
       timescaledb:
@@ -237,7 +278,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.5"
+          cpus: "1.0"
           memory: 512M
 
   health-worker:
@@ -319,6 +360,8 @@ services:
         condition: service_healthy
       backend:
         condition: service_healthy
+      link-worker:
+        condition: service_healthy
 
   viewshed-worker:
     <<: *internal-hosts
@@ -340,8 +383,16 @@ services:
       NUM_WORKERS: '1'
       COVERAGE_MODEL: ${COVERAGE_MODEL:-rf_radial_100m}
       COVERAGE_MODEL_VERSION: ${COVERAGE_MODEL_VERSION:-5}
+      PLANNED_COVERAGE_TTL_SECONDS: ${PLANNED_COVERAGE_TTL_SECONDS:-86400}
+      PLANNED_COVERAGE_QUEUE_MAX: ${PLANNED_COVERAGE_QUEUE_MAX:-100}
     volumes:
       - srtm_data:/data/srtm
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import os,redis; r=redis.Redis.from_url(os.environ['REDIS_URL'],password=os.environ.get('REDIS_PASSWORD')); raise SystemExit(0 if r.exists('meshcore:viewshed:worker_heartbeat') else 1)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
     deploy:
       resources:
         limits:
@@ -373,8 +424,19 @@ services:
       SRTM_DIR: /data/srtm
       WORKER_MODE: link
       NUM_WORKERS: '1'
+      LINK_QUEUE_V3_MAX_JOBS: ${LINK_QUEUE_V3_MAX_JOBS:-5000}
+      LINK_QUEUE_V3_MAX_BYTES: ${LINK_QUEUE_V3_MAX_BYTES:-67108864}
+      LINK_QUEUE_V3_MAX_PAYLOAD_BYTES: ${LINK_QUEUE_V3_MAX_PAYLOAD_BYTES:-32768}
+      LINK_QUEUE_V3_MAX_ATTEMPTS: ${LINK_QUEUE_V3_MAX_ATTEMPTS:-5}
+      LINK_QUEUE_V3_LEASE_MS: ${LINK_QUEUE_V3_LEASE_MS:-120000}
     volumes:
       - srtm_data:/data/srtm
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import os,redis; r=redis.Redis.from_url(os.environ['REDIS_URL'],password=os.environ.get('REDIS_PASSWORD')); raise SystemExit(0 if r.exists('meshcore:link:v3:worker_heartbeat') else 1)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
     depends_on:
       timescaledb:
         condition: service_healthy
@@ -422,11 +484,14 @@ services:
       backend:
         condition: service_healthy
     ports:
-      - "3003:80"
+      - "127.0.0.1:3003:80"
+    networks:
+      default:
+        ipv4_address: 172.30.0.10
     volumes:
       - ${TERRAIN_TILES_PATH:-./terrain-tiles}:/terrain-tiles:ro
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/ >/dev/null"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/ >/dev/null && wget -qO- http://127.0.0.1/readyz >/dev/null"]
       interval: 30s
       timeout: 10s
       retries: 6
@@ -446,12 +511,15 @@ services:
     mem_limit: "128m"
     memswap_limit: "128m"
     ports:
-      - "3004:80"
+      - "127.0.0.1:3004:80"
+    networks:
+      default:
+        ipv4_address: 172.30.0.11
     depends_on:
       backend:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/ >/dev/null"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/ >/dev/null && wget -qO- http://127.0.0.1/readyz >/dev/null"]
       interval: 30s
       timeout: 10s
       retries: 6
@@ -508,7 +576,7 @@ services:
       mosquitto:
         condition: service_healthy
     ports:
-      - "3090:3090"
+      - "127.0.0.1:3090:3090"
     volumes:
       - mesh_health_check_data:/app/data
       - ./healthcheck-overrides/index.html:/app/public/index.html:ro
@@ -540,11 +608,15 @@ services:
         VITE_SITE_HOME_URL: ${VITE_DEV_SITE_HOME_URL:-https://test.ukmesh.com}
         VITE_VIEWSHED_ENABLED: ${VIEWSHED_ENABLED:-false}
     restart: always
+    profiles: [dev]
     logging: *json-log-limits
     mem_limit: "128m"
     memswap_limit: "128m"
     ports:
-      - "3006:80"
+      - "127.0.0.1:3006:80"
+    networks:
+      default:
+        ipv4_address: 172.30.0.12
     depends_on:
       backend:
         condition: service_healthy
@@ -579,6 +651,9 @@ services:
     depends_on:
       website-ukmesh:
         condition: service_healthy
+    networks:
+      default:
+        ipv4_address: 172.30.0.20
 
   anubis-app-ukmesh:
     <<: [*anubis-base, *internal-hosts]
@@ -598,6 +673,9 @@ services:
     depends_on:
       app-ukmesh:
         condition: service_healthy
+    networks:
+      default:
+        ipv4_address: 172.30.0.21
 
   anubis-health-check:
     <<: [*anubis-base, *internal-hosts]
@@ -619,6 +697,7 @@ services:
         condition: service_healthy
     networks:
       default:
+        ipv4_address: 172.30.0.22
         # Cloudflare Tunnel currently routes healthcheck.ukmesh.com to
         # http://anubis-mesh-health-check:8923. Keep this alias unless the
         # tunnel ingress config is changed at Cloudflare too.
@@ -634,8 +713,9 @@ services:
     command: tunnel run
     profiles: [tunnel]
     networks:
-      - default
-      - meshcore-beacon-ukmesh
+      default:
+        ipv4_address: 172.30.0.30
+      meshcore-beacon-ukmesh: {}
     environment:
       TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
     depends_on:
@@ -690,11 +770,16 @@ services:
       - ./logging/grafana/dashboards:/etc/grafana/dashboards:ro
       - grafana_data:/var/lib/grafana
     ports:
-      - "3010:3000"
+      - "127.0.0.1:3010:3000"
     depends_on:
       - loki
 
 networks:
+  default:
+    ipam:
+      config:
+        # Fixed proxy addresses make the backend's immediate-peer trust exact.
+        - subnet: 172.30.0.0/24
   meshcore-beacon-ukmesh:
     external: true
     name: meshcore-beacon-ukmesh_default

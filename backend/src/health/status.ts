@@ -158,7 +158,10 @@ async function currentWorkers(precomputedStats?: ReturnType<typeof systemStats>)
     backfillState,
   ] = await Promise.all([
     r.llen('meshcore:viewshed_jobs'),
-    r.llen('meshcore:link_jobs'),
+    Promise.all([
+      r.llen('meshcore:link_jobs'),
+      r.hget('meshcore:link:v3:counters', 'count'),
+    ]).then(([legacy, v3]) => Number(legacy ?? 0) + Number(v3 ?? 0)),
     query<{ count: string }>(`SELECT COUNT(*) AS count FROM node_coverage WHERE calculated_at > NOW() - INTERVAL '1 hour'`),
     query<{ count: string }>(`SELECT COUNT(*) AS count FROM node_links WHERE itm_computed_at > NOW() - INTERVAL '1 hour'`),
     query<{ ts: string | null }>(`SELECT MAX(calculated_at)::text AS ts FROM node_coverage`),

@@ -166,7 +166,11 @@ Copy `.env.example` to `.env` and fill in your values. All variables used by the
 | `OPENTOPODATA_API` | `https://api.opentopodata.org` | Elevation API endpoint for viewshed computation |
 | `OWNER_DATABASE_URL` | *(optional)* | Separate Postgres database URL for owner portal username → repeater mappings |
 | `OWNER_COOKIE_SECRET` | *(optional but recommended)* | Secret used to encrypt/sign the owner session cookie |
-| `OWNER_MQTT_USERNAME_MAP` | *(optional fallback)* | Legacy static mapping in the format `user=nodeId1|nodeId2,...` |
+| `OWNER_MQTT_USERNAME_MAP` | *(empty)* | Operator-managed owner grants in the format `user=nodeId1|nodeId2,...` |
+| `OWNER_AUTHORIZATION_MODE` | `shadow` | `shadow` preserves read-only legacy ACL compatibility; `enforce` accepts verified database/config grants only |
+| `OWNER_ACL_MODE` | `shadow` | `shadow` renders and validates without changing Mosquitto; `apply` atomically installs and verifies the canonical ACL |
+| `OWNER_ACL_UNMANAGED_USERS` | `backend,test,test2` | Exact broker accounts intentionally preserved outside owner grant management |
+| `OWNER_ACL_ALLOW_EMPTY_USERS` | *(empty)* | Explicitly reviewed owner accounts allowed to render with no publish grants |
 | `VIEWSHED_ENABLED` | `false` | Enable coverage/planned-repeater API only when the profile-gated viewshed worker is running |
 | `COVERAGE_MODEL` | `rf_radial_100m` | Coverage model used by `viewshed-worker` |
 | `COVERAGE_MODEL_VERSION` | `5` | Coverage schema/version gate used to trigger recomputation |

@@ -66,6 +66,7 @@ export type ObserverHopHint = {
 
 export type BetaResolveContext = {
   loadedAt: number;
+  visibilityGeneration: number;
   nodesById: Map<string, MeshNode>;
   /** Repeater candidates with valid coordinates, prefiltered once per context refresh. */
   repeaterNodes: MeshNode[];

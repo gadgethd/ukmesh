@@ -1,14 +1,39 @@
 import 'node:process';
-import { getRecentPathHistoryPacketHashes, initDb, refreshRecentPathEvidence, upsertPathHistoryCache, type PathHistorySegmentRow } from '../db/index.js';
+import {
+  getPublicVisibilityGeneration,
+  getRecentPathHistoryPacketHashes,
+  initDb,
+  refreshRecentPathEvidence,
+  upsertPathHistoryCache,
+  type PathHistorySegmentRow,
+} from '../db/index.js';
 import { resolveMultiObserverBetaPath, type BetaResolvedPayload } from '../path-beta/resolver.js';
+import { runBoundedItems } from '../analysis/boundedRun.js';
+import { BoundedSegmentCounter } from '../analysis/boundedSegmentCounter.js';
+import { analysisGeneration, beginAnalysisRun, finishAnalysisRun } from '../analysis/runState.js';
 
 const REFRESH_INTERVAL_MS = 60 * 60 * 1000; // 1 hour — 7-day window changes slowly
 const WINDOW_HOURS = 168;
 const MIN_SEGMENT_COUNT = 30;
 const MAX_PACKET_HASHES = 12000;
 const MAX_SEGMENTS = 3000;
+const SEGMENT_COUNTER_CAPACITY = Math.max(
+  MAX_SEGMENTS,
+  Math.min(
+    131_072,
+    Math.trunc(Number(process.env['PATH_HISTORY_SEGMENT_COUNTER_CAPACITY'] ?? 65_536) || 65_536),
+  ),
+);
 const MIN_HISTORY_PATH_HASH_BYTES = 2;
-const SCOPES = ['all', 'ukmesh'] as const;
+const RUN_DEADLINE_MS = Math.max(
+  60_000,
+  Number(process.env['PATH_HISTORY_RUN_DEADLINE_MS'] ?? 120 * 60_000) || 120 * 60_000,
+);
+const CONCURRENCY = Math.max(
+  1,
+  Math.min(16, Math.trunc(Number(process.env['PATH_HISTORY_CONCURRENCY'] ?? 2) || 2)),
+);
+const SCOPES = ['ukmesh', 'test'] as const;
 
 type ScopeName = (typeof SCOPES)[number];
 
@@ -64,54 +89,147 @@ function collectPurpleSegments(result: BetaResolvedPayload, sink: Set<string>): 
 }
 
 async function refreshScope(scope: ScopeName): Promise<void> {
+  const visibilityGeneration = await getPublicVisibilityGeneration();
   const packetHashes = await getRecentPathHistoryPacketHashes(
     WINDOW_HOURS,
-    scope === 'all' ? undefined : scope,
+    scope,
     MAX_PACKET_HASHES,
     MIN_HISTORY_PATH_HASH_BYTES,
   );
-  const counts = new Map<string, number>();
+  const counts = new BoundedSegmentCounter(SEGMENT_COUNTER_CAPACITY);
   let resolvedPacketCount = 0;
+  let skippedPacketCount = 0;
 
-  for (const packetHash of packetHashes) {
-    const resolved = await resolveMultiObserverBetaPath(packetHash, scope, undefined, undefined, {
-      touchPredictedOnline: false,
-      log: false,
-    });
-    if (!resolved?.ok || resolved.results.length < 1) continue;
-
-    const packetSegments = new Set<string>();
-    for (const result of resolved.results) {
-      collectPurpleSegments(result, packetSegments);
-    }
-    if (packetSegments.size < 1) continue;
-
-    resolvedPacketCount += 1;
-    for (const key of packetSegments) {
-      counts.set(key, (counts.get(key) ?? 0) + 1);
-    }
-  }
-
-  const segmentCounts: SegmentCount[] = Array.from(counts.entries())
-    .filter(([, count]) => count >= MIN_SEGMENT_COUNT)
-    .map(([key, count]) => ({
-      positions: segmentPositions(key),
-      count,
-    }))
-    .sort((a, b) => b.count - a.count)
-    .slice(0, MAX_SEGMENTS);
-
-  await upsertPathHistoryCache({
+  const windowEnd = new Date();
+  const windowStart = new Date(windowEnd.getTime() - WINDOW_HOURS * 60 * 60 * 1000);
+  const run = await beginAnalysisRun({
+    workload: 'path-history',
     scope,
-    windowStart: new Date(Date.now() - WINDOW_HOURS * 60 * 60 * 1000),
-    packetCount: packetHashes.length,
-    resolvedPacketCount,
-    segmentCounts: segmentCounts as PathHistorySegmentRow[],
+    windowStart,
+    windowEnd,
+    totalItems: packetHashes.length,
   });
+  try {
+    if (packetHashes.length === 0) {
+      await finishAnalysisRun(run, {
+        status: 'stale',
+        checkpoint: 0,
+        error: 'empty selection',
+      });
+      console.warn(`[path-history] scope=${scope} selected no packets; preserving last complete snapshot`);
+      return;
+    }
+    const outcome = await runBoundedItems(packetHashes, async (packetHash) => {
+      try {
+        const resolved = await resolveMultiObserverBetaPath(packetHash, scope, undefined, undefined, {
+          touchPredictedOnline: false,
+          log: false,
+          pinContextForBatch: true,
+          requiredVisibilityGeneration: visibilityGeneration,
+        });
+        if (!resolved?.ok || resolved.results.length < 1) {
+          return;
+        }
+        const packetSegments = new Set<string>();
+        for (const result of resolved.results) collectPurpleSegments(result, packetSegments);
+        if (packetSegments.size > 0) {
+          resolvedPacketCount += 1;
+          for (const key of packetSegments) counts.observe(key);
+        }
+        return;
+      } catch (error) {
+        if ((error as Error).message === 'PATH_HISTORY_LIMIT') {
+          skippedPacketCount += 1;
+          return;
+        }
+        throw error;
+      }
+    }, {
+      windowStart,
+      windowEnd,
+      deadlineMs: RUN_DEADLINE_MS,
+      concurrency: CONCURRENCY,
+      collectResults: false,
+      maxErrors: 100,
+      runId: run.runId,
+    });
+    if (outcome.status !== 'complete') {
+      await finishAnalysisRun(run, {
+        status: outcome.status,
+        checkpoint: outcome.checkpoint,
+        error: outcome.errors[0]?.message,
+        metadata: { errors: outcome.errors.slice(0, 20) },
+      });
+      console.error('[path-history] incomplete generation; preserving last complete snapshot', {
+        scope,
+        runId: outcome.runId,
+        status: outcome.status,
+        checkpoint: outcome.checkpoint,
+        errors: outcome.errors.slice(0, 5),
+      });
+      return;
+    }
 
-  console.log(
-    `[path-history] scope=${scope} packets=${packetHashes.length} resolved=${resolvedPacketCount} segments=${segmentCounts.length}`,
-  );
+    const segmentCounts: SegmentCount[] = counts.candidates(MIN_SEGMENT_COUNT)
+      .map(({ key, count }) => ({
+        positions: segmentPositions(key),
+        count,
+      }))
+      .slice(0, MAX_SEGMENTS);
+
+    const published = await upsertPathHistoryCache({
+      scope,
+      windowStart,
+      packetCount: packetHashes.length,
+      resolvedPacketCount,
+      segmentCounts: segmentCounts as PathHistorySegmentRow[],
+      visibilityGeneration,
+    });
+    if (!published) {
+      await finishAnalysisRun(run, {
+        status: 'stale',
+        checkpoint: outcome.checkpoint,
+        error: 'public visibility changed during generation',
+        metadata: { visibilityGeneration },
+      });
+      console.warn(
+        `[path-history] scope=${scope} visibility changed during run; preserving the current snapshot`,
+      );
+      return;
+    }
+    const generation = analysisGeneration({
+      scope,
+      windowStart: windowStart.toISOString(),
+      segmentCounts,
+    });
+    await finishAnalysisRun(run, {
+      status: 'complete',
+      checkpoint: outcome.checkpoint,
+      generation,
+      metadata: {
+        skippedPacketCount,
+        resolvedPacketCount,
+        segmentCount: segmentCounts.length,
+        trackedSegmentCount: counts.size(),
+        segmentCounterReplacements: counts.replacementCount(),
+      },
+    });
+
+    console.log(
+      `[path-history] scope=${scope} run=${outcome.runId} packets=${packetHashes.length} skipped=${skippedPacketCount} resolved=${resolvedPacketCount} segments=${segmentCounts.length}`,
+    );
+  } catch (error) {
+    try {
+      await finishAnalysisRun(run, {
+        status: 'failed',
+        checkpoint: 0,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    } catch (finishError) {
+      console.error('[path-history] could not record failed run', (finishError as Error).message);
+    }
+    throw error;
+  }
 }
 
 let isRunning = false;

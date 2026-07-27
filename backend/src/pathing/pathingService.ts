@@ -1,4 +1,10 @@
 import type { PathingRepository } from './pathingRepository.js';
+import {
+  toPublicBetaResultDto,
+  toPublicMultiObserverDto,
+  type PublicBetaResultDto,
+  type PublicMultiObserverDto,
+} from './pathingPublicDto.js';
 
 type ResolvePoolFn = {
   run<T>(
@@ -22,7 +28,35 @@ type PathingServiceDeps = {
   repository: PathingRepository;
 };
 
-const resolveInflight = new Map<string, Promise<unknown>>();
+const resolveInflightSingle = new Map<string, Promise<PublicBetaResultDto>>();
+const resolveInflightMulti = new Map<string, Promise<PublicMultiObserverDto>>();
+const observerVariantsByPacket = new Map<string, Set<string>>();
+const RESOLVE_UNIQUE_INFLIGHT_MAX = Math.min(
+  256,
+  Math.max(1, Number(process.env['PATH_RESOLVE_UNIQUE_INFLIGHT_MAX'] ?? 34) || 34),
+);
+const OBSERVER_VARIANTS_PER_PACKET_MAX = Math.min(
+  16,
+  Math.max(1, Number(process.env['PATH_RESOLVE_OBSERVER_VARIANTS_PER_PACKET_MAX'] ?? 4) || 4),
+);
+
+function reserveResolve(packetHash: string, network: string, observer?: string | null): () => void {
+  if (resolveInflightSingle.size + resolveInflightMulti.size >= RESOLVE_UNIQUE_INFLIGHT_MAX) {
+    throw new Error('PATH_RESOLVE_OVERLOADED');
+  }
+  if (!observer) return () => undefined;
+  const packetKey = `${packetHash}|${network}`;
+  const variants = observerVariantsByPacket.get(packetKey) ?? new Set<string>();
+  if (!variants.has(observer) && variants.size >= OBSERVER_VARIANTS_PER_PACKET_MAX) {
+    throw new Error('PATH_RESOLVE_OVERLOADED');
+  }
+  variants.add(observer);
+  observerVariantsByPacket.set(packetKey, variants);
+  return () => {
+    variants.delete(observer);
+    if (variants.size === 0) observerVariantsByPacket.delete(packetKey);
+  };
+}
 
 type ResolvePayload = {
   mode?: 'resolved' | 'fallback' | 'none';
@@ -91,12 +125,14 @@ export function createPathingService(deps: PathingServiceDeps) {
     repository,
   } = deps;
 
-  async function resolvePacket(packetHash: string, network: string, observer?: string | null): Promise<unknown> {
-    const cacheKey = `r|${packetHash}|${network}|${observer ?? ''}`;
+  async function resolvePacket(packetHash: string, network: string, observer?: string | null): Promise<PublicBetaResultDto> {
+    const visibilityGeneration = await repository.fetchVisibilityGeneration();
+    const cacheKey = `r|${packetHash}|${network}|${observer ?? ''}|v${visibilityGeneration}`;
     const cached = getResolveCache(cacheKey);
-    if (cached) return addPathExplanation(cached);
-    const inflight = resolveInflight.get(cacheKey);
+    if (cached) return toPublicBetaResultDto(cached);
+    const inflight = resolveInflightSingle.get(cacheKey);
     if (inflight) return inflight;
+    const release = reserveResolve(packetHash, network, observer);
 
     const promise = (async () => {
       const resolved = await resolvePool.run<unknown>({
@@ -109,26 +145,29 @@ export function createPathingService(deps: PathingServiceDeps) {
         throw new Error('PACKET_NOT_FOUND');
       }
 
-      const explained = addPathExplanation(resolved);
-      setResolveCache(cacheKey, explained);
-      return explained;
+      const projected = toPublicBetaResultDto(addPathExplanation(resolved));
+      setResolveCache(cacheKey, projected);
+      return projected;
     })();
-    resolveInflight.set(cacheKey, promise);
+    resolveInflightSingle.set(cacheKey, promise);
     try {
       return await promise;
     } finally {
-      if (resolveInflight.get(cacheKey) === promise) {
-        resolveInflight.delete(cacheKey);
+      release();
+      if (resolveInflightSingle.get(cacheKey) === promise) {
+        resolveInflightSingle.delete(cacheKey);
       }
     }
   }
 
-  async function resolvePacketMulti(packetHash: string, network: string): Promise<unknown> {
-    const cacheKey = `m|${packetHash}|${network}`;
+  async function resolvePacketMulti(packetHash: string, network: string): Promise<PublicMultiObserverDto> {
+    const visibilityGeneration = await repository.fetchVisibilityGeneration();
+    const cacheKey = `m|${packetHash}|${network}|v${visibilityGeneration}`;
     const cached = getResolveCache(cacheKey);
-    if (cached) return addPathExplanation(cached);
-    const inflight = resolveInflight.get(cacheKey);
+    if (cached) return toPublicMultiObserverDto(cached);
+    const inflight = resolveInflightMulti.get(cacheKey);
     if (inflight) return inflight;
+    const release = reserveResolve(packetHash, network);
 
     const promise = (async () => {
       const resolved = await resolvePool.run<unknown>({
@@ -140,27 +179,30 @@ export function createPathingService(deps: PathingServiceDeps) {
         throw new Error('PACKET_NOT_FOUND');
       }
 
-      const explained = addPathExplanation(resolved);
-      setResolveCache(cacheKey, explained);
-      return explained;
+      const projected = toPublicMultiObserverDto(addPathExplanation(resolved));
+      setResolveCache(cacheKey, projected);
+      return projected;
     })();
-    resolveInflight.set(cacheKey, promise);
+    resolveInflightMulti.set(cacheKey, promise);
     try {
       return await promise;
     } finally {
-      if (resolveInflight.get(cacheKey) === promise) {
-        resolveInflight.delete(cacheKey);
+      release();
+      if (resolveInflightMulti.get(cacheKey) === promise) {
+        resolveInflightMulti.delete(cacheKey);
       }
     }
   }
 
   async function getPathHistory(scope: string): Promise<unknown> {
-    const memoryCached = pathHistoryCache.get(scope);
+    const visibilityGeneration = await repository.fetchVisibilityGeneration();
+    const cacheKey = `${scope}|v${visibilityGeneration}`;
+    const memoryCached = pathHistoryCache.get(cacheKey);
     if (memoryCached && Date.now() - memoryCached.ts < pathHistoryCacheTtlMs) {
       return memoryCached.data;
     }
 
-    const cached = await repository.fetchPathHistory(scope);
+    const cached = await repository.fetchPathHistory(scope, visibilityGeneration);
     let responseData: unknown;
     if (!cached) {
       responseData = {
@@ -188,7 +230,7 @@ export function createPathingService(deps: PathingServiceDeps) {
       };
     }
 
-    pathHistoryCache.set(scope, { ts: Date.now(), data: responseData });
+    pathHistoryCache.set(cacheKey, { ts: Date.now(), data: responseData });
     return responseData;
   }
 

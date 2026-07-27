@@ -4,9 +4,21 @@ import type { Server } from 'node:http';
 import { Redis } from 'ioredis';
 import type { WSMessage, LivePacket } from '../types/index.js';
 import { getNodes, getRecentPackets, getRecentMessages, getViableLinks } from '../db/index.js';
-import { resolveRequestNetwork } from '../http/requestScope.js';
+import {
+  PublicAllScopeForbiddenError,
+  resolvePublicNetworkScope,
+} from '../http/requestScope.js';
 import { networkMatchesScope } from '../networks.js';
 import { getRedisConnectionOptions, getRedisUrl } from '../platform/config/redis.js';
+import { BoundedTtlMap } from '../cache/boundedTtlMap.js';
+import {
+  BoundedAsyncGate,
+  BoundedTaskQueueFullError,
+  websocketAdmissionDecision,
+} from './limits.js';
+import { isPrivateNode } from '../api/utils/privateNode.js';
+import { PublicWsPrivacyIndex } from './privacy.js';
+import { trustedClientIp } from '../http/trustedProxy.js';
 
 const REDIS_CHANNEL = 'meshcore:live';
 const LOG_WS_PACKETS = process.env['LOG_WS_PACKETS'] === '1';
@@ -21,6 +33,14 @@ function boundedEnvInteger(name: string, fallback: number, min: number, max: num
 const WS_MAX_PAYLOAD_BYTES = boundedEnvInteger('WS_MAX_PAYLOAD_BYTES', 64 * 1024, 1_024, 1_048_576);
 const WS_MAX_QUEUE_BYTES = boundedEnvInteger('WS_MAX_QUEUE_BYTES', 8 * 1_048_576, 16 * 1024, 32 * 1_048_576);
 const WS_MAX_BUFFERED_BYTES = boundedEnvInteger('WS_MAX_BUFFERED_BYTES', 32 * 1_048_576, WS_MAX_QUEUE_BYTES, 128 * 1_048_576);
+const WS_MAX_CONNECTIONS = boundedEnvInteger('WS_MAX_CONNECTIONS', 500, 1, 10_000);
+const WS_MAX_CONNECTIONS_PER_IP = boundedEnvInteger('WS_MAX_CONNECTIONS_PER_IP', 20, 1, 1_000);
+const WS_HANDSHAKES_PER_IP_PER_MINUTE = boundedEnvInteger('WS_HANDSHAKES_PER_IP_PER_MINUTE', 30, 1, 10_000);
+const WS_MAX_PENDING_HANDSHAKES = boundedEnvInteger('WS_MAX_PENDING_HANDSHAKES', 32, 1, 1_000);
+const WS_INITIAL_STATE_CONCURRENCY = boundedEnvInteger('WS_INITIAL_STATE_CONCURRENCY', 8, 1, 128);
+const WS_INITIAL_STATE_QUEUE_MAX = boundedEnvInteger('WS_INITIAL_STATE_QUEUE_MAX', 64, 0, 1_000);
+const WS_INITIAL_STATE_MAX_BYTES = boundedEnvInteger('WS_INITIAL_STATE_MAX_BYTES', 4 * 1_048_576, 16 * 1024, 32 * 1_048_576);
+const WS_HEARTBEAT_INTERVAL_MS = boundedEnvInteger('WS_HEARTBEAT_INTERVAL_MS', 30_000, 5_000, 120_000);
 
 let pub: Redis;
 let sub: Redis;
@@ -53,8 +73,30 @@ type InitialStateEntry = {
   messages: Awaited<ReturnType<typeof getRecentMessages>>;
   viableLinks: Awaited<ReturnType<typeof getViableLinks>>;
 };
-const initialStateCache = new Map<string, InitialStateEntry>();
+const initialStateCache = new BoundedTtlMap<string, InitialStateEntry>({
+  maxEntries: 128,
+  maxWeight: 48 * 1024 * 1024,
+  ttlMs: INITIAL_STATE_TTL_MS,
+});
 const initialStateInflight = new Map<string, Promise<InitialStateEntry>>();
+const publicPrivacy = new PublicWsPrivacyIndex();
+let privacyRefreshInFlight: Promise<void> | null = null;
+
+function refreshPrivacyIndex(): Promise<void> {
+  if (privacyRefreshInFlight) return privacyRefreshInFlight;
+  const tracked = Promise.all([getNodes('ukmesh'), getNodes('test')])
+    .then(([productionNodes, testNodes]) => {
+      publicPrivacy.replace([...productionNodes, ...testNodes]);
+    })
+    .catch((error: unknown) => {
+      console.error('[ws] privacy index refresh failed:', (error as Error).message);
+    })
+    .finally(() => {
+      if (privacyRefreshInFlight === tracked) privacyRefreshInFlight = null;
+    });
+  privacyRefreshInFlight = tracked;
+  return tracked;
+}
 
 async function fetchInitialState(network: string | undefined, observer: string | undefined): Promise<InitialStateEntry> {
   const key = `${network ?? ''}:${observer ?? ''}`;
@@ -70,12 +112,17 @@ async function fetchInitialState(network: string | undefined, observer: string |
       // getRecentPackets: 5-minute window, all types (fast, CTE aggregation ~16 ms).
       // getRecentMessages: last 200 GRP (type=5) from Postgres so the feed can
       //   seed a proper message cache on first load instead of relying on live traffic.
-      const [nodes, packets, messages, viableLinks] = await Promise.all([
+      const [rawNodes, packets, messages, rawViableLinks] = await Promise.all([
         getNodes(network, observer),
         getRecentPackets(7, network, observer),
         getRecentMessages(200, network, observer),
         getCachedViableLinks(network, observer),
       ]);
+      const nodes = rawNodes.filter((node) => !isPrivateNode(node.name));
+      const viableLinks = rawViableLinks.filter((link) => (
+        !publicPrivacy.hasNode(link.node_a_id)
+        && !publicPrivacy.hasNode(link.node_b_id)
+      ));
       const entry: InitialStateEntry = { ts: Date.now(), nodes, packets, messages, viableLinks };
       initialStateCache.set(key, entry);
       return entry;
@@ -194,6 +241,9 @@ function trackScopedNodes(msg: WSMessage, scope: ClientScope): void {
 }
 
 export function initWebSocketServer(httpServer: Server): WebSocketServer {
+  void refreshPrivacyIndex();
+  const privacyRefreshTimer = setInterval(() => void refreshPrivacyIndex(), 5 * 60_000);
+  privacyRefreshTimer.unref();
   // Two separate clients: one for pub, one for sub
   // Do NOT use lazyConnect — let ioredis manage the connect lifecycle
   pub = new Redis(getRedisUrl(), getRedisConnectionOptions());
@@ -215,6 +265,23 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
     .split(',')
     .map(s => s.trim())
     .filter(Boolean);
+  const initialStateGate = new BoundedAsyncGate(
+    WS_INITIAL_STATE_CONCURRENCY,
+    WS_INITIAL_STATE_QUEUE_MAX,
+  );
+  let pendingHandshakes = 0;
+  const connectionsByPeer = new Map<string, number>();
+  const handshakeWindows = new Map<string, { startedAt: number; count: number }>();
+  const pendingHandshakeTimers = new WeakMap<IncomingMessage['socket'], NodeJS.Timeout>();
+  const missedPongs = new WeakMap<WebSocket, number>();
+
+  const releasePendingHandshake = (req: IncomingMessage): void => {
+    const timer = pendingHandshakeTimers.get(req.socket);
+    if (!timer) return;
+    clearTimeout(timer);
+    pendingHandshakeTimers.delete(req.socket);
+    pendingHandshakes = Math.max(0, pendingHandshakes - 1);
+  };
 
   // Pre-warm the initial state cache for common networks at startup so the
   // first connecting client doesn't pay the cold DB cost.
@@ -236,9 +303,55 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
     server: httpServer,
     path: '/ws',
     maxPayload: WS_MAX_PAYLOAD_BYTES,
-    verifyClient: ({ origin }: { origin: string }) => {
-      // No origin header = non-browser client (allow); otherwise must be whitelisted
-      return !origin || ALLOWED_ORIGINS.includes(origin);
+    verifyClient: (info, done) => {
+      const origin = info.origin;
+      if (origin && !ALLOWED_ORIGINS.includes(origin)) {
+        done(false, 403, 'Forbidden');
+        return;
+      }
+      try {
+        const reqUrl = new URL(info.req.url ?? '/', 'http://localhost');
+        resolvePublicNetworkScope(reqUrl.searchParams.get('network'), info.req.headers);
+      } catch (error) {
+        if (!(error instanceof PublicAllScopeForbiddenError)) throw error;
+        done(false, 400, 'The all-network scope is not available');
+        return;
+      }
+      const peer = trustedClientIp(info.req);
+      const now = Date.now();
+      if (handshakeWindows.size >= 4_096 && !handshakeWindows.has(peer)) {
+        const oldest = handshakeWindows.keys().next().value as string | undefined;
+        if (oldest) handshakeWindows.delete(oldest);
+      }
+      let peerWindow = handshakeWindows.get(peer);
+      if (!peerWindow || now - peerWindow.startedAt >= 60_000) {
+        peerWindow = { startedAt: now, count: 0 };
+        handshakeWindows.set(peer, peerWindow);
+      }
+      peerWindow.count += 1;
+      if (
+        peerWindow.count > WS_HANDSHAKES_PER_IP_PER_MINUTE
+        || (connectionsByPeer.get(peer) ?? 0) >= WS_MAX_CONNECTIONS_PER_IP
+      ) {
+        done(false, 429, 'Too Many Requests', { 'Retry-After': '5' });
+        return;
+      }
+      const admission = websocketAdmissionDecision(
+        { activeConnections: wss.clients.size, pendingHandshakes },
+        {
+          maxConnections: WS_MAX_CONNECTIONS,
+          maxPendingHandshakes: WS_MAX_PENDING_HANDSHAKES,
+        },
+      );
+      if (!admission.allowed) {
+        done(false, admission.statusCode, admission.reason, { 'Retry-After': '5' });
+        return;
+      }
+      pendingHandshakes += 1;
+      const timer = setTimeout(() => releasePendingHandshake(info.req), 10_000);
+      timer.unref();
+      pendingHandshakeTimers.set(info.req.socket, timer);
+      done(true);
     },
   });
 
@@ -257,12 +370,21 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
   };
 
   wss.on('connection', async (ws: WebSocket, req: IncomingMessage) => {
+    releasePendingHandshake(req);
+    const peer = trustedClientIp(req);
+    connectionsByPeer.set(peer, (connectionsByPeer.get(peer) ?? 0) + 1);
+    ws.once('close', () => {
+      const remaining = Math.max(0, (connectionsByPeer.get(peer) ?? 1) - 1);
+      if (remaining === 0) connectionsByPeer.delete(peer);
+      else connectionsByPeer.set(peer, remaining);
+    });
+    missedPongs.set(ws, 0);
+    ws.on('pong', () => missedPongs.set(ws, 0));
     console.log('[ws] client connected, total:', wss.clients.size);
 
     // Derive scope from query params (?network=teesside&observer=<pubkey>)
     const reqUrl  = new URL(req.url ?? '/', 'http://localhost');
-    const requestedNetwork = resolveRequestNetwork(reqUrl.searchParams.get('network'), req.headers);
-    const network = requestedNetwork === 'all' ? undefined : requestedNetwork;
+    const network = resolvePublicNetworkScope(reqUrl.searchParams.get('network'), req.headers);
     const observer = normalizeObserver(reqUrl.searchParams.get('observer'));
     const scope: ClientScope = {
       network,
@@ -274,7 +396,9 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
     if (WS_INITIAL_STATE_ENABLED) {
       // Send initial state: served from cache so concurrent connects don't exhaust the DB pool.
       try {
-        const { nodes, packets, messages, viableLinks } = await fetchInitialState(network, observer);
+        const { nodes, packets, messages, viableLinks } = await initialStateGate.run(
+          () => fetchInitialState(network, observer),
+        );
         for (const node of nodes) {
           const nodeId = String((node as { node_id?: string }).node_id ?? '').toLowerCase();
           if (nodeId) scope.nodeIds.add(nodeId);
@@ -291,9 +415,17 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
           data: { nodes, packets, messages, viable_pairs: viablePairs, viable_links: viableLinks },
           ts: Date.now(),
         };
-        if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(initMsg));
+        const serialized = JSON.stringify(initMsg);
+        if (Buffer.byteLength(serialized) > WS_INITIAL_STATE_MAX_BYTES) {
+          ws.close(1013, 'initial state is temporarily unavailable');
+          return;
+        }
+        if (ws.readyState === WebSocket.OPEN) ws.send(serialized);
       } catch (err) {
         console.error('[ws] initial state error', (err as Error).message);
+        if (err instanceof BoundedTaskQueueFullError) {
+          ws.close(1013, 'initial state is busy');
+        }
       }
     } else {
       if (ws.readyState === WebSocket.OPEN) {
@@ -314,6 +446,24 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
     ws.on('error', (err) => {
       console.error('[ws] client error', err.message);
     });
+  });
+
+  const heartbeatTimer = setInterval(() => {
+    for (const client of wss.clients) {
+      if (client.readyState !== WebSocket.OPEN) continue;
+      const missed = (missedPongs.get(client) ?? 0) + 1;
+      if (missed > 2) {
+        client.terminate();
+        continue;
+      }
+      missedPongs.set(client, missed);
+      client.ping();
+    }
+  }, WS_HEARTBEAT_INTERVAL_MS);
+  heartbeatTimer.unref();
+  wss.on('close', () => {
+    clearInterval(heartbeatTimer);
+    clearInterval(privacyRefreshTimer);
   });
 
   const flushMessageQueue = () => {
@@ -351,6 +501,9 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
     } catch {
       return;
     }
+    parsed = publicPrivacy.filterMessage(parsed);
+    if (!parsed) return;
+    messageStr = JSON.stringify(parsed);
 
     if (LOG_WS_PACKETS && parsed?.type === 'packet') {
       console.log('[ws-sub] received packet:', (parsed.data as LivePacket)?.packetHash);
@@ -362,11 +515,32 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
       return;
     }
 
+    const isLiveFeedPacket = parsed?.type === 'packet'
+      && Number((parsed.data as { packetType?: number } | null)?.packetType) === 5;
+
     for (const client of wss.clients) {
       if (client.readyState !== WebSocket.OPEN) continue;
       const scope = clientScopes.get(client);
       if (parsed && scope && !shouldSendMessage(parsed, scope)) continue;
       if (parsed && scope) trackScopedNodes(parsed, scope);
+
+      // GRP chat packets power the live feed — send immediately so the UI
+      // never waits on the 16ms batch timer. Other events stay batched.
+      if (isLiveFeedPacket) {
+        if (client.bufferedAmount > WS_MAX_BUFFERED_BYTES) {
+          disconnectSlowClient(client, `socket buffer exceeded ${WS_MAX_BUFFERED_BYTES} bytes`);
+          continue;
+        }
+        // Flush any already-queued events first so ordering stays intact.
+        const existing = messageQueue.get(client);
+        if (existing && existing.messages.length > 0) {
+          client.send(existing.messages.join('\n') + '\n' + messageStr);
+          messageQueue.delete(client);
+        } else {
+          client.send(messageStr);
+        }
+        continue;
+      }
 
       // Queue messages briefly for batched fan-out, with per-client bounds so
       // a stalled browser cannot retain an unbounded live-event backlog.
@@ -385,19 +559,21 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
         messageQueue.set(client, { messages: [messageStr], byteLength: messageByteLength });
       }
     }
-    
-    scheduleFlush();
+
+    if (!isLiveFeedPacket) scheduleFlush();
   });
 
   return wss;
 }
 
 export function broadcastPacket(packet: LivePacket): void {
+  if (publicPrivacy.packetHasPrivateParticipant(packet)) return;
   const msg: WSMessage = { type: 'packet', data: packet, ts: Date.now() };
   void pub.publish(REDIS_CHANNEL, JSON.stringify(msg));
 }
 
 export function broadcastNodeUpdate(nodeId: string, meta?: { network?: string; observerId?: string }): void {
+  if (!publicPrivacy.isReady || publicPrivacy.hasNode(nodeId)) return;
   // Normalise IDs to lowercase once here so shouldSendMessage() never needs to allocate
   const msg: WSMessage = {
     type: 'node_update',
@@ -413,6 +589,8 @@ export function broadcastNodeUpdate(nodeId: string, meta?: { network?: string; o
 }
 
 export function broadcastNodeUpsert(node: Record<string, unknown>): void {
+  const candidate = { type: 'node_upsert', data: node, ts: Date.now() } as WSMessage;
+  if (!publicPrivacy.filterMessage(candidate)) return;
   // Normalise IDs to lowercase once here so shouldSendMessage() never needs to allocate
   const normalised: Record<string, unknown> = {
     ...node,

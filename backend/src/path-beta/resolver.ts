@@ -1,4 +1,9 @@
-import { query, touchNodesPredictedOnline } from '../db/index.js';
+import {
+  getPublicVisibilityGeneration,
+  query,
+  touchNodesPredictedOnline,
+} from '../db/index.js';
+import { privateNodePacketNetworkMatchSql } from '../privacy/networkScope.js';
 import {
   buildNodePathHashIndex,
   getNodesForPathHash,
@@ -46,6 +51,26 @@ import type { BetaResolveContext, LinkMetrics, MeshNode, MlPrefixScore, NodeCove
 const contextCache = new Map<string, BetaResolveContext>();
 const MAX_TRELLIS_CANDIDATES_PER_HOP = 24;
 const TRUSTED_PATH_MAX_KM = 150;
+const PATH_SINGLE_HISTORY_HOURS = Math.min(
+  24 * 365,
+  Math.max(1, Number(process.env['PATH_SINGLE_HISTORY_HOURS'] ?? 168) || 168),
+);
+const PATH_SINGLE_MAX_OBSERVERS = Math.min(
+  2_048,
+  Math.max(8, Number(process.env['PATH_SINGLE_MAX_OBSERVERS'] ?? 128) || 128),
+);
+const PATH_MULTI_HISTORY_WINDOW_HOURS = Math.min(
+  24 * 365,
+  Math.max(1, Number(process.env['PATH_MULTI_HISTORY_WINDOW_HOURS'] ?? 168) || 168),
+);
+const PATH_MULTI_MAX_SCAN_ROWS = Math.min(
+  10_000,
+  Math.max(32, Number(process.env['PATH_MULTI_MAX_SCAN_ROWS'] ?? 2_048) || 2_048),
+);
+const PATH_MULTI_MAX_OBSERVERS = Math.min(
+  512,
+  Math.max(1, Number(process.env['PATH_MULTI_MAX_OBSERVERS'] ?? 128) || 128),
+);
 const ML_PREFIX_SCORE_MIN = 0.80;
 const ML_PREFIX_DOMINANT_SCORE = 0.85;
 const DIRECT_ANCHOR_MAX_KM = 150;
@@ -1397,23 +1422,56 @@ async function buildLearningModel(network: string): Promise<PathLearningModel> {
   };
 }
 
-async function loadContext(network: string): Promise<BetaResolveContext> {
+export function canReusePathContext(input: {
+  cachedVisibilityGeneration: number;
+  currentVisibilityGeneration: number;
+  ageMs: number;
+  pinForBatch: boolean;
+}): boolean {
+  return (
+    input.cachedVisibilityGeneration === input.currentVisibilityGeneration
+    && (input.pinForBatch || input.ageMs < CONTEXT_TTL_MS)
+  );
+}
+
+async function loadContext(
+  network: string,
+  visibilityRetry = 0,
+  options?: { pinForBatch?: boolean; requiredVisibilityGeneration?: number },
+): Promise<BetaResolveContext> {
   const now = Date.now();
+  const visibilityGeneration = await getPublicVisibilityGeneration();
+  if (
+    options?.requiredVisibilityGeneration != null
+    && visibilityGeneration !== options.requiredVisibilityGeneration
+  ) {
+    throw new Error('PUBLIC_VISIBILITY_CHANGED_DURING_RESOLUTION');
+  }
   const cached = contextCache.get(network);
-  if (cached && now - cached.loadedAt < CONTEXT_TTL_MS) return cached;
+  if (
+    cached
+    && canReusePathContext({
+      cachedVisibilityGeneration: cached.visibilityGeneration,
+      currentVisibilityGeneration: visibilityGeneration,
+      ageMs: now - cached.loadedAt,
+      pinForBatch: options?.pinForBatch === true,
+    })
+  ) return cached;
 
   const [nodeRows, coverageRows, linkRows, mlScoreRows, learningModel, neighborAffinity] = await Promise.all([
     query<MeshNode>(
       `SELECT node_id, name, lat, lon, iata, role, elevation_m, last_seen::text AS last_seen
        FROM nodes
-       WHERE ($1 = 'all' OR network = $1)`,
+       WHERE ($1 = 'all' OR network = $1)
+         AND (name IS NULL OR name NOT LIKE '%🚫%')`,
       [network],
     ),
     query<NodeCoverage>(
       `SELECT nc.node_id, nc.radius_m
        FROM node_coverage nc
        JOIN nodes n ON n.node_id = nc.node_id
-       WHERE ($1 = 'all' OR n.network = $1)`,
+       WHERE ($1 = 'all' OR n.network = $1)
+         AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')`,
       [network],
     ),
     query<{
@@ -1432,6 +1490,8 @@ async function loadContext(network: string): Promise<BetaResolveContext> {
        JOIN nodes a ON a.node_id = nl.node_a_id
        JOIN nodes b ON b.node_id = nl.node_b_id
        WHERE (nl.itm_viable IS NOT NULL OR nl.force_viable = true)
+         AND (a.name IS NULL OR a.name NOT LIKE '%🚫%')
+         AND (b.name IS NULL OR b.name NOT LIKE '%🚫%')
          AND ($1 = 'all' OR (a.network = $1 AND b.network = $1))`,
       [network],
     ),
@@ -1523,6 +1583,7 @@ async function loadContext(network: string): Promise<BetaResolveContext> {
 
   const context: BetaResolveContext = {
     loadedAt: now,
+    visibilityGeneration,
     nodesById,
     repeaterNodes,
     repeaterPathHashIndex,
@@ -1538,6 +1599,13 @@ async function loadContext(network: string): Promise<BetaResolveContext> {
     mlPrefixScores,
     learningModel,
   };
+  const confirmedGeneration = await getPublicVisibilityGeneration();
+  if (confirmedGeneration !== visibilityGeneration) {
+    if (visibilityRetry >= 1) {
+      throw new Error('PUBLIC_VISIBILITY_CHANGED_DURING_CONTEXT_LOAD');
+    }
+    return loadContext(network, visibilityRetry + 1, options);
+  }
   contextCache.set(network, context);
   return context;
 }
@@ -1664,6 +1732,10 @@ export type PathResolutionOptions = {
   touchPredictedOnline?: boolean;
   /** Bulk rebuilds emit their own summary and should not log each packet. */
   log?: boolean;
+  /** Reuse one generation-bound topology context for a long atomic batch. */
+  pinContextForBatch?: boolean;
+  /** Abort instead of mixing public visibility generations within a batch. */
+  requiredVisibilityGeneration?: number;
 };
 
 function shouldTouchPredictedOnline(options?: PathResolutionOptions): boolean {
@@ -1686,13 +1758,26 @@ export async function resolveBetaPathForPacketHash(
   stickyAgeFraction?: number,
   options?: PathResolutionOptions,
 ): Promise<BetaResolvedPayload | null> {
-  const [packetResult, observerHopResult] = await Promise.all([
-    query<PathPacket>(
+  const packetResult = await query<PathPacket>(
       `SELECT packet_hash, rx_node_id, src_node_id, packet_type, hop_count, path_hashes, path_hash_size_bytes
        FROM packets
        WHERE packet_hash = $1
          AND ($2 = 'all' OR network = $2)
          ${observer ? 'AND rx_node_id = $3' : ''}
+         AND NOT EXISTS (
+           SELECT 1 FROM nodes private_node
+           WHERE private_node.name LIKE '%🚫%'
+             AND ${privateNodePacketNetworkMatchSql('private_node', 'packets')}
+             AND (
+               private_node.node_id IN (packets.rx_node_id, packets.src_node_id)
+               OR EXISTS (
+                 SELECT 1
+                 FROM unnest(COALESCE(packets.path_hashes, ARRAY[]::text[])) AS path_hash
+                 WHERE packets.path_hash_size_bytes BETWEEN 1 AND 3
+                   AND UPPER(private_node.node_id) LIKE UPPER(path_hash) || '%'
+               )
+             )
+         )
        ORDER BY COALESCE(cardinality(path_hashes), 0) DESC,
                 CASE WHEN path_hash_size_bytes IS NOT NULL THEN 1 ELSE 0 END DESC,
                 CASE WHEN src_node_id IS NOT NULL THEN 1 ELSE 0 END DESC,
@@ -1700,19 +1785,44 @@ export async function resolveBetaPathForPacketHash(
                 time ASC
        LIMIT 32`,
       observer ? [packetHash, network, observer] : [packetHash, network],
-    ),
-    query<{ rx_node_id: string; hop_count: number | null }>(
-      `SELECT rx_node_id, MIN(hop_count) AS hop_count
-       FROM packets
-       WHERE packet_hash = $1
-         AND ($2 = 'all' OR network = $2)
-         AND rx_node_id IS NOT NULL
-       GROUP BY rx_node_id`,
-      [packetHash, network],
-    ),
-  ]);
+    );
+  // A syntactically valid but unrelated observer must not trigger the
+  // observer-independent retained-history aggregate.
+  if (packetResult.rows.length === 0) return null;
+  // Observer-scoped variants deliberately skip observer-independent history:
+  // it is only useful as cross-observer hinting, and repeating it for every
+  // selected receiver recreates the public fan-out sink.
+  const observerHopResult = observer
+    ? { rows: [] as Array<{ rx_node_id: string; hop_count: number | null }> }
+    : await query<{ rx_node_id: string; hop_count: number | null }>(
+      `SELECT rx_node_id, hop_count
+         FROM (
+           SELECT rx_node_id, MIN(hop_count) AS hop_count
+             FROM packets
+            WHERE packet_hash = $1
+              AND ($2 = 'all' OR network = $2)
+              AND time >= NOW() - ($3::int * INTERVAL '1 hour')
+              AND rx_node_id IS NOT NULL
+              AND NOT EXISTS (
+                SELECT 1 FROM nodes private_node
+                 WHERE private_node.name LIKE '%🚫%'
+                   AND ${privateNodePacketNetworkMatchSql('private_node', 'packets')}
+                   AND private_node.node_id IN (packets.rx_node_id, packets.src_node_id)
+              )
+            GROUP BY rx_node_id
+            ORDER BY rx_node_id
+            LIMIT $4
+         ) bounded_observers`,
+      [packetHash, network, PATH_SINGLE_HISTORY_HOURS, PATH_SINGLE_MAX_OBSERVERS + 1],
+    );
+  if (observerHopResult.rows.length > PATH_SINGLE_MAX_OBSERVERS) {
+    throw new Error('PATH_HISTORY_LIMIT');
+  }
 
-  const context = await loadContext(network);
+  const context = await loadContext(network, 0, {
+    pinForBatch: options?.pinContextForBatch,
+    requiredVisibilityGeneration: options?.requiredVisibilityGeneration,
+  });
   const preparedByObserver = new Map<string, PreparedPacketObservation>();
   for (const row of packetResult.rows) {
     const key = row.rx_node_id ?? '__no_observer__';
@@ -2193,18 +2303,38 @@ export async function resolveMultiObserverBetaPath(
      FROM packets
      WHERE packet_hash = $1
        AND ($2 = 'all' OR network = $2)
+       AND time >= NOW() - ($3::int * INTERVAL '1 hour')
        AND rx_node_id IS NOT NULL
+       AND NOT EXISTS (
+         SELECT 1 FROM nodes private_node
+         WHERE private_node.name LIKE '%🚫%'
+           AND ${privateNodePacketNetworkMatchSql('private_node', 'packets')}
+           AND (
+             private_node.node_id IN (packets.rx_node_id, packets.src_node_id)
+             OR EXISTS (
+               SELECT 1
+               FROM unnest(COALESCE(packets.path_hashes, ARRAY[]::text[])) AS path_hash
+               WHERE packets.path_hash_size_bytes BETWEEN 1 AND 3
+                 AND UPPER(private_node.node_id) LIKE UPPER(path_hash) || '%'
+             )
+           )
+       )
      ORDER BY COALESCE(cardinality(path_hashes), 0) DESC,
               CASE WHEN path_hash_size_bytes IS NOT NULL THEN 1 ELSE 0 END DESC,
               CASE WHEN src_node_id IS NOT NULL THEN 1 ELSE 0 END DESC,
               hop_count ASC NULLS LAST,
-              time ASC`,
-    [packetHash, network],
+              time ASC
+     LIMIT $4`,
+    [packetHash, network, PATH_MULTI_HISTORY_WINDOW_HOURS, PATH_MULTI_MAX_SCAN_ROWS + 1],
   );
 
   if (allResult.rows.length < 1) return null;
+  if (allResult.rows.length > PATH_MULTI_MAX_SCAN_ROWS) throw new Error('PATH_HISTORY_LIMIT');
 
-  const context = await loadContext(network);
+  const context = await loadContext(network, 0, {
+    pinForBatch: options?.pinContextForBatch,
+    requiredVisibilityGeneration: options?.requiredVisibilityGeneration,
+  });
 
   // 2. Group by observer, pick canonical row per observer
   const byObserver = new Map<string, PreparedPacketObservation>();
@@ -2218,6 +2348,7 @@ export async function resolveMultiObserverBetaPath(
       byObserver.set(row.rx_node_id, prepared);
     }
   }
+  if (byObserver.size > PATH_MULTI_MAX_OBSERVERS) throw new Error('PATH_HISTORY_LIMIT');
 
   // Single observer — delegate to existing per-observer resolver
   if (byObserver.size <= 1) {

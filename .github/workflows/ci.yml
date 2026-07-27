@@ -64,6 +64,8 @@ jobs:
           POSTGRES_PASSWORD: ci-postgres-password
           REDIS_PASSWORD: ci-redis-password
           JWT_SECRET: ci-jwt-secret
+          OPERATOR_SITE_TOKEN: ci-operator-site-token-0123456789abcdef0123456789abcdef
+          MQTT_PASSWORD: ci-mqtt-password
           ANUBIS_ED25519_PRIVATE_KEY_HEX: '0000000000000000000000000000000000000000000000000000000000000001'
           GRAFANA_ADMIN_PASSWORD: ci-grafana-password
         run: docker compose config --quiet

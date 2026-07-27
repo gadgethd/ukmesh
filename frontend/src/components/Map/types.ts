@@ -77,7 +77,9 @@ export interface MapLibreMapProps {
   maxHexClashHops: number;
   viewshedEnabled: boolean;
   initialView?: { lat: number; lon: number; zoom: number } | null;
-  onNodeSelect?: (nodeId: string) => void;
+  /** Currently selected node (drives the docked node panel + map highlight). */
+  selectedNodeId?: string | null;
+  onNodeSelect?: (nodeId: string | null) => void;
   onMapReady?: (map: maplibregl.Map) => void;
 }
 

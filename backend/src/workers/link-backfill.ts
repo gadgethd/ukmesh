@@ -13,8 +13,11 @@ async function main() {
   }
 
   console.log('[backfill] node_links empty, starting historical link backfill');
-  await backfillHistoricalLinks((rxNodeId, srcNodeId, path, hopCount, pathHashSizeBytes) => {
-    queueLinkJob(rxNodeId, srcNodeId, path, hopCount, pathHashSizeBytes);
+  await backfillHistoricalLinks(async (packetHash, rxNodeId, srcNodeId, path, hopCount, pathHashSizeBytes) => {
+    const admission = await queueLinkJob(packetHash, rxNodeId, srcNodeId, path, hopCount, pathHashSizeBytes);
+    if (admission && !['accepted', 'coalesced', 'duplicate'].includes(admission.status)) {
+      throw new Error(`LINK_BACKFILL_ADMISSION_${admission.status.toUpperCase()}`);
+    }
   });
 }
 

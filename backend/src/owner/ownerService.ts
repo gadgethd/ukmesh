@@ -59,11 +59,8 @@ export function createOwnerService(deps: OwnerServiceDeps) {
   const ownerLastHopCache = new Map<string, OwnerLastHopCacheEntry>();
   const ownerDashboardCache = new Map<string, { ts: number; dashboard: OwnerDashboard; nodeIds: string[] }>();
 
-  // Stable per-session cache key: prefer the MQTT username (survives node changes)
-  // and fall back to the sorted node-id set for legacy sessions without a username.
-  function dashboardCacheKey(mqttUsername: string | undefined, nodeIds: string[]): string {
-    const username = mqttUsername?.trim();
-    return username ? `u:${username}` : `n:${[...nodeIds].sort().join(',')}`;
+  function dashboardCacheKey(mqttUsername: string): string {
+    return `u:${mqttUsername.trim()}`;
   }
 
   // Best-effort background warm of the per-node live cache after login so the first
@@ -146,7 +143,7 @@ export function createOwnerService(deps: OwnerServiceDeps) {
 
     // Seed the session-dashboard cache so the first /owner/session poll (15s later)
     // is a hit, and warm the live cache so the first node switch is instant.
-    ownerDashboardCache.set(dashboardCacheKey(mqttUsername, mappedNodeIds), {
+    ownerDashboardCache.set(dashboardCacheKey(mqttUsername), {
       ts: Date.now(),
       dashboard,
       nodeIds: mappedNodeIds,
@@ -157,22 +154,23 @@ export function createOwnerService(deps: OwnerServiceDeps) {
   }
 
   async function getSessionDashboard(session: OwnerSession): Promise<{ dashboard: OwnerDashboard; nodeIds: string[] }> {
-    const cacheKey = dashboardCacheKey(session.mqttUsername, session.nodeIds);
+    const cacheKey = dashboardCacheKey(session.mqttUsername);
+    const freshNodeIds = await resolveOwnerNodeIds(session.mqttUsername);
+    if (freshNodeIds.length < 1) throw new Error('NO_ACTIVE_OWNER_NODE');
     const cached = ownerDashboardCache.get(cacheKey);
-    if (cached && Date.now() - cached.ts < ownerDashboardCacheTtlMs) {
+    if (cached
+      && Date.now() - cached.ts < ownerDashboardCacheTtlMs
+      && cached.nodeIds.length === freshNodeIds.length
+      && freshNodeIds.every((nodeId) => cached.nodeIds.includes(nodeId))) {
       return { dashboard: cached.dashboard, nodeIds: cached.nodeIds };
     }
 
-    const freshNodeIds = session.mqttUsername
-      ? await resolveOwnerNodeIds(session.mqttUsername)
-      : [];
-    const nodeIds = freshNodeIds.length > 0 ? freshNodeIds : session.nodeIds;
-    const dashboard = await buildOwnerDashboard(nodeIds);
+    const dashboard = await buildOwnerDashboard(freshNodeIds);
     if (dashboard.totals.ownedNodes < 1) {
       throw new Error('NO_ACTIVE_OWNER_NODE');
     }
-    ownerDashboardCache.set(cacheKey, { ts: Date.now(), dashboard, nodeIds });
-    return { dashboard, nodeIds };
+    ownerDashboardCache.set(cacheKey, { ts: Date.now(), dashboard, nodeIds: freshNodeIds });
+    return { dashboard, nodeIds: freshNodeIds };
   }
 
   async function getOwnerLiveData(ownedNodeIds: string[], requestedNodeId?: string): Promise<unknown> {

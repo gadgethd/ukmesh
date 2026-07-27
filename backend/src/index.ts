@@ -5,7 +5,7 @@ import compression from 'compression';
 import cors from 'cors';
 import { rateLimit } from 'express-rate-limit';
 import { initDb, query } from './db/index.js';
-import { initOwnerAuthDb } from './db/ownerAuth.js';
+import { getOwnerAclReadiness, initOwnerAuthDb } from './db/ownerAuth.js';
 import { getMqttRuntimeStatus, startMqttClient, onPacket, onNodeSeen, onNodeUpsert } from './mqtt/client.js';
 import { startMqttConnectionMonitor } from './mqtt/connectionMonitor.js';
 import { initWebSocketServer, broadcastPacket, broadcastNodeUpdate, broadcastNodeUpsert } from './ws/server.js';
@@ -13,6 +13,9 @@ import apiRoutes from './api/routes.js';
 import { initSpamMessageAnalyzer } from './spam/analyzer.js';
 import { isViewshedEligibleCoordinate, queueViewshedJob, queueLinkJob } from './queue/publisher.js';
 import { createBackendSiteRoutes } from './backend-site/routes.js';
+import { isTrustedProxyPeer } from './http/trustedProxy.js';
+import { startOwnerAuthorizationReconciler } from './owner/ownerAclReconciler.js';
+import { getAnalysisWorkloadStates } from './analysis/runState.js';
 
 const ALLOWED_ORIGINS = (process.env['ALLOWED_ORIGINS'] ?? '')
   .split(',')
@@ -40,6 +43,7 @@ async function main() {
   // 1. Initialise DB schema + retention policy
   await initDb();
   await initOwnerAuthDb();
+  await startOwnerAuthorizationReconciler();
 
   // Queue viewshed jobs for any node with a position but no coverage yet
   // (catches nodes that existed before the worker was added)
@@ -70,7 +74,7 @@ async function main() {
     console.log('[app] startup viewshed backfill disabled');
   }
 
-  // 2. Start MQTT connection monitor (populates mqtt_node_logins for owner auto-link)
+  // 2. Start the audit-only MQTT connection monitor.
   if (MQTT_INGEST_ENABLED) {
     startMqttConnectionMonitor();
   } else {
@@ -81,7 +85,18 @@ async function main() {
   onPacket((packet) => {
     broadcastPacket(packet);
     if (packet.path?.length && packet.rxNodeId) {
-      queueLinkJob(packet.rxNodeId, packet.srcNodeId, packet.path, packet.hopCount, packet.pathHashSizeBytes);
+      void queueLinkJob(
+        packet.packetHash,
+        packet.rxNodeId,
+        packet.srcNodeId,
+        packet.path,
+        packet.hopCount,
+        packet.pathHashSizeBytes,
+      ).then((admission) => {
+        if (admission && ['full', 'oversized', 'worker_unavailable'].includes(admission.status)) {
+          console.warn('[link-queue] live observation not admitted', admission.status, packet.packetHash);
+        }
+      }).catch((error: Error) => console.error('[link-queue] live admission failed', error.message));
     }
   });
   onNodeSeen((nodeId, meta) => broadcastNodeUpdate(nodeId, meta));
@@ -98,9 +113,9 @@ async function main() {
   // 3. Express app
   const app = express();
 
-  // Trust the private Docker proxy chain so rate limiting keys on the real
-  // public client IP from X-Forwarded-For, not a shared nginx/anubis hop.
-  app.set('trust proxy', ['loopback', 'linklocal', 'uniquelocal']);
+  // Only the fixed Compose Nginx peers may supply client identity. Broad
+  // private-range trust lets a direct container or host caller spoof quotas.
+  app.set('trust proxy', (ip: string) => isTrustedProxyPeer(ip));
 
   // Gzip compression for all responses — critical for large payloads like /api/coverage (~26 MB)
   app.use(compression());
@@ -148,14 +163,34 @@ async function main() {
     const checks = {
       database: false,
       mqtt: MQTT_INGEST_ENABLED ? getMqttRuntimeStatus() : { state: 'disabled', changedAt: new Date().toISOString() },
+      ownerAuthorization: {
+        mode: String(process.env['OWNER_AUTHORIZATION_MODE'] ?? 'shadow'),
+        aclMode: String(process.env['OWNER_ACL_MODE'] ?? 'shadow'),
+        desiredGeneration: null as string | null,
+        renderedGeneration: null as string | null,
+        appliedGeneration: null as string | null,
+        lastVerifiedAt: null as string | null,
+        lastError: null as string | null,
+      },
+      analysis: [] as Awaited<ReturnType<typeof getAnalysisWorkloadStates>>,
     };
     try {
       await query('SELECT 1');
       checks.database = true;
+      Object.assign(checks.ownerAuthorization, await getOwnerAclReadiness());
+      checks.analysis = await getAnalysisWorkloadStates();
     } catch (err) {
       console.error('[readyz] database check failed:', (err as Error).message);
     }
-    const ready = checks.database && (!MQTT_INGEST_ENABLED || checks.mqtt.state === 'connected');
+    const ownerAclReady = checks.ownerAuthorization.aclMode !== 'apply'
+      || (
+        checks.ownerAuthorization.desiredGeneration !== null
+        && checks.ownerAuthorization.desiredGeneration === checks.ownerAuthorization.appliedGeneration
+        && checks.ownerAuthorization.lastError === null
+      );
+    const ready = checks.database
+      && ownerAclReady
+      && (!MQTT_INGEST_ENABLED || checks.mqtt.state === 'connected');
     res.status(ready ? 200 : 503).json({ status: ready ? 'ready' : 'degraded', checks, ts: Date.now() });
   });
 

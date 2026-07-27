@@ -1,6 +1,10 @@
 import { Router, type Request, type Response } from 'express';
 import { isIP } from 'node:net';
 import type { QueryResultRow } from 'pg';
+import {
+  operatorTokenIsConfigured,
+  verifyOperatorToken,
+} from '../security/operatorAuth.js';
 
 type QueryFn = <T extends QueryResultRow = QueryResultRow>(
   text: string,
@@ -63,9 +67,27 @@ function requireBackendSiteLocalOnly(req: Request, res: Response): boolean {
   return false;
 }
 
+function requireOperatorAuth(req: Request, res: Response): boolean {
+  const expected = process.env['OPERATOR_SITE_TOKEN'];
+  if (!operatorTokenIsConfigured(expected)) {
+    res.status(503).type('text/plain').send('Operator site is not configured');
+    return false;
+  }
+  const authorization = String(req.headers.authorization ?? '');
+  const bearer = authorization.startsWith('Bearer ') ? authorization.slice(7).trim() : '';
+  const provided = String(req.headers['x-operator-token'] ?? bearer);
+  if (!verifyOperatorToken(expected, provided)) {
+    res.setHeader('WWW-Authenticate', 'Bearer realm="meshcore-operator"');
+    res.status(401).type('text/plain').send('Operator authentication required');
+    return false;
+  }
+  return true;
+}
+
 function localOnly(handler: (req: Request, res: Response) => void | Promise<void>) {
   return async (req: Request, res: Response) => {
     if (!requireBackendSiteLocalOnly(req, res)) return;
+    if (!requireOperatorAuth(req, res)) return;
     try {
       await handler(req, res);
     } catch (err) {

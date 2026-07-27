@@ -25,6 +25,32 @@ interface OpenCluster {
   lastSeen: number;
   /** Cached representative member used for fast comparison. */
   representative: MessageRecord;
+  normalizedCounts: Map<string, number>;
+  representativeCount: number;
+  signatureKeys: Set<string>;
+  signalKeys: Set<string>;
+}
+
+export class SpamAnalysisBudgetExceededError extends Error {
+  constructor() {
+    super('SPAM_ANALYSIS_BUDGET_EXCEEDED');
+    this.name = 'SpamAnalysisBudgetExceededError';
+  }
+}
+
+function assertWithinBudget(deadline: number): void {
+  if (Date.now() > deadline) throw new SpamAnalysisBudgetExceededError();
+}
+
+function exactSignature(record: MessageRecord): string {
+  return `${record.network}\u0000${record.norm.normalized}`;
+}
+
+function strongSignalKeys(record: MessageRecord): Set<string> {
+  const keys = new Set<string>();
+  for (const url of record.norm.urls) keys.add(`${record.network}\u0000url:${url}`);
+  if (record.norm.hasSpamMarker) keys.add(`${record.network}\u0000marker:ukmesh-spam`);
+  return keys;
 }
 
 function combinedJoinScore(
@@ -295,27 +321,81 @@ function finalizeIncident(members: MessageRecord[], cfg: SpamMessageConfig): Inc
  * forms a genuine burst.
  */
 export function clusterMessages(records: MessageRecord[], cfg: SpamMessageConfig): Incident[] {
+  const deadline = Date.now() + cfg.analysisBudgetMs;
   const excluded = new Set(cfg.excludeChannels.map((c) => c.toLowerCase()));
   const eligible =
     excluded.size > 0
       ? records.filter((r) => !excluded.has((r.channelLabel ?? '').toLowerCase()))
       : records;
-  const sorted = [...eligible].sort((a, b) => a.observedAt - b.observedAt);
+  const sorted = [...eligible]
+    .slice(0, cfg.maxMessagesPerRun)
+    .sort((a, b) => a.observedAt - b.observedAt);
   const open: OpenCluster[] = [];
   const closed: OpenCluster[] = [];
+  const exactIndex = new Map<string, OpenCluster>();
+  const signalIndex = new Map<string, Set<OpenCluster>>();
+
+  const addSignals = (cluster: OpenCluster, keys: Set<string>) => {
+    for (const key of keys) {
+      cluster.signalKeys.add(key);
+      const indexed = signalIndex.get(key) ?? new Set<OpenCluster>();
+      indexed.add(cluster);
+      signalIndex.set(key, indexed);
+    }
+  };
+  const removeSignals = (cluster: OpenCluster) => {
+    for (const key of cluster.signalKeys) {
+      const indexed = signalIndex.get(key);
+      indexed?.delete(cluster);
+      if (indexed?.size === 0) signalIndex.delete(key);
+    }
+  };
 
   for (const rec of sorted) {
+    assertWithinBudget(deadline);
     // Retire clusters whose last activity is older than the join window.
     for (let i = open.length - 1; i >= 0; i--) {
       if (rec.observedAt - open[i]!.lastSeen > cfg.joinWindowMs) {
-        closed.push(open[i]!);
+        const retired = open[i]!;
+        closed.push(retired);
+        for (const signature of retired.signatureKeys) {
+          if (exactIndex.get(signature) === retired) exactIndex.delete(signature);
+        }
+        removeSignals(retired);
         open.splice(i, 1);
       }
     }
 
     let bestIdx = -1;
     let bestScore = 0;
-    for (let i = 0; i < open.length; i++) {
+    const exact = exactIndex.get(exactSignature(rec));
+    if (exact) {
+      bestIdx = open.indexOf(exact);
+      bestScore = bestIdx >= 0 ? 1 : 0;
+    }
+    if (bestIdx < 0) {
+      const signalCandidates = new Set<OpenCluster>();
+      for (const key of strongSignalKeys(rec)) {
+        for (const cluster of signalIndex.get(key) ?? []) signalCandidates.add(cluster);
+      }
+      for (const cluster of signalCandidates) {
+        const index = open.indexOf(cluster);
+        if (index < 0 || cluster.representative.network !== rec.network) continue;
+        const score = combinedJoinScore(rec, cluster, cfg);
+        if (score > bestScore) {
+          bestScore = score;
+          bestIdx = index;
+        }
+      }
+    }
+    const candidateIndexes = open
+      .map((cluster, index) => ({ cluster, index }))
+      .sort((a, b) => b.cluster.lastSeen - a.cluster.lastSeen)
+      .slice(0, cfg.maxCandidateClusters)
+      .map(({ index }) => index);
+    for (let offset = 0; bestIdx < 0 && offset < candidateIndexes.length; offset += 1) {
+      if (offset % 8 === 0) assertWithinBudget(deadline);
+      const i = candidateIndexes[offset]!;
       const cl = open[i]!;
       if (cl.representative.network !== rec.network) continue;
       const s = combinedJoinScore(rec, cl, cfg);
@@ -329,16 +409,39 @@ export function clusterMessages(records: MessageRecord[], cfg: SpamMessageConfig
       const cl = open[bestIdx]!;
       cl.members.push(rec);
       cl.lastSeen = rec.observedAt;
-      // Keep representative as the modal message so the key stays stable.
-      cl.representative = modalNormalized(cl.members);
+      const normalized = rec.norm.normalized;
+      const count = (cl.normalizedCounts.get(normalized) ?? 0) + 1;
+      cl.normalizedCounts.set(normalized, count);
+      cl.signatureKeys.add(exactSignature(rec));
+      exactIndex.set(exactSignature(rec), cl);
+      addSignals(cl, strongSignalKeys(rec));
+      if (
+        count > cl.representativeCount
+        || (count === cl.representativeCount && rec.observedAt < cl.representative.observedAt)
+      ) {
+        cl.representative = rec;
+        cl.representativeCount = count;
+      }
     } else {
-      open.push({ members: [rec], lastSeen: rec.observedAt, representative: rec });
+      const cluster: OpenCluster = {
+        members: [rec],
+        lastSeen: rec.observedAt,
+        representative: rec,
+        normalizedCounts: new Map([[rec.norm.normalized, 1]]),
+        representativeCount: 1,
+        signatureKeys: new Set([exactSignature(rec)]),
+        signalKeys: new Set(),
+      };
+      open.push(cluster);
+      exactIndex.set(exactSignature(rec), cluster);
+      addSignals(cluster, strongSignalKeys(rec));
     }
   }
 
   const all = [...closed, ...open];
   const incidents: Incident[] = [];
   for (const cl of all) {
+    assertWithinBudget(deadline);
     if (cl.members.length < cfg.minTransmissions) continue;
     const sortedMembers = [...cl.members].sort((a, b) => a.observedAt - b.observedAt);
     if (maxBurstDensity(sortedMembers, cfg.burstWindowMs) < cfg.minBurst) continue;
@@ -347,7 +450,7 @@ export function clusterMessages(records: MessageRecord[], cfg: SpamMessageConfig
   }
 
   incidents.sort((a, b) => b.lastSeen - a.lastSeen);
-  return incidents;
+  return incidents.slice(0, cfg.maxIncidentsPerRun);
 }
 
 /** Whether an incident is still ongoing given the current time. */

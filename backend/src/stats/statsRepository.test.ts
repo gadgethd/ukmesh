@@ -50,3 +50,80 @@ test('24-hour chart aggregates use the complete scoped window and true signal me
   assert.doesNotMatch(signalSql, /AVG\(p\.snr\)::text\s+AS median_snr/i);
   assert.match(sqlFor('WITH prefix_counts'), /LIMIT 10/i);
 });
+
+test('map summary uses the same coordinate, role, and 14-day freshness rules as the map', async () => {
+  const calls: Array<{ text: string; params?: unknown[] }> = [];
+  const query = async <T extends QueryResultRow = QueryResultRow>(
+    text: string,
+    params?: unknown[],
+  ): Promise<{ rows: T[] }> => {
+    calls.push({ text, params });
+    return { rows: [] };
+  };
+  const repository = createStatsRepository({
+    query,
+    networkFilters: () => ({
+      params: ['ukmesh'],
+      packets: 'AND network = $1',
+      packetsAlias: (alias: string) => `AND ${alias}.network = $1`,
+      nodes: 'AND network = $1',
+      nodesAlias: (alias: string) => `AND ${alias}.network = $1`,
+    }),
+  });
+
+  await repository.fetchStatsSummary('ukmesh', undefined);
+
+  const staleSql = calls.find((call) =>
+    call.text.includes("<= NOW() - INTERVAL '14 days'"),
+  )?.text;
+  const mapSql = calls.find((call) =>
+    call.text.includes("GREATEST(last_seen, last_path_evidence_at) > NOW() - INTERVAL '28 days'")
+    && !call.text.includes("<= NOW() - INTERVAL '14 days'"),
+  )?.text;
+  assert.ok(staleSql, 'expected stale-node count query');
+  assert.ok(mapSql, 'expected on-map node count query');
+
+  for (const sql of [staleSql, mapSql]) {
+    assert.match(sql, /lat BETWEEN -90 AND 90/);
+    assert.match(sql, /lon BETWEEN -180 AND 180/);
+    assert.match(sql, /NOT \(ABS\(lat\) < 5 AND ABS\(lon\) < 5\)/);
+    assert.match(sql, /\(role IS NULL OR role NOT IN \(1, 3\)\)/);
+    assert.match(sql, /GREATEST\(last_seen, last_path_evidence_at\)/);
+    assert.match(sql, /name NOT LIKE/);
+    assert.doesNotMatch(sql, /INTERVAL '7 days'/);
+  }
+
+  assert.match(staleSql, />\s+NOW\(\) - INTERVAL '28 days'/);
+});
+
+test('statistics repository bounds concurrent database queries', async () => {
+  const previous = process.env['STATS_DB_QUERY_CONCURRENCY'];
+  process.env['STATS_DB_QUERY_CONCURRENCY'] = '2';
+  let active = 0;
+  let maxActive = 0;
+  try {
+    const query = async <T extends QueryResultRow = QueryResultRow>(): Promise<{ rows: T[] }> => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((resolve) => setImmediate(resolve));
+      active -= 1;
+      return { rows: [] };
+    };
+    const repository = createStatsRepository({
+      query,
+      networkFilters: () => ({
+        params: ['ukmesh'],
+        packets: 'AND network = $1',
+        packetsAlias: (alias: string) => `AND ${alias}.network = $1`,
+        nodes: 'AND network = $1',
+        nodesAlias: (alias: string) => `AND ${alias}.network = $1`,
+      }),
+    });
+
+    await repository.fetchStatsSummary('ukmesh', undefined);
+    assert.equal(maxActive, 2);
+  } finally {
+    if (previous === undefined) delete process.env['STATS_DB_QUERY_CONCURRENCY'];
+    else process.env['STATS_DB_QUERY_CONCURRENCY'] = previous;
+  }
+});

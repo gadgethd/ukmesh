@@ -1,7 +1,21 @@
 import type { IncomingHttpHeaders } from 'node:http';
 
-type NetworkScope = 'ukmesh' | 'test' | 'all';
+export type NetworkScope = 'ukmesh' | 'test' | 'all';
 type ForcedScope = Exclude<NetworkScope, 'all'>;
+export type PublicNetworkScope = Exclude<NetworkScope, 'all'>;
+
+export type VisibilityScope = Readonly<{
+  access: 'public';
+  network: PublicNetworkScope;
+  observer?: string;
+}>;
+
+export class PublicAllScopeForbiddenError extends Error {
+  constructor() {
+    super('PUBLIC_ALL_NETWORK_SCOPE_FORBIDDEN');
+    this.name = 'PublicAllScopeForbiddenError';
+  }
+}
 
 export function normalizeNetworkValue(value: unknown): NetworkScope | undefined {
   const normalized = String(value ?? '').trim().toLowerCase();
@@ -29,4 +43,27 @@ export function resolveRequestNetwork(
   if (forced) return forced;
   const normalized = normalizeNetworkValue(requested);
   return normalized ?? fallback;
+}
+
+export function resolvePublicNetworkScope(
+  requested: unknown,
+  headers: IncomingHttpHeaders,
+  fallback: PublicNetworkScope = 'ukmesh',
+): PublicNetworkScope {
+  const scope = resolveRequestNetwork(requested, headers, fallback) ?? fallback;
+  if (scope === 'all') throw new PublicAllScopeForbiddenError();
+  return scope;
+}
+
+export function resolvePublicVisibilityScope(
+  requested: unknown,
+  headers: IncomingHttpHeaders,
+  observer?: string,
+): VisibilityScope {
+  const network = resolvePublicNetworkScope(requested, headers);
+  return Object.freeze({
+    access: 'public',
+    network,
+    ...(observer ? { observer } : {}),
+  });
 }

@@ -218,3 +218,53 @@ test('incidentStatus reflects ongoing vs cooled-down incidents', () => {
   assert.equal(incidentStatus(now - 5 * MIN, now, conf), 'active');
   assert.equal(incidentStatus(now - 60 * MIN, now, conf), 'closed');
 });
+
+test('exact repeated spam cannot be evicted by newer unrelated candidate clusters', () => {
+  const target = 'persistent promotional flood visit target.example.com now';
+  const records: MessageRecord[] = [rec(target, 'TargetBot', 0)];
+  for (let minute = 1; minute <= 20; minute += 1) {
+    records.push(rec(`unrelated decoy message number ${minute}`, `Decoy${minute}`, minute));
+  }
+  records.push(rec(target, 'TargetBot', 21), rec(target, 'TargetBot', 22));
+  const incidents = clusterMessages(records, cfg({
+    maxCandidateClusters: 1,
+    joinWindowMs: 60 * MIN,
+    burstWindowMs: 60 * MIN,
+  }));
+  const targetIncident = incidents.find((incident) =>
+    incident.members.some((member) => member.text === target));
+  assert.ok(targetIncident);
+  assert.equal(targetIncident.messageCount, 3);
+});
+
+test('canonical URL index prevents interleaved decoys evicting variant spam', () => {
+  const records: MessageRecord[] = [];
+  let minute = 0;
+  for (let targetIndex = 0; targetIndex < 8; targetIndex += 1) {
+    records.push(rec(
+      `limited offer code ${targetIndex} visit https://spam.example/deal`,
+      'TargetBot',
+      minute++,
+    ));
+    if (targetIndex === 7) continue;
+    for (let decoyIndex = 0; decoyIndex < 65; decoyIndex += 1) {
+      records.push(rec(
+        `unrelated digest ${targetIndex}-${decoyIndex} weather radio update`,
+        `Decoy${targetIndex}-${decoyIndex}`,
+        minute++,
+      ));
+    }
+  }
+
+  const incidents = clusterMessages(records, cfg({
+    minTransmissions: 8,
+    minBurst: 8,
+    maxCandidateClusters: 64,
+    joinWindowMs: 1_000 * MIN,
+    burstWindowMs: 1_000 * MIN,
+  }));
+  const target = incidents.find((incident) => incident.members.some((member) =>
+    member.norm.urls.includes('spam.example/deal')));
+  assert.ok(target);
+  assert.equal(target.messageCount, 8);
+});
