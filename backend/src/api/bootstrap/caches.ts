@@ -1,8 +1,14 @@
 import { BoundedTtlMap } from '../../cache/boundedTtlMap.js';
 
-export const STATS_CACHE_TTL_MS = 60_000;
+// Freshness/warm cadence for the dashboard stat aggregates. These queries scan
+// the packets hypertable through the public privacy filter and take tens of
+// seconds; a 60s cadence meant the ~80s recompute never fit inside its window
+// and the warm loop pinned the database CPU. 5 minutes keeps the recompute well
+// inside the interval while stale-while-revalidate (below) still serves reads
+// instantly. Live data (nodes, packet feed) is realtime over WebSocket, not here.
+export const STATS_CACHE_TTL_MS = 5 * 60_000;
 export const STATS_CACHE_STALE_TTL_MS = 15 * 60_000;
-export const INFERRED_NODES_CACHE_TTL_MS = 60_000;
+export const INFERRED_NODES_CACHE_TTL_MS = 5 * 60_000;
 export const PATH_HISTORY_CACHE_TTL_MS = 60_000;
 export const CHARTS_CACHE_TTL_MS = 30 * 60_000;
 // A chart snapshot is refreshed every 30 minutes, but remains usable for six

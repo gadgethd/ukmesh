@@ -20,6 +20,8 @@ export const NodePopupContent: React.FC<{
   lat: number;
   lon: number;
   links: NodeLink[] | null;
+  /** Hide the internal name heading (the docked panel renders its own header). */
+  hideName?: boolean;
   coverageActive: boolean;
   coverageLoading: boolean;
   coverageMessage: string | null;
@@ -35,6 +37,7 @@ export const NodePopupContent: React.FC<{
   lat,
   lon,
   links,
+  hideName = false,
   coverageActive,
   coverageLoading,
   coverageMessage,
@@ -58,7 +61,7 @@ export const NodePopupContent: React.FC<{
 
   return (
     <div className="node-popup">
-      <div className="node-popup__name">{displayName}</div>
+      {!hideName && <div className="node-popup__name">{displayName}</div>}
       {props.public_key && (
         <div className="node-popup__row">
           <span>Public key</span>
@@ -148,15 +151,15 @@ export const NodePopupContent: React.FC<{
           </button>
         </div>
       )}
-      {!isRepeater && links === null && (
+      {links === null && (
         <div className="node-popup__neighbours-loading">
           <LoadingIndicator label="Loading neighbours..." variant="inline" />
         </div>
       )}
-      {!isRepeater && links !== null && links.length > 0 && (
+      {links !== null && links.length > 0 && (
         <div className="node-popup__neighbours">
           <div className="node-popup__neighbours-title">Confirmed neighbours</div>
-          {links.map((lk) => {
+          {links.slice(0, 8).map((lk) => {
             const tx = lk.count_this_to_peer > 0;
             const rx = lk.count_peer_to_this > 0;
             const arrow = tx && rx ? '↔' : tx ? '→' : '←';

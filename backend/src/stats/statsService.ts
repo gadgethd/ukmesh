@@ -123,6 +123,11 @@ export function createStatsService(deps: StatsServiceDeps) {
   };
   const channelTrafficCache = new Map<string, { ts: number; data: CachedChannelTraffic }>();
   const statsInflight = new Map<string, Promise<unknown>>();
+  // Observer activity runs an expensive per-packet aggregation; cache + single-
+  // flight it (mirroring getStatsSummary) so concurrent/rapid polls can't pile
+  // up identical queries and saturate the database CPU.
+  const observerActivityCache = new Map<string, { ts: number; data: unknown }>();
+  const observerActivityInflight = new Map<string, Promise<unknown>>();
   let initialStatsWarmup: Promise<void> | undefined;
   let activeObserverWork = 0;
 
@@ -531,8 +536,37 @@ export function createStatsService(deps: StatsServiceDeps) {
   }
 
   async function getObserverActivity(network: string | undefined): Promise<unknown> {
-    const result = await repository.fetchObserverActivity(network);
-    return result.rows.map((r) => ({ ...r, rx_24h: Number(r.rx_24h), tx_24h: Number(r.tx_24h) }));
+    const key = `${network ?? 'ukmesh'}`;
+    const cached = observerActivityCache.get(key);
+    if (cached && Date.now() - cached.ts < statsCacheTtlMs) {
+      return cached.data;
+    }
+
+    const inflight = observerActivityInflight.get(key);
+    if (inflight) return cached ? cached.data : inflight;
+    if (observerActivityInflight.size >= MAX_UNIQUE_STATS_INFLIGHT) {
+      if (cached) return cached.data;
+      throw new StatsWorkOverloadedError();
+    }
+
+    const promise = repository.fetchObserverActivity(network)
+      .then((result) => {
+        const data = result.rows.map((r) => ({ ...r, rx_24h: Number(r.rx_24h), tx_24h: Number(r.tx_24h) }));
+        observerActivityCache.set(key, { ts: Date.now(), data });
+        observerActivityInflight.delete(key);
+        return data;
+      })
+      .catch((err) => {
+        observerActivityInflight.delete(key);
+        throw err;
+      });
+
+    observerActivityInflight.set(key, promise);
+    if (cached) {
+      void promise.catch(() => { /* retain the last successful value */ });
+      return cached.data;
+    }
+    return promise;
   }
 
   return {

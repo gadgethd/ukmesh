@@ -515,11 +515,32 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
       return;
     }
 
+    const isLiveFeedPacket = parsed?.type === 'packet'
+      && Number((parsed.data as { packetType?: number } | null)?.packetType) === 5;
+
     for (const client of wss.clients) {
       if (client.readyState !== WebSocket.OPEN) continue;
       const scope = clientScopes.get(client);
       if (parsed && scope && !shouldSendMessage(parsed, scope)) continue;
       if (parsed && scope) trackScopedNodes(parsed, scope);
+
+      // GRP chat packets power the live feed — send immediately so the UI
+      // never waits on the 16ms batch timer. Other events stay batched.
+      if (isLiveFeedPacket) {
+        if (client.bufferedAmount > WS_MAX_BUFFERED_BYTES) {
+          disconnectSlowClient(client, `socket buffer exceeded ${WS_MAX_BUFFERED_BYTES} bytes`);
+          continue;
+        }
+        // Flush any already-queued events first so ordering stays intact.
+        const existing = messageQueue.get(client);
+        if (existing && existing.messages.length > 0) {
+          client.send(existing.messages.join('\n') + '\n' + messageStr);
+          messageQueue.delete(client);
+        } else {
+          client.send(messageStr);
+        }
+        continue;
+      }
 
       // Queue messages briefly for batched fan-out, with per-client bounds so
       // a stalled browser cannot retain an unbounded live-event backlog.
@@ -538,8 +559,8 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
         messageQueue.set(client, { messages: [messageStr], byteLength: messageByteLength });
       }
     }
-    
-    scheduleFlush();
+
+    if (!isLiveFeedPacket) scheduleFlush();
   });
 
   return wss;

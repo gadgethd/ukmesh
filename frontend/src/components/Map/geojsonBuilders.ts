@@ -86,7 +86,12 @@ export function buildNodeGeoJSON(
     if (showHexClashes && (clashOffenderIds.size > 0 || clashRelayIds.size > 0)) {
       visible = clashOffenderIds.has(node.node_id) || clashRelayIds.has(node.node_id);
     } else if (pathNodeIds !== null) {
-      visible = pathNodeIds.has(node.node_id.toLowerCase());
+      // Live Path focus used to hide everything not on the active route, which
+      // made the map feel empty. Keep all repeaters (role 2 / default) and
+      // sensors on-map; still surface any non-repeater hop that is on the path.
+      const role = node.role ?? 2;
+      const keepAlways = role === 2 || role === 4;
+      visible = keepAlways || pathNodeIds.size === 0 || pathNodeIds.has(node.node_id.toLowerCase());
     }
 
     const props: NodeFeatureProps = {

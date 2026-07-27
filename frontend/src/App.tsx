@@ -47,7 +47,6 @@ const DEFAULT_FILTERS: Filters = {
 const DISCLAIMER_KEY = 'meshcore-disclaimer-dismissed';
 const FILTERS_KEY = 'meshcore-app-filters-v3';
 const ignoreCoverageUpdate = () => {};
-const NodeDetailDrawer = React.lazy(() => import('./components/app/NodeDetailDrawer.js').then((module) => ({ default: module.NodeDetailDrawer })));
 const TimelineControl = React.lazy(() => import('./components/app/TimelineControl.js').then((module) => ({ default: module.TimelineControl })));
 const PlannerComparison = React.lazy(() => import('./components/app/PlannerComparison.js').then((module) => ({ default: module.PlannerComparison })));
 
@@ -74,6 +73,7 @@ export const App: React.FC = () => {
   const [initialMapView] = useState(() => initialMapViewFromUrl());
   const [shareLabel, setShareLabel] = useState('Copy view link');
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(() => new URLSearchParams(window.location.search).get('node'));
+  const [filtersCollapsed, setFiltersCollapsed] = useState<boolean>(() => !!new URLSearchParams(window.location.search).get('node'));
   // MapLibre map instance — used by MobileControls/NodeSearch for flyTo
   const [mlMap, setMlMap] = useState<maplibregl.Map | null>(null);
   const [showDisclaimer, setShowDisclaimer] = useState(() => !localStorage.getItem(DISCLAIMER_KEY));
@@ -118,6 +118,12 @@ export const App: React.FC = () => {
     if (selectedNodeId) url.searchParams.set('node', selectedNodeId);
     else url.searchParams.delete('node');
     window.history.replaceState(null, '', url);
+  }, [selectedNodeId]);
+
+  // Selecting a node collapses the layers panel so the docked detail panel has
+  // room on the right; clearing the selection restores it.
+  useEffect(() => {
+    setFiltersCollapsed(selectedNodeId != null);
   }, [selectedNodeId]);
 
   useEffect(() => {
@@ -379,7 +385,7 @@ export const App: React.FC = () => {
   const wsState = useWebSocket(handleMessage, { network: networkFilter, observer: observerFilter });
 
   return (
-    <div className="app-shell">
+    <div className="app-shell" data-node-open={selectedNodeId ? 'true' : undefined} data-live-feed={filters.livePackets ? 'true' : undefined}>
       <AppTopBar
         homeUrl={site.appHomeUrl}
         wsState={wsState}
@@ -410,6 +416,7 @@ export const App: React.FC = () => {
           maxHexClashHops={filters.hexClashMaxHops}
           viewshedEnabled={VIEWSHED_ENABLED}
           initialView={initialMapView}
+          selectedNodeId={selectedNodeId}
           onNodeSelect={setSelectedNodeId}
           onMapReady={setMlMap}
         />
@@ -441,18 +448,11 @@ export const App: React.FC = () => {
         onModeChange={handleModeChange}
         onShare={handleShare}
         shareLabel={shareLabel}
+        collapsed={filtersCollapsed}
+        onToggleCollapse={() => setFiltersCollapsed((value) => !value)}
+        nodeOpen={selectedNodeId != null}
       />
 
-      {selectedNodeId && (
-        <React.Suspense fallback={null}>
-          <NodeDetailDrawer
-            nodeId={selectedNodeId}
-            network={networkFilter}
-            observer={observerFilter}
-            onClose={() => setSelectedNodeId(null)}
-          />
-        </React.Suspense>
-      )}
       <React.Suspense fallback={null}>
         <TimelineControl network={networkFilter} observer={observerFilter} />
         {VIEWSHED_ENABLED && <PlannerComparison enabled />}

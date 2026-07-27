@@ -46,7 +46,10 @@ import {
   computeClashData,
 } from './geojsonBuilders.js';
 import { NodePopupContent } from './NodePopupContent.js';
+import { NodeLegend } from './NodeLegend.js';
+import { ActivitySparkline } from './ActivitySparkline.js';
 import { PlannedRepeaterPopup } from './PlannedRepeaterPopup.js';
+import { useWatchlist } from '../../hooks/useWatchlist.js';
 import type {
   CustomLosPoint,
   LosProfile,
@@ -55,7 +58,6 @@ import type {
   NodeLink,
   PlannedRepeater,
   PopupNodeView,
-  PopupState,
 } from './types.js';
 import { sampleElevationAt } from '../../utils/terrainSampler.js';
 import { computeCustomLos } from '../../utils/customLos.js';
@@ -72,14 +74,13 @@ export function MapLibreMap({
   maxHexClashHops,
   viewshedEnabled,
   initialView,
+  selectedNodeId = null,
   onNodeSelect,
   onMapReady,
 }: MapLibreMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const mapLoadedRef = useRef(false);
-  const mlPopupRef = useRef<maplibregl.Popup | null>(null);
-  const popupContainerRef = useRef<HTMLDivElement>(document.createElement('div'));
   const nodesRef = useRef(nodeStore.getState().nodes);
   const coverageRef = useRef(coverageStore.getState().coverage);
   const selectedCoverageRef = useRef<NodeCoverage | null>(null);
@@ -97,7 +98,9 @@ export function MapLibreMap({
   const setClashPathLines = useOverlayStore((state) => state.setClashPathLines);
   const hiddenCoordMaskRef = useRef<Map<string, HiddenMaskGeometry>>(new Map());
   const refreshTimerRef = useRef<number | null>(null);
-  const popupStateRef = useRef<PopupState | null>(null);
+  const selectedNodeIdRef = useRef<string | null>(selectedNodeId);
+  const onNodeSelectRef = useRef(onNodeSelect);
+  onNodeSelectRef.current = onNodeSelect;
 
   const customLosNodeClickedRef = useRef(false);
   // handleCustomLosPointRef is assigned after handleCustomLosPoint is defined below
@@ -117,7 +120,6 @@ export function MapLibreMap({
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const openPlannedPopupRef = useRef<(planId: string, lngLat: maplibregl.LngLatLike) => void>(null as any);
 
-  const [popupState, setPopupState] = useState<PopupState | null>(null);
   const [plannedPopupState, setPlannedPopupState] = useState<{ planId: string; lngLat: maplibregl.LngLatLike } | null>(null);
   const [popupLinks, setPopupLinks] = useState<NodeLink[] | null>(null);
   const [selectedCoverageNodeId, setSelectedCoverageNodeId] = useState<string | null>(null);
@@ -128,6 +130,9 @@ export function MapLibreMap({
   const [focusedPrefixNodeIds, setFocusedPrefixNodeIds] = useState<Set<string> | null>(null);
   const [popupVersion, setPopupVersion] = useState(0);
   const focusTimerRef = useRef<number | null>(null);
+  const dockRef = useRef<HTMLElement>(null);
+  const watchlist = useWatchlist();
+  const [copyLinkLabel, setCopyLinkLabel] = useState('Copy link');
 
   // -- Map theme (light/dark) -------------------------------------------------
   const [mapLight, setMapLight] = useState(() => localStorage.getItem('map-theme') === 'light');
@@ -175,9 +180,9 @@ export function MapLibreMap({
   const setLosProfilesForNode = useOverlayStore((state) => state.setLosProfilesForNode);
   const removeLosNode = useOverlayStore((state) => state.removeLosNode);
 
-  // Targeted selectors — only re-render MapLibreMap when the POPUP node's LOS
+  // Targeted selectors — only re-render MapLibreMap when the SELECTED node's LOS
   // status changes (boolean equality), not every time any node's Set changes.
-  const popupNodeId = popupState?.nodeId ?? null;
+  const popupNodeId = selectedNodeId;
   const popupLosActive = useOverlayStore((state) => popupNodeId != null && state.losNodeIds.has(popupNodeId));
   const popupLosLoading = useOverlayStore((state) => popupNodeId != null && state.losLoadingIds.has(popupNodeId));
 
@@ -339,7 +344,7 @@ export function MapLibreMap({
 
   const openPlannedPopup = useCallback((planId: string, lngLat: maplibregl.LngLatLike) => {
     if (!viewshedEnabledRef.current) return;
-    setPopupState(null); // close any normal node popup
+    onNodeSelectRef.current?.(null); // close any normal node panel
     setPlannedPopupState({ planId, lngLat });
   }, []);
 
@@ -493,6 +498,19 @@ export function MapLibreMap({
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [viewshedEnabled, customLosMode, planRepeaterMode, clearCustomLos, setPlanRepeaterMode]);
+
+  // Escape closes the node detail dock (when not in a picking mode, which the
+  // handler above owns). Also move focus into the dock when it opens so keyboard
+  // users land on the panel rather than being stranded on the map canvas.
+  useEffect(() => {
+    if (!selectedNodeId || customLosMode || (viewshedEnabled && planRepeaterMode)) return;
+    dockRef.current?.focus();
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onNodeSelectRef.current?.(null);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [selectedNodeId, customLosMode, viewshedEnabled, planRepeaterMode]);
 
   // -- Focus mode (same-prefix highlight) ------------------------------------
 
@@ -678,6 +696,42 @@ export function MapLibreMap({
           'circle-stroke-width': 0,
           'circle-stroke-color': '#00c4ff',
           'circle-stroke-opacity': 0.7,
+        },
+      });
+
+      // ── Selected-node highlight (recolour + ring) ──────────────────────────
+      // Two circle layers over node-dots, filtered to the selected node id.
+      // A soft halo underneath, a bright solid marker on top.
+      map.addLayer({
+        id: 'node-dots-selected-halo',
+        type: 'circle',
+        source: 'nodes',
+        filter: ['==', ['get', 'node_id'], '__none__'],
+        paint: {
+          'circle-radius': [
+            'interpolate', ['linear'], ['zoom'],
+            6, 11, 9, 13, 11, 15, 13, 18, 16, 22,
+          ],
+          'circle-color': '#22e0ff',
+          'circle-opacity': 0.16,
+          'circle-blur': 0.5,
+        },
+      });
+      map.addLayer({
+        id: 'node-dots-selected',
+        type: 'circle',
+        source: 'nodes',
+        filter: ['==', ['get', 'node_id'], '__none__'],
+        paint: {
+          'circle-radius': [
+            'interpolate', ['linear'], ['zoom'],
+            6, 5, 9, 6.5, 11, 8, 13, 10, 16, 13,
+          ],
+          'circle-color': '#8af4ff',
+          'circle-opacity': 1,
+          'circle-stroke-color': '#ffffff',
+          'circle-stroke-width': 2.5,
+          'circle-stroke-opacity': 0.95,
         },
       });
 
@@ -923,10 +977,14 @@ export function MapLibreMap({
 
         // MapLibre serialises properties to JSON strings for non-primitive types,
         // but all our props are primitives so this is safe.
-        onNodeSelect?.(props.node_id);
-        const coords = (feature.geometry as GeoJSON.Point).coordinates as [number, number];
         setPopupLinks(null);
-        setPopupState({ nodeId: props.node_id, lngLat: { lng: coords[0], lat: coords[1] } });
+        onNodeSelectRef.current?.(props.node_id);
+        // Nudge the map so the tapped node clears the right-docked detail panel.
+        const coords = (feature.geometry as GeoJSON.Point).coordinates as [number, number];
+        if (window.matchMedia('(min-width: 641px)').matches) {
+          const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+          map.easeTo({ center: coords, offset: [-170, 0], duration: reduceMotion ? 0 : 420 });
+        }
       });
 
       // General map click — used for custom LOS mode and plan repeater placement on empty areas
@@ -945,7 +1003,13 @@ export function MapLibreMap({
           return;
         }
 
-        if (!useOverlayStore.getState().customLosMode) return;
+        if (!useOverlayStore.getState().customLosMode) {
+          // Not in a special picking mode: a click on empty map deselects the
+          // current node (closes the docked detail panel), matching the intuition
+          // that clicking away dismisses the selection.
+          if (!consumed && selectedNodeIdRef.current) onNodeSelectRef.current?.(null);
+          return;
+        }
         if (consumed) return; // Node dot / planned pin already handled above
         void sampleElevationAt(lng, lat).then((elevation_m) => {
           void handleCustomLosPointRef.current({ lat, lon: lng, elevation_m });
@@ -969,6 +1033,12 @@ export function MapLibreMap({
       mapRef.current = map;
       onMapReady?.(map);
       refreshMapSources();
+
+      // Apply any pre-existing selection (e.g. ?node= deep link) to the highlight.
+      if (selectedNodeIdRef.current) {
+        map.setFilter('node-dots-selected-halo', ['==', ['get', 'node_id'], selectedNodeIdRef.current]);
+        map.setFilter('node-dots-selected', ['==', ['get', 'node_id'], selectedNodeIdRef.current]);
+      }
 
       // Restore terrain if it was saved in preferences
       if (showTerrainRef.current) {
@@ -1068,14 +1138,14 @@ export function MapLibreMap({
   }, [maxHexClashHops, scheduleRefresh]);
 
   useEffect(() => {
-    popupStateRef.current = popupState;
-  }, [popupState]);
+    selectedNodeIdRef.current = selectedNodeId;
+  }, [selectedNodeId]);
 
   useEffect(() => {
     const unsubscribeNodes = nodeStore.subscribe(() => {
       nodesRef.current = nodeStore.getState().nodes;
       scheduleRefresh();
-      if (popupStateRef.current) setPopupVersion((value) => value + 1);
+      if (selectedNodeIdRef.current) setPopupVersion((value) => value + 1);
     });
     const unsubscribeCoverage = coverageStore.subscribe(() => {
       if (!viewshedEnabledRef.current) return;
@@ -1155,37 +1225,29 @@ export function MapLibreMap({
     return nodesRef.current.get(nodeId) ?? inferredNodesRef.current.find((node) => node.node_id === nodeId);
   }, []);
 
-  // Fetch neighbour links for non-repeater node popups
+  // Fetch neighbour links for the selected node's detail panel
   useEffect(() => {
-    if (!popupState) return;
-    const node = getNode(popupState.nodeId);
-    if (!node || node.role === undefined || node.role === 2) return;
-    // Non-repeater — fetch neighbours
+    if (!selectedNodeId) { setPopupLinks(null); return; }
+    const node = getNode(selectedNodeId);
+    if (!node) return;
+    const controller = new AbortController();
     setPopupLinks(null);
-    fetch(`/api/nodes/${popupState.nodeId}/links`)
+    fetch(`/api/nodes/${selectedNodeId}/links`, { signal: controller.signal })
       .then((r) => r.json() as Promise<NodeLink[]>)
-      .then(setPopupLinks)
-      .catch(() => setPopupLinks([]));
-  }, [popupState?.nodeId, getNode]); // eslint-disable-line react-hooks/exhaustive-deps
+      .then((rows) => setPopupLinks(Array.isArray(rows) ? rows : []))
+      .catch((err) => { if ((err as DOMException).name !== 'AbortError') setPopupLinks([]); });
+    return () => controller.abort();
+  }, [selectedNodeId, getNode]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Show/update/close the MapLibre popup when popupState changes
+  // Highlight the selected node on the map (bright recolour + ring). Cleared
+  // when no selection. Uses setFilter so we never rebuild the whole node source.
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !mapLoadedRef.current) return;
-
-    if (!popupState) {
-      mlPopupRef.current?.remove();
-      return;
-    }
-
-    if (!mlPopupRef.current) {
-      mlPopupRef.current = new maplibregl.Popup({ maxWidth: '280px', closeOnClick: false })
-        .setDOMContent(popupContainerRef.current)
-        .on('close', () => setPopupState(null));
-    }
-
-    mlPopupRef.current.setLngLat(popupState.lngLat).addTo(map);
-  }, [popupState]);
+    if (!map || !mapLoadedRef.current || !map.getLayer('node-dots-selected')) return;
+    const filter: maplibregl.FilterSpecification = ['==', ['get', 'node_id'], selectedNodeId ?? '__none__'];
+    map.setFilter('node-dots-selected-halo', filter);
+    map.setFilter('node-dots-selected', filter);
+  }, [selectedNodeId, popupVersion]);
 
   // Show/update/close the planned-repeater popup when its state changes
   useEffect(() => {
@@ -1219,8 +1281,8 @@ export function MapLibreMap({
 
   // Resolve popup props from current nodes map
   const popupNodeProps = useMemo((): PopupNodeView | null => {
-    if (!popupState) return null;
-    const node = getNode(popupState.nodeId);
+    if (!selectedNodeId) return null;
+    const node = getNode(selectedNodeId);
     if (!node || !hasCoords(node)) return null;
     const now = Date.now();
     const ageMs = now - new Date(node.last_seen).getTime();
@@ -1248,23 +1310,24 @@ export function MapLibreMap({
       maskedLat: masked[0],
       maskedLon: masked[1],
     };
-  }, [popupState, popupVersion, getNode]);
+  }, [selectedNodeId, popupVersion, getNode]);
 
   const popupSamePrefixCount = useMemo(() => {
-    if (!popupState) return 1;
-    const prefix = popupState.nodeId.slice(0, 2).toUpperCase();
+    if (!selectedNodeId) return 1;
+    const prefix = selectedNodeId.slice(0, 2).toUpperCase();
     return Array.from(nodesRef.current.values()).filter(
       (node) => hasCoords(node)
         && (node.role === undefined || node.role === 2)
         && node.node_id.slice(0, 2).toUpperCase() === prefix,
     ).length || 1;
-  }, [popupState, popupVersion]);
+  }, [selectedNodeId, popupVersion]);
 
   // -- Render ----------------------------------------------------------------
 
   return (
     <div className="map-area" style={{ position: 'relative', width: '100%', height: '100%' }}>
       <NodeSearch map={mapRef.current} onNodeSelect={onNodeSelect} />
+      <NodeLegend />
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
 
       {/* Map tool buttons */}
@@ -1353,26 +1416,94 @@ export function MapLibreMap({
         </div>
       )}
 
-      {/* Popup content rendered into the MapLibre popup's DOM node via portal */}
-      {popupState && popupNodeProps && createPortal(
-        <NodePopupContent
-          props={popupNodeProps.props}
-          lat={popupNodeProps.maskedLat}
-          lon={popupNodeProps.maskedLon}
-          links={popupLinks}
-          coverageActive={selectedCoverageNodeId === popupNodeProps.props.node_id}
-          coverageLoading={coverageLoadingNodeId === popupNodeProps.props.node_id}
-          coverageMessage={popupState?.nodeId === popupNodeProps.props.node_id ? coverageMessage : null}
-          viewshedEnabled={viewshedEnabled}
-          onToggleCoverage={toggleCoverageForNode}
-          onFocusSamePrefix={handleFocusSamePrefix}
-          samePrefixCount={popupSamePrefixCount}
-          losActive={popupLosActive}
-          losLoading={popupLosLoading}
-          onToggleLos={handleToggleLos}
-        />,
-        popupContainerRef.current,
-      )}
+      {/* Node detail — docked panel on the right (replaces the old floating popup) */}
+      {selectedNodeId && popupNodeProps && (() => {
+        const nodeName = popupNodeProps.props.is_prohibited
+          ? 'Redacted node'
+          : (popupNodeProps.props.name ?? `Node ${selectedNodeId.slice(0, 8)}`);
+        const statusLabel = popupNodeProps.props.is_stale
+          ? 'STALE' : popupNodeProps.props.is_online ? 'ONLINE' : 'OFFLINE';
+        const statusMod = popupNodeProps.props.is_stale
+          ? 'stale' : popupNodeProps.props.is_online ? 'online' : 'offline';
+        const observations = (popupLinks ?? []).reduce(
+          (sum, lk) => sum + Number(lk.count_this_to_peer || 0) + Number(lk.count_peer_to_this || 0), 0);
+        const watched = watchlist.isWatched('node', selectedNodeId);
+        const copyLink = () => {
+          const done = (label: string) => {
+            setCopyLinkLabel(label);
+            window.setTimeout(() => setCopyLinkLabel('Copy link'), 1600);
+          };
+          try {
+            void navigator.clipboard.writeText(window.location.href).then(
+              () => done('Copied!'), () => done('Copy failed'));
+          } catch { done('Copy failed'); }
+        };
+        return (
+          <aside
+            className="node-dock"
+            aria-label="Node details"
+            role="dialog"
+            tabIndex={-1}
+            ref={dockRef}
+          >
+            <header className="node-dock__header">
+              <div className="node-dock__heading">
+                <span className={`node-dock__status node-dock__status--${statusMod}`}>{statusLabel}</span>
+                <h2 className="node-dock__name" title={nodeName}>{nodeName}</h2>
+              </div>
+              <button
+                type="button"
+                className="node-dock__close"
+                aria-label="Close node details"
+                onClick={() => onNodeSelectRef.current?.(null)}
+              >×</button>
+            </header>
+            <div className="node-dock__actions">
+              <button
+                type="button"
+                className={`node-dock__watch${watched ? ' node-dock__watch--on' : ''}`}
+                onClick={() => watchlist.toggle('node', selectedNodeId, nodeName)}
+              >
+                {watched ? '★ Watching' : '☆ Watch node'}
+              </button>
+              <button
+                type="button"
+                className="node-dock__copy"
+                onClick={copyLink}
+                aria-label="Copy a link to this node"
+              >
+                {copyLinkLabel}
+              </button>
+            </div>
+            {popupLinks !== null && popupLinks.length > 0 && (
+              <div className="node-dock__metrics">
+                <div><strong>{popupLinks.length}</strong><span>neighbours</span></div>
+                <div><strong>{observations.toLocaleString()}</strong><span>observations</span></div>
+              </div>
+            )}
+            <ActivitySparkline nodeId={selectedNodeId} />
+            <div className="node-dock__body">
+              <NodePopupContent
+                props={popupNodeProps.props}
+                lat={popupNodeProps.maskedLat}
+                lon={popupNodeProps.maskedLon}
+                links={popupLinks}
+                hideName
+                coverageActive={selectedCoverageNodeId === popupNodeProps.props.node_id}
+                coverageLoading={coverageLoadingNodeId === popupNodeProps.props.node_id}
+                coverageMessage={selectedNodeId === popupNodeProps.props.node_id ? coverageMessage : null}
+                viewshedEnabled={viewshedEnabled}
+                onToggleCoverage={toggleCoverageForNode}
+                onFocusSamePrefix={handleFocusSamePrefix}
+                samePrefixCount={popupSamePrefixCount}
+                losActive={popupLosActive}
+                losLoading={popupLosLoading}
+                onToggleLos={handleToggleLos}
+              />
+            </div>
+          </aside>
+        );
+      })()}
 
       {/* Planned repeater popup rendered into its MapLibre popup DOM node via portal */}
       {viewshedEnabled && plannedPopupState && plannedPopupRepeater && createPortal(

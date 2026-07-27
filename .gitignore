@@ -47,3 +47,8 @@ push.md
 frontend/src/pages/teesside/
 frontend/src/styles/teesside-dashboard.css
 frontend/public/favicon-teesside.svg
+
+# Local planning / audit notes (not for source control)
+audit.md
+NEW_PATHING_SYSTEM.md
+local-vs-github-pr-plan.md
