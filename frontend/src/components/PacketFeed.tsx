@@ -36,20 +36,24 @@ export const PacketFeed: React.FC = React.memo(() => {
     if (!latestId || latestIdRef.current === latestId) return;
     latestIdRef.current = latestId;
 
-    // Scroll to bottom when a new message arrives
+    // Scroll immediately so new GRP lines are visible the frame they arrive.
     if (feedRef.current) {
       feedRef.current.scrollTop = feedRef.current.scrollHeight;
     }
 
-    // Throttle animations to max once per 300ms
-    if (animationThrottleRef.current !== null) return;
-    animationThrottleRef.current = window.setTimeout(() => {
-      animationThrottleRef.current = null;
-    }, 300);
-
-    setNewestVisibleId(latestId);
-    const timer = setTimeout(() => setNewestVisibleId((current) => (current === latestId ? null : current)), 220);
-    return () => clearTimeout(timer);
+    // Flash animation is best-effort; never gate scroll/render on it.
+    if (animationThrottleRef.current === null) {
+      setNewestVisibleId(latestId);
+      animationThrottleRef.current = window.setTimeout(() => {
+        animationThrottleRef.current = null;
+      }, 120);
+      const timer = window.setTimeout(
+        () => setNewestVisibleId((current) => (current === latestId ? null : current)),
+        180,
+      );
+      return () => clearTimeout(timer);
+    }
+    return undefined;
   }, [messages]);
 
   // Scroll to bottom on initial load

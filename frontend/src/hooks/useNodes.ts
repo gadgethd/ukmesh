@@ -96,6 +96,44 @@ let state: NodeStoreState = {
   activeNodes: new Set(),
 };
 
+export function canonicalNodeId(value: string): string {
+  return value.trim().toUpperCase();
+}
+
+function normalizeNode<T extends Partial<MeshNode> & { node_id: string }>(
+  node: T,
+): T {
+  const publicKey = typeof node.public_key === 'string'
+    ? canonicalNodeId(node.public_key)
+    : node.public_key;
+  return {
+    ...node,
+    node_id: canonicalNodeId(node.node_id),
+    ...(publicKey !== undefined ? { public_key: publicKey } : {}),
+  };
+}
+
+function seenAtMs(node: Pick<MeshNode, 'last_seen'>): number {
+  const value = Date.parse(node.last_seen);
+  return Number.isFinite(value) ? value : Number.NEGATIVE_INFINITY;
+}
+
+/**
+ * Initial-state snapshots can be up to a minute old and may arrive after live
+ * WebSocket events. Keep the most recently seen representation while filling
+ * any fields it lacks from the other copy.
+ */
+function mergeNode(existing: MeshNode, incoming: MeshNode): MeshNode {
+  const newer = seenAtMs(existing) > seenAtMs(incoming) ? existing : incoming;
+  const older = newer === existing ? incoming : existing;
+  const advertCount = Math.max(existing.advert_count ?? 0, incoming.advert_count ?? 0);
+  return normalizeNode({
+    ...older,
+    ...newer,
+    ...(advertCount > 0 ? { advert_count: advertCount } : {}),
+  });
+}
+
 const listeners = new Set<() => void>();
 
 function emit(): void {
@@ -118,17 +156,33 @@ function getState(): NodeStoreState {
 
 function handleInitialState(data: { nodes: MeshNode[]; packets: RecentPacketRow[]; messages?: RecentPacketRow[] }) {
   const nodeMap = new Map<string, MeshNode>();
-  for (const n of data.nodes) nodeMap.set(n.node_id, n);
+  // Preserve live nodes received while the server was still fetching this
+  // snapshot. Canonical IDs also collapse the uppercase API rows and lowercase
+  // live-event rows that previously produced duplicate stale/current markers.
+  for (const current of state.nodes.values()) {
+    const normalized = normalizeNode(current);
+    const existing = nodeMap.get(normalized.node_id);
+    nodeMap.set(normalized.node_id, existing ? mergeNode(existing, normalized) : normalized);
+  }
+  for (const serverNode of data.nodes) {
+    const normalized = normalizeNode(serverNode);
+    const existing = nodeMap.get(normalized.node_id);
+    nodeMap.set(normalized.node_id, existing ? mergeNode(existing, normalized) : normalized);
+  }
+  const serverPackets = mapRecentRows(data.packets);
   const serverMessages = mapMessageRows(data.messages ?? data.packets);
-  // Merge with any messages already in state so that a WS reconnect with a
-  // stale server-side cache doesn't wipe messages received via live packets.
+  // Merge with live data so that a reconnect with a stale server-side cache
+  // cannot wipe packets/messages received while the snapshot was in flight.
+  const packets = state.packets.length > 0
+    ? mergePackets(state.packets, serverPackets)
+    : serverPackets;
   const messages = state.messages.length > 0
     ? mergeMessages(state.messages, serverMessages)
     : serverMessages;
   setState({
     ...state,
     nodes: nodeMap,
-    packets: mapRecentRows(data.packets),
+    packets,
     messages,
   });
 }
@@ -243,12 +297,14 @@ function handlePacket(packetOrArray: LivePacketData | LivePacketData[]) {
 }
 
 function handleNodeUpdate(data: { nodeId: string; ts: number }) {
-  const existing = state.nodes.get(data.nodeId);
+  const nodeId = canonicalNodeId(data.nodeId);
+  const existing = state.nodes.get(nodeId);
+  const seenAt = new Date(data.ts).toISOString();
   const next = new Map(state.nodes);
-  next.set(data.nodeId, {
-    node_id: data.nodeId,
+  next.set(nodeId, {
+    node_id: nodeId,
     ...(existing ?? {}),
-    last_seen: new Date(data.ts).toISOString(),
+    last_seen: existing && seenAtMs(existing) > data.ts ? existing.last_seen : seenAt,
     is_online: true,
   });
   setState({
@@ -261,11 +317,13 @@ function handleNodeUpdateBatch(updates: { nodeId: string; ts: number }[]) {
   if (updates.length === 0) return;
   const next = new Map(state.nodes);
   for (const data of updates) {
-    const existing = state.nodes.get(data.nodeId);
-    next.set(data.nodeId, {
-      node_id: data.nodeId,
+    const nodeId = canonicalNodeId(data.nodeId);
+    const existing = next.get(nodeId);
+    const seenAt = new Date(data.ts).toISOString();
+    next.set(nodeId, {
+      node_id: nodeId,
       ...(existing ?? {}),
-      last_seen: new Date(data.ts).toISOString(),
+      last_seen: existing && seenAtMs(existing) > data.ts ? existing.last_seen : seenAt,
       is_online: true,
     });
   }
@@ -276,16 +334,21 @@ function handleNodeUpdateBatch(updates: { nodeId: string; ts: number }[]) {
 }
 
 function handleNodeUpsert(node: Partial<MeshNode> & { node_id: string }) {
-  const existing = state.nodes.get(node.node_id) ?? {
-    node_id: node.node_id,
+  const normalized = normalizeNode(node);
+  const existing = state.nodes.get(normalized.node_id) ?? {
+    node_id: normalized.node_id,
     last_seen: new Date().toISOString(),
     is_online: true,
   };
   const updates = Object.fromEntries(
-    Object.entries(node).filter(([, value]) => value !== undefined),
+    Object.entries(normalized).filter(([, value]) => value !== undefined),
   ) as Partial<MeshNode> & { node_id: string };
+  const merged = mergeNode(existing, {
+    ...existing,
+    ...updates,
+  });
   const next = new Map(state.nodes);
-  next.set(node.node_id, { ...existing, ...updates });
+  next.set(normalized.node_id, merged);
   setState({
     ...state,
     nodes: next,
@@ -297,15 +360,19 @@ function handleNodeUpsertBatch(nodes: (Partial<MeshNode> & { node_id: string })[
   const next = new Map(state.nodes);
   const nowIso = new Date().toISOString();
   for (const node of nodes) {
-    const existing = state.nodes.get(node.node_id) ?? {
-      node_id: node.node_id,
+    const normalized = normalizeNode(node);
+    const existing = next.get(normalized.node_id) ?? {
+      node_id: normalized.node_id,
       last_seen: nowIso,
       is_online: true,
     };
     const updates = Object.fromEntries(
-      Object.entries(node).filter(([, value]) => value !== undefined),
+      Object.entries(normalized).filter(([, value]) => value !== undefined),
     ) as Partial<MeshNode> & { node_id: string };
-    next.set(node.node_id, { ...existing, ...updates });
+    next.set(normalized.node_id, mergeNode(existing, {
+      ...existing,
+      ...updates,
+    }));
   }
   setState({
     ...state,

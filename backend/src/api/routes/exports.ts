@@ -1,10 +1,11 @@
 import type { Router } from 'express';
 import type { QueryResultRow } from 'pg';
-import { resolveRequestNetwork } from '../../http/requestScope.js';
+import { resolvePublicNetworkScope } from '../../http/requestScope.js';
 import type { NetworkFilters } from '../utils/networkFilters.js';
-import { redactPrivateNode } from '../utils/privateNode.js';
 import fs from 'node:fs';
 import path from 'node:path';
+import { csvRow } from '../utils/csv.js';
+export { csvCell } from '../utils/csv.js';
 
 type QueryFn = <T extends QueryResultRow = QueryResultRow>(text: string, params?: unknown[]) => Promise<{ rows: T[] }>;
 type Deps = {
@@ -12,12 +13,6 @@ type Deps = {
   networkFilters: (network?: string, observer?: string) => NetworkFilters;
   limiter: ReturnType<typeof import('express-rate-limit').rateLimit>;
 };
-
-export function csvCell(value: unknown): string {
-  if (value == null) return '';
-  const text = String(value);
-  return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
-}
 
 export function registerExportRoutes(router: Router, deps: Deps): void {
   router.get('/v1', (_req, res) => {
@@ -47,8 +42,7 @@ export function registerExportRoutes(router: Router, deps: Deps): void {
         res.status(404).json({ error: 'Supported formats are csv and geojson' });
         return;
       }
-      const requestedNetwork = resolveRequestNetwork(req.query['network'], req.headers, 'ukmesh');
-      const network = requestedNetwork === 'all' ? undefined : requestedNetwork;
+      const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const requestedLimit = Number(req.query['limit'] ?? 5_000);
       const limit = Number.isFinite(requestedLimit) ? Math.min(5_000, Math.max(1, Math.round(requestedLimit))) : 5_000;
       const filters = deps.networkFilters(network);
@@ -60,12 +54,13 @@ export function registerExportRoutes(router: Router, deps: Deps): void {
         `SELECT node_id, name, lat, lon, role, iata, last_seen::text, hardware_model
          FROM nodes
          WHERE lat IS NOT NULL AND lon IS NOT NULL
+           AND (name IS NULL OR name NOT LIKE '%🚫%')
            ${filters.nodes}
          ORDER BY last_seen DESC NULLS LAST, node_id
          LIMIT ${limitParam}`,
         [...filters.params, limit],
       );
-      const nodes = result.rows.map((node) => redactPrivateNode(node));
+      const nodes = result.rows;
       res.setHeader('X-API-Version', '1');
       res.setHeader('Cache-Control', 'public, max-age=300, stale-while-revalidate=600');
       if (format === 'geojson') {
@@ -88,7 +83,10 @@ export function registerExportRoutes(router: Router, deps: Deps): void {
         return;
       }
       const columns = ['node_id', 'name', 'lat', 'lon', 'role', 'iata', 'last_seen', 'hardware_model'] as const;
-      const lines = [columns.join(','), ...nodes.map((node) => columns.map((column) => csvCell(node[column])).join(','))];
+      const lines = [
+        csvRow(columns),
+        ...nodes.map((node) => csvRow(columns.map((column) => node[column]))),
+      ];
       res.setHeader('Content-Disposition', 'attachment; filename="ukmesh-nodes.csv"');
       res.type('text/csv').send(`${lines.join('\n')}\n`);
     } catch (err) {

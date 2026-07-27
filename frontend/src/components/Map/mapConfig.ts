@@ -2,8 +2,10 @@ import type maplibregl from 'maplibre-gl';
 
 export const DEFAULT_CENTER: [number, number] = [54.57, -1.23];
 export const DEFAULT_ZOOM = 11;
-export const FOURTEEN_DAYS_MS = 14 * 24 * 60 * 60 * 1000;
-export const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+// Weekly adverts remain comfortably fresh; retain a second two-week window so
+// stale nodes are still visible as stale instead of disappearing immediately.
+export const NODE_STALE_AFTER_MS = 14 * 24 * 60 * 60 * 1000;
+export const NODE_HIDE_AFTER_MS = 28 * 24 * 60 * 60 * 1000;
 export const MAP_REFRESH_INTERVAL_MS = 100;
 
 export const LINK_GREEN_THRESHOLD_DB = 121.5;

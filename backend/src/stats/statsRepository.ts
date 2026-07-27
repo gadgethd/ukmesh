@@ -1,5 +1,4 @@
 import type { QueryResultRow } from 'pg';
-import { UKMESH_NETWORKS } from '../networks.js';
 import type { NetworkFilters } from '../api/utils/networkFilters.js';
 
 type QueryFn = <T extends QueryResultRow = QueryResultRow>(
@@ -14,62 +13,47 @@ type StatsRepositoryDeps = {
 
 export type StatsRepository = ReturnType<typeof createStatsRepository>;
 
-function rollupNetworkFilter(alias: string, network: string | undefined, params: unknown[]): string {
-  const prefix = alias ? `${alias}.` : '';
-  if (network === 'ukmesh') {
-    params.push(UKMESH_NETWORKS);
-    return `${prefix}network = ANY($${params.length})`;
-  }
-  if (network) {
-    params.push(network);
-    return `${prefix}network = $${params.length}`;
-  }
-  return `${prefix}network IS DISTINCT FROM 'test'`;
-}
-
 export function createStatsRepository(deps: StatsRepositoryDeps) {
-  const { networkFilters, query } = deps;
+  const { networkFilters } = deps;
+  const queryConcurrency = Math.max(
+    1,
+    Math.min(8, Math.trunc(Number(process.env['STATS_DB_QUERY_CONCURRENCY'] ?? 2) || 2)),
+  );
+  let activeQueries = 0;
+  const queryWaiters: Array<() => void> = [];
+
+  const acquireQuerySlot = async (): Promise<void> => {
+    if (activeQueries < queryConcurrency) {
+      activeQueries += 1;
+      return;
+    }
+    await new Promise<void>((resolve) => queryWaiters.push(resolve));
+  };
+
+  const releaseQuerySlot = (): void => {
+    const next = queryWaiters.shift();
+    if (next) {
+      next();
+      return;
+    }
+    activeQueries = Math.max(0, activeQueries - 1);
+  };
+
+  const query: QueryFn = async <T extends QueryResultRow = QueryResultRow>(
+    text: string,
+    params?: unknown[],
+  ) => {
+    await acquireQuerySlot();
+    try {
+      return await deps.query<T>(text, params);
+    } finally {
+      releaseQuerySlot();
+    }
+  };
 
   async function fetchObserverRegionSummary(network: string | undefined, observer: string | undefined) {
-    if (!observer) {
-      const params: unknown[] = [];
-      const packetNetworkWhere = rollupNetworkFilter('orp', network, params);
-      const observerNetworkWhere = rollupNetworkFilter('oro', network, params);
-      return query(`
-        WITH packet_counts AS (
-          SELECT
-            orp.iata,
-            COUNT(*) FILTER (WHERE orp.last_seen > NOW() - INTERVAL '24 hours') AS packets_24h,
-            COUNT(*) AS packets_7d,
-            MAX(orp.last_seen)::text AS last_packet_at
-          FROM observer_region_packet_sightings orp
-          WHERE orp.last_seen > NOW() - INTERVAL '7 days'
-            AND ${packetNetworkWhere}
-          GROUP BY orp.iata
-        ),
-        observer_counts AS (
-          SELECT
-            oro.iata,
-            COUNT(*) FILTER (WHERE oro.last_seen > NOW() - INTERVAL '1 minute') AS active_observers,
-            COUNT(*) AS observers
-          FROM observer_region_observer_sightings oro
-          WHERE oro.last_seen > NOW() - INTERVAL '7 days'
-            AND ${observerNetworkWhere}
-          GROUP BY oro.iata
-        )
-        SELECT
-          pc.iata,
-          pc.packets_24h,
-          pc.packets_7d,
-          COALESCE(oc.active_observers, 0) AS active_observers,
-          COALESCE(oc.observers, 0) AS observers,
-          pc.last_packet_at
-        FROM packet_counts pc
-        LEFT JOIN observer_counts oc ON oc.iata = pc.iata
-        ORDER BY pc.packets_7d DESC, pc.iata ASC
-      `, params);
-    }
-
+    // Public aggregates are computed from privacy-filtered source rows. Legacy
+    // rollups predate visibility state and cannot safely be filtered afterward.
     const filters = networkFilters(network, observer);
     return query(`
       SELECT
@@ -679,26 +663,12 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
 
   async function fetchStatsSummary(network: string | undefined, observer: string | undefined) {
     const filters = networkFilters(network, observer);
-    const longestHopResult = () => {
-      if (observer) {
-        return query(`SELECT hop_count AS count, packet_hash AS hash
-               FROM packets
-               WHERE hop_count IS NOT NULL
-                 AND time > NOW() - INTERVAL '30 days'
-                 ${filters.packets}
-               ORDER BY hop_count DESC LIMIT 1`, filters.params);
-      }
-
-      const params: unknown[] = [];
-      const networkWhere = rollupNetworkFilter('pds', network, params);
-      return query(`SELECT max_hop_count AS count, max_hop_hash AS hash
-             FROM packet_daily_stats pds
-             WHERE pds.day >= CURRENT_DATE - 30
-               AND pds.max_hop_count IS NOT NULL
-               AND ${networkWhere}
-             ORDER BY pds.max_hop_count DESC NULLS LAST, pds.max_hop_seen_at DESC NULLS LAST
-             LIMIT 1`, params);
-    };
+    const longestHopResult = () => query(`SELECT hop_count AS count, packet_hash AS hash
+           FROM packets
+           WHERE hop_count IS NOT NULL
+             AND time > NOW() - INTERVAL '30 days'
+             ${filters.packets}
+           ORDER BY hop_count DESC LIMIT 1`, filters.params);
 
     const [mqttCount, packetCount, staleCount, mapNodeCount, totalNodeCount, longestHopCount, nodesDayCount, internationalCount] = await Promise.all([
       network != null
@@ -722,17 +692,21 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
         `, filters.params),
       query(`SELECT COUNT(*) AS count FROM packets WHERE time > NOW() - INTERVAL '24 hours' ${filters.packets}`, filters.params),
       query(`SELECT COUNT(*) AS count FROM nodes
-             WHERE lat IS NOT NULL AND lon IS NOT NULL
-               AND (role IS NULL OR role = 2)
+             WHERE lat BETWEEN -90 AND 90
+               AND lon BETWEEN -180 AND 180
+               AND NOT (ABS(lat) < 5 AND ABS(lon) < 5)
                AND (name IS NULL OR name NOT LIKE '%🚫%')
-               AND last_seen <= NOW() - INTERVAL '7 days'
-               AND last_seen >  NOW() - INTERVAL '14 days'
+               AND (role IS NULL OR role NOT IN (1, 3))
+               AND GREATEST(last_seen, last_path_evidence_at) <= NOW() - INTERVAL '14 days'
+               AND GREATEST(last_seen, last_path_evidence_at) >  NOW() - INTERVAL '28 days'
                ${filters.nodes}`, filters.params),
       query(`SELECT COUNT(*) AS count FROM nodes
-             WHERE lat IS NOT NULL AND lon IS NOT NULL
-               AND (role IS NULL OR role = 2)
+             WHERE lat BETWEEN -90 AND 90
+               AND lon BETWEEN -180 AND 180
+               AND NOT (ABS(lat) < 5 AND ABS(lon) < 5)
                AND (name IS NULL OR name NOT LIKE '%🚫%')
-               AND last_seen > NOW() - INTERVAL '14 days'
+               AND (role IS NULL OR role NOT IN (1, 3))
+               AND GREATEST(last_seen, last_path_evidence_at) > NOW() - INTERVAL '28 days'
                ${filters.nodes}`, filters.params),
       query(`SELECT COUNT(*) AS count FROM nodes
              WHERE (name IS NULL OR name NOT LIKE '%🚫%')
@@ -750,6 +724,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
                WHERE lat IS NOT NULL AND lon IS NOT NULL
                  AND lat != 0 AND lon != 0
                  AND last_seen > NOW() - INTERVAL '7 days'
+                 AND (name IS NULL OR name NOT LIKE '%🚫%')
                  AND NOT (lat >= 49.8 AND lat <= 60.9 AND lon >= -8.7 AND lon <= 1.8)
                  AND (
                    (lat >= 50.75 AND lat <= 53.60 AND lon >= 3.35 AND lon <= 7.22) OR
@@ -789,13 +764,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
   }
 
   async function fetchObserverActivity(network: string | undefined) {
-    const params: unknown[] = [];
-    const conditions: string[] = [`p.time > NOW() - INTERVAL '24 hours'`];
-    if (network) {
-      params.push(network);
-      conditions.push(`p.network = $${params.length}`);
-    }
-    const where = conditions.join(' AND ');
+    const filters = networkFilters(network);
     return query<{ node_id: string; name: string | null; rx_24h: string; tx_24h: string; last_tx: string | null; last_rx: string | null }>(
       `SELECT
          n.node_id,
@@ -806,11 +775,13 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
          MAX(p.time)          FILTER (WHERE p.rx_node_id  = n.node_id)::text AS last_rx
        FROM nodes n
        JOIN packets p ON (p.rx_node_id = n.node_id OR p.src_node_id = n.node_id)
-       WHERE ${where}
+       WHERE p.time > NOW() - INTERVAL '24 hours'
+         AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
+         ${filters.packetsAlias('p')}
        GROUP BY n.node_id, n.name
        HAVING COUNT(p.packet_hash) FILTER (WHERE p.rx_node_id = n.node_id) > 0
        ORDER BY rx_24h DESC`,
-      params,
+      filters.params,
     );
   }
 

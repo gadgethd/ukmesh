@@ -4,6 +4,7 @@ import { normalizeMessage } from './normalize.js';
 import type { Incident, IncidentStatus, MessageRecord, ObserverObservation, OriginEstimate } from './types.js';
 import type { PublicIncident } from './sanitize.js';
 import type { SpamMessageConfig } from './config.js';
+import { privateNodePacketNetworkMatchSql } from '../privacy/networkScope.js';
 
 // ---------------------------------------------------------------------------
 // Persistence layer for message-spam detection.
@@ -48,34 +49,106 @@ function channelLabel(summary: string | null, channelHash: string | null): strin
  * Load decoded channel messages (one logical transmission per packet_hash)
  * within the analysis window, each with its geolocated observers.
  */
-export async function loadRecentMessages(cfg: SpamMessageConfig): Promise<MessageRecord[]> {
-  const hours = cfg.analysisWindowHours;
+export type SpamAnalysisWindow = { start: Date; end: Date };
+
+export async function countLogicalMessages(window: SpamAnalysisWindow): Promise<number> {
+  const result = await analyticsPool.query<{ count: string }>(
+    `SELECT COUNT(DISTINCT p.packet_hash)::text AS count
+       FROM packets p
+      WHERE p.packet_type = 5
+        AND p.time >= $1
+        AND p.time < $2
+        AND p.network = ANY($3)
+        AND p.payload ? 'decrypted'
+        AND p.payload->'decrypted' ? 'message'`,
+    [window.start, window.end, NETWORKS],
+  );
+  return Number(result.rows[0]?.count ?? 0);
+}
+
+export async function loadRecentMessages(
+  cfg: SpamMessageConfig,
+  fixedWindow?: SpamAnalysisWindow,
+): Promise<MessageRecord[]> {
+  const windowEnd = fixedWindow?.end ?? new Date();
+  const windowStart = fixedWindow?.start
+    ?? new Date(windowEnd.getTime() - cfg.analysisWindowHours * 60 * 60 * 1000);
 
   const msgRes = await analyticsPool.query<MsgRow>(
-    `SELECT DISTINCT ON (p.packet_hash)
-        p.packet_hash,
-        p.network,
-        p.payload->'decrypted'->>'sender'    AS sender,
-        p.payload->'decrypted'->>'message'   AS message,
-        p.payload->>'channelHash'            AS channel_hash,
-        p.payload->>'_summary'               AS summary,
-        p.payload->'decrypted'->>'timestamp' AS claimed_ts,
-        p.time                               AS observed_at
-     FROM packets p
-     WHERE p.packet_type = 5
-       AND p.time > NOW() - ($1 * INTERVAL '1 hour')
-       AND p.network = ANY($2)
-       AND p.payload ? 'decrypted'
-       AND p.payload->'decrypted' ? 'message'
-     ORDER BY p.packet_hash, p.time ASC`,
-    [hours, NETWORKS],
+    `WITH logical_messages AS (
+       SELECT DISTINCT ON (p.packet_hash)
+          p.packet_hash,
+          p.network,
+          p.payload->'decrypted'->>'sender'    AS sender,
+          p.payload->'decrypted'->>'message'   AS message,
+          p.payload->>'channelHash'            AS channel_hash,
+          p.payload->>'_summary'               AS summary,
+          p.payload->'decrypted'->>'timestamp' AS claimed_ts,
+          p.time                               AS observed_at
+       FROM packets p
+       WHERE p.packet_type = 5
+         AND p.time >= $1
+         AND p.time < $2
+         AND p.network = ANY($3)
+         AND p.payload ? 'decrypted'
+         AND p.payload->'decrypted' ? 'message'
+         AND COALESCE(p.payload->'decrypted'->>'sender', '') NOT LIKE '%🚫%'
+         AND NOT EXISTS (
+           SELECT 1 FROM nodes private_node
+            WHERE private_node.name LIKE '%🚫%'
+              AND ${privateNodePacketNetworkMatchSql('private_node', 'p')}
+              AND private_node.node_id IN (p.rx_node_id, p.src_node_id)
+         )
+       ORDER BY p.packet_hash, p.time ASC
+     ),
+     signature_keys AS (
+       SELECT logical_messages.*,
+              MD5(LOWER(BTRIM(COALESCE(message, '')))) AS signature,
+              LOWER(BTRIM(COALESCE(sender, ''))) AS normalized_sender
+         FROM logical_messages
+     ),
+     signature_stats AS (
+       SELECT network,
+              signature,
+              COUNT(*) AS signature_count,
+              COUNT(DISTINCT normalized_sender) AS distinct_sender_count
+         FROM signature_keys
+        GROUP BY network, signature
+     ),
+     signature_ranked AS (
+       SELECT signature_keys.*,
+              signature_stats.signature_count,
+              signature_stats.distinct_sender_count
+         FROM signature_keys
+         JOIN signature_stats USING (network, signature)
+     )
+     SELECT packet_hash, network, sender, message, channel_hash, summary, claimed_ts, observed_at
+       FROM signature_ranked
+      ORDER BY (
+                 signature_count >= $4
+                 AND distinct_sender_count <= $5
+               ) DESC,
+               signature_count DESC,
+               observed_at DESC,
+               packet_hash
+      LIMIT $6`,
+    [
+      windowStart,
+      windowEnd,
+      NETWORKS,
+      cfg.minTransmissions,
+      cfg.maxIndependentSenders,
+      cfg.maxCandidatePacketRows,
+    ],
   );
 
   if (msgRes.rows.length === 0) return [];
 
-  const hashes = msgRes.rows.map((r) => r.packet_hash);
+  const selectedRows = msgRes.rows.slice(0, cfg.maxMessagesPerRun);
+  const hashes = selectedRows.map((r) => r.packet_hash);
   const obsRes = await analyticsPool.query<ObsRow>(
-    `SELECT p.packet_hash,
+    `WITH ranked_observers AS (
+     SELECT p.packet_hash,
             p.rx_node_id        AS observer_id,
             n.lat, n.lon,
             MIN(p.hop_count)    AS min_hop,
@@ -84,13 +157,32 @@ export async function loadRecentMessages(cfg: SpamMessageConfig): Promise<Messag
      FROM packets p
      JOIN nodes n ON n.node_id = p.rx_node_id
      WHERE p.packet_type = 5
-       AND p.time > NOW() - ($1 * INTERVAL '1 hour')
-       AND p.network = ANY($2)
+       AND p.time >= $1
+       AND p.time < $2
+       AND p.network = ANY($3)
        AND p.rx_node_id IS NOT NULL
        AND n.lat IS NOT NULL AND n.lon IS NOT NULL
-       AND p.packet_hash = ANY($3)
-     GROUP BY p.packet_hash, p.rx_node_id, n.lat, n.lon`,
-    [hours, NETWORKS, hashes],
+       AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
+       AND NOT EXISTS (
+         SELECT 1 FROM nodes private_node
+         WHERE private_node.name LIKE '%🚫%'
+            AND ${privateNodePacketNetworkMatchSql('private_node', 'p')}
+            AND private_node.node_id IN (p.rx_node_id, p.src_node_id)
+       )
+       AND p.packet_hash = ANY($4)
+     GROUP BY p.packet_hash, p.rx_node_id, n.lat, n.lon
+     )
+     SELECT packet_hash, observer_id, lat, lon, min_hop, best_rssi, best_snr
+       FROM (
+         SELECT ranked_observers.*,
+                ROW_NUMBER() OVER (
+                  PARTITION BY packet_hash
+                  ORDER BY best_snr DESC NULLS LAST, observer_id
+                ) AS observer_rank
+           FROM ranked_observers
+       ) bounded_observers
+      WHERE observer_rank <= $5`,
+    [windowStart, windowEnd, NETWORKS, hashes, cfg.maxObserversPerMessage],
   );
 
   const obsByHash = new Map<string, ObserverObservation[]>();
@@ -108,8 +200,8 @@ export async function loadRecentMessages(cfg: SpamMessageConfig): Promise<Messag
   }
 
   const records: MessageRecord[] = [];
-  for (const r of msgRes.rows) {
-    const text = r.message ?? '';
+  for (const r of selectedRows) {
+    const text = (r.message ?? '').slice(0, cfg.maxNormalizedChars);
     if (text.trim().length === 0) continue;
     const claimed = r.claimed_ts != null && /^\d+$/.test(r.claimed_ts) ? Number(r.claimed_ts) : undefined;
     records.push({
@@ -141,6 +233,67 @@ export interface PersistableIncident {
   publicJson: PublicIncident;
 }
 
+export async function withSpamAnalyzerLease<T>(task: () => Promise<T>): Promise<T | null> {
+  const client = await pool.connect();
+  const leaseKey = 'ukmesh-spam-message-analyzer-v2';
+  try {
+    const acquired = await client.query<{ acquired: boolean }>(
+      'SELECT pg_try_advisory_lock(hashtext($1)) AS acquired',
+      [leaseKey],
+    );
+    if (!acquired.rows[0]?.acquired) return null;
+    try {
+      return await task();
+    } finally {
+      await client.query('SELECT pg_advisory_unlock(hashtext($1))', [leaseKey]);
+    }
+  } finally {
+    client.release();
+  }
+}
+
+export async function expireSpamIncidentLifecycle(cfg: SpamMessageConfig): Promise<number> {
+  const result = await pool.query(
+    `UPDATE spam_message_incidents
+        SET status = 'closed',
+            public_json = jsonb_set(public_json, '{status}', '"closed"'::jsonb, true),
+            updated_at = NOW()
+      WHERE status = 'active'
+        AND last_seen <= NOW() - ($1 * INTERVAL '1 millisecond')`,
+    [cfg.ongoingWindowMs],
+  );
+  return result.rowCount ?? 0;
+}
+
+export function selectIncidentEvidenceMembers(
+  members: MessageRecord[],
+  limit: number,
+  representativeText: string,
+): MessageRecord[] {
+  const boundedLimit = Math.max(1, Math.floor(limit));
+  if (members.length <= boundedLimit) return [...members].sort((a, b) => a.observedAt - b.observedAt);
+  const chronological = [...members].sort((a, b) => a.observedAt - b.observedAt);
+  const selected = new Map<string, MessageRecord>();
+  const add = (member: MessageRecord | undefined) => {
+    if (member) selected.set(member.id, member);
+  };
+  add(chronological[0]);
+  add(chronological.find((member) => member.text === representativeText));
+  const newestBudget = Math.max(1, Math.floor(boundedLimit / 2));
+  for (const member of chronological.slice(-newestBudget)) add(member);
+  const remaining = boundedLimit - selected.size;
+  if (remaining > 0) {
+    const stride = Math.max(1, Math.floor(chronological.length / remaining));
+    for (let index = 0; index < chronological.length && selected.size < boundedLimit; index += stride) {
+      add(chronological[index]);
+    }
+  }
+  for (let index = chronological.length - 1; index >= 0 && selected.size < boundedLimit; index -= 1) {
+    add(chronological[index]);
+  }
+  return [...selected.values()].sort((a, b) => a.observedAt - b.observedAt);
+}
+
 /**
  * Replace the in-window incidents with a freshly computed set.
  * - Upserts each incident, preserving the earliest `first_seen` ever recorded.
@@ -154,12 +307,11 @@ export async function persistIncidents(
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    await client.query(`SET LOCAL statement_timeout = '${Math.trunc(cfg.dbStatementTimeoutMs)}ms'`);
 
-    const keptKeys: string[] = [];
     let active = 0;
 
     for (const { incident, origin, status, publicJson } of items) {
-      keptKeys.push(incident.key);
       if (status === 'active') active += 1;
 
       await client.query(
@@ -219,7 +371,12 @@ export async function persistIncidents(
 
       // Replace members for this incident.
       await client.query('DELETE FROM spam_message_members WHERE incident_key = $1', [incident.key]);
-      for (const m of incident.members) {
+      const evidenceMembers = selectIncidentEvidenceMembers(
+        incident.members,
+        cfg.maxEvidenceMembersPerIncident,
+        incident.representativeText,
+      );
+      for (const m of evidenceMembers) {
         const obs = m.observers;
         const minHop = obs.reduce<number | null>((acc, o) => {
           if (o.hopCount == null) return acc;
@@ -256,24 +413,9 @@ export async function persistIncidents(
       }
     }
 
-    // Remove in-window incidents that no longer cluster (stale), keep history.
-    let removed = 0;
-    if (keptKeys.length > 0) {
-      const del = await client.query(
-        `DELETE FROM spam_message_incidents
-         WHERE last_seen > NOW() - ($1 * INTERVAL '1 hour')
-           AND incident_key <> ALL($2)`,
-        [cfg.analysisWindowHours, keptKeys],
-      );
-      removed = del.rowCount ?? 0;
-    } else {
-      const del = await client.query(
-        `DELETE FROM spam_message_incidents
-         WHERE last_seen > NOW() - ($1 * INTERVAL '1 hour')`,
-        [cfg.analysisWindowHours],
-      );
-      removed = del.rowCount ?? 0;
-    }
+    // A bounded pass is not absence evidence. Lifecycle expiry is independent,
+    // so never delete a prior incident merely because this page did not see it.
+    const removed = 0;
 
     // Re-evaluate active/closed for ALL incidents based on age (covers ones that
     // aged out of the window this run and should now flip to closed).

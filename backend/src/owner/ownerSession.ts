@@ -2,9 +2,10 @@ import type { Request } from 'express';
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
 
 export type OwnerSession = {
-  nodeIds: string[];
+  v: 2;
+  mqttUsername: string;
   exp: number;
-  mqttUsername?: string;
+  legacy?: boolean;
 };
 
 function getOwnerCookieKey(): Buffer {
@@ -17,13 +18,17 @@ export function encryptOwnerSession(payload: OwnerSession): string {
   const iv = randomBytes(12);
   const key = getOwnerCookieKey();
   const cipher = createCipheriv('aes-256-gcm', key, iv);
-  const plaintext = Buffer.from(JSON.stringify(payload), 'utf8');
+  const plaintext = Buffer.from(JSON.stringify({
+    v: 2,
+    mqttUsername: payload.mqttUsername.trim(),
+    exp: payload.exp,
+  }), 'utf8');
   const encrypted = Buffer.concat([cipher.update(plaintext), cipher.final()]);
   const tag = cipher.getAuthTag();
   return `${iv.toString('base64url')}.${tag.toString('base64url')}.${encrypted.toString('base64url')}`;
 }
 
-function decryptOwnerSession(token: string): OwnerSession | null {
+export function decryptOwnerSession(token: string): OwnerSession | null {
   try {
     const [ivB64, tagB64, ciphertextB64] = token.split('.');
     if (!ivB64 || !tagB64 || !ciphertextB64) return null;
@@ -34,14 +39,20 @@ function decryptOwnerSession(token: string): OwnerSession | null {
     const decipher = createDecipheriv('aes-256-gcm', key, iv);
     decipher.setAuthTag(tag);
     const decoded = Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString('utf8');
-    const parsed = JSON.parse(decoded) as Partial<OwnerSession>;
-    if (!Array.isArray(parsed.nodeIds) || typeof parsed.exp !== 'number') return null;
-    const nodeIds = parsed.nodeIds
-      .map((value) => String(value).trim().toUpperCase())
-      .filter((value) => /^[0-9A-F]{64}$/.test(value));
-    if (nodeIds.length < 1) return null;
-    const mqttUsername = typeof parsed.mqttUsername === 'string' ? parsed.mqttUsername.trim() : undefined;
-    return { nodeIds, exp: parsed.exp, mqttUsername: mqttUsername || undefined };
+    const parsed = JSON.parse(decoded) as Record<string, unknown>;
+    const mqttUsername = typeof parsed['mqttUsername'] === 'string'
+      ? parsed['mqttUsername'].trim()
+      : '';
+    const exp = parsed['exp'];
+    if (!mqttUsername || typeof exp !== 'number' || !Number.isFinite(exp)) return null;
+    if (parsed['v'] === 2) return { v: 2, mqttUsername, exp };
+
+    // A username-bearing v1 cookie is an identity hint only. Embedded node IDs
+    // are ignored and current server-side authorization is re-read.
+    if (Array.isArray(parsed['nodeIds'])) {
+      return { v: 2, mqttUsername, exp, legacy: true };
+    }
+    return null;
   } catch {
     return null;
   }

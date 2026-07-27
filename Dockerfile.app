@@ -27,4 +27,5 @@ RUN npm run build
 FROM nginx:alpine
 COPY --from=frontend-builder /build/frontend/dist /usr/share/nginx/html
 COPY nginx.app.conf /etc/nginx/conf.d/default.conf
+COPY nginx.security-headers.conf /etc/nginx/snippets/security-headers.conf
 EXPOSE 80

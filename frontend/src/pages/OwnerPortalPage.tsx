@@ -794,9 +794,18 @@ const OwnerMapView: React.FC<{
         const coordinates = feature.geometry.coordinates.slice() as [number, number];
         const name = String(feature.properties?.name ?? 'Node');
         const details = String(feature.properties?.details ?? '');
+        const content = document.createElement('div');
+        content.className = 'node-popup';
+        const title = document.createElement('div');
+        title.className = 'node-popup__title';
+        title.textContent = name;
+        const meta = document.createElement('div');
+        meta.className = 'node-popup__meta';
+        meta.textContent = details;
+        content.append(title, meta);
         popup
           .setLngLat(coordinates)
-          .setHTML(`<div class="node-popup"><div class="node-popup__title">${name}</div><div class="node-popup__meta">${details}</div></div>`)
+          .setDOMContent(content)
           .addTo(map);
       });
 

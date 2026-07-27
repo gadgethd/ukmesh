@@ -1,8 +1,7 @@
 import type { Router } from 'express';
 import type { QueryResultRow } from 'pg';
-import { resolveRequestNetwork } from '../../http/requestScope.js';
+import { resolvePublicNetworkScope } from '../../http/requestScope.js';
 import type { NetworkFilters } from '../utils/networkFilters.js';
-import { isPrivateNode } from '../utils/privateNode.js';
 
 type QueryFn = <T extends QueryResultRow = QueryResultRow>(text: string, params?: unknown[]) => Promise<{ rows: T[] }>;
 type Deps = {
@@ -14,8 +13,7 @@ type Deps = {
 export function registerRfValidationRoutes(router: Router, deps: Deps): void {
   router.get('/rf-validation', deps.limiter, async (req, res) => {
     try {
-      const requestedNetwork = resolveRequestNetwork(req.query['network'], req.headers, 'ukmesh');
-      const network = requestedNetwork === 'all' ? undefined : requestedNetwork;
+      const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const requestedLimit = Number(req.query['limit'] ?? 100);
       const limit = Number.isFinite(requestedLimit) ? Math.min(250, Math.max(25, Math.round(requestedLimit))) : 100;
       const filters = deps.networkFilters(network);
@@ -40,6 +38,8 @@ export function registerRfValidationRoutes(router: Router, deps: Deps): void {
          JOIN nodes a ON a.node_id = nl.node_a_id
          JOIN nodes b ON b.node_id = nl.node_b_id
          WHERE nl.last_observed > NOW() - INTERVAL '30 days'
+           AND (a.name IS NULL OR a.name NOT LIKE '%🚫%')
+           AND (b.name IS NULL OR b.name NOT LIKE '%🚫%')
            AND (a.role IS NULL OR a.role = 2)
            AND (b.role IS NULL OR b.role = 2)
            ${filters.nodesAlias('a')}
@@ -60,8 +60,8 @@ export function registerRfValidationRoutes(router: Router, deps: Deps): void {
       const links = result.rows.map((row) => ({
         source: row.node_a_id,
         target: row.node_b_id,
-        sourceName: isPrivateNode(row.name_a) ? 'Private Node' : row.name_a,
-        targetName: isPrivateNode(row.name_b) ? 'Private Node' : row.name_b,
+        sourceName: row.name_a,
+        targetName: row.name_b,
         observations: Number(row.observed_count),
         strongObservations: Number(row.multibyte_observed_count),
         pathLossDb: row.itm_path_loss_db,

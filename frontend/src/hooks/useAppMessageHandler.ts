@@ -247,6 +247,18 @@ export function useAppMessageHandler({
 
     if (msg.type === 'packet') {
       const packet = msg.data as LivePacketData;
+      // GroupText (type 5) drives the live feed + live path. Flush it
+      // immediately so the UI never waits on the 16ms batch window.
+      if (packet.packetType === 5) {
+        if (rafRef.current !== null) {
+          clearTimeout(rafRef.current);
+          rafRef.current = null;
+        }
+        pending.packets.push(packet);
+        pending.packetObserved = true;
+        flushRef.current();
+        return;
+      }
       pending.packets.push(packet);
       pending.packetObserved = true;
       scheduleFlush();

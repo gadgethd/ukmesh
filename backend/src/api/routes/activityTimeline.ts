@@ -1,6 +1,6 @@
 import type { Router } from 'express';
 import type { QueryResultRow } from 'pg';
-import { resolveRequestNetwork } from '../../http/requestScope.js';
+import { resolvePublicNetworkScope } from '../../http/requestScope.js';
 import type { NetworkFilters } from '../utils/networkFilters.js';
 
 type QueryFn = <T extends QueryResultRow = QueryResultRow>(text: string, params?: unknown[]) => Promise<{ rows: T[] }>;
@@ -18,8 +18,7 @@ export function registerActivityTimelineRoutes(router: Router, deps: Deps): void
       const requestedBucketMinutes = Number(req.query['bucket'] ?? 15);
       const minutes = Number.isFinite(requestedMinutes) ? Math.min(1_440, Math.max(60, Math.round(requestedMinutes))) : 360;
       const bucketMinutes = Number.isFinite(requestedBucketMinutes) ? Math.min(60, Math.max(5, Math.round(requestedBucketMinutes))) : 15;
-      const requestedNetwork = resolveRequestNetwork(req.query['network'], req.headers, 'ukmesh');
-      const network = requestedNetwork === 'all' ? undefined : requestedNetwork;
+      const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const filters = deps.networkFilters(network);
       const windowParam = `$${filters.params.length + 1}`;
       const bucketParam = `$${filters.params.length + 2}`;
@@ -38,6 +37,12 @@ export function registerActivityTimelineRoutes(router: Router, deps: Deps): void
            FROM packets p
            WHERE p.time > NOW() - ${windowParam}::interval
              ${filters.packetsAlias('p')}
+             AND NOT EXISTS (
+               SELECT 1
+               FROM nodes private_node
+               WHERE private_node.name LIKE '%🚫%'
+                 AND private_node.node_id IN (p.rx_node_id, p.src_node_id)
+             )
          ),
          packet_buckets AS (
            SELECT bucket,

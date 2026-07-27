@@ -183,13 +183,23 @@ CREATE INDEX IF NOT EXISTS node_status_samples_network_time_idx
 
 -- ─── Cached beta-path history (pre-aggregated purple segments) ───────────────
 
+CREATE TABLE IF NOT EXISTS public_visibility_state (
+  singleton    BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton),
+  generation   BIGINT NOT NULL DEFAULT 1,
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+INSERT INTO public_visibility_state (singleton)
+VALUES (TRUE)
+ON CONFLICT (singleton) DO NOTHING;
+
 CREATE TABLE IF NOT EXISTS path_history_cache (
   scope                  TEXT PRIMARY KEY,
   window_start           TIMESTAMPTZ NOT NULL,
   updated_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   packet_count           INTEGER NOT NULL DEFAULT 0,
   resolved_packet_count  INTEGER NOT NULL DEFAULT 0,
-  segment_counts         JSONB NOT NULL DEFAULT '[]'::jsonb
+  segment_counts         JSONB NOT NULL DEFAULT '[]'::jsonb,
+  visibility_generation  BIGINT NOT NULL DEFAULT 0
 );
 
 -- ─── Coverage polygons (one row per node, recalculated on position change) ───

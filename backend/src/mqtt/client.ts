@@ -10,6 +10,7 @@ import { invalidateResolveCache, setResolveCache, getStickyNodeMap, mergeStickyN
 import { resolvePool } from '../path-beta/resolvePool.js';
 import type { LivePacket } from '../types/index.js';
 import { decodePacketCompat } from './decodePacket.js';
+import { shouldDiscardUnverifiedTxAdvert, statusEnvelopeTargetsObserver } from './identityBinding.js';
 import { parseMqttTopic } from './topic.js';
 
 type PacketCallback      = (packet: LivePacket) => void;
@@ -485,24 +486,6 @@ function buildSummary(payloadType: number, decoded: unknown, rawHex?: string): s
   }
 }
 
-function buildAdvertFallbackPayload(originId: string, originName?: string): Record<string, unknown> {
-  const appData: Record<string, unknown> = {
-    flags: 0,
-    deviceRole: 2,
-    hasLocation: false,
-    hasName: Boolean(originName),
-  };
-  if (originName) appData['name'] = originName;
-  return {
-    type: 4,
-    version: 0,
-    isValid: false,
-    publicKey: originId,
-    appData,
-  };
-}
-
-
 export async function startMqttClient(): Promise<void> {
   // Must complete before connecting to MQTT — the broker replays buffered
   // messages immediately on connect, and knownNodeIds must be populated first.
@@ -573,18 +556,20 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
   }
 
   const origin   = typeof json['origin'] === 'string' ? json['origin'] : undefined;
-  const originId = normalizeNodeId(json['origin_id']);
-
   if (suffix === 'status') {
     const model    = json['model']            as string | undefined;
     const firmware = json['firmware_version'] as string | undefined;
 
-    const nodeId = originId ?? observerKey;
+    if (!statusEnvelopeTargetsObserver(observerKey, json)) {
+      console.warn('[mqtt] rejected status envelope with identity mismatch');
+      return;
+    }
+    const nodeId = observerKey;
     const nodeIata = topicIataForNode(nodeId, observerKey, iata);
     const writes: Promise<unknown>[] = [upsertNode(nodeId, {
       name:            origin,
       iata:            nodeIata,
-      publicKey:       originId,
+      publicKey:       observerKey,
       hardwareModel:   (model    && model    !== 'unknown') ? model    : undefined,
       firmwareVersion: (firmware && firmware !== 'unknown') ? firmware : undefined,
       network,
@@ -812,20 +797,16 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
       && 'appData' in innerPayload
       && srcNodeId
   );
-  const useTxAdvertFallback = direction === 'tx'
-    && resolvedPacketType === 4
-    && Boolean(originId)
-    && !hasDecodedAdvertPayload;
+  const discardUnverifiedTxAdvert = shouldDiscardUnverifiedTxAdvert({
+    direction,
+    packetType: resolvedPacketType,
+    decodedAdvertPayload: hasDecodedAdvertPayload,
+  });
 
-  if (useTxAdvertFallback && originId) {
-    srcNodeId = originId;
-    summary ??= origin;
-    innerPayload = buildAdvertFallbackPayload(originId, origin);
-  }
-
-  // For Router packets (type 1), also try originId as fallback
-  if (!srcNodeId && resolvedPacketType === 1 && originId) {
-    srcNodeId = originId;
+  if (discardUnverifiedTxAdvert) {
+    srcNodeId = undefined;
+    summary = undefined;
+    innerPayload = undefined;
   }
 
   if (resolvedPacketType == null) {
@@ -847,38 +828,6 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
     allowTestOverride: network === 'test',
   }).catch((err: Error) => console.error('[mqtt] observer upsert error:', err.message));
   emitNode(observerKey, { network, observerId: observerKey });
-
-  if (useTxAdvertFallback && originId && network !== 'test') {
-    const nodeIata = topicIataForNode(originId, observerKey, iata);
-    try {
-      await upsertNode(originId, {
-        name: origin,
-        iata: nodeIata,
-        publicKey: originId,
-        network,
-      });
-    } catch (err) {
-      console.error('[mqtt] upsertNode error:', (err as Error).message);
-    }
-    if (tryCountAdvert(finalHash)) {
-      try {
-        advertCount = await incrementAdvertCount(originId);
-      } catch (err) {
-        console.error('[mqtt] incrementAdvertCount error:', (err as Error).message);
-      }
-    }
-    emitNodeUpsert({
-      node_id: originId,
-      name: origin,
-      iata: nodeIata,
-      network,
-      observer_id: observerKey,
-      public_key: originId,
-      last_seen: new Date().toISOString(),
-      is_online: true,
-      advert_count: advertCount,
-    });
-  }
 
   // Decoded payloads omit mctomqtt's envelope direction. Keep that metadata in
   // the stored JSON so RX/TX counts do not classify every decoded packet as RX.
@@ -994,29 +943,49 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
 
 export async function backfillHistoricalLinks(
   queueFn: (
+    packetHash: string,
     rxNodeId: string,
     srcNodeId: string | undefined,
     path: string[],
     hopCount: number | undefined,
     pathHashSizeBytes: number | undefined,
-  ) => void,
+  ) => void | Promise<unknown>,
+  options: { windowEnd?: Date; batchSize?: number } = {},
 ): Promise<void> {
-  const res = await query<{
-    rx_node_id: string; src_node_id: string | null; hop_count: number | null; raw_hex: string;
-  }>(
-    `SELECT DISTINCT ON (packet_hash)
-       rx_node_id, src_node_id, hop_count, raw_hex
-     FROM packets
-     WHERE rx_node_id IS NOT NULL AND raw_hex IS NOT NULL AND raw_hex != ''
-     ORDER BY packet_hash, time DESC`,
-  );
-
+  const windowEnd = options.windowEnd ?? new Date();
+  const batchSize = Math.min(10_000, Math.max(100, Math.floor(options.batchSize ?? 2_000)));
+  let cursor = '';
   let queued = 0;
-  for (const row of res.rows) {
-    try {
-      const compat = decodePacketCompat(row.raw_hex, keyStore);
+  while (true) {
+    const res = await query<{
+      packet_hash: string; rx_node_id: string; src_node_id: string | null; hop_count: number | null; raw_hex: string;
+    }>(
+      `SELECT DISTINCT ON (packet_hash)
+         packet_hash, rx_node_id, src_node_id, hop_count, raw_hex
+       FROM packets
+       WHERE time < $1
+         AND packet_hash > $2
+         AND rx_node_id IS NOT NULL
+         AND raw_hex IS NOT NULL
+         AND raw_hex != ''
+       ORDER BY packet_hash, time DESC
+       LIMIT $3`,
+      [windowEnd, cursor, batchSize],
+    );
+    if (res.rows.length === 0) break;
+    for (const row of res.rows) {
+      let compat: ReturnType<typeof decodePacketCompat>;
+      try {
+        compat = decodePacketCompat(row.raw_hex, keyStore);
+      } catch {
+        // Skip undecipherable packets
+        continue;
+      }
       if (compat.metadataValid && (compat.pathHashSize ?? 1) > 1 && compat.pathHashes && compat.pathHashes.length > 0) {
-        queueFn(
+        // Admission failures are operational failures, not decode failures.
+        // Let the privileged caller abort rather than publish a partial graph.
+        await queueFn(
+          row.packet_hash,
           row.rx_node_id,
           row.src_node_id ?? undefined,
           compat.pathHashes,
@@ -1025,9 +994,9 @@ export async function backfillHistoricalLinks(
         );
         queued++;
       }
-    } catch {
-      // Skip undecipherable packets
     }
+    cursor = res.rows.at(-1)!.packet_hash;
+    if (res.rows.length < batchSize) break;
   }
   console.log(`[app] historical link backfill: queued ${queued} packets`);
 }

@@ -11,20 +11,32 @@ type PathHistoryCacheRow = {
   packet_count: number;
   resolved_packet_count: number;
   segment_counts: Array<{ count?: number }> | null;
+  visibility_generation: number;
 };
 
 type PathingRepositoryDeps = {
-  getPathHistoryCache: (scope: string) => Promise<PathHistoryCacheRow | null>;
+  getPathHistoryCache: (
+    scope: string,
+    visibilityGeneration: number,
+  ) => Promise<PathHistoryCacheRow | null>;
+  getPublicVisibilityGeneration: () => Promise<number>;
   query: QueryFn;
 };
 
 export type PathingRepository = ReturnType<typeof createPathingRepository>;
 
 export function createPathingRepository(deps: PathingRepositoryDeps) {
-  const { getPathHistoryCache, query } = deps;
+  const { getPathHistoryCache, getPublicVisibilityGeneration, query } = deps;
 
-  async function fetchPathHistory(scope: string): Promise<PathHistoryCacheRow | null> {
-    return getPathHistoryCache(scope);
+  async function fetchVisibilityGeneration(): Promise<number> {
+    return getPublicVisibilityGeneration();
+  }
+
+  async function fetchPathHistory(
+    scope: string,
+    visibilityGeneration: number,
+  ): Promise<PathHistoryCacheRow | null> {
+    return getPathHistoryCache(scope, visibilityGeneration);
   }
 
   async function fetchPathLearning(network: string, limit: number) {
@@ -37,10 +49,12 @@ export function createPathingRepository(deps: PathingRepositoryDeps) {
         probability: number;
         count: number;
       }>(
-        `SELECT prefix, receiver_region, prev_prefix, node_id, probability, count
-         FROM path_prefix_priors
-         WHERE network = $1
-         ORDER BY count DESC
+        `SELECT pp.prefix, pp.receiver_region, pp.prev_prefix, pp.node_id, pp.probability, pp.count
+         FROM path_prefix_priors pp
+         JOIN nodes n ON n.node_id = pp.node_id
+         WHERE pp.network = $1
+           AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
+         ORDER BY pp.count DESC
          LIMIT $2`,
         [network, limit],
       ),
@@ -51,10 +65,14 @@ export function createPathingRepository(deps: PathingRepositoryDeps) {
         probability: number;
         count: number;
       }>(
-        `SELECT from_node_id, to_node_id, receiver_region, probability, count
-         FROM path_transition_priors
-         WHERE network = $1
-         ORDER BY count DESC
+        `SELECT pt.from_node_id, pt.to_node_id, pt.receiver_region, pt.probability, pt.count
+         FROM path_transition_priors pt
+         JOIN nodes from_node ON from_node.node_id = pt.from_node_id
+         JOIN nodes to_node ON to_node.node_id = pt.to_node_id
+         WHERE pt.network = $1
+           AND (from_node.name IS NULL OR from_node.name NOT LIKE '%🚫%')
+           AND (to_node.name IS NULL OR to_node.name NOT LIKE '%🚫%')
+         ORDER BY pt.count DESC
          LIMIT $2`,
         [network, limit],
       ),
@@ -73,12 +91,16 @@ export function createPathingRepository(deps: PathingRepositoryDeps) {
         score: number;
         consistency_penalty: number;
       }>(
-        `SELECT from_node_id, to_node_id, receiver_region, hour_bucket,
-                observed_count, expected_count, missing_count, directional_support,
-                recency_score, reliability, itm_path_loss_db, score, consistency_penalty
-         FROM path_edge_priors
-         WHERE network = $1
-         ORDER BY score DESC, observed_count DESC
+        `SELECT pe.from_node_id, pe.to_node_id, pe.receiver_region, pe.hour_bucket,
+                pe.observed_count, pe.expected_count, pe.missing_count, pe.directional_support,
+                pe.recency_score, pe.reliability, pe.itm_path_loss_db, pe.score, pe.consistency_penalty
+         FROM path_edge_priors pe
+         JOIN nodes from_node ON from_node.node_id = pe.from_node_id
+         JOIN nodes to_node ON to_node.node_id = pe.to_node_id
+         WHERE pe.network = $1
+           AND (from_node.name IS NULL OR from_node.name NOT LIKE '%🚫%')
+           AND (to_node.name IS NULL OR to_node.name NOT LIKE '%🚫%')
+         ORDER BY pe.score DESC, pe.observed_count DESC
          LIMIT $2`,
         [network, limit],
       ),
@@ -90,10 +112,16 @@ export function createPathingRepository(deps: PathingRepositoryDeps) {
         probability: number;
         count: number;
       }>(
-        `SELECT receiver_region, hour_bucket, motif_len, node_ids, probability, count
-         FROM path_motif_priors
-         WHERE network = $1
-         ORDER BY count DESC
+        `SELECT pm.receiver_region, pm.hour_bucket, pm.motif_len, pm.node_ids, pm.probability, pm.count
+         FROM path_motif_priors pm
+         WHERE pm.network = $1
+           AND NOT EXISTS (
+             SELECT 1
+             FROM nodes private_node
+             WHERE private_node.name LIKE '%🚫%'
+               AND private_node.node_id = ANY(string_to_array(pm.node_ids, '>'))
+           )
+         ORDER BY pm.count DESC
          LIMIT $2`,
         [network, limit],
       ),
@@ -122,6 +150,7 @@ export function createPathingRepository(deps: PathingRepositoryDeps) {
   }
 
   return {
+    fetchVisibilityGeneration,
     fetchPathHistory,
     fetchPathLearning,
   };
