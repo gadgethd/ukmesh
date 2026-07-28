@@ -23,6 +23,7 @@ COMPLETED = 'meshcore:link:v3:completed'
 COUNTERS = 'meshcore:link:v3:counters'
 REBUILD = 'meshcore:link:v3:rebuild'
 WORKER_HEARTBEAT = 'meshcore:link:v3:worker_heartbeat'
+EVENTS = 'meshcore:link:v3:events'
 
 MAX_JOBS = max(1, min(100_000, int(os.environ.get('LINK_QUEUE_V3_MAX_JOBS', '5000'))))
 MAX_BYTES = max(1, min(1024 * 1024 * 1024, int(os.environ.get('LINK_QUEUE_V3_MAX_BYTES', str(64 * 1024 * 1024)))))
@@ -62,6 +63,8 @@ if ARGV[8] == '' and redis.call('EXISTS', KEYS[9]) == 1 then
 else
   redis.call('LPUSH', KEYS[1], ARGV[1])
 end
+redis.call('LPUSH', KEYS[11], 'admit')
+redis.call('LTRIM', KEYS[11], 0, 255)
 return {'accepted', ARGV[1]}
 """
 
@@ -86,6 +89,8 @@ while true do
     redis.call('HSET', KEYS[6], job_id, ARGV[1])
     redis.call('ZADD', KEYS[5], ARGV[2], job_id)
     local payload = redis.call('HGET', KEYS[2], job_id)
+    redis.call('LPUSH', KEYS[9], 'claim')
+    redis.call('LTRIM', KEYS[9], 0, 255)
     return {job_id, payload or '', redis.call('HGET', KEYS[4], job_id)}
   end
 end
@@ -107,6 +112,8 @@ redis.call('ZADD', KEYS[10], ARGV[3], ARGV[1])
 local count = math.max(0, tonumber(redis.call('HGET', KEYS[9], 'count') or '0') - 1)
 local bytes = math.max(0, tonumber(redis.call('HGET', KEYS[9], 'bytes') or '0') - payload_bytes)
 redis.call('HSET', KEYS[9], 'count', count, 'bytes', bytes)
+redis.call('LPUSH', KEYS[11], 'ack')
+redis.call('LTRIM', KEYS[11], 0, 255)
 return 1
 """
 
@@ -121,10 +128,14 @@ local attempts = tonumber(redis.call('HGET', KEYS[4], ARGV[1]) or '0')
 if attempts >= tonumber(ARGV[3]) then
   redis.call('HSET', KEYS[3], ARGV[1], 'dead')
   redis.call('LPUSH', KEYS[8], ARGV[1])
+  redis.call('LPUSH', KEYS[9], 'dead')
+  redis.call('LTRIM', KEYS[9], 0, 255)
   return 'dead'
 end
 redis.call('HSET', KEYS[3], ARGV[1], 'queued')
 redis.call('LPUSH', KEYS[1], ARGV[1])
+redis.call('LPUSH', KEYS[9], 'retry')
+redis.call('LTRIM', KEYS[9], 0, 255)
 return 'retry'
 """
 
@@ -148,6 +159,10 @@ for _, job_id in ipairs(expired) do
     redis.call('LPUSH', KEYS[4], job_id)
     count = count + 1
   end
+end
+if count > 0 then
+  redis.call('LPUSH', KEYS[5], 'reap')
+  redis.call('LTRIM', KEYS[5], 0, 255)
 end
 return count
 """
@@ -187,9 +202,9 @@ def physical_identity(node_a_id: str, node_b_id: str, generation: str | None = N
 def admit(client, job: dict) -> tuple[str, str | None]:
     payload = json.dumps(job, separators=(',', ':'), sort_keys=True)
     result = client.eval(
-        ADMIT_SCRIPT, 10,
+        ADMIT_SCRIPT, 11,
         READY, PAYLOADS, STATES, ATTEMPTS, BYTES, DEDUPE, DEDUPE_BY_JOB,
-        DEFERRED, REBUILD, COUNTERS,
+        DEFERRED, REBUILD, COUNTERS, EVENTS,
         job['job_id'], job['dedupe_key'], payload, _payload_bytes(payload),
         MAX_JOBS, MAX_BYTES, MAX_PAYLOAD_BYTES, job.get('generation') or '',
     )
@@ -212,8 +227,8 @@ def admit_physical(client, node_a_id: str, node_b_id: str, generation: str | Non
 def claim(client) -> tuple[str, str, dict, int] | None:
     token = secrets.token_hex(16)
     result = client.eval(
-        CLAIM_SCRIPT, 8, READY, PAYLOADS, STATES, ATTEMPTS, LEASES, TOKENS,
-        DEFERRED, REBUILD,
+        CLAIM_SCRIPT, 9, READY, PAYLOADS, STATES, ATTEMPTS, LEASES, TOKENS,
+        DEFERRED, REBUILD, EVENTS,
         token, int(time.time() * 1000) + LEASE_MS,
     )
     if not result:
@@ -223,9 +238,9 @@ def claim(client) -> tuple[str, str, dict, int] | None:
 
 def ack(client, job_id: str, token: str) -> bool:
     result = client.eval(
-        ACK_SCRIPT, 10,
+        ACK_SCRIPT, 11,
         READY, PAYLOADS, STATES, ATTEMPTS, BYTES, TOKENS, LEASES, DEAD,
-        COUNTERS, COMPLETED,
+        COUNTERS, COMPLETED, EVENTS,
         job_id, token, int(time.time() * 1000) + COMPLETED_RETENTION_MS,
     )
     return int(result) == 1
@@ -233,15 +248,15 @@ def ack(client, job_id: str, token: str) -> bool:
 
 def nack(client, job_id: str, token: str) -> str:
     return str(client.eval(
-        NACK_SCRIPT, 8,
-        READY, PAYLOADS, STATES, ATTEMPTS, BYTES, TOKENS, LEASES, DEAD,
+        NACK_SCRIPT, 9,
+        READY, PAYLOADS, STATES, ATTEMPTS, BYTES, TOKENS, LEASES, DEAD, EVENTS,
         job_id, token, MAX_ATTEMPTS,
     ))
 
 
 def reap(client, limit: int = 100) -> int:
     return int(client.eval(
-        REAP_SCRIPT, 4, LEASES, STATES, TOKENS, READY,
+        REAP_SCRIPT, 5, LEASES, STATES, TOKENS, READY, EVENTS,
         int(time.time() * 1000), limit,
     ))
 

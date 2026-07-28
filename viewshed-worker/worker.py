@@ -12,6 +12,7 @@ import logging
 import math
 import multiprocessing
 import os
+import random
 import subprocess
 import tempfile
 import threading
@@ -1742,11 +1743,23 @@ def worker_loop():
                     process_planned_job(db, r_client, job)
                 else:
                     process_job(db, r_client, job)
+        except psycopg2.errors.DeadlockDetected as exc:
+            log.warning(f'{name}: database deadlock detected — rolling back and recovering: {exc}')
+            try:
+                db.rollback()
+            except Exception:
+                db = wait_for_db()
+            time.sleep(random.uniform(0.25, 1.25))
         except psycopg2.OperationalError:
             log.warning(f'{name}: DB connection lost — reconnecting')
             db = wait_for_db()
         except Exception as exc:
             log.error(f'{name}: job error: {exc}', exc_info=True)
+            try:
+                if db and not db.closed:
+                    db.rollback()
+            except Exception:
+                db = wait_for_db()
 
 
 def resolve_node_ref(db, ref: str) -> dict:

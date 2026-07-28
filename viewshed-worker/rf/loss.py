@@ -1,4 +1,5 @@
 import math
+import os
 
 import numpy as np
 from osgeo import gdal
@@ -12,6 +13,9 @@ from rf.config import (
     R_EARTH_M,
     current_usable_path_loss_db,
 )
+
+PATH_LOSS_BIAS_DB = float(os.environ.get('RF_PATH_LOSS_BIAS_DB', '0'))
+TERRAIN_ROUGHNESS_FACTOR = max(0.0, min(1.0, float(os.environ.get('RF_TERRAIN_ROUGHNESS_FACTOR', '0.08'))))
 
 
 def compute_path_loss(
@@ -79,7 +83,17 @@ def compute_path_loss_from_profile(
     h_tx: float,
     h_rx: float,
 ) -> tuple[float, bool]:
-    d_total = float(dists[-1]) if len(dists) else 0.0
+    if len(dists) != len(heights) or len(dists) == 0:
+        return float('inf'), False
+    finite = np.isfinite(dists) & np.isfinite(heights)
+    if np.count_nonzero(finite) < 2:
+        return float('inf'), False
+    dists = dists[finite]
+    heights = heights[finite]
+    order = np.argsort(dists)
+    dists = dists[order]
+    heights = heights[order]
+    d_total = float(dists[-1])
     usable_threshold_db = current_usable_path_loss_db()
     if d_total < 1.0:
         return 0.0, True
@@ -114,7 +128,11 @@ def compute_path_loss_from_profile(
             math.sqrt((max_v - 0.1) ** 2 + 1) + max_v - 0.1
         ))
 
-    total_loss = fspl + diff_loss
+    # A small robust roughness term improves agreement with observed UK links
+    # without allowing a single SRTM spike to dominate the knife-edge loss.
+    terrain_roughness = float(np.percentile(np.abs(np.diff(heights)), 75)) if len(heights) > 3 else 0.0
+    roughness_loss = min(6.0, math.log1p(max(0.0, terrain_roughness)) * TERRAIN_ROUGHNESS_FACTOR)
+    total_loss = max(fspl, fspl + diff_loss + roughness_loss + PATH_LOSS_BIAS_DB)
     clear_los = max_v <= LINK_LOS_MAX_V
     viable = clear_los and total_loss < usable_threshold_db
     return total_loss, viable
