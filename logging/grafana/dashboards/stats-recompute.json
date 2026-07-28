@@ -1,0 +1,32 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "graphTooltip": 1,
+  "panels": [
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "ops"}},
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 0},
+      "id": 1,
+      "targets": [{"expr": "sum by (network, status) (rate(meshcore_stats_recompute_total[15m]))", "legendFormat": "{{network}} {{status}}"}],
+      "title": "Stats recompute rate",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "s"}},
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 0},
+      "id": 2,
+      "targets": [{"expr": "histogram_quantile(0.95, sum by (le, network) (rate(meshcore_stats_recompute_duration_seconds_bucket[15m])))", "legendFormat": "{{network}} p95"}],
+      "title": "Stats recompute p95 duration",
+      "type": "timeseries"
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["meshcore", "prometheus", "stats"],
+  "templating": {"list": []},
+  "time": {"from": "now-24h", "to": "now"},
+  "title": "MeshCore — Stats recompute",
+  "uid": "meshcore-stats-recompute",
+  "version": 1
+}

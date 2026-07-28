@@ -1,0 +1,23 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "graphTooltip": 1,
+  "panels": [
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "pps"}},
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 0},
+      "id": 1,
+      "targets": [{"expr": "sum by (network) (rate(meshcore_mqtt_messages_total[5m]))", "legendFormat": "{{network}}"}],
+      "title": "MQTT ingest rate",
+      "type": "timeseries"
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["meshcore", "prometheus", "ingest"],
+  "templating": {"list": []},
+  "time": {"from": "now-6h", "to": "now"},
+  "title": "MeshCore — Ingest rate",
+  "uid": "meshcore-ingest-rate",
+  "version": 1
+}
