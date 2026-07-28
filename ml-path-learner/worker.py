@@ -58,6 +58,7 @@ RETAIN_MODEL_ARTIFACT_GENERATIONS = int(os.environ.get('ML_RETAIN_MODEL_ARTIFACT
 CLEANUP_GENERATION_BATCH_SIZE = int(os.environ.get('ML_CLEANUP_GENERATION_BATCH_SIZE', '24'))
 MAX_HOP_KM = 150.0
 GOLD_BATCH = 5000
+MAX_TRAINING_GOLD_ROWS = max(MIN_GOLD_ROWS, int(os.environ.get('MAX_TRAINING_GOLD_ROWS', '100000')))
 CHECKPOINT_KEY = 'gold_extraction_checkpoint'
 
 # ── Genetic / evolutionary search ────────────────────────────────────────────
@@ -416,6 +417,35 @@ def build_training_data(db):
         )
         gold_rows = cur.fetchall()
 
+    if len(gold_rows) > MAX_TRAINING_GOLD_ROWS:
+        # Keep whole packets and stratify by network/hash prefix so high-volume
+        # observers cannot drown out rare collisions. Recent examples receive a
+        # second reservoir pass, retaining adaptation to topology changes.
+        by_stratum: dict[tuple[str, str], list] = defaultdict(list)
+        for row in gold_rows:
+            by_stratum[(network_scope_key(row['network']), row['hash_2char'])].append(row)
+        rng = random.Random(RANDOM_SEED)
+        quota = max(2, MAX_TRAINING_GOLD_ROWS // max(1, len(by_stratum)))
+        sampled = []
+        for rows in by_stratum.values():
+            packet_groups: dict[tuple[str, str], list] = defaultdict(list)
+            for row in rows:
+                packet_groups[(row['network'], row['packet_hash'])].append(row)
+            groups = list(packet_groups.values())
+            rng.shuffle(groups)
+            recent = sorted(groups, key=lambda group: group[0]['observed_at'], reverse=True)[:max(1, len(groups) // 5)]
+            selected_groups = recent + [group for group in groups if group not in recent]
+            stratum_rows = []
+            for group in selected_groups:
+                if len(stratum_rows) + len(group) > quota and stratum_rows:
+                    continue
+                stratum_rows.extend(group)
+                if len(stratum_rows) >= quota:
+                    break
+            sampled.extend(stratum_rows)
+        gold_rows = sampled[:MAX_TRAINING_GOLD_ROWS]
+        log.info('Stratified training sample retained %d gold rows across %d strata', len(gold_rows), len(by_stratum))
+
     if len(gold_rows) < MIN_GOLD_ROWS:
         log.info('Only %d gold rows, skipping training', len(gold_rows))
         return None, None, None
@@ -550,9 +580,13 @@ def train_variant(
     if len(set(y_cal.tolist())) < 2:
         return base
 
-    model = CalibratedClassifierCV(FrozenEstimator(base), method='isotonic')
-    model.fit(X_cal, y_cal)
-    return model
+    try:
+        model = CalibratedClassifierCV(FrozenEstimator(base), method='isotonic')
+        model.fit(X_cal, y_cal)
+        return model
+    except (ValueError, RuntimeError) as exc:
+        log.warning('Calibration failed; using uncalibrated variant: %s', exc)
+        return base
 
 
 def train_final_variant(X: np.ndarray, y: np.ndarray, params: dict) -> object | None:
