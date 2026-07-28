@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { LoadingIndicator } from '../components/LoadingIndicator.js';
@@ -151,7 +151,7 @@ const ZONE_CLOSED = '#ffb300';
 // Lazily mounted (only when the user opens it) and fitted to the zone.
 // ---------------------------------------------------------------------------
 
-function OriginMiniMap({
+const OriginMiniMap = memo(function OriginMiniMap({
   zone,
   active,
 }: {
@@ -222,15 +222,22 @@ function OriginMiniMap({
       </div>
     </div>
   );
-}
+});
 
 // ---------------------------------------------------------------------------
 // Incident card
 // ---------------------------------------------------------------------------
 
-function IncidentCard({ incident }: { incident: PublicIncident }) {
+const IncidentCard = memo(function IncidentCard({
+  incident,
+  mapOpen,
+  onToggleMap,
+}: {
+  incident: PublicIncident;
+  mapOpen: boolean;
+  onToggleMap: () => void;
+}) {
   const [expanded, setExpanded] = useState(false);
-  const [showMap, setShowMap] = useState(false);
   const [detail, setDetail] = useState<IncidentDetail | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const watchlist = useWatchlist();
@@ -281,9 +288,9 @@ function IncidentCard({ incident }: { incident: PublicIncident }) {
         <button
           type="button"
           className="sm-origin__head sm-origin__toggle"
-          onClick={() => o.zone && setShowMap((v) => !v)}
+          onClick={() => o.zone && onToggleMap()}
           disabled={!o.zone}
-          aria-expanded={showMap}
+          aria-expanded={mapOpen}
           title={o.zone ? 'Show the coarse origin area on a map' : 'No location estimate available'}
         >
           <span className="sm-k">Estimated origin</span>
@@ -296,11 +303,11 @@ function IncidentCard({ incident }: { incident: PublicIncident }) {
         </div>
         {o.reasons.length > 0 && <div className="sm-reasons">{o.reasons.join(' · ')}</div>}
         {o.zone && (
-          <button type="button" className="sm-origin__maplink" onClick={() => setShowMap((v) => !v)}>
-            {showMap ? '▾ Hide map' : '🗺 View area on map'}
+          <button type="button" className="sm-origin__maplink" onClick={onToggleMap}>
+            {mapOpen ? '▾ Hide map' : '🗺 View area on map'}
           </button>
         )}
-        {showMap && o.zone && <OriginMiniMap zone={o.zone} active={incident.status === 'active'} />}
+        {mapOpen && o.zone && <OriginMiniMap zone={o.zone} active={incident.status === 'active'} />}
       </div>
 
       {incident.similarUsernames.length > 0 && (
@@ -348,6 +355,36 @@ function IncidentCard({ incident }: { incident: PublicIncident }) {
       )}
     </div>
   );
+});
+
+function VirtualIncidentList({
+  incidents,
+  openMapId,
+  setOpenMapId,
+}: {
+  incidents: PublicIncident[];
+  openMapId: string | null;
+  setOpenMapId: (id: string | null) => void;
+}) {
+  const [scrollTop, setScrollTop] = useState(0);
+  const rowEstimate = 430;
+  const viewport = 760;
+  const start = Math.max(0, Math.floor(scrollTop / rowEstimate) - 2);
+  const end = Math.min(incidents.length, start + Math.ceil(viewport / rowEstimate) + 5);
+  return (
+    <div className="sm-virtual-list" onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}>
+      <div aria-hidden="true" style={{ height: start * rowEstimate }} />
+      {incidents.slice(start, end).map((incident) => (
+        <IncidentCard
+          key={incident.id}
+          incident={incident}
+          mapOpen={openMapId === incident.id}
+          onToggleMap={() => setOpenMapId(openMapId === incident.id ? null : incident.id)}
+        />
+      ))}
+      <div aria-hidden="true" style={{ height: Math.max(0, (incidents.length - end) * rowEstimate) }} />
+    </div>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -359,6 +396,7 @@ export function SpamPage() {
   const [incidents, setIncidents] = useState<PublicIncident[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showLow, setShowLow] = useState(false);
+  const [openMapId, setOpenMapId] = useState<string | null>(null);
 
   const mapEl = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
@@ -500,7 +538,7 @@ export function SpamPage() {
             {active.length === 0 ? (
               <p className="sm-muted">Nothing active. The mesh looks clean right now.</p>
             ) : (
-              active.map((i) => <IncidentCard key={i.id} incident={i} />)
+              <VirtualIncidentList incidents={active} openMapId={openMapId} setOpenMapId={setOpenMapId} />
             )}
           </section>
 
@@ -509,7 +547,7 @@ export function SpamPage() {
             {historical.length === 0 ? (
               <p className="sm-muted">No past incidents recorded{showLow ? '' : ' above the confidence threshold'}.</p>
             ) : (
-              historical.map((i) => <IncidentCard key={i.id} incident={i} />)
+              <VirtualIncidentList incidents={historical} openMapId={openMapId} setOpenMapId={setOpenMapId} />
             )}
           </section>
         </>

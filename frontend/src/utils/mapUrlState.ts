@@ -6,6 +6,7 @@ const BOOLEAN_FILTER_KEYS = [
   'terrain',
   'clientNodes',
   'packetHistory',
+  'heatmap',
   'betaPaths',
   'hexClashes',
 ] as const satisfies ReadonlyArray<keyof Filters>;
@@ -16,6 +17,7 @@ const FILTER_QUERY_NAMES: Record<(typeof BOOLEAN_FILTER_KEYS)[number], string> =
   terrain: 'terrain',
   clientNodes: 'clients',
   packetHistory: 'paths',
+  heatmap: 'heatmap',
   betaPaths: 'live-path',
   hexClashes: 'clashes',
 };

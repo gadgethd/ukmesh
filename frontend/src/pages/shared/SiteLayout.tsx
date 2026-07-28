@@ -19,6 +19,7 @@ type SiteLayoutProps = {
   showCompanion?: boolean;
   showRegions?: boolean;
   showTopology?: boolean;
+  showSpam?: boolean;
 };
 
 type NavItem = {
@@ -56,11 +57,13 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
   showCompanion = false,
   showRegions = false,
   showTopology = false,
+  showSpam = false,
 }) => {
   const COOKIE_CONSENT_KEY = 'meshcore-cookie-consent-v1';
   const [menuOpen, setMenuOpen] = useState(false);
   const navRef = useRef<HTMLElement>(null);
   const [ownerLabel, setOwnerLabel] = useState<string | null>(null);
+  const [activeSpamIncidents, setActiveSpamIncidents] = useState(0);
   const [cookieConsent, setCookieConsent] = useState<boolean>(() => {
     try {
       return localStorage.getItem(COOKIE_CONSENT_KEY) === '1';
@@ -74,6 +77,7 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
     { to: '/companion', label: 'Companions', enabled: showCompanion },
     { to: '/regions', label: 'Regions', enabled: showRegions },
     { to: '/topology', label: 'Topology', enabled: showTopology },
+    { to: '/spam', label: 'Spam', enabled: showSpam },
     { to: '/about', label: 'What is MeshCore', enabled: showAbout },
     { to: '/install', label: 'Install', enabled: showInstall },
     { to: '/mqtt', label: 'MQTT', enabled: showMqtt },
@@ -85,6 +89,16 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
   ];
 
   const closeMenu = () => setMenuOpen(false);
+
+  useEffect(() => {
+    if (!showSpam) return;
+    const controller = new AbortController();
+    fetch('/api/spam/messages/status', { signal: controller.signal })
+      .then((response) => response.ok ? response.json() as Promise<{ activeIncidents?: number }> : null)
+      .then((value) => setActiveSpamIncidents(Number(value?.activeIncidents ?? 0)))
+      .catch(() => {});
+    return () => controller.abort();
+  }, [showSpam]);
 
   useEffect(() => {
     if (!menuOpen) return undefined;
@@ -178,6 +192,7 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
               className={navClassName}
             >
               {item.label}
+              {item.to === '/spam' && activeSpamIncidents > 0 && <span className="site-nav__badge" aria-label={`${activeSpamIncidents} active incidents`}>{activeSpamIncidents}</span>}
             </NavLink>
           ))}
           <a href="https://healthcheck.ukmesh.com" className="site-nav__link">Health Check</a>

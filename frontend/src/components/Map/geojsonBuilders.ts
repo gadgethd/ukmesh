@@ -19,6 +19,38 @@ import {
 } from './mapConfig.js';
 import type { ClashComputation, NodeFeatureProps, PlannedRepeater } from './types.js';
 
+export type MapSourceDirtyFlags = {
+  nodes: boolean;
+  privacy: boolean;
+  links: boolean;
+  coverage: boolean;
+  clash: boolean;
+  plannedLinks: boolean;
+};
+
+export const ALL_MAP_SOURCE_DIRTY_FLAGS: MapSourceDirtyFlags = {
+  nodes: true,
+  privacy: true,
+  links: true,
+  coverage: true,
+  clash: true,
+  plannedLinks: true,
+};
+
+export function mergeMapSourceDirtyFlags(
+  current: MapSourceDirtyFlags,
+  incoming: Partial<MapSourceDirtyFlags>,
+): MapSourceDirtyFlags {
+  return {
+    nodes: current.nodes || !!incoming.nodes,
+    privacy: current.privacy || !!incoming.privacy,
+    links: current.links || !!incoming.links,
+    coverage: current.coverage || !!incoming.coverage,
+    clash: current.clash || !!incoming.clash,
+    plannedLinks: current.plannedLinks || !!incoming.plannedLinks,
+  };
+}
+
 function circleLineString(
   lat: number,
   lon: number,

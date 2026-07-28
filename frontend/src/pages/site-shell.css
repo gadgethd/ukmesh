@@ -192,3 +192,15 @@
 /* Mobile controls wrapper (filter grid + search) — hidden on desktop */
 .mobile-controls { display: none; }
 .mobile-search { display: none; }
+.site-nav__badge {
+  display: inline-grid;
+  place-items: center;
+  min-width: 18px;
+  height: 18px;
+  margin-left: 5px;
+  padding-inline: 4px;
+  border-radius: 999px;
+  background: var(--color-red);
+  color: #fff;
+  font: 10px var(--font-mono);
+}

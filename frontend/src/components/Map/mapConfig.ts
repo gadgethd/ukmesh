@@ -6,7 +6,8 @@ export const DEFAULT_ZOOM = 11;
 // stale nodes are still visible as stale instead of disappearing immediately.
 export const NODE_STALE_AFTER_MS = 14 * 24 * 60 * 60 * 1000;
 export const NODE_HIDE_AFTER_MS = 28 * 24 * 60 * 60 * 1000;
-export const MAP_REFRESH_INTERVAL_MS = 100;
+export const MAP_REFRESH_INTERVAL_MS = 250;
+export const MAP_ARC_REFRESH_INTERVAL_MS = 100;
 
 export const LINK_GREEN_THRESHOLD_DB = 121.5;
 export const LINK_AMBER_THRESHOLD_DB = 129.5;

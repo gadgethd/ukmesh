@@ -448,3 +448,13 @@
 @media (max-width: 340px) {
   .sm-grid { grid-template-columns: 1fr; }
 }
+.sm-virtual-list {
+  max-height: min(760px, 75vh);
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.sm-virtual-list .sm-card {
+  contain: layout paint;
+}

@@ -1,7 +1,8 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { LoadingIndicator } from '../LoadingIndicator.js';
 import { NODE_STALE_AFTER_MS } from './mapConfig.js';
 import type { NodeFeatureProps, NodeLink } from './types.js';
+import { LinkQualitySparkline } from './LinkQualitySparkline.js';
 
 const GPU_ROLE_LABELS: Record<number, string> = {
   1: 'Companion Radio', 2: 'Repeater', 3: 'Room Server', 4: 'Sensor',
@@ -58,10 +59,19 @@ export const NodePopupContent: React.FC<{
   const displayName = props.is_prohibited
     ? `Redacted ${fallbackName}`
     : (props.name ?? `Unknown ${fallbackName}`);
+  const [tab, setTab] = useState<'info' | 'links' | 'activity' | 'path' | 'status'>('info');
 
   return (
     <div className="node-popup">
       {!hideName && <div className="node-popup__name">{displayName}</div>}
+      <div className="node-popup__tabs" role="tablist" aria-label="Node details">
+        {(['info', 'links', 'activity', 'path', 'status'] as const).map((value) => (
+          <button key={value} type="button" role="tab" aria-selected={tab === value} onClick={() => setTab(value)}>
+            {value[0].toUpperCase() + value.slice(1)}
+          </button>
+        ))}
+      </div>
+      {tab === 'info' && <>
       {props.public_key && (
         <div className="node-popup__row">
           <span>Public key</span>
@@ -110,6 +120,17 @@ export const NodePopupContent: React.FC<{
           <span>{Math.round(props.elevation_m)} m ASL</span>
         </div>
       )}
+      </>}
+      {tab === 'status' && <>
+        <div className="node-popup__row"><span>Status</span><span style={{ color: statusColor }}>{statusLabel}</span></div>
+        {props.hardware_model && <div className="node-popup__row"><span>Hardware</span><span>{props.hardware_model}</span></div>}
+        <div className="node-popup__row"><span>Freshness</span><span>{timeAgo(props.last_seen)}</span></div>
+      </>}
+      {tab === 'activity' && <>
+        <div className="node-popup__row"><span>Last seen</span><span>{timeAgo(props.last_seen)}</span></div>
+        <div className="node-popup__row"><span>Adverts</span><span>{props.advert_count ?? 'No samples'}</span></div>
+      </>}
+      {tab === 'path' && <>
       {viewshedEnabled && isRepeater && !props.is_prohibited && (
         <div className="node-popup__row" style={{ marginTop: 6 }}>
           <button
@@ -151,6 +172,8 @@ export const NodePopupContent: React.FC<{
           </button>
         </div>
       )}
+      </>}
+      {tab === 'links' && <>
       {links === null && (
         <div className="node-popup__neighbours-loading">
           <LoadingIndicator label="Loading neighbours..." variant="inline" />
@@ -172,11 +195,14 @@ export const NodePopupContent: React.FC<{
                   {lk.observed_count}× seen
                   {lk.itm_path_loss_db != null && <> &middot; {Math.round(lk.itm_path_loss_db)} dB</>}
                 </span>
+                <LinkQualitySparkline source={props.node_id} target={lk.peer_id} />
               </div>
             );
           })}
         </div>
       )}
+      {links !== null && links.length === 0 && <div className="node-popup__muted">No confirmed neighbours.</div>}
+      </>}
     </div>
   );
 };

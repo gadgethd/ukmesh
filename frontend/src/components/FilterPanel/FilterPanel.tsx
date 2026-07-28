@@ -10,6 +10,7 @@ export interface Filters {
   terrain:           boolean;
   clientNodes:       boolean;
   packetHistory:     boolean;
+  heatmap:           boolean;
   betaPaths:         boolean;
   betaPathThreshold: number;  // 0–1
   hexClashes:        boolean;
@@ -40,6 +41,7 @@ export const FILTER_ROWS: Array<{ key: keyof Filters; label: string; color: stri
   { key: 'livePackets',  label: 'Live Feed',        color: '#00c4ff' },
   { key: 'terrain',      label: '3D Terrain',       color: '#60a5fa' },
   { key: 'packetHistory', label: 'Paths',            color: '#00c4ff', hollow: true },
+  { key: 'heatmap',       label: 'Packet Heatmap',   color: '#ef4444' },
   { key: 'betaPaths',    label: 'Live Path',         color: '#a855f7', hollow: true },
   { key: 'hexClashes',   label: 'Hex Clashes',      color: '#f97316' },
   { key: 'clientNodes',  label: 'Companion / Room', color: '#ff9800' },

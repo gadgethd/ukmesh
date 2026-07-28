@@ -110,6 +110,15 @@
   min-width: 0;
 }
 
+.uk-feed-detail-modal {
+  width: min(1100px, calc(100vw - 24px));
+  max-height: calc(100vh - 24px);
+  overflow: auto;
+  border: 1px solid var(--border-bright);
+  border-radius: var(--radius-lg);
+  background: var(--bg-base);
+}
+
 /* Mobile-only elements — hidden on desktop */
 .uk-feed-mobile-stats,
 .uk-feed-mobile-detail {

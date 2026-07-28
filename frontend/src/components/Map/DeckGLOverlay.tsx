@@ -7,11 +7,12 @@
  */
 import React, { useEffect, useRef, useMemo } from 'react';
 import { MapboxOverlay } from '@deck.gl/mapbox';
-import { ArcLayer, LineLayer, PathLayer, ScatterplotLayer } from '@deck.gl/layers';
+import { ArcLayer, LineLayer, PathLayer, ScatterplotLayer, TextLayer } from '@deck.gl/layers';
+import { HeatmapLayer } from '@deck.gl/aggregation-layers';
 import { PathStyleExtension } from '@deck.gl/extensions';
 import type { PathStyleExtensionProps } from '@deck.gl/extensions';
 import type { Layer } from '@deck.gl/core';
-import type maplibregl from 'maplibre-gl';
+import maplibregl from 'maplibre-gl';
 import type { PacketArc } from '../../hooks/useNodes.js';
 import type { HiddenMaskGeometry } from '../../utils/pathing.js';
 import { maskPoint } from '../../utils/pathing.js';
@@ -31,6 +32,14 @@ type HistorySegmentWithColor = HistorySegment & {
   width: number;
 };
 
+type ConsistencySegment = {
+  positions: [[number, number], [number, number]];
+  midpoint: [number, number];
+  observerCount: number;
+};
+
+type HeatPoint = { position: [number, number]; weight: number };
+
 interface Props {
   map: maplibregl.Map | null;
 
@@ -41,6 +50,7 @@ interface Props {
   // Packet path history (link-segment heat map)
   packetHistorySegments: HistorySegment[];
   showPacketHistory: boolean;
+  showHeatmap: boolean;
 
   // Beta path overlays
   betaPaths: [number, number][][];
@@ -49,6 +59,10 @@ interface Props {
   clashPathLines: ClashPathLine[];
   showBetaPaths: boolean;
   pathFadingOut: boolean;
+  betaConfidence: number | null;
+  pathObserverCount: number;
+  pathAlternatives: number;
+  pathSummary: string | null;
 
   hiddenCoordMask: Map<string, HiddenMaskGeometry>;
   positionElevations: Map<string, number>;
@@ -108,6 +122,9 @@ function buildLayers(
   losProfiles: LosProfile[] | null,
   customLosSegments: CustomLosSegment[],
   customLosStart: CustomLosPoint | null,
+  consistencySegments: ConsistencySegment[],
+  onPathSegmentClick: (segment: ConsistencySegment) => void,
+  showHeatmap: boolean,
 ): Layer[] {
   const now = Date.now();
   const layers: Layer[] = [];
@@ -173,6 +190,30 @@ function buildLayers(
     );
   }
 
+  if (showHeatmap && packetHistorySegments.length > 0) {
+    const heatPoints: HeatPoint[] = packetHistorySegments.flatMap((segment) => [
+      { position: [segment.positions[0][1], segment.positions[0][0]], weight: segment.count / 2 },
+      { position: [segment.positions[1][1], segment.positions[1][0]], weight: segment.count / 2 },
+    ]);
+    layers.push(new HeatmapLayer<HeatPoint>({
+      id: 'packet-heatmap',
+      data: heatPoints,
+      getPosition: (point) => point.position,
+      getWeight: (point) => point.weight,
+      radiusPixels: 45,
+      intensity: 1.2,
+      threshold: 0.03,
+      colorRange: [
+        [0, 196, 255, 0],
+        [0, 196, 255, 130],
+        [251, 191, 36, 190],
+        [249, 115, 22, 220],
+        [239, 68, 68, 245],
+        [255, 255, 255, 255],
+      ],
+    }));
+  }
+
   // ── Beta path overlays ─────────────────────────────────────────────────────
   if (showBetaPaths) {
     const targetOpacity = pathFadingOut ? 0 : 1;
@@ -231,6 +272,54 @@ function buildLayers(
           extensions: DASH_EXT,
           pickable: false,
           updateTriggers: { getPath: [hiddenCoordMask, positionElevations, useTerrainElevation] },
+        }),
+      );
+    }
+
+    if (consistencySegments.length > 0) {
+      const badgeColor = (count: number): [number, number, number, number] => {
+        const ratio = count / Math.max(1, Math.max(...consistencySegments.map((segment) => segment.observerCount)));
+        if (ratio >= 0.75 && count > 1) return [34, 197, 94, 245];
+        if (ratio >= 0.4 && count > 1) return [251, 191, 36, 245];
+        return [239, 68, 68, 245];
+      };
+      layers.push(
+        new LineLayer<ConsistencySegment>({
+          id: 'path-consistency-hit-targets',
+          data: consistencySegments,
+          getSourcePosition: (segment) => toXYZ(segment.positions[0], hiddenCoordMask, positionElevations, useTerrainElevation),
+          getTargetPosition: (segment) => toXYZ(segment.positions[1], hiddenCoordMask, positionElevations, useTerrainElevation),
+          getColor: [0, 0, 0, 1],
+          getWidth: 14,
+          widthUnits: 'pixels',
+          pickable: true,
+          onClick: ({ object }) => { if (object) onPathSegmentClick(object); },
+        }),
+        new ScatterplotLayer<ConsistencySegment>({
+          id: 'path-consistency-badges',
+          data: consistencySegments,
+          getPosition: (segment) => toXYZ(segment.midpoint, hiddenCoordMask, positionElevations, useTerrainElevation),
+          getFillColor: (segment) => badgeColor(segment.observerCount),
+          getLineColor: [255, 255, 255, 230],
+          getRadius: 9,
+          radiusUnits: 'pixels',
+          stroked: true,
+          lineWidthUnits: 'pixels',
+          getLineWidth: 1.5,
+          pickable: true,
+          onClick: ({ object }) => { if (object) onPathSegmentClick(object); },
+        }),
+        new TextLayer<ConsistencySegment>({
+          id: 'path-consistency-labels',
+          data: consistencySegments,
+          getPosition: (segment) => toXYZ(segment.midpoint, hiddenCoordMask, positionElevations, useTerrainElevation),
+          getText: (segment) => String(segment.observerCount),
+          getColor: [255, 255, 255, 255],
+          getSize: 10,
+          sizeUnits: 'pixels',
+          getTextAnchor: 'middle',
+          getAlignmentBaseline: 'center',
+          pickable: false,
         }),
       );
     }
@@ -351,8 +440,13 @@ export const DeckGLOverlay: React.FC<Props> = ({
   map,
   arcs, showArcs,
   packetHistorySegments, showPacketHistory,
+  showHeatmap,
   betaPaths, betaLowSegments, betaCompletionPaths, clashPathLines,
   showBetaPaths, pathFadingOut,
+  betaConfidence,
+  pathObserverCount,
+  pathAlternatives,
+  pathSummary,
   hiddenCoordMask,
   positionElevations,
   useTerrainElevation,
@@ -361,6 +455,67 @@ export const DeckGLOverlay: React.FC<Props> = ({
   customLosStart,
 }) => {
   const overlayRef = useRef<MapboxOverlay | null>(null);
+  const explanationPopupRef = useRef<maplibregl.Popup | null>(null);
+
+  const consistencySegments = useMemo<ConsistencySegment[]>(() => {
+    const counts = new Map<string, ConsistencySegment>();
+    const coordKey = (point: [number, number]) => `${point[0].toFixed(5)},${point[1].toFixed(5)}`;
+    for (const path of betaPaths) {
+      const seenForObserver = new Set<string>();
+      for (let index = 0; index < path.length - 1; index += 1) {
+        const a = path[index]!;
+        const b = path[index + 1]!;
+        const aKey = coordKey(a);
+        const bKey = coordKey(b);
+        const key = aKey < bKey ? `${aKey}|${bKey}` : `${bKey}|${aKey}`;
+        if (seenForObserver.has(key)) continue;
+        seenForObserver.add(key);
+        const existing = counts.get(key);
+        if (existing) existing.observerCount += 1;
+        else counts.set(key, {
+          positions: [a, b],
+          midpoint: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2],
+          observerCount: 1,
+        });
+      }
+    }
+    return Array.from(counts.values());
+  }, [betaPaths]);
+
+  const onPathSegmentClick = useMemo(() => (segment: ConsistencySegment) => {
+    if (!map) return;
+    explanationPopupRef.current?.remove();
+    const container = document.createElement('div');
+    container.className = 'path-explanation-popover';
+    const title = document.createElement('strong');
+    title.textContent = 'Path segment evidence';
+    const details = document.createElement('dl');
+    const rows: Array<[string, string]> = [
+      ['Confidence', betaConfidence == null ? 'N/A' : `${Math.round(betaConfidence * 100)}%`],
+      ['Observers', `${segment.observerCount} confirming${pathObserverCount ? ` of ${pathObserverCount}` : ''}`],
+      ['Evidence', `${segment.observerCount} independent path${segment.observerCount === 1 ? '' : 's'}`],
+      ['Top alternatives', String(pathAlternatives)],
+    ];
+    for (const [label, value] of rows) {
+      const row = document.createElement('div');
+      const term = document.createElement('dt');
+      const description = document.createElement('dd');
+      term.textContent = label;
+      description.textContent = value;
+      row.append(term, description);
+      details.append(row);
+    }
+    container.append(title, details);
+    if (pathSummary) {
+      const summary = document.createElement('p');
+      summary.textContent = pathSummary;
+      container.append(summary);
+    }
+    explanationPopupRef.current = new maplibregl.Popup({ closeButton: true, maxWidth: '290px' })
+      .setLngLat([segment.midpoint[1], segment.midpoint[0]])
+      .setDOMContent(container)
+      .addTo(map);
+  }, [betaConfidence, map, pathAlternatives, pathObserverCount, pathSummary]);
 
   // Create/destroy the MapboxOverlay when the map instance changes
   useEffect(() => {
@@ -372,6 +527,7 @@ export const DeckGLOverlay: React.FC<Props> = ({
     overlayRef.current = overlay;
 
     return () => {
+      explanationPopupRef.current?.remove();
       map.removeControl(overlay as unknown as maplibregl.IControl);
       overlayRef.current = null;
     };
@@ -389,11 +545,14 @@ export const DeckGLOverlay: React.FC<Props> = ({
       losProfiles,
       customLosSegments,
       customLosStart,
+      consistencySegments,
+      onPathSegmentClick,
+      showHeatmap,
     ),
     [arcs, showArcs, packetHistorySegments, showPacketHistory,
       betaPaths, betaLowSegments, betaCompletionPaths, clashPathLines,
       showBetaPaths, pathFadingOut, hiddenCoordMask, positionElevations, useTerrainElevation, losProfiles,
-      customLosSegments, customLosStart],
+      customLosSegments, customLosStart, consistencySegments, onPathSegmentClick, showHeatmap],
   );
 
   // Push updated layers to the overlay imperatively

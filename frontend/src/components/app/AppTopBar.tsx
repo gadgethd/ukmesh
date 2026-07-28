@@ -8,6 +8,15 @@ type AppTopBarProps = {
   wsState: WSReadyState;
   onShowDisclaimer: () => void;
   stats: DashboardStats;
+  mapLight: boolean;
+  onToggleMapTheme: () => void;
+  network: string;
+  onNetworkChange: (network: string) => void;
+  annotation: string;
+  onEditAnnotation: () => void;
+  onShowShortcuts: () => void;
+  highContrast: boolean;
+  onToggleContrast: () => void;
 };
 
 const ConnIndicator: React.FC<{ state: WSReadyState }> = ({ state }) => (
@@ -36,6 +45,15 @@ export const AppTopBar: React.FC<AppTopBarProps> = ({
   wsState,
   onShowDisclaimer,
   stats,
+  mapLight,
+  onToggleMapTheme,
+  network,
+  onNetworkChange,
+  annotation,
+  onEditAnnotation,
+  onShowShortcuts,
+  highContrast,
+  onToggleContrast,
 }) => (
   <header className="topbar">
     <a href={homeUrl} className="topbar__brand" title="Home">
@@ -49,6 +67,28 @@ export const AppTopBar: React.FC<AppTopBarProps> = ({
     </div>
     <div className="topbar__divider" />
     <ConnIndicator state={wsState} />
+    <select
+      className="topbar__network"
+      value={network}
+      onChange={(event) => onNetworkChange(event.target.value)}
+      aria-label="Network region"
+      title="Switch network"
+    >
+      <option value="ukmesh">UK Mesh</option>
+      <option value="teesside">Teesside</option>
+    </select>
+    <button type="button" className="topbar__tool-btn" onClick={onToggleMapTheme} title="Toggle map theme">
+      {mapLight ? '☀ Light' : '☾ Dark'}
+    </button>
+    <button type="button" className={`topbar__tool-btn${highContrast ? ' topbar__tool-btn--active' : ''}`} onClick={onToggleContrast} aria-pressed={highContrast} title="Toggle high contrast">
+      ◐ Contrast
+    </button>
+    <button type="button" className={`topbar__tool-btn${annotation ? ' topbar__tool-btn--active' : ''}`} onClick={onEditAnnotation} title="Add a shareable note">
+      Note
+    </button>
+    <button type="button" className="topbar__tool-btn topbar__shortcut-btn" onClick={onShowShortcuts} title="Keyboard shortcuts">
+      ?
+    </button>
     <button
       className="topbar__info-btn"
       onClick={onShowDisclaimer}

@@ -10,7 +10,6 @@
 import { useEffect, useRef, useState, useMemo, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import maplibregl from 'maplibre-gl';
-import 'maplibre-gl/dist/maplibre-gl.css';
 import type { MeshNode } from '../../hooks/useNodes.js';
 import { nodeStore } from '../../hooks/useNodes.js';
 import { coverageStore, type NodeCoverage } from '../../hooks/useCoverage.js';
@@ -27,6 +26,7 @@ import {
   DEFAULT_CENTER,
   DEFAULT_ZOOM,
   EMPTY_FC,
+  MAP_ARC_REFRESH_INTERVAL_MS,
   MAP_REFRESH_INTERVAL_MS,
   MAP_STYLE,
   MAP_STYLE_LIGHT,
@@ -44,13 +44,17 @@ import {
   buildPlannedPinGeoJSON,
   buildPrivacyRingsGeoJSON,
   computeClashData,
+  ALL_MAP_SOURCE_DIRTY_FLAGS,
+  mergeMapSourceDirtyFlags,
 } from './geojsonBuilders.js';
+import type { MapSourceDirtyFlags } from './geojsonBuilders.js';
 import { NodePopupContent } from './NodePopupContent.js';
 import { NodeLegend } from './NodeLegend.js';
 import { ActivitySparkline } from './ActivitySparkline.js';
 import { PlannedRepeaterPopup } from './PlannedRepeaterPopup.js';
 import { useWatchlist } from '../../hooks/useWatchlist.js';
 import type {
+  ClashComputation,
   CustomLosPoint,
   LosProfile,
   MapLibreMapProps,
@@ -61,6 +65,34 @@ import type {
 } from './types.js';
 import { sampleElevationAt } from '../../utils/terrainSampler.js';
 import { computeCustomLos } from '../../utils/customLos.js';
+
+const NODE_LINK_CACHE_TTL_MS = 5 * 60_000;
+const nodeLinksCache = new Map<string, { rows?: NodeLink[]; fetchedAt?: number; pending?: Promise<NodeLink[]> }>();
+
+function fetchNodeLinks(nodeId: string): Promise<NodeLink[]> {
+  const cached = nodeLinksCache.get(nodeId);
+  if (cached?.rows && Date.now() - (cached.fetchedAt ?? 0) < NODE_LINK_CACHE_TTL_MS) {
+    return Promise.resolve(cached.rows);
+  }
+  if (cached?.pending) return cached.pending;
+
+  const pending = fetch(`/api/nodes/${encodeURIComponent(nodeId)}/links`, {
+    signal: AbortSignal.timeout(15_000),
+  })
+    .then(async (response) => {
+      if (!response.ok) throw new Error(`links request failed: ${response.status}`);
+      const payload = await response.json() as NodeLink[];
+      const rows = Array.isArray(payload) ? payload : [];
+      nodeLinksCache.set(nodeId, { rows, fetchedAt: Date.now() });
+      return rows;
+    })
+    .catch((error) => {
+      nodeLinksCache.delete(nodeId);
+      throw error;
+    });
+  nodeLinksCache.set(nodeId, { ...cached, pending });
+  return pending;
+}
 
 // ── Main Component ────────────────────────────────────────────────────────────
 
@@ -77,6 +109,7 @@ export function MapLibreMap({
   selectedNodeId = null,
   onNodeSelect,
   onMapReady,
+  mapLight,
 }: MapLibreMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
@@ -98,6 +131,14 @@ export function MapLibreMap({
   const setClashPathLines = useOverlayStore((state) => state.setClashPathLines);
   const hiddenCoordMaskRef = useRef<Map<string, HiddenMaskGeometry>>(new Map());
   const refreshTimerRef = useRef<number | null>(null);
+  const lastArcActivityRef = useRef(0);
+  const dirtyFlagsRef = useRef<MapSourceDirtyFlags>({ ...ALL_MAP_SOURCE_DIRTY_FLAGS });
+  const clashRef = useRef<ClashComputation>({
+    clashOffenderNodeIds: new Set(),
+    clashRelayIds: new Set(),
+    clashPathLines: [],
+    clashModeActive: false,
+  });
   const selectedNodeIdRef = useRef<string | null>(selectedNodeId);
   const onNodeSelectRef = useRef(onNodeSelect);
   onNodeSelectRef.current = onNodeSelect;
@@ -134,18 +175,20 @@ export function MapLibreMap({
   const watchlist = useWatchlist();
   const [copyLinkLabel, setCopyLinkLabel] = useState('Copy link');
 
-  // -- Map theme (light/dark) -------------------------------------------------
-  const [mapLight, setMapLight] = useState(() => localStorage.getItem('map-theme') === 'light');
+  // MapLibre's stylesheet is loaded only when the map component mounts, keeping
+  // map-specific CSS out of non-map entry points.
+  useEffect(() => {
+    void import('maplibre-gl/dist/maplibre-gl.css');
+  }, []);
 
-  const toggleMapTheme = useCallback(() => {
-    setMapLight((prev) => {
-      const next = !prev;
-      localStorage.setItem('map-theme', next ? 'light' : 'dark');
+  // -- Map theme (light/dark) -------------------------------------------------
+  useEffect(() => {
       const map = mapRef.current;
       if (map && mapLoadedRef.current) {
-        const oldId = next ? 'carto-dark' : 'carto-light';
-        const newId = next ? 'carto-light' : 'carto-dark';
-        const variant = next ? 'light_all' : 'dark_all';
+        const oldId = mapLight ? 'carto-dark' : 'carto-light';
+        const newId = mapLight ? 'carto-light' : 'carto-dark';
+        const variant = mapLight ? 'light_all' : 'dark_all';
+        if (map.getSource(newId)) return;
         if (map.getLayer('background')) map.removeLayer('background');
         if (map.getLayer('bg-fill')) map.removeLayer('bg-fill');
         if (map.getSource(oldId)) map.removeSource(oldId);
@@ -162,7 +205,7 @@ export function MapLibreMap({
         // Insert bg-fill + basemap at the very bottom
         const firstLayer = map.getStyle().layers[0]?.id;
         map.addLayer(
-          { id: 'bg-fill', type: 'background', paint: { 'background-color': next ? '#e8e8e8' : '#080d14' } },
+          { id: 'bg-fill', type: 'background', paint: { 'background-color': mapLight ? '#e8e8e8' : '#080d14' } },
           firstLayer,
         );
         map.addLayer(
@@ -170,9 +213,7 @@ export function MapLibreMap({
           map.getStyle().layers[1]?.id,  // after bg-fill, before everything else
         );
       }
-      return next;
-    });
-  }, []);
+  }, [mapLight]);
 
   // -- LOS profiles (client-side, multi-node, auto-expire) -------------------
 
@@ -216,8 +257,7 @@ export function MapLibreMap({
     const ANTENNA_H = 10;
     const EXAG = TERRAIN_CONFIG.exaggeration;
     try {
-      const links = await fetch(`/api/nodes/${nodeId}/links`)
-        .then((r) => r.json()) as NodeLink[];
+      const links = await fetchNodeLinks(nodeId);
       const sourceNode = nodesRef.current.get(nodeId);
       if (!sourceNode || !hasCoords(sourceNode)) {
         setLosProfilesForNode(nodeId, []);
@@ -524,70 +564,103 @@ export function MapLibreMap({
   const refreshMapSources = useCallback(() => {
     if (!mapLoadedRef.current || !mapRef.current) return;
 
+    const dirty = dirtyFlagsRef.current;
+    dirtyFlagsRef.current = {
+      nodes: false,
+      privacy: false,
+      links: false,
+      coverage: false,
+      clash: false,
+      plannedLinks: false,
+    };
     const nodes = nodesRef.current;
     const coverage = viewshedEnabled ? coverageRef.current : [];
     const viablePairsArr = viablePairsRef.current;
     const linkMetrics = linkMetricsRef.current;
     const currentPathNodeIds = pathNodeIdsRef.current;
-    const currentHiddenCoordMask = buildHiddenMask(nodes);
-    hiddenCoordMaskRef.current = currentHiddenCoordMask;
+    const maskDirty = dirty.nodes || dirty.privacy || dirty.links || dirty.clash || dirty.plannedLinks;
+    const currentHiddenCoordMask = maskDirty ? buildHiddenMask(nodes) : hiddenCoordMaskRef.current;
+    if (maskDirty) hiddenCoordMaskRef.current = currentHiddenCoordMask;
 
-    const clash = computeClashData(
-      nodes,
-      coverage,
-      viablePairsArr,
-      linkMetrics,
-      showHexClashesRef.current,
-      maxHexClashHopsRef.current,
-      focusedNodeId,
-      focusedPrefixNodeIds,
-    );
+    const clashDirty = dirty.clash || dirty.nodes || dirty.coverage || dirty.links;
+    const clash = clashDirty
+      ? computeClashData(
+          nodes,
+          coverage,
+          viablePairsArr,
+          linkMetrics,
+          showHexClashesRef.current,
+          maxHexClashHopsRef.current,
+          focusedNodeId,
+          focusedPrefixNodeIds,
+        )
+      : clashRef.current;
+    if (clashDirty) clashRef.current = clash;
 
-    const nodeGeoJSON = buildNodeGeoJSON(
-      nodes,
-      currentHiddenCoordMask,
-      showClientNodesRef.current,
-      showLinksRef.current,
-      new Set(viablePairsArr.flatMap(([aId, bId]) => [aId.toLowerCase(), bId.toLowerCase()])),
-      clash.clashOffenderNodeIds,
-      clash.clashRelayIds,
-      clash.clashModeActive,
-      clash.clashModeActive ? null : currentPathNodeIds,
-      replayNodeIdsRef.current,
-    );
-    (mapRef.current.getSource('nodes') as maplibregl.GeoJSONSource | undefined)?.setData(nodeGeoJSON);
+    if (dirty.nodes || clashDirty) {
+      const nodeGeoJSON = buildNodeGeoJSON(
+        nodes,
+        currentHiddenCoordMask,
+        showClientNodesRef.current,
+        showLinksRef.current,
+        new Set(viablePairsArr.flatMap(([aId, bId]) => [aId.toLowerCase(), bId.toLowerCase()])),
+        clash.clashOffenderNodeIds,
+        clash.clashRelayIds,
+        clash.clashModeActive,
+        clash.clashModeActive ? null : currentPathNodeIds,
+        replayNodeIdsRef.current,
+      );
+      (mapRef.current.getSource('nodes') as maplibregl.GeoJSONSource | undefined)?.setData(nodeGeoJSON);
+    }
 
-    const privacyGeoJSON = buildPrivacyRingsGeoJSON(nodes, currentHiddenCoordMask);
-    (mapRef.current.getSource('privacy-rings') as maplibregl.GeoJSONSource | undefined)?.setData(privacyGeoJSON);
+    if (dirty.privacy || dirty.nodes) {
+      const privacyGeoJSON = buildPrivacyRingsGeoJSON(nodes, currentHiddenCoordMask);
+      (mapRef.current.getSource('privacy-rings') as maplibregl.GeoJSONSource | undefined)?.setData(privacyGeoJSON);
+    }
 
-    const linksGeoJSON = showLinksRef.current
-      ? buildLinksGeoJSON(nodes, viablePairsArr, linkMetrics, currentHiddenCoordMask)
-      : EMPTY_FC;
-    (mapRef.current.getSource('viable-links') as maplibregl.GeoJSONSource | undefined)?.setData(linksGeoJSON);
-    mapRef.current.setLayoutProperty('viable-links-layer', 'visibility', showLinksRef.current ? 'visible' : 'none');
+    if (dirty.links || dirty.nodes) {
+      const linksGeoJSON = showLinksRef.current
+        ? buildLinksGeoJSON(nodes, viablePairsArr, linkMetrics, currentHiddenCoordMask)
+        : EMPTY_FC;
+      (mapRef.current.getSource('viable-links') as maplibregl.GeoJSONSource | undefined)?.setData(linksGeoJSON);
+      mapRef.current.setLayoutProperty('viable-links-layer', 'visibility', showLinksRef.current ? 'visible' : 'none');
+    }
 
-    const coverageGeoJSON = viewshedEnabled && selectedCoverageRef.current && !clash.clashModeActive
-      ? buildCoverageGeoJSON([selectedCoverageRef.current])
-      : EMPTY_FC;
-    (mapRef.current.getSource('coverage') as maplibregl.GeoJSONSource | undefined)?.setData(coverageGeoJSON);
-    mapRef.current.setLayoutProperty('coverage-fill', 'visibility',
-      viewshedEnabled && selectedCoverageRef.current && !clash.clashModeActive ? 'visible' : 'none');
+    if (dirty.coverage || clashDirty) {
+      const coverageGeoJSON = viewshedEnabled && selectedCoverageRef.current && !clash.clashModeActive
+        ? buildCoverageGeoJSON([selectedCoverageRef.current])
+        : EMPTY_FC;
+      (mapRef.current.getSource('coverage') as maplibregl.GeoJSONSource | undefined)?.setData(coverageGeoJSON);
+      mapRef.current.setLayoutProperty('coverage-fill', 'visibility',
+        viewshedEnabled && selectedCoverageRef.current && !clash.clashModeActive ? 'visible' : 'none');
+    }
 
-    setClashPathLines(clash.clashModeActive ? clash.clashPathLines : []);
-    (mapRef.current.getSource('clash-lines') as maplibregl.GeoJSONSource | undefined)?.setData(EMPTY_FC);
-    mapRef.current.setLayoutProperty('clash-lines-layer', 'visibility', 'none');
+    if (clashDirty) {
+      setClashPathLines(clash.clashModeActive ? clash.clashPathLines : []);
+      (mapRef.current.getSource('clash-lines') as maplibregl.GeoJSONSource | undefined)?.setData(EMPTY_FC);
+      mapRef.current.setLayoutProperty('clash-lines-layer', 'visibility', 'none');
+    }
 
-    // Rebuild planned-link lines against the freshly-updated node positions/mask.
-    updatePlannedLinks();
+    if (dirty.plannedLinks || dirty.nodes || dirty.links) updatePlannedLinks();
   }, [viewshedEnabled, focusedNodeId, focusedPrefixNodeIds, setClashPathLines, updatePlannedLinks]);
 
-  const scheduleRefresh = useCallback(() => {
+  const scheduleRefresh = useCallback((flags: Partial<MapSourceDirtyFlags> = ALL_MAP_SOURCE_DIRTY_FLAGS) => {
+    dirtyFlagsRef.current = mergeMapSourceDirtyFlags(dirtyFlagsRef.current, flags);
     if (refreshTimerRef.current !== null) return;
+    const interval = Date.now() - lastArcActivityRef.current < 5_000
+      ? MAP_ARC_REFRESH_INTERVAL_MS
+      : MAP_REFRESH_INTERVAL_MS;
     refreshTimerRef.current = window.setTimeout(() => {
       refreshTimerRef.current = null;
       refreshMapSources();
-    }, MAP_REFRESH_INTERVAL_MS);
+    }, interval);
   }, [refreshMapSources]);
+
+  useEffect(() => {
+    const noteArcActivity = () => { lastArcActivityRef.current = Date.now(); };
+    window.addEventListener('meshcore:packet-observed', noteArcActivity);
+    return () => window.removeEventListener('meshcore:packet-observed', noteArcActivity);
+  }, []);
 
   useEffect(() => {
     viewshedEnabledRef.current = viewshedEnabled;
@@ -646,7 +719,7 @@ export function MapLibreMap({
 
     const map = new maplibregl.Map({
       container: containerRef.current,
-      style: localStorage.getItem('map-theme') === 'light' ? MAP_STYLE_LIGHT : MAP_STYLE,
+      style: mapLight ? MAP_STYLE_LIGHT : MAP_STYLE,
       center: initialView ? [initialView.lon, initialView.lat] : [DEFAULT_CENTER[1], DEFAULT_CENTER[0]],
       zoom: initialView?.zoom ?? DEFAULT_ZOOM,
       maxPitch: 0,
@@ -698,6 +771,52 @@ export function MapLibreMap({
           'circle-stroke-opacity': 0.7,
         },
       });
+
+      // Observer quality is a separate, cached overlay so live node refreshes do
+      // not rebuild health metrics. A coloured ring keeps the role colour intact.
+      map.addSource('observer-health', { type: 'geojson', data: EMPTY_FC });
+      map.addLayer({
+        id: 'observer-health-rings',
+        type: 'circle',
+        source: 'observer-health',
+        paint: {
+          'circle-radius': [
+            'interpolate', ['linear'], ['zoom'],
+            6, 5.5, 9, 7, 11, 8.5, 13, 11, 16, 14,
+          ],
+          'circle-color': 'rgba(0,0,0,0)',
+          'circle-stroke-width': 2,
+          'circle-stroke-color': [
+            'match', ['get', 'quality'],
+            'good', '#22c55e',
+            'watch', '#fbbf24',
+            '#ef4444',
+          ],
+          'circle-stroke-opacity': 0.95,
+        },
+      });
+      void fetch('/api/observers/health', { signal: AbortSignal.timeout(10_000) })
+        .then((response) => response.ok ? response.json() as Promise<Array<{
+          node_id: string; name: string | null; lat: number; lon: number;
+          score: number; quality: 'good' | 'watch' | 'poor';
+        }>> : [])
+        .then((observers) => {
+          const source = map.getSource('observer-health') as maplibregl.GeoJSONSource | undefined;
+          source?.setData({
+            type: 'FeatureCollection',
+            features: observers.map((observer) => ({
+              type: 'Feature',
+              geometry: { type: 'Point', coordinates: [observer.lon, observer.lat] },
+              properties: {
+                node_id: observer.node_id,
+                name: observer.name,
+                score: observer.score,
+                quality: observer.quality,
+              },
+            })),
+          });
+        })
+        .catch(() => {});
 
       // ── Selected-node highlight (recolour + ring) ──────────────────────────
       // Two circle layers over node-dots, filtered to the selected node id.
@@ -1068,19 +1187,22 @@ export function MapLibreMap({
       map.remove();
       mapRef.current = null;
     };
+  // Initial theme is captured on mount; subsequent theme changes are applied by
+  // the dedicated theme effect without rebuilding the MapLibre instance.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialView, onMapReady, onNodeSelect, refreshMapSources, setClashPathLines]);
 
   // -- Imperative source updates ---------------------------------------------
 
   useEffect(() => {
     inferredNodesRef.current = inferredNodes;
-    scheduleRefresh();
+    scheduleRefresh({ nodes: true });
   }, [inferredNodes, scheduleRefresh]);
 
   useEffect(() => {
     showLinksRef.current = showLinks;
     updatePlannedLinks();
-    scheduleRefresh();
+    scheduleRefresh({ nodes: true, links: true, plannedLinks: true, clash: true });
   }, [showLinks, scheduleRefresh, updatePlannedLinks]);
 
   useEffect(() => {
@@ -1124,17 +1246,17 @@ export function MapLibreMap({
 
   useEffect(() => {
     showClientNodesRef.current = showClientNodes;
-    scheduleRefresh();
+    scheduleRefresh({ nodes: true });
   }, [showClientNodes, scheduleRefresh]);
 
   useEffect(() => {
     showHexClashesRef.current = showHexClashes;
-    scheduleRefresh();
+    scheduleRefresh({ nodes: true, clash: true, coverage: true });
   }, [showHexClashes, scheduleRefresh]);
 
   useEffect(() => {
     maxHexClashHopsRef.current = maxHexClashHops;
-    scheduleRefresh();
+    scheduleRefresh({ nodes: true, clash: true, coverage: true });
   }, [maxHexClashHops, scheduleRefresh]);
 
   useEffect(() => {
@@ -1143,20 +1265,24 @@ export function MapLibreMap({
 
   useEffect(() => {
     const unsubscribeNodes = nodeStore.subscribe(() => {
-      nodesRef.current = nodeStore.getState().nodes;
-      scheduleRefresh();
+      const nextNodes = nodeStore.getState().nodes;
+      // Packet/message updates share the same node Map reference. Ignore those
+      // emissions so live feed traffic does not trigger a 3.6k-node rebuild.
+      if (nextNodes === nodesRef.current) return;
+      nodesRef.current = nextNodes;
+      scheduleRefresh({ nodes: true, privacy: true, links: true, clash: true, plannedLinks: true });
       if (selectedNodeIdRef.current) setPopupVersion((value) => value + 1);
     });
     const unsubscribeCoverage = coverageStore.subscribe(() => {
       if (!viewshedEnabledRef.current) return;
       coverageRef.current = coverageStore.getState().coverage;
-      scheduleRefresh();
+      scheduleRefresh({ coverage: true, clash: true, nodes: true });
     });
     const unsubscribeLinks = linkStateStore.subscribe(() => {
       const linkState = linkStateStore.getState();
       viablePairsRef.current = linkState.viablePairsArr;
       linkMetricsRef.current = linkState.linkMetrics;
-      scheduleRefresh();
+      scheduleRefresh({ links: true, clash: true, nodes: true, plannedLinks: true });
     });
     const unsubscribeOverlay = useOverlayStore.subscribe((overlayState) => {
       if (
@@ -1165,7 +1291,7 @@ export function MapLibreMap({
       ) return;
       pathNodeIdsRef.current = overlayState.pathNodeIds;
       replayNodeIdsRef.current = overlayState.replayNodeIds;
-      scheduleRefresh();
+      scheduleRefresh({ nodes: true });
     });
 
     return () => {
@@ -1177,7 +1303,7 @@ export function MapLibreMap({
   }, [scheduleRefresh]);
 
   useEffect(() => {
-    scheduleRefresh();
+    scheduleRefresh({ nodes: true, clash: true });
   }, [focusedNodeId, focusedPrefixNodeIds, scheduleRefresh]);
 
   const toggleCoverageForNode = useCallback((nodeId: string) => {
@@ -1230,13 +1356,12 @@ export function MapLibreMap({
     if (!selectedNodeId) { setPopupLinks(null); return; }
     const node = getNode(selectedNodeId);
     if (!node) return;
-    const controller = new AbortController();
+    let cancelled = false;
     setPopupLinks(null);
-    fetch(`/api/nodes/${selectedNodeId}/links`, { signal: controller.signal })
-      .then((r) => r.json() as Promise<NodeLink[]>)
-      .then((rows) => setPopupLinks(Array.isArray(rows) ? rows : []))
-      .catch((err) => { if ((err as DOMException).name !== 'AbortError') setPopupLinks([]); });
-    return () => controller.abort();
+    void fetchNodeLinks(selectedNodeId)
+      .then((rows) => { if (!cancelled) setPopupLinks(rows); })
+      .catch(() => { if (!cancelled) setPopupLinks([]); });
+    return () => { cancelled = true; };
   }, [selectedNodeId, getNode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Highlight the selected node on the map (bright recolour + ring). Cleared
@@ -1357,18 +1482,6 @@ export function MapLibreMap({
             Repeater
           </button>
         )}
-        <button
-          type="button"
-          className={`map-tools__btn${mapLight ? ' map-tools__btn--active' : ''}`}
-          onClick={(e) => { e.stopPropagation(); toggleMapTheme(); }}
-          onMouseDown={(e) => e.stopPropagation()}
-          onMouseUp={(e) => e.stopPropagation()}
-        >
-          {mapLight
-            ? <><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>Light</>
-            : <><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>Dark</>
-          }
-        </button>
       </div>
 
       {/* Custom LOS status hint */}

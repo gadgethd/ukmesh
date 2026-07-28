@@ -15,6 +15,8 @@ type MobileControlsProps = {
   onShare: () => void;
   shareLabel: string;
   onNodeSelect: (nodeId: string) => void;
+  fullScreenMap: boolean;
+  onToggleFullScreenMap: () => void;
 };
 
 export const MobileControls: React.FC<MobileControlsProps> = ({
@@ -27,19 +29,29 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
   onShare,
   shareLabel,
   onNodeSelect,
+  fullScreenMap,
+  onToggleFullScreenMap,
 }) => {
   const [showFilters, setShowFilters] = useState(false);
 
   return (
     <div className="mobile-controls">
-      <MapModeSelector
+      <button
+        type="button"
+        className="mobile-fullscreen-toggle"
+        onClick={onToggleFullScreenMap}
+        aria-pressed={fullScreenMap}
+      >
+        {fullScreenMap ? 'Restore panels' : 'Full-screen map'}
+      </button>
+      {!fullScreenMap && <MapModeSelector
         activeMode={activeMode}
         viewshedEnabled={viewshedEnabled}
         onChange={onModeChange}
         onShare={onShare}
         shareLabel={shareLabel}
-      />
-      <button
+      />}
+      {!fullScreenMap && <button
         type="button"
         className="mobile-legend-toggle"
         onClick={() => setShowFilters((v) => !v)}
@@ -47,8 +59,8 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
       >
         <span>Layers</span>
         <span>{showFilters ? 'Hide' : 'Show'}</span>
-      </button>
-      <div className={`mobile-filter-wrap${showFilters ? '' : ' mobile-filter-wrap--hidden'}`}>
+      </button>}
+      {!fullScreenMap && <div className={`mobile-filter-wrap${showFilters ? '' : ' mobile-filter-wrap--hidden'}`}>
         <div className="mobile-filter-grid">
           {FILTER_ROWS.map(({ key, label, color, hollow }) => (
             <button
@@ -89,10 +101,10 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
             />
           </div>
         )}
-      </div>
-      <div className="mobile-search">
+      </div>}
+      {!fullScreenMap && <div className="mobile-search">
         <NodeSearch map={map} onNodeSelect={onNodeSelect} />
-      </div>
+      </div>}
     </div>
   );
 };

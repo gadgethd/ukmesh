@@ -309,3 +309,24 @@
     grid-template-columns: 1fr;
   }
 }
+/* Dashboard loading shells reserve final layout space and avoid chart jumps. */
+.skeleton-shimmer {
+  position: relative;
+  overflow: hidden;
+  min-height: 84px;
+  background: var(--bg-panel-alt);
+}
+.skeleton-shimmer::after {
+  position: absolute;
+  inset: 0;
+  content: '';
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.09), transparent);
+  animation: skeleton-shimmer 1.35s infinite;
+}
+.stats-page__chart-skeleton { height: 220px; border-radius: var(--radius-md); }
+.stats-page__loading-shell .stats-page__chart { min-height: 310px; }
+@keyframes skeleton-shimmer { to { transform: translateX(100%); } }
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-shimmer::after { animation: none; }
+}

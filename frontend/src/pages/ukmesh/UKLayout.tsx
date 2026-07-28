@@ -22,6 +22,7 @@ export const UKLayout: React.FC = () => {
       showCompanion
       showRegions={false}
       showTopology
+      showSpam
       showAbout={false}
       showInstall
       showBestPractice

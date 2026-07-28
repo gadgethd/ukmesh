@@ -81,6 +81,7 @@ export interface MapLibreMapProps {
   selectedNodeId?: string | null;
   onNodeSelect?: (nodeId: string | null) => void;
   onMapReady?: (map: maplibregl.Map) => void;
+  mapLight: boolean;
 }
 
 export interface PopupNodeView {

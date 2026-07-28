@@ -24,6 +24,7 @@ export function filtersForMapMode(mode: MapMode, current: Filters): Filters {
         terrain: false,
         clientNodes: false,
         packetHistory: false,
+        heatmap: false,
         betaPaths: true,
         hexClashes: false,
       };
@@ -35,6 +36,7 @@ export function filtersForMapMode(mode: MapMode, current: Filters): Filters {
         terrain: false,
         clientNodes: false,
         packetHistory: true,
+        heatmap: false,
         betaPaths: false,
         hexClashes: true,
       };
@@ -46,6 +48,7 @@ export function filtersForMapMode(mode: MapMode, current: Filters): Filters {
         terrain: true,
         clientNodes: false,
         packetHistory: false,
+        heatmap: false,
         betaPaths: false,
         hexClashes: false,
       };
@@ -57,6 +60,7 @@ export function filtersForMapMode(mode: MapMode, current: Filters): Filters {
         terrain: false,
         clientNodes: false,
         packetHistory: false,
+        heatmap: false,
         betaPaths: false,
         hexClashes: false,
       };

@@ -707,3 +707,47 @@
     flex: 1 1 100%;
   }
 }
+.observer-registration {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-md);
+  margin-top: var(--space-lg);
+}
+.observer-registration label { display: grid; gap: var(--space-xs); color: var(--text-secondary); }
+.observer-registration input {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  background: var(--bg-panel);
+  color: var(--text-primary);
+}
+.observer-registration button,
+.observer-registration p { grid-column: 1 / -1; }
+.hw-card { text-align: left; cursor: pointer; color: inherit; }
+@media (max-width: 640px) {
+  .observer-registration { grid-template-columns: 1fr; }
+}
+.site-btn--donate {
+  border-color: var(--color-gold);
+  background: var(--color-gold);
+  color: #111827;
+  font-weight: 800;
+}
+.site-home-health { border-block: 1px solid var(--border); background: var(--bg-panel); }
+.site-home-health__inner { display: flex; align-items: center; gap: 18px; padding-block: 13px; }
+.site-home-health__inner > div { display: flex; align-items: center; gap: 8px; }
+.site-home-health__inner > span { color: var(--text-secondary); }
+.site-home-health__inner > a { margin-left: auto; color: var(--accent); }
+.site-home-health__dot { width: 11px; height: 11px; border-radius: 50%; background: var(--color-amber); }
+.site-home-health--healthy .site-home-health__dot { background: var(--color-green); }
+.site-home-health--poor .site-home-health__dot { background: var(--color-red); }
+.site-home-feed { display: grid; gap: 8px; }
+.site-home-feed article { display: grid; grid-template-columns: 110px 1fr auto; gap: 12px; padding: 10px; border: 1px solid var(--border); border-radius: var(--radius-md); }
+.site-home-feed time { color: var(--text-muted); }
+@media (max-width: 640px) {
+  .site-home-health__inner { align-items: flex-start; flex-direction: column; gap: 5px; }
+  .site-home-health__inner > a { margin-left: 0; }
+  .site-home-feed article { grid-template-columns: 1fr auto; }
+  .site-home-feed article span { grid-column: 1 / -1; grid-row: 2; }
+}

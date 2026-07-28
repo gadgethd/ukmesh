@@ -207,13 +207,12 @@ export function useAppMessageHandler({
   ]);
 
   // Throttle flush — batches bursts from the WebSocket into single React renders
-  const BATCH_INTERVAL_MS = 16;
   const scheduleFlush = useCallback(() => {
     if (rafRef.current !== null) return;
-    rafRef.current = window.setTimeout(() => {
+    rafRef.current = window.requestAnimationFrame(() => {
       rafRef.current = null;
       flushPending();
-    }, BATCH_INTERVAL_MS);
+    });
   }, [flushPending]);
 
   // Cleanup pending flush on unmount
@@ -221,7 +220,7 @@ export function useAppMessageHandler({
     flushRef.current = flushPending;
     return () => {
       if (rafRef.current !== null) {
-        clearTimeout(rafRef.current);
+        cancelAnimationFrame(rafRef.current);
       }
       // Flush any remaining pending updates
       flushPending();
@@ -251,7 +250,7 @@ export function useAppMessageHandler({
       // immediately so the UI never waits on the 16ms batch window.
       if (packet.packetType === 5) {
         if (rafRef.current !== null) {
-          clearTimeout(rafRef.current);
+          cancelAnimationFrame(rafRef.current);
           rafRef.current = null;
         }
         pending.packets.push(packet);
