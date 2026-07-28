@@ -2,14 +2,14 @@
 FROM node:20-alpine AS backend-builder
 WORKDIR /build/backend
 COPY backend/package.json backend/package-lock.json ./
-RUN npm ci
+RUN npm ci --audit
 COPY backend/ ./
 RUN npm run build
 
 FROM node:20-alpine AS runtime
 WORKDIR /app
 COPY backend/package.json backend/package-lock.json ./
-RUN npm ci --omit=dev && npm cache clean --force
+RUN npm ci --omit=dev --audit && npm cache clean --force
 COPY --from=backend-builder /build/backend/dist ./dist
 COPY --from=backend-builder /build/backend/src/db/schema ./dist/db/schema
 COPY --from=backend-builder /build/backend/src/db/migrations ./dist/db/migrations
