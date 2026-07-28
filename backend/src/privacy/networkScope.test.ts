@@ -16,7 +16,7 @@ test('privacy scope preserves production aliases while isolating test', () => {
 test('privacy SQL aliases are internal identifiers only', () => {
   assert.match(
     privateNodePacketNetworkMatchSql('private_node', 'p'),
-    /private_node\.network = p\.network/,
+    /p\.is_private IS TRUE/,
   );
   assert.throws(
     () => privateNodePacketNetworkMatchSql('private_node', 'p; DROP TABLE packets'),

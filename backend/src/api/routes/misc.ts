@@ -10,7 +10,12 @@ type QueryFn = <T extends QueryResultRow = QueryResultRow>(
   params?: unknown[],
 ) => Promise<{ rows: T[] }>;
 
-type GetRecentPacketsFn = (limit: number, network?: string, observer?: string) => Promise<unknown>;
+type GetRecentPacketsFn = (
+  limit: number,
+  network?: string,
+  observer?: string,
+  fields?: 'full' | 'slim',
+) => Promise<unknown>;
 type GetRecentPacketEventsFn = (limit: number, network?: string, observer?: string) => Promise<unknown>;
 type GetPacketDetailFn = (hash: string, network?: string) => Promise<unknown>;
 
@@ -19,6 +24,7 @@ type MiscRouteDeps = {
   getRecentPackets: GetRecentPacketsFn;
   getRecentPacketEvents: GetRecentPacketEventsFn;
   getPacketDetail: GetPacketDetailFn;
+  packetDetailLimiter: ReturnType<typeof import('express-rate-limit').rateLimit>;
 };
 
 export function registerMiscRoutes(router: Router, deps: MiscRouteDeps): void {
@@ -27,6 +33,7 @@ export function registerMiscRoutes(router: Router, deps: MiscRouteDeps): void {
     getRecentPackets,
     getRecentPacketEvents,
     getPacketDetail,
+    packetDetailLimiter,
   } = deps;
 
   router.get('/packets/recent', async (req, res) => {
@@ -35,9 +42,10 @@ export function registerMiscRoutes(router: Router, deps: MiscRouteDeps): void {
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const observer = normalizeObserverQuery(req.query['observer']);
       const raw = String(req.query['raw'] ?? '').trim();
+      const fields = req.query['fields'] === 'slim' ? 'slim' : 'full';
       const packets = raw === '1'
         ? await getRecentPacketEvents(limit, network, observer)
-        : await getRecentPackets(limit, network, observer);
+        : await getRecentPackets(limit, network, observer, fields);
       res.json(packets);
     } catch (err) {
       console.error('[api] GET /packets/recent', (err as Error).message);
@@ -45,7 +53,7 @@ export function registerMiscRoutes(router: Router, deps: MiscRouteDeps): void {
     }
   });
 
-  router.get('/packets/:hash', async (req, res) => {
+  router.get('/packets/:hash', packetDetailLimiter, async (req, res) => {
     try {
       const hash = String(req.params['hash'] ?? '').trim();
       if (!hash || !/^[0-9a-fA-F]{1,128}$/.test(hash)) {
@@ -75,19 +83,18 @@ export function registerMiscRoutes(router: Router, deps: MiscRouteDeps): void {
         last_message_at: string;
       }>(
         `SELECT
-          p.payload->'decrypted'->>'sender' AS sender,
+          p.companion_sender AS sender,
           COUNT(DISTINCT p.packet_hash)::text AS message_count,
           MAX(p.time) AS last_message_at
         FROM packets p
         WHERE
           p.packet_type = 5
-          AND p.payload->'decrypted' IS NOT NULL
-          AND p.payload->'decrypted'->>'sender' IS NOT NULL
-          AND p.payload->'decrypted'->>'sender' != ''
-          AND p.payload->'decrypted'->>'sender' NOT LIKE '%🚫%'
+          AND p.companion_sender IS NOT NULL
+          AND p.companion_sender != ''
+          AND p.companion_sender NOT LIKE '%🚫%'
           AND p.time > NOW() - INTERVAL '24 hours'
           ${filters.packetsAlias('p')}
-        GROUP BY p.payload->'decrypted'->>'sender'
+        GROUP BY p.companion_sender
         ORDER BY COUNT(DISTINCT p.packet_hash) DESC
         LIMIT 100`,
         filters.params,

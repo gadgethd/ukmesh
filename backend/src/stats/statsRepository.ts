@@ -1,5 +1,6 @@
 import type { QueryResultRow } from 'pg';
 import type { NetworkFilters } from '../api/utils/networkFilters.js';
+import { UKMESH_NETWORKS } from '../networks.js';
 
 type QueryFn = <T extends QueryResultRow = QueryResultRow>(
   text: string,
@@ -57,7 +58,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
     const filters = networkFilters(network, observer);
     return query(`
       SELECT
-        COALESCE(NULLIF(TRIM(UPPER(split_part(p.topic, '/', 2))), ''), 'UNK') AS iata,
+        COALESCE(NULLIF(TRIM(UPPER(p.iata)), ''), 'UNK') AS iata,
         COUNT(DISTINCT p.packet_hash) FILTER (WHERE p.time > NOW() - INTERVAL '24 hours') AS packets_24h,
         COUNT(DISTINCT p.packet_hash) AS packets_7d,
         COUNT(DISTINCT p.rx_node_id) FILTER (WHERE p.time > NOW() - INTERVAL '1 minute') AS active_observers,
@@ -218,7 +219,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
       fetchObserverRegionSummary(network, observer),
       query(`
         SELECT
-          COALESCE(NULLIF(TRIM(UPPER(split_part(p.topic, '/', 2))), ''), 'UNK') AS iata,
+          COALESCE(NULLIF(TRIM(UPPER(p.iata)), ''), 'UNK') AS iata,
           time_bucket('1 day', p.time) AS day,
           COUNT(DISTINCT p.packet_hash) AS count
         FROM packets p
@@ -663,12 +664,33 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
 
   async function fetchStatsSummary(network: string | undefined, observer: string | undefined) {
     const filters = networkFilters(network, observer);
-    const longestHopResult = () => query(`SELECT hop_count AS count, packet_hash AS hash
-           FROM packets
-           WHERE hop_count IS NOT NULL
-             AND time > NOW() - INTERVAL '30 days'
-             ${filters.packets}
-           ORDER BY hop_count DESC LIMIT 1`, filters.params);
+    const longestHopResult = () => {
+      if (observer) {
+        return query(`SELECT hop_count AS count, packet_hash AS hash
+             FROM packets
+             WHERE hop_count IS NOT NULL
+               AND time > NOW() - INTERVAL '30 days'
+               ${filters.packets}
+             ORDER BY hop_count DESC, time DESC
+             LIMIT 1`, filters.params);
+      }
+      const params: unknown[] = [];
+      let networkClause = `network IS DISTINCT FROM 'test'`;
+      if (network === 'ukmesh') {
+        params.push(UKMESH_NETWORKS);
+        networkClause = 'network = ANY($1)';
+      } else if (network) {
+        params.push(network);
+        networkClause = 'network = $1';
+      }
+      return query(`SELECT max_hop_count AS count, max_hop_hash AS hash
+           FROM packet_daily_stats
+           WHERE day >= CURRENT_DATE - 30
+             AND max_hop_count IS NOT NULL
+             AND ${networkClause}
+           ORDER BY max_hop_count DESC, max_hop_seen_at DESC NULLS LAST
+           LIMIT 1`, params);
+    };
 
     const [mqttCount, packetCount, staleCount, mapNodeCount, totalNodeCount, longestHopCount, nodesDayCount, internationalCount] = await Promise.all([
       network != null
@@ -766,21 +788,38 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
   async function fetchObserverActivity(network: string | undefined) {
     const filters = networkFilters(network);
     return query<{ node_id: string; name: string | null; rx_24h: string; tx_24h: string; last_tx: string | null; last_rx: string | null }>(
-      `SELECT
+      `WITH rx AS (
+         SELECT p.rx_node_id AS node_id,
+                COUNT(p.packet_hash)::text AS rx_24h,
+                MAX(p.time)::text AS last_rx
+         FROM packets p
+         WHERE p.time > NOW() - INTERVAL '24 hours'
+           AND p.rx_node_id IS NOT NULL
+           ${filters.packetsAlias('p')}
+         GROUP BY p.rx_node_id
+       ),
+       tx AS (
+         SELECT p.src_node_id AS node_id,
+                COUNT(p.packet_hash)::text AS tx_24h,
+                MAX(p.time)::text AS last_tx
+         FROM packets p
+         WHERE p.time > NOW() - INTERVAL '24 hours'
+           AND p.src_node_id IS NOT NULL
+           ${filters.packetsAlias('p')}
+         GROUP BY p.src_node_id
+       )
+       SELECT
          n.node_id,
          n.name,
-         COUNT(p.packet_hash) FILTER (WHERE p.rx_node_id  = n.node_id) AS rx_24h,
-         COUNT(p.packet_hash) FILTER (WHERE p.src_node_id = n.node_id) AS tx_24h,
-         MAX(p.time)          FILTER (WHERE p.src_node_id = n.node_id)::text AS last_tx,
-         MAX(p.time)          FILTER (WHERE p.rx_node_id  = n.node_id)::text AS last_rx
-       FROM nodes n
-       JOIN packets p ON (p.rx_node_id = n.node_id OR p.src_node_id = n.node_id)
-       WHERE p.time > NOW() - INTERVAL '24 hours'
-         AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
-         ${filters.packetsAlias('p')}
-       GROUP BY n.node_id, n.name
-       HAVING COUNT(p.packet_hash) FILTER (WHERE p.rx_node_id = n.node_id) > 0
-       ORDER BY rx_24h DESC`,
+         rx.rx_24h,
+         COALESCE(tx.tx_24h, '0') AS tx_24h,
+         tx.last_tx,
+         rx.last_rx
+       FROM rx
+       JOIN nodes n ON n.node_id = rx.node_id
+       LEFT JOIN tx ON tx.node_id = rx.node_id
+       WHERE n.name IS NULL OR n.name NOT LIKE '%🚫%'
+       ORDER BY rx.rx_24h::bigint DESC`,
       filters.params,
     );
   }

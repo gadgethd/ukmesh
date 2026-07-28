@@ -15,14 +15,19 @@ test('private identities and relay prefixes are suppressed', () => {
   const privacy = new PublicWsPrivacyIndex();
   privacy.replace([{ node_id: privateId, name: 'Home 🚫' }]);
 
-  assert.equal(privacy.packetHasPrivateParticipant({ srcNodeId: privateId }), true);
+  assert.equal(privacy.packetHasPrivateParticipant({
+    srcNodeId: privateId,
+    visibilityOk: false,
+  }), true);
   assert.equal(privacy.packetHasPrivateParticipant({
     path: [privateId.slice(0, 4)],
     pathHashSizeBytes: 2,
+    visibilityOk: false,
   }), true);
   assert.equal(privacy.packetHasPrivateParticipant({
     path: ['cdef'],
     pathHashSizeBytes: 2,
+    visibilityOk: true,
   }), false);
 });
 

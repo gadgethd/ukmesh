@@ -24,35 +24,64 @@ function configuredOwnerNodeIds(mqttUsername: string): string[] {
   return normalizeNodeIds(map.get(mqttUsername) ?? []);
 }
 
+const OWNER_ACCESS_CACHE_TTL_MS = Number(process.env['OWNER_ACCESS_CACHE_TTL_MS'] ?? 30_000);
+const ownerNodeIdCache = new BoundedTtlMap<string, { ts: number; nodeIds: string[] }>({
+  maxEntries: 2048,
+  maxWeight: 4 * 1024 * 1024,
+  ttlMs: OWNER_ACCESS_CACHE_TTL_MS,
+});
+const ownerNodeIdInflight = new Map<string, Promise<string[]>>();
+
 export function invalidateOwnerNodeIdCache(mqttUsername: string): void {
-  void mqttUsername;
+  ownerNodeIdCache.delete(mqttUsername.trim());
 }
 
 export async function resolveOwnerNodeIds(mqttUsername: string): Promise<string[]> {
-  const verified = normalizeNodeIds(await getOwnerNodeIdsForUsername(mqttUsername));
-  const mode = String(process.env['OWNER_AUTHORIZATION_MODE'] ?? 'shadow').trim().toLowerCase();
-  if (mode === 'enforce') return verified;
-  if (mode !== 'shadow') throw new Error(`INVALID_OWNER_AUTHORIZATION_MODE:${mode}`);
-  if (verified.length > 0) return verified;
-
-  // Transitional compatibility is deliberately read-only: the current ACL or
-  // operator config may keep an existing owner working while inventory runs,
-  // but broker logs can never create a new grant.
-  const configured = configuredOwnerNodeIds(mqttUsername);
-  if (configured.length > 0) return configured;
-  try {
-    const legacy = normalizeNodeIds(getNodeIdsForUserInAcl(readAclFile(), mqttUsername));
-    if (legacy.length > 0) {
-      console.warn('[owner-auth] shadow-mode legacy ACL authorization used', { mqttUsername });
-    }
-    return legacy;
-  } catch {
-    return [];
+  const cacheKey = mqttUsername.trim();
+  const cached = ownerNodeIdCache.get(cacheKey);
+  if (cached && Date.now() - cached.ts < OWNER_ACCESS_CACHE_TTL_MS) {
+    return [...cached.nodeIds];
   }
+  const existing = ownerNodeIdInflight.get(cacheKey);
+  if (existing) return [...await existing];
+
+  const load = async (): Promise<string[]> => {
+    const verified = normalizeNodeIds(await getOwnerNodeIdsForUsername(cacheKey));
+    const mode = String(process.env['OWNER_AUTHORIZATION_MODE'] ?? 'shadow').trim().toLowerCase();
+    if (mode === 'enforce') return verified;
+    if (mode !== 'shadow') throw new Error(`INVALID_OWNER_AUTHORIZATION_MODE:${mode}`);
+    if (verified.length > 0) return verified;
+
+    // Transitional compatibility is deliberately read-only: the current ACL or
+    // operator config may keep an existing owner working while inventory runs,
+    // but broker logs can never create a new grant.
+    const configured = configuredOwnerNodeIds(cacheKey);
+    if (configured.length > 0) return configured;
+    try {
+      const legacy = normalizeNodeIds(getNodeIdsForUserInAcl(readAclFile(), cacheKey));
+      if (legacy.length > 0) {
+        console.warn('[owner-auth] shadow-mode legacy ACL authorization used', { mqttUsername: cacheKey });
+      }
+      return legacy;
+    } catch {
+      return [];
+    }
+  };
+  const tracked = load()
+    .then((nodeIds) => {
+      ownerNodeIdCache.set(cacheKey, { ts: Date.now(), nodeIds });
+      return nodeIds;
+    })
+    .finally(() => {
+      if (ownerNodeIdInflight.get(cacheKey) === tracked) ownerNodeIdInflight.delete(cacheKey);
+    });
+  ownerNodeIdInflight.set(cacheKey, tracked);
+  return [...await tracked];
 }
 
 export async function autoLinkOwnerNodeIds(mqttUsername: string): Promise<string[]> {
   await reconcileOwnerAuthorization();
+  invalidateOwnerNodeIdCache(mqttUsername);
   return resolveOwnerNodeIds(mqttUsername);
 }
 

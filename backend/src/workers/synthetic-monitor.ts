@@ -133,12 +133,23 @@ async function evaluateAlerts(results: CheckResult[]): Promise<void> {
 }
 
 async function runChecks(): Promise<void> {
-  const results = await Promise.all([
+  const checks = [
     httpCheck('http_liveness', '/healthz', (body) => (body as { status?: string } | null)?.status === 'ok'),
     httpCheck('dependency_readiness', '/readyz', (body) => (body as { status?: string } | null)?.status === 'ready'),
     httpCheck('stats_api', '/api/stats?network=ukmesh', (body) => Number.isFinite(Number((body as { totalNodes?: number } | null)?.totalNodes))),
     websocketCheck(),
-  ]);
+  ];
+  const settled = await Promise.allSettled(checks);
+  const names = ['http_liveness', 'dependency_readiness', 'stats_api', 'websocket_initial_state'];
+  const results = settled.map((result, index): CheckResult => {
+    if (result.status === 'fulfilled') return result.value;
+    return {
+      name: names[index] ?? `check_${index}`,
+      status: 'failed',
+      latencyMs: TIMEOUT_MS,
+      detail: (result.reason instanceof Error ? result.reason.message : String(result.reason)).slice(0, 300),
+    };
+  });
   await persistResults(results);
   await evaluateAlerts(results);
   console.log(`[synthetic] ${results.map((result) => `${result.name}=${result.status}:${result.latencyMs}ms`).join(' ')}`);
@@ -146,11 +157,21 @@ async function runChecks(): Promise<void> {
 
 async function main(): Promise<void> {
   await initDb();
-  const schedule = () => setTimeout(() => void runChecks().catch((err) => {
-    console.error('[synthetic] check cycle failed', (err as Error).message);
-  }).finally(schedule), INTERVAL_MS);
-  await runChecks();
-  schedule();
+  let running = false;
+  const runCycle = async () => {
+    if (running) {
+      console.warn('[synthetic] check cycle skipped; previous cycle is still active');
+      return;
+    }
+    running = true;
+    await runChecks().catch((err) => {
+      console.error('[synthetic] check cycle failed', (err as Error).message);
+    }).finally(() => {
+      running = false;
+    });
+  };
+  await runCycle();
+  setInterval(() => void runCycle(), INTERVAL_MS);
 }
 
 main().catch((err) => {

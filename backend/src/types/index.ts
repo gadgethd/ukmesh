@@ -35,5 +35,7 @@ export interface LivePacket {
   advertCount?: number; // for Advert packets: persistent DB count after this event
   transportCodes?: string; // raw 4-byte hex for TransportFlood/TransportDirect packets
   regionScope?: string;    // matched region name e.g. '#Europe', or undefined if no match
+  isPrivate?: boolean;     // materialized at packet ingest
+  visibilityOk?: boolean;  // public privacy/path validation decision
   ts: number;
 }

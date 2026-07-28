@@ -1,6 +1,5 @@
 import { UKMESH_NETWORKS } from '../../networks.js';
 import type { VisibilityScope } from '../../http/requestScope.js';
-import { privateNodePacketNetworkMatchSql } from '../../privacy/networkScope.js';
 
 export type NetworkFilters = {
   params: unknown[];
@@ -11,36 +10,7 @@ export type NetworkFilters = {
 };
 
 function publicPacketPrivacyConditions(prefix: string): string[] {
-  const packetAlias = prefix.endsWith('.') ? prefix.slice(0, -1) : 'packets';
-  return [
-    `(
-      COALESCE(cardinality(${prefix}path_hashes), 0) = 0
-      OR ${prefix}path_hash_size_bytes BETWEEN 1 AND 3
-    )`,
-    `NOT EXISTS (
-      SELECT 1
-      FROM unnest(COALESCE(${prefix}path_hashes, ARRAY[]::text[])) AS malformed_path_hash
-      WHERE malformed_path_hash IS NULL
-         OR length(malformed_path_hash) <> ${prefix}path_hash_size_bytes * 2
-         OR malformed_path_hash !~ '^[0-9A-Fa-f]+$'
-    )`,
-    `NOT EXISTS (
-      SELECT 1
-      FROM nodes private_node
-      WHERE private_node.name LIKE '%🚫%'
-        AND ${privateNodePacketNetworkMatchSql('private_node', packetAlias)}
-        AND (
-          private_node.node_id IN (${prefix}rx_node_id, ${prefix}src_node_id)
-          OR EXISTS (
-            SELECT 1
-            FROM unnest(COALESCE(${prefix}path_hashes, ARRAY[]::text[])) AS path_hash
-            WHERE ${prefix}path_hash_size_bytes BETWEEN 1 AND 3
-              AND length(path_hash) = ${prefix}path_hash_size_bytes * 2
-              AND UPPER(private_node.node_id) LIKE UPPER(path_hash) || '%'
-          )
-        )
-    )`,
-  ];
+  return [`${prefix}visibility_ok IS TRUE`];
 }
 
 export function networkFilters(network?: string, observer?: string): NetworkFilters {
@@ -72,7 +42,7 @@ export function networkFilters(network?: string, observer?: string): NetworkFilt
   if (netEq) {
     packetConditions.push(netEq);
     if (network !== 'test') {
-      packetConditions.push(`split_part(topic, '/', 1) <> 'meshcore-test'`);
+      packetConditions.push(`topic_prefix <> 'meshcore-test'`);
     }
   } else {
     packetConditions.push(`network IS DISTINCT FROM 'test'`);
@@ -147,11 +117,11 @@ export function networkFilters(network?: string, observer?: string): NetworkFilt
         // `test` explicitly requests test traffic. Public scopes exclude the
         // legacy test topic marker as a defence-in-depth check for old rows.
         if (network !== 'test') {
-          conditions.push(`split_part(${prefix}topic, '/', 1) <> 'meshcore-test'`);
+          conditions.push(`${prefix}topic_prefix <> 'meshcore-test'`);
         }
       } else {
         conditions.push(`${prefix}network IS DISTINCT FROM 'test'`);
-        conditions.push(`split_part(${prefix}topic, '/', 1) <> 'meshcore-test'`);
+        conditions.push(`${prefix}topic_prefix <> 'meshcore-test'`);
         conditions.push(`COALESCE(${prefix}rx_node_id, '') NOT IN (SELECT node_id FROM nodes WHERE network = 'test')`);
       }
       if (observerParam) conditions.push(`${prefix}rx_node_id = ${observerParam}`);

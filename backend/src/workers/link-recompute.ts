@@ -69,8 +69,18 @@ function accepted(admission: LinkQueueAdmission | null): admission is LinkQueueA
     && ['accepted', 'coalesced', 'duplicate'].includes(admission.status);
 }
 
+async function waitForQueueEvent(redis: Redis, deadline: number): Promise<void> {
+  const remainingMs = deadline - Date.now();
+  if (remainingMs <= 0) return;
+  // A bounded timeout covers a crash between a Redis transition and its wake-up
+  // notification without returning to sub-second polling.
+  const timeoutSeconds = Math.max(1, Math.min(30, Math.ceil(remainingMs / 1_000)));
+  await redis.brpop(LINK_V3_KEYS.events, timeoutSeconds);
+}
+
 async function waitForAdmission(
   enqueue: () => Promise<LinkQueueAdmission | null>,
+  waiter: Redis,
   deadline: number,
 ): Promise<string | null> {
   while (true) {
@@ -81,11 +91,11 @@ async function waitForAdmission(
       throw new Error(`LINK_REBUILD_ADMISSION_${result.status.toUpperCase()}`);
     }
     if (Date.now() >= deadline) throw new Error('LINK_REBUILD_ADMISSION_TIMEOUT');
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    await waitForQueueEvent(waiter, deadline);
   }
 }
 
-async function waitForPreexistingDrain(redis: Redis, deadline: number): Promise<void> {
+async function waitForPreexistingDrain(redis: Redis, waiter: Redis, deadline: number): Promise<void> {
   while (true) {
     const [ready, leased, legacy] = await Promise.all([
       redis.llen(LINK_V3_KEYS.ready),
@@ -94,11 +104,11 @@ async function waitForPreexistingDrain(redis: Redis, deadline: number): Promise<
     ]);
     if (ready === 0 && leased === 0 && legacy === 0) return;
     if (Date.now() >= deadline) throw new Error('LINK_REBUILD_PREEXISTING_DRAIN_TIMEOUT');
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    await waitForQueueEvent(waiter, deadline);
   }
 }
 
-async function waitForV3DrainAfterFreeze(redis: Redis, deadline: number): Promise<void> {
+async function waitForV3DrainAfterFreeze(redis: Redis, waiter: Redis, deadline: number): Promise<void> {
   while (true) {
     const [ready, leased, legacy] = await Promise.all([
       redis.llen(LINK_V3_KEYS.ready),
@@ -108,12 +118,13 @@ async function waitForV3DrainAfterFreeze(redis: Redis, deadline: number): Promis
     if (legacy > 0) throw new Error('LINK_REBUILD_LEGACY_PRODUCER_ACTIVE');
     if (ready === 0 && leased === 0) return;
     if (Date.now() >= deadline) throw new Error('LINK_REBUILD_PREEXISTING_DRAIN_TIMEOUT');
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    await waitForQueueEvent(waiter, deadline);
   }
 }
 
 async function waitForGeneration(
   redis: Redis,
+  waiter: Redis,
   generation: string,
   expectedJobs: number,
   deadline: number,
@@ -135,14 +146,16 @@ async function waitForGeneration(
       throw new Error('LINK_REBUILD_LEGACY_PRODUCER_ACTIVE');
     }
     if (Date.now() >= deadline) throw new Error('LINK_REBUILD_COMPLETION_TIMEOUT');
-    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    await waitForQueueEvent(waiter, deadline);
   }
 }
 
 async function main(): Promise<void> {
   await initDb();
   const redis = new Redis(getRedisUrl(), getRedisConnectionOptions());
+  const waiter = new Redis(getRedisUrl(), getRedisConnectionOptions());
   redis.on('error', (error: Error) => console.error('[link-recompute/redis]', error.message));
+  waiter.on('error', (error: Error) => console.error('[link-recompute/waiter]', error.message));
 
   const suffix = randomBytes(8).toString('hex');
   const schemaName = `link_rebuild_${suffix}`;
@@ -166,7 +179,7 @@ async function main(): Promise<void> {
     const heartbeat = await redis.exists(LINK_V3_KEYS.workerHeartbeat);
     if (heartbeat !== 1) throw new Error('LINK_REBUILD_WORKER_UNAVAILABLE');
 
-    await waitForPreexistingDrain(redis, Date.now() + ADMISSION_TIMEOUT_MS);
+    await waitForPreexistingDrain(redis, waiter, Date.now() + ADMISSION_TIMEOUT_MS);
     const acquired = await redis.set(
       LINK_V3_KEYS.rebuild,
       rebuildValue,
@@ -191,7 +204,7 @@ async function main(): Promise<void> {
         });
     }, Math.max(10_000, Math.floor(REBUILD_LEASE_MS / 3)));
     renewalTimer.unref();
-    await waitForV3DrainAfterFreeze(redis, Date.now() + ADMISSION_TIMEOUT_MS);
+    await waitForV3DrainAfterFreeze(redis, waiter, Date.now() + ADMISSION_TIMEOUT_MS);
     await ensureLease();
     windowEnd = new Date();
     await query(`CREATE SCHEMA ${schemaName}`);
@@ -233,6 +246,7 @@ async function main(): Promise<void> {
         }
         const jobId = await waitForAdmission(
           () => queuePhysicalLinkJob(a.node_id, b.node_id, generation),
+          waiter,
           admissionDeadline,
         );
         if (jobId) jobIds.add(jobId);
@@ -258,6 +272,7 @@ async function main(): Promise<void> {
           pathHashSizeBytes,
           generation,
         ),
+        waiter,
         admissionDeadline,
       );
       if (jobId) jobIds.add(jobId);
@@ -273,7 +288,7 @@ async function main(): Promise<void> {
         WHERE generation = $1`,
       [generation, jobIds.size],
     );
-    await waitForGeneration(redis, generation, jobIds.size, Date.now() + COMPLETION_TIMEOUT_MS);
+    await waitForGeneration(redis, waiter, generation, jobIds.size, Date.now() + COMPLETION_TIMEOUT_MS);
     await ensureLease();
 
     if (await redis.llen(LEGACY_LINK_JOB_QUEUE) > 0) {
@@ -346,6 +361,7 @@ async function main(): Promise<void> {
       await releaseDeferredLinkJobs(redis, 1_000, rebuildValue).catch(() => 0);
     }
     await redis.quit().catch(() => undefined);
+    await waiter.quit().catch(() => undefined);
   }
 }
 

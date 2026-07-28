@@ -3,7 +3,6 @@ import { isPrivateNode } from '../api/utils/privateNode.js';
 
 export class PublicWsPrivacyIndex {
   private readonly nodeIds = new Set<string>();
-  private readonly prefixes = new Set<string>();
   private ready = false;
 
   get isReady(): boolean {
@@ -12,7 +11,6 @@ export class PublicWsPrivacyIndex {
 
   replace(nodes: Array<{ node_id?: unknown; name?: unknown }>): void {
     this.nodeIds.clear();
-    this.prefixes.clear();
     for (const node of nodes) {
       if (isPrivateNode(typeof node.name === 'string' ? node.name : null)) {
         this.remember(String(node.node_id ?? ''));
@@ -25,7 +23,6 @@ export class PublicWsPrivacyIndex {
     const normalized = nodeId.trim().toLowerCase();
     if (!/^[0-9a-f]{64}$/.test(normalized)) return;
     this.nodeIds.add(normalized);
-    for (const length of [2, 4, 6]) this.prefixes.add(normalized.slice(0, length));
   }
 
   hasNode(nodeId: unknown): boolean {
@@ -50,18 +47,10 @@ export class PublicWsPrivacyIndex {
         return true;
       }
     }
-    if (this.hasNode(packet.rxNodeId) || this.hasNode(packet.srcNodeId)) return true;
-    if (packet.path == null) return false;
-    if (!Array.isArray(packet.path)) return true;
-    const size = Number(packet.pathHashSizeBytes ?? 0);
-    if (packet.path.length > 0 && (!Number.isInteger(size) || size < 1 || size > 3)) return true;
-    if (size < 1 || size > 3) return false;
-    return packet.path.some((hash) => (
-      typeof hash !== 'string'
-      || hash.length !== size * 2
-      || !/^[0-9a-f]+$/i.test(hash)
-      || this.prefixes.has(hash.toLowerCase())
-    ));
+    // MQTT ingest and persisted packet rows share the same materialized
+    // visibility decision. Missing state is rejected rather than re-running
+    // path-prefix privacy logic on every WebSocket subscriber.
+    return packet.visibilityOk !== true;
   }
 
   filterMessage(message: WSMessage): WSMessage | null {

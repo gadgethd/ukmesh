@@ -2,6 +2,7 @@ import { Request, Response, Router } from 'express';
 import {
   CHARTS_CACHE_TTL_MS,
   INFERRED_NODES_CACHE_TTL_MS,
+  NODE_LINKS_CACHE_TTL_MS,
   OWNER_DASHBOARD_CACHE_TTL_MS,
   OWNER_LIVE_CACHE_TTL_MS,
   PATH_HISTORY_CACHE_TTL_MS,
@@ -9,6 +10,9 @@ import {
   chartsCache,
   chartsInflight,
   inferredNodesCache,
+  inferredNodesInflight,
+  nodeLinksCache,
+  nodeLinksInflight,
   ownerLiveCache,
   pathHistoryCache,
   statsCache,
@@ -26,7 +30,13 @@ import {
   pool,
   query,
 } from '../db/index.js';
-import { autoLinkOwnerNodeIds, buildOwnerDashboard, resolveOwnerNodeIds, verifyMqttCredentials } from '../owner/ownerAccess.js';
+import {
+  autoLinkOwnerNodeIds,
+  buildOwnerDashboard,
+  invalidateOwnerNodeIdCache,
+  resolveOwnerNodeIds,
+  verifyMqttCredentials,
+} from '../owner/ownerAccess.js';
 import { encryptOwnerSession, getOwnerSession, isSecureRequest } from '../owner/ownerSession.js';
 import { getResolveCache, setResolveCache } from '../path-beta/resolveCache.js';
 import { resolvePool } from '../path-beta/resolvePool.js';
@@ -34,7 +44,10 @@ import { maskDecodedPathNodes } from '../stats/maskDecodedPathNodes.js';
 import {
   COVERAGE_LIMITER,
   EXPENSIVE_LIMITER,
+  EXPORT_LIMITER,
+  NODES_LIMITER,
   OWNER_LOGIN_LIMITER,
+  PACKET_DETAIL_LIMITER,
   PATH_BETA_LIMITER,
   PATH_HISTORY_LIMITER,
   PATH_LEARNING_LIMITER,
@@ -56,6 +69,7 @@ import { registerTopologyRoutes } from './routes/topology.js';
 import { registerActivityTimelineRoutes } from './routes/activityTimeline.js';
 import { registerRfValidationRoutes } from './routes/rfValidation.js';
 import { registerExportRoutes } from './routes/exports.js';
+import { registerProductFeatureRoutes } from './routes/productFeatures.js';
 import { requireLocalOnly } from './utils/localOnly.js';
 import { networkFilters } from './utils/networkFilters.js';
 import {
@@ -82,6 +96,7 @@ router.use((req, res, next) => {
 router.use(healthRoutes);
 router.use(nodeStatusRoutes);
 router.use(radioRoutes);
+registerProductFeatureRoutes(router, query);
 const OWNER_COOKIE_NAME = 'meshcore_owner_session';
 const OWNER_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const OWNER_LAST_HOP_CACHE_TTL_MS = 60 * 60 * 1000;
@@ -129,13 +144,19 @@ registerNodeRoutes(router, {
   requireLocalOnly,
   networkFilters,
   inferredNodesCache,
+  inferredNodesInflight,
   inferredNodesCacheTtlMs: INFERRED_NODES_CACHE_TTL_MS,
+  nodeLinksCache,
+  nodeLinksInflight,
+  nodeLinksCacheTtlMs: NODE_LINKS_CACHE_TTL_MS,
+  nodesLimiter: NODES_LIMITER,
 });
 registerMiscRoutes(router, {
   query,
   getRecentPackets,
   getRecentPacketEvents,
   getPacketDetail,
+  packetDetailLimiter: PACKET_DETAIL_LIMITER,
 });
 registerOwnerRoutes(router, {
   ownerCookieName: OWNER_COOKIE_NAME,
@@ -156,6 +177,7 @@ registerOwnerRoutes(router, {
   isSecureRequest,
   getOwnerSession: getRouteOwnerSession,
   requireOwnerSession,
+  invalidateOwnerNodeIdCache,
   query,
 });
 registerPathingRoutes(router, {
@@ -204,7 +226,7 @@ registerRfValidationRoutes(router, {
 registerExportRoutes(router, {
   query,
   networkFilters,
-  limiter: EXPENSIVE_LIMITER,
+  exportLimiter: EXPORT_LIMITER,
 });
 
 export default router;

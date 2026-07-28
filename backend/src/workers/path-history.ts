@@ -10,7 +10,12 @@ import {
 import { resolveMultiObserverBetaPath, type BetaResolvedPayload } from '../path-beta/resolver.js';
 import { runBoundedItems } from '../analysis/boundedRun.js';
 import { BoundedSegmentCounter } from '../analysis/boundedSegmentCounter.js';
-import { analysisGeneration, beginAnalysisRun, finishAnalysisRun } from '../analysis/runState.js';
+import {
+  AnalysisRunAlreadyActiveError,
+  analysisGeneration,
+  beginAnalysisRun,
+  finishAnalysisRun,
+} from '../analysis/runState.js';
 
 const REFRESH_INTERVAL_MS = 60 * 60 * 1000; // 1 hour — 7-day window changes slowly
 const WINDOW_HOURS = 168;
@@ -102,13 +107,22 @@ async function refreshScope(scope: ScopeName): Promise<void> {
 
   const windowEnd = new Date();
   const windowStart = new Date(windowEnd.getTime() - WINDOW_HOURS * 60 * 60 * 1000);
-  const run = await beginAnalysisRun({
-    workload: 'path-history',
-    scope,
-    windowStart,
-    windowEnd,
-    totalItems: packetHashes.length,
-  });
+  let run;
+  try {
+    run = await beginAnalysisRun({
+      workload: 'path-history',
+      scope,
+      windowStart,
+      windowEnd,
+      totalItems: packetHashes.length,
+    });
+  } catch (error) {
+    if (error instanceof AnalysisRunAlreadyActiveError || (error as { code?: string }).code === '55P03') {
+      console.warn(`[path-history] scope=${scope} refresh skipped; another analysis run is active`);
+      return;
+    }
+    throw error;
+  }
   try {
     if (packetHashes.length === 0) {
       await finishAnalysisRun(run, {

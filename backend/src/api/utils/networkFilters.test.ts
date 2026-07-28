@@ -17,10 +17,11 @@ test('public packet scopes keep legacy test-topic rows out', () => {
   const clause = filters.packetsAlias('p');
 
   assert.match(clause, /p\.network = ANY\(\$1\)/);
-  assert.match(clause, /split_part\(p\.topic, '\/', 1\) <> 'meshcore-test'/);
-  assert.match(filters.packets, /split_part\(topic, '\/', 1\) <> 'meshcore-test'/);
-  assert.match(filters.packets, /private_node\.name LIKE '%🚫%'/);
-  assert.match(filters.packets, /unnest\(COALESCE\(path_hashes/);
+  assert.match(clause, /p\.topic_prefix <> 'meshcore-test'/);
+  assert.match(filters.packets, /topic_prefix <> 'meshcore-test'/);
+  assert.match(filters.packets, /visibility_ok IS TRUE/);
+  assert.doesNotMatch(filters.packets, /private_node\.name LIKE '%🚫%'/);
+  assert.doesNotMatch(filters.packets, /unnest\(COALESCE\(path_hashes/);
 });
 
 test('owned public visibility scopes carry observer filtering', () => {

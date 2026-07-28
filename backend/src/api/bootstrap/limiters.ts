@@ -34,7 +34,7 @@ export const COVERAGE_LIMITER = rateLimit({
 
 export const PATH_LEARNING_LIMITER = rateLimit({
   windowMs: 60_000,
-  max: 10,
+  max: 30,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many path learning requests, slow down' },
@@ -54,4 +54,30 @@ export const STATS_CHARTS_LIMITER = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many stats chart requests, slow down' },
+});
+
+export const PACKET_DETAIL_LIMITER = rateLimit({
+  windowMs: 60_000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many packet detail requests, slow down' },
+});
+
+export const NODES_LIMITER = rateLimit({
+  windowMs: 60_000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many node requests, slow down' },
+});
+
+// Exports have an independent budget so downloads do not consume the shared
+// expensive-query allowance.
+export const EXPORT_LIMITER = rateLimit({
+  windowMs: 60_000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many export requests, slow down' },
 });
