@@ -38,6 +38,7 @@ const DEFAULT_FILTERS: Filters = {
   terrain: false,
   clientNodes: false,
   packetHistory: false,
+  heatmap: false,
   betaPaths: false,
   betaPathThreshold: 0.45,
   hexClashes: false,
@@ -46,6 +47,10 @@ const DEFAULT_FILTERS: Filters = {
 
 const DISCLAIMER_KEY = 'meshcore-disclaimer-dismissed';
 const FILTERS_KEY = 'meshcore-app-filters-v3';
+const LEGACY_FILTERS_KEY = 'meshcore-app-filters-v2';
+const FILTERS_VERSION = 3;
+const MAP_FETCH_TIMEOUT_MS = 4_000;
+const OTHER_FETCH_TIMEOUT_MS = 15_000;
 const ignoreCoverageUpdate = () => {};
 const TimelineControl = React.lazy(() => import('./components/app/TimelineControl.js').then((module) => ({ default: module.TimelineControl })));
 const PlannerComparison = React.lazy(() => import('./components/app/PlannerComparison.js').then((module) => ({ default: module.PlannerComparison })));
@@ -55,8 +60,23 @@ export const App: React.FC = () => {
   const [filters, setFilters] = useState<Filters>(() => {
     let stored = DEFAULT_FILTERS;
     try {
-      const raw = localStorage.getItem(FILTERS_KEY);
-      if (raw) stored = { ...DEFAULT_FILTERS, ...JSON.parse(raw) as Partial<Filters>, betaPathThreshold: 0.45 };
+      const raw = localStorage.getItem(FILTERS_KEY) ?? localStorage.getItem(LEGACY_FILTERS_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as { version?: number; filters?: Partial<Filters> } & Partial<Filters>;
+        const version = typeof parsed.version === 'number'
+          ? parsed.version
+          : (localStorage.getItem(FILTERS_KEY) ? FILTERS_VERSION : 2);
+        const migrated = version === FILTERS_VERSION
+          ? (parsed.filters ?? parsed)
+          : version === 2
+            ? (parsed.filters ?? parsed)
+            : null;
+        if (migrated) {
+          stored = { ...DEFAULT_FILTERS, ...migrated, betaPathThreshold: 0.45 };
+          localStorage.setItem(FILTERS_KEY, JSON.stringify({ version: FILTERS_VERSION, filters: stored }));
+          localStorage.removeItem(LEGACY_FILTERS_KEY);
+        }
+      }
     } catch {
       stored = DEFAULT_FILTERS;
     }
@@ -72,8 +92,11 @@ export const App: React.FC = () => {
   });
   const [initialMapView] = useState(() => initialMapViewFromUrl());
   const [shareLabel, setShareLabel] = useState('Copy view link');
+  const [annotation, setAnnotation] = useState(() => new URLSearchParams(window.location.search).get('note') ?? '');
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(() => new URLSearchParams(window.location.search).get('node'));
   const [filtersCollapsed, setFiltersCollapsed] = useState<boolean>(() => !!new URLSearchParams(window.location.search).get('node'));
+  const [fullScreenMap, setFullScreenMap] = useState(false);
+  const [highContrast, setHighContrast] = useState(() => localStorage.getItem('meshcore-contrast') === 'high');
   // MapLibre map instance — used by MobileControls/NodeSearch for flyTo
   const [mlMap, setMlMap] = useState<maplibregl.Map | null>(null);
   const [showDisclaimer, setShowDisclaimer] = useState(() => !localStorage.getItem(DISCLAIMER_KEY));
@@ -84,22 +107,27 @@ export const App: React.FC = () => {
   const [initialStateLoaded, setInitialStateLoaded] = useState(false);
   const [initialPollLoaded, setInitialPollLoaded] = useState(false);
   const [pollRefreshing, setPollRefreshing] = useState(false);
+  const [mapLight, setMapLight] = useState(() => localStorage.getItem('map-theme') === 'light');
+  const [showShortcutGuide, setShowShortcutGuide] = useState(false);
   const [isPageVisible, setIsPageVisible] = useState(
     () => (typeof document === 'undefined' ? true : document.visibilityState === 'visible'),
   );
   const clashRestoreRef = useRef<{ clientNodes: boolean } | null>(null);
   const prevHexClashesRef = useRef<boolean>(DEFAULT_FILTERS.hexClashes);
+  const wsConnectedRef = useRef(false);
 
-  const networkFilter = site.networkFilter;
+  const requestedNetwork = new URLSearchParams(window.location.search).get('network');
+  const networkFilter = requestedNetwork === 'teesside' || requestedNetwork === 'ukmesh'
+    ? requestedNetwork
+    : site.networkFilter;
   const observerFilter = site.observerId;
 
   const stats = useDashboardStats(fetchedStats);
 
   useEffect(() => {
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('/sw.js').catch(() => {});
-    }
-  }, []);
+    document.documentElement.dataset.contrast = highContrast ? 'high' : 'standard';
+    localStorage.setItem('meshcore-contrast', highContrast ? 'high' : 'standard');
+  }, [highContrast]);
 
   useEffect(() => {
     if (typeof document === 'undefined') return undefined;
@@ -109,7 +137,7 @@ export const App: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    localStorage.setItem(FILTERS_KEY, JSON.stringify(filters));
+    localStorage.setItem(FILTERS_KEY, JSON.stringify({ version: FILTERS_VERSION, filters }));
     writeFiltersToUrl(filters, activeMode);
   }, [activeMode, filters]);
 
@@ -162,6 +190,31 @@ export const App: React.FC = () => {
     window.setTimeout(() => setShareLabel('Copy view link'), 1800);
   }, [mlMap]);
 
+  const handleEditAnnotation = useCallback(() => {
+    const next = window.prompt('Add a short annotation to this shared map URL:', annotation);
+    if (next === null) return;
+    const clean = next.trim().slice(0, 240);
+    setAnnotation(clean);
+    const url = new URL(window.location.href);
+    if (clean) url.searchParams.set('note', clean);
+    else url.searchParams.delete('note');
+    window.history.replaceState(null, '', url);
+  }, [annotation]);
+
+  const handleMapThemeToggle = useCallback(() => {
+    setMapLight((current) => {
+      const next = !current;
+      localStorage.setItem('map-theme', next ? 'light' : 'dark');
+      return next;
+    });
+  }, []);
+
+  const handleNetworkChange = useCallback((network: string) => {
+    const url = new URL(window.location.href);
+    url.searchParams.set('network', network);
+    window.location.assign(url);
+  }, []);
+
   // Keep the fast poll to live data that changes independently of the socket.
   // Expensive inferred/path overlays use their own, slower conditional polls.
   useEffect(() => {
@@ -171,7 +224,10 @@ export const App: React.FC = () => {
 
     const scheduleNext = () => {
       if (cancelled || !isPageVisible) return;
-      timer = window.setTimeout(() => { void syncLiveData(); }, 10_000);
+      timer = window.setTimeout(
+        () => { void syncLiveData(); },
+        wsConnectedRef.current ? 60_000 : 10_000,
+      );
     };
 
     const syncLiveData = async () => {
@@ -182,10 +238,12 @@ export const App: React.FC = () => {
       try {
         const [packetsRes, statsRes] = await Promise.allSettled([
           fetch(uncachedEndpoint(withScopeParams('/api/packets/recent?limit=12', { network: networkFilter, observer: observerFilter })), {
-            cache: 'no-store', signal: controller.signal,
+            cache: 'no-store',
+            signal: AbortSignal.any([controller.signal, AbortSignal.timeout(MAP_FETCH_TIMEOUT_MS)]),
           }),
           fetch(uncachedEndpoint(withScopeParams('/api/stats', { network: networkFilter, observer: observerFilter })), {
-            cache: 'no-store', signal: controller.signal,
+            cache: 'no-store',
+            signal: AbortSignal.any([controller.signal, AbortSignal.timeout(MAP_FETCH_TIMEOUT_MS)]),
           }),
         ]);
 
@@ -241,7 +299,10 @@ export const App: React.FC = () => {
       try {
         const response = await fetch(
           uncachedEndpoint(withScopeParams('/api/inferred-nodes', { network: networkFilter, observer: observerFilter })),
-          { cache: 'no-store', signal: controller.signal },
+          {
+            cache: 'no-store',
+            signal: AbortSignal.any([controller.signal, AbortSignal.timeout(OTHER_FETCH_TIMEOUT_MS)]),
+          },
         );
         if (!response.ok || cancelled) return;
         const payload = await response.json() as {
@@ -270,7 +331,7 @@ export const App: React.FC = () => {
   }, [isPageVisible, networkFilter, observerFilter]);
 
   useEffect(() => {
-    if (!filters.packetHistory) {
+    if (!filters.packetHistory && !filters.heatmap) {
       setPacketHistorySegments([]);
       return undefined;
     }
@@ -290,7 +351,10 @@ export const App: React.FC = () => {
       try {
         const response = await fetch(
           uncachedEndpoint(withScopeParams('/api/path-beta/multibyte-paths', { network: networkFilter, observer: observerFilter })),
-          { cache: 'no-store', signal: controller.signal },
+          {
+            cache: 'no-store',
+            signal: AbortSignal.any([controller.signal, AbortSignal.timeout(OTHER_FETCH_TIMEOUT_MS)]),
+          },
         );
         if (!response.ok || cancelled) return;
         const payload = await response.json() as { segments?: PacketHistorySegment[] };
@@ -311,7 +375,7 @@ export const App: React.FC = () => {
       controller?.abort();
       if (timer) window.clearTimeout(timer);
     };
-  }, [filters.packetHistory, isPageVisible, networkFilter, observerFilter]);
+  }, [filters.heatmap, filters.packetHistory, isPageVisible, networkFilter, observerFilter]);
 
   useEffect(() => {
     const wasHexClashes = prevHexClashesRef.current;
@@ -335,6 +399,7 @@ export const App: React.FC = () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ kind, message, stack, page: window.location.href, userAgent: navigator.userAgent }),
+        signal: AbortSignal.timeout(OTHER_FETCH_TIMEOUT_MS),
       }).catch(() => {});
     };
 
@@ -383,14 +448,50 @@ export const App: React.FC = () => {
   });
 
   const wsState = useWebSocket(handleMessage, { network: networkFilter, observer: observerFilter });
+  wsConnectedRef.current = wsState === 'connected';
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const isEditing = target?.matches('input, textarea, select, [contenteditable="true"]');
+      if (event.key === '?' && !isEditing) {
+        event.preventDefault();
+        setShowShortcutGuide((current) => !current);
+      } else if (event.key === 'Escape') {
+        setShowShortcutGuide(false);
+        setSelectedNodeId(null);
+      } else if (!isEditing && event.key.toLowerCase() === 'f') {
+        event.preventDefault();
+        window.dispatchEvent(new Event('meshcore:focus-search'));
+      } else if (!isEditing && event.key.toLowerCase() === 's') {
+        event.preventDefault();
+        void handleShare();
+      } else if (!isEditing && event.key.toLowerCase() === 't') {
+        setFilters((current) => ({ ...current, terrain: !current.terrain }));
+      } else if (!isEditing && event.key.toLowerCase() === 'l') {
+        setFilters((current) => ({ ...current, betaPaths: !current.betaPaths }));
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [handleShare]);
 
   return (
-    <div className="app-shell" data-node-open={selectedNodeId ? 'true' : undefined} data-live-feed={filters.livePackets ? 'true' : undefined}>
+    <div className="app-shell" data-node-open={selectedNodeId ? 'true' : undefined} data-live-feed={filters.livePackets ? 'true' : undefined} data-mobile-fullscreen={fullScreenMap ? 'true' : undefined}>
       <AppTopBar
         homeUrl={site.appHomeUrl}
         wsState={wsState}
         onShowDisclaimer={() => setShowDisclaimer(true)}
         stats={stats}
+        mapLight={mapLight}
+        onToggleMapTheme={handleMapThemeToggle}
+        network={networkFilter ?? 'ukmesh'}
+        onNetworkChange={handleNetworkChange}
+        annotation={annotation}
+        onEditAnnotation={handleEditAnnotation}
+        onShowShortcuts={() => setShowShortcutGuide(true)}
+        highContrast={highContrast}
+        onToggleContrast={() => setHighContrast((value) => !value)}
       />
 
       <MobileControls
@@ -403,6 +504,8 @@ export const App: React.FC = () => {
         onShare={handleShare}
         shareLabel={shareLabel}
         onNodeSelect={setSelectedNodeId}
+        fullScreenMap={fullScreenMap}
+        onToggleFullScreenMap={() => setFullScreenMap((value) => !value)}
       />
 
       <div className="map-layer">
@@ -419,6 +522,7 @@ export const App: React.FC = () => {
           selectedNodeId={selectedNodeId}
           onNodeSelect={setSelectedNodeId}
           onMapReady={setMlMap}
+          mapLight={mapLight}
         />
         <LiveOverlayController
           map={mlMap}
@@ -427,9 +531,9 @@ export const App: React.FC = () => {
           observer={observerFilter}
           packetHistorySegments={packetHistorySegments}
         />
-        {(!initialStateLoaded || !initialPollLoaded) && (
+        {(!initialStateLoaded && !initialPollLoaded) && (
           <LoadingIndicator
-            label={!initialStateLoaded ? 'Loading network nodes...' : 'Loading dashboard data...'}
+            label="Loading network nodes..."
             variant="overlay"
           />
         )}
@@ -440,7 +544,7 @@ export const App: React.FC = () => {
         )}
       </div>
 
-      <FilterPanel
+      {!fullScreenMap && <FilterPanel
         filters={filters}
         onChange={handleFiltersChange}
         activeMode={activeMode}
@@ -451,14 +555,36 @@ export const App: React.FC = () => {
         collapsed={filtersCollapsed}
         onToggleCollapse={() => setFiltersCollapsed((value) => !value)}
         nodeOpen={selectedNodeId != null}
-      />
+      />}
 
       <React.Suspense fallback={null}>
         <TimelineControl network={networkFilter} observer={observerFilter} />
         {VIEWSHED_ENABLED && <PlannerComparison enabled />}
       </React.Suspense>
 
-      {filters.livePackets && <PacketFeed />}
+      {filters.livePackets && !fullScreenMap && <PacketFeed />}
+
+      {annotation && (
+        <button type="button" className="map-annotation" onClick={handleEditAnnotation} title="Edit shared annotation">
+          {annotation}
+        </button>
+      )}
+
+      {showShortcutGuide && (
+        <div className="shortcut-guide" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts" onClick={() => setShowShortcutGuide(false)}>
+          <div className="shortcut-guide__panel" onClick={(event) => event.stopPropagation()}>
+            <header><h2>Keyboard shortcuts</h2><button type="button" onClick={() => setShowShortcutGuide(false)} aria-label="Close">×</button></header>
+            <dl>
+              <div><dt>Esc</dt><dd>Close panels or cancel a map tool</dd></div>
+              <div><dt>F</dt><dd>Focus node search</dd></div>
+              <div><dt>S</dt><dd>Copy the current map link</dd></div>
+              <div><dt>T</dt><dd>Toggle 3D terrain</dd></div>
+              <div><dt>L</dt><dd>Toggle Live Path</dd></div>
+              <div><dt>?</dt><dd>Show or hide this guide</dd></div>
+            </dl>
+          </div>
+        </div>
+      )}
 
       {showDisclaimer && <DisclaimerModal viewshedEnabled={VIEWSHED_ENABLED} onClose={dismissDisclaimer} />}
     </div>

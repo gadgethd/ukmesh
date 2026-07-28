@@ -1,4 +1,5 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { forceCenter, forceCollide, forceLink, forceManyBody, forceSimulation, type Simulation, type SimulationNodeDatum } from 'd3-force';
 import { LoadingIndicator } from '../components/LoadingIndicator.js';
 import { getCurrentSite } from '../config/site.js';
 import { withScopeParams } from '../utils/api.js';
@@ -11,6 +12,7 @@ type TopologyNode = {
   lon: number | null;
   degree: number;
   observations: number;
+  region?: string | null;
 };
 
 type TopologyLink = {
@@ -45,7 +47,7 @@ type RfValidationPayload = {
   }>;
 };
 
-type PlotNode = TopologyNode & { x: number; y: number };
+type PlotNode = TopologyNode & SimulationNodeDatum & { x: number; y: number };
 
 function compactNumber(value: number): string {
   return new Intl.NumberFormat('en-GB', { notation: 'compact', maximumFractionDigits: 1 }).format(value);
@@ -58,6 +60,9 @@ export const TopologyPage: React.FC = () => {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [strongOnly, setStrongOnly] = useState(false);
   const [rfValidation, setRfValidation] = useState<RfValidationPayload | null>(null);
+  const [region, setRegion] = useState('all');
+  const [plotNodes, setPlotNodes] = useState<PlotNode[]>([]);
+  const simulationRef = useRef<Simulation<PlotNode, undefined> | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -82,11 +87,14 @@ export const TopologyPage: React.FC = () => {
     return () => controller.abort();
   }, [site.networkFilter]);
 
-  const plot = useMemo(() => {
+  useEffect(() => {
     const located = (payload?.nodes ?? []).filter(
       (node): node is TopologyNode & { lat: number; lon: number } => node.lat != null && node.lon != null,
     );
-    if (located.length === 0) return { nodes: [] as PlotNode[], links: [] as TopologyLink[] };
+    if (located.length === 0) {
+      setPlotNodes([]);
+      return;
+    }
     const lats = located.map((node) => node.lat);
     const lons = located.map((node) => node.lon);
     const minLat = Math.min(...lats);
@@ -100,14 +108,28 @@ export const TopologyPage: React.FC = () => {
       x: 40 + ((node.lon - minLon) / lonSpan) * 920,
       y: 560 - ((node.lat - minLat) / latSpan) * 520,
     }));
+    const simulation = forceSimulation(nodes)
+      .force('charge', forceManyBody().strength(-28))
+      .force('center', forceCenter(500, 300).strength(0.035))
+      .force('collision', forceCollide<PlotNode>().radius((node) => Math.min(14, 5 + Math.sqrt(node.degree))))
+      .force('links', forceLink<PlotNode, { source: string | PlotNode; target: string | PlotNode }>(
+        (payload?.links ?? []).map((link) => ({ source: link.source, target: link.target })),
+      ).id((node) => node.nodeId).distance(40).strength(0.08))
+      .alpha(0.5)
+      .on('tick', () => setPlotNodes(nodes.map((node) => ({ ...node, x: node.x ?? 500, y: node.y ?? 300 }))));
+    simulationRef.current = simulation;
+    return () => { simulation.stop(); simulationRef.current = null; };
+  }, [payload]);
+
+  const plot = useMemo(() => {
+    const nodes = plotNodes.filter((node) => region === 'all' || (node.region ?? 'Unknown') === region);
     const ids = new Set(nodes.map((node) => node.nodeId));
     return {
       nodes,
-      links: (payload?.links ?? []).filter((link) => (
-        ids.has(link.source) && ids.has(link.target) && (!strongOnly || link.strongObservations > 0)
-      )),
+      links: (payload?.links ?? []).filter((link) => ids.has(link.source) && ids.has(link.target) && (!strongOnly || link.strongObservations > 0)),
     };
-  }, [payload, strongOnly]);
+  }, [payload?.links, plotNodes, region, strongOnly]);
+  const regions = useMemo(() => [...new Set((payload?.nodes ?? []).map((node) => node.region ?? 'Unknown'))].sort(), [payload]);
 
   const nodesById = useMemo(() => new Map(plot.nodes.map((node) => [node.nodeId, node])), [plot.nodes]);
   const selected = payload?.nodes.find((node) => node.nodeId === selectedNodeId) ?? null;
@@ -129,6 +151,12 @@ export const TopologyPage: React.FC = () => {
         <label className="topology-page__toggle">
           <input type="checkbox" checked={strongOnly} onChange={(event) => setStrongOnly(event.target.checked)} />
           Multibyte evidence only
+        </label>
+        <label className="topology-page__toggle">Region
+          <select value={region} onChange={(event) => setRegion(event.target.value)}>
+            <option value="all">All regions</option>
+            {regions.map((value) => <option key={value} value={value}>{value}</option>)}
+          </select>
         </label>
       </header>
 
@@ -181,6 +209,25 @@ export const TopologyPage: React.FC = () => {
                       tabIndex={0}
                       aria-label={`${node.name ?? node.nodeId.slice(0, 8)}, ${node.degree} links`}
                       onClick={() => setSelectedNodeId(node.nodeId)}
+                      onPointerDown={(event) => {
+                        const svg = event.currentTarget.ownerSVGElement;
+                        if (!svg) return;
+                        const rect = svg.getBoundingClientRect();
+                        const move = (pointer: PointerEvent) => {
+                          node.fx = ((pointer.clientX - rect.left) / rect.width) * 1000;
+                          node.fy = ((pointer.clientY - rect.top) / rect.height) * 600;
+                          simulationRef.current?.alphaTarget(0.25).restart();
+                        };
+                        const up = () => {
+                          node.fx = null;
+                          node.fy = null;
+                          simulationRef.current?.alphaTarget(0);
+                          window.removeEventListener('pointermove', move);
+                          window.removeEventListener('pointerup', up);
+                        };
+                        window.addEventListener('pointermove', move);
+                        window.addEventListener('pointerup', up, { once: true });
+                      }}
                       onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') setSelectedNodeId(node.nodeId); }}
                     >
                       <title>{node.name ?? node.nodeId.slice(0, 8)} · {node.degree} links · {compactNumber(node.observations)} observations</title>
@@ -200,6 +247,11 @@ export const TopologyPage: React.FC = () => {
                   <span>{compactNumber(selected.observations)} observations</span>
                   {bridgeIds.has(selected.nodeId) && <span className="topology-page__flag">Likely bridge between network segments</span>}
                   {isolatedIds.has(selected.nodeId) && <span className="topology-page__flag">No recent viable relationships</span>}
+                  {selected.lat != null && selected.lon != null && (
+                    <a className="site-btn site-btn--primary" href={`${site.mapHomeUrl}?map=${selected.lat.toFixed(5)},${selected.lon.toFixed(5)},13&node=${encodeURIComponent(selected.nodeId)}`}>
+                      Zoom to node on map
+                    </a>
+                  )}
                   <button type="button" onClick={() => setSelectedNodeId(null)}>Show hub ranking</button>
                 </div>
               ) : (

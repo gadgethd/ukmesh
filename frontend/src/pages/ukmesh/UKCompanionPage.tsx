@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useWebSocket } from '../../hooks/useWebSocket.js';
 import type { WSMessage } from '../../hooks/useWebSocket.js';
 import { LoadingIndicator } from '../../components/LoadingIndicator.js';
+import { ObserverRegistrationForm } from '../../components/ObserverRegistrationForm.js';
 
 interface CompanionEntry {
   sender: string;
@@ -140,6 +141,13 @@ export const UKCompanionPage: React.FC = () => {
               Synced {timeAgo(lastUpdated.toISOString())} · resyncs every minute
             </p>
           )}
+        </div>
+      </section>
+      <section className="site-section">
+        <div className="site-content site-prose">
+          <h2>Register an observer station</h2>
+          <p>Submit the station key and region for rate-limited operator review. Broker credentials are issued out of band.</p>
+          <ObserverRegistrationForm />
         </div>
       </section>
     </>

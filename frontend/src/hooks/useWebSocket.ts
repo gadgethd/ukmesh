@@ -62,9 +62,11 @@ export function useWebSocket(onMessage: MessageHandler, scope: ApiScope = {}) {
     ws.onclose = () => {
       if (!shouldReconnectRef.current) return;
       setReadyState('disconnected');
-      const delay = retryDelayRef.current;
+      const baseDelay = retryDelayRef.current;
+      const jitter = Math.random() * 1000;
+      const delay = baseDelay + jitter;
       retryDelayRef.current = Math.min(15000, retryDelayRef.current * 1.5);
-      console.log(`[ws] disconnected — reconnecting in ${Math.round(delay / 1000)}s`);
+      console.log(`[ws] disconnected — reconnecting in ${(delay / 1000).toFixed(1)}s (${Math.round(jitter)}ms jitter)`);
       timerRef.current = setTimeout(connect, delay);
     };
 

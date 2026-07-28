@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { lazy, memo, Suspense, useState, useEffect, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
   AreaChart, Area, BarChart, Bar,
@@ -172,7 +172,7 @@ function fmtTrafficPct(value: number | undefined): string {
 }
 
 // ── Stat card ─────────────────────────────────────────────────────────────────
-const StatCard: React.FC<{ label: string; value: string; sub?: string; color?: string }> = ({
+const StatCard: React.FC<{ label: string; value: string; sub?: string; color?: string }> = memo(({
   label, value, sub, color = C_CYAN,
 }) => (
   <div className="stats-page__stat">
@@ -180,10 +180,11 @@ const StatCard: React.FC<{ label: string; value: string; sub?: string; color?: s
     <span className="stats-page__stat-value" style={{ color }}>{value}</span>
     {sub && <span className="stats-page__stat-sub">{sub}</span>}
   </div>
-);
+));
 
 // ── Chart card ────────────────────────────────────────────────────────────────
-const ChartCard: React.FC<{ title: string; sub?: string; children: React.ReactNode; tall?: boolean }> = ({
+const LazyChartMount = lazy(() => import('../components/LazyChartMount.js'));
+const ChartCard: React.FC<{ title: string; sub?: string; children: React.ReactNode; tall?: boolean }> = memo(({
   title, sub, children, tall,
 }) => (
   <div className={`stats-page__chart${tall ? ' stats-page__chart--tall' : ''}`}>
@@ -191,9 +192,11 @@ const ChartCard: React.FC<{ title: string; sub?: string; children: React.ReactNo
       <span className="stats-page__chart-title">{title}</span>
       {sub && <span className="stats-page__chart-sub">{sub}</span>}
     </div>
-    {children}
+    <Suspense fallback={<div className="stats-page__chart-skeleton skeleton-shimmer" aria-hidden="true" />}>
+      <LazyChartMount minHeight={220}>{children}</LazyChartMount>
+    </Suspense>
   </div>
-);
+));
 
 const EmptyPacketState: React.FC<{ label?: string }> = ({ label = 'No packet data in this window.' }) => (
   <div className="stats-page__empty">{label}</div>
@@ -424,7 +427,16 @@ export const StatsPage: React.FC = () => {
       <div className="site-content">
 
         {loading && (
-          <LoadingIndicator label="Loading stats..." variant="block" />
+          <div className="stats-page__loading-shell" aria-label="Loading stats">
+            <LoadingIndicator label="Loading stats..." variant="block" />
+            <div className="stats-page__summary">
+              {Array.from({ length: 6 }, (_, index) => <div key={index} className="stats-page__stat skeleton-shimmer" />)}
+            </div>
+            <div className="stats-page__row">
+              <div className="stats-page__chart skeleton-shimmer" />
+              <div className="stats-page__chart skeleton-shimmer" />
+            </div>
+          </div>
         )}
 
         {data && (

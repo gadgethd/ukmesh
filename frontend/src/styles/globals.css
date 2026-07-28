@@ -311,6 +311,46 @@ button .loading-indicator--inline,
   background: var(--accent-dim);
 }
 
+.topbar__network,
+.topbar__tool-btn {
+  height: 28px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-panel-alt);
+  color: var(--text-secondary);
+  font: 10px var(--font-mono);
+}
+.topbar__network { max-width: 110px; padding: 0 7px; }
+.topbar__tool-btn { padding: 0 8px; cursor: pointer; }
+.topbar__tool-btn:hover,
+.topbar__tool-btn--active { border-color: var(--accent); color: var(--accent); }
+.topbar__shortcut-btn { width: 28px; padding: 0; font-size: 14px; }
+
+.shortcut-guide {
+  position: fixed;
+  inset: 0;
+  z-index: 2400;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgba(0, 0, 0, 0.72);
+}
+.shortcut-guide__panel {
+  width: min(430px, 100%);
+  padding: 20px;
+  border: 1px solid var(--border-bright);
+  border-radius: 12px;
+  background: var(--bg-panel);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.55);
+}
+.shortcut-guide__panel header { display: flex; align-items: center; justify-content: space-between; }
+.shortcut-guide__panel h2 { color: var(--accent); font: 16px var(--font-mono); }
+.shortcut-guide__panel header button { border: 0; background: transparent; color: var(--text-muted); font-size: 24px; cursor: pointer; }
+.shortcut-guide__panel dl { display: grid; gap: 7px; margin-top: 16px; }
+.shortcut-guide__panel dl div { display: grid; grid-template-columns: 58px 1fr; align-items: center; gap: 10px; }
+.shortcut-guide__panel dt { padding: 4px 7px; border: 1px solid var(--border); border-radius: 4px; color: var(--text-primary); font: 11px var(--font-mono); text-align: center; }
+.shortcut-guide__panel dd { color: var(--text-secondary); font-size: 12px; }
+
 /* Disclaimer modal */
 .disclaimer-overlay {
   position: fixed;
@@ -525,6 +565,9 @@ button .loading-indicator--inline,
   /* ── Analytics app topbar ────────────────────────────────────────────── */
   .topbar { gap: 10px; padding: 0 12px; }
   .topbar__stats { display: none; }
+  .topbar__divider,
+  .topbar__tool-btn:not(.topbar__shortcut-btn) { display: none; }
+  .topbar__network { margin-left: auto; max-width: 92px; }
 
   /* ── App shell: add rows for mobile controls + map ──────────────────── */
   .app-shell { grid-template-rows: 48px auto 1fr; }

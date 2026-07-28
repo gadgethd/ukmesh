@@ -6,7 +6,7 @@ import { useMessages, useNodes, type MeshNode, type LivePacketData, type Aggrega
 import type { RecentPacketRow } from '../../hooks/packetFeed.js';
 import { chartStatsEndpoint, uncachedEndpoint } from '../../utils/api.js';
 import { LoadingIndicator } from '../../components/LoadingIndicator.js';
-import { PathMap } from './PacketDetailPanel.js';
+import { PacketDetailPanel, PathMap } from './PacketDetailPanel.js';
 import type { LazyPathResult, LazyPath, LazyPathNode } from './PacketDetailPanel.js';
 
 export type FeedPacket = {
@@ -406,6 +406,9 @@ export const UKFeedPage: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [now, setNow] = useState(() => Date.now());
   const [viewportHeight, setViewportHeight] = useState(() => window.innerHeight);
+  const [listScrollTop, setListScrollTop] = useState(0);
+  const [detailOpen, setDetailOpen] = useState(false);
+  const packetListRef = useRef<HTMLDivElement>(null);
 
   // Use useNodes hook like the main App does
   const {
@@ -536,13 +539,6 @@ export const UKFeedPage: React.FC = () => {
     );
   }, [messagePackets, packets]);
 
-  const visiblePacketLimit = useMemo(() => {
-    // Layout height: calc(100vh - 140px); chat header ~55px; rows vary 50–80px
-    // Use 80px to guarantee no scrollbar when observers wrap to two lines
-    const listHeight = Math.max(400, viewportHeight - 200);
-    return Math.max(6, Math.floor(listHeight / 80));
-  }, [viewportHeight]);
-
   const availableIatas = useMemo(() => {
     return regionOptions;
   }, [regionOptions]);
@@ -598,14 +594,20 @@ export const UKFeedPage: React.FC = () => {
   const latestPacket = filteredPackets[0] ?? null;
   const globalLatestPacket = packets[0] ?? null; // unfiltered, for connection status
   const recentPackets = useMemo(() => {
-    if (searchQuery.trim()) return filteredPackets;
-    const messageViewActive = selectedMessageScope !== 'all' || messagesOnly;
-    // Message views: show up to 50 messages (scrollable)
-    // All-packets view: cap to viewport rows so there's no pointless scrollbar
-    return messageViewActive
-      ? filteredPackets.slice(0, 50)
-      : filteredPackets.slice(0, visiblePacketLimit);
-  }, [filteredPackets, messagesOnly, searchQuery, selectedMessageScope, visiblePacketLimit]);
+    return filteredPackets.slice(0, MAX_PACKETS);
+  }, [filteredPackets]);
+  const virtualRows = useMemo(() => {
+    const rowHeight = 76;
+    const visibleHeight = Math.max(320, viewportHeight - 200);
+    const start = Math.max(0, Math.floor(listScrollTop / rowHeight) - 5);
+    const end = Math.min(recentPackets.length, start + Math.ceil(visibleHeight / rowHeight) + 10);
+    return {
+      rows: recentPackets.slice(start, end),
+      start,
+      top: start * rowHeight,
+      bottom: Math.max(0, (recentPackets.length - end) * rowHeight),
+    };
+  }, [listScrollTop, recentPackets, viewportHeight]);
 
   // Always derive selectedPacket from the live list so new MQTT observers are picked up
   const selectedPacket = useMemo(
@@ -837,14 +839,20 @@ export const UKFeedPage: React.FC = () => {
               onChange={(e) => setSearchQuery(e.target.value)}
             />
           </div>
-          <div className="uk-feed-packets-list">
-            {recentPackets.length > 0 ? recentPackets.map((packet) => {
+          <div
+            className="uk-feed-packets-list"
+            ref={packetListRef}
+            onScroll={(event) => setListScrollTop(event.currentTarget.scrollTop)}
+          >
+            {recentPackets.length > 0 ? <>
+              <div aria-hidden="true" style={{ height: virtualRows.top }} />
+              {virtualRows.rows.map((packet, virtualIndex) => {
               const iatas = packetObserverIatas(packet, nodeMap);
               const observerDisplay = iatas.length === 0 ? 'unknown' : iatas.join(' · ');
               const isSelected = selectedPacketHash === packet.packet_hash;
               const cachedLazyPath = isSelected ? (lazyCache.get(packet.packet_hash) ?? null) : null;
               return (
-                <React.Fragment key={`${packet.packet_hash}-${packet.time}`}>
+                <React.Fragment key={`${packet.packet_hash}-${packet.time}-${virtualRows.start + virtualIndex}`}>
                   <article
                     className={`uk-feed-packet-row${isSelected ? ' uk-feed-packet-row--selected' : ''}`}
                     onClick={() => setSelectedPacketHash(isSelected ? null : packet.packet_hash)}
@@ -895,7 +903,9 @@ export const UKFeedPage: React.FC = () => {
                   )}
                 </React.Fragment>
               );
-            }) : (
+            })}
+              <div aria-hidden="true" style={{ height: virtualRows.bottom }} />
+            </> : (
               <p className="dev-status-empty">No public packets have arrived yet.</p>
             )}
           </div>
@@ -958,6 +968,9 @@ export const UKFeedPage: React.FC = () => {
                   >
                     Repeater tree
                   </button>
+                  <button className="uk-feed-stats__tree-toggle" onClick={() => setDetailOpen(true)}>
+                    Packet details
+                  </button>
                 </div>
               </div>
             )}
@@ -1001,6 +1014,19 @@ export const UKFeedPage: React.FC = () => {
                 onRetry={() => { void fetchSelectedLazyPath(selectedPacket); }}
               />
             </div>
+          </div>
+        </div>
+      )}
+      {detailOpen && selectedPacket && (
+        <div className="disclaimer-overlay" role="dialog" aria-modal="true" aria-label="Packet details">
+          <div className="uk-feed-detail-modal">
+            <PacketDetailPanel
+              packet={selectedPacket}
+              nodeMap={nodeMap}
+              network={site.networkFilter ?? site.network}
+              cachedLazyPath={selectedLazyPath}
+              onClose={() => setDetailOpen(false)}
+            />
           </div>
         </div>
       )}

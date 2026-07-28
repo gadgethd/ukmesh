@@ -41,6 +41,35 @@ interface AdvertPacket {
   packet_hash: string;
 }
 
+type NodeDetailBundle = { links: NodeLink[]; history: PacketHistory[]; adverts: AdvertPacket[] };
+const NODE_DETAIL_TTL_MS = 5 * 60_000;
+const nodeDetailCache = new Map<string, { expiresAt: number; value: NodeDetailBundle }>();
+
+async function fetchJsonWithTimeout<T>(url: string, timeoutMs = 8_000): Promise<T> {
+  const response = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.json() as Promise<T>;
+}
+
+async function loadNodeDetails(node: MeshNode): Promise<NodeDetailBundle> {
+  const cacheKey = node.node_id.toUpperCase();
+  const cached = nodeDetailCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
+  const publicKey = node.public_key ?? node.node_id;
+  const [links, history, adverts] = await Promise.all([
+    fetchJsonWithTimeout<NodeLink[]>(`/api/nodes/${node.node_id}/links`),
+    fetchJsonWithTimeout<PacketHistory[]>(`/api/nodes/${node.node_id}/history?hours=24`),
+    fetchJsonWithTimeout<AdvertPacket[]>(`/api/nodes/${publicKey}/adverts?hours=168`),
+  ]);
+  const value = {
+    links: Array.isArray(links) ? links : [],
+    history: Array.isArray(history) ? history : [],
+    adverts: Array.isArray(adverts) ? adverts : [],
+  };
+  nodeDetailCache.set(cacheKey, { expiresAt: Date.now() + NODE_DETAIL_TTL_MS, value });
+  return value;
+}
+
 function timeAgo(iso: string): string {
   const secs = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
   if (secs < 60) return `${secs}s ago`;
@@ -154,10 +183,10 @@ export const UKRepeaterSearchPage: React.FC = () => {
   // Load nodes on mount
   useEffect(() => {
     let cancelled = false;
-    fetch('/api/nodes?network=ukmesh')
+    fetch('/api/nodes/map?network=ukmesh&fields=node_id,name,lat,lon,iata,role,last_seen,is_online,hardware_model')
       .then(r => r.json())
       .then(data => {
-        if (!cancelled) setNodes(Array.isArray(data) ? data : []);
+        if (!cancelled) setNodes(Array.isArray(data) ? data.map((node: MeshNode) => ({ ...node, public_key: node.node_id })) : []);
       })
       .catch(() => {
         if (!cancelled) setNodes([]);
@@ -215,19 +244,10 @@ export const UKRepeaterSearchPage: React.FC = () => {
     setCopiedKey(false);
 
     try {
-      const [linksRes, historyRes, advertsRes] = await Promise.all([
-        fetch(`/api/nodes/${node.node_id}/links`),
-        fetch(`/api/nodes/${node.node_id}/history?hours=24`),
-        fetch(`/api/nodes/${node.public_key}/adverts?hours=168`)
-      ]);
-
-      const linksData = await linksRes.json();
-      const historyData = await historyRes.json();
-      const advertsData = await advertsRes.json();
-
-      setLinks(Array.isArray(linksData) ? linksData : []);
-      setHistory(Array.isArray(historyData) ? historyData : []);
-      setAdverts(Array.isArray(advertsData) ? advertsData : []);
+      const details = await loadNodeDetails(node);
+      setLinks(details.links);
+      setHistory(details.history);
+      setAdverts(details.adverts);
     } catch {
       // Ignore errors
     } finally {

@@ -105,3 +105,10 @@
   .status-page__problem { flex-direction: column; gap: 5px; }
   .status-page__grid { grid-template-columns: 1fr; }
 }
+.status-page__firmware {
+  margin-top: 18px;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-panel);
+}

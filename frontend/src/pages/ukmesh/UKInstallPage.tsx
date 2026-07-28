@@ -1,6 +1,17 @@
-import React from 'react';
+import React, { useState } from 'react';
+import { ObserverRegistrationForm } from '../../components/ObserverRegistrationForm.js';
 
-export const UKInstallPage: React.FC = () => (
+const HARDWARE = [
+  { id: 'v4', name: 'Heltec WiFi LoRa 32 V4', detail: 'ESP32-S3 · 868 MHz · OLED · USB-C · Li-Po', usb: 'USB-C', boot: 'Hold PRG while tapping RST if Web Serial cannot find the board.' },
+  { id: 'v3', name: 'Heltec WiFi LoRa 32 V3', detail: 'ESP32 · 868 MHz · OLED · USB-C', usb: 'USB-C', boot: 'Hold PRG while connecting USB to enter the ROM bootloader.' },
+  { id: 't3s3', name: 'LILYGO T3S3', detail: 'ESP32-S3 · 868 MHz · E-Paper optional', usb: 'USB-C', boot: 'Hold BOOT, tap RESET, then release BOOT.' },
+  { id: 't114', name: 'Heltec Mesh Node T114', detail: 'nRF52840 · 868 MHz · Ultra-compact', usb: 'USB-C', boot: 'Double-tap RESET to expose the UF2 boot drive.' },
+] as const;
+
+export const UKInstallPage: React.FC = () => {
+  const [hardwareId, setHardwareId] = useState<(typeof HARDWARE)[number]['id']>('v4');
+  const hardware = HARDWARE.find((entry) => entry.id === hardwareId)!;
+  return (
   <>
 
     <div className="site-content site-prose">
@@ -18,6 +29,18 @@ export const UKInstallPage: React.FC = () => (
         </p>
 
         <div className="hw-cards">
+          {HARDWARE.map((entry) => <button
+            type="button"
+            key={entry.id}
+            className={`hw-card${entry.id === hardwareId ? ' hw-card--recommended' : ''}`}
+            aria-pressed={entry.id === hardwareId}
+            onClick={() => setHardwareId(entry.id)}
+          >
+            {entry.id === 'v4' && <div className="hw-card__badge">Recommended</div>}
+            <div className="hw-card__name">{entry.name}</div>
+            <div className="hw-card__detail">{entry.detail}</div>
+          </button>)}
+          {/* Legacy card markup intentionally replaced by the interactive selector.
           <div className="hw-card hw-card--recommended">
             <div className="hw-card__badge">Recommended</div>
             <div className="hw-card__name">Heltec WiFi LoRa 32 V4</div>
@@ -35,6 +58,10 @@ export const UKInstallPage: React.FC = () => (
             <div className="hw-card__name">Heltec Mesh Node T114</div>
             <div className="hw-card__detail">nRF52840 · 868 MHz · Ultra-compact</div>
           </div>
+          */}
+        </div>
+        <div className="prose-note" role="status">
+          <strong>{hardware.name}:</strong> use a {hardware.usb} data cable. {hardware.boot}
         </div>
 
         <p className="prose-note">
@@ -59,7 +86,7 @@ export const UKInstallPage: React.FC = () => (
             </a>.
           </li>
           <li>
-            Select your <strong>device hardware</strong> from the dropdown, then select{' '}
+            Select <strong>{hardware.name}</strong> from the hardware dropdown, then select{' '}
             <strong>Companion Radio (Bluetooth)</strong> as the firmware type.
           </li>
           <li>
@@ -179,8 +206,12 @@ Password: <your password>`}</pre>
           <a href="https://flasher.ukmesh.com" target="_blank" rel="noopener noreferrer">Flasher ↗</a>{' '}
           to flash a firmware build with the MQTT bridge built in directly to your repeater node — no separate Linux device needed.
         </div>
+        <h3>Request access</h3>
+        <p>The API records a provisioning request; MQTT password creation remains operator-controlled so credentials are never exposed by the public site.</p>
+        <ObserverRegistrationForm />
       </section>
 
     </div>
   </>
-);
+  );
+};

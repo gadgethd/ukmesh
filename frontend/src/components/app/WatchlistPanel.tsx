@@ -1,10 +1,23 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useWatchlist } from '../../hooks/useWatchlist.js';
 
 export const WatchlistPanel: React.FC = () => {
   const { entries, remove } = useWatchlist();
+  const [open, setOpen] = useState(() => {
+    try { return localStorage.getItem('meshcore-watchlist-collapsed-v1') !== '1'; }
+    catch { return true; }
+  });
   return (
-    <details className="watchlist-panel">
+    <details
+      className="watchlist-panel"
+      open={open}
+      onToggle={(event) => {
+        const next = event.currentTarget.open;
+        setOpen(next);
+        try { localStorage.setItem('meshcore-watchlist-collapsed-v1', next ? '0' : '1'); }
+        catch { /* persistence is best-effort */ }
+      }}
+    >
       <summary>Watchlist <span>{entries.length}</span></summary>
       {entries.length === 0 ? <p>Star nodes, searches, regions, packet types, or spam incidents to keep them here.</p> : (
         <ul>{entries.map((entry) => (

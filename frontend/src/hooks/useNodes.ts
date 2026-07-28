@@ -206,16 +206,17 @@ function isObserverSelfEchoLoop(packet: LivePacketData, nodes: Map<string, MeshN
   if (!packet.rxNodeId || !packet.path || packet.path.length < 3) return false;
   const observer = nodes.get(packet.rxNodeId);
   if (!observer || observer.role !== 2) return false;
-  return matchesObserverPathHash(packet.rxNodeId, packet.path[0]) && matchesObserverPathHash(packet.rxNodeId, packet.path[packet.path.length - 1]);
+  return packet.path.every((hash) => matchesObserverPathHash(packet.rxNodeId, hash));
 }
 
 function handlePacket(packetOrArray: LivePacketData | LivePacketData[]) {
   const incomingPackets = Array.isArray(packetOrArray) ? packetOrArray : [packetOrArray];
   if (incomingPackets.length === 0) return;
 
-  let next = state.packets;
+  let next = state.packets.slice();
+  const packetIndex = new Map(next.map((packet, index) => [packet.packetHash, index]));
   for (const packet of incomingPackets) {
-    const idx = next.findIndex((p) => p.packetHash === packet.packetHash);
+    const idx = packetIndex.get(packet.packetHash) ?? -1;
 
     if (idx >= 0) {
       const current = next[idx]!;
@@ -255,19 +256,23 @@ function handlePacket(packetOrArray: LivePacketData | LivePacketData[]) {
         firstSeenTs: current.firstSeenTs ?? current.ts,
         ts: packet.ts,
       };
-      next = next.map((p, i) => i === idx ? entry : p);
+      next[idx] = entry;
     } else {
       const entry = createAggregatedPacketFromLive(packet);
-      next = [entry, ...next].slice(0, FEED_MAX_PACKETS);
+      packetIndex.set(packet.packetHash, next.length);
+      next.push(entry);
     }
   }
+  next.sort((a, b) => b.ts - a.ts);
+  if (next.length > FEED_MAX_PACKETS) next.length = FEED_MAX_PACKETS;
 
   // Also maintain the messages (type=5 only) array separately so GRP messages
   // are never evicted by a flood of ADV packets.
-  let nextMessages = state.messages;
+  let nextMessages = state.messages.slice();
+  const messageIndex = new Map(nextMessages.map((message, index) => [message.packetHash, index]));
   for (const packet of incomingPackets) {
     if (packet.packetType !== 5) continue;
-    const msgIdx = nextMessages.findIndex((m) => m.packetHash === packet.packetHash);
+    const msgIdx = messageIndex.get(packet.packetHash) ?? -1;
     if (msgIdx >= 0) {
       const cur = nextMessages[msgIdx]!;
       const updated: AggregatedPacket = {
@@ -282,12 +287,15 @@ function handlePacket(packetOrArray: LivePacketData | LivePacketData[]) {
         txCount: cur.txCount + (packet.direction === 'tx' ? 1 : 0),
         ts: packet.ts,
       };
-      nextMessages = nextMessages.map((m, i) => (i === msgIdx ? updated : m));
+      nextMessages[msgIdx] = updated;
     } else {
       const entry = createAggregatedPacketFromLive(packet);
-      nextMessages = [entry, ...nextMessages].slice(0, FEED_MAX_MESSAGES);
+      messageIndex.set(packet.packetHash, nextMessages.length);
+      nextMessages.push(entry);
     }
   }
+  nextMessages.sort((a, b) => b.ts - a.ts);
+  if (nextMessages.length > FEED_MAX_MESSAGES) nextMessages.length = FEED_MAX_MESSAGES;
 
   setState({
     ...state,

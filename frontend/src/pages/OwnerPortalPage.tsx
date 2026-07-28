@@ -4,6 +4,7 @@ import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { Area, AreaChart, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { LoadingIndicator } from '../components/LoadingIndicator.js';
+import { OwnerAlertSettings, OwnerLoginSection, OwnerSection } from '../components/owner/OwnerPortalSections.js';
 import { DEFAULT_CENTER, MAP_STYLE } from '../components/Map/mapConfig';
 
 type OwnerNode = {
@@ -173,6 +174,17 @@ type LastHopStrengthPoint = {
 type OwnerLastHopStrengthResponse = {
   points: LastHopStrengthPoint[];
 };
+const lastHopSeriesCache = new Map<string, { expiresAt: number; points: LastHopStrengthPoint[] }>();
+
+async function fetchOwnerCsrfToken(): Promise<string> {
+  const response = await fetch('/api/owner/csrf', { cache: 'no-store' });
+  if (!response.ok) throw new Error('Unable to initialize secure owner session');
+  const body = await response.json() as { csrfToken?: unknown };
+  if (typeof body.csrfToken !== 'string' || !body.csrfToken) {
+    throw new Error('Unable to initialize secure owner session');
+  }
+  return body.csrfToken;
+}
 
 type MappedPeer = LivePeer & { lat: number; lon: number };
 
@@ -842,6 +854,7 @@ export const OwnerPortalPage: React.FC = () => {
   const [live, setLive] = useState<OwnerLiveResponse | null>(null);
   const [liveError, setLiveError] = useState<string | null>(null);
   const [lastHopStrength, setLastHopStrength] = useState<LastHopStrengthPoint[]>([]);
+  const [activeSection, setActiveSection] = useState<'dashboard' | 'live' | 'settings'>('dashboard');
 
   useEffect(() => {
     let cancelled = false;
@@ -917,14 +930,18 @@ export const OwnerPortalPage: React.FC = () => {
     }
     setSubmitting(true);
     setError(null);
-    fetch('/api/owner/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        mqttUsername: mqttUsername.trim(),
-        mqttPassword: mqttPassword.trim(),
-      }),
-    })
+    fetchOwnerCsrfToken()
+      .then((csrfToken) => fetch('/api/owner/login', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CSRF-Token': csrfToken,
+        },
+        body: JSON.stringify({
+          mqttUsername: mqttUsername.trim(),
+          mqttPassword: mqttPassword.trim(),
+        }),
+      }))
       .then(async (res) => {
         const body = await res.json().catch(() => ({}));
         if (!res.ok) {
@@ -948,7 +965,11 @@ export const OwnerPortalPage: React.FC = () => {
   };
 
   const handleLogout = () => {
-    fetch('/api/owner/logout', { method: 'POST' })
+    fetchOwnerCsrfToken()
+      .then((csrfToken) => fetch('/api/owner/logout', {
+        method: 'POST',
+        headers: { 'X-CSRF-Token': csrfToken },
+      }))
       .finally(() => {
         setDashboard(null);
         setLive(null);
@@ -998,6 +1019,11 @@ export const OwnerPortalPage: React.FC = () => {
     let cancelled = false;
 
     const load = () => {
+      const cached = lastHopSeriesCache.get(selectedNodeId);
+      if (cached && cached.expiresAt > Date.now()) {
+        setLastHopStrength(cached.points);
+        return;
+      }
       fetch(`/api/owner/live-last-hop?nodeId=${encodeURIComponent(selectedNodeId)}`, { cache: 'no-store' })
         .then(async (res) => {
           const json = await res.json().catch(() => ({}));
@@ -1006,7 +1032,9 @@ export const OwnerPortalPage: React.FC = () => {
         })
         .then((json) => {
           if (cancelled) return;
-          setLastHopStrength(json.points ?? []);
+          const points = json.points ?? [];
+          lastHopSeriesCache.set(selectedNodeId, { expiresAt: Date.now() + 5 * 60_000, points });
+          setLastHopStrength(points);
         })
         .catch(() => {
           if (cancelled) return;
@@ -1074,45 +1102,15 @@ export const OwnerPortalPage: React.FC = () => {
       <div className="site-content site-prose site-prose--wide">
         {loading ? <LoadingIndicator label="Checking login session..." variant="block" /> : null}
         {!loading && !dashboard ? (
-          <section className="prose-section owner-login">
-            <h2>Login</h2>
-            <p className="prose-note">
-              Enter the MQTT credentials associated with your repeater observer.
-            </p>
-            <form className="owner-login__form" onSubmit={handleLogin}>
-              <label className="owner-login__label" htmlFor="owner-username">MQTT username</label>
-              <input
-                id="owner-username"
-                className="owner-login__input"
-                type="text"
-                autoComplete="username"
-                value={mqttUsername}
-                onChange={(e) => setMqttUsername(e.target.value)}
-                placeholder="Enter username"
-                maxLength={128}
-              />
-              <label className="owner-login__label" htmlFor="owner-key">MQTT password</label>
-              <input
-                id="owner-key"
-                className="owner-login__input"
-                type="password"
-                autoComplete="current-password"
-                value={mqttPassword}
-                onChange={(e) => setMqttPassword(e.target.value)}
-                placeholder="Enter password"
-                maxLength={256}
-              />
-              <button className="site-btn site-btn--primary owner-login__button" type="submit" disabled={submitting}>
-                {submitting ? <LoadingIndicator label="Logging in..." variant="inline" /> : 'Login'}
-              </button>
-            </form>
-            {error ? <p className="prose-note owner-login__error">{error}</p> : null}
-          </section>
+          <OwnerLoginSection username={mqttUsername} password={mqttPassword} submitting={submitting} error={error} onUsername={setMqttUsername} onPassword={setMqttPassword} onSubmit={handleLogin} />
         ) : null}
 
         {!loading && dashboard ? (
           <>
-            <section className="prose-section">
+            <nav className="owner-section-tabs" aria-label="Owner portal sections">
+              {(['dashboard', 'live', 'settings'] as const).map((section) => <button key={section} type="button" aria-pressed={activeSection === section} onClick={() => setActiveSection(section)}>{section}</button>)}
+            </nav>
+            {activeSection === 'dashboard' && <OwnerSection><section className="prose-section">
               <div className="owner-head">
                 <h2>Dashboard</h2>
                 <button type="button" className="site-btn site-btn--ghost" onClick={handleLogout}>
@@ -1151,9 +1149,9 @@ export const OwnerPortalPage: React.FC = () => {
                 <div className="site-stat"><span className="site-stat__value">{live?.packetsReceived24h ?? 0}</span><span className="site-stat__label">Packets Received (24h)</span></div>
               </div>
               {liveError ? <p className="prose-note owner-login__error">Live data error: {liveError}</p> : null}
-            </section>
+            </section></OwnerSection>}
 
-            <section className="owner-panel owner-telemetry-panel">
+            {activeSection === 'live' && <OwnerSection><section className="owner-panel owner-telemetry-panel">
               <div className="owner-panel__head">
                 <div>
                   <h2>Node Telemetry</h2>
@@ -1303,7 +1301,9 @@ export const OwnerPortalPage: React.FC = () => {
                   ) : null}
                 </div>
               </section>
-            </div>
+            </div></OwnerSection>}
+
+            {activeSection === 'settings' && <OwnerAlertSettings nodes={dashboard.nodes} selectedNodeId={selectedNodeId} />}
 
           </>
         ) : null}

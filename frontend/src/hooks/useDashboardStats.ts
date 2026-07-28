@@ -35,6 +35,7 @@ export function useDashboardStats(externalStats: DashboardStats | null): Dashboa
 
   useEffect(() => {
     const handlePacketObserved = () => {
+      if (document.hidden) return;
       setLocalPacketsDay((n) => n + 1);
     };
     window.addEventListener('meshcore:packet-observed', handlePacketObserved as EventListener);

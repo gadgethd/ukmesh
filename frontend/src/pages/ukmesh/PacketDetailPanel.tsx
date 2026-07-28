@@ -1,29 +1,12 @@
-import React, { useEffect, useRef, useMemo, useCallback } from 'react';
+import React, { useEffect, useRef, useMemo } from 'react';
 import type maplibregl from 'maplibre-gl';
 import { LoadingIndicator } from '../../components/LoadingIndicator.js';
 import type { MeshNode } from '../../hooks/useNodes.js';
 import type { FeedPacket } from './UKFeedPage.js';
 import { buildPathNodePopupContent } from './pathNodePopup.js';
+import { usePacketDetailData, type RadioState } from '../../hooks/usePacketDetailData.js';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
-
-type PacketDetail = {
-  packetHash: string;
-  time: string;
-  rxNodeId: string | null;
-  srcNodeId: string | null;
-  topic: string;
-  packetType: number | null;
-  routeType: number | null;
-  hopCount: number | null;
-  rssi: number | null;
-  snr: number | null;
-  payload: Record<string, unknown> | null;
-  pathHashes: string[] | null;
-  pathHashSizeBytes: number | null;
-  rawHex: string | null;
-  observations: Array<{ rxNodeId: string | null; time: string; rssi: number | null; snr: number | null; hopCount: number | null }>;
-};
 
 export type ResolvedPath = {
   ok: boolean;
@@ -32,14 +15,6 @@ export type ResolvedPath = {
   purplePath: [number, number][] | null;
   redPath: [number, number][] | null;
   redSegments?: [[number, number], [number, number]][];
-};
-
-type RadioState = {
-  frequency?: number;
-  sf?: number;
-  bw?: number;
-  cr?: number;
-  channel?: string;
 };
 
 export type LazyPathNode = {
@@ -462,120 +437,14 @@ export const PacketDetailPanel: React.FC<{
   onClose: () => void;
   cachedLazyPath?: LazyPathResult | null;
 }> = ({ packet, nodeMap, network, onClose, cachedLazyPath }) => {
-  const [detail, setDetail] = React.useState<PacketDetail | null>(null);
-  const [resolvedPaths, setResolvedPaths] = React.useState<ResolvedPath[]>([]);
-  const [radio, setRadio] = React.useState<RadioState | null>(null);
-  const [loading, setLoading] = React.useState(true);
-  const [pathLoading, setPathLoading] = React.useState(false);
-  const [lazyPath, setLazyPath] = React.useState<LazyPathResult | null>(null);
-  const [lazyStatus, setLazyStatus] = React.useState<'idle' | 'settling' | 'loading' | 'done' | 'notfound' | 'error'>('idle');
-  const [lazyCountdown, setLazyCountdown] = React.useState(0);
-  const lazyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const lazyTickRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  // Fetch static detail + radio once per packet hash
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setDetail(null);
-
-    Promise.all([
-      fetch(`/api/packets/${packet.packet_hash}?network=${encodeURIComponent(network)}`, { cache: 'no-store' })
-        .then((r) => r.ok ? r.json() as Promise<PacketDetail> : null)
-        .catch(() => null),
-      fetch('/api/radio-stats', { cache: 'no-store' })
-        .then((r) => r.ok ? r.json() as Promise<RadioState> : null)
-        .catch(() => null),
-    ]).then(([d, r]) => {
-      if (cancelled) return;
-      setDetail(d);
-      setRadio(r);
-      setLoading(false);
-    });
-
-    return () => { cancelled = true; };
-  }, [packet.packet_hash, network]);
-
-  // Lazy path fetch — called once settling is done
-  const fetchLazyPath = useCallback(async () => {
-    setLazyStatus('loading');
-    try {
-      const netParam = network ? `&network=${encodeURIComponent(network)}` : '';
-      const r = await fetch(`/api/path-lazy/resolve?hash=${packet.packet_hash}${netParam}`, { cache: 'no-store' });
-      if (r.status === 404) { setLazyStatus('notfound'); return; }
-      if (!r.ok) { setLazyStatus('error'); return; }
-      const data = await r.json() as LazyPathResult;
-      setLazyPath(data);
-      setLazyStatus('done');
-    } catch {
-      setLazyStatus('error');
-    }
-  }, [packet.packet_hash, network]);
-
-  // Re-fetch resolved paths whenever the observer list changes (new MQTT observation)
   const observerKey = (packet.observer_node_ids ?? []).slice().sort().join(',');
-  useEffect(() => {
-    let cancelled = false;
-    setPathLoading(true);
-
-    const netParam = network ? `&network=${encodeURIComponent(network)}` : '';
-    fetch(`/api/path-beta/resolve-multi?hash=${packet.packet_hash}${netParam}`, { cache: 'no-store' })
-      .then((r): Promise<ResolvedPath[]> => {
-        if (!r.ok) return Promise.resolve([]);
-        return (r.json() as Promise<{ results?: ResolvedPath[] }>).then((data) => data.results ?? []);
-      })
-      .catch(() => [])
-      .then((paths) => {
-        if (cancelled) return;
-        setResolvedPaths(paths);
-        setPathLoading(false);
-      });
-
-    return () => { cancelled = true; };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [packet.packet_hash, network, observerKey]);
-
-  // Lazy path: use background-cached result if available, otherwise settle-and-fetch.
-  const SETTLE_MS = 10_000;
-  useEffect(() => {
-    if (lazyTimerRef.current) clearTimeout(lazyTimerRef.current);
-    if (lazyTickRef.current) clearInterval(lazyTickRef.current);
-
-    // If the background cache in UKFeedPage already has a result, use it immediately.
-    if (cachedLazyPath) {
-      setLazyPath(cachedLazyPath);
-      setLazyStatus('done');
-      setLazyCountdown(0);
-      return;
-    }
-
-    // Don't attempt lazy resolution for packets with no path hashes
-    if (!packet.path_hashes?.length) {
-      setLazyStatus('notfound');
-      return;
-    }
-
-    // Otherwise run the in-panel settle timer as a fallback.
-    setLazyPath(null);
-    setLazyStatus('settling');
-    setLazyCountdown(SETTLE_MS / 1000);
-
-    lazyTickRef.current = setInterval(() => {
-      setLazyCountdown((c) => Math.max(0, c - 1));
-    }, 1000);
-
-    lazyTimerRef.current = setTimeout(() => {
-      if (lazyTickRef.current) clearInterval(lazyTickRef.current);
-      setLazyCountdown(0);
-      void fetchLazyPath();
-    }, SETTLE_MS);
-
-    return () => {
-      if (lazyTimerRef.current) clearTimeout(lazyTimerRef.current);
-      if (lazyTickRef.current) clearInterval(lazyTickRef.current);
-    };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [packet.packet_hash, network, observerKey, cachedLazyPath]);
+  const { detail, resolvedPaths, radio, loading, pathLoading, lazyPath, lazyStatus, lazyCountdown } = usePacketDetailData({
+    packetHash: packet.packet_hash,
+    network,
+    observerKey,
+    hasPathHashes: Boolean(packet.path_hashes?.length),
+    cachedLazyPath,
+  });
 
   // Observer info
   const rxNodeId = detail?.rxNodeId ?? packet.rx_node_id ?? null;

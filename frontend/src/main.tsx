@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { LoadingIndicator } from './components/LoadingIndicator.js';
 import { AppErrorBoundary } from './components/app/AppErrorBoundary.js';
+import './styles/tokens.css';
 import './styles/globals.css';
 
 const App = lazy(() => import('./App.js').then(({ App: Component }) => ({ default: Component })));
@@ -31,6 +32,29 @@ const isLocalhost = hostname === 'localhost' || hostname === '127.0.0.1' || host
 // on the dashboard without turning either website container into the dashboard.
 const isDashboardBuild = buildSite === 'ukmesh' && buildNetwork === 'ukmesh';
 const isAppDomain = !appHostname || hostname === appHostname || (isLocalhost && isDashboardBuild);
+
+if ('serviceWorker' in navigator) {
+  let refreshing = false;
+  const reloadForUpdate = () => {
+    if (refreshing) return;
+    refreshing = true;
+    window.location.reload();
+  };
+  navigator.serviceWorker.addEventListener('controllerchange', reloadForUpdate);
+  navigator.serviceWorker.register('/sw.js')
+    .then((registration) => {
+      registration.addEventListener('updatefound', () => {
+        const installing = registration.installing;
+        if (!installing) return;
+        installing.addEventListener('statechange', () => {
+          if (installing.state === 'installed' && navigator.serviceWorker.controller) {
+            reloadForUpdate();
+          }
+        });
+      });
+    })
+    .catch(() => {});
+}
 
 // Title is managed per-route by SeoHead; only set a fallback for the app domain
 if (isAppDomain) document.title = 'MeshCore Analytics';

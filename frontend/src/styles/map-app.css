@@ -47,6 +47,21 @@
   width: 260px;
 }
 
+.node-search__controls { display: flex; }
+.node-search__controls .node-search__input { border-radius: 6px 0 0 6px; }
+.node-search__nearby {
+  flex: 0 0 34px;
+  border: 1px solid var(--border);
+  border-left: 0;
+  border-radius: 0 6px 6px 0;
+  background: var(--bg-panel-alt);
+  color: var(--accent);
+  font-size: 17px;
+  cursor: pointer;
+}
+.node-search__nearby:hover { background: var(--bg-hover); }
+.node-search__status { padding: 6px 10px; border-bottom: 1px solid var(--border); color: var(--text-muted); font: 9px var(--font-mono); }
+
 .node-search__input {
   width: 100%;
   box-sizing: border-box;
@@ -109,6 +124,33 @@
 }
 .node-search__save { width: 100%; padding: 7px 10px; border: 0; border-top: 1px solid var(--border); background: var(--bg-panel-alt); color: var(--accent); font: 10px var(--font-mono); text-align: left; cursor: pointer; }
 .node-search__save:hover { background: var(--bg-hover); }
+
+.map-annotation {
+  position: absolute;
+  top: 62px;
+  left: 50%;
+  z-index: 790;
+  max-width: min(520px, calc(100vw - 500px));
+  overflow: hidden;
+  padding: 7px 12px;
+  transform: translateX(-50%);
+  border: 1px solid rgba(251, 191, 36, 0.6);
+  border-radius: 999px;
+  background: rgba(13, 21, 32, 0.94);
+  color: #fbbf24;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.path-explanation-popover { min-width: 220px; color: #172033; font-family: var(--font-body); }
+.path-explanation-popover > strong { display: block; margin-bottom: 7px; font-size: 13px; }
+.path-explanation-popover dl { display: grid; gap: 3px; margin: 0; }
+.path-explanation-popover dl div { display: flex; justify-content: space-between; gap: 12px; }
+.path-explanation-popover dt { color: #64748b; }
+.path-explanation-popover dd { margin: 0; font-weight: 600; }
+.path-explanation-popover p { margin: 7px 0 0; color: #475569; font-size: 11px; }
 
 /* ─── Filter Panel ───────────────────────────────────────────────────────── */
 .filter-panel {
@@ -1249,6 +1291,29 @@
 /* App-specific responsive rules live after the app base rules so lazy-loaded
    CSS cannot reverse the mobile cascade. */
 @media (max-width: 640px) {
+  .mobile-fullscreen-toggle {
+    position: fixed;
+    z-index: 1200;
+    top: 56px;
+    right: 8px;
+    border: 1px solid var(--accent);
+    border-radius: var(--radius-md);
+    padding: 7px 10px;
+    background: rgba(8, 13, 20, 0.92);
+    color: var(--text-primary);
+    font: 11px var(--font-mono);
+  }
+  .app-shell[data-mobile-fullscreen='true'] .topbar,
+  .app-shell[data-mobile-fullscreen='true'] .node-dock,
+  .app-shell[data-mobile-fullscreen='true'] .node-legend,
+  .app-shell[data-mobile-fullscreen='true'] .timeline-control,
+  .app-shell[data-mobile-fullscreen='true'] .planner-comparison {
+    display: none;
+  }
+  .app-shell[data-mobile-fullscreen='true'] {
+    grid-template-rows: 1fr;
+  }
+  .map-annotation { top: 98px; max-width: calc(100vw - 30px); }
   .filter-panel { display: none; }
   .filter-launcher { display: none; }
   .node-drawer,
@@ -1414,3 +1479,25 @@
   width: 100%;
   height: 28px;
 }
+.node-popup__tabs {
+  display: flex;
+  gap: 3px;
+  overflow-x: auto;
+  margin: 0 0 8px;
+}
+.node-popup__tabs button {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 4px 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: 10px var(--font-mono);
+  cursor: pointer;
+}
+.node-popup__tabs button[aria-selected='true'] {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+  color: var(--text-primary);
+}
+.node-popup__link-spark { width: 100%; margin-top: 4px; }
+.node-popup__muted { color: var(--text-muted); font-size: 11px; }

@@ -15,7 +15,13 @@ type OverlayStoreState = {
   betaRemainingHops: number | null;
   replayNodeIds: Set<string> | null;
   replayTime: string | null;
-  pathExplanation: { evidenceLevel: string; summary: string; reasons: string[]; limitations?: string[] } | null;
+  pathExplanation: {
+    evidenceLevel: string;
+    summary: string;
+    reasons: string[];
+    alternativesConsidered?: number;
+    limitations?: string[];
+  } | null;
   // Multi-node LOS support
   losNodeIds: Set<string>;
   losLoadingIds: Set<string>;
