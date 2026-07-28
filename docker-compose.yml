@@ -1,3 +1,5 @@
+name: ${COMPOSE_PROJECT_NAME:-meshcore-analytics}
+
 x-anubis-base: &anubis-base
   image: ghcr.io/techarohq/anubis:v1.25.0
   restart: always
@@ -203,6 +205,9 @@ services:
     volumes:
       - mosquitto_log:/mosquitto/log:ro
       - ./mosquitto:/mosquitto/config
+      # The backend currently needs Docker API access for the owner ACL
+      # reconciler. Production deployments should prefer docker-socket-proxy
+      # with only the required endpoints; use :ro when mutation is not needed.
       - /var/run/docker.sock:/var/run/docker.sock
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/healthz >/dev/null"]
@@ -298,6 +303,8 @@ services:
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET required}
       DATABASE_STATEMENT_TIMEOUT_MS: 300000
       DATABASE_SKIP_SCHEMA_INIT: "true"
+      STALE_MQTT_OBSERVER_CLEANUP_DAYS: ${STALE_MQTT_OBSERVER_CLEANUP_DAYS:-30}
+      STALE_MQTT_OBSERVER_CLEANUP_INTERVAL_MS: ${STALE_MQTT_OBSERVER_CLEANUP_INTERVAL_MS:-21600000}
       NODE_ENV: production
     depends_on:
       timescaledb:
@@ -338,7 +345,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.backend
-    restart: "no"
+    restart: on-failure:3
     logging: *json-log-limits
     mem_limit: "512m"
     memswap_limit: "512m"
@@ -754,6 +761,23 @@ services:
     depends_on:
       - loki
 
+  prometheus:
+    <<: *internal-hosts
+    image: prom/prometheus:v3.5.0
+    restart: always
+    logging: *json-log-limits
+    mem_limit: "256m"
+    memswap_limit: "256m"
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=15d"]
+    volumes:
+      - ./logging/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    depends_on:
+      backend:
+        condition: service_healthy
+
   grafana:
     <<: *internal-hosts
     image: grafana/grafana:11.5.0
@@ -773,6 +797,7 @@ services:
       - "127.0.0.1:3010:3000"
     depends_on:
       - loki
+      - prometheus
 
 networks:
   default:
@@ -792,4 +817,5 @@ volumes:
   srtm_data:
   loki_data:
   grafana_data:
+  prometheus_data:
   mesh_health_check_data:

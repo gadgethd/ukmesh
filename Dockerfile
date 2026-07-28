@@ -31,6 +31,7 @@ COPY --from=backend-builder /build/backend/dist ./dist
 COPY --from=backend-builder /build/backend/src/db/schema ./dist/db/schema
 COPY --from=backend-builder /build/backend/src/db/migrations ./dist/db/migrations
 COPY --from=backend-builder /build/backend/src/db/owner-auth.sql ./dist/db/owner-auth.sql
+COPY --from=backend-builder /build/backend/src/backend-site/template.html ./dist/backend-site/template.html
 
 # Copy frontend build into static dir served by backend
 COPY --from=frontend-builder /build/frontend/dist ./public
