@@ -11,7 +11,7 @@ type QueryFn = <T extends QueryResultRow = QueryResultRow>(text: string, params?
 type Deps = {
   query: QueryFn;
   networkFilters: (network?: string, observer?: string) => NetworkFilters;
-  limiter: ReturnType<typeof import('express-rate-limit').rateLimit>;
+  exportLimiter: ReturnType<typeof import('express-rate-limit').rateLimit>;
 };
 
 export function registerExportRoutes(router: Router, deps: Deps): void {
@@ -20,7 +20,7 @@ export function registerExportRoutes(router: Router, deps: Deps): void {
     res.json({
       version: 1,
       documentation: '/api/v1/openapi.yaml',
-      resources: ['/api/v1/exports/nodes.csv', '/api/v1/exports/nodes.geojson'],
+      resources: ['/api/v1/exports/nodes.csv', '/api/v1/exports/nodes.geojson', '/api/v1/exports/path.gpx?packet=…'],
     });
   });
 
@@ -35,7 +35,58 @@ export function registerExportRoutes(router: Router, deps: Deps): void {
     res.type('application/yaml').sendFile(file);
   });
 
-  router.get('/v1/exports/nodes.:format', deps.limiter, async (req, res) => {
+  router.get('/v1/exports/path.gpx', deps.exportLimiter, async (req, res) => {
+    const packet = String(req.query['packet'] ?? '').trim();
+    if (!/^[0-9a-fA-F]{1,128}$/.test(packet)) {
+      res.status(400).json({ error: 'A valid packet hash is required' });
+      return;
+    }
+    try {
+      const network = resolvePublicNetworkScope(req.query['network'], req.headers);
+      const filters = deps.networkFilters(network);
+      const result = await deps.query<{ node_id: string; name: string | null; lat: number; lon: number; ord: number }>(
+        `WITH target AS (
+           SELECT p.path_hashes
+           FROM packets p
+           WHERE p.packet_hash = $${filters.params.length + 1}
+             ${filters.packetsAlias('p')}
+           ORDER BY p.time DESC
+           LIMIT 1
+         ),
+         hops AS (
+           SELECT upper(hash) AS hash, ord::integer
+           FROM target, unnest(path_hashes) WITH ORDINALITY AS value(hash, ord)
+         )
+         SELECT DISTINCT ON (h.ord) n.node_id, n.name, n.lat, n.lon, h.ord
+         FROM hops h
+         JOIN nodes n ON upper(n.node_id) LIKE h.hash || '%'
+         WHERE n.lat IS NOT NULL AND n.lon IS NOT NULL
+           AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
+           ${filters.nodesAlias('n')}
+         ORDER BY h.ord, n.last_seen DESC NULLS LAST`,
+        [...filters.params, packet],
+      );
+      if (result.rows.length === 0) {
+        res.status(404).json({ error: 'No public positioned path is available for this packet' });
+        return;
+      }
+      const xml = (value: string) => value.replace(/[<>&'"]/g, (char) => ({
+        '<': '&lt;', '>': '&gt;', '&': '&amp;', "'": '&apos;', '"': '&quot;',
+      })[char]!);
+      const points = result.rows.map((row) => (
+        `      <trkpt lat="${Number(row.lat).toFixed(6)}" lon="${Number(row.lon).toFixed(6)}"><name>${xml(row.name ?? row.node_id.slice(0, 12))}</name></trkpt>`
+      )).join('\n');
+      res.setHeader('Content-Disposition', `attachment; filename="meshcore-path-${packet.slice(0, 16)}.gpx"`);
+      res.type('application/gpx+xml').send(
+        `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="MeshCore Analytics" xmlns="http://www.topografix.com/GPX/1/1">\n  <trk><name>Packet ${xml(packet)}</name><trkseg>\n${points}\n  </trkseg></trk>\n</gpx>\n`,
+      );
+    } catch (error) {
+      console.error('[api] GET /v1/exports/path.gpx', (error as Error).message);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  });
+
+  router.get('/v1/exports/nodes.:format', deps.exportLimiter, async (req, res) => {
     try {
       const format = String(req.params['format'] ?? '').toLowerCase();
       if (format !== 'csv' && format !== 'geojson') {

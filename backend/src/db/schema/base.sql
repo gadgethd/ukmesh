@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS nodes (
   hardware_model   TEXT,
   firmware_version TEXT,
   public_key       TEXT,              -- Same as node_id, kept for clarity
+  last_mqtt_observer_seen_at TIMESTAMPTZ,
   created_at       TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -58,6 +59,7 @@ ALTER TABLE nodes ADD COLUMN IF NOT EXISTS elevation_m DOUBLE PRECISION;
 ALTER TABLE nodes ADD COLUMN IF NOT EXISTS network TEXT NOT NULL DEFAULT 'ukmesh';
 ALTER TABLE nodes ADD COLUMN IF NOT EXISTS last_predicted_online_at TIMESTAMPTZ;
 ALTER TABLE nodes ADD COLUMN IF NOT EXISTS last_path_evidence_at TIMESTAMPTZ;
+ALTER TABLE nodes ADD COLUMN IF NOT EXISTS last_mqtt_observer_seen_at TIMESTAMPTZ;
 
 -- ─── Packets hypertable (no retention — data kept indefinitely) ──────────
 
@@ -67,12 +69,15 @@ CREATE TABLE IF NOT EXISTS packets (
   rx_node_id    TEXT,
   src_node_id   TEXT,
   topic         TEXT             NOT NULL,
+  topic_prefix  TEXT             NOT NULL DEFAULT '',
+  iata          TEXT,
   packet_type   INTEGER,
   route_type    INTEGER,
   hop_count     INTEGER,
   rssi          DOUBLE PRECISION,
   snr           DOUBLE PRECISION,
   payload       JSONB,
+  companion_sender TEXT,
   raw_hex       TEXT
 );
 
@@ -99,6 +104,9 @@ ALTER TABLE packets ADD COLUMN IF NOT EXISTS advert_count INTEGER;
 ALTER TABLE packets ADD COLUMN IF NOT EXISTS path_hashes TEXT[];
 ALTER TABLE packets ADD COLUMN IF NOT EXISTS path_hash_size_bytes INTEGER;
 ALTER TABLE packets ADD COLUMN IF NOT EXISTS network      TEXT NOT NULL DEFAULT 'ukmesh';
+ALTER TABLE packets ADD COLUMN IF NOT EXISTS topic_prefix TEXT NOT NULL DEFAULT '';
+ALTER TABLE packets ADD COLUMN IF NOT EXISTS iata TEXT;
+ALTER TABLE packets ADD COLUMN IF NOT EXISTS companion_sender TEXT;
 
 -- Legacy whole-table backfills were previously run here on every app startup:
 --   * packets.path_hash_size_bytes
@@ -122,6 +130,26 @@ CREATE INDEX IF NOT EXISTS idx_nodes_network_last_seen ON nodes(network, last_se
 CREATE INDEX IF NOT EXISTS idx_nodes_path_hash_1 ON nodes((UPPER(LEFT(node_id, 2))));
 CREATE INDEX IF NOT EXISTS idx_nodes_path_hash_2 ON nodes((UPPER(LEFT(node_id, 4))));
 CREATE INDEX IF NOT EXISTS idx_nodes_path_hash_3 ON nodes((UPPER(LEFT(node_id, 6))));
+CREATE INDEX IF NOT EXISTS idx_nodes_role_coverage
+  ON nodes(role, lat, lon)
+  WHERE role = 2
+    AND lat IS NOT NULL
+    AND lon IS NOT NULL
+    AND (name IS NULL OR name NOT LIKE '%🚫%');
+CREATE INDEX IF NOT EXISTS idx_packets_companion_sender_recent
+  ON packets(network, time DESC, companion_sender)
+  WHERE packet_type = 5 AND companion_sender IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_packets_hop_count_desc_network_time
+  ON packets (network, hop_count DESC NULLS LAST, time DESC)
+  WHERE hop_count IS NOT NULL;
+-- A partial index containing NOW() is rejected by PostgreSQL because index
+-- predicates must be immutable. Keep the requested observer-region ordering
+-- as a regular index so it remains valid as the seven-day window moves.
+CREATE INDEX IF NOT EXISTS idx_packets_observer_region
+  ON packets (network, time DESC, rx_node_id, src_node_id);
+CREATE INDEX IF NOT EXISTS idx_packets_timeline
+  ON packets (network, time DESC)
+  WHERE rx_node_id IS NOT NULL;
 
 -- ─── Small rollups for hot API stats ────────────────────────────────────────
 
@@ -377,6 +405,31 @@ CREATE TABLE IF NOT EXISTS operational_check_results (
 );
 CREATE INDEX IF NOT EXISTS operational_check_results_check_ts_idx
   ON operational_check_results(check_name, ts DESC);
+
+CREATE TABLE IF NOT EXISTS observer_registration_requests (
+  id BIGSERIAL PRIMARY KEY,
+  public_key TEXT NOT NULL UNIQUE,
+  iata TEXT NOT NULL,
+  display_name TEXT,
+  contact TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS owner_alert_rules (
+  id BIGSERIAL PRIMARY KEY,
+  owner_username TEXT NOT NULL,
+  node_id TEXT NOT NULL,
+  rule_type TEXT NOT NULL CHECK (rule_type IN ('offline_minutes', 'battery_below_mv', 'link_loss_above_db')),
+  threshold DOUBLE PRECISION NOT NULL,
+  channels JSONB NOT NULL DEFAULT '{}'::jsonb,
+  enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  last_triggered_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (owner_username, node_id, rule_type)
+);
 
 CREATE TABLE IF NOT EXISTS network_unification_runs (
   run_id           TEXT PRIMARY KEY,

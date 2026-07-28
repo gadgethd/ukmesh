@@ -19,6 +19,7 @@ import {
 import { isPrivateNode } from '../api/utils/privateNode.js';
 import { PublicWsPrivacyIndex } from './privacy.js';
 import { trustedClientIp } from '../http/trustedProxy.js';
+import { websocketClients } from '../metrics.js';
 
 const REDIS_CHANNEL = 'meshcore:live';
 const LOG_WS_PACKETS = process.env['LOG_WS_PACKETS'] === '1';
@@ -41,6 +42,108 @@ const WS_INITIAL_STATE_CONCURRENCY = boundedEnvInteger('WS_INITIAL_STATE_CONCURR
 const WS_INITIAL_STATE_QUEUE_MAX = boundedEnvInteger('WS_INITIAL_STATE_QUEUE_MAX', 64, 0, 1_000);
 const WS_INITIAL_STATE_MAX_BYTES = boundedEnvInteger('WS_INITIAL_STATE_MAX_BYTES', 4 * 1_048_576, 16 * 1024, 32 * 1_048_576);
 const WS_HEARTBEAT_INTERVAL_MS = boundedEnvInteger('WS_HEARTBEAT_INTERVAL_MS', 30_000, 5_000, 120_000);
+
+type InitialStateRow = Record<string, unknown>;
+
+function newestTimestamp(...values: unknown[]): unknown {
+  let newest: unknown;
+  let newestMs = Number.NEGATIVE_INFINITY;
+  for (const value of values) {
+    if (value == null) continue;
+    const parsed = Date.parse(String(value));
+    if (Number.isFinite(parsed) && parsed > newestMs) {
+      newest = value;
+      newestMs = parsed;
+    }
+  }
+  return newest;
+}
+
+function slimInitialNode(raw: InitialStateRow): InitialStateRow {
+  const lastSeen = newestTimestamp(
+    raw['last_seen'],
+    raw['last_rx_at'],
+    raw['last_status_at'],
+    raw['last_path_evidence_at'],
+  );
+  return {
+    node_id: raw['node_id'],
+    name: raw['name'],
+    lat: raw['lat'],
+    lon: raw['lon'],
+    iata: raw['observer_iata'] ?? raw['iata'],
+    observer_iata: raw['observer_iata'],
+    role: raw['role'],
+    last_seen: lastSeen,
+    last_rx_at: raw['last_rx_at'],
+    last_status_at: raw['last_status_at'],
+    is_online: raw['is_online'],
+    hardware_model: raw['hardware_model'],
+    advert_count: raw['advert_count'],
+    elevation_m: raw['elevation_m'],
+  };
+}
+
+function slimInitialPacket(raw: InitialStateRow): InitialStateRow {
+  return {
+    time: raw['time'],
+    packet_hash: raw['packet_hash'],
+    rx_node_id: raw['rx_node_id'],
+    src_node_id: raw['src_node_id'],
+    observer_node_ids: raw['observer_node_ids'],
+    topic: raw['topic'],
+    packet_type: raw['packet_type'],
+    hop_count: raw['hop_count'],
+    rssi: raw['rssi'],
+    snr: raw['snr'],
+    summary: raw['summary'],
+    advert_count: raw['advert_count'],
+    path_hashes: raw['path_hashes'],
+    path_hash_size_bytes: raw['path_hash_size_bytes'],
+    rx_count: raw['rx_count'],
+    tx_count: raw['tx_count'],
+  };
+}
+
+function estimatedJsonBytes(value: unknown, stopAfter: number): number {
+  let bytes = 0;
+  const stack: unknown[] = [value];
+  while (stack.length > 0 && bytes <= stopAfter) {
+    const current = stack.pop();
+    if (current == null) {
+      bytes += 4;
+    } else if (typeof current === 'string') {
+      bytes += Buffer.byteLength(current) + 2;
+    } else if (typeof current === 'number' || typeof current === 'boolean') {
+      bytes += 24;
+    } else if (Array.isArray(current)) {
+      bytes += current.length + 2;
+      stack.push(...current);
+    } else if (typeof current === 'object') {
+      const entries = Object.entries(current);
+      bytes += entries.length + 2;
+      for (const [key, entry] of entries) {
+        bytes += Buffer.byteLength(key) + 3;
+        stack.push(entry);
+      }
+    }
+  }
+  return bytes;
+}
+
+function initialStateEstimateExceedsLimit(entry: InitialStateEntry): boolean {
+  return estimatedJsonBytes({
+    type: 'initial_state',
+    data: {
+      nodes: entry.nodes,
+      packets: entry.packets,
+      messages: entry.messages,
+      viable_links: entry.viableLinks,
+      viable_pairs: entry.viableLinks.map((link) => [link.node_a_id, link.node_b_id]),
+    },
+    ts: Date.now(),
+  }, WS_INITIAL_STATE_MAX_BYTES) > WS_INITIAL_STATE_MAX_BYTES;
+}
 
 let pub: Redis;
 let sub: Redis;
@@ -68,9 +171,9 @@ setInterval(() => {
 const INITIAL_STATE_TTL_MS = 60_000; // 60 s — live WS updates keep clients current
 type InitialStateEntry = {
   ts: number;
-  nodes: Awaited<ReturnType<typeof getNodes>>;
-  packets: Awaited<ReturnType<typeof getRecentPackets>>;
-  messages: Awaited<ReturnType<typeof getRecentMessages>>;
+  nodes: InitialStateRow[];
+  packets: InitialStateRow[];
+  messages: InitialStateRow[];
   viableLinks: Awaited<ReturnType<typeof getViableLinks>>;
 };
 const initialStateCache = new BoundedTtlMap<string, InitialStateEntry>({
@@ -113,17 +216,27 @@ async function fetchInitialState(network: string | undefined, observer: string |
       // getRecentMessages: last 200 GRP (type=5) from Postgres so the feed can
       //   seed a proper message cache on first load instead of relying on live traffic.
       const [rawNodes, packets, messages, rawViableLinks] = await Promise.all([
-        getNodes(network, observer),
+        getNodes(network, observer, 'slim'),
         getRecentPackets(7, network, observer),
         getRecentMessages(200, network, observer),
         getCachedViableLinks(network, observer),
       ]);
-      const nodes = rawNodes.filter((node) => !isPrivateNode(node.name));
+      const nodes = rawNodes
+        .filter((node) => !isPrivateNode(node.name))
+        .map((node) => slimInitialNode(node as InitialStateRow));
+      const slimPackets = packets.map((packet) => slimInitialPacket(packet as InitialStateRow));
+      const slimMessages = messages.map((message) => slimInitialPacket(message as InitialStateRow));
       const viableLinks = rawViableLinks.filter((link) => (
         !publicPrivacy.hasNode(link.node_a_id)
         && !publicPrivacy.hasNode(link.node_b_id)
       ));
-      const entry: InitialStateEntry = { ts: Date.now(), nodes, packets, messages, viableLinks };
+      const entry: InitialStateEntry = {
+        ts: Date.now(),
+        nodes,
+        packets: slimPackets,
+        messages: slimMessages,
+        viableLinks,
+      };
       initialStateCache.set(key, entry);
       return entry;
     } finally {
@@ -156,9 +269,8 @@ async function getCachedViableLinks(network?: string, observer?: string) {
   if (cached && (Date.now() - cached.ts) < VIABLE_LINK_CACHE_TTL_MS) return cached.data;
   const data = await getViableLinks(network, observer);
   if (viableLinksCache.size >= VIABLE_LINK_CACHE_MAX) {
-    // Evict the oldest entry
-    const oldest = Array.from(viableLinksCache.entries()).sort((a, b) => a[1].ts - b[1].ts)[0];
-    if (oldest) viableLinksCache.delete(oldest[0]);
+    const firstKey = viableLinksCache.keys().next().value;
+    if (firstKey !== undefined) viableLinksCache.delete(firstKey);
   }
   viableLinksCache.set(key, { ts: Date.now(), data });
   return data;
@@ -381,6 +493,7 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
     missedPongs.set(ws, 0);
     ws.on('pong', () => missedPongs.set(ws, 0));
     console.log('[ws] client connected, total:', wss.clients.size);
+    websocketClients.set(wss.clients.size);
 
     // Derive scope from query params (?network=teesside&observer=<pubkey>)
     const reqUrl  = new URL(req.url ?? '/', 'http://localhost');
@@ -396,9 +509,22 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
     if (WS_INITIAL_STATE_ENABLED) {
       // Send initial state: served from cache so concurrent connects don't exhaust the DB pool.
       try {
-        const { nodes, packets, messages, viableLinks } = await initialStateGate.run(
+        const entry = await initialStateGate.run(
           () => fetchInitialState(network, observer),
         );
+        if (initialStateEstimateExceedsLimit(entry)) {
+          console.warn('[ws] initial state estimate exceeds configured limit', {
+            network,
+            observer,
+            nodes: entry.nodes.length,
+            packets: entry.packets.length,
+            messages: entry.messages.length,
+            viableLinks: entry.viableLinks.length,
+          });
+          ws.close(1013, 'initial state is temporarily unavailable');
+          return;
+        }
+        const { nodes, packets, messages, viableLinks } = entry;
         for (const node of nodes) {
           const nodeId = String((node as { node_id?: string }).node_id ?? '').toLowerCase();
           if (nodeId) scope.nodeIds.add(nodeId);
@@ -440,6 +566,7 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
     ws.on('close', () => {
       clientScopes.delete(ws);
       messageQueue.delete(ws);
+      websocketClients.set(wss.clients.size);
       console.log('[ws] client disconnected, total:', wss.clients.size);
     });
 

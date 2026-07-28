@@ -2,6 +2,7 @@ import type { Request, Response, Router } from 'express';
 import { createOwnerRepository } from '../../owner/ownerRepository.js';
 import { createOwnerService } from '../../owner/ownerService.js';
 import type { OwnerSession } from '../../owner/ownerSession.js';
+import { createCsrfToken, readCookie, requireDoubleSubmitCsrf } from '../../security/operatorAuth.js';
 
 type OwnerDashboard = {
   totals: {
@@ -42,6 +43,7 @@ type OwnerRouteDeps = {
   isSecureRequest: IsSecureRequestFn;
   getOwnerSession: GetOwnerSessionFn;
   requireOwnerSession: RequireOwnerSessionFn;
+  invalidateOwnerNodeIdCache: (mqttUsername: string) => void;
   query: QueryFn;
 };
 
@@ -60,9 +62,29 @@ export function registerOwnerRoutes(router: Router, deps: OwnerRouteDeps): void 
     autoLinkOwnerNodeIds: deps.autoLinkOwnerNodeIds,
     buildOwnerDashboard: deps.buildOwnerDashboard,
     repository,
+    invalidateOwnerNodeIdCache: deps.invalidateOwnerNodeIdCache,
   });
 
-  router.post('/owner/login', deps.ownerLoginLimiter, async (req, res) => {
+  const csrfCookieName = 'meshcore_owner_csrf';
+  const csrfProtection = requireDoubleSubmitCsrf(csrfCookieName);
+  const setCsrfCookie = (req: Request, res: Response): string => {
+    const token = readCookie(req.headers.cookie, csrfCookieName) ?? createCsrfToken();
+    res.cookie(csrfCookieName, token, {
+      httpOnly: false,
+      secure: deps.isSecureRequest(req),
+      sameSite: 'strict',
+      path: '/',
+      maxAge: deps.ownerSessionTtlMs,
+    });
+    return token;
+  };
+
+  router.get('/owner/csrf', (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ csrfToken: setCsrfCookie(req, res) });
+  });
+
+  router.post('/owner/login', deps.ownerLoginLimiter, csrfProtection, async (req, res) => {
     try {
       const body = req.body as { mqttUsername?: string; mqttPassword?: string } | undefined;
       const mqttUsername = String(body?.mqttUsername ?? '').trim();
@@ -93,7 +115,7 @@ export function registerOwnerRoutes(router: Router, deps: OwnerRouteDeps): void 
       res.cookie(deps.ownerCookieName, token, {
         httpOnly: true,
         secure: deps.isSecureRequest(req),
-        sameSite: 'lax',
+        sameSite: 'strict',
         path: '/',
         maxAge: deps.ownerSessionTtlMs,
       });
@@ -114,6 +136,7 @@ export function registerOwnerRoutes(router: Router, deps: OwnerRouteDeps): void 
 
   router.get('/owner/session', async (req, res) => {
     try {
+      setCsrfCookie(req, res);
       const session = deps.getOwnerSession(req);
       if (!session) {
         res.clearCookie(deps.ownerCookieName, { path: '/' });
@@ -130,7 +153,7 @@ export function registerOwnerRoutes(router: Router, deps: OwnerRouteDeps): void 
         }), {
           httpOnly: true,
           secure: deps.isSecureRequest(req),
-          sameSite: 'lax',
+          sameSite: 'strict',
           path: '/',
           maxAge: Math.max(0, session.exp - Date.now()),
         });
@@ -193,8 +216,73 @@ export function registerOwnerRoutes(router: Router, deps: OwnerRouteDeps): void 
     }
   });
 
-  router.post('/owner/logout', async (_req, res) => {
-    res.clearCookie(deps.ownerCookieName, { path: '/' });
+  router.get('/owner/alert-rules', async (req, res) => {
+    const ownedNodeIds = await deps.requireOwnerSession(req, res);
+    if (!ownedNodeIds) return;
+    const session = deps.getOwnerSession(req);
+    const result = await deps.query(
+      `SELECT id::text, node_id, rule_type, threshold, channels, enabled, last_triggered_at::text
+       FROM owner_alert_rules
+       WHERE owner_username = $1 AND node_id = ANY($2::text[])
+       ORDER BY created_at`,
+      [session!.mqttUsername, ownedNodeIds],
+    );
+    res.json(result.rows);
+  });
+
+  router.post('/owner/alert-rules', csrfProtection, async (req, res) => {
+    const ownedNodeIds = await deps.requireOwnerSession(req, res);
+    if (!ownedNodeIds) return;
+    const session = deps.getOwnerSession(req);
+    const body = req.body as { nodeId?: string; ruleType?: string; threshold?: number; webhook?: string; enabled?: boolean };
+    const nodeId = String(body.nodeId ?? '').trim().toUpperCase();
+    const ruleType = String(body.ruleType ?? '');
+    const threshold = Number(body.threshold);
+    const webhook = String(body.webhook ?? '').trim();
+    if (!ownedNodeIds.includes(nodeId) || !['offline_minutes', 'battery_below_mv', 'link_loss_above_db'].includes(ruleType) || !Number.isFinite(threshold) || threshold <= 0) {
+      res.status(400).json({ error: 'Invalid owner alert rule' });
+      return;
+    }
+    if (webhook && !/^https:\/\//i.test(webhook)) {
+      res.status(400).json({ error: 'Webhook must use HTTPS' });
+      return;
+    }
+    const result = await deps.query(
+      `INSERT INTO owner_alert_rules (owner_username, node_id, rule_type, threshold, channels, enabled)
+       VALUES ($1, $2, $3, $4, $5::jsonb, $6)
+       ON CONFLICT (owner_username, node_id, rule_type) DO UPDATE SET
+         threshold = EXCLUDED.threshold, channels = EXCLUDED.channels,
+         enabled = EXCLUDED.enabled, updated_at = NOW()
+       RETURNING id::text, node_id, rule_type, threshold, channels, enabled`,
+      [session!.mqttUsername, nodeId, ruleType, threshold, JSON.stringify(webhook ? { webhook } : {}), body.enabled !== false],
+    );
+    res.status(201).json(result.rows[0]);
+  });
+
+  router.delete('/owner/alert-rules/:id', csrfProtection, async (req, res) => {
+    const ownedNodeIds = await deps.requireOwnerSession(req, res);
+    if (!ownedNodeIds) return;
+    const session = deps.getOwnerSession(req);
+    await deps.query(
+      'DELETE FROM owner_alert_rules WHERE id = $1 AND owner_username = $2 AND node_id = ANY($3::text[])',
+      [String(req.params['id'] ?? ''), session!.mqttUsername, ownedNodeIds],
+    );
+    res.status(204).end();
+  });
+
+  router.post('/owner/logout', csrfProtection, async (req, res) => {
+    const session = deps.getOwnerSession(req);
+    if (session) service.clearOwnerSession(session.mqttUsername);
+    res.clearCookie(deps.ownerCookieName, {
+      path: '/',
+      secure: deps.isSecureRequest(req),
+      sameSite: 'strict',
+    });
+    res.clearCookie(csrfCookieName, {
+      path: '/',
+      secure: deps.isSecureRequest(req),
+      sameSite: 'strict',
+    });
     res.json({ ok: true });
   });
 }

@@ -31,7 +31,8 @@ const RETENTION_TARGETS: RetentionTarget[] = [
   // This rollup is intentionally limited to the 7-day dashboard window. Deleting
   // it in batches avoids long transactions and lets live ingest continue.
   { table: 'observer_region_packet_sightings', timestampColumn: 'last_seen', retention: '8 days', batchSize: 25_000 },
-  { table: 'observer_region_observer_sightings', timestampColumn: 'last_seen', retention: '8 days', batchSize: 2_000 },
+  // Observer sightings are intentionally retained until the stale-observer
+  // maintenance job archives and removes them after a month of silence.
 ];
 
 let redisClient: Redis | null = null;
@@ -281,11 +282,51 @@ export async function captureWorkerHealthSnapshot(): Promise<void> {
   }
 }
 
+type OperationalCheckRow = {
+  check_name: string;
+  status: string;
+  latency_ms: number;
+  detail: string | null;
+  ts: string;
+};
+
+const OPERATIONAL_CHECKS_TTL_MS = 30_000;
+const OPERATIONAL_CHECKS_STALE_TTL_MS = 5 * 60_000;
+let operationalChecksSnapshot: { ts: number; rows: OperationalCheckRow[] } | null = null;
+let operationalChecksInflight: Promise<OperationalCheckRow[]> | null = null;
+
+async function getOperationalChecksCached(): Promise<{ rows: OperationalCheckRow[] }> {
+  const now = Date.now();
+  if (operationalChecksSnapshot && now - operationalChecksSnapshot.ts < OPERATIONAL_CHECKS_TTL_MS) {
+    return { rows: operationalChecksSnapshot.rows };
+  }
+  if (!operationalChecksInflight) {
+    const tracked = query<OperationalCheckRow>(
+      `SELECT DISTINCT ON (check_name)
+         check_name, status, latency_ms, detail, ts::text
+       FROM operational_check_results
+       ORDER BY check_name, ts DESC`,
+    )
+      .then((result) => {
+        operationalChecksSnapshot = { ts: Date.now(), rows: result.rows };
+        return result.rows;
+      })
+      .finally(() => {
+        if (operationalChecksInflight === tracked) operationalChecksInflight = null;
+      });
+    operationalChecksInflight = tracked;
+  }
+  if (operationalChecksSnapshot && now - operationalChecksSnapshot.ts < OPERATIONAL_CHECKS_STALE_TTL_MS) {
+    return { rows: operationalChecksSnapshot.rows };
+  }
+  return { rows: await operationalChecksInflight! };
+}
+
 export async function getWorkerHealthOverview() {
   // Compute system stats once — cpuUsagePct() diffs against lastCpuSample,
   // so calling it twice in one request gives a garbage near-zero second reading.
   const sysStats = systemStats();
-  const [workers, history, errors1h, ingest, pathHashWidths, multibyteSummary, operationalChecks, databaseMaintenance] = await Promise.all([
+  const [workers, history, errors1h, ingest, pathHashWidths, multibyteSummary, operationalChecks, databaseMaintenance, databaseRuntime] = await Promise.all([
     currentWorkers(sysStats),
     query<{
       ts: string;
@@ -387,18 +428,7 @@ export async function getWorkerHealthOverview() {
        WHERE time > NOW() - INTERVAL '24 hours'
         AND network IS DISTINCT FROM 'test'`,
     ),
-    query<{
-      check_name: string;
-      status: string;
-      latency_ms: number;
-      detail: string | null;
-      ts: string;
-    }>(
-      `SELECT DISTINCT ON (check_name)
-         check_name, status, latency_ms, detail, ts::text
-       FROM operational_check_results
-       ORDER BY check_name, ts DESC`,
-    ),
+    getOperationalChecksCached(),
     query<{
       database_size_bytes: string;
       dead_rows: string;
@@ -414,6 +444,21 @@ export async function getWorkerHealthOverview() {
              AND n_dead_tup > GREATEST(10000, n_live_tup * 0.1)
          )::text AS tables_needing_vacuum
        FROM pg_stat_user_tables`,
+    ),
+    query<{
+      connection_count: string;
+      max_connections: string;
+      cache_hit_ratio: string | null;
+    }>(
+      `SELECT
+         (SELECT COUNT(*)::text FROM pg_stat_activity WHERE datname = current_database()) AS connection_count,
+         current_setting('max_connections') AS max_connections,
+         ROUND(
+           100 * blks_hit::numeric / NULLIF(blks_hit + blks_read, 0),
+           2
+         )::text AS cache_hit_ratio
+       FROM pg_stat_database
+       WHERE datname = current_database()`,
     ),
   ]);
 
@@ -509,6 +554,9 @@ export async function getWorkerHealthOverview() {
       dead_rows: Number(maintenance?.dead_rows ?? 0),
       oldest_vacuum_at: maintenance?.oldest_vacuum_at ?? null,
       tables_needing_vacuum: tablesNeedingVacuum,
+      connection_count: Number(databaseRuntime.rows[0]?.connection_count ?? 0),
+      max_connections: Number(databaseRuntime.rows[0]?.max_connections ?? 0),
+      cache_hit_ratio: Number(databaseRuntime.rows[0]?.cache_hit_ratio ?? 0),
     },
     system: sysStats,
     workers,

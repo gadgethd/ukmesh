@@ -11,6 +11,16 @@ export type AnalysisRunHandle = {
   totalItems: number;
 };
 
+export class AnalysisRunAlreadyActiveError extends Error {
+  constructor(
+    readonly workload: string,
+    readonly scope: string,
+    readonly activeRunId: string,
+  ) {
+    super(`analysis run already active for ${workload}/${scope}: ${activeRunId}`);
+  }
+}
+
 export async function beginAnalysisRun(input: Omit<AnalysisRunHandle, 'runId'>): Promise<AnalysisRunHandle> {
   const handle = { ...input, runId: randomUUID() };
   const client = await pool.connect();
@@ -26,20 +36,12 @@ export async function beginAnalysisRun(input: Omit<AnalysisRunHandle, 'runId'>):
       `SELECT active_run_id
          FROM analysis_workload_state
         WHERE workload = $1 AND scope = $2
-        FOR UPDATE`,
+        FOR UPDATE NOWAIT`,
       [handle.workload, handle.scope],
     );
-    const supersededRunId = state.rows[0]?.active_run_id;
-    if (supersededRunId) {
-      await client.query(
-        `UPDATE analysis_runs
-            SET status = 'stale',
-                heartbeat_at = NOW(),
-                completed_at = NOW(),
-                metadata = metadata || '{"reason":"superseded"}'::jsonb
-          WHERE run_id = $1 AND status = 'running'`,
-        [supersededRunId],
-      );
+    const activeRunId = state.rows[0]?.active_run_id;
+    if (activeRunId) {
+      throw new AnalysisRunAlreadyActiveError(handle.workload, handle.scope, activeRunId);
     }
     await client.query(
       `INSERT INTO analysis_runs (

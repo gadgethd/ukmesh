@@ -18,6 +18,8 @@ type TopologyRow = {
   lon_a: number | null;
   lat_b: number | null;
   lon_b: number | null;
+  iata_a?: string | null;
+  iata_b?: string | null;
   observed_count: string | number;
   multibyte_observed_count: string | number;
   last_observed: string;
@@ -29,6 +31,7 @@ type StandaloneNodeRow = {
   name: string | null;
   lat: number | null;
   lon: number | null;
+  iata?: string | null;
 };
 
 export type TopologyNode = {
@@ -38,6 +41,7 @@ export type TopologyNode = {
   lon: number | null;
   degree: number;
   observations: number;
+  region?: string | null;
 };
 
 export type TopologyLink = {
@@ -107,7 +111,7 @@ export function shapeTopology(rows: TopologyRow[], standaloneRows: StandaloneNod
   const nodes = new Map<string, TopologyNode>();
   const links: TopologyLink[] = [];
 
-  const addNode = (nodeId: string, name: string | null, lat: number | null, lon: number | null, observations: number) => {
+  const addNode = (nodeId: string, name: string | null, lat: number | null, lon: number | null, observations: number, region?: string | null) => {
     const existing = nodes.get(nodeId);
     if (existing) {
       existing.degree += 1;
@@ -121,14 +125,15 @@ export function shapeTopology(rows: TopologyRow[], standaloneRows: StandaloneNod
       lon,
       degree: 1,
       observations,
+      region: region ?? null,
     });
   };
 
   for (const row of rows) {
     if (isPrivateNode(row.name_a) || isPrivateNode(row.name_b)) continue;
     const observations = Number(row.observed_count) || 0;
-    addNode(row.node_a_id, row.name_a, row.lat_a, row.lon_a, observations);
-    addNode(row.node_b_id, row.name_b, row.lat_b, row.lon_b, observations);
+    addNode(row.node_a_id, row.name_a, row.lat_a, row.lon_a, observations, row.iata_a);
+    addNode(row.node_b_id, row.name_b, row.lat_b, row.lon_b, observations, row.iata_b);
     links.push({
       source: row.node_a_id,
       target: row.node_b_id,
@@ -149,6 +154,7 @@ export function shapeTopology(rows: TopologyRow[], standaloneRows: StandaloneNod
       lon: row.lon,
       degree: 0,
       observations: 0,
+      region: row.iata ?? null,
     });
   }
 
@@ -183,8 +189,10 @@ export function registerTopologyRoutes(router: Router, deps: TopologyRouteDeps):
            b.name AS name_b,
            a.lat AS lat_a,
            a.lon AS lon_a,
+           a.iata AS iata_a,
            b.lat AS lat_b,
            b.lon AS lon_b,
+           b.iata AS iata_b,
            nl.observed_count,
            nl.multibyte_observed_count,
            nl.last_observed::text,
@@ -205,7 +213,7 @@ export function registerTopologyRoutes(router: Router, deps: TopologyRouteDeps):
         [...filters.params, limit],
       );
       const standaloneResult = await deps.query<StandaloneNodeRow>(
-        `SELECT n.node_id, n.name, n.lat, n.lon
+        `SELECT n.node_id, n.name, n.lat, n.lon, n.iata
          FROM nodes n
          WHERE n.last_seen > NOW() - INTERVAL '30 days'
            AND (n.role IS NULL OR n.role = 2)

@@ -17,6 +17,7 @@ export const LINK_V3_KEYS = {
   counters: 'meshcore:link:v3:counters',
   rebuild: 'meshcore:link:v3:rebuild',
   workerHeartbeat: 'meshcore:link:v3:worker_heartbeat',
+  events: 'meshcore:link:v3:events',
 } as const;
 
 export type LinkQueueAdmission =
@@ -82,6 +83,8 @@ if ARGV[8] == '' and redis.call('EXISTS', KEYS[9]) == 1 then
 else
   redis.call('LPUSH', KEYS[1], ARGV[1])
 end
+redis.call('LPUSH', KEYS[11], 'admit')
+redis.call('LTRIM', KEYS[11], 0, 255)
 return {'accepted', ARGV[1]}
 `;
 
@@ -96,6 +99,7 @@ const ADMIT_KEYS = [
   LINK_V3_KEYS.deferred,
   LINK_V3_KEYS.rebuild,
   LINK_V3_KEYS.counters,
+  LINK_V3_KEYS.events,
 ];
 
 function positiveInt(value: string | undefined, fallback: number, max: number): number {
@@ -181,6 +185,10 @@ while released < tonumber(ARGV[1]) do
     released = released + 1
   end
 end
+if released > 0 then
+  redis.call('LPUSH', KEYS[5], 'release')
+  redis.call('LTRIM', KEYS[5], 0, 255)
+end
 if redis.call('LLEN', KEYS[1]) == 0 and ARGV[2] ~= '' then
   if redis.call('GET', KEYS[4]) == ARGV[2] then redis.call('DEL', KEYS[4]) end
 end
@@ -216,11 +224,12 @@ export async function releaseDeferredLinkJobs(
   while (true) {
     const released = Number(await redis.eval(
       RELEASE_DEFERRED_SCRIPT,
-      4,
+      5,
       LINK_V3_KEYS.deferred,
       LINK_V3_KEYS.states,
       LINK_V3_KEYS.ready,
       LINK_V3_KEYS.rebuild,
+      LINK_V3_KEYS.events,
       batchSize,
       ownerToken ?? '',
     ));

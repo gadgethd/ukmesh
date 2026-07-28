@@ -1,4 +1,5 @@
 import type { StatsRepository } from './statsRepository.js';
+import { statsRecomputeDuration, statsRecomputeTotal } from '../metrics.js';
 
 type MaskDecodedPathNodesFn = (
   rawNodes: Array<{
@@ -518,11 +519,17 @@ export function createStatsService(deps: StatsServiceDeps) {
       throw new StatsWorkOverloadedError();
     }
 
+    const metricNetwork = network ?? 'ukmesh';
+    const stopTimer = statsRecomputeDuration.startTimer({ network: metricNetwork });
     const promise = computeStatsSummary(network, observer).then((data) => {
+      stopTimer({ status: 'success' });
+      statsRecomputeTotal.inc({ network: metricNetwork, status: 'success' });
       statsCache.set(key, { ts: Date.now(), data });
       statsInflight.delete(key);
       return data;
     }).catch((err) => {
+      stopTimer({ status: 'failed' });
+      statsRecomputeTotal.inc({ network: metricNetwork, status: 'failed' });
       statsInflight.delete(key);
       throw err;
     });

@@ -1,4 +1,5 @@
 import { query } from '../db/index.js';
+import type { SpamSuspectRow } from '../db/index.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -149,6 +150,31 @@ interface KeyRotationStats {
 
 const identityByName = new Map<string, IdentityNameStats>();
 const keyRotationByPublicKey = new Map<string, KeyRotationStats>();
+
+// Coalesce repeated verdicts for the same identity until the MQTT packet batch
+// commits. The latest evaluation wins, avoiding one spam UPSERT per advert.
+const bufferedSpamSuspects = new Map<string, SpamSuspectRow>();
+
+export function bufferSpamSuspect(suspect: SpamSuspectRow): void {
+  bufferedSpamSuspects.set(`${suspect.network}:${suspect.srcNodeId}`, suspect);
+}
+
+export function hasBufferedSpamSuspects(): boolean {
+  return bufferedSpamSuspects.size > 0;
+}
+
+export function drainBufferedSpamSuspects(): SpamSuspectRow[] {
+  const suspects = Array.from(bufferedSpamSuspects.values());
+  bufferedSpamSuspects.clear();
+  return suspects;
+}
+
+export function requeueBufferedSpamSuspects(suspects: readonly SpamSuspectRow[]): void {
+  for (const suspect of suspects) {
+    const key = `${suspect.network}:${suspect.srcNodeId}`;
+    if (!bufferedSpamSuspects.has(key)) bufferedSpamSuspects.set(key, suspect);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Startup & refresh

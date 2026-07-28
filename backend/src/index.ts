@@ -16,6 +16,7 @@ import { createBackendSiteRoutes } from './backend-site/routes.js';
 import { isTrustedProxyPeer } from './http/trustedProxy.js';
 import { startOwnerAuthorizationReconciler } from './owner/ownerAclReconciler.js';
 import { getAnalysisWorkloadStates } from './analysis/runState.js';
+import { applySecurityHeaders } from './security/operatorAuth.js';
 
 const ALLOWED_ORIGINS = (process.env['ALLOWED_ORIGINS'] ?? '')
   .split(',')
@@ -130,13 +131,14 @@ async function main() {
   }));
 
   // Security headers
-  app.use((_req, res, next) => {
+  app.use((req, res, next) => {
     res.setHeader('Strict-Transport-Security', HSTS_HEADER);
-    res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('X-Frame-Options', 'DENY');
+    applySecurityHeaders(req, res);
     res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
-    res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob: https:; connect-src 'self' wss: https:; font-src 'self' data:");
-    res.setHeader('Permissions-Policy', 'geolocation=(), camera=(), microphone=()');
+    res.setHeader(
+      'Content-Security-Policy',
+      "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob: https://basemaps.cartocdn.com https://*.basemaps.cartocdn.com https://openstreetmap.org https://*.openstreetmap.org; connect-src 'self' wss: https:; font-src 'self' data:",
+    );
     next();
   });
 

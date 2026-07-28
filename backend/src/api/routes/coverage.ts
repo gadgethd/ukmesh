@@ -77,7 +77,7 @@ export function registerCoverageRoutes(router: Router, deps: CoverageRouteDeps):
          FROM node_coverage nc
          JOIN nodes n ON n.node_id = nc.node_id
          WHERE (n.name IS NULL OR n.name NOT LIKE '%🚫%')
-           AND (n.role IS NULL OR n.role = 2)
+           AND n.role = 2
            AND n.lat BETWEEN ${minLatParam} - 2 AND ${maxLatParam} + 2
            AND n.lon BETWEEN ${minLonParam} - 2 AND ${maxLonParam} + 2
            AND nc.node_id > ${cursorParam}

@@ -18,7 +18,11 @@ type NodeRecord = {
   name?: string | null;
 };
 
-type GetNodesFn = (network?: string, observer?: string) => Promise<NodeRecord[]>;
+type GetNodesFn = (
+  network?: string,
+  observer?: string,
+  fields?: 'full' | 'slim',
+) => Promise<NodeRecord[]>;
 type GetNodeHistoryFn = (nodeId: string, hours: number, network: string) => Promise<unknown>;
 type GetNodeAdvertsFn = (publicKey: string, hours: number, limit: number, network: string) => Promise<unknown>;
 type RequireLocalOnlyFn = (req: Request, res: Response) => boolean;
@@ -52,7 +56,12 @@ type NodesRouteDeps = {
   requireLocalOnly: RequireLocalOnlyFn;
   networkFilters: (network?: string, observer?: string) => NetworkFilters;
   inferredNodesCache: Map<string, { ts: number; data: unknown }>;
+  inferredNodesInflight: Map<string, Promise<unknown>>;
   inferredNodesCacheTtlMs: number;
+  nodeLinksCache: Map<string, { ts: number; data: unknown }>;
+  nodeLinksInflight: Map<string, Promise<unknown>>;
+  nodeLinksCacheTtlMs: number;
+  nodesLimiter: ReturnType<typeof import('express-rate-limit').rateLimit>;
 };
 
 export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
@@ -64,8 +73,41 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
     requireLocalOnly,
     networkFilters,
     inferredNodesCache,
+    inferredNodesInflight,
     inferredNodesCacheTtlMs,
+    nodeLinksCache,
+    nodeLinksInflight,
+    nodeLinksCacheTtlMs,
+    nodesLimiter,
   } = deps;
+
+  router.get('/nodes/map', async (req, res) => {
+    try {
+      const network = resolvePublicNetworkScope(req.query['network'], req.headers);
+      const scope = networkFilters(network, normalizeObserverQuery(req.query['observer']));
+      const allowed = ['node_id', 'name', 'lat', 'lon', 'role', 'iata', 'last_seen', 'is_online', 'hardware_model', 'firmware_version'] as const;
+      const requested = String(req.query['fields'] ?? '')
+        .split(',')
+        .map((field) => field.trim())
+        .filter((field): field is typeof allowed[number] => allowed.includes(field as typeof allowed[number]));
+      const fields = requested.length > 0 ? [...new Set(['node_id', ...requested])] : [...allowed];
+      const result = await query<Record<string, unknown>>(
+        `SELECT ${fields.map((field) => `n.${field}`).join(', ')}
+         FROM nodes n
+         WHERE n.lat IS NOT NULL AND n.lon IS NOT NULL
+           AND (n.role IS NULL OR n.role IN (1, 2, 3, 4))
+           AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
+           ${scope.nodesAlias('n')}
+         ORDER BY n.last_seen DESC NULLS LAST`,
+        scope.params,
+      );
+      res.setHeader('Cache-Control', 'public, max-age=60, stale-while-revalidate=300');
+      res.json(result.rows);
+    } catch (err) {
+      console.error('[api] GET /nodes/map', (err as Error).message);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  });
 
   router.get('/local/test-diagnostics', async (req, res) => {
     try {
@@ -259,11 +301,12 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
     }
   });
 
-  router.get('/nodes', async (req, res) => {
+  router.get('/nodes', nodesLimiter, async (req, res) => {
     try {
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const observer = normalizeObserverQuery(req.query['observer']);
-      const nodes = await getNodes(network, observer);
+      const fields = req.query['fields'] === 'slim' ? 'slim' : 'full';
+      const nodes = await getNodes(network, observer, fields);
       res.json(nodes.filter((node) => !isPrivateNode(node.name)).map(redactPrivateNode));
     } catch (err) {
       console.error('[api] GET /nodes', (err as Error).message);
@@ -271,7 +314,37 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
     }
   });
 
-  router.get('/inferred-nodes', async (req, res) => {
+  router.get('/nodes/map', nodesLimiter, async (req, res) => {
+    try {
+      const network = resolvePublicNetworkScope(req.query['network'], req.headers);
+      const observer = normalizeObserverQuery(req.query['observer']);
+      const filters = networkFilters(network, observer);
+      const result = await query(
+        `SELECT
+           n.node_id, n.name, n.lat, n.lon, n.role, n.iata,
+           n.last_seen::text, n.is_online, n.hardware_model,
+           n.firmware_version, n.advert_count
+         FROM nodes n
+         WHERE n.role = 2
+           AND n.lat IS NOT NULL
+           AND n.lon IS NOT NULL
+           AND n.lat BETWEEN -90 AND 90
+           AND n.lon BETWEEN -180 AND 180
+           AND NOT (ABS(n.lat) < 1e-9 AND ABS(n.lon) < 1e-9)
+           AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
+           ${filters.nodesAlias('n')}
+         ORDER BY n.node_id`,
+        filters.params,
+      );
+      res.setHeader('Cache-Control', 'public, max-age=30, stale-while-revalidate=60');
+      res.json(result.rows);
+    } catch (err) {
+      console.error('[api] GET /nodes/map', (err as Error).message);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  });
+
+  router.get('/inferred-nodes', nodesLimiter, async (req, res) => {
     try {
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const observer = normalizeObserverQuery(req.query['observer']);
@@ -283,9 +356,30 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
         res.json(inferredCached.data);
         return;
       }
+      const existingWork = inferredNodesInflight.get(inferredCacheKey);
+      if (existingWork) {
+        if (inferredCached) {
+          res.json(inferredCached.data);
+          return;
+        }
+        await existingWork;
+        const refreshed = inferredNodesCache.get(inferredCacheKey);
+        if (!refreshed) throw new Error('INFERRED_NODES_REFRESH_FAILED');
+        res.json(refreshed.data);
+        return;
+      }
 
-      const [visibleNodes, allNodeIds, packetsResult] = await Promise.all([
-        getNodes(network, observer).then((nodes) =>
+      let finishWork: () => void = () => {};
+      const work = new Promise<void>((resolve) => {
+        finishWork = resolve;
+      });
+      inferredNodesInflight.set(inferredCacheKey, work);
+      const servingStale = Boolean(inferredCached);
+      if (inferredCached) res.json(inferredCached.data);
+
+      try {
+        const [visibleNodes, allNodeIds, packetsResult] = await Promise.all([
+          getNodes(network, observer, 'slim').then((nodes) =>
           nodes.filter((node) => !isPrivateNode(node.name)).map(redactPrivateNode)),
         query<{ node_id: string }>('SELECT node_id FROM nodes'),
         query<{
@@ -304,7 +398,7 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
            ORDER BY p.time DESC`,
           scope.params,
         ),
-      ]);
+        ]);
 
       const exactNodes = visibleNodes.filter((node) =>
         node.role === undefined || node.role === 2,
@@ -458,11 +552,15 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
         inferredNodes,
         inferredActiveNodeIds,
       };
-      inferredNodesCache.set(inferredCacheKey, { ts: Date.now(), data: payload });
-      res.json(payload);
+        inferredNodesCache.set(inferredCacheKey, { ts: Date.now(), data: payload });
+        if (!servingStale) res.json(payload);
+      } finally {
+        inferredNodesInflight.delete(inferredCacheKey);
+        finishWork();
+      }
     } catch (err) {
       console.error('[api] GET /inferred-nodes', (err as Error).message);
-      res.status(500).json({ error: 'Internal server error' });
+      if (!res.headersSent) res.status(500).json({ error: 'Internal server error' });
     }
   });
 
@@ -475,35 +573,72 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
       }
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const filters = networkFilters(network);
+      const cacheKey = `${network}:${id.toUpperCase()}`;
+      const cached = nodeLinksCache.get(cacheKey);
+      if (cached && Date.now() - cached.ts < nodeLinksCacheTtlMs) {
+        res.json(cached.data);
+        return;
+      }
       const idParam = `$${filters.params.length + 1}`;
-      const result = await query<{
-        peer_id: string;
-        peer_name: string | null;
-        observed_count: number;
-        itm_path_loss_db: number | null;
-        count_this_to_peer: number;
-        count_peer_to_this: number;
-      }>(
-        `SELECT
-           CASE WHEN node_a_id = ${idParam} THEN node_b_id ELSE node_a_id END AS peer_id,
-           n.name AS peer_name,
-           observed_count,
-           itm_path_loss_db,
-           CASE WHEN node_a_id = ${idParam} THEN count_a_to_b ELSE count_b_to_a END AS count_this_to_peer,
-           CASE WHEN node_a_id = ${idParam} THEN count_b_to_a ELSE count_a_to_b END AS count_peer_to_this
-         FROM node_links
-         JOIN nodes source_node ON source_node.node_id = ${idParam}
-         JOIN nodes n ON n.node_id = CASE WHEN node_a_id = ${idParam} THEN node_b_id ELSE node_a_id END
-         WHERE (node_a_id = ${idParam} OR node_b_id = ${idParam})
-           AND (itm_viable = true OR force_viable = true)
-           AND (source_node.name IS NULL OR source_node.name NOT LIKE '%🚫%')
-           AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
-           ${filters.nodesAlias('source_node')}
-           ${filters.nodesAlias('n')}
-         ORDER BY observed_count DESC`,
-        [...filters.params, id],
-      );
-      res.json(result.rows);
+      const loadLinks = async () => {
+        const result = await query<{
+          peer_id: string;
+          peer_name: string | null;
+          observed_count: number;
+          itm_path_loss_db: number | null;
+          count_this_to_peer: number;
+          count_peer_to_this: number;
+        }>(
+          `WITH source_node AS MATERIALIZED (
+             SELECT node_id
+             FROM nodes
+             WHERE node_id = ${idParam}
+               AND (name IS NULL OR name NOT LIKE '%🚫%')
+               ${filters.nodes}
+           ),
+           relevant_links AS MATERIALIZED (
+             SELECT
+               CASE WHEN nl.node_a_id = ${idParam} THEN nl.node_b_id ELSE nl.node_a_id END AS peer_id,
+               nl.observed_count,
+               nl.itm_path_loss_db,
+               CASE WHEN nl.node_a_id = ${idParam} THEN nl.count_a_to_b ELSE nl.count_b_to_a END AS count_this_to_peer,
+               CASE WHEN nl.node_a_id = ${idParam} THEN nl.count_b_to_a ELSE nl.count_a_to_b END AS count_peer_to_this
+             FROM node_links nl
+             WHERE (nl.node_a_id = ${idParam} OR nl.node_b_id = ${idParam})
+               AND (nl.itm_viable = TRUE OR nl.force_viable = TRUE)
+               AND EXISTS (SELECT 1 FROM source_node)
+           )
+           SELECT
+             rl.peer_id, peer.name AS peer_name, rl.observed_count,
+             rl.itm_path_loss_db, rl.count_this_to_peer, rl.count_peer_to_this
+           FROM relevant_links rl
+           JOIN nodes peer ON peer.node_id = rl.peer_id
+           WHERE (peer.name IS NULL OR peer.name NOT LIKE '%🚫%')
+             ${filters.nodesAlias('peer')}
+           ORDER BY rl.observed_count DESC`,
+          [...filters.params, id],
+        );
+        return result.rows;
+      };
+      let inflight = nodeLinksInflight.get(cacheKey);
+      if (!inflight) {
+        const tracked = loadLinks()
+          .then((rows) => {
+            nodeLinksCache.set(cacheKey, { ts: Date.now(), data: rows });
+            return rows;
+          })
+          .finally(() => {
+            if (nodeLinksInflight.get(cacheKey) === tracked) nodeLinksInflight.delete(cacheKey);
+          });
+        inflight = tracked;
+        nodeLinksInflight.set(cacheKey, tracked);
+      }
+      if (cached) {
+        res.setHeader('Warning', '110 - "Response is stale"');
+        res.json(cached.data);
+        return;
+      }
+      res.json(await inflight);
     } catch (err) {
       console.error('[api] GET /nodes/:id/links', (err as Error).message);
       res.status(500).json({ error: 'Internal server error' });

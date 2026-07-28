@@ -5,6 +5,7 @@ import type {
   TracePayload, PathPayload, AckPayload,
 } from '@michaelhart/meshcore-decoder';
 import { insertNodeStatusSample, insertPacket, upsertNode, incrementAdvertCount, query, insertOrUpdateSpamSuspect, recordMultibyteEvidence } from '../db/index.js';
+import { flush as flushPacketBatch } from '../db/packetBatch.js';
 import { evaluateAdvert, initSpamDetector } from './spamDetector.js';
 import { invalidateResolveCache, setResolveCache, getStickyNodeMap, mergeStickyNodes } from '../path-beta/resolveCache.js';
 import { resolvePool } from '../path-beta/resolvePool.js';
@@ -522,7 +523,12 @@ export async function startMqttClient(): Promise<void> {
     console.error('[mqtt] error', err.message);
   });
   client.on('offline', () => setMqttRuntimeStatus('disconnected'));
-  client.on('close', () => setMqttRuntimeStatus('disconnected'));
+  client.on('close', () => {
+    setMqttRuntimeStatus('disconnected');
+    void flushPacketBatch().catch((err: unknown) => {
+      console.error('[mqtt] packet batch close flush failed:', (err as Error).message);
+    });
+  });
   client.on('reconnect', () => {
     setMqttRuntimeStatus('reconnecting');
     console.log('[mqtt] reconnecting…');
@@ -574,6 +580,7 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
       firmwareVersion: (firmware && firmware !== 'unknown') ? firmware : undefined,
       network,
       allowTestOverride: network === 'test' && nodeId === observerKey,
+      mqttObserver: true,
     })];
     const telemetry = extractStatusTelemetry(json, {
       allowRawStatsOnly: network === 'test',
@@ -826,6 +833,7 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
     iata,
     network,
     allowTestOverride: network === 'test',
+    mqttObserver: true,
   }).catch((err: Error) => console.error('[mqtt] observer upsert error:', err.message));
   emitNode(observerKey, { network, observerId: observerKey });
 
@@ -835,32 +843,29 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
     ? { ...innerPayload, direction }
     : (innerPayload ?? json);
 
-  {
-    const livePacket: LivePacket = {
-      id:         crypto.randomUUID(),
-      packetHash: finalHash,
-      rxNodeId:   observerKey,
-      srcNodeId,
-      topic,
-      network,
-      packetType: resolvedPacketType,
-      routeType:  decodedRouteType,
-      hopCount:   decodedHops,
-      pathHashSizeBytes: decodedPathHashSizeBytes,
-      direction,
-      summary,
-      payload:    packetPayload,
-      path,
-      advertCount,
-      transportCodes: decodedTransportCodes,
-      regionScope:    decodedRegionScope,
-      ts:         Date.now(),
-    };
-    emit(livePacket);
-  }
+  const livePacket: LivePacket = {
+    id:         crypto.randomUUID(),
+    packetHash: finalHash,
+    rxNodeId:   observerKey,
+    srcNodeId,
+    topic,
+    network,
+    packetType: resolvedPacketType,
+    routeType:  decodedRouteType,
+    hopCount:   decodedHops,
+    pathHashSizeBytes: decodedPathHashSizeBytes,
+    direction,
+    summary,
+    payload:    packetPayload,
+    path,
+    advertCount,
+    transportCodes: decodedTransportCodes,
+    regionScope:    decodedRegionScope,
+    ts:         Date.now(),
+  };
 
   try {
-    await insertPacket({
+    const visibility = await insertPacket({
       packetHash: finalHash,
       rxNodeId:   observerKey,
       srcNodeId,
@@ -880,6 +885,9 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
       transportCodes: decodedTransportCodes,
       regionScope:    decodedRegionScope,
     });
+    livePacket.isPrivate = visibility.isPrivate;
+    livePacket.visibilityOk = visibility.visibilityOk;
+    emit(livePacket);
     invalidateResolveCache(finalHash);
 
     // A repeater appearing in a multibyte (2–3 byte) path hash almost certainly

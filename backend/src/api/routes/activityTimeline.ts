@@ -37,12 +37,6 @@ export function registerActivityTimelineRoutes(router: Router, deps: Deps): void
            FROM packets p
            WHERE p.time > NOW() - ${windowParam}::interval
              ${filters.packetsAlias('p')}
-             AND NOT EXISTS (
-               SELECT 1
-               FROM nodes private_node
-               WHERE private_node.name LIKE '%🚫%'
-                 AND private_node.node_id IN (p.rx_node_id, p.src_node_id)
-             )
          ),
          packet_buckets AS (
            SELECT bucket,

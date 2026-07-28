@@ -5,6 +5,20 @@ export function isPrivateNode(name: string | null | undefined): boolean {
   return typeof name === 'string' && name.includes('🚫');
 }
 
+export type PrivateNodePrefix = {
+  prefixSizeBytes: 1 | 2 | 3;
+  prefix: string;
+};
+
+export function materializePrivateNodePrefixes(nodeId: string): PrivateNodePrefix[] {
+  const normalized = nodeId.trim().toUpperCase();
+  if (!/^[0-9A-F]{64}$/.test(normalized)) return [];
+  return ([1, 2, 3] as const).map((prefixSizeBytes) => ({
+    prefixSizeBytes,
+    prefix: normalized.slice(0, prefixSizeBytes * 2),
+  }));
+}
+
 export function redactPrivateNode<T extends {
   node_id: string;
   name?: string | null;

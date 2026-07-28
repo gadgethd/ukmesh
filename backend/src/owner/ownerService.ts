@@ -42,6 +42,7 @@ type OwnerServiceDeps = {
   autoLinkOwnerNodeIds: (mqttUsername: string) => Promise<string[]>;
   buildOwnerDashboard: (nodeIds: string[]) => Promise<OwnerDashboard>;
   repository: OwnerRepository;
+  invalidateOwnerNodeIdCache: (mqttUsername: string) => void;
 };
 
 export function createOwnerService(deps: OwnerServiceDeps) {
@@ -55,6 +56,7 @@ export function createOwnerService(deps: OwnerServiceDeps) {
     autoLinkOwnerNodeIds,
     buildOwnerDashboard,
     repository,
+    invalidateOwnerNodeIdCache,
   } = deps;
   const ownerLastHopCache = new Map<string, OwnerLastHopCacheEntry>();
   const ownerDashboardCache = new Map<string, { ts: number; dashboard: OwnerDashboard; nodeIds: string[] }>();
@@ -455,10 +457,22 @@ export function createOwnerService(deps: OwnerServiceDeps) {
     return responseData;
   }
 
+  function clearOwnerSession(mqttUsername: string): void {
+    const cacheKey = dashboardCacheKey(mqttUsername);
+    const nodeIds = ownerDashboardCache.get(cacheKey)?.nodeIds ?? [];
+    ownerDashboardCache.delete(cacheKey);
+    for (const nodeId of nodeIds) {
+      ownerLiveCache.delete(nodeId);
+      ownerLastHopCache.delete(nodeId);
+    }
+    invalidateOwnerNodeIdCache(mqttUsername);
+  }
+
   return {
     authenticateOwner,
     getSessionDashboard,
     getOwnerLiveData,
     getOwnerLastHopStrength,
+    clearOwnerSession,
   };
 }

@@ -1,5 +1,4 @@
 const SQL_ALIAS = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const PRODUCTION_NETWORKS_SQL = "'ukmesh', 'northeast', 'teesside'";
 
 function checkedAlias(value: string): string {
   if (!SQL_ALIAS.test(value)) throw new Error('INVALID_SQL_ALIAS');
@@ -15,15 +14,9 @@ export function privateNodePacketNetworkMatchSql(
   privateNodeAlias: string,
   packetAlias: string,
 ): string {
-  const privateNode = checkedAlias(privateNodeAlias);
+  checkedAlias(privateNodeAlias);
   const packet = checkedAlias(packetAlias);
-  return `(
-    ${privateNode}.network = ${packet}.network
-    OR (
-      ${privateNode}.network IN (${PRODUCTION_NETWORKS_SQL})
-      AND ${packet}.network IN (${PRODUCTION_NETWORKS_SQL})
-    )
-  )`;
+  return `${packet}.is_private IS TRUE`;
 }
 
 export function networksSharePrivacyScope(

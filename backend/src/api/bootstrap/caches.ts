@@ -1,4 +1,6 @@
 import { BoundedTtlMap } from '../../cache/boundedTtlMap.js';
+import { getWorkerHealthOverview } from '../../health/status.js';
+import { HealthSnapshotCache } from '../../health/snapshot.js';
 
 // Freshness/warm cadence for the dashboard stat aggregates. These queries scan
 // the packets hypertable through the public privacy filter and take tens of
@@ -9,7 +11,11 @@ import { BoundedTtlMap } from '../../cache/boundedTtlMap.js';
 export const STATS_CACHE_TTL_MS = 5 * 60_000;
 export const STATS_CACHE_STALE_TTL_MS = 15 * 60_000;
 export const INFERRED_NODES_CACHE_TTL_MS = 5 * 60_000;
+export const INFERRED_NODES_CACHE_STALE_TTL_MS = 30 * 60_000;
+export const NODE_LINKS_CACHE_TTL_MS = 60_000;
+export const NODE_LINKS_CACHE_STALE_TTL_MS = 5 * 60_000;
 export const PATH_HISTORY_CACHE_TTL_MS = 60_000;
+export const HEALTH_CACHE_TTL_MS = 60_000;
 export const CHARTS_CACHE_TTL_MS = 30 * 60_000;
 // A chart snapshot is refreshed every 30 minutes, but remains usable for six
 // hours if a refresh is slow or fails. Keeping the storage TTL longer than the
@@ -28,8 +34,13 @@ export const statsCache = new BoundedTtlMap<string, { ts: number; data: unknown 
   maxEntries: 256, maxWeight: 16 * 1024 * 1024, ttlMs: STATS_CACHE_STALE_TTL_MS,
 });
 export const inferredNodesCache = new BoundedTtlMap<string, { ts: number; data: unknown }>({
-  maxEntries: 128, maxWeight: 16 * 1024 * 1024, ttlMs: INFERRED_NODES_CACHE_TTL_MS,
+  maxEntries: 128, maxWeight: 16 * 1024 * 1024, ttlMs: INFERRED_NODES_CACHE_STALE_TTL_MS,
 });
+export const inferredNodesInflight = new Map<string, Promise<unknown>>();
+export const nodeLinksCache = new BoundedTtlMap<string, { ts: number; data: unknown }>({
+  maxEntries: 4096, maxWeight: 32 * 1024 * 1024, ttlMs: NODE_LINKS_CACHE_STALE_TTL_MS,
+});
+export const nodeLinksInflight = new Map<string, Promise<unknown>>();
 export const pathHistoryCache = new BoundedTtlMap<string, { ts: number; data: unknown }>({
   maxEntries: 8, maxWeight: 8 * 1024 * 1024, ttlMs: PATH_HISTORY_CACHE_TTL_MS,
 });
@@ -40,3 +51,8 @@ export const chartsInflight = new Map<string, Promise<unknown>>();
 export const ownerLiveCache = new BoundedTtlMap<string, { ts: number; data: unknown }>({
   maxEntries: 512, maxWeight: 16 * 1024 * 1024, ttlMs: OWNER_LIVE_CACHE_TTL_MS,
 });
+
+export const healthSnapshot = new HealthSnapshotCache(
+  getWorkerHealthOverview,
+  Math.max(HEALTH_CACHE_TTL_MS * 5, 5 * 60_000),
+);

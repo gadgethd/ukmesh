@@ -20,6 +20,41 @@ type SpamQueryFn = <T extends Record<string, unknown> = Record<string, unknown>>
   params?: unknown[],
 ) => Promise<{ rows: T[] }>;
 
+async function alertNewHighScoringIncidents(items: PersistableIncident[]): Promise<void> {
+  const webhook = String(process.env['SPAM_ALERT_WEBHOOK_URL'] ?? '').trim();
+  if (!webhook) return;
+  const threshold = Math.max(0, Math.min(1, Number(process.env['SPAM_ALERT_WEBHOOK_MIN_SCORE'] ?? 0.85) || 0.85));
+  for (const item of items) {
+    if (item.status !== 'active' || item.publicJson.confidence < threshold) continue;
+    const claimed = await dbQuery<{ incident_key: string }>(
+      `UPDATE spam_message_incidents
+       SET webhook_alerted_at = NOW()
+       WHERE incident_key = $1 AND webhook_alerted_at IS NULL
+       RETURNING incident_key`,
+      [item.publicJson.id],
+    );
+    if (claimed.rows.length === 0) continue;
+    try {
+      const response = await fetch(webhook, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          event: 'meshcore.spam.high_score',
+          incident: item.publicJson,
+        }),
+        signal: AbortSignal.timeout(8_000),
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    } catch (error) {
+      await dbQuery(
+        'UPDATE spam_message_incidents SET webhook_alerted_at = NULL WHERE incident_key = $1',
+        [item.publicJson.id],
+      );
+      console.error('[spam-msg] alert webhook failed:', (error as Error).message);
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Orchestration: load -> cluster -> estimate origin -> sanitize -> persist.
 // ---------------------------------------------------------------------------
@@ -124,6 +159,7 @@ export async function analyzeOnce(cfg: SpamMessageConfig = loadSpamMessageConfig
         startedAt + cfg.analysisBudgetMs,
       );
       const persisted = await persistIncidents(items, cfg);
+      await alertNewHighScoringIncidents(items);
       await finishAnalysisRun(run, {
         status: 'complete',
         checkpoint: records.length,
