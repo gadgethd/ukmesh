@@ -72,7 +72,7 @@ export const TimelineControl: React.FC<Props> = ({ network, observer }) => {
   return (
     <section className={`timeline-control${open ? ' timeline-control--open' : ''}`} aria-label="Network activity replay">
       <button type="button" className="timeline-control__toggle" onClick={() => setOpen((value) => !value)} aria-expanded={open}>
-        <span>Activity replay</span><strong>{label}</strong>
+        <span className="timeline-control__name"><span aria-hidden="true">◷</span> Activity replay</span><strong>{label}</strong>
       </button>
       {open && (
         <div className="timeline-control__body">

@@ -1,33 +1,19 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
+import React, { useEffect, useState } from 'react';
+import { Link } from 'react-router';
 import { LiveStatsSection } from '../../components/LiveStatsSection.js';
 import { getCurrentSite } from '../../config/site.js';
 
-const meshcoreDonationUrl = 'https://givealittle.co.nz/cause/help-us-save-meshcore';
-const meshcoreSupportPostUrl = 'https://blog.meshcore.io/2026/07/04/help-us-save-meshcore';
-
 export const UKHomePage: React.FC = () => {
   const site = getCurrentSite();
-  const [regions, setRegions] = useState<Array<{ iata: string; health?: { score?: number; status?: 'healthy' | 'watch' | 'poor' }; lastPacketAt?: string | null }>>([]);
   const [recent, setRecent] = useState<Array<{ packet_hash: string; time: string; summary?: string | null; packet_type?: number | null }>>([]);
   useEffect(() => {
     const controller = new AbortController();
-    void Promise.allSettled([
-      fetch('/api/stats/charts?network=ukmesh', { signal: controller.signal }).then((response) => response.json()),
-      fetch('/api/packets/recent?network=ukmesh&limit=5', { signal: controller.signal }).then((response) => response.json()),
-    ]).then(([stats, packets]) => {
-      if (stats.status === 'fulfilled') setRegions(Array.isArray(stats.value?.observerRegions) ? stats.value.observerRegions : []);
-      if (packets.status === 'fulfilled') setRecent(Array.isArray(packets.value) ? packets.value : []);
-    });
+    void fetch('/api/packets/recent?network=ukmesh&limit=5', { signal: controller.signal })
+      .then((response) => response.json())
+      .then((packets) => setRecent(Array.isArray(packets) ? packets : []))
+      .catch(() => {});
     return () => controller.abort();
   }, []);
-  const regionalHealth = useMemo(() => {
-    if (regions.length === 0) return { status: 'watch', label: 'Health data starting', score: 0 };
-    const score = Math.round(regions.reduce((sum, region) => sum + Number(region.health?.score ?? 0), 0) / regions.length);
-    return score >= 75 ? { status: 'healthy', label: 'Regions healthy', score }
-      : score >= 45 ? { status: 'watch', label: 'Regions need attention', score }
-        : { status: 'poor', label: 'Regional disruption', score };
-  }, [regions]);
 
   return (
     <>
@@ -40,7 +26,6 @@ export const UKHomePage: React.FC = () => {
               supporting documentation behind the live map.
             </p>
             <div className="site-home__actions">
-              <a href={meshcoreDonationUrl} target="_blank" rel="noopener noreferrer" className="site-btn site-btn--donate">Donate to MeshCore</a>
               <a href={site.appUrl} className="site-btn site-btn--primary">Open live map</a>
               <Link to="/install" className="site-btn site-btn--ghost">Install MeshCore</Link>
               <Link to="/stats" className="site-btn site-btn--ghost">Network stats</Link>
@@ -71,17 +56,9 @@ export const UKHomePage: React.FC = () => {
         </div>
       </section>
 
-      <section className={`site-home-health site-home-health--${regionalHealth.status}`}>
-        <div className="site-content site-home-health__inner">
-          <div><span className="site-home-health__dot" /><strong>{regionalHealth.label}</strong></div>
-          <span>{regionalHealth.score}% aggregate health · {regions.length} reporting regions</span>
-          <Link to="/stats">View regional detail →</Link>
-        </div>
-      </section>
-
       <LiveStatsSection />
 
-      <section className="site-section site-section--dark">
+      <section className="site-section site-section--dark site-home-feed-section">
         <div className="site-content">
           <div className="site-section__head"><h2>Recent feed</h2><Link to="/feed">Open live feed →</Link></div>
           <div className="site-home-feed">
@@ -93,29 +70,6 @@ export const UKHomePage: React.FC = () => {
               </article>
             ))}
             {recent.length === 0 && <p>Waiting for recent public packets…</p>}
-          </div>
-        </div>
-      </section>
-
-      <section className="site-section">
-        <div className="site-content">
-          <div className="site-home__support">
-            <div>
-              <h2>Support the creators of MeshCore</h2>
-              <p>
-                The MeshCore team is crowdfunding legal costs to protect the project name and keep the core
-                firmware free, open-source, and community driven. Donations go through Givealittle, and the
-                MeshCore blog explains the background.
-              </p>
-            </div>
-            <div className="site-home__support-actions">
-              <a href={meshcoreDonationUrl} target="_blank" rel="noopener noreferrer" className="site-btn site-btn--primary">
-                Donate on Givealittle
-              </a>
-              <a href={meshcoreSupportPostUrl} target="_blank" rel="noopener noreferrer" className="site-btn site-btn--ghost">
-                Read the blog post
-              </a>
-            </div>
           </div>
         </div>
       </section>
