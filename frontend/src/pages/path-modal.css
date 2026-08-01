@@ -1,0 +1,119 @@
+/* Shared path-modal styles — used by StatsPage (Decoded Path) and the UK feed
+   (Predicted Repeater Tree). Extracted from stats-page.css on 2026-08-01 so the
+   feed modal no longer loses its styling (regression from commit 83d770a, which
+   removed these rules from globals.css but only kept them in stats-page.css,
+   which the feed page never imports). */
+
+.stats-page__path-modal {
+  background: var(--bg-panel);
+  border: 1px solid var(--border-bright);
+  border-radius: 12px;
+  width: min(960px, 100%);
+  max-height: min(88vh, 900px);
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  box-sizing: border-box;
+}
+
+.stats-page__path-modal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.stats-page__path-modal-title {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 16px;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.stats-page__path-modal-sub {
+  margin: 6px 0 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.stats-page__path-modal-close {
+  width: auto;
+  min-width: 110px;
+}
+
+.stats-page__path-modal-map {
+  height: 420px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.stats-page__path-modal-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+}
+
+.stats-page__path-modal-node {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(11, 23, 37, 0.55);
+}
+
+.stats-page__path-modal-node span {
+  display: inline-flex;
+  width: 22px;
+  height: 22px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: rgba(0, 196, 255, 0.12);
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  flex: 0 0 22px;
+}
+
+.stats-page__path-modal-node strong {
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+@media (max-width: 640px) {
+
+  .stats-page__path-modal {
+    max-height: calc(100dvh - 20px);
+    padding: 14px;
+    gap: 12px;
+  }
+
+  .stats-page__path-modal-header {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+
+  .stats-page__path-modal-close {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .stats-page__path-modal-map {
+    height: min(46dvh, 320px);
+  }
+
+  .stats-page__path-modal-list {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
