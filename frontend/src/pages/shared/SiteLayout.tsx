@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Link, NavLink, Outlet } from 'react-router-dom';
+import { Link, NavLink, Outlet } from 'react-router';
 
 type SiteLayoutProps = {
   brandName: string;
@@ -182,7 +182,15 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
           id="site-navigation"
           className={`site-nav__links${menuOpen ? ' site-nav__links--open' : ''}`}
         >
-          {showLiveMap && <a href={appUrl} className="site-nav__link site-nav__link--map">Live Map ↗</a>}
+          {showLiveMap && (
+            <a
+              href={appUrl}
+              className="site-nav__link site-nav__link--map site-nav__link--external"
+              aria-label="Live Map (external app)"
+            >
+              Live Map <span className="site-nav__external-icon" aria-hidden="true">↗</span>
+            </a>
+          )}
           {navItems.filter((item) => item.enabled).map((item) => (
             <NavLink
               key={item.to}
@@ -243,7 +251,7 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
             <strong>Cookies, sadly.</strong>
             <p>We only use them for the boring useful bits, like keeping logins alive and remembering site choices. No secret biscuit syndicate.</p>
           </div>
-          <button className="cookie-banner__button" onClick={acceptCookies}>Accept</button>
+          <button type="button" className="cookie-banner__button" onClick={acceptCookies}>Accept</button>
         </div>
       )}
     </div>

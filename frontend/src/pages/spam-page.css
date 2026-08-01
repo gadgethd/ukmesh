@@ -71,6 +71,7 @@
   font-weight: 600;
   color: var(--text-primary);
 }
+.sm-status__text { color: #f0f6ff; }
 .sm-status__dot {
   width: 10px;
   height: 10px;
@@ -91,9 +92,9 @@
   display: flex;
   gap: 8px;
   align-items: center;
-  color: var(--text-muted);
+  color: #b8c9dc;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 12px;
   letter-spacing: 0.04em;
 }
 
@@ -113,16 +114,40 @@
   transition: color var(--transition);
 }
 .sm-toggle:hover { color: var(--text-primary); }
-.sm-toggle input { accent-color: var(--accent); width: 14px; height: 14px; cursor: pointer; }
+.sm-toggle input {
+  appearance: none;
+  -webkit-appearance: none;
+  display: grid;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  place-content: center;
+  border: 1px solid #7f9bb8;
+  border-radius: 4px;
+  background: #0d1520;
+  cursor: pointer;
+}
+.sm-toggle input::after {
+  content: '';
+  width: 7px;
+  height: 4px;
+  border-left: 2px solid #06101c;
+  border-bottom: 2px solid #06101c;
+  transform: rotate(-45deg) scale(0);
+  transition: transform 120ms ease-in-out;
+}
+.sm-toggle input:checked { background: var(--accent); border-color: var(--accent); }
+.sm-toggle input:checked::after { transform: rotate(-45deg) scale(1); }
+.sm-toggle input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* ── Map ────────────────────────────────────────────────────────────────── */
 .sm-mapwrap { margin: 0 0 28px; }
 .sm-maphint {
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.1em;
-  color: var(--text-muted);
+  color: #b8c9dc;
   margin-bottom: 8px;
 }
 .sm-map {
@@ -132,6 +157,15 @@
   border: 1px solid var(--border);
   background: var(--bg-base);
 }
+.sm-page .maplibregl-ctrl-group {
+  background: rgba(9, 17, 26, 0.94);
+  border: 1px solid rgba(137, 180, 214, 0.5);
+  border-radius: 6px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+}
+.sm-page .maplibregl-ctrl-group button + button { border-top-color: rgba(137, 180, 214, 0.35); }
+.sm-page .maplibregl-ctrl-group button:not(:disabled):hover { background-color: rgba(92, 219, 255, 0.14); }
+.sm-page .maplibregl-ctrl-group button .maplibregl-ctrl-icon { filter: invert(1); opacity: 0.9; }
 
 /* ── Sections ───────────────────────────────────────────────────────────── */
 .sm-section { margin: 28px 0; }
@@ -393,20 +427,23 @@
   font-size: 12px;
   margin-top: 8px;
 }
-.sm-timeline th, .sm-timeline td {
+.sm-timeline th {
   text-align: left;
   padding: 7px 10px;
   border-bottom: 1px solid var(--border);
   white-space: nowrap;
-}
-.sm-timeline th {
   color: var(--text-secondary);
   font-weight: 400;
   text-transform: uppercase;
   font-size: 9px;
   letter-spacing: 0.1em;
 }
-.sm-timeline td { color: var(--text-primary); }
+.sm-timeline td {
+  text-align: left;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap; color: var(--text-primary);
+}
 
 /* ── Footer ─────────────────────────────────────────────────────────────── */
 .sm-footer {
@@ -448,13 +485,7 @@
 @media (max-width: 340px) {
   .sm-grid { grid-template-columns: 1fr; }
 }
-.sm-virtual-list {
-  max-height: min(760px, 75vh);
-  overflow: auto;
-  overscroll-behavior: contain;
-  scrollbar-gutter: stable;
-}
-
-.sm-virtual-list .sm-card {
-  contain: layout paint;
+.sm-incident-list {
+  display: grid;
+  gap: 12px;
 }
