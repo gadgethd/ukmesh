@@ -9,7 +9,7 @@ services. Use `docker-compose.live.yml` for every production `config`, `up`,
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.live.yml \
-  --profile dev --profile viewshed --profile tunnel config --quiet
+  --profile dev --profile tunnel config --quiet
 ```
 
 The overlay treats that bridge as external and reserves
@@ -50,7 +50,8 @@ Pull requests and branch pushes run `.github/workflows/ci.yml`. The workflow:
 - installs dependencies from lockfiles
 - type-checks, tests, and builds the backend
 - builds the frontend and runs Playwright desktop/mobile smoke tests
-- compiles Python workers
+- compiles the observed-link Python worker and tests HopReach with Go 1.23
+- enforces the UK-4,600 HopReach speed/memory release gate
 - validates the Docker Compose model with required secrets represented by CI-only placeholders
 
 Dependabot groups weekly dependency updates for the backend, frontend, and GitHub Actions.
@@ -120,6 +121,11 @@ npm run load:realtime -- --duration 30 --concurrency 25 --max-p95-ms 1500
 
 Use `--mqtt-messages 5000` to exercise the bounded MQTT ingest queue with isolated, rejected test envelopes, and `--slow-ws-clients 10` to hold non-reading WebSocket clients during the run. MQTT mode uses `MQTT_BROKER_URL`, `MQTT_USERNAME`, and `MQTT_PASSWORD`; never point it at a broker outside the deployment under test.
 
+The internal HopReach compatibility load path is covered by
+`backend/src/api/hopreachCompatibility.test.ts`. Its UK-size test performs ten
+pages over 4,600 nodes, 32 concurrent calibration requests, a cold pass, and
+verified cache hits/coalescing without exposing the adapter publicly.
+
 ## Statistics aggregate rollout
 
 `packet_hourly_stats` is maintained atomically with accepted packet batches.
@@ -187,20 +193,18 @@ changes during publication. Verify the stored `scope_key`, schema version,
 visibility generation, `generated_at`, and payload byte count before restarting
 the serving backend. Do not seed an observer-filtered response.
 
-## Coverage API safety
+## HopReach RF coverage
 
-The legacy unbounded `GET /api/coverage` response has been replaced by a bounded viewport API:
+The app serves only `meta.json`, `progress.json`, and numeric PNG tile paths
+under `/rf-coverage/`. The private compatibility adapter is mounted at
+`/hopreach` on the backend container and rejects forwarded/public traffic.
+Legacy `/api/coverage` and `/api/coverage/planned` contracts return `410 Gone`
+without querying `node_coverage` or creating work.
 
-```text
-GET /api/coverage?bbox=minLon,minLat,maxLon,maxLat&limit=12&cursor=<node-id>
-```
-
-- `bbox` is required and may span at most 20 degrees on either axis.
-- `limit` defaults to 12 and is capped at 25.
-- Each serialized page has a 5 MiB safety budget.
-- A single geometry exceeding that budget is represented by `{node_id, truncated: true}` and can be retrieved through the per-node endpoint.
-- `page.nextCursor` continues a partial result when `page.hasMore` is true.
-- `GET /api/coverage/:nodeId` remains the preferred interactive-map endpoint.
+Use [the HopReach rollout and recovery runbook](rf-coverage-rollout.md) for
+source publication, benchmark gates, deployment order, progressive live
+verification, checkpoint restart tests, and rollback. Do not delete the
+`rf_coverage_data` volume or DEM cache to recover a failed run.
 
 ## Topology API
 
@@ -280,8 +284,7 @@ single retained dead job.
 
 ### QueueCapacityHigh
 
-Disable the producer feature or planned-coverage admission if growth
-continues. Confirm the worker is consuming and the byte/job counters are
+Disable the affected optional link producer if growth continues. Confirm the worker is consuming and the byte/job counters are
 consistent. Never make Redis eviction-based or raise the cap without measuring
 host memory.
 
@@ -312,7 +315,7 @@ heartbeat as the higher-priority symptom.
 ### ActiveQueueWorkerHeartbeatStale
 
 Stop new optional work, confirm the queue retains its leased payloads, and
-restart the affected link/viewshed worker. Allow lease recovery to requeue;
+restart the affected link worker. Allow lease recovery to requeue;
 do not manually duplicate the job.
 
 ### DatabaseUnavailable

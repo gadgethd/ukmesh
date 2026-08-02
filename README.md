@@ -7,11 +7,10 @@ A real-time analytics platform for [MeshCore](https://meshcore.io) networks. It 
 ## Features
 
 - Real-time node map with animated packet arcs and live WebSocket updates
-- RF coverage viewshed polygons per repeater using SRTM terrain data
+- Progressive UK-wide HopReach RF coverage with Standard and Precision tiers
 - Link intelligence overlay with directional observations and path-loss viability
 - Public repeater-topology explorer with hub ranking, graph components, likely bridge repeaters, isolated nodes, and multibyte-evidence filtering
 - Map modes, shareable viewport/filter URLs, selected-node popup, and bounded activity replay
-- Planned-repeater comparison with saved scenarios, share links, and overlap estimates
 - Regional health scoring and predicted-versus-observed RF validation
 - Local saved searches/watchlists for nodes, observers, regions, packet types, and incidents
 - Privacy-filtered CSV/GeoJSON exports with a versioned OpenAPI contract
@@ -40,11 +39,11 @@ A real-time analytics platform for [MeshCore](https://meshcore.io) networks. It 
 - Packet deduplication by hash across observers
 
 ### Phase 2 - RF coverage and link intelligence (complete)
-- Viewshed worker: SRTM terrain-aware radio horizon computation per repeater
-- Coverage polygons served as GeoJSON and rendered on the map
+- HopReach v0.1.32 canonical terrain propagation with reference-parity tests
+- Progressive Standard/Precision rasters rendered natively in MapLibre
 - Link worker: observed relay-path processing into node-to-node link intelligence
 - Directional link counts and path-loss viability modelling
-- UK mainland clipping to remove sea coverage artifacts
+- Versioned GB, Northern Ireland, Isle of Man, Jersey, and Guernsey boundary
 
 ### Phase 3 - Path learning and predictions (beta)
 - Hourly path-learning prior rebuild worker
@@ -63,7 +62,6 @@ A real-time analytics platform for [MeshCore](https://meshcore.io) networks. It 
 - MQTT username/password owner login with encrypted cookie session
 - Dedicated owner auth database for username → repeater ownership mapping
 - Owner-facing dashboard: repeater summary, packet history, advert counts, direct sender map, heard-by list, link health, and alerts
-- Planned node placement tool: drop a marker on the map, preview estimated RF coverage before deploying hardware
 - Planned repeater registration/claim workflow improvements
 - Owner alerts for offline duration, low battery voltage, and excessive predicted path loss, with durable delivery history and test delivery
 
@@ -90,7 +88,7 @@ A real-time analytics platform for [MeshCore](https://meshcore.io) networks. It 
 ## Current State
 
 - Split worker architecture for resilience:
-  - `viewshed-worker` (coverage compute)
+  - `hopreach` (canonical progressive coverage compute)
   - `link-worker` (link/path-loss processing)
   - `path-learning-worker` (hourly model rebuild)
   - `path-history-worker` (historical path resolution backfill)
@@ -99,7 +97,7 @@ A real-time analytics platform for [MeshCore](https://meshcore.io) networks. It 
 - Path resolver runs a concurrent worker pool (`resolveWorker`, `resolvePool`, `resolveCache`) to handle high packet volumes without blocking the main ingest loop.
 - Nginx frontend proxies use Docker DNS resolver-based upstreams to avoid stale backend IP issues after container recreates.
 - Owner authentication uses MQTT credentials plus a separate owner-auth mapping database rather than public-key login.
-- Live coverage is currently served by an RF radial model calibrated against observed repeater links and terrain data.
+- Live coverage is served by HopReach's canonical terrain model; calibrated variants remain disabled pending UK evidence validation.
 - Public/test feeds are isolated at the topic level, with `meshcore-test/*` excluded from the public sites.
 - MQTT connection state is tracked via Mosquitto log parsing — connect/disconnect events are available in the health feed.
 
@@ -133,12 +131,12 @@ curl --fail http://127.0.0.1:3000/readyz
 docker compose logs -f backend
 ```
 
-RF coverage and planned-repeater analysis are opt-in because terrain processing
-is resource-intensive. Set `VIEWSHED_ENABLED=true` and start its worker only
-when needed:
+The calculator starts with the stack, publishes Standard tiles first, and
+continues Precision only after Standard is live and the disk gate passes:
 
 ```bash
-docker compose --profile viewshed up -d viewshed-worker
+docker compose up -d backend hopreach app-ukmesh link-worker
+docker compose logs -f hopreach
 ```
 
 Local endpoints:
@@ -174,7 +172,6 @@ Copy `.env.example` to `.env` and fill in your values. All variables used by the
 | `API_RATE_LIMIT_MAX` | `120` | Per-client public API requests/minute; raise only in an isolated load-test project |
 | `VITE_APP_HOSTNAME` | *(blank — always shows dashboard)* | If set, only this hostname serves the analytics dashboard; all others serve the public website layout |
 | `MESHCORE_CHANNEL_SECRETS` | *(blank)* | Comma-separated channel secrets for decrypting GroupText packets. Format: `name:hex` or bare hex. The default MeshCore public channel key is always included. |
-| `OPENTOPODATA_API` | `https://api.opentopodata.org` | Elevation API endpoint for viewshed computation |
 | `OWNER_DATABASE_URL` | *(optional)* | Separate Postgres database URL for owner portal username → repeater mappings |
 | `OWNER_COOKIE_SECRET` | *(optional but recommended)* | Secret used to encrypt/sign the owner session cookie |
 | `OWNER_MQTT_USERNAME_MAP` | *(empty)* | Operator-managed owner grants in the format `user=nodeId1|nodeId2,...` |
@@ -182,14 +179,15 @@ Copy `.env.example` to `.env` and fill in your values. All variables used by the
 | `OWNER_ACL_MODE` | `shadow` | `shadow` renders and validates without changing Mosquitto; `apply` atomically installs and verifies the canonical ACL |
 | `OWNER_ACL_UNMANAGED_USERS` | `backend,test,test2` | Exact broker accounts intentionally preserved outside owner grant management |
 | `OWNER_ACL_ALLOW_EMPTY_USERS` | *(empty)* | Explicitly reviewed owner accounts allowed to render with no publish grants |
-| `VIEWSHED_ENABLED` | `false` | Enable coverage/planned-repeater API only when the profile-gated viewshed worker is running |
+| `RF_COVERAGE_ENABLED` | `true` | Compile the native HopReach layer into the production app image |
+| `HOPREACH_IMAGE` | `meshcore-analytics-hopreach:local` | Immutable HopReach calculator image override |
+| `HOPREACH_CPUS` | `4.0` | Calculator CPU limit |
+| `HOPREACH_CPU_WORKERS` | `4` | Go CPU worker limit (`GOMAXPROCS`) |
+| `HOPREACH_MEMORY_LIMIT` | `8g` | Calculator memory and swap limit |
 | `PUBLIC_FEATURE_INFERRED_NODES_ENABLED` | `true` | Runtime kill switch for privacy-reviewed inferred map nodes |
 | `PUBLIC_FEATURE_PACKET_ARCS_ENABLED` | `true` | Runtime kill switch for privacy-filtered live packet arcs |
 | `PUBLIC_FEATURE_HEATMAP_ENABLED` | `false` | Runtime kill switch for the packet heatmap |
 | `PUBLIC_FEATURE_CONFIG_TTL_SECONDS` | `30` | Client refresh interval for same-origin public feature configuration (bounded to 5–300 seconds) |
-| `COVERAGE_MODEL` | `rf_radial_100m` | Coverage model used by `viewshed-worker` |
-| `COVERAGE_MODEL_VERSION` | `7` | Coverage schema/version gate used to trigger recomputation |
-| `RF_PREFIX_RAY_BATCH` | `8` | CPU RF rays evaluated together; raise cautiously because memory grows with the batch |
 | `CLOUDFLARE_TUNNEL_TOKEN` | *(optional)* | Cloudflare Zero Trust tunnel token |
 | `PORT` | `3000` | Internal app port |
 
@@ -296,7 +294,7 @@ MeshCore Devices
      ▼
  Backend (Node.js/TypeScript)
      │
-     ├─ meshcore-decoder → TimescaleDB (packets, nodes, coverage, priors, health snapshots)
+     ├─ meshcore-decoder → TimescaleDB (packets, nodes, observed links, priors, health snapshots)
      │
      ├─ Path resolver worker pool (concurrent resolve workers + LRU cache)
      │
@@ -308,11 +306,10 @@ MeshCore Devices
  App/Web Frontends (Nginx + React)
      └─ app-ukmesh / website-ukmesh / website-dev (interactive dashboard + public site + owner portal)
 
- Python Workers
-     ├─ viewshed-worker (bounded meshcore:viewshed:v2 protocol; legacy drain reader)
-     ├─ link-worker (bounded meshcore:link:v3 protocol; legacy drain reader)
-     ├─ SRTM terrain tiles (auto-downloaded)
-     └─ node_coverage + node_links updates
+ RF and Link Workers
+     ├─ HopReach (persistent DEM cache, resumable Standard/Precision rasters)
+     ├─ backend private compatibility API (positioned repeaters + observed evidence)
+     └─ link-worker → node_links from observed paths
 
  Backend Workers (Node.js)
      ├─ path-learning-worker (hourly prior rebuild)
@@ -340,8 +337,8 @@ MeshCore Devices
 | `health-worker` | Built from `Dockerfile.backend` | Periodic health snapshot capture |
 | `link-backfill-worker` | Built from `Dockerfile.backend` | One-shot historical link backfill |
 | `synthetic-monitor` | Built from `Dockerfile.backend` | Independent HTTP/WebSocket journey checks and alert delivery |
-| `viewshed-worker` | Built from `viewshed-worker/Dockerfile` | Terrain-aware RF coverage computation |
 | `link-worker` | Built from `viewshed-worker/Dockerfile` | Link/path-loss processing from observed paths |
+| `hopreach` | Built from `third_party/hopreach/Dockerfile` | Canonical terrain RF calculation and progressive raster publication |
 | `app-ukmesh` | Built from `Dockerfile.app` | Interactive dashboard frontend |
 | `website-ukmesh` | Built from `Dockerfile.website` | Public website frontend |
 | `mesh-health-check` | Built from the configured `gadgethd/meshcore-health-check` ref | MeshCore observer coverage health-check app |
@@ -361,7 +358,8 @@ MeshCore Devices
   lifecycle rollout is approved.
 - The proposed raw retention window is 180 days, preserving the longest
   120-day learner dependency. Privacy-safe hourly/daily aggregates and current
-  node/link/coverage/model state remain longer lived.
+  node/link/model state remain longer lived. Legacy `node_coverage` is retained
+  for one release as inactive rollback data only.
 - Operational row-table cleanup is bounded and runs only when both
   `DATA_LIFECYCLE_RETENTION_ENABLED=true` and the exact table appears in
   `DATA_LIFECYCLE_RETENTION_TARGETS`.
@@ -398,9 +396,10 @@ This project is built on the following open source libraries and tools:
 | [express-rate-limit](https://github.com/express-rate-limit/express-rate-limit) | MIT |
 | [@michaelhart/meshcore-decoder](https://www.npmjs.com/package/@michaelhart/meshcore-decoder) | MIT |
 
-### Viewshed worker (Python)
+### RF and link workers
 | Package | License |
 |---|---|
+| [HopReach v0.1.32-ukmesh.1](https://github.com/gadgethd/hopreach/tree/v0.1.32-ukmesh.1) | AGPL-3.0 plus Commons Clause |
 | [NumPy](https://numpy.org) | BSD 3-Clause |
 | [SciPy](https://scipy.org) | BSD 3-Clause |
 | [Shapely](https://shapely.readthedocs.io) | BSD 3-Clause |
@@ -421,12 +420,15 @@ This project is built on the following open source libraries and tools:
 | Source | License |
 |---|---|
 | [SRTM Elevation Data](https://registry.opendata.aws/terrain-tiles) | Public Domain (NASA) |
-| [Natural Earth / world-atlas](https://www.naturalearthdata.com) | Public Domain |
+| [Natural Earth](https://www.naturalearthdata.com) | Public Domain |
 
 ---
 
 ## License
 
-This project is licensed under MIT — see [LICENSE](LICENSE).
+UK Mesh-authored code is licensed under MIT — see [LICENSE](LICENSE).
+Vendored HopReach and derived RF integration files retain AGPL-3.0 plus the
+Commons Clause; see `third_party/hopreach/LICENSE` and
+`rf-coverage/SOURCE-OFFER.md`.
 
 **Note on dependencies:** Eclipse Mosquitto (EPL 2.0) is used as a dependency but not modified. Other runtime dependencies use MIT, BSD, or Apache 2.0 licenses.

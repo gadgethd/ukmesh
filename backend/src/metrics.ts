@@ -52,49 +52,6 @@ export const webhookDeliveriesTotal = new Counter({
   registers: [metricsRegistry],
 });
 
-export const viewshedQueueAdmissionsTotal = new Counter({
-  name: 'meshcore_viewshed_queue_admissions_total',
-  help: 'Viewshed queue admission decisions.',
-  labelNames: ['status'] as const,
-  registers: [metricsRegistry],
-});
-
-export const viewshedQueueDepth = new Gauge({
-  name: 'meshcore_viewshed_queue_depth',
-  help: 'Current number of queued viewshed jobs.',
-  registers: [metricsRegistry],
-});
-
-export const viewshedQueueBytes = new Gauge({
-  name: 'meshcore_viewshed_queue_payload_bytes',
-  help: 'Current serialized payload bytes retained by the viewshed queue.',
-  registers: [metricsRegistry],
-});
-
-export const viewshedQueueDeadJobs = new Gauge({
-  name: 'meshcore_viewshed_queue_dead_jobs',
-  help: 'Retained dead-letter coverage jobs.',
-  registers: [metricsRegistry],
-});
-
-export const viewshedQueueLeases = new Gauge({
-  name: 'meshcore_viewshed_queue_active_leases',
-  help: 'Currently leased coverage jobs.',
-  registers: [metricsRegistry],
-});
-
-export const viewshedQueueRetries = new Gauge({
-  name: 'meshcore_viewshed_queue_retries',
-  help: 'Retry attempts retained in active and dead coverage jobs.',
-  registers: [metricsRegistry],
-});
-
-export const viewshedQueueOldestAgeSeconds = new Gauge({
-  name: 'meshcore_viewshed_queue_oldest_age_seconds',
-  help: 'Age of the oldest active coverage job.',
-  registers: [metricsRegistry],
-});
-
 export const linkQueueDepth = new Gauge({
   name: 'meshcore_link_queue_active_jobs',
   help: 'Queued and leased durable link jobs.',
@@ -316,7 +273,6 @@ const METRIC_WORKERS = new Set([
   'synthetic',
   'link_backfill',
   'link',
-  'viewshed',
 ]);
 const METRIC_WORKER_PHASES = new Set([
   'snapshot',

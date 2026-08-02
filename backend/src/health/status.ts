@@ -1,7 +1,6 @@
 import fs from 'node:fs';
 import { Redis } from 'ioredis';
 import { query } from '../db/index.js';
-import { isViewshedFeatureEnabled } from '../features.js';
 import { getRedisConnectionOptions, getRedisUrl } from '../platform/config/redis.js';
 import { configuredLifecycleTargets } from '../db/dataLifecycle.js';
 import {
@@ -17,12 +16,6 @@ import {
   linkQueueLeases,
   linkQueueOldestAgeSeconds,
   linkQueueRetries,
-  viewshedQueueBytes,
-  viewshedQueueDeadJobs,
-  viewshedQueueDepth,
-  viewshedQueueLeases,
-  viewshedQueueOldestAgeSeconds,
-  viewshedQueueRetries,
   workerHeartbeatAgeSeconds,
 } from '../metrics.js';
 
@@ -291,38 +284,15 @@ function systemStats() {
 async function currentWorkers(precomputedStats?: ReturnType<typeof systemStats>): Promise<WorkerSnapshot[]> {
   refreshBackupAgeMetrics();
   const r = redis();
-  const viewshedEnabled = isViewshedFeatureEnabled();
   const [
-    viewshedQueue,
     linkQueue,
-    viewshedRecent,
     linkRecent,
-    viewshedLast,
     linkLast,
     learning,
     healthRecent,
     healthLast,
     backfillState,
   ] = await Promise.all([
-    Promise.all([
-      r.llen('meshcore:viewshed_jobs'),
-      r.hmget('meshcore:viewshed:v2:counters', 'count', 'bytes', 'dead_count'),
-      r.zcard('meshcore:viewshed:v2:leases'),
-      r.zrange('meshcore:viewshed:v2:enqueued', 0, 0, 'WITHSCORES'),
-      r.hvals('meshcore:viewshed:v2:attempts'),
-    ]).then(([legacy, counters, leases, oldest, attempts]) => {
-      const [count, bytes, deadCount] = counters;
-      const oldestScore = Number(oldest[1] ?? 0);
-      return {
-        depth: Number(legacy ?? 0) + Number(count ?? 0),
-        count: Number(count ?? 0),
-        bytes: Number(bytes ?? 0),
-        deadCount: Number(deadCount ?? 0),
-        leases: Number(leases ?? 0),
-        oldestAgeSeconds: oldestScore > 0 ? Math.max(0, (Date.now() - oldestScore) / 1_000) : 0,
-        retries: attempts.reduce((total, value) => total + Math.max(0, Number(value) - 1), 0),
-      };
-    }),
     Promise.all([
       r.llen('meshcore:link_jobs'),
       r.hmget('meshcore:link:v3:counters', 'count', 'bytes', 'dead_count', 'dead_bytes'),
@@ -343,9 +313,7 @@ async function currentWorkers(precomputedStats?: ReturnType<typeof systemStats>)
         retries: attempts.reduce((total, value) => total + Math.max(0, Number(value) - 1), 0),
       };
     }),
-    query<{ count: string }>(`SELECT COUNT(*) AS count FROM node_coverage WHERE calculated_at > NOW() - INTERVAL '1 hour'`),
     query<{ count: string }>(`SELECT COUNT(*) AS count FROM node_links WHERE itm_computed_at > NOW() - INTERVAL '1 hour'`),
-    query<{ ts: string | null }>(`SELECT MAX(calculated_at)::text AS ts FROM node_coverage`),
     query<{ ts: string | null }>(`SELECT MAX(itm_computed_at)::text AS ts FROM node_links`),
     query<{ ts: string | null }>(`SELECT MAX(updated_at)::text AS ts FROM path_model_calibration`),
     query<{ count: string }>(
@@ -370,7 +338,6 @@ async function currentWorkers(precomputedStats?: ReturnType<typeof systemStats>)
   const memPct = stats.memory.used_pct ?? -1;
   const diskPct = stats.disk.used_pct ?? -1;
 
-  const viewshedProcessed = viewshedEnabled ? Number(viewshedRecent.rows[0]?.count ?? 0) : 0;
   const linkProcessed = Number(linkRecent.rows[0]?.count ?? 0);
   const healthProcessed = Number(healthRecent.rows[0]?.count ?? 0);
   const healthLastTs = healthLast.rows[0]?.ts ?? null;
@@ -378,12 +345,6 @@ async function currentWorkers(precomputedStats?: ReturnType<typeof systemStats>)
   const learningRecent = learningLast ? (Date.now() - Date.parse(learningLast)) <= 60 * 60_000 : false;
   const backfillLinks = Number(backfillState.rows[0]?.links ?? 0);
   const backfillLast = backfillState.rows[0]?.last_observed ?? null;
-  viewshedQueueDepth.set(viewshedQueue.count);
-  viewshedQueueBytes.set(viewshedQueue.bytes);
-  viewshedQueueDeadJobs.set(viewshedQueue.deadCount);
-  viewshedQueueLeases.set(viewshedQueue.leases);
-  viewshedQueueRetries.set(viewshedQueue.retries);
-  viewshedQueueOldestAgeSeconds.set(viewshedQueue.oldestAgeSeconds);
   linkQueueDepthMetric.set(linkQueue.count);
   linkQueueBytes.set(linkQueue.bytes);
   linkQueueDeadJobs.set(linkQueue.deadCount);
@@ -397,28 +358,11 @@ async function currentWorkers(precomputedStats?: ReturnType<typeof systemStats>)
       : -1;
     workerHeartbeatAgeSeconds.set({ worker }, Number.isFinite(age) ? age : -1);
   };
-  setHeartbeatAge('viewshed', viewshedLast.rows[0]?.ts);
   setHeartbeatAge('link', linkLast.rows[0]?.ts);
   setHeartbeatAge('path_learning', learningLast);
   setHeartbeatAge('health', healthLastTs);
   setHeartbeatAge('link_backfill', backfillLast);
   return [
-    {
-      worker_name: 'viewshed-worker',
-      status: viewshedEnabled ? (viewshedQueue.depth > 0 || viewshedProcessed > 0 ? 'running' : 'idle') : 'disabled',
-      queue_depth: viewshedEnabled ? viewshedQueue.depth : 0,
-      processed_1h: viewshedProcessed,
-      last_activity_at: viewshedEnabled ? (viewshedLast.rows[0]?.ts ?? null) : null,
-      cpu_load_1m: load,
-      cpu_usage_pct: stats.cpu.usage_pct,
-      mem_used_pct: memPct,
-      disk_used_pct: diskPct,
-      queue_bytes: viewshedQueue.bytes,
-      dead_jobs: viewshedQueue.deadCount,
-      retries: viewshedQueue.retries,
-      active_leases: viewshedQueue.leases,
-      oldest_age_s: viewshedQueue.oldestAgeSeconds,
-    },
     {
       worker_name: 'link-worker',
       status: linkQueue.depth > 0 || linkProcessed > 0 ? 'running' : 'idle',

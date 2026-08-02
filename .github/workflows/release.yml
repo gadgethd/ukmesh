@@ -57,6 +57,7 @@ jobs:
               VITE_APP_HOSTNAME=app.ukmesh.com
               VITE_NETWORK=ukmesh
               VITE_SITE=ukmesh
+              VITE_RF_COVERAGE_ENABLED=true
           - component: website
             image: meshcore-website
             context: .
@@ -69,6 +70,12 @@ jobs:
             context: viewshed-worker
             file: viewshed-worker/Dockerfile
             build_args: ''
+          - component: hopreach
+            image: meshcore-hopreach
+            context: third_party/hopreach
+            file: third_party/hopreach/Dockerfile
+            source_revision: 9ab79011dcd6537e3d90bbdbf5a52bc273b9b2da
+            build_args: VERSION=v0.1.32-ukmesh.1
           - component: ml-path-learner
             image: meshcore-ml-path-learner
             context: ml-path-learner
@@ -87,6 +94,7 @@ jobs:
     env:
       REGISTRY: ghcr.io
       IMAGE_NAME: ${{ github.repository_owner }}/${{ matrix.image }}
+      SOURCE_REVISION: ${{ matrix.source_revision || github.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
@@ -112,7 +120,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            SOURCE_REVISION=${{ github.sha }}
+            SOURCE_REVISION=${{ env.SOURCE_REVISION }}
             ${{ matrix.build_args }}
           provenance: false
           sbom: false
@@ -164,7 +172,8 @@ jobs:
         run: |
           jq -n \
             --arg component "${{ matrix.component }}" \
-            --arg source_revision "$GITHUB_SHA" \
+            --arg source_revision "$SOURCE_REVISION" \
+            --arg release_revision "$GITHUB_SHA" \
             --arg image "${REGISTRY}/${IMAGE_NAME}@${DIGEST}" \
             --arg sbom "sbom-${{ matrix.component }}.spdx.json" \
             --arg scan "trivy-${{ matrix.component }}.json" \
@@ -174,6 +183,7 @@ jobs:
               format: "meshcore-release-inventory-v1",
               component: $component,
               source_revision: $source_revision,
+              release_revision: $release_revision,
               image: $image,
               sbom: $sbom,
               scan: $scan,

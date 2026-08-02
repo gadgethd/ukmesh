@@ -25,8 +25,8 @@
         "sort": 1,
         "refresh": 2,
         "current": {
-          "text": ["backend", "health-worker", "path-learning-worker", "path-history-worker", "link-worker", "viewshed-worker"],
-          "value": ["backend", "health-worker", "path-learning-worker", "path-history-worker", "link-worker", "viewshed-worker"]
+          "text": ["backend", "health-worker", "path-learning-worker", "path-history-worker", "link-worker", "hopreach"],
+          "value": ["backend", "health-worker", "path-learning-worker", "path-history-worker", "link-worker", "hopreach"]
         }
       }
     ]

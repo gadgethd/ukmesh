@@ -30,7 +30,6 @@ function runFixture(liveBeforeSnapshot: boolean) {
     },
     handleNodeUpdate: () => {},
     handleNodeUpsert: (node) => { state.nodes.push(node.node_id); },
-    handleCoverageUpdate: () => {},
     applyInitialViablePairs: (pairs = []) => {
       state.links = pairs.map(([a, b]) => `${a}:${b}`);
     },
@@ -98,7 +97,6 @@ test('coordinator resets pending events at a scope boundary', () => {
     handlePacket: (value) => { packets += Array.isArray(value) ? value.length : 1; },
     handleNodeUpdate: () => {},
     handleNodeUpsert: () => {},
-    handleCoverageUpdate: () => {},
     applyInitialViablePairs: () => {},
     applyInitialViableLinks: () => {},
     applyLinkUpdate: () => {},

@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { coverageStore } from './useCoverage.js';
 import { linkStateStore } from './useLinkState.js';
 
 const A = 'a1'.repeat(32);
@@ -57,28 +56,11 @@ test('empty link snapshots clear state and viability transitions are exact', () 
   assert.equal(linkStateStore.getState().linkPairs.has(KEY), true);
 });
 
-test('link and coverage stores reject late epochs and reset all scoped state', () => {
+test('link store rejects late epochs and resets all scoped state', () => {
   const oldLinkEpoch = linkStateStore.reset('network-old');
   const currentLinkEpoch = linkStateStore.reset('network-current');
   linkStateStore.applyInitialViablePairs([[A, B]], oldLinkEpoch);
   assert.equal(linkStateStore.getState().linkPairs.size, 0);
   linkStateStore.applyInitialViablePairs([[A, B]], currentLinkEpoch);
   assert.equal(linkStateStore.getState().linkPairs.size, 1);
-
-  const oldCoverageEpoch = coverageStore.reset('network-old|all');
-  const currentCoverageEpoch = coverageStore.reset('network-current|all');
-  coverageStore.handleCoverageUpdate({
-    node_id: A,
-    geom: { type: 'Polygon', coordinates: [] },
-  }, oldCoverageEpoch);
-  assert.equal(coverageStore.getState().coverage.length, 0);
-  coverageStore.handleCoverageUpdate({
-    node_id: A,
-    geom: { type: 'Polygon', coordinates: [] },
-  }, currentCoverageEpoch);
-  assert.equal(coverageStore.getState().coverage[0]?.node_id, A.toUpperCase());
-
-  coverageStore.reset('network-next|all');
-  assert.equal(coverageStore.getState().coverage.length, 0);
-  assert.equal(coverageStore.getState().loadedScopeKey, null);
 });

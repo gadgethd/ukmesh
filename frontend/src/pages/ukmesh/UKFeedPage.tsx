@@ -97,8 +97,6 @@ export const UKFeedPage: React.FC = () => {
     handleNodeUpdateBatch: (data) => nodeStore.handleNodeUpdateBatch(data, scopeEpoch),
     handleNodeUpsert: (data) => nodeStore.handleNodeUpsert(data, scopeEpoch),
     handleNodeUpsertBatch: (data) => nodeStore.handleNodeUpsertBatch(data, scopeEpoch),
-    handleCoverageUpdate: () => {},
-    handleCoverageUpdateBatch: () => {},
     applyInitialViablePairs: () => {},
     applyInitialViableLinks: () => {},
     applyLinkUpdate: () => {},

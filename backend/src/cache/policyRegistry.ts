@@ -21,6 +21,24 @@ export type CachePolicyRecord = Readonly<{
  */
 export const CACHE_POLICY_REGISTRY: readonly CachePolicyRecord[] = Object.freeze([
   {
+    source: 'src/api/hopreachCompatibility.ts#nodeCountCache',
+    disposition: 'bounded-cache', maxEntries: 1, maxBytes: 1_024, ttlMs: 30_000,
+    scope: 'internal HopReach adapter + public repeater predicate', invalidation: 'TTL',
+    negativeCaching: 'zero is a completed count', singleFlight: 'nodeCountInFlight (cap 64)',
+  },
+  {
+    source: 'src/api/hopreachCompatibility.ts#nodePageCache',
+    disposition: 'bounded-cache', maxEntries: 256, maxBytes: 16 << 20, ttlMs: 30_000,
+    scope: 'internal HopReach adapter + limit + offset', invalidation: 'TTL',
+    negativeCaching: 'completed empty terminal page', singleFlight: 'nodePageInFlight (cap 64)',
+  },
+  {
+    source: 'src/api/hopreachCompatibility.ts#reachCache',
+    disposition: 'bounded-cache', maxEntries: 64, maxBytes: 32 << 20, ttlMs: 60_000,
+    scope: 'internal HopReach adapter + sorted public keys + observation window', invalidation: 'TTL',
+    negativeCaching: 'completed empty observed-link set', singleFlight: 'reachInFlight (cap 64)',
+  },
+  {
     source: 'src/api/bootstrap/caches.ts#statsCache',
     disposition: 'bounded-cache', maxEntries: 256, maxBytes: 16 << 20, ttlMs: 15 * 60_000,
     scope: 'network + observer + visibility generation', invalidation: 'generation check + TTL/stale-while-revalidate',

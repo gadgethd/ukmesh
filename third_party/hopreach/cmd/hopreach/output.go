@@ -1,0 +1,424 @@
+package main
+
+import (
+	"crypto/rand"
+	"encoding/json"
+	"fmt"
+	"image"
+	"math"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+
+	"hopreach/internal/calibration"
+	"hopreach/internal/corescope"
+	"hopreach/internal/coverage"
+	"hopreach/internal/propagation"
+)
+
+func classifyStatus(lastHeard *string, cfg appConfig) string {
+	if lastHeard == nil {
+		return "silent"
+	}
+	t, err := time.Parse(time.RFC3339, *lastHeard)
+	if err != nil {
+		return "silent"
+	}
+	age := time.Since(t)
+	switch {
+	case age <= time.Duration(cfg.activeHours*float64(time.Hour)):
+		return "active"
+	case age <= time.Duration(cfg.degradedHours*float64(time.Hour)):
+		return "degraded"
+	default:
+		return "silent"
+	}
+}
+
+type feature struct {
+	Type       string         `json:"type"`
+	Geometry   geometry       `json:"geometry"`
+	Properties map[string]any `json:"properties"`
+}
+
+type geometry struct {
+	Type        string    `json:"type"`
+	Coordinates []float64 `json:"coordinates"`
+}
+
+type featureCollection struct {
+	Type     string    `json:"type"`
+	Features []feature `json:"features"`
+}
+
+// buildFeatures builds the repeater GeoJSON. calResults, if non-nil, must be
+// parallel to nodes/sites (one calibration.Result per repeater, as produced
+// by calibration.Position) and adds calibrated_lat/lon plus offset/score
+// properties for the frontend's Standard/Calibrated dropdown; nil (the
+// default, calibration disabled) omits those properties entirely.
+// observedScopes (pubkey, lowercase -> every region with a confirmed
+// observation), if non-nil, adds observed_scopes/inferred_scopes wherever a
+// repeater has any — see observeRepeaterScopes. observedUnscoped (pubkey,
+// lowercase -> observed relaying at least one plain unscoped flood) adds
+// observed_unscoped, but only when scopeObservationEnabled — a repeater
+// simply not present because scope observation never ran at all must not
+// be indistinguishable from one genuinely observed-and-absent (see
+// corescope.ObservedUnscoped's own doc comment).
+func buildFeatures(nodes []corescope.Node, sites []propagation.Site, calResults []calibration.Result, observedScopes map[string][]string, observedUnscoped map[string]int, scopeObservationEnabled bool, cfg appConfig) []feature {
+	features := make([]feature, 0, len(nodes))
+	for i, n := range nodes {
+		name := "Unnamed repeater"
+		if n.Name != nil && *n.Name != "" {
+			name = *n.Name
+		}
+		props := map[string]any{
+			"name": name,
+			// Full key (not truncated): CoreScope's public keys are
+			// already exposed openly by its own API, and the planning
+			// tools need the full key to query /api/nodes/:pubkey/reach
+			// for real observed neighbour data.
+			"public_key":      n.PublicKey,
+			"status":          classifyStatus(n.LastHeard, cfg),
+			"last_heard":      n.LastHeard,
+			"first_seen":      n.FirstSeen,
+			"advert_count":    n.AdvertCount,
+			"relay_count_1h":  n.RelayCount1h,
+			"relay_count_24h": n.RelayCount24h,
+			"hash_size":       n.HashSize,
+			"elevation_m":     round1(sites[i].GroundM),
+			// Powers the map's client-side scope filter checkboxes
+			// (public/app.js) — not used for server-side filtering
+			// unless REQUIRED_SCOPE is also set.
+			"default_scope": n.DefaultScope,
+		}
+		if scopes, ok := observedScopes[strings.ToLower(n.PublicKey)]; ok {
+			// Every region this repeater has been observed relaying —
+			// decoded from real packets' own cryptographic transport
+			// codes, see corescope.ObservedScopes. A repeater can
+			// genuinely have more than one region enabled at once, so
+			// this is a list, not a single value. Distinct from
+			// default_scope (self-reported, sparse in practice) — shown
+			// alongside it in the frontend popup, not merged, since they
+			// can legitimately disagree and that's itself useful
+			// information.
+			//
+			// observed_scopes is the correctly-named field (this data is
+			// cryptographically confirmed, not inferred). inferred_scopes
+			// is dual-written alongside it for one release so a frontend
+			// build (or a cached repeaters.geojson) from before this
+			// change doesn't lose the data mid-rollout — drop it a
+			// release after this one ships.
+			props["observed_scopes"] = scopes
+			props["inferred_scopes"] = scopes
+		}
+		if scopeObservationEnabled {
+			// See corescope.ObservedUnscoped: this is "not observed
+			// relaying unscoped traffic in the window", not a confirmed
+			// negative — the frontend should present it that way.
+			props["observed_unscoped"] = corescope.ObservedUnscoped(observedUnscoped[strings.ToLower(n.PublicKey)])
+		}
+		if calResults != nil {
+			cr := calResults[i]
+			props["calibrated_lat"] = cr.Lat
+			props["calibrated_lon"] = cr.Lon
+			props["calibration_offset_m"] = round1(cr.OffsetM)
+			props["calibration_score_before"] = round1(cr.ScoreBefore)
+			props["calibration_score_after"] = round1(cr.ScoreAfter)
+			props["calibrated"] = cr.Calibrated
+		}
+		features = append(features, feature{
+			Type: "Feature",
+			Geometry: geometry{
+				Type:        "Point",
+				Coordinates: []float64{*n.Lon, *n.Lat},
+			},
+			Properties: props,
+		})
+	}
+	return features
+}
+
+// round1 rounds f to one decimal place. Uses math.Round (rather than the
+// int(f*10+0.5)/10 idiom, which truncates incorrectly for negative numbers,
+// e.g. int(-0.05*10+0.5) = int(0) = 0 instead of rounding to -0.1) so it
+// behaves symmetrically for both signs — relevant here since offsets/scores
+// can be negative.
+func round1(f float64) float64 {
+	return math.Round(f*10) / 10
+}
+
+type coverageMeta struct {
+	Tiles        []coverage.Tile `json:"tiles"`
+	FrequencyMHz float64         `json:"frequency_mhz"`
+	MaxSearchKm  float64         `json:"max_search_range_km"`
+	DEMZoom      int             `json:"dem_zoom_level"`
+	Assumptions  coverageAssumps `json:"assumptions"`
+	// GeneratedAt is when this specific tier last actually finished
+	// computing (RFC3339, UTC) — distinct from the top-level meta.json's
+	// own GeneratedAt, which reflects the whole run, not any one tier.
+	// Lets a later run skip recomputing a tier that already completed
+	// today (see tierFreshToday) without needing to skip every other tier,
+	// or the run as a whole, alongside it — the point being a deploy-time
+	// restart doesn't have to redo the expensive Precision tiers just
+	// because it wants fresh repeater data / a fresh Standard raster.
+	// Empty/zero for a tier written before this field existed.
+	GeneratedAt string `json:"generated_at,omitempty"`
+}
+
+// tierFreshToday reports whether cm was generated today (UTC calendar day,
+// matching the UTC convention meta.json's own top-level generated_at
+// already uses) — nil, an unparseable/empty timestamp, or a different day
+// are all "not fresh" (recompute it). See run()'s per-tier skip checks and
+// coverageMeta.GeneratedAt's own doc comment for why this exists.
+func tierFreshToday(cm *coverageMeta, now time.Time) bool {
+	if cm == nil || cm.GeneratedAt == "" {
+		return false
+	}
+	t, err := time.Parse(time.RFC3339, cm.GeneratedAt)
+	if err != nil {
+		return false
+	}
+	ty, tm, td := t.UTC().Date()
+	ny, nm, nd := now.UTC().Date()
+	return ty == ny && tm == nm && td == nd
+}
+
+type coverageAssumps struct {
+	TxPowerDBm      float64 `json:"tx_power_dbm"`
+	TxAntennaGainDB float64 `json:"tx_antenna_gain_dbi"`
+	RxAntennaGainDB float64 `json:"rx_antenna_gain_dbi"`
+	RxSensitivityDB float64 `json:"rx_sensitivity_dbm"`
+	FadeMarginDB    float64 `json:"fade_margin_db"`
+	AntennaHeightM  float64 `json:"antenna_height_m"`
+	RxHeightM       float64 `json:"rx_height_m"`
+	Note            string  `json:"note"`
+}
+
+func buildCoverageMeta(tiles []coverage.Tile, rangeKm float64, cfg appConfig, note string) coverageMeta {
+	return buildCoverageMetaAtZoom(tiles, rangeKm, cfg, cfg.demZoom, note)
+}
+
+func buildCoverageMetaAtZoom(tiles []coverage.Tile, rangeKm float64, cfg appConfig, demZoom int, note string) coverageMeta {
+	return coverageMeta{
+		Tiles:        tiles,
+		FrequencyMHz: cfg.propagation.FrequencyMHz,
+		MaxSearchKm:  rangeKm,
+		DEMZoom:      demZoom,
+		GeneratedAt:  time.Now().UTC().Format(time.RFC3339),
+		Assumptions: coverageAssumps{
+			TxPowerDBm:      cfg.propagation.TxPowerDBm,
+			TxAntennaGainDB: cfg.propagation.TxAntennaGainDB,
+			RxAntennaGainDB: cfg.propagation.RxAntennaGainDB,
+			RxSensitivityDB: cfg.propagation.RxSensitivityDB,
+			FadeMarginDB:    cfg.propagation.FadeMarginDB,
+			AntennaHeightM:  cfg.propagation.AntennaHeightM,
+			RxHeightM:       cfg.propagation.RxHeightM,
+			Note:            note,
+		},
+	}
+}
+
+// coverageOutputs holds the standard (self-reported positions) coverage
+// raster and, when ENABLE_POSITION_CALIBRATION is on, a second raster
+// computed from calibrated positions. The frontend's Standard/Calibrated
+// dropdown is hidden entirely when Calibrated is nil.
+type coverageOutputs struct {
+	Standard            *coverageMeta `json:"standard,omitempty"`
+	Calibrated          *coverageMeta `json:"calibrated,omitempty"`
+	Precision           *coverageMeta `json:"precision,omitempty"`
+	CalibratedPrecision *coverageMeta `json:"calibrated_precision,omitempty"`
+}
+
+type tierRunState struct {
+	State          string `json:"state"` // pending | computing | available | failed
+	CompletedTiles int    `json:"completed_tiles"`
+	TotalTiles     int    `json:"total_tiles"`
+	Failure        string `json:"failure,omitempty"`
+}
+
+type coverageRunInfo struct {
+	ID             string                  `json:"id"`
+	StartedAt      string                  `json:"started_at"`
+	Model          string                  `json:"model"`
+	SourceVersion  string                  `json:"source_version"`
+	CompletedTiles int                     `json:"completed_tiles"`
+	TotalTiles     int                     `json:"total_tiles"`
+	Tiers          map[string]tierRunState `json:"tiers"`
+	Failure        string                  `json:"failure,omitempty"`
+}
+
+type meta struct {
+	GeneratedAt           string           `json:"generated_at"`
+	Source                string           `json:"source"`
+	Boundary              string           `json:"boundary"`
+	RequiredScope         string           `json:"required_scope"`
+	TotalRepeatersFetched int              `json:"total_repeaters_fetched"`
+	RepeatersInRegion     int              `json:"repeaters_in_region"`
+	Counts                map[string]int   `json:"counts"`
+	Coverage              *coverageOutputs `json:"coverage,omitempty"`
+	// ScopeCoverage holds one standard-tier coverage raster per known
+	// MeshCore region (e.g. "#fif"), computed from only the repeaters
+	// actually in that region — see run()'s "computing_scope_coverage"
+	// block. Keyed by the region's own name (with its leading "#"), same as
+	// each repeater's inferred_scopes entries, so the frontend can look one
+	// up directly by the scope a user has ticked. nil/absent for a region
+	// with zero member repeaters, or whenever scope inference itself is
+	// disabled.
+	ScopeCoverage map[string]*coverageMeta `json:"scope_coverage,omitempty"`
+	// Complete is false from the moment meta.json is first written (before
+	// any raster) until run() reaches its very end successfully — see
+	// lastGeneratedAt. Left false (the zero value) if the process dies
+	// partway through (crash, OOM, kill) instead of only ever being
+	// overwritten by a later, complete run.
+	Complete bool `json:"complete"`
+	// Version is this binary's own buildinfo.Version — "dev" outside a
+	// real release build. Shown in the frontend footer so it's always
+	// obvious at a glance which release actually generated the data on
+	// screen.
+	Version string `json:"version"`
+	// Run is UK Mesh's backward-compatible orchestration extension. Existing
+	// HopReach consumers can ignore it; the native map uses it for partial-tile
+	// availability and failure reporting.
+	Run *coverageRunInfo `json:"run,omitempty"`
+}
+
+func runID(outputDir string) string {
+	data, err := os.ReadFile(filepath.Join(outputDir, "meta.json"))
+	if err == nil {
+		var previous struct {
+			Complete bool             `json:"complete"`
+			Run      *coverageRunInfo `json:"run"`
+		}
+		if json.Unmarshal(data, &previous) == nil && !previous.Complete && previous.Run != nil && previous.Run.ID != "" {
+			return previous.Run.ID
+		}
+	}
+	var random [8]byte
+	if _, err := rand.Read(random[:]); err == nil {
+		return fmt.Sprintf("%s-%x", time.Now().UTC().Format("20060102T150405Z"), random[:])
+	}
+	return fmt.Sprintf("%s-%d", time.Now().UTC().Format("20060102T150405Z"), os.Getpid())
+}
+
+func mergeCoverageTiles(previous, current []coverage.Tile) []coverage.Tile {
+	byImage := make(map[string]coverage.Tile, len(previous)+len(current))
+	for _, tile := range previous {
+		byImage[tile.Image] = tile
+	}
+	for _, tile := range current {
+		byImage[tile.Image] = tile
+	}
+	images := make([]string, 0, len(byImage))
+	for image := range byImage {
+		images = append(images, image)
+	}
+	sort.Strings(images)
+	merged := make([]coverage.Tile, 0, len(images))
+	for _, image := range images {
+		merged = append(merged, byImage[image])
+	}
+	return merged
+}
+
+func writeJSONFile(path string, v any) error {
+	tmp := path + ".tmp"
+	f, err := os.Create(tmp)
+	if err != nil {
+		return err
+	}
+	enc := json.NewEncoder(f)
+	if err := enc.Encode(v); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+// lastGeneratedAt reads the existing meta.json's generated_at timestamp, if
+// it reflects a *complete* run — absent (ok=false) on a genuine first run,
+// if it's missing/unparseable for any reason, or if the last run never
+// reached its own end (Complete is only ever set true right before run()
+// returns successfully — see meta.Complete). That last case matters: this
+// process's own meta.json is written early, before any raster, so it can
+// show the repeater list immediately — a run that then crashes partway
+// through (an OOM, a kill, any other abrupt exit) leaves a *recent* but
+// *incomplete* meta.json behind. Without this check, the next container
+// start would see that recent timestamp, believe a full render just
+// happened, and skip retrying — leaving stale/partial coverage data live
+// until the next scheduled interval or a manual -force, exactly the
+// scenario this project hit in production (several crashed runs in a row
+// while chasing GPU OOM/dispatch bugs). The caller should just proceed
+// with a full run whenever this returns ok=false, regardless of age.
+func lastGeneratedAt(outputDir string) (time.Time, bool) {
+	data, err := os.ReadFile(filepath.Join(outputDir, "meta.json"))
+	if err != nil {
+		return time.Time{}, false
+	}
+	var m struct {
+		GeneratedAt string `json:"generated_at"`
+		Complete    bool   `json:"complete"`
+	}
+	if err := json.Unmarshal(data, &m); err != nil {
+		return time.Time{}, false
+	}
+	if !m.Complete {
+		return time.Time{}, false
+	}
+	t, err := time.Parse(time.RFC3339, m.GeneratedAt)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return t, true
+}
+
+// previousCoverage reads whatever coverage tiles the last run wrote (if
+// any) — used to seed a fresh run's own meta.json before any tier in *this*
+// run has been recomputed, so a visitor loading the page mid-run still sees
+// the last real coverage instead of nothing, right up until each tier's own
+// writeTier call replaces it. Unlike lastGeneratedAt, this deliberately does
+// NOT check Complete: even a previous run that crashed partway through can
+// have left real, valid tiles on disk for whichever tiers it did finish
+// before failing, and those PNG files are still genuinely there, untouched,
+// regardless of whether the run that made them ever reached its own end.
+func previousCoverage(outputDir string) *coverageOutputs {
+	data, err := os.ReadFile(filepath.Join(outputDir, "meta.json"))
+	if err != nil {
+		return nil
+	}
+	var m struct {
+		Coverage *coverageOutputs `json:"coverage"`
+	}
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil
+	}
+	return m.Coverage
+}
+
+// previousScopeCoverage is previousCoverage's counterpart for ScopeCoverage —
+// same rationale (seed a fresh run's meta.json with the last run's real
+// tiles so mid-run visitors still see something), same deliberate omission
+// of a Complete check for the same reason.
+func previousScopeCoverage(outputDir string) map[string]*coverageMeta {
+	data, err := os.ReadFile(filepath.Join(outputDir, "meta.json"))
+	if err != nil {
+		return nil
+	}
+	var m struct {
+		ScopeCoverage map[string]*coverageMeta `json:"scope_coverage"`
+	}
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil
+	}
+	return m.ScopeCoverage
+}
+
+type imageResult struct {
+	raster *image.NRGBA
+	bounds propagation.Bounds
+}

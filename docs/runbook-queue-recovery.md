@@ -8,16 +8,16 @@ CSRF protected, idempotent, and audited.
 ## Diagnose
 
 1. Open `/operations` through the documented localhost tunnel.
-2. Identify `viewshed` or `link-v3`.
+2. Identify `link-v3`. The old viewshed queue is frozen rollback state and has
+   no live producer or consumer.
 3. Check worker heartbeat, oldest age, active jobs/bytes, leases, attempts, and
    the dead-letter reason.
 4. Inspect the worker logs without dumping payloads:
 
 ```bash
-docker compose logs --since=30m viewshed-worker
 docker compose logs --since=30m link-worker
 docker compose exec -T backend wget -qO- http://127.0.0.1:9091/metrics \
-  | grep -E '^meshcore_(viewshed|link)_queue_|^meshcore_worker_heartbeat'
+  | grep -E '^meshcore_link_queue_|^meshcore_worker_heartbeat'
 ```
 
 Correct a missing dependency, unavailable terrain source, bad database
@@ -34,14 +34,10 @@ recorded result without applying it twice.
 The container CLI is an emergency alternative:
 
 ```bash
-docker compose run --rm --no-deps viewshed-worker \
+docker compose run --rm --no-deps link-worker \
   python3 queue_admin.py requeue-dead JOB_ID
-docker compose run --rm --no-deps viewshed-worker \
+docker compose run --rm --no-deps link-worker \
   python3 queue_admin.py purge-dead JOB_ID
-docker compose run --rm --no-deps viewshed-worker \
-  python3 queue_admin.py requeue-coverage-dead JOB_ID
-docker compose run --rm --no-deps viewshed-worker \
-  python3 queue_admin.py purge-coverage-dead JOB_ID
 ```
 
 Record emergency CLI use separately because the UI/API path provides the
@@ -53,7 +49,7 @@ Counter repair is not a purge and does not recreate missing payloads. First run
 the read-only audit:
 
 ```bash
-docker compose run --rm --no-deps viewshed-worker \
+docker compose run --rm --no-deps link-worker \
   python3 queue_admin.py audit
 ```
 
@@ -62,7 +58,7 @@ If it reports drift, capture the output and use `/operations`, typing exactly
 link-v3 queue counters and writes an audit event. The CLI fallback is:
 
 ```bash
-docker compose run --rm --no-deps viewshed-worker \
+docker compose run --rm --no-deps link-worker \
   python3 queue_admin.py audit --repair
 ```
 

@@ -47,7 +47,7 @@ import {
   trimRedToPurpleStitch,
 } from './fallback.js';
 import { buildNeighborAffinityAdjacency, buildNeighborAffinityMap, neighborAffinityPreference } from './affinity.js';
-import type { BetaResolveContext, LinkMetrics, MeshNode, MlPrefixScore, NodeCoverage, ObserverHopHint, PathLearningModel, PathPacket } from './types.js';
+import type { BetaResolveContext, LinkMetrics, MeshNode, MlPrefixScore, ObserverHopHint, PathLearningModel, PathPacket } from './types.js';
 
 const contextCache = new BoundedTtlMap<string, BetaResolveContext>({
   name: 'path_context',
@@ -1477,21 +1477,12 @@ async function loadContext(
     })
   ) return cached;
 
-  const [nodeRows, coverageRows, linkRows, mlScoreRows, learningModel, neighborAffinity] = await Promise.all([
+  const [nodeRows, linkRows, mlScoreRows, learningModel, neighborAffinity] = await Promise.all([
     query<MeshNode>(
       `SELECT node_id, name, lat, lon, iata, role, elevation_m, last_seen::text AS last_seen
        FROM nodes
       WHERE ($1 = 'all' OR network = $1)
          AND (name IS NULL OR name NOT LIKE '%🚫%')`,
-      [network],
-      options?.signal,
-    ),
-    query<NodeCoverage>(
-      `SELECT nc.node_id, nc.radius_m
-       FROM node_coverage nc
-       JOIN nodes n ON n.node_id = nc.node_id
-       WHERE ($1 = 'all' OR n.network = $1)
-         AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')`,
       [network],
       options?.signal,
     ),
@@ -1544,9 +1535,9 @@ async function loadContext(
   for (const row of nodeRows.rows) nodesById.set(row.node_id, row);
 
   const coverageByNode = new Map<string, number>();
-  for (const row of coverageRows.rows) {
-    if (row.radius_m != null) coverageByNode.set(row.node_id, Number(row.radius_m));
-  }
+  // The rejected node_coverage radius is deliberately not loaded. Existing
+  // path geometry helpers treat an empty map as their conservative fixed
+  // 50 km candidate radius, while observed node_links remain authoritative.
 
   const linkPairs = new Set<string>();
   const observedLinkPairs = new Set<string>();

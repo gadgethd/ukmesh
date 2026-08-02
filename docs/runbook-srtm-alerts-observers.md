@@ -2,15 +2,16 @@
 
 ## SRTM terrain cache
 
-Both RF workers share the named `srtm_data` volume at `/data/srtm`. Downloads
+The observed-link worker uses the named `srtm_data` volume at `/data/srtm`. Downloads
 validate coordinates, status, compressed and decompressed size, and use a
 per-tile lock plus atomic replacement. The default cache byte cap is 20 GiB;
-link jobs may request at most 64 tiles and viewshed jobs 256.
+link jobs may request at most 64 tiles. HopReach uses the separate
+`rf_coverage_data` DEM cache described in `rf-coverage-rollout.md`.
 
 Inspect usage and recent outcomes:
 
 ```bash
-docker compose exec -T viewshed-worker sh -c \
+docker compose exec -T link-worker sh -c \
   'du -sh /data/srtm; find /data/srtm -maxdepth 1 -type f -name "*.hgt" | wc -l'
 docker compose exec -T backend wget -qO- http://127.0.0.1:9091/metrics \
   | grep '^meshcore_srtm_'
@@ -18,9 +19,9 @@ docker compose exec -T backend wget -qO- http://127.0.0.1:9091/metrics \
 
 The worker prunes least-recently-used `.hgt` files after a job and protects
 tiles active in that job. To reduce the bound, set `SRTM_CACHE_MAX_BYTES` and
-recreate both workers; allow normal pruning to converge. Do not remove the
-volume while RF work is active. A corrupted tile should be moved aside only
-after stopping both workers; restart them and let the bounded downloader
+recreate the link worker; allow normal pruning to converge. Do not remove the
+volume while link work is active. A corrupted tile should be moved aside only
+after stopping the link worker; restart it and let the bounded downloader
 replace it. Persistent download failures or budget warnings belong in the job
 dead-letter reason.
 

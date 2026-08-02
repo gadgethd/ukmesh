@@ -24,13 +24,12 @@ The worker computes:
 - terrain profile
 - total path loss
 - viability
-- coverage polygons
 
 Relevant files:
 - `viewshed-worker/rf/config.py`
 - `viewshed-worker/rf/loss.py`
 - `viewshed-worker/rf/terrain.py`
-- `viewshed-worker/worker.py`
+- `viewshed-worker/worker.py` in `WORKER_MODE=link`
 
 ## Practical tuning knobs
 
@@ -44,6 +43,6 @@ Relevant files:
 
 Do not treat packet observation counts as if they are the same thing as physical feasibility. If a change affects topology definition, make sure the evidence class is explicit.
 
-RF coverage capacity evidence, the model-version boundary, the no-deploy gate,
-and the precise relationship to HopReach are recorded in
-`docs/rf-coverage-rollout.md`.
+Whole-region RF coverage is a separate HopReach raster pipeline and does not
+consume the link worker's former viewshed polygons. Its capacity evidence,
+source boundary, and rollout gate are in `docs/rf-coverage-rollout.md`.

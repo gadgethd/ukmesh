@@ -33,9 +33,6 @@ scrape_configs:
       - targets: [link-worker:9091]
         labels:
           role: link
-      - targets: [viewshed-worker:9091]
-        labels:
-          role: viewshed
 
   - job_name: postgres
     static_configs:

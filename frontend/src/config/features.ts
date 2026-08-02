@@ -5,7 +5,14 @@ function envFlagEnabled(value: string | undefined, defaultValue = true): boolean
   return !DISABLED_VALUES.has(value.trim().toLowerCase());
 }
 
-export const VIEWSHED_ENABLED = envFlagEnabled(import.meta.env.VITE_VIEWSHED_ENABLED, false);
+// Legacy per-node viewshed and planner UI are retired. Keep this compile-time
+// false through the rollback release so no environment toggle can revive the
+// rejected API consumers.
+export const VIEWSHED_ENABLED = false;
+export const RF_COVERAGE_ENABLED = envFlagEnabled(
+  import.meta.env.VITE_RF_COVERAGE_ENABLED,
+  false,
+);
 export const INFERRED_NODES_CAPABLE = envFlagEnabled(
   import.meta.env.VITE_INFERRED_NODES_ENABLED,
   true,

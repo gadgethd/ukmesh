@@ -1,5 +1,4 @@
 import type { MeshNode } from '../../hooks/useNodes.js';
-import type { NodeCoverage } from '../../hooks/useCoverage.js';
 import type { HiddenMaskGeometry } from '../../utils/pathing.js';
 import {
   buildHiddenCoordMask,
@@ -25,7 +24,6 @@ export type MapSourceDirtyFlags = {
   nodes: boolean;
   privacy: boolean;
   links: boolean;
-  coverage: boolean;
   clash: boolean;
   plannedLinks: boolean;
 };
@@ -36,7 +34,6 @@ export const ALL_MAP_SOURCE_DIRTY_FLAGS: MapSourceDirtyFlags = {
   nodes: true,
   privacy: true,
   links: true,
-  coverage: true,
   clash: true,
   plannedLinks: true,
 };
@@ -49,7 +46,6 @@ export function mergeMapSourceDirtyFlags(
     nodes: current.nodes || !!incoming.nodes,
     privacy: current.privacy || !!incoming.privacy,
     links: current.links || !!incoming.links,
-    coverage: current.coverage || !!incoming.coverage,
     clash: current.clash || !!incoming.clash,
     plannedLinks: current.plannedLinks || !!incoming.plannedLinks,
   };
@@ -188,37 +184,6 @@ export function buildPrivacyRingsGeoJSON(
     if (!hasCoords(node) || !isProhibitedMapNode(node)) continue;
     const center = maskCircleCenter([node.lat!, node.lon!], hiddenCoordMask);
     features.push(circleLineString(center[0], center[1], HIDDEN_NODE_MASK_RADIUS_METERS));
-  }
-  return { type: 'FeatureCollection', features };
-}
-
-export function buildCoverageGeoJSON(coverage: NodeCoverage[]): GeoJSON.FeatureCollection {
-  if (coverage.length === 0) return EMPTY_FC;
-  const features: GeoJSON.Feature[] = [];
-  for (const item of coverage) {
-    const strengthGeoms = item.strength_geoms;
-    if (strengthGeoms) {
-      for (const band of ['red', 'amber', 'green'] as const) {
-        const geom = strengthGeoms[band];
-        if (!geom) continue;
-        if (geom.type === 'Polygon' || geom.type === 'MultiPolygon') {
-          features.push({
-            type: 'Feature',
-            geometry: geom as GeoJSON.Geometry,
-            properties: { node_id: item.node_id, band },
-          });
-        }
-      }
-      continue;
-    }
-
-    if (item.geom.type === 'Polygon' || item.geom.type === 'MultiPolygon') {
-      features.push({
-        type: 'Feature',
-        geometry: item.geom as GeoJSON.Geometry,
-        properties: { node_id: item.node_id, band: 'green' },
-      });
-    }
   }
   return { type: 'FeatureCollection', features };
 }
@@ -374,34 +339,18 @@ export function buildLinksGeoJSON(
   return { type: 'FeatureCollection', features };
 }
 
-function buildCoverageByNodeId(coverage: NodeCoverage[]): Map<string, NodeCoverage> {
-  const coverageByNodeId = new Map<string, NodeCoverage>();
-  for (const item of coverage) coverageByNodeId.set(item.node_id, item);
-  return coverageByNodeId;
-}
-
-function nodeRangeKm(nodeId: string, coverageByNodeId: Map<string, NodeCoverage>): number {
-  const coverage = coverageByNodeId.get(nodeId);
-  if (!coverage?.radius_m) return 50;
-  return Math.min(80, Math.max(50, coverage.radius_m / 1000));
-}
-
 function pairInReceiveRange(
   a: MeshNode,
   b: MeshNode,
-  coverageByNodeId: Map<string, NodeCoverage>,
 ): boolean {
-  const distance = distKm(a, b);
-  const range = Math.max(
-    nodeRangeKm(a.node_id, coverageByNodeId),
-    nodeRangeKm(b.node_id, coverageByNodeId),
-  );
-  return distance <= range;
+  // Clash adjacency uses observed viable links and a fixed conservative
+  // presentation bound. It must never recover range from rejected per-node
+  // viewshed geometry.
+  return distKm(a, b) <= 50;
 }
 
 export function computeClashData(
   nodes: Map<string, MeshNode>,
-  coverage: NodeCoverage[],
   viablePairsArr: [string, string][],
   linkMetrics: Map<string, { itm_path_loss_db?: number | null }>,
   showHexClashes: boolean,
@@ -410,7 +359,6 @@ export function computeClashData(
   focusedPrefixNodeIds: Set<string> | null,
   staleCutoffMs = Date.now(),
 ): ClashComputation {
-  const coverageByNodeId = buildCoverageByNodeId(coverage);
   const nodesWithPos = Array.from(nodes.values()).filter(
     (node) => hasCoords(node)
       && (node.role === undefined || node.role === 2)
@@ -433,7 +381,7 @@ export function computeClashData(
     const edgeKey = linkKey(aId, bId);
     const pathLoss = linkMetrics.get(edgeKey)?.itm_path_loss_db;
     if (pathLoss == null) continue;
-    if (!pairInReceiveRange(a, b, coverageByNodeId)) continue;
+    if (!pairInReceiveRange(a, b)) continue;
     if (!clashAdjacency.has(aId)) clashAdjacency.set(aId, new Set());
     if (!clashAdjacency.has(bId)) clashAdjacency.set(bId, new Set());
     clashAdjacency.get(aId)?.add(bId);

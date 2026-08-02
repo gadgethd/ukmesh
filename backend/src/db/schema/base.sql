@@ -280,7 +280,7 @@ CREATE TABLE IF NOT EXISTS path_history_cache (
 -- ─── Coverage polygons (one row per node, recalculated on position change) ───
 
 -- ─── Observed + ITM-validated RF links between nodes ─────────────────────────
--- Populated by the viewshed worker as real packets with path data arrive.
+-- Populated by the retained observed-link worker as real packet paths arrive.
 -- node_a_id < node_b_id (sorted) so each pair has exactly one row.
 
 CREATE TABLE IF NOT EXISTS node_links (

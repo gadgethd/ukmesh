@@ -30,9 +30,10 @@ tolerated regression is 10%.
 | Feed selected-path concurrency | 1 |
 | Link-quality sparkline concurrency | 2, with a 16-item queue |
 | Repeater detail concurrency | 4 |
-| Planned coverage polling | 2 seconds initially, visibility gated, one request at a time |
-| Planned coverage terminal deadline | 120 seconds |
-| Ordinary API deadline | 15 seconds; map/planned job calls may use their documented tighter deadline |
+| HopReach metadata/progress polling | 3 seconds while the RF feature is enabled |
+| HopReach compatibility page | 500 nodes, 100,000 maximum offset |
+| HopReach bulk evidence request | 5,000 keys and 250,000 result rows |
+| Ordinary API deadline | 15 seconds |
 
 Requests are scope-fenced by network, observer, privacy generation, and owner
 session where applicable. Hidden pages schedule no polling and perform one
@@ -66,39 +67,28 @@ gate: no duplicate selector in the same at-rule/cascade context and no
 dashboard/page selector in `styles/globals.css`. Responsive declarations in a
 distinct media query are intentional and are not counted as duplicates.
 
-## RF worker
+## HopReach RF calculator
 
-The representative prefix fixture uses 24 rays with 1,000 terrain steps per
-ray. The vectorized and legacy implementations must remain numerically
-identical on that fixture and the model-v7 golden path-loss fixtures must pass.
+The indexed CPU path must match the executable upstream v0.1.32 oracle within
+`1e-5 dB`. Conservative-superset tests cover exhaustive and randomized
+geography, poles, the antimeridian, borders, dense/empty areas, chunk edges,
+and maximum-range paths.
 
-| Measure | Release limit | 2026-08-02 exact-image result |
+| Measure | Release limit | 2026-08-02 local result |
 | --- | ---: | ---: |
-| Batched p50, 24 rays total | informational | 126.775 ms |
-| Batched p50 per ray | informational | 5.282 ms |
-| Batched p95 per ray | 250 ms | 5.449 ms |
-| Peak worker RSS | 1,024 MiB | 103.016 MiB |
-| Maximum parity error | 0.05 dB | 0.000 dB |
-| Median speedup over legacy | informational | 14.84x |
+| UK-4,600 Standard raster-time ratio | no more than 0.70 of upstream | 0.602 |
+| UK-4,600 Precision-tile time ratio | no more than 0.70 of upstream | 0.594 |
+| Standard peak terrain working-set ratio | no more than 0.70 of upstream | 0.453 |
+| Precision peak terrain working-set ratio | no more than 0.70 of upstream | 0.135 |
+| Maximum reference parity error | 0.00001 dB | within tolerance |
 
-The measurement came from `viewshed-worker/tests/benchmark_rf.py` in local
-image `sha256:64a25c84d44127b1610db39858651ba1a7fbba62a07bb4b3b56fb2949848f70f`,
-built from the digest-pinned GDAL base. All 28 worker tests passed with an
-isolated Redis instance in the same image.
-
-The maximum synthetic radial fixture uses 360 rays with 1,000 terrain steps
-per ray. `viewshed-worker/tests/benchmark_rf_radial.py` measured 1.848 seconds
-p50, 1.860 seconds p95, and 161.777 MiB peak RSS across three repetitions in
-the same image. Every green, amber, and red boundary contained 361 points,
-including the closing point. CI runs a smaller 72-ray by 500-step version so
-pull requests exercise the complete radial path without turning CI into a
-host-speed contest.
-
-These are kernel budgets, not a promise about end-to-end job latency. Terrain
-tile downloads, VRT construction, DTM filtering, database access, and host
-contention remain outside the synthetic fixtures. See
-`docs/rf-coverage-rollout.md` for end-to-end pilot evidence and the rollout
-gate.
+The measured times are three-run means with identical dimensions and
+`GOMAXPROCS=4`. The working-set gate includes unchanged 100 km range padding
+around publication tiles and uses the exact float32 Web-Mercator DEM tile
+accounting from `demgrid.Load`. `scripts/benchmark-hopreach.sh` captures
+allocation output, independent CPU/heap profiles, and a progressive completion
+trace. Full evidence and raw-value interpretation are in
+`rf-coverage/BENCHMARKS.md` and `docs/rf-coverage-rollout.md`.
 
 ## Rollout evidence
 

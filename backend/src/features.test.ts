@@ -2,22 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   envFlagEnabled,
-  getCoverageModelVersion,
   getPublicRuntimeFeatureConfig,
 } from './features.js';
-
-test('coverage model version defaults to v7 and rejects unsafe configuration', () => {
-  assert.equal(getCoverageModelVersion({}), 7);
-  assert.equal(getCoverageModelVersion({ COVERAGE_MODEL_VERSION: '8' }), 8);
-  assert.throws(
-    () => getCoverageModelVersion({ COVERAGE_MODEL_VERSION: '7.5' }),
-    /positive 32-bit integer/,
-  );
-  assert.throws(
-    () => getCoverageModelVersion({ COVERAGE_MODEL_VERSION: '0' }),
-    /positive 32-bit integer/,
-  );
-});
 
 test('runtime map features are fail-closed by default', () => {
   assert.deepEqual(getPublicRuntimeFeatureConfig({}), {

@@ -196,7 +196,6 @@ services:
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD required}
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET required}
-      OPENTOPODATA_API: ${OPENTOPODATA_API:-https://api.opentopodata.org}
       PORT: ${PORT:-3000}
       METRICS_PORT: ${METRICS_PORT:-9091}
       MESHCORE_CHANNEL_SECRETS: ${MESHCORE_CHANNEL_SECRETS:-}
@@ -216,12 +215,10 @@ services:
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3003,http://localhost:3004,https://ukmesh.com,https://www.ukmesh.com,https://app.ukmesh.com,https://test.ukmesh.com}
       API_RATE_LIMIT_MAX: ${API_RATE_LIMIT_MAX:-120}
       RADIO_BOT_URL: ${RADIO_BOT_URL:-}
-      VIEWSHED_ENABLED: ${VIEWSHED_ENABLED:-false}
       PUBLIC_FEATURE_INFERRED_NODES_ENABLED: ${PUBLIC_FEATURE_INFERRED_NODES_ENABLED:-true}
       PUBLIC_FEATURE_PACKET_ARCS_ENABLED: ${PUBLIC_FEATURE_PACKET_ARCS_ENABLED:-true}
       PUBLIC_FEATURE_HEATMAP_ENABLED: ${PUBLIC_FEATURE_HEATMAP_ENABLED:-false}
       PUBLIC_FEATURE_CONFIG_TTL_SECONDS: ${PUBLIC_FEATURE_CONFIG_TTL_SECONDS:-30}
-      COVERAGE_MODEL_VERSION: ${COVERAGE_MODEL_VERSION:-7}
       DATABASE_STATEMENT_TIMEOUT_MS: 300000
       DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-20}
       STATS_DB_QUERY_CONCURRENCY: ${STATS_DB_QUERY_CONCURRENCY:-2}
@@ -266,11 +263,6 @@ services:
       LINK_QUEUE_V3_DEAD_MAX_JOBS: ${LINK_QUEUE_V3_DEAD_MAX_JOBS:-1000}
       LINK_QUEUE_V3_DEAD_MAX_BYTES: ${LINK_QUEUE_V3_DEAD_MAX_BYTES:-33554432}
       LINK_QUEUE_V3_DEAD_RETENTION_MS: ${LINK_QUEUE_V3_DEAD_RETENTION_MS:-2592000000}
-      PLANNED_COVERAGE_TTL_MS: ${PLANNED_COVERAGE_TTL_MS:-86400000}
-      PLANNED_COVERAGE_QUEUE_MAX: ${PLANNED_COVERAGE_QUEUE_MAX:-100}
-      PLANNED_COVERAGE_MAX_OUTSTANDING_JOBS: ${PLANNED_COVERAGE_MAX_OUTSTANDING_JOBS:-100}
-      PLANNED_COVERAGE_MAX_OUTSTANDING_HANDLES: ${PLANNED_COVERAGE_MAX_OUTSTANDING_HANDLES:-10000}
-      PLANNED_COVERAGE_MAX_HANDLES_PER_JOB: ${PLANNED_COVERAGE_MAX_HANDLES_PER_JOB:-256}
       MQTT_AUDIT_MAX_OBSERVATIONS_PER_SCAN: ${MQTT_AUDIT_MAX_OBSERVATIONS_PER_SCAN:-4096}
       MQTT_AUDIT_MAX_NODES_PER_USER: ${MQTT_AUDIT_MAX_NODES_PER_USER:-256}
       MQTT_AUDIT_RETENTION_DAYS: ${MQTT_AUDIT_RETENTION_DAYS:-30}
@@ -288,10 +280,6 @@ services:
       DATA_LIFECYCLE_RESTORE_RECEIPT_SIGNATURE_PATH: /backup-receipts/latest.json.sig
       DATA_LIFECYCLE_RECEIPT_VERIFY_KEY_PATH: /backup-receipts/verify.pem
       DATA_LIFECYCLE_RECEIPT_MAX_AGE_DAYS: ${DATA_LIFECYCLE_RECEIPT_MAX_AGE_DAYS:-7}
-      VIEWSHED_JOB_COOLDOWN_SECONDS: ${VIEWSHED_JOB_COOLDOWN_SECONDS:-300}
-      VIEWSHED_QUEUE_MAX: ${VIEWSHED_QUEUE_MAX:-1000}
-      VIEWSHED_QUEUE_MAX_BYTES: ${VIEWSHED_QUEUE_MAX_BYTES:-16777216}
-      VIEWSHED_MAX_PAYLOAD_BYTES: ${VIEWSHED_MAX_PAYLOAD_BYTES:-4096}
       NODE_ENV: production
     depends_on:
       timescaledb:
@@ -515,66 +503,6 @@ services:
       link-worker:
         condition: service_healthy
 
-  viewshed-worker:
-    <<: [*internal-hosts, *application-hardening]
-    profiles: [viewshed]
-    image: ${RF_WORKER_IMAGE:-meshcore-analytics-rf-worker:local}
-    build:
-      context: ./viewshed-worker
-      dockerfile: Dockerfile
-      args:
-        SOURCE_REVISION: ${SOURCE_REVISION:-local}
-    restart: always
-    logging: *json-log-limits
-    mem_limit: "5g"
-    memswap_limit: "5g"
-    environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
-      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD required}
-      SRTM_DIR: /data/srtm
-      WORKER_MODE: viewshed
-      VIEWSHED_ENABLED: ${VIEWSHED_ENABLED:-false}
-      NUM_WORKERS: '1'
-      COVERAGE_MODEL: ${COVERAGE_MODEL:-rf_radial_100m}
-      COVERAGE_MODEL_VERSION: ${COVERAGE_MODEL_VERSION:-7}
-      COVERAGE_JOB_DEADLINE_SECONDS: ${COVERAGE_JOB_DEADLINE_SECONDS:-600}
-      RF_PREFIX_ENDPOINT_BATCH: ${RF_PREFIX_ENDPOINT_BATCH:-64}
-      RF_PREFIX_RAY_BATCH: ${RF_PREFIX_RAY_BATCH:-8}
-      PLANNED_COVERAGE_TTL_SECONDS: ${PLANNED_COVERAGE_TTL_SECONDS:-86400}
-      PLANNED_COVERAGE_QUEUE_MAX: ${PLANNED_COVERAGE_QUEUE_MAX:-100}
-      VIEWSHED_QUEUE_MAX: ${VIEWSHED_QUEUE_MAX:-1000}
-      VIEWSHED_QUEUE_MAX_BYTES: ${VIEWSHED_QUEUE_MAX_BYTES:-16777216}
-      VIEWSHED_MAX_PAYLOAD_BYTES: ${VIEWSHED_MAX_PAYLOAD_BYTES:-4096}
-      VIEWSHED_QUEUE_MAX_ATTEMPTS: ${VIEWSHED_QUEUE_MAX_ATTEMPTS:-5}
-      VIEWSHED_QUEUE_LEASE_MS: ${VIEWSHED_QUEUE_LEASE_MS:-900000}
-      VIEWSHED_QUEUE_DEAD_MAX_JOBS: ${VIEWSHED_QUEUE_DEAD_MAX_JOBS:-100}
-      VIEWSHED_QUEUE_DEAD_MAX_BYTES: ${VIEWSHED_QUEUE_DEAD_MAX_BYTES:-16777216}
-      VIEWSHED_QUEUE_DEAD_RETENTION_MS: ${VIEWSHED_QUEUE_DEAD_RETENTION_MS:-2592000000}
-      SRTM_MAX_LINK_TILES: ${SRTM_MAX_LINK_TILES:-64}
-      SRTM_MAX_JOB_TILES: ${SRTM_MAX_JOB_TILES:-256}
-      SRTM_CACHE_MAX_BYTES: ${SRTM_CACHE_MAX_BYTES:-21474836480}
-    volumes:
-      - srtm_data:/data/srtm
-    healthcheck:
-      test: ["CMD-SHELL", "python3 -c \"import os,redis; r=redis.Redis.from_url(os.environ['REDIS_URL'],password=os.environ.get('REDIS_PASSWORD')); raise SystemExit(0 if r.exists('meshcore:viewshed:worker_heartbeat') else 1)\""]
-      interval: 10s
-      timeout: 5s
-      retries: 12
-      start_period: 20s
-    deploy:
-      resources:
-        limits:
-          cpus: '1.5'
-          memory: '5g'
-    depends_on:
-      timescaledb:
-        condition: service_healthy
-      db-migrate:
-        condition: service_completed_successfully
-      redis:
-        condition: service_healthy
-
   link-worker:
     <<: [*internal-hosts, *application-hardening]
     image: ${RF_WORKER_IMAGE:-meshcore-analytics-rf-worker:local}
@@ -622,6 +550,34 @@ services:
       redis:
         condition: service_healthy
 
+  # Canonical whole-region RF calculator. HopReach owns propagation and
+  # raster output; UK Mesh supplies only the internal data adapter, versioned
+  # boundary, orchestration profile, and native map consumer.
+  hopreach:
+    <<: *internal-hosts
+    image: ${HOPREACH_IMAGE:-meshcore-analytics-hopreach:local}
+    build:
+      context: ./third_party/hopreach
+      dockerfile: Dockerfile
+      args:
+        VERSION: v0.1.32+ukmesh
+        SOURCE_REVISION: ${SOURCE_REVISION:-local}
+    restart: always
+    logging: *json-log-limits
+    cpus: ${HOPREACH_CPUS:-4.0}
+    mem_limit: ${HOPREACH_MEMORY_LIMIT:-8g}
+    memswap_limit: ${HOPREACH_MEMORY_LIMIT:-8g}
+    environment:
+      HOPREACH_CONFIG: /config/config.yaml
+      GOMAXPROCS: ${HOPREACH_CPU_WORKERS:-4}
+    volumes:
+      - rf_coverage_data:/data
+      - ./rf-coverage/config.ukmesh.yaml:/config/config.yaml:ro
+      - ./rf-coverage/boundaries/uk-operational-v1.geojson:/config/uk-operational-v1.geojson:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+
 #   ml-path-learner:
 #     build:
 #       context: ./ml-path-learner
@@ -663,7 +619,7 @@ services:
         VITE_BUILD_TARGET: app
         VITE_NETWORK: ukmesh
         VITE_SITE: ukmesh
-        VITE_VIEWSHED_ENABLED: ${VIEWSHED_ENABLED:-false}
+        VITE_RF_COVERAGE_ENABLED: ${RF_COVERAGE_ENABLED:-true}
     restart: always
     logging: *json-log-limits
     mem_limit: "128m"
@@ -678,6 +634,7 @@ services:
         ipv4_address: 172.30.0.10
     volumes:
       - ${TERRAIN_TILES_PATH:-./terrain-tiles}:/terrain-tiles:ro
+      - rf_coverage_data:/rf-coverage-data:ro
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=16m,mode=1777
       - /var/cache/nginx:rw,noexec,nosuid,size=32m,uid=101,gid=101,mode=0755
@@ -700,7 +657,6 @@ services:
         VITE_APP_HOSTNAME: app.ukmesh.com
         VITE_BUILD_TARGET: public-website
         VITE_SITE: ukmesh
-        VITE_VIEWSHED_ENABLED: ${VIEWSHED_ENABLED:-false}
     restart: always
     logging: *json-log-limits
     mem_limit: "128m"
@@ -834,7 +790,6 @@ services:
         VITE_SITE_FOOTER_NAME: ${VITE_DEV_SITE_FOOTER_NAME:-UK Mesh Test}
         VITE_SITE_APP_URL: ${VITE_DEV_SITE_APP_URL:-https://test.ukmesh.com}
         VITE_SITE_HOME_URL: ${VITE_DEV_SITE_HOME_URL:-https://test.ukmesh.com}
-        VITE_VIEWSHED_ENABLED: ${VIEWSHED_ENABLED:-false}
     restart: always
     profiles: [dev]
     logging: *json-log-limits
@@ -1215,7 +1170,7 @@ services:
     environment:
       REDIS_ADDR: redis://redis:6379
       REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD required}
-      REDIS_EXPORTER_CHECK_SINGLE_KEYS: meshcore:link:v3:worker_heartbeat,meshcore:viewshed:worker_heartbeat
+      REDIS_EXPORTER_CHECK_SINGLE_KEYS: meshcore:link:v3:worker_heartbeat
     healthcheck:
       test: ["CMD", "/redis_exporter", "-version"]
       interval: 30s
@@ -1295,3 +1250,4 @@ volumes:
   alert_receiver_data:
   alertmanager_data:
   mesh_health_check_data:
+  rf_coverage_data:
