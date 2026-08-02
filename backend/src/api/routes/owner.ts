@@ -3,6 +3,18 @@ import { createOwnerRepository } from '../../owner/ownerRepository.js';
 import { createOwnerService } from '../../owner/ownerService.js';
 import type { OwnerSession } from '../../owner/ownerSession.js';
 import { createCsrfToken, readCookie, requireDoubleSubmitCsrf } from '../../security/operatorAuth.js';
+import { resolveWebhookTarget } from '../../security/outboundWebhook.js';
+import {
+  deliverDueOwnerAlerts,
+  queueOwnerTestDelivery,
+} from '../../owner/alertRules.js';
+import { parseBoundedString } from '../utils/input.js';
+import {
+  deleteOwnerAlertRule,
+  ownerAlertDeliveryRows,
+  ownerAlertRuleRows,
+  upsertOwnerAlertRule,
+} from '../../repositories/ownerAlerts.js';
 
 type OwnerDashboard = {
   totals: {
@@ -171,10 +183,14 @@ export function registerOwnerRoutes(router: Router, deps: OwnerRouteDeps): void 
   });
 
   router.get('/owner/live', async (req, res) => {
+    const requestedNodeId = parseBoundedString(req.query['nodeId'], {
+      name: 'nodeId',
+      maxLength: 64,
+      pattern: /^[0-9a-fA-F]{64}$/,
+    })?.toUpperCase();
     try {
       const ownedNodeIds = await deps.requireOwnerSession(req, res);
       if (!ownedNodeIds) return;
-      const requestedNodeId = String(req.query['nodeId'] ?? '').trim().toUpperCase() || undefined;
       res.json(await service.getOwnerLiveData(ownedNodeIds, requestedNodeId));
     } catch (err) {
       const message = (err as Error).message;
@@ -196,10 +212,14 @@ export function registerOwnerRoutes(router: Router, deps: OwnerRouteDeps): void 
   });
 
   router.get('/owner/live-last-hop', async (req, res) => {
+    const requestedNodeId = parseBoundedString(req.query['nodeId'], {
+      name: 'nodeId',
+      maxLength: 64,
+      pattern: /^[0-9a-fA-F]{64}$/,
+    })?.toUpperCase();
     try {
       const ownedNodeIds = await deps.requireOwnerSession(req, res);
       if (!ownedNodeIds) return;
-      const requestedNodeId = String(req.query['nodeId'] ?? '').trim().toUpperCase() || undefined;
       res.json(await service.getOwnerLastHopStrength(ownedNodeIds, requestedNodeId));
     } catch (err) {
       const message = (err as Error).message;
@@ -217,57 +237,160 @@ export function registerOwnerRoutes(router: Router, deps: OwnerRouteDeps): void 
   });
 
   router.get('/owner/alert-rules', async (req, res) => {
-    const ownedNodeIds = await deps.requireOwnerSession(req, res);
-    if (!ownedNodeIds) return;
-    const session = deps.getOwnerSession(req);
-    const result = await deps.query(
-      `SELECT id::text, node_id, rule_type, threshold, channels, enabled, last_triggered_at::text
-       FROM owner_alert_rules
-       WHERE owner_username = $1 AND node_id = ANY($2::text[])
-       ORDER BY created_at`,
-      [session!.mqttUsername, ownedNodeIds],
-    );
-    res.json(result.rows);
+    try {
+      const ownedNodeIds = await deps.requireOwnerSession(req, res);
+      if (!ownedNodeIds) return;
+      const session = deps.getOwnerSession(req);
+      const result = await ownerAlertRuleRows(
+        deps.query,
+        session!.mqttUsername,
+        ownedNodeIds,
+      );
+      res.setHeader('Cache-Control', 'no-store');
+      res.json(result.rows.map(({ channels, ...rule }) => {
+        const webhook = String(channels?.webhook ?? '').trim();
+        return {
+          ...rule,
+          destination: webhook
+            ? { configured: true, host: new URL(webhook).hostname.toLowerCase() }
+            : { configured: false, host: null },
+        };
+      }));
+    } catch (error) {
+      console.error('[api] GET /owner/alert-rules', (error as Error).message);
+      res.status(500).json({ error: 'Internal server error' });
+    }
   });
 
   router.post('/owner/alert-rules', csrfProtection, async (req, res) => {
-    const ownedNodeIds = await deps.requireOwnerSession(req, res);
-    if (!ownedNodeIds) return;
-    const session = deps.getOwnerSession(req);
-    const body = req.body as { nodeId?: string; ruleType?: string; threshold?: number; webhook?: string; enabled?: boolean };
-    const nodeId = String(body.nodeId ?? '').trim().toUpperCase();
-    const ruleType = String(body.ruleType ?? '');
-    const threshold = Number(body.threshold);
-    const webhook = String(body.webhook ?? '').trim();
-    if (!ownedNodeIds.includes(nodeId) || !['offline_minutes', 'battery_below_mv', 'link_loss_above_db'].includes(ruleType) || !Number.isFinite(threshold) || threshold <= 0) {
-      res.status(400).json({ error: 'Invalid owner alert rule' });
-      return;
+    try {
+      const ownedNodeIds = await deps.requireOwnerSession(req, res);
+      if (!ownedNodeIds) return;
+      const session = deps.getOwnerSession(req);
+      const body = req.body as { nodeId?: string; ruleType?: string; threshold?: number; webhook?: string; enabled?: boolean };
+      const nodeId = String(body.nodeId ?? '').trim().toUpperCase();
+      const ruleType = String(body.ruleType ?? '');
+      const threshold = Number(body.threshold);
+      const webhook = String(body.webhook ?? '').trim();
+      if (
+        !ownedNodeIds.includes(nodeId)
+        || !['offline_minutes', 'battery_below_mv', 'link_loss_above_db'].includes(ruleType)
+        || !Number.isFinite(threshold)
+        || threshold <= 0
+        || threshold > 1_000_000
+      ) {
+        res.status(400).json({ error: 'Invalid owner alert rule' });
+        return;
+      }
+      if (webhook) {
+        try {
+          await resolveWebhookTarget(webhook);
+        } catch {
+          res.status(400).json({ error: 'Webhook destination is not permitted' });
+          return;
+        }
+      }
+      const result = await upsertOwnerAlertRule(deps.query, {
+        ownerUsername: session!.mqttUsername,
+        nodeId,
+        ruleType,
+        threshold,
+        webhook,
+        enabled: body.enabled !== false,
+      });
+      res.status(201).json(result.rows[0]);
+    } catch (error) {
+      console.error('[api] POST /owner/alert-rules', (error as Error).message);
+      res.status(500).json({ error: 'Internal server error' });
     }
-    if (webhook && !/^https:\/\//i.test(webhook)) {
-      res.status(400).json({ error: 'Webhook must use HTTPS' });
-      return;
+  });
+
+  router.get('/owner/alert-deliveries', async (req, res) => {
+    try {
+      const ownedNodeIds = await deps.requireOwnerSession(req, res);
+      if (!ownedNodeIds) return;
+      const session = deps.getOwnerSession(req);
+      const result = await ownerAlertDeliveryRows(
+        deps.query,
+        session!.mqttUsername,
+        ownedNodeIds,
+      );
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ deliveries: result.rows });
+    } catch (error) {
+      console.error('[api] GET /owner/alert-deliveries', (error as Error).message);
+      res.status(500).json({ error: 'Internal server error' });
     }
-    const result = await deps.query(
-      `INSERT INTO owner_alert_rules (owner_username, node_id, rule_type, threshold, channels, enabled)
-       VALUES ($1, $2, $3, $4, $5::jsonb, $6)
-       ON CONFLICT (owner_username, node_id, rule_type) DO UPDATE SET
-         threshold = EXCLUDED.threshold, channels = EXCLUDED.channels,
-         enabled = EXCLUDED.enabled, updated_at = NOW()
-       RETURNING id::text, node_id, rule_type, threshold, channels, enabled`,
-      [session!.mqttUsername, nodeId, ruleType, threshold, JSON.stringify(webhook ? { webhook } : {}), body.enabled !== false],
-    );
-    res.status(201).json(result.rows[0]);
+  });
+
+  router.post('/owner/alert-rules/:id/test', csrfProtection, async (req, res) => {
+    const ruleId = parseBoundedString(req.params['id'], {
+      name: 'alert rule id',
+      required: true,
+      maxLength: 20,
+      pattern: /^[1-9][0-9]{0,19}$/,
+    })!;
+    const idempotencyKey = parseBoundedString(req.headers['idempotency-key'], {
+      name: 'Idempotency-Key',
+      required: true,
+      minLength: 16,
+      maxLength: 128,
+      pattern: /^[A-Za-z0-9._:-]+$/,
+    })!;
+    try {
+      const ownedNodeIds = await deps.requireOwnerSession(req, res);
+      if (!ownedNodeIds) return;
+      const session = deps.getOwnerSession(req)!;
+      const result = await queueOwnerTestDelivery({
+        ruleId,
+        ownerUsername: session.mqttUsername,
+        ownedNodeIds,
+        idempotencyKey,
+      });
+      void deliverDueOwnerAlerts().catch((error: Error) => {
+        console.error('[owner-alerts] test delivery dispatch failed', error.message);
+      });
+      res.status(result.queued ? 202 : 200).json({
+        status: result.queued ? 'queued' : 'already_queued',
+        eventKey: result.eventKey,
+      });
+    } catch (error) {
+      const message = (error as Error).message;
+      if (message === 'OWNER_ALERT_RULE_NOT_FOUND') {
+        res.status(404).json({ error: 'Alert rule not found' });
+        return;
+      }
+      if (message === 'OWNER_ALERT_WEBHOOK_NOT_CONFIGURED') {
+        res.status(409).json({ error: 'Configure a webhook before sending a test' });
+        return;
+      }
+      console.error('[api] POST /owner/alert-rules/:id/test', message);
+      res.status(500).json({ error: 'Internal server error' });
+    }
   });
 
   router.delete('/owner/alert-rules/:id', csrfProtection, async (req, res) => {
-    const ownedNodeIds = await deps.requireOwnerSession(req, res);
-    if (!ownedNodeIds) return;
-    const session = deps.getOwnerSession(req);
-    await deps.query(
-      'DELETE FROM owner_alert_rules WHERE id = $1 AND owner_username = $2 AND node_id = ANY($3::text[])',
-      [String(req.params['id'] ?? ''), session!.mqttUsername, ownedNodeIds],
-    );
-    res.status(204).end();
+    const ruleId = parseBoundedString(req.params['id'], {
+      name: 'alert rule id',
+      required: true,
+      maxLength: 20,
+      pattern: /^[1-9][0-9]{0,19}$/,
+    })!;
+    try {
+      const ownedNodeIds = await deps.requireOwnerSession(req, res);
+      if (!ownedNodeIds) return;
+      const session = deps.getOwnerSession(req);
+      await deleteOwnerAlertRule(
+        deps.query,
+        ruleId,
+        session!.mqttUsername,
+        ownedNodeIds,
+      );
+      res.status(204).end();
+    } catch (error) {
+      console.error('[api] DELETE /owner/alert-rules/:id', (error as Error).message);
+      res.status(500).json({ error: 'Internal server error' });
+    }
   });
 
   router.post('/owner/logout', csrfProtection, async (req, res) => {

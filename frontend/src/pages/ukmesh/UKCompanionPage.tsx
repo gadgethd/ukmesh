@@ -1,8 +1,12 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useWebSocket } from '../../hooks/useWebSocket.js';
 import type { WSMessage } from '../../hooks/useWebSocket.js';
 import { LoadingIndicator } from '../../components/LoadingIndicator.js';
 import { ObserverRegistrationForm } from '../../components/ObserverRegistrationForm.js';
+import { useRuntimeFeatures } from '../../config/runtimeFeatures.js';
+import { getCurrentSite } from '../../config/site.js';
+import { useVisibilityPoll } from '../../hooks/useVisibilityPoll.js';
+import { fetchJson, withScopeParams } from '../../utils/api.js';
 
 interface CompanionEntry {
   sender: string;
@@ -28,9 +32,23 @@ function timeAgo(iso: string): string {
   return `${Math.floor(secs / 86400)}d ago`;
 }
 
-const WS_SCOPE = { network: 'ukmesh' };
+function isCompanionEntries(value: unknown): value is CompanionEntry[] {
+  return Array.isArray(value) && value.every((entry) => (
+    typeof entry === 'object'
+    && entry !== null
+    && typeof (entry as Record<string, unknown>)['sender'] === 'string'
+    && typeof (entry as Record<string, unknown>)['message_count'] === 'number'
+    && typeof (entry as Record<string, unknown>)['last_message_at'] === 'string'
+  ));
+}
 
 export const UKCompanionPage: React.FC = () => {
+  const site = getCurrentSite();
+  const network = site.networkFilter ?? site.network;
+  const observer = site.observerId;
+  const { privacyGeneration } = useRuntimeFeatures();
+  const requestScope = useMemo(() => ({ network, observer }), [network, observer]);
+  const scopeKey = `${network}:${observer ?? 'all'}:${privacyGeneration}`;
   const [entries, setEntries] = useState<CompanionEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
@@ -38,25 +56,33 @@ export const UKCompanionPage: React.FC = () => {
   // Track which packet hashes we've already counted to avoid double-counting
   const seenHashes = useRef(new Set<string>());
 
-  const fetchData = useCallback(() => {
-    fetch('/api/companion-activity?network=ukmesh')
-      .then(r => r.json())
-      .then((data: CompanionEntry[]) => {
-        setEntries(Array.isArray(data) ? data : []);
-        setLastUpdated(new Date());
-        setLoading(false);
-        // Reset live counter and seen hashes on each full resync
-        setLiveCount(0);
-        seenHashes.current.clear();
-      })
-      .catch(() => setLoading(false));
-  }, []);
-
   useEffect(() => {
-    fetchData();
-    const interval = setInterval(fetchData, 60_000);
-    return () => clearInterval(interval);
-  }, [fetchData]);
+    setEntries([]);
+    setLoading(true);
+    setLastUpdated(null);
+    setLiveCount(0);
+    seenHashes.current.clear();
+  }, [scopeKey]);
+
+  useVisibilityPoll(async (signal) => {
+    const data = await fetchJson<CompanionEntry[]>(
+      withScopeParams('/api/companion-activity', requestScope),
+      { cache: 'no-store', signal },
+      { timeoutMs: 15_000, maxBytes: 2 * 1024 * 1024, validate: isCompanionEntries },
+    );
+    if (signal.aborted) return;
+    setEntries(data.slice(0, 2_000));
+    setLastUpdated(new Date());
+    setLoading(false);
+    // A full resync is authoritative for both the live delta and dedupe window.
+    setLiveCount(0);
+    seenHashes.current.clear();
+  }, {
+    scopeKey: `companion-activity:${scopeKey}`,
+    intervalMs: 60_000,
+    timeoutMs: 15_000,
+    onError: () => setLoading(false),
+  });
 
   const handleMessage = useCallback((msg: WSMessage) => {
     if (msg.type !== 'packet') return;
@@ -85,12 +111,12 @@ export const UKCompanionPage: React.FC = () => {
       } else {
         next = [...prev, { sender, message_count: 1, last_message_at: now }];
       }
-      return next.sort((a, b) => b.message_count - a.message_count);
+      return next.sort((a, b) => b.message_count - a.message_count).slice(0, 2_000);
     });
     setLiveCount(n => n + 1);
   }, []);
 
-  useWebSocket(handleMessage, WS_SCOPE);
+  useWebSocket(handleMessage, requestScope);
 
   const topCount = entries[0]?.message_count ?? 1;
 
@@ -107,13 +133,18 @@ export const UKCompanionPage: React.FC = () => {
         </div>
       </section>
 
-      <section className="site-section site-section--dark">
+      <section className="site-section site-section--dark companion-page">
         <div className="site-content">
           {loading ? (
             <LoadingIndicator label="Loading companion activity..." variant="block" />
           ) : entries.length === 0 ? (
             <p style={{ color: 'var(--text-muted)', textAlign: 'center', padding: '48px 0' }}>No data available.</p>
           ) : (
+            <>
+              <div className="companion-leaderboard__legend" aria-label="Activity bars are relative to number one">
+              <span>Activity scale</span>
+              <span>100% = #1 - {topCount.toLocaleString()} msgs</span>
+            </div>
             <div className="companion-leaderboard">
               {entries.map((entry, i) => {
                 const barPct = Math.max(4, Math.round((entry.message_count / topCount) * 100));
@@ -134,6 +165,7 @@ export const UKCompanionPage: React.FC = () => {
                 );
               })}
             </div>
+            </>
           )}
           {lastUpdated && (
             <p className="companion-updated">

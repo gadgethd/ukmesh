@@ -4,13 +4,15 @@
  * keeping the main event loop free during CPU-heavy path computation.
  */
 import { parentPort } from 'worker_threads';
+import { query } from '../db/index.js';
+import { lazyResolvePath } from '../path-lazy/lazyResolver.js';
 import { resolveBetaPathForPacketHash, resolveMultiObserverBetaPath } from './resolver.js';
 
 if (!parentPort) throw new Error('resolveWorker must run as a worker thread');
 
 type WorkerMessage = {
   id: number;
-  type: 'resolve' | 'resolveMulti';
+  type: 'resolve' | 'resolveMulti' | 'resolveLazy';
   packetHash: string;
   network: string;
   observer?: string;
@@ -20,9 +22,11 @@ type WorkerMessage = {
 
 parentPort.on('message', (msg: WorkerMessage) => {
   const stickyMap = msg.stickyMap ? new Map(Object.entries(msg.stickyMap)) : undefined;
-  const run = msg.type === 'resolveMulti'
-    ? resolveMultiObserverBetaPath(msg.packetHash, msg.network, stickyMap, msg.stickyAgeFraction)
-    : resolveBetaPathForPacketHash(msg.packetHash, msg.network, msg.observer, stickyMap, msg.stickyAgeFraction);
+  const run = msg.type === 'resolveLazy'
+    ? lazyResolvePath(msg.packetHash, msg.network, query)
+    : msg.type === 'resolveMulti'
+      ? resolveMultiObserverBetaPath(msg.packetHash, msg.network, stickyMap, msg.stickyAgeFraction)
+      : resolveBetaPathForPacketHash(msg.packetHash, msg.network, msg.observer, stickyMap, msg.stickyAgeFraction);
 
   run
     .then((result) => { parentPort!.postMessage({ id: msg.id, ok: true, result: result ?? null }); })

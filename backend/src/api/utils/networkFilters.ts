@@ -9,8 +9,55 @@ export type NetworkFilters = {
   nodesAlias: (alias: string) => string;
 };
 
+export function publicPacketPrivacySql(alias?: string): string {
+  const prefix = alias ? `${alias}.` : 'packets.';
+  return `(
+    ${prefix}visibility_ok IS TRUE
+    AND (
+      COALESCE(cardinality(${prefix}path_hashes), 0) = 0
+      OR ${prefix}path_hash_size_bytes BETWEEN 1 AND 3
+    )
+    AND NOT EXISTS (
+      SELECT 1
+      FROM unnest(COALESCE(${prefix}path_hashes, ARRAY[]::text[])) AS path_hash
+      WHERE path_hash IS NULL
+         OR length(path_hash) <> ${prefix}path_hash_size_bytes * 2
+         OR path_hash !~ '^[0-9A-Fa-f]+$'
+    )
+    AND NOT EXISTS (
+      SELECT 1
+      FROM private_node_prefixes private_prefix
+      WHERE (
+          private_prefix.network = ${prefix}network
+          OR (
+            private_prefix.network IN ('ukmesh', 'northeast', 'teesside')
+            AND ${prefix}network IN ('ukmesh', 'northeast', 'teesside')
+          )
+        )
+        AND (
+          private_prefix.node_id IN (${prefix}rx_node_id, ${prefix}src_node_id)
+          OR (
+            ${prefix}path_hash_size_bytes = private_prefix.prefix_size_bytes
+            AND private_prefix.prefix = ANY(
+              ARRAY(
+                SELECT UPPER(packet_prefix)
+                FROM unnest(COALESCE(${prefix}path_hashes, ARRAY[]::text[]))
+                  AS packet_prefix
+              )
+            )
+          )
+        )
+    )
+  )`;
+}
+
 function publicPacketPrivacyConditions(prefix: string): string[] {
-  return [`${prefix}visibility_ok IS TRUE`];
+  const alias = prefix.endsWith('.') ? prefix.slice(0, -1) : prefix;
+  return [publicPacketPrivacySql(alias || undefined)];
+}
+
+function excludesLegacyTestTopic(prefix: string): string {
+  return `COALESCE(NULLIF(${prefix}topic_prefix, ''), split_part(${prefix}topic, '/', 1)) <> 'meshcore-test'`;
 }
 
 export function networkFilters(network?: string, observer?: string): NetworkFilters {
@@ -42,10 +89,11 @@ export function networkFilters(network?: string, observer?: string): NetworkFilt
   if (netEq) {
     packetConditions.push(netEq);
     if (network !== 'test') {
-      packetConditions.push(`topic_prefix <> 'meshcore-test'`);
+      packetConditions.push(excludesLegacyTestTopic(''));
     }
   } else {
     packetConditions.push(`network IS DISTINCT FROM 'test'`);
+    packetConditions.push(excludesLegacyTestTopic(''));
     packetConditions.push(`COALESCE(rx_node_id, '') NOT IN (SELECT node_id FROM nodes WHERE network = 'test')`);
   }
   if (observerParam) packetConditions.push(`rx_node_id = ${observerParam}`);
@@ -117,11 +165,11 @@ export function networkFilters(network?: string, observer?: string): NetworkFilt
         // `test` explicitly requests test traffic. Public scopes exclude the
         // legacy test topic marker as a defence-in-depth check for old rows.
         if (network !== 'test') {
-          conditions.push(`${prefix}topic_prefix <> 'meshcore-test'`);
+          conditions.push(excludesLegacyTestTopic(prefix));
         }
       } else {
         conditions.push(`${prefix}network IS DISTINCT FROM 'test'`);
-        conditions.push(`${prefix}topic_prefix <> 'meshcore-test'`);
+        conditions.push(excludesLegacyTestTopic(prefix));
         conditions.push(`COALESCE(${prefix}rx_node_id, '') NOT IN (SELECT node_id FROM nodes WHERE network = 'test')`);
       }
       if (observerParam) conditions.push(`${prefix}rx_node_id = ${observerParam}`);

@@ -1,0 +1,91 @@
+# UK Mesh HopReach production profile.
+# Derived HopReach integration files are AGPL-3.0 plus Commons Clause; see
+# third_party/hopreach/LICENSE and rf-coverage/SOURCE-OFFER.md.
+output_dir: /data/output
+
+site:
+  name: UK Mesh RF Coverage
+  subtitle: Canonical HopReach coverage, refreshed nightly
+  active_hours: 6
+  degraded_hours: 24
+
+map:
+  center_lat: 54.7
+  center_lon: -3.3
+  zoom: 5
+
+region:
+  name: UK Mesh operational boundary v1 (GB, NI, Isle of Man, Channel Islands)
+  boundary_path: /config/uk-operational-v1.geojson
+  boundary_url: ""
+  required_scope: ""
+
+corescope:
+  api_url: http://backend:3000/hopreach
+  request_timeout_seconds: 60
+  scope_observation:
+    enabled: false
+    window_hours: 168
+
+terrain:
+  dem_zoom: 11
+  dem_cache_dir: /data/dem-cache
+  dem_tile_url_base: https://s3.amazonaws.com/elevation-tiles-prod/terrarium
+
+# These are HopReach v0.1.32's canonical propagation defaults. Keep changes
+# evidence-driven; never tune the model merely to make the map look fuller.
+propagation:
+  frequency_mhz: 868
+  tx_power_dbm: 22
+  tx_antenna_gain_dbi: 3
+  rx_antenna_gain_dbi: 0
+  rx_sensitivity_dbm: -124
+  fade_margin_db: 20
+  antenna_height_m: 1
+  rx_height_m: 2
+  max_range_km: 100
+  margin_green_db: 15
+
+coverage:
+  image_width: 2000
+  precision_width: 6000
+  precision_dem_zoom: 13
+  precision_supersample: 2
+  max_alpha: 190
+  progressive_publication: true
+  publication_tile_size: 1024
+  precision_min_free_disk_gb: 8
+  precision_chunk_budget_mb: 0
+  min_recompute_interval_hours: 6
+  standard_requires_gpu: false
+  calibrated_requires_gpu: false
+  precision_requires_gpu: false
+  calibrated_precision_requires_gpu: false
+
+# Disabled until bulk observed-link evidence has been validated against a
+# representative, independently reviewed UK path fixture.
+calibration:
+  enabled: false
+  min_links: 2
+  needs_score: 5
+  max_offset_m: 300
+  min_improvement_pct: 20
+  reach_days: 14
+
+gpu:
+  mode: cpu
+  remote:
+    broker_addr: ""
+
+schedule:
+  cron: "17 2 * * *"
+
+# HopReach's share/planner interfaces are not exposed by the UK Mesh native UI.
+share:
+  ttl_days: 7
+  store_dir: /data/shared-plans
+  listen_addr: 127.0.0.1:8081
+
+remote_worker:
+  token: ""
+  job_timeout_seconds: 1800

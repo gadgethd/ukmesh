@@ -14,10 +14,10 @@ export const UKInstallPage: React.FC = () => {
   return (
   <>
 
-    <div className="site-content site-prose">
+    <div className="site-content site-prose install-page">
 
       <section className="prose-section">
-        <h2>
+        <h2 className="install-page__heading">
           <span className="prose-step">1</span>
           What you need
         </h2>
@@ -32,7 +32,7 @@ export const UKInstallPage: React.FC = () => {
           {HARDWARE.map((entry) => <button
             type="button"
             key={entry.id}
-            className={`hw-card${entry.id === hardwareId ? ' hw-card--recommended' : ''}`}
+            className={`hw-card${entry.id === hardwareId ? ' hw-card--selected' : ''}${entry.id === 'v4' ? ' hw-card--recommended' : ''}`}
             aria-pressed={entry.id === hardwareId}
             onClick={() => setHardwareId(entry.id)}
           >
@@ -71,7 +71,7 @@ export const UKInstallPage: React.FC = () => {
       </section>
 
       <section className="prose-section">
-        <h2>
+        <h2 className="install-page__heading">
           <span className="prose-step">2</span>
           Flash the firmware
         </h2>
@@ -104,7 +104,7 @@ export const UKInstallPage: React.FC = () => {
       </section>
 
       <section className="prose-section">
-        <h2>
+        <h2 className="install-page__heading">
           <span className="prose-step">3</span>
           Configure your node
         </h2>
@@ -141,7 +141,7 @@ export const UKInstallPage: React.FC = () => {
       </section>
 
       <section className="prose-section">
-        <h2>
+        <h2 className="install-page__heading">
           <span className="prose-step">4</span>
           Get on the network
         </h2>
@@ -168,7 +168,7 @@ export const UKInstallPage: React.FC = () => {
       </section>
 
       <section className="prose-section">
-        <h2>
+        <h2 className="install-page__heading">
           <span className="prose-step">5</span>
           Add an MQTT observer
         </h2>
@@ -179,13 +179,13 @@ export const UKInstallPage: React.FC = () => {
         <div className="prose-note">
           <strong>Access is by request.</strong> Message <strong>ibengr</strong> on Discord to get MQTT credentials before setting this up.
         </div>
-        <div className="code-block">
+        <div className="code-block" tabIndex={0} aria-label="Observer configuration example">
           <pre>{'curl -fsSL https://raw.githubusercontent.com/Cisien/meshcoretomqtt/main/install.sh | bash'}</pre>
         </div>
         <p>
           During setup, enable packet logging, choose the correct IATA code for your location, and add one extra broker with:
         </p>
-        <div className="code-block">
+        <div className="code-block" tabIndex={0} aria-label="Observer service command example">
           <pre>{`Server hostname/IP: mqtt.ukmesh.com
 Port [1883]: 443
 Use WebSockets transport? [y/N]: y
@@ -198,7 +198,7 @@ Password: <your password>`}</pre>
         <p className="prose-note">
           Topic format:
         </p>
-        <div className="code-block">
+        <div className="code-block" tabIndex={0} aria-label="Observer verification command example">
           <pre>{'meshcore/<IATA>/{PUBLIC_KEY}/packets'}</pre>
         </div>
         <div className="prose-note">

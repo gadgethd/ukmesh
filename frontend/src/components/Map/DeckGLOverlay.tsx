@@ -13,13 +13,12 @@ import { PathStyleExtension } from '@deck.gl/extensions';
 import type { PathStyleExtensionProps } from '@deck.gl/extensions';
 import type { Layer } from '@deck.gl/core';
 import maplibregl from 'maplibre-gl';
-import type { PacketArc } from '../../hooks/useNodes.js';
+import { PACKET_ARC_TTL_MS, type PacketArc } from '../../hooks/useNodes.js';
 import type { HiddenMaskGeometry } from '../../utils/pathing.js';
 import { maskPoint } from '../../utils/pathing.js';
 import type { ClashPathLine, CustomLosPoint, CustomLosSegment, LosProfile } from './types.js';
 import { TERRAIN_CONFIG } from './mapConfig.js';
 
-const ARC_TTL_MS = 5_000;
 const FADE_DURATION_MS = 1_000;
 
 type HistorySegment = {
@@ -131,9 +130,9 @@ function buildLayers(
 
   // ── Arc trails ─────────────────────────────────────────────────────────────
   if (showArcs && arcs.length > 0) {
-    const visible = arcs.filter((a) => now - a.ts < ARC_TTL_MS);
+    const visible = arcs.filter((a) => now - a.ts < PACKET_ARC_TTL_MS);
     if (visible.length > 0) {
-      const fade = (ts: number) => Math.max(0, 1 - (now - ts) / ARC_TTL_MS);
+      const fade = (ts: number) => Math.max(0, 1 - (now - ts) / PACKET_ARC_TTL_MS);
       layers.push(
         new ArcLayer<PacketArc>({
           id: 'arc-bloom',

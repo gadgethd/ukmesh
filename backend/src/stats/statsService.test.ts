@@ -40,7 +40,17 @@ function emptyChartsData() {
 test('completed canonical charts are reused while observer-scoped charts are never persisted', async () => {
   let chartCalls = 0;
   let regionSummaryCalls = 0;
+  let snapshotLoads = 0;
+  let snapshotSaves = 0;
   const repository = {
+    loadChartSnapshot: async () => {
+      snapshotLoads += 1;
+      return null;
+    },
+    saveChartSnapshot: async () => {
+      snapshotSaves += 1;
+      return true;
+    },
     fetchChartsData: async () => {
       chartCalls += 1;
       return emptyChartsData();
@@ -59,6 +69,7 @@ test('completed canonical charts are reused while observer-scoped charts are nev
     chartsCacheTtlMs: 60_000,
     chartsInflight: new Map(),
     repository,
+    getPublicVisibilityGeneration: async () => 1,
     maskDecodedPathNodes: () => [],
   });
 
@@ -67,11 +78,137 @@ test('completed canonical charts are reused while observer-scoped charts are nev
   assert.equal(chartCalls, 1);
   assert.equal(regionSummaryCalls, 0);
   assert.equal(chartsCache.size, 1);
+  assert.equal(snapshotLoads, 1);
+  assert.equal(snapshotSaves, 1);
 
   await service.getCharts('ukmesh', 'A'.repeat(64));
   await service.getCharts('ukmesh', 'A'.repeat(64));
   assert.equal(chartCalls, 3);
   assert.equal(chartsCache.size, 1);
+  assert.equal(snapshotLoads, 1);
+  assert.equal(snapshotSaves, 1);
+});
+
+test('a valid durable chart snapshot serves a cold process without analytical queries', async () => {
+  const generatedAt = new Date(Date.now() - 60_000).toISOString();
+  const durable = {
+    snapshot: {
+      status: 'complete',
+      generatedAt,
+      scope: 'ukmesh',
+      visibilityGeneration: 1,
+    },
+    packetsPerHour: [{ hour: '11:00', count: 3 }],
+  };
+  let chartCalls = 0;
+  let saves = 0;
+  const repository = {
+    loadChartSnapshot: async () => ({
+      scope_key: 'ukmesh',
+      schema_version: 2,
+      visibility_generation: '1',
+      generated_at: generatedAt,
+      payload: durable,
+    }),
+    saveChartSnapshot: async () => {
+      saves += 1;
+      return true;
+    },
+    fetchChartsData: async () => {
+      chartCalls += 1;
+      return emptyChartsData();
+    },
+    fetchChannelTraffic: async () => ({ rows: [] }),
+  } as unknown as StatsRepository;
+  const service = createStatsService({
+    statsCache: new Map(),
+    statsCacheTtlMs: 60_000,
+    chartsCache: new Map(),
+    chartsCacheTtlMs: 30 * 60_000,
+    chartsSnapshotStaleTtlMs: 6 * 60 * 60_000,
+    chartsInflight: new Map(),
+    repository,
+    getPublicVisibilityGeneration: async () => 1,
+    maskDecodedPathNodes: () => [],
+  });
+
+  assert.deepEqual(await service.getCharts('ukmesh', undefined), durable);
+  assert.equal(chartCalls, 0);
+  assert.equal(saves, 0);
+});
+
+test('chart snapshots from an older privacy generation are never served or republished', async () => {
+  const generatedAt = new Date(Date.now() - 60_000).toISOString();
+  const oldPayload = {
+    snapshot: {
+      status: 'complete',
+      generatedAt,
+      scope: 'ukmesh',
+      visibilityGeneration: 1,
+    },
+    marker: 'old-generation',
+  };
+  let chartCalls = 0;
+  const repository = {
+    loadChartSnapshot: async () => ({
+      scope_key: 'ukmesh',
+      schema_version: 2,
+      visibility_generation: '1',
+      generated_at: generatedAt,
+      payload: oldPayload,
+    }),
+    saveChartSnapshot: async () => true,
+    fetchChartsData: async () => {
+      chartCalls += 1;
+      return emptyChartsData();
+    },
+    fetchChannelTraffic: async () => ({ rows: [] }),
+  } as unknown as StatsRepository;
+  const service = createStatsService({
+    statsCache: new Map(),
+    statsCacheTtlMs: 60_000,
+    chartsCache: new Map(),
+    chartsCacheTtlMs: 30 * 60_000,
+    chartsSnapshotStaleTtlMs: 6 * 60 * 60_000,
+    chartsInflight: new Map(),
+    repository,
+    getPublicVisibilityGeneration: async () => 2,
+    maskDecodedPathNodes: () => [],
+  });
+
+  const result = await service.getCharts('ukmesh', undefined) as {
+    snapshot: { visibilityGeneration: number };
+    marker?: string;
+  };
+  assert.equal(chartCalls, 1);
+  assert.equal(result.snapshot.visibilityGeneration, 2);
+  assert.equal(result.marker, undefined);
+});
+
+test('a visibility change at chart publication fails closed without caching the result', async () => {
+  const chartsCache = new Map<string, { ts: number; data: unknown }>();
+  const repository = {
+    loadChartSnapshot: async () => null,
+    saveChartSnapshot: async () => false,
+    fetchChartsData: async () => emptyChartsData(),
+    fetchChannelTraffic: async () => ({ rows: [] }),
+  } as unknown as StatsRepository;
+  const service = createStatsService({
+    statsCache: new Map(),
+    statsCacheTtlMs: 60_000,
+    chartsCache,
+    chartsCacheTtlMs: 30 * 60_000,
+    chartsInflight: new Map(),
+    repository,
+    getPublicVisibilityGeneration: async () => 1,
+    maskDecodedPathNodes: () => [],
+  });
+
+  await assert.rejects(
+    service.getCharts('ukmesh', undefined),
+    /privacy generation changed before publication/,
+  );
+  assert.equal(chartsCache.size, 0);
 });
 
 test('expired canonical charts are served while one refresh runs in the background', async () => {
@@ -81,6 +218,8 @@ test('expired canonical charts are served while one refresh runs in the backgrou
   });
   let chartCalls = 0;
   const repository = {
+    loadChartSnapshot: async () => null,
+    saveChartSnapshot: async () => true,
     fetchChartsData: async () => {
       chartCalls += 1;
       return refresh;
@@ -94,14 +233,16 @@ test('expired canonical charts are served while one refresh runs in the backgrou
     ttlMs: 60_000,
   });
   const chartsInflight = new Map<string, Promise<unknown>>();
-  chartsCache.set('ukmesh', { ts: 0, data: stale });
+  chartsCache.set('ukmesh:v1', { ts: Date.now() - 1_000, data: stale });
   const service = createStatsService({
     statsCache: new Map(),
     statsCacheTtlMs: 60_000,
     chartsCache,
     chartsCacheTtlMs: 1,
+    chartsSnapshotStaleTtlMs: 60_000,
     chartsInflight,
     repository,
+    getPublicVisibilityGeneration: async () => 1,
     maskDecodedPathNodes: () => [],
   });
 
@@ -110,8 +251,8 @@ test('expired canonical charts are served while one refresh runs in the backgrou
   assert.equal(chartCalls, 1);
 
   resolveRefresh(emptyChartsData());
-  await chartsInflight.get('ukmesh');
-  assert.notEqual(chartsCache.get('ukmesh')?.data, stale);
+  await chartsInflight.get('ukmesh:v1');
+  assert.notEqual(chartsCache.get('ukmesh:v1')?.data, stale);
   chartsCache.shutdown();
 });
 
@@ -122,6 +263,8 @@ test('startup chart work waits for the lightweight summary warmup', async () => 
   });
   let chartCalls = 0;
   const repository = {
+    loadChartSnapshot: async () => null,
+    saveChartSnapshot: async () => true,
     fetchStatsSummary: async () => summary,
     fetchChartsData: async () => {
       chartCalls += 1;
@@ -136,6 +279,7 @@ test('startup chart work waits for the lightweight summary warmup', async () => 
     chartsCacheTtlMs: 60_000,
     chartsInflight: new Map(),
     repository,
+    getPublicVisibilityGeneration: async () => 1,
     maskDecodedPathNodes: () => [],
   });
 
@@ -189,7 +333,7 @@ test('expired canonical stats are served while one refresh runs in the backgroun
     maxWeight: 1024,
     ttlMs: 60_000,
   });
-  statsCache.set('ukmesh', { ts: 0, data: stale });
+  statsCache.set('ukmesh:v1', { ts: 0, data: stale });
   const service = createStatsService({
     statsCache,
     statsCacheTtlMs: 1,
@@ -197,6 +341,7 @@ test('expired canonical stats are served while one refresh runs in the backgroun
     chartsCacheTtlMs: 60_000,
     chartsInflight: new Map(),
     repository,
+    getPublicVisibilityGeneration: async () => 1,
     maskDecodedPathNodes: () => [],
   });
 
@@ -217,6 +362,51 @@ test('expired canonical stats are served while one refresh runs in the backgroun
   });
   await refresh;
   await new Promise((resolve) => setImmediate(resolve));
-  assert.equal((statsCache.get('ukmesh')?.data as { totalNodes: number }).totalNodes, 7);
+  assert.equal((statsCache.get('ukmesh:v1')?.data as { totalNodes: number }).totalNodes, 7);
   statsCache.shutdown();
+});
+
+test('canonical summary cache entries cannot cross a privacy generation change', async () => {
+  let visibilityGeneration = 1;
+  let summaryCalls = 0;
+  const empty = { rows: [] };
+  const repository = {
+    fetchStatsSummary: async () => {
+      summaryCalls += 1;
+      return {
+        mqttCount: empty,
+        packetCount: empty,
+        staleCount: empty,
+        mapNodeCount: empty,
+        totalNodeCount: { rows: [{ count: String(summaryCalls) }] },
+        longestHopCount: empty,
+        nodesDayCount: empty,
+        internationalCount: empty,
+      };
+    },
+  } as unknown as StatsRepository;
+  const statsCache = new Map<string, { ts: number; data: unknown }>();
+  const service = createStatsService({
+    statsCache,
+    statsCacheTtlMs: 60_000,
+    chartsCache: new Map(),
+    chartsCacheTtlMs: 60_000,
+    chartsInflight: new Map(),
+    repository,
+    getPublicVisibilityGeneration: async () => visibilityGeneration,
+    maskDecodedPathNodes: () => [],
+  });
+
+  assert.equal(
+    (await service.getStatsSummary('ukmesh', undefined) as { totalNodes: number }).totalNodes,
+    1,
+  );
+  visibilityGeneration = 2;
+  assert.equal(
+    (await service.getStatsSummary('ukmesh', undefined) as { totalNodes: number }).totalNodes,
+    2,
+  );
+  assert.equal(summaryCalls, 2);
+  assert.ok(statsCache.has('ukmesh:v1'));
+  assert.ok(statsCache.has('ukmesh:v2'));
 });

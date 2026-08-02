@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>UKMesh Operator Login</title>
+  <style nonce="{{CSP_NONCE}}">
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #0b0f0d; color: #edf5f0; }
+    main { width: min(420px, calc(100vw - 32px)); padding: 24px; border: 1px solid #55635c; border-radius: 10px; background: #151b18; }
+    h1 { margin-top: 0; }
+    p { color: #a9b5af; line-height: 1.5; }
+    label { display: grid; gap: 8px; }
+    input, button { box-sizing: border-box; width: 100%; padding: 11px; border-radius: 7px; border: 1px solid #6b7d74; font: inherit; }
+    input { background: #0b100d; color: #fff; }
+    input:focus-visible { outline: 2px solid #5ad18f; outline-offset: 2px; border-color: #5ad18f; }
+    button { margin-top: 14px; cursor: pointer; background: #267d51; color: #fff; font-weight: 700; }
+    #status { min-height: 1.5em; color: #ff9b9b; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Operator login</h1>
+    <p>Use the local HTTPS or localhost tunnel endpoint. The token is exchanged for a short-lived secure browser session and is not stored by this page.</p>
+    <form id="login">
+      <label>Operator token <input id="token" type="password" autocomplete="current-password" required maxlength="4096"></label>
+      <button type="submit">Log in</button>
+    </form>
+    <p id="status" role="alert"></p>
+  </main>
+  <script nonce="{{CSP_NONCE}}">
+    const form = document.getElementById('login');
+    const token = document.getElementById('token');
+    const status = document.getElementById('status');
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      status.textContent = 'Logging in…';
+      try {
+        const response = await fetch('/local-api/operator/login', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ token: token.value }),
+        });
+        token.value = '';
+        if (!response.ok) throw new Error(response.status === 403 ? 'Invalid token' : 'Login unavailable');
+        location.reload();
+      } catch (error) {
+        status.textContent = error.message;
+      }
+    });
+  </script>
+</body>
+</html>

@@ -5,6 +5,7 @@ import type { MeshNode } from '../../hooks/useNodes.js';
 import { useNodeMap } from '../../hooks/useNodes.js';
 import { isValidMapCoord } from '../../utils/pathing.js';
 import { useWatchlist } from '../../hooks/useWatchlist.js';
+import { Combobox, type ComboboxOption } from '../ui/Combobox.js';
 
 interface NodeSearchProps {
   map: maplibregl.Map | null;
@@ -13,9 +14,10 @@ interface NodeSearchProps {
 
 export const NodeSearch: React.FC<NodeSearchProps> = ({ map, onNodeSelect }) => {
   const nodes = useNodeMap();
-  const [query, setQuery] = useState('');
-  const [open, setOpen] = useState(false);
-  const containerRef = useRef<HTMLDivElement>(null);
+  const restoredQuery = new URLSearchParams(window.location.search).get('search')?.trim() ?? '';
+  const [query, setQuery] = useState(restoredQuery);
+  const [open, setOpen] = useState(Boolean(restoredQuery));
+  const inputRef = useRef<HTMLInputElement>(null);
   const watchlist = useWatchlist();
   const [nearbyNodes, setNearbyNodes] = useState<MeshNode[] | null>(null);
   const [geoStatus, setGeoStatus] = useState<string | null>(null);
@@ -50,23 +52,19 @@ export const NodeSearch: React.FC<NodeSearchProps> = ({ map, onNodeSelect }) => 
   }, [fuse, nearbyNodes, query, searchableNodes]);
 
   useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node))
-        setOpen(false);
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, []);
-
-  useEffect(() => {
     const focusSearch = () => {
-      const input = containerRef.current?.querySelector<HTMLInputElement>('input');
-      input?.focus();
+      inputRef.current?.focus();
       setOpen(true);
     };
     window.addEventListener('meshcore:focus-search', focusSearch);
     return () => window.removeEventListener('meshcore:focus-search', focusSearch);
   }, []);
+
+  useEffect(() => {
+    if (!restoredQuery) return;
+    inputRef.current?.focus();
+    setOpen(true);
+  }, [restoredQuery]);
 
   const findNearby = () => {
     if (!navigator.geolocation) {
@@ -109,36 +107,70 @@ export const NodeSearch: React.FC<NodeSearchProps> = ({ map, onNodeSelect }) => 
     setNearbyNodes(null);
     setGeoStatus(null);
     setOpen(false);
+    const url = new URL(window.location.href);
+    url.searchParams.delete('search');
+    window.history.replaceState(null, '', url);
   };
 
+  const options = useMemo<ComboboxOption[]>(() => results.map((node) => ({
+    id: node.node_id,
+    label: node.name ?? node.node_id,
+    content: (
+      <>
+        <span className="node-search__result-name">{node.name ?? 'Unnamed node'}</span>
+        <span className="node-search__result-key">
+          {node.iata ?? node.public_key?.slice(0, 8) ?? node.node_id.slice(0, 8)}
+        </span>
+      </>
+    ),
+  })), [results]);
+
   return (
-    <div ref={containerRef} className="node-search">
+    <div className="node-search">
       <div className="node-search__controls">
-        <input
-          className="node-search__input"
-          type="text"
-          placeholder="Name, IATA or prefix…"
+        <Combobox
+          label="Search map nodes"
           value={query}
-          onChange={(e) => { setQuery(e.target.value); setNearbyNodes(null); setGeoStatus(null); setOpen(true); }}
-          onFocus={() => { if (query || nearbyNodes) setOpen(true); }}
-          onKeyDown={(e) => { if (e.key === 'Escape') setOpen(false); }}
+          onValueChange={(value) => {
+            setQuery(value);
+            setNearbyNodes(null);
+            setGeoStatus(null);
+            setOpen(true);
+          }}
+          onSelectionChange={(id) => {
+            const node = results.find((entry) => entry.node_id === id);
+            if (node) select(node);
+          }}
+          options={options}
+          placeholder="Name, IATA or prefix…"
+          isOpen={open && (results.length > 0 || Boolean(geoStatus) || Boolean(query.trim()))}
+          onOpenChange={setOpen}
+          inputRef={inputRef}
+          className="node-search__combobox"
+          inputClassName="node-search__input"
+          popoverClassName="node-search__results"
+          optionClassName="node-search__result"
+          emptyContent={geoStatus ?? (query.trim() ? 'No matching nodes' : 'Type to search nodes')}
+          footer={(
+            <>
+              {geoStatus && results.length > 0 ? <div className="node-search__status">{geoStatus}</div> : null}
+              {query.trim() ? (
+                <button
+                  type="button"
+                  className="node-search__save"
+                  onClick={() => {
+                    watchlist.toggle('search', query.trim().toLowerCase(), query.trim());
+                    setOpen(false);
+                  }}
+                >
+                  {watchlist.isWatched('search', query.trim().toLowerCase()) ? '★ Saved search' : '☆ Save this search'}
+                </button>
+              ) : null}
+            </>
+          )}
         />
         <button type="button" className="node-search__nearby" onClick={findNearby} title="Find nearby repeaters" aria-label="Find nearby repeaters">⌖</button>
       </div>
-      {open && (results.length > 0 || geoStatus) && (
-        <div className="node-search__results">
-          {geoStatus && <div className="node-search__status">{geoStatus}</div>}
-          {results.map((node) => (
-            <button type="button" key={node.node_id} className="node-search__result" onClick={() => select(node)}>
-              <span className="node-search__result-name">{node.name}</span>
-              <span className="node-search__result-key">{node.iata ?? node.public_key?.slice(0, 8) ?? node.node_id.slice(0, 8)}</span>
-            </button>
-          ))}
-          {query.trim() && <button type="button" className="node-search__save" onClick={() => { watchlist.toggle('search', query.trim().toLowerCase(), query.trim()); setOpen(false); }}>
-            {watchlist.isWatched('search', query.trim().toLowerCase()) ? '★ Saved search' : '☆ Save this search'}
-          </button>}
-        </div>
-      )}
     </div>
   );
 };

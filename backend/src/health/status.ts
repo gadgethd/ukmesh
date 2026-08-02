@@ -1,9 +1,23 @@
-import os from 'node:os';
 import fs from 'node:fs';
 import { Redis } from 'ioredis';
 import { query } from '../db/index.js';
-import { isViewshedFeatureEnabled } from '../features.js';
 import { getRedisConnectionOptions, getRedisUrl } from '../platform/config/redis.js';
+import { configuredLifecycleTargets } from '../db/dataLifecycle.js';
+import {
+  loadVerifiedRestoreReceipt,
+  REQUIRED_BACKUP_DATASETS,
+} from '../backup/receipt.js';
+import {
+  backupAgeSeconds,
+  linkQueueBytes,
+  linkQueueDeadBytes,
+  linkQueueDeadJobs,
+  linkQueueDepth as linkQueueDepthMetric,
+  linkQueueLeases,
+  linkQueueOldestAgeSeconds,
+  linkQueueRetries,
+  workerHeartbeatAgeSeconds,
+} from '../metrics.js';
 
 type WorkerSnapshot = {
   worker_name: string;
@@ -15,25 +29,63 @@ type WorkerSnapshot = {
   cpu_usage_pct: number;
   mem_used_pct: number;
   disk_used_pct: number;
+  queue_bytes?: number;
+  dead_jobs?: number;
+  retries?: number;
+  active_leases?: number;
+  oldest_age_s?: number;
 };
 
 type RetentionTarget = {
-  table: 'worker_health_snapshots' | 'frontend_error_events' | 'operational_check_results' | 'observer_region_packet_sightings' | 'observer_region_observer_sightings';
-  timestampColumn: 'ts' | 'time' | 'last_seen';
+  table: 'worker_health_snapshots' | 'frontend_error_events' | 'owner_alert_deliveries' | 'operational_check_results' | 'observer_region_packet_sightings' | 'observer_region_observer_sightings' | 'link_job_commits' | 'ml_model_variant_packet_results';
+  timestampColumn: 'ts' | 'time' | 'created_at' | 'completed_at' | 'last_seen';
   retention: string;
   batchSize: number;
+  extraPredicate?: string;
 };
 
 const RETENTION_TARGETS: RetentionTarget[] = [
   { table: 'worker_health_snapshots', timestampColumn: 'ts', retention: '14 days', batchSize: 10_000 },
   { table: 'frontend_error_events', timestampColumn: 'time', retention: '30 days', batchSize: 2_000 },
+  {
+    table: 'owner_alert_deliveries',
+    timestampColumn: 'created_at',
+    retention: '90 days',
+    batchSize: 1_000,
+    extraPredicate: `(status = 'succeeded' OR attempts >= 5)`,
+  },
   { table: 'operational_check_results', timestampColumn: 'ts', retention: '14 days', batchSize: 2_000 },
-  // This rollup is intentionally limited to the 7-day dashboard window. Deleting
-  // it in batches avoids long transactions and lets live ingest continue.
   { table: 'observer_region_packet_sightings', timestampColumn: 'last_seen', retention: '8 days', batchSize: 25_000 },
-  // Observer sightings are intentionally retained until the stale-observer
-  // maintenance job archives and removes them after a month of silence.
+  { table: 'observer_region_observer_sightings', timestampColumn: 'last_seen', retention: '31 days', batchSize: 5_000 },
+  { table: 'link_job_commits', timestampColumn: 'completed_at', retention: '180 days', batchSize: 5_000 },
+  { table: 'ml_model_variant_packet_results', timestampColumn: 'created_at', retention: '180 days', batchSize: 5_000 },
 ];
+
+function refreshBackupAgeMetrics(now = new Date()): void {
+  backupAgeSeconds.reset();
+  try {
+    const receipt = loadVerifiedRestoreReceipt({
+      receiptPath: process.env['DATA_LIFECYCLE_RESTORE_RECEIPT_PATH'],
+      signaturePath: process.env['DATA_LIFECYCLE_RESTORE_RECEIPT_SIGNATURE_PATH'],
+      verifyKeyPath: process.env['DATA_LIFECYCLE_RECEIPT_VERIFY_KEY_PATH'],
+    });
+    const ageSeconds = Math.max(
+      0,
+      (now.getTime() - Date.parse(receipt.backup_completed_at)) / 1_000,
+    );
+    for (const dataset of REQUIRED_BACKUP_DATASETS) {
+      backupAgeSeconds.set({ dataset }, ageSeconds);
+    }
+  } catch {
+    // Absence is intentional signal: BackupReceiptMissing fires when no
+    // signature-verified receipt can be loaded.
+  }
+}
+const OPERATIONAL_RETENTION_ENABLED =
+  process.env['DATA_LIFECYCLE_RETENTION_ENABLED'] === 'true';
+const OPERATIONAL_RETENTION_TARGETS = configuredLifecycleTargets(
+  process.env['DATA_LIFECYCLE_RETENTION_TARGETS'],
+);
 
 let redisClient: Redis | null = null;
 
@@ -54,6 +106,7 @@ async function deleteExpiredRows(target: RetentionTarget): Promise<void> {
        SELECT ctid
        FROM ${target.table}
        WHERE ${target.timestampColumn} < NOW() - $1::interval
+         ${target.extraPredicate ? `AND ${target.extraPredicate}` : ''}
        LIMIT $2
      )
      DELETE FROM ${target.table} AS target
@@ -67,105 +120,200 @@ function toPct(num: number): number {
   return Math.round(num * 1000) / 10;
 }
 
-type CpuSample = {
-  idle: number;
-  total: number;
+type ProcessCpuSample = {
+  usageMicros: number;
+  atNanos: bigint;
 };
 
-let lastCpuSample: CpuSample | null = null;
+let lastProcessCpuSample: ProcessCpuSample | null = null;
 
-function readCpuSample(): CpuSample {
-  const cpus = os.cpus();
-  let idle = 0;
-  let total = 0;
-  for (const cpu of cpus) {
-    idle += cpu.times.idle;
-    total += cpu.times.user + cpu.times.nice + cpu.times.sys + cpu.times.idle + cpu.times.irq;
-  }
-  return { idle, total };
+function processCpuUsagePct(): number {
+  const usage = process.cpuUsage();
+  const current = {
+    usageMicros: usage.user + usage.system,
+    atNanos: process.hrtime.bigint(),
+  };
+  const previous = lastProcessCpuSample;
+  lastProcessCpuSample = current;
+  if (!previous) return 0;
+  const elapsedMicros = Number(current.atNanos - previous.atNanos) / 1_000;
+  if (elapsedMicros <= 0) return 0;
+  return Math.round(
+    (Math.max(0, current.usageMicros - previous.usageMicros) / elapsedMicros) * 10_000,
+  ) / 100;
 }
 
-function cpuUsagePct(): number {
-  const current = readCpuSample();
-  const previous = lastCpuSample;
-  lastCpuSample = current;
-  if (!previous) return 0;
+function readFiniteNumber(path: string): number | null {
+  try {
+    const value = fs.readFileSync(path, 'utf8').trim();
+    if (!/^\d+$/.test(value)) return null;
+    const parsed = Number(value);
+    return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
+  } catch {
+    return null;
+  }
+}
 
-  const idleDelta = Math.max(0, current.idle - previous.idle);
-  const totalDelta = Math.max(0, current.total - previous.total);
-  if (totalDelta <= 0) return 0;
-  return toPct(1 - idleDelta / totalDelta);
+export function measureDirectoryBytes(
+  root: string,
+  maxEntries = 100_000,
+): { bytes: number | null; entries: number; complete: boolean } {
+  const pending = [root];
+  let bytes = 0;
+  let entries = 0;
+  try {
+    while (pending.length > 0) {
+      const directory = pending.pop()!;
+      for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+        entries += 1;
+        if (entries > maxEntries) return { bytes: null, entries, complete: false };
+        const entryPath = `${directory}/${entry.name}`;
+        if (entry.isDirectory()) pending.push(entryPath);
+        else if (entry.isFile()) bytes += fs.statSync(entryPath).size;
+      }
+    }
+    return { bytes, entries, complete: true };
+  } catch {
+    return { bytes: null, entries, complete: false };
+  }
+}
+
+type VolumeConfig = {
+  name: string;
+  path: string;
+  budgetBytes: number;
+};
+
+function volumeConfigs(raw = process.env['HEALTH_VOLUME_PATHS'] ?? ''): VolumeConfig[] {
+  return raw.split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .flatMap((entry) => {
+      const [name, path, budget] = entry.split('=');
+      const budgetBytes = Number(budget);
+      return name && path && /^[a-z][a-z0-9_-]{0,31}$/i.test(name)
+        && path.startsWith('/') && Number.isSafeInteger(budgetBytes) && budgetBytes > 0
+        ? [{ name, path, budgetBytes }]
+        : [];
+    });
+}
+
+export function measureConfiguredVolumes(raw: string): Record<string, {
+  path: string;
+  used_bytes: number | null;
+  budget_bytes: number;
+  used_pct: number | null;
+  complete: boolean;
+}> {
+  return Object.fromEntries(volumeConfigs(raw).map((config) => {
+    const measured = measureDirectoryBytes(config.path);
+    return [config.name, {
+      path: config.path,
+      used_bytes: measured.bytes,
+      budget_bytes: config.budgetBytes,
+      used_pct: measured.bytes == null
+        ? null
+        : toPct(measured.bytes / config.budgetBytes),
+      complete: measured.complete,
+    }];
+  }));
+}
+
+let cachedVolumes: {
+  expiresAt: number;
+  value: Record<string, {
+    path: string;
+    used_bytes: number | null;
+    budget_bytes: number;
+    used_pct: number | null;
+    complete: boolean;
+  }>;
+} | null = null;
+
+function volumeStats(): Record<string, {
+  path: string;
+  used_bytes: number | null;
+  budget_bytes: number;
+  used_pct: number | null;
+  complete: boolean;
+}> {
+  if (cachedVolumes && cachedVolumes.expiresAt > Date.now()) return cachedVolumes.value;
+  const value = measureConfiguredVolumes(process.env['HEALTH_VOLUME_PATHS'] ?? '');
+  cachedVolumes = { expiresAt: Date.now() + 5 * 60_000, value };
+  return value;
 }
 
 function systemStats() {
-  const load1 = os.loadavg()[0] ?? 0;
-  const cpuCount = os.cpus().length;
-  const usagePct = cpuUsagePct();
-  const totalMem = os.totalmem();
-  const freeMem = os.freemem();
-  const usedMem = Math.max(0, totalMem - freeMem);
-
-  let diskTotal = 0;
-  let diskUsed = 0;
-  try {
-    const stat = fs.statfsSync('/');
-    diskTotal = Number(stat.blocks) * Number(stat.bsize);
-    const free = Number(stat.bavail) * Number(stat.bsize);
-    diskUsed = Math.max(0, diskTotal - free);
-  } catch {
-    // Keep zeros if statfs is unavailable
-  }
+  const usagePct = processCpuUsagePct();
+  const cgroupCurrent = readFiniteNumber('/sys/fs/cgroup/memory.current');
+  const cgroupMax = readFiniteNumber('/sys/fs/cgroup/memory.max');
+  const rss = process.memoryUsage().rss;
+  const memoryUsed = cgroupCurrent ?? rss;
+  const memoryTotal = cgroupMax;
+  const volumes = volumeStats();
+  const knownVolumePcts = Object.values(volumes)
+    .map((volume) => volume.used_pct)
+    .filter((value): value is number => value != null);
+  const maxVolumePct = knownVolumePcts.length > 0 ? Math.max(...knownVolumePcts) : null;
 
   return {
     generated_at: new Date().toISOString(),
     cpu: {
-      load_1m: load1,
-      count: cpuCount,
-      load_pct: cpuCount > 0 ? toPct(load1 / cpuCount) : 0,
+      scope: 'process',
+      load_1m: usagePct,
       usage_pct: usagePct,
     },
     memory: {
-      total_mb: Math.round(totalMem / 1_048_576),
-      used_mb: Math.round(usedMem / 1_048_576),
-      used_pct: totalMem > 0 ? toPct(usedMem / totalMem) : 0,
+      scope: cgroupCurrent != null && cgroupMax != null ? 'cgroup' : 'process',
+      total_mb: memoryTotal == null ? null : Math.round(memoryTotal / 1_048_576),
+      used_mb: Math.round(memoryUsed / 1_048_576),
+      used_pct: memoryTotal == null ? null : toPct(memoryUsed / memoryTotal),
     },
     disk: {
-      total_gb: Math.round((diskTotal / 1_073_741_824) * 10) / 10,
-      used_gb: Math.round((diskUsed / 1_073_741_824) * 10) / 10,
-      used_pct: diskTotal > 0 ? toPct(diskUsed / diskTotal) : 0,
+      scope: 'configured_volumes',
+      used_pct: maxVolumePct,
+      volumes,
     },
     runtime: {
-      uptime_s: Math.round(os.uptime()),
-      node_version: process.version,
-      platform: process.platform,
-      arch: process.arch,
+      scope: 'process',
+      uptime_s: Math.round(process.uptime()),
     },
   };
 }
 
 async function currentWorkers(precomputedStats?: ReturnType<typeof systemStats>): Promise<WorkerSnapshot[]> {
+  refreshBackupAgeMetrics();
   const r = redis();
-  const viewshedEnabled = isViewshedFeatureEnabled();
   const [
-    viewshedDepth,
-    linkDepth,
-    viewshedRecent,
+    linkQueue,
     linkRecent,
-    viewshedLast,
     linkLast,
     learning,
     healthRecent,
     healthLast,
     backfillState,
   ] = await Promise.all([
-    r.llen('meshcore:viewshed_jobs'),
     Promise.all([
       r.llen('meshcore:link_jobs'),
-      r.hget('meshcore:link:v3:counters', 'count'),
-    ]).then(([legacy, v3]) => Number(legacy ?? 0) + Number(v3 ?? 0)),
-    query<{ count: string }>(`SELECT COUNT(*) AS count FROM node_coverage WHERE calculated_at > NOW() - INTERVAL '1 hour'`),
+      r.hmget('meshcore:link:v3:counters', 'count', 'bytes', 'dead_count', 'dead_bytes'),
+      r.zcard('meshcore:link:v3:leases'),
+      r.zrange('meshcore:link:v3:enqueued', 0, 0, 'WITHSCORES'),
+      r.hvals('meshcore:link:v3:attempts'),
+    ]).then(([legacy, counters, leases, oldest, attempts]) => {
+      const [count, bytes, deadCount, deadBytes] = counters;
+      const oldestScore = Number(oldest[1] ?? 0);
+      return {
+        depth: Number(legacy ?? 0) + Number(count ?? 0),
+        count: Number(count ?? 0),
+        bytes: Number(bytes ?? 0),
+        deadCount: Number(deadCount ?? 0),
+        deadBytes: Number(deadBytes ?? 0),
+        leases: Number(leases ?? 0),
+        oldestAgeSeconds: oldestScore > 0 ? Math.max(0, (Date.now() - oldestScore) / 1_000) : 0,
+        retries: attempts.reduce((total, value) => total + Math.max(0, Number(value) - 1), 0),
+      };
+    }),
     query<{ count: string }>(`SELECT COUNT(*) AS count FROM node_links WHERE itm_computed_at > NOW() - INTERVAL '1 hour'`),
-    query<{ ts: string | null }>(`SELECT MAX(calculated_at)::text AS ts FROM node_coverage`),
     query<{ ts: string | null }>(`SELECT MAX(itm_computed_at)::text AS ts FROM node_links`),
     query<{ ts: string | null }>(`SELECT MAX(updated_at)::text AS ts FROM path_model_calibration`),
     query<{ count: string }>(
@@ -187,10 +335,9 @@ async function currentWorkers(precomputedStats?: ReturnType<typeof systemStats>)
 
   const stats = precomputedStats ?? systemStats();
   const load = stats.cpu.load_1m;
-  const memPct = stats.memory.used_pct;
-  const diskPct = stats.disk.used_pct;
+  const memPct = stats.memory.used_pct ?? -1;
+  const diskPct = stats.disk.used_pct ?? -1;
 
-  const viewshedProcessed = viewshedEnabled ? Number(viewshedRecent.rows[0]?.count ?? 0) : 0;
   const linkProcessed = Number(linkRecent.rows[0]?.count ?? 0);
   const healthProcessed = Number(healthRecent.rows[0]?.count ?? 0);
   const healthLastTs = healthLast.rows[0]?.ts ?? null;
@@ -198,28 +345,39 @@ async function currentWorkers(precomputedStats?: ReturnType<typeof systemStats>)
   const learningRecent = learningLast ? (Date.now() - Date.parse(learningLast)) <= 60 * 60_000 : false;
   const backfillLinks = Number(backfillState.rows[0]?.links ?? 0);
   const backfillLast = backfillState.rows[0]?.last_observed ?? null;
+  linkQueueDepthMetric.set(linkQueue.count);
+  linkQueueBytes.set(linkQueue.bytes);
+  linkQueueDeadJobs.set(linkQueue.deadCount);
+  linkQueueDeadBytes.set(linkQueue.deadBytes);
+  linkQueueLeases.set(linkQueue.leases);
+  linkQueueRetries.set(linkQueue.retries);
+  linkQueueOldestAgeSeconds.set(linkQueue.oldestAgeSeconds);
+  const setHeartbeatAge = (worker: string, timestamp: string | null | undefined) => {
+    const age = timestamp
+      ? Math.max(0, (Date.now() - Date.parse(timestamp)) / 1_000)
+      : -1;
+    workerHeartbeatAgeSeconds.set({ worker }, Number.isFinite(age) ? age : -1);
+  };
+  setHeartbeatAge('link', linkLast.rows[0]?.ts);
+  setHeartbeatAge('path_learning', learningLast);
+  setHeartbeatAge('health', healthLastTs);
+  setHeartbeatAge('link_backfill', backfillLast);
   return [
     {
-      worker_name: 'viewshed-worker',
-      status: viewshedEnabled ? (viewshedDepth > 0 || viewshedProcessed > 0 ? 'running' : 'idle') : 'disabled',
-      queue_depth: viewshedEnabled ? Number(viewshedDepth ?? 0) : 0,
-      processed_1h: viewshedProcessed,
-      last_activity_at: viewshedEnabled ? (viewshedLast.rows[0]?.ts ?? null) : null,
-      cpu_load_1m: load,
-      cpu_usage_pct: stats.cpu.usage_pct,
-      mem_used_pct: memPct,
-      disk_used_pct: diskPct,
-    },
-    {
       worker_name: 'link-worker',
-      status: linkDepth > 0 || linkProcessed > 0 ? 'running' : 'idle',
-      queue_depth: Number(linkDepth ?? 0),
+      status: linkQueue.depth > 0 || linkProcessed > 0 ? 'running' : 'idle',
+      queue_depth: linkQueue.depth,
       processed_1h: linkProcessed,
       last_activity_at: linkLast.rows[0]?.ts ?? null,
       cpu_load_1m: load,
       cpu_usage_pct: stats.cpu.usage_pct,
       mem_used_pct: memPct,
       disk_used_pct: diskPct,
+      queue_bytes: linkQueue.bytes,
+      dead_jobs: linkQueue.deadCount,
+      retries: linkQueue.retries,
+      active_leases: linkQueue.leases,
+      oldest_age_s: linkQueue.oldestAgeSeconds,
     },
     {
       worker_name: 'path-learning',
@@ -257,6 +415,26 @@ async function currentWorkers(precomputedStats?: ReturnType<typeof systemStats>)
   ];
 }
 
+async function redisDurabilityState(): Promise<{
+  maxmemory_policy: string;
+  appendonly: string;
+}> {
+  const r = redis();
+  try {
+    const [policy, appendonly] = await Promise.all([
+      r.config('GET', 'maxmemory-policy') as Promise<string[]>,
+      r.config('GET', 'appendonly') as Promise<string[]>,
+    ]);
+    return {
+      maxmemory_policy: policy[1] ?? 'unknown',
+      appendonly: appendonly[1] ?? 'unknown',
+    };
+  } catch (error) {
+    console.error('[health] unable to verify Redis durability config', error);
+    return { maxmemory_policy: 'unknown', appendonly: 'unknown' };
+  }
+}
+
 export async function captureWorkerHealthSnapshot(): Promise<void> {
   const rows = await currentWorkers();
   for (const row of rows) {
@@ -277,8 +455,11 @@ export async function captureWorkerHealthSnapshot(): Promise<void> {
     );
   }
 
-  for (const target of RETENTION_TARGETS) {
-    await deleteExpiredRows(target);
+  if (OPERATIONAL_RETENTION_ENABLED) {
+    for (const target of RETENTION_TARGETS) {
+      if (!OPERATIONAL_RETENTION_TARGETS.has(target.table)) continue;
+      await deleteExpiredRows(target);
+    }
   }
 }
 
@@ -326,7 +507,7 @@ export async function getWorkerHealthOverview() {
   // Compute system stats once — cpuUsagePct() diffs against lastCpuSample,
   // so calling it twice in one request gives a garbage near-zero second reading.
   const sysStats = systemStats();
-  const [workers, history, errors1h, ingest, pathHashWidths, multibyteSummary, operationalChecks, databaseMaintenance, databaseRuntime] = await Promise.all([
+  const [workers, history, errors1h, ingest, pathHashWidths, multibyteSummary, operationalChecks, databaseMaintenance, databaseRuntime, redisDurability] = await Promise.all([
     currentWorkers(sysStats),
     query<{
       ts: string;
@@ -460,6 +641,7 @@ export async function getWorkerHealthOverview() {
        FROM pg_stat_database
        WHERE datname = current_database()`,
     ),
+    redisDurabilityState(),
   ]);
 
   const ingestRow = ingest.rows[0];
@@ -486,7 +668,7 @@ export async function getWorkerHealthOverview() {
   }
 
   const multibyteRow = multibyteSummary.rows[0];
-  const problems: Array<{ code: string; severity: 'warning' | 'critical'; message: string }> = [];
+  const problems: HealthProblem[] = [];
   const lastPacketAt = ingestRow?.global_last_packet_at ? Date.parse(ingestRow.global_last_packet_at) : Number.NaN;
   const packetAgeMinutes = Number.isFinite(lastPacketAt) ? Math.floor((Date.now() - lastPacketAt) / 60_000) : null;
   if (packetAgeMinutes == null || packetAgeMinutes > 30) {
@@ -496,9 +678,9 @@ export async function getWorkerHealthOverview() {
       message: packetAgeMinutes == null ? 'No public packet ingest timestamp is available' : `Public ingest is ${packetAgeMinutes} minutes stale`,
     });
   }
-  if (sysStats.disk.used_pct >= 90) {
+  if (sysStats.disk.used_pct != null && sysStats.disk.used_pct >= 90) {
     problems.push({ code: 'disk_pressure', severity: 'critical', message: `Disk usage is ${sysStats.disk.used_pct}%` });
-  } else if (sysStats.disk.used_pct >= 80) {
+  } else if (sysStats.disk.used_pct != null && sysStats.disk.used_pct >= 80) {
     problems.push({ code: 'disk_pressure', severity: 'warning', message: `Disk usage is ${sysStats.disk.used_pct}%` });
   }
   for (const worker of workers) {
@@ -509,15 +691,24 @@ export async function getWorkerHealthOverview() {
         message: `${worker.worker_name} queue contains ${worker.queue_depth} jobs`,
       });
     }
+    if ((worker.dead_jobs ?? 0) > 0) {
+      problems.push({
+        code: 'worker_dead_letter_jobs',
+        severity: (worker.dead_jobs ?? 0) >= 10 ? 'critical' : 'warning',
+        message: `${worker.worker_name} retains ${worker.dead_jobs} dead-letter job(s)`,
+      });
+    }
+    if ((worker.oldest_age_s ?? 0) > 3_600) {
+      problems.push({
+        code: 'worker_oldest_job_stale',
+        severity: (worker.oldest_age_s ?? 0) > 21_600 ? 'critical' : 'warning',
+        message: `${worker.worker_name} oldest job is ${Math.floor((worker.oldest_age_s ?? 0) / 60)} minutes old`,
+      });
+    }
   }
+  // Browser reports are anonymous, untrusted diagnostics. They are retained as
+  // an operator trend but can never set authoritative public health severity.
   const frontendErrors = Number(errors1h.rows[0]?.count ?? 0);
-  if (frontendErrors >= 25) {
-    problems.push({
-      code: 'frontend_error_spike',
-      severity: frontendErrors >= 100 ? 'critical' : 'warning',
-      message: `${frontendErrors} frontend errors were recorded in the last hour`,
-    });
-  }
   const latestChecks = operationalChecks.rows;
   for (const check of latestChecks) {
     const ageMinutes = Math.floor((Date.now() - Date.parse(check.ts)) / 60_000);
@@ -538,11 +729,24 @@ export async function getWorkerHealthOverview() {
       message: `${tablesNeedingVacuum} database table(s) exceed the dead-row vacuum threshold`,
     });
   }
+  if (redisDurability.maxmemory_policy !== 'noeviction') {
+    problems.push({
+      code: 'redis_eviction_policy_unsafe',
+      severity: 'critical',
+      message: `Redis maxmemory policy is ${redisDurability.maxmemory_policy}; durable queues require noeviction`,
+    });
+  }
+  if (redisDurability.appendonly !== 'yes') {
+    problems.push({
+      code: 'redis_persistence_disabled',
+      severity: 'warning',
+      message: `Redis append-only persistence is ${redisDurability.appendonly}`,
+    });
+  }
 
+  const healthSummary = summarizeAuthoritativeHealth(problems, frontendErrors);
   return {
-    status: problems.some((problem) => problem.severity === 'critical')
-      ? 'critical'
-      : problems.length > 0 ? 'degraded' : 'healthy',
+    status: healthSummary.status,
     problems,
     maintenance: {
       active: process.env['MAINTENANCE_ACTIVE'] === '1',
@@ -558,10 +762,11 @@ export async function getWorkerHealthOverview() {
       max_connections: Number(databaseRuntime.rows[0]?.max_connections ?? 0),
       cache_hit_ratio: Number(databaseRuntime.rows[0]?.cache_hit_ratio ?? 0),
     },
+    redis: redisDurability,
     system: sysStats,
     workers,
     history: history.rows,
-    frontend_errors_1h: frontendErrors,
+    frontend_errors_1h: healthSummary.frontendErrors,
     ingest: {
       stale_nodes: staleNodes,
       active_nodes: activeNodes,
@@ -574,6 +779,65 @@ export async function getWorkerHealthOverview() {
       last_24h_hops: pathHashStats,
       multibyte_packets_24h: Number(multibyteRow?.multibyte_packets_24h ?? 0),
       latest_multibyte_at: multibyteRow?.latest_multibyte_at ?? null,
+    },
+  };
+}
+
+export type HealthProblem = {
+  code: string;
+  severity: 'warning' | 'critical';
+  message: string;
+};
+
+/**
+ * Anonymous browser diagnostics are reported to operators but are deliberately
+ * absent from the authoritative status calculation.
+ */
+export function summarizeAuthoritativeHealth(
+  problems: readonly HealthProblem[],
+  frontendErrors: number,
+): {
+  status: 'healthy' | 'degraded' | 'critical';
+  frontendErrors: number;
+} {
+  return {
+    status: problems.some((problem) => problem.severity === 'critical')
+      ? 'critical'
+      : problems.length > 0 ? 'degraded' : 'healthy',
+    frontendErrors: Math.max(0, Math.floor(frontendErrors) || 0),
+  };
+}
+
+export function toPublicHealthOverview(
+  detail: Awaited<ReturnType<typeof getWorkerHealthOverview>>,
+) {
+  const storagePct = detail.system.disk.used_pct;
+  return {
+    status: detail.status,
+    generatedAt: detail.system.generated_at,
+    maintenance: detail.maintenance,
+    incidents: detail.problems.map((problem) => ({
+      code: problem.code,
+      severity: problem.severity,
+    })),
+    components: {
+      ingest: {
+        status: detail.ingest.packet_age_minutes == null
+          ? 'unknown'
+          : detail.ingest.packet_age_minutes > 30 ? 'stale' : 'ok',
+      },
+      workers: {
+        status: detail.workers.some((worker) => worker.status === 'failed')
+          ? 'failed'
+          : detail.workers.some((worker) => worker.status === 'running')
+            ? 'running'
+            : 'idle',
+      },
+      storage: {
+        status: storagePct == null
+          ? 'unknown'
+          : storagePct >= 90 ? 'critical' : storagePct >= 80 ? 'warning' : 'ok',
+      },
     },
   };
 }

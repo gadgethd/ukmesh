@@ -1,5 +1,10 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { LoadingIndicator } from '../../components/LoadingIndicator.js';
+import { getCurrentSite } from '../../config/site.js';
+import { useRuntimeFeatures } from '../../config/runtimeFeatures.js';
+import { fetchJson, withScopeParams } from '../../utils/api.js';
+import { ScopedCache } from '../../utils/scopedCache.js';
+import { Combobox, type ComboboxOption } from '../../components/ui/Combobox.js';
 
 interface MeshNode {
   node_id: string;
@@ -42,32 +47,107 @@ interface AdvertPacket {
 }
 
 type NodeDetailBundle = { links: NodeLink[]; history: PacketHistory[]; adverts: AdvertPacket[] };
+type PublicMapPage = {
+  nodes: MeshNode[];
+  page: {
+    snapshot: string;
+    nextCursor: string | null;
+    complete: boolean;
+    returned: number;
+    rowLimit: number;
+  };
+};
 const NODE_DETAIL_TTL_MS = 5 * 60_000;
-const nodeDetailCache = new Map<string, { expiresAt: number; value: NodeDetailBundle }>();
+const MAP_PAGE_LIMIT = 2000;
+const MAP_MAX_PAGES = 100;
+const nodeDetailCache = new ScopedCache<NodeDetailBundle>({
+  name: 'repeater-detail',
+  ttlMs: NODE_DETAIL_TTL_MS,
+  maxEntries: 128,
+  maxBytes: 12 * 1024 * 1024,
+  maxInflight: 4,
+});
 
-async function fetchJsonWithTimeout<T>(url: string, timeoutMs = 8_000): Promise<T> {
-  const response = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  return response.json() as Promise<T>;
+async function loadNodeDetails(
+  node: MeshNode,
+  network: string,
+  observer: string | undefined,
+  scopeKey: string,
+  signal: AbortSignal,
+): Promise<NodeDetailBundle> {
+  const cacheKey = node.node_id.toUpperCase();
+  const publicKey = node.public_key ?? node.node_id;
+  return nodeDetailCache.getOrLoad(scopeKey, cacheKey, async () => {
+    const requestScope = { network, observer };
+    const [links, history, adverts] = await Promise.all([
+      fetchJson<NodeLink[]>(
+        withScopeParams(`/api/nodes/${encodeURIComponent(node.node_id)}/links`, requestScope),
+        { signal, cache: 'no-store' },
+        { timeoutMs: 8_000, maxBytes: 2 * 1024 * 1024 },
+      ),
+      fetchJson<PacketHistory[]>(
+        withScopeParams(`/api/nodes/${encodeURIComponent(node.node_id)}/history?hours=24`, requestScope),
+        { signal, cache: 'no-store' },
+        { timeoutMs: 8_000, maxBytes: 4 * 1024 * 1024 },
+      ),
+      fetchJson<AdvertPacket[]>(
+        withScopeParams(`/api/nodes/${encodeURIComponent(publicKey)}/adverts?hours=168`, requestScope),
+        { signal, cache: 'no-store' },
+        { timeoutMs: 8_000, maxBytes: 2 * 1024 * 1024 },
+      ),
+    ]);
+    return {
+      links: Array.isArray(links) ? links : [],
+      history: Array.isArray(history) ? history : [],
+      adverts: Array.isArray(adverts) ? adverts : [],
+    };
+  });
 }
 
-async function loadNodeDetails(node: MeshNode): Promise<NodeDetailBundle> {
-  const cacheKey = node.node_id.toUpperCase();
-  const cached = nodeDetailCache.get(cacheKey);
-  if (cached && cached.expiresAt > Date.now()) return cached.value;
-  const publicKey = node.public_key ?? node.node_id;
-  const [links, history, adverts] = await Promise.all([
-    fetchJsonWithTimeout<NodeLink[]>(`/api/nodes/${node.node_id}/links`),
-    fetchJsonWithTimeout<PacketHistory[]>(`/api/nodes/${node.node_id}/history?hours=24`),
-    fetchJsonWithTimeout<AdvertPacket[]>(`/api/nodes/${publicKey}/adverts?hours=168`),
-  ]);
-  const value = {
-    links: Array.isArray(links) ? links : [],
-    history: Array.isArray(history) ? history : [],
-    adverts: Array.isArray(adverts) ? adverts : [],
-  };
-  nodeDetailCache.set(cacheKey, { expiresAt: Date.now() + NODE_DETAIL_TTL_MS, value });
-  return value;
+async function loadCompleteNodeSnapshot(
+  signal: AbortSignal,
+  network: string,
+  observer: string | undefined,
+): Promise<MeshNode[]> {
+  const nodes = new Map<string, MeshNode>();
+  let snapshot: string | null = null;
+  let cursor: string | null = null;
+  const seenCursors = new Set<string>();
+
+  for (let pageNumber = 0; pageNumber < MAP_MAX_PAGES; pageNumber += 1) {
+    const params = new URLSearchParams({
+      network,
+      fields: 'node_id,name,lat,lon,iata,role,last_seen,is_online,hardware_model,advert_count,elevation_m',
+      limit: String(MAP_PAGE_LIMIT),
+    });
+    if (observer) params.set('observer', observer);
+    if (snapshot) params.set('snapshot', snapshot);
+    if (cursor) params.set('cursor', cursor);
+    const payload = await fetchJson<PublicMapPage>(
+      `/api/nodes/map?${params}`,
+      { signal, cache: 'no-store' },
+      { timeoutMs: 20_000, maxBytes: 12 * 1024 * 1024 },
+    );
+    if (!payload || !Array.isArray(payload.nodes) || !payload.page) {
+      throw new Error('Repeater index returned an invalid page');
+    }
+    if (snapshot && payload.page.snapshot !== snapshot) {
+      throw new Error('Repeater index snapshot changed while paging');
+    }
+    snapshot = payload.page.snapshot;
+    for (const node of payload.nodes) {
+      if (node && typeof node.node_id === 'string') {
+        nodes.set(node.node_id, { ...node, public_key: node.node_id });
+      }
+    }
+    if (payload.page.complete) return [...nodes.values()];
+    if (!payload.page.nextCursor || seenCursors.has(payload.page.nextCursor)) {
+      throw new Error('Repeater index did not provide a forward cursor');
+    }
+    seenCursors.add(payload.page.nextCursor);
+    cursor = payload.page.nextCursor;
+  }
+  throw new Error('Repeater index exceeded its page budget');
 }
 
 function timeAgo(iso: string): string {
@@ -168,47 +248,54 @@ function formatTimeUntil(date: Date): string {
 }
 
 export const UKRepeaterSearchPage: React.FC = () => {
+  const site = getCurrentSite();
+  const runtimeFeatures = useRuntimeFeatures();
+  const network = site.networkFilter ?? site.network;
+  const observer = site.observerId;
+  const detailScopeKey = `${network}|${observer ?? 'all'}|privacy-${runtimeFeatures.privacyGeneration}`;
   const [searchQuery, setSearchQuery] = useState('');
   const [showResults, setShowResults] = useState(false);
   const [nodes, setNodes] = useState<MeshNode[]>([]);
   const [loadingNodes, setLoadingNodes] = useState(true);
+  const [nodesError, setNodesError] = useState<string | null>(null);
   const [selectedNode, setSelectedNode] = useState<MeshNode | null>(null);
   const [links, setLinks] = useState<NodeLink[]>([]);
   const [history, setHistory] = useState<PacketHistory[]>([]);
   const [adverts, setAdverts] = useState<AdvertPacket[]>([]);
   const [loadingDetails, setLoadingDetails] = useState(false);
   const [copiedKey, setCopiedKey] = useState(false);
-  const searchRef = useRef<HTMLDivElement>(null);
+  const selectionSequenceRef = useRef(0);
+  const selectionControllerRef = useRef<AbortController | null>(null);
 
   // Load nodes on mount
   useEffect(() => {
-    let cancelled = false;
-    fetch('/api/nodes/map?network=ukmesh&fields=node_id,name,lat,lon,iata,role,last_seen,is_online,hardware_model')
-      .then(r => r.json())
-      .then(data => {
-        if (!cancelled) setNodes(Array.isArray(data) ? data.map((node: MeshNode) => ({ ...node, public_key: node.node_id })) : []);
+    const controller = new AbortController();
+    setLoadingNodes(true);
+    setNodes([]);
+    setSelectedNode(null);
+    selectionControllerRef.current?.abort();
+    loadCompleteNodeSnapshot(controller.signal, network, observer)
+      .then(loadedNodes => {
+        if (!controller.signal.aborted) {
+          setNodes(loadedNodes);
+          setNodesError(null);
+        }
       })
-      .catch(() => {
-        if (!cancelled) setNodes([]);
+      .catch((error: unknown) => {
+        if (!controller.signal.aborted) {
+          setNodes([]);
+          setNodesError(error instanceof Error ? error.message : 'Could not load repeater index');
+        }
       })
       .finally(() => {
-        if (!cancelled) setLoadingNodes(false);
+        if (!controller.signal.aborted) setLoadingNodes(false);
       });
     return () => {
-      cancelled = true;
+      controller.abort();
     };
-  }, []);
+  }, [network, observer, runtimeFeatures.privacyGeneration]);
 
-  // Click outside to close search dropdown
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (searchRef.current && !searchRef.current.contains(event.target as Node)) {
-        setShowResults(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
+  useEffect(() => () => selectionControllerRef.current?.abort(), []);
 
   const searchResults = useMemo(() => {
     if (!searchQuery.trim()) return [];
@@ -226,6 +313,19 @@ export const UKRepeaterSearchPage: React.FC = () => {
       })
       .slice(0, 10);
   }, [searchQuery, nodes]);
+  const searchOptions = useMemo<ComboboxOption[]>(() => searchResults.map((node) => ({
+    id: node.node_id,
+    label: node.name ?? node.node_id,
+    content: (
+      <>
+        <span className="repeater-search-box__result-name">{node.name || 'Unknown'}</span>
+        <span className="repeater-search-box__result-meta">
+          {node.iata ? `${node.iata} · ` : ''}
+          {node.public_key?.slice(0, 16)}... · {node.is_online ? 'Online' : 'Offline'}
+        </span>
+      </>
+    ),
+  })), [searchResults]);
 
   // Calculate predicted next advert based on advert packets
   const prediction = useMemo(() => {
@@ -234,6 +334,11 @@ export const UKRepeaterSearchPage: React.FC = () => {
   }, [adverts]);
 
   const selectNode = async (node: MeshNode) => {
+    const sequence = selectionSequenceRef.current + 1;
+    selectionSequenceRef.current = sequence;
+    selectionControllerRef.current?.abort();
+    const controller = new AbortController();
+    selectionControllerRef.current = controller;
     setSelectedNode(node);
     setSearchQuery(node.name || node.public_key?.slice(0, 16) || '');
     setShowResults(false);
@@ -244,14 +349,20 @@ export const UKRepeaterSearchPage: React.FC = () => {
     setCopiedKey(false);
 
     try {
-      const details = await loadNodeDetails(node);
+      const details = await loadNodeDetails(node, network, observer, detailScopeKey, controller.signal);
+      if (controller.signal.aborted || sequence !== selectionSequenceRef.current) return;
       setLinks(details.links);
       setHistory(details.history);
       setAdverts(details.adverts);
     } catch {
       // Ignore errors
     } finally {
-      setLoadingDetails(false);
+      if (selectionControllerRef.current === controller) {
+        selectionControllerRef.current = null;
+      }
+      if (!controller.signal.aborted && sequence === selectionSequenceRef.current) {
+        setLoadingDetails(false);
+      }
     }
   };
 
@@ -266,55 +377,57 @@ export const UKRepeaterSearchPage: React.FC = () => {
   return (
     <>
 
-      <section className="site-section">
+      <section className="site-section repeater-page">
         <div className="site-content">
-          <div className="repeater-search-box" ref={searchRef}>
-            <input
-              type="text"
+          <Combobox
+              label="Search repeaters"
               value={searchQuery}
-              onChange={(e) => { setSearchQuery(e.target.value); setShowResults(true); }}
-              onFocus={() => setShowResults(true)}
+              onValueChange={(value) => {
+                setSearchQuery(value);
+                setShowResults(true);
+              }}
+              onSelectionChange={(id) => {
+                const node = searchResults.find((entry) => entry.node_id === id);
+                if (node) void selectNode(node);
+              }}
+              options={searchOptions}
               placeholder="Search by repeater name, IATA code, or public key..."
-              className="repeater-search-box__input"
+              className="repeater-search-box"
+              inputClassName="repeater-search-box__input"
+              popoverClassName="repeater-search-box__results"
+              optionClassName="repeater-search-box__result"
+              isOpen={showResults}
+              onOpenChange={setShowResults}
               autoFocus
-            />
-            {showResults && (
-              <div className="repeater-search-box__results">
-                {loadingNodes ? (
+              emptyContent={loadingNodes ? (
                   <div className="repeater-search-box__no-results">
                     <LoadingIndicator label="Loading repeaters..." variant="inline" />
+                  </div>
+                ) : nodesError ? (
+                  <div className="repeater-search-box__no-results" role="alert">
+                    {nodesError}
                   </div>
                 ) : searchQuery && searchResults.length === 0 ? (
                   <div className="repeater-search-box__no-results">
                     No repeaters found matching "{searchQuery}"
                   </div>
-                ) : (
-                  searchResults.map(node => (
-                    <button
-                      key={node.node_id}
-                      className="repeater-search-box__result"
-                      onClick={() => selectNode(node)}
-                    >
-                      <span className="repeater-search-box__result-name">{node.name || 'Unknown'}</span>
-                      <span className="repeater-search-box__result-meta">
-                        {node.iata ? `${node.iata} · ` : ''}{node.public_key?.slice(0, 16)}... · {node.is_online ? 'Online' : 'Offline'}
-                      </span>
-                    </button>
-                  ))
-                )}
-                {searchResults.length > 0 && (
+                ) : 'Type to search repeaters'}
+              footer={searchResults.length > 0 ? (
                   <div className="repeater-search-box__count">
                     {searchResults.length} result{searchResults.length !== 1 ? 's' : ''}
                   </div>
-                )}
-              </div>
-            )}
-          </div>
+                ) : null}
+          />
 
           {!selectedNode ? (
             <div className="repeater-details-card">
               {loadingNodes ? (
                 <LoadingIndicator label="Loading repeater index..." variant="block" />
+              ) : nodesError ? (
+                <div className="repeater-details-card__empty" role="alert">
+                  <h3>Repeater index unavailable</h3>
+                  <p>{nodesError}</p>
+                </div>
               ) : (
                 <div className="repeater-details-card__empty">
                   <svg className="repeater-details-card__empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
@@ -353,6 +466,7 @@ export const UKRepeaterSearchPage: React.FC = () => {
                     </span>
                     {selectedNode.public_key && (
                       <button
+                        type="button"
                         className="repeater-details-card__copy-btn"
                         onClick={copyPublicKey}
                       >
@@ -378,7 +492,8 @@ export const UKRepeaterSearchPage: React.FC = () => {
                   <div className="repeater-details-card__field">
                     <span className="repeater-details-card__label">Position</span>
                     <span className="repeater-details-card__value">
-                      {selectedNode.lat && selectedNode.lon
+                      {selectedNode.lat !== undefined && selectedNode.lat !== null
+                        && selectedNode.lon !== undefined && selectedNode.lon !== null
                         ? `${selectedNode.lat.toFixed(5)}, ${selectedNode.lon.toFixed(5)}`
                         : 'Unknown'}
                     </span>
@@ -484,11 +599,11 @@ export const UKRepeaterSearchPage: React.FC = () => {
                           <table className="repeater-details-card__table">
                             <thead>
                               <tr>
-                                <th>Time</th>
-                                <th>Hops</th>
-                                <th>RSSI</th>
-                                <th>SNR</th>
-                                <th>From</th>
+                                <th scope="col">Time</th>
+                                <th scope="col">Hops</th>
+                                <th scope="col">RSSI</th>
+                                <th scope="col">SNR</th>
+                                <th scope="col">From</th>
                               </tr>
                             </thead>
                             <tbody>

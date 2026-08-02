@@ -3,6 +3,10 @@ import { query } from '../../db/index.js';
 import { resolvePublicNetworkScope } from '../../http/requestScope.js';
 import { normalizeObserverQuery } from '../utils/observer.js';
 import { expandResolverScope } from '../../networks.js';
+import {
+  parseBoundedInteger,
+  parseBoundedString,
+} from '../utils/input.js';
 
 const router = Router();
 
@@ -72,19 +76,23 @@ router.get('/node-status/latest', async (req, res) => {
 });
 
 router.get('/node-status/history', async (req, res) => {
+  const requestedNodeId = parseBoundedString(req.query['nodeId'], {
+    name: 'nodeId',
+    maxLength: 64,
+    pattern: /^[0-9a-fA-F]{64}$/,
+  });
+  const hours = parseBoundedInteger(req.query['hours'], {
+    name: 'hours',
+    defaultValue: 24,
+    min: 1,
+    max: 168,
+  });
   try {
     const ESTIMATED_AIRTIME_SECONDS_PER_PUBLISH = 0.12;
     const network = resolvePublicNetworkScope(req.query['network'], req.headers);
     const networkValues = expandResolverScope(network);
     const observer = normalizeObserverQuery(req.query['observer']);
-    const requestedNodeId = String(req.query['nodeId'] ?? '').trim();
-    const hours = Math.max(1, Math.min(Number(req.query['hours'] ?? 24), 168));
-
-    let nodeId = requestedNodeId.toLowerCase();
-    if (nodeId && !/^[0-9a-f]{64}$/.test(nodeId)) {
-      res.status(400).json({ error: 'Invalid nodeId format' });
-      return;
-    }
+    let nodeId = requestedNodeId?.toLowerCase() ?? '';
 
     if (!nodeId) {
       const params: unknown[] = [];

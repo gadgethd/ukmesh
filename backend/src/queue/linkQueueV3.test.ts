@@ -55,3 +55,75 @@ test('observation identity is stable for replay but isolated by receiver', () =>
   assert.notEqual(first.jobId, linkObservationIdentity('abcd', '22').jobId);
   assert.notEqual(first.jobId, linkObservationIdentity('abcd', '11', 'link_rebuild_0123456789abcdef').jobId);
 });
+
+test('terminal jobs release active capacity and use separate requeueable DLQ accounting', () => {
+  const model = new LinkQueueV3Model(1, 10, 1);
+  assert.equal(model.admit('a', 'observe:a', 7), 'accepted');
+  assert.equal(model.claim('worker', 0, 10), 'a');
+  assert.equal(model.nack('a', 'worker'), 'dead');
+  assert.deepEqual(
+    { count: model.count, bytes: model.bytes, deadCount: model.deadCount, deadBytes: model.deadBytes },
+    { count: 0, bytes: 0, deadCount: 1, deadBytes: 7 },
+  );
+  assert.equal(model.admit('b', 'observe:b', 10), 'accepted');
+  assert.equal(model.requeueDead('a'), false);
+  assert.equal(model.claim('worker-2', 0, 10), 'b');
+  assert.equal(model.ack('b', 'worker-2'), true);
+  assert.equal(model.requeueDead('a'), true);
+  assert.equal(model.purgeDead('a'), false);
+  assert.equal(model.claim('worker-3', 0, 10), 'a');
+  assert.equal(model.nack('a', 'worker-3'), 'dead');
+  assert.equal(model.purgeDead('a'), true);
+  assert.deepEqual({ deadCount: model.deadCount, deadBytes: model.deadBytes }, { deadCount: 0, deadBytes: 0 });
+});
+
+test('randomized queue transitions preserve active and DLQ count/byte invariants', () => {
+  const model = new LinkQueueV3Model(50, 4_000, 3);
+  let seed = 0x20260729;
+  let nextJob = 0;
+  let now = 0;
+  const random = (): number => {
+    seed = (Math.imul(seed, 1_664_525) + 1_013_904_223) >>> 0;
+    return seed / 0x1_0000_0000;
+  };
+
+  for (let step = 0; step < 5_000; step += 1) {
+    now += 1;
+    const action = Math.floor(random() * 8);
+    if (action <= 2) {
+      nextJob += 1;
+      model.admit(`job-${nextJob}`, `dedupe-${nextJob}`, 1 + Math.floor(random() * 100));
+    } else if (action <= 4) {
+      const token = `token-${step}`;
+      const claimed = model.claim(token, now, 10);
+      if (claimed) {
+        if (action === 3) model.ack(claimed, token);
+        else model.nack(claimed, token);
+      }
+    } else if (action === 5) {
+      model.reap(now);
+    } else if (action === 6 && model.dead.length > 0) {
+      model.requeueDead(model.dead[Math.floor(random() * model.dead.length)]!);
+    } else if (model.dead.length > 0) {
+      model.purgeDead(model.dead[Math.floor(random() * model.dead.length)]!);
+    }
+
+    const jobs = [...model.jobs.values()];
+    const active = jobs.filter((job) => job.state === 'queued' || job.state === 'in_flight');
+    const dead = jobs.filter((job) => job.state === 'dead');
+    assert.deepEqual(
+      {
+        count: model.count,
+        bytes: model.bytes,
+        deadCount: model.deadCount,
+        deadBytes: model.deadBytes,
+      },
+      {
+        count: active.length,
+        bytes: active.reduce((total, job) => total + job.bytes, 0),
+        deadCount: dead.length,
+        deadBytes: dead.reduce((total, job) => total + job.bytes, 0),
+      },
+    );
+  }
+});

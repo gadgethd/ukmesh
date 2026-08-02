@@ -34,7 +34,8 @@ If in doubt, keep it out of Git and add it to `.gitignore`.
 
 Before finishing a refactor or behavior change:
 - use Node 20 and run `cd backend && npm ci && npm run typecheck && npm test && npm run build`
-- run `cd frontend && npm ci && npm run build`
-- if worker code changed, run `python3 -m py_compile viewshed-worker/worker.py viewshed-worker/backfill_profiles.py viewshed-worker/rf/*.py`
+- run `cd frontend && npm ci && npm test && npm run build && npm run test:e2e`
+- if worker code changed, build its image and run its tests there so GDAL and
+  `osgeo` exactly match production
 - run `docker compose config --quiet`
 - rebuild affected containers and check `http://localhost:3000/healthz`

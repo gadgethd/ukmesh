@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo } from 'react';
 import type maplibregl from 'maplibre-gl';
 import { DeckGLOverlay } from './DeckGLOverlay.js';
-import { useNodeMap } from '../../hooks/useNodes.js';
+import { useArcs, useNodeMap } from '../../hooks/useNodes.js';
 import { usePacketPathOverlay } from '../../hooks/usePacketPathOverlay.js';
 import type { Filters } from '../FilterPanel/FilterPanel.js';
 import { buildHiddenCoordMask, hasCoords, maskNodePoint } from '../../utils/pathing.js';
@@ -22,6 +22,8 @@ type LiveOverlayControllerProps = {
   network?: string;
   observer?: string;
   packetHistorySegments: PacketHistorySegment[];
+  packetArcsEnabled: boolean;
+  heatmapEnabled: boolean;
 };
 
 export const LiveOverlayController: React.FC<LiveOverlayControllerProps> = ({
@@ -30,6 +32,8 @@ export const LiveOverlayController: React.FC<LiveOverlayControllerProps> = ({
   network,
   observer,
   packetHistorySegments,
+  packetArcsEnabled,
+  heatmapEnabled,
 }) => {
   const losProfilesByNodeId = useOverlayStore((state) => state.losProfilesByNodeId);
   const customLosSegments = useOverlayStore((state) => state.customLosSegments);
@@ -47,6 +51,7 @@ export const LiveOverlayController: React.FC<LiveOverlayControllerProps> = ({
     [losProfilesKey],
   );
   const nodes = useNodeMap();
+  const arcs = useArcs();
   const nodeCoordinateKey = useMemo(() => Array.from(nodes.values())
     .map((node) => `${node.node_id}:${node.lat ?? ''}:${node.lon ?? ''}:${node.name?.includes('🚫') ? 1 : 0}`)
     .sort()
@@ -177,11 +182,11 @@ export const LiveOverlayController: React.FC<LiveOverlayControllerProps> = ({
   return (
     <DeckGLOverlay
       map={map}
-      arcs={[]}
-      showArcs={filters.livePackets}
+      arcs={packetArcsEnabled ? arcs : []}
+      showArcs={packetArcsEnabled && filters.livePackets}
       packetHistorySegments={packetHistorySegments}
       showPacketHistory={filters.packetHistory}
-      showHeatmap={filters.heatmap}
+      showHeatmap={heatmapEnabled && filters.heatmap}
       betaPaths={renderedPaths}
       betaLowSegments={betaLowConfidenceSegments}
       betaCompletionPaths={betaCompletionPaths}

@@ -1,0 +1,47 @@
+// Docker uses the supported journald logging driver. Compose service/project
+// labels are copied into journal fields, so Alloy can preserve the historical
+// Loki `service`, `project`, and `container` query labels without Docker API
+// access. Journal cursors live below --storage.path on the alloy_data volume.
+loki.relabel "docker_journal" {
+  forward_to = []
+  max_cache_size = 1024
+
+  rule {
+    action        = "keep"
+    source_labels = ["__journal_com_docker_compose_service"]
+    regex         = ".+"
+  }
+
+  rule {
+    source_labels = ["__journal_com_docker_compose_service"]
+    target_label  = "service"
+  }
+
+  rule {
+    source_labels = ["__journal_com_docker_compose_project"]
+    target_label  = "project"
+  }
+
+  rule {
+    source_labels = ["__journal_container_name"]
+    target_label  = "container"
+  }
+
+  rule {
+    source_labels = ["__journal_priority_keyword"]
+    target_label  = "level"
+  }
+}
+
+loki.source.journal "docker" {
+  max_age       = "1h"
+  relabel_rules = loki.relabel.docker_journal.rules
+  forward_to    = [loki.write.local.receiver]
+  labels        = { job = "docker" }
+}
+
+loki.write "local" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}

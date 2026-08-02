@@ -9,13 +9,23 @@ import { DisclaimerModal } from './components/app/DisclaimerModal.js';
 import { AppTopBar } from './components/app/AppTopBar.js';
 import { MobileControls } from './components/app/MobileControls.js';
 import { LoadingIndicator } from './components/LoadingIndicator.js';
+import { Dialog, DialogTitle } from './components/ui/Dialog.js';
 import { useWebSocket } from './hooks/useWebSocket.js';
 import { nodeStore, type MeshNode } from './hooks/useNodes.js';
-import { coverageStore } from './hooks/useCoverage.js';
+import { useRfCoverage, type RfCoverageTierName } from './hooks/useRfCoverage.js';
 import { useDashboardStats, type DashboardStats } from './hooks/useDashboardStats.js';
 import { linkStateStore } from './hooks/useLinkState.js';
 import { useAppMessageHandler } from './hooks/useAppMessageHandler.js';
-import { VIEWSHED_ENABLED } from './config/features.js';
+import {
+  HEATMAP_CAPABLE,
+  INFERRED_NODES_CAPABLE,
+  PACKET_ARCS_CAPABLE,
+  RF_COVERAGE_ENABLED,
+  VIEWSHED_ENABLED,
+} from './config/features.js';
+import { RfCoverageOverlay } from './components/Map/RfCoverageOverlay.js';
+import { RfCoverageStatus } from './components/Map/RfCoverageStatus.js';
+import { useRuntimeFeatures } from './config/runtimeFeatures.js';
 import { getCurrentSite } from './config/site.js';
 import { filtersForMapMode, isMapMode, type MapMode } from './config/mapModes.js';
 import { useOverlayStore } from './store/overlayStore.js';
@@ -38,6 +48,7 @@ const DEFAULT_FILTERS: Filters = {
   terrain: false,
   clientNodes: false,
   packetHistory: false,
+  coverage: false,
   heatmap: false,
   betaPaths: false,
   betaPathThreshold: 0.45,
@@ -49,14 +60,21 @@ const DISCLAIMER_KEY = 'meshcore-disclaimer-dismissed';
 const FILTERS_KEY = 'meshcore-app-filters-v3';
 const LEGACY_FILTERS_KEY = 'meshcore-app-filters-v2';
 const FILTERS_VERSION = 3;
+const RF_VISIBILITY_KEY = 'meshcore-rf-coverage-visible-v1';
+const RF_TIER_KEY = 'meshcore-rf-coverage-tier-v1';
 const MAP_FETCH_TIMEOUT_MS = 4_000;
 const OTHER_FETCH_TIMEOUT_MS = 15_000;
-const ignoreCoverageUpdate = () => {};
+const EMPTY_NODE_IDS = new Set<string>();
 const TimelineControl = React.lazy(() => import('./components/app/TimelineControl.js').then((module) => ({ default: module.TimelineControl })));
 const PlannerComparison = React.lazy(() => import('./components/app/PlannerComparison.js').then((module) => ({ default: module.PlannerComparison })));
 
 export const App: React.FC = () => {
+  const initialLayersSpecifiedRef = useRef(new URLSearchParams(window.location.search).has('layers'));
   const site = getCurrentSite();
+  const runtimeFeatures = useRuntimeFeatures();
+  const inferredNodesEnabled = INFERRED_NODES_CAPABLE && runtimeFeatures.inferredNodes;
+  const packetArcsEnabled = PACKET_ARCS_CAPABLE && runtimeFeatures.packetArcs;
+  const heatmapEnabled = HEATMAP_CAPABLE && runtimeFeatures.heatmap;
   const [filters, setFilters] = useState<Filters>(() => {
     let stored = DEFAULT_FILTERS;
     try {
@@ -84,7 +102,11 @@ export const App: React.FC = () => {
     const modeFilters = isMapMode(requestedMode) && (requestedMode !== 'plan' || VIEWSHED_ENABLED)
       ? filtersForMapMode(requestedMode, stored)
       : stored;
-    return filtersFromUrl(modeFilters);
+    const savedRfVisibility = localStorage.getItem(RF_VISIBILITY_KEY);
+    const withRfVisibility = savedRfVisibility === null
+      ? modeFilters
+      : { ...modeFilters, coverage: savedRfVisibility === '1' };
+    return filtersFromUrl(withRfVisibility);
   });
   const [activeMode, setActiveMode] = useState<MapMode | null>(() => {
     const requested = new URLSearchParams(window.location.search).get('mode');
@@ -108,6 +130,10 @@ export const App: React.FC = () => {
   const [initialPollLoaded, setInitialPollLoaded] = useState(false);
   const [pollRefreshing, setPollRefreshing] = useState(false);
   const [mapLight, setMapLight] = useState(() => localStorage.getItem('map-theme') === 'light');
+  const [rfCoverageTier, setRfCoverageTier] = useState<RfCoverageTierName>(() => (
+    localStorage.getItem(RF_TIER_KEY) === 'precision' ? 'precision' : 'standard'
+  ));
+  const rfCoverage = useRfCoverage(RF_COVERAGE_ENABLED);
   const [showShortcutGuide, setShowShortcutGuide] = useState(false);
   const [isPageVisible, setIsPageVisible] = useState(
     () => (typeof document === 'undefined' ? true : document.visibilityState === 'visible'),
@@ -116,18 +142,65 @@ export const App: React.FC = () => {
   const prevHexClashesRef = useRef<boolean>(DEFAULT_FILTERS.hexClashes);
   const wsConnectedRef = useRef(false);
 
-  const requestedNetwork = new URLSearchParams(window.location.search).get('network');
-  const networkFilter = requestedNetwork === 'teesside' || requestedNetwork === 'ukmesh'
-    ? requestedNetwork
-    : site.networkFilter;
+  // The public live app is deliberately scoped to the UK Mesh deployment.
+  // Ignore legacy `network` query parameters rather than allowing the app to
+  // switch into another deployment's dataset.
+  const networkFilter = site.networkFilter ?? 'ukmesh';
   const observerFilter = site.observerId;
+  const realtimeScopeKey = `${networkFilter}|${observerFilter ?? 'all'}|privacy-${runtimeFeatures.privacyGeneration}`;
+  const scopeStateRef = useRef<{
+    key: string;
+    nodeEpoch: number;
+    linkEpoch: number;
+  } | null>(null);
+  if (scopeStateRef.current?.key !== realtimeScopeKey) {
+    scopeStateRef.current = {
+      key: realtimeScopeKey,
+      nodeEpoch: nodeStore.reset(realtimeScopeKey),
+      linkEpoch: linkStateStore.reset(realtimeScopeKey),
+    };
+  }
+  const scopeState = scopeStateRef.current;
 
-  const stats = useDashboardStats(fetchedStats);
+  const stats = useDashboardStats(fetchedStats, realtimeScopeKey);
 
   useEffect(() => {
     document.documentElement.dataset.contrast = highContrast ? 'high' : 'standard';
     localStorage.setItem('meshcore-contrast', highContrast ? 'high' : 'standard');
   }, [highContrast]);
+
+  useEffect(() => {
+    nodeStore.setArcCollectionEnabled(packetArcsEnabled);
+    return () => nodeStore.setArcCollectionEnabled(false);
+  }, [packetArcsEnabled]);
+
+  useEffect(() => {
+    setFetchedStats(null);
+    setInferredNodes([]);
+    setInferredActiveNodeIds(new Set());
+    setPacketHistorySegments([]);
+    setInitialStateLoaded(false);
+    setInitialPollLoaded(false);
+    setPollRefreshing(false);
+  }, [realtimeScopeKey]);
+
+  useEffect(() => {
+    if (heatmapEnabled) return;
+    setFilters((current) => current.heatmap ? { ...current, heatmap: false } : current);
+  }, [heatmapEnabled]);
+
+  useEffect(() => {
+    if (!RF_COVERAGE_ENABLED || !rfCoverage.availableTiers.includes('standard')) return;
+    if (localStorage.getItem(RF_VISIBILITY_KEY) !== null) return;
+    if (initialLayersSpecifiedRef.current) return;
+    setFilters((current) => current.coverage ? current : { ...current, coverage: true });
+  }, [rfCoverage.availableTiers]);
+
+  useEffect(() => {
+    if (rfCoverageTier === 'precision' && !rfCoverage.availableTiers.includes('precision')) {
+      setRfCoverageTier('standard');
+    }
+  }, [rfCoverage.availableTiers, rfCoverageTier]);
 
   useEffect(() => {
     if (typeof document === 'undefined') return undefined;
@@ -167,7 +240,15 @@ export const App: React.FC = () => {
   const handleFiltersChange = useCallback((next: Filters) => {
     setActiveMode(null);
     useOverlayStore.getState().setPlanRepeaterMode(false);
+    if (next.coverage !== filters.coverage) {
+      localStorage.setItem(RF_VISIBILITY_KEY, next.coverage ? '1' : '0');
+    }
     setFilters(next);
+  }, [filters.coverage]);
+
+  const handleRfTierChange = useCallback((tier: RfCoverageTierName) => {
+    localStorage.setItem(RF_TIER_KEY, tier);
+    setRfCoverageTier(tier);
   }, []);
 
   const handleModeChange = useCallback((mode: MapMode) => {
@@ -209,15 +290,14 @@ export const App: React.FC = () => {
     });
   }, []);
 
-  const handleNetworkChange = useCallback((network: string) => {
-    const url = new URL(window.location.href);
-    url.searchParams.set('network', network);
-    window.location.assign(url);
-  }, []);
-
   // Keep the fast poll to live data that changes independently of the socket.
   // Expensive inferred/path overlays use their own, slower conditional polls.
   useEffect(() => {
+    if (!inferredNodesEnabled) {
+      setInferredNodes([]);
+      setInferredActiveNodeIds(new Set());
+      return undefined;
+    }
     let cancelled = false;
     let timer: number | null = null;
     let controller: AbortController | null = null;
@@ -257,7 +337,7 @@ export const App: React.FC = () => {
             payload?: Record<string, unknown>; advert_count?: number | null;
             path_hashes?: string[] | null;
           }>;
-          if (!cancelled) nodeStore.replaceRecentPackets(rows);
+          if (!cancelled) nodeStore.replaceRecentPackets(rows, scopeState.nodeEpoch);
         }
 
         if (statsRes.status === 'fulfilled' && statsRes.value.ok) {
@@ -281,7 +361,7 @@ export const App: React.FC = () => {
       controller?.abort();
       if (timer) window.clearTimeout(timer);
     };
-  }, [isPageVisible, networkFilter, observerFilter]);
+  }, [isPageVisible, networkFilter, observerFilter, scopeState.nodeEpoch]);
 
   useEffect(() => {
     let cancelled = false;
@@ -328,10 +408,10 @@ export const App: React.FC = () => {
       controller?.abort();
       if (timer) window.clearTimeout(timer);
     };
-  }, [isPageVisible, networkFilter, observerFilter]);
+  }, [inferredNodesEnabled, isPageVisible, networkFilter, observerFilter]);
 
   useEffect(() => {
-    if (!filters.packetHistory && !filters.heatmap) {
+    if (!filters.packetHistory && !(heatmapEnabled && filters.heatmap)) {
       setPacketHistorySegments([]);
       return undefined;
     }
@@ -375,7 +455,7 @@ export const App: React.FC = () => {
       controller?.abort();
       if (timer) window.clearTimeout(timer);
     };
-  }, [filters.heatmap, filters.packetHistory, isPageVisible, networkFilter, observerFilter]);
+  }, [filters.heatmap, filters.packetHistory, heatmapEnabled, isPageVisible, networkFilter, observerFilter]);
 
   useEffect(() => {
     const wasHexClashes = prevHexClashesRef.current;
@@ -425,29 +505,42 @@ export const App: React.FC = () => {
   }, []);
 
   const handleInitialState = useCallback((data: Parameters<typeof nodeStore.handleInitialState>[0]) => {
-    nodeStore.handleInitialState(data);
+    nodeStore.handleInitialState(data, scopeState.nodeEpoch);
     setInitialStateLoaded(true);
-  }, []);
+  }, [scopeState.nodeEpoch]);
 
   const handleMessage = useAppMessageHandler({
+    epoch: scopeState.nodeEpoch,
     handleInitialState,
-    handlePacket: nodeStore.handlePacket,
-    handleNodeUpdate: nodeStore.handleNodeUpdate,
-    handleNodeUpdateBatch: nodeStore.handleNodeUpdateBatch,
-    handleNodeUpsert: nodeStore.handleNodeUpsert,
-    handleNodeUpsertBatch: nodeStore.handleNodeUpsertBatch,
-    handleCoverageUpdate: VIEWSHED_ENABLED ? coverageStore.handleCoverageUpdate : ignoreCoverageUpdate,
-    handleCoverageUpdateBatch: VIEWSHED_ENABLED ? coverageStore.handleCoverageUpdateBatch : ignoreCoverageUpdate,
-    applyInitialViablePairs: linkStateStore.applyInitialViablePairs,
-    applyInitialViableLinks: linkStateStore.applyInitialViableLinks,
-    applyLinkUpdate: linkStateStore.applyLinkUpdate,
-    applyLinkUpdateBatch: linkStateStore.applyLinkUpdateBatch,
-    onPacketObserved: () => {
-      window.dispatchEvent(new Event('meshcore:packet-observed'));
+    handlePacket: (data) => nodeStore.handlePacket(data, scopeState.nodeEpoch),
+    handleNodeUpdate: (data) => nodeStore.handleNodeUpdate(data, scopeState.nodeEpoch),
+    handleNodeUpdateBatch: (data) => nodeStore.handleNodeUpdateBatch(data, scopeState.nodeEpoch),
+    handleNodeUpsert: (data) => nodeStore.handleNodeUpsert(data, scopeState.nodeEpoch),
+    handleNodeUpsertBatch: (data) => nodeStore.handleNodeUpsertBatch(data, scopeState.nodeEpoch),
+    applyInitialViablePairs: (pairs) => linkStateStore.applyInitialViablePairs(
+      pairs,
+      scopeState.linkEpoch,
+    ),
+    applyInitialViableLinks: (links) => linkStateStore.applyInitialViableLinks(
+      links,
+      scopeState.linkEpoch,
+    ),
+    applyLinkUpdate: (update) => linkStateStore.applyLinkUpdate(update, scopeState.linkEpoch),
+    applyLinkUpdateBatch: (updates) => linkStateStore.applyLinkUpdateBatch(
+      updates,
+      scopeState.linkEpoch,
+    ),
+    onPacketObserved: (count) => {
+      window.dispatchEvent(new CustomEvent('meshcore:packet-observed', { detail: { count } }));
     },
   });
 
-  const wsState = useWebSocket(handleMessage, { network: networkFilter, observer: observerFilter });
+  const wsConnection = useWebSocket(
+    handleMessage,
+    { network: networkFilter, observer: observerFilter },
+    scopeState.nodeEpoch,
+  );
+  const wsState = wsConnection.readyState;
   wsConnectedRef.current = wsState === 'connected';
 
   useEffect(() => {
@@ -485,8 +578,6 @@ export const App: React.FC = () => {
         stats={stats}
         mapLight={mapLight}
         onToggleMapTheme={handleMapThemeToggle}
-        network={networkFilter ?? 'ukmesh'}
-        onNetworkChange={handleNetworkChange}
         annotation={annotation}
         onEditAnnotation={handleEditAnnotation}
         onShowShortcuts={() => setShowShortcutGuide(true)}
@@ -500,6 +591,8 @@ export const App: React.FC = () => {
         onFiltersChange={handleFiltersChange}
         activeMode={activeMode}
         viewshedEnabled={VIEWSHED_ENABLED}
+        rfCoverageEnabled={RF_COVERAGE_ENABLED}
+        heatmapEnabled={heatmapEnabled}
         onModeChange={handleModeChange}
         onShare={handleShare}
         shareLabel={shareLabel}
@@ -510,8 +603,8 @@ export const App: React.FC = () => {
 
       <div className="map-layer">
         <MapLibreMap
-          inferredNodes={inferredNodes}
-          inferredActiveNodeIds={inferredActiveNodeIds}
+          inferredNodes={inferredNodesEnabled ? inferredNodes : []}
+          inferredActiveNodeIds={inferredNodesEnabled ? inferredActiveNodeIds : EMPTY_NODE_IDS}
           showLinks={filters.links}
           showTerrain={filters.terrain}
           showClientNodes={filters.clientNodes}
@@ -523,6 +616,15 @@ export const App: React.FC = () => {
           onNodeSelect={setSelectedNodeId}
           onMapReady={setMlMap}
           mapLight={mapLight}
+          network={networkFilter}
+          observer={observerFilter}
+          privacyGeneration={runtimeFeatures.privacyGeneration}
+        />
+        <RfCoverageOverlay
+          map={mlMap}
+          meta={rfCoverage.meta}
+          tier={rfCoverageTier}
+          visible={RF_COVERAGE_ENABLED && filters.coverage}
         />
         <LiveOverlayController
           map={mlMap}
@@ -530,6 +632,16 @@ export const App: React.FC = () => {
           network={networkFilter}
           observer={observerFilter}
           packetHistorySegments={packetHistorySegments}
+          packetArcsEnabled={packetArcsEnabled}
+          heatmapEnabled={heatmapEnabled}
+        />
+        <RfCoverageStatus
+          meta={rfCoverage.meta}
+          progress={rfCoverage.progress}
+          availableTiers={rfCoverage.availableTiers}
+          tier={rfCoverageTier}
+          onTierChange={handleRfTierChange}
+          visible={RF_COVERAGE_ENABLED && filters.coverage}
         />
         {(!initialStateLoaded && !initialPollLoaded) && (
           <LoadingIndicator
@@ -549,6 +661,8 @@ export const App: React.FC = () => {
         onChange={handleFiltersChange}
         activeMode={activeMode}
         viewshedEnabled={VIEWSHED_ENABLED}
+        rfCoverageEnabled={RF_COVERAGE_ENABLED}
+        heatmapEnabled={heatmapEnabled}
         onModeChange={handleModeChange}
         onShare={handleShare}
         shareLabel={shareLabel}
@@ -571,9 +685,16 @@ export const App: React.FC = () => {
       )}
 
       {showShortcutGuide && (
-        <div className="shortcut-guide" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts" onClick={() => setShowShortcutGuide(false)}>
-          <div className="shortcut-guide__panel" onClick={(event) => event.stopPropagation()}>
-            <header><h2>Keyboard shortcuts</h2><button type="button" onClick={() => setShowShortcutGuide(false)} aria-label="Close">×</button></header>
+        <Dialog
+          isOpen
+          onOpenChange={(open) => { if (!open) setShowShortcutGuide(false); }}
+          ariaLabel="Keyboard shortcuts"
+          overlayClassName="shortcut-guide"
+          className="shortcut-guide__panel"
+        >
+          {(close) => (
+            <>
+            <header><DialogTitle>Keyboard shortcuts</DialogTitle><button type="button" onClick={close} aria-label="Close">×</button></header>
             <dl>
               <div><dt>Esc</dt><dd>Close panels or cancel a map tool</dd></div>
               <div><dt>F</dt><dd>Focus node search</dd></div>
@@ -582,8 +703,9 @@ export const App: React.FC = () => {
               <div><dt>L</dt><dd>Toggle Live Path</dd></div>
               <div><dt>?</dt><dd>Show or hide this guide</dd></div>
             </dl>
-          </div>
-        </div>
+            </>
+          )}
+        </Dialog>
       )}
 
       {showDisclaimer && <DisclaimerModal viewshedEnabled={VIEWSHED_ENABLED} onClose={dismissDisclaimer} />}

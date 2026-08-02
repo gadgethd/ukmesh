@@ -82,6 +82,9 @@ export interface MapLibreMapProps {
   onNodeSelect?: (nodeId: string | null) => void;
   onMapReady?: (map: maplibregl.Map) => void;
   mapLight: boolean;
+  network?: string;
+  observer?: string;
+  privacyGeneration: number;
 }
 
 export interface PopupNodeView {
@@ -98,10 +101,22 @@ export interface PredictedLink {
   distance_km: number | null;
 }
 
+// Dormant rollback shape used only by the hidden planned-repeater code. The
+// live RF layer never consumes this legacy polygon contract.
+export interface LegacyCoverageGeometry {
+  node_id: string;
+  geom: { type: string; coordinates: unknown };
+  strength_geoms?: Partial<Record<'green' | 'amber' | 'red', { type: string; coordinates: unknown }>>;
+  antenna_height_m?: number;
+  radius_m?: number;
+  predicted_links?: PredictedLink[];
+  calculated_at?: string;
+}
+
 export interface PlannedRepeater {
   id: string;        // plan_<16hex>
   lat: number;
   lon: number;
   status: 'queued' | 'ready' | 'error';
-  coverage?: import('../../hooks/useCoverage.js').NodeCoverage;
+  coverage?: LegacyCoverageGeometry;
 }

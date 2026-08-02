@@ -20,11 +20,6 @@ export type LinkMetrics = {
   count_b_to_a: number | null;
 };
 
-export type NodeCoverage = {
-  node_id: string;
-  radius_m: number | null;
-};
-
 export type PathLearningModel = {
   prefixProbabilities: Map<string, number>;
   transitionProbabilities: Map<string, number>;

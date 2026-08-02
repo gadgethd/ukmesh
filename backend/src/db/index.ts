@@ -9,11 +9,20 @@ import {
   enqueuePacket,
   type PacketBatchResult,
 } from './packetBatch.js';
+import {
+  assertAnalysisPublicationLease,
+  type AnalysisPublicationHandle,
+} from '../analysis/publicationFence.js';
+import { publicPacketPrivacySql } from '../api/utils/networkFilters.js';
+import {
+  dbQueriesTotal,
+  dbQueryDuration,
+  updateDbPoolMetrics,
+} from '../metrics.js';
 
 const { Pool } = pg;
 const COORDINATE_RECALC_THRESHOLD_M = Number(process.env['NODE_COORDINATE_RECALC_THRESHOLD_M'] ?? 25);
 const MAX_MULTIBYTE_PATH_SEGMENT_KM = 150;
-const OBSERVER_NODE_ID_RE = /^[0-9A-Fa-f]{64}$/;
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -71,11 +80,76 @@ function observerRegionFromTopic(topic: string): string | null {
   return rawRegion.trim().toUpperCase() || 'UNK';
 }
 
+async function queryPool<T extends pg.QueryResultRow = pg.QueryResultRow>(
+  targetPool: pg.Pool,
+  poolName: 'oltp' | 'analytics',
+  text: string,
+  params?: unknown[],
+  signal?: AbortSignal,
+): Promise<pg.QueryResult<T>> {
+  const startedAt = process.hrtime.bigint();
+  let outcome = 'success';
+  try {
+    updateDbPoolMetrics(poolName, targetPool);
+    if (!signal) return await targetPool.query<T>(text, params);
+    signal.throwIfAborted();
+    const client = await targetPool.connect();
+    let destroyed = false;
+    let abortedCleanup: (() => void) | undefined;
+    const aborted = new Promise<never>((_resolve, reject) => {
+      const onAbort = () => {
+        if (destroyed) return;
+        destroyed = true;
+        // node-postgres has no AbortSignal query API. Destroy this one
+        // checked-out connection so PostgreSQL cancels the active statement and
+        // the connection can never return to the pool.
+        client.release(true);
+        reject(
+          signal.reason instanceof Error
+            ? signal.reason
+            : new Error('database query aborted'),
+        );
+      };
+      signal.addEventListener('abort', onAbort, { once: true });
+      abortedCleanup = () => signal.removeEventListener('abort', onAbort);
+    });
+    try {
+      signal.throwIfAborted();
+      const result = await Promise.race([
+        client.query<T>(text, params),
+        aborted,
+      ]);
+      signal.throwIfAborted();
+      return result;
+    } finally {
+      abortedCleanup?.();
+      if (!destroyed) client.release();
+    }
+  } catch (error) {
+    outcome = signal?.aborted ? 'aborted' : 'failure';
+    throw error;
+  } finally {
+    const durationSeconds = Number(process.hrtime.bigint() - startedAt) / 1e9;
+    dbQueriesTotal.inc({ pool: poolName, outcome });
+    dbQueryDuration.observe({ pool: poolName, outcome }, durationSeconds);
+    updateDbPoolMetrics(poolName, targetPool);
+  }
+}
+
 export async function query<T extends pg.QueryResultRow = pg.QueryResultRow>(
   text: string,
-  params?: unknown[]
+  params?: unknown[],
+  signal?: AbortSignal,
 ): Promise<pg.QueryResult<T>> {
-  return pool.query<T>(text, params);
+  return queryPool<T>(pool, 'oltp', text, params, signal);
+}
+
+export async function analyticsQuery<T extends pg.QueryResultRow = pg.QueryResultRow>(
+  text: string,
+  params?: unknown[],
+  signal?: AbortSignal,
+): Promise<pg.QueryResult<T>> {
+  return queryPool<T>(analyticsPool, 'analytics', text, params, signal);
 }
 
 type ScopePlaceholders = {
@@ -117,11 +191,15 @@ function buildPacketScopeClause(
       : `${prefix}network = ${placeholders.networkParam}`;
     conditions.push(netCond);
     if (network !== 'test') {
-      conditions.push(`${prefix}topic_prefix <> 'meshcore-test'`);
+      conditions.push(
+        `COALESCE(NULLIF(${prefix}topic_prefix, ''), split_part(${prefix}topic, '/', 1)) <> 'meshcore-test'`,
+      );
     }
   } else {
     conditions.push(`${prefix}network IS DISTINCT FROM 'test'`);
-    conditions.push(`${prefix}topic_prefix <> 'meshcore-test'`);
+    conditions.push(
+      `COALESCE(NULLIF(${prefix}topic_prefix, ''), split_part(${prefix}topic, '/', 1)) <> 'meshcore-test'`,
+    );
   }
   if (placeholders.observerParam) {
     conditions.push(`${prefix}rx_node_id = ${placeholders.observerParam}`);
@@ -130,8 +208,7 @@ function buildPacketScopeClause(
 }
 
 function buildPublicPacketPrivacyClause(alias?: string): string {
-  const prefix = alias ? `${alias}.` : '';
-  return ` AND ${prefix}visibility_ok IS TRUE`;
+  return ` AND ${publicPacketPrivacySql(alias)}`;
 }
 
 function buildNodeScopeClause(
@@ -515,65 +592,6 @@ export async function upsertNode(nodeId: string, updates: {
   }
 }
 
-async function updatePacketStatsRollups(p: {
-  packetHash: string;
-  rxNodeId?: string;
-  topic: string;
-  hopCount?: number;
-}, network: string, visibilityOk: boolean): Promise<void> {
-  const tasks: Array<Promise<unknown>> = [];
-
-  if (visibilityOk && typeof p.hopCount === 'number' && Number.isFinite(p.hopCount)) {
-    tasks.push(pool.query(
-      `INSERT INTO packet_daily_stats
-         (network, day, max_hop_count, max_hop_hash, max_hop_seen_at, updated_at)
-       VALUES ($1, CURRENT_DATE, $2, $3, NOW(), NOW())
-       ON CONFLICT (network, day) DO UPDATE SET
-         max_hop_count = EXCLUDED.max_hop_count,
-         max_hop_hash = EXCLUDED.max_hop_hash,
-         max_hop_seen_at = EXCLUDED.max_hop_seen_at,
-         updated_at = NOW()
-       -- Keep the first packet that reaches a daily maximum as its stable
-       -- representative. Updating for every lower/equal-hop reception turns
-       -- this one row per network/day into an ingest hot lock and needless WAL.
-       WHERE packet_daily_stats.max_hop_count IS NULL
-          OR EXCLUDED.max_hop_count > packet_daily_stats.max_hop_count`,
-      [network, Math.trunc(p.hopCount), p.packetHash],
-    ));
-  }
-
-  const iata = observerRegionFromTopic(p.topic);
-  if (network !== 'test' && iata && p.packetHash && p.rxNodeId && OBSERVER_NODE_ID_RE.test(p.rxNodeId)) {
-    // These always advance together for a received packet. One data-modifying
-    // CTE saves a pool checkout/round trip versus two detached UPSERTs.
-    tasks.push(pool.query(
-      `WITH packet_sighting AS (
-         INSERT INTO observer_region_packet_sightings
-           (network, iata, packet_hash, first_seen, last_seen)
-         VALUES ($1, $2, $3, NOW(), NOW())
-         ON CONFLICT (network, iata, packet_hash) DO UPDATE SET
-           first_seen = LEAST(observer_region_packet_sightings.first_seen, EXCLUDED.first_seen),
-           last_seen = GREATEST(observer_region_packet_sightings.last_seen, EXCLUDED.last_seen)
-       ), observer_sighting AS (
-         INSERT INTO observer_region_observer_sightings
-           (network, iata, rx_node_id, first_seen, last_seen)
-         VALUES ($1, $2, $4, NOW(), NOW())
-         ON CONFLICT (network, iata, rx_node_id) DO UPDATE SET
-           first_seen = LEAST(observer_region_observer_sightings.first_seen, EXCLUDED.first_seen),
-           last_seen = GREATEST(observer_region_observer_sightings.last_seen, EXCLUDED.last_seen)
-       )
-       SELECT 1`,
-      [network, iata, p.packetHash, p.rxNodeId],
-    ));
-  }
-
-  if (tasks.length > 0) {
-    const results = await Promise.allSettled(tasks);
-    const failed = results.find((result) => result.status === 'rejected');
-    if (failed?.status === 'rejected') throw failed.reason;
-  }
-}
-
 export async function insertPacket(p: {
   packetHash: string;
   rxNodeId?: string;
@@ -618,7 +636,7 @@ export async function insertPacket(p: {
   const network = p.network ?? 'ukmesh';
   const topicPrefix = p.topic.split('/', 1)[0]?.trim() || '';
   const iata = observerRegionFromTopic(p.topic);
-  const insertResult = await enqueuePacket({
+  return enqueuePacket({
     time: new Date(),
     packetHash: p.packetHash,
     rxNodeId: p.rxNodeId ?? null,
@@ -641,26 +659,6 @@ export async function insertPacket(p: {
     transportCodes: p.transportCodes ?? null,
     regionScope: p.regionScope ?? null,
   });
-  const postInsertTasks: Promise<unknown>[] = [
-    updatePacketStatsRollups(p, network, insertResult.visibilityOk),
-  ];
-  if (p.srcNodeId && network !== 'test') {
-    postInsertTasks.push(pool.query(
-      `INSERT INTO node_network_sightings (node_id, network, last_seen_at)
-       VALUES ($1, $2, NOW())
-       ON CONFLICT (node_id, network) DO UPDATE SET last_seen_at = NOW()`,
-      [p.srcNodeId, network]
-    ));
-  }
-  const postInsertResults = await Promise.allSettled(postInsertTasks);
-  for (const result of postInsertResults) {
-    if (result.status === 'rejected') {
-      // Raw packet storage succeeded above. Report a derived-write failure but
-      // do not reject the ingest handler or lose its live path/cache updates.
-      console.error('[db] packet-derived write failed', (result.reason as Error).message);
-    }
-  }
-  return insertResult;
 }
 
 export async function insertNodeStatusSample(sample: {
@@ -821,6 +819,7 @@ export async function getRecentPackets(
       SELECT 
         packet_hash,
         ARRAY_AGG(DISTINCT rx_node_id ORDER BY rx_node_id) FILTER (WHERE rx_node_id IS NOT NULL) AS observer_node_ids,
+        ARRAY_AGG(DISTINCT iata ORDER BY iata) FILTER (WHERE NULLIF(TRIM(iata), '') IS NOT NULL) AS observer_iatas,
         COUNT(*) FILTER (WHERE COALESCE(payload->>'direction', 'rx') <> 'tx')::int AS rx_count,
         COUNT(*) FILTER (WHERE COALESCE(payload->>'direction', 'rx') = 'tx')::int AS tx_count
       FROM packets
@@ -837,7 +836,7 @@ export async function getRecentPackets(
       ${fields === 'full'
         ? 'rp.topic, rp.topic_prefix, rp.iata, rp.route_type, rp.network, rp.transport_codes, rp.region_scope,'
         : ''}
-      ps.observer_node_ids, ps.rx_count, ps.tx_count
+      ps.observer_node_ids, ps.observer_iatas, ps.rx_count, ps.tx_count
     FROM recent_packets rp
     LEFT JOIN packet_stats ps ON ps.packet_hash = rp.packet_hash
     ORDER BY rp.time DESC
@@ -858,6 +857,7 @@ export async function getRecentMessages(limit = 50, network?: string, observer?:
     `WITH recent_msgs AS (
       SELECT DISTINCT ON (p.packet_hash)
              p.time, p.packet_hash, p.rx_node_id, p.src_node_id, p.topic,
+             p.iata,
              p.packet_type, p.hop_count, p.rssi, p.snr, p.payload,
              p.payload->>'_summary' AS summary,
              p.advert_count, p.path_hashes, p.path_hash_size_bytes,
@@ -875,6 +875,7 @@ export async function getRecentMessages(limit = 50, network?: string, observer?:
       SELECT
         packet_hash,
         ARRAY_AGG(DISTINCT rx_node_id ORDER BY rx_node_id) FILTER (WHERE rx_node_id IS NOT NULL) AS observer_node_ids,
+        ARRAY_AGG(DISTINCT iata ORDER BY iata) FILTER (WHERE NULLIF(TRIM(iata), '') IS NOT NULL) AS observer_iatas,
         COUNT(*) FILTER (WHERE COALESCE(payload->>'direction', 'rx') <> 'tx')::int AS rx_count,
         COUNT(*) FILTER (WHERE COALESCE(payload->>'direction', 'rx') = 'tx')::int AS tx_count
       FROM packets
@@ -885,10 +886,10 @@ export async function getRecentMessages(limit = 50, network?: string, observer?:
       GROUP BY packet_hash
     )
     SELECT
-      m.time, m.packet_hash, m.rx_node_id, m.src_node_id, m.topic,
+      m.time, m.packet_hash, m.rx_node_id, m.src_node_id, m.topic, m.iata,
       m.packet_type, m.hop_count, m.rssi, m.snr, m.payload,
       m.summary, m.advert_count, m.path_hashes, m.path_hash_size_bytes,
-      ms.observer_node_ids, ms.rx_count, ms.tx_count
+      ms.observer_node_ids, ms.observer_iatas, ms.rx_count, ms.tx_count
     FROM recent_msgs m
     LEFT JOIN msg_stats ms ON ms.packet_hash = m.packet_hash
     ORDER BY m.time DESC
@@ -903,7 +904,7 @@ export async function getRecentPacketEvents(limit = 200, network?: string, obser
   const params: unknown[] = [limit, ...scope.params];
   const res = await pool.query(
     `SELECT
-        p.time, p.packet_hash, p.rx_node_id, p.src_node_id, p.topic,
+        p.time, p.packet_hash, p.rx_node_id, p.src_node_id, p.topic, p.iata,
         p.packet_type, p.hop_count, p.rssi, p.snr, p.payload,
         p.payload->>'_summary' AS summary,
         p.advert_count, p.path_hashes, p.path_hash_size_bytes
@@ -922,7 +923,7 @@ export async function getPacketDetail(hash: string, network = 'ukmesh') {
   const scope = buildScopePlaceholders(2, network);
   const [primary, observations] = await Promise.all([
     pool.query(
-      `SELECT p.time, p.packet_hash, p.rx_node_id, p.src_node_id, p.topic,
+      `SELECT p.time, p.packet_hash, p.rx_node_id, p.src_node_id, p.topic, p.iata,
               p.packet_type, p.route_type, p.hop_count, p.rssi, p.snr,
               p.payload, p.path_hashes, p.path_hash_size_bytes, p.raw_hex
        FROM packets p
@@ -937,7 +938,7 @@ export async function getPacketDetail(hash: string, network = 'ukmesh') {
       [hash, ...scope.params],
     ),
     pool.query(
-      `SELECT p.rx_node_id, p.time, p.rssi, p.snr, p.hop_count
+      `SELECT p.rx_node_id, p.iata, p.time, p.rssi, p.snr, p.hop_count
        FROM packets p
        WHERE p.packet_hash = $1
          ${buildPacketScopeClause(scope, 'p', network)}
@@ -954,6 +955,7 @@ export async function getPacketDetail(hash: string, network = 'ukmesh') {
     rxNodeId: row.rx_node_id as string | null,
     srcNodeId: row.src_node_id as string | null,
     topic: row.topic as string,
+    iata: row.iata as string | null,
     packetType: row.packet_type as number | null,
     routeType: row.route_type as number | null,
     hopCount: row.hop_count as number | null,
@@ -965,6 +967,7 @@ export async function getPacketDetail(hash: string, network = 'ukmesh') {
     rawHex: row.raw_hex as string | null,
     observations: observations.rows.map((r) => ({
       rxNodeId: r.rx_node_id as string | null,
+      iata: r.iata as string | null,
       time: r.time as Date,
       rssi: r.rssi as number | null,
       snr: r.snr as number | null,
@@ -988,11 +991,13 @@ export type PathHistoryCacheRow = {
   visibility_generation: number;
 };
 
-export async function getPublicVisibilityGeneration(): Promise<number> {
-  const result = await pool.query<{ generation: string }>(
+export async function getPublicVisibilityGeneration(signal?: AbortSignal): Promise<number> {
+  const result = await query<{ generation: string }>(
     `SELECT generation::text AS generation
        FROM public_visibility_state
       WHERE singleton = TRUE`,
+    undefined,
+    signal,
   );
   const generation = Number(result.rows[0]?.generation);
   if (!Number.isSafeInteger(generation) || generation < 1) {
@@ -1039,36 +1044,49 @@ export async function upsertPathHistoryCache(entry: {
   resolvedPacketCount: number;
   segmentCounts: PathHistorySegmentRow[];
   visibilityGeneration: number;
+  analysisRun: AnalysisPublicationHandle;
 }): Promise<boolean> {
-  const result = await pool.query(
-    `INSERT INTO path_history_cache
-       (scope, window_start, updated_at, packet_count, resolved_packet_count, segment_counts, visibility_generation)
-     SELECT $1, $2, NOW(), $3, $4, $5::jsonb, $6
-       FROM (
-         SELECT generation
-           FROM public_visibility_state
-          WHERE singleton = TRUE
-            AND generation = $6
-          FOR SHARE
-       ) current_visibility
-     ON CONFLICT (scope) DO UPDATE SET
-       window_start = EXCLUDED.window_start,
-       updated_at = NOW(),
-       packet_count = EXCLUDED.packet_count,
-       resolved_packet_count = EXCLUDED.resolved_packet_count,
-       segment_counts = EXCLUDED.segment_counts,
-       visibility_generation = EXCLUDED.visibility_generation
-     RETURNING scope`,
-    [
-      entry.scope,
-      entry.windowStart.toISOString(),
-      entry.packetCount,
-      entry.resolvedPacketCount,
-      JSON.stringify(entry.segmentCounts),
-      entry.visibilityGeneration,
-    ],
-  );
-  return (result.rowCount ?? 0) === 1;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await assertAnalysisPublicationLease(client, entry.analysisRun);
+    const result = await client.query(
+      `INSERT INTO path_history_cache
+         (scope, window_start, updated_at, packet_count, resolved_packet_count, segment_counts, visibility_generation)
+       SELECT $1, $2, NOW(), $3, $4, $5::jsonb, $6
+         FROM (
+           SELECT generation
+             FROM public_visibility_state
+            WHERE singleton = TRUE
+              AND generation = $6
+            FOR SHARE
+         ) current_visibility
+       ON CONFLICT (scope) DO UPDATE SET
+         window_start = EXCLUDED.window_start,
+         updated_at = NOW(),
+         packet_count = EXCLUDED.packet_count,
+         resolved_packet_count = EXCLUDED.resolved_packet_count,
+         segment_counts = EXCLUDED.segment_counts,
+         visibility_generation = EXCLUDED.visibility_generation
+       RETURNING scope`,
+      [
+        entry.scope,
+        entry.windowStart.toISOString(),
+        entry.packetCount,
+        entry.resolvedPacketCount,
+        JSON.stringify(entry.segmentCounts),
+        entry.visibilityGeneration,
+      ],
+    );
+    await assertAnalysisPublicationLease(client, entry.analysisRun);
+    await client.query('COMMIT');
+    return (result.rowCount ?? 0) === 1;
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 export async function getPathHistoryCache(
@@ -1258,6 +1276,10 @@ export async function getViableLinks(network?: string, observer?: string): Promi
 }
 
 export { pool, analyticsPool };
+
+export async function closeDb(): Promise<void> {
+  await Promise.all([pool.end(), analyticsPool.end()]);
+}
 
 // ---------------------------------------------------------------------------
 // Spam detection
@@ -1495,7 +1517,7 @@ export async function getSpamPacketObservers(srcNodeId: string) {
        AND ss.network = p.network
      WHERE p.src_node_id = $1
        AND p.network = ANY($2)
-       AND p.topic_prefix <> 'meshcore-test'
+       AND COALESCE(NULLIF(p.topic_prefix, ''), split_part(p.topic, '/', 1)) <> 'meshcore-test'
        AND p.packet_type = 4
        AND p.time > NOW() - INTERVAL '30 days'
        AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
@@ -1535,7 +1557,7 @@ export async function getSpamAllObservers() {
      WHERE ss.claimed_lat IS NOT NULL
        AND ss.claimed_lon IS NOT NULL
        AND ss.network = ANY($1)
-       AND p.topic_prefix <> 'meshcore-test'
+       AND COALESCE(NULLIF(p.topic_prefix, ''), split_part(p.topic, '/', 1)) <> 'meshcore-test'
        AND n.lat IS NOT NULL
        AND n.lon IS NOT NULL
        AND ss.spoofed_name NOT LIKE '%🚫%'

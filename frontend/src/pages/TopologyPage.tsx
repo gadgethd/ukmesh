@@ -2,7 +2,10 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { forceCenter, forceCollide, forceLink, forceManyBody, forceSimulation, type Simulation, type SimulationNodeDatum } from 'd3-force';
 import { LoadingIndicator } from '../components/LoadingIndicator.js';
 import { getCurrentSite } from '../config/site.js';
-import { withScopeParams } from '../utils/api.js';
+import { useRuntimeFeatures } from '../config/runtimeFeatures.js';
+import { fetchJson, withScopeParams } from '../utils/api.js';
+import { createFrameSnapshotScheduler } from '../utils/frameSnapshotScheduler.js';
+import { filterTopologyLinks } from './topologyModel.js';
 import './network-intelligence.css';
 
 type TopologyNode = {
@@ -48,6 +51,7 @@ type RfValidationPayload = {
 };
 
 type PlotNode = TopologyNode & SimulationNodeDatum & { x: number; y: number };
+const TOPOLOGY_SNAPSHOT_INTERVAL_MS = 66;
 
 function compactNumber(value: number): string {
   return new Intl.NumberFormat('en-GB', { notation: 'compact', maximumFractionDigits: 1 }).format(value);
@@ -55,6 +59,9 @@ function compactNumber(value: number): string {
 
 export const TopologyPage: React.FC = () => {
   const site = getCurrentSite();
+  const { privacyGeneration } = useRuntimeFeatures();
+  const network = site.networkFilter ?? site.network;
+  const observer = site.observerId;
   const [payload, setPayload] = useState<TopologyPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -66,26 +73,33 @@ export const TopologyPage: React.FC = () => {
 
   useEffect(() => {
     const controller = new AbortController();
-    fetch(withScopeParams('/api/topology?limit=300', { network: site.networkFilter }), { signal: controller.signal })
-      .then(async (response) => {
-        if (!response.ok) throw new Error(`Topology request failed (${response.status})`);
-        return response.json() as Promise<TopologyPayload>;
-      })
+    setPayload(null);
+    setError(null);
+    setSelectedNodeId(null);
+    fetchJson<TopologyPayload>(
+      withScopeParams('/api/topology?limit=300', { network, observer }),
+      { signal: controller.signal, cache: 'no-store' },
+      { timeoutMs: 15_000, maxBytes: 8 * 1024 * 1024 },
+    )
       .then(setPayload)
       .catch((reason: unknown) => {
         if ((reason as DOMException).name !== 'AbortError') setError((reason as Error).message);
       });
     return () => controller.abort();
-  }, [site.networkFilter]);
+  }, [network, observer, privacyGeneration]);
 
   useEffect(() => {
     const controller = new AbortController();
-    fetch(withScopeParams('/api/rf-validation?limit=100', { network: site.networkFilter }), { signal: controller.signal })
-      .then((response) => response.ok ? response.json() as Promise<RfValidationPayload> : Promise.reject(new Error('RF validation unavailable')))
+    setRfValidation(null);
+    fetchJson<RfValidationPayload>(
+      withScopeParams('/api/rf-validation?limit=100', { network, observer }),
+      { signal: controller.signal, cache: 'no-store' },
+      { timeoutMs: 15_000, maxBytes: 4 * 1024 * 1024 },
+    )
       .then(setRfValidation)
       .catch(() => setRfValidation(null));
     return () => controller.abort();
-  }, [site.networkFilter]);
+  }, [network, observer, privacyGeneration]);
 
   useEffect(() => {
     const located = (payload?.nodes ?? []).filter(
@@ -108,17 +122,47 @@ export const TopologyPage: React.FC = () => {
       x: 40 + ((node.lon - minLon) / lonSpan) * 920,
       y: 560 - ((node.lat - minLat) / latSpan) * 520,
     }));
+    const simulationLinks = filterTopologyLinks(
+      nodes.map((node) => node.nodeId),
+      payload?.links ?? [],
+    );
+    setPlotNodes(nodes.map((node) => ({ ...node })));
+    const snapshotScheduler = createFrameSnapshotScheduler({
+      minIntervalMs: TOPOLOGY_SNAPSHOT_INTERVAL_MS,
+      isVisible: () => document.visibilityState === 'visible',
+      emit: () => {
+        setPlotNodes(nodes.map((node) => ({
+          ...node,
+          x: node.x ?? 500,
+          y: node.y ?? 300,
+        })));
+      },
+    });
     const simulation = forceSimulation(nodes)
       .force('charge', forceManyBody().strength(-28))
       .force('center', forceCenter(500, 300).strength(0.035))
       .force('collision', forceCollide<PlotNode>().radius((node) => Math.min(14, 5 + Math.sqrt(node.degree))))
       .force('links', forceLink<PlotNode, { source: string | PlotNode; target: string | PlotNode }>(
-        (payload?.links ?? []).map((link) => ({ source: link.source, target: link.target })),
+        simulationLinks.map((link) => ({ source: link.source, target: link.target })),
       ).id((node) => node.nodeId).distance(40).strength(0.08))
       .alpha(0.5)
-      .on('tick', () => setPlotNodes(nodes.map((node) => ({ ...node, x: node.x ?? 500, y: node.y ?? 300 }))));
+      .on('tick', () => snapshotScheduler.noteMutation());
     simulationRef.current = simulation;
-    return () => { simulation.stop(); simulationRef.current = null; };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        simulation.restart();
+        snapshotScheduler.noteMutation();
+      } else {
+        simulation.stop();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      snapshotScheduler.stop();
+      simulation.stop();
+      simulationRef.current = null;
+    };
   }, [payload]);
 
   const plot = useMemo(() => {
@@ -152,8 +196,13 @@ export const TopologyPage: React.FC = () => {
           <input type="checkbox" checked={strongOnly} onChange={(event) => setStrongOnly(event.target.checked)} />
           Multibyte evidence only
         </label>
-        <label className="topology-page__toggle">Region
-          <select value={region} onChange={(event) => setRegion(event.target.value)}>
+        <label className="topology-page__toggle topology-page__region-toggle">Region
+          <select
+            className="topology-page__region-select"
+            aria-label="Filter topology by region"
+            value={region}
+            onChange={(event) => setRegion(event.target.value)}
+          >
             <option value="all">All regions</option>
             {regions.map((value) => <option key={value} value={value}>{value}</option>)}
           </select>
@@ -176,7 +225,10 @@ export const TopologyPage: React.FC = () => {
 
           <div className="topology-page__workspace">
             <section className="topology-page__graph" aria-label="Geographic repeater topology graph">
-              <svg viewBox="0 0 1000 600" role="img" aria-label={`${plot.nodes.length} positioned repeaters and ${plot.links.length} links`}>
+              <p className="ui-visually-hidden" id="topology-graph-desc">
+                {plot.nodes.length} positioned repeaters and {plot.links.length} links
+              </p>
+              <svg viewBox="0 0 1000 600" role="group" aria-labelledby="topology-graph-desc">
                 <g className="topology-page__links">
                   {plot.links.map((link) => {
                     const source = nodesById.get(link.source);
@@ -258,8 +310,12 @@ export const TopologyPage: React.FC = () => {
                 <ol>
                   {payload.nodes.filter((node) => node.degree > 0).slice(0, 12).map((node) => (
                     <li key={node.nodeId}>
-                      <button type="button" onClick={() => setSelectedNodeId(node.nodeId)}>
-                        <span>{node.name ?? node.nodeId.slice(0, 10)}</span>
+                      <button
+                        type="button"
+                        title={node.name ?? node.nodeId}
+                        onClick={() => setSelectedNodeId(node.nodeId)}
+                      >
+                        <span title={node.name ?? node.nodeId}>{node.name ?? node.nodeId.slice(0, 10)}</span>
                         <strong>{node.degree}</strong>
                       </button>
                     </li>
@@ -284,6 +340,12 @@ export const TopologyPage: React.FC = () => {
               </div>
               {rfValidation.mismatches.length > 0 && (
                 <div className="topology-page__validation-table" role="table" aria-label="RF model mismatches">
+                  <div role="row" className="topology-page__validation-table-head">
+                    <span role="columnheader">Link</span>
+                    <span role="columnheader">Observations</span>
+                    <span role="columnheader">Modelled path loss</span>
+                    <span role="columnheader">Classification</span>
+                  </div>
                   {rfValidation.mismatches.slice(0, 20).map((link) => (
                     <div role="row" key={`${link.source}:${link.target}`}>
                       <span role="cell">{link.sourceName ?? link.source.slice(0, 8)} ↔ {link.targetName ?? link.target.slice(0, 8)}</span>

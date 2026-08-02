@@ -105,7 +105,7 @@
                 <button class="control-button ghost-button hidden" id="install-app-button" type="button">
                   Install App
                 </button>
-                <a class="control-button ghost-button hidden" href="#" id="external-link" rel="noopener noreferrer" target="_blank">External Link</a>
+                <a class="control-button external-link hidden" href="#" id="external-link" rel="noopener noreferrer" target="_blank" aria-label="Open external link in a new tab">External Link</a>
                 <a class="control-button primary-button" href="/app" id="start-own-check-link">Run Your Own Check</a>
                 <button class="control-button primary-button hidden" id="new-session-button" type="button">
                   New Code
@@ -114,7 +114,7 @@
             </div>
 
             <div class="dock-status-stack">
-              <span class="pill status-pill" id="mqtt-pill">Shared Link</span>
+              <span class="pill status-pill" id="mqtt-pill" role="status" aria-live="polite">Shared Link</span>
               <div class="dock-note">
                 <span class="meta-label">Share Mode</span>
                 <strong id="network-window">Read-only diagnostics</strong>
@@ -124,7 +124,7 @@
           </article>
 
           <section class="glance-grid telemetry-strip" id="health-at-a-glance">
-            <article class="glance-card telemetry-strip__item">
+            <article class="glance-card telemetry-strip__item glance-card--empty" id="signal-quality-card">
             <div class="glance-card__head">
               <span class="panel-label">Transport</span>
             </div>
@@ -133,7 +133,7 @@
             <p class="small-note" id="observer-density-label">Awaiting observer directory.</p>
             </article>
 
-            <article class="glance-card telemetry-strip__item">
+            <article class="glance-card telemetry-strip__item glance-card--empty" id="receipt-spread-card">
             <div class="glance-card__head">
               <span class="panel-label">Mapped Nodes</span>
             </div>
@@ -146,18 +146,18 @@
             <div class="glance-card__head">
               <span class="panel-label">Signal Quality</span>
             </div>
-            <strong class="glance-card__value" id="signal-quality">--</strong>
+            <strong class="glance-card__value" id="signal-quality">No data yet</strong>
             <div class="sparkline" id="signal-sparkline" aria-hidden="true"></div>
-            <p class="small-note" id="signal-quality-label">Awaiting telemetry.</p>
+            <p class="small-note" id="signal-quality-label">Waiting for a health check receipt.</p>
             </article>
 
             <article class="glance-card telemetry-strip__item">
             <div class="glance-card__head">
               <span class="panel-label">Receipt Spread</span>
             </div>
-            <strong class="glance-card__value" id="latency-score">--</strong>
+            <strong class="glance-card__value" id="latency-score">No data yet</strong>
             <div class="sparkline" id="latency-sparkline" aria-hidden="true"></div>
-            <p class="small-note" id="latency-label">Awaiting receipt spread.</p>
+            <p class="small-note" id="latency-label">Waiting for observer reports.</p>
             </article>
           </section>
         </section>

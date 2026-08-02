@@ -3,7 +3,8 @@
  *
  * Node dots are rendered as a MapLibre GeoJSON circle layer (GPU, no React fibers).
  * Pan/zoom is pure GPU — zero JS work on move events.
- * Coverage, hex-clash lines, and privacy rings are also GeoJSON layers.
+ * RF coverage is a separate HopReach image overlay; this component owns
+ * nodes, links, hex-clash lines, and privacy rings.
  * Click hit-testing uses MapLibre's built-in R-tree spatial index.
  * deck.gl overlays are integrated via @deck.gl/mapbox (MapboxOverlay).
  */
@@ -12,7 +13,6 @@ import { createPortal } from 'react-dom';
 import maplibregl from 'maplibre-gl';
 import type { MeshNode } from '../../hooks/useNodes.js';
 import { nodeStore } from '../../hooks/useNodes.js';
-import { coverageStore, type NodeCoverage } from '../../hooks/useCoverage.js';
 import { linkStateStore } from '../../hooks/useLinkState.js';
 import type { HiddenMaskGeometry } from '../../utils/pathing.js';
 import {
@@ -27,6 +27,8 @@ import {
   DEFAULT_ZOOM,
   EMPTY_FC,
   MAP_ARC_REFRESH_INTERVAL_MS,
+  MAP_LABEL_COLORS,
+  MAP_RASTER_PAINT,
   MAP_REFRESH_INTERVAL_MS,
   MAP_STYLE,
   MAP_STYLE_LIGHT,
@@ -35,7 +37,6 @@ import {
   TERRAIN_DEM_SOURCE,
 } from './mapConfig.js';
 import {
-  buildCoverageGeoJSON,
   buildHiddenMask,
   buildLinksGeoJSON,
   buildNodeGeoJSON,
@@ -65,40 +66,50 @@ import type {
 } from './types.js';
 import { sampleElevationAt } from '../../utils/terrainSampler.js';
 import { computeCustomLos } from '../../utils/customLos.js';
+import { fetchJson, withScopeParams, type ApiScope } from '../../utils/api.js';
+import { ScopedCache } from '../../utils/scopedCache.js';
 
-const NODE_LINK_CACHE_TTL_MS = 5 * 60_000;
-const nodeLinksCache = new Map<string, { rows?: NodeLink[]; fetchedAt?: number; pending?: Promise<NodeLink[]> }>();
-
-function fetchNodeLinks(nodeId: string): Promise<NodeLink[]> {
-  const cached = nodeLinksCache.get(nodeId);
-  if (cached?.rows && Date.now() - (cached.fetchedAt ?? 0) < NODE_LINK_CACHE_TTL_MS) {
-    return Promise.resolve(cached.rows);
-  }
-  if (cached?.pending) return cached.pending;
-
-  const pending = fetch(`/api/nodes/${encodeURIComponent(nodeId)}/links`, {
-    signal: AbortSignal.timeout(15_000),
-  })
-    .then(async (response) => {
-      if (!response.ok) throw new Error(`links request failed: ${response.status}`);
-      const payload = await response.json() as NodeLink[];
-      const rows = Array.isArray(payload) ? payload : [];
-      nodeLinksCache.set(nodeId, { rows, fetchedAt: Date.now() });
-      return rows;
-    })
-    .catch((error) => {
-      nodeLinksCache.delete(nodeId);
-      throw error;
-    });
-  nodeLinksCache.set(nodeId, { ...cached, pending });
-  return pending;
+const NODE_DOCK_RIGHT_PADDING = 372;
+function mapPaddingForNode(selected: string | null): { top: number; right: number; bottom: number; left: number } {
+  const desktop = window.matchMedia('(min-width: 641px)').matches;
+  return {
+    top: 0,
+    right: selected && desktop ? NODE_DOCK_RIGHT_PADDING : 0,
+    bottom: 0,
+    left: 0,
+  };
 }
 
+const NODE_LINK_CACHE_TTL_MS = 5 * 60_000;
+const nodeLinksCache = new ScopedCache<NodeLink[]>({
+  name: 'map-node-links',
+  ttlMs: NODE_LINK_CACHE_TTL_MS,
+  maxEntries: 512,
+  maxBytes: 8 * 1024 * 1024,
+  maxInflight: 8,
+});
+
+function fetchNodeLinks(nodeId: string, scopeKey: string, scope: ApiScope): Promise<NodeLink[]> {
+  return nodeLinksCache.getOrLoad(scopeKey, nodeId.toUpperCase(), async () => {
+    const payload = await fetchJson<unknown>(
+      withScopeParams(`/api/nodes/${encodeURIComponent(nodeId)}/links`, scope),
+      {},
+      { timeoutMs: 15_000, maxBytes: 2 * 1024 * 1024 },
+    );
+    if (!Array.isArray(payload)) throw new Error('node links response was not an array');
+    return payload as NodeLink[];
+  });
+}
+
+import {
+  applyMapOverlayTheme,
+  installMapSourcesAndLayers,
+} from './mapSourceLayers.js';
 // ── Main Component ────────────────────────────────────────────────────────────
 
 export function MapLibreMap({
   inferredNodes,
-  inferredActiveNodeIds: _inferredActiveNodeIds,
+  inferredActiveNodeIds,
   showLinks,
   showTerrain,
   showClientNodes,
@@ -110,22 +121,27 @@ export function MapLibreMap({
   onNodeSelect,
   onMapReady,
   mapLight,
+  network,
+  observer,
+  privacyGeneration,
 }: MapLibreMapProps) {
+  const requestScope = useMemo(() => ({ network, observer }), [network, observer]);
+  const requestScopeKey = `${network ?? 'all'}|${observer ?? 'all'}|privacy-${privacyGeneration}`;
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const mapLoadedRef = useRef(false);
   const nodesRef = useRef(nodeStore.getState().nodes);
-  const coverageRef = useRef(coverageStore.getState().coverage);
-  const selectedCoverageRef = useRef<NodeCoverage | null>(null);
   const viablePairsRef = useRef(linkStateStore.getState().viablePairsArr);
   const linkMetricsRef = useRef(linkStateStore.getState().linkMetrics);
   const inferredNodesRef = useRef(inferredNodes);
+  const inferredActiveNodeIdsRef = useRef(inferredActiveNodeIds);
   const showLinksRef = useRef(showLinks);
   const showTerrainRef = useRef(showTerrain);
   const showClientNodesRef = useRef(showClientNodes);
   const showHexClashesRef = useRef(showHexClashes);
   const maxHexClashHopsRef = useRef(maxHexClashHops);
   const viewshedEnabledRef = useRef(viewshedEnabled);
+  const mapLightRef = useRef(mapLight);
   const pathNodeIdsRef = useRef(useOverlayStore.getState().pathNodeIds);
   const replayNodeIdsRef = useRef(useOverlayStore.getState().replayNodeIds);
   const setClashPathLines = useOverlayStore((state) => state.setClashPathLines);
@@ -149,7 +165,7 @@ export function MapLibreMap({
   const handleCustomLosPointRef = useRef<(point: CustomLosPoint) => Promise<void>>(null as any);
   // Planned repeater placement
   const plannedRepeatersRef = useRef<PlannedRepeater[]>([]);
-  const plannedPollRefs = useRef<Map<string, number>>(new Map());
+  const plannedPollRefs = useRef<Map<string, { stop: () => void }>>(new Map());
   // Plans whose LOS overlay has already been auto-applied (so we don't re-apply
   // it or fight a user who manually hid it from the popup).
   const plannedLosAppliedRef = useRef<Set<string>>(new Set());
@@ -163,9 +179,6 @@ export function MapLibreMap({
 
   const [plannedPopupState, setPlannedPopupState] = useState<{ planId: string; lngLat: maplibregl.LngLatLike } | null>(null);
   const [popupLinks, setPopupLinks] = useState<NodeLink[] | null>(null);
-  const [selectedCoverageNodeId, setSelectedCoverageNodeId] = useState<string | null>(null);
-  const [coverageLoadingNodeId, setCoverageLoadingNodeId] = useState<string | null>(null);
-  const [coverageMessage, setCoverageMessage] = useState<string | null>(null);
   const [focusedPrefix, setFocusedPrefix] = useState<string | null>(null);
   const [focusedNodeId, setFocusedNodeId] = useState<string | null>(null);
   const [focusedPrefixNodeIds, setFocusedPrefixNodeIds] = useState<Set<string> | null>(null);
@@ -183,11 +196,13 @@ export function MapLibreMap({
 
   // -- Map theme (light/dark) -------------------------------------------------
   useEffect(() => {
+      const theme = mapLight ? 'light' : 'dark';
+      mapLightRef.current = mapLight;
       const map = mapRef.current;
       if (map && mapLoadedRef.current) {
         const oldId = mapLight ? 'carto-dark' : 'carto-light';
         const newId = mapLight ? 'carto-light' : 'carto-dark';
-        const variant = mapLight ? 'light_all' : 'dark_all';
+        const variant = mapLight ? 'light_nolabels' : 'dark_nolabels';
         if (map.getSource(newId)) return;
         if (map.getLayer('background')) map.removeLayer('background');
         if (map.getLayer('bg-fill')) map.removeLayer('bg-fill');
@@ -205,15 +220,54 @@ export function MapLibreMap({
         // Insert bg-fill + basemap at the very bottom
         const firstLayer = map.getStyle().layers[0]?.id;
         map.addLayer(
-          { id: 'bg-fill', type: 'background', paint: { 'background-color': mapLight ? '#e8e8e8' : '#080d14' } },
+          { id: 'bg-fill', type: 'background', paint: { 'background-color': mapLight ? '#edf2f7' : '#080d14' } },
           firstLayer,
         );
         map.addLayer(
-          { id: 'background', type: 'raster', source: newId },
-          map.getStyle().layers[1]?.id,  // after bg-fill, before everything else
+          {
+            id: 'background',
+            type: 'raster',
+            source: newId,
+            paint: MAP_RASTER_PAINT[mapLight ? 'light' : 'dark'],
+          },
+          map.getStyle().layers[1]?.id,  // after bg-fill, before vector labels
         );
+
+        const labelColors = mapLight ? MAP_LABEL_COLORS.light : MAP_LABEL_COLORS.dark;
+        for (const [layerId, colorKey] of [
+          ['map-labels-place', 'place'],
+          ['map-labels-water', 'water'],
+          ['map-labels-road', 'road'],
+        ] as const) {
+          if (!map.getLayer(layerId)) continue;
+          map.setPaintProperty(layerId, 'text-color', labelColors[colorKey]);
+          map.setPaintProperty(layerId, 'text-halo-color', labelColors.halo);
+          map.setPaintProperty(layerId, 'text-halo-width', colorKey === 'place' ? 1.7 : 1.5);
+          map.setPaintProperty(layerId, 'text-halo-blur', 0.1);
+        }
+
+        applyMapOverlayTheme(map, theme);
+        const nodes = nodesRef.current;
+        const viablePairs = viablePairsRef.current;
+        const linkMetrics = linkMetricsRef.current;
+        const hiddenMask = hiddenCoordMaskRef.current;
+        const links = showLinksRef.current
+          ? buildLinksGeoJSON(nodes, viablePairs, linkMetrics, hiddenMask, theme)
+          : EMPTY_FC;
+        (map.getSource('viable-links') as maplibregl.GeoJSONSource | undefined)?.setData(links);
+        const plannedLinks = viewshedEnabledRef.current && showLinksRef.current
+          ? buildPlannedLinksGeoJSON(plannedRepeatersRef.current, nodes, hiddenMask, theme)
+          : EMPTY_FC;
+        (map.getSource('planned-links') as maplibregl.GeoJSONSource | undefined)?.setData(plannedLinks);
       }
   }, [mapLight]);
+
+  // Keep the map's usable camera area clear of the right-side node dock.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapLoadedRef.current) return;
+    map.setPadding(mapPaddingForNode(selectedNodeId));
+  }, [selectedNodeId]);
 
   // -- LOS profiles (client-side, multi-node, auto-expire) -------------------
 
@@ -257,7 +311,7 @@ export function MapLibreMap({
     const ANTENNA_H = 10;
     const EXAG = TERRAIN_CONFIG.exaggeration;
     try {
-      const links = await fetchNodeLinks(nodeId);
+      const links = await fetchNodeLinks(nodeId, requestScopeKey, requestScope);
       const sourceNode = nodesRef.current.get(nodeId);
       if (!sourceNode || !hasCoords(sourceNode)) {
         setLosProfilesForNode(nodeId, []);
@@ -292,7 +346,14 @@ export function MapLibreMap({
       removeLosNode(nodeId);
     }, 15_000);
     losTimersRef.current.set(nodeId, handle);
-  }, [addLosLoading, setLosProfilesForNode, removeLosNode, clearLosTimer]);
+  }, [
+    addLosLoading,
+    clearLosTimer,
+    removeLosNode,
+    requestScope,
+    requestScopeKey,
+    setLosProfilesForNode,
+  ]);
 
   // -- Custom LOS (two-point terrain-sampled LOS) ----------------------------
 
@@ -326,49 +387,16 @@ export function MapLibreMap({
 
   // -- Planned repeater placement --------------------------------------------
 
-  const pollPlannedCoverage = useCallback((planId: string) => {
-    if (!viewshedEnabledRef.current) return;
-    const iv = window.setInterval(() => {
-      void fetch(`/api/coverage/planned/${planId}`)
-        .then((r) => {
-          if (r.status === 404 || r.status === 410) {
-            return {
-              status: 'failed',
-              coverage: undefined,
-            } satisfies { status: string; coverage?: PlannedRepeater['coverage'] };
-          }
-          if (!r.ok) throw new Error('planned coverage temporarily unavailable');
-          return r.json() as Promise<{ status: string; coverage?: PlannedRepeater['coverage'] }>;
-        })
-        .then((data) => {
-          if (data.status === 'ready') {
-            window.clearInterval(iv);
-            plannedPollRefs.current.delete(planId);
-            useOverlayStore.getState().updatePlannedRepeater(planId, { status: 'ready', coverage: data.coverage });
-          } else if (data.status === 'failed') {
-            window.clearInterval(iv);
-            plannedPollRefs.current.delete(planId);
-            useOverlayStore.getState().updatePlannedRepeater(planId, { status: 'error' });
-          }
-        })
-        .catch(() => {});
-    }, 2000);
-    plannedPollRefs.current.set(planId, iv);
-  }, []);
-
   const handleRemovePlannedRepeater = useCallback((planId: string) => {
-    const iv = plannedPollRefs.current.get(planId);
-    if (iv !== undefined) {
-      window.clearInterval(iv);
+    const poll = plannedPollRefs.current.get(planId);
+    if (poll) {
+      poll.stop();
       plannedPollRefs.current.delete(planId);
     }
     setPlannedPopupState((prev) => (prev?.planId === planId ? null : prev));
     plannedLosAppliedRef.current.delete(planId);
     useOverlayStore.getState().removeLosNode(planId);
     useOverlayStore.getState().removePlannedRepeater(planId);
-    if (viewshedEnabledRef.current) {
-      void fetch(`/api/coverage/planned/${planId}`, { method: 'DELETE' }).catch(() => {});
-    }
   }, []);
 
   // Rebuild the planned-link lines from the current plans + live node positions,
@@ -376,7 +404,12 @@ export function MapLibreMap({
   const updatePlannedLinks = useCallback(() => {
     if (!mapLoadedRef.current || !mapRef.current) return;
     const data = viewshedEnabledRef.current && showLinksRef.current
-      ? buildPlannedLinksGeoJSON(plannedRepeatersRef.current, nodesRef.current, hiddenCoordMaskRef.current)
+      ? buildPlannedLinksGeoJSON(
+          plannedRepeatersRef.current,
+          nodesRef.current,
+          hiddenCoordMaskRef.current,
+          mapLightRef.current ? 'light' : 'dark',
+        )
       : EMPTY_FC;
     (mapRef.current.getSource('planned-links') as maplibregl.GeoJSONSource | undefined)?.setData(data);
     mapRef.current.setLayoutProperty('planned-links-layer', 'visibility', viewshedEnabledRef.current && showLinksRef.current ? 'visible' : 'none');
@@ -458,21 +491,11 @@ export function MapLibreMap({
   }, [viewshedEnabled, plannedRepeaters, buildPlannedLosProfiles]);
 
   const placePlannedRepeater = useCallback(async (lat: number, lon: number) => {
-    if (!viewshedEnabledRef.current) return;
-    try {
-      const res = await fetch('/api/coverage/planned', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ lat, lon }),
-      });
-      if (!res.ok) return;
-      const data = await res.json() as { plan_id: string };
-      useOverlayStore.getState().addPlannedRepeater({ id: data.plan_id, lat, lon, status: 'queued' });
-      pollPlannedCoverage(data.plan_id);
-    } catch {
-      // non-fatal
-    }
-  }, [pollPlannedCoverage]);
+    void lat;
+    void lon;
+    // Retired with the legacy viewshed planner. Kept as a no-op until the
+    // dormant planner UI is removed after the rollback window.
+  }, []);
 
   // Keep handler refs in sync for map event handlers
   useEffect(() => {
@@ -504,13 +527,19 @@ export function MapLibreMap({
     updatePlannedLinks();
   }, [viewshedEnabled, plannedRepeaters, updatePlannedLinks]);
 
-  // Clean up all planned repeaters, intervals, and LOS overlays on unmount
+  // Stop old-scope jobs before they can publish into a new network/observer.
   useEffect(() => () => {
-    for (const [planId, iv] of plannedPollRefs.current) {
-      window.clearInterval(iv);
-      if (viewshedEnabledRef.current) {
-        void fetch(`/api/coverage/planned/${planId}`, { method: 'DELETE' }).catch(() => {});
-      }
+    for (const [planId, poll] of plannedPollRefs.current) {
+      poll.stop();
+      useOverlayStore.getState().updatePlannedRepeater(planId, { status: 'error' });
+    }
+    plannedPollRefs.current.clear();
+  }, [requestScopeKey]);
+
+  // Clean up all planned repeaters, pollers, and LOS overlays on unmount
+  useEffect(() => () => {
+    for (const [, poll] of plannedPollRefs.current) {
+      poll.stop();
     }
     plannedPollRefs.current.clear();
     for (const planId of plannedLosAppliedRef.current) {
@@ -569,12 +598,10 @@ export function MapLibreMap({
       nodes: false,
       privacy: false,
       links: false,
-      coverage: false,
       clash: false,
       plannedLinks: false,
     };
     const nodes = nodesRef.current;
-    const coverage = viewshedEnabled ? coverageRef.current : [];
     const viablePairsArr = viablePairsRef.current;
     const linkMetrics = linkMetricsRef.current;
     const currentPathNodeIds = pathNodeIdsRef.current;
@@ -582,11 +609,10 @@ export function MapLibreMap({
     const currentHiddenCoordMask = maskDirty ? buildHiddenMask(nodes) : hiddenCoordMaskRef.current;
     if (maskDirty) hiddenCoordMaskRef.current = currentHiddenCoordMask;
 
-    const clashDirty = dirty.clash || dirty.nodes || dirty.coverage || dirty.links;
+    const clashDirty = dirty.clash || dirty.nodes || dirty.links;
     const clash = clashDirty
       ? computeClashData(
           nodes,
-          coverage,
           viablePairsArr,
           linkMetrics,
           showHexClashesRef.current,
@@ -609,6 +635,9 @@ export function MapLibreMap({
         clash.clashModeActive,
         clash.clashModeActive ? null : currentPathNodeIds,
         replayNodeIdsRef.current,
+        Date.now(),
+        inferredNodesRef.current,
+        inferredActiveNodeIdsRef.current,
       );
       (mapRef.current.getSource('nodes') as maplibregl.GeoJSONSource | undefined)?.setData(nodeGeoJSON);
     }
@@ -620,19 +649,16 @@ export function MapLibreMap({
 
     if (dirty.links || dirty.nodes) {
       const linksGeoJSON = showLinksRef.current
-        ? buildLinksGeoJSON(nodes, viablePairsArr, linkMetrics, currentHiddenCoordMask)
+        ? buildLinksGeoJSON(
+            nodes,
+            viablePairsArr,
+            linkMetrics,
+            currentHiddenCoordMask,
+            mapLightRef.current ? 'light' : 'dark',
+          )
         : EMPTY_FC;
       (mapRef.current.getSource('viable-links') as maplibregl.GeoJSONSource | undefined)?.setData(linksGeoJSON);
       mapRef.current.setLayoutProperty('viable-links-layer', 'visibility', showLinksRef.current ? 'visible' : 'none');
-    }
-
-    if (dirty.coverage || clashDirty) {
-      const coverageGeoJSON = viewshedEnabled && selectedCoverageRef.current && !clash.clashModeActive
-        ? buildCoverageGeoJSON([selectedCoverageRef.current])
-        : EMPTY_FC;
-      (mapRef.current.getSource('coverage') as maplibregl.GeoJSONSource | undefined)?.setData(coverageGeoJSON);
-      mapRef.current.setLayoutProperty('coverage-fill', 'visibility',
-        viewshedEnabled && selectedCoverageRef.current && !clash.clashModeActive ? 'visible' : 'none');
     }
 
     if (clashDirty) {
@@ -665,15 +691,11 @@ export function MapLibreMap({
   useEffect(() => {
     viewshedEnabledRef.current = viewshedEnabled;
     if (!viewshedEnabled) {
-      selectedCoverageRef.current = null;
-      setSelectedCoverageNodeId(null);
-      setCoverageLoadingNodeId(null);
-      setCoverageMessage(null);
       setPlanRepeaterMode(false);
       setPlannedPopupState(null);
       plannedPopupRef.current?.remove();
-      for (const [, iv] of plannedPollRefs.current) {
-        window.clearInterval(iv);
+      for (const [, poll] of plannedPollRefs.current) {
+        poll.stop();
       }
       plannedPollRefs.current.clear();
       for (const repeater of useOverlayStore.getState().plannedRepeaters) {
@@ -730,328 +752,10 @@ export function MapLibreMap({
     map.on('load', () => {
       mapLoadedRef.current = true;
 
-      // ── Node dots source + layer ───────────────────────────────────────────
-      map.addSource('nodes', { type: 'geojson', data: EMPTY_FC });
-
-      map.addLayer({
-        id: 'node-dots',
-        type: 'circle',
-        source: 'nodes',
-        filter: ['==', ['get', 'visible'], true],
-        paint: {
-          'circle-radius': [
-            'interpolate', ['linear'], ['zoom'],
-            6, 3, 9, 4, 11, 5, 13, 7, 16, 9,
-          ],
-          'circle-color': [
-            'case',
-            ['==', ['get', 'hex_clash_state'], 'offender'], '#ef4444',
-            ['==', ['get', 'hex_clash_state'], 'relay'], '#22c55e',
-            ['get', 'replay_active'], '#fbbf24',
-            ['get', 'is_link_only_stale'], '#4b5563',
-            ['get', 'is_inferred'], '#7dd3fc',
-            ['get', 'is_stale'], '#6b7280',
-            ['!', ['get', 'is_online']], '#6b7280',
-            ['==', ['get', 'role'], 1], '#ff9f43',
-            ['==', ['get', 'role'], 3], '#a78bfa',
-            ['==', ['get', 'role'], 4], '#34d399',
-            '#00c4ff', // repeater (role 2 / default)
-          ],
-          'circle-opacity': [
-            'case',
-            ['all', ['get', 'replay_mode'], ['!', ['get', 'replay_active']]], 0.12,
-            ['get', 'is_link_only_stale'], 0.22,
-            ['get', 'is_stale'], 0.4,
-            ['!', ['get', 'is_online']], 0.4,
-            ['get', 'is_inferred'], 0.7,
-            1.0,
-          ],
-          'circle-stroke-width': 0,
-          'circle-stroke-color': '#00c4ff',
-          'circle-stroke-opacity': 0.7,
-        },
+      installMapSourcesAndLayers(map, {
+        showLinks: showLinksRef.current,
+        mapLight: mapLightRef.current,
       });
-
-      // Observer quality is a separate, cached overlay so live node refreshes do
-      // not rebuild health metrics. A coloured ring keeps the role colour intact.
-      map.addSource('observer-health', { type: 'geojson', data: EMPTY_FC });
-      map.addLayer({
-        id: 'observer-health-rings',
-        type: 'circle',
-        source: 'observer-health',
-        paint: {
-          'circle-radius': [
-            'interpolate', ['linear'], ['zoom'],
-            6, 5.5, 9, 7, 11, 8.5, 13, 11, 16, 14,
-          ],
-          'circle-color': 'rgba(0,0,0,0)',
-          'circle-stroke-width': 2,
-          'circle-stroke-color': [
-            'match', ['get', 'quality'],
-            'good', '#22c55e',
-            'watch', '#fbbf24',
-            '#ef4444',
-          ],
-          'circle-stroke-opacity': 0.95,
-        },
-      });
-      void fetch('/api/observers/health', { signal: AbortSignal.timeout(10_000) })
-        .then((response) => response.ok ? response.json() as Promise<Array<{
-          node_id: string; name: string | null; lat: number; lon: number;
-          score: number; quality: 'good' | 'watch' | 'poor';
-        }>> : [])
-        .then((observers) => {
-          const source = map.getSource('observer-health') as maplibregl.GeoJSONSource | undefined;
-          source?.setData({
-            type: 'FeatureCollection',
-            features: observers.map((observer) => ({
-              type: 'Feature',
-              geometry: { type: 'Point', coordinates: [observer.lon, observer.lat] },
-              properties: {
-                node_id: observer.node_id,
-                name: observer.name,
-                score: observer.score,
-                quality: observer.quality,
-              },
-            })),
-          });
-        })
-        .catch(() => {});
-
-      // ── Selected-node highlight (recolour + ring) ──────────────────────────
-      // Two circle layers over node-dots, filtered to the selected node id.
-      // A soft halo underneath, a bright solid marker on top.
-      map.addLayer({
-        id: 'node-dots-selected-halo',
-        type: 'circle',
-        source: 'nodes',
-        filter: ['==', ['get', 'node_id'], '__none__'],
-        paint: {
-          'circle-radius': [
-            'interpolate', ['linear'], ['zoom'],
-            6, 11, 9, 13, 11, 15, 13, 18, 16, 22,
-          ],
-          'circle-color': '#22e0ff',
-          'circle-opacity': 0.16,
-          'circle-blur': 0.5,
-        },
-      });
-      map.addLayer({
-        id: 'node-dots-selected',
-        type: 'circle',
-        source: 'nodes',
-        filter: ['==', ['get', 'node_id'], '__none__'],
-        paint: {
-          'circle-radius': [
-            'interpolate', ['linear'], ['zoom'],
-            6, 5, 9, 6.5, 11, 8, 13, 10, 16, 13,
-          ],
-          'circle-color': '#8af4ff',
-          'circle-opacity': 1,
-          'circle-stroke-color': '#ffffff',
-          'circle-stroke-width': 2.5,
-          'circle-stroke-opacity': 0.95,
-        },
-      });
-
-      // ── Privacy rings source + layer ───────────────────────────────────────
-      map.addSource('privacy-rings', { type: 'geojson', data: EMPTY_FC });
-      map.addLayer({
-        id: 'privacy-rings-layer',
-        type: 'line',
-        source: 'privacy-rings',
-        paint: {
-          'line-color': '#f59e0b',
-          'line-width': 1.4,
-          'line-opacity': 0.55,
-          'line-dasharray': [4, 6],
-        },
-      });
-
-      // ── Viable links source + layer ───────────────────────────────────────
-      map.addSource('viable-links', { type: 'geojson', data: EMPTY_FC });
-      map.addLayer({
-        id: 'viable-links-layer',
-        type: 'line',
-        source: 'viable-links',
-        layout: {
-          visibility: 'none',
-          'line-cap': 'round',
-          'line-join': 'round',
-        },
-        paint: {
-          'line-color': ['get', 'color'],
-          'line-width': ['get', 'width'],
-          'line-opacity': ['get', 'opacity'],
-        },
-      });
-
-      // ── Coverage source + layer ────────────────────────────────────────────
-      map.addSource('coverage', { type: 'geojson', data: EMPTY_FC });
-      map.addLayer({
-        id: 'coverage-fill',
-        type: 'fill',
-        source: 'coverage',
-        layout: { visibility: 'none' },
-        paint: {
-          'fill-color': [
-            'match', ['get', 'band'],
-            'green', '#22c55e',
-            'amber', '#fbbf24',
-            'red', '#ef4444',
-            '#22c55e',
-          ],
-          'fill-opacity': [
-            'match', ['get', 'band'],
-            'green', 0.22,
-            'amber', 0.16,
-            'red', 0.10,
-            0.18,
-          ],
-        },
-      });
-
-      // ── Clash lines source + layer ─────────────────────────────────────────
-      map.addSource('clash-lines', { type: 'geojson', data: EMPTY_FC });
-      map.addLayer({
-        id: 'clash-lines-layer',
-        type: 'line',
-        source: 'clash-lines',
-        layout: { visibility: 'none' },
-        paint: {
-          'line-color': '#f97316',
-          'line-width': 2.2,
-          'line-opacity': 0.9,
-        },
-      });
-
-      // ── Planned coverage source + layers ──────────────────────────────────
-      map.addSource('planned-coverage', { type: 'geojson', data: EMPTY_FC });
-      map.addLayer({
-        id: 'planned-coverage-fill',
-        type: 'fill',
-        source: 'planned-coverage',
-        paint: {
-          'fill-color': [
-            'match', ['get', 'band'],
-            'green', '#2dd4bf',   // teal-400
-            'amber', '#818cf8',   // indigo-400
-            'red',   '#c084fc',   // purple-400
-            '#2dd4bf',
-          ],
-          'fill-opacity': [
-            'match', ['get', 'band'],
-            'green', 0.30,
-            'amber', 0.25,
-            'red',   0.20,
-            0.25,
-          ],
-        },
-      });
-      map.addLayer({
-        id: 'planned-coverage-outline',
-        type: 'line',
-        source: 'planned-coverage',
-        paint: {
-          'line-color': '#22d3ee', // cyan-400
-          'line-width': 1.5,
-          'line-opacity': 0.6,
-        },
-      });
-
-      // ── Predicted planned-repeater links source + layer ───────────────────
-      // Dashed lines (coloured by predicted path loss) so they read as
-      // hypothetical, distinct from the solid observed-link lines. Visibility
-      // follows the global Links toggle.
-      map.addSource('planned-links', { type: 'geojson', data: EMPTY_FC });
-      map.addLayer({
-        id: 'planned-links-layer',
-        type: 'line',
-        source: 'planned-links',
-        layout: {
-          visibility: showLinksRef.current ? 'visible' : 'none',
-          'line-cap': 'round',
-          'line-join': 'round',
-        },
-        paint: {
-          'line-color': ['get', 'color'],
-          'line-width': ['get', 'width'],
-          'line-opacity': 0.9,
-          'line-dasharray': [2, 1.5],
-        },
-      });
-
-      // ── Planned repeater pins source + layers ──────────────────────────────
-      // Styled to match real repeater nodes (role 2, #00c4ff) but visually
-      // distinct via white stroke + glow halo + "Planned" label.
-      map.addSource('planned-pins', { type: 'geojson', data: EMPTY_FC });
-
-      // Halo: soft glow behind the pin
-      map.addLayer({
-        id: 'planned-pins-halo',
-        type: 'circle',
-        source: 'planned-pins',
-        paint: {
-          'circle-radius': [
-            'interpolate', ['linear'], ['zoom'],
-            6, 8, 9, 11, 11, 14, 13, 18, 16, 22,
-          ],
-          'circle-color': '#22d3ee',
-          'circle-opacity': [
-            'match', ['get', 'status'],
-            'ready', 0.20,
-            0.10,
-          ],
-          'circle-stroke-width': 0,
-        },
-      });
-
-      // Core dot: same size/colour as a real online repeater, white stroke to mark as planned
-      map.addLayer({
-        id: 'planned-pins-dot',
-        type: 'circle',
-        source: 'planned-pins',
-        paint: {
-          'circle-radius': [
-            'interpolate', ['linear'], ['zoom'],
-            6, 3, 9, 4, 11, 5, 13, 7, 16, 9,
-          ],
-          'circle-color': [
-            'match', ['get', 'status'],
-            'ready', '#00c4ff',   // identical to real online repeater
-            '#4b5563',            // dark grey while computing
-          ],
-          'circle-opacity': [
-            'match', ['get', 'status'],
-            'ready', 1.0,
-            0.6,
-          ],
-          'circle-stroke-color': '#ffffff',
-          'circle-stroke-width': 2,
-          'circle-stroke-opacity': 0.95,
-        },
-      });
-
-      // Label: status ("Planned"/"Computing…") + the placement coordinates below the dot
-      map.addLayer({
-        id: 'planned-pins-label',
-        type: 'symbol',
-        source: 'planned-pins',
-        layout: {
-          'text-field': ['get', 'label'],
-          'text-size': 10,
-          'text-anchor': 'top',
-          'text-offset': [0, 1.0],
-          'text-allow-overlap': true,
-          'text-ignore-placement': true,
-        },
-        paint: {
-          'text-color': '#22d3ee',
-          'text-halo-color': 'rgba(0,0,0,0.8)',
-          'text-halo-width': 1.2,
-        },
-      });
-
       // ── Click handler ──────────────────────────────────────────────────────
       map.on('click', 'planned-pins-dot', (e) => {
         if (!viewshedEnabledRef.current) return;
@@ -1150,6 +854,7 @@ export function MapLibreMap({
       });
 
       mapRef.current = map;
+      map.setPadding(mapPaddingForNode(selectedNodeIdRef.current));
       onMapReady?.(map);
       refreshMapSources();
 
@@ -1196,8 +901,9 @@ export function MapLibreMap({
 
   useEffect(() => {
     inferredNodesRef.current = inferredNodes;
+    inferredActiveNodeIdsRef.current = inferredActiveNodeIds;
     scheduleRefresh({ nodes: true });
-  }, [inferredNodes, scheduleRefresh]);
+  }, [inferredActiveNodeIds, inferredNodes, scheduleRefresh]);
 
   useEffect(() => {
     showLinksRef.current = showLinks;
@@ -1251,12 +957,12 @@ export function MapLibreMap({
 
   useEffect(() => {
     showHexClashesRef.current = showHexClashes;
-    scheduleRefresh({ nodes: true, clash: true, coverage: true });
+    scheduleRefresh({ nodes: true, clash: true });
   }, [showHexClashes, scheduleRefresh]);
 
   useEffect(() => {
     maxHexClashHopsRef.current = maxHexClashHops;
-    scheduleRefresh({ nodes: true, clash: true, coverage: true });
+    scheduleRefresh({ nodes: true, clash: true });
   }, [maxHexClashHops, scheduleRefresh]);
 
   useEffect(() => {
@@ -1272,11 +978,6 @@ export function MapLibreMap({
       nodesRef.current = nextNodes;
       scheduleRefresh({ nodes: true, privacy: true, links: true, clash: true, plannedLinks: true });
       if (selectedNodeIdRef.current) setPopupVersion((value) => value + 1);
-    });
-    const unsubscribeCoverage = coverageStore.subscribe(() => {
-      if (!viewshedEnabledRef.current) return;
-      coverageRef.current = coverageStore.getState().coverage;
-      scheduleRefresh({ coverage: true, clash: true, nodes: true });
     });
     const unsubscribeLinks = linkStateStore.subscribe(() => {
       const linkState = linkStateStore.getState();
@@ -1296,7 +997,6 @@ export function MapLibreMap({
 
     return () => {
       unsubscribeNodes();
-      unsubscribeCoverage();
       unsubscribeLinks();
       unsubscribeOverlay();
     };
@@ -1305,44 +1005,6 @@ export function MapLibreMap({
   useEffect(() => {
     scheduleRefresh({ nodes: true, clash: true });
   }, [focusedNodeId, focusedPrefixNodeIds, scheduleRefresh]);
-
-  const toggleCoverageForNode = useCallback((nodeId: string) => {
-    if (!viewshedEnabled) return;
-    if (coverageLoadingNodeId === nodeId) return;
-    if (selectedCoverageNodeId === nodeId) {
-      selectedCoverageRef.current = null;
-      setSelectedCoverageNodeId(null);
-      setCoverageMessage(null);
-      scheduleRefresh();
-      return;
-    }
-
-    setCoverageLoadingNodeId(nodeId);
-    setCoverageMessage(null);
-    void fetch(`/api/coverage/${encodeURIComponent(nodeId)}`, { cache: 'no-store' })
-      .then(async (response) => {
-        const payload = await response.json().catch(() => ({})) as { status?: string; coverage?: NodeCoverage };
-        if (response.status === 202 || payload.status === 'queued') {
-          selectedCoverageRef.current = null;
-          setSelectedCoverageNodeId(null);
-          setCoverageMessage('Coverage is being calculated.');
-          return;
-        }
-        if (!response.ok || !payload.coverage) throw new Error('coverage unavailable');
-        selectedCoverageRef.current = payload.coverage;
-        setSelectedCoverageNodeId(nodeId);
-        setCoverageMessage(null);
-      })
-      .catch(() => {
-        selectedCoverageRef.current = null;
-        setSelectedCoverageNodeId(null);
-        setCoverageMessage('Coverage unavailable.');
-      })
-      .finally(() => {
-        setCoverageLoadingNodeId(null);
-        scheduleRefresh();
-      });
-  }, [viewshedEnabled, coverageLoadingNodeId, selectedCoverageNodeId, scheduleRefresh]);
 
   // -- Popup management ------------------------------------------------------
 
@@ -1358,11 +1020,11 @@ export function MapLibreMap({
     if (!node) return;
     let cancelled = false;
     setPopupLinks(null);
-    void fetchNodeLinks(selectedNodeId)
+    void fetchNodeLinks(selectedNodeId, requestScopeKey, requestScope)
       .then((rows) => { if (!cancelled) setPopupLinks(rows); })
       .catch(() => { if (!cancelled) setPopupLinks([]); });
     return () => { cancelled = true; };
-  }, [selectedNodeId, getNode]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [getNode, requestScope, requestScopeKey, selectedNodeId]);
 
   // Highlight the selected node on the map (bright recolour + ring). Cleared
   // when no selection. Uses setFilter so we never rebuild the whole node source.
@@ -1452,7 +1114,7 @@ export function MapLibreMap({
   return (
     <div className="map-area" style={{ position: 'relative', width: '100%', height: '100%' }}>
       <NodeSearch map={mapRef.current} onNodeSelect={onNodeSelect} />
-      <NodeLegend />
+      <NodeLegend mapLight={mapLight} />
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
 
       {/* Map tool buttons */}
@@ -1602,16 +1264,14 @@ export function MapLibreMap({
                 lon={popupNodeProps.maskedLon}
                 links={popupLinks}
                 hideName
-                coverageActive={selectedCoverageNodeId === popupNodeProps.props.node_id}
-                coverageLoading={coverageLoadingNodeId === popupNodeProps.props.node_id}
-                coverageMessage={selectedNodeId === popupNodeProps.props.node_id ? coverageMessage : null}
-                viewshedEnabled={viewshedEnabled}
-                onToggleCoverage={toggleCoverageForNode}
                 onFocusSamePrefix={handleFocusSamePrefix}
                 samePrefixCount={popupSamePrefixCount}
                 losActive={popupLosActive}
                 losLoading={popupLosLoading}
                 onToggleLos={handleToggleLos}
+                network={network}
+                observer={observer}
+                privacyGeneration={privacyGeneration}
               />
             </div>
           </aside>

@@ -13,15 +13,35 @@
  */
 
 import { generateKeyPairSync, type KeyObject } from 'node:crypto';
-import { writeFileSync, mkdirSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import {
+  closeSync,
+  constants,
+  fsyncSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+process.umask(0o077);
 
 // ── Parse args ──────────────────────────────────────────────────────────────
-const nameIdx = process.argv.indexOf('--name');
-const observerName = nameIdx !== -1 ? (process.argv[nameIdx + 1] ?? 'Observer') : 'Observer';
+function optionValue(name: string): string | undefined {
+  const index = process.argv.indexOf(name);
+  if (index === -1) return undefined;
+  const value = process.argv[index + 1];
+  if (!value || value.startsWith('--')) {
+    throw new Error(`${name} requires a value`);
+  }
+  return value;
+}
+
+const observerName = optionValue('--name') ?? 'Observer';
+const outputDirectory = optionValue('--output-dir');
 
 // ── Generate keypair ─────────────────────────────────────────────────────────
 const { publicKey, privateKey } = generateKeyPairSync('ed25519');
@@ -46,11 +66,18 @@ const publicKeyPem  = publicKey.export({ type: 'spki',  format: 'pem' }) as stri
 const privateKeyPem = privateKey.export({ type: 'pkcs8', format: 'pem' }) as string;
 
 // ── Save to file ─────────────────────────────────────────────────────────────
-const keysDir  = join(__dirname, 'keys');
+const keysDir  = outputDirectory ? resolve(outputDirectory) : join(__dirname, 'keys');
 const ts       = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
 const filename = join(keysDir, `observer-${ts}.json`);
 
-mkdirSync(keysDir, { recursive: true });
+mkdirSync(keysDir, { recursive: true, mode: 0o700 });
+const directoryStat = lstatSync(keysDir);
+if (!directoryStat.isDirectory() || directoryStat.isSymbolicLink()) {
+  throw new Error(`refusing unsafe key output path: ${keysDir}`);
+}
+if ((directoryStat.mode & 0o077) !== 0) {
+  throw new Error(`key output directory must not be accessible by group or other: ${keysDir}`);
+}
 
 const keyFile = {
   generated:     new Date().toISOString(),
@@ -61,7 +88,27 @@ const keyFile = {
   privateKeyPem,
 };
 
-writeFileSync(filename, JSON.stringify(keyFile, null, 2), 'utf8');
+let keyFileDescriptor: number | undefined;
+try {
+  keyFileDescriptor = openSync(
+    filename,
+    constants.O_WRONLY |
+      constants.O_CREAT |
+      constants.O_EXCL |
+      constants.O_NOFOLLOW,
+    0o600,
+  );
+  writeFileSync(keyFileDescriptor, `${JSON.stringify(keyFile, null, 2)}\n`, 'utf8');
+  fsyncSync(keyFileDescriptor);
+  closeSync(keyFileDescriptor);
+  keyFileDescriptor = undefined;
+} catch (error) {
+  if (keyFileDescriptor !== undefined) {
+    closeSync(keyFileDescriptor);
+    unlinkSync(filename);
+  }
+  throw error;
+}
 
 // ── Print instructions ────────────────────────────────────────────────────────
 const LINE = '─'.repeat(62);
@@ -76,8 +123,7 @@ console.log(`  Keys saved to : ${filename}\n`);
 console.log('  PUBLIC KEY (register this in the system):');
 console.log(`  ${publicKeyHex}\n`);
 
-console.log('  PRIVATE KEY (keep this SECRET — never share):');
-console.log(`  ${privateKeyHex}\n`);
+console.log('  Private key material was written only to the protected key file.');
 
 console.log(`${LINE}`);
 console.log('  NEXT STEPS:');

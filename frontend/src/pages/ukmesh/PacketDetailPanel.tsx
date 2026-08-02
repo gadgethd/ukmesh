@@ -1,48 +1,20 @@
-import React, { useEffect, useRef, useMemo } from 'react';
-import type maplibregl from 'maplibre-gl';
+import React, { useMemo } from 'react';
 import { LoadingIndicator } from '../../components/LoadingIndicator.js';
 import type { MeshNode } from '../../hooks/useNodes.js';
 import type { FeedPacket } from './UKFeedPage.js';
-import { buildPathNodePopupContent } from './pathNodePopup.js';
 import { usePacketDetailData, type RadioState } from '../../hooks/usePacketDetailData.js';
+import {
+  PathMap,
+  type LazyPath,
+  type LazyPathNode,
+  type LazyPathResult,
+  type ResolvedPath,
+} from './PacketPathMap.js';
+
+export { PathMap };
+export type { LazyPath, LazyPathNode, LazyPathResult, ResolvedPath };
 
 // ── Types ─────────────────────────────────────────────────────────────────────
-
-export type ResolvedPath = {
-  ok: boolean;
-  mode: 'resolved' | 'fallback' | 'none';
-  confidence: number | null;
-  purplePath: [number, number][] | null;
-  redPath: [number, number][] | null;
-  redSegments?: [[number, number], [number, number]][];
-};
-
-export type LazyPathNode = {
-  position: number;
-  hash: string;
-  nodeId: string | null;
-  name: string | null;
-  lat: number | null;
-  lon: number | null;
-  appearances: number;
-  totalObservations: number;
-  ambiguous: boolean;
-  isObserver: boolean;
-};
-
-export type LazyPath = {
-  canonicalPath: LazyPathNode[];
-  coordinates: Array<[number, number]>;
-  matchedHops: number;
-  totalHops: number;
-  observerIds: string[];
-};
-
-export type LazyPathResult = {
-  packetHash: string;
-  observerCount: number;
-  paths: LazyPath[];
-};
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -55,17 +27,7 @@ const PAYLOAD_NAMES: Record<number, string> = {
 const ROUTE_NAMES: Record<number, string> = {
   0: 'Transport Flood', 1: 'Flood', 2: 'Direct', 3: 'Transport Direct',
 };
-
-const CARTO_TILES = [
-  'https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
-  'https://b.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
-  'https://c.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
-  'https://d.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
-];
-
-const C_PURPLE = '#ce93d8';
-const C_RED = '#ff5252';
-const C_CYAN = '#00c4ff';
+const LAZY_PATH_COLORS = ['#26c6a2', '#00b4d8', '#f59e0b', '#a78bfa', '#f87171'];
 
 // ── Hex parsing ───────────────────────────────────────────────────────────────
 
@@ -143,233 +105,6 @@ function parsePacketHex(hex: string): ParsedPacket | null {
   };
 }
 
-// ── Path map ─────────────────────────────────────────────────────────────────
-
-// Distinct colours for multiple lazy paths
-const LAZY_PATH_COLORS = ['#26c6a2', '#00b4d8', '#f59e0b', '#a78bfa', '#f87171'];
-
-export const PathMap: React.FC<{
-  results: ResolvedPath[];
-  observerPositions?: [number, number][];
-  lazyPaths?: LazyPath[];
-  nodeMap?: Map<string, MeshNode>;
-  isLoading?: boolean;
-}> = ({ results, observerPositions = [], lazyPaths = [], nodeMap, isLoading = false }) => {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const mapRef = useRef<maplibregl.Map | null>(null);
-  const maplibreRef = useRef<typeof maplibregl | null>(null);
-  const mapReadyRef = useRef(false);
-  const nodeMapRef = useRef(nodeMap);
-  nodeMapRef.current = nodeMap;
-
-  // Keep latest prop values accessible inside stable callbacks without causing rerenders
-  const lazyPathsRef = useRef(lazyPaths);
-  const resultsRef = useRef(results);
-  const observerPositionsRef = useRef(observerPositions);
-  lazyPathsRef.current = lazyPaths;
-  resultsRef.current = results;
-  observerPositionsRef.current = observerPositions;
-
-  const toLngLat = ([lat, lon]: [number, number]): [number, number] => [lon, lat];
-
-  const hasData = useMemo(() => {
-    if (results.some((r) => r.purplePath?.length || r.redPath?.length || r.redSegments?.length)) return true;
-    if (lazyPaths.some((p) => p.canonicalPath.some((n) => n.lat != null && n.lon != null))) return true;
-    if (observerPositions.some(([lat, lon]) => Number.isFinite(lat) && Number.isFinite(lon))) return true;
-    return false;
-  }, [results, lazyPaths, observerPositions]);
-
-  // Imperatively add or update all map sources/layers without recreating the map.
-  // Reads from refs so it can be a stable useCallback reference.
-  const applyData = React.useCallback((map: maplibregl.Map, fitBounds: boolean) => {
-    const maplibre = maplibreRef.current;
-    if (!maplibre) return;
-    const lazys = lazyPathsRef.current;
-    const res = resultsRef.current;
-    const obs = observerPositionsRef.current;
-    const bounds = new maplibre.LngLatBounds();
-
-    // ── Beta results (purple / red paths) ────────────────────────────────
-    const allPurpleCoords: [number, number][][] = [];
-    const allRedCoords: [number, number][][] = [];
-    const allNodeCoords: [number, number][] = [];
-    for (const r of res) {
-      if (r.purplePath && r.purplePath.length >= 2) {
-        const coords = r.purplePath.map(toLngLat);
-        allPurpleCoords.push(coords);
-        allNodeCoords.push(...coords);
-        coords.forEach((c) => bounds.extend(c));
-      }
-      if (r.redPath && r.redPath.length >= 2) allRedCoords.push(r.redPath.map(toLngLat));
-      if (r.redSegments?.length) r.redSegments.forEach(([a, b]) => allRedCoords.push([toLngLat(a), toLngLat(b)]));
-      if (r.redPath) r.redPath.forEach((pt) => bounds.extend(toLngLat(pt)));
-      if (r.redSegments) r.redSegments.forEach(([a, b]) => { bounds.extend(toLngLat(a)); bounds.extend(toLngLat(b)); });
-    }
-    if (allPurpleCoords.length > 0) {
-      const purpleLinesData = { type: 'FeatureCollection' as const, features: allPurpleCoords.map((coords) => ({ type: 'Feature' as const, geometry: { type: 'LineString' as const, coordinates: coords }, properties: {} })) };
-      const purpleNodesData = { type: 'FeatureCollection' as const, features: allNodeCoords.map((c) => ({ type: 'Feature' as const, geometry: { type: 'Point' as const, coordinates: c }, properties: {} })) };
-      const plSrc = map.getSource('purple-lines') as maplibregl.GeoJSONSource | undefined;
-      if (plSrc) { plSrc.setData(purpleLinesData); } else {
-        map.addSource('purple-lines', { type: 'geojson', data: purpleLinesData });
-        map.addLayer({ id: 'purple-lines-layer', type: 'line', source: 'purple-lines', paint: { 'line-color': C_PURPLE, 'line-width': 2.5, 'line-opacity': 0.85 } });
-        map.addSource('purple-nodes', { type: 'geojson', data: purpleNodesData });
-        map.addLayer({ id: 'purple-node-circles', type: 'circle', source: 'purple-nodes', paint: { 'circle-radius': 5, 'circle-color': '#0b1725', 'circle-stroke-color': C_CYAN, 'circle-stroke-width': 2 } });
-      }
-    }
-    if (allRedCoords.length > 0) {
-      const redData = { type: 'FeatureCollection' as const, features: allRedCoords.map((coords) => ({ type: 'Feature' as const, geometry: { type: 'LineString' as const, coordinates: coords }, properties: {} })) };
-      const rlSrc = map.getSource('red-lines') as maplibregl.GeoJSONSource | undefined;
-      if (rlSrc) { rlSrc.setData(redData); } else {
-        map.addSource('red-lines', { type: 'geojson', data: redData });
-        map.addLayer({ id: 'red-lines-layer', type: 'line', source: 'red-lines', paint: { 'line-color': C_RED, 'line-width': 1.5, 'line-opacity': 0.65, 'line-dasharray': [4, 4] } });
-      }
-    }
-
-    // ── Lazy paths ───────────────────────────────────────────────────────
-    lazys.forEach((lazyPath, pi) => {
-      const color = LAZY_PATH_COLORS[pi % LAZY_PATH_COLORS.length]!;
-      const validNodes = lazyPath.canonicalPath.filter(
-        (n) => n.lat != null && n.lon != null && Number.isFinite(n.lat) && Number.isFinite(n.lon),
-      );
-      if (validNodes.length < 2) return;
-      const lngLat = validNodes.map((n) => [n.lon!, n.lat!] as [number, number]);
-      lngLat.forEach((c) => bounds.extend(c));
-      const lineId = `lazy-line-${pi}`;
-      const nodeLayerId = `lazy-nodes-${pi}`;
-      const lineData = { type: 'Feature' as const, geometry: { type: 'LineString' as const, coordinates: lngLat }, properties: {} };
-      const nodeData = { type: 'FeatureCollection' as const, features: validNodes.map((n, ni) => ({ type: 'Feature' as const, geometry: { type: 'Point' as const, coordinates: lngLat[ni]! }, properties: { nodeId: n.nodeId ?? '', name: n.name ?? '', isObserver: n.isObserver } })) };
-      const existingLine = map.getSource(lineId) as maplibregl.GeoJSONSource | undefined;
-      if (existingLine) {
-        existingLine.setData(lineData);
-        (map.getSource(nodeLayerId) as maplibregl.GeoJSONSource | undefined)?.setData(nodeData);
-      } else {
-        map.addSource(lineId, { type: 'geojson', data: lineData });
-        map.addLayer({ id: `${lineId}-layer`, type: 'line', source: lineId, paint: { 'line-color': color, 'line-width': 3, 'line-opacity': 0.9 } });
-        map.addSource(nodeLayerId, { type: 'geojson', data: nodeData });
-        map.addLayer({ id: `${nodeLayerId}-layer`, type: 'circle', source: nodeLayerId, paint: { 'circle-radius': 6, 'circle-color': '#0b1725', 'circle-stroke-color': color, 'circle-stroke-width': 2.5 } });
-        map.on('click', `${nodeLayerId}-layer`, (e) => {
-          const feat = e.features?.[0];
-          if (!feat) return;
-          const props = feat.properties as { nodeId: string; name: string; isObserver: boolean };
-          const fullNode = props.nodeId ? nodeMapRef.current?.get(props.nodeId) : undefined;
-          const displayName = props.name || props.nodeId.slice(0, 12) || '—';
-          const pubKey = fullNode?.public_key ?? props.nodeId ?? '—';
-          new maplibre.Popup({ closeButton: true, maxWidth: '320px' })
-            .setLngLat(e.lngLat)
-            .setDOMContent(buildPathNodePopupContent({
-              displayName,
-              publicKey: pubKey,
-              isObserver: props.isObserver,
-            }))
-            .addTo(map);
-        });
-        map.on('mouseenter', `${nodeLayerId}-layer`, () => { map.getCanvas().style.cursor = 'pointer'; });
-        map.on('mouseleave', `${nodeLayerId}-layer`, () => { map.getCanvas().style.cursor = ''; });
-      }
-    });
-
-    // ── Observer positions ────────────────────────────────────────────────
-    const validObs = obs.filter(([lat, lon]) => Number.isFinite(lat) && Number.isFinite(lon));
-    if (validObs.length > 0) {
-      const obsFeatures = validObs.map(([lat, lon]) => ({
-        type: 'Feature' as const,
-        geometry: { type: 'Point' as const, coordinates: [lon, lat] as [number, number] },
-        properties: {},
-      }));
-      const obsData = { type: 'FeatureCollection' as const, features: obsFeatures };
-      const existingObs = map.getSource('observer-pos') as maplibregl.GeoJSONSource | undefined;
-      if (existingObs) {
-        existingObs.setData(obsData);
-      } else {
-        map.addSource('observer-pos', { type: 'geojson', data: obsData });
-        map.addLayer({ id: 'observer-pos-layer', type: 'circle', source: 'observer-pos', paint: { 'circle-radius': 8, 'circle-color': '#ffb300', 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 2 } });
-      }
-      obsFeatures.forEach((f) => bounds.extend(f.geometry.coordinates));
-    }
-
-    if (fitBounds && !bounds.isEmpty()) map.fitBounds(bounds, { padding: 24, animate: false });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // stable — all data accessed via refs
-
-  // Create map once on mount; never recreate it for data changes
-  useEffect(() => {
-    if (!containerRef.current) return;
-    let cancelled = false;
-    let map: maplibregl.Map | null = null;
-    void Promise.all([
-      import('maplibre-gl'),
-      import('maplibre-gl/dist/maplibre-gl.css'),
-    ]).then(([maplibreModule]) => {
-      if (cancelled || !containerRef.current) return;
-      const maplibre = maplibreModule.default;
-      maplibreRef.current = maplibre;
-      const nextMap = new maplibre.Map({
-        container: containerRef.current,
-        style: {
-          version: 8,
-          sources: { tiles: { type: 'raster', tiles: CARTO_TILES, tileSize: 256, maxzoom: 19, attribution: '© OpenStreetMap © CARTO' } },
-          layers: [{ id: 'bg', type: 'raster', source: 'tiles' }],
-        },
-        center: [0, 51.5],
-        zoom: 6,
-        attributionControl: false,
-      });
-      map = nextMap;
-      mapRef.current = nextMap;
-      nextMap.on('load', () => {
-        if (cancelled) return;
-        mapReadyRef.current = true;
-        applyData(nextMap, true);
-      });
-    });
-    return () => {
-      cancelled = true;
-      if (mapRef.current === map) mapRef.current = null;
-      mapReadyRef.current = false;
-      maplibreRef.current = null;
-      map?.remove();
-    };
-  }, [applyData]);
-
-  // Track the path geometry key so we can refit bounds when paths change
-  // but not on every observer-position update (which would refit constantly).
-  const prevPathKeyRef = useRef('');
-  const prevIsLoadingRef = useRef(isLoading);
-
-  // Update sources imperatively when data changes — no map recreation, no flash.
-  // Suppress fitBounds while loading; refit once loading completes so the full
-  // path is in view before the user sees the map.
-  useEffect(() => {
-    if (!mapReadyRef.current || !mapRef.current) return;
-    const loadingComplete = prevIsLoadingRef.current && !isLoading;
-    prevIsLoadingRef.current = isLoading;
-
-    const pathKey = [
-      ...lazyPaths.flatMap((p) => p.canonicalPath.filter((n) => n.lat != null).map((n) => `${n.lat?.toFixed(4)},${n.lon?.toFixed(4)}`)),
-      ...results.flatMap((r) => (r.purplePath ?? []).map(([lat, lon]) => `${lat.toFixed(4)},${lon.toFixed(4)}`)),
-    ].join('|');
-    const pathsChanged = pathKey !== prevPathKeyRef.current;
-    prevPathKeyRef.current = pathKey;
-
-    // Fit when: paths just changed, or loading just completed (lazy paths arrived)
-    applyData(mapRef.current, !isLoading && (pathsChanged || loadingComplete));
-  }, [lazyPaths, results, observerPositions, isLoading, applyData]);
-
-  return (
-    <div style={{ position: 'relative', height: '100%', width: '100%' }}>
-      <div ref={containerRef} style={{ height: '100%', width: '100%' }} />
-      {isLoading && (
-        <LoadingIndicator label="Resolving path..." variant="overlay" className="path-map-loading-overlay" />
-      )}
-      {!hasData && !isLoading && (
-        <div className="feed-detail__no-map" style={{ position: 'absolute', inset: 0 }}>
-          Path could not be resolved
-        </div>
-      )}
-    </div>
-  );
-};
-
 // ── Byte breakdown section ────────────────────────────────────────────────────
 
 const ByteSection: React.FC<{
@@ -399,7 +134,7 @@ const BitTable: React.FC<{
 }> = ({ rows }) => (
   <table className="feed-detail__bit-table">
     <thead>
-      <tr><th>Bits</th><th>Field</th><th>Value</th><th>Binary</th></tr>
+      <tr><th scope="col">Bits</th><th scope="col">Field</th><th scope="col">Value</th><th scope="col">Binary</th></tr>
     </thead>
     <tbody>
       {rows.map((row, i) => (
@@ -434,13 +169,16 @@ export const PacketDetailPanel: React.FC<{
   packet: FeedPacket;
   nodeMap: Map<string, MeshNode>;
   network: string;
+  observer?: string;
   onClose: () => void;
   cachedLazyPath?: LazyPathResult | null;
-}> = ({ packet, nodeMap, network, onClose, cachedLazyPath }) => {
+}> = ({ packet, nodeMap, network, observer, onClose, cachedLazyPath }) => {
   const observerKey = (packet.observer_node_ids ?? []).slice().sort().join(',');
   const { detail, resolvedPaths, radio, loading, pathLoading, lazyPath, lazyStatus, lazyCountdown } = usePacketDetailData({
     packetHash: packet.packet_hash,
+    packetTime: packet.time,
     network,
+    observer,
     observerKey,
     hasPathHashes: Boolean(packet.path_hashes?.length),
     cachedLazyPath,
@@ -450,11 +188,17 @@ export const PacketDetailPanel: React.FC<{
   const rxNodeId = detail?.rxNodeId ?? packet.rx_node_id ?? null;
   const rxNode = rxNodeId ? nodeMap.get(rxNodeId) : undefined;
   const observerName = rxNode?.name ?? rxNodeId?.slice(0, 8) ?? '—';
-  const observerIata = rxNode?.iata?.trim().toUpperCase() ?? '—';
+  const observerIata = detail?.iata?.trim().toUpperCase()
+    ?? packet.iata?.trim().toUpperCase()
+    ?? rxNode?.iata?.trim().toUpperCase()
+    ?? '—';
 
   // Regions heard — combine live observer_node_ids, rx_node_id fallback, and DB observations
   const regionsHeard = useMemo(() => {
     const iatas = new Set<string>();
+    for (const value of [...(packet.observer_iatas ?? []), packet.iata, detail?.iata]) {
+      if (value) iatas.add(value.trim().toUpperCase());
+    }
     const ids: (string | null | undefined)[] = [
       ...(packet.observer_node_ids?.length ? packet.observer_node_ids : [packet.rx_node_id]),
       ...(detail?.observations?.map((o) => o.rxNodeId) ?? []),
@@ -464,8 +208,11 @@ export const PacketDetailPanel: React.FC<{
       const iata = nodeMap.get(id)?.iata;
       if (iata) iatas.add(iata.trim().toUpperCase());
     }
+    for (const observation of detail?.observations ?? []) {
+      if (observation.iata) iatas.add(observation.iata.trim().toUpperCase());
+    }
     return Array.from(iatas).join(' · ') || '—';
-  }, [packet.observer_node_ids, packet.rx_node_id, detail?.observations, nodeMap]);
+  }, [packet.observer_iatas, packet.iata, packet.observer_node_ids, packet.rx_node_id, detail?.iata, detail?.observations, nodeMap]);
 
   // Propagation time — span from first observer to last observer receiving this packet
   const propagationTime = useMemo(() => {
@@ -532,7 +279,7 @@ export const PacketDetailPanel: React.FC<{
         <code className="feed-detail__hash">{packet.packet_hash}</code>
         <span className="feed-detail__badge">{typeLabel}</span>
         {totalHops != null && <span className="feed-detail__badge feed-detail__badge--muted">{totalHops} hop{totalHops !== 1 ? 's' : ''}</span>}
-        <button type="button" className="feed-detail__close" onClick={onClose}>✕</button>
+        <button type="button" className="feed-detail__close" onClick={onClose} aria-label="Close packet details">✕</button>
       </div>
 
       {loading && (
@@ -561,7 +308,7 @@ export const PacketDetailPanel: React.FC<{
           {propagationTime && (
             <div className="feed-detail__info-item">
               <span className="feed-detail__info-label">Propagation</span>
-              <span className="feed-detail__info-value">{propagationTime}s</span>
+              <span className="feed-detail__info-value">{propagationTime}</span>
             </div>
           )}
           <div className="feed-detail__info-item">
@@ -589,12 +336,12 @@ export const PacketDetailPanel: React.FC<{
           <div className="feed-detail__section-title">Observers ({detail.observations.length})</div>
           <table className="feed-detail__observer-table">
             <thead>
-              <tr><th>Node</th><th>Region</th><th>Hops</th><th>RSSI</th><th>SNR</th><th>Time</th></tr>
+              <tr><th scope="col">Node</th><th scope="col">Region</th><th scope="col">Hops</th><th scope="col">RSSI</th><th scope="col">SNR</th><th scope="col">Time</th></tr>
             </thead>
             <tbody>
               {detail.observations.map((obs, i) => {
                 const node = obs.rxNodeId ? nodeMap.get(obs.rxNodeId) : undefined;
-                const iata = node?.iata?.trim().toUpperCase() ?? '—';
+                const iata = obs.iata?.trim().toUpperCase() || node?.iata?.trim().toUpperCase() || '—';
                 const name = node?.name ?? (obs.rxNodeId ? `${obs.rxNodeId.slice(0, 8)}…` : '—');
                 return (
                   <tr key={i}>
@@ -653,7 +400,7 @@ export const PacketDetailPanel: React.FC<{
               )}
               <table className="feed-detail__observer-table">
                 <thead>
-                  <tr><th>Hop</th><th>Hash</th><th>Node</th><th>Region</th><th>Seen by</th></tr>
+                  <tr><th scope="col">Hop</th><th scope="col">Hash</th><th scope="col">Node</th><th scope="col">Region</th><th scope="col">Seen by</th></tr>
                 </thead>
                 <tbody>
                   {lp.canonicalPath.map((step, si) => {

@@ -13,7 +13,7 @@ export default defineConfig({
   projects: [
     {
       name: 'public-desktop',
-      testMatch: /(?:owner|public)\.spec\.ts/,
+      testMatch: /(?:accessibility|owner|public)\.spec\.ts/,
       use: { ...devices['Desktop Chrome'], baseURL: 'http://127.0.0.1:4173' },
     },
     {
@@ -39,7 +39,7 @@ export default defineConfig({
       reuseExistingServer: !process.env['CI'],
     },
     {
-      command: 'VITE_APP_HOSTNAME=127.0.0.1 VITE_SITE=ukmesh VITE_NETWORK=ukmesh npm run dev -- --host 127.0.0.1 --port 4174',
+      command: 'VITE_APP_HOSTNAME=127.0.0.1 VITE_SITE=ukmesh VITE_NETWORK=ukmesh VITE_RF_COVERAGE_ENABLED=true npm run dev -- --host 127.0.0.1 --port 4174',
       port: 4174,
       reuseExistingServer: !process.env['CI'],
     },

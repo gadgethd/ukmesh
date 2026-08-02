@@ -43,6 +43,48 @@
   text-align: center;
 }
 
+.stats-page__request-state {
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  margin: 24px 0;
+  padding: 32px;
+  border: 1px dashed rgba(0, 196, 255, 0.3);
+  border-radius: var(--radius-lg);
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+.stats-page__request-state p {
+  margin: 0;
+}
+
+.stats-page__request-state button,
+.stats-page__refresh-state button {
+  border: 1px solid rgba(0, 196, 255, 0.45);
+  border-radius: var(--radius-md);
+  padding: 8px 12px;
+  background: rgba(0, 196, 255, 0.12);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.stats-page__refresh-state {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 14px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.stats-page__refresh-state button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
 .stats-page__stat {
   background: var(--bg-panel);
   border: 1px solid var(--border);
@@ -176,8 +218,7 @@
   gap: 8px;
 }
 
-.stats-page__channel-head,
-.stats-page__channel-meta {
+.stats-page__channel-head {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
@@ -217,6 +258,10 @@
 }
 
 .stats-page__channel-meta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
   color: var(--text-muted);
   font-size: 11px;
   flex-wrap: wrap;
@@ -329,4 +374,57 @@
 @keyframes skeleton-shimmer { to { transform: translateX(100%); } }
 @media (prefers-reduced-motion: reduce) {
   .skeleton-shimmer::after { animation: none; }
+}
+
+.stats-page__path-link {
+  appearance: none;
+  border: 0;
+  background: none;
+  padding: 0;
+  margin: 0;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+  text-align: left;
+  display: block;
+  max-width: 100%;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.stats-page__path-link:hover {
+  text-decoration: underline;
+}
+
+.stats-page__path-node-label {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  color: #ffffff;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  margin: 0;
+  padding: 0;
+}
+
+.stats-page__path-node-label::before {
+  display: none;
+}
+
+.stats-page__pie-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(140px, 1fr);
+  align-items: center;
+  gap: 16px;
+}
+
+@media (max-width: 640px) {
+
+  .stats-page__pie-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
