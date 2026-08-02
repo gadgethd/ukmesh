@@ -454,5 +454,3 @@ export const TelemetryStatCard: React.FC<{
     </div>
   </article>
 );
-
-
