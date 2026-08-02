@@ -1,13 +1,11 @@
-:root {
+:where(html) {
   --color-bg: #0a0f1a;
   --color-surface: #111827;
   --color-primary: #00c4ff;
   --color-primary-dim: #0099cc;
-  --color-gold: #fbbf24;
   --color-red: #ef4444;
   --color-green: #22c55e;
   --color-amber: #ff9f43;
-  --color-purple: #a78bfa;
   --color-text: #e2e8f0;
   --color-text-dim: #6b7280;
   --radius-sm: 4px;
@@ -19,7 +17,6 @@
   --space-lg: 16px;
   --space-xl: 24px;
   --font-mono: 'Iosevka', 'JetBrains Mono', monospace;
-  --font-sans: 'Inter', -apple-system, 'Segoe UI', sans-serif;
 }
 
 :root[data-contrast='high'] {
@@ -27,11 +24,9 @@
   --color-surface: #101010;
   --color-primary: #5cdbff;
   --color-primary-dim: #24bce8;
-  --color-gold: #ffd75e;
   --color-red: #ff6b6b;
   --color-green: #55ef88;
   --color-amber: #ffc266;
-  --color-purple: #c7b5ff;
   --color-text: #fff;
   --color-text-dim: #c7d2df;
   --bg-base: var(--color-bg);
@@ -63,9 +58,4 @@
     --online: #55ef88;
     --danger: #ff6b6b;
   }
-}
-
-.maplibregl-map {
-  --map-label-color: var(--color-text);
-  --map-link-color: var(--color-primary);
 }

@@ -26,10 +26,15 @@ export function parseCoverageBounds(value: unknown): CoverageBounds | null {
 }
 
 export function parseCoverageLimit(value: unknown): number {
-  if (typeof value !== 'string' || value.trim() === '') return COVERAGE_DEFAULT_LIMIT;
+  if (value === undefined || value === null || value === '') return COVERAGE_DEFAULT_LIMIT;
+  if (typeof value !== 'string' || !/^[1-9]\d*$/.test(value)) {
+    throw new ApiInputError('limit must be a positive integer');
+  }
   const parsed = Number(value);
-  if (!Number.isInteger(parsed)) return COVERAGE_DEFAULT_LIMIT;
-  return Math.min(COVERAGE_MAX_LIMIT, Math.max(1, parsed));
+  if (!Number.isSafeInteger(parsed) || parsed > COVERAGE_MAX_LIMIT) {
+    throw new ApiInputError(`limit must be between 1 and ${COVERAGE_MAX_LIMIT}`);
+  }
+  return parsed;
 }
 
 export function parseCoverageCursor(value: unknown): string | null | undefined {
@@ -69,3 +74,4 @@ export function boundCoveragePage<T extends { node_id: string }>(
     nextCursor: hasMore && items.length > 0 ? items[items.length - 1]!.node_id : null,
   };
 }
+import { ApiInputError } from '../errors.js';

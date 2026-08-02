@@ -17,6 +17,13 @@ export class PublicAllScopeForbiddenError extends Error {
   }
 }
 
+export class InvalidPublicNetworkScopeError extends Error {
+  constructor() {
+    super('INVALID_PUBLIC_NETWORK_SCOPE');
+    this.name = 'InvalidPublicNetworkScopeError';
+  }
+}
+
 export function normalizeNetworkValue(value: unknown): NetworkScope | undefined {
   const normalized = String(value ?? '').trim().toLowerCase();
   if (normalized === 'all') return 'all';
@@ -50,6 +57,14 @@ export function resolvePublicNetworkScope(
   headers: IncomingHttpHeaders,
   fallback: PublicNetworkScope = 'ukmesh',
 ): PublicNetworkScope {
+  if (
+    requested !== undefined
+    && requested !== null
+    && String(requested).trim() !== ''
+    && normalizeNetworkValue(requested) === undefined
+  ) {
+    throw new InvalidPublicNetworkScopeError();
+  }
   const scope = resolveRequestNetwork(requested, headers, fallback) ?? fallback;
   if (scope === 'all') throw new PublicAllScopeForbiddenError();
   return scope;

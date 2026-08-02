@@ -146,11 +146,11 @@
     gap: 12px;
   }
 
-  html .site-nav__hamburger {
+  .site-nav__hamburger {
     display: flex;
   }
 
-  html .site-nav__links {
+  .site-nav__links {
     display: none;
     position: absolute;
     top: calc(100% + 8px);
@@ -170,12 +170,12 @@
     z-index: 999;
   }
 
-  html .site-nav__links.site-nav__links--open {
+  .site-nav__links.site-nav__links--open {
     display: grid;
   }
 
-  html .site-nav__links .site-nav__link,
-  html .site-nav__links .site-nav__app-btn {
+  .site-nav__links .site-nav__link,
+  .site-nav__links .site-nav__app-btn {
     display: flex;
     align-items: center;
     min-width: 0;
@@ -224,7 +224,7 @@
   margin-left: 5px;
   padding-inline: 4px;
   border-radius: 999px;
-  background: var(--color-red);
+  background: #b91c1c;
   color: #fff;
-  font: 10px var(--font-mono);
+  font: 11px var(--font-mono);
 }

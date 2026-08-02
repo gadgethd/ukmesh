@@ -3,6 +3,15 @@ import { rateLimit } from 'express-rate-limit';
 import type { QueryResultRow } from 'pg';
 import { resolvePublicNetworkScope } from '../../http/requestScope.js';
 import { expandResolverScope } from '../../networks.js';
+import { parseBoundedInteger, parseBoundedString } from '../utils/input.js';
+import {
+  linkHistoryRows,
+  normalizeObserverRegistration,
+  observerHealthRows,
+  repeaterFirmwareRows,
+  submitObserverRegistration,
+  visibleLinkNodeIds,
+} from '../../repositories/productFeatures.js';
 
 type QueryFn = <T extends QueryResultRow = QueryResultRow>(text: string, params?: unknown[]) => Promise<{ rows: T[] }>;
 
@@ -19,29 +28,7 @@ export function registerProductFeatureRoutes(router: Router, query: QueryFn): vo
     try {
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const networks = expandResolverScope(network);
-      const result = await query<{
-        node_id: string; name: string | null; lat: number; lon: number;
-        active_hours: string; packets_48h: string; unique_src_48h: string;
-      }>(
-        `WITH observer_activity AS (
-           SELECT p.rx_node_id,
-             COUNT(DISTINCT date_trunc('hour', p.time)) AS active_hours,
-             COUNT(*) AS packets_48h,
-             COUNT(DISTINCT p.src_node_id) FILTER (WHERE p.src_node_id IS NOT NULL) AS unique_src_48h
-           FROM packets p
-           WHERE p.time > NOW() - INTERVAL '48 hours'
-             AND p.network = ANY($1::text[])
-             AND p.rx_node_id IS NOT NULL
-           GROUP BY p.rx_node_id
-         )
-         SELECT n.node_id, n.name, n.lat, n.lon,
-           oa.active_hours::text, oa.packets_48h::text, oa.unique_src_48h::text
-         FROM observer_activity oa
-         JOIN nodes n ON n.node_id = oa.rx_node_id
-         WHERE n.lat IS NOT NULL AND n.lon IS NOT NULL
-           AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')`,
-        [networks],
-      );
+      const result = await observerHealthRows(query, networks);
       const maxPackets = Math.max(1, ...result.rows.map((row) => Number(row.packets_48h)));
       res.setHeader('Cache-Control', 'public, max-age=60, stale-while-revalidate=300');
       res.json(result.rows.map((row) => {
@@ -68,30 +55,39 @@ export function registerProductFeatureRoutes(router: Router, query: QueryFn): vo
   });
 
   router.get('/links/:id/history', async (req, res) => {
-    const parts = decodeURIComponent(String(req.params['id'] ?? '')).split(/:|--/).map((part) => part.trim().toUpperCase());
+    const linkId = parseBoundedString(req.params['id'], {
+      name: 'link id',
+      required: true,
+      maxLength: 132,
+      pattern: /^[0-9a-fA-F:-]+$/,
+    })!;
+    const parts = linkId.split(/:|--/).map((part) => part.trim().toUpperCase());
     if (parts.length !== 2 || parts.some((part) => !/^[0-9A-F]{6,64}$/.test(part))) {
       res.status(400).json({ error: 'Link id must be nodeA:nodeB' });
       return;
     }
-    const hours = Math.max(1, Math.min(168, Math.floor(Number(req.query['hours'] ?? 72) || 72)));
+    if (parts[0] === parts[1]) {
+      res.status(400).json({ error: 'Link id must contain two different nodes' });
+      return;
+    }
+    const hours = parseBoundedInteger(req.query['hours'], {
+      name: 'hours',
+      defaultValue: 72,
+      min: 1,
+      max: 168,
+    });
     try {
       const [nodeA, nodeB] = parts.sort();
-      const result = await query<{
-        time: string; snr: number | null; rssi: number | null; path_loss: number | null; sample_count: number;
-      }>(
-        `SELECT reports.last_seen::text AS time, reports.last_snr_db AS snr,
-                NULL::double precision AS rssi, links.itm_path_loss_db AS path_loss,
-                reports.sample_count
-         FROM node_link_radio_reports reports
-         LEFT JOIN node_links links
-           ON links.node_a_id = reports.node_a_id AND links.node_b_id = reports.node_b_id
-         WHERE reports.node_a_id = $1 AND reports.node_b_id = $2
-           AND reports.last_seen > NOW() - ($3::text || ' hours')::interval
-         ORDER BY reports.last_seen ASC`,
-        [nodeA, nodeB, String(hours)],
-      );
+      const network = resolvePublicNetworkScope(req.query['network'], req.headers);
+      const networks = expandResolverScope(network);
+      const visible = await visibleLinkNodeIds(query, [nodeA, nodeB], networks);
+      if (new Set(visible.rows.map((row) => row.node_id.toUpperCase())).size !== 2) {
+        res.status(404).json({ error: 'Link not found' });
+        return;
+      }
+      const result = await linkHistoryRows(query, nodeA, nodeB, hours);
       res.setHeader('Cache-Control', 'public, max-age=60, stale-while-revalidate=300');
-      res.json({ linkId: `${nodeA}:${nodeB}`, hours, points: result.rows });
+      res.json({ linkId: `${nodeA}:${nodeB}`, network, hours, points: result.rows });
     } catch (error) {
       console.error('[api] GET /links/:id/history', (error as Error).message);
       res.status(500).json({ error: 'Internal server error' });
@@ -102,19 +98,7 @@ export function registerProductFeatureRoutes(router: Router, query: QueryFn): vo
     try {
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const networks = expandResolverScope(network);
-      const result = await query<{ hardware_model: string | null; firmware_version: string | null; count: string }>(
-        `SELECT COALESCE(hardware_model, 'Unknown') AS hardware_model,
-                COALESCE(NULLIF(firmware_version, ''), 'Unknown') AS firmware_version,
-                COUNT(*)::text AS count
-         FROM nodes
-         WHERE network = ANY($1::text[])
-           AND (role IS NULL OR role = 2)
-           AND last_seen > NOW() - INTERVAL '30 days'
-           AND (name IS NULL OR name NOT LIKE '%🚫%')
-         GROUP BY 1, 2
-         ORDER BY COUNT(*) DESC, 1, 2`,
-        [networks],
-      );
+      const result = await repeaterFirmwareRows(query, networks);
       const versions = result.rows.map((row) => ({ ...row, count: Number(row.count) }));
       res.setHeader('Cache-Control', 'public, max-age=300, stale-while-revalidate=900');
       res.json({ total: versions.reduce((sum, row) => sum + row.count, 0), versions });
@@ -125,26 +109,20 @@ export function registerProductFeatureRoutes(router: Router, query: QueryFn): vo
   });
 
   router.post('/observers/register', registrationLimiter, async (req, res) => {
-    const body = req.body as { publicKey?: string; iata?: string; name?: string; contact?: string } | undefined;
-    const publicKey = String(body?.publicKey ?? '').trim().toUpperCase();
-    const iata = String(body?.iata ?? '').trim().toUpperCase();
-    const name = String(body?.name ?? '').trim().slice(0, 100);
-    const contact = String(body?.contact ?? '').trim().slice(0, 200);
-    if (!/^[0-9A-F]{64}$/.test(publicKey) || !/^[A-Z0-9]{2,8}$/.test(iata) || !contact) {
+    let input;
+    try {
+      input = normalizeObserverRegistration(req.body);
+    } catch {
       res.status(400).json({ error: 'A 64-character public key, IATA region, and contact are required' });
       return;
     }
     try {
-      const result = await query<{ id: string }>(
-        `INSERT INTO observer_registration_requests (public_key, iata, display_name, contact)
-         VALUES ($1, $2, $3, $4)
-         ON CONFLICT (public_key) DO UPDATE SET
-           iata = EXCLUDED.iata, display_name = EXCLUDED.display_name,
-           contact = EXCLUDED.contact, status = 'pending', updated_at = NOW()
-         RETURNING id::text`,
-        [publicKey, iata, name || null, contact],
-      );
-      res.status(202).json({ ok: true, requestId: result.rows[0]?.id, status: 'pending' });
+      const result = await submitObserverRegistration(query, input);
+      res.status(202).json({
+        ok: true,
+        requestId: result.requestId,
+        status: result.accepted ? 'pending' : 'already_received',
+      });
     } catch (error) {
       console.error('[api] POST /observers/register', (error as Error).message);
       res.status(500).json({ error: 'Internal server error' });

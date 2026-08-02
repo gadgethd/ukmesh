@@ -1,6 +1,14 @@
 import type { QueryResultRow } from 'pg';
 import type { NetworkFilters } from '../api/utils/networkFilters.js';
 import { UKMESH_NETWORKS } from '../networks.js';
+import {
+  publicMapBasePredicate,
+  publicMapFreshPredicate,
+} from '../nodes/publicMap.js';
+import {
+  loadStoredChartSnapshot,
+  saveStoredChartSnapshot,
+} from './chartSnapshot.js';
 
 type QueryFn = <T extends QueryResultRow = QueryResultRow>(
   text: string,
@@ -10,9 +18,85 @@ type QueryFn = <T extends QueryResultRow = QueryResultRow>(
 type StatsRepositoryDeps = {
   networkFilters: (network?: string, observer?: string) => NetworkFilters;
   query: QueryFn;
+  aggregateReadsEnabled?: boolean;
+  aggregateShadowEnabled?: boolean;
 };
 
 export type StatsRepository = ReturnType<typeof createStatsRepository>;
+
+export type AggregateShadowRowComparison = {
+  matched: boolean;
+  maxAbsoluteDifference: number;
+  reason?: 'keys' | 'count';
+};
+
+function normalizedDimensionKey(row: QueryResultRow): string {
+  return JSON.stringify(Object.fromEntries(
+    Object.entries(row)
+      .filter(([key]) => key !== 'count')
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, value]) => {
+        const timestamp = (key === 'hour' || key === 'day')
+          ? Date.parse(String(value))
+          : Number.NaN;
+        return [
+          key,
+          Number.isFinite(timestamp)
+            ? new Date(timestamp).toISOString()
+            : (value instanceof Date ? value.toISOString() : String(value ?? '')),
+        ];
+      }),
+  ));
+}
+
+/**
+ * Shadow reads use one pinned cutoff, but a packet transaction that commits
+ * between the aggregate and legacy snapshots can still create a tiny count
+ * difference. Keys must match exactly; counts allow the documented maximum of
+ * five packets or 0.1%, whichever is larger.
+ */
+export function compareAggregateShadowRows(
+  aggregateRows: QueryResultRow[],
+  legacyRows: QueryResultRow[],
+  absoluteTolerance = 5,
+  relativeTolerance = 0.001,
+): AggregateShadowRowComparison {
+  const aggregate = new Map(
+    aggregateRows.map((row) => [normalizedDimensionKey(row), Number(row['count'])]),
+  );
+  const legacy = new Map(
+    legacyRows.map((row) => [normalizedDimensionKey(row), Number(row['count'])]),
+  );
+  const aggregateKeys = [...aggregate.keys()].sort();
+  const legacyKeys = [...legacy.keys()].sort();
+  if (JSON.stringify(aggregateKeys) !== JSON.stringify(legacyKeys)) {
+    return { matched: false, maxAbsoluteDifference: Number.POSITIVE_INFINITY, reason: 'keys' };
+  }
+
+  let maxAbsoluteDifference = 0;
+  for (const key of aggregateKeys) {
+    const aggregateCount = aggregate.get(key);
+    const legacyCount = legacy.get(key);
+    if (
+      aggregateCount === undefined
+      || legacyCount === undefined
+      || !Number.isFinite(aggregateCount)
+      || !Number.isFinite(legacyCount)
+    ) {
+      return { matched: false, maxAbsoluteDifference: Number.POSITIVE_INFINITY, reason: 'count' };
+    }
+    const difference = Math.abs(aggregateCount - legacyCount);
+    maxAbsoluteDifference = Math.max(maxAbsoluteDifference, difference);
+    const tolerance = Math.max(
+      absoluteTolerance,
+      Math.ceil(Math.max(Math.abs(aggregateCount), Math.abs(legacyCount)) * relativeTolerance),
+    );
+    if (difference > tolerance) {
+      return { matched: false, maxAbsoluteDifference, reason: 'count' };
+    }
+  }
+  return { matched: true, maxAbsoluteDifference };
+}
 
 export function createStatsRepository(deps: StatsRepositoryDeps) {
   const { networkFilters } = deps;
@@ -51,6 +135,25 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
       releaseQuerySlot();
     }
   };
+
+  async function loadChartSnapshot(scope: string, visibilityGeneration: number) {
+    return loadStoredChartSnapshot(query, scope, visibilityGeneration);
+  }
+
+  async function saveChartSnapshot(
+    scope: string,
+    payload: unknown,
+    visibilityGeneration: number,
+    maxAgeMs: number,
+  ): Promise<boolean> {
+    return saveStoredChartSnapshot(
+      query,
+      scope,
+      payload,
+      visibilityGeneration,
+      maxAgeMs,
+    );
+  }
 
   async function fetchObserverRegionSummary(network: string | undefined, observer: string | undefined) {
     // Public aggregates are computed from privacy-filtered source rows. Legacy
@@ -114,8 +217,478 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
     `, filters.params);
   }
 
+  type AggregateChartParts = {
+    packetsPerHour: QueryResultRow[];
+    packetsPerDay: QueryResultRow[];
+    packetTypes: QueryResultRow[];
+    hopDistribution: QueryResultRow[];
+    routeTypes: QueryResultRow[];
+    transportCodes: QueryResultRow[];
+  };
+
+  const aggregateReadsEnabled = deps.aggregateReadsEnabled
+    ?? process.env['STATS_AGGREGATE_READS_ENABLED'] === 'true';
+  const aggregateShadowEnabled = deps.aggregateShadowEnabled
+    ?? process.env['STATS_AGGREGATE_SHADOW_ENABLED'] === 'true';
+  const aggregateShadowInFlight = new Map<string, Promise<void>>();
+  const aggregateShadowLastStartedAt = new Map<string, number>();
+  const aggregateShadowMinimumIntervalMs = 5 * 60_000;
+
+  function aggregateScope(network: string | undefined): {
+    clause: string;
+  } {
+    if (network === 'ukmesh') {
+      return { clause: 's.network = ANY($1)' };
+    }
+    if (network) {
+      return { clause: 's.network = $1' };
+    }
+    return { clause: `s.network IS DISTINCT FROM 'test'` };
+  }
+
+  function chartWindowBounds(asOf: Date): {
+    asOf: Date;
+    start24h: Date;
+    start7d: Date;
+    fullStart24h: Date;
+    fullStart7d: Date;
+    fullEnd: Date;
+  } {
+    const hourMs = 60 * 60_000;
+    const asOfMs = asOf.getTime();
+    const start24h = new Date(asOfMs - 24 * hourMs);
+    const start7d = new Date(asOfMs - 7 * 24 * hourMs);
+    return {
+      asOf,
+      start24h,
+      start7d,
+      fullStart24h: new Date(Math.ceil(start24h.getTime() / hourMs) * hourMs),
+      fullStart7d: new Date(Math.ceil(start7d.getTime() / hourMs) * hourMs),
+      fullEnd: new Date(Math.floor(asOfMs / hourMs) * hourMs),
+    };
+  }
+
+  async function fetchAggregateChartParts(
+    network: string | undefined,
+    asOf: Date,
+  ): Promise<AggregateChartParts> {
+    const scope = aggregateScope(network);
+    const filters = networkFilters(network, undefined);
+    const bounds = chartWindowBounds(asOf);
+    const firstBoundParam = filters.params.length + 1;
+    const asOfParam = `$${firstBoundParam}`;
+    const start24hParam = `$${firstBoundParam + 1}`;
+    const start7dParam = `$${firstBoundParam + 2}`;
+    const fullStart24hParam = `$${firstBoundParam + 3}`;
+    const fullStart7dParam = `$${firstBoundParam + 4}`;
+    const fullEndParam = `$${firstBoundParam + 5}`;
+    const result = await query<{
+      packets_per_hour: QueryResultRow[];
+      packets_per_day: QueryResultRow[];
+      packet_types: QueryResultRow[];
+      hop_distribution: QueryResultRow[];
+      route_types: QueryResultRow[];
+      transport_codes: QueryResultRow[];
+    }>(
+      `WITH rollup_24h AS (
+         SELECT
+           s.network, s.hour, s.packet_type, s.hop_count, s.route_type,
+           s.transport_code, s.region_scope, s.packet_count
+         FROM packet_hourly_stats s
+         WHERE s.hour >= ${fullStart24hParam}::timestamptz
+           AND s.hour < ${fullEndParam}::timestamptz
+           AND ${scope.clause}
+       ),
+       raw_24h_packets AS MATERIALIZED (
+         SELECT
+           p.time, p.network, p.packet_type, p.hop_count, p.route_type,
+           p.transport_codes, p.region_scope
+         FROM packets p
+         WHERE p.time > ${start24hParam}::timestamptz
+           AND p.time < ${fullStart24hParam}::timestamptz
+           ${filters.packetsAlias('p')}
+         UNION ALL
+         SELECT
+           p.time, p.network, p.packet_type, p.hop_count, p.route_type,
+           p.transport_codes, p.region_scope
+         FROM packets p
+         WHERE p.time >= ${fullEndParam}::timestamptz
+           AND p.time <= ${asOfParam}::timestamptz
+           ${filters.packetsAlias('p')}
+       ),
+       raw_24h AS (
+         SELECT
+           network,
+           date_trunc('hour', time) AS hour,
+           COALESCE(packet_type, -1) AS packet_type,
+           COALESCE(hop_count, -1) AS hop_count,
+           COALESCE(route_type, -1) AS route_type,
+           COALESCE(NULLIF(TRIM(transport_codes), ''), '') AS transport_code,
+           COALESCE(NULLIF(TRIM(region_scope), ''), '') AS region_scope,
+           COUNT(*)::bigint AS packet_count
+         FROM raw_24h_packets
+         GROUP BY 1, 2, 3, 4, 5, 6, 7
+       ),
+       scoped_24h AS MATERIALIZED (
+         SELECT * FROM rollup_24h
+         UNION ALL
+         SELECT * FROM raw_24h
+       ),
+       rollup_7d AS (
+         SELECT
+           s.network, s.hour, s.packet_type, s.hop_count, s.route_type,
+           s.transport_code, s.region_scope, s.packet_count
+         FROM packet_hourly_stats s
+         WHERE s.hour >= ${fullStart7dParam}::timestamptz
+           AND s.hour < ${fullEndParam}::timestamptz
+           AND ${scope.clause}
+       ),
+       raw_7d_packets AS MATERIALIZED (
+         SELECT
+           p.time, p.network, p.packet_type, p.hop_count, p.route_type,
+           p.transport_codes, p.region_scope
+         FROM packets p
+         WHERE p.time > ${start7dParam}::timestamptz
+           AND p.time < ${fullStart7dParam}::timestamptz
+           ${filters.packetsAlias('p')}
+         UNION ALL
+         SELECT
+           p.time, p.network, p.packet_type, p.hop_count, p.route_type,
+           p.transport_codes, p.region_scope
+         FROM packets p
+         WHERE p.time >= ${fullEndParam}::timestamptz
+           AND p.time <= ${asOfParam}::timestamptz
+           ${filters.packetsAlias('p')}
+       ),
+       raw_7d AS (
+         SELECT
+           network,
+           date_trunc('hour', time) AS hour,
+           COALESCE(packet_type, -1) AS packet_type,
+           COALESCE(hop_count, -1) AS hop_count,
+           COALESCE(route_type, -1) AS route_type,
+           COALESCE(NULLIF(TRIM(transport_codes), ''), '') AS transport_code,
+           COALESCE(NULLIF(TRIM(region_scope), ''), '') AS region_scope,
+           COUNT(*)::bigint AS packet_count
+         FROM raw_7d_packets
+         GROUP BY 1, 2, 3, 4, 5, 6, 7
+       ),
+       scoped_7d AS MATERIALIZED (
+         SELECT * FROM rollup_7d
+         UNION ALL
+         SELECT * FROM raw_7d
+       ),
+       hour_counts AS (
+         SELECT hour, SUM(packet_count)::bigint AS count
+           FROM scoped_24h
+          GROUP BY hour
+       ),
+       hour_buckets AS (
+         SELECT generate_series(
+           date_trunc('hour', ${start24hParam}::timestamptz),
+           ${fullEndParam}::timestamptz,
+           INTERVAL '1 hour'
+         ) AS hour
+       ),
+       day_counts AS (
+         SELECT date_trunc('day', hour) AS day, SUM(packet_count)::bigint AS count
+           FROM scoped_7d
+          GROUP BY 1
+       ),
+       packet_types AS (
+         SELECT NULLIF(packet_type, -1) AS packet_type,
+                SUM(packet_count)::bigint AS count
+           FROM scoped_24h
+          GROUP BY packet_type
+       ),
+       hop_counts AS (
+         SELECT hop_count AS hops, SUM(packet_count)::bigint AS count
+           FROM scoped_7d
+          WHERE hop_count >= 0
+          GROUP BY hop_count
+       ),
+       route_counts AS (
+         SELECT CASE WHEN route_type = -1 THEN 'Unknown' ELSE route_type::text END AS route_type,
+                SUM(packet_count)::bigint AS count
+           FROM scoped_24h
+          GROUP BY route_type
+       ),
+       transport_counts AS (
+         SELECT transport_code,
+                NULLIF(region_scope, '') AS region_scope,
+                SUM(packet_count)::bigint AS count
+           FROM scoped_24h
+          WHERE transport_code <> ''
+          GROUP BY transport_code, region_scope
+          ORDER BY count DESC, region_scope ASC, transport_code ASC
+          LIMIT 12
+       )
+       SELECT
+         COALESCE((
+           SELECT jsonb_agg(
+             jsonb_build_object('hour', b.hour, 'count', COALESCE(h.count, 0)::text)
+             ORDER BY b.hour
+           )
+             FROM hour_buckets b
+             LEFT JOIN hour_counts h USING (hour)
+         ), '[]'::jsonb) AS packets_per_hour,
+         COALESCE((
+           SELECT jsonb_agg(
+             jsonb_build_object('day', day, 'count', count::text)
+             ORDER BY day
+           ) FROM day_counts
+         ), '[]'::jsonb) AS packets_per_day,
+         COALESCE((
+           SELECT jsonb_agg(
+             jsonb_build_object('packet_type', packet_type, 'count', count::text)
+             ORDER BY count DESC
+           ) FROM packet_types
+         ), '[]'::jsonb) AS packet_types,
+         COALESCE((
+           SELECT jsonb_agg(
+             jsonb_build_object('hops', hops, 'count', count::text)
+             ORDER BY hops
+           ) FROM hop_counts
+         ), '[]'::jsonb) AS hop_distribution,
+         COALESCE((
+           SELECT jsonb_agg(
+             jsonb_build_object('route_type', route_type, 'count', count::text)
+             ORDER BY count DESC, route_type
+           ) FROM route_counts
+         ), '[]'::jsonb) AS route_types,
+         COALESCE((
+           SELECT jsonb_agg(
+             jsonb_build_object(
+               'transport_code', transport_code,
+               'region_scope', region_scope,
+               'count', count::text
+             )
+             ORDER BY count DESC, region_scope, transport_code
+           ) FROM transport_counts
+         ), '[]'::jsonb) AS transport_codes`,
+      [
+        ...filters.params,
+        bounds.asOf.toISOString(),
+        bounds.start24h.toISOString(),
+        bounds.start7d.toISOString(),
+        bounds.fullStart24h.toISOString(),
+        bounds.fullStart7d.toISOString(),
+        bounds.fullEnd.toISOString(),
+      ],
+    );
+    const row = result.rows[0];
+    return {
+      packetsPerHour: row?.packets_per_hour ?? [],
+      packetsPerDay: row?.packets_per_day ?? [],
+      packetTypes: row?.packet_types ?? [],
+      hopDistribution: row?.hop_distribution ?? [],
+      routeTypes: row?.route_types ?? [],
+      transportCodes: row?.transport_codes ?? [],
+    };
+  }
+
+  async function fetchLegacyAggregateChartParts(
+    network: string | undefined,
+    asOf: Date,
+  ): Promise<AggregateChartParts> {
+    const filters = networkFilters(network, undefined);
+    const bounds = chartWindowBounds(asOf);
+    const firstBoundParam = filters.params.length + 1;
+    const asOfParam = `$${firstBoundParam}`;
+    const start24hParam = `$${firstBoundParam + 1}`;
+    const start7dParam = `$${firstBoundParam + 2}`;
+    const result = await query<{
+      packets_per_hour: QueryResultRow[];
+      packets_per_day: QueryResultRow[];
+      packet_types: QueryResultRow[];
+      hop_distribution: QueryResultRow[];
+      route_types: QueryResultRow[];
+      transport_codes: QueryResultRow[];
+    }>(
+      `WITH scoped AS MATERIALIZED (
+         SELECT
+           p.time,
+           p.packet_type,
+           p.hop_count,
+           p.route_type,
+           NULLIF(TRIM(p.transport_codes), '') AS transport_code,
+           NULLIF(TRIM(p.region_scope), '') AS region_scope
+         FROM packets p
+         WHERE p.time > ${start7dParam}::timestamptz
+           AND p.time <= ${asOfParam}::timestamptz
+           ${filters.packetsAlias('p')}
+       ),
+       hour_counts AS (
+         SELECT date_trunc('hour', s.time) AS hour, COUNT(*)::bigint AS count
+         FROM scoped s
+         WHERE s.time > ${start24hParam}::timestamptz
+         GROUP BY 1
+       ),
+       hour_buckets AS (
+         SELECT generate_series(
+           date_trunc('hour', ${start24hParam}::timestamptz),
+           date_trunc('hour', ${asOfParam}::timestamptz),
+           INTERVAL '1 hour'
+         ) AS hour
+       ),
+       day_counts AS (
+         SELECT date_trunc('day', time) AS day, COUNT(*)::bigint AS count
+         FROM scoped
+         GROUP BY 1
+       ),
+       packet_types AS (
+         SELECT s.packet_type, COUNT(*)::bigint AS count
+         FROM scoped s
+         WHERE s.time > ${start24hParam}::timestamptz
+         GROUP BY s.packet_type
+       ),
+       hop_counts AS (
+         SELECT hop_count AS hops, COUNT(*)::bigint AS count
+         FROM scoped
+         WHERE hop_count IS NOT NULL
+         GROUP BY hop_count
+       ),
+       route_counts AS (
+         SELECT COALESCE(s.route_type::text, 'Unknown') AS route_type,
+                COUNT(*)::bigint AS count
+         FROM scoped s
+         WHERE s.time > ${start24hParam}::timestamptz
+         GROUP BY s.route_type
+       ),
+       transport_counts AS (
+         SELECT s.transport_code, s.region_scope, COUNT(*)::bigint AS count
+         FROM scoped s
+         WHERE s.time > ${start24hParam}::timestamptz
+           AND s.transport_code IS NOT NULL
+         GROUP BY s.transport_code, s.region_scope
+         ORDER BY count DESC, region_scope ASC, transport_code ASC
+         LIMIT 12
+       )
+       SELECT
+         COALESCE((
+           SELECT jsonb_agg(
+             jsonb_build_object('hour', b.hour, 'count', COALESCE(h.count, 0)::text)
+             ORDER BY b.hour
+           )
+           FROM hour_buckets b
+           LEFT JOIN hour_counts h USING (hour)
+         ), '[]'::jsonb) AS packets_per_hour,
+         COALESCE((
+           SELECT jsonb_agg(
+             jsonb_build_object('day', day, 'count', count::text)
+             ORDER BY day
+           ) FROM day_counts
+         ), '[]'::jsonb) AS packets_per_day,
+         COALESCE((
+           SELECT jsonb_agg(
+             jsonb_build_object('packet_type', packet_type, 'count', count::text)
+             ORDER BY count DESC
+           ) FROM packet_types
+         ), '[]'::jsonb) AS packet_types,
+         COALESCE((
+           SELECT jsonb_agg(
+             jsonb_build_object('hops', hops, 'count', count::text)
+             ORDER BY hops
+           ) FROM hop_counts
+         ), '[]'::jsonb) AS hop_distribution,
+         COALESCE((
+           SELECT jsonb_agg(
+             jsonb_build_object('route_type', route_type, 'count', count::text)
+             ORDER BY count DESC, route_type
+           ) FROM route_counts
+         ), '[]'::jsonb) AS route_types,
+         COALESCE((
+           SELECT jsonb_agg(
+             jsonb_build_object(
+               'transport_code', transport_code,
+               'region_scope', region_scope,
+               'count', count::text
+             )
+             ORDER BY count DESC, region_scope, transport_code
+           ) FROM transport_counts
+         ), '[]'::jsonb) AS transport_codes`,
+      [
+        ...filters.params,
+        bounds.asOf.toISOString(),
+        bounds.start24h.toISOString(),
+        bounds.start7d.toISOString(),
+      ],
+    );
+    const row = result.rows[0];
+    return {
+      packetsPerHour: row?.packets_per_hour ?? [],
+      packetsPerDay: row?.packets_per_day ?? [],
+      packetTypes: row?.packet_types ?? [],
+      hopDistribution: row?.hop_distribution ?? [],
+      routeTypes: row?.route_types ?? [],
+      transportCodes: row?.transport_codes ?? [],
+    };
+  }
+
+  function reportAggregateShadow(
+    network: string | undefined,
+    aggregate: AggregateChartParts,
+    legacy: AggregateChartParts,
+  ): void {
+    const comparisons = Object.fromEntries(
+      (Object.keys(aggregate) as Array<keyof AggregateChartParts>)
+        .map((key) => [key, compareAggregateShadowRows(aggregate[key], legacy[key])]),
+    ) as Record<keyof AggregateChartParts, AggregateShadowRowComparison>;
+    const mismatches = (Object.keys(comparisons) as Array<keyof AggregateChartParts>)
+      .filter((key) => !comparisons[key].matched);
+    const payload = {
+      network: network ?? 'public',
+      matched: mismatches.length === 0,
+      mismatches,
+      comparisons,
+      tolerance: { absolutePackets: 5, relative: 0.001 },
+    };
+    if (mismatches.length > 0) console.warn('[stats-aggregate-shadow] mismatch', payload);
+    else console.log('[stats-aggregate-shadow] match', payload);
+  }
+
+  function scheduleAggregateShadow(
+    network: string | undefined,
+    asOf: Date,
+    aggregate: AggregateChartParts,
+  ): void {
+    const key = network ?? 'public';
+    const lastStartedAt = aggregateShadowLastStartedAt.get(key) ?? 0;
+    if (
+      aggregateShadowInFlight.has(key)
+      || Date.now() - lastStartedAt < aggregateShadowMinimumIntervalMs
+    ) {
+      return;
+    }
+    aggregateShadowLastStartedAt.set(key, Date.now());
+    const comparison = fetchLegacyAggregateChartParts(network, asOf)
+      .then((legacy) => reportAggregateShadow(network, aggregate, legacy))
+      .catch((error: unknown) => {
+        console.warn('[stats-aggregate-shadow] failed', {
+          network: key,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      })
+      .finally(() => {
+        aggregateShadowInFlight.delete(key);
+      });
+    aggregateShadowInFlight.set(key, comparison);
+  }
+
   async function fetchChartsData(network: string | undefined, observer: string | undefined) {
     const filters = networkFilters(network, observer);
+    const aggregateAsOf = new Date();
+    const aggregatePartsPromise = aggregateReadsEnabled && !observer
+      ? fetchAggregateChartParts(network, aggregateAsOf)
+      : null;
+    const aggregateRows = (
+      key: keyof AggregateChartParts,
+      legacy: () => Promise<{ rows: QueryResultRow[] }>,
+    ): Promise<{ rows: QueryResultRow[] }> => (
+      aggregatePartsPromise
+        ? aggregatePartsPromise.then((parts) => ({ rows: parts[key] }))
+        : legacy()
+    );
 
     const [
       phResult, pdResult, rhResult, rdResult,
@@ -123,7 +696,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
       pathHashWidthsResult, multibyteSummaryResult, observerDiversityResult, signalSummaryResult,
       routeTypesResult, transportCodesResult, pathDecodeTrendResult,
     ] = await Promise.all([
-      query(`
+      aggregateRows('packetsPerHour', () => query(`
         WITH buckets AS (
           SELECT generate_series(
             date_trunc('hour', NOW() - INTERVAL '24 hours'),
@@ -142,13 +715,13 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
         FROM buckets b
         LEFT JOIN counts c ON c.bucket = b.bucket
         ORDER BY b.bucket
-      `, filters.params),
-      query(`
+      `, filters.params)),
+      aggregateRows('packetsPerDay', () => query(`
         SELECT time_bucket('1 day', time) AS day, COUNT(*) AS count
         FROM packets
         WHERE time > NOW() - INTERVAL '7 days' ${filters.packets}
         GROUP BY day ORDER BY day
-      `, filters.params),
+      `, filters.params)),
       query(`
         WITH buckets AS (
           SELECT generate_series(
@@ -176,20 +749,20 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
         WHERE time > NOW() - INTERVAL '7 days' AND src_node_id IS NOT NULL ${filters.packets}
         GROUP BY day ORDER BY day
       `, filters.params),
-      query(`
+      aggregateRows('packetTypes', () => query(`
         SELECT packet_type, COUNT(*) AS count
         FROM packets
         WHERE time > NOW() - INTERVAL '24 hours' ${filters.packets}
         GROUP BY packet_type ORDER BY count DESC
-      `, filters.params),
-      query(`
+      `, filters.params)),
+      aggregateRows('hopDistribution', () => query(`
         SELECT hop_count AS hops, COUNT(*) AS count
         FROM packets
         WHERE time > NOW() - INTERVAL '7 days'
           AND hop_count IS NOT NULL
           ${filters.packets}
         GROUP BY hop_count ORDER BY hop_count
-      `, filters.params),
+      `, filters.params)),
       query(`
         WITH prefix_counts AS (
           SELECT UPPER(h) AS prefix, COUNT(*)::int AS node_count
@@ -479,7 +1052,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
            ${filters.packetsAlias('p')}`,
         filters.params,
       ),
-      query<{ route_type: string; count: string }>(
+      aggregateRows('routeTypes', () => query<{ route_type: string; count: string }>(
         `SELECT COALESCE(p.route_type::text, 'Unknown') AS route_type, COUNT(*)::text AS count
          FROM packets p
          WHERE p.time > NOW() - INTERVAL '24 hours'
@@ -487,8 +1060,8 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
          GROUP BY p.route_type
          ORDER BY COUNT(*) DESC, route_type ASC`,
         filters.params,
-      ),
-      query<{ transport_code: string; region_scope: string | null; count: string }>(
+      )),
+      aggregateRows('transportCodes', () => query<{ transport_code: string; region_scope: string | null; count: string }>(
         `SELECT
            NULLIF(TRIM(p.transport_codes), '') AS transport_code,
            NULLIF(TRIM(p.region_scope), '') AS region_scope,
@@ -501,7 +1074,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
          ORDER BY COUNT(*) DESC, region_scope ASC, transport_code ASC
          LIMIT 12`,
         filters.params,
-      ),
+      )),
       query<{
         day: string;
         multibyte_count: string;
@@ -641,7 +1214,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
       ),
     ]);
 
-    return {
+    const response = {
       phResult,
       pdResult,
       rhResult,
@@ -660,6 +1233,13 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
       transportCodesResult,
       pathDecodeTrendResult,
     };
+    if (aggregatePartsPromise && aggregateShadowEnabled) {
+      const aggregate = await aggregatePartsPromise;
+      // The comparison is bounded to the six switched dimensions, uses one
+      // materialized recent packet scan and runs off the response path.
+      scheduleAggregateShadow(network, aggregateAsOf, aggregate);
+    }
+    return response;
   }
 
   async function fetchStatsSummary(network: string | undefined, observer: string | undefined) {
@@ -714,21 +1294,14 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
         `, filters.params),
       query(`SELECT COUNT(*) AS count FROM packets WHERE time > NOW() - INTERVAL '24 hours' ${filters.packets}`, filters.params),
       query(`SELECT COUNT(*) AS count FROM nodes
-             WHERE lat BETWEEN -90 AND 90
-               AND lon BETWEEN -180 AND 180
-               AND NOT (ABS(lat) < 5 AND ABS(lon) < 5)
-               AND (name IS NULL OR name NOT LIKE '%🚫%')
-               AND (role IS NULL OR role NOT IN (1, 3))
-               AND GREATEST(last_seen, last_path_evidence_at) <= NOW() - INTERVAL '14 days'
-               AND GREATEST(last_seen, last_path_evidence_at) >  NOW() - INTERVAL '28 days'
+             WHERE ${publicMapBasePredicate('nodes')}
+               AND GREATEST(nodes.last_seen, nodes.last_path_evidence_at)
+                     <= NOW() - INTERVAL '14 days'
+               AND GREATEST(nodes.last_seen, nodes.last_path_evidence_at)
+                     > NOW() - INTERVAL '28 days'
                ${filters.nodes}`, filters.params),
       query(`SELECT COUNT(*) AS count FROM nodes
-             WHERE lat BETWEEN -90 AND 90
-               AND lon BETWEEN -180 AND 180
-               AND NOT (ABS(lat) < 5 AND ABS(lon) < 5)
-               AND (name IS NULL OR name NOT LIKE '%🚫%')
-               AND (role IS NULL OR role NOT IN (1, 3))
-               AND GREATEST(last_seen, last_path_evidence_at) > NOW() - INTERVAL '28 days'
+             WHERE ${publicMapFreshPredicate('nodes')}
                ${filters.nodes}`, filters.params),
       query(`SELECT COUNT(*) AS count FROM nodes
              WHERE (name IS NULL OR name NOT LIKE '%🚫%')
@@ -825,6 +1398,8 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
   }
 
   return {
+    loadChartSnapshot,
+    saveChartSnapshot,
     fetchObserverRegionSummary,
     fetchChannelTraffic,
     fetchChartsData,

@@ -1,4 +1,5 @@
 import React from 'react';
+import { Dialog, DialogTitle } from '../ui/Dialog.js';
 
 type DisclaimerModalProps = {
   viewshedEnabled: boolean;
@@ -6,9 +7,16 @@ type DisclaimerModalProps = {
 };
 
 export const DisclaimerModal: React.FC<DisclaimerModalProps> = ({ viewshedEnabled, onClose }) => (
-  <div className="disclaimer-overlay" role="dialog" aria-modal="true" aria-label="Data disclaimer">
-    <div className="disclaimer-modal">
-      <h2 className="disclaimer-modal__title">Data disclaimer</h2>
+  <Dialog
+    isOpen
+    onOpenChange={(open) => { if (!open) onClose(); }}
+    ariaLabel="Data disclaimer"
+    overlayClassName="disclaimer-overlay"
+    className="disclaimer-modal"
+  >
+    {(close) => (
+      <>
+      <DialogTitle className="disclaimer-modal__title">Data disclaimer</DialogTitle>
       <div className="disclaimer-modal__body">
         <section>
           <h3>Packet paths</h3>
@@ -25,7 +33,7 @@ export const DisclaimerModal: React.FC<DisclaimerModalProps> = ({ viewshedEnable
           <section>
             <h3>Coverage map</h3>
             <p>
-              The green coverage layer is a precomputed RF estimate built from terrain data and a
+              The green, amber, and red coverage bands are a precomputed RF estimate built from terrain data and a
               simplified diffraction/path-loss model that is calibrated against observed repeater
               links on this network, and is biased towards areas near known repeater presence rather
               than empty terrain. It assumes the source repeater and the receiving repeater are both
@@ -36,7 +44,8 @@ export const DisclaimerModal: React.FC<DisclaimerModalProps> = ({ viewshedEnable
           </section>
         )}
       </div>
-      <button className="disclaimer-modal__close" onClick={onClose}>Got it</button>
-    </div>
-  </div>
+      <button type="button" className="disclaimer-modal__close" onClick={close}>Got it</button>
+      </>
+    )}
+  </Dialog>
 );

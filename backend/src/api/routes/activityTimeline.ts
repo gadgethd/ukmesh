@@ -2,6 +2,7 @@ import type { Router } from 'express';
 import type { QueryResultRow } from 'pg';
 import { resolvePublicNetworkScope } from '../../http/requestScope.js';
 import type { NetworkFilters } from '../utils/networkFilters.js';
+import { parseBoundedInteger } from '../utils/input.js';
 
 type QueryFn = <T extends QueryResultRow = QueryResultRow>(text: string, params?: unknown[]) => Promise<{ rows: T[] }>;
 
@@ -13,11 +14,19 @@ type Deps = {
 
 export function registerActivityTimelineRoutes(router: Router, deps: Deps): void {
   router.get('/activity/timeline', deps.limiter, async (req, res) => {
+    const minutes = parseBoundedInteger(req.query['minutes'], {
+      name: 'minutes',
+      defaultValue: 360,
+      min: 60,
+      max: 1_440,
+    });
+    const bucketMinutes = parseBoundedInteger(req.query['bucket'], {
+      name: 'bucket',
+      defaultValue: 15,
+      min: 5,
+      max: 60,
+    });
     try {
-      const requestedMinutes = Number(req.query['minutes'] ?? 360);
-      const requestedBucketMinutes = Number(req.query['bucket'] ?? 15);
-      const minutes = Number.isFinite(requestedMinutes) ? Math.min(1_440, Math.max(60, Math.round(requestedMinutes))) : 360;
-      const bucketMinutes = Number.isFinite(requestedBucketMinutes) ? Math.min(60, Math.max(5, Math.round(requestedBucketMinutes))) : 15;
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const filters = deps.networkFilters(network);
       const windowParam = `$${filters.params.length + 1}`;

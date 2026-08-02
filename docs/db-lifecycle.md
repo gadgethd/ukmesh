@@ -48,6 +48,69 @@ eight-day observer-window retention boundary. It is idempotent; use
 `--daily-days` or `--observer-days` only when an operator intentionally wants
 a different bounded window.
 
+The hourly chart rollup uses a persisted cursor and a pinned end time. Each
+historical hour, its replacement aggregate rows, and its next cursor commit in
+one transaction. `--hourly-days` defaults to eight; interruption can therefore
+resume without skipping or double-counting a slice.
+
+## History contract and retention inventory
+
+Retention is disabled by default. The longest raw-packet dependency is the
+120-day path-learning window. Interactive paths use seven days, public and
+owner dashboards use at most 30 days, and public-map node freshness uses 28
+days. The proposed raw packet and status-sample retention is therefore 180
+days. Privacy-filtered hourly/daily chart aggregates, model parameters, current
+node/link/coverage state, and privacy state remain longer lived.
+
+Run the exact, read-only inventory before considering compression or deletion:
+
+```bash
+docker compose exec backend npm run db:lifecycle
+```
+
+It reports exact expired rows, expired/compressed Timescale chunks, relation
+bytes, oldest/newest timestamps, and the affected features for every target.
+The inventory can be expensive by design; run it away from peak ingest.
+
+Compression and retention are separate, table-at-a-time changes. Both require:
+
+- a named, fresh database backup;
+- a successful isolated restore verification from the last 30 days;
+- the target in `DATA_LIFECYCLE_RETENTION_TARGETS`;
+- the action flag set to `true`; and
+- an exact per-table approval argument.
+
+Example compression rollout:
+
+```bash
+DATA_LIFECYCLE_COMPRESSION_ENABLED=true
+DATA_LIFECYCLE_RETENTION_TARGETS=packets
+DATA_LIFECYCLE_BACKUP_REFERENCE=backup-20260729
+DATA_LIFECYCLE_RESTORE_VERIFIED_AT=2026-07-29T12:00:00Z
+docker compose exec backend npm run db:lifecycle -- \
+  --apply-compression --target=packets \
+  --approve=apply-data-lifecycle-compression-packets
+```
+
+Measure query CPU, ingest WAL, and storage after cold-chunk compression. Only
+after aggregate cutover and another inventory may retention be enabled:
+
+```bash
+docker compose exec backend npm run db:lifecycle -- \
+  --apply-retention --target=packets \
+  --approve=apply-data-lifecycle-retention-packets
+```
+
+Hypertable retention uses a Timescale policy. Row-table deletion is bounded and
+performed by the health worker only for targets explicitly listed in
+`DATA_LIFECYCLE_RETENTION_TARGETS`. Failed/pending owner alert deliveries are
+not discarded while they remain retryable.
+
+Owner/private data uses the same 180-day raw-packet boundary. An owner export
+must be completed before enabling deletion if older raw evidence is required.
+Removing raw data is irreversible without the named restore; turning the flag
+off stops future policy runs but does not recreate deleted chunks.
+
 ## Startup guarantee
 
 Backend startup should be safe against a production-sized database. If a change can lock or scan large tables, it does not belong in startup schema init.

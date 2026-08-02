@@ -1,10 +1,20 @@
 import React, { Suspense, lazy } from 'react';
 import ReactDOM from 'react-dom/client';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router';
 import { LoadingIndicator } from './components/LoadingIndicator.js';
 import { AppErrorBoundary } from './components/app/AppErrorBoundary.js';
+import { ServiceWorkerUpdatePrompt } from './components/ServiceWorkerUpdatePrompt.js';
+import {
+  initializeRuntimeFeatures,
+  startRuntimeFeaturePolling,
+} from './config/runtimeFeatures.js';
 import './styles/tokens.css';
 import './styles/globals.css';
+import { registerServiceWorker } from './serviceWorkerUpdates.js';
+import {
+  PUBLIC_ROUTES,
+  type PublicRouteComponent,
+} from './config/publicRoutes.js';
 
 const App = lazy(() => import('./App.js').then(({ App: Component }) => ({ default: Component })));
 const OpenSourcePage = lazy(() => import('./pages/OpenSourcePage.js').then(({ OpenSourcePage: Component }) => ({ default: Component })));
@@ -20,6 +30,22 @@ const UKBestPracticePage = lazy(() => import('./pages/ukmesh/UKBestPracticePage.
 const SpamPage = lazy(() => import('./pages/SpamTransparencyPage.js').then(({ SpamPage: Component }) => ({ default: Component })));
 const TopologyPage = lazy(() => import('./pages/TopologyPage.js').then(({ TopologyPage: Component }) => ({ default: Component })));
 const StatusPage = lazy(() => import('./pages/StatusPage.js').then(({ StatusPage: Component }) => ({ default: Component })));
+const NotFoundPage = lazy(() => import('./pages/NotFoundPage.js').then(({ NotFoundPage: Component }) => ({ default: Component })));
+
+const PUBLIC_ROUTE_ELEMENTS: Record<PublicRouteComponent, React.ReactElement> = {
+  home: <UKHomePage />,
+  feed: <UKFeedPage />,
+  repeater: <UKRepeaterSearchPage />,
+  companion: <UKCompanionPage />,
+  install: <UKInstallPage />,
+  docs: <UKBestPracticePage />,
+  health: <StatusPage />,
+  owner: <OwnerPortalPage />,
+  'open-source': <OpenSourcePage />,
+  stats: <StatsPage />,
+  spam: <SpamPage />,
+  topology: <TopologyPage />,
+};
 
 const root = document.getElementById('root')!;
 const hostname = window.location.hostname.toLowerCase();
@@ -33,63 +59,47 @@ const isLocalhost = hostname === 'localhost' || hostname === '127.0.0.1' || host
 const isDashboardBuild = buildSite === 'ukmesh' && buildNetwork === 'ukmesh';
 const isAppDomain = !appHostname || hostname === appHostname || (isLocalhost && isDashboardBuild);
 
-if ('serviceWorker' in navigator) {
-  let refreshing = false;
-  const reloadForUpdate = () => {
-    if (refreshing) return;
-    refreshing = true;
-    window.location.reload();
-  };
-  navigator.serviceWorker.addEventListener('controllerchange', reloadForUpdate);
-  navigator.serviceWorker.register('/sw.js')
-    .then((registration) => {
-      registration.addEventListener('updatefound', () => {
-        const installing = registration.installing;
-        if (!installing) return;
-        installing.addEventListener('statechange', () => {
-          if (installing.state === 'installed' && navigator.serviceWorker.controller) {
-            reloadForUpdate();
-          }
-        });
-      });
-    })
-    .catch(() => {});
-}
-
 // Title is managed per-route by SeoHead; only set a fallback for the app domain
 if (isAppDomain) document.title = 'MeshCore Analytics';
 
-ReactDOM.createRoot(root).render(
-  <React.StrictMode>
-    <AppErrorBoundary>
-      <Suspense fallback={<LoadingIndicator label="Loading..." variant="overlay" />}>
-        {isAppDomain ? (
-          <App />
-        ) : (
-          <BrowserRouter>
-            <Routes>
-            <Route element={<UKLayout />}>
-              <Route index element={<UKHomePage />} />
-              <Route path="feed" element={<UKFeedPage />} />
-              <Route path="repeater" element={<UKRepeaterSearchPage />} />
-              <Route path="companion" element={<UKCompanionPage />} />
-              <Route path="regions" element={<Navigate to="/" replace />} />
-              <Route path="about" element={<Navigate to="/" replace />} />
-              <Route path="install" element={<UKInstallPage />} />
-              <Route path="docs" element={<UKBestPracticePage />} />
-              <Route path="mqtt" element={<Navigate to="/install" replace />} />
-              <Route path="health" element={<StatusPage />} />
-              <Route path="status" element={<Navigate to="/health" replace />} />
-              <Route path="login" element={<OwnerPortalPage />} />
-              <Route path="open-source" element={<OpenSourcePage />} />
-              <Route path="stats" element={<StatsPage />} />
-              <Route path="spam" element={<SpamPage />} />
-              <Route path="topology" element={<TopologyPage />} />
-            </Route>
-            </Routes>
-          </BrowserRouter>
-        )}
-      </Suspense>
-    </AppErrorBoundary>
-  </React.StrictMode>
-);
+async function bootstrap(): Promise<void> {
+  // The map is not mounted until its same-origin kill switches have resolved.
+  // initializeRuntimeFeatures handles timeout/malformed/offline failures by
+  // publishing the all-disabled snapshot.
+  await initializeRuntimeFeatures();
+  startRuntimeFeaturePolling();
+
+  ReactDOM.createRoot(root).render(
+    <React.StrictMode>
+      <AppErrorBoundary>
+        <ServiceWorkerUpdatePrompt />
+        <Suspense fallback={<LoadingIndicator label="Loading..." variant="overlay" />}>
+          {isAppDomain ? (
+            <App />
+          ) : (
+            <BrowserRouter>
+              <Routes>
+              <Route element={<UKLayout />}>
+                {PUBLIC_ROUTES.map((route) => {
+                  const element = route.redirectTo
+                    ? <Navigate to={route.redirectTo} replace />
+                    : route.component
+                      ? PUBLIC_ROUTE_ELEMENTS[route.component]
+                      : null;
+                  return route.path === '/'
+                    ? <Route key={route.path} index element={element} />
+                    : <Route key={route.path} path={route.path.slice(1)} element={element} />;
+                })}
+                <Route path="*" element={<NotFoundPage />} />
+              </Route>
+              </Routes>
+            </BrowserRouter>
+          )}
+        </Suspense>
+      </AppErrorBoundary>
+    </React.StrictMode>,
+  );
+  registerServiceWorker();
+}
+
+void bootstrap();

@@ -26,11 +26,13 @@ function configuredOwnerNodeIds(mqttUsername: string): string[] {
 
 const OWNER_ACCESS_CACHE_TTL_MS = Number(process.env['OWNER_ACCESS_CACHE_TTL_MS'] ?? 30_000);
 const ownerNodeIdCache = new BoundedTtlMap<string, { ts: number; nodeIds: string[] }>({
+  name: 'owner_nodes',
   maxEntries: 2048,
   maxWeight: 4 * 1024 * 1024,
   ttlMs: OWNER_ACCESS_CACHE_TTL_MS,
 });
 const ownerNodeIdInflight = new Map<string, Promise<string[]>>();
+const OWNER_NODE_ID_INFLIGHT_MAX = 128;
 
 export function invalidateOwnerNodeIdCache(mqttUsername: string): void {
   ownerNodeIdCache.delete(mqttUsername.trim());
@@ -44,6 +46,9 @@ export async function resolveOwnerNodeIds(mqttUsername: string): Promise<string[
   }
   const existing = ownerNodeIdInflight.get(cacheKey);
   if (existing) return [...await existing];
+  if (ownerNodeIdInflight.size >= OWNER_NODE_ID_INFLIGHT_MAX) {
+    throw new Error('OWNER_ACCESS_OVERLOADED');
+  }
 
   const load = async (): Promise<string[]> => {
     const verified = normalizeNodeIds(await getOwnerNodeIdsForUsername(cacheKey));
@@ -93,6 +98,7 @@ export async function autoLinkOwnerNodeIds(mqttUsername: string): Promise<string
 // misses and re-verifies. Only positive results are cached.
 const AUTH_CACHE_TTL_MS = Number(process.env['OWNER_AUTH_CACHE_TTL_MS'] ?? 5 * 60_000);
 const authCache = new BoundedTtlMap<string, { credentialHash: string; ts: number }>({
+  name: 'owner_auth',
   maxEntries: Number(process.env['OWNER_AUTH_CACHE_MAX_ENTRIES'] ?? 512),
   maxWeight: 2 * 1024 * 1024,
   ttlMs: AUTH_CACHE_TTL_MS,

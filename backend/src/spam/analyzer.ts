@@ -1,11 +1,10 @@
-import { query as dbQuery } from '../db/index.js';
+import { getPublicVisibilityGeneration, query as dbQuery } from '../db/index.js';
 import { loadSpamMessageConfig, type SpamMessageConfig } from './config.js';
 import { clusterMessages, incidentStatus, SpamAnalysisBudgetExceededError } from './cluster.js';
 import { estimateOrigin } from './origin.js';
 import { resolveSpamOrigin } from './spamResolver.js';
 import { sanitizeIncident } from './sanitize.js';
 import {
-  expireSpamIncidentLifecycle,
   loadRecentMessages,
   persistIncidents,
   withSpamAnalyzerLease,
@@ -13,7 +12,13 @@ import {
   type PersistResult,
 } from './repository.js';
 import type { Incident, MessageRecord, OriginEstimate } from './types.js';
-import { analysisGeneration, beginAnalysisRun, finishAnalysisRun } from '../analysis/runState.js';
+import {
+  analysisGeneration,
+  beginAnalysisRun,
+  finishAnalysisRun,
+  startAnalysisRunHeartbeat,
+  updateAnalysisRunTotalItems,
+} from '../analysis/runState.js';
 
 type SpamQueryFn = <T extends Record<string, unknown> = Record<string, unknown>>(
   text: string,
@@ -114,12 +119,15 @@ export async function buildIncidentsWithPaths(
   query: SpamQueryFn,
   cfg: SpamMessageConfig,
   deadlineAt = Number.POSITIVE_INFINITY,
+  signal?: AbortSignal,
 ): Promise<PersistableIncident[]> {
   const incidents = clusterMessages(records, cfg);
   const out: PersistableIncident[] = [];
   for (const incident of incidents) {
+    signal?.throwIfAborted();
     if (Date.now() > deadlineAt) throw new SpamAnalysisBudgetExceededError();
     const origin = await originForIncident(incident, query, cfg);
+    signal?.throwIfAborted();
     if (Date.now() > deadlineAt) throw new SpamAnalysisBudgetExceededError();
     const status = incidentStatus(incident.lastSeen, now, cfg);
     const publicJson = sanitizeIncident(incident, origin, status, cfg);
@@ -141,66 +149,91 @@ export async function analyzeOnce(cfg: SpamMessageConfig = loadSpamMessageConfig
     const startedAt = Date.now();
     const windowEnd = new Date(startedAt);
     const windowStart = new Date(startedAt - cfg.analysisWindowHours * 60 * 60 * 1000);
-    const lifecycleExpired = await expireSpamIncidentLifecycle(cfg);
-    const records = await loadRecentMessages(cfg, { start: windowStart, end: windowEnd });
+    const visibilityGeneration = await getPublicVisibilityGeneration();
     const run = await beginAnalysisRun({
       workload: 'spam-analysis',
       scope: 'public',
       windowStart,
       windowEnd,
-      totalItems: records.length,
+      totalItems: 0,
+      deadlineMs: cfg.analysisBudgetMs,
+      privacyGeneration: visibilityGeneration,
+      modelGeneration: 'spam-analysis-v2',
     });
+    const heartbeat = startAnalysisRunHeartbeat(run);
+    let messageCount = 0;
     try {
+      const records = await loadRecentMessages(
+        cfg,
+        { start: windowStart, end: windowEnd },
+        heartbeat.signal,
+      );
+      messageCount = records.length;
+      await updateAnalysisRunTotalItems(run, records.length, heartbeat.signal);
       const items = await buildIncidentsWithPaths(
         records,
         Date.now(),
-        dbQuery,
+        (text, params) => dbQuery(text, params, heartbeat.signal),
         cfg,
-        startedAt + cfg.analysisBudgetMs,
+        run.deadlineAt.getTime(),
+        heartbeat.signal,
       );
-      const persisted = await persistIncidents(items, cfg);
-      await alertNewHighScoringIncidents(items);
+      heartbeat.assertOwned();
+      const persisted = await persistIncidents(items, cfg, run);
+      heartbeat.assertOwned();
+      await heartbeat();
       await finishAnalysisRun(run, {
         status: 'complete',
         checkpoint: records.length,
         generation: analysisGeneration(items.map((item) => item.publicJson)),
-        metadata: { incidents: items.length, lifecycleExpired },
+        metadata: {
+          incidents: items.length,
+          lifecycleExpired: persisted.lifecycleExpired,
+        },
       });
+      await alertNewHighScoringIncidents(items);
       return {
         ...persisted,
         status: 'complete' as const,
         messages: records.length,
         incidents: items.length,
-        lifecycleExpired,
+        lifecycleExpired: persisted.lifecycleExpired,
       };
     } catch (error) {
-      const timedOut = error instanceof SpamAnalysisBudgetExceededError;
+      const timedOut = (
+        error instanceof SpamAnalysisBudgetExceededError
+        || Date.now() >= run.deadlineAt.getTime()
+      );
+      if (timedOut) await heartbeat.stopForTerminal();
+      else await heartbeat();
       await finishAnalysisRun(run, {
         status: timedOut ? 'timed_out' : 'failed',
         checkpoint: 0,
         error: error instanceof Error ? error.message : String(error),
-        metadata: { messages: records.length, lifecycleExpired },
+        metadata: { messages: messageCount },
       });
       if (!timedOut) throw error;
       return {
         upserted: 0,
         removed: 0,
         active: 0,
+        lifecycleExpired: 0,
         status: 'timed_out' as const,
-        messages: records.length,
+        messages: messageCount,
         incidents: 0,
-        lifecycleExpired,
       };
+    } finally {
+      await heartbeat().catch(() => {});
     }
   });
   return result ?? {
     upserted: 0,
     removed: 0,
     active: 0,
+    lifecycleExpired: 0,
     status: 'stale',
     messages: 0,
     incidents: 0,
-    lifecycleExpired: 0,
   };
 }
 
@@ -246,4 +279,12 @@ export async function initSpamMessageAnalyzer(cfg: SpamMessageConfig = loadSpamM
   };
   await run();
   schedule();
+}
+
+export async function stopSpamMessageAnalyzer(): Promise<void> {
+  if (timer) {
+    clearTimeout(timer);
+    timer = null;
+  }
+  await inFlight;
 }

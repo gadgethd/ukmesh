@@ -1,0 +1,36 @@
+{
+  "format": "meshcore-restore-receipt-v1",
+  "receipt_id": "restore-20260729T230204Z-20260729T202342Z-b9b2ecdbfaa9",
+  "backup_id": "backup-20260729T202342Z-b9b2ecdbfaa9",
+  "backup_completed_at": "2026-07-29T20:33:10.000Z",
+  "restore_started_at": "2026-07-29T22:45:33.000Z",
+  "restore_verified_at": "2026-07-29T23:02:04.000Z",
+  "restore_duration_seconds": 991,
+  "recovery_point_age_seconds": 8934,
+  "archive_sha256": "75489f067f0698b350e7804ef48ae7e89e4e5ad4287cf2cd21da62860862d713",
+  "source_revision": "b9b2ecdbfaa9688a79a62ccee38d6b406f14deaa",
+  "schema_version": 30,
+  "datasets": [
+    "analytics",
+    "owner_auth",
+    "mosquitto",
+    "redis",
+    "configuration"
+  ],
+  "evidence": {
+    "integrity": {
+      "packet_sample_rows": 1000,
+      "packet_sample_md5": "ccb1301a8f4adc96b01640ed99127c87",
+      "node_sample_rows": 1000,
+      "node_sample_md5": "21e4151aebbb4a7275f6a2f7ede22cf6"
+    },
+    "owner_lookup_count": 44
+  },
+  "checks": {
+    "migrations": "passed",
+    "integrity": "passed",
+    "owner_lookup": "passed",
+    "readiness": "passed"
+  },
+  "status": "verified"
+}

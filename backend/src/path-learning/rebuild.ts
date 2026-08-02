@@ -1,5 +1,15 @@
 import type { PoolClient } from 'pg';
-import { pool, query } from '../db/index.js';
+import { getPublicVisibilityGeneration, pool, query } from '../db/index.js';
+import {
+  analysisGeneration,
+  beginAnalysisRun,
+  finishAnalysisRun,
+  startAnalysisRunHeartbeat,
+  updateAnalysisRunTotalItems,
+  type AnalysisRunHandle,
+  type AnalysisRunHeartbeat,
+} from '../analysis/runState.js';
+import { assertAnalysisPublicationLease } from '../analysis/publicationFence.js';
 import {
   buildNodePathHashIndex,
   getNodesForPathHash,
@@ -253,8 +263,10 @@ async function insertJsonBatches<T extends object>(
   statement: string,
   network: string,
   rows: T[],
+  assertOwned: () => void,
 ): Promise<void> {
   for (let offset = 0; offset < rows.length; offset += WRITE_BATCH_SIZE) {
+    assertOwned();
     await client.query(statement, [network, JSON.stringify(rows.slice(offset, offset + WRITE_BATCH_SIZE))]);
   }
 }
@@ -273,10 +285,14 @@ async function replacePathLearningRows(
     confidenceBias: number;
     recommendedThreshold: number;
   },
+  analysisRun: AnalysisRunHandle,
+  heartbeat: AnalysisRunHeartbeat,
 ): Promise<void> {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    heartbeat.assertOwned();
+    await assertAnalysisPublicationLease(client, analysisRun);
     await client.query('DELETE FROM path_prefix_priors WHERE network = $1', [network]);
     await client.query('DELETE FROM path_transition_priors WHERE network = $1', [network]);
     await client.query('DELETE FROM path_edge_priors WHERE network = $1', [network]);
@@ -295,6 +311,7 @@ async function replacePathLearningRows(
          updated_at = NOW()`,
       network,
       prefixRows,
+      heartbeat.assertOwned,
     );
     await insertJsonBatches(client,
       `INSERT INTO path_transition_priors
@@ -309,6 +326,7 @@ async function replacePathLearningRows(
          updated_at = NOW()`,
       network,
       transitionRows,
+      heartbeat.assertOwned,
     );
     await insertJsonBatches(client,
       `INSERT INTO path_edge_priors
@@ -335,6 +353,7 @@ async function replacePathLearningRows(
          updated_at = NOW()`,
       network,
       edgeRows,
+      heartbeat.assertOwned,
     );
     await insertJsonBatches(client,
       `INSERT INTO path_motif_priors
@@ -349,6 +368,7 @@ async function replacePathLearningRows(
          updated_at = NOW()`,
       network,
       motifRows,
+      heartbeat.assertOwned,
     );
     await client.query(
       `INSERT INTO path_model_calibration
@@ -372,6 +392,8 @@ async function replacePathLearningRows(
         calibration.recommendedThreshold,
       ],
     );
+    heartbeat.assertOwned();
+    await assertAnalysisPublicationLease(client, analysisRun);
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
@@ -405,7 +427,59 @@ export async function rebuildPathLearningModels(): Promise<void> {
 
 async function rebuildNetwork(modelNetwork: string, sourceNetwork: string | undefined): Promise<void> {
   const nowMs = Date.now();
-  const deadline = nowMs + LEARNING_RUN_DEADLINE_MS;
+  const visibilityGeneration = await getPublicVisibilityGeneration();
+  const run = await beginAnalysisRun({
+    workload: 'path-learning',
+    scope: modelNetwork,
+    windowStart: new Date(nowMs - 30 * 24 * 60 * 60_000),
+    windowEnd: new Date(nowMs),
+    totalItems: 0,
+    deadlineMs: LEARNING_RUN_DEADLINE_MS,
+    privacyGeneration: visibilityGeneration,
+    modelGeneration: 'path-learning-v2',
+  });
+  const heartbeat = startAnalysisRunHeartbeat(run);
+  try {
+    const generation = await rebuildNetworkUnderLease(
+      modelNetwork,
+      sourceNetwork,
+      run,
+      heartbeat,
+    );
+    await heartbeat();
+    await finishAnalysisRun(run, {
+      status: 'complete',
+      checkpoint: 1,
+      generation,
+    });
+  } catch (error) {
+    try {
+      const timedOut = Date.now() >= run.deadlineAt.getTime();
+      if (timedOut) await heartbeat.stopForTerminal();
+      else await heartbeat();
+      await finishAnalysisRun(run, {
+        status: timedOut ? 'timed_out' : 'failed',
+        checkpoint: 0,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    } catch (finishError) {
+      console.error('[path-learning] could not record terminal run', finishError);
+    }
+    throw error;
+  } finally {
+    await heartbeat().catch(() => {});
+  }
+}
+
+async function rebuildNetworkUnderLease(
+  modelNetwork: string,
+  sourceNetwork: string | undefined,
+  run: AnalysisRunHandle,
+  heartbeat: AnalysisRunHeartbeat,
+): Promise<string> {
+  const nowMs = Date.now();
+  const deadline = run.deadlineAt.getTime();
+  heartbeat.assertOwned();
   const nodeNetworkFilter = sourceNetwork ? 'AND network = $1' : '';
   const packetNetworkFilter = sourceNetwork ? 'AND network = $1' : '';
   const linkNetworkFilter = sourceNetwork ? 'AND a.network = $1 AND b.network = $1' : '';
@@ -422,9 +496,11 @@ async function rebuildNetwork(modelNetwork: string, sourceNetwork: string | unde
        AND (role IS NULL OR role = 2)
        ${nodeNetworkFilter}
      ORDER BY node_id
-     LIMIT $${sourceNetwork ? 2 : 1}`,
+    LIMIT $${sourceNetwork ? 2 : 1}`,
     nodeParams,
+    heartbeat.signal,
   );
+  heartbeat.assertOwned();
   if (nodesResult.rows.length > MAX_LEARNING_NODES) throw new Error('PATH_LEARNING_NODE_LIMIT');
   const nodesById = new Map(nodesResult.rows.map((n) => [n.node_id, n]));
 
@@ -438,8 +514,9 @@ async function rebuildNetwork(modelNetwork: string, sourceNetwork: string | unde
      WHERE (nl.itm_viable = true OR nl.force_viable = true)
        ${linkNetworkFilter}
      ORDER BY nl.node_a_id, nl.node_b_id
-     LIMIT $${sourceNetwork ? 2 : 1}`,
+    LIMIT $${sourceNetwork ? 2 : 1}`,
     linkParams,
+    heartbeat.signal,
   );
   if (linksResult.rows.length > MAX_LEARNING_LINKS) throw new Error('PATH_LEARNING_LINK_LIMIT');
 
@@ -463,9 +540,11 @@ async function rebuildNetwork(modelNetwork: string, sourceNetwork: string | unde
        AND time > NOW() - INTERVAL '120 days'
        ${packetNetworkFilter}
      ORDER BY time DESC
-     LIMIT $${sourceNetwork ? 2 : 1}`,
+    LIMIT $${sourceNetwork ? 2 : 1}`,
     packetParams,
+    heartbeat.signal,
   );
+  await updateAnalysisRunTotalItems(run, packetsResult.rows.length, heartbeat.signal);
 
   const prefixChoiceCounts = new Map<string, number>();
   const prefixGroupTotals = new Map<string, number>();
@@ -485,7 +564,10 @@ async function rebuildNetwork(modelNetwork: string, sourceNetwork: string | unde
   let confidenceSum = 0;
 
   for (let packetIndex = 0; packetIndex < packetsResult.rows.length; packetIndex += 1) {
-    if (packetIndex % 256 === 0 && Date.now() >= deadline) throw new Error('PATH_LEARNING_TIMEOUT');
+    if (packetIndex % 256 === 0) {
+      heartbeat.assertOwned();
+      if (Date.now() >= deadline) throw new Error('PATH_LEARNING_TIMEOUT');
+    }
     const packet = packetsResult.rows[packetIndex]!;
     const hashes = packet.path_hashes?.map(normalizePathHash).filter(Boolean) ?? [];
     if (hashes.length === 0) continue;
@@ -570,6 +652,7 @@ async function rebuildNetwork(modelNetwork: string, sourceNetwork: string | unde
     }
   }
 
+  heartbeat.assertOwned();
   if (Date.now() >= deadline) throw new Error('PATH_LEARNING_TIMEOUT');
 
   const groupedPrefix = new Map<string, Array<{ nodeId: string; count: number }>>();
@@ -763,6 +846,7 @@ async function rebuildNetwork(modelNetwork: string, sourceNetwork: string | unde
   const confidenceBias = clamp(top1Accuracy - meanPredConfidence * confidenceScale, -0.2, 0.2);
   const recommendedThreshold = clamp(0.35 + (1 - top1Accuracy) * 0.2, 0.3, 0.88);
 
+  heartbeat.assertOwned();
   if (Date.now() >= deadline) throw new Error('PATH_LEARNING_TIMEOUT');
   await replacePathLearningRows(modelNetwork, prefixRows, transitionRows, edgeRows, motifRows, {
     evaluatedPackets,
@@ -771,10 +855,24 @@ async function rebuildNetwork(modelNetwork: string, sourceNetwork: string | unde
     confidenceScale,
     confidenceBias,
     recommendedThreshold,
-  });
+  }, run, heartbeat);
 
   console.log(
     `[path-learning] model=${modelNetwork} source=${sourceNetwork ?? 'all'} packets=${evaluatedPackets} ` +
     `top1=${top1Accuracy.toFixed(3)} scale=${confidenceScale.toFixed(3)} edges=${edgeRows.length} motifs=${motifRows.length}`,
   );
+  return analysisGeneration({
+    modelNetwork,
+    sourceNetwork: sourceNetwork ?? 'all',
+    prefixRows: prefixRows.length,
+    transitionRows: transitionRows.length,
+    edgeRows: edgeRows.length,
+    motifRows: motifRows.length,
+    evaluatedPackets,
+    top1Accuracy,
+    meanPredConfidence,
+    confidenceScale,
+    confidenceBias,
+    recommendedThreshold,
+  });
 }

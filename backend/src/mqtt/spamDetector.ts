@@ -71,7 +71,6 @@ const SIGNAL_SCORES: Record<SignalName, number> = {
 };
 
 // Window/threshold config
-const BURST_WINDOW_MS          = 5 * 60 * 1000;        // 5 min
 const HIGH_FREQ_WINDOW_MS      = 60 * 1000;            // 1 min
 const EXTREME_HIGH_FREQ_COUNT  = 30;                   // high advert rate is supporting only
 const NAME_ROTATION_WINDOW_MS  = 30 * 60 * 1000;       // 30 min
@@ -105,9 +104,6 @@ const nodeFreqTracker = new Map<string, {
   times: number[];
   namesSeen: Map<string, number>;
 }>();
-
-// Global burst window: srcNodeId → first seen ms (5-min window)
-const burstWindow = new Map<string, number>();
 
 // DB-backed established node locations (refreshed every 15 min at startup)
 // srcNodeId → { lat, lon, avgHops, advertCount }
@@ -154,8 +150,22 @@ const keyRotationByPublicKey = new Map<string, KeyRotationStats>();
 // Coalesce repeated verdicts for the same identity until the MQTT packet batch
 // commits. The latest evaluation wins, avoiding one spam UPSERT per advert.
 const bufferedSpamSuspects = new Map<string, SpamSuspectRow>();
+const SPAM_RUNTIME_TRACKER_MAX = 10_000;
+const SPAM_BUFFERED_SUSPECTS_MAX = 1_000;
+const SPAM_NAMES_PER_NODE_MAX = 64;
+
+function evictOldest<K, V>(map: Map<K, V>, capacity: number): void {
+  while (map.size >= capacity) {
+    const oldest = map.keys().next().value as K | undefined;
+    if (oldest === undefined) break;
+    map.delete(oldest);
+  }
+}
 
 export function bufferSpamSuspect(suspect: SpamSuspectRow): void {
+  if (!bufferedSpamSuspects.has(`${suspect.network}:${suspect.srcNodeId}`)) {
+    evictOldest(bufferedSpamSuspects, SPAM_BUFFERED_SUSPECTS_MAX);
+  }
   bufferedSpamSuspects.set(`${suspect.network}:${suspect.srcNodeId}`, suspect);
 }
 
@@ -236,7 +246,11 @@ async function refreshEstablishedNodes(): Promise<void> {
 
     // Also load all known node IDs (even without stable location) for slow-burn detection
     const allIds = await query<{ node_id: string }>(
-      `SELECT node_id FROM nodes`
+      `SELECT node_id
+         FROM nodes
+        WHERE last_seen > NOW() - INTERVAL '180 days'
+        ORDER BY last_seen DESC
+        LIMIT 100000`
     );
     for (const row of allIds.rows) knownNodeIds.add(row.node_id);
 
@@ -441,9 +455,6 @@ function cleanupMemory(): void {
     if (entry.times.length === 0 && entry.namesSeen.size === 0) nodeFreqTracker.delete(id);
   }
 
-  for (const [id, ts] of burstWindow) {
-    if (now - ts > BURST_WINDOW_MS) burstWindow.delete(id);
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -520,6 +531,7 @@ function checkHighFreq(srcNodeId: string): Signal[] {
   const now = Date.now();
   let entry = nodeFreqTracker.get(srcNodeId);
   if (!entry) {
+    evictOldest(nodeFreqTracker, SPAM_RUNTIME_TRACKER_MAX);
     entry = { times: [], namesSeen: new Map() };
     nodeFreqTracker.set(srcNodeId, entry);
   }
@@ -550,8 +562,12 @@ function checkNameRotation(srcNodeId: string, name: string): Signal[] {
   const now = Date.now();
   let entry = nodeFreqTracker.get(srcNodeId);
   if (!entry) {
+    evictOldest(nodeFreqTracker, SPAM_RUNTIME_TRACKER_MAX);
     entry = { times: [], namesSeen: new Map() };
     nodeFreqTracker.set(srcNodeId, entry);
+  }
+  if (!entry.namesSeen.has(name)) {
+    evictOldest(entry.namesSeen, SPAM_NAMES_PER_NODE_MAX);
   }
   entry.namesSeen.set(name, now);
 

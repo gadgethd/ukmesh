@@ -28,6 +28,7 @@
   --bg-base:        #080d14;
   --bg-panel:       #0d1520;
   --bg-panel-alt:   #111c2b;
+  --bg-secondary:   var(--bg-panel-alt);
   --bg-hover:       #162030;
   --bg-active:      #1a2840;
 
@@ -52,6 +53,7 @@
   /* Status */
   --online:         #00e676;
   --offline:        #546e7a;
+  --offline-text:   #93a7b2;
   --danger:         #ff1744;
   --inferred:       #6ddc7a;
 
@@ -296,8 +298,8 @@ button .loading-indicator--inline,
 
 /* Info button in topbar */
 .topbar__info-btn {
-  width: 22px;
-  height: 22px;
+  width: 24px;
+  height: 24px;
   border-radius: 50%;
   border: 1px solid var(--border);
   background: transparent;
@@ -584,44 +586,6 @@ button .loading-indicator--inline,
 
   /* ── Packet feed: full width at bottom, max 4 items ─────────────────── */
 
-  /* ── Website nav: keep bar fixed height, dropdown pops below it ─────── */
-  .site-nav {
-    height: 52px;
-    padding: 0 16px;
-    gap: 12px;
-    position: sticky; /* already sticky — needed for dropdown anchor */
-  }
-  .site-nav__hamburger { display: flex; }
-
-  /* Dropdown pops out absolutely below the nav bar */
-  .site-nav__links {
-    display: none;
-    position: absolute;
-    top: 52px;
-    left: 0;
-    right: 0;
-    flex-direction: column;
-    background: var(--bg-panel);
-    border-bottom: 1px solid var(--border);
-    padding: 8px 16px 14px;
-    gap: 0;
-    z-index: 999;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
-  }
-  .site-nav__links--open { display: flex; }
-  .site-nav__link { padding: 12px 4px; font-size: 14px; border-bottom: 1px solid var(--border); }
-  /* App button inside dropdown: reset to plain link style */
-  .site-nav__links .site-nav__app-btn {
-    margin-left: 0;
-    background: transparent;
-    border: none;
-    border-bottom: 1px solid var(--border);
-    border-radius: 0;
-    padding: 12px 4px;
-    font-family: var(--font-body);
-    font-size: 14px;
-  }
-
   .site-layout:has(.cookie-banner) .site-main {
     padding-bottom: 24px;
   }
@@ -658,50 +622,9 @@ button .loading-indicator--inline,
     margin-bottom: 12px;
   }
   .site-home__join { align-items: flex-start; }
-  .dev-monitor__grid { grid-template-columns: 1fr; }
-  .dev-monitor__row { flex-direction: column; align-items: flex-start; }
-  .dev-monitor__row strong { text-align: left; }
-  .dev-monitor__section-head { flex-direction: column; align-items: flex-start; }
-  .dev-status-shell { padding: 16px; }
-  .dev-status-grid { grid-template-columns: 1fr; }
-  .dev-status-list > div { flex-direction: column; align-items: flex-start; }
-  .dev-status-list strong { text-align: left; }
-  .dev-status-card--fixed { height: auto; }
   .site-prose { padding: 24px 16px 56px; }
   .site-prose--wide { max-width: 100%; }
   .prose-section--muted { padding: 20px; }
-}
-
-@media (max-width: 1180px) {
-  .dev-telemetry__charts {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
-@media (max-width: 860px) {
-  .dev-telemetry__charts {
-    grid-template-columns: 1fr;
-  }
-
-  /* ── Feed: mobile layout ─────────────────────────────────────── */
-
-  /* Channels sidebar → horizontal filter pills */
-
-  /* Packet list — full height, no cap */
-
-  /* Packet rows — bigger touch targets, simplified meta */
-
-  /* Hide hash on mobile — too long to be useful */
-
-  /* Observer spans to the last grid cell and wraps naturally */
-
-  /* Inline map — shown on mobile below selected row */
-
-  /* Hide the desktop right column entirely on mobile */
-
-  /* Mobile stats bar — connection status + type tags, shown between channels and chat */
-
-  /* Mobile detail strip — shown below inline map for selected packet */
 }
 
 /* Repeater Search Page */
@@ -723,7 +646,6 @@ button .loading-indicator--inline,
 }
 
 .repeater-search-box__input:focus {
-  outline: none;
   border-color: var(--accent);
 }
 
@@ -774,7 +696,8 @@ button .loading-indicator--inline,
 
 .repeater-search-box__result:hover,
 .repeater-search-box__result[data-focused] {
-  background: var(--bg-tertiary);
+  background: var(--bg-hover);
+  color: var(--accent);
 }
 
 .repeater-search-box__result-name {
@@ -1048,32 +971,6 @@ button .loading-indicator--inline,
   height: 14px;
 }
 
-/* Map link */
-.repeater-details-card__map-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 12px;
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--accent);
-  text-decoration: none;
-  background: transparent;
-  border: 1px solid var(--accent);
-  border-radius: 6px;
-  transition: all 0.2s ease;
-}
-
-.repeater-details-card__map-link:hover {
-  background: var(--accent);
-  color: white;
-}
-
-.repeater-details-card__map-icon {
-  width: 14px;
-  height: 14px;
-}
-
 /* Section icons */
 .repeater-details-card__section-icon {
   width: 18px;
@@ -1105,23 +1002,6 @@ button .loading-indicator--inline,
   border-radius: 10px;
 }
 
-/* Loading spinner */
-.repeater-details-card__spinner {
-  display: inline-block;
-  width: 20px;
-  height: 20px;
-  margin-right: 12px;
-  vertical-align: middle;
-  border: 2px solid var(--border);
-  border-top-color: var(--accent);
-  border-radius: 50%;
-  animation: repeater-spin 0.8s linear infinite;
-}
-
-@keyframes repeater-spin {
-  to { transform: rotate(360deg); }
-}
-
 /* Marching dashes on beta path overlays — GPU-animated, no JS rAF needed.
    Speed matches former JS loop: 0.3px/frame × 60fps = 18px/s.
    dashArray '6 9' = 15px cycle → period 15/18 ≈ 0.833s.
@@ -1143,17 +1023,6 @@ button .loading-indicator--inline,
 }
 
 /* ── Map tool buttons (top-left cluster) ──────────────────────────────────── */
-
-/* Packet type labels */
-.repeater-details-card__packet-type {
-  display: inline-block;
-  padding: 2px 8px;
-  font-size: 11px;
-  font-weight: 500;
-  background: var(--bg-tertiary);
-  color: var(--text-primary);
-  border-radius: 4px;
-}
 
 /* ── Companion Leaderboard ──────────────────────────────────────────────── */
 .companion-leaderboard {
@@ -1278,7 +1147,6 @@ button .loading-indicator--inline,
 }
 
 .regions-search__input:focus {
-  outline: none;
   border-color: var(--accent);
 }
 
@@ -1737,7 +1605,6 @@ button .loading-indicator--inline,
   height: 4px;
   border-radius: 2px;
   background: var(--border);
-  outline: none;
   cursor: pointer;
 }
 
@@ -1750,7 +1617,7 @@ button .loading-indicator--inline,
   background: var(--accent);
   cursor: pointer;
   border: none;
-  box-shadow: 0 0 0 3px rgba(var(--accent-rgb, 80, 220, 180), 0.2);
+  box-shadow: 0 0 0 3px var(--accent-dim);
 }
 
 .regions-rel__neighbour-range::-moz-range-thumb {
@@ -1760,6 +1627,14 @@ button .loading-indicator--inline,
   background: var(--accent);
   cursor: pointer;
   border: none;
+}
+
+.regions-rel__neighbour-range:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 4px var(--accent-glow);
+}
+
+.regions-rel__neighbour-range:focus-visible::-moz-range-thumb {
+  box-shadow: 0 0 0 4px var(--accent-glow);
 }
 
 .regions-rel__neighbour-ticks {
@@ -2084,11 +1959,13 @@ button .loading-indicator--inline,
 }
 
 .ui-dialog-modal {
-  width: min(760px, 100%);
+  width: auto;
+  max-width: calc(100vw - 32px);
   max-height: calc(100dvh - 32px);
 }
 
 .ui-dialog {
+  width: min(760px, calc(100vw - 32px));
   max-height: calc(100dvh - 32px);
   overflow: auto;
   border-radius: 12px;
@@ -2112,16 +1989,17 @@ button .loading-indicator--inline,
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
 }
 
-.ui-combobox__listbox {
-  outline: none;
-}
-
 .ui-combobox__empty {
   padding: 12px;
   color: var(--text-secondary);
 }
 
-:where(a, button, input, select, textarea, [tabindex]):focus-visible,
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible,
 [data-focus-visible] {
   outline: 3px solid var(--accent);
   outline-offset: 2px;

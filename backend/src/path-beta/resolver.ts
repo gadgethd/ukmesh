@@ -3,6 +3,7 @@ import {
   query,
   touchNodesPredictedOnline,
 } from '../db/index.js';
+import { BoundedTtlMap } from '../cache/boundedTtlMap.js';
 import { privateNodePacketNetworkMatchSql } from '../privacy/networkScope.js';
 import {
   buildNodePathHashIndex,
@@ -48,7 +49,12 @@ import {
 import { buildNeighborAffinityAdjacency, buildNeighborAffinityMap, neighborAffinityPreference } from './affinity.js';
 import type { BetaResolveContext, LinkMetrics, MeshNode, MlPrefixScore, NodeCoverage, ObserverHopHint, PathLearningModel, PathPacket } from './types.js';
 
-const contextCache = new Map<string, BetaResolveContext>();
+const contextCache = new BoundedTtlMap<string, BetaResolveContext>({
+  name: 'path_context',
+  maxEntries: 16,
+  maxWeight: 128 * 1024 * 1024,
+  ttlMs: CONTEXT_TTL_MS,
+});
 const MAX_TRELLIS_CANDIDATES_PER_HOP = 24;
 const TRUSTED_PATH_MAX_KM = 150;
 const PATH_SINGLE_HISTORY_HOURS = Math.min(
@@ -1291,7 +1297,10 @@ function resolveBetaPath(
   };
 }
 
-async function buildLearningModel(network: string): Promise<PathLearningModel> {
+async function buildLearningModel(
+  network: string,
+  signal?: AbortSignal,
+): Promise<PathLearningModel> {
   const [prefixRows, transitionRows, edgeRows, motifRows, calibrationRows] = await Promise.all([
     query<{
       prefix: string;
@@ -1304,8 +1313,9 @@ async function buildLearningModel(network: string): Promise<PathLearningModel> {
        FROM path_prefix_priors
        WHERE network = $1
        ORDER BY count DESC
-       LIMIT $2`,
+      LIMIT $2`,
       [network, MODEL_LIMIT],
+      signal,
     ),
     query<{
       from_node_id: string;
@@ -1317,8 +1327,9 @@ async function buildLearningModel(network: string): Promise<PathLearningModel> {
        FROM path_transition_priors
        WHERE network = $1
        ORDER BY count DESC
-       LIMIT $2`,
+      LIMIT $2`,
       [network, MODEL_LIMIT],
+      signal,
     ),
     query<{
       from_node_id: string;
@@ -1331,8 +1342,9 @@ async function buildLearningModel(network: string): Promise<PathLearningModel> {
        FROM path_edge_priors
        WHERE network = $1
        ORDER BY score DESC, observed_count DESC
-       LIMIT $2`,
+      LIMIT $2`,
       [network, MODEL_LIMIT],
+      signal,
     ),
     query<{
       receiver_region: string;
@@ -1345,8 +1357,9 @@ async function buildLearningModel(network: string): Promise<PathLearningModel> {
        FROM path_motif_priors
        WHERE network = $1
        ORDER BY count DESC
-       LIMIT $2`,
+      LIMIT $2`,
       [network, MODEL_LIMIT],
+      signal,
     ),
     query<{
       confidence_scale: number;
@@ -1356,6 +1369,7 @@ async function buildLearningModel(network: string): Promise<PathLearningModel> {
        FROM path_model_calibration
        WHERE network = $1`,
       [network],
+      signal,
     ),
   ]);
 
@@ -1437,10 +1451,15 @@ export function canReusePathContext(input: {
 async function loadContext(
   network: string,
   visibilityRetry = 0,
-  options?: { pinForBatch?: boolean; requiredVisibilityGeneration?: number },
+  options?: {
+    pinForBatch?: boolean;
+    requiredVisibilityGeneration?: number;
+    signal?: AbortSignal;
+  },
 ): Promise<BetaResolveContext> {
+  options?.signal?.throwIfAborted();
   const now = Date.now();
-  const visibilityGeneration = await getPublicVisibilityGeneration();
+  const visibilityGeneration = await getPublicVisibilityGeneration(options?.signal);
   if (
     options?.requiredVisibilityGeneration != null
     && visibilityGeneration !== options.requiredVisibilityGeneration
@@ -1462,9 +1481,10 @@ async function loadContext(
     query<MeshNode>(
       `SELECT node_id, name, lat, lon, iata, role, elevation_m, last_seen::text AS last_seen
        FROM nodes
-       WHERE ($1 = 'all' OR network = $1)
+      WHERE ($1 = 'all' OR network = $1)
          AND (name IS NULL OR name NOT LIKE '%🚫%')`,
       [network],
+      options?.signal,
     ),
     query<NodeCoverage>(
       `SELECT nc.node_id, nc.radius_m
@@ -1473,6 +1493,7 @@ async function loadContext(
        WHERE ($1 = 'all' OR n.network = $1)
          AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')`,
       [network],
+      options?.signal,
     ),
     query<{
       node_a_id: string;
@@ -1494,6 +1515,7 @@ async function loadContext(
          AND (b.name IS NULL OR b.name NOT LIKE '%🚫%')
          AND ($1 = 'all' OR (a.network = $1 AND b.network = $1))`,
       [network],
+      options?.signal,
     ),
     query<{
       hash_2char: string;
@@ -1508,10 +1530,15 @@ async function loadContext(
        ORDER BY score DESC, observation_count DESC
        LIMIT $3`,
       [network, ML_PREFIX_SCORE_MIN, MODEL_LIMIT],
+      options?.signal,
     ),
-    buildLearningModel(network),
-    buildNeighborAffinityMap(network, query),
+    buildLearningModel(network, options?.signal),
+    buildNeighborAffinityMap(
+      network,
+      (text, params) => query(text, params, options?.signal),
+    ),
   ]);
+  options?.signal?.throwIfAborted();
 
   const nodesById = new Map<string, MeshNode>();
   for (const row of nodeRows.rows) nodesById.set(row.node_id, row);
@@ -1599,7 +1626,7 @@ async function loadContext(
     mlPrefixScores,
     learningModel,
   };
-  const confirmedGeneration = await getPublicVisibilityGeneration();
+  const confirmedGeneration = await getPublicVisibilityGeneration(options?.signal);
   if (confirmedGeneration !== visibilityGeneration) {
     if (visibilityRetry >= 1) {
       throw new Error('PUBLIC_VISIBILITY_CHANGED_DURING_CONTEXT_LOAD');
@@ -1736,7 +1763,13 @@ export type PathResolutionOptions = {
   pinContextForBatch?: boolean;
   /** Abort instead of mixing public visibility generations within a batch. */
   requiredVisibilityGeneration?: number;
+  /** Cooperative cancellation for bounded rebuilds and lease loss. */
+  signal?: AbortSignal;
 };
+
+function throwIfResolutionAborted(options?: PathResolutionOptions): void {
+  options?.signal?.throwIfAborted();
+}
 
 function shouldTouchPredictedOnline(options?: PathResolutionOptions): boolean {
   return options?.touchPredictedOnline !== false;
@@ -1758,6 +1791,7 @@ export async function resolveBetaPathForPacketHash(
   stickyAgeFraction?: number,
   options?: PathResolutionOptions,
 ): Promise<BetaResolvedPayload | null> {
+  throwIfResolutionAborted(options);
   const packetResult = await query<PathPacket>(
       `SELECT packet_hash, rx_node_id, src_node_id, packet_type, hop_count, path_hashes, path_hash_size_bytes
        FROM packets
@@ -1785,7 +1819,9 @@ export async function resolveBetaPathForPacketHash(
                 time ASC
        LIMIT 32`,
       observer ? [packetHash, network, observer] : [packetHash, network],
+      options?.signal,
     );
+  throwIfResolutionAborted(options);
   // A syntactically valid but unrelated observer must not trigger the
   // observer-independent retained-history aggregate.
   if (packetResult.rows.length === 0) return null;
@@ -1814,6 +1850,7 @@ export async function resolveBetaPathForPacketHash(
             LIMIT $4
          ) bounded_observers`,
       [packetHash, network, PATH_SINGLE_HISTORY_HOURS, PATH_SINGLE_MAX_OBSERVERS + 1],
+      options?.signal,
     );
   if (observerHopResult.rows.length > PATH_SINGLE_MAX_OBSERVERS) {
     throw new Error('PATH_HISTORY_LIMIT');
@@ -1822,7 +1859,9 @@ export async function resolveBetaPathForPacketHash(
   const context = await loadContext(network, 0, {
     pinForBatch: options?.pinContextForBatch,
     requiredVisibilityGeneration: options?.requiredVisibilityGeneration,
+    signal: options?.signal,
   });
+  throwIfResolutionAborted(options);
   const preparedByObserver = new Map<string, PreparedPacketObservation>();
   for (const row of packetResult.rows) {
     const key = row.rx_node_id ?? '__no_observer__';
@@ -2018,6 +2057,7 @@ export async function resolveBetaPathForPacketHash(
     directObserverAnchors: directAnchorsForHops(hops, directAnchorIndex),
     stickyAgeFraction,
   });
+  throwIfResolutionAborted(options);
   let solvedHopCount = hops.length;
   let solverMode: 'full' | 'suffix-partial' = 'full';
   if (!result && hops.length > 1) {
@@ -2297,6 +2337,7 @@ export async function resolveMultiObserverBetaPath(
   stickyAgeFraction?: number,
   options?: PathResolutionOptions,
 ): Promise<MultiObserverResolvedPayload | null> {
+  throwIfResolutionAborted(options);
   // 1. Load ALL observations for this packet hash
   const allResult = await query<PathPacket & { path_hash_size_bytes: number | null }>(
     `SELECT packet_hash, rx_node_id, src_node_id, packet_type, hop_count, path_hashes, path_hash_size_bytes
@@ -2326,7 +2367,9 @@ export async function resolveMultiObserverBetaPath(
               time ASC
      LIMIT $4`,
     [packetHash, network, PATH_MULTI_HISTORY_WINDOW_HOURS, PATH_MULTI_MAX_SCAN_ROWS + 1],
+    options?.signal,
   );
+  throwIfResolutionAborted(options);
 
   if (allResult.rows.length < 1) return null;
   if (allResult.rows.length > PATH_MULTI_MAX_SCAN_ROWS) throw new Error('PATH_HISTORY_LIMIT');
@@ -2334,11 +2377,14 @@ export async function resolveMultiObserverBetaPath(
   const context = await loadContext(network, 0, {
     pinForBatch: options?.pinContextForBatch,
     requiredVisibilityGeneration: options?.requiredVisibilityGeneration,
+    signal: options?.signal,
   });
+  throwIfResolutionAborted(options);
 
   // 2. Group by observer, pick canonical row per observer
   const byObserver = new Map<string, PreparedPacketObservation>();
   for (const row of allResult.rows) {
+    throwIfResolutionAborted(options);
     if (!row.rx_node_id) continue;
     const rxNode = context.nodesById.get(row.rx_node_id) ?? null;
     const prepared = preparePacketObservation(row, rxNode);
@@ -2373,6 +2419,7 @@ export async function resolveMultiObserverBetaPath(
 
   const entries: ObserverEntry[] = [];
   for (const [observerId, prepared] of byObserver) {
+    throwIfResolutionAborted(options);
     const rx = prepared.rx;
     if (!hasCoords(rx)) continue;
     const hashes = prepared.hashes;
@@ -2478,6 +2525,7 @@ export async function resolveMultiObserverBetaPath(
       stickyAgeFraction,
     },
   );
+  throwIfResolutionAborted(options);
 
   // Build anchor node map: hop index → resolved MeshNode
   // Also extract sticky updates: high-confidence hops that should be reused on re-resolution
@@ -2515,6 +2563,7 @@ export async function resolveMultiObserverBetaPath(
   };
 
   for (let ei = 0; ei < entries.length; ei++) {
+    throwIfResolutionAborted(options);
     const entry = entries[ei]!;
 
     if (ei === anchorIdx && anchorResult) {
@@ -2569,6 +2618,7 @@ export async function resolveMultiObserverBetaPath(
         stickyAgeFraction,
       },
     );
+    throwIfResolutionAborted(options);
 
     if (entryResult) {
       collectPredictedOnline(entryResult.nodeIds);
@@ -2596,6 +2646,7 @@ export async function resolveMultiObserverBetaPath(
         extraCorridorTargets: entryExtraCorridorTargets,
       },
     );
+    throwIfResolutionAborted(options);
 
     if (fallbackResult) {
       collectPredictedOnline(fallbackResult.nodeIds);
@@ -2615,6 +2666,7 @@ export async function resolveMultiObserverBetaPath(
     if (entry.hops.length > 1) {
       let suffixPartialResult: ReturnType<typeof resolveBetaPath> = null;
       for (let suffixLen = entry.hops.length - 1; suffixLen >= 1; suffixLen--) {
+        throwIfResolutionAborted(options);
         const suffix = entry.hops.slice(entry.hops.length - suffixLen);
         const partial = resolveBetaPath(suffix, hasCoords(src) ? src : null, entry.rx, context, {
           forceIncludeSource: false,

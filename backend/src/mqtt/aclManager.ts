@@ -1,7 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import Docker from 'dockerode';
 
 export const OWNER_ACL_RENDERER_VERSION = 'meshcore-owner-acl/v1';
 const MANAGED_BEGIN = '# BEGIN MESHCORE OWNER ACL';
@@ -270,12 +269,12 @@ export function writeAclAtomically(
   const temporaryPath = path.join(directory, `.${path.basename(aclPath)}.${process.pid}.tmp`);
   const lastKnownGoodPath = `${aclPath}.lkg`;
   const previous = fs.readFileSync(aclPath, 'utf8');
-  const stat = fs.statSync(aclPath);
-  fs.writeFileSync(lastKnownGoodPath, previous, { encoding: 'utf8', mode: stat.mode & 0o777 });
-  const descriptor = fs.openSync(temporaryPath, 'wx', stat.mode & 0o777);
+  const fileMode = 0o640;
+  fs.writeFileSync(lastKnownGoodPath, previous, { encoding: 'utf8', mode: fileMode });
+  fs.chmodSync(lastKnownGoodPath, fileMode);
+  const descriptor = fs.openSync(temporaryPath, 'wx', fileMode);
   try {
-    fs.fchownSync(descriptor, stat.uid, stat.gid);
-    fs.fchmodSync(descriptor, stat.mode & 0o777);
+    fs.fchmodSync(descriptor, fileMode);
     fs.writeFileSync(descriptor, content, 'utf8');
     fs.fsyncSync(descriptor);
   } finally {
@@ -291,12 +290,22 @@ export function writeAclAtomically(
 }
 
 export async function reloadMosquitto(): Promise<void> {
-  const socketPath = process.env['DOCKER_SOCKET'] ?? '/var/run/docker.sock';
-  if (!fs.existsSync(socketPath)) throw new Error(`DOCKER_SOCKET_NOT_FOUND:${socketPath}`);
-  const docker = new Docker({ socketPath });
-  const containers = await docker.listContainers();
-  const label = process.env['MOSQUITTO_CONTAINER_NAME'] ?? 'mosquitto';
-  const matches = containers.filter((container) => container.Names.some((name) => name.includes(label)));
-  if (matches.length !== 1) throw new Error(`MOSQUITTO_CONTAINER_MATCH_COUNT:${matches.length}`);
-  await docker.getContainer(matches[0]!.Id).kill({ signal: 'SIGHUP' });
+  const endpoint = process.env['OWNER_ACL_RELOAD_URL'] ?? 'http://mosquitto-reloader:8080/reload';
+  const token = String(process.env['OWNER_ACL_RELOAD_TOKEN'] ?? '');
+  if (token.length < 32) throw new Error('OWNER_ACL_RELOAD_TOKEN_INVALID');
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${token}`,
+      'content-type': 'application/json',
+    },
+    body: '{}',
+    redirect: 'error',
+    signal: AbortSignal.timeout(5_000),
+  });
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new Error(`MOSQUITTO_RELOAD_FAILED:${response.status}`);
+  }
+  await response.body?.cancel().catch(() => undefined);
 }

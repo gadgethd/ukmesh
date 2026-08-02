@@ -1,9 +1,11 @@
 import React, { useState } from 'react';
 import type maplibregl from 'maplibre-gl';
 import { NodeSearch } from '../Map/NodeSearch.js';
-import { FILTER_ROWS, type Filters } from '../FilterPanel/FilterPanel.js';
+import { visibleFilterRows, type Filters } from '../FilterPanel/FilterPanel.js';
 import type { MapMode } from '../../config/mapModes.js';
 import { MapModeSelector } from './MapModeSelector.js';
+import { WatchlistPanel } from './WatchlistPanel.js';
+import { useOverlayStore } from '../../store/overlayStore.js';
 
 type MobileControlsProps = {
   map: maplibregl.Map | null;
@@ -11,6 +13,7 @@ type MobileControlsProps = {
   onFiltersChange: (next: Filters) => void;
   activeMode: MapMode | null;
   viewshedEnabled: boolean;
+  heatmapEnabled: boolean;
   onModeChange: (mode: MapMode) => void;
   onShare: () => void;
   shareLabel: string;
@@ -25,6 +28,7 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
   onFiltersChange,
   activeMode,
   viewshedEnabled,
+  heatmapEnabled,
   onModeChange,
   onShare,
   shareLabel,
@@ -33,6 +37,11 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
   onToggleFullScreenMap,
 }) => {
   const [showFilters, setShowFilters] = useState(false);
+  const customLosMode = useOverlayStore((state) => state.customLosMode);
+  const planRepeaterMode = useOverlayStore((state) => state.planRepeaterMode);
+  const setCustomLosMode = useOverlayStore((state) => state.setCustomLosMode);
+  const clearCustomLos = useOverlayStore((state) => state.clearCustomLos);
+  const setPlanRepeaterMode = useOverlayStore((state) => state.setPlanRepeaterMode);
 
   return (
     <div className="mobile-controls">
@@ -51,6 +60,40 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
         onShare={onShare}
         shareLabel={shareLabel}
       />}
+      {!fullScreenMap && (
+        <div className="mobile-map-tools" aria-label="Map planning tools">
+          <button
+            type="button"
+            className={customLosMode ? 'mobile-map-tools__button mobile-map-tools__button--active' : 'mobile-map-tools__button'}
+            aria-pressed={customLosMode}
+            onClick={() => {
+              if (customLosMode) clearCustomLos();
+              else {
+                setPlanRepeaterMode(false);
+                setCustomLosMode(true);
+              }
+            }}
+          >
+            Line of sight
+          </button>
+          {viewshedEnabled && (
+            <button
+              type="button"
+              className={planRepeaterMode ? 'mobile-map-tools__button mobile-map-tools__button--active' : 'mobile-map-tools__button'}
+              aria-pressed={planRepeaterMode}
+              onClick={() => {
+                if (planRepeaterMode) setPlanRepeaterMode(false);
+                else {
+                  clearCustomLos();
+                  setPlanRepeaterMode(true);
+                }
+              }}
+            >
+              Plan repeater
+            </button>
+          )}
+        </div>
+      )}
       {!fullScreenMap && <button
         type="button"
         className="mobile-legend-toggle"
@@ -62,7 +105,7 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
       </button>}
       {!fullScreenMap && <div className={`mobile-filter-wrap${showFilters ? '' : ' mobile-filter-wrap--hidden'}`}>
         <div className="mobile-filter-grid">
-          {FILTER_ROWS.map(({ key, label, color, hollow }) => (
+          {visibleFilterRows(viewshedEnabled, heatmapEnabled).map(({ key, label, color, hollow }) => (
             <button
               type="button"
               key={key}
@@ -87,10 +130,11 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
         </div>
         {filters.hexClashes && (
           <div className="filter-slider" style={{ margin: '0 8px 8px' }}>
-            <span className="filter-slider__label">
+            <label className="filter-slider__label" htmlFor="mobile-hex-clash-hops">
               Hex clash hops: {Math.round(filters.hexClashMaxHops)}
-            </span>
+            </label>
             <input
+              id="mobile-hex-clash-hops"
               className="filter-slider__input"
               type="range"
               min={0}
@@ -105,6 +149,7 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
       {!fullScreenMap && <div className="mobile-search">
         <NodeSearch map={map} onNodeSelect={onNodeSelect} />
       </div>}
+      {!fullScreenMap && <WatchlistPanel />}
     </div>
   );
 };

@@ -3,7 +3,7 @@ providers:
   - name: meshcore-analytics
     folder: meshcore-analytics
     type: file
-    disableDeletion: false
-    editable: true
+    disableDeletion: true
+    editable: false
     options:
       path: /etc/grafana/dashboards

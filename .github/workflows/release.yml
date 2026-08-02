@@ -1,0 +1,192 @@
+name: Signed container release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  policy:
+    name: Release policy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+      - name: Validate vulnerability waivers
+        run: node scripts/check-trivy-waivers.mjs
+      - name: Require a clean commit release
+        run: test -z "$(git status --porcelain --untracked-files=all)"
+
+  image:
+    name: ${{ matrix.component }}
+    needs: policy
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - component: backend
+            image: meshcore-backend
+            context: .
+            file: Dockerfile.backend
+            build_args: ''
+          - component: combined
+            image: meshcore-combined
+            context: .
+            file: Dockerfile
+            build_args: VITE_APP_HOSTNAME=app.ukmesh.com
+          - component: app
+            image: meshcore-app
+            context: .
+            file: Dockerfile.app
+            build_args: |
+              VITE_APP_HOSTNAME=app.ukmesh.com
+              VITE_NETWORK=ukmesh
+              VITE_SITE=ukmesh
+          - component: website
+            image: meshcore-website
+            context: .
+            file: Dockerfile.website
+            build_args: |
+              VITE_APP_HOSTNAME=app.ukmesh.com
+              VITE_SITE=ukmesh
+          - component: rf-worker
+            image: meshcore-rf-worker
+            context: viewshed-worker
+            file: viewshed-worker/Dockerfile
+            build_args: ''
+          - component: ml-path-learner
+            image: meshcore-ml-path-learner
+            context: ml-path-learner
+            file: ml-path-learner/Dockerfile
+            build_args: ''
+          - component: mosquitto-reloader
+            image: meshcore-mosquitto-reloader
+            context: .
+            file: Dockerfile.mosquitto-reloader
+            build_args: ''
+          - component: health-check
+            image: meshcore-health-check
+            context: .
+            file: Dockerfile.mesh-health-check
+            build_args: MESH_HEALTH_CHECK_REF=952eec8e0c55d0749f9abef211c266f992c0bfc7
+    env:
+      REGISTRY: ghcr.io
+      IMAGE_NAME: ${{ github.repository_owner }}/${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,format=long
+            type=ref,event=tag
+      - id: build
+        name: Build and push immutable image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            SOURCE_REVISION=${{ github.sha }}
+            ${{ matrix.build_args }}
+          provenance: false
+          sbom: false
+          cache-from: type=gha,scope=${{ matrix.component }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.component }}
+      - name: Gate exact digest on critical vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
+          format: json
+          output: trivy-${{ matrix.component }}.json
+          exit-code: '1'
+          severity: CRITICAL
+          ignore-unfixed: false
+          trivyignores: .trivyignore.yaml
+      - name: Generate SPDX SBOM for exact digest
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
+          format: spdx-json
+          output-file: sbom-${{ matrix.component }}.spdx.json
+          upload-artifact: false
+      - uses: sigstore/cosign-installer@f713795cb21599bc4e5c4b58cbad1da852d7eeb9 # v3
+      - name: Sign and attach SBOM attestation
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          image="${REGISTRY}/${IMAGE_NAME}@${DIGEST}"
+          cosign sign --yes "$image"
+          cosign attest --yes \
+            --predicate "sbom-${{ matrix.component }}.spdx.json" \
+            --type spdxjson "$image"
+          cosign verify "$image" \
+            --certificate-identity-regexp "^https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            > "signature-${{ matrix.component }}.json"
+      - id: provenance
+        name: Publish registry provenance
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+      - name: Write release inventory
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          ATTESTATION_URL: ${{ steps.provenance.outputs.attestation-url }}
+        run: |
+          jq -n \
+            --arg component "${{ matrix.component }}" \
+            --arg source_revision "$GITHUB_SHA" \
+            --arg image "${REGISTRY}/${IMAGE_NAME}@${DIGEST}" \
+            --arg sbom "sbom-${{ matrix.component }}.spdx.json" \
+            --arg scan "trivy-${{ matrix.component }}.json" \
+            --arg signature "signature-${{ matrix.component }}.json" \
+            --arg provenance "$ATTESTATION_URL" \
+            '{
+              format: "meshcore-release-inventory-v1",
+              component: $component,
+              source_revision: $source_revision,
+              image: $image,
+              sbom: $sbom,
+              scan: $scan,
+              signature: $signature,
+              provenance: $provenance
+            }' > "inventory-${{ matrix.component }}.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-${{ github.sha }}-${{ matrix.component }}
+          if-no-files-found: error
+          retention-days: 90
+          path: |
+            inventory-${{ matrix.component }}.json
+            sbom-${{ matrix.component }}.spdx.json
+            trivy-${{ matrix.component }}.json
+            signature-${{ matrix.component }}.json
