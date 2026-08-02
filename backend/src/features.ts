@@ -5,26 +5,6 @@ export function envFlagEnabled(value: string | undefined, defaultValue = true): 
   return !DISABLED_VALUES.has(value.trim().toLowerCase());
 }
 
-export function isViewshedFeatureEnabled(): boolean {
-  return envFlagEnabled(process.env['VIEWSHED_ENABLED'], false);
-}
-
-export const DEFAULT_COVERAGE_MODEL_VERSION = 7;
-
-export function getCoverageModelVersion(
-  env: NodeJS.ProcessEnv = process.env,
-): number {
-  const parsed = Number(
-    env['COVERAGE_MODEL_VERSION'] ?? DEFAULT_COVERAGE_MODEL_VERSION,
-  );
-  if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > 2_147_483_647) {
-    throw new Error(
-      'COVERAGE_MODEL_VERSION must be a positive 32-bit integer',
-    );
-  }
-  return parsed;
-}
-
 export type PublicRuntimeFeatureConfig = {
   version: 1;
   inferredNodes: boolean;

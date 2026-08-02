@@ -12,7 +12,7 @@ import { LoadingIndicator } from './components/LoadingIndicator.js';
 import { Dialog, DialogTitle } from './components/ui/Dialog.js';
 import { useWebSocket } from './hooks/useWebSocket.js';
 import { nodeStore, type MeshNode } from './hooks/useNodes.js';
-import { coverageStore } from './hooks/useCoverage.js';
+import { useRfCoverage, type RfCoverageTierName } from './hooks/useRfCoverage.js';
 import { useDashboardStats, type DashboardStats } from './hooks/useDashboardStats.js';
 import { linkStateStore } from './hooks/useLinkState.js';
 import { useAppMessageHandler } from './hooks/useAppMessageHandler.js';
@@ -20,8 +20,11 @@ import {
   HEATMAP_CAPABLE,
   INFERRED_NODES_CAPABLE,
   PACKET_ARCS_CAPABLE,
+  RF_COVERAGE_ENABLED,
   VIEWSHED_ENABLED,
 } from './config/features.js';
+import { RfCoverageOverlay } from './components/Map/RfCoverageOverlay.js';
+import { RfCoverageStatus } from './components/Map/RfCoverageStatus.js';
 import { useRuntimeFeatures } from './config/runtimeFeatures.js';
 import { getCurrentSite } from './config/site.js';
 import { filtersForMapMode, isMapMode, type MapMode } from './config/mapModes.js';
@@ -57,6 +60,8 @@ const DISCLAIMER_KEY = 'meshcore-disclaimer-dismissed';
 const FILTERS_KEY = 'meshcore-app-filters-v3';
 const LEGACY_FILTERS_KEY = 'meshcore-app-filters-v2';
 const FILTERS_VERSION = 3;
+const RF_VISIBILITY_KEY = 'meshcore-rf-coverage-visible-v1';
+const RF_TIER_KEY = 'meshcore-rf-coverage-tier-v1';
 const MAP_FETCH_TIMEOUT_MS = 4_000;
 const OTHER_FETCH_TIMEOUT_MS = 15_000;
 const EMPTY_NODE_IDS = new Set<string>();
@@ -64,6 +69,7 @@ const TimelineControl = React.lazy(() => import('./components/app/TimelineContro
 const PlannerComparison = React.lazy(() => import('./components/app/PlannerComparison.js').then((module) => ({ default: module.PlannerComparison })));
 
 export const App: React.FC = () => {
+  const initialLayersSpecifiedRef = useRef(new URLSearchParams(window.location.search).has('layers'));
   const site = getCurrentSite();
   const runtimeFeatures = useRuntimeFeatures();
   const inferredNodesEnabled = INFERRED_NODES_CAPABLE && runtimeFeatures.inferredNodes;
@@ -96,7 +102,11 @@ export const App: React.FC = () => {
     const modeFilters = isMapMode(requestedMode) && (requestedMode !== 'plan' || VIEWSHED_ENABLED)
       ? filtersForMapMode(requestedMode, stored)
       : stored;
-    return filtersFromUrl(modeFilters);
+    const savedRfVisibility = localStorage.getItem(RF_VISIBILITY_KEY);
+    const withRfVisibility = savedRfVisibility === null
+      ? modeFilters
+      : { ...modeFilters, coverage: savedRfVisibility === '1' };
+    return filtersFromUrl(withRfVisibility);
   });
   const [activeMode, setActiveMode] = useState<MapMode | null>(() => {
     const requested = new URLSearchParams(window.location.search).get('mode');
@@ -120,6 +130,10 @@ export const App: React.FC = () => {
   const [initialPollLoaded, setInitialPollLoaded] = useState(false);
   const [pollRefreshing, setPollRefreshing] = useState(false);
   const [mapLight, setMapLight] = useState(() => localStorage.getItem('map-theme') === 'light');
+  const [rfCoverageTier, setRfCoverageTier] = useState<RfCoverageTierName>(() => (
+    localStorage.getItem(RF_TIER_KEY) === 'precision' ? 'precision' : 'standard'
+  ));
+  const rfCoverage = useRfCoverage(RF_COVERAGE_ENABLED);
   const [showShortcutGuide, setShowShortcutGuide] = useState(false);
   const [isPageVisible, setIsPageVisible] = useState(
     () => (typeof document === 'undefined' ? true : document.visibilityState === 'visible'),
@@ -133,22 +147,17 @@ export const App: React.FC = () => {
   // switch into another deployment's dataset.
   const networkFilter = site.networkFilter ?? 'ukmesh';
   const observerFilter = site.observerId;
-  const realtimeScopeKey = coverageStore.scopeKey({
-    network: networkFilter,
-    observer: observerFilter,
-  });
+  const realtimeScopeKey = `${networkFilter}|${observerFilter ?? 'all'}|privacy-${runtimeFeatures.privacyGeneration}`;
   const scopeStateRef = useRef<{
     key: string;
     nodeEpoch: number;
     linkEpoch: number;
-    coverageEpoch: number;
   } | null>(null);
   if (scopeStateRef.current?.key !== realtimeScopeKey) {
     scopeStateRef.current = {
       key: realtimeScopeKey,
       nodeEpoch: nodeStore.reset(realtimeScopeKey),
       linkEpoch: linkStateStore.reset(realtimeScopeKey),
-      coverageEpoch: coverageStore.reset(realtimeScopeKey),
     };
   }
   const scopeState = scopeStateRef.current;
@@ -179,6 +188,19 @@ export const App: React.FC = () => {
     if (heatmapEnabled) return;
     setFilters((current) => current.heatmap ? { ...current, heatmap: false } : current);
   }, [heatmapEnabled]);
+
+  useEffect(() => {
+    if (!RF_COVERAGE_ENABLED || !rfCoverage.availableTiers.includes('standard')) return;
+    if (localStorage.getItem(RF_VISIBILITY_KEY) !== null) return;
+    if (initialLayersSpecifiedRef.current) return;
+    setFilters((current) => current.coverage ? current : { ...current, coverage: true });
+  }, [rfCoverage.availableTiers]);
+
+  useEffect(() => {
+    if (rfCoverageTier === 'precision' && !rfCoverage.availableTiers.includes('precision')) {
+      setRfCoverageTier('standard');
+    }
+  }, [rfCoverage.availableTiers, rfCoverageTier]);
 
   useEffect(() => {
     if (typeof document === 'undefined') return undefined;
@@ -218,7 +240,15 @@ export const App: React.FC = () => {
   const handleFiltersChange = useCallback((next: Filters) => {
     setActiveMode(null);
     useOverlayStore.getState().setPlanRepeaterMode(false);
+    if (next.coverage !== filters.coverage) {
+      localStorage.setItem(RF_VISIBILITY_KEY, next.coverage ? '1' : '0');
+    }
     setFilters(next);
+  }, [filters.coverage]);
+
+  const handleRfTierChange = useCallback((tier: RfCoverageTierName) => {
+    localStorage.setItem(RF_TIER_KEY, tier);
+    setRfCoverageTier(tier);
   }, []);
 
   const handleModeChange = useCallback((mode: MapMode) => {
@@ -487,12 +517,6 @@ export const App: React.FC = () => {
     handleNodeUpdateBatch: (data) => nodeStore.handleNodeUpdateBatch(data, scopeState.nodeEpoch),
     handleNodeUpsert: (data) => nodeStore.handleNodeUpsert(data, scopeState.nodeEpoch),
     handleNodeUpsertBatch: (data) => nodeStore.handleNodeUpsertBatch(data, scopeState.nodeEpoch),
-    handleCoverageUpdate: (data) => {
-      if (VIEWSHED_ENABLED) coverageStore.handleCoverageUpdate(data, scopeState.coverageEpoch);
-    },
-    handleCoverageUpdateBatch: (data) => {
-      if (VIEWSHED_ENABLED) coverageStore.handleCoverageUpdateBatch(data, scopeState.coverageEpoch);
-    },
     applyInitialViablePairs: (pairs) => linkStateStore.applyInitialViablePairs(
       pairs,
       scopeState.linkEpoch,
@@ -567,6 +591,7 @@ export const App: React.FC = () => {
         onFiltersChange={handleFiltersChange}
         activeMode={activeMode}
         viewshedEnabled={VIEWSHED_ENABLED}
+        rfCoverageEnabled={RF_COVERAGE_ENABLED}
         heatmapEnabled={heatmapEnabled}
         onModeChange={handleModeChange}
         onShare={handleShare}
@@ -582,7 +607,6 @@ export const App: React.FC = () => {
           inferredActiveNodeIds={inferredNodesEnabled ? inferredActiveNodeIds : EMPTY_NODE_IDS}
           showLinks={filters.links}
           showTerrain={filters.terrain}
-          showCoverage={filters.coverage}
           showClientNodes={filters.clientNodes}
           showHexClashes={filters.hexClashes}
           maxHexClashHops={filters.hexClashMaxHops}
@@ -596,6 +620,12 @@ export const App: React.FC = () => {
           observer={observerFilter}
           privacyGeneration={runtimeFeatures.privacyGeneration}
         />
+        <RfCoverageOverlay
+          map={mlMap}
+          meta={rfCoverage.meta}
+          tier={rfCoverageTier}
+          visible={RF_COVERAGE_ENABLED && filters.coverage}
+        />
         <LiveOverlayController
           map={mlMap}
           filters={filters}
@@ -604,6 +634,14 @@ export const App: React.FC = () => {
           packetHistorySegments={packetHistorySegments}
           packetArcsEnabled={packetArcsEnabled}
           heatmapEnabled={heatmapEnabled}
+        />
+        <RfCoverageStatus
+          meta={rfCoverage.meta}
+          progress={rfCoverage.progress}
+          availableTiers={rfCoverage.availableTiers}
+          tier={rfCoverageTier}
+          onTierChange={handleRfTierChange}
+          visible={RF_COVERAGE_ENABLED && filters.coverage}
         />
         {(!initialStateLoaded && !initialPollLoaded) && (
           <LoadingIndicator
@@ -623,6 +661,7 @@ export const App: React.FC = () => {
         onChange={handleFiltersChange}
         activeMode={activeMode}
         viewshedEnabled={VIEWSHED_ENABLED}
+        rfCoverageEnabled={RF_COVERAGE_ENABLED}
         heatmapEnabled={heatmapEnabled}
         onModeChange={handleModeChange}
         onShare={handleShare}

@@ -16,13 +16,13 @@
   - live path overlay controller
 - `DeckGLOverlay.tsx`
   - bounded packet-arc animation outside React map rerenders
-- `NodePopupContent.tsx` and `PlannedRepeaterPopup.tsx`
-  - selected-node and planned-repeater presentation
+- `RfCoverageOverlay.tsx` and `RfCoverageStatus.tsx`
+  - native progressive raster layers, tier controls, legend, and progress
 
 ## State ownership
 
 - live nodes/packets: `useNodes.ts`
-- coverage: `useCoverage.ts`
+- HopReach metadata/progress and last-known-good state: `useRfCoverage.ts`
 - links: `useLinkState.ts`
 - overlay/path state: `overlayStore.ts`
 
@@ -31,6 +31,8 @@
 - do not reintroduce React-driven full-map rerenders for live packet/node traffic
 - put pure map data shaping in builder modules, not in the top-level map component
 - keep map visibility rules explicit and centralized where possible
+- keep RF rasters below labels/nodes, use nearest-neighbour rendering, and
+  validate all metadata-provided relative tile paths before adding sources
 
 ## Documented lifecycle exception
 

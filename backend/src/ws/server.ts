@@ -326,11 +326,6 @@ function shouldSendMessage(msg: WSMessage, scope: ClientScope): boolean {
     return nodeMatchesScope(data.node_id, scope);
   }
 
-  if (msg.type === 'coverage_update') {
-    const data = msg.data as { node_id?: string };
-    return nodeMatchesScope(data.node_id, scope);
-  }
-
   if (msg.type === 'link_update') {
     const data = msg.data as { node_a_id?: string; node_b_id?: string };
     return nodeMatchesScope(data.node_a_id, scope) || nodeMatchesScope(data.node_b_id, scope);

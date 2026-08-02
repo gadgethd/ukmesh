@@ -24,11 +24,6 @@ export const NodePopupContent: React.FC<{
   links: NodeLink[] | null;
   /** Hide the internal name heading (the docked panel renders its own header). */
   hideName?: boolean;
-  coverageActive: boolean;
-  coverageLoading: boolean;
-  coverageMessage: string | null;
-  viewshedEnabled: boolean;
-  onToggleCoverage: (nodeId: string) => void;
   onFocusSamePrefix: (nodeId: string) => void;
   samePrefixCount: number;
   losActive: boolean;
@@ -43,11 +38,6 @@ export const NodePopupContent: React.FC<{
   lon,
   links,
   hideName = false,
-  coverageActive,
-  coverageLoading,
-  coverageMessage,
-  viewshedEnabled,
-  onToggleCoverage,
   onFocusSamePrefix,
   samePrefixCount,
   losActive,
@@ -143,24 +133,6 @@ export const NodePopupContent: React.FC<{
         <div className="node-popup__row"><span>Adverts</span><span>{props.advert_count ?? 'No samples'}</span></div>
       </TabPanel>
       <TabPanel id="path">
-      {viewshedEnabled && isRepeater && !props.is_prohibited && (
-        <div className="node-popup__row" style={{ marginTop: 6 }}>
-          <button
-            type="button"
-            className={`node-popup__coverage-btn${coverageActive ? ' node-popup__coverage-btn--active' : ''}`}
-            onClick={() => onToggleCoverage(props.node_id)}
-            disabled={coverageLoading}
-          >
-            {coverageLoading ? <LoadingIndicator label="Loading coverage..." variant="inline" /> : coverageActive ? 'Hide coverage' : 'Show coverage'}
-          </button>
-        </div>
-      )}
-      {viewshedEnabled && coverageMessage && (
-        <div className="node-popup__row">
-          <span>Coverage</span>
-          <span>{coverageMessage}</span>
-        </div>
-      )}
       {isRepeater && !props.is_prohibited && (
         <div className="node-popup__row" style={{ marginTop: 6 }}>
           <button

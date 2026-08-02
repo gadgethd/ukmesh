@@ -22,45 +22,11 @@ export type ObserverAction =
   | 'notification-sent'
   | 'notification-failed';
 
-export type QueueName = 'viewshed' | 'link-v3';
+export type QueueName = 'link-v3';
 export type QueueAction = 'requeue' | 'purge' | 'repair';
 export type PlannedPublicationAction = 'publish' | 'unpublish';
 
-export const VIEWSHED_V2_KEYS = {
-  ready: 'meshcore:viewshed:v2:ready',
-  payloads: 'meshcore:viewshed:v2:payloads',
-  states: 'meshcore:viewshed:v2:states',
-  attempts: 'meshcore:viewshed:v2:attempts',
-  bytes: 'meshcore:viewshed:v2:bytes',
-  pending: 'meshcore:viewshed_pending',
-  tokens: 'meshcore:viewshed:v2:tokens',
-  leases: 'meshcore:viewshed:v2:leases',
-  dead: 'meshcore:viewshed:v2:dead',
-  deadReasons: 'meshcore:viewshed:v2:dead_reasons',
-  counters: 'meshcore:viewshed:v2:counters',
-  events: 'meshcore:viewshed:v2:events',
-  enqueued: 'meshcore:viewshed:v2:enqueued',
-  dirty: 'meshcore:viewshed:v2:dirty',
-  workerHeartbeat: 'meshcore:viewshed:worker_heartbeat',
-} as const;
-
-const VIEWSHED_QUEUE_MAX = boundedPositiveInt(
-  process.env['VIEWSHED_QUEUE_MAX'],
-  1_000,
-  10_000,
-);
-const VIEWSHED_QUEUE_MAX_BYTES = boundedPositiveInt(
-  process.env['VIEWSHED_QUEUE_MAX_BYTES'],
-  16 * 1024 * 1024,
-  256 * 1024 * 1024,
-);
-
 let operatorRedis: Redis | null = null;
-
-function boundedPositiveInt(value: string | undefined, fallback: number, max: number): number {
-  const parsed = Number(value ?? fallback);
-  return Math.min(max, Math.max(1, Number.isFinite(parsed) ? Math.floor(parsed) : fallback));
-}
 
 function redis(): Redis {
   if (!operatorRedis) {
@@ -498,25 +464,6 @@ type QueueDescriptor = {
 };
 
 const QUEUES: Record<QueueName, QueueDescriptor> = {
-  viewshed: {
-    name: 'viewshed',
-    ready: VIEWSHED_V2_KEYS.ready,
-    payloads: VIEWSHED_V2_KEYS.payloads,
-    states: VIEWSHED_V2_KEYS.states,
-    attempts: VIEWSHED_V2_KEYS.attempts,
-    bytes: VIEWSHED_V2_KEYS.bytes,
-    leases: VIEWSHED_V2_KEYS.leases,
-    tokens: VIEWSHED_V2_KEYS.tokens,
-    dead: VIEWSHED_V2_KEYS.dead,
-    deadReasons: VIEWSHED_V2_KEYS.deadReasons,
-    enqueued: VIEWSHED_V2_KEYS.enqueued,
-    counters: VIEWSHED_V2_KEYS.counters,
-    events: VIEWSHED_V2_KEYS.events,
-    heartbeat: VIEWSHED_V2_KEYS.workerHeartbeat,
-    maxJobs: VIEWSHED_QUEUE_MAX,
-    maxBytes: VIEWSHED_QUEUE_MAX_BYTES,
-    cleanupSet: VIEWSHED_V2_KEYS.pending,
-  },
   'link-v3': {
     name: 'link-v3',
     ready: LINK_V3_KEYS.ready,
@@ -590,7 +537,7 @@ async function queueSnapshot(descriptor: QueueDescriptor): Promise<Record<string
 }
 
 export async function loadOperationsDashboard(query: QueryFn): Promise<Record<string, unknown>> {
-  const [analysisRuns, plannedCoverage, plannedNodes, mlLearner, calibration, viewshed, link] = await Promise.all([
+  const [analysisRuns, plannedCoverage, plannedNodes, mlLearner, calibration, link] = await Promise.all([
     query(
       `SELECT run_id, workload, scope, status, checkpoint, total_items,
               lease_owner, lease_expires_at, run_deadline_at, attempt,
@@ -630,12 +577,11 @@ export async function loadOperationsDashboard(query: QueryFn): Promise<Record<st
         ORDER BY versions.trained_at DESC
         LIMIT 40`,
     ),
-    queueSnapshot(QUEUES.viewshed),
     queueSnapshot(QUEUES['link-v3']),
   ]);
   return {
     generatedAt: new Date().toISOString(),
-    queues: [viewshed, link],
+    queues: [link],
     analysisRuns: analysisRuns.rows,
     plannedCoverageJobs: plannedCoverage.rows,
     plannedNodes,

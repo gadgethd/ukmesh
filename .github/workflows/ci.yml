@@ -61,7 +61,6 @@ jobs:
       - run: npm test
       - run: npm run test:analysis-integration
       - run: npm run test:ingest-integration
-      - run: npm run test:queue-integration
       - run: npm run build
 
   frontend:
@@ -123,7 +122,7 @@ jobs:
         run: |
           docker build -f viewshed-worker/Dockerfile -t meshcore-viewshed-worker:test viewshed-worker
           docker build -f ml-path-learner/Dockerfile -t meshcore-ml-path-learner:test ml-path-learner
-      - name: Test viewshed worker in its GDAL image
+      - name: Test retained observed-link worker image
         run: |
           trap 'docker rm -f link-queue-test-redis >/dev/null 2>&1 || true' EXIT
           docker run -d --name link-queue-test-redis \
@@ -143,6 +142,28 @@ jobs:
             meshcore-viewshed-worker:test /app/tests/benchmark_rf.py --rays 12 --steps 1000
           docker run --rm --network none --entrypoint python \
             meshcore-viewshed-worker:test /app/tests/benchmark_rf_radial.py --rays 72 --steps 500 --repeats 1
+      - name: Test HopReach parity and progressive publication
+        run: |
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -v "$PWD:/work" \
+            -w /work/third_party/hopreach \
+            golang:1.23-bookworm \
+            go test ./...
+      - name: Enforce HopReach UK performance release gate
+        run: |
+          profile_dir="$(mktemp -d)"
+          trap 'rm -rf "$profile_dir"' EXIT
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e HOPREACH_PROFILE_DIR=/profiles \
+            -v "$PWD:/work" \
+            -v "$profile_dir:/profiles" \
+            -w /work \
+            golang:1.23-bookworm \
+            /work/scripts/benchmark-hopreach.sh
       - name: Test ML worker in its image
         run: |
           docker run --rm --network host --entrypoint python \
@@ -196,7 +217,6 @@ jobs:
             docker compose \
               --project-name "$project" \
               --profile dev \
-              --profile viewshed \
               down --volumes --remove-orphans
           }
           trap cleanup EXIT
@@ -217,14 +237,12 @@ jobs:
           docker compose \
             --project-name "$project" \
             --profile dev \
-            --profile viewshed \
             build \
               backend app-ukmesh website-ukmesh mesh-health-check \
-              mosquitto-reloader link-worker
+              mosquitto-reloader link-worker hopreach
           docker compose \
             --project-name "$project" \
             --profile dev \
-            --profile viewshed \
             up --detach --no-build --wait --wait-timeout 360
           health_session_id="$(
             curl --fail --silent --request POST \

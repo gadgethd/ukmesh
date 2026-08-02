@@ -15,18 +15,11 @@ type PendingLinkUpdate = {
   count_a_to_b?: number;
   count_b_to_a?: number;
 };
-type PendingCoverageUpdate = {
-  node_id: string;
-  geom: { type: string; coordinates: unknown };
-  strength_geoms?: Partial<Record<'green' | 'amber' | 'red', { type: string; coordinates: unknown }>>;
-};
-
 interface PendingBatches {
   packets: PendingPacket[];
   nodeUpdates: PendingNodeUpdate[];
   nodeUpserts: PendingNodeUpsert[];
   linkUpdates: PendingLinkUpdate[];
-  coverageUpdates: PendingCoverageUpdate[];
 }
 
 type InitialState = {
@@ -55,8 +48,6 @@ export type RealtimeMessageActions = {
   handleNodeUpdateBatch?: (data: PendingNodeUpdate[]) => void;
   handleNodeUpsert: (data: PendingNodeUpsert) => void;
   handleNodeUpsertBatch?: (data: PendingNodeUpsert[]) => void;
-  handleCoverageUpdate: (data: PendingCoverageUpdate) => void;
-  handleCoverageUpdateBatch?: (data: PendingCoverageUpdate[]) => void;
   applyInitialViablePairs: (pairs?: [string, string][]) => void;
   applyInitialViableLinks: (links?: ViableLinkSnapshot[]) => void;
   applyLinkUpdate: (update: PendingLinkUpdate) => void;
@@ -70,7 +61,6 @@ function emptyPending(): PendingBatches {
     nodeUpdates: [],
     nodeUpserts: [],
     linkUpdates: [],
-    coverageUpdates: [],
   };
 }
 
@@ -121,14 +111,6 @@ export function createRealtimeMessageCoordinator(
       else batch.linkUpdates.forEach(actions.applyLinkUpdate);
     }
 
-    const latestCoverage = new Map<string, PendingCoverageUpdate>();
-    for (const update of batch.coverageUpdates) latestCoverage.set(update.node_id, update);
-    const coverage = Array.from(latestCoverage.values());
-    if (coverage.length > 0) {
-      if (actions.handleCoverageUpdateBatch) actions.handleCoverageUpdateBatch(coverage);
-      else coverage.forEach(actions.handleCoverageUpdate);
-    }
-
     if (batch.packets.length > 0) actions.onPacketObserved?.(batch.packets.length);
   };
 
@@ -161,7 +143,6 @@ export function createRealtimeMessageCoordinator(
     }
     if (msg.type === 'node_update') pending.nodeUpdates.push(msg.data as PendingNodeUpdate);
     else if (msg.type === 'node_upsert') pending.nodeUpserts.push(msg.data as PendingNodeUpsert);
-    else if (msg.type === 'coverage_update') pending.coverageUpdates.push(msg.data as PendingCoverageUpdate);
     else if (msg.type === 'link_update') pending.linkUpdates.push(msg.data as PendingLinkUpdate);
     else return;
 

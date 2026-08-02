@@ -13,6 +13,7 @@ type MobileControlsProps = {
   onFiltersChange: (next: Filters) => void;
   activeMode: MapMode | null;
   viewshedEnabled: boolean;
+  rfCoverageEnabled: boolean;
   heatmapEnabled: boolean;
   onModeChange: (mode: MapMode) => void;
   onShare: () => void;
@@ -28,6 +29,7 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
   onFiltersChange,
   activeMode,
   viewshedEnabled,
+  rfCoverageEnabled,
   heatmapEnabled,
   onModeChange,
   onShare,
@@ -105,7 +107,7 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
       </button>}
       {!fullScreenMap && <div className={`mobile-filter-wrap${showFilters ? '' : ' mobile-filter-wrap--hidden'}`}>
         <div className="mobile-filter-grid">
-          {visibleFilterRows(viewshedEnabled, heatmapEnabled).map(({ key, label, color, hollow }) => (
+          {visibleFilterRows(viewshedEnabled, heatmapEnabled, rfCoverageEnabled).map(({ key, label, color, hollow }) => (
             <button
               type="button"
               key={key}

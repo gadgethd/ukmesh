@@ -66,7 +66,7 @@ groups:
     interval: 15s
     rules:
       - alert: QueueAgeHigh
-        expr: max(meshcore_link_queue_oldest_age_seconds or meshcore_viewshed_queue_oldest_age_seconds) > 600
+        expr: meshcore_link_queue_oldest_age_seconds > 600
         for: 5m
         labels:
           severity: warning
@@ -76,7 +76,7 @@ groups:
           runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#queueagehigh
 
       - alert: QueueCapacityHigh
-        expr: meshcore_link_queue_active_jobs > 4000 or meshcore_link_queue_active_bytes > 53687091 or meshcore_viewshed_queue_depth > 800 or meshcore_viewshed_queue_payload_bytes > 13421772
+        expr: meshcore_link_queue_active_jobs > 4000 or meshcore_link_queue_active_bytes > 53687091
         for: 5m
         labels:
           severity: critical
@@ -86,7 +86,7 @@ groups:
           runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#queuecapacityhigh
 
       - alert: DeadJobsPresent
-        expr: meshcore_link_queue_dead_jobs > 0 or meshcore_viewshed_queue_dead_jobs > 0
+        expr: meshcore_link_queue_dead_jobs > 0
         for: 5m
         labels:
           severity: warning
@@ -115,7 +115,7 @@ groups:
           runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#healthworkerheartbeatstale
 
       - alert: WorkerMetricsDown
-        expr: up{job="meshcore-workers",role!="viewshed"} == 0
+        expr: up{job="meshcore-workers"} == 0
         for: 3m
         labels:
           severity: critical
@@ -125,7 +125,7 @@ groups:
           runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#workermetricsdown
 
       - alert: ActiveQueueWorkerHeartbeatStale
-        expr: (meshcore_link_queue_active_jobs > 0 and on() meshcore_worker_heartbeat_age_seconds{worker="link"} > 180) or (meshcore_viewshed_queue_depth > 0 and on() meshcore_worker_heartbeat_age_seconds{worker="viewshed"} > 180)
+        expr: meshcore_link_queue_active_jobs > 0 and on() meshcore_worker_heartbeat_age_seconds{worker="link"} > 180
         for: 3m
         labels:
           severity: critical

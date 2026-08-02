@@ -32,16 +32,6 @@ function nodeOpacityExpression(colors: OverlayColors): maplibregl.ExpressionSpec
   ];
 }
 
-function bandColorExpression(colors: OverlayColors): maplibregl.ExpressionSpecification {
-  return [
-    'match', ['get', 'band'],
-    'green', colors.coverageGood,
-    'amber', colors.coverageMarginal,
-    'red', colors.coveragePoor,
-    colors.coverageGood,
-  ];
-}
-
 function plannedBandColorExpression(colors: OverlayColors): maplibregl.ExpressionSpecification {
   return [
     'match', ['get', 'band'],
@@ -67,7 +57,6 @@ export function applyMapOverlayTheme(map: maplibregl.Map, theme: MapTheme): void
   setPaint('node-dots-selected', 'circle-color', colors.selected);
   setPaint('node-dots-selected', 'circle-stroke-color', colors.selectedStroke);
   setPaint('privacy-rings-layer', 'line-color', colors.privacy);
-  setPaint('coverage-fill', 'fill-color', bandColorExpression(colors));
   setPaint('clash-lines-layer', 'line-color', colors.clashLine);
   setPaint('planned-coverage-fill', 'fill-color', plannedBandColorExpression(colors));
   setPaint('planned-coverage-outline', 'line-color', colors.plannedOutline);
@@ -172,25 +161,6 @@ export function installMapSourcesAndLayers(
           'line-color': ['get', 'color'],
           'line-width': ['get', 'width'],
           'line-opacity': ['get', 'opacity'],
-        },
-      });
-
-      // ── Coverage source + layer ────────────────────────────────────────────
-      map.addSource('coverage', { type: 'geojson', data: EMPTY_FC });
-      map.addLayer({
-        id: 'coverage-fill',
-        type: 'fill',
-        source: 'coverage',
-        layout: { visibility: 'none' },
-        paint: {
-          'fill-color': bandColorExpression(colors),
-          'fill-opacity': [
-            'match', ['get', 'band'],
-            'green', 0.22,
-            'amber', 0.16,
-            'red', 0.10,
-            0.18,
-          ],
         },
       });
 

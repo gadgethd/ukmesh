@@ -15,8 +15,6 @@ import apiRoutes from './api/routes.js';
 import { initSpamMessageAnalyzer, stopSpamMessageAnalyzer } from './spam/analyzer.js';
 import {
   closeQueuePublisher,
-  isViewshedEligibleCoordinate,
-  queueViewshedJob,
   queueLinkJob,
   stopQueueAdmission,
 } from './queue/publisher.js';
@@ -42,7 +40,7 @@ import {
 } from './metrics.js';
 import { closeOperatorOperations } from './operations/operatorOperations.js';
 import { createGlobalApiLimiter } from './api/bootstrap/limiters.js';
-import { getCoverageModelVersion } from './features.js';
+import { createHopReachCompatibilityRoutes } from './api/hopreachCompatibility.js';
 
 const ALLOWED_ORIGINS = (process.env['ALLOWED_ORIGINS'] ?? '')
   .split(',')
@@ -51,12 +49,10 @@ const ALLOWED_ORIGINS = (process.env['ALLOWED_ORIGINS'] ?? '')
 
 const PORT = Number(process.env['PORT'] ?? 3000);
 const METRICS_PORT = Number(process.env['METRICS_PORT'] ?? 9091);
-const COVERAGE_MODEL_VERSION = getCoverageModelVersion();
 const HSTS_HEADER = 'max-age=31536000; includeSubDomains; preload';
 const MQTT_INGEST_ENABLED = !['0', 'false', 'no'].includes(
   String(process.env['MQTT_INGEST_ENABLED'] ?? 'true').trim().toLowerCase(),
 );
-const COVERAGE_STARTUP_BACKFILL_ENABLED = process.env['COVERAGE_STARTUP_BACKFILL_ENABLED'] === '1';
 const WS_ENABLED = process.env['WS_ENABLED'] !== '0';
 const SHUTDOWN_DEADLINE_MS = Math.min(
   30_000,
@@ -162,35 +158,6 @@ async function main() {
   await initOwnerAuthDb();
   await startOwnerAuthorizationReconciler();
 
-  // Queue viewshed jobs for any node with a position but no coverage yet
-  // (catches nodes that existed before the worker was added)
-  if (COVERAGE_STARTUP_BACKFILL_ENABLED) {
-    const uncovered = await query<{ node_id: string; lat: number; lon: number }>(
-      `SELECT n.node_id, n.lat, n.lon FROM nodes n
-       LEFT JOIN node_coverage nc ON n.node_id = nc.node_id
-       WHERE n.lat IS NOT NULL AND n.lon IS NOT NULL
-         AND n.lat BETWEEN 49.5 AND 61.5
-         AND n.lon BETWEEN -8.5 AND 2.5
-         AND NOT (ABS(n.lat) < 1e-9 AND ABS(n.lon) < 1e-9)
-         AND (nc.node_id IS NULL OR nc.model_version < $1 OR n.elevation_m IS NULL)
-         AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
-         AND (n.role IS NULL OR n.role = 2)`,
-      [COVERAGE_MODEL_VERSION],
-    );
-    if (uncovered.rows.length > 0) {
-      console.log(`[app] queuing ${uncovered.rows.length} node(s) for viewshed (model v${COVERAGE_MODEL_VERSION})`);
-      // Jobs are pushed here but the Redis pub client isn't ready yet —
-      // defer until after initWebSocketServer wires up the Redis client.
-      process.nextTick(() => {
-        for (const row of uncovered.rows) {
-          queueViewshedJob(row.node_id, row.lat, row.lon);
-        }
-      });
-    }
-  } else {
-    console.log('[app] startup viewshed backfill disabled');
-  }
-
   // 2. Start the audit-only MQTT connection monitor.
   if (MQTT_INGEST_ENABLED) {
     startMqttConnectionMonitor();
@@ -219,12 +186,6 @@ async function main() {
   onNodeSeen((nodeId, meta) => broadcastNodeUpdate(nodeId, meta));
   onNodeUpsert((node) => {
     broadcastNodeUpsert(node);
-    // Queue a viewshed job only for visible repeaters (role=2 or unknown)
-    const isHidden      = typeof node.name === 'string' && node.name.includes('🚫');
-    const isNonRepeater = typeof node.role === 'number' && node.role !== 2;
-    if (!isHidden && !isNonRepeater && typeof node.lat === 'number' && typeof node.lon === 'number' && isViewshedEligibleCoordinate(node.lat, node.lon)) {
-      queueViewshedJob(node.node_id as string, node.lat, node.lon, node['coordinates_changed'] === true);
-    }
   });
 
   // 3. Express app
@@ -236,7 +197,7 @@ async function main() {
   // private-range trust lets a direct container or host caller spoof quotas.
   app.set('trust proxy', (ip: string) => isTrustedProxyPeer(ip));
 
-  // Gzip compression for all responses — critical for large payloads like /api/coverage (~26 MB)
+  // Gzip compression for bounded JSON and static responses.
   app.use(compression());
 
   // CORS — allow only our own domains for browser cross-origin requests
@@ -259,6 +220,15 @@ async function main() {
     );
     next();
   });
+
+  // Internal CoreScope-shaped compatibility API for the HopReach calculator.
+  // Mounted outside /api so the public Nginx proxy never exposes it. Its one
+  // bulk calibration request needs a larger, still-bounded JSON body.
+  app.use(
+    '/hopreach',
+    express.json({ limit: '512kb' }),
+    createHopReachCompatibilityRoutes(query),
+  );
 
   app.use(express.json({ limit: '50kb' }));
 

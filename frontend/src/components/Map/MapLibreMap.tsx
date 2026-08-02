@@ -3,7 +3,8 @@
  *
  * Node dots are rendered as a MapLibre GeoJSON circle layer (GPU, no React fibers).
  * Pan/zoom is pure GPU — zero JS work on move events.
- * Coverage, hex-clash lines, and privacy rings are also GeoJSON layers.
+ * RF coverage is a separate HopReach image overlay; this component owns
+ * nodes, links, hex-clash lines, and privacy rings.
  * Click hit-testing uses MapLibre's built-in R-tree spatial index.
  * deck.gl overlays are integrated via @deck.gl/mapbox (MapboxOverlay).
  */
@@ -12,7 +13,6 @@ import { createPortal } from 'react-dom';
 import maplibregl from 'maplibre-gl';
 import type { MeshNode } from '../../hooks/useNodes.js';
 import { nodeStore } from '../../hooks/useNodes.js';
-import { coverageStore, type NodeCoverage } from '../../hooks/useCoverage.js';
 import { linkStateStore } from '../../hooks/useLinkState.js';
 import type { HiddenMaskGeometry } from '../../utils/pathing.js';
 import {
@@ -37,7 +37,6 @@ import {
   TERRAIN_DEM_SOURCE,
 } from './mapConfig.js';
 import {
-  buildCoverageGeoJSON,
   buildHiddenMask,
   buildLinksGeoJSON,
   buildNodeGeoJSON,
@@ -67,16 +66,10 @@ import type {
 } from './types.js';
 import { sampleElevationAt } from '../../utils/terrainSampler.js';
 import { computeCustomLos } from '../../utils/customLos.js';
-import { ApiResponseError, fetchJson, withScopeParams, type ApiScope } from '../../utils/api.js';
+import { fetchJson, withScopeParams, type ApiScope } from '../../utils/api.js';
 import { ScopedCache } from '../../utils/scopedCache.js';
-import { createVisibilityPoller } from '../../hooks/useVisibilityPoll.js';
 
 const NODE_DOCK_RIGHT_PADDING = 372;
-const COVERAGE_PAGE_LIMIT = 25;
-const COVERAGE_VIEWPORT_MAX_ITEMS = 25;
-const COVERAGE_MAX_VIEWPORT_SPAN_DEGREES = 20;
-const COVERAGE_VIEWPORT_MIN_REFRESH_MS = 10_000;
-
 function mapPaddingForNode(selected: string | null): { top: number; right: number; bottom: number; left: number } {
   const desktop = window.matchMedia('(min-width: 641px)').matches;
   return {
@@ -119,7 +112,6 @@ export function MapLibreMap({
   inferredActiveNodeIds,
   showLinks,
   showTerrain,
-  showCoverage,
   showClientNodes,
   showHexClashes,
   maxHexClashHops,
@@ -139,20 +131,12 @@ export function MapLibreMap({
   const mapRef = useRef<maplibregl.Map | null>(null);
   const mapLoadedRef = useRef(false);
   const nodesRef = useRef(nodeStore.getState().nodes);
-  const coverageRef = useRef(coverageStore.getState().coverage);
-  const viewportCoverageRef = useRef<NodeCoverage[]>([]);
-  const selectedCoverageRef = useRef<NodeCoverage | null>(null);
-  const coverageRequestRef = useRef<AbortController | null>(null);
-  const viewportCoverageRequestRef = useRef<AbortController | null>(null);
-  const viewportCoverageTimerRef = useRef<number | null>(null);
-  const lastViewportCoverageRequestAtRef = useRef(0);
   const viablePairsRef = useRef(linkStateStore.getState().viablePairsArr);
   const linkMetricsRef = useRef(linkStateStore.getState().linkMetrics);
   const inferredNodesRef = useRef(inferredNodes);
   const inferredActiveNodeIdsRef = useRef(inferredActiveNodeIds);
   const showLinksRef = useRef(showLinks);
   const showTerrainRef = useRef(showTerrain);
-  const showCoverageRef = useRef(showCoverage);
   const showClientNodesRef = useRef(showClientNodes);
   const showHexClashesRef = useRef(showHexClashes);
   const maxHexClashHopsRef = useRef(maxHexClashHops);
@@ -173,7 +157,6 @@ export function MapLibreMap({
   });
   const selectedNodeIdRef = useRef<string | null>(selectedNodeId);
   const onNodeSelectRef = useRef(onNodeSelect);
-  const refreshViewportCoverageRef = useRef<() => void>(() => undefined);
   onNodeSelectRef.current = onNodeSelect;
 
   const customLosNodeClickedRef = useRef(false);
@@ -196,9 +179,6 @@ export function MapLibreMap({
 
   const [plannedPopupState, setPlannedPopupState] = useState<{ planId: string; lngLat: maplibregl.LngLatLike } | null>(null);
   const [popupLinks, setPopupLinks] = useState<NodeLink[] | null>(null);
-  const [selectedCoverageNodeId, setSelectedCoverageNodeId] = useState<string | null>(null);
-  const [coverageLoadingNodeId, setCoverageLoadingNodeId] = useState<string | null>(null);
-  const [coverageMessage, setCoverageMessage] = useState<string | null>(null);
   const [focusedPrefix, setFocusedPrefix] = useState<string | null>(null);
   const [focusedNodeId, setFocusedNodeId] = useState<string | null>(null);
   const [focusedPrefixNodeIds, setFocusedPrefixNodeIds] = useState<Set<string> | null>(null);
@@ -213,23 +193,6 @@ export function MapLibreMap({
   useEffect(() => {
     void import('maplibre-gl/dist/maplibre-gl.css');
   }, []);
-
-  useEffect(() => {
-    coverageRequestRef.current?.abort();
-    coverageRequestRef.current = null;
-    viewportCoverageRequestRef.current?.abort();
-    viewportCoverageRequestRef.current = null;
-    if (viewportCoverageTimerRef.current !== null) {
-      window.clearTimeout(viewportCoverageTimerRef.current);
-      viewportCoverageTimerRef.current = null;
-    }
-    lastViewportCoverageRequestAtRef.current = 0;
-    viewportCoverageRef.current = [];
-    selectedCoverageRef.current = null;
-    setSelectedCoverageNodeId(null);
-    setCoverageLoadingNodeId(null);
-    setCoverageMessage(null);
-  }, [requestScopeKey]);
 
   // -- Map theme (light/dark) -------------------------------------------------
   useEffect(() => {
@@ -424,76 +387,6 @@ export function MapLibreMap({
 
   // -- Planned repeater placement --------------------------------------------
 
-  const pollPlannedCoverage = useCallback((planId: string) => {
-    if (!viewshedEnabledRef.current) return;
-    plannedPollRefs.current.get(planId)?.stop();
-
-    const deadlineAt = Date.now() + 2 * 60_000;
-    let deadlineTimer: number | null = null;
-    let poller: ReturnType<typeof createVisibilityPoller> | null = null;
-    let stopped = false;
-    const finish = (patch: Partial<PlannedRepeater>) => {
-      if (stopped) return;
-      stopped = true;
-      if (deadlineTimer !== null) window.clearTimeout(deadlineTimer);
-      poller?.stop();
-      plannedPollRefs.current.delete(planId);
-      useOverlayStore.getState().updatePlannedRepeater(planId, patch);
-    };
-    const handle = {
-      stop: () => {
-        if (stopped) return;
-        stopped = true;
-        if (deadlineTimer !== null) window.clearTimeout(deadlineTimer);
-        poller?.stop();
-      },
-    };
-    plannedPollRefs.current.set(planId, handle);
-
-    poller = createVisibilityPoller({
-      poll: async (signal) => {
-        if (Date.now() >= deadlineAt) {
-          finish({ status: 'error' });
-          return;
-        }
-        const data = await fetchJson<{
-          status?: unknown;
-          coverage?: PlannedRepeater['coverage'];
-        }>(
-          withScopeParams(`/api/coverage/planned/${encodeURIComponent(planId)}`, requestScope),
-          { cache: 'no-store', signal },
-          { timeoutMs: 8_000, maxBytes: 8 * 1024 * 1024 },
-        );
-        if (signal.aborted || stopped) return;
-        if (data.status === 'ready' && data.coverage) {
-          finish({ status: 'ready', coverage: data.coverage });
-        } else if (data.status === 'failed') {
-          finish({ status: 'error' });
-        } else if (data.status !== 'queued' && data.status !== 'processing') {
-          throw new Error('Planned coverage returned an unknown state');
-        }
-      },
-      intervalMs: 2_000,
-      timeoutMs: 8_000,
-      maxBackoffMs: 8_000,
-      jitterRatio: 0.1,
-      isVisible: () => document.visibilityState === 'visible',
-      subscribeVisibility: (listener) => {
-        document.addEventListener('visibilitychange', listener);
-        return () => document.removeEventListener('visibilitychange', listener);
-      },
-      onError: (pollError) => {
-        if (
-          Date.now() >= deadlineAt
-          || (pollError instanceof ApiResponseError && [404, 410].includes(pollError.status))
-        ) {
-          finish({ status: 'error' });
-        }
-      },
-    });
-    deadlineTimer = window.setTimeout(() => finish({ status: 'error' }), Math.max(1, deadlineAt - Date.now()));
-  }, [requestScope]);
-
   const handleRemovePlannedRepeater = useCallback((planId: string) => {
     const poll = plannedPollRefs.current.get(planId);
     if (poll) {
@@ -504,13 +397,7 @@ export function MapLibreMap({
     plannedLosAppliedRef.current.delete(planId);
     useOverlayStore.getState().removeLosNode(planId);
     useOverlayStore.getState().removePlannedRepeater(planId);
-    if (viewshedEnabledRef.current) {
-      void fetch(
-        withScopeParams(`/api/coverage/planned/${encodeURIComponent(planId)}`, requestScope),
-        { method: 'DELETE' },
-      ).catch(() => {});
-    }
-  }, [requestScope]);
+  }, []);
 
   // Rebuild the planned-link lines from the current plans + live node positions,
   // and toggle their visibility with the global Links toggle.
@@ -604,24 +491,11 @@ export function MapLibreMap({
   }, [viewshedEnabled, plannedRepeaters, buildPlannedLosProfiles]);
 
   const placePlannedRepeater = useCallback(async (lat: number, lon: number) => {
-    if (!viewshedEnabledRef.current) return;
-    try {
-      const data = await fetchJson<{ plan_id: string }>(
-        withScopeParams('/api/coverage/planned', requestScope),
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ lat, lon }),
-        },
-        { timeoutMs: 15_000, maxBytes: 64 * 1024 },
-      );
-      if (typeof data.plan_id !== 'string' || !data.plan_id) return;
-      useOverlayStore.getState().addPlannedRepeater({ id: data.plan_id, lat, lon, status: 'queued' });
-      pollPlannedCoverage(data.plan_id);
-    } catch {
-      // non-fatal
-    }
-  }, [pollPlannedCoverage, requestScope]);
+    void lat;
+    void lon;
+    // Retired with the legacy viewshed planner. Kept as a no-op until the
+    // dormant planner UI is removed after the rollback window.
+  }, []);
 
   // Keep handler refs in sync for map event handlers
   useEffect(() => {
@@ -664,21 +538,15 @@ export function MapLibreMap({
 
   // Clean up all planned repeaters, pollers, and LOS overlays on unmount
   useEffect(() => () => {
-    for (const [planId, poll] of plannedPollRefs.current) {
+    for (const [, poll] of plannedPollRefs.current) {
       poll.stop();
-      if (viewshedEnabledRef.current) {
-        void fetch(
-          withScopeParams(`/api/coverage/planned/${encodeURIComponent(planId)}`, requestScope),
-          { method: 'DELETE' },
-        ).catch(() => {});
-      }
     }
     plannedPollRefs.current.clear();
     for (const planId of plannedLosAppliedRef.current) {
       useOverlayStore.getState().removeLosNode(planId);
     }
     plannedLosAppliedRef.current.clear();
-  }, [requestScope]);
+  }, []);
 
   // Cursor crosshair while in custom LOS mode or plan repeater mode
   useEffect(() => {
@@ -730,12 +598,10 @@ export function MapLibreMap({
       nodes: false,
       privacy: false,
       links: false,
-      coverage: false,
       clash: false,
       plannedLinks: false,
     };
     const nodes = nodesRef.current;
-    const coverage = viewshedEnabled ? coverageRef.current : [];
     const viablePairsArr = viablePairsRef.current;
     const linkMetrics = linkMetricsRef.current;
     const currentPathNodeIds = pathNodeIdsRef.current;
@@ -743,11 +609,10 @@ export function MapLibreMap({
     const currentHiddenCoordMask = maskDirty ? buildHiddenMask(nodes) : hiddenCoordMaskRef.current;
     if (maskDirty) hiddenCoordMaskRef.current = currentHiddenCoordMask;
 
-    const clashDirty = dirty.clash || dirty.nodes || dirty.coverage || dirty.links;
+    const clashDirty = dirty.clash || dirty.nodes || dirty.links;
     const clash = clashDirty
       ? computeClashData(
           nodes,
-          coverage,
           viablePairsArr,
           linkMetrics,
           showHexClashesRef.current,
@@ -796,32 +661,6 @@ export function MapLibreMap({
       mapRef.current.setLayoutProperty('viable-links-layer', 'visibility', showLinksRef.current ? 'visible' : 'none');
     }
 
-    if (dirty.coverage || clashDirty) {
-      const visibleCoverage = new Map<string, NodeCoverage>();
-      if (showCoverageRef.current) {
-        for (const item of viewportCoverageRef.current) visibleCoverage.set(item.node_id, item);
-        const bounds = mapRef.current.getBounds();
-        for (const item of coverageRef.current) {
-          const node = nodesRef.current.get(item.node_id);
-          if (
-            node && hasCoords(node)
-            && node.lon >= bounds.getWest() - 2 && node.lon <= bounds.getEast() + 2
-            && node.lat >= bounds.getSouth() - 2 && node.lat <= bounds.getNorth() + 2
-          ) visibleCoverage.set(item.node_id, item);
-        }
-      }
-      if (selectedCoverageRef.current) {
-        visibleCoverage.set(selectedCoverageRef.current.node_id, selectedCoverageRef.current);
-      }
-      const coverageVisible = viewshedEnabled && visibleCoverage.size > 0 && !clash.clashModeActive;
-      const coverageGeoJSON = coverageVisible
-        ? buildCoverageGeoJSON(Array.from(visibleCoverage.values()))
-        : EMPTY_FC;
-      (mapRef.current.getSource('coverage') as maplibregl.GeoJSONSource | undefined)?.setData(coverageGeoJSON);
-      mapRef.current.setLayoutProperty('coverage-fill', 'visibility',
-        coverageVisible ? 'visible' : 'none');
-    }
-
     if (clashDirty) {
       setClashPathLines(clash.clashModeActive ? clash.clashPathLines : []);
       (mapRef.current.getSource('clash-lines') as maplibregl.GeoJSONSource | undefined)?.setData(EMPTY_FC);
@@ -843,90 +682,6 @@ export function MapLibreMap({
     }, interval);
   }, [refreshMapSources]);
 
-  const refreshViewportCoverage = useCallback(() => {
-    if (viewportCoverageTimerRef.current !== null) {
-      window.clearTimeout(viewportCoverageTimerRef.current);
-      viewportCoverageTimerRef.current = null;
-    }
-    viewportCoverageRequestRef.current?.abort();
-    viewportCoverageRequestRef.current = null;
-    if (!viewshedEnabledRef.current || !showCoverageRef.current || !mapLoadedRef.current || !mapRef.current) {
-      viewportCoverageRef.current = [];
-      scheduleRefresh({ coverage: true });
-      return;
-    }
-
-    const refreshDelay = COVERAGE_VIEWPORT_MIN_REFRESH_MS
-      - (Date.now() - lastViewportCoverageRequestAtRef.current);
-    if (refreshDelay > 0) {
-      viewportCoverageTimerRef.current = window.setTimeout(
-        () => refreshViewportCoverageRef.current(),
-        refreshDelay,
-      );
-      return;
-    }
-    lastViewportCoverageRequestAtRef.current = Date.now();
-
-    const bounds = mapRef.current.getBounds();
-    const west = Math.max(-180, bounds.getWest());
-    const east = Math.min(180, bounds.getEast());
-    const south = Math.max(-90, bounds.getSouth());
-    const north = Math.min(90, bounds.getNorth());
-    if (west >= east || south >= north) return;
-
-    const lonParts = Math.max(1, Math.ceil((east - west) / COVERAGE_MAX_VIEWPORT_SPAN_DEGREES));
-    const latParts = Math.max(1, Math.ceil((north - south) / COVERAGE_MAX_VIEWPORT_SPAN_DEGREES));
-    const controller = new AbortController();
-    viewportCoverageRequestRef.current = controller;
-
-    type CoveragePage = {
-      items?: Array<NodeCoverage & { truncated?: boolean }>;
-      page?: { hasMore?: boolean; nextCursor?: string | null };
-    };
-
-    void (async () => {
-      const items = new Map<string, NodeCoverage>();
-      for (let latIndex = 0; latIndex < latParts && items.size < COVERAGE_VIEWPORT_MAX_ITEMS; latIndex += 1) {
-        const minLat = south + ((north - south) * latIndex) / latParts;
-        const maxLat = south + ((north - south) * (latIndex + 1)) / latParts;
-        for (let lonIndex = 0; lonIndex < lonParts && items.size < COVERAGE_VIEWPORT_MAX_ITEMS; lonIndex += 1) {
-          const minLon = west + ((east - west) * lonIndex) / lonParts;
-          const maxLon = west + ((east - west) * (lonIndex + 1)) / lonParts;
-          let cursor: string | null = null;
-          do {
-            const params = new URLSearchParams({
-              bbox: `${minLon},${minLat},${maxLon},${maxLat}`,
-              limit: String(COVERAGE_PAGE_LIMIT),
-            });
-            if (cursor) params.set('cursor', cursor);
-            const payload = await fetchJson<CoveragePage>(
-              withScopeParams(`/api/coverage?${params}`, requestScope),
-              { cache: 'no-store', signal: controller.signal },
-              { timeoutMs: 15_000, maxBytes: 5 * 1024 * 1024 },
-            );
-            for (const item of payload.items ?? []) {
-              if (!item.truncated && item.geom && typeof item.node_id === 'string') {
-                items.set(item.node_id, item);
-              }
-              if (items.size >= COVERAGE_VIEWPORT_MAX_ITEMS) break;
-            }
-            cursor = payload.page?.hasMore ? payload.page.nextCursor ?? null : null;
-          } while (cursor && items.size < COVERAGE_VIEWPORT_MAX_ITEMS);
-        }
-      }
-      if (controller.signal.aborted || viewportCoverageRequestRef.current !== controller) return;
-      viewportCoverageRef.current = Array.from(items.values());
-    })().catch(() => {
-      if (controller.signal.aborted || viewportCoverageRequestRef.current !== controller) return;
-      viewportCoverageRef.current = [];
-    }).finally(() => {
-      if (viewportCoverageRequestRef.current !== controller) return;
-      viewportCoverageRequestRef.current = null;
-      scheduleRefresh({ coverage: true });
-    });
-  }, [requestScope, scheduleRefresh]);
-  refreshViewportCoverageRef.current = refreshViewportCoverage;
-
   useEffect(() => {
     const noteArcActivity = () => { lastArcActivityRef.current = Date.now(); };
     window.addEventListener('meshcore:packet-observed', noteArcActivity);
@@ -936,10 +691,6 @@ export function MapLibreMap({
   useEffect(() => {
     viewshedEnabledRef.current = viewshedEnabled;
     if (!viewshedEnabled) {
-      selectedCoverageRef.current = null;
-      setSelectedCoverageNodeId(null);
-      setCoverageLoadingNodeId(null);
-      setCoverageMessage(null);
       setPlanRepeaterMode(false);
       setPlannedPopupState(null);
       plannedPopupRef.current?.remove();
@@ -955,22 +706,6 @@ export function MapLibreMap({
     }
     scheduleRefresh();
   }, [viewshedEnabled, scheduleRefresh, setPlanRepeaterMode]);
-
-  useEffect(() => {
-    showCoverageRef.current = showCoverage;
-    if (!showCoverage) {
-      viewportCoverageRequestRef.current?.abort();
-      viewportCoverageRequestRef.current = null;
-      if (viewportCoverageTimerRef.current !== null) {
-        window.clearTimeout(viewportCoverageTimerRef.current);
-        viewportCoverageTimerRef.current = null;
-      }
-      viewportCoverageRef.current = [];
-      scheduleRefresh({ coverage: true });
-      return;
-    }
-    refreshViewportCoverageRef.current();
-  }, [showCoverage, scheduleRefresh]);
 
   const handleFocusSamePrefix = useCallback((nodeId: string) => {
     const prefix = nodeId.slice(0, 2).toUpperCase();
@@ -1122,9 +857,6 @@ export function MapLibreMap({
       map.setPadding(mapPaddingForNode(selectedNodeIdRef.current));
       onMapReady?.(map);
       refreshMapSources();
-      refreshViewportCoverageRef.current();
-
-      map.on('moveend', () => refreshViewportCoverageRef.current());
 
       // Apply any pre-existing selection (e.g. ?node= deep link) to the highlight.
       if (selectedNodeIdRef.current) {
@@ -1156,12 +888,6 @@ export function MapLibreMap({
 
     return () => {
       mapLoadedRef.current = false;
-      viewportCoverageRequestRef.current?.abort();
-      viewportCoverageRequestRef.current = null;
-      if (viewportCoverageTimerRef.current !== null) {
-        window.clearTimeout(viewportCoverageTimerRef.current);
-        viewportCoverageTimerRef.current = null;
-      }
       setClashPathLines([]);
       map.remove();
       mapRef.current = null;
@@ -1231,12 +957,12 @@ export function MapLibreMap({
 
   useEffect(() => {
     showHexClashesRef.current = showHexClashes;
-    scheduleRefresh({ nodes: true, clash: true, coverage: true });
+    scheduleRefresh({ nodes: true, clash: true });
   }, [showHexClashes, scheduleRefresh]);
 
   useEffect(() => {
     maxHexClashHopsRef.current = maxHexClashHops;
-    scheduleRefresh({ nodes: true, clash: true, coverage: true });
+    scheduleRefresh({ nodes: true, clash: true });
   }, [maxHexClashHops, scheduleRefresh]);
 
   useEffect(() => {
@@ -1252,11 +978,6 @@ export function MapLibreMap({
       nodesRef.current = nextNodes;
       scheduleRefresh({ nodes: true, privacy: true, links: true, clash: true, plannedLinks: true });
       if (selectedNodeIdRef.current) setPopupVersion((value) => value + 1);
-    });
-    const unsubscribeCoverage = coverageStore.subscribe(() => {
-      if (!viewshedEnabledRef.current) return;
-      coverageRef.current = coverageStore.getState().coverage;
-      scheduleRefresh({ coverage: true, clash: true, nodes: true });
     });
     const unsubscribeLinks = linkStateStore.subscribe(() => {
       const linkState = linkStateStore.getState();
@@ -1276,7 +997,6 @@ export function MapLibreMap({
 
     return () => {
       unsubscribeNodes();
-      unsubscribeCoverage();
       unsubscribeLinks();
       unsubscribeOverlay();
     };
@@ -1285,62 +1005,6 @@ export function MapLibreMap({
   useEffect(() => {
     scheduleRefresh({ nodes: true, clash: true });
   }, [focusedNodeId, focusedPrefixNodeIds, scheduleRefresh]);
-
-  const toggleCoverageForNode = useCallback((nodeId: string) => {
-    if (!viewshedEnabled) return;
-    if (coverageLoadingNodeId === nodeId) return;
-    if (selectedCoverageNodeId === nodeId) {
-      coverageRequestRef.current?.abort();
-      coverageRequestRef.current = null;
-      selectedCoverageRef.current = null;
-      setSelectedCoverageNodeId(null);
-      setCoverageMessage(null);
-      scheduleRefresh();
-      return;
-    }
-
-    coverageRequestRef.current?.abort();
-    const controller = new AbortController();
-    coverageRequestRef.current = controller;
-    setCoverageLoadingNodeId(nodeId);
-    setCoverageMessage(null);
-    void fetchJson<{ status?: string; coverage?: NodeCoverage }>(
-      withScopeParams(`/api/coverage/${encodeURIComponent(nodeId)}`, requestScope),
-      { cache: 'no-store', signal: controller.signal },
-      { timeoutMs: 15_000, maxBytes: 8 * 1024 * 1024 },
-    )
-      .then((payload) => {
-        if (controller.signal.aborted || coverageRequestRef.current !== controller) return;
-        if (payload.status === 'queued') {
-          selectedCoverageRef.current = null;
-          setSelectedCoverageNodeId(null);
-          setCoverageMessage('Coverage is being calculated.');
-          return;
-        }
-        if (!payload.coverage) throw new Error('coverage unavailable');
-        selectedCoverageRef.current = payload.coverage;
-        setSelectedCoverageNodeId(nodeId);
-        setCoverageMessage(null);
-      })
-      .catch(() => {
-        if (controller.signal.aborted || coverageRequestRef.current !== controller) return;
-        selectedCoverageRef.current = null;
-        setSelectedCoverageNodeId(null);
-        setCoverageMessage('Coverage unavailable.');
-      })
-      .finally(() => {
-        if (coverageRequestRef.current !== controller) return;
-        coverageRequestRef.current = null;
-        setCoverageLoadingNodeId(null);
-        scheduleRefresh();
-      });
-  }, [
-    viewshedEnabled,
-    coverageLoadingNodeId,
-    requestScope,
-    selectedCoverageNodeId,
-    scheduleRefresh,
-  ]);
 
   // -- Popup management ------------------------------------------------------
 
@@ -1600,11 +1264,6 @@ export function MapLibreMap({
                 lon={popupNodeProps.maskedLon}
                 links={popupLinks}
                 hideName
-                coverageActive={selectedCoverageNodeId === popupNodeProps.props.node_id}
-                coverageLoading={coverageLoadingNodeId === popupNodeProps.props.node_id}
-                coverageMessage={selectedNodeId === popupNodeProps.props.node_id ? coverageMessage : null}
-                viewshedEnabled={viewshedEnabled}
-                onToggleCoverage={toggleCoverageForNode}
                 onFocusSamePrefix={handleFocusSamePrefix}
                 samePrefixCount={popupSamePrefixCount}
                 losActive={popupLosActive}
