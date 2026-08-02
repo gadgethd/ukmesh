@@ -2424,16 +2424,26 @@ def worker_loop():
             except Exception:
                 db = wait_for_db()
             time.sleep(random.uniform(0.25, 1.25))
-        except psycopg2.OperationalError:
+        except (psycopg2.OperationalError, psycopg2.InterfaceError):
             log.warning(f'{name}: DB connection lost — reconnecting')
+            try:
+                if db is not None:
+                    db.close()
+            except Exception:
+                pass
             db = wait_for_db()
+            time.sleep(2)
         except Exception as exc:
-            log.error(f'{name}: job error: {exc}', exc_info=True)
+            log.error(f'{name}: job error: {exc}')
             try:
                 if db and not db.closed:
                     db.rollback()
             except Exception:
-                db = wait_for_db()
+                try:
+                    db = wait_for_db()
+                except RuntimeError:
+                    log.warning(f'{name}: DB still unavailable — retrying shortly')
+            time.sleep(1)
 
 
 def resolve_node_ref(db, ref: str) -> dict:
