@@ -1,0 +1,14 @@
+title = "UK Mesh gitleaks configuration"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "generic-api-key"
+
+[[rules.allowlists]]
+description = "Documented MeshCore public-channel interoperability key"
+paths = ['''^backend/backfill-transport-codes\.mjs$''']
+regexTarget = "line"
+regexes = ['''(?i)const DEFAULT_PUBLIC_CHANNEL_KEY\s*=\s*'[0-9a-f]{32}'\s*;''']
+condition = "AND"
