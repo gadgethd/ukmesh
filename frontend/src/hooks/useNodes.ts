@@ -46,6 +46,7 @@ export interface LivePacketData {
   rxNodeId?:    string;
   srcNodeId?:   string;
   topic:        string;
+  iata?:        string;
   packetType?:  number;
   hopCount?:    number;
   pathHashSizeBytes?: number;
@@ -64,6 +65,7 @@ export interface AggregatedPacket {
   firstSeenTs?: number;
   rxNodeId?:    string;
   observerIds:  string[];
+  observerIatas: string[];
   srcNodeId?:   string;
   topic?:       string;
   summary?:     string;
@@ -129,6 +131,7 @@ function normalizeLivePacket(packet: LivePacketData): LivePacketData {
     packetHash: packet.packetHash.trim().toUpperCase(),
     rxNodeId: canonicalOptionalNodeId(packet.rxNodeId),
     srcNodeId: canonicalOptionalNodeId(packet.srcNodeId),
+    iata: packet.iata?.trim().toUpperCase(),
     path: packet.path?.map((value) => value.trim().toUpperCase()).filter(Boolean),
   };
 }
@@ -316,12 +319,16 @@ function handlePacket(packetOrArray: LivePacketData | LivePacketData[], epoch?: 
       const observerIds = packet.rxNodeId
         ? [packet.rxNodeId, ...current.observerIds.filter((id) => id !== packet.rxNodeId)]
         : current.observerIds;
+      const observerIatas = packet.iata
+        ? [packet.iata, ...current.observerIatas.filter((iata) => iata !== packet.iata)]
+        : current.observerIatas;
       const candidate: AggregatedPacket = {
         ...current,
         packetType: packet.packetType ?? current.packetType,
         firstSeenTs: current.firstSeenTs ?? current.ts,
         rxNodeId: packet.rxNodeId ?? current.rxNodeId,
         observerIds,
+        observerIatas,
         srcNodeId: packet.srcNodeId ?? current.srcNodeId,
         summary: packet.summary ?? extractPacketSummary(packet.payload) ?? current.summary,
         hopCount: packet.hopCount ?? current.hopCount,
@@ -338,6 +345,7 @@ function handlePacket(packetOrArray: LivePacketData | LivePacketData[], epoch?: 
           : mergeAggregatedPacket(current, {
               ...createAggregatedPacketFromLive(packet),
               observerIds,
+              observerIatas,
               rxCount: current.rxCount + (packet.direction !== 'tx' ? 1 : 0),
               txCount: current.txCount + (packet.direction === 'tx' ? 1 : 0),
             })),
@@ -373,6 +381,9 @@ function handlePacket(packetOrArray: LivePacketData | LivePacketData[], epoch?: 
         observerIds: packet.rxNodeId
           ? [packet.rxNodeId, ...cur.observerIds.filter((id) => id !== packet.rxNodeId)]
           : cur.observerIds,
+        observerIatas: packet.iata
+          ? [packet.iata, ...cur.observerIatas.filter((iata) => iata !== packet.iata)]
+          : cur.observerIatas,
         rxCount: cur.rxCount + (packet.direction !== 'tx' ? 1 : 0),
         txCount: cur.txCount + (packet.direction === 'tx' ? 1 : 0),
         ts: packet.ts,

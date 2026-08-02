@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useMessages, useNodeMap } from '../hooks/useNodes.js';
+import { aggregatedPacketObserverIataLabel } from '../hooks/packetFeed.js';
 import { useOverlayStore } from '../store/overlayStore.js';
 import { useWatchlist } from '../hooks/useWatchlist.js';
 import type { AggregatedPacket } from '../hooks/useNodes.js';
@@ -153,7 +154,7 @@ export const PacketFeed: React.FC = React.memo(() => {
   return (
   <div className="packet-feed" ref={feedRef}>
     {visible.map((p) => {
-      const observerIata = p.rxNodeId ? nodes.get(p.rxNodeId)?.iata : undefined;
+      const observerIata = aggregatedPacketObserverIataLabel(p, nodes);
       return (
         <PacketFeedItem
           key={p.packetHash || p.id}
