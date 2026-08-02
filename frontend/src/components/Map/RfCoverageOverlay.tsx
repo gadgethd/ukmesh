@@ -46,6 +46,7 @@ export function RfCoverageOverlay({
   useEffect(() => {
     if (!map) return undefined;
     let active = true;
+    let retryFrame: number | null = null;
 
     const render = () => {
       if (!active || !map.isStyleLoaded()) return;
@@ -84,16 +85,29 @@ export function RfCoverageOverlay({
       });
     };
 
-    // The React map reference is intentionally published before MapLibre's
-    // first style finishes loading. Re-render on that first load and on later
-    // theme/style replacements so RF cannot disappear until the next poll.
+    // MapLibre can publish the map reference from inside its initial `load`
+    // callback while isStyleLoaded() still reports false. Subscribing to
+    // `load` at that point is too late: the current event will not invoke the
+    // newly-added listener, leaving an already-enabled RF layer absent until
+    // the user toggles it. Retry on the next frame, with `idle` as a fallback,
+    // and continue to handle later theme/style replacements.
+    const renderOnIdle = () => render();
     map.on('style.load', render);
     if (map.isStyleLoaded()) render();
-    else map.once('load', render);
+    else {
+      map.once('load', render);
+      retryFrame = window.requestAnimationFrame(() => {
+        retryFrame = null;
+        if (map.isStyleLoaded()) render();
+        else map.once('idle', renderOnIdle);
+      });
+    }
 
     return () => {
       active = false;
+      if (retryFrame !== null) window.cancelAnimationFrame(retryFrame);
       map.off('load', render);
+      map.off('idle', renderOnIdle);
       map.off('style.load', render);
       if (map.isStyleLoaded()) removeRfLayers(map);
     };
