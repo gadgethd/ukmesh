@@ -7,6 +7,7 @@ export type PacketDetail = {
   rxNodeId: string | null;
   srcNodeId: string | null;
   topic: string;
+  iata: string | null;
   packetType: number | null;
   routeType: number | null;
   hopCount: number | null;
@@ -16,7 +17,7 @@ export type PacketDetail = {
   pathHashes: string[] | null;
   pathHashSizeBytes: number | null;
   rawHex: string | null;
-  observations: Array<{ rxNodeId: string | null; time: string; rssi: number | null; snr: number | null; hopCount: number | null }>;
+  observations: Array<{ rxNodeId: string | null; iata: string | null; time: string; rssi: number | null; snr: number | null; hopCount: number | null }>;
 };
 
 export type RadioState = {
@@ -29,9 +30,16 @@ export type RadioState = {
 
 type StaticData = { detail: PacketDetail | null; radio: RadioState | null };
 const CACHE_TTL_MS = 5 * 60_000;
+export const LAZY_PATH_SETTLE_MS = 10_000;
 const staticCache = new Map<string, { expiresAt: number; value: StaticData }>();
 const staticInflight = new Map<string, Promise<StaticData>>();
 const pathCache = new Map<string, { expiresAt: number; value: ResolvedPath[] }>();
+
+export function lazyPathSettleRemainingMs(packetTime: string, nowMs = Date.now()): number {
+  const parsedPacketTime = Date.parse(packetTime);
+  const ageMs = Number.isFinite(parsedPacketTime) ? Math.max(0, nowMs - parsedPacketTime) : LAZY_PATH_SETTLE_MS;
+  return Math.max(0, LAZY_PATH_SETTLE_MS - ageMs);
+}
 
 async function cachedStatic(packetHash: string, network: string): Promise<StaticData> {
   const key = `${network}:${packetHash}`;
@@ -57,12 +65,13 @@ async function cachedStatic(packetHash: string, network: string): Promise<Static
 
 export function usePacketDetailData(input: {
   packetHash: string;
+  packetTime: string;
   network: string;
   observerKey: string;
   hasPathHashes: boolean;
   cachedLazyPath?: LazyPathResult | null;
 }) {
-  const { packetHash, network, observerKey, hasPathHashes, cachedLazyPath } = input;
+  const { packetHash, packetTime, network, observerKey, hasPathHashes, cachedLazyPath } = input;
   const [detail, setDetail] = useState<PacketDetail | null>(null);
   const [radio, setRadio] = useState<RadioState | null>(null);
   const [resolvedPaths, setResolvedPaths] = useState<ResolvedPath[]>([]);
@@ -112,7 +121,7 @@ export function usePacketDetailData(input: {
     setLazyStatus('loading');
     try {
       const netParam = network ? `&network=${encodeURIComponent(network)}` : '';
-      const response = await fetch(`/api/path-lazy/resolve?hash=${packetHash}${netParam}`, { signal: AbortSignal.timeout(12_000) });
+      const response = await fetch(`/api/path-lazy/resolve?hash=${packetHash}${netParam}`, { signal: AbortSignal.timeout(15_000) });
       if (response.status === 404) { setLazyStatus('notfound'); return; }
       if (!response.ok) { setLazyStatus('error'); return; }
       setLazyPath(await response.json() as LazyPathResult);
@@ -134,19 +143,27 @@ export function usePacketDetailData(input: {
       return;
     }
     setLazyPath(null);
+    const remainingMs = lazyPathSettleRemainingMs(packetTime);
+    if (remainingMs === 0) {
+      void fetchLazyPath();
+      return;
+    }
     setLazyStatus('settling');
-    setLazyCountdown(10);
-    const tick = window.setInterval(() => setLazyCountdown((value) => Math.max(0, value - 1)), 1_000);
+    setLazyCountdown(Math.ceil(remainingMs / 1_000));
+    const settleDeadline = Date.now() + remainingMs;
+    const tick = window.setInterval(() => {
+      setLazyCountdown(Math.max(0, Math.ceil((settleDeadline - Date.now()) / 1_000)));
+    }, 250);
     const timer = window.setTimeout(() => {
       window.clearInterval(tick);
       setLazyCountdown(0);
       void fetchLazyPath();
-    }, 10_000);
+    }, remainingMs);
     return () => {
       window.clearInterval(tick);
       window.clearTimeout(timer);
     };
-  }, [cachedLazyPath, fetchLazyPath, hasPathHashes, observerKey]);
+  }, [cachedLazyPath, fetchLazyPath, hasPathHashes, observerKey, packetTime]);
 
   return { detail, radio, resolvedPaths, loading, pathLoading, lazyPath, lazyStatus, lazyCountdown };
 }

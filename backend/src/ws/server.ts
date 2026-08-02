@@ -91,6 +91,8 @@ function slimInitialPacket(raw: InitialStateRow): InitialStateRow {
     rx_node_id: raw['rx_node_id'],
     src_node_id: raw['src_node_id'],
     observer_node_ids: raw['observer_node_ids'],
+    iata: raw['iata'],
+    observer_iatas: raw['observer_iatas'],
     topic: raw['topic'],
     packet_type: raw['packet_type'],
     hop_count: raw['hop_count'],

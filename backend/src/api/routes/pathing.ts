@@ -1,12 +1,15 @@
 import type { Router } from 'express';
 import { resolvePublicNetworkScope } from '../../http/requestScope.js';
-import { lazyResolvePath } from '../../path-lazy/lazyResolver.js';
 import { createPathingRepository } from '../../pathing/pathingRepository.js';
 import { createPathingService } from '../../pathing/pathingService.js';
 import { normalizeObserverQuery } from '../utils/observer.js';
 
 type ResolvePoolFn = {
-  run<T>(job: { type: 'resolve'; packetHash: string; network: string; observer?: string | null } | { type: 'resolveMulti'; packetHash: string; network: string }): Promise<T | null>;
+  run<T>(job:
+    | { type: 'resolve'; packetHash: string; network: string; observer?: string | null }
+    | { type: 'resolveMulti'; packetHash: string; network: string }
+    | { type: 'resolveLazy'; packetHash: string; network: string }
+  ): Promise<T | null>;
 };
 
 type PathingRouteDeps = {
@@ -156,7 +159,11 @@ export function registerPathingRoutes(router: Router, deps: PathingRouteDeps): v
         return;
       }
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
-      const result = await lazyResolvePath(packetHash, network, deps.query);
+      const result = await deps.resolvePool.run({
+        type: 'resolveLazy',
+        packetHash,
+        network,
+      });
       if (!result) {
         res.status(404).json({ error: 'No path data found for this packet' });
         return;
@@ -165,6 +172,10 @@ export function registerPathingRoutes(router: Router, deps: PathingRouteDeps): v
     } catch (err) {
       if ((err as Error).message === 'PATH_HISTORY_LIMIT') {
         res.status(422).json({ error: 'HISTORY_LIMIT', retryable: false });
+        return;
+      }
+      if ((err as Error).message === 'PATH_RESOLVE_OVERLOADED' || (err as Error).message === 'PATH_RESOLVE_TIMEOUT') {
+        res.status(503).json({ error: 'Path resolver is busy', retryable: true });
         return;
       }
       console.error('[api] GET /path-lazy/resolve', (err as Error).message);

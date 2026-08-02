@@ -170,6 +170,7 @@ services:
       SPAM_MESSAGE_MAX_EVIDENCE_MEMBERS: ${SPAM_MESSAGE_MAX_EVIDENCE_MEMBERS:-256}
       SPAM_MESSAGE_ANALYSIS_BUDGET_MS: ${SPAM_MESSAGE_ANALYSIS_BUDGET_MS:-5000}
       SPAM_MESSAGE_DB_TIMEOUT_MS: ${SPAM_MESSAGE_DB_TIMEOUT_MS:-15000}
+      ANALYSIS_RUN_STALE_AFTER_MS: ${ANALYSIS_RUN_STALE_AFTER_MS:-300000}
       STATS_UNIQUE_INFLIGHT_MAX: ${STATS_UNIQUE_INFLIGHT_MAX:-32}
       LINK_QUEUE_V3_PRODUCER_ENABLED: ${LINK_QUEUE_V3_PRODUCER_ENABLED:-1}
       LINK_QUEUE_V3_MAX_JOBS: ${LINK_QUEUE_V3_MAX_JOBS:-5000}
@@ -254,8 +255,10 @@ services:
       dockerfile: Dockerfile.backend
     restart: always
     logging: *json-log-limits
-    mem_limit: "512m"
-    memswap_limit: "512m"
+    # The resolver's topology context plus concurrent packet trellises exceeds
+    # Node's cgroup-derived ~256 MB heap default on a full history rebuild.
+    mem_limit: "768m"
+    memswap_limit: "768m"
     command: ["node", "dist/workers/path-history.js"]
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}
@@ -267,7 +270,11 @@ services:
       DATABASE_SKIP_SCHEMA_INIT: "true"
       PATH_HISTORY_RUN_DEADLINE_MS: ${PATH_HISTORY_RUN_DEADLINE_MS:-7200000}
       PATH_HISTORY_CONCURRENCY: ${PATH_HISTORY_CONCURRENCY:-2}
+      PATH_HISTORY_RETRY_INTERVAL_MS: ${PATH_HISTORY_RETRY_INTERVAL_MS:-60000}
       PATH_HISTORY_SEGMENT_COUNTER_CAPACITY: ${PATH_HISTORY_SEGMENT_COUNTER_CAPACITY:-65536}
+      PATH_HISTORY_MAX_OLD_SPACE_MB: ${PATH_HISTORY_MAX_OLD_SPACE_MB:-384}
+      ANALYSIS_RUN_STALE_AFTER_MS: ${ANALYSIS_RUN_STALE_AFTER_MS:-300000}
+      NODE_OPTIONS: --max-old-space-size=${PATH_HISTORY_MAX_OLD_SPACE_MB:-384}
       PATH_MULTI_HISTORY_WINDOW_HOURS: ${PATH_MULTI_HISTORY_WINDOW_HOURS:-168}
       PATH_MULTI_MAX_SCAN_ROWS: ${PATH_MULTI_MAX_SCAN_ROWS:-2048}
       PATH_MULTI_MAX_OBSERVERS: ${PATH_MULTI_MAX_OBSERVERS:-128}
@@ -284,7 +291,7 @@ services:
       resources:
         limits:
           cpus: "1.0"
-          memory: 512M
+          memory: 768M
 
   health-worker:
     <<: *internal-hosts

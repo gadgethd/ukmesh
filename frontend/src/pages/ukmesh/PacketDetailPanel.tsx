@@ -172,12 +172,12 @@ export const PacketDetailPanel: React.FC<{
   observer?: string;
   onClose: () => void;
   cachedLazyPath?: LazyPathResult | null;
-}> = ({ packet, nodeMap, network, observer, onClose, cachedLazyPath }) => {
+}> = ({ packet, nodeMap, network, onClose, cachedLazyPath }) => {
   const observerKey = (packet.observer_node_ids ?? []).slice().sort().join(',');
   const { detail, resolvedPaths, radio, loading, pathLoading, lazyPath, lazyStatus, lazyCountdown } = usePacketDetailData({
     packetHash: packet.packet_hash,
+    packetTime: packet.time,
     network,
-    observer,
     observerKey,
     hasPathHashes: Boolean(packet.path_hashes?.length),
     cachedLazyPath,
@@ -187,11 +187,17 @@ export const PacketDetailPanel: React.FC<{
   const rxNodeId = detail?.rxNodeId ?? packet.rx_node_id ?? null;
   const rxNode = rxNodeId ? nodeMap.get(rxNodeId) : undefined;
   const observerName = rxNode?.name ?? rxNodeId?.slice(0, 8) ?? '—';
-  const observerIata = rxNode?.iata?.trim().toUpperCase() ?? '—';
+  const observerIata = detail?.iata?.trim().toUpperCase()
+    ?? packet.iata?.trim().toUpperCase()
+    ?? rxNode?.iata?.trim().toUpperCase()
+    ?? '—';
 
   // Regions heard — combine live observer_node_ids, rx_node_id fallback, and DB observations
   const regionsHeard = useMemo(() => {
     const iatas = new Set<string>();
+    for (const value of [...(packet.observer_iatas ?? []), packet.iata, detail?.iata]) {
+      if (value) iatas.add(value.trim().toUpperCase());
+    }
     const ids: (string | null | undefined)[] = [
       ...(packet.observer_node_ids?.length ? packet.observer_node_ids : [packet.rx_node_id]),
       ...(detail?.observations?.map((o) => o.rxNodeId) ?? []),
@@ -201,8 +207,11 @@ export const PacketDetailPanel: React.FC<{
       const iata = nodeMap.get(id)?.iata;
       if (iata) iatas.add(iata.trim().toUpperCase());
     }
+    for (const observation of detail?.observations ?? []) {
+      if (observation.iata) iatas.add(observation.iata.trim().toUpperCase());
+    }
     return Array.from(iatas).join(' · ') || '—';
-  }, [packet.observer_node_ids, packet.rx_node_id, detail?.observations, nodeMap]);
+  }, [packet.observer_iatas, packet.iata, packet.observer_node_ids, packet.rx_node_id, detail?.iata, detail?.observations, nodeMap]);
 
   // Propagation time — span from first observer to last observer receiving this packet
   const propagationTime = useMemo(() => {

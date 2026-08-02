@@ -821,6 +821,7 @@ export async function getRecentPackets(
       SELECT 
         packet_hash,
         ARRAY_AGG(DISTINCT rx_node_id ORDER BY rx_node_id) FILTER (WHERE rx_node_id IS NOT NULL) AS observer_node_ids,
+        ARRAY_AGG(DISTINCT iata ORDER BY iata) FILTER (WHERE NULLIF(TRIM(iata), '') IS NOT NULL) AS observer_iatas,
         COUNT(*) FILTER (WHERE COALESCE(payload->>'direction', 'rx') <> 'tx')::int AS rx_count,
         COUNT(*) FILTER (WHERE COALESCE(payload->>'direction', 'rx') = 'tx')::int AS tx_count
       FROM packets
@@ -837,7 +838,7 @@ export async function getRecentPackets(
       ${fields === 'full'
         ? 'rp.topic, rp.topic_prefix, rp.iata, rp.route_type, rp.network, rp.transport_codes, rp.region_scope,'
         : ''}
-      ps.observer_node_ids, ps.rx_count, ps.tx_count
+      ps.observer_node_ids, ps.observer_iatas, ps.rx_count, ps.tx_count
     FROM recent_packets rp
     LEFT JOIN packet_stats ps ON ps.packet_hash = rp.packet_hash
     ORDER BY rp.time DESC
@@ -858,6 +859,7 @@ export async function getRecentMessages(limit = 50, network?: string, observer?:
     `WITH recent_msgs AS (
       SELECT DISTINCT ON (p.packet_hash)
              p.time, p.packet_hash, p.rx_node_id, p.src_node_id, p.topic,
+             p.iata,
              p.packet_type, p.hop_count, p.rssi, p.snr, p.payload,
              p.payload->>'_summary' AS summary,
              p.advert_count, p.path_hashes, p.path_hash_size_bytes,
@@ -875,6 +877,7 @@ export async function getRecentMessages(limit = 50, network?: string, observer?:
       SELECT
         packet_hash,
         ARRAY_AGG(DISTINCT rx_node_id ORDER BY rx_node_id) FILTER (WHERE rx_node_id IS NOT NULL) AS observer_node_ids,
+        ARRAY_AGG(DISTINCT iata ORDER BY iata) FILTER (WHERE NULLIF(TRIM(iata), '') IS NOT NULL) AS observer_iatas,
         COUNT(*) FILTER (WHERE COALESCE(payload->>'direction', 'rx') <> 'tx')::int AS rx_count,
         COUNT(*) FILTER (WHERE COALESCE(payload->>'direction', 'rx') = 'tx')::int AS tx_count
       FROM packets
@@ -885,10 +888,10 @@ export async function getRecentMessages(limit = 50, network?: string, observer?:
       GROUP BY packet_hash
     )
     SELECT
-      m.time, m.packet_hash, m.rx_node_id, m.src_node_id, m.topic,
+      m.time, m.packet_hash, m.rx_node_id, m.src_node_id, m.topic, m.iata,
       m.packet_type, m.hop_count, m.rssi, m.snr, m.payload,
       m.summary, m.advert_count, m.path_hashes, m.path_hash_size_bytes,
-      ms.observer_node_ids, ms.rx_count, ms.tx_count
+      ms.observer_node_ids, ms.observer_iatas, ms.rx_count, ms.tx_count
     FROM recent_msgs m
     LEFT JOIN msg_stats ms ON ms.packet_hash = m.packet_hash
     ORDER BY m.time DESC
@@ -903,7 +906,7 @@ export async function getRecentPacketEvents(limit = 200, network?: string, obser
   const params: unknown[] = [limit, ...scope.params];
   const res = await pool.query(
     `SELECT
-        p.time, p.packet_hash, p.rx_node_id, p.src_node_id, p.topic,
+        p.time, p.packet_hash, p.rx_node_id, p.src_node_id, p.topic, p.iata,
         p.packet_type, p.hop_count, p.rssi, p.snr, p.payload,
         p.payload->>'_summary' AS summary,
         p.advert_count, p.path_hashes, p.path_hash_size_bytes
@@ -922,7 +925,7 @@ export async function getPacketDetail(hash: string, network = 'ukmesh') {
   const scope = buildScopePlaceholders(2, network);
   const [primary, observations] = await Promise.all([
     pool.query(
-      `SELECT p.time, p.packet_hash, p.rx_node_id, p.src_node_id, p.topic,
+      `SELECT p.time, p.packet_hash, p.rx_node_id, p.src_node_id, p.topic, p.iata,
               p.packet_type, p.route_type, p.hop_count, p.rssi, p.snr,
               p.payload, p.path_hashes, p.path_hash_size_bytes, p.raw_hex
        FROM packets p
@@ -937,7 +940,7 @@ export async function getPacketDetail(hash: string, network = 'ukmesh') {
       [hash, ...scope.params],
     ),
     pool.query(
-      `SELECT p.rx_node_id, p.time, p.rssi, p.snr, p.hop_count
+      `SELECT p.rx_node_id, p.iata, p.time, p.rssi, p.snr, p.hop_count
        FROM packets p
        WHERE p.packet_hash = $1
          ${buildPacketScopeClause(scope, 'p', network)}
@@ -954,6 +957,7 @@ export async function getPacketDetail(hash: string, network = 'ukmesh') {
     rxNodeId: row.rx_node_id as string | null,
     srcNodeId: row.src_node_id as string | null,
     topic: row.topic as string,
+    iata: row.iata as string | null,
     packetType: row.packet_type as number | null,
     routeType: row.route_type as number | null,
     hopCount: row.hop_count as number | null,
@@ -965,6 +969,7 @@ export async function getPacketDetail(hash: string, network = 'ukmesh') {
     rawHex: row.raw_hex as string | null,
     observations: observations.rows.map((r) => ({
       rxNodeId: r.rx_node_id as string | null,
+      iata: r.iata as string | null,
       time: r.time as Date,
       rssi: r.rssi as number | null,
       snr: r.snr as number | null,

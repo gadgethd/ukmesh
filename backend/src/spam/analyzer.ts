@@ -13,7 +13,12 @@ import {
   type PersistResult,
 } from './repository.js';
 import type { Incident, MessageRecord, OriginEstimate } from './types.js';
-import { analysisGeneration, beginAnalysisRun, finishAnalysisRun } from '../analysis/runState.js';
+import {
+  analysisGeneration,
+  beginAnalysisRun,
+  finishAnalysisRun,
+  startAnalysisRunHeartbeat,
+} from '../analysis/runState.js';
 
 type SpamQueryFn = <T extends Record<string, unknown> = Record<string, unknown>>(
   text: string,
@@ -150,6 +155,7 @@ export async function analyzeOnce(cfg: SpamMessageConfig = loadSpamMessageConfig
       windowEnd,
       totalItems: records.length,
     });
+    const heartbeat = startAnalysisRunHeartbeat(run);
     try {
       const items = await buildIncidentsWithPaths(
         records,
@@ -191,6 +197,8 @@ export async function analyzeOnce(cfg: SpamMessageConfig = loadSpamMessageConfig
         incidents: 0,
         lifecycleExpired,
       };
+    } finally {
+      await heartbeat.stop();
     }
   });
   return result ?? {

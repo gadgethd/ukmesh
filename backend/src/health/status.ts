@@ -154,6 +154,7 @@ async function currentWorkers(precomputedStats?: ReturnType<typeof systemStats>)
     viewshedLast,
     linkLast,
     learning,
+    pathHistory,
     healthRecent,
     healthLast,
     backfillState,
@@ -168,6 +169,20 @@ async function currentWorkers(precomputedStats?: ReturnType<typeof systemStats>)
     query<{ ts: string | null }>(`SELECT MAX(calculated_at)::text AS ts FROM node_coverage`),
     query<{ ts: string | null }>(`SELECT MAX(itm_computed_at)::text AS ts FROM node_links`),
     query<{ ts: string | null }>(`SELECT MAX(updated_at)::text AS ts FROM path_model_calibration`),
+    query<{
+      active_run_id: string | null;
+      last_status: string | null;
+      last_complete_at: string | null;
+      heartbeat_at: string | null;
+    }>(
+      `SELECT state.active_run_id,
+              state.last_status,
+              state.last_complete_at::text,
+              run.heartbeat_at::text
+         FROM analysis_workload_state state
+         LEFT JOIN analysis_runs run ON run.run_id = state.active_run_id
+        WHERE state.workload = 'path-history' AND state.scope = 'ukmesh'`,
+    ),
     query<{ count: string }>(
       `SELECT COUNT(*) AS count
        FROM worker_health_snapshots
@@ -196,6 +211,23 @@ async function currentWorkers(precomputedStats?: ReturnType<typeof systemStats>)
   const healthLastTs = healthLast.rows[0]?.ts ?? null;
   const learningLast = learning.rows[0]?.ts ?? null;
   const learningRecent = learningLast ? (Date.now() - Date.parse(learningLast)) <= 60 * 60_000 : false;
+  const pathHistoryRow = pathHistory.rows[0];
+  const pathHistoryHeartbeatRecent = Boolean(
+    pathHistoryRow?.active_run_id
+    && pathHistoryRow.heartbeat_at
+    && Date.now() - Date.parse(pathHistoryRow.heartbeat_at) <= 2 * 60_000,
+  );
+  const pathHistoryCompleteRecent = Boolean(
+    pathHistoryRow?.last_complete_at
+    && Date.now() - Date.parse(pathHistoryRow.last_complete_at) <= 4 * 60 * 60_000,
+  );
+  const pathHistoryStatus = pathHistoryRow?.active_run_id
+    ? pathHistoryHeartbeatRecent ? 'running' : 'stale'
+    : pathHistoryRow?.last_status === 'failed' || pathHistoryRow?.last_status === 'timed_out'
+      ? 'failed'
+      : pathHistoryCompleteRecent
+        ? 'idle'
+        : 'stale';
   const backfillLinks = Number(backfillState.rows[0]?.links ?? 0);
   const backfillLast = backfillState.rows[0]?.last_observed ?? null;
   return [
@@ -227,6 +259,18 @@ async function currentWorkers(precomputedStats?: ReturnType<typeof systemStats>)
       queue_depth: 0,
       processed_1h: learningRecent ? 1 : 0,
       last_activity_at: learningLast,
+      cpu_load_1m: load,
+      cpu_usage_pct: stats.cpu.usage_pct,
+      mem_used_pct: memPct,
+      disk_used_pct: diskPct,
+    },
+    {
+      worker_name: 'path-history',
+      status: pathHistoryStatus,
+      queue_depth: 0,
+      processed_1h: pathHistoryRow?.last_complete_at
+        && Date.now() - Date.parse(pathHistoryRow.last_complete_at) <= 60 * 60_000 ? 1 : 0,
+      last_activity_at: pathHistoryRow?.heartbeat_at ?? pathHistoryRow?.last_complete_at ?? null,
       cpu_load_1m: load,
       cpu_usage_pct: stats.cpu.usage_pct,
       mem_used_pct: memPct,
@@ -502,6 +546,13 @@ export async function getWorkerHealthOverview() {
     problems.push({ code: 'disk_pressure', severity: 'warning', message: `Disk usage is ${sysStats.disk.used_pct}%` });
   }
   for (const worker of workers) {
+    if (worker.status === 'failed' || worker.status === 'stale') {
+      problems.push({
+        code: 'worker_unavailable',
+        severity: worker.status === 'failed' ? 'critical' : 'warning',
+        message: `${worker.worker_name} is ${worker.status}`,
+      });
+    }
     if (worker.queue_depth >= 1_000) {
       problems.push({
         code: 'worker_queue_backlog',

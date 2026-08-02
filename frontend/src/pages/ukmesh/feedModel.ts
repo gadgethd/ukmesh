@@ -15,6 +15,8 @@ export type FeedPacket = {
   snr?: number | null;
   payload?: Record<string, unknown>;
   observer_node_ids?: string[];
+  iata?: string | null;
+  observer_iatas?: string[];
   rx_count?: number;
   tx_count?: number;
   summary?: string | null;
@@ -154,6 +156,8 @@ export function aggregatedPacketToFeedPacket(packet: AggregatedPacket): FeedPack
     snr: null,
     payload: packet as unknown as Record<string, unknown>,
     observer_node_ids: packet.observerIds,
+    iata: packet.observerIatas[0] ?? null,
+    observer_iatas: packet.observerIatas,
     rx_count: packet.rxCount,
     tx_count: packet.txCount,
     summary: packet.summary ?? null,
@@ -163,6 +167,11 @@ export function aggregatedPacketToFeedPacket(packet: AggregatedPacket): FeedPack
 
 export function packetObserverIatas(packet: FeedPacket, nodeMap: Map<string, MeshNode>): string[] {
   const values = new Set<string>();
+  for (const value of [...(packet.observer_iatas ?? []), packet.iata]) {
+    const iata = String(value ?? '').trim().toUpperCase();
+    if (/^[A-Z0-9]{2,8}$/.test(iata)) values.add(iata);
+  }
+  if (values.size > 0) return Array.from(values);
   for (const observerId of packetObserverIds(packet)) {
     const iata = nodeMap.get(observerId)?.iata?.trim().toUpperCase();
     if (iata) values.add(iata);

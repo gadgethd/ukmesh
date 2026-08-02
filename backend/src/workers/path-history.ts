@@ -15,9 +15,14 @@ import {
   analysisGeneration,
   beginAnalysisRun,
   finishAnalysisRun,
+  startAnalysisRunHeartbeat,
 } from '../analysis/runState.js';
 
 const REFRESH_INTERVAL_MS = 60 * 60 * 1000; // 1 hour — 7-day window changes slowly
+const RETRY_INTERVAL_MS = Math.min(
+  5 * 60_000,
+  Math.max(10_000, Number(process.env['PATH_HISTORY_RETRY_INTERVAL_MS'] ?? 60_000) || 60_000),
+);
 const WINDOW_HOURS = 168;
 const MIN_SEGMENT_COUNT = 30;
 const MAX_PACKET_HASHES = 12000;
@@ -93,7 +98,7 @@ function collectPurpleSegments(result: BetaResolvedPayload, sink: Set<string>): 
   }
 }
 
-async function refreshScope(scope: ScopeName): Promise<void> {
+async function refreshScope(scope: ScopeName): Promise<'finished' | 'active-run'> {
   const visibilityGeneration = await getPublicVisibilityGeneration();
   const packetHashes = await getRecentPathHistoryPacketHashes(
     WINDOW_HOURS,
@@ -119,10 +124,11 @@ async function refreshScope(scope: ScopeName): Promise<void> {
   } catch (error) {
     if (error instanceof AnalysisRunAlreadyActiveError || (error as { code?: string }).code === '55P03') {
       console.warn(`[path-history] scope=${scope} refresh skipped; another analysis run is active`);
-      return;
+      return 'active-run';
     }
     throw error;
   }
+  const heartbeat = startAnalysisRunHeartbeat(run);
   try {
     if (packetHashes.length === 0) {
       await finishAnalysisRun(run, {
@@ -131,9 +137,10 @@ async function refreshScope(scope: ScopeName): Promise<void> {
         error: 'empty selection',
       });
       console.warn(`[path-history] scope=${scope} selected no packets; preserving last complete snapshot`);
-      return;
+      return 'finished';
     }
     const outcome = await runBoundedItems(packetHashes, async (packetHash) => {
+      if (!heartbeat.ownsLease()) throw new Error('ANALYSIS_RUN_LEASE_LOST');
       try {
         const resolved = await resolveMultiObserverBetaPath(packetHash, scope, undefined, undefined, {
           touchPredictedOnline: false,
@@ -181,7 +188,7 @@ async function refreshScope(scope: ScopeName): Promise<void> {
         checkpoint: outcome.checkpoint,
         errors: outcome.errors.slice(0, 5),
       });
-      return;
+      return 'finished';
     }
 
     const segmentCounts: SegmentCount[] = counts.candidates(MIN_SEGMENT_COUNT)
@@ -209,7 +216,7 @@ async function refreshScope(scope: ScopeName): Promise<void> {
       console.warn(
         `[path-history] scope=${scope} visibility changed during run; preserving the current snapshot`,
       );
-      return;
+      return 'finished';
     }
     const generation = analysisGeneration({
       scope,
@@ -232,6 +239,7 @@ async function refreshScope(scope: ScopeName): Promise<void> {
     console.log(
       `[path-history] scope=${scope} run=${outcome.runId} packets=${packetHashes.length} skipped=${skippedPacketCount} resolved=${resolvedPacketCount} segments=${segmentCounts.length}`,
     );
+    return 'finished';
   } catch (error) {
     try {
       await finishAnalysisRun(run, {
@@ -243,15 +251,17 @@ async function refreshScope(scope: ScopeName): Promise<void> {
       console.error('[path-history] could not record failed run', (finishError as Error).message);
     }
     throw error;
+  } finally {
+    await heartbeat.stop();
   }
 }
 
 let isRunning = false;
 
-async function refreshAll(tag: 'initial' | 'scheduled') {
+async function refreshAll(tag: 'initial' | 'scheduled'): Promise<boolean> {
   if (isRunning) {
     console.warn(`[path-history] ${tag} refresh skipped; previous refresh still running`);
-    return;
+    return true;
   }
   isRunning = true;
   try {
@@ -266,11 +276,14 @@ async function refreshAll(tag: 'initial' | 'scheduled') {
     } catch (evidenceErr) {
       console.warn(`[path-history] ${tag} path-evidence skipped:`, (evidenceErr as Error).message);
     }
+    let retrySoon = false;
     for (const scope of SCOPES) {
-      await refreshScope(scope);
+      if (await refreshScope(scope) === 'active-run') retrySoon = true;
     }
+    return retrySoon;
   } catch (err) {
     console.error(`[path-history] ${tag} refresh failed`, (err as Error).message);
+    return true;
   } finally {
     isRunning = false;
   }
@@ -278,11 +291,12 @@ async function refreshAll(tag: 'initial' | 'scheduled') {
 
 async function main() {
   await initDb();
-  await refreshAll('initial');
-
-  setInterval(() => {
-    void refreshAll('scheduled');
-  }, REFRESH_INTERVAL_MS);
+  const scheduleNext = (retrySoon: boolean) => {
+    setTimeout(() => {
+      void refreshAll('scheduled').then(scheduleNext);
+    }, retrySoon ? RETRY_INTERVAL_MS : REFRESH_INTERVAL_MS);
+  };
+  scheduleNext(await refreshAll('initial'));
 }
 
 main().catch((err) => {

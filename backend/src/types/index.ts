@@ -23,6 +23,8 @@ export interface LivePacket {
   rxNodeId?: string;
   srcNodeId?: string;
   topic: string;
+  /** Observer region parsed and validated from the MQTT topic. */
+  iata?: string;
   network?: string;
   packetType?: number;
   routeType?: number;   // 0=TransportFlood, 1=Flood, 2=Direct, 3=TransportDirect
