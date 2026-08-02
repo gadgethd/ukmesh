@@ -5,18 +5,17 @@ import {
   type RfCoverageMeta,
   type RfCoverageTierName,
 } from '../../hooks/useRfCoverage.js';
+import {
+  maxRfRasterZoom,
+  registerRfRasterDataset,
+} from './rfCoverageRasterProtocol.js';
 
-const SOURCE_PREFIX = 'hopreach-rf-source-';
-const LAYER_PREFIX = 'hopreach-rf-layer-';
+const SOURCE_ID = 'hopreach-rf-source';
+const LAYER_ID = 'hopreach-rf-layer';
 
 function removeRfLayers(map: maplibregl.Map): void {
-  const style = map.getStyle();
-  for (const layer of [...(style.layers ?? [])].reverse()) {
-    if (layer.id.startsWith(LAYER_PREFIX) && map.getLayer(layer.id)) map.removeLayer(layer.id);
-  }
-  for (const sourceId of Object.keys(style.sources ?? {})) {
-    if (sourceId.startsWith(SOURCE_PREFIX) && map.getSource(sourceId)) map.removeSource(sourceId);
-  }
+  if (map.getLayer(LAYER_ID)) map.removeLayer(LAYER_ID);
+  if (map.getSource(SOURCE_ID)) map.removeSource(SOURCE_ID);
 }
 
 export function rfCoverageTileUrl(image: string, revision: string): string {
@@ -47,10 +46,13 @@ export function RfCoverageOverlay({
     if (!map) return undefined;
     let active = true;
     let retryFrame: number | null = null;
+    let releaseDataset: (() => void) | null = null;
 
     const render = () => {
       if (!active || !map.isStyleLoaded()) return;
       removeRfLayers(map);
+      releaseDataset?.();
+      releaseDataset = null;
       if (!visible || tiles.length === 0) return;
 
       const beforeId = map.getLayer('map-labels-water')
@@ -59,30 +61,32 @@ export function RfCoverageOverlay({
           ? 'privacy-rings-layer'
           : undefined;
 
-      tiles.forEach((tile, index) => {
-        const sourceId = `${SOURCE_PREFIX}${index}`;
-        const layerId = `${LAYER_PREFIX}${index}`;
-        map.addSource(sourceId, {
-          type: 'image',
+      const dataset = registerRfRasterDataset(
+        tiles.map((tile) => ({
           url: rfCoverageTileUrl(tile.image, revision),
-          coordinates: [
-            [tile.bounds.West, tile.bounds.North],
-            [tile.bounds.East, tile.bounds.North],
-            [tile.bounds.East, tile.bounds.South],
-            [tile.bounds.West, tile.bounds.South],
-          ],
-        });
-        map.addLayer({
-          id: layerId,
-          type: 'raster',
-          source: sourceId,
-          paint: {
-            'raster-opacity': 0.72,
-            'raster-resampling': 'nearest',
-            'raster-fade-duration': 0,
-          },
-        }, beforeId);
+          bounds: tile.bounds,
+        })),
+        maxRfRasterZoom(tier),
+      );
+      releaseDataset = dataset.release;
+      map.addSource(SOURCE_ID, {
+        type: 'raster',
+        tiles: [dataset.tileTemplate],
+        tileSize: 256,
+        minzoom: 0,
+        maxzoom: maxRfRasterZoom(tier),
+        bounds: dataset.bounds,
       });
+      map.addLayer({
+        id: LAYER_ID,
+        type: 'raster',
+        source: SOURCE_ID,
+        paint: {
+          'raster-opacity': 0.72,
+          'raster-resampling': 'nearest',
+          'raster-fade-duration': 0,
+        },
+      }, beforeId);
     };
 
     // MapLibre can publish the map reference from inside its initial `load`
@@ -110,6 +114,7 @@ export function RfCoverageOverlay({
       map.off('idle', renderOnIdle);
       map.off('style.load', render);
       if (map.isStyleLoaded()) removeRfLayers(map);
+      releaseDataset?.();
     };
   // signature deliberately captures content changes without depending on
   // unstable array/object identities returned by each metadata poll.
