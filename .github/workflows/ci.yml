@@ -231,15 +231,26 @@ jobs:
               down --volumes --remove-orphans
           }
           trap cleanup EXIT
-          # Keep the files writable by the runner while adding the CI-only
-          # publisher, then restore the production 1000:1883 ownership.
-          MOSQUITTO_BACKEND_UID="$(id -u)" scripts/bootstrap-mosquitto.sh
+          # Create each Argon2 entry independently. Updating an existing
+          # password file with this image is not reliable on hosted runners.
           docker run --rm \
             --user "$(id -u):$(id -g)" \
             -v "$PWD/mosquitto:/mosquitto/config" \
             "$MOSQUITTO_IMAGE" \
-            mosquitto_passwd -b /mosquitto/config/passwd \
+            mosquitto_passwd -b -c /mosquitto/config/.passwd-backend \
+              "$MQTT_USERNAME" "$MQTT_PASSWORD"
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -v "$PWD/mosquitto:/mosquitto/config" \
+            "$MOSQUITTO_IMAGE" \
+            mosquitto_passwd -b -c /mosquitto/config/.passwd-publisher \
               "$publisher_user" "$publisher_password"
+          cp mosquitto/.passwd-backend mosquitto/passwd
+          cat mosquitto/.passwd-publisher >>mosquitto/passwd
+          unlink mosquitto/.passwd-backend
+          unlink mosquitto/.passwd-publisher
+          printf 'user %s\ntopic read meshcore/#\ntopic read ukmesh/#\ntopic read meshcore-test/#\n' \
+            "$MQTT_USERNAME" >mosquitto/acl
           printf '\nuser %s\ntopic write meshcore-test/CI/%s/packets\ntopic write meshcore-test/CI/%s/status\n' \
             "$publisher_user" "$observer" "$observer" >>mosquitto/acl
           chmod 640 mosquitto/passwd mosquitto/acl
