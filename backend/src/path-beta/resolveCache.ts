@@ -8,15 +8,37 @@
  * over multi-day uptime.
  */
 
-const RESOLVE_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+import { BoundedTtlMap } from '../cache/boundedTtlMap.js';
 
-type CacheEntry = { data: unknown; cachedAt: number };
-const cache = new Map<string, CacheEntry>();
+const RESOLVE_CACHE_TTL_MS = 10 * 60 * 1000;
+const cache = new BoundedTtlMap<string, {
+  data: unknown;
+  packetHash: string;
+  invalidationVersion: number;
+}>({
+  name: 'path_resolution',
+  maxEntries: 4_096,
+  maxWeight: 64 * 1024 * 1024,
+  ttlMs: RESOLVE_CACHE_TTL_MS,
+});
+const invalidationVersions = new BoundedTtlMap<string, number>({
+  name: 'path_invalidation',
+  maxEntries: 50_000,
+  maxWeight: 4 * 1024 * 1024,
+  ttlMs: 60 * 60_000,
+});
+
+function packetHashFromKey(key: string): string {
+  return key.split('|')[1]?.trim() ?? '';
+}
 
 export function getResolveCache(key: string): unknown | undefined {
   const entry = cache.get(key);
   if (!entry) return undefined;
-  if (Date.now() - entry.cachedAt > RESOLVE_CACHE_TTL_MS) {
+  if (
+    entry.invalidationVersion
+    !== (invalidationVersions.get(entry.packetHash) ?? 0)
+  ) {
     cache.delete(key);
     return undefined;
   }
@@ -24,16 +46,29 @@ export function getResolveCache(key: string): unknown | undefined {
 }
 
 export function setResolveCache(key: string, result: unknown): void {
-  cache.set(key, { data: result, cachedAt: Date.now() });
+  const packetHash = packetHashFromKey(key);
+  if (!packetHash) return;
+  cache.set(key, {
+    data: result,
+    packetHash,
+    invalidationVersion: invalidationVersions.get(packetHash) ?? 0,
+  });
 }
 
 /** Invalidate all cached results for a given packet hash (all networks/observers). */
 export function invalidateResolveCache(packetHash: string): void {
-  for (const key of cache.keys()) {
-    if (key.includes(`|${packetHash}|`) || key.endsWith(`|${packetHash}`)) {
-      cache.delete(key);
-    }
-  }
+  invalidationVersions.set(
+    packetHash,
+    (invalidationVersions.get(packetHash) ?? 0) + 1,
+  );
+}
+
+export function resolveCacheMetrics() {
+  return {
+    results: cache.metrics(),
+    invalidations: invalidationVersions.metrics(),
+    sticky: stickyNodeCache.metrics(),
+  };
 }
 
 /**
@@ -47,7 +82,14 @@ export function invalidateResolveCache(packetHash: string): void {
  */
 const STICKY_NODE_TTL_MS = 30 * 60 * 1000; // 30 minutes
 type StickyEntry = { hashToNodeId: Map<string, string>; updatedAt: number };
-const stickyNodeCache = new Map<string, StickyEntry>();
+const stickyNodeCache = new BoundedTtlMap<string, StickyEntry>({
+  name: 'path_sticky_nodes',
+  maxEntries: 2_048,
+  maxWeight: 16 * 1024 * 1024,
+  ttlMs: STICKY_NODE_TTL_MS,
+  weightOf: (key, value) => key.length * 2 + value.hashToNodeId.size * 256,
+});
+const STICKY_NODES_PER_PACKET_MAX = 64;
 
 export function getStickyNodeMap(
   packetHash: string,
@@ -57,10 +99,6 @@ export function getStickyNodeMap(
   const entry = stickyNodeCache.get(key);
   if (!entry) return undefined;
   const ageMs = Date.now() - entry.updatedAt;
-  if (ageMs > STICKY_NODE_TTL_MS) {
-    stickyNodeCache.delete(key);
-    return undefined;
-  }
   // ageFraction: 0 = brand new, 1 = at TTL boundary
   const ageFraction = ageMs / STICKY_NODE_TTL_MS;
   return { hashToNodeId: entry.hashToNodeId, ageFraction };
@@ -80,7 +118,12 @@ export function mergeStickyNodes(
     stickyNodeCache.set(key, entry);
   }
   for (const [hash, nodeId] of Object.entries(updates)) {
+    if (
+      !entry.hashToNodeId.has(hash)
+      && entry.hashToNodeId.size >= STICKY_NODES_PER_PACKET_MAX
+    ) break;
     if (hash && nodeId) entry.hashToNodeId.set(hash, nodeId);
   }
   entry.updatedAt = Date.now();
+  stickyNodeCache.set(key, entry);
 }

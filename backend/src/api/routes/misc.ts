@@ -4,6 +4,17 @@ import { resolvePublicNetworkScope } from '../../http/requestScope.js';
 import { normalizeObserverQuery } from '../utils/observer.js';
 import { expandResolverScope } from '../../networks.js';
 import { networkFilters } from '../utils/networkFilters.js';
+import { getPublicRuntimeFeatureConfig } from '../../features.js';
+import {
+  parseBoolean,
+  parseBoundedInteger,
+  parseEnum,
+  parseHexIdentifier,
+} from '../utils/input.js';
+import {
+  decodePlannedNodeCursor,
+  listPublicPlannedNodes,
+} from '../../repositories/plannedNodes.js';
 
 type QueryFn = <T extends QueryResultRow = QueryResultRow>(
   text: string,
@@ -24,6 +35,7 @@ type MiscRouteDeps = {
   getRecentPackets: GetRecentPacketsFn;
   getRecentPacketEvents: GetRecentPacketEventsFn;
   getPacketDetail: GetPacketDetailFn;
+  getPublicVisibilityGeneration: () => Promise<number>;
   packetDetailLimiter: ReturnType<typeof import('express-rate-limit').rateLimit>;
 };
 
@@ -33,17 +45,39 @@ export function registerMiscRoutes(router: Router, deps: MiscRouteDeps): void {
     getRecentPackets,
     getRecentPacketEvents,
     getPacketDetail,
+    getPublicVisibilityGeneration,
     packetDetailLimiter,
   } = deps;
 
-  router.get('/packets/recent', async (req, res) => {
+  router.get('/runtime-config', async (_req, res) => {
     try {
-      const limit = Math.min(Number(req.query['limit'] ?? 200), 1000);
+      const privacyGeneration = await getPublicVisibilityGeneration();
+      res.setHeader('Cache-Control', 'no-store');
+      res.setHeader('Vary', 'Accept-Encoding');
+      res.json(getPublicRuntimeFeatureConfig(process.env, privacyGeneration));
+    } catch (error) {
+      console.error('[api] GET /runtime-config', (error as Error).message);
+      res.status(503).json({ error: 'Runtime configuration unavailable' });
+    }
+  });
+
+  router.get('/packets/recent', async (req, res) => {
+    const limit = parseBoundedInteger(req.query['limit'], {
+      name: 'limit',
+      defaultValue: 200,
+      min: 1,
+      max: 1000,
+    });
+    const raw = parseBoolean(req.query['raw'], { name: 'raw' });
+    const fields = parseEnum(req.query['fields'], {
+      name: 'fields',
+      values: ['slim', 'full'] as const,
+      defaultValue: 'full',
+    })!;
+    try {
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const observer = normalizeObserverQuery(req.query['observer']);
-      const raw = String(req.query['raw'] ?? '').trim();
-      const fields = req.query['fields'] === 'slim' ? 'slim' : 'full';
-      const packets = raw === '1'
+      const packets = raw
         ? await getRecentPacketEvents(limit, network, observer)
         : await getRecentPackets(limit, network, observer, fields);
       res.json(packets);
@@ -54,12 +88,11 @@ export function registerMiscRoutes(router: Router, deps: MiscRouteDeps): void {
   });
 
   router.get('/packets/:hash', packetDetailLimiter, async (req, res) => {
+    const hash = parseHexIdentifier(req.params['hash'], {
+      name: 'hash',
+      maxLength: 128,
+    });
     try {
-      const hash = String(req.params['hash'] ?? '').trim();
-      if (!hash || !/^[0-9a-fA-F]{1,128}$/.test(hash)) {
-        res.status(400).json({ error: 'Invalid packet hash' });
-        return;
-      }
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const detail = await getPacketDetail(hash, network);
       if (!detail) {
@@ -110,13 +143,25 @@ export function registerMiscRoutes(router: Router, deps: MiscRouteDeps): void {
     }
   });
 
-  router.get('/planned-nodes', async (_req, res) => {
+  router.get('/planned-nodes', async (req, res) => {
+    const limit = parseBoundedInteger(req.query['limit'], {
+      name: 'limit',
+      defaultValue: 50,
+      min: 1,
+      max: 100,
+    });
     try {
-      const result = await query(
-        'SELECT id, owner_pubkey, name, lat, lon, height_m, notes, created_at FROM planned_nodes ORDER BY created_at DESC',
-      );
-      res.json(result.rows);
+      const page = await listPublicPlannedNodes(query, {
+        limit,
+        cursor: decodePlannedNodeCursor(req.query['cursor']),
+      });
+      res.setHeader('Cache-Control', 'public, max-age=60, stale-while-revalidate=300');
+      res.json(page);
     } catch (err) {
+      if ((err as Error).message === 'INVALID_PLANNED_NODE_CURSOR') {
+        res.status(400).json({ error: 'Invalid planned-node cursor' });
+        return;
+      }
       console.error('[api] GET /planned-nodes', (err as Error).message);
       res.status(500).json({ error: 'Internal server error' });
     }

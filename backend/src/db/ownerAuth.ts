@@ -2,12 +2,19 @@ import pg from 'pg';
 import fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { resolveDbAssetPath } from './assets.js';
+import { boundedIntegerSetting } from '../platform/config/boundedNumber.js';
 
 const { Pool } = pg;
 const OWNER_DB_NAME = process.env['OWNER_POSTGRES_DB'] ?? 'meshcore_owner_auth';
 const ownerDatabaseApplicationName = String(process.env['OWNER_DATABASE_APPLICATION_NAME'] ?? 'meshcore-owner-auth').trim() || 'meshcore-owner-auth';
 const ownerAdminDatabaseApplicationName = String(process.env['OWNER_DATABASE_ADMIN_APPLICATION_NAME'] ?? 'meshcore-owner-auth-admin').trim() || 'meshcore-owner-auth-admin';
-const ownerDatabaseStatementTimeoutMs = Number(process.env['OWNER_DATABASE_STATEMENT_TIMEOUT_MS'] ?? 30_000);
+const ownerDatabaseStatementTimeoutMs = boundedIntegerSetting(
+  'OWNER_DATABASE_STATEMENT_TIMEOUT_MS',
+  process.env['OWNER_DATABASE_STATEMENT_TIMEOUT_MS'],
+  30_000,
+  0,
+  3_600_000,
+);
 const mqttAuditMaxNodesPerUser = Math.min(
   4_096,
   Math.max(16, Number(process.env['MQTT_AUDIT_MAX_NODES_PER_USER'] ?? 256) || 256),
@@ -40,7 +47,13 @@ function getAdminDatabaseUrl(): string {
 const ownerPool = new Pool({
   connectionString: getOwnerDatabaseUrl(),
   application_name: ownerDatabaseApplicationName,
-  max: Number(process.env['OWNER_DATABASE_POOL_MAX'] ?? 3),
+  max: boundedIntegerSetting(
+    'OWNER_DATABASE_POOL_MAX',
+    process.env['OWNER_DATABASE_POOL_MAX'],
+    3,
+    1,
+    32,
+  ),
   idleTimeoutMillis: 30_000,
   connectionTimeoutMillis: 5_000,
   statement_timeout: ownerDatabaseStatementTimeoutMs,

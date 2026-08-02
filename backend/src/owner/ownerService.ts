@@ -1,5 +1,6 @@
 import type { OwnerRepository } from './ownerRepository.js';
 import type { OwnerSession } from './ownerSession.js';
+import { BoundedTtlMap } from '../cache/boundedTtlMap.js';
 
 type OwnerDashboard = {
   totals: {
@@ -58,8 +59,22 @@ export function createOwnerService(deps: OwnerServiceDeps) {
     repository,
     invalidateOwnerNodeIdCache,
   } = deps;
-  const ownerLastHopCache = new Map<string, OwnerLastHopCacheEntry>();
-  const ownerDashboardCache = new Map<string, { ts: number; dashboard: OwnerDashboard; nodeIds: string[] }>();
+  const ownerLastHopCache = new BoundedTtlMap<string, OwnerLastHopCacheEntry>({
+    name: 'owner_last_hop',
+    maxEntries: 1_024,
+    maxWeight: 64 * 1024 * 1024,
+    ttlMs: ownerLastHopCacheTtlMs,
+  });
+  const ownerDashboardCache = new BoundedTtlMap<string, {
+    ts: number;
+    dashboard: OwnerDashboard;
+    nodeIds: string[];
+  }>({
+    name: 'owner_dashboard',
+    maxEntries: 512,
+    maxWeight: 16 * 1024 * 1024,
+    ttlMs: ownerDashboardCacheTtlMs,
+  });
 
   function dashboardCacheKey(mqttUsername: string): string {
     return `u:${mqttUsername.trim()}`;

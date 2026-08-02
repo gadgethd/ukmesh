@@ -1,4 +1,5 @@
 import type { ApiScope } from '../utils/api.js';
+import { canonicalNodeId } from '../utils/nodeIds.js';
 
 export interface NodeCoverage {
   node_id: string;
@@ -12,10 +13,14 @@ export interface NodeCoverage {
 }
 
 type CoverageState = {
+  scopeKey: string | null;
+  epoch: number;
   coverage: NodeCoverage[];
   loadedScopeKey: string | null;
 };
 let state: CoverageState = {
+  scopeKey: null,
+  epoch: 0,
   coverage: [],
   loadedScopeKey: null,
 };
@@ -40,9 +45,30 @@ function scopeKey(scope: ApiScope = {}): string {
   return `${scope.network ?? 'all'}|${scope.observer ?? 'all'}`;
 }
 
-function replaceCoverage(coverage: NodeCoverage[], key: string): void {
+function acceptsEpoch(epoch: number | undefined): boolean {
+  return epoch === undefined || epoch === state.epoch;
+}
+
+function reset(key: string): number {
+  const epoch = state.epoch + 1;
   setState({
-    coverage,
+    scopeKey: key,
+    epoch,
+    coverage: [],
+    loadedScopeKey: null,
+  });
+  return epoch;
+}
+
+function normalizeCoverage(entry: NodeCoverage): NodeCoverage {
+  return { ...entry, node_id: canonicalNodeId(entry.node_id) };
+}
+
+function replaceCoverage(coverage: NodeCoverage[], key: string, epoch?: number): void {
+  if (!acceptsEpoch(epoch) || key !== state.scopeKey) return;
+  setState({
+    ...state,
+    coverage: coverage.map(normalizeCoverage),
     loadedScopeKey: key,
   });
 }
@@ -53,11 +79,16 @@ function upsertCoverageBatch(
     geom: NodeCoverage['geom'];
     strength_geoms?: NodeCoverage['strength_geoms'];
   }>,
+  epoch?: number,
 ): void {
-  if (updates.length === 0) return;
-  const idsToRemove = new Set(updates.map((update) => update.node_id));
+  if (!acceptsEpoch(epoch) || updates.length === 0) return;
+  const normalizedUpdates = updates.map((update) => ({
+    ...update,
+    node_id: canonicalNodeId(update.node_id),
+  }));
+  const idsToRemove = new Set(normalizedUpdates.map((update) => update.node_id));
   const filtered = state.coverage.filter((entry) => !idsToRemove.has(entry.node_id));
-  const added = updates.map((update) => ({
+  const added = normalizedUpdates.map((update) => ({
     node_id: update.node_id,
     geom: update.geom,
     strength_geoms: update.strength_geoms,
@@ -72,16 +103,16 @@ function handleCoverageUpdate(update: {
   node_id: string;
   geom: NodeCoverage['geom'];
   strength_geoms?: NodeCoverage['strength_geoms'];
-}): void {
-  upsertCoverageBatch([update]);
+}, epoch?: number): void {
+  upsertCoverageBatch([update], epoch);
 }
 
 function handleCoverageUpdateBatch(updates: Array<{
   node_id: string;
   geom: NodeCoverage['geom'];
   strength_geoms?: NodeCoverage['strength_geoms'];
-}>): void {
-  upsertCoverageBatch(updates);
+}>, epoch?: number): void {
+  upsertCoverageBatch(updates, epoch);
 }
 
 function getState(): CoverageState {
@@ -91,6 +122,7 @@ function getState(): CoverageState {
 export const coverageStore = {
   subscribe,
   getState,
+  reset,
   replaceCoverage,
   handleCoverageUpdate,
   handleCoverageUpdateBatch,

@@ -1,5 +1,25 @@
 import { rateLimit } from 'express-rate-limit';
 
+export function parseApiRateLimitMax(
+  value = process.env['API_RATE_LIMIT_MAX'],
+): number {
+  const parsed = Number(value ?? 120);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 1_000_000) {
+    throw new Error('API_RATE_LIMIT_MAX must be an integer from 1 to 1000000');
+  }
+  return parsed;
+}
+
+export function createGlobalApiLimiter() {
+  return rateLimit({
+    windowMs: 60_000,
+    max: parseApiRateLimitMax(),
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many requests, please slow down' },
+  });
+}
+
 export const OWNER_LOGIN_LIMITER = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 8,
@@ -70,6 +90,14 @@ export const NODES_LIMITER = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many node requests, slow down' },
+});
+
+export const TELEMETRY_LIMITER = rateLimit({
+  windowMs: 60_000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many diagnostic reports' },
 });
 
 // Exports have an independent budget so downloads do not consume the shared

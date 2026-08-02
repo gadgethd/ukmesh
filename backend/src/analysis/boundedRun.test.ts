@@ -73,3 +73,26 @@ test('bounded run can discard successful values without changing completion acco
   assert.deepEqual(result.results, []);
   assert.deepEqual(result.errors, [{ index: 1, message: 'sentinel' }]);
 });
+
+test('bounded run reports stale and propagates lease cancellation to active work', async () => {
+  const controller = new AbortController();
+  let sawAbort = false;
+  const resultPromise = runBoundedItems([1, 2], async (_value, _index, signal) => {
+    await new Promise<void>((resolve) => {
+      signal.addEventListener('abort', () => {
+        sawAbort = true;
+        resolve();
+      }, { once: true });
+    });
+  }, {
+    windowStart: new Date(0),
+    windowEnd: new Date(1),
+    deadlineMs: 5_000,
+    signal: controller.signal,
+  });
+  setImmediate(() => controller.abort(new Error('lease lost')));
+  const result = await resultPromise;
+  assert.equal(result.status, 'stale');
+  assert.equal(sawAbort, true);
+  assert.equal(result.checkpoint, 0);
+});

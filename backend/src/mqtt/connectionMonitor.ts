@@ -23,6 +23,10 @@ type ClientObservation = {
 };
 
 const clientToUsername = new Map<string, ClientObservation>();
+let monitorTimer: NodeJS.Timeout | null = null;
+let retryTimer: NodeJS.Timeout | null = null;
+let monitorInFlight: Promise<void> | null = null;
+let monitorStopping = false;
 
 function pruneClientObservations(now = Date.now()): void {
   for (const [clientId, observation] of clientToUsername) {
@@ -119,16 +123,19 @@ async function scanRange(start: number, end: number): Promise<void> {
 }
 
 export function startMqttConnectionMonitor(): void {
+  if (monitorStopping || monitorTimer || retryTimer || monitorInFlight) return;
   if (!fs.existsSync(LOG_PATH)) {
     console.warn('[conn-monitor] log not found at', LOG_PATH, '— retrying in 30s');
-    const retry = setTimeout(startMqttConnectionMonitor, 30_000);
-    retry.unref();
+    retryTimer = setTimeout(() => {
+      retryTimer = null;
+      startMqttConnectionMonitor();
+    }, 30_000);
+    retryTimer.unref();
     return;
   }
 
   let position = 0;
   let pollInFlight = false;
-  let timer: NodeJS.Timeout | null = null;
   async function init(): Promise<void> {
     const { size } = fs.statSync(LOG_PATH);
     const start = Math.max(0, size - HISTORICAL_SCAN_BYTES);
@@ -151,20 +158,44 @@ export function startMqttConnectionMonitor(): void {
     }
   }
 
-  void init().then(() => {
-    timer = setInterval(() => {
+  const initialising = init().then(() => {
+    if (monitorStopping) return;
+    monitorTimer = setInterval(() => {
       if (pollInFlight) return;
       pollInFlight = true;
-      void poll()
+      const polling = poll()
         .catch((error: Error) => console.error('[conn-monitor] poll error:', error.message))
         .finally(() => {
           pollInFlight = false;
+          if (monitorInFlight === polling) monitorInFlight = null;
         });
+      monitorInFlight = polling;
     }, POLL_INTERVAL_MS);
-    timer.unref();
+    monitorTimer.unref();
   }).catch((error: Error) => {
+    if (monitorStopping) return;
     console.error('[conn-monitor] init error:', error.message);
-    const retry = setTimeout(startMqttConnectionMonitor, 30_000);
-    retry.unref();
+    retryTimer = setTimeout(() => {
+      retryTimer = null;
+      startMqttConnectionMonitor();
+    }, 30_000);
+    retryTimer.unref();
+  }).finally(() => {
+    if (monitorInFlight === initialising) monitorInFlight = null;
   });
+  monitorInFlight = initialising;
+}
+
+export async function stopMqttConnectionMonitor(): Promise<void> {
+  monitorStopping = true;
+  if (monitorTimer) {
+    clearInterval(monitorTimer);
+    monitorTimer = null;
+  }
+  if (retryTimer) {
+    clearTimeout(retryTimer);
+    retryTimer = null;
+  }
+  await monitorInFlight;
+  monitorInFlight = null;
 }

@@ -13,23 +13,26 @@ import math
 import multiprocessing
 import os
 import random
-import subprocess
+import resource
 import tempfile
 import threading
 import time
 import datetime as dt
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 import numpy as np
 import psycopg2
 import requests
+import shapely
 from scipy.ndimage import minimum_filter as _min_filter
 from scipy.spatial import cKDTree
 import redis
 from psycopg2 import sql
 from osgeo import gdal
-from shapely.geometry import mapping, Polygon as ShapelyPolygon
+from shapely.geometry import mapping, shape as shapely_shape, Polygon as ShapelyPolygon
+from shapely.ops import unary_union
 from rf.config import (
     ANTENNA_HEIGHT_M,
     CALIBRATION_EXTRA_MARGIN_DB,
@@ -52,16 +55,24 @@ from rf.config import (
     current_usable_path_loss_db,
     radio_snr_band,
 )
-from rf.loss import compute_path_loss, compute_path_loss_from_profile
+from rf.loss import compute_path_loss, compute_prefix_path_losses
 from rf.terrain import (
+    InvalidTerrainRequest,
+    PermanentOutOfScope,
+    RetryableTerrainError,
+    build_vrt,
     build_link_vrt,
-    download_tile,
+    ensure_tiles,
+    ensure_tiles_for_link,
+    ensure_tiles_for_radius,
     load_uk_mainland,
+    raster_window_for_radius,
     radio_horizon_m,
     sample_elevation,
-    tiles_for_radius,
 )
 import link_queue_v3
+import viewshed_queue_v2
+from worker_metrics import heartbeat, record_job, start_worker_metrics
 
 gdal.UseExceptions()
 
@@ -71,6 +82,28 @@ logging.basicConfig(
     datefmt='%H:%M:%S',
 )
 log = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class Computed:
+    geom: dict
+    strength_geoms: dict[str, dict]
+    radius_m: float
+    elevation_m: float
+    stage_seconds: dict[str, float] = field(default_factory=dict)
+    peak_rss_mb: float = 0.0
+
+
+class InvalidJob(ValueError):
+    pass
+
+
+class Cancelled(RuntimeError):
+    pass
+
+
+class JobDeadlineExceeded(RetryableTerrainError):
+    pass
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -96,6 +129,8 @@ DB_APPLICATION_NAME = os.environ.get(
 
 JOB_QUEUE      = 'meshcore:viewshed_jobs'
 JOB_PENDING_SET = 'meshcore:viewshed_pending'
+JOB_PAYLOADS = 'meshcore:viewshed:payloads'
+JOB_COUNTERS = 'meshcore:viewshed:counters'
 LINK_JOB_QUEUE = 'meshcore:link_jobs'
 LIVE_CHANNEL   = 'meshcore:live'
 VIEWSHED_WORKER_HEARTBEAT = 'meshcore:viewshed:worker_heartbeat'
@@ -110,12 +145,25 @@ PLANNED_COVERAGE_QUEUE_MAX = max(
 
 COVERAGE_MODEL_VERSION = int(os.environ.get(
     'COVERAGE_MODEL_VERSION',
-    '5' if COVERAGE_MODEL == 'rf_radial_100m' else '2',
+    '7' if COVERAGE_MODEL == 'rf_radial_100m' else '2',
 ))
+COVERAGE_JOB_DEADLINE_SECONDS = max(
+    60,
+    min(3600, int(os.environ.get('COVERAGE_JOB_DEADLINE_SECONDS', '600'))),
+)
+RF_PREFIX_ENDPOINT_BATCH = max(
+    1,
+    min(512, int(os.environ.get('RF_PREFIX_ENDPOINT_BATCH', '64'))),
+)
+RF_PREFIX_RAY_BATCH = max(
+    1,
+    min(64, int(os.environ.get('RF_PREFIX_RAY_BATCH', '8'))),
+)
 MIN_LINK_OBSERVATIONS = 5  # must match backend db/index.ts
 PREFIX_AMBIGUITY_RADIUS_KM = 45.0  # only penalize same-prefix ambiguity when nodes are realistically in range
 MAX_RADIUS_M     = 100_000  # absolute cap on viewshed radius (m)
 SIMPLIFY_DEG     = 0.001    # Douglas-Peucker tolerance (~100 m)
+GEOMETRY_GRID_DEG = 1e-9    # fixed-precision overlay grid (~0.1 mm)
 N_RAYS           = 720      # number of radial rays cast from the observer
 STEP_M           = 50.0     # ray step size in metres
 ANGLE_EPS        = 1e-9     # numerical tolerance for horizon comparisons
@@ -161,6 +209,26 @@ UK_LAT_MIN = 49.5
 UK_LAT_MAX = 61.5
 UK_LON_MIN = -8.5
 UK_LON_MAX = 2.5
+
+
+def peak_rss_mb() -> float:
+    # Linux reports ru_maxrss in KiB; the production worker image is Linux.
+    return float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss) / 1024.0
+
+
+def check_job_budget(
+    deadline_monotonic: Optional[float],
+    cancellation_check: Optional[Callable[[], None]] = None,
+) -> None:
+    if cancellation_check is not None:
+        try:
+            cancellation_check()
+        except Cancelled:
+            raise
+        except Exception as exc:
+            raise Cancelled(str(exc)) from exc
+    if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
+        raise JobDeadlineExceeded('coverage job deadline exceeded')
 
 
 def is_viewshed_eligible_coordinate(lat: float, lon: float) -> bool:
@@ -501,14 +569,38 @@ def support_penalty_db(source_node_id: str, sample_lats: np.ndarray, sample_lons
     penalty = np.maximum(0.0, nearest_km - SUPPORT_NEARBY_REPEATER_KM) * SUPPORT_PENALTY_PER_KM_DB
     return np.clip(penalty, 0.0, SUPPORT_MAX_PENALTY_DB).astype(np.float32)
 
+
+def rf_search_radius_m(base_radius_m: float) -> float:
+    """Return the exact radius both terrain acquisition and RF rays must cover."""
+    return min(
+        MAX_RADIUS_M,
+        max(base_radius_m * RF_RADIUS_MULTIPLIER, RF_MIN_RADIUS_M),
+    )
+
+
+def approximate_dtm_in_place(elevation: np.ndarray) -> np.ndarray:
+    """Strip narrow DSM spikes without allocating another full-size raster."""
+    if elevation.ndim != 2 or elevation.dtype not in (np.dtype(np.int16), np.dtype(np.float32)):
+        raise ValueError('DTM raster must be a two-dimensional int16 or float32 array')
+    _min_filter(elevation, size=9, output=elevation)
+    return elevation
+
+
 def resolve_rf_radial_boundaries(node_id: str,
                                  lat: float,
                                  lon: float,
                                  elev: np.ndarray,
                                  gt: tuple[float, float, float, float, float, float],
                                  observer_h: float,
-                                 base_radius_m: float) -> tuple[dict[str, list[tuple[float, float]]], float]:
-    search_radius_m = min(MAX_RADIUS_M, max(base_radius_m * RF_RADIUS_MULTIPLIER, RF_MIN_RADIUS_M))
+                                 base_radius_m: float,
+                                 *,
+                                 deadline_monotonic: Optional[float] = None,
+                                 cancellation_check: Optional[Callable[[], None]] = None,
+                                 raster_x_offset: int = 0,
+                                 raster_y_offset: int = 0,
+                                 ) -> tuple[dict[str, list[tuple[float, float]]], float]:
+    check_job_budget(deadline_monotonic, cancellation_check)
+    search_radius_m = rf_search_radius_m(base_radius_m)
     n_rows, n_cols = elev.shape
     dpmlat = 1.0 / 111_320.0
     dpmlon = 1.0 / (111_320.0 * math.cos(math.radians(lat)))
@@ -521,36 +613,69 @@ def resolve_rf_radial_boundaries(node_id: str,
     boundaries: dict[str, list[tuple[float, float]]] = {key: [] for key in signal_thresholds}
     max_reached = 0.0
 
-    for theta_idx in range(RF_N_RAYS):
-        pt_lats = lat + sin_t[theta_idx] * ds_arr * dpmlat
-        pt_lons = lon + cos_t[theta_idx] * ds_arr * dpmlon
-        pxs = np.clip(((pt_lons - gt[0]) / gt[1]).astype(np.int32), 0, n_cols - 1)
-        pys = np.clip(((pt_lats - gt[3]) / gt[5]).astype(np.int32), 0, n_rows - 1)
-        hs = elev[pys, pxs].astype(np.float32)
+    # Materialise coordinates, raster samples, and support penalties once per
+    # job. Prefix path loss remains ray-specific, but runs in bounded NumPy
+    # endpoint batches instead of rebuilding every preceding prefix in Python.
+    pt_lats = lat + sin_t[:, None] * ds_arr[None, :] * dpmlat
+    pt_lons = lon + cos_t[:, None] * ds_arr[None, :] * dpmlon
+    # Convert in the original VRT pixel space before subtracting the integer
+    # read-window origin. Recomputing against a shifted floating-point origin
+    # can move samples on exact pixel boundaries by one cell.
+    pxs = np.clip(
+        ((pt_lons - gt[0]) / gt[1]).astype(np.int32) - raster_x_offset,
+        0,
+        n_cols - 1,
+    )
+    pys = np.clip(
+        ((pt_lats - gt[3]) / gt[5]).astype(np.int32) - raster_y_offset,
+        0,
+        n_rows - 1,
+    )
+    ray_heights = elev[pys, pxs].astype(np.float32)
+    support_penalties = support_penalty_db(
+        node_id,
+        pt_lats.reshape(-1),
+        pt_lons.reshape(-1),
+    ).reshape(pt_lats.shape)
 
-        losses: list[float] = []
-        for idx in range(len(ds_arr)):
-            dists = ds_arr[:idx + 1]
-            heights = hs[:idx + 1]
-            h_rx = float(heights[-1]) + COVERAGE_TARGET_HEIGHT_M
-            loss, _viable = compute_path_loss_from_profile(dists, heights, observer_h, h_rx)
-            losses.append(loss)
-        losses_arr = np.asarray(losses, dtype=np.float32)
-        effective_losses = losses_arr + support_penalty_db(node_id, pt_lats, pt_lons)
+    for ray_start in range(0, RF_N_RAYS, RF_PREFIX_RAY_BATCH):
+        check_job_budget(deadline_monotonic, cancellation_check)
+        ray_end = min(RF_N_RAYS, ray_start + RF_PREFIX_RAY_BATCH)
+        ray_slice = slice(ray_start, ray_end)
+        heights = ray_heights[ray_slice]
+        prefix_result = compute_prefix_path_losses(
+            ds_arr,
+            heights,
+            observer_h,
+            heights + COVERAGE_TARGET_HEIGHT_M,
+            endpoint_batch_size=RF_PREFIX_ENDPOINT_BATCH,
+            ray_batch_size=RF_PREFIX_RAY_BATCH,
+        )
+        effective_losses = (
+            prefix_result.path_loss_db
+            + support_penalties[ray_slice]
+        )
 
         for band, threshold in signal_thresholds.items():
-            passing = np.where(effective_losses <= threshold)[0]
-            if passing.size < 1:
-                end_dist = float(ds_arr[0])
-            else:
-                end_dist = float(ds_arr[int(passing[-1])])
+            passing = effective_losses <= threshold
+            any_passing = np.any(passing, axis=1)
+            last_passing = len(ds_arr) - 1 - np.argmax(
+                passing[:, ::-1],
+                axis=1,
+            )
+            end_dists = np.where(
+                any_passing,
+                ds_arr[last_passing],
+                ds_arr[0],
+            )
             if band == 'red':
-                max_reached = max(max_reached, end_dist)
-            boundaries[band].append((
-                lon + float(cos_t[theta_idx]) * end_dist * dpmlon,
-                lat + float(sin_t[theta_idx]) * end_dist * dpmlat,
+                max_reached = max(max_reached, float(np.max(end_dists)))
+            boundaries[band].extend(zip(
+                lon + cos_t[ray_slice] * end_dists * dpmlon,
+                lat + sin_t[ray_slice] * end_dists * dpmlat,
             ))
 
+    check_job_budget(deadline_monotonic, cancellation_check)
     for band_boundary in boundaries.values():
         if band_boundary:
             band_boundary.append(band_boundary[0])
@@ -572,42 +697,114 @@ def clip_and_simplify_polygon(poly) -> Optional[dict]:
     return mapping(result)
 
 
-def build_exclusive_strength_geoms(band_polys: dict[str, ShapelyPolygon]) -> dict[str, dict]:
+def require_mapped_coverage(node_id: str, geom: Optional[dict], model_name: str) -> dict:
+    """Return mapped coverage or classify a stable land-mask miss as terminal."""
+    if geom is None:
+        raise PermanentOutOfScope(
+            f'{node_id}: {model_name} coverage does not intersect the map land mask'
+        )
+    return geom
+
+
+def _polygonal_geometry(poly):
+    if poly is None or poly.is_empty:
+        return None
+    if not poly.is_valid:
+        poly = poly.buffer(0)
+    if poly.is_empty:
+        return None
+    if poly.geom_type in ('Polygon', 'MultiPolygon'):
+        return poly
+    if poly.geom_type == 'GeometryCollection':
+        polygon_parts = [
+            part for part in poly.geoms
+            if part.geom_type in ('Polygon', 'MultiPolygon') and not part.is_empty
+        ]
+        if polygon_parts:
+            return unary_union(polygon_parts)
+    return None
+
+
+def _clipped_simplified_polygon(poly):
+    if poly is None:
+        return None
+    geom = clip_and_simplify_polygon(poly)
+    return _polygonal_geometry(shapely_shape(geom)) if geom is not None else None
+
+
+def build_exclusive_strength_geoms(
+    band_polys: dict[str, ShapelyPolygon],
+    *,
+    red_outer_geom: Optional[dict] = None,
+) -> dict[str, dict]:
     """Convert nested strength polygons into exclusive green/amber/red areas.
 
     The strongest band should own the fill for a location. Without this, the
     frontend ends up stacking green over amber over red and the center reads as
     muddy yellow instead of a clean strength gradient.
     """
-    exclusive: dict[str, dict] = {}
+    red_outer = (
+        _polygonal_geometry(shapely_shape(red_outer_geom))
+        if red_outer_geom is not None
+        else _clipped_simplified_polygon(band_polys.get('red'))
+    )
+    if red_outer is None:
+        return {}
 
-    green_poly = band_polys.get('green')
-    if green_poly is not None and not green_poly.is_empty:
-        clipped_green = clip_and_simplify_polygon(green_poly)
-        if clipped_green is not None:
-            exclusive['green'] = clipped_green
+    amber_outer = _clipped_simplified_polygon(band_polys.get('amber'))
+    if amber_outer is not None:
+        amber_outer = _polygonal_geometry(shapely.intersection(
+            amber_outer,
+            red_outer,
+            grid_size=GEOMETRY_GRID_DEG,
+        ))
 
-    amber_poly = band_polys.get('amber')
-    if amber_poly is not None and not amber_poly.is_empty:
-        amber_only = amber_poly
-        if green_poly is not None and not green_poly.is_empty:
-            amber_only = amber_only.difference(green_poly)
-        clipped_amber = clip_and_simplify_polygon(amber_only)
-        if clipped_amber is not None:
-            exclusive['amber'] = clipped_amber
+    green_outer = _clipped_simplified_polygon(band_polys.get('green'))
+    if green_outer is not None:
+        green_limit = amber_outer if amber_outer is not None else red_outer
+        green_outer = _polygonal_geometry(shapely.intersection(
+            green_outer,
+            green_limit,
+            grid_size=GEOMETRY_GRID_DEG,
+        ))
 
-    red_poly = band_polys.get('red')
-    if red_poly is not None and not red_poly.is_empty:
-        red_only = red_poly
-        if amber_poly is not None and not amber_poly.is_empty:
-            red_only = red_only.difference(amber_poly)
-        elif green_poly is not None and not green_poly.is_empty:
-            red_only = red_only.difference(green_poly)
-        clipped_red = clip_and_simplify_polygon(red_only)
-        if clipped_red is not None:
-            exclusive['red'] = clipped_red
-
-    return exclusive
+    exclusive_shapes: dict[str, object] = {}
+    occupied = None
+    if green_outer is not None:
+        exclusive_shapes['green'] = green_outer
+        occupied = green_outer
+    if amber_outer is not None:
+        amber_only = _polygonal_geometry(
+            shapely.difference(
+                amber_outer,
+                occupied,
+                grid_size=GEOMETRY_GRID_DEG,
+            )
+            if occupied is not None
+            else amber_outer
+        )
+        if amber_only is not None:
+            exclusive_shapes['amber'] = amber_only
+            occupied = (
+                shapely.union_all(
+                    (occupied, amber_only),
+                    grid_size=GEOMETRY_GRID_DEG,
+                )
+                if occupied is not None
+                else amber_only
+            )
+    red_only = _polygonal_geometry(
+        shapely.difference(
+            red_outer,
+            occupied,
+            grid_size=GEOMETRY_GRID_DEG,
+        )
+        if occupied is not None
+        else red_outer
+    )
+    if red_only is not None:
+        exclusive_shapes['red'] = red_only
+    return {name: mapping(poly) for name, poly in exclusive_shapes.items()}
 
 
 UK_MAINLAND = load_uk_mainland(Path(__file__).parent, log)
@@ -615,26 +812,48 @@ UK_MAINLAND = load_uk_mainland(Path(__file__).parent, log)
 
 # ── Viewshed calculation ──────────────────────────────────────────────────────
 
-def calculate_viewshed(node_id: str, lat: float, lon: float, antenna_height_m: float = ANTENNA_HEIGHT_M) -> Optional[tuple[dict, dict[str, dict], float, float]]:
+def calculate_viewshed(
+    node_id: str,
+    lat: float,
+    lon: float,
+    antenna_height_m: float = ANTENNA_HEIGHT_M,
+    *,
+    deadline_monotonic: Optional[float] = None,
+    cancellation_check: Optional[Callable[[], None]] = None,
+) -> Computed:
+    calculation_started = time.monotonic()
+    stage_seconds: dict[str, float] = {}
+
+    def record_stage(name: str, started: float) -> None:
+        stage_seconds[name] = round(time.monotonic() - started, 6)
+
+    check_job_budget(deadline_monotonic, cancellation_check)
     if not is_viewshed_eligible_coordinate(lat, lon):
-        log.info(f'Skipping viewshed for {node_id[:12]}… outside UK coverage bounds at ({lat:.4f}, {lon:.4f})')
-        return None
+        raise PermanentOutOfScope(
+            f'coordinate outside UK coverage bounds at ({lat:.4f}, {lon:.4f})'
+        )
     with tempfile.TemporaryDirectory() as tmp:
         # 1. Download the observer's own tile and sample terrain elevation.
         #    This single tile is sufficient to determine node height; we need
         #    it before we know how far to reach for surrounding tiles.
+        stage_started = time.monotonic()
         obs_tile = (math.floor(lat), math.floor(lon))
-        obs_path = download_tile(SRTM_DIR, *obs_tile, log)
-        if not obs_path:
-            log.error(f'No SRTM tile for observer at {node_id} ({lat:.4f}, {lon:.4f})')
-            return None
+        obs_path = ensure_tiles(
+            SRTM_DIR,
+            (obs_tile,),
+            log,
+            required_tiles=(obs_tile,),
+            max_tiles=1,
+        )[0]
+        record_stage('observer_tile_acquisition', stage_started)
+        check_job_budget(deadline_monotonic, cancellation_check)
 
+        stage_started = time.monotonic()
         obs_vrt = f'{tmp}/observer.vrt'
-        subprocess.run(
-            ['gdalbuildvrt', obs_vrt, str(obs_path)],
-            capture_output=True, text=True,
-        )
+        build_vrt((obs_path,), obs_vrt)
         elevation_m = sample_elevation(obs_vrt, lat, lon)
+        record_stage('observer_vrt_and_sample', stage_started)
+        check_job_budget(deadline_monotonic, cancellation_check)
 
         # 2. Radio-horizon radius: node ASL + per-node antenna height.
         effective_height_m = elevation_m + antenna_height_m
@@ -646,32 +865,67 @@ def calculate_viewshed(node_id: str, lat: float, lon: float, antenna_height_m: f
         )
 
         # 3. Download all tiles covering the computed horizon radius
-        needed = tiles_for_radius(lat, lon, radius_m)
-        paths  = [p for t in needed if (p := download_tile(SRTM_DIR, *t, log))]
-        if not paths:
-            log.error(f'No SRTM tiles for {node_id} ({lat:.4f}, {lon:.4f})')
-            return None
+        stage_started = time.monotonic()
+        terrain_radius_m = (
+            rf_search_radius_m(radius_m)
+            if COVERAGE_MODEL == 'rf_radial_100m'
+            else radius_m
+        )
+        paths = ensure_tiles_for_radius(
+            SRTM_DIR,
+            lat,
+            lon,
+            terrain_radius_m,
+            log,
+        )
+        record_stage('coverage_tile_acquisition', stage_started)
+        check_job_budget(deadline_monotonic, cancellation_check)
 
         # 4. Merge tiles into a single VRT
+        stage_started = time.monotonic()
         vrt = f'{tmp}/input.vrt'
-        r   = subprocess.run(
-            ['gdalbuildvrt', vrt] + [str(p) for p in paths],
-            capture_output=True, text=True,
-        )
-        if r.returncode != 0:
-            log.error(f'gdalbuildvrt failed: {r.stderr}')
-            return None
+        build_vrt(paths, vrt)
+        record_stage('coverage_vrt_construction', stage_started)
+        check_job_budget(deadline_monotonic, cancellation_check)
 
-        # 5. Read entire elevation raster into memory once.
+        # 5. Read only the radius-bounded elevation window into memory once.
         #    NODATA ocean pixels (INT16 -32768) are clamped to 0 — treated as sea level.
+        stage_started = time.monotonic()
         ds   = gdal.Open(vrt)
-        gt   = ds.GetGeoTransform()   # (x_origin, px_lon, 0, y_origin, 0, px_lat)
-        elev = np.clip(
-            ds.GetRasterBand(1).ReadAsArray().astype(np.float32),
-            0, None,
+        if ds is None:
+            raise RetryableTerrainError('GDAL could not open the coverage VRT')
+        full_gt = ds.GetGeoTransform()   # (x_origin, px_lon, 0, y_origin, 0, px_lat)
+        band = ds.GetRasterBand(1)
+        if band is None:
+            ds = None
+            raise RetryableTerrainError('coverage VRT has no elevation band')
+        x_offset, y_offset, x_size, y_size, _window_gt = raster_window_for_radius(
+            full_gt,
+            ds.RasterXSize,
+            ds.RasterYSize,
+            lat,
+            lon,
+            terrain_radius_m,
+            # minimum_filter(size=9) needs four real neighbouring pixels at
+            # the coverage edge. One extra pixel also absorbs float-to-index
+            # rounding at the final radial step.
+            margin_pixels=5,
         )
+        elev = band.ReadAsArray(x_offset, y_offset, x_size, y_size)
+        if elev is None:
+            ds = None
+            raise RetryableTerrainError('GDAL could not read the coverage elevation raster')
+        # SRTM is signed int16. Keep the full radius window in that native
+        # representation through the DTM filter; only the bounded ray samples
+        # are promoted to float32 later. This halves the dominant per-job
+        # raster allocation without changing any elevation values.
+        if elev.dtype != np.int16:
+            elev = elev.astype(np.int16)
+        np.maximum(elev, 0, out=elev)
         n_rows, n_cols = elev.shape
         ds = None
+        record_stage('terrain_raster_read', stage_started)
+        check_job_budget(deadline_monotonic, cancellation_check)
 
         # 5b. Approximate DTM from SRTM DSM via spatial minimum filter.
         #     SRTM is a Digital Surface Model — building heights corrupt urban
@@ -679,17 +933,28 @@ def calculate_viewshed(node_id: str, lat: float, lon: float, antenna_height_m: f
         #     A 9-pixel (~270 m for SRTM1 at 30 m/px) minimum filter strips
         #     building-height spikes while preserving genuine terrain features
         #     (hills, ridges) whose footprints are wider than ~270 m.
-        elev = _min_filter(elev, size=9)
+        stage_started = time.monotonic()
+        approximate_dtm_in_place(elev)
 
         # 5c. Re-sample observer elevation from the DTM-approximated raster.
         #     This corrects the radio-horizon radius when SRTM reads building tops.
-        obs_px = int(np.clip((lon - gt[0]) / gt[1], 0, n_cols - 1))
-        obs_py = int(np.clip((lat - gt[3]) / gt[5], 0, n_rows - 1))
+        obs_px = int(np.clip(
+            int((lon - full_gt[0]) / full_gt[1]) - x_offset,
+            0,
+            n_cols - 1,
+        ))
+        obs_py = int(np.clip(
+            int((lat - full_gt[3]) / full_gt[5]) - y_offset,
+            0,
+            n_rows - 1,
+        ))
         dtm_elev = float(elev[obs_py, obs_px])
         # Guard against coastal bleed-in: min filter near shoreline may return 0
         # (ocean NODATA) even for land pixels.  Fall back to raw SRTM in that case.
         if dtm_elev > 0.0 or elevation_m <= 0.0:
             elevation_m = dtm_elev
+        record_stage('terrain_filter_and_origin_sample', stage_started)
+        check_job_budget(deadline_monotonic, cancellation_check)
         effective_height_m = elevation_m + antenna_height_m
         radius_m = min(radio_horizon_m(effective_height_m), MAX_RADIUS_M)
         radius_m = source_support_radius_m(node_id, radius_m)
@@ -700,6 +965,7 @@ def calculate_viewshed(node_id: str, lat: float, lon: float, antenna_height_m: f
 
         observer_h = elevation_m + antenna_height_m
         strength_geoms: dict[str, dict] = {}
+        radial_started = time.monotonic()
         if COVERAGE_MODEL == 'terrain_los':
             # Vectorised raycasting terrain line-of-sight model.
             dpmlat = 1.0 / 111_320.0                                       # deg/m northward
@@ -717,8 +983,16 @@ def calculate_viewshed(node_id: str, lat: float, lon: float, antenna_height_m: f
             pt_lons = lon + cos_t * ds_arr[None, :] * dpmlon   # (N, M)
 
             # Pixel indices — clamped to raster bounds (N, M)
-            pxs = np.clip(((pt_lons - gt[0]) / gt[1]).astype(np.int32), 0, n_cols - 1)
-            pys = np.clip(((pt_lats - gt[3]) / gt[5]).astype(np.int32), 0, n_rows - 1)
+            pxs = np.clip(
+                ((pt_lons - full_gt[0]) / full_gt[1]).astype(np.int32) - x_offset,
+                0,
+                n_cols - 1,
+            )
+            pys = np.clip(
+                ((pt_lats - full_gt[3]) / full_gt[5]).astype(np.int32) - y_offset,
+                0,
+                n_rows - 1,
+            )
 
             # Terrain heights at each ray step: (N, M)
             hs = elev[pys, pxs]
@@ -742,14 +1016,29 @@ def calculate_viewshed(node_id: str, lat: float, lon: float, antenna_height_m: f
             boundary = list(zip(lons_b.tolist(), lats_b.tolist()))
             boundary.append(boundary[0])
             poly = ShapelyPolygon(boundary)
-            clipped = clip_and_simplify_polygon(poly)
-            if clipped is None:
-                log.warning(f'{node_id}: degenerate geometry after clipping — skipping')
-                return None
-            geom = clipped
+            geom = require_mapped_coverage(
+                node_id,
+                clip_and_simplify_polygon(poly),
+                'terrain',
+            )
             strength_geoms = {'green': geom}
         elif COVERAGE_MODEL == 'rf_radial_100m':
-            band_boundaries, radius_m = resolve_rf_radial_boundaries(node_id, lat, lon, elev, gt, observer_h, radius_m)
+            band_boundaries, radius_m = resolve_rf_radial_boundaries(
+                node_id,
+                lat,
+                lon,
+                elev,
+                full_gt,
+                observer_h,
+                radius_m,
+                deadline_monotonic=deadline_monotonic,
+                cancellation_check=cancellation_check,
+                raster_x_offset=x_offset,
+                raster_y_offset=y_offset,
+            )
+            record_stage('radial_calculation', radial_started)
+            check_job_budget(deadline_monotonic, cancellation_check)
+            polygon_started = time.monotonic()
             raw_band_polys: dict[str, ShapelyPolygon] = {}
             for band, band_boundary in band_boundaries.items():
                 if len(band_boundary) < 4:
@@ -757,18 +1046,41 @@ def calculate_viewshed(node_id: str, lat: float, lon: float, antenna_height_m: f
                 band_poly = ShapelyPolygon(band_boundary)
                 if not band_poly.is_empty:
                     raw_band_polys[band] = band_poly
-            strength_geoms = build_exclusive_strength_geoms(raw_band_polys)
-            geom = clip_and_simplify_polygon(raw_band_polys.get('red')) if raw_band_polys.get('red') is not None else None
-            if geom is None:
-                log.warning(f'{node_id}: degenerate RF coverage geometry after clipping — skipping')
-                return None
+            geom = require_mapped_coverage(
+                node_id,
+                (
+                    clip_and_simplify_polygon(raw_band_polys.get('red'))
+                    if raw_band_polys.get('red') is not None
+                    else None
+                ),
+                'RF',
+            )
+            strength_geoms = build_exclusive_strength_geoms(
+                raw_band_polys,
+                red_outer_geom=geom,
+            )
+            record_stage('polygonization_and_clipping', polygon_started)
         else:
-            raise ValueError(f'Unknown COVERAGE_MODEL={COVERAGE_MODEL}')
-        return geom, strength_geoms, radius_m, elevation_m
+            raise InvalidJob(f'Unknown COVERAGE_MODEL={COVERAGE_MODEL}')
+        if 'radial_calculation' not in stage_seconds:
+            record_stage('radial_calculation', radial_started)
+        check_job_budget(deadline_monotonic, cancellation_check)
+        stage_seconds['calculation_total'] = round(
+            time.monotonic() - calculation_started,
+            6,
+        )
+        return Computed(
+            geom,
+            strength_geoms,
+            radius_m,
+            elevation_m,
+            stage_seconds,
+            peak_rss_mb(),
+        )
 
 # ── DB helpers ────────────────────────────────────────────────────────────────
 
-def already_calculated(db, node_id: str) -> bool:
+def already_calculated(db, node_id: str, *, require_predicted_links: bool = False) -> bool:
     with db.cursor() as cur:
         cur.execute(
             '''SELECT 1
@@ -776,28 +1088,92 @@ def already_calculated(db, node_id: str) -> bool:
                LEFT JOIN nodes n ON n.node_id = nc.node_id
                WHERE nc.node_id = %s
                  AND nc.model_version >= %s
+                 AND nc.calculation_status IN ('computed', 'permanent')
+                 AND (%s IS FALSE OR nc.predicted_links IS NOT NULL OR nc.calculation_status = 'permanent')
                  AND (n.node_id IS NULL OR n.elevation_m IS NOT NULL)''',
-            (node_id, COVERAGE_MODEL_VERSION),
+            (node_id, COVERAGE_MODEL_VERSION, require_predicted_links),
         )
         return cur.fetchone() is not None
 
-def store_coverage(db, node_id: str, geom: dict, strength_geoms: dict[str, dict], radius_m: float, elevation_m: float, antenna_height_m: float = ANTENNA_HEIGHT_M):
+def store_coverage(
+    db,
+    node_id: str,
+    geom: dict,
+    strength_geoms: dict[str, dict],
+    radius_m: float,
+    elevation_m: float,
+    antenna_height_m: float = ANTENNA_HEIGHT_M,
+    *,
+    commit: bool = True,
+):
     with db.cursor() as cur:
         cur.execute(
-            '''INSERT INTO node_coverage (node_id, geom, strength_geoms, antenna_height_m, radius_m, model_version)
-               VALUES (%s, %s::jsonb, %s::jsonb, %s, %s, %s)
+            '''INSERT INTO node_coverage (
+                   node_id, geom, strength_geoms, antenna_height_m, radius_m,
+                   model_version, calculation_status, permanent_reason,
+                   last_error, retry_after
+               )
+               VALUES (%s, %s::jsonb, %s::jsonb, %s, %s, %s, 'computed', NULL, NULL, NULL)
                ON CONFLICT (node_id) DO UPDATE
                  SET geom = EXCLUDED.geom,
                      strength_geoms = EXCLUDED.strength_geoms,
                      antenna_height_m = EXCLUDED.antenna_height_m,
                      radius_m = EXCLUDED.radius_m,
                      model_version = EXCLUDED.model_version,
+                     calculation_status = 'computed',
+                     permanent_reason = NULL,
+                     last_error = NULL,
+                     retry_after = NULL,
                      calculated_at = NOW()''',
             (node_id, json.dumps(geom), json.dumps(strength_geoms), antenna_height_m, radius_m, COVERAGE_MODEL_VERSION),
         )
         cur.execute(
             'UPDATE nodes SET elevation_m = %s WHERE node_id = %s',
             (round(elevation_m, 1), node_id),
+        )
+    if commit:
+        db.commit()
+
+
+def store_permanent_coverage(
+    db,
+    node_id: str,
+    reason: str,
+    *,
+    antenna_height_m: float = ANTENNA_HEIGHT_M,
+    is_planned: bool = False,
+) -> None:
+    safe_reason = str(reason).strip()[:240] or 'unsupported'
+    with db.cursor() as cur:
+        cur.execute(
+            '''INSERT INTO node_coverage (
+                   node_id, geom, strength_geoms, antenna_height_m, radius_m,
+                   model_version, calculation_status, permanent_reason,
+                   last_error, retry_after, is_planned
+               )
+               VALUES (
+                   %s, '{"type":"Polygon","coordinates":[]}'::jsonb, NULL,
+                   %s, NULL, %s, 'permanent', %s, NULL, NULL, %s
+               )
+               ON CONFLICT (node_id) DO UPDATE
+                 SET geom = EXCLUDED.geom,
+                     strength_geoms = NULL,
+                     antenna_height_m = EXCLUDED.antenna_height_m,
+                     radius_m = NULL,
+                     model_version = EXCLUDED.model_version,
+                     calculation_status = 'permanent',
+                     permanent_reason = EXCLUDED.permanent_reason,
+                     last_error = NULL,
+                     retry_after = NULL,
+                     is_planned = EXCLUDED.is_planned,
+                     calculated_at = NOW()''',
+            (
+                node_id,
+                antenna_height_m,
+                COVERAGE_MODEL_VERSION,
+                safe_reason,
+                is_planned,
+            ),
         )
     db.commit()
 
@@ -873,23 +1249,57 @@ def get_link_topology(db, required_node_ids: tuple[str, ...] = ()) -> tuple[dict
 
 # Cap how many nearby repeaters a planned repeater is path-loss tested against,
 # to bound the synchronous compute performed inside a single viewshed job.
-MAX_PLANNED_LINK_PEERS = int(os.environ.get('MAX_PLANNED_LINK_PEERS', '60'))
+MAX_PLANNED_LINK_PEERS = max(
+    1,
+    min(200, int(os.environ.get('MAX_PLANNED_LINK_PEERS', '60'))),
+)
 
 
 def compute_planned_links(db, lat: float, lon: float, elevation_m: float,
                           radius_m: Optional[float],
-                          antenna_height_m: float = ANTENNA_HEIGHT_M) -> list[dict]:
+                          antenna_height_m: float = ANTENNA_HEIGHT_M,
+                          *,
+                          stage_seconds: Optional[dict[str, float]] = None,
+                          deadline_monotonic: Optional[float] = None,
+                          cancellation_check: Optional[Callable[[], None]] = None,
+                          ) -> list[dict]:
     """Predict viable RF links from a hypothetical repeater at (lat, lon) to nearby
     real positioned repeaters, using the same ITM path-loss model as physical links.
 
     Returns a list of {peer_id, peer_name, itm_path_loss_db, itm_viable, distance_km}
     for peers the planned repeater would reach, ordered best (lowest loss) first.
     """
+    check_job_budget(deadline_monotonic, cancellation_check)
+    timings = stage_seconds if stage_seconds is not None else {}
     origin = {'lat': lat, 'lon': lon, 'radius_m': radius_m, 'elevation_m': elevation_m}
     origin_radius_km = physical_candidate_radius_km(radius_m)
 
+    peer_lookup_started = time.monotonic()
+    all_nodes, _physical_pairs = get_link_topology(db)
+    support_tree: Optional[cKDTree] = SUPPORT_CONTEXT['tree']
+    support_node_ids: list[str] = SUPPORT_CONTEXT['node_ids']
+    if support_tree is not None and support_node_ids:
+        origin_xy = project_xy_km([lat], [lon])[0]
+        nearby_indices = support_tree.query_ball_point(
+            origin_xy,
+            # The tree uses one UK reference latitude. Over-query so its
+            # equirectangular longitude scale cannot exclude a true candidate;
+            # node_dist_km applies the exact bounded filter below.
+            r=MAX_PHYSICAL_LINK_RADIUS_KM * 1.35,
+        )
+        candidate_ids = [
+            support_node_ids[int(index)]
+            for index in nearby_indices
+            if int(index) < len(support_node_ids)
+        ]
+    else:
+        candidate_ids = list(all_nodes)
+
     candidates: list[tuple[float, str, dict]] = []
-    for peer_id, peer in load_positioned_repeaters(db).items():
+    for peer_id in candidate_ids:
+        peer = all_nodes.get(peer_id)
+        if peer is None:
+            continue
         if peer.get('lat') is None or peer.get('lon') is None:
             continue
         dist_km = node_dist_km(origin, peer)
@@ -899,41 +1309,83 @@ def compute_planned_links(db, lat: float, lon: float, elevation_m: float,
         candidates.append((dist_km, peer_id, peer))
     candidates.sort(key=lambda c: c[0])
     candidates = candidates[:MAX_PLANNED_LINK_PEERS]
+    timings['planned_peer_lookup'] = round(
+        time.monotonic() - peer_lookup_started,
+        6,
+    )
+    check_job_budget(deadline_monotonic, cancellation_check)
+    if not candidates:
+        return []
 
     links: list[dict] = []
     with tempfile.TemporaryDirectory() as tmp:
+        tile_started = time.monotonic()
+        terrain_paths: dict[str, Path] = {}
+        terrain_candidates: list[tuple[float, str, dict]] = []
         for dist_km, peer_id, peer in candidates:
+            check_job_budget(deadline_monotonic, cancellation_check)
             try:
-                # Ensure SRTM tiles spanning the link bbox are available locally.
-                lat_lo, lat_hi = math.floor(min(lat, peer['lat'])), math.floor(max(lat, peer['lat']))
-                lon_lo, lon_hi = math.floor(min(lon, peer['lon'])), math.floor(max(lon, peer['lon']))
-                for lt in range(lat_lo, lat_hi + 1):
-                    for ln in range(lon_lo, lon_hi + 1):
-                        download_tile(SRTM_DIR, lt, ln, log)
-                vrt = build_link_vrt(lat, lon, peer['lat'], peer['lon'], tmp, SRTM_DIR)
-                if not vrt:
-                    continue
+                paths = ensure_tiles_for_link(
+                    SRTM_DIR,
+                    lat,
+                    lon,
+                    peer['lat'],
+                    peer['lon'],
+                    log,
+                )
+                for path in paths:
+                    terrain_paths[str(path)] = path
+                terrain_candidates.append((dist_km, peer_id, peer))
+            except PermanentOutOfScope as exc:
+                log.info(f'Planned link {peer_id[:8]}… is outside terrain scope: {exc}')
+        timings['planned_tile_acquisition'] = round(
+            time.monotonic() - tile_started,
+            6,
+        )
+        if not terrain_candidates:
+            return []
+
+        check_job_budget(deadline_monotonic, cancellation_check)
+        vrt_started = time.monotonic()
+        vrt = f'{tmp}/planned-links.vrt'
+        build_vrt(terrain_paths.values(), vrt)
+        timings['planned_vrt_construction'] = round(
+            time.monotonic() - vrt_started,
+            6,
+        )
+
+        link_started = time.monotonic()
+        for dist_km, peer_id, peer in terrain_candidates:
+            check_job_budget(deadline_monotonic, cancellation_check)
+            try:
                 peer_elev = peer.get('elevation_m')
                 if peer_elev is None:
                     peer_elev = sample_elevation(vrt, peer['lat'], peer['lon'])
-                path_loss_db, itm_viable = compute_path_loss(
+                result = compute_path_loss(
                     lat, lon, elevation_m,
                     peer['lat'], peer['lon'], peer_elev,
                     vrt,
                     antenna_height_m_tx=antenna_height_m,
                     antenna_height_m_rx=peer.get('antenna_height_m', ANTENNA_HEIGHT_M),
                 )
-                if not itm_viable:
+                if not result.viable:
                     continue
                 links.append({
                     'peer_id': peer_id,
                     'peer_name': peer.get('name'),
-                    'itm_path_loss_db': round(float(path_loss_db), 1),
+                    'itm_path_loss_db': round(float(result.path_loss_db), 1),
                     'itm_viable': True,
                     'distance_km': round(dist_km, 1),
                 })
             except Exception as exc:
-                log.warning(f'Planned link {peer_id[:8]}…: path loss failed: {exc}')
+                raise RetryableTerrainError(
+                    f'planned link {peer_id[:8]} path loss failed: {exc}'
+                ) from exc
+        timings['planned_per_link_calculation'] = round(
+            time.monotonic() - link_started,
+            6,
+        )
+    check_job_budget(deadline_monotonic, cancellation_check)
     links.sort(key=lambda link: link['itm_path_loss_db'])
     return links
 
@@ -1005,9 +1457,15 @@ def ensure_physical_link_metrics(db, a_id: str, a: dict, b_id: str, b: dict):
         return obs_count, path_loss_db, itm_viable, count_a_to_b, count_b_to_a, multibyte_obs
 
     with tempfile.TemporaryDirectory() as tmp:
+        ensure_tiles_for_link(
+            SRTM_DIR,
+            a['lat'],
+            a['lon'],
+            b['lat'],
+            b['lon'],
+            log,
+        )
         vrt = build_link_vrt(a['lat'], a['lon'], b['lat'], b['lon'], tmp, SRTM_DIR)
-        if not vrt:
-            return obs_count, path_loss_db, itm_viable, count_a_to_b, count_b_to_a, multibyte_obs
         try:
             a_elev = a.get('elevation_m')
             b_elev = b.get('elevation_m')
@@ -1027,30 +1485,34 @@ def ensure_physical_link_metrics(db, a_id: str, a: dict, b_id: str, b: dict):
                         'UPDATE nodes SET elevation_m = %s WHERE node_id = %s AND elevation_m IS NULL',
                         (round(b_elev, 1), b_id),
                     )
-            path_loss_db, itm_viable = compute_path_loss(
+            result = compute_path_loss(
                 a['lat'], a['lon'], a_elev,
                 b['lat'], b['lon'], b_elev,
                 vrt,
                 antenna_height_m_tx=a.get('antenna_height_m', ANTENNA_HEIGHT_M),
                 antenna_height_m_rx=b.get('antenna_height_m', ANTENNA_HEIGHT_M),
             )
-            path_loss_db = round(path_loss_db, 1)
+            path_loss_db = round(result.path_loss_db, 1)
+            itm_viable = result.viable
             with db.cursor() as cur:
                 cur.execute(
                     '''UPDATE node_links
                        SET itm_path_loss_db = %s,
                            itm_viable = %s,
-                           itm_computed_at = NOW()
+                           itm_computed_at = NOW(),
+                           terrain_profile_json = %s::jsonb
                        WHERE node_a_id = %s AND node_b_id = %s''',
-                    (path_loss_db, itm_viable, a_id, b_id),
+                    (path_loss_db, itm_viable, json.dumps(result.profile), a_id, b_id),
                 )
             log.info(
                 f'Link {a_id[:8]}…↔{b_id[:8]}…: '
                 f'{path_loss_db:.1f} dB {"✓" if itm_viable else "✗"} '
                 f'(obs={obs_count})'
             )
+        except (PermanentOutOfScope, InvalidTerrainRequest):
+            raise
         except Exception as exc:
-            log.warning(f'Path loss computation failed: {exc}')
+            raise RetryableTerrainError(f'path loss computation failed: {exc}') from exc
 
     return obs_count, path_loss_db, itm_viable, count_a_to_b, count_b_to_a, multibyte_obs
 
@@ -1234,7 +1696,7 @@ def redis_connection():
 def process_claimed_link_job(db, r_client, claimed) -> None:
     job_id, token, job, _attempt = claimed
     try:
-        with link_queue_v3.LeaseRenewer(redis_connection, job_id, token):
+        with link_queue_v3.LeaseRenewer(redis_connection, job_id, token) as renewer:
             db.autocommit = False
             try:
                 with db.cursor() as cur:
@@ -1266,6 +1728,9 @@ def process_claimed_link_job(db, r_client, claimed) -> None:
                             "SELECT pg_advisory_xact_lock(hashtext('meshcore-link-graph-write'))"
                         )
                         process_link_job(db, r_client, job)
+                        renewer.assert_owned()
+                        if not link_queue_v3.owns_lease(r_client, job_id, token):
+                            raise RuntimeError(f'LINK_LEASE_LOST:{job_id}')
                         payload_hash = hashlib.sha256(
                             json.dumps(job, separators=(',', ':'), sort_keys=True).encode()
                         ).hexdigest()
@@ -1292,8 +1757,10 @@ def process_claimed_link_job(db, r_client, claimed) -> None:
                     LINK_TOPOLOGY['updated_at'] = 0.0
         if not link_queue_v3.ack(r_client, job_id, token):
             log.warning(f'Link v3 ACK rejected for {job_id}')
-    except Exception:
-        result = link_queue_v3.nack(r_client, job_id, token)
+        record_job('link', 'job', 'success')
+    except Exception as exc:
+        result = link_queue_v3.nack(r_client, job_id, token, type(exc).__name__)
+        record_job('link', 'job', 'failure')
         log.exception(f'Link v3 job {job_id} failed; transition={result}')
         raise
 
@@ -1363,14 +1830,28 @@ def enqueue_uncovered(db, r_client):
     if rows:
         log.info(f'Queuing {len(rows)} existing node(s) for viewshed calculation (model v{COVERAGE_MODEL_VERSION})')
         for node_id, lat, lon in rows:
-            if r_client.sadd(JOB_PENDING_SET, node_id):
-                r_client.lpush(JOB_QUEUE, json.dumps({'node_id': node_id, 'lat': lat, 'lon': lon}))
+            status, _ = viewshed_queue_v2.admit(
+                r_client,
+                {
+                    'version': 2,
+                    'node_id': node_id,
+                    'lat': lat,
+                    'lon': lon,
+                    'model_version': COVERAGE_MODEL_VERSION,
+                },
+            )
+            if status not in ('accepted', 'coalesced', 'dead'):
+                log.warning(f'Coverage startup job {node_id[:12]}… was not admitted: {status}')
 
 def rebuild_pending_viewshed_set(r_client):
-    """Rebuild the pending-node set from the current queue contents on startup."""
+    """Rebuild the dedupe set from v2 state plus any legacy queue entries."""
     r_client.delete(JOB_PENDING_SET)
+    node_ids = [
+        str(job_id)
+        for job_id, state in r_client.hgetall(viewshed_queue_v2.STATES).items()
+        if state in ('queued', 'in_flight', 'dead')
+    ]
     raw_jobs = r_client.lrange(JOB_QUEUE, 0, -1)
-    node_ids = []
     for raw in raw_jobs:
         try:
             job = json.loads(raw)
@@ -1426,13 +1907,18 @@ def recover_planned_coverage_jobs(db, r_client) -> int:
     db.commit()
     queued = 0
     for job_id, lat, lon in rows:
-        if r_client.sadd(JOB_PENDING_SET, job_id):
-            r_client.lpush(JOB_QUEUE, json.dumps({
+        status, _ = viewshed_queue_v2.admit(
+            r_client,
+            {
+                'version': 2,
                 'node_id': job_id,
                 'planned_job_id': job_id,
                 'lat': lat,
                 'lon': lon,
-            }))
+                'model_version': COVERAGE_MODEL_VERSION,
+            },
+        )
+        if status in ('accepted', 'coalesced'):
             queued += 1
     if queued:
         log.warning(f'Recovered {queued} durable planned coverage job(s)')
@@ -1486,8 +1972,15 @@ class PlannedJobHeartbeat:
         self.thread.join(timeout=5)
 
 
-def process_planned_job(db, r_client, job: dict) -> None:
+def process_planned_job(
+    db,
+    r_client,
+    job: dict,
+    *,
+    cancellation_check: Optional[Callable[[], None]] = None,
+) -> None:
     job_id = str(job['planned_job_id'])
+    check_job_budget(None, cancellation_check)
     with db.cursor() as cur:
         cur.execute(
             '''UPDATE planned_coverage_jobs
@@ -1497,12 +1990,17 @@ def process_planned_job(db, r_client, job: dict) -> None:
             (job_id,),
         )
         if cur.fetchone() is None:
-            r_client.srem(JOB_PENDING_SET, job_id)
             return
     db.commit()
     try:
         with PlannedJobHeartbeat(job_id):
-            process_job(db, r_client, job)
+            process_job(
+                db,
+                r_client,
+                job,
+                cancellation_check=cancellation_check,
+            )
+        check_job_budget(None, cancellation_check)
         expires_at = dt.datetime.now(dt.timezone.utc) + dt.timedelta(seconds=PLANNED_RESULT_TTL_S)
         with db.cursor() as cur:
             cur.execute(
@@ -1523,6 +2021,22 @@ def process_planned_job(db, r_client, job: dict) -> None:
                 (expires_at, job_id),
             )
         db.commit()
+    except Cancelled:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        raise
+    except PermanentOutOfScope as exc:
+        with db.cursor() as cur:
+            cur.execute(
+                '''UPDATE planned_coverage_jobs
+                      SET status = 'permanent', error = %s, heartbeat_at = NOW(), updated_at = NOW()
+                    WHERE job_id = %s''',
+                (str(exc)[:500], job_id),
+            )
+        db.commit()
+        log.info(f'Planned coverage job {job_id} has a permanent outcome: {exc}')
     except Exception as exc:
         with db.cursor() as cur:
             cur.execute(
@@ -1536,27 +2050,59 @@ def process_planned_job(db, r_client, job: dict) -> None:
 
 # ── Job processor ─────────────────────────────────────────────────────────────
 
-def process_job(db, r_client, job: dict):
-    node_id = job['node_id']
-    lat     = float(job['lat'])
-    lon     = float(job['lon'])
+RELEASE_VIEWSHED_PAYLOAD_SCRIPT = """
+local current = redis.call('HGET', KEYS[1], ARGV[1])
+if current and current == ARGV[2] then
+  redis.call('HDEL', KEYS[1], ARGV[1])
+  local bytes = math.max(0, tonumber(redis.call('HGET', KEYS[2], 'bytes') or '0') - string.len(ARGV[2]))
+  redis.call('HSET', KEYS[2], 'bytes', bytes)
+  return bytes
+end
+return tonumber(redis.call('HGET', KEYS[2], 'bytes') or '0')
+"""
+
+
+def release_viewshed_queue_payload(r_client, job: dict, raw_payload: str) -> int:
+    """Release producer-side byte accounting immediately after BRPOP."""
+    node_id = str(job.get('node_id') or '')
+    if not node_id:
+        return 0
+    return int(r_client.eval(
+        RELEASE_VIEWSHED_PAYLOAD_SCRIPT,
+        2,
+        JOB_PAYLOADS,
+        JOB_COUNTERS,
+        node_id,
+        raw_payload,
+    ))
+
+def process_job(
+    db,
+    r_client,
+    job: dict,
+    *,
+    cancellation_check: Optional[Callable[[], None]] = None,
+):
+    job_started = time.monotonic()
+    deadline_monotonic = job_started + COVERAGE_JOB_DEADLINE_SECONDS
+    stage_seconds: dict[str, float] = {}
+    check_job_budget(deadline_monotonic, cancellation_check)
+    node_id = str(job.get('node_id') or '').strip()
+    if not node_id or len(node_id) > 128:
+        raise InvalidJob('node_id is required and must be at most 128 characters')
+    is_planned = bool(node_id.startswith('plan_') or job.get('planned_job_id'))
+    try:
+        lat = float(job['lat'])
+        lon = float(job['lon'])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise InvalidJob('lat and lon must be finite numbers') from exc
+    if not all(math.isfinite(value) for value in (lat, lon)):
+        raise InvalidJob('lat and lon must be finite numbers')
     try:
         if not is_viewshed_eligible_coordinate(lat, lon):
-            log.info(f'Skipping out-of-UK viewshed job {node_id[:12]}… at ({lat:.4f}, {lon:.4f})')
-            # Write placeholder so this node isn't re-queued on restart
-            with db.cursor() as cur:
-                cur.execute(
-                    '''INSERT INTO node_coverage (node_id, geom, strength_geoms, antenna_height_m, radius_m, model_version)
-                       VALUES (%s, '{"type":"Polygon","coordinates":[]}'::jsonb, NULL, %s, NULL, %s)
-                       ON CONFLICT (node_id) DO UPDATE
-                         SET geom = '{"type":"Polygon","coordinates":[]}'::jsonb,
-                             strength_geoms = NULL,
-                             model_version = EXCLUDED.model_version,
-                             calculated_at = NOW()''',
-                    (node_id, ANTENNA_HEIGHT_M, COVERAGE_MODEL_VERSION),
-                )
-            db.commit()
-            return
+            raise PermanentOutOfScope(
+                f'coordinate outside UK coverage bounds at ({lat:.4f}, {lon:.4f})'
+            )
         # Skip hidden (🚫) or non-repeater nodes regardless of how the job arrived
         with db.cursor() as cur:
             cur.execute(
@@ -1579,47 +2125,78 @@ def process_job(db, r_client, job: dict):
                 log.info(f'Skipping non-repeater {node_id[:12]}… (role={role})')
                 return
 
-        if already_calculated(db, node_id):
+        if already_calculated(db, node_id, require_predicted_links=is_planned):
             log.info(f'Coverage already exists for {node_id[:12]}…, skipping')
             return
 
         log.info(f'Viewshed: {node_id[:12]}… at ({lat:.4f}, {lon:.4f})')
-        t0     = time.time()
-        result = calculate_viewshed(node_id, lat, lon, antenna_height_m=node_antenna_height_m)
-        if result is None:
-            # Write an empty-geom placeholder so this node isn't re-queued on restart
-            with db.cursor() as cur:
-                cur.execute(
-                    '''INSERT INTO node_coverage (node_id, geom, strength_geoms, antenna_height_m, radius_m, model_version)
-                       VALUES (%s, '{"type":"Polygon","coordinates":[]}'::jsonb, NULL, %s, NULL, %s)
-                       ON CONFLICT (node_id) DO UPDATE
-                         SET geom = '{"type":"Polygon","coordinates":[]}'::jsonb,
-                             strength_geoms = NULL,
-                             model_version = EXCLUDED.model_version,
-                             calculated_at = NOW()''',
-                    (node_id, node_antenna_height_m, COVERAGE_MODEL_VERSION),
-                )
-            db.commit()
-            return
-
-        geom, strength_geoms, radius_m, elevation_m = result
-        store_coverage(db, node_id, geom, strength_geoms, radius_m, elevation_m, antenna_height_m=node_antenna_height_m)
-        if node_id.startswith('plan_') or job.get('planned_job_id'):
+        result = calculate_viewshed(
+            node_id,
+            lat,
+            lon,
+            antenna_height_m=node_antenna_height_m,
+            deadline_monotonic=deadline_monotonic,
+            cancellation_check=cancellation_check,
+        )
+        stage_seconds.update(result.stage_seconds)
+        geom = result.geom
+        strength_geoms = result.strength_geoms
+        radius_m = result.radius_m
+        elevation_m = result.elevation_m
+        predicted: Optional[list[dict]] = None
+        if is_planned:
             # Planned (hypothetical) repeater: predict viable links to nearby real
             # repeaters in-line so the result is ready when the user polls coverage.
-            try:
-                predicted = compute_planned_links(
-                    db, lat, lon, elevation_m, radius_m, antenna_height_m=node_antenna_height_m,
-                )
-                store_planned_links(db, node_id, predicted)
-                log.info(f'Planned repeater {node_id}: {len(predicted)} predicted link(s)')
-            except Exception as exc:
-                log.warning(f'Planned link computation failed for {node_id}: {exc}')
+            predicted = compute_planned_links(
+                db, lat, lon, elevation_m, radius_m, antenna_height_m=node_antenna_height_m,
+                stage_seconds=stage_seconds,
+                deadline_monotonic=deadline_monotonic,
+                cancellation_check=cancellation_check,
+            )
+        check_job_budget(deadline_monotonic, cancellation_check)
+        db_write_started = time.monotonic()
+        store_coverage(
+            db,
+            node_id,
+            geom,
+            strength_geoms,
+            radius_m,
+            elevation_m,
+            antenna_height_m=node_antenna_height_m,
+            commit=not is_planned,
+        )
+        if is_planned:
+            assert predicted is not None
+            store_planned_links(db, node_id, predicted)
+            log.info(f'Planned repeater {node_id}: {len(predicted)} predicted link(s)')
         elif WORKER_MODE in ('all', 'link'):
             queued_links = enqueue_physical_link_jobs_for_node(db, r_client, node_id, lat, lon, radius_m)
             if queued_links > 0:
                 log.info(f'Queued {queued_links} physical link job(s) for {node_id[:12]}…')
-        log.info(f'Done in {time.time() - t0:.1f}s — notifying frontend')
+        stage_seconds['database_write'] = round(
+            time.monotonic() - db_write_started,
+            6,
+        )
+        check_job_budget(deadline_monotonic, cancellation_check)
+        duration_seconds = round(time.monotonic() - job_started, 6)
+        log.info(
+            'coverage_job_metrics %s',
+            json.dumps(
+                {
+                    'node_id': node_id,
+                    'is_planned': is_planned,
+                    'model': COVERAGE_MODEL,
+                    'model_version': COVERAGE_MODEL_VERSION,
+                    'duration_seconds': duration_seconds,
+                    'peak_rss_mb': max(result.peak_rss_mb, peak_rss_mb()),
+                    'stage_seconds': stage_seconds,
+                    'predicted_link_count': len(predicted or []),
+                },
+                sort_keys=True,
+                separators=(',', ':'),
+            ),
+        )
+        log.info(f'Done in {duration_seconds:.1f}s — notifying frontend')
 
         r_client.publish(LIVE_CHANNEL, json.dumps({
             'type': 'coverage_update',
@@ -1631,8 +2208,84 @@ def process_job(db, r_client, job: dict):
             'data': {'node_id': node_id, 'elevation_m': round(elevation_m, 1)},
             'ts':   int(time.time() * 1000),
         }))
-    finally:
-        r_client.srem(JOB_PENDING_SET, node_id)
+    except PermanentOutOfScope as exc:
+        store_permanent_coverage(
+            db,
+            node_id,
+            str(exc),
+            is_planned=is_planned,
+        )
+        raise
+
+
+def process_claimed_viewshed_job(db, r_client, claimed) -> None:
+    job_id, token, job, attempt = claimed
+    permanent_outcome: Optional[PermanentOutOfScope] = None
+    try:
+        with viewshed_queue_v2.LeaseRenewer(redis_connection, job_id, token) as renewer:
+            try:
+                if job.get('planned_job_id'):
+                    process_planned_job(
+                        db,
+                        r_client,
+                        job,
+                        cancellation_check=renewer.assert_owned,
+                    )
+                else:
+                    process_job(
+                        db,
+                        r_client,
+                        job,
+                        cancellation_check=renewer.assert_owned,
+                    )
+            except PermanentOutOfScope as exc:
+                # process_job persists this explicit terminal result before
+                # raising. It is therefore safe to ACK after the lease fence.
+                permanent_outcome = exc
+            renewer.assert_owned()
+            if not viewshed_queue_v2.owns_lease(r_client, job_id, token):
+                raise RuntimeError(f'VIEWSHED_LEASE_LOST:{job_id}')
+        transition = viewshed_queue_v2.ack(r_client, job_id, token)
+        if transition == 'invalid':
+            raise RuntimeError(f'VIEWSHED_ACK_REJECTED:{job_id}')
+        if permanent_outcome is not None:
+            log.info(f'Coverage job {job_id[:12]}… completed permanently: {permanent_outcome}')
+        elif transition == 'requeued':
+            log.info(f'Coverage job {job_id[:12]}… coalesced a newer position and was requeued')
+        record_job('viewshed', 'job', 'success')
+    except InvalidJob:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        transition = viewshed_queue_v2.nack(
+            r_client,
+            job_id,
+            token,
+            permanent=True,
+            reason='InvalidJob',
+        )
+        record_job('viewshed', 'job', 'dead')
+        log.exception(
+            f'Invalid coverage job {job_id[:12]}… moved to terminal state; '
+            f'attempt={attempt} transition={transition}'
+        )
+    except Exception as exc:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        transition = viewshed_queue_v2.nack(
+            r_client,
+            job_id,
+            token,
+            reason=type(exc).__name__,
+        )
+        record_job('viewshed', 'job', 'failure')
+        log.exception(
+            f'Coverage job {job_id[:12]}… failed; attempt={attempt} transition={transition}'
+        )
+        raise
 
 # ── Main loop ─────────────────────────────────────────────────────────────────
 
@@ -1666,6 +2319,7 @@ def worker_loop():
                     if heartbeat_client is None:
                         heartbeat_client = redis_connection()
                     heartbeat_client.set(VIEWSHED_WORKER_HEARTBEAT, str(int(time.time())), ex=45)
+                    heartbeat('viewshed')
                     heartbeat_stop.wait(10)
                 except Exception as exc:
                     log.warning(f'Viewshed heartbeat reconnecting: {exc}')
@@ -1683,10 +2337,13 @@ def worker_loop():
     refresh_support_context(db, force=True)
     log.info(f'{name} ready')
     last_link_reap = 0.0
+    last_viewshed_reap = 0.0
     last_planned_recovery = 0.0
 
     while True:
         try:
+            if WORKER_MODE in ('link', 'viewshed'):
+                heartbeat(WORKER_MODE)
             if WORKER_MODE == 'viewshed' and not VIEWSHED_ENABLED:
                 time.sleep(300)
                 continue
@@ -1695,6 +2352,12 @@ def worker_loop():
                 if now - last_planned_recovery >= 30:
                     recover_planned_coverage_jobs(db, r_client)
                     last_planned_recovery = now
+                if now - last_viewshed_reap >= 5:
+                    recovered = viewshed_queue_v2.reap(r_client)
+                    if recovered:
+                        log.warning(f'Recovered {recovered} expired coverage lease(s)')
+                    viewshed_queue_v2.cleanup_dead(r_client)
+                    last_viewshed_reap = now
 
             if sync_radio_neighbors and WORKER_MODE in ('all', 'link'):
                 refresh_radio_neighbor_reports(db, r_client)
@@ -1707,6 +2370,7 @@ def worker_loop():
                     if recovered:
                         log.warning(f'Recovered {recovered} expired link lease(s)')
                     link_queue_v3.cleanup_completed(r_client)
+                    link_queue_v3.cleanup_dead(r_client)
                     last_link_reap = now
                 # Drain v3 first. Claim removes a ready entry and installs its
                 # token/lease in one Lua transition.
@@ -1722,6 +2386,12 @@ def worker_loop():
                         if raw is None:
                             break
                         process_link_job(db, r_client, json.loads(raw))
+
+            if WORKER_MODE in ('all', 'viewshed') and VIEWSHED_ENABLED:
+                claimed_viewshed = viewshed_queue_v2.claim(r_client)
+                if claimed_viewshed is not None:
+                    process_claimed_viewshed_job(db, r_client, claimed_viewshed)
+                    continue
 
             if WORKER_MODE == 'viewshed':
                 wait_queues = [JOB_QUEUE]
@@ -1739,10 +2409,14 @@ def worker_loop():
                 process_link_job(db, r_client, json.loads(raw))
             else:
                 job = json.loads(raw)
-                if job.get('planned_job_id'):
-                    process_planned_job(db, r_client, job)
-                else:
-                    process_job(db, r_client, job)
+                release_viewshed_queue_payload(r_client, job, raw)
+                try:
+                    if job.get('planned_job_id'):
+                        process_planned_job(db, r_client, job)
+                    else:
+                        process_job(db, r_client, job)
+                finally:
+                    r_client.srem(JOB_PENDING_SET, str(job.get('node_id') or ''))
         except psycopg2.errors.DeadlockDetected as exc:
             log.warning(f'{name}: database deadlock detected — rolling back and recovering: {exc}')
             try:
@@ -1816,9 +2490,15 @@ def compute_pair_diagnostics(a: dict, b: dict) -> dict:
     elev_b = float(b.get('elevation_m') or 0.0)
 
     with tempfile.TemporaryDirectory() as tmp_dir:
+        ensure_tiles_for_link(
+            SRTM_DIR,
+            float(a['lat']),
+            float(a['lon']),
+            float(b['lat']),
+            float(b['lon']),
+            log,
+        )
         vrt = build_link_vrt(float(a['lat']), float(a['lon']), float(b['lat']), float(b['lon']), tmp_dir, SRTM_DIR)
-        if vrt is None:
-            raise RuntimeError('No SRTM tiles available for this path')
 
         cos_mid = math.cos(math.radians((float(a['lat']) + float(b['lat'])) / 2))
         dlat = (float(b['lat']) - float(a['lat'])) * 111_320
@@ -1978,6 +2658,7 @@ def main():
         run_test_mode(args)
         return
 
+    start_worker_metrics(WORKER_MODE)
     log.info(
         f'Viewshed worker starting (mode={WORKER_MODE}, '
         f'coverage_model={COVERAGE_MODEL}, model_version={COVERAGE_MODEL_VERSION}, '

@@ -44,6 +44,80 @@ export const MAP_LABEL_COLORS = {
   },
 } as const;
 
+// Overlay colours are independent of the raster basemap palette. Every solid
+// marker and link colour meets the 3:1 non-text contrast threshold against its
+// theme background (#080d14 dark, #edf2f7 light).
+export const MAP_OVERLAY_COLORS = {
+  dark: {
+    repeater: '#00c4ff',
+    companion: '#ff9f43',
+    roomServer: '#a78bfa',
+    sensor: '#34d399',
+    inferred: '#7dd3fc',
+    replay: '#fbbf24',
+    stale: '#94a3b8',
+    linkOnlyStale: '#94a3b8',
+    clashRelay: '#22c55e',
+    clashOffender: '#ef4444',
+    nodeStroke: '#020617',
+    selected: '#8af4ff',
+    selectedStroke: '#ffffff',
+    selectedHalo: '#22e0ff',
+    linkUnknown: '#d1d5db',
+    linkGood: '#22c55e',
+    linkMarginal: '#fbbf24',
+    linkPoor: '#ef4444',
+    privacy: '#f59e0b',
+    clashLine: '#f97316',
+    coverageGood: '#22c55e',
+    coverageMarginal: '#fbbf24',
+    coveragePoor: '#ef4444',
+    plannedGood: '#2dd4bf',
+    plannedMarginal: '#818cf8',
+    plannedPoor: '#c084fc',
+    plannedOutline: '#22d3ee',
+    plannedPending: '#94a3b8',
+    dimmedOpacity: 0.72,
+    staleOpacity: 0.7,
+    inferredOpacity: 0.85,
+  },
+  light: {
+    repeater: '#006a8f',
+    companion: '#9a3e00',
+    roomServer: '#6d28d9',
+    sensor: '#087f5b',
+    inferred: '#0369a1',
+    replay: '#8a5d00',
+    stale: '#4b5563',
+    linkOnlyStale: '#475569',
+    clashRelay: '#087b38',
+    clashOffender: '#b91c1c',
+    nodeStroke: '#ffffff',
+    selected: '#005a7a',
+    selectedStroke: '#111827',
+    selectedHalo: '#006d8f',
+    linkUnknown: '#475569',
+    linkGood: '#087b38',
+    linkMarginal: '#8a5d00',
+    linkPoor: '#b91c1c',
+    privacy: '#8a5d00',
+    clashLine: '#a13d00',
+    coverageGood: '#087b38',
+    coverageMarginal: '#8a5d00',
+    coveragePoor: '#b91c1c',
+    plannedGood: '#0f766e',
+    plannedMarginal: '#4338ca',
+    plannedPoor: '#7e22ce',
+    plannedOutline: '#036983',
+    plannedPending: '#475569',
+    dimmedOpacity: 0.8,
+    staleOpacity: 0.7,
+    inferredOpacity: 0.85,
+  },
+} as const;
+
+export type MapTheme = keyof typeof MAP_OVERLAY_COLORS;
+
 // The no-label raster variants leave label rendering to the vector layers
 // below, so labels stay readable in both themes instead of being baked into
 // a tile with the wrong contrast.

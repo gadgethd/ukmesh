@@ -1,0 +1,3 @@
+# Trivy's YAML ignore format is used so every exception can be narrowly scoped
+# and automatically expire. There are deliberately no active waivers.
+vulnerabilities: []

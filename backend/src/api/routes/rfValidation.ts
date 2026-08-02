@@ -2,6 +2,8 @@ import type { Router } from 'express';
 import type { QueryResultRow } from 'pg';
 import { resolvePublicNetworkScope } from '../../http/requestScope.js';
 import type { NetworkFilters } from '../utils/networkFilters.js';
+import { parseBoundedInteger } from '../utils/input.js';
+import { rfValidationRows } from '../../repositories/networkAnalysis.js';
 
 type QueryFn = <T extends QueryResultRow = QueryResultRow>(text: string, params?: unknown[]) => Promise<{ rows: T[] }>;
 type Deps = {
@@ -12,51 +14,16 @@ type Deps = {
 
 export function registerRfValidationRoutes(router: Router, deps: Deps): void {
   router.get('/rf-validation', deps.limiter, async (req, res) => {
+    const limit = parseBoundedInteger(req.query['limit'], {
+      name: 'limit',
+      defaultValue: 100,
+      min: 25,
+      max: 250,
+    });
     try {
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
-      const requestedLimit = Number(req.query['limit'] ?? 100);
-      const limit = Number.isFinite(requestedLimit) ? Math.min(250, Math.max(25, Math.round(requestedLimit))) : 100;
       const filters = deps.networkFilters(network);
-      const limitParam = `$${filters.params.length + 1}`;
-      const result = await deps.query<{
-        node_a_id: string; node_b_id: string; name_a: string | null; name_b: string | null;
-        observed_count: string; multibyte_observed_count: string; itm_path_loss_db: number | null;
-        itm_viable: boolean | null; force_viable: boolean; last_observed: string; classification: string;
-      }>(
-        `SELECT
-           nl.node_a_id, nl.node_b_id, a.name AS name_a, b.name AS name_b,
-           nl.observed_count, nl.multibyte_observed_count, nl.itm_path_loss_db,
-           nl.itm_viable, nl.force_viable, nl.last_observed::text,
-           CASE
-             WHEN nl.force_viable THEN 'operator_override'
-             WHEN nl.itm_viable = false AND nl.multibyte_observed_count > 0 THEN 'observed_unexpected'
-             WHEN nl.itm_viable = false AND nl.observed_count >= 10 THEN 'observed_unexpected'
-             WHEN nl.itm_viable = true AND nl.observed_count <= 2 AND nl.last_observed < NOW() - INTERVAL '7 days' THEN 'weak_model_evidence'
-             ELSE 'match'
-           END AS classification
-         FROM node_links nl
-         JOIN nodes a ON a.node_id = nl.node_a_id
-         JOIN nodes b ON b.node_id = nl.node_b_id
-         WHERE nl.last_observed > NOW() - INTERVAL '30 days'
-           AND (a.name IS NULL OR a.name NOT LIKE '%🚫%')
-           AND (b.name IS NULL OR b.name NOT LIKE '%🚫%')
-           AND (a.role IS NULL OR a.role = 2)
-           AND (b.role IS NULL OR b.role = 2)
-           ${filters.nodesAlias('a')}
-           ${filters.nodesAlias('b')}
-         ORDER BY
-           CASE
-             WHEN nl.itm_viable = false AND nl.multibyte_observed_count > 0 THEN 0
-             WHEN nl.force_viable THEN 1
-             WHEN nl.itm_viable = false AND nl.observed_count >= 10 THEN 2
-             WHEN nl.itm_viable = true AND nl.observed_count <= 2 THEN 3
-             ELSE 4
-           END,
-           nl.multibyte_observed_count DESC,
-           nl.observed_count DESC
-         LIMIT ${limitParam}`,
-        [...filters.params, limit],
-      );
+      const result = await rfValidationRows(deps.query, filters, limit);
       const links = result.rows.map((row) => ({
         source: row.node_a_id,
         target: row.node_b_id,

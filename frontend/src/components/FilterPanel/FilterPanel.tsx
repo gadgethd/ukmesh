@@ -10,6 +10,7 @@ export interface Filters {
   terrain:           boolean;
   clientNodes:       boolean;
   packetHistory:     boolean;
+  coverage:          boolean;
   heatmap:           boolean;
   betaPaths:         boolean;
   betaPathThreshold: number;  // 0–1
@@ -25,6 +26,7 @@ interface FilterPanelProps {
   betaRemainingHops?: number | null;
   activeMode: MapMode | null;
   viewshedEnabled: boolean;
+  heatmapEnabled: boolean;
   onModeChange: (mode: MapMode) => void;
   onShare: () => void;
   shareLabel: string;
@@ -34,12 +36,18 @@ interface FilterPanelProps {
   nodeOpen?: boolean;
 }
 
-const activeLayerCount = (filters: Filters): number =>
-  FILTER_ROWS.reduce((count, { key }) => count + (filters[key] ? 1 : 0), 0);
+type FilterRow = {
+  key: keyof Filters;
+  label: string;
+  color: string;
+  hollow?: boolean;
+  requiresViewshed?: boolean;
+};
 
-export const FILTER_ROWS: Array<{ key: keyof Filters; label: string; color: string; hollow?: boolean }> = [
+export const FILTER_ROWS: FilterRow[] = [
   { key: 'livePackets',  label: 'Live Feed',        color: '#00c4ff' },
   { key: 'terrain',      label: '3D Terrain',       color: '#60a5fa' },
+  { key: 'coverage',     label: 'RF Coverage',      color: '#22c55e', requiresViewshed: true },
   { key: 'packetHistory', label: 'Paths',            color: '#00c4ff', hollow: true },
   { key: 'heatmap',       label: 'Packet Heatmap',   color: '#ef4444' },
   { key: 'betaPaths',    label: 'Live Path',         color: '#a855f7', hollow: true },
@@ -47,9 +55,19 @@ export const FILTER_ROWS: Array<{ key: keyof Filters; label: string; color: stri
   { key: 'clientNodes',  label: 'Companion / Room', color: '#ff9800' },
 ];
 
+export const visibleFilterRows = (viewshedEnabled: boolean, heatmapEnabled: boolean): FilterRow[] =>
+  FILTER_ROWS.filter(({ key, requiresViewshed }) =>
+    (key !== 'heatmap' || heatmapEnabled) && (!requiresViewshed || viewshedEnabled));
+
+const activeLayerCount = (filters: Filters, viewshedEnabled: boolean, heatmapEnabled: boolean): number =>
+  visibleFilterRows(viewshedEnabled, heatmapEnabled).reduce(
+    (count, { key }) => count + (filters[key] ? 1 : 0),
+    0,
+  );
+
 export const FilterPanel: React.FC<FilterPanelProps> = ({
   filters, onChange, betaPathConfidence, betaPermutationCount, betaRemainingHops,
-  activeMode, viewshedEnabled, onModeChange, onShare, shareLabel,
+  activeMode, viewshedEnabled, heatmapEnabled, onModeChange, onShare, shareLabel,
   collapsed, onToggleCollapse, nodeOpen = false,
 }) => {
   const liveBetaPathConfidence = useOverlayStore((state) => state.betaPathConfidence);
@@ -64,7 +82,7 @@ export const FilterPanel: React.FC<FilterPanelProps> = ({
   };
 
   if (collapsed) {
-    const count = activeLayerCount(filters);
+    const count = activeLayerCount(filters, viewshedEnabled, heatmapEnabled);
     return (
       <button
         type="button"
@@ -124,7 +142,7 @@ export const FilterPanel: React.FC<FilterPanelProps> = ({
           )}
         </div>
       )}
-      {FILTER_ROWS.map(({ key, label, color, hollow }) => (
+      {visibleFilterRows(viewshedEnabled, heatmapEnabled).map(({ key, label, color, hollow }) => (
         <React.Fragment key={key}>
           <button
             type="button"
@@ -152,10 +170,11 @@ export const FilterPanel: React.FC<FilterPanelProps> = ({
           </button>
           {key === 'hexClashes' && filters.hexClashes && (
             <div className="filter-slider" onClick={(e) => e.stopPropagation()}>
-              <span className="filter-slider__label">
+              <label className="filter-slider__label" htmlFor="desktop-hex-clash-hops">
                 Hex clash hops: {Math.round(filters.hexClashMaxHops)}
-              </span>
+              </label>
               <input
+                id="desktop-hex-clash-hops"
                 className="filter-slider__input"
                 type="range"
                 min={0}
