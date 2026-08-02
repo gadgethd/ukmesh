@@ -13,7 +13,11 @@ mkdir -p /data/dem-cache /data/shared-plans
 /app/hopreach -prepare
 
 touch /var/log/fetch.log /var/log/prune.log
-cron -f &
+if command -v cron >/dev/null 2>&1; then
+  cron -f &
+else
+  crond -f &
+fi
 tail -F /var/log/fetch.log /var/log/prune.log &
 
 # The terrain-aware coverage computation can take minutes on first run (DEM

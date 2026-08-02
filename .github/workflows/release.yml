@@ -74,8 +74,8 @@ jobs:
             image: meshcore-hopreach
             context: third_party/hopreach
             file: third_party/hopreach/Dockerfile
-            source_revision: f497b3fb72644aa1fb5f5fcce3fe2afca78bdaf6
-            build_args: VERSION=v0.1.32-ukmesh.2
+            source_revision: 0230702be70a2729c5acc5640401f56ab9d65fd4
+            build_args: VERSION=v0.1.32-ukmesh.3
           - component: ml-path-learner
             image: meshcore-ml-path-learner
             context: ml-path-learner
@@ -107,6 +107,8 @@ jobs:
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          labels: |
+            org.opencontainers.image.revision=${{ env.SOURCE_REVISION }}
           tags: |
             type=sha,format=long
             type=ref,event=tag
