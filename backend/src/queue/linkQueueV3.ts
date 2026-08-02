@@ -13,6 +13,8 @@ export const LINK_V3_KEYS = {
   leases: 'meshcore:link:v3:leases',
   tokens: 'meshcore:link:v3:tokens',
   dead: 'meshcore:link:v3:dead',
+  deadReasons: 'meshcore:link:v3:dead_reasons',
+  enqueued: 'meshcore:link:v3:enqueued',
   completed: 'meshcore:link:v3:completed',
   counters: 'meshcore:link:v3:counters',
   rebuild: 'meshcore:link:v3:rebuild',
@@ -78,6 +80,7 @@ redis.call('HSET', KEYS[6], ARGV[2], ARGV[1])
 redis.call('HSET', KEYS[7], ARGV[1], ARGV[2])
 redis.call('HINCRBY', KEYS[10], 'count', 1)
 redis.call('HINCRBY', KEYS[10], 'bytes', payload_bytes)
+redis.call('ZADD', KEYS[12], ARGV[9], ARGV[1])
 if ARGV[8] == '' and redis.call('EXISTS', KEYS[9]) == 1 then
   redis.call('LPUSH', KEYS[8], ARGV[1])
 else
@@ -100,6 +103,7 @@ const ADMIT_KEYS = [
   LINK_V3_KEYS.rebuild,
   LINK_V3_KEYS.counters,
   LINK_V3_KEYS.events,
+  LINK_V3_KEYS.enqueued,
 ];
 
 function positiveInt(value: string | undefined, fallback: number, max: number): number {
@@ -161,6 +165,7 @@ export async function admitLinkV3Job(
     String(linkQueueLimits.maxBytes),
     String(linkQueueLimits.maxPayloadBytes),
     payload.generation ?? '',
+    String(Date.now()),
   ) as [LinkQueueAdmission['status'], string];
   const [status, jobId] = response;
   if (status === 'accepted' || status === 'coalesced' || status === 'duplicate') {
@@ -260,6 +265,8 @@ export class LinkQueueV3Model {
   readonly dead: string[] = [];
   count = 0;
   bytes = 0;
+  deadCount = 0;
+  deadBytes = 0;
   rebuildActive = false;
 
   constructor(readonly maxJobs: number, readonly maxBytes: number, readonly maxAttempts = 3) {}
@@ -311,11 +318,41 @@ export class LinkQueueV3Model {
     if (job.attempts >= this.maxAttempts) {
       job.state = 'dead';
       this.dead.unshift(jobId);
+      this.count -= 1;
+      this.bytes -= job.bytes;
+      this.deadCount += 1;
+      this.deadBytes += job.bytes;
       return 'dead';
     }
     job.state = 'queued';
     this.ready.unshift(jobId);
     return 'retry';
+  }
+
+  requeueDead(jobId: string): boolean {
+    const job = this.jobs.get(jobId);
+    if (!job || job.state !== 'dead') return false;
+    if (this.count + 1 > this.maxJobs || this.bytes + job.bytes > this.maxBytes) return false;
+    job.state = 'queued';
+    job.attempts = 0;
+    this.dead.splice(this.dead.indexOf(jobId), 1);
+    this.deadCount -= 1;
+    this.deadBytes -= job.bytes;
+    this.count += 1;
+    this.bytes += job.bytes;
+    this.ready.unshift(jobId);
+    return true;
+  }
+
+  purgeDead(jobId: string): boolean {
+    const job = this.jobs.get(jobId);
+    if (!job || job.state !== 'dead') return false;
+    this.dead.splice(this.dead.indexOf(jobId), 1);
+    this.deadCount -= 1;
+    this.deadBytes -= job.bytes;
+    this.jobs.delete(jobId);
+    if (this.dedupe.get(job.dedupeKey) === jobId) this.dedupe.delete(job.dedupeKey);
+    return true;
   }
 
   reap(now: number): number {

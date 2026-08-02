@@ -229,7 +229,7 @@ export const StatusPage: React.FC = () => {
                     <div className="ui-visually-hidden">
                       <table>
                         <caption>Repeater firmware distribution{includeUnknownFirmware ? '' : ' (Unknown excluded)'}</caption>
-                        <thead><tr><th>Firmware</th><th>Hardware models</th><th>Repeaters</th></tr></thead>
+                        <thead><tr><th scope="col">Firmware</th><th scope="col">Hardware models</th><th scope="col">Repeaters</th></tr></thead>
                         <tbody>
                           {visibleFirmwareDistribution.map((row) => (
                             <tr key={row.firmware_version}>

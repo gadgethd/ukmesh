@@ -1,4 +1,5 @@
 import { linkKey, type LinkMetrics } from '../utils/pathing.js';
+import { canonicalNodeId } from '../utils/nodeIds.js';
 
 type LinkUpdate = {
   node_a_id: string;
@@ -22,12 +23,16 @@ export type ViableLinkSnapshot = {
 };
 
 type LinkState = {
+  scopeKey: string | null;
+  epoch: number;
   linkPairs: Set<string>;
   linkMetrics: Map<string, LinkMetrics>;
   viablePairsArr: [string, string][];
 };
 
 let state: LinkState = {
+  scopeKey: null,
+  epoch: 0,
   linkPairs: new Set(),
   linkMetrics: new Map(),
   viablePairsArr: [],
@@ -53,12 +58,38 @@ function getState(): LinkState {
   return state;
 }
 
-function applyInitialViablePairs(viablePairs?: [string, string][]): void {
-  if (!viablePairs) return;
+function acceptsEpoch(epoch: number | undefined): boolean {
+  return epoch === undefined || epoch === state.epoch;
+}
 
-  const linkPairs = new Set(viablePairs.map(([a, b]) => linkKey(a, b)));
+function canonicalPair(a: string, b: string): [string, string] | null {
+  const nodeA = canonicalNodeId(a);
+  const nodeB = canonicalNodeId(b);
+  if (!nodeA || !nodeB || nodeA === nodeB) return null;
+  return nodeA < nodeB ? [nodeA, nodeB] : [nodeB, nodeA];
+}
+
+function reset(scopeKey: string): number {
+  const epoch = state.epoch + 1;
+  setState({
+    scopeKey,
+    epoch,
+    linkPairs: new Set(),
+    linkMetrics: new Map(),
+    viablePairsArr: [],
+  });
+  return epoch;
+}
+
+function applyInitialViablePairs(viablePairs: [string, string][] = [], epoch?: number): void {
+  if (!acceptsEpoch(epoch)) return;
+  const normalizedPairs = viablePairs
+    .map(([a, b]) => canonicalPair(a, b))
+    .filter((pair): pair is [string, string] => pair !== null);
+
+  const linkPairs = new Set(normalizedPairs.map(([a, b]) => linkKey(a, b)));
   const linkMetrics = new Map<string, LinkMetrics>();
-  for (const [a, b] of viablePairs) {
+  for (const [a, b] of normalizedPairs) {
     linkMetrics.set(linkKey(a, b), {
       observed_count: 0,
       multibyte_observed_count: 0,
@@ -69,18 +100,27 @@ function applyInitialViablePairs(viablePairs?: [string, string][]): void {
   setState({
     linkPairs,
     linkMetrics,
-    viablePairsArr: viablePairs,
+    viablePairsArr: normalizedPairs,
+    scopeKey: state.scopeKey,
+    epoch: state.epoch,
   });
 }
 
-function applyInitialViableLinks(viableLinks?: ViableLinkSnapshot[]): void {
-  if (!viableLinks || viableLinks.length === 0) return;
-
-  const viablePairsArr = viableLinks.map((link) => [link.node_a_id, link.node_b_id] as [string, string]);
+function applyInitialViableLinks(viableLinks: ViableLinkSnapshot[] = [], epoch?: number): void {
+  if (!acceptsEpoch(epoch)) return;
+  const normalized = viableLinks
+    .map((link) => {
+      const pair = canonicalPair(link.node_a_id, link.node_b_id);
+      return pair ? { link, pair } : null;
+    })
+    .filter((entry): entry is { link: ViableLinkSnapshot; pair: [string, string] } => entry !== null);
+  const viablePairsArr = normalized
+    .filter(({ link }) => link.itm_viable === true)
+    .map(({ pair }) => pair);
   const linkPairs = new Set(viablePairsArr.map(([a, b]) => linkKey(a, b)));
   const linkMetrics = new Map<string, LinkMetrics>();
-  for (const link of viableLinks) {
-    linkMetrics.set(linkKey(link.node_a_id, link.node_b_id), {
+  for (const { link, pair } of normalized) {
+    linkMetrics.set(linkKey(pair[0], pair[1]), {
       observed_count: link.observed_count,
       multibyte_observed_count: link.multibyte_observed_count ?? 0,
       itm_viable: link.itm_viable,
@@ -94,15 +134,17 @@ function applyInitialViableLinks(viableLinks?: ViableLinkSnapshot[]): void {
     linkPairs,
     linkMetrics,
     viablePairsArr,
+    scopeKey: state.scopeKey,
+    epoch: state.epoch,
   });
 }
 
-function applyLinkUpdate(update: LinkUpdate): void {
-  applyLinkUpdateBatch([update]);
+function applyLinkUpdate(update: LinkUpdate, epoch?: number): void {
+  applyLinkUpdateBatch([update], epoch);
 }
 
-function applyLinkUpdateBatch(updates: LinkUpdate[]): void {
-  if (updates.length === 0) return;
+function applyLinkUpdateBatch(updates: LinkUpdate[], epoch?: number): void {
+  if (!acceptsEpoch(epoch) || updates.length === 0) return;
 
   const nextLinkMetrics = new Map(state.linkMetrics);
   const nextLinkPairs = new Set(state.linkPairs);
@@ -110,27 +152,43 @@ function applyLinkUpdateBatch(updates: LinkUpdate[]): void {
   const viablePairKeys = new Set(viablePairs.map(([a, b]) => linkKey(a, b)));
 
   for (const update of updates) {
-    const key = linkKey(update.node_a_id, update.node_b_id);
+    const pair = canonicalPair(update.node_a_id, update.node_b_id);
+    if (!pair) continue;
+    const key = linkKey(pair[0], pair[1]);
     const existing = nextLinkMetrics.get(key);
-    nextLinkMetrics.set(key, {
+    const metrics: LinkMetrics = {
       observed_count: Math.max(existing?.observed_count ?? 0, update.observed_count ?? 0),
       multibyte_observed_count: Math.max(existing?.multibyte_observed_count ?? 0, update.multibyte_observed_count ?? 0),
       itm_viable: update.itm_viable ?? existing?.itm_viable ?? null,
       itm_path_loss_db: update.itm_path_loss_db ?? existing?.itm_path_loss_db ?? null,
       count_a_to_b: update.count_a_to_b ?? existing?.count_a_to_b,
       count_b_to_a: update.count_b_to_a ?? existing?.count_b_to_a,
-    });
+    };
 
-    if (update.itm_viable) {
+    if (update.itm_viable === false) {
+      nextLinkMetrics.delete(key);
+      nextLinkPairs.delete(key);
+      viablePairKeys.delete(key);
+      const index = viablePairs.findIndex(([a, b]) => linkKey(a, b) === key);
+      if (index >= 0) viablePairs.splice(index, 1);
+    } else {
+      // null/unknown updates enrich metrics but deliberately preserve current
+      // membership. A link is added only by an explicit true transition.
+      nextLinkMetrics.set(key, metrics);
+    }
+
+    if (update.itm_viable === true) {
       nextLinkPairs.add(key);
       if (!viablePairKeys.has(key)) {
         viablePairKeys.add(key);
-        viablePairs.push([update.node_a_id, update.node_b_id]);
+        viablePairs.push(pair);
       }
     }
   }
 
   setState({
+    scopeKey: state.scopeKey,
+    epoch: state.epoch,
     linkPairs: nextLinkPairs,
     linkMetrics: nextLinkMetrics,
     viablePairsArr: viablePairs,
@@ -140,6 +198,7 @@ function applyLinkUpdateBatch(updates: LinkUpdate[]): void {
 export const linkStateStore = {
   subscribe,
   getState,
+  reset,
   applyInitialViablePairs,
   applyInitialViableLinks,
   applyLinkUpdate,

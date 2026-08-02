@@ -85,27 +85,38 @@ test('public site exposes its primary journeys', async ({ page }) => {
     await route.fulfill({
       json: {
         generatedAt: '2026-07-11T12:00:00Z', windowDays: 30, limited: false,
-        summary: { nodes: 2, links: 1, observations: 20, connectedComponents: 1, likelyBridges: 0, isolatedNodes: 0 },
+        summary: { nodes: 3, links: 2, observations: 25, connectedComponents: 1, likelyBridges: 0, isolatedNodes: 0 },
         analysis: { connectedComponents: 1, bridgeNodeIds: [], isolatedNodeIds: [] },
         nodes: [
           { nodeId: 'A'.repeat(64), name: 'Alpha', lat: 52, lon: -1, degree: 1, observations: 20 },
           { nodeId: 'B'.repeat(64), name: 'Bravo', lat: 53, lon: -2, degree: 1, observations: 20 },
+          { nodeId: 'C'.repeat(64), name: 'No location', lat: null, lon: null, degree: 1, observations: 5 },
         ],
-        links: [{
-          source: 'A'.repeat(64), target: 'B'.repeat(64), observations: 20,
-          strongObservations: 5, pathLossDb: 110, lastObserved: '2026-07-11T11:00:00Z',
-        }],
+        links: [
+          {
+            source: 'A'.repeat(64), target: 'B'.repeat(64), observations: 20,
+            strongObservations: 5, pathLossDb: 110, lastObserved: '2026-07-11T11:00:00Z',
+          },
+          {
+            source: 'A'.repeat(64), target: 'C'.repeat(64), observations: 5,
+            strongObservations: 1, pathLossDb: 120, lastObserved: '2026-07-11T10:00:00Z',
+          },
+        ],
       },
     });
   });
-  await page.route('**/api/health', async (route) => {
+  await page.route('**/api/health**', async (route) => {
     await route.fulfill({
       json: {
-        status: 'healthy', problems: [], maintenance: { active: false, message: null },
-        ingest: { active_nodes: 120, stale_nodes: 2, global_last_packet_at: '2026-07-11T11:59:00Z', packet_age_minutes: 1 },
-        operational_checks: [{ check_name: 'stats_api', status: 'ok', latency_ms: 42, detail: null, ts: '2026-07-11T12:00:00Z' }],
-        database: { size_bytes: 1_073_741_824, dead_rows: 100, oldest_vacuum_at: '2026-07-11T10:00:00Z', tables_needing_vacuum: 0 },
-        workers: [{ worker_name: 'path-learning', status: 'running', queue_depth: 0, last_activity_at: '2026-07-11T12:00:00Z' }],
+        status: 'healthy',
+        generatedAt: '2026-07-11T12:00:00Z',
+        maintenance: { active: false, message: null },
+        incidents: [],
+        components: {
+          ingest: { status: 'ok' },
+          workers: { status: 'running' },
+          storage: { status: 'ok' },
+        },
       },
     });
   });
@@ -113,6 +124,9 @@ test('public site exposes its primary journeys', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByRole('heading', { name: 'UK Mesh Network' })).toBeVisible();
   await expect(page.getByRole('link', { name: 'Open live map' }).first()).toBeVisible();
+  await expect(page.getByText(/regions need attention/i)).toHaveCount(0);
+  await expect(page.getByText(/support the creators of meshcore/i)).toHaveCount(0);
+  await expect(page.getByRole('link', { name: /donate/i })).toHaveCount(0);
   const homeAccessibility = await new AxeBuilder({ page }).analyze();
   expect(homeAccessibility.violations
     .filter((violation) => violation.impact === 'critical' || violation.impact === 'serious')
@@ -123,12 +137,16 @@ test('public site exposes its primary journeys', async ({ page }) => {
   await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
 
   await page.getByRole('link', { name: 'Topology' }).click();
+  await expect(page).toHaveURL(/\/topology$/);
   await expect(page.getByRole('heading', { name: 'Repeater topology' })).toBeVisible();
   await expect(page.getByLabel('Geographic repeater topology graph')).toBeVisible();
+  await expect(page.getByRole('group', { name: '2 positioned repeaters and 1 links' })).toBeVisible();
 
   await page.getByRole('link', { name: 'Health', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Platform status' })).toBeVisible();
   await expect(page.getByText('All monitored systems operational')).toBeVisible();
+  await expect(page.getByText('Status data is currently unavailable.')).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'Public ingest' })).toBeVisible();
   const statusAccessibility = await new AxeBuilder({ page }).analyze();
   expect(statusAccessibility.violations
     .filter((violation) => violation.impact === 'critical' || violation.impact === 'serious')

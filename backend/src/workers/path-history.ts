@@ -15,7 +15,10 @@ import {
   analysisGeneration,
   beginAnalysisRun,
   finishAnalysisRun,
+  startAnalysisRunHeartbeat,
 } from '../analysis/runState.js';
+import { observeWorkerOutcome } from '../metrics.js';
+import { startWorkerMetrics } from './workerMetrics.js';
 
 const REFRESH_INTERVAL_MS = 60 * 60 * 1000; // 1 hour — 7-day window changes slowly
 const WINDOW_HOURS = 168;
@@ -115,6 +118,9 @@ async function refreshScope(scope: ScopeName): Promise<void> {
       windowStart,
       windowEnd,
       totalItems: packetHashes.length,
+      deadlineMs: RUN_DEADLINE_MS,
+      privacyGeneration: visibilityGeneration,
+      modelGeneration: 'path-history-v2',
     });
   } catch (error) {
     if (error instanceof AnalysisRunAlreadyActiveError || (error as { code?: string }).code === '55P03') {
@@ -123,9 +129,17 @@ async function refreshScope(scope: ScopeName): Promise<void> {
     }
     throw error;
   }
+  const stopHeartbeat = startAnalysisRunHeartbeat(run);
+  const finish = async (
+    input: Parameters<typeof finishAnalysisRun>[1],
+  ): Promise<void> => {
+    if (input.status === 'timed_out') await stopHeartbeat.stopForTerminal();
+    else await stopHeartbeat();
+    await finishAnalysisRun(run, input);
+  };
   try {
     if (packetHashes.length === 0) {
-      await finishAnalysisRun(run, {
+      await finish({
         status: 'stale',
         checkpoint: 0,
         error: 'empty selection',
@@ -133,14 +147,18 @@ async function refreshScope(scope: ScopeName): Promise<void> {
       console.warn(`[path-history] scope=${scope} selected no packets; preserving last complete snapshot`);
       return;
     }
-    const outcome = await runBoundedItems(packetHashes, async (packetHash) => {
+    const outcome = await runBoundedItems(packetHashes, async (packetHash, _index, signal) => {
+      stopHeartbeat.assertOwned();
+      signal.throwIfAborted();
       try {
         const resolved = await resolveMultiObserverBetaPath(packetHash, scope, undefined, undefined, {
           touchPredictedOnline: false,
           log: false,
           pinContextForBatch: true,
           requiredVisibilityGeneration: visibilityGeneration,
+          signal,
         });
+        stopHeartbeat.assertOwned();
         if (!resolved?.ok || resolved.results.length < 1) {
           return;
         }
@@ -166,9 +184,10 @@ async function refreshScope(scope: ScopeName): Promise<void> {
       collectResults: false,
       maxErrors: 100,
       runId: run.runId,
+      signal: stopHeartbeat.signal,
     });
     if (outcome.status !== 'complete') {
-      await finishAnalysisRun(run, {
+      await finish({
         status: outcome.status,
         checkpoint: outcome.checkpoint,
         error: outcome.errors[0]?.message,
@@ -198,9 +217,10 @@ async function refreshScope(scope: ScopeName): Promise<void> {
       resolvedPacketCount,
       segmentCounts: segmentCounts as PathHistorySegmentRow[],
       visibilityGeneration,
+      analysisRun: run,
     });
     if (!published) {
-      await finishAnalysisRun(run, {
+      await finish({
         status: 'stale',
         checkpoint: outcome.checkpoint,
         error: 'public visibility changed during generation',
@@ -216,7 +236,7 @@ async function refreshScope(scope: ScopeName): Promise<void> {
       windowStart: windowStart.toISOString(),
       segmentCounts,
     });
-    await finishAnalysisRun(run, {
+    await finish({
       status: 'complete',
       checkpoint: outcome.checkpoint,
       generation,
@@ -234,8 +254,11 @@ async function refreshScope(scope: ScopeName): Promise<void> {
     );
   } catch (error) {
     try {
-      await finishAnalysisRun(run, {
-        status: 'failed',
+      const timedOut = Date.now() >= run.deadlineAt.getTime();
+      if (timedOut) await stopHeartbeat.stopForTerminal();
+      else await stopHeartbeat();
+      await finish({
+        status: timedOut ? 'timed_out' : 'failed',
         checkpoint: 0,
         error: error instanceof Error ? error.message : String(error),
       });
@@ -243,6 +266,8 @@ async function refreshScope(scope: ScopeName): Promise<void> {
       console.error('[path-history] could not record failed run', (finishError as Error).message);
     }
     throw error;
+  } finally {
+    await stopHeartbeat().catch(() => {});
   }
 }
 
@@ -250,6 +275,7 @@ let isRunning = false;
 
 async function refreshAll(tag: 'initial' | 'scheduled') {
   if (isRunning) {
+    observeWorkerOutcome('path_history', 'refresh', 'skipped');
     console.warn(`[path-history] ${tag} refresh skipped; previous refresh still running`);
     return;
   }
@@ -269,7 +295,9 @@ async function refreshAll(tag: 'initial' | 'scheduled') {
     for (const scope of SCOPES) {
       await refreshScope(scope);
     }
+    observeWorkerOutcome('path_history', 'refresh', 'success');
   } catch (err) {
+    observeWorkerOutcome('path_history', 'refresh', 'failure');
     console.error(`[path-history] ${tag} refresh failed`, (err as Error).message);
   } finally {
     isRunning = false;
@@ -277,6 +305,7 @@ async function refreshAll(tag: 'initial' | 'scheduled') {
 }
 
 async function main() {
+  startWorkerMetrics();
   await initDb();
   await refreshAll('initial');
 

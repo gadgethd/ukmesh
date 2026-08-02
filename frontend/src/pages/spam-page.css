@@ -230,7 +230,7 @@
 
 .sm-tag {
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.1em;
@@ -284,7 +284,7 @@
 .sm-grid > div { display: flex; flex-direction: column; gap: 4px; }
 .sm-k {
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.12em;
   color: var(--text-muted);
@@ -435,7 +435,7 @@
   color: var(--text-secondary);
   font-weight: 400;
   text-transform: uppercase;
-  font-size: 9px;
+  font-size: 11px;
   letter-spacing: 0.1em;
 }
 .sm-timeline td {

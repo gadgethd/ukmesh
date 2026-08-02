@@ -25,6 +25,7 @@ interface FilterPanelProps {
   betaRemainingHops?: number | null;
   activeMode: MapMode | null;
   viewshedEnabled: boolean;
+  heatmapEnabled: boolean;
   onModeChange: (mode: MapMode) => void;
   onShare: () => void;
   shareLabel: string;
@@ -34,8 +35,11 @@ interface FilterPanelProps {
   nodeOpen?: boolean;
 }
 
-const activeLayerCount = (filters: Filters): number =>
-  FILTER_ROWS.reduce((count, { key }) => count + (filters[key] ? 1 : 0), 0);
+const activeLayerCount = (filters: Filters, heatmapEnabled: boolean): number =>
+  FILTER_ROWS.reduce(
+    (count, { key }) => count + (key !== 'heatmap' || heatmapEnabled ? (filters[key] ? 1 : 0) : 0),
+    0,
+  );
 
 export const FILTER_ROWS: Array<{ key: keyof Filters; label: string; color: string; hollow?: boolean }> = [
   { key: 'livePackets',  label: 'Live Feed',        color: '#00c4ff' },
@@ -49,7 +53,7 @@ export const FILTER_ROWS: Array<{ key: keyof Filters; label: string; color: stri
 
 export const FilterPanel: React.FC<FilterPanelProps> = ({
   filters, onChange, betaPathConfidence, betaPermutationCount, betaRemainingHops,
-  activeMode, viewshedEnabled, onModeChange, onShare, shareLabel,
+  activeMode, viewshedEnabled, heatmapEnabled, onModeChange, onShare, shareLabel,
   collapsed, onToggleCollapse, nodeOpen = false,
 }) => {
   const liveBetaPathConfidence = useOverlayStore((state) => state.betaPathConfidence);
@@ -64,7 +68,7 @@ export const FilterPanel: React.FC<FilterPanelProps> = ({
   };
 
   if (collapsed) {
-    const count = activeLayerCount(filters);
+    const count = activeLayerCount(filters, heatmapEnabled);
     return (
       <button
         type="button"
@@ -124,7 +128,7 @@ export const FilterPanel: React.FC<FilterPanelProps> = ({
           )}
         </div>
       )}
-      {FILTER_ROWS.map(({ key, label, color, hollow }) => (
+      {FILTER_ROWS.filter(({ key }) => key !== 'heatmap' || heatmapEnabled).map(({ key, label, color, hollow }) => (
         <React.Fragment key={key}>
           <button
             type="button"
@@ -152,10 +156,11 @@ export const FilterPanel: React.FC<FilterPanelProps> = ({
           </button>
           {key === 'hexClashes' && filters.hexClashes && (
             <div className="filter-slider" onClick={(e) => e.stopPropagation()}>
-              <span className="filter-slider__label">
+              <label className="filter-slider__label" htmlFor="desktop-hex-clash-hops">
                 Hex clash hops: {Math.round(filters.hexClashMaxHops)}
-              </span>
+              </label>
               <input
+                id="desktop-hex-clash-hops"
                 className="filter-slider__input"
                 type="range"
                 min={0}

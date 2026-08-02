@@ -22,9 +22,13 @@ import logging
 import math
 import os
 import random
+import signal
+import threading
 import time
+import uuid
 import warnings
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import joblib
@@ -46,7 +50,7 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-DATABASE_URL = os.environ['DATABASE_URL']
+DATABASE_URL = os.environ.get('DATABASE_URL')
 GOLD_INTERVAL_SECS = int(os.environ.get('GOLD_EXTRACTION_INTERVAL_MINS', '15')) * 60
 TRAIN_INTERVAL_SECS = int(os.environ.get('TRAINING_INTERVAL_MINS', '30')) * 60
 MIN_GOLD_ROWS = int(os.environ.get('MIN_GOLD_PATHS', '100'))
@@ -60,6 +64,12 @@ MAX_HOP_KM = 150.0
 GOLD_BATCH = 5000
 MAX_TRAINING_GOLD_ROWS = max(MIN_GOLD_ROWS, int(os.environ.get('MAX_TRAINING_GOLD_ROWS', '100000')))
 CHECKPOINT_KEY = 'gold_extraction_checkpoint'
+ML_MODEL_VERSION = os.environ.get('ML_MODEL_VERSION', 'lightgbm-path-v1')
+ML_DATA_VERSION = os.environ.get('ML_DATA_VERSION', 'gold-multibyte-v2')
+ML_LEASE_SECONDS = max(30, min(600, int(os.environ.get('ML_LEASE_SECONDS', '90'))))
+ML_RUN_DEADLINE_SECONDS = max(60, min(6 * 3600, int(os.environ.get('ML_RUN_DEADLINE_SECONDS', '1200'))))
+ML_HEARTBEAT_SECONDS = max(5, min(ML_LEASE_SECONDS // 3, int(os.environ.get('ML_HEARTBEAT_SECONDS', '20'))))
+STOP_EVENT = threading.Event()
 
 # ── Genetic / evolutionary search ────────────────────────────────────────────
 
@@ -200,27 +210,290 @@ def dist_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 # ── Database connection ───────────────────────────────────────────────────────
 
 def get_db():
+    if not DATABASE_URL:
+        raise RuntimeError('DATABASE_URL is required')
     conn = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
     conn.autocommit = False
     return conn
 
 
-def get_checkpoint(db) -> str:
-    with db.cursor() as cur:
-        cur.execute("SELECT value FROM ml_extraction_state WHERE key = %s", [CHECKPOINT_KEY])
-        row = cur.fetchone()
-        return row['value'] if row else '1970-01-01T00:00:00+00:00'
+class LeaseLost(RuntimeError):
+    pass
 
 
-def set_checkpoint(db, ts: str):
+class RunDeadlineExceeded(RuntimeError):
+    pass
+
+
+class RunGuard:
+    def __init__(
+        self,
+        token: str,
+        deadline_monotonic: float,
+        should_train: bool = False,
+        expected_model_version: str = ML_MODEL_VERSION,
+    ):
+        self.token = token
+        self.deadline_monotonic = deadline_monotonic
+        self.should_train = should_train
+        self.expected_model_version = expected_model_version
+        self.stop_event = threading.Event()
+        self.lease_lost = threading.Event()
+        self.thread = threading.Thread(
+            target=self._heartbeat,
+            name=f'ml-lease-{token[:8]}',
+            daemon=True,
+        )
+
+    def _heartbeat(self):
+        db = None
+        while not self.stop_event.wait(ML_HEARTBEAT_SECONDS):
+            try:
+                if db is None or db.closed:
+                    db = get_db()
+                with db.cursor() as cur:
+                    cur.execute(
+                        """UPDATE ml_learner_state
+                              SET heartbeat_at = NOW(),
+                                  lease_expires_at = NOW() + (%s * INTERVAL '1 second'),
+                                  updated_at = NOW()
+                            WHERE singleton = TRUE
+                              AND leader_token = %s
+                              AND run_deadline_at > NOW()
+                          RETURNING singleton""",
+                        [ML_LEASE_SECONDS, self.token],
+                    )
+                    owned = cur.fetchone() is not None
+                db.commit()
+                if not owned:
+                    self.lease_lost.set()
+                    break
+            except Exception as exc:
+                log.warning('ML lease heartbeat reconnecting: %s', exc)
+                try:
+                    if db is not None and not db.closed:
+                        db.rollback()
+                        db.close()
+                except Exception:
+                    pass
+                db = None
+        if db is not None and not db.closed:
+            db.close()
+
+    def check(self):
+        if STOP_EVENT.is_set():
+            raise InterruptedError('ML learner is shutting down')
+        if self.lease_lost.is_set():
+            raise LeaseLost('ML leader lease was lost')
+        if time.monotonic() >= self.deadline_monotonic:
+            raise RunDeadlineExceeded('ML run deadline exceeded')
+
+    def fence_publication(self, cursor, published_version: str):
+        self.check()
+        cursor.execute(
+            """UPDATE ml_learner_state
+                  SET model_version = %s,
+                      data_version = %s,
+                      heartbeat_at = NOW(),
+                      updated_at = NOW()
+                WHERE singleton = TRUE
+                  AND leader_token = %s
+                  AND model_version = %s
+                  AND lease_expires_at > NOW()
+                  AND run_deadline_at > NOW()
+              RETURNING singleton""",
+            [
+                published_version,
+                ML_DATA_VERSION,
+                self.token,
+                self.expected_model_version,
+            ],
+        )
+        if cursor.fetchone() is None:
+            self.lease_lost.set()
+            raise LeaseLost('ML publication fence rejected stale leader')
+
+    def fence_checkpoint(self, cursor, checkpoint: 'ExtractionCursor'):
+        self.check()
+        cursor.execute(
+            """UPDATE ml_learner_state
+                  SET cursor_observed_at = %s,
+                      cursor_packet_hash = %s,
+                      cursor_network = %s,
+                      cursor_rx_node_id = %s,
+                      cursor_topic = %s,
+                      cursor_raw_hex = %s,
+                      heartbeat_at = NOW(),
+                      updated_at = NOW()
+                WHERE singleton = TRUE
+                  AND leader_token = %s
+                  AND lease_expires_at > NOW()
+                  AND run_deadline_at > NOW()
+              RETURNING singleton""",
+            [*checkpoint.sql_values(), self.token],
+        )
+        if cursor.fetchone() is None:
+            self.lease_lost.set()
+            raise LeaseLost('ML checkpoint fence rejected stale leader')
+
+    def finish(
+        self,
+        db,
+        reason: str,
+        training_completed: bool = False,
+        retry_delay_seconds: int = GOLD_INTERVAL_SECS,
+    ):
+        self.stop_event.set()
+        if self.thread.is_alive():
+            self.thread.join(timeout=5)
+        with db.cursor() as cur:
+            cur.execute(
+                """UPDATE ml_learner_state
+                      SET leader_token = NULL,
+                          lease_expires_at = NULL,
+                          heartbeat_at = NOW(),
+                          run_deadline_at = NULL,
+                          next_run_at = NOW() + (%s * INTERVAL '1 second'),
+                          last_trained_at = CASE
+                            WHEN %s THEN NOW()
+                            ELSE last_trained_at
+                          END,
+                          next_training_at = CASE
+                            WHEN %s THEN NOW() + (%s * INTERVAL '1 second')
+                            ELSE next_training_at
+                          END,
+                          last_terminal_reason = %s,
+                          updated_at = NOW()
+                    WHERE singleton = TRUE AND leader_token = %s""",
+                [
+                    max(0, retry_delay_seconds),
+                    training_completed,
+                    training_completed,
+                    TRAIN_INTERVAL_SECS,
+                    reason[:240],
+                    self.token,
+                ],
+            )
+        db.commit()
+
+    def __enter__(self):
+        self.thread.start()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.stop_event.set()
+        self.thread.join(timeout=5)
+
+
+def claim_leadership(db) -> RunGuard | None:
+    token = uuid.uuid4().hex
     with db.cursor() as cur:
         cur.execute(
-            """INSERT INTO ml_extraction_state (key, value, updated_at)
-               VALUES (%s, %s, NOW())
-               ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()""",
-            [CHECKPOINT_KEY, ts],
+            """UPDATE ml_learner_state
+                  SET leader_token = %s,
+                      lease_expires_at = NOW() + (%s * INTERVAL '1 second'),
+                      heartbeat_at = NOW(),
+                      run_started_at = NOW(),
+                      run_deadline_at = NOW() + (%s * INTERVAL '1 second'),
+                      last_terminal_reason = NULL,
+                      data_version = %s,
+                      updated_at = NOW()
+                WHERE singleton = TRUE
+                  AND next_run_at <= NOW()
+                  AND (
+                    leader_token IS NULL
+                    OR lease_expires_at IS NULL
+                    OR lease_expires_at <= NOW()
+                  )
+              RETURNING singleton,
+                        next_training_at <= NOW() AS should_train,
+                        model_version""",
+            [
+                token,
+                ML_LEASE_SECONDS,
+                ML_RUN_DEADLINE_SECONDS,
+                ML_DATA_VERSION,
+            ],
         )
+        row = cur.fetchone()
     db.commit()
+    if row is None:
+        return None
+    return RunGuard(
+        token,
+        time.monotonic() + ML_RUN_DEADLINE_SECONDS,
+        should_train=bool(row['should_train']),
+        expected_model_version=str(row['model_version']),
+    )
+
+
+@dataclass(frozen=True, order=True)
+class ExtractionCursor:
+    observed_at: datetime
+    packet_hash: str
+    network: str
+    rx_node_id: str
+    topic: str
+    raw_hex: str
+
+    def sql_values(self) -> tuple:
+        return (
+            self.observed_at,
+            self.packet_hash,
+            self.network,
+            self.rx_node_id,
+            self.topic,
+            self.raw_hex,
+        )
+
+
+def cursor_from_row(row) -> ExtractionCursor:
+    observed_at = row['observed_at']
+    if not isinstance(observed_at, datetime):
+        observed_at = datetime.fromisoformat(str(observed_at))
+    if observed_at.tzinfo is None:
+        observed_at = observed_at.replace(tzinfo=timezone.utc)
+    return ExtractionCursor(
+        observed_at=observed_at,
+        packet_hash=str(row['packet_hash'] or ''),
+        network=str(row['network'] or ''),
+        rx_node_id=str(row['rx_node_id'] or ''),
+        topic=str(row['topic'] or ''),
+        raw_hex=str(row['raw_hex'] or ''),
+    )
+
+
+def get_checkpoint(db) -> ExtractionCursor:
+    with db.cursor() as cur:
+        cur.execute(
+            """SELECT cursor_observed_at, cursor_packet_hash, cursor_network,
+                      cursor_rx_node_id, cursor_topic, cursor_raw_hex
+                 FROM ml_learner_state
+                WHERE singleton = TRUE"""
+        )
+        row = cur.fetchone()
+        if not row:
+            return ExtractionCursor(
+                datetime(1970, 1, 1, tzinfo=timezone.utc),
+                '',
+                '',
+                '',
+                '',
+                '',
+            )
+        return ExtractionCursor(
+            observed_at=row['cursor_observed_at'],
+            packet_hash=row['cursor_packet_hash'],
+            network=row['cursor_network'],
+            rx_node_id=row['cursor_rx_node_id'],
+            topic=row['cursor_topic'],
+            raw_hex=row['cursor_raw_hex'],
+        )
+
+
+def set_checkpoint(db, cursor: ExtractionCursor, guard: RunGuard):
+    with db.cursor() as cur:
+        guard.fence_checkpoint(cur, cursor)
 
 
 # ── Gold extraction ───────────────────────────────────────────────────────────
@@ -235,34 +508,54 @@ def _trim_terminal_hash(path_hashes: list[str], rx_node_id: str) -> list[str]:
     return path_hashes
 
 
-def extract_gold_paths(db):
+def extract_gold_paths(db, guard: RunGuard):
+    guard.check()
     checkpoint = get_checkpoint(db)
     log.info('Gold extraction from checkpoint %s', checkpoint)
 
     with db.cursor() as cur:
         cur.execute(
-            """SELECT packet_hash, network, rx_node_id,
-                      path_hashes, path_hash_size_bytes, time as observed_at
-                 FROM packets
-                WHERE path_hash_size_bytes > 1
-                  AND path_hashes IS NOT NULL
-                  AND cardinality(path_hashes) > 1
-                  AND time > %s
-                ORDER BY time ASC
+            """SELECT p.packet_hash, p.network, p.rx_node_id, p.topic, p.raw_hex,
+                      p.path_hashes, p.path_hash_size_bytes, p.time AS observed_at,
+                      receiver.iata AS rx_region
+                 FROM packets p
+                 LEFT JOIN nodes receiver ON receiver.node_id = p.rx_node_id
+                WHERE p.path_hash_size_bytes > 1
+                  AND p.path_hashes IS NOT NULL
+                  AND cardinality(p.path_hashes) > 1
+                  AND ROW(
+                        p.time,
+                        p.packet_hash,
+                        p.network,
+                        COALESCE(p.rx_node_id, ''),
+                        p.topic,
+                        COALESCE(p.raw_hex, '')
+                      ) > ROW(%s, %s, %s, %s, %s, %s)
+                ORDER BY
+                  p.time ASC,
+                  p.packet_hash ASC,
+                  p.network ASC,
+                  COALESCE(p.rx_node_id, '') ASC,
+                  p.topic ASC,
+                  COALESCE(p.raw_hex, '') ASC
                 LIMIT %s""",
-            [checkpoint, GOLD_BATCH],
+            [*checkpoint.sql_values(), GOLD_BATCH],
         )
         rows = cur.fetchall()
 
+    guard.check()
     if not rows:
         log.info('Gold extraction: no new packets')
-        return
+        db.rollback()
+        return 0
 
     # ── Collect all hashes to batch-resolve ──────────────────────────────────
     # Map: (network scope, hash_upper) → [node row, ...]
     hash_to_resolve: dict[str, set[str]] = defaultdict(set)
     scope_networks: dict[str, set[str]] = defaultdict(set)
-    for row in rows:
+    for row_index, row in enumerate(rows):
+        if row_index % 250 == 0:
+            guard.check()
         scope = network_scope_key(row['network'])
         scope_networks[scope].update(network_scope_values(row['network']))
         hashes = [h.upper() for h in (row['path_hashes'] or [])]
@@ -274,6 +567,7 @@ def extract_gold_paths(db):
 
     nodes_by_net_hash: dict[tuple[str, str], list[dict]] = {}
     for scope, hashes in hash_to_resolve.items():
+        guard.check()
         if not hashes:
             continue
         hash_list = sorted(hashes)
@@ -307,9 +601,10 @@ def extract_gold_paths(db):
         by_packet[(row['packet_hash'], row['network'])].append(dict(row))
 
     inserted = 0
-    latest_ts = checkpoint
 
-    for (packet_hash, network), observations in by_packet.items():
+    for packet_index, ((packet_hash, network), observations) in enumerate(by_packet.items()):
+        if packet_index % 100 == 0:
+            guard.check()
         # All observers for this packet
         all_observer_ids = [o['rx_node_id'] for o in observations]
 
@@ -348,13 +643,7 @@ def extract_gold_paths(db):
             if not ok:
                 continue
 
-            # Get receiver region (IATA) from first observer node
-            rx_region = None
-            with db.cursor() as cur:
-                cur.execute("SELECT iata FROM nodes WHERE node_id = %s", [obs['rx_node_id']])
-                node_row = cur.fetchone()
-                if node_row:
-                    rx_region = node_row['iata']
+            rx_region = obs.get('rx_region')
 
             # Insert gold hop rows
             for pos, (h, node) in enumerate(resolved):
@@ -362,42 +651,30 @@ def extract_gold_paths(db):
                 hash_2char = node_id.upper()[:2]
                 hash_4char = node_id.upper()[:4]
                 hash_6char = node_id.upper()[:6]
-                try:
-                    with db.cursor() as cur:
-                        cur.execute(
-                            """INSERT INTO ml_gold_paths
-                                 (packet_hash, network, observed_at, hop_position,
-                                  true_node_id, hash_2char, hash_4char, hash_6char,
-                                  path_hash_size_bytes, observer_ids, rx_region)
-                               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                               ON CONFLICT (packet_hash, hop_position, true_node_id) DO NOTHING""",
-                            [packet_hash, network, obs['observed_at'], pos,
-                             node_id, hash_2char, hash_4char, hash_6char,
-                             obs['path_hash_size_bytes'], all_observer_ids, rx_region],
-                        )
-                        inserted += cur.rowcount
-                except Exception as e:
-                    db.rollback()
-                    log.warning('Insert error for %s pos %d: %s', packet_hash, pos, e)
-                    continue
+                with db.cursor() as cur:
+                    cur.execute(
+                        """INSERT INTO ml_gold_paths
+                             (packet_hash, network, observed_at, hop_position,
+                              true_node_id, hash_2char, hash_4char, hash_6char,
+                              path_hash_size_bytes, observer_ids, rx_region)
+                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                           ON CONFLICT (packet_hash, hop_position, true_node_id) DO NOTHING""",
+                        [packet_hash, network, obs['observed_at'], pos,
+                         node_id, hash_2char, hash_4char, hash_6char,
+                         obs['path_hash_size_bytes'], all_observer_ids, rx_region],
+                    )
+                    inserted += cur.rowcount
 
-            ts = obs['observed_at']
-            if isinstance(ts, datetime):
-                ts_str = ts.isoformat()
-            else:
-                ts_str = str(ts)
-            if ts_str > latest_ts:
-                latest_ts = ts_str
-
-        db.commit()
-
-    set_checkpoint(db, latest_ts)
+    set_checkpoint(db, cursor_from_row(rows[-1]), guard)
+    guard.check()
+    db.commit()
     log.info('Gold extraction: inserted %d new hop rows from %d packets', inserted, len(by_packet))
+    return len(rows)
 
 
 # ── Feature building ──────────────────────────────────────────────────────────
 
-def build_training_data(db):
+def build_training_data(db, guard: RunGuard):
     """
     Build (X, y, meta) arrays for training.
 
@@ -405,50 +682,62 @@ def build_training_data(db):
     same 1-byte (2-char) hash prefix.  The true node gets label=1; all
     others get label=0.
     """
-    # Load all gold hops with path length context
+    # Select whole packets in SQL before transferring rows to the worker. The
+    # round-robin stratum rank retains rare network/prefix examples while the
+    # cumulative row budget places a hard bound on application memory.
+    guard.check()
     with db.cursor() as cur:
         cur.execute(
-            """SELECT g.id, g.packet_hash, g.network, g.observed_at,
+            """WITH packet_groups AS (
+                 SELECT
+                   network,
+                   packet_hash,
+                   MIN(hash_2char) AS primary_hash,
+                   MAX(observed_at) AS latest_observed_at,
+                   COUNT(*)::bigint AS gold_rows
+                 FROM ml_gold_paths
+                 GROUP BY network, packet_hash
+               ),
+               stratified AS (
+                 SELECT
+                   packet_groups.*,
+                   ROW_NUMBER() OVER (
+                     PARTITION BY network, primary_hash
+                     ORDER BY latest_observed_at DESC, packet_hash
+                   ) AS stratum_rank
+                 FROM packet_groups
+               ),
+               budgeted AS (
+                 SELECT
+                   stratified.*,
+                   SUM(gold_rows) OVER (
+                     ORDER BY stratum_rank, latest_observed_at DESC, network, packet_hash
+                   ) AS running_rows
+                 FROM stratified
+               ),
+               selected_packets AS (
+                 SELECT network, packet_hash
+                 FROM budgeted
+                 WHERE running_rows <= %s
+               )
+               SELECT g.id, g.packet_hash, g.network, g.observed_at,
                       g.hop_position, g.true_node_id, g.hash_2char,
                       g.path_hash_size_bytes,
                       COUNT(*) OVER (PARTITION BY g.packet_hash, g.network) as path_length
                  FROM ml_gold_paths g
-                ORDER BY g.network, g.hash_2char, g.observed_at"""
+                 JOIN selected_packets selected
+                   ON selected.network = g.network
+                  AND selected.packet_hash = g.packet_hash
+                ORDER BY g.network, g.hash_2char, g.observed_at, g.id""",
+            [MAX_TRAINING_GOLD_ROWS],
         )
         gold_rows = cur.fetchall()
-
-    if len(gold_rows) > MAX_TRAINING_GOLD_ROWS:
-        # Keep whole packets and stratify by network/hash prefix so high-volume
-        # observers cannot drown out rare collisions. Recent examples receive a
-        # second reservoir pass, retaining adaptation to topology changes.
-        by_stratum: dict[tuple[str, str], list] = defaultdict(list)
-        for row in gold_rows:
-            by_stratum[(network_scope_key(row['network']), row['hash_2char'])].append(row)
-        rng = random.Random(RANDOM_SEED)
-        quota = max(2, MAX_TRAINING_GOLD_ROWS // max(1, len(by_stratum)))
-        sampled = []
-        for rows in by_stratum.values():
-            packet_groups: dict[tuple[str, str], list] = defaultdict(list)
-            for row in rows:
-                packet_groups[(row['network'], row['packet_hash'])].append(row)
-            groups = list(packet_groups.values())
-            rng.shuffle(groups)
-            recent = sorted(groups, key=lambda group: group[0]['observed_at'], reverse=True)[:max(1, len(groups) // 5)]
-            selected_groups = recent + [group for group in groups if group not in recent]
-            stratum_rows = []
-            for group in selected_groups:
-                if len(stratum_rows) + len(group) > quota and stratum_rows:
-                    continue
-                stratum_rows.extend(group)
-                if len(stratum_rows) >= quota:
-                    break
-            sampled.extend(stratum_rows)
-        gold_rows = sampled[:MAX_TRAINING_GOLD_ROWS]
-        log.info('Stratified training sample retained %d gold rows across %d strata', len(gold_rows), len(by_stratum))
+    guard.check()
+    log.info('SQL-bounded training sample retained %d gold rows', len(gold_rows))
 
     if len(gold_rows) < MIN_GOLD_ROWS:
         log.info('Only %d gold rows, skipping training', len(gold_rows))
-        return None, None, None
+        return None, None, None, None
 
     # Load all candidate nodes per combined network scope + 1-byte prefix.
     hash_pairs: dict[tuple[str, str], set[str]] = defaultdict(set)
@@ -458,6 +747,7 @@ def build_training_data(db):
 
     candidates_map: dict[tuple[str, str], list[dict]] = {}
     for (scope, hash_2char), networks in hash_pairs.items():
+        guard.check()
         with db.cursor() as cur:
             cur.execute(
                 """SELECT node_id, network AS node_network, elevation_m, last_seen
@@ -476,7 +766,9 @@ def build_training_data(db):
     #  true_node_id, gold_id, path_length, candidate_network)
     meta_rows = []
 
-    for r in gold_rows:
+    for row_index, r in enumerate(gold_rows):
+        if row_index % 500 == 0:
+            guard.check()
         rid = r['id']
         network = r['network']
         hash_2char = r['hash_2char']
@@ -524,7 +816,7 @@ def build_training_data(db):
             ))
 
     if not X_rows:
-        return None, None, None
+        return None, None, None, None
 
     X = np.array(X_rows, dtype=np.float32)
     y = np.array(y_rows, dtype=np.int32)
@@ -727,7 +1019,9 @@ def persist_variant_evaluation(
     all_metrics: dict,
     val_metrics: dict,
     packets: dict,
+    guard: RunGuard,
 ):
+    guard.check()
     packet_rows = [
         (
             training_run_id,
@@ -813,6 +1107,7 @@ def persist_variant_evaluation(
                 packet_rows,
                 page_size=1000,
             )
+    guard.check()
     db.commit()
 
 
@@ -897,8 +1192,15 @@ def promote_model(db, model, val_metrics: dict, all_metrics: dict, gold_count: i
                   X: np.ndarray, y: np.ndarray, meta_rows: list,
                   gold_ids: np.ndarray,
                   hyperparams: dict | None = None,
-                  generation: int = 1, variant_rank: int = 1):
-    version = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S') + '_global'
+                  generation: int = 1, variant_rank: int = 1,
+                  guard: RunGuard | None = None):
+    if guard is None:
+        raise RuntimeError('a leader run guard is required for model publication')
+    guard.check()
+    version = (
+        datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S_%f')
+        + f'_global_{guard.token[:8]}'
+    )
 
     # Serialize model
     buf = io.BytesIO()
@@ -913,9 +1215,9 @@ def promote_model(db, model, val_metrics: dict, all_metrics: dict, gold_count: i
                   top3_accuracy, is_active, promoted_at, model_artifact,
                   hyperparams, generation, variant_rank, population_size,
                   evaluated_packets, evaluated_hops, complete_path_accuracy,
-                  mean_path_completion)
+                  mean_path_completion, data_version)
                VALUES (%s, %s, NOW(), %s, %s, %s, TRUE, NOW(), %s, %s, %s, %s, %s,
-                       %s, %s, %s, %s)""",
+                       %s, %s, %s, %s, %s)""",
             [
                 version,
                 GLOBAL_NETWORK,
@@ -931,6 +1233,7 @@ def promote_model(db, model, val_metrics: dict, all_metrics: dict, gold_count: i
                 all_metrics['hop_total'],
                 all_metrics['complete_path_accuracy'],
                 all_metrics['mean_path_completion'],
+                ML_DATA_VERSION,
             ],
         )
 
@@ -1013,6 +1316,8 @@ def promote_model(db, model, val_metrics: dict, all_metrics: dict, gold_count: i
             )
             scores_written += 1
 
+    with db.cursor() as cur:
+        guard.fence_publication(cur, version)
     db.commit()
     log.info(
         'Champion promoted network=%s generation=%d variant=%d/%d val_hop=%.3f val_top3=%.3f val_full_path=%.3f val_path_completion=%.3f all_hop=%.3f all_full_path=%.3f scores_written=%d confidence_threshold=%.2f params=%s',
@@ -1024,12 +1329,13 @@ def promote_model(db, model, val_metrics: dict, all_metrics: dict, gold_count: i
     )
 
 
-def cleanup_training_artifacts(db):
+def cleanup_training_artifacts(db, guard: RunGuard):
     """Keep recent diagnostics and active model artifacts; trim old bulk data."""
     deleted_packet_results = 0
     cleared_model_artifacts = 0
     cleaned_generations: list[int] = []
 
+    guard.check()
     with db.cursor() as cur:
         if RETAIN_VARIANT_RESULT_GENERATIONS > 0:
             cur.execute(
@@ -1089,6 +1395,7 @@ def cleanup_training_artifacts(db):
             )
             cleared_model_artifacts = cur.rowcount
 
+    guard.check()
     db.commit()
 
     if deleted_packet_results or cleared_model_artifacts:
@@ -1102,9 +1409,10 @@ def cleanup_training_artifacts(db):
 
 # ── Main loop ─────────────────────────────────────────────────────────────────
 
-def run_training_cycle(db):
+def run_training_cycle(db, guard: RunGuard):
+    guard.check()
     log.info('Starting training cycle')
-    result = build_training_data(db)
+    result = build_training_data(db, guard)
     if result[0] is None:
         log.info('Insufficient training data, skipping')
         return
@@ -1198,6 +1506,7 @@ def run_training_cycle(db):
     best_score = (-1.0, -1.0, -1.0, -1.0)
 
     for rank, params in enumerate(population, start=1):
+        guard.check()
         model = train_variant(X_train, y_train, X_val, y_val, params)
         if model is None:
             continue
@@ -1206,7 +1515,7 @@ def run_training_cycle(db):
         all_metrics, _all_predictions, all_packets_detail = evaluate_path_details(model, X, y, meta_rows)
         persist_variant_evaluation(
             db, training_run_id, generation, rank, params,
-            all_metrics, val_metrics, all_packets_detail,
+            all_metrics, val_metrics, all_packets_detail, guard,
         )
 
         log.info(
@@ -1248,6 +1557,7 @@ def run_training_cycle(db):
     )
 
     final_model = train_final_variant(X, y, best_params)
+    guard.check()
     if final_model is None:
         log.warning('Final all-gold training failed for generation=%d variant=%d', generation, best_rank)
         final_model = best_model
@@ -1294,6 +1604,7 @@ def run_training_cycle(db):
             db, final_model, best_val_metrics, final_all_metrics, int(sum(y)),
             X, y, meta_rows, gold_ids,
             hyperparams=best_params, generation=generation, variant_rank=best_rank,
+            guard=guard,
         )
     else:
         log.info(
@@ -1305,45 +1616,129 @@ def run_training_cycle(db):
         )
 
 
+def _request_shutdown(signum, _frame):
+    log.info('Received signal %s; requesting graceful shutdown', signum)
+    STOP_EVENT.set()
+
+
+def _install_signal_handlers():
+    signal.signal(signal.SIGTERM, _request_shutdown)
+    signal.signal(signal.SIGINT, _request_shutdown)
+
+
+def _rollback_quietly(db):
+    try:
+        if db is not None and not db.closed:
+            db.rollback()
+    except Exception:
+        pass
+
+
+def _close_quietly(db):
+    try:
+        if db is not None and not db.closed:
+            db.close()
+    except Exception:
+        pass
+
+
 def main():
-    log.info('ML path learner starting')
-    db = None
-    last_train = 0.0
+    log.info(
+        'ML path learner starting model_version=%s data_version=%s '
+        'batch=%d max_training_rows=%d',
+        ML_MODEL_VERSION,
+        ML_DATA_VERSION,
+        GOLD_BATCH,
+        MAX_TRAINING_GOLD_ROWS,
+    )
+    _install_signal_handlers()
 
-    while True:
+    while not STOP_EVENT.is_set():
+        db = None
+        guard = None
+        terminal_reason = 'completed'
+        training_completed = False
+        retry_delay_seconds = GOLD_INTERVAL_SECS
+
         try:
-            if db is None or db.closed:
-                db = get_db()
-                log.info('Connected to database')
+            db = get_db()
+            guard = claim_leadership(db)
+            if guard is None:
+                _close_quietly(db)
+                db = None
+                STOP_EVENT.wait(min(30, max(1, GOLD_INTERVAL_SECS)))
+                continue
 
-            extract_gold_paths(db)
+            guard.thread.start()
+            log.info(
+                'Claimed learner lease token=%s training_due=%s',
+                guard.token[:8],
+                guard.should_train,
+            )
 
-            now = time.time()
-            if now - last_train >= TRAIN_INTERVAL_SECS:
-                run_training_cycle(db)
-                cleanup_training_artifacts(db)
-                last_train = now
+            extracted_rows = 0
+            while True:
+                guard.check()
+                processed_rows = extract_gold_paths(db, guard)
+                extracted_rows += processed_rows
+                if processed_rows < GOLD_BATCH:
+                    break
 
-        except KeyboardInterrupt:
-            log.info('Shutting down')
-            break
-        except Exception as e:
-            log.error('Error in main loop: %s', e, exc_info=True)
-            try:
-                if db and not db.closed:
-                    db.rollback()
-            except Exception:
-                pass
-            try:
-                if db and not db.closed:
-                    db.close()
-            except Exception:
-                pass
-            db = None
-            time.sleep(30)
-            continue
+            if guard.should_train:
+                guard.check()
+                run_training_cycle(db, guard)
+                cleanup_training_artifacts(db, guard)
+                training_completed = True
 
-        time.sleep(GOLD_INTERVAL_SECS)
+            terminal_reason = (
+                f'completed extraction_rows={extracted_rows} '
+                f'training_completed={training_completed}'
+            )
+        except (KeyboardInterrupt, InterruptedError):
+            STOP_EVENT.set()
+            terminal_reason = 'graceful shutdown'
+            retry_delay_seconds = 0
+            _rollback_quietly(db)
+        except LeaseLost as exc:
+            terminal_reason = f'lease lost: {exc}'
+            retry_delay_seconds = 5
+            log.warning('%s', terminal_reason)
+            _rollback_quietly(db)
+        except RunDeadlineExceeded as exc:
+            terminal_reason = f'run deadline: {exc}'
+            retry_delay_seconds = 30
+            log.warning('%s', terminal_reason)
+            _rollback_quietly(db)
+        except Exception as exc:
+            terminal_reason = f'run failed: {type(exc).__name__}: {exc}'
+            retry_delay_seconds = 30
+            log.error('ML learner run failed: %s', exc, exc_info=True)
+            _rollback_quietly(db)
+        finally:
+            if guard is not None:
+                guard.stop_event.set()
+                if guard.thread.is_alive():
+                    guard.thread.join(timeout=5)
+                if db is not None and not db.closed:
+                    try:
+                        guard.finish(
+                            db,
+                            terminal_reason,
+                            training_completed=training_completed,
+                            retry_delay_seconds=retry_delay_seconds,
+                        )
+                    except Exception as exc:
+                        log.warning(
+                            'Could not record learner terminal state: %s',
+                            exc,
+                        )
+                        _rollback_quietly(db)
+            _close_quietly(db)
+
+        if not STOP_EVENT.is_set() and terminal_reason.startswith('run failed'):
+            STOP_EVENT.wait(retry_delay_seconds)
+
+    log.info('ML path learner stopped')
 
 
 if __name__ == '__main__':

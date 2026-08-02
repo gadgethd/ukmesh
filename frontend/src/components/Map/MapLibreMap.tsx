@@ -105,6 +105,7 @@ function fetchNodeLinks(nodeId: string, scopeKey: string, scope: ApiScope): Prom
 }
 
 import {
+  applyMapOverlayTheme,
   installMapSourcesAndLayers,
 } from './mapSourceLayers.js';
 // ── Main Component ────────────────────────────────────────────────────────────
@@ -146,6 +147,7 @@ export function MapLibreMap({
   const showHexClashesRef = useRef(showHexClashes);
   const maxHexClashHopsRef = useRef(maxHexClashHops);
   const viewshedEnabledRef = useRef(viewshedEnabled);
+  const mapLightRef = useRef(mapLight);
   const pathNodeIdsRef = useRef(useOverlayStore.getState().pathNodeIds);
   const replayNodeIdsRef = useRef(useOverlayStore.getState().replayNodeIds);
   const setClashPathLines = useOverlayStore((state) => state.setClashPathLines);
@@ -212,6 +214,8 @@ export function MapLibreMap({
 
   // -- Map theme (light/dark) -------------------------------------------------
   useEffect(() => {
+      const theme = mapLight ? 'light' : 'dark';
+      mapLightRef.current = mapLight;
       const map = mapRef.current;
       if (map && mapLoadedRef.current) {
         const oldId = mapLight ? 'carto-dark' : 'carto-light';
@@ -259,6 +263,20 @@ export function MapLibreMap({
           map.setPaintProperty(layerId, 'text-halo-width', colorKey === 'place' ? 1.7 : 1.5);
           map.setPaintProperty(layerId, 'text-halo-blur', 0.1);
         }
+
+        applyMapOverlayTheme(map, theme);
+        const nodes = nodesRef.current;
+        const viablePairs = viablePairsRef.current;
+        const linkMetrics = linkMetricsRef.current;
+        const hiddenMask = hiddenCoordMaskRef.current;
+        const links = showLinksRef.current
+          ? buildLinksGeoJSON(nodes, viablePairs, linkMetrics, hiddenMask, theme)
+          : EMPTY_FC;
+        (map.getSource('viable-links') as maplibregl.GeoJSONSource | undefined)?.setData(links);
+        const plannedLinks = viewshedEnabledRef.current && showLinksRef.current
+          ? buildPlannedLinksGeoJSON(plannedRepeatersRef.current, nodes, hiddenMask, theme)
+          : EMPTY_FC;
+        (map.getSource('planned-links') as maplibregl.GeoJSONSource | undefined)?.setData(plannedLinks);
       }
   }, [mapLight]);
 
@@ -480,7 +498,12 @@ export function MapLibreMap({
   const updatePlannedLinks = useCallback(() => {
     if (!mapLoadedRef.current || !mapRef.current) return;
     const data = viewshedEnabledRef.current && showLinksRef.current
-      ? buildPlannedLinksGeoJSON(plannedRepeatersRef.current, nodesRef.current, hiddenCoordMaskRef.current)
+      ? buildPlannedLinksGeoJSON(
+          plannedRepeatersRef.current,
+          nodesRef.current,
+          hiddenCoordMaskRef.current,
+          mapLightRef.current ? 'light' : 'dark',
+        )
       : EMPTY_FC;
     (mapRef.current.getSource('planned-links') as maplibregl.GeoJSONSource | undefined)?.setData(data);
     mapRef.current.setLayoutProperty('planned-links-layer', 'visibility', viewshedEnabledRef.current && showLinksRef.current ? 'visible' : 'none');
@@ -742,7 +765,13 @@ export function MapLibreMap({
 
     if (dirty.links || dirty.nodes) {
       const linksGeoJSON = showLinksRef.current
-        ? buildLinksGeoJSON(nodes, viablePairsArr, linkMetrics, currentHiddenCoordMask)
+        ? buildLinksGeoJSON(
+            nodes,
+            viablePairsArr,
+            linkMetrics,
+            currentHiddenCoordMask,
+            mapLightRef.current ? 'light' : 'dark',
+          )
         : EMPTY_FC;
       (mapRef.current.getSource('viable-links') as maplibregl.GeoJSONSource | undefined)?.setData(linksGeoJSON);
       mapRef.current.setLayoutProperty('viable-links-layer', 'visibility', showLinksRef.current ? 'visible' : 'none');
@@ -854,6 +883,7 @@ export function MapLibreMap({
 
       installMapSourcesAndLayers(map, {
         showLinks: showLinksRef.current,
+        mapLight: mapLightRef.current,
       });
       // ── Click handler ──────────────────────────────────────────────────────
       map.on('click', 'planned-pins-dot', (e) => {
@@ -1275,7 +1305,7 @@ export function MapLibreMap({
   return (
     <div className="map-area" style={{ position: 'relative', width: '100%', height: '100%' }}>
       <NodeSearch map={mapRef.current} onNodeSelect={onNodeSelect} />
-      <NodeLegend />
+      <NodeLegend mapLight={mapLight} />
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
 
       {/* Map tool buttons */}

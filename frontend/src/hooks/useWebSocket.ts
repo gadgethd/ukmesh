@@ -2,17 +2,23 @@ import { useEffect, useRef, useCallback, useState } from 'react';
 import type { ApiScope } from '../utils/api.js';
 
 export type WSReadyState = 'connecting' | 'connected' | 'disconnected';
+export type WSConnectionState = {
+  readyState: WSReadyState;
+  lastMessageAt: number | null;
+};
 
 export interface WSMessage {
   type: 'packet' | 'node_update' | 'node_upsert' | 'initial_state' | 'coverage_update' | 'link_update';
   data: unknown;
   ts: number;
+  scopeEpoch?: number;
 }
 
 type MessageHandler = (msg: WSMessage) => void;
 
-export function useWebSocket(onMessage: MessageHandler, scope: ApiScope = {}) {
+export function useWebSocket(onMessage: MessageHandler, scope: ApiScope = {}, scopeEpoch = 0) {
   const [readyState, setReadyState] = useState<WSReadyState>('connecting');
+  const [lastMessageAt, setLastMessageAt] = useState<number | null>(null);
   const wsRef   = useRef<WebSocket | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const shouldReconnectRef = useRef(true);
@@ -41,17 +47,23 @@ export function useWebSocket(onMessage: MessageHandler, scope: ApiScope = {}) {
     setReadyState('connecting');
 
     ws.onopen = () => {
+      if (wsRef.current !== ws) return;
       setReadyState('connected');
       retryDelayRef.current = 3000;
       console.log('[ws] connected');
     };
 
     ws.onmessage = (e: MessageEvent<string>) => {
+      if (wsRef.current !== ws) return;
       try {
         const raw = String(e.data ?? '');
         const lines = raw.includes('\n') ? raw.split('\n').filter(Boolean) : [raw];
         for (const line of lines) {
-          const msg = JSON.parse(line) as WSMessage;
+          const msg = {
+            ...(JSON.parse(line) as WSMessage),
+            scopeEpoch,
+          };
+          setLastMessageAt(Date.now());
           handlerRef.current(msg);
         }
       } catch {
@@ -60,7 +72,8 @@ export function useWebSocket(onMessage: MessageHandler, scope: ApiScope = {}) {
     };
 
     ws.onclose = () => {
-      if (!shouldReconnectRef.current) return;
+      if (wsRef.current !== ws || !shouldReconnectRef.current) return;
+      wsRef.current = null;
       setReadyState('disconnected');
       const baseDelay = retryDelayRef.current;
       const jitter = Math.random() * 1000;
@@ -73,18 +86,21 @@ export function useWebSocket(onMessage: MessageHandler, scope: ApiScope = {}) {
     ws.onerror = () => {
       ws.close();
     };
-  }, [scope.network, scope.observer]);
+  }, [scope.network, scope.observer, scopeEpoch]);
 
   useEffect(() => {
     shouldReconnectRef.current = true;
     retryDelayRef.current = 3000;
+    setLastMessageAt(null);
     connect();
     return () => {
       shouldReconnectRef.current = false;
       if (timerRef.current) clearTimeout(timerRef.current);
-      wsRef.current?.close();
+      const ws = wsRef.current;
+      wsRef.current = null;
+      ws?.close();
     };
   }, [connect]);
 
-  return readyState;
+  return { readyState, lastMessageAt } satisfies WSConnectionState;
 }

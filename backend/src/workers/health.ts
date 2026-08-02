@@ -3,6 +3,8 @@ import { initDb } from '../db/index.js';
 import { captureWorkerHealthSnapshot } from '../health/status.js';
 import { cleanupStaleMqttObservers } from '../maintenance/staleMqttObservers.js';
 import { pollOwnerAlertRules } from '../owner/alertRules.js';
+import { observeWorkerOutcome } from '../metrics.js';
+import { startWorkerMetrics } from './workerMetrics.js';
 
 const SNAPSHOT_INTERVAL_MS = 60 * 1000;
 
@@ -28,7 +30,9 @@ const STALE_OBSERVER_CLEANUP_DAYS = boundedEnvNumber(
 async function captureOnce(tag: 'initial' | 'scheduled') {
   try {
     await Promise.all([captureWorkerHealthSnapshot(), pollOwnerAlertRules()]);
+    observeWorkerOutcome('health', 'snapshot', 'success');
   } catch (err) {
+    observeWorkerOutcome('health', 'snapshot', 'failure');
     console.error(`[health] ${tag} snapshot failed`, (err as Error).message);
   }
 }
@@ -42,12 +46,15 @@ async function cleanupStaleObservers(tag: 'initial' | 'scheduled') {
         `nodes=${result.nodes} observerSightings=${result.observerSightings} networkSightings=${result.networkSightings}`,
       );
     }
+    observeWorkerOutcome('health', 'cleanup', 'success');
   } catch (err) {
+    observeWorkerOutcome('health', 'cleanup', 'failure');
     console.error(`[health] ${tag} stale MQTT observer cleanup failed`, (err as Error).message);
   }
 }
 
 async function main() {
+  startWorkerMetrics();
   await initDb();
   await captureOnce('initial');
   await cleanupStaleObservers('initial');
