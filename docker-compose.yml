@@ -560,7 +560,7 @@ services:
       context: ./third_party/hopreach
       dockerfile: Dockerfile
       args:
-        VERSION: v0.1.32+ukmesh
+        VERSION: v0.1.32-ukmesh.3
         SOURCE_REVISION: ${SOURCE_REVISION:-local}
     restart: always
     logging: *json-log-limits
