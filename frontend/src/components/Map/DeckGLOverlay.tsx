@@ -18,6 +18,12 @@ import type { HiddenMaskGeometry } from '../../utils/pathing.js';
 import { maskPoint } from '../../utils/pathing.js';
 import type { ClashPathLine, CustomLosPoint, CustomLosSegment, LosProfile } from './types.js';
 import { TERRAIN_CONFIG } from './mapConfig.js';
+import {
+  PATH_ARC_BLOOM_WIDTH,
+  PATH_ARC_CORE_WIDTH,
+  PATH_ARC_HEIGHT,
+  pathArcColors,
+} from './pathArcStyle.js';
 
 const FADE_DURATION_MS = 1_000;
 
@@ -139,20 +145,20 @@ function buildLayers(
           data: visible,
           getSourcePosition: (d) => d.from,
           getTargetPosition: (d) => d.to,
-          getSourceColor: (d) => [0, 196, 255, Math.round(35 * fade(d.ts))],
-          getTargetColor: (d) => [0, 196, 255, Math.round(70 * fade(d.ts))],
-          getWidth: 10,
-          getHeight: 0.15,
+          getSourceColor: (d) => pathArcColors(1, fade(d.ts)).bloomSource,
+          getTargetColor: (d) => pathArcColors(1, fade(d.ts)).bloomTarget,
+          getWidth: PATH_ARC_BLOOM_WIDTH,
+          getHeight: PATH_ARC_HEIGHT,
         }),
         new ArcLayer<PacketArc>({
           id: 'arc-core',
           data: visible,
           getSourcePosition: (d) => d.from,
           getTargetPosition: (d) => d.to,
-          getSourceColor: (d) => [120, 220, 255, Math.round(200 * fade(d.ts))],
-          getTargetColor: (d) => [200, 245, 255, Math.round(255 * fade(d.ts))],
-          getWidth: 2,
-          getHeight: 0.15,
+          getSourceColor: (d) => pathArcColors(1, fade(d.ts)).coreSource,
+          getTargetColor: (d) => pathArcColors(1, fade(d.ts)).coreTarget,
+          getWidth: PATH_ARC_CORE_WIDTH,
+          getHeight: PATH_ARC_HEIGHT,
         }),
       );
     }

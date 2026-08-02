@@ -1,5 +1,6 @@
 import React, { lazy, memo, Suspense, useEffect } from 'react';
 import type maplibregl from 'maplibre-gl';
+import { AnimatedPathOverlay, type AerialPath } from '../Map/AnimatedPathOverlay.js';
 
 export const C_CYAN = '#00c4ff';
 export const C_GREEN = '#00e676';
@@ -261,6 +262,16 @@ const CARTO_DARK_TILES = [
 
 export const DecodedPathMapView: React.FC<{ nodes: DecodedPathNode[] }> = ({ nodes }) => {
   const containerRef = React.useRef<HTMLDivElement>(null);
+  const [mapInstance, setMapInstance] = React.useState<maplibregl.Map | null>(null);
+  const paths = React.useMemo<AerialPath[]>(() => [{
+    id: 'decoded-path',
+    confidence: 1,
+    nodes: nodes.map((node) => ({
+      position: [Number(node.lon), Number(node.lat)],
+      nodeId: node.node_id,
+      name: node.name ?? undefined,
+    })),
+  }], [nodes]);
   useEffect(() => {
     if (!containerRef.current || nodes.length < 2) return undefined;
     let cancelled = false;
@@ -292,53 +303,24 @@ export const DecodedPathMapView: React.FC<{ nodes: DecodedPathNode[] }> = ({ nod
       });
       map.on('load', () => {
         if (cancelled || !map) return;
-        const lineData: GeoJSON.FeatureCollection<GeoJSON.LineString> = {
-          type: 'FeatureCollection',
-          features: [{
-            type: 'Feature',
-            geometry: {
-              type: 'LineString',
-              coordinates: nodes.map((node) => [Number(node.lon), Number(node.lat)]),
-            },
-            properties: {},
-          }],
-        };
-        const pointData: GeoJSON.FeatureCollection<GeoJSON.Point, { ord: string }> = {
-          type: 'FeatureCollection',
-          features: nodes.map((node) => ({
-            type: 'Feature',
-            geometry: { type: 'Point', coordinates: [Number(node.lon), Number(node.lat)] },
-            properties: { ord: String(node.ord) },
-          })),
-        };
-        map.addSource('decoded-path-line', { type: 'geojson', data: lineData });
-        map.addSource('decoded-path-nodes', { type: 'geojson', data: pointData });
-        map.addLayer({
-          id: 'decoded-path-line-layer',
-          type: 'line',
-          source: 'decoded-path-line',
-          paint: { 'line-color': C_PURPLE, 'line-width': 4, 'line-opacity': 0.9 },
-        });
-        map.addLayer({
-          id: 'decoded-path-node-circles',
-          type: 'circle',
-          source: 'decoded-path-nodes',
-          paint: {
-            'circle-radius': 10,
-            'circle-color': '#0b1725',
-            'circle-stroke-color': C_CYAN,
-            'circle-stroke-width': 2,
-          },
-        });
         const bounds = new maplibre.LngLatBounds();
         for (const node of nodes) bounds.extend([Number(node.lon), Number(node.lat)]);
         map.fitBounds(bounds, { padding: 24, animate: false });
+        map.setPitch(50);
+        map.setBearing(-8);
+        setMapInstance(map);
       });
     });
     return () => {
       cancelled = true;
+      setMapInstance(null);
       map?.remove();
     };
   }, [nodes]);
-  return <div ref={containerRef} style={{ height: '100%', width: '100%' }} />;
+  return (
+    <div style={{ position: 'relative', height: '100%', width: '100%' }}>
+      <div ref={containerRef} style={{ height: '100%', width: '100%' }} />
+      <AnimatedPathOverlay map={mapInstance} paths={paths} active />
+    </div>
+  );
 };
