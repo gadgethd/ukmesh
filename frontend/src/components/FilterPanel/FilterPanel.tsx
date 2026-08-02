@@ -154,6 +154,11 @@ export const FilterPanel: React.FC<FilterPanelProps> = ({
             className="filter-row"
             onClick={() => toggle(key)}
             aria-pressed={filters[key] as boolean}
+            title={key === 'terrain'
+              ? '3D Terrain and RF Coverage render separately; enabling terrain turns RF coverage off.'
+              : key === 'coverage'
+                ? 'RF Coverage uses the flat map; enabling it turns 3D terrain off.'
+                : undefined}
           >
             <span className="filter-row__label">
               {hollow ? (
