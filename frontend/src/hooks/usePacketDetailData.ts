@@ -10,6 +10,7 @@ export type PacketDetail = {
   rxNodeId: string | null;
   srcNodeId: string | null;
   topic: string;
+  iata: string | null;
   packetType: number | null;
   routeType: number | null;
   hopCount: number | null;
@@ -19,7 +20,7 @@ export type PacketDetail = {
   pathHashes: string[] | null;
   pathHashSizeBytes: number | null;
   rawHex: string | null;
-  observations: Array<{ rxNodeId: string | null; time: string; rssi: number | null; snr: number | null; hopCount: number | null }>;
+  observations: Array<{ rxNodeId: string | null; iata: string | null; time: string; rssi: number | null; snr: number | null; hopCount: number | null }>;
 };
 
 export type RadioState = {
@@ -31,6 +32,7 @@ export type RadioState = {
 };
 
 const CACHE_TTL_MS = 5 * 60_000;
+export const LAZY_PATH_SETTLE_MS = 10_000;
 const detailCache = new ScopedCache<PacketDetail | null>({
   name: 'packet-detail',
   ttlMs: CACHE_TTL_MS,
@@ -52,6 +54,14 @@ const pathCache = new ScopedCache<ResolvedPath[]>({
   maxBytes: 24 * 1024 * 1024,
   maxInflight: 8,
 });
+
+export function lazyPathSettleRemainingMs(packetTime: string, nowMs = Date.now()): number {
+  const parsedPacketTime = Date.parse(packetTime);
+  const ageMs = Number.isFinite(parsedPacketTime)
+    ? Math.max(0, nowMs - parsedPacketTime)
+    : LAZY_PATH_SETTLE_MS;
+  return Math.max(0, LAZY_PATH_SETTLE_MS - ageMs);
+}
 
 async function cachedPacketDetail(
   packetHash: string,
@@ -96,13 +106,14 @@ async function cachedRadioState(
 
 export function usePacketDetailData(input: {
   packetHash: string;
+  packetTime: string;
   network: string;
   observer?: string;
   observerKey: string;
   hasPathHashes: boolean;
   cachedLazyPath?: LazyPathResult | null;
 }) {
-  const { packetHash, network, observer, observerKey, hasPathHashes, cachedLazyPath } = input;
+  const { packetHash, packetTime, network, observer, observerKey, hasPathHashes, cachedLazyPath } = input;
   const runtimeFeatures = useRuntimeFeatures();
   const scopeKey = `${network}|${observerKey}|privacy-${runtimeFeatures.privacyGeneration}`;
   const [detail, setDetail] = useState<PacketDetail | null>(null);
@@ -182,7 +193,7 @@ export function usePacketDetailData(input: {
           observer,
         }),
         { signal, cache: 'no-store' },
-        { timeoutMs: 12_000, maxBytes: 4 * 1024 * 1024 },
+        { timeoutMs: 15_000, maxBytes: 4 * 1024 * 1024 },
       );
       if (signal.aborted) return;
       setLazyPath(value);
@@ -213,20 +224,28 @@ export function usePacketDetailData(input: {
       return () => controller.abort();
     }
     setLazyPath(null);
+    const remainingMs = lazyPathSettleRemainingMs(packetTime);
+    if (remainingMs === 0) {
+      void fetchLazyPath(controller.signal);
+      return () => controller.abort();
+    }
     setLazyStatus('settling');
-    setLazyCountdown(10);
-    const tick = window.setInterval(() => setLazyCountdown((value) => Math.max(0, value - 1)), 1_000);
+    setLazyCountdown(Math.ceil(remainingMs / 1_000));
+    const settleDeadline = Date.now() + remainingMs;
+    const tick = window.setInterval(() => {
+      setLazyCountdown(Math.max(0, Math.ceil((settleDeadline - Date.now()) / 1_000)));
+    }, 250);
     const timer = window.setTimeout(() => {
       window.clearInterval(tick);
       setLazyCountdown(0);
       void fetchLazyPath(controller.signal);
-    }, 10_000);
+    }, remainingMs);
     return () => {
       window.clearInterval(tick);
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [cachedLazyPath, fetchLazyPath, hasPathHashes, observerKey]);
+  }, [cachedLazyPath, fetchLazyPath, hasPathHashes, observerKey, packetTime]);
 
   return { detail, radio, resolvedPaths, loading, pathLoading, lazyPath, lazyStatus, lazyCountdown };
 }

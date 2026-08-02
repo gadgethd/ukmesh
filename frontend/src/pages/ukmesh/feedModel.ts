@@ -15,6 +15,8 @@ export type FeedPacket = {
   snr?: number | null;
   payload?: Record<string, unknown>;
   observer_node_ids?: string[];
+  iata?: string | null;
+  observer_iatas?: string[];
   rx_count?: number;
   tx_count?: number;
   summary?: string | null;
@@ -154,6 +156,8 @@ export function aggregatedPacketToFeedPacket(packet: AggregatedPacket): FeedPack
     snr: null,
     payload: packet as unknown as Record<string, unknown>,
     observer_node_ids: packet.observerIds,
+    iata: packet.observerIatas[0] ?? null,
+    observer_iatas: packet.observerIatas,
     rx_count: packet.rxCount,
     tx_count: packet.txCount,
     summary: packet.summary ?? null,
@@ -161,8 +165,62 @@ export function aggregatedPacketToFeedPacket(packet: AggregatedPacket): FeedPack
   };
 }
 
+function finiteTimestamp(value: string | undefined): number | null {
+  if (!value) return null;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function mergedStrings(values: Array<string | null | undefined>): string[] {
+  return Array.from(new Set(values.map((value) => String(value ?? '').trim()).filter(Boolean)));
+}
+
+function mergedIatas(values: Array<string | null | undefined>): string[] {
+  const normalized = values
+    .map((value) => String(value ?? '').trim().toUpperCase())
+    .filter((value) => /^[A-Z0-9]{2,8}$/.test(value));
+  return Array.from(new Set(normalized));
+}
+
+export function mergeFeedPacketObservations(current: FeedPacket, next: FeedPacket): FeedPacket {
+  const currentTime = finiteTimestamp(current.time);
+  const nextTime = finiteTimestamp(next.time);
+  const latest = nextTime != null && (currentTime == null || nextTime >= currentTime) ? next : current;
+  const firstSeenCandidates = [
+    finiteTimestamp(current.first_seen_time ?? current.time),
+    finiteTimestamp(next.first_seen_time ?? next.time),
+  ].filter((value): value is number => value != null);
+  const observerIatas = mergedIatas([
+    ...(current.observer_iatas ?? []),
+    current.iata,
+    ...(next.observer_iatas ?? []),
+    next.iata,
+  ]);
+  return {
+    ...latest,
+    first_seen_time: firstSeenCandidates.length > 0
+      ? new Date(Math.min(...firstSeenCandidates)).toISOString()
+      : (latest.first_seen_time ?? latest.time),
+    observer_node_ids: mergedStrings([
+      ...(current.observer_node_ids ?? []),
+      current.rx_node_id,
+      ...(next.observer_node_ids ?? []),
+      next.rx_node_id,
+    ]),
+    observer_iatas: observerIatas,
+    iata: mergedIatas([latest.iata])[0] ?? observerIatas[0] ?? null,
+    rx_count: Math.max(current.rx_count ?? 0, next.rx_count ?? 0),
+    tx_count: Math.max(current.tx_count ?? 0, next.tx_count ?? 0),
+  };
+}
+
 export function packetObserverIatas(packet: FeedPacket, nodeMap: Map<string, MeshNode>): string[] {
   const values = new Set<string>();
+  for (const value of [...(packet.observer_iatas ?? []), packet.iata]) {
+    const iata = String(value ?? '').trim().toUpperCase();
+    if (/^[A-Z0-9]{2,8}$/.test(iata)) values.add(iata);
+  }
+  if (values.size > 0) return Array.from(values);
   for (const observerId of packetObserverIds(packet)) {
     const iata = nodeMap.get(observerId)?.iata?.trim().toUpperCase();
     if (iata) values.add(iata);
