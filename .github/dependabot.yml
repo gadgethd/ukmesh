@@ -14,6 +14,39 @@ updates:
     groups:
       frontend-dependencies:
         patterns: ['*']
+  - package-ecosystem: npm
+    directory: /scripts
+    schedule:
+      interval: weekly
+    groups:
+      scripts-dependencies:
+        patterns: ['*']
+  - package-ecosystem: pip
+    directory: /viewshed-worker
+    schedule:
+      interval: weekly
+    groups:
+      rf-worker-dependencies:
+        patterns: ['*']
+  - package-ecosystem: pip
+    directory: /ml-path-learner
+    schedule:
+      interval: weekly
+    groups:
+      ml-worker-dependencies:
+        patterns: ['*']
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: docker
+    directory: /viewshed-worker
+    schedule:
+      interval: weekly
+  - package-ecosystem: docker
+    directory: /ml-path-learner
+    schedule:
+      interval: weekly
   - package-ecosystem: github-actions
     directory: /
     schedule:

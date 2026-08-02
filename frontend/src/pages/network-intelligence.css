@@ -36,10 +36,10 @@
 .topology-page__link--active { stroke: #22d3ee; opacity: 0.9; }
 .topology-page__node { fill: #a9eaff; stroke: #d9f7ff; stroke-width: 1.8; filter: drop-shadow(0 0 3px rgba(91, 211, 245, 0.42)); cursor: pointer; transition: fill var(--transition), stroke var(--transition); }
 .topology-page__node:hover,
-.topology-page__node:focus,
-.topology-page__node--active { fill: #f8fafc; stroke: #22d3ee; outline: none; }
+.topology-page__node--active { fill: #f8fafc; stroke: #22d3ee; }
 .topology-page__node--bridge { stroke: #f59e0b; stroke-width: 2.5; }
 .topology-page__node--isolated { fill: transparent; stroke: #d7e8f7; stroke-width: 2.2; stroke-dasharray: 2 1; filter: drop-shadow(0 0 4px rgba(215, 232, 247, 0.45)); }
+.topology-page__node:focus-visible { fill: #f8fafc; stroke: #fff; stroke-width: 3.5; filter: drop-shadow(0 0 6px rgba(0, 196, 255, 0.9)); }
 .topology-page__legend { position: absolute; left: 12px; bottom: 10px; padding: 5px 8px; border-radius: var(--radius); background: rgba(2, 8, 16, 0.82); color: var(--text-muted); font: 10px/1.2 var(--font-mono); }
 .topology-page__hubs { background: #07101d; border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 18px; }
 .topology-page__hubs h2 { margin: 0 0 12px; font-size: 15px; }
@@ -63,10 +63,11 @@
 .topology-page__validation-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 15px; }
 .topology-page__validation-stats div { display: flex; flex-direction: column; padding: 10px; border-radius: var(--radius); background: var(--bg-panel-alt); }
 .topology-page__validation-stats strong { color: var(--amber); font: 18px var(--font-mono); }
-.topology-page__validation-stats span { color: var(--text-muted); font-size: 9px; }
+.topology-page__validation-stats span { color: var(--text-muted); font-size: 11px; }
 .topology-page__validation-table { margin-top: 14px; border-top: 1px solid var(--border); }
-.topology-page__validation-table [role='row'] { display: grid; grid-template-columns: minmax(180px, 1fr) 150px 100px 170px; gap: 10px; padding: 8px 4px; border-bottom: 1px solid var(--border); color: var(--text-secondary); font-size: 10px; }
-.topology-page__validation-table strong { color: var(--amber); font: 9px var(--font-mono); text-transform: uppercase; }
+.topology-page__validation-table [role='row'] { display: grid; grid-template-columns: minmax(180px, 1fr) 150px 100px 170px; gap: 10px; padding: 8px 4px; border-bottom: 1px solid var(--border); color: var(--text-secondary); font-size: 11px; }
+.topology-page__validation-table-head { color: var(--text-muted) !important; font: 11px var(--font-mono); letter-spacing: 0.06em; text-transform: uppercase; }
+.topology-page__validation-table strong { color: var(--amber); font: 11px var(--font-mono); text-transform: uppercase; }
 
 .status-page { padding-top: 48px; padding-bottom: 64px; }
 .status-page > header { margin-bottom: 22px; }
@@ -95,7 +96,7 @@
 .status-page__grid dt { color: var(--text-muted); }
 .status-page__grid dd { color: var(--text-primary); font-family: var(--font-mono); }
 .status-page__checks > div { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 7px 0; border-bottom: 1px solid var(--border); }
-.status-page__checks strong { overflow: hidden; color: var(--text-secondary); font: 10px var(--font-mono); text-overflow: ellipsis; text-transform: uppercase; white-space: nowrap; }
+.status-page__checks strong { overflow: hidden; color: var(--text-secondary); font: 11px var(--font-mono); text-overflow: ellipsis; text-transform: uppercase; white-space: nowrap; }
 .status-page__checks small { color: var(--text-muted); }
 .status-page__dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); }
 .status-page__dot--ok { background: var(--online); box-shadow: 0 0 8px rgba(0, 230, 118, 0.45); }
@@ -105,7 +106,7 @@
 .status-page__dot--critical,
 .status-page__dot--failed,
 .status-page__dot--disabled { background: var(--danger); }
-.status-page__privacy { margin-top: 16px; color: var(--text-muted); font-size: 10px; }
+.status-page__privacy { margin-top: 16px; color: var(--text-muted); font-size: 11px; }
 
 @media (max-width: 860px) {
   .topology-page__workspace { grid-template-columns: 1fr; }

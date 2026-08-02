@@ -192,7 +192,7 @@ export const PacketPathTree: React.FC<{
     return (
       <div className="uk-feed-path-tree uk-feed-path-tree--message">
         <span className="uk-feed-path-tree__status">Route lookup failed.</span>
-        <button className="uk-feed-path-tree__retry" onClick={onRetry}>Try again</button>
+        <button type="button" className="uk-feed-path-tree__retry" onClick={onRetry}>Try again</button>
       </div>
     );
   }
@@ -200,7 +200,7 @@ export const PacketPathTree: React.FC<{
     return (
       <div className="uk-feed-path-tree uk-feed-path-tree--message">
         <span className="uk-feed-path-tree__status">Select “Try again” to resolve this packet path.</span>
-        <button className="uk-feed-path-tree__retry" onClick={onRetry}>Resolve path</button>
+        <button type="button" className="uk-feed-path-tree__retry" onClick={onRetry}>Resolve path</button>
       </div>
     );
   }

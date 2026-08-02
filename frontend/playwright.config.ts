@@ -13,7 +13,7 @@ export default defineConfig({
   projects: [
     {
       name: 'public-desktop',
-      testMatch: /(?:owner|public)\.spec\.ts/,
+      testMatch: /(?:accessibility|owner|public)\.spec\.ts/,
       use: { ...devices['Desktop Chrome'], baseURL: 'http://127.0.0.1:4173' },
     },
     {

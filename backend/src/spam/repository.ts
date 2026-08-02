@@ -1,10 +1,14 @@
-import { pool, analyticsPool } from '../db/index.js';
+import { analyticsQuery, pool } from '../db/index.js';
 import { UKMESH_NETWORKS } from '../networks.js';
 import { normalizeMessage } from './normalize.js';
 import type { Incident, IncidentStatus, MessageRecord, ObserverObservation, OriginEstimate } from './types.js';
 import type { PublicIncident } from './sanitize.js';
 import type { SpamMessageConfig } from './config.js';
 import { privateNodePacketNetworkMatchSql } from '../privacy/networkScope.js';
+import {
+  assertAnalysisPublicationLease,
+  type AnalysisPublicationHandle,
+} from '../analysis/publicationFence.js';
 
 // ---------------------------------------------------------------------------
 // Persistence layer for message-spam detection.
@@ -51,8 +55,11 @@ function channelLabel(summary: string | null, channelHash: string | null): strin
  */
 export type SpamAnalysisWindow = { start: Date; end: Date };
 
-export async function countLogicalMessages(window: SpamAnalysisWindow): Promise<number> {
-  const result = await analyticsPool.query<{ count: string }>(
+export async function countLogicalMessages(
+  window: SpamAnalysisWindow,
+  signal?: AbortSignal,
+): Promise<number> {
+  const result = await analyticsQuery<{ count: string }>(
     `SELECT COUNT(DISTINCT p.packet_hash)::text AS count
        FROM packets p
       WHERE p.packet_type = 5
@@ -62,6 +69,7 @@ export async function countLogicalMessages(window: SpamAnalysisWindow): Promise<
         AND p.payload ? 'decrypted'
         AND p.payload->'decrypted' ? 'message'`,
     [window.start, window.end, NETWORKS],
+    signal,
   );
   return Number(result.rows[0]?.count ?? 0);
 }
@@ -69,12 +77,13 @@ export async function countLogicalMessages(window: SpamAnalysisWindow): Promise<
 export async function loadRecentMessages(
   cfg: SpamMessageConfig,
   fixedWindow?: SpamAnalysisWindow,
+  signal?: AbortSignal,
 ): Promise<MessageRecord[]> {
   const windowEnd = fixedWindow?.end ?? new Date();
   const windowStart = fixedWindow?.start
     ?? new Date(windowEnd.getTime() - cfg.analysisWindowHours * 60 * 60 * 1000);
 
-  const msgRes = await analyticsPool.query<MsgRow>(
+  const msgRes = await analyticsQuery<MsgRow>(
     `WITH logical_messages AS (
        SELECT DISTINCT ON (p.packet_hash)
           p.packet_hash,
@@ -140,13 +149,14 @@ export async function loadRecentMessages(
       cfg.maxIndependentSenders,
       cfg.maxCandidatePacketRows,
     ],
+    signal,
   );
 
   if (msgRes.rows.length === 0) return [];
 
   const selectedRows = msgRes.rows.slice(0, cfg.maxMessagesPerRun);
   const hashes = selectedRows.map((r) => r.packet_hash);
-  const obsRes = await analyticsPool.query<ObsRow>(
+  const obsRes = await analyticsQuery<ObsRow>(
     `WITH ranked_observers AS (
      SELECT p.packet_hash,
             p.rx_node_id        AS observer_id,
@@ -183,6 +193,7 @@ export async function loadRecentMessages(
        ) bounded_observers
       WHERE observer_rank <= $5`,
     [windowStart, windowEnd, NETWORKS, hashes, cfg.maxObserversPerMessage],
+    signal,
   );
 
   const obsByHash = new Map<string, ObserverObservation[]>();
@@ -224,6 +235,7 @@ export interface PersistResult {
   upserted: number;
   removed: number;
   active: number;
+  lifecycleExpired: number;
 }
 
 export interface PersistableIncident {
@@ -250,19 +262,6 @@ export async function withSpamAnalyzerLease<T>(task: () => Promise<T>): Promise<
   } finally {
     client.release();
   }
-}
-
-export async function expireSpamIncidentLifecycle(cfg: SpamMessageConfig): Promise<number> {
-  const result = await pool.query(
-    `UPDATE spam_message_incidents
-        SET status = 'closed',
-            public_json = jsonb_set(public_json, '{status}', '"closed"'::jsonb, true),
-            updated_at = NOW()
-      WHERE status = 'active'
-        AND last_seen <= NOW() - ($1 * INTERVAL '1 millisecond')`,
-    [cfg.ongoingWindowMs],
-  );
-  return result.rowCount ?? 0;
 }
 
 export function selectIncidentEvidenceMembers(
@@ -303,11 +302,13 @@ export function selectIncidentEvidenceMembers(
 export async function persistIncidents(
   items: PersistableIncident[],
   cfg: SpamMessageConfig,
+  analysisRun: AnalysisPublicationHandle,
 ): Promise<PersistResult> {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     await client.query(`SET LOCAL statement_timeout = '${Math.trunc(cfg.dbStatementTimeoutMs)}ms'`);
+    await assertAnalysisPublicationLease(client, analysisRun);
 
     let active = 0;
 
@@ -419,17 +420,24 @@ export async function persistIncidents(
 
     // Re-evaluate active/closed for ALL incidents based on age (covers ones that
     // aged out of the window this run and should now flip to closed).
-    await client.query(
+    const lifecycle = await client.query(
       `UPDATE spam_message_incidents
-         SET status = CASE WHEN last_seen > NOW() - ($1 * INTERVAL '1 millisecond')
-                           THEN 'active' ELSE 'closed' END
+         SET status = 'closed',
+             public_json = jsonb_set(public_json, '{status}', '"closed"'::jsonb, true),
+             updated_at = NOW()
        WHERE status = 'active'
          AND last_seen <= NOW() - ($1 * INTERVAL '1 millisecond')`,
       [cfg.ongoingWindowMs],
     );
 
+    await assertAnalysisPublicationLease(client, analysisRun);
     await client.query('COMMIT');
-    return { upserted: items.length, removed, active };
+    return {
+      upserted: items.length,
+      removed,
+      active,
+      lifecycleExpired: lifecycle.rowCount ?? 0,
+    };
   } catch (err) {
     await client.query('ROLLBACK');
     throw err;

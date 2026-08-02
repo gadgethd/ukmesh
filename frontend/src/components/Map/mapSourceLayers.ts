@@ -1,11 +1,91 @@
 import type maplibregl from 'maplibre-gl';
-import { EMPTY_FC } from './mapConfig.js';
+import { EMPTY_FC, MAP_OVERLAY_COLORS, type MapTheme } from './mapConfig.js';
+
+type OverlayColors = (typeof MAP_OVERLAY_COLORS)[MapTheme];
+
+function nodeColorExpression(colors: OverlayColors): maplibregl.ExpressionSpecification {
+  return [
+    'case',
+    ['==', ['get', 'hex_clash_state'], 'offender'], colors.clashOffender,
+    ['==', ['get', 'hex_clash_state'], 'relay'], colors.clashRelay,
+    ['get', 'replay_active'], colors.replay,
+    ['get', 'is_link_only_stale'], colors.linkOnlyStale,
+    ['get', 'is_inferred'], colors.inferred,
+    ['get', 'is_stale'], colors.stale,
+    ['!', ['get', 'is_online']], colors.stale,
+    ['==', ['get', 'role'], 1], colors.companion,
+    ['==', ['get', 'role'], 3], colors.roomServer,
+    ['==', ['get', 'role'], 4], colors.sensor,
+    colors.repeater,
+  ];
+}
+
+function nodeOpacityExpression(colors: OverlayColors): maplibregl.ExpressionSpecification {
+  return [
+    'case',
+    ['all', ['get', 'replay_mode'], ['!', ['get', 'replay_active']]], colors.dimmedOpacity,
+    ['get', 'is_link_only_stale'], colors.staleOpacity,
+    ['get', 'is_stale'], colors.staleOpacity,
+    ['!', ['get', 'is_online']], colors.staleOpacity,
+    ['get', 'is_inferred'], colors.inferredOpacity,
+    1,
+  ];
+}
+
+function bandColorExpression(colors: OverlayColors): maplibregl.ExpressionSpecification {
+  return [
+    'match', ['get', 'band'],
+    'green', colors.coverageGood,
+    'amber', colors.coverageMarginal,
+    'red', colors.coveragePoor,
+    colors.coverageGood,
+  ];
+}
+
+function plannedBandColorExpression(colors: OverlayColors): maplibregl.ExpressionSpecification {
+  return [
+    'match', ['get', 'band'],
+    'green', colors.plannedGood,
+    'amber', colors.plannedMarginal,
+    'red', colors.plannedPoor,
+    colors.plannedGood,
+  ];
+}
+
+/** Re-theme all non-raster overlays without replacing their live sources. */
+export function applyMapOverlayTheme(map: maplibregl.Map, theme: MapTheme): void {
+  const colors = MAP_OVERLAY_COLORS[theme];
+  const setPaint = (layerId: string, property: string, value: unknown) => {
+    if (map.getLayer(layerId)) map.setPaintProperty(layerId, property, value);
+  };
+  setPaint('node-dots', 'circle-color', nodeColorExpression(colors));
+  setPaint('node-dots', 'circle-opacity', nodeOpacityExpression(colors));
+  setPaint('node-dots', 'circle-stroke-width', 1);
+  setPaint('node-dots', 'circle-stroke-color', colors.nodeStroke);
+  setPaint('node-dots', 'circle-stroke-opacity', 0.9);
+  setPaint('node-dots-selected-halo', 'circle-color', colors.selectedHalo);
+  setPaint('node-dots-selected', 'circle-color', colors.selected);
+  setPaint('node-dots-selected', 'circle-stroke-color', colors.selectedStroke);
+  setPaint('privacy-rings-layer', 'line-color', colors.privacy);
+  setPaint('coverage-fill', 'fill-color', bandColorExpression(colors));
+  setPaint('clash-lines-layer', 'line-color', colors.clashLine);
+  setPaint('planned-coverage-fill', 'fill-color', plannedBandColorExpression(colors));
+  setPaint('planned-coverage-outline', 'line-color', colors.plannedOutline);
+  setPaint('planned-pins-halo', 'circle-color', colors.plannedOutline);
+  setPaint('planned-pins-dot', 'circle-color', [
+    'match', ['get', 'status'],
+    'ready', colors.repeater,
+    colors.plannedPending,
+  ]);
+  setPaint('planned-pins-dot', 'circle-stroke-color', colors.selectedStroke);
+}
 
 export function installMapSourcesAndLayers(
   map: maplibregl.Map,
-  options: { showLinks: boolean },
+  options: { showLinks: boolean; mapLight: boolean },
 ): void {
-  const { showLinks } = options;
+  const { showLinks, mapLight } = options;
+  const colors = MAP_OVERLAY_COLORS[mapLight ? 'light' : 'dark'];
       // ── Node dots source + layer ───────────────────────────────────────────
       map.addSource('nodes', { type: 'geojson', data: EMPTY_FC });
 
@@ -19,32 +99,11 @@ export function installMapSourcesAndLayers(
             'interpolate', ['linear'], ['zoom'],
             6, 3, 9, 4, 11, 5, 13, 7, 16, 9,
           ],
-          'circle-color': [
-            'case',
-            ['==', ['get', 'hex_clash_state'], 'offender'], '#ef4444',
-            ['==', ['get', 'hex_clash_state'], 'relay'], '#22c55e',
-            ['get', 'replay_active'], '#fbbf24',
-            ['get', 'is_link_only_stale'], '#4b5563',
-            ['get', 'is_inferred'], '#7dd3fc',
-            ['get', 'is_stale'], '#6b7280',
-            ['!', ['get', 'is_online']], '#6b7280',
-            ['==', ['get', 'role'], 1], '#ff9f43',
-            ['==', ['get', 'role'], 3], '#a78bfa',
-            ['==', ['get', 'role'], 4], '#34d399',
-            '#00c4ff', // repeater (role 2 / default)
-          ],
-          'circle-opacity': [
-            'case',
-            ['all', ['get', 'replay_mode'], ['!', ['get', 'replay_active']]], 0.12,
-            ['get', 'is_link_only_stale'], 0.22,
-            ['get', 'is_stale'], 0.4,
-            ['!', ['get', 'is_online']], 0.4,
-            ['get', 'is_inferred'], 0.7,
-            1.0,
-          ],
-          'circle-stroke-width': 0,
-          'circle-stroke-color': '#00c4ff',
-          'circle-stroke-opacity': 0.7,
+          'circle-color': nodeColorExpression(colors),
+          'circle-opacity': nodeOpacityExpression(colors),
+          'circle-stroke-width': 1,
+          'circle-stroke-color': colors.nodeStroke,
+          'circle-stroke-opacity': 0.9,
         },
       });
 
@@ -61,7 +120,7 @@ export function installMapSourcesAndLayers(
             'interpolate', ['linear'], ['zoom'],
             6, 11, 9, 13, 11, 15, 13, 18, 16, 22,
           ],
-          'circle-color': '#22e0ff',
+          'circle-color': colors.selectedHalo,
           'circle-opacity': 0.16,
           'circle-blur': 0.5,
         },
@@ -76,9 +135,9 @@ export function installMapSourcesAndLayers(
             'interpolate', ['linear'], ['zoom'],
             6, 5, 9, 6.5, 11, 8, 13, 10, 16, 13,
           ],
-          'circle-color': '#8af4ff',
+          'circle-color': colors.selected,
           'circle-opacity': 1,
-          'circle-stroke-color': '#ffffff',
+          'circle-stroke-color': colors.selectedStroke,
           'circle-stroke-width': 2.5,
           'circle-stroke-opacity': 0.95,
         },
@@ -91,7 +150,7 @@ export function installMapSourcesAndLayers(
         type: 'line',
         source: 'privacy-rings',
         paint: {
-          'line-color': '#f59e0b',
+          'line-color': colors.privacy,
           'line-width': 1.4,
           'line-opacity': 0.55,
           'line-dasharray': [4, 6],
@@ -124,13 +183,7 @@ export function installMapSourcesAndLayers(
         source: 'coverage',
         layout: { visibility: 'none' },
         paint: {
-          'fill-color': [
-            'match', ['get', 'band'],
-            'green', '#22c55e',
-            'amber', '#fbbf24',
-            'red', '#ef4444',
-            '#22c55e',
-          ],
+          'fill-color': bandColorExpression(colors),
           'fill-opacity': [
             'match', ['get', 'band'],
             'green', 0.22,
@@ -149,7 +202,7 @@ export function installMapSourcesAndLayers(
         source: 'clash-lines',
         layout: { visibility: 'none' },
         paint: {
-          'line-color': '#f97316',
+          'line-color': colors.clashLine,
           'line-width': 2.2,
           'line-opacity': 0.9,
         },
@@ -162,13 +215,7 @@ export function installMapSourcesAndLayers(
         type: 'fill',
         source: 'planned-coverage',
         paint: {
-          'fill-color': [
-            'match', ['get', 'band'],
-            'green', '#2dd4bf',   // teal-400
-            'amber', '#818cf8',   // indigo-400
-            'red',   '#c084fc',   // purple-400
-            '#2dd4bf',
-          ],
+          'fill-color': plannedBandColorExpression(colors),
           'fill-opacity': [
             'match', ['get', 'band'],
             'green', 0.30,
@@ -183,7 +230,7 @@ export function installMapSourcesAndLayers(
         type: 'line',
         source: 'planned-coverage',
         paint: {
-          'line-color': '#22d3ee', // cyan-400
+          'line-color': colors.plannedOutline,
           'line-width': 1.5,
           'line-opacity': 0.6,
         },
@@ -212,7 +259,7 @@ export function installMapSourcesAndLayers(
       });
 
       // ── Planned repeater pins source + layers ──────────────────────────────
-      // Styled to match real repeater nodes (role 2, #00c4ff) but visually
+      // Styled to match real repeater nodes in the active theme but visually
       // distinct via a white stroke and glow halo. Shared map labels and glyphs
       // belong to the base style; planned status text stays in the popup so
       // temporary planning markers do not add clutter to the map.
@@ -228,13 +275,12 @@ export function installMapSourcesAndLayers(
             'interpolate', ['linear'], ['zoom'],
             6, 8, 9, 11, 11, 14, 13, 18, 16, 22,
           ],
-          'circle-color': '#22d3ee',
+          'circle-color': colors.plannedOutline,
           'circle-opacity': [
             'match', ['get', 'status'],
             'ready', 0.20,
             0.10,
           ],
-          'circle-stroke-width': 0,
         },
       });
 
@@ -250,15 +296,15 @@ export function installMapSourcesAndLayers(
           ],
           'circle-color': [
             'match', ['get', 'status'],
-            'ready', '#00c4ff',   // identical to real online repeater
-            '#4b5563',            // dark grey while computing
+            'ready', colors.repeater,
+            colors.plannedPending,
           ],
           'circle-opacity': [
             'match', ['get', 'status'],
             'ready', 1.0,
             0.6,
           ],
-          'circle-stroke-color': '#ffffff',
+          'circle-stroke-color': colors.selectedStroke,
           'circle-stroke-width': 2,
           'circle-stroke-opacity': 0.95,
         },

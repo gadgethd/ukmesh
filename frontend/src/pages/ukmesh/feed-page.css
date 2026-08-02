@@ -836,7 +836,6 @@
   color: var(--text-primary);
   font-size: 12px;
   padding: 5px 10px;
-  outline: none;
   transition: border-color 0.15s;
 }
 .uk-feed-search::placeholder {
@@ -1140,12 +1139,6 @@
   }
   .uk-feed-packet-row__observer {
     font-size: 0.8rem;
-  }
-  .uk-feed-inline-map {
-    display: block;
-    height: 240px;
-    border-bottom: 1px solid var(--border);
-    background: var(--bg-secondary);
   }
   .uk-feed-right {
     display: none;

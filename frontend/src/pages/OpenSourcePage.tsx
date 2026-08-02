@@ -21,7 +21,7 @@ const FRONTEND: LibEntry[] = [
   { name: 'deck.gl',             role: 'WebGL overlay for animated packet arc trails',               url: 'https://deck.gl' },
   { name: '@deck.gl/mapbox',     role: 'Native deck.gl integration with the MapLibre map',           url: 'https://deck.gl/docs/api-reference/mapbox/overview' },
   { name: 'Zustand',             role: 'Lightweight client state management for UI atoms',           url: 'https://zustand-demo.pmnd.rs' },
-  { name: 'react-router-dom',    role: 'Client-side routing between pages',                          url: 'https://reactrouter.com' },
+  { name: 'react-router',        role: 'Client-side routing between pages',                          url: 'https://reactrouter.com' },
   { name: 'Recharts',            role: 'Chart components for stats and history graphs',              url: 'https://recharts.org' },
   { name: 'polygon-clipping',    role: 'Coverage polygon clipping to UK mainland bounds',            url: 'https://github.com/mfogel/polygon-clipping' },
 ];

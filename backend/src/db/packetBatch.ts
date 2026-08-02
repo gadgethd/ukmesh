@@ -1,4 +1,10 @@
 import type { QueryResultRow } from 'pg';
+import {
+  packetBatchDuration,
+  packetBatchFlushTotal,
+  packetBatchSize,
+  privacyFilterTotal,
+} from '../metrics.js';
 
 const MAX_BATCH_SIZE = 50;
 const FLUSH_INTERVAL_MS = 50;
@@ -46,6 +52,7 @@ type PendingPacket = {
 let queryFn: QueryFn | null = null;
 let timer: NodeJS.Timeout | null = null;
 let activeFlush: Promise<void> | null = null;
+let draining = false;
 const pending: PendingPacket[] = [];
 
 export function configurePacketBatch(query: QueryFn): void {
@@ -64,6 +71,7 @@ function scheduleFlush(): void {
 }
 
 export function enqueuePacket(packet: PacketBatchInput): Promise<PacketBatchResult> {
+  if (draining) return Promise.reject(new Error('PACKET_BATCH_DRAINING'));
   if (!queryFn) return Promise.reject(new Error('PACKET_BATCH_NOT_CONFIGURED'));
   const result = new Promise<PacketBatchResult>((resolve, reject) => {
     pending.push({ packet, resolve, reject });
@@ -117,6 +125,9 @@ async function writeBatch(batch: PendingPacket[]): Promise<void> {
     return `(${placeholders.join(', ')})`;
   }).join(',\n');
 
+  const startedAt = process.hrtime.bigint();
+  let outcome = 'success';
+  packetBatchSize.observe(batch.length);
   try {
     const result = await query<{ row_id: number; is_private: boolean; visibility_ok: boolean }>(
       `WITH incoming (
@@ -176,23 +187,177 @@ async function writeBatch(batch: PendingPacket[]): Promise<void> {
        ),
        observer_updates AS (
          INSERT INTO nodes (
-           node_id, iata, observer_iata, last_seen, last_rx_at, is_online, network
+           node_id, iata, observer_iata, last_seen, last_rx_at, is_online,
+           network, last_mqtt_observer_seen_at
          )
          SELECT DISTINCT ON (rx_node_id)
-           rx_node_id, iata, iata, time, time, TRUE, network
+           rx_node_id, iata, iata, time, time, TRUE, network, time
          FROM classified
          WHERE rx_node_id IS NOT NULL AND rx_node_id <> ''
          ORDER BY rx_node_id, time DESC
          ON CONFLICT (node_id) DO UPDATE SET
            last_rx_at = GREATEST(nodes.last_rx_at, EXCLUDED.last_rx_at),
+           iata = COALESCE(EXCLUDED.iata, nodes.iata),
            observer_iata = COALESCE(EXCLUDED.observer_iata, nodes.observer_iata),
            last_seen = GREATEST(nodes.last_seen, EXCLUDED.last_seen),
+           network = CASE
+             WHEN EXCLUDED.network = 'test' THEN 'test'
+             WHEN EXCLUDED.network IN ('ukmesh', 'teesside') THEN EXCLUDED.network
+             ELSE EXCLUDED.network
+           END,
+           last_mqtt_observer_seen_at = GREATEST(
+             nodes.last_mqtt_observer_seen_at,
+             EXCLUDED.last_mqtt_observer_seen_at
+           ),
            is_online = TRUE
+         RETURNING 1
+       ),
+       network_sightings AS (
+         INSERT INTO node_network_sightings
+           (node_id, network, first_seen_at, last_seen_at)
+         SELECT src_node_id, network, MIN(time), MAX(time)
+         FROM classified
+         WHERE src_node_id IS NOT NULL
+           AND src_node_id <> ''
+           AND network <> 'test'
+         GROUP BY src_node_id, network
+         ON CONFLICT (node_id, network) DO UPDATE SET
+           first_seen_at = LEAST(
+             node_network_sightings.first_seen_at,
+             EXCLUDED.first_seen_at
+           ),
+           last_seen_at = GREATEST(
+             node_network_sightings.last_seen_at,
+             EXCLUDED.last_seen_at
+           )
+         RETURNING 1
+       ),
+       daily_candidates AS (
+         SELECT DISTINCT ON (network)
+           network,
+           time::date AS day,
+           hop_count,
+           packet_hash,
+           time
+         FROM classified
+         WHERE path_is_valid
+           AND NOT is_private
+           AND hop_count IS NOT NULL
+         ORDER BY network, hop_count DESC, row_id ASC
+       ),
+       daily_updates AS (
+         INSERT INTO packet_daily_stats
+           (network, day, max_hop_count, max_hop_hash, max_hop_seen_at, updated_at)
+         SELECT network, day, hop_count, packet_hash, time, NOW()
+         FROM daily_candidates
+         ON CONFLICT (network, day) DO UPDATE SET
+           max_hop_count = EXCLUDED.max_hop_count,
+           max_hop_hash = EXCLUDED.max_hop_hash,
+           max_hop_seen_at = EXCLUDED.max_hop_seen_at,
+           updated_at = NOW()
+         WHERE packet_daily_stats.max_hop_count IS NULL
+            OR EXCLUDED.max_hop_count > packet_daily_stats.max_hop_count
+         RETURNING 1
+       ),
+       hourly_updates AS (
+         INSERT INTO packet_hourly_stats (
+           network, hour, packet_type, hop_count, route_type,
+           transport_code, region_scope, packet_count,
+           rssi_sum, rssi_count, snr_sum, snr_count, updated_at
+         )
+         SELECT
+           network,
+           date_trunc('hour', time),
+           COALESCE(packet_type, -1),
+           COALESCE(hop_count, -1),
+           COALESCE(route_type, -1),
+           COALESCE(NULLIF(TRIM(transport_codes), ''), ''),
+           COALESCE(NULLIF(TRIM(region_scope), ''), ''),
+           COUNT(*)::bigint,
+           COALESCE(SUM(rssi), 0)::double precision,
+           COUNT(rssi)::bigint,
+           COALESCE(SUM(snr), 0)::double precision,
+           COUNT(snr)::bigint,
+           NOW()
+         FROM classified
+         WHERE path_is_valid
+           AND NOT is_private
+           AND (network = 'test' OR topic_prefix <> 'meshcore-test')
+         GROUP BY
+           network,
+           date_trunc('hour', time),
+           COALESCE(packet_type, -1),
+           COALESCE(hop_count, -1),
+           COALESCE(route_type, -1),
+           COALESCE(NULLIF(TRIM(transport_codes), ''), ''),
+           COALESCE(NULLIF(TRIM(region_scope), ''), '')
+         ON CONFLICT (
+           network, hour, packet_type, hop_count, route_type,
+           transport_code, region_scope
+         ) DO UPDATE SET
+           packet_count = packet_hourly_stats.packet_count + EXCLUDED.packet_count,
+           rssi_sum = packet_hourly_stats.rssi_sum + EXCLUDED.rssi_sum,
+           rssi_count = packet_hourly_stats.rssi_count + EXCLUDED.rssi_count,
+           snr_sum = packet_hourly_stats.snr_sum + EXCLUDED.snr_sum,
+           snr_count = packet_hourly_stats.snr_count + EXCLUDED.snr_count,
+           updated_at = NOW()
+         RETURNING 1
+       ),
+       packet_region_updates AS (
+         INSERT INTO observer_region_packet_sightings
+           (network, iata, packet_hash, first_seen, last_seen)
+         SELECT network, iata, packet_hash, MIN(time), MAX(time)
+         FROM classified
+         WHERE network <> 'test'
+           AND path_is_valid
+           AND NOT is_private
+           AND iata IS NOT NULL
+           AND iata <> ''
+           AND packet_hash <> ''
+           AND rx_node_id ~ '^[0-9A-Fa-f]{64}$'
+         GROUP BY network, iata, packet_hash
+         ON CONFLICT (network, iata, packet_hash) DO UPDATE SET
+           first_seen = LEAST(
+             observer_region_packet_sightings.first_seen,
+             EXCLUDED.first_seen
+           ),
+           last_seen = GREATEST(
+             observer_region_packet_sightings.last_seen,
+             EXCLUDED.last_seen
+           )
+         RETURNING 1
+       ),
+       observer_region_updates AS (
+         INSERT INTO observer_region_observer_sightings
+           (network, iata, rx_node_id, first_seen, last_seen)
+         SELECT network, iata, rx_node_id, MIN(time), MAX(time)
+         FROM classified
+         WHERE network <> 'test'
+           AND path_is_valid
+           AND NOT is_private
+           AND iata IS NOT NULL
+           AND iata <> ''
+           AND rx_node_id ~ '^[0-9A-Fa-f]{64}$'
+         GROUP BY network, iata, rx_node_id
+         ON CONFLICT (network, iata, rx_node_id) DO UPDATE SET
+           first_seen = LEAST(
+             observer_region_observer_sightings.first_seen,
+             EXCLUDED.first_seen
+           ),
+           last_seen = GREATEST(
+             observer_region_observer_sightings.last_seen,
+             EXCLUDED.last_seen
+           )
          RETURNING 1
        )
        SELECT row_id, is_private, path_is_valid AND NOT is_private AS visibility_ok,
               (SELECT COUNT(*) FROM inserted) AS inserted_count,
-              (SELECT COUNT(*) FROM observer_updates) AS observer_update_count
+              (SELECT COUNT(*) FROM observer_updates) AS observer_update_count,
+              (SELECT COUNT(*) FROM network_sightings) AS network_sighting_count,
+              (SELECT COUNT(*) FROM daily_updates) AS daily_update_count,
+              (SELECT COUNT(*) FROM hourly_updates) AS hourly_update_count,
+              (SELECT COUNT(*) FROM packet_region_updates) AS packet_region_update_count,
+              (SELECT COUNT(*) FROM observer_region_updates) AS observer_region_update_count
        FROM classified
        ORDER BY row_id`,
       params,
@@ -200,14 +365,25 @@ async function writeBatch(batch: PendingPacket[]): Promise<void> {
 
     if (result.rows.length !== batch.length) throw new Error('PACKET_BATCH_RESULT_MISMATCH');
     for (const row of result.rows) {
+      privacyFilterTotal.inc({
+        operation: 'packet_ingest',
+        outcome: row.visibility_ok ? 'public' : (row.is_private ? 'private' : 'invalid'),
+      });
       batch[row.row_id]?.resolve({
         isPrivate: Boolean(row.is_private),
         visibilityOk: Boolean(row.visibility_ok),
       });
     }
   } catch (error) {
+    outcome = 'failure';
     for (const item of batch) item.reject(error);
     throw error;
+  } finally {
+    packetBatchFlushTotal.inc({ outcome });
+    packetBatchDuration.observe(
+      { outcome },
+      Number(process.hrtime.bigint() - startedAt) / 1e9,
+    );
   }
 }
 
@@ -228,4 +404,9 @@ export function flush(): Promise<void> {
     if (pending.length > 0) scheduleFlush();
   });
   return activeFlush;
+}
+
+export async function closePacketBatch(): Promise<void> {
+  draining = true;
+  await flush();
 }

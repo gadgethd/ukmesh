@@ -18,12 +18,37 @@ jobs:
   backend:
     name: Backend
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: timescale/timescaledb@sha256:22e8a5ae7aef121d1537afe946dd7cc5deeeb63ab36ce19849d671bd3b663509
+        env:
+          POSTGRES_PASSWORD: analysis-test-password
+        ports:
+          - 55433:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+      redis:
+        image: redis@sha256:8b81dd37ff027bec4e516d41acfbe9fe2460070dc6d4a4570a2ac5b9d59df065
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      TEST_REDIS_URL: redis://127.0.0.1:6379
+      TEST_ANALYSIS_DATABASE_URL: postgresql://postgres:analysis-test-password@127.0.0.1:55433/postgres
+      TEST_INGEST_DATABASE_URL: postgresql://postgres:analysis-test-password@127.0.0.1:55433/postgres
     defaults:
       run:
         working-directory: backend
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 20
           cache: npm
@@ -32,7 +57,11 @@ jobs:
       - name: Audit backend dependencies
         run: npm audit --audit-level=high
       - run: npm run typecheck
+      - run: npm run contract:check
       - run: npm test
+      - run: npm run test:analysis-integration
+      - run: npm run test:ingest-integration
+      - run: npm run test:queue-integration
       - run: npm run build
 
   frontend:
@@ -42,15 +71,16 @@ jobs:
       run:
         working-directory: frontend
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
       - name: Audit frontend dependencies
         run: npm audit --audit-level=high
+      - run: npm test
       - run: npm run build
       - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e
@@ -58,13 +88,77 @@ jobs:
   workers-and-compose:
     name: Workers and Compose
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+        env:
+          POSTGRES_PASSWORD: ml-test-password
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+      - name: Validate release security waivers
+        run: node scripts/check-trivy-waivers.mjs
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: '3.12'
+      - name: Test operator scripts
+        working-directory: scripts
+        run: |
+          npm ci
+          npm audit --audit-level=high
+          npm run typecheck
+          npm test
       - name: Compile Python workers
-        run: python -m py_compile viewshed-worker/worker.py viewshed-worker/rf/*.py ml-path-learner/worker.py
+        run: python -m py_compile viewshed-worker/worker.py viewshed-worker/link_queue_v3.py viewshed-worker/viewshed_queue_v2.py viewshed-worker/backfill_profiles.py viewshed-worker/rf/*.py ml-path-learner/worker.py
+      - name: Build worker images
+        run: |
+          docker build -f viewshed-worker/Dockerfile -t meshcore-viewshed-worker:test viewshed-worker
+          docker build -f ml-path-learner/Dockerfile -t meshcore-ml-path-learner:test ml-path-learner
+      - name: Test viewshed worker in its GDAL image
+        run: |
+          trap 'docker rm -f link-queue-test-redis >/dev/null 2>&1 || true' EXIT
+          docker run -d --name link-queue-test-redis \
+            -p 127.0.0.1:6380:6379 \
+            redis@sha256:8b81dd37ff027bec4e516d41acfbe9fe2460070dc6d4a4570a2ac5b9d59df065 redis-server --requirepass test-queue-password --maxmemory-policy noeviction
+          for _ in $(seq 1 30); do
+            if docker exec link-queue-test-redis redis-cli -a test-queue-password --no-auth-warning ping >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          docker run --rm --network host --entrypoint python \
+            -e TEST_REDIS_URL=redis://127.0.0.1:6380 \
+            -e TEST_REDIS_PASSWORD=test-queue-password \
+            meshcore-viewshed-worker:test -m unittest discover -s /app/tests -v
+          docker run --rm --entrypoint python \
+            meshcore-viewshed-worker:test /app/tests/benchmark_rf.py --rays 12 --steps 1000
+          docker run --rm --network none --entrypoint python \
+            meshcore-viewshed-worker:test /app/tests/benchmark_rf_radial.py --rays 72 --steps 500 --repeats 1
+      - name: Test ML worker in its image
+        run: |
+          docker run --rm --network host --entrypoint python \
+            -e TEST_DATABASE_URL=postgresql://postgres:ml-test-password@127.0.0.1:55432/postgres \
+            meshcore-ml-path-learner:test -m unittest discover -s /app/tests -v
+      - name: Bootstrap clean Mosquitto credentials
+        env:
+          MQTT_USERNAME: backend
+          MQTT_PASSWORD: ci-mqtt-password
+          MOSQUITTO_CONFIG_DIR: /tmp/meshcore-ci-mosquitto
+        run: |
+          install -d -m 700 "$MOSQUITTO_CONFIG_DIR"
+          cp mosquitto/mosquitto.conf "$MOSQUITTO_CONFIG_DIR/mosquitto.conf"
+          scripts/bootstrap-mosquitto.sh
+          test "$(stat -c '%a' "$MOSQUITTO_CONFIG_DIR/passwd")" = 640
+          test "$(stat -c '%a' "$MOSQUITTO_CONFIG_DIR/acl")" = 640
       - name: Validate Compose configuration
         env:
           POSTGRES_PASSWORD: ci-postgres-password
@@ -73,18 +167,193 @@ jobs:
           OPERATOR_SITE_TOKEN: ci-operator-site-token-0123456789abcdef0123456789abcdef
           MQTT_PASSWORD: ci-mqtt-password
           ANUBIS_ED25519_PRIVATE_KEY_HEX: '0000000000000000000000000000000000000000000000000000000000000001'
+          HEALTHCHECK_SOURCE_REF: 952eec8e0c55d0749f9abef211c266f992c0bfc7
           GRAFANA_ADMIN_PASSWORD: ci-grafana-password
-        run: docker compose config --quiet
+        run: |
+          docker compose config --quiet
+          docker compose config --format json \
+            | jq -e '.services.timescaledb.command
+              | index("max_worker_processes=24") != null' >/dev/null
+      - name: Build every application image and smoke an empty-volume stack
+        env:
+          POSTGRES_PASSWORD: ci-postgres-password
+          REDIS_PASSWORD: ci-redis-password
+          JWT_SECRET: ci-jwt-secret
+          OPERATOR_SITE_TOKEN: ci-operator-site-token-0123456789abcdef0123456789abcdef
+          MQTT_USERNAME: backend
+          MQTT_PASSWORD: ci-mqtt-password
+          ANUBIS_ED25519_PRIVATE_KEY_HEX: '0000000000000000000000000000000000000000000000000000000000000001'
+          HEALTHCHECK_SOURCE_REF: 952eec8e0c55d0749f9abef211c266f992c0bfc7
+          GRAFANA_ADMIN_PASSWORD: ci-grafana-password
+          SOURCE_REVISION: ${{ github.sha }}
+          MOSQUITTO_IMAGE: eclipse-mosquitto@sha256:9cfdd46ad59f3e3e5f592f6baf57ab23e1ad00605509d0f5c1e9b179c5314d87
+        run: |
+          project="meshcore-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          publisher_user="ci-e2e-publisher"
+          publisher_password="ci-e2e-publisher-password"
+          observer="CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"
+          cleanup() {
+            docker compose \
+              --project-name "$project" \
+              --profile dev \
+              --profile viewshed \
+              down --volumes --remove-orphans
+          }
+          trap cleanup EXIT
+          scripts/bootstrap-mosquitto.sh
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -v "$PWD/mosquitto:/mosquitto/config" \
+            "$MOSQUITTO_IMAGE" \
+            mosquitto_passwd -b /mosquitto/config/passwd \
+              "$publisher_user" "$publisher_password"
+          printf '\nuser %s\ntopic write meshcore-test/CI/%s/packets\ntopic write meshcore-test/CI/%s/status\n' \
+            "$publisher_user" "$observer" "$observer" >>mosquitto/acl
+          chmod 640 mosquitto/passwd mosquitto/acl
+          docker build \
+            --build-arg SOURCE_REVISION="$SOURCE_REVISION" \
+            --build-arg VITE_APP_HOSTNAME=app.ukmesh.com \
+            -f Dockerfile -t meshcore-combined:test .
+          docker compose \
+            --project-name "$project" \
+            --profile dev \
+            --profile viewshed \
+            build \
+              backend app-ukmesh website-ukmesh mesh-health-check \
+              mosquitto-reloader link-worker
+          docker compose \
+            --project-name "$project" \
+            --profile dev \
+            --profile viewshed \
+            up --detach --no-build --wait --wait-timeout 360
+          health_session_id="$(
+            curl --fail --silent --request POST \
+              --header 'Content-Type: application/json' \
+              --data '{}' \
+              http://127.0.0.1:3090/api/sessions \
+              | jq -er '.id'
+          )"
+          sleep 1
+          docker compose --project-name "$project" exec -T \
+            -e HEALTH_SESSION_ID="$health_session_id" \
+            mesh-health-check node --input-type=module <<'NODE'
+          import { readFileSync } from 'node:fs';
+          const payload = JSON.parse(
+            readFileSync('/app/data/session-results.json', 'utf8'),
+          );
+          if (!payload.sessions?.some(({ id }) => id === process.env.HEALTH_SESSION_ID)) {
+            throw new Error('health-check session was not persisted by the non-root runtime');
+          }
+          NODE
+          curl --fail --silent http://127.0.0.1:3000/readyz \
+            | jq -e '.status == "ready"' >/dev/null
+          curl --fail --silent http://127.0.0.1:3003/ >/dev/null
+          curl --fail --silent http://127.0.0.1:3004/ >/dev/null
+          curl --fail --silent http://127.0.0.1:3003/readyz \
+            | jq -e '.status == "ready"' >/dev/null
+          curl --fail --silent http://127.0.0.1:3004/readyz \
+            | jq -e '.status == "ready"' >/dev/null
+          for origin in http://127.0.0.1:3003 http://127.0.0.1:3004; do
+            for path in /metrics /operations /observer-registrations /local-api/operations; do
+              test "$(curl --silent --output /dev/null --write-out '%{http_code}' "${origin}${path}")" = 404
+            done
+          done
+          docker compose --project-name "$project" exec -T backend \
+            wget -qO- http://127.0.0.1:9091/metrics \
+            | grep -q '^meshcore_process_'
+          ws_log="$(mktemp)"
+          docker compose --project-name "$project" exec -T \
+            -e MQTT_E2E_OBSERVER="$observer" \
+            backend node --input-type=module >"$ws_log" <<'NODE' &
+          import WebSocket from 'ws';
+          const observer = process.env.MQTT_E2E_OBSERVER.toLowerCase();
+          const socket = new WebSocket('ws://website-ukmesh:8080/ws?network=test');
+          const timeout = setTimeout(() => {
+            console.error('timed out waiting for MQTT packet WebSocket fanout');
+            process.exit(1);
+          }, 15_000);
+          socket.on('message', (raw) => {
+            for (const line of String(raw).split('\n').filter(Boolean)) {
+              const message = JSON.parse(line);
+              if (
+                message.type === 'packet'
+                && String(message.data?.rxNodeId ?? '').toLowerCase() === observer
+              ) {
+                clearTimeout(timeout);
+                console.log('mqtt-packet-fanout-ok');
+                socket.close();
+                process.exit(0);
+              }
+            }
+          });
+          socket.on('error', (error) => {
+            console.error(error);
+            process.exit(1);
+          });
+          NODE
+          ws_pid=$!
+          sleep 2
+          docker compose --project-name "$project" exec -T mosquitto \
+            mosquitto_pub -h 127.0.0.1 -p 1883 \
+              -u "$publisher_user" -P "$publisher_password" \
+              -t "meshcore-test/CI/${observer}/status" \
+              -m '{"origin":"CI E2E observer","origin_id":"CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC","stats":{"battery_mv":4100,"uptime_secs":60}}'
+          docker compose --project-name "$project" exec -T mosquitto \
+            mosquitto_pub -h 127.0.0.1 -p 1883 \
+              -u "$publisher_user" -P "$publisher_password" \
+              -t "meshcore-test/CI/${observer}/packets" \
+              -m '{"packet_type":1,"RSSI":-75,"SNR":8,"direction":"rx","raw":"0D02AABBDEADBEEF"}'
+          readback=""
+          for _ in $(seq 1 30); do
+            readback="$(
+              docker compose --project-name "$project" exec -T timescaledb \
+                psql -U meshcore -d meshcore -Atc \
+                "SELECT EXISTS(SELECT 1 FROM nodes WHERE node_id = '${observer}' AND network = 'test'), EXISTS(SELECT 1 FROM packets WHERE rx_node_id = '${observer}' AND network = 'test'), EXISTS(SELECT 1 FROM packet_hourly_stats WHERE network = 'test')"
+            )"
+            if [ "$readback" = "t|t|t" ]; then
+              break
+            fi
+            sleep 1
+          done
+          test "$readback" = "t|t|t"
+          wait "$ws_pid"
+          grep -q '^mqtt-packet-fanout-ok$' "$ws_log"
+      - name: Validate monitoring configuration
+        run: |
+          docker run --rm \
+            -v "$PWD/logging/prometheus.yml:/etc/prometheus/prometheus.yml:ro" \
+            -v "$PWD/logging/rules:/etc/prometheus/rules:ro" \
+            --entrypoint /bin/promtool \
+            prom/prometheus@sha256:63805ebb8d2b3920190daf1cb14a60871b16fd38bed42b857a3182bc621f4996 \
+            check config /etc/prometheus/prometheus.yml
+          docker run --rm \
+            -v "$PWD/logging/rules:/rules:ro" \
+            --entrypoint /bin/promtool \
+            prom/prometheus@sha256:63805ebb8d2b3920190daf1cb14a60871b16fd38bed42b857a3182bc621f4996 \
+            test rules /rules/meshcore.test.yml
+          docker run --rm \
+            -v "$PWD/logging:/etc/meshcore:ro" \
+            --entrypoint /bin/amtool \
+            prom/alertmanager@sha256:27c475db5fb156cab31d5c18a4251ac7ed567746a2483ff264516437a39b15ba \
+            check-config /etc/meshcore/alertmanager.yml
+          docker run --rm \
+            -v "$PWD/logging/alloy/config.alloy:/etc/alloy/config.alloy:ro" \
+            grafana/alloy@sha256:491b0578c04983fd54fe99b587b6fab4404dc46d0dc16677bd6b00cc1140b308 \
+            validate /etc/alloy/config.alloy
+      - name: Test compressed-chunk maintenance safety gates
+        run: scripts/test-vacuum-maintenance.sh
+      - name: Test immutable release rollback and schema compatibility gates
+        run: scripts/test-replace-container.sh
 
   secrets:
     name: Secret scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
       - name: Scan repository with gitleaks
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@dcedce43c6f43de0b836d1fe38946645c9c638dc # v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -93,8 +362,8 @@ jobs:
     if: github.event_name == 'schedule'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 20
           cache: npm
@@ -107,10 +376,15 @@ jobs:
           OPERATOR_SITE_TOKEN: nightly-operator-token-0123456789abcdef0123456789abcdef
           MQTT_PASSWORD: nightly-mqtt-password
           GRAFANA_ADMIN_PASSWORD: nightly-grafana-password
-        run: docker compose up -d --build timescaledb redis mosquitto db-migrate backend
+          API_RATE_LIMIT_MAX: 1000000
+          ANUBIS_ED25519_PRIVATE_KEY_HEX: '0000000000000000000000000000000000000000000000000000000000000001'
+          HEALTHCHECK_SOURCE_REF: 952eec8e0c55d0749f9abef211c266f992c0bfc7
+        run: |
+          MQTT_USERNAME=backend MQTT_PASSWORD=nightly-mqtt-password scripts/bootstrap-mosquitto.sh
+          docker compose up -d --build timescaledb redis mosquitto db-migrate backend
       - name: Wait for readiness
         run: |
-          for attempt in $(seq 1 60); do
+          for _ in $(seq 1 60); do
             if curl --fail --silent http://127.0.0.1:3000/readyz >/dev/null; then
               exit 0
             fi
@@ -126,7 +400,7 @@ jobs:
       - name: Capture logs
         if: always()
         run: docker compose logs --no-color backend > nightly-backend.log
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()
         with:
           name: nightly-load-logs

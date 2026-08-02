@@ -454,18 +454,21 @@ export const UKFeedPage: React.FC = () => {
         <nav className="uk-feed-channels">
           <div className="uk-feed-channels__header">Channels</div>
           <button
+            type="button"
             className={`uk-feed-channel-item${selectedMessageScope === 'all' ? ' uk-feed-channel-item--active' : ''}`}
             onClick={() => setSelectedMessageScope('all')}
           >
             All
           </button>
           <button
+            type="button"
             className={`uk-feed-channel-item${selectedMessageScope === 'public' ? ' uk-feed-channel-item--active' : ''}`}
             onClick={() => setSelectedMessageScope('public')}
           >
             Public
           </button>
           <button
+            type="button"
             className={`uk-feed-channel-item${selectedMessageScope === 'test' ? ' uk-feed-channel-item--active' : ''}`}
             onClick={() => setSelectedMessageScope('test')}
           >
@@ -475,6 +478,7 @@ export const UKFeedPage: React.FC = () => {
           <div className="uk-feed-channels__divider" />
           <div className="uk-feed-channels__header">Regions</div>
           <button
+            type="button"
             className={`uk-feed-channel-item${selectedIata === 'all' ? ' uk-feed-channel-item--active' : ''}`}
             onClick={() => setSelectedIata('all')}
           >
@@ -482,6 +486,7 @@ export const UKFeedPage: React.FC = () => {
           </button>
           {availableIatas.map((iata) => (
             <button
+              type="button"
               key={iata}
               className={`uk-feed-channel-item${selectedIata === iata ? ' uk-feed-channel-item--active' : ''}`}
               onClick={() => setSelectedIata(iata)}
@@ -530,6 +535,7 @@ export const UKFeedPage: React.FC = () => {
             <input
               type="search"
               className="uk-feed-search"
+              aria-label="Search packets"
               placeholder="Search packets…"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
@@ -621,7 +627,7 @@ export const UKFeedPage: React.FC = () => {
                 </div>
                 <p className="uk-feed-stats__selected-summary">{packetSummary(selectedPacket, nodeMap)}</p>
                 <div className="uk-feed-stats__actions">
-                  <button className="uk-feed-stats__tree-toggle" onClick={openPathTree}>
+                  <button type="button" className="uk-feed-stats__tree-toggle" onClick={openPathTree}>
                     Repeater tree
                   </button>
                 </div>
@@ -677,17 +683,18 @@ export const UKFeedPage: React.FC = () => {
                       {selectedPacket.hop_count} hop{selectedPacket.hop_count !== 1 ? 's' : ''}
                     </span>
                   )}
-                  <button className="uk-feed-stats__close" onClick={() => setSelectedPacketHash(null)}>✕</button>
+                  <button type="button" className="uk-feed-stats__close" onClick={() => setSelectedPacketHash(null)} aria-label="Clear selected packet">✕</button>
                 </div>
                 <p className="uk-feed-stats__selected-summary">{packetSummary(selectedPacket, nodeMap)}</p>
                 <div className="uk-feed-stats__actions">
                   <button
+                    type="button"
                     className="uk-feed-stats__tree-toggle"
                     onClick={openPathTree}
                   >
                     Repeater tree
                   </button>
-                  <button className="uk-feed-stats__tree-toggle" onClick={() => setDetailOpen(true)}>
+                  <button type="button" className="uk-feed-stats__tree-toggle" onClick={() => setDetailOpen(true)}>
                     Packet details
                   </button>
                 </div>

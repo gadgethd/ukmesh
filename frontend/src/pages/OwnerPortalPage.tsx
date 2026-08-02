@@ -1,849 +1,46 @@
 import React, { FormEvent, useEffect, useMemo, useState } from 'react';
 import './owner-portal.css';
-import maplibregl from 'maplibre-gl';
-import 'maplibre-gl/dist/maplibre-gl.css';
-import { Area, AreaChart, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { LoadingIndicator } from '../components/LoadingIndicator.js';
 import { OwnerAlertSettings, OwnerLoginSection, OwnerSection } from '../components/owner/OwnerPortalSections.js';
-import { DEFAULT_CENTER, MAP_STYLE } from '../components/Map/mapConfig';
-
-type OwnerNode = {
-  node_id: string;
-  name: string | null;
-  network: string;
-  last_seen: string | null;
-  advert_count: number;
-  lat: number | null;
-  lon: number | null;
-  iata: string | null;
-  role: number | null;
-};
-
-function nodeRoleLabel(role: number | null): string {
-  if (role === 1) return 'Companion';
-  if (role === 3) return 'Room Server';
-  return 'Repeater';
-}
-
-type OwnerDashboard = {
-  nodes: OwnerNode[];
-  totals: {
-    ownedNodes: number;
-    packets24h: number;
-    packets7d: number;
-    packetsReceived24h: number;
-  };
-  roadmap: string[];
-};
-
-type OwnerSessionResponse = {
-  ok: boolean;
-  dashboard: OwnerDashboard;
-  mqttUsername?: string | null;
-};
-
-const OWNER_SESSION_EVENT = 'meshcore-owner-session';
-const LAST_HOP_EXCLUDED_COOKIE = 'meshcore-owner-last-hop-hidden-v1';
-const LAST_HOP_COOKIE_MAX_AGE = 60 * 60 * 24 * 365;
-
-function publishOwnerSession(mqttUsername: string | null) {
-  window.dispatchEvent(new CustomEvent(OWNER_SESSION_EVENT, { detail: { mqttUsername } }));
-}
-
-function readCookieValue(key: string): string | null {
-  if (typeof document === 'undefined') return null;
-  const prefix = `${key}=`;
-  for (const entry of document.cookie.split(';')) {
-    const trimmed = entry.trim();
-    if (trimmed.startsWith(prefix)) {
-      return decodeURIComponent(trimmed.slice(prefix.length));
-    }
-  }
-  return null;
-}
-
-function readExcludedLastHopSeries(nodeId: string): string[] {
-  if (!nodeId) return [];
-  try {
-    const raw = readCookieValue(LAST_HOP_EXCLUDED_COOKIE);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    const keys = parsed[nodeId];
-    return Array.isArray(keys)
-      ? keys.filter((value): value is string => typeof value === 'string' && value.length > 0)
-      : [];
-  } catch {
-    return [];
-  }
-}
-
-function writeExcludedLastHopSeries(nodeId: string, seriesKeys: string[]) {
-  if (typeof document === 'undefined' || !nodeId) return;
-  let parsed: Record<string, unknown> = {};
-  try {
-    const raw = readCookieValue(LAST_HOP_EXCLUDED_COOKIE);
-    if (raw) {
-      const decoded = JSON.parse(raw) as Record<string, unknown>;
-      if (decoded && typeof decoded === 'object') {
-        parsed = decoded;
-      }
-    }
-  } catch {
-    parsed = {};
-  }
-
-  if (seriesKeys.length > 0) {
-    parsed[nodeId] = Array.from(new Set(seriesKeys)).sort();
-  } else {
-    delete parsed[nodeId];
-  }
-
-  document.cookie = [
-    `${LAST_HOP_EXCLUDED_COOKIE}=${encodeURIComponent(JSON.stringify(parsed))}`,
-    'Path=/',
-    'SameSite=Lax',
-    `Max-Age=${LAST_HOP_COOKIE_MAX_AGE}`,
-  ].join('; ');
-}
-
-type LivePeer = {
-  node_id: string;
-  name: string | null;
-  network: string | null;
-  iata: string | null;
-  lat: number | null;
-  lon: number | null;
-  packets_24h: number;
-  last_seen: string | null;
-};
-
-type LivePacket = {
-  time: string;
-  packet_type: number | null;
-  route_type: number | null;
-  hop_count: number | null;
-  packet_hash: string | null;
-  src_node_id: string | null;
-  src_node_name: string | null;
-  sender: string | null;
-  body: string | null;
-};
-
-type OwnerLiveResponse = {
-  nodeId: string;
-  ownerNode: OwnerNode;
-  incomingPeers: LivePeer[];
-  heardBy: Array<LivePeer & { packets_7d: number; best_hops: number | null }>;
-  linkHealth: Array<{
-    peer_node_id: string;
-    peer_name: string | null;
-    peer_network: string | null;
-    owner_to_peer: number;
-    peer_to_owner: number;
-    observed_count: number;
-    itm_path_loss_db: number | null;
-    itm_viable: boolean | null;
-    force_viable: boolean;
-    last_observed: string | null;
-  }>;
-  advertTrend24h: Array<{ bucket: string; adverts: number }>;
-  telemetry24h: Array<{
-    bucket: string;
-    batteryPct: number | null;
-    batteryMv: number | null;
-    uptimeSecs: number | null;
-    channelUtilPct: number | null;
-    airUtilTxPct: number | null;
-  }>;
-  packetsSent24h: number;
-  packetsReceived24h: number;
-  alerts: Array<{ level: 'info' | 'warn' | 'error'; message: string }>;
-  recentPackets: LivePacket[];
-};
-
-type LastHopStrengthPoint = {
-  bucket: string;
-  lastHopNodeId: string | null;
-  lastHopName: string;
-  resolution: 'direct' | 'resolved' | 'inferred' | 'unresolved';
-  avgSnr: number | null;
-  avgRssi: number | null;
-  sampleCount: number;
-};
-
-type OwnerLastHopStrengthResponse = {
-  points: LastHopStrengthPoint[];
-};
-const lastHopSeriesCache = new Map<string, { expiresAt: number; points: LastHopStrengthPoint[] }>();
-
-async function fetchOwnerCsrfToken(): Promise<string> {
-  const response = await fetch('/api/owner/csrf', { cache: 'no-store' });
-  if (!response.ok) throw new Error('Unable to initialize secure owner session');
-  const body = await response.json() as { csrfToken?: unknown };
-  if (typeof body.csrfToken !== 'string' || !body.csrfToken) {
-    throw new Error('Unable to initialize secure owner session');
-  }
-  return body.csrfToken;
-}
-
-type MappedPeer = LivePeer & { lat: number; lon: number };
-
-function fmtTs(ts: string | null): string {
-  if (!ts) return 'No recent activity';
-  return new Date(ts).toLocaleString();
-}
-
-function isValidMapCoord(lat: number | null, lon: number | null): boolean {
-  if (lat == null || lon == null) return false;
-  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return false;
-  if (Math.abs(lat) < 5 && Math.abs(lon) < 5) return false;
-  if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return false;
-  return true;
-}
-
-const PACKET_LABELS: Record<number, string> = {
-  0: 'Request',
-  1: 'Response',
-  2: 'DM',
-  3: 'Ack',
-  4: 'Advert',
-  5: 'GroupText',
-  6: 'GroupData',
-  7: 'AnonReq',
-  8: 'Path',
-  9: 'Trace',
-};
-
-const ROUTE_LABELS: Record<number, string> = {
-  0: 'Flood',
-  1: 'Direct',
-  2: 'Guided',
-  3: 'Opportunistic',
-};
-
-const AXIS_COLOR = '#3a5070';
-const LABEL_COLOR = '#6b8aaa';
-const TIP_BG = '#0d1520';
-const TIP_BORDER = 'rgba(0,196,255,0.25)';
-
-function cleanPacketBody(packet: LivePacket): string | null {
-  const body = packet.body?.trim();
-  if (!body) return null;
-  if (/^\d+$/.test(body) && body === String(packet.packet_type ?? '')) return null;
-  return body;
-}
-
-function formatCompactTs(ts: string | null): string {
-  if (!ts) return '-';
-  return new Date(ts).toLocaleString([], {
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-}
-
-function formatPathLoss(value: number | null): string {
-  if (value == null || !Number.isFinite(value)) return '-';
-  return `${value.toFixed(1)} dB`;
-}
-
-function linkBadge(link: OwnerLiveResponse['linkHealth'][number]): string {
-  if (link.force_viable) return 'Forced';
-  if (link.itm_viable) return 'Viable';
-  if (link.itm_path_loss_db != null && link.itm_path_loss_db <= 137.5) return 'Weak';
-  return 'Unproven';
-}
-
-const TrendBars: React.FC<{ points: Array<{ bucket: string; adverts: number }> }> = ({ points }) => {
-  const max = Math.max(1, ...points.map((point) => point.adverts));
-  return (
-    <div className="owner-trend">
-      <div className="owner-trend__bars" aria-label="Advert trend for the last 24 hours">
-        {points.map((point) => {
-          const height = Math.max(10, Math.round((point.adverts / max) * 100));
-          return (
-            <div
-              key={point.bucket}
-              className="owner-trend__bar"
-              title={`${formatCompactTs(point.bucket)} · ${point.adverts} advert${point.adverts === 1 ? '' : 's'}`}
-              style={{ height: `${height}%` }}
-            />
-          );
-        })}
-      </div>
-      <div className="owner-trend__meta">
-        <span>24h advert trend</span>
-        <strong>{points.reduce((sum, point) => sum + point.adverts, 0)}</strong>
-      </div>
-    </div>
-  );
-};
-
-type TelemetryPoint = OwnerLiveResponse['telemetry24h'][number];
-
-const TELEMETRY_SERIES = [
-  {
-    key: 'batteryPct' as const,
-    title: 'Battery',
-    suffix: '%',
-    stroke: '#6ddc7a',
-    meta: (point: TelemetryPoint | null) => point?.batteryMv == null ? 'No data' : `${point.batteryMv} mV`,
-  },
-  {
-    key: 'channelUtilPct' as const,
-    title: 'Channel Utilization',
-    suffix: '%',
-    stroke: '#00c4ff',
-    meta: () => 'Rolling from status samples',
-  },
-  {
-    key: 'airUtilTxPct' as const,
-    title: 'Air Util TX',
-    suffix: '%',
-    stroke: '#ff9f43',
-    meta: () => 'Rolling TX air time',
-  },
-] as const;
-
-function formatUptime(seconds: number | null): string {
-  if (seconds == null || !Number.isFinite(seconds) || seconds < 0) return '—';
-  const total = Math.floor(seconds);
-  const days = Math.floor(total / 86400);
-  const hours = Math.floor((total % 86400) / 3600);
-  const minutes = Math.floor((total % 3600) / 60);
-  if (days > 0) return `${days}d ${hours}h`;
-  if (hours > 0) return `${hours}h ${minutes}m`;
-  return `${minutes}m`;
-}
-
-const OwnerTelemetryTooltip: React.FC<{
-  active?: boolean;
-  payload?: Array<{ value: number }>;
-  label?: string;
-  suffix: string;
-}> = ({ active, payload, label, suffix }) => {
-  if (!active || !payload?.length) return null;
-  return (
-    <div style={{ background: TIP_BG, border: `1px solid ${TIP_BORDER}`, borderRadius: 6, padding: '8px 12px', fontSize: 12 }}>
-      {label ? <p style={{ color: LABEL_COLOR, margin: '0 0 4px' }}>{formatCompactTs(label)}</p> : null}
-      <p style={{ color: '#e8f0fb', margin: 0 }}>
-        <strong>{payload[0]?.value?.toFixed(1)}{suffix}</strong>
-      </p>
-    </div>
-  );
-};
-
-const LAST_HOP_COLORS = ['#00c4ff', '#6ddc7a', '#ff9f43', '#f472b6', '#a78bfa', '#facc15'];
-const MIN_LAST_HOP_SAMPLES = 10;
-
-const LastHopStrengthTooltip: React.FC<{
-  active?: boolean;
-  payload?: Array<{ dataKey: string; value: number; color: string; payload: Record<string, unknown> }>;
-  label?: string;
-  seriesByKey: Map<string, { label: string; totalSamples: number; bucketCount: number }>;
-}> = ({ active, payload, label, seriesByKey }) => {
-  if (!active || !payload?.length) return null;
-  return (
-    <div style={{ background: TIP_BG, border: `1px solid ${TIP_BORDER}`, borderRadius: 6, padding: '8px 12px', fontSize: 12 }}>
-      {label ? <p style={{ color: LABEL_COLOR, margin: '0 0 6px' }}>{formatCompactTs(label)}</p> : null}
-      {payload.map((entry) => {
-        const series = seriesByKey.get(entry.dataKey);
-        const sampleCount = Number((entry.payload?.[`${entry.dataKey}__samples`] as number | undefined) ?? 0);
-        return (
-          <p key={entry.dataKey} style={{ color: '#e8f0fb', margin: '2px 0' }}>
-            <strong style={{ color: entry.color }}>{series?.label ?? entry.dataKey}</strong>
-            {`: ${Number(entry.value).toFixed(1)} dB`}
-            {sampleCount > 0 ? ` (${sampleCount} sample${sampleCount === 1 ? '' : 's'})` : ''}
-          </p>
-        );
-      })}
-    </div>
-  );
-};
-
-const LastHopStrengthChart: React.FC<{ nodeId: string; points: LastHopStrengthPoint[]; isPassiveRepeater?: boolean }> = ({ nodeId, points, isPassiveRepeater }) => {
-  const [selectedSeriesKey, setSelectedSeriesKey] = useState<string | null>(null);
-  const [excludedSeriesKeys, setExcludedSeriesKeys] = useState<string[]>(() => readExcludedLastHopSeries(nodeId));
-  const visiblePoints = useMemo(
-    () => points.filter((point) => point.resolution !== 'unresolved'),
-    [points],
-  );
-  const excludedSet = useMemo(() => new Set(excludedSeriesKeys), [excludedSeriesKeys]);
-
-  useEffect(() => {
-    setExcludedSeriesKeys(readExcludedLastHopSeries(nodeId));
-    setSelectedSeriesKey(null);
-  }, [nodeId]);
-
-  const chartState = useMemo(() => {
-    const totals = new Map<string, {
-      key: string;
-      label: string;
-      totalSamples: number;
-      bucketCount: number;
-      buckets: Set<string>;
-      resolution: LastHopStrengthPoint['resolution'];
-    }>();
-    for (const point of visiblePoints) {
-      const key = point.lastHopNodeId ?? `unresolved:${point.lastHopName}`;
-      const existing = totals.get(key);
-      if (existing) {
-        existing.totalSamples += point.sampleCount;
-        existing.buckets.add(point.bucket);
-        existing.bucketCount = existing.buckets.size;
-      } else {
-        totals.set(key, {
-          key,
-          label: point.lastHopName,
-          totalSamples: point.sampleCount,
-          bucketCount: 1,
-          buckets: new Set([point.bucket]),
-          resolution: point.resolution,
-        });
-      }
-    }
-
-    const allSeries = Array.from(totals.values())
-      .filter((series) => series.totalSamples >= MIN_LAST_HOP_SAMPLES)
-      .sort((a, b) => b.totalSamples - a.totalSamples || a.label.localeCompare(b.label));
-    const includedSeries = allSeries.filter((series) => !excludedSet.has(series.key));
-    const selected = selectedSeriesKey
-      ? includedSeries.filter((series) => series.key === selectedSeriesKey)
-      : includedSeries.slice(0, 6);
-    const selectedKeys = new Set(selected.map((series) => series.key));
-    const seriesByKey = new Map(allSeries.map((series) => [series.key, series] as const));
-
-    const bucketed = new Map<string, Record<string, string | number | null>>();
-    for (const point of visiblePoints) {
-      const key = point.lastHopNodeId ?? `unresolved:${point.lastHopName}`;
-      if (!selectedKeys.has(key)) continue;
-      const entry = bucketed.get(point.bucket) ?? { bucket: point.bucket };
-      entry[key] = point.avgSnr;
-      entry[`${key}__samples`] = point.sampleCount;
-      bucketed.set(point.bucket, entry);
-    }
-
-    return {
-      allSeries,
-      includedSeries,
-      excludedCount: allSeries.length - includedSeries.length,
-      series: selected,
-      seriesByKey,
-      data: Array.from(bucketed.values()).sort((a, b) => String(a.bucket).localeCompare(String(b.bucket))),
-    };
-  }, [excludedSet, selectedSeriesKey, visiblePoints]);
-
-  useEffect(() => {
-    if (selectedSeriesKey && !chartState.allSeries.some((series) => series.key === selectedSeriesKey)) {
-      setSelectedSeriesKey(null);
-    }
-  }, [chartState.allSeries, selectedSeriesKey]);
-
-  useEffect(() => {
-    if (selectedSeriesKey && excludedSet.has(selectedSeriesKey)) {
-      setSelectedSeriesKey(null);
-    }
-  }, [excludedSet, selectedSeriesKey]);
-
-  useEffect(() => {
-    writeExcludedLastHopSeries(nodeId, excludedSeriesKeys);
-  }, [excludedSeriesKeys, nodeId]);
-
-  const toggleSeriesExclusion = (seriesKey: string) => {
-    setExcludedSeriesKeys((current) => (
-      current.includes(seriesKey)
-        ? current.filter((key) => key !== seriesKey)
-        : [...current, seriesKey]
-    ));
-  };
-
-  const hideSelectedSeries = () => {
-    if (!selectedSeriesKey) return;
-    toggleSeriesExclusion(selectedSeriesKey);
-  };
-
-  const clearExcludedSeries = () => {
-    setExcludedSeriesKeys([]);
-  };
-
-  if (chartState.allSeries.length < 1) {
-    return (
-      <article className="owner-telemetry-metric">
-        <div className="owner-panel__head owner-panel__head--compact">
-          <div>
-            <h3>RX Strength by Last Hop <span style={{ fontSize: '0.6em', opacity: 0.6 }}>(Node names are predicted based on the first two hex characters in the path)</span></h3>
-            <p>Average SNR over the last 7 days</p>
-          </div>
-        </div>
-        <div className="owner-telemetry-metric__chart">
-          <div className="owner-telemetry-metric__empty">
-            {isPassiveRepeater
-              ? 'This node does not report received packets via MQTT — rx signal data is captured by its companion node'
-              : 'No last-hop repeaters with 10+ samples yet'}
-          </div>
-        </div>
-        <div className="owner-telemetry-metric__footer">
-          <span>Last 7d</span>
-          <span>Minimum 10 samples</span>
-        </div>
-      </article>
-    );
-  }
-
-  const latestBucket = chartState.data[chartState.data.length - 1];
-  const latestActive = chartState.series
-    .map((series) => {
-      const value = latestBucket?.[series.key];
-      return typeof value === 'number'
-        ? `${series.label}: ${value.toFixed(1)} dB`
-        : null;
-    })
-    .filter(Boolean)
-    .slice(0, 2)
-    .join(' · ');
-
-  return (
-      <article className="owner-telemetry-metric owner-telemetry-metric--wide owner-telemetry-metric--tall">
-        <div className="owner-panel__head owner-panel__head--compact">
-          <div>
-            <h3>RX Strength by Last Hop <span style={{ fontSize: '0.6em', opacity: 0.6 }}>(Node names are predicted based on the first two hex characters in the path)</span></h3>
-            <p>{latestActive || (chartState.includedSeries.length > 0 ? 'Average SNR over the last 7 days' : 'All eligible repeaters are currently hidden')}</p>
-          </div>
-          <strong className="owner-telemetry-metric__value">{chartState.series.length}</strong>
-        </div>
-        <div className="owner-telemetry-metric__chart">
-          {chartState.series.length > 0 && chartState.data.length > 0 ? (
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={chartState.data} margin={{ top: 6, right: 10, left: 0, bottom: 0 }}>
-                <XAxis dataKey="bucket" hide />
-                <YAxis
-                  width={28}
-                  axisLine={{ stroke: AXIS_COLOR }}
-                  tickLine={false}
-                  tick={{ fill: LABEL_COLOR, fontSize: 11 }}
-                  domain={['auto', 'auto']}
-                />
-                <Tooltip content={<LastHopStrengthTooltip seriesByKey={chartState.seriesByKey} />} />
-                {chartState.series.map((series, index) => (
-                  <Line
-                    key={series.key}
-                    type="monotone"
-                    dataKey={series.key}
-                    stroke={LAST_HOP_COLORS[index % LAST_HOP_COLORS.length]}
-                    strokeWidth={2}
-                    dot={false}
-                    connectNulls
-                    isAnimationActive={false}
-                  />
-                ))}
-              </LineChart>
-            </ResponsiveContainer>
-          ) : (
-            <div className="owner-telemetry-metric__empty">
-              {chartState.includedSeries.length > 0 ? 'No chartable last-hop samples yet' : 'All repeaters are hidden. Show one below or reset exclusions.'}
-            </div>
-          )}
-        </div>
-        <div className="owner-telemetry-metric__footer">
-          <span>Last 7d</span>
-          <span>
-            {selectedSeriesKey
-              ? 'Focused on one repeater'
-              : `${chartState.includedSeries.length} shown of ${chartState.allSeries.length}`}
-            {chartState.excludedCount > 0 ? ` · ${chartState.excludedCount} hidden` : ''}
-          </span>
-        </div>
-        <div className="owner-telemetry-metric__series-list">
-          <button
-            type="button"
-            className={`owner-telemetry-metric__series-btn${selectedSeriesKey == null ? ' owner-telemetry-metric__series-btn--active' : ''}`}
-            onClick={() => setSelectedSeriesKey(null)}
-          >
-            All
-          </button>
-          {chartState.excludedCount > 0 ? (
-            <button
-              type="button"
-              className="owner-telemetry-metric__series-btn owner-telemetry-metric__series-btn--secondary"
-              onClick={clearExcludedSeries}
-            >
-              Show Hidden
-            </button>
-          ) : null}
-          {selectedSeriesKey ? (
-            <button
-              type="button"
-              className="owner-telemetry-metric__series-btn owner-telemetry-metric__series-btn--secondary"
-              onClick={hideSelectedSeries}
-            >
-              Hide Selected
-            </button>
-          ) : null}
-          {chartState.includedSeries.map((series) => (
-            <button
-              key={series.key}
-              type="button"
-              className={`owner-telemetry-metric__series-btn${selectedSeriesKey === series.key ? ' owner-telemetry-metric__series-btn--active' : ''}`}
-              onClick={() => setSelectedSeriesKey(series.key)}
-              title={`${series.label} · ${series.bucketCount} hourly buckets · ${series.totalSamples} packets in last 7d`}
-            >
-              {series.label} ({series.totalSamples})
-            </button>
-          ))}
-        </div>
-      </article>
-  );
-};
-
-const TelemetryMiniChart: React.FC<{
-  title: string;
-  stroke: string;
-  suffix: string;
-  points: TelemetryPoint[];
-  metric: keyof Pick<TelemetryPoint, 'batteryPct' | 'channelUtilPct' | 'airUtilTxPct'>;
-  meta: (point: TelemetryPoint | null) => string;
-}> = ({ title, stroke, suffix, points, metric, meta }) => {
-  const chartData = points
-    .map((point) => ({ bucket: point.bucket, value: point[metric] }))
-    .filter((entry): entry is { bucket: string; value: number } => entry.value != null);
-  const latest = points.length > 0 ? points[points.length - 1]! : null;
-  const latestValue = latest?.[metric] ?? null;
-
-  return (
-    <article className="owner-telemetry-metric">
-      <div className="owner-panel__head owner-panel__head--compact">
-        <div>
-          <h3>{title}</h3>
-          <p>{meta(latest)}</p>
-        </div>
-        <strong className="owner-telemetry-metric__value">
-          {latestValue == null ? '—' : `${latestValue.toFixed(1)}${suffix}`}
-        </strong>
-      </div>
-      <div className="owner-telemetry-metric__chart">
-        {chartData.length > 0 ? (
-          <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={chartData} margin={{ top: 6, right: 6, left: 0, bottom: 0 }}>
-              <XAxis dataKey="bucket" hide />
-              <YAxis
-                hide
-                domain={[0, 100]}
-                axisLine={{ stroke: AXIS_COLOR }}
-                tickLine={false}
-                tick={{ fill: LABEL_COLOR, fontSize: 11 }}
-              />
-              <Tooltip content={<OwnerTelemetryTooltip suffix={suffix} />} />
-              <Area
-                type="monotone"
-                dataKey="value"
-                stroke={stroke}
-                fill={stroke}
-                fillOpacity={0.18}
-                strokeWidth={2}
-                dot={false}
-                isAnimationActive={false}
-              />
-            </AreaChart>
-          </ResponsiveContainer>
-        ) : (
-          <div className="owner-telemetry-metric__empty">No telemetry yet</div>
-        )}
-      </div>
-      <div className="owner-telemetry-metric__footer">
-        <span>Last 24h</span>
-        <span>{chartData.length} samples</span>
-      </div>
-    </article>
-  );
-};
-
-const TelemetryStatCard: React.FC<{
-  title: string;
-  value: string;
-  meta: string;
-}> = ({ title, value, meta }) => (
-  <article className="owner-telemetry-metric owner-telemetry-metric--stat">
-    <div className="owner-panel__head owner-panel__head--compact">
-      <div>
-        <h3>{title}</h3>
-        <p>{meta}</p>
-      </div>
-    </div>
-    <div className="owner-telemetry-metric__stat">
-      <strong>{value}</strong>
-    </div>
-    <div className="owner-telemetry-metric__footer">
-      <span>Last 24h</span>
-      <span>Latest sample</span>
-    </div>
-  </article>
-);
-
-const OwnerMapView: React.FC<{
-  ownerCoord: { lat: number; lon: number } | null;
-  peers: MappedPeer[];
-  allPoints: Array<{ lat: number; lon: number }>;
-}> = ({ ownerCoord, peers, allPoints }) => {
-  const containerRef = React.useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!containerRef.current) return;
-
-    const map = new maplibregl.Map({
-      container: containerRef.current,
-      style: MAP_STYLE,
-      center: [DEFAULT_CENTER[1], DEFAULT_CENTER[0]],
-      zoom: 7,
-      attributionControl: false,
-    });
-
-    // Keep the map as a static regional backdrop while preserving marker clicks.
-    map.scrollZoom.disable();
-    map.boxZoom.disable();
-    map.dragPan.disable();
-    map.dragRotate.disable();
-    map.doubleClickZoom.disable();
-    map.keyboard.disable();
-    map.touchZoomRotate.disable();
-
-    const EMPTY: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: [] };
-    const popup = new maplibregl.Popup({
-      closeButton: true,
-      closeOnClick: true,
-      offset: 14,
-      maxWidth: '260px',
-    });
-
-    const applyViewport = () => {
-      map.resize();
-      if (allPoints.length === 1) {
-        map.setCenter([allPoints[0].lon, allPoints[0].lat]);
-        map.setZoom(8);
-        return;
-      }
-      if (allPoints.length > 1) {
-        const centerPoints = peers.length > 0 ? peers : allPoints;
-        const centerLons = centerPoints.map((pt) => pt.lon);
-        const centerLats = centerPoints.map((pt) => pt.lat);
-        const centerLon = (Math.min(...centerLons) + Math.max(...centerLons)) / 2;
-        const centerLat = (Math.min(...centerLats) + Math.max(...centerLats)) / 2;
-        const maxLonDelta = Math.max(...allPoints.map((pt) => Math.abs(pt.lon - centerLon)));
-        const maxLatDelta = Math.max(...allPoints.map((pt) => Math.abs(pt.lat - centerLat)));
-        const lonExtent = Math.max(0.02, maxLonDelta * 2.25);
-        const latExtent = Math.max(0.02, maxLatDelta * 2.25);
-        const paddedBounds = new maplibregl.LngLatBounds(
-          [centerLon - lonExtent, centerLat - latExtent],
-          [centerLon + lonExtent, centerLat + latExtent],
-        );
-        const padding = { top: 24, right: 24, bottom: 24, left: 24 };
-        const camera = map.cameraForBounds(paddedBounds, { padding });
-        map.jumpTo({
-          center: [centerLon, centerLat],
-          zoom: camera?.zoom ?? map.getZoom(),
-          bearing: 0,
-          pitch: 0,
-        });
-      }
-    };
-
-    const buildNodeFC = (): GeoJSON.FeatureCollection => ({
-      type: 'FeatureCollection',
-      features: [
-        ...(ownerCoord ? [{
-          type: 'Feature' as const,
-          geometry: { type: 'Point' as const, coordinates: [ownerCoord.lon, ownerCoord.lat] },
-          properties: {
-            kind: 'owner',
-            name: 'Selected owner node',
-            details: ownerCoord ? `${ownerCoord.lat.toFixed(4)}, ${ownerCoord.lon.toFixed(4)}` : '',
-          },
-        }] : []),
-        ...peers.map((p) => ({
-          type: 'Feature' as const,
-          geometry: { type: 'Point' as const, coordinates: [p.lon, p.lat] },
-          properties: {
-            kind: 'peer',
-            name: p.name ?? p.node_id,
-            details: `${p.packets_24h} packets / 24h${p.iata ? ` · ${p.iata}` : ''}${p.network ? ` · ${p.network}` : ''}`,
-          },
-        })),
-      ],
-    });
-
-    const buildLineFC = (): GeoJSON.FeatureCollection => ({
-      type: 'FeatureCollection',
-      features: ownerCoord ? peers.map((p) => ({
-        type: 'Feature' as const,
-        geometry: { type: 'LineString' as const, coordinates: [[ownerCoord.lon, ownerCoord.lat], [p.lon, p.lat]] },
-        properties: {},
-      })) : [],
-    });
-
-    map.on('load', () => {
-      map.addSource('owner-lines', { type: 'geojson', data: buildLineFC() });
-      map.addSource('owner-nodes', { type: 'geojson', data: buildNodeFC() });
-
-      map.addLayer({ id: 'owner-lines-layer', type: 'line', source: 'owner-lines',
-        paint: { 'line-color': '#00c4ff', 'line-width': 1.5, 'line-opacity': 0.6 } });
-      map.addLayer({ id: 'owner-nodes-layer', type: 'circle', source: 'owner-nodes',
-        paint: {
-          'circle-radius': ['case', ['==', ['get', 'kind'], 'owner'], 8, 6.5],
-          'circle-color': ['case', ['==', ['get', 'kind'], 'owner'], 'rgba(0,196,255,0.18)', 'rgba(255,179,0,0.18)'],
-          'circle-stroke-width': 2,
-          'circle-stroke-color': ['case', ['==', ['get', 'kind'], 'owner'], '#00c4ff', '#ffb300'],
-        } });
-
-      map.on('mouseenter', 'owner-nodes-layer', () => {
-        map.getCanvas().style.cursor = 'pointer';
-      });
-      map.on('mouseleave', 'owner-nodes-layer', () => {
-        map.getCanvas().style.cursor = '';
-      });
-      map.on('click', 'owner-nodes-layer', (event) => {
-        const feature = event.features?.[0];
-        if (!feature || feature.geometry.type !== 'Point') return;
-        const coordinates = feature.geometry.coordinates.slice() as [number, number];
-        const name = String(feature.properties?.name ?? 'Node');
-        const details = String(feature.properties?.details ?? '');
-        const content = document.createElement('div');
-        content.className = 'node-popup';
-        const title = document.createElement('div');
-        title.className = 'node-popup__title';
-        title.textContent = name;
-        const meta = document.createElement('div');
-        meta.className = 'node-popup__meta';
-        meta.textContent = details;
-        content.append(title, meta);
-        popup
-          .setLngLat(coordinates)
-          .setDOMContent(content)
-          .addTo(map);
-      });
-
-      applyViewport();
-      requestAnimationFrame(applyViewport);
-    });
-
-    const resizeObserver = new ResizeObserver(() => {
-      applyViewport();
-    });
-    resizeObserver.observe(containerRef.current);
-
-    return () => {
-      resizeObserver.disconnect();
-      popup.remove();
-      map.remove();
-      void EMPTY; // silence unused warning
-    };
-  // Re-create map whenever data changes (static display map, re-creation is fine)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ownerCoord, peers, allPoints]);
-
-  return <div ref={containerRef} className="owner-map" />;
-};
-
+import { useRuntimeFeatures } from '../config/runtimeFeatures.js';
+import { useVisibilityPoll } from '../hooks/useVisibilityPoll.js';
+import { ApiResponseError, fetchJson } from '../utils/api.js';
+
+import {
+  PACKET_LABELS,
+  ROUTE_LABELS,
+  cleanPacketBody,
+  fetchOwnerCsrfToken,
+  fmtTs,
+  formatCompactTs,
+  formatPathLoss,
+  isOwnerLastHopStrengthResponse,
+  isOwnerLiveResponse,
+  isOwnerSessionResponse,
+  isRecord,
+  isValidMapCoord,
+  lastHopSeriesCache,
+  linkBadge,
+  nodeRoleLabel,
+  publishOwnerSession,
+  type LastHopStrengthPoint,
+  type MappedPeer,
+  type OwnerDashboard,
+  type OwnerLastHopStrengthResponse,
+  type OwnerLiveResponse,
+  type OwnerSessionResponse,
+} from './owner/ownerPortalModel.js';
+import {
+  LastHopStrengthChart,
+  TELEMETRY_SERIES,
+  TelemetryMiniChart,
+  TelemetryStatCard,
+  TrendBars,
+  formatUptime,
+} from './owner/OwnerPortalCharts.js';
+import { OwnerMapView } from './owner/OwnerMapView.js';
 export const OwnerPortalPage: React.FC = () => {
+  const { privacyGeneration } = useRuntimeFeatures();
   const [mqttUsername, setMqttUsername] = useState('');
   const [mqttPassword, setMqttPassword] = useState('');
   const [loading, setLoading] = useState(true);
@@ -855,72 +52,78 @@ export const OwnerPortalPage: React.FC = () => {
   const [liveError, setLiveError] = useState<string | null>(null);
   const [lastHopStrength, setLastHopStrength] = useState<LastHopStrengthPoint[]>([]);
   const [activeSection, setActiveSection] = useState<'dashboard' | 'live' | 'settings'>('dashboard');
+  const [ownerSessionKey, setOwnerSessionKey] = useState<string | null>(null);
+
+  const clearOwnerSession = () => {
+    lastHopSeriesCache.clear();
+    setDashboard(null);
+    setOwnerSessionKey(null);
+    setSelectedNodeId('');
+    setLive(null);
+    setLiveError(null);
+    setLastHopStrength([]);
+    setError(null);
+    publishOwnerSession(null);
+  };
 
   useEffect(() => {
-    let cancelled = false;
-    fetch('/api/owner/session', { cache: 'no-store' })
-      .then(async (res) => {
-        if (!res.ok) return null;
-        return (await res.json()) as OwnerSessionResponse;
-      })
+    const controller = new AbortController();
+    fetchJson<OwnerSessionResponse>(
+      '/api/owner/session',
+      { cache: 'no-store', signal: controller.signal },
+      { timeoutMs: 10_000, maxBytes: 2 * 1024 * 1024, validate: isOwnerSessionResponse },
+    )
       .then((json) => {
-        if (cancelled) return;
-        setDashboard(json?.dashboard ?? null);
-        publishOwnerSession(json?.mqttUsername ?? null);
-        if (json?.dashboard?.nodes?.[0]?.node_id) {
+        if (controller.signal.aborted) return;
+        setDashboard(json.dashboard);
+        setOwnerSessionKey(json.mqttUsername ?? null);
+        publishOwnerSession(json.mqttUsername ?? null);
+        if (json.dashboard.nodes[0]?.node_id) {
           setSelectedNodeId(json.dashboard.nodes[0].node_id);
         }
         setLoading(false);
       })
       .catch(() => {
-        if (cancelled) return;
-        setDashboard(null);
-        publishOwnerSession(null);
+        if (controller.signal.aborted) return;
+        clearOwnerSession();
         setLoading(false);
       });
-    return () => {
-      cancelled = true;
-    };
+    return () => controller.abort();
+  // Session bootstrap runs once. Subsequent authenticated refreshes are owned
+  // by the visibility-aware poller below.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Keep the node list in sync with keys learned from MQTT after login. The
   // backend resolves the username on every session request, so a newly attached
   // observer appears without making the owner log out and back in.
   const hasDashboard = dashboard !== null;
-  useEffect(() => {
-    if (!hasDashboard) return;
-    let cancelled = false;
-
-    const refreshDashboard = () => {
-      fetch('/api/owner/session', { cache: 'no-store' })
-        .then(async (res) => {
-          if (!res.ok) throw new Error(res.status === 401 ? 'SESSION_EXPIRED' : `HTTP ${res.status}`);
-          return (await res.json()) as OwnerSessionResponse;
-        })
-        .then((json) => {
-          if (cancelled) return;
-          setDashboard(json.dashboard);
-          setSelectedNodeId((current) => (
-            json.dashboard.nodes.some((node) => node.node_id === current)
-              ? current
-              : (json.dashboard.nodes[0]?.node_id ?? '')
-          ));
-        })
-        .catch((err: Error) => {
-          if (cancelled || err.message !== 'SESSION_EXPIRED') return;
-          setDashboard(null);
-          setLive(null);
-          setLastHopStrength([]);
-          publishOwnerSession(null);
-        });
-    };
-
-    const timer = window.setInterval(refreshDashboard, 15_000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [hasDashboard]);
+  useVisibilityPoll(async (signal) => {
+    const json = await fetchJson<OwnerSessionResponse>(
+      '/api/owner/session',
+      { cache: 'no-store', signal },
+      { timeoutMs: 10_000, maxBytes: 2 * 1024 * 1024, validate: isOwnerSessionResponse },
+    );
+    if (signal.aborted) return;
+    setDashboard(json.dashboard);
+    setOwnerSessionKey(json.mqttUsername ?? ownerSessionKey);
+    publishOwnerSession(json.mqttUsername ?? ownerSessionKey);
+    setSelectedNodeId((current) => (
+      json.dashboard.nodes.some((node) => node.node_id === current)
+        ? current
+        : (json.dashboard.nodes[0]?.node_id ?? '')
+    ));
+  }, {
+    enabled: hasDashboard,
+    scopeKey: `owner-session:${ownerSessionKey ?? 'pending'}`,
+    intervalMs: 15_000,
+    timeoutMs: 10_000,
+    onError: (pollError) => {
+      if (pollError instanceof ApiResponseError && pollError.status === 401) {
+        clearOwnerSession();
+      }
+    },
+  });
 
   const handleLogin = (event: FormEvent) => {
     event.preventDefault();
@@ -930,28 +133,29 @@ export const OwnerPortalPage: React.FC = () => {
     }
     setSubmitting(true);
     setError(null);
+    const loginUsername = mqttUsername.trim();
     fetchOwnerCsrfToken()
-      .then((csrfToken) => fetch('/api/owner/login', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-CSRF-Token': csrfToken,
-        },
-        body: JSON.stringify({
-          mqttUsername: mqttUsername.trim(),
-          mqttPassword: mqttPassword.trim(),
+      .then((csrfToken) => fetchJson<OwnerSessionResponse>('/api/owner/login', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-Token': csrfToken,
+          },
+          body: JSON.stringify({
+            mqttUsername: loginUsername,
+            mqttPassword: mqttPassword.trim(),
+          }),
+        }, {
+          timeoutMs: 15_000,
+          maxBytes: 2 * 1024 * 1024,
+          validate: isOwnerSessionResponse,
         }),
-      }))
-      .then(async (res) => {
-        const body = await res.json().catch(() => ({}));
-        if (!res.ok) {
-          throw new Error(String(body.error ?? `HTTP ${res.status}`));
-        }
-        return body as OwnerSessionResponse;
-      })
+      )
       .then((json) => {
+        lastHopSeriesCache.clear();
         setDashboard(json.dashboard);
-        publishOwnerSession(json.mqttUsername ?? mqttUsername.trim());
+        setOwnerSessionKey(json.mqttUsername ?? loginUsername);
+        publishOwnerSession(json.mqttUsername ?? loginUsername);
         if (json.dashboard.nodes[0]?.node_id) {
           setSelectedNodeId(json.dashboard.nodes[0].node_id);
         }
@@ -966,90 +170,70 @@ export const OwnerPortalPage: React.FC = () => {
 
   const handleLogout = () => {
     fetchOwnerCsrfToken()
-      .then((csrfToken) => fetch('/api/owner/logout', {
-        method: 'POST',
-        headers: { 'X-CSRF-Token': csrfToken },
-      }))
+      .then((csrfToken) => fetchJson<{ ok: boolean }>('/api/owner/logout', {
+          method: 'POST',
+          headers: { 'X-CSRF-Token': csrfToken },
+        }, {
+          timeoutMs: 10_000,
+          maxBytes: 8 * 1024,
+          validate: (value): value is { ok: boolean } => isRecord(value) && value['ok'] === true,
+        }),
+      )
       .finally(() => {
-        setDashboard(null);
-        setLive(null);
-        setLastHopStrength([]);
-        setError(null);
-        publishOwnerSession(null);
+        clearOwnerSession();
       });
   };
 
   useEffect(() => {
-    if (!hasDashboard || !selectedNodeId) return;
-    let cancelled = false;
     setLive(null);
     setLiveError(null);
+  }, [ownerSessionKey, selectedNodeId]);
 
-    const load = () => {
-      fetch(`/api/owner/live?nodeId=${encodeURIComponent(selectedNodeId)}`, { cache: 'no-store' })
-        .then(async (res) => {
-          const json = await res.json().catch(() => ({}));
-          if (!res.ok) throw new Error(String(json.error ?? `HTTP ${res.status}`));
-          return json as OwnerLiveResponse;
-        })
-        .then((json) => {
-          if (cancelled) return;
-          setLive(json);
-          setLiveError(null);
-        })
-        .catch((err: Error) => {
-          if (cancelled) return;
-          setLiveError(err.message);
-        });
-    };
-
-    load();
-    const timer = setInterval(load, 10_000);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-    };
-  // Session polling replaces the dashboard snapshot every 15 seconds. Key this
-  // effect to authentication state and the selected node so a snapshot refresh
-  // does not clear the live data and restart its request interval.
-  }, [hasDashboard, selectedNodeId]);
-
-  useEffect(() => {
-    if (!hasDashboard || !selectedNodeId) return;
-    let cancelled = false;
-
-    const load = () => {
-      const cached = lastHopSeriesCache.get(selectedNodeId);
-      if (cached && cached.expiresAt > Date.now()) {
-        setLastHopStrength(cached.points);
+  useVisibilityPoll(async (signal) => {
+    const json = await fetchJson<OwnerLiveResponse>(
+      `/api/owner/live?nodeId=${encodeURIComponent(selectedNodeId)}`,
+      { cache: 'no-store', signal },
+      { timeoutMs: 10_000, maxBytes: 4 * 1024 * 1024, validate: isOwnerLiveResponse },
+    );
+    if (signal.aborted) return;
+    setLive(json);
+    setLiveError(null);
+  }, {
+    enabled: hasDashboard && Boolean(ownerSessionKey) && Boolean(selectedNodeId),
+    scopeKey: `owner-live:${ownerSessionKey ?? 'none'}:${privacyGeneration}:${selectedNodeId}`,
+    intervalMs: 10_000,
+    timeoutMs: 10_000,
+    onError: (pollError) => {
+      if (pollError instanceof ApiResponseError && pollError.status === 401) {
+        clearOwnerSession();
         return;
       }
-      fetch(`/api/owner/live-last-hop?nodeId=${encodeURIComponent(selectedNodeId)}`, { cache: 'no-store' })
-        .then(async (res) => {
-          const json = await res.json().catch(() => ({}));
-          if (!res.ok) throw new Error(String(json.error ?? `HTTP ${res.status}`));
-          return json as OwnerLastHopStrengthResponse;
-        })
-        .then((json) => {
-          if (cancelled) return;
-          const points = json.points ?? [];
-          lastHopSeriesCache.set(selectedNodeId, { expiresAt: Date.now() + 5 * 60_000, points });
-          setLastHopStrength(points);
-        })
-        .catch(() => {
-          if (cancelled) return;
-        });
-    };
+      setLiveError(pollError instanceof Error ? pollError.message : 'Unable to load live data');
+    },
+  });
 
-    setLastHopStrength([]);
-    load();
-    const timer = setInterval(load, 60_000);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-    };
-  // As above, dashboard snapshots are not a reason to reset this chart.
-  }, [hasDashboard, selectedNodeId]);
+  const lastHopScope = `owner:${ownerSessionKey ?? 'none'}|privacy:${privacyGeneration}`;
+  useEffect(() => {
+    const cached = selectedNodeId ? lastHopSeriesCache.get(lastHopScope, selectedNodeId) : undefined;
+    setLastHopStrength(cached ?? []);
+  }, [lastHopScope, selectedNodeId]);
+
+  useVisibilityPoll(async (signal) => {
+    const points = await lastHopSeriesCache.getOrLoad(lastHopScope, selectedNodeId, async () => {
+      const json = await fetchJson<OwnerLastHopStrengthResponse>(
+        `/api/owner/live-last-hop?nodeId=${encodeURIComponent(selectedNodeId)}`,
+        { cache: 'no-store', signal },
+        { timeoutMs: 15_000, maxBytes: 8 * 1024 * 1024, validate: isOwnerLastHopStrengthResponse },
+      );
+      return json.points;
+    });
+    if (!signal.aborted) setLastHopStrength(points);
+  }, {
+    enabled: hasDashboard && Boolean(ownerSessionKey) && Boolean(selectedNodeId),
+    scopeKey: `owner-last-hop:${lastHopScope}:${selectedNodeId}`,
+    intervalMs: 60_000,
+    timeoutMs: 15_000,
+  });
 
   const mapPoints = useMemo(() => {
     const ownerNode = live?.ownerNode;
@@ -1099,7 +283,10 @@ export const OwnerPortalPage: React.FC = () => {
   return (
     <>
 
-      <div className="site-content site-prose site-prose--wide">
+      <div
+        className="site-content site-prose site-prose--wide"
+        data-update-blocking={submitting || Boolean(mqttUsername) || Boolean(mqttPassword) ? 'true' : undefined}
+      >
         {loading ? <LoadingIndicator label="Checking login session..." variant="block" /> : null}
         {!loading && !dashboard ? (
           <OwnerLoginSection username={mqttUsername} password={mqttPassword} submitting={submitting} error={error} onUsername={setMqttUsername} onPassword={setMqttPassword} onSubmit={handleLogin} />

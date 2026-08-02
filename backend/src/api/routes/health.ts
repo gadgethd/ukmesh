@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { HEALTH_CACHE_TTL_MS, healthSnapshot } from '../bootstrap/caches.js';
+import { toPublicHealthOverview } from '../../health/status.js';
 
 const router = Router();
 const refreshTimer = setInterval(() => {
@@ -24,7 +25,7 @@ router.get('/health', (_req, res) => {
     return;
   }
   res.setHeader('Cache-Control', 'public, max-age=30, stale-while-revalidate=60');
-  res.json(current.data);
+  res.json(toPublicHealthOverview(current.data));
 });
 
 export default router;

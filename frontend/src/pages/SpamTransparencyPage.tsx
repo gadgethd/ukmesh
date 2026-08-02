@@ -240,25 +240,44 @@ const IncidentCard = memo(function IncidentCard({
   const [expanded, setExpanded] = useState(false);
   const [detail, setDetail] = useState<IncidentDetail | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
+  const detailController = useRef<AbortController | null>(null);
   const watchlist = useWatchlist();
+
+  useEffect(() => () => detailController.current?.abort(), []);
 
   const toggle = useCallback(() => {
     const next = !expanded;
     setExpanded(next);
     if (next && !detail && !loadingDetail) {
+      detailController.current?.abort();
+      const controller = new AbortController();
+      detailController.current = controller;
       setLoadingDetail(true);
-      fetch(`/api/spam/messages/incidents/${incident.id}`, { cache: 'no-store' })
+      fetch(`/api/spam/messages/incidents/${incident.id}`, {
+        cache: 'no-store',
+        signal: controller.signal,
+      })
         .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
-        .then((d: IncidentDetail) => setDetail(d))
-        .catch(() => setDetail(null))
-        .finally(() => setLoadingDetail(false));
+        .then((d: IncidentDetail) => {
+          if (!controller.signal.aborted) setDetail(d);
+        })
+        .catch(() => {
+          if (!controller.signal.aborted) setDetail(null);
+        })
+        .finally(() => {
+          if (!controller.signal.aborted) setLoadingDetail(false);
+        });
     }
   }, [expanded, detail, loadingDetail, incident.id]);
 
   const o = incident.origin;
 
   return (
-    <div className={`sm-card ${incident.status === 'active' ? 'sm-card--active' : ''}`}>
+    <div
+      id={`spam-incident-${incident.id}`}
+      className={`sm-card ${incident.status === 'active' ? 'sm-card--active' : ''}`}
+      tabIndex={-1}
+    >
       <div className="sm-card__head">
         <div className="sm-card__title">
           <span className="sm-card__label">Suspected spam cluster</span>
@@ -319,12 +338,18 @@ const IncidentCard = memo(function IncidentCard({
         </div>
       )}
 
-      <button className="sm-expand" onClick={toggle}>
+      <button
+        type="button"
+        className="sm-expand"
+        onClick={toggle}
+        aria-expanded={expanded}
+        aria-controls={`spam-incident-detail-${incident.id}`}
+      >
         {expanded ? '▾ Hide details' : '▸ Why flagged & timeline'}
       </button>
 
       {expanded && (
-        <div className="sm-detail">
+        <div className="sm-detail" id={`spam-incident-detail-${incident.id}`}>
           <div className="sm-detail__reasons">
             <span className="sm-k">Detection factors</span>
             <ul>{incident.reasons.map((r, idx) => <li key={idx}>{r}</li>)}</ul>
@@ -335,7 +360,7 @@ const IncidentCard = memo(function IncidentCard({
               <span className="sm-k">Timeline ({detail.timeline.length} transmissions)</span>
               <table>
                 <thead>
-                  <tr><th>Time</th><th>Channel</th><th>Observers</th><th>Min hops</th><th>Best SNR</th></tr>
+                  <tr><th scope="col">Time</th><th scope="col">Channel</th><th scope="col">Observers</th><th scope="col">Min hops</th><th scope="col">Best SNR</th></tr>
                 </thead>
                 <tbody>
                   {detail.timeline.slice(0, 40).map((t, idx) => (
@@ -357,7 +382,9 @@ const IncidentCard = memo(function IncidentCard({
   );
 });
 
-function VirtualIncidentList({
+// The API caps this list at 200 incidents. Keeping expanded cards in normal
+// document flow avoids the fixed-row virtualization overlap bug.
+function IncidentList({
   incidents,
   openMapId,
   setOpenMapId,
@@ -366,15 +393,9 @@ function VirtualIncidentList({
   openMapId: string | null;
   setOpenMapId: (id: string | null) => void;
 }) {
-  const [scrollTop, setScrollTop] = useState(0);
-  const rowEstimate = 430;
-  const viewport = 760;
-  const start = Math.max(0, Math.floor(scrollTop / rowEstimate) - 2);
-  const end = Math.min(incidents.length, start + Math.ceil(viewport / rowEstimate) + 5);
   return (
-    <div className="sm-virtual-list" onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}>
-      <div aria-hidden="true" style={{ height: start * rowEstimate }} />
-      {incidents.slice(start, end).map((incident) => (
+    <div className="sm-incident-list">
+      {incidents.map((incident) => (
         <IncidentCard
           key={incident.id}
           incident={incident}
@@ -382,7 +403,6 @@ function VirtualIncidentList({
           onToggleMap={() => setOpenMapId(openMapId === incident.id ? null : incident.id)}
         />
       ))}
-      <div aria-hidden="true" style={{ height: Math.max(0, (incidents.length - end) * rowEstimate) }} />
     </div>
   );
 }
@@ -397,39 +417,68 @@ export function SpamPage() {
   const [error, setError] = useState<string | null>(null);
   const [showLow, setShowLow] = useState(false);
   const [openMapId, setOpenMapId] = useState<string | null>(null);
+  const [retryVersion, setRetryVersion] = useState(0);
+  const requestedIncident = new URLSearchParams(window.location.search).get('incident')?.trim() ?? '';
 
   const mapEl = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const mapReady = useRef(false);
+  const zonesRef = useRef<PublicIncident[]>([]);
+
+  useEffect(() => {
+    if (!requestedIncident || !incidents?.some((incident) => incident.id === requestedIncident)) return;
+    const frame = window.requestAnimationFrame(() => {
+      const card = document.getElementById(`spam-incident-${requestedIncident}`);
+      card?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      card?.focus({ preventScroll: true });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [incidents, requestedIncident]);
 
   // Fetch status + incidents whenever the confidence filter changes.
   useEffect(() => {
-    let cancelled = false;
+    const controller = new AbortController();
     setError(null);
+    setIncidents(null);
     const conf = showLow ? '?minConfidence=0' : '';
     const incConf = showLow ? '&minConfidence=0' : '';
     Promise.all([
-      fetch(`/api/spam/messages/status${conf}`, { cache: 'no-store' }).then((r) => r.json() as Promise<StatusResp>),
-      fetch(`/api/spam/messages/incidents?limit=200${incConf}`, { cache: 'no-store' }).then(
-        (r) => r.json() as Promise<IncidentsResp>,
+      fetch(`/api/spam/messages/status${conf}`, {
+        cache: 'no-store',
+        signal: controller.signal,
+      }).then((response) => {
+        if (!response.ok) throw new Error(`status:${response.status}`);
+        return response.json() as Promise<StatusResp>;
+      }),
+      fetch(`/api/spam/messages/incidents?limit=200${incConf}`, {
+        cache: 'no-store',
+        signal: controller.signal,
+      }).then(
+        (response) => {
+          if (!response.ok) throw new Error(`incidents:${response.status}`);
+          return response.json() as Promise<IncidentsResp>;
+        },
       ),
     ])
       .then(([s, inc]) => {
-        if (cancelled) return;
+        if (controller.signal.aborted) return;
         setStatus(s);
-        setIncidents(inc.incidents);
+        setIncidents(Array.isArray(inc.incidents) ? inc.incidents : []);
       })
       .catch(() => {
-        if (!cancelled) setError('Could not load spam data. Please try again later.');
+        if (!controller.signal.aborted) {
+          setStatus(null);
+          setIncidents([]);
+          setError('Could not load spam data. Please try again later.');
+        }
       });
-    return () => {
-      cancelled = true;
-    };
-  }, [showLow]);
+    return () => controller.abort();
+  }, [retryVersion, showLow]);
 
   const active = useMemo(() => (incidents ?? []).filter((i) => i.status === 'active'), [incidents]);
   const historical = useMemo(() => (incidents ?? []).filter((i) => i.status === 'closed'), [incidents]);
   const zones = useMemo(() => (incidents ?? []).filter((i) => i.origin.zone), [incidents]);
+  zonesRef.current = zones;
 
   // Initialise the coarse heat-zone map once.
   useEffect(() => {
@@ -465,7 +514,7 @@ export function SpamPage() {
       });
       mapReady.current = true;
       const src = map.getSource('zones') as maplibregl.GeoJSONSource | undefined;
-      src?.setData(buildZonesGeoJSON(zones));
+      src?.setData(buildZonesGeoJSON(zonesRef.current));
     });
     mapRef.current = map;
     return () => {
@@ -473,7 +522,6 @@ export function SpamPage() {
       mapRef.current = null;
       mapReady.current = false;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Push zone updates to the map.
@@ -495,7 +543,14 @@ export function SpamPage() {
         </p>
       </header>
 
-      {error && <div className="sm-error">{error}</div>}
+      {error && (
+        <div className="sm-error" role="alert">
+          {error}{' '}
+          <button type="button" onClick={() => setRetryVersion((value) => value + 1)}>
+            Retry
+          </button>
+        </div>
+      )}
 
       {!incidents && !error && <LoadingIndicator />}
 
@@ -524,12 +579,18 @@ export function SpamPage() {
         </label>
       </div>
 
-      {zones.length > 0 && (
-        <section className="sm-mapwrap">
-          <div className="sm-maphint">Coarse origin heat zones — broad areas only, not precise locations.</div>
-          <div ref={mapEl} className="sm-map" />
-        </section>
-      )}
+      <section className="sm-mapwrap" aria-label="Coarse incident origin map">
+        <div className="sm-maphint">
+          {incidents === null
+            ? 'Loading coarse origin heat zones…'
+            : error
+              ? 'Origin zones are unavailable.'
+              : zones.length === 0
+                ? 'No coarse origin zones are available for this result.'
+                : 'Coarse origin heat zones — broad areas only, not precise locations.'}
+        </div>
+        <div ref={mapEl} className="sm-map" />
+      </section>
 
       {incidents && (
         <>
@@ -538,7 +599,7 @@ export function SpamPage() {
             {active.length === 0 ? (
               <p className="sm-muted">Nothing active. The mesh looks clean right now.</p>
             ) : (
-              <VirtualIncidentList incidents={active} openMapId={openMapId} setOpenMapId={setOpenMapId} />
+              <IncidentList incidents={active} openMapId={openMapId} setOpenMapId={setOpenMapId} />
             )}
           </section>
 
@@ -547,7 +608,7 @@ export function SpamPage() {
             {historical.length === 0 ? (
               <p className="sm-muted">No past incidents recorded{showLow ? '' : ' above the confidence threshold'}.</p>
             ) : (
-              <VirtualIncidentList incidents={historical} openMapId={openMapId} setOpenMapId={setOpenMapId} />
+              <IncidentList incidents={historical} openMapId={openMapId} setOpenMapId={setOpenMapId} />
             )}
           </section>
         </>

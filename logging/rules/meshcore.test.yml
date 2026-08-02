@@ -1,0 +1,176 @@
+rule_files:
+  - meshcore.yml
+
+evaluation_interval: 1m
+
+tests:
+  - name: bounded queues and stopped workers produce their documented alerts
+    interval: 1m
+    input_series:
+      - series: meshcore_link_queue_oldest_age_seconds
+        values: 700x8
+      - series: meshcore_link_queue_active_jobs
+        values: 4500x8
+      - series: meshcore_link_queue_dead_jobs
+        values: 1x8
+      - series: 'meshcore_worker_heartbeat_age_seconds{worker="health"}'
+        values: 200x8
+      - series: 'up{job="meshcore-workers",role="link"}'
+        values: 0x8
+      - series: 'meshcore_worker_heartbeat_age_seconds{worker="link"}'
+        values: 200x8
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: QueueAgeHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: A durable worker queue has jobs older than ten minutes
+              owner: meshcore-operations
+              runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#queueagehigh
+      - eval_time: 6m
+        alertname: QueueCapacityHigh
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: A durable queue is above 80 percent of its configured bound
+              owner: meshcore-operations
+              runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#queuecapacityhigh
+      - eval_time: 6m
+        alertname: DeadJobsPresent
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: A durable worker queue contains dead-letter jobs
+              owner: meshcore-operations
+              runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#deadjobspresent
+      - eval_time: 4m
+        alertname: HealthWorkerHeartbeatStale
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              worker: health
+            exp_annotations:
+              summary: Health worker heartbeat is stale or missing
+              owner: meshcore-operations
+              runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#healthworkerheartbeatstale
+      - eval_time: 4m
+        alertname: WorkerMetricsDown
+        exp_alerts:
+          - exp_labels:
+              job: meshcore-workers
+              role: link
+              severity: critical
+            exp_annotations:
+              summary: Required worker link is unavailable
+              owner: meshcore-operations
+              runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#workermetricsdown
+      - eval_time: 4m
+        alertname: ActiveQueueWorkerHeartbeatStale
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: A worker with queued work has a stale heartbeat
+              owner: meshcore-operations
+              runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#activequeueworkerheartbeatstale
+
+  - name: database host and backup failures produce their documented alerts
+    interval: 1m
+    input_series:
+      - series: 'pg_up{instance="database"}'
+        values: 0x14
+      - series: 'meshcore_db_pool_connections{state="primary_waiting"}'
+        values: 1x14
+      - series: 'node_filesystem_avail_bytes{fstype="ext4",mountpoint="/data"}'
+        values: 5x14
+      - series: 'node_filesystem_size_bytes{fstype="ext4",mountpoint="/data"}'
+        values: 100x14
+      - series: 'meshcore_backup_age_seconds{dataset="analytics"}'
+        values: 90000x14
+      - series: 'meshcore_backup_age_seconds{dataset="owner_auth"}'
+        values: 10x14
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: DatabaseUnavailable
+        exp_alerts:
+          - exp_labels:
+              instance: database
+              severity: critical
+            exp_annotations:
+              summary: PostgreSQL exporter cannot query the database
+              owner: meshcore-operations
+              runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#databaseunavailable
+      - eval_time: 6m
+        alertname: DatabasePoolSaturated
+        exp_alerts:
+          - exp_labels:
+              state: primary_waiting
+              severity: warning
+            exp_annotations:
+              summary: Application database pool has waiting callers
+              owner: meshcore-operations
+              runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#databasepoolsaturated
+      - eval_time: 11m
+        alertname: HostDiskSpaceLow
+        exp_alerts:
+          - exp_labels:
+              fstype: ext4
+              mountpoint: /data
+              severity: critical
+            exp_annotations:
+              summary: Host filesystem /data has less than 10 percent free
+              owner: meshcore-operations
+              runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#hostdiskspacelow
+      - eval_time: 11m
+        alertname: BackupReceiptMissing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: One or more required verified backup receipts are missing
+              owner: meshcore-operations
+              runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#backupreceiptmissing
+      - eval_time: 11m
+        alertname: BackupStale
+        exp_alerts:
+          - exp_labels:
+              dataset: analytics
+              severity: critical
+            exp_annotations:
+              summary: Verified analytics backup receipt is older than 24 hours
+              owner: meshcore-operations
+              runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#backupstale
+
+  - name: lease and privacy integrity counters alert on observed failures
+    interval: 1m
+    input_series:
+      - series: 'meshcore_analysis_lease_events_total{outcome="heartbeat_lost",workload="stats"}'
+        values: 0 0 1 1 1 1 1 1
+      - series: 'meshcore_privacy_filter_total{outcome="invalid"}'
+        values: 0 0 0 20 20 20 20 20
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: AnalysisLeaseLost
+        exp_alerts:
+          - exp_labels:
+              outcome: heartbeat_lost
+              workload: stats
+              severity: critical
+            exp_annotations:
+              summary: Analysis workload stats lost its publication lease
+              owner: meshcore-operations
+              runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#analysisleaselost
+      - eval_time: 8m
+        alertname: TelemetryIntegrityFailures
+        exp_alerts:
+          - exp_labels:
+              outcome: invalid
+              severity: warning
+            exp_annotations:
+              summary: Packet visibility validation is rejecting elevated telemetry
+              owner: meshcore-operations
+              runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#telemetryintegrityfailures

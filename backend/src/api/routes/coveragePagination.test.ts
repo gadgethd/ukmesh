@@ -25,11 +25,12 @@ test('parseCoverageBounds rejects invalid and excessively large viewports', () =
   assert.equal(parseCoverageBounds('-181,40,1,50'), null);
 });
 
-test('coverage limits are defaulted and clamped', () => {
+test('coverage limits default when absent and reject malformed or out-of-range values', () => {
   assert.equal(parseCoverageLimit(undefined), COVERAGE_DEFAULT_LIMIT);
-  assert.equal(parseCoverageLimit('abc'), COVERAGE_DEFAULT_LIMIT);
-  assert.equal(parseCoverageLimit('0'), 1);
-  assert.equal(parseCoverageLimit('999'), COVERAGE_MAX_LIMIT);
+  assert.equal(parseCoverageLimit(String(COVERAGE_MAX_LIMIT)), COVERAGE_MAX_LIMIT);
+  assert.throws(() => parseCoverageLimit('abc'));
+  assert.throws(() => parseCoverageLimit('0'));
+  assert.throws(() => parseCoverageLimit('999'));
 });
 
 test('coverage cursors accept only canonical node identifiers', () => {

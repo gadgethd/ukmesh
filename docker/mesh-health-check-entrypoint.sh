@@ -1,6 +1,11 @@
 #!/bin/sh
 set -eu
 
+# Keep runtime-created session and observer files private to the service group.
+# The upstream server uses atomic replacements, so the process umask must
+# enforce the same mode on every rewrite rather than only at volume init.
+umask 027
+
 if [ -z "${TEST_CHANNEL_SECRET:-}" ] && [ -n "${MESHCORE_CHANNEL_SECRETS:-}" ]; then
   wanted_name=$(printf '%s' "${TEST_CHANNEL_NAME:-health-check}" | tr '[:upper:]' '[:lower:]')
   secret_source_name=$(printf '%s' "${TEST_CHANNEL_SECRET_SOURCE_NAME:-}" | tr '[:upper:]' '[:lower:]')

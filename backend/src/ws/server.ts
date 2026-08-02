@@ -19,7 +19,10 @@ import {
 import { isPrivateNode } from '../api/utils/privateNode.js';
 import { PublicWsPrivacyIndex } from './privacy.js';
 import { trustedClientIp } from '../http/trustedProxy.js';
-import { websocketClients } from '../metrics.js';
+import {
+  websocketAdmissionsTotal,
+  websocketClients,
+} from '../metrics.js';
 
 const REDIS_CHANNEL = 'meshcore:live';
 const LOG_WS_PACKETS = process.env['LOG_WS_PACKETS'] === '1';
@@ -151,17 +154,15 @@ let sub: Redis;
 // 5-minute TTL means the expensive correlated-subquery runs at most once per
 // 5 minutes per network/observer combo instead of once per 30 seconds.
 const VIABLE_LINK_CACHE_TTL_MS = 5 * 60_000;
-const VIABLE_LINK_CACHE_MAX = 50;
-const viableLinksCache = new Map<string, { ts: number; data: Awaited<ReturnType<typeof getViableLinks>> }>();
-
-// Periodically evict stale cache entries so they don't persist indefinitely
-// when a network/observer combo stops being requested.
-setInterval(() => {
-  const now = Date.now();
-  for (const [key, entry] of viableLinksCache) {
-    if (now - entry.ts > VIABLE_LINK_CACHE_TTL_MS) viableLinksCache.delete(key);
-  }
-}, VIABLE_LINK_CACHE_TTL_MS);
+const viableLinksCache = new BoundedTtlMap<string, {
+  ts: number;
+  data: Awaited<ReturnType<typeof getViableLinks>>;
+}>({
+  name: 'ws_viable_links',
+  maxEntries: 50,
+  maxWeight: 16 * 1024 * 1024,
+  ttlMs: VIABLE_LINK_CACHE_TTL_MS,
+});
 
 /**
  * Initial-state cache — all connecting clients share one cached snapshot per
@@ -177,6 +178,7 @@ type InitialStateEntry = {
   viableLinks: Awaited<ReturnType<typeof getViableLinks>>;
 };
 const initialStateCache = new BoundedTtlMap<string, InitialStateEntry>({
+  name: 'ws_initial_state',
   maxEntries: 128,
   maxWeight: 48 * 1024 * 1024,
   ttlMs: INITIAL_STATE_TTL_MS,
@@ -209,6 +211,9 @@ async function fetchInitialState(network: string | undefined, observer: string |
   // If a fetch is already in flight for this key, share it — don't pile on the DB.
   const existing = initialStateInflight.get(key);
   if (existing) return existing;
+  if (initialStateInflight.size >= 128) {
+    throw new Error('WS_INITIAL_STATE_OVERLOADED');
+  }
 
   const promise = (async () => {
     try {
@@ -268,10 +273,6 @@ async function getCachedViableLinks(network?: string, observer?: string) {
   const cached = viableLinksCache.get(key);
   if (cached && (Date.now() - cached.ts) < VIABLE_LINK_CACHE_TTL_MS) return cached.data;
   const data = await getViableLinks(network, observer);
-  if (viableLinksCache.size >= VIABLE_LINK_CACHE_MAX) {
-    const firstKey = viableLinksCache.keys().next().value;
-    if (firstKey !== undefined) viableLinksCache.delete(firstKey);
-  }
   viableLinksCache.set(key, { ts: Date.now(), data });
   return data;
 }
@@ -418,6 +419,7 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
     verifyClient: (info, done) => {
       const origin = info.origin;
       if (origin && !ALLOWED_ORIGINS.includes(origin)) {
+        websocketAdmissionsTotal.inc({ outcome: 'origin_denied' });
         done(false, 403, 'Forbidden');
         return;
       }
@@ -426,6 +428,7 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
         resolvePublicNetworkScope(reqUrl.searchParams.get('network'), info.req.headers);
       } catch (error) {
         if (!(error instanceof PublicAllScopeForbiddenError)) throw error;
+        websocketAdmissionsTotal.inc({ outcome: 'scope_denied' });
         done(false, 400, 'The all-network scope is not available');
         return;
       }
@@ -445,6 +448,7 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
         peerWindow.count > WS_HANDSHAKES_PER_IP_PER_MINUTE
         || (connectionsByPeer.get(peer) ?? 0) >= WS_MAX_CONNECTIONS_PER_IP
       ) {
+        websocketAdmissionsTotal.inc({ outcome: 'rate_limited' });
         done(false, 429, 'Too Many Requests', { 'Retry-After': '5' });
         return;
       }
@@ -456,6 +460,7 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
         },
       );
       if (!admission.allowed) {
+        websocketAdmissionsTotal.inc({ outcome: 'capacity_denied' });
         done(false, admission.statusCode, admission.reason, { 'Retry-After': '5' });
         return;
       }
@@ -463,6 +468,7 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
       const timer = setTimeout(() => releasePendingHandshake(info.req), 10_000);
       timer.unref();
       pendingHandshakeTimers.set(info.req.socket, timer);
+      websocketAdmissionsTotal.inc({ outcome: 'accepted' });
       done(true);
     },
   });
@@ -691,6 +697,23 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
   });
 
   return wss;
+}
+
+export async function closeWebSocketServer(wss: WebSocketServer): Promise<void> {
+  for (const client of wss.clients) client.close(1001, 'server restart');
+  const deadline = Date.now() + 5_000;
+  while (wss.clients.size > 0 && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  for (const client of wss.clients) client.terminate();
+  await new Promise<void>((resolve) => {
+    wss.close(() => resolve());
+  });
+  await Promise.all([
+    pub?.quit().catch(() => undefined),
+    sub?.quit().catch(() => undefined),
+  ]);
+  websocketClients.set(0);
 }
 
 export function broadcastPacket(packet: LivePacket): void {

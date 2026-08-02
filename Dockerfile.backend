@@ -1,19 +1,28 @@
 # Backend only — API, WebSocket, MQTT ingestion, DB
-FROM node:20-alpine AS backend-builder
+FROM node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293 AS backend-builder
 WORKDIR /build/backend
 COPY backend/package.json backend/package-lock.json ./
 RUN npm ci --audit
 COPY backend/ ./
 RUN npm run build
 
-FROM node:20-alpine AS runtime
+FROM node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293 AS runtime
+ARG SOURCE_REVISION=unknown
+LABEL org.opencontainers.image.revision="${SOURCE_REVISION}" \
+      org.opencontainers.image.source="https://github.com/gadgethd/ukmesh"
 WORKDIR /app
 COPY backend/package.json backend/package-lock.json ./
-RUN npm ci --omit=dev --audit && npm cache clean --force
+RUN npm ci --omit=dev --audit \
+  && npm cache clean --force \
+  && rm -rf /usr/local/lib/node_modules/npm \
+  && rm -f /usr/local/bin/npm /usr/local/bin/npx
+RUN mkdir -p /var/lib/meshcore-alerts && chown 1000:1000 /var/lib/meshcore-alerts
 COPY --from=backend-builder /build/backend/dist ./dist
 COPY --from=backend-builder /build/backend/src/db/schema ./dist/db/schema
 COPY --from=backend-builder /build/backend/src/db/migrations ./dist/db/migrations
 COPY --from=backend-builder /build/backend/src/db/owner-auth.sql ./dist/db/owner-auth.sql
+COPY --from=backend-builder /build/backend/src/backend-site/*.html ./dist/backend-site/
 COPY docs/openapi.yaml ./openapi.yaml
-EXPOSE 3000
+USER 1000:1000
+EXPOSE 3000 9091
 CMD ["node", "dist/index.js"]

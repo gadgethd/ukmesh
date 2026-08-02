@@ -225,7 +225,10 @@ export const TopologyPage: React.FC = () => {
 
           <div className="topology-page__workspace">
             <section className="topology-page__graph" aria-label="Geographic repeater topology graph">
-              <svg viewBox="0 0 1000 600" role="img" aria-label={`${plot.nodes.length} positioned repeaters and ${plot.links.length} links`}>
+              <p className="ui-visually-hidden" id="topology-graph-desc">
+                {plot.nodes.length} positioned repeaters and {plot.links.length} links
+              </p>
+              <svg viewBox="0 0 1000 600" role="group" aria-labelledby="topology-graph-desc">
                 <g className="topology-page__links">
                   {plot.links.map((link) => {
                     const source = nodesById.get(link.source);
@@ -337,6 +340,12 @@ export const TopologyPage: React.FC = () => {
               </div>
               {rfValidation.mismatches.length > 0 && (
                 <div className="topology-page__validation-table" role="table" aria-label="RF model mismatches">
+                  <div role="row" className="topology-page__validation-table-head">
+                    <span role="columnheader">Link</span>
+                    <span role="columnheader">Observations</span>
+                    <span role="columnheader">Modelled path loss</span>
+                    <span role="columnheader">Classification</span>
+                  </div>
                   {rfValidation.mismatches.slice(0, 20).map((link) => (
                     <div role="row" key={`${link.source}:${link.target}`}>
                       <span role="cell">{link.sourceName ?? link.source.slice(0, 8)} ↔ {link.targetName ?? link.target.slice(0, 8)}</span>

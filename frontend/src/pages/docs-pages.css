@@ -240,11 +240,14 @@
   transition: border-color var(--transition), background var(--transition);
 }
 
-.health-card--interactive:hover,
-.health-card--interactive:focus-visible {
+.health-card--interactive:hover {
   border-color: var(--border-bright);
   background: var(--bg-hover);
-  outline: none;
+}
+
+.health-card--interactive:focus-visible {
+  border-color: var(--accent);
+  background: var(--bg-hover);
 }
 
 .health-card--expanded {

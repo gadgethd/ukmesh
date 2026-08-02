@@ -187,6 +187,53 @@ CREATE TABLE IF NOT EXISTS observer_region_observer_sightings (
 CREATE INDEX IF NOT EXISTS observer_region_observer_sightings_network_last_seen_idx
   ON observer_region_observer_sightings (network, last_seen DESC, iata);
 
+CREATE TABLE IF NOT EXISTS packet_hourly_stats (
+  network         TEXT NOT NULL,
+  hour            TIMESTAMPTZ NOT NULL,
+  packet_type     INTEGER NOT NULL,
+  hop_count       INTEGER NOT NULL,
+  route_type      INTEGER NOT NULL,
+  transport_code  TEXT NOT NULL,
+  region_scope    TEXT NOT NULL,
+  packet_count    BIGINT NOT NULL DEFAULT 0 CHECK (packet_count >= 0),
+  rssi_sum        DOUBLE PRECISION NOT NULL DEFAULT 0,
+  rssi_count      BIGINT NOT NULL DEFAULT 0 CHECK (rssi_count >= 0),
+  snr_sum         DOUBLE PRECISION NOT NULL DEFAULT 0,
+  snr_count       BIGINT NOT NULL DEFAULT 0 CHECK (snr_count >= 0),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (
+    network, hour, packet_type, hop_count, route_type,
+    transport_code, region_scope
+  )
+);
+CREATE INDEX IF NOT EXISTS packet_hourly_stats_hour_network_idx
+  ON packet_hourly_stats (hour DESC, network);
+
+CREATE TABLE IF NOT EXISTS maintenance_backfill_checkpoints (
+  job_name       TEXT PRIMARY KEY,
+  cursor_value   TEXT NOT NULL,
+  window_end     TIMESTAMPTZ NOT NULL,
+  rows_processed BIGINT NOT NULL DEFAULT 0 CHECK (rows_processed >= 0),
+  updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  completed_at   TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS stats_chart_snapshots (
+  scope_key      TEXT PRIMARY KEY
+    CHECK (scope_key ~ '^[a-z0-9][a-z0-9_-]{0,63}$'),
+  schema_version INTEGER NOT NULL CHECK (schema_version > 0),
+  visibility_generation BIGINT NOT NULL CHECK (visibility_generation > 0),
+  generated_at   TIMESTAMPTZ NOT NULL,
+  payload        JSONB NOT NULL
+    CHECK (jsonb_typeof(payload) = 'object')
+    CHECK (octet_length(payload::text) <= 2097152),
+  updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS stats_chart_snapshots_generated_at_idx
+  ON stats_chart_snapshots (generated_at DESC);
+CREATE INDEX IF NOT EXISTS stats_chart_snapshots_visibility_idx
+  ON stats_chart_snapshots (visibility_generation, generated_at DESC);
+
 -- ─── Observer / repeater status telemetry samples ───────────────────────────
 
 CREATE TABLE IF NOT EXISTS node_status_samples (
@@ -280,10 +327,19 @@ CREATE TABLE IF NOT EXISTS node_coverage (
   antenna_height_m DOUBLE PRECISION DEFAULT 10,
   radius_m         DOUBLE PRECISION DEFAULT 30000,
   model_version    INTEGER NOT NULL DEFAULT 1,
-  calculated_at    TIMESTAMPTZ DEFAULT NOW()
+  calculated_at    TIMESTAMPTZ DEFAULT NOW(),
+  calculation_status TEXT NOT NULL DEFAULT 'legacy'
+    CHECK (calculation_status IN ('legacy', 'computed', 'permanent')),
+  permanent_reason TEXT,
+  last_error       TEXT,
+  retry_after      TIMESTAMPTZ
 );
 ALTER TABLE node_coverage ADD COLUMN IF NOT EXISTS strength_geoms JSONB;
 ALTER TABLE node_coverage ADD COLUMN IF NOT EXISTS model_version INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE node_coverage ADD COLUMN IF NOT EXISTS calculation_status TEXT NOT NULL DEFAULT 'legacy';
+ALTER TABLE node_coverage ADD COLUMN IF NOT EXISTS permanent_reason TEXT;
+ALTER TABLE node_coverage ADD COLUMN IF NOT EXISTS last_error TEXT;
+ALTER TABLE node_coverage ADD COLUMN IF NOT EXISTS retry_after TIMESTAMPTZ;
 -- Predicted RF links from a planned (hypothetical) repeater to nearby real
 -- repeaters, computed by the viewshed worker. Only populated for plan_ rows.
 ALTER TABLE node_coverage ADD COLUMN IF NOT EXISTS predicted_links JSONB;
@@ -395,6 +451,17 @@ CREATE TABLE IF NOT EXISTS frontend_error_events (
 );
 CREATE INDEX IF NOT EXISTS frontend_error_events_time_idx
   ON frontend_error_events(time DESC);
+ALTER TABLE frontend_error_events
+  ADD COLUMN IF NOT EXISTS fingerprint TEXT,
+  ADD COLUMN IF NOT EXISTS source_hash TEXT,
+  ADD COLUMN IF NOT EXISTS bucket_start TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS occurrences INTEGER NOT NULL DEFAULT 1,
+  ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+CREATE UNIQUE INDEX IF NOT EXISTS frontend_error_events_dedupe_idx
+  ON frontend_error_events (fingerprint, source_hash, bucket_start)
+  WHERE fingerprint IS NOT NULL AND source_hash IS NOT NULL AND bucket_start IS NOT NULL;
+CREATE INDEX IF NOT EXISTS frontend_error_events_source_time_idx
+  ON frontend_error_events (source_hash, time DESC);
 
 CREATE TABLE IF NOT EXISTS operational_check_results (
   ts          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -412,10 +479,24 @@ CREATE TABLE IF NOT EXISTS observer_registration_requests (
   iata TEXT NOT NULL,
   display_name TEXT,
   contact TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
+  status TEXT NOT NULL DEFAULT 'pending'
+    CHECK (status IN ('pending', 'approved', 'rejected', 'expired', 'provisioned')),
+  expires_at TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '90 days'),
+  reviewed_at TIMESTAMPTZ,
+  reviewed_by TEXT,
+  decision_reason TEXT,
+  duplicate_of BIGINT REFERENCES observer_registration_requests(id),
+  provisioned_at TIMESTAMPTZ,
+  notification_status TEXT NOT NULL DEFAULT 'not_required'
+    CHECK (notification_status IN ('not_required', 'pending', 'sent', 'failed')),
+  notification_error TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+CREATE INDEX IF NOT EXISTS observer_registration_queue_idx
+  ON observer_registration_requests (status, created_at, id);
+CREATE INDEX IF NOT EXISTS observer_registration_contact_idx
+  ON observer_registration_requests (lower(contact), created_at DESC);
 
 CREATE TABLE IF NOT EXISTS owner_alert_rules (
   id BIGSERIAL PRIMARY KEY,
@@ -425,11 +506,89 @@ CREATE TABLE IF NOT EXISTS owner_alert_rules (
   threshold DOUBLE PRECISION NOT NULL,
   channels JSONB NOT NULL DEFAULT '{}'::jsonb,
   enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  pause_reason TEXT,
   last_triggered_at TIMESTAMPTZ,
+  last_delivery_success_at TIMESTAMPTZ,
+  last_delivery_error_at TIMESTAMPTZ,
+  last_delivery_error TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE (owner_username, node_id, rule_type)
 );
+
+CREATE TABLE IF NOT EXISTS owner_alert_deliveries (
+  id BIGSERIAL PRIMARY KEY,
+  rule_id BIGINT NOT NULL REFERENCES owner_alert_rules(id) ON DELETE CASCADE,
+  event_key TEXT NOT NULL,
+  destination_host TEXT NOT NULL,
+  payload JSONB NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending'
+    CHECK (status IN ('pending', 'delivering', 'succeeded', 'failed', 'dead_lettered')),
+  channel TEXT NOT NULL DEFAULT 'webhook' CHECK (channel IN ('webhook')),
+  attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0 AND attempts <= 5),
+  next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  last_attempt_at TIMESTAMPTZ,
+  delivered_at TIMESTAMPTZ,
+  last_error TEXT,
+  claim_token TEXT,
+  claim_expires_at TIMESTAMPTZ,
+  is_test BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (rule_id, event_key)
+);
+CREATE INDEX IF NOT EXISTS owner_alert_deliveries_due_idx
+  ON owner_alert_deliveries (next_attempt_at, id)
+  WHERE status IN ('pending', 'failed') AND attempts < 5;
+
+CREATE TABLE IF NOT EXISTS owner_alert_delivery_attempts (
+  id BIGSERIAL PRIMARY KEY,
+  delivery_id BIGINT NOT NULL REFERENCES owner_alert_deliveries(id) ON DELETE CASCADE,
+  attempt_number INTEGER NOT NULL CHECK (attempt_number BETWEEN 1 AND 5),
+  channel TEXT NOT NULL CHECK (channel IN ('webhook')),
+  outcome TEXT NOT NULL CHECK (outcome IN ('succeeded', 'failed', 'lease_lost')),
+  destination_host TEXT NOT NULL,
+  http_status INTEGER,
+  error TEXT,
+  started_at TIMESTAMPTZ NOT NULL,
+  completed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (delivery_id, attempt_number)
+);
+CREATE INDEX IF NOT EXISTS owner_alert_delivery_attempts_delivery_idx
+  ON owner_alert_delivery_attempts (delivery_id, attempt_number DESC);
+
+CREATE TABLE IF NOT EXISTS operator_audit_events (
+  id BIGSERIAL PRIMARY KEY,
+  actor TEXT NOT NULL,
+  action TEXT NOT NULL,
+  target_type TEXT NOT NULL,
+  target_id TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL UNIQUE,
+  request JSONB NOT NULL DEFAULT '{}'::jsonb,
+  result JSONB,
+  status TEXT NOT NULL DEFAULT 'started'
+    CHECK (status IN ('started', 'succeeded', 'failed')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  completed_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS operator_audit_events_target_idx
+  ON operator_audit_events (target_type, target_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS planned_node_publications (
+  planned_node_id UUID PRIMARY KEY REFERENCES planned_nodes(id) ON DELETE CASCADE,
+  public_name TEXT NOT NULL CHECK (char_length(public_name) BETWEEN 1 AND 100),
+  public_lat DOUBLE PRECISION NOT NULL CHECK (public_lat BETWEEN -90 AND 90),
+  public_lon DOUBLE PRECISION NOT NULL CHECK (public_lon BETWEEN -180 AND 180),
+  public_height_m DOUBLE PRECISION CHECK (public_height_m BETWEEN 0 AND 500),
+  region TEXT CHECK (region IS NULL OR region ~ '^[A-Z0-9]{2,8}$'),
+  published_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  expires_at TIMESTAMPTZ NOT NULL,
+  published_by TEXT NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CHECK (expires_at > published_at)
+);
+CREATE INDEX IF NOT EXISTS planned_node_publications_public_idx
+  ON planned_node_publications (expires_at, published_at DESC, planned_node_id);
 
 CREATE TABLE IF NOT EXISTS network_unification_runs (
   run_id           TEXT PRIMARY KEY,

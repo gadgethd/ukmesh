@@ -21,9 +21,25 @@ export const EMPTY_STATS: DashboardStats = {
  * real-time `packetsDay` increment driven by the meshcore:packet-observed event.
  * The interval counter resets each time fresh stats arrive from the server.
  */
-export function useDashboardStats(externalStats: DashboardStats | null): DashboardStats {
+export function packetObservedCount(event: Event): number {
+  const detail = 'detail' in event
+    ? (event as Event & { detail?: { count?: unknown } | null }).detail
+    : null;
+  const count = Number(detail?.count ?? 1);
+  return Number.isSafeInteger(count) && count > 0 ? count : 1;
+}
+
+export function useDashboardStats(
+  externalStats: DashboardStats | null,
+  scopeKey = 'default',
+): DashboardStats {
   const [localPacketsDay, setLocalPacketsDay] = useState(0);
   const prevStatsRef = useRef<DashboardStats | null>(null);
+
+  useEffect(() => {
+    prevStatsRef.current = null;
+    setLocalPacketsDay(0);
+  }, [scopeKey]);
 
   // Reset local counter when the server sends a fresh packetsDay value
   useEffect(() => {
@@ -34,9 +50,9 @@ export function useDashboardStats(externalStats: DashboardStats | null): Dashboa
   }, [externalStats]);
 
   useEffect(() => {
-    const handlePacketObserved = () => {
+    const handlePacketObserved = (event: Event) => {
       if (document.hidden) return;
-      setLocalPacketsDay((n) => n + 1);
+      setLocalPacketsDay((n) => n + packetObservedCount(event));
     };
     window.addEventListener('meshcore:packet-observed', handlePacketObserved as EventListener);
     return () => {

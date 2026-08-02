@@ -1,5 +1,10 @@
 import type { StatsRepository } from './statsRepository.js';
 import { statsRecomputeDuration, statsRecomputeTotal } from '../metrics.js';
+import { BoundedTtlMap } from '../cache/boundedTtlMap.js';
+import {
+  CHART_SNAPSHOT_MAX_FUTURE_SKEW_MS,
+  validateChartSnapshotPayload,
+} from './chartSnapshot.js';
 
 type MaskDecodedPathNodesFn = (
   rawNodes: Array<{
@@ -23,8 +28,10 @@ type StatsServiceDeps = {
   statsCacheTtlMs: number;
   chartsCache: Map<string, { ts: number; data: unknown }>;
   chartsCacheTtlMs: number;
+  chartsSnapshotStaleTtlMs?: number;
   chartsInflight: Map<string, Promise<unknown>>;
   repository: StatsRepository;
+  getPublicVisibilityGeneration: () => Promise<number>;
   maskDecodedPathNodes: MaskDecodedPathNodesFn;
 };
 
@@ -90,8 +97,10 @@ export function createStatsService(deps: StatsServiceDeps) {
     statsCacheTtlMs,
     chartsCache,
     chartsCacheTtlMs,
+    chartsSnapshotStaleTtlMs = Math.max(chartsCacheTtlMs, 6 * 60 * 60_000),
     chartsInflight,
     repository,
+    getPublicVisibilityGeneration,
     maskDecodedPathNodes,
   } = deps;
 
@@ -122,13 +131,36 @@ export function createStatsService(deps: StatsServiceDeps) {
       description: 'Route type was not decoded from the raw packet',
     },
   };
-  const channelTrafficCache = new Map<string, { ts: number; data: CachedChannelTraffic }>();
+  const channelTrafficCache = new BoundedTtlMap<string, {
+    ts: number;
+    data: CachedChannelTraffic;
+  }>({
+    name: 'stats_channel',
+    maxEntries: 64,
+    maxWeight: 2 * 1024 * 1024,
+    ttlMs: CHANNEL_TRAFFIC_CACHE_TTL_MS,
+  });
+  const channelTrafficInflight = new Map<string, Promise<CachedChannelTraffic>>();
+  // Coordination-only maps have a hard admission cap below and entries are
+  // removed in both resolve and reject paths.
   const statsInflight = new Map<string, Promise<unknown>>();
   // Observer activity runs an expensive per-packet aggregation; cache + single-
   // flight it (mirroring getStatsSummary) so concurrent/rapid polls can't pile
   // up identical queries and saturate the database CPU.
-  const observerActivityCache = new Map<string, { ts: number; data: unknown }>();
+  const observerActivityCache = new BoundedTtlMap<string, {
+    ts: number;
+    data: unknown;
+  }>({
+    name: 'stats_observer',
+    maxEntries: 64,
+    maxWeight: 16 * 1024 * 1024,
+    ttlMs: Math.max(statsCacheTtlMs * 5, 5 * 60_000),
+  });
   const observerActivityInflight = new Map<string, Promise<unknown>>();
+  const chartSnapshotLoads = new Map<
+    string,
+    Promise<{ ts: number; data: unknown } | undefined>
+  >();
   let initialStatsWarmup: Promise<void> | undefined;
   let activeObserverWork = 0;
 
@@ -192,26 +224,47 @@ export function createStatsService(deps: StatsServiceDeps) {
     };
   }
 
-  async function getChannelTraffic(network: string | undefined, observer: string | undefined): Promise<CachedChannelTraffic> {
-    const key = `${network ?? 'all'}:${observer ?? ''}`;
+  async function getChannelTraffic(
+    network: string | undefined,
+    observer: string | undefined,
+    visibilityGeneration: number,
+  ): Promise<CachedChannelTraffic> {
+    const key = `${network ?? 'all'}:${observer ?? ''}:v${visibilityGeneration}`;
     const cached = observer ? undefined : channelTrafficCache.get(key);
     if (cached && Date.now() - cached.ts < CHANNEL_TRAFFIC_CACHE_TTL_MS) return cached.data;
-
-    const result = await repository.fetchChannelTraffic(network, observer);
-    const data = result.rows.map((r) => {
-      const count = Number(r.count ?? 0);
-      const total = Number(r.total_count ?? 0);
-      return {
-        channel: String(r.channel ?? 'Unknown'),
-        count,
-        pct: total > 0 ? Number(((count / total) * 100).toFixed(1)) : 0,
-      };
-    });
-    if (!observer) channelTrafficCache.set(key, { ts: Date.now(), data });
-    return data;
+    const existing = channelTrafficInflight.get(key);
+    if (existing) return existing;
+    if (channelTrafficInflight.size >= MAX_UNIQUE_STATS_INFLIGHT) {
+      throw new StatsWorkOverloadedError();
+    }
+    const tracked = repository.fetchChannelTraffic(network, observer)
+      .then((result) => {
+        const data = result.rows.map((r) => {
+          const count = Number(r.count ?? 0);
+          const total = Number(r.total_count ?? 0);
+          return {
+            channel: String(r.channel ?? 'Unknown'),
+            count,
+            pct: total > 0 ? Number(((count / total) * 100).toFixed(1)) : 0,
+          };
+        });
+        if (!observer) channelTrafficCache.set(key, { ts: Date.now(), data });
+        return data;
+      })
+      .finally(() => {
+        if (channelTrafficInflight.get(key) === tracked) {
+          channelTrafficInflight.delete(key);
+        }
+      });
+    channelTrafficInflight.set(key, tracked);
+    return tracked;
   }
 
-  async function computeChartsData(network: string | undefined, observer: string | undefined): Promise<unknown> {
+  async function computeChartsData(
+    network: string | undefined,
+    observer: string | undefined,
+    visibilityGeneration: number,
+  ): Promise<unknown> {
     const {
       phResult, pdResult, rhResult, rdResult,
       ptResult, hdResult, pcResult, sumResult, orSummaryResult, orSeriesResult,
@@ -274,7 +327,11 @@ export function createStatsService(deps: StatsServiceDeps) {
     const latestFullyDecodedNodes = maskDecodedPathNodes(multibyteRow?.latest_fully_decoded_nodes);
     const longestFullyDecodedNodes = maskDecodedPathNodes(multibyteRow?.longest_fully_decoded_nodes);
     const totalPackets24h = Number((sumResult.rows[0] as any).total_24h ?? 0);
-    const channelTrafficRows = await getChannelTraffic(network, observer);
+    const channelTrafficRows = await getChannelTraffic(
+      network,
+      observer,
+      visibilityGeneration,
+    );
     const observerDiversityRow = observerDiversityResult.rows[0] as any;
     const signalSummaryRow = signalSummaryResult.rows[0] as any;
     const totalDiversityPackets = Number(observerDiversityRow?.total_packets ?? 0);
@@ -285,6 +342,7 @@ export function createStatsService(deps: StatsServiceDeps) {
         status: 'complete',
         generatedAt: new Date().toISOString(),
         scope: network ?? 'ukmesh',
+        visibilityGeneration,
       },
       packetsPerHour: phResult.rows.map(r => ({ hour: fmtHourMinute((r as any).hour), count: Number((r as any).count) })),
       packetsPerDay: pdResult.rows.map(r => ({ day: fmtDay((r as any).day), count: Number((r as any).count) })),
@@ -376,25 +434,157 @@ export function createStatsService(deps: StatsServiceDeps) {
     };
   }
 
+  function getUsableCachedCharts(key: string): { ts: number; data: unknown } | undefined {
+    const cached = chartsCache.get(key);
+    if (!cached) return undefined;
+    const ageMs = Date.now() - cached.ts;
+    if (
+      !Number.isFinite(cached.ts)
+      || ageMs > chartsSnapshotStaleTtlMs
+      || ageMs < -CHART_SNAPSHOT_MAX_FUTURE_SKEW_MS
+    ) {
+      chartsCache.delete(key);
+      return undefined;
+    }
+    return cached;
+  }
+
+  async function loadPersistedCharts(
+    scope: string,
+    key: string,
+    visibilityGeneration: number,
+  ): Promise<{ ts: number; data: unknown } | undefined> {
+    const existing = chartSnapshotLoads.get(key);
+    if (existing) return existing;
+    let load!: Promise<{ ts: number; data: unknown } | undefined>;
+    load = repository.loadChartSnapshot(scope, visibilityGeneration)
+      .then((row) => {
+        if (
+          !row
+          || row.scope_key !== scope
+          || Number(row.visibility_generation) !== visibilityGeneration
+        ) {
+          return undefined;
+        }
+        const validated = validateChartSnapshotPayload(
+          row.payload,
+          scope,
+          chartsSnapshotStaleTtlMs,
+          Date.now(),
+          visibilityGeneration,
+        );
+        const storedGeneratedAtMs = new Date(row.generated_at).getTime();
+        if (
+          !validated
+          || !Number.isFinite(storedGeneratedAtMs)
+          || Math.abs(storedGeneratedAtMs - validated.generatedAtMs) > 1_000
+        ) {
+          console.warn(`[stats] ignored invalid persisted chart snapshot scope=${scope}`);
+          return undefined;
+        }
+        const cached = { ts: validated.generatedAtMs, data: validated.payload };
+        chartsCache.set(key, cached);
+        return cached;
+      })
+      .catch((error: unknown) => {
+        console.warn(
+          `[stats] persisted chart snapshot load failed scope=${scope}:`,
+          error instanceof Error ? error.message : 'unknown error',
+        );
+        return undefined;
+      })
+      .finally(() => {
+        if (chartSnapshotLoads.get(key) === load) chartSnapshotLoads.delete(key);
+      });
+    chartSnapshotLoads.set(key, load);
+    return load;
+  }
+
+  function beginCanonicalChartRefresh(
+    network: string | undefined,
+    scope: string,
+    key: string,
+    visibilityGeneration: number,
+  ): Promise<unknown> {
+    const existing = chartsInflight.get(key);
+    if (existing) return existing;
+    if (chartsInflight.size >= MAX_UNIQUE_STATS_INFLIGHT) {
+      throw new StatsWorkOverloadedError();
+    }
+    let refresh!: Promise<unknown>;
+    refresh = (async () => {
+      if (initialStatsWarmup) {
+        await initialStatsWarmup.catch(() => {
+          // Chart refresh can still proceed if the lightweight warmup failed.
+        });
+      }
+      const data = await computeChartsData(
+        network,
+        undefined,
+        visibilityGeneration,
+      );
+      const validated = validateChartSnapshotPayload(
+        data,
+        scope,
+        chartsSnapshotStaleTtlMs,
+        Date.now(),
+        visibilityGeneration,
+      );
+      if (!validated) {
+        throw new Error('computed chart snapshot failed completeness validation');
+      }
+      const published = await repository.saveChartSnapshot(
+        scope,
+        validated.payload,
+        visibilityGeneration,
+        chartsSnapshotStaleTtlMs,
+      ).catch((error: unknown) => {
+        // A transient persistence failure must not discard a newly completed
+        // in-memory response, but it is visible for operators and retried on
+        // the next successful refresh.
+        console.warn(
+          `[stats] chart snapshot persistence failed scope=${scope}:`,
+          error instanceof Error ? error.message : 'unknown error',
+        );
+        return false;
+      });
+      if (!published) {
+        throw new Error('chart snapshot privacy generation changed before publication');
+      }
+      chartsCache.set(key, { ts: validated.generatedAtMs, data: validated.payload });
+      return validated.payload;
+    })().finally(() => {
+      if (chartsInflight.get(key) === refresh) chartsInflight.delete(key);
+    });
+    chartsInflight.set(key, refresh);
+    return refresh;
+  }
+
   async function getCharts(network: string | undefined, observer: string | undefined): Promise<unknown> {
     if (observer) {
       if (activeObserverWork >= MAX_UNIQUE_STATS_INFLIGHT) throw new StatsWorkOverloadedError();
       activeObserverWork += 1;
       try {
-        return await computeChartsData(network, observer);
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          const visibilityGeneration = await getPublicVisibilityGeneration();
+          const data = await computeChartsData(network, observer, visibilityGeneration);
+          if (await getPublicVisibilityGeneration() === visibilityGeneration) return data;
+        }
+        throw new Error('chart privacy generation changed during observer computation');
       } finally {
         activeObserverWork -= 1;
       }
     }
-    // Route registration precedes the delayed startup warmup. A browser can
-    // therefore request charts during that short window and fill every stats
-    // query slot with long scans before the lightweight summary is cached.
-    // Hold canonical chart work behind the one startup summary warmup.
-    if (initialStatsWarmup) {
-      await initialStatsWarmup.catch(() => { /* charts may still warm independently */ });
+    const scope = `${network ?? 'ukmesh'}`;
+    const visibilityGeneration = await getPublicVisibilityGeneration();
+    const key = `${scope}:v${visibilityGeneration}`;
+    let cached = getUsableCachedCharts(key);
+    if (!cached) {
+      // Durable complete snapshots are loaded before any analytical query. A
+      // cold process can therefore answer immediately and refresh in the
+      // background, while observer-scoped data never crosses this boundary.
+      cached = await loadPersistedCharts(scope, key, visibilityGeneration);
     }
-    const key = `${network ?? 'ukmesh'}`;
-    const cached = chartsCache.get(key);
     if (cached && Date.now() - cached.ts < chartsCacheTtlMs) {
       // Region counts and series are part of the canonical 30-minute charts
       // snapshot. Re-querying the seven-day packet window on every cache hit
@@ -405,25 +595,18 @@ export function createStatsService(deps: StatsServiceDeps) {
       return refreshed;
     }
 
-    const inflight = chartsInflight.get(key);
-    if (inflight) {
-      return cached ? refreshCachedRegionHealth(cached.data) : inflight;
-    }
-    if (chartsInflight.size >= MAX_UNIQUE_STATS_INFLIGHT) {
+    let promise: Promise<unknown>;
+    try {
+      promise = beginCanonicalChartRefresh(
+        network,
+        scope,
+        key,
+        visibilityGeneration,
+      );
+    } catch (error) {
       if (cached) return refreshCachedRegionHealth(cached.data);
-      throw new StatsWorkOverloadedError();
+      throw error;
     }
-
-    const promise = computeChartsData(network, observer).then((data) => {
-      chartsCache.set(key, { ts: Date.now(), data });
-      chartsInflight.delete(key);
-      return data;
-    }).catch((err) => {
-      chartsInflight.delete(key);
-      throw err;
-    });
-
-    chartsInflight.set(key, promise);
     if (cached) {
       // The canonical snapshot is already privacy-filtered. Serve it while the
       // single coalesced refresh runs, and retain it if that refresh fails.
@@ -501,12 +684,19 @@ export function createStatsService(deps: StatsServiceDeps) {
       if (activeObserverWork >= MAX_UNIQUE_STATS_INFLIGHT) throw new StatsWorkOverloadedError();
       activeObserverWork += 1;
       try {
-        return await computeStatsSummary(network, observer);
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          const visibilityGeneration = await getPublicVisibilityGeneration();
+          const data = await computeStatsSummary(network, observer);
+          if (await getPublicVisibilityGeneration() === visibilityGeneration) return data;
+        }
+        throw new Error('statistics privacy generation changed during observer computation');
       } finally {
         activeObserverWork -= 1;
       }
     }
-    const key = `${network ?? 'ukmesh'}`;
+    const scope = `${network ?? 'ukmesh'}`;
+    const visibilityGeneration = await getPublicVisibilityGeneration();
+    const key = `${scope}:v${visibilityGeneration}`;
     const cached = statsCache.get(key);
     if (cached && Date.now() - cached.ts < statsCacheTtlMs) {
       return cached.data;
@@ -519,9 +709,12 @@ export function createStatsService(deps: StatsServiceDeps) {
       throw new StatsWorkOverloadedError();
     }
 
-    const metricNetwork = network ?? 'ukmesh';
+    const metricNetwork = scope;
     const stopTimer = statsRecomputeDuration.startTimer({ network: metricNetwork });
-    const promise = computeStatsSummary(network, observer).then((data) => {
+    const promise = computeStatsSummary(network, observer).then(async (data) => {
+      if (await getPublicVisibilityGeneration() !== visibilityGeneration) {
+        throw new Error('statistics privacy generation changed before cache publication');
+      }
       stopTimer({ status: 'success' });
       statsRecomputeTotal.inc({ network: metricNetwork, status: 'success' });
       statsCache.set(key, { ts: Date.now(), data });

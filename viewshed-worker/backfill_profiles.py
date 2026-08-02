@@ -14,7 +14,13 @@ import psycopg2
 
 # Add the worker source to path
 sys.path.insert(0, os.path.dirname(__file__))
-from rf.terrain import build_link_vrt, sample_elevation
+from rf.terrain import (
+    PermanentOutOfScope,
+    RetryableTerrainError,
+    build_link_vrt,
+    ensure_tiles_for_link,
+    sample_elevation,
+)
 from rf.loss import compute_path_loss
 
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s %(message)s',
@@ -54,23 +60,29 @@ def main():
             log.info(f'Progress: {i}/{len(rows)} (ok={ok}, skip={skip})')
         try:
             with tempfile.TemporaryDirectory() as tmp:
+                ensure_tiles_for_link(SRTM_DIR, lat_a, lon_a, lat_b, lon_b, log)
                 vrt = build_link_vrt(lat_a, lon_a, lat_b, lon_b, tmp, SRTM_DIR)
-                if not vrt:
-                    skip += 1
-                    continue
                 ea = elev_a if elev_a is not None else sample_elevation(vrt, lat_a, lon_a)
                 eb = elev_b if elev_b is not None else sample_elevation(vrt, lat_b, lon_b)
-                _, _, profile = compute_path_loss(lat_a, lon_a, ea, lat_b, lon_b, eb, vrt)
-                if not profile:
+                result = compute_path_loss(lat_a, lon_a, ea, lat_b, lon_b, eb, vrt)
+                if not result.profile:
                     skip += 1
                     continue
                 with db.cursor() as cur:
                     cur.execute(
                         'UPDATE node_links SET terrain_profile_json = %s WHERE node_a_id = %s AND node_b_id = %s',
-                        (json.dumps(profile), a_id, b_id),
+                        (json.dumps(result.profile), a_id, b_id),
                     )
                 db.commit()
                 ok += 1
+        except PermanentOutOfScope as exc:
+            db.rollback()
+            log.info(f'Skipping out-of-scope link {a_id[:8]}↔{b_id[:8]}: {exc}')
+            skip += 1
+        except RetryableTerrainError as exc:
+            db.rollback()
+            log.warning(f'Retryable terrain failure {a_id[:8]}↔{b_id[:8]}: {exc}')
+            skip += 1
         except Exception as exc:
             db.rollback()
             log.warning(f'Failed {a_id[:8]}↔{b_id[:8]}: {exc}')

@@ -1,0 +1,211 @@
+groups:
+  - name: meshcore-availability
+    interval: 15s
+    rules:
+      - alert: BackendDown
+        expr: up{job="meshcore-backend"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: MeshCore backend metrics endpoint is unavailable
+          owner: meshcore-operations
+          runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#backenddown
+
+      - alert: BackendNotReady
+        expr: probe_success{job="meshcore-readiness"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: MeshCore dependency readiness probe is failing
+          owner: meshcore-operations
+          runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#backendnotready
+
+      - alert: SyntheticProbeFailed
+        expr: probe_success{job="meshcore-synthetic"} == 0
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: A public application synthetic probe is failing
+          owner: meshcore-operations
+          runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#syntheticprobefailed
+
+      - alert: DependencyExporterDown
+        expr: up{job=~"postgres|redis"} == 0
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: Dependency exporter {{ $labels.job }} is unavailable
+          owner: meshcore-operations
+          runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#dependencyexporterdown
+
+      - alert: MosquittoUnavailable
+        expr: probe_success{job="mosquitto-broker"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Mosquitto WebSocket listener is unavailable
+          owner: meshcore-operations
+          runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#mosquittounavailable
+
+      - alert: MeshIngestSilent
+        expr: (sum(rate(meshcore_mqtt_messages_total[15m])) or vector(0)) == 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: No accepted MeshCore MQTT packets for 30 minutes
+          owner: meshcore-operations
+          runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#meshingestsilent
+
+  - name: meshcore-queues-and-workers
+    interval: 15s
+    rules:
+      - alert: QueueAgeHigh
+        expr: max(meshcore_link_queue_oldest_age_seconds or meshcore_viewshed_queue_oldest_age_seconds) > 600
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: A durable worker queue has jobs older than ten minutes
+          owner: meshcore-operations
+          runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#queueagehigh
+
+      - alert: QueueCapacityHigh
+        expr: meshcore_link_queue_active_jobs > 4000 or meshcore_link_queue_active_bytes > 53687091 or meshcore_viewshed_queue_depth > 800 or meshcore_viewshed_queue_payload_bytes > 13421772
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: A durable queue is above 80 percent of its configured bound
+          owner: meshcore-operations
+          runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#queuecapacityhigh
+
+      - alert: DeadJobsPresent
+        expr: meshcore_link_queue_dead_jobs > 0 or meshcore_viewshed_queue_dead_jobs > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: A durable worker queue contains dead-letter jobs
+          owner: meshcore-operations
+          runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#deadjobspresent
+
+      - alert: AnalysisLeaseLost
+        expr: increase(meshcore_analysis_lease_events_total{outcome=~"heartbeat_lost|finish_lease_lost"}[10m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: Analysis workload {{ $labels.workload }} lost its publication lease
+          owner: meshcore-operations
+          runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#analysisleaselost
+
+      - alert: HealthWorkerHeartbeatStale
+        expr: meshcore_worker_heartbeat_age_seconds{worker="health"} < 0 or meshcore_worker_heartbeat_age_seconds{worker="health"} > 180
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: Health worker heartbeat is stale or missing
+          owner: meshcore-operations
+          runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#healthworkerheartbeatstale
+
+      - alert: WorkerMetricsDown
+        expr: up{job="meshcore-workers",role!="viewshed"} == 0
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: Required worker {{ $labels.role }} is unavailable
+          owner: meshcore-operations
+          runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#workermetricsdown
+
+      - alert: ActiveQueueWorkerHeartbeatStale
+        expr: (meshcore_link_queue_active_jobs > 0 and on() meshcore_worker_heartbeat_age_seconds{worker="link"} > 180) or (meshcore_viewshed_queue_depth > 0 and on() meshcore_worker_heartbeat_age_seconds{worker="viewshed"} > 180)
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: A worker with queued work has a stale heartbeat
+          owner: meshcore-operations
+          runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#activequeueworkerheartbeatstale
+
+  - name: meshcore-database-and-host
+    interval: 30s
+    rules:
+      - alert: DatabaseUnavailable
+        expr: pg_up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: PostgreSQL exporter cannot query the database
+          owner: meshcore-operations
+          runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#databaseunavailable
+
+      - alert: DatabasePoolSaturated
+        expr: meshcore_db_pool_connections{state=~".*_waiting"} > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Application database pool has waiting callers
+          owner: meshcore-operations
+          runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#databasepoolsaturated
+
+      - alert: DatabaseWalRateHigh
+        expr: rate(pg_wal_bytes[15m]) > 52428800
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: PostgreSQL WAL generation exceeds 50 MiB per second
+          owner: meshcore-operations
+          runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#databasewalratehigh
+
+      - alert: HostDiskSpaceLow
+        expr: node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs"} < 0.10
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: Host filesystem {{ $labels.mountpoint }} has less than 10 percent free
+          owner: meshcore-operations
+          runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#hostdiskspacelow
+
+  - name: meshcore-data-integrity
+    interval: 30s
+    rules:
+      - alert: BackupReceiptMissing
+        expr: count(meshcore_backup_age_seconds{dataset=~"analytics|owner_auth|mosquitto"}) < 3
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: One or more required verified backup receipts are missing
+          owner: meshcore-operations
+          runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#backupreceiptmissing
+
+      - alert: BackupStale
+        expr: meshcore_backup_age_seconds{dataset=~"analytics|owner_auth|mosquitto"} > 86400
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: Verified {{ $labels.dataset }} backup receipt is older than 24 hours
+          owner: meshcore-operations
+          runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#backupstale
+
+      - alert: TelemetryIntegrityFailures
+        expr: increase(meshcore_privacy_filter_total{outcome="invalid"}[10m]) > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Packet visibility validation is rejecting elevated telemetry
+          owner: meshcore-operations
+          runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#telemetryintegrityfailures

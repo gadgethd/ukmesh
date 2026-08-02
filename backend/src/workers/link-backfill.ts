@@ -2,12 +2,16 @@ import 'node:process';
 import { initDb, pool, query } from '../db/index.js';
 import { backfillHistoricalLinks } from '../mqtt/client.js';
 import { queueLinkJob, closeQueuePublisher } from '../queue/publisher.js';
+import { observeWorkerOutcome } from '../metrics.js';
+import { startWorkerMetrics } from './workerMetrics.js';
 
 async function main() {
+  startWorkerMetrics();
   await initDb();
 
   const { rows } = await query<{ count: string }>('SELECT COUNT(*) AS count FROM node_links');
   if (Number(rows[0]?.count ?? 0) > 0) {
+    observeWorkerOutcome('link_backfill', 'backfill', 'skipped');
     console.log('[backfill] node_links already populated, skipping historical backfill');
     return;
   }
@@ -19,10 +23,12 @@ async function main() {
       throw new Error(`LINK_BACKFILL_ADMISSION_${admission.status.toUpperCase()}`);
     }
   });
+  observeWorkerOutcome('link_backfill', 'backfill', 'success');
 }
 
 main()
   .catch((err) => {
+    observeWorkerOutcome('link_backfill', 'backfill', 'failure');
     console.error('[backfill] fatal error:', err);
     process.exit(1);
   })

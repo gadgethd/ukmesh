@@ -134,7 +134,7 @@ const BitTable: React.FC<{
 }> = ({ rows }) => (
   <table className="feed-detail__bit-table">
     <thead>
-      <tr><th>Bits</th><th>Field</th><th>Value</th><th>Binary</th></tr>
+      <tr><th scope="col">Bits</th><th scope="col">Field</th><th scope="col">Value</th><th scope="col">Binary</th></tr>
     </thead>
     <tbody>
       {rows.map((row, i) => (
@@ -269,7 +269,7 @@ export const PacketDetailPanel: React.FC<{
         <code className="feed-detail__hash">{packet.packet_hash}</code>
         <span className="feed-detail__badge">{typeLabel}</span>
         {totalHops != null && <span className="feed-detail__badge feed-detail__badge--muted">{totalHops} hop{totalHops !== 1 ? 's' : ''}</span>}
-        <button type="button" className="feed-detail__close" onClick={onClose}>✕</button>
+        <button type="button" className="feed-detail__close" onClick={onClose} aria-label="Close packet details">✕</button>
       </div>
 
       {loading && (
@@ -326,7 +326,7 @@ export const PacketDetailPanel: React.FC<{
           <div className="feed-detail__section-title">Observers ({detail.observations.length})</div>
           <table className="feed-detail__observer-table">
             <thead>
-              <tr><th>Node</th><th>Region</th><th>Hops</th><th>RSSI</th><th>SNR</th><th>Time</th></tr>
+              <tr><th scope="col">Node</th><th scope="col">Region</th><th scope="col">Hops</th><th scope="col">RSSI</th><th scope="col">SNR</th><th scope="col">Time</th></tr>
             </thead>
             <tbody>
               {detail.observations.map((obs, i) => {
@@ -390,7 +390,7 @@ export const PacketDetailPanel: React.FC<{
               )}
               <table className="feed-detail__observer-table">
                 <thead>
-                  <tr><th>Hop</th><th>Hash</th><th>Node</th><th>Region</th><th>Seen by</th></tr>
+                  <tr><th scope="col">Hop</th><th scope="col">Hash</th><th scope="col">Node</th><th scope="col">Region</th><th scope="col">Seen by</th></tr>
                 </thead>
                 <tbody>
                   {lp.canonicalPath.map((step, si) => {

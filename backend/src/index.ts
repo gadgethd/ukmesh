@@ -3,20 +3,46 @@ import http from 'node:http';
 import express from 'express';
 import compression from 'compression';
 import cors from 'cors';
-import { rateLimit } from 'express-rate-limit';
-import { initDb, query } from './db/index.js';
-import { getOwnerAclReadiness, initOwnerAuthDb } from './db/ownerAuth.js';
-import { getMqttRuntimeStatus, startMqttClient, onPacket, onNodeSeen, onNodeUpsert } from './mqtt/client.js';
-import { startMqttConnectionMonitor } from './mqtt/connectionMonitor.js';
-import { initWebSocketServer, broadcastPacket, broadcastNodeUpdate, broadcastNodeUpsert } from './ws/server.js';
+import { closeDb, initDb, query } from './db/index.js';
+import { closeOwnerAuthDb, getOwnerAclReadiness, initOwnerAuthDb } from './db/ownerAuth.js';
+import { getMqttRuntimeStatus, startMqttClient, stopMqttClient, onPacket, onNodeSeen, onNodeUpsert } from './mqtt/client.js';
+import {
+  startMqttConnectionMonitor,
+  stopMqttConnectionMonitor,
+} from './mqtt/connectionMonitor.js';
+import { initWebSocketServer, closeWebSocketServer, broadcastPacket, broadcastNodeUpdate, broadcastNodeUpsert } from './ws/server.js';
 import apiRoutes from './api/routes.js';
-import { initSpamMessageAnalyzer } from './spam/analyzer.js';
-import { isViewshedEligibleCoordinate, queueViewshedJob, queueLinkJob } from './queue/publisher.js';
+import { initSpamMessageAnalyzer, stopSpamMessageAnalyzer } from './spam/analyzer.js';
+import {
+  closeQueuePublisher,
+  isViewshedEligibleCoordinate,
+  queueViewshedJob,
+  queueLinkJob,
+  stopQueueAdmission,
+} from './queue/publisher.js';
 import { createBackendSiteRoutes } from './backend-site/routes.js';
 import { isTrustedProxyPeer } from './http/trustedProxy.js';
-import { startOwnerAuthorizationReconciler } from './owner/ownerAclReconciler.js';
+import { startOwnerAuthorizationReconciler, stopOwnerAuthorizationReconciler } from './owner/ownerAclReconciler.js';
 import { getAnalysisWorkloadStates } from './analysis/runState.js';
 import { applySecurityHeaders } from './security/operatorAuth.js';
+import { closeMetricsServer, startMetricsServer } from './metricsServer.js';
+import { resolvePool } from './path-beta/resolvePool.js';
+import {
+  LifecycleCoordinator,
+  LifecycleDeadlineError,
+} from './lifecycle/coordinator.js';
+import {
+  apiErrorMiddleware,
+  requestContextMiddleware,
+} from './api/errors.js';
+import { getWorkerHealthOverview } from './health/status.js';
+import {
+  gracefulShutdownTotal,
+  observeHttpRequest,
+} from './metrics.js';
+import { closeOperatorOperations } from './operations/operatorOperations.js';
+import { createGlobalApiLimiter } from './api/bootstrap/limiters.js';
+import { getCoverageModelVersion } from './features.js';
 
 const ALLOWED_ORIGINS = (process.env['ALLOWED_ORIGINS'] ?? '')
   .split(',')
@@ -24,20 +50,110 @@ const ALLOWED_ORIGINS = (process.env['ALLOWED_ORIGINS'] ?? '')
   .filter(Boolean);
 
 const PORT = Number(process.env['PORT'] ?? 3000);
-const COVERAGE_MODEL_VERSION = Number(process.env['COVERAGE_MODEL_VERSION'] ?? 5);
+const METRICS_PORT = Number(process.env['METRICS_PORT'] ?? 9091);
+const COVERAGE_MODEL_VERSION = getCoverageModelVersion();
 const HSTS_HEADER = 'max-age=31536000; includeSubDomains; preload';
 const MQTT_INGEST_ENABLED = !['0', 'false', 'no'].includes(
   String(process.env['MQTT_INGEST_ENABLED'] ?? 'true').trim().toLowerCase(),
 );
 const COVERAGE_STARTUP_BACKFILL_ENABLED = process.env['COVERAGE_STARTUP_BACKFILL_ENABLED'] === '1';
 const WS_ENABLED = process.env['WS_ENABLED'] !== '0';
+const SHUTDOWN_DEADLINE_MS = Math.min(
+  30_000,
+  Math.max(1_000, Number(process.env['SHUTDOWN_DEADLINE_MS'] ?? 30_000) || 30_000),
+);
+const lifecycle = new LifecycleCoordinator(SHUTDOWN_DEADLINE_MS);
+let shutdownExitCode = 0;
+let forceCloseHttpConnections = () => {};
 
-// The MQTT/WS/DB paths are full of fire-and-forget work (`.catch()` loggers).
-// On Node 15+ a single rejection that slips past a `.catch()` would otherwise
-// terminate the whole real-time platform for every user. Log it and keep
-// serving — a stray background rejection must not take down ingestion + WS + API.
+lifecycle.register({
+  name: 'queue-admission',
+  stage: 10,
+  close: stopQueueAdmission,
+});
+lifecycle.register({
+  name: 'mqtt-connection-monitor',
+  stage: 10,
+  close: stopMqttConnectionMonitor,
+});
+lifecycle.register({
+  name: 'spam-analyzer',
+  stage: 10,
+  close: stopSpamMessageAnalyzer,
+});
+lifecycle.register({
+  name: 'owner-authorization-reconciler',
+  stage: 10,
+  close: stopOwnerAuthorizationReconciler,
+});
+lifecycle.register({
+  name: 'mqtt-ingest',
+  stage: 10,
+  close: () => stopMqttClient(Math.max(1_000, SHUTDOWN_DEADLINE_MS - 5_000)),
+});
+lifecycle.register({
+  name: 'path-resolve-workers',
+  stage: 30,
+  close: () => resolvePool.close(),
+});
+lifecycle.register({
+  name: 'queue-publisher',
+  stage: 30,
+  close: closeQueuePublisher,
+});
+lifecycle.register({
+  name: 'operator-operations',
+  stage: 30,
+  close: closeOperatorOperations,
+});
+lifecycle.register({
+  name: 'metrics-server',
+  stage: 30,
+  close: closeMetricsServer,
+});
+lifecycle.register({
+  name: 'owner-auth-database',
+  stage: 40,
+  close: closeOwnerAuthDb,
+});
+lifecycle.register({
+  name: 'application-database',
+  stage: 40,
+  close: closeDb,
+});
+
+async function shutdown(reason: string, exitCode: number): Promise<void> {
+  shutdownExitCode = Math.max(shutdownExitCode, exitCode);
+  if (!lifecycle.isDraining) console.log(`[app] draining after ${reason}`);
+  try {
+    await lifecycle.drain(reason);
+    gracefulShutdownTotal.inc({ outcome: 'success' });
+    console.log('[app] graceful shutdown complete');
+    process.exit(shutdownExitCode);
+  } catch (error) {
+    gracefulShutdownTotal.inc({
+      outcome: error instanceof LifecycleDeadlineError ? 'deadline' : 'failure',
+    });
+    forceCloseHttpConnections();
+    const diagnostics = lifecycle.snapshot();
+    if (error instanceof LifecycleDeadlineError) {
+      console.error('[app] graceful shutdown timed out', diagnostics);
+    } else {
+      console.error('[app] graceful shutdown failed:', error, diagnostics);
+    }
+    process.exit(1);
+  }
+}
+
+process.on('SIGTERM', () => { void shutdown('SIGTERM', 0); });
+process.on('SIGINT', () => { void shutdown('SIGINT', 0); });
 process.on('unhandledRejection', (reason) => {
-  console.error('[app] unhandledRejection:', reason instanceof Error ? reason.stack ?? reason.message : reason);
+  console.error('[app] unhandled rejection:', reason);
+  void shutdown('unhandledRejection', 1);
+});
+process.on('uncaughtException', (error) => {
+  console.error('[app] uncaught exception:', error);
+  void shutdown('uncaughtException', 1);
 });
 
 async function main() {
@@ -113,6 +229,8 @@ async function main() {
 
   // 3. Express app
   const app = express();
+  app.use(requestContextMiddleware);
+  app.use(observeHttpRequest);
 
   // Only the fixed Compose Nginx peers may supply client identity. Broad
   // private-range trust lets a direct container or host caller spoof quotas.
@@ -145,16 +263,14 @@ async function main() {
   app.use(express.json({ limit: '50kb' }));
 
   // Local-only backend/operator site.
-  app.use('/', createBackendSiteRoutes({ query }));
-
-  // Rate limit: 120 requests / IP / minute on all API endpoints
-  app.use('/api', rateLimit({
-    windowMs: 60_000,
-    max: 120,
-    standardHeaders: true,
-    legacyHeaders: false,
-    message: { error: 'Too many requests, please slow down' },
+  app.use('/', createBackendSiteRoutes({
+    query,
+    getHealthOverview: getWorkerHealthOverview,
   }));
+
+  // Defaults to 120 requests / IP / minute. Isolated load environments may
+  // raise the bounded configuration without changing production policy.
+  app.use('/api', createGlobalApiLimiter());
 
   // API routes
   app.use('/api', apiRoutes);
@@ -190,17 +306,56 @@ async function main() {
         && checks.ownerAuthorization.desiredGeneration === checks.ownerAuthorization.appliedGeneration
         && checks.ownerAuthorization.lastError === null
       );
-    const ready = checks.database
+    const ready = !lifecycle.isDraining
+      && checks.database
       && ownerAclReady
       && (!MQTT_INGEST_ENABLED || checks.mqtt.state === 'connected');
     res.status(ready ? 200 : 503).json({ status: ready ? 'ready' : 'degraded', checks, ts: Date.now() });
   });
+  app.use(apiErrorMiddleware);
 
   // 4. HTTP server + WebSocket
   const httpServer = http.createServer(app);
-  if (WS_ENABLED) {
-    initWebSocketServer(httpServer);
-  } else {
+  let httpClosePromise: Promise<void> | null = null;
+  lifecycle.register({
+    name: 'http-admission',
+    stage: 10,
+    close: () => {
+      httpServer.closeIdleConnections();
+      if (!httpClosePromise) {
+        httpClosePromise = new Promise<void>((resolve, reject) => {
+          httpServer.close((error) => {
+            if ((error as NodeJS.ErrnoException | undefined)?.code === 'ERR_SERVER_NOT_RUNNING') {
+              resolve();
+            } else if (error) {
+              reject(error);
+            } else {
+              resolve();
+            }
+          });
+        });
+      }
+    },
+  });
+  lifecycle.register({
+    name: 'http-connections',
+    stage: 20,
+    close: async () => {
+      await httpClosePromise;
+    },
+  });
+  forceCloseHttpConnections = () => httpServer.closeAllConnections();
+  const webSocketServer = WS_ENABLED
+    ? initWebSocketServer(httpServer)
+    : null;
+  if (webSocketServer) {
+    lifecycle.register({
+      name: 'websocket-server',
+      stage: 20,
+      close: () => closeWebSocketServer(webSocketServer),
+    });
+  }
+  if (!WS_ENABLED) {
     console.warn('[ws] disabled by WS_ENABLED');
   }
 
@@ -210,6 +365,7 @@ async function main() {
   httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`[app] listening on http://0.0.0.0:${PORT}`);
   });
+  startMetricsServer(METRICS_PORT);
 
   if (MQTT_INGEST_ENABLED) {
     void startMqttClient().catch((err: unknown) => {
@@ -226,5 +382,5 @@ async function main() {
 
 main().catch((err) => {
   console.error('[app] fatal startup error:', err);
-  process.exit(1);
+  void shutdown('startup failure', 1);
 });

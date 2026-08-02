@@ -1,18 +1,26 @@
-import mqtt from 'mqtt';
+import mqtt, { type MqttClient } from 'mqtt';
 import { MeshCoreDecoder, calcRegionKey, transportCodeMatchesRegion } from '@michaelhart/meshcore-decoder';
 import type {
   AdvertPayload, GroupTextPayload, TextMessagePayload,
   TracePayload, PathPayload, AckPayload,
 } from '@michaelhart/meshcore-decoder';
 import { insertNodeStatusSample, insertPacket, upsertNode, incrementAdvertCount, query, insertOrUpdateSpamSuspect, recordMultibyteEvidence } from '../db/index.js';
-import { flush as flushPacketBatch } from '../db/packetBatch.js';
+import { closePacketBatch, flush as flushPacketBatch } from '../db/packetBatch.js';
 import { evaluateAdvert, initSpamDetector } from './spamDetector.js';
 import { invalidateResolveCache, setResolveCache, getStickyNodeMap, mergeStickyNodes } from '../path-beta/resolveCache.js';
 import { resolvePool } from '../path-beta/resolvePool.js';
+import { BoundedTtlMap } from '../cache/boundedTtlMap.js';
 import type { LivePacket } from '../types/index.js';
 import { decodePacketCompat } from './decodePacket.js';
 import { shouldDiscardUnverifiedTxAdvert, statusEnvelopeTargetsObserver } from './identityBinding.js';
 import { parseMqttTopic } from './topic.js';
+import {
+  boundedNetworkMetricLabel,
+  mqttIngestActive,
+  mqttIngestOutcomesTotal,
+  mqttIngestQueueDepth,
+  mqttMessagesTotal,
+} from '../metrics.js';
 
 type PacketCallback      = (packet: LivePacket) => void;
 type NodeCallback        = (nodeId: string, meta?: { network?: string; observerId?: string }) => void;
@@ -29,6 +37,8 @@ type MqttRuntimeStatus = {
 };
 
 let mqttRuntimeStatus: MqttRuntimeStatus = { state: 'starting', changedAt: new Date().toISOString() };
+let mqttClient: MqttClient | null = null;
+let mqttStopping = false;
 
 function setMqttRuntimeStatus(state: MqttRuntimeStatus['state'], lastError?: string): void {
   mqttRuntimeStatus = {
@@ -270,6 +280,7 @@ function extractStatusTelemetry(
 /** In-flight pre-resolve tracking — prevents duplicate concurrent resolutions for the same hash/network. */
 const preResolveInFlight = new Set<string>();
 const preResolveLastStarted = new Map<string, number>();
+const PRE_RESOLVE_HISTORY_MAX = 50_000;
 const PRE_RESOLVE_ENABLED = process.env['PATH_BETA_PRERESOLVE_ENABLED'] === '1';
 const PRE_RESOLVE_MIN_INTERVAL_MS = Math.max(
   1_000,
@@ -369,8 +380,13 @@ const keyStore = MeshCoreDecoder.createKeyStore({
 });
 
 // Small cache so relay copies of the same GroupText don't trigger re-decodes
-const channelCache = new Map<string, string | null>();
-const CHANNEL_CACHE_MAX = 200;
+const channelCache = new BoundedTtlMap<string, string | null>({
+  name: 'mqtt_channels',
+  maxEntries: 200,
+  maxWeight: 2 * 1024 * 1024,
+  ttlMs: 10 * 60_000,
+  weightOf: (key, value) => key.length * 2 + (value?.length ?? 0) * 2,
+});
 
 function boundedEnvInteger(name: string, fallback: number, min: number, max: number): number {
   const parsed = Number(process.env[name]);
@@ -392,7 +408,11 @@ let activeMqttIngests = 0;
 let droppedMqttMessages = 0;
 let lastMqttDropLogAt = 0;
 
-function reportDroppedMqttMessage(reason: string): void {
+function reportDroppedMqttMessage(
+  reason: string,
+  outcome: 'draining' | 'queue_full' | 'oversized_payload' | 'oversized_topic',
+): void {
+  mqttIngestOutcomesTotal.inc({ outcome });
   droppedMqttMessages += 1;
   const now = Date.now();
   if (now - lastMqttDropLogAt < 5_000) return;
@@ -405,21 +425,35 @@ function drainMqttIngestQueue(): void {
   while (activeMqttIngests < MQTT_INGEST_CONCURRENCY && mqttIngestQueue.length > 0) {
     const task = mqttIngestQueue.shift()!;
     activeMqttIngests += 1;
+    mqttIngestQueueDepth.set(mqttIngestQueue.length);
+    mqttIngestActive.set(activeMqttIngests);
     void handleMessage(task.topic, task.rawPayload)
-      .catch((err: Error) => console.error('[mqtt] handleMessage error:', err.message))
+      .then(() => mqttIngestOutcomesTotal.inc({ outcome: 'processed' }))
+      .catch((err: Error) => {
+        mqttIngestOutcomesTotal.inc({ outcome: 'failure' });
+        console.error('[mqtt] handleMessage error:', err.message);
+      })
       .finally(() => {
         activeMqttIngests -= 1;
+        mqttIngestActive.set(activeMqttIngests);
         drainMqttIngestQueue();
       });
   }
+  mqttIngestQueueDepth.set(mqttIngestQueue.length);
 }
 
 function enqueueMqttMessage(topic: string, rawPayload: Buffer): void {
+  if (mqttStopping) {
+    reportDroppedMqttMessage('ingest is draining', 'draining');
+    return;
+  }
   if (mqttIngestQueue.length >= MQTT_INGEST_QUEUE_MAX) {
-    reportDroppedMqttMessage(`ingest queue full (${MQTT_INGEST_QUEUE_MAX})`);
+    reportDroppedMqttMessage(`ingest queue full (${MQTT_INGEST_QUEUE_MAX})`, 'queue_full');
     return;
   }
   mqttIngestQueue.push({ topic, rawPayload });
+  mqttIngestOutcomesTotal.inc({ outcome: 'enqueued' });
+  mqttIngestQueueDepth.set(mqttIngestQueue.length);
   drainMqttIngestQueue();
 }
 
@@ -438,9 +472,6 @@ function identifyChannel(rawHex: string): string | undefined {
     if (p?.decrypted) { result = entry.name; break; }
   }
 
-  if (channelCache.size >= CHANNEL_CACHE_MAX) {
-    channelCache.delete(channelCache.keys().next().value!);
-  }
   channelCache.set(rawHex, result ?? null);
   return result;
 }
@@ -488,9 +519,11 @@ function buildSummary(payloadType: number, decoded: unknown, rawHex?: string): s
 }
 
 export async function startMqttClient(): Promise<void> {
+  if (mqttStopping) return;
   // Must complete before connecting to MQTT — the broker replays buffered
   // messages immediately on connect, and knownNodeIds must be populated first.
   await initSpamDetector();
+  if (mqttStopping) return;
 
   const brokerUrl = process.env['MQTT_BROKER_URL'] ?? 'ws://mosquitto:9001';
   const redactedUrl = brokerUrl.replace(/\/\/[^@]*@/, '//***:***@');
@@ -506,6 +539,7 @@ export async function startMqttClient(): Promise<void> {
     username: process.env['MQTT_USERNAME'],
     password: process.env['MQTT_PASSWORD'],
   });
+  mqttClient = client;
 
   client.on('connect', () => {
     setMqttRuntimeStatus('connected');
@@ -535,22 +569,56 @@ export async function startMqttClient(): Promise<void> {
   });
   client.on('message',   (topic: string, rawPayload: Buffer) => {
     if (rawPayload.length > MQTT_MAX_PAYLOAD_BYTES) {
-      reportDroppedMqttMessage(`payload exceeds ${MQTT_MAX_PAYLOAD_BYTES} bytes`);
+      reportDroppedMqttMessage(
+        `payload exceeds ${MQTT_MAX_PAYLOAD_BYTES} bytes`,
+        'oversized_payload',
+      );
       return;
     }
     if (topic.length > 512) {
-      reportDroppedMqttMessage('topic exceeds 512 characters');
+      reportDroppedMqttMessage('topic exceeds 512 characters', 'oversized_topic');
       return;
     }
     enqueueMqttMessage(topic, rawPayload);
   });
 }
 
+export async function stopMqttClient(timeoutMs = 20_000): Promise<void> {
+  mqttStopping = true;
+  const client = mqttClient;
+  mqttClient = null;
+  if (client) {
+    client.removeAllListeners('reconnect');
+    await client.endAsync(false).catch((error: unknown) => {
+      console.error('[mqtt] disconnect failed:', error instanceof Error ? error.message : error);
+    });
+  }
+  const deadline = Date.now() + timeoutMs;
+  while ((mqttIngestQueue.length > 0 || activeMqttIngests > 0) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  if (mqttIngestQueue.length > 0 || activeMqttIngests > 0) {
+    throw new Error(
+      `MQTT_DRAIN_TIMEOUT:queued=${mqttIngestQueue.length}:active=${activeMqttIngests}`,
+    );
+  }
+  if (nodeFlushTimer) {
+    clearTimeout(nodeFlushTimer);
+    flushPendingNodeEmits();
+  }
+  await closePacketBatch();
+  setMqttRuntimeStatus('disconnected');
+}
+
 async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
   const topicParts = parseMqttTopic(topic, TOPIC_PREFIXES, BLOCKED_PUBLIC_IATAS);
-  if (!topicParts) return;
+  if (!topicParts) {
+    mqttIngestOutcomesTotal.inc({ outcome: 'invalid_topic' });
+    return;
+  }
 
   const { iata, observerKey, suffix, network } = topicParts;
+  mqttMessagesTotal.inc({ network: boundedNetworkMetricLabel(network) });
   const rawStr = rawPayload.toString('utf8').trim();
 
   let json: Record<string, unknown>;
@@ -829,12 +897,6 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
     return;
   }
 
-  const observerUpsert = upsertNode(observerKey, {
-    iata,
-    network,
-    allowTestOverride: network === 'test',
-    mqttObserver: true,
-  }).catch((err: Error) => console.error('[mqtt] observer upsert error:', err.message));
   emitNode(observerKey, { network, observerId: observerKey });
 
   // Decoded payloads omit mctomqtt's envelope direction. Keep that metadata in
@@ -921,6 +983,13 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
       && Date.now() - lastPreResolve >= PRE_RESOLVE_MIN_INTERVAL_MS;
     if (shouldPreResolve) {
       preResolveInFlight.add(preResolveKey);
+      if (
+        !preResolveLastStarted.has(preResolveKey)
+        && preResolveLastStarted.size >= PRE_RESOLVE_HISTORY_MAX
+      ) {
+        const oldest = preResolveLastStarted.keys().next().value;
+        if (oldest !== undefined) preResolveLastStarted.delete(oldest);
+      }
       preResolveLastStarted.set(preResolveKey, Date.now());
       const ck = `m|${finalHash}|${network}`;
       // Pass any previously resolved high-confidence hop assignments so the solver reuses them
@@ -942,10 +1011,6 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
     }
   } catch (err) {
     console.error('[mqtt] db insert failed', (err as Error).message);
-  } finally {
-    // Keep observer writes within the MQTT worker's bounded lifetime. Without
-    // this await, a traffic burst can create unlimited detached pool queries.
-    await observerUpsert;
   }
 }
 

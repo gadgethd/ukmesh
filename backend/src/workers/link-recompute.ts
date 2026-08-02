@@ -15,6 +15,8 @@ import {
   type LinkQueueAdmission,
 } from '../queue/linkQueueV3.js';
 import { getRedisConnectionOptions, getRedisUrl } from '../platform/config/redis.js';
+import { observeWorkerOutcome } from '../metrics.js';
+import { startWorkerMetrics } from './workerMetrics.js';
 
 const LEGACY_LINK_JOB_QUEUE = 'meshcore:link_jobs';
 const DEFAULT_PHYSICAL_RADIUS_KM = 60;
@@ -151,6 +153,7 @@ async function waitForGeneration(
 }
 
 async function main(): Promise<void> {
+  startWorkerMetrics();
   await initDb();
   const redis = new Redis(getRedisUrl(), getRedisConnectionOptions());
   const waiter = new Redis(getRedisUrl(), getRedisConnectionOptions());
@@ -345,7 +348,9 @@ async function main(): Promise<void> {
     console.log(
       `[link-recompute] published generation=${generation} jobs=${jobIds.size} deferred_released=${released} rollback_schema=${rollbackSchema}`,
     );
+    observeWorkerOutcome('link', 'rebuild', 'success');
   } catch (error) {
+    observeWorkerOutcome('link', 'rebuild', 'failure');
     if (!published) {
       await query(
         `UPDATE link_rebuild_runs

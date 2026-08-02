@@ -1,9 +1,7 @@
-import { useCallback, useRef, useEffect } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import type { WSMessage } from './useWebSocket.js';
 import type { LivePacketData, MeshNode } from './useNodes.js';
 import type { ViableLinkSnapshot } from './useLinkState.js';
-
-
 
 type PendingPacket = LivePacketData;
 type PendingNodeUpdate = { nodeId: string; ts: number };
@@ -29,267 +27,202 @@ interface PendingBatches {
   nodeUpserts: PendingNodeUpsert[];
   linkUpdates: PendingLinkUpdate[];
   coverageUpdates: PendingCoverageUpdate[];
-  packetObserved: boolean;
 }
 
-type UseAppMessageHandlerParams = {
-  handleInitialState: (data: {
-    nodes: MeshNode[];
-    packets: Array<{
-      time: string;
-      packet_hash: string;
-      rx_node_id?: string;
-      src_node_id?: string;
-      packet_type?: number;
-      hop_count?: number;
-      path_hash_size_bytes?: number;
-      summary?: string | null;
-      payload?: Record<string, unknown>;
-      advert_count?: number | null;
-      path_hashes?: string[] | null;
-    }>;
-  }) => void;
-  handlePacket: (data: LivePacketData | LivePacketData[]) => void;
-  handleNodeUpdate: (data: { nodeId: string; ts: number }) => void;
-  handleNodeUpdateBatch?: (data: { nodeId: string; ts: number }[]) => void;
-  handleNodeUpsert: (data: Partial<MeshNode> & { node_id: string }) => void;
-  handleNodeUpsertBatch?: (data: (Partial<MeshNode> & { node_id: string })[]) => void;
-  handleCoverageUpdate: (data: {
-    node_id: string;
-    geom: { type: string; coordinates: unknown };
-    strength_geoms?: Partial<Record<'green' | 'amber' | 'red', { type: string; coordinates: unknown }>>;
-  }) => void;
-  handleCoverageUpdateBatch?: (data: {
-    node_id: string;
-    geom: { type: string; coordinates: unknown };
-    strength_geoms?: Partial<Record<'green' | 'amber' | 'red', { type: string; coordinates: unknown }>>;
-  }[]) => void;
-  applyInitialViablePairs: (pairs?: [string, string][]) => void;
-  applyInitialViableLinks: (links?: ViableLinkSnapshot[]) => void;
-  applyLinkUpdate: (update: {
-    node_a_id: string;
-    node_b_id: string;
-    observed_count: number;
-    itm_viable: boolean | null;
-    itm_path_loss_db?: number | null;
-    count_a_to_b?: number;
-    count_b_to_a?: number;
-  }) => void;
-  applyLinkUpdateBatch?: (updates: {
-    node_a_id: string;
-    node_b_id: string;
-    observed_count: number;
-    itm_viable: boolean | null;
-    itm_path_loss_db?: number | null;
-    count_a_to_b?: number;
-    count_b_to_a?: number;
-  }[]) => void;
-  onPacketObserved?: () => void;
+type InitialState = {
+  nodes: MeshNode[];
+  packets: Array<{
+    time: string;
+    packet_hash: string;
+    rx_node_id?: string;
+    src_node_id?: string;
+    packet_type?: number;
+    hop_count?: number;
+    path_hash_size_bytes?: number;
+    summary?: string | null;
+    payload?: Record<string, unknown>;
+    advert_count?: number | null;
+    path_hashes?: string[] | null;
+  }>;
+  viable_pairs?: [string, string][];
+  viable_links?: ViableLinkSnapshot[];
 };
 
-export function useAppMessageHandler({
-  handleInitialState,
-  handlePacket,
-  handleNodeUpdate,
-  handleNodeUpdateBatch,
-  handleNodeUpsert,
-  handleNodeUpsertBatch,
-  handleCoverageUpdate,
-  handleCoverageUpdateBatch,
-  applyInitialViablePairs,
-  applyInitialViableLinks,
-  applyLinkUpdate,
-  applyLinkUpdateBatch,
-  onPacketObserved,
-}: UseAppMessageHandlerParams) {
-  const pendingRef = useRef<PendingBatches>({
+export type RealtimeMessageActions = {
+  handleInitialState: (data: InitialState) => void;
+  handlePacket: (data: LivePacketData | LivePacketData[]) => void;
+  handleNodeUpdate: (data: PendingNodeUpdate) => void;
+  handleNodeUpdateBatch?: (data: PendingNodeUpdate[]) => void;
+  handleNodeUpsert: (data: PendingNodeUpsert) => void;
+  handleNodeUpsertBatch?: (data: PendingNodeUpsert[]) => void;
+  handleCoverageUpdate: (data: PendingCoverageUpdate) => void;
+  handleCoverageUpdateBatch?: (data: PendingCoverageUpdate[]) => void;
+  applyInitialViablePairs: (pairs?: [string, string][]) => void;
+  applyInitialViableLinks: (links?: ViableLinkSnapshot[]) => void;
+  applyLinkUpdate: (update: PendingLinkUpdate) => void;
+  applyLinkUpdateBatch?: (updates: PendingLinkUpdate[]) => void;
+  onPacketObserved?: (count: number) => void;
+};
+
+function emptyPending(): PendingBatches {
+  return {
     packets: [],
     nodeUpdates: [],
     nodeUpserts: [],
     linkUpdates: [],
     coverageUpdates: [],
-    packetObserved: false,
-  });
-  const rafRef = useRef<number | null>(null);
-  const flushRef = useRef<() => void>(() => {});
+  };
+}
 
-  // Flush pending updates - runs at most once per animation frame
-  const flushPending = useCallback(() => {
-    const pending = pendingRef.current;
-    if (!pending.packets.length && !pending.nodeUpdates.length && 
-        !pending.nodeUpserts.length && !pending.linkUpdates.length &&
-        !pending.coverageUpdates.length && !pending.packetObserved) {
+/**
+ * Buffers live events until the connection's authoritative initial snapshot is
+ * applied. That makes "live then snapshot" converge with "snapshot then live"
+ * while retaining animation-frame batching after initialization.
+ */
+export function createRealtimeMessageCoordinator(
+  getActions: () => RealtimeMessageActions,
+  scheduleFlush: () => void = () => {},
+  cancelScheduledFlush: () => void = () => {},
+) {
+  let pending = emptyPending();
+  let snapshotReceived = false;
+
+  const flush = (): void => {
+    if (!snapshotReceived) return;
+    const batch = pending;
+    pending = emptyPending();
+    const actions = getActions();
+
+    // Resolve/update endpoints before packets so packet arcs can only be built
+    // from the current authoritative, privacy-safe node map.
+    const latestNodeUpdates = new Map<string, PendingNodeUpdate>();
+    for (const update of batch.nodeUpdates) {
+      const existing = latestNodeUpdates.get(update.nodeId);
+      if (!existing || update.ts >= existing.ts) latestNodeUpdates.set(update.nodeId, update);
+    }
+    const nodeUpdates = Array.from(latestNodeUpdates.values());
+    if (nodeUpdates.length > 0) {
+      if (actions.handleNodeUpdateBatch) actions.handleNodeUpdateBatch(nodeUpdates);
+      else nodeUpdates.forEach(actions.handleNodeUpdate);
+    }
+
+    const latestNodeUpserts = new Map<string, PendingNodeUpsert>();
+    for (const upsert of batch.nodeUpserts) latestNodeUpserts.set(upsert.node_id, upsert);
+    const nodeUpserts = Array.from(latestNodeUpserts.values());
+    if (nodeUpserts.length > 0) {
+      if (actions.handleNodeUpsertBatch) actions.handleNodeUpsertBatch(nodeUpserts);
+      else nodeUpserts.forEach(actions.handleNodeUpsert);
+    }
+
+    if (batch.packets.length > 0) actions.handlePacket(batch.packets);
+
+    if (batch.linkUpdates.length > 0) {
+      if (actions.applyLinkUpdateBatch) actions.applyLinkUpdateBatch(batch.linkUpdates);
+      else batch.linkUpdates.forEach(actions.applyLinkUpdate);
+    }
+
+    const latestCoverage = new Map<string, PendingCoverageUpdate>();
+    for (const update of batch.coverageUpdates) latestCoverage.set(update.node_id, update);
+    const coverage = Array.from(latestCoverage.values());
+    if (coverage.length > 0) {
+      if (actions.handleCoverageUpdateBatch) actions.handleCoverageUpdateBatch(coverage);
+      else coverage.forEach(actions.handleCoverageUpdate);
+    }
+
+    if (batch.packets.length > 0) actions.onPacketObserved?.(batch.packets.length);
+  };
+
+  const handle = (msg: WSMessage): void => {
+    if (msg.type === 'initial_state') {
+      cancelScheduledFlush();
+      const data = msg.data as InitialState;
+      const actions = getActions();
+      actions.handleInitialState(data);
+      if (Object.prototype.hasOwnProperty.call(data, 'viable_links')) {
+        actions.applyInitialViableLinks(data.viable_links ?? []);
+      } else {
+        actions.applyInitialViablePairs(data.viable_pairs ?? []);
+      }
+      snapshotReceived = true;
+      flush();
       return;
     }
 
-    // Flush ALL packets at once - single state update for entire batch
-    if (pending.packets.length > 0) {
-      handlePacket(pending.packets);
-    }
-
-    // Flush node updates (dedupe by nodeId, keep latest)
-    const latestNodeUpdates = new Map<string, PendingNodeUpdate>();
-    for (const update of pending.nodeUpdates) {
-      latestNodeUpdates.set(update.nodeId, update);
-    }
-    if (latestNodeUpdates.size > 0) {
-      const arr = Array.from(latestNodeUpdates.values());
-      if (handleNodeUpdateBatch) {
-        handleNodeUpdateBatch(arr);
-      } else {
-        arr.forEach(handleNodeUpdate);
+    if (msg.type === 'packet') {
+      const packet = msg.data as PendingPacket;
+      pending.packets.push(packet);
+      if (snapshotReceived && packet.packetType === 5) {
+        cancelScheduledFlush();
+        flush();
+      } else if (snapshotReceived) {
+        scheduleFlush();
       }
+      return;
     }
+    if (msg.type === 'node_update') pending.nodeUpdates.push(msg.data as PendingNodeUpdate);
+    else if (msg.type === 'node_upsert') pending.nodeUpserts.push(msg.data as PendingNodeUpsert);
+    else if (msg.type === 'coverage_update') pending.coverageUpdates.push(msg.data as PendingCoverageUpdate);
+    else if (msg.type === 'link_update') pending.linkUpdates.push(msg.data as PendingLinkUpdate);
+    else return;
 
-    // Flush node upserts (dedupe by node_id, keep latest)
-    const latestNodeUpserts = new Map<string, PendingNodeUpsert>();
-    for (const upsert of pending.nodeUpserts) {
-      latestNodeUpserts.set(upsert.node_id, upsert);
-    }
-    if (latestNodeUpserts.size > 0) {
-      const arr = Array.from(latestNodeUpserts.values());
-      if (handleNodeUpsertBatch) {
-        handleNodeUpsertBatch(arr);
-      } else {
-        arr.forEach(handleNodeUpsert);
-      }
-    }
+    if (snapshotReceived) scheduleFlush();
+  };
 
-    // Flush link updates
-    if (pending.linkUpdates.length > 0) {
-      if (applyLinkUpdateBatch) {
-        applyLinkUpdateBatch(pending.linkUpdates);
-      } else {
-        pending.linkUpdates.forEach(applyLinkUpdate);
-      }
-    }
+  const reset = (): void => {
+    cancelScheduledFlush();
+    pending = emptyPending();
+    snapshotReceived = false;
+  };
 
-    // Flush coverage updates (dedupe by node_id, keep latest)
-    const latestCoverage = new Map<string, PendingCoverageUpdate>();
-    for (const update of pending.coverageUpdates) {
-      latestCoverage.set(update.node_id, update);
-    }
-    if (latestCoverage.size > 0) {
-      const arr = Array.from(latestCoverage.values());
-      if (handleCoverageUpdateBatch) {
-        handleCoverageUpdateBatch(arr);
-      } else {
-        arr.forEach(handleCoverageUpdate);
-      }
-    }
+  return {
+    handle,
+    flush,
+    reset,
+    hasSnapshot: () => snapshotReceived,
+    pendingPacketCount: () => pending.packets.length,
+  };
+}
 
-    // Fire packet observed event once if any packets were processed
-    if (pending.packetObserved || pending.packets.length > 0) {
-      onPacketObserved?.();
-    }
+type UseAppMessageHandlerParams = RealtimeMessageActions & {
+  epoch: number;
+};
 
-    // Reset pending
-    pendingRef.current = {
-      packets: [],
-      nodeUpdates: [],
-      nodeUpserts: [],
-      linkUpdates: [],
-      coverageUpdates: [],
-      packetObserved: false,
-    };
+export function useAppMessageHandler(params: UseAppMessageHandlerParams) {
+  const { epoch, ...actions } = params;
+  const actionsRef = useRef<RealtimeMessageActions>(actions);
+  actionsRef.current = actions;
+  const rafRef = useRef<number | null>(null);
+  const coordinatorRef = useRef<ReturnType<typeof createRealtimeMessageCoordinator> | null>(null);
+
+  const cancelScheduledFlush = useCallback(() => {
+    if (rafRef.current === null) return;
+    cancelAnimationFrame(rafRef.current);
     rafRef.current = null;
-  }, [
-    handlePacket,
-    handleNodeUpdate,
-    handleNodeUpdateBatch,
-    handleNodeUpsert,
-    handleNodeUpsertBatch,
-    handleCoverageUpdate,
-    handleCoverageUpdateBatch,
-    applyLinkUpdate,
-    applyLinkUpdateBatch,
-    onPacketObserved,
-  ]);
+  }, []);
 
-  // Throttle flush — batches bursts from the WebSocket into single React renders
   const scheduleFlush = useCallback(() => {
     if (rafRef.current !== null) return;
     rafRef.current = window.requestAnimationFrame(() => {
       rafRef.current = null;
-      flushPending();
+      coordinatorRef.current?.flush();
     });
-  }, [flushPending]);
+  }, []);
 
-  // Cleanup pending flush on unmount
+  if (coordinatorRef.current === null) {
+    coordinatorRef.current = createRealtimeMessageCoordinator(
+      () => actionsRef.current,
+      scheduleFlush,
+      cancelScheduledFlush,
+    );
+  }
+
   useEffect(() => {
-    flushRef.current = flushPending;
-    return () => {
-      if (rafRef.current !== null) {
-        cancelAnimationFrame(rafRef.current);
-      }
-      // Flush any remaining pending updates
-      flushPending();
-    };
-  }, [flushPending]);
+    coordinatorRef.current?.reset();
+    return () => coordinatorRef.current?.reset();
+  }, [epoch]);
 
   return useCallback((msg: WSMessage) => {
-    if (msg.type === 'initial_state') {
-      const data = msg.data as Parameters<typeof handleInitialState>[0] & {
-        viable_pairs?: [string, string][];
-        viable_links?: ViableLinkSnapshot[];
-      };
-      handleInitialState(data);
-      if (data.viable_links && data.viable_links.length > 0) {
-        applyInitialViableLinks(data.viable_links);
-      } else {
-        applyInitialViablePairs(data.viable_pairs);
-      }
-      return;
-    }
-
-    const pending = pendingRef.current;
-
-    if (msg.type === 'packet') {
-      const packet = msg.data as LivePacketData;
-      // GroupText (type 5) drives the live feed + live path. Flush it
-      // immediately so the UI never waits on the 16ms batch window.
-      if (packet.packetType === 5) {
-        if (rafRef.current !== null) {
-          cancelAnimationFrame(rafRef.current);
-          rafRef.current = null;
-        }
-        pending.packets.push(packet);
-        pending.packetObserved = true;
-        flushRef.current();
-        return;
-      }
-      pending.packets.push(packet);
-      pending.packetObserved = true;
-      scheduleFlush();
-      return;
-    }
-
-    if (msg.type === 'node_update') {
-      pending.nodeUpdates.push(msg.data as PendingNodeUpdate);
-      scheduleFlush();
-      return;
-    }
-
-    if (msg.type === 'node_upsert') {
-      pending.nodeUpserts.push(msg.data as PendingNodeUpsert);
-      scheduleFlush();
-      return;
-    }
-
-    if (msg.type === 'coverage_update') {
-      pending.coverageUpdates.push(msg.data as PendingCoverageUpdate);
-      scheduleFlush();
-      return;
-    }
-
-    if (msg.type === 'link_update') {
-      pending.linkUpdates.push(msg.data as PendingLinkUpdate);
-      scheduleFlush();
-    }
-  }, [
-    handleInitialState,
-    applyInitialViablePairs,
-    applyInitialViableLinks,
-    scheduleFlush,
-  ]);
+    if (msg.scopeEpoch !== undefined && msg.scopeEpoch !== epoch) return;
+    coordinatorRef.current?.handle(msg);
+  }, [epoch]);
 }

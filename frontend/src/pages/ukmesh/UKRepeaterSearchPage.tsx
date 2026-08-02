@@ -466,6 +466,7 @@ export const UKRepeaterSearchPage: React.FC = () => {
                     </span>
                     {selectedNode.public_key && (
                       <button
+                        type="button"
                         className="repeater-details-card__copy-btn"
                         onClick={copyPublicKey}
                       >
@@ -598,11 +599,11 @@ export const UKRepeaterSearchPage: React.FC = () => {
                           <table className="repeater-details-card__table">
                             <thead>
                               <tr>
-                                <th>Time</th>
-                                <th>Hops</th>
-                                <th>RSSI</th>
-                                <th>SNR</th>
-                                <th>From</th>
+                                <th scope="col">Time</th>
+                                <th scope="col">Hops</th>
+                                <th scope="col">RSSI</th>
+                                <th scope="col">SNR</th>
+                                <th scope="col">From</th>
                               </tr>
                             </thead>
                             <tbody>

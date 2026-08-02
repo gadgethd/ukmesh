@@ -29,7 +29,11 @@ if (!DATABASE_URL) {
   process.exit(1);
 }
 
-const CHANNEL_SECRETS = ['8b3387e9c5cdea6ac9e5edbaa115cd72'];
+// This is the documented MeshCore public-channel material, not an application
+// credential. Private/custom channel material must only enter through the
+// environment and must never be committed.
+const DEFAULT_PUBLIC_CHANNEL_KEY = '8b3387e9c5cdea6ac9e5edbaa115cd72';
+const CHANNEL_SECRETS = [DEFAULT_PUBLIC_CHANNEL_KEY];
 if (process.env.MESHCORE_CHANNEL_SECRETS) {
   for (const entry of process.env.MESHCORE_CHANNEL_SECRETS.split(',').map((s) => s.trim()).filter(Boolean)) {
     const colon = entry.indexOf(':');

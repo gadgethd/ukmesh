@@ -1,4 +1,5 @@
 import type { AggregatedPacket, LivePacketData } from './useNodes.js';
+import { canonicalNodeId, canonicalOptionalNodeId } from '../utils/nodeIds.js';
 
 export const FEED_MAX_PACKETS = 50;
 export const FEED_MAX_MESSAGES = 200;
@@ -94,27 +95,28 @@ export function mapRecentRows(rows: RecentPacketRow[]): AggregatedPacket[] {
     const observerIds = Array.from(new Set([
       ...(row.observer_node_ids ?? []),
       ...(row.rx_node_id ? [row.rx_node_id] : []),
-    ]));
+    ].map(canonicalNodeId).filter(Boolean)));
+    const packetHash = row.packet_hash.trim().toUpperCase();
     const next: AggregatedPacket = {
-      id: row.packet_hash,
-      packetHash: row.packet_hash,
+      id: packetHash,
+      packetHash,
       packetType: row.packet_type,
       firstSeenTs: new Date(row.time).getTime(),
-      rxNodeId: row.rx_node_id,
+      rxNodeId: canonicalOptionalNodeId(row.rx_node_id),
       observerIds,
-      srcNodeId: row.src_node_id,
+      srcNodeId: canonicalOptionalNodeId(row.src_node_id),
       topic: row.topic,
       summary,
       hopCount: row.hop_count,
       pathHashSizeBytes: row.path_hash_size_bytes ?? undefined,
-      path: row.path_hashes ?? undefined,
+      path: row.path_hashes?.map(canonicalNodeId).filter(Boolean),
       rxCount: Number(row.rx_count ?? 1),
       txCount: Number(row.tx_count ?? 0),
       ts: new Date(row.time).getTime(),
       advertCount: row.advert_count ?? undefined,
     };
-    const current = mapped.get(row.packet_hash);
-    mapped.set(row.packet_hash, current ? mergeAggregatedPacket(current, next) : next);
+    const current = mapped.get(packetHash);
+    mapped.set(packetHash, current ? mergeAggregatedPacket(current, next) : next);
   }
   return Array.from(mapped.values())
     .sort((a, b) => b.ts - a.ts)
@@ -129,27 +131,28 @@ export function mapMessageRows(rows: RecentPacketRow[]): AggregatedPacket[] {
     const observerIds = Array.from(new Set([
       ...(row.observer_node_ids ?? []),
       ...(row.rx_node_id ? [row.rx_node_id] : []),
-    ]));
+    ].map(canonicalNodeId).filter(Boolean)));
+    const packetHash = row.packet_hash.trim().toUpperCase();
     const next: AggregatedPacket = {
-      id: row.packet_hash,
-      packetHash: row.packet_hash,
+      id: packetHash,
+      packetHash,
       packetType: row.packet_type,
       firstSeenTs: new Date(row.time).getTime(),
-      rxNodeId: row.rx_node_id,
+      rxNodeId: canonicalOptionalNodeId(row.rx_node_id),
       observerIds,
-      srcNodeId: row.src_node_id,
+      srcNodeId: canonicalOptionalNodeId(row.src_node_id),
       topic: row.topic,
       summary,
       hopCount: row.hop_count,
       pathHashSizeBytes: row.path_hash_size_bytes ?? undefined,
-      path: row.path_hashes ?? undefined,
+      path: row.path_hashes?.map(canonicalNodeId).filter(Boolean),
       rxCount: Number(row.rx_count ?? 1),
       txCount: Number(row.tx_count ?? 0),
       ts: new Date(row.time).getTime(),
       advertCount: row.advert_count ?? undefined,
     };
-    const current = mapped.get(row.packet_hash);
-    mapped.set(row.packet_hash, current ? mergeAggregatedPacket(current, next) : next);
+    const current = mapped.get(packetHash);
+    mapped.set(packetHash, current ? mergeAggregatedPacket(current, next) : next);
   }
   return Array.from(mapped.values())
     .sort((a, b) => b.ts - a.ts)

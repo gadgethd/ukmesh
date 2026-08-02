@@ -1,48 +1,17 @@
 import { type Plugin } from 'vite';
 import fs from 'node:fs';
 import path from 'node:path';
+import { PUBLIC_CONTENT_ROUTES } from '../config/publicRoutes.js';
 
 type SiteId = 'ukmesh';
 
 type RouteMeta = { title: string; description: string };
 
 const SEO_META: Record<SiteId, Record<string, RouteMeta>> = {
-  ukmesh: {
-    '/': {
-      title: 'UK Mesh Network — MeshCore LoRa Coverage & Live Map',
-      description:
-        'Real-time analytics for the UK MeshCore LoRa mesh network. Live packet feed, repeater coverage maps, network statistics, and install guides.',
-    },
-    '/install': {
-      title: 'Install MeshCore — UK Mesh Network',
-      description:
-        'Step-by-step guide to flash MeshCore firmware on a LoRa device and join the UK mesh network. No soldering, no special tools — just a browser and a USB cable.',
-    },
-    '/stats': {
-      title: 'Network Statistics — UK Mesh Network',
-      description:
-        'Live statistics for the UK MeshCore network: active nodes, packet counts, repeater uptime, and coverage trends.',
-    },
-    '/feed': {
-      title: 'Live Packet Feed — UK Mesh Network',
-      description:
-        'Real-time decoded LoRa packet stream from UK MeshCore observers. Watch adverts, messages, and traceroutes as they arrive.',
-    },
-    '/repeater': {
-      title: 'Repeater Search — UK Mesh Network',
-      description:
-        'Search and browse MeshCore repeater nodes across the UK network. View coverage, uptime, and connection details.',
-    },
-    '/open-source': {
-      title: 'Open Source — UK Mesh Network',
-      description:
-        'Libraries and open-source technologies powering the UK Mesh analytics platform.',
-    },
-    '/login': {
-      title: 'Repeater Owner Portal — UK Mesh Network',
-      description: 'Log in to manage your MeshCore repeater node on the UK Mesh network.',
-    },
-  },
+  ukmesh: Object.fromEntries(PUBLIC_CONTENT_ROUTES.map((route) => [
+    route.path,
+    { title: route.title, description: route.description },
+  ])),
 };
 
 const SITE_DEFAULTS: Record<SiteId, { siteName: string; baseUrl: string; themeColor: string }> = {
@@ -50,7 +19,7 @@ const SITE_DEFAULTS: Record<SiteId, { siteName: string; baseUrl: string; themeCo
 };
 
 const SITEMAP_ROUTES: Record<SiteId, string[]> = {
-  ukmesh: ['/', '/install', '/stats', '/feed', '/repeater', '/open-source'],
+  ukmesh: PUBLIC_CONTENT_ROUTES.filter((route) => route.sitemap).map((route) => route.path),
 };
 
 function getSiteId(): SiteId {
@@ -60,11 +29,20 @@ function getSiteId(): SiteId {
 type BuildTarget = 'app' | 'public-website' | 'dev-website';
 
 function buildTarget(): BuildTarget {
+  const explicitTarget = String(process.env['VITE_BUILD_TARGET'] ?? '').trim().toLowerCase();
+  if (
+    explicitTarget === 'app'
+    || explicitTarget === 'public-website'
+    || explicitTarget === 'dev-website'
+  ) {
+    return explicitTarget;
+  }
+
   const site = String(process.env['VITE_SITE'] ?? '').trim().toLowerCase();
   const network = String(process.env['VITE_NETWORK'] ?? '').trim().toLowerCase();
 
-  // Dockerfile.app supplies both values. The public website needs the same
-  // VITE_APP_HOSTNAME at runtime, so hostname alone cannot identify the build.
+  // Preserve direct/local build compatibility, but release Dockerfiles always
+  // supply VITE_BUILD_TARGET so cached layers cannot change the artifact type.
   if (site === 'ukmesh' && network === 'ukmesh') return 'app';
   if (site === 'dev' || network === 'test') return 'dev-website';
   return 'public-website';
@@ -141,9 +119,14 @@ export default function viteSeoPlugin(): Plugin {
   const target = buildTarget();
   const isPublicWebsite = target === 'public-website';
   const homeMeta = SEO_META[site]['/'];
+  let resolvedOutDir = path.resolve(process.cwd(), 'dist');
 
   return {
     name: 'vite-seo',
+
+    configResolved(config) {
+      resolvedOutDir = path.resolve(config.root, config.build.outDir);
+    },
 
     transformIndexHtml(html) {
       if (!isPublicWebsite || !homeMeta) {
@@ -172,7 +155,7 @@ export default function viteSeoPlugin(): Plugin {
     },
 
     closeBundle() {
-      const outDir = path.resolve(process.cwd(), 'dist');
+      const outDir = resolvedOutDir;
       if (!fs.existsSync(outDir)) return;
 
       // Dashboard and dev/test builds must not be indexed. Public website

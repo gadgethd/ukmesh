@@ -8,8 +8,6 @@
   background: var(--bg-panel);
   border: 1px solid var(--border-bright);
   border-radius: 12px;
-  width: min(960px, 100%);
-  max-height: min(88vh, 900px);
   padding: 24px;
   display: flex;
   flex-direction: column;

@@ -1,0 +1,61 @@
+# Live-host compatibility overlay.
+#
+# This host predates the isolated 172.30.0.0/24 default network and shares the
+# existing 172.18.0.0/16 meshcore-analytics_default bridge with independently
+# managed beacon and Discord services. Treat that bridge as external so Compose
+# never tries to remove it, and reserve a high, collision-free range for the
+# analytics proxies. Fresh/CI deployments must continue to use only
+# docker-compose.yml and its isolated network.
+services:
+  backend:
+    environment:
+      TRUSTED_PROXY_PEERS: ${TRUSTED_PROXY_PEERS:-172.18.30.10,172.18.30.11,172.18.30.12}
+
+  prometheus:
+    # The live host's independent isolated-network Prometheus owns 9090.
+    ports: !override
+      - "127.0.0.1:9092:9090"
+
+  app-ukmesh:
+    networks:
+      default:
+        ipv4_address: 172.18.30.10
+
+  website-ukmesh:
+    networks:
+      default:
+        ipv4_address: 172.18.30.11
+
+  website-dev:
+    networks:
+      default:
+        ipv4_address: 172.18.30.12
+
+  anubis-website-ukmesh:
+    networks:
+      default:
+        ipv4_address: 172.18.30.20
+
+  anubis-app-ukmesh:
+    networks:
+      default:
+        ipv4_address: 172.18.30.21
+
+  anubis-health-check:
+    networks:
+      default:
+        ipv4_address: 172.18.30.22
+        aliases:
+          - anubis-mesh-health-check
+
+  cloudflared:
+    networks:
+      default:
+        ipv4_address: 172.18.30.30
+      meshcore-beacon-ukmesh: {}
+
+networks:
+  default:
+    name: meshcore-analytics_default
+    external: true
+    ipam: !reset null

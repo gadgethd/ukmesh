@@ -1,6 +1,7 @@
 import { Request, Response, Router } from 'express';
 import {
   CHARTS_CACHE_TTL_MS,
+  CHARTS_CACHE_STALE_TTL_MS,
   INFERRED_NODES_CACHE_TTL_MS,
   NODE_LINKS_CACHE_TTL_MS,
   OWNER_DASHBOARD_CACHE_TTL_MS,
@@ -64,6 +65,8 @@ import { registerOwnerRoutes } from './routes/owner.js';
 import { registerPathingRoutes } from './routes/pathing.js';
 import { registerStatsRoutes } from './routes/stats.js';
 import { registerTelemetryRoutes } from './routes/telemetry.js';
+import { createNodeRepository } from '../repositories/nodes.js';
+import { createPlannedCoverageRepository } from '../repositories/plannedCoverage.js';
 import { registerSpamRoutes } from './routes/spam.js';
 import { registerTopologyRoutes } from './routes/topology.js';
 import { registerActivityTimelineRoutes } from './routes/activityTimeline.js';
@@ -72,10 +75,15 @@ import { registerExportRoutes } from './routes/exports.js';
 import { registerProductFeatureRoutes } from './routes/productFeatures.js';
 import { requireLocalOnly } from './utils/localOnly.js';
 import { networkFilters } from './utils/networkFilters.js';
+import { normalizeObserverQuery } from './utils/observer.js';
 import {
   PublicAllScopeForbiddenError,
+  InvalidPublicNetworkScopeError,
   resolvePublicNetworkScope,
 } from '../http/requestScope.js';
+import { assertUniqueRouteRegistry } from './routeRegistry.js';
+import { assertContractCoverage } from './contracts.js';
+import { ApiInputError, wrapAsyncHandlers } from './errors.js';
 
 const router = Router();
 // Anonymous cross-network aggregation is not a public API capability. Operator
@@ -83,12 +91,21 @@ const router = Router();
 router.use((req, res, next) => {
   try {
     resolvePublicNetworkScope(req.query['network'], req.headers);
+    normalizeObserverQuery(req.query['observer']);
   } catch (error) {
-    if (!(error instanceof PublicAllScopeForbiddenError)) {
+    if (
+      !(error instanceof PublicAllScopeForbiddenError)
+      && !(error instanceof InvalidPublicNetworkScopeError)
+      && !(error instanceof ApiInputError)
+    ) {
       next(error);
       return;
     }
-    res.status(400).json({ error: 'The all-network scope is not available on public endpoints' });
+    res.status(400).json({
+      error: error instanceof PublicAllScopeForbiddenError
+        ? 'The all-network scope is not available on public endpoints'
+        : 'Invalid public request scope',
+    });
     return;
   }
   next();
@@ -134,15 +151,16 @@ registerCoverageRoutes(router, {
 });
 registerPlannedCoverageRoutes(router, {
   coverageLimiter: COVERAGE_LIMITER,
-  pool,
+  plannedCoverageRepository: createPlannedCoverageRepository(pool),
 });
 registerNodeRoutes(router, {
   getNodes,
   getNodeHistory,
   getNodeAdverts,
-  query,
+  nodeRepository: createNodeRepository(query),
   requireLocalOnly,
   networkFilters,
+  getPublicVisibilityGeneration,
   inferredNodesCache,
   inferredNodesInflight,
   inferredNodesCacheTtlMs: INFERRED_NODES_CACHE_TTL_MS,
@@ -156,6 +174,7 @@ registerMiscRoutes(router, {
   getRecentPackets,
   getRecentPacketEvents,
   getPacketDetail,
+  getPublicVisibilityGeneration,
   packetDetailLimiter: PACKET_DETAIL_LIMITER,
 });
 registerOwnerRoutes(router, {
@@ -199,11 +218,13 @@ registerStatsRoutes(router, {
   statsCacheTtlMs: STATS_CACHE_TTL_MS,
   chartsCache,
   chartsCacheTtlMs: CHARTS_CACHE_TTL_MS,
+  chartsSnapshotStaleTtlMs: CHARTS_CACHE_STALE_TTL_MS,
   chartsInflight,
   expensiveLimiter: EXPENSIVE_LIMITER,
   statsChartsLimiter: STATS_CHARTS_LIMITER,
   networkFilters,
   query,
+  getPublicVisibilityGeneration,
   maskDecodedPathNodes,
 });
 registerTelemetryRoutes(router, { query });
@@ -228,5 +249,9 @@ registerExportRoutes(router, {
   networkFilters,
   exportLimiter: EXPORT_LIMITER,
 });
+
+assertUniqueRouteRegistry(router);
+assertContractCoverage(router);
+wrapAsyncHandlers(router);
 
 export default router;

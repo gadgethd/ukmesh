@@ -4,6 +4,7 @@ import { lazyResolvePath } from '../../path-lazy/lazyResolver.js';
 import { createPathingRepository } from '../../pathing/pathingRepository.js';
 import { createPathingService } from '../../pathing/pathingService.js';
 import { normalizeObserverQuery } from '../utils/observer.js';
+import { parseBoundedInteger, parseHexIdentifier } from '../utils/input.js';
 
 type ResolvePoolFn = {
   run<T>(job: { type: 'resolve'; packetHash: string; network: string; observer?: string | null } | { type: 'resolveMulti'; packetHash: string; network: string }): Promise<T | null>;
@@ -57,16 +58,11 @@ export function registerPathingRoutes(router: Router, deps: PathingRouteDeps): v
   });
 
   router.get('/path-beta/resolve', deps.pathBetaLimiter, async (req, res) => {
+    const packetHash = parseHexIdentifier(req.query['hash'], {
+      name: 'hash',
+      maxLength: 128,
+    });
     try {
-      const packetHash = String(req.query['hash'] ?? '').trim();
-      if (!packetHash) {
-        res.status(400).json({ error: 'Missing hash query parameter' });
-        return;
-      }
-      if (!/^[0-9a-fA-F]{1,128}$/.test(packetHash)) {
-        res.status(400).json({ error: 'Invalid hash format' });
-        return;
-      }
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const observer = normalizeObserverQuery(req.query['observer']);
       res.json(await service.resolvePacket(packetHash, network, observer));
@@ -90,16 +86,11 @@ export function registerPathingRoutes(router: Router, deps: PathingRouteDeps): v
   });
 
   router.get('/path-beta/resolve-multi', deps.pathBetaLimiter, async (req, res) => {
+    const packetHash = parseHexIdentifier(req.query['hash'], {
+      name: 'hash',
+      maxLength: 128,
+    });
     try {
-      const packetHash = String(req.query['hash'] ?? '').trim();
-      if (!packetHash) {
-        res.status(400).json({ error: 'Missing hash query parameter' });
-        return;
-      }
-      if (!/^[0-9a-fA-F]{1,128}$/.test(packetHash)) {
-        res.status(400).json({ error: 'Invalid hash format' });
-        return;
-      }
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       res.json(await service.resolvePacketMulti(packetHash, network));
     } catch (err) {
@@ -149,12 +140,11 @@ export function registerPathingRoutes(router: Router, deps: PathingRouteDeps): v
   });
 
   router.get('/path-lazy/resolve', deps.pathBetaLimiter, async (req, res) => {
+    const packetHash = parseHexIdentifier(req.query['hash'], {
+      name: 'hash',
+      maxLength: 128,
+    });
     try {
-      const packetHash = String(req.query['hash'] ?? '').trim();
-      if (!packetHash || !/^[0-9a-fA-F]{1,128}$/.test(packetHash)) {
-        res.status(400).json({ error: 'Invalid or missing hash' });
-        return;
-      }
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const result = await lazyResolvePath(packetHash, network, deps.query);
       if (!result) {
@@ -173,9 +163,14 @@ export function registerPathingRoutes(router: Router, deps: PathingRouteDeps): v
   });
 
   router.get('/path-learning', deps.pathLearningLimiter, async (req, res) => {
+    const limit = parseBoundedInteger(req.query['limit'], {
+      name: 'limit',
+      defaultValue: 6000,
+      min: 1000,
+      max: 12000,
+    });
     try {
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
-      const limit = Math.min(12000, Math.max(1000, Number(req.query['limit'] ?? 6000)));
       res.json(await service.getPathLearning(network, limit));
     } catch (err) {
       console.error('[api] GET /path-learning', (err as Error).message);

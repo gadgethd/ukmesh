@@ -72,6 +72,10 @@ import { ScopedCache } from '../../utils/scopedCache.js';
 import { createVisibilityPoller } from '../../hooks/useVisibilityPoll.js';
 
 const NODE_DOCK_RIGHT_PADDING = 372;
+const COVERAGE_PAGE_LIMIT = 25;
+const COVERAGE_VIEWPORT_MAX_ITEMS = 25;
+const COVERAGE_MAX_VIEWPORT_SPAN_DEGREES = 20;
+const COVERAGE_VIEWPORT_MIN_REFRESH_MS = 10_000;
 
 function mapPaddingForNode(selected: string | null): { top: number; right: number; bottom: number; left: number } {
   const desktop = window.matchMedia('(min-width: 641px)').matches;
@@ -105,6 +109,7 @@ function fetchNodeLinks(nodeId: string, scopeKey: string, scope: ApiScope): Prom
 }
 
 import {
+  applyMapOverlayTheme,
   installMapSourcesAndLayers,
 } from './mapSourceLayers.js';
 // ── Main Component ────────────────────────────────────────────────────────────
@@ -114,6 +119,7 @@ export function MapLibreMap({
   inferredActiveNodeIds,
   showLinks,
   showTerrain,
+  showCoverage,
   showClientNodes,
   showHexClashes,
   maxHexClashHops,
@@ -134,18 +140,24 @@ export function MapLibreMap({
   const mapLoadedRef = useRef(false);
   const nodesRef = useRef(nodeStore.getState().nodes);
   const coverageRef = useRef(coverageStore.getState().coverage);
+  const viewportCoverageRef = useRef<NodeCoverage[]>([]);
   const selectedCoverageRef = useRef<NodeCoverage | null>(null);
   const coverageRequestRef = useRef<AbortController | null>(null);
+  const viewportCoverageRequestRef = useRef<AbortController | null>(null);
+  const viewportCoverageTimerRef = useRef<number | null>(null);
+  const lastViewportCoverageRequestAtRef = useRef(0);
   const viablePairsRef = useRef(linkStateStore.getState().viablePairsArr);
   const linkMetricsRef = useRef(linkStateStore.getState().linkMetrics);
   const inferredNodesRef = useRef(inferredNodes);
   const inferredActiveNodeIdsRef = useRef(inferredActiveNodeIds);
   const showLinksRef = useRef(showLinks);
   const showTerrainRef = useRef(showTerrain);
+  const showCoverageRef = useRef(showCoverage);
   const showClientNodesRef = useRef(showClientNodes);
   const showHexClashesRef = useRef(showHexClashes);
   const maxHexClashHopsRef = useRef(maxHexClashHops);
   const viewshedEnabledRef = useRef(viewshedEnabled);
+  const mapLightRef = useRef(mapLight);
   const pathNodeIdsRef = useRef(useOverlayStore.getState().pathNodeIds);
   const replayNodeIdsRef = useRef(useOverlayStore.getState().replayNodeIds);
   const setClashPathLines = useOverlayStore((state) => state.setClashPathLines);
@@ -161,6 +173,7 @@ export function MapLibreMap({
   });
   const selectedNodeIdRef = useRef<string | null>(selectedNodeId);
   const onNodeSelectRef = useRef(onNodeSelect);
+  const refreshViewportCoverageRef = useRef<() => void>(() => undefined);
   onNodeSelectRef.current = onNodeSelect;
 
   const customLosNodeClickedRef = useRef(false);
@@ -204,6 +217,14 @@ export function MapLibreMap({
   useEffect(() => {
     coverageRequestRef.current?.abort();
     coverageRequestRef.current = null;
+    viewportCoverageRequestRef.current?.abort();
+    viewportCoverageRequestRef.current = null;
+    if (viewportCoverageTimerRef.current !== null) {
+      window.clearTimeout(viewportCoverageTimerRef.current);
+      viewportCoverageTimerRef.current = null;
+    }
+    lastViewportCoverageRequestAtRef.current = 0;
+    viewportCoverageRef.current = [];
     selectedCoverageRef.current = null;
     setSelectedCoverageNodeId(null);
     setCoverageLoadingNodeId(null);
@@ -212,6 +233,8 @@ export function MapLibreMap({
 
   // -- Map theme (light/dark) -------------------------------------------------
   useEffect(() => {
+      const theme = mapLight ? 'light' : 'dark';
+      mapLightRef.current = mapLight;
       const map = mapRef.current;
       if (map && mapLoadedRef.current) {
         const oldId = mapLight ? 'carto-dark' : 'carto-light';
@@ -259,6 +282,20 @@ export function MapLibreMap({
           map.setPaintProperty(layerId, 'text-halo-width', colorKey === 'place' ? 1.7 : 1.5);
           map.setPaintProperty(layerId, 'text-halo-blur', 0.1);
         }
+
+        applyMapOverlayTheme(map, theme);
+        const nodes = nodesRef.current;
+        const viablePairs = viablePairsRef.current;
+        const linkMetrics = linkMetricsRef.current;
+        const hiddenMask = hiddenCoordMaskRef.current;
+        const links = showLinksRef.current
+          ? buildLinksGeoJSON(nodes, viablePairs, linkMetrics, hiddenMask, theme)
+          : EMPTY_FC;
+        (map.getSource('viable-links') as maplibregl.GeoJSONSource | undefined)?.setData(links);
+        const plannedLinks = viewshedEnabledRef.current && showLinksRef.current
+          ? buildPlannedLinksGeoJSON(plannedRepeatersRef.current, nodes, hiddenMask, theme)
+          : EMPTY_FC;
+        (map.getSource('planned-links') as maplibregl.GeoJSONSource | undefined)?.setData(plannedLinks);
       }
   }, [mapLight]);
 
@@ -480,7 +517,12 @@ export function MapLibreMap({
   const updatePlannedLinks = useCallback(() => {
     if (!mapLoadedRef.current || !mapRef.current) return;
     const data = viewshedEnabledRef.current && showLinksRef.current
-      ? buildPlannedLinksGeoJSON(plannedRepeatersRef.current, nodesRef.current, hiddenCoordMaskRef.current)
+      ? buildPlannedLinksGeoJSON(
+          plannedRepeatersRef.current,
+          nodesRef.current,
+          hiddenCoordMaskRef.current,
+          mapLightRef.current ? 'light' : 'dark',
+        )
       : EMPTY_FC;
     (mapRef.current.getSource('planned-links') as maplibregl.GeoJSONSource | undefined)?.setData(data);
     mapRef.current.setLayoutProperty('planned-links-layer', 'visibility', viewshedEnabledRef.current && showLinksRef.current ? 'visible' : 'none');
@@ -742,19 +784,42 @@ export function MapLibreMap({
 
     if (dirty.links || dirty.nodes) {
       const linksGeoJSON = showLinksRef.current
-        ? buildLinksGeoJSON(nodes, viablePairsArr, linkMetrics, currentHiddenCoordMask)
+        ? buildLinksGeoJSON(
+            nodes,
+            viablePairsArr,
+            linkMetrics,
+            currentHiddenCoordMask,
+            mapLightRef.current ? 'light' : 'dark',
+          )
         : EMPTY_FC;
       (mapRef.current.getSource('viable-links') as maplibregl.GeoJSONSource | undefined)?.setData(linksGeoJSON);
       mapRef.current.setLayoutProperty('viable-links-layer', 'visibility', showLinksRef.current ? 'visible' : 'none');
     }
 
     if (dirty.coverage || clashDirty) {
-      const coverageGeoJSON = viewshedEnabled && selectedCoverageRef.current && !clash.clashModeActive
-        ? buildCoverageGeoJSON([selectedCoverageRef.current])
+      const visibleCoverage = new Map<string, NodeCoverage>();
+      if (showCoverageRef.current) {
+        for (const item of viewportCoverageRef.current) visibleCoverage.set(item.node_id, item);
+        const bounds = mapRef.current.getBounds();
+        for (const item of coverageRef.current) {
+          const node = nodesRef.current.get(item.node_id);
+          if (
+            node && hasCoords(node)
+            && node.lon >= bounds.getWest() - 2 && node.lon <= bounds.getEast() + 2
+            && node.lat >= bounds.getSouth() - 2 && node.lat <= bounds.getNorth() + 2
+          ) visibleCoverage.set(item.node_id, item);
+        }
+      }
+      if (selectedCoverageRef.current) {
+        visibleCoverage.set(selectedCoverageRef.current.node_id, selectedCoverageRef.current);
+      }
+      const coverageVisible = viewshedEnabled && visibleCoverage.size > 0 && !clash.clashModeActive;
+      const coverageGeoJSON = coverageVisible
+        ? buildCoverageGeoJSON(Array.from(visibleCoverage.values()))
         : EMPTY_FC;
       (mapRef.current.getSource('coverage') as maplibregl.GeoJSONSource | undefined)?.setData(coverageGeoJSON);
       mapRef.current.setLayoutProperty('coverage-fill', 'visibility',
-        viewshedEnabled && selectedCoverageRef.current && !clash.clashModeActive ? 'visible' : 'none');
+        coverageVisible ? 'visible' : 'none');
     }
 
     if (clashDirty) {
@@ -777,6 +842,90 @@ export function MapLibreMap({
       refreshMapSources();
     }, interval);
   }, [refreshMapSources]);
+
+  const refreshViewportCoverage = useCallback(() => {
+    if (viewportCoverageTimerRef.current !== null) {
+      window.clearTimeout(viewportCoverageTimerRef.current);
+      viewportCoverageTimerRef.current = null;
+    }
+    viewportCoverageRequestRef.current?.abort();
+    viewportCoverageRequestRef.current = null;
+    if (!viewshedEnabledRef.current || !showCoverageRef.current || !mapLoadedRef.current || !mapRef.current) {
+      viewportCoverageRef.current = [];
+      scheduleRefresh({ coverage: true });
+      return;
+    }
+
+    const refreshDelay = COVERAGE_VIEWPORT_MIN_REFRESH_MS
+      - (Date.now() - lastViewportCoverageRequestAtRef.current);
+    if (refreshDelay > 0) {
+      viewportCoverageTimerRef.current = window.setTimeout(
+        () => refreshViewportCoverageRef.current(),
+        refreshDelay,
+      );
+      return;
+    }
+    lastViewportCoverageRequestAtRef.current = Date.now();
+
+    const bounds = mapRef.current.getBounds();
+    const west = Math.max(-180, bounds.getWest());
+    const east = Math.min(180, bounds.getEast());
+    const south = Math.max(-90, bounds.getSouth());
+    const north = Math.min(90, bounds.getNorth());
+    if (west >= east || south >= north) return;
+
+    const lonParts = Math.max(1, Math.ceil((east - west) / COVERAGE_MAX_VIEWPORT_SPAN_DEGREES));
+    const latParts = Math.max(1, Math.ceil((north - south) / COVERAGE_MAX_VIEWPORT_SPAN_DEGREES));
+    const controller = new AbortController();
+    viewportCoverageRequestRef.current = controller;
+
+    type CoveragePage = {
+      items?: Array<NodeCoverage & { truncated?: boolean }>;
+      page?: { hasMore?: boolean; nextCursor?: string | null };
+    };
+
+    void (async () => {
+      const items = new Map<string, NodeCoverage>();
+      for (let latIndex = 0; latIndex < latParts && items.size < COVERAGE_VIEWPORT_MAX_ITEMS; latIndex += 1) {
+        const minLat = south + ((north - south) * latIndex) / latParts;
+        const maxLat = south + ((north - south) * (latIndex + 1)) / latParts;
+        for (let lonIndex = 0; lonIndex < lonParts && items.size < COVERAGE_VIEWPORT_MAX_ITEMS; lonIndex += 1) {
+          const minLon = west + ((east - west) * lonIndex) / lonParts;
+          const maxLon = west + ((east - west) * (lonIndex + 1)) / lonParts;
+          let cursor: string | null = null;
+          do {
+            const params = new URLSearchParams({
+              bbox: `${minLon},${minLat},${maxLon},${maxLat}`,
+              limit: String(COVERAGE_PAGE_LIMIT),
+            });
+            if (cursor) params.set('cursor', cursor);
+            const payload = await fetchJson<CoveragePage>(
+              withScopeParams(`/api/coverage?${params}`, requestScope),
+              { cache: 'no-store', signal: controller.signal },
+              { timeoutMs: 15_000, maxBytes: 5 * 1024 * 1024 },
+            );
+            for (const item of payload.items ?? []) {
+              if (!item.truncated && item.geom && typeof item.node_id === 'string') {
+                items.set(item.node_id, item);
+              }
+              if (items.size >= COVERAGE_VIEWPORT_MAX_ITEMS) break;
+            }
+            cursor = payload.page?.hasMore ? payload.page.nextCursor ?? null : null;
+          } while (cursor && items.size < COVERAGE_VIEWPORT_MAX_ITEMS);
+        }
+      }
+      if (controller.signal.aborted || viewportCoverageRequestRef.current !== controller) return;
+      viewportCoverageRef.current = Array.from(items.values());
+    })().catch(() => {
+      if (controller.signal.aborted || viewportCoverageRequestRef.current !== controller) return;
+      viewportCoverageRef.current = [];
+    }).finally(() => {
+      if (viewportCoverageRequestRef.current !== controller) return;
+      viewportCoverageRequestRef.current = null;
+      scheduleRefresh({ coverage: true });
+    });
+  }, [requestScope, scheduleRefresh]);
+  refreshViewportCoverageRef.current = refreshViewportCoverage;
 
   useEffect(() => {
     const noteArcActivity = () => { lastArcActivityRef.current = Date.now(); };
@@ -806,6 +955,22 @@ export function MapLibreMap({
     }
     scheduleRefresh();
   }, [viewshedEnabled, scheduleRefresh, setPlanRepeaterMode]);
+
+  useEffect(() => {
+    showCoverageRef.current = showCoverage;
+    if (!showCoverage) {
+      viewportCoverageRequestRef.current?.abort();
+      viewportCoverageRequestRef.current = null;
+      if (viewportCoverageTimerRef.current !== null) {
+        window.clearTimeout(viewportCoverageTimerRef.current);
+        viewportCoverageTimerRef.current = null;
+      }
+      viewportCoverageRef.current = [];
+      scheduleRefresh({ coverage: true });
+      return;
+    }
+    refreshViewportCoverageRef.current();
+  }, [showCoverage, scheduleRefresh]);
 
   const handleFocusSamePrefix = useCallback((nodeId: string) => {
     const prefix = nodeId.slice(0, 2).toUpperCase();
@@ -854,6 +1019,7 @@ export function MapLibreMap({
 
       installMapSourcesAndLayers(map, {
         showLinks: showLinksRef.current,
+        mapLight: mapLightRef.current,
       });
       // ── Click handler ──────────────────────────────────────────────────────
       map.on('click', 'planned-pins-dot', (e) => {
@@ -956,6 +1122,9 @@ export function MapLibreMap({
       map.setPadding(mapPaddingForNode(selectedNodeIdRef.current));
       onMapReady?.(map);
       refreshMapSources();
+      refreshViewportCoverageRef.current();
+
+      map.on('moveend', () => refreshViewportCoverageRef.current());
 
       // Apply any pre-existing selection (e.g. ?node= deep link) to the highlight.
       if (selectedNodeIdRef.current) {
@@ -987,6 +1156,12 @@ export function MapLibreMap({
 
     return () => {
       mapLoadedRef.current = false;
+      viewportCoverageRequestRef.current?.abort();
+      viewportCoverageRequestRef.current = null;
+      if (viewportCoverageTimerRef.current !== null) {
+        window.clearTimeout(viewportCoverageTimerRef.current);
+        viewportCoverageTimerRef.current = null;
+      }
       setClashPathLines([]);
       map.remove();
       mapRef.current = null;
@@ -1275,7 +1450,7 @@ export function MapLibreMap({
   return (
     <div className="map-area" style={{ position: 'relative', width: '100%', height: '100%' }}>
       <NodeSearch map={mapRef.current} onNodeSelect={onNodeSelect} />
-      <NodeLegend />
+      <NodeLegend mapLight={mapLight} />
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
 
       {/* Map tool buttons */}

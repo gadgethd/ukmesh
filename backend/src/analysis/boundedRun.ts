@@ -17,7 +17,7 @@ export type BoundedRunResult<T> = {
 
 export async function runBoundedItems<TInput, TOutput>(
   items: readonly TInput[],
-  work: (item: TInput, index: number) => Promise<TOutput>,
+  work: (item: TInput, index: number, signal: AbortSignal) => Promise<TOutput>,
   options: {
     windowStart: Date;
     windowEnd: Date;
@@ -27,6 +27,7 @@ export async function runBoundedItems<TInput, TOutput>(
     maxErrors?: number;
     now?: () => number;
     runId?: string;
+    signal?: AbortSignal;
   },
 ): Promise<BoundedRunResult<TOutput>> {
   const now = options.now ?? Date.now;
@@ -43,20 +44,47 @@ export async function runBoundedItems<TInput, TOutput>(
   let checkpoint = 0;
   let successfulItems = 0;
   let timedOut = false;
+  let leaseAborted = false;
+  const deadlineController = new AbortController();
+  const deadlineTimer = setTimeout(() => {
+    timedOut = true;
+    deadlineController.abort(new Error('analysis run deadline exceeded'));
+  }, Math.max(1, options.deadlineMs));
+  deadlineTimer.unref();
+  const signal = options.signal
+    ? AbortSignal.any([options.signal, deadlineController.signal])
+    : deadlineController.signal;
 
   const worker = async () => {
     while (nextIndex < items.length && errors.length < maxErrors) {
+      if (options.signal?.aborted) {
+        leaseAborted = true;
+        return;
+      }
       if (now() >= deadline) {
         timedOut = true;
+        deadlineController.abort(new Error('analysis run deadline exceeded'));
         return;
       }
       const index = nextIndex;
       nextIndex += 1;
       try {
-        const value = await work(items[index]!, index);
+        const value = await work(items[index]!, index, signal);
+        if (options.signal?.aborted) {
+          leaseAborted = true;
+          return;
+        }
         successfulItems += 1;
         if (options.collectResults !== false) indexedResults.push({ index, value });
       } catch (error) {
+        if (options.signal?.aborted) {
+          leaseAborted = true;
+          return;
+        }
+        if (deadlineController.signal.aborted) {
+          timedOut = true;
+          return;
+        }
         errors.push({
           index,
           message: error instanceof Error ? error.message : String(error),
@@ -65,12 +93,18 @@ export async function runBoundedItems<TInput, TOutput>(
       checkpoint += 1;
     }
   };
-  await Promise.all(Array.from({ length: concurrency }, () => worker()));
+  try {
+    await Promise.all(Array.from({ length: concurrency }, () => worker()));
+  } finally {
+    clearTimeout(deadlineTimer);
+  }
 
   const results = indexedResults
     .sort((left, right) => left.index - right.index)
     .map((entry) => entry.value);
-  const status: BoundedRunStatus = timedOut
+  const status: BoundedRunStatus = leaseAborted
+    ? 'stale'
+    : timedOut
     ? 'timed_out'
     : errors.length > 0
       ? (successfulItems > 0 ? 'partial' : 'failed')

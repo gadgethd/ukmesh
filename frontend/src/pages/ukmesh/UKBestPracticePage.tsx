@@ -197,7 +197,7 @@ export const UKBestPracticePage: React.FC = () => (
         <p>
           Check the observer bridge service is running and connected:
         </p>
-        <div className="code-block">
+        <div className="code-block" tabIndex={0} aria-label="Observer status command example">
           <pre>{'journalctl -u mctomqtt -f'}</pre>
         </div>
         <p>
@@ -233,7 +233,7 @@ export const UKBestPracticePage: React.FC = () => (
           charge-only cable). If the problem persists, disable USB autosuspend — the meshcoretomqtt
           install script offers this as a udev rule, or you can add it manually:
         </p>
-        <div className="code-block">
+        <div className="code-block" tabIndex={0} aria-label="Observer log command example">
           <pre>{'echo \'ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="303a", ATTR{power/autosuspend}="-1"\' | sudo tee /etc/udev/rules.d/99-meshcore-usb.rules\nsudo udevadm control --reload-rules && sudo udevadm trigger'}</pre>
         </div>
 

@@ -10,7 +10,7 @@ A real-time analytics platform for [MeshCore](https://meshcore.io) networks. It 
 - RF coverage viewshed polygons per repeater using SRTM terrain data
 - Link intelligence overlay with directional observations and path-loss viability
 - Public repeater-topology explorer with hub ranking, graph components, likely bridge repeaters, isolated nodes, and multibyte-evidence filtering
-- Map modes, shareable viewport/filter URLs, node detail drawer, and bounded activity replay
+- Map modes, shareable viewport/filter URLs, selected-node popup, and bounded activity replay
 - Planned-repeater comparison with saved scenarios, share links, and overlap estimates
 - Regional health scoring and predicted-versus-observed RF validation
 - Local saved searches/watchlists for nodes, observers, regions, packet types, and incidents
@@ -65,7 +65,7 @@ A real-time analytics platform for [MeshCore](https://meshcore.io) networks. It 
 - Owner-facing dashboard: repeater summary, packet history, advert counts, direct sender map, heard-by list, link health, and alerts
 - Planned node placement tool: drop a marker on the map, preview estimated RF coverage before deploying hardware
 - Planned repeater registration/claim workflow improvements
-- In-app owner alerts for low battery, stale links, advert drops, silence, and missing observers
+- Owner alerts for offline duration, low battery voltage, and excessive predicted path loss, with durable delivery history and test delivery
 
 ### Phase 6 - Network intelligence expansion (complete)
 - Bounded topology graph with hubs, graph components, isolated repeaters, and likely bridge nodes
@@ -114,13 +114,22 @@ cd ukmesh
 
 # 2. Copy and configure environment
 cp .env.example .env
-# Edit .env — at minimum set POSTGRES_PASSWORD, JWT_SECRET, MQTT_PASSWORD,
-# and REDIS_PASSWORD.
+# Edit .env. Required values are POSTGRES_PASSWORD, JWT_SECRET,
+# MQTT_PASSWORD, REDIS_PASSWORD, OPERATOR_SITE_TOKEN,
+# ANUBIS_ED25519_PRIVATE_KEY_HEX, GRAFANA_ADMIN_PASSWORD, and the full
+# 40-character HEALTHCHECK_SOURCE_REF.
 
-# 3. Start everything
+# 3. Create Mosquitto's backend credential and least-privilege ACL
+set -a
+. ./.env
+set +a
+scripts/bootstrap-mosquitto.sh
+
+# 4. Start everything
 docker compose up -d
 
-# 4. Check logs
+# 5. Confirm readiness and inspect logs
+curl --fail http://127.0.0.1:3000/readyz
 docker compose logs -f backend
 ```
 
@@ -154,6 +163,7 @@ Copy `.env.example` to `.env` and fill in your values. All variables used by the
 | `POSTGRES_DB` | `meshcore` | TimescaleDB database name |
 | `POSTGRES_USER` | `meshcore` | TimescaleDB user |
 | `POSTGRES_PASSWORD` | *(required)* | TimescaleDB password |
+| `POSTGRES_MAX_WORKER_PROCESSES` | `24` | PostgreSQL worker slots; keep above the Timescale background-worker setting plus launcher/scheduler headroom |
 | `MQTT_BROKER_URL` | `ws://mosquitto:9001` | Mosquitto WebSocket URL (internal) |
 | `MQTT_USERNAME` | `backend` | MQTT client username |
 | `MQTT_PASSWORD` | *(required)* | MQTT client password |
@@ -161,6 +171,7 @@ Copy `.env.example` to `.env` and fill in your values. All variables used by the
 | `REDIS_URL` | `redis://redis:6379` | Redis URL for WebSocket pub/sub |
 | `JWT_SECRET` | *(required)* | Secret for JWT verification |
 | `ALLOWED_ORIGINS` | `http://localhost:3001,http://localhost:3002` | Comma-separated browser origins allowed for CORS and WebSocket |
+| `API_RATE_LIMIT_MAX` | `120` | Per-client public API requests/minute; raise only in an isolated load-test project |
 | `VITE_APP_HOSTNAME` | *(blank — always shows dashboard)* | If set, only this hostname serves the analytics dashboard; all others serve the public website layout |
 | `MESHCORE_CHANNEL_SECRETS` | *(blank)* | Comma-separated channel secrets for decrypting GroupText packets. Format: `name:hex` or bare hex. The default MeshCore public channel key is always included. |
 | `OPENTOPODATA_API` | `https://api.opentopodata.org` | Elevation API endpoint for viewshed computation |
@@ -172,25 +183,48 @@ Copy `.env.example` to `.env` and fill in your values. All variables used by the
 | `OWNER_ACL_UNMANAGED_USERS` | `backend,test,test2` | Exact broker accounts intentionally preserved outside owner grant management |
 | `OWNER_ACL_ALLOW_EMPTY_USERS` | *(empty)* | Explicitly reviewed owner accounts allowed to render with no publish grants |
 | `VIEWSHED_ENABLED` | `false` | Enable coverage/planned-repeater API only when the profile-gated viewshed worker is running |
+| `PUBLIC_FEATURE_INFERRED_NODES_ENABLED` | `true` | Runtime kill switch for privacy-reviewed inferred map nodes |
+| `PUBLIC_FEATURE_PACKET_ARCS_ENABLED` | `true` | Runtime kill switch for privacy-filtered live packet arcs |
+| `PUBLIC_FEATURE_HEATMAP_ENABLED` | `false` | Runtime kill switch for the packet heatmap |
+| `PUBLIC_FEATURE_CONFIG_TTL_SECONDS` | `30` | Client refresh interval for same-origin public feature configuration (bounded to 5–300 seconds) |
 | `COVERAGE_MODEL` | `rf_radial_100m` | Coverage model used by `viewshed-worker` |
-| `COVERAGE_MODEL_VERSION` | `5` | Coverage schema/version gate used to trigger recomputation |
+| `COVERAGE_MODEL_VERSION` | `7` | Coverage schema/version gate used to trigger recomputation |
+| `RF_PREFIX_RAY_BATCH` | `8` | CPU RF rays evaluated together; raise cautiously because memory grows with the batch |
 | `CLOUDFLARE_TUNNEL_TOKEN` | *(optional)* | Cloudflare Zero Trust tunnel token |
 | `PORT` | `3000` | Internal app port |
+
+The inferred-node and packet-arc layers are enabled after privacy/correctness
+validation; the heatmap remains disabled by default. Each has an independent
+runtime kill switch. To operate an immediate kill switch,
+change the relevant value in `.env`, then recreate the backend without building
+an image:
+
+```bash
+docker compose up -d --no-build --force-recreate backend
+```
+
+Browsers load `/api/runtime-config` before the map starts and refresh it within
+`PUBLIC_FEATURE_CONFIG_TTL_SECONDS`. A failed, malformed, or timed-out request
+disables all three layers.
 
 ---
 
 ## Mosquitto Setup
 
 Mosquitto is configured for WebSocket-only access with password authentication.
-After first starting the stack, add the backend service password:
+Create the backend credential and least-privilege read ACL before first startup:
 
 ```bash
-# Add the backend client password (must match MQTT_PASSWORD in .env)
-docker exec meshcore-analytics-mosquitto-1 \
-  mosquitto_passwd -b /mosquitto/config/passwd backend your_password
-
-docker compose restart mosquitto
+# Reads MQTT_USERNAME/MQTT_PASSWORD from the environment.
+set -a
+. ./.env
+set +a
+scripts/bootstrap-mosquitto.sh
+docker compose up -d
 ```
+
+The bootstrap is idempotent, sets credential files to mode `0640`, refuses
+symlinks or incomplete existing state, and never overwrites live credentials.
 
 Do not create observer passwords manually. Provision every observer with
 `~/bin/newuser`; it installs and verifies the publish ACL before enabling the
@@ -214,15 +248,17 @@ To expose the app and MQTT broker publicly without opening firewall ports:
 3. Add to `.env`: `CLOUDFLARE_TUNNEL_TOKEN=<token>`
 4. Start with the tunnel profile: `docker compose --profile tunnel up -d`
 5. Configure public hostnames in the Cloudflare dashboard (example):
-   - `app.example.com` → `http://app-ukmesh:80`
-   - `www.example.com` → `http://website-ukmesh:80`
+   - `app.example.com` → `http://anubis-app-ukmesh:8923`
+   - `www.example.com` → `http://anubis-website-ukmesh:8923`
    - `mqtt.example.com` → `http://mosquitto:9001`
-   - `healthcheck.example.com` → `http://mesh-health-check:3090`
+   - `healthcheck.example.com` → `http://anubis-mesh-health-check:8923`
 
 For UKMesh health checks, point `healthcheck.ukmesh.com` at
-`http://mesh-health-check:3090` in the same tunnel. The container uses the
+`http://anubis-mesh-health-check:8923` in the same tunnel. The container uses the
 internal Mosquitto WebSocket listener and persists observer/result state in the
-`mesh_health_check_data` Docker volume. By default it uses
+`mesh_health_check_data` Docker volume. A network-isolated one-shot Compose
+initializer normalizes that volume's ownership before the capability-free,
+non-root application starts. By default it uses
 `HEALTHCHECK_TEST_CHANNEL_NAME=ukmeshtest` and reuses the existing `test:...`
 entry from `MESHCORE_CHANNEL_SECRETS` via
 `HEALTHCHECK_TEST_CHANNEL_SECRET_SOURCE_NAME=test`.
@@ -273,8 +309,8 @@ MeshCore Devices
      └─ app-ukmesh / website-ukmesh / website-dev (interactive dashboard + public site + owner portal)
 
  Python Workers
-     ├─ viewshed-worker (meshcore:viewshed_jobs)
-     ├─ link-worker (meshcore:link_jobs)
+     ├─ viewshed-worker (bounded meshcore:viewshed:v2 protocol; legacy drain reader)
+     ├─ link-worker (bounded meshcore:link:v3 protocol; legacy drain reader)
      ├─ SRTM terrain tiles (auto-downloaded)
      └─ node_coverage + node_links updates
 
@@ -294,9 +330,10 @@ MeshCore Devices
 
 | Service | Image | Purpose |
 |---|---|---|
-| `timescaledb` | `timescale/timescaledb:latest-pg16` | Time-series and relational data storage |
-| `mosquitto` | `eclipse-mosquitto:2` | MQTT broker (WebSocket only) |
-| `redis` | `redis:7-alpine` | WebSocket fan-out pub/sub and job queue |
+| `timescaledb` | Digest-pinned TimescaleDB/PostgreSQL image from Compose | Time-series and relational data storage |
+| `mosquitto` | Digest-pinned Eclipse Mosquitto image from Compose | MQTT broker (WebSocket only) |
+| `mosquitto-reloader` | Locally built, least-privilege helper | Authenticated broker-local ACL reload |
+| `redis` | Digest-pinned Redis image from Compose | WebSocket fan-out pub/sub and bounded job queues |
 | `backend` | Built from `Dockerfile.backend` | MQTT ingest, decoding, API, WebSocket |
 | `path-learning-worker` | Built from `Dockerfile.backend` | Hourly path-learning model rebuilds |
 | `path-history-worker` | Built from `Dockerfile.backend` | Historical path resolution backfill |
@@ -310,14 +347,26 @@ MeshCore Devices
 | `mesh-health-check` | Built from the configured `gadgethd/meshcore-health-check` ref | MeshCore observer coverage health-check app |
 | `website-dev` | Built from `Dockerfile.website` | Isolated test/status site for `meshcore-test/*` traffic |
 | `cloudflared` | `cloudflare/cloudflared` | Optional Cloudflare Tunnel (use `--profile tunnel`) |
+| `alloy`, `loki` | Digest-pinned observability images | Bounded journal/container log collection and storage |
+| `prometheus`, `alertmanager`, `alert-receiver` | Digest-pinned observability images plus local receiver | Metrics, rules, grouped alert delivery, and delivery history |
+| `grafana` | Digest-pinned Grafana image | Provisioned read-only operational dashboards |
+| `postgres-exporter`, `redis-exporter`, `node-exporter`, `blackbox-exporter` | Digest-pinned exporters | Database, queue, host, and endpoint telemetry |
 
 ---
 
 ## Data Retention
 
-- Packet retention policy is currently disabled. Historical data is kept indefinitely unless explicitly pruned.
-- Node/link/coverage/path-learning/health tables are also retained indefinitely by default.
-- Synthetic journey results are pruned to 14 days by the monitor.
+- Compression and destructive retention ship disabled. Raw packets and status
+  samples remain intact until a table-specific, backup- and restore-gated
+  lifecycle rollout is approved.
+- The proposed raw retention window is 180 days, preserving the longest
+  120-day learner dependency. Privacy-safe hourly/daily aggregates and current
+  node/link/coverage/model state remain longer lived.
+- Operational row-table cleanup is bounded and runs only when both
+  `DATA_LIFECYCLE_RETENTION_ENABLED=true` and the exact table appears in
+  `DATA_LIFECYCLE_RETENTION_TARGETS`.
+- See `docs/db-lifecycle.md` for the exact dry-run inventory, compression,
+  retention, owner export, and restore requirements.
 
 ---
 

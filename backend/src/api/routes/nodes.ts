@@ -1,14 +1,23 @@
 import type { Request, Response, Router } from 'express';
-import type { QueryResultRow } from 'pg';
 import { resolvePublicNetworkScope } from '../../http/requestScope.js';
 import type { NetworkFilters } from '../utils/networkFilters.js';
 import { normalizeObserverQuery } from '../utils/observer.js';
 import { isPrivateNode, redactPrivateNode } from '../utils/privateNode.js';
-
-type QueryFn = <T extends QueryResultRow = QueryResultRow>(
-  text: string,
-  params?: unknown[],
-) => Promise<{ rows: T[] }>;
+import type { NodeRepository } from '../../repositories/nodes.js';
+import {
+  PublicMapInputError,
+  encodePublicMapCursor,
+  fitPublicMapRowsToByteBudget,
+  parsePublicMapCursor,
+  parsePublicMapFields,
+  parsePublicMapLimit,
+  parsePublicMapSnapshot,
+} from '../../nodes/publicMap.js';
+import {
+  parseBoundedInteger,
+  parseEnum,
+  parseHexIdentifier,
+} from '../utils/input.js';
 
 type NodeRecord = {
   node_id: string;
@@ -48,13 +57,18 @@ type InferredActiveResponse = {
   inferredActiveNodeIds: string[];
 };
 
+const MAX_INFERRED_PACKET_ROWS = 100_000;
+const MAX_INFERRED_NODES = 2_000;
+const MAX_INFERRED_ACTIVE_NODE_IDS = 5_000;
+
 type NodesRouteDeps = {
   getNodes: GetNodesFn;
   getNodeHistory: GetNodeHistoryFn;
   getNodeAdverts: GetNodeAdvertsFn;
-  query: QueryFn;
+  nodeRepository: NodeRepository;
   requireLocalOnly: RequireLocalOnlyFn;
   networkFilters: (network?: string, observer?: string) => NetworkFilters;
+  getPublicVisibilityGeneration: () => Promise<number>;
   inferredNodesCache: Map<string, { ts: number; data: unknown }>;
   inferredNodesInflight: Map<string, Promise<unknown>>;
   inferredNodesCacheTtlMs: number;
@@ -69,9 +83,10 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
     getNodes,
     getNodeHistory,
     getNodeAdverts,
-    query,
+    nodeRepository,
     requireLocalOnly,
     networkFilters,
+    getPublicVisibilityGeneration,
     inferredNodesCache,
     inferredNodesInflight,
     inferredNodesCacheTtlMs,
@@ -81,219 +96,18 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
     nodesLimiter,
   } = deps;
 
-  router.get('/nodes/map', async (req, res) => {
-    try {
-      const network = resolvePublicNetworkScope(req.query['network'], req.headers);
-      const scope = networkFilters(network, normalizeObserverQuery(req.query['observer']));
-      const allowed = ['node_id', 'name', 'lat', 'lon', 'role', 'iata', 'last_seen', 'is_online', 'hardware_model', 'firmware_version'] as const;
-      const requested = String(req.query['fields'] ?? '')
-        .split(',')
-        .map((field) => field.trim())
-        .filter((field): field is typeof allowed[number] => allowed.includes(field as typeof allowed[number]));
-      const fields = requested.length > 0 ? [...new Set(['node_id', ...requested])] : [...allowed];
-      const result = await query<Record<string, unknown>>(
-        `SELECT ${fields.map((field) => `n.${field}`).join(', ')}
-         FROM nodes n
-         WHERE n.lat IS NOT NULL AND n.lon IS NOT NULL
-           AND (n.role IS NULL OR n.role IN (1, 2, 3, 4))
-           AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
-           ${scope.nodesAlias('n')}
-         ORDER BY n.last_seen DESC NULLS LAST`,
-        scope.params,
-      );
-      res.setHeader('Cache-Control', 'public, max-age=60, stale-while-revalidate=300');
-      res.json(result.rows);
-    } catch (err) {
-      console.error('[api] GET /nodes/map', (err as Error).message);
-      res.status(500).json({ error: 'Internal server error' });
-    }
-  });
-
   router.get('/local/test-diagnostics', async (req, res) => {
     try {
       if (!requireLocalOnly(req, res)) return;
-
-      const [nodes, packetsResult, latestStatusRows, statusSamplesResult] = await Promise.all([
+      const [nodes, diagnostics] = await Promise.all([
         getNodes('test'),
-        query<{
-          time: string;
-          topic: string;
-          packet_hash: string | null;
-          packet_type: number | null;
-          route_type: number | null;
-          hop_count: number | null;
-          src_node_id: string | null;
-          rx_node_id: string | null;
-          rssi: number | null;
-          snr: number | null;
-          payload: Record<string, unknown> | null;
-          raw_hex: string | null;
-          path_hash_size_bytes: number | null;
-          path_hashes: string[] | null;
-        }>(
-          `SELECT
-             time::text,
-             topic,
-             packet_hash,
-             packet_type,
-             route_type,
-             hop_count,
-             src_node_id,
-             rx_node_id,
-             rssi,
-             snr,
-             payload,
-             raw_hex,
-             path_hash_size_bytes,
-             path_hashes
-           FROM packets
-           WHERE network = 'test'
-           ORDER BY time DESC
-           LIMIT 2000`,
-          [],
-        ),
-        query<{
-          time: string;
-          node_id: string;
-          network: string | null;
-          battery_mv: number | null;
-          uptime_secs: number | null;
-          tx_air_secs: number | null;
-          rx_air_secs: number | null;
-          channel_utilization: number | null;
-          air_util_tx: number | null;
-          stats: Record<string, unknown> | null;
-          name: string | null;
-          iata: string | null;
-          hardware_model: string | null;
-          firmware_version: string | null;
-        }>(
-          `SELECT * FROM (
-             SELECT DISTINCT ON (nss.node_id)
-               nss.time::text,
-               nss.node_id,
-               nss.network,
-               nss.battery_mv,
-               nss.uptime_secs,
-               nss.tx_air_secs,
-               nss.rx_air_secs,
-               nss.channel_utilization,
-               nss.air_util_tx,
-               nss.stats,
-               n.name,
-               n.iata,
-               n.hardware_model,
-               n.firmware_version
-             FROM node_status_samples nss
-             LEFT JOIN nodes n ON n.node_id = nss.node_id
-             WHERE nss.network = 'test'
-             ORDER BY nss.node_id, nss.time DESC
-           ) latest
-           ORDER BY time DESC`,
-          [],
-        ),
-        query<{
-          time: string;
-          node_id: string;
-          network: string | null;
-          battery_mv: number | null;
-          uptime_secs: number | null;
-          tx_air_secs: number | null;
-          rx_air_secs: number | null;
-          channel_utilization: number | null;
-          air_util_tx: number | null;
-          stats: Record<string, unknown> | null;
-        }>(
-          `SELECT
-             time::text,
-             node_id,
-             network,
-             battery_mv,
-             uptime_secs,
-             tx_air_secs,
-             rx_air_secs,
-             channel_utilization,
-             air_util_tx,
-             stats
-           FROM node_status_samples
-           WHERE network = 'test'
-           ORDER BY time DESC`,
-          [],
-        ),
+        nodeRepository.loadTestDiagnostics(),
       ]);
-
-      const packets = packetsResult.rows;
-      const latestStatuses = latestStatusRows.rows;
-      const statusSamples = statusSamplesResult.rows;
-      const latestStatus = latestStatusRows.rows[0] ?? null;
-      let history: unknown[] = [];
-      if (latestStatus?.node_id) {
-        const historyRows = await query<{
-          time: string;
-          battery_mv: number | null;
-          uptime_secs: number | null;
-          channel_utilization: number | null;
-          air_util_tx: number | null;
-          heap_free: number | null;
-          heap_min_free: number | null;
-          uptime_ms: number | null;
-          rx_publish_calls: number | null;
-          tx_publish_calls: number | null;
-          tx_queue_depth: number | null;
-          tx_queue_depth_peak: number | null;
-        }>(
-          `SELECT
-             time::text,
-             battery_mv,
-             uptime_secs,
-             channel_utilization,
-             air_util_tx,
-             CASE
-               WHEN jsonb_typeof(stats->'heap_free') = 'number' THEN (stats->>'heap_free')::double precision
-               ELSE NULL
-             END AS heap_free,
-             CASE
-               WHEN jsonb_typeof(stats->'heap_min_free') = 'number' THEN (stats->>'heap_min_free')::double precision
-               ELSE NULL
-             END AS heap_min_free,
-             CASE
-               WHEN jsonb_typeof(stats->'uptime_ms') = 'number' THEN (stats->>'uptime_ms')::double precision
-               ELSE NULL
-             END AS uptime_ms,
-             CASE
-               WHEN jsonb_typeof(stats->'rx_publish_calls') = 'number' THEN (stats->>'rx_publish_calls')::double precision
-               ELSE NULL
-             END AS rx_publish_calls,
-             CASE
-               WHEN jsonb_typeof(stats->'tx_publish_calls') = 'number' THEN (stats->>'tx_publish_calls')::double precision
-               ELSE NULL
-             END AS tx_publish_calls,
-             CASE
-               WHEN jsonb_typeof(stats->'tx_queue_depth') = 'number' THEN (stats->>'tx_queue_depth')::double precision
-               ELSE NULL
-             END AS tx_queue_depth,
-             CASE
-               WHEN jsonb_typeof(stats->'tx_queue_depth_peak') = 'number' THEN (stats->>'tx_queue_depth_peak')::double precision
-               ELSE NULL
-             END AS tx_queue_depth_peak
-           FROM node_status_samples
-           WHERE node_id = $1
-             AND network = 'test'
-             AND time > NOW() - INTERVAL '24 hours'
-           ORDER BY time ASC`,
-          [latestStatus.node_id],
-        );
-        history = historyRows.rows;
-      }
 
       res.json({
         network: 'test',
         nodes,
-        packets,
-        latestStatuses,
-        statusSamples,
-        latestStatus,
-        history,
+        ...diagnostics,
       });
     } catch (err) {
       console.error('[api] GET /local/test-diagnostics', (err as Error).message);
@@ -302,10 +116,14 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
   });
 
   router.get('/nodes', nodesLimiter, async (req, res) => {
+    const fields = parseEnum(req.query['fields'], {
+      name: 'fields',
+      values: ['slim', 'full'] as const,
+      defaultValue: 'full',
+    })!;
     try {
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const observer = normalizeObserverQuery(req.query['observer']);
-      const fields = req.query['fields'] === 'slim' ? 'slim' : 'full';
       const nodes = await getNodes(network, observer, fields);
       res.json(nodes.filter((node) => !isPrivateNode(node.name)).map(redactPrivateNode));
     } catch (err) {
@@ -319,26 +137,42 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const observer = normalizeObserverQuery(req.query['observer']);
       const filters = networkFilters(network, observer);
-      const result = await query(
-        `SELECT
-           n.node_id, n.name, n.lat, n.lon, n.role, n.iata,
-           n.last_seen::text, n.is_online, n.hardware_model,
-           n.firmware_version, n.advert_count
-         FROM nodes n
-         WHERE n.role = 2
-           AND n.lat IS NOT NULL
-           AND n.lon IS NOT NULL
-           AND n.lat BETWEEN -90 AND 90
-           AND n.lon BETWEEN -180 AND 180
-           AND NOT (ABS(n.lat) < 1e-9 AND ABS(n.lon) < 1e-9)
-           AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
-           ${filters.nodesAlias('n')}
-         ORDER BY n.node_id`,
-        filters.params,
+      const fields = parsePublicMapFields(req.query['fields']);
+      const limit = parsePublicMapLimit(req.query['limit']);
+      const snapshot = parsePublicMapSnapshot(req.query['snapshot']);
+      const cursor = parsePublicMapCursor(req.query['cursor']);
+      const result = await nodeRepository.listPublicMapRows(
+        fields,
+        filters,
+        snapshot,
+        cursor,
+        limit,
       );
+      const hasExtraRow = result.length > limit;
+      const fitted = fitPublicMapRowsToByteBudget(result, limit);
+      const rows = fitted.rows;
+      const complete = !hasExtraRow && !fitted.truncatedByBytes;
+      const nextCursor = complete || rows.length < 1
+        ? null
+        : encodePublicMapCursor(String(rows[rows.length - 1]!['node_id']));
       res.setHeader('Cache-Control', 'public, max-age=30, stale-while-revalidate=60');
-      res.json(result.rows);
+      res.setHeader('X-Map-Snapshot', snapshot);
+      res.setHeader('X-Map-Complete', complete ? 'true' : 'false');
+      res.json({
+        nodes: rows,
+        page: {
+          snapshot,
+          nextCursor,
+          complete,
+          returned: rows.length,
+          rowLimit: limit,
+        },
+      });
     } catch (err) {
+      if (err instanceof PublicMapInputError) {
+        res.status(400).json({ error: err.message });
+        return;
+      }
       console.error('[api] GET /nodes/map', (err as Error).message);
       res.status(500).json({ error: 'Internal server error' });
     }
@@ -349,8 +183,9 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const observer = normalizeObserverQuery(req.query['observer']);
       const scope = networkFilters(network, observer);
+      const visibilityGeneration = await getPublicVisibilityGeneration();
 
-      const inferredCacheKey = `${network ?? 'all'}:${observer ?? ''}`;
+      const inferredCacheKey = `${network ?? 'all'}:${observer ?? ''}:visibility-${visibilityGeneration}`;
       const inferredCached = inferredNodesCache.get(inferredCacheKey);
       if (inferredCached && Date.now() - inferredCached.ts < inferredNodesCacheTtlMs) {
         res.json(inferredCached.data);
@@ -381,23 +216,8 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
         const [visibleNodes, allNodeIds, packetsResult] = await Promise.all([
           getNodes(network, observer, 'slim').then((nodes) =>
           nodes.filter((node) => !isPrivateNode(node.name)).map(redactPrivateNode)),
-        query<{ node_id: string }>('SELECT node_id FROM nodes'),
-        query<{
-          packet_hash: string;
-          time: string;
-          path_hashes: string[] | null;
-          path_hash_size_bytes: number | null;
-        }>(
-          `SELECT p.packet_hash, p.time::text, p.path_hashes, p.path_hash_size_bytes
-           FROM packets p
-           WHERE p.time > NOW() - INTERVAL '7 days'
-             ${scope.packetsAlias('p')}
-             AND p.path_hash_size_bytes > 1
-             AND p.path_hashes IS NOT NULL
-             AND array_length(p.path_hashes, 1) > 0
-           ORDER BY p.time DESC`,
-          scope.params,
-        ),
+          nodeRepository.listAllNodeIds(),
+          nodeRepository.listInferredPackets(scope, MAX_INFERRED_PACKET_ROWS),
         ]);
 
       const exactNodes = visibleNodes.filter((node) =>
@@ -437,7 +257,7 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
         return exactNodePrefixes.get(normalized) ?? null;
       };
 
-      for (const row of packetsResult.rows) {
+      for (const row of packetsResult) {
         const pathHashes = Array.isArray(row.path_hashes) ? row.path_hashes : [];
         if (pathHashes.length < 3) continue;
         const hashSizeBytes = Number(row.path_hash_size_bytes ?? 0);
@@ -511,7 +331,7 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
       };
 
       const knownNodePrefixes = new Set<string>();
-      for (const node of allNodeIds.rows) {
+      for (const node of allNodeIds) {
         const nodeId = node.node_id.toUpperCase();
         if (nodeId.length >= 4) knownNodePrefixes.add(nodeId.slice(0, 4));
         if (nodeId.length >= 6) knownNodePrefixes.add(nodeId.slice(0, 6));
@@ -538,7 +358,8 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
           b.inferred_packet_count - a.inferred_packet_count
           || b.inferred_observations - a.inferred_observations
           || b.last_seen.localeCompare(a.last_seen)
-        ));
+        ))
+        .slice(0, MAX_INFERRED_NODES);
       const inferredActiveNodeIds = Array.from(inferredKnowns.values())
         .filter((entry) => entry.packetHashes.size >= 2)
         .sort((a, b) => (
@@ -546,7 +367,8 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
           || b.observations - a.observations
           || b.latestSeen.localeCompare(a.latestSeen)
         ))
-        .map((entry) => entry.nodeId);
+        .map((entry) => entry.nodeId)
+        .slice(0, MAX_INFERRED_ACTIVE_NODE_IDS);
 
       const payload: InferredActiveResponse = {
         inferredNodes,
@@ -565,12 +387,12 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
   });
 
   router.get('/nodes/:id/links', async (req, res) => {
+    const id = parseHexIdentifier(req.params['id'], {
+      name: 'node ID',
+      minLength: 64,
+      maxLength: 64,
+    });
     try {
-      const id = req.params['id']!;
-      if (!/^[0-9a-fA-F]{64}$/.test(id)) {
-        res.status(400).json({ error: 'Invalid node ID format' });
-        return;
-      }
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const filters = networkFilters(network);
       const cacheKey = `${network}:${id.toUpperCase()}`;
@@ -579,47 +401,7 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
         res.json(cached.data);
         return;
       }
-      const idParam = `$${filters.params.length + 1}`;
-      const loadLinks = async () => {
-        const result = await query<{
-          peer_id: string;
-          peer_name: string | null;
-          observed_count: number;
-          itm_path_loss_db: number | null;
-          count_this_to_peer: number;
-          count_peer_to_this: number;
-        }>(
-          `WITH source_node AS MATERIALIZED (
-             SELECT node_id
-             FROM nodes
-             WHERE node_id = ${idParam}
-               AND (name IS NULL OR name NOT LIKE '%🚫%')
-               ${filters.nodes}
-           ),
-           relevant_links AS MATERIALIZED (
-             SELECT
-               CASE WHEN nl.node_a_id = ${idParam} THEN nl.node_b_id ELSE nl.node_a_id END AS peer_id,
-               nl.observed_count,
-               nl.itm_path_loss_db,
-               CASE WHEN nl.node_a_id = ${idParam} THEN nl.count_a_to_b ELSE nl.count_b_to_a END AS count_this_to_peer,
-               CASE WHEN nl.node_a_id = ${idParam} THEN nl.count_b_to_a ELSE nl.count_a_to_b END AS count_peer_to_this
-             FROM node_links nl
-             WHERE (nl.node_a_id = ${idParam} OR nl.node_b_id = ${idParam})
-               AND (nl.itm_viable = TRUE OR nl.force_viable = TRUE)
-               AND EXISTS (SELECT 1 FROM source_node)
-           )
-           SELECT
-             rl.peer_id, peer.name AS peer_name, rl.observed_count,
-             rl.itm_path_loss_db, rl.count_this_to_peer, rl.count_peer_to_this
-           FROM relevant_links rl
-           JOIN nodes peer ON peer.node_id = rl.peer_id
-           WHERE (peer.name IS NULL OR peer.name NOT LIKE '%🚫%')
-             ${filters.nodesAlias('peer')}
-           ORDER BY rl.observed_count DESC`,
-          [...filters.params, id],
-        );
-        return result.rows;
-      };
+      const loadLinks = () => nodeRepository.listNodeLinks(id, filters);
       let inflight = nodeLinksInflight.get(cacheKey);
       if (!inflight) {
         const tracked = loadLinks()
@@ -646,13 +428,18 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
   });
 
   router.get('/nodes/:id/history', async (req, res) => {
+    const id = parseHexIdentifier(req.params['id'], {
+      name: 'node ID',
+      minLength: 64,
+      maxLength: 64,
+    });
+    const hours = parseBoundedInteger(req.query['hours'], {
+      name: 'hours',
+      defaultValue: 24,
+      min: 1,
+      max: 672,
+    });
     try {
-      const id = req.params['id']!;
-      if (!/^[0-9a-fA-F]{64}$/.test(id)) {
-        res.status(400).json({ error: 'Invalid node ID format' });
-        return;
-      }
-      const hours = Math.min(Number(req.query['hours'] ?? 24), 672);
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const history = await getNodeHistory(id, hours, network);
       res.json(history);
@@ -663,13 +450,18 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
   });
 
   router.get('/nodes/:id/adverts', async (req, res) => {
+    const publicKey = parseHexIdentifier(req.params['id'], {
+      name: 'public key',
+      minLength: 64,
+      maxLength: 64,
+    });
+    const hours = parseBoundedInteger(req.query['hours'], {
+      name: 'hours',
+      defaultValue: 24,
+      min: 1,
+      max: 672,
+    });
     try {
-      const publicKey = req.params['id']!;
-      if (!/^[0-9a-fA-F]{64}$/.test(publicKey)) {
-        res.status(400).json({ error: 'Invalid public key format' });
-        return;
-      }
-      const hours = Math.min(Number(req.query['hours'] ?? 24), 672);
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const adverts = await getNodeAdverts(publicKey, hours, 100, network);
       res.json(adverts);

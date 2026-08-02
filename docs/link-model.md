@@ -37,8 +37,13 @@ Relevant files:
 - `LINK_LOS_MAX_V`
 - `DEFAULT_USABLE_PATH_LOSS_DB`
 - calibration controls in `rf/config.py`
+- `RF_PREFIX_ENDPOINT_BATCH` and `RF_PREFIX_RAY_BATCH` for bounded CPU/memory tuning
 - frontend display bands in `frontend/src/components/Map/mapConfig.ts`
 
 ## Contributor rule
 
 Do not treat packet observation counts as if they are the same thing as physical feasibility. If a change affects topology definition, make sure the evidence class is explicit.
+
+RF coverage capacity evidence, the model-version boundary, the no-deploy gate,
+and the precise relationship to HopReach are recorded in
+`docs/rf-coverage-rollout.md`.
