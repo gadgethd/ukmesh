@@ -5,6 +5,7 @@ import {
   getServiceWorkerUpdateSnapshot,
   registerServiceWorker,
   resetServiceWorkerUpdatesForTests,
+  serviceWorkerScriptUrl,
 } from './serviceWorkerUpdates.js';
 
 const runtimeModulePath: string = new URL('../public/sw-runtime.js', import.meta.url).href;
@@ -189,6 +190,7 @@ test('page update coordinator defers active interactions and reloads once only a
   const posted: unknown[] = [];
   let blocked = true;
   let reloads = 0;
+  let registeredUrl = '';
   const registration = {
     waiting: { postMessage: (value: unknown) => posted.push(value) },
     installing: null,
@@ -199,7 +201,7 @@ test('page update coordinator defers active interactions and reloads once only a
     value: {
       serviceWorker: {
         controller: {},
-        register: async () => registration,
+        register: async (url: string) => { registeredUrl = url; return registration; },
         addEventListener: (name: string, listener: () => void) => containerListeners.set(name, listener),
       },
     },
@@ -218,6 +220,7 @@ test('page update coordinator defers active interactions and reloads once only a
     await Promise.resolve();
     await Promise.resolve();
     assert.equal(getServiceWorkerUpdateSnapshot().available, true);
+    assert.equal(registeredUrl, '/sw.js?build=unversioned');
     containerListeners.get('controllerchange')?.();
     assert.equal(reloads, 0, 'an update event alone never forces a reload');
     assert.equal(activateServiceWorkerUpdate(), false);
@@ -238,5 +241,23 @@ test('page update coordinator defers active interactions and reloads once only a
     if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow);
     else Reflect.deleteProperty(globalThis, 'window');
     resetServiceWorkerUpdatesForTests();
+  }
+});
+
+test('service worker URL follows the hashed Vite entry bundle', () => {
+  const originalDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  Object.defineProperty(globalThis, 'document', {
+    configurable: true,
+    value: {
+      querySelector: () => ({
+        getAttribute: (name: string) => name === 'src' ? '/assets/index-example123.js' : null,
+      }),
+    },
+  });
+  try {
+    assert.equal(serviceWorkerScriptUrl(), '/sw.js?build=%2Fassets%2Findex-example123.js');
+  } finally {
+    if (originalDocument) Object.defineProperty(globalThis, 'document', originalDocument);
+    else Reflect.deleteProperty(globalThis, 'document');
   }
 });

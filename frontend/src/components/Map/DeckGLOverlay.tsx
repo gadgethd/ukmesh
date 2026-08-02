@@ -7,10 +7,8 @@
  */
 import React, { useEffect, useRef, useMemo } from 'react';
 import { MapboxOverlay } from '@deck.gl/mapbox';
-import { ArcLayer, LineLayer, PathLayer, ScatterplotLayer, TextLayer } from '@deck.gl/layers';
+import { ArcLayer, LineLayer, PathLayer, ScatterplotLayer } from '@deck.gl/layers';
 import { HeatmapLayer } from '@deck.gl/aggregation-layers';
-import { PathStyleExtension } from '@deck.gl/extensions';
-import type { PathStyleExtensionProps } from '@deck.gl/extensions';
 import type { Layer } from '@deck.gl/core';
 import maplibregl from 'maplibre-gl';
 import { PACKET_ARC_TTL_MS, type PacketArc } from '../../hooks/useNodes.js';
@@ -24,8 +22,6 @@ import {
   PATH_ARC_HEIGHT,
   pathArcColors,
 } from './pathArcStyle.js';
-
-const FADE_DURATION_MS = 1_000;
 
 type HistorySegment = {
   positions: [[number, number], [number, number]];
@@ -59,11 +55,8 @@ interface Props {
 
   // Beta path overlays
   betaPaths: [number, number][][];
-  betaLowSegments: [[number, number], [number, number]][];
-  betaCompletionPaths: [number, number][][];
   clashPathLines: ClashPathLine[];
   showBetaPaths: boolean;
-  pathFadingOut: boolean;
   betaConfidence: number | null;
   pathObserverCount: number;
   pathAlternatives: number;
@@ -99,9 +92,6 @@ function toXYZ(
   return [lon, lat, z];
 }
 
-// Shared PathStyleExtension instance for dashed paths — created once outside the component.
-const DASH_EXT = [new PathStyleExtension({ dash: true, highPrecisionDash: true })];
-
 function observedPathColor(count: number, maxCount: number, alpha: number): [number, number, number, number] {
   if (maxCount <= 1) return [239, 68, 68, alpha];
   const normalized = Math.log(Math.max(1, count)) / Math.log(maxCount);
@@ -115,14 +105,10 @@ function buildLayers(
   showArcs: boolean,
   packetHistorySegments: HistorySegment[],
   showPacketHistory: boolean,
-  betaPaths: [number, number][][],
-  betaLowSegments: [[number, number], [number, number]][],
-  betaCompletionPaths: [number, number][][],
   clashPathLines: ClashPathLine[],
   positionElevations: Map<string, number>,
   useTerrainElevation: boolean,
   showBetaPaths: boolean,
-  pathFadingOut: boolean,
   hiddenCoordMask: Map<string, HiddenMaskGeometry>,
   losProfiles: LosProfile[] | null,
   customLosSegments: CustomLosSegment[],
@@ -219,75 +205,10 @@ function buildLayers(
     }));
   }
 
-  // ── Beta path overlays ─────────────────────────────────────────────────────
+  // The visible live paths are rendered by AnimatedPathOverlay. Keep only a
+  // transparent hit target here so the existing evidence popover still works.
   if (showBetaPaths) {
-    const targetOpacity = pathFadingOut ? 0 : 1;
-    const opacityTransition = { duration: pathFadingOut ? FADE_DURATION_MS : 0 };
-
-    if (betaLowSegments.length > 0) {
-      layers.push(
-        new PathLayer<[[number, number], [number, number]], PathStyleExtensionProps>({
-          id: 'beta-low-segs',
-          data: betaLowSegments,
-          getPath: (d) => [toXYZ(d[0], hiddenCoordMask, positionElevations, useTerrainElevation), toXYZ(d[1], hiddenCoordMask, positionElevations, useTerrainElevation)],
-          getColor: [239, 68, 68, 230],
-          getWidth: 2.6,
-          widthUnits: 'pixels',
-          getDashArray: [6, 9],
-          opacity: targetOpacity * 0.9,
-          transitions: { opacity: opacityTransition },
-          extensions: DASH_EXT,
-          pickable: false,
-          updateTriggers: { getPath: [hiddenCoordMask, positionElevations, useTerrainElevation] },
-        }),
-      );
-    }
-
-    if (betaPaths.length > 0) {
-      layers.push(
-        new PathLayer<[number, number][], PathStyleExtensionProps>({
-          id: 'beta-purple',
-          data: betaPaths,
-          getPath: (d) => d.map((pt) => toXYZ(pt, hiddenCoordMask, positionElevations, useTerrainElevation)),
-          getColor: [168, 85, 247, 255],
-          getWidth: 2.8,
-          widthUnits: 'pixels',
-          getDashArray: [6, 9],
-          opacity: targetOpacity * 0.75,
-          transitions: { opacity: opacityTransition },
-          extensions: DASH_EXT,
-          pickable: false,
-          updateTriggers: { getPath: [hiddenCoordMask, positionElevations, useTerrainElevation] },
-        }),
-      );
-    }
-
-    if (betaCompletionPaths.length > 0) {
-      layers.push(
-        new PathLayer<[number, number][], PathStyleExtensionProps>({
-          id: 'beta-completion',
-          data: betaCompletionPaths,
-          getPath: (d) => d.map((pt) => toXYZ(pt, hiddenCoordMask, positionElevations, useTerrainElevation)),
-          getColor: [239, 68, 68, 255],
-          getWidth: 1.8,
-          widthUnits: 'pixels',
-          getDashArray: [4, 7],
-          opacity: targetOpacity * 0.74,
-          transitions: { opacity: opacityTransition },
-          extensions: DASH_EXT,
-          pickable: false,
-          updateTriggers: { getPath: [hiddenCoordMask, positionElevations, useTerrainElevation] },
-        }),
-      );
-    }
-
     if (consistencySegments.length > 0) {
-      const badgeColor = (count: number): [number, number, number, number] => {
-        const ratio = count / Math.max(1, Math.max(...consistencySegments.map((segment) => segment.observerCount)));
-        if (ratio >= 0.75 && count > 1) return [34, 197, 94, 245];
-        if (ratio >= 0.4 && count > 1) return [251, 191, 36, 245];
-        return [239, 68, 68, 245];
-      };
       layers.push(
         new LineLayer<ConsistencySegment>({
           id: 'path-consistency-hit-targets',
@@ -299,32 +220,6 @@ function buildLayers(
           widthUnits: 'pixels',
           pickable: true,
           onClick: ({ object }) => { if (object) onPathSegmentClick(object); },
-        }),
-        new ScatterplotLayer<ConsistencySegment>({
-          id: 'path-consistency-badges',
-          data: consistencySegments,
-          getPosition: (segment) => toXYZ(segment.midpoint, hiddenCoordMask, positionElevations, useTerrainElevation),
-          getFillColor: (segment) => badgeColor(segment.observerCount),
-          getLineColor: [255, 255, 255, 230],
-          getRadius: 9,
-          radiusUnits: 'pixels',
-          stroked: true,
-          lineWidthUnits: 'pixels',
-          getLineWidth: 1.5,
-          pickable: true,
-          onClick: ({ object }) => { if (object) onPathSegmentClick(object); },
-        }),
-        new TextLayer<ConsistencySegment>({
-          id: 'path-consistency-labels',
-          data: consistencySegments,
-          getPosition: (segment) => toXYZ(segment.midpoint, hiddenCoordMask, positionElevations, useTerrainElevation),
-          getText: (segment) => String(segment.observerCount),
-          getColor: [255, 255, 255, 255],
-          getSize: 10,
-          sizeUnits: 'pixels',
-          getTextAnchor: 'middle',
-          getAlignmentBaseline: 'center',
-          pickable: false,
         }),
       );
     }
@@ -446,8 +341,8 @@ export const DeckGLOverlay: React.FC<Props> = ({
   arcs, showArcs,
   packetHistorySegments, showPacketHistory,
   showHeatmap,
-  betaPaths, betaLowSegments, betaCompletionPaths, clashPathLines,
-  showBetaPaths, pathFadingOut,
+  betaPaths, clashPathLines,
+  showBetaPaths,
   betaConfidence,
   pathObserverCount,
   pathAlternatives,
@@ -543,9 +438,9 @@ export const DeckGLOverlay: React.FC<Props> = ({
     () => buildLayers(
       arcs, showArcs,
       packetHistorySegments, showPacketHistory,
-      betaPaths, betaLowSegments, betaCompletionPaths, clashPathLines,
+      clashPathLines,
       positionElevations, useTerrainElevation,
-      showBetaPaths, pathFadingOut,
+      showBetaPaths,
       hiddenCoordMask,
       losProfiles,
       customLosSegments,
@@ -555,8 +450,8 @@ export const DeckGLOverlay: React.FC<Props> = ({
       showHeatmap,
     ),
     [arcs, showArcs, packetHistorySegments, showPacketHistory,
-      betaPaths, betaLowSegments, betaCompletionPaths, clashPathLines,
-      showBetaPaths, pathFadingOut, hiddenCoordMask, positionElevations, useTerrainElevation, losProfiles,
+      betaPaths, clashPathLines,
+      showBetaPaths, hiddenCoordMask, positionElevations, useTerrainElevation, losProfiles,
       customLosSegments, customLosStart, consistencySegments, onPathSegmentClick, showHeatmap],
   );
 

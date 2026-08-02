@@ -44,6 +44,18 @@ function noteWaitingWorker(nextRegistration: ServiceWorkerRegistration): void {
   }
 }
 
+/**
+ * Version the service-worker URL with Vite's hashed entry bundle. This makes
+ * every frontend build discoverable even when sw.js itself did not change.
+ */
+export function serviceWorkerScriptUrl(): string {
+  const entry = document.querySelector('script[type="module"][src*="/assets/"]') as {
+    getAttribute?: (name: string) => string | null;
+  } | null;
+  const buildAsset = entry?.getAttribute?.('src') ?? 'unversioned';
+  return `/sw.js?build=${encodeURIComponent(buildAsset)}`;
+}
+
 export function registerServiceWorker(): void {
   if (started || !('serviceWorker' in navigator)) return;
   started = true;
@@ -52,7 +64,7 @@ export function registerServiceWorker(): void {
     reloadIssued = true;
     window.location.reload();
   });
-  void navigator.serviceWorker.register('/sw.js', {
+  void navigator.serviceWorker.register(serviceWorkerScriptUrl(), {
     type: 'module',
     updateViaCache: 'none',
   }).then((nextRegistration) => {

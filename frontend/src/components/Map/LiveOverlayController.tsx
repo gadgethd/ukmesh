@@ -1,10 +1,11 @@
 import React, { useEffect, useMemo } from 'react';
 import type maplibregl from 'maplibre-gl';
 import { DeckGLOverlay } from './DeckGLOverlay.js';
+import { AnimatedPathOverlay, type AerialPath } from './AnimatedPathOverlay.js';
 import { useArcs, useNodeMap } from '../../hooks/useNodes.js';
 import { usePacketPathOverlay } from '../../hooks/usePacketPathOverlay.js';
 import type { Filters } from '../FilterPanel/FilterPanel.js';
-import { buildHiddenCoordMask, hasCoords, maskNodePoint } from '../../utils/pathing.js';
+import { buildHiddenCoordMask, hasCoords, maskNodePoint, maskPoint } from '../../utils/pathing.js';
 import { useOverlayStore } from '../../store/overlayStore.js';
 
 type PacketHistorySegment = {
@@ -89,7 +90,6 @@ export const LiveOverlayController: React.FC<LiveOverlayControllerProps> = ({
     betaPathConfidence,
     betaPermutationCount,
     betaRemainingHops,
-    pathFadingOut,
     pinnedPacketId,
     activePacketSnapshot,
   } = usePacketPathOverlay({
@@ -102,6 +102,33 @@ export const LiveOverlayController: React.FC<LiveOverlayControllerProps> = ({
     betaPacketPaths.length > 0 ? betaPacketPaths : packetPaths
   ), [betaPacketPaths, packetPaths]);
   const showPathOnly = filters.betaPaths || pinnedPacketId !== null;
+  const liveAerialPaths = useMemo<AerialPath[]>(() => {
+    if (!showPathOnly) return [];
+    const packetKey = activePacketSnapshot?.id ?? 'live';
+    const nodesFor = (path: [number, number][]) => path.map((point) => {
+      const [lat, lon] = maskPoint(point, hiddenCoordMask);
+      return { position: [lon, lat] as [number, number] };
+    });
+    const resolvedConfidence = betaPacketPaths.length > 0 ? betaPathConfidence : 1;
+    return [
+      ...renderedPaths.map((path, index) => ({
+        id: `main-live-path:${packetKey}:resolved:${index}`,
+        confidence: resolvedConfidence,
+        nodes: nodesFor(path),
+      })),
+      ...betaLowConfidenceSegments.map((segment, index) => ({
+        id: `main-live-path:${packetKey}:low:${index}`,
+        confidence: 0,
+        nodes: nodesFor(segment),
+      })),
+      ...betaCompletionPaths.map((path, index) => ({
+        id: `main-live-path:${packetKey}:completion:${index}`,
+        confidence: 0,
+        nodes: nodesFor(path),
+      })),
+    ].filter((path) => path.nodes.length > 1);
+  }, [activePacketSnapshot?.id, betaCompletionPaths, betaLowConfidenceSegments,
+    betaPacketPaths.length, betaPathConfidence, hiddenCoordMask, renderedPaths, showPathOnly]);
 
   const pathPointIndex = useMemo(() => {
     const index = new Map<string, Set<string>>();
@@ -180,7 +207,8 @@ export const LiveOverlayController: React.FC<LiveOverlayControllerProps> = ({
   }, [setPathNodeIds, setBetaMetrics]);
 
   return (
-    <DeckGLOverlay
+    <>
+      <DeckGLOverlay
       map={map}
       arcs={packetArcsEnabled ? arcs : []}
       showArcs={packetArcsEnabled && filters.livePackets}
@@ -188,21 +216,20 @@ export const LiveOverlayController: React.FC<LiveOverlayControllerProps> = ({
       showPacketHistory={filters.packetHistory}
       showHeatmap={heatmapEnabled && filters.heatmap}
       betaPaths={renderedPaths}
-      betaLowSegments={betaLowConfidenceSegments}
-      betaCompletionPaths={betaCompletionPaths}
       clashPathLines={clashPathLines}
       showBetaPaths={filters.betaPaths || pinnedPacketId !== null}
       betaConfidence={betaPathConfidence}
       pathObserverCount={activePacketSnapshot?.observerIds.length ?? 0}
       pathAlternatives={pathExplanation?.alternativesConsidered ?? betaPermutationCount ?? 0}
       pathSummary={pathExplanation?.summary ?? null}
-      pathFadingOut={pathFadingOut}
       hiddenCoordMask={hiddenCoordMask}
       positionElevations={positionElevations}
       useTerrainElevation={filters.terrain}
       losProfiles={losProfiles}
       customLosSegments={customLosSegments}
       customLosStart={customLosStart}
-    />
+      />
+      <AnimatedPathOverlay map={map} paths={liveAerialPaths} active={showPathOnly} />
+    </>
   );
 };

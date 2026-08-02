@@ -14,8 +14,11 @@ import {
   type ServerBetaResponse,
 } from './packetPathOverlayUtils.js';
 import { useOverlayStore } from '../store/overlayStore.js';
+import { PATH_LINE_FADE_MS, PATH_LINE_TTL_MS } from '../components/Map/pathArcStyle.js';
 
-const PATH_TTL = 5_000;
+// Retain resolved data beyond the renderer's 60-second visible lifetime so the
+// hop animation and final fade can finish before React clears the path state.
+const PATH_DATA_RETENTION_MS = PATH_LINE_TTL_MS + PATH_LINE_FADE_MS + 30_000;
 const PREDICTION_CACHE_TTL_MS = 120_000;
 const MAX_PREDICTION_CACHE = 1200;
 const RECENT_PREDICTION_TTL_MS = 45_000;
@@ -402,7 +405,7 @@ export function usePacketPathOverlay({
         pathFadeTimerRef.current = null;
         clearPathState();
       }, FADE_MS);
-    }, PATH_TTL - FADE_MS);
+    }, PATH_DATA_RETENTION_MS - FADE_MS);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   // `packets` intentionally omitted — accessed via packetsRef to avoid firing on every
   // packet arrival. Effect only re-runs when latestId changes (a new distinct path packet).
@@ -436,7 +439,7 @@ export function usePacketPathOverlay({
         pinnedOverlayKeyRef.current = '';
         pinnedTimerRef.current = null;
       }, FADE_MS);
-    }, 30_000);
+    }, PATH_DATA_RETENTION_MS);
   }, [clearPathState, clearPinnedPacket, pinnedPacketId, stopPathTimers]);
 
   useEffect(() => {
