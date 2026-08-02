@@ -184,23 +184,25 @@ func marginsRowReference(margins []float32, py, imageWidth, imageHeight int, bou
 	}
 }
 
-func marginsRowIndexed(margins []float32, py, imageWidth, imageHeight int, bounds Bounds, grid Grid, sites []Site, index *SpatialIndex, candidates []int, rangeKm float64, p Params) []int {
+func marginsRowIndexed(margins []float32, py, imageWidth, imageHeight int, bounds Bounds, grid Grid, profileGrid TerrainProfileGrid, terrainProfile []float64, sites []Site, index *SpatialIndex, candidates []int, rangeKm float64, rp rasterParams) []int {
 	lat := bounds.North - (float64(py)+0.5)/float64(imageHeight)*(bounds.North-bounds.South)
+	cosLat := math.Cos(lat * math.Pi / 180)
 	rowOffset := py * imageWidth
 	for px := 0; px < imageWidth; px++ {
 		lon := bounds.West + (float64(px)+0.5)/float64(imageWidth)*(bounds.East-bounds.West)
 		candidates = index.Query(lat, lon, rangeKm, candidates)
+		rxHeightASL := grid.At(lat, lon) + rp.rxHeightM
 
 		bestMargin := math.Inf(-1)
 		for _, siteIndex := range candidates {
 			s := sites[siteIndex]
 			// Keep HopReach's exact cutoff. The spatial index is only a
 			// conservative pre-filter and is never an RF-model approximation.
-			d := HaversineKm(lat, lon, s.Lat, s.Lon)
+			d := haversinePrepared(lat, lon, cosLat, s, index.siteCosLat[siteIndex])
 			if d > rangeKm || d < 0.01 {
 				continue
 			}
-			m := PathMargin(grid, p, s.Lat, s.Lon, s.TxHeightM, lat, lon, d)
+			m := pathMarginPrepared(grid, profileGrid, terrainProfile, rp, s.Lat, s.Lon, s.TxHeightM, lat, lon, rxHeightASL, d)
 			if m > bestMargin {
 				bestMargin = m
 			}
@@ -215,13 +217,15 @@ func marginsRowIndexed(margins []float32, py, imageWidth, imageHeight int, bound
 	return candidates
 }
 
-// ComputeMarginsCPU is the trusted reference implementation every other
-// compute path (local GPU, remote GPU workers) is verified against — always
-// correct, parallelized across CPU cores since it's also the real fallback
-// whenever no GPU is available at all.
+// ComputeMarginsCPU is the optimized production implementation. It preserves
+// the upstream RF model while indexing nearby sites, reusing worker buffers,
+// and factoring invariant path calculations out of inner loops. GPU paths are
+// still checked against the retained upstream CPU reference below.
 func ComputeMarginsCPU(grid Grid, sites []Site, bounds Bounds, imageWidth, imageHeight int, rangeKm float64, p Params, progress func(done, total int)) []float32 {
 	margins := make([]float32, imageWidth*imageHeight)
 	index := NewSpatialIndex(sites, rangeKm)
+	rp := prepareRasterParams(p)
+	profileGrid, _ := grid.(TerrainProfileGrid)
 
 	rows := make(chan int, imageHeight)
 	for py := 0; py < imageHeight; py++ {
@@ -243,13 +247,14 @@ func ComputeMarginsCPU(grid Grid, sites []Site, bounds Bounds, imageWidth, image
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			terrainProfile := make([]float64, 299)
 			// Allocate once per worker, then reuse for every pixel it serves.
 			// A UK pixel normally sees only a small fraction of all sites.
 			// Start small and retain the largest buffer this worker actually
 			// needs instead of reserving all ~4,600 entries per worker.
 			candidates := make([]int, 0, min(128, len(sites)))
 			for py := range rows {
-				candidates = marginsRowIndexed(margins, py, imageWidth, imageHeight, bounds, grid, sites, index, candidates, rangeKm, p)
+				candidates = marginsRowIndexed(margins, py, imageWidth, imageHeight, bounds, grid, profileGrid, terrainProfile, sites, index, candidates, rangeKm, rp)
 				mu.Lock()
 				done++
 				if progress != nil {

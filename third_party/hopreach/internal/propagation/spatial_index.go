@@ -4,7 +4,10 @@
 // the same AGPL-3.0 plus Commons-Clause terms as the vendored HopReach source.
 package propagation
 
-import "math"
+import (
+	"math"
+	"sort"
+)
 
 // SpatialIndex bins transmitter coordinates in latitude/longitude space.
 // Query first returns a conservative geographic superset; callers must retain
@@ -17,7 +20,17 @@ type SpatialIndex struct {
 	binDegrees  float64
 	latBinCount int
 	lonBinCount int
-	bins        map[int][]int
+	siteCosLat  []float64
+	bins        []spatialBin
+	binMask     uint32
+	siteIndices []int
+}
+
+type spatialBin struct {
+	// keyPlusOne reserves zero as the empty-table sentinel.
+	keyPlusOne uint32
+	start      uint32
+	end        uint32
 }
 
 const (
@@ -42,15 +55,94 @@ func NewSpatialIndex(sites []Site, rangeKm float64) *SpatialIndex {
 		binDegrees:  binDegrees,
 		latBinCount: latBins,
 		lonBinCount: lonBins,
-		bins:        make(map[int][]int, len(sites)),
+		siteCosLat:  make([]float64, len(sites)),
+		siteIndices: make([]int, len(sites)),
 	}
 	for siteIndex, site := range sites {
-		latBin := idx.latBin(site.Lat)
-		lonBin := idx.lonBin(site.Lon)
-		key := latBin*idx.lonBinCount + lonBin
-		idx.bins[key] = append(idx.bins[key], siteIndex)
+		idx.siteCosLat[siteIndex] = math.Cos(site.Lat * math.Pi / 180)
+		idx.siteIndices[siteIndex] = siteIndex
+	}
+	sort.Slice(idx.siteIndices, func(i, j int) bool {
+		left, right := idx.siteIndices[i], idx.siteIndices[j]
+		leftKey := idx.keyForSite(sites[left])
+		rightKey := idx.keyForSite(sites[right])
+		if leftKey == rightKey {
+			return left < right
+		}
+		return leftKey < rightKey
+	})
+
+	uniqueBins := 0
+	previousKey := -1
+	for _, siteIndex := range idx.siteIndices {
+		key := idx.keyForSite(sites[siteIndex])
+		if key != previousKey {
+			uniqueBins++
+			previousKey = key
+		}
+	}
+	tableSize := 1
+	for tableSize < uniqueBins*2 {
+		tableSize <<= 1
+	}
+	idx.bins = make([]spatialBin, tableSize)
+	idx.binMask = uint32(tableSize - 1)
+	for start := 0; start < len(idx.siteIndices); {
+		key := idx.keyForSite(sites[idx.siteIndices[start]])
+		end := start + 1
+		for end < len(idx.siteIndices) && idx.keyForSite(sites[idx.siteIndices[end]]) == key {
+			end++
+		}
+		idx.insertBin(key, start, end)
+		start = end
 	}
 	return idx
+}
+
+func (idx *SpatialIndex) keyForSite(site Site) int {
+	return idx.latBin(site.Lat)*idx.lonBinCount + idx.lonBin(site.Lon)
+}
+
+func spatialBinHash(key uint32) uint32 {
+	// Knuth's multiplicative hash disperses adjacent geographic bin keys.
+	return key * 2654435761
+}
+
+func (idx *SpatialIndex) insertBin(key, start, end int) {
+	position := spatialBinHash(uint32(key)) & idx.binMask
+	for idx.bins[position].keyPlusOne != 0 {
+		position = (position + 1) & idx.binMask
+	}
+	idx.bins[position] = spatialBin{keyPlusOne: uint32(key) + 1, start: uint32(start), end: uint32(end)}
+}
+
+func (idx *SpatialIndex) appendBin(dst []int, key int) []int {
+	if len(idx.bins) == 0 {
+		return dst
+	}
+	keyPlusOne := uint32(key) + 1
+	position := spatialBinHash(uint32(key)) & idx.binMask
+	for {
+		bin := idx.bins[position]
+		if bin.keyPlusOne == 0 {
+			return dst
+		}
+		if bin.keyPlusOne == keyPlusOne {
+			return append(dst, idx.siteIndices[bin.start:bin.end]...)
+		}
+		position = (position + 1) & idx.binMask
+	}
+}
+
+func haversinePrepared(lat, lon, cosLat float64, site Site, siteCosLat float64) float64 {
+	const radiansPerDegree = math.Pi / 180
+	dLat := (site.Lat - lat) * radiansPerDegree
+	dLon := (site.Lon - lon) * radiansPerDegree
+	sinHalfLat := math.Sin(dLat / 2)
+	sinHalfLon := math.Sin(dLon / 2)
+	a := sinHalfLat*sinHalfLat + cosLat*siteCosLat*sinHalfLon*sinHalfLon
+	c := 2 * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
+	return EarthRadiusKm * c
 }
 
 func (idx *SpatialIndex) latBin(lat float64) int {
@@ -118,7 +210,7 @@ func (idx *SpatialIndex) Query(lat, lon, rangeKm float64, dst []int) []int {
 	appendLonBins := func(latBin, first, last int) {
 		for lonBin := first; lonBin <= last; lonBin++ {
 			key := latBin*idx.lonBinCount + lonBin
-			dst = append(dst, idx.bins[key]...)
+			dst = idx.appendBin(dst, key)
 		}
 	}
 

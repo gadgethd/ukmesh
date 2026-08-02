@@ -91,6 +91,8 @@ func Load(b Bounds, zoom int, cacheDir, tileURLBase string, client *http.Client,
 		Width:     tilesWide * tileSize,
 		Height:    tilesHigh * tileSize,
 	}
+	grid.latitudeProjection = newLatitudeProjection(zoom, minTileY, tilesHigh)
+	grid.initializeLongitudeProjection()
 	elev, release, err := mmapFloat32(filepath.Join(cacheDir, "grid-scratch"), grid.Width*grid.Height)
 	if err != nil {
 		return nil, fmt.Errorf("demgrid: allocating grid: %w", err)

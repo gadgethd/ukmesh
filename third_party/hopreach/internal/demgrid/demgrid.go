@@ -51,6 +51,9 @@ type Grid struct {
 	Width, Height      int
 	Elev               []float32 // row-major, Width*Height, mmap-backed
 	release            func() error
+	latitudeProjection *latitudeProjection
+	lonPixelsPerDegree float64
+	lonPixelOffset     float64
 }
 
 // Close releases the grid's backing scratch file. Idempotent — safe to
@@ -79,7 +82,7 @@ func NewFromElev(zoom, minTileX, minTileY, tilesWide, tilesHigh int, elev []floa
 	if len(elev) != width*height {
 		return nil, fmt.Errorf("demgrid: elev length %d doesn't match %dx%d grid (%d tiles wide x %d tiles high)", len(elev), width, height, tilesWide, tilesHigh)
 	}
-	return &Grid{
+	grid := &Grid{
 		Zoom:      zoom,
 		MinTileX:  minTileX,
 		MinTileY:  minTileY,
@@ -88,44 +91,134 @@ func NewFromElev(zoom, minTileX, minTileY, tilesWide, tilesHigh int, elev []floa
 		Width:     width,
 		Height:    height,
 		Elev:      elev,
-	}, nil
+	}
+	grid.latitudeProjection = newLatitudeProjection(zoom, minTileY, tilesHigh)
+	grid.initializeLongitudeProjection()
+	return grid, nil
+}
+
+func (g *Grid) initializeLongitudeProjection() {
+	worldPixels := zoomScale(g.Zoom) * tileSize
+	g.lonPixelsPerDegree = worldPixels / 360
+	g.lonPixelOffset = worldPixels/2 - float64(g.MinTileX*tileSize)
 }
 
 func lonToTileX(lon float64, z int) float64 {
-	n := math.Exp2(float64(z))
+	n := zoomScale(z)
 	return (lon + 180.0) / 360.0 * n
 }
 
 func latToTileY(lat float64, z int) float64 {
-	n := math.Exp2(float64(z))
-	latRad := lat * math.Pi / 180
-	return (1 - math.Asinh(math.Tan(latRad))/math.Pi) / 2 * n
+	n := zoomScale(z)
+	return (1 - latitudeMercatorExact(lat)/math.Pi) / 2 * n
+}
+
+func zoomScale(z int) float64 {
+	// Web-Mercator zooms are non-negative integers and operational values are
+	// far below 53. Converting the exact power-of-two integer avoids the much
+	// more expensive general-purpose Exp2 implementation in every DEM sample.
+	if z >= 0 && z < 53 {
+		return float64(uint64(1) << uint(z))
+	}
+	return math.Exp2(float64(z))
 }
 
 // At returns the elevation in metres at lat/lon using bilinear
 // interpolation. Points outside the grid are clamped to the nearest edge
 // pixel. Satisfies propagation.Grid.
 func (g *Grid) At(lat, lon float64) float64 {
-	xf := lonToTileX(lon, g.Zoom) - float64(g.MinTileX)
-	yf := latToTileY(lat, g.Zoom) - float64(g.MinTileY)
-	px := xf * tileSize
-	py := yf * tileSize
+	lonScale, lonOffset := g.longitudeProjection()
+	px := lon*lonScale + lonOffset
+	return g.atPixels(px, g.latitudePixel(lat))
+}
 
-	px = clampF(px, 0, float64(g.Width-1))
-	py = clampF(py, 0, float64(g.Height-1))
+// SampleTerrainProfile fills dst with bilinear elevation samples at the
+// supplied fractions along one straight lat/lon path. Longitude is linear in
+// Web Mercator, so projecting it once per path avoids repeated work without
+// changing any requested geographic sample.
+func (g *Grid) SampleTerrainProfile(txLat, txLon, rxLat, rxLon float64, fractions, dst []float64) {
+	if len(dst) < len(fractions) {
+		panic("demgrid: terrain profile destination is too small")
+	}
+	lonScale, lonOffset := g.longitudeProjection()
+	txPixelX := txLon*lonScale + lonOffset
+	pixelXDelta := (rxLon - txLon) * lonScale
+	latDelta := rxLat - txLat
+	projection := g.latitudeProjection
+	maxX, maxY := float64(g.Width-1), float64(g.Height-1)
+	width := g.Width
+	elevations := g.Elev
+	for i, fraction := range fractions {
+		px := txPixelX + pixelXDelta*fraction
+		latitude := txLat + latDelta*fraction
+		py, ok := projection.pixelY(latitude)
+		if !ok {
+			py = g.latitudePixel(latitude)
+		}
+		if px < 0 || px >= maxX || py < 0 || py >= maxY {
+			dst[i] = g.atPixels(px, py)
+			continue
+		}
+		x0, y0 := int(px), int(py)
+		row0 := y0 * width
+		row1 := row0 + width
+		fx := px - float64(x0)
+		fy := py - float64(y0)
+		e00 := float64(elevations[row0+x0])
+		e10 := float64(elevations[row0+x0+1])
+		e01 := float64(elevations[row1+x0])
+		e11 := float64(elevations[row1+x0+1])
+		top := e00 + (e10-e00)*fx
+		bottom := e01 + (e11-e01)*fx
+		dst[i] = top + (bottom-top)*fy
+	}
+}
 
-	x0 := int(px)
-	y0 := int(py)
+func (g *Grid) longitudeProjection() (float64, float64) {
+	if g.lonPixelsPerDegree != 0 {
+		return g.lonPixelsPerDegree, g.lonPixelOffset
+	}
+	worldPixels := zoomScale(g.Zoom) * tileSize
+	return worldPixels / 360, worldPixels/2 - float64(g.MinTileX*tileSize)
+}
+
+func (g *Grid) latitudePixel(lat float64) float64 {
+	if py, ok := g.latitudeProjection.pixelY(lat); ok {
+		return py
+	}
+	worldPixels := zoomScale(g.Zoom) * tileSize
+	return (1-latitudeMercatorExact(lat)/math.Pi)/2*worldPixels - float64(g.MinTileY*tileSize)
+}
+
+func (g *Grid) atPixels(px, py float64) float64 {
+	maxX, maxY := float64(g.Width-1), float64(g.Height-1)
+	if px >= 0 && px < maxX && py >= 0 && py < maxY {
+		x0, y0 := int(px), int(py)
+		row0 := y0 * g.Width
+		row1 := row0 + g.Width
+		fx := px - float64(x0)
+		fy := py - float64(y0)
+		e00 := float64(g.Elev[row0+x0])
+		e10 := float64(g.Elev[row0+x0+1])
+		e01 := float64(g.Elev[row1+x0])
+		e11 := float64(g.Elev[row1+x0+1])
+		top := e00 + (e10-e00)*fx
+		bottom := e01 + (e11-e01)*fx
+		return top + (bottom-top)*fy
+	}
+
+	px = clampF(px, 0, maxX)
+	py = clampF(py, 0, maxY)
+	x0, y0 := int(px), int(py)
 	x1 := minInt(x0+1, g.Width-1)
 	y1 := minInt(y0+1, g.Height-1)
+	row0, row1 := y0*g.Width, y1*g.Width
 	fx := px - float64(x0)
 	fy := py - float64(y0)
-
-	e00 := float64(g.Elev[y0*g.Width+x0])
-	e10 := float64(g.Elev[y0*g.Width+x1])
-	e01 := float64(g.Elev[y1*g.Width+x0])
-	e11 := float64(g.Elev[y1*g.Width+x1])
-
+	e00 := float64(g.Elev[row0+x0])
+	e10 := float64(g.Elev[row0+x1])
+	e01 := float64(g.Elev[row1+x0])
+	e11 := float64(g.Elev[row1+x1])
 	top := e00 + (e10-e00)*fx
 	bottom := e01 + (e11-e01)*fx
 	return top + (bottom-top)*fy

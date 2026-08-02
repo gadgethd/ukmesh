@@ -24,13 +24,13 @@ temporary directory; set `HOPREACH_PROFILE_DIR` to retain it as a CI artifact.
 ## Accepted local release measurement
 
 The 2026-08-02 release-gate run used Go 1.23, `GOMAXPROCS=4`, and the container
-reported `QEMU Virtual CPU version 2.5+`. Each time below is the mean of three
+reported `QEMU Virtual CPU version 2.5+`. Each time below is the median of three
 identical one-iteration UK-4,600 runs:
 
 | Fixture | Indexed | Upstream oracle | Ratio | Reduction |
 | --- | ---: | ---: | ---: | ---: |
-| Standard | 1.551 s | 2.712 s | 0.572 | 42.8% |
-| Precision tile | 6.143 s | 9.640 s | 0.637 | 36.3% |
+| Standard | 0.718 s | 2.605 s | 0.276 | 72.4% |
+| Precision tile | 2.526 s | 9.735 s | 0.260 | 74.0% |
 
 The exact DEM working-set calculation, including unchanged 100 km range
 padding around every publication tile, measured:

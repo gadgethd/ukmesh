@@ -6,8 +6,8 @@ by this change.
 Evidence date: 2026-08-02
 
 Canonical model: the public UK Mesh HopReach tag
-[`v0.1.32-ukmesh.1`](https://github.com/gadgethd/hopreach/tree/v0.1.32-ukmesh.1)
-at commit `9ab79011dcd6537e3d90bbdbf5a52bc273b9b2da`, based directly on upstream
+[`v0.1.32-ukmesh.2`](https://github.com/gadgethd/hopreach/tree/v0.1.32-ukmesh.2)
+at commit `f497b3fb72644aa1fb5f5fcce3fe2afca78bdaf6`, based directly on upstream
 v0.1.32 commit `61efac0b4678f55496fe08f53eda0c79eb18655b`. The tagged tree is vendored
 at `third_party/hopreach`.
 
@@ -20,7 +20,7 @@ at `third_party/hopreach`.
 - Use digest-pinned backend, HopReach, and app images built by the signed
   release workflow. Confirm the backend/app revision label is the integration
   release commit and the HopReach revision label is
-  `9ab79011dcd6537e3d90bbdbf5a52bc273b9b2da`.
+  `f497b3fb72644aa1fb5f5fcce3fe2afca78bdaf6`.
 - Do not enable calibrated variants. The production profile deliberately has
   `calibration.enabled: false`; evidence validation is a separate rollout.
 - Do not reduce range, node count, terrain zoom, supersampling, or RF fidelity
