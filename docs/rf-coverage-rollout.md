@@ -1,7 +1,9 @@
 # RF-aware coverage: compatibility, capacity, and rollout
 
-Status: implemented and verified locally; not deployed  
-Evidence date: 2026-08-02  
+Status: implemented and verified locally; not deployed
+
+Evidence date: 2026-08-02
+
 Coverage model: `rf_radial_100m`, model version 7
 
 ## Scope and HopReach relationship

@@ -205,5 +205,3 @@ export const OwnerMapView: React.FC<{
 
   return <div ref={containerRef} className="owner-map" />;
 };
-
-

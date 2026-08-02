@@ -1,7 +1,9 @@
 # Frontend performance and resource budgets
 
-Status: approved release guardrail  
-Baseline date: 2026-07-29  
+Status: approved release guardrail
+
+Baseline date: 2026-07-29
+
 Baseline revision: `b9b2ecdbfaa9688a79a62ccee38d6b406f14deaa`
 
 These limits turn the Phase 0/6 performance requirements into release gates.
