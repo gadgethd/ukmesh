@@ -33,7 +33,26 @@ export type AerialPathSegment = {
   confidence: number | null;
 };
 
-type RenderedSegment = AerialPathSegment & { renderedTarget: [number, number] };
+type RenderedSegment = AerialPathSegment & {
+  renderedTarget: [number, number];
+  opacity: number;
+};
+
+type RenderedNode = AerialPathNode & {
+  confidence: number | null;
+  opacity: number;
+};
+
+type LeadingPulse = {
+  position: [number, number];
+  confidence: number | null;
+};
+
+export type PathRegistryEntry = {
+  signature: string;
+  segments: AerialPathSegment[];
+  startedAt: number;
+};
 
 export function buildAerialPathSegments(paths: AerialPath[]): AerialPathSegment[] {
   return paths.flatMap((path) => path.nodes.slice(0, -1).flatMap((source, index) => {
@@ -41,6 +60,28 @@ export function buildAerialPathSegments(paths: AerialPath[]): AerialPathSegment[
     if (!target) return [];
     return [{ id: `${path.id}:${index}`, source, target, confidence: path.confidence }];
   }));
+}
+
+function aerialPathSignature(path: AerialPath): string {
+  return [
+    path.confidence ?? 'unknown',
+    ...path.nodes.map((node) => `${node.position[0].toFixed(6)},${node.position[1].toFixed(6)}`),
+  ].join(':');
+}
+
+/** Add or update incoming paths without removing paths from earlier packets. */
+export function registerAerialPaths(
+  registry: Map<string, PathRegistryEntry>,
+  paths: AerialPath[],
+  now: number,
+): void {
+  for (const path of paths) {
+    const signature = aerialPathSignature(path);
+    const existing = registry.get(path.id);
+    if (existing?.signature === signature) continue;
+    const segments = buildAerialPathSegments([path]);
+    if (segments.length > 0) registry.set(path.id, { signature, segments, startedAt: now });
+  }
 }
 
 function interpolate(
@@ -54,25 +95,27 @@ function interpolate(
   ];
 }
 
-function uniqueNodes(segments: AerialPathSegment[]): AerialPathNode[] {
-  const seen = new Set<string>();
-  const nodes: AerialPathNode[] = [];
+function uniqueNodes(segments: RenderedSegment[]): RenderedNode[] {
+  const nodesByKey = new Map<string, RenderedNode>();
   for (const segment of segments) {
     for (const node of [segment.source, segment.target]) {
       const key = `${node.nodeId ?? ''}:${node.position[0]}:${node.position[1]}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      nodes.push(node);
+      const existing = nodesByKey.get(key);
+      if (existing && existing.opacity >= segment.opacity) continue;
+      nodesByKey.set(key, {
+        ...node,
+        confidence: segment.confidence,
+        opacity: segment.opacity,
+      });
     }
   }
-  return nodes;
+  return [...nodesByKey.values()];
 }
 
 function layersForFrame(
   segments: RenderedSegment[],
-  nodes: AerialPathNode[],
-  pulse: { position: [number, number]; confidence: number | null } | null,
-  opacity: number,
+  nodes: RenderedNode[],
+  pulses: LeadingPulse[],
   onNodeClick?: (node: AerialPathNode) => void,
 ): Layer[] {
   const layers: Layer[] = [];
@@ -83,43 +126,33 @@ function layersForFrame(
         data: segments,
         getSourcePosition: (segment) => segment.source.position,
         getTargetPosition: (segment) => segment.renderedTarget,
-        getSourceColor: (segment) => pathArcColors(segment.confidence, opacity).bloomSource,
-        getTargetColor: (segment) => pathArcColors(segment.confidence, opacity).bloomTarget,
+        getSourceColor: (segment) => pathArcColors(segment.confidence, segment.opacity).bloomSource,
+        getTargetColor: (segment) => pathArcColors(segment.confidence, segment.opacity).bloomTarget,
         getWidth: PATH_ARC_BLOOM_WIDTH,
         getHeight: PATH_ARC_HEIGHT,
         pickable: false,
-        updateTriggers: { getSourceColor: opacity, getTargetColor: opacity },
       }),
       new ArcLayer<RenderedSegment>({
         id: 'resolved-path-arc-core',
         data: segments,
         getSourcePosition: (segment) => segment.source.position,
         getTargetPosition: (segment) => segment.renderedTarget,
-        getSourceColor: (segment) => pathArcColors(segment.confidence, opacity).coreSource,
-        getTargetColor: (segment) => pathArcColors(segment.confidence, opacity).coreTarget,
+        getSourceColor: (segment) => pathArcColors(segment.confidence, segment.opacity).coreSource,
+        getTargetColor: (segment) => pathArcColors(segment.confidence, segment.opacity).coreTarget,
         getWidth: PATH_ARC_CORE_WIDTH,
         getHeight: PATH_ARC_HEIGHT,
         pickable: false,
-        updateTriggers: { getSourceColor: opacity, getTargetColor: opacity },
       }),
     );
   }
 
   if (nodes.length > 0) {
-    const segmentByPosition = new Map<string, AerialPathSegment>();
-    for (const segment of segments) {
-      segmentByPosition.set(segment.source.position.join(','), segment);
-      segmentByPosition.set(segment.target.position.join(','), segment);
-    }
-    layers.push(new ScatterplotLayer<AerialPathNode>({
+    layers.push(new ScatterplotLayer<RenderedNode>({
       id: 'resolved-path-nodes',
       data: nodes,
       getPosition: (node) => node.position,
-      getFillColor: [11, 23, 37, Math.round(255 * opacity)],
-      getLineColor: (node) => {
-        const segment = segmentByPosition.get(node.position.join(','));
-        return pathArcColors(segment?.confidence ?? null, opacity).coreTarget;
-      },
+      getFillColor: (node) => [11, 23, 37, Math.round(255 * node.opacity)],
+      getLineColor: (node) => pathArcColors(node.confidence, node.opacity).coreTarget,
       getRadius: 6,
       radiusUnits: 'pixels',
       stroked: true,
@@ -127,17 +160,16 @@ function layersForFrame(
       getLineWidth: 2.5,
       pickable: Boolean(onNodeClick),
       onClick: ({ object }: PickingInfo<AerialPathNode>) => { if (object) onNodeClick?.(object); },
-      updateTriggers: { getFillColor: opacity, getLineColor: opacity },
     }));
   }
 
-  if (pulse) {
-    layers.push(new ScatterplotLayer<typeof pulse>({
+  if (pulses.length > 0) {
+    layers.push(new ScatterplotLayer<LeadingPulse>({
       id: 'resolved-path-leading-pulse',
-      data: [pulse],
+      data: pulses,
       getPosition: (item) => item.position,
-      getFillColor: (item) => pathArcColors(item.confidence, opacity).coreTarget,
-      getLineColor: [255, 255, 255, Math.round(220 * opacity)],
+      getFillColor: (item) => pathArcColors(item.confidence).coreTarget,
+      getLineColor: [255, 255, 255, 220],
       getRadius: 7,
       radiusUnits: 'pixels',
       stroked: true,
@@ -156,8 +188,15 @@ export const AnimatedPathOverlay: React.FC<{
   onNodeClick?: (node: AerialPathNode) => void;
 }> = ({ map, paths, active, onNodeClick }) => {
   const overlayRef = useRef<MapboxOverlay | null>(null);
-  const pathsRef = useRef(paths);
-  pathsRef.current = paths;
+  const registryRef = useRef(new Map<string, PathRegistryEntry>());
+  const frameRef = useRef<number | null>(null);
+  const wakeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const renderRef = useRef<(now: number) => void>(() => {});
+  const scheduleRef = useRef<() => void>(() => {});
+  const activeRef = useRef(active);
+  const onNodeClickRef = useRef(onNodeClick);
+  activeRef.current = active;
+  onNodeClickRef.current = onNodeClick;
   const signature = useMemo(() => paths.map((path) => [
     path.id,
     path.confidence ?? 'unknown',
@@ -170,77 +209,106 @@ export const AnimatedPathOverlay: React.FC<{
     map.addControl(overlay as unknown as maplibregl.IControl);
     overlayRef.current = overlay;
     return () => {
+      if (frameRef.current != null) cancelAnimationFrame(frameRef.current);
+      if (wakeTimerRef.current) clearTimeout(wakeTimerRef.current);
+      frameRef.current = null;
+      wakeTimerRef.current = null;
+      registryRef.current.clear();
       map.removeControl(overlay as unknown as maplibregl.IControl);
       overlayRef.current = null;
     };
   }, [map]);
 
-  useEffect(() => {
+  scheduleRef.current = () => {
+    if (frameRef.current != null) cancelAnimationFrame(frameRef.current);
+    if (wakeTimerRef.current) clearTimeout(wakeTimerRef.current);
+    wakeTimerRef.current = null;
+    frameRef.current = requestAnimationFrame((now) => {
+      frameRef.current = null;
+      renderRef.current(now);
+    });
+  };
+
+  renderRef.current = (now: number) => {
     const overlay = overlayRef.current;
-    if (!overlay) return undefined;
-    let frameId: number | null = null;
-    let ttlTimer: ReturnType<typeof setTimeout> | null = null;
-    let cancelled = false;
-    const segments = buildAerialPathSegments(pathsRef.current);
-    if (!active || segments.length === 0) {
-      overlay.setProps({ layers: [] });
-      return undefined;
+    if (!overlay || !activeRef.current) return;
+    const rendered: RenderedSegment[] = [];
+    const pulses: LeadingPulse[] = [];
+    let needsAnimationFrame = false;
+    let nextFadeAt = Number.POSITIVE_INFINITY;
+
+    for (const [pathId, entry] of registryRef.current) {
+      const animationDuration = entry.segments.length * PATH_HOP_ANIMATION_MS;
+      const elapsed = Math.max(0, now - entry.startedAt);
+      if (elapsed < animationDuration) {
+        needsAnimationFrame = true;
+        const completedCount = Math.floor(elapsed / PATH_HOP_ANIMATION_MS);
+        const activeSegment = entry.segments[completedCount];
+        for (const segment of entry.segments.slice(0, completedCount)) {
+          rendered.push({ ...segment, renderedTarget: segment.target.position, opacity: 1 });
+        }
+        if (activeSegment) {
+          const hopProgress = Math.min(
+            1,
+            (elapsed - completedCount * PATH_HOP_ANIMATION_MS) / PATH_HOP_ANIMATION_MS,
+          );
+          const position = interpolate(activeSegment.source.position, activeSegment.target.position, hopProgress);
+          rendered.push({ ...activeSegment, renderedTarget: position, opacity: 1 });
+          pulses.push({ position, confidence: activeSegment.confidence });
+        }
+        continue;
+      }
+
+      const ageSinceCompletion = elapsed - animationDuration;
+      if (ageSinceCompletion >= PATH_LINE_TTL_MS + PATH_LINE_FADE_MS) {
+        registryRef.current.delete(pathId);
+        continue;
+      }
+      const opacity = ageSinceCompletion <= PATH_LINE_TTL_MS
+        ? 1
+        : Math.max(0, 1 - (ageSinceCompletion - PATH_LINE_TTL_MS) / PATH_LINE_FADE_MS);
+      if (ageSinceCompletion > PATH_LINE_TTL_MS) needsAnimationFrame = true;
+      else nextFadeAt = Math.min(nextFadeAt, entry.startedAt + animationDuration + PATH_LINE_TTL_MS);
+      for (const segment of entry.segments) {
+        rendered.push({ ...segment, renderedTarget: segment.target.position, opacity });
+      }
     }
 
-    const startedAt = performance.now();
-    const render = (now: number) => {
-      if (cancelled) return;
-      const elapsed = Math.max(0, now - startedAt);
-      const completedCount = Math.min(segments.length, Math.floor(elapsed / PATH_HOP_ANIMATION_MS));
-      const activeSegment = segments[completedCount];
-      const hopProgress = activeSegment
-        ? Math.min(1, (elapsed - completedCount * PATH_HOP_ANIMATION_MS) / PATH_HOP_ANIMATION_MS)
-        : 1;
-      const rendered: RenderedSegment[] = segments.slice(0, completedCount).map((segment) => ({
-        ...segment,
-        renderedTarget: segment.target.position,
-      }));
-      if (activeSegment) {
-        rendered.push({
-          ...activeSegment,
-          renderedTarget: interpolate(activeSegment.source.position, activeSegment.target.position, hopProgress),
-        });
-      }
-      const revealedSegments = segments.slice(0, Math.min(segments.length, completedCount + 1));
-      const pulse = activeSegment
-        ? { position: interpolate(activeSegment.source.position, activeSegment.target.position, hopProgress), confidence: activeSegment.confidence }
-        : null;
-      overlay.setProps({ layers: layersForFrame(rendered, uniqueNodes(revealedSegments), pulse, 1, onNodeClick) });
+    overlay.setProps({
+      layers: layersForFrame(rendered, uniqueNodes(rendered), pulses, onNodeClickRef.current),
+    });
 
-      if (completedCount < segments.length) {
-        frameId = requestAnimationFrame(render);
-        return;
-      }
+    if (needsAnimationFrame) {
+      frameRef.current = requestAnimationFrame((nextNow) => {
+        frameRef.current = null;
+        renderRef.current(nextNow);
+      });
+    } else if (Number.isFinite(nextFadeAt)) {
+      wakeTimerRef.current = setTimeout(
+        () => scheduleRef.current(),
+        Math.max(0, nextFadeAt - performance.now()),
+      );
+    }
+  };
 
-      const complete = segments.map((segment) => ({ ...segment, renderedTarget: segment.target.position }));
-      const allNodes = uniqueNodes(segments);
-      overlay.setProps({ layers: layersForFrame(complete, allNodes, null, 1, onNodeClick) });
-      ttlTimer = setTimeout(() => {
-        const fadeStartedAt = performance.now();
-        const fade = (fadeNow: number) => {
-          if (cancelled) return;
-          const opacity = Math.max(0, 1 - (fadeNow - fadeStartedAt) / PATH_LINE_FADE_MS);
-          overlay.setProps({ layers: layersForFrame(complete, allNodes, null, opacity, onNodeClick) });
-          if (opacity > 0) frameId = requestAnimationFrame(fade);
-          else overlay.setProps({ layers: [] });
-        };
-        frameId = requestAnimationFrame(fade);
-      }, PATH_LINE_TTL_MS);
-    };
-    frameId = requestAnimationFrame(render);
-
-    return () => {
-      cancelled = true;
-      if (frameId != null) cancelAnimationFrame(frameId);
-      if (ttlTimer) clearTimeout(ttlTimer);
+  useEffect(() => {
+    const overlay = overlayRef.current;
+    if (!overlay) return;
+    if (!active) {
+      registryRef.current.clear();
+      if (frameRef.current != null) cancelAnimationFrame(frameRef.current);
+      if (wakeTimerRef.current) clearTimeout(wakeTimerRef.current);
+      frameRef.current = null;
+      wakeTimerRef.current = null;
       overlay.setProps({ layers: [] });
-    };
-  }, [active, map, onNodeClick, signature]);
+      return;
+    }
+
+    registerAerialPaths(registryRef.current, paths, performance.now());
+    scheduleRef.current();
+  // `signature` is the stable semantic dependency for the path collection.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, map, signature]);
 
   return null;
 };
