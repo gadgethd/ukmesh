@@ -399,7 +399,7 @@ This project is built on the following open source libraries and tools:
 ### RF and link workers
 | Package | License |
 |---|---|
-| [HopReach v0.1.32-ukmesh.2](https://github.com/gadgethd/hopreach/tree/v0.1.32-ukmesh.2) | AGPL-3.0 plus Commons Clause |
+| [HopReach v0.1.32-ukmesh.3](https://github.com/gadgethd/hopreach/tree/v0.1.32-ukmesh.3) | AGPL-3.0 plus Commons Clause |
 | [NumPy](https://numpy.org) | BSD 3-Clause |
 | [SciPy](https://scipy.org) | BSD 3-Clause |
 | [Shapely](https://shapely.readthedocs.io) | BSD 3-Clause |
