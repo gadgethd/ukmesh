@@ -1232,7 +1232,10 @@ networks:
     ipam:
       config:
         # Fixed proxy addresses make the backend's immediate-peer trust exact.
+        # Keep Docker's dynamic allocator away from those reserved low
+        # addresses when the full stack starts services concurrently.
         - subnet: 172.30.0.0/24
+          ip_range: 172.30.0.128/25
   meshcore-beacon-ukmesh:
     external: true
     name: meshcore-beacon-ukmesh_default
