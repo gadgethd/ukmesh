@@ -353,6 +353,18 @@ export function usePacketPathOverlay({
     // effect on every packet arrival.
     const latest = messagesRef.current[0];
     const observerIds = getPacketObserverIds(latest);
+    // Discard the previous packet's resolved candidates before associating the
+    // new packet ID with geometry. AnimatedPathOverlay keeps the prior packet
+    // in its own TTL registry; carrying these arrays forward would duplicate it
+    // under the new packet ID while the new server resolution is in flight.
+    setBetaPacketPaths([]);
+    setBetaLowConfidencePaths([]);
+    setBetaLowConfidenceSegments([]);
+    setBetaCompletionPaths([]);
+    setBetaPathConfidence(null);
+    setBetaPermutationCount(null);
+    setBetaRemainingHops(null);
+    useOverlayStore.getState().setPathExplanation(null);
     setPacketPaths(buildLocalPaths(latest, observerIds));
 
     if (!isPageVisible) {
