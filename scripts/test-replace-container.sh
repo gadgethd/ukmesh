@@ -259,6 +259,9 @@ run_case() {
       "${test_root}/docker.log" || true
   )"
   test "$up_count" -eq "$expected_up_count"
+  grep -Eq -- \
+    '^run .* --volumes-from current-backend:ro( |$)' \
+    "${test_root}/docker.log"
   if [ "$signature_mode" = "keyless" ]; then
     grep -q -- '--certificate-identity-regexp' "${test_root}/cosign.log"
     grep -q -- '--certificate-oidc-issuer' "${test_root}/cosign.log"

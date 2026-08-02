@@ -280,6 +280,7 @@ docker run -d \
   --name "$compat_name" \
   --network "$network_name" \
   --env-file "$compat_env" \
+  --volumes-from "$current_backend_id:ro" \
   -e MQTT_INGEST_ENABLED=false \
   -e OWNER_AUTHORIZATION_MODE=shadow \
   -e OWNER_ACL_MODE=shadow \
