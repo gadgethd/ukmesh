@@ -162,6 +162,20 @@ test('enabled HopReach coverage survives metadata winning the initial map-load r
   await expect.poll(() => tileRequests.length, { timeout: 15_000 }).toBeGreaterThan(0);
 });
 
+test('RF coverage and 3D terrain cannot create black terrain polygons together', async ({ page }, testInfo) => {
+  await page.goto('/?layers=feed%2Cterrain%2Ccoverage', { waitUntil: 'domcontentloaded' });
+  await page.getByText('Live Map', { exact: true }).waitFor({ state: 'visible', timeout: 15_000 });
+  if (testInfo.project.name === 'dashboard-mobile') {
+    await page.getByRole('button', { name: 'Layers' }).first().click();
+  }
+
+  const terrain = page.getByRole('button', { name: '3D Terrain' }).first();
+  const coverage = page.getByRole('button', { name: 'RF Coverage' }).first();
+  await expect(coverage).toHaveAttribute('aria-pressed', 'true');
+  await expect(terrain).toHaveAttribute('aria-pressed', 'false');
+  await expect(page).toHaveURL(/layers=(?![^&]*terrain)[^&]*coverage/);
+});
+
 test('map modes update layers and produce a shareable URL', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByText('Live Map', { exact: true })).toBeVisible();
