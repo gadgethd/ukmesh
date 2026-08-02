@@ -36,7 +36,6 @@ import {
   writeFiltersToUrl,
   writeMapViewToUrl,
 } from './utils/mapUrlState.js';
-import { resolveTerrainCoverageConflict } from './utils/mapLayerCompatibility.js';
 
 type PacketHistorySegment = {
   positions: [[number, number], [number, number]];
@@ -107,10 +106,7 @@ export const App: React.FC = () => {
     const withRfVisibility = savedRfVisibility === null
       ? modeFilters
       : { ...modeFilters, coverage: savedRfVisibility === '1' };
-    return resolveTerrainCoverageConflict(
-      { terrain: false, coverage: false },
-      filtersFromUrl(withRfVisibility),
-    );
+    return filtersFromUrl(withRfVisibility);
   });
   const [activeMode, setActiveMode] = useState<MapMode | null>(() => {
     const requested = new URLSearchParams(window.location.search).get('mode');
@@ -197,9 +193,7 @@ export const App: React.FC = () => {
     if (!RF_COVERAGE_ENABLED || !rfCoverage.availableTiers.includes('standard')) return;
     if (localStorage.getItem(RF_VISIBILITY_KEY) !== null) return;
     if (initialLayersSpecifiedRef.current) return;
-    setFilters((current) => current.coverage || current.terrain
-      ? current
-      : { ...current, coverage: true });
+    setFilters((current) => current.coverage ? current : { ...current, coverage: true });
   }, [rfCoverage.availableTiers]);
 
   useEffect(() => {
@@ -246,12 +240,11 @@ export const App: React.FC = () => {
   const handleFiltersChange = useCallback((next: Filters) => {
     setActiveMode(null);
     useOverlayStore.getState().setPlanRepeaterMode(false);
-    const compatible = resolveTerrainCoverageConflict(filters, next);
-    if (compatible.coverage !== filters.coverage) {
-      localStorage.setItem(RF_VISIBILITY_KEY, compatible.coverage ? '1' : '0');
+    if (next.coverage !== filters.coverage) {
+      localStorage.setItem(RF_VISIBILITY_KEY, next.coverage ? '1' : '0');
     }
-    setFilters(compatible);
-  }, [filters]);
+    setFilters(next);
+  }, [filters.coverage]);
 
   const handleRfTierChange = useCallback((tier: RfCoverageTierName) => {
     localStorage.setItem(RF_TIER_KEY, tier);
@@ -260,13 +253,7 @@ export const App: React.FC = () => {
 
   const handleModeChange = useCallback((mode: MapMode) => {
     setActiveMode(mode);
-    setFilters((current) => {
-      const compatible = resolveTerrainCoverageConflict(current, filtersForMapMode(mode, current));
-      if (compatible.coverage !== current.coverage) {
-        localStorage.setItem(RF_VISIBILITY_KEY, compatible.coverage ? '1' : '0');
-      }
-      return compatible;
-    });
+    setFilters((current) => filtersForMapMode(mode, current));
     useOverlayStore.getState().setPlanRepeaterMode(mode === 'plan');
   }, []);
 
@@ -573,16 +560,7 @@ export const App: React.FC = () => {
         event.preventDefault();
         void handleShare();
       } else if (!isEditing && event.key.toLowerCase() === 't') {
-        setFilters((current) => {
-          const compatible = resolveTerrainCoverageConflict(
-            current,
-            { ...current, terrain: !current.terrain },
-          );
-          if (compatible.coverage !== current.coverage) {
-            localStorage.setItem(RF_VISIBILITY_KEY, compatible.coverage ? '1' : '0');
-          }
-          return compatible;
-        });
+        setFilters((current) => ({ ...current, terrain: !current.terrain }));
       } else if (!isEditing && event.key.toLowerCase() === 'l') {
         setFilters((current) => ({ ...current, betaPaths: !current.betaPaths }));
       }
