@@ -271,7 +271,15 @@ jobs:
           docker compose \
             --project-name "$project" \
             --profile dev \
-            up --detach --no-build --wait --wait-timeout 360
+            up --detach --no-build --scale link-backfill-worker=0 \
+              --wait --wait-timeout 360
+          # link-backfill-worker is intentionally a finite job. Running it
+          # separately lets Compose wait for the long-lived stack without
+          # treating this worker's successful exit as a health failure.
+          docker compose \
+            --project-name "$project" \
+            --profile dev \
+            run --rm --no-deps link-backfill-worker
           health_session_id="$(
             curl --fail --silent --request POST \
               --header 'Content-Type: application/json' \
@@ -304,9 +312,11 @@ jobs:
               test "$(curl --silent --output /dev/null --write-out '%{http_code}' "${origin}${path}")" = 404
             done
           done
-          docker compose --project-name "$project" exec -T backend \
-            wget -qO- http://127.0.0.1:9091/metrics \
-            | grep -q '^meshcore_process_'
+          backend_metrics="$(
+            docker compose --project-name "$project" exec -T backend \
+              wget -qO- http://127.0.0.1:9091/metrics
+          )"
+          grep -q '^meshcore_process_' <<<"$backend_metrics"
           ws_log="$(mktemp)"
           docker compose --project-name "$project" exec -T \
             -e MQTT_E2E_OBSERVER="$observer" \
@@ -362,7 +372,10 @@ jobs:
             sleep 1
           done
           test "$readback" = "t|t|t"
-          wait "$ws_pid"
+          if ! wait "$ws_pid"; then
+            cat "$ws_log"
+            exit 1
+          fi
           grep -q '^mqtt-packet-fanout-ok$' "$ws_log"
       - name: Validate monitoring configuration
         run: |
