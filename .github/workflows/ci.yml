@@ -263,7 +263,7 @@ jobs:
             --project-name "$project" \
             --profile dev \
             build \
-              backend app-ukmesh website-ukmesh mesh-health-check \
+              backend app-ukmesh website-ukmesh website-dev mesh-health-check \
               mosquitto-reloader link-worker hopreach
           docker compose \
             --project-name "$project" \

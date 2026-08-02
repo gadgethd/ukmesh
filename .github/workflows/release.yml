@@ -74,8 +74,8 @@ jobs:
             image: meshcore-hopreach
             context: third_party/hopreach
             file: third_party/hopreach/Dockerfile
-            source_revision: 9ab79011dcd6537e3d90bbdbf5a52bc273b9b2da
-            build_args: VERSION=v0.1.32-ukmesh.1
+            source_revision: f497b3fb72644aa1fb5f5fcce3fe2afca78bdaf6
+            build_args: VERSION=v0.1.32-ukmesh.2
           - component: ml-path-learner
             image: meshcore-ml-path-learner
             context: ml-path-learner
