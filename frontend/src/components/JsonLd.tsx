@@ -1,5 +1,5 @@
 import React from 'react';
-import { useLocation } from 'react-router-dom';
+import { useLocation } from 'react-router';
 import { getCurrentSite } from '../config/site.js';
 import { SITE_SEO_DEFAULTS, SEO_META } from '../config/seo.js';
 

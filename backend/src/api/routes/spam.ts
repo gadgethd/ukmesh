@@ -2,6 +2,12 @@ import { Router, RequestHandler } from 'express';
 import { getSpamSuspects, getSpamPacketObservers, getSpamAllObservers, getSpamSuspectSummary } from '../../db/index.js';
 import { getPublicIncident, getPublicIncidents, getPublicStatus } from '../../spam/repository.js';
 import { loadSpamMessageConfig } from '../../spam/config.js';
+import {
+  parseBoolean,
+  parseBoundedFloat,
+  parseBoundedInteger,
+  parseEnum,
+} from '../utils/input.js';
 
 interface SpamRouteDeps {
   expensiveLimiter: RequestHandler;
@@ -10,34 +16,39 @@ interface SpamRouteDeps {
 const SPAM_MSG_CFG = loadSpamMessageConfig();
 
 function numberParam(value: unknown, fallback: number, min: number, max: number): number {
-  const raw = Array.isArray(value) ? value[0] : value;
-  const parsed = Number(raw ?? fallback);
-  if (!Number.isFinite(parsed)) return fallback;
-  return Math.max(min, Math.min(max, Math.floor(parsed)));
+  return parseBoundedInteger(value, {
+    name: 'numeric parameter',
+    defaultValue: fallback,
+    min,
+    max,
+  });
 }
 
 function floatParam(value: unknown, fallback: number, min: number, max: number): number {
-  const raw = Array.isArray(value) ? value[0] : value;
-  const parsed = Number(raw ?? fallback);
-  if (!Number.isFinite(parsed)) return fallback;
-  return Math.max(min, Math.min(max, parsed));
+  return parseBoundedFloat(value, {
+    name: 'numeric parameter',
+    defaultValue: fallback,
+    min,
+    max,
+  });
 }
 
 function boolParam(value: unknown): boolean {
-  const raw = String(Array.isArray(value) ? value[0] : value ?? '').toLowerCase();
-  return raw === '1' || raw === 'true' || raw === 'yes';
+  return parseBoolean(value, { name: 'boolean parameter' });
 }
 
 function verdictParam(value: unknown): 'spam' | 'suspect' | undefined {
-  const raw = String(Array.isArray(value) ? value[0] : value ?? '').toLowerCase();
-  if (raw === 'spam' || raw === 'suspect') return raw;
-  return undefined;
+  return parseEnum(value, {
+    name: 'verdict',
+    values: ['spam', 'suspect'] as const,
+  });
 }
 
 function statusParam(value: unknown): 'active' | 'closed' | undefined {
-  const raw = String(Array.isArray(value) ? value[0] : value ?? '').toLowerCase();
-  if (raw === 'active' || raw === 'closed') return raw;
-  return undefined;
+  return parseEnum(value, {
+    name: 'status',
+    values: ['active', 'closed'] as const,
+  });
 }
 
 export function registerSpamRoutes(router: Router, deps: SpamRouteDeps): void {
@@ -49,8 +60,8 @@ export function registerSpamRoutes(router: Router, deps: SpamRouteDeps): void {
 
   // Current spam status: is anything ongoing right now?
   router.get('/spam/messages/status', async (req, res) => {
+    const minConfidence = floatParam(req.query['minConfidence'], SPAM_MSG_CFG.publicMinScore, 0, 1);
     try {
-      const minConfidence = floatParam(req.query['minConfidence'], SPAM_MSG_CFG.publicMinScore, 0, 1);
       res.json(await getPublicStatus(minConfidence));
     } catch (err: unknown) {
       console.error('[api/spam] message status error:', (err as Error).message);
@@ -60,11 +71,11 @@ export function registerSpamRoutes(router: Router, deps: SpamRouteDeps): void {
 
   // List incidents (active and/or historical), already sanitized.
   router.get('/spam/messages/incidents', expensiveLimiter, async (req, res) => {
+    const status = statusParam(req.query['status']);
+    const limit = numberParam(req.query['limit'], 100, 1, 200);
+    const offset = numberParam(req.query['offset'], 0, 0, 100000);
+    const minConfidence = floatParam(req.query['minConfidence'], SPAM_MSG_CFG.publicMinScore, 0, 1);
     try {
-      const status = statusParam(req.query['status']);
-      const limit = numberParam(req.query['limit'], 100, 1, 200);
-      const offset = numberParam(req.query['offset'], 0, 0, 100000);
-      const minConfidence = floatParam(req.query['minConfidence'], SPAM_MSG_CFG.publicMinScore, 0, 1);
       const incidents = await getPublicIncidents({ status, limit, offset, minConfidence });
       res.json({
         filters: { status: status ?? 'all', minConfidence, limit, offset },
@@ -103,18 +114,17 @@ export function registerSpamRoutes(router: Router, deps: SpamRouteDeps): void {
   // -------------------------------------------------------------------------
 
   router.get('/spam/suspects', expensiveLimiter, async (req, res) => {
+    const hours = numberParam(req.query['hours'], 8760, 1, 8760);
+    const includeSuspects = boolParam(req.query['includeSuspects']);
+    const requestedVerdict = verdictParam(req.query['verdict']);
+    const verdict = requestedVerdict ?? (includeSuspects ? undefined : 'spam');
+    const minScore = req.query['minScore'] == null
+      ? undefined
+      : numberParam(req.query['minScore'], 0, 0, 1000);
+    const limit = numberParam(req.query['limit'], 100, 1, 200);
+    const offset = numberParam(req.query['offset'], 0, 0, 100000);
+    const includePacketCounts = boolParam(req.query['includePacketCounts']);
     try {
-      const hours = numberParam(req.query['hours'], 8760, 1, 8760);
-      const includeSuspects = boolParam(req.query['includeSuspects']);
-      const requestedVerdict = verdictParam(req.query['verdict']);
-      const verdict = requestedVerdict ?? (includeSuspects ? undefined : 'spam');
-      const minScore = req.query['minScore'] == null
-        ? undefined
-        : numberParam(req.query['minScore'], 0, 0, 1000);
-      const limit = numberParam(req.query['limit'], 100, 1, 200);
-      const offset = numberParam(req.query['offset'], 0, 0, 100000);
-      const includePacketCounts = boolParam(req.query['includePacketCounts']);
-
       const filter = { hours, verdict, minScore };
       const [rows, summary, filteredSummary] = await Promise.all([
         getSpamSuspects({ ...filter, limit, offset, includePacketCounts }),

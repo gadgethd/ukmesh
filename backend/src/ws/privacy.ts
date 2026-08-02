@@ -69,9 +69,6 @@ export class PublicWsPrivacyIndex {
     if (message.type === 'node_update') {
       return this.hasNode((message.data as { nodeId?: string }).nodeId) ? null : message;
     }
-    if (message.type === 'coverage_update') {
-      return this.hasNode((message.data as { node_id?: string }).node_id) ? null : message;
-    }
     if (message.type === 'link_update') {
       const data = message.data as { node_a_id?: string; node_b_id?: string };
       return this.hasNode(data.node_a_id) || this.hasNode(data.node_b_id) ? null : message;

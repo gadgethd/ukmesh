@@ -38,6 +38,7 @@ function allowedEmptyAclUsers(): string[] {
 }
 
 let inFlight: Promise<void> | null = null;
+let reconcileTimer: NodeJS.Timeout | null = null;
 
 export function reconcileOwnerAuthorization(): Promise<void> {
   if (inFlight) return inFlight;
@@ -140,6 +141,14 @@ export async function startOwnerAuthorizationReconciler(): Promise<void> {
   // the HTTP listener can serve owner-protected data; subsequent refreshes may
   // retry in the background because the startup invariant is already current.
   await reconcileOwnerAuthorization();
-  const timer = setInterval(execute, Math.max(10_000, intervalMs));
-  timer.unref();
+  reconcileTimer = setInterval(execute, Math.max(10_000, intervalMs));
+  reconcileTimer.unref();
+}
+
+export async function stopOwnerAuthorizationReconciler(): Promise<void> {
+  if (reconcileTimer) {
+    clearInterval(reconcileTimer);
+    reconcileTimer = null;
+  }
+  await inFlight;
 }

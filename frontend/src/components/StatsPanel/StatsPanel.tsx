@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { useReducedMotion } from '../../hooks/useReducedMotion.js';
 
 interface StatProps {
   label: string;
@@ -7,6 +8,7 @@ interface StatProps {
 }
 
 const AnimatedStat: React.FC<StatProps> = ({ label, value, variant = 'default' }) => {
+  const reducedMotion = useReducedMotion();
   const [display, setDisplay] = useState(value);
   const [ticking, setTicking] = useState(false);
   const prevRef = useRef(value);
@@ -14,6 +16,11 @@ const AnimatedStat: React.FC<StatProps> = ({ label, value, variant = 'default' }
   useEffect(() => {
     if (prevRef.current === value) return;
     prevRef.current = value;
+    if (reducedMotion) {
+      setDisplay(value);
+      setTicking(false);
+      return;
+    }
     setTicking(true);
 
     // Quick count-up animation
@@ -34,7 +41,7 @@ const AnimatedStat: React.FC<StatProps> = ({ label, value, variant = 'default' }
       }
     }, 40);
     return () => clearInterval(interval);
-  }, [value]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [reducedMotion, value]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const cls = [
     'stat__value',

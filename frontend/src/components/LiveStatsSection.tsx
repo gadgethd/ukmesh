@@ -1,5 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { statsEndpoint, uncachedEndpoint } from '../utils/api.js';
+import { useRuntimeFeatures } from '../config/runtimeFeatures.js';
+import { useVisibilityPoll } from '../hooks/useVisibilityPoll.js';
+import { fetchJson, statsEndpoint, uncachedEndpoint } from '../utils/api.js';
 import { useFlash } from '../hooks/useFlash.js'; // used by StatCard
 import { LoadingIndicator } from './LoadingIndicator.js';
 
@@ -23,6 +25,25 @@ const EMPTY_STATS: SiteStats = {
   internationalLastSeen: null,
   internationalLastCountry: null,
 };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function parseSiteStats(value: unknown): SiteStats {
+  if (!isRecord(value)) throw new Error('Stats response was not an object');
+  return {
+    packetsDay: Number.isFinite(Number(value['packetsDay'])) ? Number(value['packetsDay']) : 0,
+    totalNodes: Number.isFinite(Number(value['totalNodes'])) ? Number(value['totalNodes']) : 0,
+    internationalNodes: Number.isFinite(Number(value['internationalNodes'])) ? Number(value['internationalNodes']) : 0,
+    internationalLastSeen: typeof value['internationalLastSeen'] === 'string'
+      ? value['internationalLastSeen']
+      : null,
+    internationalLastCountry: typeof value['internationalLastCountry'] === 'string'
+      ? value['internationalLastCountry']
+      : null,
+  };
+}
 
 const timeAgo = (ts: string | null): string => {
   if (!ts) return '';
@@ -51,42 +72,33 @@ const StatCard: React.FC<{ value: number; label: string; suffix?: string }> = ({
 };
 
 export const LiveStatsSection: React.FC<LiveStatsSectionProps> = ({ network, observer }) => {
+  const { privacyGeneration } = useRuntimeFeatures();
   const [stats, setStats] = useState<SiteStats>(EMPTY_STATS);
   const [hasLoaded, setHasLoaded] = useState(false);
   const [loading, setLoading] = useState(true);
-  const refreshSeconds = 5 * 60;
-
   useEffect(() => {
-    let cancelled = false;
+    setStats(EMPTY_STATS);
+    setHasLoaded(false);
+    setLoading(true);
+  }, [network, observer, privacyGeneration]);
 
-    const loadStats = () => {
-      setLoading(true);
-      fetch(uncachedEndpoint(statsEndpoint({ network, observer })), { cache: 'no-store' })
-        .then((response) => response.json())
-        .then((data) => {
-          if (cancelled) return;
-          setStats({
-            packetsDay: Number.isFinite(Number(data.packetsDay)) ? Number(data.packetsDay) : 0,
-            totalNodes: Number.isFinite(Number(data.totalNodes)) ? Number(data.totalNodes) : 0,
-            internationalNodes: Number.isFinite(Number(data.internationalNodes)) ? Number(data.internationalNodes) : 0,
-            internationalLastSeen: data.internationalLastSeen ?? null,
-            internationalLastCountry: data.internationalLastCountry ?? null,
-          });
-          setHasLoaded(true);
-        })
-        .catch(() => {})
-        .finally(() => {
-          if (!cancelled) setLoading(false);
-        });
-    };
-
-    loadStats();
-    const interval = setInterval(loadStats, refreshSeconds * 1000);
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-    };
-  }, [network, observer]);
+  useVisibilityPoll(async (signal) => {
+    setLoading(true);
+    const payload = await fetchJson<unknown>(
+      uncachedEndpoint(statsEndpoint({ network, observer })),
+      { cache: 'no-store', signal },
+      { timeoutMs: 15_000, maxBytes: 2 * 1024 * 1024 },
+    );
+    if (signal.aborted) return;
+    setStats(parseSiteStats(payload));
+    setHasLoaded(true);
+    setLoading(false);
+  }, {
+    scopeKey: `live-stats:${network ?? 'all'}:${observer ?? 'all'}:${privacyGeneration}`,
+    intervalMs: 5 * 60_000,
+    timeoutMs: 15_000,
+    onError: () => setLoading(false),
+  });
 
   const initialLoading = loading && !hasLoaded;
 

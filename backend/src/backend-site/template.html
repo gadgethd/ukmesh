@@ -104,6 +104,21 @@
     .row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
     .empty { color: var(--muted); padding: 18px 0; }
     code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+    .actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+    .actions button, .actions input, .actions select {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #101511;
+      color: var(--ink);
+      padding: 7px 9px;
+      font: inherit;
+    }
+    .actions button { cursor: pointer; }
+    .actions button:hover, .actions button:focus-visible { border-color: var(--green); }
+    .actions button.danger:hover, .actions button.danger:focus-visible { border-color: var(--red); }
+    .actions input { min-width: 190px; }
+    .stack { display: grid; gap: 12px; }
+    .scroll { overflow-x: auto; }
     @media (max-width: 1000px) {
       .shell { grid-template-columns: 1fr; }
       .side { position: static; height: auto; }
@@ -120,8 +135,11 @@
       <div class="brand">UKMesh Backend</div>
       <div class="sub">Local operator tools</div>
       <nav class="nav">
-        <button data-page="ml">ML Path Learner</button>
         <button data-page="overview">Overview</button>
+        <button data-page="ml">ML Path Learner</button>
+        <button data-page="operations">Job Operations</button>
+        <button data-page="observers">Observer Registrations</button>
+        <button id="logout" type="button">Log out</button>
       </nav>
     </aside>
     <main class="main">
@@ -144,9 +162,18 @@
     const runState = document.getElementById('runState');
     const title = document.getElementById('title');
     const subtitle = document.getElementById('subtitle');
-    const navButtons = [...document.querySelectorAll('.nav button')];
+    const navButtons = [...document.querySelectorAll('.nav button[data-page]')];
+    const logoutButton = document.getElementById('logout');
     let state = null;
-    let currentPage = location.pathname.endsWith('/ml-path-learner') ? 'ml' : 'overview';
+    let csrfToken = null;
+    let refreshTimer = null;
+    let currentPage = location.pathname.endsWith('/ml-path-learner')
+      ? 'ml'
+      : location.pathname.endsWith('/operations')
+        ? 'operations'
+        : location.pathname.endsWith('/observer-registrations')
+          ? 'observers'
+          : 'overview';
 
     if (currentPage === 'ml') {
       title.textContent = 'ML Path Learner';
@@ -313,18 +340,125 @@
         '</div>' +
         '<div class="panel full"><h2>Next slots</h2><div class="empty">Add backend tools here as needed.</div></div>';
     }
+    function queueActions(queue) {
+      const deadJobs = queue.dead?.jobs || [];
+      const deadRows = deadJobs.length
+        ? '<div class="scroll"><table><thead><tr><th>Job</th><th>Dead at</th><th>Attempts</th><th>Reason</th><th>Single-job action</th></tr></thead><tbody>' +
+          deadJobs.map((job) => '<tr><td><code>' + esc(job.jobId) + '</code></td><td>' + esc(new Date(job.deadAt).toLocaleString()) + '</td><td>' + int(job.attempts) + '</td><td>' + esc(job.reason) + '</td><td><div class="actions">' +
+            '<button type="button" data-queue-action="requeue" data-queue="' + esc(queue.name) + '" data-job="' + esc(job.jobId) + '">Requeue</button>' +
+            '<button type="button" class="danger" data-queue-action="purge" data-queue="' + esc(queue.name) + '" data-job="' + esc(job.jobId) + '">Purge</button>' +
+          '</div></td></tr>').join('') +
+          '</tbody></table></div>'
+        : '<div class="empty">No dead-letter jobs.</div>';
+      return '<div class="panel full"><h2>' + esc(queue.name) + '</h2>' +
+        '<div class="metrics-grid">' +
+          metric('Active jobs', int(queue.active?.count), int(queue.active?.bytes) + ' bytes') +
+          metric('Ready / leases', int(queue.ready) + ' / ' + int(queue.leases), int(queue.deferred) + ' deferred') +
+          metric('Dead jobs', int(queue.dead?.count), int(queue.dead?.bytes) + ' bytes') +
+          metric('Oldest age', int(queue.oldestAgeSeconds) + 's', queue.workerHealthy ? 'worker heartbeat present' : 'worker heartbeat missing') +
+        '</div>' +
+        deadRows +
+        '<div class="actions"><label for="repair-' + esc(queue.name) + '">Type <code>REPAIR ' + esc(queue.name) + '</code></label>' +
+          '<input id="repair-' + esc(queue.name) + '" data-repair-confirm="' + esc(queue.name) + '" autocomplete="off">' +
+          '<button type="button" data-queue-action="repair" data-queue="' + esc(queue.name) + '" data-job="_queue">Repair counters</button></div>' +
+      '</div>';
+    }
+    function renderOperations() {
+      title.textContent = 'Job Operations';
+      subtitle.textContent = 'Bounded queue recovery, leases, analysis runs, and model calibration';
+      const queues = state.queues || [];
+      const runs = state.analysisRuns || [];
+      const planned = state.plannedCoverageJobs || [];
+      const plannedNodes = state.plannedNodes || [];
+      const models = state.modelCalibration || [];
+      app.innerHTML = '<div class="stack">' +
+        queues.map(queueActions).join('') +
+        '<div class="panel full scroll"><h2>Analysis runs</h2>' +
+          (runs.length ? '<table><thead><tr><th>Run</th><th>Workload</th><th>Status</th><th>Progress</th><th>Attempt</th><th>Lease owner</th><th>Lease expires</th><th>Terminal reason</th></tr></thead><tbody>' +
+            runs.map((run) => '<tr><td><code>' + esc(run.run_id) + '</code></td><td>' + esc(run.workload) + ' / ' + esc(run.scope) + '</td><td>' + esc(run.status) + '</td><td>' + int(run.checkpoint) + ' / ' + int(run.total_items) + '</td><td>' + int(run.attempt) + '</td><td>' + esc(run.lease_owner || '-') + '</td><td>' + esc(run.lease_expires_at ? new Date(run.lease_expires_at).toLocaleString() : '-') + '</td><td>' + esc(run.terminal_reason || '-') + '</td></tr>').join('') +
+            '</tbody></table>' : '<div class="empty">No analysis runs.</div>') +
+        '</div>' +
+        '<div class="panel full scroll"><h2>Planned coverage</h2>' +
+          (planned.length ? '<table><thead><tr><th>Job</th><th>Status</th><th>Heartbeat</th><th>Expires</th><th>Error</th></tr></thead><tbody>' +
+            planned.map((job) => '<tr><td><code>' + esc(job.job_id) + '</code></td><td>' + esc(job.status) + '</td><td>' + esc(job.heartbeat_at ? new Date(job.heartbeat_at).toLocaleString() : '-') + '</td><td>' + esc(new Date(job.expires_at).toLocaleString()) + '</td><td>' + esc(job.error || '-') + '</td></tr>').join('') +
+            '</tbody></table>' : '<div class="empty">No planned coverage jobs.</div>') +
+        '</div>' +
+        '<div class="panel full scroll"><h2>Privacy-reviewed planned-node publishing</h2>' +
+          (plannedNodes.length ? '<table><thead><tr><th>Private record</th><th>Private owner / notes</th><th>Public DTO</th><th>Review reason</th><th>Action</th></tr></thead><tbody>' +
+            plannedNodes.map((node) => '<tr><td><strong>' + esc(node.name) + '</strong><br><code>' + esc(node.id) + '</code><br>' + esc(node.lat) + ', ' + esc(node.lon) + '</td>' +
+              '<td><code>' + esc(node.owner_pubkey) + '</code><br>' + esc(node.notes || '-') + '</td>' +
+              '<td><div class="actions"><label class="metric-label" for="pub-name-' + esc(node.id) + '">Name</label><input id="pub-name-' + esc(node.id) + '" data-pub-name="' + esc(node.id) + '" value="' + esc(node.public_name || node.name) + '" maxlength="100">' +
+              '<label class="metric-label" for="pub-lat-' + esc(node.id) + '">Latitude</label><input id="pub-lat-' + esc(node.id) + '" data-pub-lat="' + esc(node.id) + '" value="' + esc(node.public_lat ?? node.lat) + '" inputmode="decimal">' +
+              '<label class="metric-label" for="pub-lon-' + esc(node.id) + '">Longitude</label><input id="pub-lon-' + esc(node.id) + '" data-pub-lon="' + esc(node.id) + '" value="' + esc(node.public_lon ?? node.lon) + '" inputmode="decimal">' +
+              '<label class="metric-label" for="pub-height-' + esc(node.id) + '">Height m</label><input id="pub-height-' + esc(node.id) + '" data-pub-height="' + esc(node.id) + '" value="' + esc(node.public_height_m ?? node.height_m ?? '') + '" inputmode="decimal">' +
+              '<label class="metric-label" for="pub-region-' + esc(node.id) + '">Region</label><input id="pub-region-' + esc(node.id) + '" data-pub-region="' + esc(node.id) + '" value="' + esc(node.region || '') + '" maxlength="8">' +
+              '<label class="metric-label" for="pub-expires-' + esc(node.id) + '">Expiry (ISO)</label><input id="pub-expires-' + esc(node.id) + '" data-pub-expires="' + esc(node.id) + '" value="' + esc(node.expires_at || new Date(Date.now() + 30 * 86400000).toISOString()) + '"></div></td>' +
+              '<td><input aria-label="Publication review reason" data-pub-reason="' + esc(node.id) + '" maxlength="500"></td>' +
+              '<td><div class="actions"><button type="button" data-publication-action="publish" data-node="' + esc(node.id) + '">Review &amp; publish</button>' +
+              (node.published_at ? '<button type="button" class="danger" data-publication-action="unpublish" data-node="' + esc(node.id) + '">Unpublish</button>' : '') +
+              '</div><div class="metric-note">' + (node.published_at ? 'Published ' + esc(new Date(node.published_at).toLocaleString()) : 'Private only') + '</div></td></tr>'
+            ).join('') + '</tbody></table>' : '<div class="empty">No private planned-node records.</div>') +
+        '</div>' +
+        '<div class="panel full scroll"><h2>Model calibration by version and network</h2>' +
+          (models.length ? '<table><thead><tr><th>Version</th><th>Network</th><th>Generation</th><th>Observed packets</th><th>Top-1</th><th>Complete path</th><th>Mean confidence</th><th>Threshold</th><th>Active</th></tr></thead><tbody>' +
+            models.map((model) => '<tr><td><code>' + esc(model.version) + '</code></td><td>' + esc(model.network) + '</td><td>' + int(model.generation) + '</td><td>' + int(model.evaluated_packets) + '</td><td>' + pct(model.top1_accuracy) + '</td><td>' + pct(model.complete_path_accuracy) + '</td><td>' + pct(model.mean_pred_confidence) + '</td><td>' + pct(model.recommended_threshold) + '</td><td>' + (model.is_active ? 'yes' : 'no') + '</td></tr>').join('') +
+            '</tbody></table>' : '<div class="empty">No model calibration rows.</div>') +
+        '</div>' +
+      '</div>';
+    }
+    function observerActionButtons(request) {
+      if (request.status === 'pending') {
+        return '<button type="button" data-observer-action="approve" data-request="' + esc(request.id) + '">Approve</button>' +
+          '<button type="button" class="danger" data-observer-action="reject" data-request="' + esc(request.id) + '">Reject</button>';
+      }
+      if (request.status === 'approved') {
+        return '<button type="button" data-observer-action="provision" data-request="' + esc(request.id) + '">Provision</button>';
+      }
+      if (request.notification_status === 'pending' || request.notification_status === 'failed') {
+        return '<button type="button" data-observer-action="notification-sent" data-request="' + esc(request.id) + '">Mark notified</button>' +
+          '<button type="button" class="danger" data-observer-action="notification-failed" data-request="' + esc(request.id) + '">Notification failed</button>';
+      }
+      return '';
+    }
+    function renderObservers() {
+      title.textContent = 'Observer Registrations';
+      subtitle.textContent = 'Operator-only PII review, duplicate detection, provisioning, and notification handoff';
+      const registrations = state.registrations || [];
+      app.innerHTML = '<div class="panel full"><div class="actions"><label for="observer-status">State</label>' +
+        '<select id="observer-status"><option value="pending">Pending</option><option value="approved">Approved</option><option value="rejected">Rejected</option><option value="expired">Expired</option><option value="provisioned">Provisioned</option><option value="all">All</option></select></div></div>' +
+        '<div class="panel full scroll"><table><thead><tr><th>ID / state</th><th>Public key</th><th>Region / name</th><th>Contact (PII)</th><th>Duplicate</th><th>Decision</th><th>Action reason</th><th>Actions</th></tr></thead><tbody>' +
+        (registrations.length ? registrations.map((request) =>
+          '<tr><td>' + esc(request.id) + '<br><span class="pill' + (request.status === 'rejected' || request.status === 'expired' ? ' bad' : '') + '">' + esc(request.status) + '</span><br>' + esc(request.notification_status) + '</td>' +
+          '<td><code>' + esc(request.public_key) + '</code></td><td>' + esc(request.iata) + '<br>' + esc(request.display_name || '-') + '</td><td>' + esc(request.contact) + '</td>' +
+          '<td>' + esc(request.possible_duplicate_id || request.duplicate_of || '-') + '</td><td>' + esc(request.decision_reason || '-') + '</td>' +
+          '<td><label class="metric-label" for="reason-' + esc(request.id) + '">Required reason</label><input id="reason-' + esc(request.id) + '" data-observer-reason="' + esc(request.id) + '" maxlength="500">' +
+          '<label class="metric-label" for="duplicate-' + esc(request.id) + '">Duplicate ID (reject only)</label><input id="duplicate-' + esc(request.id) + '" data-observer-duplicate="' + esc(request.id) + '" value="' + esc(request.possible_duplicate_id || '') + '" inputmode="numeric"></td>' +
+          '<td><div class="actions">' + observerActionButtons(request) + '</div></td></tr>'
+        ).join('') : '<tr><td colspan="8" class="empty">No registrations in this state.</td></tr>') +
+        '</tbody></table></div>';
+      const select = document.getElementById('observer-status');
+      select.value = state.status || 'pending';
+      select.addEventListener('change', () => loadState(select.value));
+    }
     function render() {
       if (!state) {
         app.innerHTML = '<div class="panel full"><div class="empty">Loading backend state</div></div>';
         return;
       }
-      runState.textContent = state.trainingRunId ? 'run ' + state.trainingRunId : 'no run yet';
+      runState.textContent = state.trainingRunId ? 'run ' + state.trainingRunId : '';
       if (currentPage === 'overview') renderOverview();
-      else renderMl();
+      else if (currentPage === 'ml') renderMl();
+      else if (currentPage === 'operations') renderOperations();
+      else renderObservers();
     }
-    async function loadState() {
+    async function loadState(observerStatus) {
       try {
-        const response = await fetch('/local-api/ml-path-learner', { cache: 'no-store' });
+        const endpoint = currentPage === 'operations'
+          ? '/local-api/operations'
+          : currentPage === 'observers'
+            ? '/local-api/observer-registrations?status=' + encodeURIComponent(observerStatus || state?.status || 'pending')
+            : '/local-api/ml-path-learner';
+        const response = await fetch(endpoint, { cache: 'no-store' });
         if (!response.ok) throw new Error('HTTP ' + response.status);
         state = await response.json();
         refreshState.textContent = 'Updated ' + new Date().toLocaleTimeString();
@@ -333,17 +467,107 @@
         refreshState.textContent = 'Update failed: ' + err.message;
       }
     }
+    function mutationHeaders() {
+      const headers = {
+        'content-type': 'application/json',
+        'idempotency-key': 'operator-ui:' + crypto.randomUUID()
+      };
+      if (csrfToken) headers['x-csrf-token'] = csrfToken;
+      return headers;
+    }
+    async function mutate(url, body) {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: mutationHeaders(),
+        body: JSON.stringify(body)
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || 'HTTP ' + response.status);
+      await loadState();
+    }
+    async function loadSession() {
+      const response = await fetch('/local-api/operator/session', { cache: 'no-store' });
+      if (!response.ok) {
+        location.reload();
+        return;
+      }
+      const session = await response.json();
+      csrfToken = session.csrfToken;
+    }
+    async function logout() {
+      if (!csrfToken) return;
+      const response = await fetch('/local-api/operator/logout', {
+        method: 'POST',
+        headers: { 'x-csrf-token': csrfToken },
+      });
+      if (response.ok) location.reload();
+    }
+    async function refreshVisible() {
+      if (document.visibilityState === 'visible') await loadState();
+      refreshTimer = setTimeout(refreshVisible, 15000);
+    }
     navButtons.forEach((button) => {
       button.addEventListener('click', () => {
         currentPage = button.dataset.page;
         navButtons.forEach((b) => b.classList.toggle('active', b === button));
-        history.replaceState(null, '', currentPage === 'overview' ? '/' : '/ml-path-learner');
+        const path = currentPage === 'overview' ? '/' : currentPage === 'ml' ? '/ml-path-learner' : currentPage === 'operations' ? '/operations' : '/observer-registrations';
+        history.replaceState(null, '', path);
+        state = null;
         render();
+        loadState();
       });
     });
+    app.addEventListener('click', async (event) => {
+      const queueButton = event.target.closest('[data-queue-action]');
+      const observerButton = event.target.closest('[data-observer-action]');
+      const publicationButton = event.target.closest('[data-publication-action]');
+      try {
+        if (queueButton) {
+          const action = queueButton.dataset.queueAction;
+          const queue = queueButton.dataset.queue;
+          const job = queueButton.dataset.job;
+          const confirmation = action === 'purge'
+            ? 'PURGE ' + job
+            : action === 'repair'
+              ? document.querySelector('[data-repair-confirm="' + CSS.escape(queue) + '"]').value
+              : undefined;
+          await mutate('/local-api/jobs/' + encodeURIComponent(queue) + '/' + encodeURIComponent(job) + '/' + encodeURIComponent(action), { confirmation });
+        } else if (observerButton) {
+          const action = observerButton.dataset.observerAction;
+          const id = observerButton.dataset.request;
+          const reason = document.querySelector('[data-observer-reason="' + CSS.escape(id) + '"]').value;
+          const duplicateOf = document.querySelector('[data-observer-duplicate="' + CSS.escape(id) + '"]').value || undefined;
+          await mutate('/local-api/observer-registrations/' + encodeURIComponent(id) + '/action', { action, reason, duplicateOf });
+        } else if (publicationButton) {
+          const action = publicationButton.dataset.publicationAction;
+          const id = publicationButton.dataset.node;
+          const read = (field) => document.querySelector('[data-pub-' + field + '="' + CSS.escape(id) + '"]').value;
+          await mutate('/local-api/planned-nodes/' + encodeURIComponent(id) + '/publication', {
+            action,
+            reason: read('reason'),
+            ...(action === 'publish' ? {
+              publicName: read('name'),
+              publicLat: read('lat'),
+              publicLon: read('lon'),
+              publicHeightM: read('height'),
+              region: read('region'),
+              expiresAt: read('expires')
+            } : {})
+          });
+        }
+      } catch (error) {
+        refreshState.textContent = 'Action failed: ' + error.message;
+      }
+    });
     navButtons.forEach((button) => button.classList.toggle('active', button.dataset.page === currentPage));
-    loadState();
-    setInterval(loadState, 2000);
+    logoutButton.addEventListener('click', logout);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') {
+        clearTimeout(refreshTimer);
+        refreshVisible();
+      }
+    });
+    loadSession().then(refreshVisible);
   </script>
 </body>
 </html>

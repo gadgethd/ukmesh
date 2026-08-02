@@ -33,11 +33,13 @@ type StatsRouteDeps = {
   statsCacheTtlMs: number;
   chartsCache: Map<string, { ts: number; data: unknown }>;
   chartsCacheTtlMs: number;
+  chartsSnapshotStaleTtlMs: number;
   chartsInflight: Map<string, Promise<unknown>>;
   expensiveLimiter: ReturnType<typeof import('express-rate-limit').rateLimit>;
   statsChartsLimiter: ReturnType<typeof import('express-rate-limit').rateLimit>;
   networkFilters: (network?: string, observer?: string) => NetworkFilters;
   query: QueryFn;
+  getPublicVisibilityGeneration: () => Promise<number>;
   maskDecodedPathNodes: MaskDecodedPathNodesFn;
 };
 
@@ -52,8 +54,10 @@ export function registerStatsRoutes(router: Router, deps: StatsRouteDeps): void 
     statsCacheTtlMs: deps.statsCacheTtlMs,
     chartsCache: deps.chartsCache,
     chartsCacheTtlMs: deps.chartsCacheTtlMs,
+    chartsSnapshotStaleTtlMs: deps.chartsSnapshotStaleTtlMs,
     chartsInflight: deps.chartsInflight,
     repository,
+    getPublicVisibilityGeneration: deps.getPublicVisibilityGeneration,
     maskDecodedPathNodes: deps.maskDecodedPathNodes,
   });
 

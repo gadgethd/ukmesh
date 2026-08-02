@@ -1,5 +1,4 @@
 import type { MeshNode } from '../../hooks/useNodes.js';
-import type { NodeCoverage } from '../../hooks/useCoverage.js';
 import type { HiddenMaskGeometry } from '../../utils/pathing.js';
 import {
   buildHiddenCoordMask,
@@ -16,23 +15,25 @@ import {
   NODE_STALE_AFTER_MS,
   LINK_AMBER_THRESHOLD_DB,
   LINK_GREEN_THRESHOLD_DB,
+  MAP_OVERLAY_COLORS,
 } from './mapConfig.js';
+import type { MapTheme } from './mapConfig.js';
 import type { ClashComputation, NodeFeatureProps, PlannedRepeater } from './types.js';
 
 export type MapSourceDirtyFlags = {
   nodes: boolean;
   privacy: boolean;
   links: boolean;
-  coverage: boolean;
   clash: boolean;
   plannedLinks: boolean;
 };
+
+export const MAX_INFERRED_NODE_FEATURES = 2_000;
 
 export const ALL_MAP_SOURCE_DIRTY_FLAGS: MapSourceDirtyFlags = {
   nodes: true,
   privacy: true,
   links: true,
-  coverage: true,
   clash: true,
   plannedLinks: true,
 };
@@ -45,7 +46,6 @@ export function mergeMapSourceDirtyFlags(
     nodes: current.nodes || !!incoming.nodes,
     privacy: current.privacy || !!incoming.privacy,
     links: current.links || !!incoming.links,
-    coverage: current.coverage || !!incoming.coverage,
     clash: current.clash || !!incoming.clash,
     plannedLinks: current.plannedLinks || !!incoming.plannedLinks,
   };
@@ -88,11 +88,17 @@ export function buildNodeGeoJSON(
   pathNodeIds: Set<string> | null,
   replayNodeIds: Set<string> | null = null,
   staleCutoffMs = Date.now(),
+  inferredNodes: readonly MeshNode[] = [],
+  inferredActiveNodeIds: ReadonlySet<string> = new Set<string>(),
 ): GeoJSON.FeatureCollection {
   const features: GeoJSON.Feature[] = [];
+  const activeInferredIds = new Set(
+    Array.from(inferredActiveNodeIds, (nodeId) => nodeId.trim().toUpperCase()),
+  );
 
-  const addNode = (node: MeshNode) => {
+  const addNode = (node: MeshNode, explicitlyInferred = false) => {
     if (!hasCoords(node)) return;
+    if (explicitlyInferred && isProhibitedMapNode(node)) return;
     const ageMs = staleCutoffMs - new Date(node.last_seen).getTime();
     const isLinkOnlyStale = ageMs > NODE_HIDE_AFTER_MS
       && showLinks
@@ -134,7 +140,7 @@ export function buildNodeGeoJSON(
       is_stale: ageMs > NODE_STALE_AFTER_MS,
       is_link_only_stale: isLinkOnlyStale,
       is_prohibited: isProhibited,
-      is_inferred: false,
+      is_inferred: explicitlyInferred || activeInferredIds.has(node.node_id.trim().toUpperCase()),
       replay_active: replayNodeIds?.has(node.node_id.toLowerCase()) ?? false,
       replay_mode: replayNodeIds !== null,
       hex_clash_state: hexClashState,
@@ -154,6 +160,17 @@ export function buildNodeGeoJSON(
   };
 
   for (const node of nodes.values()) addNode(node);
+  const existingIds = new Set(
+    Array.from(nodes.values(), (node) => node.node_id.trim().toUpperCase()),
+  );
+  let addedInferred = 0;
+  for (const node of inferredNodes) {
+    if (addedInferred >= MAX_INFERRED_NODE_FEATURES) break;
+    if (existingIds.has(node.node_id.trim().toUpperCase())) continue;
+    const before = features.length;
+    addNode(node, true);
+    if (features.length > before) addedInferred += 1;
+  }
 
   return { type: 'FeatureCollection', features };
 }
@@ -167,37 +184,6 @@ export function buildPrivacyRingsGeoJSON(
     if (!hasCoords(node) || !isProhibitedMapNode(node)) continue;
     const center = maskCircleCenter([node.lat!, node.lon!], hiddenCoordMask);
     features.push(circleLineString(center[0], center[1], HIDDEN_NODE_MASK_RADIUS_METERS));
-  }
-  return { type: 'FeatureCollection', features };
-}
-
-export function buildCoverageGeoJSON(coverage: NodeCoverage[]): GeoJSON.FeatureCollection {
-  if (coverage.length === 0) return EMPTY_FC;
-  const features: GeoJSON.Feature[] = [];
-  for (const item of coverage) {
-    const strengthGeoms = item.strength_geoms;
-    if (strengthGeoms) {
-      for (const band of ['red', 'amber', 'green'] as const) {
-        const geom = strengthGeoms[band];
-        if (!geom) continue;
-        if (geom.type === 'Polygon' || geom.type === 'MultiPolygon') {
-          features.push({
-            type: 'Feature',
-            geometry: geom as GeoJSON.Geometry,
-            properties: { node_id: item.node_id, band },
-          });
-        }
-      }
-      continue;
-    }
-
-    if (item.geom.type === 'Polygon' || item.geom.type === 'MultiPolygon') {
-      features.push({
-        type: 'Feature',
-        geometry: item.geom as GeoJSON.Geometry,
-        properties: { node_id: item.node_id, band: 'green' },
-      });
-    }
   }
   return { type: 'FeatureCollection', features };
 }
@@ -265,7 +251,9 @@ export function buildPlannedLinksGeoJSON(
   repeaters: PlannedRepeater[],
   nodes: Map<string, MeshNode>,
   hiddenCoordMask: Map<string, HiddenMaskGeometry>,
+  theme: MapTheme = 'dark',
 ): GeoJSON.FeatureCollection {
+  const colors = MAP_OVERLAY_COLORS[theme];
   const features: GeoJSON.Feature[] = [];
   for (const repeater of repeaters) {
     if (repeater.status !== 'ready') continue;
@@ -277,12 +265,12 @@ export function buildPlannedLinksGeoJSON(
       const peerMasked = maskNodePoint(peer, hiddenCoordMask);
       const pathLoss = link.itm_path_loss_db;
       const color = pathLoss == null
-        ? '#a78bfa'
+        ? colors.linkUnknown
         : pathLoss <= LINK_GREEN_THRESHOLD_DB
-          ? '#22c55e'
+          ? colors.linkGood
           : pathLoss <= LINK_AMBER_THRESHOLD_DB
-            ? '#fbbf24'
-            : '#ef4444';
+            ? colors.linkMarginal
+            : colors.linkPoor;
       features.push({
         type: 'Feature',
         geometry: {
@@ -292,7 +280,7 @@ export function buildPlannedLinksGeoJSON(
         properties: {
           key: `${repeater.id}:${link.peer_id}`,
           color,
-          width: pathLoss == null ? 1.6 : pathLoss <= LINK_GREEN_THRESHOLD_DB ? 2.4 : pathLoss <= LINK_AMBER_THRESHOLD_DB ? 2.0 : 1.6,
+          width: pathLoss == null ? 1.8 : pathLoss <= LINK_GREEN_THRESHOLD_DB ? 3 : pathLoss <= LINK_AMBER_THRESHOLD_DB ? 2.1 : 1.4,
         },
       });
     }
@@ -305,7 +293,9 @@ export function buildLinksGeoJSON(
   viablePairsArr: [string, string][],
   linkMetrics: Map<string, { itm_path_loss_db?: number | null }>,
   hiddenCoordMask: Map<string, HiddenMaskGeometry>,
+  theme: MapTheme = 'dark',
 ): GeoJSON.FeatureCollection {
+  const colors = MAP_OVERLAY_COLORS[theme];
   const features: GeoJSON.Feature[] = [];
   const seen = new Set<string>();
 
@@ -323,12 +313,12 @@ export function buildLinksGeoJSON(
     const pathLoss = linkMetrics.get(edgeId)?.itm_path_loss_db ?? null;
     const distance = distKm(a, b);
     const color = pathLoss == null
-      ? '#d1d5db'
+      ? colors.linkUnknown
       : pathLoss <= LINK_GREEN_THRESHOLD_DB
-        ? '#22c55e'
+        ? colors.linkGood
         : pathLoss <= LINK_AMBER_THRESHOLD_DB
-          ? '#fbbf24'
-          : '#ef4444';
+          ? colors.linkMarginal
+          : colors.linkPoor;
 
     const coordinates = distance > 0.02
       ? [[aMasked[1], aMasked[0]], [bMasked[1], bMasked[0]]]
@@ -340,8 +330,8 @@ export function buildLinksGeoJSON(
       properties: {
         key: edgeId,
         color,
-        width: pathLoss == null ? 1.2 : pathLoss <= LINK_GREEN_THRESHOLD_DB ? 2.2 : pathLoss <= LINK_AMBER_THRESHOLD_DB ? 1.8 : 1.4,
-        opacity: pathLoss == null ? 0.38 : pathLoss <= LINK_GREEN_THRESHOLD_DB ? 0.72 : pathLoss <= LINK_AMBER_THRESHOLD_DB ? 0.62 : 0.5,
+        width: pathLoss == null ? 1.8 : pathLoss <= LINK_GREEN_THRESHOLD_DB ? 3 : pathLoss <= LINK_AMBER_THRESHOLD_DB ? 2.1 : 1.4,
+        opacity: pathLoss == null ? 0.75 : 0.9,
       },
     });
   }
@@ -349,34 +339,18 @@ export function buildLinksGeoJSON(
   return { type: 'FeatureCollection', features };
 }
 
-function buildCoverageByNodeId(coverage: NodeCoverage[]): Map<string, NodeCoverage> {
-  const coverageByNodeId = new Map<string, NodeCoverage>();
-  for (const item of coverage) coverageByNodeId.set(item.node_id, item);
-  return coverageByNodeId;
-}
-
-function nodeRangeKm(nodeId: string, coverageByNodeId: Map<string, NodeCoverage>): number {
-  const coverage = coverageByNodeId.get(nodeId);
-  if (!coverage?.radius_m) return 50;
-  return Math.min(80, Math.max(50, coverage.radius_m / 1000));
-}
-
 function pairInReceiveRange(
   a: MeshNode,
   b: MeshNode,
-  coverageByNodeId: Map<string, NodeCoverage>,
 ): boolean {
-  const distance = distKm(a, b);
-  const range = Math.max(
-    nodeRangeKm(a.node_id, coverageByNodeId),
-    nodeRangeKm(b.node_id, coverageByNodeId),
-  );
-  return distance <= range;
+  // Clash adjacency uses observed viable links and a fixed conservative
+  // presentation bound. It must never recover range from rejected per-node
+  // viewshed geometry.
+  return distKm(a, b) <= 50;
 }
 
 export function computeClashData(
   nodes: Map<string, MeshNode>,
-  coverage: NodeCoverage[],
   viablePairsArr: [string, string][],
   linkMetrics: Map<string, { itm_path_loss_db?: number | null }>,
   showHexClashes: boolean,
@@ -385,7 +359,6 @@ export function computeClashData(
   focusedPrefixNodeIds: Set<string> | null,
   staleCutoffMs = Date.now(),
 ): ClashComputation {
-  const coverageByNodeId = buildCoverageByNodeId(coverage);
   const nodesWithPos = Array.from(nodes.values()).filter(
     (node) => hasCoords(node)
       && (node.role === undefined || node.role === 2)
@@ -408,7 +381,7 @@ export function computeClashData(
     const edgeKey = linkKey(aId, bId);
     const pathLoss = linkMetrics.get(edgeKey)?.itm_path_loss_db;
     if (pathLoss == null) continue;
-    if (!pairInReceiveRange(a, b, coverageByNodeId)) continue;
+    if (!pairInReceiveRange(a, b)) continue;
     if (!clashAdjacency.has(aId)) clashAdjacency.set(aId, new Set());
     if (!clashAdjacency.has(bId)) clashAdjacency.set(bId, new Set());
     clashAdjacency.get(aId)?.add(bId);

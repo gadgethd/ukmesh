@@ -51,8 +51,12 @@
   color: var(--text-secondary);
   margin: 0 0 16px;
 }
-.prose-section a:not(.site-btn) { color: var(--accent); text-decoration: none; }
-.prose-section a:not(.site-btn):hover { text-decoration: underline; }
+.prose-section a:not(.site-btn) {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 0.16em;
+}
+.prose-section a:not(.site-btn):hover { text-decoration-thickness: 2px; }
 .prose-section ul, .prose-section ol {
   padding-left: 24px;
   margin: 0 0 16px;
@@ -142,7 +146,11 @@
   border-radius: 8px;
   padding: 16px 18px;
   margin: 16px 0;
+  max-width: 100%;
+  min-width: 0;
   overflow-x: auto;
+  white-space: pre;
+  -webkit-overflow-scrolling: touch;
 }
 .code-block pre {
   margin: 0;
@@ -150,6 +158,8 @@
   font-size: 13px;
   line-height: 1.7;
   color: #a8c8e8;
+  min-width: fit-content;
+  width: max-content;
   white-space: pre;
 }
 
@@ -166,6 +176,9 @@
   border-radius: 8px;
   padding: 16px 18px;
   position: relative;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
 }
 .hw-card--recommended { border-color: rgba(0, 196, 255, 0.28); }
 .hw-card__badge {
@@ -227,11 +240,14 @@
   transition: border-color var(--transition), background var(--transition);
 }
 
-.health-card--interactive:hover,
-.health-card--interactive:focus-visible {
+.health-card--interactive:hover {
   border-color: var(--border-bright);
   background: var(--bg-hover);
-  outline: none;
+}
+
+.health-card--interactive:focus-visible {
+  border-color: var(--accent);
+  background: var(--bg-hover);
 }
 
 .health-card--expanded {
@@ -289,14 +305,11 @@
 
 .health-kv span {
   min-width: 0;
-}
-
-.health-kv strong,
-.health-kv span {
   overflow-wrap: anywhere;
 }
 
 .health-kv strong {
+  overflow-wrap: anywhere;
   color: var(--text-primary);
   font-family: var(--font-mono);
   text-align: left;
@@ -381,8 +394,12 @@
 .oss-banner__icon { font-size: 24px; flex-shrink: 0; margin-top: 2px; }
 .oss-banner strong { color: var(--text-primary); display: block; margin-bottom: 6px; font-size: 15px; }
 .oss-banner p { font-size: 14px; color: var(--text-secondary); margin: 0; line-height: 1.6; }
-.oss-banner a:not(.site-btn) { color: var(--accent); text-decoration: none; }
-.oss-banner a:not(.site-btn):hover { text-decoration: underline; }
+.oss-banner a:not(.site-btn) {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 0.16em;
+}
+.oss-banner a:not(.site-btn):hover { text-decoration-thickness: 2px; }
 
 /* ── Packet type cards ──────────────────────────────────────────────────── */
 .packet-grid {

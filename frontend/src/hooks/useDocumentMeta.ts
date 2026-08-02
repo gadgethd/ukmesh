@@ -26,6 +26,10 @@ function setCanonical(href: string): void {
   el.setAttribute('href', href);
 }
 
+function removeMetaTag(attr: 'name' | 'property', key: string): void {
+  document.querySelector<HTMLMetaElement>(`meta[${attr}="${key}"]`)?.remove();
+}
+
 export function useDocumentMeta({ title, description, canonicalUrl }: MetaConfig): void {
   useEffect(() => {
     document.title = title;
@@ -37,6 +41,9 @@ export function useDocumentMeta({ title, description, canonicalUrl }: MetaConfig
     if (canonicalUrl) {
       setCanonical(canonicalUrl);
       setMetaTag('property', 'og:url', canonicalUrl);
+    } else {
+      document.querySelector<HTMLLinkElement>('link[rel="canonical"]')?.remove();
+      removeMetaTag('property', 'og:url');
     }
   }, [title, description, canonicalUrl]);
 }

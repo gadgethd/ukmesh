@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "generate-key":       "tsx generate-observer-key.ts",
-    "register-observer":  "tsx register-observer.ts"
+    "register-observer":  "tsx register-observer.ts",
+    "test":               "bash test-generate-observer-key.sh",
+    "typecheck":          "tsc --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --strict --types node generate-observer-key.ts register-observer.ts"
   },
   "dependencies": {
     "pg": "^8.13.1"

@@ -15,9 +15,16 @@ import {
   analysisGeneration,
   beginAnalysisRun,
   finishAnalysisRun,
+  startAnalysisRunHeartbeat,
 } from '../analysis/runState.js';
+import { observeWorkerOutcome } from '../metrics.js';
+import { startWorkerMetrics } from './workerMetrics.js';
+import {
+  pathHistoryNextDelayMs,
+  pathHistoryRetryIntervalMs,
+} from './pathHistorySchedule.js';
 
-const REFRESH_INTERVAL_MS = 60 * 60 * 1000; // 1 hour — 7-day window changes slowly
+const RETRY_INTERVAL_MS = pathHistoryRetryIntervalMs(process.env['PATH_HISTORY_RETRY_INTERVAL_MS']);
 const WINDOW_HOURS = 168;
 const MIN_SEGMENT_COUNT = 30;
 const MAX_PACKET_HASHES = 12000;
@@ -93,7 +100,7 @@ function collectPurpleSegments(result: BetaResolvedPayload, sink: Set<string>): 
   }
 }
 
-async function refreshScope(scope: ScopeName): Promise<void> {
+async function refreshScope(scope: ScopeName): Promise<'finished' | 'active-run'> {
   const visibilityGeneration = await getPublicVisibilityGeneration();
   const packetHashes = await getRecentPathHistoryPacketHashes(
     WINDOW_HOURS,
@@ -115,32 +122,47 @@ async function refreshScope(scope: ScopeName): Promise<void> {
       windowStart,
       windowEnd,
       totalItems: packetHashes.length,
+      deadlineMs: RUN_DEADLINE_MS,
+      privacyGeneration: visibilityGeneration,
+      modelGeneration: 'path-history-v2',
     });
   } catch (error) {
     if (error instanceof AnalysisRunAlreadyActiveError || (error as { code?: string }).code === '55P03') {
       console.warn(`[path-history] scope=${scope} refresh skipped; another analysis run is active`);
-      return;
+      return 'active-run';
     }
     throw error;
   }
+  const stopHeartbeat = startAnalysisRunHeartbeat(run);
+  const finish = async (
+    input: Parameters<typeof finishAnalysisRun>[1],
+  ): Promise<void> => {
+    if (input.status === 'timed_out') await stopHeartbeat.stopForTerminal();
+    else await stopHeartbeat();
+    await finishAnalysisRun(run, input);
+  };
   try {
     if (packetHashes.length === 0) {
-      await finishAnalysisRun(run, {
+      await finish({
         status: 'stale',
         checkpoint: 0,
         error: 'empty selection',
       });
       console.warn(`[path-history] scope=${scope} selected no packets; preserving last complete snapshot`);
-      return;
+      return 'finished';
     }
-    const outcome = await runBoundedItems(packetHashes, async (packetHash) => {
+    const outcome = await runBoundedItems(packetHashes, async (packetHash, _index, signal) => {
+      stopHeartbeat.assertOwned();
+      signal.throwIfAborted();
       try {
         const resolved = await resolveMultiObserverBetaPath(packetHash, scope, undefined, undefined, {
           touchPredictedOnline: false,
           log: false,
           pinContextForBatch: true,
           requiredVisibilityGeneration: visibilityGeneration,
+          signal,
         });
+        stopHeartbeat.assertOwned();
         if (!resolved?.ok || resolved.results.length < 1) {
           return;
         }
@@ -166,9 +188,10 @@ async function refreshScope(scope: ScopeName): Promise<void> {
       collectResults: false,
       maxErrors: 100,
       runId: run.runId,
+      signal: stopHeartbeat.signal,
     });
     if (outcome.status !== 'complete') {
-      await finishAnalysisRun(run, {
+      await finish({
         status: outcome.status,
         checkpoint: outcome.checkpoint,
         error: outcome.errors[0]?.message,
@@ -181,7 +204,7 @@ async function refreshScope(scope: ScopeName): Promise<void> {
         checkpoint: outcome.checkpoint,
         errors: outcome.errors.slice(0, 5),
       });
-      return;
+      return 'finished';
     }
 
     const segmentCounts: SegmentCount[] = counts.candidates(MIN_SEGMENT_COUNT)
@@ -198,9 +221,10 @@ async function refreshScope(scope: ScopeName): Promise<void> {
       resolvedPacketCount,
       segmentCounts: segmentCounts as PathHistorySegmentRow[],
       visibilityGeneration,
+      analysisRun: run,
     });
     if (!published) {
-      await finishAnalysisRun(run, {
+      await finish({
         status: 'stale',
         checkpoint: outcome.checkpoint,
         error: 'public visibility changed during generation',
@@ -209,14 +233,14 @@ async function refreshScope(scope: ScopeName): Promise<void> {
       console.warn(
         `[path-history] scope=${scope} visibility changed during run; preserving the current snapshot`,
       );
-      return;
+      return 'finished';
     }
     const generation = analysisGeneration({
       scope,
       windowStart: windowStart.toISOString(),
       segmentCounts,
     });
-    await finishAnalysisRun(run, {
+    await finish({
       status: 'complete',
       checkpoint: outcome.checkpoint,
       generation,
@@ -232,10 +256,14 @@ async function refreshScope(scope: ScopeName): Promise<void> {
     console.log(
       `[path-history] scope=${scope} run=${outcome.runId} packets=${packetHashes.length} skipped=${skippedPacketCount} resolved=${resolvedPacketCount} segments=${segmentCounts.length}`,
     );
+    return 'finished';
   } catch (error) {
     try {
-      await finishAnalysisRun(run, {
-        status: 'failed',
+      const timedOut = Date.now() >= run.deadlineAt.getTime();
+      if (timedOut) await stopHeartbeat.stopForTerminal();
+      else await stopHeartbeat();
+      await finish({
+        status: timedOut ? 'timed_out' : 'failed',
         checkpoint: 0,
         error: error instanceof Error ? error.message : String(error),
       });
@@ -243,15 +271,18 @@ async function refreshScope(scope: ScopeName): Promise<void> {
       console.error('[path-history] could not record failed run', (finishError as Error).message);
     }
     throw error;
+  } finally {
+    await stopHeartbeat().catch(() => {});
   }
 }
 
 let isRunning = false;
 
-async function refreshAll(tag: 'initial' | 'scheduled') {
+async function refreshAll(tag: 'initial' | 'scheduled'): Promise<boolean> {
   if (isRunning) {
+    observeWorkerOutcome('path_history', 'refresh', 'skipped');
     console.warn(`[path-history] ${tag} refresh skipped; previous refresh still running`);
-    return;
+    return true;
   }
   isRunning = true;
   try {
@@ -266,23 +297,30 @@ async function refreshAll(tag: 'initial' | 'scheduled') {
     } catch (evidenceErr) {
       console.warn(`[path-history] ${tag} path-evidence skipped:`, (evidenceErr as Error).message);
     }
+    let retrySoon = false;
     for (const scope of SCOPES) {
-      await refreshScope(scope);
+      if (await refreshScope(scope) === 'active-run') retrySoon = true;
     }
+    observeWorkerOutcome('path_history', 'refresh', 'success');
+    return retrySoon;
   } catch (err) {
+    observeWorkerOutcome('path_history', 'refresh', 'failure');
     console.error(`[path-history] ${tag} refresh failed`, (err as Error).message);
+    return true;
   } finally {
     isRunning = false;
   }
 }
 
 async function main() {
+  startWorkerMetrics();
   await initDb();
-  await refreshAll('initial');
-
-  setInterval(() => {
-    void refreshAll('scheduled');
-  }, REFRESH_INTERVAL_MS);
+  const scheduleNext = (retrySoon: boolean) => {
+    setTimeout(() => {
+      void refreshAll('scheduled').then(scheduleNext);
+    }, pathHistoryNextDelayMs(retrySoon, RETRY_INTERVAL_MS));
+  };
+  scheduleNext(await refreshAll('initial'));
 }
 
 main().catch((err) => {

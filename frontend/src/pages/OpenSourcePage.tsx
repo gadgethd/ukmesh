@@ -21,9 +21,9 @@ const FRONTEND: LibEntry[] = [
   { name: 'deck.gl',             role: 'WebGL overlay for animated packet arc trails',               url: 'https://deck.gl' },
   { name: '@deck.gl/mapbox',     role: 'Native deck.gl integration with the MapLibre map',           url: 'https://deck.gl/docs/api-reference/mapbox/overview' },
   { name: 'Zustand',             role: 'Lightweight client state management for UI atoms',           url: 'https://zustand-demo.pmnd.rs' },
-  { name: 'react-router-dom',    role: 'Client-side routing between pages',                          url: 'https://reactrouter.com' },
+  { name: 'react-router',        role: 'Client-side routing between pages',                          url: 'https://reactrouter.com' },
   { name: 'Recharts',            role: 'Chart components for stats and history graphs',              url: 'https://recharts.org' },
-  { name: 'polygon-clipping',    role: 'Coverage polygon clipping to UK mainland bounds',            url: 'https://github.com/mfogel/polygon-clipping' },
+  { name: 'polygon-clipping',    role: 'Client-side geospatial polygon operations',                   url: 'https://github.com/mfogel/polygon-clipping' },
 ];
 
 const BACKEND: LibEntry[] = [
@@ -53,14 +53,15 @@ const INFRA: LibEntry[] = [
   { name: 'meshcore-health-check',              role: 'Observer coverage tool powering healthcheck.ukmesh.com',     url: 'https://github.com/yellowcooln/meshcore-health-check' },
 ];
 
-const GEOSPATIAL: LibEntry[] = [
-  { name: 'world-atlas',          role: 'Natural Earth 10m country boundary data (pre-processed into source)',  url: 'https://github.com/topojson/world-atlas' },
-  { name: 'scipy + numpy',        role: 'Viewshed raycasting for terrain line-of-sight calculations',           url: 'https://scipy.org' },
-  { name: 'Shapely',              role: 'Polygon intersection for terrain clip and gap detection',              url: 'https://shapely.readthedocs.io' },
-  { name: 'GDAL',                 role: 'Geospatial data abstraction for reading SRTM raster tiles',            url: 'https://gdal.org' },
-  { name: 'psycopg2',             role: 'PostgreSQL client for the Python viewshed worker',                     url: 'https://www.psycopg.org' },
-  { name: 'redis-py',             role: 'Redis client for viewshed job queue',                                  url: 'https://github.com/redis/redis-py' },
-  { name: 'SRTM elevation data',  role: 'NASA shuttle radar terrain model via AWS Terrain Tiles',               url: 'https://registry.opendata.aws/terrain-tiles' },
+const RF_AND_GEOSPATIAL: LibEntry[] = [
+  { name: 'HopReach v0.1.32',      role: 'Canonical terrain propagation and progressive RF rasters (AGPL-3.0 + Commons Clause)', url: 'https://github.com/A13xB0/hopreach' },
+  { name: 'Go',                    role: 'HopReach calculator runtime and CPU raster engine',                    url: 'https://go.dev' },
+  { name: 'Natural Earth',         role: 'Versioned GB, Northern Ireland, Isle of Man, Jersey, and Guernsey boundary', url: 'https://www.naturalearthdata.com' },
+  { name: 'AWS Terrain Tiles',     role: 'Public-domain elevation tiles used by HopReach',                       url: 'https://registry.opendata.aws/terrain-tiles' },
+  { name: 'scipy + numpy',         role: 'Observed-link path-loss processing retained in the link worker',       url: 'https://scipy.org' },
+  { name: 'GDAL',                  role: 'Terrain raster access retained by the observed-link worker',           url: 'https://gdal.org' },
+  { name: 'psycopg2',              role: 'PostgreSQL client for observed-link processing',                       url: 'https://www.psycopg.org' },
+  { name: 'redis-py',              role: 'Redis client for the bounded observed-link queue',                     url: 'https://github.com/redis/redis-py' },
 ];
 
 const Section: React.FC<{ title: string; items: LibEntry[] }> = ({ title, items }) => (
@@ -84,7 +85,7 @@ export const OpenSourcePage: React.FC = () => (
             <strong>The source code is on GitHub</strong>
             <p>
               The full source code for this dashboard is publicly available: backend, frontend,
-              viewshed worker, and Docker setup. If you run a MeshCore network and want to set up
+              HopReach integration, observed-link worker, and Docker setup. If you run a MeshCore network and want to set up
               your own analytics instance, everything you need is there.
             </p>
             <a
@@ -102,7 +103,7 @@ export const OpenSourcePage: React.FC = () => (
       <Section title="Frontend" items={FRONTEND} />
       <Section title="Backend" items={BACKEND} />
       <Section title="Infrastructure" items={INFRA} />
-      <Section title="Geospatial & Viewshed" items={GEOSPATIAL} />
+      <Section title="RF & Geospatial" items={RF_AND_GEOSPATIAL} />
 
       <section className="prose-section">
         <h2>MeshCore itself</h2>

@@ -1,6 +1,8 @@
 import 'node:process';
 import { WebSocket } from 'ws';
 import { initDb, query } from '../db/index.js';
+import { observeSyntheticCheck } from '../metrics.js';
+import { startWorkerMetrics } from './workerMetrics.js';
 
 type CheckResult = {
   name: string;
@@ -150,12 +152,14 @@ async function runChecks(): Promise<void> {
       detail: (result.reason instanceof Error ? result.reason.message : String(result.reason)).slice(0, 300),
     };
   });
+  for (const result of results) observeSyntheticCheck(result.name, result.status === 'ok');
   await persistResults(results);
   await evaluateAlerts(results);
   console.log(`[synthetic] ${results.map((result) => `${result.name}=${result.status}:${result.latencyMs}ms`).join(' ')}`);
 }
 
 async function main(): Promise<void> {
+  startWorkerMetrics();
   await initDb();
   let running = false;
   const runCycle = async () => {

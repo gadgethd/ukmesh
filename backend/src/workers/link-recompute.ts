@@ -15,12 +15,11 @@ import {
   type LinkQueueAdmission,
 } from '../queue/linkQueueV3.js';
 import { getRedisConnectionOptions, getRedisUrl } from '../platform/config/redis.js';
+import { observeWorkerOutcome } from '../metrics.js';
+import { startWorkerMetrics } from './workerMetrics.js';
 
 const LEGACY_LINK_JOB_QUEUE = 'meshcore:link_jobs';
 const DEFAULT_PHYSICAL_RADIUS_KM = 60;
-const MIN_PHYSICAL_RADIUS_KM = 20;
-const MAX_PHYSICAL_RADIUS_KM = 100;
-const PHYSICAL_RADIUS_MARGIN = 1.25;
 const ADMISSION_TIMEOUT_MS = Math.max(
   60_000,
   Number(process.env['LINK_REBUILD_ADMISSION_TIMEOUT_MS'] ?? 30 * 60_000) || 30 * 60_000,
@@ -46,7 +45,6 @@ type PhysicalNodeRow = {
   node_id: string;
   lat: number;
   lon: number;
-  radius_m: number | null;
 };
 
 function distKm(a: PhysicalNodeRow, b: PhysicalNodeRow): number {
@@ -54,13 +52,6 @@ function distKm(a: PhysicalNodeRow, b: PhysicalNodeRow): number {
   const dLat = (a.lat - b.lat) * 111.32;
   const dLon = (a.lon - b.lon) * 111.32 * cos;
   return Math.sqrt(dLat * dLat + dLon * dLon);
-}
-
-function candidateRadiusKm(node: PhysicalNodeRow): number {
-  const derived = node.radius_m != null
-    ? (node.radius_m / 1000) * PHYSICAL_RADIUS_MARGIN
-    : DEFAULT_PHYSICAL_RADIUS_KM;
-  return Math.min(MAX_PHYSICAL_RADIUS_KM, Math.max(MIN_PHYSICAL_RADIUS_KM, derived));
 }
 
 function accepted(admission: LinkQueueAdmission | null): admission is LinkQueueAdmission & { jobId: string } {
@@ -151,6 +142,7 @@ async function waitForGeneration(
 }
 
 async function main(): Promise<void> {
+  startWorkerMetrics();
   await initDb();
   const redis = new Redis(getRedisUrl(), getRedisConnectionOptions());
   const waiter = new Redis(getRedisUrl(), getRedisConnectionOptions());
@@ -216,9 +208,8 @@ async function main(): Promise<void> {
     );
 
     const nodes = await query<PhysicalNodeRow>(
-      `SELECT n.node_id, n.lat, n.lon, nc.radius_m
+      `SELECT n.node_id, n.lat, n.lon
          FROM nodes n
-         LEFT JOIN node_coverage nc ON nc.node_id = n.node_id
         WHERE n.lat IS NOT NULL
           AND n.lon IS NOT NULL
           AND n.lat BETWEEN 49.5 AND 61.5
@@ -237,10 +228,9 @@ async function main(): Promise<void> {
     for (let i = 0; i < nodes.rows.length; i += 1) {
       await ensureLease();
       const a = nodes.rows[i]!;
-      const aRadiusKm = candidateRadiusKm(a);
       for (let j = i + 1; j < nodes.rows.length; j += 1) {
         const b = nodes.rows[j]!;
-        if (distKm(a, b) > Math.max(aRadiusKm, candidateRadiusKm(b))) continue;
+        if (distKm(a, b) > DEFAULT_PHYSICAL_RADIUS_KM) continue;
         if (jobIds.size >= MAX_REBUILD_PHYSICAL_JOBS) {
           throw new Error('LINK_REBUILD_PHYSICAL_JOB_LIMIT');
         }
@@ -345,7 +335,9 @@ async function main(): Promise<void> {
     console.log(
       `[link-recompute] published generation=${generation} jobs=${jobIds.size} deferred_released=${released} rollback_schema=${rollbackSchema}`,
     );
+    observeWorkerOutcome('link', 'rebuild', 'success');
   } catch (error) {
+    observeWorkerOutcome('link', 'rebuild', 'failure');
     if (!published) {
       await query(
         `UPDATE link_rebuild_runs

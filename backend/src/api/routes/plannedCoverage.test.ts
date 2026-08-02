@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict';
+import { once } from 'node:events';
+import type { AddressInfo } from 'node:net';
 import test from 'node:test';
-import { plannedCoverageAdmissionDecision, plannedCoverageHandleDigest } from './plannedCoverage.js';
+import express, { Router, type RequestHandler } from 'express';
+import {
+  plannedCoverageAdmissionDecision,
+  plannedCoverageHandleDigest,
+  registerPlannedCoverageRoutes,
+} from './plannedCoverage.js';
 
 test('planned coverage capabilities use full-entropy SHA-256 handles', () => {
   const handle = `planv2_${'ab'.repeat(32)}`;
@@ -41,4 +48,45 @@ test('planned coverage admission enforces every durable bound at its edge', () =
     ...base,
     handlesForJob: 3,
   }), 'job_handles');
+});
+
+test('planned coverage contracts return 410 without repository or queue work', async () => {
+  let repositoryCalls = 0;
+  const unused = async () => { repositoryCalls += 1; };
+  const passThroughLimiter: RequestHandler = (_req, _res, next) => next();
+  const router = Router();
+  registerPlannedCoverageRoutes(router, {
+    coverageLimiter: passThroughLimiter,
+    plannedCoverageRepository: {
+      cleanupExpired: unused,
+      createOrReuse: async () => {
+        repositoryCalls += 1;
+        return { jobId: 'unused', created: false };
+      },
+      findByHandle: async () => {
+        repositoryCalls += 1;
+        return null;
+      },
+      deleteHandle: unused,
+    },
+  });
+  const app = express();
+  app.use(router);
+  const server = app.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  try {
+    const { port } = server.address() as AddressInfo;
+    const requests = [
+      fetch(`http://127.0.0.1:${port}/coverage/planned`, { method: 'POST' }),
+      fetch(`http://127.0.0.1:${port}/coverage/planned/planv2_${'a'.repeat(64)}`),
+      fetch(`http://127.0.0.1:${port}/coverage/planned/planv2_${'a'.repeat(64)}`, { method: 'DELETE' }),
+    ];
+    for (const response of await Promise.all(requests)) {
+      assert.equal(response.status, 410);
+      assert.equal((await response.json() as { replacement: string }).replacement, '/rf-coverage/meta.json');
+    }
+    assert.equal(repositoryCalls, 0);
+  } finally {
+    server.close();
+  }
 });

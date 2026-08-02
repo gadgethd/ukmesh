@@ -63,21 +63,14 @@ const chartStats = {
 };
 
 const health = {
-  system: {
-    generated_at: '2026-07-18T12:00:00Z',
-    cpu: { load_1m: 0.2, count: 2, load_pct: 10, usage_pct: 12 },
-    memory: { total_mb: 1024, used_mb: 512, used_pct: 50 },
-    disk: { total_gb: 20, used_gb: 8, used_pct: 40 },
-    runtime: { uptime_s: 3600, node_version: 'v20', platform: 'linux', arch: 'x64' },
-  },
-  workers: [],
-  frontend_errors_1h: 0,
-  ingest: {
-    stale_nodes: 0,
-    active_nodes: 2,
-    max_stale_minutes: 0,
-    stale_threshold_minutes: 10,
-    global_last_packet_at: '2026-07-18T12:00:00Z',
+  status: 'healthy',
+  generatedAt: '2026-07-18T12:00:00Z',
+  maintenance: { active: false, message: null },
+  incidents: [],
+  components: {
+    ingest: { status: 'ok' },
+    workers: { status: 'running' },
+    storage: { status: 'ok' },
   },
 };
 
@@ -117,12 +110,39 @@ async function installApiFixtures(page: Page) {
       });
     }
     if (pathname === '/api/health') return route.fulfill({ json: health });
+    if (pathname === '/api/repeaters/firmware') {
+      return route.fulfill({
+        json: {
+          total: 32,
+          versions: [
+            {
+              hardware_model: 'Heltec V3',
+              firmware_version: 'v1.12.0-public-release-with-long-label',
+              count: 32,
+            },
+          ],
+        },
+      });
+    }
     if (pathname.endsWith('/packets/recent')) return route.fulfill({ json: [] });
     if (pathname.endsWith('/path-beta/history')) return route.fulfill({ json: { segments: [] } });
     if (pathname.endsWith('/inferred-nodes')) {
       return route.fulfill({ json: { inferredNodes: [], inferredActiveNodeIds: [] } });
     }
-    if (pathname === '/api/nodes') return route.fulfill({ json: repeaterNodes });
+    if (pathname === '/api/nodes/map') {
+      return route.fulfill({
+        json: {
+          nodes: repeaterNodes,
+          page: {
+            snapshot: '2026-07-18T12:00:00.000Z',
+            nextCursor: null,
+            complete: true,
+            returned: repeaterNodes.length,
+            rowLimit: 2_000,
+          },
+        },
+      });
+    }
     if (pathname === '/api/node-status/latest') return route.fulfill({ json: [] });
     if (pathname === '/api/companion-activity') return route.fulfill({ json: [] });
     if (pathname === '/api/owner/session') return route.fulfill({ json: { ok: false } });
@@ -148,6 +168,7 @@ const routedViews = [
   ['UK install', 'http://127.0.0.1:4173/install'],
   ['UK open source', 'http://127.0.0.1:4173/open-source'],
   ['UK stats', 'http://127.0.0.1:4173/stats'],
+  ['UK health', 'http://127.0.0.1:4173/health'],
   ['UK login', 'http://127.0.0.1:4173/login'],
   ['UK docs', 'http://127.0.0.1:4173/docs'],
   ['test site home', 'http://127.0.0.1:4175/'],
@@ -247,6 +268,10 @@ test('map controls and disclaimer leave the map usable on a phone', async ({ pag
   await page.goto('http://127.0.0.1:4174/', { waitUntil: 'networkidle' });
 
   await page.getByRole('button', { name: /Layers/ }).click();
+  const lineOfSight = page.getByRole('button', { name: 'Line of sight' });
+  await expect(lineOfSight).toBeVisible();
+  expect((await lineOfSight.boundingBox())?.width ?? 0).toBeGreaterThan(330);
+  await expect(page.locator('.mobile-controls .watchlist-panel')).not.toHaveAttribute('open', '');
   const controlsBox = await page.locator('.mobile-controls').boundingBox();
   expect(controlsBox?.height ?? PHONE.height).toBeLessThan(PHONE.height * 0.42);
   const mapBox = await page.locator('.map-area').boundingBox();
@@ -261,18 +286,54 @@ test('map controls and disclaimer leave the map usable on a phone', async ({ pag
   await expect(dialog.getByRole('button', { name: 'Got it' })).toBeVisible();
 });
 
+test('live map stays inside every supported viewport and remains UK-only', async ({ page }) => {
+  await installApiFixtures(page);
+  const apiRequests: string[] = [];
+  page.on('request', (request) => {
+    const url = new URL(request.url());
+    if (url.pathname.startsWith('/api/')) apiRequests.push(url.href);
+  });
+
+  for (const width of [320, 375, 640, 768, 1024, 1280, 1440]) {
+    await page.setViewportSize({ width, height: width <= 375 ? 667 : 800 });
+    await page.goto('http://127.0.0.1:4174/?network=teesside', { waitUntil: 'networkidle' });
+    await expect(page.locator('.map-area')).toBeVisible();
+    await expect(page.getByLabel('Network region')).toHaveCount(0);
+
+    for (const selector of ['.app-shell', '.topbar', '.map-layer', '.map-area']) {
+      const box = await page.locator(selector).boundingBox();
+      expect(box, `${selector} should have a box at ${width}px`).not.toBeNull();
+      expect(box!.x, `${selector} should start inside ${width}px`).toBeGreaterThanOrEqual(0);
+      expect(box!.x + box!.width, `${selector} should end inside ${width}px`).toBeLessThanOrEqual(width + 0.5);
+    }
+
+    if (width <= 640) {
+      const mobileControls = page.locator('.mobile-controls');
+      await expect(mobileControls).toBeVisible();
+      const controlsBox = await mobileControls.boundingBox();
+      expect(controlsBox!.x + controlsBox!.width).toBeLessThanOrEqual(width + 0.5);
+    }
+    await expectNoViewportOverflow(page);
+  }
+
+  expect(apiRequests.some((url) => new URL(url).searchParams.get('network') === 'ukmesh')).toBe(true);
+  expect(apiRequests.some((url) => new URL(url).searchParams.get('network') === 'teesside')).toBe(false);
+  expect(apiRequests.some((url) => new URL(url).pathname === '/api/observers/health')).toBe(false);
+});
+
 test('repeater search results stay bounded and scroll inside the menu', async ({ page }) => {
   await page.setViewportSize(PHONE);
   await installApiFixtures(page);
   await page.goto('http://127.0.0.1:4173/repeater', { waitUntil: 'networkidle' });
 
-  await page.getByRole('textbox').fill('Repeater');
+  await page.getByRole('combobox', { name: 'Search repeaters' }).fill('Repeater');
   const results = page.locator('.repeater-search-box__results');
   await expect(results).toBeVisible();
   const box = await results.boundingBox();
   expect(box?.height ?? PHONE.height).toBeLessThanOrEqual(PHONE.height * 0.47);
-  expect(await results.evaluate((element) => element.scrollHeight)).toBeGreaterThan(
-    await results.evaluate((element) => element.clientHeight),
+  const listbox = results.locator('.ui-combobox__listbox');
+  expect(await listbox.evaluate((element) => element.scrollHeight)).toBeGreaterThan(
+    await listbox.evaluate((element) => element.clientHeight),
   );
   await expectNoViewportOverflow(page);
 });
@@ -290,6 +351,34 @@ test('stats path modal fits the viewport and keeps its close action reachable', 
   expect(modalBox?.y ?? -1).toBeGreaterThanOrEqual(0);
   expect((modalBox?.y ?? PHONE.height) + (modalBox?.height ?? 1)).toBeLessThanOrEqual(PHONE.height);
   await expect(dialog.getByRole('button', { name: 'Close' })).toBeVisible();
+});
+
+test('repeater-tree modal remains centred and fully reachable at every target width', async ({ page }) => {
+  await installApiFixtures(page);
+  await page.goto('http://127.0.0.1:4173/feed', { waitUntil: 'networkidle' });
+
+  await page.evaluate(() => {
+    const overlay = document.createElement('div');
+    overlay.className = 'disclaimer-overlay';
+    overlay.dataset.testid = 'path-modal-overlay';
+    const shell = document.createElement('div');
+    shell.className = 'ui-dialog-modal';
+    const dialog = document.createElement('section');
+    dialog.className = 'ui-dialog stats-page__path-modal uk-feed-path-modal';
+    dialog.textContent = 'Predicted Repeater Tree';
+    shell.append(dialog);
+    overlay.append(shell);
+    document.body.append(overlay);
+  });
+
+  for (const width of [375, 850, 900, 1024, 1280, 1440]) {
+    await page.setViewportSize({ width, height: 800 });
+    const box = await page.locator('.uk-feed-path-modal').boundingBox();
+    expect(box).not.toBeNull();
+    expect(box!.x).toBeGreaterThanOrEqual(width <= 640 ? 10 : 16);
+    expect(box!.x + box!.width).toBeLessThanOrEqual(width - (width <= 640 ? 10 : 16) + 0.5);
+    expect(Math.abs((box!.x + box!.width / 2) - width / 2)).toBeLessThanOrEqual(0.5);
+  }
 });
 
 test('narrow 320px pages keep primary content inside the viewport', async ({ page }) => {

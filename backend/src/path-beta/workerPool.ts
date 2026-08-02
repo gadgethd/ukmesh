@@ -4,6 +4,8 @@ type JobCallback = {
   resolve: (result: unknown) => void;
   reject: (err: Error) => void;
   timeout?: NodeJS.Timeout;
+  signal?: AbortSignal;
+  abortListener?: () => void;
 };
 
 export class WorkerPoolOverloadedError extends Error {
@@ -17,6 +19,13 @@ export class WorkerPoolTimeoutError extends Error {
   constructor() {
     super('PATH_RESOLVE_TIMEOUT');
     this.name = 'WorkerPoolTimeoutError';
+  }
+}
+
+export class WorkerPoolAbortedError extends Error {
+  constructor() {
+    super('PATH_RESOLVE_ABORTED');
+    this.name = 'WorkerPoolAbortedError';
   }
 }
 
@@ -39,6 +48,13 @@ export class WorkerPool {
   private backgroundQueue: QueuedJob[] = [];
   private jobId = 0;
   private closed = false;
+
+  private cleanupCallback(cb: JobCallback): void {
+    if (cb.timeout) clearTimeout(cb.timeout);
+    if (cb.signal && cb.abortListener) {
+      cb.signal.removeEventListener('abort', cb.abortListener);
+    }
+  }
 
   constructor(
     private readonly scriptUrl: URL,
@@ -64,7 +80,7 @@ export class WorkerPool {
       const cb = this.pendingJobs.get(msg.id);
       this.pendingJobs.delete(msg.id);
       if (cb) {
-        if (cb.timeout) clearTimeout(cb.timeout);
+        this.cleanupCallback(cb);
         if (msg.ok) cb.resolve(msg.result ?? null);
         else cb.reject(new Error(msg.error ?? 'Worker error'));
       }
@@ -95,7 +111,7 @@ export class WorkerPool {
     if (jobId != null) {
       const cb = this.pendingJobs.get(jobId);
       this.pendingJobs.delete(jobId);
-      if (cb?.timeout) clearTimeout(cb.timeout);
+      if (cb) this.cleanupCallback(cb);
       cb?.reject(error);
     }
 
@@ -120,14 +136,19 @@ export class WorkerPool {
     } catch (err) {
       this.workerJobs.delete(worker);
       this.pendingJobs.delete(job.id);
-      if (job.cb.timeout) clearTimeout(job.cb.timeout);
+      this.cleanupCallback(job.cb);
       job.cb.reject(err instanceof Error ? err : new Error(String(err)));
       this.dispatchNext(worker);
     }
   }
 
-  private enqueue<T>(msg: object, background: boolean): Promise<T> {
+  private enqueue<T>(
+    msg: object,
+    background: boolean,
+    signal?: AbortSignal,
+  ): Promise<T> {
     if (this.closed) return Promise.reject(new Error('WORKER_POOL_CLOSED'));
+    if (signal?.aborted) return Promise.reject(new WorkerPoolAbortedError());
     if (
       (background && this.backgroundQueue.length >= this.maxBackgroundQueue)
       || (!background && this.interactiveQueue.length >= this.maxInteractiveQueue)
@@ -139,8 +160,24 @@ export class WorkerPool {
       const job: QueuedJob = {
         id,
         msg: { ...msg, id },
-        cb: { resolve: resolve as (result: unknown) => void, reject },
+        cb: { resolve: resolve as (result: unknown) => void, reject, signal },
       };
+      job.cb.abortListener = () => {
+        const activeWorker = [...this.workerJobs].find(([, jobId]) => jobId === job.id)?.[0];
+        if (activeWorker) {
+          this.retireWorker(activeWorker, new WorkerPoolAbortedError());
+          void activeWorker.terminate();
+          return;
+        }
+        const before = this.interactiveQueue.length + this.backgroundQueue.length;
+        this.interactiveQueue = this.interactiveQueue.filter((queued) => queued.id !== job.id);
+        this.backgroundQueue = this.backgroundQueue.filter((queued) => queued.id !== job.id);
+        if (this.interactiveQueue.length + this.backgroundQueue.length < before) {
+          this.cleanupCallback(job.cb);
+          reject(new WorkerPoolAbortedError());
+        }
+      };
+      signal?.addEventListener('abort', job.cb.abortListener, { once: true });
       job.cb.timeout = setTimeout(() => {
         const activeWorker = [...this.workerJobs].find(([, jobId]) => jobId === job.id)?.[0];
         if (activeWorker) {
@@ -152,6 +189,7 @@ export class WorkerPool {
         this.interactiveQueue = this.interactiveQueue.filter((queued) => queued.id !== job.id);
         this.backgroundQueue = this.backgroundQueue.filter((queued) => queued.id !== job.id);
         if (this.interactiveQueue.length + this.backgroundQueue.length < before) {
+          this.cleanupCallback(job.cb);
           reject(new WorkerPoolTimeoutError());
         }
       }, this.endToEndTimeoutMs);
@@ -163,17 +201,17 @@ export class WorkerPool {
     });
   }
 
-  run<T>(msg: object): Promise<T> {
-    return this.enqueue<T>(msg, false);
+  run<T>(msg: object, signal?: AbortSignal): Promise<T> {
+    return this.enqueue<T>(msg, false, signal);
   }
 
   /**
    * Queue best-effort work without allowing it to grow without bound or delay
    * queued interactive requests. A null result means the queue was full.
    */
-  runBackground<T>(msg: object): Promise<T | null> {
+  runBackground<T>(msg: object, signal?: AbortSignal): Promise<T | null> {
     if (this.backgroundQueue.length >= this.maxBackgroundQueue) return Promise.resolve(null);
-    return this.enqueue<T | null>(msg, true).catch((error: unknown) => {
+    return this.enqueue<T | null>(msg, true, signal).catch((error: unknown) => {
       if (error instanceof WorkerPoolOverloadedError) return null;
       throw error;
     });
@@ -192,7 +230,7 @@ export class WorkerPool {
     this.closed = true;
     const closeError = new Error('WORKER_POOL_CLOSED');
     for (const job of [...this.interactiveQueue, ...this.backgroundQueue]) {
-      if (job.cb.timeout) clearTimeout(job.cb.timeout);
+      this.cleanupCallback(job.cb);
       job.cb.reject(closeError);
     }
     this.interactiveQueue = [];

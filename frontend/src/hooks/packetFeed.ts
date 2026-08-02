@@ -1,4 +1,5 @@
-import type { AggregatedPacket, LivePacketData } from './useNodes.js';
+import type { AggregatedPacket, LivePacketData, MeshNode } from './useNodes.js';
+import { canonicalNodeId, canonicalOptionalNodeId } from '../utils/nodeIds.js';
 
 export const FEED_MAX_PACKETS = 50;
 export const FEED_MAX_MESSAGES = 200;
@@ -8,6 +9,8 @@ export type RecentPacketRow = {
   packet_hash: string;
   rx_node_id?: string;
   observer_node_ids?: string[] | null;
+  iata?: string | null;
+  observer_iatas?: Array<string | null> | null;
   src_node_id?: string;
   topic?: string;
   packet_type?: number;
@@ -20,6 +23,32 @@ export type RecentPacketRow = {
   rx_count?: number | null;
   tx_count?: number | null;
 };
+
+export function normalizeIatas(values: Array<string | null | undefined>): string[] {
+  const normalized = new Set<string>();
+  for (const value of values) {
+    const iata = String(value ?? '').trim().toUpperCase();
+    if (/^[A-Z0-9]{2,8}$/.test(iata)) normalized.add(iata);
+  }
+  return Array.from(normalized);
+}
+
+export function packetRowObserverIatas(row: RecentPacketRow): string[] {
+  const explicit = normalizeIatas([...(row.observer_iatas ?? []), row.iata]);
+  if (explicit.length > 0) return explicit;
+  const topicIata = String(row.topic ?? '').split('/')[1];
+  return normalizeIatas([topicIata]);
+}
+
+export function aggregatedPacketObserverIataLabel(
+  packet: Pick<AggregatedPacket, 'rxNodeId'> & Partial<Pick<AggregatedPacket, 'observerIatas'>>,
+  nodeMap: Map<string, Pick<MeshNode, 'iata'>>,
+): string | undefined {
+  const explicit = normalizeIatas(packet.observerIatas ?? []);
+  if (explicit.length > 0) return explicit.join(' · ');
+  const fallback = packet.rxNodeId ? nodeMap.get(packet.rxNodeId)?.iata : undefined;
+  return normalizeIatas([fallback])[0];
+}
 
 export function extractPacketSummary(payload?: Record<string, unknown>): string | undefined {
   if (!payload) return undefined;
@@ -63,6 +92,7 @@ export function mergeAggregatedPacket(current: AggregatedPacket, next: Aggregate
     packetType: next.packetType ?? current.packetType,
     rxNodeId: next.rxNodeId ?? current.rxNodeId,
     observerIds: Array.from(new Set([...current.observerIds, ...next.observerIds])),
+    observerIatas: normalizeIatas([...current.observerIatas, ...next.observerIatas]),
     srcNodeId: next.srcNodeId ?? current.srcNodeId,
     summary: next.summary ?? current.summary,
     hopCount: next.hopCount ?? current.hopCount,
@@ -79,6 +109,7 @@ export function mergeAggregatedPacket(current: AggregatedPacket, next: Aggregate
     ...current,
     firstSeenTs: Math.min(current.firstSeenTs ?? current.ts, next.firstSeenTs ?? next.ts),
     observerIds: Array.from(new Set([...current.observerIds, ...next.observerIds])),
+    observerIatas: normalizeIatas([...current.observerIatas, ...next.observerIatas]),
     rxCount: Math.max(current.rxCount, next.rxCount),
     txCount: Math.max(current.txCount, next.txCount),
     ts: Math.max(current.ts, next.ts),
@@ -94,27 +125,29 @@ export function mapRecentRows(rows: RecentPacketRow[]): AggregatedPacket[] {
     const observerIds = Array.from(new Set([
       ...(row.observer_node_ids ?? []),
       ...(row.rx_node_id ? [row.rx_node_id] : []),
-    ]));
+    ].map(canonicalNodeId).filter(Boolean)));
+    const packetHash = row.packet_hash.trim().toUpperCase();
     const next: AggregatedPacket = {
-      id: row.packet_hash,
-      packetHash: row.packet_hash,
+      id: packetHash,
+      packetHash,
       packetType: row.packet_type,
       firstSeenTs: new Date(row.time).getTime(),
-      rxNodeId: row.rx_node_id,
+      rxNodeId: canonicalOptionalNodeId(row.rx_node_id),
       observerIds,
-      srcNodeId: row.src_node_id,
+      observerIatas: packetRowObserverIatas(row),
+      srcNodeId: canonicalOptionalNodeId(row.src_node_id),
       topic: row.topic,
       summary,
       hopCount: row.hop_count,
       pathHashSizeBytes: row.path_hash_size_bytes ?? undefined,
-      path: row.path_hashes ?? undefined,
+      path: row.path_hashes?.map(canonicalNodeId).filter(Boolean),
       rxCount: Number(row.rx_count ?? 1),
       txCount: Number(row.tx_count ?? 0),
       ts: new Date(row.time).getTime(),
       advertCount: row.advert_count ?? undefined,
     };
-    const current = mapped.get(row.packet_hash);
-    mapped.set(row.packet_hash, current ? mergeAggregatedPacket(current, next) : next);
+    const current = mapped.get(packetHash);
+    mapped.set(packetHash, current ? mergeAggregatedPacket(current, next) : next);
   }
   return Array.from(mapped.values())
     .sort((a, b) => b.ts - a.ts)
@@ -129,27 +162,29 @@ export function mapMessageRows(rows: RecentPacketRow[]): AggregatedPacket[] {
     const observerIds = Array.from(new Set([
       ...(row.observer_node_ids ?? []),
       ...(row.rx_node_id ? [row.rx_node_id] : []),
-    ]));
+    ].map(canonicalNodeId).filter(Boolean)));
+    const packetHash = row.packet_hash.trim().toUpperCase();
     const next: AggregatedPacket = {
-      id: row.packet_hash,
-      packetHash: row.packet_hash,
+      id: packetHash,
+      packetHash,
       packetType: row.packet_type,
       firstSeenTs: new Date(row.time).getTime(),
-      rxNodeId: row.rx_node_id,
+      rxNodeId: canonicalOptionalNodeId(row.rx_node_id),
       observerIds,
-      srcNodeId: row.src_node_id,
+      observerIatas: packetRowObserverIatas(row),
+      srcNodeId: canonicalOptionalNodeId(row.src_node_id),
       topic: row.topic,
       summary,
       hopCount: row.hop_count,
       pathHashSizeBytes: row.path_hash_size_bytes ?? undefined,
-      path: row.path_hashes ?? undefined,
+      path: row.path_hashes?.map(canonicalNodeId).filter(Boolean),
       rxCount: Number(row.rx_count ?? 1),
       txCount: Number(row.tx_count ?? 0),
       ts: new Date(row.time).getTime(),
       advertCount: row.advert_count ?? undefined,
     };
-    const current = mapped.get(row.packet_hash);
-    mapped.set(row.packet_hash, current ? mergeAggregatedPacket(current, next) : next);
+    const current = mapped.get(packetHash);
+    mapped.set(packetHash, current ? mergeAggregatedPacket(current, next) : next);
   }
   return Array.from(mapped.values())
     .sort((a, b) => b.ts - a.ts)
@@ -190,6 +225,7 @@ export function createAggregatedPacketFromLive(packet: LivePacketData): Aggregat
     firstSeenTs: packet.ts,
     rxNodeId: packet.rxNodeId,
     observerIds: packet.rxNodeId ? [packet.rxNodeId] : [],
+    observerIatas: normalizeIatas([packet.iata]),
     srcNodeId: packet.srcNodeId,
     topic: packet.topic,
     summary: packet.summary ?? extractPacketSummary(packet.payload),

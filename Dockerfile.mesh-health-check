@@ -1,21 +1,24 @@
-FROM node:22-slim
+FROM node:22-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3 AS builder
 
 ARG MESH_HEALTH_CHECK_REPO=https://github.com/gadgethd/meshcore-health-check.git
-ARG MESH_HEALTH_CHECK_REF=main
+ARG MESH_HEALTH_CHECK_REF
 
 WORKDIR /app
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates git \
   && rm -rf /var/lib/apt/lists/* \
+  && test -n "$MESH_HEALTH_CHECK_REF" \
+  && echo "$MESH_HEALTH_CHECK_REF" | grep -Eq '^[0-9a-f]{40}$' \
   && git init /tmp/mesh-health-check \
   && git -C /tmp/mesh-health-check remote add origin "$MESH_HEALTH_CHECK_REPO" \
   && git -C /tmp/mesh-health-check fetch --depth 1 origin "$MESH_HEALTH_CHECK_REF" \
   && git -C /tmp/mesh-health-check checkout --detach FETCH_HEAD \
+  && test "$(git -C /tmp/mesh-health-check rev-parse HEAD)" = "$MESH_HEALTH_CHECK_REF" \
   && cp /tmp/mesh-health-check/package.json /tmp/mesh-health-check/package-lock.json ./ \
   && mkdir -p ./scripts \
   && cp /tmp/mesh-health-check/scripts/patch-meshcore-decoder.js ./scripts/patch-meshcore-decoder.js \
-  && npm install --omit=dev --no-audit --fund=false \
+  && npm ci --omit=dev --no-audit --fund=false \
   && cp /tmp/mesh-health-check/server.js ./ \
   && cp -a /tmp/mesh-health-check/lib ./lib \
   && cp -a /tmp/mesh-health-check/public ./public \
@@ -23,13 +26,25 @@ RUN apt-get update \
   && cp /tmp/mesh-health-check/README.md /tmp/mesh-health-check/HOWTO.md /tmp/mesh-health-check/AGENTS.md /tmp/mesh-health-check/CHANGES.md ./ \
   && rm -rf /tmp/mesh-health-check \
   && apt-get purge -y --auto-remove git \
-  && rm -rf /var/lib/apt/lists/*
+  && rm -rf /var/lib/apt/lists/* /usr/local/lib/node_modules/npm \
+  && rm -f /usr/local/bin/npm /usr/local/bin/npx
 
+FROM node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2
+ARG SOURCE_REVISION=unknown
+LABEL org.opencontainers.image.revision="${SOURCE_REVISION}" \
+      org.opencontainers.image.source="https://github.com/gadgethd/ukmesh"
+WORKDIR /app
+COPY --from=builder --chown=node:node /app /app
 COPY docker/mesh-health-check-entrypoint.sh /usr/local/bin/mesh-health-check-entrypoint.sh
-RUN chmod +x /usr/local/bin/mesh-health-check-entrypoint.sh
+RUN rm -rf /usr/local/lib/node_modules/npm \
+  && rm -f /usr/local/bin/npm /usr/local/bin/npx \
+  && chmod +x /usr/local/bin/mesh-health-check-entrypoint.sh \
+  && mkdir -p /app/data \
+  && chown -R node:node /app/data
 
 ENV NODE_ENV=production
 EXPOSE 3090
 
+USER node
 ENTRYPOINT ["mesh-health-check-entrypoint.sh"]
 CMD ["node", "server.js"]

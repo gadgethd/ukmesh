@@ -5,6 +5,11 @@ import type { NetworkFilters } from '../utils/networkFilters.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { csvRow } from '../utils/csv.js';
+import {
+  parseBoundedInteger,
+  parseEnum,
+  parseHexIdentifier,
+} from '../utils/input.js';
 export { csvCell } from '../utils/csv.js';
 
 type QueryFn = <T extends QueryResultRow = QueryResultRow>(text: string, params?: unknown[]) => Promise<{ rows: T[] }>;
@@ -36,11 +41,10 @@ export function registerExportRoutes(router: Router, deps: Deps): void {
   });
 
   router.get('/v1/exports/path.gpx', deps.exportLimiter, async (req, res) => {
-    const packet = String(req.query['packet'] ?? '').trim();
-    if (!/^[0-9a-fA-F]{1,128}$/.test(packet)) {
-      res.status(400).json({ error: 'A valid packet hash is required' });
-      return;
-    }
+    const packet = parseHexIdentifier(req.query['packet'], {
+      name: 'packet',
+      maxLength: 128,
+    });
     try {
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const filters = deps.networkFilters(network);
@@ -87,15 +91,22 @@ export function registerExportRoutes(router: Router, deps: Deps): void {
   });
 
   router.get('/v1/exports/nodes.:format', deps.exportLimiter, async (req, res) => {
+    const format = parseEnum(req.params['format']?.toLowerCase(), {
+      name: 'format',
+      values: ['csv', 'geojson'] as const,
+    });
+    if (!format) {
+      res.status(404).json({ error: 'Supported formats are csv and geojson' });
+      return;
+    }
+    const limit = parseBoundedInteger(req.query['limit'], {
+      name: 'limit',
+      defaultValue: 5_000,
+      min: 1,
+      max: 5_000,
+    });
     try {
-      const format = String(req.params['format'] ?? '').toLowerCase();
-      if (format !== 'csv' && format !== 'geojson') {
-        res.status(404).json({ error: 'Supported formats are csv and geojson' });
-        return;
-      }
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
-      const requestedLimit = Number(req.query['limit'] ?? 5_000);
-      const limit = Number.isFinite(requestedLimit) ? Math.min(5_000, Math.max(1, Math.round(requestedLimit))) : 5_000;
       const filters = deps.networkFilters(network);
       const limitParam = `$${filters.params.length + 1}`;
       const result = await deps.query<{

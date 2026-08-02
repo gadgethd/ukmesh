@@ -3,6 +3,7 @@ import { LoadingIndicator } from '../LoadingIndicator.js';
 import { NODE_STALE_AFTER_MS } from './mapConfig.js';
 import type { NodeFeatureProps, NodeLink } from './types.js';
 import { LinkQualitySparkline } from './LinkQualitySparkline.js';
+import { Tab, TabList, TabPanel, Tabs } from '../ui/Tabs.js';
 
 const GPU_ROLE_LABELS: Record<number, string> = {
   1: 'Companion Radio', 2: 'Repeater', 3: 'Room Server', 4: 'Sensor',
@@ -23,38 +24,34 @@ export const NodePopupContent: React.FC<{
   links: NodeLink[] | null;
   /** Hide the internal name heading (the docked panel renders its own header). */
   hideName?: boolean;
-  coverageActive: boolean;
-  coverageLoading: boolean;
-  coverageMessage: string | null;
-  viewshedEnabled: boolean;
-  onToggleCoverage: (nodeId: string) => void;
   onFocusSamePrefix: (nodeId: string) => void;
   samePrefixCount: number;
   losActive: boolean;
   losLoading: boolean;
   onToggleLos: (nodeId: string) => void;
+  network?: string;
+  observer?: string;
+  privacyGeneration: number;
 }> = ({
   props,
   lat,
   lon,
   links,
   hideName = false,
-  coverageActive,
-  coverageLoading,
-  coverageMessage,
-  viewshedEnabled,
-  onToggleCoverage,
   onFocusSamePrefix,
   samePrefixCount,
   losActive,
   losLoading,
   onToggleLos,
+  network,
+  observer,
+  privacyGeneration,
 }) => {
   const isRepeater = props.role === undefined || props.role === 2;
   const ageMs = Date.now() - new Date(props.last_seen).getTime();
   const isStale = ageMs > NODE_STALE_AFTER_MS;
   const statusLabel = isStale ? 'STALE' : props.is_online ? 'ONLINE' : 'OFFLINE';
-  const statusColor = isStale ? 'var(--danger)' : props.is_online ? 'var(--online)' : 'var(--offline)';
+  const statusColor = isStale ? 'var(--danger)' : props.is_online ? 'var(--online)' : 'var(--offline-text)';
   const fallbackName = GPU_ROLE_LABELS[props.role ?? 2] ?? 'Unknown Device';
   const displayName = props.is_prohibited
     ? `Redacted ${fallbackName}`
@@ -64,14 +61,19 @@ export const NodePopupContent: React.FC<{
   return (
     <div className="node-popup">
       {!hideName && <div className="node-popup__name">{displayName}</div>}
-      <div className="node-popup__tabs" role="tablist" aria-label="Node details">
+      <Tabs
+        selectedKey={tab}
+        onSelectionChange={(key) => setTab(key as typeof tab)}
+        className="node-popup__tab-system"
+      >
+      <TabList className="node-popup__tabs" aria-label="Node details">
         {(['info', 'links', 'activity', 'path', 'status'] as const).map((value) => (
-          <button key={value} type="button" role="tab" aria-selected={tab === value} onClick={() => setTab(value)}>
+          <Tab id={value} key={value}>
             {value[0].toUpperCase() + value.slice(1)}
-          </button>
+          </Tab>
         ))}
-      </div>
-      {tab === 'info' && <>
+      </TabList>
+      <TabPanel id="info">
       {props.public_key && (
         <div className="node-popup__row">
           <span>Public key</span>
@@ -120,35 +122,17 @@ export const NodePopupContent: React.FC<{
           <span>{Math.round(props.elevation_m)} m ASL</span>
         </div>
       )}
-      </>}
-      {tab === 'status' && <>
+      </TabPanel>
+      <TabPanel id="status">
         <div className="node-popup__row"><span>Status</span><span style={{ color: statusColor }}>{statusLabel}</span></div>
         {props.hardware_model && <div className="node-popup__row"><span>Hardware</span><span>{props.hardware_model}</span></div>}
         <div className="node-popup__row"><span>Freshness</span><span>{timeAgo(props.last_seen)}</span></div>
-      </>}
-      {tab === 'activity' && <>
+      </TabPanel>
+      <TabPanel id="activity">
         <div className="node-popup__row"><span>Last seen</span><span>{timeAgo(props.last_seen)}</span></div>
         <div className="node-popup__row"><span>Adverts</span><span>{props.advert_count ?? 'No samples'}</span></div>
-      </>}
-      {tab === 'path' && <>
-      {viewshedEnabled && isRepeater && !props.is_prohibited && (
-        <div className="node-popup__row" style={{ marginTop: 6 }}>
-          <button
-            type="button"
-            className={`node-popup__coverage-btn${coverageActive ? ' node-popup__coverage-btn--active' : ''}`}
-            onClick={() => onToggleCoverage(props.node_id)}
-            disabled={coverageLoading}
-          >
-            {coverageLoading ? <LoadingIndicator label="Loading coverage..." variant="inline" /> : coverageActive ? 'Hide coverage' : 'Show coverage'}
-          </button>
-        </div>
-      )}
-      {viewshedEnabled && coverageMessage && (
-        <div className="node-popup__row">
-          <span>Coverage</span>
-          <span>{coverageMessage}</span>
-        </div>
-      )}
+      </TabPanel>
+      <TabPanel id="path">
       {isRepeater && !props.is_prohibited && (
         <div className="node-popup__row" style={{ marginTop: 6 }}>
           <button
@@ -172,8 +156,8 @@ export const NodePopupContent: React.FC<{
           </button>
         </div>
       )}
-      </>}
-      {tab === 'links' && <>
+      </TabPanel>
+      <TabPanel id="links">
       {links === null && (
         <div className="node-popup__neighbours-loading">
           <LoadingIndicator label="Loading neighbours..." variant="inline" />
@@ -195,14 +179,21 @@ export const NodePopupContent: React.FC<{
                   {lk.observed_count}× seen
                   {lk.itm_path_loss_db != null && <> &middot; {Math.round(lk.itm_path_loss_db)} dB</>}
                 </span>
-                <LinkQualitySparkline source={props.node_id} target={lk.peer_id} />
+                <LinkQualitySparkline
+                  source={props.node_id}
+                  target={lk.peer_id}
+                  network={network}
+                  observer={observer}
+                  privacyGeneration={privacyGeneration}
+                />
               </div>
             );
           })}
         </div>
       )}
       {links !== null && links.length === 0 && <div className="node-popup__muted">No confirmed neighbours.</div>}
-      </>}
+      </TabPanel>
+      </Tabs>
     </div>
   );
 };

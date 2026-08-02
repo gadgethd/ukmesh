@@ -9,7 +9,7 @@ export interface Node {
   firmwareVersion?: string;
 }
 
-export type WSMessageType = 'packet' | 'node_update' | 'node_upsert' | 'coverage_update' | 'initial_state' | 'link_update';
+export type WSMessageType = 'packet' | 'node_update' | 'node_upsert' | 'initial_state' | 'link_update';
 
 export interface WSMessage {
   type: WSMessageType;
@@ -23,6 +23,8 @@ export interface LivePacket {
   rxNodeId?: string;
   srcNodeId?: string;
   topic: string;
+  /** Observer region parsed and validated from the MQTT topic. */
+  iata?: string;
   network?: string;
   packetType?: number;
   routeType?: number;   // 0=TransportFlood, 1=Flood, 2=Direct, 3=TransportDirect

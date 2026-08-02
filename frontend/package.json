@@ -6,8 +6,11 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "budget": "node scripts/check-performance-budgets.mjs",
+    "lint:css": "node scripts/check-css-structure.mjs",
+    "soak:production": "node scripts/soak-production.mjs",
     "preview": "vite preview",
-    "test": "tsx --test src/**/*.test.ts",
+    "test": "tsx --test $(find src -name '*.test.ts' -print)",
     "test:e2e": "playwright test --project=public-desktop --project=dashboard-desktop --project=dashboard-mobile",
     "test:mobile": "playwright test mobile.spec.ts --project=mobile-regression"
   },
@@ -21,21 +24,26 @@
     "fuse.js": "^7.5.0",
     "maplibre-gl": "^4.7.1",
     "polygon-clipping": "^0.15.7",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "react-router-dom": "^7.18.1",
+    "react": "19.2.7",
+    "react-aria-components": "^1.19.0",
+    "react-dom": "19.2.7",
+    "react-router": "8.3.0",
     "recharts": "^2.15.0",
     "zustand": "^5.0.3"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.12.1",
     "@playwright/test": "^1.61.1",
-    "@types/react": "^18.3.12",
-    "@types/react-dom": "^18.3.1",
     "@types/d3-force": "^3.0.10",
+    "@types/react": "^19.2.11",
+    "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^4.3.3",
+    "postcss": "8.5.24",
     "tsx": "^4.23.1",
     "typescript": "^5.6.3",
     "vite": "^6.4.3"
+  },
+  "overrides": {
+    "postcss": "8.5.24"
   }
 }
