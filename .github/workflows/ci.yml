@@ -204,8 +204,11 @@ jobs:
         run: |
           docker compose config --quiet
           docker compose config --format json \
-            | jq -e '.services.timescaledb.command
-              | index("max_worker_processes=24") != null' >/dev/null
+            | jq -e '
+              (.services.timescaledb.command
+                | index("max_worker_processes=24") != null)
+              and (.networks.default.ipam.config[0].ip_range
+                == "172.30.0.128/25")' >/dev/null
       - name: Build every application image and smoke an empty-volume stack
         env:
           POSTGRES_PASSWORD: ci-postgres-password
