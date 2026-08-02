@@ -10,4 +10,5 @@
 coverage
 npm-debug.log*
 terrain-tiles
+mosquitto
 *.log

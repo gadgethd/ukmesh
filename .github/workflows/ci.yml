@@ -174,12 +174,23 @@ jobs:
           MQTT_USERNAME: backend
           MQTT_PASSWORD: ci-mqtt-password
           MOSQUITTO_CONFIG_DIR: /tmp/meshcore-ci-mosquitto
+          MOSQUITTO_IMAGE: eclipse-mosquitto@sha256:9cfdd46ad59f3e3e5f592f6baf57ab23e1ad00605509d0f5c1e9b179c5314d87
         run: |
           install -d -m 700 "$MOSQUITTO_CONFIG_DIR"
           cp mosquitto/mosquitto.conf "$MOSQUITTO_CONFIG_DIR/mosquitto.conf"
           scripts/bootstrap-mosquitto.sh
-          test "$(stat -c '%a' "$MOSQUITTO_CONFIG_DIR/passwd")" = 640
-          test "$(stat -c '%a' "$MOSQUITTO_CONFIG_DIR/acl")" = 640
+          for credential in passwd acl; do
+            mode="$(
+              docker run --rm \
+                --user 1000:1883 \
+                --cap-drop ALL \
+                --entrypoint stat \
+                -v "$MOSQUITTO_CONFIG_DIR:/mosquitto/config:ro" \
+                "$MOSQUITTO_IMAGE" \
+                -c '%a' "/mosquitto/config/$credential"
+            )"
+            test "$mode" = 640
+          done
       - name: Validate Compose configuration
         env:
           POSTGRES_PASSWORD: ci-postgres-password
@@ -220,7 +231,9 @@ jobs:
               down --volumes --remove-orphans
           }
           trap cleanup EXIT
-          scripts/bootstrap-mosquitto.sh
+          # Keep the files writable by the runner while adding the CI-only
+          # publisher, then restore the production 1000:1883 ownership.
+          MOSQUITTO_BACKEND_UID="$(id -u)" scripts/bootstrap-mosquitto.sh
           docker run --rm \
             --user "$(id -u):$(id -g)" \
             -v "$PWD/mosquitto:/mosquitto/config" \
@@ -230,6 +243,7 @@ jobs:
           printf '\nuser %s\ntopic write meshcore-test/CI/%s/packets\ntopic write meshcore-test/CI/%s/status\n' \
             "$publisher_user" "$observer" "$observer" >>mosquitto/acl
           chmod 640 mosquitto/passwd mosquitto/acl
+          scripts/bootstrap-mosquitto.sh
           docker build \
             --build-arg SOURCE_REVISION="$SOURCE_REVISION" \
             --build-arg VITE_APP_HOSTNAME=app.ukmesh.com \

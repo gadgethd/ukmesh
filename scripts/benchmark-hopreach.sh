@@ -24,15 +24,32 @@ go test ./internal/propagation -run '^$' \
   -bench 'BenchmarkRasterUKFixtures/(Optimized|UpstreamReference)/(Standard|PrecisionTile)/UK4600$' \
   -benchtime=1x -count=3 -benchmem > "$gate_output"
 
-average_ns() {
+median_ns() {
   pattern=$1
-  awk -v pattern="$pattern" '$1 ~ pattern { sum += $3; count += 1 } END { if (count == 0) exit 1; printf "%.0f", sum/count }' "$gate_output"
+  awk -v pattern="$pattern" '
+    $1 ~ pattern { values[++count] = $3 }
+    END {
+      if (count == 0) exit 1
+      for (i = 2; i <= count; i++) {
+        value = values[i]
+        j = i - 1
+        while (j >= 1 && values[j] > value) {
+          values[j + 1] = values[j]
+          j--
+        }
+        values[j + 1] = value
+      }
+      middle = int((count + 1) / 2)
+      if (count % 2 == 1) printf "%.0f", values[middle]
+      else printf "%.0f", (values[middle] + values[middle + 1]) / 2
+    }
+  ' "$gate_output"
 }
 
 check_time_gate() {
   tier=$1
-  optimized=$(average_ns "Optimized/$tier/UK4600-")
-  reference=$(average_ns "UpstreamReference/$tier/UK4600-")
+  optimized=$(median_ns "Optimized/$tier/UK4600-")
+  reference=$(median_ns "UpstreamReference/$tier/UK4600-")
   awk -v optimized="$optimized" -v reference="$reference" -v tier="$tier" 'BEGIN {
     ratio = optimized / reference
     printf "%s: optimized %.3fs, upstream %.3fs, ratio %.3f\n", tier, optimized/1e9, reference/1e9, ratio
