@@ -911,6 +911,7 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
     rxNodeId:   observerKey,
     srcNodeId,
     topic,
+    iata,
     network,
     packetType: resolvedPacketType,
     routeType:  decodedRouteType,

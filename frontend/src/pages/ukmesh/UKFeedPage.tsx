@@ -29,6 +29,7 @@ import {
   aggregatedPacketToFeedPacket,
   feedPathCache,
   feedPathCacheKey,
+  mergeFeedPacketObservations,
   packetMatchesMessageScope,
   packetObserverIatas,
   packetObserverIds,
@@ -175,12 +176,7 @@ export const UKFeedPage: React.FC = () => {
         byHash.set(packet.packet_hash, packet);
         continue;
       }
-      const existingFirstSeen = Date.parse(existing.first_seen_time ?? existing.time);
-      const packetFirstSeen = Date.parse(packet.first_seen_time ?? packet.time);
-      byHash.set(packet.packet_hash, {
-        ...(Date.parse(packet.time) >= Date.parse(existing.time) ? packet : existing),
-        first_seen_time: new Date(Math.min(existingFirstSeen, packetFirstSeen)).toISOString(),
-      });
+      byHash.set(packet.packet_hash, mergeFeedPacketObservations(existing, packet));
     }
     return Array.from(byHash.values()).sort(
       (a, b) => Date.parse(b.first_seen_time ?? b.time) - Date.parse(a.first_seen_time ?? a.time),
