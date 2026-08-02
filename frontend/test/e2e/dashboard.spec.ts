@@ -141,6 +141,27 @@ test('HopReach tiles arrive progressively while the 4,600-node map remains inter
   expect(requests.some((path) => path.startsWith('/api/coverage'))).toBe(false);
 });
 
+test('enabled HopReach coverage survives metadata winning the initial map-load race', async ({ page }, testInfo) => {
+  const tileRequests: string[] = [];
+  page.on('request', (request) => {
+    const path = new URL(request.url()).pathname;
+    if (path.startsWith('/rf-coverage/tiles/standard/')) tileRequests.push(path);
+  });
+  await page.route('**/vector/carto.streets/v1/tiles.json', async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    await route.continue();
+  });
+
+  await page.goto('/', { waitUntil: 'domcontentloaded' });
+
+  await page.getByText('Live Map', { exact: true }).waitFor({ state: 'visible', timeout: 15_000 });
+  if (testInfo.project.name === 'dashboard-mobile') {
+    await page.getByRole('button', { name: 'Layers' }).first().click();
+  }
+  await expect(page.getByRole('button', { name: 'RF Coverage' }).first()).toHaveAttribute('aria-pressed', 'true');
+  await expect.poll(() => tileRequests.length, { timeout: 15_000 }).toBeGreaterThan(0);
+});
+
 test('map modes update layers and produce a shareable URL', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByText('Live Map', { exact: true })).toBeVisible();
