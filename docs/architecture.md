@@ -16,8 +16,8 @@
 The complete HopReach v0.1.32 source is vendored at
 `third_party/hopreach`, with the exact upstream revision recorded in
 `UPSTREAM_COMMIT`. The identical derived source is public as
-[`v0.1.32-ukmesh.2`](https://github.com/gadgethd/hopreach/tree/v0.1.32-ukmesh.2)
-at commit `f497b3fb72644aa1fb5f5fcce3fe2afca78bdaf6`. The unmodified upstream CPU
+[`v0.1.32-ukmesh.3`](https://github.com/gadgethd/hopreach/tree/v0.1.32-ukmesh.3)
+at commit `0230702be70a2729c5acc5640401f56ab9d65fd4`. The unmodified upstream CPU
 raster remains an executable accuracy oracle. The production CPU path retains
 the same propagation equations, DEM samples, free-space path loss, 4/3-earth
 curvature, knife-edge diffraction, link budget, and margin calculation while

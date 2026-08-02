@@ -1,13 +1,12 @@
 # HopReach RF coverage rollout and recovery
 
-Status: implemented and verified locally; production rollout is not performed
-by this change.
+Status: implemented and release-gated for production rollout.
 
 Evidence date: 2026-08-02
 
 Canonical model: the public UK Mesh HopReach tag
-[`v0.1.32-ukmesh.2`](https://github.com/gadgethd/hopreach/tree/v0.1.32-ukmesh.2)
-at commit `f497b3fb72644aa1fb5f5fcce3fe2afca78bdaf6`, based directly on upstream
+[`v0.1.32-ukmesh.3`](https://github.com/gadgethd/hopreach/tree/v0.1.32-ukmesh.3)
+at commit `0230702be70a2729c5acc5640401f56ab9d65fd4`, based directly on upstream
 v0.1.32 commit `61efac0b4678f55496fe08f53eda0c79eb18655b`. The tagged tree is vendored
 at `third_party/hopreach`.
 
@@ -20,7 +19,7 @@ at `third_party/hopreach`.
 - Use digest-pinned backend, HopReach, and app images built by the signed
   release workflow. Confirm the backend/app revision label is the integration
   release commit and the HopReach revision label is
-  `f497b3fb72644aa1fb5f5fcce3fe2afca78bdaf6`.
+  `0230702be70a2729c5acc5640401f56ab9d65fd4`.
 - Do not enable calibrated variants. The production profile deliberately has
   `calibration.enabled: false`; evidence validation is a separate rollout.
 - Do not reduce range, node count, terrain zoom, supersampling, or RF fidelity
@@ -70,9 +69,10 @@ From a clean reviewed revision:
 docker compose config --quiet
 docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
   -v "$PWD:/work" -w /work/third_party/hopreach \
-  golang:1.23-bookworm go test ./...
+  golang:1.25.7-bookworm@sha256:564e366a28ad1d70f460a2b97d1d299a562f08707eb0ecb24b659e5bd6c108e1 go test ./...
 docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
-  -v "$PWD:/work" -w /work golang:1.23-bookworm \
+  -v "$PWD:/work" -w /work \
+  golang:1.25.7-bookworm@sha256:564e366a28ad1d70f460a2b97d1d299a562f08707eb0ecb24b659e5bd6c108e1 \
   /work/scripts/benchmark-hopreach.sh
 ```
 

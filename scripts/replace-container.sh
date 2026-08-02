@@ -321,9 +321,9 @@ smoke_service() {
   docker compose --project-name "$project_name" exec -T backend \
     wget -qO- http://127.0.0.1:3000/readyz \
     | jq -e '.status == "ready"' >/dev/null
-  docker compose --project-name "$project_name" exec -T backend \
-    wget -qO- http://127.0.0.1:9091/metrics \
-    | grep -q '^meshcore_process_'
+  metrics="$(docker compose --project-name "$project_name" exec -T backend \
+    wget -qO- http://127.0.0.1:9091/metrics)"
+  grep -q '^meshcore_process_' <<<"$metrics"
   case "$target_service" in
     backend)
       curl --fail --silent http://127.0.0.1:3000/readyz \
