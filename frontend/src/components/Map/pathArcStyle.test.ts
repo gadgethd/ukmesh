@@ -3,7 +3,7 @@ import test from 'node:test';
 import { PATH_LINE_TTL_MS, pathArcColors, pathConfidenceBand } from './pathArcStyle.js';
 
 test('path confidence uses low/mid/high traffic-light bands', () => {
-  assert.equal(PATH_LINE_TTL_MS, 60_000);
+  assert.equal(PATH_LINE_TTL_MS, 15_000);
   assert.equal(pathConfidenceBand(null), 'low');
   assert.equal(pathConfidenceBand(0.39), 'low');
   assert.equal(pathConfidenceBand(0.4), 'mid');
