@@ -3,16 +3,17 @@ import type maplibregl from 'maplibre-gl';
 import { AnimatedPathOverlay, type AerialPath, type AerialPathNode } from '../../components/Map/AnimatedPathOverlay.js';
 import { LoadingIndicator } from '../../components/LoadingIndicator.js';
 import type { MeshNode } from '../../hooks/useNodes.js';
+import {
+  canonicalPathRuns,
+  type CanonicalPathNode,
+  type MultiObserverBetaResponse,
+  type ResolveMode,
+  type ServerBetaResponse,
+} from '../../hooks/packetPathOverlayUtils.js';
 import { buildPathNodePopupContent } from './pathNodePopup.js';
 
-export type ResolvedPath = {
-  ok: boolean;
-  mode: 'resolved' | 'fallback' | 'none';
-  confidence: number | null;
-  purplePath: [number, number][] | null;
-  redPath: [number, number][] | null;
-  redSegments?: [[number, number], [number, number]][];
-};
+export type { CanonicalPathNode, MultiObserverBetaResponse, ResolveMode, ServerBetaResponse };
+export type ResolvedPath = ServerBetaResponse;
 
 export type LazyPathNode = {
   position: number;
@@ -48,57 +49,68 @@ const CARTO_TILES = [
   'https://d.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
 ];
 
-function resolvedNode([lat, lon]: [number, number]): AerialPathNode {
-  return { position: [lon, lat] };
+function resolvedNode(node: CanonicalPathNode): AerialPathNode {
+  return {
+    position: [node.lon!, node.lat!],
+    nodeId: node.nodeId ?? undefined,
+    name: node.name ?? undefined,
+    confidence: node.confidence,
+  };
 }
 
-function buildAerialPaths(results: ResolvedPath[], lazyPaths: LazyPath[]): AerialPath[] {
+function lazyPathRuns(nodes: readonly LazyPathNode[]): LazyPathNode[][] {
+  const runs: LazyPathNode[][] = [];
+  let current: LazyPathNode[] = [];
+  const flush = () => {
+    if (current.length >= 2) runs.push(current);
+    current = [];
+  };
+  for (const node of nodes) {
+    if (node.lat == null || node.lon == null || !Number.isFinite(node.lat) || !Number.isFinite(node.lon)) {
+      flush();
+      continue;
+    }
+    current.push(node);
+  }
+  flush();
+  return runs;
+}
+
+function buildAerialPaths(results: MultiObserverBetaResponse[], lazyPaths: LazyPath[]): AerialPath[] {
   const paths: AerialPath[] = [];
   results.forEach((result, resultIndex) => {
-    if (result.purplePath && result.purplePath.length >= 2) {
+    canonicalPathRuns(result.canonicalPath).forEach((run, segmentIndex) => {
       paths.push({
-        id: `resolved-${resultIndex}`,
+        id: `canonical-${result.packetHash}-${resultIndex}-${segmentIndex}`,
         confidence: result.confidence,
-        nodes: result.purplePath.map(resolvedNode),
-      });
-    }
-    if (result.redPath && result.redPath.length >= 2) {
-      paths.push({
-        id: `fallback-${resultIndex}`,
-        confidence: 0,
-        nodes: result.redPath.map(resolvedNode),
-      });
-    }
-    result.redSegments?.forEach((segment, segmentIndex) => {
-      paths.push({
-        id: `fallback-${resultIndex}-${segmentIndex}`,
-        confidence: 0,
-        nodes: segment.map(resolvedNode),
+        nodes: run.map(resolvedNode),
       });
     });
   });
 
+  // The canonical multi-observer response is authoritative. Lazy paths are
+  // used only by the feed view, which does not request the multi response.
+  if (results.length > 0) return paths;
+
   lazyPaths.forEach((path, pathIndex) => {
-    const nodes = path.canonicalPath.flatMap((node): AerialPathNode[] => {
-      if (node.lat == null || node.lon == null || !Number.isFinite(node.lat) || !Number.isFinite(node.lon)) return [];
-      return [{
-        position: [node.lon, node.lat],
+    lazyPathRuns(path.canonicalPath).forEach((run, runIndex) => {
+      const nodes = run.map((node): AerialPathNode => ({
+        position: [node.lon!, node.lat!],
         nodeId: node.nodeId ?? undefined,
         name: node.name ?? undefined,
         isObserver: node.isObserver,
-      }];
+      }));
+      const confidence = path.totalHops > 0
+        ? Math.max(0, Math.min(1, path.matchedHops / path.totalHops))
+        : null;
+      paths.push({ id: `hash-traced-${pathIndex}-${runIndex}`, confidence, nodes });
     });
-    if (nodes.length < 2) return;
-    const confidence = path.totalHops > 0
-      ? Math.max(0, Math.min(1, path.matchedHops / path.totalHops))
-      : null;
-    paths.push({ id: `hash-traced-${pathIndex}`, confidence, nodes });
   });
   return paths;
 }
 
 export const PathMap: React.FC<{
-  results: ResolvedPath[];
+  results: MultiObserverBetaResponse[];
   observerPositions?: [number, number][];
   lazyPaths?: LazyPath[];
   nodeMap?: Map<string, MeshNode>;
@@ -148,7 +160,7 @@ export const PathMap: React.FC<{
         source: 'observer-pos',
         paint: {
           'circle-radius': 8,
-          'circle-color': '#ffb300',
+          'circle-color': '#3b82f6',
           'circle-stroke-color': '#ffffff',
           'circle-stroke-width': 2,
         },
