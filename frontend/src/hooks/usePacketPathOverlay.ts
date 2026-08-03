@@ -6,11 +6,11 @@ import type { Filters } from '../components/FilterPanel/FilterPanel.js';
 import {
   aggregateCanonicalPath,
   buildRegularPacketPaths,
-  canonicalPathCoordinates,
   packetObserverIds,
   type AggregatedPredictionState,
   type CanonicalPathNode,
   type MultiObserverBetaResponse,
+  type ResolvedPathRoute,
 } from './packetPathOverlayUtils.js';
 import { useOverlayStore } from '../store/overlayStore.js';
 import { PATH_LINE_FADE_MS, PATH_LINE_TTL_MS } from '../components/Map/pathArcStyle.js';
@@ -33,6 +33,7 @@ type UsePacketPathOverlayResult = {
   packetPaths: [number, number][][];
   betaPacketPaths: [number, number][][];
   betaCanonicalPath: CanonicalPathNode[];
+  betaPathRoutes: ResolvedPathRoute[];
   betaObserverIds: string[];
   betaPathConfidence: number | null;
   betaPermutationCount: number | null;
@@ -88,6 +89,7 @@ export function usePacketPathOverlay({
   const [packetPaths, setPacketPaths] = useState<[number, number][][]>([]);
   const [betaPacketPaths, setBetaPacketPaths] = useState<[number, number][][]>([]);
   const [betaCanonicalPath, setBetaCanonicalPath] = useState<CanonicalPathNode[]>([]);
+  const [betaPathRoutes, setBetaPathRoutes] = useState<ResolvedPathRoute[]>([]);
   const [betaObserverIds, setBetaObserverIds] = useState<string[]>([]);
   const [betaPathConfidence, setBetaPathConfidence] = useState<number | null>(null);
   // The canonical DTO intentionally does not expose alternative permutations
@@ -129,6 +131,7 @@ export function usePacketPathOverlay({
   const clearBetaState = useCallback(() => {
     setBetaPacketPaths([]);
     setBetaCanonicalPath([]);
+    setBetaPathRoutes([]);
     setBetaObserverIds([]);
     setBetaPathConfidence(null);
     setBetaPermutationCount(null);
@@ -164,8 +167,11 @@ export function usePacketPathOverlay({
   }, []);
 
   const applyAggregatedPrediction = useCallback((aggregated: AggregatedPredictionState) => {
-    setBetaPacketPaths(canonicalPathCoordinates(aggregated.canonicalPath));
+    setBetaPacketPaths(aggregated.routes.map((route) => (
+      route.nodes.map((node) => [node.lat, node.lon] as [number, number])
+    )));
     setBetaCanonicalPath(aggregated.canonicalPath);
+    setBetaPathRoutes(aggregated.routes);
     setBetaObserverIds(aggregated.observerIds);
     setBetaPathConfidence(aggregated.confidence);
     setBetaPermutationCount(null);
@@ -409,6 +415,7 @@ export function usePacketPathOverlay({
     packetPaths,
     betaPacketPaths,
     betaCanonicalPath,
+    betaPathRoutes,
     betaObserverIds,
     betaPathConfidence,
     betaPermutationCount,

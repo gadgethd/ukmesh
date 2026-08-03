@@ -38,6 +38,7 @@ export const FeedMapPanel: React.FC<{
       results={[]}
       observerPositions={observerPositions}
       lazyPaths={(cachedLazyPath?.paths ?? []) as LazyPath[]}
+      pathScopeId={packet.packet_hash}
       nodeMap={nodeMap}
       isLoading={isLoading}
     />
