@@ -12,6 +12,13 @@ export const PATH_ARC_HEIGHT = 0.15;
 export const PATH_ARC_BLOOM_WIDTH = 10;
 export const PATH_ARC_CORE_WIDTH = 2;
 
+// Live-path endpoints sit just above the sampled DEM when MapLibre terrain is
+// active. The peak is deliberately much higher so the animated hop reads as
+// an airborne transmission rather than a line being dragged over the ground.
+export const PATH_TERRAIN_CLEARANCE_M = 32;
+export const PATH_HOP_PEAK_HEIGHT_M = 300;
+export const PATH_HOP_PEAK_DISTANCE_SCALE = 0.1;
+
 export type PathConfidenceBand = 'low' | 'mid' | 'high';
 
 // Confidence colours are intentionally traffic-light ordered on every path

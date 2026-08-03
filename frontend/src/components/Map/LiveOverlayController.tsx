@@ -256,6 +256,7 @@ export const LiveOverlayController: React.FC<LiveOverlayControllerProps> = ({
         paths={liveAerialPaths}
         observerNodes={observerNodes}
         active={showPathOnly}
+        terrainEnabled={filters.terrain}
       />
     </>
   );

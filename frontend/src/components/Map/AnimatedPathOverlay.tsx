@@ -3,13 +3,17 @@ import type { Layer, PickingInfo } from '@deck.gl/core';
 import { ArcLayer, ScatterplotLayer } from '@deck.gl/layers';
 import { MapboxOverlay } from '@deck.gl/mapbox';
 import type maplibregl from 'maplibre-gl';
+import { TERRAIN_CONFIG } from './mapConfig.js';
 import {
   PATH_ARC_BLOOM_WIDTH,
   PATH_ARC_CORE_WIDTH,
   PATH_ARC_HEIGHT,
   PATH_HOP_ANIMATION_MS,
+  PATH_HOP_PEAK_DISTANCE_SCALE,
+  PATH_HOP_PEAK_HEIGHT_M,
   PATH_LINE_FADE_MS,
   PATH_LINE_TTL_MS,
+  PATH_TERRAIN_CLEARANCE_M,
   pathArcColors,
 } from './pathArcStyle.js';
 
@@ -34,20 +38,31 @@ export type AerialPathSegment = {
   confidence: number | null;
 };
 
+export type DeckPosition = [number, number, number];
+
 type RenderedSegment = AerialPathSegment & {
-  renderedTarget: [number, number];
+  sourcePosition: DeckPosition;
+  targetPosition: DeckPosition;
+  renderedTarget: DeckPosition;
   opacity: number;
 };
 
 type RenderedNode = AerialPathNode & {
   confidence: number | null;
+  renderedPosition: DeckPosition;
   opacity: number;
 };
 
+type RenderedObserverNode = AerialPathNode & {
+  renderedPosition: DeckPosition;
+};
+
 type LeadingPulse = {
-  position: [number, number];
+  position: DeckPosition;
   confidence: number | null;
 };
+
+type TerrainElevationMap = Pick<maplibregl.Map, 'queryTerrainElevation'>;
 
 export type PathRegistryEntry = {
   signature: string;
@@ -114,27 +129,117 @@ export function registerAerialPaths(
   }
 }
 
-function interpolate(
-  source: [number, number],
-  target: [number, number],
-  progress: number,
-): [number, number] {
+export function terrainCoordinateKey(position: [number, number]): string {
+  return `${position[0].toFixed(6)},${position[1].toFixed(6)}`;
+}
+
+export function cachedTerrainElevation(
+  map: TerrainElevationMap | null,
+  position: [number, number],
+  cache: Map<string, number | null>,
+  terrainEnabled: boolean,
+): number | null {
+  if (!terrainEnabled || !map) return null;
+  const key = terrainCoordinateKey(position);
+  if (cache.has(key)) return cache.get(key) ?? null;
+
+  let elevation: number | null = null;
+  try {
+    const queried = map.queryTerrainElevation(position);
+    elevation = typeof queried === 'number' && Number.isFinite(queried) ? queried : null;
+  } catch {
+    // A terrain tile may not be ready yet. The idle listener retries null
+    // samples; unavailable terrain keeps the pre-terrain z=0 behaviour.
+  }
+  cache.set(key, elevation);
+  return elevation;
+}
+
+export function terrainAwarePosition(
+  position: [number, number],
+  elevation: number | null,
+  terrainEnabled: boolean,
+  terrainExaggeration = TERRAIN_CONFIG.exaggeration,
+): DeckPosition {
+  if (!terrainEnabled || elevation == null || !Number.isFinite(elevation)) {
+    return [position[0], position[1], 0];
+  }
   return [
-    source[0] + (target[0] - source[0]) * progress,
-    source[1] + (target[1] - source[1]) * progress,
+    position[0],
+    position[1],
+    (elevation + PATH_TERRAIN_CLEARANCE_M) * terrainExaggeration,
   ];
+}
+
+function horizontalDistanceMeters(source: DeckPosition, target: DeckPosition): number {
+  const earthRadiusM = 6_371_000;
+  const sourceLat = source[1] * Math.PI / 180;
+  const targetLat = target[1] * Math.PI / 180;
+  const deltaLat = targetLat - sourceLat;
+  const deltaLon = (target[0] - source[0]) * Math.PI / 180;
+  const haversine = Math.sin(deltaLat / 2) ** 2
+    + Math.cos(sourceLat) * Math.cos(targetLat) * Math.sin(deltaLon / 2) ** 2;
+  return 2 * earthRadiusM * Math.asin(Math.sqrt(Math.min(1, haversine)));
+}
+
+export function hopPeakElevation(
+  source: DeckPosition,
+  target: DeckPosition,
+  terrainExaggeration = 1,
+): number {
+  const peakHeightM = Math.max(
+    PATH_HOP_PEAK_HEIGHT_M,
+    horizontalDistanceMeters(source, target) * PATH_HOP_PEAK_DISTANCE_SCALE,
+  );
+  return Math.max(source[2], target[2]) + peakHeightM * terrainExaggeration;
+}
+
+/** Interpolate horizontally while following a parabolic, midpoint-peaking hop. */
+export function interpolateBallistic(
+  source: DeckPosition,
+  target: DeckPosition,
+  progress: number,
+  peakElevation: number,
+): DeckPosition {
+  const clampedProgress = Math.max(0, Math.min(1, progress));
+  const linearElevation = source[2] + (target[2] - source[2]) * clampedProgress;
+  const midpointElevation = (source[2] + target[2]) / 2;
+  const arcElevation = 4 * clampedProgress * (1 - clampedProgress)
+    * Math.max(0, peakElevation - midpointElevation);
+  return [
+    source[0] + (target[0] - source[0]) * clampedProgress,
+    source[1] + (target[1] - source[1]) * clampedProgress,
+    linearElevation + arcElevation,
+  ];
+}
+
+function renderedPosition(
+  node: AerialPathNode,
+  map: TerrainElevationMap | null,
+  terrainEnabled: boolean,
+  elevationCache: Map<string, number | null>,
+): DeckPosition {
+  return terrainAwarePosition(
+    node.position,
+    cachedTerrainElevation(map, node.position, elevationCache, terrainEnabled),
+    terrainEnabled,
+  );
 }
 
 function uniqueNodes(segments: RenderedSegment[]): RenderedNode[] {
   const nodesByKey = new Map<string, RenderedNode>();
   for (const segment of segments) {
-    for (const node of [segment.source, segment.target]) {
+    for (const [node, position] of [
+      [segment.source, segment.sourcePosition],
+      [segment.target, segment.targetPosition],
+    ] as const) {
       const key = `${node.nodeId ?? ''}:${node.position[0]}:${node.position[1]}`;
       const existing = nodesByKey.get(key);
       if (existing && existing.opacity >= segment.opacity) continue;
       nodesByKey.set(key, {
         ...node,
         confidence: segment.confidence,
+        renderedPosition: position,
         opacity: segment.opacity,
       });
     }
@@ -146,7 +251,7 @@ function layersForFrame(
   segments: RenderedSegment[],
   nodes: RenderedNode[],
   pulses: LeadingPulse[],
-  observerNodes: AerialPathNode[],
+  observerNodes: RenderedObserverNode[],
   onNodeClick?: (node: AerialPathNode) => void,
 ): Layer[] {
   const layers: Layer[] = [];
@@ -155,7 +260,7 @@ function layersForFrame(
       new ArcLayer<RenderedSegment>({
         id: 'resolved-path-arc-bloom',
         data: segments,
-        getSourcePosition: (segment) => segment.source.position,
+        getSourcePosition: (segment) => segment.sourcePosition,
         getTargetPosition: (segment) => segment.renderedTarget,
         getSourceColor: (segment) => pathArcColors(segment.confidence, segment.opacity).bloomSource,
         getTargetColor: (segment) => pathArcColors(segment.confidence, segment.opacity).bloomTarget,
@@ -166,7 +271,7 @@ function layersForFrame(
       new ArcLayer<RenderedSegment>({
         id: 'resolved-path-arc-core',
         data: segments,
-        getSourcePosition: (segment) => segment.source.position,
+        getSourcePosition: (segment) => segment.sourcePosition,
         getTargetPosition: (segment) => segment.renderedTarget,
         getSourceColor: (segment) => pathArcColors(segment.confidence, segment.opacity).coreSource,
         getTargetColor: (segment) => pathArcColors(segment.confidence, segment.opacity).coreTarget,
@@ -181,7 +286,7 @@ function layersForFrame(
     layers.push(new ScatterplotLayer<RenderedNode>({
       id: 'resolved-path-nodes',
       data: nodes,
-      getPosition: (node) => node.position,
+      getPosition: (node) => node.renderedPosition,
       getFillColor: (node) => [11, 23, 37, Math.round(255 * node.opacity)],
       getLineColor: (node) => pathArcColors(node.confidence, node.opacity).coreTarget,
       getRadius: 6,
@@ -195,10 +300,10 @@ function layersForFrame(
   }
 
   if (observerNodes.length > 0) {
-    layers.push(new ScatterplotLayer<AerialPathNode>({
+    layers.push(new ScatterplotLayer<RenderedObserverNode>({
       id: 'resolved-path-observers',
       data: observerNodes,
-      getPosition: (node) => node.position,
+      getPosition: (node) => node.renderedPosition,
       getFillColor: [59, 130, 246, 255],
       getLineColor: [255, 255, 255, 235],
       getRadius: 8,
@@ -234,18 +339,30 @@ export const AnimatedPathOverlay: React.FC<{
   paths: AerialPath[];
   observerNodes?: AerialPathNode[];
   active: boolean;
+  terrainEnabled?: boolean;
   onNodeClick?: (node: AerialPathNode) => void;
-}> = ({ map, paths, observerNodes = EMPTY_OBSERVER_NODES, active, onNodeClick }) => {
+}> = ({
+  map,
+  paths,
+  observerNodes = EMPTY_OBSERVER_NODES,
+  active,
+  terrainEnabled = false,
+  onNodeClick,
+}) => {
   const overlayRef = useRef<MapboxOverlay | null>(null);
   const registryRef = useRef(new Map<string, PathRegistryEntry>());
+  const elevationCacheRef = useRef(new Map<string, number | null>());
+  const terrainCoordinatesRef = useRef(new Map<string, [number, number]>());
   const frameRef = useRef<number | null>(null);
   const wakeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const renderRef = useRef<(now: number) => void>(() => {});
   const scheduleRef = useRef<() => void>(() => {});
   const activeRef = useRef(active);
+  const terrainEnabledRef = useRef(terrainEnabled);
   const onNodeClickRef = useRef(onNodeClick);
   const observerNodesRef = useRef(observerNodes);
   activeRef.current = active;
+  terrainEnabledRef.current = terrainEnabled;
   onNodeClickRef.current = onNodeClick;
   observerNodesRef.current = observerNodes;
   const signature = useMemo(() => paths.map((path) => [
@@ -253,6 +370,12 @@ export const AnimatedPathOverlay: React.FC<{
     path.confidence ?? 'unknown',
     ...path.nodes.map((node) => `${node.position[0].toFixed(6)},${node.position[1].toFixed(6)}`),
   ].join(':')).join('|'), [paths]);
+  const featureSignature = useMemo(() => [
+    signature,
+    ...observerNodes
+      .map((node) => `${node.nodeId ?? ''}:${aerialNodeKey(node)}`)
+      .sort(),
+  ].join('|'), [observerNodes, signature]);
 
   useEffect(() => {
     if (!map) return undefined;
@@ -265,6 +388,8 @@ export const AnimatedPathOverlay: React.FC<{
       frameRef.current = null;
       wakeTimerRef.current = null;
       registryRef.current.clear();
+      elevationCacheRef.current.clear();
+      terrainCoordinatesRef.current.clear();
       map.removeControl(overlay as unknown as maplibregl.IControl);
       overlayRef.current = null;
     };
@@ -285,6 +410,8 @@ export const AnimatedPathOverlay: React.FC<{
     if (!overlay || !activeRef.current) return;
     const rendered: RenderedSegment[] = [];
     const pulses: LeadingPulse[] = [];
+    const terrainEnabledNow = terrainEnabledRef.current;
+    const terrainMap = map;
     let needsAnimationFrame = false;
     let nextFadeAt = Number.POSITIVE_INFINITY;
 
@@ -300,15 +427,60 @@ export const AnimatedPathOverlay: React.FC<{
         const completedCount = Math.floor(elapsed / PATH_HOP_ANIMATION_MS);
         const activeSegment = entry.segments[completedCount];
         for (const segment of entry.segments.slice(0, completedCount)) {
-          rendered.push({ ...segment, renderedTarget: segment.target.position, opacity: 1 });
+          const sourcePosition = renderedPosition(
+            segment.source,
+            terrainMap,
+            terrainEnabledNow,
+            elevationCacheRef.current,
+          );
+          const targetPosition = renderedPosition(
+            segment.target,
+            terrainMap,
+            terrainEnabledNow,
+            elevationCacheRef.current,
+          );
+          rendered.push({
+            ...segment,
+            sourcePosition,
+            targetPosition,
+            renderedTarget: targetPosition,
+            opacity: 1,
+          });
         }
         if (activeSegment) {
           const hopProgress = Math.min(
             1,
             (elapsed - completedCount * PATH_HOP_ANIMATION_MS) / PATH_HOP_ANIMATION_MS,
           );
-          const position = interpolate(activeSegment.source.position, activeSegment.target.position, hopProgress);
-          rendered.push({ ...activeSegment, renderedTarget: position, opacity: 1 });
+          const sourcePosition = renderedPosition(
+            activeSegment.source,
+            terrainMap,
+            terrainEnabledNow,
+            elevationCacheRef.current,
+          );
+          const targetPosition = renderedPosition(
+            activeSegment.target,
+            terrainMap,
+            terrainEnabledNow,
+            elevationCacheRef.current,
+          );
+          const position = interpolateBallistic(
+            sourcePosition,
+            targetPosition,
+            hopProgress,
+            hopPeakElevation(
+              sourcePosition,
+              targetPosition,
+              terrainEnabledNow ? TERRAIN_CONFIG.exaggeration : 1,
+            ),
+          );
+          rendered.push({
+            ...activeSegment,
+            sourcePosition,
+            targetPosition,
+            renderedTarget: position,
+            opacity: 1,
+          });
           pulses.push({ position, confidence: activeSegment.confidence });
         }
         continue;
@@ -325,16 +497,44 @@ export const AnimatedPathOverlay: React.FC<{
       if (ageSinceCompletion > PATH_LINE_TTL_MS) needsAnimationFrame = true;
       else nextFadeAt = Math.min(nextFadeAt, entry.startedAt + animationDuration + PATH_LINE_TTL_MS);
       for (const segment of entry.segments) {
-        rendered.push({ ...segment, renderedTarget: segment.target.position, opacity });
+        const sourcePosition = renderedPosition(
+          segment.source,
+          terrainMap,
+          terrainEnabledNow,
+          elevationCacheRef.current,
+        );
+        const targetPosition = renderedPosition(
+          segment.target,
+          terrainMap,
+          terrainEnabledNow,
+          elevationCacheRef.current,
+        );
+        rendered.push({
+          ...segment,
+          sourcePosition,
+          targetPosition,
+          renderedTarget: targetPosition,
+          opacity,
+        });
       }
     }
+
+    const renderedObserverNodes: RenderedObserverNode[] = observerNodesRef.current.map((node) => ({
+      ...node,
+      renderedPosition: renderedPosition(
+        node,
+        terrainMap,
+        terrainEnabledNow,
+        elevationCacheRef.current,
+      ),
+    }));
 
     overlay.setProps({
       layers: layersForFrame(
         rendered,
         uniqueNodes(rendered),
         pulses,
-        observerNodesRef.current,
+        renderedObserverNodes,
         onNodeClickRef.current,
       ),
     });
@@ -354,7 +554,40 @@ export const AnimatedPathOverlay: React.FC<{
 
   useEffect(() => {
     const overlay = overlayRef.current;
-    if (!overlay) return;
+    const coordinates = new Map<string, [number, number]>();
+    const rememberCoordinate = (position: [number, number]) => {
+      coordinates.set(terrainCoordinateKey(position), position);
+    };
+    for (const path of paths) {
+      for (const node of path.nodes) rememberCoordinate(node.position);
+    }
+    for (const node of observerNodes) rememberCoordinate(node.position);
+    terrainCoordinatesRef.current = coordinates;
+    elevationCacheRef.current.clear();
+    if (terrainEnabled && map) {
+      for (const position of coordinates.values()) {
+        cachedTerrainElevation(map, position, elevationCacheRef.current, true);
+      }
+    }
+
+    const retryUnavailableTerrain = () => {
+      if (!map || !terrainEnabledRef.current) return;
+      let updated = false;
+      for (const [key, position] of terrainCoordinatesRef.current) {
+        if (elevationCacheRef.current.get(key) !== null) continue;
+        elevationCacheRef.current.delete(key);
+        const elevation = cachedTerrainElevation(map, position, elevationCacheRef.current, true);
+        if (elevation !== null) updated = true;
+      }
+      if (updated) scheduleRef.current();
+    };
+    if (map && terrainEnabled) map.on('idle', retryUnavailableTerrain);
+
+    if (!overlay) {
+      return () => {
+        if (map && terrainEnabled) map.off('idle', retryUnavailableTerrain);
+      };
+    }
     if (!active) {
       registryRef.current.clear();
       if (frameRef.current != null) cancelAnimationFrame(frameRef.current);
@@ -362,14 +595,19 @@ export const AnimatedPathOverlay: React.FC<{
       frameRef.current = null;
       wakeTimerRef.current = null;
       overlay.setProps({ layers: [] });
-      return;
+      return () => {
+        if (map && terrainEnabled) map.off('idle', retryUnavailableTerrain);
+      };
     }
 
     registerAerialPaths(registryRef.current, paths, performance.now());
     scheduleRef.current();
+    return () => {
+      if (map && terrainEnabled) map.off('idle', retryUnavailableTerrain);
+    };
   // `signature` is the stable semantic dependency for the path collection.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, map, signature, observerNodes]);
+  }, [active, featureSignature, map, paths, terrainEnabled]);
 
   return null;
 };
