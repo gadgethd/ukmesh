@@ -18,6 +18,7 @@ export type AerialPathNode = {
   nodeId?: string;
   name?: string;
   isObserver?: boolean;
+  confidence?: number | null;
 };
 
 export type AerialPath = {
@@ -54,18 +55,25 @@ export type PathRegistryEntry = {
   startedAt: number;
 };
 
+const EMPTY_OBSERVER_NODES: AerialPathNode[] = [];
+
 export function buildAerialPathSegments(paths: AerialPath[]): AerialPathSegment[] {
   return paths.flatMap((path) => path.nodes.slice(0, -1).flatMap((source, index) => {
     const target = path.nodes[index + 1];
     if (!target) return [];
-    return [{ id: `${path.id}:${index}`, source, target, confidence: path.confidence }];
+    return [{
+      id: `${path.id}:${index}`,
+      source,
+      target,
+      confidence: target.confidence ?? path.confidence,
+    }];
   }));
 }
 
 function aerialPathSignature(path: AerialPath): string {
   return [
     path.confidence ?? 'unknown',
-    ...path.nodes.map((node) => `${node.position[0].toFixed(6)},${node.position[1].toFixed(6)}`),
+    ...path.nodes.map((node) => `${node.position[0].toFixed(6)},${node.position[1].toFixed(6)}:${node.confidence ?? 'unknown'}`),
   ].join(':');
 }
 
@@ -116,6 +124,7 @@ function layersForFrame(
   segments: RenderedSegment[],
   nodes: RenderedNode[],
   pulses: LeadingPulse[],
+  observerNodes: AerialPathNode[],
   onNodeClick?: (node: AerialPathNode) => void,
 ): Layer[] {
   const layers: Layer[] = [];
@@ -163,6 +172,23 @@ function layersForFrame(
     }));
   }
 
+  if (observerNodes.length > 0) {
+    layers.push(new ScatterplotLayer<AerialPathNode>({
+      id: 'resolved-path-observers',
+      data: observerNodes,
+      getPosition: (node) => node.position,
+      getFillColor: [59, 130, 246, 255],
+      getLineColor: [255, 255, 255, 235],
+      getRadius: 8,
+      radiusUnits: 'pixels',
+      stroked: true,
+      lineWidthUnits: 'pixels',
+      getLineWidth: 2,
+      pickable: Boolean(onNodeClick),
+      onClick: ({ object }: PickingInfo<AerialPathNode>) => { if (object) onNodeClick?.(object); },
+    }));
+  }
+
   if (pulses.length > 0) {
     layers.push(new ScatterplotLayer<LeadingPulse>({
       id: 'resolved-path-leading-pulse',
@@ -184,9 +210,10 @@ function layersForFrame(
 export const AnimatedPathOverlay: React.FC<{
   map: maplibregl.Map | null;
   paths: AerialPath[];
+  observerNodes?: AerialPathNode[];
   active: boolean;
   onNodeClick?: (node: AerialPathNode) => void;
-}> = ({ map, paths, active, onNodeClick }) => {
+}> = ({ map, paths, observerNodes = EMPTY_OBSERVER_NODES, active, onNodeClick }) => {
   const overlayRef = useRef<MapboxOverlay | null>(null);
   const registryRef = useRef(new Map<string, PathRegistryEntry>());
   const frameRef = useRef<number | null>(null);
@@ -195,8 +222,10 @@ export const AnimatedPathOverlay: React.FC<{
   const scheduleRef = useRef<() => void>(() => {});
   const activeRef = useRef(active);
   const onNodeClickRef = useRef(onNodeClick);
+  const observerNodesRef = useRef(observerNodes);
   activeRef.current = active;
   onNodeClickRef.current = onNodeClick;
+  observerNodesRef.current = observerNodes;
   const signature = useMemo(() => paths.map((path) => [
     path.id,
     path.confidence ?? 'unknown',
@@ -275,7 +304,13 @@ export const AnimatedPathOverlay: React.FC<{
     }
 
     overlay.setProps({
-      layers: layersForFrame(rendered, uniqueNodes(rendered), pulses, onNodeClickRef.current),
+      layers: layersForFrame(
+        rendered,
+        uniqueNodes(rendered),
+        pulses,
+        observerNodesRef.current,
+        onNodeClickRef.current,
+      ),
     });
 
     if (needsAnimationFrame) {
@@ -308,7 +343,7 @@ export const AnimatedPathOverlay: React.FC<{
     scheduleRef.current();
   // `signature` is the stable semantic dependency for the path collection.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, map, signature]);
+  }, [active, map, signature, observerNodes]);
 
   return null;
 };

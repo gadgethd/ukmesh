@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { LazyPathResult, ResolvedPath } from '../pages/ukmesh/PacketDetailPanel.js';
+import type { LazyPathResult } from '../pages/ukmesh/PacketDetailPanel.js';
+import type { MultiObserverBetaResponse } from './packetPathOverlayUtils.js';
 import { useRuntimeFeatures } from '../config/runtimeFeatures.js';
 import { ApiResponseError, fetchJson, withScopeParams } from '../utils/api.js';
 import { ScopedCache } from '../utils/scopedCache.js';
@@ -47,7 +48,7 @@ const radioCache = new ScopedCache<RadioState | null>({
   maxBytes: 128 * 1024,
   maxInflight: 4,
 });
-const pathCache = new ScopedCache<ResolvedPath[]>({
+const pathCache = new ScopedCache<MultiObserverBetaResponse[]>({
   name: 'packet-resolved-paths',
   ttlMs: CACHE_TTL_MS,
   maxEntries: 256,
@@ -118,7 +119,7 @@ export function usePacketDetailData(input: {
   const scopeKey = `${network}|${observerKey}|privacy-${runtimeFeatures.privacyGeneration}`;
   const [detail, setDetail] = useState<PacketDetail | null>(null);
   const [radio, setRadio] = useState<RadioState | null>(null);
-  const [resolvedPaths, setResolvedPaths] = useState<ResolvedPath[]>([]);
+  const [resolvedPaths, setResolvedPaths] = useState<MultiObserverBetaResponse[]>([]);
   const [loading, setLoading] = useState(true);
   const [pathLoading, setPathLoading] = useState(false);
   const [lazyPath, setLazyPath] = useState<LazyPathResult | null>(null);
@@ -158,7 +159,7 @@ export function usePacketDetailData(input: {
     const key = `${packetHash.toUpperCase()}:${observerKey}`;
     setPathLoading(true);
     void pathCache.getOrLoad(scopeKey, key, async () => {
-      const value = await fetchJson<{ results?: ResolvedPath[] }>(
+      const value = await fetchJson<MultiObserverBetaResponse>(
         withScopeParams(`/api/path-beta/resolve-multi?hash=${encodeURIComponent(packetHash)}`, {
           network,
           observer,
@@ -166,7 +167,7 @@ export function usePacketDetailData(input: {
         { signal: controller.signal, cache: 'no-store' },
         { timeoutMs: 12_000, maxBytes: 8 * 1024 * 1024 },
       );
-      return Array.isArray(value.results) ? value.results : [];
+      return Array.isArray(value.canonicalPath) && Array.isArray(value.observers) ? [value] : [];
     })
       .then((paths) => {
         if (!active) return;

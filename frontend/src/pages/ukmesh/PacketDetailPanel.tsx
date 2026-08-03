@@ -193,7 +193,7 @@ export const PacketDetailPanel: React.FC<{
     ?? rxNode?.iata?.trim().toUpperCase()
     ?? '—';
 
-  // Regions heard — combine live observer_node_ids, rx_node_id fallback, and DB observations
+  // Regions heard — combine live observer_node_ids, rx_node_id, and DB observations
   const regionsHeard = useMemo(() => {
     const iatas = new Set<string>();
     for (const value of [...(packet.observer_iatas ?? []), packet.iata, detail?.iata]) {
@@ -246,7 +246,11 @@ export const PacketDetailPanel: React.FC<{
   const resolvedHopCount = useMemo(() => {
     const allNodes = new Set<string>();
     for (const r of resolvedPaths) {
-      r.purplePath?.forEach(([lat, lon]) => allNodes.add(`${lat},${lon}`));
+      r.canonicalPath.forEach((node) => {
+        if (node.lat != null && node.lon != null && Number.isFinite(node.lat) && Number.isFinite(node.lon)) {
+          allNodes.add(`${node.lat},${node.lon}`);
+        }
+      });
     }
     return allNodes.size;
   }, [resolvedPaths]);
@@ -259,6 +263,7 @@ export const PacketDetailPanel: React.FC<{
     const candidates: string[] = [
       ...(packet.observer_node_ids?.length ? packet.observer_node_ids : [packet.rx_node_id].filter(Boolean) as string[]),
       ...(detail?.observations?.map((o) => o.rxNodeId).filter(Boolean) as string[] ?? []),
+      ...resolvedPaths.flatMap((path) => path.observers.map((entry) => entry.observerId)),
     ];
     const positions: [number, number][] = [];
     for (const id of candidates) {
@@ -270,7 +275,7 @@ export const PacketDetailPanel: React.FC<{
       }
     }
     return positions;
-  }, [packet.observer_node_ids, packet.rx_node_id, detail?.observations, nodeMap]);
+  }, [packet.observer_node_ids, packet.rx_node_id, detail?.observations, nodeMap, resolvedPaths]);
 
   return (
     <div className="feed-detail-panel">
