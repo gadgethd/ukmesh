@@ -4,7 +4,7 @@ export type PathArcColor = [number, number, number, number];
  * How long a completed live path remains fully visible. Change this to 30_000
  * for a 30-second lifetime, for example. The fade begins after this interval.
  */
-export const PATH_LINE_TTL_MS = 60_000;
+export const PATH_LINE_TTL_MS = 15_000;
 
 export const PATH_HOP_ANIMATION_MS = 400;
 export const PATH_LINE_FADE_MS = 1_000;
