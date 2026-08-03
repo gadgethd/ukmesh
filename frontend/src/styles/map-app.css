@@ -902,17 +902,6 @@
 }
 .node-marker--room .node-marker__pulse { background: var(--room-server); }
 
-.node-marker--inferred .node-marker__core {
-  background: rgba(109, 220, 122, 0.18);
-  border-color: rgba(109, 220, 122, 0.92);
-  box-shadow: 0 0 0 1px rgba(109, 220, 122, 0.28), 0 0 14px rgba(109, 220, 122, 0.18);
-}
-
-.node-marker--inferred .node-marker__pulse {
-  background: rgba(109, 220, 122, 0.7);
-  opacity: 0.32;
-}
-
 .node-marker--restore .node-marker__core,
 .node-marker--restore .node-marker__pulse {
   animation: node-restore-fade 1.2s ease;

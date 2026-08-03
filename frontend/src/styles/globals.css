@@ -55,8 +55,6 @@
   --offline:        #546e7a;
   --offline-text:   #93a7b2;
   --danger:         #ff1744;
-  --inferred:       #6ddc7a;
-
   /* Device-type colours */
   --companion:      #ff9800;   /* ChatNode (role 1) — orange */
   --room-server:    #ce93d8;   /* RoomServer (role 3) — lavender */

@@ -954,19 +954,19 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
     invalidateResolveCache(finalHash);
 
     // A repeater appearing in a multibyte (2–3 byte) path hash almost certainly
-    // relayed this packet, so treat it as proof it is online right now: refresh its
-    // last_path_evidence_at and broadcast a live "seen now" update. Non-MQTT
-    // repeaters (no direct reception) only get refreshed this way. Best-effort.
+    // relayed this packet. Resolve only a unique historic row with stored
+    // coordinates, then broadcast the full row so clients which no longer hold
+    // the stale node can restore it at its original location. Best-effort.
     if (decodedPathHashSizeBytes != null && decodedPathHashSizeBytes >= 2 && path && path.length > 0) {
       try {
-        const nodeIds = await recordMultibyteEvidence(
+        const historicNodes = await recordMultibyteEvidence(
           path,
           decodedPathHashSizeBytes,
           new Date(),
           decodedRouteType,
           network,
         );
-        for (const nodeId of nodeIds) emitNode(nodeId, { network });
+        for (const node of historicNodes) emitNodeUpsert({ ...node });
       } catch (err) {
         console.error('[mqtt] recordMultibyteEvidence error:', (err as Error).message);
       }

@@ -1,3 +1,5 @@
+import { nodeEffectiveLastSeenSql } from './presence.js';
+
 export const PUBLIC_MAP_ALLOWED_FIELDS = [
   'node_id',
   'name',
@@ -47,9 +49,9 @@ export function publicMapFreshPredicate(
   const table = safeAlias(alias);
   return `(
     ${publicMapBasePredicate(table)}
-    AND GREATEST(${table}.last_seen, ${table}.last_path_evidence_at)
+    AND ${nodeEffectiveLastSeenSql(table)}
       > ${referenceSql} - INTERVAL '28 days'
-    AND GREATEST(${table}.last_seen, ${table}.last_path_evidence_at)
+    AND ${nodeEffectiveLastSeenSql(table)}
       <= ${referenceSql}
   )`;
 }

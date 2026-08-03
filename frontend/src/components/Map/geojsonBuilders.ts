@@ -28,8 +28,6 @@ export type MapSourceDirtyFlags = {
   plannedLinks: boolean;
 };
 
-export const MAX_INFERRED_NODE_FEATURES = 2_000;
-
 export const ALL_MAP_SOURCE_DIRTY_FLAGS: MapSourceDirtyFlags = {
   nodes: true,
   privacy: true,
@@ -88,17 +86,11 @@ export function buildNodeGeoJSON(
   pathNodeIds: Set<string> | null,
   replayNodeIds: Set<string> | null = null,
   staleCutoffMs = Date.now(),
-  inferredNodes: readonly MeshNode[] = [],
-  inferredActiveNodeIds: ReadonlySet<string> = new Set<string>(),
 ): GeoJSON.FeatureCollection {
   const features: GeoJSON.Feature[] = [];
-  const activeInferredIds = new Set(
-    Array.from(inferredActiveNodeIds, (nodeId) => nodeId.trim().toUpperCase()),
-  );
 
-  const addNode = (node: MeshNode, explicitlyInferred = false) => {
+  const addNode = (node: MeshNode) => {
     if (!hasCoords(node)) return;
-    if (explicitlyInferred && isProhibitedMapNode(node)) return;
     const ageMs = staleCutoffMs - new Date(node.last_seen).getTime();
     const isLinkOnlyStale = ageMs > NODE_HIDE_AFTER_MS
       && showLinks
@@ -140,7 +132,6 @@ export function buildNodeGeoJSON(
       is_stale: ageMs > NODE_STALE_AFTER_MS,
       is_link_only_stale: isLinkOnlyStale,
       is_prohibited: isProhibited,
-      is_inferred: explicitlyInferred || activeInferredIds.has(node.node_id.trim().toUpperCase()),
       replay_active: replayNodeIds?.has(node.node_id.toLowerCase()) ?? false,
       replay_mode: replayNodeIds !== null,
       hex_clash_state: hexClashState,
@@ -160,17 +151,6 @@ export function buildNodeGeoJSON(
   };
 
   for (const node of nodes.values()) addNode(node);
-  const existingIds = new Set(
-    Array.from(nodes.values(), (node) => node.node_id.trim().toUpperCase()),
-  );
-  let addedInferred = 0;
-  for (const node of inferredNodes) {
-    if (addedInferred >= MAX_INFERRED_NODE_FEATURES) break;
-    if (existingIds.has(node.node_id.trim().toUpperCase())) continue;
-    const before = features.length;
-    addNode(node, true);
-    if (features.length > before) addedInferred += 1;
-  }
 
   return { type: 'FeatureCollection', features };
 }

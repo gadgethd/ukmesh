@@ -19,6 +19,14 @@ import {
   dbQueryDuration,
   updateDbPoolMetrics,
 } from '../metrics.js';
+import {
+  nodeEffectiveLastSeenSql,
+  nodeEffectiveOnlineSql,
+} from '../nodes/presence.js';
+import {
+  reactivateHistoricPathNodes,
+  type HistoricPathNode,
+} from '../repositories/pathEvidence.js';
 
 const { Pool } = pg;
 const COORDINATE_RECALC_THRESHOLD_M = Number(process.env['NODE_COORDINATE_RECALC_THRESHOLD_M'] ?? 25);
@@ -370,10 +378,18 @@ export async function refreshRecentPathEvidence(
      ),
      node_hashes AS (
        SELECT 2 AS path_hash_size_bytes, UPPER(LEFT(node_id, 4)) AS hash, node_id
-       FROM nodes WHERE (role = 2 OR role IS NULL) AND ${pathEvidenceNodeScope}
+       FROM nodes
+       WHERE (role = 2 OR role IS NULL) AND ${pathEvidenceNodeScope}
+         AND lat BETWEEN -90 AND 90
+         AND lon BETWEEN -180 AND 180
+         AND NOT (ABS(lat) < 1e-9 AND ABS(lon) < 1e-9)
        UNION ALL
        SELECT 3 AS path_hash_size_bytes, UPPER(LEFT(node_id, 6)) AS hash, node_id
-       FROM nodes WHERE (role = 2 OR role IS NULL) AND ${pathEvidenceNodeScope}
+       FROM nodes
+       WHERE (role = 2 OR role IS NULL) AND ${pathEvidenceNodeScope}
+         AND lat BETWEEN -90 AND 90
+         AND lon BETWEEN -180 AND 180
+         AND NOT (ABS(lat) < 1e-9 AND ABS(lon) < 1e-9)
      ),
      unique_node_hashes AS (
        SELECT path_hash_size_bytes, hash, MIN(node_id) AS node_id
@@ -409,8 +425,8 @@ export async function refreshRecentPathEvidence(
 /**
  * Real-time counterpart to {@link refreshRecentPathEvidence}: given the multibyte
  * path hashes of a single freshly-ingested packet, credit each repeater whose
- * prefix uniquely matches with `last_path_evidence_at = seenAt`. Returns the node
- * IDs that were updated so the caller can broadcast a live "seen now" update.
+ * prefix uniquely matches with `last_path_evidence_at = seenAt`. Returns the
+ * preserved historic node rows so the caller can broadcast their coordinates.
  *
  * Only 2- and 3-byte hashes are accepted (single-byte is too collision-prone), and
  * prefixes shared by more than one repeater are skipped (ambiguous). Best-effort:
@@ -422,52 +438,14 @@ export async function recordMultibyteEvidence(
   seenAt: Date,
   routeType?: number,
   network?: string,
-): Promise<string[]> {
-  // On Direct/TransportDirect packets the path is a future route, not an
-  // observed relay path. Crediting it would invent node presence.
-  if ((routeType !== 0 && routeType !== 1) || (sizeBytes !== 2 && sizeBytes !== 3)) return [];
-  const prefixLen = sizeBytes * 2; // hex chars: 2 bytes → 4, 3 bytes → 6
-  const hashes = Array.from(new Set(
-    pathHashes
-      .map((h) => String(h).trim().toUpperCase())
-      .filter((h) => h.length === prefixLen && /^[0-9A-F]+$/.test(h)),
-  ));
-  if (hashes.length === 0) return [];
-  const pathEvidenceNodeScope = network === 'test'
-    ? "n.network = 'test'"
-    : "n.network IS DISTINCT FROM 'test'";
-  // prefixLen is a server-controlled integer (4 or 6); inlining it lets Postgres
-  // use the upper(left(node_id,N)) functional indexes (idx_nodes_path_hash_2/3).
-  const res = await pool.query<{ node_id: string }>(
-    `WITH input(hash) AS (
-       SELECT UNNEST($1::text[])
-     ),
-     candidates AS (
-       SELECT n.node_id, i.hash
-       FROM nodes n
-       JOIN input i ON UPPER(LEFT(n.node_id, ${prefixLen})) = i.hash
-       WHERE (n.role = 2 OR n.role IS NULL) AND ${pathEvidenceNodeScope}
-     ),
-     unique_hashes AS (
-       SELECT hash FROM candidates GROUP BY hash HAVING COUNT(*) = 1
-     ),
-     matched AS (
-       SELECT c.node_id
-       FROM candidates c
-       JOIN unique_hashes u ON u.hash = c.hash
-     ),
-     updated AS (
-       UPDATE nodes n
-       SET last_path_evidence_at = $2::timestamptz
-       FROM matched m
-       WHERE n.node_id = m.node_id
-         AND (n.last_path_evidence_at IS NULL OR n.last_path_evidence_at < $2::timestamptz)
-       RETURNING n.node_id
-     )
-     SELECT node_id FROM updated`,
-    [hashes, seenAt.toISOString()],
-  );
-  return res.rows.map((r) => r.node_id);
+): Promise<HistoricPathNode[]> {
+  return reactivateHistoricPathNodes(query, {
+    pathHashes,
+    sizeBytes,
+    seenAt,
+    routeType,
+    network,
+  });
 }
 
 export async function upsertNode(nodeId: string, updates: {
@@ -726,30 +704,13 @@ export async function getNodes(
        -- multibyte relay evidence are independent proofs of presence. Always
        -- expose the newest proof; preferring observer metadata with COALESCE
        -- could make a freshly advertised node appear days older on the map.
-       GREATEST(
-         n.last_seen,
-         n.last_rx_at,
-         n.last_status_at,
-         n.last_path_evidence_at
-       ) AS last_seen,
-       COALESCE(
-         CASE
-           WHEN GREATEST(n.last_rx_at, n.last_status_at) IS NOT NULL
-           THEN GREATEST(n.last_rx_at, n.last_status_at) > NOW() - INTERVAL '15 minutes'
-           ELSE NULL
-         END,
-         CASE
-           WHEN n.last_path_evidence_at IS NOT NULL
-             AND n.last_path_evidence_at > NOW() - INTERVAL '60 minutes'
-           THEN TRUE
-           ELSE n.is_online
-         END
-       ) AS is_online,
+       ${nodeEffectiveLastSeenSql('n')} AS last_seen,
+       ${nodeEffectiveOnlineSql('n')} AS is_online,
        n.advert_count
        ${optionalFields}
      FROM nodes n
      ${whereClause}
-     ORDER BY GREATEST(n.last_seen, n.last_rx_at, n.last_status_at, n.last_path_evidence_at) DESC`,
+     ORDER BY ${nodeEffectiveLastSeenSql('n')} DESC`,
     scope.params
   );
   return res.rows;

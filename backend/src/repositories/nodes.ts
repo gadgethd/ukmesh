@@ -1,6 +1,10 @@
 import type { QueryResultRow } from 'pg';
 import type { NetworkFilters } from '../api/utils/networkFilters.js';
 import { publicMapFreshPredicate } from '../nodes/publicMap.js';
+import {
+  nodeEffectiveLastSeenSql,
+  nodeEffectiveOnlineSql,
+} from '../nodes/presence.js';
 
 type QueryFn = <T extends QueryResultRow = QueryResultRow>(
   text: string,
@@ -182,7 +186,15 @@ export function createNodeRepository(query: QueryFn): NodeRepository {
       const cursorParameter = snapshotParameter + 1;
       const limitParameter = cursorParameter + 1;
       const selectedFields = fields
-        .map((field) => field === 'last_seen' ? 'n.last_seen::text AS last_seen' : `n.${field}`)
+        .map((field) => {
+          if (field === 'last_seen') {
+            return `${nodeEffectiveLastSeenSql('n')}::text AS last_seen`;
+          }
+          if (field === 'is_online') {
+            return `${nodeEffectiveOnlineSql('n', `$${snapshotParameter}::timestamptz`)} AS is_online`;
+          }
+          return `n.${field}`;
+        })
         .join(', ');
       const result = await query<Record<string, unknown>>(
         `SELECT ${selectedFields}

@@ -22,7 +22,6 @@ export interface NodeFeatureProps {
   is_stale: boolean;
   is_link_only_stale: boolean;
   is_prohibited: boolean;
-  is_inferred: boolean;
   replay_active: boolean;
   replay_mode: boolean;
   hex_clash_state: 'offender' | 'relay' | null;
@@ -68,8 +67,6 @@ export interface CustomLosSegment {
 }
 
 export interface MapLibreMapProps {
-  inferredNodes: import('../../hooks/useNodes.js').MeshNode[];
-  inferredActiveNodeIds: Set<string>;
   showLinks: boolean;
   showTerrain: boolean;
   showClientNodes: boolean;

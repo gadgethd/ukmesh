@@ -168,7 +168,8 @@ test('map summary uses the same coordinate, role, and 14-day freshness rules as 
     call.text.includes("<= NOW() - INTERVAL '14 days'"),
   )?.text;
   const mapSql = calls.find((call) =>
-    call.text.includes("GREATEST(nodes.last_seen, nodes.last_path_evidence_at)")
+    call.text.includes('nodes.last_path_evidence_at')
+    && call.text.includes('nodes.last_rx_at')
     && call.text.includes("> NOW() - INTERVAL '28 days'")
     && !call.text.includes("<= NOW() - INTERVAL '14 days'"),
   )?.text;
@@ -180,7 +181,10 @@ test('map summary uses the same coordinate, role, and 14-day freshness rules as 
     assert.match(sql, /nodes\.lon BETWEEN -180 AND 180/);
     assert.match(sql, /NOT \(ABS\(nodes\.lat\) < 5 AND ABS\(nodes\.lon\) < 5\)/);
     assert.match(sql, /\(nodes\.role IS NULL OR nodes\.role NOT IN \(1, 3\)\)/);
-    assert.match(sql, /GREATEST\(nodes\.last_seen, nodes\.last_path_evidence_at\)/);
+    assert.match(sql, /nodes\.last_seen/);
+    assert.match(sql, /nodes\.last_rx_at/);
+    assert.match(sql, /nodes\.last_status_at/);
+    assert.match(sql, /nodes\.last_path_evidence_at/);
     assert.match(sql, /nodes\.name NOT LIKE/);
     assert.doesNotMatch(sql, /INTERVAL '7 days'/);
   }
