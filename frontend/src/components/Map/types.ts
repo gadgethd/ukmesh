@@ -76,6 +76,11 @@ export interface MapLibreMapProps {
   showHexClashes: boolean;
   maxHexClashHops: number;
   viewshedEnabled: boolean;
+  rfCoverageEnabled: boolean;
+  selectedRfCoverageNodeKey?: string | null;
+  getRfCoverageNodeState?: (publicKey: string) => import('../../hooks/useRfCoverage.js').RfNodeCoverageState;
+  onShowRfCoverage?: (publicKey: string) => void;
+  onClearRfCoverage?: () => void;
   initialView?: { lat: number; lon: number; zoom: number } | null;
   /** Currently selected node (drives the docked node panel + map highlight). */
   selectedNodeId?: string | null;

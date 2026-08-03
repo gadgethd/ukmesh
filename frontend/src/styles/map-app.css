@@ -45,6 +45,15 @@
   justify-content: space-between;
   color: var(--text-primary);
 }
+.rf-coverage-back {
+  padding: 3px 6px;
+  border: 1px solid var(--border-bright);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  cursor: pointer;
+}
 .rf-coverage-tier { display: flex; gap: 3px; }
 .rf-coverage-tier button {
   padding: 3px 6px;
@@ -1110,6 +1119,16 @@
   border-color: #1ec850;
   color: #1ec850;
 }
+.node-popup__coverage-action { margin-top: 6px; }
+.node-popup__coverage-state {
+  display: block;
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-size: 10px;
+}
+.node-popup__coverage-state--available { color: var(--online); }
+.node-popup__coverage-state--stale,
+.node-popup__coverage-state--error { color: var(--danger); }
 .node-popup__neighbours-loading {
   margin-top: 8px;
   font-size: 10px;

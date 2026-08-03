@@ -17,8 +17,11 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
+	"fmt"
 	"log"
+	"os"
 
 	yconfig "hopreach/internal/config"
 	"hopreach/internal/sysinfo"
@@ -35,7 +38,19 @@ func main() {
 	force := flag.Bool("force", false, "run even if within coverage.min_recompute_interval_hours (each tier still skips itself if it already completed today — see -force-all-tiers)")
 	forceAllTiers := flag.Bool("force-all-tiers", false, "also recompute every tier regardless of same-day freshness (implies -force); use after a config change that invalidates existing output, not for a routine restart/deploy")
 	prepare := flag.Bool("prepare", false, "render config.js, nginx's site config, and the cron file from config.yaml, then exit")
+	nodeFlag := flag.String("node", "", "compute standard-tier coverage for one 64-hex repeater public key, then exit")
 	flag.Parse()
+	if *prepare && *nodeFlag != "" {
+		log.Fatal("hopreach: -prepare and -node cannot be used together")
+	}
+	var nodePublicKey string
+	if *nodeFlag != "" {
+		var err error
+		nodePublicKey, err = normalizeNodePublicKey(*nodeFlag)
+		if err != nil {
+			log.Fatalf("hopreach: -node: %v", err)
+		}
+	}
 
 	yc, path, err := yconfig.Load(*configFlag)
 	if err != nil {
@@ -54,6 +69,10 @@ func main() {
 	// /admin/recompute trigger happens to overlap — see lock.go.
 	lock, err := acquireLock()
 	if err != nil {
+		if nodePublicKey != "" {
+			_ = json.NewEncoder(os.Stdout).Encode(nodeRunResult{PublicKey: nodePublicKey, State: "busy", Message: err.Error()})
+			return
+		}
 		log.Printf("hopreach: %v, skipping this run", err)
 		return
 	}
@@ -62,6 +81,17 @@ func main() {
 	cfg := toAppConfig(yc)
 	cfg.forceRecompute = *force || *forceAllTiers
 	cfg.forceAllTiers = *forceAllTiers
+	if nodePublicKey != "" {
+		result, runErr := runNode(cfg, nodePublicKey)
+		if encodeErr := json.NewEncoder(os.Stdout).Encode(result); encodeErr != nil {
+			log.Fatalf("hopreach: writing node result: %v", encodeErr)
+		}
+		if runErr != nil {
+			fmt.Fprintf(os.Stderr, "hopreach: node coverage: %v\n", runErr)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := run(cfg); err != nil {
 		log.Fatalf("hopreach: %v", err)
 	}

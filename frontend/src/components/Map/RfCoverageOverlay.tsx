@@ -27,20 +27,26 @@ export function RfCoverageOverlay({
   map,
   meta,
   tier,
+  nodePublicKey,
   visible,
 }: {
   map: maplibregl.Map | null;
   meta: RfCoverageMeta | null;
   tier: RfCoverageTierName;
+  nodePublicKey?: string | null;
   visible: boolean;
 }) {
-  const product = meta?.coverage?.[tier];
+  const nodeEntry = nodePublicKey ? meta?.node_coverage?.[nodePublicKey.toLowerCase()] : undefined;
+  const product = nodePublicKey ? nodeEntry?.standard : meta?.coverage?.[tier];
   const tiles = useMemo(
     () => (product?.tiles ?? []).filter(isValidRfCoverageTile),
     [product?.tiles],
   );
-  const revision = `${meta?.run?.id ?? meta?.generated_at ?? 'unknown'}-${meta?.run?.tiers?.[tier]?.completed_tiles ?? tiles.length}`;
-  const signature = `${visible}|${tier}|${revision}|${tiles.map((tile) => `${tile.image}:${JSON.stringify(tile.bounds)}`).join('|')}`;
+  const revision = nodeEntry
+    ? `${nodeEntry.dataset_id}-${nodeEntry.updated_at}-${nodeEntry.completed_tiles ?? tiles.length}`
+    : `${meta?.run?.id ?? meta?.generated_at ?? 'unknown'}-${meta?.run?.tiers?.[tier]?.completed_tiles ?? tiles.length}`;
+  const datasetKind = nodePublicKey ? `node:${nodePublicKey.toLowerCase()}` : tier;
+  const signature = `${visible}|${datasetKind}|${revision}|${tiles.map((tile) => `${tile.image}:${JSON.stringify(tile.bounds)}`).join('|')}`;
 
   useEffect(() => {
     if (!map) return undefined;
@@ -66,7 +72,7 @@ export function RfCoverageOverlay({
           url: rfCoverageTileUrl(tile.image, revision),
           bounds: tile.bounds,
         })),
-        maxRfRasterZoom(tier),
+        maxRfRasterZoom(nodePublicKey ? 'standard' : tier),
       );
       releaseDataset = dataset.release;
       map.addSource(SOURCE_ID, {
@@ -74,7 +80,7 @@ export function RfCoverageOverlay({
         tiles: [dataset.tileTemplate],
         tileSize: 256,
         minzoom: 0,
-        maxzoom: maxRfRasterZoom(tier),
+        maxzoom: maxRfRasterZoom(nodePublicKey ? 'standard' : tier),
         bounds: dataset.bounds,
       });
       map.addLayer({

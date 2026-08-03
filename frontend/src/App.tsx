@@ -12,7 +12,7 @@ import { LoadingIndicator } from './components/LoadingIndicator.js';
 import { Dialog, DialogTitle } from './components/ui/Dialog.js';
 import { useWebSocket } from './hooks/useWebSocket.js';
 import { nodeStore, type MeshNode } from './hooks/useNodes.js';
-import { useRfCoverage, type RfCoverageTierName } from './hooks/useRfCoverage.js';
+import { rfNodeCoverageState, useRfCoverage, type RfCoverageTierName } from './hooks/useRfCoverage.js';
 import { useDashboardStats, type DashboardStats } from './hooks/useDashboardStats.js';
 import { linkStateStore } from './hooks/useLinkState.js';
 import { useAppMessageHandler } from './hooks/useAppMessageHandler.js';
@@ -134,6 +134,7 @@ export const App: React.FC = () => {
     localStorage.getItem(RF_TIER_KEY) === 'precision' ? 'precision' : 'standard'
   ));
   const rfCoverage = useRfCoverage(RF_COVERAGE_ENABLED);
+  const [rfCoverageNodeKey, setRfCoverageNodeKey] = useState<string | null>(null);
   const [showShortcutGuide, setShowShortcutGuide] = useState(false);
   const [isPageVisible, setIsPageVisible] = useState(
     () => (typeof document === 'undefined' ? true : document.visibilityState === 'visible'),
@@ -250,6 +251,19 @@ export const App: React.FC = () => {
     localStorage.setItem(RF_TIER_KEY, tier);
     setRfCoverageTier(tier);
   }, []);
+
+  const handleShowNodeRfCoverage = useCallback((publicKey: string) => {
+    if (!/^[0-9a-f]{64}$/i.test(publicKey)) return;
+    setRfCoverageNodeKey(publicKey.toLowerCase());
+    setFilters((current) => current.coverage ? current : { ...current, coverage: true });
+  }, []);
+
+  const handleClearNodeRfCoverage = useCallback(() => setRfCoverageNodeKey(null), []);
+
+  const getRfCoverageNodeState = useCallback(
+    (publicKey: string) => rfNodeCoverageState(rfCoverage.meta, publicKey),
+    [rfCoverage.meta],
+  );
 
   const handleModeChange = useCallback((mode: MapMode) => {
     setActiveMode(mode);
@@ -611,6 +625,11 @@ export const App: React.FC = () => {
           showHexClashes={filters.hexClashes}
           maxHexClashHops={filters.hexClashMaxHops}
           viewshedEnabled={VIEWSHED_ENABLED}
+          rfCoverageEnabled={RF_COVERAGE_ENABLED}
+          selectedRfCoverageNodeKey={rfCoverageNodeKey}
+          getRfCoverageNodeState={getRfCoverageNodeState}
+          onShowRfCoverage={handleShowNodeRfCoverage}
+          onClearRfCoverage={handleClearNodeRfCoverage}
           initialView={initialMapView}
           selectedNodeId={selectedNodeId}
           onNodeSelect={setSelectedNodeId}
@@ -624,6 +643,7 @@ export const App: React.FC = () => {
           map={mlMap}
           meta={rfCoverage.meta}
           tier={rfCoverageTier}
+          nodePublicKey={rfCoverageNodeKey}
           visible={RF_COVERAGE_ENABLED && filters.coverage}
         />
         <LiveOverlayController
@@ -641,6 +661,8 @@ export const App: React.FC = () => {
           availableTiers={rfCoverage.availableTiers}
           tier={rfCoverageTier}
           onTierChange={handleRfTierChange}
+          nodePublicKey={rfCoverageNodeKey}
+          onClearNode={handleClearNodeRfCoverage}
           visible={RF_COVERAGE_ENABLED && filters.coverage}
         />
         {(!initialStateLoaded && !initialPollLoaded) && (

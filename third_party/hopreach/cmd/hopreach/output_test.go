@@ -173,3 +173,16 @@ func TestPreviousScopeCoverageSurvivesAcrossRuns(t *testing.T) {
 		t.Errorf("expected no #sco entry (never present in this meta.json), got %+v", got["#sco"])
 	}
 }
+
+func TestPreviousNodeCoverageSurvivesAcrossGlobalRuns(t *testing.T) {
+	dir := t.TempDir()
+	key := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	body := `{"complete":false,"node_coverage":{"` + key + `":{"dataset_id":"n111111111111111111111111","state":"available","standard":{"tiles":[{"image":"tiles/nodes/n111111111111111111111111/0-0.png"}]}}}}`
+	if err := os.WriteFile(filepath.Join(dir, "meta.json"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := previousNodeCoverage(dir)
+	if got[key] == nil || got[key].Standard == nil || len(got[key].Standard.Tiles) != 1 {
+		t.Fatalf("node coverage was not preserved: %+v", got[key])
+	}
+}

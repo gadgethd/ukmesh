@@ -249,6 +249,26 @@ type coverageRunInfo struct {
 	Failure        string                  `json:"failure,omitempty"`
 }
 
+// nodeCoverageMeta is a compact, bounded index entry for one on-demand
+// single-transmitter raster. The full normalized public key is the map key;
+// DatasetID is the short deterministic publication/checkpoint name.
+type nodeCoverageMeta struct {
+	DatasetID      string        `json:"dataset_id"`
+	RunID          string        `json:"run_id"`
+	State          string        `json:"state"` // computing | available | failed
+	PositionStatus string        `json:"position_status"`
+	LastHeard      *string       `json:"last_heard,omitempty"`
+	Lat            float64       `json:"lat"`
+	Lon            float64       `json:"lon"`
+	RequestedAt    string        `json:"requested_at"`
+	UpdatedAt      string        `json:"updated_at"`
+	FreshUntil     string        `json:"fresh_until,omitempty"`
+	CompletedTiles int           `json:"completed_tiles,omitempty"`
+	TotalTiles     int           `json:"total_tiles,omitempty"`
+	Standard       *coverageMeta `json:"standard,omitempty"`
+	Failure        string        `json:"failure,omitempty"`
+}
+
 type meta struct {
 	GeneratedAt           string           `json:"generated_at"`
 	Source                string           `json:"source"`
@@ -267,6 +287,9 @@ type meta struct {
 	// with zero member repeaters, or whenever scope inference itself is
 	// disabled.
 	ScopeCoverage map[string]*coverageMeta `json:"scope_coverage,omitempty"`
+	// NodeCoverage is deliberately a compact, TTL/LRU-bounded index. Node
+	// jobs update only this member of meta.json and never mutate Run.
+	NodeCoverage map[string]*nodeCoverageMeta `json:"node_coverage,omitempty"`
 	// Complete is false from the moment meta.json is first written (before
 	// any raster) until run() reaches its very end successfully — see
 	// lastGeneratedAt. Left false (the zero value) if the process dies
@@ -416,6 +439,20 @@ func previousScopeCoverage(outputDir string) map[string]*coverageMeta {
 		return nil
 	}
 	return m.ScopeCoverage
+}
+
+func previousNodeCoverage(outputDir string) map[string]*nodeCoverageMeta {
+	data, err := os.ReadFile(filepath.Join(outputDir, "meta.json"))
+	if err != nil {
+		return nil
+	}
+	var m struct {
+		NodeCoverage map[string]*nodeCoverageMeta `json:"node_coverage"`
+	}
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil
+	}
+	return m.NodeCoverage
 }
 
 type imageResult struct {
