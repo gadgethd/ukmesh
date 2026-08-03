@@ -115,20 +115,27 @@ test('map marks nodes stale after 14 days and hides ordinary nodes after 28 days
   assert.equal(byId.get(OTHER_NODE_ID)?.['is_stale'], true);
 });
 
-test('inferred fixtures appear, update known-node styling, disappear, and exclude private rows', () => {
-  const known = meshNode(NODE_ID, 0);
-  const inferred = meshNode('inferred:2:C3D4', 0, {
-    name: 'Inferred C3D4',
-    is_inferred: true,
-  });
-  const privateInferred = meshNode('inferred:2:FFFF', 0, {
-    name: 'Hidden 🚫',
-    is_inferred: true,
-  });
-  const nodes = new Map([[known.node_id, known]]);
+test('a full historic-node upsert restores its stored location as an observed online node', () => {
+  const epoch = nodeStore.reset('historic-path-node');
+  nodeStore.handleInitialState({ nodes: [], packets: [] }, epoch);
+  nodeStore.handleNodeUpsert({
+    node_id: NODE_ID.toLowerCase(),
+    name: 'Historic relay',
+    lat: 54.5,
+    lon: -1.2,
+    role: 2,
+    last_seen: new Date(NOW).toISOString(),
+    is_online: true,
+  }, epoch);
 
-  const populated = buildNodeGeoJSON(
-    nodes,
+  const restored = nodeStore.getState().nodes.get(NODE_ID);
+  assert.ok(restored);
+  assert.equal(restored.lat, 54.5);
+  assert.equal(restored.lon, -1.2);
+  assert.equal(restored.is_online, true);
+
+  const geojson = buildNodeGeoJSON(
+    nodeStore.getState().nodes,
     new Map(),
     true,
     false,
@@ -139,36 +146,14 @@ test('inferred fixtures appear, update known-node styling, disappear, and exclud
     null,
     null,
     NOW,
-    [inferred, privateInferred],
-    new Set([NODE_ID.toLowerCase()]),
   );
-  assert.deepEqual(
-    populated.features.map((feature) => feature.properties?.['node_id']),
-    [NODE_ID, inferred.node_id],
-  );
-  assert.equal(populated.features[0]?.properties?.['is_inferred'], true);
-  assert.equal(populated.features[1]?.properties?.['is_inferred'], true);
-
-  const cleared = buildNodeGeoJSON(
-    nodes,
-    new Map(),
-    true,
-    false,
-    new Set(),
-    new Set(),
-    new Set(),
-    false,
-    null,
-    null,
-    NOW,
-    [],
-    new Set(),
-  );
-  assert.deepEqual(
-    cleared.features.map((feature) => feature.properties?.['node_id']),
-    [NODE_ID],
-  );
-  assert.equal(cleared.features[0]?.properties?.['is_inferred'], false);
+  assert.equal(geojson.features.length, 1);
+  assert.deepEqual(geojson.features[0]?.geometry, {
+    type: 'Point',
+    coordinates: [-1.2, 54.5],
+  });
+  assert.equal(geojson.features[0]?.properties?.['is_online'], true);
+  assert.equal('is_inferred' in (geojson.features[0]?.properties ?? {}), false);
 });
 
 test('one privacy-safe packet creates a bounded arc and expiry removes it', () => {

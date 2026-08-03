@@ -5,6 +5,7 @@ import {
   publicMapBasePredicate,
   publicMapFreshPredicate,
 } from '../nodes/publicMap.js';
+import { nodeEffectiveLastSeenSql } from '../nodes/presence.js';
 import {
   loadStoredChartSnapshot,
   saveStoredChartSnapshot,
@@ -1295,9 +1296,9 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
       query(`SELECT COUNT(*) AS count FROM packets WHERE time > NOW() - INTERVAL '24 hours' ${filters.packets}`, filters.params),
       query(`SELECT COUNT(*) AS count FROM nodes
              WHERE ${publicMapBasePredicate('nodes')}
-               AND GREATEST(nodes.last_seen, nodes.last_path_evidence_at)
+               AND ${nodeEffectiveLastSeenSql('nodes')}
                      <= NOW() - INTERVAL '14 days'
-               AND GREATEST(nodes.last_seen, nodes.last_path_evidence_at)
+               AND ${nodeEffectiveLastSeenSql('nodes')}
                      > NOW() - INTERVAL '28 days'
                ${filters.nodes}`, filters.params),
       query(`SELECT COUNT(*) AS count FROM nodes

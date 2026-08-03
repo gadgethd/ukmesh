@@ -108,8 +108,6 @@ import {
 // ── Main Component ────────────────────────────────────────────────────────────
 
 export function MapLibreMap({
-  inferredNodes,
-  inferredActiveNodeIds,
   showLinks,
   showTerrain,
   showClientNodes,
@@ -138,8 +136,6 @@ export function MapLibreMap({
   const nodesRef = useRef(nodeStore.getState().nodes);
   const viablePairsRef = useRef(linkStateStore.getState().viablePairsArr);
   const linkMetricsRef = useRef(linkStateStore.getState().linkMetrics);
-  const inferredNodesRef = useRef(inferredNodes);
-  const inferredActiveNodeIdsRef = useRef(inferredActiveNodeIds);
   const showLinksRef = useRef(showLinks);
   const showTerrainRef = useRef(showTerrain);
   const showClientNodesRef = useRef(showClientNodes);
@@ -634,8 +630,6 @@ export function MapLibreMap({
         clash.clashModeActive ? null : currentPathNodeIds,
         replayNodeIdsRef.current,
         Date.now(),
-        inferredNodesRef.current,
-        inferredActiveNodeIdsRef.current,
       );
       (mapRef.current.getSource('nodes') as maplibregl.GeoJSONSource | undefined)?.setData(nodeGeoJSON);
     }
@@ -892,12 +886,6 @@ export function MapLibreMap({
   // -- Imperative source updates ---------------------------------------------
 
   useEffect(() => {
-    inferredNodesRef.current = inferredNodes;
-    inferredActiveNodeIdsRef.current = inferredActiveNodeIds;
-    scheduleRefresh({ nodes: true });
-  }, [inferredActiveNodeIds, inferredNodes, scheduleRefresh]);
-
-  useEffect(() => {
     showLinksRef.current = showLinks;
     updatePlannedLinks();
     scheduleRefresh({ nodes: true, links: true, plannedLinks: true, clash: true });
@@ -1000,9 +988,9 @@ export function MapLibreMap({
 
   // -- Popup management ------------------------------------------------------
 
-  // Find the full MeshNode from nodeId (checks nodes and inferredNodes)
+  // Find the full observed MeshNode from nodeId.
   const getNode = useCallback((nodeId: string): MeshNode | undefined => {
-    return nodesRef.current.get(nodeId) ?? inferredNodesRef.current.find((node) => node.node_id === nodeId);
+    return nodesRef.current.get(nodeId);
   }, []);
 
   // Fetch neighbour links for the selected node's detail panel
@@ -1075,7 +1063,6 @@ export function MapLibreMap({
         is_stale: ageMs > NODE_STALE_AFTER_MS,
         is_link_only_stale: false,
         is_prohibited: isProhibitedMapNode(node),
-        is_inferred: !!node.is_inferred,
         replay_active: replayNodeIdsRef.current?.has(node.node_id.toLowerCase()) ?? false,
         replay_mode: replayNodeIdsRef.current !== null,
         hex_clash_state: null,

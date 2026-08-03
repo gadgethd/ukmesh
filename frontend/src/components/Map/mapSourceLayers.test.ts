@@ -48,11 +48,12 @@ test('map layers avoid observer rings and raster-style glyph dependencies', () =
     && 'text-field' in layer.layout
   )), false);
   assert.equal(layers.some((layer) => layer.id === 'planned-pins-dot'), true);
+  assert.doesNotMatch(JSON.stringify(layers), /is_inferred/);
 });
 
 test('map overlay markers and links retain 3:1 contrast in both themes', () => {
   const nodeColors = [
-    'repeater', 'companion', 'roomServer', 'sensor', 'inferred', 'replay',
+    'repeater', 'companion', 'roomServer', 'sensor', 'replay',
     'stale', 'linkOnlyStale', 'clashRelay', 'clashOffender',
   ] as const;
   const linkColors = ['linkUnknown', 'linkGood', 'linkMarginal', 'linkPoor'] as const;

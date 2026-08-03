@@ -10,7 +10,6 @@ function nodeColorExpression(colors: OverlayColors): maplibregl.ExpressionSpecif
     ['==', ['get', 'hex_clash_state'], 'relay'], colors.clashRelay,
     ['get', 'replay_active'], colors.replay,
     ['get', 'is_link_only_stale'], colors.linkOnlyStale,
-    ['get', 'is_inferred'], colors.inferred,
     ['get', 'is_stale'], colors.stale,
     ['!', ['get', 'is_online']], colors.stale,
     ['==', ['get', 'role'], 1], colors.companion,
@@ -27,7 +26,6 @@ function nodeOpacityExpression(colors: OverlayColors): maplibregl.ExpressionSpec
     ['get', 'is_link_only_stale'], colors.staleOpacity,
     ['get', 'is_stale'], colors.staleOpacity,
     ['!', ['get', 'is_online']], colors.staleOpacity,
-    ['get', 'is_inferred'], colors.inferredOpacity,
     1,
   ];
 }

@@ -11,14 +11,12 @@ import {
 test('runtime feature parser accepts only the bounded versioned DTO', () => {
   assert.deepEqual(parseRuntimeFeatureConfig({
     version: 1,
-    inferredNodes: true,
     packetArcs: false,
     heatmap: true,
     privacyGeneration: 9,
     refreshAfterSeconds: 15,
     ignored: 'safe',
   }), {
-    inferredNodes: true,
     packetArcs: false,
     heatmap: true,
     privacyGeneration: 9,
@@ -28,9 +26,9 @@ test('runtime feature parser accepts only the bounded versioned DTO', () => {
   for (const malformed of [
     null,
     {},
-    { version: 2, inferredNodes: true, packetArcs: true, heatmap: true, privacyGeneration: 1, refreshAfterSeconds: 30 },
-    { version: 1, inferredNodes: 'true', packetArcs: true, heatmap: true, privacyGeneration: 1, refreshAfterSeconds: 30 },
-    { version: 1, inferredNodes: true, packetArcs: true, heatmap: true, privacyGeneration: 1, refreshAfterSeconds: 301 },
+    { version: 2, packetArcs: true, heatmap: true, privacyGeneration: 1, refreshAfterSeconds: 30 },
+    { version: 1, packetArcs: 'true', heatmap: true, privacyGeneration: 1, refreshAfterSeconds: 30 },
+    { version: 1, packetArcs: true, heatmap: true, privacyGeneration: 1, refreshAfterSeconds: 301 },
   ]) {
     assert.deepEqual(parseRuntimeFeatureConfig(malformed), FAIL_CLOSED_RUNTIME_FEATURES);
   }
@@ -40,7 +38,6 @@ test('runtime feature refresh fails closed on transport and malformed responses'
   resetRuntimeFeaturesForTests();
   const enabledResponse = new Response(JSON.stringify({
     version: 1,
-    inferredNodes: true,
     packetArcs: true,
     heatmap: true,
     privacyGeneration: 3,
