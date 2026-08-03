@@ -8,37 +8,45 @@
  * single-observer resolver, and beta multi-observer resolver against the known
  * relay chain.
  *
- * LEAKAGE NOTE: the node-id-keyed priors (transition/edge/motif) are rebuilt
- * from the same 120-day window that contains the gold packets, so a path that
- * occurs only once has a prior that effectively memorised its own answer. We
- * therefore STRATIFY by prior support (min transition-prior count along the
- * truth chain). The route-length and corridor buckets are independent views
- * of the same predictions; corridor novelty is based on whether the source →
- * receiver pair occurred earlier in the preceding 120-day prior window.
+ * LEAKAGE NOTE: champion priors use a deterministic 70% packet-hash training
+ * split. We therefore stratify by transition support and by whether an exact
+ * source→receiver pair exists in the sampled corridor-prior table. The latter
+ * is the production equivalent of the experiment's seen/unseen holdout split.
  *
  * Usage: npx tsx src/path-lazy/evaluate.ts [network] [sampleSize]
  * Read-only: issues only SELECTs. Beta's predicted-online side effect is
  * disabled, and its packet SELECTs are degraded in-memory for this run.
  */
 import pg from 'pg';
-import { query } from '../db/index.js';
+import { analyticsQuery, query } from '../db/index.js';
 import {
   resolveBetaPathForPacketHash,
   resolveMultiObserverBetaPath,
   type BetaResolvedPayload,
   type MultiObserverResolvedPayload,
 } from '../path-beta/resolver.js';
-import { lazyResolvePath, type LazyPath, type LazyPathResult } from './lazyResolver.js';
+import {
+  lazyResolvePath,
+  type LazyPath,
+  type LazyPathResult,
+  type LazyResolveOptions,
+} from './lazyResolver.js';
 import { lazyResolvePathLegacy } from './lazyResolverLegacy.js';
 import { buildNodePathHashIndex, getNodesForPathHash, normalizePathHash } from '../path-hash/utils.js';
 import { expandResolverScope } from '../networks.js';
+import { distanceKm } from '../path-core/decoder.js';
 
 type QueryFn = <T extends Record<string, unknown> = Record<string, unknown>>(
   text: string,
   params?: unknown[],
 ) => Promise<{ rows: T[] }>;
 
-type LazyResolver = (packetHash: string, network: string | null, q: QueryFn) => Promise<LazyPathResult | null>;
+type LazyResolver = (
+  packetHash: string,
+  network: string | null,
+  q: QueryFn,
+  options?: LazyResolveOptions,
+) => Promise<LazyPathResult | null>;
 
 type CorridorNovelty = 'seen' | 'unseen';
 
@@ -63,10 +71,20 @@ type GoldDataset = {
   coordinates: NodeCoordinateIndex;
 };
 
-const PRIOR_BUILDING_WINDOW_DAYS = 120;
 const PRIOR_SUPPORT_BUCKETS = ['rare(≤1)', 'mid(2-7)', 'supp(≥8)'] as const;
 const ROUTE_LENGTH_BUCKETS = ['≤3', '4', '5-6', '7-8', '9-12', '13+'] as const;
 const CORRIDOR_BUCKETS: CorridorNovelty[] = ['seen', 'unseen'];
+const ALL_JOB_NAMES = ['legacy-greedy', 'lazy-viterbi', 'beta-single', 'beta-multi'] as const;
+type JobName = typeof ALL_JOB_NAMES[number];
+
+function selectedJobNames(): JobName[] {
+  const requested = String(process.env['EVALUATE_JOBS'] ?? '').trim();
+  if (!requested) return [...ALL_JOB_NAMES];
+  const selected = new Set(requested.split(',').map((name) => name.trim()).filter(Boolean));
+  const unknown = [...selected].filter((name) => !ALL_JOB_NAMES.includes(name as JobName));
+  if (unknown.length > 0) throw new Error(`unknown EVALUATE_JOBS value(s): ${unknown.join(', ')}`);
+  return ALL_JOB_NAMES.filter((name) => selected.has(name));
+}
 
 function trimTerminalHop(rxNodeId: string, hashes: string[]): string[] {
   if (hashes.length === 0) return hashes;
@@ -123,15 +141,16 @@ function corridorKey(srcNodeId: string, rxNodeId: string): string {
 async function loadGoldPackets(network: string, sampleSize: number): Promise<GoldDataset> {
   const scope = expandResolverScope(network);
 
-  const nodeRows = await query<{ node_id: string; lat: number; lon: number }>(
+  const nodeRows = await analyticsQuery<{ node_id: string; lat: number; lon: number }>(
     `SELECT node_id, lat, lon FROM nodes
-      WHERE network = ANY($1) AND lat IS NOT NULL AND lon IS NOT NULL AND lat != 0 AND lon != 0`,
+      WHERE network = ANY($1) AND lat IS NOT NULL AND lon IS NOT NULL AND lat != 0 AND lon != 0
+        AND (name IS NULL OR name NOT LIKE '%🚫%')`,
     [scope],
   );
   const index = buildNodePathHashIndex(nodeRows.rows);
   const coordinates = buildCoordinateIndex(nodeRows.rows);
 
-  const candidates = await query<{
+  const candidates = await analyticsQuery<{
     packet_hash: string;
     network: string;
     rx_node_id: string;
@@ -141,13 +160,13 @@ async function loadGoldPackets(network: string, sampleSize: number): Promise<Gol
   }>(
     `SELECT DISTINCT ON (packet_hash) packet_hash, network, rx_node_id, src_node_id, path_hashes,
             time::text AS observed_at
-       FROM packets
+      FROM packets
       WHERE network = ANY($1) AND path_hash_size_bytes > 1 AND path_hashes IS NOT NULL
-        AND cardinality(path_hashes) >= 2 AND rx_node_id IS NOT NULL
+        AND cardinality(path_hashes) >= 2 AND rx_node_id IS NOT NULL AND src_node_id IS NOT NULL
         AND time > NOW() - INTERVAL '45 days'
       ORDER BY packet_hash, cardinality(path_hashes) DESC, path_hash_size_bytes DESC, time DESC
       LIMIT $2`,
-    [scope, Math.max(sampleSize * 4, sampleSize + 100)],
+    [scope, Math.max(sampleSize * 12, sampleSize + 100)],
   );
 
   const goldWithoutSupport: Omit<GoldPacket, 'support' | 'corridor'>[] = [];
@@ -169,9 +188,27 @@ async function loadGoldPackets(network: string, sampleSize: number): Promise<Gol
       truth.push(id);
     }
     if (!ok) continue;
+    const source = row.src_node_id
+      ? coordinates.byNodeId.get(row.src_node_id.toUpperCase())
+      : undefined;
+    const receiver = coordinates.byNodeId.get(row.rx_node_id.toUpperCase());
+    if (!source || !receiver) continue;
+    const fullRoute = [row.src_node_id!, ...truth, row.rx_node_id];
+    for (let position = 1; position < fullRoute.length; position++) {
+      const previous = coordinates.byNodeId.get(fullRoute[position - 1]!.toUpperCase());
+      const current = coordinates.byNodeId.get(fullRoute[position]!.toUpperCase());
+      if (!previous || !current
+          || distanceKm({ lat: previous[0], lon: previous[1] }, { lat: current[0], lon: current[1] }) > 150) {
+        ok = false;
+        break;
+      }
+    }
+    if (!ok) continue;
     goldWithoutSupport.push({
       packetHash: row.packet_hash,
-      network: row.network,
+      // Resolve against the requested compatibility scope. Historical packet
+      // labels (northeast/teesside) no longer match relabelled UKMesh nodes.
+      network,
       rxNodeId: row.rx_node_id,
       srcNodeId: row.src_node_id,
       observedAt: row.observed_at,
@@ -180,20 +217,16 @@ async function loadGoldPackets(network: string, sampleSize: number): Promise<Gol
     if (goldWithoutSupport.length >= sampleSize) break;
   }
 
-  // A corridor is source → receiver. A pair is "seen" only when it occurred
-  // before the candidate packet in the same 120-day window used by rebuild.ts;
-  // this keeps the novelty split useful even though the live priors include
-  // the current window.
+  // A corridor is source → receiver. "Seen" means the sampled training
+  // rebuild produced corridor evidence for the exact pair; this is the direct
+  // production equivalent of the experiment's train/test corridor split.
   const corridorPairs = [...new Set(
     goldWithoutSupport.flatMap((g) => g.srcNodeId ? [corridorKey(g.srcNodeId, g.rxNodeId)] : []),
   )].map((key) => {
     const [srcNodeId, rxNodeId] = key.split('|');
     return { srcNodeId: srcNodeId!, rxNodeId: rxNodeId! };
   });
-  const firstCorridorSeenAt = new Map<string, number>();
-  // There is an index on src_node_id but not on the source × receiver pair.
-  // Query exact pairs in bounded batches to avoid the large Cartesian scan that
-  // an `src = ANY(...) AND rx = ANY(...)` predicate would induce.
+  const trainedCorridors = new Set<string>();
   for (let offset = 0; offset < corridorPairs.length; offset += 128) {
     const batch = corridorPairs.slice(offset, offset + 128);
     const pairClauses = batch.map((_, index) => {
@@ -202,22 +235,19 @@ async function loadGoldPackets(network: string, sampleSize: number): Promise<Gol
       return `(src_node_id = $${srcParam} AND rx_node_id = $${rxParam})`;
     });
     const pairParams = batch.flatMap((pair) => [pair.srcNodeId, pair.rxNodeId]);
-    const priorCorridors = await query<{
+    const priorCorridors = await analyticsQuery<{
       src_node_id: string;
       rx_node_id: string;
-      first_seen: string;
     }>(
-      `SELECT src_node_id, rx_node_id, MIN(time)::text AS first_seen
-         FROM packets
+      `SELECT DISTINCT src_node_id, rx_node_id
+         FROM path_corridor_priors
         WHERE network = ANY($1)
-          AND time > NOW() - INTERVAL '${PRIOR_BUILDING_WINDOW_DAYS} days'
           AND (${pairClauses.join(' OR ')})
-        GROUP BY src_node_id, rx_node_id`,
+       `,
       [scope, ...pairParams],
     );
     for (const row of priorCorridors.rows) {
-      const firstSeen = Date.parse(row.first_seen);
-      if (Number.isFinite(firstSeen)) firstCorridorSeenAt.set(corridorKey(row.src_node_id, row.rx_node_id), firstSeen);
+      trainedCorridors.add(corridorKey(row.src_node_id, row.rx_node_id));
     }
   }
 
@@ -225,9 +255,7 @@ async function loadGoldPackets(network: string, sampleSize: number): Promise<Gol
     ...g,
     corridor: (() => {
       if (!g.srcNodeId) return 'unseen' as const;
-      const firstSeen = firstCorridorSeenAt.get(corridorKey(g.srcNodeId, g.rxNodeId));
-      const candidateTime = Date.parse(g.observedAt);
-      return firstSeen != null && Number.isFinite(candidateTime) && firstSeen < candidateTime
+      return trainedCorridors.has(corridorKey(g.srcNodeId, g.rxNodeId))
         ? 'seen' as const
         : 'unseen' as const;
     })(),
@@ -245,7 +273,7 @@ async function loadGoldPackets(network: string, sampleSize: number): Promise<Gol
   }
   const pairCount = new Map<string, number>();
   if (fromIds.size > 0) {
-    const rows = await query<{ from_node_id: string; to_node_id: string; c: string }>(
+    const rows = await analyticsQuery<{ from_node_id: string; to_node_id: string; c: string }>(
       `SELECT from_node_id, to_node_id, SUM(count)::text as c FROM path_transition_priors
         WHERE network = ANY($1) AND from_node_id = ANY($2) AND to_node_id = ANY($3)
         GROUP BY from_node_id, to_node_id`,
@@ -374,8 +402,14 @@ async function scoreLazyPacket(
   jobName: string,
 ): Promise<void> {
   try {
-    const result = await resolver(gold.packetHash, gold.network, dq);
-    recordPrediction(stats, gold, lazyPrediction(result, gold));
+    const result = await resolver(gold.packetHash, gold.network, dq, { referenceTime: gold.observedAt });
+    const prediction = lazyPrediction(result, gold);
+    recordPrediction(stats, gold, prediction);
+    const traceLimit = Math.max(0, Number(process.env['EVALUATE_TRACE_LIMIT'] ?? 0) || 0);
+    if (traceLimit > 0 && stats.all.packets <= traceLimit) {
+      console.log(`[evaluate] trace job=${jobName} packet=${gold.packetHash} truth=${gold.truth.join(',')} `
+        + `prediction=${gold.truth.map((_, position) => prediction.get(position) ?? '-').join(',')}`);
+    }
   } catch (error) {
     recordFailure(stats, gold);
     console.warn(`[evaluate] ${jobName} failed packet=${gold.packetHash}: ${error instanceof Error ? error.message : String(error)}`);
@@ -553,6 +587,7 @@ function printStratification(
 async function main() {
   const network = process.argv[2] ?? 'ukmesh';
   const sampleSize = Number(process.argv[3] ?? 400);
+  const selectedJobs = selectedJobNames();
 
   const dataset = await loadGoldPackets(network, sampleSize);
   const gold = dataset.gold;
@@ -564,45 +599,75 @@ async function main() {
   console.log(`[evaluate] corridor packets seen=${corridorCounts[0]} unseen=${corridorCounts[1]}`);
   console.log(`[evaluate] route length packets ${ROUTE_LENGTH_BUCKETS.map((label, i) => `${label}=${lengthCounts[i]}`).join(' ')}`);
 
+  let truthEdges = 0;
+  let truthEdgesOver150Km = 0;
+  let routesWithOver150Km = 0;
+  let routesWithEndpointOver150Km = 0;
+  let routesWithoutPositionedSource = 0;
+  for (const packet of gold) {
+    let routeOver = false;
+    const source = packet.srcNodeId
+      ? dataset.coordinates.byNodeId.get(packet.srcNodeId.toUpperCase())
+      : undefined;
+    const receiver = dataset.coordinates.byNodeId.get(packet.rxNodeId.toUpperCase());
+    const first = dataset.coordinates.byNodeId.get(packet.truth[0]!.toUpperCase());
+    const last = dataset.coordinates.byNodeId.get(packet.truth[packet.truth.length - 1]!.toUpperCase());
+    if (!source) routesWithoutPositionedSource++;
+    if ((source && first && distanceKm({ lat: source[0], lon: source[1] }, { lat: first[0], lon: first[1] }) > 150)
+        || (receiver && last && distanceKm({ lat: last[0], lon: last[1] }, { lat: receiver[0], lon: receiver[1] }) > 150)) {
+      routesWithEndpointOver150Km++;
+    }
+    for (let position = 1; position < packet.truth.length; position++) {
+      const previous = dataset.coordinates.byNodeId.get(packet.truth[position - 1]!.toUpperCase());
+      const current = dataset.coordinates.byNodeId.get(packet.truth[position]!.toUpperCase());
+      if (!previous || !current) continue;
+      truthEdges++;
+      if (distanceKm({ lat: previous[0], lon: previous[1] }, { lat: current[0], lon: current[1] }) > 150) {
+        truthEdgesOver150Km++;
+        routeOver = true;
+      }
+    }
+    if (routeOver) routesWithOver150Km++;
+  }
+  console.log(`[evaluate] truth relay edges >150km: ${truthEdgesOver150Km}/${truthEdges}; routes affected=${routesWithOver150Km}/${gold.length}`);
+  console.log(`[evaluate] endpoint edges >150km: routes=${routesWithEndpointOver150Km}/${gold.length}; missing positioned source=${routesWithoutPositionedSource}`);
+
   // Prior key-format sanity: fraction of truth pairs with a non-zero
   // transition prior on every hop.
   const supported = gold.filter((g) => g.support > 0).length;
   console.log(`[evaluate] truth chains with a non-zero transition prior on every hop: ${supported}/${gold.length} `
     + `(if ~0, the directed key format is wrong)`);
 
-  const jobs = new Map<string, JobStats>([
-    ['legacy-greedy', newJobStats()],
-    ['lazy-viterbi', newJobStats()],
-    ['beta-single', newJobStats()],
-    ['beta-multi', newJobStats()],
-  ]);
-  const legacy = jobs.get('legacy-greedy')!;
-  const lazy = jobs.get('lazy-viterbi')!;
-  const betaSingle = jobs.get('beta-single')!;
-  const betaMulti = jobs.get('beta-multi')!;
+  const jobs = new Map<string, JobStats>(selectedJobs.map((name) => [name, newJobStats()]));
+  const legacy = jobs.get('legacy-greedy');
+  const lazy = jobs.get('lazy-viterbi');
+  const betaSingle = jobs.get('beta-single');
+  const betaMulti = jobs.get('beta-multi');
   const dq = degradingQuery(query as unknown as QueryFn);
 
-  for (let index = 0; index < gold.length; index++) {
-    const goldPacket = gold[index]!;
-    await Promise.all([
-      scoreLazyPacket(lazyResolvePathLegacy, goldPacket, dq, legacy, 'legacy-greedy'),
-      scoreLazyPacket(lazyResolvePath, goldPacket, dq, lazy, 'lazy-viterbi'),
-    ]);
-    if ((index + 1) % 25 === 0 || index + 1 === gold.length) {
-      console.log(`[evaluate] lazy/legacy ${index + 1}/${gold.length}`);
+  if (legacy || lazy) {
+    for (let index = 0; index < gold.length; index++) {
+      const goldPacket = gold[index]!;
+      if (legacy) await scoreLazyPacket(lazyResolvePathLegacy, goldPacket, dq, legacy, 'legacy-greedy');
+      if (lazy) await scoreLazyPacket(lazyResolvePath, goldPacket, dq, lazy, 'lazy-viterbi');
+      if ((index + 1) % 25 === 0 || index + 1 === gold.length) {
+        console.log(`[evaluate] lazy jobs ${index + 1}/${gold.length}`);
+      }
     }
   }
 
-  await withDegradedBetaPackets(async () => {
-    for (let index = 0; index < gold.length; index++) {
-      const goldPacket = gold[index]!;
-      await scoreBetaSinglePacket(goldPacket, dataset.coordinates, betaSingle);
-      await scoreBetaMultiPacket(goldPacket, dataset.coordinates, betaMulti);
-      if ((index + 1) % 25 === 0 || index + 1 === gold.length) {
-        console.log(`[evaluate] beta single/multi ${index + 1}/${gold.length}`);
+  if (betaSingle || betaMulti) {
+    await withDegradedBetaPackets(async () => {
+      for (let index = 0; index < gold.length; index++) {
+        const goldPacket = gold[index]!;
+        if (betaSingle) await scoreBetaSinglePacket(goldPacket, dataset.coordinates, betaSingle);
+        if (betaMulti) await scoreBetaMultiPacket(goldPacket, dataset.coordinates, betaMulti);
+        if ((index + 1) % 25 === 0 || index + 1 === gold.length) {
+          console.log(`[evaluate] beta jobs ${index + 1}/${gold.length}`);
+        }
       }
-    }
-  });
+    });
+  }
 
   console.log('\n=== OVERALL (blended — includes leakage) ===');
   for (const [name, stats] of jobs) console.log(fmt(name, stats.all));
@@ -610,7 +675,7 @@ async function main() {
     (stats, index) => stats.prior[index]!);
   printStratification('BY ROUTE LENGTH', ROUTE_LENGTH_BUCKETS, jobs,
     (stats, index) => stats.length[index]!);
-  printStratification('BY CORRIDOR NOVELTY (earlier 120-day prior window)', CORRIDOR_BUCKETS, jobs,
+  printStratification('BY CORRIDOR NOVELTY (sampled rebuild training set)', CORRIDOR_BUCKETS, jobs,
     (stats, index) => stats.corridor[index]!);
   process.exit(0);
 }

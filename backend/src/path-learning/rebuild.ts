@@ -16,6 +16,7 @@ import {
   nodePathHash,
   normalizePathHash,
 } from '../path-hash/utils.js';
+import { expandResolverScope } from '../networks.js';
 
 type LearningNode = {
   node_id: string;
@@ -53,7 +54,11 @@ type LearningPathNode = {
 
 const MAX_TRAINING_PACKETS = Math.min(
   500_000,
-  Math.max(1_000, Number(process.env['PATH_LEARNING_MAX_TRAINING_PACKETS'] ?? 120_000) || 120_000),
+  Math.max(1_000, Number(process.env['PATH_LEARNING_MAX_TRAINING_PACKETS'] ?? 500_000) || 500_000),
+);
+const TRAINING_SPLIT_PERCENT = Math.min(
+  100,
+  Math.max(1, Number(process.env['PATH_LEARNING_TRAINING_SPLIT_PERCENT'] ?? 70) || 70),
 );
 const MAX_LEARNING_NODES = Math.min(
   200_000,
@@ -76,6 +81,9 @@ const MAX_TRANSITIONS_PER_GROUP = 5;
 const MAX_EDGE_CHOICES_PER_GROUP = 8;
 const MAX_MOTIF2_CHOICES_PER_GROUP = 6;
 const MAX_MOTIF3_CHOICES_PER_GROUP = 4;
+const MAX_POSITION_PREFIX_CHOICES_PER_GROUP = 64;
+const MAX_CORRIDOR_CHOICES_PER_GROUP = 16;
+const MAX_POSITION_TRANSITIONS_PER_GROUP = 16;
 const HOUR_BUCKET_SIZE = 6;
 const PREFIX_AMBIGUITY_RADIUS_KM = 45;
 const WRITE_BATCH_SIZE = 1_000;
@@ -93,6 +101,31 @@ type TransitionPriorWriteRow = {
   from_node_id: string;
   to_node_id: string;
   receiver_region: string;
+  count: number;
+  probability: number;
+};
+
+type PositionPrefixPriorWriteRow = {
+  prefix: string;
+  position: number;
+  node_id: string;
+  count: number;
+  probability: number;
+};
+
+type CorridorPriorWriteRow = {
+  src_node_id: string;
+  rx_node_id: string;
+  position: number;
+  node_id: string;
+  count: number;
+  probability: number;
+};
+
+type PositionTransitionPriorWriteRow = {
+  position: number;
+  from_node_id: string;
+  to_node_id: string;
   count: number;
   probability: number;
 };
@@ -274,7 +307,10 @@ async function insertJsonBatches<T extends object>(
 async function replacePathLearningRows(
   network: string,
   prefixRows: PrefixPriorWriteRow[],
+  positionPrefixRows: PositionPrefixPriorWriteRow[],
+  corridorRows: CorridorPriorWriteRow[],
   transitionRows: TransitionPriorWriteRow[],
+  positionTransitionRows: PositionTransitionPriorWriteRow[],
   edgeRows: EdgePriorWriteRow[],
   motifRows: MotifPriorWriteRow[],
   calibration: {
@@ -294,7 +330,10 @@ async function replacePathLearningRows(
     heartbeat.assertOwned();
     await assertAnalysisPublicationLease(client, analysisRun);
     await client.query('DELETE FROM path_prefix_priors WHERE network = $1', [network]);
+    await client.query('DELETE FROM path_position_prefix_priors WHERE network = $1', [network]);
+    await client.query('DELETE FROM path_corridor_priors WHERE network = $1', [network]);
     await client.query('DELETE FROM path_transition_priors WHERE network = $1', [network]);
+    await client.query('DELETE FROM path_position_transition_priors WHERE network = $1', [network]);
     await client.query('DELETE FROM path_edge_priors WHERE network = $1', [network]);
     await client.query('DELETE FROM path_motif_priors WHERE network = $1', [network]);
 
@@ -314,6 +353,36 @@ async function replacePathLearningRows(
       heartbeat.assertOwned,
     );
     await insertJsonBatches(client,
+      `INSERT INTO path_position_prefix_priors
+         (network, prefix, position, node_id, count, probability, updated_at)
+       SELECT $1, row.prefix, row.position, row.node_id, row.count, row.probability, NOW()
+       FROM jsonb_to_recordset($2::jsonb) AS row(
+         prefix text, position smallint, node_id text, count integer, probability double precision
+       )
+       ON CONFLICT (network, prefix, position, node_id) DO UPDATE SET
+         count = EXCLUDED.count,
+         probability = EXCLUDED.probability,
+         updated_at = NOW()`,
+      network,
+      positionPrefixRows,
+      heartbeat.assertOwned,
+    );
+    await insertJsonBatches(client,
+      `INSERT INTO path_corridor_priors
+         (network, src_node_id, rx_node_id, position, node_id, count, probability, updated_at)
+       SELECT $1, row.src_node_id, row.rx_node_id, row.position, row.node_id, row.count, row.probability, NOW()
+       FROM jsonb_to_recordset($2::jsonb) AS row(
+         src_node_id text, rx_node_id text, position smallint, node_id text, count integer, probability double precision
+       )
+       ON CONFLICT (network, src_node_id, rx_node_id, position, node_id) DO UPDATE SET
+         count = EXCLUDED.count,
+         probability = EXCLUDED.probability,
+         updated_at = NOW()`,
+      network,
+      corridorRows,
+      heartbeat.assertOwned,
+    );
+    await insertJsonBatches(client,
       `INSERT INTO path_transition_priors
          (network, from_node_id, to_node_id, receiver_region, count, probability, updated_at)
        SELECT $1, row.from_node_id, row.to_node_id, row.receiver_region, row.count, row.probability, NOW()
@@ -326,6 +395,21 @@ async function replacePathLearningRows(
          updated_at = NOW()`,
       network,
       transitionRows,
+      heartbeat.assertOwned,
+    );
+    await insertJsonBatches(client,
+      `INSERT INTO path_position_transition_priors
+         (network, position, from_node_id, to_node_id, count, probability, updated_at)
+       SELECT $1, row.position, row.from_node_id, row.to_node_id, row.count, row.probability, NOW()
+       FROM jsonb_to_recordset($2::jsonb) AS row(
+         position smallint, from_node_id text, to_node_id text, count integer, probability double precision
+       )
+       ON CONFLICT (network, position, from_node_id, to_node_id) DO UPDATE SET
+         count = EXCLUDED.count,
+         probability = EXCLUDED.probability,
+         updated_at = NOW()`,
+      network,
+      positionTransitionRows,
       heartbeat.assertOwned,
     );
     await insertJsonBatches(client,
@@ -436,7 +520,7 @@ async function rebuildNetwork(modelNetwork: string, sourceNetwork: string | unde
     totalItems: 0,
     deadlineMs: LEARNING_RUN_DEADLINE_MS,
     privacyGeneration: visibilityGeneration,
-    modelGeneration: 'path-learning-v2',
+    modelGeneration: 'path-learning-v3-champion',
   });
   const heartbeat = startAnalysisRunHeartbeat(run);
   try {
@@ -481,10 +565,14 @@ async function rebuildNetworkUnderLease(
   const deadline = run.deadlineAt.getTime();
   heartbeat.assertOwned();
   const nodeNetworkFilter = sourceNetwork ? 'AND network = $1' : '';
-  const packetNetworkFilter = sourceNetwork ? 'AND network = $1' : '';
+  const packetNetworkFilter = sourceNetwork
+    ? (modelNetwork === 'ukmesh' ? 'AND network = ANY($1)' : 'AND network = $1')
+    : '';
   const linkNetworkFilter = sourceNetwork ? 'AND a.network = $1 AND b.network = $1' : '';
   const nodeParams: unknown[] = sourceNetwork ? [sourceNetwork, MAX_LEARNING_NODES + 1] : [MAX_LEARNING_NODES + 1];
-  const packetParams: unknown[] = sourceNetwork ? [sourceNetwork, MAX_TRAINING_PACKETS] : [MAX_TRAINING_PACKETS];
+  const packetParams: unknown[] = sourceNetwork
+    ? [modelNetwork === 'ukmesh' ? expandResolverScope(modelNetwork) : sourceNetwork, MAX_TRAINING_PACKETS]
+    : [MAX_TRAINING_PACKETS];
   const linkParams: unknown[] = sourceNetwork ? [sourceNetwork, MAX_LEARNING_LINKS + 1] : [MAX_LEARNING_LINKS + 1];
 
   const nodesResult = await query<LearningNode>(
@@ -531,16 +619,18 @@ async function rebuildNetworkUnderLease(
   }
 
   const packetsResult = await query<LearningPacket>(
-    `SELECT time, rx_node_id, src_node_id, path_hashes
-     FROM packets
-     WHERE rx_node_id IS NOT NULL
-       AND path_hashes IS NOT NULL
-       AND cardinality(path_hashes) > 0
-       AND path_hash_size_bytes >= 2
-       AND time > NOW() - INTERVAL '120 days'
-       ${packetNetworkFilter}
-     ORDER BY time DESC
-    LIMIT $${sourceNetwork ? 2 : 1}`,
+    `SELECT DISTINCT ON (packet_hash, rx_node_id, src_node_id, path_hashes)
+            time, rx_node_id, src_node_id, path_hashes
+       FROM packets
+      WHERE rx_node_id IS NOT NULL
+        AND path_hashes IS NOT NULL
+        AND cardinality(path_hashes) > 0
+        AND path_hash_size_bytes >= 2
+        AND time > NOW() - INTERVAL '30 days'
+        AND mod(hashtext(packet_hash)::bigint + 2147483648, 100) < ${TRAINING_SPLIT_PERCENT}
+        ${packetNetworkFilter}
+      ORDER BY packet_hash, rx_node_id, src_node_id, path_hashes, time DESC
+      LIMIT $${sourceNetwork ? 2 : 1}`,
     packetParams,
     heartbeat.signal,
   );
@@ -548,8 +638,14 @@ async function rebuildNetworkUnderLease(
 
   const prefixChoiceCounts = new Map<string, number>();
   const prefixGroupTotals = new Map<string, number>();
+  const positionPrefixChoiceCounts = new Map<string, number>();
+  const positionPrefixGroupTotals = new Map<string, number>();
+  const corridorChoiceCounts = new Map<string, number>();
+  const corridorGroupTotals = new Map<string, number>();
   const transitionCounts = new Map<string, number>();
   const transitionGroupTotals = new Map<string, number>();
+  const positionTransitionCounts = new Map<string, number>();
+  const positionTransitionGroupTotals = new Map<string, number>();
 
   const edgeObservedCounts = new Map<string, number>();
   const edgeLastSeenMs = new Map<string, number>();
@@ -569,15 +665,20 @@ async function rebuildNetworkUnderLease(
       if (Date.now() >= deadline) throw new Error('PATH_LEARNING_TIMEOUT');
     }
     const packet = packetsResult.rows[packetIndex]!;
-    const hashes = packet.path_hashes?.map(normalizePathHash).filter(Boolean) ?? [];
+    let hashes = packet.path_hashes?.map(normalizePathHash).filter(Boolean) ?? [];
     if (hashes.length === 0) continue;
     const rx = nodesById.get(packet.rx_node_id);
     if (!rx) continue;
+    if (hashes.length > 0 && rx.node_id.toUpperCase().startsWith(hashes[hashes.length - 1]!)) {
+      hashes = hashes.slice(0, -1);
+    }
+    if (hashes.length === 0) continue;
 
     const src = packet.src_node_id ? nodesById.get(packet.src_node_id) : undefined;
     const region = rx.iata ?? 'unknown';
     const resolved = resolvePathForPacket(hashes, src, rx, pathHashIndex, confirmedLinks);
     if (resolved.length === 0) continue;
+    const championRoute = resolved.length === hashes.length && resolved.every((hop) => hop.isUnique);
 
     const ts = new Date(packet.time);
     const bucket = hourBucket(ts);
@@ -613,6 +714,33 @@ async function rebuildNetworkUnderLease(
       increment(prefixGroupTotals, prefixGroup);
     }
 
+    if (championRoute) {
+      for (let i = 0; i < resolved.length; i++) {
+        const hop = resolved[i]!;
+        const prefix = hop.prefix.slice(0, 2).toUpperCase();
+        const positionPrefixGroup = `${prefix}|${i}`;
+        increment(positionPrefixChoiceCounts, `${positionPrefixGroup}|${hop.node.node_id}`);
+        increment(positionPrefixGroupTotals, positionPrefixGroup);
+
+        if (src) {
+          const corridorGroup = `${src.node_id}|${rx.node_id}|${i}`;
+          increment(corridorChoiceCounts, `${corridorGroup}|${hop.node.node_id}`);
+          increment(corridorGroupTotals, corridorGroup);
+        }
+      }
+
+      if (src) {
+        const championNodes = [src, ...resolved.map((hop) => hop.node), rx];
+        for (let edgePosition = 0; edgePosition < championNodes.length - 1; edgePosition++) {
+          const from = championNodes[edgePosition]!;
+          const to = championNodes[edgePosition + 1]!;
+          const group = `${edgePosition}|${from.node_id}`;
+          increment(positionTransitionCounts, `${group}|${to.node_id}`);
+          increment(positionTransitionGroupTotals, group);
+        }
+      }
+    }
+
     for (let i = 0; i < fullNodes.length - 1; i++) {
       const from = fullNodes[i]!;
       const to = fullNodes[i + 1]!;
@@ -643,8 +771,12 @@ async function rebuildNetworkUnderLease(
       }
     }
     if (
-      prefixChoiceCounts.size + prefixGroupTotals.size + transitionCounts.size
-      + transitionGroupTotals.size + edgeObservedCounts.size + edgeLastSeenMs.size
+      prefixChoiceCounts.size + prefixGroupTotals.size
+      + positionPrefixChoiceCounts.size + positionPrefixGroupTotals.size
+      + corridorChoiceCounts.size + corridorGroupTotals.size
+      + transitionCounts.size + transitionGroupTotals.size
+      + positionTransitionCounts.size + positionTransitionGroupTotals.size
+      + edgeObservedCounts.size + edgeLastSeenMs.size
       + activeFromCounts.size + motif2Counts.size + motif2GroupTotals.size
       + motif3Counts.size + motif3GroupTotals.size > MAX_AGGREGATE_KEYS
     ) {
@@ -680,6 +812,59 @@ async function rebuildNetworkUnderLease(
     }
   }
 
+  const groupedPositionPrefixes = new Map<string, Array<{ nodeId: string; count: number }>>();
+  for (const [key, count] of positionPrefixChoiceCounts) {
+    const [prefix, position, nodeId] = key.split('|');
+    const groupKey = `${prefix}|${position}`;
+    const rows = groupedPositionPrefixes.get(groupKey) ?? [];
+    rows.push({ nodeId: nodeId!, count });
+    groupedPositionPrefixes.set(groupKey, rows);
+  }
+  const positionPrefixRows: PositionPrefixPriorWriteRow[] = [];
+  for (const [groupKey, rows] of groupedPositionPrefixes) {
+    const [prefix, positionText] = groupKey.split('|');
+    const total = positionPrefixGroupTotals.get(groupKey) ?? 1;
+    for (const row of truncateBest(
+      rows.map((candidate) => ({ key: candidate.nodeId, count: candidate.count })),
+      MAX_POSITION_PREFIX_CHOICES_PER_GROUP,
+    )) {
+      positionPrefixRows.push({
+        prefix: prefix!,
+        position: Number(positionText),
+        node_id: row.key,
+        count: row.count,
+        probability: row.count / total,
+      });
+    }
+  }
+
+  const groupedCorridors = new Map<string, Array<{ nodeId: string; count: number }>>();
+  for (const [key, count] of corridorChoiceCounts) {
+    const [srcNodeId, rxNodeId, position, nodeId] = key.split('|');
+    const groupKey = `${srcNodeId}|${rxNodeId}|${position}`;
+    const rows = groupedCorridors.get(groupKey) ?? [];
+    rows.push({ nodeId: nodeId!, count });
+    groupedCorridors.set(groupKey, rows);
+  }
+  const corridorRows: CorridorPriorWriteRow[] = [];
+  for (const [groupKey, rows] of groupedCorridors) {
+    const [srcNodeId, rxNodeId, positionText] = groupKey.split('|');
+    const total = corridorGroupTotals.get(groupKey) ?? 1;
+    for (const row of truncateBest(
+      rows.map((candidate) => ({ key: candidate.nodeId, count: candidate.count })),
+      MAX_CORRIDOR_CHOICES_PER_GROUP,
+    )) {
+      corridorRows.push({
+        src_node_id: srcNodeId!,
+        rx_node_id: rxNodeId!,
+        position: Number(positionText),
+        node_id: row.key,
+        count: row.count,
+        probability: row.count / total,
+      });
+    }
+  }
+
   const groupedTransitions = new Map<string, Array<{ toNodeId: string; count: number }>>();
   for (const [key, count] of transitionCounts) {
     const [fromNodeId, region, toNodeId] = key.split('|');
@@ -698,6 +883,32 @@ async function rebuildNetworkUnderLease(
         from_node_id: fromNodeId!,
         to_node_id: row.key,
         receiver_region: region!,
+        count: row.count,
+        probability: row.count / total,
+      });
+    }
+  }
+
+  const groupedPositionTransitions = new Map<string, Array<{ toNodeId: string; count: number }>>();
+  for (const [key, count] of positionTransitionCounts) {
+    const [position, fromNodeId, toNodeId] = key.split('|');
+    const groupKey = `${position}|${fromNodeId}`;
+    const rows = groupedPositionTransitions.get(groupKey) ?? [];
+    rows.push({ toNodeId: toNodeId!, count });
+    groupedPositionTransitions.set(groupKey, rows);
+  }
+  const positionTransitionRows: PositionTransitionPriorWriteRow[] = [];
+  for (const [groupKey, rows] of groupedPositionTransitions) {
+    const [positionText, fromNodeId] = groupKey.split('|');
+    const total = positionTransitionGroupTotals.get(groupKey) ?? 1;
+    for (const row of truncateBest(
+      rows.map((candidate) => ({ key: candidate.toNodeId, count: candidate.count })),
+      MAX_POSITION_TRANSITIONS_PER_GROUP,
+    )) {
+      positionTransitionRows.push({
+        position: Number(positionText),
+        from_node_id: fromNodeId!,
+        to_node_id: row.key,
         count: row.count,
         probability: row.count / total,
       });
@@ -848,24 +1059,41 @@ async function rebuildNetworkUnderLease(
 
   heartbeat.assertOwned();
   if (Date.now() >= deadline) throw new Error('PATH_LEARNING_TIMEOUT');
-  await replacePathLearningRows(modelNetwork, prefixRows, transitionRows, edgeRows, motifRows, {
+  await replacePathLearningRows(
+    modelNetwork,
+    prefixRows,
+    positionPrefixRows,
+    corridorRows,
+    transitionRows,
+    positionTransitionRows,
+    edgeRows,
+    motifRows,
+    {
     evaluatedPackets,
     top1Accuracy,
     meanPredConfidence,
     confidenceScale,
     confidenceBias,
     recommendedThreshold,
-  }, run, heartbeat);
+    },
+    run,
+    heartbeat,
+  );
 
   console.log(
     `[path-learning] model=${modelNetwork} source=${sourceNetwork ?? 'all'} packets=${evaluatedPackets} ` +
-    `top1=${top1Accuracy.toFixed(3)} scale=${confidenceScale.toFixed(3)} edges=${edgeRows.length} motifs=${motifRows.length}`,
+    `top1=${top1Accuracy.toFixed(3)} scale=${confidenceScale.toFixed(3)} `
+      + `posPrefix=${positionPrefixRows.length} corridors=${corridorRows.length} `
+      + `posTransitions=${positionTransitionRows.length} edges=${edgeRows.length} motifs=${motifRows.length}`,
   );
   return analysisGeneration({
     modelNetwork,
     sourceNetwork: sourceNetwork ?? 'all',
     prefixRows: prefixRows.length,
+    positionPrefixRows: positionPrefixRows.length,
+    corridorRows: corridorRows.length,
     transitionRows: transitionRows.length,
+    positionTransitionRows: positionTransitionRows.length,
     edgeRows: edgeRows.length,
     motifRows: motifRows.length,
     evaluatedPackets,

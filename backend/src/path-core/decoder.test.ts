@@ -29,7 +29,19 @@ function evidence(
   overrides: Partial<PathDecoderEvidence> = {},
 ): PathDecoderEvidence {
   return {
-    weights: SCORE,
+    weights: {
+      ...SCORE,
+      prefix: 0.30,
+      positionPrefixFrequency: 0,
+      observerDistance: 0,
+      anchor: 0.12,
+      corridorPrior: 0,
+      corridorInterpolation: 0,
+      transition: 0.25,
+      positionConditionalTransition: 0,
+      itmViability: 0,
+      dist: 0.10,
+    },
     maxHopKm: MAX_HOP_KM,
     distanceDecayKm: DIST_DECAY_KM,
     mlDominantThreshold: ML_DOMINANT_THRESHOLD,
@@ -67,13 +79,23 @@ test('decodes the strongest coherent chain from supplied evidence', () => {
   assert.equal(decoded.get(1)?.nodeId, 'C');
 });
 
-test('prefers the unresolved baseline over an unsupported candidate', () => {
+test('chooses the real argmax even when the candidate has no prior support', () => {
   const decoded = decodePath(
     ['AA'],
     evidence(new Map([['AA', [node('A', 51, 0)]]])),
   );
-  assert.equal(decoded.get(0)?.nodeId, null);
+  assert.equal(decoded.get(0)?.nodeId, 'A');
   assert.equal(decoded.get(0)?.ambiguous, false);
+});
+
+test('uses unresolved only when a column has no real candidates', () => {
+  const decoded = decodePath(['AA', 'BB', 'CC'], evidence(new Map([
+    ['AA', [node('A', 51, 0)]],
+    ['CC', [node('C', 51.2, 0)]],
+  ])));
+  assert.equal(decoded.get(0)?.nodeId, 'A');
+  assert.equal(decoded.get(1)?.nodeId, null);
+  assert.equal(decoded.get(2)?.nodeId, 'C');
 });
 
 test('hard-gates candidates outside a direct observer anchor hop', () => {
@@ -96,7 +118,8 @@ test('returns the marginal gap and flags a near-equal real candidate', () => {
   );
   const hop = decoded.get(0)!;
   assert.equal(hop.nodeId, 'A');
-  assert.ok(Math.abs(hop.margin - 0.009) < 1e-12);
+  const expectedMargin = 0.30 * (Math.log1p(0.30) - Math.log1p(0.27));
+  assert.ok(Math.abs(hop.margin - expectedMargin) < 1e-12);
   assert.equal(hop.ambiguous, true);
 });
 
