@@ -37,9 +37,12 @@ export function motif2Key(fromNodeId: string, toNodeId: string): string {
  */
 export type PathScoreWeights = Readonly<{
   prefix: number;
+  positionPrefixFrequency: number;
   mlDominantCap: number;
   mlWeakCap: number;
+  observerDistance: number;
   anchor: number;
+  corridorPrior: number;
   corridorInterpolation: number;
   edge: number;
   transition: number;
@@ -53,22 +56,22 @@ export type PathScoreWeights = Readonly<{
 /** Scoring weights for the shared Viterbi decoder. */
 export const SCORE: PathScoreWeights = {
   // Emission (how well a node fits a hash position on its own)
-  prefix: 0.30, // historical prefix→node probability
-  mlDominantCap: 0.20, // ML score >= mlDominantThreshold
-  mlWeakCap: 0.06, // ML score below the dominant threshold
-  anchor: 0.12, // proximity to a direct-receiver observer anchor (0..1)
-  // Reserved for Phase 4. Kept inert until the matching evidence is loaded.
-  corridorInterpolation: 0, // source→receiver corridor position fit
+  prefix: 0.3, // log(1 + count) global 1-byte frequency backoff
+  positionPrefixFrequency: 1.2, // log(1 + count) for (byte-prefix, position, node)
+  mlDominantCap: 0, // the champion did not use the ML candidate scorer
+  mlWeakCap: 0,
+  observerDistance: 1.0, // -distance to the receiving observer / 80 km
+  anchor: 0.9, // direct multi-observer position anchor, distance-shaped over 80 km
+  corridorPrior: 1.0, // log(1 + count) for (source, receiver, position, node)
+  corridorInterpolation: 1.0, // -distance to source→receiver interpolated point / 55 km
   // Transition (how well two adjacent nodes form a real hop)
-  edge: 0.28, // path_edge_priors directed score
-  transition: 0.25, // path_transition_priors directed probability
-  // Reserved for Phase 4. Kept inert until the matching evidence is loaded.
-  positionConditionalTransition: 0, // (position, from)→to probability
-  motif: 0.18, // path_motif_priors 2-gram directed probability
-  link: 0.20, // confirmed node_links pair
-  // Reserved for Phase 4. Bonus-only; never use ITM viability as a hard gate.
-  itmViability: 0,
-  dist: 0.10, // distance shaping exp(-d/22), only when both ends are positioned
+  edge: 0,
+  transition: 2.0, // log(1 + global directed transition count)
+  positionConditionalTransition: 1.2, // log(1 + count) for (position, from)→to
+  motif: 0,
+  link: 0,
+  itmViability: 0.8, // bonus-only; never a hard gate
+  dist: 1.0, // -distance / DIST_DECAY_KM
 };
 
 /** ML score at/above this is treated as strong (dominant) evidence. */
@@ -78,17 +81,20 @@ export const ML_DOMINANT_THRESHOLD = 0.85;
 export const ML_SCORE_LOAD_THRESHOLD = 0.80;
 
 /** Distance-decay constant (km) for the transition distance-shaping term. */
-export const DIST_DECAY_KM = 22;
+export const DIST_DECAY_KM = 40;
 
-/** Baseline score for the synthetic "unresolved" candidate at every position.
- * A real candidate must accumulate at least this much positive evidence to be
- * chosen over leaving the position unresolved — this is what stops the decoder
- * from guessing on pure geography with no supporting evidence. */
-export const NULL_BASELINE = 0.06;
+/** Corridor interpolation distance divisor from the champion experiment. */
+export const CORRIDOR_INTERPOLATION_KM = 55;
+
+/** Direct-observer anchor distance divisor from the champion experiment. */
+export const OBSERVER_DISTANCE_DECAY_KM = 80;
+
+/** Structural score used only when a position has no real candidates. */
+export const NULL_BASELINE = 0;
 
 /** Two candidates whose best-path marginals differ by less than this are
  * flagged ambiguous. */
 export const AMBIG_DELTA = 0.12;
 
 /** Max candidate nodes kept per hash position (trellis column cap). */
-export const MAX_COL = 24;
+export const MAX_COL = 64;

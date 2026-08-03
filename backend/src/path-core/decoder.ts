@@ -7,7 +7,10 @@
  * candidate bounding/capping, emissions, transitions, the unresolved baseline,
  * max-product trellis traversal, and per-position margin/ambiguity calculation.
  */
-import type { PathScoreWeights } from '../path-shared/scoring.js';
+import {
+  OBSERVER_DISTANCE_DECAY_KM,
+  type PathScoreWeights,
+} from '../path-shared/scoring.js';
 
 export type GeographicPoint = { lat: number; lon: number };
 
@@ -55,7 +58,12 @@ export type PathDecoderEvidence = {
   maxColumnCandidates: number;
   candidatesByHash: ReadonlyMap<string, readonly CandidateNode[]>;
   directAnchors: (position: number, hash: string) => readonly ObserverAnchor[];
+  sourceAnchor?: ObserverAnchor;
+  terminalAnchors?: readonly ObserverAnchor[];
   prefixProbability: (nodeId: string, hash: string, prevHash: string | null) => number;
+  positionPrefixCount?: (position: number, nodeId: string, hash: string) => number;
+  corridorPriorCount?: (position: number, nodeId: string) => number;
+  observerDistance?: (candidate: CandidateNode) => number;
   mlPrefixScore: (hash: string, nodeId: string) => number;
   directedEdgeScore: (fromNodeId: string, toNodeId: string) => number;
   transitionProbability: (fromNodeId: string, toNodeId: string) => number;
@@ -183,7 +191,7 @@ function emissionScore(
   }
 
   let score = evidence.weights.prefix
-    * evidence.prefixProbability(candidate.nodeId, hash, prevHash);
+    * Math.log1p(Math.max(0, evidence.prefixProbability(candidate.nodeId, hash, prevHash)));
   const mlScore = evidence.mlPrefixScore(hash, candidate.nodeId);
   score += mlScore >= evidence.mlDominantThreshold
     ? Math.min(evidence.weights.mlDominantCap, mlScore * evidence.weights.mlDominantCap)
@@ -191,7 +199,21 @@ function emissionScore(
 
   if (anchors.length > 0 && positioned) {
     const distance = minDistanceToSet({ lat: candidate.lat!, lon: candidate.lon! }, anchors);
-    score += evidence.weights.anchor * Math.max(0, 1 - distance / evidence.maxHopKm);
+    score -= evidence.weights.anchor * (distance / OBSERVER_DISTANCE_DECAY_KM);
+  }
+
+  if (positioned && evidence.weights.observerDistance !== 0 && evidence.observerDistance) {
+    score += evidence.weights.observerDistance
+      * evidence.observerDistance(candidate as CandidateNode);
+  }
+
+  if (evidence.weights.positionPrefixFrequency !== 0 && evidence.positionPrefixCount) {
+    score += evidence.weights.positionPrefixFrequency
+      * Math.log1p(Math.max(0, evidence.positionPrefixCount(position, candidate.nodeId, hash)));
+  }
+  if (evidence.weights.corridorPrior !== 0 && evidence.corridorPriorCount) {
+    score += evidence.weights.corridorPrior
+      * Math.log1p(Math.max(0, evidence.corridorPriorCount(position, candidate.nodeId)));
   }
 
   if (evidence.weights.corridorInterpolation !== 0 && evidence.corridorInterpolation) {
@@ -215,12 +237,12 @@ function transitionScore(
       { lat: current.lat, lon: current.lon },
     );
     if (distance > evidence.maxHopKm) return -Infinity;
-    score += evidence.weights.dist * Math.exp(-distance / evidence.distanceDecayKm);
+    score -= evidence.weights.dist * (distance / evidence.distanceDecayKm);
   }
   score += evidence.weights.edge
     * evidence.directedEdgeScore(previous.nodeId, current.nodeId);
   score += evidence.weights.transition
-    * evidence.transitionProbability(previous.nodeId, current.nodeId);
+    * Math.log1p(Math.max(0, evidence.transitionProbability(previous.nodeId, current.nodeId)));
   score += evidence.weights.motif
     * evidence.motifProbability(previous.nodeId, current.nodeId);
   if (evidence.hasObservedLink(previous.nodeId, current.nodeId)) {
@@ -229,7 +251,9 @@ function transitionScore(
   if (evidence.weights.positionConditionalTransition !== 0
       && evidence.positionConditionalTransition) {
     score += evidence.weights.positionConditionalTransition
-      * evidence.positionConditionalTransition(position, previous.nodeId, current.nodeId);
+      * Math.log1p(Math.max(0,
+        evidence.positionConditionalTransition(position, previous.nodeId, current.nodeId),
+      ));
   }
   if (evidence.weights.itmViability !== 0
       && evidence.isItmViable?.(previous.nodeId, current.nodeId)) {
@@ -258,8 +282,33 @@ function buildColumn(
       .slice(0, evidence.maxColumnCandidates)
       .map(({ candidate }) => candidate);
   }
-  candidates.push(UNRESOLVED_CANDIDATE);
+  // The experiment always chose an argmax. Keep NULL only as a structural
+  // fallback for a genuinely empty column; ambiguity remains a marginal flag.
+  if (candidates.length === 0) candidates.push(UNRESOLVED_CANDIDATE);
   return candidates;
+}
+
+function endpointCandidate(anchor: ObserverAnchor): DecoderCandidate {
+  return {
+    nodeId: anchor.nodeId ?? null,
+    name: null,
+    lat: anchor.lat,
+    lon: anchor.lon,
+  };
+}
+
+function bestTerminalTransition(
+  position: number,
+  candidate: DecoderCandidate,
+  evidence: PathDecoderEvidence,
+): number {
+  const terminals = evidence.terminalAnchors ?? [];
+  if (terminals.length === 0) return 0;
+  let best = -Infinity;
+  for (const terminal of terminals) {
+    best = Math.max(best, transitionScore(position, candidate, endpointCandidate(terminal), evidence));
+  }
+  return best;
 }
 
 /** Decode a coherent node assignment for every canonical path-hash position. */
@@ -293,7 +342,12 @@ export function decodePath(
   // Best prefix score ending at columns[position][candidate].
   const forward: number[][] = columns.map((column) => new Array(column.length).fill(-Infinity));
   for (let candidate = 0; candidate < columns[0]!.length; candidate++) {
-    forward[0]![candidate] = emissions[0]![candidate]!;
+    const startTransition = evidence.sourceAnchor
+      ? transitionScore(0, endpointCandidate(evidence.sourceAnchor), columns[0]![candidate]!, evidence)
+      : 0;
+    if (isFinite(startTransition) && isFinite(emissions[0]![candidate]!)) {
+      forward[0]![candidate] = emissions[0]![candidate]! + startTransition;
+    }
   }
   for (let position = 1; position < pathLength; position++) {
     for (let current = 0; current < columns[position]!.length; current++) {
@@ -319,7 +373,11 @@ export function decodePath(
   // Best suffix score starting immediately after columns[position][candidate].
   const backward: number[][] = columns.map((column) => new Array(column.length).fill(-Infinity));
   for (let candidate = 0; candidate < columns[pathLength - 1]!.length; candidate++) {
-    backward[pathLength - 1]![candidate] = 0;
+    backward[pathLength - 1]![candidate] = bestTerminalTransition(
+      pathLength,
+      columns[pathLength - 1]![candidate]!,
+      evidence,
+    );
   }
   for (let position = pathLength - 2; position >= 0; position--) {
     for (let current = 0; current < columns[position]!.length; current++) {

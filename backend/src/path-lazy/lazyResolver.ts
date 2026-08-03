@@ -47,13 +47,13 @@ import {
   MAX_HOP_KM,
   SCORE,
   ML_DOMINANT_THRESHOLD,
-  ML_SCORE_LOAD_THRESHOLD,
   DIST_DECAY_KM,
+  CORRIDOR_INTERPOLATION_KM,
+  OBSERVER_DISTANCE_DECAY_KM,
   NULL_BASELINE,
   AMBIG_DELTA,
   MAX_COL,
   transitionKey,
-  motif2Key,
 } from '../path-shared/scoring.js';
 import {
   buildObserverBounds,
@@ -102,6 +102,38 @@ export type LazyPathResult = {
 // accuracy harness to measure the leakage-free floor (structural + prefix-prior
 // + geographic anchoring only). Never set in production.
 const ABLATE_LEAKY_PRIORS = process.env['LAZY_ABLATE_PRIORS'] === '1';
+// Evaluation-only switches used to isolate production evidence loss. They are
+// inert unless explicitly set by the read-only accuracy harness process.
+const DIAGNOSTIC_DISABLE_OBSERVER_BOUNDS = process.env['LAZY_DIAGNOSTIC_DISABLE_OBSERVER_BOUNDS'] === '1';
+const DIAGNOSTIC_DISABLE_DIRECT_ANCHORS = process.env['LAZY_DIAGNOSTIC_DISABLE_DIRECT_ANCHORS'] === '1';
+const DIAGNOSTIC_MAX_COL = Number(process.env['LAZY_DIAGNOSTIC_MAX_COL'] ?? MAX_COL);
+const DIAGNOSTIC_NULL_BASELINE = Number(process.env['LAZY_DIAGNOSTIC_NULL_BASELINE'] ?? NULL_BASELINE);
+const ENABLE_POSITION_PREFIX_PRIORS = process.env['PATH_POSITION_PREFIX_PRIORS'] !== '0';
+const ENABLE_CORRIDOR_PRIORS = process.env['PATH_CORRIDOR_PRIORS'] !== '0';
+const ENABLE_CORRIDOR_INTERPOLATION = process.env['PATH_CORRIDOR_INTERPOLATION'] !== '0';
+const ENABLE_POSITION_TRANSITIONS = process.env['PATH_POSITION_TRANSITIONS'] !== '0';
+const ENABLE_ITM_BONUS = process.env['PATH_ITM_BONUS'] !== '0';
+
+function scoreWeight(name: string, fallback: number): number {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) && value >= 0 ? value : fallback;
+}
+
+const DECODER_WEIGHTS = Object.freeze({
+  ...SCORE,
+  prefix: scoreWeight('PATH_WEIGHT_PREFIX', SCORE.prefix),
+  positionPrefixFrequency: scoreWeight('PATH_WEIGHT_POSITION_PREFIX', SCORE.positionPrefixFrequency),
+  observerDistance: scoreWeight('PATH_WEIGHT_OBSERVER_DISTANCE', SCORE.observerDistance),
+  corridorPrior: scoreWeight('PATH_WEIGHT_CORRIDOR_PRIOR', SCORE.corridorPrior),
+  corridorInterpolation: scoreWeight('PATH_WEIGHT_CORRIDOR_INTERPOLATION', SCORE.corridorInterpolation),
+  transition: scoreWeight('PATH_WEIGHT_TRANSITION', SCORE.transition),
+  positionConditionalTransition: scoreWeight(
+    'PATH_WEIGHT_POSITION_TRANSITION',
+    SCORE.positionConditionalTransition,
+  ),
+  itmViability: scoreWeight('PATH_WEIGHT_ITM', SCORE.itmViability),
+  dist: scoreWeight('PATH_WEIGHT_DISTANCE', SCORE.dist),
+});
 const LAZY_HISTORY_WINDOW_HOURS = Math.min(
   24 * 365,
   Math.max(1, Number(process.env['LAZY_PATH_HISTORY_WINDOW_HOURS'] ?? 168) || 168),
@@ -116,11 +148,11 @@ const LAZY_MAX_OBSERVERS = Math.min(
 );
 const LAZY_MAX_UNIQUE_HASHES = Math.min(
   256,
-  Math.max(1, Number(process.env['LAZY_PATH_MAX_UNIQUE_HASHES'] ?? 64) || 64),
+  Math.max(1, Number(process.env['LAZY_PATH_MAX_UNIQUE_HASHES'] ?? 256) || 256),
 );
 const LAZY_MAX_CANDIDATE_NODES = Math.min(
   20_000,
-  Math.max(32, Number(process.env['LAZY_PATH_MAX_CANDIDATE_NODES'] ?? 2_048) || 2_048),
+  Math.max(32, Number(process.env['LAZY_PATH_MAX_CANDIDATE_NODES'] ?? 20_000) || 20_000),
 );
 
 function expectedHashHexLength(pathHashSizeBytes: number | null): number | null {
@@ -134,8 +166,14 @@ function networkScope(network: string | null): string[] | null {
 
 type ObsEntry = {
   rx_node_id: string;
+  src_node_id: string | null;
   path_hashes: string[];          // normalized uppercase
   path_hash_size_bytes: number | null;
+};
+
+export type LazyResolveOptions = {
+  /** Evaluation only: resolve the observation window around this historical packet. */
+  referenceTime?: string;
 };
 
 type ObsGroup = {
@@ -178,21 +216,31 @@ export async function lazyResolvePath(
   packetHash: string,
   network: string | null,
   query: QueryFn,
+  options: LazyResolveOptions = {},
 ): Promise<LazyPathResult | null> {
   const scopedNetworks = networkScope(network);
+  const referenceTime = options.referenceTime && Number.isFinite(Date.parse(options.referenceTime))
+    ? options.referenceTime
+    : null;
+  const packetTimePredicate = referenceTime
+    ? `time BETWEEN $3::timestamptz - INTERVAL '30 seconds'
+                AND $3::timestamptz + INTERVAL '30 seconds'`
+    : `time >= NOW() - ($3::int * INTERVAL '1 hour')`;
+  const packetTimeParam = referenceTime ?? LAZY_HISTORY_WINDOW_HOURS;
 
   // ── 1. Canonical path-hash observations (one richest row per observer) ──
   const canonicalObs = await query<{
     rx_node_id: string;
+    src_node_id: string | null;
     path_hashes: string[] | null;
     path_hash_size_bytes: number | null;
   }>(
     `SELECT DISTINCT ON (rx_node_id)
-            rx_node_id, path_hashes, path_hash_size_bytes
+            rx_node_id, src_node_id, path_hashes, path_hash_size_bytes
        FROM packets
       WHERE packet_hash = $1
         AND ($2::text[] IS NULL OR network = ANY($2))
-        AND time >= NOW() - ($3::int * INTERVAL '1 hour')
+        AND ${packetTimePredicate}
         AND rx_node_id IS NOT NULL
         AND NOT EXISTS (
           SELECT 1 FROM nodes private_node
@@ -213,7 +261,7 @@ export async function lazyResolvePath(
                COALESCE(path_hash_size_bytes, 0) DESC,
                time ASC
       LIMIT $4`,
-    [packetHash, scopedNetworks, LAZY_HISTORY_WINDOW_HOURS, LAZY_MAX_OBSERVERS + 1],
+    [packetHash, scopedNetworks, packetTimeParam, LAZY_MAX_OBSERVERS + 1],
   );
 
   if (canonicalObs.rows.length === 0) return null;
@@ -222,25 +270,27 @@ export async function lazyResolvePath(
   const totalObs = canonicalObs.rows.length;
   const allObserverIds = canonicalObs.rows.map((r) => r.rx_node_id);
 
-  // ── 2. All (rx_node_id, hop_count) rows — NOT deduplicated ──────────────
+  // ── 2. Distinct (rx_node_id, hop_count) anchor observations ─────────────
   const allHopRows = await query<{
     rx_node_id: string;
     hop_count: number | null;
   }>(
-    `SELECT rx_node_id, hop_count
+    `SELECT DISTINCT rx_node_id, hop_count
        FROM packets
       WHERE packet_hash = $1
         AND ($2::text[] IS NULL OR network = ANY($2))
-        AND time >= NOW() - ($3::int * INTERVAL '1 hour')
+        AND ${packetTimePredicate}
         AND rx_node_id IS NOT NULL
         AND hop_count IS NOT NULL
-      ORDER BY time DESC, rx_node_id
+      ORDER BY rx_node_id, hop_count
       LIMIT $4`,
-    [packetHash, scopedNetworks, LAZY_HISTORY_WINDOW_HOURS, LAZY_MAX_OBSERVATIONS + 1],
+    [packetHash, scopedNetworks, packetTimeParam, LAZY_MAX_OBSERVATIONS + 1],
   );
   if (allHopRows.rows.length > LAZY_MAX_OBSERVATIONS) throw new Error('PATH_HISTORY_LIMIT');
 
   // ── 3. Observer node positions + names ──────────────────────────────────
+  const sourceNodeIds = [...new Set(canonicalObs.rows.flatMap((row) => row.src_node_id ? [row.src_node_id] : []))];
+  const endpointNodeIds = [...new Set([...allObserverIds, ...sourceNodeIds])];
   const obsNodeResult = await query<{
     node_id: string;
     lat: number | null;
@@ -252,19 +302,24 @@ export async function lazyResolvePath(
         AND lat IS NOT NULL AND lon IS NOT NULL
         AND lat != 0 AND lon != 0
         AND (name IS NULL OR name NOT LIKE '%🚫%')`,
-    [allObserverIds],
+    [endpointNodeIds],
   );
 
   const observerPositions = new Map<string, { lat: number; lon: number; name: string | null }>();
+  const sourcePositions = new Map<string, { lat: number; lon: number; name: string | null }>();
   for (const row of obsNodeResult.rows) {
     if (row.lat != null && row.lon != null) {
-      observerPositions.set(row.node_id, { lat: row.lat, lon: row.lon, name: row.name ?? null });
+      const point = { lat: row.lat, lon: row.lon, name: row.name ?? null };
+      if (allObserverIds.includes(row.node_id)) observerPositions.set(row.node_id, point);
+      if (sourceNodeIds.includes(row.node_id)) sourcePositions.set(row.node_id, point);
     }
   }
 
   // ── 4. Bounding box from all observer positions ─────────────────────────
   const obsCoords = [...observerPositions.values()];
-  const observerBounds = buildObserverBounds(obsCoords, MAX_HOP_KM);
+  const observerBounds = DIAGNOSTIC_DISABLE_OBSERVER_BOUNDS
+    ? null
+    : buildObserverBounds([...obsCoords, ...sourcePositions.values()], MAX_HOP_KM);
 
   // ── 5. Group observers by prefix-compatible path_hashes ─────────────────
   const obsEntries: ObsEntry[] = canonicalObs.rows.map((row) => {
@@ -288,6 +343,7 @@ export async function lazyResolvePath(
     }
     return {
       rx_node_id: row.rx_node_id,
+      src_node_id: row.src_node_id,
       path_hashes: hashes,
       path_hash_size_bytes: pathHashSizeBytes,
     };
@@ -363,72 +419,66 @@ export async function lazyResolvePath(
     for (const c of candidates) allCandidateNodeIds.push(c.nodeId);
   }
   for (const obsId of observerPositions.keys()) allCandidateNodeIds.push(obsId);
+  for (const srcId of sourcePositions.keys()) allCandidateNodeIds.push(srcId);
   const uniqueCandidateNodeIds = [...new Set(allCandidateNodeIds)];
   if (uniqueCandidateNodeIds.length > LAZY_MAX_CANDIDATE_NODES) throw new Error('PATH_HISTORY_LIMIT');
 
-  // Derive 2-char (1-byte) prefixes for ML score lookup
+  // All new prefix evidence is deliberately keyed at one-byte granularity.
   const allUnique2charHashes = [...new Set(allUniqueHashes.map((h) => h.slice(0, 2)))];
+  const corridorSourceIds = [...sourcePositions.keys()];
+  const corridorReceiverIds = [...observerPositions.keys()];
 
-  const [linkResult, prefixPriorRows, edgePriorRows, mlScoreRows, transitionPriorRows, motifPriorRows, calibrationRows] =
+  const [linkResult, positionPrefixRows, corridorPriorRows, transitionPriorRows,
+    positionTransitionRows, calibrationRows] =
     await Promise.all([
       uniqueCandidateNodeIds.length > 0
-        ? query<{ node_a_id: string; node_b_id: string }>(
-            `SELECT node_a_id, node_b_id FROM node_links
-              WHERE (node_a_id = ANY($1) OR node_b_id = ANY($1))
-                AND observed_count >= 2`,
+        ? query<{ node_a_id: string; node_b_id: string; observed_count: string; itm_viable: boolean | null; force_viable: boolean }>(
+            `SELECT node_a_id, node_b_id, observed_count::text, itm_viable, force_viable
+               FROM node_links
+              WHERE node_a_id = ANY($1) AND node_b_id = ANY($1)`,
             [uniqueCandidateNodeIds],
           )
-        : Promise.resolve({ rows: [] as { node_a_id: string; node_b_id: string }[] }),
-      allUniqueHashes.length > 0
-        ? query<{ prefix: string; prev_prefix: string | null; node_id: string; max_prob: string }>(
-            `SELECT prefix, prev_prefix, node_id, MAX(probability)::text as max_prob
-               FROM path_prefix_priors
+        : Promise.resolve({ rows: [] as { node_a_id: string; node_b_id: string; observed_count: string; itm_viable: boolean | null; force_viable: boolean }[] }),
+      ENABLE_POSITION_PREFIX_PRIORS && allUnique2charHashes.length > 0
+        ? query<{ prefix: string; position: number; node_id: string; count: string }>(
+            `SELECT prefix, position, node_id, SUM(count)::text AS count
+               FROM path_position_prefix_priors
               WHERE ($1::text[] IS NULL OR network = ANY($1))
                 AND prefix = ANY($2)
-              GROUP BY prefix, prev_prefix, node_id`,
-            [scopedNetworks, allUniqueHashes],
+              GROUP BY prefix, position, node_id`,
+            [scopedNetworks, allUnique2charHashes],
           )
-        : Promise.resolve({ rows: [] as { prefix: string; prev_prefix: string | null; node_id: string; max_prob: string }[] }),
-      uniqueCandidateNodeIds.length > 0
-        ? query<{ from_node_id: string; to_node_id: string; best_score: string }>(
-            `SELECT from_node_id, to_node_id, MAX(score)::text as best_score
-               FROM path_edge_priors
+        : Promise.resolve({ rows: [] as { prefix: string; position: number; node_id: string; count: string }[] }),
+      ENABLE_CORRIDOR_PRIORS && corridorSourceIds.length > 0 && corridorReceiverIds.length > 0
+        ? query<{ src_node_id: string; rx_node_id: string; position: number; node_id: string; count: string }>(
+            `SELECT src_node_id, rx_node_id, position, node_id, SUM(count)::text AS count
+               FROM path_corridor_priors
               WHERE ($1::text[] IS NULL OR network = ANY($1))
-                AND (from_node_id = ANY($2) OR to_node_id = ANY($2))
-              GROUP BY from_node_id, to_node_id`,
-            [scopedNetworks, uniqueCandidateNodeIds],
+                AND src_node_id = ANY($2) AND rx_node_id = ANY($3)
+              GROUP BY src_node_id, rx_node_id, position, node_id`,
+            [scopedNetworks, corridorSourceIds, corridorReceiverIds],
           )
-        : Promise.resolve({ rows: [] as { from_node_id: string; to_node_id: string; best_score: string }[] }),
-      allUnique2charHashes.length > 0
-        ? query<{ hash_2char: string; node_id: string; score: string; observation_count: string }>(
-            `SELECT hash_2char, node_id, score::text, observation_count::text
-               FROM ml_path_prefix_scores
-              WHERE ($1::text[] IS NULL OR network = ANY($1)) AND hash_2char = ANY($2) AND score >= $3`,
-            [scopedNetworks, allUnique2charHashes, ML_SCORE_LOAD_THRESHOLD],
-          )
-        : Promise.resolve({ rows: [] as { hash_2char: string; node_id: string; score: string; observation_count: string }[] }),
+        : Promise.resolve({ rows: [] as { src_node_id: string; rx_node_id: string; position: number; node_id: string; count: string }[] }),
       uniqueCandidateNodeIds.length > 0
-        ? query<{ from_node_id: string; to_node_id: string; prob: string }>(
-            `SELECT from_node_id, to_node_id, MAX(probability)::text as prob
+        ? query<{ from_node_id: string; to_node_id: string; count: string }>(
+            `SELECT from_node_id, to_node_id, SUM(count)::text AS count
                FROM path_transition_priors
               WHERE ($1::text[] IS NULL OR network = ANY($1))
-                AND (from_node_id = ANY($2) OR to_node_id = ANY($2))
+                AND from_node_id = ANY($2) AND to_node_id = ANY($2)
               GROUP BY from_node_id, to_node_id`,
             [scopedNetworks, uniqueCandidateNodeIds],
           )
-        : Promise.resolve({ rows: [] as { from_node_id: string; to_node_id: string; prob: string }[] }),
-      uniqueCandidateNodeIds.length > 0
-        ? query<{ node_ids: string; prob: string }>(
-            `SELECT node_ids, MAX(probability)::text as prob
-               FROM path_motif_priors
+        : Promise.resolve({ rows: [] as { from_node_id: string; to_node_id: string; count: string }[] }),
+      ENABLE_POSITION_TRANSITIONS && uniqueCandidateNodeIds.length > 0
+        ? query<{ position: number; from_node_id: string; to_node_id: string; count: string }>(
+            `SELECT position, from_node_id, to_node_id, SUM(count)::text AS count
+               FROM path_position_transition_priors
               WHERE ($1::text[] IS NULL OR network = ANY($1))
-                AND motif_len = 2
-                AND split_part(node_ids, '>', 1) = ANY($2)
-                AND split_part(node_ids, '>', 2) = ANY($2)
-              GROUP BY node_ids`,
+                AND from_node_id = ANY($2) AND to_node_id = ANY($2)
+              GROUP BY position, from_node_id, to_node_id`,
             [scopedNetworks, uniqueCandidateNodeIds],
           )
-        : Promise.resolve({ rows: [] as { node_ids: string; prob: string }[] }),
+        : Promise.resolve({ rows: [] as { position: number; from_node_id: string; to_node_id: string; count: string }[] }),
       query<{ network: string; confidence_scale: string; confidence_bias: string; recommended_threshold: string }>(
         `SELECT network, confidence_scale::text, confidence_bias::text, recommended_threshold::text
            FROM path_model_calibration
@@ -439,10 +489,13 @@ export async function lazyResolvePath(
 
   // Build known-links set
   const knownLinks = new Set<string>();
+  const itmViableLinks = new Set<string>();
   for (const row of linkResult.rows) {
     const mn = row.node_a_id < row.node_b_id ? row.node_a_id : row.node_b_id;
     const mx = row.node_a_id < row.node_b_id ? row.node_b_id : row.node_a_id;
-    knownLinks.add(`${mn}:${mx}`);
+    const key = `${mn}:${mx}`;
+    if (Number(row.observed_count) >= 2) knownLinks.add(key);
+    if (row.itm_viable === true || row.force_viable === true) itmViableLinks.add(key);
   }
 
   function hasLink(a: string, b: string): boolean {
@@ -451,58 +504,58 @@ export async function lazyResolvePath(
     const mx = a < b ? b : a;
     return knownLinks.has(`${mn}:${mx}`);
   }
+  const isItmViable = (a: string, b: string): boolean => {
+    if (ABLATE_LEAKY_PRIORS || !ENABLE_ITM_BONUS) return false;
+    const mn = a < b ? a : b;
+    const mx = a < b ? b : a;
+    return itmViableLinks.has(`${mn}:${mx}`);
+  };
 
-  // Prefix-prior probability: "HASH|PREV_HASH" → Map<nodeId, probability>.
-  // MAX(probability) aggregates across receiver_region (best-case evidence).
-  const prefixProb = new Map<string, Map<string, number>>();
-  for (const row of prefixPriorRows.rows) {
-    const key = `${row.prefix.toUpperCase()}|${(row.prev_prefix ?? '').toUpperCase()}`;
-    if (!prefixProb.has(key)) prefixProb.set(key, new Map());
-    const p = Number(row.max_prob) || 0;
-    const inner = prefixProb.get(key)!;
-    inner.set(row.node_id, Math.max(inner.get(row.node_id) ?? 0, p));
+  const positionPrefixCounts = new Map<string, number>();
+  const prefixCounts = new Map<string, number>();
+  for (const row of positionPrefixRows.rows) {
+    const prefix = row.prefix.toUpperCase();
+    const count = Number(row.count) || 0;
+    positionPrefixCounts.set(
+      `${prefix}|${row.position}|${row.node_id}`,
+      count,
+    );
+    const prefixKey = `${prefix}|${row.node_id}`;
+    prefixCounts.set(prefixKey, (prefixCounts.get(prefixKey) ?? 0) + count);
+  }
+  const getPrefixCount = (nodeId: string, hash: string): number =>
+    ABLATE_LEAKY_PRIORS ? 0
+      : prefixCounts.get(`${hash.slice(0, 2).toUpperCase()}|${nodeId}`) ?? 0;
+  const getPositionPrefixCount = (position: number, nodeId: string, hash: string): number =>
+    ABLATE_LEAKY_PRIORS ? 0
+      : positionPrefixCounts.get(`${hash.slice(0, 2).toUpperCase()}|${position}|${nodeId}`) ?? 0;
+
+  const corridorCounts = new Map<string, number>();
+  for (const row of corridorPriorRows.rows) {
+    corridorCounts.set(
+      `${row.src_node_id}|${row.rx_node_id}|${row.position}|${row.node_id}`,
+      Number(row.count) || 0,
+    );
   }
 
-  function getPrefixProb(nodeId: string, hash: string, prevHash: string | null): number {
-    const h = hash.toUpperCase();
-    const withPrev = prefixProb.get(`${h}|${(prevHash ?? '').toUpperCase()}`)?.get(nodeId);
-    if (withPrev != null) return withPrev;
-    return prefixProb.get(`${h}|`)?.get(nodeId) ?? 0;
-  }
-
-  // Directed edge score: from (source-side) → to (receiver-side).
-  const edgeDirected = new Map<string, number>();
-  for (const row of edgePriorRows.rows) {
-    const k = transitionKey(row.from_node_id, row.to_node_id);
-    edgeDirected.set(k, Math.max(edgeDirected.get(k) ?? 0, Number(row.best_score) || 0));
-  }
-  const getEdgeDirected = (a: string, b: string): number =>
-    ABLATE_LEAKY_PRIORS ? 0 : edgeDirected.get(transitionKey(a, b)) ?? 0;
-
-  // Directed transition probability.
-  const transitionProb = new Map<string, number>();
+  const transitionCounts = new Map<string, number>();
   for (const row of transitionPriorRows.rows) {
     const k = transitionKey(row.from_node_id, row.to_node_id);
-    transitionProb.set(k, Math.max(transitionProb.get(k) ?? 0, Number(row.prob) || 0));
+    transitionCounts.set(k, Number(row.count) || 0);
   }
-  const getTransitionProb = (a: string, b: string): number =>
-    ABLATE_LEAKY_PRIORS ? 0 : transitionProb.get(transitionKey(a, b)) ?? 0;
+  const getTransitionCount = (a: string, b: string): number =>
+    ABLATE_LEAKY_PRIORS ? 0 : transitionCounts.get(transitionKey(a, b)) ?? 0;
 
-  // Directed 2-gram motif probability ("FROM>TO").
-  const motif2Prob = new Map<string, number>();
-  for (const row of motifPriorRows.rows) {
-    motif2Prob.set(row.node_ids, Math.max(motif2Prob.get(row.node_ids) ?? 0, Number(row.prob) || 0));
+  const positionTransitionCounts = new Map<string, number>();
+  for (const row of positionTransitionRows.rows) {
+    positionTransitionCounts.set(
+      `${row.position}|${transitionKey(row.from_node_id, row.to_node_id)}`,
+      Number(row.count) || 0,
+    );
   }
-  const getMotif2 = (a: string, b: string): number =>
-    ABLATE_LEAKY_PRIORS ? 0 : motif2Prob.get(motif2Key(a, b)) ?? 0;
-
-  // ML prefix scores: `${hash_2char}:${node_id}` → score
-  const mlScores = new Map<string, number>();
-  for (const row of mlScoreRows.rows) {
-    mlScores.set(`${row.hash_2char.toUpperCase()}:${row.node_id}`, Number(row.score) || 0);
-  }
-  const getMlScore = (hash: string, nodeId: string): number =>
-    ABLATE_LEAKY_PRIORS ? 0 : mlScores.get(`${hash.slice(0, 2).toUpperCase()}:${nodeId}`) ?? 0;
+  const getPositionTransitionCount = (position: number, a: string, b: string): number =>
+    ABLATE_LEAKY_PRIORS ? 0
+      : positionTransitionCounts.get(`${position}|${transitionKey(a, b)}`) ?? 0;
 
   // Model calibration (prefer exact network, fall back to 'all').
   let confidenceScale = 1;
@@ -517,21 +570,26 @@ export async function lazyResolvePath(
   }
 
   const decoderEvidence: PathDecoderEvidence = {
-    weights: SCORE,
+    weights: DECODER_WEIGHTS,
     maxHopKm: MAX_HOP_KM,
     distanceDecayKm: DIST_DECAY_KM,
     mlDominantThreshold: ML_DOMINANT_THRESHOLD,
-    unresolvedBaseline: NULL_BASELINE,
+    unresolvedBaseline: DIAGNOSTIC_NULL_BASELINE,
     ambiguityDelta: AMBIG_DELTA,
-    maxColumnCandidates: MAX_COL,
+    maxColumnCandidates: Math.max(1, Math.min(512, DIAGNOSTIC_MAX_COL || MAX_COL)),
     candidatesByHash: nodesByHash,
-    directAnchors: (position, hash) => globalDirectAnchors.get(`${position}:${hash}`) ?? [],
-    prefixProbability: getPrefixProb,
-    mlPrefixScore: getMlScore,
-    directedEdgeScore: getEdgeDirected,
-    transitionProbability: getTransitionProb,
-    motifProbability: getMotif2,
+    directAnchors: (position, hash) => DIAGNOSTIC_DISABLE_DIRECT_ANCHORS
+      ? []
+      : globalDirectAnchors.get(`${position}:${hash}`) ?? [],
+    prefixProbability: (nodeId, hash) => getPrefixCount(nodeId, hash),
+    positionPrefixCount: getPositionPrefixCount,
+    mlPrefixScore: () => 0,
+    directedEdgeScore: () => 0,
+    transitionProbability: getTransitionCount,
+    positionConditionalTransition: getPositionTransitionCount,
+    motifProbability: () => 0,
     hasObservedLink: hasLink,
+    isItmViable,
   };
 
   // ── 9. Decode each group and shape the public lazy-path DTO ──────────────
@@ -563,7 +621,59 @@ export async function lazyResolvePath(
       canonicalHashEntries.push({ position: i, hash: h, appearances });
     }
 
-    const resolved = decodePath(canonicalHashes, decoderEvidence);
+    const sourceMember = members.find((member) => member.src_node_id && sourcePositions.has(member.src_node_id));
+    const sourcePosition = sourceMember?.src_node_id
+      ? sourcePositions.get(sourceMember.src_node_id)
+      : undefined;
+    const sourceAnchor = sourceMember?.src_node_id && sourcePosition
+      ? { nodeId: sourceMember.src_node_id, lat: sourcePosition.lat, lon: sourcePosition.lon }
+      : undefined;
+    const terminalAnchors = members.flatMap((member) => {
+      const position = observerPositions.get(member.rx_node_id);
+      return position
+        ? [{ nodeId: member.rx_node_id, lat: position.lat, lon: position.lon }]
+        : [];
+    });
+    const corridorPairs = members.flatMap((member) => member.src_node_id
+      ? [`${member.src_node_id}|${member.rx_node_id}`]
+      : []);
+
+    const groupEvidence: PathDecoderEvidence = {
+      ...decoderEvidence,
+      sourceAnchor,
+      terminalAnchors,
+      corridorPriorCount: (position, nodeId) => {
+        if (ABLATE_LEAKY_PRIORS || !ENABLE_CORRIDOR_PRIORS) return 0;
+        let best = 0;
+        for (const pair of corridorPairs) {
+          best = Math.max(best, corridorCounts.get(`${pair}|${position}|${nodeId}`) ?? 0);
+        }
+        return best;
+      },
+      observerDistance: (candidate) => {
+        if (terminalAnchors.length === 0) return 0;
+        let nearest = Infinity;
+        for (const terminal of terminalAnchors) {
+          nearest = Math.min(nearest, distanceKm(terminal, candidate));
+        }
+        return Number.isFinite(nearest) ? -nearest / OBSERVER_DISTANCE_DECAY_KM : 0;
+      },
+      corridorInterpolation: (position, pathLength, candidate) => {
+        if (!ENABLE_CORRIDOR_INTERPOLATION || !sourcePosition || terminalAnchors.length === 0) return 0;
+        const fraction = pathLength <= 1 ? 0.5 : position / (pathLength - 1);
+        let nearest = Infinity;
+        for (const terminal of terminalAnchors) {
+          const interpolated = {
+            lat: sourcePosition.lat + (terminal.lat - sourcePosition.lat) * fraction,
+            lon: sourcePosition.lon + (terminal.lon - sourcePosition.lon) * fraction,
+          };
+          nearest = Math.min(nearest, distanceKm(interpolated, candidate));
+        }
+        return Number.isFinite(nearest) ? -nearest / CORRIDOR_INTERPOLATION_KM : 0;
+      },
+    };
+
+    const resolved = decodePath(canonicalHashes, groupEvidence);
 
     // ── Build canonicalPath: relay nodes + observer nodes ──────────────────
     const canonicalPath: LazyPathNode[] = canonicalHashEntries.map(({ position, hash, appearances }) => {
