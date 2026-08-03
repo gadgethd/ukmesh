@@ -4,7 +4,7 @@ import { AnimatedPathOverlay, type AerialPath, type AerialPathNode } from '../..
 import { LoadingIndicator } from '../../components/LoadingIndicator.js';
 import type { MeshNode } from '../../hooks/useNodes.js';
 import {
-  canonicalPathRuns,
+  multiObserverPathRoutes,
   type CanonicalPathNode,
   type MultiObserverBetaResponse,
   type ResolveMode,
@@ -49,15 +49,6 @@ const CARTO_TILES = [
   'https://d.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
 ];
 
-function resolvedNode(node: CanonicalPathNode): AerialPathNode {
-  return {
-    position: [node.lon!, node.lat!],
-    nodeId: node.nodeId ?? undefined,
-    name: node.name ?? undefined,
-    confidence: node.confidence,
-  };
-}
-
 function lazyPathRuns(nodes: readonly LazyPathNode[]): LazyPathNode[][] {
   const runs: LazyPathNode[][] = [];
   let current: LazyPathNode[] = [];
@@ -76,14 +67,23 @@ function lazyPathRuns(nodes: readonly LazyPathNode[]): LazyPathNode[][] {
   return runs;
 }
 
-function buildAerialPaths(results: MultiObserverBetaResponse[], lazyPaths: LazyPath[]): AerialPath[] {
+export function buildAerialPaths(
+  results: MultiObserverBetaResponse[],
+  lazyPaths: LazyPath[],
+  pathScopeId = 'detail',
+): AerialPath[] {
   const paths: AerialPath[] = [];
-  results.forEach((result, resultIndex) => {
-    canonicalPathRuns(result.canonicalPath).forEach((run, segmentIndex) => {
+  results.forEach((result) => {
+    multiObserverPathRoutes(result).forEach((route) => {
       paths.push({
-        id: `canonical-${result.packetHash}-${resultIndex}-${segmentIndex}`,
-        confidence: result.confidence,
-        nodes: run.map(resolvedNode),
+        id: `canonical-${result.packetHash}`,
+        confidence: route.confidence,
+        nodes: route.nodes.map((node) => ({
+          position: [node.lon, node.lat],
+          nodeId: node.nodeId ?? undefined,
+          name: node.name ?? undefined,
+          confidence: node.confidence,
+        })),
       });
     });
   });
@@ -92,8 +92,8 @@ function buildAerialPaths(results: MultiObserverBetaResponse[], lazyPaths: LazyP
   // used only by the feed view, which does not request the multi response.
   if (results.length > 0) return paths;
 
-  lazyPaths.forEach((path, pathIndex) => {
-    lazyPathRuns(path.canonicalPath).forEach((run, runIndex) => {
+  lazyPaths.forEach((path) => {
+    lazyPathRuns(path.canonicalPath).forEach((run) => {
       const nodes = run.map((node): AerialPathNode => ({
         position: [node.lon!, node.lat!],
         nodeId: node.nodeId ?? undefined,
@@ -103,7 +103,7 @@ function buildAerialPaths(results: MultiObserverBetaResponse[], lazyPaths: LazyP
       const confidence = path.totalHops > 0
         ? Math.max(0, Math.min(1, path.matchedHops / path.totalHops))
         : null;
-      paths.push({ id: `hash-traced-${pathIndex}-${runIndex}`, confidence, nodes });
+      paths.push({ id: `hash-traced-${pathScopeId}`, confidence, nodes });
     });
   });
   return paths;
@@ -113,16 +113,20 @@ export const PathMap: React.FC<{
   results: MultiObserverBetaResponse[];
   observerPositions?: [number, number][];
   lazyPaths?: LazyPath[];
+  pathScopeId?: string;
   nodeMap?: Map<string, MeshNode>;
   isLoading?: boolean;
-}> = ({ results, observerPositions = [], lazyPaths = [], nodeMap, isLoading = false }) => {
+}> = ({ results, observerPositions = [], lazyPaths = [], pathScopeId = 'detail', nodeMap, isLoading = false }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const maplibreRef = useRef<typeof maplibregl | null>(null);
   const mapReadyRef = useRef(false);
   const nodeMapRef = useRef(nodeMap);
   const observerPositionsRef = useRef(observerPositions);
-  const aerialPaths = useMemo(() => buildAerialPaths(results, lazyPaths), [results, lazyPaths]);
+  const aerialPaths = useMemo(
+    () => buildAerialPaths(results, lazyPaths, pathScopeId),
+    [results, lazyPaths, pathScopeId],
+  );
   const aerialPathsRef = useRef(aerialPaths);
   const [map, setMap] = useState<maplibregl.Map | null>(null);
   nodeMapRef.current = nodeMap;

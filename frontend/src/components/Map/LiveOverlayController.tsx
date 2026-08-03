@@ -4,7 +4,7 @@ import { DeckGLOverlay } from './DeckGLOverlay.js';
 import { AnimatedPathOverlay, type AerialPath } from './AnimatedPathOverlay.js';
 import { useArcs, useNodeMap } from '../../hooks/useNodes.js';
 import { usePacketPathOverlay } from '../../hooks/usePacketPathOverlay.js';
-import { canonicalPathRuns, packetObserverIds } from '../../hooks/packetPathOverlayUtils.js';
+import { packetObserverIds } from '../../hooks/packetPathOverlayUtils.js';
 import type { Filters } from '../FilterPanel/FilterPanel.js';
 import { buildHiddenCoordMask, hasCoords, maskNodePoint, maskPoint } from '../../utils/pathing.js';
 import { useOverlayStore } from '../../store/overlayStore.js';
@@ -86,7 +86,7 @@ export const LiveOverlayController: React.FC<LiveOverlayControllerProps> = ({
   const {
     packetPaths,
     betaPacketPaths,
-    betaCanonicalPath,
+    betaPathRoutes,
     betaObserverIds,
     betaPathConfidence,
     betaPermutationCount,
@@ -105,17 +105,20 @@ export const LiveOverlayController: React.FC<LiveOverlayControllerProps> = ({
   const showPathOnly = filters.betaPaths || pinnedPacketId !== null;
   const liveAerialPaths = useMemo<AerialPath[]>(() => {
     if (!showPathOnly) return [];
-    const packetKey = activePacketSnapshot?.id ?? 'live';
+    const packetKey = activePacketSnapshot?.packetHash ?? activePacketSnapshot?.id ?? 'live';
     const nodesFor = (path: [number, number][]) => path.map((point) => {
       const [lat, lon] = maskPoint(point, hiddenCoordMask);
       return { position: [lon, lat] as [number, number] };
     });
     if (filters.betaPaths) {
-      return canonicalPathRuns(betaCanonicalPath).map((run, index) => ({
-        id: `main-live-path:${packetKey}:canonical:${index}`,
-        confidence: betaPathConfidence,
-        nodes: run.map((node) => {
-          const [lat, lon] = maskPoint([node.lat!, node.lon!], hiddenCoordMask);
+      return betaPathRoutes.map((route) => ({
+        // All routes for one packet deliberately share this scope. The
+        // animated overlay keys individual edges within it, so a later
+        // observer reuses the trunk and adds only its new branch.
+        id: `main-live-path:${packetKey}:resolved`,
+        confidence: route.confidence,
+        nodes: route.nodes.map((node) => {
+          const [lat, lon] = maskPoint([node.lat, node.lon], hiddenCoordMask);
           return {
             position: [lon, lat] as [number, number],
             nodeId: node.nodeId ?? undefined,
@@ -125,12 +128,12 @@ export const LiveOverlayController: React.FC<LiveOverlayControllerProps> = ({
         }),
       }));
     }
-    return renderedPaths.map((path, index) => ({
-      id: `main-live-path:${packetKey}:observed:${index}`,
+    return renderedPaths.map((path) => ({
+      id: `main-live-path:${packetKey}:observed`,
       confidence: 1,
       nodes: nodesFor(path),
     })).filter((path) => path.nodes.length > 1);
-  }, [activePacketSnapshot?.id, betaCanonicalPath, betaPathConfidence, filters.betaPaths,
+  }, [activePacketSnapshot?.id, activePacketSnapshot?.packetHash, betaPathRoutes, filters.betaPaths,
     hiddenCoordMask, renderedPaths, showPathOnly]);
 
   const observerIdsForOverlay = useMemo(() => {

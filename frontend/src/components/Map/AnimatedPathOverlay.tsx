@@ -57,12 +57,16 @@ export type PathRegistryEntry = {
 
 const EMPTY_OBSERVER_NODES: AerialPathNode[] = [];
 
+function aerialNodeKey(node: AerialPathNode): string {
+  return `${node.position[0].toFixed(6)},${node.position[1].toFixed(6)}`;
+}
+
 export function buildAerialPathSegments(paths: AerialPath[]): AerialPathSegment[] {
   return paths.flatMap((path) => path.nodes.slice(0, -1).flatMap((source, index) => {
     const target = path.nodes[index + 1];
     if (!target) return [];
     return [{
-      id: `${path.id}:${index}`,
+      id: `${path.id}:${aerialNodeKey(source)}>${aerialNodeKey(target)}`,
       source,
       target,
       confidence: target.confidence ?? path.confidence,
@@ -70,25 +74,43 @@ export function buildAerialPathSegments(paths: AerialPath[]): AerialPathSegment[
   }));
 }
 
-function aerialPathSignature(path: AerialPath): string {
-  return [
-    path.confidence ?? 'unknown',
-    ...path.nodes.map((node) => `${node.position[0].toFixed(6)},${node.position[1].toFixed(6)}:${node.confidence ?? 'unknown'}`),
-  ].join(':');
+function strongestConfidence(a: number | null, b: number | null): number | null {
+  if (a == null) return b;
+  if (b == null) return a;
+  return Math.max(a, b);
 }
 
-/** Add or update incoming paths without removing paths from earlier packets. */
+/**
+ * Register stable packet-scoped edges. Shared trunk edges are stored once, so
+ * adding an observer updates their metadata without restarting animation/TTL;
+ * new branch edges and different packet scopes receive independent entries.
+ */
 export function registerAerialPaths(
   registry: Map<string, PathRegistryEntry>,
   paths: AerialPath[],
   now: number,
 ): void {
   for (const path of paths) {
-    const signature = aerialPathSignature(path);
-    const existing = registry.get(path.id);
-    if (existing?.signature === signature) continue;
-    const segments = buildAerialPathSegments([path]);
-    if (segments.length > 0) registry.set(path.id, { signature, segments, startedAt: now });
+    let nextSegmentStart = now;
+    for (const segment of buildAerialPathSegments([path])) {
+      const existing = registry.get(segment.id);
+      const previous = existing?.segments[0];
+      const merged = previous
+        ? { ...segment, confidence: strongestConfidence(previous.confidence, segment.confidence) }
+        : segment;
+      const signature = [
+        aerialNodeKey(merged.source),
+        aerialNodeKey(merged.target),
+        merged.confidence ?? 'unknown',
+      ].join(':');
+      registry.set(segment.id, {
+        signature,
+        segments: [merged],
+        startedAt: existing?.startedAt ?? nextSegmentStart,
+      });
+      const completionAt = (existing?.startedAt ?? nextSegmentStart) + PATH_HOP_ANIMATION_MS;
+      if (completionAt > now) nextSegmentStart = Math.max(nextSegmentStart, completionAt);
+    }
   }
 }
 
@@ -268,7 +290,11 @@ export const AnimatedPathOverlay: React.FC<{
 
     for (const [pathId, entry] of registryRef.current) {
       const animationDuration = entry.segments.length * PATH_HOP_ANIMATION_MS;
-      const elapsed = Math.max(0, now - entry.startedAt);
+      if (now < entry.startedAt) {
+        needsAnimationFrame = true;
+        continue;
+      }
+      const elapsed = now - entry.startedAt;
       if (elapsed < animationDuration) {
         needsAnimationFrame = true;
         const completedCount = Math.floor(elapsed / PATH_HOP_ANIMATION_MS);

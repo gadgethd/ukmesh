@@ -465,6 +465,7 @@ export const PacketDetailPanel: React.FC<{
               results={resolvedPaths}
               observerPositions={observerPositions}
               lazyPaths={lazyPath?.paths ?? []}
+              pathScopeId={packet.packet_hash}
               nodeMap={nodeMap}
               isLoading={lazyStatus === 'settling' || lazyStatus === 'loading'}
             />
