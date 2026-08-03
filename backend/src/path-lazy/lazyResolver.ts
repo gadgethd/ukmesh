@@ -39,14 +39,15 @@
  *    path at position = path_hashes.length (i.e. right after the last relay
  *    it heard through).  Observer positions are ground-truth.
  *
- * Scoring weights and prior key-formats live in ../path-shared/scoring.ts so
- * the lazy and beta resolvers cannot silently drift apart.
+ * Decode mechanics live in ../path-core/decoder.ts. This wrapper owns database
+ * evidence loading, observer grouping, and the public lazy-path DTO only.
  */
 import { privateNodePacketNetworkMatchSql } from '../privacy/networkScope.js';
 import {
   MAX_HOP_KM,
   SCORE,
   ML_DOMINANT_THRESHOLD,
+  ML_SCORE_LOAD_THRESHOLD,
   DIST_DECAY_KM,
   NULL_BASELINE,
   AMBIG_DELTA,
@@ -54,6 +55,14 @@ import {
   transitionKey,
   motif2Key,
 } from '../path-shared/scoring.js';
+import {
+  buildObserverBounds,
+  decodePath,
+  distanceKm,
+  indexCandidatesByHash,
+  type CandidateNodeEvidence,
+  type PathDecoderEvidence,
+} from '../path-core/decoder.js';
 import { expandResolverScope } from '../networks.js';
 
 type QueryFn = <T extends Record<string, unknown> = Record<string, unknown>>(
@@ -121,36 +130,6 @@ function expectedHashHexLength(pathHashSizeBytes: number | null): number | null 
 
 function networkScope(network: string | null): string[] | null {
   return network == null ? null : expandResolverScope(network);
-}
-
-function distKm(
-  a: { lat: number; lon: number },
-  b: { lat: number; lon: number },
-): number {
-  const R = 6371;
-  const dLat = (b.lat - a.lat) * (Math.PI / 180);
-  const dLon = (b.lon - a.lon) * (Math.PI / 180);
-  const sinLat = Math.sin(dLat / 2) ** 2;
-  const sinLon = Math.sin(dLon / 2) ** 2;
-  const cosA = Math.cos(a.lat * (Math.PI / 180));
-  const cosB = Math.cos(b.lat * (Math.PI / 180));
-  return 2 * R * Math.asin(Math.sqrt(sinLat + cosA * cosB * sinLon));
-}
-
-function minDistToSet(
-  pt: { lat: number; lon: number },
-  anchors: Array<{ lat: number; lon: number }>,
-): number {
-  let min = Infinity;
-  for (const a of anchors) min = Math.min(min, distKm(pt, a));
-  return min;
-}
-
-type Bounds = { minLat: number; maxLat: number; minLon: number; maxLon: number };
-
-function inBounds(pt: { lat: number; lon: number }, b: Bounds): boolean {
-  return pt.lat >= b.minLat && pt.lat <= b.maxLat &&
-         pt.lon >= b.minLon && pt.lon <= b.maxLon;
 }
 
 type ObsEntry = {
@@ -284,21 +263,8 @@ export async function lazyResolvePath(
   }
 
   // ── 4. Bounding box from all observer positions ─────────────────────────
-  let observerBounds: Bounds | null = null;
   const obsCoords = [...observerPositions.values()];
-  if (obsCoords.length > 0) {
-    const lats = obsCoords.map((p) => p.lat);
-    const lons = obsCoords.map((p) => p.lon);
-    const padLat = MAX_HOP_KM / 111;
-    const midLat = (Math.min(...lats) + Math.max(...lats)) / 2;
-    const padLon = MAX_HOP_KM / (111 * Math.cos(midLat * (Math.PI / 180)));
-    observerBounds = {
-      minLat: Math.min(...lats) - padLat,
-      maxLat: Math.max(...lats) + padLat,
-      minLon: Math.min(...lons) - padLon,
-      maxLon: Math.max(...lons) + padLon,
-    };
-  }
+  const observerBounds = buildObserverBounds(obsCoords, MAX_HOP_KM);
 
   // ── 5. Group observers by prefix-compatible path_hashes ─────────────────
   const obsEntries: ObsEntry[] = canonicalObs.rows.map((row) => {
@@ -334,7 +300,7 @@ export async function lazyResolvePath(
   const allUniqueHashes = [...new Set(groups.flatMap((g) => g.canonicalHashes))];
   if (allUniqueHashes.length > LAZY_MAX_UNIQUE_HASHES) throw new Error('PATH_HISTORY_LIMIT');
 
-  const nodesByHash = new Map<string, Array<{ nodeId: string; name: string | null; lat: number; lon: number }>>();
+  let candidateNodeEvidence: CandidateNodeEvidence[] = [];
 
   if (allUniqueHashes.length > 0) {
     const whereClauses = allUniqueHashes.map((_, i) => `upper(node_id) LIKE $${i + 2}`);
@@ -354,20 +320,14 @@ export async function lazyResolvePath(
       [scopedNetworks, ...allUniqueHashes.map((h) => h + '%'), LAZY_MAX_CANDIDATE_NODES + 1],
     );
     if (nodeResult.rows.length > LAZY_MAX_CANDIDATE_NODES) throw new Error('PATH_HISTORY_LIMIT');
-
-    for (const node of nodeResult.rows) {
-      if (node.lat == null || node.lon == null || node.lat === 0 || node.lon === 0) continue;
-      if (observerBounds && !inBounds(node as { lat: number; lon: number }, observerBounds)) continue;
-      const id = node.node_id.toUpperCase();
-      for (const hash of allUniqueHashes) {
-        if (id.startsWith(hash)) {
-          if (!nodesByHash.has(hash)) nodesByHash.set(hash, []);
-          nodesByHash.get(hash)!.push({ nodeId: node.node_id, name: node.name, lat: node.lat!, lon: node.lon! });
-          break;
-        }
-      }
-    }
+    candidateNodeEvidence = nodeResult.rows.map((node) => ({
+      nodeId: node.node_id,
+      name: node.name,
+      lat: node.lat,
+      lon: node.lon,
+    }));
   }
+  const nodesByHash = indexCandidatesByHash(allUniqueHashes, candidateNodeEvidence, observerBounds);
 
   // ── 7. Global cross-group direct anchor map ─────────────────────────────
   // Key: `${position}:${hash}`.  An observer with hop_count = P+1 received
@@ -443,8 +403,8 @@ export async function lazyResolvePath(
         ? query<{ hash_2char: string; node_id: string; score: string; observation_count: string }>(
             `SELECT hash_2char, node_id, score::text, observation_count::text
                FROM ml_path_prefix_scores
-              WHERE ($1::text[] IS NULL OR network = ANY($1)) AND hash_2char = ANY($2) AND score >= 0.80`,
-            [scopedNetworks, allUnique2charHashes],
+              WHERE ($1::text[] IS NULL OR network = ANY($1)) AND hash_2char = ANY($2) AND score >= $3`,
+            [scopedNetworks, allUnique2charHashes, ML_SCORE_LOAD_THRESHOLD],
           )
         : Promise.resolve({ rows: [] as { hash_2char: string; node_id: string; score: string; observation_count: string }[] }),
       uniqueCandidateNodeIds.length > 0
@@ -556,157 +516,25 @@ export async function lazyResolvePath(
     confidenceBias = Number(chosen.confidence_bias) || 0;
   }
 
-  // ── 9. Decode each group into a LazyPath via a per-group Viterbi ─────────
-  type Cand = { nodeId: string | null; name: string | null; lat: number | null; lon: number | null };
-  const NULL_CAND: Cand = { nodeId: null, name: null, lat: null, lon: null };
-
-  type ResolvedEntry = {
-    hash: string;
-    nodeId: string | null;
-    name: string | null;
-    lat: number | null;
-    lon: number | null;
-    ambiguous: boolean;
+  const decoderEvidence: PathDecoderEvidence = {
+    weights: SCORE,
+    maxHopKm: MAX_HOP_KM,
+    distanceDecayKm: DIST_DECAY_KM,
+    mlDominantThreshold: ML_DOMINANT_THRESHOLD,
+    unresolvedBaseline: NULL_BASELINE,
+    ambiguityDelta: AMBIG_DELTA,
+    maxColumnCandidates: MAX_COL,
+    candidatesByHash: nodesByHash,
+    directAnchors: (position, hash) => globalDirectAnchors.get(`${position}:${hash}`) ?? [],
+    prefixProbability: getPrefixProb,
+    mlPrefixScore: getMlScore,
+    directedEdgeScore: getEdgeDirected,
+    transitionProbability: getTransitionProb,
+    motifProbability: getMotif2,
+    hasObservedLink: hasLink,
   };
 
-  // Emission: how well `cand` fits the hash on its own.
-  function emission(hash: string, prevHash: string | null, cand: Cand, anchors: Array<{ lat: number; lon: number }>): number {
-    if (cand.nodeId === null) return NULL_BASELINE;
-    const positioned = cand.lat != null && cand.lon != null;
-    // Hard direct-receiver gate: when an anchor exists for this position the
-    // relay must be positioned and within one hop of the observer.
-    if (anchors.length > 0) {
-      if (!positioned) return -Infinity;
-      if (minDistToSet({ lat: cand.lat!, lon: cand.lon! }, anchors) > MAX_HOP_KM) return -Infinity;
-    }
-    let e = 0;
-    e += SCORE.prefix * getPrefixProb(cand.nodeId, hash, prevHash);
-    const ml = getMlScore(hash, cand.nodeId);
-    e += ml >= ML_DOMINANT_THRESHOLD ? Math.min(SCORE.mlDominantCap, ml * SCORE.mlDominantCap)
-                                     : Math.min(SCORE.mlWeakCap, ml * SCORE.mlWeakCap);
-    if (anchors.length > 0 && positioned) {
-      const d = minDistToSet({ lat: cand.lat!, lon: cand.lon! }, anchors);
-      e += SCORE.anchor * Math.max(0, 1 - d / MAX_HOP_KM);
-    }
-    return e;
-  }
-
-  // Transition: how well `cur` (receiver-side) follows `prev` (source-side).
-  function transition(prev: Cand, cur: Cand): number {
-    if (prev.nodeId === null || cur.nodeId === null) return 0; // unresolved wildcard, neutral
-    let t = 0;
-    if (prev.lat != null && prev.lon != null && cur.lat != null && cur.lon != null) {
-      const d = distKm({ lat: prev.lat, lon: prev.lon }, { lat: cur.lat, lon: cur.lon });
-      if (d > MAX_HOP_KM) return -Infinity; // physically impossible hop
-      t += SCORE.dist * Math.exp(-d / DIST_DECAY_KM);
-    }
-    t += SCORE.edge * getEdgeDirected(prev.nodeId, cur.nodeId);
-    t += SCORE.transition * getTransitionProb(prev.nodeId, cur.nodeId);
-    t += SCORE.motif * getMotif2(prev.nodeId, cur.nodeId);
-    if (hasLink(prev.nodeId, cur.nodeId)) t += SCORE.link;
-    return t;
-  }
-
-  function buildColumn(pos: number, hash: string, prevHash: string | null): Cand[] {
-    const raw = nodesByHash.get(hash) ?? [];
-    let cands: Cand[] = raw.map((c) => ({ nodeId: c.nodeId, name: c.name, lat: c.lat, lon: c.lon }));
-    if (cands.length > MAX_COL) {
-      // Keep the strongest by standalone evidence when a 1-byte prefix is shared widely.
-      const anchors = globalDirectAnchors.get(`${pos}:${hash}`) ?? [];
-      cands = cands
-        .map((c) => ({ c, s: emission(hash, prevHash, c, anchors) }))
-        .sort((a, b) => b.s - a.s)
-        .slice(0, MAX_COL)
-        .map((x) => x.c);
-    }
-    cands.push(NULL_CAND);
-    return cands;
-  }
-
-  // Run the max-product Viterbi over canonicalHashes[0..N-1] and return the
-  // best coherent assignment per position (+ ambiguity from marginal gaps).
-  function decodeChain(canonicalHashes: string[]): Map<number, ResolvedEntry> {
-    const N = canonicalHashes.length;
-    const resolved = new Map<number, ResolvedEntry>();
-    if (N === 0) return resolved;
-
-    const cols: Cand[][] = [];
-    const emiss: number[][] = [];
-    const anchorsByPos: Array<Array<{ lat: number; lon: number }>> = [];
-    for (let pos = 0; pos < N; pos++) {
-      const hash = canonicalHashes[pos]!;
-      const prevHash = pos > 0 ? (canonicalHashes[pos - 1] ?? null) : null;
-      const anchors = globalDirectAnchors.get(`${pos}:${hash}`) ?? [];
-      anchorsByPos.push(anchors);
-      const col = buildColumn(pos, hash, prevHash);
-      cols.push(col);
-      emiss.push(col.map((c) => emission(hash, prevHash, c, anchors)));
-    }
-
-    // Forward max-product: best score of a prefix ending at cols[pos][j].
-    // The NULL_CAND in every column (neutral, finite transitions) guarantees a
-    // connected path, so an infeasible real→real hop simply isn't taken — the
-    // chain routes through the unresolved wildcard instead of teleporting.
-    const fwd: number[][] = cols.map((c) => new Array(c.length).fill(-Infinity));
-    for (let j = 0; j < cols[0]!.length; j++) fwd[0]![j] = emiss[0]![j]!;
-    for (let pos = 1; pos < N; pos++) {
-      for (let j = 0; j < cols[pos]!.length; j++) {
-        const ej = emiss[pos]![j]!;
-        if (!isFinite(ej)) continue;
-        let best = -Infinity;
-        for (let k = 0; k < cols[pos - 1]!.length; k++) {
-          if (!isFinite(fwd[pos - 1]![k]!)) continue;
-          const t = transition(cols[pos - 1]![k]!, cols[pos]![j]!);
-          if (!isFinite(t)) continue;
-          const total = fwd[pos - 1]![k]! + t;
-          if (total > best) best = total;
-        }
-        if (isFinite(best)) fwd[pos]![j] = best + ej;
-      }
-    }
-
-    // Backward max-product: best score of a suffix starting at cols[pos][j].
-    const bwd: number[][] = cols.map((c) => new Array(c.length).fill(-Infinity));
-    for (let j = 0; j < cols[N - 1]!.length; j++) bwd[N - 1]![j] = 0;
-    for (let pos = N - 2; pos >= 0; pos--) {
-      for (let j = 0; j < cols[pos]!.length; j++) {
-        let best = -Infinity;
-        for (let k = 0; k < cols[pos + 1]!.length; k++) {
-          const ek = emiss[pos + 1]![k]!;
-          if (!isFinite(ek) || !isFinite(bwd[pos + 1]![k]!)) continue;
-          const t = transition(cols[pos]![j]!, cols[pos + 1]![k]!);
-          if (!isFinite(t)) continue;
-          const total = t + ek + bwd[pos + 1]![k]!;
-          if (total > best) best = total;
-        }
-        bwd[pos]![j] = isFinite(best) ? best : 0; // suffix may end here
-      }
-    }
-
-    for (let pos = 0; pos < N; pos++) {
-      const hash = canonicalHashes[pos]!;
-      // Best-path-through marginal for each candidate at this position.
-      let bestJ = -1, bestM = -Infinity, secondNodeM = -Infinity;
-      for (let j = 0; j < cols[pos]!.length; j++) {
-        if (!isFinite(fwd[pos]![j]!) || !isFinite(bwd[pos]![j]!)) continue;
-        const m = fwd[pos]![j]! + bwd[pos]![j]!;
-        if (m > bestM) { secondNodeM = bestM; bestM = m; bestJ = j; }
-        else if (m > secondNodeM) { secondNodeM = m; }
-      }
-      const best = bestJ >= 0 ? cols[pos]![bestJ]! : NULL_CAND;
-      const ambiguous = best.nodeId !== null && isFinite(secondNodeM) && (bestM - secondNodeM) < AMBIG_DELTA;
-      resolved.set(pos, {
-        hash,
-        nodeId: best.nodeId,
-        name: best.name,
-        lat: best.lat,
-        lon: best.lon,
-        ambiguous,
-      });
-    }
-
-    return resolved;
-  }
+  // ── 9. Decode each group and shape the public lazy-path DTO ──────────────
 
   const paths: LazyPath[] = [];
 
@@ -735,7 +563,7 @@ export async function lazyResolvePath(
       canonicalHashEntries.push({ position: i, hash: h, appearances });
     }
 
-    const resolved = decodeChain(canonicalHashes);
+    const resolved = decodePath(canonicalHashes, decoderEvidence);
 
     // ── Build canonicalPath: relay nodes + observer nodes ──────────────────
     const canonicalPath: LazyPathNode[] = canonicalHashEntries.map(({ position, hash, appearances }) => {
@@ -771,7 +599,7 @@ export async function lazyResolvePath(
         if (obsPos) {
           const prevRelay = resolved.get(obsPosition - 1);
           const distOk = !prevRelay?.lat || !prevRelay?.lon ||
-            distKm(obsPos, { lat: prevRelay.lat, lon: prevRelay.lon }) <= MAX_HOP_KM;
+            distanceKm(obsPos, { lat: prevRelay.lat, lon: prevRelay.lon }) <= MAX_HOP_KM;
           if (distOk) { validLat = obsPos.lat; validLon = obsPos.lon; }
         }
         canonicalPath.push({
