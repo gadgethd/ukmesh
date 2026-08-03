@@ -1,7 +1,8 @@
-import type {
-  RfCoverageMeta,
-  RfCoverageProgress,
-  RfCoverageTierName,
+import {
+  rfNodeCoverageState,
+  type RfCoverageMeta,
+  type RfCoverageProgress,
+  type RfCoverageTierName,
 } from '../../hooks/useRfCoverage.js';
 
 export function formatRfEta(seconds: number | undefined): string | null {
@@ -24,6 +25,8 @@ export function RfCoverageStatus({
   availableTiers,
   tier,
   onTierChange,
+  nodePublicKey,
+  onClearNode,
   visible,
 }: {
   meta: RfCoverageMeta | null;
@@ -31,19 +34,25 @@ export function RfCoverageStatus({
   availableTiers: RfCoverageTierName[];
   tier: RfCoverageTierName;
   onTierChange: (tier: RfCoverageTierName) => void;
+  nodePublicKey?: string | null;
+  onClearNode?: () => void;
   visible: boolean;
 }) {
   if (!visible) return null;
-  const product = meta?.coverage?.[tier];
+  const nodeEntry = nodePublicKey ? meta?.node_coverage?.[nodePublicKey.toLowerCase()] : undefined;
+  const product = nodePublicKey ? nodeEntry?.standard : meta?.coverage?.[tier];
+  const nodeState = nodePublicKey ? rfNodeCoverageState(meta, nodePublicKey) : null;
   const eta = formatRfEta(progress?.eta_seconds);
   const running = !!progress && progress.stage !== 'done' && progress.stage !== 'error';
-  const failed = progress?.stage === 'error'
-    || !!meta?.run?.failure
-    || meta?.run?.tiers?.[tier]?.state === 'failed';
+  const failed = nodePublicKey
+    ? nodeState === 'error'
+    : progress?.stage === 'error'
+      || !!meta?.run?.failure
+      || meta?.run?.tiers?.[tier]?.state === 'failed';
 
   return (
     <section className="rf-coverage-status" aria-label="RF coverage status">
-      {running && (
+      {!nodePublicKey && running && (
         <div className="rf-coverage-progress" role="status">
           <strong>{stageLabel(progress.stage)}</strong>
           <span>{progress.backend?.replace('_', ' ') ?? 'preparing'}</span>
@@ -51,15 +60,23 @@ export function RfCoverageStatus({
           {eta && <span>ETA {eta}</span>}
         </div>
       )}
+      {nodePublicKey && nodeState === 'pending' && (
+        <div className="rf-coverage-progress" role="status">
+          Repeater coverage is pending an on-demand calculation.
+        </div>
+      )}
       {failed && (
         <div className="rf-coverage-progress rf-coverage-progress--error" role="status">
-          Coverage refresh failed; the last published tiles remain live.
+          {nodePublicKey ? (nodeEntry?.failure ?? 'Repeater coverage failed.') : 'Coverage refresh failed; the last published tiles remain live.'}
         </div>
       )}
       <div className="rf-coverage-card">
         <div className="rf-coverage-card__header">
-          <strong>HopReach RF coverage</strong>
-          {availableTiers.length > 1 && (
+          <strong>{nodePublicKey ? 'Repeater RF footprint' : 'HopReach RF coverage'}</strong>
+          {nodePublicKey && onClearNode && (
+            <button type="button" className="rf-coverage-back" onClick={onClearNode}>Network coverage</button>
+          )}
+          {!nodePublicKey && availableTiers.length > 1 && (
             <div className="rf-coverage-tier" aria-label="Coverage detail">
               {availableTiers.map((value) => (
                 <button
@@ -80,11 +97,18 @@ export function RfCoverageStatus({
           <dl className="rf-coverage-details">
             <div><dt>Frequency</dt><dd>{product.frequency_mhz.toFixed(3)} MHz</dd></div>
             <div><dt>Generated</dt><dd>{new Date(product.generated_at ?? meta?.generated_at ?? '').toLocaleString()}</dd></div>
-            <div><dt>Model</dt><dd>{meta?.run?.model ?? 'HopReach'}</dd></div>
+            <div><dt>Model</dt><dd>{nodePublicKey ? 'Single transmitter' : (meta?.run?.model ?? 'HopReach')}</dd></div>
             <div><dt>Source</dt><dd>{meta?.run?.source_version ?? meta?.version ?? 'unknown'}</dd></div>
+            {nodePublicKey && <div><dt>Status</dt><dd>{nodeState === 'pending' ? 'Pending' : nodeState === 'stale' ? 'Stale' : 'Available'}</dd></div>}
           </dl>
         ) : (
-          <p className="rf-coverage-waiting">Standard coverage is being prepared.</p>
+          <p className="rf-coverage-waiting">
+            {nodePublicKey
+              ? nodeEntry?.state === 'failed'
+                ? 'Coverage could not be computed for this repeater.'
+                : 'Coverage is pending an on-demand calculation.'
+              : 'Standard coverage is being prepared.'}
+          </p>
         )}
         {product?.assumptions?.note && <p className="rf-coverage-note">{product.assumptions.note}</p>}
       </div>

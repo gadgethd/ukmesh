@@ -116,6 +116,11 @@ export function MapLibreMap({
   showHexClashes,
   maxHexClashHops,
   viewshedEnabled,
+  rfCoverageEnabled,
+  selectedRfCoverageNodeKey = null,
+  getRfCoverageNodeState,
+  onShowRfCoverage,
+  onClearRfCoverage,
   initialView,
   selectedNodeId = null,
   onNodeSelect,
@@ -1269,6 +1274,12 @@ export function MapLibreMap({
                 losActive={popupLosActive}
                 losLoading={popupLosLoading}
                 onToggleLos={handleToggleLos}
+                rfCoverageEnabled={rfCoverageEnabled}
+                rfCoverageActive={!!popupNodeProps.props.public_key
+                  && selectedRfCoverageNodeKey?.toLowerCase() === popupNodeProps.props.public_key.toLowerCase()}
+                rfCoverageState={getRfCoverageNodeState?.(popupNodeProps.props.public_key ?? '') ?? 'pending'}
+                onShowRfCoverage={(publicKey) => onShowRfCoverage?.(publicKey)}
+                onClearRfCoverage={() => onClearRfCoverage?.()}
                 network={network}
                 observer={observer}
                 privacyGeneration={privacyGeneration}

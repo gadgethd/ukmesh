@@ -34,12 +34,32 @@ export type RfCoverageTier = {
   assumptions: RfCoverageAssumptions;
 };
 
+export type RfNodeCoverageState = 'pending' | 'available' | 'stale' | 'error';
+
+export type RfNodeCoverage = {
+  dataset_id: string;
+  run_id: string;
+  state: 'computing' | 'available' | 'failed';
+  position_status: 'active' | 'degraded' | 'silent';
+  last_heard?: string;
+  lat: number;
+  lon: number;
+  requested_at: string;
+  updated_at: string;
+  fresh_until?: string;
+  completed_tiles?: number;
+  total_tiles?: number;
+  standard?: RfCoverageTier;
+  failure?: string;
+};
+
 export type RfCoverageMeta = {
   generated_at: string;
   source: string;
   version: string;
   complete: boolean;
   coverage?: Partial<Record<RfCoverageTierName, RfCoverageTier>>;
+  node_coverage?: Record<string, RfNodeCoverage>;
   run?: {
     id: string;
     started_at: string;
@@ -79,10 +99,9 @@ export function isValidRfCoverageTile(value: unknown): value is RfCoverageTile {
   if (!value || typeof value !== 'object') return false;
   const tile = value as Partial<RfCoverageTile>;
   const bounds = tile.bounds as Partial<RfCoverageBounds> | undefined;
-  return typeof tile.image === 'string'
-    && tile.image.length > 0
-    && !tile.image.startsWith('/')
-    && !tile.image.includes('..')
+  const validPath = typeof tile.image === 'string'
+    && /^(?:tiles\/(?:standard|precision)\/[0-9]+-[0-9]+\.png|tiles\/nodes\/n[0-9a-f]{24}\/[0-9]+-[0-9]+\.png)$/.test(tile.image);
+  return validPath
     && !!bounds
     && isFiniteNumber(bounds.South)
     && isFiniteNumber(bounds.North)
@@ -90,6 +109,22 @@ export function isValidRfCoverageTile(value: unknown): value is RfCoverageTile {
     && isFiniteNumber(bounds.East)
     && bounds.South < bounds.North
     && bounds.West < bounds.East;
+}
+
+export function rfNodeCoverageState(
+  meta: RfCoverageMeta | null,
+  publicKey: string | null | undefined,
+  now = Date.now(),
+): RfNodeCoverageState {
+  if (!publicKey || !/^[0-9a-f]{64}$/i.test(publicKey)) return 'pending';
+  const entry = meta?.node_coverage?.[publicKey.toLowerCase()];
+  if (!entry || entry.state === 'computing') return 'pending';
+  if (entry.state === 'failed') return 'error';
+  const hasTiles = entry.standard?.tiles?.some(isValidRfCoverageTile) ?? false;
+  if (!hasTiles) return 'pending';
+  const freshUntil = entry.fresh_until ? Date.parse(entry.fresh_until) : Number.NaN;
+  if (entry.position_status !== 'active' || !Number.isFinite(freshUntil) || freshUntil <= now) return 'stale';
+  return 'available';
 }
 
 export function availableRfCoverageTiers(meta: RfCoverageMeta | null): RfCoverageTierName[] {

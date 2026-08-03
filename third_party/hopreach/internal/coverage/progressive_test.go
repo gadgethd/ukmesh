@@ -3,11 +3,20 @@
 package coverage
 
 import (
+	"strings"
 	"testing"
 	"time"
 
 	"hopreach/internal/propagation"
 )
+
+func TestProgressiveNamespaceRejectsPathSegments(t *testing.T) {
+	_, err := RasterProgressiveChunked(nil, propagation.Bounds{}, 11, "", "", nil, nil, 0, 1, propagation.Params{}, 0,
+		ProgressiveOptions{Tier: "node", Namespace: "../nodes", RunID: "node-test"}, nil)
+	if err == nil || !strings.Contains(err.Error(), "invalid progressive namespace") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
 
 func TestPlanPublicationTilesCoversRasterWithoutGaps(t *testing.T) {
 	bounds := propagation.Bounds{South: 49, North: 61, West: -9, East: 3}

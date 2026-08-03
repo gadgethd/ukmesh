@@ -22,6 +22,7 @@ import (
 )
 
 var tierNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
+var namespacePattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
 
 // ProgressiveOptions controls resumable browser-tile publication. TileSize is
 // served pixels, not the (optionally supersampled) compute resolution.
@@ -30,6 +31,15 @@ type ProgressiveOptions struct {
 	Tier      string
 	RunID     string
 	TileSize  int
+	// Identity is optional caller-owned input folded into the checkpoint
+	// signature. Node jobs use the full public key here even though their
+	// bounded filesystem tier uses only a short digest.
+	Identity string
+	// Namespace optionally places both tiles and checkpoints below one
+	// additional, validated path segment. Global tiers leave this empty;
+	// on-demand node jobs use "nodes" so they cannot collide with the
+	// standard/precision publication or checkpoint namespaces.
+	Namespace string
 	// OnTile is called after each PNG and its checkpoint are safely written.
 	// The tile list contains only tiles completed by this run so far.
 	OnTile func(completed, total int, tiles []Tile) error
@@ -201,6 +211,9 @@ func RasterProgressiveChunked(
 	if !tierNamePattern.MatchString(options.Tier) {
 		return nil, fmt.Errorf("invalid progressive tier name %q", options.Tier)
 	}
+	if options.Namespace != "" && !namespacePattern.MatchString(options.Namespace) {
+		return nil, fmt.Errorf("invalid progressive namespace %q", options.Namespace)
+	}
 	if options.RunID == "" {
 		return nil, fmt.Errorf("progressive run ID is required")
 	}
@@ -219,9 +232,22 @@ func RasterProgressiveChunked(
 	if err != nil {
 		return nil, fmt.Errorf("progressive signature: %w", err)
 	}
+	if options.Identity != "" {
+		digest := sha256.Sum256([]byte(signature + "\x00" + options.Identity))
+		signature = hex.EncodeToString(digest[:])
+	}
 
-	tileDir := filepath.Join(options.OutputDir, "tiles", options.Tier)
-	checkpointDir := filepath.Join(options.OutputDir, "checkpoints")
+	tileParts := []string{options.OutputDir, "tiles"}
+	checkpointParts := []string{options.OutputDir, "checkpoints"}
+	publicParts := []string{"tiles"}
+	if options.Namespace != "" {
+		tileParts = append(tileParts, options.Namespace)
+		checkpointParts = append(checkpointParts, options.Namespace)
+		publicParts = append(publicParts, options.Namespace)
+	}
+	tileDir := filepath.Join(append(tileParts, options.Tier)...)
+	checkpointDir := filepath.Join(checkpointParts...)
+	publicParts = append(publicParts, options.Tier)
 	if err := os.MkdirAll(tileDir, 0o755); err != nil {
 		return nil, err
 	}
@@ -282,7 +308,7 @@ func RasterProgressiveChunked(
 			return checkpointTiles(checkpoint), fmt.Errorf("publishing tile %s: %w", tilePlan.name, err)
 		}
 		checkpoint.Completed[tilePlan.name] = Tile{
-			Image:  filepath.ToSlash(filepath.Join("tiles", options.Tier, tilePlan.name)),
+			Image:  filepath.ToSlash(filepath.Join(append(publicParts, tilePlan.name)...)),
 			Bounds: tilePlan.bounds,
 		}
 		completed++

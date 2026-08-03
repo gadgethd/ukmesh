@@ -4,6 +4,7 @@ import { NODE_STALE_AFTER_MS } from './mapConfig.js';
 import type { NodeFeatureProps, NodeLink } from './types.js';
 import { LinkQualitySparkline } from './LinkQualitySparkline.js';
 import { Tab, TabList, TabPanel, Tabs } from '../ui/Tabs.js';
+import type { RfNodeCoverageState } from '../../hooks/useRfCoverage.js';
 
 const GPU_ROLE_LABELS: Record<number, string> = {
   1: 'Companion Radio', 2: 'Repeater', 3: 'Room Server', 4: 'Sensor',
@@ -29,6 +30,11 @@ export const NodePopupContent: React.FC<{
   losActive: boolean;
   losLoading: boolean;
   onToggleLos: (nodeId: string) => void;
+  rfCoverageEnabled: boolean;
+  rfCoverageActive: boolean;
+  rfCoverageState: RfNodeCoverageState;
+  onShowRfCoverage: (publicKey: string) => void;
+  onClearRfCoverage: () => void;
   network?: string;
   observer?: string;
   privacyGeneration: number;
@@ -43,6 +49,11 @@ export const NodePopupContent: React.FC<{
   losActive,
   losLoading,
   onToggleLos,
+  rfCoverageEnabled,
+  rfCoverageActive,
+  rfCoverageState,
+  onShowRfCoverage,
+  onClearRfCoverage,
   network,
   observer,
   privacyGeneration,
@@ -143,6 +154,20 @@ export const NodePopupContent: React.FC<{
           >
             {losLoading ? <LoadingIndicator label="Loading LOS..." variant="inline" /> : losActive ? 'Hide LOS' : 'Show LOS'}
           </button>
+        </div>
+      )}
+      {rfCoverageEnabled && isRepeater && !props.is_prohibited && props.public_key && /^[0-9a-f]{64}$/i.test(props.public_key) && (
+        <div className="node-popup__coverage-action">
+          <button
+            type="button"
+            className={`node-popup__coverage-btn${rfCoverageActive ? ' node-popup__coverage-btn--active' : ''}`}
+            onClick={() => rfCoverageActive ? onClearRfCoverage() : onShowRfCoverage(props.public_key!)}
+          >
+            {rfCoverageActive ? 'Back to network coverage' : 'Show RF coverage'}
+          </button>
+          <span aria-live="polite" className={`node-popup__coverage-state node-popup__coverage-state--${rfCoverageState}`}>
+            {rfCoverageState === 'available' ? 'Available' : rfCoverageState === 'stale' ? 'Stale position or raster' : rfCoverageState === 'error' ? 'Calculation failed' : 'Pending calculation'}
+          </span>
         </div>
       )}
       {isRepeater && samePrefixCount > 1 && (
