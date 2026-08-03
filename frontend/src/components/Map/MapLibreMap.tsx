@@ -69,12 +69,12 @@ import { computeCustomLos } from '../../utils/customLos.js';
 import { fetchJson, withScopeParams, type ApiScope } from '../../utils/api.js';
 import { ScopedCache } from '../../utils/scopedCache.js';
 
-const NODE_DOCK_RIGHT_PADDING = 372;
-function mapPaddingForNode(selected: string | null): { top: number; right: number; bottom: number; left: number } {
-  const desktop = window.matchMedia('(min-width: 641px)').matches;
+// The node detail dock is an overlay, so node selection must never reserve
+// camera padding or shift the visible map.
+function mapPaddingForNode(_selected: string | null): { top: number; right: number; bottom: number; left: number } {
   return {
     top: 0,
-    right: selected && desktop ? NODE_DOCK_RIGHT_PADDING : 0,
+    right: 0,
     bottom: 0,
     left: 0,
   };
@@ -266,13 +266,6 @@ export function MapLibreMap({
         (map.getSource('planned-links') as maplibregl.GeoJSONSource | undefined)?.setData(plannedLinks);
       }
   }, [mapLight]);
-
-  // Keep the map's usable camera area clear of the right-side node dock.
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map || !mapLoadedRef.current) return;
-    map.setPadding(mapPaddingForNode(selectedNodeId));
-  }, [selectedNodeId]);
 
   // -- LOS profiles (client-side, multi-node, auto-expire) -------------------
 
@@ -853,7 +846,7 @@ export function MapLibreMap({
       });
 
       mapRef.current = map;
-      map.setPadding(mapPaddingForNode(selectedNodeIdRef.current));
+      map.setPadding(mapPaddingForNode(null));
       onMapReady?.(map);
       refreshMapSources();
 
