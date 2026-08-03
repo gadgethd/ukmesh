@@ -414,11 +414,27 @@ function findSharedPathPrefix(pathsByObserver: readonly string[][]): string[] {
   return first.slice(0, length);
 }
 
+export type BetaCanonicalPathNode = {
+  position: number;
+  hash: string;
+  nodeId: string | null;
+  name: string | null;
+  lat: number | null;
+  lon: number | null;
+  ambiguous: boolean;
+  confidence: number | null;
+};
+
+export type BetaPathObserver = { observerId: string };
+
 export type BetaResolvedPayload = {
   ok: boolean;
   packetHash: string;
   mode: 'resolved' | 'none';
   confidence: number | null;
+  canonicalPath: BetaCanonicalPathNode[];
+  observers: BetaPathObserver[];
+  network: string;
   permutationCount: number;
   remainingHops: number | null;
   purplePath: [number, number][] | null;
@@ -492,6 +508,25 @@ function maskPath(
   return path.map((point) => hiddenCoordMask.get(hiddenCoordKey(point[0], point[1])) ?? point);
 }
 
+function buildCanonicalPath(decoded: BetaSharedDecode): BetaCanonicalPathNode[] {
+  const nodes: BetaCanonicalPathNode[] = [];
+  for (let position = 0; position < decoded.canonicalHashes.length; position++) {
+    const hop = decoded.hops.get(position);
+    const confidence = decoded.hopConfidences.get(position) ?? null;
+    nodes.push({
+      position,
+      hash: decoded.canonicalHashes[position] ?? hop?.hash ?? '',
+      nodeId: hop?.nodeId ?? null,
+      name: hop?.name ?? null,
+      lat: hop?.lat ?? null,
+      lon: hop?.lon ?? null,
+      ambiguous: hop?.ambiguous ?? (confidence == null || confidence < BETA_PURPLE_THRESHOLD),
+      confidence,
+    });
+  }
+  return nodes;
+}
+
 function maskResolvedPayload(
   payload: BetaResolvedPayload,
   hiddenCoordMask: ReadonlyMap<string, [number, number]>,
@@ -539,6 +574,9 @@ function emptyPayload(
     packetHash,
     mode: 'none',
     confidence: null,
+    canonicalPath: [],
+    observers: [],
+    network: '',
     permutationCount: 0,
     remainingHops,
     purplePath: null,
@@ -561,6 +599,7 @@ function payloadFromProjection(
   packetHash: string,
   entry: BetaObserverEntry,
   projection: BetaPathProjection,
+  canonical: { canonicalPath: BetaCanonicalPathNode[]; observers: BetaPathObserver[]; network: string },
 ): BetaResolvedPayload {
   if (!projection.purplePath) {
     return emptyPayload(packetHash, entry.packet, entry.hashes.length, projection.remainingHops);
@@ -570,6 +609,9 @@ function payloadFromProjection(
     packetHash,
     mode: 'resolved',
     confidence: projection.confidence,
+    canonicalPath: canonical.canonicalPath,
+    observers: canonical.observers,
+    network: canonical.network,
     permutationCount: 0,
     remainingHops: projection.remainingHops,
     purplePath: projection.purplePath,
@@ -670,7 +712,11 @@ export async function resolveBetaPathForPacketHash(
     ? context.nodesById.get(selectedEntry.packet.src_node_id) ?? null
     : null;
   const projection = projectCanonicalPathForObserver(selectedEntry, decoded, context, source);
-  const payload = payloadFromProjection(packetHash, selectedEntry, projection);
+  const payload = payloadFromProjection(packetHash, selectedEntry, projection, {
+    canonicalPath: buildCanonicalPath(decoded),
+    observers: [{ observerId: selectedEntry.observerId }],
+    network,
+  });
   if (payload.mode === 'resolved' && shouldTouchPredictedOnline(options)) {
     await recordPredictedOnline(projection.nodeIds);
   }
@@ -692,8 +738,12 @@ export type RegionLink = {
 export type MultiObserverResolvedPayload = {
   ok: boolean;
   packetHash: string;
+  network: string;
   observerCount: number;
   sharedPrefixLength: number;
+  canonicalPath: BetaCanonicalPathNode[];
+  observers: BetaPathObserver[];
+  confidence: number | null;
   results: BetaResolvedPayload[];
   regionLinks?: RegionLink[];
   stickyUpdates?: Record<string, string>;
@@ -821,6 +871,7 @@ export async function resolveMultiObserverBetaPath(
   const groups = groupCompatibleObservations(entries);
   const hiddenCoordMask = buildHiddenCoordMask(context.nodesById);
   const results: BetaResolvedPayload[] = [];
+  let firstCanonicalPath: BetaCanonicalPathNode[] = [];
   const predictedOnlineNodeIds = new Set<string>();
   const stickyUpdates: Record<string, string> = {};
   const stickyConflicts = new Set<string>();
@@ -829,6 +880,7 @@ export async function resolveMultiObserverBetaPath(
   for (const group of groups) {
     throwIfResolutionAborted(options);
     const decoded = decodeBetaCanonicalGroup(group, context, stickyMap, stickyAgeFraction);
+    if (firstCanonicalPath.length === 0) firstCanonicalPath = buildCanonicalPath(decoded);
     for (let position = 0; position < decoded.canonicalHashes.length; position++) {
       const hop = decoded.hops.get(position);
       const confidence = decoded.hopConfidences.get(position) ?? 0;
@@ -842,7 +894,11 @@ export async function resolveMultiObserverBetaPath(
         ? context.nodesById.get(entry.packet.src_node_id) ?? null
         : null;
       const projection = projectCanonicalPathForObserver(entry, decoded, context, source);
-      const payload = payloadFromProjection(packetHash, entry, projection);
+      const payload = payloadFromProjection(packetHash, entry, projection, {
+        canonicalPath: buildCanonicalPath(decoded),
+        observers: group.members.map((member) => ({ observerId: member.observerId })),
+        network,
+      });
       results.push(maskResolvedPayload(payload, hiddenCoordMask));
       if (payload.mode === 'resolved') {
         for (const nodeId of projection.nodeIds) predictedOnlineNodeIds.add(nodeId);
@@ -865,8 +921,12 @@ export async function resolveMultiObserverBetaPath(
   return {
     ok: true,
     packetHash,
+    network,
     observerCount: entries.length,
     sharedPrefixLength,
+    canonicalPath: firstCanonicalPath,
+    observers: entries.map((entry) => ({ observerId: entry.observerId })),
+    confidence: results[0]?.confidence ?? null,
     results,
     ...(regionLinks.length > 0 ? { regionLinks } : {}),
     ...(Object.keys(stickyUpdates).length > 0 ? { stickyUpdates } : {}),
