@@ -79,6 +79,21 @@ export function installMapSourcesAndLayers(
       map.addSource('nodes', { type: 'geojson', data: EMPTY_FC });
 
       map.addLayer({
+        id: 'node-dots-hit',
+        type: 'circle',
+        source: 'nodes',
+        filter: ['==', ['get', 'visible'], true],
+        paint: {
+          'circle-radius': [
+            'interpolate', ['linear'], ['zoom'],
+            6, 8, 9, 10, 11, 12, 13, 14, 16, 16,
+          ],
+          'circle-opacity': 0,
+          'circle-stroke-opacity': 0,
+        },
+      });
+
+      map.addLayer({
         id: 'node-dots',
         type: 'circle',
         source: 'nodes',

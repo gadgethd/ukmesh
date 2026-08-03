@@ -774,7 +774,7 @@ export function MapLibreMap({
         openPlannedPopupRef.current(planId, { lng: coords[0], lat: coords[1] });
       });
 
-      map.on('click', 'node-dots', (e) => {
+      map.on('click', 'node-dots-hit', (e) => {
         const feature = e.features?.[0];
         if (!feature) return;
         const props = feature.properties as NodeFeatureProps;
@@ -807,12 +807,6 @@ export function MapLibreMap({
         // but all our props are primitives so this is safe.
         setPopupLinks(null);
         onNodeSelectRef.current?.(props.node_id);
-        // Nudge the map so the tapped node clears the right-docked detail panel.
-        const coords = (feature.geometry as GeoJSON.Point).coordinates as [number, number];
-        if (window.matchMedia('(min-width: 641px)').matches) {
-          const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-          map.easeTo({ center: coords, offset: [-170, 0], duration: reduceMotion ? 0 : 420 });
-        }
       });
 
       // General map click — used for custom LOS mode and plan repeater placement on empty areas
@@ -845,10 +839,10 @@ export function MapLibreMap({
       });
 
       // Make cursor a pointer over node dots and planned pins
-      map.on('mouseenter', 'node-dots', () => {
+      map.on('mouseenter', 'node-dots-hit', () => {
         map.getCanvas().style.cursor = 'pointer';
       });
-      map.on('mouseleave', 'node-dots', () => {
+      map.on('mouseleave', 'node-dots-hit', () => {
         map.getCanvas().style.cursor = (viewshedEnabledRef.current && useOverlayStore.getState().planRepeaterMode) || useOverlayStore.getState().customLosMode ? 'crosshair' : '';
       });
       map.on('mouseenter', 'planned-pins-dot', () => {
