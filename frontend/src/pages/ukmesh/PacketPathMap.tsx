@@ -77,6 +77,7 @@ export function buildAerialPaths(
     multiObserverPathRoutes(result).forEach((route) => {
       paths.push({
         id: `canonical-${result.packetHash}`,
+        packetHash: result.packetHash,
         confidence: route.confidence,
         nodes: route.nodes.map((node) => ({
           position: [node.lon, node.lat],
@@ -103,7 +104,12 @@ export function buildAerialPaths(
       const confidence = path.totalHops > 0
         ? Math.max(0, Math.min(1, path.matchedHops / path.totalHops))
         : null;
-      paths.push({ id: `hash-traced-${pathScopeId}`, confidence, nodes });
+      paths.push({
+        id: `hash-traced-${pathScopeId}`,
+        packetHash: pathScopeId,
+        confidence,
+        nodes,
+      });
     });
   });
   return paths;

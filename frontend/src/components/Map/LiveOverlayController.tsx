@@ -37,6 +37,7 @@ export function buildResolvedAerialPaths(
   if (!packetHash) return [];
   return routes.map((route) => ({
     id: `main-live-path:${packetHash}:resolved`,
+    packetHash,
     confidence: route.confidence,
     nodes: route.nodes.map((node) => {
       const [lat, lon] = maskPoint([node.lat, node.lon], hiddenCoordMask);
@@ -141,6 +142,7 @@ export const LiveOverlayController: React.FC<LiveOverlayControllerProps> = ({
     const packetKey = activePacketSnapshot?.packetHash ?? activePacketSnapshot?.id ?? 'live';
     return renderedPaths.map((path) => ({
       id: `main-live-path:${packetKey}:observed`,
+      packetHash: activePacketSnapshot?.packetHash ?? activePacketSnapshot?.id ?? null,
       confidence: 1,
       nodes: nodesFor(path),
     })).filter((path) => path.nodes.length > 1);
