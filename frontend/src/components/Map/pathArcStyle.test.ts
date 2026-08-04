@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   PATH_HOP_ANIMATION_MS,
-  PATH_HOP_PEAK_HEIGHT_M,
   PATH_LINE_TTL_MS,
   PATH_TERRAIN_CLEARANCE_M,
   pathArcColors,
@@ -13,7 +12,6 @@ test('path confidence uses low/mid/high traffic-light bands', () => {
   assert.equal(PATH_LINE_TTL_MS, 5_000);
   assert.equal(PATH_HOP_ANIMATION_MS, 400);
   assert.equal(PATH_TERRAIN_CLEARANCE_M, 32);
-  assert.equal(PATH_HOP_PEAK_HEIGHT_M, 300);
   assert.equal(pathConfidenceBand(null), 'low');
   assert.equal(pathConfidenceBand(0.39), 'low');
   assert.equal(pathConfidenceBand(0.4), 'mid');
