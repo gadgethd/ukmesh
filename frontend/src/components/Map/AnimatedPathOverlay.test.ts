@@ -2,13 +2,17 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   buildAerialPathSegments,
+  arcGroundPosition,
+  arcHeightMultiplier,
   cachedTerrainElevation,
   easeArcProgress,
   interpolateArcPosition,
   registerAerialPaths,
+  renderedPosition,
   terrainAwarePosition,
   type AerialPath,
   type PathRegistryEntry,
+  type TerrainElevationMap,
 } from './AnimatedPathOverlay.js';
 
 function path(id: string, offset = 0): AerialPath {
@@ -110,14 +114,16 @@ test('terrain elevation queries are cached per coordinate and preserve null fall
   const cache = new Map<string, number | null>();
   let queryCount = 0;
   const map = {
+    isSourceLoaded: () => true,
+    transform: { elevation: 300 },
     queryTerrainElevation: (position: [number, number]) => {
       queryCount += 1;
       return position[0] === 1 ? 120 : null;
     },
   } as Parameters<typeof cachedTerrainElevation>[0];
 
-  assert.equal(cachedTerrainElevation(map, [1, 2], cache, true), 120);
-  assert.equal(cachedTerrainElevation(map, [1.0000004, 2], cache, true), 120);
+  assert.equal(cachedTerrainElevation(map, [1, 2], cache, true), 420);
+  assert.equal(cachedTerrainElevation(map, [1.0000004, 2], cache, true), 420);
   assert.equal(cachedTerrainElevation(map, [3, 4], cache, true), null);
   assert.equal(cachedTerrainElevation(map, [3, 4], cache, true), null);
   assert.equal(queryCount, 2);
@@ -125,10 +131,58 @@ test('terrain elevation queries are cached per coordinate and preserve null fall
   assert.equal(queryCount, 2, 'disabled terrain does not query or use stale elevations');
 });
 
-test('terrain-aware endpoint positions apply clearance and fall back to ground level', () => {
-  assert.deepEqual(terrainAwarePosition([1, 2], 120, true, 2), [1, 2, 304]);
-  assert.deepEqual(terrainAwarePosition([1, 2], null, true, 2), [1, 2, 0]);
+test('terrain queries stay unavailable until the DEM source is loaded', () => {
+  let queryCount = 0;
+  const map = {
+    isSourceLoaded: () => false,
+    transform: { elevation: 300 },
+    queryTerrainElevation: () => {
+      queryCount += 1;
+      return 0;
+    },
+  } as Parameters<typeof cachedTerrainElevation>[0];
+  const cache = new Map<string, number | null>();
+
+  assert.equal(cachedTerrainElevation(map, [1, 2], cache, true), null);
+  assert.equal(queryCount, 0, 'a loading DEM is not converted into a z=0 anchor');
+});
+
+test('terrain-aware endpoint positions use absolute exaggerated elevation and clearance', () => {
+  assert.deepEqual(terrainAwarePosition([1, 2], 420, true, 2), [1, 2, 484]);
+  assert.equal(terrainAwarePosition([1, 2], null, true, 2), null);
   assert.deepEqual(terrainAwarePosition([1, 2], 120, false, 2), [1, 2, 0]);
+});
+
+test('arc endpoints and node dots reuse one terrain anchor', () => {
+  let queryCount = 0;
+  const map = {
+    isSourceLoaded: () => true,
+    transform: { elevation: 300 },
+    queryTerrainElevation: () => {
+      queryCount += 1;
+      return 120;
+    },
+  } as TerrainElevationMap;
+  const elevations = new Map<string, number | null>();
+  const anchors = new Map<string, ReturnType<typeof renderedPosition>>();
+  const lineAnchor = renderedPosition(
+    { position: [1, 2] },
+    map,
+    true,
+    elevations,
+    anchors,
+  );
+  const dotAnchor = renderedPosition(
+    { position: [1.0000004, 2] },
+    map,
+    true,
+    elevations,
+    anchors,
+  );
+
+  assert.strictEqual(lineAnchor, dotAnchor, 'both layers share the exact coordinate anchor');
+  assert.deepEqual(lineAnchor, [1, 2, 516]);
+  assert.equal(queryCount, 1, 'the shared anchor uses one terrain query');
 });
 
 test('hop interpolation samples the same eased ArcLayer paraboloid', () => {
@@ -140,7 +194,49 @@ test('hop interpolation samples the same eased ArcLayer paraboloid', () => {
   assert.deepEqual(interpolateArcPosition(source, target, 1), target);
   assert(Math.abs(midpoint[0] - -0.5) < 1e-12);
   assert(midpoint[1] > 51.5, 'the marker follows Web Mercator arc projection, not linear latitude');
-  assert(midpoint[2] > target[2], 'the ArcLayer height profile clears both endpoints');
+  assert(midpoint[2] > source[2], 'the ArcLayer height profile clears the lower endpoint');
+});
+
+test('terrain crests raise the ArcLayer curve without moving its endpoint anchors', () => {
+  const source: [number, number, number] = [-1, 51, 100];
+  const target: [number, number, number] = [0, 52, 100];
+  const baseHeight = arcHeightMultiplier(source, target);
+  const crestPosition = arcGroundPosition(
+    [source[0], source[1]],
+    [target[0], target[1]],
+    0.5,
+  );
+  const terrainHeight = arcHeightMultiplier(source, target, [{
+    progress: 0.5,
+    position: [...crestPosition, 1_000],
+  }]);
+  const midpoint = interpolateArcPosition(source, target, 0.5, terrainHeight);
+
+  assert(terrainHeight > baseHeight, 'a high DEM sample increases only the arc lift');
+  assert(midpoint[2] >= 1_000 - 1e-9, 'the curve stays above the sampled terrain crest');
+  assert.deepEqual(interpolateArcPosition(source, target, 0, terrainHeight), source);
+  assert.deepEqual(interpolateArcPosition(source, target, 1, terrainHeight), target);
+});
+
+test('the baseline ArcLayer lift is a consistent physical height across hop lengths', () => {
+  const shortSource: [number, number, number] = [0, 51, 100];
+  const shortTarget: [number, number, number] = [0.01, 51, 100];
+  const longSource: [number, number, number] = [0, 51, 100];
+  const longTarget: [number, number, number] = [0.1, 51, 100];
+  const shortMidpoint = interpolateArcPosition(
+    shortSource,
+    shortTarget,
+    0.5,
+    arcHeightMultiplier(shortSource, shortTarget),
+  );
+  const longMidpoint = interpolateArcPosition(
+    longSource,
+    longTarget,
+    0.5,
+    arcHeightMultiplier(longSource, longTarget),
+  );
+
+  assert(Math.abs(shortMidpoint[2] - longMidpoint[2]) < 1, 'hop length does not change the physical lift');
 });
 
 test('arc progress eases smoothly while preserving segment endpoints', () => {
