@@ -47,14 +47,54 @@ type UsePacketPathOverlayResult = {
   handlePacketPin: (packet: AggregatedPacket) => void;
 };
 
+type SlowModePendingResponse = { status: 'pending'; remainingMs: number };
+
+function isSlowPending(
+  result: MultiObserverBetaResponse | SlowModePendingResponse,
+): result is SlowModePendingResponse {
+  const maybe = result as SlowModePendingResponse;
+  return maybe.status === 'pending' && typeof maybe.remainingMs === 'number';
+}
+
 async function fetchServerBetaMulti(
   packetHash: string,
   network?: string,
-): Promise<MultiObserverBetaResponse | null> {
-  const endpoint = withScopeParams(`/api/path-beta/resolve-multi?hash=${encodeURIComponent(packetHash)}`, { network });
+  mode?: 'slow',
+): Promise<MultiObserverBetaResponse | SlowModePendingResponse | null> {
+  const modeQuery = mode === 'slow' ? '&mode=slow' : '';
+  const endpoint = withScopeParams(
+    `/api/path-beta/resolve-multi?hash=${encodeURIComponent(packetHash)}${modeQuery}`,
+    { network },
+  );
   const response = await fetch(uncachedEndpoint(endpoint), { cache: 'no-store' });
+  if (response.status === 202) {
+    return response.json() as Promise<SlowModePendingResponse>;
+  }
   if (!response.ok) return null;
   return response.json() as Promise<MultiObserverBetaResponse>;
+}
+
+/**
+ * Slow-mode fetch: asks the backend to wait out the packet's propagation
+ * window, retrying while the backend reports `pending`. Bounded so the
+ * pinned-packet view cannot hang forever on a stalled resolver.
+ */
+async function fetchServerBetaMultiSlow(
+  packetHash: string,
+  network?: string,
+): Promise<MultiObserverBetaResponse | null> {
+  const maxAttempts = 3;
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const result = await fetchServerBetaMulti(packetHash, network, 'slow');
+    if (result === null) return null;
+    if (isSlowPending(result)) {
+      const waitMs = Math.min(Math.max(result.remainingMs + 500, 1_000), 30_000);
+      await new Promise((resolve) => window.setTimeout(resolve, waitMs));
+      continue;
+    }
+    return result;
+  }
+  return null;
 }
 
 function cacheKey(packetHash: string, observerIds: string[], network?: string): string {
@@ -231,18 +271,29 @@ export function usePacketPathOverlay({
     observerIds: string[],
     networkName?: string,
     minFreshTs = 0,
+    mode?: 'slow',
   ): Promise<MultiObserverBetaResponse | null> => {
     prunePredictionCache();
     const key = cacheKey(packetHash, observerIds, networkName);
-    const cached = multiPredictionCacheRef.current.get(key);
-    if (cached && cached.ts >= minFreshTs && Date.now() - cached.ts <= PREDICTION_CACHE_TTL_MS) {
-      return Promise.resolve(cached.response);
+    // Slow-mode requests must not be served from the eager cache or deduped
+    // onto an in-flight eager fetch — the whole point is the post-window set.
+    if (mode !== 'slow') {
+      const cached = multiPredictionCacheRef.current.get(key);
+      if (cached && cached.ts >= minFreshTs && Date.now() - cached.ts <= PREDICTION_CACHE_TTL_MS) {
+        return Promise.resolve(cached.response);
+      }
+      const inflight = multiInflightRef.current.get(key);
+      if (inflight) return inflight;
     }
 
-    const inflight = multiInflightRef.current.get(key);
-    if (inflight) return inflight;
-
-    const promise = fetchServerBetaMulti(packetHash, networkName)
+    const fetchFn: () => Promise<MultiObserverBetaResponse | null> = mode === 'slow'
+      ? () => fetchServerBetaMultiSlow(packetHash, networkName)
+      : async () => {
+          const result = await fetchServerBetaMulti(packetHash, networkName);
+          // fast path never receives a 202; treat it as unresolved anyway
+          return result === null || isSlowPending(result) ? null : result;
+        };
+    const promise = fetchFn()
       .then((response) => {
         if (response) multiPredictionCacheRef.current.set(key, { response, ts: Date.now() });
         return response;
@@ -383,7 +434,10 @@ export function usePacketPathOverlay({
 
     if (filters.betaPaths && pinnedPacket.packetHash && pinnedPacket.path?.length && observerIds.length > 0) {
       const reqSeq = ++activeReqSeqRef.current;
-      void resolveMultiPrediction(pinnedPacket.packetHash, observerIds, network, pinnedPacket.ts)
+      // Pinned packet: slow mode — wait out the propagation window so the
+      // path is resolved against the COMPLETE observer set. The local path
+      // (built above) renders meanwhile; this upgrades it once final.
+      void resolveMultiPrediction(pinnedPacket.packetHash, observerIds, network, pinnedPacket.ts, 'slow')
         .then((response) => {
           if (reqSeq !== activeReqSeqRef.current) return;
           applyServerPrediction(pinnedPacket.packetHash!, response);

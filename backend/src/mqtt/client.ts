@@ -9,6 +9,8 @@ import { closePacketBatch, flush as flushPacketBatch } from '../db/packetBatch.j
 import { evaluateAdvert, initSpamDetector } from './spamDetector.js';
 import { invalidateResolveCache, setResolveCache, getStickyNodeMap, mergeStickyNodes } from '../path-beta/resolveCache.js';
 import { resolvePool } from '../path-beta/resolvePool.js';
+import { scheduleSlowResolution } from '../path-beta/slowMode.js';
+import { pathingConfig } from '../platform/config/pathing.js';
 import { BoundedTtlMap } from '../cache/boundedTtlMap.js';
 import type { LivePacket } from '../types/index.js';
 import { decodePacketCompat } from './decodePacket.js';
@@ -969,6 +971,12 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
         for (const node of historicNodes) emitNodeUpsert({ ...node });
       } catch (err) {
         console.error('[mqtt] recordMultibyteEvidence error:', (err as Error).message);
+      }
+      // Slow mode: schedule ONE final multi-observer resolution after the
+      // propagation window closes so the complete observer set is included
+      // (idempotent per packet hash; best-effort).
+      if (path.length >= pathingConfig.slowModeMinPathHops) {
+        scheduleSlowResolution(finalHash, network);
       }
     }
 

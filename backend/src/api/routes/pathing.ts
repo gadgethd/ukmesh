@@ -2,6 +2,11 @@ import type { Router } from 'express';
 import { resolvePublicNetworkScope } from '../../http/requestScope.js';
 import { createPathingRepository } from '../../pathing/pathingRepository.js';
 import { createPathingService } from '../../pathing/pathingService.js';
+import {
+  slowModeRemainingMs,
+  slowModeStatus,
+  slowModeWindowMs,
+} from '../../path-beta/slowMode.js';
 import { normalizeObserverQuery } from '../utils/observer.js';
 import { parseBoundedInteger, parseHexIdentifier } from '../utils/input.js';
 
@@ -95,6 +100,17 @@ export function registerPathingRoutes(router: Router, deps: PathingRouteDeps): v
     });
     try {
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
+      if (req.query['mode'] === 'slow') {
+        const remainingMs = slowModeRemainingMs(packetHash, network);
+        if (remainingMs > 0) {
+          res.status(202).json({
+            status: 'pending',
+            remainingMs,
+            windowMs: slowModeWindowMs(),
+          });
+          return;
+        }
+      }
       res.json(await service.resolvePacketMulti(packetHash, network));
     } catch (err) {
       const message = (err as Error).message;
@@ -113,6 +129,10 @@ export function registerPathingRoutes(router: Router, deps: PathingRouteDeps): v
       console.error('[api] GET /path-beta/resolve-multi', message);
       res.status(500).json({ error: 'Internal server error' });
     }
+  });
+
+  router.get('/path-beta/slow-mode', (_req, res) => {
+    res.json(slowModeStatus());
   });
 
   router.get('/path-beta/history', deps.pathHistoryLimiter, async (req, res) => {
