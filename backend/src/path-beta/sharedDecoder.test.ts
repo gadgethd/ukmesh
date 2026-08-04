@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   decodeBetaCanonicalGroup,
+  decodeBetaCanonicalGroupWithHeldPath,
   groupCompatibleObservations,
   projectCanonicalPathForObserver,
   type BetaObserverEntry,
@@ -123,4 +124,44 @@ test('observer projection breaks at unresolved hops and never invents a connecti
   assert.equal(projection.remainingHops, 1);
   assert.equal(projection.resolvedHopCount, 2);
   assert.ok(Math.abs(projection.confidence - (2 / 3)) < 1e-12);
+});
+
+test('refinement keeps a physical held path when an alternative misses the margin', () => {
+  const heldA = meshNode('AA01', 51.0, 0.1);
+  const heldB = meshNode('BB01', 51.1, 0.1);
+  const alternativeB = meshNode('BB02', 51.1, 0.1);
+  const observer = entry('RX', ['AA', 'BB']);
+  observer.rx = meshNode('RX', 51.2, 0.1);
+  const betaContext = context([heldA, heldB, alternativeB, observer.rx]);
+  betaContext.learningModel.prefixProbabilities.set('unknown|BB|AA|BB01', 0.70);
+  betaContext.learningModel.prefixProbabilities.set('unknown|BB|AA|BB02', 0.80);
+
+  const decoded = decodeBetaCanonicalGroupWithHeldPath(
+    { canonicalHashes: observer.hops, members: [observer] },
+    betaContext,
+    ['AA01', 'BB01'],
+  );
+
+  assert.equal(decoded.held, true);
+  assert.equal(decoded.physical, true);
+  assert.equal(decoded.refined, false);
+  assert.deepEqual([...decoded.hops.values()].map((hop) => hop.nodeId), ['AA01', 'BB01']);
+});
+
+test('an impossible held final hop triggers a full re-solve', () => {
+  const impossible = meshNode('AA01', 52.1, 0.1);
+  const replacement = meshNode('AA02', 51.1, 0.1);
+  const observer = entry('RX', ['AA']);
+  observer.rx = meshNode('RX', 51.0, 0.1);
+  const betaContext = context([impossible, replacement, observer.rx]);
+
+  const decoded = decodeBetaCanonicalGroupWithHeldPath(
+    { canonicalHashes: observer.hops, members: [observer] },
+    betaContext,
+    ['AA01'],
+  );
+
+  assert.equal(decoded.held, false);
+  assert.equal(decoded.physical, false);
+  assert.equal(decoded.hops.get(0)?.nodeId, 'AA02');
 });

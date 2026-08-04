@@ -2,6 +2,11 @@ export const pathingConfig = {
   maxBetaHops: 25,
   purpleThreshold: 0.45,
   earthEffectiveRadiusM: 6_371_000 / (1 - 0.25),
+  defaultAntennaHeightM: 15,
+  behindEarthToleranceKm: 25,
+  // Physics is a bounded tiebreaker; full-strength transition physics reduced
+  // the bake-off accuracy by overwhelming the tuned evidence model.
+  physicsSoftMarginWeight: 0.05,
   prefixAmbiguityFloorKm: 45,
   weakLinkPathlossMaxDb: 137.5,
   looseLinkPathlossMaxDb: 146.0,

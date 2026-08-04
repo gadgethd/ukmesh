@@ -7,7 +7,7 @@ import type {
 import { insertNodeStatusSample, insertPacket, upsertNode, incrementAdvertCount, query, insertOrUpdateSpamSuspect, recordMultibyteEvidence } from '../db/index.js';
 import { closePacketBatch, flush as flushPacketBatch } from '../db/packetBatch.js';
 import { evaluateAdvert, initSpamDetector } from './spamDetector.js';
-import { invalidateResolveCache, setResolveCache, getStickyNodeMap, mergeStickyNodes } from '../path-beta/resolveCache.js';
+import { invalidateResolveCache, setResolveCache, getStickyNodeMap, mergeStickyNodes, getHeldPath, setHeldPath } from '../path-beta/resolveCache.js';
 import { resolvePool } from '../path-beta/resolvePool.js';
 import { scheduleSlowResolution } from '../path-beta/slowMode.js';
 import { pathingConfig } from '../platform/config/pathing.js';
@@ -1005,13 +1005,21 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
       const stickyEntry = getStickyNodeMap(finalHash, network);
       const stickyMap = stickyEntry ? Object.fromEntries(stickyEntry.hashToNodeId) : undefined;
       const stickyAgeFraction = stickyEntry?.ageFraction;
-      resolvePool.runBackground<{ stickyUpdates?: Record<string, string> }>({ type: 'resolveMulti', packetHash: finalHash, network, ...(stickyMap ? { stickyMap, stickyAgeFraction } : {}) })
+      const heldPath = getHeldPath(finalHash, network);
+      resolvePool.runBackground<{
+        stickyUpdates?: Record<string, string>;
+        canonicalPath?: Array<{ nodeId?: string | null }>;
+      }>({ type: 'resolveMulti', packetHash: finalHash, network, ...(stickyMap ? { stickyMap, stickyAgeFraction } : {}), ...(heldPath ? { heldPath } : {}) })
         .then((result) => {
           if (result) {
             const { stickyUpdates, ...cacheableResult } = result;
             setResolveCache(ck, cacheableResult);
             if (stickyUpdates && Object.keys(stickyUpdates).length > 0) {
               mergeStickyNodes(finalHash, network, stickyUpdates);
+            }
+            const heldNodes = result.canonicalPath?.map((hop) => hop.nodeId ?? '').filter(Boolean) ?? [];
+            if (heldNodes.length > 0 && heldNodes.length === result.canonicalPath?.length) {
+              setHeldPath(finalHash, network, { path: heldNodes, resolvedAt: Date.now(), physical: true });
             }
           }
         })

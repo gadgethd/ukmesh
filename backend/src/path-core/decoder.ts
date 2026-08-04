@@ -26,6 +26,7 @@ export type CandidateNode = {
   name: string | null;
   lat: number;
   lon: number;
+  elevationM?: number | null;
 };
 
 export type CandidateNodeEvidence = {
@@ -33,9 +34,26 @@ export type CandidateNodeEvidence = {
   name: string | null;
   lat: number | null;
   lon: number | null;
+  elevationM?: number | null;
 };
 
-export type ObserverAnchor = GeographicPoint & { nodeId?: string };
+export type ObserverAnchor = GeographicPoint & { nodeId?: string; elevationM?: number | null };
+
+export type PhysicalHopLimits = {
+  maxHopKm: number;
+  earthEffectiveRadiusM: number;
+  behindEarthToleranceKm: number;
+  impossibleLinkPathlossDb: number;
+  pathlossDb?: number | null;
+  antennaHeightM?: number;
+};
+
+export type PhysicalHopEvaluation = {
+  possible: boolean;
+  distanceKm: number;
+  horizonMarginKm: number | null;
+  softMargin: number;
+};
 
 export type DecodedHop = {
   hash: string;
@@ -60,6 +78,16 @@ export type PathDecoderEvidence = {
   directAnchors: (position: number, hash: string) => readonly ObserverAnchor[];
   sourceAnchor?: ObserverAnchor;
   terminalAnchors?: readonly ObserverAnchor[];
+  /** Optional fixed node assignment at a trellis position. */
+  fixed?: ReadonlyMap<number, string>;
+  /** Optional hard-physics gate plus small ranking-only score. */
+  physicalTransition?: (
+    from: CandidateNode,
+    to: CandidateNode,
+    distanceKm: number,
+  ) => { possible: boolean; score: number };
+  /** Endpoint anchors use only hard gates plus the bounded physics tiebreaker. */
+  endpointTransitionsGateOnly?: boolean;
   prefixProbability: (nodeId: string, hash: string, prevHash: string | null) => number;
   positionPrefixCount?: (position: number, nodeId: string, hash: string) => number;
   corridorPriorCount?: (position: number, nodeId: string) => number;
@@ -90,6 +118,7 @@ type DecoderCandidate = {
   name: string | null;
   lat: number | null;
   lon: number | null;
+  elevationM?: number | null;
 };
 
 const UNRESOLVED_CANDIDATE: DecoderCandidate = {
@@ -108,6 +137,42 @@ export function distanceKm(a: GeographicPoint, b: GeographicPoint): number {
   const cosA = Math.cos(a.lat * (Math.PI / 180));
   const cosB = Math.cos(b.lat * (Math.PI / 180));
   return 2 * earthRadiusKm * Math.asin(Math.sqrt(sinLat + cosA * cosB * sinLon));
+}
+
+/** Evaluate calibrated hard-impossibility gates for one radio hop.
+ * Missing elevation deliberately disables only the curvature gate. */
+export function evaluatePhysicalHop(
+  from: GeographicPoint & { elevationM?: number | null },
+  to: GeographicPoint & { elevationM?: number | null },
+  limits: PhysicalHopLimits,
+): PhysicalHopEvaluation {
+  const distance = distanceKm(from, to);
+  const lossImpossible = limits.pathlossDb != null
+    && Number.isFinite(limits.pathlossDb)
+    && limits.pathlossDb > limits.impossibleLinkPathlossDb;
+  let horizonMarginKm: number | null = null;
+  if (from.elevationM != null && to.elevationM != null
+      && Number.isFinite(from.elevationM) && Number.isFinite(to.elevationM)) {
+    const antennaHeightM = limits.antennaHeightM ?? 15;
+    const radiusKm = limits.earthEffectiveRadiusM / 1_000;
+    const fromHeightKm = Math.max(0, from.elevationM + antennaHeightM) / 1_000;
+    const toHeightKm = Math.max(0, to.elevationM + antennaHeightM) / 1_000;
+    const horizonKm = Math.sqrt(2 * radiusKm * fromHeightKm)
+      + Math.sqrt(2 * radiusKm * toHeightKm);
+    horizonMarginKm = horizonKm - distance;
+  }
+  const curvatureImpossible = horizonMarginKm != null
+    && horizonMarginKm < -limits.behindEarthToleranceKm;
+  const possible = distance <= limits.maxHopKm && !lossImpossible && !curvatureImpossible;
+  return {
+    possible,
+    distanceKm: distance,
+    horizonMarginKm,
+    // Ranking only: bounded so physics cannot swamp the tuned evidence.
+    softMargin: horizonMarginKm == null
+      ? 0
+      : Math.max(-1, Math.min(1, horizonMarginKm / limits.behindEarthToleranceKm)),
+  };
 }
 
 function minDistanceToSet(pt: GeographicPoint, anchors: readonly GeographicPoint[]): number {
@@ -183,15 +248,30 @@ function emissionScore(
   if (candidate.nodeId === null) return evidence.unresolvedBaseline;
 
   const positioned = candidate.lat != null && candidate.lon != null;
+  let directPhysicsScore = 0;
   if (anchors.length > 0) {
     if (!positioned) return -Infinity;
     if (minDistanceToSet({ lat: candidate.lat!, lon: candidate.lon! }, anchors) > evidence.maxHopKm) {
       return -Infinity;
     }
+    if (evidence.physicalTransition) {
+      let bestPhysics = -Infinity;
+      for (const anchor of anchors) {
+        const physics = evidence.physicalTransition(
+          candidate as CandidateNode,
+          endpointCandidate(anchor) as CandidateNode,
+          distanceKm(candidate as CandidateNode, anchor),
+        );
+        if (physics.possible) bestPhysics = Math.max(bestPhysics, physics.score);
+      }
+      if (!isFinite(bestPhysics)) return -Infinity;
+      directPhysicsScore = bestPhysics;
+    }
   }
 
   let score = evidence.weights.prefix
     * Math.log1p(Math.max(0, evidence.prefixProbability(candidate.nodeId, hash, prevHash)));
+  score += directPhysicsScore;
   const mlScore = evidence.mlPrefixScore(hash, candidate.nodeId);
   score += mlScore >= evidence.mlDominantThreshold
     ? Math.min(evidence.weights.mlDominantCap, mlScore * evidence.weights.mlDominantCap)
@@ -237,6 +317,15 @@ function transitionScore(
       { lat: current.lat, lon: current.lon },
     );
     if (distance > evidence.maxHopKm) return -Infinity;
+    if (evidence.physicalTransition) {
+      const physics = evidence.physicalTransition(
+        previous as CandidateNode,
+        current as CandidateNode,
+        distance,
+      );
+      if (!physics.possible) return -Infinity;
+      score += physics.score;
+    }
     score -= evidence.weights.dist * (distance / evidence.distanceDecayKm);
   }
   score += evidence.weights.edge
@@ -262,6 +351,20 @@ function transitionScore(
   return score;
 }
 
+function endpointTransitionScore(
+  from: DecoderCandidate,
+  to: DecoderCandidate,
+  evidence: PathDecoderEvidence,
+): number {
+  if (!evidence.endpointTransitionsGateOnly) return transitionScore(0, from, to, evidence);
+  if (from.lat == null || from.lon == null || to.lat == null || to.lon == null) return -Infinity;
+  const distance = distanceKm(from as CandidateNode, to as CandidateNode);
+  if (distance > evidence.maxHopKm) return -Infinity;
+  if (!evidence.physicalTransition) return 0;
+  const physics = evidence.physicalTransition(from as CandidateNode, to as CandidateNode, distance);
+  return physics.possible ? physics.score : -Infinity;
+}
+
 function buildColumn(
   position: number,
   pathLength: number,
@@ -271,6 +374,8 @@ function buildColumn(
 ): DecoderCandidate[] {
   const raw = evidence.candidatesByHash.get(hash) ?? [];
   let candidates: DecoderCandidate[] = raw.map((candidate) => ({ ...candidate }));
+  const fixedNodeId = evidence.fixed?.get(position);
+  if (fixedNodeId) candidates = candidates.filter((candidate) => candidate.nodeId === fixedNodeId);
   if (candidates.length > evidence.maxColumnCandidates) {
     const anchors = evidence.directAnchors(position, hash);
     candidates = candidates
@@ -294,6 +399,7 @@ function endpointCandidate(anchor: ObserverAnchor): DecoderCandidate {
     name: null,
     lat: anchor.lat,
     lon: anchor.lon,
+    elevationM: anchor.elevationM,
   };
 }
 
@@ -306,19 +412,67 @@ function bestTerminalTransition(
   if (terminals.length === 0) return 0;
   let best = -Infinity;
   for (const terminal of terminals) {
-    best = Math.max(best, transitionScore(position, candidate, endpointCandidate(terminal), evidence));
+    best = Math.max(best, evidence.endpointTransitionsGateOnly
+      ? endpointTransitionScore(candidate, endpointCandidate(terminal), evidence)
+      : transitionScore(position, candidate, endpointCandidate(terminal), evidence));
   }
   return best;
 }
 
 /** Decode a coherent node assignment for every canonical path-hash position. */
-export function decodePath(
+export type DecodedPathResult = { hops: Map<number, DecodedHop>; score: number };
+
+/** Score one fully specified path without running a trellis traversal. */
+export function scoreFixedPath(
+  canonicalHashes: readonly string[],
+  nodeIds: readonly string[],
+  evidence: PathDecoderEvidence,
+): number {
+  if (canonicalHashes.length === 0 || nodeIds.length !== canonicalHashes.length) return -Infinity;
+  const chosen: DecoderCandidate[] = [];
+  let score = 0;
+  for (let position = 0; position < canonicalHashes.length; position++) {
+    const hash = canonicalHashes[position]!;
+    const previousHash = position > 0 ? canonicalHashes[position - 1] ?? null : null;
+    const candidate = (evidence.candidatesByHash.get(hash) ?? [])
+      .find((value) => value.nodeId === nodeIds[position]);
+    if (!candidate) return -Infinity;
+    const emission = emissionScore(
+      position,
+      canonicalHashes.length,
+      hash,
+      previousHash,
+      candidate,
+      evidence.directAnchors(position, hash),
+      evidence,
+    );
+    if (!isFinite(emission)) return -Infinity;
+    score += emission;
+    const previous = chosen[position - 1];
+    const transition = previous
+      ? transitionScore(position, previous, candidate, evidence)
+      : evidence.sourceAnchor
+        ? endpointTransitionScore(endpointCandidate(evidence.sourceAnchor), candidate, evidence)
+        : 0;
+    if (!isFinite(transition)) return -Infinity;
+    score += transition;
+    chosen.push(candidate);
+  }
+  const terminal = bestTerminalTransition(
+    canonicalHashes.length,
+    chosen[chosen.length - 1]!,
+    evidence,
+  );
+  return isFinite(terminal) ? score + terminal : -Infinity;
+}
+
+export function decodePathWithScore(
   canonicalHashes: readonly string[],
   evidence: PathDecoderEvidence,
-): Map<number, DecodedHop> {
+): DecodedPathResult {
   const pathLength = canonicalHashes.length;
   const decoded = new Map<number, DecodedHop>();
-  if (pathLength === 0) return decoded;
+  if (pathLength === 0) return { hops: decoded, score: 0 };
 
   const columns: DecoderCandidate[][] = [];
   const emissions: number[][] = [];
@@ -343,7 +497,7 @@ export function decodePath(
   const forward: number[][] = columns.map((column) => new Array(column.length).fill(-Infinity));
   for (let candidate = 0; candidate < columns[0]!.length; candidate++) {
     const startTransition = evidence.sourceAnchor
-      ? transitionScore(0, endpointCandidate(evidence.sourceAnchor), columns[0]![candidate]!, evidence)
+      ? endpointTransitionScore(endpointCandidate(evidence.sourceAnchor), columns[0]![candidate]!, evidence)
       : 0;
     if (isFinite(startTransition) && isFinite(emissions[0]![candidate]!)) {
       forward[0]![candidate] = emissions[0]![candidate]! + startTransition;
@@ -432,5 +586,19 @@ export function decodePath(
     });
   }
 
-  return decoded;
+  let score = -Infinity;
+  for (let candidate = 0; candidate < columns[pathLength - 1]!.length; candidate++) {
+    const total = forward[pathLength - 1]![candidate]!
+      + backward[pathLength - 1]![candidate]!;
+    if (total > score) score = total;
+  }
+  return { hops: decoded, score };
+}
+
+/** Decode a coherent node assignment for every canonical path-hash position. */
+export function decodePath(
+  canonicalHashes: readonly string[],
+  evidence: PathDecoderEvidence,
+): Map<number, DecodedHop> {
+  return decodePathWithScore(canonicalHashes, evidence).hops;
 }
