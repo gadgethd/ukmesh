@@ -7,7 +7,8 @@ import { TERRAIN_CONFIG } from './mapConfig.js';
 import {
   PATH_ARC_BLOOM_WIDTH,
   PATH_ARC_CORE_WIDTH,
-  PATH_ARC_HEIGHT,
+  PATH_ARC_HEIGHT_M,
+  PATH_ARC_SEGMENTS,
   PATH_HOP_ANIMATION_MS,
   PATH_LINE_FADE_MS,
   PATH_LINE_TTL_MS,
@@ -42,6 +43,7 @@ type RenderedSegment = AerialPathSegment & {
   sourcePosition: DeckPosition;
   targetPosition: DeckPosition;
   renderedTarget: DeckPosition;
+  arcHeight: number;
   opacity: number;
 };
 
@@ -60,7 +62,17 @@ type LeadingPulse = {
   confidence: number | null;
 };
 
-type TerrainElevationMap = Pick<maplibregl.Map, 'queryTerrainElevation'>;
+export type TerrainProfileSample = {
+  progress: number;
+  position: DeckPosition;
+};
+
+export type TerrainElevationMap = Pick<maplibregl.Map, 'queryTerrainElevation'> & {
+  isSourceLoaded?: (sourceId: string) => boolean;
+  // MapLibre exposes the terrain-relative query publicly but keeps the
+  // exaggerated map-centre elevation on its internal transform.
+  transform?: { elevation?: number };
+};
 
 export type PathRegistryEntry = {
   signature: string;
@@ -151,11 +163,25 @@ export function cachedTerrainElevation(
 
   let elevation: number | null = null;
   try {
+    // MapLibre returns a flat/zero DEM while the source is still loading. Do
+    // not turn that transient value into a cached z=0 endpoint: idle retries
+    // will revisit the coordinate after the terrain tile is ready.
+    if (map.isSourceLoaded && !map.isSourceLoaded('terrain-dem')) {
+      cache.set(key, null);
+      return null;
+    }
     const queried = map.queryTerrainElevation(position);
-    elevation = typeof queried === 'number' && Number.isFinite(queried) ? queried : null;
+    if (typeof queried === 'number' && Number.isFinite(queried)) {
+      const mapCentreElevation = map.transform?.elevation;
+      elevation = queried + (
+        typeof mapCentreElevation === 'number' && Number.isFinite(mapCentreElevation)
+          ? mapCentreElevation
+          : 0
+      );
+    }
   } catch {
     // A terrain tile may not be ready yet. The idle listener retries null
-    // samples; unavailable terrain keeps the pre-terrain z=0 behaviour.
+    // samples; terrain-enabled paths stay hidden until their anchors resolve.
   }
   cache.set(key, elevation);
   return elevation;
@@ -166,14 +192,15 @@ export function terrainAwarePosition(
   elevation: number | null,
   terrainEnabled: boolean,
   terrainExaggeration = TERRAIN_CONFIG.exaggeration,
-): DeckPosition {
-  if (!terrainEnabled || elevation == null || !Number.isFinite(elevation)) {
+): DeckPosition | null {
+  if (!terrainEnabled) {
     return [position[0], position[1], 0];
   }
+  if (elevation == null || !Number.isFinite(elevation)) return null;
   return [
     position[0],
     position[1],
-    (elevation + PATH_TERRAIN_CLEARANCE_M) * terrainExaggeration,
+    elevation + PATH_TERRAIN_CLEARANCE_M * terrainExaggeration,
   ];
 }
 
@@ -190,54 +217,206 @@ export function easeArcProgress(progress: number): number {
   return clamped * clamped * (3 - 2 * clamped);
 }
 
-/** Sample the same projected paraboloid used by Deck.gl's ArcLayer shader. */
-export function interpolateArcPosition(
-  source: DeckPosition,
-  target: DeckPosition,
-  progress: number,
-  height = PATH_ARC_HEIGHT,
-): DeckPosition {
-  const ratio = Math.max(0, Math.min(1, progress));
-  if (ratio === 0) return source;
-  if (ratio === 1) return target;
-  const sourceWorld = ARC_PROJECTION.projectPosition(source);
-  const targetWorld = ARC_PROJECTION.projectPosition(target);
+function arcWorldElevation(
+  sourceWorld: DeckPosition,
+  targetWorld: DeckPosition,
+  ratio: number,
+  height: number,
+): number {
   const distance = Math.hypot(
     targetWorld[0] - sourceWorld[0],
     targetWorld[1] - sourceWorld[1],
   );
   const heightDistance = distance * height;
   const deltaZ = targetWorld[2] - sourceWorld[2];
-  let z: number;
-  if (heightDistance === 0) {
-    z = sourceWorld[2] + deltaZ * ratio;
-  } else {
-    const unitZ = deltaZ / heightDistance;
-    const paraboloidWidth = unitZ * unitZ + 1;
-    const reversed = deltaZ <= 0;
-    const arcRatio = reversed ? 1 - ratio : ratio;
-    const baseZ = reversed ? targetWorld[2] : sourceWorld[2];
-    z = Math.sqrt(Math.max(0, arcRatio * (paraboloidWidth - arcRatio)))
-      * heightDistance + baseZ;
+  if (heightDistance === 0) return sourceWorld[2] + deltaZ * ratio;
+  const unitZ = deltaZ / heightDistance;
+  const paraboloidWidth = unitZ * unitZ + 1;
+  const reversed = deltaZ <= 0;
+  const arcRatio = reversed ? 1 - ratio : ratio;
+  const baseZ = reversed ? targetWorld[2] : sourceWorld[2];
+  return Math.sqrt(Math.max(0, arcRatio * (paraboloidWidth - arcRatio)))
+    * heightDistance + baseZ;
+}
+
+/**
+ * Convert a fixed physical lift and the terrain profile into ArcLayer's
+ * length-relative getHeight multiplier. The binary search raises only the
+ * segments whose sampled DEM crest would otherwise intersect the paraboloid.
+ */
+export function arcHeightMultiplier(
+  source: DeckPosition,
+  target: DeckPosition,
+  terrainSamples: readonly TerrainProfileSample[] = [],
+): number {
+  const sourceWorld = ARC_PROJECTION.projectPosition(source) as DeckPosition;
+  const targetWorld = ARC_PROJECTION.projectPosition(target) as DeckPosition;
+  const distance = Math.hypot(
+    targetWorld[0] - sourceWorld[0],
+    targetWorld[1] - sourceWorld[1],
+  );
+  if (distance === 0) return 0;
+
+  const midpointLatitude = (source[1] + target[1]) / 2;
+  const baseHeightWorld = ARC_PROJECTION.projectPosition([
+    source[0],
+    midpointLatitude,
+    PATH_ARC_HEIGHT_M,
+  ])[2];
+  let height = Math.max(0, baseHeightWorld / distance);
+
+  for (const sample of terrainSamples) {
+    const ratio = Math.max(0, Math.min(1, sample.progress));
+    if (ratio === 0 || ratio === 1) continue;
+    const requiredWorld = ARC_PROJECTION.projectPosition(sample.position)[2];
+    if (arcWorldElevation(sourceWorld, targetWorld, ratio, height) >= requiredWorld) continue;
+
+    let low = height;
+    let high = Math.max(height, 0.001);
+    while (arcWorldElevation(sourceWorld, targetWorld, ratio, high) < requiredWorld) {
+      high *= 2;
+    }
+    for (let iteration = 0; iteration < 24; iteration += 1) {
+      const middle = (low + high) / 2;
+      if (arcWorldElevation(sourceWorld, targetWorld, ratio, middle) < requiredWorld) low = middle;
+      else high = middle;
+    }
+    height = high;
   }
+  return height;
+}
+
+/** Sample the same projected paraboloid used by Deck.gl's ArcLayer shader. */
+export function interpolateArcPosition(
+  source: DeckPosition,
+  target: DeckPosition,
+  progress: number,
+  height = arcHeightMultiplier(source, target),
+): DeckPosition {
+  const ratio = Math.max(0, Math.min(1, progress));
+  if (ratio === 0) return source;
+  if (ratio === 1) return target;
+  const sourceWorld = ARC_PROJECTION.projectPosition(source);
+  const targetWorld = ARC_PROJECTION.projectPosition(target);
   return ARC_PROJECTION.unprojectPosition([
     sourceWorld[0] + (targetWorld[0] - sourceWorld[0]) * ratio,
     sourceWorld[1] + (targetWorld[1] - sourceWorld[1]) * ratio,
-    z,
+    arcWorldElevation(sourceWorld, targetWorld, ratio, height),
   ]) as DeckPosition;
 }
 
-function renderedPosition(
+/** Return the ground coordinate at the same projected XY ratio as ArcLayer. */
+export function arcGroundPosition(
+  source: [number, number],
+  target: [number, number],
+  progress: number,
+): [number, number] {
+  const ratio = Math.max(0, Math.min(1, progress));
+  const sourceWorld = ARC_PROJECTION.projectPosition([...source, 0]);
+  const targetWorld = ARC_PROJECTION.projectPosition([...target, 0]);
+  return ARC_PROJECTION.unprojectPosition([
+    sourceWorld[0] + (targetWorld[0] - sourceWorld[0]) * ratio,
+    sourceWorld[1] + (targetWorld[1] - sourceWorld[1]) * ratio,
+    0,
+  ]).slice(0, 2) as [number, number];
+}
+
+function arcTerrainCoordinates(
+  source: [number, number],
+  target: [number, number],
+): [number, number][] {
+  return Array.from({ length: PATH_ARC_SEGMENTS }, (_, index) => arcGroundPosition(
+    source,
+    target,
+    easeArcProgress(index / (PATH_ARC_SEGMENTS - 1)),
+  ));
+}
+
+function terrainProfileForSegment(
+  source: AerialPathNode,
+  target: AerialPathNode,
+  map: TerrainElevationMap | null,
+  terrainEnabled: boolean,
+  elevationCache: Map<string, number | null>,
+): TerrainProfileSample[] | null {
+  if (!terrainEnabled) return [];
+  const samples: TerrainProfileSample[] = [];
+  for (let index = 1; index < PATH_ARC_SEGMENTS - 1; index += 1) {
+    const progress = easeArcProgress(index / (PATH_ARC_SEGMENTS - 1));
+    const position = arcGroundPosition(source.position, target.position, progress);
+    const elevation = cachedTerrainElevation(map, position, elevationCache, true);
+    const terrainPosition = terrainAwarePosition(position, elevation, true);
+    if (!terrainPosition) return null;
+    samples.push({ progress, position: terrainPosition });
+  }
+  return samples;
+}
+
+export function renderedPosition(
   node: AerialPathNode,
   map: TerrainElevationMap | null,
   terrainEnabled: boolean,
   elevationCache: Map<string, number | null>,
-): DeckPosition {
-  return terrainAwarePosition(
+  anchorCache: Map<string, DeckPosition | null>,
+): DeckPosition | null {
+  const key = terrainCoordinateKey(node.position);
+  if (anchorCache.has(key)) return anchorCache.get(key) ?? null;
+  const rendered = terrainAwarePosition(
     node.position,
     cachedTerrainElevation(map, node.position, elevationCache, terrainEnabled),
     terrainEnabled,
   );
+  // Arc endpoints, path node dots, observer dots, and the hop marker all use
+  // this one coordinate anchor. This prevents a line from ending at a second
+  // terrain query that is numerically close but not the icon's actual anchor.
+  anchorCache.set(key, rendered);
+  return rendered;
+}
+
+type SegmentGeometry = {
+  sourcePosition: DeckPosition;
+  targetPosition: DeckPosition;
+  renderedTarget: DeckPosition;
+  arcHeight: number;
+};
+
+function segmentGeometry(
+  segment: AerialPathSegment,
+  map: TerrainElevationMap | null,
+  terrainEnabled: boolean,
+  elevationCache: Map<string, number | null>,
+  anchorCache: Map<string, DeckPosition | null>,
+): SegmentGeometry | null {
+  const sourcePosition = renderedPosition(
+    segment.source,
+    map,
+    terrainEnabled,
+    elevationCache,
+    anchorCache,
+  );
+  const targetPosition = renderedPosition(
+    segment.target,
+    map,
+    terrainEnabled,
+    elevationCache,
+    anchorCache,
+  );
+  if (!sourcePosition || !targetPosition) return null;
+  const terrainSamples = terrainProfileForSegment(
+    segment.source,
+    segment.target,
+    map,
+    terrainEnabled,
+    elevationCache,
+  );
+  if (!terrainSamples) return null;
+  const arcHeight = arcHeightMultiplier(sourcePosition, targetPosition, terrainSamples);
+  return {
+    sourcePosition,
+    targetPosition,
+    renderedTarget: targetPosition,
+    arcHeight,
+  };
 }
 
 function uniqueNodes(segments: RenderedSegment[]): RenderedNode[] {
@@ -272,25 +451,27 @@ function layersForFrame(
   if (segments.length > 0) {
     layers.push(
       new ArcLayer<RenderedSegment>({
-        id: 'resolved-path-arc-bloom',
+        id: 'resolved-path-arc-bloom-terrain-clearance-v2',
         data: segments,
         getSourcePosition: (segment) => segment.sourcePosition,
         getTargetPosition: (segment) => segment.renderedTarget,
         getSourceColor: (segment) => pathArcColors(segment.confidence, segment.opacity).bloomSource,
         getTargetColor: (segment) => pathArcColors(segment.confidence, segment.opacity).bloomTarget,
         getWidth: PATH_ARC_BLOOM_WIDTH,
-        getHeight: PATH_ARC_HEIGHT,
+        getHeight: (segment) => segment.arcHeight,
+        numSegments: PATH_ARC_SEGMENTS,
         pickable: false,
       }),
       new ArcLayer<RenderedSegment>({
-        id: 'resolved-path-arc-core',
+        id: 'resolved-path-arc-core-terrain-clearance-v2',
         data: segments,
         getSourcePosition: (segment) => segment.sourcePosition,
         getTargetPosition: (segment) => segment.renderedTarget,
         getSourceColor: (segment) => pathArcColors(segment.confidence, segment.opacity).coreSource,
         getTargetColor: (segment) => pathArcColors(segment.confidence, segment.opacity).coreTarget,
         getWidth: PATH_ARC_CORE_WIDTH,
-        getHeight: PATH_ARC_HEIGHT,
+        getHeight: (segment) => segment.arcHeight,
+        numSegments: PATH_ARC_SEGMENTS,
         pickable: false,
       }),
     );
@@ -425,7 +606,8 @@ export const AnimatedPathOverlay: React.FC<{
     const rendered: RenderedSegment[] = [];
     const pulses: LeadingPulse[] = [];
     const terrainEnabledNow = terrainEnabledRef.current;
-    const terrainMap = map;
+    const terrainMap = map as TerrainElevationMap | null;
+    const anchorCache = new Map<string, DeckPosition | null>();
     let needsAnimationFrame = false;
     let nextFadeAt = Number.POSITIVE_INFINITY;
 
@@ -440,24 +622,23 @@ export const AnimatedPathOverlay: React.FC<{
         needsAnimationFrame = true;
         const activeSegment = entry.segment;
         const hopProgress = easeArcProgress(elapsed / PATH_HOP_ANIMATION_MS);
-        const sourcePosition = renderedPosition(
-          activeSegment.source,
+        const geometry = segmentGeometry(
+          activeSegment,
           terrainMap,
           terrainEnabledNow,
           elevationCacheRef.current,
+          anchorCache,
         );
-        const targetPosition = renderedPosition(
-          activeSegment.target,
-          terrainMap,
-          terrainEnabledNow,
-          elevationCacheRef.current,
+        if (!geometry) continue;
+        const position = interpolateArcPosition(
+          geometry.sourcePosition,
+          geometry.targetPosition,
+          hopProgress,
+          geometry.arcHeight,
         );
-        const position = interpolateArcPosition(sourcePosition, targetPosition, hopProgress);
         rendered.push({
           ...activeSegment,
-          sourcePosition,
-          targetPosition,
-          renderedTarget: targetPosition,
+          ...geometry,
           opacity: 1,
         });
         pulses.push({ position, confidence: activeSegment.confidence });
@@ -475,36 +656,31 @@ export const AnimatedPathOverlay: React.FC<{
       if (ageSinceCompletion > PATH_LINE_TTL_MS) needsAnimationFrame = true;
       else nextFadeAt = Math.min(nextFadeAt, entry.startedAt + animationDuration + PATH_LINE_TTL_MS);
       const segment = entry.segment;
-      const sourcePosition = renderedPosition(
-        segment.source,
+      const geometry = segmentGeometry(
+        segment,
         terrainMap,
         terrainEnabledNow,
         elevationCacheRef.current,
+        anchorCache,
       );
-      const targetPosition = renderedPosition(
-        segment.target,
-        terrainMap,
-        terrainEnabledNow,
-        elevationCacheRef.current,
-      );
+      if (!geometry) continue;
       rendered.push({
         ...segment,
-        sourcePosition,
-        targetPosition,
-        renderedTarget: targetPosition,
+        ...geometry,
         opacity,
       });
     }
 
-    const renderedObserverNodes: RenderedObserverNode[] = observerNodesRef.current.map((node) => ({
-      ...node,
-      renderedPosition: renderedPosition(
+    const renderedObserverNodes: RenderedObserverNode[] = observerNodesRef.current.flatMap((node) => {
+      const renderedPositionForNode = renderedPosition(
         node,
         terrainMap,
         terrainEnabledNow,
         elevationCacheRef.current,
-      ),
-    }));
+        anchorCache,
+      );
+      return renderedPositionForNode ? [{ ...node, renderedPosition: renderedPositionForNode }] : [];
+    });
 
     overlay.setProps({
       layers: layersForFrame(
@@ -537,6 +713,14 @@ export const AnimatedPathOverlay: React.FC<{
     };
     for (const path of paths) {
       for (const node of path.nodes) rememberCoordinate(node.position);
+      for (let index = 0; index < path.nodes.length - 1; index += 1) {
+        const source = path.nodes[index];
+        const target = path.nodes[index + 1];
+        if (!source || !target) continue;
+        for (const position of arcTerrainCoordinates(source.position, target.position)) {
+          rememberCoordinate(position);
+        }
+      }
     }
     for (const node of observerNodes) rememberCoordinate(node.position);
     terrainCoordinatesRef.current = coordinates;
@@ -551,9 +735,14 @@ export const AnimatedPathOverlay: React.FC<{
       if (!map || !terrainEnabledRef.current) return;
       let updated = false;
       for (const [key, position] of terrainCoordinatesRef.current) {
-        if (elevationCacheRef.current.get(key) !== null) continue;
+        if (elevationCacheRef.current.has(key) && elevationCacheRef.current.get(key) !== null) continue;
         elevationCacheRef.current.delete(key);
-        const elevation = cachedTerrainElevation(map, position, elevationCacheRef.current, true);
+        const elevation = cachedTerrainElevation(
+          map as TerrainElevationMap,
+          position,
+          elevationCacheRef.current,
+          true,
+        );
         if (elevation !== null) updated = true;
       }
       if (updated) scheduleRef.current();

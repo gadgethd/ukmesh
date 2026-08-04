@@ -8,7 +8,13 @@ export const PATH_LINE_TTL_MS = 5_000;
 
 export const PATH_HOP_ANIMATION_MS = 400;
 export const PATH_LINE_FADE_MS = 1_000;
+// Kept for the non-terrain packet arcs in DeckGLOverlay. ArcLayer interprets
+// this value as a multiplier of each segment's projected length.
 export const PATH_ARC_HEIGHT = 0.15;
+// Animated live paths convert this physical lift to ArcLayer's per-segment
+// multiplier, so a short hop and a long hop use the same aerial scale.
+export const PATH_ARC_HEIGHT_M = 120;
+export const PATH_ARC_SEGMENTS = 32;
 export const PATH_ARC_BLOOM_WIDTH = 10;
 export const PATH_ARC_CORE_WIDTH = 2;
 
