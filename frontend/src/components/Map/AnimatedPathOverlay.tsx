@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef } from 'react';
-import type { Layer, PickingInfo } from '@deck.gl/core';
+import { WebMercatorViewport, type Layer, type PickingInfo } from '@deck.gl/core';
 import { ArcLayer, ScatterplotLayer } from '@deck.gl/layers';
 import { MapboxOverlay } from '@deck.gl/mapbox';
 import type maplibregl from 'maplibre-gl';
@@ -9,8 +9,6 @@ import {
   PATH_ARC_CORE_WIDTH,
   PATH_ARC_HEIGHT,
   PATH_HOP_ANIMATION_MS,
-  PATH_HOP_PEAK_DISTANCE_SCALE,
-  PATH_HOP_PEAK_HEIGHT_M,
   PATH_LINE_FADE_MS,
   PATH_LINE_TTL_MS,
   PATH_TERRAIN_CLEARANCE_M,
@@ -66,7 +64,7 @@ type TerrainElevationMap = Pick<maplibregl.Map, 'queryTerrainElevation'>;
 
 export type PathRegistryEntry = {
   signature: string;
-  segments: AerialPathSegment[];
+  segment: AerialPathSegment;
   startedAt: number;
 };
 
@@ -76,12 +74,20 @@ function aerialNodeKey(node: AerialPathNode): string {
   return `${node.position[0].toFixed(6)},${node.position[1].toFixed(6)}`;
 }
 
+export function aerialSegmentKey(
+  pathId: string,
+  source: AerialPathNode,
+  target: AerialPathNode,
+): string {
+  return `${pathId}:stable-segment:${aerialNodeKey(source)}>${aerialNodeKey(target)}`;
+}
+
 export function buildAerialPathSegments(paths: AerialPath[]): AerialPathSegment[] {
   return paths.flatMap((path) => path.nodes.slice(0, -1).flatMap((source, index) => {
     const target = path.nodes[index + 1];
     if (!target) return [];
     return [{
-      id: `${path.id}:${aerialNodeKey(source)}>${aerialNodeKey(target)}`,
+      id: aerialSegmentKey(path.id, source, target),
       source,
       target,
       confidence: target.confidence ?? path.confidence,
@@ -109,7 +115,7 @@ export function registerAerialPaths(
     let nextSegmentStart = now;
     for (const segment of buildAerialPathSegments([path])) {
       const existing = registry.get(segment.id);
-      const previous = existing?.segments[0];
+      const previous = existing?.segment;
       const merged = previous
         ? { ...segment, confidence: strongestConfidence(previous.confidence, segment.confidence) }
         : segment;
@@ -120,7 +126,7 @@ export function registerAerialPaths(
       ].join(':');
       registry.set(segment.id, {
         signature,
-        segments: [merged],
+        segment: merged,
         startedAt: existing?.startedAt ?? nextSegmentStart,
       });
       const completionAt = (existing?.startedAt ?? nextSegmentStart) + PATH_HOP_ANIMATION_MS;
@@ -171,46 +177,54 @@ export function terrainAwarePosition(
   ];
 }
 
-function horizontalDistanceMeters(source: DeckPosition, target: DeckPosition): number {
-  const earthRadiusM = 6_371_000;
-  const sourceLat = source[1] * Math.PI / 180;
-  const targetLat = target[1] * Math.PI / 180;
-  const deltaLat = targetLat - sourceLat;
-  const deltaLon = (target[0] - source[0]) * Math.PI / 180;
-  const haversine = Math.sin(deltaLat / 2) ** 2
-    + Math.cos(sourceLat) * Math.cos(targetLat) * Math.sin(deltaLon / 2) ** 2;
-  return 2 * earthRadiusM * Math.asin(Math.sqrt(Math.min(1, haversine)));
+const ARC_PROJECTION = new WebMercatorViewport({
+  width: 1,
+  height: 1,
+  longitude: 0,
+  latitude: 0,
+  zoom: 0,
+});
+
+export function easeArcProgress(progress: number): number {
+  const clamped = Math.max(0, Math.min(1, progress));
+  return clamped * clamped * (3 - 2 * clamped);
 }
 
-export function hopPeakElevation(
-  source: DeckPosition,
-  target: DeckPosition,
-  terrainExaggeration = 1,
-): number {
-  const peakHeightM = Math.max(
-    PATH_HOP_PEAK_HEIGHT_M,
-    horizontalDistanceMeters(source, target) * PATH_HOP_PEAK_DISTANCE_SCALE,
-  );
-  return Math.max(source[2], target[2]) + peakHeightM * terrainExaggeration;
-}
-
-/** Interpolate horizontally while following a parabolic, midpoint-peaking hop. */
-export function interpolateBallistic(
+/** Sample the same projected paraboloid used by Deck.gl's ArcLayer shader. */
+export function interpolateArcPosition(
   source: DeckPosition,
   target: DeckPosition,
   progress: number,
-  peakElevation: number,
+  height = PATH_ARC_HEIGHT,
 ): DeckPosition {
-  const clampedProgress = Math.max(0, Math.min(1, progress));
-  const linearElevation = source[2] + (target[2] - source[2]) * clampedProgress;
-  const midpointElevation = (source[2] + target[2]) / 2;
-  const arcElevation = 4 * clampedProgress * (1 - clampedProgress)
-    * Math.max(0, peakElevation - midpointElevation);
-  return [
-    source[0] + (target[0] - source[0]) * clampedProgress,
-    source[1] + (target[1] - source[1]) * clampedProgress,
-    linearElevation + arcElevation,
-  ];
+  const ratio = Math.max(0, Math.min(1, progress));
+  if (ratio === 0) return source;
+  if (ratio === 1) return target;
+  const sourceWorld = ARC_PROJECTION.projectPosition(source);
+  const targetWorld = ARC_PROJECTION.projectPosition(target);
+  const distance = Math.hypot(
+    targetWorld[0] - sourceWorld[0],
+    targetWorld[1] - sourceWorld[1],
+  );
+  const heightDistance = distance * height;
+  const deltaZ = targetWorld[2] - sourceWorld[2];
+  let z: number;
+  if (heightDistance === 0) {
+    z = sourceWorld[2] + deltaZ * ratio;
+  } else {
+    const unitZ = deltaZ / heightDistance;
+    const paraboloidWidth = unitZ * unitZ + 1;
+    const reversed = deltaZ <= 0;
+    const arcRatio = reversed ? 1 - ratio : ratio;
+    const baseZ = reversed ? targetWorld[2] : sourceWorld[2];
+    z = Math.sqrt(Math.max(0, arcRatio * (paraboloidWidth - arcRatio)))
+      * heightDistance + baseZ;
+  }
+  return ARC_PROJECTION.unprojectPosition([
+    sourceWorld[0] + (targetWorld[0] - sourceWorld[0]) * ratio,
+    sourceWorld[1] + (targetWorld[1] - sourceWorld[1]) * ratio,
+    z,
+  ]) as DeckPosition;
 }
 
 function renderedPosition(
@@ -318,7 +332,7 @@ function layersForFrame(
 
   if (pulses.length > 0) {
     layers.push(new ScatterplotLayer<LeadingPulse>({
-      id: 'resolved-path-leading-pulse',
+      id: 'resolved-path-arc-rider',
       data: pulses,
       getPosition: (item) => item.position,
       getFillColor: (item) => pathArcColors(item.confidence).coreTarget,
@@ -415,8 +429,8 @@ export const AnimatedPathOverlay: React.FC<{
     let needsAnimationFrame = false;
     let nextFadeAt = Number.POSITIVE_INFINITY;
 
-    for (const [pathId, entry] of registryRef.current) {
-      const animationDuration = entry.segments.length * PATH_HOP_ANIMATION_MS;
+    for (const [segmentId, entry] of registryRef.current) {
+      const animationDuration = PATH_HOP_ANIMATION_MS;
       if (now < entry.startedAt) {
         needsAnimationFrame = true;
         continue;
@@ -424,71 +438,35 @@ export const AnimatedPathOverlay: React.FC<{
       const elapsed = now - entry.startedAt;
       if (elapsed < animationDuration) {
         needsAnimationFrame = true;
-        const completedCount = Math.floor(elapsed / PATH_HOP_ANIMATION_MS);
-        const activeSegment = entry.segments[completedCount];
-        for (const segment of entry.segments.slice(0, completedCount)) {
-          const sourcePosition = renderedPosition(
-            segment.source,
-            terrainMap,
-            terrainEnabledNow,
-            elevationCacheRef.current,
-          );
-          const targetPosition = renderedPosition(
-            segment.target,
-            terrainMap,
-            terrainEnabledNow,
-            elevationCacheRef.current,
-          );
-          rendered.push({
-            ...segment,
-            sourcePosition,
-            targetPosition,
-            renderedTarget: targetPosition,
-            opacity: 1,
-          });
-        }
-        if (activeSegment) {
-          const hopProgress = Math.min(
-            1,
-            (elapsed - completedCount * PATH_HOP_ANIMATION_MS) / PATH_HOP_ANIMATION_MS,
-          );
-          const sourcePosition = renderedPosition(
-            activeSegment.source,
-            terrainMap,
-            terrainEnabledNow,
-            elevationCacheRef.current,
-          );
-          const targetPosition = renderedPosition(
-            activeSegment.target,
-            terrainMap,
-            terrainEnabledNow,
-            elevationCacheRef.current,
-          );
-          const position = interpolateBallistic(
-            sourcePosition,
-            targetPosition,
-            hopProgress,
-            hopPeakElevation(
-              sourcePosition,
-              targetPosition,
-              terrainEnabledNow ? TERRAIN_CONFIG.exaggeration : 1,
-            ),
-          );
-          rendered.push({
-            ...activeSegment,
-            sourcePosition,
-            targetPosition,
-            renderedTarget: position,
-            opacity: 1,
-          });
-          pulses.push({ position, confidence: activeSegment.confidence });
-        }
+        const activeSegment = entry.segment;
+        const hopProgress = easeArcProgress(elapsed / PATH_HOP_ANIMATION_MS);
+        const sourcePosition = renderedPosition(
+          activeSegment.source,
+          terrainMap,
+          terrainEnabledNow,
+          elevationCacheRef.current,
+        );
+        const targetPosition = renderedPosition(
+          activeSegment.target,
+          terrainMap,
+          terrainEnabledNow,
+          elevationCacheRef.current,
+        );
+        const position = interpolateArcPosition(sourcePosition, targetPosition, hopProgress);
+        rendered.push({
+          ...activeSegment,
+          sourcePosition,
+          targetPosition,
+          renderedTarget: targetPosition,
+          opacity: 1,
+        });
+        pulses.push({ position, confidence: activeSegment.confidence });
         continue;
       }
 
       const ageSinceCompletion = elapsed - animationDuration;
       if (ageSinceCompletion >= PATH_LINE_TTL_MS + PATH_LINE_FADE_MS) {
-        registryRef.current.delete(pathId);
+        registryRef.current.delete(segmentId);
         continue;
       }
       const opacity = ageSinceCompletion <= PATH_LINE_TTL_MS
@@ -496,27 +474,26 @@ export const AnimatedPathOverlay: React.FC<{
         : Math.max(0, 1 - (ageSinceCompletion - PATH_LINE_TTL_MS) / PATH_LINE_FADE_MS);
       if (ageSinceCompletion > PATH_LINE_TTL_MS) needsAnimationFrame = true;
       else nextFadeAt = Math.min(nextFadeAt, entry.startedAt + animationDuration + PATH_LINE_TTL_MS);
-      for (const segment of entry.segments) {
-        const sourcePosition = renderedPosition(
-          segment.source,
-          terrainMap,
-          terrainEnabledNow,
-          elevationCacheRef.current,
-        );
-        const targetPosition = renderedPosition(
-          segment.target,
-          terrainMap,
-          terrainEnabledNow,
-          elevationCacheRef.current,
-        );
-        rendered.push({
-          ...segment,
-          sourcePosition,
-          targetPosition,
-          renderedTarget: targetPosition,
-          opacity,
-        });
-      }
+      const segment = entry.segment;
+      const sourcePosition = renderedPosition(
+        segment.source,
+        terrainMap,
+        terrainEnabledNow,
+        elevationCacheRef.current,
+      );
+      const targetPosition = renderedPosition(
+        segment.target,
+        terrainMap,
+        terrainEnabledNow,
+        elevationCacheRef.current,
+      );
+      rendered.push({
+        ...segment,
+        sourcePosition,
+        targetPosition,
+        renderedTarget: targetPosition,
+        opacity,
+      });
     }
 
     const renderedObserverNodes: RenderedObserverNode[] = observerNodesRef.current.map((node) => ({

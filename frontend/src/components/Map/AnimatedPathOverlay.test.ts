@@ -3,8 +3,8 @@ import test from 'node:test';
 import {
   buildAerialPathSegments,
   cachedTerrainElevation,
-  hopPeakElevation,
-  interpolateBallistic,
+  easeArcProgress,
+  interpolateArcPosition,
   registerAerialPaths,
   terrainAwarePosition,
   type AerialPath,
@@ -72,7 +72,38 @@ test('a later observer reuses the common trunk and registers only its new branch
   assert.equal(firstBranchStartedAt, 500, 'the original path still animates hop by hop');
   assert.equal(registry.get(firstBranchKey!)?.startedAt, firstBranchStartedAt);
   assert.equal(registry.get(secondBranchKey)?.startedAt, 500, 'only the new branch starts later');
-  assert.equal(registry.get(trunkKey!)?.segments[0]?.confidence, 0.9, 'shared edges retain strongest evidence');
+  assert.equal(registry.get(trunkKey!)?.segment.confidence, 0.9, 'shared edges retain strongest evidence');
+});
+
+test('a branch arriving mid-trunk waits at the split without replaying stable segments', () => {
+  const registry = new Map<string, PathRegistryEntry>();
+  const initial: AerialPath = {
+    id: 'packet-a',
+    confidence: 0.6,
+    nodes: [
+      { position: [-2, 51] },
+      { position: [-1, 52] },
+      { position: [0, 53] },
+    ],
+  };
+  const diverted: AerialPath = {
+    id: 'packet-a',
+    confidence: 0.9,
+    nodes: [
+      { position: [-2, 51] },
+      { position: [-1, 52] },
+      { position: [1, 53] },
+    ],
+  };
+  const [trunkKey, originalBranchKey] = buildAerialPathSegments([initial]).map((segment) => segment.id);
+  const divertedBranchKey = buildAerialPathSegments([diverted])[1]!.id;
+
+  registerAerialPaths(registry, [initial], 100);
+  registerAerialPaths(registry, [initial, diverted], 300);
+
+  assert.equal(registry.get(trunkKey!)?.startedAt, 100, 'active trunk progress is retained');
+  assert.equal(registry.get(originalBranchKey!)?.startedAt, 500, 'existing stream timing is retained');
+  assert.equal(registry.get(divertedBranchKey)?.startedAt, 500, 'new stream starts when the split is reached');
 });
 
 test('terrain elevation queries are cached per coordinate and preserve null fallbacks', () => {
@@ -100,20 +131,24 @@ test('terrain-aware endpoint positions apply clearance and fall back to ground l
   assert.deepEqual(terrainAwarePosition([1, 2], 120, false, 2), [1, 2, 0]);
 });
 
-test('hop interpolation is horizontal-linear but vertically ballistic', () => {
+test('hop interpolation samples the same eased ArcLayer paraboloid', () => {
   const source: [number, number, number] = [-1, 51, 100];
   const target: [number, number, number] = [0, 52, 200];
-  const peak = hopPeakElevation(source, target, 1);
-  const midpoint = interpolateBallistic(source, target, 0.5, peak);
+  const midpoint = interpolateArcPosition(source, target, easeArcProgress(0.5));
 
-  assert.deepEqual(interpolateBallistic(source, target, 0, peak), source);
-  assert.deepEqual(interpolateBallistic(source, target, 1, peak), target);
-  assert.deepEqual(midpoint.slice(0, 2), [-0.5, 51.5]);
-  assert.equal(midpoint[2], peak, 'mid-hop reaches the planned peak elevation');
-  assert(midpoint[2] > target[2], 'the active marker clears both endpoints');
+  assert.deepEqual(interpolateArcPosition(source, target, 0), source);
+  assert.deepEqual(interpolateArcPosition(source, target, 1), target);
+  assert(Math.abs(midpoint[0] - -0.5) < 1e-12);
+  assert(midpoint[1] > 51.5, 'the marker follows Web Mercator arc projection, not linear latitude');
+  assert(midpoint[2] > target[2], 'the ArcLayer height profile clears both endpoints');
 });
 
-test('long hops scale their airborne peak above the minimum', () => {
-  const peak = hopPeakElevation([0, 0, 0], [1, 0, 0]);
-  assert(peak > 300);
+test('arc progress eases smoothly while preserving segment endpoints', () => {
+  assert.equal(easeArcProgress(-1), 0);
+  assert.equal(easeArcProgress(0), 0);
+  assert.equal(easeArcProgress(0.25), 0.15625);
+  assert.equal(easeArcProgress(0.5), 0.5);
+  assert.equal(easeArcProgress(0.75), 0.84375);
+  assert.equal(easeArcProgress(1), 1);
+  assert.equal(easeArcProgress(2), 1);
 });
