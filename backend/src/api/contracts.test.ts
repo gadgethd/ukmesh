@@ -39,3 +39,21 @@ test('planned-node public response contract has a closed privacy allowlist', () 
   assert.match(serialized, /publishedAt/);
   assert.doesNotMatch(serialized, /owner_pubkey|notes|published_by/);
 });
+
+test('slow path contracts cover status, mode query, and pending response', () => {
+  const status = API_CONTRACTS.find((entry) => entry.path === '/path-beta/slow-mode');
+  assert.deepEqual(
+    (status?.responseSchema?.['required'] as string[] | undefined)?.sort(),
+    ['enabled', 'pending', 'pendingMax', 'windowMs'],
+  );
+
+  const resolveMulti = API_CONTRACTS.find((entry) => entry.path === '/path-beta/resolve-multi');
+  assert.deepEqual(
+    resolveMulti?.queryParameters?.[0]?.['schema'],
+    { type: 'string', enum: ['fast', 'slow'] },
+  );
+  assert.equal(
+    resolveMulti?.additionalResponses?.['202']?.responseSchema['properties'] != null,
+    true,
+  );
+});
