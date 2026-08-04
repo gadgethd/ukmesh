@@ -58,6 +58,7 @@ export type ResolvedPathRoute = {
 };
 
 export type AggregatedPredictionState = {
+  packetHash: string;
   canonicalPath: CanonicalPathNode[];
   routes: ResolvedPathRoute[];
   observerIds: string[];
@@ -173,6 +174,7 @@ export function aggregateCanonicalPath(
 ): Omit<AggregatedPredictionState, 'ts'> | null {
   if (!response || response.ok === false) return null;
   return {
+    packetHash: response.packetHash.trim().toUpperCase(),
     canonicalPath: Array.isArray(response.canonicalPath) ? response.canonicalPath : [],
     routes: multiObserverPathRoutes(response),
     observerIds: canonicalPathObserverIds(response),

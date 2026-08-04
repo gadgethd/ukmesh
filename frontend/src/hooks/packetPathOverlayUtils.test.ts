@@ -39,6 +39,7 @@ test('canonical path aggregation renders one route and exposes observer markers'
   };
 
   assert.deepEqual(aggregateCanonicalPath(response), {
+    packetHash: 'ABC',
     canonicalPath: response.canonicalPath,
     routes: [{
       confidence: 0.9,

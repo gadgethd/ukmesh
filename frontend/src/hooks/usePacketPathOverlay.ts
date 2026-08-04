@@ -32,6 +32,7 @@ type UsePacketPathOverlayParams = {
 type UsePacketPathOverlayResult = {
   packetPaths: [number, number][][];
   betaPacketPaths: [number, number][][];
+  betaPathPacketHash: string | null;
   betaCanonicalPath: CanonicalPathNode[];
   betaPathRoutes: ResolvedPathRoute[];
   betaObserverIds: string[];
@@ -88,6 +89,7 @@ export function usePacketPathOverlay({
   const nodes = useNodeMap();
   const [packetPaths, setPacketPaths] = useState<[number, number][][]>([]);
   const [betaPacketPaths, setBetaPacketPaths] = useState<[number, number][][]>([]);
+  const [betaPathPacketHash, setBetaPathPacketHash] = useState<string | null>(null);
   const [betaCanonicalPath, setBetaCanonicalPath] = useState<CanonicalPathNode[]>([]);
   const [betaPathRoutes, setBetaPathRoutes] = useState<ResolvedPathRoute[]>([]);
   const [betaObserverIds, setBetaObserverIds] = useState<string[]>([]);
@@ -130,6 +132,7 @@ export function usePacketPathOverlay({
 
   const clearBetaState = useCallback(() => {
     setBetaPacketPaths([]);
+    setBetaPathPacketHash(null);
     setBetaCanonicalPath([]);
     setBetaPathRoutes([]);
     setBetaObserverIds([]);
@@ -170,6 +173,7 @@ export function usePacketPathOverlay({
     setBetaPacketPaths(aggregated.routes.map((route) => (
       route.nodes.map((node) => [node.lat, node.lon] as [number, number])
     )));
+    setBetaPathPacketHash(aggregated.packetHash);
     setBetaCanonicalPath(aggregated.canonicalPath);
     setBetaPathRoutes(aggregated.routes);
     setBetaObserverIds(aggregated.observerIds);
@@ -414,6 +418,7 @@ export function usePacketPathOverlay({
   return {
     packetPaths,
     betaPacketPaths,
+    betaPathPacketHash,
     betaCanonicalPath,
     betaPathRoutes,
     betaObserverIds,
