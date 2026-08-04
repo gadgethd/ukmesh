@@ -11,6 +11,11 @@ export type ApiContract = {
   summary: string;
   requestSchema?: Record<string, unknown>;
   responseSchema?: Record<string, unknown>;
+  queryParameters?: readonly Record<string, unknown>[];
+  additionalResponses?: Readonly<Record<string, {
+    description: string;
+    responseSchema: Record<string, unknown>;
+  }>>;
 };
 
 const ERROR_SCHEMA = {
@@ -43,6 +48,29 @@ const PLANNED_NODE_PAGE_SCHEMA = {
       },
     },
     nextCursor: { type: ['string', 'null'] },
+  },
+  additionalProperties: false,
+};
+
+const SLOW_MODE_STATUS_SCHEMA = {
+  type: 'object',
+  required: ['enabled', 'windowMs', 'pending', 'pendingMax'],
+  properties: {
+    enabled: { type: 'boolean' },
+    windowMs: { type: 'integer', minimum: 0 },
+    pending: { type: 'integer', minimum: 0 },
+    pendingMax: { type: 'integer', minimum: 1 },
+  },
+  additionalProperties: false,
+};
+
+const SLOW_MODE_PENDING_SCHEMA = {
+  type: 'object',
+  required: ['status', 'remainingMs', 'windowMs'],
+  properties: {
+    status: { type: 'string', const: 'pending' },
+    remainingMs: { type: 'integer', minimum: 0 },
+    windowMs: { type: 'integer', minimum: 0 },
   },
   additionalProperties: false,
 };
@@ -93,6 +121,7 @@ const PUBLIC_GET = [
   '/path-beta/multibyte-paths',
   '/path-beta/resolve',
   '/path-beta/resolve-multi',
+  '/path-beta/slow-mode',
   '/path-lazy/resolve',
   '/path-learning',
   '/planned-nodes',
@@ -139,6 +168,30 @@ export const API_CONTRACTS: readonly ApiContract[] = [
   ...contracts('DELETE', ['/coverage/planned/:planId'], 'public'),
   ...contracts('DELETE', ['/owner/alert-rules/:id'], 'owner'),
 ].map((contract) => {
+  if (contract.path === '/path-beta/slow-mode') {
+    return {
+      ...contract,
+      summary: 'Read slow-mode path resolution scheduler status',
+      responseSchema: SLOW_MODE_STATUS_SCHEMA,
+    };
+  }
+  if (contract.path === '/path-beta/resolve-multi') {
+    return {
+      ...contract,
+      queryParameters: [{
+        name: 'mode',
+        in: 'query',
+        required: false,
+        schema: { type: 'string', enum: ['fast', 'slow'] },
+      }],
+      additionalResponses: {
+        '202': {
+          description: 'Slow-mode propagation window is still pending',
+          responseSchema: SLOW_MODE_PENDING_SCHEMA,
+        },
+      },
+    };
+  }
   if (contract.path === '/planned-nodes') {
     return { ...contract, summary: 'List explicitly published planned nodes', responseSchema: PLANNED_NODE_PAGE_SCHEMA };
   }

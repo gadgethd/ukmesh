@@ -3755,7 +3755,20 @@
           "public"
         ],
         "x-access": "public",
-        "parameters": [],
+        "parameters": [
+          {
+            "name": "mode",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "fast",
+                "slow"
+              ]
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful response",
@@ -3764,6 +3777,140 @@
                 "schema": {
                   "type": "object",
                   "additionalProperties": true
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Slow-mode propagation window is still pending",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "status",
+                    "remainingMs",
+                    "windowMs"
+                  ],
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "const": "pending"
+                    },
+                    "remainingMs": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "windowMs": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid or out-of-bounds request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/path-beta/slow-mode": {
+      "get": {
+        "summary": "Read slow-mode path resolution scheduler status",
+        "operationId": "get-path-beta-slow-mode",
+        "tags": [
+          "public"
+        ],
+        "x-access": "public",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "enabled",
+                    "windowMs",
+                    "pending",
+                    "pendingMax"
+                  ],
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "windowMs": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "pending": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "pendingMax": {
+                      "type": "integer",
+                      "minimum": 1
+                    }
+                  },
+                  "additionalProperties": false
                 }
               }
             }
