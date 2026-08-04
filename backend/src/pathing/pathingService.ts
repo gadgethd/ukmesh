@@ -1,4 +1,5 @@
 import type { PathingRepository } from './pathingRepository.js';
+import type { HeldPathEntry } from '../path-beta/resolveCache.js';
 import {
   toPublicBetaResultDto,
   toPublicMultiObserverDto,
@@ -9,8 +10,8 @@ import {
 type ResolvePoolFn = {
   run<T>(
     job:
-      | { type: 'resolve'; packetHash: string; network: string; observer?: string | null }
-      | { type: 'resolveMulti'; packetHash: string; network: string },
+      | { type: 'resolve'; packetHash: string; network: string; observer?: string | null; heldPath?: HeldPathEntry }
+      | { type: 'resolveMulti'; packetHash: string; network: string; heldPath?: HeldPathEntry },
   ): Promise<T | null>;
 };
 
@@ -24,6 +25,8 @@ type PathingServiceDeps = {
   pathHistoryCacheTtlMs: number;
   getResolveCache: (key: string) => unknown;
   setResolveCache: (key: string, value: unknown) => void;
+  getHeldPath: (packetHash: string, network: string) => HeldPathEntry | undefined;
+  setHeldPath: (packetHash: string, network: string, value: HeldPathEntry) => void;
   resolvePool: ResolvePoolFn;
   repository: PathingRepository;
 };
@@ -121,6 +124,8 @@ export function createPathingService(deps: PathingServiceDeps) {
     pathHistoryCacheTtlMs,
     getResolveCache,
     setResolveCache,
+    getHeldPath,
+    setHeldPath,
     resolvePool,
     repository,
   } = deps;
@@ -140,12 +145,17 @@ export function createPathingService(deps: PathingServiceDeps) {
         packetHash,
         network,
         observer,
+        heldPath: getHeldPath(packetHash, network),
       });
       if (!resolved) {
         throw new Error('PACKET_NOT_FOUND');
       }
 
       const projected = toPublicBetaResultDto(addPathExplanation(resolved));
+      const heldNodes = projected.canonicalPath.map((hop) => hop.nodeId ?? '').filter(Boolean);
+      if (heldNodes.length === projected.canonicalPath.length && heldNodes.length > 0) {
+        setHeldPath(packetHash, network, { path: heldNodes, resolvedAt: Date.now(), physical: true });
+      }
       setResolveCache(cacheKey, projected);
       return projected;
     })();
@@ -174,12 +184,17 @@ export function createPathingService(deps: PathingServiceDeps) {
         type: 'resolveMulti',
         packetHash,
         network,
+        heldPath: getHeldPath(packetHash, network),
       });
       if (!resolved) {
         throw new Error('PACKET_NOT_FOUND');
       }
 
       const projected = toPublicMultiObserverDto(addPathExplanation(resolved));
+      const heldNodes = projected.canonicalPath.map((hop) => hop.nodeId ?? '').filter(Boolean);
+      if (heldNodes.length === projected.canonicalPath.length && heldNodes.length > 0) {
+        setHeldPath(packetHash, network, { path: heldNodes, resolvedAt: Date.now(), physical: true });
+      }
       setResolveCache(cacheKey, projected);
       return projected;
     })();

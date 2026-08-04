@@ -48,6 +48,8 @@ test('path history memory entries are bound to the current privacy generation', 
     pathHistoryCacheTtlMs: 60_000,
     getResolveCache: () => undefined,
     setResolveCache: () => undefined,
+    getHeldPath: () => undefined,
+    setHeldPath: () => undefined,
     resolvePool: { run: async () => null },
     repository,
   });
