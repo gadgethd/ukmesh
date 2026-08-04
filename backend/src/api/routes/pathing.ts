@@ -9,11 +9,12 @@ import {
 } from '../../path-beta/slowMode.js';
 import { normalizeObserverQuery } from '../utils/observer.js';
 import { parseBoundedInteger, parseHexIdentifier } from '../utils/input.js';
+import type { HeldPathEntry } from '../../path-beta/resolveCache.js';
 
 type ResolvePoolFn = {
   run<T>(job:
-    | { type: 'resolve'; packetHash: string; network: string; observer?: string | null }
-    | { type: 'resolveMulti'; packetHash: string; network: string }
+    | { type: 'resolve'; packetHash: string; network: string; observer?: string | null; heldPath?: HeldPathEntry }
+    | { type: 'resolveMulti'; packetHash: string; network: string; heldPath?: HeldPathEntry }
     | { type: 'resolveLazy'; packetHash: string; network: string }
   ): Promise<T | null>;
 };
@@ -26,6 +27,8 @@ type PathingRouteDeps = {
   pathHistoryCacheTtlMs: number;
   getResolveCache: (key: string) => unknown;
   setResolveCache: (key: string, value: unknown) => void;
+  getHeldPath: (packetHash: string, network: string) => HeldPathEntry | undefined;
+  setHeldPath: (packetHash: string, network: string, value: HeldPathEntry) => void;
   resolvePool: ResolvePoolFn;
   getPublicVisibilityGeneration: () => Promise<number>;
   getPathHistoryCache: (scope: string, visibilityGeneration: number) => Promise<{
@@ -61,6 +64,8 @@ export function registerPathingRoutes(router: Router, deps: PathingRouteDeps): v
     pathHistoryCacheTtlMs: deps.pathHistoryCacheTtlMs,
     getResolveCache: deps.getResolveCache,
     setResolveCache: deps.setResolveCache,
+    getHeldPath: deps.getHeldPath,
+    setHeldPath: deps.setHeldPath,
     resolvePool: deps.resolvePool,
     repository,
   });

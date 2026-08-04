@@ -275,6 +275,7 @@ export function usePacketPathOverlay({
   ): Promise<MultiObserverBetaResponse | null> => {
     prunePredictionCache();
     const key = cacheKey(packetHash, observerIds, networkName);
+    const inflightKey = mode === 'slow' ? `${key}|slow` : key;
     // Slow-mode requests must not be served from the eager cache or deduped
     // onto an in-flight eager fetch — the whole point is the post-window set.
     if (mode !== 'slow') {
@@ -282,9 +283,9 @@ export function usePacketPathOverlay({
       if (cached && cached.ts >= minFreshTs && Date.now() - cached.ts <= PREDICTION_CACHE_TTL_MS) {
         return Promise.resolve(cached.response);
       }
-      const inflight = multiInflightRef.current.get(key);
-      if (inflight) return inflight;
     }
+    const inflight = multiInflightRef.current.get(inflightKey);
+    if (inflight) return inflight;
 
     const fetchFn: () => Promise<MultiObserverBetaResponse | null> = mode === 'slow'
       ? () => fetchServerBetaMultiSlow(packetHash, networkName)
@@ -300,9 +301,9 @@ export function usePacketPathOverlay({
       })
       .catch(() => null)
       .finally(() => {
-        multiInflightRef.current.delete(key);
+        multiInflightRef.current.delete(inflightKey);
       });
-    multiInflightRef.current.set(key, promise);
+    multiInflightRef.current.set(inflightKey, promise);
     return promise;
   }, [prunePredictionCache]);
 
@@ -341,7 +342,9 @@ export function usePacketPathOverlay({
 
     if (filters.betaPaths && latest?.packetHash && latest.path?.length && observerIds.length > 0) {
       const reqSeq = ++activeReqSeqRef.current;
-      void resolveMultiPrediction(latest.packetHash, observerIds, network, latest.ts)
+      // The feed renders its local path immediately, then upgrades once the
+      // bounded slow-mode request sees the complete propagation window.
+      void resolveMultiPrediction(latest.packetHash, observerIds, network, latest.ts, 'slow')
         .then((response) => {
           if (reqSeq !== activeReqSeqRef.current) return;
           applyServerPrediction(latest.packetHash, response);
@@ -434,10 +437,9 @@ export function usePacketPathOverlay({
 
     if (filters.betaPaths && pinnedPacket.packetHash && pinnedPacket.path?.length && observerIds.length > 0) {
       const reqSeq = ++activeReqSeqRef.current;
-      // Pinned packet: slow mode — wait out the propagation window so the
-      // path is resolved against the COMPLETE observer set. The local path
-      // (built above) renders meanwhile; this upgrades it once final.
-      void resolveMultiPrediction(pinnedPacket.packetHash, observerIds, network, pinnedPacket.ts, 'slow')
+      // Pinned/detail views use the fast path; the local path renders while
+      // the server prediction is fetched.
+      void resolveMultiPrediction(pinnedPacket.packetHash, observerIds, network, pinnedPacket.ts)
         .then((response) => {
           if (reqSeq !== activeReqSeqRef.current) return;
           applyServerPrediction(pinnedPacket.packetHash!, response);

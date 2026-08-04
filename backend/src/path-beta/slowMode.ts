@@ -26,6 +26,8 @@ import {
   setResolveCache,
   mergeStickyNodes,
   getStickyNodeMap,
+  getHeldPath,
+  setHeldPath,
 } from './resolveCache.js';
 
 type PendingEntry = {
@@ -150,6 +152,7 @@ async function finalizeSlowResolution(packetHash: string, network: string): Prom
       ? Object.fromEntries(stickyEntry.hashToNodeId)
       : undefined;
     const stickyAgeFraction = stickyEntry?.ageFraction;
+    const heldPath = getHeldPath(packetHash, network);
     const result = await (await getSlowPool()).runBackground<{
       stickyUpdates?: Record<string, string>;
       observers?: unknown;
@@ -159,12 +162,22 @@ async function finalizeSlowResolution(packetHash: string, network: string): Prom
       packetHash,
       network,
       ...(stickyMap ? { stickyMap, stickyAgeFraction } : {}),
+      ...(heldPath ? { heldPath } : {}),
     });
     if (!result) return;
     const { stickyUpdates, ...cacheableResult } = result;
     setResolveCache(cacheKey, cacheableResult);
     if (stickyUpdates && Object.keys(stickyUpdates).length > 0) {
       mergeStickyNodes(packetHash, network, stickyUpdates);
+    }
+    const canonicalPath = Array.isArray(result.canonicalPath) ? result.canonicalPath : [];
+    const heldNodes = canonicalPath
+      .map((hop) => hop && typeof hop === 'object' && 'nodeId' in hop
+        ? String((hop as { nodeId?: unknown }).nodeId ?? '')
+        : '')
+      .filter(Boolean);
+    if (heldNodes.length > 0 && heldNodes.length === canonicalPath.length) {
+      setHeldPath(packetHash, network, { path: heldNodes, resolvedAt: Date.now(), physical: true });
     }
     await (await getSlowRecorder())(packetHash, network, result).catch(() => {
       /* observability is best-effort */

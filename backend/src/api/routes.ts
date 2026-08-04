@@ -39,7 +39,7 @@ import {
   verifyMqttCredentials,
 } from '../owner/ownerAccess.js';
 import { encryptOwnerSession, getOwnerSession, isSecureRequest } from '../owner/ownerSession.js';
-import { getResolveCache, setResolveCache } from '../path-beta/resolveCache.js';
+import { getResolveCache, setResolveCache, getHeldPath, setHeldPath } from '../path-beta/resolveCache.js';
 import { resolvePool } from '../path-beta/resolvePool.js';
 import { maskDecodedPathNodes } from '../stats/maskDecodedPathNodes.js';
 import {
@@ -207,6 +207,8 @@ registerPathingRoutes(router, {
   pathHistoryCacheTtlMs: PATH_HISTORY_CACHE_TTL_MS,
   getResolveCache,
   setResolveCache,
+  getHeldPath,
+  setHeldPath,
   resolvePool,
   getPathHistoryCache,
   getPublicVisibilityGeneration,

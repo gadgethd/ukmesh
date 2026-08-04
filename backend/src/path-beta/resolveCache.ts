@@ -68,7 +68,37 @@ export function resolveCacheMetrics() {
     results: cache.metrics(),
     invalidations: invalidationVersions.metrics(),
     sticky: stickyNodeCache.metrics(),
+    held: heldPathCache.metrics(),
   };
+}
+
+export type HeldPathEntry = {
+  path: string[];
+  resolvedAt: number;
+  physical: boolean;
+};
+
+const HELD_PATH_TTL_MS = 30 * 60 * 1000;
+const heldPathCache = new BoundedTtlMap<string, HeldPathEntry>({
+  name: 'path_held_paths',
+  maxEntries: 2_048,
+  maxWeight: 16 * 1024 * 1024,
+  ttlMs: HELD_PATH_TTL_MS,
+  weightOf: (key, value) => key.length * 2 + value.path.length * 128,
+});
+
+export function getHeldPath(packetHash: string, network: string): HeldPathEntry | undefined {
+  const entry = heldPathCache.get(`${packetHash}|${network}`);
+  return entry ? { ...entry, path: [...entry.path] } : undefined;
+}
+
+export function setHeldPath(
+  packetHash: string,
+  network: string,
+  value: HeldPathEntry,
+): void {
+  if (!packetHash || !network || value.path.length === 0 || value.path.some((nodeId) => !nodeId)) return;
+  heldPathCache.set(`${packetHash}|${network}`, { ...value, path: [...value.path] });
 }
 
 /**
