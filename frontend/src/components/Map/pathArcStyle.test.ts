@@ -6,30 +6,38 @@ import {
   PATH_ARC_SEGMENTS,
   PATH_LINE_TTL_MS,
   PATH_TERRAIN_CLEARANCE_M,
-  pathArcColors,
-  pathConfidenceBand,
+  packetIdentityColor,
+  packetPathColors,
 } from './pathArcStyle.js';
 
-test('path confidence uses low/mid/high traffic-light bands', () => {
-  assert.equal(PATH_LINE_TTL_MS, 5_000);
+test('live path styling uses a 30-second TTL', () => {
+  assert.equal(PATH_LINE_TTL_MS, 30_000);
   assert.equal(PATH_HOP_ANIMATION_MS, 400);
   assert.equal(PATH_ARC_HEIGHT_M, 120);
   assert.equal(PATH_ARC_SEGMENTS, 32);
   assert.equal(PATH_TERRAIN_CLEARANCE_M, 32);
-  assert.equal(pathConfidenceBand(null), 'low');
-  assert.equal(pathConfidenceBand(0.39), 'low');
-  assert.equal(pathConfidenceBand(0.4), 'mid');
-  assert.equal(pathConfidenceBand(0.749), 'mid');
-  assert.equal(pathConfidenceBand(0.75), 'high');
 });
 
-test('path arcs render high green, mid yellow, and low red with fade opacity', () => {
-  assert.deepEqual(pathArcColors(1), {
-    bloomSource: [34, 197, 94, 35],
-    bloomTarget: [34, 197, 94, 70],
-    coreSource: [34, 197, 94, 200],
-    coreTarget: [34, 197, 94, 255],
-  });
-  assert.deepEqual(pathArcColors(0.5, 0.5).coreTarget, [250, 204, 21, 128]);
-  assert.deepEqual(pathArcColors(0.2).coreTarget, [239, 68, 68, 255]);
+test('packet identity colors are deterministic and distinct for visible packets', () => {
+  const hashes = ['ABC123', 'DEF456', '012345', 'AABBCC'];
+  const colors = hashes.map(packetIdentityColor);
+
+  assert.deepEqual(packetIdentityColor('ABC123'), packetIdentityColor('ABC123'));
+  assert.deepEqual(packetIdentityColor('abc123'), packetIdentityColor('ABC123'));
+  assert.equal(new Set(colors.map((color) => color.join(','))).size, hashes.length);
+
+  for (let first = 0; first < colors.length; first += 1) {
+    for (let second = first + 1; second < colors.length; second += 1) {
+      const distance = Math.hypot(...colors[first]!.map((value, channel) => value - colors[second]![channel]!));
+      assert(distance > 70, `${hashes[first]} and ${hashes[second]} are too visually close`);
+    }
+  }
+});
+
+test('packet path colors preserve identity while fading alpha', () => {
+  const full = packetPathColors('ABC123');
+  const half = packetPathColors('ABC123', 0.5);
+  assert.deepEqual(full.coreTarget.slice(0, 3), half.coreTarget.slice(0, 3));
+  assert.equal(full.coreTarget[3], 255);
+  assert.equal(half.coreTarget[3], 128);
 });

@@ -13,7 +13,7 @@ import {
   PATH_LINE_FADE_MS,
   PATH_LINE_TTL_MS,
   PATH_TERRAIN_CLEARANCE_M,
-  pathArcColors,
+  packetPathColors,
 } from './pathArcStyle.js';
 
 export type AerialPathNode = {
@@ -26,12 +26,14 @@ export type AerialPathNode = {
 
 export type AerialPath = {
   id: string;
+  packetHash?: string | null;
   confidence: number | null;
   nodes: AerialPathNode[];
 };
 
 export type AerialPathSegment = {
   id: string;
+  packetHash: string;
   source: AerialPathNode;
   target: AerialPathNode;
   confidence: number | null;
@@ -48,6 +50,7 @@ type RenderedSegment = AerialPathSegment & {
 };
 
 type RenderedNode = AerialPathNode & {
+  packetHash: string;
   confidence: number | null;
   renderedPosition: DeckPosition;
   opacity: number;
@@ -59,6 +62,7 @@ type RenderedObserverNode = AerialPathNode & {
 
 type LeadingPulse = {
   position: DeckPosition;
+  packetHash: string;
   confidence: number | null;
 };
 
@@ -100,6 +104,7 @@ export function buildAerialPathSegments(paths: AerialPath[]): AerialPathSegment[
     if (!target) return [];
     return [{
       id: aerialSegmentKey(path.id, source, target),
+      packetHash: path.packetHash ?? path.id,
       source,
       target,
       confidence: target.confidence ?? path.confidence,
@@ -431,6 +436,7 @@ function uniqueNodes(segments: RenderedSegment[]): RenderedNode[] {
       if (existing && existing.opacity >= segment.opacity) continue;
       nodesByKey.set(key, {
         ...node,
+        packetHash: segment.packetHash,
         confidence: segment.confidence,
         renderedPosition: position,
         opacity: segment.opacity,
@@ -455,8 +461,8 @@ function layersForFrame(
         data: segments,
         getSourcePosition: (segment) => segment.sourcePosition,
         getTargetPosition: (segment) => segment.renderedTarget,
-        getSourceColor: (segment) => pathArcColors(segment.confidence, segment.opacity).bloomSource,
-        getTargetColor: (segment) => pathArcColors(segment.confidence, segment.opacity).bloomTarget,
+        getSourceColor: (segment) => packetPathColors(segment.packetHash, segment.opacity).bloomSource,
+        getTargetColor: (segment) => packetPathColors(segment.packetHash, segment.opacity).bloomTarget,
         getWidth: PATH_ARC_BLOOM_WIDTH,
         getHeight: (segment) => segment.arcHeight,
         numSegments: PATH_ARC_SEGMENTS,
@@ -467,8 +473,8 @@ function layersForFrame(
         data: segments,
         getSourcePosition: (segment) => segment.sourcePosition,
         getTargetPosition: (segment) => segment.renderedTarget,
-        getSourceColor: (segment) => pathArcColors(segment.confidence, segment.opacity).coreSource,
-        getTargetColor: (segment) => pathArcColors(segment.confidence, segment.opacity).coreTarget,
+        getSourceColor: (segment) => packetPathColors(segment.packetHash, segment.opacity).coreSource,
+        getTargetColor: (segment) => packetPathColors(segment.packetHash, segment.opacity).coreTarget,
         getWidth: PATH_ARC_CORE_WIDTH,
         getHeight: (segment) => segment.arcHeight,
         numSegments: PATH_ARC_SEGMENTS,
@@ -483,7 +489,7 @@ function layersForFrame(
       data: nodes,
       getPosition: (node) => node.renderedPosition,
       getFillColor: (node) => [11, 23, 37, Math.round(255 * node.opacity)],
-      getLineColor: (node) => pathArcColors(node.confidence, node.opacity).coreTarget,
+      getLineColor: (node) => packetPathColors(node.packetHash, node.opacity).coreTarget,
       getRadius: 6,
       radiusUnits: 'pixels',
       stroked: true,
@@ -516,7 +522,7 @@ function layersForFrame(
       id: 'resolved-path-arc-rider',
       data: pulses,
       getPosition: (item) => item.position,
-      getFillColor: (item) => pathArcColors(item.confidence).coreTarget,
+      getFillColor: (item) => packetPathColors(item.packetHash).coreTarget,
       getLineColor: [255, 255, 255, 220],
       getRadius: 7,
       radiusUnits: 'pixels',
@@ -562,6 +568,7 @@ export const AnimatedPathOverlay: React.FC<{
   observerNodesRef.current = observerNodes;
   const signature = useMemo(() => paths.map((path) => [
     path.id,
+    path.packetHash ?? path.id,
     path.confidence ?? 'unknown',
     ...path.nodes.map((node) => `${node.position[0].toFixed(6)},${node.position[1].toFixed(6)}`),
   ].join(':')).join('|'), [paths]);
@@ -641,7 +648,11 @@ export const AnimatedPathOverlay: React.FC<{
           ...geometry,
           opacity: 1,
         });
-        pulses.push({ position, confidence: activeSegment.confidence });
+        pulses.push({
+          position,
+          packetHash: activeSegment.packetHash,
+          confidence: activeSegment.confidence,
+        });
         continue;
       }
 
