@@ -17,6 +17,7 @@ import {
 import { hasCoords, linkKey } from './geometry.js';
 import {
   decodeBetaCanonicalGroup,
+  decodeBetaCanonicalGroupWithHeldPath,
   groupCompatibleObservations,
   projectCanonicalPathForObserver,
   type BetaObserverEntry,
@@ -31,6 +32,7 @@ import type {
   PathLearningModel,
   PathPacket,
 } from './types.js';
+import type { HeldPathEntry } from './resolveCache.js';
 
 const contextCache = new BoundedTtlMap<string, BetaResolveContext>({
   name: 'path_context',
@@ -545,6 +547,7 @@ export type PathResolutionOptions = {
   pinContextForBatch?: boolean;
   requiredVisibilityGeneration?: number;
   signal?: AbortSignal;
+  heldPath?: HeldPathEntry;
 };
 
 function throwIfResolutionAborted(options?: PathResolutionOptions): void {
@@ -707,7 +710,13 @@ export async function resolveBetaPathForPacketHash(
   const group = groupCompatibleObservations(entries)
     .find((candidate) => candidate.members.includes(selectedEntry))
     ?? { canonicalHashes: selectedEntry.hops, members: [selectedEntry] };
-  const decoded = decodeBetaCanonicalGroup(group, context, stickyMap, stickyAgeFraction);
+  const decoded = decodeBetaCanonicalGroupWithHeldPath(
+    group,
+    context,
+    options?.heldPath?.path,
+    stickyMap,
+    stickyAgeFraction,
+  );
   const source = selectedEntry.packet.src_node_id
     ? context.nodesById.get(selectedEntry.packet.src_node_id) ?? null
     : null;
@@ -717,6 +726,7 @@ export async function resolveBetaPathForPacketHash(
     observers: [{ observerId: selectedEntry.observerId }],
     network,
   });
+  payload.permutationCount = decoded.held ? Math.min(2, decoded.canonicalHashes.length) : 0;
   if (payload.mode === 'resolved' && shouldTouchPredictedOnline(options)) {
     await recordPredictedOnline(projection.nodeIds);
   }
@@ -879,7 +889,20 @@ export async function resolveMultiObserverBetaPath(
 
   for (const group of groups) {
     throwIfResolutionAborted(options);
-    const decoded = decodeBetaCanonicalGroup(group, context, stickyMap, stickyAgeFraction);
+    const heldStickyMap = new Map(stickyMap ?? []);
+    if (options?.heldPath?.path.length === group.canonicalHashes.length) {
+      for (let position = 0; position < group.canonicalHashes.length; position++) {
+        const hash = normalizePathHash(group.canonicalHashes[position]);
+        const nodeId = options.heldPath.path[position];
+        if (hash && nodeId) heldStickyMap.set(hash, nodeId);
+      }
+    }
+    const decoded = decodeBetaCanonicalGroup(
+      group,
+      context,
+      heldStickyMap.size > 0 ? heldStickyMap : undefined,
+      stickyAgeFraction,
+    );
     if (firstCanonicalPath.length === 0) firstCanonicalPath = buildCanonicalPath(decoded);
     for (let position = 0; position < decoded.canonicalHashes.length; position++) {
       const hop = decoded.hops.get(position);

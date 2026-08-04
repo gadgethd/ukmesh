@@ -20,6 +20,8 @@ async function withPathingServer(
     pathHistoryCacheTtlMs: 60_000,
     getResolveCache: () => undefined,
     setResolveCache: () => undefined,
+    getHeldPath: () => undefined,
+    setHeldPath: () => undefined,
     resolvePool: { run },
     getPublicVisibilityGeneration: async () => 1,
     getPathHistoryCache: async () => null,

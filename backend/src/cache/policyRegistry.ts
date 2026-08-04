@@ -105,6 +105,12 @@ export const CACHE_POLICY_REGISTRY: readonly CachePolicyRecord[] = Object.freeze
     negativeCaching: 'none', singleFlight: 'worker pool',
   },
   {
+    source: 'src/path-beta/resolveCache.ts#heldPathCache',
+    disposition: 'bounded-cache', maxEntries: 2_048, maxBytes: 16 << 20, ttlMs: 30 * 60_000,
+    scope: 'packet + network; public projection remains visibility-fenced', invalidation: 'TTL only; packet observations do not clear held paths',
+    negativeCaching: 'none', singleFlight: 'pathingService resolve maps + worker pool',
+  },
+  {
     source: 'src/path-beta/resolver.ts#contextCache',
     disposition: 'bounded-cache', maxEntries: 16, maxBytes: 128 << 20, ttlMs: 15 * 60_000,
     scope: 'network + embedded visibility generation', invalidation: 'generation check + TTL',

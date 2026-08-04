@@ -2,13 +2,19 @@ import type { Router } from 'express';
 import { resolvePublicNetworkScope } from '../../http/requestScope.js';
 import { createPathingRepository } from '../../pathing/pathingRepository.js';
 import { createPathingService } from '../../pathing/pathingService.js';
+import {
+  slowModeRemainingMs,
+  slowModeStatus,
+  slowModeWindowMs,
+} from '../../path-beta/slowMode.js';
 import { normalizeObserverQuery } from '../utils/observer.js';
 import { parseBoundedInteger, parseHexIdentifier } from '../utils/input.js';
+import type { HeldPathEntry } from '../../path-beta/resolveCache.js';
 
 type ResolvePoolFn = {
   run<T>(job:
-    | { type: 'resolve'; packetHash: string; network: string; observer?: string | null }
-    | { type: 'resolveMulti'; packetHash: string; network: string }
+    | { type: 'resolve'; packetHash: string; network: string; observer?: string | null; heldPath?: HeldPathEntry }
+    | { type: 'resolveMulti'; packetHash: string; network: string; heldPath?: HeldPathEntry }
     | { type: 'resolveLazy'; packetHash: string; network: string }
   ): Promise<T | null>;
 };
@@ -21,6 +27,8 @@ type PathingRouteDeps = {
   pathHistoryCacheTtlMs: number;
   getResolveCache: (key: string) => unknown;
   setResolveCache: (key: string, value: unknown) => void;
+  getHeldPath: (packetHash: string, network: string) => HeldPathEntry | undefined;
+  setHeldPath: (packetHash: string, network: string, value: HeldPathEntry) => void;
   resolvePool: ResolvePoolFn;
   getPublicVisibilityGeneration: () => Promise<number>;
   getPathHistoryCache: (scope: string, visibilityGeneration: number) => Promise<{
@@ -56,6 +64,8 @@ export function registerPathingRoutes(router: Router, deps: PathingRouteDeps): v
     pathHistoryCacheTtlMs: deps.pathHistoryCacheTtlMs,
     getResolveCache: deps.getResolveCache,
     setResolveCache: deps.setResolveCache,
+    getHeldPath: deps.getHeldPath,
+    setHeldPath: deps.setHeldPath,
     resolvePool: deps.resolvePool,
     repository,
   });
@@ -95,6 +105,17 @@ export function registerPathingRoutes(router: Router, deps: PathingRouteDeps): v
     });
     try {
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
+      if (req.query['mode'] === 'slow') {
+        const remainingMs = slowModeRemainingMs(packetHash, network);
+        if (remainingMs > 0) {
+          res.status(202).json({
+            status: 'pending',
+            remainingMs,
+            windowMs: slowModeWindowMs(),
+          });
+          return;
+        }
+      }
       res.json(await service.resolvePacketMulti(packetHash, network));
     } catch (err) {
       const message = (err as Error).message;
@@ -113,6 +134,10 @@ export function registerPathingRoutes(router: Router, deps: PathingRouteDeps): v
       console.error('[api] GET /path-beta/resolve-multi', message);
       res.status(500).json({ error: 'Internal server error' });
     }
+  });
+
+  router.get('/path-beta/slow-mode', (_req, res) => {
+    res.json(slowModeStatus());
   });
 
   router.get('/path-beta/history', deps.pathHistoryLimiter, async (req, res) => {
