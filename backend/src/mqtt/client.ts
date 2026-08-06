@@ -1,9 +1,5 @@
 import mqtt, { type MqttClient } from 'mqtt';
-import { MeshCoreDecoder, calcRegionKey, transportCodeMatchesRegion } from '@michaelhart/meshcore-decoder';
-import type {
-  AdvertPayload, GroupTextPayload, TextMessagePayload,
-  TracePayload, PathPayload, AckPayload,
-} from '@michaelhart/meshcore-decoder';
+import { calcRegionKey, transportCodeMatchesRegion } from '@michaelhart/meshcore-decoder';
 import { insertNodeStatusSample, insertPacket, upsertNode, incrementAdvertCount, query, insertOrUpdateSpamSuspect, recordMultibyteEvidence } from '../db/index.js';
 import { closePacketBatch, flush as flushPacketBatch } from '../db/packetBatch.js';
 import { evaluateAdvert, initSpamDetector } from './spamDetector.js';
@@ -11,9 +7,9 @@ import { invalidateResolveCache, setResolveCache, getStickyNodeMap, mergeStickyN
 import { resolvePool } from '../path-beta/resolvePool.js';
 import { scheduleSlowResolution } from '../path-beta/slowMode.js';
 import { pathingConfig } from '../platform/config/pathing.js';
-import { BoundedTtlMap } from '../cache/boundedTtlMap.js';
 import type { LivePacket } from '../types/index.js';
 import { decodePacketCompat } from './decodePacket.js';
+import { buildChannelEntries, buildCombinedKeyStore, buildSummary } from './channelRegistry.js';
 import { shouldDiscardUnverifiedTxAdvert, statusEnvelopeTargetsObserver } from './identityBinding.js';
 import { parseMqttTopic } from './topic.js';
 import {
@@ -354,41 +350,10 @@ function tryCountAdvert(hash: string): boolean {
  * MESHCORE_CHANNEL_SECRETS supports 'name:hex' or bare 'hex' entries (comma-separated).
  * The default public channel is always included.
  */
-interface ChannelEntry {
-  name:     string;
-  secret:   string;
-  keyStore: ReturnType<typeof MeshCoreDecoder.createKeyStore>;
-}
-
-const channelEntries: ChannelEntry[] = [
-  {
-    name:     'Public',
-    secret:   '8b3387e9c5cdea6ac9e5edbaa115cd72',
-    keyStore: MeshCoreDecoder.createKeyStore({ channelSecrets: ['8b3387e9c5cdea6ac9e5edbaa115cd72'] }),
-  },
-  ...(process.env['MESHCORE_CHANNEL_SECRETS']
-    ?.split(',').map((s) => s.trim()).filter(Boolean)
-    .map((entry) => {
-      const colon  = entry.indexOf(':');
-      const name   = colon > 0 ? entry.slice(0, colon)  : entry.slice(0, 6);
-      const secret = colon > 0 ? entry.slice(colon + 1) : entry;
-      return { name, secret, keyStore: MeshCoreDecoder.createKeyStore({ channelSecrets: [secret] }) };
-    }) ?? []),
-];
+const channelEntries = buildChannelEntries(process.env['MESHCORE_CHANNEL_SECRETS']);
 
 // Combined keyStore used for decryption (all secrets, single decode call per packet)
-const keyStore = MeshCoreDecoder.createKeyStore({
-  channelSecrets: channelEntries.map((e) => e.secret),
-});
-
-// Small cache so relay copies of the same GroupText don't trigger re-decodes
-const channelCache = new BoundedTtlMap<string, string | null>({
-  name: 'mqtt_channels',
-  maxEntries: 200,
-  maxWeight: 2 * 1024 * 1024,
-  ttlMs: 10 * 60_000,
-  weightOf: (key, value) => key.length * 2 + (value?.length ?? 0) * 2,
-});
+const keyStore = buildCombinedKeyStore(channelEntries);
 
 function boundedEnvInteger(name: string, fallback: number, min: number, max: number): number {
   const parsed = Number(process.env[name]);
@@ -459,66 +424,6 @@ function enqueueMqttMessage(topic: string, rawPayload: Buffer): void {
   drainMqttIngestQueue();
 }
 
-/** Identify which channel a GroupText was sent on by trying each single-key keyStore. */
-function identifyChannel(rawHex: string): string | undefined {
-  // Single channel — must be it, no re-decode needed
-  if (channelEntries.length === 1) return channelEntries[0]!.name;
-
-  if (channelCache.has(rawHex)) return channelCache.get(rawHex) ?? undefined;
-
-  let result: string | undefined;
-  for (const entry of channelEntries) {
-    const { decoded: d, metadataValid } = decodePacketCompat(rawHex, entry.keyStore);
-    if (!metadataValid) continue;
-    const p = d?.payload?.decoded as GroupTextPayload | undefined;
-    if (p?.decrypted) { result = entry.name; break; }
-  }
-
-  channelCache.set(rawHex, result ?? null);
-  return result;
-}
-
-/** Build a short human-readable summary from a decoded payload. */
-function buildSummary(payloadType: number, decoded: unknown, rawHex?: string): string | undefined {
-  if (!decoded) return undefined;
-
-  switch (payloadType) {
-    case 4: {
-      const p = decoded as AdvertPayload;
-      const name = p.appData?.name;
-      return name ? `${name}` : undefined;
-    }
-    case 5: {
-      const p = decoded as GroupTextPayload;
-      if (p.decrypted) {
-        const sender  = p.decrypted.sender ?? '?';
-        const channel = rawHex ? identifyChannel(rawHex) : undefined;
-        const prefix  = channel ? `[${channel}] ` : '';
-        return `${prefix}${sender}: ${p.decrypted.message}`;
-      }
-      return '[encrypted]';
-    }
-    case 2: {
-      const p = decoded as TextMessagePayload;
-      if (p.decrypted?.message) return `${p.decrypted.message}`;
-      return '[encrypted DM]';
-    }
-    case 3: {
-      const p = decoded as AckPayload;
-      return `ACK ${p.checksum.slice(0, 4)}`;
-    }
-    case 8: {
-      const p = decoded as PathPayload;
-      return `${p.pathLength} hop path`;
-    }
-    case 9: {
-      const p = decoded as TracePayload;
-      return `trace ${p.pathHashes.length} hops`;
-    }
-    default:
-      return undefined;
-  }
-}
 
 export async function startMqttClient(): Promise<void> {
   if (mqttStopping) return;
@@ -762,7 +667,7 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
         }
 
         const decodedInner = decoded.payload?.decoded;
-        summary = buildSummary(decoded.payloadType, decodedInner, rawHex);
+        summary = buildSummary(decoded.payloadType, decodedInner, rawHex, channelEntries);
 
         if (decoded.payloadType === 4) {
           const inner     = decodedInner as unknown as Record<string, unknown> | undefined;
