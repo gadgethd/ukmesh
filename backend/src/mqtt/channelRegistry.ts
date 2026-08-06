@@ -10,7 +10,7 @@
  * Also hosts the summary + channel-identification helpers so the ingest
  * pipeline and offline tools (e.g. backfillDecrypt) share one implementation.
  */
-import { MeshCoreDecoder } from '@michaelhart/meshcore-decoder';
+import { ChannelCrypto, MeshCoreDecoder } from '@michaelhart/meshcore-decoder';
 import type { GroupTextPayload } from '@michaelhart/meshcore-decoder';
 import { decodePacketCompat } from './decodePacket.js';
 import { BoundedTtlMap } from '../cache/boundedTtlMap.js';
@@ -85,6 +85,30 @@ export function buildChannelEntries(envValue?: string): ChannelEntry[] {
     entries.push({ name, secret, keyStore: MeshCoreDecoder.createKeyStore({ channelSecrets: [secret] }) });
   }
   return entries;
+}
+
+const channelHashCache = new BoundedTtlMap<string, string[]>({
+  name: 'mqtt_channel_hashes',
+  maxEntries: 64,
+  maxWeight: 64 * 1024,
+  ttlMs: 30 * 60_000,
+  weightOf: (key, value) => key.length * 2 + value.length * 4,
+});
+
+/** Return the wire-level channel hashes for a configured channel label. */
+export function channelHashesForName(name: string, envValue = process.env['MESHCORE_CHANNEL_SECRETS']): string[] {
+  const normalizedName = name.trim().toLowerCase();
+  const cacheKey = `${envValue ?? ''}\u0000${normalizedName}`;
+  const cached = channelHashCache.get(cacheKey);
+  if (cached) return cached;
+
+  const hashes = Array.from(new Set(
+    buildChannelEntries(envValue)
+      .filter((entry) => entry.name.trim().toLowerCase() === normalizedName)
+      .map((entry) => ChannelCrypto.calculateChannelHash(entry.secret).toLowerCase()),
+  ));
+  channelHashCache.set(cacheKey, hashes);
+  return hashes;
 }
 
 /** Combined keyStore used for decryption — one decode call per packet tries every secret. */

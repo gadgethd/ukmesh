@@ -26,6 +26,7 @@ import {
   getPacketDetail,
   getPathHistoryCache,
   getPublicVisibilityGeneration,
+  getChannelMessageHistory,
   getRecentPacketEvents,
   getRecentPackets,
   pool,
@@ -174,6 +175,7 @@ registerMiscRoutes(router, {
   getRecentPackets,
   getRecentPacketEvents,
   getPacketDetail,
+  getChannelMessageHistory,
   getPublicVisibilityGeneration,
   packetDetailLimiter: PACKET_DETAIL_LIMITER,
 });

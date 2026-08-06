@@ -120,6 +120,18 @@ export function timeAgo(ts?: string | null): string {
   return `${Math.floor(seconds / 86400)}d ago`;
 }
 
+export function formatFeedTimestamp(ts: string): string {
+  const date = new Date(ts);
+  if (!Number.isFinite(date.getTime())) return '—';
+  return date.toLocaleString(undefined, {
+    day: '2-digit',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+}
+
 export function packetSummary(packet: FeedPacket, nodeMap?: Map<string, MeshNode>): string {
   if (typeof packet.summary === 'string' && packet.summary.trim()) return packet.summary.trim();
   const payload = packet.payload ?? {};

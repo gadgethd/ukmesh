@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mergeFeedPacketObservations, type FeedPacket } from './feedModel.js';
+import {
+  mergeFeedPacketObservations,
+  packetMatchesMessageScope,
+  type FeedPacket,
+} from './feedModel.js';
 
 const retainedMessage: FeedPacket = {
   time: '2026-08-01T12:00:00.000Z',
@@ -37,4 +41,10 @@ test('duplicate feed rows retain the richest observer and IATA aggregate', () =>
     rx_count: 4,
     tx_count: 0,
   });
+});
+
+test('channel scopes match the bracketed label case-insensitively', () => {
+  assert.equal(packetMatchesMessageScope({ ...retainedMessage, summary: '[bot] historic text' }, 'bot'), true);
+  assert.equal(packetMatchesMessageScope({ ...retainedMessage, summary: '[BOT] historic text' }, 'bot'), true);
+  assert.equal(packetMatchesMessageScope({ ...retainedMessage, summary: '[bot-extra] historic text' }, 'bot'), false);
 });

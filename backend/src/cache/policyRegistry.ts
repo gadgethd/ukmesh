@@ -153,10 +153,16 @@ export const CACHE_POLICY_REGISTRY: readonly CachePolicyRecord[] = Object.freeze
     negativeCaching: 'completed empty state', singleFlight: 'initialStateInflight (cap 128)',
   },
   {
-    source: 'src/mqtt/client.ts#channelCache',
+    source: 'src/mqtt/channelRegistry.ts#channelCache',
     disposition: 'bounded-cache', maxEntries: 200, maxBytes: 2 << 20, ttlMs: 10 * 60_000,
     scope: 'raw packet within immutable configured channel set', invalidation: 'TTL/LRU capacity',
     negativeCaching: 'failed channel decode is cached', singleFlight: 'single MQTT ingest task',
+  },
+  {
+    source: 'src/mqtt/channelRegistry.ts#channelHashCache',
+    disposition: 'bounded-cache', maxEntries: 64, maxBytes: 64 << 10, ttlMs: 30 * 60_000,
+    scope: 'configured channel label + channel-secret configuration', invalidation: 'TTL/LRU capacity',
+    negativeCaching: 'unknown labels cache as empty hash lists', singleFlight: 'not applicable',
   },
   {
     source: 'src/path-beta/resolver.ts#hopCache',
