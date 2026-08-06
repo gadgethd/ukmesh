@@ -105,22 +105,6 @@ test('public site exposes its primary journeys', async ({ page }) => {
       },
     });
   });
-  await page.route('**/api/health**', async (route) => {
-    await route.fulfill({
-      json: {
-        status: 'healthy',
-        generatedAt: '2026-07-11T12:00:00Z',
-        maintenance: { active: false, message: null },
-        incidents: [],
-        components: {
-          ingest: { status: 'ok' },
-          workers: { status: 'running' },
-          storage: { status: 'ok' },
-        },
-      },
-    });
-  });
-
   await page.goto('/');
   await expect(page.getByRole('heading', { name: 'UK Mesh Network' })).toBeVisible();
   await expect(page.getByRole('link', { name: 'Open live map' }).first()).toBeVisible();
@@ -142,15 +126,7 @@ test('public site exposes its primary journeys', async ({ page }) => {
   await expect(page.getByLabel('Geographic repeater topology graph')).toBeVisible();
   await expect(page.getByRole('group', { name: '2 positioned repeaters and 1 links' })).toBeVisible();
 
-  await page.getByRole('link', { name: 'Health', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'Platform status' })).toBeVisible();
-  await expect(page.getByText('All monitored systems operational')).toBeVisible();
-  await expect(page.getByText('Status data is currently unavailable.')).toHaveCount(0);
-  await expect(page.getByRole('heading', { name: 'Public ingest' })).toBeVisible();
-  const statusAccessibility = await new AxeBuilder({ page }).analyze();
-  expect(statusAccessibility.violations
-    .filter((violation) => violation.impact === 'critical' || violation.impact === 'serious')
-    .map((violation) => ({ id: violation.id, targets: violation.nodes.map((node) => node.target.join(' ')) }))).toEqual([]);
+  await expect(page.getByRole('link', { name: 'Health', exact: true })).toHaveCount(0);
 });
 
 // Guards issue #3 (contrast): the feed chrome renders the muted/secondary text

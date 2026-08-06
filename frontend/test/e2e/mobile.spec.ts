@@ -62,18 +62,6 @@ const chartStats = {
   },
 };
 
-const health = {
-  status: 'healthy',
-  generatedAt: '2026-07-18T12:00:00Z',
-  maintenance: { active: false, message: null },
-  incidents: [],
-  components: {
-    ingest: { status: 'ok' },
-    workers: { status: 'running' },
-    storage: { status: 'ok' },
-  },
-};
-
 const repeaterNodes = Array.from({ length: 12 }, (_, index) => ({
   node_id: `node-${index}`,
   name: `Repeater ${String(index + 1).padStart(2, '0')}`,
@@ -109,7 +97,6 @@ async function installApiFixtures(page: Page) {
         },
       });
     }
-    if (pathname === '/api/health') return route.fulfill({ json: health });
     if (pathname === '/api/repeaters/firmware') {
       return route.fulfill({
         json: {
@@ -168,7 +155,6 @@ const routedViews = [
   ['UK install', 'http://127.0.0.1:4173/install'],
   ['UK open source', 'http://127.0.0.1:4173/open-source'],
   ['UK stats', 'http://127.0.0.1:4173/stats'],
-  ['UK health', 'http://127.0.0.1:4173/health'],
   ['UK login', 'http://127.0.0.1:4173/login'],
   ['UK docs', 'http://127.0.0.1:4173/docs'],
   ['test site home', 'http://127.0.0.1:4175/'],

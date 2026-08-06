@@ -10,7 +10,6 @@ type SiteLayoutProps = {
   showAbout?: boolean;
   showInstall?: boolean;
   showMqtt?: boolean;
-  showHealth?: boolean;
   showOpenSource?: boolean;
   showBestPractice?: boolean;
   showPackets: boolean;
@@ -48,7 +47,6 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
   showAbout = true,
   showInstall = true,
   showMqtt = true,
-  showHealth = true,
   showOpenSource = true,
   showBestPractice = false,
   showPackets,
@@ -81,7 +79,6 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
     { to: '/about', label: 'What is MeshCore', enabled: showAbout },
     { to: '/install', label: 'Install', enabled: showInstall },
     { to: '/mqtt', label: 'MQTT', enabled: showMqtt },
-    { to: '/health', label: 'Health', enabled: showHealth },
     { to: '/packets', label: 'Packets', enabled: showPackets },
     { to: '/open-source', label: 'Open Source', enabled: showOpenSource },
     { to: '/stats', label: 'Stats', enabled: showStats },
