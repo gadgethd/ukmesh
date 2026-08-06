@@ -513,7 +513,11 @@ button .loading-indicator--inline,
   .topbar__shortcut-btn { margin-left: auto; }
 
   /* ── App shell: add rows for mobile controls + map ──────────────────── */
-  .app-shell { grid-template-rows: 48px auto 1fr; }
+  .app-shell {
+    grid-template-rows: 48px auto minmax(0, 1fr);
+    min-height: 0;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
 
   /* ── Desktop filter panel: hide on mobile (replaced by mobile-controls) */
 
