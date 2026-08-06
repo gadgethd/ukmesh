@@ -1208,6 +1208,7 @@
   left: 16px;
   z-index: 800;
   width: min(400px, calc(100vw - 32px));
+  height: min(268px, calc(100vh - 80px));
   max-height: 268px;
   overflow-y: auto;
   overflow-x: hidden;
@@ -1776,7 +1777,11 @@
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
   .map-area .node-search { display: none; }
-  .packet-feed { width: calc(100% - 32px); max-height: 180px; }
+  .packet-feed {
+    width: calc(100% - 32px);
+    height: min(180px, calc(100dvh - 80px));
+    max-height: 180px;
+  }
   .packet-item { grid-template-columns: minmax(0, 1fr) auto; column-gap: 6px; }
   .packet-item__meta { font-size: 10px; }
 }
