@@ -96,7 +96,12 @@ export function networkFilters(network?: string, observer?: string): NetworkFilt
     packetConditions.push(excludesLegacyTestTopic(''));
     packetConditions.push(`COALESCE(rx_node_id, '') NOT IN (SELECT node_id FROM nodes WHERE network = 'test')`);
   }
-  if (observerParam) packetConditions.push(`rx_node_id = ${observerParam}`);
+  if (observerParam) {
+    packetConditions.push(
+      `(rx_node_id = ${observerParam}
+        OR meshcore_canonical_node_id(rx_node_id) = meshcore_canonical_node_id(${observerParam}))`,
+    );
+  }
   packetConditions.push(...publicPacketPrivacyConditions(''));
 
   const nodeConditions = (alias?: string) => {
@@ -119,7 +124,7 @@ export function networkFilters(network?: string, observer?: string): NetworkFilt
             ${prefix}network IS DISTINCT FROM 'test'
             AND EXISTS (
               SELECT 1
-              FROM node_network_sightings s
+              FROM node_identity_sightings s
               WHERE s.node_id = ${nodeRef}
                 AND s.network ${netMatch}
                 AND s.last_seen_at > NOW() - INTERVAL '30 days'
@@ -137,11 +142,11 @@ export function networkFilters(network?: string, observer?: string): NetworkFilt
       // 7-day window keeps the packet scan inside recent chunks.
       conditions.push(
         `(
-          ${prefix}node_id = ${observerParam}
+          meshcore_canonical_node_id(${prefix}node_id) = meshcore_canonical_node_id(${observerParam})
           OR ${nodeRef} IN (
-            SELECT p.src_node_id
+            SELECT meshcore_canonical_node_id(p.src_node_id)
             FROM packets p
-            WHERE p.rx_node_id = ${observerParam}
+            WHERE meshcore_canonical_node_id(p.rx_node_id) = meshcore_canonical_node_id(${observerParam})
               AND p.time > NOW() - INTERVAL '7 days'
               AND p.src_node_id IS NOT NULL
               ${pNetCond}
@@ -172,7 +177,12 @@ export function networkFilters(network?: string, observer?: string): NetworkFilt
         conditions.push(excludesLegacyTestTopic(prefix));
         conditions.push(`COALESCE(${prefix}rx_node_id, '') NOT IN (SELECT node_id FROM nodes WHERE network = 'test')`);
       }
-      if (observerParam) conditions.push(`${prefix}rx_node_id = ${observerParam}`);
+      if (observerParam) {
+        conditions.push(
+          `(${prefix}rx_node_id = ${observerParam}
+            OR meshcore_canonical_node_id(${prefix}rx_node_id) = meshcore_canonical_node_id(${observerParam}))`,
+        );
+      }
       conditions.push(...publicPacketPrivacyConditions(prefix));
       return conditions.length > 0 ? `AND ${conditions.join(' AND ')}` : '';
     },

@@ -53,9 +53,9 @@ export async function topologyRows(
        nl.multibyte_observed_count,
        nl.last_observed::text,
        nl.itm_path_loss_db
-     FROM node_links nl
-     JOIN nodes a ON a.node_id = nl.node_a_id
-     JOIN nodes b ON b.node_id = nl.node_b_id
+     FROM node_identity_links nl
+     JOIN node_identity_nodes a ON a.node_id = nl.node_a_id
+     JOIN node_identity_nodes b ON b.node_id = nl.node_b_id
      WHERE (nl.itm_viable = true OR nl.force_viable = true)
        AND nl.last_observed > NOW() - INTERVAL '30 days'
        AND (a.role IS NULL OR a.role = 2)
@@ -73,14 +73,14 @@ export async function topologyRows(
 export async function standaloneTopologyRows(query: QueryFn, filters: NetworkFilters) {
   return query<StandaloneNodeRow>(
     `SELECT n.node_id, n.name, n.lat, n.lon, n.iata
-     FROM nodes n
+     FROM node_identity_nodes n
      WHERE n.last_seen > NOW() - INTERVAL '30 days'
        AND (n.role IS NULL OR n.role = 2)
        AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
        ${filters.nodesAlias('n')}
        AND NOT EXISTS (
          SELECT 1
-         FROM node_links nl
+         FROM node_identity_links nl
          WHERE (nl.node_a_id = n.node_id OR nl.node_b_id = n.node_id)
            AND (nl.itm_viable = true OR nl.force_viable = true)
            AND nl.last_observed > NOW() - INTERVAL '30 days'
@@ -121,9 +121,9 @@ export async function rfValidationRows(
          WHEN nl.itm_viable = true AND nl.observed_count <= 2 AND nl.last_observed < NOW() - INTERVAL '7 days' THEN 'weak_model_evidence'
          ELSE 'match'
        END AS classification
-     FROM node_links nl
-     JOIN nodes a ON a.node_id = nl.node_a_id
-     JOIN nodes b ON b.node_id = nl.node_b_id
+     FROM node_identity_links nl
+     JOIN node_identity_nodes a ON a.node_id = nl.node_a_id
+     JOIN node_identity_nodes b ON b.node_id = nl.node_b_id
      WHERE nl.last_observed > NOW() - INTERVAL '30 days'
        AND (a.name IS NULL OR a.name NOT LIKE '%🚫%')
        AND (b.name IS NULL OR b.name NOT LIKE '%🚫%')

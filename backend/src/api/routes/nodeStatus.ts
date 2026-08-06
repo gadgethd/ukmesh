@@ -16,16 +16,16 @@ router.get('/node-status/latest', async (req, res) => {
     const networkValues = expandResolverScope(network);
     const observer = normalizeObserverQuery(req.query['observer']);
 
-    const params: unknown[] = [];
-    const conditions: string[] = [];
-    params.push(networkValues);
-    conditions.push(`nss.network = ANY($${params.length}::text[])`);
+    const params: unknown[] = [networkValues];
+    const identityConditions: string[] = [
+      `(n.name IS NULL OR n.name NOT LIKE '%🚫%')`,
+    ];
     if (observer) {
       params.push(observer);
-      conditions.push(`nss.node_id = $${params.length}`);
+      identityConditions.push(`n.node_id = meshcore_canonical_node_id($${params.length})`);
     }
 
-    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    const identityWhereClause = `WHERE ${identityConditions.join(' AND ')}`;
     const result = await query<{
       time: string;
       node_id: string;
@@ -42,10 +42,20 @@ router.get('/node-status/latest', async (req, res) => {
       hardware_model: string | null;
       firmware_version: string | null;
     }>(
-      `SELECT * FROM (
-         SELECT DISTINCT ON (nss.node_id)
+      `WITH identity_sources AS MATERIALIZED (
+         SELECT n.node_id AS canonical_id,
+                n.name,
+                n.iata,
+                n.hardware_model,
+                n.firmware_version,
+                source.source_node_id
+         FROM node_identity_nodes n
+         CROSS JOIN LATERAL unnest(n.identity_source_ids) AS source(source_node_id)
+         ${identityWhereClause}
+       ), latest AS (
+         SELECT DISTINCT ON (s.canonical_id)
            nss.time::text,
-           nss.node_id,
+           s.canonical_id AS node_id,
            nss.network,
            nss.battery_mv,
            nss.uptime_secs,
@@ -54,16 +64,23 @@ router.get('/node-status/latest', async (req, res) => {
            nss.channel_utilization,
            nss.air_util_tx,
            nss.stats,
-           n.name,
-           n.iata,
-           n.hardware_model,
-           n.firmware_version
-         FROM node_status_samples nss
-         LEFT JOIN nodes n ON n.node_id = nss.node_id
-         ${whereClause}
-         ${whereClause ? 'AND' : 'WHERE'} (n.name IS NULL OR n.name NOT LIKE '%🚫%')
-         ORDER BY nss.node_id, nss.time DESC
-       ) latest
+           s.name,
+           s.iata,
+           s.hardware_model,
+           s.firmware_version
+         FROM identity_sources s
+         JOIN LATERAL (
+           SELECT time, network, battery_mv, uptime_secs, tx_air_secs,
+                  rx_air_secs, channel_utilization, air_util_tx, stats
+           FROM node_status_samples
+           WHERE node_id = s.source_node_id
+             AND network = ANY($1::text[])
+           ORDER BY time DESC
+           LIMIT 1
+         ) nss ON TRUE
+         ORDER BY s.canonical_id, nss.time DESC
+       )
+       SELECT * FROM latest
        ORDER BY time DESC`,
       params,
     );
@@ -101,13 +118,13 @@ router.get('/node-status/history', async (req, res) => {
       conditions.push(`nss.network = ANY($${params.length}::text[])`);
       if (observer) {
         params.push(observer);
-        conditions.push(`nss.node_id = $${params.length}`);
+        conditions.push(`nss.node_id = meshcore_canonical_node_id($${params.length})`);
       }
       const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
       const latestNode = await query<{ node_id: string }>(
         `SELECT nss.node_id
-         FROM node_status_samples nss
-         JOIN nodes n ON n.node_id = nss.node_id
+         FROM node_identity_status_samples nss
+         JOIN node_identity_nodes n ON n.node_id = nss.node_id
          ${whereClause}
            AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
          ORDER BY nss.time DESC
@@ -169,9 +186,10 @@ router.get('/node-status/history', async (req, res) => {
            WHEN jsonb_typeof(stats->'tx_queue_depth_peak') = 'number' THEN (stats->>'tx_queue_depth_peak')::double precision
            ELSE NULL
          END AS tx_queue_depth_peak
-       FROM node_status_samples nss
-       JOIN nodes n ON n.node_id = nss.node_id
-       WHERE nss.node_id = $1
+       FROM node_identity_nodes n
+       CROSS JOIN LATERAL unnest(n.identity_source_ids) AS source(source_node_id)
+       JOIN node_status_samples nss ON nss.node_id = source.source_node_id
+       WHERE n.node_id = meshcore_canonical_node_id($1)
          AND nss.network = ANY($3::text[])
          AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
          AND nss.time > NOW() - ($2::text || ' hours')::interval

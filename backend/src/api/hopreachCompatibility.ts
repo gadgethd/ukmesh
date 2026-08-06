@@ -167,7 +167,7 @@ const NODE_WHERE = `
   AND (
     n.network = 'ukmesh'
     OR EXISTS (
-      SELECT 1 FROM node_network_sightings sighting
+      SELECT 1 FROM node_identity_sightings sighting
       WHERE sighting.node_id = n.node_id AND sighting.network = 'ukmesh'
     )
   )`;
@@ -175,11 +175,12 @@ const NODE_WHERE = `
 async function fetchLinks(query: QueryFn, publicKeys: string[], days: number) {
   if (publicKeys.length === 0) return [] as HopReachLinkRow[];
   const result = await query<HopReachLinkRow>(
-    `WITH requested(source_id) AS (
-       SELECT unnest($1::text[])
+    `WITH requested(requested_id, source_id) AS (
+       SELECT id, meshcore_canonical_node_id(id)
+       FROM unnest($1::text[]) AS ids(id)
      )
      SELECT
-       requested.source_id,
+       requested.requested_id AS source_id,
        peer.node_id AS pubkey,
        peer.name,
        peer.lat,
@@ -191,9 +192,9 @@ async function fetchLinks(query: QueryFn, publicKeys: string[], days: number) {
        END::int AS bottleneck,
        (nl.count_a_to_b > 0 AND nl.count_b_to_a > 0) AS bidir
      FROM requested
-     JOIN node_links nl
+     JOIN node_identity_links nl
        ON nl.node_a_id = requested.source_id OR nl.node_b_id = requested.source_id
-     JOIN nodes peer
+     JOIN node_identity_nodes peer
        ON peer.node_id = CASE
          WHEN nl.node_a_id = requested.source_id THEN nl.node_b_id
          ELSE nl.node_a_id
@@ -244,7 +245,7 @@ export function createHopReachCompatibilityRoutes(query: QueryFn): Router {
       const [count, page] = await Promise.all([
         loadCached(nodeCountCache, nodeCountInFlight, 'all-repeaters', async () => {
           const result = await query<{ total: string }>(
-            `SELECT COUNT(*)::text AS total FROM nodes n WHERE ${NODE_WHERE}`,
+            `SELECT COUNT(*)::text AS total FROM node_identity_nodes n WHERE ${NODE_WHERE}`,
           );
           return Number(result.rows[0]?.total ?? 0);
         }),
@@ -253,7 +254,7 @@ export function createHopReachCompatibilityRoutes(query: QueryFn): Router {
             `SELECT n.node_id AS public_key, n.name, n.lat, n.lon,
                     n.last_seen AS last_heard, n.created_at AS first_seen,
                     n.advert_count
-               FROM nodes n
+               FROM node_identity_nodes n
               WHERE ${NODE_WHERE}
               ORDER BY n.node_id
               LIMIT $1 OFFSET $2`,

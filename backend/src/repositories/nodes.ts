@@ -98,8 +98,8 @@ export function createNodeRepository(query: QueryFn): NodeRepository {
                n.iata,
                n.hardware_model,
                n.firmware_version
-             FROM node_status_samples nss
-             LEFT JOIN nodes n ON n.node_id = nss.node_id
+             FROM node_identity_status_samples nss
+             LEFT JOIN node_identity_nodes n ON n.node_id = nss.node_id
              WHERE nss.network = 'test'
              ORDER BY nss.node_id, nss.time DESC
            ) latest
@@ -118,7 +118,7 @@ export function createNodeRepository(query: QueryFn): NodeRepository {
              channel_utilization,
              air_util_tx,
              stats
-           FROM node_status_samples
+           FROM node_identity_status_samples
            WHERE network = 'test'
            ORDER BY time DESC`,
           [],
@@ -164,7 +164,7 @@ export function createNodeRepository(query: QueryFn): NodeRepository {
                WHEN jsonb_typeof(stats->'tx_queue_depth_peak') = 'number' THEN (stats->>'tx_queue_depth_peak')::double precision
                ELSE NULL
              END AS tx_queue_depth_peak
-           FROM node_status_samples
+           FROM node_identity_status_samples
            WHERE node_id = $1
              AND network = 'test'
              AND time > NOW() - INTERVAL '24 hours'
@@ -198,7 +198,7 @@ export function createNodeRepository(query: QueryFn): NodeRepository {
         .join(', ');
       const result = await query<Record<string, unknown>>(
         `SELECT ${selectedFields}
-           FROM nodes n
+           FROM node_identity_nodes n
           WHERE ${publicMapFreshPredicate('n', `$${snapshotParameter}::timestamptz`)}
             ${filters.nodesAlias('n')}
             AND ($${cursorParameter}::text IS NULL OR n.node_id > $${cursorParameter})
@@ -210,7 +210,7 @@ export function createNodeRepository(query: QueryFn): NodeRepository {
     },
 
     async listAllNodeIds() {
-      return (await query<{ node_id: string }>('SELECT node_id FROM nodes')).rows;
+      return (await query<{ node_id: string }>('SELECT node_id FROM node_identity_nodes')).rows;
     },
 
     async listInferredPackets(scope, limit) {
@@ -233,20 +233,24 @@ export function createNodeRepository(query: QueryFn): NodeRepository {
       return (await query<NodeLinkRow>(
         `WITH source_node AS MATERIALIZED (
            SELECT node_id
-             FROM nodes
-            WHERE node_id = ${idParam}
+             FROM node_identity_nodes
+            WHERE node_id = meshcore_canonical_node_id(${idParam})
               AND (name IS NULL OR name NOT LIKE '%🚫%')
               ${filters.nodes}
          ),
          relevant_links AS MATERIALIZED (
            SELECT
-             CASE WHEN nl.node_a_id = ${idParam} THEN nl.node_b_id ELSE nl.node_a_id END AS peer_id,
+             CASE WHEN nl.node_a_id = meshcore_canonical_node_id(${idParam})
+                  THEN nl.node_b_id ELSE nl.node_a_id END AS peer_id,
              nl.observed_count,
              nl.itm_path_loss_db,
-             CASE WHEN nl.node_a_id = ${idParam} THEN nl.count_a_to_b ELSE nl.count_b_to_a END AS count_this_to_peer,
-             CASE WHEN nl.node_a_id = ${idParam} THEN nl.count_b_to_a ELSE nl.count_a_to_b END AS count_peer_to_this
-             FROM node_links nl
-            WHERE (nl.node_a_id = ${idParam} OR nl.node_b_id = ${idParam})
+             CASE WHEN nl.node_a_id = meshcore_canonical_node_id(${idParam})
+                  THEN nl.count_a_to_b ELSE nl.count_b_to_a END AS count_this_to_peer,
+             CASE WHEN nl.node_a_id = meshcore_canonical_node_id(${idParam})
+                  THEN nl.count_b_to_a ELSE nl.count_a_to_b END AS count_peer_to_this
+             FROM node_identity_links nl
+            WHERE (nl.node_a_id = meshcore_canonical_node_id(${idParam})
+                   OR nl.node_b_id = meshcore_canonical_node_id(${idParam}))
               AND (nl.itm_viable = TRUE OR nl.force_viable = TRUE)
               AND EXISTS (SELECT 1 FROM source_node)
          )
@@ -254,7 +258,7 @@ export function createNodeRepository(query: QueryFn): NodeRepository {
            rl.peer_id, peer.name AS peer_name, rl.observed_count,
            rl.itm_path_loss_db, rl.count_this_to_peer, rl.count_peer_to_this
            FROM relevant_links rl
-           JOIN nodes peer ON peer.node_id = rl.peer_id
+           JOIN node_identity_nodes peer ON peer.node_id = rl.peer_id
           WHERE (peer.name IS NULL OR peer.name NOT LIKE '%🚫%')
             ${filters.nodesAlias('peer')}
           ORDER BY rl.observed_count DESC`,

@@ -165,8 +165,9 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
         COALESCE(NULLIF(TRIM(UPPER(p.iata)), ''), 'UNK') AS iata,
         COUNT(DISTINCT p.packet_hash) FILTER (WHERE p.time > NOW() - INTERVAL '24 hours') AS packets_24h,
         COUNT(DISTINCT p.packet_hash) AS packets_7d,
-        COUNT(DISTINCT p.rx_node_id) FILTER (WHERE p.time > NOW() - INTERVAL '1 minute') AS active_observers,
-        COUNT(DISTINCT p.rx_node_id) AS observers,
+        COUNT(DISTINCT meshcore_canonical_node_id(p.rx_node_id))
+          FILTER (WHERE p.time > NOW() - INTERVAL '1 minute') AS active_observers,
+        COUNT(DISTINCT meshcore_canonical_node_id(p.rx_node_id)) AS observers,
         MAX(p.time)::text AS last_packet_at
       FROM packets p
       WHERE p.time > NOW() - INTERVAL '7 days'
@@ -732,7 +733,8 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
           ) AS bucket
         ),
         counts AS (
-          SELECT time_bucket('1 hour', p.time) AS bucket, COUNT(DISTINCT p.src_node_id)::int AS count
+          SELECT time_bucket('1 hour', p.time) AS bucket,
+                 COUNT(DISTINCT meshcore_canonical_node_id(p.src_node_id))::int AS count
           FROM packets p
           WHERE p.time > NOW() - INTERVAL '24 hours'
             AND p.src_node_id IS NOT NULL
@@ -745,7 +747,8 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
         ORDER BY b.bucket
       `, filters.params),
       query(`
-        SELECT time_bucket('1 day', time) AS day, COUNT(DISTINCT src_node_id) AS count
+        SELECT time_bucket('1 day', time) AS day,
+               COUNT(DISTINCT meshcore_canonical_node_id(src_node_id)) AS count
         FROM packets
         WHERE time > NOW() - INTERVAL '7 days' AND src_node_id IS NOT NULL ${filters.packets}
         GROUP BY day ORDER BY day
@@ -788,7 +791,10 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
         SELECT
           (SELECT COUNT(*) FROM packets WHERE time > NOW() - INTERVAL '24 hours' ${filters.packets}) AS total_24h,
           (SELECT COUNT(*) FROM packets WHERE time > NOW() - INTERVAL '7 days' ${filters.packets}) AS total_7d,
-          (SELECT COUNT(DISTINCT src_node_id) FROM packets WHERE time > NOW() - INTERVAL '24 hours' AND src_node_id IS NOT NULL ${filters.packets}) AS unique_radios_24h
+          (SELECT COUNT(DISTINCT meshcore_canonical_node_id(src_node_id))
+             FROM packets
+            WHERE time > NOW() - INTERVAL '24 hours'
+              AND src_node_id IS NOT NULL ${filters.packets}) AS unique_radios_24h
       `, filters.params),
       fetchObserverRegionSummary(network, observer),
       query(`
@@ -846,7 +852,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
              p.path_hashes,
              rx.role AS rx_role
            FROM packets p
-           LEFT JOIN nodes rx ON rx.node_id = p.rx_node_id
+           LEFT JOIN node_identity_nodes rx ON rx.node_id = meshcore_canonical_node_id(p.rx_node_id)
            WHERE p.time > NOW() - INTERVAL '24 hours'
              AND p.path_hash_size_bytes > 1
              AND COALESCE(array_length(p.path_hashes, 1), 0) > 0
@@ -896,7 +902,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
              UPPER(LEFT(n.node_id, 4)) AS hash,
              COUNT(*)::int AS match_count,
              MIN(n.node_id) AS node_id
-           FROM nodes n
+           FROM node_identity_nodes n
            JOIN distinct_hashes dh
              ON LENGTH(dh.hash) = 4
             AND dh.hash = UPPER(LEFT(n.node_id, 4))
@@ -909,7 +915,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
              UPPER(LEFT(n.node_id, 6)) AS hash,
              COUNT(*)::int AS match_count,
              MIN(n.node_id) AS node_id
-           FROM nodes n
+           FROM node_identity_nodes n
            JOIN distinct_hashes dh
              ON LENGTH(dh.hash) = 6
             AND dh.hash = UPPER(LEFT(n.node_id, 6))
@@ -985,7 +991,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
              ) ORDER BY dh.ord)
              FROM latest_fully_decoded l
              JOIN decoded_hops dh ON dh.obs_id = l.obs_id
-             LEFT JOIN nodes n ON n.node_id = dh.node_id
+           LEFT JOIN node_identity_nodes n ON n.node_id = dh.node_id
            ) AS latest_fully_decoded_nodes,
            (SELECT time::text FROM longest_fully_decoded) AS longest_fully_decoded_at,
            (SELECT packet_hash FROM longest_fully_decoded) AS longest_fully_decoded_hash,
@@ -1002,7 +1008,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
              ) ORDER BY dh.ord)
              FROM longest_fully_decoded l
              JOIN decoded_hops dh ON dh.obs_id = l.obs_id
-             LEFT JOIN nodes n ON n.node_id = dh.node_id
+             LEFT JOIN node_identity_nodes n ON n.node_id = dh.node_id
            ) AS longest_fully_decoded_nodes`,
         filters.params,
       ),
@@ -1013,7 +1019,8 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
         single_observer_packets: string;
       }>(
         `WITH per_packet AS (
-           SELECT packet_hash, COUNT(DISTINCT rx_node_id)::int AS observer_count
+           SELECT packet_hash,
+                  COUNT(DISTINCT meshcore_canonical_node_id(rx_node_id))::int AS observer_count
            FROM (
              SELECT p.packet_hash, p.rx_node_id
            FROM packets p
@@ -1100,7 +1107,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
              p.path_hashes,
              rx.role AS rx_role
            FROM packets p
-           LEFT JOIN nodes rx ON rx.node_id = p.rx_node_id
+           LEFT JOIN node_identity_nodes rx ON rx.node_id = meshcore_canonical_node_id(p.rx_node_id)
            WHERE p.time > NOW() - INTERVAL '7 days'
              AND p.path_hash_size_bytes > 1
              AND COALESCE(array_length(p.path_hashes, 1), 0) > 0
@@ -1155,7 +1162,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
              UPPER(LEFT(n.node_id, 4)) AS hash,
              COUNT(*)::int AS match_count,
              MIN(n.node_id) AS node_id
-           FROM nodes n
+           FROM node_identity_nodes n
            JOIN distinct_hashes dh
              ON LENGTH(dh.hash) = 4
             AND dh.hash = UPPER(LEFT(n.node_id, 4))
@@ -1168,7 +1175,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
              UPPER(LEFT(n.node_id, 6)) AS hash,
              COUNT(*)::int AS match_count,
              MIN(n.node_id) AS node_id
-           FROM nodes n
+           FROM node_identity_nodes n
            JOIN distinct_hashes dh
              ON LENGTH(dh.hash) = 6
             AND dh.hash = UPPER(LEFT(n.node_id, 6))
@@ -1275,18 +1282,21 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
 
     const [mqttCount, packetCount, staleCount, mapNodeCount, totalNodeCount, longestHopCount, nodesDayCount, internationalCount] = await Promise.all([
       network != null
-        ? query(`SELECT COUNT(DISTINCT rx_node_id) AS count
+        ? query(`SELECT COUNT(DISTINCT meshcore_canonical_node_id(rx_node_id)) AS count
                  FROM packets
                  WHERE time > NOW() - INTERVAL '10 minutes'
                    AND rx_node_id IS NOT NULL
                    ${filters.packets}`, filters.params)
         : query(`
           WITH test_active AS (
-            SELECT rx_node_id FROM packets WHERE rx_node_id IS NOT NULL AND rx_node_id <> ''
+           SELECT meshcore_canonical_node_id(rx_node_id) AS rx_node_id
+             FROM packets
+            WHERE rx_node_id IS NOT NULL AND rx_node_id <> ''
               AND time > NOW() - INTERVAL '7 days'
-            GROUP BY rx_node_id HAVING MAX(time) = MAX(time) FILTER (WHERE network = 'test')
+            GROUP BY meshcore_canonical_node_id(rx_node_id)
+            HAVING MAX(time) = MAX(time) FILTER (WHERE network = 'test')
           )
-          SELECT COUNT(DISTINCT rx_node_id) AS count
+          SELECT COUNT(DISTINCT meshcore_canonical_node_id(rx_node_id)) AS count
           FROM packets
           WHERE time > NOW() - INTERVAL '10 minutes'
             AND rx_node_id IS NOT NULL
@@ -1294,29 +1304,29 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
             ${filters.packets}
         `, filters.params),
       query(`SELECT COUNT(*) AS count FROM packets WHERE time > NOW() - INTERVAL '24 hours' ${filters.packets}`, filters.params),
-      query(`SELECT COUNT(*) AS count FROM nodes
+      query(`SELECT COUNT(*) AS count FROM node_identity_nodes nodes
              WHERE ${publicMapBasePredicate('nodes')}
                AND ${nodeEffectiveLastSeenSql('nodes')}
                      <= NOW() - INTERVAL '14 days'
                AND ${nodeEffectiveLastSeenSql('nodes')}
                      > NOW() - INTERVAL '28 days'
                ${filters.nodes}`, filters.params),
-      query(`SELECT COUNT(*) AS count FROM nodes
+      query(`SELECT COUNT(*) AS count FROM node_identity_nodes nodes
              WHERE ${publicMapFreshPredicate('nodes')}
                ${filters.nodes}`, filters.params),
-      query(`SELECT COUNT(*) AS count FROM nodes
+      query(`SELECT COUNT(*) AS count FROM node_identity_nodes nodes
              WHERE (name IS NULL OR name NOT LIKE '%🚫%')
                AND (role IS NULL OR role != 4)
                ${filters.nodes}`, filters.params),
       longestHopResult(),
-      query(`SELECT COUNT(DISTINCT src_node_id) AS count
+      query(`SELECT COUNT(DISTINCT meshcore_canonical_node_id(src_node_id)) AS count
              FROM packets
              WHERE time > NOW() - INTERVAL '24 hours'
                AND src_node_id IS NOT NULL
                ${filters.packets}`, filters.params),
       query(`WITH intl AS (
                SELECT lat, lon, last_seen, advert_count
-               FROM nodes
+               FROM node_identity_nodes nodes
                WHERE lat IS NOT NULL AND lon IS NOT NULL
                  AND lat != 0 AND lon != 0
                  AND last_seen > NOW() - INTERVAL '7 days'
@@ -1363,24 +1373,24 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
     const filters = networkFilters(network);
     return query<{ node_id: string; name: string | null; rx_24h: string; tx_24h: string; last_tx: string | null; last_rx: string | null }>(
       `WITH rx AS (
-         SELECT p.rx_node_id AS node_id,
+         SELECT meshcore_canonical_node_id(p.rx_node_id) AS node_id,
                 COUNT(p.packet_hash)::text AS rx_24h,
                 MAX(p.time)::text AS last_rx
          FROM packets p
          WHERE p.time > NOW() - INTERVAL '24 hours'
            AND p.rx_node_id IS NOT NULL
            ${filters.packetsAlias('p')}
-         GROUP BY p.rx_node_id
+         GROUP BY meshcore_canonical_node_id(p.rx_node_id)
        ),
        tx AS (
-         SELECT p.src_node_id AS node_id,
+         SELECT meshcore_canonical_node_id(p.src_node_id) AS node_id,
                 COUNT(p.packet_hash)::text AS tx_24h,
                 MAX(p.time)::text AS last_tx
          FROM packets p
          WHERE p.time > NOW() - INTERVAL '24 hours'
            AND p.src_node_id IS NOT NULL
            ${filters.packetsAlias('p')}
-         GROUP BY p.src_node_id
+         GROUP BY meshcore_canonical_node_id(p.src_node_id)
        )
        SELECT
          n.node_id,
@@ -1390,7 +1400,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
          tx.last_tx,
          rx.last_rx
        FROM rx
-       JOIN nodes n ON n.node_id = rx.node_id
+       JOIN node_identity_nodes n ON n.node_id = rx.node_id
        LEFT JOIN tx ON tx.node_id = rx.node_id
        WHERE n.name IS NULL OR n.name NOT LIKE '%🚫%'
        ORDER BY rx.rx_24h::bigint DESC`,
