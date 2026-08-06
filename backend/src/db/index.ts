@@ -1237,53 +1237,67 @@ export async function getMultibytePathSegments(network?: string, observer?: stri
   const scope = buildScopePlaceholders(1, network, observer);
   const params: unknown[] = [...scope.params];
 
-  const res = await pool.query<{
-    a_lat: number;
-    a_lon: number;
-    b_lat: number;
-    b_lon: number;
-    count: number;
-  }>(
-    `SELECT
-       a.lat AS a_lat,
-       a.lon AS a_lon,
-       b.lat AS b_lat,
-       b.lon AS b_lon,
-       nl.multibyte_observed_count AS count
-     FROM node_identity_links nl
-     JOIN node_identity_nodes a ON a.node_id = nl.node_a_id
-     JOIN node_identity_nodes b ON b.node_id = nl.node_b_id
-     WHERE nl.multibyte_observed_count > 0
-       AND nl.itm_viable = true
-       AND a.lat IS NOT NULL
-       AND a.lon IS NOT NULL
-       AND b.lat IS NOT NULL
-       AND b.lon IS NOT NULL
-       AND a.lat BETWEEN -90 AND 90
-       AND b.lat BETWEEN -90 AND 90
-       AND a.lon BETWEEN -180 AND 180
-       AND b.lon BETWEEN -180 AND 180
-       AND NOT (ABS(a.lat) < 5 AND ABS(a.lon) < 5)
-       AND NOT (ABS(b.lat) < 5 AND ABS(b.lon) < 5)
-       AND (a.name IS NULL OR a.name NOT LIKE '%🚫%')
-       AND (b.name IS NULL OR b.name NOT LIKE '%🚫%')
-       AND SQRT(
-         POWER((a.lat - b.lat) * 111, 2)
-         + POWER((a.lon - b.lon) * 111 * COS(RADIANS((a.lat + b.lat) / 2)), 2)
-       ) <= ${MAX_MULTIBYTE_PATH_SEGMENT_KM}
-       ${buildNodeScopeClause(scope, 'a')}
-       ${buildNodeScopeClause(scope, 'b')}
-     ORDER BY nl.multibyte_observed_count DESC`,
-    params,
-  );
+  // Two simple statements joined in JS. A single JOIN blob makes the planner
+  // guess rows=1 on the scoped-node CTE (the sightings EXISTS is not
+  // estimable) and pick nested loops that re-materialise the identity view
+  // per row: 100s+. Splitting keeps both statements simple enough that the
+  // planner cannot mis-estimate them (measured: ~325ms + ~92ms).
+  const [nodesRes, linksRes] = await Promise.all([
+    pool.query<{
+      node_id: string;
+      lat: number | null;
+      lon: number | null;
+      name: string | null;
+    }>(
+      `SELECT node_id, lat, lon, name
+       FROM node_identity_nodes n
+       WHERE 1=1${buildNodeScopeClause(scope, 'n')}`,
+      params,
+    ),
+    pool.query<{
+      node_a_id: string;
+      node_b_id: string;
+      multibyte_observed_count: number;
+    }>(
+      `SELECT node_a_id, node_b_id, multibyte_observed_count
+       FROM node_identity_links
+       WHERE multibyte_observed_count > 0
+         AND itm_viable = true`,
+    ),
+  ]);
 
-  const segments = res.rows.map((row) => ({
-    positions: [
-      [Number(row.a_lat), Number(row.a_lon)],
-      [Number(row.b_lat), Number(row.b_lon)],
-    ] as [[number, number], [number, number]],
-    count: Number(row.count ?? 0),
-  }));
+  const nodesById = new Map(nodesRes.rows.map((row) => [row.node_id, row]));
+  const segments: Array<{
+    positions: [[number, number], [number, number]];
+    count: number;
+  }> = [];
+  for (const link of linksRes.rows) {
+    const a = nodesById.get(link.node_a_id);
+    const b = nodesById.get(link.node_b_id);
+    if (!a || !b) continue;
+    if (a.lat == null || a.lon == null || b.lat == null || b.lon == null) continue;
+    if (a.lat < -90 || a.lat > 90 || b.lat < -90 || b.lat > 90) continue;
+    if (a.lon < -180 || a.lon > 180 || b.lon < -180 || b.lon > 180) continue;
+    if (Math.abs(a.lat) < 5 && Math.abs(a.lon) < 5) continue;
+    if (Math.abs(b.lat) < 5 && Math.abs(b.lon) < 5) continue;
+    if ((a.name ?? '').includes('🚫') || (b.name ?? '').includes('🚫')) continue;
+    const distKm = Math.sqrt(
+      Math.pow((a.lat - b.lat) * 111, 2)
+        + Math.pow(
+          (a.lon - b.lon) * 111 * Math.cos(((a.lat + b.lat) / 2) * (Math.PI / 180)),
+          2,
+        ),
+    );
+    if (distKm > MAX_MULTIBYTE_PATH_SEGMENT_KM) continue;
+    segments.push({
+      positions: [
+        [a.lat, a.lon],
+        [b.lat, b.lon],
+      ],
+      count: link.multibyte_observed_count,
+    });
+  }
+  segments.sort((x, y) => y.count - x.count);
 
   const maxCount = segments.reduce((max, segment) => Math.max(max, segment.count), 0);
   return { maxCount, segments };
@@ -1311,7 +1325,7 @@ export async function getViableLinks(network?: string, observer?: string): Promi
   if (network && !observer) {
     const scopedNetworks = network === 'ukmesh' ? UKMESH_NETWORKS : [network];
     const res = await pool.query<ViableLinkRow>(
-      `WITH net_nodes AS (
+      `WITH net_nodes AS MATERIALIZED (
          SELECT DISTINCT node_id FROM node_identity_nodes
          WHERE network = ANY($1::text[])
            AND (name IS NULL OR name NOT LIKE '%🚫%')
