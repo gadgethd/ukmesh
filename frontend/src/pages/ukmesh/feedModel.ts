@@ -38,7 +38,50 @@ export const TYPE_LABELS: Record<number, string> = {
 };
 
 export const MAX_PACKETS = 500;
-export type MessageScope = 'all' | 'public' | 'test';
+/** Decrypted/visible channel scopes — matches the [Channel] summary prefix (lowercased).
+ * Kept in sync with backend/src/mqtt/channelRegistry.ts VALIDATED_CHANNELS. */
+export const MESSAGE_SCOPE_CHANNELS = [
+  'public',
+  'test',
+  'bot',
+  'yorkshire',
+  'liverpool',
+  'london',
+  'nottingham',
+  'northeast',
+  'kent',
+  'wales',
+  'cornwall',
+  'devon',
+  'dorset',
+  'cumbria',
+  'yorks',
+  'leicester',
+  'dartford',
+  'uckfield',
+  'huddersfield',
+  'derbyshire',
+  'lincolnshire',
+  'surrey',
+  'midlands',
+  'hamradio',
+  'mesh',
+  'public2',
+  'test2',
+  'thenorf',
+  'g8py',
+  'echo',
+  'denhaag',
+  'dublin',
+  'glasgow',
+  'york',
+  'ireland',
+  'scilly',
+  'brentwood',
+  'marple',
+  'uk',
+] as const;
+export type MessageScope = 'all' | (typeof MESSAGE_SCOPE_CHANNELS)[number];
 export type PathTreeBranchNode = LazyPathNode & {
   treeKey: string;
   branchIndexes: Set<number>;
