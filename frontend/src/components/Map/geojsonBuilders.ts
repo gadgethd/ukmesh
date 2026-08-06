@@ -74,12 +74,35 @@ export function distKm(a: MeshNode, b: MeshNode): number {
   return Math.hypot(dlat, dlon);
 }
 
+/**
+ * Map presence is driven by the backend's effective last_seen value. That
+ * value is the newest direct presence, status, observer, or multibyte path
+ * evidence, so a repeater carrying recent traffic remains eligible even when
+ * its own advert is old.
+ */
+export function nodePresenceAgeMs(
+  node: Pick<MeshNode, 'last_seen'>,
+  nowMs = Date.now(),
+): number {
+  const seenAtMs = Date.parse(node.last_seen);
+  if (!Number.isFinite(seenAtMs)) return Number.POSITIVE_INFINITY;
+  // A small clock skew must not make an otherwise evidenced node disappear.
+  return Math.max(0, nowMs - seenAtMs);
+}
+
+/** Pure, data-driven rendering predicate for map node presence. */
+export function shouldRenderMapNode(
+  node: Pick<MeshNode, 'last_seen'>,
+  nowMs = Date.now(),
+  hideAfterMs = NODE_HIDE_AFTER_MS,
+): boolean {
+  return nodePresenceAgeMs(node, nowMs) <= hideAfterMs;
+}
+
 export function buildNodeGeoJSON(
   nodes: Map<string, MeshNode>,
   hiddenCoordMask: Map<string, HiddenMaskGeometry>,
   showClientNodes: boolean,
-  showLinks: boolean,
-  viableLinkNodeIds: Set<string>,
   clashOffenderIds: Set<string>,
   clashRelayIds: Set<string>,
   showHexClashes: boolean,
@@ -91,11 +114,8 @@ export function buildNodeGeoJSON(
 
   const addNode = (node: MeshNode) => {
     if (!hasCoords(node)) return;
-    const ageMs = staleCutoffMs - new Date(node.last_seen).getTime();
-    const isLinkOnlyStale = ageMs > NODE_HIDE_AFTER_MS
-      && showLinks
-      && viableLinkNodeIds.has(node.node_id.toLowerCase());
-    if (ageMs > NODE_HIDE_AFTER_MS && !isLinkOnlyStale) return;
+    const ageMs = nodePresenceAgeMs(node, staleCutoffMs);
+    if (!shouldRenderMapNode(node, staleCutoffMs)) return;
 
     const isClientNode = node.role === 1 || node.role === 3;
     if (isClientNode && !showClientNodes) return;
@@ -130,7 +150,6 @@ export function buildNodeGeoJSON(
       role: node.role ?? 2,
       is_online: node.is_online,
       is_stale: ageMs > NODE_STALE_AFTER_MS,
-      is_link_only_stale: isLinkOnlyStale,
       is_prohibited: isProhibited,
       replay_active: replayNodeIds?.has(node.node_id.toLowerCase()) ?? false,
       replay_mode: replayNodeIds !== null,

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { buildNodeGeoJSON } from '../components/Map/geojsonBuilders.js';
+import { buildNodeGeoJSON, shouldRenderMapNode } from '../components/Map/geojsonBuilders.js';
 import {
   NODE_HIDE_AFTER_MS,
   NODE_STALE_AFTER_MS,
@@ -96,8 +96,6 @@ test('map marks nodes stale after 14 days and hides ordinary nodes after 28 days
     nodes,
     new Map(),
     true,
-    false,
-    new Set(),
     new Set(),
     new Set(),
     false,
@@ -138,8 +136,6 @@ test('a full historic-node upsert restores its stored location as an observed on
     nodeStore.getState().nodes,
     new Map(),
     true,
-    false,
-    new Set(),
     new Set(),
     new Set(),
     false,
@@ -154,6 +150,16 @@ test('a full historic-node upsert restores its stored location as an observed on
   });
   assert.equal(geojson.features[0]?.properties?.['is_online'], true);
   assert.equal('is_inferred' in (geojson.features[0]?.properties ?? {}), false);
+});
+
+test('presence filter hides stale nodes regardless of link visibility', () => {
+  const now = Date.parse('2026-08-06T00:00:00.000Z');
+  const stale = { last_seen: new Date(now - NODE_HIDE_AFTER_MS - 1).toISOString() };
+  assert.equal(shouldRenderMapNode(stale, now), false);
+  assert.equal(shouldRenderMapNode({
+    last_seen: new Date(now - NODE_HIDE_AFTER_MS + 1).toISOString(),
+  }, now), true);
+  assert.equal(shouldRenderMapNode({ last_seen: 'not-a-date' }, now), false);
 });
 
 test('one privacy-safe packet creates a bounded arc and expiry removes it', () => {
