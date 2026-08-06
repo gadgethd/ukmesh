@@ -304,21 +304,7 @@ export const OwnerPortalPage: React.FC = () => {
                 </button>
               </div>
               {dashboard.nodes.length > 1 ? (
-                <div className="owner-select">
-                  <label htmlFor="owner-node-select">Node</label>
-                  <select
-                    id="owner-node-select"
-                    className="owner-select__input"
-                    value={selectedNodeId}
-                    onChange={(e) => setSelectedNodeId(e.target.value)}
-                  >
-                    {dashboard.nodes.map((node) => (
-                      <option key={node.canonicalId} value={node.node_id}>
-                        {node.name ?? node.canonicalId}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+                <p className="prose-note">Select a repeater by clicking its identity card below.</p>
               ) : null}
               <div className="owner-node-identities" aria-label="Owned repeater identities">
                 {dashboard.nodes.map((node) => (
@@ -326,6 +312,17 @@ export const OwnerPortalPage: React.FC = () => {
                     key={node.canonicalId}
                     className={`owner-node-identity${node.node_id === selectedNodeId ? ' owner-node-identity--selected' : ''}`}
                     data-canonical-id={node.canonicalId}
+                    onClick={() => setSelectedNodeId(node.node_id)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        setSelectedNodeId(node.node_id);
+                      }
+                    }}
+                    role="button"
+                    tabIndex={0}
+                    aria-pressed={node.node_id === selectedNodeId}
+                    title={dashboard.nodes.length > 1 ? `View ${node.name ?? 'this node'}` : undefined}
                   >
                     <div className="owner-node-identity__head">
                       <strong>{node.name ?? 'Unnamed node'}</strong>
