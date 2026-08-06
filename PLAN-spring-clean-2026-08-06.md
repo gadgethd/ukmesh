@@ -129,3 +129,45 @@ start from the live state.
   the screenshot contains zero `spring-dashboard-proof` text. A source and
   shipped-app audit found no proof-mode toggle or proof token in the
   frontend/backend bundle. Screenshot: `SPRING-DASHBOARD-2026-08-06.png`.
+
+## Wave 2 completion — items 5/7/8/9 + item 6 visual — 2026-08-06
+
+- **[DONE] Item 5 — live map feed card:** message text is now the primary
+  larger/leading element; group/type, IATA, hop count, path size, and receive
+  counts are compact muted metadata. The feed viewport is explicitly compact
+  and remains visible over the map.
+- **[DONE] Item 7 — stale repeaters:** map rendering uses the pure,
+  data-driven `shouldRenderMapNode()` 28-day presence predicate over backend
+  effective `last_seen`. Invalid timestamps are hidden; valid multibyte path
+  evidence is already folded into the backend effective timestamp, so active
+  hop carriers remain visible. No data is deleted.
+- **[DONE] Item 8 — MQTT repeaters:** removed link-only-stale/MQTT-specific map
+  styling and palette branches; the normal repeater rendering path is used.
+- **[DONE] Item 9 — repeater UI polish:** popup, legend, search/detail entries,
+  colors, typography, spacing, radii, borders, and focus states use the site’s
+  existing design language. No behavior change.
+- **[DONE] Item 6 visual verification:** live Googlebot browser reproduction
+  resolved a real 3B packet path. A successful resolver response was HTTP 200
+  with six coordinate-bearing canonical nodes and seven frontend `purplePath`
+  points (confidence 0.4252); terrain was enabled. The rendered path appeared
+  as an ordered terrain-aware hop chain with no apparent wild jump or
+  impossible leg. No LOS/ITM violation was found and no path code changed.
+  Repeated popup/deep-link capture attempts allowed the live feed to expire, so
+  the final evidence image is the stable feed/map view rather than a combined
+  path/popup capture.
+- **Quality gates:** frontend `npx tsc --noEmit`, `npm test` (77/77),
+  `npm run lint:css`, and `npm run build` passed; backend `npx tsc --noEmit`
+  and `npm test` (273/273) passed. Build output contained only existing
+  large-chunk warnings.
+- **Deployment:** built and deployed only `app-ukmesh` and `website-ukmesh`
+  with tags `spring-mapfeed`. Final app digest:
+  `sha256:4a0ac805ec579b970dcb518e397d38b7ae15ff45469bc94066b75635336fc2dd`;
+  final website digest:
+  `sha256:965ce6fa65f6d006fe4dc8fd863f5516da39f98965278d48d746421169d1f861`.
+  `/api/health` was healthy and `/hopreach/api/nodes` returned 200. Only the
+  app/website image pins were updated in `.env`; secret lines were untouched.
+- **Local commits:** `4569831` (`feat(map): spring-clean live feed and
+  repeater rendering`) and `52820d0` (`fix(map): keep live feed viewport
+  visible`). The report/evidence commit follows this append; no GitHub push.
+- **Evidence:** `SPRING-MAPFEED-2026-08-06.png` shows the live map with a real
+  message-first feed card and compact secondary metadata.
