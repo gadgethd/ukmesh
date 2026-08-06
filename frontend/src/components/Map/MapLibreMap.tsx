@@ -127,6 +127,7 @@ export function MapLibreMap({
   network,
   observer,
   privacyGeneration,
+  showMapChrome = true,
 }: MapLibreMapProps) {
   const requestScope = useMemo(() => ({ network, observer }), [network, observer]);
   const requestScopeKey = `${network ?? 'all'}|${observer ?? 'all'}|privacy-${privacyGeneration}`;
@@ -1089,12 +1090,12 @@ export function MapLibreMap({
 
   return (
     <div className="map-area" style={{ position: 'relative', width: '100%', height: '100%' }}>
-      <NodeSearch map={mapRef.current} onNodeSelect={onNodeSelect} />
-      <NodeLegend mapLight={mapLight} />
+      {showMapChrome && <NodeSearch map={mapRef.current} onNodeSelect={onNodeSelect} />}
+      {showMapChrome && <NodeLegend mapLight={mapLight} />}
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
 
       {/* Map tool buttons */}
-      <div className="map-tools">
+      {showMapChrome && <div className="map-tools">
         <button
           type="button"
           className={`map-tools__btn${customLosMode ? ' map-tools__btn--active' : ''}`}
@@ -1120,10 +1121,10 @@ export function MapLibreMap({
             Repeater
           </button>
         )}
-      </div>
+      </div>}
 
       {/* Custom LOS status hint */}
-      {customLosMode && (
+      {showMapChrome && customLosMode && (
         <div
           style={{
             position: 'absolute', bottom: 40, left: '50%', transform: 'translateX(-50%)',
@@ -1139,7 +1140,7 @@ export function MapLibreMap({
       )}
 
       {/* Plan repeater mode hint */}
-      {viewshedEnabled && planRepeaterMode && (
+      {showMapChrome && viewshedEnabled && planRepeaterMode && (
         <div
           style={{
             position: 'absolute', bottom: 40, left: '50%', transform: 'translateX(-50%)',
@@ -1155,7 +1156,7 @@ export function MapLibreMap({
       )}
 
       {/* Computing coverage indicator */}
-      {viewshedEnabled && plannedRepeaters.some((r) => r.status === 'queued') && (
+      {showMapChrome && viewshedEnabled && plannedRepeaters.some((r) => r.status === 'queued') && (
         <div
           style={{
             position: 'absolute', top: 10, right: 10, zIndex: 10,
