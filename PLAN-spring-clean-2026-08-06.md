@@ -283,7 +283,8 @@ local commit below.
   Playwright rendered the basemap, zoom control, nodes, and relationship lines.
   Evidence: `SPRING-TOPOLOGY-2026-08-06.png` and
   `SPRING-TOPOLOGY-2026-08-06.md`.
-- `/api/health` returned HTTP 200 and healthy containers, while its payload
-  currently reports the unrelated `database_vacuum_backlog` incident; no
-  unrelated database or service maintenance was performed.
+- `/api/health` returned HTTP 200 with `status: healthy` and no incidents; all
+  three deployed service containers are healthy. A transient vacuum-backlog
+  incident during the first post-deploy refresh cleared before final
+  verification, without unrelated database or service maintenance.
 - Local commits: `be0a689` and `7b6e860`; never pushed.
