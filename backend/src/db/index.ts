@@ -762,10 +762,11 @@ export async function getRecentPackets(
       SELECT DISTINCT ON (p.packet_hash)
              p.time, p.packet_hash, p.rx_node_id, p.src_node_id, p.topic,
              p.topic_prefix, p.iata, p.packet_type, p.route_type, p.hop_count, p.rssi, p.snr,
-             p.payload->>'_summary' AS summary,
+             COALESCE(p.payload->>'_summary', pd.summary) AS summary,
              p.advert_count, p.path_hashes, p.path_hash_size_bytes,
              p.network, p.transport_codes, p.region_scope
       FROM packets p
+      LEFT JOIN packet_decryptions pd ON pd.packet_hash = p.packet_hash
       WHERE p.time > ${fiveMinAgo}
         ${buildPacketScopeClause(scope, 'p', network)}
         ${buildPublicPacketPrivacyClause('p')}
@@ -820,10 +821,11 @@ export async function getRecentMessages(limit = 50, network?: string, observer?:
              p.time, p.packet_hash, p.rx_node_id, p.src_node_id, p.topic,
              p.iata,
              p.packet_type, p.hop_count, p.rssi, p.snr, p.payload,
-             p.payload->>'_summary' AS summary,
+             COALESCE(p.payload->>'_summary', pd.summary) AS summary,
              p.advert_count, p.path_hashes, p.path_hash_size_bytes,
              p.network
       FROM packets p
+      LEFT JOIN packet_decryptions pd ON pd.packet_hash = p.packet_hash
       WHERE p.packet_type = 5
         AND p.time > NOW() - INTERVAL '24 hours'
         ${buildPacketScopeClause(scope, 'p', network)}
