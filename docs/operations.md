@@ -368,3 +368,45 @@ verified receipt restores the recovery guarantee.
 Inspect aggregate rejection reasons and a bounded redacted sample. Treat
 private/cross-network leakage as an immediate rollback condition. Otherwise
 identify the malformed observer/client version without weakening validation.
+
+## Spring-clean additions (2026-08-06)
+
+### MQTT ingest resilience (`90d0dce`)
+
+Ingest was silently lossy: failed packet-batch DB writes were logged +
+DISCARDED (no retry), and the MQTT client used a CLEAN session (missed
+messages on reconnect). Fix: idempotent transient batch retries + stable
+`clean=false` QoS-1 MQTT session (broker sees `meshcore-analytics-ingest`
+with `c0`) + ingest outcome/retry metrics. The backend does NOT dedupe
+inserts (DISTINCT ON is readers/backfills only) — envelope-vs-packet count
+differences vs services counting every MQTT message are expected, not loss.
+Full audit: `INGEST-AUDIT-2026-08-06.md` in the repo root.
+
+### Feed history contract
+
+`GET /api/feed/messages?channel=<scope>&limit<=50` — up to 50 unique
+historical messages per channel, 90-day bound, dedup by packet hash. Uses an
+ordered keyset-paginated packet scan (500-row pages, in-memory hash dedup,
+early stop at 50) so it stays fast under TimescaleDB load; observer-stat
+aggregation is bounded on the history path only (live WS path keeps full
+aggregation). UI merges history under live WS messages; `initial_state`
+still delivers 200. See `docs/decryption.md` for the join.
+
+### Canonical node identity
+
+Evidence-based identity merging is live (`docs/node-identity.md`,
+migrations 036/037). Owner dashboard shows one entry per canonical identity
+with the merged member key list.
+
+### Spring-clean UI removals
+
+- Site `Health` page removed (StatusPage + `/health` route + legacy
+  `/status → /health` redirect + nav entry/flag). The separate
+  `meshcore-health-check` app (healthcheck.ukmesh.com) is unaffected.
+- Owner dashboard collapsed to a single page; alert-settings tab and the
+  unused "coming next" roadmap payload removed end-to-end (backend, types,
+  CSS).
+- Live map feed cards are message-first with compact metadata; stale
+  repeaters (no recent advert/status AND no multibyte-hop evidence) are
+  filtered from the map; MQTT repeaters render like normal repeaters.
+- Spam transparency page verified working (live API) and kept.
