@@ -86,6 +86,8 @@ export interface MapLibreMapProps {
   network?: string;
   observer?: string;
   privacyGeneration: number;
+  /** Hide dashboard-only search, legend, and planning controls for embedded maps. */
+  showMapChrome?: boolean;
 }
 
 export interface PopupNodeView {

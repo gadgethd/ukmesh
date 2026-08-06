@@ -31,6 +31,38 @@ export type StandaloneNodeRow = {
   iata?: string | null;
 };
 
+// The canonical link view deliberately materializes a complete identity
+// projection. That is useful for broad analytics, but topology only needs
+// recent viable rows. Filtering the base link table first keeps this public
+// endpoint bounded as historical link evidence grows.
+const RECENT_CANONICAL_LINK_CTES = `
+WITH recent_links AS MATERIALIZED (
+  SELECT
+    COALESCE(la.canonical_node_id, upper(btrim(nl.node_a_id))) AS raw_a,
+    COALESCE(lb.canonical_node_id, upper(btrim(nl.node_b_id))) AS raw_b,
+    nl.observed_count,
+    nl.last_observed,
+    nl.itm_path_loss_db,
+    nl.multibyte_observed_count
+  FROM node_links nl
+  LEFT JOIN node_identity_aliases la
+    ON la.source_node_id = upper(btrim(nl.node_a_id))
+  LEFT JOIN node_identity_aliases lb
+    ON lb.source_node_id = upper(btrim(nl.node_b_id))
+  WHERE (nl.itm_viable = true OR nl.force_viable = true)
+    AND nl.last_observed > NOW() - INTERVAL '30 days'
+), canonical_links AS (
+  SELECT
+    LEAST(raw_a, raw_b) AS node_a_id,
+    GREATEST(raw_a, raw_b) AS node_b_id,
+    observed_count,
+    last_observed,
+    itm_path_loss_db,
+    multibyte_observed_count
+  FROM recent_links
+  WHERE raw_a <> raw_b
+)`;
+
 export async function topologyRows(
   query: QueryFn,
   filters: NetworkFilters,
@@ -38,7 +70,26 @@ export async function topologyRows(
 ) {
   const limitParam = `$${filters.params.length + 1}`;
   return query<TopologyRow>(
-    `SELECT
+    `${RECENT_CANONICAL_LINK_CTES},
+     aggregated_links AS (
+       SELECT
+         node_a_id,
+         node_b_id,
+         SUM(observed_count)::integer AS observed_count,
+         SUM(multibyte_observed_count)::integer AS multibyte_observed_count,
+         MAX(last_observed)::text AS last_observed,
+         MIN(itm_path_loss_db) AS itm_path_loss_db
+       FROM canonical_links
+       GROUP BY node_a_id, node_b_id
+     ),
+     eligible_nodes AS MATERIALIZED (
+       SELECT n.node_id, n.name, n.lat, n.lon, n.iata
+       FROM node_identity_nodes n
+       WHERE (n.role IS NULL OR n.role = 2)
+         AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
+         ${filters.nodesAlias('n')}
+     )
+     SELECT
        nl.node_a_id,
        nl.node_b_id,
        a.name AS name_a,
@@ -51,19 +102,11 @@ export async function topologyRows(
        b.iata AS iata_b,
        nl.observed_count,
        nl.multibyte_observed_count,
-       nl.last_observed::text,
+       nl.last_observed,
        nl.itm_path_loss_db
-     FROM node_identity_links nl
-     JOIN node_identity_nodes a ON a.node_id = nl.node_a_id
-     JOIN node_identity_nodes b ON b.node_id = nl.node_b_id
-     WHERE (nl.itm_viable = true OR nl.force_viable = true)
-       AND nl.last_observed > NOW() - INTERVAL '30 days'
-       AND (a.role IS NULL OR a.role = 2)
-       AND (b.role IS NULL OR b.role = 2)
-       AND (a.name IS NULL OR a.name NOT LIKE '%🚫%')
-       AND (b.name IS NULL OR b.name NOT LIKE '%🚫%')
-       ${filters.nodesAlias('a')}
-       ${filters.nodesAlias('b')}
+     FROM aggregated_links nl
+     JOIN eligible_nodes a ON a.node_id = nl.node_a_id
+     JOIN eligible_nodes b ON b.node_id = nl.node_b_id
      ORDER BY nl.multibyte_observed_count DESC, nl.observed_count DESC, nl.last_observed DESC
      LIMIT ${limitParam}`,
     [...filters.params, limit],
@@ -72,7 +115,13 @@ export async function topologyRows(
 
 export async function standaloneTopologyRows(query: QueryFn, filters: NetworkFilters) {
   return query<StandaloneNodeRow>(
-    `SELECT n.node_id, n.name, n.lat, n.lon, n.iata
+    `${RECENT_CANONICAL_LINK_CTES},
+     recent_node_ids AS (
+       SELECT node_a_id AS node_id FROM canonical_links
+       UNION
+       SELECT node_b_id AS node_id FROM canonical_links
+     )
+     SELECT n.node_id, n.name, n.lat, n.lon, n.iata
      FROM node_identity_nodes n
      WHERE n.last_seen > NOW() - INTERVAL '30 days'
        AND (n.role IS NULL OR n.role = 2)
@@ -80,10 +129,8 @@ export async function standaloneTopologyRows(query: QueryFn, filters: NetworkFil
        ${filters.nodesAlias('n')}
        AND NOT EXISTS (
          SELECT 1
-         FROM node_identity_links nl
-         WHERE (nl.node_a_id = n.node_id OR nl.node_b_id = n.node_id)
-           AND (nl.itm_viable = true OR nl.force_viable = true)
-           AND nl.last_observed > NOW() - INTERVAL '30 days'
+         FROM recent_node_ids r
+         WHERE r.node_id = n.node_id
        )
      ORDER BY n.last_seen DESC
      LIMIT 100`,

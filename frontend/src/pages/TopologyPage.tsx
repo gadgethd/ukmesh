@@ -1,11 +1,9 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { forceCenter, forceCollide, forceLink, forceManyBody, forceSimulation, type Simulation, type SimulationNodeDatum } from 'd3-force';
+import React, { useEffect, useMemo, useState } from 'react';
 import { LoadingIndicator } from '../components/LoadingIndicator.js';
+import { TopologyMap } from '../components/Map/TopologyMap.js';
 import { getCurrentSite } from '../config/site.js';
 import { useRuntimeFeatures } from '../config/runtimeFeatures.js';
 import { fetchJson, withScopeParams } from '../utils/api.js';
-import { createFrameSnapshotScheduler } from '../utils/frameSnapshotScheduler.js';
-import { filterTopologyLinks } from './topologyModel.js';
 import './network-intelligence.css';
 
 type TopologyNode = {
@@ -50,9 +48,6 @@ type RfValidationPayload = {
   }>;
 };
 
-type PlotNode = TopologyNode & SimulationNodeDatum & { x: number; y: number };
-const TOPOLOGY_SNAPSHOT_INTERVAL_MS = 66;
-
 function compactNumber(value: number): string {
   return new Intl.NumberFormat('en-GB', { notation: 'compact', maximumFractionDigits: 1 }).format(value);
 }
@@ -68,8 +63,6 @@ export const TopologyPage: React.FC = () => {
   const [strongOnly, setStrongOnly] = useState(false);
   const [rfValidation, setRfValidation] = useState<RfValidationPayload | null>(null);
   const [region, setRegion] = useState('all');
-  const [plotNodes, setPlotNodes] = useState<PlotNode[]>([]);
-  const simulationRef = useRef<Simulation<PlotNode, undefined> | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -101,83 +94,17 @@ export const TopologyPage: React.FC = () => {
     return () => controller.abort();
   }, [network, observer, privacyGeneration]);
 
-  useEffect(() => {
-    const located = (payload?.nodes ?? []).filter(
-      (node): node is TopologyNode & { lat: number; lon: number } => node.lat != null && node.lon != null,
-    );
-    if (located.length === 0) {
-      setPlotNodes([]);
-      return;
-    }
-    const lats = located.map((node) => node.lat);
-    const lons = located.map((node) => node.lon);
-    const minLat = Math.min(...lats);
-    const maxLat = Math.max(...lats);
-    const minLon = Math.min(...lons);
-    const maxLon = Math.max(...lons);
-    const latSpan = Math.max(0.2, maxLat - minLat);
-    const lonSpan = Math.max(0.2, maxLon - minLon);
-    const nodes = located.map<PlotNode>((node) => ({
-      ...node,
-      x: 40 + ((node.lon - minLon) / lonSpan) * 920,
-      y: 560 - ((node.lat - minLat) / latSpan) * 520,
-    }));
-    const simulationLinks = filterTopologyLinks(
-      nodes.map((node) => node.nodeId),
-      payload?.links ?? [],
-    );
-    setPlotNodes(nodes.map((node) => ({ ...node })));
-    const snapshotScheduler = createFrameSnapshotScheduler({
-      minIntervalMs: TOPOLOGY_SNAPSHOT_INTERVAL_MS,
-      isVisible: () => document.visibilityState === 'visible',
-      emit: () => {
-        setPlotNodes(nodes.map((node) => ({
-          ...node,
-          x: node.x ?? 500,
-          y: node.y ?? 300,
-        })));
-      },
-    });
-    const simulation = forceSimulation(nodes)
-      .force('charge', forceManyBody().strength(-28))
-      .force('center', forceCenter(500, 300).strength(0.035))
-      .force('collision', forceCollide<PlotNode>().radius((node) => Math.min(14, 5 + Math.sqrt(node.degree))))
-      .force('links', forceLink<PlotNode, { source: string | PlotNode; target: string | PlotNode }>(
-        simulationLinks.map((link) => ({ source: link.source, target: link.target })),
-      ).id((node) => node.nodeId).distance(40).strength(0.08))
-      .alpha(0.5)
-      .on('tick', () => snapshotScheduler.noteMutation());
-    simulationRef.current = simulation;
-    const onVisibilityChange = () => {
-      if (document.visibilityState === 'visible') {
-        simulation.restart();
-        snapshotScheduler.noteMutation();
-      } else {
-        simulation.stop();
-      }
-    };
-    document.addEventListener('visibilitychange', onVisibilityChange);
-    return () => {
-      document.removeEventListener('visibilitychange', onVisibilityChange);
-      snapshotScheduler.stop();
-      simulation.stop();
-      simulationRef.current = null;
-    };
-  }, [payload]);
-
   const plot = useMemo(() => {
-    const nodes = plotNodes.filter((node) => region === 'all' || (node.region ?? 'Unknown') === region);
+    const nodes = (payload?.nodes ?? []).filter((node) => region === 'all' || (node.region ?? 'Unknown') === region);
     const ids = new Set(nodes.map((node) => node.nodeId));
     return {
       nodes,
       links: (payload?.links ?? []).filter((link) => ids.has(link.source) && ids.has(link.target) && (!strongOnly || link.strongObservations > 0)),
     };
-  }, [payload?.links, plotNodes, region, strongOnly]);
+  }, [payload?.links, payload?.nodes, region, strongOnly]);
   const regions = useMemo(() => [...new Set((payload?.nodes ?? []).map((node) => node.region ?? 'Unknown'))].sort(), [payload]);
 
-  const nodesById = useMemo(() => new Map(plot.nodes.map((node) => [node.nodeId, node])), [plot.nodes]);
   const selected = payload?.nodes.find((node) => node.nodeId === selectedNodeId) ?? null;
-  const maxObservations = Math.max(1, ...plot.links.map((link) => link.observations));
   const bridgeIds = useMemo(() => new Set(payload?.analysis.bridgeNodeIds ?? []), [payload]);
   const isolatedIds = useMemo(() => new Set(payload?.analysis.isolatedNodeIds ?? []), [payload]);
 
@@ -224,71 +151,18 @@ export const TopologyPage: React.FC = () => {
           </div>
 
           <div className="topology-page__workspace">
-            <section className="topology-page__graph" aria-label="Geographic repeater topology graph">
-              <p className="ui-visually-hidden" id="topology-graph-desc">
-                {plot.nodes.length} positioned repeaters and {plot.links.length} links
-              </p>
-              <svg viewBox="0 0 1000 600" role="group" aria-labelledby="topology-graph-desc">
-                <g className="topology-page__links">
-                  {plot.links.map((link) => {
-                    const source = nodesById.get(link.source);
-                    const target = nodesById.get(link.target);
-                    if (!source || !target) return null;
-                    const highlighted = selectedNodeId === link.source || selectedNodeId === link.target;
-                    return (
-                      <line
-                        key={`${link.source}:${link.target}`}
-                        x1={source.x} y1={source.y} x2={target.x} y2={target.y}
-                        className={highlighted ? 'topology-page__link topology-page__link--active' : 'topology-page__link'}
-                        strokeWidth={0.6 + (link.observations / maxObservations) * 3}
-                      />
-                    );
-                  })}
-                </g>
-                <g className="topology-page__nodes">
-                  {plot.nodes.map((node) => (
-                    <circle
-                      key={node.nodeId}
-                      cx={node.x} cy={node.y}
-                      r={Math.min(10, 2.5 + Math.sqrt(node.degree))}
-                      className={[
-                        'topology-page__node',
-                        selectedNodeId === node.nodeId ? 'topology-page__node--active' : '',
-                        bridgeIds.has(node.nodeId) ? 'topology-page__node--bridge' : '',
-                        isolatedIds.has(node.nodeId) ? 'topology-page__node--isolated' : '',
-                      ].filter(Boolean).join(' ')}
-                      role="button"
-                      tabIndex={0}
-                      aria-label={`${node.name ?? node.nodeId.slice(0, 8)}, ${node.degree} links`}
-                      onClick={() => setSelectedNodeId(node.nodeId)}
-                      onPointerDown={(event) => {
-                        const svg = event.currentTarget.ownerSVGElement;
-                        if (!svg) return;
-                        const rect = svg.getBoundingClientRect();
-                        const move = (pointer: PointerEvent) => {
-                          node.fx = ((pointer.clientX - rect.left) / rect.width) * 1000;
-                          node.fy = ((pointer.clientY - rect.top) / rect.height) * 600;
-                          simulationRef.current?.alphaTarget(0.25).restart();
-                        };
-                        const up = () => {
-                          node.fx = null;
-                          node.fy = null;
-                          simulationRef.current?.alphaTarget(0);
-                          window.removeEventListener('pointermove', move);
-                          window.removeEventListener('pointerup', up);
-                        };
-                        window.addEventListener('pointermove', move);
-                        window.addEventListener('pointerup', up, { once: true });
-                      }}
-                      onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') setSelectedNodeId(node.nodeId); }}
-                    >
-                      <title>{node.name ?? node.nodeId.slice(0, 8)} · {node.degree} links · {compactNumber(node.observations)} observations</title>
-                    </circle>
-                  ))}
-                </g>
-              </svg>
-              <div className="topology-page__legend">Dot size = connections · amber ring = likely bridge · hollow = isolated</div>
-            </section>
+            <TopologyMap
+              nodes={plot.nodes}
+              links={plot.links}
+              selectedNodeId={selectedNodeId}
+              bridgeNodeIds={bridgeIds}
+              isolatedNodeIds={isolatedIds}
+              strongOnly={strongOnly}
+              network={network}
+              observer={observer}
+              privacyGeneration={privacyGeneration}
+              onNodeSelect={setSelectedNodeId}
+            />
 
             <aside className="topology-page__hubs">
               <h2>{selected ? 'Selected repeater' : 'Most connected'}</h2>
