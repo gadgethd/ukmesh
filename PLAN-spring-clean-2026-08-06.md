@@ -261,3 +261,29 @@ local commit below.
   `SPRING-PAGES-2026-08-06.md`.
 - **Local commit:** `1c3841c` (`chore(website): spring-clean public pages`);
   no GitHub push.
+
+## Item 11 — Topology map on the UK map (2026-08-06, done)
+
+- Replaced the graph-only topology SVG with a MapLibre UK basemap and live
+  GeoJSON repeater nodes plus observed adjacency links. Region and multibyte
+  filters, bridge/isolated state, selection, link weighting, and the ranked
+  repeater panel remain available.
+- Optimised the backend topology query to filter recent viable base links before
+  canonical aggregation; the live endpoint now returns HTTP 200 without the
+  previous full-view timeout.
+- Quality gates passed: frontend typecheck, 80 tests, CSS lint, and build;
+  backend typecheck and all 273 tests passed in the isolated rerun.
+- Deployed only `backend`, `app-ukmesh`, and `website-ukmesh`. Final image
+  digests are app `sha256:15c5acf7ad203be5a95f319becb403c06902bf8bfd8bd540639828e4b6326e9c`,
+  website `sha256:ef4797a250316697294e415f0f8ffc41810f16000ebc713aa77a78d52ba4b0aa`,
+  and backend `sha256:983f4e29cb2ac23ee06e35dba5507e590f1f11179170fe46ef90af84bd64ca08`.
+  `.env` changed only `APP_IMAGE` and `WEBSITE_IMAGE`.
+- Live proof: `/api/topology?network=ukmesh&limit=300` returned 303 repeaters,
+  294 mapped repeaters, and 300 links; HopReach returned 200; Googlebot
+  Playwright rendered the basemap, zoom control, nodes, and relationship lines.
+  Evidence: `SPRING-TOPOLOGY-2026-08-06.png` and
+  `SPRING-TOPOLOGY-2026-08-06.md`.
+- `/api/health` returned HTTP 200 and healthy containers, while its payload
+  currently reports the unrelated `database_vacuum_backlog` incident; no
+  unrelated database or service maintenance was performed.
+- Local commits: `be0a689` and `7b6e860`; never pushed.
