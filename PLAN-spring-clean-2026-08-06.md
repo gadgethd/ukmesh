@@ -237,8 +237,10 @@ local commit below.
 - **[DONE] Item 14 — Health page removal:** deleted `StatusPage.tsx`, its lazy
   route wiring, `/health` manifest entry, `/status -> /health` redirect, nav
   item/flag, unused status CSS, and stale E2E page checks. Direct `/health`
-  page-link searches in `frontend` are empty. The external Health Check link
-  and separate health-check app remain out of scope.
+  page-link searches in `frontend` are empty. A literal substring search leaves
+  only the unrelated `/api/observers/health` test endpoint and the external
+  `https://healthcheck.ukmesh.com` link; neither links to the removed page. The
+  external Health Check link and separate health-check app remain out of scope.
 - **Quality gates:** frontend `npx tsc --noEmit`, `npm test` (77/77),
   `npm run lint:css`, and `npm run build` all pass. No backend files changed.
 - **Deployment:** built both `spring-pages` tags. The new not-found marker was

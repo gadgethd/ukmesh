@@ -38,8 +38,11 @@ Removed the page module, lazy import, route component/type, `/health` content
 route, obsolete `/status -> /health` redirect, `showHealth` prop, Health nav
 entry, unused UK layout flag, page-specific status CSS, and stale E2E page
 fixtures/assertions. Direct page-link searches for `/health` in `frontend`
-return no results. The external `https://healthcheck.ukmesh.com` Health Check
-link remains intentionally because it belongs to the separate application.
+return no results. A literal substring search leaves only the unrelated
+`/api/observers/health` test endpoint and the external
+`https://healthcheck.ukmesh.com` link; neither links to the removed page. The
+external Health Check link remains intentionally because it belongs to the
+separate application.
 
 ## Quality and deployment
 
