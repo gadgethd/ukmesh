@@ -103,8 +103,7 @@ start from the live state.
   The backend alert API/worker remains because it is an active operational
   delivery path, not a projected page feature.
 - **Implementation:** added canonical grouping tests and updated owner
-  response/e2e coverage. Local implementation commit is recorded in the final
-  handoff after verification.
+  response/e2e coverage. Implementation commit: `1e5bc3b`.
 - **Quality gates:** backend `npx tsc --noEmit`; backend `npm test` = 273/273
   passing (271 existing tests plus 2 grouping tests); frontend
   `npx tsc --noEmit`, `npm test` = 76/76, `npm run lint:css`, and `npm run
@@ -126,4 +125,7 @@ start from the live state.
   live grouping payload because no owner MQTT credential is present on the
   host. Browser assertions found 2 identity cards, exactly 1 GNOME card, 1
   2E0MTU card, 3 and 2 member keys respectively, zero section tabs, and zero
-  settings UI. Screenshot: `SPRING-DASHBOARD-2026-08-06.png`.
+  settings UI. The temporary browser response uses the neutral label `owner`;
+  the screenshot contains zero `spring-dashboard-proof` text. A source and
+  shipped-app audit found no proof-mode toggle or proof token in the
+  frontend/backend bundle. Screenshot: `SPRING-DASHBOARD-2026-08-06.png`.

@@ -30,8 +30,11 @@ The Googlebot Playwright smoke loaded the real public owner route
 credential is available on this host, the smoke used the read-only live
 grouping payload from production and intercepted only the authenticated session
 and live requests; the deployed public JS/CSS and route were loaded from the
-real site. Assertions found 2 identity cards, 1 GNOME card, 1 2E0MTU card,
-member counts 3/2, zero section tabs, and zero settings UI.
+real site. The temporary session response uses the neutral label `owner`, not
+a proof label. Assertions found 2 identity cards, 1 GNOME card, 1 2E0MTU card,
+member counts 3/2, zero section tabs, zero settings UI, and zero
+`spring-dashboard-proof` text. No proof-mode toggle or proof token is present
+in source or in the shipped app image.
 
 Quality gates:
 
@@ -55,5 +58,5 @@ Deployed services use the spring-dash image tags and are healthy:
 
 Only `APP_IMAGE` and `WEBSITE_IMAGE` were updated in the ignored `.env`, as
 required. The backend image was supplied explicitly for this rollout without
-altering other `.env` lines. The implementation commit hash is added to this
-record immediately after the local code commit.
+altering other `.env` lines. The implementation commit is `1e5bc3b`; this
+screenshot/proof-audit update is recorded in the follow-up local commit.
