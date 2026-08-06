@@ -78,5 +78,5 @@ affected page data loading or rendered state. Evidence image:
 
 ## Local commit
 
-Implementation and evidence were committed locally after verification. No
-remote push was attempted.
+Implementation and evidence were committed locally in `1c3841c`
+(`chore(website): spring-clean public pages`). No remote push was attempted.
