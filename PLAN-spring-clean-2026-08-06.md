@@ -262,6 +262,57 @@ local commit below.
 - **Local commit:** `1c3841c` (`chore(website): spring-clean public pages`);
   no GitHub push.
 
+## Item 13 — Install page fact-check audit (2026-08-06 ~13:30Z, done by Hermes directly)
+Audit of frontend/src/pages/ukmesh/UKInstallPage.tsx claims vs live reality — NO CORRECTIONS NEEDED:
+- Hardware cards (V4 ESP32-S3, V3 ESP32, T3S3, T114 nRF52840 + boot methods): accurate.
+- flasher.meshcore.io: HTTP 200 live. meshcore.gg (Discord): 200. Cisien/meshcoretomqtt install.sh: 200.
+- Radio profile (869.618 MHz / 62.5 kHz / SF8 / CR8): consistent with UKBestPracticePage + UKHomePage (same values site-wide).
+- mqtt.ukmesh.com:443 WS+TLS: verified working end-to-end with a real mqtt.js client (reached MQTT auth gate; 'Not authorized' = correct credentialless behavior). The 502s from plain-HTTP probes are normal (MQTT-only endpoint). Tunnel ingress healthy (cloudflared-http2 attached to both networks).
+- Topic format meshcore/<IATA>/{key}/packets: matches live DB topics.
+- flasher.ukmesh.com alternative + ObserverRegistrationForm + ibengr contact: all valid.
+- Screenshot: SPRING-INSTALL-AUDIT-2026-08-06.png (full-page render through Anubis with Googlebot UA).
+
+## Item 15 — Docs expansion + fact-check (2026-08-06, done by Hermes directly)
+- Fact-check found pathing.md STALE (described the old purple/red scheme) → rewritten for the live canonical-path pipeline (Viterbi+ITM champion, slow-mode, physics gates, canonicalPath DTO, blue paths).
+- New docs/decryption.md (key store, AES-128-ECB format, side table, backfill, feed contract, validation gate, honest 43.5% rate).
+- New docs/node-identity.md (canonical identity merging, migrations 036/037, false-merge guard, owner canonical grouping).
+- operations.md expanded: ingest resilience (90d0dce), feed history contract, identity merge, spring-clean UI changes.
+- Commit b2824b8 (docs only, no deploy needed).
+
+## Item 16 — Health check redesign (2026-08-06, done)
+
+- **[DONE] Separate app redesigned:** `healthcheck.ukmesh.com` now uses the UK
+  Mesh dark navy/cyan shell, bundled Inter and Share Tech Mono typography,
+  spacing, panel treatment, topbar, and responsive dashboard styling. Existing
+  observer coverage, map, receipts, share links, PWA, and Turnstile flows
+  remain in place.
+- **[DONE] Packet send and track:** the app can publish a bounded,
+  channel-authenticated GroupText envelope to the configured exact MQTT
+  `/packets` topic and live-track `sent -> observed -> confirmed`. The virtual
+  MQTT loopback source is excluded from observer coverage scoring; this proves
+  the broker/subscription/decode pipeline and is not presented as RF airtime.
+- **Quality gates:** `npm run check`, `npm test` (30/30), and Playwright smoke
+  (4/4, run in the pinned Playwright container) passed. The real Docker image
+  was built from the health-check working tree.
+- **Local commits:** health-check `b15ff2d` (`Redesign health check and track
+  test packets`) plus `77afb27` (`Record spring clean health check
+  deployment`) on the existing local `region-observer-filter` branch; no
+  GitHub push. Existing unrelated working-tree edits in
+  `meshcore-health-check/public/styles.css` were preserved.
+- **Deployment:** only `meshcore-analytics-mesh-health-check-1` was replaced
+  by hand on `meshcore-analytics_default`, retaining the health-check data
+  volume and leaving all other analytics services/compose files untouched.
+  The running container is healthy and Anubis remains on its existing image.
+- **Image:** `meshcore-health-check:spring16` —
+  `sha256:c287f4da3025d7ccb93ec89bc58ea462aec69e8bdba6e7b3da89fdbf9d2d5293`.
+  Previous health image removed after validation:
+  `sha256:9795134a475fa702803c6256670766f9d482c13fcec64d1c0f7fc4db41262c9d`.
+- **Live proof:** public Googlebot-context browser verification rendered the
+  redesigned page, sent a real test packet, and observed all three lifecycle
+  stages. Evidence is
+  `meshcore-health-check/HEALTHCHECK-SPRING-2026-08-06.png` and the detailed
+  handoff is `meshcore-health-check/HEALTHCHECK-SPRING-2026-08-06.md`.
+
 ## Item 11 — Topology map on the UK map (2026-08-06, done)
 
 - Replaced the graph-only topology SVG with a MapLibre UK basemap and live
@@ -288,3 +339,8 @@ local commit below.
   incident during the first post-deploy refresh cleared before final
   verification, without unrelated database or service maintenance.
 - Local commits: `be0a689` and `7b6e860`; never pushed.
+
+## ALL 18 ITEMS COMPLETE (2026-08-06 ~14:15Z)
+- Item 11 (topology map): DEPLOYED — MapLibre UK basemap + live repeater nodes + weighted links + filters + bridge/isolated states. Fixed pre-existing /api/topology 120s timeout → 3.4s (303 nodes/300 links). Commits be0a689, 7b6e860, 4e75b1f, 2c5316a. App 15c5acf7, Website ef4797a2, Backend 983f4e29 (pin corrected by Hermes after agent only pinned app/website).
+- Item 16 (health check redesign): DEPLOYED — navy/cyan UKMesh theme (real Inter/Share Tech Mono fonts), MQTT packet send → sent/observed/confirmed lifecycle with rate limits, loopback excluded from 34-observer coverage score. Image c287f4da (meshcore-health-check:spring16), commits b15ff2d, 77afb27. Only health-check container replaced.
+- Final state: health healthy, HopReach 200, all pins == running containers (Hermes-verified), ~30 local commits unpushed (push decision still with Ben).
