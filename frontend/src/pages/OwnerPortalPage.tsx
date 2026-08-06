@@ -303,9 +303,6 @@ export const OwnerPortalPage: React.FC = () => {
                   Logout
                 </button>
               </div>
-              {dashboard.nodes.length > 1 ? (
-                <p className="prose-note">Select a repeater by clicking its identity card below.</p>
-              ) : null}
               <div className="owner-node-identities" aria-label="Owned repeater identities">
                 {dashboard.nodes.map((node) => (
                   <article
