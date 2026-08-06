@@ -54,7 +54,7 @@ test('map layers avoid observer rings and raster-style glyph dependencies', () =
 test('map overlay markers and links retain 3:1 contrast in both themes', () => {
   const nodeColors = [
     'repeater', 'companion', 'roomServer', 'sensor', 'replay',
-    'stale', 'linkOnlyStale', 'clashRelay', 'clashOffender',
+    'stale', 'clashRelay', 'clashOffender',
   ] as const;
   const linkColors = ['linkUnknown', 'linkGood', 'linkMarginal', 'linkPoor'] as const;
   const selectedColors = ['selected', 'selectedStroke'] as const;

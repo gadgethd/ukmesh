@@ -3,7 +3,7 @@ import type maplibregl from 'maplibre-gl';
 export const DEFAULT_CENTER: [number, number] = [54.57, -1.23];
 export const DEFAULT_ZOOM = 11;
 // Weekly adverts remain comfortably fresh; retain a second two-week window so
-// stale nodes are still visible as stale instead of disappearing immediately.
+// stale nodes are still visible as stale before the presence filter hides them.
 export const NODE_STALE_AFTER_MS = 14 * 24 * 60 * 60 * 1000;
 export const NODE_HIDE_AFTER_MS = 28 * 24 * 60 * 60 * 1000;
 export const MAP_REFRESH_INTERVAL_MS = 250;
@@ -55,7 +55,6 @@ export const MAP_OVERLAY_COLORS = {
     sensor: '#34d399',
     replay: '#fbbf24',
     stale: '#94a3b8',
-    linkOnlyStale: '#94a3b8',
     clashRelay: '#22c55e',
     clashOffender: '#ef4444',
     nodeStroke: '#020617',
@@ -86,7 +85,6 @@ export const MAP_OVERLAY_COLORS = {
     sensor: '#087f5b',
     replay: '#8a5d00',
     stale: '#4b5563',
-    linkOnlyStale: '#475569',
     clashRelay: '#087b38',
     clashOffender: '#b91c1c',
     nodeStroke: '#ffffff',

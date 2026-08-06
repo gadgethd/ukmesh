@@ -20,7 +20,6 @@ export interface NodeFeatureProps {
   role: number;
   is_online: boolean;
   is_stale: boolean;
-  is_link_only_stale: boolean;
   is_prohibited: boolean;
   replay_active: boolean;
   replay_mode: boolean;
