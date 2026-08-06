@@ -29,7 +29,6 @@ const UKCompanionPage = lazy(() => import('./pages/ukmesh/UKCompanionPage.js').t
 const UKBestPracticePage = lazy(() => import('./pages/ukmesh/UKBestPracticePage.js').then(({ UKBestPracticePage: Component }) => ({ default: Component })));
 const SpamPage = lazy(() => import('./pages/SpamTransparencyPage.js').then(({ SpamPage: Component }) => ({ default: Component })));
 const TopologyPage = lazy(() => import('./pages/TopologyPage.js').then(({ TopologyPage: Component }) => ({ default: Component })));
-const StatusPage = lazy(() => import('./pages/StatusPage.js').then(({ StatusPage: Component }) => ({ default: Component })));
 const NotFoundPage = lazy(() => import('./pages/NotFoundPage.js').then(({ NotFoundPage: Component }) => ({ default: Component })));
 
 const PUBLIC_ROUTE_ELEMENTS: Record<PublicRouteComponent, React.ReactElement> = {
@@ -39,7 +38,6 @@ const PUBLIC_ROUTE_ELEMENTS: Record<PublicRouteComponent, React.ReactElement> = 
   companion: <UKCompanionPage />,
   install: <UKInstallPage />,
   docs: <UKBestPracticePage />,
-  health: <StatusPage />,
   owner: <OwnerPortalPage />,
   'open-source': <OpenSourcePage />,
   stats: <StatsPage />,

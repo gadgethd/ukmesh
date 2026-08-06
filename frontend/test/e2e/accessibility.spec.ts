@@ -91,21 +91,6 @@ async function fulfillApi(route: Route) {
       },
     });
   }
-  if (pathname === '/api/health') {
-    return route.fulfill({
-      json: {
-        status: 'healthy',
-        generatedAt: '2026-07-18T12:00:00Z',
-        maintenance: { active: false, message: null },
-        incidents: [],
-        components: {
-          ingest: { status: 'ok' },
-          workers: { status: 'running' },
-          storage: { status: 'ok' },
-        },
-      },
-    });
-  }
   if (pathname === '/api/topology') {
     return route.fulfill({
       json: {
@@ -229,7 +214,6 @@ const publicRoutes = [
   '/companion',
   '/install',
   '/docs',
-  '/health',
   '/login',
   '/open-source',
   '/stats',

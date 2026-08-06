@@ -5,7 +5,6 @@ export type PublicRouteComponent =
   | 'companion'
   | 'install'
   | 'docs'
-  | 'health'
   | 'owner'
   | 'open-source'
   | 'stats'
@@ -93,13 +92,6 @@ export const PUBLIC_ROUTES: readonly PublicRouteDefinition[] = [
     sitemap: true,
   },
   {
-    path: '/health',
-    component: 'health',
-    title: 'Platform Status — UK Mesh Network',
-    description: 'Public platform health, packet-ingest freshness, synthetic journeys, and background-worker status for UKMesh analytics.',
-    sitemap: true,
-  },
-  {
     path: '/login',
     component: 'owner',
     title: 'Repeater Owner Portal — UK Mesh Network',
@@ -109,7 +101,6 @@ export const PUBLIC_ROUTES: readonly PublicRouteDefinition[] = [
   { path: '/regions', redirectTo: '/', sitemap: false },
   { path: '/about', redirectTo: '/', sitemap: false },
   { path: '/mqtt', redirectTo: '/install', sitemap: false },
-  { path: '/status', redirectTo: '/health', sitemap: false },
 ] as const;
 
 export const PUBLIC_CONTENT_ROUTES = PUBLIC_ROUTES.filter(

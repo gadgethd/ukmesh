@@ -27,7 +27,6 @@ export const UKLayout: React.FC = () => {
       showInstall
       showBestPractice
       showMqtt={false}
-      showHealth
       showPackets={false}
       showOpenSource={false}
       showStats={false}

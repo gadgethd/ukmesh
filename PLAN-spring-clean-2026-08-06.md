@@ -171,3 +171,91 @@ start from the live state.
   visible`). The report/evidence commit follows this append; no GitHub push.
 - **Evidence:** `SPRING-MAPFEED-2026-08-06.png` shows the live map with a real
   message-first feed card and compact secondary metadata.
+
+## Wave 3 investigation and implementation design — items 10/12/14 (2026-08-06)
+
+### Item 10 — observation register: resolved by absence
+
+The frontend route table contains the public pages `/`, `/install`, `/stats`,
+`/feed`, `/repeater`, `/companion`, `/docs`, `/open-source`, `/spam`,
+`/topology`, and `/login`, plus redirects for `/regions`, `/about`, `/mqtt`,
+and `/status`; it contains no `/register` or `/observations` page. The navigation
+has no observation/register entry. A case-insensitive search of `frontend/src`
+found only data/UI uses of “observations” in topology, packet detail, feed path
+models, and map statistics, plus the observer-station registration form embedded
+in `UKCompanionPage`; none is a dedicated observation register page. Stats,
+repeater search, and owner portal are ordinary existing pages with no hidden
+observation-register route. Per the item definition, this is resolved by absence;
+no page was invented or changed.
+
+### Item 12 — Spam Watch: keep
+
+Live host baseline at `http://127.0.0.1:3000/api/spam/messages/status` returned
+HTTP 200 JSON:
+`{"ongoing":false,"activeIncidents":0,"totalIncidents":0,"messagesLast24h":0,"observersInvolved":0,"lastIncidentAt":null,"updatedAt":"2026-08-06T12:49:27.141Z"}`.
+The companion request used by the page,
+`/api/spam/messages/incidents?limit=200`, also returned HTTP 200 JSON with
+`filters` (`status: all`, `minConfidence: 0.5`, `limit: 200`, `offset: 0`),
+`returned: 0`, and an empty `incidents` array. A Googlebot Playwright run against
+`https://ukmesh.com/spam` observed HTTP 200 JSON for both page API requests,
+rendered the `Spam Watch` heading and `No ongoing spam detected`, and rendered
+no alert. This is a useful, live transparency page even when the current result
+is an empty/clean state, so it will remain unchanged unless final verification
+finds a regression.
+
+### Item 14 — Health page removal: designed frontend-only
+
+Remove `frontend/src/pages/StatusPage.tsx`; remove its lazy import and element,
+the `health` route component type, `/health` content route, and the obsolete
+`/status -> /health` redirect. Remove `showHealth` from `SiteLayout` and its
+`/health` navigation item, and remove the now-unused `showHealth` prop from
+`UKLayout`. The separate `healthcheck.ukmesh.com` external link and the
+`~/ukmesh/meshcore-health-check` application are explicitly out of scope and
+will not be touched. Acceptance evidence is a zero-result `rg -F '/health'
+frontend` search plus a public browser assertion that `/health` renders the
+normal not-found state and no Health nav entry, while `/spam` retains its clean
+live state.
+
+No backend change is planned. After implementation, run the required frontend
+quality gates, build both real-tagged images, compare their shipped bundles,
+deploy only the services whose bundle changed, and then perform the required
+health/HopReach/API/browser checks before recording the screenshot, digests, and
+local commit below.
+
+## Wave 3 completion — items 10/12/14 (2026-08-06)
+
+- **[DONE] Item 10 — observation register:** resolved by absence. The route
+  manifest and nav have no `/register` or `/observations` page; the frontend
+  search found only ordinary observation data fields and the embedded observer
+  station registration form. No page was invented.
+- **[DONE] Item 12 — Spam Watch:** kept. Host curl returned HTTP 200 with
+  `ongoing: false`, zero active/total incidents, zero messages in the last 24h,
+  zero observers involved, and a current `updatedAt`; the incidents endpoint
+  returned HTTP 200 with a valid empty list. Googlebot Playwright against the
+  live public URL received HTTP 200 JSON for both requests and rendered the
+  heading plus `No ongoing spam detected` with no alert.
+- **[DONE] Item 14 — Health page removal:** deleted `StatusPage.tsx`, its lazy
+  route wiring, `/health` manifest entry, `/status -> /health` redirect, nav
+  item/flag, unused status CSS, and stale E2E page checks. Direct `/health`
+  page-link searches in `frontend` are empty. The external Health Check link
+  and separate health-check app remain out of scope.
+- **Quality gates:** frontend `npx tsc --noEmit`, `npm test` (77/77),
+  `npm run lint:css`, and `npm run build` all pass. No backend files changed.
+- **Deployment:** built both `spring-pages` tags. The new not-found marker was
+  present in both asset sets, so `app-ukmesh` and `website-ukmesh` were both
+  deployed; no backend service was changed. Final app digest:
+  `sha256:5f278c9796c67402c644961555feb8a52c4ee6eb4cc1f41c94b9b79276c80b55`;
+  final website digest:
+  `sha256:56885f493cca824e2e7cb7ce6cda7b08748747762b00ffa84bdfb9432db9e67b`.
+  `.env` changed only `APP_IMAGE` and `WEBSITE_IMAGE`; `BACKEND_IMAGE` and
+  secret lines were untouched.
+- **Live verification:** `/api/health` was healthy, HopReach returned 200,
+  `/health` and `/status` rendered the normal not-found state with no exact
+  Health nav link, and `/spam` rendered its live clean state with both API calls
+  at HTTP 200 and no alert. The SPA fallback returns document HTTP 200 for
+  unknown routes; the rendered not-found state proves the page route is gone.
+- **Evidence:** `SPRING-PAGES-2026-08-06.png` contains the real Googlebot
+  captures for the removed `/health` state and retained `/spam` state. Summary:
+  `SPRING-PAGES-2026-08-06.md`.
+- **Local commit:** to be recorded after the final scoped commit; no GitHub
+  push.
