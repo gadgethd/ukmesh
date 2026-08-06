@@ -81,7 +81,11 @@
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
+  min-width: 0;
   margin-bottom: 12px;
+}
+.owner-panel__head > div {
+  min-width: 0;
 }
 .owner-panel__head h2 {
   margin: 0;
@@ -193,14 +197,21 @@
 .owner-telemetry-metric--tall .owner-telemetry-metric__chart {
   height: 220px;
 }
+.owner-telemetry-metric__hint {
+  font-size: 0.6em;
+  opacity: 0.6;
+}
 .owner-telemetry-metric__value {
+  flex: 0 0 auto;
   color: var(--text-primary);
   font-family: var(--font-mono);
   font-size: 15px;
   white-space: nowrap;
 }
 .owner-telemetry-metric__chart {
+  flex: 0 0 auto;
   height: 88px;
+  min-height: 88px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01));
@@ -210,6 +221,8 @@
   justify-content: space-between;
 }
 .owner-telemetry-metric__stat {
+  flex: 0 0 auto;
+  height: 88px;
   min-height: 88px;
   display: flex;
   align-items: center;
@@ -238,8 +251,10 @@
   font-size: 12px;
 }
 .owner-telemetry-metric__footer {
+  flex: 0 0 auto;
   margin-top: 8px;
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   gap: 10px;
   color: var(--text-secondary);
@@ -247,19 +262,27 @@
   font-family: var(--font-mono);
 }
 .owner-telemetry-metric__series-list {
+  align-items: flex-start;
+  min-width: 0;
+  width: 100%;
   margin-top: 8px;
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
 }
 .owner-telemetry-metric__series-btn {
+  min-width: 0;
+  max-width: 100%;
   border: 1px solid var(--border);
   background: rgba(255,255,255,0.03);
   color: var(--text-secondary);
   border-radius: 999px;
   padding: 5px 10px;
   font-size: 10px;
+  line-height: 1.25;
   font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+  text-align: left;
   cursor: pointer;
 }
 .owner-telemetry-metric__series-btn:hover {
@@ -383,6 +406,8 @@
   overflow-wrap: anywhere;
 }
 .owner-map-wrap {
+  position: relative;
+  isolation: isolate;
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   overflow: hidden;
@@ -390,10 +415,22 @@
   min-height: 0;
 }
 .owner-map {
+  position: relative;
   width: 100%;
   height: 100%;
   min-height: 280px;
   background: var(--bg-base);
+}
+.owner-map .maplibregl-ctrl-bottom-right {
+  right: 6px;
+  bottom: 6px;
+  max-width: calc(100% - 12px);
+}
+.owner-map .maplibregl-ctrl-attrib {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .owner-packets {
   display: flex;
@@ -480,5 +517,71 @@
   .owner-dashboard-grid {
     grid-template-columns: 1fr;
     grid-auto-rows: minmax(280px, auto);
+  }
+}
+
+/* Keep telemetry and map cards content-sized on phones. Fixed-height flex/grid
+   tracks otherwise let the chart/stat body shrink away while its footer stays
+   visible, and the map attribution can escape into the card header. */
+@media (max-width: 640px) {
+  .site-main .site-prose--wide {
+    padding-bottom: 72px;
+  }
+  .owner-panel {
+    height: auto;
+  }
+  .owner-telemetry-panel {
+    min-height: 0;
+    margin-bottom: 24px;
+    padding: 14px 12px 20px;
+    overflow: visible;
+  }
+  .owner-telemetry-panel > .owner-telemetry-strip {
+    min-width: 0;
+    gap: 14px;
+  }
+  .owner-telemetry-metric {
+    min-width: 0;
+    overflow: visible;
+  }
+  .owner-telemetry-metric__chart {
+    height: 110px;
+    min-height: 110px;
+  }
+  .owner-telemetry-metric--tall .owner-telemetry-metric__chart {
+    height: 240px;
+    min-height: 240px;
+  }
+  .owner-telemetry-metric__stat {
+    height: 96px;
+    min-height: 96px;
+  }
+  .owner-telemetry-metric--wide .owner-panel__head--compact {
+    flex-wrap: wrap;
+  }
+  .owner-telemetry-metric--wide .owner-telemetry-metric__hint {
+    display: block;
+    margin-top: 4px;
+    line-height: 1.35;
+  }
+  .owner-telemetry-metric__footer {
+    padding-bottom: 2px;
+  }
+  .owner-telemetry-metric__series-list {
+    column-gap: 6px;
+    row-gap: 7px;
+  }
+  .owner-telemetry-metric__series-btn {
+    flex: 0 1 auto;
+  }
+  .owner-dashboard-grid > .owner-panel--map {
+    min-height: 360px;
+  }
+  .owner-panel--map .owner-map-wrap {
+    min-height: 280px;
+  }
+  .owner-map .maplibregl-ctrl-bottom-right {
+    right: 6px;
+    bottom: 6px;
   }
 }

@@ -1732,7 +1732,8 @@
     flex-direction: column;
     width: 100%;
     min-width: 0;
-    max-height: min(40dvh, 270px);
+    min-height: 0;
+    max-height: min(34dvh, 240px);
     overflow-y: auto;
     overscroll-behavior: contain;
     background: var(--bg-panel);
@@ -1888,4 +1889,98 @@
 .timeline-control__name > span {
   color: var(--amber);
   font-size: 14px;
+}
+
+/* Mobile overlay layout is deliberately partitioned: the legend and replay
+   launcher share the top edge, while coverage and the packet feed share the
+   bottom edge. This keeps independently positioned map chrome from landing
+   on the same pixels when the map becomes short. */
+@media (max-width: 640px) {
+  .mobile-controls__primary {
+    flex: 0 0 auto;
+  }
+  .map-layer,
+  .map-area {
+    min-height: 0;
+  }
+  .map-area .node-legend {
+    top: 8px;
+    right: auto;
+    bottom: auto;
+    left: 8px;
+    width: min(170px, calc(50% - 12px));
+    min-width: 0;
+    max-width: none;
+    max-height: min(34dvh, 220px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  .node-legend__toggle {
+    min-height: 40px;
+    padding: 8px 9px;
+  }
+  .node-legend__body {
+    max-height: min(28dvh, 180px);
+    overflow-y: auto;
+  }
+  .app-shell .map-layer ~ .timeline-control {
+    top: calc(48px + min(34dvh, 240px) + 8px);
+    right: 8px;
+    bottom: auto;
+    left: auto;
+    width: min(212px, calc(50% - 12px));
+    max-width: none;
+    max-height: min(34dvh, 220px);
+    margin: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  .timeline-control__toggle {
+    min-height: 40px;
+    padding: 8px 9px;
+  }
+  .timeline-control__name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .map-layer > .rf-coverage-status {
+    top: auto;
+    right: 8px;
+    bottom: calc(8px + env(safe-area-inset-bottom, 0px));
+    left: 8px;
+    width: auto;
+    max-height: min(30dvh, 220px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  .rf-coverage-card__header {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+  .rf-coverage-card__header > strong {
+    min-width: 0;
+    flex: 1 1 140px;
+    overflow-wrap: anywhere;
+  }
+  .rf-coverage-tier {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+  .app-shell:has(.rf-coverage-status) .rf-coverage-status {
+    right: auto;
+    width: calc(58% - 12px);
+  }
+  .app-shell:has(.rf-coverage-status) .packet-feed {
+    right: 8px;
+    left: auto;
+    width: calc(42% - 12px);
+    height: min(150px, calc(100dvh - 80px));
+    max-height: 150px;
+    bottom: calc(8px + env(safe-area-inset-bottom, 0px));
+  }
+  .app-shell > .packet-feed {
+    bottom: calc(8px + env(safe-area-inset-bottom, 0px));
+  }
 }

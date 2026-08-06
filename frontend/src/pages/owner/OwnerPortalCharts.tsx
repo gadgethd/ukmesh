@@ -233,7 +233,7 @@ export const LastHopStrengthChart: React.FC<{ nodeId: string; points: LastHopStr
       <article className="owner-telemetry-metric">
         <div className="owner-panel__head owner-panel__head--compact">
           <div>
-            <h3>RX Strength by Last Hop <span style={{ fontSize: '0.6em', opacity: 0.6 }}>(Node names are predicted based on the first two hex characters in the path)</span></h3>
+            <h3>RX Strength by Last Hop <span className="owner-telemetry-metric__hint">(Node names are predicted based on the first two hex characters in the path)</span></h3>
             <p>Average SNR over the last 7 days</p>
           </div>
         </div>
@@ -272,7 +272,7 @@ export const LastHopStrengthChart: React.FC<{ nodeId: string; points: LastHopStr
       <article className="owner-telemetry-metric owner-telemetry-metric--wide owner-telemetry-metric--tall">
         <div className="owner-panel__head owner-panel__head--compact">
           <div>
-            <h3>RX Strength by Last Hop <span style={{ fontSize: '0.6em', opacity: 0.6 }}>(Node names are predicted based on the first two hex characters in the path)</span></h3>
+            <h3>RX Strength by Last Hop <span className="owner-telemetry-metric__hint">(Node names are predicted based on the first two hex characters in the path)</span></h3>
             <p>{latestActive || (chartState.includedSeries.length > 0 ? 'Average SNR over the last 7 days' : 'All eligible repeaters are currently hidden')}</p>
           </div>
           <strong className="owner-telemetry-metric__value">{chartState.series.length}</strong>
