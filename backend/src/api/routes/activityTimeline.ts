@@ -41,8 +41,8 @@ export function registerActivityTimelineRoutes(router: Router, deps: Deps): void
            SELECT
              date_bin(${bucketParam}::interval, p.time, TIMESTAMPTZ '2000-01-01') AS bucket,
              p.packet_hash,
-             p.rx_node_id,
-             p.src_node_id
+             meshcore_canonical_node_id(p.rx_node_id) AS rx_node_id,
+             meshcore_canonical_node_id(p.src_node_id) AS src_node_id
            FROM packets p
            WHERE p.time > NOW() - ${windowParam}::interval
              ${filters.packetsAlias('p')}

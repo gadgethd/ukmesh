@@ -210,7 +210,9 @@ function buildPacketScopeClause(
     );
   }
   if (placeholders.observerParam) {
-    conditions.push(`${prefix}rx_node_id = ${placeholders.observerParam}`);
+    conditions.push(
+      `meshcore_canonical_node_id(${prefix}rx_node_id) = meshcore_canonical_node_id(${placeholders.observerParam})`,
+    );
   }
   return conditions.length > 0 ? ` AND ${conditions.join(' AND ')}` : '';
 }
@@ -245,7 +247,7 @@ function buildNodeScopeClause(
           ${prefix}network IS DISTINCT FROM 'test'
           AND EXISTS (
             SELECT 1
-            FROM node_network_sightings s
+            FROM node_identity_sightings s
             WHERE s.node_id = ${nodeRef}
               AND s.network ${netMatch}
               AND s.last_seen_at > NOW() - INTERVAL '30 days'
@@ -268,11 +270,11 @@ function buildNodeScopeClause(
     // 7-day window matches the observer_meta lookback and keeps the packet
     // scan inside recent chunks (~700ms vs 5min unbounded).
     const observerNodeScope = [
-      `${prefix}node_id = ${placeholders.observerParam}`,
+      `meshcore_canonical_node_id(${nodeRef}) = meshcore_canonical_node_id(${placeholders.observerParam})`,
       `OR ${nodeRef} IN (
-         SELECT p.src_node_id
+         SELECT meshcore_canonical_node_id(p.src_node_id)
          FROM packets p
-         WHERE p.rx_node_id = ${placeholders.observerParam}
+         WHERE meshcore_canonical_node_id(p.rx_node_id) = meshcore_canonical_node_id(${placeholders.observerParam})
            AND p.time > NOW() - INTERVAL '7 days'
            AND p.src_node_id IS NOT NULL`,
       netCond,
@@ -708,7 +710,7 @@ export async function getNodes(
        ${nodeEffectiveOnlineSql('n')} AS is_online,
        n.advert_count
        ${optionalFields}
-     FROM nodes n
+     FROM node_identity_nodes n
      ${whereClause}
      ORDER BY ${nodeEffectiveLastSeenSql('n')} DESC`,
     scope.params
@@ -719,9 +721,11 @@ export async function getNodes(
 export async function getNodeHistory(nodeId: string, hours = 24, network = 'ukmesh') {
   const scope = buildScopePlaceholders(3, network);
   const res = await pool.query(
-    `SELECT time, packet_hash, src_node_id, topic, packet_type, hop_count, rssi, snr, payload
+    `SELECT time, packet_hash, meshcore_canonical_node_id(src_node_id) AS src_node_id,
+            topic, packet_type, hop_count, rssi, snr, payload
      FROM packets p
-     WHERE p.rx_node_id = $1 AND p.time > NOW() - INTERVAL '1 hour' * $2
+     WHERE meshcore_canonical_node_id(p.rx_node_id) = meshcore_canonical_node_id($1)
+       AND p.time > NOW() - INTERVAL '1 hour' * $2
        ${buildPacketScopeClause(scope, 'p', network)}
        ${buildPublicPacketPrivacyClause('p')}
      ORDER BY time DESC LIMIT 500`,
@@ -738,7 +742,8 @@ export async function getNodeAdverts(nodePublicKey: string, hours = 24, limit = 
     `SELECT time, packet_hash
      FROM packets p
      WHERE p.packet_type = 4
-       AND p.payload->>'publicKey' = $1
+       AND meshcore_canonical_node_id(COALESCE(p.src_node_id, p.payload->>'publicKey'))
+             = meshcore_canonical_node_id($1)
        AND p.time > NOW() - INTERVAL '1 hour' * $2
        ${buildPacketScopeClause(scope, 'p', network)}
        ${buildPublicPacketPrivacyClause('p')}
@@ -760,7 +765,9 @@ export async function getRecentPackets(
   const res = await pool.query(
     `WITH recent_packets AS (
       SELECT DISTINCT ON (p.packet_hash)
-             p.time, p.packet_hash, p.rx_node_id, p.src_node_id, p.topic,
+             p.time, p.packet_hash,
+             meshcore_canonical_node_id(p.rx_node_id) AS rx_node_id,
+             meshcore_canonical_node_id(p.src_node_id) AS src_node_id, p.topic,
              p.topic_prefix, p.iata, p.packet_type, p.route_type, p.hop_count, p.rssi, p.snr,
              COALESCE(p.payload->>'_summary', pd.summary) AS summary,
              p.advert_count, p.path_hashes, p.path_hash_size_bytes,
@@ -780,7 +787,9 @@ export async function getRecentPackets(
     packet_stats AS (
       SELECT 
         packet_hash,
-        ARRAY_AGG(DISTINCT rx_node_id ORDER BY rx_node_id) FILTER (WHERE rx_node_id IS NOT NULL) AS observer_node_ids,
+        ARRAY_AGG(DISTINCT meshcore_canonical_node_id(rx_node_id)
+                  ORDER BY meshcore_canonical_node_id(rx_node_id))
+          FILTER (WHERE rx_node_id IS NOT NULL) AS observer_node_ids,
         ARRAY_AGG(DISTINCT iata ORDER BY iata) FILTER (WHERE NULLIF(TRIM(iata), '') IS NOT NULL) AS observer_iatas,
         COUNT(*) FILTER (WHERE COALESCE(payload->>'direction', 'rx') <> 'tx')::int AS rx_count,
         COUNT(*) FILTER (WHERE COALESCE(payload->>'direction', 'rx') = 'tx')::int AS tx_count
@@ -818,7 +827,9 @@ export async function getRecentMessages(limit = 50, network?: string, observer?:
   const res = await pool.query(
     `WITH recent_msgs AS (
       SELECT DISTINCT ON (p.packet_hash)
-             p.time, p.packet_hash, p.rx_node_id, p.src_node_id, p.topic,
+             p.time, p.packet_hash,
+             meshcore_canonical_node_id(p.rx_node_id) AS rx_node_id,
+             meshcore_canonical_node_id(p.src_node_id) AS src_node_id, p.topic,
              p.iata,
              p.packet_type, p.hop_count, p.rssi, p.snr, p.payload,
              COALESCE(p.payload->>'_summary', pd.summary) AS summary,
@@ -837,7 +848,9 @@ export async function getRecentMessages(limit = 50, network?: string, observer?:
     msg_stats AS (
       SELECT
         packet_hash,
-        ARRAY_AGG(DISTINCT rx_node_id ORDER BY rx_node_id) FILTER (WHERE rx_node_id IS NOT NULL) AS observer_node_ids,
+        ARRAY_AGG(DISTINCT meshcore_canonical_node_id(rx_node_id)
+                  ORDER BY meshcore_canonical_node_id(rx_node_id))
+          FILTER (WHERE rx_node_id IS NOT NULL) AS observer_node_ids,
         ARRAY_AGG(DISTINCT iata ORDER BY iata) FILTER (WHERE NULLIF(TRIM(iata), '') IS NOT NULL) AS observer_iatas,
         COUNT(*) FILTER (WHERE COALESCE(payload->>'direction', 'rx') <> 'tx')::int AS rx_count,
         COUNT(*) FILTER (WHERE COALESCE(payload->>'direction', 'rx') = 'tx')::int AS tx_count
@@ -867,7 +880,9 @@ export async function getRecentPacketEvents(limit = 200, network?: string, obser
   const params: unknown[] = [limit, ...scope.params];
   const res = await pool.query(
     `SELECT
-        p.time, p.packet_hash, p.rx_node_id, p.src_node_id, p.topic, p.iata,
+        p.time, p.packet_hash,
+        meshcore_canonical_node_id(p.rx_node_id) AS rx_node_id,
+        meshcore_canonical_node_id(p.src_node_id) AS src_node_id, p.topic, p.iata,
         p.packet_type, p.hop_count, p.rssi, p.snr, p.payload,
         p.payload->>'_summary' AS summary,
         p.advert_count, p.path_hashes, p.path_hash_size_bytes
@@ -901,7 +916,8 @@ export async function getPacketDetail(hash: string, network = 'ukmesh') {
       [hash, ...scope.params],
     ),
     pool.query(
-      `SELECT p.rx_node_id, p.iata, p.time, p.rssi, p.snr, p.hop_count
+      `SELECT meshcore_canonical_node_id(p.rx_node_id) AS rx_node_id,
+              p.iata, p.time, p.rssi, p.snr, p.hop_count
        FROM packets p
        WHERE p.packet_hash = $1
          ${buildPacketScopeClause(scope, 'p', network)}
@@ -1110,9 +1126,9 @@ export async function getMultibytePathSegments(network?: string, observer?: stri
        b.lat AS b_lat,
        b.lon AS b_lon,
        nl.multibyte_observed_count AS count
-     FROM node_links nl
-     JOIN nodes a ON a.node_id = nl.node_a_id
-     JOIN nodes b ON b.node_id = nl.node_b_id
+     FROM node_identity_links nl
+     JOIN node_identity_nodes a ON a.node_id = nl.node_a_id
+     JOIN node_identity_nodes b ON b.node_id = nl.node_b_id
      WHERE nl.multibyte_observed_count > 0
        AND nl.itm_viable = true
        AND a.lat IS NOT NULL
@@ -1172,7 +1188,7 @@ export async function getViableLinks(network?: string, observer?: string): Promi
     const scopedNetworks = network === 'ukmesh' ? UKMESH_NETWORKS : [network];
     const res = await pool.query<ViableLinkRow>(
       `WITH net_nodes AS (
-         SELECT DISTINCT node_id FROM nodes
+         SELECT DISTINCT node_id FROM node_identity_nodes
          WHERE network = ANY($1::text[])
            AND (name IS NULL OR name NOT LIKE '%🚫%')
        )
@@ -1187,12 +1203,12 @@ export async function getViableLinks(network?: string, observer?: string): Promi
          nl.itm_path_loss_db,
          nl.count_a_to_b,
          nl.count_b_to_a
-       FROM node_links nl
+       FROM node_identity_links nl
        LEFT JOIN (
          SELECT node_a_id, node_b_id,
            SUM(sample_count)::int AS neighbor_report_count,
            MAX(best_snr_db) AS neighbor_best_snr_db
-         FROM node_link_radio_reports
+         FROM node_identity_link_radio_reports
          GROUP BY node_a_id, node_b_id
        ) nr ON nr.node_a_id = nl.node_a_id AND nr.node_b_id = nl.node_b_id
        WHERE (nl.itm_viable = true OR nl.force_viable = true)
@@ -1218,16 +1234,16 @@ export async function getViableLinks(network?: string, observer?: string): Promi
        nl.itm_path_loss_db,
        nl.count_a_to_b,
        nl.count_b_to_a
-     FROM node_links nl
+     FROM node_identity_links nl
      LEFT JOIN (
        SELECT node_a_id, node_b_id,
          SUM(sample_count)::int AS neighbor_report_count,
          MAX(best_snr_db) AS neighbor_best_snr_db
-       FROM node_link_radio_reports
+       FROM node_identity_link_radio_reports
        GROUP BY node_a_id, node_b_id
      ) nr ON nr.node_a_id = nl.node_a_id AND nr.node_b_id = nl.node_b_id
-     JOIN nodes a ON a.node_id = nl.node_a_id
-     JOIN nodes b ON b.node_id = nl.node_b_id
+     JOIN node_identity_nodes a ON a.node_id = nl.node_a_id
+     JOIN node_identity_nodes b ON b.node_id = nl.node_b_id
      WHERE (nl.itm_viable = true OR nl.force_viable = true)
        AND (a.name IS NULL OR a.name NOT LIKE '%🚫%')
        AND (b.name IS NULL OR b.name NOT LIKE '%🚫%')

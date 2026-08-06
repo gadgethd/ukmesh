@@ -3,7 +3,8 @@ import http from 'node:http';
 import express from 'express';
 import compression from 'compression';
 import cors from 'cors';
-import { closeDb, initDb, query } from './db/index.js';
+import { closeDb, initDb, pool, query } from './db/index.js';
+import { refreshNodeIdentityAliases } from './db/nodeIdentity.js';
 import { closeOwnerAuthDb, getOwnerAclReadiness, initOwnerAuthDb } from './db/ownerAuth.js';
 import { getMqttRuntimeStatus, startMqttClient, stopMqttClient, onPacket, onNodeSeen, onNodeUpsert } from './mqtt/client.js';
 import {
@@ -58,9 +59,11 @@ const SHUTDOWN_DEADLINE_MS = Math.min(
   30_000,
   Math.max(1_000, Number(process.env['SHUTDOWN_DEADLINE_MS'] ?? 30_000) || 30_000),
 );
+const NODE_IDENTITY_REFRESH_INTERVAL_MS = 30 * 60_000;
 const lifecycle = new LifecycleCoordinator(SHUTDOWN_DEADLINE_MS);
 let shutdownExitCode = 0;
 let forceCloseHttpConnections = () => {};
+let nodeIdentityRefreshTimer: NodeJS.Timeout | null = null;
 
 lifecycle.register({
   name: 'queue-admission',
@@ -117,6 +120,14 @@ lifecycle.register({
   stage: 40,
   close: closeDb,
 });
+lifecycle.register({
+  name: 'node-identity-refresh',
+  stage: 10,
+  close: () => {
+    if (nodeIdentityRefreshTimer) clearInterval(nodeIdentityRefreshTimer);
+    nodeIdentityRefreshTimer = null;
+  },
+});
 
 async function shutdown(reason: string, exitCode: number): Promise<void> {
   shutdownExitCode = Math.max(shutdownExitCode, exitCode);
@@ -155,6 +166,16 @@ process.on('uncaughtException', (error) => {
 async function main() {
   // 1. Initialise DB schema + retention policy
   await initDb();
+  const identityRefresh = await refreshNodeIdentityAliases(pool);
+  console.log('[node-identity] refreshed', identityRefresh);
+  nodeIdentityRefreshTimer = setInterval(() => {
+    void refreshNodeIdentityAliases(pool)
+      .then((result) => console.log('[node-identity] refreshed', result))
+      .catch((error: unknown) => {
+        console.error('[node-identity] refresh failed:', error instanceof Error ? error.message : error);
+      });
+  }, NODE_IDENTITY_REFRESH_INTERVAL_MS);
+  nodeIdentityRefreshTimer.unref();
   await initOwnerAuthDb();
   await startOwnerAuthorizationReconciler();
 
