@@ -39,8 +39,32 @@ test('owner response guards reject structurally incomplete payloads', () => {
     ok: true,
     dashboard: {
       nodes: [],
-      totals: {},
-      roadmap: [],
     },
   }), true);
+  assert.equal(isOwnerSessionResponse({
+    ok: true,
+    dashboard: {
+      nodes: [{
+        node_id: 'A'.repeat(64),
+        canonicalId: 'A'.repeat(64),
+        members: ['A'.repeat(64)],
+      }],
+    },
+  }), true);
+  assert.equal(isOwnerSessionResponse({
+    ok: true,
+    dashboard: {
+      nodes: [{ node_id: 'A'.repeat(64) }],
+    },
+  }), false);
+  assert.equal(isOwnerSessionResponse({
+    ok: true,
+    dashboard: {
+      nodes: [{
+        node_id: 'A'.repeat(64),
+        canonicalId: 'A'.repeat(64),
+        members: [42],
+      }],
+    },
+  }), false);
 });

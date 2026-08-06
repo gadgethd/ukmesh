@@ -3,9 +3,7 @@ import type { OwnerSession } from './ownerSession.js';
 import { BoundedTtlMap } from '../cache/boundedTtlMap.js';
 
 type OwnerDashboard = {
-  totals: {
-    ownedNodes: number;
-  };
+  nodes: unknown[];
 } & Record<string, unknown>;
 
 type OwnerLiveCacheEntry = {
@@ -154,7 +152,7 @@ export function createOwnerService(deps: OwnerServiceDeps) {
     const mappedNodeIds = await autoLinkOwnerNodeIds(mqttUsername);
 
     const dashboard = await buildOwnerDashboard(mappedNodeIds);
-    if (dashboard.totals.ownedNodes < 1) {
+    if (dashboard.nodes.length < 1) {
       throw new Error('NO_ACTIVE_OWNER_NODE');
     }
 
@@ -183,7 +181,7 @@ export function createOwnerService(deps: OwnerServiceDeps) {
     }
 
     const dashboard = await buildOwnerDashboard(freshNodeIds);
-    if (dashboard.totals.ownedNodes < 1) {
+    if (dashboard.nodes.length < 1) {
       throw new Error('NO_ACTIVE_OWNER_NODE');
     }
     ownerDashboardCache.set(cacheKey, { ts: Date.now(), dashboard, nodeIds: freshNodeIds });
@@ -412,6 +410,8 @@ export function createOwnerService(deps: OwnerServiceDeps) {
       nodeId: selectedNodeId,
       ownerNode: {
         ...ownerNode,
+        canonicalId: ownerNode.node_id,
+        members: ownerNode.members,
         advert_count: Number(ownerNode.advert_count ?? 0),
         last_seen: ownerNode.last_seen ? new Date(ownerNode.last_seen).toISOString() : null,
       },

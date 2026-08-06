@@ -3,6 +3,8 @@ import { ScopedCache } from '../../utils/scopedCache.js';
 
 export type OwnerNode = {
   node_id: string;
+  canonicalId: string;
+  members: string[];
   name: string | null;
   network: string;
   last_seen: string | null;
@@ -21,13 +23,6 @@ export function nodeRoleLabel(role: number | null): string {
 
 export type OwnerDashboard = {
   nodes: OwnerNode[];
-  totals: {
-    ownedNodes: number;
-    packets24h: number;
-    packets7d: number;
-    packetsReceived24h: number;
-  };
-  roadmap: string[];
 };
 
 export type OwnerSessionResponse = {
@@ -183,8 +178,11 @@ export function isOwnerSessionResponse(value: unknown): value is OwnerSessionRes
   if (!isRecord(value) || value['ok'] !== true || !isRecord(value['dashboard'])) return false;
   const dashboard = value['dashboard'];
   return Array.isArray(dashboard['nodes'])
-    && isRecord(dashboard['totals'])
-    && Array.isArray(dashboard['roadmap'])
+    && dashboard['nodes'].every((node) => isRecord(node)
+      && typeof node['node_id'] === 'string'
+      && typeof node['canonicalId'] === 'string'
+      && Array.isArray(node['members'])
+      && node['members'].every((member) => typeof member === 'string'))
     && (value['mqttUsername'] == null || typeof value['mqttUsername'] === 'string');
 }
 

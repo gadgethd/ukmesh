@@ -17,9 +17,7 @@ import {
 } from '../../repositories/ownerAlerts.js';
 
 type OwnerDashboard = {
-  totals: {
-    ownedNodes: number;
-  };
+  nodes: unknown[];
 };
 
 type OwnerLiveCacheEntry = {
