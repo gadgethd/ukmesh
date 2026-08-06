@@ -193,6 +193,7 @@ services:
       MQTT_BROKER_URL: ${MQTT_BROKER_URL:-ws://mosquitto:9001}
       MQTT_USERNAME: ${MQTT_USERNAME:-backend}
       MQTT_PASSWORD: ${MQTT_PASSWORD}
+      MQTT_CLIENT_ID: ${MQTT_CLIENT_ID:-meshcore-analytics-ingest}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD required}
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET required}

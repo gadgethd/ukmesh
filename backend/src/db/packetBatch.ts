@@ -2,12 +2,30 @@ import type { QueryResultRow } from 'pg';
 import {
   packetBatchDuration,
   packetBatchFlushTotal,
+  packetBatchRetryTotal,
   packetBatchSize,
   privacyFilterTotal,
 } from '../metrics.js';
 
 const MAX_BATCH_SIZE = 50;
 const FLUSH_INTERVAL_MS = 50;
+const MAX_WRITE_ATTEMPTS = 7;
+const RETRY_DELAYS_MS = [100, 250, 500, 1_000, 2_000, 4_000] as const;
+
+const RETRYABLE_DATABASE_CODES = new Set([
+  '08000', // connection_exception
+  '08001', // sqlclient_unable_to_establish_sqlconnection
+  '08003', // connection_does_not_exist
+  '08004', // sqlserver_rejected_establishment_of_sqlconnection
+  '08006', // connection_failure
+  '08007', // transaction_resolution_unknown
+  '57P01', // admin_shutdown
+  '57P02', // crash_shutdown
+  '57P03', // cannot_connect_now
+  '40001', // serialization_failure
+  '40P01', // deadlock_detected
+  '53300', // too_many_connections
+]);
 
 export type PacketBatchInput = {
   time: Date;
@@ -70,6 +88,19 @@ function scheduleFlush(): void {
   timer.unref();
 }
 
+function isRetryableDatabaseError(error: unknown): boolean {
+  if (typeof error === 'object' && error !== null && 'code' in error) {
+    const code = (error as { code?: unknown }).code;
+    if (typeof code === 'string' && RETRYABLE_DATABASE_CODES.has(code)) return true;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  return /connection terminated|database system is not yet accepting connections|server closed the connection unexpectedly|connection reset|connection refused|could not connect/i.test(message);
+}
+
+function retryDelay(attempt: number): number {
+  return RETRY_DELAYS_MS[Math.min(attempt, RETRY_DELAYS_MS.length - 1)] ?? 4_000;
+}
+
 export function enqueuePacket(packet: PacketBatchInput): Promise<PacketBatchResult> {
   if (draining) return Promise.reject(new Error('PACKET_BATCH_DRAINING'));
   if (!queryFn) return Promise.reject(new Error('PACKET_BATCH_NOT_CONFIGURED'));
@@ -81,7 +112,7 @@ export function enqueuePacket(packet: PacketBatchInput): Promise<PacketBatchResu
   return result;
 }
 
-async function writeBatch(batch: PendingPacket[]): Promise<void> {
+async function writeBatch(batch: PendingPacket[], idempotent: boolean): Promise<void> {
   const query = queryFn;
   if (!query) throw new Error('PACKET_BATCH_NOT_CONFIGURED');
 
@@ -125,11 +156,24 @@ async function writeBatch(batch: PendingPacket[]): Promise<void> {
     return `(${placeholders.join(', ')})`;
   }).join(',\n');
 
-  const startedAt = process.hrtime.bigint();
-  let outcome = 'success';
-  packetBatchSize.observe(batch.length);
-  try {
-    const result = await query<{ row_id: number; is_private: boolean; visibility_ok: boolean }>(
+  const persistenceSource = idempotent ? 'new_rows' : 'classified';
+  const idempotencyCte = idempotent
+    ? `new_rows AS MATERIALIZED (
+         SELECT c.*
+         FROM classified c
+         WHERE NOT EXISTS (
+           SELECT 1
+           FROM packets existing
+           WHERE existing.time = c.time
+             AND existing.packet_hash = c.packet_hash
+             AND existing.rx_node_id IS NOT DISTINCT FROM c.rx_node_id
+             AND existing.topic = c.topic
+             AND existing.network = c.network
+         )
+       ),`
+    : '';
+
+  const result = await query<{ row_id: number; is_private: boolean; visibility_ok: boolean }>(
       `WITH incoming (
          row_id, time, packet_hash, rx_node_id, src_node_id, topic, topic_prefix,
          iata, packet_type, route_type, hop_count, rssi, snr, payload, companion_sender, raw_hex,
@@ -168,9 +212,10 @@ async function writeBatch(batch: PendingPacket[]): Promise<void> {
                   OR length(path_hash) <> i.path_hash_size_bytes * 2
                   OR path_hash !~ '^[0-9A-Fa-f]+$'
              )
-           ) AS path_is_valid
+         ) AS path_is_valid
          FROM incoming i
        ),
+       ${idempotencyCte}
        inserted AS (
          INSERT INTO packets (
            time, packet_hash, rx_node_id, src_node_id, topic, topic_prefix, iata,
@@ -182,7 +227,7 @@ async function writeBatch(batch: PendingPacket[]): Promise<void> {
                 packet_type, route_type, hop_count, rssi, snr, payload::jsonb, companion_sender, raw_hex,
                 advert_count, path_hashes, path_hash_size_bytes, network, transport_codes,
                 region_scope, is_private, path_is_valid AND NOT is_private
-         FROM classified
+         FROM ${persistenceSource}
          RETURNING 1
        ),
        observer_updates AS (
@@ -192,7 +237,7 @@ async function writeBatch(batch: PendingPacket[]): Promise<void> {
          )
          SELECT DISTINCT ON (rx_node_id)
            rx_node_id, iata, iata, time, time, TRUE, network, time
-         FROM classified
+         FROM ${persistenceSource}
          WHERE rx_node_id IS NOT NULL AND rx_node_id <> ''
          ORDER BY rx_node_id, time DESC
          ON CONFLICT (node_id) DO UPDATE SET
@@ -216,7 +261,7 @@ async function writeBatch(batch: PendingPacket[]): Promise<void> {
          INSERT INTO node_network_sightings
            (node_id, network, first_seen_at, last_seen_at)
          SELECT src_node_id, network, MIN(time), MAX(time)
-         FROM classified
+         FROM ${persistenceSource}
          WHERE src_node_id IS NOT NULL
            AND src_node_id <> ''
            AND network <> 'test'
@@ -239,7 +284,7 @@ async function writeBatch(batch: PendingPacket[]): Promise<void> {
            hop_count,
            packet_hash,
            time
-         FROM classified
+         FROM ${persistenceSource}
          WHERE path_is_valid
            AND NOT is_private
            AND hop_count IS NOT NULL
@@ -279,7 +324,7 @@ async function writeBatch(batch: PendingPacket[]): Promise<void> {
            COALESCE(SUM(snr), 0)::double precision,
            COUNT(snr)::bigint,
            NOW()
-         FROM classified
+         FROM ${persistenceSource}
          WHERE path_is_valid
            AND NOT is_private
            AND (network = 'test' OR topic_prefix <> 'meshcore-test')
@@ -307,7 +352,7 @@ async function writeBatch(batch: PendingPacket[]): Promise<void> {
          INSERT INTO observer_region_packet_sightings
            (network, iata, packet_hash, first_seen, last_seen)
          SELECT network, iata, packet_hash, MIN(time), MAX(time)
-         FROM classified
+         FROM ${persistenceSource}
          WHERE network <> 'test'
            AND path_is_valid
            AND NOT is_private
@@ -331,7 +376,7 @@ async function writeBatch(batch: PendingPacket[]): Promise<void> {
          INSERT INTO observer_region_observer_sightings
            (network, iata, rx_node_id, first_seen, last_seen)
          SELECT network, iata, rx_node_id, MIN(time), MAX(time)
-         FROM classified
+         FROM ${persistenceSource}
          WHERE network <> 'test'
            AND path_is_valid
            AND NOT is_private
@@ -363,28 +408,49 @@ async function writeBatch(batch: PendingPacket[]): Promise<void> {
       params,
     );
 
-    if (result.rows.length !== batch.length) throw new Error('PACKET_BATCH_RESULT_MISMATCH');
-    for (const row of result.rows) {
-      privacyFilterTotal.inc({
-        operation: 'packet_ingest',
-        outcome: row.visibility_ok ? 'public' : (row.is_private ? 'private' : 'invalid'),
-      });
-      batch[row.row_id]?.resolve({
-        isPrivate: Boolean(row.is_private),
-        visibilityOk: Boolean(row.visibility_ok),
-      });
-    }
-  } catch (error) {
-    outcome = 'failure';
-    for (const item of batch) item.reject(error);
-    throw error;
-  } finally {
-    packetBatchFlushTotal.inc({ outcome });
-    packetBatchDuration.observe(
-      { outcome },
-      Number(process.hrtime.bigint() - startedAt) / 1e9,
-    );
+  if (result.rows.length !== batch.length) throw new Error('PACKET_BATCH_RESULT_MISMATCH');
+  for (const row of result.rows) {
+    privacyFilterTotal.inc({
+      operation: 'packet_ingest',
+      outcome: row.visibility_ok ? 'public' : (row.is_private ? 'private' : 'invalid'),
+    });
+    batch[row.row_id]?.resolve({
+      isPrivate: Boolean(row.is_private),
+      visibilityOk: Boolean(row.visibility_ok),
+    });
   }
+}
+
+async function writeBatchWithRetry(batch: PendingPacket[]): Promise<void> {
+  const startedAt = process.hrtime.bigint();
+  packetBatchSize.observe(batch.length);
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt < MAX_WRITE_ATTEMPTS; attempt += 1) {
+    try {
+      await writeBatch(batch, attempt > 0);
+      packetBatchFlushTotal.inc({ outcome: 'success' });
+      packetBatchDuration.observe(
+        { outcome: 'success' },
+        Number(process.hrtime.bigint() - startedAt) / 1e9,
+      );
+      return;
+    } catch (error) {
+      lastError = error;
+      const retriesRemaining = attempt < MAX_WRITE_ATTEMPTS - 1;
+      if (!retriesRemaining || !isRetryableDatabaseError(error)) break;
+      packetBatchRetryTotal.inc();
+      await new Promise((resolve) => setTimeout(resolve, retryDelay(attempt)));
+    }
+  }
+
+  for (const item of batch) item.reject(lastError);
+  packetBatchFlushTotal.inc({ outcome: 'failure' });
+  packetBatchDuration.observe(
+    { outcome: 'failure' },
+    Number(process.hrtime.bigint() - startedAt) / 1e9,
+  );
+  throw lastError;
 }
 
 export function flush(): Promise<void> {
@@ -397,7 +463,7 @@ export function flush(): Promise<void> {
   activeFlush = (async () => {
     while (pending.length > 0) {
       const batch = pending.splice(0, MAX_BATCH_SIZE);
-      await writeBatch(batch);
+      await writeBatchWithRetry(batch);
     }
   })().finally(() => {
     activeFlush = null;

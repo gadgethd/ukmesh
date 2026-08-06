@@ -364,6 +364,9 @@ function boundedEnvInteger(name: string, fallback: number, min: number, max: num
 const MQTT_MAX_PAYLOAD_BYTES = boundedEnvInteger('MQTT_MAX_PAYLOAD_BYTES', 64 * 1024, 1_024, 1_048_576);
 const MQTT_INGEST_CONCURRENCY = boundedEnvInteger('MQTT_INGEST_CONCURRENCY', 8, 1, 32);
 const MQTT_INGEST_QUEUE_MAX = boundedEnvInteger('MQTT_INGEST_QUEUE_MAX', 1_000, 10, 20_000);
+const MQTT_CLIENT_ID = String(
+  process.env['MQTT_CLIENT_ID'] ?? 'meshcore-analytics-ingest',
+).trim() || 'meshcore-analytics-ingest';
 
 type MqttIngestTask = {
   topic: string;
@@ -438,11 +441,13 @@ export async function startMqttClient(): Promise<void> {
   console.log(`[mqtt] channels: ${channelEntries.map((e) => e.name).join(', ')}`);
   console.log(`[mqtt] topic prefixes: ${Array.from(TOPIC_PREFIXES).join(', ')}`);
   console.log(`[mqtt] ingest concurrency=${MQTT_INGEST_CONCURRENCY} queue=${MQTT_INGEST_QUEUE_MAX} maxPayload=${MQTT_MAX_PAYLOAD_BYTES}`);
+  console.log(`[mqtt] persistent session clientId=${MQTT_CLIENT_ID} subscriptionQos=1`);
 
   const client = mqtt.connect(brokerUrl, {
     reconnectPeriod: 5000,
     connectTimeout: 30000,
-    clientId: `meshcore-analytics-${Math.random().toString(16).slice(2, 8)}`,
+    clean: false,
+    clientId: MQTT_CLIENT_ID,
     username: process.env['MQTT_USERNAME'],
     password: process.env['MQTT_PASSWORD'],
   });
@@ -452,7 +457,7 @@ export async function startMqttClient(): Promise<void> {
     setMqttRuntimeStatus('connected');
     console.log('[mqtt] connected');
     for (const prefix of TOPIC_PREFIXES) {
-      client.subscribe(`${prefix}/#`, { qos: 0 }, (err) => {
+      client.subscribe(`${prefix}/#`, { qos: 1 }, (err) => {
         if (err) console.error(`[mqtt] subscribe error (${prefix}/#)`, err.message);
         else      console.log(`[mqtt] subscribed to ${prefix}/#`);
       });
@@ -532,6 +537,7 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
   try {
     json = JSON.parse(rawStr) as Record<string, unknown>;
   } catch {
+    mqttIngestOutcomesTotal.inc({ outcome: 'invalid_json' });
     console.warn(`[mqtt] non-JSON payload on topic ${topic}: ${rawStr.slice(0, 80)}`);
     return;
   }
@@ -542,6 +548,7 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
     const firmware = json['firmware_version'] as string | undefined;
 
     if (!statusEnvelopeTargetsObserver(observerKey, json)) {
+      mqttIngestOutcomesTotal.inc({ outcome: 'status_identity_mismatch' });
       console.warn('[mqtt] rejected status envelope with identity mismatch');
       return;
     }
@@ -576,6 +583,7 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
     const writeResults = await Promise.allSettled(writes);
     for (const result of writeResults) {
       if (result.status === 'rejected') {
+        mqttIngestOutcomesTotal.inc({ outcome: 'status_persist_failure' });
         console.error('[mqtt] status persistence error:', (result.reason as Error).message);
       }
     }
@@ -595,6 +603,7 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
   const direction = directionValue === 'rx' || directionValue === 'tx' ? directionValue : undefined;
 
   if (isEmptyPacketEnvelope(json, rawHex, packetType)) {
+    mqttIngestOutcomesTotal.inc({ outcome: 'empty_packet' });
     return;
   }
 
@@ -792,6 +801,7 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
   }
 
   if (resolvedPacketType == null) {
+    mqttIngestOutcomesTotal.inc({ outcome: 'missing_packet_type' });
     return;
   }
 
@@ -801,6 +811,7 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
   const finalHash = canonicalPacketId ?? upstreamPacketHash(json['hash']) ?? crypto.randomUUID();
 
   if (isDuplicatePacket(finalHash, observerKey, decodedHops)) {
+    mqttIngestOutcomesTotal.inc({ outcome: 'duplicate_packet' });
     return;
   }
 
@@ -859,6 +870,7 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
     livePacket.visibilityOk = visibility.visibilityOk;
     emit(livePacket);
     invalidateResolveCache(finalHash);
+    mqttIngestOutcomesTotal.inc({ outcome: 'packet_persisted' });
 
     // A repeater appearing in a multibyte (2–3 byte) path hash almost certainly
     // relayed this packet. Resolve only a unique historic row with stored
@@ -932,6 +944,7 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
         .finally(() => { preResolveInFlight.delete(preResolveKey); });
     }
   } catch (err) {
+    mqttIngestOutcomesTotal.inc({ outcome: 'packet_persist_failure' });
     console.error('[mqtt] db insert failed', (err as Error).message);
   }
 }

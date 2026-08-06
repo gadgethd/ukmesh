@@ -150,6 +150,12 @@ export const packetBatchFlushTotal = new Counter({
   registers: [metricsRegistry],
 });
 
+export const packetBatchRetryTotal = new Counter({
+  name: 'meshcore_packet_batch_retries_total',
+  help: 'Transient database retry attempts for packet batches.',
+  registers: [metricsRegistry],
+});
+
 export const packetBatchSize = new Histogram({
   name: 'meshcore_packet_batch_size',
   help: 'Packets committed per atomic batch.',
