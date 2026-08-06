@@ -315,24 +315,6 @@
   font-size: 11px;
   font-family: var(--font-mono);
 }
-.owner-select {
-  margin: 12px 0 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.owner-select label {
-  color: var(--text-secondary);
-  font-size: 12px;
-}
-.owner-select__input {
-  max-width: 360px;
-  background: var(--bg-panel);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  color: var(--text-primary);
-  padding: 8px 10px;
-}
 .owner-node-identities {
   display: grid;
   gap: 10px;
@@ -343,9 +325,22 @@
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--bg-panel-alt);
+  cursor: pointer;
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+.owner-node-identity:hover {
+  border-color: var(--text-secondary);
+}
+.owner-node-identity:focus-visible {
+  outline: 2px solid rgba(0, 196, 255, 0.55);
+  outline-offset: 2px;
 }
 .owner-node-identity--selected {
   border-color: rgba(0, 196, 255, 0.55);
+  background: color-mix(in srgb, var(--bg-panel-alt) 80%, rgba(0, 196, 255, 0.06));
+}
+.owner-node-identity--selected:hover {
+  border-color: rgba(0, 196, 255, 0.8);
 }
 .owner-node-identity__head {
   display: flex;
