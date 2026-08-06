@@ -742,6 +742,9 @@ export function MapLibreMap({
 
     map.on('load', () => {
       mapLoadedRef.current = true;
+      mapRef.current = map;
+      map.setPadding(mapPaddingForNode(null));
+      onMapReady?.(map);
 
       installMapSourcesAndLayers(map, {
         showLinks: showLinksRef.current,
@@ -838,9 +841,6 @@ export function MapLibreMap({
         map.getCanvas().style.cursor = viewshedEnabledRef.current && useOverlayStore.getState().planRepeaterMode ? 'crosshair' : '';
       });
 
-      mapRef.current = map;
-      map.setPadding(mapPaddingForNode(null));
-      onMapReady?.(map);
       refreshMapSources();
 
       // Apply any pre-existing selection (e.g. ?node= deep link) to the highlight.

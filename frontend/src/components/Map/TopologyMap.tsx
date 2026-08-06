@@ -14,6 +14,7 @@ const TOPOLOGY_LINK_LAYER = 'topology-links';
 const TOPOLOGY_NODE_HIT_LAYER = 'topology-node-hit';
 const TOPOLOGY_NODE_HALO_LAYER = 'topology-node-halo';
 const TOPOLOGY_NODE_LAYER = 'topology-node';
+const TOPOLOGY_INITIAL_VIEW = { lat: DEFAULT_CENTER[0], lon: -2.4, zoom: 6 } as const;
 
 type TopologyMapProps = {
   nodes: readonly TopologyMapNode[];
@@ -222,7 +223,7 @@ export function TopologyMap({
         maxHexClashHops={3}
         viewshedEnabled={false}
         rfCoverageEnabled={false}
-        initialView={{ lat: DEFAULT_CENTER[0], lon: -2.4, zoom: 6 }}
+        initialView={TOPOLOGY_INITIAL_VIEW}
         mapLight={false}
         network={network}
         observer={observer}
