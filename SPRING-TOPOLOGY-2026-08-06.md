@@ -35,10 +35,11 @@ overlay sources, layers, and navigation control to persist.
   topology API HTTP 200, one MapLibre canvas, zoom control present, live
   topology metadata present, and no loading/error state. Evidence:
   `SPRING-TOPOLOGY-2026-08-06.png`.
-- `/api/health`: HTTP 200 and all three deployed service containers report
-  healthy, but the public payload currently reports the unrelated
-  `database_vacuum_backlog` critical incident. No database maintenance or
-  unrelated service changes were made for this item.
+- `/api/health`: HTTP 200 with `status: healthy`, no incidents, and all three
+  deployed service containers healthy. A transient vacuum-backlog incident
+  appeared during the first post-deploy refresh and cleared before final
+  verification; no database maintenance or unrelated service changes were
+  made for this item.
 
 ## Quality gates
 
