@@ -65,9 +65,16 @@ export function createOwnerRepository(deps: OwnerRepositoryDeps) {
              ELSE NULL
            END AS receiver_side_hash
          FROM node_identity_packets p
-         WHERE p.rx_node_id = ANY(
+         WHERE p.rx_node_id_raw IN (
            SELECT meshcore_canonical_node_id(id)
            FROM unnest($1::text[]) AS selected(id)
+           UNION
+           SELECT source_node_id
+           FROM node_identity_aliases
+           WHERE canonical_node_id = ANY(
+             SELECT meshcore_canonical_node_id(id)
+             FROM unnest($1::text[]) AS selected(id)
+           )
          )
            AND ${timeFilter}
            AND p.packet_type NOT IN (8, 9)
@@ -259,7 +266,12 @@ export function createOwnerRepository(deps: OwnerRepositoryDeps) {
            MAX(p.time)::text AS last_seen
          FROM node_identity_packets p
          LEFT JOIN node_identity_nodes n ON n.node_id = p.src_node_id
-         WHERE p.rx_node_id = meshcore_canonical_node_id($1)
+         WHERE p.rx_node_id_raw IN (
+           SELECT meshcore_canonical_node_id($1)
+           UNION
+           SELECT source_node_id FROM node_identity_aliases
+           WHERE canonical_node_id = meshcore_canonical_node_id($1)
+         )
            AND p.hop_count = 0
            AND p.src_node_id IS NOT NULL
            AND p.src_node_id <> meshcore_canonical_node_id($1)
@@ -280,7 +292,7 @@ export function createOwnerRepository(deps: OwnerRepositoryDeps) {
         sender: string | null;
         body: string | null;
       }>(
-        `WITH ranked AS (
+        `WITH recent AS (
            SELECT
              p.time,
              p.packet_type,
@@ -288,24 +300,43 @@ export function createOwnerRepository(deps: OwnerRepositoryDeps) {
              p.hop_count,
              p.packet_hash,
              p.src_node_id,
-             p.payload,
+             p.payload
+           FROM node_identity_packets p
+           WHERE p.rx_node_id_raw IN (
+             SELECT meshcore_canonical_node_id($1)
+             UNION
+             SELECT source_node_id FROM node_identity_aliases
+             WHERE canonical_node_id = meshcore_canonical_node_id($1)
+           )
+             AND p.time > NOW() - INTERVAL '30 days'
+           ORDER BY p.time DESC
+           LIMIT 5000
+         ),
+         ranked AS (
+           SELECT
+             recent.time,
+             recent.packet_type,
+             recent.route_type,
+             recent.hop_count,
+             recent.packet_hash,
+             recent.src_node_id,
+             recent.payload,
              ROW_NUMBER() OVER (
                PARTITION BY COALESCE(
-                 p.packet_hash,
+                 recent.packet_hash,
                  CONCAT_WS(':',
-                   COALESCE(p.src_node_id, ''),
-                   COALESCE(p.packet_type::text, ''),
-                   COALESCE(p.route_type::text, ''),
-                   COALESCE(p.hop_count::text, ''),
-                   COALESCE(p.payload->'decrypted'->>'sender', ''),
-                   COALESCE(p.payload->'decrypted'->>'text', ''),
-                   DATE_TRUNC('second', p.time)::text
+                   COALESCE(recent.src_node_id, ''),
+                   COALESCE(recent.packet_type::text, ''),
+                   COALESCE(recent.route_type::text, ''),
+                   COALESCE(recent.hop_count::text, ''),
+                   COALESCE(recent.payload->'decrypted'->>'sender', ''),
+                   COALESCE(recent.payload->'decrypted'->>'text', ''),
+                   DATE_TRUNC('second', recent.time)::text
                  )
                )
-               ORDER BY p.time DESC
+               ORDER BY recent.time DESC
              ) AS rn
-           FROM node_identity_packets p
-           WHERE p.rx_node_id = meshcore_canonical_node_id($1)
+           FROM recent
          )
          SELECT
            r.time::text AS time,
@@ -355,7 +386,12 @@ export function createOwnerRepository(deps: OwnerRepositoryDeps) {
            MIN(p.hop_count) AS best_hops
          FROM node_identity_packets p
          LEFT JOIN node_identity_nodes n ON n.node_id = p.rx_node_id
-         WHERE p.src_node_id = meshcore_canonical_node_id($1)
+         WHERE p.src_node_id_raw IN (
+           SELECT meshcore_canonical_node_id($1)
+           UNION
+           SELECT source_node_id FROM node_identity_aliases
+           WHERE canonical_node_id = meshcore_canonical_node_id($1)
+         )
            AND p.rx_node_id IS NOT NULL
            AND p.rx_node_id <> meshcore_canonical_node_id($1)
            AND p.time > NOW() - INTERVAL '7 days'
@@ -415,7 +451,12 @@ export function createOwnerRepository(deps: OwnerRepositoryDeps) {
            time_bucket('1 hour', time)::text AS bucket,
            COUNT(DISTINCT packet_hash)::int AS adverts
          FROM node_identity_packets
-         WHERE src_node_id = meshcore_canonical_node_id($1)
+         WHERE src_node_id_raw IN (
+           SELECT meshcore_canonical_node_id($1)
+           UNION
+           SELECT source_node_id FROM node_identity_aliases
+           WHERE canonical_node_id = meshcore_canonical_node_id($1)
+         )
            AND packet_type = 4
            AND time > NOW() - INTERVAL '24 hours'
          GROUP BY bucket
@@ -455,7 +496,12 @@ export function createOwnerRepository(deps: OwnerRepositoryDeps) {
              ELSE NULL
            END AS tx_publish_calls
          FROM node_identity_status_samples
-         WHERE node_id = meshcore_canonical_node_id($1)
+         WHERE node_id_raw IN (
+           SELECT meshcore_canonical_node_id($1)
+           UNION
+           SELECT source_node_id FROM node_identity_aliases
+           WHERE canonical_node_id = meshcore_canonical_node_id($1)
+         )
            AND time > NOW() - INTERVAL '24 hours'
         ORDER BY time ASC`,
         [selectedNodeId],
@@ -463,14 +509,24 @@ export function createOwnerRepository(deps: OwnerRepositoryDeps) {
       query<{ packets_24h: number }>(
         `SELECT COUNT(*)::int AS packets_24h
          FROM node_identity_packets
-         WHERE src_node_id = meshcore_canonical_node_id($1)
+         WHERE src_node_id_raw IN (
+           SELECT meshcore_canonical_node_id($1)
+           UNION
+           SELECT source_node_id FROM node_identity_aliases
+           WHERE canonical_node_id = meshcore_canonical_node_id($1)
+         )
            AND time > NOW() - INTERVAL '24 hours'`,
         [selectedNodeId],
       ),
       query<{ packets_24h: number }>(
         `SELECT COUNT(*)::int AS packets_24h
          FROM node_identity_packets
-         WHERE rx_node_id = meshcore_canonical_node_id($1)
+         WHERE rx_node_id_raw IN (
+           SELECT meshcore_canonical_node_id($1)
+           UNION
+           SELECT source_node_id FROM node_identity_aliases
+           WHERE canonical_node_id = meshcore_canonical_node_id($1)
+         )
            AND time > NOW() - INTERVAL '24 hours'`,
         [selectedNodeId],
       ),
