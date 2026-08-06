@@ -75,6 +75,22 @@ const SLOW_MODE_PENDING_SCHEMA = {
   additionalProperties: false,
 };
 
+const FEED_MESSAGE_HISTORY_SCHEMA = {
+  type: 'array',
+  maxItems: 50,
+  items: {
+    type: 'object',
+    required: ['time', 'packet_hash', 'packet_type'],
+    properties: {
+      time: { type: 'string', format: 'date-time' },
+      packet_hash: { type: 'string' },
+      packet_type: { type: 'integer', const: 5 },
+      summary: { type: ['string', 'null'] },
+    },
+    additionalProperties: true,
+  },
+};
+
 function humanize(path: string): string {
   return path
     .replace(/^\/v1\//, '')
@@ -102,6 +118,7 @@ const PUBLIC_GET = [
   '/coverage',
   '/coverage/:nodeId',
   '/coverage/planned/:planId',
+  '/feed/messages',
   '/health',
   '/inferred-nodes',
   '/links/:id/history',
@@ -194,6 +211,27 @@ export const API_CONTRACTS: readonly ApiContract[] = [
   }
   if (contract.path === '/planned-nodes') {
     return { ...contract, summary: 'List explicitly published planned nodes', responseSchema: PLANNED_NODE_PAGE_SCHEMA };
+  }
+  if (contract.path === '/feed/messages') {
+    return {
+      ...contract,
+      summary: 'Read historical messages for one channel',
+      responseSchema: FEED_MESSAGE_HISTORY_SCHEMA,
+      queryParameters: [
+        {
+          name: 'channel',
+          in: 'query',
+          required: true,
+          schema: { type: 'string', pattern: '^[A-Za-z0-9][A-Za-z0-9_-]*$', maxLength: 64 },
+        },
+        {
+          name: 'limit',
+          in: 'query',
+          required: false,
+          schema: { type: 'integer', minimum: 1, maximum: 50, default: 50 },
+        },
+      ],
+    };
   }
   if (contract.path === '/observers/register') {
     return {

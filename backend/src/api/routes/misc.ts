@@ -8,6 +8,7 @@ import { getPublicRuntimeFeatureConfig } from '../../features.js';
 import {
   parseBoolean,
   parseBoundedInteger,
+  parseBoundedString,
   parseEnum,
   parseHexIdentifier,
 } from '../utils/input.js';
@@ -29,12 +30,19 @@ type GetRecentPacketsFn = (
 ) => Promise<unknown>;
 type GetRecentPacketEventsFn = (limit: number, network?: string, observer?: string) => Promise<unknown>;
 type GetPacketDetailFn = (hash: string, network?: string) => Promise<unknown>;
+type GetChannelMessageHistoryFn = (
+  channel: string,
+  limit: number,
+  network?: string,
+  observer?: string,
+) => Promise<unknown>;
 
 type MiscRouteDeps = {
   query: QueryFn;
   getRecentPackets: GetRecentPacketsFn;
   getRecentPacketEvents: GetRecentPacketEventsFn;
   getPacketDetail: GetPacketDetailFn;
+  getChannelMessageHistory: GetChannelMessageHistoryFn;
   getPublicVisibilityGeneration: () => Promise<number>;
   packetDetailLimiter: ReturnType<typeof import('express-rate-limit').rateLimit>;
 };
@@ -45,6 +53,7 @@ export function registerMiscRoutes(router: Router, deps: MiscRouteDeps): void {
     getRecentPackets,
     getRecentPacketEvents,
     getPacketDetail,
+    getChannelMessageHistory,
     getPublicVisibilityGeneration,
     packetDetailLimiter,
   } = deps;
@@ -83,6 +92,31 @@ export function registerMiscRoutes(router: Router, deps: MiscRouteDeps): void {
       res.json(packets);
     } catch (err) {
       console.error('[api] GET /packets/recent', (err as Error).message);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  });
+
+  router.get('/feed/messages', async (req, res) => {
+    const channel = parseBoundedString(req.query['channel'], {
+      name: 'channel',
+      required: true,
+      maxLength: 64,
+      pattern: /^[A-Za-z0-9][A-Za-z0-9_-]*$/,
+    })!;
+    const limit = parseBoundedInteger(req.query['limit'], {
+      name: 'limit',
+      defaultValue: 50,
+      min: 1,
+      max: 50,
+    });
+    try {
+      const network = resolvePublicNetworkScope(req.query['network'], req.headers);
+      const observer = normalizeObserverQuery(req.query['observer']);
+      const messages = await getChannelMessageHistory(channel, limit, network, observer);
+      res.setHeader('Cache-Control', 'no-store');
+      res.json(messages);
+    } catch (err) {
+      console.error('[api] GET /feed/messages', (err as Error).message);
       res.status(500).json({ error: 'Internal server error' });
     }
   });

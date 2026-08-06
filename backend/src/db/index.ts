@@ -27,6 +27,7 @@ import {
   reactivateHistoricPathNodes,
   type HistoricPathNode,
 } from '../repositories/pathEvidence.js';
+import { channelHashesForName } from '../mqtt/channelRegistry.js';
 
 const { Pool } = pg;
 const COORDINATE_RECALC_THRESHOLD_M = Number(process.env['NODE_COORDINATE_RECALC_THRESHOLD_M'] ?? 25);
@@ -873,6 +874,129 @@ export async function getRecentMessages(limit = 50, network?: string, observer?:
     [limit, ...scope.params],
   );
   return res.rows;
+}
+
+/**
+ * Fetch one channel's decrypted GroupText history. The WebSocket snapshot stays
+ * intentionally recent and bounded; this demand-driven read reaches back 90
+ * days so quiet channels can still fill the feed's 50-row view.
+ */
+export async function getChannelMessageHistory(
+  channel: string,
+  limit = 50,
+  network?: string,
+  observer?: string,
+) {
+  const normalizedChannel = channel.trim().toLowerCase();
+  const channelHashes = channelHashesForName(normalizedChannel);
+  const scope = buildScopePlaceholders(6, network, observer);
+  // A historical packet may retain the ingest-time "[encrypted]" marker in
+  // payload while packet_decryptions has the channel-specific summary. Prefer
+  // the durable decryption summary for channel matching and display.
+  const summaryExpr = `COALESCE(NULLIF(BTRIM(pd.summary), ''), NULLIF(BTRIM(p.payload->>'_summary'), ''))`;
+  const historyWindow = `NOW() - INTERVAL '90 days'`;
+  const historyBatchLimit = 100;
+  const selectionLimit = Math.min(100, Math.max(limit, Math.ceil(limit * 1.5)));
+  const selected = new Set<string>();
+  let cursorTime = new Date();
+  let cursorHash = '\uffff';
+
+  while (selected.size < selectionLimit) {
+    const batch = await analyticsQuery<{ packet_hash: string; time: Date }>(
+      `SELECT p.time, p.packet_hash
+       FROM packets p
+       LEFT JOIN packet_decryptions pd ON pd.packet_hash = p.packet_hash
+       WHERE p.packet_type = 5
+         AND p.time > ${historyWindow}
+         AND (
+           p.time < $2::timestamptz
+           OR (p.time = $2::timestamptz AND p.packet_hash < $3)
+         )
+         ${buildPacketScopeClause(scope, 'p', network)}
+         -- Apply the complete privacy predicate after this bounded candidate
+         -- page is selected. The path/private-prefix checks are intentionally
+         -- not evaluated for every historical packet observation.
+         AND p.visibility_ok IS TRUE
+         AND p.is_private IS NOT TRUE
+         AND (
+           LOWER(${summaryExpr}) LIKE ('[' || $4 || ']%')
+           OR LOWER(COALESCE(
+             p.payload->>'channelHash',
+             p.payload->'decrypted'->>'channelHash',
+             pd.decrypted->>'channelHash',
+             ''
+           )) = ANY($5::text[])
+         )
+       ORDER BY p.time DESC, p.packet_hash DESC
+       LIMIT $1`,
+      [historyBatchLimit, cursorTime, cursorHash, normalizedChannel, channelHashes, ...scope.params],
+    );
+    if (batch.rows.length === 0) break;
+
+    for (const row of batch.rows) {
+      if (typeof row.packet_hash !== 'string' || selected.has(row.packet_hash)) continue;
+      selected.add(row.packet_hash);
+      if (selected.size >= selectionLimit) break;
+    }
+
+    const last = batch.rows.at(-1);
+    if (!last || batch.rows.length < historyBatchLimit) break;
+    cursorTime = last.time;
+    cursorHash = last.packet_hash;
+  }
+
+  const selectedHashes = Array.from(selected.keys());
+  if (selectedHashes.length === 0) return [];
+
+  const detailScope = buildScopePlaceholders(2, network, observer);
+  const res = await analyticsQuery(
+    `WITH channel_candidates AS MATERIALIZED (
+      SELECT DISTINCT ON (p.packet_hash)
+             p.time, p.packet_hash,
+             meshcore_canonical_node_id(p.rx_node_id) AS rx_node_id,
+             meshcore_canonical_node_id(p.src_node_id) AS src_node_id, p.topic,
+             p.iata,
+             p.packet_type, p.hop_count, p.rssi, p.snr, p.payload,
+             ${summaryExpr} AS summary,
+             p.advert_count, p.path_hashes, p.path_hash_size_bytes,
+             p.network, p.visibility_ok, p.is_private
+      FROM packets p
+      LEFT JOIN packet_decryptions pd ON pd.packet_hash = p.packet_hash
+      WHERE p.packet_hash = ANY($1::text[])
+        AND p.packet_type = 5
+        AND p.time > ${historyWindow}
+        ${buildPacketScopeClause(detailScope, 'p', network)}
+        AND p.visibility_ok IS TRUE
+        AND p.is_private IS NOT TRUE
+      ORDER BY p.packet_hash,
+               CASE WHEN ${summaryExpr} IS NOT NULL THEN 1 ELSE 0 END DESC,
+               CASE WHEN p.payload ? 'decrypted' THEN 1 ELSE 0 END DESC,
+               CASE WHEN p.src_node_id IS NOT NULL THEN 1 ELSE 0 END DESC,
+               p.time DESC
+    )
+    SELECT
+      m.time, m.packet_hash, m.rx_node_id, m.src_node_id, m.topic, m.iata,
+      m.packet_type, m.hop_count, m.rssi, m.snr, m.payload,
+      m.summary, m.advert_count, m.path_hashes, m.path_hash_size_bytes,
+      CASE WHEN m.rx_node_id IS NOT NULL THEN ARRAY[m.rx_node_id]::text[] ELSE ARRAY[]::text[] END AS observer_node_ids,
+      CASE WHEN NULLIF(TRIM(m.iata), '') IS NOT NULL THEN ARRAY[m.iata]::text[] ELSE ARRAY[]::text[] END AS observer_iatas,
+      CASE WHEN COALESCE(m.payload->>'direction', 'rx') <> 'tx' THEN 1 ELSE 0 END::int AS rx_count,
+      CASE WHEN COALESCE(m.payload->>'direction', 'rx') = 'tx' THEN 1 ELSE 0 END::int AS tx_count
+    FROM channel_candidates m
+    WHERE 1 = 1
+      ${buildPublicPacketPrivacyClause('m')}
+    ORDER BY m.time DESC`,
+    [selectedHashes, ...detailScope.params],
+  );
+  const channelPrefix = `[${normalizedChannel}]`;
+  return res.rows.slice(0, limit).map((row) => {
+    const summary = typeof row.summary === 'string' ? row.summary.trim() : '';
+    if (summary.toLowerCase().startsWith(channelPrefix)) return row;
+    // A channel-hash match can carry the generic live "[encrypted]" marker;
+    // normalize it to the selected channel so the existing feed scope matcher
+    // includes the row without changing the live packet path.
+    return { ...row, summary: `${channelPrefix}${summary ? ` ${summary}` : ''}` };
+  });
 }
 
 export async function getRecentPacketEvents(limit = 200, network?: string, observer?: string) {
