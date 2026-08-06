@@ -229,8 +229,10 @@ export function createOwnerRepository(deps: OwnerRepositoryDeps) {
         lat: number | null;
         lon: number | null;
         role: number | null;
+        members: string[];
       }>(
-        `SELECT node_id, name, network, iata, advert_count, last_seen, lat, lon, role
+        `SELECT node_id, name, network, iata, advert_count, last_seen, lat, lon, role,
+                identity_source_ids AS members
          FROM node_identity_nodes
          WHERE node_id = meshcore_canonical_node_id($1)
          LIMIT 1`,

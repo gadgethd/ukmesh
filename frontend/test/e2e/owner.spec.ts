@@ -5,6 +5,8 @@ const NODE_ID = 'A'.repeat(64);
 const dashboard = {
   nodes: [{
     node_id: NODE_ID,
+    canonicalId: NODE_ID,
+    members: [NODE_ID],
     name: 'Alpha Repeater',
     network: 'ukmesh',
     last_seen: '2026-07-16T10:00:00Z',
@@ -14,13 +16,6 @@ const dashboard = {
     iata: 'TST',
     role: 2,
   }],
-  totals: {
-    ownedNodes: 1,
-    packets24h: 25,
-    packets7d: 100,
-    packetsReceived24h: 20,
-  },
-  roadmap: [],
 };
 
 test('session polling does not reset the repeater owner content', async ({ page }) => {
@@ -62,6 +57,8 @@ test('session polling does not reset the repeater owner content', async ({ page 
 
   await page.goto('/login');
   await expect(page.getByText('Alpha Repeater', { exact: true })).toBeVisible();
+  await expect(page.locator('.owner-section-tabs')).toHaveCount(0);
+  await expect(page.locator('.owner-settings')).toHaveCount(0);
 
   const initialSessionRequests = sessionRequests;
   const initialLiveRequests = liveRequests;
@@ -119,8 +116,10 @@ test('owner map construction remains one across repeated live polls', async ({ p
   await page.route('**/api/owner/live-last-hop?**', (route) => route.fulfill({ json: { points: [] } }));
 
   await page.goto('/login');
-  await page.getByRole('button', { name: 'live', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Direct Sender Map' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Node Telemetry' })).toBeVisible();
+  await expect(page.locator('.owner-section-tabs')).toHaveCount(0);
+  await expect(page.locator('.owner-settings')).toHaveCount(0);
   await expect(page.locator('.owner-map')).toHaveCount(1);
   await expect.poll(() => page.evaluate(() => (
     (window as typeof window & { __ownerMapLifecycle: { constructions: number } })
