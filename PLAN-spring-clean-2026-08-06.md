@@ -257,5 +257,5 @@ local commit below.
 - **Evidence:** `SPRING-PAGES-2026-08-06.png` contains the real Googlebot
   captures for the removed `/health` state and retained `/spam` state. Summary:
   `SPRING-PAGES-2026-08-06.md`.
-- **Local commit:** to be recorded after the final scoped commit; no GitHub
-  push.
+- **Local commit:** `1c3841c` (`chore(website): spring-clean public pages`);
+  no GitHub push.
