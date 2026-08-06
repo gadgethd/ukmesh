@@ -1508,16 +1508,25 @@
    CSS cannot reverse the mobile cascade. */
 @media (max-width: 640px) {
   .mobile-fullscreen-toggle {
-    position: fixed;
-    z-index: 1200;
-    top: 56px;
-    right: 8px;
+    position: static;
     border: 1px solid var(--accent);
     border-radius: var(--radius-md);
     padding: 7px 10px;
     background: rgba(8, 13, 20, 0.92);
     color: var(--text-primary);
     font: 11px var(--font-mono);
+    width: 100%;
+    min-width: 0;
+    min-height: 40px;
+  }
+  .app-shell[data-mobile-fullscreen='true'] .mobile-fullscreen-toggle {
+    position: fixed;
+    z-index: 1200;
+    top: 56px;
+    right: 8px;
+    width: auto;
+    min-width: auto;
+    min-height: 0;
   }
   .app-shell[data-mobile-fullscreen='true'] .topbar,
   .app-shell[data-mobile-fullscreen='true'] .node-dock,
@@ -1745,9 +1754,41 @@
     width: min(330px, calc(100% - 16px));
   }
   .rf-coverage-details { grid-template-columns: 1fr 1fr; }
-  .mobile-controls > .map-modes {
+  .mobile-controls__primary {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 8px;
+    min-width: 0;
     padding: 8px 12px;
     border-bottom: 1px solid var(--border);
+  }
+  .mobile-controls__primary .map-modes {
+    display: contents;
+  }
+  .mobile-controls__primary .map-modes__buttons {
+    grid-column: 1 / -1;
+    min-width: 0;
+  }
+  .mobile-controls__primary .map-modes__button {
+    min-width: 0;
+    margin: 0;
+  }
+  .mobile-controls__primary .map-modes__share {
+    grid-column: 1;
+    min-width: 0;
+    margin: 0;
+  }
+  .mobile-controls__primary .mobile-fullscreen-toggle {
+    grid-column: 2;
+    min-width: 0;
+    margin: 0;
+    padding: 7px 8px;
+  }
+  .mobile-controls__primary--fullscreen {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .mobile-controls__primary--fullscreen .mobile-fullscreen-toggle {
+    grid-column: 1;
   }
   .mobile-map-tools {
     display: grid;
@@ -1785,6 +1826,12 @@
   }
   .packet-item { grid-template-columns: minmax(0, 1fr) auto; column-gap: 6px; }
   .packet-item__meta { font-size: 10px; }
+}
+
+@media (max-width: 420px) {
+  .mobile-controls__primary .map-modes__buttons {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 .map-tools {
   position: absolute;
@@ -1896,9 +1943,6 @@
    bottom edge. This keeps independently positioned map chrome from landing
    on the same pixels when the map becomes short. */
 @media (max-width: 640px) {
-  .mobile-controls__primary {
-    flex: 0 0 auto;
-  }
   .map-layer,
   .map-area {
     min-height: 0;
