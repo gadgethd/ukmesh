@@ -28,6 +28,7 @@ test('upgrades an empty keyless user block with exact per-node publish rules', (
   const updated = updateUserAclContent(initial, 'keyless.user', [NODE_ID]);
   assert.deepEqual(getNodeIdsForUserInAcl(updated, 'keyless.user'), [NODE_ID]);
   assert.match(updated, new RegExp(`user keyless\\.user\\ntopic write meshcore/\\+/${NODE_ID}/packets`));
+  assert.match(updated, new RegExp(`topic write meshcore/\\+/${NODE_ID}/neighbors`));
 });
 
 test('matches literal usernames instead of treating punctuation as a regular expression', () => {
@@ -108,4 +109,17 @@ test('cutover validation blocks empty managed accounts unless explicitly reviewe
 
   const reviewed = renderOwnerAcl('', [{ mqttUsername: 'revoked', nodeIds: [] }], [], ['revoked']);
   assert.equal(reviewed.validation.ok, true);
+});
+
+test('an explicit grant takes precedence over an unmanaged staging entry', () => {
+  const rendered = renderOwnerAcl(
+    'user hermes-test\ntopic read meshcore/#\n',
+    [{ mqttUsername: 'hermes-test', nodeIds: [NODE_ID] }],
+    ['hermes-test'],
+  );
+
+  assert.equal(rendered.validation.ok, true);
+  assert.match(rendered.content, new RegExp(`user hermes-test\\ntopic write meshcore/\\+/${NODE_ID}/packets`));
+  assert.doesNotMatch(rendered.content, /topic read meshcore\/#/);
+  assert.deepEqual(rendered.semantic, [{ mqttUsername: 'hermes-test', nodeIds: [NODE_ID] }]);
 });
