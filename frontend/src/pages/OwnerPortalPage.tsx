@@ -39,6 +39,8 @@ import {
   formatUptime,
 } from './owner/OwnerPortalCharts.js';
 import { OwnerMapView } from './owner/OwnerMapView.js';
+import { OwnerHeardNeighbors } from './owner/OwnerHeardNeighbors.js';
+import { OwnerStatusFields } from './owner/OwnerStatusFields.js';
 export const OwnerPortalPage: React.FC = () => {
   const { privacyGeneration } = useRuntimeFeatures();
   const [mqttUsername, setMqttUsername] = useState('');
@@ -377,6 +379,17 @@ export const OwnerPortalPage: React.FC = () => {
               </div>
             </section>
 
+            <section className="owner-panel owner-status-panel">
+              <div className="owner-panel__head">
+                <div>
+                  <h2>Node status</h2>
+                  <p className="prose-note">Latest nullable diagnostics reported by the node.</p>
+                </div>
+                <span className="owner-status-panel__sample">{live?.status?.sampled_at ? fmtTs(live.status.sampled_at) : 'No sample'}</span>
+              </div>
+              <OwnerStatusFields status={live?.status ?? null} />
+            </section>
+
             <div className="owner-dashboard-grid">
               <section className="prose-section owner-panel owner-panel--map">
                 <div className="owner-panel__head">
@@ -474,6 +487,16 @@ export const OwnerPortalPage: React.FC = () => {
                     <p className="prose-note">No nodes have received packets from this node in the last 7 days.</p>
                   ) : null}
                 </div>
+              </section>
+
+              <section className="prose-section owner-panel owner-panel--neighbors">
+                <div className="owner-panel__head">
+                  <div>
+                    <h2>Heard neighbors</h2>
+                    <p className="prose-note" style={{ marginTop: 0 }}>The latest neighbor sample, sorted by last-seen recency (up to 32 nodes).</p>
+                  </div>
+                </div>
+                <OwnerHeardNeighbors neighbors={live?.heardNeighbors ?? []} />
               </section>
 
               <section className="prose-section owner-panel owner-panel--packets">

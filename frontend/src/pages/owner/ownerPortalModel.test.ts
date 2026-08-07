@@ -2,6 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   cleanPacketBody,
+  formatDurationMs,
+  formatEpochSeconds,
+  formatNeighborAge,
   isOwnerLiveResponse,
   isOwnerSessionResponse,
   isValidMapCoord,
@@ -30,6 +33,15 @@ test('owner role and packet presentation remain stable', () => {
     sender: null,
     body: '4',
   }), null);
+});
+
+test('owner telemetry durations and unsynced epochs are humanized safely', () => {
+  assert.equal(formatDurationMs((1 * 24 * 60 + 2 * 60 + 3) * 60_000), '1d 2h 3m');
+  assert.equal(formatDurationMs(0), '0m');
+  assert.equal(formatDurationMs(null), '—');
+  assert.equal(formatEpochSeconds(0), 'Unsynced');
+  assert.equal(formatNeighborAge(null), '—');
+  assert.equal(formatNeighborAge('2026-08-07T00:00:00.000Z', Date.parse('2026-08-07T01:02:00.000Z')), '1h 2m ago');
 });
 
 test('owner response guards reject structurally incomplete payloads', () => {
