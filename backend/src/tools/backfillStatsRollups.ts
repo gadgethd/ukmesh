@@ -1,8 +1,9 @@
 import { pool, query } from '../db/index.js';
 import { publicPacketPrivacySql } from '../api/utils/networkFilters.js';
 
-type CountRow = { count: string };
 const PUBLIC_PACKET_PRIVACY_SQL = publicPacketPrivacySql('p');
+
+type CountRow = { count: string };
 
 function argValue(flag: string): string | undefined {
   const index = process.argv.indexOf(flag);
@@ -38,7 +39,6 @@ async function describeHourlyBackfill(days: number): Promise<void> {
           FROM packets p
          WHERE p.time >= b.window_start
            AND p.time < b.window_end
-           AND ${PUBLIC_PACKET_PRIVACY_SQL}
            AND (
              p.network = 'test'
              OR COALESCE(NULLIF(p.topic_prefix, ''), split_part(p.topic, '/', 1)) <> 'meshcore-test'
@@ -47,7 +47,6 @@ async function describeHourlyBackfill(days: number): Promise<void> {
           FROM packets p
          WHERE p.time >= b.window_start
            AND p.time < b.window_end
-           AND ${PUBLIC_PACKET_PRIVACY_SQL}
            AND (
              p.network = 'test'
              OR COALESCE(NULLIF(p.topic_prefix, ''), split_part(p.topic, '/', 1)) <> 'meshcore-test'
@@ -136,7 +135,6 @@ async function backfillHourlyStats(days: number, pauseMs: number): Promise<void>
            FROM packets p
            WHERE p.time >= $1::timestamptz
              AND p.time < $2::timestamptz
-             AND ${PUBLIC_PACKET_PRIVACY_SQL}
              AND (
                p.network = 'test'
                OR COALESCE(NULLIF(p.topic_prefix, ''), split_part(p.topic, '/', 1)) <> 'meshcore-test'
@@ -271,7 +269,6 @@ async function catchUpCurrentHour(): Promise<void> {
            FROM packets p
            WHERE p.time >= $1::timestamptz
              AND p.time < $2::timestamptz
-             AND ${PUBLIC_PACKET_PRIVACY_SQL}
              AND (
                p.network = 'test'
                OR COALESCE(NULLIF(p.topic_prefix, ''), split_part(p.topic, '/', 1)) <> 'meshcore-test'
@@ -337,6 +334,7 @@ async function backfillDailyStats(days: number): Promise<void> {
          WHERE p.time >= $1::date - $2::integer
            AND p.time < $1::date - ($2::integer - 1)
            AND p.hop_count IS NOT NULL
+           AND ${PUBLIC_PACKET_PRIVACY_SQL}
          ORDER BY p.network, p.time::date, p.hop_count DESC, p.time DESC, p.packet_hash DESC
        ), inserted AS (
          INSERT INTO packet_daily_stats
