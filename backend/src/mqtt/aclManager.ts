@@ -139,12 +139,14 @@ function buildManagedSection(grants: OwnerAclGrant[], generation: string): strin
       lines.push(`topic write meshcore/+/${nodeId}/packets`);
       lines.push(`topic write meshcore/+/${nodeId}/status`);
       lines.push(`topic write meshcore/+/${nodeId}/neighbors`);
+      lines.push(`topic write meshcore/+/${nodeId}/neighbours`);
       // Test-scope equivalents: grant holders may also run observer nodes in
       // the isolated test network (network='test', e.g. IATA=TST) used for
       // firmware bring-up and soak testing.
       lines.push(`topic write meshcore-test/+/${nodeId}/packets`);
       lines.push(`topic write meshcore-test/+/${nodeId}/status`);
       lines.push(`topic write meshcore-test/+/${nodeId}/neighbors`);
+      lines.push(`topic write meshcore-test/+/${nodeId}/neighbours`);
     }
     lines.push('');
   }
@@ -247,9 +249,11 @@ export function validateRenderedOwnerAcl(content: string, expected: OwnerAclRend
       if (!content.includes(`topic write meshcore/+/${nodeId}/packets`)
         || !content.includes(`topic write meshcore/+/${nodeId}/status`)
         || !content.includes(`topic write meshcore/+/${nodeId}/neighbors`)
+        || !content.includes(`topic write meshcore/+/${nodeId}/neighbours`)
         || !content.includes(`topic write meshcore-test/+/${nodeId}/packets`)
         || !content.includes(`topic write meshcore-test/+/${nodeId}/status`)
-        || !content.includes(`topic write meshcore-test/+/${nodeId}/neighbors`)) {
+        || !content.includes(`topic write meshcore-test/+/${nodeId}/neighbors`)
+        || !content.includes(`topic write meshcore-test/+/${nodeId}/neighbours`)) {
         throw new Error(`OWNER_ACL_SEMANTIC_MISMATCH:${grant.mqttUsername}:${nodeId}`);
       }
     }
@@ -260,7 +264,7 @@ export function getNodeIdsForUserInAcl(content: string, mqttUsername: string): s
   const nodeIds: string[] = [];
   for (const stanza of parseAcl(content).stanzas.filter((candidate) => candidate.username === mqttUsername)) {
     for (const directive of stanza.directives) {
-      const match = directive.line.match(/^topic\s+write\s+meshcore\/\+\/([0-9A-Fa-f]{64})\/(?:packets|status|neighbors)$/);
+      const match = directive.line.match(/^topic\s+write\s+meshcore\/\+\/([0-9A-Fa-f]{64})\/(?:packets|status|neighbors|neighbours)$/);
       if (match) nodeIds.push(match[1]!.toUpperCase());
     }
   }

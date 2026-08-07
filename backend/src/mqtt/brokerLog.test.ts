@@ -24,6 +24,7 @@ test('extracts an exact public key only from supported owner MQTT topics', () =>
   assert.equal(parseOwnerNodeTopic(`meshcore/NCL/${NODE_ID}/packets`), NODE_ID);
   assert.equal(parseOwnerNodeTopic(`ukmesh/ncl/${NODE_ID.toLowerCase()}/status`), NODE_ID);
   assert.equal(parseOwnerNodeTopic(`meshcore/NCL/${NODE_ID}/neighbors`), NODE_ID);
+  assert.equal(parseOwnerNodeTopic(`meshcore/NCL/${NODE_ID}/neighbours`), NODE_ID);
   assert.equal(parseOwnerNodeTopic(`meshcore-test/NCL/${NODE_ID}/packets`), null);
   assert.equal(parseOwnerNodeTopic(`meshcore/NCL/${NODE_ID}/internal`), null);
   assert.equal(parseOwnerNodeTopic('meshcore/NCL/not-a-key/packets'), null);

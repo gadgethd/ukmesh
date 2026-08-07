@@ -41,6 +41,7 @@ import { useWatchlist } from '../hooks/useWatchlist.js';
 import { isStatsPayloadEmpty } from './statsState.js';
 import './path-modal.css';
 import './stats-page.css';
+import { fmtAxisDay, fmtAxisTime } from './statsTimeFormat.js';
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 export const StatsPage: React.FC = () => {
@@ -194,7 +195,7 @@ export const StatsPage: React.FC = () => {
                   <ChartCard
                     title="Observed packets per hour"
                     sub="rolling 1h window · last 24 hours"
-                    summary={describeSeries(data.packetsPerHour, (row) => row.hour, (row) => row.count, 'packets')}
+                    summary={describeSeries(data.packetsPerHour, (row) => fmtAxisTime(row.hour), (row) => row.count, 'packets')}
                   >
                     <ResponsiveContainer width="100%" height={220}>
                       <AreaChart data={data.packetsPerHour} margin={{ top: 8, right: 8, left: -20, bottom: 0 }}>
@@ -205,9 +206,9 @@ export const StatsPage: React.FC = () => {
                           </linearGradient>
                         </defs>
                         <CartesianGrid {...gridProps} />
-                        <XAxis dataKey="hour" {...axisProps} interval="preserveStartEnd" />
+                        <XAxis dataKey="hour" {...axisProps} interval="preserveStartEnd" tickFormatter={fmtAxisTime} />
                         <YAxis {...axisProps} />
-                        <Tooltip content={<CustomTooltip />} />
+                        <Tooltip content={<CustomTooltip />} labelFormatter={fmtAxisTime} />
                         <Area type="monotone" dataKey="count" name="Packets" stroke={C_CYAN} fill="url(#gCyan)" strokeWidth={2} dot={false} />
                       </AreaChart>
                     </ResponsiveContainer>
@@ -216,14 +217,14 @@ export const StatsPage: React.FC = () => {
                   <ChartCard
                     title="Observed packets per day"
                     sub="last 7 days"
-                    summary={describeSeries(data.packetsPerDay, (row) => row.day, (row) => row.count, 'packets')}
+                    summary={describeSeries(data.packetsPerDay, (row) => fmtAxisDay(row.day), (row) => row.count, 'packets')}
                   >
                     <ResponsiveContainer width="100%" height={220}>
                       <BarChart data={data.packetsPerDay} margin={{ top: 8, right: 8, left: -20, bottom: 0 }}>
                         <CartesianGrid {...gridProps} />
-                        <XAxis dataKey="day" {...axisProps} />
+                        <XAxis dataKey="day" {...axisProps} tickFormatter={fmtAxisDay} />
                         <YAxis {...axisProps} />
-                        <Tooltip content={<CustomTooltip />} />
+                        <Tooltip content={<CustomTooltip />} labelFormatter={fmtAxisDay} />
                         <Bar dataKey="count" name="Packets" fill={C_CYAN} fillOpacity={0.8} radius={[3, 3, 0, 0]} />
                       </BarChart>
                     </ResponsiveContainer>
@@ -234,7 +235,7 @@ export const StatsPage: React.FC = () => {
                   <ChartCard
                     title="Unique radios heard per hour"
                     sub="distinct transmitting nodes · last 24 hours"
-                    summary={describeSeries(data.radiosPerHour, (row) => row.hour, (row) => row.count, 'radios')}
+                    summary={describeSeries(data.radiosPerHour, (row) => fmtAxisTime(row.hour), (row) => row.count, 'radios')}
                   >
                     <ResponsiveContainer width="100%" height={220}>
                       <AreaChart data={data.radiosPerHour} margin={{ top: 8, right: 8, left: -20, bottom: 0 }}>
@@ -245,9 +246,9 @@ export const StatsPage: React.FC = () => {
                           </linearGradient>
                         </defs>
                         <CartesianGrid {...gridProps} />
-                        <XAxis dataKey="hour" {...axisProps} interval="preserveStartEnd" />
+                        <XAxis dataKey="hour" {...axisProps} interval="preserveStartEnd" tickFormatter={fmtAxisTime} />
                         <YAxis {...axisProps} allowDecimals={false} />
-                        <Tooltip content={<CustomTooltip />} />
+                        <Tooltip content={<CustomTooltip />} labelFormatter={fmtAxisTime} />
                         <Area type="monotone" dataKey="count" name="Radios" stroke={C_GREEN} fill="url(#gGreen)" strokeWidth={2} dot={false} />
                       </AreaChart>
                     </ResponsiveContainer>
@@ -256,14 +257,14 @@ export const StatsPage: React.FC = () => {
                   <ChartCard
                     title="Unique radios heard per day"
                     sub="distinct transmitting nodes · last 7 days"
-                    summary={describeSeries(data.radiosPerDay, (row) => row.day, (row) => row.count, 'radios')}
+                    summary={describeSeries(data.radiosPerDay, (row) => fmtAxisDay(row.day), (row) => row.count, 'radios')}
                   >
                     <ResponsiveContainer width="100%" height={220}>
                       <BarChart data={data.radiosPerDay} margin={{ top: 8, right: 8, left: -20, bottom: 0 }}>
                         <CartesianGrid {...gridProps} />
-                        <XAxis dataKey="day" {...axisProps} />
+                        <XAxis dataKey="day" {...axisProps} tickFormatter={fmtAxisDay} />
                         <YAxis {...axisProps} allowDecimals={false} />
-                        <Tooltip content={<CustomTooltip />} />
+                        <Tooltip content={<CustomTooltip />} labelFormatter={fmtAxisDay} />
                         <Bar dataKey="count" name="Radios" fill={C_GREEN} fillOpacity={0.8} radius={[3, 3, 0, 0]} />
                       </BarChart>
                     </ResponsiveContainer>
@@ -624,14 +625,14 @@ export const StatsPage: React.FC = () => {
                   <ChartCard
                     title="Multibyte path-hash trend"
                     sub="packet-inferred path hashes · last 7 days"
-                    summary={describeSeries(data.pathDecodeTrend, (row) => row.day, (row) => row.multibyte, 'multibyte paths')}
+                    summary={describeSeries(data.pathDecodeTrend, (row) => fmtAxisDay(row.day), (row) => row.multibyte, 'multibyte paths')}
                   >
                     <ResponsiveContainer width="100%" height={220}>
                       <BarChart data={data.pathDecodeTrend} margin={{ top: 8, right: 8, left: -20, bottom: 0 }}>
                         <CartesianGrid {...gridProps} />
-                        <XAxis dataKey="day" {...axisProps} />
+                        <XAxis dataKey="day" {...axisProps} tickFormatter={fmtAxisDay} />
                         <YAxis {...axisProps} />
-                        <Tooltip content={<CustomTooltip />} />
+                        <Tooltip content={<CustomTooltip />} labelFormatter={fmtAxisDay} />
                         <Bar dataKey="multibyte" name="Multibyte" fill={C_CYAN} fillOpacity={0.75} radius={[3, 3, 0, 0]} />
                       </BarChart>
                     </ResponsiveContainer>

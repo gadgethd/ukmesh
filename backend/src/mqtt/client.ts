@@ -103,8 +103,8 @@ function emitNodeUpsert(node: Record<string, unknown>): void {
 
 /**
  * Topic formats:
- *   meshcore/{IATA}/{OBSERVER_PUBLIC_KEY}/{packets|status|neighbors}
- *   ukmesh/{IATA}/{OBSERVER_PUBLIC_KEY}/{packets|status|neighbors} (legacy, accepted during migration)
+ *   meshcore/{IATA}/{OBSERVER_PUBLIC_KEY}/{packets|status|neighbors|neighbours}
+ *   ukmesh/{IATA}/{OBSERVER_PUBLIC_KEY}/{packets|status|neighbors|neighbours} (legacy, accepted during migration)
  *   meshcore-test/{IATA}/{OBSERVER_PUBLIC_KEY}/{packets|status|neighbors} (isolated dev/test ingest)
  *
  * Public-network assignment is derived from observer IATA:
@@ -116,7 +116,8 @@ function emitNodeUpsert(node: Record<string, unknown>): void {
  *
  * mctomqtt JSON structure:
  *   status:  { origin, origin_id, model, firmware_version, radio, client_version }
- *   neighbors: { nodes: [...] }
+ *   neighbors/neighbours: { nodes: [...] } (both spellings accepted — the
+ *   official MeshCore firmware publishes the UK spelling, the MQTT fork the US)
  *   packets: { raw (hex), hash, packet_type, SNR, RSSI, score, route, len,
  *              payload_len, direction, origin, origin_id, timestamp, type }
  *   All numeric values arrive as strings from mctomqtt regex groups.
@@ -610,7 +611,7 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
     return;
   }
 
-  if (suffix === 'neighbors') {
+  if (suffix === 'neighbors' || suffix === 'neighbours') {
     const neighbors = extractNeighborNodes(json);
     if (!neighbors) {
       mqttIngestOutcomesTotal.inc({ outcome: 'invalid_neighbors' });

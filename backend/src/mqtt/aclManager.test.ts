@@ -29,6 +29,7 @@ test('upgrades an empty keyless user block with exact per-node publish rules', (
   assert.deepEqual(getNodeIdsForUserInAcl(updated, 'keyless.user'), [NODE_ID]);
   assert.match(updated, new RegExp(`user keyless\\.user\\ntopic write meshcore/\\+/${NODE_ID}/packets`));
   assert.match(updated, new RegExp(`topic write meshcore/\\+/${NODE_ID}/neighbors`));
+  assert.match(updated, new RegExp(`topic write meshcore/\\+/${NODE_ID}/neighbours`));
 });
 
 test('matches literal usernames instead of treating punctuation as a regular expression', () => {
