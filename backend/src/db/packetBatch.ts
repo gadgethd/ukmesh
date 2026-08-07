@@ -325,9 +325,8 @@ async function writeBatch(batch: PendingPacket[], idempotent: boolean): Promise<
            COUNT(snr)::bigint,
            NOW()
          FROM ${persistenceSource}
-         WHERE path_is_valid
-           AND NOT is_private
-           AND (network = 'test' OR topic_prefix <> 'meshcore-test')
+         WHERE network = 'test'
+            OR topic_prefix <> 'meshcore-test'
          GROUP BY
            network,
            date_trunc('hour', time),
