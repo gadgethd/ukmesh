@@ -165,16 +165,18 @@ export function createStatsService(deps: StatsServiceDeps) {
   let activeObserverWork = 0;
 
   const fmtHour = (ts: Date | string) => {
+    // Machine-readable ISO for the client: axis labels are formatted in the
+    // viewer's local timezone (never format display strings server-side).
     const d = new Date(ts);
-    return `${d.getHours().toString().padStart(2, '0')}:00`;
+    return Number.isFinite(d.getTime()) ? d.toISOString() : String(ts);
   };
   const fmtHourMinute = (ts: Date | string) => {
     const d = new Date(ts);
-    return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
+    return Number.isFinite(d.getTime()) ? d.toISOString() : String(ts);
   };
   const fmtDay = (ts: Date | string) => {
     const d = new Date(ts);
-    return d.toLocaleDateString('en-GB', { weekday: 'short', month: 'short', day: 'numeric' });
+    return Number.isFinite(d.getTime()) ? d.toISOString() : String(ts);
   };
   const decodeTransportCodes = (raw: unknown) => {
     const hex = String(raw ?? '').trim().toUpperCase();
