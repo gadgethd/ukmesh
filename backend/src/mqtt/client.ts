@@ -120,7 +120,8 @@ function emitNodeUpsert(node: Record<string, unknown>): void {
  *   All numeric values arrive as strings from mctomqtt regex groups.
  */
 const DEFAULT_TOPIC_PREFIXES = ['meshcore', 'ukmesh', 'meshcore-test'];
-// Junk/test-marker IATAs are dropped at ingest regardless of topic prefix.
+// Test-marker IATAs are isolated to the 'test' network scope regardless of
+// topic prefix: persisted for analysis, excluded from every public scope.
 const BLOCKED_PUBLIC_IATAS = new Set(['TST']);
 const TOPIC_PREFIXES = new Set(
   String(process.env['MQTT_TOPIC_PREFIXES'] ?? DEFAULT_TOPIC_PREFIXES.join(','))
