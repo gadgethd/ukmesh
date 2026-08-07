@@ -129,7 +129,7 @@ test('canonical charts coalesce six high-volume dimensions into one maintained a
   assert.match(aggregateSql, /SELECT \* FROM rollup_24h\s+UNION ALL\s+SELECT \* FROM raw_24h/);
   assert.equal(
     calls.filter((sql) =>
-      sql.includes("time_bucket('1 hour', p.time) AS bucket, COUNT(DISTINCT p.packet_hash)::int AS count")).length,
+      sql.includes("time_bucket('1 hour', p.time) AS bucket, COUNT(*)::int AS count")).length,
     0,
   );
   assert.deepEqual(result.ptResult.rows, [{ packet_type: 4, count: '3' }]);
@@ -139,7 +139,7 @@ test('canonical charts coalesce six high-volume dimensions into one maintained a
   await repository.fetchChartsData('ukmesh', 'A'.repeat(64));
   assert.equal(calls.filter((sql) => sql.includes('FROM packet_hourly_stats')).length, 0);
   assert.ok(calls.some((sql) =>
-    sql.includes("time_bucket('1 hour', p.time) AS bucket, COUNT(DISTINCT p.packet_hash)::int AS count")));
+    sql.includes("time_bucket('1 hour', p.time) AS bucket, COUNT(*)::int AS count")));
 });
 
 test('map summary uses the same coordinate, role, and 14-day freshness rules as the map', async () => {
