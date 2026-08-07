@@ -60,7 +60,11 @@ function excludesLegacyTestTopic(prefix: string): string {
   return `COALESCE(NULLIF(${prefix}topic_prefix, ''), split_part(${prefix}topic, '/', 1)) <> 'meshcore-test'`;
 }
 
-export function networkFilters(network?: string, observer?: string): NetworkFilters {
+export function networkFilters(
+  network?: string,
+  observer?: string,
+  opts?: { includePrivacy?: boolean },
+): NetworkFilters {
   const params: unknown[] = [];
   let networkParam: string | null = null;
   let networkIsMulti = false;
@@ -102,7 +106,9 @@ export function networkFilters(network?: string, observer?: string): NetworkFilt
         OR meshcore_canonical_node_id(rx_node_id) = meshcore_canonical_node_id(${observerParam}))`,
     );
   }
-  packetConditions.push(...publicPacketPrivacyConditions(''));
+  if (opts?.includePrivacy !== false) {
+    packetConditions.push(...publicPacketPrivacyConditions(''));
+  }
 
   const nodeConditions = (alias?: string) => {
     const prefix = alias ? `${alias}.` : '';

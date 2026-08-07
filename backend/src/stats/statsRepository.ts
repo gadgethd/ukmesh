@@ -17,7 +17,7 @@ type QueryFn = <T extends QueryResultRow = QueryResultRow>(
 ) => Promise<{ rows: T[] }>;
 
 type StatsRepositoryDeps = {
-  networkFilters: (network?: string, observer?: string) => NetworkFilters;
+  networkFilters: (network?: string, observer?: string, opts?: { includePrivacy?: boolean }) => NetworkFilters;
   query: QueryFn;
   aggregateReadsEnabled?: boolean;
   aggregateShadowEnabled?: boolean;
@@ -181,11 +181,10 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
   }
 
   async function fetchChannelTraffic(network: string | undefined, observer: string | undefined) {
-    const filters = networkFilters(network, observer);
+    const filters = networkFilters(network, observer, { includePrivacy: false });
     return query<{ channel: string; count: string; total_count: string }>(`
       WITH decoded_group_packets AS (
         SELECT
-          p.packet_hash AS packet_hash,
           COALESCE(p.payload->>'_summary', '') AS summary,
           NULLIF(TRIM((regexp_match(COALESCE(p.payload->>'_summary', ''), '^\\[([^\\]]+)\\]'))[1]), '') AS parsed_channel
         FROM packets p
@@ -195,7 +194,6 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
       ),
       group_packets AS (
         SELECT
-          packet_hash,
           COALESCE(
             CASE
               WHEN parsed_channel IS NOT NULL
@@ -210,7 +208,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
         FROM decoded_group_packets
       ),
       channel_counts AS (
-        SELECT channel, COUNT(DISTINCT packet_hash)::text AS count
+        SELECT channel, COUNT(*)::text AS count
         FROM group_packets
         GROUP BY channel
       )
@@ -681,6 +679,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
 
   async function fetchChartsData(network: string | undefined, observer: string | undefined) {
     const filters = networkFilters(network, observer);
+    const totalFilters = networkFilters(network, observer, { includePrivacy: false });
     const aggregateAsOf = new Date();
     const aggregatePartsPromise = aggregateReadsEnabled && !observer
       ? fetchAggregateChartParts(network, aggregateAsOf)
@@ -709,7 +708,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
           ) AS bucket
         ),
         counts AS (
-          SELECT time_bucket('1 hour', p.time) AS bucket, COUNT(DISTINCT p.packet_hash)::int AS count
+          SELECT time_bucket('1 hour', p.time) AS bucket, COUNT(*)::int AS count
           FROM packets p
           WHERE p.time > NOW() - INTERVAL '24 hours'
             ${filters.packetsAlias('p')}
@@ -721,7 +720,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
         ORDER BY b.bucket
       `, filters.params)),
       aggregateRows('packetsPerDay', () => query(`
-        SELECT time_bucket('1 day', time) AS day, COUNT(DISTINCT packet_hash) AS count
+        SELECT time_bucket('1 day', time) AS day, COUNT(*) AS count
         FROM packets
         WHERE time > NOW() - INTERVAL '7 days' ${filters.packets}
         GROUP BY day ORDER BY day
@@ -756,13 +755,13 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
         GROUP BY day ORDER BY day
       `, filters.params),
       aggregateRows('packetTypes', () => query(`
-        SELECT packet_type, COUNT(DISTINCT packet_hash) AS count
+        SELECT packet_type, COUNT(*) AS count
         FROM packets
         WHERE time > NOW() - INTERVAL '24 hours' ${filters.packets}
         GROUP BY packet_type ORDER BY count DESC
       `, filters.params)),
       aggregateRows('hopDistribution', () => query(`
-        SELECT hop_count AS hops, COUNT(DISTINCT packet_hash) AS count
+        SELECT hop_count AS hops, COUNT(*) AS count
         FROM packets
         WHERE time > NOW() - INTERVAL '7 days'
           AND hop_count IS NOT NULL
@@ -791,8 +790,8 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
       `, filters.params),
       query(`
         SELECT
-          (SELECT COUNT(DISTINCT packet_hash) FROM packets WHERE time > NOW() - INTERVAL '24 hours' ${filters.packets}) AS total_24h,
-          (SELECT COUNT(DISTINCT packet_hash) FROM packets WHERE time > NOW() - INTERVAL '7 days' ${filters.packets}) AS total_7d,
+          (SELECT COUNT(*) FROM packets WHERE time > NOW() - INTERVAL '24 hours' ${totalFilters.packets}) AS total_24h,
+          (SELECT COUNT(*) FROM packets WHERE time > NOW() - INTERVAL '7 days' ${totalFilters.packets}) AS total_7d,
           (SELECT COUNT(DISTINCT meshcore_canonical_node_id(src_node_id))
              FROM packets
             WHERE time > NOW() - INTERVAL '24 hours'
@@ -1063,7 +1062,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
         filters.params,
       ),
       aggregateRows('routeTypes', () => query<{ route_type: string; count: string }>(
-        `SELECT COALESCE(p.route_type::text, 'Unknown') AS route_type, COUNT(DISTINCT p.packet_hash)::text AS count
+        `SELECT COALESCE(p.route_type::text, 'Unknown') AS route_type, COUNT(*)::text AS count
          FROM packets p
          WHERE p.time > NOW() - INTERVAL '24 hours'
            ${filters.packetsAlias('p')}
@@ -1075,10 +1074,10 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
         `SELECT
            NULLIF(TRIM(p.transport_codes), '') AS transport_code,
            NULLIF(TRIM(p.region_scope), '') AS region_scope,
-           COUNT(DISTINCT p.packet_hash)::text AS count
-                   FROM packets p
-                   WHERE p.time > NOW() - INTERVAL '24 hours'
-                     AND NULLIF(TRIM(p.transport_codes), '') IS NOT NULL
+           COUNT(*)::text AS count
+                              FROM packets p
+                              WHERE p.time > NOW() - INTERVAL '24 hours'
+                                AND NULLIF(TRIM(p.transport_codes), '') IS NOT NULL
            ${filters.packetsAlias('p')}
          GROUP BY 1, 2
          ORDER BY COUNT(*) DESC, region_scope ASC, transport_code ASC
@@ -1254,6 +1253,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
 
   async function fetchStatsSummary(network: string | undefined, observer: string | undefined) {
     const filters = networkFilters(network, observer);
+    const totalFilters = networkFilters(network, observer, { includePrivacy: false });
     const longestHopResult = () => {
       if (observer) {
         return query(`SELECT hop_count AS count, packet_hash AS hash
@@ -1305,7 +1305,10 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
             AND rx_node_id NOT IN (SELECT rx_node_id FROM test_active)
             ${filters.packets}
         `, filters.params),
-      query(`SELECT COUNT(DISTINCT packet_hash) AS count FROM packets WHERE time > NOW() - INTERVAL '24 hours' ${filters.packets}`, filters.params),
+      query(`SELECT COUNT(*) AS count FROM packets
+             WHERE time > NOW() - INTERVAL '24 hours'
+               AND rx_node_id IS NOT NULL AND rx_node_id <> ''
+               ${totalFilters.packets}`, totalFilters.params),
       query(`SELECT COUNT(*) AS count FROM node_identity_nodes nodes
              WHERE ${publicMapBasePredicate('nodes')}
                AND ${nodeEffectiveLastSeenSql('nodes')}

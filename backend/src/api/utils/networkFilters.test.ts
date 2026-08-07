@@ -28,6 +28,15 @@ test('public packet scopes keep legacy test-topic rows out', () => {
   assert.doesNotMatch(filters.packets, /private_node\.name LIKE '%🚫%'/);
 });
 
+test('includePrivacy:false omits visibility and private-prefix conditions', () => {
+  const filters = networkFilters('ukmesh', undefined, { includePrivacy: false });
+  assert.match(filters.packets, /network = ANY\(\$1\)/);
+  assert.doesNotMatch(filters.packets, /visibility_ok IS TRUE/);
+  assert.doesNotMatch(filters.packets, /private_node_prefixes private_prefix/);
+  const defaulted = networkFilters('ukmesh');
+  assert.match(defaulted.packets, /visibility_ok IS TRUE/);
+});
+
 test('owned public visibility scopes carry observer filtering', () => {
   const filters = publicNetworkFilters({
     access: 'public',

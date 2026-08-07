@@ -37,7 +37,7 @@ type StatsRouteDeps = {
   chartsInflight: Map<string, Promise<unknown>>;
   expensiveLimiter: ReturnType<typeof import('express-rate-limit').rateLimit>;
   statsChartsLimiter: ReturnType<typeof import('express-rate-limit').rateLimit>;
-  networkFilters: (network?: string, observer?: string) => NetworkFilters;
+  networkFilters: (network?: string, observer?: string, opts?: { includePrivacy?: boolean }) => NetworkFilters;
   query: QueryFn;
   getPublicVisibilityGeneration: () => Promise<number>;
   maskDecodedPathNodes: MaskDecodedPathNodesFn;
