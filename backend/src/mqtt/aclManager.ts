@@ -139,6 +139,12 @@ function buildManagedSection(grants: OwnerAclGrant[], generation: string): strin
       lines.push(`topic write meshcore/+/${nodeId}/packets`);
       lines.push(`topic write meshcore/+/${nodeId}/status`);
       lines.push(`topic write meshcore/+/${nodeId}/neighbors`);
+      // Test-scope equivalents: grant holders may also run observer nodes in
+      // the isolated test network (network='test', e.g. IATA=TST) used for
+      // firmware bring-up and soak testing.
+      lines.push(`topic write meshcore-test/+/${nodeId}/packets`);
+      lines.push(`topic write meshcore-test/+/${nodeId}/status`);
+      lines.push(`topic write meshcore-test/+/${nodeId}/neighbors`);
     }
     lines.push('');
   }
@@ -240,7 +246,10 @@ export function validateRenderedOwnerAcl(content: string, expected: OwnerAclRend
     for (const nodeId of grant.nodeIds) {
       if (!content.includes(`topic write meshcore/+/${nodeId}/packets`)
         || !content.includes(`topic write meshcore/+/${nodeId}/status`)
-        || !content.includes(`topic write meshcore/+/${nodeId}/neighbors`)) {
+        || !content.includes(`topic write meshcore/+/${nodeId}/neighbors`)
+        || !content.includes(`topic write meshcore-test/+/${nodeId}/packets`)
+        || !content.includes(`topic write meshcore-test/+/${nodeId}/status`)
+        || !content.includes(`topic write meshcore-test/+/${nodeId}/neighbors`)) {
         throw new Error(`OWNER_ACL_SEMANTIC_MISMATCH:${grant.mqttUsername}:${nodeId}`);
       }
     }
