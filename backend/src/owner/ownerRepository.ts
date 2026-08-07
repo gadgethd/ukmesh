@@ -637,11 +637,15 @@ export function createOwnerRepository(deps: OwnerRepositoryDeps) {
            CASE
              WHEN jsonb_typeof(item->'snr') = 'number' THEN (item->>'snr')::double precision
              WHEN jsonb_typeof(item->'SNR') = 'number' THEN (item->>'SNR')::double precision
+             WHEN jsonb_typeof(item->'snr_db') = 'number' THEN (item->>'snr_db')::double precision
              ELSE NULL
            END AS snr,
            COALESCE(
              CASE WHEN jsonb_typeof(item->'last_seen') IN ('string', 'number') THEN item->>'last_seen' ELSE NULL END,
-             CASE WHEN jsonb_typeof(item->'lastSeen') IN ('string', 'number') THEN item->>'lastSeen' ELSE NULL END
+             CASE WHEN jsonb_typeof(item->'lastSeen') IN ('string', 'number') THEN item->>'lastSeen' ELSE NULL END,
+             CASE WHEN jsonb_typeof(item->'heard_secs_ago') = 'number'
+                  THEN (latest.time - ((item->>'heard_secs_ago')::double precision * INTERVAL '1 second'))::text
+                  ELSE NULL END
            ) AS last_seen,
            latest.time::text AS sample_time
          FROM latest

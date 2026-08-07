@@ -8,6 +8,12 @@ test('extracts the raw neighbor array, including an empty sample', () => {
   assert.deepEqual(extractNeighborNodes({ nodes: [] }), []);
 });
 
+test('accepts the official firmware UK-spelling envelope', () => {
+  const neighbours = [{ id: '5F318F39', snr_db: -4.5, heard_secs_ago: 3863 }];
+  assert.deepEqual(extractNeighborNodes({ neighbours }), neighbours);
+  assert.deepEqual(extractNeighborNodes({ neighbours: [] }), []);
+});
+
 test('rejects malformed neighbor envelopes', () => {
   assert.equal(extractNeighborNodes(null), null);
   assert.equal(extractNeighborNodes([]), null);
