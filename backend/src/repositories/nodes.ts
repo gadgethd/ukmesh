@@ -233,10 +233,10 @@ export function createNodeRepository(query: QueryFn): NodeRepository {
       return (await query<NodeLinkRow>(
         `WITH source_node AS MATERIALIZED (
            SELECT node_id
-             FROM node_identity_nodes
+             FROM node_identity_nodes sn
             WHERE node_id = meshcore_canonical_node_id(${idParam})
               AND (name IS NULL OR name NOT LIKE '%🚫%')
-              ${filters.nodes}
+              ${filters.nodesAlias('sn')}
          ),
          relevant_links AS MATERIALIZED (
            SELECT
