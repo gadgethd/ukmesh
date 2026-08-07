@@ -31,6 +31,33 @@ type OwnerLastHopCacheEntry = {
   latestBucket: string | null;
 };
 
+function nullableNumber(value: unknown): number | null {
+  if (value == null || value === '') return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function nullableString(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() !== '' ? value : null;
+}
+
+function isoTimestamp(value: unknown): string | null {
+  if (typeof value !== 'string' || !value) return null;
+  const time = Date.parse(value);
+  return Number.isFinite(time) ? new Date(time).toISOString() : null;
+}
+
+function neighborTimestamp(value: unknown): string | null {
+  if (typeof value === 'number' || (typeof value === 'string' && value.trim() !== '' && Number.isFinite(Number(value)))) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric) || numeric <= 0) return null;
+    const milliseconds = numeric > 1_000_000_000_000 ? numeric : numeric * 1_000;
+    const date = new Date(milliseconds);
+    return Number.isFinite(date.getTime()) ? date.toISOString() : null;
+  }
+  return isoTimestamp(value);
+}
+
 type OwnerServiceDeps = {
   ownerLiveCacheTtlMs: number;
   ownerLiveCache: Map<string, OwnerLiveCacheEntry>;
@@ -213,6 +240,7 @@ export function createOwnerService(deps: OwnerServiceDeps) {
       linkHealthResult,
       advertTrendResult,
       telemetryResult,
+      heardNeighborsResult,
       packetsSentResult,
       packetsReceivedResult,
     } = await repository.fetchOwnerLiveData(selectedNodeId);
@@ -248,6 +276,21 @@ export function createOwnerService(deps: OwnerServiceDeps) {
       best_hops: row.best_hops == null ? null : Number(row.best_hops),
       last_seen: row.last_seen ? new Date(row.last_seen).toISOString() : null,
     }));
+
+    const heardNeighbors = heardNeighborsResult.rows
+      .map((row) => ({
+        id: row.id,
+        rssi: nullableNumber(row.rssi),
+        snr: nullableNumber(row.snr),
+        last_seen_at: neighborTimestamp(row.last_seen),
+        sampled_at: isoTimestamp(row.sample_time),
+      }))
+      .sort((a, b) => {
+        const aTime = a.last_seen_at ? Date.parse(a.last_seen_at) : 0;
+        const bTime = b.last_seen_at ? Date.parse(b.last_seen_at) : 0;
+        return bTime - aTime;
+      })
+      .slice(0, 32);
 
     const linkHealth = linkHealthResult.rows.map((row) => ({
       ...row,
@@ -374,6 +417,49 @@ export function createOwnerService(deps: OwnerServiceDeps) {
       return Array.from(bucketed.values()).sort((a, b) => a.bucket.localeCompare(b.bucket));
     })();
 
+    const latestStatusRow = telemetryResult.rows[telemetryResult.rows.length - 1];
+    const status = latestStatusRow
+      ? {
+          sampled_at: isoTimestamp(latestStatusRow.time),
+          battery_mv: nullableNumber(latestStatusRow.battery_mv),
+          solar_mv: nullableNumber(latestStatusRow.solar_mv),
+          board_temp_c: nullableNumber(latestStatusRow.board_temp_c),
+          wifi_rssi: nullableNumber(latestStatusRow.wifi_rssi),
+          wifi_ssid: nullableString(latestStatusRow.wifi_ssid),
+          wifi_uptime_ms: nullableNumber(latestStatusRow.wifi_uptime_ms),
+          ntp_synced: typeof latestStatusRow.ntp_synced === 'boolean' ? latestStatusRow.ntp_synced : null,
+          ntp_sync_age_ms: nullableNumber(latestStatusRow.ntp_sync_age_ms),
+          boot_count: nullableNumber(latestStatusRow.boot_count),
+          reset_reason: nullableString(latestStatusRow.reset_reason),
+          max_loop_ms: nullableNumber(latestStatusRow.max_loop_ms),
+          max_loop_at_ms: nullableNumber(latestStatusRow.max_loop_at_ms),
+          nodes_heard_24h: nullableNumber(latestStatusRow.nodes_heard_24h),
+          channel_utilization: nullableNumber(latestStatusRow.channel_utilization),
+          air_util_tx: nullableNumber(latestStatusRow.air_util_tx),
+          air_util_rx: nullableNumber(latestStatusRow.air_util_rx),
+          last_rx_rssi: nullableNumber(latestStatusRow.last_rx_rssi),
+          last_rx_snr: nullableNumber(latestStatusRow.last_rx_snr),
+          tx_power_dbm: nullableNumber(latestStatusRow.tx_power_dbm),
+          config_version: nullableString(latestStatusRow.config_version),
+          config_crc32: nullableString(latestStatusRow.config_crc32),
+          fs_free_bytes: nullableNumber(latestStatusRow.fs_free_bytes),
+          fs_total_bytes: nullableNumber(latestStatusRow.fs_total_bytes),
+          nvs_free_entries: nullableNumber(latestStatusRow.nvs_free_entries),
+          channel_id: nullableNumber(latestStatusRow.channel_id),
+          git_commit: nullableString(latestStatusRow.git_commit),
+          boot_epoch: nullableNumber(latestStatusRow.boot_epoch),
+          mqtt: {
+            broker_uri: nullableString(latestStatusRow.mqtt_broker_uri),
+            broker_username: nullableString(latestStatusRow.mqtt_broker_username),
+            uptime_ms: nullableNumber(latestStatusRow.mqtt_uptime_ms),
+            reconnect_attempts_1h: nullableNumber(latestStatusRow.mqtt_reconnect_attempts_1h),
+            session_status_publishes: nullableNumber(latestStatusRow.mqtt_session_status_publishes),
+            session_packet_publishes: nullableNumber(latestStatusRow.mqtt_session_packet_publishes),
+            last_offline_epoch: nullableNumber(latestStatusRow.mqtt_last_offline_epoch),
+          },
+        }
+      : null;
+
     const alerts: Array<{ level: 'info' | 'warn' | 'error'; message: string }> = [];
     const ownerLastSeenMs = ownerNode.last_seen ? new Date(ownerNode.last_seen).getTime() : 0;
     const minsSinceSeen = ownerLastSeenMs ? Math.max(0, Math.round((Date.now() - ownerLastSeenMs) / 60000)) : null;
@@ -424,6 +510,8 @@ export function createOwnerService(deps: OwnerServiceDeps) {
       linkHealth,
       advertTrend24h,
       telemetry24h,
+      status,
+      heardNeighbors,
       packetsSent24h: Number(packetsSentResult.rows[0]?.packets_24h ?? 0),
       packetsReceived24h: Number(packetsReceivedResult.rows[0]?.packets_24h ?? 0),
       alerts,
