@@ -42,7 +42,7 @@ export function parseOwnerNodeTopic(topic: string): string | null {
   if (!/^[0-9A-F]{64}$/.test(nodeId)) return null;
 
   const suffix = parts[3]?.trim().toLowerCase();
-  return suffix === 'packets' || suffix === 'status' ? nodeId : null;
+  return suffix === 'packets' || suffix === 'status' || suffix === 'neighbors' ? nodeId : null;
 }
 
 export function parseDeniedOwnerPublish(line: string): DeniedOwnerPublish | null {

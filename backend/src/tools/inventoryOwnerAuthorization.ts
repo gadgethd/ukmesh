@@ -33,7 +33,7 @@ async function main(): Promise<void> {
   const legacyAclGrants = parsedAcl.stanzas.flatMap((stanza) =>
     stanza.directives
       .map((directive) => directive.line.match(
-        /^topic\s+write\s+meshcore\/\+\/([0-9A-Fa-f]{64})\/(?:packets|status)$/,
+        /^topic\s+write\s+meshcore\/\+\/([0-9A-Fa-f]{64})\/(?:packets|status|neighbors)$/,
       )?.[1]?.toUpperCase())
       .filter((nodeId): nodeId is string => Boolean(nodeId))
       .map((nodeId) => ({ mqttUsername: stanza.username, nodeId })))

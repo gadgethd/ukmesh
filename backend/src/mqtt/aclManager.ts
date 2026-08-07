@@ -84,7 +84,7 @@ function stripManagedSection(content: string): { content: string; found: boolean
 
 function classifyDirective(line: string): AclDirectiveClass {
   const trimmed = line.trim();
-  if (/^topic\s+write\s+meshcore\/\+\/[0-9A-Fa-f]{64}\/(?:packets|status)$/.test(trimmed)) {
+  if (/^topic\s+write\s+meshcore\/\+\/[0-9A-Fa-f]{64}\/(?:packets|status|neighbors)$/.test(trimmed)) {
     return 'canonical-owner-write';
   }
   if (/^pattern\s+/i.test(trimmed)) return 'pattern';
@@ -138,6 +138,7 @@ function buildManagedSection(grants: OwnerAclGrant[], generation: string): strin
     for (const nodeId of grant.nodeIds) {
       lines.push(`topic write meshcore/+/${nodeId}/packets`);
       lines.push(`topic write meshcore/+/${nodeId}/status`);
+      lines.push(`topic write meshcore/+/${nodeId}/neighbors`);
     }
     lines.push('');
   }
@@ -152,18 +153,30 @@ export function renderOwnerAcl(
   unmanagedUsers: Iterable<string>,
   allowedEmptyUsers: Iterable<string> = [],
 ): OwnerAclRenderResult {
-  const unmanaged = new Set([...unmanagedUsers].map((value) => normalizeUsername(value)));
   const normalized = grants.map((grant) => ({
     mqttUsername: normalizeUsername(grant.mqttUsername),
     nodeIds: normalizeNodeIds(grant.nodeIds),
-  }))
+  }));
+  // An explicit operator grant is the declaration that an account has become
+  // managed. This permits a staged owner to remain in the unmanaged list
+  // until its grant is reviewed, without requiring a live .env edit alongside
+  // the grant.
+  const configuredUsernames = new Set(
+    normalized.filter((grant) => grant.nodeIds.length > 0).map((grant) => grant.mqttUsername),
+  );
+  const unmanaged = new Set(
+    [...unmanagedUsers]
+      .map((value) => normalizeUsername(value))
+      .filter((username) => !configuredUsernames.has(username)),
+  );
+  const sortedNormalized = normalized
     .filter((grant) => !unmanaged.has(grant.mqttUsername))
     .sort((a, b) => a.mqttUsername.localeCompare(b.mqttUsername));
-  const usernames = new Set(normalized.map((grant) => grant.mqttUsername));
-  if (usernames.size !== normalized.length) throw new Error('DUPLICATE_OWNER_GRANT_USERNAME');
+  const usernames = new Set(sortedNormalized.map((grant) => grant.mqttUsername));
+  if (usernames.size !== sortedNormalized.length) throw new Error('DUPLICATE_OWNER_GRANT_USERNAME');
 
   const generation = createHash('sha256')
-    .update(JSON.stringify({ renderer: OWNER_ACL_RENDERER_VERSION, grants: normalized }))
+    .update(JSON.stringify({ renderer: OWNER_ACL_RENDERER_VERSION, grants: sortedNormalized }))
     .digest('hex');
   const stripped = stripManagedSection(existingContent);
   const parsed = parseAcl(stripped.content);
@@ -179,7 +192,7 @@ export function renderOwnerAcl(
     stanza.directives
       .filter((directive) => directive.classification === 'malformed')
       .map((directive) => `${stanza.username}: ${directive.line}`));
-  const emptyManagedUsers = normalized
+  const emptyManagedUsers = sortedNormalized
     .filter((grant) => grant.nodeIds.length === 0 && !allowedEmpty.has(grant.mqttUsername))
     .map((grant) => grant.mqttUsername);
 
@@ -192,7 +205,7 @@ export function renderOwnerAcl(
     while (output.at(-1)?.trim() === '') output.pop();
   }
   if (output.length > 0) output.push('');
-  output.push(...buildManagedSection(normalized, generation));
+  output.push(...buildManagedSection(sortedNormalized, generation));
   const content = `${output.join('\n').trimEnd()}\n`;
   const contentSha256 = createHash('sha256').update(content).digest('hex');
 
@@ -200,7 +213,7 @@ export function renderOwnerAcl(
     generation,
     contentSha256,
     content,
-    semantic: normalized,
+    semantic: sortedNormalized,
     validation: {
       ok: parsed.errors.length === 0
         && parsed.duplicateUsers.length === 0
@@ -226,7 +239,8 @@ export function validateRenderedOwnerAcl(content: string, expected: OwnerAclRend
   for (const grant of expected.semantic) {
     for (const nodeId of grant.nodeIds) {
       if (!content.includes(`topic write meshcore/+/${nodeId}/packets`)
-        || !content.includes(`topic write meshcore/+/${nodeId}/status`)) {
+        || !content.includes(`topic write meshcore/+/${nodeId}/status`)
+        || !content.includes(`topic write meshcore/+/${nodeId}/neighbors`)) {
         throw new Error(`OWNER_ACL_SEMANTIC_MISMATCH:${grant.mqttUsername}:${nodeId}`);
       }
     }
@@ -237,7 +251,7 @@ export function getNodeIdsForUserInAcl(content: string, mqttUsername: string): s
   const nodeIds: string[] = [];
   for (const stanza of parseAcl(content).stanzas.filter((candidate) => candidate.username === mqttUsername)) {
     for (const directive of stanza.directives) {
-      const match = directive.line.match(/^topic\s+write\s+meshcore\/\+\/([0-9A-Fa-f]{64})\/(?:packets|status)$/);
+      const match = directive.line.match(/^topic\s+write\s+meshcore\/\+\/([0-9A-Fa-f]{64})\/(?:packets|status|neighbors)$/);
       if (match) nodeIds.push(match[1]!.toUpperCase());
     }
   }
