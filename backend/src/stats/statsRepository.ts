@@ -210,7 +210,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
         FROM decoded_group_packets
       ),
       channel_counts AS (
-        SELECT channel, COUNT(DISTINCT p.packet_hash)::text AS count
+        SELECT channel, COUNT(DISTINCT packet_hash)::text AS count
         FROM group_packets
         GROUP BY channel
       )
@@ -1076,8 +1076,8 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
            NULLIF(TRIM(p.transport_codes), '') AS transport_code,
            NULLIF(TRIM(p.region_scope), '') AS region_scope,
            COUNT(DISTINCT p.packet_hash)::text AS count
-                   FROM packets
-                   WHERE time > NOW() - INTERVAL '24 hours'
+                   FROM packets p
+                   WHERE p.time > NOW() - INTERVAL '24 hours'
                      AND NULLIF(TRIM(p.transport_codes), '') IS NOT NULL
            ${filters.packetsAlias('p')}
          GROUP BY 1, 2
