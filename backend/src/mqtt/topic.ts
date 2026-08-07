@@ -22,7 +22,10 @@ export function parseMqttTopic(
   if (!prefix || !acceptedPrefixes.has(prefix)) return null;
 
   const iata = (parts[1] ?? '').trim().toUpperCase();
-  if (!/^[A-Z0-9]{2,8}$/.test(iata) || blockedIatas.has(iata)) return null;
+  // Test-marker IATAs are not dropped at ingest: they persist under the
+  // isolated 'test' network scope so they never surface on public scopes.
+  const isTestMarker = blockedIatas.has(iata);
+  if (!/^[A-Z0-9]{2,8}$/.test(iata)) return null;
 
   // Database node IDs and decoded MeshCore public keys are canonical uppercase.
   // Keep that form at the persistence boundary; WebSocket/API layers normalize
@@ -37,6 +40,6 @@ export function parseMqttTopic(
     iata,
     observerKey,
     suffix,
-    network: prefix === 'meshcore' || prefix === 'ukmesh' ? 'ukmesh' : 'test',
+    network: isTestMarker ? 'test' : prefix === 'meshcore' || prefix === 'ukmesh' ? 'ukmesh' : 'test',
   };
 }

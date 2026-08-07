@@ -21,8 +21,18 @@ test('classifies public and configured test MQTT topic prefixes without mixing s
   );
 });
 
-test('rejects malformed, blocked, and unsupported MQTT topics before persistence', () => {
-  assert.equal(parseMqttTopic(`meshcore/TST/${observer}/packets`, prefixes, blocked), null);
+test('stores test-marker IATAs under the isolated test network scope', () => {
+  assert.deepEqual(
+    parseMqttTopic(`meshcore/TST/${observer}/packets`, prefixes, blocked),
+    { iata: 'TST', observerKey: observer.toUpperCase(), suffix: 'packets', network: 'test' },
+  );
+  assert.deepEqual(
+    parseMqttTopic(`meshcore-test/TST/${observer.toUpperCase()}/status`, prefixes, blocked),
+    { iata: 'TST', observerKey: observer.toUpperCase(), suffix: 'status', network: 'test' },
+  );
+});
+
+test('rejects malformed and unsupported MQTT topics before persistence', () => {
   assert.equal(parseMqttTopic('meshcore/lhr/short/packets', prefixes, blocked), null);
   assert.equal(parseMqttTopic(`meshcore/lhr/${observer}/other`, prefixes, blocked), null);
   assert.equal(parseMqttTopic(`unknown/lhr/${observer}/packets`, prefixes, blocked), null);
