@@ -1,6 +1,6 @@
 import mqtt, { type MqttClient } from 'mqtt';
 import { calcRegionKey, transportCodeMatchesRegion } from '@michaelhart/meshcore-decoder';
-import { insertNodeStatusSample, insertPacket, upsertNode, incrementAdvertCount, query, insertOrUpdateSpamSuspect, recordMultibyteEvidence } from '../db/index.js';
+import { insertNodeNeighborSample, insertNodeStatusSample, insertPacket, upsertNode, incrementAdvertCount, query, insertOrUpdateSpamSuspect, recordMultibyteEvidence } from '../db/index.js';
 import { closePacketBatch, flush as flushPacketBatch } from '../db/packetBatch.js';
 import { evaluateAdvert, initSpamDetector } from './spamDetector.js';
 import { invalidateResolveCache, setResolveCache, getStickyNodeMap, mergeStickyNodes, getHeldPath, setHeldPath } from '../path-beta/resolveCache.js';
@@ -11,6 +11,7 @@ import type { LivePacket } from '../types/index.js';
 import { decodePacketCompat } from './decodePacket.js';
 import { buildChannelEntries, buildCombinedKeyStore, buildSummary } from './channelRegistry.js';
 import { shouldDiscardUnverifiedTxAdvert, statusEnvelopeTargetsObserver } from './identityBinding.js';
+import { extractNeighborNodes } from './neighborPayload.js';
 import { parseMqttTopic } from './topic.js';
 import {
   boundedNetworkMetricLabel,
@@ -102,9 +103,9 @@ function emitNodeUpsert(node: Record<string, unknown>): void {
 
 /**
  * Topic formats:
- *   meshcore/{IATA}/{OBSERVER_PUBLIC_KEY}/{packets|status}
- *   ukmesh/{IATA}/{OBSERVER_PUBLIC_KEY}/{packets|status} (legacy, accepted during migration)
- *   meshcore-test/{IATA}/{OBSERVER_PUBLIC_KEY}/{packets|status} (isolated dev/test ingest)
+ *   meshcore/{IATA}/{OBSERVER_PUBLIC_KEY}/{packets|status|neighbors}
+ *   ukmesh/{IATA}/{OBSERVER_PUBLIC_KEY}/{packets|status|neighbors} (legacy, accepted during migration)
+ *   meshcore-test/{IATA}/{OBSERVER_PUBLIC_KEY}/{packets|status|neighbors} (isolated dev/test ingest)
  *
  * Public-network assignment is derived from observer IATA:
  *   - MME => teesside
@@ -115,6 +116,7 @@ function emitNodeUpsert(node: Record<string, unknown>): void {
  *
  * mctomqtt JSON structure:
  *   status:  { origin, origin_id, model, firmware_version, radio, client_version }
+ *   neighbors: { nodes: [...] }
  *   packets: { raw (hex), hash, packet_type, SNR, RSSI, score, route, len,
  *              payload_len, direction, origin, origin_id, timestamp, type }
  *   All numeric values arrive as strings from mctomqtt regex groups.
@@ -210,12 +212,26 @@ type StatusTelemetrySample = {
   stats?: Record<string, unknown>;
 };
 
+const OWNER_STATUS_STATS_KEYS = new Set([
+  'battery_mv', 'solar_mv', 'board_temp_c', 'wifi_rssi', 'wifi_ssid', 'wifi_uptime_ms',
+  'ntp_synced', 'ntp_sync_age_ms', 'boot_count', 'reset_reason', 'max_loop_ms',
+  'max_loop_at_ms', 'nodes_heard_24h', 'channel_utilization', 'air_util_tx', 'air_util_rx',
+  'last_rx_rssi', 'last_rx_snr', 'tx_power_dbm', 'config_version', 'config_crc32',
+  'fs_free_bytes', 'fs_total_bytes', 'nvs_free_entries', 'channel_id', 'git_commit', 'boot_epoch',
+]);
+
 function extractStatusTelemetry(
   json: Record<string, unknown>,
   options?: { allowRawStatsOnly?: boolean },
 ): StatusTelemetrySample | null {
   const stats = toRecord(json['stats']);
   const hasRawStats = Boolean(stats && Object.keys(stats).length > 0);
+  const hasOwnerStats = Boolean(
+    stats && (
+      Object.keys(stats).some((key) => OWNER_STATUS_STATS_KEYS.has(key))
+      || toRecord(stats['mqtt'])
+    ),
+  );
   const batteryMv = readNum(stats, 'battery_mv', 'batteryMv');
   const uptimeSecs = (() => {
     const direct = readNum(stats, 'uptime_secs', 'uptimeSecs');
@@ -251,7 +267,7 @@ function extractStatusTelemetry(
     && channelUtilization == null
     && airUtilTx == null
   ) {
-    if (options?.allowRawStatsOnly && hasRawStats) {
+    if ((options?.allowRawStatsOnly || hasOwnerStats) && hasRawStats) {
       return {
         batteryMv,
         uptimeSecs,
@@ -536,7 +552,9 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
 
   let json: Record<string, unknown>;
   try {
-    json = JSON.parse(rawStr) as Record<string, unknown>;
+    const parsed = JSON.parse(rawStr) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('payload_not_object');
+    json = parsed as Record<string, unknown>;
   } catch {
     mqttIngestOutcomesTotal.inc({ outcome: 'invalid_json' });
     console.warn(`[mqtt] non-JSON payload on topic ${topic}: ${rawStr.slice(0, 80)}`);
@@ -589,6 +607,22 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
       }
     }
     emitNode(nodeId, { network, observerId: observerKey });
+    return;
+  }
+
+  if (suffix === 'neighbors') {
+    const neighbors = extractNeighborNodes(json);
+    if (!neighbors) {
+      mqttIngestOutcomesTotal.inc({ outcome: 'invalid_neighbors' });
+      return;
+    }
+    try {
+      await insertNodeNeighborSample({ nodeId: observerKey, network, neighbors });
+      mqttIngestOutcomesTotal.inc({ outcome: 'neighbors_persisted' });
+    } catch (error) {
+      mqttIngestOutcomesTotal.inc({ outcome: 'neighbors_persist_failure' });
+      console.error('[mqtt] neighbor persistence error:', error instanceof Error ? error.message : error);
+    }
     return;
   }
 

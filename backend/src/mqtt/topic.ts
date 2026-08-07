@@ -1,7 +1,7 @@
 export type MqttTopicParts = {
   iata: string;
   observerKey: string;
-  suffix: 'packets' | 'status';
+  suffix: 'packets' | 'status' | 'neighbors';
   network: 'ukmesh' | 'test';
 };
 
@@ -34,7 +34,7 @@ export function parseMqttTopic(
   if (!/^[0-9A-F]{64}$/.test(observerKey)) return null;
 
   const suffix = (parts[3] ?? '').trim().toLowerCase();
-  if (suffix !== 'packets' && suffix !== 'status') return null;
+  if (suffix !== 'packets' && suffix !== 'status' && suffix !== 'neighbors') return null;
 
   return {
     iata,

@@ -39,6 +39,17 @@ export const DATA_LIFECYCLE_POLICIES: readonly DataLifecyclePolicy[] = Object.fr
     ],
   },
   {
+    table: 'node_neighbor_samples',
+    timestampColumn: 'time',
+    retention: '7 days',
+    kind: 'hypertable',
+    compressAfter: '1 day',
+    compressionSegmentBy: 'network',
+    featureImpact: [
+      'owner heard-neighbor history older than seven days becomes restore-only',
+    ],
+  },
+  {
     table: 'frontend_error_events',
     timestampColumn: 'time',
     retention: '30 days',
