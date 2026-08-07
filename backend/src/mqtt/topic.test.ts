@@ -15,6 +15,10 @@ test('classifies public and configured test MQTT topic prefixes without mixing s
     parseMqttTopic(`meshcore-test/test/${observer.toUpperCase()}/status`, prefixes, blocked),
     { iata: 'TEST', observerKey: observer.toUpperCase(), suffix: 'status', network: 'test' },
   );
+  assert.deepEqual(
+    parseMqttTopic(`meshcore/lhr/${observer}/neighbors`, prefixes, blocked),
+    { iata: 'LHR', observerKey: observer.toUpperCase(), suffix: 'neighbors', network: 'ukmesh' },
+  );
   assert.equal(
     parseMqttTopic(`lab/abc/${observer}/packets`, prefixes, blocked)?.network,
     'test',
@@ -29,6 +33,10 @@ test('stores test-marker IATAs under the isolated test network scope', () => {
   assert.deepEqual(
     parseMqttTopic(`meshcore-test/TST/${observer.toUpperCase()}/status`, prefixes, blocked),
     { iata: 'TST', observerKey: observer.toUpperCase(), suffix: 'status', network: 'test' },
+  );
+  assert.deepEqual(
+    parseMqttTopic(`meshcore/TST/${observer}/neighbors`, prefixes, blocked),
+    { iata: 'TST', observerKey: observer.toUpperCase(), suffix: 'neighbors', network: 'test' },
   );
 });
 

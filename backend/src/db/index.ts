@@ -679,6 +679,18 @@ export async function insertNodeStatusSample(sample: {
   );
 }
 
+export async function insertNodeNeighborSample(sample: {
+  nodeId: string;
+  network?: string;
+  neighbors: unknown[];
+}): Promise<void> {
+  await pool.query(
+    `INSERT INTO node_neighbor_samples (node_id, time, neighbors, network)
+     VALUES ($1, NOW(), $2::jsonb, $3)`,
+    [sample.nodeId, JSON.stringify(sample.neighbors), sample.network ?? 'ukmesh'],
+  );
+}
+
 export async function getNodes(
   network?: string,
   observer?: string,
