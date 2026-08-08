@@ -55,3 +55,4 @@ frontend/public/favicon-teesside.svg
 audit.md
 NEW_PATHING_SYSTEM.md
 local-vs-github-pr-plan.md
+/.env.bak-*
