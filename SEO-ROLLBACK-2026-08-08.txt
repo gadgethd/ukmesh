@@ -1,0 +1,20 @@
+=== UK Mesh deploy rollback pins — 2026-08-08 (full history) ===
+Restore: sed -i 's|^<VAR>=.*|<VAR>=<OLD>|' .env && docker compose -f docker-compose.yml -f docker-compose.live.yml up -d --no-deps <svc>
+
+WEBSITE_IMAGE (website-ukmesh):
+  PRE-SEO (original live) sha256:148e80fbc02c24cc30981d5e57af4dff108ba409cdd93fd2cf3b1e4e0cecd585  [retagged ukmesh-website:live-orig]
+  SEO delta (00:15)        sha256:5843f3aff6382be0c8f1105f967321cadfa1c9989906360e610498f966ab16bb
+  HEAD release (01:0x)     sha256:0e37443ee557a66689de0fb64fc9541eb7ef7264b06bb98e9cdf80b22cd032b3  [CURRENT]
+
+BACKEND_IMAGE (backend):
+  PRE (original)           meshcore-analytics-backend:dc12587f672d0f6edd8ea88246b7cbae0ceac9a306e56e2648610a287a0286ef (digest 87074c1ebafe)
+  HEAD release (00:5x)     sha256:1468726cfbd446b52e44b2b5b0c943342a6c138514e4ade54f06cb6cb5498aa5  [CURRENT]
+
+WEBSITE_DEV_IMAGE (website-dev):
+  PRE                     sha256:1483797133b859019f93b58d6c2d42b35fcf80d708f56da3b668938fbbf21b11
+  CURRENT (HEAD build)    sha256:0e37443ee557a66689de0fb64fc9541eb7ef7264b06bb98e9cdf80b22cd032b3
+
+Config changes today:
+  .env ALLOWED_ORIGINS += https://test.ukmesh.com  (backup .env.bak-allowed-origins-*)
+  docker-compose.yml backend DATABASE_STATEMENT_TIMEOUT_MS 300000 -> 900000 (charts regen)
+  .env STATS_AGGREGATE_READS_ENABLED=true (was already true)
