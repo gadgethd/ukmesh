@@ -430,6 +430,13 @@ CREATE TABLE IF NOT EXISTS path_model_calibration (
   confidence_scale      DOUBLE PRECISION NOT NULL DEFAULT 1,
   confidence_bias       DOUBLE PRECISION NOT NULL DEFAULT 0,
   recommended_threshold DOUBLE PRECISION NOT NULL DEFAULT 0.5,
+  input_hash            TEXT,
+  model_hash            TEXT,
+  algorithm_version     TEXT,
+  privacy_generation    BIGINT,
+  window_start          TIMESTAMPTZ,
+  window_end            TIMESTAMPTZ,
+  last_mutation_count   INTEGER NOT NULL DEFAULT 0,
   updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 ALTER TABLE path_model_calibration ADD COLUMN IF NOT EXISTS confidence_bias DOUBLE PRECISION NOT NULL DEFAULT 0;
