@@ -1,5 +1,6 @@
 import {
   getPublicVisibilityGeneration,
+  namedQuery,
   query,
   touchNodesPredictedOnline,
 } from '../db/index.js';
@@ -211,12 +212,14 @@ async function loadContext(
   options?: {
     pinForBatch?: boolean;
     requiredVisibilityGeneration?: number;
+    currentVisibilityGeneration?: number;
     signal?: AbortSignal;
   },
 ): Promise<BetaResolveContext> {
   options?.signal?.throwIfAborted();
   const now = Date.now();
-  const visibilityGeneration = await getPublicVisibilityGeneration(options?.signal);
+  const visibilityGeneration = options?.currentVisibilityGeneration
+    ?? await getPublicVisibilityGeneration(options?.signal);
   if (options?.requiredVisibilityGeneration != null
       && visibilityGeneration !== options.requiredVisibilityGeneration) {
     throw new Error('PUBLIC_VISIBILITY_CHANGED_DURING_RESOLUTION');
@@ -317,7 +320,8 @@ async function loadContext(
     mlPrefixScores,
     learningModel,
   };
-  const confirmedGeneration = await getPublicVisibilityGeneration(options?.signal);
+  const confirmedGeneration = options?.currentVisibilityGeneration
+    ?? await getPublicVisibilityGeneration(options?.signal);
   if (confirmedGeneration !== visibilityGeneration) {
     if (visibilityRetry >= 1) throw new Error('PUBLIC_VISIBILITY_CHANGED_DURING_CONTEXT_LOAD');
     return loadContext(network, visibilityRetry + 1, options);
@@ -811,56 +815,17 @@ function buildRegionLinks(
   return links;
 }
 
-export async function resolveMultiObserverBetaPath(
+async function resolveMultiObserverBetaPathFromRows(
   packetHash: string,
   network: string,
+  rows: readonly PathPacket[],
+  context: BetaResolveContext,
   stickyMap?: Map<string, string>,
   stickyAgeFraction?: number,
   options?: PathResolutionOptions,
 ): Promise<MultiObserverResolvedPayload | null> {
-  throwIfResolutionAborted(options);
-  const allResult = await query<PathPacket>(
-    `SELECT packet_hash, rx_node_id, src_node_id, packet_type, hop_count, path_hashes, path_hash_size_bytes
-     FROM packets
-     WHERE packet_hash = $1
-       AND ($2 = 'all' OR network = $2)
-       AND time >= NOW() - ($3::int * INTERVAL '1 hour')
-       AND rx_node_id IS NOT NULL
-       AND NOT EXISTS (
-         SELECT 1 FROM nodes private_node
-         WHERE private_node.name LIKE '%🚫%'
-           AND ${privateNodePacketNetworkMatchSql('private_node', 'packets')}
-           AND (
-             private_node.node_id IN (packets.rx_node_id, packets.src_node_id)
-             OR EXISTS (
-               SELECT 1
-               FROM unnest(COALESCE(packets.path_hashes, ARRAY[]::text[])) AS path_hash
-               WHERE packets.path_hash_size_bytes BETWEEN 1 AND 3
-                 AND UPPER(private_node.node_id) LIKE UPPER(path_hash) || '%'
-             )
-           )
-       )
-     ORDER BY COALESCE(cardinality(path_hashes), 0) DESC,
-              COALESCE(path_hash_size_bytes, 0) DESC,
-              CASE WHEN src_node_id IS NOT NULL THEN 1 ELSE 0 END DESC,
-              hop_count ASC NULLS LAST,
-              time ASC
-     LIMIT $4`,
-    [packetHash, network, PATH_MULTI_HISTORY_WINDOW_HOURS, PATH_MULTI_MAX_SCAN_ROWS + 1],
-    options?.signal,
-  );
-  if (allResult.rows.length === 0) return null;
-  if (allResult.rows.length > PATH_MULTI_MAX_SCAN_ROWS) throw new Error('PATH_HISTORY_LIMIT');
-
-  const context = await loadContext(network, 0, {
-    pinForBatch: options?.pinContextForBatch,
-    requiredVisibilityGeneration: options?.requiredVisibilityGeneration,
-    signal: options?.signal,
-  });
-  throwIfResolutionAborted(options);
-
   const byObserver = new Map<string, PreparedPacketObservation>();
-  for (const row of allResult.rows) {
+  for (const row of rows) {
     if (!row.rx_node_id) continue;
     const prepared = preparePacketObservation(row, context.nodesById.get(row.rx_node_id) ?? null);
     if (prepared.ignoreForPathing) continue;
@@ -953,5 +918,180 @@ export async function resolveMultiObserverBetaPath(
     results,
     ...(regionLinks.length > 0 ? { regionLinks } : {}),
     ...(Object.keys(stickyUpdates).length > 0 ? { stickyUpdates } : {}),
+  };
+}
+
+export async function resolveMultiObserverBetaPath(
+  packetHash: string,
+  network: string,
+  stickyMap?: Map<string, string>,
+  stickyAgeFraction?: number,
+  options?: PathResolutionOptions,
+): Promise<MultiObserverResolvedPayload | null> {
+  throwIfResolutionAborted(options);
+  const allResult = await query<PathPacket>(
+    `SELECT packet_hash, rx_node_id, src_node_id, packet_type, hop_count, path_hashes, path_hash_size_bytes
+     FROM packets
+     WHERE packet_hash = $1
+       AND ($2 = 'all' OR network = $2)
+       AND time >= NOW() - ($3::int * INTERVAL '1 hour')
+       AND rx_node_id IS NOT NULL
+       AND NOT EXISTS (
+         SELECT 1 FROM nodes private_node
+         WHERE private_node.name LIKE '%🚫%'
+           AND ${privateNodePacketNetworkMatchSql('private_node', 'packets')}
+           AND (
+             private_node.node_id IN (packets.rx_node_id, packets.src_node_id)
+             OR EXISTS (
+               SELECT 1
+               FROM unnest(COALESCE(packets.path_hashes, ARRAY[]::text[])) AS path_hash
+               WHERE packets.path_hash_size_bytes BETWEEN 1 AND 3
+                 AND UPPER(private_node.node_id) LIKE UPPER(path_hash) || '%'
+             )
+           )
+       )
+     ORDER BY COALESCE(cardinality(path_hashes), 0) DESC,
+              COALESCE(path_hash_size_bytes, 0) DESC,
+              CASE WHEN src_node_id IS NOT NULL THEN 1 ELSE 0 END DESC,
+              hop_count ASC NULLS LAST,
+              time ASC
+     LIMIT $4`,
+    [packetHash, network, PATH_MULTI_HISTORY_WINDOW_HOURS, PATH_MULTI_MAX_SCAN_ROWS + 1],
+    options?.signal,
+  );
+  if (allResult.rows.length === 0) return null;
+  if (allResult.rows.length > PATH_MULTI_MAX_SCAN_ROWS) throw new Error('PATH_HISTORY_LIMIT');
+
+  const context = await loadContext(network, 0, {
+    pinForBatch: options?.pinContextForBatch,
+    requiredVisibilityGeneration: options?.requiredVisibilityGeneration,
+    signal: options?.signal,
+  });
+  throwIfResolutionAborted(options);
+  return resolveMultiObserverBetaPathFromRows(
+    packetHash,
+    network,
+    allResult.rows,
+    context,
+    stickyMap,
+    stickyAgeFraction,
+    options,
+  );
+}
+
+export type MultiObserverPathBatch = {
+  results: Map<string, MultiObserverResolvedPayload | null>;
+  limitedPacketHashes: Set<string>;
+};
+
+export async function createMultiObserverPathBatchResolver(
+  network: string,
+  visibilityGeneration: number,
+  signal?: AbortSignal,
+): Promise<{
+  resolveBatch: (
+    packetHashes: readonly string[],
+    windowStart: Date,
+    windowEnd: Date,
+    signal?: AbortSignal,
+  ) => Promise<MultiObserverPathBatch>;
+}> {
+  const context = await loadContext(network, 0, {
+    pinForBatch: true,
+    requiredVisibilityGeneration: visibilityGeneration,
+    currentVisibilityGeneration: visibilityGeneration,
+    signal,
+  });
+
+  return {
+    resolveBatch: async (packetHashes, windowStart, windowEnd, batchSignal) => {
+      batchSignal?.throwIfAborted();
+      const results = new Map<string, MultiObserverResolvedPayload | null>();
+      const limitedPacketHashes = new Set<string>();
+      if (packetHashes.length === 0) return { results, limitedPacketHashes };
+
+      const packetResult = await namedQuery<PathPacket>(
+        'path-history-observations-v1',
+        `SELECT observation.packet_hash, observation.rx_node_id, observation.src_node_id,
+                observation.packet_type, observation.hop_count, observation.path_hashes,
+                observation.path_hash_size_bytes
+           FROM unnest($1::text[]) WITH ORDINALITY AS requested(packet_hash, selection_order)
+           CROSS JOIN LATERAL (
+             SELECT p.packet_hash, p.rx_node_id, p.src_node_id, p.packet_type,
+                    p.hop_count, p.path_hashes, p.path_hash_size_bytes, p.time
+               FROM packets p
+              WHERE p.packet_hash = requested.packet_hash
+                AND ($2 = 'all' OR p.network = $2)
+                AND p.time >= $3
+                AND p.time <= $4
+                AND p.rx_node_id IS NOT NULL
+                AND NOT EXISTS (
+                  SELECT 1 FROM nodes private_node
+                   WHERE private_node.name LIKE '%🚫%'
+                     AND ${privateNodePacketNetworkMatchSql('private_node', 'p')}
+                     AND (
+                       private_node.node_id IN (p.rx_node_id, p.src_node_id)
+                       OR EXISTS (
+                         SELECT 1
+                           FROM unnest(COALESCE(p.path_hashes, ARRAY[]::text[])) AS path_hash
+                          WHERE p.path_hash_size_bytes BETWEEN 1 AND 3
+                            AND UPPER(private_node.node_id) LIKE UPPER(path_hash) || '%'
+                       )
+                     )
+                )
+              ORDER BY COALESCE(cardinality(p.path_hashes), 0) DESC,
+                       COALESCE(p.path_hash_size_bytes, 0) DESC,
+                       CASE WHEN p.src_node_id IS NOT NULL THEN 1 ELSE 0 END DESC,
+                       p.hop_count ASC NULLS LAST,
+                       p.time ASC
+              LIMIT $5
+           ) observation
+          ORDER BY requested.selection_order,
+                   COALESCE(cardinality(observation.path_hashes), 0) DESC,
+                   COALESCE(observation.path_hash_size_bytes, 0) DESC,
+                   CASE WHEN observation.src_node_id IS NOT NULL THEN 1 ELSE 0 END DESC,
+                   observation.hop_count ASC NULLS LAST,
+                   observation.time ASC`,
+        [packetHashes, network, windowStart, windowEnd, PATH_MULTI_MAX_SCAN_ROWS + 1],
+        batchSignal,
+      );
+      batchSignal?.throwIfAborted();
+
+      const rowsByHash = new Map<string, PathPacket[]>();
+      for (const row of packetResult.rows) {
+        const rows = rowsByHash.get(row.packet_hash) ?? [];
+        rows.push(row);
+        rowsByHash.set(row.packet_hash, rows);
+      }
+      for (const packetHash of packetHashes) {
+        batchSignal?.throwIfAborted();
+        const rows = rowsByHash.get(packetHash) ?? [];
+        if (rows.length > PATH_MULTI_MAX_SCAN_ROWS) {
+          limitedPacketHashes.add(packetHash);
+          continue;
+        }
+        try {
+          results.set(packetHash, await resolveMultiObserverBetaPathFromRows(
+            packetHash,
+            network,
+            rows,
+            context,
+            undefined,
+            undefined,
+            {
+              touchPredictedOnline: false,
+              log: false,
+              pinContextForBatch: true,
+              requiredVisibilityGeneration: visibilityGeneration,
+              signal: batchSignal,
+            },
+          ));
+        } catch (error) {
+          if ((error as Error).message !== 'PATH_HISTORY_LIMIT') throw error;
+          limitedPacketHashes.add(packetHash);
+        }
+      }
+      return { results, limitedPacketHashes };
+    },
   };
 }

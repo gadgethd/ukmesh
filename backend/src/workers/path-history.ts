@@ -7,14 +7,19 @@ import {
   upsertPathHistoryCache,
   type PathHistorySegmentRow,
 } from '../db/index.js';
-import { resolveMultiObserverBetaPath, type BetaResolvedPayload } from '../path-beta/resolver.js';
-import { runBoundedItems } from '../analysis/boundedRun.js';
+import {
+  createMultiObserverPathBatchResolver,
+  type BetaResolvedPayload,
+} from '../path-beta/resolver.js';
 import { BoundedSegmentCounter } from '../analysis/boundedSegmentCounter.js';
 import {
+  AnalysisRunDeadlineExceededError,
   AnalysisRunAlreadyActiveError,
   analysisGeneration,
   beginAnalysisRun,
+  checkpointAnalysisRun,
   finishAnalysisRun,
+  getLatestTimedOutAnalysisCheckpoint,
   startAnalysisRunHeartbeat,
 } from '../analysis/runState.js';
 import { observeWorkerOutcome } from '../metrics.js';
@@ -23,6 +28,13 @@ import {
   pathHistoryNextDelayMs,
   pathHistoryRetryIntervalMs,
 } from './pathHistorySchedule.js';
+import {
+  PATH_HISTORY_MODEL_GENERATION,
+  pathHistoryBatches,
+  pathHistorySelectionIdentity,
+  resumablePathHistoryCheckpoint,
+  type PathHistoryCheckpoint,
+} from './pathHistoryCheckpoint.js';
 
 const RETRY_INTERVAL_MS = pathHistoryRetryIntervalMs(process.env['PATH_HISTORY_RETRY_INTERVAL_MS']);
 const WINDOW_HOURS = 168;
@@ -41,9 +53,9 @@ const RUN_DEADLINE_MS = Math.max(
   60_000,
   Number(process.env['PATH_HISTORY_RUN_DEADLINE_MS'] ?? 120 * 60_000) || 120 * 60_000,
 );
-const CONCURRENCY = Math.max(
-  1,
-  Math.min(16, Math.trunc(Number(process.env['PATH_HISTORY_CONCURRENCY'] ?? 2) || 2)),
+const BATCH_SIZE = Math.max(
+  8,
+  Math.min(512, Math.trunc(Number(process.env['PATH_HISTORY_BATCH_SIZE'] ?? 64) || 64)),
 );
 const SCOPES = ['ukmesh', 'test'] as const;
 
@@ -100,20 +112,103 @@ function collectPurpleSegments(result: BetaResolvedPayload, sink: Set<string>): 
   }
 }
 
-async function refreshScope(scope: ScopeName): Promise<'finished' | 'active-run'> {
+async function refreshScope(scope: ScopeName): Promise<'finished' | 'active-run' | 'retry'> {
   const visibilityGeneration = await getPublicVisibilityGeneration();
-  const packetHashes = await getRecentPathHistoryPacketHashes(
-    WINDOW_HOURS,
+  const latestTimedOut = await getLatestTimedOutAnalysisCheckpoint('path-history', scope);
+  const parsedCheckpointCandidate = resumablePathHistoryCheckpoint(latestTimedOut?.metadata, {
+    scope,
+    modelGeneration: PATH_HISTORY_MODEL_GENERATION,
+    privacyGeneration: visibilityGeneration,
+  });
+  const checkpointCandidate = parsedCheckpointCandidate
+    && latestTimedOut
+    && Date.parse(latestTimedOut?.windowStart ?? '') === Date.parse(parsedCheckpointCandidate.windowStart)
+    && Date.parse(latestTimedOut?.windowEnd ?? '') === Date.parse(parsedCheckpointCandidate.windowEnd)
+    && latestTimedOut.modelGeneration === parsedCheckpointCandidate.modelGeneration
+    && latestTimedOut.privacyGeneration === parsedCheckpointCandidate.privacyGeneration
+    && latestTimedOut.checkpoint === parsedCheckpointCandidate.nextIndex
+    ? parsedCheckpointCandidate
+    : null;
+
+  let windowEnd = checkpointCandidate
+    ? new Date(checkpointCandidate.windowEnd)
+    : new Date();
+  let windowStart = checkpointCandidate
+    ? new Date(checkpointCandidate.windowStart)
+    : new Date(windowEnd.getTime() - WINDOW_HOURS * 60 * 60 * 1000);
+  let packetHashes = await getRecentPathHistoryPacketHashes(
+    windowStart,
+    windowEnd,
     scope,
     MAX_PACKET_HASHES,
     MIN_HISTORY_PATH_HASH_BYTES,
   );
-  const counts = new BoundedSegmentCounter(SEGMENT_COUNTER_CAPACITY);
-  let resolvedPacketCount = 0;
-  let skippedPacketCount = 0;
+  let selectionIdentity = pathHistorySelectionIdentity({
+    scope,
+    windowStart,
+    windowEnd,
+    modelGeneration: PATH_HISTORY_MODEL_GENERATION,
+    privacyGeneration: visibilityGeneration,
+    packetHashes,
+  });
+  let resume = resumablePathHistoryCheckpoint(latestTimedOut?.metadata, {
+    scope,
+    modelGeneration: PATH_HISTORY_MODEL_GENERATION,
+    privacyGeneration: visibilityGeneration,
+    selectionIdentity,
+    packetCount: packetHashes.length,
+  });
+  let counts: BoundedSegmentCounter;
+  try {
+    counts = resume
+      ? BoundedSegmentCounter.fromSnapshot(SEGMENT_COUNTER_CAPACITY, resume.segmentCounter)
+      : new BoundedSegmentCounter(SEGMENT_COUNTER_CAPACITY);
+  } catch {
+    resume = null;
+    counts = new BoundedSegmentCounter(SEGMENT_COUNTER_CAPACITY);
+  }
 
-  const windowEnd = new Date();
-  const windowStart = new Date(windowEnd.getTime() - WINDOW_HOURS * 60 * 60 * 1000);
+  if (checkpointCandidate && !resume) {
+    // Late-arriving rows, a capacity change, or damaged metadata invalidates the
+    // old fixed selection. Start a fresh current window rather than mixing it
+    // with partial state from another generation.
+    windowEnd = new Date();
+    windowStart = new Date(windowEnd.getTime() - WINDOW_HOURS * 60 * 60 * 1000);
+    packetHashes = await getRecentPathHistoryPacketHashes(
+      windowStart,
+      windowEnd,
+      scope,
+      MAX_PACKET_HASHES,
+      MIN_HISTORY_PATH_HASH_BYTES,
+    );
+    selectionIdentity = pathHistorySelectionIdentity({
+      scope,
+      windowStart,
+      windowEnd,
+      modelGeneration: PATH_HISTORY_MODEL_GENERATION,
+      privacyGeneration: visibilityGeneration,
+      packetHashes,
+    });
+    counts = new BoundedSegmentCounter(SEGMENT_COUNTER_CAPACITY);
+  }
+  let nextIndex = resume?.nextIndex ?? 0;
+  let resolvedPacketCount = resume?.resolvedPacketCount ?? 0;
+  let skippedPacketCount = resume?.skippedPacketCount ?? 0;
+
+  const makeCheckpoint = (): PathHistoryCheckpoint => ({
+    version: 1,
+    scope,
+    windowStart: windowStart.toISOString(),
+    windowEnd: windowEnd.toISOString(),
+    modelGeneration: PATH_HISTORY_MODEL_GENERATION,
+    privacyGeneration: visibilityGeneration,
+    selectionIdentity,
+    packetCount: packetHashes.length,
+    nextIndex,
+    resolvedPacketCount,
+    skippedPacketCount,
+    segmentCounter: counts.snapshot(),
+  });
   let run;
   try {
     run = await beginAnalysisRun({
@@ -124,7 +219,7 @@ async function refreshScope(scope: ScopeName): Promise<'finished' | 'active-run'
       totalItems: packetHashes.length,
       deadlineMs: RUN_DEADLINE_MS,
       privacyGeneration: visibilityGeneration,
-      modelGeneration: 'path-history-v2',
+      modelGeneration: PATH_HISTORY_MODEL_GENERATION,
     });
   } catch (error) {
     if (error instanceof AnalysisRunAlreadyActiveError || (error as { code?: string }).code === '55P03') {
@@ -151,20 +246,51 @@ async function refreshScope(scope: ScopeName): Promise<'finished' | 'active-run'
       console.warn(`[path-history] scope=${scope} selected no packets; preserving last complete snapshot`);
       return 'finished';
     }
-    const outcome = await runBoundedItems(packetHashes, async (packetHash, _index, signal) => {
+    const resolver = await createMultiObserverPathBatchResolver(
+      scope,
+      visibilityGeneration,
+      stopHeartbeat.signal,
+    );
+    if (resume) {
+      console.log(
+        `[path-history] scope=${scope} resuming checkpoint=${nextIndex}/${packetHashes.length} `
+          + `window=${windowStart.toISOString()}..${windowEnd.toISOString()}`,
+      );
+    }
+    for (const batch of pathHistoryBatches(packetHashes, nextIndex, BATCH_SIZE)) {
       stopHeartbeat.assertOwned();
-      signal.throwIfAborted();
-      try {
-        const resolved = await resolveMultiObserverBetaPath(packetHash, scope, undefined, undefined, {
-          touchPredictedOnline: false,
-          log: false,
-          pinContextForBatch: true,
-          requiredVisibilityGeneration: visibilityGeneration,
-          signal,
+      stopHeartbeat.signal.throwIfAborted();
+      // Exactly one visibility read fences each observation batch. The context
+      // was preloaded against the same generation and publication rechecks it.
+      const batchVisibilityGeneration = await getPublicVisibilityGeneration(stopHeartbeat.signal);
+      if (batchVisibilityGeneration !== visibilityGeneration) {
+        await finish({
+          status: 'stale',
+          checkpoint: nextIndex,
+          error: 'public visibility changed during generation',
+          metadata: { pathHistoryCheckpoint: makeCheckpoint() },
         });
+        console.warn(
+          `[path-history] scope=${scope} visibility changed during run; preserving the current snapshot`,
+        );
+        return 'finished';
+      }
+      const resolvedBatch = await resolver.resolveBatch(
+        batch.items,
+        windowStart,
+        windowEnd,
+        stopHeartbeat.signal,
+      );
+      stopHeartbeat.assertOwned();
+      for (const packetHash of batch.items) {
+        if (resolvedBatch.limitedPacketHashes.has(packetHash)) {
+          skippedPacketCount += 1;
+          continue;
+        }
+        const resolved = resolvedBatch.results.get(packetHash) ?? null;
         stopHeartbeat.assertOwned();
         if (!resolved?.ok || resolved.results.length < 1) {
-          return;
+          continue;
         }
         const packetSegments = new Set<string>();
         for (const result of resolved.results) collectPurpleSegments(result, packetSegments);
@@ -172,39 +298,14 @@ async function refreshScope(scope: ScopeName): Promise<'finished' | 'active-run'
           resolvedPacketCount += 1;
           for (const key of packetSegments) counts.observe(key);
         }
-        return;
-      } catch (error) {
-        if ((error as Error).message === 'PATH_HISTORY_LIMIT') {
-          skippedPacketCount += 1;
-          return;
-        }
-        throw error;
       }
-    }, {
-      windowStart,
-      windowEnd,
-      deadlineMs: RUN_DEADLINE_MS,
-      concurrency: CONCURRENCY,
-      collectResults: false,
-      maxErrors: 100,
-      runId: run.runId,
-      signal: stopHeartbeat.signal,
-    });
-    if (outcome.status !== 'complete') {
-      await finish({
-        status: outcome.status,
-        checkpoint: outcome.checkpoint,
-        error: outcome.errors[0]?.message,
-        metadata: { errors: outcome.errors.slice(0, 20) },
-      });
-      console.error('[path-history] incomplete generation; preserving last complete snapshot', {
-        scope,
-        runId: outcome.runId,
-        status: outcome.status,
-        checkpoint: outcome.checkpoint,
-        errors: outcome.errors.slice(0, 5),
-      });
-      return 'finished';
+      nextIndex = batch.endIndex;
+      await checkpointAnalysisRun(
+        run,
+        nextIndex,
+        { pathHistoryCheckpoint: makeCheckpoint() },
+        stopHeartbeat.signal,
+      );
     }
 
     const segmentCounts: SegmentCount[] = counts.candidates(MIN_SEGMENT_COUNT)
@@ -213,6 +314,20 @@ async function refreshScope(scope: ScopeName): Promise<'finished' | 'active-run'
         count,
       }))
       .slice(0, MAX_SEGMENTS);
+
+    const publicationVisibilityGeneration = await getPublicVisibilityGeneration();
+    if (publicationVisibilityGeneration !== visibilityGeneration) {
+      await finish({
+        status: 'stale',
+        checkpoint: nextIndex,
+        error: 'public visibility changed before publication',
+        metadata: { pathHistoryCheckpoint: makeCheckpoint() },
+      });
+      console.warn(
+        `[path-history] scope=${scope} visibility changed before publication; preserving the current snapshot`,
+      );
+      return 'finished';
+    }
 
     const published = await upsertPathHistoryCache({
       scope,
@@ -226,7 +341,7 @@ async function refreshScope(scope: ScopeName): Promise<'finished' | 'active-run'
     if (!published) {
       await finish({
         status: 'stale',
-        checkpoint: outcome.checkpoint,
+        checkpoint: nextIndex,
         error: 'public visibility changed during generation',
         metadata: { visibilityGeneration },
       });
@@ -242,7 +357,7 @@ async function refreshScope(scope: ScopeName): Promise<'finished' | 'active-run'
     });
     await finish({
       status: 'complete',
-      checkpoint: outcome.checkpoint,
+      checkpoint: nextIndex,
       generation,
       metadata: {
         skippedPacketCount,
@@ -254,19 +369,26 @@ async function refreshScope(scope: ScopeName): Promise<'finished' | 'active-run'
     });
 
     console.log(
-      `[path-history] scope=${scope} run=${outcome.runId} packets=${packetHashes.length} skipped=${skippedPacketCount} resolved=${resolvedPacketCount} segments=${segmentCounts.length}`,
+      `[path-history] scope=${scope} run=${run.runId} packets=${packetHashes.length} skipped=${skippedPacketCount} resolved=${resolvedPacketCount} segments=${segmentCounts.length}`,
     );
     return 'finished';
   } catch (error) {
     try {
-      const timedOut = Date.now() >= run.deadlineAt.getTime();
-      if (timedOut) await stopHeartbeat.stopForTerminal();
-      else await stopHeartbeat();
+      const timedOut = Date.now() >= run.deadlineAt.getTime()
+        || error instanceof AnalysisRunDeadlineExceededError
+        || (error as Error).message === 'analysis run deadline exceeded';
       await finish({
         status: timedOut ? 'timed_out' : 'failed',
-        checkpoint: 0,
+        checkpoint: nextIndex,
         error: error instanceof Error ? error.message : String(error),
+        metadata: { pathHistoryCheckpoint: makeCheckpoint() },
       });
+      if (timedOut) {
+        console.warn(
+          `[path-history] scope=${scope} timed out at checkpoint=${nextIndex}/${packetHashes.length}; retry will resume`,
+        );
+        return 'retry';
+      }
     } catch (finishError) {
       console.error('[path-history] could not record failed run', (finishError as Error).message);
     }
@@ -299,7 +421,8 @@ async function refreshAll(tag: 'initial' | 'scheduled'): Promise<boolean> {
     }
     let retrySoon = false;
     for (const scope of SCOPES) {
-      if (await refreshScope(scope) === 'active-run') retrySoon = true;
+      const result = await refreshScope(scope);
+      if (result === 'active-run' || result === 'retry') retrySoon = true;
     }
     observeWorkerOutcome('path_history', 'refresh', 'success');
     return retrySoon;
@@ -315,10 +438,12 @@ async function refreshAll(tag: 'initial' | 'scheduled'): Promise<boolean> {
 async function main() {
   startWorkerMetrics();
   await initDb();
+  let consecutiveRetries = 0;
   const scheduleNext = (retrySoon: boolean) => {
+    consecutiveRetries = retrySoon ? consecutiveRetries + 1 : 0;
     setTimeout(() => {
       void refreshAll('scheduled').then(scheduleNext);
-    }, pathHistoryNextDelayMs(retrySoon, RETRY_INTERVAL_MS));
+    }, pathHistoryNextDelayMs(retrySoon, RETRY_INTERVAL_MS, consecutiveRetries));
   };
   scheduleNext(await refreshAll('initial'));
 }
