@@ -561,9 +561,12 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
         if (ws.readyState === WebSocket.OPEN) ws.send(serialized);
       } catch (err) {
         console.error('[ws] initial state error', (err as Error).message);
-        if (err instanceof BoundedTaskQueueFullError) {
-          ws.close(1013, 'initial state is busy');
-        }
+        ws.close(
+          1013,
+          err instanceof BoundedTaskQueueFullError
+            ? 'initial state is busy'
+            : 'initial state is temporarily unavailable',
+        );
       }
     } else {
       if (ws.readyState === WebSocket.OPEN) {
