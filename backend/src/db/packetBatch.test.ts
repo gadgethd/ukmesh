@@ -11,6 +11,9 @@ test('packet batches retry transient database failures without losing the pendin
   let attempts = 0;
   const statements: string[] = [];
   configurePacketBatch(async (text) => {
+    if (text.includes('jsonb_agg(jsonb_build_object')) {
+      return { rows: [{ generation: '7', prefixes: [] }] };
+    }
     statements.push(text);
     attempts += 1;
     if (attempts < 3) {
@@ -21,6 +24,7 @@ test('packet batches retry transient database failures without losing the pendin
         row_id: 0,
         is_private: false,
         visibility_ok: true,
+        prefix_cache_fresh: true,
       }],
     };
   });
@@ -62,4 +66,6 @@ test('packet batches retry transient database failures without losing the pendin
   assert.match(statements[1]!, /existing\.packet_hash = c\.packet_hash/);
   assert.match(statements[1]!, /INSERT INTO packets \(\s*observation_id,/);
   assert.match(statements[1]!, /SELECT gen_random_uuid\(\), time, packet_hash/);
+  assert.match(statements[1]!, /FOR KEY SHARE/);
+  assert.doesNotMatch(statements[1]!, /FROM private_node_prefixes pp/);
 });

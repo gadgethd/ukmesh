@@ -79,12 +79,20 @@ export async function reactivateHistoricPathNodes(
        FROM candidates c
        JOIN unique_hashes u ON u.hash = c.hash
      ),
+     locked AS MATERIALIZED (
+       SELECT n.node_id
+       FROM nodes n
+       JOIN matched m ON m.node_id = n.node_id
+       WHERE n.last_path_evidence_at IS NULL
+          OR n.last_path_evidence_at < $2::timestamptz
+       ORDER BY n.node_id
+       FOR UPDATE OF n
+     ),
      updated AS (
        UPDATE nodes n
        SET last_path_evidence_at = $2::timestamptz
-       FROM matched m
-       WHERE n.node_id = m.node_id
-         AND (n.last_path_evidence_at IS NULL OR n.last_path_evidence_at < $2::timestamptz)
+       FROM locked
+       WHERE n.node_id = locked.node_id
        RETURNING
          n.node_id,
          n.name,
@@ -100,7 +108,7 @@ export async function reactivateHistoricPathNodes(
          n.elevation_m,
          n.network
      )
-     SELECT * FROM updated`,
+     SELECT * FROM updated ORDER BY node_id`,
     [hashes, seenAt.toISOString()],
   );
   return result.rows;

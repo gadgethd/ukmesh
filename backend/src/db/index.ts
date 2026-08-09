@@ -16,7 +16,7 @@ import {
   assertAnalysisPublicationLease,
   type AnalysisPublicationHandle,
 } from '../analysis/publicationFence.js';
-import { publicPacketPrivacySql } from '../api/utils/networkFilters.js';
+import { nodeAliasArraySql, publicPacketPrivacySql } from '../api/utils/networkFilters.js';
 import {
   dbQueriesTotal,
   dbQueryDuration,
@@ -230,7 +230,7 @@ function buildPacketScopeClause(
   }
   if (placeholders.observerParam) {
     conditions.push(
-      `meshcore_canonical_node_id(${prefix}rx_node_id) = meshcore_canonical_node_id(${placeholders.observerParam})`,
+      `${prefix}rx_node_id = ANY(${nodeAliasArraySql(placeholders.observerParam)})`,
     );
   }
   return conditions.length > 0 ? ` AND ${conditions.join(' AND ')}` : '';
@@ -289,11 +289,13 @@ function buildNodeScopeClause(
     // 7-day window matches the observer_meta lookback and keeps the packet
     // scan inside recent chunks (~700ms vs 5min unbounded).
     const observerNodeScope = [
-      `meshcore_canonical_node_id(${nodeRef}) = meshcore_canonical_node_id(${placeholders.observerParam})`,
+      `${nodeRef} = ANY(${nodeAliasArraySql(placeholders.observerParam)})`,
       `OR ${nodeRef} IN (
-         SELECT meshcore_canonical_node_id(p.src_node_id)
+         SELECT COALESCE(src_alias.canonical_node_id, UPPER(BTRIM(p.src_node_id)))
          FROM packets p
-         WHERE meshcore_canonical_node_id(p.rx_node_id) = meshcore_canonical_node_id(${placeholders.observerParam})
+         LEFT JOIN node_identity_aliases src_alias
+           ON src_alias.source_node_id = UPPER(BTRIM(p.src_node_id))
+         WHERE p.rx_node_id = ANY(${nodeAliasArraySql(placeholders.observerParam)})
            AND p.time > NOW() - INTERVAL '7 days'
            AND p.src_node_id IS NOT NULL`,
       netCond,
@@ -337,14 +339,6 @@ export async function initDb(): Promise<void> {
   console.log(
     `[db] base schema initialised${executedMigrations.length > 0 ? `, migrations applied: ${executedMigrations.join(', ')}` : ', no pending migrations'}`,
   );
-}
-
-export async function incrementAdvertCount(nodeId: string): Promise<number> {
-  const res = await pool.query<{ advert_count: number }>(
-    `UPDATE nodes SET advert_count = advert_count + 1 WHERE node_id = $1 RETURNING advert_count`,
-    [nodeId]
-  );
-  return res.rows[0]?.advert_count ?? 1;
 }
 
 export async function touchNodesPredictedOnline(nodeIds: string[]): Promise<void> {
@@ -481,7 +475,8 @@ export async function upsertNode(nodeId: string, updates: {
   network?: string;
   allowTestOverride?: boolean;
   mqttObserver?: boolean;
-}): Promise<{ coordinatesChanged: boolean }> {
+  advertHash?: string;
+}): Promise<{ coordinatesChanged: boolean; advertCount: number }> {
   const incomingLat = typeof updates.lat === 'number' && updates.lat !== 0 ? updates.lat : null;
   const incomingLon = typeof updates.lon === 'number' && updates.lon !== 0 ? updates.lon : null;
   const hasIncomingPosition = validCoordinatePair(incomingLat, incomingLon);
@@ -492,9 +487,16 @@ export async function upsertNode(nodeId: string, updates: {
   // updates retain the transaction below because they also compare old values
   // and invalidate dependent coverage atomically.
   if (!hasIncomingPosition) {
-    await pool.query(
-      `INSERT INTO nodes (node_id, name, lat, lon, iata, role, hardware_model, firmware_version, public_key, last_seen, is_online, network, last_mqtt_observer_seen_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), TRUE, $10, CASE WHEN $12 THEN NOW() ELSE NULL END)
+    const result = await pool.query<{ advert_count: number }>(
+      `WITH advert_once AS (
+         INSERT INTO node_counted_adverts (canonical_advert_hash, node_id, counted_at)
+         SELECT $13, $1, NOW()
+         WHERE $13::text IS NOT NULL
+         ON CONFLICT (canonical_advert_hash) DO NOTHING
+         RETURNING 1
+       )
+       INSERT INTO nodes (node_id, name, lat, lon, iata, role, hardware_model, firmware_version, public_key, last_seen, is_online, network, last_mqtt_observer_seen_at, advert_count)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), TRUE, $10, CASE WHEN $12 THEN NOW() ELSE NULL END, (SELECT COUNT(*) FROM advert_once))
        ON CONFLICT (node_id) DO UPDATE SET
          name             = COALESCE(EXCLUDED.name, nodes.name),
          lat              = COALESCE(NULLIF(EXCLUDED.lat, 0), nodes.lat),
@@ -516,12 +518,14 @@ export async function upsertNode(nodeId: string, updates: {
                                         WHEN $12 THEN NOW()
                                         ELSE nodes.last_mqtt_observer_seen_at
                                       END,
-         is_online        = TRUE`,
+         advert_count     = nodes.advert_count + (SELECT COUNT(*) FROM advert_once),
+         is_online        = TRUE
+       RETURNING advert_count`,
       [nodeId, updates.name, updates.lat, updates.lon, updates.iata, updates.role,
        updates.hardwareModel, updates.firmwareVersion, updates.publicKey, updates.network ?? null,
-       Boolean(updates.allowTestOverride), Boolean(updates.mqttObserver)],
+       Boolean(updates.allowTestOverride), Boolean(updates.mqttObserver), updates.advertHash ?? null],
     );
-    return { coordinatesChanged: false };
+    return { coordinatesChanged: false, advertCount: Number(result.rows[0]?.advert_count ?? 0) };
   }
 
   const client = await pool.connect();
@@ -534,9 +538,16 @@ export async function upsertNode(nodeId: string, updates: {
         )
       : null;
 
-    await client.query(
-      `INSERT INTO nodes (node_id, name, lat, lon, iata, role, hardware_model, firmware_version, public_key, last_seen, is_online, network, last_mqtt_observer_seen_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), TRUE, $10, CASE WHEN $12 THEN NOW() ELSE NULL END)
+    const upsert = await client.query<{ advert_count: number }>(
+      `WITH advert_once AS (
+         INSERT INTO node_counted_adverts (canonical_advert_hash, node_id, counted_at)
+         SELECT $13, $1, NOW()
+         WHERE $13::text IS NOT NULL
+         ON CONFLICT (canonical_advert_hash) DO NOTHING
+         RETURNING 1
+       )
+       INSERT INTO nodes (node_id, name, lat, lon, iata, role, hardware_model, firmware_version, public_key, last_seen, is_online, network, last_mqtt_observer_seen_at, advert_count)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), TRUE, $10, CASE WHEN $12 THEN NOW() ELSE NULL END, (SELECT COUNT(*) FROM advert_once))
        ON CONFLICT (node_id) DO UPDATE SET
          name             = COALESCE(EXCLUDED.name, nodes.name),
          lat              = COALESCE(NULLIF(EXCLUDED.lat, 0), nodes.lat),
@@ -558,10 +569,12 @@ export async function upsertNode(nodeId: string, updates: {
                                         WHEN $12 THEN NOW()
                                         ELSE nodes.last_mqtt_observer_seen_at
                                       END,
-         is_online        = TRUE`,
+         advert_count     = nodes.advert_count + (SELECT COUNT(*) FROM advert_once),
+         is_online        = TRUE
+       RETURNING advert_count`,
       [nodeId, updates.name, updates.lat, updates.lon, updates.iata, updates.role,
        updates.hardwareModel, updates.firmwareVersion, updates.publicKey, updates.network ?? null,
-       Boolean(updates.allowTestOverride), Boolean(updates.mqttObserver)]
+       Boolean(updates.allowTestOverride), Boolean(updates.mqttObserver), updates.advertHash ?? null]
     );
 
     const row = existing?.rows[0];
@@ -582,7 +595,10 @@ export async function upsertNode(nodeId: string, updates: {
     }
 
     await client.query('COMMIT');
-    return { coordinatesChanged };
+    return {
+      coordinatesChanged,
+      advertCount: Number(upsert.rows[0]?.advert_count ?? 0),
+    };
   } catch (err) {
     await client.query('ROLLBACK');
     throw err;
@@ -760,10 +776,13 @@ export async function getNodes(
 export async function getNodeHistory(nodeId: string, hours = 24, network = 'ukmesh') {
   const scope = buildScopePlaceholders(3, network);
   const res = await pool.query(
-    `SELECT time, packet_hash, meshcore_canonical_node_id(src_node_id) AS src_node_id,
+    `SELECT p.time, p.packet_hash,
+            COALESCE(src_alias.canonical_node_id, UPPER(BTRIM(p.src_node_id))) AS src_node_id,
             topic, packet_type, hop_count, rssi, snr, payload
      FROM packets p
-     WHERE meshcore_canonical_node_id(p.rx_node_id) = meshcore_canonical_node_id($1)
+     LEFT JOIN node_identity_aliases src_alias
+       ON src_alias.source_node_id = UPPER(BTRIM(p.src_node_id))
+     WHERE p.rx_node_id = ANY(${nodeAliasArraySql('$1')})
        AND p.time > NOW() - INTERVAL '1 hour' * $2
        ${buildPacketScopeClause(scope, 'p', network)}
        ${buildPublicPacketPrivacyClause('p')}
@@ -781,8 +800,8 @@ export async function getNodeAdverts(nodePublicKey: string, hours = 24, limit = 
     `SELECT time, packet_hash
      FROM packets p
      WHERE p.packet_type = 4
-       AND meshcore_canonical_node_id(COALESCE(p.src_node_id, p.payload->>'publicKey'))
-             = meshcore_canonical_node_id($1)
+       AND UPPER(BTRIM(COALESCE(p.src_node_id, p.payload->>'publicKey')))
+             = ANY(${nodeAliasArraySql('$1')})
        AND p.time > NOW() - INTERVAL '1 hour' * $2
        ${buildPacketScopeClause(scope, 'p', network)}
        ${buildPublicPacketPrivacyClause('p')}
@@ -1005,8 +1024,8 @@ export async function getChannelMessageHistory(
     `WITH channel_candidates AS MATERIALIZED (
       SELECT DISTINCT ON (p.packet_hash)
              p.time, p.packet_hash,
-             meshcore_canonical_node_id(p.rx_node_id) AS rx_node_id,
-             meshcore_canonical_node_id(p.src_node_id) AS src_node_id, p.topic,
+             COALESCE(rx_alias.canonical_node_id, UPPER(BTRIM(p.rx_node_id))) AS rx_node_id,
+             COALESCE(src_alias.canonical_node_id, UPPER(BTRIM(p.src_node_id))) AS src_node_id, p.topic,
              p.iata,
              p.packet_type, p.hop_count, p.rssi, p.snr, p.payload,
              ${summaryExpr} AS summary,
@@ -1014,6 +1033,10 @@ export async function getChannelMessageHistory(
              p.network, p.visibility_ok, p.is_private
       FROM packets p
       LEFT JOIN packet_decryptions pd ON pd.packet_hash = p.packet_hash
+      LEFT JOIN node_identity_aliases rx_alias
+        ON rx_alias.source_node_id = UPPER(BTRIM(p.rx_node_id))
+      LEFT JOIN node_identity_aliases src_alias
+        ON src_alias.source_node_id = UPPER(BTRIM(p.src_node_id))
       WHERE p.packet_hash = ANY($1::text[])
         AND p.packet_type = 5
         AND p.time > ${historyWindow}
@@ -1057,12 +1080,17 @@ export async function getRecentPacketEvents(limit = 200, network?: string, obser
   const res = await pool.query(
     `SELECT
         p.time, p.packet_hash,
-        meshcore_canonical_node_id(p.rx_node_id) AS rx_node_id,
-        meshcore_canonical_node_id(p.src_node_id) AS src_node_id, p.topic, p.iata,
+        COALESCE(rx_alias.canonical_node_id, UPPER(BTRIM(p.rx_node_id))) AS rx_node_id,
+        COALESCE(src_alias.canonical_node_id, UPPER(BTRIM(p.src_node_id))) AS src_node_id,
+        p.topic, p.iata,
         p.packet_type, p.hop_count, p.rssi, p.snr, p.payload,
         p.payload->>'_summary' AS summary,
         p.advert_count, p.path_hashes, p.path_hash_size_bytes
      FROM packets p
+     LEFT JOIN node_identity_aliases rx_alias
+       ON rx_alias.source_node_id = UPPER(BTRIM(p.rx_node_id))
+     LEFT JOIN node_identity_aliases src_alias
+       ON src_alias.source_node_id = UPPER(BTRIM(p.src_node_id))
      WHERE p.time > NOW() - INTERVAL '24 hours'
          ${buildPacketScopeClause(scope, 'p', network)}
          ${buildPublicPacketPrivacyClause('p')}
@@ -1092,9 +1120,11 @@ export async function getPacketDetail(hash: string, network = 'ukmesh') {
       [hash, ...scope.params],
     ),
     pool.query(
-      `SELECT meshcore_canonical_node_id(p.rx_node_id) AS rx_node_id,
+      `SELECT COALESCE(rx_alias.canonical_node_id, UPPER(BTRIM(p.rx_node_id))) AS rx_node_id,
               p.iata, p.time, p.rssi, p.snr, p.hop_count
        FROM packets p
+       LEFT JOIN node_identity_aliases rx_alias
+         ON rx_alias.source_node_id = UPPER(BTRIM(p.rx_node_id))
        WHERE p.packet_hash = $1
          ${buildPacketScopeClause(scope, 'p', network)}
          ${buildPublicPacketPrivacyClause('p')}

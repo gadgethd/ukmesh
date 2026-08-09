@@ -6,6 +6,10 @@ import {
   packetBatchSize,
   privacyFilterTotal,
 } from '../metrics.js';
+import {
+  PrivatePrefixCache,
+  type PrivatePrefixRow,
+} from '../privacy/privatePrefixCache.js';
 
 const MAX_BATCH_SIZE = 50;
 const FLUSH_INTERVAL_MS = 50;
@@ -72,9 +76,48 @@ let timer: NodeJS.Timeout | null = null;
 let activeFlush: Promise<void> | null = null;
 let draining = false;
 const pending: PendingPacket[] = [];
+let privatePrefixCache = new PrivatePrefixCache();
+let privatePrefixRefresh: Promise<void> | null = null;
 
 export function configurePacketBatch(query: QueryFn): void {
   queryFn = query;
+  privatePrefixCache = new PrivatePrefixCache();
+  privatePrefixRefresh = null;
+}
+
+function refreshPrivatePrefixCache(query: QueryFn): Promise<void> {
+  if (privatePrefixRefresh) return privatePrefixRefresh;
+  const refresh = query<{
+    generation: string;
+    prefixes: PrivatePrefixRow[];
+  }>(
+    `SELECT visibility.generation::text AS generation,
+            COALESCE(
+              jsonb_agg(jsonb_build_object(
+                'node_id', prefix.node_id,
+                'network', prefix.network,
+                'prefix_size_bytes', prefix.prefix_size_bytes,
+                'prefix', prefix.prefix
+              ) ORDER BY prefix.network, prefix.node_id, prefix.prefix_size_bytes)
+                FILTER (WHERE prefix.node_id IS NOT NULL),
+              '[]'::jsonb
+            ) AS prefixes
+       FROM public_visibility_state visibility
+       LEFT JOIN private_node_prefixes prefix ON TRUE
+      WHERE visibility.singleton = TRUE
+      GROUP BY visibility.generation`,
+  ).then(({ rows }) => {
+    const row = rows[0];
+    const generation = Number(row?.generation);
+    if (!row || !Number.isSafeInteger(generation) || generation < 1) {
+      throw new Error('PRIVATE_PREFIX_CACHE_STATE_UNAVAILABLE');
+    }
+    privatePrefixCache.replace(generation, row.prefixes);
+  }).finally(() => {
+    if (privatePrefixRefresh === refresh) privatePrefixRefresh = null;
+  });
+  privatePrefixRefresh = refresh;
+  return refresh;
 }
 
 function scheduleFlush(): void {
@@ -116,15 +159,30 @@ async function writeBatch(batch: PendingPacket[], idempotent: boolean): Promise<
   const query = queryFn;
   if (!query) throw new Error('PACKET_BATCH_NOT_CONFIGURED');
 
-  const columnsPerRow = 22;
+  if (privatePrefixCache.currentGeneration < 1) {
+    try {
+      await refreshPrivatePrefixCache(query);
+    } catch (error) {
+      console.error('[db] private prefix cache refresh failed', (error as Error).message);
+    }
+  }
+
+  const columnsPerRow = 25;
   const casts = [
     'int', 'timestamptz', 'text', 'text', 'text', 'text', 'text', 'text',
     'int', 'int', 'int', 'double precision', 'double precision', 'text', 'text',
-    'text', 'int', 'text[]', 'int', 'text', 'text', 'text',
+    'text', 'int', 'text[]', 'int', 'text', 'text', 'text', 'bigint', 'boolean', 'boolean',
   ];
   const params: unknown[] = [];
   const values = batch.map(({ packet }, rowIndex) => {
     const offset = rowIndex * columnsPerRow;
+    const privacy = privatePrefixCache.classify({
+      network: packet.network,
+      rxNodeId: packet.rxNodeId,
+      srcNodeId: packet.srcNodeId,
+      pathHashes: packet.pathHashes,
+      pathHashSizeBytes: packet.pathHashSizeBytes,
+    });
     params.push(
       rowIndex,
       packet.time,
@@ -148,6 +206,9 @@ async function writeBatch(batch: PendingPacket[], idempotent: boolean): Promise<
       packet.network,
       packet.transportCodes,
       packet.regionScope,
+      privacy.generation,
+      privacy.isPrivate,
+      privacy.pathIsValid,
     );
     const placeholders = Array.from(
       { length: columnsPerRow },
@@ -173,47 +234,33 @@ async function writeBatch(batch: PendingPacket[], idempotent: boolean): Promise<
        ),`
     : '';
 
-  const result = await query<{ row_id: number; is_private: boolean; visibility_ok: boolean }>(
-      `WITH incoming (
+  const result = await query<{
+    row_id: number;
+    is_private: boolean;
+    visibility_ok: boolean;
+    prefix_cache_fresh: boolean;
+  }>(
+      `WITH current_visibility AS MATERIALIZED (
+         SELECT generation
+           FROM public_visibility_state
+          WHERE singleton = TRUE
+          FOR KEY SHARE
+       ),
+       incoming (
          row_id, time, packet_hash, rx_node_id, src_node_id, topic, topic_prefix,
          iata, packet_type, route_type, hop_count, rssi, snr, payload, companion_sender, raw_hex,
-         advert_count, path_hashes, path_hash_size_bytes, network, transport_codes, region_scope
+         advert_count, path_hashes, path_hash_size_bytes, network, transport_codes, region_scope,
+         prefix_cache_generation, classified_private, path_is_valid
        ) AS (VALUES ${values}),
        classified AS MATERIALIZED (
          SELECT i.*,
-           EXISTS (
-             SELECT 1
-             FROM private_node_prefixes pp
-             WHERE (
-                 pp.network = i.network
-                 OR (
-                   pp.network IN ('ukmesh', 'northeast', 'teesside')
-                   AND i.network IN ('ukmesh', 'northeast', 'teesside')
-                 )
-               )
-               AND (
-                 pp.node_id IN (i.rx_node_id, i.src_node_id)
-                 OR (
-                   i.path_hash_size_bytes = pp.prefix_size_bytes
-                   AND EXISTS (
-                     SELECT 1
-                     FROM unnest(COALESCE(i.path_hashes, ARRAY[]::text[])) AS packet_prefix
-                     WHERE UPPER(packet_prefix) = pp.prefix
-                   )
-                 )
-               )
-           ) AS is_private,
-           (
-             (COALESCE(cardinality(i.path_hashes), 0) = 0 OR i.path_hash_size_bytes BETWEEN 1 AND 3)
-             AND NOT EXISTS (
-               SELECT 1
-               FROM unnest(COALESCE(i.path_hashes, ARRAY[]::text[])) AS path_hash
-               WHERE path_hash IS NULL
-                  OR length(path_hash) <> i.path_hash_size_bytes * 2
-                  OR path_hash !~ '^[0-9A-Fa-f]+$'
-             )
-         ) AS path_is_valid
+           CASE
+             WHEN i.prefix_cache_generation = visibility.generation THEN i.classified_private
+             ELSE TRUE
+           END AS is_private,
+           i.prefix_cache_generation = visibility.generation AS prefix_cache_fresh
          FROM incoming i
+         CROSS JOIN current_visibility visibility
        ),
        ${idempotencyCte}
        inserted AS (
@@ -395,6 +442,7 @@ async function writeBatch(batch: PendingPacket[], idempotent: boolean): Promise<
          RETURNING 1
        )
        SELECT row_id, is_private, path_is_valid AND NOT is_private AS visibility_ok,
+              prefix_cache_fresh,
               (SELECT COUNT(*) FROM inserted) AS inserted_count,
               (SELECT COUNT(*) FROM observer_updates) AS observer_update_count,
               (SELECT COUNT(*) FROM network_sightings) AS network_sighting_count,
@@ -408,6 +456,11 @@ async function writeBatch(batch: PendingPacket[], idempotent: boolean): Promise<
     );
 
   if (result.rows.length !== batch.length) throw new Error('PACKET_BATCH_RESULT_MISMATCH');
+  if (result.rows.some((row) => !row.prefix_cache_fresh)) {
+    void refreshPrivatePrefixCache(query).catch((error: unknown) => {
+      console.error('[db] private prefix cache refresh failed', (error as Error).message);
+    });
+  }
   for (const row of result.rows) {
     privacyFilterTotal.inc({
       operation: 'packet_ingest',
