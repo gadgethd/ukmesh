@@ -17,6 +17,13 @@ export const mqttMessagesTotal = new Counter({
   registers: [metricsRegistry],
 });
 
+export const ownerAclReloadTotal = new Counter({
+  name: 'meshcore_owner_acl_reload_total',
+  help: 'Authenticated Mosquitto ACL reload requests by bounded outcome.',
+  labelNames: ['outcome'] as const,
+  registers: [metricsRegistry],
+});
+
 export const websocketClients = new Gauge({
   name: 'meshcore_websocket_clients',
   help: 'Currently connected WebSocket clients.',

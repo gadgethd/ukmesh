@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
 import test from 'node:test';
+import { ownerAclReloadTotal } from '../metrics.js';
 import {
   getNodeIdsForUserInAcl,
   parseAcl,
+  reloadMosquitto,
   renderOwnerAcl,
   updateUserAclContent,
   userExistsInAclContent,
@@ -123,4 +126,59 @@ test('an explicit grant takes precedence over an unmanaged staging entry', () =>
   assert.match(rendered.content, new RegExp(`user hermes-test\\ntopic write meshcore/\\+/${NODE_ID}/packets`));
   assert.doesNotMatch(rendered.content, /topic read meshcore\/#/);
   assert.deepEqual(rendered.semantic, [{ mqttUsername: 'hermes-test', nodeIds: [NODE_ID] }]);
+});
+
+async function reloadMetricValue(outcome: string): Promise<number> {
+  const metric = await ownerAclReloadTotal.get();
+  return metric.values.find((value) => value.labels['outcome'] === outcome)?.value ?? 0;
+}
+
+test('reload uses the authenticated contract and records acknowledged failures', async () => {
+  const requests: Array<{ authorization: string | undefined; body: string }> = [];
+  const server = createServer((request, response) => {
+    const chunks: Buffer[] = [];
+    request.on('data', (chunk: Buffer) => chunks.push(chunk));
+    request.on('end', () => {
+      requests.push({
+        authorization: request.headers.authorization,
+        body: Buffer.concat(chunks).toString('utf8'),
+      });
+      response.writeHead(requests.length === 1 ? 204 : 504).end();
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert.ok(address && typeof address !== 'string');
+
+  const previousUrl = process.env['OWNER_ACL_RELOAD_URL'];
+  const previousToken = process.env['OWNER_ACL_RELOAD_TOKEN'];
+  const previousConsoleError = console.error;
+  const loggedErrors: unknown[][] = [];
+  process.env['OWNER_ACL_RELOAD_URL'] = `http://127.0.0.1:${address.port}/reload`;
+  process.env['OWNER_ACL_RELOAD_TOKEN'] = 'r'.repeat(32);
+  console.error = (...values: unknown[]) => loggedErrors.push(values);
+
+  try {
+    const successesBefore = await reloadMetricValue('success');
+    const failuresBefore = await reloadMetricValue('failure');
+    await reloadMosquitto();
+    await assert.rejects(reloadMosquitto(), /MOSQUITTO_RELOAD_FAILED:504/);
+
+    assert.deepEqual(requests, [
+      { authorization: `Bearer ${'r'.repeat(32)}`, body: '{}' },
+      { authorization: `Bearer ${'r'.repeat(32)}`, body: '{}' },
+    ]);
+    assert.equal(await reloadMetricValue('success'), successesBefore + 1);
+    assert.equal(await reloadMetricValue('failure'), failuresBefore + 1);
+    assert.deepEqual(loggedErrors, [
+      ['[owner-acl] mosquitto reload failed:', 'MOSQUITTO_RELOAD_FAILED:504'],
+    ]);
+  } finally {
+    console.error = previousConsoleError;
+    if (previousUrl === undefined) delete process.env['OWNER_ACL_RELOAD_URL'];
+    else process.env['OWNER_ACL_RELOAD_URL'] = previousUrl;
+    if (previousToken === undefined) delete process.env['OWNER_ACL_RELOAD_TOKEN'];
+    else process.env['OWNER_ACL_RELOAD_TOKEN'] = previousToken;
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
 });
