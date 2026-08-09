@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { analyticsQuery, getPublicVisibilityGeneration, pool } from '../db/index.js';
+import { analyticsPool, analyticsQuery, getPublicVisibilityGeneration } from '../db/index.js';
 import {
   analysisGeneration,
   beginAnalysisRun,
@@ -382,7 +382,7 @@ async function publishPathLearningRowsDelta(
   heartbeat: AnalysisRunHeartbeat,
 ): Promise<{ skipped: boolean; upserted: number; deleted: number }> {
   return withHeavyWorkAdmission({
-    pool,
+    pool: analyticsPool,
     workload: `path-learning:${network}`,
     signal: heartbeat.signal,
     task: () => publishPathLearningRowsDeltaUnderAdmission(
@@ -410,7 +410,7 @@ async function publishPathLearningRowsDeltaUnderAdmission(
   analysisRun: AnalysisRunHandle,
   heartbeat: AnalysisRunHeartbeat,
 ): Promise<{ skipped: boolean; upserted: number; deleted: number }> {
-  const client = await pool.connect();
+  const client = await analyticsPool.connect();
   try {
     await client.query('BEGIN');
     heartbeat.assertOwned();
