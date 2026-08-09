@@ -5,9 +5,9 @@ IFS=$'\n\t'
 
 readonly REPO_DIR='/home/ben/ukmesh/meshcore-analytics'
 readonly ENV_FILE="${REPO_DIR}/.env"
-readonly MOSQUITTO_CONTAINER='meshcore-analytics-mosquitto-1'
+readonly MOSQUITTO_CONTAINER="$(docker ps --format '{{.Names}}' | grep -E '^meshcore-infra-mosquitto-1$|mosquitto-1$' | head -1)"
 readonly BACKEND_CONTAINER='meshcore-analytics-backend-1'
-readonly TIMESCALEDB_CONTAINER='meshcore-analytics-timescaledb-1'
+readonly TIMESCALEDB_CONTAINER="$(docker ps --format '{{.Names}}' | grep -E '^meshcore-infra-timescaledb-1$|timescaledb-1$' | head -1)"
 readonly OWNER_DATABASE='meshcore_owner_auth'
 readonly POSTGRES_USER='meshcore'
 readonly BROKER_URL='wss://mqtt.ukmesh.com:443'
