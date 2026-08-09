@@ -1,10 +1,16 @@
-import { getPublicVisibilityGeneration, pool, query } from '../db/index.js';
+import {
+  analyticsPool,
+  closeDb,
+  getPublicVisibilityGeneration,
+  query,
+} from '../db/index.js';
 import {
   backfillMultibyteObservationIds,
   backfillMultibytePathFacts,
   listMultibyteFactChunks,
   selectMultibyteFactChunkBatch,
   setMultibyteFactChunkCompression,
+  splitMultibyteFactWindow,
 } from '../stats/multibytePathFacts.js';
 
 function boundedDays(raw: string | undefined): number {
@@ -23,6 +29,12 @@ function boundedThrottleMs(raw: string | undefined): number {
   const value = Number(raw ?? 250);
   if (!Number.isFinite(value)) return 250;
   return Math.max(0, Math.min(5_000, Math.trunc(value)));
+}
+
+function boundedWriteWindowMinutes(raw: string | undefined): number {
+  const value = Number(raw ?? 360);
+  if (!Number.isFinite(value)) return 360;
+  return Math.max(30, Math.min(1_440, Math.trunc(value)));
 }
 
 function wait(ms: number): Promise<void> {
@@ -54,6 +66,9 @@ async function main(): Promise<void> {
   const windowStart = new Date(cutoff.getTime() - days * 24 * 60 * 60_000);
   const batchSize = boundedBatchSize(process.env['MULTIBYTE_FACTS_ID_BATCH_SIZE']);
   const throttleMs = boundedThrottleMs(process.env['MULTIBYTE_FACTS_ID_THROTTLE_MS']);
+  const writeWindowMinutes = boundedWriteWindowMinutes(
+    process.env['MULTIBYTE_FACTS_WRITE_WINDOW_MINUTES'],
+  );
   const chunkStartIndex = boundedChunkIndex(process.env['MULTIBYTE_FACTS_CHUNK_INDEX']);
   const chunkLimit = boundedChunkLimit(process.env['MULTIBYTE_FACTS_CHUNK_LIMIT']);
   const visibilityGeneration = await getPublicVisibilityGeneration();
@@ -93,12 +108,56 @@ async function main(): Promise<void> {
         }));
         if (throttleMs > 0) await wait(throttleMs);
       }
-      const result = await backfillMultibytePathFacts(query, {
-        windowStart: chunk.rangeStart,
-        cutoff: chunk.rangeEnd,
-        visibilityGeneration,
-      });
-      factsBackfilled += result.affectedRows;
+      const factWindows = splitMultibyteFactWindow(
+        chunk.rangeStart,
+        chunk.rangeEnd,
+        writeWindowMinutes,
+      );
+      const client = await analyticsPool.connect();
+      let chunkFactsBackfilled = 0;
+      try {
+        await client.query('BEGIN');
+        for (const [factWindowIndex, factWindow] of factWindows.entries()) {
+          const result = await backfillMultibytePathFacts(
+            (text, params) => client.query(text, params),
+            {
+              ...factWindow,
+              visibilityGeneration,
+            },
+          );
+          chunkFactsBackfilled += result.affectedRows;
+          console.log(JSON.stringify({
+            status: 'fact-window',
+            chunk: `${chunk.chunkSchema}.${chunk.chunkName}`,
+            chunkIndex: chunkIndex + 1,
+            chunkCount: chunks.length,
+            factWindowIndex: factWindowIndex + 1,
+            factWindowCount: factWindows.length,
+            windowStart: factWindow.windowStart.toISOString(),
+            cutoff: factWindow.cutoff.toISOString(),
+            affectedRows: result.affectedRows,
+          }));
+        }
+        await client.query(
+          `UPDATE multibyte_path_fact_state state
+              SET row_count = (
+                    SELECT COUNT(*)::bigint
+                    FROM multibyte_path_facts facts
+                    WHERE facts.visibility_generation = state.visibility_generation
+                      AND facts.observed_at >= state.covered_from
+                      AND facts.observed_at <= state.covered_through
+                  ),
+                  updated_at = NOW()
+            WHERE state.singleton = TRUE`,
+        );
+        await client.query('COMMIT');
+        factsBackfilled += chunkFactsBackfilled;
+      } catch (error) {
+        await client.query('ROLLBACK').catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
     } finally {
       if (chunk.wasCompressed) {
         console.log(JSON.stringify({
@@ -136,5 +195,5 @@ main()
     process.exitCode = 1;
   })
   .finally(async () => {
-    await pool.end();
+    await closeDb();
   });

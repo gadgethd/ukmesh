@@ -8,6 +8,7 @@ import {
   multibyteFactsCoverWindow,
   multibyteObservationIdBatchSql,
   selectMultibyteFactChunkBatch,
+  splitMultibyteFactWindow,
 } from './multibytePathFacts.js';
 
 test('multibyte fact backfill keys every observation row instead of packet hashes', () => {
@@ -27,6 +28,30 @@ test('off-peak backfill selects an explicit bounded chunk batch', () => {
   assert.deepEqual(selectMultibyteFactChunkBatch(chunks, 1, 1), [chunks[1]]);
   assert.throws(() => selectMultibyteFactChunkBatch(chunks, -1, 1), /INVALID_MULTIBYTE_FACT_CHUNK_INDEX/);
   assert.throws(() => selectMultibyteFactChunkBatch(chunks, 0, 5), /INVALID_MULTIBYTE_FACT_CHUNK_LIMIT/);
+});
+
+test('off-peak fact writes split one selected chunk into bounded statement windows', () => {
+  const windows = splitMultibyteFactWindow(
+    new Date('2026-08-01T22:00:00.000Z'),
+    new Date('2026-08-02T12:30:00.000Z'),
+    360,
+  );
+  assert.deepEqual(windows.map((window) => ({
+    windowStart: window.windowStart.toISOString(),
+    cutoff: window.cutoff.toISOString(),
+  })), [
+    { windowStart: '2026-08-01T22:00:00.000Z', cutoff: '2026-08-02T04:00:00.000Z' },
+    { windowStart: '2026-08-02T04:00:00.000Z', cutoff: '2026-08-02T10:00:00.000Z' },
+    { windowStart: '2026-08-02T10:00:00.000Z', cutoff: '2026-08-02T12:30:00.000Z' },
+  ]);
+  assert.throws(
+    () => splitMultibyteFactWindow(new Date(2), new Date(1), 360),
+    /INVALID_MULTIBYTE_FACT_WINDOW/,
+  );
+  assert.throws(
+    () => splitMultibyteFactWindow(new Date(1), new Date(2), 0),
+    /INVALID_MULTIBYTE_FACT_WINDOW_MINUTES/,
+  );
 });
 
 test('historical observation ids are populated oldest-first in bounded physical-row batches', async () => {
