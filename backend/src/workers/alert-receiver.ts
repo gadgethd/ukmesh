@@ -19,6 +19,11 @@ export type AlertReceipt = {
   resolved: number;
 };
 
+export type AlertForwardPayload = {
+  content: string;
+  allowed_mentions: { parse: string[] };
+};
+
 function boundedInteger(
   raw: string | undefined,
   fallback: number,
@@ -96,6 +101,29 @@ export function summarizeAlertPayload(payload: unknown, now = new Date()): Alert
   };
 }
 
+export function buildAlertForwardPayload(receipt: AlertReceipt): AlertForwardPayload {
+  const state = receipt.status === 'firing'
+    ? { icon: '🚨', label: 'firing' }
+    : receipt.status === 'resolved' || receipt.status === 'recovery'
+      ? { icon: '✅', label: receipt.status }
+      : { icon: '⚠️', label: 'unknown' };
+  const names = receipt.alert_names.length > 0
+    ? receipt.alert_names.join(', ')
+    : 'unnamed alert';
+  const content = [
+    `${state.icon} **UKMesh alert ${state.label}**`,
+    `Source: ${receipt.source}`,
+    `Alerts: ${names}`,
+    `Firing: ${receipt.firing} · Resolved: ${receipt.resolved}`,
+    `Received: ${receipt.received_at}`,
+  ].join('\n').slice(0, 2_000);
+
+  return {
+    content,
+    allowed_mentions: { parse: [] },
+  };
+}
+
 async function readBody(req: IncomingMessage): Promise<Buffer> {
   const chunks: Buffer[] = [];
   let size = 0;
@@ -129,7 +157,7 @@ function persistReceipt(receipt: AlertReceipt): Promise<void> {
   return writeChain;
 }
 
-async function forward(body: Buffer): Promise<void> {
+async function forward(receipt: AlertReceipt): Promise<void> {
   if (!FORWARD_URL) return;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), FORWARD_TIMEOUT_MS);
@@ -137,10 +165,11 @@ async function forward(body: Buffer): Promise<void> {
     const response = await fetch(FORWARD_URL, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body,
+      body: JSON.stringify(buildAlertForwardPayload(receipt)),
       signal: controller.signal,
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    console.log(`[alert-receiver] forward succeeded: HTTP ${response.status}`);
   } finally {
     clearTimeout(timeout);
   }
@@ -169,7 +198,7 @@ const server = http.createServer(async (req, res) => {
     const payload = JSON.parse(body.toString('utf8')) as unknown;
     const receipt = summarizeAlertPayload(payload);
     await persistReceipt(receipt);
-    void forward(body).catch((error) => {
+    void forward(receipt).catch((error) => {
       console.error('[alert-receiver] forward failed:', (error as Error).message);
     });
     json(res, 202, { accepted: true });
