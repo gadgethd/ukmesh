@@ -1,6 +1,17 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { LinkQueueV3Model, linkObservationIdentity } from './linkQueueV3.js';
+import {
+  LINK_V3_ADMIT_SCRIPT,
+  LINK_V3_KEYS,
+  LinkQueueV3Model,
+  linkObservationIdentity,
+} from './linkQueueV3.js';
+
+test('v3 admission emits one bounded blocking-wake token', () => {
+  assert.equal(LINK_V3_KEYS.wake, 'meshcore:link:v3:wake');
+  assert.match(LINK_V3_ADMIT_SCRIPT, /LPUSH', KEYS\[13\], '1'/);
+  assert.match(LINK_V3_ADMIT_SCRIPT, /LTRIM', KEYS\[13\], 0, 0/);
+});
 
 test('link queue accounting stays exact across admission, retry, and ACK', () => {
   const model = new LinkQueueV3Model(2, 20, 3);

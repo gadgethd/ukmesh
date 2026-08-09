@@ -1,5 +1,6 @@
 import unittest
 from unittest import mock
+from pathlib import Path
 
 import worker
 from rf.terrain import RetryableTerrainError
@@ -48,6 +49,18 @@ class FakeRedis:
 
 
 class CoverageOutcomeTests(unittest.TestCase):
+    def test_link_idle_wait_is_blocking_but_preserves_five_second_reaping(self):
+        now = 1000.0
+        with mock.patch.dict(worker.LINK_TOPOLOGY, {'updated_at': now}), mock.patch.dict(
+            worker.SUPPORT_CONTEXT, {'updated_at': now}
+        ), mock.patch.dict(worker.RF_CALIBRATION, {'updated_at': now}):
+            self.assertEqual(worker.link_idle_wait_seconds(now, now), 5.0)
+            self.assertAlmostEqual(worker.link_idle_wait_seconds(now, now - 4.75), 0.25)
+
+        source = Path(worker.__file__).read_text(encoding='utf-8')
+        self.assertNotIn('time.sleep(0.5)', source)
+        self.assertIn('r_client.blpop(', source)
+
     def test_transient_calculation_failure_writes_no_success_marker(self):
         db = FakeDb()
         redis = FakeRedis()
