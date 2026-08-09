@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   backfillMultibyteObservationIds,
   backfillMultibytePathFacts,
+  listMultibyteFactChunks,
   multibyteFactBackfillSql,
   multibyteFactsCoverWindow,
   multibyteObservationIdBatchSql,
@@ -20,7 +21,8 @@ test('multibyte fact backfill keys every observation row instead of packet hashe
 test('historical observation ids are populated oldest-first in bounded physical-row batches', async () => {
   const sql = multibyteObservationIdBatchSql();
   assert.match(sql, /p\.observation_id IS NULL/);
-  assert.match(sql, /ORDER BY p\.time ASC, p\.tableoid ASC, p\.ctid ASC/);
+  assert.match(sql, /ORDER BY p\.time ASC/);
+  assert.doesNotMatch(sql, /ORDER BY p\.time ASC, p\.tableoid/);
   assert.match(sql, /LIMIT \$3::integer/);
   assert.match(sql, /SET observation_id = gen_random_uuid\(\)/);
   assert.doesNotMatch(sql, /ALTER COLUMN observation_id SET DEFAULT/i);
@@ -57,6 +59,53 @@ test('bounded backfill pins cutoff and privacy generation', async () => {
   });
   assert.equal(result.affectedRows, 42);
   assert.deepEqual(calls[0]?.params, [windowStart.toISOString(), cutoff.toISOString(), 7]);
+  assert.match(calls[0]?.sql ?? '', /LEAST\(multibyte_path_fact_state\.covered_from/);
+  assert.match(calls[0]?.sql ?? '', /GREATEST\(multibyte_path_fact_state\.covered_through/);
+});
+
+test('chunk inventory is ordered and clipped to the bounded requested window', async () => {
+  const chunks = await listMultibyteFactChunks(async (_sql, params) => {
+    assert.deepEqual(params, ['2026-08-01T12:00:00.000Z', '2026-08-09T14:00:00.000Z']);
+    return { rows: [
+      {
+        chunk_schema: '_timescaledb_internal',
+        chunk_name: '_hyper_1_70_chunk',
+        range_start: new Date('2026-07-30T00:00:00.000Z'),
+        range_end: new Date('2026-08-06T00:00:00.000Z'),
+        is_compressed: true,
+      },
+      {
+        chunk_schema: '_timescaledb_internal',
+        chunk_name: '_hyper_1_90_chunk',
+        range_start: new Date('2026-08-06T00:00:00.000Z'),
+        range_end: new Date('2026-08-13T00:00:00.000Z'),
+        is_compressed: false,
+      },
+    ] };
+  }, {
+    windowStart: new Date('2026-08-01T12:00:00.000Z'),
+    cutoff: new Date('2026-08-09T14:00:00.000Z'),
+  });
+  assert.deepEqual(chunks.map((chunk) => ({
+    ...chunk,
+    rangeStart: chunk.rangeStart.toISOString(),
+    rangeEnd: chunk.rangeEnd.toISOString(),
+  })), [
+    {
+      chunkSchema: '_timescaledb_internal',
+      chunkName: '_hyper_1_70_chunk',
+      rangeStart: '2026-08-01T12:00:00.000Z',
+      rangeEnd: '2026-08-06T00:00:00.000Z',
+      wasCompressed: true,
+    },
+    {
+      chunkSchema: '_timescaledb_internal',
+      chunkName: '_hyper_1_90_chunk',
+      rangeStart: '2026-08-06T00:00:00.000Z',
+      rangeEnd: '2026-08-09T14:00:00.000Z',
+      wasCompressed: false,
+    },
+  ]);
 });
 
 test('coverage fence rejects a state from another privacy generation', async () => {
