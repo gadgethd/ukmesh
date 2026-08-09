@@ -538,6 +538,8 @@ rollback() {
     docker exec "$MOSQUITTO_CONTAINER" \
       mosquitto_passwd -D /mosquitto/config/passwd "$username" >/dev/null 2>&1 \
       || printf 'newuser: WARNING: failed to remove Mosquitto credential\n' >&2
+    docker exec "$MOSQUITTO_CONTAINER" sh -c 'kill -HUP 1' >/dev/null 2>&1 \
+      || true
   fi
   if (( env_changed )); then
     apply_backend_config \
@@ -565,6 +567,10 @@ else
   docker exec "$MOSQUITTO_CONTAINER" \
     mosquitto_passwd -b /mosquitto/config/passwd "$username" "$password"
   credential_created=1
+  # mosquitto only re-reads password_file on SIGHUP; the reconciler reloads
+  # every ~60s but a device may connect before then, so reload immediately.
+  docker exec "$MOSQUITTO_CONTAINER" sh -c 'kill -HUP 1' >/dev/null 2>&1 \
+    || log 'WARNING: could not reload mosquitto; credential activates on the next reload cycle'
 
   if (( discovery_mode )); then
     # Once shown to the operator, this credential must survive timeout or an
@@ -577,6 +583,10 @@ fi
 
 if (( discovery_mode )); then
   log "watching fresh Mosquitto logs for up to ${timeout_seconds}s"
+  # The watch is passive (log polling only); holding the lock through it would
+  # block every other newuser run for the whole window. Release, then
+  # re-acquire before the mutation phase.
+  flock -u 9 2>/dev/null || true
   if discovered_key="$(discover_node_key "$username" "$discovery_since" "$timeout_seconds")"; then
     keys=("$discovered_key")
     log "discovered node public key ${discovered_key}"
@@ -602,6 +612,7 @@ else
   new_owner_map=$new_entry
 fi
 
+flock -x 9  # re-acquire for the mutation phase
 log 'adding deduplicated owner grant to OWNER_MQTT_USERNAME_MAP'
 replace_owner_map "$new_owner_map"
 env_changed=1
