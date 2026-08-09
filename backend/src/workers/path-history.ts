@@ -6,6 +6,7 @@ import {
   refreshRecentPathEvidence,
   upsertPathHistoryCache,
   type PathHistorySegmentRow,
+  pool,
 } from '../db/index.js';
 import {
   createMultiObserverPathBatchResolver,
@@ -35,6 +36,7 @@ import {
   resumablePathHistoryCheckpoint,
   type PathHistoryCheckpoint,
 } from './pathHistoryCheckpoint.js';
+import { withHeavyWorkAdmission } from '../analysis/heavyWorkAdmission.js';
 
 const RETRY_INTERVAL_MS = pathHistoryRetryIntervalMs(process.env['PATH_HISTORY_RETRY_INTERVAL_MS']);
 const WINDOW_HOURS = 168;
@@ -408,6 +410,22 @@ async function refreshAll(tag: 'initial' | 'scheduled'): Promise<boolean> {
   }
   isRunning = true;
   try {
+    return await withHeavyWorkAdmission({
+      pool,
+      workload: `path-history:${tag}`,
+      task: () => refreshAllUnderAdmission(tag),
+    });
+  } catch (err) {
+    observeWorkerOutcome('path_history', 'refresh', 'failure');
+    console.error(`[path-history] ${tag} refresh failed`, (err as Error).message);
+    return true;
+  } finally {
+    isRunning = false;
+  }
+}
+
+async function refreshAllUnderAdmission(tag: 'initial' | 'scheduled'): Promise<boolean> {
+  try {
     let publicEvidenceUpdates = 0;
     let testEvidenceUpdates = 0;
     try {
@@ -430,8 +448,6 @@ async function refreshAll(tag: 'initial' | 'scheduled'): Promise<boolean> {
     observeWorkerOutcome('path_history', 'refresh', 'failure');
     console.error(`[path-history] ${tag} refresh failed`, (err as Error).message);
     return true;
-  } finally {
-    isRunning = false;
   }
 }
 

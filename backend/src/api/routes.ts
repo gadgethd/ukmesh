@@ -86,6 +86,7 @@ import {
 import { assertUniqueRouteRegistry } from './routeRegistry.js';
 import { assertContractCoverage } from './contracts.js';
 import { ApiInputError, wrapAsyncHandlers } from './errors.js';
+import { withHeavyWorkAdmission } from '../analysis/heavyWorkAdmission.js';
 
 const router = Router();
 // Anonymous cross-network aggregation is not a public API capability. Operator
@@ -232,6 +233,7 @@ registerStatsRoutes(router, {
   analyticsQuery,
   getPublicVisibilityGeneration,
   maskDecodedPathNodes,
+  runHeavyWork: (workload, task) => withHeavyWorkAdmission({ pool, workload, task }),
 });
 registerTelemetryRoutes(router, { query });
 registerSpamRoutes(router, { expensiveLimiter: EXPENSIVE_LIMITER });

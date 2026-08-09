@@ -49,6 +49,7 @@ type StatsRouteDeps = {
   analyticsQuery: QueryFn;
   getPublicVisibilityGeneration: () => Promise<number>;
   maskDecodedPathNodes: MaskDecodedPathNodesFn;
+  runHeavyWork: <T>(workload: string, task: () => Promise<T>) => Promise<T>;
 };
 
 export function registerStatsRoutes(router: Router, deps: StatsRouteDeps): void {
@@ -75,6 +76,7 @@ export function registerStatsRoutes(router: Router, deps: StatsRouteDeps): void 
     },
     getPublicVisibilityGeneration: deps.getPublicVisibilityGeneration,
     maskDecodedPathNodes: deps.maskDecodedPathNodes,
+    runHeavyWork: deps.runHeavyWork,
   });
 
   chartsWarmup.register(service.startChartsWarmup);

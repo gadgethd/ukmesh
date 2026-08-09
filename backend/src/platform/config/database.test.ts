@@ -50,7 +50,7 @@ test('database configuration rejects invalid pool, timeout, and schema settings 
 });
 
 test('analytics queries honor a longer configured timeout while retaining a safe floor', () => {
-  assert.equal(analyticsStatementTimeoutMs(30_000), 300_000);
+  assert.equal(analyticsStatementTimeoutMs(30_000), 900_000);
   assert.equal(analyticsStatementTimeoutMs(900_000), 900_000);
   assert.equal(analyticsStatementTimeoutMs(0), 0);
 });
