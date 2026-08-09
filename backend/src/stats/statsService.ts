@@ -463,7 +463,6 @@ export function createStatsService(deps: StatsServiceDeps) {
         if (
           !row
           || row.scope_key !== scope
-          || Number(row.visibility_generation) !== visibilityGeneration
         ) {
           return undefined;
         }
@@ -472,7 +471,7 @@ export function createStatsService(deps: StatsServiceDeps) {
           scope,
           chartsSnapshotStaleTtlMs,
           Date.now(),
-          visibilityGeneration,
+          undefined,
           { allowExpired: true },
         );
         const storedGeneratedAtMs = new Date(row.generated_at).getTime();
@@ -508,7 +507,7 @@ export function createStatsService(deps: StatsServiceDeps) {
     key: string,
     visibilityGeneration: number,
   ): Promise<unknown> {
-    const existing = chartsInflight.get(key);
+    const existing = chartsInflight.get(scope);
     if (existing) return existing;
     if (chartsInflight.size >= MAX_UNIQUE_STATS_INFLIGHT) {
       throw new StatsWorkOverloadedError();
@@ -556,9 +555,9 @@ export function createStatsService(deps: StatsServiceDeps) {
       chartsCache.set(key, { ts: validated.generatedAtMs, data: validated.payload });
       return validated.payload;
     })().finally(() => {
-      if (chartsInflight.get(key) === refresh) chartsInflight.delete(key);
+      if (chartsInflight.get(scope) === refresh) chartsInflight.delete(scope);
     });
-    chartsInflight.set(key, refresh);
+    chartsInflight.set(scope, refresh);
     return refresh;
   }
 
@@ -587,7 +586,15 @@ export function createStatsService(deps: StatsServiceDeps) {
       // background, while observer-scoped data never crosses this boundary.
       cached = await loadPersistedCharts(scope, key, visibilityGeneration);
     }
-    if (cached && Date.now() - cached.ts <= chartsSnapshotStaleTtlMs) {
+    const cachedVisibilityGeneration = Number(
+      (cached?.data as { snapshot?: { visibilityGeneration?: unknown } } | undefined)
+        ?.snapshot?.visibilityGeneration,
+    );
+    if (
+      cached
+      && cachedVisibilityGeneration === visibilityGeneration
+      && Date.now() - cached.ts <= chartsSnapshotStaleTtlMs
+    ) {
       // A cold process must treat the persisted snapshot's durable max-age as
       // authoritative. The shorter in-memory cadence is only how often we
       // check freshness; it must not force a multi-minute rebuild after every

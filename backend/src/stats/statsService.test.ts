@@ -139,7 +139,7 @@ test('a valid durable chart snapshot serves a cold process without analytical qu
   assert.equal(saves, 0);
 });
 
-test('chart snapshots from an older privacy generation are never served or republished', async () => {
+test('a complete older-generation snapshot is served while one scope refresh runs', async () => {
   const generatedAt = new Date(Date.now() - 60_000).toISOString();
   const oldPayload = {
     snapshot: {
@@ -150,6 +150,10 @@ test('chart snapshots from an older privacy generation are never served or repub
     },
     marker: 'old-generation',
   };
+  let resolveRefresh!: (value: ReturnType<typeof emptyChartsData>) => void;
+  const refresh = new Promise<ReturnType<typeof emptyChartsData>>((resolve) => {
+    resolveRefresh = resolve;
+  });
   let chartCalls = 0;
   const repository = {
     loadChartSnapshot: async () => ({
@@ -162,7 +166,7 @@ test('chart snapshots from an older privacy generation are never served or repub
     saveChartSnapshot: async () => true,
     fetchChartsData: async () => {
       chartCalls += 1;
-      return emptyChartsData();
+      return refresh;
     },
     fetchChannelTraffic: async () => ({ rows: [] }),
   } as unknown as StatsRepository;
@@ -178,13 +182,16 @@ test('chart snapshots from an older privacy generation are never served or repub
     maskDecodedPathNodes: () => [],
   });
 
-  const result = await service.getCharts('ukmesh', undefined) as {
+  const first = await service.getCharts('ukmesh', undefined) as {
     snapshot: { visibilityGeneration: number };
     marker?: string;
   };
+  const second = await service.getCharts('ukmesh', undefined) as typeof first;
   assert.equal(chartCalls, 1);
-  assert.equal(result.snapshot.visibilityGeneration, 2);
-  assert.equal(result.marker, undefined);
+  assert.equal(first.snapshot.visibilityGeneration, 1);
+  assert.equal(first.marker, 'old-generation');
+  assert.deepEqual(second, first);
+  resolveRefresh(emptyChartsData());
 });
 
 test('a visibility change at chart publication fails closed without caching the result', async () => {
@@ -267,7 +274,7 @@ test('expired persisted canonical charts are served while one refresh runs in th
   assert.equal(chartCalls, 1);
 
   resolveRefresh(emptyChartsData());
-  await chartsInflight.get('ukmesh:v1');
+  await chartsInflight.get('ukmesh');
   assert.notEqual(chartsCache.get('ukmesh:v1')?.data, stale);
   chartsCache.shutdown();
 });
