@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { getPublicVisibilityGeneration, pool, query } from '../db/index.js';
+import { analyticsQuery, getPublicVisibilityGeneration, pool } from '../db/index.js';
 import {
   analysisGeneration,
   beginAnalysisRun,
@@ -21,6 +21,7 @@ import {
   PATH_LEARNING_DELTA_DEFINITIONS,
   publishPathLearningDelta,
 } from './deltaPublication.js';
+import { withHeavyWorkAdmission } from '../analysis/heavyWorkAdmission.js';
 
 type LearningNode = {
   node_id: string;
@@ -380,6 +381,35 @@ async function publishPathLearningRowsDelta(
   analysisRun: AnalysisRunHandle,
   heartbeat: AnalysisRunHeartbeat,
 ): Promise<{ skipped: boolean; upserted: number; deleted: number }> {
+  return withHeavyWorkAdmission({
+    pool,
+    workload: `path-learning:${network}`,
+    signal: heartbeat.signal,
+    task: () => publishPathLearningRowsDeltaUnderAdmission(
+      network,
+      datasets,
+      calibration,
+      metadata,
+      analysisRun,
+      heartbeat,
+    ),
+  });
+}
+
+async function publishPathLearningRowsDeltaUnderAdmission(
+  network: string,
+  datasets: object[][],
+  calibration: PathLearningCalibration,
+  metadata: {
+    inputHash: string;
+    modelHash: string;
+    privacyGeneration: number;
+    windowStart: Date;
+    windowEnd: Date;
+  },
+  analysisRun: AnalysisRunHandle,
+  heartbeat: AnalysisRunHeartbeat,
+): Promise<{ skipped: boolean; upserted: number; deleted: number }> {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -460,7 +490,7 @@ async function publishPathLearningRowsDelta(
 export async function rebuildPathLearningModels(): Promise<void> {
   const windowEnd = new Date();
   const windowStart = new Date(windowEnd.getTime() - 30 * 24 * 60 * 60_000);
-  const networksResult = await query<{ network: string }>(
+  const networksResult = await analyticsQuery<{ network: string }>(
     `SELECT DISTINCT network
      FROM packets
      WHERE network IS NOT NULL
@@ -560,7 +590,7 @@ async function rebuildNetworkUnderLease(
     : [run.windowStart, run.windowEnd, MAX_TRAINING_PACKETS];
   const linkParams: unknown[] = sourceNetwork ? [sourceNetwork, MAX_LEARNING_LINKS + 1] : [MAX_LEARNING_LINKS + 1];
 
-  const packetsResult = await query<LearningPacket>(
+  const packetsResult = await analyticsQuery<LearningPacket>(
     `SELECT DISTINCT ON (packet_hash, rx_node_id, src_node_id, path_hashes)
             time, rx_node_id, src_node_id, path_hashes
        FROM packets
@@ -591,7 +621,7 @@ async function rebuildNetworkUnderLease(
     });
   }
 
-  const nodesResult = await query<LearningNode>(
+  const nodesResult = await analyticsQuery<LearningNode>(
     `SELECT node_id, lat, lon, elevation_m, iata
      FROM nodes
      WHERE lat IS NOT NULL
@@ -610,7 +640,7 @@ async function rebuildNetworkUnderLease(
 
   const pathHashIndex = buildNodePathHashIndex(nodesResult.rows);
 
-  const linksResult = await query<LearningLink>(
+  const linksResult = await analyticsQuery<LearningLink>(
     `SELECT nl.node_a_id, nl.node_b_id, nl.itm_path_loss_db, nl.count_a_to_b, nl.count_b_to_a
      FROM node_links nl
      JOIN nodes a ON a.node_id = nl.node_a_id

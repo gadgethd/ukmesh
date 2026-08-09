@@ -42,6 +42,7 @@ test('completed canonical charts are reused while observer-scoped charts are nev
   let regionSummaryCalls = 0;
   let snapshotLoads = 0;
   let snapshotSaves = 0;
+  let admittedChartRefreshes = 0;
   const repository = {
     loadChartSnapshot: async () => {
       snapshotLoads += 1;
@@ -71,6 +72,11 @@ test('completed canonical charts are reused while observer-scoped charts are nev
     repository,
     getPublicVisibilityGeneration: async () => 1,
     maskDecodedPathNodes: () => [],
+    runHeavyWork: async (workload, task) => {
+      assert.equal(workload, 'chart-refresh:ukmesh');
+      admittedChartRefreshes += 1;
+      return task();
+    },
   });
 
   await service.getCharts('ukmesh', undefined);
@@ -80,6 +86,7 @@ test('completed canonical charts are reused while observer-scoped charts are nev
   assert.equal(chartsCache.size, 1);
   assert.equal(snapshotLoads, 1);
   assert.equal(snapshotSaves, 1);
+  assert.equal(admittedChartRefreshes, 1);
 
   await service.getCharts('ukmesh', 'A'.repeat(64));
   await service.getCharts('ukmesh', 'A'.repeat(64));
@@ -87,6 +94,7 @@ test('completed canonical charts are reused while observer-scoped charts are nev
   assert.equal(chartsCache.size, 1);
   assert.equal(snapshotLoads, 1);
   assert.equal(snapshotSaves, 1);
+  assert.equal(admittedChartRefreshes, 1);
 });
 
 test('a valid durable chart snapshot serves a cold process without analytical queries', async () => {

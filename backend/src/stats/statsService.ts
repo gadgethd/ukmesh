@@ -33,6 +33,7 @@ type StatsServiceDeps = {
   repository: StatsRepository;
   getPublicVisibilityGeneration: () => Promise<number>;
   maskDecodedPathNodes: MaskDecodedPathNodesFn;
+  runHeavyWork?: <T>(workload: string, task: () => Promise<T>) => Promise<T>;
 };
 
 const CHANNEL_TRAFFIC_CACHE_TTL_MS = 60 * 60_000;
@@ -102,6 +103,7 @@ export function createStatsService(deps: StatsServiceDeps) {
     repository,
     getPublicVisibilityGeneration,
     maskDecodedPathNodes,
+    runHeavyWork = async (_workload, task) => task(),
   } = deps;
 
   const PAYLOAD_LABELS: Record<number, string> = {
@@ -521,10 +523,9 @@ export function createStatsService(deps: StatsServiceDeps) {
           // Chart refresh can still proceed if the lightweight warmup failed.
         });
       }
-      const data = await computeChartsData(
-        network,
-        undefined,
-        visibilityGeneration,
+      const data = await runHeavyWork(
+        `chart-refresh:${scope}`,
+        () => computeChartsData(network, undefined, visibilityGeneration),
       );
       const validated = validateChartSnapshotPayload(
         data,
