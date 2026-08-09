@@ -5,6 +5,17 @@ type CounterEntry = {
   heapIndex: number;
 };
 
+export type BoundedSegmentCounterSnapshot = {
+  version: 1;
+  capacity: number;
+  replacements: number;
+  entries: Array<{
+    key: string;
+    count: number;
+    error: number;
+  }>;
+};
+
 /**
  * Space-Saving heavy-hitter counter.
  *
@@ -21,6 +32,55 @@ export class BoundedSegmentCounter {
     if (!Number.isSafeInteger(capacity) || capacity < 1) {
       throw new Error('INVALID_SEGMENT_COUNTER_CAPACITY');
     }
+  }
+
+  static fromSnapshot(
+    capacity: number,
+    snapshot: BoundedSegmentCounterSnapshot,
+  ): BoundedSegmentCounter {
+    if (snapshot.version !== 1 || snapshot.capacity !== capacity) {
+      throw new Error('INVALID_SEGMENT_COUNTER_SNAPSHOT');
+    }
+    if (!Number.isSafeInteger(snapshot.replacements) || snapshot.replacements < 0) {
+      throw new Error('INVALID_SEGMENT_COUNTER_SNAPSHOT');
+    }
+    if (!Array.isArray(snapshot.entries) || snapshot.entries.length > capacity) {
+      throw new Error('INVALID_SEGMENT_COUNTER_SNAPSHOT');
+    }
+
+    const counter = new BoundedSegmentCounter(capacity);
+    const seen = new Set<string>();
+    for (const saved of snapshot.entries) {
+      if (
+        typeof saved.key !== 'string'
+        || saved.key.length === 0
+        || seen.has(saved.key)
+        || !Number.isSafeInteger(saved.count)
+        || saved.count < 1
+        || !Number.isSafeInteger(saved.error)
+        || saved.error < 0
+        || saved.error > saved.count
+      ) {
+        throw new Error('INVALID_SEGMENT_COUNTER_SNAPSHOT');
+      }
+      seen.add(saved.key);
+      const entry: CounterEntry = {
+        key: saved.key,
+        count: saved.count,
+        error: saved.error,
+        heapIndex: counter.heap.length,
+      };
+      counter.entries.set(entry.key, entry);
+      counter.heap.push(entry);
+    }
+    for (let index = 1; index < counter.heap.length; index += 1) {
+      const parent = Math.floor((index - 1) / 2);
+      if (counter.less(counter.heap[index]!, counter.heap[parent]!)) {
+        throw new Error('INVALID_SEGMENT_COUNTER_SNAPSHOT');
+      }
+    }
+    counter.replacements = snapshot.replacements;
+    return counter;
   }
 
   observe(key: string): void {
@@ -70,6 +130,19 @@ export class BoundedSegmentCounter {
 
   replacementCount(): number {
     return this.replacements;
+  }
+
+  snapshot(): BoundedSegmentCounterSnapshot {
+    return {
+      version: 1,
+      capacity: this.capacity,
+      replacements: this.replacements,
+      entries: this.heap.map((entry) => ({
+        key: entry.key,
+        count: entry.count,
+        error: entry.error,
+      })),
+    };
   }
 
   private less(left: CounterEntry, right: CounterEntry): boolean {

@@ -92,7 +92,7 @@ function observerRegionFromTopic(topic: string): string | null {
 async function queryPool<T extends pg.QueryResultRow = pg.QueryResultRow>(
   targetPool: pg.Pool,
   poolName: 'oltp' | 'analytics',
-  text: string,
+  querySpec: string | pg.QueryConfig<unknown[]>,
   params?: unknown[],
   signal?: AbortSignal,
 ): Promise<pg.QueryResult<T>> {
@@ -100,7 +100,12 @@ async function queryPool<T extends pg.QueryResultRow = pg.QueryResultRow>(
   let outcome = 'success';
   try {
     updateDbPoolMetrics(poolName, targetPool);
-    if (!signal) return await targetPool.query<T>(text, params);
+    const execute = (target: pg.Pool | pg.PoolClient) => (
+      typeof querySpec === 'string'
+        ? target.query<T>(querySpec, params)
+        : target.query<T>(querySpec)
+    );
+    if (!signal) return await execute(targetPool);
     signal.throwIfAborted();
     const client = await targetPool.connect();
     let destroyed = false;
@@ -125,7 +130,7 @@ async function queryPool<T extends pg.QueryResultRow = pg.QueryResultRow>(
     try {
       signal.throwIfAborted();
       const result = await Promise.race([
-        client.query<T>(text, params),
+        execute(client),
         aborted,
       ]);
       signal.throwIfAborted();
@@ -151,6 +156,16 @@ export async function query<T extends pg.QueryResultRow = pg.QueryResultRow>(
   signal?: AbortSignal,
 ): Promise<pg.QueryResult<T>> {
   return queryPool<T>(pool, 'oltp', text, params, signal);
+}
+
+export async function namedQuery<T extends pg.QueryResultRow = pg.QueryResultRow>(
+  name: string,
+  text: string,
+  params?: unknown[],
+  signal?: AbortSignal,
+): Promise<pg.QueryResult<T>> {
+  if (!/^[a-z0-9_-]{1,63}$/.test(name)) throw new Error('INVALID_PREPARED_STATEMENT_NAME');
+  return queryPool<T>(pool, 'oltp', { name, text, values: params }, undefined, signal);
 }
 
 export async function analyticsQuery<T extends pg.QueryResultRow = pg.QueryResultRow>(
@@ -1144,32 +1159,43 @@ export async function getPublicVisibilityGeneration(signal?: AbortSignal): Promi
 }
 
 export async function getRecentPathHistoryPacketHashes(
-  hours = 1,
+  windowStart: Date,
+  windowEnd: Date,
   network?: string,
   limit = 1200,
   minPathHashSizeBytes = 1,
+  signal?: AbortSignal,
 ): Promise<string[]> {
   const normalizedMinPathHashSizeBytes = Number.isFinite(minPathHashSizeBytes)
     ? Math.max(1, Math.floor(minPathHashSizeBytes))
     : 1;
-  const scope = buildScopePlaceholders(4, network);
-  const params: unknown[] = [hours, limit, normalizedMinPathHashSizeBytes, ...scope.params];
-  const res = await pool.query<{ packet_hash: string }>(
+  const scope = buildScopePlaceholders(5, network);
+  const params: unknown[] = [
+    windowStart,
+    windowEnd,
+    limit,
+    normalizedMinPathHashSizeBytes,
+    ...scope.params,
+  ];
+  const res = await namedQuery<{ packet_hash: string }>(
+    `path-history-selection-${scope.networkIsMulti ? 'multi' : 'single'}-v1`,
     `SELECT packet_hash
      FROM (
        SELECT p.packet_hash, MAX(p.time) AS last_seen
        FROM packets p
-        WHERE p.time > NOW() - INTERVAL '1 hour' * $1
+        WHERE p.time > $1
+          AND p.time <= $2
           AND p.path_hashes IS NOT NULL
           AND cardinality(p.path_hashes) > 0
-          AND COALESCE(p.path_hash_size_bytes, 1) >= $3
+          AND COALESCE(p.path_hash_size_bytes, 1) >= $4
           ${buildPacketScopeClause(scope, 'p', network)}
           ${buildPublicPacketPrivacyClause('p')}
        GROUP BY p.packet_hash
      ) recent
      ORDER BY last_seen DESC
-     LIMIT $2`,
+     LIMIT $3`,
     params,
+    signal,
   );
   return res.rows.map((row) => row.packet_hash).filter(Boolean);
 }

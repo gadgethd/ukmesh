@@ -328,6 +328,83 @@ export async function updateAnalysisRunTotalItems(
   if (result.rows.length !== 1) throw new AnalysisRunLeaseLostError(handle.runId);
 }
 
+export async function checkpointAnalysisRun(
+  handle: AnalysisRunHandle,
+  checkpoint: number,
+  metadata: unknown,
+  signal?: AbortSignal,
+): Promise<void> {
+  const result = await query(
+    `UPDATE analysis_runs run
+        SET checkpoint = $4,
+            metadata = $5::jsonb,
+            heartbeat_at = clock_timestamp()
+       FROM analysis_workload_state state
+      WHERE state.workload = $1
+        AND state.scope = $2
+        AND state.active_run_id = run.run_id
+        AND state.active_run_id = $3
+        AND state.active_lease_token = $6
+        AND state.active_lease_expires_at > clock_timestamp()
+        AND state.active_run_deadline_at > clock_timestamp()
+        AND run.lease_token = $6
+        AND run.status = 'running'
+      RETURNING run.run_id`,
+    [
+      handle.workload,
+      handle.scope,
+      handle.runId,
+      Math.max(0, Math.trunc(checkpoint)),
+      JSON.stringify(metadata ?? {}),
+      handle.leaseToken,
+    ],
+    signal,
+  );
+  if (result.rows.length !== 1) throw new AnalysisRunLeaseLostError(handle.runId);
+}
+
+export async function getLatestTimedOutAnalysisCheckpoint(
+  workload: string,
+  scope: string,
+): Promise<{
+  checkpoint: number;
+  metadata: unknown;
+  windowStart: string;
+  windowEnd: string;
+  privacyGeneration: number | null;
+  modelGeneration: string | null;
+} | null> {
+  const result = await query<{
+    status: string;
+    checkpoint: string;
+    metadata: unknown;
+    window_start: string;
+    window_end: string;
+    privacy_generation: string | null;
+    model_generation: string | null;
+  }>(
+    `SELECT status, checkpoint::text, metadata,
+            window_start::text, window_end::text,
+            privacy_generation::text, model_generation
+       FROM analysis_runs
+      WHERE workload = $1
+        AND scope = $2
+      ORDER BY started_at DESC
+      LIMIT 1`,
+    [workload, scope],
+  );
+  const row = result.rows[0];
+  if (!row || row.status !== 'timed_out' || Number(row.checkpoint) <= 0) return null;
+  return {
+    checkpoint: Number(row.checkpoint),
+    metadata: row.metadata,
+    windowStart: row.window_start,
+    windowEnd: row.window_end,
+    privacyGeneration: row.privacy_generation == null ? null : Number(row.privacy_generation),
+    modelGeneration: row.model_generation,
+  };
+}
+
 export type AnalysisRunHeartbeat = (() => Promise<void>) & {
   signal: AbortSignal;
   assertOwned: () => void;
