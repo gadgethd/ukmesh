@@ -39,6 +39,7 @@ type StatsRouteDeps = {
   statsChartsLimiter: ReturnType<typeof import('express-rate-limit').rateLimit>;
   networkFilters: (network?: string, observer?: string, opts?: { includePrivacy?: boolean }) => NetworkFilters;
   query: QueryFn;
+  analyticsQuery: QueryFn;
   getPublicVisibilityGeneration: () => Promise<number>;
   maskDecodedPathNodes: MaskDecodedPathNodesFn;
 };
@@ -48,6 +49,10 @@ export function registerStatsRoutes(router: Router, deps: StatsRouteDeps): void 
     networkFilters: deps.networkFilters,
     query: deps.query,
   });
+  const chartRepository = createStatsRepository({
+    networkFilters: deps.networkFilters,
+    query: deps.analyticsQuery,
+  });
 
   const service = createStatsService({
     statsCache: deps.statsCache,
@@ -56,7 +61,11 @@ export function registerStatsRoutes(router: Router, deps: StatsRouteDeps): void 
     chartsCacheTtlMs: deps.chartsCacheTtlMs,
     chartsSnapshotStaleTtlMs: deps.chartsSnapshotStaleTtlMs,
     chartsInflight: deps.chartsInflight,
-    repository,
+    repository: {
+      ...repository,
+      fetchChartsData: chartRepository.fetchChartsData,
+      fetchChannelTraffic: chartRepository.fetchChannelTraffic,
+    },
     getPublicVisibilityGeneration: deps.getPublicVisibilityGeneration,
     maskDecodedPathNodes: deps.maskDecodedPathNodes,
   });
