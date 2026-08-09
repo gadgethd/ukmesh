@@ -42,4 +42,6 @@ test('rebuild has no full-table-per-network replacement path and retains all fal
   assert.match(source, /rebuildNetwork\('all', undefined, windowStart, windowEnd\)/);
   assert.match(source, /skipped-empty-selected-window/);
   assert.match(source, /updated_at = NOW\(\)/);
+  assert.match(source, /analyticsPool\.connect\(\)/);
+  assert.doesNotMatch(source, /const client = await pool\.connect\(\)/);
 });
