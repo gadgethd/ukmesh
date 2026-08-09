@@ -13,6 +13,59 @@ export type MultibyteFactBackfillResult = {
   affectedRows: number;
 };
 
+export type MultibyteFactChunk = {
+  chunkSchema: string;
+  chunkName: string;
+  rangeStart: Date;
+  rangeEnd: Date;
+  wasCompressed: boolean;
+};
+
+export async function listMultibyteFactChunks(
+  query: QueryFn,
+  input: { windowStart: Date; cutoff: Date },
+): Promise<MultibyteFactChunk[]> {
+  const result = await query<{
+    chunk_schema: string;
+    chunk_name: string;
+    range_start: Date;
+    range_end: Date;
+    is_compressed: boolean;
+  }>(
+    `SELECT chunk_schema, chunk_name, range_start, range_end, is_compressed
+       FROM timescaledb_information.chunks
+      WHERE hypertable_schema = 'public'
+        AND hypertable_name = 'packets'
+        AND range_end >= $1::timestamptz
+        AND range_start <= $2::timestamptz
+      ORDER BY range_start ASC`,
+    [input.windowStart.toISOString(), input.cutoff.toISOString()],
+  );
+  return result.rows.map((row) => ({
+    chunkSchema: row.chunk_schema,
+    chunkName: row.chunk_name,
+    rangeStart: new Date(Math.max(input.windowStart.getTime(), new Date(row.range_start).getTime())),
+    rangeEnd: new Date(Math.min(input.cutoff.getTime(), new Date(row.range_end).getTime())),
+    wasCompressed: row.is_compressed,
+  }));
+}
+
+export async function setMultibyteFactChunkCompression(
+  query: QueryFn,
+  chunk: Pick<MultibyteFactChunk, 'chunkSchema' | 'chunkName'>,
+  compressed: boolean,
+): Promise<void> {
+  if (!/^[_a-z][_a-z0-9]*$/i.test(chunk.chunkSchema)
+    || !/^[_a-z][_a-z0-9]*$/i.test(chunk.chunkName)) {
+    throw new Error('INVALID_MULTIBYTE_FACT_CHUNK_NAME');
+  }
+  const qualifiedName = `"${chunk.chunkSchema}"."${chunk.chunkName}"`;
+  await query(
+    `SELECT ${compressed ? 'compress_chunk' : 'decompress_chunk'}($1::regclass, TRUE)`,
+    [qualifiedName],
+  );
+}
+
 export function multibyteObservationIdBatchSql(): string {
   return `WITH candidates AS MATERIALIZED (
     SELECT p.tableoid AS source_tableoid, p.ctid AS source_ctid
@@ -22,7 +75,7 @@ export function multibyteObservationIdBatchSql(): string {
       AND p.observation_id IS NULL
       AND p.path_hash_size_bytes BETWEEN 2 AND 3
       AND COALESCE(cardinality(p.path_hashes), 0) > 0
-    ORDER BY p.time ASC, p.tableoid ASC, p.ctid ASC
+    ORDER BY p.time ASC
     LIMIT $3::integer
   ), updated AS (
     UPDATE packets p
@@ -30,6 +83,8 @@ export function multibyteObservationIdBatchSql(): string {
       FROM candidates
      WHERE p.tableoid = candidates.source_tableoid
        AND p.ctid = candidates.source_ctid
+       AND p.time >= $1::timestamptz
+       AND p.time <= $2::timestamptz
     RETURNING 1
   )
   SELECT COUNT(*)::integer AS affected_rows FROM updated`;
@@ -130,8 +185,16 @@ export function multibyteFactBackfillSql(): string {
       AND observed_at <= $2::timestamptz
     ON CONFLICT (singleton) DO UPDATE SET
       visibility_generation = EXCLUDED.visibility_generation,
-      covered_from = EXCLUDED.covered_from,
-      covered_through = EXCLUDED.covered_through,
+      covered_from = CASE
+        WHEN multibyte_path_fact_state.visibility_generation = EXCLUDED.visibility_generation
+          THEN LEAST(multibyte_path_fact_state.covered_from, EXCLUDED.covered_from)
+        ELSE EXCLUDED.covered_from
+      END,
+      covered_through = CASE
+        WHEN multibyte_path_fact_state.visibility_generation = EXCLUDED.visibility_generation
+          THEN GREATEST(multibyte_path_fact_state.covered_through, EXCLUDED.covered_through)
+        ELSE EXCLUDED.covered_through
+      END,
       row_count = EXCLUDED.row_count,
       updated_at = NOW()
     RETURNING 1

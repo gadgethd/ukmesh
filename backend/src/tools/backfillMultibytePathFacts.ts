@@ -2,6 +2,8 @@ import { getPublicVisibilityGeneration, pool, query } from '../db/index.js';
 import {
   backfillMultibyteObservationIds,
   backfillMultibytePathFacts,
+  listMultibyteFactChunks,
+  setMultibyteFactChunkCompression,
 } from '../stats/multibytePathFacts.js';
 
 function boundedDays(raw: string | undefined): number {
@@ -35,31 +37,57 @@ async function main(): Promise<void> {
   const windowStart = new Date(cutoff.getTime() - days * 24 * 60 * 60_000);
   const batchSize = boundedBatchSize(process.env['MULTIBYTE_FACTS_ID_BATCH_SIZE']);
   const throttleMs = boundedThrottleMs(process.env['MULTIBYTE_FACTS_ID_THROTTLE_MS']);
-  let observationIdsBackfilled = 0;
-  let batch = 0;
-  while (true) {
-    const affectedRows = await backfillMultibyteObservationIds(query, {
-      windowStart,
-      cutoff,
-      batchSize,
-    });
-    if (affectedRows === 0) break;
-    batch += 1;
-    observationIdsBackfilled += affectedRows;
-    console.log(JSON.stringify({
-      status: 'observation-id-batch',
-      batch,
-      affectedRows,
-      totalAffectedRows: observationIdsBackfilled,
-    }));
-    if (throttleMs > 0) await wait(throttleMs);
-  }
   const visibilityGeneration = await getPublicVisibilityGeneration();
-  const result = await backfillMultibytePathFacts(query, {
-    windowStart,
-    cutoff,
-    visibilityGeneration,
-  });
+  const chunks = await listMultibyteFactChunks(query, { windowStart, cutoff });
+  let observationIdsBackfilled = 0;
+  let factsBackfilled = 0;
+  let batch = 0;
+  for (const [chunkIndex, chunk] of chunks.entries()) {
+    if (chunk.rangeEnd < chunk.rangeStart) continue;
+    if (chunk.wasCompressed) {
+      console.log(JSON.stringify({
+        status: 'chunk-decompressing',
+        chunk: `${chunk.chunkSchema}.${chunk.chunkName}`,
+      }));
+      await setMultibyteFactChunkCompression(query, chunk, false);
+    }
+    try {
+      while (true) {
+        const affectedRows = await backfillMultibyteObservationIds(query, {
+          windowStart: chunk.rangeStart,
+          cutoff: chunk.rangeEnd,
+          batchSize,
+        });
+        if (affectedRows === 0) break;
+        batch += 1;
+        observationIdsBackfilled += affectedRows;
+        console.log(JSON.stringify({
+          status: 'observation-id-batch',
+          chunk: `${chunk.chunkSchema}.${chunk.chunkName}`,
+          chunkIndex: chunkIndex + 1,
+          chunkCount: chunks.length,
+          batch,
+          affectedRows,
+          totalAffectedRows: observationIdsBackfilled,
+        }));
+        if (throttleMs > 0) await wait(throttleMs);
+      }
+      const result = await backfillMultibytePathFacts(query, {
+        windowStart: chunk.rangeStart,
+        cutoff: chunk.rangeEnd,
+        visibilityGeneration,
+      });
+      factsBackfilled += result.affectedRows;
+    } finally {
+      if (chunk.wasCompressed) {
+        console.log(JSON.stringify({
+          status: 'chunk-recompressing',
+          chunk: `${chunk.chunkSchema}.${chunk.chunkName}`,
+        }));
+        await setMultibyteFactChunkCompression(query, chunk, true);
+      }
+    }
+  }
   const confirmedGeneration = await getPublicVisibilityGeneration();
   if (confirmedGeneration !== visibilityGeneration) {
     throw new Error(
@@ -73,7 +101,8 @@ async function main(): Promise<void> {
     cutoff: cutoff.toISOString(),
     observationIdsBackfilled,
     observationIdBatches: batch,
-    affectedRows: result.affectedRows,
+    chunksProcessed: chunks.length,
+    affectedRows: factsBackfilled,
   }));
 }
 
