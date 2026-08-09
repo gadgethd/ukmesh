@@ -4,8 +4,9 @@
 # existing 172.30.0.0/24 meshcore-analytics_default bridge with independently
 # managed beacon and Discord services. Treat that bridge as external so Compose
 # never tries to remove it, and reserve a high, collision-free range for the
-# analytics proxies. Fresh/CI deployments must continue to use only
-# docker-compose.yml and its isolated network.
+# analytics proxies. The long-lived data-plane services are provided by the
+# meshcore-infra project on this external network and must be healthy before the
+# application project is reconciled.
 services:
   backend:
     environment:
