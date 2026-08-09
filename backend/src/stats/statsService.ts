@@ -512,6 +512,8 @@ export function createStatsService(deps: StatsServiceDeps) {
     if (chartsInflight.size >= MAX_UNIQUE_STATS_INFLIGHT) {
       throw new StatsWorkOverloadedError();
     }
+    const refreshStartedAt = Date.now();
+    console.log(`[stats] chart refresh started scope=${scope} visibilityGeneration=${visibilityGeneration}`);
     let refresh!: Promise<unknown>;
     refresh = (async () => {
       if (initialStatsWarmup) {
@@ -553,8 +555,17 @@ export function createStatsService(deps: StatsServiceDeps) {
         throw new Error('chart snapshot privacy generation changed before publication');
       }
       chartsCache.set(key, { ts: validated.generatedAtMs, data: validated.payload });
+      console.log(
+        `[stats] chart refresh published scope=${scope} visibilityGeneration=${visibilityGeneration} durationMs=${Date.now() - refreshStartedAt}`,
+      );
       return validated.payload;
-    })().finally(() => {
+    })().catch((error: unknown) => {
+      console.warn(
+        `[stats] chart refresh failed scope=${scope} visibilityGeneration=${visibilityGeneration} durationMs=${Date.now() - refreshStartedAt}:`,
+        error instanceof Error ? error.message : 'unknown error',
+      );
+      throw error;
+    }).finally(() => {
       if (chartsInflight.get(scope) === refresh) chartsInflight.delete(scope);
     });
     chartsInflight.set(scope, refresh);

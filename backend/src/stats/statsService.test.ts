@@ -194,6 +194,48 @@ test('a complete older-generation snapshot is served while one scope refresh run
   resolveRefresh(emptyChartsData());
 });
 
+test('a detached chart refresh reports its actual failure while retaining the old snapshot', async () => {
+  const generatedAt = new Date(Date.now() - 60_000).toISOString();
+  const warnings: unknown[][] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => { warnings.push(args); };
+  try {
+    const repository = {
+      loadChartSnapshot: async () => ({
+        scope_key: 'ukmesh',
+        schema_version: 2,
+        visibility_generation: '1',
+        generated_at: generatedAt,
+        payload: {
+          snapshot: { status: 'complete', generatedAt, scope: 'ukmesh', visibilityGeneration: 1 },
+        },
+      }),
+      fetchChartsData: async () => { throw new Error('captured database failure'); },
+      fetchChannelTraffic: async () => ({ rows: [] }),
+    } as unknown as StatsRepository;
+    const service = createStatsService({
+      statsCache: new Map(),
+      statsCacheTtlMs: 60_000,
+      chartsCache: new Map(),
+      chartsCacheTtlMs: 30 * 60_000,
+      chartsSnapshotStaleTtlMs: 6 * 60 * 60_000,
+      chartsInflight: new Map(),
+      repository,
+      getPublicVisibilityGeneration: async () => 2,
+      maskDecodedPathNodes: () => [],
+    });
+
+    const served = await service.getCharts('ukmesh', undefined) as {
+      snapshot: { visibilityGeneration: number };
+    };
+    assert.equal(served.snapshot.visibilityGeneration, 1);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.ok(warnings.some((args) => args.join(' ').includes('captured database failure')));
+  } finally {
+    console.warn = originalWarn;
+  }
+});
+
 test('a visibility change at chart publication fails closed without caching the result', async () => {
   const chartsCache = new Map<string, { ts: number; data: unknown }>();
   const repository = {
