@@ -91,12 +91,11 @@ export async function loadStoredChartSnapshot(
   }
   const result = await query<StoredChartSnapshotRow>(
     `SELECT scope_key, schema_version, visibility_generation, generated_at, payload
-       FROM stats_chart_snapshots
+      FROM stats_chart_snapshots
       WHERE scope_key = $1
         AND schema_version = $2
-        AND visibility_generation = $3
       LIMIT 1`,
-    [scope, CHART_SNAPSHOT_SCHEMA_VERSION, visibilityGeneration],
+    [scope, CHART_SNAPSHOT_SCHEMA_VERSION],
   );
   return result.rows[0] ?? null;
 }
