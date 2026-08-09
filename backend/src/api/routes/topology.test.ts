@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { analyzeTopology, shapeTopology } from './topology.js';
+import { analyzeTopology, createTopologyLoader, shapeTopology } from './topology.js';
 
 test('shapeTopology ranks hubs and preserves link evidence', () => {
   const topology = shapeTopology([
@@ -50,4 +50,89 @@ test('shapeTopology omits links involving opted-out nodes', () => {
   }]);
   assert.deepEqual(topology.nodes, []);
   assert.deepEqual(topology.links, []);
+});
+
+const combinedRows = [{
+  row_kind: 0,
+  row_order: '1',
+  node_a_id: 'A',
+  node_b_id: 'B',
+  name_a: 'Alpha',
+  name_b: 'Bravo',
+  lat_a: 52,
+  lon_a: -1,
+  lat_b: 53,
+  lon_b: -2,
+  iata_a: 'LHR',
+  iata_b: 'MAN',
+  observed_count: 10,
+  multibyte_observed_count: 4,
+  last_observed: '2026-08-09T12:00:00.000Z',
+  itm_path_loss_db: 110,
+  standalone_node_id: null,
+  standalone_name: null,
+  standalone_lat: null,
+  standalone_lon: null,
+  standalone_iata: null,
+}];
+
+test('complete topology DTO cache singleflights misses and invalidates by privacy generation', async () => {
+  let queryCalls = 0;
+  let generation = 5;
+  let combinedSql = '';
+  const loader = createTopologyLoader({
+    query: (async (sql: string) => {
+      queryCalls += 1;
+      combinedSql = sql;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return { rows: combinedRows };
+    }) as never,
+    networkFilters: () => ({ params: [], nodesAlias: () => '' }) as never,
+    getPublicVisibilityGeneration: async () => generation,
+    now: () => new Date('2026-08-09T12:30:00.000Z'),
+  });
+  try {
+    const [first, concurrent] = await Promise.all([
+      loader.load('ukmesh', 300),
+      loader.load('ukmesh', 300),
+    ]);
+    assert.equal(queryCalls, 1);
+    assert.match(combinedSql, /selected_links AS MATERIALIZED/);
+    assert.match(combinedSql, /standalone_nodes AS MATERIALIZED/);
+    assert.equal(combinedSql.match(/WITH recent_links AS MATERIALIZED/g)?.length, 1);
+    assert.strictEqual(first, concurrent);
+    assert.equal(first.generatedAt, '2026-08-09T12:30:00.000Z');
+    assert.equal(first.summary.observations, 10);
+
+    assert.strictEqual(await loader.load('ukmesh', 300), first);
+    assert.equal(queryCalls, 1);
+
+    generation = 6;
+    const afterPrivacyChange = await loader.load('ukmesh', 300);
+    assert.equal(queryCalls, 2);
+    assert.notStrictEqual(afterPrivacyChange, first);
+  } finally {
+    loader.shutdown();
+  }
+});
+
+test('failed combined topology loads are never cached', async () => {
+  let queryCalls = 0;
+  const loader = createTopologyLoader({
+    query: (async () => {
+      queryCalls += 1;
+      if (queryCalls === 1) throw new Error('database unavailable');
+      return { rows: combinedRows };
+    }) as never,
+    networkFilters: () => ({ params: [], nodesAlias: () => '' }) as never,
+    getPublicVisibilityGeneration: async () => 1,
+  });
+  try {
+    await assert.rejects(loader.load('ukmesh', 300), /database unavailable/);
+    const recovered = await loader.load('ukmesh', 300);
+    assert.equal(queryCalls, 2);
+    assert.equal(recovered.links.length, 1);
+  } finally {
+    loader.shutdown();
+  }
 });

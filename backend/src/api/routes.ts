@@ -238,6 +238,7 @@ registerSpamRoutes(router, { expensiveLimiter: EXPENSIVE_LIMITER });
 registerTopologyRoutes(router, {
   query,
   networkFilters,
+  getPublicVisibilityGeneration,
   limiter: EXPENSIVE_LIMITER,
 });
 registerActivityTimelineRoutes(router, {
