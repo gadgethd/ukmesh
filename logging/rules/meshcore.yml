@@ -65,6 +65,25 @@ groups:
   - name: meshcore-queues-and-workers
     interval: 15s
     rules:
+      - alert: MqttIngestQueueDepthHigh
+        expr: meshcore_mqtt_ingest_queue_depth > 800
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: The MQTT ingest queue has remained above 800 messages
+          owner: meshcore-operations
+          runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#mqttingestqueuedepthhigh
+
+      - alert: MqttIngestQueueFull
+        expr: rate(meshcore_mqtt_ingest_outcomes_total{outcome="queue_full"}[5m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: The MQTT ingest queue is rejecting messages at capacity
+          owner: meshcore-operations
+          runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#mqttingestqueuefull
+
       - alert: QueueAgeHigh
         expr: meshcore_link_queue_oldest_age_seconds > 600
         for: 5m

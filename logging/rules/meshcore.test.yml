@@ -19,7 +19,32 @@ tests:
         values: 0x8
       - series: 'meshcore_worker_heartbeat_age_seconds{worker="link"}'
         values: 200x8
+      - series: 'meshcore_mqtt_ingest_queue_depth{job="meshcore-backend"}'
+        values: 900x8
+      - series: 'meshcore_mqtt_ingest_outcomes_total{job="meshcore-backend",outcome="queue_full"}'
+        values: 0 0 1 2 3 4 5 6
     alert_rule_test:
+      - eval_time: 6m
+        alertname: MqttIngestQueueDepthHigh
+        exp_alerts:
+          - exp_labels:
+              job: meshcore-backend
+              severity: warning
+            exp_annotations:
+              summary: The MQTT ingest queue has remained above 800 messages
+              owner: meshcore-operations
+              runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#mqttingestqueuedepthhigh
+      - eval_time: 3m
+        alertname: MqttIngestQueueFull
+        exp_alerts:
+          - exp_labels:
+              job: meshcore-backend
+              outcome: queue_full
+              severity: critical
+            exp_annotations:
+              summary: The MQTT ingest queue is rejecting messages at capacity
+              owner: meshcore-operations
+              runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#mqttingestqueuefull
       - eval_time: 6m
         alertname: QueueAgeHigh
         exp_alerts:
