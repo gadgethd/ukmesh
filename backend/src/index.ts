@@ -13,6 +13,7 @@ import {
 } from './mqtt/connectionMonitor.js';
 import { initWebSocketServer, closeWebSocketServer, broadcastPacket, broadcastNodeUpdate, broadcastNodeUpsert } from './ws/server.js';
 import apiRoutes from './api/routes.js';
+import { startRegisteredStatsWarmup } from './api/routes/stats.js';
 import { initSpamMessageAnalyzer, stopSpamMessageAnalyzer } from './spam/analyzer.js';
 import {
   closeQueuePublisher,
@@ -176,6 +177,9 @@ async function main() {
       });
   }, NODE_IDENTITY_REFRESH_INTERVAL_MS);
   nodeIdentityRefreshTimer.unref();
+  // Visibility-dependent chart work must pin its generation only after the
+  // initial identity reconciliation has settled the alias mapping.
+  startRegisteredStatsWarmup();
   await initOwnerAuthDb();
   await startOwnerAuthorizationReconciler();
 

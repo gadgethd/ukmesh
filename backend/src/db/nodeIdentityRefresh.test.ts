@@ -19,6 +19,9 @@ test('automatic identity refresh skips a byte-equivalent semantic alias generati
     evidence: { a: 'stable', z: [2, { a: 1, b: true }] },
   }];
   assert.equal(automaticIdentityAliasSetsEqual(current, [desired]), true);
+  assert.equal(automaticIdentityAliasSetsEqual([{
+    ...current[0]!, confidence: 'medium', reason: 'new audit evidence', evidence: { changed: true },
+  }], [desired]), true);
   assert.equal(automaticIdentityAliasSetsEqual(current, [
     { ...desired, canonicalNodeId: 'C'.repeat(64) },
   ]), false);
