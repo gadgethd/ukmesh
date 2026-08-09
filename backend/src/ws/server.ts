@@ -44,6 +44,7 @@ const WS_MAX_PENDING_HANDSHAKES = boundedEnvInteger('WS_MAX_PENDING_HANDSHAKES',
 const WS_INITIAL_STATE_CONCURRENCY = boundedEnvInteger('WS_INITIAL_STATE_CONCURRENCY', 8, 1, 128);
 const WS_INITIAL_STATE_QUEUE_MAX = boundedEnvInteger('WS_INITIAL_STATE_QUEUE_MAX', 64, 0, 1_000);
 const WS_INITIAL_STATE_MAX_BYTES = boundedEnvInteger('WS_INITIAL_STATE_MAX_BYTES', 4 * 1_048_576, 16 * 1024, 32 * 1_048_576);
+const WS_INITIAL_STATE_DB_TIMEOUT_MS = boundedEnvInteger('WS_INITIAL_STATE_DB_TIMEOUT_MS', 8_000, 1_000, 9_000);
 const WS_HEARTBEAT_INTERVAL_MS = boundedEnvInteger('WS_HEARTBEAT_INTERVAL_MS', 30_000, 5_000, 120_000);
 
 type InitialStateRow = Record<string, unknown>;
@@ -153,8 +154,8 @@ function initialStateEstimateExceedsLimit(entry: InitialStateEntry): boolean {
 let pub: Redis;
 let sub: Redis;
 // Viable links change slowly (based on historical packet accumulation).
-// 5-minute TTL means the expensive correlated-subquery runs at most once per
-// 5 minutes per network/observer combo instead of once per 30 seconds.
+// Keep the scoped link snapshot off the connect path for five minutes per
+// network/observer combination.
 const VIABLE_LINK_CACHE_TTL_MS = 5 * 60_000;
 const viableLinksCache = new BoundedTtlMap<string, {
   ts: number;
@@ -219,14 +220,18 @@ async function fetchInitialState(network: string | undefined, observer: string |
 
   const promise = (async () => {
     try {
+      // The public synthetic check allows 10 seconds. Abort every database read
+      // before that deadline so a pathological cold query cannot retain an
+      // initial-state gate slot (and a pool connection) for minutes.
+      const signal = AbortSignal.timeout(WS_INITIAL_STATE_DB_TIMEOUT_MS);
       // getRecentPackets: 5-minute window, all types (fast, CTE aggregation ~16 ms).
       // getRecentMessages: last 200 GRP (type=5) from Postgres so the feed can
       //   seed a proper message cache on first load instead of relying on live traffic.
       const [rawNodes, packets, messages, rawViableLinks] = await Promise.all([
-        getNodes(network, observer, 'slim'),
-        getRecentPackets(7, network, observer),
-        getRecentMessages(200, network, observer),
-        getCachedViableLinks(network, observer),
+        getNodes(network, observer, 'slim', signal),
+        getRecentPackets(7, network, observer, 'full', signal),
+        getRecentMessages(200, network, observer, signal),
+        getCachedViableLinks(network, observer, signal),
       ]);
       const nodes = rawNodes
         .filter((node) => !isPrivateNode(node.name))
@@ -270,11 +275,15 @@ function cacheKey(network?: string, observer?: string): string {
   return `${network ?? 'all'}|${observer ?? 'all'}`;
 }
 
-async function getCachedViableLinks(network?: string, observer?: string) {
+async function getCachedViableLinks(
+  network?: string,
+  observer?: string,
+  signal?: AbortSignal,
+) {
   const key = cacheKey(network, observer);
   const cached = viableLinksCache.get(key);
   if (cached && (Date.now() - cached.ts) < VIABLE_LINK_CACHE_TTL_MS) return cached.data;
-  const data = await getViableLinks(network, observer);
+  const data = await getViableLinks(network, observer, signal);
   viableLinksCache.set(key, { ts: Date.now(), data });
   return data;
 }
