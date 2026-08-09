@@ -66,6 +66,9 @@ services:
     memswap_limit: "1g"
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}
+      DATABASE_APPLICATION_NAME: meshcore-backend
+      OWNER_DATABASE_APPLICATION_NAME: meshcore-backend-owner-auth
+      OWNER_DATABASE_ADMIN_APPLICATION_NAME: meshcore-backend-owner-auth-admin
       MQTT_BROKER_URL: ${MQTT_BROKER_URL:-ws://mosquitto:9001}
       MQTT_USERNAME: ${MQTT_USERNAME:-backend}
       MQTT_PASSWORD: ${MQTT_PASSWORD}
@@ -204,6 +207,7 @@ services:
     command: ["node", "dist/workers/path-learning.js"]
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}
+      DATABASE_APPLICATION_NAME: meshcore-path-learning
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD required}
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET required}
@@ -244,8 +248,8 @@ services:
       DATABASE_CONNECTION_TIMEOUT_MS: ${PATH_HISTORY_DATABASE_CONNECTION_TIMEOUT_MS:-30000}
       DATABASE_SKIP_SCHEMA_INIT: "true"
       PATH_HISTORY_RUN_DEADLINE_MS: ${PATH_HISTORY_RUN_DEADLINE_MS:-7200000}
-      PATH_HISTORY_CONCURRENCY: ${PATH_HISTORY_CONCURRENCY:-2}
-      PATH_HISTORY_RETRY_INTERVAL_MS: ${PATH_HISTORY_RETRY_INTERVAL_MS:-60000}
+      PATH_HISTORY_BATCH_SIZE: ${PATH_HISTORY_BATCH_SIZE:-64}
+      PATH_HISTORY_RETRY_INTERVAL_MS: ${PATH_HISTORY_RETRY_INTERVAL_MS:-300000}
       PATH_HISTORY_SEGMENT_COUNTER_CAPACITY: ${PATH_HISTORY_SEGMENT_COUNTER_CAPACITY:-65536}
       PATH_HISTORY_MAX_OLD_SPACE_MB: ${PATH_HISTORY_MAX_OLD_SPACE_MB:-384}
       NODE_OPTIONS: --max-old-space-size=${PATH_HISTORY_MAX_OLD_SPACE_MB:-384}
@@ -278,6 +282,7 @@ services:
     command: ["node", "dist/workers/health.js"]
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}
+      DATABASE_APPLICATION_NAME: meshcore-health-worker
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD required}
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET required}
@@ -286,8 +291,8 @@ services:
       STALE_MQTT_OBSERVER_CLEANUP_DAYS: ${STALE_MQTT_OBSERVER_CLEANUP_DAYS:-30}
       STALE_MQTT_OBSERVER_CLEANUP_INTERVAL_MS: ${STALE_MQTT_OBSERVER_CLEANUP_INTERVAL_MS:-21600000}
       HEALTH_VOLUME_PATHS: database=/health-volumes/database=${HEALTH_DATABASE_BUDGET_BYTES:-322122547200},redis=/health-volumes/redis=${HEALTH_REDIS_BUDGET_BYTES:-4294967296},terrain=/health-volumes/terrain=${HEALTH_TERRAIN_BUDGET_BYTES:-53687091200},logs=/health-volumes/logs=${HEALTH_LOG_BUDGET_BYTES:-21474836480}
-      DATA_LIFECYCLE_RETENTION_ENABLED: ${DATA_LIFECYCLE_RETENTION_ENABLED:-false}
-      DATA_LIFECYCLE_RETENTION_TARGETS: ${DATA_LIFECYCLE_RETENTION_TARGETS:-}
+      DATA_LIFECYCLE_RETENTION_ENABLED: "true"
+      DATA_LIFECYCLE_RETENTION_TARGETS: worker_health_snapshots,operational_check_results
       NODE_ENV: production
     depends_on:
       db-migrate:
@@ -313,6 +318,7 @@ services:
     command: ["node", "dist/workers/synthetic-monitor.js"]
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}
+      DATABASE_APPLICATION_NAME: meshcore-synthetic-monitor
       DATABASE_SKIP_SCHEMA_INIT: "true"
       SYNTHETIC_BASE_URL: http://backend:3000
       SYNTHETIC_WS_URL: ws://backend:3000
@@ -373,6 +379,7 @@ services:
     cpus: 2.0
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}
+      DATABASE_APPLICATION_NAME: meshcore-link-worker
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD required}
       RADIO_BOT_URL: ${LINK_WORKER_RADIO_BOT_URL:-}
@@ -938,6 +945,7 @@ services:
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=16m
     environment:
+      DATABASE_APPLICATION_NAME: meshcore-alert-receiver
       ALERT_FORWARD_URL: ${ALERT_FORWARD_URL:-}
       ALERT_RECEIVER_PATH: /var/lib/meshcore-alerts/alerts.jsonl
       NODE_ENV: production
