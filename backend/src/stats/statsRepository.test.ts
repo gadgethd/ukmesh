@@ -3,8 +3,58 @@ import { test } from 'node:test';
 import type { QueryResultRow } from 'pg';
 import {
   compareAggregateShadowRows,
+  compareExactMultibyteRows,
   createStatsRepository,
 } from './statsRepository.js';
+
+test('multibyte shadow comparison is exact for totals, nested values, nulls, and ordering', () => {
+  const raw = [{
+    multibyte_packets_24h: '17',
+    latest_fully_decoded_nodes: [{ ord: 1, node_id: 'AA', name: null }],
+  }];
+  assert.equal(compareExactMultibyteRows(raw, structuredClone(raw)).matched, true);
+  assert.equal(compareExactMultibyteRows(
+    [{ ...raw[0], multibyte_packets_24h: '18' }],
+    raw,
+  ).matched, false);
+  assert.equal(compareExactMultibyteRows(
+    [{ ...raw[0], latest_fully_decoded_nodes: [{ ord: 1, node_id: 'AA', name: '' }] }],
+    raw,
+  ).matched, false);
+  assert.equal(compareExactMultibyteRows([...raw, { extra: true }], raw).matched, false);
+});
+
+test('multibyte fact cutover removes both raw decode scans and binds the privacy generation', async () => {
+  const calls: Array<{ text: string; params?: unknown[] }> = [];
+  const query = async <T extends QueryResultRow = QueryResultRow>(
+    text: string,
+    params?: unknown[],
+  ): Promise<{ rows: T[] }> => {
+    calls.push({ text, params });
+    if (text.includes('FROM multibyte_path_fact_state')) {
+      return { rows: [{ ready: true }] as T[] };
+    }
+    return { rows: [] };
+  };
+  const repository = createStatsRepository({
+    query,
+    networkFilters: () => ({
+      params: ['ukmesh'],
+      packets: 'AND network = $1',
+      packetsAlias: (alias: string) => `AND ${alias}.network = $1`,
+      nodes: 'AND network = $1',
+      nodesAlias: (alias: string) => `AND ${alias}.network = $1`,
+    }),
+    multibyteFactsReadsEnabled: true,
+    multibyteFactsShadowEnabled: false,
+  });
+
+  await repository.fetchChartsData('ukmesh', undefined, 12);
+  const factCalls = calls.filter((call) => call.text.includes('FROM multibyte_path_facts f'));
+  assert.equal(factCalls.length, 2);
+  assert.ok(factCalls.every((call) => call.params?.at(-1) === 12));
+  assert.equal(calls.some((call) => call.text.includes('row_number() OVER () AS obs_id')), false);
+});
 
 test('aggregate shadow comparison requires exact keys and applies the documented count tolerance', () => {
   assert.deepEqual(

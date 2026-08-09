@@ -272,7 +272,7 @@ export function createStatsService(deps: StatsServiceDeps) {
       ptResult, hdResult, pcResult, sumResult, orSummaryResult, orSeriesResult,
       pathHashWidthsResult, multibyteSummaryResult, observerDiversityResult, signalSummaryResult,
       routeTypesResult, transportCodesResult, pathDecodeTrendResult,
-    } = await repository.fetchChartsData(network, observer);
+    } = await repository.fetchChartsData(network, observer, visibilityGeneration);
 
     const peakRow = phResult.rows.reduce(
       (best: any, r: any) => (Number(r.count) > Number(best?.count ?? 0) ? r : best),

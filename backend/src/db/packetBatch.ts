@@ -218,12 +218,12 @@ async function writeBatch(batch: PendingPacket[], idempotent: boolean): Promise<
        ${idempotencyCte}
        inserted AS (
          INSERT INTO packets (
-           time, packet_hash, rx_node_id, src_node_id, topic, topic_prefix, iata,
+           observation_id, time, packet_hash, rx_node_id, src_node_id, topic, topic_prefix, iata,
            packet_type, route_type, hop_count, rssi, snr, payload, companion_sender, raw_hex,
            advert_count, path_hashes, path_hash_size_bytes, network, transport_codes,
            region_scope, is_private, visibility_ok
          )
-         SELECT time, packet_hash, rx_node_id, src_node_id, topic, topic_prefix, iata,
+         SELECT gen_random_uuid(), time, packet_hash, rx_node_id, src_node_id, topic, topic_prefix, iata,
                 packet_type, route_type, hop_count, rssi, snr, payload::jsonb, companion_sender, raw_hex,
                 advert_count, path_hashes, path_hash_size_bytes, network, transport_codes,
                 region_scope, is_private, path_is_valid AND NOT is_private
