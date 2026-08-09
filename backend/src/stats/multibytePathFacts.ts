@@ -21,6 +21,20 @@ export type MultibyteFactChunk = {
   wasCompressed: boolean;
 };
 
+export function selectMultibyteFactChunkBatch(
+  chunks: readonly MultibyteFactChunk[],
+  startIndex: number,
+  limit: number,
+): MultibyteFactChunk[] {
+  if (!Number.isSafeInteger(startIndex) || startIndex < 0) {
+    throw new Error('INVALID_MULTIBYTE_FACT_CHUNK_INDEX');
+  }
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 4) {
+    throw new Error('INVALID_MULTIBYTE_FACT_CHUNK_LIMIT');
+  }
+  return chunks.slice(startIndex, startIndex + limit);
+}
+
 export async function listMultibyteFactChunks(
   query: QueryFn,
   input: { windowStart: Date; cutoff: Date },
