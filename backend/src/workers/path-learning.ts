@@ -4,7 +4,13 @@ import { rebuildPathLearningModels } from '../path-learning/rebuild.js';
 import { observeWorkerOutcome } from '../metrics.js';
 import { startWorkerMetrics } from './workerMetrics.js';
 
-const REBUILD_INTERVAL_MS = 60 * 60 * 1000;
+const REBUILD_INTERVAL_MS = Math.max(
+  5 * 60_000,
+  Math.min(
+    24 * 60 * 60_000,
+    Number(process.env['PATH_LEARNING_INTERVAL_MS'] ?? 60 * 60_000) || 60 * 60_000,
+  ),
+);
 
 let isRunning = false;
 
