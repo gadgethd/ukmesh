@@ -39,6 +39,13 @@ export const CACHE_POLICY_REGISTRY: readonly CachePolicyRecord[] = Object.freeze
     negativeCaching: 'completed empty observed-link set', singleFlight: 'reachInFlight (cap 64)',
   },
   {
+    source: 'src/api/routes/topology.ts#cache',
+    disposition: 'bounded-cache', maxEntries: 64, maxBytes: 16 << 20, ttlMs: 60_000,
+    scope: 'effective public network + link limit + visibility generation',
+    invalidation: 'identity/privacy generation check + TTL',
+    negativeCaching: 'successful complete DTOs only', singleFlight: 'inflight (cap 64)',
+  },
+  {
     source: 'src/api/bootstrap/caches.ts#statsCache',
     disposition: 'bounded-cache', maxEntries: 256, maxBytes: 16 << 20, ttlMs: 15 * 60_000,
     scope: 'network + observer + visibility generation', invalidation: 'generation check + TTL/stale-while-revalidate',
