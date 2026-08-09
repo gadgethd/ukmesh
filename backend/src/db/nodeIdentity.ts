@@ -95,30 +95,15 @@ type StoredIdentityAlias = {
   source_kind: string;
 };
 
-function stableJsonValue(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(stableJsonValue);
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>)
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([key, child]) => [key, stableJsonValue(child)]),
-    );
-  }
-  return value;
-}
-
 export function automaticIdentityAliasSetsEqual(
-  current: Array<Pick<StoredIdentityAlias, 'source_node_id' | 'canonical_node_id' | 'confidence' | 'reason' | 'evidence'>>,
-  desired: IdentityAlias[],
+  current: Array<Pick<StoredIdentityAlias, 'source_node_id' | 'canonical_node_id'>>,
+  desired: Array<Pick<IdentityAlias, 'sourceNodeId' | 'canonicalNodeId'>>,
 ): boolean {
-  const currentRows = current.map((row) => JSON.stringify(stableJsonValue({
-    sourceNodeId: row.source_node_id,
-    canonicalNodeId: row.canonical_node_id,
-    confidence: row.confidence,
-    reason: row.reason,
-    evidence: row.evidence,
-  }))).sort();
-  const desiredRows = desired.map((row) => JSON.stringify(stableJsonValue(row))).sort();
+  // Public identity and privacy projections consume only the mapping. Evidence,
+  // reason, and confidence continue to refresh in node_identity_match_evidence;
+  // changing that audit metadata must not invalidate every public cache.
+  const currentRows = current.map((row) => `${row.source_node_id}\0${row.canonical_node_id}`).sort();
+  const desiredRows = desired.map((row) => `${row.sourceNodeId}\0${row.canonicalNodeId}`).sort();
   return currentRows.length === desiredRows.length
     && currentRows.every((row, index) => row === desiredRows[index]);
 }

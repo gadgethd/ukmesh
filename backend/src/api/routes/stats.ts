@@ -5,6 +5,13 @@ import { createStatsService, StatsWorkOverloadedError } from '../../stats/statsS
 import type { NetworkFilters } from '../utils/networkFilters.js';
 import { normalizeObserverQuery } from '../utils/observer.js';
 import type { QueryResultRow } from 'pg';
+import { createDeferredOnce } from '../../lifecycle/deferredOnce.js';
+
+const chartsWarmup = createDeferredOnce('stats chart warmup');
+
+export function startRegisteredStatsWarmup(): boolean {
+  return chartsWarmup.start();
+}
 
 type QueryFn = <T extends QueryResultRow = QueryResultRow>(
   text: string,
@@ -70,7 +77,7 @@ export function registerStatsRoutes(router: Router, deps: StatsRouteDeps): void 
     maskDecodedPathNodes: deps.maskDecodedPathNodes,
   });
 
-  service.startChartsWarmup();
+  chartsWarmup.register(service.startChartsWarmup);
 
   router.get('/stats', async (req, res) => {
     try {
