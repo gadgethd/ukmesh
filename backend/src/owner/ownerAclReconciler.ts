@@ -58,6 +58,7 @@ export function reconcileOwnerAuthorization(): Promise<void> {
       })),
       unmanagedAclUsers(),
       allowedEmptyAclUsers(),
+      [String(process.env['MQTT_USERNAME'] ?? 'backend').trim() || 'backend'],
     );
     await updateOwnerAclState({ desiredGeneration: rendered.generation });
     await saveOwnerAclArtifact({
