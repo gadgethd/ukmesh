@@ -498,6 +498,12 @@ export async function captureWorkerHealthSnapshot(): Promise<void> {
               last_activity_at, cpu_load_1m, mem_used_pct, disk_used_pct
          FROM snapshot
        RETURNING worker_name
+     ), current_cleanup AS (
+       DELETE FROM worker_health_current current
+        WHERE NOT EXISTS (
+          SELECT 1 FROM snapshot WHERE snapshot.worker_name = current.worker_name
+        )
+       RETURNING worker_name
      )
      INSERT INTO worker_health_current
        (worker_name, captured_at, status, queue_depth, processed_1h,
