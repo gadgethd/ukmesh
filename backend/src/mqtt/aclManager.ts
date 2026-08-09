@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
+import { ownerAclReloadTotal } from '../metrics.js';
 
 export const OWNER_ACL_RENDERER_VERSION = 'meshcore-owner-acl/v1';
 const MANAGED_BEGIN = '# BEGIN MESHCORE OWNER ACL';
@@ -317,22 +318,30 @@ export function writeAclAtomically(
 }
 
 export async function reloadMosquitto(): Promise<void> {
-  const endpoint = process.env['OWNER_ACL_RELOAD_URL'] ?? 'http://mosquitto-reloader:8080/reload';
-  const token = String(process.env['OWNER_ACL_RELOAD_TOKEN'] ?? '');
-  if (token.length < 32) throw new Error('OWNER_ACL_RELOAD_TOKEN_INVALID');
-  const response = await fetch(endpoint, {
-    method: 'POST',
-    headers: {
-      authorization: `Bearer ${token}`,
-      'content-type': 'application/json',
-    },
-    body: '{}',
-    redirect: 'error',
-    signal: AbortSignal.timeout(5_000),
-  });
-  if (!response.ok) {
+  try {
+    const endpoint = process.env['OWNER_ACL_RELOAD_URL'] ?? 'http://mosquitto-reloader:8080/reload';
+    const token = String(process.env['OWNER_ACL_RELOAD_TOKEN'] ?? '');
+    if (token.length < 32) throw new Error('OWNER_ACL_RELOAD_TOKEN_INVALID');
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${token}`,
+        'content-type': 'application/json',
+      },
+      body: '{}',
+      redirect: 'error',
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new Error(`MOSQUITTO_RELOAD_FAILED:${response.status}`);
+    }
     await response.body?.cancel().catch(() => undefined);
-    throw new Error(`MOSQUITTO_RELOAD_FAILED:${response.status}`);
+    ownerAclReloadTotal.inc({ outcome: 'success' });
+  } catch (error) {
+    ownerAclReloadTotal.inc({ outcome: 'failure' });
+    const message = error instanceof Error ? error.message : String(error);
+    console.error('[owner-acl] mosquitto reload failed:', message);
+    throw error;
   }
-  await response.body?.cancel().catch(() => undefined);
 }
