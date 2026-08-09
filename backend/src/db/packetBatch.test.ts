@@ -60,4 +60,6 @@ test('packet batches retry transient database failures without losing the pendin
   assert.doesNotMatch(statements[0]!, /new_rows AS MATERIALIZED/);
   assert.match(statements[1]!, /new_rows AS MATERIALIZED/);
   assert.match(statements[1]!, /existing\.packet_hash = c\.packet_hash/);
+  assert.match(statements[1]!, /INSERT INTO packets \(\s*observation_id,/);
+  assert.match(statements[1]!, /SELECT gen_random_uuid\(\), time, packet_hash/);
 });

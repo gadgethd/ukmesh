@@ -1,0 +1,87 @@
+# Production app/data-plane split overlay.
+#
+# Rollback-only: use explicitly after docker-compose.yml and
+# docker-compose.live.yml. Never activate this file through a bare
+# `docker compose up`; no normal build, deploy, or reconciliation path may
+# reference it. The original four service definitions remain available for an
+# exact rollback, while the profile keeps them outside normal app deploys.
+services:
+  timescaledb:
+    profiles: [infra-owned]
+
+  mosquitto:
+    profiles: [infra-owned]
+
+  mosquitto-reloader:
+    profiles: [infra-owned]
+
+  redis:
+    profiles: [infra-owned]
+
+  db-migrate:
+    depends_on: !override {}
+
+  backend:
+    depends_on: !override
+      db-migrate:
+        condition: service_completed_successfully
+
+  path-learning-worker:
+    depends_on: !override
+      db-migrate:
+        condition: service_completed_successfully
+
+  path-history-worker:
+    depends_on: !override
+      db-migrate:
+        condition: service_completed_successfully
+
+  health-worker:
+    depends_on: !override
+      db-migrate:
+        condition: service_completed_successfully
+
+  link-backfill-worker:
+    depends_on: !override
+      db-migrate:
+        condition: service_completed_successfully
+      backend:
+        condition: service_healthy
+      link-worker:
+        condition: service_healthy
+
+  link-worker:
+    depends_on: !override
+      db-migrate:
+        condition: service_completed_successfully
+
+  mesh-health-check:
+    depends_on: !override
+      mesh-health-check-data-init:
+        condition: service_completed_successfully
+
+  postgres-exporter:
+    depends_on: !override {}
+
+  redis-exporter:
+    depends_on: !override {}
+
+networks:
+  default:
+    name: meshcore-analytics_default
+    external: true
+    ipam: !reset null
+
+volumes:
+  timescaledb_data:
+    name: meshcore-analytics_timescaledb_data
+    external: true
+  mosquitto_data:
+    name: meshcore-analytics_mosquitto_data
+    external: true
+  mosquitto_log:
+    name: meshcore-analytics_mosquitto_log
+    external: true
+  redis_data:
+    name: meshcore-analytics_redis_data
+    external: true

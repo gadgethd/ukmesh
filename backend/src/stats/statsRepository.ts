@@ -10,6 +10,7 @@ import {
   loadStoredChartSnapshot,
   saveStoredChartSnapshot,
 } from './chartSnapshot.js';
+import { ensureMultibyteFactsCoverWindow } from './multibytePathFacts.js';
 
 type QueryFn = <T extends QueryResultRow = QueryResultRow>(
   text: string,
@@ -21,6 +22,8 @@ type StatsRepositoryDeps = {
   query: QueryFn;
   aggregateReadsEnabled?: boolean;
   aggregateShadowEnabled?: boolean;
+  multibyteFactsReadsEnabled?: boolean;
+  multibyteFactsShadowEnabled?: boolean;
 };
 
 export type StatsRepository = ReturnType<typeof createStatsRepository>;
@@ -30,6 +33,18 @@ export type AggregateShadowRowComparison = {
   maxAbsoluteDifference: number;
   reason?: 'keys' | 'count';
 };
+
+export function compareExactMultibyteRows(
+  rollupRows: QueryResultRow[],
+  rawRows: QueryResultRow[],
+): { matched: boolean; rollup: string; raw: string } {
+  const normalize = (rows: QueryResultRow[]) => JSON.stringify(rows, (_key, value) => (
+    value instanceof Date ? value.toISOString() : value
+  ));
+  const rollup = normalize(rollupRows);
+  const raw = normalize(rawRows);
+  return { matched: rollup === raw, rollup, raw };
+}
 
 function normalizedDimensionKey(row: QueryResultRow): string {
   return JSON.stringify(Object.fromEntries(
@@ -101,6 +116,10 @@ export function compareAggregateShadowRows(
 
 export function createStatsRepository(deps: StatsRepositoryDeps) {
   const { networkFilters } = deps;
+  const multibyteFactsReadsEnabled = deps.multibyteFactsReadsEnabled
+    ?? process.env['STATS_MULTIBYTE_FACTS_READS_ENABLED'] === 'true';
+  const multibyteFactsShadowEnabled = deps.multibyteFactsShadowEnabled
+    ?? process.env['STATS_MULTIBYTE_FACTS_SHADOW_ENABLED'] === 'true';
   const queryConcurrency = Math.max(
     1,
     Math.min(8, Math.trunc(Number(process.env['STATS_DB_QUERY_CONCURRENCY'] ?? 2) || 2)),
@@ -676,10 +695,144 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
     aggregateShadowInFlight.set(key, comparison);
   }
 
-  async function fetchChartsData(network: string | undefined, observer: string | undefined) {
+  async function fetchChartsData(
+    network: string | undefined,
+    observer: string | undefined,
+    visibilityGeneration = 1,
+  ) {
     const filters = networkFilters(network, observer);
     const totalFilters = networkFilters(network, observer, { includePrivacy: false });
     const aggregateAsOf = new Date();
+    const multibyteCutoffPlaceholder = `$${filters.params.length + 1}`;
+    const multibyteGenerationPlaceholder = `$${filters.params.length + 2}`;
+    const multibyteRawParams = [...filters.params, aggregateAsOf.toISOString()];
+    const multibyteFactParams = [...multibyteRawParams, visibilityGeneration];
+    if (multibyteFactsReadsEnabled || multibyteFactsShadowEnabled) {
+      const coverage = await ensureMultibyteFactsCoverWindow(query, {
+        windowStart: new Date(aggregateAsOf.getTime() - (8 * 24 * 60 * 60 * 1_000)),
+        cutoff: aggregateAsOf,
+        visibilityGeneration,
+      });
+      if (coverage.backfilled) {
+        console.log('[stats-multibyte-facts] bounded backfill complete', {
+          cutoff: aggregateAsOf.toISOString(),
+          visibilityGeneration,
+          affectedRows: coverage.affectedRows,
+        });
+      }
+    }
+
+    const fetchMultibyteFactSummary = () => query<{
+      latest_multibyte_at: string | null;
+      latest_multibyte_hash: string | null;
+      multibyte_packets_24h: string;
+      fully_decoded_multibyte_24h: string;
+      latest_fully_decoded_at: string | null;
+      latest_fully_decoded_hash: string | null;
+      latest_fully_decoded_hops: string | null;
+      latest_fully_decoded_path: string | null;
+      latest_fully_decoded_nodes: Array<{ ord: number; node_id: string; name: string | null; lat: number | null; lon: number | null; last_seen: string | null; }> | null;
+      longest_fully_decoded_at: string | null;
+      longest_fully_decoded_hash: string | null;
+      longest_fully_decoded_hops: string | null;
+      longest_fully_decoded_path: string | null;
+      longest_fully_decoded_nodes: Array<{ ord: number; node_id: string; name: string | null; lat: number | null; lon: number | null; last_seen: string | null; }> | null;
+    }>(
+      `WITH multibyte AS MATERIALIZED (
+         SELECT f.*
+         FROM multibyte_path_facts f
+         WHERE f.observed_at > ${multibyteCutoffPlaceholder}::timestamptz - INTERVAL '24 hours'
+           AND f.observed_at <= ${multibyteCutoffPlaceholder}::timestamptz
+           AND f.visibility_generation = ${multibyteGenerationPlaceholder}::bigint
+           ${filters.packetsAlias('f')}
+       ),
+       latest_fully_decoded AS (
+         SELECT * FROM multibyte
+         WHERE fully_decoded IS TRUE
+         ORDER BY observed_at DESC, packet_hash DESC, observation_id DESC
+         LIMIT 1
+       ),
+       longest_fully_decoded AS (
+         SELECT * FROM multibyte
+         WHERE fully_decoded IS TRUE
+         ORDER BY decoded_hops DESC, observed_at DESC, packet_hash DESC, observation_id DESC
+         LIMIT 1
+       )
+       SELECT
+         (SELECT MAX(observed_at)::text FROM multibyte) AS latest_multibyte_at,
+         (SELECT packet_hash FROM multibyte ORDER BY observed_at DESC, packet_hash DESC LIMIT 1) AS latest_multibyte_hash,
+         (SELECT COUNT(*)::text FROM multibyte) AS multibyte_packets_24h,
+         (SELECT COUNT(*)::text FROM multibyte WHERE fully_decoded IS TRUE) AS fully_decoded_multibyte_24h,
+         (SELECT observed_at::text FROM latest_fully_decoded) AS latest_fully_decoded_at,
+         (SELECT packet_hash FROM latest_fully_decoded) AS latest_fully_decoded_hash,
+         (SELECT decoded_hops::text FROM latest_fully_decoded) AS latest_fully_decoded_hops,
+         (SELECT decoded_path FROM latest_fully_decoded) AS latest_fully_decoded_path,
+         (
+           SELECT jsonb_agg(jsonb_build_object(
+             'ord', decoded.ord,
+             'node_id', decoded.node_id,
+             'name', node.name,
+             'lat', node.lat,
+             'lon', node.lon,
+             'last_seen', node.last_seen
+           ) ORDER BY decoded.ord)
+           FROM latest_fully_decoded latest
+           CROSS JOIN LATERAL unnest(latest.decoded_node_ids)
+             WITH ORDINALITY decoded(node_id, ord)
+           LEFT JOIN node_identity_nodes node ON node.node_id = decoded.node_id
+         ) AS latest_fully_decoded_nodes,
+         (SELECT observed_at::text FROM longest_fully_decoded) AS longest_fully_decoded_at,
+         (SELECT packet_hash FROM longest_fully_decoded) AS longest_fully_decoded_hash,
+         (SELECT decoded_hops::text FROM longest_fully_decoded) AS longest_fully_decoded_hops,
+         (SELECT decoded_path FROM longest_fully_decoded) AS longest_fully_decoded_path,
+         (
+           SELECT jsonb_agg(jsonb_build_object(
+             'ord', decoded.ord,
+             'node_id', decoded.node_id,
+             'name', node.name,
+             'lat', node.lat,
+             'lon', node.lon,
+             'last_seen', node.last_seen
+           ) ORDER BY decoded.ord)
+           FROM longest_fully_decoded longest
+           CROSS JOIN LATERAL unnest(longest.decoded_node_ids)
+             WITH ORDINALITY decoded(node_id, ord)
+           LEFT JOIN node_identity_nodes node ON node.node_id = decoded.node_id
+         ) AS longest_fully_decoded_nodes`,
+      multibyteFactParams,
+    );
+
+    const fetchMultibyteFactTrend = () => query<{
+      day: string;
+      multibyte_count: string;
+      fully_decoded_count: string;
+    }>(
+      `WITH buckets AS (
+         SELECT generate_series(
+           date_trunc('day', ${multibyteCutoffPlaceholder}::timestamptz - INTERVAL '7 days'),
+           date_trunc('day', ${multibyteCutoffPlaceholder}::timestamptz),
+           INTERVAL '1 day'
+         ) AS day
+       ), counts AS (
+         SELECT time_bucket('1 day', f.observed_at) AS day,
+                COUNT(*)::text AS multibyte_count,
+                COUNT(*) FILTER (WHERE f.fully_decoded IS TRUE)::text AS fully_decoded_count
+         FROM multibyte_path_facts f
+         WHERE f.observed_at > ${multibyteCutoffPlaceholder}::timestamptz - INTERVAL '7 days'
+           AND f.observed_at <= ${multibyteCutoffPlaceholder}::timestamptz
+           AND f.visibility_generation = ${multibyteGenerationPlaceholder}::bigint
+           ${filters.packetsAlias('f')}
+         GROUP BY 1
+       )
+       SELECT b.day::text,
+              COALESCE(MAX(c.multibyte_count), '0') AS multibyte_count,
+              COALESCE(MAX(c.fully_decoded_count), '0') AS fully_decoded_count
+       FROM buckets b
+       LEFT JOIN counts c ON c.day = b.day
+       GROUP BY b.day
+       ORDER BY b.day`,
+      multibyteFactParams,
+    );
     const aggregatePartsPromise = aggregateReadsEnabled && !observer
       ? fetchAggregateChartParts(network, aggregateAsOf)
       : null;
@@ -824,7 +977,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
          GROUP BY 1`,
         filters.params,
       ),
-      query<{
+      multibyteFactsReadsEnabled ? fetchMultibyteFactSummary() : query<{
         latest_multibyte_at: string | null;
         latest_multibyte_hash: string | null;
         multibyte_packets_24h: string;
@@ -853,7 +1006,8 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
              rx.role AS rx_role
            FROM packets p
            LEFT JOIN node_identity_nodes rx ON rx.node_id = meshcore_canonical_node_id(p.rx_node_id)
-           WHERE p.time > NOW() - INTERVAL '24 hours'
+           WHERE p.time > ${multibyteCutoffPlaceholder}::timestamptz - INTERVAL '24 hours'
+             AND p.time <= ${multibyteCutoffPlaceholder}::timestamptz
              AND p.path_hash_size_bytes > 1
              AND COALESCE(array_length(p.path_hashes, 1), 0) > 0
              ${filters.packetsAlias('p')}
@@ -1010,7 +1164,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
              JOIN decoded_hops dh ON dh.obs_id = l.obs_id
              LEFT JOIN node_identity_nodes n ON n.node_id = dh.node_id
            ) AS longest_fully_decoded_nodes`,
-        filters.params,
+        multibyteRawParams,
       ),
       query<{
         avg_observers: string | null;
@@ -1083,15 +1237,15 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
          LIMIT 12`,
         filters.params,
       )),
-      query<{
+      multibyteFactsReadsEnabled ? fetchMultibyteFactTrend() : query<{
         day: string;
         multibyte_count: string;
         fully_decoded_count: string;
       }>(
         `WITH buckets AS (
            SELECT generate_series(
-             date_trunc('day', NOW() - INTERVAL '7 days'),
-             date_trunc('day', NOW()),
+             date_trunc('day', ${multibyteCutoffPlaceholder}::timestamptz - INTERVAL '7 days'),
+             date_trunc('day', ${multibyteCutoffPlaceholder}::timestamptz),
              INTERVAL '1 day'
            ) AS day
          ),
@@ -1108,7 +1262,8 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
              rx.role AS rx_role
            FROM packets p
            LEFT JOIN node_identity_nodes rx ON rx.node_id = meshcore_canonical_node_id(p.rx_node_id)
-           WHERE p.time > NOW() - INTERVAL '7 days'
+           WHERE p.time > ${multibyteCutoffPlaceholder}::timestamptz - INTERVAL '7 days'
+             AND p.time <= ${multibyteCutoffPlaceholder}::timestamptz
              AND p.path_hash_size_bytes > 1
              AND COALESCE(array_length(p.path_hashes, 1), 0) > 0
              ${filters.packetsAlias('p')}
@@ -1218,7 +1373,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
          LEFT JOIN fully_decoded_counts f ON f.day = b.day
          GROUP BY b.day
          ORDER BY b.day`,
-        filters.params,
+        multibyteRawParams,
       ),
     ]);
 
@@ -1246,6 +1401,39 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
       // The comparison is bounded to the six switched dimensions, uses one
       // materialized recent packet scan and runs off the response path.
       scheduleAggregateShadow(network, aggregateAsOf, aggregate);
+    }
+    if (multibyteFactsShadowEnabled && !multibyteFactsReadsEnabled) {
+      const [factSummary, factTrend] = await Promise.all([
+        fetchMultibyteFactSummary(),
+        fetchMultibyteFactTrend(),
+      ]);
+      const summaryComparison = compareExactMultibyteRows(
+        factSummary.rows,
+        multibyteSummaryResult.rows,
+      );
+      const trendComparison = compareExactMultibyteRows(
+        factTrend.rows,
+        pathDecodeTrendResult.rows,
+      );
+      const payload = {
+        network: network ?? 'public',
+        observer: observer ?? null,
+        cutoff: aggregateAsOf.toISOString(),
+        visibilityGeneration,
+        matched: summaryComparison.matched && trendComparison.matched,
+        summaryMatched: summaryComparison.matched,
+        trendMatched: trendComparison.matched,
+        ...(summaryComparison.matched ? {} : {
+          summaryRollup: summaryComparison.rollup,
+          summaryRaw: summaryComparison.raw,
+        }),
+        ...(trendComparison.matched ? {} : {
+          trendRollup: trendComparison.rollup,
+          trendRaw: trendComparison.raw,
+        }),
+      };
+      if (payload.matched) console.log('[stats-multibyte-shadow] match', payload);
+      else console.warn('[stats-multibyte-shadow] mismatch', payload);
     }
     return response;
   }
