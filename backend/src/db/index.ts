@@ -695,6 +695,7 @@ export async function getNodes(
   network?: string,
   observer?: string,
   fields: 'full' | 'slim' = 'full',
+  signal?: AbortSignal,
 ) {
   const scope = buildScopePlaceholders(1, network, observer);
   const slimConditions = fields === 'slim'
@@ -707,7 +708,13 @@ export async function getNodes(
   const optionalFields = fields === 'full'
     ? `, n.hardware_model, n.public_key, n.elevation_m`
     : ', n.elevation_m';
-  const res = await pool.query(
+  const res = await query<{
+    node_id: string;
+    name: string | null;
+    lat: number | null;
+    lon: number | null;
+    role: number | null;
+  }>(
     `SELECT
        n.node_id,
        n.name,
@@ -726,7 +733,8 @@ export async function getNodes(
      FROM node_identity_nodes n
      ${whereClause}
      ORDER BY ${nodeEffectiveLastSeenSql('n')} DESC`,
-    scope.params
+    scope.params,
+    signal,
   );
   return res.rows;
 }
@@ -772,10 +780,11 @@ export async function getRecentPackets(
   network?: string,
   observer?: string,
   fields: 'full' | 'slim' = 'full',
+  signal?: AbortSignal,
 ) {
   const scope = buildScopePlaceholders(2, network, observer);
   const fiveMinAgo = 'NOW() - INTERVAL \'5 minutes\'';
-  const res = await pool.query(
+  const res = await query(
     `WITH recent_packets AS (
       SELECT DISTINCT ON (p.packet_hash)
              p.time, p.packet_hash,
@@ -825,7 +834,8 @@ export async function getRecentPackets(
     LEFT JOIN packet_stats ps ON ps.packet_hash = rp.packet_hash
     ORDER BY rp.time DESC
     LIMIT $1`,
-    [limit, ...scope.params]
+    [limit, ...scope.params],
+    signal,
   );
   return res.rows;
 }
@@ -835,9 +845,14 @@ export async function getRecentPackets(
  * Used to pre-populate the channel feed on page load so it isn't blank.
  * Returns rows with the same shape as getRecentPackets.
  */
-export async function getRecentMessages(limit = 50, network?: string, observer?: string) {
+export async function getRecentMessages(
+  limit = 50,
+  network?: string,
+  observer?: string,
+  signal?: AbortSignal,
+) {
   const scope = buildScopePlaceholders(2, network, observer);
-  const res = await pool.query(
+  const res = await query(
     `WITH recent_msgs AS (
       SELECT DISTINCT ON (p.packet_hash)
              p.time, p.packet_hash,
@@ -884,6 +899,7 @@ export async function getRecentMessages(limit = 50, network?: string, observer?:
     ORDER BY m.time DESC
     LIMIT $1`,
     [limit, ...scope.params],
+    signal,
   );
   return res.rows;
 }
@@ -1329,50 +1345,63 @@ export type ViableLinkRow = {
 };
 
 /** Returns viable links with metrics so UI can render precomputed styles immediately. */
-export async function getViableLinks(network?: string, observer?: string): Promise<ViableLinkRow[]> {
-  // For network-scoped queries we pre-compute the set of nodes seen on that
-  // network in a CTE, then join on it — replacing the correlated EXISTS
-  // subquery in buildNodeScopeClause which ran once per row and caused
-  // full scans on the packets table (30 s+ for teesside).
+export async function getViableLinks(
+  network?: string,
+  observer?: string,
+  signal?: AbortSignal,
+): Promise<ViableLinkRow[]> {
   if (network && !observer) {
     const scopedNetworks = network === 'ukmesh' ? UKMESH_NETWORKS : [network];
-    const res = await pool.query<ViableLinkRow>(
-      `WITH net_nodes AS MATERIALIZED (
-         SELECT DISTINCT node_id FROM node_identity_nodes
+    // Keep the identity scope and link scan as separate statements. The
+    // identity view's representative-rank predicate is estimated at one row;
+    // combining it with both link endpoints makes PostgreSQL form the scoped
+    // node Cartesian product and perform ~174M composite-index probes for
+    // ukmesh. Each simple statement is fast even with that bad estimate, and
+    // the in-memory intersection preserves the exact endpoint scope.
+    const [nodesRes, linksRes] = await Promise.all([
+      query<{ node_id: string }>(
+        `SELECT DISTINCT node_id
+         FROM node_identity_nodes
          WHERE network = ANY($1::text[])
-           AND (name IS NULL OR name NOT LIKE '%🚫%')
-       )
-       SELECT
-         nl.node_a_id,
-         nl.node_b_id,
-         nl.observed_count,
-         nl.multibyte_observed_count,
-         COALESCE(nr.neighbor_report_count, 0) AS neighbor_report_count,
-         nr.neighbor_best_snr_db,
-         nl.itm_viable,
-         nl.itm_path_loss_db,
-         nl.count_a_to_b,
-         nl.count_b_to_a
-       FROM node_identity_links nl
-       LEFT JOIN (
-         SELECT node_a_id, node_b_id,
-           SUM(sample_count)::int AS neighbor_report_count,
-           MAX(best_snr_db) AS neighbor_best_snr_db
-         FROM node_identity_link_radio_reports
-         GROUP BY node_a_id, node_b_id
-       ) nr ON nr.node_a_id = nl.node_a_id AND nr.node_b_id = nl.node_b_id
-       WHERE (nl.itm_viable = true OR nl.force_viable = true)
-         AND nl.node_a_id IN (SELECT node_id FROM net_nodes)
-         AND nl.node_b_id IN (SELECT node_id FROM net_nodes)`,
-      [scopedNetworks],
-    );
-    return res.rows;
+           AND (name IS NULL OR name NOT LIKE '%🚫%')`,
+        [scopedNetworks],
+        signal,
+      ),
+      query<ViableLinkRow>(
+        `SELECT
+           nl.node_a_id,
+           nl.node_b_id,
+           nl.observed_count,
+           nl.multibyte_observed_count,
+           COALESCE(nr.neighbor_report_count, 0) AS neighbor_report_count,
+           nr.neighbor_best_snr_db,
+           nl.itm_viable,
+           nl.itm_path_loss_db,
+           nl.count_a_to_b,
+           nl.count_b_to_a
+         FROM node_identity_links nl
+         LEFT JOIN (
+           SELECT node_a_id, node_b_id,
+             SUM(sample_count)::int AS neighbor_report_count,
+             MAX(best_snr_db) AS neighbor_best_snr_db
+           FROM node_identity_link_radio_reports
+           GROUP BY node_a_id, node_b_id
+         ) nr ON nr.node_a_id = nl.node_a_id AND nr.node_b_id = nl.node_b_id
+         WHERE (nl.itm_viable = true OR nl.force_viable = true)`,
+        undefined,
+        signal,
+      ),
+    ]);
+    const scopedNodeIds = new Set(nodesRes.rows.map((row) => row.node_id));
+    return linksRes.rows.filter((link) => (
+      scopedNodeIds.has(link.node_a_id) && scopedNodeIds.has(link.node_b_id)
+    ));
   }
 
   const scope = buildScopePlaceholders(1, network, observer);
   const params: unknown[] = [...scope.params];
 
-  const res = await pool.query<ViableLinkRow>(
+  const res = await query<ViableLinkRow>(
     `SELECT
        nl.node_a_id,
        nl.node_b_id,
@@ -1400,6 +1429,7 @@ export async function getViableLinks(network?: string, observer?: string): Promi
        ${buildNodeScopeClause(scope, 'a')}
        ${buildNodeScopeClause(scope, 'b')}`,
     params,
+    signal,
   );
   return res.rows;
 }
