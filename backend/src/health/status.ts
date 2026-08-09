@@ -437,23 +437,36 @@ async function redisDurabilityState(): Promise<{
 
 export async function captureWorkerHealthSnapshot(): Promise<void> {
   const rows = await currentWorkers();
-  for (const row of rows) {
-    await query(
-      `INSERT INTO worker_health_snapshots
-         (ts, worker_name, status, queue_depth, processed_5m, processed_1h, last_activity_at, cpu_load_1m, mem_used_pct, disk_used_pct)
-       VALUES (NOW(), $1, $2, $3, 0, $4, $5, $6, $7, $8)`,
-      [
-        row.worker_name,
-        row.status,
-        row.queue_depth,
-        row.processed_1h,
-        row.last_activity_at,
-        row.cpu_load_1m,
-        row.mem_used_pct,
-        row.disk_used_pct,
-      ],
-    );
-  }
+  const capturedAt = new Date().toISOString();
+  await query(
+    `INSERT INTO worker_health_snapshots
+       (ts, worker_name, status, queue_depth, processed_5m, processed_1h,
+        last_activity_at, cpu_load_1m, mem_used_pct, disk_used_pct)
+     SELECT $1::timestamptz, snapshot.worker_name, snapshot.status,
+            snapshot.queue_depth, 0, snapshot.processed_1h,
+            snapshot.last_activity_at, snapshot.cpu_load_1m,
+            snapshot.mem_used_pct, snapshot.disk_used_pct
+       FROM jsonb_to_recordset($2::jsonb) AS snapshot(
+         worker_name text,
+         status text,
+         queue_depth integer,
+         processed_1h integer,
+         last_activity_at timestamptz,
+         cpu_load_1m double precision,
+         mem_used_pct double precision,
+         disk_used_pct double precision
+       )`,
+    [capturedAt, JSON.stringify(rows.map((row) => ({
+      worker_name: row.worker_name,
+      status: row.status,
+      queue_depth: row.queue_depth,
+      processed_1h: row.processed_1h,
+      last_activity_at: row.last_activity_at,
+      cpu_load_1m: row.cpu_load_1m,
+      mem_used_pct: row.mem_used_pct,
+      disk_used_pct: row.disk_used_pct,
+    })))],
+  );
 
   if (OPERATIONAL_RETENTION_ENABLED) {
     for (const target of RETENTION_TARGETS) {

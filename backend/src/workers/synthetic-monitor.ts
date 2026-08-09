@@ -1,15 +1,12 @@
 import 'node:process';
 import { WebSocket } from 'ws';
-import { initDb, query } from '../db/index.js';
+import { initDb } from '../db/index.js';
 import { observeSyntheticCheck } from '../metrics.js';
 import { startWorkerMetrics } from './workerMetrics.js';
-
-type CheckResult = {
-  name: string;
-  status: 'ok' | 'failed';
-  latencyMs: number;
-  detail: string;
-};
+import {
+  persistSyntheticCheckResults,
+  type SyntheticCheckResult as CheckResult,
+} from './syntheticPersistence.js';
 
 type AlertState = { failures: number; alerting: boolean };
 
@@ -25,7 +22,6 @@ const TIMEOUT_MS = boundedNumber(process.env['SYNTHETIC_TIMEOUT_MS'], 10_000, 1_
 const FAILURE_THRESHOLD = boundedNumber(process.env['SYNTHETIC_FAILURE_THRESHOLD'], 3, 1);
 const ALERT_WEBHOOK_URL = String(process.env['ALERT_WEBHOOK_URL'] ?? '').trim();
 const states = new Map<string, AlertState>();
-let lastRetentionCleanup = 0;
 
 function elapsedMs(started: number): number {
   return Math.max(0, Math.round(performance.now() - started));
@@ -77,15 +73,7 @@ async function websocketCheck(): Promise<CheckResult> {
 }
 
 async function persistResults(results: CheckResult[]): Promise<void> {
-  await Promise.all(results.map((result) => query(
-    `INSERT INTO operational_check_results (check_name, status, latency_ms, detail)
-     VALUES ($1, $2, $3, $4)`,
-    [result.name, result.status, result.latencyMs, result.detail],
-  )));
-  if (Date.now() - lastRetentionCleanup > 86_400_000) {
-    await query(`DELETE FROM operational_check_results WHERE ts < NOW() - INTERVAL '14 days'`);
-    lastRetentionCleanup = Date.now();
-  }
+  await persistSyntheticCheckResults(results);
 }
 
 async function notify(kind: 'alert' | 'recovery', result: CheckResult): Promise<void> {
