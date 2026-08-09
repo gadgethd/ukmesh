@@ -12,10 +12,6 @@ import {
   enqueuePacket,
   type PacketBatchResult,
 } from './packetBatch.js';
-import {
-  assertAnalysisPublicationLease,
-  type AnalysisPublicationHandle,
-} from '../analysis/publicationFence.js';
 import { nodeAliasArraySql, publicPacketPrivacySql } from '../api/utils/networkFilters.js';
 import {
   dbQueriesTotal,
@@ -1161,21 +1157,6 @@ export async function getPacketDetail(hash: string, network = 'ukmesh') {
   };
 }
 
-export type PathHistorySegmentRow = {
-  positions: [[number, number], [number, number]];
-  count: number;
-};
-
-export type PathHistoryCacheRow = {
-  scope: string;
-  window_start: string;
-  updated_at: string;
-  packet_count: number;
-  resolved_packet_count: number;
-  segment_counts: PathHistorySegmentRow[];
-  visibility_generation: number;
-};
-
 export async function getPublicVisibilityGeneration(signal?: AbortSignal): Promise<number> {
   const result = await query<{ generation: string }>(
     `SELECT generation::text AS generation
@@ -1189,133 +1170,6 @@ export async function getPublicVisibilityGeneration(signal?: AbortSignal): Promi
     throw new Error('PUBLIC_VISIBILITY_GENERATION_UNAVAILABLE');
   }
   return generation;
-}
-
-export async function getRecentPathHistoryPacketHashes(
-  windowStart: Date,
-  windowEnd: Date,
-  network?: string,
-  limit = 1200,
-  minPathHashSizeBytes = 1,
-  signal?: AbortSignal,
-): Promise<string[]> {
-  const normalizedMinPathHashSizeBytes = Number.isFinite(minPathHashSizeBytes)
-    ? Math.max(1, Math.floor(minPathHashSizeBytes))
-    : 1;
-  const scope = buildScopePlaceholders(5, network);
-  const params: unknown[] = [
-    windowStart,
-    windowEnd,
-    limit,
-    normalizedMinPathHashSizeBytes,
-    ...scope.params,
-  ];
-  const res = await namedQuery<{ packet_hash: string }>(
-    `path-history-selection-${scope.networkIsMulti ? 'multi' : 'single'}-v1`,
-    `SELECT packet_hash
-     FROM (
-       SELECT p.packet_hash, MAX(p.time) AS last_seen
-       FROM packets p
-        WHERE p.time > $1
-          AND p.time <= $2
-          AND p.path_hashes IS NOT NULL
-          AND cardinality(p.path_hashes) > 0
-          AND COALESCE(p.path_hash_size_bytes, 1) >= $4
-          ${buildPacketScopeClause(scope, 'p', network)}
-          ${buildPublicPacketPrivacyClause('p')}
-       GROUP BY p.packet_hash
-     ) recent
-     ORDER BY last_seen DESC
-     LIMIT $3`,
-    params,
-    signal,
-  );
-  return res.rows.map((row) => row.packet_hash).filter(Boolean);
-}
-
-export async function upsertPathHistoryCache(entry: {
-  scope: string;
-  windowStart: Date;
-  packetCount: number;
-  resolvedPacketCount: number;
-  segmentCounts: PathHistorySegmentRow[];
-  visibilityGeneration: number;
-  analysisRun: AnalysisPublicationHandle;
-}): Promise<boolean> {
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    await assertAnalysisPublicationLease(client, entry.analysisRun);
-    const result = await client.query(
-      `INSERT INTO path_history_cache
-         (scope, window_start, updated_at, packet_count, resolved_packet_count, segment_counts, visibility_generation)
-       SELECT $1, $2, NOW(), $3, $4, $5::jsonb, $6
-         FROM (
-           SELECT generation
-             FROM public_visibility_state
-            WHERE singleton = TRUE
-              AND generation = $6
-            FOR SHARE
-         ) current_visibility
-       ON CONFLICT (scope) DO UPDATE SET
-         window_start = EXCLUDED.window_start,
-         updated_at = NOW(),
-         packet_count = EXCLUDED.packet_count,
-         resolved_packet_count = EXCLUDED.resolved_packet_count,
-         segment_counts = EXCLUDED.segment_counts,
-         visibility_generation = EXCLUDED.visibility_generation
-       RETURNING scope`,
-      [
-        entry.scope,
-        entry.windowStart.toISOString(),
-        entry.packetCount,
-        entry.resolvedPacketCount,
-        JSON.stringify(entry.segmentCounts),
-        entry.visibilityGeneration,
-      ],
-    );
-    await assertAnalysisPublicationLease(client, entry.analysisRun);
-    await client.query('COMMIT');
-    return (result.rowCount ?? 0) === 1;
-  } catch (error) {
-    await client.query('ROLLBACK');
-    throw error;
-  } finally {
-    client.release();
-  }
-}
-
-export async function getPathHistoryCache(
-  scope: string,
-  visibilityGeneration: number,
-): Promise<PathHistoryCacheRow | null> {
-  const res = await pool.query<{
-    scope: string;
-    window_start: string;
-    updated_at: string;
-    packet_count: number;
-    resolved_packet_count: number;
-    segment_counts: PathHistorySegmentRow[] | null;
-    visibility_generation: string;
-  }>(
-    `SELECT scope, window_start, updated_at, packet_count, resolved_packet_count,
-            segment_counts, visibility_generation::text AS visibility_generation
-     FROM path_history_cache
-     WHERE scope = $1
-       AND visibility_generation = $2`,
-    [scope, visibilityGeneration],
-  );
-  const row = res.rows[0];
-  if (!row) return null;
-  return {
-    scope: row.scope,
-    window_start: row.window_start,
-    updated_at: row.updated_at,
-    packet_count: row.packet_count,
-    resolved_packet_count: row.resolved_packet_count,
-    segment_counts: Array.isArray(row.segment_counts) ? row.segment_counts : [],
-    visibility_generation: Number(row.visibility_generation),
-  };
 }
 
 export type MultibytePathSegmentRow = {

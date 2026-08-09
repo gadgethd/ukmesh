@@ -36,14 +36,6 @@ export const PATH_BETA_LIMITER = rateLimit({
   message: { error: 'Too many path requests, slow down' },
 });
 
-export const PATH_HISTORY_LIMITER = rateLimit({
-  windowMs: 60_000,
-  max: 20,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: 'Too many history requests, slow down' },
-});
-
 export const COVERAGE_LIMITER = rateLimit({
   windowMs: 60_000,
   max: 12,

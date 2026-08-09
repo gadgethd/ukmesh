@@ -57,7 +57,6 @@ BEGIN
     EXECUTE 'DELETE FROM path_simulation_runs WHERE network IN (''teesside'',''northeast'')';
   END IF;
 END $$;
-DELETE FROM path_history_cache          WHERE scope         IN ('teesside','northeast');
 UPDATE spam_suspects           SET network = 'ukmesh' WHERE network IN ('teesside','northeast');
 UPDATE spam_message_incidents  SET network = 'ukmesh' WHERE network IN ('teesside','northeast');
 UPDATE spam_message_members    SET network = 'ukmesh' WHERE network IN ('teesside','northeast');

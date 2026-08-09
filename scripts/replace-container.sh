@@ -67,7 +67,6 @@ declare -A image_variables=(
   [backend]=BACKEND_IMAGE
   [db-migrate]=BACKEND_IMAGE
   [path-learning-worker]=BACKEND_IMAGE
-  [path-history-worker]=BACKEND_IMAGE
   [health-worker]=BACKEND_IMAGE
   [synthetic-monitor]=BACKEND_IMAGE
   [link-backfill-worker]=BACKEND_IMAGE

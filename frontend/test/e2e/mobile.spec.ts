@@ -112,7 +112,6 @@ async function installApiFixtures(page: Page) {
       });
     }
     if (pathname.endsWith('/packets/recent')) return route.fulfill({ json: [] });
-    if (pathname.endsWith('/path-beta/history')) return route.fulfill({ json: { segments: [] } });
     if (pathname.endsWith('/inferred-nodes')) {
       return route.fulfill({ json: { inferredNodes: [], inferredActiveNodeIds: [] } });
     }

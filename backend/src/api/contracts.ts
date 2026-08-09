@@ -134,7 +134,6 @@ const PUBLIC_GET = [
   '/observers/health',
   '/packets/:hash',
   '/packets/recent',
-  '/path-beta/history',
   '/path-beta/multibyte-paths',
   '/path-beta/resolve',
   '/path-beta/resolve-multi',

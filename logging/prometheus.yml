@@ -24,9 +24,6 @@ scrape_configs:
       - targets: [path-learning-worker:9091]
         labels:
           role: path_learning
-      - targets: [path-history-worker:9091]
-        labels:
-          role: path_history
       - targets: [synthetic-monitor:9091]
         labels:
           role: synthetic

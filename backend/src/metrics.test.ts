@@ -51,6 +51,5 @@ test('metrics use only reviewed low-cardinality labels and fit the scrape budget
 test('dynamic metric dimensions collapse unknown values into bounded buckets', () => {
   assert.equal(boundedNetworkMetricLabel('ukmesh'), 'ukmesh');
   assert.equal(boundedNetworkMetricLabel('customer-created-network'), 'other');
-  assert.equal(boundedAnalysisWorkloadLabel('path-history'), 'path-history');
   assert.equal(boundedAnalysisWorkloadLabel('run-123456'), 'other');
 });

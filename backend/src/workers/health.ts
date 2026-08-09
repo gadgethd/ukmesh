@@ -6,7 +6,7 @@ import { pollOwnerAlertRules } from '../owner/alertRules.js';
 import { observeWorkerOutcome } from '../metrics.js';
 import { startWorkerMetrics } from './workerMetrics.js';
 
-const SNAPSHOT_INTERVAL_MS = 60 * 1000;
+const SNAPSHOT_INTERVAL_MS = 5 * 60 * 1000;
 
 function boundedEnvNumber(name: string, fallback: number, min: number, max: number): number {
   const parsed = Number(process.env[name]);

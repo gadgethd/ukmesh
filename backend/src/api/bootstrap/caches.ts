@@ -14,7 +14,6 @@ export const INFERRED_NODES_CACHE_TTL_MS = 5 * 60_000;
 export const INFERRED_NODES_CACHE_STALE_TTL_MS = 30 * 60_000;
 export const NODE_LINKS_CACHE_TTL_MS = 60_000;
 export const NODE_LINKS_CACHE_STALE_TTL_MS = 5 * 60_000;
-export const PATH_HISTORY_CACHE_TTL_MS = 60_000;
 export const HEALTH_CACHE_TTL_MS = 60_000;
 // Check durable chart freshness every 30 minutes. Regeneration is gated by the
 // persisted snapshot max age below, so a process restart cannot turn an empty
@@ -45,10 +44,6 @@ export const nodeLinksCache = new BoundedTtlMap<string, { ts: number; data: unkn
   maxEntries: 4096, maxWeight: 32 * 1024 * 1024, ttlMs: NODE_LINKS_CACHE_STALE_TTL_MS,
 });
 export const nodeLinksInflight = new Map<string, Promise<unknown>>();
-export const pathHistoryCache = new BoundedTtlMap<string, { ts: number; data: unknown }>({
-  name: 'api_path_history',
-  maxEntries: 8, maxWeight: 8 * 1024 * 1024, ttlMs: PATH_HISTORY_CACHE_TTL_MS,
-});
 export const chartsCache = new BoundedTtlMap<string, { ts: number; data: unknown }>({
   name: 'api_charts',
   maxEntries: 256, maxWeight: 32 * 1024 * 1024, ttlMs: CHARTS_CACHE_STALE_TTL_MS,

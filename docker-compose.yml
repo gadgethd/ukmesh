@@ -102,7 +102,7 @@ services:
       # 15 min: the ukmesh chart snapshot regen runs multibyte analytics that
       # exceed 5 min on the 2vCPU VPS (was 300000; raised 2026-08-08)
       DATABASE_STATEMENT_TIMEOUT_MS: 900000
-      DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-20}
+      DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-16}
       STATS_DB_QUERY_CONCURRENCY: ${STATS_DB_QUERY_CONCURRENCY:-2}
       STATS_AGGREGATE_READS_ENABLED: ${STATS_AGGREGATE_READS_ENABLED:-false}
       STATS_AGGREGATE_SHADOW_ENABLED: ${STATS_AGGREGATE_SHADOW_ENABLED:-false}
@@ -166,6 +166,7 @@ services:
       DATA_LIFECYCLE_RESTORE_RECEIPT_SIGNATURE_PATH: /backup-receipts/latest.json.sig
       DATA_LIFECYCLE_RECEIPT_VERIFY_KEY_PATH: /backup-receipts/verify.pem
       DATA_LIFECYCLE_RECEIPT_MAX_AGE_DAYS: ${DATA_LIFECYCLE_RECEIPT_MAX_AGE_DAYS:-7}
+      SYNTHETIC_SUCCESS_TTL_MS: ${SYNTHETIC_SUCCESS_TTL_MS:-960000}
       NODE_ENV: production
     depends_on:
       db-migrate:
@@ -228,50 +229,6 @@ services:
       db-migrate:
         condition: service_completed_successfully
 
-  path-history-worker:
-    <<: [*internal-hosts, *application-hardening]
-    image: ${BACKEND_IMAGE:-meshcore-analytics-backend:local}
-    build:
-      context: .
-      dockerfile: Dockerfile.backend
-      args:
-        SOURCE_REVISION: ${SOURCE_REVISION:-local}
-    restart: always
-    logging: *json-log-limits
-    # A full 12k-packet history rebuild exceeds Node's cgroup-derived ~256 MB
-    # heap default while holding topology context and concurrent trellises.
-    mem_limit: "768m"
-    memswap_limit: "768m"
-    command: ["node", "dist/workers/path-history.js"]
-    environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}
-      DATABASE_APPLICATION_NAME: meshcore-path-history
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
-      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD required}
-      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET required}
-      DATABASE_STATEMENT_TIMEOUT_MS: 300000
-      DATABASE_CONNECTION_TIMEOUT_MS: ${PATH_HISTORY_DATABASE_CONNECTION_TIMEOUT_MS:-30000}
-      DATABASE_SKIP_SCHEMA_INIT: "true"
-      PATH_HISTORY_RUN_DEADLINE_MS: ${PATH_HISTORY_RUN_DEADLINE_MS:-7200000}
-      PATH_HISTORY_BATCH_SIZE: ${PATH_HISTORY_BATCH_SIZE:-64}
-      PATH_HISTORY_RETRY_INTERVAL_MS: ${PATH_HISTORY_RETRY_INTERVAL_MS:-300000}
-      PATH_HISTORY_SEGMENT_COUNTER_CAPACITY: ${PATH_HISTORY_SEGMENT_COUNTER_CAPACITY:-65536}
-      PATH_HISTORY_MAX_OLD_SPACE_MB: ${PATH_HISTORY_MAX_OLD_SPACE_MB:-384}
-      NODE_OPTIONS: --max-old-space-size=${PATH_HISTORY_MAX_OLD_SPACE_MB:-384}
-      PATH_MULTI_HISTORY_WINDOW_HOURS: ${PATH_MULTI_HISTORY_WINDOW_HOURS:-168}
-      PATH_MULTI_MAX_SCAN_ROWS: ${PATH_MULTI_MAX_SCAN_ROWS:-2048}
-      PATH_MULTI_MAX_OBSERVERS: ${PATH_MULTI_MAX_OBSERVERS:-128}
-      NODE_ENV: production
-    depends_on:
-      db-migrate:
-        condition: service_completed_successfully
-
-    deploy:
-      resources:
-        limits:
-          cpus: "1.0"
-          memory: 768M
-
   health-worker:
     <<: [*internal-hosts, *application-hardening]
     image: ${BACKEND_IMAGE:-meshcore-analytics-backend:local}
@@ -328,6 +285,7 @@ services:
       SYNTHETIC_BASE_URL: http://backend:3000
       SYNTHETIC_WS_URL: ws://backend:3000
       SYNTHETIC_INTERVAL_MS: ${SYNTHETIC_INTERVAL_MS:-60000}
+      SYNTHETIC_FULL_INTERVAL_MS: ${SYNTHETIC_FULL_INTERVAL_MS:-720000}
       SYNTHETIC_TIMEOUT_MS: ${SYNTHETIC_TIMEOUT_MS:-10000}
       SYNTHETIC_FAILURE_THRESHOLD: ${SYNTHETIC_FAILURE_THRESHOLD:-3}
       ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-http://alert-receiver:8080/alerts}

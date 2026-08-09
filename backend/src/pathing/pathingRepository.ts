@@ -5,20 +5,7 @@ type QueryFn = <T extends QueryResultRow = QueryResultRow>(
   params?: unknown[],
 ) => Promise<{ rows: T[] }>;
 
-type PathHistoryCacheRow = {
-  window_start: string | null;
-  updated_at: string | null;
-  packet_count: number;
-  resolved_packet_count: number;
-  segment_counts: Array<{ count?: number }> | null;
-  visibility_generation: number;
-};
-
 type PathingRepositoryDeps = {
-  getPathHistoryCache: (
-    scope: string,
-    visibilityGeneration: number,
-  ) => Promise<PathHistoryCacheRow | null>;
   getPublicVisibilityGeneration: () => Promise<number>;
   query: QueryFn;
 };
@@ -26,17 +13,10 @@ type PathingRepositoryDeps = {
 export type PathingRepository = ReturnType<typeof createPathingRepository>;
 
 export function createPathingRepository(deps: PathingRepositoryDeps) {
-  const { getPathHistoryCache, getPublicVisibilityGeneration, query } = deps;
+  const { getPublicVisibilityGeneration, query } = deps;
 
   async function fetchVisibilityGeneration(): Promise<number> {
     return getPublicVisibilityGeneration();
-  }
-
-  async function fetchPathHistory(
-    scope: string,
-    visibilityGeneration: number,
-  ): Promise<PathHistoryCacheRow | null> {
-    return getPathHistoryCache(scope, visibilityGeneration);
   }
 
   async function fetchPathLearning(network: string, limit: number) {
@@ -151,7 +131,6 @@ export function createPathingRepository(deps: PathingRepositoryDeps) {
 
   return {
     fetchVisibilityGeneration,
-    fetchPathHistory,
     fetchPathLearning,
   };
 }
