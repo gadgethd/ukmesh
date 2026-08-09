@@ -21,24 +21,13 @@ type ResolvePoolFn = {
 
 type PathingRouteDeps = {
   pathBetaLimiter: ReturnType<typeof import('express-rate-limit').rateLimit>;
-  pathHistoryLimiter: ReturnType<typeof import('express-rate-limit').rateLimit>;
   pathLearningLimiter: ReturnType<typeof import('express-rate-limit').rateLimit>;
-  pathHistoryCache: Map<string, { ts: number; data: unknown }>;
-  pathHistoryCacheTtlMs: number;
   getResolveCache: (key: string) => unknown;
   setResolveCache: (key: string, value: unknown) => void;
   getHeldPath: (packetHash: string, network: string) => HeldPathEntry | undefined;
   setHeldPath: (packetHash: string, network: string, value: HeldPathEntry) => void;
   resolvePool: ResolvePoolFn;
   getPublicVisibilityGeneration: () => Promise<number>;
-  getPathHistoryCache: (scope: string, visibilityGeneration: number) => Promise<{
-    window_start: string | null;
-    updated_at: string | null;
-    packet_count: number;
-    resolved_packet_count: number;
-    segment_counts: Array<{ count?: number }> | null;
-    visibility_generation: number;
-  } | null>;
   getMultibytePathSegments: (network?: string, observer?: string) => Promise<{
     maxCount: number;
     segments: Array<{
@@ -54,14 +43,11 @@ type PathingRouteDeps = {
 
 export function registerPathingRoutes(router: Router, deps: PathingRouteDeps): void {
   const repository = createPathingRepository({
-    getPathHistoryCache: deps.getPathHistoryCache,
     getPublicVisibilityGeneration: deps.getPublicVisibilityGeneration,
     query: deps.query,
   });
 
   const service = createPathingService({
-    pathHistoryCache: deps.pathHistoryCache,
-    pathHistoryCacheTtlMs: deps.pathHistoryCacheTtlMs,
     getResolveCache: deps.getResolveCache,
     setResolveCache: deps.setResolveCache,
     getHeldPath: deps.getHeldPath,
@@ -140,17 +126,7 @@ export function registerPathingRoutes(router: Router, deps: PathingRouteDeps): v
     res.json(slowModeStatus());
   });
 
-  router.get('/path-beta/history', deps.pathHistoryLimiter, async (req, res) => {
-    try {
-      const network = resolvePublicNetworkScope(req.query['network'], req.headers);
-      res.json(await service.getPathHistory(network));
-    } catch (err) {
-      console.error('[api] GET /path-beta/history', (err as Error).message);
-      res.status(500).json({ error: 'Internal server error' });
-    }
-  });
-
-  router.get('/path-beta/multibyte-paths', deps.pathHistoryLimiter, async (req, res) => {
+  router.get('/path-beta/multibyte-paths', deps.pathBetaLimiter, async (req, res) => {
     try {
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const observer = normalizeObserverQuery(req.query['observer']);

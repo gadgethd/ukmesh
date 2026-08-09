@@ -6,7 +6,6 @@ import {
   NODE_LINKS_CACHE_TTL_MS,
   OWNER_DASHBOARD_CACHE_TTL_MS,
   OWNER_LIVE_CACHE_TTL_MS,
-  PATH_HISTORY_CACHE_TTL_MS,
   STATS_CACHE_TTL_MS,
   chartsCache,
   chartsInflight,
@@ -15,7 +14,6 @@ import {
   nodeLinksCache,
   nodeLinksInflight,
   ownerLiveCache,
-  pathHistoryCache,
   statsCache,
 } from './bootstrap/caches.js';
 import {
@@ -24,7 +22,6 @@ import {
   getNodeHistory,
   getNodeAdverts,
   getPacketDetail,
-  getPathHistoryCache,
   getPublicVisibilityGeneration,
   getChannelMessageHistory,
   getRecentPacketEvents,
@@ -52,7 +49,6 @@ import {
   OWNER_LOGIN_LIMITER,
   PACKET_DETAIL_LIMITER,
   PATH_BETA_LIMITER,
-  PATH_HISTORY_LIMITER,
   PATH_LEARNING_LIMITER,
   STATS_CHARTS_LIMITER,
 } from './bootstrap/limiters.js';
@@ -205,16 +201,12 @@ registerOwnerRoutes(router, {
 });
 registerPathingRoutes(router, {
   pathBetaLimiter: PATH_BETA_LIMITER,
-  pathHistoryLimiter: PATH_HISTORY_LIMITER,
   pathLearningLimiter: PATH_LEARNING_LIMITER,
-  pathHistoryCache,
-  pathHistoryCacheTtlMs: PATH_HISTORY_CACHE_TTL_MS,
   getResolveCache,
   setResolveCache,
   getHeldPath,
   setHeldPath,
   resolvePool,
-  getPathHistoryCache,
   getPublicVisibilityGeneration,
   getMultibytePathSegments,
   query,

@@ -518,7 +518,13 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
     };
     clientScopes.set(ws, scope);
 
-    if (WS_INITIAL_STATE_ENABLED) {
+    // Synthetic handshake probes explicitly opt out of the expensive initial
+    // state. The WebSocket control-frame ping/pong still proves the full HTTP
+    // upgrade and bidirectional socket path without touching PostgreSQL.
+    const skipInitialState = reqUrl.searchParams.get('initial_state') === '0';
+    if (skipInitialState) {
+      // No application payload is required for a control-frame probe.
+    } else if (WS_INITIAL_STATE_ENABLED) {
       // Send initial state: served from cache so concurrent connects don't exhaust the DB pool.
       try {
         const entry = await initialStateGate.run(

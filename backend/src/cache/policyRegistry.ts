@@ -64,12 +64,6 @@ export const CACHE_POLICY_REGISTRY: readonly CachePolicyRecord[] = Object.freeze
     negativeCaching: 'empty link response allowed', singleFlight: 'nodeLinksInflight',
   },
   {
-    source: 'src/api/bootstrap/caches.ts#pathHistoryCache',
-    disposition: 'bounded-cache', maxEntries: 8, maxBytes: 8 << 20, ttlMs: 60_000,
-    scope: 'public scope + visibility generation', invalidation: 'TTL + publication fence',
-    negativeCaching: 'none', singleFlight: 'durable analysis lease',
-  },
-  {
     source: 'src/api/bootstrap/caches.ts#chartsCache',
     disposition: 'bounded-cache', maxEntries: 256, maxBytes: 32 << 20, ttlMs: 6 * 60 * 60_000,
     scope: 'network + visibility generation; observer responses are not cached', invalidation: 'generation check + stale-while-revalidate TTL',

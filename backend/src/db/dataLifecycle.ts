@@ -59,9 +59,9 @@ export const DATA_LIFECYCLE_POLICIES: readonly DataLifecyclePolicy[] = Object.fr
   {
     table: 'worker_health_snapshots',
     timestampColumn: 'ts',
-    retention: '14 days',
+    retention: '7 days',
     kind: 'row-table',
-    featureImpact: ['operator worker-health history older than 14 days is removed'],
+    featureImpact: ['operator worker-health history older than seven days is removed'],
   },
   {
     table: 'operational_check_results',

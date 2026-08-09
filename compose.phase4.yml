@@ -23,10 +23,6 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@172.18.0.1:5433/${POSTGRES_DB}
 
-  path-history-worker:
-    environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@172.18.0.1:5433/${POSTGRES_DB}
-
   health-worker:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@172.18.0.1:5433/${POSTGRES_DB}

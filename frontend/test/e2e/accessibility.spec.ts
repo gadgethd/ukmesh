@@ -152,7 +152,6 @@ async function fulfillApi(route: Route) {
   if (pathname.endsWith('/inferred-nodes')) {
     return route.fulfill({ json: { inferredNodes: [], inferredActiveNodeIds: [] } });
   }
-  if (pathname.endsWith('/path-beta/history')) return route.fulfill({ json: { segments: [] } });
   return route.fulfill({ json: {} });
 }
 
