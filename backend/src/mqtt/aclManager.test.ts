@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import test from 'node:test';
 import { ownerAclReloadTotal } from '../metrics.js';
@@ -104,6 +105,27 @@ test('unmanaged users are retained only once even when present in the owner snap
   assert.equal((rendered.content.match(/^user test$/gm) ?? []).length, 1);
   assert.match(rendered.content, /topic write meshcore\/#/);
   assert.deepEqual(rendered.semantic, []);
+});
+
+test('renderer grants only bounded broker uptime reads to the configured monitor account', () => {
+  const existing = 'user backend\ntopic readwrite meshcore/#\n';
+  const rendered = renderOwnerAcl(existing, [], ['backend'], [], ['backend']);
+
+  assert.equal(rendered.validation.ok, true);
+  assert.deepEqual(rendered.systemReadUsers, ['backend']);
+  assert.equal((rendered.content.match(/^user backend$/gm) ?? []).length, 1);
+  assert.match(rendered.content, /topic read \$SYS\/broker\/uptime/);
+  assert.doesNotMatch(rendered.content, /topic read \$SYS\/#/);
+  validateRenderedOwnerAcl(rendered.content, rendered);
+  assert.throws(
+    () => validateRenderedOwnerAcl(
+      rendered.content.replace('topic read $SYS/broker/uptime\n', ''),
+      { ...rendered, contentSha256: createHash('sha256').update(
+        rendered.content.replace('topic read $SYS/broker/uptime\n', ''),
+      ).digest('hex') },
+    ),
+    /OWNER_ACL_SYSTEM_READ_MISMATCH/,
+  );
 });
 
 test('cutover validation blocks empty managed accounts unless explicitly reviewed', () => {

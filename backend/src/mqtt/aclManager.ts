@@ -3,7 +3,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { ownerAclReloadTotal } from '../metrics.js';
 
-export const OWNER_ACL_RENDERER_VERSION = 'meshcore-owner-acl/v1';
+export const OWNER_ACL_RENDERER_VERSION = 'meshcore-owner-acl/v2-sys-read';
 const MANAGED_BEGIN = '# BEGIN MESHCORE OWNER ACL';
 const MANAGED_END = '# END MESHCORE OWNER ACL';
 const NODE_ID_RE = /^[0-9A-F]{64}$/;
@@ -39,6 +39,7 @@ export type OwnerAclRenderResult = {
   contentSha256: string;
   content: string;
   semantic: OwnerAclGrant[];
+  systemReadUsers: string[];
   validation: {
     ok: boolean;
     ambiguousUsers: string[];
@@ -132,10 +133,15 @@ export function parseAcl(content: string): ParsedAcl {
   };
 }
 
-function buildManagedSection(grants: OwnerAclGrant[], generation: string): string[] {
+function buildManagedSection(
+  grants: OwnerAclGrant[],
+  generation: string,
+  systemReadUsers: ReadonlySet<string>,
+): string[] {
   const lines = [`${MANAGED_BEGIN} v1 generation=${generation}`];
   for (const grant of grants) {
     lines.push(`user ${grant.mqttUsername}`);
+    if (systemReadUsers.has(grant.mqttUsername)) lines.push('topic read $SYS/broker/uptime');
     for (const nodeId of grant.nodeIds) {
       lines.push(`topic write meshcore/+/${nodeId}/packets`);
       lines.push(`topic write meshcore/+/${nodeId}/status`);
@@ -161,6 +167,7 @@ export function renderOwnerAcl(
   grants: OwnerAclGrant[],
   unmanagedUsers: Iterable<string>,
   allowedEmptyUsers: Iterable<string> = [],
+  systemReadUsers: Iterable<string> = [],
 ): OwnerAclRenderResult {
   const normalized = grants.map((grant) => ({
     mqttUsername: normalizeUsername(grant.mqttUsername),
@@ -183,9 +190,17 @@ export function renderOwnerAcl(
     .sort((a, b) => a.mqttUsername.localeCompare(b.mqttUsername));
   const usernames = new Set(sortedNormalized.map((grant) => grant.mqttUsername));
   if (usernames.size !== sortedNormalized.length) throw new Error('DUPLICATE_OWNER_GRANT_USERNAME');
+  const normalizedSystemReadUsers = Array.from(new Set(
+    [...systemReadUsers].map((value) => normalizeUsername(value)),
+  )).sort();
+  const systemReadUserSet = new Set(normalizedSystemReadUsers);
 
   const generation = createHash('sha256')
-    .update(JSON.stringify({ renderer: OWNER_ACL_RENDERER_VERSION, grants: sortedNormalized }))
+    .update(JSON.stringify({
+      renderer: OWNER_ACL_RENDERER_VERSION,
+      grants: sortedNormalized,
+      systemReadUsers: normalizedSystemReadUsers,
+    }))
     .digest('hex');
   const stripped = stripManagedSection(existingContent);
   const parsed = parseAcl(stripped.content);
@@ -210,11 +225,19 @@ export function renderOwnerAcl(
   while (output.length > 0 && output.at(-1)?.trim() === '') output.pop();
   for (const stanza of retained) {
     if (output.length > 0) output.push('');
-    output.push(...stanza.rawLines);
+    const retainedLines = [...stanza.rawLines];
+    while (retainedLines.at(-1)?.trim() === '') retainedLines.pop();
+    if (
+      systemReadUserSet.has(stanza.username)
+      && !retainedLines.some((line) => line.trim() === 'topic read $SYS/broker/uptime')
+    ) {
+      retainedLines.push('topic read $SYS/broker/uptime');
+    }
+    output.push(...retainedLines);
     while (output.at(-1)?.trim() === '') output.pop();
   }
   if (output.length > 0) output.push('');
-  output.push(...buildManagedSection(sortedNormalized, generation));
+  output.push(...buildManagedSection(sortedNormalized, generation, systemReadUserSet));
   const content = `${output.join('\n').trimEnd()}\n`;
   const contentSha256 = createHash('sha256').update(content).digest('hex');
 
@@ -223,6 +246,7 @@ export function renderOwnerAcl(
     contentSha256,
     content,
     semantic: sortedNormalized,
+    systemReadUsers: normalizedSystemReadUsers,
     validation: {
       ok: parsed.errors.length === 0
         && parsed.duplicateUsers.length === 0
@@ -257,6 +281,12 @@ export function validateRenderedOwnerAcl(content: string, expected: OwnerAclRend
         || !content.includes(`topic write meshcore-test/+/${nodeId}/neighbours`)) {
         throw new Error(`OWNER_ACL_SEMANTIC_MISMATCH:${grant.mqttUsername}:${nodeId}`);
       }
+    }
+  }
+  for (const username of expected.systemReadUsers) {
+    const stanza = parseAcl(content).stanzas.find((candidate) => candidate.username === username);
+    if (!stanza?.directives.some((directive) => directive.line === 'topic read $SYS/broker/uptime')) {
+      throw new Error(`OWNER_ACL_SYSTEM_READ_MISMATCH:${username}`);
     }
   }
 }
