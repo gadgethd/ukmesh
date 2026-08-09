@@ -21,6 +21,39 @@ export type MultibyteFactChunk = {
   wasCompressed: boolean;
 };
 
+export type MultibyteFactWindow = {
+  windowStart: Date;
+  cutoff: Date;
+};
+
+export function splitMultibyteFactWindow(
+  windowStart: Date,
+  cutoff: Date,
+  windowMinutes: number,
+): MultibyteFactWindow[] {
+  if (!(windowStart instanceof Date) || !Number.isFinite(windowStart.getTime())) {
+    throw new Error('INVALID_MULTIBYTE_FACT_WINDOW_START');
+  }
+  if (!(cutoff instanceof Date) || !Number.isFinite(cutoff.getTime())) {
+    throw new Error('INVALID_MULTIBYTE_FACT_CUTOFF');
+  }
+  if (cutoff < windowStart) throw new Error('INVALID_MULTIBYTE_FACT_WINDOW');
+  if (!Number.isSafeInteger(windowMinutes) || windowMinutes < 1 || windowMinutes > 1_440) {
+    throw new Error('INVALID_MULTIBYTE_FACT_WINDOW_MINUTES');
+  }
+
+  const windows: MultibyteFactWindow[] = [];
+  const windowMs = windowMinutes * 60_000;
+  let cursor = windowStart.getTime();
+  while (cursor < cutoff.getTime()) {
+    const next = Math.min(cutoff.getTime(), cursor + windowMs);
+    windows.push({ windowStart: new Date(cursor), cutoff: new Date(next) });
+    cursor = next;
+  }
+  if (windows.length === 0) windows.push({ windowStart, cutoff });
+  return windows;
+}
+
 export function selectMultibyteFactChunkBatch(
   chunks: readonly MultibyteFactChunk[],
   startIndex: number,
