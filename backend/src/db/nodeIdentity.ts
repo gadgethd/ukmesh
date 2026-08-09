@@ -54,6 +54,7 @@ export type IdentityRefreshResult = {
   aliasesWritten: number;
   ambiguousPairs: number;
   canonicalGroups: number;
+  aliasRewriteSkipped: boolean;
 };
 
 const MAX_NAME_DISTANCE_METERS = 3_000;
@@ -84,6 +85,43 @@ type IdentityGroup = {
   members: IdentityNode[];
   edges: IdentityEdge[];
 };
+
+type StoredIdentityAlias = {
+  source_node_id: string;
+  canonical_node_id: string;
+  confidence: IdentityConfidence;
+  reason: string;
+  evidence: Record<string, unknown>;
+  source_kind: string;
+};
+
+function stableJsonValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stableJsonValue);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, child]) => [key, stableJsonValue(child)]),
+    );
+  }
+  return value;
+}
+
+export function automaticIdentityAliasSetsEqual(
+  current: Array<Pick<StoredIdentityAlias, 'source_node_id' | 'canonical_node_id' | 'confidence' | 'reason' | 'evidence'>>,
+  desired: IdentityAlias[],
+): boolean {
+  const currentRows = current.map((row) => JSON.stringify(stableJsonValue({
+    sourceNodeId: row.source_node_id,
+    canonicalNodeId: row.canonical_node_id,
+    confidence: row.confidence,
+    reason: row.reason,
+    evidence: row.evidence,
+  }))).sort();
+  const desiredRows = desired.map((row) => JSON.stringify(stableJsonValue(row))).sort();
+  return currentRows.length === desiredRows.length
+    && currentRows.every((row, index) => row === desiredRows[index]);
+}
 
 function timeMs(value: unknown): number | null {
   if (value == null) return null;
@@ -744,10 +782,26 @@ export async function refreshNodeIdentityAliases(
 
     const grouped = buildIdentityGroups(nodes, { statuses, selfAdverts, pairs });
 
-    await client.query(`DELETE FROM node_identity_aliases WHERE source_kind = 'automatic'`);
-    if (grouped.aliases.length > 0) {
+    const storedAliases = await client.query<StoredIdentityAlias>(
+      `SELECT source_node_id, canonical_node_id, confidence, reason, evidence, source_kind
+         FROM node_identity_aliases
+        ORDER BY source_node_id`,
+    );
+    const manualSourceIds = new Set(
+      storedAliases.rows
+        .filter((alias) => alias.source_kind !== 'automatic')
+        .map((alias) => alias.source_node_id),
+    );
+    const effectiveAliases = grouped.aliases.filter((alias) => !manualSourceIds.has(alias.sourceNodeId));
+    const automaticAliases = storedAliases.rows.filter((alias) => alias.source_kind === 'automatic');
+    const aliasRewriteSkipped = automaticIdentityAliasSetsEqual(automaticAliases, effectiveAliases);
+
+    if (!aliasRewriteSkipped) {
+      await client.query(`DELETE FROM node_identity_aliases WHERE source_kind = 'automatic'`);
+    }
+    if (!aliasRewriteSkipped && effectiveAliases.length > 0) {
       const params: unknown[] = [];
-      const values = grouped.aliases.map((alias, index) => {
+      const values = effectiveAliases.map((alias, index) => {
         const offset = index * 6;
         params.push(
           alias.sourceNodeId,
@@ -827,9 +881,10 @@ export async function refreshNodeIdentityAliases(
       nodesConsidered: nodes.length,
       candidatePairs: candidatePairs.length,
       acceptedPairs: grouped.assessments.filter((assessment) => assessment.accepted).length,
-      aliasesWritten: grouped.aliases.length,
+      aliasesWritten: aliasRewriteSkipped ? 0 : effectiveAliases.length,
       ambiguousPairs: grouped.assessments.filter((assessment) => !assessment.accepted).length,
       canonicalGroups: grouped.groups.length,
+      aliasRewriteSkipped,
     };
   } catch (error) {
     await client.query('ROLLBACK');
