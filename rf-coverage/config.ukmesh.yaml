@@ -78,7 +78,7 @@ gpu:
     broker_addr: ""
 
 schedule:
-  cron: "17 2 * * *"
+  cron: "0 1 * * 0"
 
 # HopReach's share/planner interfaces are not exposed by the UK Mesh native UI.
 share:
