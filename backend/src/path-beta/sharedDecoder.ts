@@ -187,9 +187,7 @@ export function decodeBetaCanonicalGroup(
       const sticky = stickyMap?.get(prefix) === nodeId ? stickyStrength : 0;
       return Math.max(learned, sticky);
     },
-    mlPrefixScore: (hash, nodeId) => (
-      context.mlPrefixScores.get(normalizePathHash(hash).slice(0, 2))?.get(nodeId)?.score ?? 0
-    ),
+    mlPrefixScore: () => 0,
     directedEdgeScore: (fromNodeId, toNodeId) => regionalMaximum(regions, (region) => (
       context.learningModel.edgeScores.get(`${region}|${bucket}|${fromNodeId}|${toNodeId}`)
       ?? context.learningModel.edgeScores.get(`${region}|-1|${fromNodeId}|${toNodeId}`)

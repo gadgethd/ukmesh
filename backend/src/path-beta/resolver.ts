@@ -8,7 +8,6 @@ import { BoundedTtlMap } from '../cache/boundedTtlMap.js';
 import { privateNodePacketNetworkMatchSql } from '../privacy/networkScope.js';
 import { normalizePathHash, nodePathHash } from '../path-hash/utils.js';
 import type { DecodedHop } from '../path-core/decoder.js';
-import { ML_SCORE_LOAD_THRESHOLD } from '../path-shared/scoring.js';
 import {
   BETA_PURPLE_THRESHOLD,
   CONTEXT_TTL_MS,
@@ -29,7 +28,6 @@ import type {
   BetaResolveContext,
   LinkMetrics,
   MeshNode,
-  MlPrefixScore,
   PathLearningModel,
   PathPacket,
 } from './types.js';
@@ -232,7 +230,7 @@ async function loadContext(
     pinForBatch: options?.pinForBatch === true,
   })) return cached;
 
-  const [nodeRows, linkRows, mlScoreRows, learningModel] = await Promise.all([
+  const [nodeRows, linkRows, learningModel] = await Promise.all([
     query<MeshNode>(
       `SELECT node_id, name, lat, lon, iata, role, elevation_m, last_seen::text AS last_seen
        FROM nodes
@@ -263,21 +261,6 @@ async function loadContext(
       [network],
       options?.signal,
     ),
-    query<{
-      hash_2char: string;
-      node_id: string;
-      score: number;
-      observation_count: number;
-    }>(
-      `SELECT hash_2char, node_id, score, observation_count
-       FROM ml_path_prefix_scores
-       WHERE ($1 = 'all' OR network = $1)
-         AND score >= $2
-       ORDER BY score DESC, observation_count DESC
-       LIMIT $3`,
-      [network, ML_SCORE_LOAD_THRESHOLD, MODEL_LIMIT],
-      options?.signal,
-    ),
     buildLearningModel(network, options?.signal),
   ]);
   options?.signal?.throwIfAborted();
@@ -297,17 +280,6 @@ async function loadContext(
     });
   }
 
-  const mlPrefixScores = new Map<string, Map<string, MlPrefixScore>>();
-  for (const row of mlScoreRows.rows) {
-    const hash = normalizePathHash(row.hash_2char).slice(0, 2);
-    if (!hash || !row.node_id) continue;
-    const byNode = mlPrefixScores.get(hash) ?? new Map<string, MlPrefixScore>();
-    byNode.set(row.node_id, {
-      score: Number(row.score ?? 0),
-      observationCount: Number(row.observation_count ?? 0),
-    });
-    mlPrefixScores.set(hash, byNode);
-  }
 
   const context: BetaResolveContext = {
     loadedAt: now,
@@ -317,7 +289,6 @@ async function loadContext(
       (node) => hasCoords(node) && (node.role === null || node.role === 2),
     ),
     linkMetrics,
-    mlPrefixScores,
     learningModel,
   };
   const confirmedGeneration = options?.currentVisibilityGeneration
