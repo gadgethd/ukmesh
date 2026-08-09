@@ -1,6 +1,6 @@
 import mqtt, { type MqttClient } from 'mqtt';
 import { calcRegionKey, transportCodeMatchesRegion } from '@michaelhart/meshcore-decoder';
-import { insertNodeNeighborSample, insertNodeStatusSample, insertPacket, upsertNode, incrementAdvertCount, query, insertOrUpdateSpamSuspect, recordMultibyteEvidence } from '../db/index.js';
+import { insertNodeNeighborSample, insertNodeStatusSample, insertPacket, upsertNode, query, insertOrUpdateSpamSuspect, recordMultibyteEvidence } from '../db/index.js';
 import { closePacketBatch, flush as flushPacketBatch } from '../db/packetBatch.js';
 import { evaluateAdvert, initSpamDetector } from './spamDetector.js';
 import { invalidateResolveCache, setResolveCache, getStickyNodeMap, mergeStickyNodes, getHeldPath, setHeldPath } from '../path-beta/resolveCache.js';
@@ -335,32 +335,6 @@ function isDuplicatePacket(packetHash: string, observerKey: string, hopCount: nu
   }
   seenPackets.set(key, Date.now());
   return false;
-}
-
-/**
- * Dedup map for advert counts — prevents relay copies of the same advert packet
- * from incrementing the count multiple times. Keyed by decoded message hash.
- * Entries expire after 60 seconds (well beyond any realistic relay window).
- */
-const countedAdvertHashes = new Map<string, number>();
-const COUNTED_ADVERT_HASHES_MAX = 10_000;
-const COUNTED_ADVERT_TTL_MS = 60_000;
-
-setInterval(() => {
-  const cutoff = Date.now() - COUNTED_ADVERT_TTL_MS;
-  for (const [h, ts] of countedAdvertHashes) {
-    if (ts < cutoff) countedAdvertHashes.delete(h);
-  }
-}, 30_000).unref();
-
-function tryCountAdvert(hash: string): boolean {
-  if (countedAdvertHashes.has(hash)) return false;
-  if (countedAdvertHashes.size >= COUNTED_ADVERT_HASHES_MAX) {
-    const oldest = countedAdvertHashes.keys().next().value;
-    if (oldest !== undefined) countedAdvertHashes.delete(oldest);
-  }
-  countedAdvertHashes.set(hash, Date.now());
-  return true;
 }
 
 /**
@@ -772,15 +746,9 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
                 iata:      nodeIata,
                 publicKey: senderKey,
                 network,
+                advertHash: canonicalPacketId,
               });
-
-              if (canonicalPacketId && tryCountAdvert(canonicalPacketId)) {
-                try {
-                  advertCount = await incrementAdvertCount(nodeId);
-                } catch (err) {
-                  console.error('[mqtt] incrementAdvertCount error:', (err as Error).message);
-                }
-              }
+              advertCount = nodeUpdate.advertCount;
 
               emitNodeUpsert({
                 node_id:      nodeId,

@@ -9,44 +9,40 @@ export type NetworkFilters = {
   nodesAlias: (alias: string) => string;
 };
 
+/** Resolve one requested identity into its canonical id and every stored alias.
+ * The subquery is uncorrelated, so PostgreSQL evaluates it once while retaining
+ * an indexable `packet_node_id = ANY(...)` predicate on packet scans. */
+export function nodeAliasArraySql(requestedNodeParam: string): string {
+  return `ARRAY(
+    WITH requested_identity AS MATERIALIZED (
+      SELECT COALESCE(
+        (SELECT alias.canonical_node_id
+           FROM node_identity_aliases alias
+          WHERE alias.source_node_id = UPPER(BTRIM(${requestedNodeParam}))),
+        UPPER(BTRIM(${requestedNodeParam}))
+      ) AS canonical_node_id
+    )
+    SELECT canonical_node_id FROM requested_identity
+    UNION
+    SELECT alias.source_node_id
+      FROM node_identity_aliases alias
+      JOIN requested_identity requested
+        ON requested.canonical_node_id = alias.canonical_node_id
+  )`;
+}
+
 export function publicPacketPrivacySql(alias?: string): string {
   const prefix = alias ? `${alias}.` : 'packets.';
   return `(
     ${prefix}visibility_ok IS TRUE
-    AND (
-      COALESCE(cardinality(${prefix}path_hashes), 0) = 0
-      OR ${prefix}path_hash_size_bytes BETWEEN 1 AND 3
-    )
-    AND NOT EXISTS (
+    AND ${prefix}is_private IS NOT TRUE
+    AND EXISTS (
       SELECT 1
-      FROM unnest(COALESCE(${prefix}path_hashes, ARRAY[]::text[])) AS path_hash
-      WHERE path_hash IS NULL
-         OR length(path_hash) <> ${prefix}path_hash_size_bytes * 2
-         OR path_hash !~ '^[0-9A-Fa-f]+$'
-    )
-    AND NOT EXISTS (
-      SELECT 1
-      FROM private_node_prefixes private_prefix
-      WHERE (
-          private_prefix.network = ${prefix}network
-          OR (
-            private_prefix.network IN ('ukmesh', 'northeast', 'teesside')
-            AND ${prefix}network IN ('ukmesh', 'northeast', 'teesside')
-          )
-        )
-        AND (
-          private_prefix.node_id IN (${prefix}rx_node_id, ${prefix}src_node_id)
-          OR (
-            ${prefix}path_hash_size_bytes = private_prefix.prefix_size_bytes
-            AND private_prefix.prefix = ANY(
-              ARRAY(
-                SELECT UPPER(packet_prefix)
-                FROM unnest(COALESCE(${prefix}path_hashes, ARRAY[]::text[]))
-                  AS packet_prefix
-              )
-            )
-          )
-        )
+      FROM packet_visibility_materialization_state cached_visibility
+      JOIN public_visibility_state current_visibility
+        ON current_visibility.singleton = cached_visibility.singleton
+      WHERE cached_visibility.singleton = TRUE
+        AND cached_visibility.visibility_generation = current_visibility.generation
     )
   )`;
 }
@@ -102,8 +98,7 @@ export function networkFilters(
   }
   if (observerParam) {
     packetConditions.push(
-      `(rx_node_id = ${observerParam}
-        OR meshcore_canonical_node_id(rx_node_id) = meshcore_canonical_node_id(${observerParam}))`,
+      `rx_node_id = ANY(${nodeAliasArraySql(observerParam)})`,
     );
   }
   if (opts?.includePrivacy !== false) {
@@ -148,11 +143,13 @@ export function networkFilters(
       // 7-day window keeps the packet scan inside recent chunks.
       conditions.push(
         `(
-          meshcore_canonical_node_id(${prefix}node_id) = meshcore_canonical_node_id(${observerParam})
+          ${nodeRef} = ANY(${nodeAliasArraySql(observerParam)})
           OR ${nodeRef} IN (
-            SELECT meshcore_canonical_node_id(p.src_node_id)
+            SELECT COALESCE(src_alias.canonical_node_id, UPPER(BTRIM(p.src_node_id)))
             FROM packets p
-            WHERE meshcore_canonical_node_id(p.rx_node_id) = meshcore_canonical_node_id(${observerParam})
+            LEFT JOIN node_identity_aliases src_alias
+              ON src_alias.source_node_id = UPPER(BTRIM(p.src_node_id))
+            WHERE p.rx_node_id = ANY(${nodeAliasArraySql(observerParam)})
               AND p.time > NOW() - INTERVAL '7 days'
               AND p.src_node_id IS NOT NULL
               ${pNetCond}
@@ -185,8 +182,7 @@ export function networkFilters(
       }
       if (observerParam) {
         conditions.push(
-          `(${prefix}rx_node_id = ${observerParam}
-            OR meshcore_canonical_node_id(${prefix}rx_node_id) = meshcore_canonical_node_id(${observerParam}))`,
+          `${prefix}rx_node_id = ANY(${nodeAliasArraySql(observerParam)})`,
         );
       }
       conditions.push(...publicPacketPrivacyConditions(prefix));

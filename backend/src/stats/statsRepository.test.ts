@@ -133,6 +133,12 @@ test('24-hour chart aggregates use the complete scoped window and true signal me
   assert.doesNotMatch(signalSql, /AVG\(p\.rssi\)::text\s+AS median_rssi/i);
   assert.doesNotMatch(signalSql, /AVG\(p\.snr\)::text\s+AS median_snr/i);
   assert.match(sqlFor('WITH prefix_counts'), /LIMIT 10/i);
+  assert.equal(
+    calls.some((call) => call.text.includes('meshcore_canonical_node_id')),
+    false,
+    'chart queries must canonicalize through the identity alias relation',
+  );
+  assert.ok(calls.some((call) => call.text.includes('LEFT JOIN node_identity_aliases')));
 });
 
 test('canonical charts coalesce six high-volume dimensions into one maintained aggregate read', async () => {
@@ -213,6 +219,12 @@ test('map summary uses the same coordinate, role, and 14-day freshness rules as 
   });
 
   await repository.fetchStatsSummary('ukmesh', undefined);
+
+  assert.equal(
+    calls.some((call) => call.text.includes('meshcore_canonical_node_id')),
+    false,
+    'summary queries must canonicalize through the identity alias relation',
+  );
 
   const staleSql = calls.find((call) =>
     call.text.includes("<= NOW() - INTERVAL '14 days'"),

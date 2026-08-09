@@ -50,6 +50,8 @@ test('historic path activation resolves only unique coordinate-bearing relays', 
   assert.match(capturedSql, /NOT \(ABS\(n\.lat\) < 1e-9 AND ABS\(n\.lon\) < 1e-9\)/);
   assert.match(capturedSql, /HAVING COUNT\(\*\) = 1/);
   assert.match(capturedSql, /SET last_path_evidence_at = \$2::timestamptz/);
+  assert.match(capturedSql, /ORDER BY n\.node_id\s+FOR UPDATE OF n/);
+  assert.match(capturedSql, /SELECT \* FROM updated ORDER BY node_id/);
   assert.match(capturedSql, /n\.lat,[\s\S]*n\.lon/);
   assert.match(capturedSql, /TRUE AS is_online/);
 });
