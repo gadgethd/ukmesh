@@ -19,6 +19,7 @@ import {
 const App = lazy(() => import('./App.js').then(({ App: Component }) => ({ default: Component })));
 const OpenSourcePage = lazy(() => import('./pages/OpenSourcePage.js').then(({ OpenSourcePage: Component }) => ({ default: Component })));
 const StatsPage = lazy(() => import('./pages/StatsPage.js').then(({ StatsPage: Component }) => ({ default: Component })));
+const ContactPage = lazy(() => import('./pages/ContactPage.js').then(({ ContactPage: Component }) => ({ default: Component })));
 const OwnerPortalPage = lazy(() => import('./pages/OwnerPortalPage.js').then(({ OwnerPortalPage: Component }) => ({ default: Component })));
 const UKLayout = lazy(() => import('./pages/ukmesh/UKLayout.js').then(({ UKLayout: Component }) => ({ default: Component })));
 const UKHomePage = lazy(() => import('./pages/ukmesh/UKHomePage.js').then(({ UKHomePage: Component }) => ({ default: Component })));
@@ -43,6 +44,7 @@ const PUBLIC_ROUTE_ELEMENTS: Record<PublicRouteComponent, React.ReactElement> = 
   stats: <StatsPage />,
   spam: <SpamPage />,
   topology: <TopologyPage />,
+  contact: <ContactPage />,
 };
 
 const root = document.getElementById('root')!;
