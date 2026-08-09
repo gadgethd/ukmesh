@@ -197,7 +197,9 @@ async function main(): Promise<void> {
   startWorkerMetrics();
   await initDb();
   let running = false;
-  let lastFullCanaryAt = 0;
+  // Compose's backend healthcheck is deliberately liveness-only. Give MQTT
+  // readiness one lightweight cycle to settle before the first full canary.
+  let lastFullCanaryAt = Date.now() - FULL_INTERVAL_MS + INTERVAL_MS;
   const runCycle = async () => {
     if (running) {
       console.warn('[synthetic] check cycle skipped; previous cycle is still active');
