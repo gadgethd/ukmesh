@@ -29,6 +29,7 @@ import {
   getChannelMessageHistory,
   getRecentPacketEvents,
   getRecentPackets,
+  analyticsQuery,
   pool,
   query,
 } from '../db/index.js';
@@ -228,6 +229,7 @@ registerStatsRoutes(router, {
   statsChartsLimiter: STATS_CHARTS_LIMITER,
   networkFilters,
   query,
+  analyticsQuery,
   getPublicVisibilityGeneration,
   maskDecodedPathNodes,
 });

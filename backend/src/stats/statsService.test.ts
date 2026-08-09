@@ -90,7 +90,9 @@ test('completed canonical charts are reused while observer-scoped charts are nev
 });
 
 test('a valid durable chart snapshot serves a cold process without analytical queries', async () => {
-  const generatedAt = new Date(Date.now() - 60_000).toISOString();
+  // Older than the 30-minute in-memory cadence, but still inside the durable
+  // six-hour max age: this is the exact backend-restart regression guard.
+  const generatedAt = new Date(Date.now() - 45 * 60_000).toISOString();
   const durable = {
     snapshot: {
       status: 'complete',
@@ -211,14 +213,30 @@ test('a visibility change at chart publication fails closed without caching the 
   assert.equal(chartsCache.size, 0);
 });
 
-test('expired canonical charts are served while one refresh runs in the background', async () => {
+test('expired persisted canonical charts are served while one refresh runs in the background', async () => {
   let resolveRefresh!: (value: ReturnType<typeof emptyChartsData>) => void;
   const refresh = new Promise<ReturnType<typeof emptyChartsData>>((resolve) => {
     resolveRefresh = resolve;
   });
   let chartCalls = 0;
+  const generatedAt = new Date(Date.now() - 2 * 60_000).toISOString();
+  const stale = {
+    snapshot: {
+      status: 'complete',
+      generatedAt,
+      scope: 'ukmesh',
+      visibilityGeneration: 1,
+    },
+    marker: 'last-complete',
+  };
   const repository = {
-    loadChartSnapshot: async () => null,
+    loadChartSnapshot: async () => ({
+      scope_key: 'ukmesh',
+      schema_version: 2,
+      visibility_generation: '1',
+      generated_at: generatedAt,
+      payload: stale,
+    }),
     saveChartSnapshot: async () => true,
     fetchChartsData: async () => {
       chartCalls += 1;
@@ -226,19 +244,17 @@ test('expired canonical charts are served while one refresh runs in the backgrou
     },
     fetchChannelTraffic: async () => ({ rows: [] }),
   } as unknown as StatsRepository;
-  const stale = { snapshot: { generatedAt: '2026-07-11T12:00:00Z' } };
   const chartsCache = new BoundedTtlMap<string, { ts: number; data: unknown }>({
     maxEntries: 2,
     maxWeight: 1024 * 1024,
     ttlMs: 60_000,
   });
   const chartsInflight = new Map<string, Promise<unknown>>();
-  chartsCache.set('ukmesh:v1', { ts: Date.now() - 1_000, data: stale });
   const service = createStatsService({
     statsCache: new Map(),
     statsCacheTtlMs: 60_000,
     chartsCache,
-    chartsCacheTtlMs: 1,
+    chartsCacheTtlMs: 1_000,
     chartsSnapshotStaleTtlMs: 60_000,
     chartsInflight,
     repository,

@@ -36,6 +36,7 @@ export function validateChartSnapshotPayload(
   maxAgeMs: number,
   nowMs = Date.now(),
   expectedVisibilityGeneration?: number,
+  options: { allowExpired?: boolean } = {},
 ): ValidChartSnapshot | null {
   if (
     !payload
@@ -65,7 +66,7 @@ export function validateChartSnapshotPayload(
   if (
     !Number.isFinite(generatedAtMs)
     || generatedAtMs > nowMs + CHART_SNAPSHOT_MAX_FUTURE_SKEW_MS
-    || nowMs - generatedAtMs > maxAgeMs
+    || (!options.allowExpired && nowMs - generatedAtMs > maxAgeMs)
   ) {
     return null;
   }

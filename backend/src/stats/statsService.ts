@@ -436,13 +436,12 @@ export function createStatsService(deps: StatsServiceDeps) {
     };
   }
 
-  function getUsableCachedCharts(key: string): { ts: number; data: unknown } | undefined {
+  function getCachedCharts(key: string): { ts: number; data: unknown } | undefined {
     const cached = chartsCache.get(key);
     if (!cached) return undefined;
     const ageMs = Date.now() - cached.ts;
     if (
       !Number.isFinite(cached.ts)
-      || ageMs > chartsSnapshotStaleTtlMs
       || ageMs < -CHART_SNAPSHOT_MAX_FUTURE_SKEW_MS
     ) {
       chartsCache.delete(key);
@@ -474,6 +473,7 @@ export function createStatsService(deps: StatsServiceDeps) {
           chartsSnapshotStaleTtlMs,
           Date.now(),
           visibilityGeneration,
+          { allowExpired: true },
         );
         const storedGeneratedAtMs = new Date(row.generated_at).getTime();
         if (
@@ -580,18 +580,18 @@ export function createStatsService(deps: StatsServiceDeps) {
     const scope = `${network ?? 'ukmesh'}`;
     const visibilityGeneration = await getPublicVisibilityGeneration();
     const key = `${scope}:v${visibilityGeneration}`;
-    let cached = getUsableCachedCharts(key);
+    let cached = getCachedCharts(key);
     if (!cached) {
       // Durable complete snapshots are loaded before any analytical query. A
       // cold process can therefore answer immediately and refresh in the
       // background, while observer-scoped data never crosses this boundary.
       cached = await loadPersistedCharts(scope, key, visibilityGeneration);
     }
-    if (cached && Date.now() - cached.ts < chartsCacheTtlMs) {
-      // Region counts and series are part of the canonical 30-minute charts
-      // snapshot. Re-querying the seven-day packet window on every cache hit
-      // allowed concurrent page loads to pile up multi-minute scans. Only the
-      // time-dependent health score needs recalculating between snapshots.
+    if (cached && Date.now() - cached.ts <= chartsSnapshotStaleTtlMs) {
+      // A cold process must treat the persisted snapshot's durable max-age as
+      // authoritative. The shorter in-memory cadence is only how often we
+      // check freshness; it must not force a multi-minute rebuild after every
+      // restart. Only the time-dependent region health score changes here.
       const refreshed = refreshCachedRegionHealth(cached.data);
       chartsCache.set(key, { ts: cached.ts, data: refreshed });
       return refreshed;
@@ -610,8 +610,8 @@ export function createStatsService(deps: StatsServiceDeps) {
       throw error;
     }
     if (cached) {
-      // The canonical snapshot is already privacy-filtered. Serve it while the
-      // single coalesced refresh runs, and retain it if that refresh fails.
+      // Even an expired canonical snapshot is complete and privacy-filtered.
+      // Serve it while one refresh runs, and retain it if that refresh fails.
       void promise.catch(() => { /* retain the last successful value */ });
       return refreshCachedRegionHealth(cached.data);
     }
@@ -634,13 +634,20 @@ export function createStatsService(deps: StatsServiceDeps) {
       }
     };
 
-    // Populate the lightweight summary before starting the much larger chart
-    // snapshot. This keeps /api/stats responsive during a cold restart while
-    // the bounded chart queries continue in the background.
+    const coldRegenDeferMs = Math.max(
+      0,
+      Math.min(15 * 60_000, Number(process.env['CHARTS_COLD_REGEN_DEFER_MS'] ?? 60_000) || 0),
+    );
+
+    // Populate the lightweight summary first, then defer the persisted-snapshot
+    // check. Fresh durable rows never regenerate; missing or genuinely stale
+    // rows can regenerate after WS initial-state has had time to warm.
     initialStatsWarmup = new Promise<void>((resolve) => {
       setTimeout(resolve, 5_000);
     }).then(warmStats);
-    void initialStatsWarmup.finally(warmCharts);
+    void initialStatsWarmup.finally(() => {
+      setTimeout(() => void warmCharts(), coldRegenDeferMs).unref();
+    });
     setInterval(warmStats, statsCacheTtlMs);
     setInterval(warmCharts, chartsCacheTtlMs);
   }
