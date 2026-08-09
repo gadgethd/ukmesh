@@ -78,8 +78,10 @@ export function pathLearningDeltaMergeSql(definition: PathLearningDeltaDefinitio
   const semanticTarget = definition.semantic.map((column) => `${definition.target}.${column}`).join(', ');
   const semanticExcluded = definition.semantic.map((column) => `EXCLUDED.${column}`).join(', ');
   const updateSet = definition.semantic.map((column) => `${column} = EXCLUDED.${column}`).join(',\n           ');
+  // Every conflict-key column is NOT NULL in the seven target schemas. Plain
+  // equality lets PostgreSQL use the staged key index for the anti-join.
   const absentKey = definition.keys.map(
-    (column) => `desired.${column} IS NOT DISTINCT FROM ${definition.target}.${column}`,
+    (column) => `desired.${column} = ${definition.target}.${column}`,
   ).join('\n             AND ');
   return `WITH upserted AS (
     INSERT INTO ${definition.target} (${allColumns.join(', ')}, updated_at)
@@ -128,6 +130,11 @@ export async function publishPathLearningDelta(
         [network, JSON.stringify(rows.slice(offset, offset + WRITE_BATCH_SIZE))],
       );
     }
+    await client.query(
+      `CREATE INDEX ${definition.stage}_keys_idx
+         ON ${definition.stage} (network, ${definition.keys.join(', ')})`,
+    );
+    await client.query(`ANALYZE ${definition.stage}`);
   }
   let upserted = 0;
   let deleted = 0;
