@@ -37,4 +37,8 @@ export function loadDatabaseConfig(env: NodeJS.ProcessEnv) {
   } as const;
 }
 
+export function analyticsStatementTimeoutMs(configuredTimeoutMs: number): number {
+  return configuredTimeoutMs === 0 ? 0 : Math.max(300_000, configuredTimeoutMs);
+}
+
 export const databaseConfig = loadDatabaseConfig(process.env);

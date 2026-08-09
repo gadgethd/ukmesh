@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { boundedIntegerSetting } from './boundedNumber.js';
-import { loadDatabaseConfig } from './database.js';
+import { analyticsStatementTimeoutMs, loadDatabaseConfig } from './database.js';
 
 test('database numeric settings use bounded deployment-safe defaults', () => {
   assert.deepEqual(loadDatabaseConfig({}), {
@@ -47,4 +47,10 @@ test('database configuration rejects invalid pool, timeout, and schema settings 
     () => loadDatabaseConfig({ DATABASE_SCHEMA: 'public; DROP SCHEMA public' }),
     /Invalid DATABASE_SCHEMA/,
   );
+});
+
+test('analytics queries honor a longer configured timeout while retaining a safe floor', () => {
+  assert.equal(analyticsStatementTimeoutMs(30_000), 300_000);
+  assert.equal(analyticsStatementTimeoutMs(900_000), 900_000);
+  assert.equal(analyticsStatementTimeoutMs(0), 0);
 });

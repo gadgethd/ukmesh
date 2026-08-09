@@ -1,6 +1,9 @@
 import pg from 'pg';
 import fs from 'node:fs';
-import { databaseConfig } from '../platform/config/database.js';
+import {
+  analyticsStatementTimeoutMs,
+  databaseConfig,
+} from '../platform/config/database.js';
 import { resolveDbAssetPath } from './assets.js';
 import { runMigrations } from './migrations.js';
 import { UKMESH_NETWORKS } from '../networks.js';
@@ -58,8 +61,8 @@ const analyticsPool = new Pool({
   max: 2,
   idleTimeoutMillis: databaseConfig.idleTimeoutMs,
   connectionTimeoutMillis: databaseConfig.connectionTimeoutMs,
-  statement_timeout: 300_000, // 5 minutes — analytics queries are intentionally slow
-  query_timeout: 300_000,
+  statement_timeout: analyticsStatementTimeoutMs(databaseConfig.statementTimeoutMs),
+  query_timeout: analyticsStatementTimeoutMs(databaseConfig.statementTimeoutMs),
 });
 
 analyticsPool.on('error', (err) => {
