@@ -7,6 +7,7 @@ import {
   multibyteFactBackfillSql,
   multibyteFactsCoverWindow,
   multibyteObservationIdBatchSql,
+  selectMultibyteFactChunkBatch,
 } from './multibytePathFacts.js';
 
 test('multibyte fact backfill keys every observation row instead of packet hashes', () => {
@@ -16,6 +17,16 @@ test('multibyte fact backfill keys every observation row instead of packet hashe
   assert.match(sql, /ON CONFLICT \(observation_id\)/);
   assert.doesNotMatch(sql, /ON CONFLICT \(packet_hash\)/);
   assert.match(sql, /meshcore_decode_multibyte_path/);
+});
+
+test('off-peak backfill selects an explicit bounded chunk batch', () => {
+  const chunks = [
+    { chunkSchema: 'ts', chunkName: 'c1', rangeStart: new Date(1), rangeEnd: new Date(2), wasCompressed: true },
+    { chunkSchema: 'ts', chunkName: 'c2', rangeStart: new Date(2), rangeEnd: new Date(3), wasCompressed: false },
+  ];
+  assert.deepEqual(selectMultibyteFactChunkBatch(chunks, 1, 1), [chunks[1]]);
+  assert.throws(() => selectMultibyteFactChunkBatch(chunks, -1, 1), /INVALID_MULTIBYTE_FACT_CHUNK_INDEX/);
+  assert.throws(() => selectMultibyteFactChunkBatch(chunks, 0, 5), /INVALID_MULTIBYTE_FACT_CHUNK_LIMIT/);
 });
 
 test('historical observation ids are populated oldest-first in bounded physical-row batches', async () => {
