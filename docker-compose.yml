@@ -440,35 +440,6 @@ services:
       backend:
         condition: service_healthy
 
-#   ml-path-learner:
-#     build:
-#       context: ./ml-path-learner
-#       dockerfile: Dockerfile
-#     restart: always
-#     logging: *json-log-limits
-#     cpus: 2.0
-#     mem_limit: '2g'
-#     environment:
-#       DATABASE_URL: postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}
-#       GOLD_EXTRACTION_INTERVAL_MINS: '15'
-#       TRAINING_INTERVAL_MINS: '30'
-#       MIN_GOLD_PATHS: '100'
-#       CONFIDENCE_THRESHOLD: '0.85'
-#       MAX_TRAINING_GOLD_ROWS: ${MAX_TRAINING_GOLD_ROWS:-100000}
-#       ML_LEASE_SECONDS: ${ML_LEASE_SECONDS:-90}
-#       ML_HEARTBEAT_SECONDS: ${ML_HEARTBEAT_SECONDS:-20}
-#       ML_RUN_DEADLINE_SECONDS: ${ML_RUN_DEADLINE_SECONDS:-1200}
-#       ML_MODEL_VERSION: ${ML_MODEL_VERSION:-lightgbm-path-v1}
-#       ML_DATA_VERSION: ${ML_DATA_VERSION:-gold-multibyte-v2}
-#       ML_RETAIN_VARIANT_RESULT_GENERATIONS: ${ML_RETAIN_VARIANT_RESULT_GENERATIONS:-96}
-#       ML_RETAIN_MODEL_ARTIFACT_GENERATIONS: ${ML_RETAIN_MODEL_ARTIFACT_GENERATIONS:-96}
-#       ML_CLEANUP_GENERATION_BATCH_SIZE: ${ML_CLEANUP_GENERATION_BATCH_SIZE:-24}
-#     depends_on:
-#       timescaledb:
-#         condition: service_healthy
-#       db-migrate:
-#         condition: service_completed_successfully
-
   app-ukmesh:
     <<: [*internal-hosts, *application-hardening]
     image: ${APP_IMAGE:-meshcore-analytics-app:local}
