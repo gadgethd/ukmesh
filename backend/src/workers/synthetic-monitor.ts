@@ -23,6 +23,11 @@ const FULL_INTERVAL_MS = Math.min(
   boundedNumber(process.env['SYNTHETIC_FULL_INTERVAL_MS'], 12 * 60_000, 10 * 60_000),
 );
 const TIMEOUT_MS = boundedNumber(process.env['SYNTHETIC_TIMEOUT_MS'], 10_000, 1_000);
+const INITIAL_STATE_TIMEOUT_MS = boundedNumber(
+  process.env['SYNTHETIC_INITIAL_STATE_TIMEOUT_MS'],
+  35_000,
+  10_000,
+);
 const FAILURE_THRESHOLD = boundedNumber(process.env['SYNTHETIC_FAILURE_THRESHOLD'], 3, 1);
 const ALERT_WEBHOOK_URL = String(process.env['ALERT_WEBHOOK_URL'] ?? '').trim();
 const states = new Map<string, AlertState>();
@@ -78,7 +83,7 @@ async function websocketPingCheck(): Promise<CheckResult> {
 async function websocketInitialStateCheck(): Promise<CheckResult> {
   const started = performance.now();
   return new Promise((resolve) => {
-    const socket = new WebSocket(websocketUrl(false), { handshakeTimeout: TIMEOUT_MS });
+    const socket = new WebSocket(websocketUrl(false), { handshakeTimeout: INITIAL_STATE_TIMEOUT_MS });
     let settled = false;
     const finish = (status: CheckResult['status'], detail: string) => {
       if (settled) return;
@@ -87,7 +92,10 @@ async function websocketInitialStateCheck(): Promise<CheckResult> {
       socket.close();
       resolve({ name: 'websocket_initial_state', status, latencyMs: elapsedMs(started), detail: detail.slice(0, 300) });
     };
-    const timeout = setTimeout(() => finish('failed', `no initial_state within ${TIMEOUT_MS}ms`), TIMEOUT_MS);
+    const timeout = setTimeout(
+      () => finish('failed', `no initial_state within ${INITIAL_STATE_TIMEOUT_MS}ms`),
+      INITIAL_STATE_TIMEOUT_MS,
+    );
     socket.on('message', (data) => {
       try {
         const lines = String(data).split('\n').filter(Boolean);
