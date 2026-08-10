@@ -173,22 +173,110 @@ export function multibyteFactBackfillSql(): string {
       p.hop_count,
       p.path_hashes,
       p.path_hash_size_bytes,
+      rx.role AS rx_role,
       ${publicVisibility} AS current_visibility_ok
     FROM packets p
+    LEFT JOIN node_identity_aliases rx_alias
+      ON rx_alias.source_node_id = UPPER(BTRIM(p.rx_node_id))
+    LEFT JOIN node_identity_nodes rx
+      ON rx.node_id = COALESCE(rx_alias.canonical_node_id, UPPER(BTRIM(p.rx_node_id)))
     WHERE p.time >= $1::timestamptz
       AND p.time <= $2::timestamptz
       AND p.path_hash_size_bytes BETWEEN 2 AND 3
       AND COALESCE(cardinality(p.path_hashes), 0) > 0
       AND p.observation_id IS NOT NULL
-  ), decoded AS MATERIALIZED (
-    SELECT source_rows.*, path_decode.*
+  ), prepared AS MATERIALIZED (
+    SELECT source_rows.*,
+      CASE
+        WHEN hop_count IS NOT NULL THEN (
+          SELECT COALESCE(array_agg(UPPER(h) ORDER BY ord), ARRAY[]::text[])
+          FROM unnest(path_hashes) WITH ORDINALITY u(h, ord)
+          WHERE LENGTH(h) = path_hash_size_bytes * 2
+            AND ord <= GREATEST(hop_count, 0)
+        )
+        ELSE (
+          SELECT COALESCE(array_agg(UPPER(h) ORDER BY ord), ARRAY[]::text[])
+          FROM unnest(path_hashes) WITH ORDINALITY u(h, ord)
+          WHERE LENGTH(h) = path_hash_size_bytes * 2
+        )
+      END AS valid_hops
     FROM source_rows
-    CROSS JOIN LATERAL meshcore_decode_multibyte_path(
-      source_rows.rx_node_id,
-      source_rows.hop_count,
-      source_rows.path_hash_size_bytes,
-      source_rows.path_hashes
-    ) path_decode
+  ), trimmed AS MATERIALIZED (
+    SELECT prepared.*,
+      CASE
+        WHEN rx_role = 2
+          AND CARDINALITY(valid_hops) > 1
+          AND UPPER(rx_node_id) LIKE valid_hops[CARDINALITY(valid_hops)] || '%'
+        THEN valid_hops[1:CARDINALITY(valid_hops) - 1]
+        ELSE valid_hops
+      END AS hops
+    FROM prepared
+  ), distinct_hashes AS MATERIALIZED (
+    SELECT DISTINCT hash
+    FROM trimmed
+    CROSS JOIN LATERAL unnest(hops) h(hash)
+    WHERE hash IS NOT NULL
+  ), node_prefixes AS MATERIALIZED (
+    SELECT UPPER(LEFT(node.node_id, 4)) AS hash,
+           COUNT(*)::integer AS match_count,
+           MIN(node.node_id) AS node_id
+    FROM node_identity_nodes node
+    JOIN distinct_hashes hashes
+      ON LENGTH(hashes.hash) = 4
+     AND hashes.hash = UPPER(LEFT(node.node_id, 4))
+    WHERE node.lat IS NOT NULL
+      AND node.lon IS NOT NULL
+      AND (node.role IS NULL OR node.role = 2)
+    GROUP BY UPPER(LEFT(node.node_id, 4))
+    UNION ALL
+    SELECT UPPER(LEFT(node.node_id, 6)) AS hash,
+           COUNT(*)::integer AS match_count,
+           MIN(node.node_id) AS node_id
+    FROM node_identity_nodes node
+    JOIN distinct_hashes hashes
+      ON LENGTH(hashes.hash) = 6
+     AND hashes.hash = UPPER(LEFT(node.node_id, 6))
+    WHERE node.lat IS NOT NULL
+      AND node.lon IS NOT NULL
+      AND (node.role IS NULL OR node.role = 2)
+    GROUP BY UPPER(LEFT(node.node_id, 6))
+  ), hop_eval AS MATERIALIZED (
+    SELECT trimmed.observation_id,
+           hop.ord,
+           COALESCE(node_prefixes.match_count, 0) AS match_count,
+           node_prefixes.node_id
+    FROM trimmed
+    CROSS JOIN LATERAL unnest(trimmed.hops) WITH ORDINALITY hop(hash, ord)
+    LEFT JOIN node_prefixes ON node_prefixes.hash = hop.hash
+  ), decoded_rollup AS MATERIALIZED (
+    SELECT trimmed.observation_id,
+           CARDINALITY(trimmed.hops) >= 2
+             AND COUNT(hop_eval.ord) = CARDINALITY(trimmed.hops)
+             AND COALESCE(BOOL_AND(hop_eval.match_count = 1), FALSE)
+             AND COUNT(DISTINCT hop_eval.node_id)
+                   FILTER (WHERE hop_eval.match_count = 1) = CARDINALITY(trimmed.hops)
+             AS fully_decoded,
+           CARDINALITY(trimmed.hops)::smallint AS candidate_hops,
+           string_agg(
+             UPPER(LEFT(hop_eval.node_id, 6)),
+             ' -> ' ORDER BY hop_eval.ord
+           ) FILTER (WHERE hop_eval.match_count = 1) AS candidate_path,
+           array_agg(hop_eval.node_id ORDER BY hop_eval.ord)
+             FILTER (WHERE hop_eval.match_count = 1) AS candidate_node_ids
+    FROM trimmed
+    LEFT JOIN hop_eval ON hop_eval.observation_id = trimmed.observation_id
+    GROUP BY trimmed.observation_id, trimmed.hops
+  ), decoded AS MATERIALIZED (
+    SELECT source_rows.*,
+           decoded_rollup.fully_decoded,
+           CASE WHEN decoded_rollup.fully_decoded
+             THEN decoded_rollup.candidate_hops ELSE NULL END AS decoded_hops,
+           CASE WHEN decoded_rollup.fully_decoded
+             THEN decoded_rollup.candidate_path ELSE NULL END AS decoded_path,
+           CASE WHEN decoded_rollup.fully_decoded
+             THEN decoded_rollup.candidate_node_ids ELSE NULL END AS decoded_node_ids
+    FROM source_rows
+    JOIN decoded_rollup USING (observation_id)
   ), written AS (
     INSERT INTO multibyte_path_facts (
       observation_id, observed_at, packet_hash, network, rx_node_id, src_node_id,
