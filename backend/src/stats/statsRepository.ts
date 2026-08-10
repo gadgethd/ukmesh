@@ -22,8 +22,6 @@ type StatsRepositoryDeps = {
   query: QueryFn;
   aggregateReadsEnabled?: boolean;
   aggregateShadowEnabled?: boolean;
-  multibyteFactsReadsEnabled?: boolean;
-  multibyteFactsShadowEnabled?: boolean;
 };
 
 export type StatsRepository = ReturnType<typeof createStatsRepository>;
@@ -33,18 +31,6 @@ export type AggregateShadowRowComparison = {
   maxAbsoluteDifference: number;
   reason?: 'keys' | 'count';
 };
-
-export function compareExactMultibyteRows(
-  rollupRows: QueryResultRow[],
-  rawRows: QueryResultRow[],
-): { matched: boolean; rollup: string; raw: string } {
-  const normalize = (rows: QueryResultRow[]) => JSON.stringify(rows, (_key, value) => (
-    value instanceof Date ? value.toISOString() : value
-  ));
-  const rollup = normalize(rollupRows);
-  const raw = normalize(rawRows);
-  return { matched: rollup === raw, rollup, raw };
-}
 
 function normalizedDimensionKey(row: QueryResultRow): string {
   return JSON.stringify(Object.fromEntries(
@@ -116,10 +102,6 @@ export function compareAggregateShadowRows(
 
 export function createStatsRepository(deps: StatsRepositoryDeps) {
   const { networkFilters } = deps;
-  const multibyteFactsReadsEnabled = deps.multibyteFactsReadsEnabled
-    ?? process.env['STATS_MULTIBYTE_FACTS_READS_ENABLED'] === 'true';
-  const multibyteFactsShadowEnabled = deps.multibyteFactsShadowEnabled
-    ?? process.env['STATS_MULTIBYTE_FACTS_SHADOW_ENABLED'] === 'true';
   const queryConcurrency = Math.max(
     1,
     Math.min(8, Math.trunc(Number(process.env['STATS_DB_QUERY_CONCURRENCY'] ?? 2) || 2)),
@@ -707,21 +689,22 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
     const aggregateAsOf = new Date();
     const multibyteCutoffPlaceholder = `$${filters.params.length + 1}`;
     const multibyteGenerationPlaceholder = `$${filters.params.length + 2}`;
-    const multibyteRawParams = [...filters.params, aggregateAsOf.toISOString()];
-    const multibyteFactParams = [...multibyteRawParams, visibilityGeneration];
-    if (multibyteFactsReadsEnabled || multibyteFactsShadowEnabled) {
-      const coverage = await ensureMultibyteFactsCoverWindow(query, {
-        windowStart: new Date(aggregateAsOf.getTime() - (8 * 24 * 60 * 60 * 1_000)),
-        cutoff: aggregateAsOf,
+    const multibyteFactParams = [
+      ...filters.params,
+      aggregateAsOf.toISOString(),
+      visibilityGeneration,
+    ];
+    const coverage = await ensureMultibyteFactsCoverWindow(query, {
+      windowStart: new Date(aggregateAsOf.getTime() - (8 * 24 * 60 * 60 * 1_000)),
+      cutoff: aggregateAsOf,
+      visibilityGeneration,
+    });
+    if (coverage.backfilled) {
+      console.log('[stats-multibyte-facts] bounded backfill complete', {
+        cutoff: aggregateAsOf.toISOString(),
         visibilityGeneration,
+        affectedRows: coverage.affectedRows,
       });
-      if (coverage.backfilled) {
-        console.log('[stats-multibyte-facts] bounded backfill complete', {
-          cutoff: aggregateAsOf.toISOString(),
-          visibilityGeneration,
-          affectedRows: coverage.affectedRows,
-        });
-      }
     }
 
     const fetchMultibyteFactSummary = () => query<{
@@ -985,198 +968,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
          GROUP BY 1`,
         filters.params,
       ),
-      multibyteFactsReadsEnabled ? fetchMultibyteFactSummary() : query<{
-        latest_multibyte_at: string | null;
-        latest_multibyte_hash: string | null;
-        multibyte_packets_24h: string;
-        fully_decoded_multibyte_24h: string;
-        latest_fully_decoded_at: string | null;
-        latest_fully_decoded_hash: string | null;
-        latest_fully_decoded_hops: string | null;
-        latest_fully_decoded_path: string | null;
-        latest_fully_decoded_nodes: Array<{ ord: number; node_id: string; name: string | null; lat: number | null; lon: number | null; last_seen: string | null; }> | null;
-        longest_fully_decoded_at: string | null;
-        longest_fully_decoded_hash: string | null;
-        longest_fully_decoded_hops: string | null;
-        longest_fully_decoded_path: string | null;
-        longest_fully_decoded_nodes: Array<{ ord: number; node_id: string; name: string | null; lat: number | null; lon: number | null; last_seen: string | null; }> | null;
-      }>(
-        `WITH multibyte AS (
-           SELECT
-             row_number() OVER () AS obs_id,
-             p.packet_hash,
-             p.network,
-             p.time,
-             p.rx_node_id,
-             p.hop_count,
-             p.path_hash_size_bytes,
-             p.path_hashes,
-             rx.role AS rx_role
-           FROM packets p
-           LEFT JOIN node_identity_aliases rx_alias
-             ON rx_alias.source_node_id = UPPER(BTRIM(p.rx_node_id))
-           LEFT JOIN node_identity_nodes rx
-             ON rx.node_id = COALESCE(rx_alias.canonical_node_id, UPPER(BTRIM(p.rx_node_id)))
-           WHERE p.time > ${multibyteCutoffPlaceholder}::timestamptz - INTERVAL '24 hours'
-             AND p.time <= ${multibyteCutoffPlaceholder}::timestamptz
-             AND p.path_hash_size_bytes > 1
-             AND COALESCE(array_length(p.path_hashes, 1), 0) > 0
-             ${filters.packetsAlias('p')}
-         ),
-         prepared AS (
-           SELECT m.*,
-             CASE
-               WHEN m.hop_count IS NOT NULL THEN (
-                 SELECT COALESCE(array_agg(UPPER(h) ORDER BY ord), ARRAY[]::text[])
-                 FROM unnest(m.path_hashes) WITH ORDINALITY u(h, ord)
-                 WHERE LENGTH(h) = m.path_hash_size_bytes * 2
-                   AND ord <= GREATEST(m.hop_count, 0)
-               )
-               ELSE (
-                 SELECT COALESCE(array_agg(UPPER(h) ORDER BY ord), ARRAY[]::text[])
-                 FROM unnest(m.path_hashes) WITH ORDINALITY u(h, ord)
-                 WHERE LENGTH(h) = m.path_hash_size_bytes * 2
-               )
-             END AS valid_hops
-           FROM multibyte m
-         ),
-         trimmed AS (
-           SELECT p.*,
-             CASE
-               WHEN p.rx_role = 2
-                 AND CARDINALITY(p.valid_hops) > 1
-                 AND UPPER(p.rx_node_id) LIKE p.valid_hops[CARDINALITY(p.valid_hops)] || '%'
-               THEN p.valid_hops[1:CARDINALITY(p.valid_hops) - 1]
-               ELSE p.valid_hops
-             END AS hops
-           FROM prepared p
-         ),
-         distinct_hashes AS (
-           -- Distinct on hash only. node_prefixes ignores network, so keeping
-           -- network here fans the JOIN out by the number of networks a hash
-           -- was seen on (ukmesh scope = ukmesh+northeast), multiplying
-           -- match_count and breaking BOOL_AND(match_count = 1) for any hop
-           -- whose hash appears on >1 network — which collapsed the decode rate.
-           SELECT DISTINCT hash
-           FROM trimmed
-           CROSS JOIN LATERAL unnest(hops) h(hash)
-           WHERE hash IS NOT NULL
-         ),
-         node_prefixes AS (
-           SELECT
-             UPPER(LEFT(n.node_id, 4)) AS hash,
-             COUNT(*)::int AS match_count,
-             MIN(n.node_id) AS node_id
-           FROM node_identity_nodes n
-           JOIN distinct_hashes dh
-             ON LENGTH(dh.hash) = 4
-            AND dh.hash = UPPER(LEFT(n.node_id, 4))
-           WHERE n.lat IS NOT NULL
-             AND n.lon IS NOT NULL
-             AND (n.role IS NULL OR n.role = 2)
-           GROUP BY UPPER(LEFT(n.node_id, 4))
-           UNION ALL
-           SELECT
-             UPPER(LEFT(n.node_id, 6)) AS hash,
-             COUNT(*)::int AS match_count,
-             MIN(n.node_id) AS node_id
-           FROM node_identity_nodes n
-           JOIN distinct_hashes dh
-             ON LENGTH(dh.hash) = 6
-            AND dh.hash = UPPER(LEFT(n.node_id, 6))
-           WHERE n.lat IS NOT NULL
-             AND n.lon IS NOT NULL
-             AND (n.role IS NULL OR n.role = 2)
-           GROUP BY UPPER(LEFT(n.node_id, 6))
-         ),
-         hop_eval AS (
-           SELECT
-             t.obs_id,
-             t.packet_hash,
-             t.network,
-             t.time,
-             h.ord,
-             h.hash,
-             COALESCE(np.match_count, 0) AS match_count,
-             np.node_id
-           FROM trimmed t
-           CROSS JOIN LATERAL unnest(t.hops) WITH ORDINALITY h(hash, ord)
-           LEFT JOIN node_prefixes np ON np.hash = h.hash
-         ),
-         fully_decoded AS (
-           SELECT
-             t.obs_id,
-             t.packet_hash,
-             t.network,
-             t.time,
-             CARDINALITY(t.hops)::int AS decoded_hops,
-             string_agg(UPPER(LEFT(he.node_id, 6)), ' -> ' ORDER BY he.ord) AS decoded_path
-           FROM trimmed t
-           JOIN hop_eval he ON he.obs_id = t.obs_id
-           GROUP BY t.obs_id, t.packet_hash, t.network, t.time, t.hops
-           HAVING CARDINALITY(t.hops) >= 2
-              AND COUNT(he.ord) = CARDINALITY(t.hops)
-              AND BOOL_AND(he.match_count = 1)
-              AND COUNT(DISTINCT he.node_id) FILTER (WHERE he.match_count = 1) = CARDINALITY(t.hops)
-         ),
-         decoded_hops AS (
-           SELECT he.*
-           FROM hop_eval he
-           JOIN fully_decoded fd ON fd.obs_id = he.obs_id
-         ),
-         latest_fully_decoded AS (
-           SELECT *
-           FROM fully_decoded
-           ORDER BY time DESC, packet_hash DESC, obs_id DESC
-           LIMIT 1
-         ),
-         longest_fully_decoded AS (
-           SELECT *
-           FROM fully_decoded
-           ORDER BY decoded_hops DESC, time DESC, packet_hash DESC, obs_id DESC
-           LIMIT 1
-         )
-         SELECT
-           (SELECT MAX(time)::text FROM multibyte) AS latest_multibyte_at,
-           (SELECT packet_hash FROM multibyte ORDER BY time DESC, packet_hash DESC LIMIT 1) AS latest_multibyte_hash,
-           (SELECT COUNT(*)::text FROM multibyte) AS multibyte_packets_24h,
-           (SELECT COUNT(*)::text FROM fully_decoded) AS fully_decoded_multibyte_24h,
-           (SELECT time::text FROM latest_fully_decoded) AS latest_fully_decoded_at,
-           (SELECT packet_hash FROM latest_fully_decoded) AS latest_fully_decoded_hash,
-           (SELECT decoded_hops::text FROM latest_fully_decoded) AS latest_fully_decoded_hops,
-           (SELECT decoded_path FROM latest_fully_decoded) AS latest_fully_decoded_path,
-           (
-             SELECT jsonb_agg(jsonb_build_object(
-               'ord', dh.ord,
-               'node_id', dh.node_id,
-               'name', n.name,
-               'lat', n.lat,
-               'lon', n.lon,
-               'last_seen', n.last_seen
-             ) ORDER BY dh.ord)
-             FROM latest_fully_decoded l
-             JOIN decoded_hops dh ON dh.obs_id = l.obs_id
-           LEFT JOIN node_identity_nodes n ON n.node_id = dh.node_id
-           ) AS latest_fully_decoded_nodes,
-           (SELECT time::text FROM longest_fully_decoded) AS longest_fully_decoded_at,
-           (SELECT packet_hash FROM longest_fully_decoded) AS longest_fully_decoded_hash,
-           (SELECT decoded_hops::text FROM longest_fully_decoded) AS longest_fully_decoded_hops,
-           (SELECT decoded_path FROM longest_fully_decoded) AS longest_fully_decoded_path,
-           (
-             SELECT jsonb_agg(jsonb_build_object(
-               'ord', dh.ord,
-               'node_id', dh.node_id,
-               'name', n.name,
-               'lat', n.lat,
-               'lon', n.lon,
-               'last_seen', n.last_seen
-             ) ORDER BY dh.ord)
-             FROM longest_fully_decoded l
-             JOIN decoded_hops dh ON dh.obs_id = l.obs_id
-             LEFT JOIN node_identity_nodes n ON n.node_id = dh.node_id
-           ) AS longest_fully_decoded_nodes`,
-        multibyteRawParams,
-      ),
+      fetchMultibyteFactSummary(),
       query<{
         avg_observers: string | null;
         max_observers: string | null;
@@ -1251,147 +1043,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
          LIMIT 12`,
         filters.params,
       )),
-      multibyteFactsReadsEnabled ? fetchMultibyteFactTrend() : query<{
-        day: string;
-        multibyte_count: string;
-        fully_decoded_count: string;
-      }>(
-        `WITH buckets AS (
-           SELECT generate_series(
-             date_trunc('day', ${multibyteCutoffPlaceholder}::timestamptz - INTERVAL '7 days'),
-             date_trunc('day', ${multibyteCutoffPlaceholder}::timestamptz),
-             INTERVAL '1 day'
-           ) AS day
-         ),
-         multibyte AS (
-           SELECT
-             row_number() OVER () AS obs_id,
-             p.packet_hash,
-             p.network,
-             time_bucket('1 day', p.time) AS day,
-             p.rx_node_id,
-             p.hop_count,
-             p.path_hash_size_bytes,
-             p.path_hashes,
-             rx.role AS rx_role
-           FROM packets p
-           LEFT JOIN node_identity_aliases rx_alias
-             ON rx_alias.source_node_id = UPPER(BTRIM(p.rx_node_id))
-           LEFT JOIN node_identity_nodes rx
-             ON rx.node_id = COALESCE(rx_alias.canonical_node_id, UPPER(BTRIM(p.rx_node_id)))
-           WHERE p.time > ${multibyteCutoffPlaceholder}::timestamptz - INTERVAL '7 days'
-             AND p.time <= ${multibyteCutoffPlaceholder}::timestamptz
-             AND p.path_hash_size_bytes > 1
-             AND COALESCE(array_length(p.path_hashes, 1), 0) > 0
-             ${filters.packetsAlias('p')}
-         ),
-         multibyte_counts AS (
-           SELECT day, COUNT(*)::text AS count
-           FROM multibyte
-           GROUP BY day
-         ),
-         prepared AS (
-           SELECT m.*,
-             CASE
-               WHEN m.hop_count IS NOT NULL THEN (
-                 SELECT COALESCE(array_agg(UPPER(h) ORDER BY ord), ARRAY[]::text[])
-                 FROM unnest(m.path_hashes) WITH ORDINALITY u(h, ord)
-                 WHERE LENGTH(h) = m.path_hash_size_bytes * 2
-                   AND ord <= GREATEST(m.hop_count, 0)
-               )
-               ELSE (
-                 SELECT COALESCE(array_agg(UPPER(h) ORDER BY ord), ARRAY[]::text[])
-                 FROM unnest(m.path_hashes) WITH ORDINALITY u(h, ord)
-                 WHERE LENGTH(h) = m.path_hash_size_bytes * 2
-               )
-             END AS valid_hops
-           FROM multibyte m
-         ),
-         trimmed AS (
-           SELECT p.*,
-             CASE
-               WHEN p.rx_role = 2
-                 AND CARDINALITY(p.valid_hops) > 1
-                 AND UPPER(p.rx_node_id) LIKE p.valid_hops[CARDINALITY(p.valid_hops)] || '%'
-               THEN p.valid_hops[1:CARDINALITY(p.valid_hops) - 1]
-               ELSE p.valid_hops
-             END AS hops
-           FROM prepared p
-         ),
-         distinct_hashes AS (
-           -- Distinct on hash only. node_prefixes ignores network, so keeping
-           -- network here fans the JOIN out by the number of networks a hash
-           -- was seen on (ukmesh scope = ukmesh+northeast), multiplying
-           -- match_count and breaking BOOL_AND(match_count = 1) for any hop
-           -- whose hash appears on >1 network — which collapsed the decode rate.
-           SELECT DISTINCT hash
-           FROM trimmed
-           CROSS JOIN LATERAL unnest(hops) h(hash)
-           WHERE hash IS NOT NULL
-         ),
-         node_prefixes AS (
-           SELECT
-             UPPER(LEFT(n.node_id, 4)) AS hash,
-             COUNT(*)::int AS match_count,
-             MIN(n.node_id) AS node_id
-           FROM node_identity_nodes n
-           JOIN distinct_hashes dh
-             ON LENGTH(dh.hash) = 4
-            AND dh.hash = UPPER(LEFT(n.node_id, 4))
-           WHERE n.lat IS NOT NULL
-             AND n.lon IS NOT NULL
-             AND (n.role IS NULL OR n.role = 2)
-           GROUP BY UPPER(LEFT(n.node_id, 4))
-           UNION ALL
-           SELECT
-             UPPER(LEFT(n.node_id, 6)) AS hash,
-             COUNT(*)::int AS match_count,
-             MIN(n.node_id) AS node_id
-           FROM node_identity_nodes n
-           JOIN distinct_hashes dh
-             ON LENGTH(dh.hash) = 6
-            AND dh.hash = UPPER(LEFT(n.node_id, 6))
-           WHERE n.lat IS NOT NULL
-             AND n.lon IS NOT NULL
-             AND (n.role IS NULL OR n.role = 2)
-           GROUP BY UPPER(LEFT(n.node_id, 6))
-         ),
-         hop_eval AS (
-           SELECT
-             t.obs_id,
-             h.ord,
-             COALESCE(np.match_count, 0) AS match_count,
-             np.node_id
-           FROM trimmed t
-           CROSS JOIN LATERAL unnest(t.hops) WITH ORDINALITY h(hash, ord)
-           LEFT JOIN node_prefixes np ON np.hash = h.hash
-         ),
-         fully_decoded AS (
-           SELECT m.day, COUNT(*)::text AS count
-           FROM trimmed m
-           JOIN hop_eval he ON he.obs_id = m.obs_id
-           GROUP BY m.day, m.obs_id, m.hops
-           HAVING CARDINALITY(m.hops) >= 2
-              AND COUNT(he.ord) = CARDINALITY(m.hops)
-              AND BOOL_AND(he.match_count = 1)
-              AND COUNT(DISTINCT he.node_id) FILTER (WHERE he.match_count = 1) = CARDINALITY(m.hops)
-         ),
-         fully_decoded_counts AS (
-           SELECT day, COUNT(*)::text AS count
-           FROM fully_decoded
-           GROUP BY day
-         )
-         SELECT
-           b.day::text,
-           COALESCE(MAX(m.count), '0') AS multibyte_count,
-           COALESCE(MAX(f.count), '0') AS fully_decoded_count
-         FROM buckets b
-         LEFT JOIN multibyte_counts m ON m.day = b.day
-         LEFT JOIN fully_decoded_counts f ON f.day = b.day
-         GROUP BY b.day
-         ORDER BY b.day`,
-        multibyteRawParams,
-      ),
+      fetchMultibyteFactTrend(),
     ]);
 
     const response = {
@@ -1418,39 +1070,6 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
       // The comparison is bounded to the six switched dimensions, uses one
       // materialized recent packet scan and runs off the response path.
       scheduleAggregateShadow(network, aggregateAsOf, aggregate);
-    }
-    if (multibyteFactsShadowEnabled && !multibyteFactsReadsEnabled) {
-      const [factSummary, factTrend] = await Promise.all([
-        fetchMultibyteFactSummary(),
-        fetchMultibyteFactTrend(),
-      ]);
-      const summaryComparison = compareExactMultibyteRows(
-        factSummary.rows,
-        multibyteSummaryResult.rows,
-      );
-      const trendComparison = compareExactMultibyteRows(
-        factTrend.rows,
-        pathDecodeTrendResult.rows,
-      );
-      const payload = {
-        network: network ?? 'public',
-        observer: observer ?? null,
-        cutoff: aggregateAsOf.toISOString(),
-        visibilityGeneration,
-        matched: summaryComparison.matched && trendComparison.matched,
-        summaryMatched: summaryComparison.matched,
-        trendMatched: trendComparison.matched,
-        ...(summaryComparison.matched ? {} : {
-          summaryRollup: summaryComparison.rollup,
-          summaryRaw: summaryComparison.raw,
-        }),
-        ...(trendComparison.matched ? {} : {
-          trendRollup: trendComparison.rollup,
-          trendRaw: trendComparison.raw,
-        }),
-      };
-      if (payload.matched) console.log('[stats-multibyte-shadow] match', payload);
-      else console.warn('[stats-multibyte-shadow] mismatch', payload);
     }
     return response;
   }
