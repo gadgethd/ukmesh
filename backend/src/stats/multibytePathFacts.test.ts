@@ -17,7 +17,9 @@ test('multibyte fact backfill keys every observation row instead of packet hashe
   assert.match(sql, /p\.observation_id IS NOT NULL/);
   assert.match(sql, /ON CONFLICT \(observation_id\)/);
   assert.doesNotMatch(sql, /ON CONFLICT \(packet_hash\)/);
-  assert.match(sql, /meshcore_decode_multibyte_path/);
+  assert.match(sql, /distinct_hashes AS MATERIALIZED/);
+  assert.match(sql, /node_prefixes AS MATERIALIZED/);
+  assert.doesNotMatch(sql, /meshcore_decode_multibyte_path/);
 });
 
 test('off-peak backfill selects an explicit bounded chunk batch', () => {
