@@ -314,10 +314,7 @@ export function multibyteFactBackfillSql(): string {
       singleton, visibility_generation, covered_from, covered_through, row_count, updated_at
     )
     SELECT TRUE, $3::bigint, $1::timestamptz, $2::timestamptz, COUNT(*)::bigint, NOW()
-    FROM multibyte_path_facts
-    WHERE visibility_generation = $3::bigint
-      AND observed_at >= $1::timestamptz
-      AND observed_at <= $2::timestamptz
+    FROM written
     ON CONFLICT (singleton) DO UPDATE SET
       visibility_generation = EXCLUDED.visibility_generation,
       covered_from = CASE

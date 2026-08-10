@@ -99,6 +99,7 @@ test('bounded backfill pins cutoff and privacy generation', async () => {
   assert.deepEqual(calls[0]?.params, [windowStart.toISOString(), cutoff.toISOString(), 7]);
   assert.match(calls[0]?.sql ?? '', /LEAST\(multibyte_path_fact_state\.covered_from/);
   assert.match(calls[0]?.sql ?? '', /GREATEST\(multibyte_path_fact_state\.covered_through/);
+  assert.match(calls[0]?.sql ?? '', /FROM written/);
 });
 
 test('chunk inventory is ordered and clipped to the bounded requested window', async () => {
