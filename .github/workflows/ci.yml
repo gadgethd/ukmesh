@@ -181,8 +181,8 @@ jobs:
           done
       - name: Validate Compose configuration
         run: |
-          docker compose config --quiet
-          docker compose config --format json \
+          docker compose -f docker-compose.yml -f docker-compose.ci.yml config --quiet
+          docker compose -f docker-compose.yml -f docker-compose.ci.yml config --format json \
             | jq -e '
               (.services.timescaledb.command
                 | index("max_worker_processes=24") != null)
@@ -198,7 +198,7 @@ jobs:
             [[ "$dockerfile" == *'$''{{'* ]] && continue
             test -f "$dockerfile"
           done < <(sed -n 's/^[[:space:]]*file: //p' .github/workflows/release.yml)
-          compose_services="$(docker compose config --services)"
+          compose_services="$(docker compose -f docker-compose.yml -f docker-compose.ci.yml config --services)"
           for service in \
             db-migrate backend app-ukmesh website-ukmesh website-dev mesh-health-check \
             mosquitto-reloader link-worker link-backfill-worker hopreach \
@@ -212,7 +212,7 @@ jobs:
           publisher_password="ci-e2e-publisher-password"
           observer="CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"
           cleanup() {
-            docker compose \
+            docker compose -f docker-compose.yml -f docker-compose.ci.yml \
               --project-name "$project" \
               --profile dev \
               down --volumes --remove-orphans
@@ -246,13 +246,13 @@ jobs:
             --build-arg SOURCE_REVISION="$SOURCE_REVISION" \
             --build-arg VITE_APP_HOSTNAME=app.ukmesh.com \
             -f Dockerfile -t meshcore-combined:test .
-          docker compose \
+          docker compose -f docker-compose.yml -f docker-compose.ci.yml \
             --project-name "$project" \
             --profile dev \
             build \
               backend app-ukmesh website-ukmesh website-dev mesh-health-check \
               mosquitto-reloader link-worker hopreach
-          docker compose \
+          docker compose -f docker-compose.yml -f docker-compose.ci.yml \
             --project-name "$project" \
             --profile dev \
             up --detach --no-build --scale link-backfill-worker=0 \
@@ -260,7 +260,7 @@ jobs:
           # link-backfill-worker is intentionally a finite job. Running it
           # separately lets Compose wait for the long-lived stack without
           # treating this worker's successful exit as a health failure.
-          docker compose \
+          docker compose -f docker-compose.yml -f docker-compose.ci.yml \
             --project-name "$project" \
             --profile dev \
             run --rm --no-deps link-backfill-worker
@@ -272,7 +272,7 @@ jobs:
               | jq -er '.id'
           )"
           sleep 1
-          docker compose --project-name "$project" exec -T \
+          docker compose -f docker-compose.yml -f docker-compose.ci.yml --project-name "$project" exec -T \
             -e HEALTH_SESSION_ID="$health_session_id" \
             mesh-health-check node --input-type=module <<'NODE'
           import { readFileSync } from 'node:fs';
@@ -297,12 +297,12 @@ jobs:
             done
           done
           backend_metrics="$(
-            docker compose --project-name "$project" exec -T backend \
+            docker compose -f docker-compose.yml -f docker-compose.ci.yml --project-name "$project" exec -T backend \
               wget -qO- http://127.0.0.1:9091/metrics
           )"
           grep -q '^meshcore_process_' <<<"$backend_metrics"
           ws_log="$(mktemp)"
-          docker compose --project-name "$project" exec -T \
+          docker compose -f docker-compose.yml -f docker-compose.ci.yml --project-name "$project" exec -T \
             -e MQTT_E2E_OBSERVER="$observer" \
             backend node --input-type=module >"$ws_log" <<'NODE' &
           import WebSocket from 'ws';
@@ -333,12 +333,12 @@ jobs:
           NODE
           ws_pid=$!
           sleep 2
-          docker compose --project-name "$project" exec -T mosquitto \
+          docker compose -f docker-compose.yml -f docker-compose.ci.yml --project-name "$project" exec -T mosquitto \
             mosquitto_pub -h 127.0.0.1 -p 1883 \
               -u "$publisher_user" -P "$publisher_password" \
               -t "meshcore-test/CI/${observer}/status" \
               -m '{"origin":"CI E2E observer","origin_id":"CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC","stats":{"battery_mv":4100,"uptime_secs":60}}'
-          docker compose --project-name "$project" exec -T mosquitto \
+          docker compose -f docker-compose.yml -f docker-compose.ci.yml --project-name "$project" exec -T mosquitto \
             mosquitto_pub -h 127.0.0.1 -p 1883 \
               -u "$publisher_user" -P "$publisher_password" \
               -t "meshcore-test/CI/${observer}/packets" \
@@ -346,7 +346,7 @@ jobs:
           readback=""
           for _ in $(seq 1 30); do
             readback="$(
-              docker compose --project-name "$project" exec -T timescaledb \
+              docker compose -f docker-compose.yml -f docker-compose.ci.yml --project-name "$project" exec -T timescaledb \
                 psql -U meshcore -d meshcore -Atc \
                 "SELECT EXISTS(SELECT 1 FROM nodes WHERE node_id = '${observer}' AND network = 'test'), EXISTS(SELECT 1 FROM packets WHERE rx_node_id = '${observer}' AND network = 'test'), EXISTS(SELECT 1 FROM packet_hourly_stats WHERE network = 'test')"
             )"
