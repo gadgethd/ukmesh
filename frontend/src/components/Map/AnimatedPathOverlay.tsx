@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef } from 'react';
 import { WebMercatorViewport, type Layer, type PickingInfo } from '@deck.gl/core';
 import { ArcLayer, ScatterplotLayer } from '@deck.gl/layers';
 import { MapboxOverlay } from '@deck.gl/mapbox';
-import type maplibregl from 'maplibre-gl';
+import type * as maplibregl from 'maplibre-gl';
 import { TERRAIN_CONFIG } from './mapConfig.js';
 import {
   PATH_ARC_BLOOM_WIDTH,
