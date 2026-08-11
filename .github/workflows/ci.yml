@@ -191,11 +191,11 @@ jobs:
       - name: Validate tracked build and Compose inventory
         run: |
           while IFS= read -r context; do
-            [[ "$context" == *'${{'* ]] && continue
+            [[ "$context" == *'$''{{'* ]] && continue
             test -d "$context"
           done < <(sed -n 's/^[[:space:]]*context: //p' .github/workflows/release.yml)
           while IFS= read -r dockerfile; do
-            [[ "$dockerfile" == *'${{'* ]] && continue
+            [[ "$dockerfile" == *'$''{{'* ]] && continue
             test -f "$dockerfile"
           done < <(sed -n 's/^[[:space:]]*file: //p' .github/workflows/release.yml)
           compose_services="$(docker compose config --services)"
