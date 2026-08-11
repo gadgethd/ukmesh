@@ -12,3 +12,28 @@ paths = ['''^backend/backfill-transport-codes\.mjs$''']
 regexTarget = "line"
 regexes = ['''(?i)const DEFAULT_PUBLIC_CHANNEL_KEY\s*=\s*'[0-9a-f]{32}'\s*;''']
 condition = "AND"
+
+[[rules.allowlists]]
+description = "Reviewed public/community MeshCore channel secrets (channelRegistry.ts VALIDATED_CHANNELS) — each entry verified to decrypt real UK Mesh group text; classified intentionally public in the channel registry"
+paths = ['''^backend/src/mqtt/channelRegistry\.ts$''']
+regexTarget = "line"
+regexes = ['''\{ name: '[A-Za-z0-9_-]+',\s+secret: '[0-9a-f]{32}'\s*\},?''']
+condition = "AND"
+
+[[rules.allowlists]]
+description = "Documented Public channel key in any file/historical commit (exact fingerprint)"
+regexTarget = "secret"
+regexes = ['''^8b3387e9c5cdea6ac9e5edbaa115cd72$''']
+
+[[rules.allowlists]]
+description = "Fake test fixtures (exact fingerprints)"
+regexTarget = "secret"
+regexes = [
+  '''^0123456789abcdef0123456789abcdef$''',
+  '''^abcdef0123456789$''',
+]
+
+[[rules.allowlists]]
+description = "Deployed-commit SHA in live website manifests"
+regexTarget = "secret"
+regexes = ['''^bef003f072283fd5e3f14b29890f7610adf3fb9808e8c6e700bd48d3e7a8bc87$''']

@@ -512,44 +512,52 @@ credential_created=0
 env_changed=0
 db_changed=0
 preserve_credential=0
+rollback_done=0
 rollback() {
   local status=${1:-1}
-  trap - ERR INT TERM
+  (( rollback_done )) && exit "$status"
+  rollback_done=1
+  trap - ERR INT TERM EXIT
   set +e
-  if (( preserve_credential )); then
-    printf 'newuser: provisioning failed; rolling back owner grant for %s (broker credential remains)\n' "$username" >&2
-  else
-    printf 'newuser: provisioning failed; rolling back %s\n' "$username" >&2
-  fi
-  if (( env_changed )); then
-    replace_owner_map "$old_owner_map" \
-      || printf 'newuser: WARNING: failed to restore OWNER_MQTT_USERNAME_MAP\n' >&2
-  fi
-  if (( db_changed )); then
-    if (( owner_db_preexisting )); then
-      restore_keyless_owner_account "$username" "$key_csv" "$owner_db_restore_active" \
-        || printf 'newuser: WARNING: failed to restore key-less owner database row\n' >&2
+  if (( preserve_credential || env_changed || db_changed || credential_created )); then
+    if (( preserve_credential )); then
+      printf 'newuser: provisioning failed; rolling back owner grant for %s (broker credential remains)\n' "$username" >&2
     else
-      delete_owner_account "$username" \
-        || printf 'newuser: WARNING: failed to remove owner database rows\n' >&2
+      printf 'newuser: provisioning failed; rolling back %s\n' "$username" >&2
     fi
-  fi
-  if (( credential_created )); then
-    docker exec "$MOSQUITTO_CONTAINER" \
-      mosquitto_passwd -D /mosquitto/config/passwd "$username" >/dev/null 2>&1 \
-      || printf 'newuser: WARNING: failed to remove Mosquitto credential\n' >&2
-    docker exec "$MOSQUITTO_CONTAINER" sh -c 'kill -HUP 1' >/dev/null 2>&1 \
-      || true
-  fi
-  if (( env_changed )); then
-    apply_backend_config \
-      || printf 'newuser: WARNING: failed to re-apply backend config after rollback\n' >&2
+    if (( env_changed )); then
+      replace_owner_map "$old_owner_map" \
+        || printf 'newuser: WARNING: failed to restore OWNER_MQTT_USERNAME_MAP\n' >&2
+    fi
+    if (( db_changed )); then
+      if (( owner_db_preexisting )); then
+        restore_keyless_owner_account "$username" "$key_csv" "$owner_db_restore_active" \
+          || printf 'newuser: WARNING: failed to restore key-less owner database row\n' >&2
+      else
+        delete_owner_account "$username" \
+          || printf 'newuser: WARNING: failed to remove owner database rows\n' >&2
+      fi
+    fi
+    if (( credential_created )); then
+      docker exec "$MOSQUITTO_CONTAINER" \
+        mosquitto_passwd -D /mosquitto/config/passwd "$username" >/dev/null 2>&1 \
+        || printf 'newuser: WARNING: failed to remove Mosquitto credential\n' >&2
+      docker exec "$MOSQUITTO_CONTAINER" sh -c 'kill -HUP 1' >/dev/null 2>&1 \
+        || true
+    fi
+    if (( env_changed )); then
+      apply_backend_config \
+        || printf 'newuser: WARNING: failed to re-apply backend config after rollback\n' >&2
+    fi
   fi
   exit "$status"
 }
+# EXIT trap guarantees rollback even when die() exits explicitly (ERR does not
+# fire on `exit 1`). rollback is idempotent and no-ops before any mutation flag.
 trap 'rollback $?' ERR
 trap 'rollback 130' INT
 trap 'rollback 143' TERM
+trap 'rollback 1' EXIT
 
 password=''
 discovery_since=''
@@ -592,7 +600,7 @@ if (( discovery_mode )); then
     log "discovered node public key ${discovered_key}"
   else
     discovery_status=$?
-    trap - ERR INT TERM
+    trap - ERR INT TERM EXIT
     if (( watch_mode )); then
       log "discovery timed out; reconnect the device and retry: newuser --watch --timeout ${timeout_value} ${username}"
     else
@@ -606,13 +614,32 @@ fi
 key_pipe="$(IFS='|'; printf '%s' "${keys[*]}")"
 key_csv="$(IFS=','; printf '%s' "${keys[*]}")"
 new_entry="${username}=${key_pipe}"
+
+flock -x 9  # re-acquire for the mutation phase
+
+# BUG-011 fix: the map was last read before the long unlocked discovery window.
+# Another provisioning run may have added grants while we were unlocked — re-read
+# the CURRENT map under the lock, re-validate, and merge into it so we never
+# overwrite a concurrent grant with a stale snapshot.
+mapfile -t owner_map_lines < <(awk '/^OWNER_MQTT_USERNAME_MAP=/{ print }' "$ENV_FILE")
+(( ${#owner_map_lines[@]} == 1 )) \
+  || die "expected exactly one OWNER_MQTT_USERNAME_MAP line in ${ENV_FILE}"
+old_owner_map=${owner_map_lines[0]#OWNER_MQTT_USERNAME_MAP=}
+IFS=',' read -r -a existing_entries <<<"$old_owner_map"
+for existing_entry in "${existing_entries[@]}"; do
+  existing_entry="$(trim "$existing_entry")"
+  [[ -z $existing_entry ]] && continue
+  [[ $existing_entry == *=* ]] || die 'existing OWNER_MQTT_USERNAME_MAP is malformed'
+  existing_username="$(trim "${existing_entry%%=*}" )"
+  [[ $existing_username != "$username" ]] \
+    || die "username already exists in OWNER_MQTT_USERNAME_MAP: ${username}"
+done
+
 if [[ -n $old_owner_map ]]; then
   new_owner_map="${old_owner_map},${new_entry}"
 else
   new_owner_map=$new_entry
 fi
-
-flock -x 9  # re-acquire for the mutation phase
 log 'adding deduplicated owner grant to OWNER_MQTT_USERNAME_MAP'
 replace_owner_map "$new_owner_map"
 env_changed=1
@@ -715,7 +742,7 @@ else
   log "dashboard source contains ${dashboard_node_count} matching node(s)"
 fi
 
-trap - ERR INT TERM
+trap - ERR INT TERM EXIT
 credential_created=0
 env_changed=0
 db_changed=0
