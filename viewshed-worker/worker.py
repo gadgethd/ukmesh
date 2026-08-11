@@ -1147,6 +1147,82 @@ def already_calculated(db, node_id: str, *, require_predicted_links: bool = Fals
         )
         return cur.fetchone() is not None
 
+
+# ---- BUG-006: side-effect completion markers ----
+# store_coverage() commits on an autocommit connection, then the worker queues
+# physical-link jobs and publishes Redis notifications. If Redis fails after
+# the DB commit, the job is NACKed and retried — but already_calculated() then
+# sees the coverage row and returns early, permanently skipping the link work
+# and frontend notifications. We record a completion marker in Redis only after
+# EVERY side effect succeeds; on retry, a missing marker means the side effects
+# must be replayed (link admission is idempotent; notifications re-publish the
+# same stored data, which is harmless).
+SIDE_EFFECT_MARKER_KEY = 'viewshed:side-effects:{node_id}'
+SIDE_EFFECT_MARKER_TTL_S = 90 * 24 * 60 * 60  # 90 days — long enough to cover retry windows
+
+
+def side_effects_complete(r_client, node_id: str) -> bool:
+    try:
+        return bool(r_client.exists(SIDE_EFFECT_MARKER_KEY.format(node_id=node_id)))
+    except Exception:
+        # If Redis is down we cannot confirm completion; treat as incomplete so
+        # the caller replays (which will also fail and re-raise, NACKing the job).
+        return False
+
+
+def mark_side_effects_complete(r_client, node_id: str) -> None:
+    r_client.set(SIDE_EFFECT_MARKER_KEY.format(node_id=node_id), '1', ex=SIDE_EFFECT_MARKER_TTL_S)
+
+
+def replay_coverage_side_effects(db, r_client, node_id: str) -> None:
+    """Re-enqueue link jobs and re-publish notifications for a node whose
+    coverage row exists but whose post-commit side effects never completed."""
+    with db.cursor() as cur:
+        cur.execute(
+            '''SELECT geom, strength_geoms, radius_m, elevation_m
+               FROM node_coverage nc
+               LEFT JOIN nodes n ON n.node_id = nc.node_id
+               WHERE nc.node_id = %s''',
+            (node_id,),
+        )
+        row = cur.fetchone()
+    if row is None or row[0] is None:
+        log.warning(f'Cannot replay side effects for {node_id[:12]}…: no coverage row')
+        return
+    geom, strength_geoms, radius_m, elevation_m = row
+    if WORKER_MODE in ('all', 'link'):
+        _replay_link_jobs(db, r_client, node_id, radius_m)
+    _publish_coverage_notifications(r_client, node_id, geom, strength_geoms, elevation_m)
+    mark_side_effects_complete(r_client, node_id)
+    log.info(f'Replayed missing side effects for {node_id[:12]}…')
+
+
+def _replay_link_jobs(db, r_client, node_id: str, radius_m: Optional[float]) -> None:
+    """Reload the node position and enqueue physical link jobs (idempotent)."""
+    with db.cursor() as cur:
+        cur.execute(
+            'SELECT lat, lon FROM nodes WHERE node_id = %s',
+            (node_id,),
+        )
+        row = cur.fetchone()
+    if row is None or row[0] is None or row[1] is None:
+        log.warning(f'Cannot replay link jobs for {node_id[:12]}…: no position')
+        return
+    enqueue_physical_link_jobs_for_node(db, r_client, node_id, row[0], row[1], radius_m)
+
+
+def _publish_coverage_notifications(r_client, node_id: str, geom, strength_geoms, elevation_m) -> None:
+    r_client.publish(LIVE_CHANNEL, json.dumps({
+        'type': 'coverage_update',
+        'data': {'node_id': node_id, 'geom': geom, 'strength_geoms': strength_geoms},
+        'ts':   int(time.time() * 1000),
+    }))
+    r_client.publish(LIVE_CHANNEL, json.dumps({
+        'type': 'node_upsert',
+        'data': {'node_id': node_id, 'elevation_m': round(float(elevation_m), 1) if elevation_m is not None else None},
+        'ts':   int(time.time() * 1000),
+    }))
+
 def store_coverage(
     db,
     node_id: str,
@@ -2202,6 +2278,11 @@ def process_job(
                 return
 
         if already_calculated(db, node_id, require_predicted_links=is_planned):
+            if not is_planned and not side_effects_complete(r_client, node_id):
+                # BUG-006: coverage exists but the post-commit side effects
+                # (link jobs + notifications) never completed — replay them
+                # instead of silently skipping.
+                replay_coverage_side_effects(db, r_client, node_id)
             log.info(f'Coverage already exists for {node_id[:12]}…, skipping')
             return
 
@@ -2274,16 +2355,12 @@ def process_job(
         )
         log.info(f'Done in {duration_seconds:.1f}s — notifying frontend')
 
-        r_client.publish(LIVE_CHANNEL, json.dumps({
-            'type': 'coverage_update',
-            'data': {'node_id': node_id, 'geom': geom, 'strength_geoms': strength_geoms},
-            'ts':   int(time.time() * 1000),
-        }))
-        r_client.publish(LIVE_CHANNEL, json.dumps({
-            'type': 'node_upsert',
-            'data': {'node_id': node_id, 'elevation_m': round(elevation_m, 1)},
-            'ts':   int(time.time() * 1000),
-        }))
+        _publish_coverage_notifications(r_client, node_id, geom, strength_geoms, elevation_m)
+        if not is_planned:
+            # BUG-006: only after EVERY side effect succeeds do we record the
+            # completion marker, so a crash/Redis failure here is detected on
+            # retry and the side effects replayed instead of skipped forever.
+            mark_side_effects_complete(r_client, node_id)
     except PermanentOutOfScope as exc:
         store_permanent_coverage(
             db,
