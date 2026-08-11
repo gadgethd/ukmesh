@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo } from 'react';
-import type maplibregl from 'maplibre-gl';
+import type * as maplibregl from 'maplibre-gl';
 import { DeckGLOverlay } from './DeckGLOverlay.js';
 import { AnimatedPathOverlay, type AerialPath } from './AnimatedPathOverlay.js';
 import { useArcs, useNodeMap } from '../../hooks/useNodes.js';

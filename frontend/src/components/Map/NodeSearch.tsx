@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import Fuse from 'fuse.js';
-import type maplibregl from 'maplibre-gl';
+import type * as maplibregl from 'maplibre-gl';
 import type { MeshNode } from '../../hooks/useNodes.js';
 import { useNodeMap } from '../../hooks/useNodes.js';
 import { isValidMapCoord } from '../../utils/pathing.js';

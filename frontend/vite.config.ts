@@ -16,11 +16,12 @@ export default defineConfig({
         entryFileNames: 'assets/[name]-[hash].js',
         chunkFileNames: 'assets/[name]-[hash].js',
         assetFileNames: 'assets/[name]-[hash].[ext]',
-        manualChunks: {
+        manualChunks(id) {
           // Keep Vite's dynamic-import helper out of the large Deck chunk so
           // public-site routes do not preload Deck just to load a lazy route.
-          'vite-preload': ['\0vite/preload-helper.js'],
-          'react': ['react', 'react-dom'],
+          if (id === '\0vite/preload-helper.js') return 'vite-preload';
+          if (/\/node_modules\/(?:react|react-dom)\//.test(id)) return 'react';
+          return undefined;
         },
       },
     },

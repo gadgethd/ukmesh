@@ -10,7 +10,7 @@
  */
 import { useEffect, useRef, useState, useMemo, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import maplibregl from 'maplibre-gl';
+import * as maplibregl from 'maplibre-gl';
 import type { MeshNode } from '../../hooks/useNodes.js';
 import { nodeStore } from '../../hooks/useNodes.js';
 import { linkStateStore } from '../../hooks/useLinkState.js';
@@ -1026,9 +1026,10 @@ export function MapLibreMap({
     }
 
     if (!plannedPopupRef.current) {
-      plannedPopupRef.current = new maplibregl.Popup({ maxWidth: '280px', closeOnClick: false })
-        .setDOMContent(plannedPopupContainerRef.current)
-        .on('close', () => setPlannedPopupState(null));
+      const popup = new maplibregl.Popup({ maxWidth: '280px', closeOnClick: false })
+        .setDOMContent(plannedPopupContainerRef.current);
+      popup.on('close', () => setPlannedPopupState(null));
+      plannedPopupRef.current = popup;
     }
 
     plannedPopupRef.current.setLngLat(plannedPopupState.lngLat).addTo(map);
