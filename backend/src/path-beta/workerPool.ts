@@ -87,9 +87,10 @@ export class WorkerPool {
       this.dispatchNext(worker);
     });
 
-    worker.on('error', (err) => {
-      console.error('[worker-pool] worker crashed:', err.message);
-      this.retireWorker(worker, err);
+    worker.on('error', (err: unknown) => {
+      const error = err instanceof Error ? err : new Error(String(err));
+      console.error('[worker-pool] worker crashed:', error.message);
+      this.retireWorker(worker, error);
     });
 
     worker.on('exit', (code) => {

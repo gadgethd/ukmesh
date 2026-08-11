@@ -300,7 +300,7 @@ async function currentWorkers(precomputedStats?: ReturnType<typeof systemStats>)
       r.llen('meshcore:link_jobs'),
       r.hmget('meshcore:link:v3:counters', 'count', 'bytes', 'dead_count', 'dead_bytes'),
       r.zcard('meshcore:link:v3:leases'),
-      r.zrange('meshcore:link:v3:enqueued', 0, 0, 'WITHSCORES'),
+      r.zrange('meshcore:link:v3:enqueued', 0, '0', 'WITHSCORES'),
       r.hvals('meshcore:link:v3:attempts'),
     ]).then(([legacy, counters, leases, oldest, attempts]) => {
       const [count, bytes, deadCount, deadBytes] = counters;
