@@ -90,7 +90,8 @@ export function registerSpamRoutes(router: Router, deps: SpamRouteDeps): void {
 
   // Single incident with sanitized timeline.
   router.get('/spam/messages/incidents/:id', expensiveLimiter, async (req, res) => {
-    const { id } = req.params;
+    const rawId = req.params.id;
+    const id = Array.isArray(rawId) ? rawId[0] : rawId;
     if (!id || !/^[0-9a-f]{16}$/.test(id)) {
       res.status(400).json({ error: 'invalid incident id' });
       return;
@@ -228,7 +229,8 @@ export function registerSpamRoutes(router: Router, deps: SpamRouteDeps): void {
 
   // Per-node observer detail (used as fallback)
   router.get('/spam/packet/:id/observers', expensiveLimiter, async (req, res) => {
-    const { id } = req.params;
+    const rawId = req.params.id;
+    const id = Array.isArray(rawId) ? rawId[0] : rawId;
     if (!id || !/^[0-9a-fA-F]{64}$/.test(id)) {
       res.status(400).json({ error: 'invalid node id' });
       return;
