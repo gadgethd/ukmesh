@@ -35,6 +35,7 @@ class LinkQueueV3RedisTests(unittest.TestCase):
             'node_b_id': f'b-{index}',
         })
         self.assertEqual((status, accepted_id), ('accepted', job_id))
+        self.assertEqual(self.redis.llen(queue.WAKE), 1)
         return job_id
 
     def test_final_nack_releases_active_capacity_and_retains_purgeable_dead_payload(self):

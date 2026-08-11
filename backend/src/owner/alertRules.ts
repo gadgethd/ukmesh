@@ -158,6 +158,28 @@ async function claimDueDeliveries(): Promise<Delivery[]> {
   return claimed.rows.filter((row) => Boolean(String(row.webhook ?? '').trim()));
 }
 
+async function hasClaimableDeliveries(): Promise<boolean> {
+  const result = await query<{ claimable: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1
+         FROM owner_alert_deliveries delivery
+         JOIN owner_alert_rules rules ON rules.id = delivery.rule_id
+        WHERE delivery.status IN ('pending', 'failed')
+          AND delivery.attempts < $1
+          AND delivery.next_attempt_at <= NOW()
+          AND rules.enabled
+          AND rules.pause_reason IS NULL
+     ) OR EXISTS (
+       SELECT 1
+         FROM owner_alert_deliveries
+        WHERE status = 'delivering'
+          AND claim_expires_at <= NOW()
+     ) AS claimable`,
+    [MAX_DELIVERY_ATTEMPTS],
+  );
+  return result.rows[0]?.claimable === true;
+}
+
 async function recordDeliverySuccess(
   delivery: Delivery,
   destinationHost: string,
@@ -254,6 +276,7 @@ async function deliverClaimed(delivery: Delivery): Promise<void> {
 }
 
 export async function deliverDueOwnerAlerts(): Promise<number> {
+  if (!await hasClaimableDeliveries()) return 0;
   const deliveries = await claimDueDeliveries();
   await Promise.all(deliveries.map(deliverClaimed));
   return deliveries.length;

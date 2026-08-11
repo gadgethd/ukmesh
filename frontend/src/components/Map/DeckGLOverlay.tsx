@@ -20,7 +20,7 @@ import {
   PATH_ARC_BLOOM_WIDTH,
   PATH_ARC_CORE_WIDTH,
   PATH_ARC_HEIGHT,
-  pathArcColors,
+  packetPathColors,
 } from './pathArcStyle.js';
 
 type HistorySegment = {
@@ -131,8 +131,8 @@ function buildLayers(
           data: visible,
           getSourcePosition: (d) => d.from,
           getTargetPosition: (d) => d.to,
-          getSourceColor: (d) => pathArcColors(1, fade(d.ts)).bloomSource,
-          getTargetColor: (d) => pathArcColors(1, fade(d.ts)).bloomTarget,
+          getSourceColor: (d) => packetPathColors(d.packetHash, fade(d.ts)).bloomSource,
+          getTargetColor: (d) => packetPathColors(d.packetHash, fade(d.ts)).bloomTarget,
           getWidth: PATH_ARC_BLOOM_WIDTH,
           getHeight: PATH_ARC_HEIGHT,
         }),
@@ -141,8 +141,8 @@ function buildLayers(
           data: visible,
           getSourcePosition: (d) => d.from,
           getTargetPosition: (d) => d.to,
-          getSourceColor: (d) => pathArcColors(1, fade(d.ts)).coreSource,
-          getTargetColor: (d) => pathArcColors(1, fade(d.ts)).coreTarget,
+          getSourceColor: (d) => packetPathColors(d.packetHash, fade(d.ts)).coreSource,
+          getTargetColor: (d) => packetPathColors(d.packetHash, fade(d.ts)).coreTarget,
           getWidth: PATH_ARC_CORE_WIDTH,
           getHeight: PATH_ARC_HEIGHT,
         }),

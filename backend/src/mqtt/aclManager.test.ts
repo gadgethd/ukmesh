@@ -1,8 +1,12 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { createServer } from 'node:http';
 import test from 'node:test';
+import { ownerAclReloadTotal } from '../metrics.js';
 import {
   getNodeIdsForUserInAcl,
   parseAcl,
+  reloadMosquitto,
   renderOwnerAcl,
   updateUserAclContent,
   userExistsInAclContent,
@@ -28,6 +32,8 @@ test('upgrades an empty keyless user block with exact per-node publish rules', (
   const updated = updateUserAclContent(initial, 'keyless.user', [NODE_ID]);
   assert.deepEqual(getNodeIdsForUserInAcl(updated, 'keyless.user'), [NODE_ID]);
   assert.match(updated, new RegExp(`user keyless\\.user\\ntopic write meshcore/\\+/${NODE_ID}/packets`));
+  assert.match(updated, new RegExp(`topic write meshcore/\\+/${NODE_ID}/neighbors`));
+  assert.match(updated, new RegExp(`topic write meshcore/\\+/${NODE_ID}/neighbours`));
 });
 
 test('matches literal usernames instead of treating punctuation as a regular expression', () => {
@@ -101,6 +107,27 @@ test('unmanaged users are retained only once even when present in the owner snap
   assert.deepEqual(rendered.semantic, []);
 });
 
+test('renderer grants only bounded broker uptime reads to the configured monitor account', () => {
+  const existing = 'user backend\ntopic readwrite meshcore/#\n';
+  const rendered = renderOwnerAcl(existing, [], ['backend'], [], ['backend']);
+
+  assert.equal(rendered.validation.ok, true);
+  assert.deepEqual(rendered.systemReadUsers, ['backend']);
+  assert.equal((rendered.content.match(/^user backend$/gm) ?? []).length, 1);
+  assert.match(rendered.content, /topic read \$SYS\/broker\/uptime/);
+  assert.doesNotMatch(rendered.content, /topic read \$SYS\/#/);
+  validateRenderedOwnerAcl(rendered.content, rendered);
+  assert.throws(
+    () => validateRenderedOwnerAcl(
+      rendered.content.replace('topic read $SYS/broker/uptime\n', ''),
+      { ...rendered, contentSha256: createHash('sha256').update(
+        rendered.content.replace('topic read $SYS/broker/uptime\n', ''),
+      ).digest('hex') },
+    ),
+    /OWNER_ACL_SYSTEM_READ_MISMATCH/,
+  );
+});
+
 test('cutover validation blocks empty managed accounts unless explicitly reviewed', () => {
   const blocked = renderOwnerAcl('', [{ mqttUsername: 'revoked', nodeIds: [] }], []);
   assert.equal(blocked.validation.ok, false);
@@ -108,4 +135,72 @@ test('cutover validation blocks empty managed accounts unless explicitly reviewe
 
   const reviewed = renderOwnerAcl('', [{ mqttUsername: 'revoked', nodeIds: [] }], [], ['revoked']);
   assert.equal(reviewed.validation.ok, true);
+});
+
+test('an explicit grant takes precedence over an unmanaged staging entry', () => {
+  const rendered = renderOwnerAcl(
+    'user hermes-test\ntopic read meshcore/#\n',
+    [{ mqttUsername: 'hermes-test', nodeIds: [NODE_ID] }],
+    ['hermes-test'],
+  );
+
+  assert.equal(rendered.validation.ok, true);
+  assert.match(rendered.content, new RegExp(`user hermes-test\\ntopic write meshcore/\\+/${NODE_ID}/packets`));
+  assert.doesNotMatch(rendered.content, /topic read meshcore\/#/);
+  assert.deepEqual(rendered.semantic, [{ mqttUsername: 'hermes-test', nodeIds: [NODE_ID] }]);
+});
+
+async function reloadMetricValue(outcome: string): Promise<number> {
+  const metric = await ownerAclReloadTotal.get();
+  return metric.values.find((value) => value.labels['outcome'] === outcome)?.value ?? 0;
+}
+
+test('reload uses the authenticated contract and records acknowledged failures', async () => {
+  const requests: Array<{ authorization: string | undefined; body: string }> = [];
+  const server = createServer((request, response) => {
+    const chunks: Buffer[] = [];
+    request.on('data', (chunk: Buffer) => chunks.push(chunk));
+    request.on('end', () => {
+      requests.push({
+        authorization: request.headers.authorization,
+        body: Buffer.concat(chunks).toString('utf8'),
+      });
+      response.writeHead(requests.length === 1 ? 204 : 504).end();
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert.ok(address && typeof address !== 'string');
+
+  const previousUrl = process.env['OWNER_ACL_RELOAD_URL'];
+  const previousToken = process.env['OWNER_ACL_RELOAD_TOKEN'];
+  const previousConsoleError = console.error;
+  const loggedErrors: unknown[][] = [];
+  process.env['OWNER_ACL_RELOAD_URL'] = `http://127.0.0.1:${address.port}/reload`;
+  process.env['OWNER_ACL_RELOAD_TOKEN'] = 'r'.repeat(32);
+  console.error = (...values: unknown[]) => loggedErrors.push(values);
+
+  try {
+    const successesBefore = await reloadMetricValue('success');
+    const failuresBefore = await reloadMetricValue('failure');
+    await reloadMosquitto();
+    await assert.rejects(reloadMosquitto(), /MOSQUITTO_RELOAD_FAILED:504/);
+
+    assert.deepEqual(requests, [
+      { authorization: `Bearer ${'r'.repeat(32)}`, body: '{}' },
+      { authorization: `Bearer ${'r'.repeat(32)}`, body: '{}' },
+    ]);
+    assert.equal(await reloadMetricValue('success'), successesBefore + 1);
+    assert.equal(await reloadMetricValue('failure'), failuresBefore + 1);
+    assert.deepEqual(loggedErrors, [
+      ['[owner-acl] mosquitto reload failed:', 'MOSQUITTO_RELOAD_FAILED:504'],
+    ]);
+  } finally {
+    console.error = previousConsoleError;
+    if (previousUrl === undefined) delete process.env['OWNER_ACL_RELOAD_URL'];
+    else process.env['OWNER_ACL_RELOAD_URL'] = previousUrl;
+    if (previousToken === undefined) delete process.env['OWNER_ACL_RELOAD_TOKEN'];
+    else process.env['OWNER_ACL_RELOAD_TOKEN'] = previousToken;
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
 });

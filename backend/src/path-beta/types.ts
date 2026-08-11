@@ -30,10 +30,6 @@ export type PathLearningModel = {
   bucketHours: number;
 };
 
-export type MlPrefixScore = {
-  score: number;
-  observationCount: number;
-};
 
 export type PathPacket = {
   packet_hash: string;
@@ -59,6 +55,5 @@ export type BetaResolveContext = {
   repeaterNodes: MeshNode[];
   linkMetrics: Map<string, LinkMetrics>;
   /** ML mapping from 1-byte path hash prefix to likely node IDs. */
-  mlPrefixScores: Map<string, Map<string, MlPrefixScore>>;
   learningModel: PathLearningModel;
 };

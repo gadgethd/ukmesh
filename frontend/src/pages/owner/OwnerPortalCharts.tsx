@@ -6,6 +6,7 @@ import {
   OWNER_TOOLTIP_BG as TIP_BG,
   OWNER_TOOLTIP_BORDER as TIP_BORDER,
   formatCompactTs,
+  formatDurationMs,
   readExcludedLastHopSeries,
   writeExcludedLastHopSeries,
   type LastHopStrengthPoint,
@@ -69,13 +70,7 @@ export const TELEMETRY_SERIES = [
 
 export function formatUptime(seconds: number | null): string {
   if (seconds == null || !Number.isFinite(seconds) || seconds < 0) return '—';
-  const total = Math.floor(seconds);
-  const days = Math.floor(total / 86400);
-  const hours = Math.floor((total % 86400) / 3600);
-  const minutes = Math.floor((total % 3600) / 60);
-  if (days > 0) return `${days}d ${hours}h`;
-  if (hours > 0) return `${hours}h ${minutes}m`;
-  return `${minutes}m`;
+  return formatDurationMs(seconds * 1_000);
 }
 
 const OwnerTelemetryTooltip: React.FC<{
@@ -233,7 +228,7 @@ export const LastHopStrengthChart: React.FC<{ nodeId: string; points: LastHopStr
       <article className="owner-telemetry-metric">
         <div className="owner-panel__head owner-panel__head--compact">
           <div>
-            <h3>RX Strength by Last Hop <span style={{ fontSize: '0.6em', opacity: 0.6 }}>(Node names are predicted based on the first two hex characters in the path)</span></h3>
+            <h3>RX Strength by Last Hop <span className="owner-telemetry-metric__hint">(Node names are predicted based on the first two hex characters in the path)</span></h3>
             <p>Average SNR over the last 7 days</p>
           </div>
         </div>
@@ -272,7 +267,7 @@ export const LastHopStrengthChart: React.FC<{ nodeId: string; points: LastHopStr
       <article className="owner-telemetry-metric owner-telemetry-metric--wide owner-telemetry-metric--tall">
         <div className="owner-panel__head owner-panel__head--compact">
           <div>
-            <h3>RX Strength by Last Hop <span style={{ fontSize: '0.6em', opacity: 0.6 }}>(Node names are predicted based on the first two hex characters in the path)</span></h3>
+            <h3>RX Strength by Last Hop <span className="owner-telemetry-metric__hint">(Node names are predicted based on the first two hex characters in the path)</span></h3>
             <p>{latestActive || (chartState.includedSeries.length > 0 ? 'Average SNR over the last 7 days' : 'All eligible repeaters are currently hidden')}</p>
           </div>
           <strong className="owner-telemetry-metric__value">{chartState.series.length}</strong>

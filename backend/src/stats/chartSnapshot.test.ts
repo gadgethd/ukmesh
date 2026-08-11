@@ -72,7 +72,8 @@ test('chart snapshot store pins the schema version and refuses older overwrites'
 
   const loaded = await loadStoredChartSnapshot(query, 'ukmesh', 7);
   assert.equal(loaded?.schema_version, CHART_SNAPSHOT_SCHEMA_VERSION);
-  assert.deepEqual(calls[0]?.params, ['ukmesh', CHART_SNAPSHOT_SCHEMA_VERSION, 7]);
+  assert.deepEqual(calls[0]?.params, ['ukmesh', CHART_SNAPSHOT_SCHEMA_VERSION]);
+  assert.doesNotMatch(calls[0]?.text ?? '', /visibility_generation = \$3/);
 
   assert.equal(
     await saveStoredChartSnapshot(query, 'ukmesh', payload(), 7, 6 * 60 * 60_000, NOW),

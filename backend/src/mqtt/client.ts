@@ -1,18 +1,17 @@
 import mqtt, { type MqttClient } from 'mqtt';
-import { MeshCoreDecoder, calcRegionKey, transportCodeMatchesRegion } from '@michaelhart/meshcore-decoder';
-import type {
-  AdvertPayload, GroupTextPayload, TextMessagePayload,
-  TracePayload, PathPayload, AckPayload,
-} from '@michaelhart/meshcore-decoder';
-import { insertNodeStatusSample, insertPacket, upsertNode, incrementAdvertCount, query, insertOrUpdateSpamSuspect, recordMultibyteEvidence } from '../db/index.js';
+import { calcRegionKey, transportCodeMatchesRegion } from '@michaelhart/meshcore-decoder';
+import { insertNodeNeighborSample, insertNodeStatusSample, insertPacket, upsertNode, query, insertOrUpdateSpamSuspect, recordMultibyteEvidence } from '../db/index.js';
 import { closePacketBatch, flush as flushPacketBatch } from '../db/packetBatch.js';
 import { evaluateAdvert, initSpamDetector } from './spamDetector.js';
-import { invalidateResolveCache, setResolveCache, getStickyNodeMap, mergeStickyNodes } from '../path-beta/resolveCache.js';
+import { invalidateResolveCache, setResolveCache, getStickyNodeMap, mergeStickyNodes, getHeldPath, setHeldPath } from '../path-beta/resolveCache.js';
 import { resolvePool } from '../path-beta/resolvePool.js';
-import { BoundedTtlMap } from '../cache/boundedTtlMap.js';
+import { scheduleSlowResolution } from '../path-beta/slowMode.js';
+import { pathingConfig } from '../platform/config/pathing.js';
 import type { LivePacket } from '../types/index.js';
 import { decodePacketCompat } from './decodePacket.js';
+import { buildChannelEntries, buildCombinedKeyStore, buildSummary } from './channelRegistry.js';
 import { shouldDiscardUnverifiedTxAdvert, statusEnvelopeTargetsObserver } from './identityBinding.js';
+import { extractNeighborNodes } from './neighborPayload.js';
 import { parseMqttTopic } from './topic.js';
 import {
   boundedNetworkMetricLabel,
@@ -104,9 +103,9 @@ function emitNodeUpsert(node: Record<string, unknown>): void {
 
 /**
  * Topic formats:
- *   meshcore/{IATA}/{OBSERVER_PUBLIC_KEY}/{packets|status}
- *   ukmesh/{IATA}/{OBSERVER_PUBLIC_KEY}/{packets|status} (legacy, accepted during migration)
- *   meshcore-test/{IATA}/{OBSERVER_PUBLIC_KEY}/{packets|status} (isolated dev/test ingest)
+ *   meshcore/{IATA}/{OBSERVER_PUBLIC_KEY}/{packets|status|neighbors|neighbours}
+ *   ukmesh/{IATA}/{OBSERVER_PUBLIC_KEY}/{packets|status|neighbors|neighbours} (legacy, accepted during migration)
+ *   meshcore-test/{IATA}/{OBSERVER_PUBLIC_KEY}/{packets|status|neighbors} (isolated dev/test ingest)
  *
  * Public-network assignment is derived from observer IATA:
  *   - MME => teesside
@@ -117,12 +116,15 @@ function emitNodeUpsert(node: Record<string, unknown>): void {
  *
  * mctomqtt JSON structure:
  *   status:  { origin, origin_id, model, firmware_version, radio, client_version }
+ *   neighbors/neighbours: { nodes: [...] } (both spellings accepted — the
+ *   official MeshCore firmware publishes the UK spelling, the MQTT fork the US)
  *   packets: { raw (hex), hash, packet_type, SNR, RSSI, score, route, len,
  *              payload_len, direction, origin, origin_id, timestamp, type }
  *   All numeric values arrive as strings from mctomqtt regex groups.
  */
 const DEFAULT_TOPIC_PREFIXES = ['meshcore', 'ukmesh', 'meshcore-test'];
-// Junk/test-marker IATAs are dropped at ingest regardless of topic prefix.
+// Test-marker IATAs are isolated to the 'test' network scope regardless of
+// topic prefix: persisted for analysis, excluded from every public scope.
 const BLOCKED_PUBLIC_IATAS = new Set(['TST']);
 const TOPIC_PREFIXES = new Set(
   String(process.env['MQTT_TOPIC_PREFIXES'] ?? DEFAULT_TOPIC_PREFIXES.join(','))
@@ -211,12 +213,26 @@ type StatusTelemetrySample = {
   stats?: Record<string, unknown>;
 };
 
+const OWNER_STATUS_STATS_KEYS = new Set([
+  'battery_mv', 'solar_mv', 'board_temp_c', 'wifi_rssi', 'wifi_ssid', 'wifi_uptime_ms',
+  'ntp_synced', 'ntp_sync_age_ms', 'boot_count', 'reset_reason', 'max_loop_ms',
+  'max_loop_at_ms', 'nodes_heard_24h', 'channel_utilization', 'air_util_tx', 'air_util_rx',
+  'last_rx_rssi', 'last_rx_snr', 'tx_power_dbm', 'config_version', 'config_crc32',
+  'fs_free_bytes', 'fs_total_bytes', 'nvs_free_entries', 'channel_id', 'git_commit', 'boot_epoch',
+]);
+
 function extractStatusTelemetry(
   json: Record<string, unknown>,
   options?: { allowRawStatsOnly?: boolean },
 ): StatusTelemetrySample | null {
   const stats = toRecord(json['stats']);
   const hasRawStats = Boolean(stats && Object.keys(stats).length > 0);
+  const hasOwnerStats = Boolean(
+    stats && (
+      Object.keys(stats).some((key) => OWNER_STATUS_STATS_KEYS.has(key))
+      || toRecord(stats['mqtt'])
+    ),
+  );
   const batteryMv = readNum(stats, 'battery_mv', 'batteryMv');
   const uptimeSecs = (() => {
     const direct = readNum(stats, 'uptime_secs', 'uptimeSecs');
@@ -252,7 +268,7 @@ function extractStatusTelemetry(
     && channelUtilization == null
     && airUtilTx == null
   ) {
-    if (options?.allowRawStatsOnly && hasRawStats) {
+    if ((options?.allowRawStatsOnly || hasOwnerStats) && hasRawStats) {
       return {
         batteryMv,
         uptimeSecs,
@@ -322,71 +338,14 @@ function isDuplicatePacket(packetHash: string, observerKey: string, hopCount: nu
 }
 
 /**
- * Dedup map for advert counts — prevents relay copies of the same advert packet
- * from incrementing the count multiple times. Keyed by decoded message hash.
- * Entries expire after 60 seconds (well beyond any realistic relay window).
- */
-const countedAdvertHashes = new Map<string, number>();
-const COUNTED_ADVERT_HASHES_MAX = 10_000;
-const COUNTED_ADVERT_TTL_MS = 60_000;
-
-setInterval(() => {
-  const cutoff = Date.now() - COUNTED_ADVERT_TTL_MS;
-  for (const [h, ts] of countedAdvertHashes) {
-    if (ts < cutoff) countedAdvertHashes.delete(h);
-  }
-}, 30_000).unref();
-
-function tryCountAdvert(hash: string): boolean {
-  if (countedAdvertHashes.has(hash)) return false;
-  if (countedAdvertHashes.size >= COUNTED_ADVERT_HASHES_MAX) {
-    const oldest = countedAdvertHashes.keys().next().value;
-    if (oldest !== undefined) countedAdvertHashes.delete(oldest);
-  }
-  countedAdvertHashes.set(hash, Date.now());
-  return true;
-}
-
-/**
  * Channel registry — built once at startup.
  * MESHCORE_CHANNEL_SECRETS supports 'name:hex' or bare 'hex' entries (comma-separated).
  * The default public channel is always included.
  */
-interface ChannelEntry {
-  name:     string;
-  secret:   string;
-  keyStore: ReturnType<typeof MeshCoreDecoder.createKeyStore>;
-}
-
-const channelEntries: ChannelEntry[] = [
-  {
-    name:     'Public',
-    secret:   '8b3387e9c5cdea6ac9e5edbaa115cd72',
-    keyStore: MeshCoreDecoder.createKeyStore({ channelSecrets: ['8b3387e9c5cdea6ac9e5edbaa115cd72'] }),
-  },
-  ...(process.env['MESHCORE_CHANNEL_SECRETS']
-    ?.split(',').map((s) => s.trim()).filter(Boolean)
-    .map((entry) => {
-      const colon  = entry.indexOf(':');
-      const name   = colon > 0 ? entry.slice(0, colon)  : entry.slice(0, 6);
-      const secret = colon > 0 ? entry.slice(colon + 1) : entry;
-      return { name, secret, keyStore: MeshCoreDecoder.createKeyStore({ channelSecrets: [secret] }) };
-    }) ?? []),
-];
+const channelEntries = buildChannelEntries(process.env['MESHCORE_CHANNEL_SECRETS']);
 
 // Combined keyStore used for decryption (all secrets, single decode call per packet)
-const keyStore = MeshCoreDecoder.createKeyStore({
-  channelSecrets: channelEntries.map((e) => e.secret),
-});
-
-// Small cache so relay copies of the same GroupText don't trigger re-decodes
-const channelCache = new BoundedTtlMap<string, string | null>({
-  name: 'mqtt_channels',
-  maxEntries: 200,
-  maxWeight: 2 * 1024 * 1024,
-  ttlMs: 10 * 60_000,
-  weightOf: (key, value) => key.length * 2 + (value?.length ?? 0) * 2,
-});
+const keyStore = buildCombinedKeyStore(channelEntries);
 
 function boundedEnvInteger(name: string, fallback: number, min: number, max: number): number {
   const parsed = Number(process.env[name]);
@@ -397,6 +356,9 @@ function boundedEnvInteger(name: string, fallback: number, min: number, max: num
 const MQTT_MAX_PAYLOAD_BYTES = boundedEnvInteger('MQTT_MAX_PAYLOAD_BYTES', 64 * 1024, 1_024, 1_048_576);
 const MQTT_INGEST_CONCURRENCY = boundedEnvInteger('MQTT_INGEST_CONCURRENCY', 8, 1, 32);
 const MQTT_INGEST_QUEUE_MAX = boundedEnvInteger('MQTT_INGEST_QUEUE_MAX', 1_000, 10, 20_000);
+const MQTT_CLIENT_ID = String(
+  process.env['MQTT_CLIENT_ID'] ?? 'meshcore-analytics-ingest',
+).trim() || 'meshcore-analytics-ingest';
 
 type MqttIngestTask = {
   topic: string;
@@ -457,66 +419,6 @@ function enqueueMqttMessage(topic: string, rawPayload: Buffer): void {
   drainMqttIngestQueue();
 }
 
-/** Identify which channel a GroupText was sent on by trying each single-key keyStore. */
-function identifyChannel(rawHex: string): string | undefined {
-  // Single channel — must be it, no re-decode needed
-  if (channelEntries.length === 1) return channelEntries[0]!.name;
-
-  if (channelCache.has(rawHex)) return channelCache.get(rawHex) ?? undefined;
-
-  let result: string | undefined;
-  for (const entry of channelEntries) {
-    const { decoded: d, metadataValid } = decodePacketCompat(rawHex, entry.keyStore);
-    if (!metadataValid) continue;
-    const p = d?.payload?.decoded as GroupTextPayload | undefined;
-    if (p?.decrypted) { result = entry.name; break; }
-  }
-
-  channelCache.set(rawHex, result ?? null);
-  return result;
-}
-
-/** Build a short human-readable summary from a decoded payload. */
-function buildSummary(payloadType: number, decoded: unknown, rawHex?: string): string | undefined {
-  if (!decoded) return undefined;
-
-  switch (payloadType) {
-    case 4: {
-      const p = decoded as AdvertPayload;
-      const name = p.appData?.name;
-      return name ? `${name}` : undefined;
-    }
-    case 5: {
-      const p = decoded as GroupTextPayload;
-      if (p.decrypted) {
-        const sender  = p.decrypted.sender ?? '?';
-        const channel = rawHex ? identifyChannel(rawHex) : undefined;
-        const prefix  = channel ? `[${channel}] ` : '';
-        return `${prefix}${sender}: ${p.decrypted.message}`;
-      }
-      return '[encrypted]';
-    }
-    case 2: {
-      const p = decoded as TextMessagePayload;
-      if (p.decrypted?.message) return `${p.decrypted.message}`;
-      return '[encrypted DM]';
-    }
-    case 3: {
-      const p = decoded as AckPayload;
-      return `ACK ${p.checksum.slice(0, 4)}`;
-    }
-    case 8: {
-      const p = decoded as PathPayload;
-      return `${p.pathLength} hop path`;
-    }
-    case 9: {
-      const p = decoded as TracePayload;
-      return `trace ${p.pathHashes.length} hops`;
-    }
-    default:
-      return undefined;
-  }
-}
 
 export async function startMqttClient(): Promise<void> {
   if (mqttStopping) return;
@@ -531,11 +433,13 @@ export async function startMqttClient(): Promise<void> {
   console.log(`[mqtt] channels: ${channelEntries.map((e) => e.name).join(', ')}`);
   console.log(`[mqtt] topic prefixes: ${Array.from(TOPIC_PREFIXES).join(', ')}`);
   console.log(`[mqtt] ingest concurrency=${MQTT_INGEST_CONCURRENCY} queue=${MQTT_INGEST_QUEUE_MAX} maxPayload=${MQTT_MAX_PAYLOAD_BYTES}`);
+  console.log(`[mqtt] persistent session clientId=${MQTT_CLIENT_ID} subscriptionQos=1`);
 
   const client = mqtt.connect(brokerUrl, {
     reconnectPeriod: 5000,
     connectTimeout: 30000,
-    clientId: `meshcore-analytics-${Math.random().toString(16).slice(2, 8)}`,
+    clean: false,
+    clientId: MQTT_CLIENT_ID,
     username: process.env['MQTT_USERNAME'],
     password: process.env['MQTT_PASSWORD'],
   });
@@ -545,7 +449,7 @@ export async function startMqttClient(): Promise<void> {
     setMqttRuntimeStatus('connected');
     console.log('[mqtt] connected');
     for (const prefix of TOPIC_PREFIXES) {
-      client.subscribe(`${prefix}/#`, { qos: 0 }, (err) => {
+      client.subscribe(`${prefix}/#`, { qos: 1 }, (err) => {
         if (err) console.error(`[mqtt] subscribe error (${prefix}/#)`, err.message);
         else      console.log(`[mqtt] subscribed to ${prefix}/#`);
       });
@@ -623,8 +527,11 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
 
   let json: Record<string, unknown>;
   try {
-    json = JSON.parse(rawStr) as Record<string, unknown>;
+    const parsed = JSON.parse(rawStr) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('payload_not_object');
+    json = parsed as Record<string, unknown>;
   } catch {
+    mqttIngestOutcomesTotal.inc({ outcome: 'invalid_json' });
     console.warn(`[mqtt] non-JSON payload on topic ${topic}: ${rawStr.slice(0, 80)}`);
     return;
   }
@@ -635,6 +542,7 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
     const firmware = json['firmware_version'] as string | undefined;
 
     if (!statusEnvelopeTargetsObserver(observerKey, json)) {
+      mqttIngestOutcomesTotal.inc({ outcome: 'status_identity_mismatch' });
       console.warn('[mqtt] rejected status envelope with identity mismatch');
       return;
     }
@@ -669,10 +577,27 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
     const writeResults = await Promise.allSettled(writes);
     for (const result of writeResults) {
       if (result.status === 'rejected') {
+        mqttIngestOutcomesTotal.inc({ outcome: 'status_persist_failure' });
         console.error('[mqtt] status persistence error:', (result.reason as Error).message);
       }
     }
     emitNode(nodeId, { network, observerId: observerKey });
+    return;
+  }
+
+  if (suffix === 'neighbors' || suffix === 'neighbours') {
+    const neighbors = extractNeighborNodes(json);
+    if (!neighbors) {
+      mqttIngestOutcomesTotal.inc({ outcome: 'invalid_neighbors' });
+      return;
+    }
+    try {
+      await insertNodeNeighborSample({ nodeId: observerKey, network, neighbors });
+      mqttIngestOutcomesTotal.inc({ outcome: 'neighbors_persisted' });
+    } catch (error) {
+      mqttIngestOutcomesTotal.inc({ outcome: 'neighbors_persist_failure' });
+      console.error('[mqtt] neighbor persistence error:', error instanceof Error ? error.message : error);
+    }
     return;
   }
 
@@ -688,6 +613,7 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
   const direction = directionValue === 'rx' || directionValue === 'tx' ? directionValue : undefined;
 
   if (isEmptyPacketEnvelope(json, rawHex, packetType)) {
+    mqttIngestOutcomesTotal.inc({ outcome: 'empty_packet' });
     return;
   }
 
@@ -760,7 +686,7 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
         }
 
         const decodedInner = decoded.payload?.decoded;
-        summary = buildSummary(decoded.payloadType, decodedInner, rawHex);
+        summary = buildSummary(decoded.payloadType, decodedInner, rawHex, channelEntries);
 
         if (decoded.payloadType === 4) {
           const inner     = decodedInner as unknown as Record<string, unknown> | undefined;
@@ -820,15 +746,9 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
                 iata:      nodeIata,
                 publicKey: senderKey,
                 network,
+                advertHash: canonicalPacketId,
               });
-
-              if (canonicalPacketId && tryCountAdvert(canonicalPacketId)) {
-                try {
-                  advertCount = await incrementAdvertCount(nodeId);
-                } catch (err) {
-                  console.error('[mqtt] incrementAdvertCount error:', (err as Error).message);
-                }
-              }
+              advertCount = nodeUpdate.advertCount;
 
               emitNodeUpsert({
                 node_id:      nodeId,
@@ -885,6 +805,7 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
   }
 
   if (resolvedPacketType == null) {
+    mqttIngestOutcomesTotal.inc({ outcome: 'missing_packet_type' });
     return;
   }
 
@@ -894,6 +815,7 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
   const finalHash = canonicalPacketId ?? upstreamPacketHash(json['hash']) ?? crypto.randomUUID();
 
   if (isDuplicatePacket(finalHash, observerKey, decodedHops)) {
+    mqttIngestOutcomesTotal.inc({ outcome: 'duplicate_packet' });
     return;
   }
 
@@ -952,23 +874,30 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
     livePacket.visibilityOk = visibility.visibilityOk;
     emit(livePacket);
     invalidateResolveCache(finalHash);
+    mqttIngestOutcomesTotal.inc({ outcome: 'packet_persisted' });
 
     // A repeater appearing in a multibyte (2–3 byte) path hash almost certainly
-    // relayed this packet, so treat it as proof it is online right now: refresh its
-    // last_path_evidence_at and broadcast a live "seen now" update. Non-MQTT
-    // repeaters (no direct reception) only get refreshed this way. Best-effort.
+    // relayed this packet. Resolve only a unique historic row with stored
+    // coordinates, then broadcast the full row so clients which no longer hold
+    // the stale node can restore it at its original location. Best-effort.
     if (decodedPathHashSizeBytes != null && decodedPathHashSizeBytes >= 2 && path && path.length > 0) {
       try {
-        const nodeIds = await recordMultibyteEvidence(
+        const historicNodes = await recordMultibyteEvidence(
           path,
           decodedPathHashSizeBytes,
           new Date(),
           decodedRouteType,
           network,
         );
-        for (const nodeId of nodeIds) emitNode(nodeId, { network });
+        for (const node of historicNodes) emitNodeUpsert({ ...node });
       } catch (err) {
         console.error('[mqtt] recordMultibyteEvidence error:', (err as Error).message);
+      }
+      // Slow mode: schedule ONE final multi-observer resolution after the
+      // propagation window closes so the complete observer set is included
+      // (idempotent per packet hash; best-effort).
+      if (path.length >= pathingConfig.slowModeMinPathHops) {
+        scheduleSlowResolution(finalHash, network);
       }
     }
 
@@ -997,7 +926,11 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
       const stickyEntry = getStickyNodeMap(finalHash, network);
       const stickyMap = stickyEntry ? Object.fromEntries(stickyEntry.hashToNodeId) : undefined;
       const stickyAgeFraction = stickyEntry?.ageFraction;
-      resolvePool.runBackground<{ stickyUpdates?: Record<string, string> }>({ type: 'resolveMulti', packetHash: finalHash, network, ...(stickyMap ? { stickyMap, stickyAgeFraction } : {}) })
+      const heldPath = getHeldPath(finalHash, network);
+      resolvePool.runBackground<{
+        stickyUpdates?: Record<string, string>;
+        canonicalPath?: Array<{ nodeId?: string | null }>;
+      }>({ type: 'resolveMulti', packetHash: finalHash, network, ...(stickyMap ? { stickyMap, stickyAgeFraction } : {}), ...(heldPath ? { heldPath } : {}) })
         .then((result) => {
           if (result) {
             const { stickyUpdates, ...cacheableResult } = result;
@@ -1005,12 +938,17 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
             if (stickyUpdates && Object.keys(stickyUpdates).length > 0) {
               mergeStickyNodes(finalHash, network, stickyUpdates);
             }
+            const heldNodes = result.canonicalPath?.map((hop) => hop.nodeId ?? '').filter(Boolean) ?? [];
+            if (heldNodes.length > 0 && heldNodes.length === result.canonicalPath?.length) {
+              setHeldPath(finalHash, network, { path: heldNodes, resolvedAt: Date.now(), physical: true });
+            }
           }
         })
         .catch(() => { /* best-effort */ })
         .finally(() => { preResolveInFlight.delete(preResolveKey); });
     }
   } catch (err) {
+    mqttIngestOutcomesTotal.inc({ outcome: 'packet_persist_failure' });
     console.error('[mqtt] db insert failed', (err as Error).message);
   }
 }

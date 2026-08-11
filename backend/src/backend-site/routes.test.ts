@@ -77,13 +77,7 @@ test('operator site exchanges the token for a CSRF-protected bounded browser ses
   const dashboard = await fetch(`${base}/local-api/ml-path-learner`, {
     headers: { cookie },
   });
-  assert.equal(dashboard.status, 200);
-  assert.ok(queryCount > 0);
-  const cachedAt = queryCount;
-  assert.equal((await fetch(`${base}/local-api/ml-path-learner`, {
-    headers: { cookie },
-  })).status, 200);
-  assert.equal(queryCount, cachedAt);
+  assert.equal(dashboard.status, 404);
 
   const rejectedLogout = await fetch(`${base}/local-api/operator/logout`, {
     method: 'POST',

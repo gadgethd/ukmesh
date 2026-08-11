@@ -11,6 +11,8 @@ const NON_TRANSACTIONAL_DIRECTIVE = '-- meshcore:migration-mode non-transactiona
 export const NONEMPTY_PRIVATE_PREFIX_SUPERSESSION_APPROVAL =
   'supersede-016-and-017-with-authoritative-privacy-and-026';
 const EMPTY_DATABASE_SUPERSESSIONS = new Map<string, string>([
+  ['011_invalidate_pre_visibility_path_cache.sql', '044_health_current_remove_path_history.sql'],
+  ['015_public_visibility_generation.sql', '044_health_current_remove_path_history.sql'],
   ['016_private_prefixes.sql', '026_private_visibility_schema.sql'],
 ]);
 

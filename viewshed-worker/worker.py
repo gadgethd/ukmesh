@@ -195,6 +195,7 @@ SUPPORT_CONTEXT = {
     'node_index_by_id': {},
     'max_link_km_by_node': {},
     'updated_at': 0.0,
+    'source_signature': None,
 }
 
 # Link observations can arrive much faster than topology changes. Keep a short-lived
@@ -278,6 +279,25 @@ def refresh_rf_calibration(db, force: bool = False) -> None:
 
     with db.cursor() as cur:
         cur.execute(
+            '''SELECT
+                 (SELECT MAX(p.time)
+                    FROM packets p
+                   WHERE p.snr IS NOT NULL
+                     AND p.rx_node_id IS NOT NULL
+                     AND p.src_node_id IS NOT NULL
+                     AND p.rx_node_id <> p.src_node_id
+                     AND p.hop_count = 0
+                     AND p.time > NOW() - (%s * INTERVAL '1 hour')),
+                 (SELECT MAX(nl.itm_computed_at) FROM node_links nl),
+                 (SELECT COUNT(*) FROM node_links nl
+                   WHERE nl.itm_path_loss_db IS NOT NULL AND nl.force_viable = false)''',
+            (RADIO_NEIGHBOR_MAX_AGE_HOURS,),
+        )
+        source_signature = cur.fetchone()
+        if not force and source_signature == RF_CALIBRATION.get('source_signature'):
+            RF_CALIBRATION['updated_at'] = now
+            return
+        cur.execute(
             '''
             WITH link_packet_stats AS (
               SELECT
@@ -309,6 +329,8 @@ def refresh_rf_calibration(db, force: bool = False) -> None:
             (RADIO_NEIGHBOR_MAX_AGE_HOURS, CALIBRATION_MIN_OBSERVED_COUNT),
         )
         rows = cur.fetchall()
+
+    RF_CALIBRATION['source_signature'] = source_signature
 
     if len(rows) < CALIBRATION_MIN_LINKS:
         RF_CALIBRATION['usable_path_loss_db'] = DEFAULT_USABLE_PATH_LOSS_DB
@@ -482,6 +504,35 @@ def refresh_support_context(db, force: bool = False) -> None:
 
     with db.cursor() as cur:
         cur.execute(
+            '''WITH positioned AS (
+                 SELECT node_id, lat, lon
+                 FROM nodes
+                 WHERE lat IS NOT NULL
+                   AND lon IS NOT NULL
+                   AND lat BETWEEN %s AND %s
+                   AND lon BETWEEN %s AND %s
+                   AND NOT (ABS(lat) < 1e-9 AND ABS(lon) < 1e-9)
+                   AND (name IS NULL OR name NOT LIKE %s)
+                   AND (role IS NULL OR role = 2)
+               ), viable AS (
+                 SELECT node_a_id, node_b_id, itm_viable, force_viable
+                 FROM node_links
+                 WHERE itm_viable = true OR force_viable = true
+               )
+               SELECT
+                 (SELECT md5(COALESCE(string_agg(
+                    node_id || ':' || lat::text || ':' || lon::text,
+                    ',' ORDER BY node_id), '')) FROM positioned),
+                 (SELECT md5(COALESCE(string_agg(
+                    node_a_id || ':' || node_b_id || ':' || itm_viable::text || ':' || force_viable::text,
+                    ',' ORDER BY node_a_id, node_b_id), '')) FROM viable)''',
+            (UK_LAT_MIN, UK_LAT_MAX, UK_LON_MIN, UK_LON_MAX, '%🚫%',),
+        )
+        source_signature = cur.fetchone()
+        if not force and source_signature == SUPPORT_CONTEXT.get('source_signature'):
+            SUPPORT_CONTEXT['updated_at'] = now
+            return
+        cur.execute(
             '''
             SELECT node_id, lat, lon
             FROM nodes
@@ -530,6 +581,7 @@ def refresh_support_context(db, force: bool = False) -> None:
       max_link_km_by_node[a_id] = max(max_link_km_by_node.get(a_id, 0.0), dist_km)
       max_link_km_by_node[b_id] = max(max_link_km_by_node.get(b_id, 0.0), dist_km)
     SUPPORT_CONTEXT['max_link_km_by_node'] = max_link_km_by_node
+    SUPPORT_CONTEXT['source_signature'] = source_signature
     SUPPORT_CONTEXT['updated_at'] = now
     log.info(
         f'Mesh support context: repeaters={len(node_ids)}, '
@@ -1443,7 +1495,31 @@ def upsert_link_pair(db, a_id: str, b_id: str, inc_atob: int, inc_btoa: int, inc
 
 
 def ensure_physical_link_metrics(db, a_id: str, a: dict, b_id: str, b: dict):
-    row = upsert_link_pair(db, a_id, b_id, 0, 0, 0)
+    # Existing physical-pair jobs are read-only until a metric is actually
+    # missing. Avoid the old zero-delta ON CONFLICT UPDATE, while retaining a
+    # race-safe insert-and-reread path for a genuinely absent pair.
+    select_pair_sql = '''SELECT observed_count, itm_computed_at, itm_path_loss_db, itm_viable,
+                                count_a_to_b, count_b_to_a, multibyte_observed_count
+                         FROM node_links
+                         WHERE node_a_id = %s AND node_b_id = %s'''
+    with db.cursor() as cur:
+        cur.execute(select_pair_sql, (a_id, b_id))
+        row = cur.fetchone()
+        if row is None:
+            cur.execute(
+                '''INSERT INTO node_links
+                     (node_a_id, node_b_id, observed_count, last_observed,
+                      count_a_to_b, count_b_to_a, multibyte_observed_count)
+                   VALUES (%s, %s, 0, NOW(), 0, 0, 0)
+                   ON CONFLICT (node_a_id, node_b_id) DO NOTHING
+                   RETURNING observed_count, itm_computed_at, itm_path_loss_db, itm_viable,
+                             count_a_to_b, count_b_to_a, multibyte_observed_count''',
+                (a_id, b_id),
+            )
+            row = cur.fetchone()
+            if row is None:
+                cur.execute(select_pair_sql, (a_id, b_id))
+                row = cur.fetchone()
     obs_count = row[0] if row else 0
     itm_computed = row[1] if row else None
     path_loss_db = row[2] if row else None
@@ -2303,6 +2379,21 @@ def wait_for_db() -> psycopg2.extensions.connection:
             time.sleep(3)
     raise RuntimeError('DB never became ready')
 
+
+def link_idle_wait_seconds(now: float, last_link_reap: float) -> float:
+    """Block until the next maintenance deadline, capped by lease reaping."""
+    deadlines = [
+        5.0 - (now - last_link_reap),
+        LINK_TOPOLOGY_REFRESH_S - (now - float(LINK_TOPOLOGY['updated_at'])),
+        SUPPORT_REFRESH_S - (now - float(SUPPORT_CONTEXT['updated_at'])),
+        CALIBRATION_REFRESH_S - (now - float(RF_CALIBRATION['updated_at'])),
+    ]
+    if RADIO_BOT_URL:
+        deadlines.append(
+            RADIO_NEIGHBOR_REFRESH_S - (now - float(RADIO_NEIGHBOR_SYNC['updated_at']))
+        )
+    return max(0.05, min(5.0, *deadlines))
+
 def worker_loop():
     """Single worker process: owns its own DB and Redis connections."""
     name     = multiprocessing.current_process().name
@@ -2335,6 +2426,8 @@ def worker_loop():
         refresh_radio_neighbor_reports(db, r_client, force=True)
     refresh_rf_calibration(db, force=True)
     refresh_support_context(db, force=True)
+    if WORKER_MODE in ('all', 'link'):
+        refresh_link_topology(db, force=True)
     log.info(f'{name} ready')
     last_link_reap = 0.0
     last_viewshed_reap = 0.0
@@ -2364,6 +2457,7 @@ def worker_loop():
             refresh_rf_calibration(db)
             refresh_support_context(db)
             if WORKER_MODE in ('all', 'link'):
+                refresh_link_topology(db)
                 now = time.time()
                 if now - last_link_reap >= 5:
                     recovered = link_queue_v3.reap(r_client)
@@ -2396,7 +2490,10 @@ def worker_loop():
             if WORKER_MODE == 'viewshed':
                 wait_queues = [JOB_QUEUE]
             elif WORKER_MODE == 'link':
-                time.sleep(0.5)
+                r_client.blpop(
+                    link_queue_v3.WAKE,
+                    timeout=link_idle_wait_seconds(time.time(), last_link_reap),
+                )
                 continue
             else:
                 wait_queues = [JOB_QUEUE, LINK_JOB_QUEUE] if VIEWSHED_ENABLED else [LINK_JOB_QUEUE]
@@ -2683,10 +2780,6 @@ def main():
     r = redis.Redis.from_url(REDIS_URL, decode_responses=True, password=REDIS_PASSWORD)
     r.ping()
     log.info('Connected to Redis')
-    if WORKER_MODE in ('all', 'link'):
-        refresh_radio_neighbor_reports(db, r, force=True)
-    refresh_rf_calibration(db, force=True)
-    refresh_support_context(db, force=True)
     if WORKER_MODE in ('all', 'viewshed') and VIEWSHED_ENABLED:
         rebuild_pending_viewshed_set(r)
         recover_planned_coverage_jobs(db, r)

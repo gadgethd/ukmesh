@@ -20,9 +20,7 @@ export interface NodeFeatureProps {
   role: number;
   is_online: boolean;
   is_stale: boolean;
-  is_link_only_stale: boolean;
   is_prohibited: boolean;
-  is_inferred: boolean;
   replay_active: boolean;
   replay_mode: boolean;
   hex_clash_state: 'offender' | 'relay' | null;
@@ -68,8 +66,6 @@ export interface CustomLosSegment {
 }
 
 export interface MapLibreMapProps {
-  inferredNodes: import('../../hooks/useNodes.js').MeshNode[];
-  inferredActiveNodeIds: Set<string>;
   showLinks: boolean;
   showTerrain: boolean;
   showClientNodes: boolean;
@@ -90,6 +86,8 @@ export interface MapLibreMapProps {
   network?: string;
   observer?: string;
   privacyGeneration: number;
+  /** Hide dashboard-only search, legend, and planning controls for embedded maps. */
+  showMapChrome?: boolean;
 }
 
 export interface PopupNodeView {

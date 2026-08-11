@@ -49,10 +49,11 @@ export async function observerHealthRows(query: QueryFn, networks: string[]) {
     unique_src_48h: string;
   }>(
     `WITH observer_activity AS (
-       SELECT p.rx_node_id,
+       SELECT meshcore_canonical_node_id(p.rx_node_id) AS rx_node_id,
          COUNT(DISTINCT date_trunc('hour', p.time)) AS active_hours,
          COUNT(*) AS packets_48h,
-         COUNT(DISTINCT p.src_node_id) FILTER (WHERE p.src_node_id IS NOT NULL) AS unique_src_48h
+         COUNT(DISTINCT meshcore_canonical_node_id(p.src_node_id))
+           FILTER (WHERE p.src_node_id IS NOT NULL) AS unique_src_48h
        FROM packets p
        WHERE p.time > NOW() - INTERVAL '48 hours'
          AND p.network = ANY($1::text[])
@@ -62,7 +63,7 @@ export async function observerHealthRows(query: QueryFn, networks: string[]) {
      SELECT n.node_id, n.name, n.lat, n.lon,
        oa.active_hours::text, oa.packets_48h::text, oa.unique_src_48h::text
      FROM observer_activity oa
-     JOIN nodes n ON n.node_id = oa.rx_node_id
+     JOIN node_identity_nodes n ON n.node_id = oa.rx_node_id
      WHERE n.lat IS NOT NULL AND n.lon IS NOT NULL
        AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')`,
     [networks],
@@ -76,7 +77,7 @@ export async function visibleLinkNodeIds(
 ) {
   return query<{ node_id: string }>(
     `SELECT n.node_id
-       FROM nodes n
+       FROM node_identity_nodes n
       WHERE n.node_id = ANY($1::text[])
         AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
         AND (
@@ -85,7 +86,7 @@ export async function visibleLinkNodeIds(
             n.network IS DISTINCT FROM 'test'
             AND EXISTS (
               SELECT 1
-                FROM node_network_sightings sighting
+                FROM node_identity_sightings sighting
                WHERE sighting.node_id = n.node_id
                  AND sighting.network = ANY($2::text[])
                  AND sighting.last_seen_at > NOW() - INTERVAL '30 days'
@@ -112,10 +113,11 @@ export async function linkHistoryRows(
     `SELECT reports.last_seen::text AS time, reports.last_snr_db AS snr,
             NULL::double precision AS rssi, links.itm_path_loss_db AS path_loss,
             reports.sample_count
-     FROM node_link_radio_reports reports
-     LEFT JOIN node_links links
+     FROM node_identity_link_radio_reports reports
+     LEFT JOIN node_identity_links links
        ON links.node_a_id = reports.node_a_id AND links.node_b_id = reports.node_b_id
-     WHERE reports.node_a_id = $1 AND reports.node_b_id = $2
+     WHERE reports.node_a_id = meshcore_canonical_node_id($1)
+       AND reports.node_b_id = meshcore_canonical_node_id($2)
        AND reports.last_seen > NOW() - ($3::text || ' hours')::interval
      ORDER BY reports.last_seen ASC`,
     [nodeA, nodeB, String(hours)],
@@ -127,7 +129,7 @@ export async function repeaterFirmwareRows(query: QueryFn, networks: string[]) {
     `SELECT COALESCE(hardware_model, 'Unknown') AS hardware_model,
             COALESCE(NULLIF(firmware_version, ''), 'Unknown') AS firmware_version,
             COUNT(*)::text AS count
-     FROM nodes
+     FROM node_identity_nodes
      WHERE network = ANY($1::text[])
        AND (role IS NULL OR role = 2)
        AND last_seen > NOW() - INTERVAL '30 days'

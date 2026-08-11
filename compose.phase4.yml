@@ -1,0 +1,44 @@
+# Phase 4 parallel-run override — Projects VPS ONLY (not for production)
+# Rationale: a Postgres hot-standby is READ-ONLY, so app services that write at
+# startup (backend owner-auth tables, worker schema ensure) cannot boot against
+# the replica. For the dress rehearsal they point at the LIVE PRIMARY through
+# the mig-tunnel (172.18.0.1:5433 → VM). The local timescaledb keeps streaming
+# as standby for cutover. At cutover: promote replica, remove this override,
+# DATABASE_URL returns to timescaledb:5432.
+services:
+  # Schema already present on the replica from pg_basebackup — no-op.
+  db-migrate:
+    command: ["sh", "-c", "echo 'Phase-4: replica standby, migrations skipped (schema present from base backup)'; exit 0"]
+
+  # Writes duplicate test rows to the shared prod DB — not wanted in rehearsal.
+  synthetic-monitor:
+    command: ["sh", "-c", "echo 'Phase-4: synthetic-monitor disabled (would pollute shared prod DB)'; sleep infinity"]
+
+  backend:
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@172.18.0.1:5433/${POSTGRES_DB}
+      OWNER_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@172.18.0.1:5433/${OWNER_POSTGRES_DB:-meshcore_owner_auth}
+
+  path-learning-worker:
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@172.18.0.1:5433/${POSTGRES_DB}
+
+  health-worker:
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@172.18.0.1:5433/${POSTGRES_DB}
+
+  alert-receiver:
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@172.18.0.1:5433/${POSTGRES_DB}
+
+  link-worker:
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@172.18.0.1:5433/${POSTGRES_DB}
+
+  link-backfill-worker:
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@172.18.0.1:5433/${POSTGRES_DB}
+
+  mesh-health-check:
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@172.18.0.1:5433/${POSTGRES_DB}

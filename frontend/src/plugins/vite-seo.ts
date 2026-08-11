@@ -48,6 +48,52 @@ function buildTarget(): BuildTarget {
   return 'public-website';
 }
 
+function buildJsonLd(meta: RouteMeta, routePath: string, site: SiteId): string {
+  const defaults = SITE_DEFAULTS[site];
+  const url = `${defaults.baseUrl}${routePath === '/' ? '' : routePath}`;
+  const siteName = defaults.siteName;
+
+  const organization = {
+    '@type': 'Organization',
+    name: siteName,
+    url: defaults.baseUrl,
+    logo: {
+      '@type': 'ImageObject',
+      url: `${defaults.baseUrl}/og-image.png`,
+    },
+  };
+
+  const graph: object[] = routePath === '/'
+    ? [{
+        '@type': 'WebSite',
+        name: siteName,
+        url: defaults.baseUrl,
+        description: meta.description,
+        publisher: organization,
+      }]
+    : [
+        {
+          '@type': 'WebPage',
+          name: meta.title,
+          url,
+          description: meta.description,
+          isPartOf: { '@type': 'WebSite', name: siteName, url: defaults.baseUrl },
+          publisher: organization,
+        },
+        {
+          '@type': 'BreadcrumbList',
+          itemListElement: [
+            { '@type': 'ListItem', position: 1, name: 'Home', item: defaults.baseUrl },
+            { '@type': 'ListItem', position: 2, name: meta.title.split(' — ')[0], item: url },
+          ],
+        },
+      ];
+
+  // Escape `<` so the serialized JSON can never close the script tag.
+  const json = JSON.stringify({ '@context': 'https://schema.org', '@graph': graph }).replace(/</g, '\\u003c');
+  return `<script type="application/ld+json">${json}</script>`;
+}
+
 function buildMetaTags(meta: RouteMeta, routePath: string, site: SiteId): string {
   const defaults = SITE_DEFAULTS[site];
   const url = `${defaults.baseUrl}${routePath === '/' ? '' : routePath}`;
@@ -68,6 +114,7 @@ function buildMetaTags(meta: RouteMeta, routePath: string, site: SiteId): string
     `<meta name="twitter:title" content="${meta.title}">`,
     `<meta name="twitter:description" content="${meta.description}">`,
     `<meta name="twitter:image" content="${ogImage}">`,
+    buildJsonLd(meta, routePath, site),
   ].join('\n    ');
 }
 
@@ -83,11 +130,12 @@ function generateSitemapXml(site: SiteId): string {
   const baseUrl = SITE_DEFAULTS[site].baseUrl;
   const routes = SITEMAP_ROUTES[site];
   const totalRoutes = routes.length;
+  const buildDate = new Date().toISOString().slice(0, 10);
 
   const urls = routes.map((route, i) => {
     const loc = route === '/' ? baseUrl + '/' : baseUrl + route;
     const priority = Math.max(0.4, 1.0 - (i / totalRoutes) * 0.6).toFixed(1);
-    return `  <url>\n    <loc>${loc}</loc>\n    <priority>${priority}</priority>\n  </url>`;
+    return `  <url>\n    <loc>${loc}</loc>\n    <lastmod>${buildDate}</lastmod>\n    <priority>${priority}</priority>\n  </url>`;
   });
 
   return [
@@ -207,6 +255,12 @@ export default function viteSeoPlugin(): Plugin {
         // Replace Twitter tags
         routeHtml = routeHtml.replace(/(<meta name="twitter:title" content=")[^"]*(")/,  `$1${meta.title}$2`);
         routeHtml = routeHtml.replace(/(<meta name="twitter:description" content=")[^"]*(")/,  `$1${meta.description}$2`);
+
+        // Replace the homepage JSON-LD block with the route-specific one
+        routeHtml = routeHtml.replace(
+          /<script type="application\/ld\+json">.*?<\/script>/,
+          buildJsonLd(meta, route, site),
+        );
 
         // Write to route subdirectory
         const routeDir = path.join(outDir, route.slice(1)); // Remove leading /

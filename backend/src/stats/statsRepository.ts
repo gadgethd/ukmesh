@@ -5,10 +5,12 @@ import {
   publicMapBasePredicate,
   publicMapFreshPredicate,
 } from '../nodes/publicMap.js';
+import { nodeEffectiveLastSeenSql } from '../nodes/presence.js';
 import {
   loadStoredChartSnapshot,
   saveStoredChartSnapshot,
 } from './chartSnapshot.js';
+import { ensureMultibyteFactsCoverWindow } from './multibytePathFacts.js';
 
 type QueryFn = <T extends QueryResultRow = QueryResultRow>(
   text: string,
@@ -16,7 +18,7 @@ type QueryFn = <T extends QueryResultRow = QueryResultRow>(
 ) => Promise<{ rows: T[] }>;
 
 type StatsRepositoryDeps = {
-  networkFilters: (network?: string, observer?: string) => NetworkFilters;
+  networkFilters: (network?: string, observer?: string, opts?: { includePrivacy?: boolean }) => NetworkFilters;
   query: QueryFn;
   aggregateReadsEnabled?: boolean;
   aggregateShadowEnabled?: boolean;
@@ -156,18 +158,19 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
   }
 
   async function fetchObserverRegionSummary(network: string | undefined, observer: string | undefined) {
-    // Public aggregates are computed from privacy-filtered source rows. Legacy
-    // rollups predate visibility state and cannot safely be filtered afterward.
-    const filters = networkFilters(network, observer);
+    const filters = networkFilters(network, observer, { includePrivacy: false });
     return query(`
       SELECT
         COALESCE(NULLIF(TRIM(UPPER(p.iata)), ''), 'UNK') AS iata,
         COUNT(DISTINCT p.packet_hash) FILTER (WHERE p.time > NOW() - INTERVAL '24 hours') AS packets_24h,
         COUNT(DISTINCT p.packet_hash) AS packets_7d,
-        COUNT(DISTINCT p.rx_node_id) FILTER (WHERE p.time > NOW() - INTERVAL '1 minute') AS active_observers,
-        COUNT(DISTINCT p.rx_node_id) AS observers,
+        COUNT(DISTINCT COALESCE(rx_alias.canonical_node_id, UPPER(BTRIM(p.rx_node_id))))
+          FILTER (WHERE p.time > NOW() - INTERVAL '1 minute') AS active_observers,
+        COUNT(DISTINCT COALESCE(rx_alias.canonical_node_id, UPPER(BTRIM(p.rx_node_id)))) AS observers,
         MAX(p.time)::text AS last_packet_at
       FROM packets p
+      LEFT JOIN node_identity_aliases rx_alias
+        ON rx_alias.source_node_id = UPPER(BTRIM(p.rx_node_id))
       WHERE p.time > NOW() - INTERVAL '7 days'
         AND p.rx_node_id IS NOT NULL
         AND p.rx_node_id <> ''
@@ -179,7 +182,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
   }
 
   async function fetchChannelTraffic(network: string | undefined, observer: string | undefined) {
-    const filters = networkFilters(network, observer);
+    const filters = networkFilters(network, observer, { includePrivacy: false });
     return query<{ channel: string; count: string; total_count: string }>(`
       WITH decoded_group_packets AS (
         SELECT
@@ -274,6 +277,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
   ): Promise<AggregateChartParts> {
     const scope = aggregateScope(network);
     const filters = networkFilters(network, undefined);
+    const totalFilters = networkFilters(network, undefined, { includePrivacy: false });
     const bounds = chartWindowBounds(asOf);
     const firstBoundParam = filters.params.length + 1;
     const asOfParam = `$${firstBoundParam}`;
@@ -306,7 +310,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
          FROM packets p
          WHERE p.time > ${start24hParam}::timestamptz
            AND p.time < ${fullStart24hParam}::timestamptz
-           ${filters.packetsAlias('p')}
+           ${totalFilters.packetsAlias('p')}
          UNION ALL
          SELECT
            p.time, p.network, p.packet_type, p.hop_count, p.route_type,
@@ -314,7 +318,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
          FROM packets p
          WHERE p.time >= ${fullEndParam}::timestamptz
            AND p.time <= ${asOfParam}::timestamptz
-           ${filters.packetsAlias('p')}
+           ${totalFilters.packetsAlias('p')}
        ),
        raw_24h AS (
          SELECT
@@ -350,7 +354,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
          FROM packets p
          WHERE p.time > ${start7dParam}::timestamptz
            AND p.time < ${fullStart7dParam}::timestamptz
-           ${filters.packetsAlias('p')}
+           ${totalFilters.packetsAlias('p')}
          UNION ALL
          SELECT
            p.time, p.network, p.packet_type, p.hop_count, p.route_type,
@@ -358,7 +362,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
          FROM packets p
          WHERE p.time >= ${fullEndParam}::timestamptz
            AND p.time <= ${asOfParam}::timestamptz
-           ${filters.packetsAlias('p')}
+           ${totalFilters.packetsAlias('p')}
        ),
        raw_7d AS (
          SELECT
@@ -675,9 +679,145 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
     aggregateShadowInFlight.set(key, comparison);
   }
 
-  async function fetchChartsData(network: string | undefined, observer: string | undefined) {
+  async function fetchChartsData(
+    network: string | undefined,
+    observer: string | undefined,
+    visibilityGeneration = 1,
+  ) {
     const filters = networkFilters(network, observer);
+    const totalFilters = networkFilters(network, observer, { includePrivacy: false });
     const aggregateAsOf = new Date();
+    const multibyteCutoffPlaceholder = `$${filters.params.length + 1}`;
+    const multibyteGenerationPlaceholder = `$${filters.params.length + 2}`;
+    const multibyteFactParams = [
+      ...filters.params,
+      aggregateAsOf.toISOString(),
+      visibilityGeneration,
+    ];
+    const coverage = await ensureMultibyteFactsCoverWindow(query, {
+      windowStart: new Date(aggregateAsOf.getTime() - (8 * 24 * 60 * 60 * 1_000)),
+      cutoff: aggregateAsOf,
+      visibilityGeneration,
+    });
+    if (coverage.backfilled) {
+      console.log('[stats-multibyte-facts] bounded backfill complete', {
+        cutoff: aggregateAsOf.toISOString(),
+        visibilityGeneration,
+        affectedRows: coverage.affectedRows,
+      });
+    }
+
+    const fetchMultibyteFactSummary = () => query<{
+      latest_multibyte_at: string | null;
+      latest_multibyte_hash: string | null;
+      multibyte_packets_24h: string;
+      fully_decoded_multibyte_24h: string;
+      latest_fully_decoded_at: string | null;
+      latest_fully_decoded_hash: string | null;
+      latest_fully_decoded_hops: string | null;
+      latest_fully_decoded_path: string | null;
+      latest_fully_decoded_nodes: Array<{ ord: number; node_id: string; name: string | null; lat: number | null; lon: number | null; last_seen: string | null; }> | null;
+      longest_fully_decoded_at: string | null;
+      longest_fully_decoded_hash: string | null;
+      longest_fully_decoded_hops: string | null;
+      longest_fully_decoded_path: string | null;
+      longest_fully_decoded_nodes: Array<{ ord: number; node_id: string; name: string | null; lat: number | null; lon: number | null; last_seen: string | null; }> | null;
+    }>(
+      `WITH multibyte AS MATERIALIZED (
+         SELECT f.*
+         FROM multibyte_path_facts f
+         WHERE f.observed_at > ${multibyteCutoffPlaceholder}::timestamptz - INTERVAL '24 hours'
+           AND f.observed_at <= ${multibyteCutoffPlaceholder}::timestamptz
+           AND f.visibility_generation = ${multibyteGenerationPlaceholder}::bigint
+           ${filters.packetsAlias('f')}
+       ),
+       latest_fully_decoded AS (
+         SELECT * FROM multibyte
+         WHERE fully_decoded IS TRUE
+         ORDER BY observed_at DESC, packet_hash DESC, observation_id DESC
+         LIMIT 1
+       ),
+       longest_fully_decoded AS (
+         SELECT * FROM multibyte
+         WHERE fully_decoded IS TRUE
+         ORDER BY decoded_hops DESC, observed_at DESC, packet_hash DESC, observation_id DESC
+         LIMIT 1
+       )
+       SELECT
+         (SELECT MAX(observed_at)::text FROM multibyte) AS latest_multibyte_at,
+         (SELECT packet_hash FROM multibyte ORDER BY observed_at DESC, packet_hash DESC LIMIT 1) AS latest_multibyte_hash,
+         (SELECT COUNT(*)::text FROM multibyte) AS multibyte_packets_24h,
+         (SELECT COUNT(*)::text FROM multibyte WHERE fully_decoded IS TRUE) AS fully_decoded_multibyte_24h,
+         (SELECT observed_at::text FROM latest_fully_decoded) AS latest_fully_decoded_at,
+         (SELECT packet_hash FROM latest_fully_decoded) AS latest_fully_decoded_hash,
+         (SELECT decoded_hops::text FROM latest_fully_decoded) AS latest_fully_decoded_hops,
+         (SELECT decoded_path FROM latest_fully_decoded) AS latest_fully_decoded_path,
+         (
+           SELECT jsonb_agg(jsonb_build_object(
+             'ord', decoded.ord,
+             'node_id', decoded.node_id,
+             'name', node.name,
+             'lat', node.lat,
+             'lon', node.lon,
+             'last_seen', node.last_seen
+           ) ORDER BY decoded.ord)
+           FROM latest_fully_decoded latest
+           CROSS JOIN LATERAL unnest(latest.decoded_node_ids)
+             WITH ORDINALITY decoded(node_id, ord)
+           LEFT JOIN node_identity_nodes node ON node.node_id = decoded.node_id
+         ) AS latest_fully_decoded_nodes,
+         (SELECT observed_at::text FROM longest_fully_decoded) AS longest_fully_decoded_at,
+         (SELECT packet_hash FROM longest_fully_decoded) AS longest_fully_decoded_hash,
+         (SELECT decoded_hops::text FROM longest_fully_decoded) AS longest_fully_decoded_hops,
+         (SELECT decoded_path FROM longest_fully_decoded) AS longest_fully_decoded_path,
+         (
+           SELECT jsonb_agg(jsonb_build_object(
+             'ord', decoded.ord,
+             'node_id', decoded.node_id,
+             'name', node.name,
+             'lat', node.lat,
+             'lon', node.lon,
+             'last_seen', node.last_seen
+           ) ORDER BY decoded.ord)
+           FROM longest_fully_decoded longest
+           CROSS JOIN LATERAL unnest(longest.decoded_node_ids)
+             WITH ORDINALITY decoded(node_id, ord)
+           LEFT JOIN node_identity_nodes node ON node.node_id = decoded.node_id
+         ) AS longest_fully_decoded_nodes`,
+      multibyteFactParams,
+    );
+
+    const fetchMultibyteFactTrend = () => query<{
+      day: string;
+      multibyte_count: string;
+      fully_decoded_count: string;
+    }>(
+      `WITH buckets AS (
+         SELECT generate_series(
+           date_trunc('day', ${multibyteCutoffPlaceholder}::timestamptz - INTERVAL '7 days'),
+           date_trunc('day', ${multibyteCutoffPlaceholder}::timestamptz),
+           INTERVAL '1 day'
+         ) AS day
+       ), counts AS (
+         SELECT time_bucket('1 day', f.observed_at) AS day,
+                COUNT(*)::text AS multibyte_count,
+                COUNT(*) FILTER (WHERE f.fully_decoded IS TRUE)::text AS fully_decoded_count
+         FROM multibyte_path_facts f
+         WHERE f.observed_at > ${multibyteCutoffPlaceholder}::timestamptz - INTERVAL '7 days'
+           AND f.observed_at <= ${multibyteCutoffPlaceholder}::timestamptz
+           AND f.visibility_generation = ${multibyteGenerationPlaceholder}::bigint
+           ${filters.packetsAlias('f')}
+         GROUP BY 1
+       )
+       SELECT b.day::text,
+              COALESCE(MAX(c.multibyte_count), '0') AS multibyte_count,
+              COALESCE(MAX(c.fully_decoded_count), '0') AS fully_decoded_count
+       FROM buckets b
+       LEFT JOIN counts c ON c.day = b.day
+       GROUP BY b.day
+       ORDER BY b.day`,
+      multibyteFactParams,
+    );
     const aggregatePartsPromise = aggregateReadsEnabled && !observer
       ? fetchAggregateChartParts(network, aggregateAsOf)
       : null;
@@ -708,7 +848,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
           SELECT time_bucket('1 hour', p.time) AS bucket, COUNT(*)::int AS count
           FROM packets p
           WHERE p.time > NOW() - INTERVAL '24 hours'
-            ${filters.packetsAlias('p')}
+            ${totalFilters.packetsAlias('p')}
           GROUP BY 1
         )
         SELECT b.bucket AS hour, COALESCE(c.count, 0) AS count
@@ -719,7 +859,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
       aggregateRows('packetsPerDay', () => query(`
         SELECT time_bucket('1 day', time) AS day, COUNT(*) AS count
         FROM packets
-        WHERE time > NOW() - INTERVAL '7 days' ${filters.packets}
+        WHERE time > NOW() - INTERVAL '7 days' ${totalFilters.packets}
         GROUP BY day ORDER BY day
       `, filters.params)),
       query(`
@@ -731,8 +871,11 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
           ) AS bucket
         ),
         counts AS (
-          SELECT time_bucket('1 hour', p.time) AS bucket, COUNT(DISTINCT p.src_node_id)::int AS count
+          SELECT time_bucket('1 hour', p.time) AS bucket,
+                 COUNT(DISTINCT COALESCE(src_alias.canonical_node_id, UPPER(BTRIM(p.src_node_id))))::int AS count
           FROM packets p
+          LEFT JOIN node_identity_aliases src_alias
+            ON src_alias.source_node_id = UPPER(BTRIM(p.src_node_id))
           WHERE p.time > NOW() - INTERVAL '24 hours'
             AND p.src_node_id IS NOT NULL
             ${filters.packetsAlias('p')}
@@ -744,15 +887,18 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
         ORDER BY b.bucket
       `, filters.params),
       query(`
-        SELECT time_bucket('1 day', time) AS day, COUNT(DISTINCT src_node_id) AS count
-        FROM packets
-        WHERE time > NOW() - INTERVAL '7 days' AND src_node_id IS NOT NULL ${filters.packets}
+        SELECT time_bucket('1 day', p.time) AS day,
+               COUNT(DISTINCT COALESCE(src_alias.canonical_node_id, UPPER(BTRIM(p.src_node_id)))) AS count
+        FROM packets p
+        LEFT JOIN node_identity_aliases src_alias
+          ON src_alias.source_node_id = UPPER(BTRIM(p.src_node_id))
+        WHERE p.time > NOW() - INTERVAL '7 days' AND p.src_node_id IS NOT NULL ${filters.packetsAlias('p')}
         GROUP BY day ORDER BY day
       `, filters.params),
       aggregateRows('packetTypes', () => query(`
         SELECT packet_type, COUNT(*) AS count
         FROM packets
-        WHERE time > NOW() - INTERVAL '24 hours' ${filters.packets}
+        WHERE time > NOW() - INTERVAL '24 hours' ${totalFilters.packets}
         GROUP BY packet_type ORDER BY count DESC
       `, filters.params)),
       aggregateRows('hopDistribution', () => query(`
@@ -760,7 +906,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
         FROM packets
         WHERE time > NOW() - INTERVAL '7 days'
           AND hop_count IS NOT NULL
-          ${filters.packets}
+          ${totalFilters.packets}
         GROUP BY hop_count ORDER BY hop_count
       `, filters.params)),
       query(`
@@ -785,9 +931,14 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
       `, filters.params),
       query(`
         SELECT
-          (SELECT COUNT(*) FROM packets WHERE time > NOW() - INTERVAL '24 hours' ${filters.packets}) AS total_24h,
-          (SELECT COUNT(*) FROM packets WHERE time > NOW() - INTERVAL '7 days' ${filters.packets}) AS total_7d,
-          (SELECT COUNT(DISTINCT src_node_id) FROM packets WHERE time > NOW() - INTERVAL '24 hours' AND src_node_id IS NOT NULL ${filters.packets}) AS unique_radios_24h
+          (SELECT COUNT(*) FROM packets WHERE time > NOW() - INTERVAL '24 hours' ${totalFilters.packets}) AS total_24h,
+          (SELECT COUNT(*) FROM packets WHERE time > NOW() - INTERVAL '7 days' ${totalFilters.packets}) AS total_7d,
+          (SELECT COUNT(DISTINCT COALESCE(src_alias.canonical_node_id, UPPER(BTRIM(p.src_node_id))))
+             FROM packets p
+             LEFT JOIN node_identity_aliases src_alias
+               ON src_alias.source_node_id = UPPER(BTRIM(p.src_node_id))
+            WHERE p.time > NOW() - INTERVAL '24 hours'
+              AND p.src_node_id IS NOT NULL ${filters.packetsAlias('p')}) AS unique_radios_24h
       `, filters.params),
       fetchObserverRegionSummary(network, observer),
       query(`
@@ -817,194 +968,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
          GROUP BY 1`,
         filters.params,
       ),
-      query<{
-        latest_multibyte_at: string | null;
-        latest_multibyte_hash: string | null;
-        multibyte_packets_24h: string;
-        fully_decoded_multibyte_24h: string;
-        latest_fully_decoded_at: string | null;
-        latest_fully_decoded_hash: string | null;
-        latest_fully_decoded_hops: string | null;
-        latest_fully_decoded_path: string | null;
-        latest_fully_decoded_nodes: Array<{ ord: number; node_id: string; name: string | null; lat: number | null; lon: number | null; last_seen: string | null; }> | null;
-        longest_fully_decoded_at: string | null;
-        longest_fully_decoded_hash: string | null;
-        longest_fully_decoded_hops: string | null;
-        longest_fully_decoded_path: string | null;
-        longest_fully_decoded_nodes: Array<{ ord: number; node_id: string; name: string | null; lat: number | null; lon: number | null; last_seen: string | null; }> | null;
-      }>(
-        `WITH multibyte AS (
-           SELECT
-             row_number() OVER () AS obs_id,
-             p.packet_hash,
-             p.network,
-             p.time,
-             p.rx_node_id,
-             p.hop_count,
-             p.path_hash_size_bytes,
-             p.path_hashes,
-             rx.role AS rx_role
-           FROM packets p
-           LEFT JOIN nodes rx ON rx.node_id = p.rx_node_id
-           WHERE p.time > NOW() - INTERVAL '24 hours'
-             AND p.path_hash_size_bytes > 1
-             AND COALESCE(array_length(p.path_hashes, 1), 0) > 0
-             ${filters.packetsAlias('p')}
-         ),
-         prepared AS (
-           SELECT m.*,
-             CASE
-               WHEN m.hop_count IS NOT NULL THEN (
-                 SELECT COALESCE(array_agg(UPPER(h) ORDER BY ord), ARRAY[]::text[])
-                 FROM unnest(m.path_hashes) WITH ORDINALITY u(h, ord)
-                 WHERE LENGTH(h) = m.path_hash_size_bytes * 2
-                   AND ord <= GREATEST(m.hop_count, 0)
-               )
-               ELSE (
-                 SELECT COALESCE(array_agg(UPPER(h) ORDER BY ord), ARRAY[]::text[])
-                 FROM unnest(m.path_hashes) WITH ORDINALITY u(h, ord)
-                 WHERE LENGTH(h) = m.path_hash_size_bytes * 2
-               )
-             END AS valid_hops
-           FROM multibyte m
-         ),
-         trimmed AS (
-           SELECT p.*,
-             CASE
-               WHEN p.rx_role = 2
-                 AND CARDINALITY(p.valid_hops) > 1
-                 AND UPPER(p.rx_node_id) LIKE p.valid_hops[CARDINALITY(p.valid_hops)] || '%'
-               THEN p.valid_hops[1:CARDINALITY(p.valid_hops) - 1]
-               ELSE p.valid_hops
-             END AS hops
-           FROM prepared p
-         ),
-         distinct_hashes AS (
-           -- Distinct on hash only. node_prefixes ignores network, so keeping
-           -- network here fans the JOIN out by the number of networks a hash
-           -- was seen on (ukmesh scope = ukmesh+northeast), multiplying
-           -- match_count and breaking BOOL_AND(match_count = 1) for any hop
-           -- whose hash appears on >1 network — which collapsed the decode rate.
-           SELECT DISTINCT hash
-           FROM trimmed
-           CROSS JOIN LATERAL unnest(hops) h(hash)
-           WHERE hash IS NOT NULL
-         ),
-         node_prefixes AS (
-           SELECT
-             UPPER(LEFT(n.node_id, 4)) AS hash,
-             COUNT(*)::int AS match_count,
-             MIN(n.node_id) AS node_id
-           FROM nodes n
-           JOIN distinct_hashes dh
-             ON LENGTH(dh.hash) = 4
-            AND dh.hash = UPPER(LEFT(n.node_id, 4))
-           WHERE n.lat IS NOT NULL
-             AND n.lon IS NOT NULL
-             AND (n.role IS NULL OR n.role = 2)
-           GROUP BY UPPER(LEFT(n.node_id, 4))
-           UNION ALL
-           SELECT
-             UPPER(LEFT(n.node_id, 6)) AS hash,
-             COUNT(*)::int AS match_count,
-             MIN(n.node_id) AS node_id
-           FROM nodes n
-           JOIN distinct_hashes dh
-             ON LENGTH(dh.hash) = 6
-            AND dh.hash = UPPER(LEFT(n.node_id, 6))
-           WHERE n.lat IS NOT NULL
-             AND n.lon IS NOT NULL
-             AND (n.role IS NULL OR n.role = 2)
-           GROUP BY UPPER(LEFT(n.node_id, 6))
-         ),
-         hop_eval AS (
-           SELECT
-             t.obs_id,
-             t.packet_hash,
-             t.network,
-             t.time,
-             h.ord,
-             h.hash,
-             COALESCE(np.match_count, 0) AS match_count,
-             np.node_id
-           FROM trimmed t
-           CROSS JOIN LATERAL unnest(t.hops) WITH ORDINALITY h(hash, ord)
-           LEFT JOIN node_prefixes np ON np.hash = h.hash
-         ),
-         fully_decoded AS (
-           SELECT
-             t.obs_id,
-             t.packet_hash,
-             t.network,
-             t.time,
-             CARDINALITY(t.hops)::int AS decoded_hops,
-             string_agg(UPPER(LEFT(he.node_id, 6)), ' -> ' ORDER BY he.ord) AS decoded_path
-           FROM trimmed t
-           JOIN hop_eval he ON he.obs_id = t.obs_id
-           GROUP BY t.obs_id, t.packet_hash, t.network, t.time, t.hops
-           HAVING CARDINALITY(t.hops) >= 2
-              AND COUNT(he.ord) = CARDINALITY(t.hops)
-              AND BOOL_AND(he.match_count = 1)
-              AND COUNT(DISTINCT he.node_id) FILTER (WHERE he.match_count = 1) = CARDINALITY(t.hops)
-         ),
-         decoded_hops AS (
-           SELECT he.*
-           FROM hop_eval he
-           JOIN fully_decoded fd ON fd.obs_id = he.obs_id
-         ),
-         latest_fully_decoded AS (
-           SELECT *
-           FROM fully_decoded
-           ORDER BY time DESC, packet_hash DESC, obs_id DESC
-           LIMIT 1
-         ),
-         longest_fully_decoded AS (
-           SELECT *
-           FROM fully_decoded
-           ORDER BY decoded_hops DESC, time DESC, packet_hash DESC, obs_id DESC
-           LIMIT 1
-         )
-         SELECT
-           (SELECT MAX(time)::text FROM multibyte) AS latest_multibyte_at,
-           (SELECT packet_hash FROM multibyte ORDER BY time DESC, packet_hash DESC LIMIT 1) AS latest_multibyte_hash,
-           (SELECT COUNT(*)::text FROM multibyte) AS multibyte_packets_24h,
-           (SELECT COUNT(*)::text FROM fully_decoded) AS fully_decoded_multibyte_24h,
-           (SELECT time::text FROM latest_fully_decoded) AS latest_fully_decoded_at,
-           (SELECT packet_hash FROM latest_fully_decoded) AS latest_fully_decoded_hash,
-           (SELECT decoded_hops::text FROM latest_fully_decoded) AS latest_fully_decoded_hops,
-           (SELECT decoded_path FROM latest_fully_decoded) AS latest_fully_decoded_path,
-           (
-             SELECT jsonb_agg(jsonb_build_object(
-               'ord', dh.ord,
-               'node_id', dh.node_id,
-               'name', n.name,
-               'lat', n.lat,
-               'lon', n.lon,
-               'last_seen', n.last_seen
-             ) ORDER BY dh.ord)
-             FROM latest_fully_decoded l
-             JOIN decoded_hops dh ON dh.obs_id = l.obs_id
-             LEFT JOIN nodes n ON n.node_id = dh.node_id
-           ) AS latest_fully_decoded_nodes,
-           (SELECT time::text FROM longest_fully_decoded) AS longest_fully_decoded_at,
-           (SELECT packet_hash FROM longest_fully_decoded) AS longest_fully_decoded_hash,
-           (SELECT decoded_hops::text FROM longest_fully_decoded) AS longest_fully_decoded_hops,
-           (SELECT decoded_path FROM longest_fully_decoded) AS longest_fully_decoded_path,
-           (
-             SELECT jsonb_agg(jsonb_build_object(
-               'ord', dh.ord,
-               'node_id', dh.node_id,
-               'name', n.name,
-               'lat', n.lat,
-               'lon', n.lon,
-               'last_seen', n.last_seen
-             ) ORDER BY dh.ord)
-             FROM longest_fully_decoded l
-             JOIN decoded_hops dh ON dh.obs_id = l.obs_id
-             LEFT JOIN nodes n ON n.node_id = dh.node_id
-           ) AS longest_fully_decoded_nodes`,
-        filters.params,
-      ),
+      fetchMultibyteFactSummary(),
       query<{
         avg_observers: string | null;
         max_observers: string | null;
@@ -1012,10 +976,14 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
         single_observer_packets: string;
       }>(
         `WITH per_packet AS (
-           SELECT packet_hash, COUNT(DISTINCT rx_node_id)::int AS observer_count
+           SELECT packet_hash,
+                  COUNT(DISTINCT rx_node_id)::int AS observer_count
            FROM (
-             SELECT p.packet_hash, p.rx_node_id
-           FROM packets p
+             SELECT p.packet_hash,
+                    COALESCE(rx_alias.canonical_node_id, UPPER(BTRIM(p.rx_node_id))) AS rx_node_id
+             FROM packets p
+             LEFT JOIN node_identity_aliases rx_alias
+               ON rx_alias.source_node_id = UPPER(BTRIM(p.rx_node_id))
            WHERE p.time > NOW() - INTERVAL '24 hours'
              AND p.packet_hash IS NOT NULL
              AND p.rx_node_id IS NOT NULL
@@ -1056,7 +1024,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
         `SELECT COALESCE(p.route_type::text, 'Unknown') AS route_type, COUNT(*)::text AS count
          FROM packets p
          WHERE p.time > NOW() - INTERVAL '24 hours'
-           ${filters.packetsAlias('p')}
+           ${totalFilters.packetsAlias('p')}
          GROUP BY p.route_type
          ORDER BY COUNT(*) DESC, route_type ASC`,
         filters.params,
@@ -1066,152 +1034,16 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
            NULLIF(TRIM(p.transport_codes), '') AS transport_code,
            NULLIF(TRIM(p.region_scope), '') AS region_scope,
            COUNT(*)::text AS count
-         FROM packets p
-         WHERE p.time > NOW() - INTERVAL '24 hours'
-           AND NULLIF(TRIM(p.transport_codes), '') IS NOT NULL
-           ${filters.packetsAlias('p')}
+                   FROM packets p
+                   WHERE p.time > NOW() - INTERVAL '24 hours'
+                     AND NULLIF(TRIM(p.transport_codes), '') IS NOT NULL
+           ${totalFilters.packetsAlias('p')}
          GROUP BY 1, 2
          ORDER BY COUNT(*) DESC, region_scope ASC, transport_code ASC
          LIMIT 12`,
         filters.params,
       )),
-      query<{
-        day: string;
-        multibyte_count: string;
-        fully_decoded_count: string;
-      }>(
-        `WITH buckets AS (
-           SELECT generate_series(
-             date_trunc('day', NOW() - INTERVAL '7 days'),
-             date_trunc('day', NOW()),
-             INTERVAL '1 day'
-           ) AS day
-         ),
-         multibyte AS (
-           SELECT
-             row_number() OVER () AS obs_id,
-             p.packet_hash,
-             p.network,
-             time_bucket('1 day', p.time) AS day,
-             p.rx_node_id,
-             p.hop_count,
-             p.path_hash_size_bytes,
-             p.path_hashes,
-             rx.role AS rx_role
-           FROM packets p
-           LEFT JOIN nodes rx ON rx.node_id = p.rx_node_id
-           WHERE p.time > NOW() - INTERVAL '7 days'
-             AND p.path_hash_size_bytes > 1
-             AND COALESCE(array_length(p.path_hashes, 1), 0) > 0
-             ${filters.packetsAlias('p')}
-         ),
-         multibyte_counts AS (
-           SELECT day, COUNT(*)::text AS count
-           FROM multibyte
-           GROUP BY day
-         ),
-         prepared AS (
-           SELECT m.*,
-             CASE
-               WHEN m.hop_count IS NOT NULL THEN (
-                 SELECT COALESCE(array_agg(UPPER(h) ORDER BY ord), ARRAY[]::text[])
-                 FROM unnest(m.path_hashes) WITH ORDINALITY u(h, ord)
-                 WHERE LENGTH(h) = m.path_hash_size_bytes * 2
-                   AND ord <= GREATEST(m.hop_count, 0)
-               )
-               ELSE (
-                 SELECT COALESCE(array_agg(UPPER(h) ORDER BY ord), ARRAY[]::text[])
-                 FROM unnest(m.path_hashes) WITH ORDINALITY u(h, ord)
-                 WHERE LENGTH(h) = m.path_hash_size_bytes * 2
-               )
-             END AS valid_hops
-           FROM multibyte m
-         ),
-         trimmed AS (
-           SELECT p.*,
-             CASE
-               WHEN p.rx_role = 2
-                 AND CARDINALITY(p.valid_hops) > 1
-                 AND UPPER(p.rx_node_id) LIKE p.valid_hops[CARDINALITY(p.valid_hops)] || '%'
-               THEN p.valid_hops[1:CARDINALITY(p.valid_hops) - 1]
-               ELSE p.valid_hops
-             END AS hops
-           FROM prepared p
-         ),
-         distinct_hashes AS (
-           -- Distinct on hash only. node_prefixes ignores network, so keeping
-           -- network here fans the JOIN out by the number of networks a hash
-           -- was seen on (ukmesh scope = ukmesh+northeast), multiplying
-           -- match_count and breaking BOOL_AND(match_count = 1) for any hop
-           -- whose hash appears on >1 network — which collapsed the decode rate.
-           SELECT DISTINCT hash
-           FROM trimmed
-           CROSS JOIN LATERAL unnest(hops) h(hash)
-           WHERE hash IS NOT NULL
-         ),
-         node_prefixes AS (
-           SELECT
-             UPPER(LEFT(n.node_id, 4)) AS hash,
-             COUNT(*)::int AS match_count,
-             MIN(n.node_id) AS node_id
-           FROM nodes n
-           JOIN distinct_hashes dh
-             ON LENGTH(dh.hash) = 4
-            AND dh.hash = UPPER(LEFT(n.node_id, 4))
-           WHERE n.lat IS NOT NULL
-             AND n.lon IS NOT NULL
-             AND (n.role IS NULL OR n.role = 2)
-           GROUP BY UPPER(LEFT(n.node_id, 4))
-           UNION ALL
-           SELECT
-             UPPER(LEFT(n.node_id, 6)) AS hash,
-             COUNT(*)::int AS match_count,
-             MIN(n.node_id) AS node_id
-           FROM nodes n
-           JOIN distinct_hashes dh
-             ON LENGTH(dh.hash) = 6
-            AND dh.hash = UPPER(LEFT(n.node_id, 6))
-           WHERE n.lat IS NOT NULL
-             AND n.lon IS NOT NULL
-             AND (n.role IS NULL OR n.role = 2)
-           GROUP BY UPPER(LEFT(n.node_id, 6))
-         ),
-         hop_eval AS (
-           SELECT
-             t.obs_id,
-             h.ord,
-             COALESCE(np.match_count, 0) AS match_count,
-             np.node_id
-           FROM trimmed t
-           CROSS JOIN LATERAL unnest(t.hops) WITH ORDINALITY h(hash, ord)
-           LEFT JOIN node_prefixes np ON np.hash = h.hash
-         ),
-         fully_decoded AS (
-           SELECT m.day, COUNT(*)::text AS count
-           FROM trimmed m
-           JOIN hop_eval he ON he.obs_id = m.obs_id
-           GROUP BY m.day, m.obs_id, m.hops
-           HAVING CARDINALITY(m.hops) >= 2
-              AND COUNT(he.ord) = CARDINALITY(m.hops)
-              AND BOOL_AND(he.match_count = 1)
-              AND COUNT(DISTINCT he.node_id) FILTER (WHERE he.match_count = 1) = CARDINALITY(m.hops)
-         ),
-         fully_decoded_counts AS (
-           SELECT day, COUNT(*)::text AS count
-           FROM fully_decoded
-           GROUP BY day
-         )
-         SELECT
-           b.day::text,
-           COALESCE(MAX(m.count), '0') AS multibyte_count,
-           COALESCE(MAX(f.count), '0') AS fully_decoded_count
-         FROM buckets b
-         LEFT JOIN multibyte_counts m ON m.day = b.day
-         LEFT JOIN fully_decoded_counts f ON f.day = b.day
-         GROUP BY b.day
-         ORDER BY b.day`,
-        filters.params,
-      ),
+      fetchMultibyteFactTrend(),
     ]);
 
     const response = {
@@ -1244,6 +1076,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
 
   async function fetchStatsSummary(network: string | undefined, observer: string | undefined) {
     const filters = networkFilters(network, observer);
+    const totalFilters = networkFilters(network, observer, { includePrivacy: false });
     const longestHopResult = () => {
       if (observer) {
         return query(`SELECT hop_count AS count, packet_hash AS hash
@@ -1274,48 +1107,63 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
 
     const [mqttCount, packetCount, staleCount, mapNodeCount, totalNodeCount, longestHopCount, nodesDayCount, internationalCount] = await Promise.all([
       network != null
-        ? query(`SELECT COUNT(DISTINCT rx_node_id) AS count
-                 FROM packets
-                 WHERE time > NOW() - INTERVAL '10 minutes'
-                   AND rx_node_id IS NOT NULL
-                   ${filters.packets}`, filters.params)
+        ? query(`SELECT COUNT(DISTINCT COALESCE(rx_alias.canonical_node_id, UPPER(BTRIM(p.rx_node_id)))) AS count
+                 FROM packets p
+                 LEFT JOIN node_identity_aliases rx_alias
+                   ON rx_alias.source_node_id = UPPER(BTRIM(p.rx_node_id))
+                 WHERE p.time > NOW() - INTERVAL '10 minutes'
+                   AND p.rx_node_id IS NOT NULL
+                   ${filters.packetsAlias('p')}`, filters.params)
         : query(`
           WITH test_active AS (
-            SELECT rx_node_id FROM packets WHERE rx_node_id IS NOT NULL AND rx_node_id <> ''
-              AND time > NOW() - INTERVAL '7 days'
-            GROUP BY rx_node_id HAVING MAX(time) = MAX(time) FILTER (WHERE network = 'test')
+           SELECT COALESCE(rx_alias.canonical_node_id, UPPER(BTRIM(p.rx_node_id))) AS rx_node_id
+             FROM packets p
+             LEFT JOIN node_identity_aliases rx_alias
+               ON rx_alias.source_node_id = UPPER(BTRIM(p.rx_node_id))
+            WHERE p.rx_node_id IS NOT NULL AND p.rx_node_id <> ''
+              AND p.time > NOW() - INTERVAL '7 days'
+            GROUP BY COALESCE(rx_alias.canonical_node_id, UPPER(BTRIM(p.rx_node_id)))
+            HAVING MAX(p.time) = MAX(p.time) FILTER (WHERE p.network = 'test')
           )
-          SELECT COUNT(DISTINCT rx_node_id) AS count
-          FROM packets
-          WHERE time > NOW() - INTERVAL '10 minutes'
-            AND rx_node_id IS NOT NULL
-            AND rx_node_id NOT IN (SELECT rx_node_id FROM test_active)
-            ${filters.packets}
+          SELECT COUNT(DISTINCT COALESCE(rx_alias.canonical_node_id, UPPER(BTRIM(p.rx_node_id)))) AS count
+          FROM packets p
+          LEFT JOIN node_identity_aliases rx_alias
+            ON rx_alias.source_node_id = UPPER(BTRIM(p.rx_node_id))
+          WHERE p.time > NOW() - INTERVAL '10 minutes'
+            AND p.rx_node_id IS NOT NULL
+            AND COALESCE(rx_alias.canonical_node_id, UPPER(BTRIM(p.rx_node_id)))
+                NOT IN (SELECT rx_node_id FROM test_active)
+            ${filters.packetsAlias('p')}
         `, filters.params),
-      query(`SELECT COUNT(*) AS count FROM packets WHERE time > NOW() - INTERVAL '24 hours' ${filters.packets}`, filters.params),
-      query(`SELECT COUNT(*) AS count FROM nodes
+      query(`SELECT COUNT(*) AS count FROM packets
+             WHERE time > NOW() - INTERVAL '24 hours'
+               AND rx_node_id IS NOT NULL AND rx_node_id <> ''
+               ${totalFilters.packets}`, totalFilters.params),
+      query(`SELECT COUNT(*) AS count FROM node_identity_nodes nodes
              WHERE ${publicMapBasePredicate('nodes')}
-               AND GREATEST(nodes.last_seen, nodes.last_path_evidence_at)
+               AND ${nodeEffectiveLastSeenSql('nodes')}
                      <= NOW() - INTERVAL '14 days'
-               AND GREATEST(nodes.last_seen, nodes.last_path_evidence_at)
+               AND ${nodeEffectiveLastSeenSql('nodes')}
                      > NOW() - INTERVAL '28 days'
                ${filters.nodes}`, filters.params),
-      query(`SELECT COUNT(*) AS count FROM nodes
+      query(`SELECT COUNT(*) AS count FROM node_identity_nodes nodes
              WHERE ${publicMapFreshPredicate('nodes')}
                ${filters.nodes}`, filters.params),
-      query(`SELECT COUNT(*) AS count FROM nodes
+      query(`SELECT COUNT(*) AS count FROM node_identity_nodes nodes
              WHERE (name IS NULL OR name NOT LIKE '%🚫%')
                AND (role IS NULL OR role != 4)
                ${filters.nodes}`, filters.params),
       longestHopResult(),
-      query(`SELECT COUNT(DISTINCT src_node_id) AS count
-             FROM packets
-             WHERE time > NOW() - INTERVAL '24 hours'
-               AND src_node_id IS NOT NULL
-               ${filters.packets}`, filters.params),
+      query(`SELECT COUNT(DISTINCT COALESCE(src_alias.canonical_node_id, UPPER(BTRIM(p.src_node_id)))) AS count
+             FROM packets p
+             LEFT JOIN node_identity_aliases src_alias
+               ON src_alias.source_node_id = UPPER(BTRIM(p.src_node_id))
+             WHERE p.time > NOW() - INTERVAL '24 hours'
+               AND p.src_node_id IS NOT NULL
+               ${filters.packetsAlias('p')}`, filters.params),
       query(`WITH intl AS (
                SELECT lat, lon, last_seen, advert_count
-               FROM nodes
+               FROM node_identity_nodes nodes
                WHERE lat IS NOT NULL AND lon IS NOT NULL
                  AND lat != 0 AND lon != 0
                  AND last_seen > NOW() - INTERVAL '7 days'
@@ -1362,24 +1210,28 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
     const filters = networkFilters(network);
     return query<{ node_id: string; name: string | null; rx_24h: string; tx_24h: string; last_tx: string | null; last_rx: string | null }>(
       `WITH rx AS (
-         SELECT p.rx_node_id AS node_id,
+         SELECT COALESCE(rx_alias.canonical_node_id, UPPER(BTRIM(p.rx_node_id))) AS node_id,
                 COUNT(p.packet_hash)::text AS rx_24h,
                 MAX(p.time)::text AS last_rx
          FROM packets p
+         LEFT JOIN node_identity_aliases rx_alias
+           ON rx_alias.source_node_id = UPPER(BTRIM(p.rx_node_id))
          WHERE p.time > NOW() - INTERVAL '24 hours'
            AND p.rx_node_id IS NOT NULL
            ${filters.packetsAlias('p')}
-         GROUP BY p.rx_node_id
+         GROUP BY COALESCE(rx_alias.canonical_node_id, UPPER(BTRIM(p.rx_node_id)))
        ),
        tx AS (
-         SELECT p.src_node_id AS node_id,
+         SELECT COALESCE(src_alias.canonical_node_id, UPPER(BTRIM(p.src_node_id))) AS node_id,
                 COUNT(p.packet_hash)::text AS tx_24h,
                 MAX(p.time)::text AS last_tx
          FROM packets p
+         LEFT JOIN node_identity_aliases src_alias
+           ON src_alias.source_node_id = UPPER(BTRIM(p.src_node_id))
          WHERE p.time > NOW() - INTERVAL '24 hours'
            AND p.src_node_id IS NOT NULL
            ${filters.packetsAlias('p')}
-         GROUP BY p.src_node_id
+         GROUP BY COALESCE(src_alias.canonical_node_id, UPPER(BTRIM(p.src_node_id)))
        )
        SELECT
          n.node_id,
@@ -1389,7 +1241,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
          tx.last_tx,
          rx.last_rx
        FROM rx
-       JOIN nodes n ON n.node_id = rx.node_id
+       JOIN node_identity_nodes n ON n.node_id = rx.node_id
        LEFT JOIN tx ON tx.node_id = rx.node_id
        WHERE n.name IS NULL OR n.name NOT LIKE '%🚫%'
        ORDER BY rx.rx_24h::bigint DESC`,

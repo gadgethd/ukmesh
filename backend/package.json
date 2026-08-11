@@ -10,6 +10,7 @@
     "spam:messages": "node dist/tools/recomputeSpamMessages.js",
     "db:migrate": "node dist/tools/migrate.js",
     "stats:backfill-rollups": "node dist/tools/backfillStatsRollups.js",
+    "stats:backfill-multibyte": "node dist/tools/backfillMultibytePathFacts.js",
     "stats:seed-chart-snapshot": "node dist/tools/seedStatsChartSnapshot.js",
     "db:lifecycle": "node dist/tools/dataLifecycle.js",
     "owner-auth:inventory": "node dist/tools/inventoryOwnerAuthorization.js",

@@ -3,7 +3,7 @@ import type maplibregl from 'maplibre-gl';
 export const DEFAULT_CENTER: [number, number] = [54.57, -1.23];
 export const DEFAULT_ZOOM = 11;
 // Weekly adverts remain comfortably fresh; retain a second two-week window so
-// stale nodes are still visible as stale instead of disappearing immediately.
+// stale nodes are still visible as stale before the presence filter hides them.
 export const NODE_STALE_AFTER_MS = 14 * 24 * 60 * 60 * 1000;
 export const NODE_HIDE_AFTER_MS = 28 * 24 * 60 * 60 * 1000;
 export const MAP_REFRESH_INTERVAL_MS = 250;
@@ -53,10 +53,8 @@ export const MAP_OVERLAY_COLORS = {
     companion: '#ff9f43',
     roomServer: '#a78bfa',
     sensor: '#34d399',
-    inferred: '#7dd3fc',
     replay: '#fbbf24',
     stale: '#94a3b8',
-    linkOnlyStale: '#94a3b8',
     clashRelay: '#22c55e',
     clashOffender: '#ef4444',
     nodeStroke: '#020617',
@@ -79,17 +77,14 @@ export const MAP_OVERLAY_COLORS = {
     plannedPending: '#94a3b8',
     dimmedOpacity: 0.72,
     staleOpacity: 0.7,
-    inferredOpacity: 0.85,
   },
   light: {
     repeater: '#006a8f',
     companion: '#9a3e00',
     roomServer: '#6d28d9',
     sensor: '#087f5b',
-    inferred: '#0369a1',
     replay: '#8a5d00',
     stale: '#4b5563',
-    linkOnlyStale: '#475569',
     clashRelay: '#087b38',
     clashOffender: '#b91c1c',
     nodeStroke: '#ffffff',
@@ -112,7 +107,6 @@ export const MAP_OVERLAY_COLORS = {
     plannedPending: '#475569',
     dimmedOpacity: 0.8,
     staleOpacity: 0.7,
-    inferredOpacity: 0.85,
   },
 } as const;
 

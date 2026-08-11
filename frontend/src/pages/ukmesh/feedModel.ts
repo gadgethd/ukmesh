@@ -38,7 +38,50 @@ export const TYPE_LABELS: Record<number, string> = {
 };
 
 export const MAX_PACKETS = 500;
-export type MessageScope = 'all' | 'public' | 'test';
+/** Decrypted/visible channel scopes — matches the [Channel] summary prefix (lowercased).
+ * Kept in sync with backend/src/mqtt/channelRegistry.ts VALIDATED_CHANNELS. */
+export const MESSAGE_SCOPE_CHANNELS = [
+  'public',
+  'test',
+  'bot',
+  'yorkshire',
+  'liverpool',
+  'london',
+  'nottingham',
+  'northeast',
+  'kent',
+  'wales',
+  'cornwall',
+  'devon',
+  'dorset',
+  'cumbria',
+  'yorks',
+  'leicester',
+  'dartford',
+  'uckfield',
+  'huddersfield',
+  'derbyshire',
+  'lincolnshire',
+  'surrey',
+  'midlands',
+  'hamradio',
+  'mesh',
+  'public2',
+  'test2',
+  'thenorf',
+  'g8py',
+  'echo',
+  'denhaag',
+  'dublin',
+  'glasgow',
+  'york',
+  'ireland',
+  'scilly',
+  'brentwood',
+  'marple',
+  'uk',
+] as const;
+export type MessageScope = 'all' | (typeof MESSAGE_SCOPE_CHANNELS)[number];
 export type PathTreeBranchNode = LazyPathNode & {
   treeKey: string;
   branchIndexes: Set<number>;
@@ -75,6 +118,18 @@ export function timeAgo(ts?: string | null): string {
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
   if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
   return `${Math.floor(seconds / 86400)}d ago`;
+}
+
+export function formatFeedTimestamp(ts: string): string {
+  const date = new Date(ts);
+  if (!Number.isFinite(date.getTime())) return '—';
+  return date.toLocaleString(undefined, {
+    day: '2-digit',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
 }
 
 export function packetSummary(packet: FeedPacket, nodeMap?: Map<string, MeshNode>): string {

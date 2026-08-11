@@ -33,6 +33,7 @@ type StatsServiceDeps = {
   repository: StatsRepository;
   getPublicVisibilityGeneration: () => Promise<number>;
   maskDecodedPathNodes: MaskDecodedPathNodesFn;
+  runHeavyWork?: <T>(workload: string, task: () => Promise<T>) => Promise<T>;
 };
 
 const CHANNEL_TRAFFIC_CACHE_TTL_MS = 60 * 60_000;
@@ -102,6 +103,7 @@ export function createStatsService(deps: StatsServiceDeps) {
     repository,
     getPublicVisibilityGeneration,
     maskDecodedPathNodes,
+    runHeavyWork = async (_workload, task) => task(),
   } = deps;
 
   const PAYLOAD_LABELS: Record<number, string> = {
@@ -165,16 +167,18 @@ export function createStatsService(deps: StatsServiceDeps) {
   let activeObserverWork = 0;
 
   const fmtHour = (ts: Date | string) => {
+    // Machine-readable ISO for the client: axis labels are formatted in the
+    // viewer's local timezone (never format display strings server-side).
     const d = new Date(ts);
-    return `${d.getHours().toString().padStart(2, '0')}:00`;
+    return Number.isFinite(d.getTime()) ? d.toISOString() : String(ts);
   };
   const fmtHourMinute = (ts: Date | string) => {
     const d = new Date(ts);
-    return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
+    return Number.isFinite(d.getTime()) ? d.toISOString() : String(ts);
   };
   const fmtDay = (ts: Date | string) => {
     const d = new Date(ts);
-    return d.toLocaleDateString('en-GB', { weekday: 'short', month: 'short', day: 'numeric' });
+    return Number.isFinite(d.getTime()) ? d.toISOString() : String(ts);
   };
   const decodeTransportCodes = (raw: unknown) => {
     const hex = String(raw ?? '').trim().toUpperCase();
@@ -270,7 +274,7 @@ export function createStatsService(deps: StatsServiceDeps) {
       ptResult, hdResult, pcResult, sumResult, orSummaryResult, orSeriesResult,
       pathHashWidthsResult, multibyteSummaryResult, observerDiversityResult, signalSummaryResult,
       routeTypesResult, transportCodesResult, pathDecodeTrendResult,
-    } = await repository.fetchChartsData(network, observer);
+    } = await repository.fetchChartsData(network, observer, visibilityGeneration);
 
     const peakRow = phResult.rows.reduce(
       (best: any, r: any) => (Number(r.count) > Number(best?.count ?? 0) ? r : best),
@@ -434,13 +438,12 @@ export function createStatsService(deps: StatsServiceDeps) {
     };
   }
 
-  function getUsableCachedCharts(key: string): { ts: number; data: unknown } | undefined {
+  function getCachedCharts(key: string): { ts: number; data: unknown } | undefined {
     const cached = chartsCache.get(key);
     if (!cached) return undefined;
     const ageMs = Date.now() - cached.ts;
     if (
       !Number.isFinite(cached.ts)
-      || ageMs > chartsSnapshotStaleTtlMs
       || ageMs < -CHART_SNAPSHOT_MAX_FUTURE_SKEW_MS
     ) {
       chartsCache.delete(key);
@@ -462,7 +465,6 @@ export function createStatsService(deps: StatsServiceDeps) {
         if (
           !row
           || row.scope_key !== scope
-          || Number(row.visibility_generation) !== visibilityGeneration
         ) {
           return undefined;
         }
@@ -471,7 +473,8 @@ export function createStatsService(deps: StatsServiceDeps) {
           scope,
           chartsSnapshotStaleTtlMs,
           Date.now(),
-          visibilityGeneration,
+          undefined,
+          { allowExpired: true },
         );
         const storedGeneratedAtMs = new Date(row.generated_at).getTime();
         if (
@@ -506,11 +509,13 @@ export function createStatsService(deps: StatsServiceDeps) {
     key: string,
     visibilityGeneration: number,
   ): Promise<unknown> {
-    const existing = chartsInflight.get(key);
+    const existing = chartsInflight.get(scope);
     if (existing) return existing;
     if (chartsInflight.size >= MAX_UNIQUE_STATS_INFLIGHT) {
       throw new StatsWorkOverloadedError();
     }
+    const refreshStartedAt = Date.now();
+    console.log(`[stats] chart refresh started scope=${scope} visibilityGeneration=${visibilityGeneration}`);
     let refresh!: Promise<unknown>;
     refresh = (async () => {
       if (initialStatsWarmup) {
@@ -518,10 +523,9 @@ export function createStatsService(deps: StatsServiceDeps) {
           // Chart refresh can still proceed if the lightweight warmup failed.
         });
       }
-      const data = await computeChartsData(
-        network,
-        undefined,
-        visibilityGeneration,
+      const data = await runHeavyWork(
+        `chart-refresh:${scope}`,
+        () => computeChartsData(network, undefined, visibilityGeneration),
       );
       const validated = validateChartSnapshotPayload(
         data,
@@ -552,11 +556,20 @@ export function createStatsService(deps: StatsServiceDeps) {
         throw new Error('chart snapshot privacy generation changed before publication');
       }
       chartsCache.set(key, { ts: validated.generatedAtMs, data: validated.payload });
+      console.log(
+        `[stats] chart refresh published scope=${scope} visibilityGeneration=${visibilityGeneration} durationMs=${Date.now() - refreshStartedAt}`,
+      );
       return validated.payload;
-    })().finally(() => {
-      if (chartsInflight.get(key) === refresh) chartsInflight.delete(key);
+    })().catch((error: unknown) => {
+      console.warn(
+        `[stats] chart refresh failed scope=${scope} visibilityGeneration=${visibilityGeneration} durationMs=${Date.now() - refreshStartedAt}:`,
+        error instanceof Error ? error.message : 'unknown error',
+      );
+      throw error;
+    }).finally(() => {
+      if (chartsInflight.get(scope) === refresh) chartsInflight.delete(scope);
     });
-    chartsInflight.set(key, refresh);
+    chartsInflight.set(scope, refresh);
     return refresh;
   }
 
@@ -578,18 +591,26 @@ export function createStatsService(deps: StatsServiceDeps) {
     const scope = `${network ?? 'ukmesh'}`;
     const visibilityGeneration = await getPublicVisibilityGeneration();
     const key = `${scope}:v${visibilityGeneration}`;
-    let cached = getUsableCachedCharts(key);
+    let cached = getCachedCharts(key);
     if (!cached) {
       // Durable complete snapshots are loaded before any analytical query. A
       // cold process can therefore answer immediately and refresh in the
       // background, while observer-scoped data never crosses this boundary.
       cached = await loadPersistedCharts(scope, key, visibilityGeneration);
     }
-    if (cached && Date.now() - cached.ts < chartsCacheTtlMs) {
-      // Region counts and series are part of the canonical 30-minute charts
-      // snapshot. Re-querying the seven-day packet window on every cache hit
-      // allowed concurrent page loads to pile up multi-minute scans. Only the
-      // time-dependent health score needs recalculating between snapshots.
+    const cachedVisibilityGeneration = Number(
+      (cached?.data as { snapshot?: { visibilityGeneration?: unknown } } | undefined)
+        ?.snapshot?.visibilityGeneration,
+    );
+    if (
+      cached
+      && cachedVisibilityGeneration === visibilityGeneration
+      && Date.now() - cached.ts <= chartsSnapshotStaleTtlMs
+    ) {
+      // A cold process must treat the persisted snapshot's durable max-age as
+      // authoritative. The shorter in-memory cadence is only how often we
+      // check freshness; it must not force a multi-minute rebuild after every
+      // restart. Only the time-dependent region health score changes here.
       const refreshed = refreshCachedRegionHealth(cached.data);
       chartsCache.set(key, { ts: cached.ts, data: refreshed });
       return refreshed;
@@ -608,8 +629,8 @@ export function createStatsService(deps: StatsServiceDeps) {
       throw error;
     }
     if (cached) {
-      // The canonical snapshot is already privacy-filtered. Serve it while the
-      // single coalesced refresh runs, and retain it if that refresh fails.
+      // Even an expired canonical snapshot is complete and privacy-filtered.
+      // Serve it while one refresh runs, and retain it if that refresh fails.
       void promise.catch(() => { /* retain the last successful value */ });
       return refreshCachedRegionHealth(cached.data);
     }
@@ -632,13 +653,20 @@ export function createStatsService(deps: StatsServiceDeps) {
       }
     };
 
-    // Populate the lightweight summary before starting the much larger chart
-    // snapshot. This keeps /api/stats responsive during a cold restart while
-    // the bounded chart queries continue in the background.
+    const coldRegenDeferMs = Math.max(
+      0,
+      Math.min(15 * 60_000, Number(process.env['CHARTS_COLD_REGEN_DEFER_MS'] ?? 60_000) || 0),
+    );
+
+    // Populate the lightweight summary first, then defer the persisted-snapshot
+    // check. Fresh durable rows never regenerate; missing or genuinely stale
+    // rows can regenerate after WS initial-state has had time to warm.
     initialStatsWarmup = new Promise<void>((resolve) => {
       setTimeout(resolve, 5_000);
     }).then(warmStats);
-    void initialStatsWarmup.finally(warmCharts);
+    void initialStatsWarmup.finally(() => {
+      setTimeout(() => void warmCharts(), coldRegenDeferMs).unref();
+    });
     setInterval(warmStats, statsCacheTtlMs);
     setInterval(warmCharts, chartsCacheTtlMs);
   }

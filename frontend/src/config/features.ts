@@ -13,10 +13,6 @@ export const RF_COVERAGE_ENABLED = envFlagEnabled(
   import.meta.env.VITE_RF_COVERAGE_ENABLED,
   false,
 );
-export const INFERRED_NODES_CAPABLE = envFlagEnabled(
-  import.meta.env.VITE_INFERRED_NODES_ENABLED,
-  true,
-);
 export const PACKET_ARCS_CAPABLE = envFlagEnabled(
   import.meta.env.VITE_PACKET_ARCS_ENABLED,
   true,

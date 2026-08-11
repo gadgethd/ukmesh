@@ -1,7 +1,6 @@
 import { useSyncExternalStore } from 'react';
 
 export type RuntimeFeatureSnapshot = {
-  inferredNodes: boolean;
   packetArcs: boolean;
   heatmap: boolean;
   privacyGeneration: number;
@@ -18,7 +17,6 @@ const MAX_REFRESH_SECONDS = 300;
 const REQUEST_TIMEOUT_MS = 3_000;
 
 export const FAIL_CLOSED_RUNTIME_FEATURES: RuntimeFeatureSnapshot = Object.freeze({
-  inferredNodes: false,
   packetArcs: false,
   heatmap: false,
   privacyGeneration: 0,
@@ -29,8 +27,7 @@ let snapshot: RuntimeFeatureSnapshot = FAIL_CLOSED_RUNTIME_FEATURES;
 const listeners = new Set<() => void>();
 
 function sameSnapshot(a: RuntimeFeatureSnapshot, b: RuntimeFeatureSnapshot): boolean {
-  return a.inferredNodes === b.inferredNodes
-    && a.packetArcs === b.packetArcs
+  return a.packetArcs === b.packetArcs
     && a.heatmap === b.heatmap
     && a.privacyGeneration === b.privacyGeneration
     && a.refreshAfterSeconds === b.refreshAfterSeconds;
@@ -50,7 +47,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export function parseRuntimeFeatureConfig(value: unknown): RuntimeFeatureSnapshot {
   if (!isRecord(value)
     || value['version'] !== 1
-    || typeof value['inferredNodes'] !== 'boolean'
     || typeof value['packetArcs'] !== 'boolean'
     || typeof value['heatmap'] !== 'boolean'
     || typeof value['privacyGeneration'] !== 'number'
@@ -65,7 +61,6 @@ export function parseRuntimeFeatureConfig(value: unknown): RuntimeFeatureSnapsho
 
   const parsed = value as RuntimeFeatureResponse;
   return {
-    inferredNodes: parsed.inferredNodes,
     packetArcs: parsed.packetArcs,
     heatmap: parsed.heatmap,
     privacyGeneration: parsed.privacyGeneration,

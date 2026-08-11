@@ -32,126 +32,6 @@ x-application-hardening: &application-hardening
     - /tmp:rw,noexec,nosuid,size=64m,mode=1777
 
 services:
-  timescaledb:
-    image: timescale/timescaledb@sha256:22e8a5ae7aef121d1537afe946dd7cc5deeeb63ab36ce19849d671bd3b663509
-    restart: always
-    logging: *json-log-limits
-    mem_limit: "4g"
-    memswap_limit: "4g"
-    stop_grace_period: 2m
-    # The image currently tunes timescaledb.max_background_workers to 16.
-    # Leave headroom for the Timescale launcher/schedulers, logical replication,
-    # and a policy worker so scheduled jobs do not fail their first launch.
-    command:
-      - postgres
-      - -c
-      - max_connections=300
-      - -c
-      - max_worker_processes=${POSTGRES_MAX_WORKER_PROCESSES:-24}
-      - -c
-      - max_parallel_workers_per_gather=0
-    ports:
-      - "${INFRA_BIND_ADDRESS:-127.0.0.1}:5432:5432"
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB:-meshcore}
-      POSTGRES_USER: ${POSTGRES_USER:-meshcore}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD required}
-    volumes:
-      - timescaledb_data:/var/lib/postgresql/data
-      - ./backend/src/db/schema/base.sql:/docker-entrypoint-initdb.d/001_schema.sql:ro
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-meshcore} -d ${POSTGRES_DB:-meshcore}"]
-      interval: 30s
-      timeout: 10s
-      retries: 10
-      start_period: 30s
-
-  mosquitto:
-    <<: *internal-hosts
-    image: eclipse-mosquitto@sha256:9cfdd46ad59f3e3e5f592f6baf57ab23e1ad00605509d0f5c1e9b179c5314d87
-    restart: always
-    logging: *json-log-limits
-    mem_limit: "128m"
-    memswap_limit: "128m"
-    ports:
-      - "${INFRA_BIND_ADDRESS:-127.0.0.1}:9001:9001"
-    healthcheck:
-      test: ["CMD-SHELL", "pgrep mosquitto >/dev/null && nc -z 127.0.0.1 9001"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 10s
-    volumes:
-      - ./mosquitto:/mosquitto/config
-      - mosquitto_data:/mosquitto/data
-      - mosquitto_log:/mosquitto/log
-
-  mosquitto-reloader:
-    <<: *internal-hosts
-    image: ${MOSQUITTO_RELOADER_IMAGE:-meshcore-analytics-mosquitto-reloader:local}
-    build:
-      context: .
-      dockerfile: Dockerfile.mosquitto-reloader
-      args:
-        SOURCE_REVISION: ${SOURCE_REVISION:-local}
-    restart: always
-    logging: *json-log-limits
-    mem_limit: "64m"
-    memswap_limit: "64m"
-    pid: "service:mosquitto"
-    # Match the broker UID inside the shared PID namespace so SIGHUP can be
-    # delivered without granting CAP_KILL or root.
-    user: "1883:1883"
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
-    read_only: true
-    environment:
-      OWNER_ACL_RELOAD_TOKEN: ${JWT_SECRET:?JWT_SECRET required}
-      MOSQUITTO_LOG_PATH: /mosquitto/log/mosquitto.log
-    volumes:
-      - mosquitto_log:/mosquitto/log
-    depends_on:
-      mosquitto:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=2).read()"]
-      interval: 30s
-      timeout: 5s
-      retries: 5
-
-  redis:
-    <<: *internal-hosts
-    image: redis@sha256:8b81dd37ff027bec4e516d41acfbe9fe2460070dc6d4a4570a2ac5b9d59df065
-    restart: always
-    logging: *json-log-limits
-    mem_limit: "512m"
-    memswap_limit: "512m"
-    command:
-      - redis-server
-      - --requirepass
-      - ${REDIS_PASSWORD:?REDIS_PASSWORD required}
-      - --maxmemory
-      - 448mb
-      - --maxmemory-policy
-      - noeviction
-      - --appendonly
-      - "yes"
-      - --appendfsync
-      - everysec
-    environment:
-      REDIS_PASSWORD: ${REDIS_PASSWORD}
-    ports:
-      - "${INFRA_BIND_ADDRESS:-127.0.0.1}:6379:6379"
-    volumes:
-      - redis_data:/data
-    healthcheck:
-      test: ["CMD-SHELL", "redis-cli -a $REDIS_PASSWORD --no-auth-warning ping"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-
   # Apply additive, versioned migrations once before the application starts.
   # Base schema creation remains in the database init hook for fresh volumes;
   # this service keeps existing volumes current while backend startup stays fast.
@@ -172,10 +52,6 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}
       DATABASE_STATEMENT_TIMEOUT_MS: 0
       NODE_ENV: production
-    depends_on:
-      timescaledb:
-        condition: service_healthy
-
   backend:
     <<: *internal-hosts
     image: ${BACKEND_IMAGE:-meshcore-analytics-backend:local}
@@ -190,9 +66,13 @@ services:
     memswap_limit: "1g"
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}
+      DATABASE_APPLICATION_NAME: meshcore-backend
+      OWNER_DATABASE_APPLICATION_NAME: meshcore-backend-owner-auth
+      OWNER_DATABASE_ADMIN_APPLICATION_NAME: meshcore-backend-owner-auth-admin
       MQTT_BROKER_URL: ${MQTT_BROKER_URL:-ws://mosquitto:9001}
       MQTT_USERNAME: ${MQTT_USERNAME:-backend}
       MQTT_PASSWORD: ${MQTT_PASSWORD}
+      MQTT_CLIENT_ID: ${MQTT_CLIENT_ID:-meshcore-analytics-ingest}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD required}
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET required}
@@ -219,17 +99,22 @@ services:
       PUBLIC_FEATURE_PACKET_ARCS_ENABLED: ${PUBLIC_FEATURE_PACKET_ARCS_ENABLED:-true}
       PUBLIC_FEATURE_HEATMAP_ENABLED: ${PUBLIC_FEATURE_HEATMAP_ENABLED:-false}
       PUBLIC_FEATURE_CONFIG_TTL_SECONDS: ${PUBLIC_FEATURE_CONFIG_TTL_SECONDS:-30}
-      DATABASE_STATEMENT_TIMEOUT_MS: 300000
-      DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-20}
+      # 15 min: the ukmesh chart snapshot regen runs multibyte analytics that
+      # exceed 5 min on the 2vCPU VPS (was 300000; raised 2026-08-08)
+      DATABASE_STATEMENT_TIMEOUT_MS: 900000
+      DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-16}
       STATS_DB_QUERY_CONCURRENCY: ${STATS_DB_QUERY_CONCURRENCY:-2}
       STATS_AGGREGATE_READS_ENABLED: ${STATS_AGGREGATE_READS_ENABLED:-false}
       STATS_AGGREGATE_SHADOW_ENABLED: ${STATS_AGGREGATE_SHADOW_ENABLED:-false}
+      WARMUP_NETWORKS: ${WARMUP_NETWORKS:-ukmesh}
       DATABASE_SKIP_SCHEMA_INIT: "true"
       WS_INITIAL_STATE_ENABLED: "1"
+      WS_INITIAL_STATE_DB_TIMEOUT_MS: ${WS_INITIAL_STATE_DB_TIMEOUT_MS:-30000}
       WS_INITIAL_STATE_MAX_BYTES: ${WS_INITIAL_STATE_MAX_BYTES:-16777216}
       MQTT_MAX_PAYLOAD_BYTES: ${MQTT_MAX_PAYLOAD_BYTES:-65536}
       MQTT_INGEST_CONCURRENCY: ${MQTT_INGEST_CONCURRENCY:-8}
-      MQTT_INGEST_QUEUE_MAX: ${MQTT_INGEST_QUEUE_MAX:-1000}
+      # The 30s lifecycle deadline reserves 25s for MQTT disconnect and queue drain.
+      MQTT_INGEST_QUEUE_MAX: ${MQTT_INGEST_QUEUE_MAX:-20000}
       PATH_RESOLVE_WORKERS: ${PATH_RESOLVE_WORKERS:-2}
       PATH_RESOLVE_BACKGROUND_QUEUE_MAX: ${PATH_RESOLVE_BACKGROUND_QUEUE_MAX:-128}
       PATH_RESOLVE_INTERACTIVE_QUEUE_MAX: ${PATH_RESOLVE_INTERACTIVE_QUEUE_MAX:-32}
@@ -280,18 +165,11 @@ services:
       DATA_LIFECYCLE_RESTORE_RECEIPT_SIGNATURE_PATH: /backup-receipts/latest.json.sig
       DATA_LIFECYCLE_RECEIPT_VERIFY_KEY_PATH: /backup-receipts/verify.pem
       DATA_LIFECYCLE_RECEIPT_MAX_AGE_DAYS: ${DATA_LIFECYCLE_RECEIPT_MAX_AGE_DAYS:-7}
+      SYNTHETIC_SUCCESS_TTL_MS: ${SYNTHETIC_SUCCESS_TTL_MS:-960000}
       NODE_ENV: production
     depends_on:
-      timescaledb:
-        condition: service_healthy
       db-migrate:
         condition: service_completed_successfully
-      redis:
-        condition: service_healthy
-      mosquitto:
-        condition: service_healthy
-      mosquitto-reloader:
-        condition: service_healthy
     ports:
       - "127.0.0.1:3000:3000"
     volumes:
@@ -333,6 +211,7 @@ services:
     command: ["node", "dist/workers/path-learning.js"]
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}
+      DATABASE_APPLICATION_NAME: meshcore-path-learning
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD required}
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET required}
@@ -343,62 +222,11 @@ services:
       PATH_LEARNING_MAX_LINKS: ${PATH_LEARNING_MAX_LINKS:-200000}
       PATH_LEARNING_MAX_AGGREGATE_KEYS: ${PATH_LEARNING_MAX_AGGREGATE_KEYS:-1000000}
       PATH_LEARNING_RUN_DEADLINE_MS: ${PATH_LEARNING_RUN_DEADLINE_MS:-2700000}
+      PATH_LEARNING_INTERVAL_MS: ${PATH_LEARNING_INTERVAL_MS:-3600000}
       NODE_ENV: production
     depends_on:
-      timescaledb:
-        condition: service_healthy
       db-migrate:
         condition: service_completed_successfully
-      redis:
-        condition: service_healthy
-
-  path-history-worker:
-    <<: [*internal-hosts, *application-hardening]
-    image: ${BACKEND_IMAGE:-meshcore-analytics-backend:local}
-    build:
-      context: .
-      dockerfile: Dockerfile.backend
-      args:
-        SOURCE_REVISION: ${SOURCE_REVISION:-local}
-    restart: always
-    logging: *json-log-limits
-    # A full 12k-packet history rebuild exceeds Node's cgroup-derived ~256 MB
-    # heap default while holding topology context and concurrent trellises.
-    mem_limit: "768m"
-    memswap_limit: "768m"
-    command: ["node", "dist/workers/path-history.js"]
-    environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}
-      DATABASE_APPLICATION_NAME: meshcore-path-history
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
-      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD required}
-      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET required}
-      DATABASE_STATEMENT_TIMEOUT_MS: 300000
-      DATABASE_CONNECTION_TIMEOUT_MS: ${PATH_HISTORY_DATABASE_CONNECTION_TIMEOUT_MS:-30000}
-      DATABASE_SKIP_SCHEMA_INIT: "true"
-      PATH_HISTORY_RUN_DEADLINE_MS: ${PATH_HISTORY_RUN_DEADLINE_MS:-7200000}
-      PATH_HISTORY_CONCURRENCY: ${PATH_HISTORY_CONCURRENCY:-2}
-      PATH_HISTORY_RETRY_INTERVAL_MS: ${PATH_HISTORY_RETRY_INTERVAL_MS:-60000}
-      PATH_HISTORY_SEGMENT_COUNTER_CAPACITY: ${PATH_HISTORY_SEGMENT_COUNTER_CAPACITY:-65536}
-      PATH_HISTORY_MAX_OLD_SPACE_MB: ${PATH_HISTORY_MAX_OLD_SPACE_MB:-384}
-      NODE_OPTIONS: --max-old-space-size=${PATH_HISTORY_MAX_OLD_SPACE_MB:-384}
-      PATH_MULTI_HISTORY_WINDOW_HOURS: ${PATH_MULTI_HISTORY_WINDOW_HOURS:-168}
-      PATH_MULTI_MAX_SCAN_ROWS: ${PATH_MULTI_MAX_SCAN_ROWS:-2048}
-      PATH_MULTI_MAX_OBSERVERS: ${PATH_MULTI_MAX_OBSERVERS:-128}
-      NODE_ENV: production
-    depends_on:
-      timescaledb:
-        condition: service_healthy
-      db-migrate:
-        condition: service_completed_successfully
-      redis:
-        condition: service_healthy
-
-    deploy:
-      resources:
-        limits:
-          cpus: "1.0"
-          memory: 768M
 
   health-worker:
     <<: [*internal-hosts, *application-hardening]
@@ -415,6 +243,7 @@ services:
     command: ["node", "dist/workers/health.js"]
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}
+      DATABASE_APPLICATION_NAME: meshcore-health-worker
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD required}
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET required}
@@ -423,16 +252,12 @@ services:
       STALE_MQTT_OBSERVER_CLEANUP_DAYS: ${STALE_MQTT_OBSERVER_CLEANUP_DAYS:-30}
       STALE_MQTT_OBSERVER_CLEANUP_INTERVAL_MS: ${STALE_MQTT_OBSERVER_CLEANUP_INTERVAL_MS:-21600000}
       HEALTH_VOLUME_PATHS: database=/health-volumes/database=${HEALTH_DATABASE_BUDGET_BYTES:-322122547200},redis=/health-volumes/redis=${HEALTH_REDIS_BUDGET_BYTES:-4294967296},terrain=/health-volumes/terrain=${HEALTH_TERRAIN_BUDGET_BYTES:-53687091200},logs=/health-volumes/logs=${HEALTH_LOG_BUDGET_BYTES:-21474836480}
-      DATA_LIFECYCLE_RETENTION_ENABLED: ${DATA_LIFECYCLE_RETENTION_ENABLED:-false}
-      DATA_LIFECYCLE_RETENTION_TARGETS: ${DATA_LIFECYCLE_RETENTION_TARGETS:-}
+      DATA_LIFECYCLE_RETENTION_ENABLED: "true"
+      DATA_LIFECYCLE_RETENTION_TARGETS: worker_health_snapshots,operational_check_results
       NODE_ENV: production
     depends_on:
-      timescaledb:
-        condition: service_healthy
       db-migrate:
         condition: service_completed_successfully
-      redis:
-        condition: service_healthy
     volumes:
       - timescaledb_data:/health-volumes/database:ro
       - redis_data:/health-volumes/redis:ro
@@ -454,11 +279,14 @@ services:
     command: ["node", "dist/workers/synthetic-monitor.js"]
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}
+      DATABASE_APPLICATION_NAME: meshcore-synthetic-monitor
       DATABASE_SKIP_SCHEMA_INIT: "true"
       SYNTHETIC_BASE_URL: http://backend:3000
       SYNTHETIC_WS_URL: ws://backend:3000
       SYNTHETIC_INTERVAL_MS: ${SYNTHETIC_INTERVAL_MS:-60000}
+      SYNTHETIC_FULL_INTERVAL_MS: ${SYNTHETIC_FULL_INTERVAL_MS:-720000}
       SYNTHETIC_TIMEOUT_MS: ${SYNTHETIC_TIMEOUT_MS:-10000}
+      SYNTHETIC_INITIAL_STATE_TIMEOUT_MS: ${SYNTHETIC_INITIAL_STATE_TIMEOUT_MS:-35000}
       SYNTHETIC_FAILURE_THRESHOLD: ${SYNTHETIC_FAILURE_THRESHOLD:-3}
       ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-http://alert-receiver:8080/alerts}
       NODE_ENV: production
@@ -492,12 +320,8 @@ services:
       DATABASE_SKIP_SCHEMA_INIT: "true"
       NODE_ENV: production
     depends_on:
-      timescaledb:
-        condition: service_healthy
       db-migrate:
         condition: service_completed_successfully
-      redis:
-        condition: service_healthy
       backend:
         condition: service_healthy
       link-worker:
@@ -518,6 +342,7 @@ services:
     cpus: 2.0
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}
+      DATABASE_APPLICATION_NAME: meshcore-link-worker
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD required}
       RADIO_BOT_URL: ${LINK_WORKER_RADIO_BOT_URL:-}
@@ -543,12 +368,8 @@ services:
       retries: 12
       start_period: 20s
     depends_on:
-      timescaledb:
-        condition: service_healthy
       db-migrate:
         condition: service_completed_successfully
-      redis:
-        condition: service_healthy
 
   # Canonical whole-region RF calculator. HopReach owns propagation and
   # raster output; UK Mesh supplies only the internal data adapter, versioned
@@ -577,35 +398,6 @@ services:
     depends_on:
       backend:
         condition: service_healthy
-
-#   ml-path-learner:
-#     build:
-#       context: ./ml-path-learner
-#       dockerfile: Dockerfile
-#     restart: always
-#     logging: *json-log-limits
-#     cpus: 2.0
-#     mem_limit: '2g'
-#     environment:
-#       DATABASE_URL: postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}
-#       GOLD_EXTRACTION_INTERVAL_MINS: '15'
-#       TRAINING_INTERVAL_MINS: '30'
-#       MIN_GOLD_PATHS: '100'
-#       CONFIDENCE_THRESHOLD: '0.85'
-#       MAX_TRAINING_GOLD_ROWS: ${MAX_TRAINING_GOLD_ROWS:-100000}
-#       ML_LEASE_SECONDS: ${ML_LEASE_SECONDS:-90}
-#       ML_HEARTBEAT_SECONDS: ${ML_HEARTBEAT_SECONDS:-20}
-#       ML_RUN_DEADLINE_SECONDS: ${ML_RUN_DEADLINE_SECONDS:-1200}
-#       ML_MODEL_VERSION: ${ML_MODEL_VERSION:-lightgbm-path-v1}
-#       ML_DATA_VERSION: ${ML_DATA_VERSION:-gold-multibyte-v2}
-#       ML_RETAIN_VARIANT_RESULT_GENERATIONS: ${ML_RETAIN_VARIANT_RESULT_GENERATIONS:-96}
-#       ML_RETAIN_MODEL_ARTIFACT_GENERATIONS: ${ML_RETAIN_MODEL_ARTIFACT_GENERATIONS:-96}
-#       ML_CLEANUP_GENERATION_BATCH_SIZE: ${ML_CLEANUP_GENERATION_BATCH_SIZE:-24}
-#     depends_on:
-#       timescaledb:
-#         condition: service_healthy
-#       db-migrate:
-#         condition: service_completed_successfully
 
   app-ukmesh:
     <<: [*internal-hosts, *application-hardening]
@@ -754,8 +546,6 @@ services:
     depends_on:
       mesh-health-check-data-init:
         condition: service_completed_successfully
-      mosquitto:
-        condition: service_healthy
     ports:
       - "127.0.0.1:3090:3090"
     volumes:
@@ -1089,6 +879,7 @@ services:
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=16m
     environment:
+      DATABASE_APPLICATION_NAME: meshcore-alert-receiver
       ALERT_FORWARD_URL: ${ALERT_FORWARD_URL:-}
       ALERT_RECEIVER_PATH: /var/lib/meshcore-alerts/alerts.jsonl
       NODE_ENV: production
@@ -1151,10 +942,6 @@ services:
       interval: 30s
       timeout: 5s
       retries: 5
-    depends_on:
-      timescaledb:
-        condition: service_healthy
-
   redis-exporter:
     <<: *internal-hosts
     image: oliver006/redis_exporter@sha256:4c8000eb3525e0f6ed1327499861e272fcce358a9e7a87dd9db74c44607e6d8e
@@ -1176,10 +963,6 @@ services:
       interval: 30s
       timeout: 5s
       retries: 5
-    depends_on:
-      redis:
-        condition: service_healthy
-
   node-exporter:
     <<: *internal-hosts
     image: prom/node-exporter@sha256:d00a542e409ee618a4edc67da14dd48c5da66726bbd5537ab2af9c1dfc442c8a

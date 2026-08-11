@@ -15,14 +15,36 @@ test('classifies public and configured test MQTT topic prefixes without mixing s
     parseMqttTopic(`meshcore-test/test/${observer.toUpperCase()}/status`, prefixes, blocked),
     { iata: 'TEST', observerKey: observer.toUpperCase(), suffix: 'status', network: 'test' },
   );
+  assert.deepEqual(
+    parseMqttTopic(`meshcore/lhr/${observer}/neighbors`, prefixes, blocked),
+    { iata: 'LHR', observerKey: observer.toUpperCase(), suffix: 'neighbors', network: 'ukmesh' },
+  );
+  assert.deepEqual(
+    parseMqttTopic(`meshcore/lhr/${observer}/neighbours`, prefixes, blocked),
+    { iata: 'LHR', observerKey: observer.toUpperCase(), suffix: 'neighbours', network: 'ukmesh' },
+  );
   assert.equal(
     parseMqttTopic(`lab/abc/${observer}/packets`, prefixes, blocked)?.network,
     'test',
   );
 });
 
-test('rejects malformed, blocked, and unsupported MQTT topics before persistence', () => {
-  assert.equal(parseMqttTopic(`meshcore/TST/${observer}/packets`, prefixes, blocked), null);
+test('stores test-marker IATAs under the isolated test network scope', () => {
+  assert.deepEqual(
+    parseMqttTopic(`meshcore/TST/${observer}/packets`, prefixes, blocked),
+    { iata: 'TST', observerKey: observer.toUpperCase(), suffix: 'packets', network: 'test' },
+  );
+  assert.deepEqual(
+    parseMqttTopic(`meshcore-test/TST/${observer.toUpperCase()}/status`, prefixes, blocked),
+    { iata: 'TST', observerKey: observer.toUpperCase(), suffix: 'status', network: 'test' },
+  );
+  assert.deepEqual(
+    parseMqttTopic(`meshcore/TST/${observer}/neighbors`, prefixes, blocked),
+    { iata: 'TST', observerKey: observer.toUpperCase(), suffix: 'neighbors', network: 'test' },
+  );
+});
+
+test('rejects malformed and unsupported MQTT topics before persistence', () => {
   assert.equal(parseMqttTopic('meshcore/lhr/short/packets', prefixes, blocked), null);
   assert.equal(parseMqttTopic(`meshcore/lhr/${observer}/other`, prefixes, blocked), null);
   assert.equal(parseMqttTopic(`unknown/lhr/${observer}/packets`, prefixes, blocked), null);

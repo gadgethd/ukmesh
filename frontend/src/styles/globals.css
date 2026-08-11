@@ -55,8 +55,6 @@
   --offline:        #546e7a;
   --offline-text:   #93a7b2;
   --danger:         #ff1744;
-  --inferred:       #6ddc7a;
-
   /* Device-type colours */
   --companion:      #ff9800;   /* ChatNode (role 1) — orange */
   --room-server:    #ce93d8;   /* RoomServer (role 3) — lavender */
@@ -515,7 +513,11 @@ button .loading-indicator--inline,
   .topbar__shortcut-btn { margin-left: auto; }
 
   /* ── App shell: add rows for mobile controls + map ──────────────────── */
-  .app-shell { grid-template-rows: 48px auto 1fr; }
+  .app-shell {
+    grid-template-rows: 48px auto minmax(0, 1fr);
+    min-height: 0;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
 
   /* ── Desktop filter panel: hide on mobile (replaced by mobile-controls) */
 
@@ -631,15 +633,16 @@ button .loading-indicator--inline,
 .repeater-search-box {
   position: relative;
   max-width: 600px;
-  margin-bottom: 32px;
+  margin-bottom: 28px;
 }
 
 .repeater-search-box__input {
   width: 100%;
   padding: 14px 18px;
   font-size: 15px;
+  font-family: var(--font-body);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   background: var(--bg-panel);
   color: var(--text-primary);
   box-sizing: border-box;
@@ -647,6 +650,7 @@ button .loading-indicator--inline,
 
 .repeater-search-box__input:focus {
   border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-dim);
 }
 
 .repeater-search-box__results {
@@ -654,7 +658,7 @@ button .loading-indicator--inline,
   background: var(--bg-panel);
   border: 1px solid var(--border);
   border-top: none;
-  border-radius: 0 0 8px 8px;
+  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
   max-height: min(320px, 46dvh);
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -681,13 +685,14 @@ button .loading-indicator--inline,
 .repeater-search-box__result {
   display: block;
   width: 100%;
-  padding: 12px 18px;
+  padding: 11px 14px;
   text-align: left;
-  background: none;
+  background: var(--bg-panel);
   border: none;
   border-bottom: 1px solid var(--border);
   cursor: pointer;
   box-sizing: border-box;
+  font-family: var(--font-body);
 }
 
 .repeater-search-box__result:last-child {
@@ -697,6 +702,7 @@ button .loading-indicator--inline,
 .repeater-search-box__result:hover,
 .repeater-search-box__result[data-focused] {
   background: var(--bg-hover);
+  border-bottom-color: var(--border-bright);
   color: var(--accent);
 }
 
@@ -718,8 +724,8 @@ button .loading-indicator--inline,
 /* Repeater Details Card */
 .repeater-details-card {
   background: var(--bg-panel);
-  border: 1px solid var(--border);
-  border-radius: 12px;
+  border: 1px solid var(--border-bright);
+  border-radius: var(--radius-lg);
   overflow: hidden;
 }
 
@@ -728,14 +734,14 @@ button .loading-indicator--inline,
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding: 20px 24px;
+  padding: 18px 20px;
   border-bottom: 1px solid var(--border);
   flex-wrap: wrap;
 }
 
 .repeater-details-card__header h2 {
   margin: 0;
-  font-size: 20px;
+  font-size: 19px;
   font-weight: 700;
   color: var(--text-primary);
   letter-spacing: -0.02em;
@@ -746,21 +752,24 @@ button .loading-indicator--inline,
   border-radius: 20px;
   font-size: 12px;
   font-weight: 600;
+  font-family: var(--font-mono);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
   white-space: nowrap;
 }
 
 .repeater-details-card__status--online {
-  background: rgba(34, 197, 94, 0.15);
-  color: #22c55e;
+  background: rgba(0, 230, 118, 0.12);
+  color: var(--online);
 }
 
 .repeater-details-card__status--offline {
-  background: rgba(239, 68, 68, 0.15);
-  color: #ef4444;
+  background: rgba(255, 23, 68, 0.12);
+  color: var(--danger);
 }
 
 .repeater-details-card__section {
-  padding: 24px;
+  padding: 20px;
   border-bottom: 1px solid var(--border);
 }
 
@@ -777,7 +786,7 @@ button .loading-indicator--inline,
 .repeater-details-card__grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-  gap: 20px;
+  gap: 18px;
 }
 
 .repeater-details-card__field {
@@ -833,7 +842,7 @@ button .loading-indicator--inline,
 .repeater-details-card__neighbour {
   padding: 14px 16px;
   background: var(--bg-secondary);
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   border: 1px solid var(--border);
 }
 
@@ -863,8 +872,8 @@ button .loading-indicator--inline,
 
 .repeater-details-card__table-wrap {
   overflow-x: auto;
-  margin: 0 -24px;
-  padding: 0 24px;
+  margin: 0 -20px;
+  padding: 0 20px;
 }
 
 .repeater-details-card__table {
@@ -908,6 +917,7 @@ button .loading-indicator--inline,
   color: var(--text-secondary);
   background: var(--bg-secondary);
   border-top: 1px solid var(--border);
+  font-family: var(--font-mono);
 }
 
 /* Empty state */
@@ -942,7 +952,7 @@ button .loading-indicator--inline,
   color: var(--text-secondary);
   font-size: 14px;
   background: var(--bg-secondary);
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
 }
 
 /* Copy button */
@@ -956,14 +966,14 @@ button .loading-indicator--inline,
   color: var(--accent);
   background: transparent;
   border: 1px solid var(--accent);
-  border-radius: 6px;
+  border-radius: var(--radius);
   cursor: pointer;
   transition: all 0.2s ease;
 }
 
 .repeater-details-card__copy-btn:hover {
   background: var(--accent);
-  color: white;
+  color: var(--bg-base);
 }
 
 .repeater-details-card__copy-icon {

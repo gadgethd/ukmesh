@@ -5,12 +5,12 @@ export type PublicRouteComponent =
   | 'companion'
   | 'install'
   | 'docs'
-  | 'health'
   | 'owner'
   | 'open-source'
   | 'stats'
   | 'spam'
-  | 'topology';
+  | 'topology'
+  | 'contact';
 
 export type PublicRouteDefinition = {
   path: string;
@@ -27,6 +27,13 @@ export const PUBLIC_ROUTES: readonly PublicRouteDefinition[] = [
     component: 'home',
     title: 'UK Mesh Network — MeshCore LoRa Coverage & Live Map',
     description: 'Real-time analytics for the UK MeshCore LoRa mesh network. Live packet feed, repeater coverage maps, network statistics, and install guides.',
+    sitemap: true,
+  },
+  {
+    path: '/contact',
+    component: 'contact',
+    title: 'Contact — UK Mesh Network',
+    description: 'Get in touch with the UK Mesh operator about the site, the network, or adding your observer station.',
     sitemap: true,
   },
   {
@@ -93,13 +100,6 @@ export const PUBLIC_ROUTES: readonly PublicRouteDefinition[] = [
     sitemap: true,
   },
   {
-    path: '/health',
-    component: 'health',
-    title: 'Platform Status — UK Mesh Network',
-    description: 'Public platform health, packet-ingest freshness, synthetic journeys, and background-worker status for UKMesh analytics.',
-    sitemap: true,
-  },
-  {
     path: '/login',
     component: 'owner',
     title: 'Repeater Owner Portal — UK Mesh Network',
@@ -109,7 +109,6 @@ export const PUBLIC_ROUTES: readonly PublicRouteDefinition[] = [
   { path: '/regions', redirectTo: '/', sitemap: false },
   { path: '/about', redirectTo: '/', sitemap: false },
   { path: '/mqtt', redirectTo: '/install', sitemap: false },
-  { path: '/status', redirectTo: '/health', sitemap: false },
 ] as const;
 
 export const PUBLIC_CONTENT_ROUTES = PUBLIC_ROUTES.filter(

@@ -6,11 +6,11 @@ import type { Filters } from '../components/FilterPanel/FilterPanel.js';
 import {
   aggregateCanonicalPath,
   buildRegularPacketPaths,
-  canonicalPathCoordinates,
   packetObserverIds,
   type AggregatedPredictionState,
   type CanonicalPathNode,
   type MultiObserverBetaResponse,
+  type ResolvedPathRoute,
 } from './packetPathOverlayUtils.js';
 import { useOverlayStore } from '../store/overlayStore.js';
 import { PATH_LINE_FADE_MS, PATH_LINE_TTL_MS } from '../components/Map/pathArcStyle.js';
@@ -32,7 +32,9 @@ type UsePacketPathOverlayParams = {
 type UsePacketPathOverlayResult = {
   packetPaths: [number, number][][];
   betaPacketPaths: [number, number][][];
+  betaPathPacketHash: string | null;
   betaCanonicalPath: CanonicalPathNode[];
+  betaPathRoutes: ResolvedPathRoute[];
   betaObserverIds: string[];
   betaPathConfidence: number | null;
   betaPermutationCount: number | null;
@@ -45,14 +47,54 @@ type UsePacketPathOverlayResult = {
   handlePacketPin: (packet: AggregatedPacket) => void;
 };
 
+type SlowModePendingResponse = { status: 'pending'; remainingMs: number };
+
+function isSlowPending(
+  result: MultiObserverBetaResponse | SlowModePendingResponse,
+): result is SlowModePendingResponse {
+  const maybe = result as SlowModePendingResponse;
+  return maybe.status === 'pending' && typeof maybe.remainingMs === 'number';
+}
+
 async function fetchServerBetaMulti(
   packetHash: string,
   network?: string,
-): Promise<MultiObserverBetaResponse | null> {
-  const endpoint = withScopeParams(`/api/path-beta/resolve-multi?hash=${encodeURIComponent(packetHash)}`, { network });
+  mode?: 'slow',
+): Promise<MultiObserverBetaResponse | SlowModePendingResponse | null> {
+  const modeQuery = mode === 'slow' ? '&mode=slow' : '';
+  const endpoint = withScopeParams(
+    `/api/path-beta/resolve-multi?hash=${encodeURIComponent(packetHash)}${modeQuery}`,
+    { network },
+  );
   const response = await fetch(uncachedEndpoint(endpoint), { cache: 'no-store' });
+  if (response.status === 202) {
+    return response.json() as Promise<SlowModePendingResponse>;
+  }
   if (!response.ok) return null;
   return response.json() as Promise<MultiObserverBetaResponse>;
+}
+
+/**
+ * Slow-mode fetch: asks the backend to wait out the packet's propagation
+ * window, retrying while the backend reports `pending`. Bounded so the
+ * pinned-packet view cannot hang forever on a stalled resolver.
+ */
+async function fetchServerBetaMultiSlow(
+  packetHash: string,
+  network?: string,
+): Promise<MultiObserverBetaResponse | null> {
+  const maxAttempts = 3;
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const result = await fetchServerBetaMulti(packetHash, network, 'slow');
+    if (result === null) return null;
+    if (isSlowPending(result)) {
+      const waitMs = Math.min(Math.max(result.remainingMs + 500, 1_000), 30_000);
+      await new Promise((resolve) => window.setTimeout(resolve, waitMs));
+      continue;
+    }
+    return result;
+  }
+  return null;
 }
 
 function cacheKey(packetHash: string, observerIds: string[], network?: string): string {
@@ -87,7 +129,9 @@ export function usePacketPathOverlay({
   const nodes = useNodeMap();
   const [packetPaths, setPacketPaths] = useState<[number, number][][]>([]);
   const [betaPacketPaths, setBetaPacketPaths] = useState<[number, number][][]>([]);
+  const [betaPathPacketHash, setBetaPathPacketHash] = useState<string | null>(null);
   const [betaCanonicalPath, setBetaCanonicalPath] = useState<CanonicalPathNode[]>([]);
+  const [betaPathRoutes, setBetaPathRoutes] = useState<ResolvedPathRoute[]>([]);
   const [betaObserverIds, setBetaObserverIds] = useState<string[]>([]);
   const [betaPathConfidence, setBetaPathConfidence] = useState<number | null>(null);
   // The canonical DTO intentionally does not expose alternative permutations
@@ -128,7 +172,9 @@ export function usePacketPathOverlay({
 
   const clearBetaState = useCallback(() => {
     setBetaPacketPaths([]);
+    setBetaPathPacketHash(null);
     setBetaCanonicalPath([]);
+    setBetaPathRoutes([]);
     setBetaObserverIds([]);
     setBetaPathConfidence(null);
     setBetaPermutationCount(null);
@@ -164,8 +210,12 @@ export function usePacketPathOverlay({
   }, []);
 
   const applyAggregatedPrediction = useCallback((aggregated: AggregatedPredictionState) => {
-    setBetaPacketPaths(canonicalPathCoordinates(aggregated.canonicalPath));
+    setBetaPacketPaths(aggregated.routes.map((route) => (
+      route.nodes.map((node) => [node.lat, node.lon] as [number, number])
+    )));
+    setBetaPathPacketHash(aggregated.packetHash);
     setBetaCanonicalPath(aggregated.canonicalPath);
+    setBetaPathRoutes(aggregated.routes);
     setBetaObserverIds(aggregated.observerIds);
     setBetaPathConfidence(aggregated.confidence);
     setBetaPermutationCount(null);
@@ -221,27 +271,39 @@ export function usePacketPathOverlay({
     observerIds: string[],
     networkName?: string,
     minFreshTs = 0,
+    mode?: 'slow',
   ): Promise<MultiObserverBetaResponse | null> => {
     prunePredictionCache();
     const key = cacheKey(packetHash, observerIds, networkName);
-    const cached = multiPredictionCacheRef.current.get(key);
-    if (cached && cached.ts >= minFreshTs && Date.now() - cached.ts <= PREDICTION_CACHE_TTL_MS) {
-      return Promise.resolve(cached.response);
+    const inflightKey = mode === 'slow' ? `${key}|slow` : key;
+    // Slow-mode requests must not be served from the eager cache or deduped
+    // onto an in-flight eager fetch — the whole point is the post-window set.
+    if (mode !== 'slow') {
+      const cached = multiPredictionCacheRef.current.get(key);
+      if (cached && cached.ts >= minFreshTs && Date.now() - cached.ts <= PREDICTION_CACHE_TTL_MS) {
+        return Promise.resolve(cached.response);
+      }
     }
-
-    const inflight = multiInflightRef.current.get(key);
+    const inflight = multiInflightRef.current.get(inflightKey);
     if (inflight) return inflight;
 
-    const promise = fetchServerBetaMulti(packetHash, networkName)
+    const fetchFn: () => Promise<MultiObserverBetaResponse | null> = mode === 'slow'
+      ? () => fetchServerBetaMultiSlow(packetHash, networkName)
+      : async () => {
+          const result = await fetchServerBetaMulti(packetHash, networkName);
+          // fast path never receives a 202; treat it as unresolved anyway
+          return result === null || isSlowPending(result) ? null : result;
+        };
+    const promise = fetchFn()
       .then((response) => {
         if (response) multiPredictionCacheRef.current.set(key, { response, ts: Date.now() });
         return response;
       })
       .catch(() => null)
       .finally(() => {
-        multiInflightRef.current.delete(key);
+        multiInflightRef.current.delete(inflightKey);
       });
-    multiInflightRef.current.set(key, promise);
+    multiInflightRef.current.set(inflightKey, promise);
     return promise;
   }, [prunePredictionCache]);
 
@@ -280,7 +342,9 @@ export function usePacketPathOverlay({
 
     if (filters.betaPaths && latest?.packetHash && latest.path?.length && observerIds.length > 0) {
       const reqSeq = ++activeReqSeqRef.current;
-      void resolveMultiPrediction(latest.packetHash, observerIds, network, latest.ts)
+      // The feed renders its local path immediately, then upgrades once the
+      // bounded slow-mode request sees the complete propagation window.
+      void resolveMultiPrediction(latest.packetHash, observerIds, network, latest.ts, 'slow')
         .then((response) => {
           if (reqSeq !== activeReqSeqRef.current) return;
           applyServerPrediction(latest.packetHash, response);
@@ -373,6 +437,8 @@ export function usePacketPathOverlay({
 
     if (filters.betaPaths && pinnedPacket.packetHash && pinnedPacket.path?.length && observerIds.length > 0) {
       const reqSeq = ++activeReqSeqRef.current;
+      // Pinned/detail views use the fast path; the local path renders while
+      // the server prediction is fetched.
       void resolveMultiPrediction(pinnedPacket.packetHash, observerIds, network, pinnedPacket.ts)
         .then((response) => {
           if (reqSeq !== activeReqSeqRef.current) return;
@@ -408,7 +474,9 @@ export function usePacketPathOverlay({
   return {
     packetPaths,
     betaPacketPaths,
+    betaPathPacketHash,
     betaCanonicalPath,
+    betaPathRoutes,
     betaObserverIds,
     betaPathConfidence,
     betaPermutationCount,

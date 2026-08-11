@@ -91,7 +91,6 @@ A real-time analytics platform for [MeshCore](https://meshcore.io) networks. It 
   - `hopreach` (canonical progressive coverage compute)
   - `link-worker` (link/path-loss processing)
   - `path-learning-worker` (hourly model rebuild)
-  - `path-history-worker` (historical path resolution backfill)
   - `health-worker` (health snapshots)
   - `link-backfill-worker` (one-shot historical backfill)
 - Path resolver runs a concurrent worker pool (`resolveWorker`, `resolvePool`, `resolveCache`) to handle high packet volumes without blocking the main ingest loop.
@@ -313,7 +312,6 @@ MeshCore Devices
 
  Backend Workers (Node.js)
      ├─ path-learning-worker (hourly prior rebuild)
-     ├─ path-history-worker (historical path resolution)
      ├─ health-worker (minute snapshots)
      └─ link-backfill-worker (one-shot historical backfill)
 
@@ -333,7 +331,6 @@ MeshCore Devices
 | `redis` | Digest-pinned Redis image from Compose | WebSocket fan-out pub/sub and bounded job queues |
 | `backend` | Built from `Dockerfile.backend` | MQTT ingest, decoding, API, WebSocket |
 | `path-learning-worker` | Built from `Dockerfile.backend` | Hourly path-learning model rebuilds |
-| `path-history-worker` | Built from `Dockerfile.backend` | Historical path resolution backfill |
 | `health-worker` | Built from `Dockerfile.backend` | Periodic health snapshot capture |
 | `link-backfill-worker` | Built from `Dockerfile.backend` | One-shot historical link backfill |
 | `synthetic-monitor` | Built from `Dockerfile.backend` | Independent HTTP/WebSocket journey checks and alert delivery |

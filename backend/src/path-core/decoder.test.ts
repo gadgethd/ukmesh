@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   buildObserverBounds,
   decodePath,
+  evaluatePhysicalHop,
   indexCandidatesByHash,
   type CandidateNode,
   type PathDecoderEvidence,
@@ -132,4 +133,20 @@ test('builds observer bounds and filters unpositioned or remote candidates', () 
   ], bounds);
 
   assert.deepEqual(indexed.get('AA')?.map((candidate) => candidate.nodeId), ['AA-near']);
+});
+
+test('missing elevation never causes a curvature rejection', () => {
+  const evaluated = evaluatePhysicalHop(
+    { lat: 51, lon: 0, elevationM: null },
+    { lat: 51.72, lon: 0, elevationM: 0 },
+    {
+      maxHopKm: 100,
+      earthEffectiveRadiusM: 6_371_000 / (1 - 0.25),
+      behindEarthToleranceKm: 25,
+      impossibleLinkPathlossDb: 165,
+    },
+  );
+  assert.ok(evaluated.distanceKm > 75);
+  assert.equal(evaluated.horizonMarginKm, null);
+  assert.equal(evaluated.possible, true);
 });
