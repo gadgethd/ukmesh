@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type maplibregl from 'maplibre-gl';
+import type * as maplibregl from 'maplibre-gl';
 import { AnimatedPathOverlay, type AerialPath, type AerialPathNode } from '../../components/Map/AnimatedPathOverlay.js';
 import { LoadingIndicator } from '../../components/LoadingIndicator.js';
 import type { MeshNode } from '../../hooks/useNodes.js';
@@ -189,7 +189,7 @@ export const PathMap: React.FC<{
       import('maplibre-gl/dist/maplibre-gl.css'),
     ]).then(([maplibreModule]) => {
       if (cancelled || !containerRef.current) return;
-      const maplibre = maplibreModule.default;
+      const maplibre = maplibreModule;
       maplibreRef.current = maplibre;
       nextMap = new maplibre.Map({
         container: containerRef.current,

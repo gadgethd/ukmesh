@@ -1,5 +1,5 @@
 import React, { lazy, memo, Suspense, useEffect } from 'react';
-import type maplibregl from 'maplibre-gl';
+import type * as maplibregl from 'maplibre-gl';
 import { AnimatedPathOverlay, type AerialPath } from '../Map/AnimatedPathOverlay.js';
 
 export const C_CYAN = '#00c4ff';
@@ -281,7 +281,7 @@ export const DecodedPathMapView: React.FC<{ nodes: DecodedPathNode[] }> = ({ nod
       import('maplibre-gl/dist/maplibre-gl.css'),
     ]).then(([maplibreModule]) => {
       if (cancelled || !containerRef.current) return;
-      const maplibre = maplibreModule.default;
+      const maplibre = maplibreModule;
       map = new maplibre.Map({
         container: containerRef.current,
         style: {

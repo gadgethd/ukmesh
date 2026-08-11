@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type maplibregl from 'maplibre-gl';
+import type * as maplibregl from 'maplibre-gl';
 import { installMapSourcesAndLayers } from './mapSourceLayers.js';
 import { MAP_OVERLAY_COLORS } from './mapConfig.js';
 

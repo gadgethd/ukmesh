@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import './styles/map-app.css';
-import type maplibregl from 'maplibre-gl';
+import type * as maplibregl from 'maplibre-gl';
 import { MapLibreMap } from './components/Map/MapLibreMap.js';
 import { LiveOverlayController } from './components/Map/LiveOverlayController.js';
 import { FilterPanel, type Filters } from './components/FilterPanel/FilterPanel.js';

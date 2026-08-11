@@ -4,6 +4,12 @@ import viteSeoPlugin from './src/plugins/vite-seo.js';
 
 export default defineConfig({
   plugins: [react(), viteSeoPlugin()],
+  optimizeDeps: {
+    // maplibre-gl v6 loads its worker via new URL(..., import.meta.url) —
+    // vite's dep pre-bundling rewrites that to node_modules/.vite/deps/maplibre-gl-worker.mjs
+    // which does not exist, killing the worker (and custom raster protocols) in dev.
+    exclude: ['maplibre-gl'],
+  },
   server: {
     proxy: {
       '/api': 'http://localhost:3000',
@@ -16,11 +22,12 @@ export default defineConfig({
         entryFileNames: 'assets/[name]-[hash].js',
         chunkFileNames: 'assets/[name]-[hash].js',
         assetFileNames: 'assets/[name]-[hash].[ext]',
-        manualChunks: {
+        manualChunks(id) {
           // Keep Vite's dynamic-import helper out of the large Deck chunk so
           // public-site routes do not preload Deck just to load a lazy route.
-          'vite-preload': ['\0vite/preload-helper.js'],
-          'react': ['react', 'react-dom'],
+          if (id === '\0vite/preload-helper.js') return 'vite-preload';
+          if (/\/node_modules\/(?:react|react-dom)\//.test(id)) return 'react';
+          return undefined;
         },
       },
     },
