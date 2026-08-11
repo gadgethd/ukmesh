@@ -3,7 +3,7 @@ FROM ghcr.io/osgeo/gdal:ubuntu-full-3.13.2@sha256:de280a240ef4309e6fb64b943e0472
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      python3-pip python3-venv \
+      python3-pip python3-venv python3-shapely \
     && rm -rf /var/lib/apt/lists/*
 
 # Venv with system-site-packages so GDAL Python bindings + numpy are inherited
