@@ -125,8 +125,8 @@ test('public site exposes its primary journeys', async ({ page }) => {
   await page.getByRole('link', { name: 'Topology' }).click();
   await expect(page).toHaveURL(/\/topology$/);
   await expect(page.getByRole('heading', { name: 'Repeater topology' })).toBeVisible();
-  await expect(page.getByLabel('Geographic repeater topology graph')).toBeVisible();
-  await expect(page.getByRole('group', { name: '2 positioned repeaters and 1 links' })).toBeVisible();
+  await expect(page.getByLabel('Geographic repeater topology map')).toBeVisible();
+  await expect(page.getByText('2 mapped repeaters · 2 observed relationships')).toBeVisible();
 
   await expect(page.getByRole('link', { name: 'Health', exact: true })).toHaveCount(0);
 });
