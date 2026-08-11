@@ -493,7 +493,7 @@ async function queueSnapshot(descriptor: QueueDescriptor): Promise<Record<string
     .hmget(descriptor.counters, 'count', 'bytes', 'dead_count', 'dead_bytes')
     .llen(descriptor.ready)
     .zcard(descriptor.leases)
-    .zrange(descriptor.enqueued, 0, 0, 'WITHSCORES')
+    .zrange(descriptor.enqueued, 0, '0', 'WITHSCORES')
     .zrevrange(descriptor.dead, 0, 24, 'WITHSCORES')
     .exists(descriptor.heartbeat);
   if (descriptor.deferred) pipeline.llen(descriptor.deferred);
