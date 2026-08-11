@@ -1,9 +1,11 @@
 import mqtt from 'mqtt';
 import { createHash, randomBytes } from 'node:crypto';
+import { Redis } from 'ioredis';
 import { BoundedTtlMap } from '../cache/boundedTtlMap.js';
 import { getOwnerNodeIdsForUsername } from '../db/ownerAuth.js';
 import { query } from '../db/index.js';
 import { getNodeIdsForUserInAcl, readAclFile } from '../mqtt/aclManager.js';
+import { getRedisConnectionOptions, getRedisUrl } from '../platform/config/redis.js';
 import { reconcileOwnerAuthorization } from './ownerAclReconciler.js';
 import { groupOwnerNodes, type OwnerDashboardRow } from './ownerDashboard.js';
 import { parseOwnerGrantConfig } from './ownerGrantConfig.js';
@@ -119,11 +121,60 @@ export function verifyMqttCredentials(mqttUsername: string, mqttPassword: string
     if (ok) {
       authCache.set(mqttUsername, { credentialHash: hash, ts: Date.now() });
     } else if (cached && cached.credentialHash === hash) {
-      // Same credential that previously worked now rejected (revoked) — drop it.
+      // Same credential that previously worked now rejected (revoked) — drop it
+      // AND bump the credential generation so every live owner session minted
+      // under the old password is invalidated immediately.
       authCache.delete(mqttUsername);
+      void bumpOwnerCredentialGeneration(mqttUsername);
     }
     return ok;
   });
+}
+
+// ---- Credential generation (BUG-010) ----
+// Owner sessions are stateless signed cookies with a 30-day TTL. To make
+// password revocation effective immediately, every session records the
+// credential generation that minted it. When the broker rejects a previously
+// valid password (the only signal the backend has that a password changed),
+// the generation is bumped in Redis and all older sessions stop validating.
+const OWNER_CRED_GEN_KEY = (username: string) => `owner:credential-gen:${username}`;
+const OWNER_CRED_GEN_TTL_MS = 90 * 24 * 60 * 60 * 1000;
+
+let credGenRedis: Redis | null = null;
+
+function getCredGenRedis(): Redis {
+  if (!credGenRedis) {
+    credGenRedis = new Redis(getRedisUrl(), getRedisConnectionOptions());
+    credGenRedis.on('error', (e: Error) => console.error('[redis/owner-credgen] error', e.message));
+  }
+  return credGenRedis;
+}
+
+/** Current credential generation for a username (0 when never minted). */
+export async function getOwnerCredentialGeneration(mqttUsername: string): Promise<number> {
+  try {
+    const value = await getCredGenRedis().get(OWNER_CRED_GEN_KEY(mqttUsername));
+    const parsed = value === null ? NaN : Number(value);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+  } catch (error) {
+    console.error('[owner-credgen] read failed, treating as 0', error instanceof Error ? error.message : error);
+    return 0;
+  }
+}
+
+/**
+ * Bump the credential generation, invalidating every session minted under an
+ * older password. Failures are logged but non-fatal: the next login still
+ * succeeds and re-records the current generation.
+ */
+export async function bumpOwnerCredentialGeneration(mqttUsername: string): Promise<void> {
+  try {
+    const redis = getCredGenRedis();
+    await redis.incr(OWNER_CRED_GEN_KEY(mqttUsername));
+    await redis.pexpire(OWNER_CRED_GEN_KEY(mqttUsername), OWNER_CRED_GEN_TTL_MS);
+  } catch (error) {
+    console.error('[owner-credgen] bump failed', error instanceof Error ? error.message : error);
+  }
 }
 
 function verifyMqttCredentialsViaBroker(mqttUsername: string, mqttPassword: string): Promise<boolean> {
