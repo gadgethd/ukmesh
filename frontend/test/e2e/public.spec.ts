@@ -49,7 +49,7 @@ test('phone layouts give primary content the full available width', async ({ pag
   await expect(page.locator('.uk-feed-right')).toBeHidden();
 });
 
-test('tablet topology uses the full-width graph workspace', async ({ page }) => {
+test('tablet topology uses the full-width map workspace', async ({ page }) => {
   await page.setViewportSize({ width: 768, height: 667 });
   await page.route('**/api/topology**', (route) => route.fulfill({
     json: {
@@ -66,7 +66,9 @@ test('tablet topology uses the full-width graph workspace', async ({ page }) => 
   await page.goto('/topology');
   const workspace = page.locator('.topology-page__workspace');
   expect(await workspace.evaluate((element) => getComputedStyle(element).gridTemplateColumns.split(' ').length)).toBe(1);
-  expect((await page.locator('.topology-page__graph').boundingBox())?.width ?? 0).toBeGreaterThan(700);
+  const map = page.getByLabel('Geographic repeater topology map');
+  await expect(map).toBeVisible();
+  expect((await map.boundingBox())?.width ?? 0).toBeGreaterThan(700);
 });
 
 test('public site exposes its primary journeys', async ({ page }) => {

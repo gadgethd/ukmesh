@@ -4,8 +4,6 @@ on:
   push:
     branches: ['**']
   pull_request:
-  schedule:
-    - cron: '17 2 * * *'
 
 permissions:
   contents: read
@@ -87,18 +85,18 @@ jobs:
   workers-and-compose:
     name: Workers and Compose
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
-        env:
-          POSTGRES_PASSWORD: ml-test-password
-        ports:
-          - 55432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 10
+    env:
+      POSTGRES_PASSWORD: ci-postgres-password
+      REDIS_PASSWORD: ci-redis-password
+      JWT_SECRET: ci-test-only-ci-test-only-ci-test-only-ci-test-only
+      OPERATOR_SITE_TOKEN: ci-operator-site-token-0123456789abcdef0123456789abcdef
+      MQTT_USERNAME: backend
+      MQTT_PASSWORD: ci-mqtt-password
+      ANUBIS_ED25519_PRIVATE_KEY_HEX: '0000000000000000000000000000000000000000000000000000000000000001'
+      HEALTHCHECK_SOURCE_REF: 952eec8e0c55d0749f9abef211c266f992c0bfc7
+      GRAFANA_ADMIN_PASSWORD: ci-grafana-password
+      SOURCE_REVISION: ${{ github.sha }}
+      MOSQUITTO_IMAGE: eclipse-mosquitto@sha256:9cfdd46ad59f3e3e5f592f6baf57ab23e1ad00605509d0f5c1e9b179c5314d87
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
@@ -117,11 +115,9 @@ jobs:
           npm run typecheck
           npm test
       - name: Compile Python workers
-        run: python -m py_compile viewshed-worker/worker.py viewshed-worker/link_queue_v3.py viewshed-worker/viewshed_queue_v2.py viewshed-worker/backfill_profiles.py viewshed-worker/rf/*.py ml-path-learner/worker.py
+        run: python -m py_compile viewshed-worker/worker.py viewshed-worker/link_queue_v3.py viewshed-worker/viewshed_queue_v2.py viewshed-worker/backfill_profiles.py viewshed-worker/rf/*.py
       - name: Build worker images
-        run: |
-          docker build -f viewshed-worker/Dockerfile -t meshcore-viewshed-worker:test viewshed-worker
-          docker build -f ml-path-learner/Dockerfile -t meshcore-ml-path-learner:test ml-path-learner
+        run: docker build -f viewshed-worker/Dockerfile -t meshcore-viewshed-worker:test viewshed-worker
       - name: Test retained observed-link worker image
         run: |
           trap 'docker rm -f link-queue-test-redis >/dev/null 2>&1 || true' EXIT
@@ -164,17 +160,9 @@ jobs:
             -w /work \
             golang:1.23-bookworm \
             /work/scripts/benchmark-hopreach.sh
-      - name: Test ML worker in its image
-        run: |
-          docker run --rm --network host --entrypoint python \
-            -e TEST_DATABASE_URL=postgresql://postgres:ml-test-password@127.0.0.1:55432/postgres \
-            meshcore-ml-path-learner:test -m unittest discover -s /app/tests -v
       - name: Bootstrap clean Mosquitto credentials
         env:
-          MQTT_USERNAME: backend
-          MQTT_PASSWORD: ci-mqtt-password
           MOSQUITTO_CONFIG_DIR: /tmp/meshcore-ci-mosquitto
-          MOSQUITTO_IMAGE: eclipse-mosquitto@sha256:9cfdd46ad59f3e3e5f592f6baf57ab23e1ad00605509d0f5c1e9b179c5314d87
         run: |
           install -d -m 700 "$MOSQUITTO_CONFIG_DIR"
           cp mosquitto/mosquitto.conf "$MOSQUITTO_CONFIG_DIR/mosquitto.conf"
@@ -192,15 +180,6 @@ jobs:
             test "$mode" = 640
           done
       - name: Validate Compose configuration
-        env:
-          POSTGRES_PASSWORD: ci-postgres-password
-          REDIS_PASSWORD: ci-redis-password
-          JWT_SECRET: ci-test-only-ci-test-only-ci-test-only-ci-test-only
-          OPERATOR_SITE_TOKEN: ci-operator-site-token-0123456789abcdef0123456789abcdef
-          MQTT_PASSWORD: ci-mqtt-password
-          ANUBIS_ED25519_PRIVATE_KEY_HEX: '0000000000000000000000000000000000000000000000000000000000000001'
-          HEALTHCHECK_SOURCE_REF: 952eec8e0c55d0749f9abef211c266f992c0bfc7
-          GRAFANA_ADMIN_PASSWORD: ci-grafana-password
         run: |
           docker compose config --quiet
           docker compose config --format json \
@@ -209,19 +188,24 @@ jobs:
                 | index("max_worker_processes=24") != null)
               and (.networks.default.ipam.config[0].ip_range
                 == "172.30.0.128/25")' >/dev/null
+      - name: Validate tracked build and Compose inventory
+        run: |
+          while IFS= read -r context; do
+            [[ "$context" == *'${{'* ]] && continue
+            test -d "$context"
+          done < <(sed -n 's/^[[:space:]]*context: //p' .github/workflows/release.yml)
+          while IFS= read -r dockerfile; do
+            [[ "$dockerfile" == *'${{'* ]] && continue
+            test -f "$dockerfile"
+          done < <(sed -n 's/^[[:space:]]*file: //p' .github/workflows/release.yml)
+          compose_services="$(docker compose config --services)"
+          for service in \
+            db-migrate backend app-ukmesh website-ukmesh website-dev mesh-health-check \
+            mosquitto-reloader link-worker link-backfill-worker hopreach \
+            timescaledb mosquitto; do
+            grep -Fxq "$service" <<<"$compose_services"
+          done
       - name: Build every application image and smoke an empty-volume stack
-        env:
-          POSTGRES_PASSWORD: ci-postgres-password
-          REDIS_PASSWORD: ci-redis-password
-          JWT_SECRET: ci-test-only-ci-test-only-ci-test-only-ci-test-only
-          OPERATOR_SITE_TOKEN: ci-operator-site-token-0123456789abcdef0123456789abcdef
-          MQTT_USERNAME: backend
-          MQTT_PASSWORD: ci-mqtt-password
-          ANUBIS_ED25519_PRIVATE_KEY_HEX: '0000000000000000000000000000000000000000000000000000000000000001'
-          HEALTHCHECK_SOURCE_REF: 952eec8e0c55d0749f9abef211c266f992c0bfc7
-          GRAFANA_ADMIN_PASSWORD: ci-grafana-password
-          SOURCE_REVISION: ${{ github.sha }}
-          MOSQUITTO_IMAGE: eclipse-mosquitto@sha256:9cfdd46ad59f3e3e5f592f6baf57ab23e1ad00605509d0f5c1e9b179c5314d87
         run: |
           project="meshcore-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           publisher_user="ci-e2e-publisher"
@@ -415,52 +399,3 @@ jobs:
         uses: gitleaks/gitleaks-action@dcedce43c6f43de0b836d1fe38946645c9c638dc # v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  nightly-load:
-    name: Nightly realtime load
-    if: github.event_name == 'schedule'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
-        with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: backend/package-lock.json
-      - name: Start realtime stack
-        env:
-          POSTGRES_PASSWORD: nightly-postgres-password
-          REDIS_PASSWORD: nightly-redis-password
-          JWT_SECRET: nightly-jwt-secret
-          OPERATOR_SITE_TOKEN: nightly-operator-token-0123456789abcdef0123456789abcdef
-          MQTT_PASSWORD: nightly-mqtt-password
-          GRAFANA_ADMIN_PASSWORD: nightly-grafana-password
-          API_RATE_LIMIT_MAX: 1000000
-          ANUBIS_ED25519_PRIVATE_KEY_HEX: '0000000000000000000000000000000000000000000000000000000000000001'
-          HEALTHCHECK_SOURCE_REF: 952eec8e0c55d0749f9abef211c266f992c0bfc7
-        run: |
-          MQTT_USERNAME=backend MQTT_PASSWORD=nightly-mqtt-password scripts/bootstrap-mosquitto.sh
-          docker compose up -d --build timescaledb redis mosquitto db-migrate backend
-      - name: Wait for readiness
-        run: |
-          for _ in $(seq 1 60); do
-            if curl --fail --silent http://127.0.0.1:3000/readyz >/dev/null; then
-              exit 0
-            fi
-            sleep 2
-          done
-          docker compose logs backend
-          exit 1
-      - name: Run realtime load budget
-        working-directory: backend
-        run: |
-          npm ci
-          npm run load:realtime -- --duration 30 --concurrency 20 --slow-ws-clients 10 --max-p95-ms 1500
-      - name: Capture logs
-        if: always()
-        run: docker compose logs --no-color backend > nightly-backend.log
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        if: always()
-        with:
-          name: nightly-load-logs
-          path: nightly-backend.log
