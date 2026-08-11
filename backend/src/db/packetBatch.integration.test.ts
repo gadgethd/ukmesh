@@ -227,6 +227,11 @@ test('packet batch atomically coalesces observer, sighting, and stats writes', {
   const now = Date.now();
   let statementCount = 0;
   configurePacketBatch(async (text, params) => {
+    if (text.includes('jsonb_agg(jsonb_build_object')) {
+      // Private-prefix cache refresh is bookkeeping, not part of the atomic
+      // batch statement (same convention as packetBatch.test.ts).
+      return pool.query(text, params);
+    }
     statementCount += 1;
     return pool.query(text, params);
   });
