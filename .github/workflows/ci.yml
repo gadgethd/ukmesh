@@ -198,7 +198,7 @@ jobs:
             [[ "$dockerfile" == *'$''{{'* ]] && continue
             test -f "$dockerfile"
           done < <(sed -n 's/^[[:space:]]*file: //p' .github/workflows/release.yml)
-          compose_services="$(docker compose -f docker-compose.yml -f docker-compose.ci.yml config --services)"
+          compose_services="$(docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile dev config --services)"
           for service in \
             db-migrate backend app-ukmesh website-ukmesh website-dev mesh-health-check \
             mosquitto-reloader link-worker link-backfill-worker hopreach \
