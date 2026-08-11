@@ -4,6 +4,12 @@ import viteSeoPlugin from './src/plugins/vite-seo.js';
 
 export default defineConfig({
   plugins: [react(), viteSeoPlugin()],
+  optimizeDeps: {
+    // maplibre-gl v6 loads its worker via new URL(..., import.meta.url) —
+    // vite's dep pre-bundling rewrites that to node_modules/.vite/deps/maplibre-gl-worker.mjs
+    // which does not exist, killing the worker (and custom raster protocols) in dev.
+    exclude: ['maplibre-gl'],
+  },
   server: {
     proxy: {
       '/api': 'http://localhost:3000',
