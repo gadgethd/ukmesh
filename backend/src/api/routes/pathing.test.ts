@@ -14,15 +14,13 @@ async function withPathingServer(
   const router = Router();
   registerPathingRoutes(router, {
     pathBetaLimiter: passThroughLimiter as Parameters<typeof registerPathingRoutes>[1]['pathBetaLimiter'],
-    pathHistoryLimiter: passThroughLimiter as Parameters<typeof registerPathingRoutes>[1]['pathHistoryLimiter'],
     pathLearningLimiter: passThroughLimiter as Parameters<typeof registerPathingRoutes>[1]['pathLearningLimiter'],
-    pathHistoryCache: new Map(),
-    pathHistoryCacheTtlMs: 60_000,
     getResolveCache: () => undefined,
     setResolveCache: () => undefined,
+    getHeldPath: () => undefined,
+    setHeldPath: () => undefined,
     resolvePool: { run },
     getPublicVisibilityGeneration: async () => 1,
-    getPathHistoryCache: async () => null,
     getMultibytePathSegments: async () => ({ maxCount: 0, segments: [] }),
     query: async () => ({ rows: [] }),
   });

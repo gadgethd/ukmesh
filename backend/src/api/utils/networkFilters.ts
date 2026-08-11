@@ -9,44 +9,40 @@ export type NetworkFilters = {
   nodesAlias: (alias: string) => string;
 };
 
+/** Resolve one requested identity into its canonical id and every stored alias.
+ * The subquery is uncorrelated, so PostgreSQL evaluates it once while retaining
+ * an indexable `packet_node_id = ANY(...)` predicate on packet scans. */
+export function nodeAliasArraySql(requestedNodeParam: string): string {
+  return `ARRAY(
+    WITH requested_identity AS MATERIALIZED (
+      SELECT COALESCE(
+        (SELECT alias.canonical_node_id
+           FROM node_identity_aliases alias
+          WHERE alias.source_node_id = UPPER(BTRIM(${requestedNodeParam}))),
+        UPPER(BTRIM(${requestedNodeParam}))
+      ) AS canonical_node_id
+    )
+    SELECT canonical_node_id FROM requested_identity
+    UNION
+    SELECT alias.source_node_id
+      FROM node_identity_aliases alias
+      JOIN requested_identity requested
+        ON requested.canonical_node_id = alias.canonical_node_id
+  )`;
+}
+
 export function publicPacketPrivacySql(alias?: string): string {
   const prefix = alias ? `${alias}.` : 'packets.';
   return `(
     ${prefix}visibility_ok IS TRUE
-    AND (
-      COALESCE(cardinality(${prefix}path_hashes), 0) = 0
-      OR ${prefix}path_hash_size_bytes BETWEEN 1 AND 3
-    )
-    AND NOT EXISTS (
+    AND ${prefix}is_private IS NOT TRUE
+    AND EXISTS (
       SELECT 1
-      FROM unnest(COALESCE(${prefix}path_hashes, ARRAY[]::text[])) AS path_hash
-      WHERE path_hash IS NULL
-         OR length(path_hash) <> ${prefix}path_hash_size_bytes * 2
-         OR path_hash !~ '^[0-9A-Fa-f]+$'
-    )
-    AND NOT EXISTS (
-      SELECT 1
-      FROM private_node_prefixes private_prefix
-      WHERE (
-          private_prefix.network = ${prefix}network
-          OR (
-            private_prefix.network IN ('ukmesh', 'northeast', 'teesside')
-            AND ${prefix}network IN ('ukmesh', 'northeast', 'teesside')
-          )
-        )
-        AND (
-          private_prefix.node_id IN (${prefix}rx_node_id, ${prefix}src_node_id)
-          OR (
-            ${prefix}path_hash_size_bytes = private_prefix.prefix_size_bytes
-            AND private_prefix.prefix = ANY(
-              ARRAY(
-                SELECT UPPER(packet_prefix)
-                FROM unnest(COALESCE(${prefix}path_hashes, ARRAY[]::text[]))
-                  AS packet_prefix
-              )
-            )
-          )
-        )
+      FROM packet_visibility_materialization_state cached_visibility
+      JOIN public_visibility_state current_visibility
+        ON current_visibility.singleton = cached_visibility.singleton
+      WHERE cached_visibility.singleton = TRUE
+        AND cached_visibility.visibility_generation = current_visibility.generation
     )
   )`;
 }
@@ -60,7 +56,11 @@ function excludesLegacyTestTopic(prefix: string): string {
   return `COALESCE(NULLIF(${prefix}topic_prefix, ''), split_part(${prefix}topic, '/', 1)) <> 'meshcore-test'`;
 }
 
-export function networkFilters(network?: string, observer?: string): NetworkFilters {
+export function networkFilters(
+  network?: string,
+  observer?: string,
+  opts?: { includePrivacy?: boolean },
+): NetworkFilters {
   const params: unknown[] = [];
   let networkParam: string | null = null;
   let networkIsMulti = false;
@@ -96,8 +96,14 @@ export function networkFilters(network?: string, observer?: string): NetworkFilt
     packetConditions.push(excludesLegacyTestTopic(''));
     packetConditions.push(`COALESCE(rx_node_id, '') NOT IN (SELECT node_id FROM nodes WHERE network = 'test')`);
   }
-  if (observerParam) packetConditions.push(`rx_node_id = ${observerParam}`);
-  packetConditions.push(...publicPacketPrivacyConditions(''));
+  if (observerParam) {
+    packetConditions.push(
+      `rx_node_id = ANY(${nodeAliasArraySql(observerParam)})`,
+    );
+  }
+  if (opts?.includePrivacy !== false) {
+    packetConditions.push(...publicPacketPrivacyConditions(''));
+  }
 
   const nodeConditions = (alias?: string) => {
     const prefix = alias ? `${alias}.` : '';
@@ -119,7 +125,7 @@ export function networkFilters(network?: string, observer?: string): NetworkFilt
             ${prefix}network IS DISTINCT FROM 'test'
             AND EXISTS (
               SELECT 1
-              FROM node_network_sightings s
+              FROM node_identity_sightings s
               WHERE s.node_id = ${nodeRef}
                 AND s.network ${netMatch}
                 AND s.last_seen_at > NOW() - INTERVAL '30 days'
@@ -137,11 +143,13 @@ export function networkFilters(network?: string, observer?: string): NetworkFilt
       // 7-day window keeps the packet scan inside recent chunks.
       conditions.push(
         `(
-          ${prefix}node_id = ${observerParam}
+          ${nodeRef} = ANY(${nodeAliasArraySql(observerParam)})
           OR ${nodeRef} IN (
-            SELECT p.src_node_id
+            SELECT COALESCE(src_alias.canonical_node_id, UPPER(BTRIM(p.src_node_id)))
             FROM packets p
-            WHERE p.rx_node_id = ${observerParam}
+            LEFT JOIN node_identity_aliases src_alias
+              ON src_alias.source_node_id = UPPER(BTRIM(p.src_node_id))
+            WHERE p.rx_node_id = ANY(${nodeAliasArraySql(observerParam)})
               AND p.time > NOW() - INTERVAL '7 days'
               AND p.src_node_id IS NOT NULL
               ${pNetCond}
@@ -172,7 +180,11 @@ export function networkFilters(network?: string, observer?: string): NetworkFilt
         conditions.push(excludesLegacyTestTopic(prefix));
         conditions.push(`COALESCE(${prefix}rx_node_id, '') NOT IN (SELECT node_id FROM nodes WHERE network = 'test')`);
       }
-      if (observerParam) conditions.push(`${prefix}rx_node_id = ${observerParam}`);
+      if (observerParam) {
+        conditions.push(
+          `${prefix}rx_node_id = ANY(${nodeAliasArraySql(observerParam)})`,
+        );
+      }
       conditions.push(...publicPacketPrivacyConditions(prefix));
       return conditions.length > 0 ? `AND ${conditions.join(' AND ')}` : '';
     },

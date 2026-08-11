@@ -67,7 +67,6 @@ declare -A image_variables=(
   [backend]=BACKEND_IMAGE
   [db-migrate]=BACKEND_IMAGE
   [path-learning-worker]=BACKEND_IMAGE
-  [path-history-worker]=BACKEND_IMAGE
   [health-worker]=BACKEND_IMAGE
   [synthetic-monitor]=BACKEND_IMAGE
   [link-backfill-worker]=BACKEND_IMAGE
@@ -280,6 +279,7 @@ docker run -d \
   --name "$compat_name" \
   --network "$network_name" \
   --env-file "$compat_env" \
+  --volumes-from "$current_backend_id:ro" \
   -e MQTT_INGEST_ENABLED=false \
   -e OWNER_AUTHORIZATION_MODE=shadow \
   -e OWNER_ACL_MODE=shadow \
@@ -321,9 +321,9 @@ smoke_service() {
   docker compose --project-name "$project_name" exec -T backend \
     wget -qO- http://127.0.0.1:3000/readyz \
     | jq -e '.status == "ready"' >/dev/null
-  docker compose --project-name "$project_name" exec -T backend \
-    wget -qO- http://127.0.0.1:9091/metrics \
-    | grep -q '^meshcore_process_'
+  metrics="$(docker compose --project-name "$project_name" exec -T backend \
+    wget -qO- http://127.0.0.1:9091/metrics)"
+  grep -q '^meshcore_process_' <<<"$metrics"
   case "$target_service" in
     backend)
       curl --fail --silent http://127.0.0.1:3000/readyz \

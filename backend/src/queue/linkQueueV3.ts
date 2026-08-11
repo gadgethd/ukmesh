@@ -20,6 +20,7 @@ export const LINK_V3_KEYS = {
   rebuild: 'meshcore:link:v3:rebuild',
   workerHeartbeat: 'meshcore:link:v3:worker_heartbeat',
   events: 'meshcore:link:v3:events',
+  wake: 'meshcore:link:v3:wake',
 } as const;
 
 export type LinkQueueAdmission =
@@ -88,6 +89,8 @@ else
 end
 redis.call('LPUSH', KEYS[11], 'admit')
 redis.call('LTRIM', KEYS[11], 0, 255)
+redis.call('LPUSH', KEYS[13], '1')
+redis.call('LTRIM', KEYS[13], 0, 0)
 return {'accepted', ARGV[1]}
 `;
 
@@ -104,6 +107,7 @@ const ADMIT_KEYS = [
   LINK_V3_KEYS.counters,
   LINK_V3_KEYS.events,
   LINK_V3_KEYS.enqueued,
+  LINK_V3_KEYS.wake,
 ];
 
 function positiveInt(value: string | undefined, fallback: number, max: number): number {

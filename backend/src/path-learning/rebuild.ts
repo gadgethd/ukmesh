@@ -1,5 +1,5 @@
-import type { PoolClient } from 'pg';
-import { getPublicVisibilityGeneration, pool, query } from '../db/index.js';
+import { createHash } from 'node:crypto';
+import { analyticsPool, analyticsQuery, getPublicVisibilityGeneration } from '../db/index.js';
 import {
   analysisGeneration,
   beginAnalysisRun,
@@ -16,6 +16,12 @@ import {
   nodePathHash,
   normalizePathHash,
 } from '../path-hash/utils.js';
+import { expandResolverScope } from '../networks.js';
+import {
+  PATH_LEARNING_DELTA_DEFINITIONS,
+  publishPathLearningDelta,
+} from './deltaPublication.js';
+import { withHeavyWorkAdmission } from '../analysis/heavyWorkAdmission.js';
 
 type LearningNode = {
   node_id: string;
@@ -53,7 +59,11 @@ type LearningPathNode = {
 
 const MAX_TRAINING_PACKETS = Math.min(
   500_000,
-  Math.max(1_000, Number(process.env['PATH_LEARNING_MAX_TRAINING_PACKETS'] ?? 120_000) || 120_000),
+  Math.max(1_000, Number(process.env['PATH_LEARNING_MAX_TRAINING_PACKETS'] ?? 500_000) || 500_000),
+);
+const TRAINING_SPLIT_PERCENT = Math.min(
+  100,
+  Math.max(1, Number(process.env['PATH_LEARNING_TRAINING_SPLIT_PERCENT'] ?? 70) || 70),
 );
 const MAX_LEARNING_NODES = Math.min(
   200_000,
@@ -76,9 +86,12 @@ const MAX_TRANSITIONS_PER_GROUP = 5;
 const MAX_EDGE_CHOICES_PER_GROUP = 8;
 const MAX_MOTIF2_CHOICES_PER_GROUP = 6;
 const MAX_MOTIF3_CHOICES_PER_GROUP = 4;
+const MAX_POSITION_PREFIX_CHOICES_PER_GROUP = 64;
+const MAX_CORRIDOR_CHOICES_PER_GROUP = 16;
+const MAX_POSITION_TRANSITIONS_PER_GROUP = 16;
 const HOUR_BUCKET_SIZE = 6;
 const PREFIX_AMBIGUITY_RADIUS_KM = 45;
-const WRITE_BATCH_SIZE = 1_000;
+const PATH_LEARNING_ALGORITHM_VERSION = 'path-learning-v4-delta';
 
 type PrefixPriorWriteRow = {
   prefix: string;
@@ -93,6 +106,31 @@ type TransitionPriorWriteRow = {
   from_node_id: string;
   to_node_id: string;
   receiver_region: string;
+  count: number;
+  probability: number;
+};
+
+type PositionPrefixPriorWriteRow = {
+  prefix: string;
+  position: number;
+  node_id: string;
+  count: number;
+  probability: number;
+};
+
+type CorridorPriorWriteRow = {
+  src_node_id: string;
+  rx_node_id: string;
+  position: number;
+  node_id: string;
+  count: number;
+  probability: number;
+};
+
+type PositionTransitionPriorWriteRow = {
+  position: number;
+  from_node_id: string;
+  to_node_id: string;
   count: number;
   probability: number;
 };
@@ -258,122 +296,153 @@ function directionalSupport(link: LearningLink, fromId: string, toId: string): n
   return forward / total;
 }
 
-async function insertJsonBatches<T extends object>(
-  client: PoolClient,
-  statement: string,
-  network: string,
-  rows: T[],
-  assertOwned: () => void,
-): Promise<void> {
-  for (let offset = 0; offset < rows.length; offset += WRITE_BATCH_SIZE) {
-    assertOwned();
-    await client.query(statement, [network, JSON.stringify(rows.slice(offset, offset + WRITE_BATCH_SIZE))]);
+type PathLearningCalibration = {
+  evaluatedPackets: number;
+  top1Accuracy: number;
+  meanPredConfidence: number;
+  confidenceScale: number;
+  confidenceBias: number;
+  recommendedThreshold: number;
+};
+
+export function pathLearningInputHash(input: {
+  modelNetwork: string;
+  sourceNetwork: string;
+  windowStart: Date;
+  windowEnd: Date;
+  privacyGeneration: number;
+  nodes: LearningNode[];
+  links: LearningLink[];
+  packets: LearningPacket[];
+}): string {
+  const hash = createHash('sha256');
+  hash.update(JSON.stringify({
+    algorithm: PATH_LEARNING_ALGORITHM_VERSION,
+    modelNetwork: input.modelNetwork,
+    sourceNetwork: input.sourceNetwork,
+    windowStart: input.windowStart.toISOString(),
+    windowEnd: input.windowEnd.toISOString(),
+    privacyGeneration: input.privacyGeneration,
+    config: {
+      trainingSplitPercent: TRAINING_SPLIT_PERCENT,
+      maxTrainingPackets: MAX_TRAINING_PACKETS,
+      hourBucketSize: HOUR_BUCKET_SIZE,
+      prefixAmbiguityRadiusKm: PREFIX_AMBIGUITY_RADIUS_KM,
+      prefixChoices: MAX_PREFIX_CHOICES_PER_GROUP,
+      transitions: MAX_TRANSITIONS_PER_GROUP,
+      edgeChoices: MAX_EDGE_CHOICES_PER_GROUP,
+      motif2Choices: MAX_MOTIF2_CHOICES_PER_GROUP,
+      motif3Choices: MAX_MOTIF3_CHOICES_PER_GROUP,
+      positionPrefixChoices: MAX_POSITION_PREFIX_CHOICES_PER_GROUP,
+      corridorChoices: MAX_CORRIDOR_CHOICES_PER_GROUP,
+      positionTransitions: MAX_POSITION_TRANSITIONS_PER_GROUP,
+    },
+  }));
+  for (const [label, rows] of [
+    ['nodes', input.nodes],
+    ['links', input.links],
+    ['packets', input.packets],
+  ] as const) {
+    hash.update(`\n${label}\n`);
+    for (const row of rows) hash.update(`${JSON.stringify(row)}\n`);
   }
+  return hash.digest('hex');
 }
 
-async function replacePathLearningRows(
+function pathLearningModelHash(
+  datasets: object[][],
+  calibration: PathLearningCalibration,
+): string {
+  const hash = createHash('sha256');
+  hash.update(JSON.stringify({
+    algorithm: PATH_LEARNING_ALGORITHM_VERSION,
+    calibration,
+  }));
+  for (const [index, rows] of datasets.entries()) {
+    hash.update(`\ntable:${PATH_LEARNING_DELTA_DEFINITIONS[index]?.target ?? index}\n`);
+    for (const row of rows.map((value) => JSON.stringify(value)).sort()) {
+      hash.update(`${row}\n`);
+    }
+  }
+  return hash.digest('hex');
+}
+
+async function publishPathLearningRowsDelta(
   network: string,
-  prefixRows: PrefixPriorWriteRow[],
-  transitionRows: TransitionPriorWriteRow[],
-  edgeRows: EdgePriorWriteRow[],
-  motifRows: MotifPriorWriteRow[],
-  calibration: {
-    evaluatedPackets: number;
-    top1Accuracy: number;
-    meanPredConfidence: number;
-    confidenceScale: number;
-    confidenceBias: number;
-    recommendedThreshold: number;
+  datasets: object[][],
+  calibration: PathLearningCalibration,
+  metadata: {
+    inputHash: string;
+    modelHash: string;
+    privacyGeneration: number;
+    windowStart: Date;
+    windowEnd: Date;
   },
   analysisRun: AnalysisRunHandle,
   heartbeat: AnalysisRunHeartbeat,
-): Promise<void> {
-  const client = await pool.connect();
+): Promise<{ skipped: boolean; upserted: number; deleted: number }> {
+  return withHeavyWorkAdmission({
+    pool: analyticsPool,
+    workload: `path-learning:${network}`,
+    signal: heartbeat.signal,
+    task: () => publishPathLearningRowsDeltaUnderAdmission(
+      network,
+      datasets,
+      calibration,
+      metadata,
+      analysisRun,
+      heartbeat,
+    ),
+  });
+}
+
+async function publishPathLearningRowsDeltaUnderAdmission(
+  network: string,
+  datasets: object[][],
+  calibration: PathLearningCalibration,
+  metadata: {
+    inputHash: string;
+    modelHash: string;
+    privacyGeneration: number;
+    windowStart: Date;
+    windowEnd: Date;
+  },
+  analysisRun: AnalysisRunHandle,
+  heartbeat: AnalysisRunHeartbeat,
+): Promise<{ skipped: boolean; upserted: number; deleted: number }> {
+  const client = await analyticsPool.connect();
   try {
     await client.query('BEGIN');
     heartbeat.assertOwned();
     await assertAnalysisPublicationLease(client, analysisRun);
-    await client.query('DELETE FROM path_prefix_priors WHERE network = $1', [network]);
-    await client.query('DELETE FROM path_transition_priors WHERE network = $1', [network]);
-    await client.query('DELETE FROM path_edge_priors WHERE network = $1', [network]);
-    await client.query('DELETE FROM path_motif_priors WHERE network = $1', [network]);
-
-    await insertJsonBatches(client,
-      `INSERT INTO path_prefix_priors
-         (network, prefix, receiver_region, prev_prefix, node_id, count, probability, updated_at)
-       SELECT $1, row.prefix, row.receiver_region, row.prev_prefix, row.node_id, row.count, row.probability, NOW()
-       FROM jsonb_to_recordset($2::jsonb) AS row(
-         prefix text, receiver_region text, prev_prefix text, node_id text, count integer, probability double precision
-       )
-       ON CONFLICT (network, prefix, receiver_region, prev_prefix, node_id) DO UPDATE SET
-         count = EXCLUDED.count,
-         probability = EXCLUDED.probability,
-         updated_at = NOW()`,
-      network,
-      prefixRows,
-      heartbeat.assertOwned,
+    const current = await client.query<{ model_hash: string | null }>(
+      `SELECT model_hash FROM path_model_calibration WHERE network = $1 FOR UPDATE`,
+      [network],
     );
-    await insertJsonBatches(client,
-      `INSERT INTO path_transition_priors
-         (network, from_node_id, to_node_id, receiver_region, count, probability, updated_at)
-       SELECT $1, row.from_node_id, row.to_node_id, row.receiver_region, row.count, row.probability, NOW()
-       FROM jsonb_to_recordset($2::jsonb) AS row(
-         from_node_id text, to_node_id text, receiver_region text, count integer, probability double precision
-       )
-       ON CONFLICT (network, from_node_id, to_node_id, receiver_region) DO UPDATE SET
-         count = EXCLUDED.count,
-         probability = EXCLUDED.probability,
-         updated_at = NOW()`,
-      network,
-      transitionRows,
-      heartbeat.assertOwned,
-    );
-    await insertJsonBatches(client,
-      `INSERT INTO path_edge_priors
-         (network, from_node_id, to_node_id, receiver_region, hour_bucket, observed_count, expected_count, missing_count,
-          directional_support, recency_score, reliability, itm_path_loss_db, score, consistency_penalty, updated_at)
-       SELECT $1, row.from_node_id, row.to_node_id, row.receiver_region, row.hour_bucket, row.observed_count,
-              row.expected_count, row.missing_count, row.directional_support, row.recency_score, row.reliability,
-              row.itm_path_loss_db, row.score, row.consistency_penalty, NOW()
-       FROM jsonb_to_recordset($2::jsonb) AS row(
-         from_node_id text, to_node_id text, receiver_region text, hour_bucket integer, observed_count integer,
-         expected_count integer, missing_count integer, directional_support double precision, recency_score double precision,
-         reliability double precision, itm_path_loss_db double precision, score double precision, consistency_penalty double precision
-       )
-       ON CONFLICT (network, receiver_region, hour_bucket, from_node_id, to_node_id) DO UPDATE SET
-         observed_count = EXCLUDED.observed_count,
-         expected_count = EXCLUDED.expected_count,
-         missing_count = EXCLUDED.missing_count,
-         directional_support = EXCLUDED.directional_support,
-         recency_score = EXCLUDED.recency_score,
-         reliability = EXCLUDED.reliability,
-         itm_path_loss_db = EXCLUDED.itm_path_loss_db,
-         score = EXCLUDED.score,
-         consistency_penalty = EXCLUDED.consistency_penalty,
-         updated_at = NOW()`,
-      network,
-      edgeRows,
-      heartbeat.assertOwned,
-    );
-    await insertJsonBatches(client,
-      `INSERT INTO path_motif_priors
-         (network, receiver_region, hour_bucket, motif_len, node_ids, count, probability, updated_at)
-       SELECT $1, row.receiver_region, row.hour_bucket, row.motif_len, row.node_ids, row.count, row.probability, NOW()
-       FROM jsonb_to_recordset($2::jsonb) AS row(
-         receiver_region text, hour_bucket integer, motif_len integer, node_ids text, count integer, probability double precision
-       )
-       ON CONFLICT (network, receiver_region, hour_bucket, motif_len, node_ids) DO UPDATE SET
-         count = EXCLUDED.count,
-         probability = EXCLUDED.probability,
-         updated_at = NOW()`,
-      network,
-      motifRows,
-      heartbeat.assertOwned,
-    );
+    let upserted = 0;
+    let deleted = 0;
+    const skipped = current.rows[0]?.model_hash === metadata.modelHash;
+    if (!skipped) {
+      const delta = await publishPathLearningDelta(
+        client,
+        network,
+        PATH_LEARNING_DELTA_DEFINITIONS.map((definition, index) => ({
+          definition,
+          rows: datasets[index] ?? [],
+        })),
+        heartbeat.assertOwned,
+      );
+      upserted = delta.upserted;
+      deleted = delta.deleted;
+    }
+    const mutationCount = upserted + deleted;
     await client.query(
       `INSERT INTO path_model_calibration
-         (network, evaluated_packets, top1_accuracy, mean_pred_confidence, confidence_scale, confidence_bias, recommended_threshold, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+         (network, evaluated_packets, top1_accuracy, mean_pred_confidence,
+          confidence_scale, confidence_bias, recommended_threshold,
+          input_hash, model_hash, algorithm_version, privacy_generation,
+          window_start, window_end, last_mutation_count, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW())
        ON CONFLICT (network) DO UPDATE SET
          evaluated_packets = EXCLUDED.evaluated_packets,
          top1_accuracy = EXCLUDED.top1_accuracy,
@@ -381,6 +450,13 @@ async function replacePathLearningRows(
          confidence_scale = EXCLUDED.confidence_scale,
          confidence_bias = EXCLUDED.confidence_bias,
          recommended_threshold = EXCLUDED.recommended_threshold,
+         input_hash = EXCLUDED.input_hash,
+         model_hash = EXCLUDED.model_hash,
+         algorithm_version = EXCLUDED.algorithm_version,
+         privacy_generation = EXCLUDED.privacy_generation,
+         window_start = EXCLUDED.window_start,
+         window_end = EXCLUDED.window_end,
+         last_mutation_count = EXCLUDED.last_mutation_count,
          updated_at = NOW()`,
       [
         network,
@@ -390,53 +466,71 @@ async function replacePathLearningRows(
         calibration.confidenceScale,
         calibration.confidenceBias,
         calibration.recommendedThreshold,
+        metadata.inputHash,
+        metadata.modelHash,
+        PATH_LEARNING_ALGORITHM_VERSION,
+        metadata.privacyGeneration,
+        metadata.windowStart,
+        metadata.windowEnd,
+        mutationCount,
       ],
     );
     heartbeat.assertOwned();
     await assertAnalysisPublicationLease(client, analysisRun);
     await client.query('COMMIT');
-  } catch (err) {
+    return { skipped, upserted, deleted };
+  } catch (error) {
     await client.query('ROLLBACK').catch(() => {});
-    throw err;
+    throw error;
   } finally {
     client.release();
   }
 }
 
 export async function rebuildPathLearningModels(): Promise<void> {
-  const networksResult = await query<{ network: string }>(
+  const windowEnd = new Date();
+  const windowStart = new Date(windowEnd.getTime() - 30 * 24 * 60 * 60_000);
+  const networksResult = await analyticsQuery<{ network: string }>(
     `SELECT DISTINCT network
-     FROM (
-       SELECT network FROM packets
-       UNION
-       SELECT network FROM nodes
-     ) t
+     FROM packets
      WHERE network IS NOT NULL
+       AND time > $1::timestamptz
+       AND time <= $2::timestamptz
+       AND rx_node_id IS NOT NULL
+       AND path_hashes IS NOT NULL
+       AND cardinality(path_hashes) > 0
+       AND path_hash_size_bytes >= 2
+       AND mod(hashtext(packet_hash)::bigint + 2147483648, 100) < ${TRAINING_SPLIT_PERCENT}
      ORDER BY network
      LIMIT 33`,
+    [windowStart, windowEnd],
   );
   if (networksResult.rows.length > 32) throw new Error('PATH_LEARNING_NETWORK_LIMIT');
   const networks = networksResult.rows.map((r) => r.network).filter(Boolean);
-  if (networks.length === 0) return;
-
   for (const network of networks) {
-    await rebuildNetwork(network, network);
+    await rebuildNetwork(network, network, windowStart, windowEnd);
   }
-  await rebuildNetwork('all', undefined);
+  // The lazy resolver always falls back to this model. An empty source window
+  // skips publication and deliberately leaves the last complete `all` model.
+  await rebuildNetwork('all', undefined, windowStart, windowEnd);
 }
 
-async function rebuildNetwork(modelNetwork: string, sourceNetwork: string | undefined): Promise<void> {
-  const nowMs = Date.now();
+async function rebuildNetwork(
+  modelNetwork: string,
+  sourceNetwork: string | undefined,
+  windowStart: Date,
+  windowEnd: Date,
+): Promise<void> {
   const visibilityGeneration = await getPublicVisibilityGeneration();
   const run = await beginAnalysisRun({
     workload: 'path-learning',
     scope: modelNetwork,
-    windowStart: new Date(nowMs - 30 * 24 * 60 * 60_000),
-    windowEnd: new Date(nowMs),
+    windowStart,
+    windowEnd,
     totalItems: 0,
     deadlineMs: LEARNING_RUN_DEADLINE_MS,
     privacyGeneration: visibilityGeneration,
-    modelGeneration: 'path-learning-v2',
+    modelGeneration: PATH_LEARNING_ALGORITHM_VERSION,
   });
   const heartbeat = startAnalysisRunHeartbeat(run);
   try {
@@ -481,13 +575,53 @@ async function rebuildNetworkUnderLease(
   const deadline = run.deadlineAt.getTime();
   heartbeat.assertOwned();
   const nodeNetworkFilter = sourceNetwork ? 'AND network = $1' : '';
-  const packetNetworkFilter = sourceNetwork ? 'AND network = $1' : '';
+  const packetNetworkFilter = sourceNetwork
+    ? (modelNetwork === 'ukmesh' ? 'AND network = ANY($1)' : 'AND network = $1')
+    : '';
   const linkNetworkFilter = sourceNetwork ? 'AND a.network = $1 AND b.network = $1' : '';
   const nodeParams: unknown[] = sourceNetwork ? [sourceNetwork, MAX_LEARNING_NODES + 1] : [MAX_LEARNING_NODES + 1];
-  const packetParams: unknown[] = sourceNetwork ? [sourceNetwork, MAX_TRAINING_PACKETS] : [MAX_TRAINING_PACKETS];
+  const packetParams: unknown[] = sourceNetwork
+    ? [
+      modelNetwork === 'ukmesh' ? expandResolverScope(modelNetwork) : sourceNetwork,
+      run.windowStart,
+      run.windowEnd,
+      MAX_TRAINING_PACKETS,
+    ]
+    : [run.windowStart, run.windowEnd, MAX_TRAINING_PACKETS];
   const linkParams: unknown[] = sourceNetwork ? [sourceNetwork, MAX_LEARNING_LINKS + 1] : [MAX_LEARNING_LINKS + 1];
 
-  const nodesResult = await query<LearningNode>(
+  const packetsResult = await analyticsQuery<LearningPacket>(
+    `SELECT DISTINCT ON (packet_hash, rx_node_id, src_node_id, path_hashes)
+            time, rx_node_id, src_node_id, path_hashes
+       FROM packets
+      WHERE rx_node_id IS NOT NULL
+        AND path_hashes IS NOT NULL
+        AND cardinality(path_hashes) > 0
+        AND path_hash_size_bytes >= 2
+        AND time > $${sourceNetwork ? 2 : 1}::timestamptz
+        AND time <= $${sourceNetwork ? 3 : 2}::timestamptz
+        AND mod(hashtext(packet_hash)::bigint + 2147483648, 100) < ${TRAINING_SPLIT_PERCENT}
+        ${packetNetworkFilter}
+      ORDER BY packet_hash, rx_node_id, src_node_id, path_hashes, time DESC
+      LIMIT $${sourceNetwork ? 4 : 3}`,
+    packetParams,
+    heartbeat.signal,
+  );
+  await updateAnalysisRunTotalItems(run, packetsResult.rows.length, heartbeat.signal);
+  if (packetsResult.rows.length === 0) {
+    console.log(`[path-learning] model=${modelNetwork} skipped-empty-selected-window`);
+    return analysisGeneration({
+      algorithm: PATH_LEARNING_ALGORITHM_VERSION,
+      modelNetwork,
+      sourceNetwork: sourceNetwork ?? 'all',
+      windowStart: run.windowStart.toISOString(),
+      windowEnd: run.windowEnd.toISOString(),
+      privacyGeneration: run.privacyGeneration,
+      empty: true,
+    });
+  }
+
+  const nodesResult = await analyticsQuery<LearningNode>(
     `SELECT node_id, lat, lon, elevation_m, iata
      FROM nodes
      WHERE lat IS NOT NULL
@@ -506,7 +640,7 @@ async function rebuildNetworkUnderLease(
 
   const pathHashIndex = buildNodePathHashIndex(nodesResult.rows);
 
-  const linksResult = await query<LearningLink>(
+  const linksResult = await analyticsQuery<LearningLink>(
     `SELECT nl.node_a_id, nl.node_b_id, nl.itm_path_loss_db, nl.count_a_to_b, nl.count_b_to_a
      FROM node_links nl
      JOIN nodes a ON a.node_id = nl.node_a_id
@@ -530,26 +664,27 @@ async function rebuildNetworkUnderLease(
     adjacency.get(link.node_b_id)!.add(link.node_a_id);
   }
 
-  const packetsResult = await query<LearningPacket>(
-    `SELECT time, rx_node_id, src_node_id, path_hashes
-     FROM packets
-     WHERE rx_node_id IS NOT NULL
-       AND path_hashes IS NOT NULL
-       AND cardinality(path_hashes) > 0
-       AND path_hash_size_bytes >= 2
-       AND time > NOW() - INTERVAL '120 days'
-       ${packetNetworkFilter}
-     ORDER BY time DESC
-    LIMIT $${sourceNetwork ? 2 : 1}`,
-    packetParams,
-    heartbeat.signal,
-  );
-  await updateAnalysisRunTotalItems(run, packetsResult.rows.length, heartbeat.signal);
+  const inputHash = pathLearningInputHash({
+    modelNetwork,
+    sourceNetwork: sourceNetwork ?? 'all',
+    windowStart: run.windowStart,
+    windowEnd: run.windowEnd,
+    privacyGeneration: Number(run.privacyGeneration),
+    nodes: nodesResult.rows,
+    links: linksResult.rows,
+    packets: packetsResult.rows,
+  });
 
   const prefixChoiceCounts = new Map<string, number>();
   const prefixGroupTotals = new Map<string, number>();
+  const positionPrefixChoiceCounts = new Map<string, number>();
+  const positionPrefixGroupTotals = new Map<string, number>();
+  const corridorChoiceCounts = new Map<string, number>();
+  const corridorGroupTotals = new Map<string, number>();
   const transitionCounts = new Map<string, number>();
   const transitionGroupTotals = new Map<string, number>();
+  const positionTransitionCounts = new Map<string, number>();
+  const positionTransitionGroupTotals = new Map<string, number>();
 
   const edgeObservedCounts = new Map<string, number>();
   const edgeLastSeenMs = new Map<string, number>();
@@ -569,15 +704,20 @@ async function rebuildNetworkUnderLease(
       if (Date.now() >= deadline) throw new Error('PATH_LEARNING_TIMEOUT');
     }
     const packet = packetsResult.rows[packetIndex]!;
-    const hashes = packet.path_hashes?.map(normalizePathHash).filter(Boolean) ?? [];
+    let hashes = packet.path_hashes?.map(normalizePathHash).filter(Boolean) ?? [];
     if (hashes.length === 0) continue;
     const rx = nodesById.get(packet.rx_node_id);
     if (!rx) continue;
+    if (hashes.length > 0 && rx.node_id.toUpperCase().startsWith(hashes[hashes.length - 1]!)) {
+      hashes = hashes.slice(0, -1);
+    }
+    if (hashes.length === 0) continue;
 
     const src = packet.src_node_id ? nodesById.get(packet.src_node_id) : undefined;
     const region = rx.iata ?? 'unknown';
     const resolved = resolvePathForPacket(hashes, src, rx, pathHashIndex, confirmedLinks);
     if (resolved.length === 0) continue;
+    const championRoute = resolved.length === hashes.length && resolved.every((hop) => hop.isUnique);
 
     const ts = new Date(packet.time);
     const bucket = hourBucket(ts);
@@ -613,6 +753,33 @@ async function rebuildNetworkUnderLease(
       increment(prefixGroupTotals, prefixGroup);
     }
 
+    if (championRoute) {
+      for (let i = 0; i < resolved.length; i++) {
+        const hop = resolved[i]!;
+        const prefix = hop.prefix.slice(0, 2).toUpperCase();
+        const positionPrefixGroup = `${prefix}|${i}`;
+        increment(positionPrefixChoiceCounts, `${positionPrefixGroup}|${hop.node.node_id}`);
+        increment(positionPrefixGroupTotals, positionPrefixGroup);
+
+        if (src) {
+          const corridorGroup = `${src.node_id}|${rx.node_id}|${i}`;
+          increment(corridorChoiceCounts, `${corridorGroup}|${hop.node.node_id}`);
+          increment(corridorGroupTotals, corridorGroup);
+        }
+      }
+
+      if (src) {
+        const championNodes = [src, ...resolved.map((hop) => hop.node), rx];
+        for (let edgePosition = 0; edgePosition < championNodes.length - 1; edgePosition++) {
+          const from = championNodes[edgePosition]!;
+          const to = championNodes[edgePosition + 1]!;
+          const group = `${edgePosition}|${from.node_id}`;
+          increment(positionTransitionCounts, `${group}|${to.node_id}`);
+          increment(positionTransitionGroupTotals, group);
+        }
+      }
+    }
+
     for (let i = 0; i < fullNodes.length - 1; i++) {
       const from = fullNodes[i]!;
       const to = fullNodes[i + 1]!;
@@ -643,8 +810,12 @@ async function rebuildNetworkUnderLease(
       }
     }
     if (
-      prefixChoiceCounts.size + prefixGroupTotals.size + transitionCounts.size
-      + transitionGroupTotals.size + edgeObservedCounts.size + edgeLastSeenMs.size
+      prefixChoiceCounts.size + prefixGroupTotals.size
+      + positionPrefixChoiceCounts.size + positionPrefixGroupTotals.size
+      + corridorChoiceCounts.size + corridorGroupTotals.size
+      + transitionCounts.size + transitionGroupTotals.size
+      + positionTransitionCounts.size + positionTransitionGroupTotals.size
+      + edgeObservedCounts.size + edgeLastSeenMs.size
       + activeFromCounts.size + motif2Counts.size + motif2GroupTotals.size
       + motif3Counts.size + motif3GroupTotals.size > MAX_AGGREGATE_KEYS
     ) {
@@ -680,6 +851,59 @@ async function rebuildNetworkUnderLease(
     }
   }
 
+  const groupedPositionPrefixes = new Map<string, Array<{ nodeId: string; count: number }>>();
+  for (const [key, count] of positionPrefixChoiceCounts) {
+    const [prefix, position, nodeId] = key.split('|');
+    const groupKey = `${prefix}|${position}`;
+    const rows = groupedPositionPrefixes.get(groupKey) ?? [];
+    rows.push({ nodeId: nodeId!, count });
+    groupedPositionPrefixes.set(groupKey, rows);
+  }
+  const positionPrefixRows: PositionPrefixPriorWriteRow[] = [];
+  for (const [groupKey, rows] of groupedPositionPrefixes) {
+    const [prefix, positionText] = groupKey.split('|');
+    const total = positionPrefixGroupTotals.get(groupKey) ?? 1;
+    for (const row of truncateBest(
+      rows.map((candidate) => ({ key: candidate.nodeId, count: candidate.count })),
+      MAX_POSITION_PREFIX_CHOICES_PER_GROUP,
+    )) {
+      positionPrefixRows.push({
+        prefix: prefix!,
+        position: Number(positionText),
+        node_id: row.key,
+        count: row.count,
+        probability: row.count / total,
+      });
+    }
+  }
+
+  const groupedCorridors = new Map<string, Array<{ nodeId: string; count: number }>>();
+  for (const [key, count] of corridorChoiceCounts) {
+    const [srcNodeId, rxNodeId, position, nodeId] = key.split('|');
+    const groupKey = `${srcNodeId}|${rxNodeId}|${position}`;
+    const rows = groupedCorridors.get(groupKey) ?? [];
+    rows.push({ nodeId: nodeId!, count });
+    groupedCorridors.set(groupKey, rows);
+  }
+  const corridorRows: CorridorPriorWriteRow[] = [];
+  for (const [groupKey, rows] of groupedCorridors) {
+    const [srcNodeId, rxNodeId, positionText] = groupKey.split('|');
+    const total = corridorGroupTotals.get(groupKey) ?? 1;
+    for (const row of truncateBest(
+      rows.map((candidate) => ({ key: candidate.nodeId, count: candidate.count })),
+      MAX_CORRIDOR_CHOICES_PER_GROUP,
+    )) {
+      corridorRows.push({
+        src_node_id: srcNodeId!,
+        rx_node_id: rxNodeId!,
+        position: Number(positionText),
+        node_id: row.key,
+        count: row.count,
+        probability: row.count / total,
+      });
+    }
+  }
+
   const groupedTransitions = new Map<string, Array<{ toNodeId: string; count: number }>>();
   for (const [key, count] of transitionCounts) {
     const [fromNodeId, region, toNodeId] = key.split('|');
@@ -698,6 +922,32 @@ async function rebuildNetworkUnderLease(
         from_node_id: fromNodeId!,
         to_node_id: row.key,
         receiver_region: region!,
+        count: row.count,
+        probability: row.count / total,
+      });
+    }
+  }
+
+  const groupedPositionTransitions = new Map<string, Array<{ toNodeId: string; count: number }>>();
+  for (const [key, count] of positionTransitionCounts) {
+    const [position, fromNodeId, toNodeId] = key.split('|');
+    const groupKey = `${position}|${fromNodeId}`;
+    const rows = groupedPositionTransitions.get(groupKey) ?? [];
+    rows.push({ toNodeId: toNodeId!, count });
+    groupedPositionTransitions.set(groupKey, rows);
+  }
+  const positionTransitionRows: PositionTransitionPriorWriteRow[] = [];
+  for (const [groupKey, rows] of groupedPositionTransitions) {
+    const [positionText, fromNodeId] = groupKey.split('|');
+    const total = positionTransitionGroupTotals.get(groupKey) ?? 1;
+    for (const row of truncateBest(
+      rows.map((candidate) => ({ key: candidate.toNodeId, count: candidate.count })),
+      MAX_POSITION_TRANSITIONS_PER_GROUP,
+    )) {
+      positionTransitionRows.push({
+        position: Number(positionText),
+        from_node_id: fromNodeId!,
+        to_node_id: row.key,
         count: row.count,
         probability: row.count / total,
       });
@@ -848,31 +1098,46 @@ async function rebuildNetworkUnderLease(
 
   heartbeat.assertOwned();
   if (Date.now() >= deadline) throw new Error('PATH_LEARNING_TIMEOUT');
-  await replacePathLearningRows(modelNetwork, prefixRows, transitionRows, edgeRows, motifRows, {
+  const calibration = {
     evaluatedPackets,
     top1Accuracy,
     meanPredConfidence,
     confidenceScale,
     confidenceBias,
     recommendedThreshold,
-  }, run, heartbeat);
+  };
+  const datasets: object[][] = [
+    prefixRows,
+    positionPrefixRows,
+    corridorRows,
+    transitionRows,
+    positionTransitionRows,
+    edgeRows,
+    motifRows,
+  ];
+  const modelHash = pathLearningModelHash(datasets, calibration);
+  const publication = await publishPathLearningRowsDelta(
+    modelNetwork,
+    datasets,
+    calibration,
+    {
+      inputHash,
+      modelHash,
+      privacyGeneration: Number(run.privacyGeneration),
+      windowStart: run.windowStart,
+      windowEnd: run.windowEnd,
+    },
+    run,
+    heartbeat,
+  );
 
   console.log(
     `[path-learning] model=${modelNetwork} source=${sourceNetwork ?? 'all'} packets=${evaluatedPackets} ` +
-    `top1=${top1Accuracy.toFixed(3)} scale=${confidenceScale.toFixed(3)} edges=${edgeRows.length} motifs=${motifRows.length}`,
+    `top1=${top1Accuracy.toFixed(3)} scale=${confidenceScale.toFixed(3)} `
+      + `posPrefix=${positionPrefixRows.length} corridors=${corridorRows.length} `
+      + `posTransitions=${positionTransitionRows.length} edges=${edgeRows.length} motifs=${motifRows.length}`
+      + ` deltaUpserts=${publication.upserted} deltaDeletes=${publication.deleted}`
+      + ` unchanged=${publication.skipped}`,
   );
-  return analysisGeneration({
-    modelNetwork,
-    sourceNetwork: sourceNetwork ?? 'all',
-    prefixRows: prefixRows.length,
-    transitionRows: transitionRows.length,
-    edgeRows: edgeRows.length,
-    motifRows: motifRows.length,
-    evaluatedPackets,
-    top1Accuracy,
-    meanPredConfidence,
-    confidenceScale,
-    confidenceBias,
-    recommendedThreshold,
-  });
+  return modelHash;
 }

@@ -42,6 +42,7 @@ const PacketFeedItem: React.FC<PacketFeedItemProps> = React.memo(({
     ? (TYPE_LABELS[p.packetType] ?? `T${p.packetType}`)
     : '???';
   const display = p.summary?.includes('🚫') ? '[redacted]' : p.summary;
+  const messageText = display ?? 'No decoded message text';
   const advertBadge = p.packetType === 4 && typeof p.advertCount === 'number'
     ? (p.advertCount === 1 ? 'NEW' : `${p.advertCount}`)
     : undefined;
@@ -54,53 +55,55 @@ const PacketFeedItem: React.FC<PacketFeedItemProps> = React.memo(({
       role="button"
       tabIndex={0}
       aria-pressed={isPinned}
-      aria-label={`${isPinned ? 'Unpin' : 'Pin'} ${typeLabel} packet${display ? `: ${display}` : ''}`}
+      aria-label={`${isPinned ? 'Unpin' : 'Pin'} ${typeLabel} packet: ${messageText}`}
       onKeyDown={(event) => {
         if (event.key !== 'Enter' && event.key !== ' ') return;
         event.preventDefault();
         onTogglePacket(p);
       }}
     >
-      <span
-        className={'packet-item__iata' + (observerIata ? '' : ' packet-item__placeholder')}
-        aria-hidden={!observerIata}
-        title={observerIata}
-      >{observerIata ?? '—'}</span>
-      <span
-        className={'packet-item__path-bytes' + (p.pathHashSizeBytes !== undefined && p.pathHashSizeBytes > 0 ? '' : ' packet-item__placeholder')}
-        aria-hidden={p.pathHashSizeBytes === undefined || p.pathHashSizeBytes <= 0}
-        title={p.pathHashSizeBytes !== undefined && p.pathHashSizeBytes > 0 ? String(p.pathHashSizeBytes) + ' path bytes' : undefined}
-      >{p.pathHashSizeBytes !== undefined && p.pathHashSizeBytes > 0 ? p.pathHashSizeBytes : '—'}</span>
-      <span className="packet-item__type" title={typeLabel}>{typeLabel}</span>
-      <span
-        className={'packet-item__advert-badge' + (advertBadge ? '' : ' packet-item__placeholder')}
-        aria-hidden={!advertBadge}
-      >{advertBadge ?? '—'}</span>
-      <span
-        className={'packet-item__summary' + (display ? '' : ' packet-item__summary--empty')}
-        title={display ?? undefined}
-      >{display ?? '—'}</span>
-      <span
-        className={'packet-item__hops' + (p.hopCount !== undefined && p.hopCount > 0 ? '' : ' packet-item__placeholder')}
-        aria-hidden={p.hopCount === undefined || p.hopCount <= 0}
-      >{p.hopCount !== undefined && p.hopCount > 0 ? '↑' + p.hopCount : '—'}</span>
-      <span className="packet-item__counts" aria-hidden={p.observerIds.length === 0 && p.txCount <= 0}>
-        {p.observerIds.length > 0 && <span className="count count--rx">{p.observerIds.length}rx</span>}
-        {p.txCount > 0 && <span className="count count--tx">{p.txCount}tx</span>}
-      </span>
-      <button
-        type="button"
-        className="packet-item__watch"
-        aria-label={ (isWatched ? 'Stop watching' : 'Watch') + ' ' + typeLabel + ' packets' }
-        onClick={(event) => {
-          event.stopPropagation();
-          onToggleWatch('packet_type', packetTypeId, typeLabel + ' packets');
-        }}
-      >{isWatched ? '★' : '☆'}</button>
-      <span
-        className={'packet-item__pin' + (isPinned ? '' : ' packet-item__placeholder')}
-        aria-hidden={!isPinned}
-      >●</span>
+      <div className="packet-item__body">
+        <span className="packet-item__summary" title={display ?? undefined}>{messageText}</span>
+        <span className="packet-item__meta" aria-label="Packet metadata">
+          <span className="packet-item__type" title={typeLabel}>{typeLabel}</span>
+          <span className="packet-item__meta-separator" aria-hidden="true">·</span>
+          <span
+            className={'packet-item__iata' + (observerIata ? '' : ' packet-item__placeholder')}
+            title={observerIata ?? 'Observer IATA unavailable'}
+          >{observerIata ?? '—'}</span>
+          {p.hopCount !== undefined && p.hopCount > 0 && <>
+            <span className="packet-item__meta-separator" aria-hidden="true">·</span>
+            <span className="packet-item__hops">↑{p.hopCount} hops</span>
+          </>}
+          {p.pathHashSizeBytes !== undefined && p.pathHashSizeBytes > 0 && <>
+            <span className="packet-item__meta-separator" aria-hidden="true">·</span>
+            <span className="packet-item__path-bytes">{p.pathHashSizeBytes}B path</span>
+          </>}
+          {advertBadge && <>
+            <span className="packet-item__meta-separator" aria-hidden="true">·</span>
+            <span className="packet-item__advert-badge">{advertBadge}</span>
+          </>}
+          {(p.observerIds.length > 0 || p.txCount > 0) && <>
+            <span className="packet-item__meta-separator" aria-hidden="true">·</span>
+            <span className="packet-item__counts">
+              {p.observerIds.length > 0 && <span className="count count--rx">{p.observerIds.length}rx</span>}
+              {p.txCount > 0 && <span className="count count--tx">{p.txCount}tx</span>}
+            </span>
+          </>}
+        </span>
+      </div>
+      <div className="packet-item__actions">
+        <button
+          type="button"
+          className="packet-item__watch"
+          aria-label={ (isWatched ? 'Stop watching' : 'Watch') + ' ' + typeLabel + ' packets' }
+          onClick={(event) => {
+            event.stopPropagation();
+            onToggleWatch('packet_type', packetTypeId, typeLabel + ' packets');
+          }}
+        >{isWatched ? '★' : '☆'}</button>
+        {isPinned && <span className="packet-item__pin" aria-label="Pinned">●</span>}
+      </div>
     </div>
   );
 });

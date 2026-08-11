@@ -1,4 +1,5 @@
 import type { PathingRepository } from './pathingRepository.js';
+import type { HeldPathEntry } from '../path-beta/resolveCache.js';
 import {
   toPublicBetaResultDto,
   toPublicMultiObserverDto,
@@ -9,21 +10,16 @@ import {
 type ResolvePoolFn = {
   run<T>(
     job:
-      | { type: 'resolve'; packetHash: string; network: string; observer?: string | null }
-      | { type: 'resolveMulti'; packetHash: string; network: string },
+      | { type: 'resolve'; packetHash: string; network: string; observer?: string | null; heldPath?: HeldPathEntry }
+      | { type: 'resolveMulti'; packetHash: string; network: string; heldPath?: HeldPathEntry },
   ): Promise<T | null>;
 };
 
-type PathHistoryCacheEntry = {
-  ts: number;
-  data: unknown;
-};
-
 type PathingServiceDeps = {
-  pathHistoryCache: Map<string, PathHistoryCacheEntry>;
-  pathHistoryCacheTtlMs: number;
   getResolveCache: (key: string) => unknown;
   setResolveCache: (key: string, value: unknown) => void;
+  getHeldPath: (packetHash: string, network: string) => HeldPathEntry | undefined;
+  setHeldPath: (packetHash: string, network: string, value: HeldPathEntry) => void;
   resolvePool: ResolvePoolFn;
   repository: PathingRepository;
 };
@@ -117,10 +113,10 @@ export function addPathExplanation(value: unknown): unknown {
 
 export function createPathingService(deps: PathingServiceDeps) {
   const {
-    pathHistoryCache,
-    pathHistoryCacheTtlMs,
     getResolveCache,
     setResolveCache,
+    getHeldPath,
+    setHeldPath,
     resolvePool,
     repository,
   } = deps;
@@ -140,12 +136,17 @@ export function createPathingService(deps: PathingServiceDeps) {
         packetHash,
         network,
         observer,
+        heldPath: getHeldPath(packetHash, network),
       });
       if (!resolved) {
         throw new Error('PACKET_NOT_FOUND');
       }
 
       const projected = toPublicBetaResultDto(addPathExplanation(resolved));
+      const heldNodes = projected.canonicalPath.map((hop) => hop.nodeId ?? '').filter(Boolean);
+      if (heldNodes.length === projected.canonicalPath.length && heldNodes.length > 0) {
+        setHeldPath(packetHash, network, { path: heldNodes, resolvedAt: Date.now(), physical: true });
+      }
       setResolveCache(cacheKey, projected);
       return projected;
     })();
@@ -174,12 +175,17 @@ export function createPathingService(deps: PathingServiceDeps) {
         type: 'resolveMulti',
         packetHash,
         network,
+        heldPath: getHeldPath(packetHash, network),
       });
       if (!resolved) {
         throw new Error('PACKET_NOT_FOUND');
       }
 
       const projected = toPublicMultiObserverDto(addPathExplanation(resolved));
+      const heldNodes = projected.canonicalPath.map((hop) => hop.nodeId ?? '').filter(Boolean);
+      if (heldNodes.length === projected.canonicalPath.length && heldNodes.length > 0) {
+        setHeldPath(packetHash, network, { path: heldNodes, resolvedAt: Date.now(), physical: true });
+      }
       setResolveCache(cacheKey, projected);
       return projected;
     })();
@@ -192,46 +198,6 @@ export function createPathingService(deps: PathingServiceDeps) {
         resolveInflightMulti.delete(cacheKey);
       }
     }
-  }
-
-  async function getPathHistory(scope: string): Promise<unknown> {
-    const visibilityGeneration = await repository.fetchVisibilityGeneration();
-    const cacheKey = `${scope}|v${visibilityGeneration}`;
-    const memoryCached = pathHistoryCache.get(cacheKey);
-    if (memoryCached && Date.now() - memoryCached.ts < pathHistoryCacheTtlMs) {
-      return memoryCached.data;
-    }
-
-    const cached = await repository.fetchPathHistory(scope, visibilityGeneration);
-    let responseData: unknown;
-    if (!cached) {
-      responseData = {
-        ok: true,
-        scope,
-        windowStart: null,
-        updatedAt: null,
-        packetCount: 0,
-        resolvedPacketCount: 0,
-        maxCount: 0,
-        segments: [],
-      };
-    } else {
-      const segments = Array.isArray(cached.segment_counts) ? cached.segment_counts : [];
-      const maxCount = segments.reduce((max, segment) => Math.max(max, Number(segment.count ?? 0)), 0);
-      responseData = {
-        ok: true,
-        scope,
-        windowStart: cached.window_start,
-        updatedAt: cached.updated_at,
-        packetCount: cached.packet_count,
-        resolvedPacketCount: cached.resolved_packet_count,
-        maxCount,
-        segments,
-      };
-    }
-
-    pathHistoryCache.set(cacheKey, { ts: Date.now(), data: responseData });
-    return responseData;
   }
 
   async function getPathLearning(network: string, limit: number): Promise<unknown> {
@@ -265,7 +231,6 @@ export function createPathingService(deps: PathingServiceDeps) {
   return {
     resolvePacket,
     resolvePacketMulti,
-    getPathHistory,
     getPathLearning,
   };
 }

@@ -7,6 +7,7 @@ import {
   useMessages,
   useNodes,
 } from '../../hooks/useNodes.js';
+import { mapMessageRows, type RecentPacketRow } from '../../hooks/packetFeed.js';
 import { useAppMessageHandler } from '../../hooks/useAppMessageHandler.js';
 import {
   ApiResponseError,
@@ -21,6 +22,7 @@ import type { LazyPathResult } from './PacketDetailPanel.js';
 import { FeedMapPanel } from './FeedPathViews.js';
 import { FeedDialogs } from './FeedDialogs.js';
 import {
+  MESSAGE_SCOPE_CHANNELS,
   FEED_PATH_MAX_CONCURRENCY,
   LAZY_SETTLE_MS,
   MAX_PACKETS,
@@ -30,6 +32,7 @@ import {
   feedPathCache,
   feedPathCacheKey,
   mergeFeedPacketObservations,
+  formatFeedTimestamp,
   packetMatchesMessageScope,
   packetObserverIatas,
   packetObserverIds,
@@ -62,7 +65,9 @@ export const UKFeedPage: React.FC = () => {
   const [selectedIata, setSelectedIata] = useState<string>(() => localStorage.getItem('uk-feed-iata') ?? 'all');
   const [selectedMessageScope, setSelectedMessageScope] = useState<MessageScope>(() => {
     const stored = localStorage.getItem('uk-feed-message-scope');
-    return stored === 'public' || stored === 'test' ? stored : 'all';
+    return stored === 'all' || (stored !== null && (MESSAGE_SCOPE_CHANNELS as readonly string[]).includes(stored))
+      ? (stored as MessageScope)
+      : 'all';
   });
   const [messagesOnly, setMessagesOnly] = useState<boolean>(() => localStorage.getItem('uk-feed-messages-only') === '1');
   const [regionOptions, setRegionOptions] = useState<string[]>([]);
@@ -81,7 +86,11 @@ export const UKFeedPage: React.FC = () => {
   const [viewportHeight, setViewportHeight] = useState(() => window.innerHeight);
   const [listScrollTop, setListScrollTop] = useState(0);
   const [detailOpen, setDetailOpen] = useState(false);
+  const [historicalMessages, setHistoricalMessages] = useState<FeedPacket[]>([]);
+  const [historyStatus, setHistoryStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
+  const [historyError, setHistoryError] = useState<string | null>(null);
   const packetListRef = useRef<HTMLDivElement>(null);
+  const historyRequestRef = useRef<AbortController | null>(null);
 
   const {
     nodes: nodeMap,
@@ -104,6 +113,45 @@ export const UKFeedPage: React.FC = () => {
   });
 
   const wsConnection = useWebSocket(handleWSMessage, scope, scopeEpoch);
+
+  useEffect(() => {
+    historyRequestRef.current?.abort();
+    historyRequestRef.current = null;
+    if (selectedMessageScope === 'all') {
+      setHistoricalMessages([]);
+      setHistoryStatus('idle');
+      setHistoryError(null);
+      return;
+    }
+
+    const controller = new AbortController();
+    historyRequestRef.current = controller;
+    setHistoricalMessages([]);
+    setHistoryStatus('loading');
+    setHistoryError(null);
+    const endpoint = withScopeParams(
+      `/api/feed/messages?channel=${encodeURIComponent(selectedMessageScope)}&limit=50`,
+      scope,
+    );
+    void fetchJson<RecentPacketRow[]>(
+      uncachedEndpoint(endpoint),
+      { cache: 'no-store', signal: controller.signal },
+      { timeoutMs: 45_000, maxBytes: 4 * 1024 * 1024 },
+    ).then((rows) => {
+      if (controller.signal.aborted || historyRequestRef.current !== controller) return;
+      setHistoricalMessages(mapMessageRows(rows).map(aggregatedPacketToFeedPacket));
+      setHistoryStatus('ready');
+    }).catch((error: unknown) => {
+      if (controller.signal.aborted || historyRequestRef.current !== controller) return;
+      setHistoryStatus('error');
+      setHistoryError(error instanceof Error ? error.message : 'History unavailable');
+    });
+
+    return () => {
+      controller.abort();
+      if (historyRequestRef.current === controller) historyRequestRef.current = null;
+    };
+  }, [scope, scopeKey, selectedMessageScope]);
 
   // Persist filters
   useEffect(() => { localStorage.setItem('uk-feed-iata', selectedIata); }, [selectedIata]);
@@ -181,6 +229,22 @@ export const UKFeedPage: React.FC = () => {
     );
   }, [messagePackets, packets]);
 
+  const selectedChannelMessages = useMemo(() => {
+    if (selectedMessageScope === 'all') return retainedMessagePackets;
+    const byHash = new Map<string, FeedPacket>();
+    for (const packet of [...historicalMessages, ...retainedMessagePackets]) {
+      if (packet.packet_type !== 5 || !packetMatchesMessageScope(packet, selectedMessageScope)) continue;
+      const current = byHash.get(packet.packet_hash);
+      byHash.set(
+        packet.packet_hash,
+        current ? mergeFeedPacketObservations(current, packet) : packet,
+      );
+    }
+    return Array.from(byHash.values())
+      .sort((a, b) => Date.parse(b.first_seen_time ?? b.time) - Date.parse(a.first_seen_time ?? a.time))
+      .slice(0, 50);
+  }, [historicalMessages, retainedMessagePackets, selectedMessageScope]);
+
   const availableIatas = useMemo(() => {
     const values = new Set(regionOptions);
     for (const packet of packets) {
@@ -201,7 +265,9 @@ export const UKFeedPage: React.FC = () => {
 
   const filteredPackets = useMemo(() => {
     const messageViewActive = selectedMessageScope !== 'all' || messagesOnly;
-    let result = messageViewActive ? retainedMessagePackets : packets;
+    let result = messageViewActive
+      ? (selectedMessageScope === 'all' ? retainedMessagePackets : selectedChannelMessages)
+      : packets;
     if (selectedMessageScope !== 'all') {
       result = result.filter((packet) => packetMatchesMessageScope(packet, selectedMessageScope));
     }
@@ -225,7 +291,7 @@ export const UKFeedPage: React.FC = () => {
       );
     }
     return result;
-  }, [messagesOnly, nodeMap, packets, retainedMessagePackets, searchQuery, selectedIata, selectedMessageScope, selectedPacketType]);
+  }, [messagesOnly, nodeMap, packets, retainedMessagePackets, searchQuery, selectedChannelMessages, selectedIata, selectedMessageScope, selectedPacketType]);
 
   const activeObserverCount = useMemo(() => {
     const ids = new Set<string>();
@@ -447,27 +513,23 @@ export const UKFeedPage: React.FC = () => {
         {/* ── Channels sidebar ───────────────────────────────────────── */}
         <nav className="uk-feed-channels">
           <div className="uk-feed-channels__header">Channels</div>
-          <button
+                    <button
             type="button"
             className={`uk-feed-channel-item${selectedMessageScope === 'all' ? ' uk-feed-channel-item--active' : ''}`}
             onClick={() => setSelectedMessageScope('all')}
           >
             All
           </button>
-          <button
-            type="button"
-            className={`uk-feed-channel-item${selectedMessageScope === 'public' ? ' uk-feed-channel-item--active' : ''}`}
-            onClick={() => setSelectedMessageScope('public')}
-          >
-            Public
-          </button>
-          <button
-            type="button"
-            className={`uk-feed-channel-item${selectedMessageScope === 'test' ? ' uk-feed-channel-item--active' : ''}`}
-            onClick={() => setSelectedMessageScope('test')}
-          >
-            Test
-          </button>
+          {MESSAGE_SCOPE_CHANNELS.map((channel) => (
+            <button
+              key={channel}
+              type="button"
+              className={`uk-feed-channel-item${selectedMessageScope === channel ? ' uk-feed-channel-item--active' : ''}`}
+              onClick={() => setSelectedMessageScope(channel)}
+            >
+              {channel === 'public' ? 'Public' : channel}
+            </button>
+          ))}
 
           <div className="uk-feed-channels__divider" />
           <div className="uk-feed-channels__header">Regions</div>
@@ -548,6 +610,15 @@ export const UKFeedPage: React.FC = () => {
                 Type {TYPE_LABELS[Number(selectedPacketType)] ?? selectedPacketType} ×
               </button>
             )}
+            {selectedMessageScope !== 'all' && (
+              <span className={`uk-feed-history-status uk-feed-history-status--${historyStatus}`} aria-live="polite">
+                {historyStatus === 'loading'
+                  ? `Loading ${selectedMessageScope} history…`
+                  : historyStatus === 'error'
+                    ? (historyError ?? 'History unavailable')
+                    : `${selectedMessageScope} history · ${selectedChannelMessages.length} messages`}
+              </span>
+            )}
           </div>
           <div
             className="uk-feed-packets-list"
@@ -576,7 +647,7 @@ export const UKFeedPage: React.FC = () => {
                     }}
                   >
                     <div className="uk-feed-packet-row__meta">
-                      <span>{new Date(packet.time).toLocaleTimeString()}</span>
+                      <span>{formatFeedTimestamp(packet.time)}</span>
                       <span>{packet.packet_type != null ? (TYPE_LABELS[packet.packet_type] ?? `T${packet.packet_type}`) : '—'}</span>
                       <span className="uk-feed-packet-row__hops">{packet.hop_count != null ? `${packet.hop_count} hop${packet.hop_count !== 1 ? 's' : ''}` : '—'}</span>
                       <span className="uk-feed-packet-row__hash dev-status-mono">{packet.packet_hash}</span>

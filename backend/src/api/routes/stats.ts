@@ -5,6 +5,13 @@ import { createStatsService, StatsWorkOverloadedError } from '../../stats/statsS
 import type { NetworkFilters } from '../utils/networkFilters.js';
 import { normalizeObserverQuery } from '../utils/observer.js';
 import type { QueryResultRow } from 'pg';
+import { createDeferredOnce } from '../../lifecycle/deferredOnce.js';
+
+const chartsWarmup = createDeferredOnce('stats chart warmup');
+
+export function startRegisteredStatsWarmup(): boolean {
+  return chartsWarmup.start();
+}
 
 type QueryFn = <T extends QueryResultRow = QueryResultRow>(
   text: string,
@@ -37,16 +44,22 @@ type StatsRouteDeps = {
   chartsInflight: Map<string, Promise<unknown>>;
   expensiveLimiter: ReturnType<typeof import('express-rate-limit').rateLimit>;
   statsChartsLimiter: ReturnType<typeof import('express-rate-limit').rateLimit>;
-  networkFilters: (network?: string, observer?: string) => NetworkFilters;
+  networkFilters: (network?: string, observer?: string, opts?: { includePrivacy?: boolean }) => NetworkFilters;
   query: QueryFn;
+  analyticsQuery: QueryFn;
   getPublicVisibilityGeneration: () => Promise<number>;
   maskDecodedPathNodes: MaskDecodedPathNodesFn;
+  runHeavyWork: <T>(workload: string, task: () => Promise<T>) => Promise<T>;
 };
 
 export function registerStatsRoutes(router: Router, deps: StatsRouteDeps): void {
   const repository = createStatsRepository({
     networkFilters: deps.networkFilters,
     query: deps.query,
+  });
+  const chartRepository = createStatsRepository({
+    networkFilters: deps.networkFilters,
+    query: deps.analyticsQuery,
   });
 
   const service = createStatsService({
@@ -56,12 +69,17 @@ export function registerStatsRoutes(router: Router, deps: StatsRouteDeps): void 
     chartsCacheTtlMs: deps.chartsCacheTtlMs,
     chartsSnapshotStaleTtlMs: deps.chartsSnapshotStaleTtlMs,
     chartsInflight: deps.chartsInflight,
-    repository,
+    repository: {
+      ...repository,
+      fetchChartsData: chartRepository.fetchChartsData,
+      fetchChannelTraffic: chartRepository.fetchChannelTraffic,
+    },
     getPublicVisibilityGeneration: deps.getPublicVisibilityGeneration,
     maskDecodedPathNodes: deps.maskDecodedPathNodes,
+    runHeavyWork: deps.runHeavyWork,
   });
 
-  service.startChartsWarmup();
+  chartsWarmup.register(service.startChartsWarmup);
 
   router.get('/stats', async (req, res) => {
     try {

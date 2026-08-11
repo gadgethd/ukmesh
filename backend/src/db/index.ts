@@ -1,6 +1,9 @@
 import pg from 'pg';
 import fs from 'node:fs';
-import { databaseConfig } from '../platform/config/database.js';
+import {
+  analyticsStatementTimeoutMs,
+  databaseConfig,
+} from '../platform/config/database.js';
 import { resolveDbAssetPath } from './assets.js';
 import { runMigrations } from './migrations.js';
 import { UKMESH_NETWORKS } from '../networks.js';
@@ -9,16 +12,21 @@ import {
   enqueuePacket,
   type PacketBatchResult,
 } from './packetBatch.js';
-import {
-  assertAnalysisPublicationLease,
-  type AnalysisPublicationHandle,
-} from '../analysis/publicationFence.js';
-import { publicPacketPrivacySql } from '../api/utils/networkFilters.js';
+import { nodeAliasArraySql, publicPacketPrivacySql } from '../api/utils/networkFilters.js';
 import {
   dbQueriesTotal,
   dbQueryDuration,
   updateDbPoolMetrics,
 } from '../metrics.js';
+import {
+  nodeEffectiveLastSeenSql,
+  nodeEffectiveOnlineSql,
+} from '../nodes/presence.js';
+import {
+  reactivateHistoricPathNodes,
+  type HistoricPathNode,
+} from '../repositories/pathEvidence.js';
+import { channelHashesForName } from '../mqtt/channelRegistry.js';
 
 const { Pool } = pg;
 const COORDINATE_RECALC_THRESHOLD_M = Number(process.env['NODE_COORDINATE_RECALC_THRESHOLD_M'] ?? 25);
@@ -49,8 +57,8 @@ const analyticsPool = new Pool({
   max: 2,
   idleTimeoutMillis: databaseConfig.idleTimeoutMs,
   connectionTimeoutMillis: databaseConfig.connectionTimeoutMs,
-  statement_timeout: 300_000, // 5 minutes — analytics queries are intentionally slow
-  query_timeout: 300_000,
+  statement_timeout: analyticsStatementTimeoutMs(databaseConfig.statementTimeoutMs),
+  query_timeout: analyticsStatementTimeoutMs(databaseConfig.statementTimeoutMs),
 });
 
 analyticsPool.on('error', (err) => {
@@ -83,7 +91,7 @@ function observerRegionFromTopic(topic: string): string | null {
 async function queryPool<T extends pg.QueryResultRow = pg.QueryResultRow>(
   targetPool: pg.Pool,
   poolName: 'oltp' | 'analytics',
-  text: string,
+  querySpec: string | pg.QueryConfig<unknown[]>,
   params?: unknown[],
   signal?: AbortSignal,
 ): Promise<pg.QueryResult<T>> {
@@ -91,7 +99,12 @@ async function queryPool<T extends pg.QueryResultRow = pg.QueryResultRow>(
   let outcome = 'success';
   try {
     updateDbPoolMetrics(poolName, targetPool);
-    if (!signal) return await targetPool.query<T>(text, params);
+    const execute = (target: pg.Pool | pg.PoolClient) => (
+      typeof querySpec === 'string'
+        ? target.query<T>(querySpec, params)
+        : target.query<T>(querySpec)
+    );
+    if (!signal) return await execute(targetPool);
     signal.throwIfAborted();
     const client = await targetPool.connect();
     let destroyed = false;
@@ -116,7 +129,7 @@ async function queryPool<T extends pg.QueryResultRow = pg.QueryResultRow>(
     try {
       signal.throwIfAborted();
       const result = await Promise.race([
-        client.query<T>(text, params),
+        execute(client),
         aborted,
       ]);
       signal.throwIfAborted();
@@ -142,6 +155,16 @@ export async function query<T extends pg.QueryResultRow = pg.QueryResultRow>(
   signal?: AbortSignal,
 ): Promise<pg.QueryResult<T>> {
   return queryPool<T>(pool, 'oltp', text, params, signal);
+}
+
+export async function namedQuery<T extends pg.QueryResultRow = pg.QueryResultRow>(
+  name: string,
+  text: string,
+  params?: unknown[],
+  signal?: AbortSignal,
+): Promise<pg.QueryResult<T>> {
+  if (!/^[a-z0-9_-]{1,63}$/.test(name)) throw new Error('INVALID_PREPARED_STATEMENT_NAME');
+  return queryPool<T>(pool, 'oltp', { name, text, values: params }, undefined, signal);
 }
 
 export async function analyticsQuery<T extends pg.QueryResultRow = pg.QueryResultRow>(
@@ -202,7 +225,9 @@ function buildPacketScopeClause(
     );
   }
   if (placeholders.observerParam) {
-    conditions.push(`${prefix}rx_node_id = ${placeholders.observerParam}`);
+    conditions.push(
+      `${prefix}rx_node_id = ANY(${nodeAliasArraySql(placeholders.observerParam)})`,
+    );
   }
   return conditions.length > 0 ? ` AND ${conditions.join(' AND ')}` : '';
 }
@@ -237,7 +262,7 @@ function buildNodeScopeClause(
           ${prefix}network IS DISTINCT FROM 'test'
           AND EXISTS (
             SELECT 1
-            FROM node_network_sightings s
+            FROM node_identity_sightings s
             WHERE s.node_id = ${nodeRef}
               AND s.network ${netMatch}
               AND s.last_seen_at > NOW() - INTERVAL '30 days'
@@ -260,11 +285,13 @@ function buildNodeScopeClause(
     // 7-day window matches the observer_meta lookback and keeps the packet
     // scan inside recent chunks (~700ms vs 5min unbounded).
     const observerNodeScope = [
-      `${prefix}node_id = ${placeholders.observerParam}`,
+      `${nodeRef} = ANY(${nodeAliasArraySql(placeholders.observerParam)})`,
       `OR ${nodeRef} IN (
-         SELECT p.src_node_id
+         SELECT COALESCE(src_alias.canonical_node_id, UPPER(BTRIM(p.src_node_id)))
          FROM packets p
-         WHERE p.rx_node_id = ${placeholders.observerParam}
+         LEFT JOIN node_identity_aliases src_alias
+           ON src_alias.source_node_id = UPPER(BTRIM(p.src_node_id))
+         WHERE p.rx_node_id = ANY(${nodeAliasArraySql(placeholders.observerParam)})
            AND p.time > NOW() - INTERVAL '7 days'
            AND p.src_node_id IS NOT NULL`,
       netCond,
@@ -308,14 +335,6 @@ export async function initDb(): Promise<void> {
   console.log(
     `[db] base schema initialised${executedMigrations.length > 0 ? `, migrations applied: ${executedMigrations.join(', ')}` : ', no pending migrations'}`,
   );
-}
-
-export async function incrementAdvertCount(nodeId: string): Promise<number> {
-  const res = await pool.query<{ advert_count: number }>(
-    `UPDATE nodes SET advert_count = advert_count + 1 WHERE node_id = $1 RETURNING advert_count`,
-    [nodeId]
-  );
-  return res.rows[0]?.advert_count ?? 1;
 }
 
 export async function touchNodesPredictedOnline(nodeIds: string[]): Promise<void> {
@@ -370,10 +389,18 @@ export async function refreshRecentPathEvidence(
      ),
      node_hashes AS (
        SELECT 2 AS path_hash_size_bytes, UPPER(LEFT(node_id, 4)) AS hash, node_id
-       FROM nodes WHERE (role = 2 OR role IS NULL) AND ${pathEvidenceNodeScope}
+       FROM nodes
+       WHERE (role = 2 OR role IS NULL) AND ${pathEvidenceNodeScope}
+         AND lat BETWEEN -90 AND 90
+         AND lon BETWEEN -180 AND 180
+         AND NOT (ABS(lat) < 1e-9 AND ABS(lon) < 1e-9)
        UNION ALL
        SELECT 3 AS path_hash_size_bytes, UPPER(LEFT(node_id, 6)) AS hash, node_id
-       FROM nodes WHERE (role = 2 OR role IS NULL) AND ${pathEvidenceNodeScope}
+       FROM nodes
+       WHERE (role = 2 OR role IS NULL) AND ${pathEvidenceNodeScope}
+         AND lat BETWEEN -90 AND 90
+         AND lon BETWEEN -180 AND 180
+         AND NOT (ABS(lat) < 1e-9 AND ABS(lon) < 1e-9)
      ),
      unique_node_hashes AS (
        SELECT path_hash_size_bytes, hash, MIN(node_id) AS node_id
@@ -409,8 +436,8 @@ export async function refreshRecentPathEvidence(
 /**
  * Real-time counterpart to {@link refreshRecentPathEvidence}: given the multibyte
  * path hashes of a single freshly-ingested packet, credit each repeater whose
- * prefix uniquely matches with `last_path_evidence_at = seenAt`. Returns the node
- * IDs that were updated so the caller can broadcast a live "seen now" update.
+ * prefix uniquely matches with `last_path_evidence_at = seenAt`. Returns the
+ * preserved historic node rows so the caller can broadcast their coordinates.
  *
  * Only 2- and 3-byte hashes are accepted (single-byte is too collision-prone), and
  * prefixes shared by more than one repeater are skipped (ambiguous). Best-effort:
@@ -422,52 +449,14 @@ export async function recordMultibyteEvidence(
   seenAt: Date,
   routeType?: number,
   network?: string,
-): Promise<string[]> {
-  // On Direct/TransportDirect packets the path is a future route, not an
-  // observed relay path. Crediting it would invent node presence.
-  if ((routeType !== 0 && routeType !== 1) || (sizeBytes !== 2 && sizeBytes !== 3)) return [];
-  const prefixLen = sizeBytes * 2; // hex chars: 2 bytes → 4, 3 bytes → 6
-  const hashes = Array.from(new Set(
-    pathHashes
-      .map((h) => String(h).trim().toUpperCase())
-      .filter((h) => h.length === prefixLen && /^[0-9A-F]+$/.test(h)),
-  ));
-  if (hashes.length === 0) return [];
-  const pathEvidenceNodeScope = network === 'test'
-    ? "n.network = 'test'"
-    : "n.network IS DISTINCT FROM 'test'";
-  // prefixLen is a server-controlled integer (4 or 6); inlining it lets Postgres
-  // use the upper(left(node_id,N)) functional indexes (idx_nodes_path_hash_2/3).
-  const res = await pool.query<{ node_id: string }>(
-    `WITH input(hash) AS (
-       SELECT UNNEST($1::text[])
-     ),
-     candidates AS (
-       SELECT n.node_id, i.hash
-       FROM nodes n
-       JOIN input i ON UPPER(LEFT(n.node_id, ${prefixLen})) = i.hash
-       WHERE (n.role = 2 OR n.role IS NULL) AND ${pathEvidenceNodeScope}
-     ),
-     unique_hashes AS (
-       SELECT hash FROM candidates GROUP BY hash HAVING COUNT(*) = 1
-     ),
-     matched AS (
-       SELECT c.node_id
-       FROM candidates c
-       JOIN unique_hashes u ON u.hash = c.hash
-     ),
-     updated AS (
-       UPDATE nodes n
-       SET last_path_evidence_at = $2::timestamptz
-       FROM matched m
-       WHERE n.node_id = m.node_id
-         AND (n.last_path_evidence_at IS NULL OR n.last_path_evidence_at < $2::timestamptz)
-       RETURNING n.node_id
-     )
-     SELECT node_id FROM updated`,
-    [hashes, seenAt.toISOString()],
-  );
-  return res.rows.map((r) => r.node_id);
+): Promise<HistoricPathNode[]> {
+  return reactivateHistoricPathNodes(query, {
+    pathHashes,
+    sizeBytes,
+    seenAt,
+    routeType,
+    network,
+  });
 }
 
 export async function upsertNode(nodeId: string, updates: {
@@ -482,7 +471,8 @@ export async function upsertNode(nodeId: string, updates: {
   network?: string;
   allowTestOverride?: boolean;
   mqttObserver?: boolean;
-}): Promise<{ coordinatesChanged: boolean }> {
+  advertHash?: string;
+}): Promise<{ coordinatesChanged: boolean; advertCount: number }> {
   const incomingLat = typeof updates.lat === 'number' && updates.lat !== 0 ? updates.lat : null;
   const incomingLon = typeof updates.lon === 'number' && updates.lon !== 0 ? updates.lon : null;
   const hasIncomingPosition = validCoordinatePair(incomingLat, incomingLon);
@@ -493,9 +483,16 @@ export async function upsertNode(nodeId: string, updates: {
   // updates retain the transaction below because they also compare old values
   // and invalidate dependent coverage atomically.
   if (!hasIncomingPosition) {
-    await pool.query(
-      `INSERT INTO nodes (node_id, name, lat, lon, iata, role, hardware_model, firmware_version, public_key, last_seen, is_online, network, last_mqtt_observer_seen_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), TRUE, $10, CASE WHEN $12 THEN NOW() ELSE NULL END)
+    const result = await pool.query<{ advert_count: number }>(
+      `WITH advert_once AS (
+         INSERT INTO node_counted_adverts (canonical_advert_hash, node_id, counted_at)
+         SELECT $13, $1, NOW()
+         WHERE $13::text IS NOT NULL
+         ON CONFLICT (canonical_advert_hash) DO NOTHING
+         RETURNING 1
+       )
+       INSERT INTO nodes (node_id, name, lat, lon, iata, role, hardware_model, firmware_version, public_key, last_seen, is_online, network, last_mqtt_observer_seen_at, advert_count)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), TRUE, $10, CASE WHEN $12 THEN NOW() ELSE NULL END, (SELECT COUNT(*) FROM advert_once))
        ON CONFLICT (node_id) DO UPDATE SET
          name             = COALESCE(EXCLUDED.name, nodes.name),
          lat              = COALESCE(NULLIF(EXCLUDED.lat, 0), nodes.lat),
@@ -517,12 +514,14 @@ export async function upsertNode(nodeId: string, updates: {
                                         WHEN $12 THEN NOW()
                                         ELSE nodes.last_mqtt_observer_seen_at
                                       END,
-         is_online        = TRUE`,
+         advert_count     = nodes.advert_count + (SELECT COUNT(*) FROM advert_once),
+         is_online        = TRUE
+       RETURNING advert_count`,
       [nodeId, updates.name, updates.lat, updates.lon, updates.iata, updates.role,
        updates.hardwareModel, updates.firmwareVersion, updates.publicKey, updates.network ?? null,
-       Boolean(updates.allowTestOverride), Boolean(updates.mqttObserver)],
+       Boolean(updates.allowTestOverride), Boolean(updates.mqttObserver), updates.advertHash ?? null],
     );
-    return { coordinatesChanged: false };
+    return { coordinatesChanged: false, advertCount: Number(result.rows[0]?.advert_count ?? 0) };
   }
 
   const client = await pool.connect();
@@ -535,9 +534,16 @@ export async function upsertNode(nodeId: string, updates: {
         )
       : null;
 
-    await client.query(
-      `INSERT INTO nodes (node_id, name, lat, lon, iata, role, hardware_model, firmware_version, public_key, last_seen, is_online, network, last_mqtt_observer_seen_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), TRUE, $10, CASE WHEN $12 THEN NOW() ELSE NULL END)
+    const upsert = await client.query<{ advert_count: number }>(
+      `WITH advert_once AS (
+         INSERT INTO node_counted_adverts (canonical_advert_hash, node_id, counted_at)
+         SELECT $13, $1, NOW()
+         WHERE $13::text IS NOT NULL
+         ON CONFLICT (canonical_advert_hash) DO NOTHING
+         RETURNING 1
+       )
+       INSERT INTO nodes (node_id, name, lat, lon, iata, role, hardware_model, firmware_version, public_key, last_seen, is_online, network, last_mqtt_observer_seen_at, advert_count)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), TRUE, $10, CASE WHEN $12 THEN NOW() ELSE NULL END, (SELECT COUNT(*) FROM advert_once))
        ON CONFLICT (node_id) DO UPDATE SET
          name             = COALESCE(EXCLUDED.name, nodes.name),
          lat              = COALESCE(NULLIF(EXCLUDED.lat, 0), nodes.lat),
@@ -559,10 +565,12 @@ export async function upsertNode(nodeId: string, updates: {
                                         WHEN $12 THEN NOW()
                                         ELSE nodes.last_mqtt_observer_seen_at
                                       END,
-         is_online        = TRUE`,
+         advert_count     = nodes.advert_count + (SELECT COUNT(*) FROM advert_once),
+         is_online        = TRUE
+       RETURNING advert_count`,
       [nodeId, updates.name, updates.lat, updates.lon, updates.iata, updates.role,
        updates.hardwareModel, updates.firmwareVersion, updates.publicKey, updates.network ?? null,
-       Boolean(updates.allowTestOverride), Boolean(updates.mqttObserver)]
+       Boolean(updates.allowTestOverride), Boolean(updates.mqttObserver), updates.advertHash ?? null]
     );
 
     const row = existing?.rows[0];
@@ -583,7 +591,10 @@ export async function upsertNode(nodeId: string, updates: {
     }
 
     await client.query('COMMIT');
-    return { coordinatesChanged };
+    return {
+      coordinatesChanged,
+      advertCount: Number(upsert.rows[0]?.advert_count ?? 0),
+    };
   } catch (err) {
     await client.query('ROLLBACK');
     throw err;
@@ -698,10 +709,23 @@ export async function insertNodeStatusSample(sample: {
   );
 }
 
+export async function insertNodeNeighborSample(sample: {
+  nodeId: string;
+  network?: string;
+  neighbors: unknown[];
+}): Promise<void> {
+  await pool.query(
+    `INSERT INTO node_neighbor_samples (node_id, time, neighbors, network)
+     VALUES ($1, NOW(), $2::jsonb, $3)`,
+    [sample.nodeId, JSON.stringify(sample.neighbors), sample.network ?? 'ukmesh'],
+  );
+}
+
 export async function getNodes(
   network?: string,
   observer?: string,
   fields: 'full' | 'slim' = 'full',
+  signal?: AbortSignal,
 ) {
   const scope = buildScopePlaceholders(1, network, observer);
   const slimConditions = fields === 'slim'
@@ -714,7 +738,13 @@ export async function getNodes(
   const optionalFields = fields === 'full'
     ? `, n.hardware_model, n.public_key, n.elevation_m`
     : ', n.elevation_m';
-  const res = await pool.query(
+  const res = await query<{
+    node_id: string;
+    name: string | null;
+    lat: number | null;
+    lon: number | null;
+    role: number | null;
+  }>(
     `SELECT
        n.node_id,
        n.name,
@@ -726,31 +756,15 @@ export async function getNodes(
        -- multibyte relay evidence are independent proofs of presence. Always
        -- expose the newest proof; preferring observer metadata with COALESCE
        -- could make a freshly advertised node appear days older on the map.
-       GREATEST(
-         n.last_seen,
-         n.last_rx_at,
-         n.last_status_at,
-         n.last_path_evidence_at
-       ) AS last_seen,
-       COALESCE(
-         CASE
-           WHEN GREATEST(n.last_rx_at, n.last_status_at) IS NOT NULL
-           THEN GREATEST(n.last_rx_at, n.last_status_at) > NOW() - INTERVAL '15 minutes'
-           ELSE NULL
-         END,
-         CASE
-           WHEN n.last_path_evidence_at IS NOT NULL
-             AND n.last_path_evidence_at > NOW() - INTERVAL '60 minutes'
-           THEN TRUE
-           ELSE n.is_online
-         END
-       ) AS is_online,
+       ${nodeEffectiveLastSeenSql('n')} AS last_seen,
+       ${nodeEffectiveOnlineSql('n')} AS is_online,
        n.advert_count
        ${optionalFields}
-     FROM nodes n
+     FROM node_identity_nodes n
      ${whereClause}
-     ORDER BY GREATEST(n.last_seen, n.last_rx_at, n.last_status_at, n.last_path_evidence_at) DESC`,
-    scope.params
+     ORDER BY ${nodeEffectiveLastSeenSql('n')} DESC`,
+    scope.params,
+    signal,
   );
   return res.rows;
 }
@@ -758,9 +772,14 @@ export async function getNodes(
 export async function getNodeHistory(nodeId: string, hours = 24, network = 'ukmesh') {
   const scope = buildScopePlaceholders(3, network);
   const res = await pool.query(
-    `SELECT time, packet_hash, src_node_id, topic, packet_type, hop_count, rssi, snr, payload
+    `SELECT p.time, p.packet_hash,
+            COALESCE(src_alias.canonical_node_id, UPPER(BTRIM(p.src_node_id))) AS src_node_id,
+            topic, packet_type, hop_count, rssi, snr, payload
      FROM packets p
-     WHERE p.rx_node_id = $1 AND p.time > NOW() - INTERVAL '1 hour' * $2
+     LEFT JOIN node_identity_aliases src_alias
+       ON src_alias.source_node_id = UPPER(BTRIM(p.src_node_id))
+     WHERE p.rx_node_id = ANY(${nodeAliasArraySql('$1')})
+       AND p.time > NOW() - INTERVAL '1 hour' * $2
        ${buildPacketScopeClause(scope, 'p', network)}
        ${buildPublicPacketPrivacyClause('p')}
      ORDER BY time DESC LIMIT 500`,
@@ -777,7 +796,8 @@ export async function getNodeAdverts(nodePublicKey: string, hours = 24, limit = 
     `SELECT time, packet_hash
      FROM packets p
      WHERE p.packet_type = 4
-       AND p.payload->>'publicKey' = $1
+       AND UPPER(BTRIM(COALESCE(p.src_node_id, p.payload->>'publicKey')))
+             = ANY(${nodeAliasArraySql('$1')})
        AND p.time > NOW() - INTERVAL '1 hour' * $2
        ${buildPacketScopeClause(scope, 'p', network)}
        ${buildPublicPacketPrivacyClause('p')}
@@ -793,18 +813,24 @@ export async function getRecentPackets(
   network?: string,
   observer?: string,
   fields: 'full' | 'slim' = 'full',
+  signal?: AbortSignal,
 ) {
   const scope = buildScopePlaceholders(2, network, observer);
   const fiveMinAgo = 'NOW() - INTERVAL \'5 minutes\'';
-  const res = await pool.query(
+  const res = await query(
     `WITH recent_packets AS (
       SELECT DISTINCT ON (p.packet_hash)
-             p.time, p.packet_hash, p.rx_node_id, p.src_node_id, p.topic,
+             p.time, p.packet_hash,
+             COALESCE(pa_rx.canonical_node_id, upper(btrim(p.rx_node_id))) AS rx_node_id,
+             COALESCE(pa_src.canonical_node_id, upper(btrim(p.src_node_id))) AS src_node_id, p.topic,
              p.topic_prefix, p.iata, p.packet_type, p.route_type, p.hop_count, p.rssi, p.snr,
-             p.payload->>'_summary' AS summary,
+             COALESCE(p.payload->>'_summary', pd.summary) AS summary,
              p.advert_count, p.path_hashes, p.path_hash_size_bytes,
              p.network, p.transport_codes, p.region_scope
       FROM packets p
+      LEFT JOIN packet_decryptions pd ON pd.packet_hash = p.packet_hash
+      LEFT JOIN node_identity_aliases pa_rx ON pa_rx.source_node_id = upper(btrim(p.rx_node_id))
+      LEFT JOIN node_identity_aliases pa_src ON pa_src.source_node_id = upper(btrim(p.src_node_id))
       WHERE p.time > ${fiveMinAgo}
         ${buildPacketScopeClause(scope, 'p', network)}
         ${buildPublicPacketPrivacyClause('p')}
@@ -818,11 +844,14 @@ export async function getRecentPackets(
     packet_stats AS (
       SELECT 
         packet_hash,
-        ARRAY_AGG(DISTINCT rx_node_id ORDER BY rx_node_id) FILTER (WHERE rx_node_id IS NOT NULL) AS observer_node_ids,
+        ARRAY_AGG(DISTINCT COALESCE(pa2.canonical_node_id, upper(btrim(packets.rx_node_id)))
+                  ORDER BY COALESCE(pa2.canonical_node_id, upper(btrim(packets.rx_node_id))))
+          FILTER (WHERE packets.rx_node_id IS NOT NULL) AS observer_node_ids,
         ARRAY_AGG(DISTINCT iata ORDER BY iata) FILTER (WHERE NULLIF(TRIM(iata), '') IS NOT NULL) AS observer_iatas,
         COUNT(*) FILTER (WHERE COALESCE(payload->>'direction', 'rx') <> 'tx')::int AS rx_count,
         COUNT(*) FILTER (WHERE COALESCE(payload->>'direction', 'rx') = 'tx')::int AS tx_count
       FROM packets
+      LEFT JOIN node_identity_aliases pa2 ON pa2.source_node_id = upper(btrim(packets.rx_node_id))
       WHERE packet_hash = ANY(SELECT packet_hash FROM recent_packets)
         AND time > ${fiveMinAgo}
         ${buildPacketScopeClause(scope, '', network)}
@@ -841,7 +870,8 @@ export async function getRecentPackets(
     LEFT JOIN packet_stats ps ON ps.packet_hash = rp.packet_hash
     ORDER BY rp.time DESC
     LIMIT $1`,
-    [limit, ...scope.params]
+    [limit, ...scope.params],
+    signal,
   );
   return res.rows;
 }
@@ -851,18 +881,28 @@ export async function getRecentPackets(
  * Used to pre-populate the channel feed on page load so it isn't blank.
  * Returns rows with the same shape as getRecentPackets.
  */
-export async function getRecentMessages(limit = 50, network?: string, observer?: string) {
+export async function getRecentMessages(
+  limit = 50,
+  network?: string,
+  observer?: string,
+  signal?: AbortSignal,
+) {
   const scope = buildScopePlaceholders(2, network, observer);
-  const res = await pool.query(
+  const res = await query(
     `WITH recent_msgs AS (
       SELECT DISTINCT ON (p.packet_hash)
-             p.time, p.packet_hash, p.rx_node_id, p.src_node_id, p.topic,
+             p.time, p.packet_hash,
+             COALESCE(pa_rx.canonical_node_id, upper(btrim(p.rx_node_id))) AS rx_node_id,
+             COALESCE(pa_src.canonical_node_id, upper(btrim(p.src_node_id))) AS src_node_id, p.topic,
              p.iata,
              p.packet_type, p.hop_count, p.rssi, p.snr, p.payload,
-             p.payload->>'_summary' AS summary,
+             COALESCE(p.payload->>'_summary', pd.summary) AS summary,
              p.advert_count, p.path_hashes, p.path_hash_size_bytes,
              p.network
       FROM packets p
+      LEFT JOIN packet_decryptions pd ON pd.packet_hash = p.packet_hash
+      LEFT JOIN node_identity_aliases pa_rx ON pa_rx.source_node_id = upper(btrim(p.rx_node_id))
+      LEFT JOIN node_identity_aliases pa_src ON pa_src.source_node_id = upper(btrim(p.src_node_id))
       WHERE p.packet_type = 5
         AND p.time > NOW() - INTERVAL '24 hours'
         ${buildPacketScopeClause(scope, 'p', network)}
@@ -874,11 +914,14 @@ export async function getRecentMessages(limit = 50, network?: string, observer?:
     msg_stats AS (
       SELECT
         packet_hash,
-        ARRAY_AGG(DISTINCT rx_node_id ORDER BY rx_node_id) FILTER (WHERE rx_node_id IS NOT NULL) AS observer_node_ids,
+        ARRAY_AGG(DISTINCT COALESCE(pa2.canonical_node_id, upper(btrim(packets.rx_node_id)))
+                  ORDER BY COALESCE(pa2.canonical_node_id, upper(btrim(packets.rx_node_id))))
+          FILTER (WHERE packets.rx_node_id IS NOT NULL) AS observer_node_ids,
         ARRAY_AGG(DISTINCT iata ORDER BY iata) FILTER (WHERE NULLIF(TRIM(iata), '') IS NOT NULL) AS observer_iatas,
         COUNT(*) FILTER (WHERE COALESCE(payload->>'direction', 'rx') <> 'tx')::int AS rx_count,
         COUNT(*) FILTER (WHERE COALESCE(payload->>'direction', 'rx') = 'tx')::int AS tx_count
       FROM packets
+      LEFT JOIN node_identity_aliases pa2 ON pa2.source_node_id = upper(btrim(packets.rx_node_id))
       WHERE packet_hash = ANY(SELECT packet_hash FROM recent_msgs)
         AND time > NOW() - INTERVAL '24 hours'
         ${buildPacketScopeClause(scope, '', network)}
@@ -895,8 +938,136 @@ export async function getRecentMessages(limit = 50, network?: string, observer?:
     ORDER BY m.time DESC
     LIMIT $1`,
     [limit, ...scope.params],
+    signal,
   );
   return res.rows;
+}
+
+/**
+ * Fetch one channel's decrypted GroupText history. The WebSocket snapshot stays
+ * intentionally recent and bounded; this demand-driven read reaches back 90
+ * days so quiet channels can still fill the feed's 50-row view.
+ */
+export async function getChannelMessageHistory(
+  channel: string,
+  limit = 50,
+  network?: string,
+  observer?: string,
+) {
+  const normalizedChannel = channel.trim().toLowerCase();
+  const channelHashes = channelHashesForName(normalizedChannel);
+  const scope = buildScopePlaceholders(6, network, observer);
+  // A historical packet may retain the ingest-time "[encrypted]" marker in
+  // payload while packet_decryptions has the channel-specific summary. Prefer
+  // the durable decryption summary for channel matching and display.
+  const summaryExpr = `COALESCE(NULLIF(BTRIM(pd.summary), ''), NULLIF(BTRIM(p.payload->>'_summary'), ''))`;
+  const historyWindow = `NOW() - INTERVAL '90 days'`;
+  const historyBatchLimit = 100;
+  const selectionLimit = Math.min(100, Math.max(limit, Math.ceil(limit * 1.5)));
+  const selected = new Set<string>();
+  let cursorTime = new Date();
+  let cursorHash = '\uffff';
+
+  while (selected.size < selectionLimit) {
+    const batch = await analyticsQuery<{ packet_hash: string; time: Date }>(
+      `SELECT p.time, p.packet_hash
+       FROM packets p
+       LEFT JOIN packet_decryptions pd ON pd.packet_hash = p.packet_hash
+       WHERE p.packet_type = 5
+         AND p.time > ${historyWindow}
+         AND (
+           p.time < $2::timestamptz
+           OR (p.time = $2::timestamptz AND p.packet_hash < $3)
+         )
+         ${buildPacketScopeClause(scope, 'p', network)}
+         -- Apply the complete privacy predicate after this bounded candidate
+         -- page is selected. The path/private-prefix checks are intentionally
+         -- not evaluated for every historical packet observation.
+         AND p.visibility_ok IS TRUE
+         AND p.is_private IS NOT TRUE
+         AND (
+           LOWER(${summaryExpr}) LIKE ('[' || $4 || ']%')
+           OR LOWER(COALESCE(
+             p.payload->>'channelHash',
+             p.payload->'decrypted'->>'channelHash',
+             pd.decrypted->>'channelHash',
+             ''
+           )) = ANY($5::text[])
+         )
+       ORDER BY p.time DESC, p.packet_hash DESC
+       LIMIT $1`,
+      [historyBatchLimit, cursorTime, cursorHash, normalizedChannel, channelHashes, ...scope.params],
+    );
+    if (batch.rows.length === 0) break;
+
+    for (const row of batch.rows) {
+      if (typeof row.packet_hash !== 'string' || selected.has(row.packet_hash)) continue;
+      selected.add(row.packet_hash);
+      if (selected.size >= selectionLimit) break;
+    }
+
+    const last = batch.rows.at(-1);
+    if (!last || batch.rows.length < historyBatchLimit) break;
+    cursorTime = last.time;
+    cursorHash = last.packet_hash;
+  }
+
+  const selectedHashes = Array.from(selected.keys());
+  if (selectedHashes.length === 0) return [];
+
+  const detailScope = buildScopePlaceholders(2, network, observer);
+  const res = await analyticsQuery(
+    `WITH channel_candidates AS MATERIALIZED (
+      SELECT DISTINCT ON (p.packet_hash)
+             p.time, p.packet_hash,
+             COALESCE(rx_alias.canonical_node_id, UPPER(BTRIM(p.rx_node_id))) AS rx_node_id,
+             COALESCE(src_alias.canonical_node_id, UPPER(BTRIM(p.src_node_id))) AS src_node_id, p.topic,
+             p.iata,
+             p.packet_type, p.hop_count, p.rssi, p.snr, p.payload,
+             ${summaryExpr} AS summary,
+             p.advert_count, p.path_hashes, p.path_hash_size_bytes,
+             p.network, p.visibility_ok, p.is_private
+      FROM packets p
+      LEFT JOIN packet_decryptions pd ON pd.packet_hash = p.packet_hash
+      LEFT JOIN node_identity_aliases rx_alias
+        ON rx_alias.source_node_id = UPPER(BTRIM(p.rx_node_id))
+      LEFT JOIN node_identity_aliases src_alias
+        ON src_alias.source_node_id = UPPER(BTRIM(p.src_node_id))
+      WHERE p.packet_hash = ANY($1::text[])
+        AND p.packet_type = 5
+        AND p.time > ${historyWindow}
+        ${buildPacketScopeClause(detailScope, 'p', network)}
+        AND p.visibility_ok IS TRUE
+        AND p.is_private IS NOT TRUE
+      ORDER BY p.packet_hash,
+               CASE WHEN ${summaryExpr} IS NOT NULL THEN 1 ELSE 0 END DESC,
+               CASE WHEN p.payload ? 'decrypted' THEN 1 ELSE 0 END DESC,
+               CASE WHEN p.src_node_id IS NOT NULL THEN 1 ELSE 0 END DESC,
+               p.time DESC
+    )
+    SELECT
+      m.time, m.packet_hash, m.rx_node_id, m.src_node_id, m.topic, m.iata,
+      m.packet_type, m.hop_count, m.rssi, m.snr, m.payload,
+      m.summary, m.advert_count, m.path_hashes, m.path_hash_size_bytes,
+      CASE WHEN m.rx_node_id IS NOT NULL THEN ARRAY[m.rx_node_id]::text[] ELSE ARRAY[]::text[] END AS observer_node_ids,
+      CASE WHEN NULLIF(TRIM(m.iata), '') IS NOT NULL THEN ARRAY[m.iata]::text[] ELSE ARRAY[]::text[] END AS observer_iatas,
+      CASE WHEN COALESCE(m.payload->>'direction', 'rx') <> 'tx' THEN 1 ELSE 0 END::int AS rx_count,
+      CASE WHEN COALESCE(m.payload->>'direction', 'rx') = 'tx' THEN 1 ELSE 0 END::int AS tx_count
+    FROM channel_candidates m
+    WHERE 1 = 1
+      ${buildPublicPacketPrivacyClause('m')}
+    ORDER BY m.time DESC`,
+    [selectedHashes, ...detailScope.params],
+  );
+  const channelPrefix = `[${normalizedChannel}]`;
+  return res.rows.slice(0, limit).map((row) => {
+    const summary = typeof row.summary === 'string' ? row.summary.trim() : '';
+    if (summary.toLowerCase().startsWith(channelPrefix)) return row;
+    // A channel-hash match can carry the generic live "[encrypted]" marker;
+    // normalize it to the selected channel so the existing feed scope matcher
+    // includes the row without changing the live packet path.
+    return { ...row, summary: `${channelPrefix}${summary ? ` ${summary}` : ''}` };
+  });
 }
 
 export async function getRecentPacketEvents(limit = 200, network?: string, observer?: string) {
@@ -904,11 +1075,18 @@ export async function getRecentPacketEvents(limit = 200, network?: string, obser
   const params: unknown[] = [limit, ...scope.params];
   const res = await pool.query(
     `SELECT
-        p.time, p.packet_hash, p.rx_node_id, p.src_node_id, p.topic, p.iata,
+        p.time, p.packet_hash,
+        COALESCE(rx_alias.canonical_node_id, UPPER(BTRIM(p.rx_node_id))) AS rx_node_id,
+        COALESCE(src_alias.canonical_node_id, UPPER(BTRIM(p.src_node_id))) AS src_node_id,
+        p.topic, p.iata,
         p.packet_type, p.hop_count, p.rssi, p.snr, p.payload,
         p.payload->>'_summary' AS summary,
         p.advert_count, p.path_hashes, p.path_hash_size_bytes
      FROM packets p
+     LEFT JOIN node_identity_aliases rx_alias
+       ON rx_alias.source_node_id = UPPER(BTRIM(p.rx_node_id))
+     LEFT JOIN node_identity_aliases src_alias
+       ON src_alias.source_node_id = UPPER(BTRIM(p.src_node_id))
      WHERE p.time > NOW() - INTERVAL '24 hours'
          ${buildPacketScopeClause(scope, 'p', network)}
          ${buildPublicPacketPrivacyClause('p')}
@@ -938,8 +1116,11 @@ export async function getPacketDetail(hash: string, network = 'ukmesh') {
       [hash, ...scope.params],
     ),
     pool.query(
-      `SELECT p.rx_node_id, p.iata, p.time, p.rssi, p.snr, p.hop_count
+      `SELECT COALESCE(rx_alias.canonical_node_id, UPPER(BTRIM(p.rx_node_id))) AS rx_node_id,
+              p.iata, p.time, p.rssi, p.snr, p.hop_count
        FROM packets p
+       LEFT JOIN node_identity_aliases rx_alias
+         ON rx_alias.source_node_id = UPPER(BTRIM(p.rx_node_id))
        WHERE p.packet_hash = $1
          ${buildPacketScopeClause(scope, 'p', network)}
          ${buildPublicPacketPrivacyClause('p')}
@@ -976,21 +1157,6 @@ export async function getPacketDetail(hash: string, network = 'ukmesh') {
   };
 }
 
-export type PathHistorySegmentRow = {
-  positions: [[number, number], [number, number]];
-  count: number;
-};
-
-export type PathHistoryCacheRow = {
-  scope: string;
-  window_start: string;
-  updated_at: string;
-  packet_count: number;
-  resolved_packet_count: number;
-  segment_counts: PathHistorySegmentRow[];
-  visibility_generation: number;
-};
-
 export async function getPublicVisibilityGeneration(signal?: AbortSignal): Promise<number> {
   const result = await query<{ generation: string }>(
     `SELECT generation::text AS generation
@@ -1006,122 +1172,6 @@ export async function getPublicVisibilityGeneration(signal?: AbortSignal): Promi
   return generation;
 }
 
-export async function getRecentPathHistoryPacketHashes(
-  hours = 1,
-  network?: string,
-  limit = 1200,
-  minPathHashSizeBytes = 1,
-): Promise<string[]> {
-  const normalizedMinPathHashSizeBytes = Number.isFinite(minPathHashSizeBytes)
-    ? Math.max(1, Math.floor(minPathHashSizeBytes))
-    : 1;
-  const scope = buildScopePlaceholders(4, network);
-  const params: unknown[] = [hours, limit, normalizedMinPathHashSizeBytes, ...scope.params];
-  const res = await pool.query<{ packet_hash: string }>(
-    `SELECT packet_hash
-     FROM (
-       SELECT p.packet_hash, MAX(p.time) AS last_seen
-       FROM packets p
-        WHERE p.time > NOW() - INTERVAL '1 hour' * $1
-          AND p.path_hashes IS NOT NULL
-          AND cardinality(p.path_hashes) > 0
-          AND COALESCE(p.path_hash_size_bytes, 1) >= $3
-          ${buildPacketScopeClause(scope, 'p', network)}
-          ${buildPublicPacketPrivacyClause('p')}
-       GROUP BY p.packet_hash
-     ) recent
-     ORDER BY last_seen DESC
-     LIMIT $2`,
-    params,
-  );
-  return res.rows.map((row) => row.packet_hash).filter(Boolean);
-}
-
-export async function upsertPathHistoryCache(entry: {
-  scope: string;
-  windowStart: Date;
-  packetCount: number;
-  resolvedPacketCount: number;
-  segmentCounts: PathHistorySegmentRow[];
-  visibilityGeneration: number;
-  analysisRun: AnalysisPublicationHandle;
-}): Promise<boolean> {
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    await assertAnalysisPublicationLease(client, entry.analysisRun);
-    const result = await client.query(
-      `INSERT INTO path_history_cache
-         (scope, window_start, updated_at, packet_count, resolved_packet_count, segment_counts, visibility_generation)
-       SELECT $1, $2, NOW(), $3, $4, $5::jsonb, $6
-         FROM (
-           SELECT generation
-             FROM public_visibility_state
-            WHERE singleton = TRUE
-              AND generation = $6
-            FOR SHARE
-         ) current_visibility
-       ON CONFLICT (scope) DO UPDATE SET
-         window_start = EXCLUDED.window_start,
-         updated_at = NOW(),
-         packet_count = EXCLUDED.packet_count,
-         resolved_packet_count = EXCLUDED.resolved_packet_count,
-         segment_counts = EXCLUDED.segment_counts,
-         visibility_generation = EXCLUDED.visibility_generation
-       RETURNING scope`,
-      [
-        entry.scope,
-        entry.windowStart.toISOString(),
-        entry.packetCount,
-        entry.resolvedPacketCount,
-        JSON.stringify(entry.segmentCounts),
-        entry.visibilityGeneration,
-      ],
-    );
-    await assertAnalysisPublicationLease(client, entry.analysisRun);
-    await client.query('COMMIT');
-    return (result.rowCount ?? 0) === 1;
-  } catch (error) {
-    await client.query('ROLLBACK');
-    throw error;
-  } finally {
-    client.release();
-  }
-}
-
-export async function getPathHistoryCache(
-  scope: string,
-  visibilityGeneration: number,
-): Promise<PathHistoryCacheRow | null> {
-  const res = await pool.query<{
-    scope: string;
-    window_start: string;
-    updated_at: string;
-    packet_count: number;
-    resolved_packet_count: number;
-    segment_counts: PathHistorySegmentRow[] | null;
-    visibility_generation: string;
-  }>(
-    `SELECT scope, window_start, updated_at, packet_count, resolved_packet_count,
-            segment_counts, visibility_generation::text AS visibility_generation
-     FROM path_history_cache
-     WHERE scope = $1
-       AND visibility_generation = $2`,
-    [scope, visibilityGeneration],
-  );
-  const row = res.rows[0];
-  if (!row) return null;
-  return {
-    scope: row.scope,
-    window_start: row.window_start,
-    updated_at: row.updated_at,
-    packet_count: row.packet_count,
-    resolved_packet_count: row.resolved_packet_count,
-    segment_counts: Array.isArray(row.segment_counts) ? row.segment_counts : [],
-    visibility_generation: Number(row.visibility_generation),
-  };
-}
-
 export type MultibytePathSegmentRow = {
   positions: [[number, number], [number, number]];
   count: number;
@@ -1134,53 +1184,67 @@ export async function getMultibytePathSegments(network?: string, observer?: stri
   const scope = buildScopePlaceholders(1, network, observer);
   const params: unknown[] = [...scope.params];
 
-  const res = await pool.query<{
-    a_lat: number;
-    a_lon: number;
-    b_lat: number;
-    b_lon: number;
-    count: number;
-  }>(
-    `SELECT
-       a.lat AS a_lat,
-       a.lon AS a_lon,
-       b.lat AS b_lat,
-       b.lon AS b_lon,
-       nl.multibyte_observed_count AS count
-     FROM node_links nl
-     JOIN nodes a ON a.node_id = nl.node_a_id
-     JOIN nodes b ON b.node_id = nl.node_b_id
-     WHERE nl.multibyte_observed_count > 0
-       AND nl.itm_viable = true
-       AND a.lat IS NOT NULL
-       AND a.lon IS NOT NULL
-       AND b.lat IS NOT NULL
-       AND b.lon IS NOT NULL
-       AND a.lat BETWEEN -90 AND 90
-       AND b.lat BETWEEN -90 AND 90
-       AND a.lon BETWEEN -180 AND 180
-       AND b.lon BETWEEN -180 AND 180
-       AND NOT (ABS(a.lat) < 5 AND ABS(a.lon) < 5)
-       AND NOT (ABS(b.lat) < 5 AND ABS(b.lon) < 5)
-       AND (a.name IS NULL OR a.name NOT LIKE '%🚫%')
-       AND (b.name IS NULL OR b.name NOT LIKE '%🚫%')
-       AND SQRT(
-         POWER((a.lat - b.lat) * 111, 2)
-         + POWER((a.lon - b.lon) * 111 * COS(RADIANS((a.lat + b.lat) / 2)), 2)
-       ) <= ${MAX_MULTIBYTE_PATH_SEGMENT_KM}
-       ${buildNodeScopeClause(scope, 'a')}
-       ${buildNodeScopeClause(scope, 'b')}
-     ORDER BY nl.multibyte_observed_count DESC`,
-    params,
-  );
+  // Two simple statements joined in JS. A single JOIN blob makes the planner
+  // guess rows=1 on the scoped-node CTE (the sightings EXISTS is not
+  // estimable) and pick nested loops that re-materialise the identity view
+  // per row: 100s+. Splitting keeps both statements simple enough that the
+  // planner cannot mis-estimate them (measured: ~325ms + ~92ms).
+  const [nodesRes, linksRes] = await Promise.all([
+    pool.query<{
+      node_id: string;
+      lat: number | null;
+      lon: number | null;
+      name: string | null;
+    }>(
+      `SELECT node_id, lat, lon, name
+       FROM node_identity_nodes n
+       WHERE 1=1${buildNodeScopeClause(scope, 'n')}`,
+      params,
+    ),
+    pool.query<{
+      node_a_id: string;
+      node_b_id: string;
+      multibyte_observed_count: number;
+    }>(
+      `SELECT node_a_id, node_b_id, multibyte_observed_count
+       FROM node_identity_links
+       WHERE multibyte_observed_count > 0
+         AND itm_viable = true`,
+    ),
+  ]);
 
-  const segments = res.rows.map((row) => ({
-    positions: [
-      [Number(row.a_lat), Number(row.a_lon)],
-      [Number(row.b_lat), Number(row.b_lon)],
-    ] as [[number, number], [number, number]],
-    count: Number(row.count ?? 0),
-  }));
+  const nodesById = new Map(nodesRes.rows.map((row) => [row.node_id, row]));
+  const segments: Array<{
+    positions: [[number, number], [number, number]];
+    count: number;
+  }> = [];
+  for (const link of linksRes.rows) {
+    const a = nodesById.get(link.node_a_id);
+    const b = nodesById.get(link.node_b_id);
+    if (!a || !b) continue;
+    if (a.lat == null || a.lon == null || b.lat == null || b.lon == null) continue;
+    if (a.lat < -90 || a.lat > 90 || b.lat < -90 || b.lat > 90) continue;
+    if (a.lon < -180 || a.lon > 180 || b.lon < -180 || b.lon > 180) continue;
+    if (Math.abs(a.lat) < 5 && Math.abs(a.lon) < 5) continue;
+    if (Math.abs(b.lat) < 5 && Math.abs(b.lon) < 5) continue;
+    if ((a.name ?? '').includes('🚫') || (b.name ?? '').includes('🚫')) continue;
+    const distKm = Math.sqrt(
+      Math.pow((a.lat - b.lat) * 111, 2)
+        + Math.pow(
+          (a.lon - b.lon) * 111 * Math.cos(((a.lat + b.lat) / 2) * (Math.PI / 180)),
+          2,
+        ),
+    );
+    if (distKm > MAX_MULTIBYTE_PATH_SEGMENT_KM) continue;
+    segments.push({
+      positions: [
+        [a.lat, a.lon],
+        [b.lat, b.lon],
+      ],
+      count: link.multibyte_observed_count,
+    });
+  }
+  segments.sort((x, y) => y.count - x.count);
 
   const maxCount = segments.reduce((max, segment) => Math.max(max, segment.count), 0);
   return { maxCount, segments };
@@ -1200,50 +1264,63 @@ export type ViableLinkRow = {
 };
 
 /** Returns viable links with metrics so UI can render precomputed styles immediately. */
-export async function getViableLinks(network?: string, observer?: string): Promise<ViableLinkRow[]> {
-  // For network-scoped queries we pre-compute the set of nodes seen on that
-  // network in a CTE, then join on it — replacing the correlated EXISTS
-  // subquery in buildNodeScopeClause which ran once per row and caused
-  // full scans on the packets table (30 s+ for teesside).
+export async function getViableLinks(
+  network?: string,
+  observer?: string,
+  signal?: AbortSignal,
+): Promise<ViableLinkRow[]> {
   if (network && !observer) {
     const scopedNetworks = network === 'ukmesh' ? UKMESH_NETWORKS : [network];
-    const res = await pool.query<ViableLinkRow>(
-      `WITH net_nodes AS (
-         SELECT DISTINCT node_id FROM nodes
+    // Keep the identity scope and link scan as separate statements. The
+    // identity view's representative-rank predicate is estimated at one row;
+    // combining it with both link endpoints makes PostgreSQL form the scoped
+    // node Cartesian product and perform ~174M composite-index probes for
+    // ukmesh. Each simple statement is fast even with that bad estimate, and
+    // the in-memory intersection preserves the exact endpoint scope.
+    const [nodesRes, linksRes] = await Promise.all([
+      query<{ node_id: string }>(
+        `SELECT DISTINCT node_id
+         FROM node_identity_nodes
          WHERE network = ANY($1::text[])
-           AND (name IS NULL OR name NOT LIKE '%🚫%')
-       )
-       SELECT
-         nl.node_a_id,
-         nl.node_b_id,
-         nl.observed_count,
-         nl.multibyte_observed_count,
-         COALESCE(nr.neighbor_report_count, 0) AS neighbor_report_count,
-         nr.neighbor_best_snr_db,
-         nl.itm_viable,
-         nl.itm_path_loss_db,
-         nl.count_a_to_b,
-         nl.count_b_to_a
-       FROM node_links nl
-       LEFT JOIN (
-         SELECT node_a_id, node_b_id,
-           SUM(sample_count)::int AS neighbor_report_count,
-           MAX(best_snr_db) AS neighbor_best_snr_db
-         FROM node_link_radio_reports
-         GROUP BY node_a_id, node_b_id
-       ) nr ON nr.node_a_id = nl.node_a_id AND nr.node_b_id = nl.node_b_id
-       WHERE (nl.itm_viable = true OR nl.force_viable = true)
-         AND nl.node_a_id IN (SELECT node_id FROM net_nodes)
-         AND nl.node_b_id IN (SELECT node_id FROM net_nodes)`,
-      [scopedNetworks],
-    );
-    return res.rows;
+           AND (name IS NULL OR name NOT LIKE '%🚫%')`,
+        [scopedNetworks],
+        signal,
+      ),
+      query<ViableLinkRow>(
+        `SELECT
+           nl.node_a_id,
+           nl.node_b_id,
+           nl.observed_count,
+           nl.multibyte_observed_count,
+           COALESCE(nr.neighbor_report_count, 0) AS neighbor_report_count,
+           nr.neighbor_best_snr_db,
+           nl.itm_viable,
+           nl.itm_path_loss_db,
+           nl.count_a_to_b,
+           nl.count_b_to_a
+         FROM node_identity_links nl
+         LEFT JOIN (
+           SELECT node_a_id, node_b_id,
+             SUM(sample_count)::int AS neighbor_report_count,
+             MAX(best_snr_db) AS neighbor_best_snr_db
+           FROM node_identity_link_radio_reports
+           GROUP BY node_a_id, node_b_id
+         ) nr ON nr.node_a_id = nl.node_a_id AND nr.node_b_id = nl.node_b_id
+         WHERE (nl.itm_viable = true OR nl.force_viable = true)`,
+        undefined,
+        signal,
+      ),
+    ]);
+    const scopedNodeIds = new Set(nodesRes.rows.map((row) => row.node_id));
+    return linksRes.rows.filter((link) => (
+      scopedNodeIds.has(link.node_a_id) && scopedNodeIds.has(link.node_b_id)
+    ));
   }
 
   const scope = buildScopePlaceholders(1, network, observer);
   const params: unknown[] = [...scope.params];
 
-  const res = await pool.query<ViableLinkRow>(
+  const res = await query<ViableLinkRow>(
     `SELECT
        nl.node_a_id,
        nl.node_b_id,
@@ -1255,22 +1332,23 @@ export async function getViableLinks(network?: string, observer?: string): Promi
        nl.itm_path_loss_db,
        nl.count_a_to_b,
        nl.count_b_to_a
-     FROM node_links nl
+     FROM node_identity_links nl
      LEFT JOIN (
        SELECT node_a_id, node_b_id,
          SUM(sample_count)::int AS neighbor_report_count,
          MAX(best_snr_db) AS neighbor_best_snr_db
-       FROM node_link_radio_reports
+       FROM node_identity_link_radio_reports
        GROUP BY node_a_id, node_b_id
      ) nr ON nr.node_a_id = nl.node_a_id AND nr.node_b_id = nl.node_b_id
-     JOIN nodes a ON a.node_id = nl.node_a_id
-     JOIN nodes b ON b.node_id = nl.node_b_id
+     JOIN node_identity_nodes a ON a.node_id = nl.node_a_id
+     JOIN node_identity_nodes b ON b.node_id = nl.node_b_id
      WHERE (nl.itm_viable = true OR nl.force_viable = true)
        AND (a.name IS NULL OR a.name NOT LIKE '%🚫%')
        AND (b.name IS NULL OR b.name NOT LIKE '%🚫%')
        ${buildNodeScopeClause(scope, 'a')}
        ${buildNodeScopeClause(scope, 'b')}`,
     params,
+    signal,
   );
   return res.rows;
 }

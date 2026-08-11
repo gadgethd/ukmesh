@@ -19,6 +19,7 @@ import {
 const App = lazy(() => import('./App.js').then(({ App: Component }) => ({ default: Component })));
 const OpenSourcePage = lazy(() => import('./pages/OpenSourcePage.js').then(({ OpenSourcePage: Component }) => ({ default: Component })));
 const StatsPage = lazy(() => import('./pages/StatsPage.js').then(({ StatsPage: Component }) => ({ default: Component })));
+const ContactPage = lazy(() => import('./pages/ContactPage.js').then(({ ContactPage: Component }) => ({ default: Component })));
 const OwnerPortalPage = lazy(() => import('./pages/OwnerPortalPage.js').then(({ OwnerPortalPage: Component }) => ({ default: Component })));
 const UKLayout = lazy(() => import('./pages/ukmesh/UKLayout.js').then(({ UKLayout: Component }) => ({ default: Component })));
 const UKHomePage = lazy(() => import('./pages/ukmesh/UKHomePage.js').then(({ UKHomePage: Component }) => ({ default: Component })));
@@ -29,7 +30,6 @@ const UKCompanionPage = lazy(() => import('./pages/ukmesh/UKCompanionPage.js').t
 const UKBestPracticePage = lazy(() => import('./pages/ukmesh/UKBestPracticePage.js').then(({ UKBestPracticePage: Component }) => ({ default: Component })));
 const SpamPage = lazy(() => import('./pages/SpamTransparencyPage.js').then(({ SpamPage: Component }) => ({ default: Component })));
 const TopologyPage = lazy(() => import('./pages/TopologyPage.js').then(({ TopologyPage: Component }) => ({ default: Component })));
-const StatusPage = lazy(() => import('./pages/StatusPage.js').then(({ StatusPage: Component }) => ({ default: Component })));
 const NotFoundPage = lazy(() => import('./pages/NotFoundPage.js').then(({ NotFoundPage: Component }) => ({ default: Component })));
 
 const PUBLIC_ROUTE_ELEMENTS: Record<PublicRouteComponent, React.ReactElement> = {
@@ -39,12 +39,12 @@ const PUBLIC_ROUTE_ELEMENTS: Record<PublicRouteComponent, React.ReactElement> = 
   companion: <UKCompanionPage />,
   install: <UKInstallPage />,
   docs: <UKBestPracticePage />,
-  health: <StatusPage />,
   owner: <OwnerPortalPage />,
   'open-source': <OpenSourcePage />,
   stats: <StatsPage />,
   spam: <SpamPage />,
   topology: <TopologyPage />,
+  contact: <ContactPage />,
 };
 
 const root = document.getElementById('root')!;

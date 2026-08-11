@@ -47,21 +47,23 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
 
   return (
     <div className="mobile-controls">
-      <button
-        type="button"
-        className="mobile-fullscreen-toggle"
-        onClick={onToggleFullScreenMap}
-        aria-pressed={fullScreenMap}
-      >
-        {fullScreenMap ? 'Restore panels' : 'Full-screen map'}
-      </button>
-      {!fullScreenMap && <MapModeSelector
-        activeMode={activeMode}
-        viewshedEnabled={viewshedEnabled}
-        onChange={onModeChange}
-        onShare={onShare}
-        shareLabel={shareLabel}
-      />}
+      <div className={`mobile-controls__primary${fullScreenMap ? ' mobile-controls__primary--fullscreen' : ''}`}>
+        {!fullScreenMap && <MapModeSelector
+          activeMode={activeMode}
+          viewshedEnabled={viewshedEnabled}
+          onChange={onModeChange}
+          onShare={onShare}
+          shareLabel={shareLabel}
+        />}
+        <button
+          type="button"
+          className="mobile-fullscreen-toggle"
+          onClick={onToggleFullScreenMap}
+          aria-pressed={fullScreenMap}
+        >
+          {fullScreenMap ? 'Restore panels' : 'Full-screen map'}
+        </button>
+      </div>
       {!fullScreenMap && (
         <div className="mobile-map-tools" aria-label="Map planning tools">
           <button

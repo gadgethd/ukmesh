@@ -2,11 +2,13 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   getResolveCache,
+  getHeldPath,
   getStickyNodeMap,
   invalidateResolveCache,
   mergeStickyNodes,
   resolveCacheMetrics,
   setResolveCache,
+  setHeldPath,
 } from './resolveCache.js';
 
 test('resolve cache invalidates a packet without a full-cache scan and remains bounded', () => {
@@ -29,4 +31,18 @@ test('sticky anchors cap nested entries per packet', () => {
   );
   mergeStickyNodes('sticky-packet', 'ukmesh', updates);
   assert.equal(getStickyNodeMap('sticky-packet', 'ukmesh')?.hashToNodeId.size, 64);
+});
+
+test('held paths survive ordinary result invalidation', () => {
+  setHeldPath('held-packet', 'ukmesh', {
+    path: ['AA01', 'BB01'],
+    resolvedAt: 123,
+    physical: true,
+  });
+  invalidateResolveCache('held-packet');
+  assert.deepEqual(getHeldPath('held-packet', 'ukmesh'), {
+    path: ['AA01', 'BB01'],
+    resolvedAt: 123,
+    physical: true,
+  });
 });

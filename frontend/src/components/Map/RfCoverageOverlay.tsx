@@ -5,18 +5,17 @@ import {
   type RfCoverageMeta,
   type RfCoverageTierName,
 } from '../../hooks/useRfCoverage.js';
+import {
+  maxRfRasterZoom,
+  registerRfRasterDataset,
+} from './rfCoverageRasterProtocol.js';
 
-const SOURCE_PREFIX = 'hopreach-rf-source-';
-const LAYER_PREFIX = 'hopreach-rf-layer-';
+const SOURCE_ID = 'hopreach-rf-source';
+const LAYER_ID = 'hopreach-rf-layer';
 
 function removeRfLayers(map: maplibregl.Map): void {
-  const style = map.getStyle();
-  for (const layer of [...(style.layers ?? [])].reverse()) {
-    if (layer.id.startsWith(LAYER_PREFIX) && map.getLayer(layer.id)) map.removeLayer(layer.id);
-  }
-  for (const sourceId of Object.keys(style.sources ?? {})) {
-    if (sourceId.startsWith(SOURCE_PREFIX) && map.getSource(sourceId)) map.removeSource(sourceId);
-  }
+  if (map.getLayer(LAYER_ID)) map.removeLayer(LAYER_ID);
+  if (map.getSource(SOURCE_ID)) map.removeSource(SOURCE_ID);
 }
 
 export function rfCoverageTileUrl(image: string, revision: string): string {
@@ -28,28 +27,38 @@ export function RfCoverageOverlay({
   map,
   meta,
   tier,
+  nodePublicKey,
   visible,
 }: {
   map: maplibregl.Map | null;
   meta: RfCoverageMeta | null;
   tier: RfCoverageTierName;
+  nodePublicKey?: string | null;
   visible: boolean;
 }) {
-  const product = meta?.coverage?.[tier];
+  const nodeEntry = nodePublicKey ? meta?.node_coverage?.[nodePublicKey.toLowerCase()] : undefined;
+  const product = nodePublicKey ? nodeEntry?.standard : meta?.coverage?.[tier];
   const tiles = useMemo(
     () => (product?.tiles ?? []).filter(isValidRfCoverageTile),
     [product?.tiles],
   );
-  const revision = `${meta?.run?.id ?? meta?.generated_at ?? 'unknown'}-${meta?.run?.tiers?.[tier]?.completed_tiles ?? tiles.length}`;
-  const signature = `${visible}|${tier}|${revision}|${tiles.map((tile) => `${tile.image}:${JSON.stringify(tile.bounds)}`).join('|')}`;
+  const revision = nodeEntry
+    ? `${nodeEntry.dataset_id}-${nodeEntry.updated_at}-${nodeEntry.completed_tiles ?? tiles.length}`
+    : `${meta?.run?.id ?? meta?.generated_at ?? 'unknown'}-${meta?.run?.tiers?.[tier]?.completed_tiles ?? tiles.length}`;
+  const datasetKind = nodePublicKey ? `node:${nodePublicKey.toLowerCase()}` : tier;
+  const signature = `${visible}|${datasetKind}|${revision}|${tiles.map((tile) => `${tile.image}:${JSON.stringify(tile.bounds)}`).join('|')}`;
 
   useEffect(() => {
     if (!map) return undefined;
     let active = true;
+    let retryFrame: number | null = null;
+    let releaseDataset: (() => void) | null = null;
 
     const render = () => {
       if (!active || !map.isStyleLoaded()) return;
       removeRfLayers(map);
+      releaseDataset?.();
+      releaseDataset = null;
       if (!visible || tiles.length === 0) return;
 
       const beforeId = map.getLayer('map-labels-water')
@@ -58,44 +67,60 @@ export function RfCoverageOverlay({
           ? 'privacy-rings-layer'
           : undefined;
 
-      tiles.forEach((tile, index) => {
-        const sourceId = `${SOURCE_PREFIX}${index}`;
-        const layerId = `${LAYER_PREFIX}${index}`;
-        map.addSource(sourceId, {
-          type: 'image',
+      const dataset = registerRfRasterDataset(
+        tiles.map((tile) => ({
           url: rfCoverageTileUrl(tile.image, revision),
-          coordinates: [
-            [tile.bounds.West, tile.bounds.North],
-            [tile.bounds.East, tile.bounds.North],
-            [tile.bounds.East, tile.bounds.South],
-            [tile.bounds.West, tile.bounds.South],
-          ],
-        });
-        map.addLayer({
-          id: layerId,
-          type: 'raster',
-          source: sourceId,
-          paint: {
-            'raster-opacity': 0.72,
-            'raster-resampling': 'nearest',
-            'raster-fade-duration': 0,
-          },
-        }, beforeId);
+          bounds: tile.bounds,
+        })),
+        maxRfRasterZoom(nodePublicKey ? 'standard' : tier),
+      );
+      releaseDataset = dataset.release;
+      map.addSource(SOURCE_ID, {
+        type: 'raster',
+        tiles: [dataset.tileTemplate],
+        tileSize: 256,
+        minzoom: 0,
+        maxzoom: maxRfRasterZoom(nodePublicKey ? 'standard' : tier),
+        bounds: dataset.bounds,
       });
+      map.addLayer({
+        id: LAYER_ID,
+        type: 'raster',
+        source: SOURCE_ID,
+        paint: {
+          'raster-opacity': 0.72,
+          'raster-resampling': 'nearest',
+          'raster-fade-duration': 0,
+        },
+      }, beforeId);
     };
 
-    // The React map reference is intentionally published before MapLibre's
-    // first style finishes loading. Re-render on that first load and on later
-    // theme/style replacements so RF cannot disappear until the next poll.
+    // MapLibre can publish the map reference from inside its initial `load`
+    // callback while isStyleLoaded() still reports false. Subscribing to
+    // `load` at that point is too late: the current event will not invoke the
+    // newly-added listener, leaving an already-enabled RF layer absent until
+    // the user toggles it. Retry on the next frame, with `idle` as a fallback,
+    // and continue to handle later theme/style replacements.
+    const renderOnIdle = () => render();
     map.on('style.load', render);
     if (map.isStyleLoaded()) render();
-    else map.once('load', render);
+    else {
+      map.once('load', render);
+      retryFrame = window.requestAnimationFrame(() => {
+        retryFrame = null;
+        if (map.isStyleLoaded()) render();
+        else map.once('idle', renderOnIdle);
+      });
+    }
 
     return () => {
       active = false;
+      if (retryFrame !== null) window.cancelAnimationFrame(retryFrame);
       map.off('load', render);
+      map.off('idle', renderOnIdle);
       map.off('style.load', render);
       if (map.isStyleLoaded()) removeRfLayers(map);
+      releaseDataset?.();
     };
   // signature deliberately captures content changes without depending on
   // unstable array/object identities returned by each metadata poll.

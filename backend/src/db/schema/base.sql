@@ -256,7 +256,19 @@ CREATE INDEX IF NOT EXISTS node_status_samples_node_time_idx
 CREATE INDEX IF NOT EXISTS node_status_samples_network_time_idx
   ON node_status_samples (network, time DESC);
 
--- ─── Cached beta-path history (pre-aggregated purple segments) ───────────────
+CREATE TABLE IF NOT EXISTS node_neighbor_samples (
+  node_id              TEXT             NOT NULL,
+  time                 TIMESTAMPTZ      NOT NULL DEFAULT NOW(),
+  neighbors            JSONB            NOT NULL CHECK (jsonb_typeof(neighbors) = 'array'),
+  network              TEXT             NOT NULL DEFAULT 'ukmesh'
+);
+
+SELECT create_hypertable('node_neighbor_samples', 'time', if_not_exists => TRUE);
+
+CREATE INDEX IF NOT EXISTS node_neighbor_samples_node_time_idx
+  ON node_neighbor_samples (node_id, time DESC);
+CREATE INDEX IF NOT EXISTS node_neighbor_samples_network_time_idx
+  ON node_neighbor_samples (network, time DESC);
 
 CREATE TABLE IF NOT EXISTS public_visibility_state (
   singleton    BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton),
@@ -266,16 +278,6 @@ CREATE TABLE IF NOT EXISTS public_visibility_state (
 INSERT INTO public_visibility_state (singleton)
 VALUES (TRUE)
 ON CONFLICT (singleton) DO NOTHING;
-
-CREATE TABLE IF NOT EXISTS path_history_cache (
-  scope                  TEXT PRIMARY KEY,
-  window_start           TIMESTAMPTZ NOT NULL,
-  updated_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  packet_count           INTEGER NOT NULL DEFAULT 0,
-  resolved_packet_count  INTEGER NOT NULL DEFAULT 0,
-  segment_counts         JSONB NOT NULL DEFAULT '[]'::jsonb,
-  visibility_generation  BIGINT NOT NULL DEFAULT 0
-);
 
 -- ─── Coverage polygons (one row per node, recalculated on position change) ───
 
@@ -416,6 +418,13 @@ CREATE TABLE IF NOT EXISTS path_model_calibration (
   confidence_scale      DOUBLE PRECISION NOT NULL DEFAULT 1,
   confidence_bias       DOUBLE PRECISION NOT NULL DEFAULT 0,
   recommended_threshold DOUBLE PRECISION NOT NULL DEFAULT 0.5,
+  input_hash            TEXT,
+  model_hash            TEXT,
+  algorithm_version     TEXT,
+  privacy_generation    BIGINT,
+  window_start          TIMESTAMPTZ,
+  window_end            TIMESTAMPTZ,
+  last_mutation_count   INTEGER NOT NULL DEFAULT 0,
   updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 ALTER TABLE path_model_calibration ADD COLUMN IF NOT EXISTS confidence_bias DOUBLE PRECISION NOT NULL DEFAULT 0;
@@ -439,6 +448,24 @@ CREATE INDEX IF NOT EXISTS worker_health_snapshots_ts_idx
   ON worker_health_snapshots(ts DESC);
 CREATE INDEX IF NOT EXISTS worker_health_snapshots_worker_ts_idx
   ON worker_health_snapshots(worker_name, ts DESC);
+
+CREATE TABLE IF NOT EXISTS worker_health_current (
+  worker_name      TEXT PRIMARY KEY,
+  captured_at      TIMESTAMPTZ NOT NULL,
+  status           TEXT NOT NULL,
+  queue_depth      INTEGER NOT NULL DEFAULT 0,
+  processed_1h     INTEGER NOT NULL DEFAULT 0,
+  last_activity_at TIMESTAMPTZ,
+  cpu_load_1m      DOUBLE PRECISION,
+  cpu_usage_pct    DOUBLE PRECISION,
+  mem_used_pct     DOUBLE PRECISION,
+  disk_used_pct    DOUBLE PRECISION,
+  queue_bytes      BIGINT,
+  dead_jobs        INTEGER,
+  retries          INTEGER,
+  active_leases    INTEGER,
+  oldest_age_s     DOUBLE PRECISION
+);
 
 CREATE TABLE IF NOT EXISTS frontend_error_events (
   id          BIGSERIAL PRIMARY KEY,

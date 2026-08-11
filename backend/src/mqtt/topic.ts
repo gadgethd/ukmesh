@@ -1,7 +1,7 @@
 export type MqttTopicParts = {
   iata: string;
   observerKey: string;
-  suffix: 'packets' | 'status';
+  suffix: 'packets' | 'status' | 'neighbors' | 'neighbours';
   network: 'ukmesh' | 'test';
 };
 
@@ -22,7 +22,10 @@ export function parseMqttTopic(
   if (!prefix || !acceptedPrefixes.has(prefix)) return null;
 
   const iata = (parts[1] ?? '').trim().toUpperCase();
-  if (!/^[A-Z0-9]{2,8}$/.test(iata) || blockedIatas.has(iata)) return null;
+  // Test-marker IATAs are not dropped at ingest: they persist under the
+  // isolated 'test' network scope so they never surface on public scopes.
+  const isTestMarker = blockedIatas.has(iata);
+  if (!/^[A-Z0-9]{2,8}$/.test(iata)) return null;
 
   // Database node IDs and decoded MeshCore public keys are canonical uppercase.
   // Keep that form at the persistence boundary; WebSocket/API layers normalize
@@ -31,12 +34,12 @@ export function parseMqttTopic(
   if (!/^[0-9A-F]{64}$/.test(observerKey)) return null;
 
   const suffix = (parts[3] ?? '').trim().toLowerCase();
-  if (suffix !== 'packets' && suffix !== 'status') return null;
+  if (suffix !== 'packets' && suffix !== 'status' && suffix !== 'neighbors' && suffix !== 'neighbours') return null;
 
   return {
     iata,
     observerKey,
     suffix,
-    network: prefix === 'meshcore' || prefix === 'ukmesh' ? 'ukmesh' : 'test',
+    network: isTestMarker ? 'test' : prefix === 'meshcore' || prefix === 'ukmesh' ? 'ukmesh' : 'test',
   };
 }

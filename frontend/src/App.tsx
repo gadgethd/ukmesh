@@ -11,14 +11,13 @@ import { MobileControls } from './components/app/MobileControls.js';
 import { LoadingIndicator } from './components/LoadingIndicator.js';
 import { Dialog, DialogTitle } from './components/ui/Dialog.js';
 import { useWebSocket } from './hooks/useWebSocket.js';
-import { nodeStore, type MeshNode } from './hooks/useNodes.js';
-import { useRfCoverage, type RfCoverageTierName } from './hooks/useRfCoverage.js';
+import { nodeStore } from './hooks/useNodes.js';
+import { rfNodeCoverageState, useRfCoverage, type RfCoverageTierName } from './hooks/useRfCoverage.js';
 import { useDashboardStats, type DashboardStats } from './hooks/useDashboardStats.js';
 import { linkStateStore } from './hooks/useLinkState.js';
 import { useAppMessageHandler } from './hooks/useAppMessageHandler.js';
 import {
   HEATMAP_CAPABLE,
-  INFERRED_NODES_CAPABLE,
   PACKET_ARCS_CAPABLE,
   RF_COVERAGE_ENABLED,
   VIEWSHED_ENABLED,
@@ -64,7 +63,6 @@ const RF_VISIBILITY_KEY = 'meshcore-rf-coverage-visible-v1';
 const RF_TIER_KEY = 'meshcore-rf-coverage-tier-v1';
 const MAP_FETCH_TIMEOUT_MS = 4_000;
 const OTHER_FETCH_TIMEOUT_MS = 15_000;
-const EMPTY_NODE_IDS = new Set<string>();
 const TimelineControl = React.lazy(() => import('./components/app/TimelineControl.js').then((module) => ({ default: module.TimelineControl })));
 const PlannerComparison = React.lazy(() => import('./components/app/PlannerComparison.js').then((module) => ({ default: module.PlannerComparison })));
 
@@ -72,7 +70,6 @@ export const App: React.FC = () => {
   const initialLayersSpecifiedRef = useRef(new URLSearchParams(window.location.search).has('layers'));
   const site = getCurrentSite();
   const runtimeFeatures = useRuntimeFeatures();
-  const inferredNodesEnabled = INFERRED_NODES_CAPABLE && runtimeFeatures.inferredNodes;
   const packetArcsEnabled = PACKET_ARCS_CAPABLE && runtimeFeatures.packetArcs;
   const heatmapEnabled = HEATMAP_CAPABLE && runtimeFeatures.heatmap;
   const [filters, setFilters] = useState<Filters>(() => {
@@ -122,8 +119,6 @@ export const App: React.FC = () => {
   // MapLibre map instance — used by MobileControls/NodeSearch for flyTo
   const [mlMap, setMlMap] = useState<maplibregl.Map | null>(null);
   const [showDisclaimer, setShowDisclaimer] = useState(() => !localStorage.getItem(DISCLAIMER_KEY));
-  const [inferredNodes, setInferredNodes] = useState<MeshNode[]>([]);
-  const [inferredActiveNodeIds, setInferredActiveNodeIds] = useState<Set<string>>(new Set());
   const [packetHistorySegments, setPacketHistorySegments] = useState<PacketHistorySegment[]>([]);
   const [fetchedStats, setFetchedStats] = useState<DashboardStats | null>(null);
   const [initialStateLoaded, setInitialStateLoaded] = useState(false);
@@ -134,6 +129,7 @@ export const App: React.FC = () => {
     localStorage.getItem(RF_TIER_KEY) === 'precision' ? 'precision' : 'standard'
   ));
   const rfCoverage = useRfCoverage(RF_COVERAGE_ENABLED);
+  const [rfCoverageNodeKey, setRfCoverageNodeKey] = useState<string | null>(null);
   const [showShortcutGuide, setShowShortcutGuide] = useState(false);
   const [isPageVisible, setIsPageVisible] = useState(
     () => (typeof document === 'undefined' ? true : document.visibilityState === 'visible'),
@@ -176,8 +172,6 @@ export const App: React.FC = () => {
 
   useEffect(() => {
     setFetchedStats(null);
-    setInferredNodes([]);
-    setInferredActiveNodeIds(new Set());
     setPacketHistorySegments([]);
     setInitialStateLoaded(false);
     setInitialPollLoaded(false);
@@ -251,6 +245,19 @@ export const App: React.FC = () => {
     setRfCoverageTier(tier);
   }, []);
 
+  const handleShowNodeRfCoverage = useCallback((publicKey: string) => {
+    if (!/^[0-9a-f]{64}$/i.test(publicKey)) return;
+    setRfCoverageNodeKey(publicKey.toLowerCase());
+    setFilters((current) => current.coverage ? current : { ...current, coverage: true });
+  }, []);
+
+  const handleClearNodeRfCoverage = useCallback(() => setRfCoverageNodeKey(null), []);
+
+  const getRfCoverageNodeState = useCallback(
+    (publicKey: string) => rfNodeCoverageState(rfCoverage.meta, publicKey),
+    [rfCoverage.meta],
+  );
+
   const handleModeChange = useCallback((mode: MapMode) => {
     setActiveMode(mode);
     setFilters((current) => filtersForMapMode(mode, current));
@@ -291,13 +298,7 @@ export const App: React.FC = () => {
   }, []);
 
   // Keep the fast poll to live data that changes independently of the socket.
-  // Expensive inferred/path overlays use their own, slower conditional polls.
   useEffect(() => {
-    if (!inferredNodesEnabled) {
-      setInferredNodes([]);
-      setInferredActiveNodeIds(new Set());
-      return undefined;
-    }
     let cancelled = false;
     let timer: number | null = null;
     let controller: AbortController | null = null;
@@ -362,53 +363,6 @@ export const App: React.FC = () => {
       if (timer) window.clearTimeout(timer);
     };
   }, [isPageVisible, networkFilter, observerFilter, scopeState.nodeEpoch]);
-
-  useEffect(() => {
-    let cancelled = false;
-    let timer: number | null = null;
-    let controller: AbortController | null = null;
-
-    const scheduleNext = () => {
-      if (cancelled || !isPageVisible) return;
-      timer = window.setTimeout(() => { void syncInferredNodes(); }, 60_000);
-    };
-
-    const syncInferredNodes = async () => {
-      if (cancelled || !isPageVisible) return;
-      controller = new AbortController();
-      try {
-        const response = await fetch(
-          uncachedEndpoint(withScopeParams('/api/inferred-nodes', { network: networkFilter, observer: observerFilter })),
-          {
-            cache: 'no-store',
-            signal: AbortSignal.any([controller.signal, AbortSignal.timeout(OTHER_FETCH_TIMEOUT_MS)]),
-          },
-        );
-        if (!response.ok || cancelled) return;
-        const payload = await response.json() as {
-          inferredNodes: MeshNode[]; inferredActiveNodeIds: string[];
-        };
-        if (!cancelled) {
-          setInferredNodes(payload.inferredNodes ?? []);
-          setInferredActiveNodeIds(new Set((payload.inferredActiveNodeIds ?? []).map((value) => value.toLowerCase())));
-        }
-      } catch (err) {
-        if (!cancelled && (err as DOMException).name !== 'AbortError') {
-          console.warn('[app] inferred nodes refresh failed');
-        }
-      } finally {
-        controller = null;
-        scheduleNext();
-      }
-    };
-
-    void syncInferredNodes();
-    return () => {
-      cancelled = true;
-      controller?.abort();
-      if (timer) window.clearTimeout(timer);
-    };
-  }, [inferredNodesEnabled, isPageVisible, networkFilter, observerFilter]);
 
   useEffect(() => {
     if (!filters.packetHistory && !(heatmapEnabled && filters.heatmap)) {
@@ -603,14 +557,17 @@ export const App: React.FC = () => {
 
       <div className="map-layer">
         <MapLibreMap
-          inferredNodes={inferredNodesEnabled ? inferredNodes : []}
-          inferredActiveNodeIds={inferredNodesEnabled ? inferredActiveNodeIds : EMPTY_NODE_IDS}
           showLinks={filters.links}
           showTerrain={filters.terrain}
           showClientNodes={filters.clientNodes}
           showHexClashes={filters.hexClashes}
           maxHexClashHops={filters.hexClashMaxHops}
           viewshedEnabled={VIEWSHED_ENABLED}
+          rfCoverageEnabled={RF_COVERAGE_ENABLED}
+          selectedRfCoverageNodeKey={rfCoverageNodeKey}
+          getRfCoverageNodeState={getRfCoverageNodeState}
+          onShowRfCoverage={handleShowNodeRfCoverage}
+          onClearRfCoverage={handleClearNodeRfCoverage}
           initialView={initialMapView}
           selectedNodeId={selectedNodeId}
           onNodeSelect={setSelectedNodeId}
@@ -624,6 +581,7 @@ export const App: React.FC = () => {
           map={mlMap}
           meta={rfCoverage.meta}
           tier={rfCoverageTier}
+          nodePublicKey={rfCoverageNodeKey}
           visible={RF_COVERAGE_ENABLED && filters.coverage}
         />
         <LiveOverlayController
@@ -641,6 +599,8 @@ export const App: React.FC = () => {
           availableTiers={rfCoverage.availableTiers}
           tier={rfCoverageTier}
           onTierChange={handleRfTierChange}
+          nodePublicKey={rfCoverageNodeKey}
+          onClearNode={handleClearNodeRfCoverage}
           visible={RF_COVERAGE_ENABLED && filters.coverage}
         />
         {(!initialStateLoaded && !initialPollLoaded) && (

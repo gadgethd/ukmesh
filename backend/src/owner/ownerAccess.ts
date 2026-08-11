@@ -5,6 +5,7 @@ import { getOwnerNodeIdsForUsername } from '../db/ownerAuth.js';
 import { query } from '../db/index.js';
 import { getNodeIdsForUserInAcl, readAclFile } from '../mqtt/aclManager.js';
 import { reconcileOwnerAuthorization } from './ownerAclReconciler.js';
+import { groupOwnerNodes, type OwnerDashboardRow } from './ownerDashboard.js';
 import { parseOwnerGrantConfig } from './ownerGrantConfig.js';
 
 function normalizeNodeIds(nodeIds: string[]): string[] {
@@ -155,75 +156,25 @@ function verifyMqttCredentialsViaBroker(mqttUsername: string, mqttPassword: stri
 }
 
 export async function buildOwnerDashboard(nodeIds: string[]) {
-  if (nodeIds.length < 1) {
-    return {
-      nodes: [],
-      totals: {
-        ownedNodes: 0,
-        packets24h: 0,
-        packets7d: 0,
-        packetsReceived24h: 0,
-      },
-      roadmap: [
-        'Per-node packet history for owner nodes',
-        'Advert and heartbeat trend views',
-        'RSSI and SNR trend views from observer reports',
-        'Node placement planner (coming next)',
-      ],
-    };
-  }
+  const ownedNodes = await query<OwnerDashboardRow>(
+    `SELECT n.node_id AS canonical_id,
+            n.name,
+            n.network,
+            n.last_seen::text,
+            n.advert_count,
+            n.lat,
+            n.lon,
+            n.iata,
+            n.role,
+            n.identity_source_ids AS members
+       FROM node_identity_nodes n
+      WHERE n.node_id IN (
+        SELECT meshcore_canonical_node_id(source_node_id)
+          FROM unnest($1::text[]) AS source(source_node_id)
+      )
+      ORDER BY n.last_seen DESC NULLS LAST`,
+    [nodeIds],
+  );
 
-  const [ownedNodes, packetSummary, rxSummary] = await Promise.all([
-    query<{
-      node_id: string;
-      name: string | null;
-      network: string;
-      last_seen: string | null;
-      advert_count: number | null;
-      lat: number | null;
-      lon: number | null;
-      iata: string | null;
-    }>(
-      `SELECT node_id, name, network, last_seen, advert_count, lat, lon, iata
-       FROM nodes
-       WHERE node_id = ANY($1::text[])
-       ORDER BY last_seen DESC NULLS LAST`,
-      [nodeIds],
-    ),
-    query<{ packets_24h: number; packets_7d: number }>(
-      `SELECT
-         COUNT(*) FILTER (WHERE time > NOW() - INTERVAL '24 hours')::int AS packets_24h,
-         COUNT(*) FILTER (WHERE time > NOW() - INTERVAL '7 days')::int AS packets_7d
-       FROM packets
-       WHERE src_node_id = ANY($1::text[])`,
-      [nodeIds],
-    ),
-    query<{ packets_24h: number }>(
-      `SELECT
-         COUNT(*) FILTER (WHERE time > NOW() - INTERVAL '24 hours')::int AS packets_24h
-       FROM packets
-       WHERE rx_node_id = ANY($1::text[])`,
-      [nodeIds],
-    ),
-  ]);
-
-  return {
-    nodes: ownedNodes.rows.map((row) => ({
-      ...row,
-      last_seen: row.last_seen ? new Date(row.last_seen).toISOString() : null,
-      advert_count: Number(row.advert_count ?? 0),
-    })),
-    totals: {
-      ownedNodes: ownedNodes.rows.length,
-      packets24h: Number(packetSummary.rows[0]?.packets_24h ?? 0),
-      packets7d: Number(packetSummary.rows[0]?.packets_7d ?? 0),
-      packetsReceived24h: Number(rxSummary.rows[0]?.packets_24h ?? 0),
-    },
-    roadmap: [
-      'Per-node packet history for owner nodes',
-      'Advert and heartbeat trend views',
-      'RSSI and SNR trend views from observer reports',
-      'Node placement planner (coming next)',
-    ],
-  };
+  return { nodes: groupOwnerNodes(ownedNodes.rows, nodeIds) };
 }

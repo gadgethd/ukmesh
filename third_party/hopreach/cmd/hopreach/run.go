@@ -553,6 +553,7 @@ func run(cfg appConfig) (err error) {
 		// briefly vanishing for anyone loading the page mid-run.
 		Coverage:      previousCoverage(cfg.outputDir),
 		ScopeCoverage: previousScopeCoverage(cfg.outputDir),
+		NodeCoverage:  previousNodeCoverage(cfg.outputDir),
 	}
 	// previousCoverage is nil on a genuine first run (or when the last
 	// meta.json never got a coverage tier — e.g. an earlier run died before

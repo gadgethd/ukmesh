@@ -10,7 +10,6 @@ interface ImportMetaEnv {
   readonly VITE_SITE_APP_URL: string;
   readonly VITE_SITE_HOME_URL: string;
   readonly VITE_RF_COVERAGE_ENABLED: string | undefined;
-  readonly VITE_INFERRED_NODES_ENABLED: string | undefined;
   readonly VITE_PACKET_ARCS_ENABLED: string | undefined;
   readonly VITE_HEATMAP_ENABLED: string | undefined;
 }

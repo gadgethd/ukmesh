@@ -1,15 +1,12 @@
 import 'node:process';
 import { WebSocket } from 'ws';
-import { initDb, query } from '../db/index.js';
+import { initDb } from '../db/index.js';
 import { observeSyntheticCheck } from '../metrics.js';
 import { startWorkerMetrics } from './workerMetrics.js';
-
-type CheckResult = {
-  name: string;
-  status: 'ok' | 'failed';
-  latencyMs: number;
-  detail: string;
-};
+import {
+  persistSyntheticCheckResults,
+  type SyntheticCheckResult as CheckResult,
+} from './syntheticPersistence.js';
 
 type AlertState = { failures: number; alerting: boolean };
 
@@ -21,11 +18,19 @@ function boundedNumber(raw: string | undefined, fallback: number, minimum: numbe
 }
 
 const INTERVAL_MS = boundedNumber(process.env['SYNTHETIC_INTERVAL_MS'], 60_000, 15_000);
+const FULL_INTERVAL_MS = Math.min(
+  15 * 60_000,
+  boundedNumber(process.env['SYNTHETIC_FULL_INTERVAL_MS'], 12 * 60_000, 10 * 60_000),
+);
 const TIMEOUT_MS = boundedNumber(process.env['SYNTHETIC_TIMEOUT_MS'], 10_000, 1_000);
+const INITIAL_STATE_TIMEOUT_MS = boundedNumber(
+  process.env['SYNTHETIC_INITIAL_STATE_TIMEOUT_MS'],
+  35_000,
+  10_000,
+);
 const FAILURE_THRESHOLD = boundedNumber(process.env['SYNTHETIC_FAILURE_THRESHOLD'], 3, 1);
 const ALERT_WEBHOOK_URL = String(process.env['ALERT_WEBHOOK_URL'] ?? '').trim();
 const states = new Map<string, AlertState>();
-let lastRetentionCleanup = 0;
 
 function elapsedMs(started: number): number {
   return Math.max(0, Math.round(performance.now() - started));
@@ -48,10 +53,37 @@ async function httpCheck(name: string, path: string, validate?: (body: unknown) 
   }
 }
 
-async function websocketCheck(): Promise<CheckResult> {
+function websocketUrl(skipInitialState: boolean): string {
+  const url = new URL(`${WS_URL}/ws`);
+  url.searchParams.set('network', 'ukmesh');
+  if (skipInitialState) url.searchParams.set('initial_state', '0');
+  return url.toString();
+}
+
+async function websocketPingCheck(): Promise<CheckResult> {
   const started = performance.now();
   return new Promise((resolve) => {
-    const socket = new WebSocket(`${WS_URL}/ws?network=ukmesh`, { handshakeTimeout: TIMEOUT_MS });
+    const socket = new WebSocket(websocketUrl(true), { handshakeTimeout: TIMEOUT_MS });
+    let settled = false;
+    const finish = (status: CheckResult['status'], detail: string) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      socket.close();
+      resolve({ name: 'websocket_ping', status, latencyMs: elapsedMs(started), detail: detail.slice(0, 300) });
+    };
+    const timeout = setTimeout(() => finish('failed', `no pong within ${TIMEOUT_MS}ms`), TIMEOUT_MS);
+    socket.on('open', () => socket.ping());
+    socket.on('pong', () => finish('ok', 'handshake and pong received'));
+    socket.on('error', (err) => finish('failed', err.message));
+    socket.on('close', () => finish('failed', 'socket closed before pong'));
+  });
+}
+
+async function websocketInitialStateCheck(): Promise<CheckResult> {
+  const started = performance.now();
+  return new Promise((resolve) => {
+    const socket = new WebSocket(websocketUrl(false), { handshakeTimeout: INITIAL_STATE_TIMEOUT_MS });
     let settled = false;
     const finish = (status: CheckResult['status'], detail: string) => {
       if (settled) return;
@@ -60,7 +92,10 @@ async function websocketCheck(): Promise<CheckResult> {
       socket.close();
       resolve({ name: 'websocket_initial_state', status, latencyMs: elapsedMs(started), detail: detail.slice(0, 300) });
     };
-    const timeout = setTimeout(() => finish('failed', `no initial_state within ${TIMEOUT_MS}ms`), TIMEOUT_MS);
+    const timeout = setTimeout(
+      () => finish('failed', `no initial_state within ${INITIAL_STATE_TIMEOUT_MS}ms`),
+      INITIAL_STATE_TIMEOUT_MS,
+    );
     socket.on('message', (data) => {
       try {
         const lines = String(data).split('\n').filter(Boolean);
@@ -77,15 +112,7 @@ async function websocketCheck(): Promise<CheckResult> {
 }
 
 async function persistResults(results: CheckResult[]): Promise<void> {
-  await Promise.all(results.map((result) => query(
-    `INSERT INTO operational_check_results (check_name, status, latency_ms, detail)
-     VALUES ($1, $2, $3, $4)`,
-    [result.name, result.status, result.latencyMs, result.detail],
-  )));
-  if (Date.now() - lastRetentionCleanup > 86_400_000) {
-    await query(`DELETE FROM operational_check_results WHERE ts < NOW() - INTERVAL '14 days'`);
-    lastRetentionCleanup = Date.now();
-  }
+  await persistSyntheticCheckResults(results);
 }
 
 async function notify(kind: 'alert' | 'recovery', result: CheckResult): Promise<void> {
@@ -134,19 +161,32 @@ async function evaluateAlerts(results: CheckResult[]): Promise<void> {
   }
 }
 
-async function runChecks(): Promise<void> {
-  const checks = [
-    httpCheck('http_liveness', '/healthz', (body) => (body as { status?: string } | null)?.status === 'ok'),
-    httpCheck('dependency_readiness', '/readyz', (body) => (body as { status?: string } | null)?.status === 'ready'),
-    httpCheck('stats_api', '/api/stats?network=ukmesh', (body) => Number.isFinite(Number((body as { totalNodes?: number } | null)?.totalNodes))),
-    websocketCheck(),
+async function runChecks(fullCanary: boolean): Promise<void> {
+  const checks: Array<{ name: string; promise: Promise<CheckResult> }> = [
+    { name: 'websocket_ping', promise: websocketPingCheck() },
   ];
-  const settled = await Promise.allSettled(checks);
-  const names = ['http_liveness', 'dependency_readiness', 'stats_api', 'websocket_initial_state'];
+  if (fullCanary) {
+    checks.push(
+      {
+        name: 'http_liveness',
+        promise: httpCheck('http_liveness', '/healthz', (body) => (body as { status?: string } | null)?.status === 'ok'),
+      },
+      {
+        name: 'dependency_readiness',
+        promise: httpCheck('dependency_readiness', '/readyz', (body) => (body as { status?: string } | null)?.status === 'ready'),
+      },
+      {
+        name: 'stats_api',
+        promise: httpCheck('stats_api', '/api/stats?network=ukmesh', (body) => Number.isFinite(Number((body as { totalNodes?: number } | null)?.totalNodes))),
+      },
+      { name: 'websocket_initial_state', promise: websocketInitialStateCheck() },
+    );
+  }
+  const settled = await Promise.allSettled(checks.map((check) => check.promise));
   const results = settled.map((result, index): CheckResult => {
     if (result.status === 'fulfilled') return result.value;
     return {
-      name: names[index] ?? `check_${index}`,
+      name: checks[index]?.name ?? `check_${index}`,
       status: 'failed',
       latencyMs: TIMEOUT_MS,
       detail: (result.reason instanceof Error ? result.reason.message : String(result.reason)).slice(0, 300),
@@ -155,20 +195,29 @@ async function runChecks(): Promise<void> {
   for (const result of results) observeSyntheticCheck(result.name, result.status === 'ok');
   await persistResults(results);
   await evaluateAlerts(results);
-  console.log(`[synthetic] ${results.map((result) => `${result.name}=${result.status}:${result.latencyMs}ms`).join(' ')}`);
+  console.log(
+    `[synthetic] mode=${fullCanary ? 'full' : 'ping'} `
+      + results.map((result) => `${result.name}=${result.status}:${result.latencyMs}ms`).join(' '),
+  );
 }
 
 async function main(): Promise<void> {
   startWorkerMetrics();
   await initDb();
   let running = false;
+  // Compose's backend healthcheck is deliberately liveness-only. Give MQTT
+  // readiness one lightweight cycle to settle before the first full canary.
+  let lastFullCanaryAt = Date.now() - FULL_INTERVAL_MS + INTERVAL_MS;
   const runCycle = async () => {
     if (running) {
       console.warn('[synthetic] check cycle skipped; previous cycle is still active');
       return;
     }
     running = true;
-    await runChecks().catch((err) => {
+    const now = Date.now();
+    const fullCanary = lastFullCanaryAt === 0 || now - lastFullCanaryAt >= FULL_INTERVAL_MS;
+    if (fullCanary) lastFullCanaryAt = now;
+    await runChecks(fullCanary).catch((err) => {
       console.error('[synthetic] check cycle failed', (err as Error).message);
     }).finally(() => {
       running = false;

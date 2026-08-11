@@ -3,6 +3,8 @@ import { ScopedCache } from '../../utils/scopedCache.js';
 
 export type OwnerNode = {
   node_id: string;
+  canonicalId: string;
+  members: string[];
   name: string | null;
   network: string;
   last_seen: string | null;
@@ -21,13 +23,6 @@ export function nodeRoleLabel(role: number | null): string {
 
 export type OwnerDashboard = {
   nodes: OwnerNode[];
-  totals: {
-    ownedNodes: number;
-    packets24h: number;
-    packets7d: number;
-    packetsReceived24h: number;
-  };
-  roadmap: string[];
 };
 
 export type OwnerSessionResponse = {
@@ -119,6 +114,54 @@ export type LivePacket = {
   body: string | null;
 };
 
+export type OwnerStatus = {
+  sampled_at: string | null;
+  battery_mv: number | null;
+  solar_mv: number | null;
+  board_temp_c: number | null;
+  wifi_rssi: number | null;
+  wifi_ssid: string | null;
+  wifi_uptime_ms: number | null;
+  ntp_synced: boolean | null;
+  ntp_sync_age_ms: number | null;
+  boot_count: number | null;
+  reset_reason: string | null;
+  max_loop_ms: number | null;
+  max_loop_at_ms: number | null;
+  nodes_heard_24h: number | null;
+  channel_utilization: number | null;
+  air_util_tx: number | null;
+  air_util_rx: number | null;
+  last_rx_rssi: number | null;
+  last_rx_snr: number | null;
+  tx_power_dbm: number | null;
+  config_version: string | null;
+  config_crc32: string | null;
+  fs_free_bytes: number | null;
+  fs_total_bytes: number | null;
+  nvs_free_entries: number | null;
+  channel_id: number | null;
+  git_commit: string | null;
+  boot_epoch: number | null;
+  mqtt: {
+    broker_uri: string | null;
+    broker_username: string | null;
+    uptime_ms: number | null;
+    reconnect_attempts_1h: number | null;
+    session_status_publishes: number | null;
+    session_packet_publishes: number | null;
+    last_offline_epoch: number | null;
+  };
+};
+
+export type HeardNeighbor = {
+  id: string;
+  rssi: number | null;
+  snr: number | null;
+  last_seen_at: string | null;
+  sampled_at: string | null;
+};
+
 export type OwnerLiveResponse = {
   nodeId: string;
   ownerNode: OwnerNode;
@@ -145,6 +188,8 @@ export type OwnerLiveResponse = {
     channelUtilPct: number | null;
     airUtilTxPct: number | null;
   }>;
+  status: OwnerStatus | null;
+  heardNeighbors: HeardNeighbor[];
   packetsSent24h: number;
   packetsReceived24h: number;
   alerts: Array<{ level: 'info' | 'warn' | 'error'; message: string }>;
@@ -183,14 +228,22 @@ export function isOwnerSessionResponse(value: unknown): value is OwnerSessionRes
   if (!isRecord(value) || value['ok'] !== true || !isRecord(value['dashboard'])) return false;
   const dashboard = value['dashboard'];
   return Array.isArray(dashboard['nodes'])
-    && isRecord(dashboard['totals'])
-    && Array.isArray(dashboard['roadmap'])
+    && dashboard['nodes'].every((node) => isRecord(node)
+      && typeof node['node_id'] === 'string'
+      && typeof node['canonicalId'] === 'string'
+      && Array.isArray(node['members'])
+      && node['members'].every((member) => typeof member === 'string'))
     && (value['mqttUsername'] == null || typeof value['mqttUsername'] === 'string');
 }
 
 export function isOwnerLiveResponse(value: unknown): value is OwnerLiveResponse {
-  return isRecord(value)
-    && typeof value['nodeId'] === 'string'
+  if (!isRecord(value)) return false;
+  const status = value['status'];
+  const heardNeighbors = value['heardNeighbors'];
+  if (status != null && (!isRecord(status) || !isRecord(status['mqtt']))) return false;
+  if (heardNeighbors != null && (!Array.isArray(heardNeighbors)
+    || heardNeighbors.some((neighbor) => !isRecord(neighbor) || typeof neighbor['id'] !== 'string'))) return false;
+  return typeof value['nodeId'] === 'string'
     && isRecord(value['ownerNode'])
     && Array.isArray(value['incomingPeers'])
     && Array.isArray(value['heardBy'])
@@ -222,6 +275,36 @@ export type MappedPeer = LivePeer & { lat: number; lon: number };
 export function fmtTs(timestamp: string | null): string {
   if (!timestamp) return 'No recent activity';
   return new Date(timestamp).toLocaleString();
+}
+
+export function formatDurationMs(milliseconds: number | null): string {
+  if (milliseconds == null || !Number.isFinite(milliseconds) || milliseconds < 0) return '—';
+  const totalMinutes = Math.floor(milliseconds / 60_000);
+  const days = Math.floor(totalMinutes / 1_440);
+  const hours = Math.floor((totalMinutes % 1_440) / 60);
+  const minutes = totalMinutes % 60;
+  if (days > 0) return `${days}d ${hours}h ${minutes}m`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${minutes}m`;
+}
+
+export function formatEpochSeconds(seconds: number | null): string {
+  if (seconds == null || !Number.isFinite(seconds) || seconds <= 0) return 'Unsynced';
+  const date = new Date(seconds * 1_000);
+  return Number.isFinite(date.getTime()) ? date.toLocaleString() : '—';
+}
+
+export function formatNeighborAge(timestamp: string | null, now = Date.now()): string {
+  if (!timestamp) return '—';
+  const time = Date.parse(timestamp);
+  if (!Number.isFinite(time)) return '—';
+  const totalMinutes = Math.max(0, Math.floor((now - time) / 60_000));
+  const days = Math.floor(totalMinutes / 1_440);
+  const hours = Math.floor((totalMinutes % 1_440) / 60);
+  const minutes = totalMinutes % 60;
+  if (days > 0) return `${days}d ${hours}h ${minutes}m ago`;
+  if (hours > 0) return `${hours}h ${minutes}m ago`;
+  return `${minutes}m ago`;
 }
 
 export function isValidMapCoord(lat: number | null, lon: number | null): boolean {

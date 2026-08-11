@@ -6,6 +6,36 @@ import {
   createStatsRepository,
 } from './statsRepository.js';
 
+test('multibyte fact cutover removes both raw decode scans and binds the privacy generation', async () => {
+  const calls: Array<{ text: string; params?: unknown[] }> = [];
+  const query = async <T extends QueryResultRow = QueryResultRow>(
+    text: string,
+    params?: unknown[],
+  ): Promise<{ rows: T[] }> => {
+    calls.push({ text, params });
+    if (text.includes('FROM multibyte_path_fact_state')) {
+      return { rows: [{ ready: true }] as T[] };
+    }
+    return { rows: [] };
+  };
+  const repository = createStatsRepository({
+    query,
+    networkFilters: () => ({
+      params: ['ukmesh'],
+      packets: 'AND network = $1',
+      packetsAlias: (alias: string) => `AND ${alias}.network = $1`,
+      nodes: 'AND network = $1',
+      nodesAlias: (alias: string) => `AND ${alias}.network = $1`,
+    }),
+  });
+
+  await repository.fetchChartsData('ukmesh', undefined, 12);
+  const factCalls = calls.filter((call) => call.text.includes('FROM multibyte_path_facts f'));
+  assert.equal(factCalls.length, 2);
+  assert.ok(factCalls.every((call) => call.params?.at(-1) === 12));
+  assert.equal(calls.some((call) => call.text.includes('row_number() OVER () AS obs_id')), false);
+});
+
 test('aggregate shadow comparison requires exact keys and applies the documented count tolerance', () => {
   assert.deepEqual(
     compareAggregateShadowRows(
@@ -64,10 +94,10 @@ test('24-hour chart aggregates use the complete scoped window and true signal me
     assert.ok(sql, `expected query containing ${fragment}`);
     return sql;
   };
+  const multibyteSql = sqlFor('fully_decoded_multibyte_24h');
   const fullWindowAggregates = [
     sqlFor('WITH prefix_counts'),
     sqlFor('hash_hex_len'),
-    sqlFor('fully_decoded_multibyte_24h'),
     sqlFor('avg_observers'),
     sqlFor('median_rssi'),
   ];
@@ -76,6 +106,8 @@ test('24-hour chart aggregates use the complete scoped window and true signal me
     assert.doesNotMatch(sql, /\bLIMIT\s+50000\b/i);
     assert.match(sql, /AND p\.network = \$1/);
   }
+  assert.doesNotMatch(multibyteSql, /\bLIMIT\s+50000\b/i);
+  assert.match(multibyteSql, /AND f\.network = \$1/);
 
   const signalSql = sqlFor('median_rssi');
   assert.match(signalSql, /percentile_cont\(0\.5\)\s+WITHIN GROUP\s+\(ORDER BY p\.rssi\)::text\s+AS median_rssi/i);
@@ -83,6 +115,12 @@ test('24-hour chart aggregates use the complete scoped window and true signal me
   assert.doesNotMatch(signalSql, /AVG\(p\.rssi\)::text\s+AS median_rssi/i);
   assert.doesNotMatch(signalSql, /AVG\(p\.snr\)::text\s+AS median_snr/i);
   assert.match(sqlFor('WITH prefix_counts'), /LIMIT 10/i);
+  assert.equal(
+    calls.some((call) => call.text.includes('meshcore_canonical_node_id')),
+    false,
+    'chart queries must canonicalize through the identity alias relation',
+  );
+  assert.ok(calls.some((call) => call.text.includes('LEFT JOIN node_identity_aliases')));
 });
 
 test('canonical charts coalesce six high-volume dimensions into one maintained aggregate read', async () => {
@@ -164,11 +202,18 @@ test('map summary uses the same coordinate, role, and 14-day freshness rules as 
 
   await repository.fetchStatsSummary('ukmesh', undefined);
 
+  assert.equal(
+    calls.some((call) => call.text.includes('meshcore_canonical_node_id')),
+    false,
+    'summary queries must canonicalize through the identity alias relation',
+  );
+
   const staleSql = calls.find((call) =>
     call.text.includes("<= NOW() - INTERVAL '14 days'"),
   )?.text;
   const mapSql = calls.find((call) =>
-    call.text.includes("GREATEST(nodes.last_seen, nodes.last_path_evidence_at)")
+    call.text.includes('nodes.last_path_evidence_at')
+    && call.text.includes('nodes.last_rx_at')
     && call.text.includes("> NOW() - INTERVAL '28 days'")
     && !call.text.includes("<= NOW() - INTERVAL '14 days'"),
   )?.text;
@@ -180,7 +225,10 @@ test('map summary uses the same coordinate, role, and 14-day freshness rules as 
     assert.match(sql, /nodes\.lon BETWEEN -180 AND 180/);
     assert.match(sql, /NOT \(ABS\(nodes\.lat\) < 5 AND ABS\(nodes\.lon\) < 5\)/);
     assert.match(sql, /\(nodes\.role IS NULL OR nodes\.role NOT IN \(1, 3\)\)/);
-    assert.match(sql, /GREATEST\(nodes\.last_seen, nodes\.last_path_evidence_at\)/);
+    assert.match(sql, /nodes\.last_seen/);
+    assert.match(sql, /nodes\.last_rx_at/);
+    assert.match(sql, /nodes\.last_status_at/);
+    assert.match(sql, /nodes\.last_path_evidence_at/);
     assert.match(sql, /nodes\.name NOT LIKE/);
     assert.doesNotMatch(sql, /INTERVAL '7 days'/);
   }

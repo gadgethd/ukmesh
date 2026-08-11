@@ -4,7 +4,7 @@
 # COVERAGE_GPU_MODE) links against wgpu-native's prebuilt static libs, which
 # target glibc. The runtime stage below has to follow suit for the same
 # reason.
-FROM golang:1.23-bookworm AS build
+FROM golang:1.25.7-bookworm@sha256:564e366a28ad1d70f460a2b97d1d299a562f08707eb0ecb24b659e5bd6c108e1 AS build
 # VERSION is passed by .github/workflows/release.yml as the git tag that
 # triggered this build (e.g. v0.1.8) — "dev" (buildinfo's own default,
 # unmistakable in the UI/analytics page) if built some other way, e.g.
@@ -26,7 +26,7 @@ RUN CGO_ENABLED=1 go build -ldflags "-X hopreach/internal/buildinfo.Version=${VE
 # drifting JS copy. wasm_exec.js (Go's own runtime shim) is copied from
 # this same build stage so it's always paired with the Go version that
 # actually compiled the module.
-FROM golang:1.23-bookworm AS wasmbuild
+FROM golang:1.25.7-bookworm@sha256:564e366a28ad1d70f460a2b97d1d299a562f08707eb0ecb24b659e5bd6c108e1 AS wasmbuild
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
@@ -42,7 +42,7 @@ RUN GOOS=js GOARCH=wasm go build -o /out/hopreach.wasm ./wasm \
 # `devices:` block) — otherwise gpu.mode=auto's probe simply finds nothing
 # and falls back to CPU, same as always. They're a modest image size cost
 # either way, not a functional requirement.
-FROM nginx:bookworm
+FROM ubuntu:26.04@sha256:3131b4cc82a783df6c9df078f86e01819a13594b865c2cad47bd1bca2b7063bb
 ARG SOURCE_REVISION=unknown
 ARG VERSION=v0.1.32+ukmesh
 LABEL org.opencontainers.image.revision="${SOURCE_REVISION}" \
@@ -50,8 +50,9 @@ LABEL org.opencontainers.image.revision="${SOURCE_REVISION}" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.licenses="AGPL-3.0-only WITH Commons-Clause"
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends libvulkan1 mesa-vulkan-drivers cron curl \
-  && rm -rf /var/lib/apt/lists/*
+  && apt-get install -y --no-install-recommends \
+       nginx cron curl libvulkan1 mesa-vulkan-drivers ca-certificates \
+  && rm -rf /var/lib/apt/lists/* /etc/nginx/sites-enabled/default
 
 COPY --from=build /app/hopreach /app/hopreach
 COPY --from=build /app/hopreach-shareapi /app/hopreach-shareapi
@@ -64,7 +65,7 @@ COPY docker/config.docker.yaml /config/config.yaml
 COPY LICENSE UPSTREAM_COMMIT /usr/share/doc/hopreach/
 RUN chmod +x /entrypoint.sh /app/hopreach /app/hopreach-shareapi \
   && mkdir -p /data/dem-cache /data/shared-plans /var/cache/nginx/dem-tiles \
-  && chown -R nginx:nginx /var/cache/nginx/dem-tiles
+  && chown -R www-data:www-data /var/cache/nginx/dem-tiles
 
 # The only environment variable HopReach's own binaries read — everything
 # else lives in config.yaml (see /config/config.yaml, baked in above from

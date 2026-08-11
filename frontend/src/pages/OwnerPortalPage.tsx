@@ -1,7 +1,7 @@
 import React, { FormEvent, useEffect, useMemo, useState } from 'react';
 import './owner-portal.css';
 import { LoadingIndicator } from '../components/LoadingIndicator.js';
-import { OwnerAlertSettings, OwnerLoginSection, OwnerSection } from '../components/owner/OwnerPortalSections.js';
+import { OwnerLoginSection } from '../components/owner/OwnerPortalSections.js';
 import { useRuntimeFeatures } from '../config/runtimeFeatures.js';
 import { useVisibilityPoll } from '../hooks/useVisibilityPoll.js';
 import { ApiResponseError, fetchJson } from '../utils/api.js';
@@ -39,6 +39,8 @@ import {
   formatUptime,
 } from './owner/OwnerPortalCharts.js';
 import { OwnerMapView } from './owner/OwnerMapView.js';
+import { OwnerHeardNeighbors } from './owner/OwnerHeardNeighbors.js';
+import { OwnerStatusFields } from './owner/OwnerStatusFields.js';
 export const OwnerPortalPage: React.FC = () => {
   const { privacyGeneration } = useRuntimeFeatures();
   const [mqttUsername, setMqttUsername] = useState('');
@@ -51,7 +53,6 @@ export const OwnerPortalPage: React.FC = () => {
   const [live, setLive] = useState<OwnerLiveResponse | null>(null);
   const [liveError, setLiveError] = useState<string | null>(null);
   const [lastHopStrength, setLastHopStrength] = useState<LastHopStrengthPoint[]>([]);
-  const [activeSection, setActiveSection] = useState<'dashboard' | 'live' | 'settings'>('dashboard');
   const [ownerSessionKey, setOwnerSessionKey] = useState<string | null>(null);
 
   const clearOwnerSession = () => {
@@ -294,33 +295,45 @@ export const OwnerPortalPage: React.FC = () => {
 
         {!loading && dashboard ? (
           <>
-            <nav className="owner-section-tabs" aria-label="Owner portal sections">
-              {(['dashboard', 'live', 'settings'] as const).map((section) => <button key={section} type="button" aria-pressed={activeSection === section} onClick={() => setActiveSection(section)}>{section}</button>)}
-            </nav>
-            {activeSection === 'dashboard' && <OwnerSection><section className="prose-section">
+            <section className="prose-section">
               <div className="owner-head">
-                <h2>Dashboard</h2>
+                <div>
+                  <h1>Repeater owner dashboard</h1>
+                  <p className="prose-note">Live status, identity history, telemetry, and packet activity for your owned nodes.</p>
+                </div>
                 <button type="button" className="site-btn site-btn--ghost" onClick={handleLogout}>
                   Logout
                 </button>
               </div>
-              {dashboard.nodes.length > 1 ? (
-                <div className="owner-select">
-                  <label htmlFor="owner-node-select">Node</label>
-                  <select
-                    id="owner-node-select"
-                    className="owner-select__input"
-                    value={selectedNodeId}
-                    onChange={(e) => setSelectedNodeId(e.target.value)}
+              <div className="owner-node-identities" aria-label="Owned repeater identities">
+                {dashboard.nodes.map((node) => (
+                  <article
+                    key={node.canonicalId}
+                    className={`owner-node-identity${node.node_id === selectedNodeId ? ' owner-node-identity--selected' : ''}`}
+                    data-canonical-id={node.canonicalId}
+                    onClick={() => setSelectedNodeId(node.node_id)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        setSelectedNodeId(node.node_id);
+                      }
+                    }}
+                    role="button"
+                    tabIndex={0}
+                    aria-pressed={node.node_id === selectedNodeId}
+                    title={dashboard.nodes.length > 1 ? `View ${node.name ?? 'this node'}` : undefined}
                   >
-                    {dashboard.nodes.map((node) => (
-                      <option key={node.node_id} value={node.node_id}>
-                        {node.name ?? node.node_id}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              ) : null}
+                    <div className="owner-node-identity__head">
+                      <strong>{node.name ?? 'Unnamed node'}</strong>
+                      <span>{node.members.length} member key{node.members.length === 1 ? '' : 's'}</span>
+                    </div>
+                    <p className="owner-node-identity__canonical">Canonical ID <code>{node.canonicalId}</code></p>
+                    <ul className="owner-node-identity__members" aria-label={`Member keys for ${node.name ?? node.canonicalId}`}>
+                      {node.members.map((member) => <li key={member}><code>{member}</code></li>)}
+                    </ul>
+                  </article>
+                ))}
+              </div>
               <div className="site-stats-grid site-stats-grid--6 owner-summary-grid">
                 <div className="site-stat"><span className="site-stat__value">{live?.ownerNode.name ?? 'Unnamed'}</span><span className="site-stat__label">{nodeRoleLabel(live?.ownerNode.role ?? null)}</span></div>
                 <div className="site-stat"><span className="site-stat__value">{live?.ownerNode.network ?? '-'}</span><span className="site-stat__label">Network</span></div>
@@ -336,9 +349,9 @@ export const OwnerPortalPage: React.FC = () => {
                 <div className="site-stat"><span className="site-stat__value">{live?.packetsReceived24h ?? 0}</span><span className="site-stat__label">Packets Received (24h)</span></div>
               </div>
               {liveError ? <p className="prose-note owner-login__error">Live data error: {liveError}</p> : null}
-            </section></OwnerSection>}
+            </section>
 
-            {activeSection === 'live' && <OwnerSection><section className="owner-panel owner-telemetry-panel">
+            <section className="owner-panel owner-telemetry-panel">
               <div className="owner-panel__head">
                 <div>
                   <h2>Node Telemetry</h2>
@@ -364,6 +377,17 @@ export const OwnerPortalPage: React.FC = () => {
                 />
                 <LastHopStrengthChart nodeId={selectedNodeId} points={lastHopStrength} isPassiveRepeater={live !== null && (live.incomingPeers.length === 0 && live.recentPackets.length === 0 && live.heardBy.length > 0)} />
               </div>
+            </section>
+
+            <section className="owner-panel owner-status-panel">
+              <div className="owner-panel__head">
+                <div>
+                  <h2>Node status</h2>
+                  <p className="prose-note">Latest nullable diagnostics reported by the node.</p>
+                </div>
+                <span className="owner-status-panel__sample">{live?.status?.sampled_at ? fmtTs(live.status.sampled_at) : 'No sample'}</span>
+              </div>
+              <OwnerStatusFields status={live?.status ?? null} />
             </section>
 
             <div className="owner-dashboard-grid">
@@ -465,6 +489,16 @@ export const OwnerPortalPage: React.FC = () => {
                 </div>
               </section>
 
+              <section className="prose-section owner-panel owner-panel--neighbors">
+                <div className="owner-panel__head">
+                  <div>
+                    <h2>Heard neighbors</h2>
+                    <p className="prose-note" style={{ marginTop: 0 }}>The latest neighbor sample, sorted by last-seen recency (up to 32 nodes).</p>
+                  </div>
+                </div>
+                <OwnerHeardNeighbors neighbors={live?.heardNeighbors ?? []} />
+              </section>
+
               <section className="prose-section owner-panel owner-panel--packets">
                 <div className="owner-panel__head"><h2>Live Packets Received By {nodeRoleLabel(live?.ownerNode.role ?? null)}</h2></div>
                 <div className="owner-packets">
@@ -488,10 +522,7 @@ export const OwnerPortalPage: React.FC = () => {
                   ) : null}
                 </div>
               </section>
-            </div></OwnerSection>}
-
-            {activeSection === 'settings' && <OwnerAlertSettings nodes={dashboard.nodes} selectedNodeId={selectedNodeId} />}
-
+            </div>
           </>
         ) : null}
       </div>

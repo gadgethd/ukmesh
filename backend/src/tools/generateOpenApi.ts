@@ -54,7 +54,10 @@ function operation(contract: ApiContract): Record<string, unknown> {
       .replace(/^-|-$/g, ''),
     tags: [contract.access],
     'x-access': contract.access,
-    parameters: pathParameters(contract.path),
+    parameters: [
+      ...pathParameters(contract.path),
+      ...(contract.queryParameters ?? []),
+    ],
     responses: {
       [status]: status === '204'
         ? { description: 'Deleted' }
@@ -76,6 +79,12 @@ function operation(contract: ApiContract): Record<string, unknown> {
       },
     },
   };
+  for (const [additionalStatus, response] of Object.entries(contract.additionalResponses ?? {})) {
+    (result['responses'] as Record<string, unknown>)[additionalStatus] = {
+      description: response.description,
+      content: { 'application/json': { schema: response.responseSchema } },
+    };
+  }
   if (contract.access === 'operator') {
     result['servers'] = [{
       url: 'http://127.0.0.1:3000',

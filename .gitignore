@@ -9,6 +9,9 @@ test-results/
 # Environment variables — never commit real credentials
 .env
 
+# Local semantic code index
+.tokensave/
+
 # Mosquitto credentials (generated file, not for source control)
 mosquitto/passwd
 mosquitto/acl
@@ -52,3 +55,4 @@ frontend/public/favicon-teesside.svg
 audit.md
 NEW_PATHING_SYSTEM.md
 local-vs-github-pr-plan.md
+/.env.bak-*

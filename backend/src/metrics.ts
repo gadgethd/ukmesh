@@ -17,6 +17,13 @@ export const mqttMessagesTotal = new Counter({
   registers: [metricsRegistry],
 });
 
+export const ownerAclReloadTotal = new Counter({
+  name: 'meshcore_owner_acl_reload_total',
+  help: 'Authenticated Mosquitto ACL reload requests by bounded outcome.',
+  labelNames: ['outcome'] as const,
+  registers: [metricsRegistry],
+});
+
 export const websocketClients = new Gauge({
   name: 'meshcore_websocket_clients',
   help: 'Currently connected WebSocket clients.',
@@ -150,6 +157,12 @@ export const packetBatchFlushTotal = new Counter({
   registers: [metricsRegistry],
 });
 
+export const packetBatchRetryTotal = new Counter({
+  name: 'meshcore_packet_batch_retries_total',
+  help: 'Transient database retry attempts for packet batches.',
+  registers: [metricsRegistry],
+});
+
 export const packetBatchSize = new Histogram({
   name: 'meshcore_packet_batch_size',
   help: 'Packets committed per atomic batch.',
@@ -265,11 +278,10 @@ export const backupAgeSeconds = new Gauge({
 
 const HTTP_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS', 'HEAD']);
 const METRIC_NETWORKS = new Set(['ukmesh', 'teesside', 'test']);
-const METRIC_ANALYSIS_WORKLOADS = new Set(['spam-analysis', 'path-learning', 'path-history']);
+const METRIC_ANALYSIS_WORKLOADS = new Set(['spam-analysis', 'path-learning']);
 const METRIC_WORKERS = new Set([
   'health',
   'path_learning',
-  'path_history',
   'synthetic',
   'link_backfill',
   'link',
@@ -297,13 +309,13 @@ const METRIC_SYNTHETIC_CHECKS = new Set([
   'http_liveness',
   'dependency_readiness',
   'stats_api',
+  'websocket_ping',
   'websocket_initial_state',
 ]);
 const METRIC_CACHES = new Set([
   'api_stats',
   'api_inferred_nodes',
   'api_node_links',
-  'api_path_history',
   'api_charts',
   'api_owner_live',
   'mqtt_channels',

@@ -22,7 +22,6 @@ export const NodeLegend: React.FC<{ mapLight: boolean }> = ({ mapLight }) => {
     { label: 'Room server', color: colors.roomServer },
     { label: 'Sensor', color: colors.sensor },
     { label: 'Offline / stale', color: colors.stale },
-    { label: 'Inferred', color: colors.inferred },
     { label: 'Selected', color: colors.selected, ring: true },
   ];
   const linkRows = [

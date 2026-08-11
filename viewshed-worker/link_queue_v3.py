@@ -26,6 +26,7 @@ COUNTERS = 'meshcore:link:v3:counters'
 REBUILD = 'meshcore:link:v3:rebuild'
 WORKER_HEARTBEAT = 'meshcore:link:v3:worker_heartbeat'
 EVENTS = 'meshcore:link:v3:events'
+WAKE = 'meshcore:link:v3:wake'
 
 MAX_JOBS = max(1, min(100_000, int(os.environ.get('LINK_QUEUE_V3_MAX_JOBS', '5000'))))
 MAX_BYTES = max(1, min(1024 * 1024 * 1024, int(os.environ.get('LINK_QUEUE_V3_MAX_BYTES', str(64 * 1024 * 1024)))))
@@ -71,6 +72,8 @@ else
 end
 redis.call('LPUSH', KEYS[11], 'admit')
 redis.call('LTRIM', KEYS[11], 0, 255)
+redis.call('LPUSH', KEYS[13], '1')
+redis.call('LTRIM', KEYS[13], 0, 0)
 return {'accepted', ARGV[1]}
 """
 
@@ -427,9 +430,9 @@ def physical_identity(node_a_id: str, node_b_id: str, generation: str | None = N
 def admit(client, job: dict) -> tuple[str, str | None]:
     payload = json.dumps(job, separators=(',', ':'), sort_keys=True)
     result = client.eval(
-        ADMIT_SCRIPT, 12,
+        ADMIT_SCRIPT, 13,
         READY, PAYLOADS, STATES, ATTEMPTS, BYTES, DEDUPE, DEDUPE_BY_JOB,
-        DEFERRED, REBUILD, COUNTERS, EVENTS, ENQUEUED,
+        DEFERRED, REBUILD, COUNTERS, EVENTS, ENQUEUED, WAKE,
         job['job_id'], job['dedupe_key'], payload, _payload_bytes(payload),
         MAX_JOBS, MAX_BYTES, MAX_PAYLOAD_BYTES, job.get('generation') or '',
         int(time.time() * 1000),

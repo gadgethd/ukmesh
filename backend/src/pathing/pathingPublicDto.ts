@@ -9,11 +9,27 @@ export type PublicPathExplanation = {
   limitations?: string[];
 };
 
+export type PublicCanonicalPathNode = {
+  position: number;
+  hash: string;
+  nodeId: string | null;
+  name: string | null;
+  lat: number | null;
+  lon: number | null;
+  ambiguous: boolean;
+  confidence: number | null;
+};
+
+export type PublicPathObserver = { observerId: string };
+
 export type PublicBetaResultDto = {
   ok: boolean;
   packetHash: string;
   mode: 'resolved' | 'fallback' | 'none';
   confidence: number | null;
+  canonicalPath: PublicCanonicalPathNode[];
+  observers: PublicPathObserver[];
+  network: string;
   permutationCount: number;
   remainingHops: number | null;
   purplePath: PublicPathPoint[] | null;
@@ -27,8 +43,12 @@ export type PublicBetaResultDto = {
 export type PublicMultiObserverDto = {
   ok: boolean;
   packetHash: string;
+  network: string;
   observerCount: number;
   sharedPrefixLength: number;
+  canonicalPath: PublicCanonicalPathNode[];
+  observers: PublicPathObserver[];
+  confidence: number | null;
   results: PublicBetaResultDto[];
 };
 
@@ -108,6 +128,41 @@ function projectExplanation(value: unknown): PublicPathExplanation | undefined {
   };
 }
 
+function projectCanonicalPath(value: unknown): PublicCanonicalPathNode[] {
+  if (!Array.isArray(value)) return [];
+  const nodes: PublicCanonicalPathNode[] = [];
+  for (const item of value) {
+    if (!isPlainRecord(item)) continue;
+    const hash = ownValue(item, 'hash');
+    const nodeId = ownValue(item, 'nodeId');
+    const name = ownValue(item, 'name');
+    if (typeof hash !== 'string') continue;
+    nodes.push({
+      position: finiteNumber(ownValue(item, 'position'), -1),
+      hash,
+      nodeId: typeof nodeId === 'string' ? nodeId : null,
+      name: typeof name === 'string' ? name : null,
+      lat: nullableNumber(ownValue(item, 'lat')),
+      lon: nullableNumber(ownValue(item, 'lon')),
+      ambiguous: ownValue(item, 'ambiguous') === true,
+      confidence: nullableNumber(ownValue(item, 'confidence')),
+    });
+  }
+  return nodes;
+}
+
+function projectObservers(value: unknown): PublicPathObserver[] {
+  if (!Array.isArray(value)) return [];
+  const observers: PublicPathObserver[] = [];
+  for (const item of value) {
+    if (isPlainRecord(item)) {
+      const observerId = ownValue(item, 'observerId');
+      if (typeof observerId === 'string') observers.push({ observerId });
+    }
+  }
+  return observers;
+}
+
 export function toPublicBetaResultDto(value: unknown): PublicBetaResultDto {
   if (!isPlainRecord(value)) throw new Error('INVALID_PATH_RESULT');
   const packetHash = ownValue(value, 'packetHash');
@@ -117,11 +172,15 @@ export function toPublicBetaResultDto(value: unknown): PublicBetaResultDto {
     throw new Error('INVALID_PATH_RESULT');
   }
   const explanation = projectExplanation(ownValue(value, 'explanation'));
+  const network = ownValue(value, 'network');
   return {
     ok: ownValue(value, 'ok') === true,
     packetHash,
     mode,
     confidence: nullableNumber(ownValue(value, 'confidence')),
+    canonicalPath: projectCanonicalPath(ownValue(value, 'canonicalPath')),
+    observers: projectObservers(ownValue(value, 'observers')),
+    network: typeof network === 'string' ? network : '',
     permutationCount: finiteNumber(ownValue(value, 'permutationCount')),
     remainingHops: nullableNumber(ownValue(value, 'remainingHops')),
     purplePath: projectPath(ownValue(value, 'purplePath')),
@@ -138,11 +197,16 @@ export function toPublicMultiObserverDto(value: unknown): PublicMultiObserverDto
   const packetHash = ownValue(value, 'packetHash');
   const results = ownValue(value, 'results');
   if (typeof packetHash !== 'string' || !Array.isArray(results)) throw new Error('INVALID_PATH_RESULT');
+  const network = ownValue(value, 'network');
   return {
     ok: ownValue(value, 'ok') === true,
     packetHash,
+    network: typeof network === 'string' ? network : '',
     observerCount: finiteNumber(ownValue(value, 'observerCount')),
     sharedPrefixLength: finiteNumber(ownValue(value, 'sharedPrefixLength')),
+    canonicalPath: projectCanonicalPath(ownValue(value, 'canonicalPath')),
+    observers: projectObservers(ownValue(value, 'observers')),
+    confidence: nullableNumber(ownValue(value, 'confidence')),
     results: results.map(toPublicBetaResultDto),
   };
 }

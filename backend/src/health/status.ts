@@ -45,7 +45,7 @@ type RetentionTarget = {
 };
 
 const RETENTION_TARGETS: RetentionTarget[] = [
-  { table: 'worker_health_snapshots', timestampColumn: 'ts', retention: '14 days', batchSize: 10_000 },
+  { table: 'worker_health_snapshots', timestampColumn: 'ts', retention: '7 days', batchSize: 10_000 },
   { table: 'frontend_error_events', timestampColumn: 'time', retention: '30 days', batchSize: 2_000 },
   {
     table: 'owner_alert_deliveries',
@@ -85,6 +85,10 @@ const OPERATIONAL_RETENTION_ENABLED =
   process.env['DATA_LIFECYCLE_RETENTION_ENABLED'] === 'true';
 const OPERATIONAL_RETENTION_TARGETS = configuredLifecycleTargets(
   process.env['DATA_LIFECYCLE_RETENTION_TARGETS'],
+);
+const SYNTHETIC_SUCCESS_TTL_MS = Math.max(
+  16 * 60_000,
+  Number(process.env['SYNTHETIC_SUCCESS_TTL_MS'] ?? 16 * 60_000) || 16 * 60_000,
 );
 
 let redisClient: Redis | null = null;
@@ -289,8 +293,7 @@ async function currentWorkers(precomputedStats?: ReturnType<typeof systemStats>)
     linkRecent,
     linkLast,
     learning,
-    healthRecent,
-    healthLast,
+    healthActivity,
     backfillState,
   ] = await Promise.all([
     Promise.all([
@@ -316,14 +319,9 @@ async function currentWorkers(precomputedStats?: ReturnType<typeof systemStats>)
     query<{ count: string }>(`SELECT COUNT(*) AS count FROM node_links WHERE itm_computed_at > NOW() - INTERVAL '1 hour'`),
     query<{ ts: string | null }>(`SELECT MAX(itm_computed_at)::text AS ts FROM node_links`),
     query<{ ts: string | null }>(`SELECT MAX(updated_at)::text AS ts FROM path_model_calibration`),
-    query<{ count: string }>(
-      `SELECT COUNT(*) AS count
-       FROM worker_health_snapshots
-       WHERE worker_name = 'health-worker'
-         AND ts > NOW() - INTERVAL '1 hour'`,
-    ),
-    query<{ ts: string | null }>(
-      `SELECT MAX(ts)::text AS ts
+    query<{ count: string; ts: string | null }>(
+      `SELECT COUNT(*) FILTER (WHERE ts > NOW() - INTERVAL '1 hour') AS count,
+              MAX(ts)::text AS ts
        FROM worker_health_snapshots
        WHERE worker_name = 'health-worker'`,
     ),
@@ -339,8 +337,8 @@ async function currentWorkers(precomputedStats?: ReturnType<typeof systemStats>)
   const diskPct = stats.disk.used_pct ?? -1;
 
   const linkProcessed = Number(linkRecent.rows[0]?.count ?? 0);
-  const healthProcessed = Number(healthRecent.rows[0]?.count ?? 0);
-  const healthLastTs = healthLast.rows[0]?.ts ?? null;
+  const healthProcessed = Number(healthActivity.rows[0]?.count ?? 0);
+  const healthLastTs = healthActivity.rows[0]?.ts ?? null;
   const learningLast = learning.rows[0]?.ts ?? null;
   const learningRecent = learningLast ? (Date.now() - Date.parse(learningLast)) <= 60 * 60_000 : false;
   const backfillLinks = Number(backfillState.rows[0]?.links ?? 0);
@@ -415,6 +413,34 @@ async function currentWorkers(precomputedStats?: ReturnType<typeof systemStats>)
   ];
 }
 
+async function currentWorkerStatuses(precomputedStats: ReturnType<typeof systemStats>): Promise<WorkerSnapshot[]> {
+  const result = await query<WorkerSnapshot & { captured_at: string }>(
+    `SELECT worker_name, status, queue_depth, processed_1h,
+            last_activity_at::text, cpu_load_1m, cpu_usage_pct,
+            mem_used_pct, disk_used_pct, queue_bytes, dead_jobs,
+            retries, active_leases, oldest_age_s, captured_at::text
+       FROM worker_health_current
+      ORDER BY worker_name`,
+  );
+  if (result.rows.length === 0) return currentWorkers(precomputedStats);
+  return result.rows.map((row) => ({
+    worker_name: row.worker_name,
+    status: row.status,
+    queue_depth: Number(row.queue_depth ?? 0),
+    processed_1h: Number(row.processed_1h ?? 0),
+    last_activity_at: row.last_activity_at,
+    cpu_load_1m: Number(row.cpu_load_1m ?? 0),
+    cpu_usage_pct: Number(row.cpu_usage_pct ?? 0),
+    mem_used_pct: Number(row.mem_used_pct ?? -1),
+    disk_used_pct: Number(row.disk_used_pct ?? -1),
+    queue_bytes: row.queue_bytes == null ? undefined : Number(row.queue_bytes),
+    dead_jobs: row.dead_jobs == null ? undefined : Number(row.dead_jobs),
+    retries: row.retries == null ? undefined : Number(row.retries),
+    active_leases: row.active_leases == null ? undefined : Number(row.active_leases),
+    oldest_age_s: row.oldest_age_s == null ? undefined : Number(row.oldest_age_s),
+  }));
+}
+
 async function redisDurabilityState(): Promise<{
   maxmemory_policy: string;
   appendonly: string;
@@ -436,24 +462,74 @@ async function redisDurabilityState(): Promise<{
 }
 
 export async function captureWorkerHealthSnapshot(): Promise<void> {
-  const rows = await currentWorkers();
-  for (const row of rows) {
-    await query(
-      `INSERT INTO worker_health_snapshots
-         (ts, worker_name, status, queue_depth, processed_5m, processed_1h, last_activity_at, cpu_load_1m, mem_used_pct, disk_used_pct)
-       VALUES (NOW(), $1, $2, $3, 0, $4, $5, $6, $7, $8)`,
-      [
-        row.worker_name,
-        row.status,
-        row.queue_depth,
-        row.processed_1h,
-        row.last_activity_at,
-        row.cpu_load_1m,
-        row.mem_used_pct,
-        row.disk_used_pct,
-      ],
-    );
-  }
+  const capturedAt = new Date().toISOString();
+  const rows = (await currentWorkers()).map((row) => row.worker_name === 'health-worker'
+    ? {
+        ...row,
+        status: 'running',
+        processed_1h: row.processed_1h + 1,
+        last_activity_at: capturedAt,
+      }
+    : row);
+  await query(
+    `WITH snapshot AS MATERIALIZED (
+       SELECT *
+         FROM jsonb_to_recordset($2::jsonb) AS value(
+           worker_name text,
+           status text,
+           queue_depth integer,
+           processed_1h integer,
+           last_activity_at timestamptz,
+           cpu_load_1m double precision,
+           cpu_usage_pct double precision,
+           mem_used_pct double precision,
+           disk_used_pct double precision,
+           queue_bytes bigint,
+           dead_jobs integer,
+           retries integer,
+           active_leases integer,
+           oldest_age_s double precision
+         )
+     ), history_write AS (
+       INSERT INTO worker_health_snapshots
+         (ts, worker_name, status, queue_depth, processed_5m, processed_1h,
+          last_activity_at, cpu_load_1m, mem_used_pct, disk_used_pct)
+       SELECT $1::timestamptz, worker_name, status, queue_depth, 0, processed_1h,
+              last_activity_at, cpu_load_1m, mem_used_pct, disk_used_pct
+         FROM snapshot
+       RETURNING worker_name
+     ), current_cleanup AS (
+       DELETE FROM worker_health_current current
+        WHERE NOT EXISTS (
+          SELECT 1 FROM snapshot WHERE snapshot.worker_name = current.worker_name
+        )
+       RETURNING worker_name
+     )
+     INSERT INTO worker_health_current
+       (worker_name, captured_at, status, queue_depth, processed_1h,
+        last_activity_at, cpu_load_1m, cpu_usage_pct, mem_used_pct,
+        disk_used_pct, queue_bytes, dead_jobs, retries, active_leases, oldest_age_s)
+     SELECT worker_name, $1::timestamptz, status, queue_depth, processed_1h,
+            last_activity_at, cpu_load_1m, cpu_usage_pct, mem_used_pct,
+            disk_used_pct, queue_bytes, dead_jobs, retries, active_leases, oldest_age_s
+       FROM snapshot
+     ON CONFLICT (worker_name) DO UPDATE SET
+       captured_at = EXCLUDED.captured_at,
+       status = EXCLUDED.status,
+       queue_depth = EXCLUDED.queue_depth,
+       processed_1h = EXCLUDED.processed_1h,
+       last_activity_at = EXCLUDED.last_activity_at,
+       cpu_load_1m = EXCLUDED.cpu_load_1m,
+       cpu_usage_pct = EXCLUDED.cpu_usage_pct,
+       mem_used_pct = EXCLUDED.mem_used_pct,
+       disk_used_pct = EXCLUDED.disk_used_pct,
+       queue_bytes = EXCLUDED.queue_bytes,
+       dead_jobs = EXCLUDED.dead_jobs,
+       retries = EXCLUDED.retries,
+       active_leases = EXCLUDED.active_leases,
+       oldest_age_s = EXCLUDED.oldest_age_s`,
+    [capturedAt, JSON.stringify(rows)],
+  );
 
   if (OPERATIONAL_RETENTION_ENABLED) {
     for (const target of RETENTION_TARGETS) {
@@ -508,7 +584,7 @@ export async function getWorkerHealthOverview() {
   // so calling it twice in one request gives a garbage near-zero second reading.
   const sysStats = systemStats();
   const [workers, history, errors1h, ingest, pathHashWidths, multibyteSummary, operationalChecks, databaseMaintenance, databaseRuntime, redisDurability] = await Promise.all([
-    currentWorkers(sysStats),
+    currentWorkerStatuses(sysStats),
     query<{
       ts: string;
       worker_name: string;
@@ -711,11 +787,12 @@ export async function getWorkerHealthOverview() {
   const frontendErrors = Number(errors1h.rows[0]?.count ?? 0);
   const latestChecks = operationalChecks.rows;
   for (const check of latestChecks) {
-    const ageMinutes = Math.floor((Date.now() - Date.parse(check.ts)) / 60_000);
-    if (check.status !== 'ok' || ageMinutes > 5) {
+    const ageMs = Date.now() - Date.parse(check.ts);
+    const ageMinutes = Math.floor(ageMs / 60_000);
+    if (check.status !== 'ok' || ageMs > SYNTHETIC_SUCCESS_TTL_MS) {
       problems.push({
         code: check.status !== 'ok' ? 'synthetic_check_failed' : 'synthetic_check_stale',
-        severity: check.status !== 'ok' || ageMinutes > 15 ? 'critical' : 'warning',
+        severity: check.status !== 'ok' || ageMs > SYNTHETIC_SUCCESS_TTL_MS * 2 ? 'critical' : 'warning',
         message: `${check.check_name}: ${check.status !== 'ok' ? check.detail ?? 'failed' : `last result is ${ageMinutes} minutes old`}`,
       });
     }

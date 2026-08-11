@@ -69,12 +69,12 @@ import { computeCustomLos } from '../../utils/customLos.js';
 import { fetchJson, withScopeParams, type ApiScope } from '../../utils/api.js';
 import { ScopedCache } from '../../utils/scopedCache.js';
 
-const NODE_DOCK_RIGHT_PADDING = 372;
-function mapPaddingForNode(selected: string | null): { top: number; right: number; bottom: number; left: number } {
-  const desktop = window.matchMedia('(min-width: 641px)').matches;
+// The node detail dock is an overlay, so node selection must never reserve
+// camera padding or shift the visible map.
+function mapPaddingForNode(_selected: string | null): { top: number; right: number; bottom: number; left: number } {
   return {
     top: 0,
-    right: selected && desktop ? NODE_DOCK_RIGHT_PADDING : 0,
+    right: 0,
     bottom: 0,
     left: 0,
   };
@@ -108,14 +108,17 @@ import {
 // ── Main Component ────────────────────────────────────────────────────────────
 
 export function MapLibreMap({
-  inferredNodes,
-  inferredActiveNodeIds,
   showLinks,
   showTerrain,
   showClientNodes,
   showHexClashes,
   maxHexClashHops,
   viewshedEnabled,
+  rfCoverageEnabled,
+  selectedRfCoverageNodeKey = null,
+  getRfCoverageNodeState,
+  onShowRfCoverage,
+  onClearRfCoverage,
   initialView,
   selectedNodeId = null,
   onNodeSelect,
@@ -124,6 +127,7 @@ export function MapLibreMap({
   network,
   observer,
   privacyGeneration,
+  showMapChrome = true,
 }: MapLibreMapProps) {
   const requestScope = useMemo(() => ({ network, observer }), [network, observer]);
   const requestScopeKey = `${network ?? 'all'}|${observer ?? 'all'}|privacy-${privacyGeneration}`;
@@ -133,8 +137,6 @@ export function MapLibreMap({
   const nodesRef = useRef(nodeStore.getState().nodes);
   const viablePairsRef = useRef(linkStateStore.getState().viablePairsArr);
   const linkMetricsRef = useRef(linkStateStore.getState().linkMetrics);
-  const inferredNodesRef = useRef(inferredNodes);
-  const inferredActiveNodeIdsRef = useRef(inferredActiveNodeIds);
   const showLinksRef = useRef(showLinks);
   const showTerrainRef = useRef(showTerrain);
   const showClientNodesRef = useRef(showClientNodes);
@@ -261,13 +263,6 @@ export function MapLibreMap({
         (map.getSource('planned-links') as maplibregl.GeoJSONSource | undefined)?.setData(plannedLinks);
       }
   }, [mapLight]);
-
-  // Keep the map's usable camera area clear of the right-side node dock.
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map || !mapLoadedRef.current) return;
-    map.setPadding(mapPaddingForNode(selectedNodeId));
-  }, [selectedNodeId]);
 
   // -- LOS profiles (client-side, multi-node, auto-expire) -------------------
 
@@ -628,16 +623,12 @@ export function MapLibreMap({
         nodes,
         currentHiddenCoordMask,
         showClientNodesRef.current,
-        showLinksRef.current,
-        new Set(viablePairsArr.flatMap(([aId, bId]) => [aId.toLowerCase(), bId.toLowerCase()])),
         clash.clashOffenderNodeIds,
         clash.clashRelayIds,
         clash.clashModeActive,
         clash.clashModeActive ? null : currentPathNodeIds,
         replayNodeIdsRef.current,
         Date.now(),
-        inferredNodesRef.current,
-        inferredActiveNodeIdsRef.current,
       );
       (mapRef.current.getSource('nodes') as maplibregl.GeoJSONSource | undefined)?.setData(nodeGeoJSON);
     }
@@ -751,6 +742,9 @@ export function MapLibreMap({
 
     map.on('load', () => {
       mapLoadedRef.current = true;
+      mapRef.current = map;
+      map.setPadding(mapPaddingForNode(null));
+      onMapReady?.(map);
 
       installMapSourcesAndLayers(map, {
         showLinks: showLinksRef.current,
@@ -769,7 +763,7 @@ export function MapLibreMap({
         openPlannedPopupRef.current(planId, { lng: coords[0], lat: coords[1] });
       });
 
-      map.on('click', 'node-dots', (e) => {
+      map.on('click', 'node-dots-hit', (e) => {
         const feature = e.features?.[0];
         if (!feature) return;
         const props = feature.properties as NodeFeatureProps;
@@ -802,12 +796,6 @@ export function MapLibreMap({
         // but all our props are primitives so this is safe.
         setPopupLinks(null);
         onNodeSelectRef.current?.(props.node_id);
-        // Nudge the map so the tapped node clears the right-docked detail panel.
-        const coords = (feature.geometry as GeoJSON.Point).coordinates as [number, number];
-        if (window.matchMedia('(min-width: 641px)').matches) {
-          const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-          map.easeTo({ center: coords, offset: [-170, 0], duration: reduceMotion ? 0 : 420 });
-        }
       });
 
       // General map click — used for custom LOS mode and plan repeater placement on empty areas
@@ -840,10 +828,10 @@ export function MapLibreMap({
       });
 
       // Make cursor a pointer over node dots and planned pins
-      map.on('mouseenter', 'node-dots', () => {
+      map.on('mouseenter', 'node-dots-hit', () => {
         map.getCanvas().style.cursor = 'pointer';
       });
-      map.on('mouseleave', 'node-dots', () => {
+      map.on('mouseleave', 'node-dots-hit', () => {
         map.getCanvas().style.cursor = (viewshedEnabledRef.current && useOverlayStore.getState().planRepeaterMode) || useOverlayStore.getState().customLosMode ? 'crosshair' : '';
       });
       map.on('mouseenter', 'planned-pins-dot', () => {
@@ -853,9 +841,6 @@ export function MapLibreMap({
         map.getCanvas().style.cursor = viewshedEnabledRef.current && useOverlayStore.getState().planRepeaterMode ? 'crosshair' : '';
       });
 
-      mapRef.current = map;
-      map.setPadding(mapPaddingForNode(selectedNodeIdRef.current));
-      onMapReady?.(map);
       refreshMapSources();
 
       // Apply any pre-existing selection (e.g. ?node= deep link) to the highlight.
@@ -898,12 +883,6 @@ export function MapLibreMap({
   }, [initialView, onMapReady, onNodeSelect, refreshMapSources, setClashPathLines]);
 
   // -- Imperative source updates ---------------------------------------------
-
-  useEffect(() => {
-    inferredNodesRef.current = inferredNodes;
-    inferredActiveNodeIdsRef.current = inferredActiveNodeIds;
-    scheduleRefresh({ nodes: true });
-  }, [inferredActiveNodeIds, inferredNodes, scheduleRefresh]);
 
   useEffect(() => {
     showLinksRef.current = showLinks;
@@ -1008,9 +987,9 @@ export function MapLibreMap({
 
   // -- Popup management ------------------------------------------------------
 
-  // Find the full MeshNode from nodeId (checks nodes and inferredNodes)
+  // Find the full observed MeshNode from nodeId.
   const getNode = useCallback((nodeId: string): MeshNode | undefined => {
-    return nodesRef.current.get(nodeId) ?? inferredNodesRef.current.find((node) => node.node_id === nodeId);
+    return nodesRef.current.get(nodeId);
   }, []);
 
   // Fetch neighbour links for the selected node's detail panel
@@ -1081,9 +1060,7 @@ export function MapLibreMap({
         role: node.role ?? 2,
         is_online: node.is_online,
         is_stale: ageMs > NODE_STALE_AFTER_MS,
-        is_link_only_stale: false,
         is_prohibited: isProhibitedMapNode(node),
-        is_inferred: !!node.is_inferred,
         replay_active: replayNodeIdsRef.current?.has(node.node_id.toLowerCase()) ?? false,
         replay_mode: replayNodeIdsRef.current !== null,
         hex_clash_state: null,
@@ -1113,12 +1090,12 @@ export function MapLibreMap({
 
   return (
     <div className="map-area" style={{ position: 'relative', width: '100%', height: '100%' }}>
-      <NodeSearch map={mapRef.current} onNodeSelect={onNodeSelect} />
-      <NodeLegend mapLight={mapLight} />
+      {showMapChrome && <NodeSearch map={mapRef.current} onNodeSelect={onNodeSelect} />}
+      {showMapChrome && <NodeLegend mapLight={mapLight} />}
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
 
       {/* Map tool buttons */}
-      <div className="map-tools">
+      {showMapChrome && <div className="map-tools">
         <button
           type="button"
           className={`map-tools__btn${customLosMode ? ' map-tools__btn--active' : ''}`}
@@ -1144,10 +1121,10 @@ export function MapLibreMap({
             Repeater
           </button>
         )}
-      </div>
+      </div>}
 
       {/* Custom LOS status hint */}
-      {customLosMode && (
+      {showMapChrome && customLosMode && (
         <div
           style={{
             position: 'absolute', bottom: 40, left: '50%', transform: 'translateX(-50%)',
@@ -1163,7 +1140,7 @@ export function MapLibreMap({
       )}
 
       {/* Plan repeater mode hint */}
-      {viewshedEnabled && planRepeaterMode && (
+      {showMapChrome && viewshedEnabled && planRepeaterMode && (
         <div
           style={{
             position: 'absolute', bottom: 40, left: '50%', transform: 'translateX(-50%)',
@@ -1179,7 +1156,7 @@ export function MapLibreMap({
       )}
 
       {/* Computing coverage indicator */}
-      {viewshedEnabled && plannedRepeaters.some((r) => r.status === 'queued') && (
+      {showMapChrome && viewshedEnabled && plannedRepeaters.some((r) => r.status === 'queued') && (
         <div
           style={{
             position: 'absolute', top: 10, right: 10, zIndex: 10,
@@ -1269,6 +1246,12 @@ export function MapLibreMap({
                 losActive={popupLosActive}
                 losLoading={popupLosLoading}
                 onToggleLos={handleToggleLos}
+                rfCoverageEnabled={rfCoverageEnabled}
+                rfCoverageActive={!!popupNodeProps.props.public_key
+                  && selectedRfCoverageNodeKey?.toLowerCase() === popupNodeProps.props.public_key.toLowerCase()}
+                rfCoverageState={getRfCoverageNodeState?.(popupNodeProps.props.public_key ?? '') ?? 'pending'}
+                onShowRfCoverage={(publicKey) => onShowRfCoverage?.(publicKey)}
+                onClearRfCoverage={() => onClearRfCoverage?.()}
                 network={network}
                 observer={observer}
                 privacyGeneration={privacyGeneration}

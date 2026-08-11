@@ -26,7 +26,10 @@ test('public map predicate is the single role, coordinate, privacy, and freshnes
   assert.match(sql, /NOT \(ABS\(n\.lat\) < 5 AND ABS\(n\.lon\) < 5\)/);
   assert.match(sql, /n\.name NOT LIKE '%🚫%'/);
   assert.match(sql, /n\.role IS NULL OR n\.role NOT IN \(1, 3\)/);
-  assert.match(sql, /GREATEST\(n\.last_seen, n\.last_path_evidence_at\)/);
+  assert.match(sql, /n\.last_seen/);
+  assert.match(sql, /n\.last_rx_at/);
+  assert.match(sql, /n\.last_status_at/);
+  assert.match(sql, /n\.last_path_evidence_at/);
   assert.match(sql, /> \$2::timestamptz - INTERVAL '28 days'/);
   assert.match(sql, /<= \$2::timestamptz/);
 });

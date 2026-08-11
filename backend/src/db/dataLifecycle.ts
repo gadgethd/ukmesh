@@ -39,6 +39,17 @@ export const DATA_LIFECYCLE_POLICIES: readonly DataLifecyclePolicy[] = Object.fr
     ],
   },
   {
+    table: 'node_neighbor_samples',
+    timestampColumn: 'time',
+    retention: '7 days',
+    kind: 'hypertable',
+    compressAfter: '1 day',
+    compressionSegmentBy: 'network',
+    featureImpact: [
+      'owner heard-neighbor history older than seven days becomes restore-only',
+    ],
+  },
+  {
     table: 'frontend_error_events',
     timestampColumn: 'time',
     retention: '30 days',
@@ -48,9 +59,9 @@ export const DATA_LIFECYCLE_POLICIES: readonly DataLifecyclePolicy[] = Object.fr
   {
     table: 'worker_health_snapshots',
     timestampColumn: 'ts',
-    retention: '14 days',
+    retention: '7 days',
     kind: 'row-table',
-    featureImpact: ['operator worker-health history older than 14 days is removed'],
+    featureImpact: ['operator worker-health history older than seven days is removed'],
   },
   {
     table: 'operational_check_results',

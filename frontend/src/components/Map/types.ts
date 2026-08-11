@@ -20,9 +20,7 @@ export interface NodeFeatureProps {
   role: number;
   is_online: boolean;
   is_stale: boolean;
-  is_link_only_stale: boolean;
   is_prohibited: boolean;
-  is_inferred: boolean;
   replay_active: boolean;
   replay_mode: boolean;
   hex_clash_state: 'offender' | 'relay' | null;
@@ -68,14 +66,17 @@ export interface CustomLosSegment {
 }
 
 export interface MapLibreMapProps {
-  inferredNodes: import('../../hooks/useNodes.js').MeshNode[];
-  inferredActiveNodeIds: Set<string>;
   showLinks: boolean;
   showTerrain: boolean;
   showClientNodes: boolean;
   showHexClashes: boolean;
   maxHexClashHops: number;
   viewshedEnabled: boolean;
+  rfCoverageEnabled: boolean;
+  selectedRfCoverageNodeKey?: string | null;
+  getRfCoverageNodeState?: (publicKey: string) => import('../../hooks/useRfCoverage.js').RfNodeCoverageState;
+  onShowRfCoverage?: (publicKey: string) => void;
+  onClearRfCoverage?: () => void;
   initialView?: { lat: number; lon: number; zoom: number } | null;
   /** Currently selected node (drives the docked node panel + map highlight). */
   selectedNodeId?: string | null;
@@ -85,6 +86,8 @@ export interface MapLibreMapProps {
   network?: string;
   observer?: string;
   privacyGeneration: number;
+  /** Hide dashboard-only search, legend, and planning controls for embedded maps. */
+  showMapChrome?: boolean;
 }
 
 export interface PopupNodeView {

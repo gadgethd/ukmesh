@@ -1,10 +1,13 @@
 import React, { useEffect, useMemo } from 'react';
 import type maplibregl from 'maplibre-gl';
 import { DeckGLOverlay } from './DeckGLOverlay.js';
+import { AnimatedPathOverlay, type AerialPath } from './AnimatedPathOverlay.js';
 import { useArcs, useNodeMap } from '../../hooks/useNodes.js';
 import { usePacketPathOverlay } from '../../hooks/usePacketPathOverlay.js';
+import { packetObserverIds } from '../../hooks/packetPathOverlayUtils.js';
+import type { ResolvedPathRoute } from '../../hooks/packetPathOverlayUtils.js';
 import type { Filters } from '../FilterPanel/FilterPanel.js';
-import { buildHiddenCoordMask, hasCoords, maskNodePoint } from '../../utils/pathing.js';
+import { buildHiddenCoordMask, hasCoords, maskNodePoint, maskPoint } from '../../utils/pathing.js';
 import { useOverlayStore } from '../../store/overlayStore.js';
 
 type PacketHistorySegment = {
@@ -25,6 +28,28 @@ type LiveOverlayControllerProps = {
   packetArcsEnabled: boolean;
   heatmapEnabled: boolean;
 };
+
+export function buildResolvedAerialPaths(
+  packetHash: string | null,
+  routes: ResolvedPathRoute[],
+  hiddenCoordMask: ReturnType<typeof buildHiddenCoordMask>,
+): AerialPath[] {
+  if (!packetHash) return [];
+  return routes.map((route) => ({
+    id: `main-live-path:${packetHash}:resolved`,
+    packetHash,
+    confidence: route.confidence,
+    nodes: route.nodes.map((node) => {
+      const [lat, lon] = maskPoint([node.lat, node.lon], hiddenCoordMask);
+      return {
+        position: [lon, lat] as [number, number],
+        nodeId: node.nodeId ?? undefined,
+        name: node.name ?? undefined,
+        confidence: node.confidence,
+      };
+    }),
+  }));
+}
 
 export const LiveOverlayController: React.FC<LiveOverlayControllerProps> = ({
   map,
@@ -84,12 +109,12 @@ export const LiveOverlayController: React.FC<LiveOverlayControllerProps> = ({
   const {
     packetPaths,
     betaPacketPaths,
-    betaLowConfidenceSegments,
-    betaCompletionPaths,
+    betaPathPacketHash,
+    betaPathRoutes,
+    betaObserverIds,
     betaPathConfidence,
     betaPermutationCount,
     betaRemainingHops,
-    pathFadingOut,
     pinnedPacketId,
     activePacketSnapshot,
   } = usePacketPathOverlay({
@@ -99,9 +124,50 @@ export const LiveOverlayController: React.FC<LiveOverlayControllerProps> = ({
   });
 
   const renderedPaths = useMemo<[number, number][][]>(() => (
-    betaPacketPaths.length > 0 ? betaPacketPaths : packetPaths
-  ), [betaPacketPaths, packetPaths]);
+    filters.betaPaths ? betaPacketPaths : packetPaths
+  ), [betaPacketPaths, filters.betaPaths, packetPaths]);
   const showPathOnly = filters.betaPaths || pinnedPacketId !== null;
+  const liveAerialPaths = useMemo<AerialPath[]>(() => {
+    if (!showPathOnly) return [];
+    const nodesFor = (path: [number, number][]) => path.map((point) => {
+      const [lat, lon] = maskPoint(point, hiddenCoordMask);
+      return { position: [lon, lat] as [number, number] };
+    });
+    if (filters.betaPaths) {
+      // The routes and their scope come from the same resolved DTO. During the
+      // render where packet B becomes active, packet A's still-committed routes
+      // therefore cannot be registered under B and replayed as new segments.
+      return buildResolvedAerialPaths(betaPathPacketHash, betaPathRoutes, hiddenCoordMask);
+    }
+    const packetKey = activePacketSnapshot?.packetHash ?? activePacketSnapshot?.id ?? 'live';
+    return renderedPaths.map((path) => ({
+      id: `main-live-path:${packetKey}:observed`,
+      packetHash: activePacketSnapshot?.packetHash ?? activePacketSnapshot?.id ?? null,
+      confidence: 1,
+      nodes: nodesFor(path),
+    })).filter((path) => path.nodes.length > 1);
+  }, [activePacketSnapshot?.id, activePacketSnapshot?.packetHash, betaPathPacketHash, betaPathRoutes, filters.betaPaths,
+    hiddenCoordMask, renderedPaths, showPathOnly]);
+
+  const observerIdsForOverlay = useMemo(() => {
+    if (!showPathOnly) return [];
+    const ids = filters.betaPaths && betaObserverIds.length > 0
+      ? betaObserverIds
+      : packetObserverIds(activePacketSnapshot ?? undefined);
+    return Array.from(new Set(ids));
+  }, [activePacketSnapshot, betaObserverIds, filters.betaPaths, showPathOnly]);
+
+  const observerNodes = useMemo(() => observerIdsForOverlay.flatMap((observerId) => {
+    const node = nodes.get(observerId);
+    if (!hasCoords(node)) return [];
+    const [lat, lon] = maskNodePoint(node, hiddenCoordMask);
+    return [{
+      position: [lon, lat] as [number, number],
+      nodeId: node.node_id,
+      name: node.name ?? undefined,
+      isObserver: true,
+    }];
+  }), [hiddenCoordMask, nodes, observerIdsForOverlay]);
 
   const pathPointIndex = useMemo(() => {
     const index = new Map<string, Set<string>>();
@@ -141,12 +207,8 @@ export const LiveOverlayController: React.FC<LiveOverlayControllerProps> = ({
     for (const path of renderedPaths) {
       for (const point of path) addPoint(point);
     }
-    for (const [a, b] of betaLowConfidenceSegments) {
-      addPoint(a);
-      addPoint(b);
-    }
-    for (const path of betaCompletionPaths) {
-      for (const point of path) addPoint(point);
+    for (const node of observerNodes) {
+      addPoint([node.position[1], node.position[0]]);
     }
 
     const result = ids;
@@ -156,7 +218,7 @@ export const LiveOverlayController: React.FC<LiveOverlayControllerProps> = ({
     }
     pathNodeIdsPrevRef.current = result;
     return result;
-  }, [showPathOnly, activePacketSnapshot, pathPointIndex, renderedPaths, betaLowConfidenceSegments, betaCompletionPaths]);
+  }, [showPathOnly, activePacketSnapshot, pathPointIndex, renderedPaths, observerNodes]);
 
   useEffect(() => {
     setPathNodeIds(pathNodeIds);
@@ -180,7 +242,8 @@ export const LiveOverlayController: React.FC<LiveOverlayControllerProps> = ({
   }, [setPathNodeIds, setBetaMetrics]);
 
   return (
-    <DeckGLOverlay
+    <>
+      <DeckGLOverlay
       map={map}
       arcs={packetArcsEnabled ? arcs : []}
       showArcs={packetArcsEnabled && filters.livePackets}
@@ -188,21 +251,26 @@ export const LiveOverlayController: React.FC<LiveOverlayControllerProps> = ({
       showPacketHistory={filters.packetHistory}
       showHeatmap={heatmapEnabled && filters.heatmap}
       betaPaths={renderedPaths}
-      betaLowSegments={betaLowConfidenceSegments}
-      betaCompletionPaths={betaCompletionPaths}
       clashPathLines={clashPathLines}
       showBetaPaths={filters.betaPaths || pinnedPacketId !== null}
       betaConfidence={betaPathConfidence}
-      pathObserverCount={activePacketSnapshot?.observerIds.length ?? 0}
+      pathObserverCount={observerNodes.length}
       pathAlternatives={pathExplanation?.alternativesConsidered ?? betaPermutationCount ?? 0}
       pathSummary={pathExplanation?.summary ?? null}
-      pathFadingOut={pathFadingOut}
       hiddenCoordMask={hiddenCoordMask}
       positionElevations={positionElevations}
       useTerrainElevation={filters.terrain}
       losProfiles={losProfiles}
       customLosSegments={customLosSegments}
       customLosStart={customLosStart}
-    />
+      />
+      <AnimatedPathOverlay
+        map={map}
+        paths={liveAerialPaths}
+        observerNodes={observerNodes}
+        active={showPathOnly}
+        terrainEnabled={filters.terrain}
+      />
+    </>
   );
 };

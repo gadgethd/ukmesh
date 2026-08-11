@@ -39,6 +39,13 @@ export const CACHE_POLICY_REGISTRY: readonly CachePolicyRecord[] = Object.freeze
     negativeCaching: 'completed empty observed-link set', singleFlight: 'reachInFlight (cap 64)',
   },
   {
+    source: 'src/api/routes/topology.ts#cache',
+    disposition: 'bounded-cache', maxEntries: 64, maxBytes: 16 << 20, ttlMs: 60_000,
+    scope: 'effective public network + link limit + visibility generation',
+    invalidation: 'identity/privacy generation check + TTL',
+    negativeCaching: 'successful complete DTOs only', singleFlight: 'inflight (cap 64)',
+  },
+  {
     source: 'src/api/bootstrap/caches.ts#statsCache',
     disposition: 'bounded-cache', maxEntries: 256, maxBytes: 16 << 20, ttlMs: 15 * 60_000,
     scope: 'network + observer + visibility generation', invalidation: 'generation check + TTL/stale-while-revalidate',
@@ -55,12 +62,6 @@ export const CACHE_POLICY_REGISTRY: readonly CachePolicyRecord[] = Object.freeze
     disposition: 'bounded-cache', maxEntries: 4_096, maxBytes: 32 << 20, ttlMs: 5 * 60_000,
     scope: 'network + observer + node', invalidation: 'TTL',
     negativeCaching: 'empty link response allowed', singleFlight: 'nodeLinksInflight',
-  },
-  {
-    source: 'src/api/bootstrap/caches.ts#pathHistoryCache',
-    disposition: 'bounded-cache', maxEntries: 8, maxBytes: 8 << 20, ttlMs: 60_000,
-    scope: 'public scope + visibility generation', invalidation: 'TTL + publication fence',
-    negativeCaching: 'none', singleFlight: 'durable analysis lease',
   },
   {
     source: 'src/api/bootstrap/caches.ts#chartsCache',
@@ -105,6 +106,12 @@ export const CACHE_POLICY_REGISTRY: readonly CachePolicyRecord[] = Object.freeze
     negativeCaching: 'none', singleFlight: 'worker pool',
   },
   {
+    source: 'src/path-beta/resolveCache.ts#heldPathCache',
+    disposition: 'bounded-cache', maxEntries: 2_048, maxBytes: 16 << 20, ttlMs: 30 * 60_000,
+    scope: 'packet + network; public projection remains visibility-fenced', invalidation: 'TTL only; packet observations do not clear held paths',
+    negativeCaching: 'none', singleFlight: 'pathingService resolve maps + worker pool',
+  },
+  {
     source: 'src/path-beta/resolver.ts#contextCache',
     disposition: 'bounded-cache', maxEntries: 16, maxBytes: 128 << 20, ttlMs: 15 * 60_000,
     scope: 'network + embedded visibility generation', invalidation: 'generation check + TTL',
@@ -147,10 +154,16 @@ export const CACHE_POLICY_REGISTRY: readonly CachePolicyRecord[] = Object.freeze
     negativeCaching: 'completed empty state', singleFlight: 'initialStateInflight (cap 128)',
   },
   {
-    source: 'src/mqtt/client.ts#channelCache',
+    source: 'src/mqtt/channelRegistry.ts#channelCache',
     disposition: 'bounded-cache', maxEntries: 200, maxBytes: 2 << 20, ttlMs: 10 * 60_000,
     scope: 'raw packet within immutable configured channel set', invalidation: 'TTL/LRU capacity',
     negativeCaching: 'failed channel decode is cached', singleFlight: 'single MQTT ingest task',
+  },
+  {
+    source: 'src/mqtt/channelRegistry.ts#channelHashCache',
+    disposition: 'bounded-cache', maxEntries: 64, maxBytes: 64 << 10, ttlMs: 30 * 60_000,
+    scope: 'configured channel label + channel-secret configuration', invalidation: 'TTL/LRU capacity',
+    negativeCaching: 'unknown labels cache as empty hash lists', singleFlight: 'not applicable',
   },
   {
     source: 'src/path-beta/resolver.ts#hopCache',

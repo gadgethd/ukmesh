@@ -6,7 +6,6 @@ import {
   NODE_LINKS_CACHE_TTL_MS,
   OWNER_DASHBOARD_CACHE_TTL_MS,
   OWNER_LIVE_CACHE_TTL_MS,
-  PATH_HISTORY_CACHE_TTL_MS,
   STATS_CACHE_TTL_MS,
   chartsCache,
   chartsInflight,
@@ -15,7 +14,6 @@ import {
   nodeLinksCache,
   nodeLinksInflight,
   ownerLiveCache,
-  pathHistoryCache,
   statsCache,
 } from './bootstrap/caches.js';
 import {
@@ -24,10 +22,11 @@ import {
   getNodeHistory,
   getNodeAdverts,
   getPacketDetail,
-  getPathHistoryCache,
   getPublicVisibilityGeneration,
+  getChannelMessageHistory,
   getRecentPacketEvents,
   getRecentPackets,
+  analyticsQuery,
   pool,
   query,
 } from '../db/index.js';
@@ -39,7 +38,7 @@ import {
   verifyMqttCredentials,
 } from '../owner/ownerAccess.js';
 import { encryptOwnerSession, getOwnerSession, isSecureRequest } from '../owner/ownerSession.js';
-import { getResolveCache, setResolveCache } from '../path-beta/resolveCache.js';
+import { getResolveCache, setResolveCache, getHeldPath, setHeldPath } from '../path-beta/resolveCache.js';
 import { resolvePool } from '../path-beta/resolvePool.js';
 import { maskDecodedPathNodes } from '../stats/maskDecodedPathNodes.js';
 import {
@@ -50,7 +49,6 @@ import {
   OWNER_LOGIN_LIMITER,
   PACKET_DETAIL_LIMITER,
   PATH_BETA_LIMITER,
-  PATH_HISTORY_LIMITER,
   PATH_LEARNING_LIMITER,
   STATS_CHARTS_LIMITER,
 } from './bootstrap/limiters.js';
@@ -84,6 +82,7 @@ import {
 import { assertUniqueRouteRegistry } from './routeRegistry.js';
 import { assertContractCoverage } from './contracts.js';
 import { ApiInputError, wrapAsyncHandlers } from './errors.js';
+import { withHeavyWorkAdmission } from '../analysis/heavyWorkAdmission.js';
 
 const router = Router();
 // Anonymous cross-network aggregation is not a public API capability. Operator
@@ -174,6 +173,7 @@ registerMiscRoutes(router, {
   getRecentPackets,
   getRecentPacketEvents,
   getPacketDetail,
+  getChannelMessageHistory,
   getPublicVisibilityGeneration,
   packetDetailLimiter: PACKET_DETAIL_LIMITER,
 });
@@ -201,14 +201,12 @@ registerOwnerRoutes(router, {
 });
 registerPathingRoutes(router, {
   pathBetaLimiter: PATH_BETA_LIMITER,
-  pathHistoryLimiter: PATH_HISTORY_LIMITER,
   pathLearningLimiter: PATH_LEARNING_LIMITER,
-  pathHistoryCache,
-  pathHistoryCacheTtlMs: PATH_HISTORY_CACHE_TTL_MS,
   getResolveCache,
   setResolveCache,
+  getHeldPath,
+  setHeldPath,
   resolvePool,
-  getPathHistoryCache,
   getPublicVisibilityGeneration,
   getMultibytePathSegments,
   query,
@@ -224,14 +222,17 @@ registerStatsRoutes(router, {
   statsChartsLimiter: STATS_CHARTS_LIMITER,
   networkFilters,
   query,
+  analyticsQuery,
   getPublicVisibilityGeneration,
   maskDecodedPathNodes,
+  runHeavyWork: (workload, task) => withHeavyWorkAdmission({ pool, workload, task }),
 });
 registerTelemetryRoutes(router, { query });
 registerSpamRoutes(router, { expensiveLimiter: EXPENSIVE_LIMITER });
 registerTopologyRoutes(router, {
   query,
   networkFilters,
+  getPublicVisibilityGeneration,
   limiter: EXPENSIVE_LIMITER,
 });
 registerActivityTimelineRoutes(router, {
