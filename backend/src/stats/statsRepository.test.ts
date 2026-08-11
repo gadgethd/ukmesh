@@ -3,26 +3,8 @@ import { test } from 'node:test';
 import type { QueryResultRow } from 'pg';
 import {
   compareAggregateShadowRows,
-  compareExactMultibyteRows,
   createStatsRepository,
 } from './statsRepository.js';
-
-test('multibyte shadow comparison is exact for totals, nested values, nulls, and ordering', () => {
-  const raw = [{
-    multibyte_packets_24h: '17',
-    latest_fully_decoded_nodes: [{ ord: 1, node_id: 'AA', name: null }],
-  }];
-  assert.equal(compareExactMultibyteRows(raw, structuredClone(raw)).matched, true);
-  assert.equal(compareExactMultibyteRows(
-    [{ ...raw[0], multibyte_packets_24h: '18' }],
-    raw,
-  ).matched, false);
-  assert.equal(compareExactMultibyteRows(
-    [{ ...raw[0], latest_fully_decoded_nodes: [{ ord: 1, node_id: 'AA', name: '' }] }],
-    raw,
-  ).matched, false);
-  assert.equal(compareExactMultibyteRows([...raw, { extra: true }], raw).matched, false);
-});
 
 test('multibyte fact cutover removes both raw decode scans and binds the privacy generation', async () => {
   const calls: Array<{ text: string; params?: unknown[] }> = [];
@@ -45,8 +27,6 @@ test('multibyte fact cutover removes both raw decode scans and binds the privacy
       nodes: 'AND network = $1',
       nodesAlias: (alias: string) => `AND ${alias}.network = $1`,
     }),
-    multibyteFactsReadsEnabled: true,
-    multibyteFactsShadowEnabled: false,
   });
 
   await repository.fetchChartsData('ukmesh', undefined, 12);
@@ -114,10 +94,10 @@ test('24-hour chart aggregates use the complete scoped window and true signal me
     assert.ok(sql, `expected query containing ${fragment}`);
     return sql;
   };
+  const multibyteSql = sqlFor('fully_decoded_multibyte_24h');
   const fullWindowAggregates = [
     sqlFor('WITH prefix_counts'),
     sqlFor('hash_hex_len'),
-    sqlFor('fully_decoded_multibyte_24h'),
     sqlFor('avg_observers'),
     sqlFor('median_rssi'),
   ];
@@ -126,6 +106,8 @@ test('24-hour chart aggregates use the complete scoped window and true signal me
     assert.doesNotMatch(sql, /\bLIMIT\s+50000\b/i);
     assert.match(sql, /AND p\.network = \$1/);
   }
+  assert.doesNotMatch(multibyteSql, /\bLIMIT\s+50000\b/i);
+  assert.match(multibyteSql, /AND f\.network = \$1/);
 
   const signalSql = sqlFor('median_rssi');
   assert.match(signalSql, /percentile_cont\(0\.5\)\s+WITHIN GROUP\s+\(ORDER BY p\.rssi\)::text\s+AS median_rssi/i);

@@ -52,6 +52,9 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}
       DATABASE_STATEMENT_TIMEOUT_MS: 0
       NODE_ENV: production
+    depends_on:
+      timescaledb:
+        condition: service_healthy
   backend:
     <<: *internal-hosts
     image: ${BACKEND_IMAGE:-meshcore-analytics-backend:local}
@@ -106,8 +109,6 @@ services:
       STATS_DB_QUERY_CONCURRENCY: ${STATS_DB_QUERY_CONCURRENCY:-2}
       STATS_AGGREGATE_READS_ENABLED: ${STATS_AGGREGATE_READS_ENABLED:-false}
       STATS_AGGREGATE_SHADOW_ENABLED: ${STATS_AGGREGATE_SHADOW_ENABLED:-false}
-      STATS_MULTIBYTE_FACTS_READS_ENABLED: ${STATS_MULTIBYTE_FACTS_READS_ENABLED:-false}
-      STATS_MULTIBYTE_FACTS_SHADOW_ENABLED: ${STATS_MULTIBYTE_FACTS_SHADOW_ENABLED:-false}
       WARMUP_NETWORKS: ${WARMUP_NETWORKS:-ukmesh}
       DATABASE_SKIP_SCHEMA_INIT: "true"
       WS_INITIAL_STATE_ENABLED: "1"

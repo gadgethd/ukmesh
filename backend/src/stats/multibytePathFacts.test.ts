@@ -8,6 +8,7 @@ import {
   multibyteFactsCoverWindow,
   multibyteObservationIdBatchSql,
   selectMultibyteFactChunkBatch,
+  splitMultibyteFactWindow,
 } from './multibytePathFacts.js';
 
 test('multibyte fact backfill keys every observation row instead of packet hashes', () => {
@@ -16,7 +17,9 @@ test('multibyte fact backfill keys every observation row instead of packet hashe
   assert.match(sql, /p\.observation_id IS NOT NULL/);
   assert.match(sql, /ON CONFLICT \(observation_id\)/);
   assert.doesNotMatch(sql, /ON CONFLICT \(packet_hash\)/);
-  assert.match(sql, /meshcore_decode_multibyte_path/);
+  assert.match(sql, /distinct_hashes AS MATERIALIZED/);
+  assert.match(sql, /node_prefixes AS MATERIALIZED/);
+  assert.doesNotMatch(sql, /meshcore_decode_multibyte_path/);
 });
 
 test('off-peak backfill selects an explicit bounded chunk batch', () => {
@@ -27,6 +30,30 @@ test('off-peak backfill selects an explicit bounded chunk batch', () => {
   assert.deepEqual(selectMultibyteFactChunkBatch(chunks, 1, 1), [chunks[1]]);
   assert.throws(() => selectMultibyteFactChunkBatch(chunks, -1, 1), /INVALID_MULTIBYTE_FACT_CHUNK_INDEX/);
   assert.throws(() => selectMultibyteFactChunkBatch(chunks, 0, 5), /INVALID_MULTIBYTE_FACT_CHUNK_LIMIT/);
+});
+
+test('off-peak fact writes split one selected chunk into bounded statement windows', () => {
+  const windows = splitMultibyteFactWindow(
+    new Date('2026-08-01T22:00:00.000Z'),
+    new Date('2026-08-02T12:30:00.000Z'),
+    360,
+  );
+  assert.deepEqual(windows.map((window) => ({
+    windowStart: window.windowStart.toISOString(),
+    cutoff: window.cutoff.toISOString(),
+  })), [
+    { windowStart: '2026-08-01T22:00:00.000Z', cutoff: '2026-08-02T04:00:00.000Z' },
+    { windowStart: '2026-08-02T04:00:00.000Z', cutoff: '2026-08-02T10:00:00.000Z' },
+    { windowStart: '2026-08-02T10:00:00.000Z', cutoff: '2026-08-02T12:30:00.000Z' },
+  ]);
+  assert.throws(
+    () => splitMultibyteFactWindow(new Date(2), new Date(1), 360),
+    /INVALID_MULTIBYTE_FACT_WINDOW/,
+  );
+  assert.throws(
+    () => splitMultibyteFactWindow(new Date(1), new Date(2), 0),
+    /INVALID_MULTIBYTE_FACT_WINDOW_MINUTES/,
+  );
 });
 
 test('historical observation ids are populated oldest-first in bounded physical-row batches', async () => {
@@ -72,6 +99,7 @@ test('bounded backfill pins cutoff and privacy generation', async () => {
   assert.deepEqual(calls[0]?.params, [windowStart.toISOString(), cutoff.toISOString(), 7]);
   assert.match(calls[0]?.sql ?? '', /LEAST\(multibyte_path_fact_state\.covered_from/);
   assert.match(calls[0]?.sql ?? '', /GREATEST\(multibyte_path_fact_state\.covered_through/);
+  assert.match(calls[0]?.sql ?? '', /FROM written/);
 });
 
 test('chunk inventory is ordered and clipped to the bounded requested window', async () => {
