@@ -855,7 +855,7 @@ export function MapLibreMap({
         try {
           map.addSource('terrain-dem', TERRAIN_DEM_SOURCE);
           const src = map.getSource('terrain-dem') as maplibregl.RasterDEMTileSource | undefined;
-          src?.on('error', (e: ErrorEvent) => console.error('[terrain] source error (load):', e));
+          src?.on('error', (e: maplibregl.ErrorEvent) => console.error('[terrain] source error (load):', e));
           map.addLayer({
             id: 'hillshade', type: 'hillshade', source: 'terrain-dem', minzoom: 7,
             paint: { 'hillshade-exaggeration': 0.7, 'hillshade-shadow-color': '#000000', 'hillshade-highlight-color': '#ffffff', 'hillshade-illumination-anchor': 'viewport' },
@@ -901,7 +901,7 @@ export function MapLibreMap({
           map.addSource('terrain-dem', TERRAIN_DEM_SOURCE);
           console.log('[terrain] source added, config:', JSON.stringify(TERRAIN_DEM_SOURCE));
           const src = map.getSource('terrain-dem') as maplibregl.RasterDEMTileSource | undefined;
-          src?.on('error', (e: ErrorEvent) => console.error('[terrain] source error:', e));
+          src?.on('error', (e: maplibregl.ErrorEvent) => console.error('[terrain] source error:', e));
         }
         if (!map.getLayer('hillshade')) {
           map.addLayer({
