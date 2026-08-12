@@ -217,7 +217,7 @@ export const TERRAIN_DEM_SOURCE: maplibregl.RasterDEMSourceSpecification = {
   type: 'raster-dem',
   tiles: ['/terrain-tiles/{z}/{x}/{y}.png'],
   encoding: 'terrarium',
-  tileSize: 512,
+  tileSize: 256,
   minzoom: 5,
   maxzoom: 12,
 };
