@@ -17,14 +17,14 @@ export const DATA_LIFECYCLE_POLICIES: readonly DataLifecyclePolicy[] = Object.fr
   {
     table: 'packets',
     timestampColumn: 'time',
-    retention: '180 days',
+    retention: '30 days',
     kind: 'hypertable',
     compressAfter: '7 days',
     compressionSegmentBy: 'network',
     featureImpact: [
-      'path-learning training scans are limited to 120 days',
+      'message content and raw packet data older than 30 days are removed',
+      'raw pathing data is preserved content-stripped in packet_paths (no retention)',
       'public and owner packet/path views are limited to 30 days or less',
-      'raw packet export or forensic replay older than 180 days becomes restore-only',
     ],
   },
   {
@@ -55,6 +55,13 @@ export const DATA_LIFECYCLE_POLICIES: readonly DataLifecyclePolicy[] = Object.fr
     retention: '30 days',
     kind: 'row-table',
     featureImpact: ['anonymous browser diagnostic trends older than 30 days are removed'],
+  },
+  {
+    table: 'packet_decryptions',
+    timestampColumn: 'created_at',
+    retention: '30 days',
+    kind: 'row-table',
+    featureImpact: ['decrypted packet content is diagnostics-only and removed after 30 days'],
   },
   {
     table: 'worker_health_snapshots',

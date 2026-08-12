@@ -17,7 +17,7 @@ export class AppErrorBoundary extends React.Component<React.PropsWithChildren, S
         kind: 'crash',
         message: error.message,
         stack: `${error.stack ?? ''}\n${info.componentStack}`.slice(0, 4000),
-        page: window.location.href,
+        page: window.location.pathname,
         userAgent: navigator.userAgent,
       }),
       keepalive: true,
