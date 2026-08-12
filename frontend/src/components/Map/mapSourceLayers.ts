@@ -1,4 +1,4 @@
-import type maplibregl from 'maplibre-gl';
+import type * as maplibregl from 'maplibre-gl';
 import { EMPTY_FC, MAP_OVERLAY_COLORS, type MapTheme } from './mapConfig.js';
 
 type OverlayColors = (typeof MAP_OVERLAY_COLORS)[MapTheme];
@@ -41,7 +41,11 @@ function plannedBandColorExpression(colors: OverlayColors): maplibregl.Expressio
 /** Re-theme all non-raster overlays without replacing their live sources. */
 export function applyMapOverlayTheme(map: maplibregl.Map, theme: MapTheme): void {
   const colors = MAP_OVERLAY_COLORS[theme];
-  const setPaint = (layerId: string, property: string, value: unknown) => {
+  const setPaint = (
+    layerId: string,
+    property: Parameters<maplibregl.Map['setPaintProperty']>[1],
+    value: Parameters<maplibregl.Map['setPaintProperty']>[2],
+  ) => {
     if (map.getLayer(layerId)) map.setPaintProperty(layerId, property, value);
   };
   setPaint('node-dots', 'circle-color', nodeColorExpression(colors));

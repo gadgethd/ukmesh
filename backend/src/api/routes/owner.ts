@@ -32,6 +32,7 @@ type EncryptOwnerSessionFn = (payload: OwnerSession) => string;
 type IsSecureRequestFn = (req: Request) => boolean;
 type GetOwnerSessionFn = (req: Request) => OwnerSession | null;
 type RequireOwnerSessionFn = (req: Request, res: Response) => Promise<string[] | null>;
+type GetOwnerCredentialGenerationFn = (mqttUsername: string) => Promise<number>;
 type QueryFn = <T extends import('pg').QueryResultRow = import('pg').QueryResultRow>(text: string, params?: unknown[]) => Promise<{ rows: T[] }>;
 
 type OwnerRouteDeps = {
@@ -53,6 +54,7 @@ type OwnerRouteDeps = {
   isSecureRequest: IsSecureRequestFn;
   getOwnerSession: GetOwnerSessionFn;
   requireOwnerSession: RequireOwnerSessionFn;
+  getOwnerCredentialGeneration: GetOwnerCredentialGenerationFn;
   invalidateOwnerNodeIdCache: (mqttUsername: string) => void;
   query: QueryFn;
 };
@@ -98,7 +100,10 @@ export function registerOwnerRoutes(router: Router, deps: OwnerRouteDeps): void 
     try {
       const body = req.body as { mqttUsername?: string; mqttPassword?: string } | undefined;
       const mqttUsername = String(body?.mqttUsername ?? '').trim();
-      const mqttPassword = String(body?.mqttPassword ?? '').trim();
+      // Passwords must NOT be trimmed — a valid broker password may begin/end
+      // with whitespace, and transforming it would make the credential
+      // permanently unauthenticatable (username trimming is fine).
+      const mqttPassword = String(body?.mqttPassword ?? '');
       if (!mqttUsername || !mqttPassword) {
         res.status(400).json({ error: 'Missing MQTT username or password' });
         return;
@@ -117,10 +122,12 @@ export function registerOwnerRoutes(router: Router, deps: OwnerRouteDeps): void 
       }
 
       const { dashboard } = await service.authenticateOwner(mqttUsername, mqttPassword);
+      const gen = await deps.getOwnerCredentialGeneration(mqttUsername);
       const token = deps.encryptOwnerSession({
-        v: 2,
+        v: 3,
         exp: Date.now() + deps.ownerSessionTtlMs,
         mqttUsername,
+        gen,
       });
       res.cookie(deps.ownerCookieName, token, {
         httpOnly: true,
@@ -154,12 +161,23 @@ export function registerOwnerRoutes(router: Router, deps: OwnerRouteDeps): void 
         return;
       }
 
+      // BUG-010: reject sessions minted under a revoked password (same check as
+      // requireOwnerSession) and upgrade legacy cookies to the generationed v3
+      // format so future revocations can invalidate them.
+      const currentGen = await deps.getOwnerCredentialGeneration(session.mqttUsername);
+      if (session.gen !== currentGen) {
+        res.clearCookie(deps.ownerCookieName, { path: '/' });
+        res.status(401).json({ error: 'Credentials have been rotated — please log in again' });
+        return;
+      }
+
       const { dashboard } = await service.getSessionDashboard(session);
-      if (session.legacy) {
+      if (session.legacy || session.v !== 3) {
         res.cookie(deps.ownerCookieName, deps.encryptOwnerSession({
-          v: 2,
+          v: 3,
           mqttUsername: session.mqttUsername,
           exp: session.exp,
+          gen: session.gen,
         }), {
           httpOnly: true,
           secure: deps.isSecureRequest(req),

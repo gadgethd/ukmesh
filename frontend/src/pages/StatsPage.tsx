@@ -651,7 +651,7 @@ export const StatsPage: React.FC = () => {
                         <CartesianGrid {...gridProps} />
                         <XAxis dataKey="prefix" {...axisProps} />
                         <YAxis {...axisProps} allowDecimals={false} />
-                        <Tooltip content={<CustomTooltip />} formatter={(value: number) => [value, 'Repeats']} />
+                        <Tooltip content={<CustomTooltip />} />
                         <Bar dataKey="repeats" name="Repeats" fill={C_PURPLE} fillOpacity={0.8} radius={[3, 3, 0, 0]} />
                       </BarChart>
                     </ResponsiveContainer>

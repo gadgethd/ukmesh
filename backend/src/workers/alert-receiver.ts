@@ -175,6 +175,85 @@ async function forward(receipt: AlertReceipt): Promise<void> {
   }
 }
 
+// ---- BUG-014: durable delivery state ----
+// Forwarding used to fire-and-forget: failures were logged asynchronously and
+// /healthz stayed green while alerts silently never reached an operator.
+// Now every receipt is retried with bounded exponential backoff, dead-lettered
+// after MAX_FORWARD_ATTEMPTS, and readiness reflects delivery health.
+const FORWARD_DEAD_LETTER_PATH = `${RECEIPT_PATH}.dead`;
+const MAX_FORWARD_ATTEMPTS = Number(process.env['ALERT_FORWARD_MAX_ATTEMPTS'] ?? 5);
+const FORWARD_BACKOFF_BASE_MS = Number(process.env['ALERT_FORWARD_BACKOFF_BASE_MS'] ?? 1_000);
+const FORWARD_BACKOFF_CAP_MS = Number(process.env['ALERT_FORWARD_BACKOFF_CAP_MS'] ?? 60_000);
+
+type DeliveryState = {
+  attempts: number;
+  lastAttempt: number;
+  pending: boolean;
+};
+
+const delivery = new Map<string, DeliveryState>();
+let forwardChain = Promise.resolve();
+let lastForwardSuccessAt = FORWARD_URL ? 0 : Date.now();
+
+async function deadLetter(receipt: AlertReceipt, reason: string): Promise<void> {
+  try {
+    await appendFile(FORWARD_DEAD_LETTER_PATH, `${JSON.stringify({ ...receipt, deadLetterReason: reason })}\n`, {
+      encoding: 'utf8',
+      mode: 0o600,
+    });
+  } catch (error) {
+    console.error('[alert-receiver] failed to write dead-letter:', (error as Error).message);
+  }
+}
+
+/** Enqueue a receipt for durable forwarding with bounded retries. */
+function enqueueForward(receipt: AlertReceipt): void {
+  const key = `${receipt.alert_names.join(',')}:${receipt.received_at}`;
+  if (delivery.has(key) && delivery.get(key)!.pending) return; // already in flight
+  delivery.set(key, { attempts: 0, lastAttempt: 0, pending: true });
+
+  forwardChain = forwardChain.then(async () => {
+    while (true) {
+      const state = delivery.get(key)!;
+      if (state.attempts >= MAX_FORWARD_ATTEMPTS) {
+        state.pending = false;
+        await deadLetter(receipt, `max attempts (${MAX_FORWARD_ATTEMPTS})`);
+        console.error(`[alert-receiver] dead-lettered after ${MAX_FORWARD_ATTEMPTS} attempts: ${key}`);
+        return;
+      }
+      if (state.lastAttempt > 0) {
+        const backoff = Math.min(FORWARD_BACKOFF_CAP_MS, FORWARD_BACKOFF_BASE_MS * 2 ** (state.attempts - 1));
+        await new Promise((resolve) => setTimeout(resolve, backoff));
+      }
+      state.lastAttempt = Date.now();
+      try {
+        await forward(receipt);
+        state.pending = false;
+        lastForwardSuccessAt = Date.now();
+        return;
+      } catch (error) {
+        state.attempts += 1;
+        console.error(`[alert-receiver] forward attempt ${state.attempts}/${MAX_FORWARD_ATTEMPTS} failed:`, (error as Error).message);
+      }
+    }
+  });
+}
+
+function deliveryHealth(): { degraded: boolean; detail: string } {
+  if (!FORWARD_URL) {
+    return { degraded: true, detail: 'archive-only mode: ALERT_FORWARD_URL is not configured' };
+  }
+  if (lastForwardSuccessAt === 0) {
+    return { degraded: true, detail: 'no successful forward since startup' };
+  }
+  const pending = [...delivery.values()].filter((state) => state.pending);
+  const stuck = pending.filter((state) => Date.now() - state.lastAttempt > 5 * 60_000);
+  if (stuck.length > 0) {
+    return { degraded: true, detail: `${stuck.length} alert(s) undelivered for over 5 minutes` };
+  }
+  return { degraded: false, detail: `delivering to ${FORWARD_URL}` };
+}
+
 function json(res: ServerResponse, statusCode: number, payload: unknown): void {
   res.writeHead(statusCode, {
     'content-type': 'application/json',
@@ -185,8 +264,13 @@ function json(res: ServerResponse, statusCode: number, payload: unknown): void {
 }
 
 const server = http.createServer(async (req, res) => {
-  if (req.method === 'GET' && req.url === '/healthz') {
-    json(res, 200, { status: 'ok' });
+  if (req.method === 'GET' && (req.url === '/healthz' || req.url === '/readyz')) {
+    const health = deliveryHealth();
+    // /healthz always 200 so the compose healthcheck (wget -qO-) never
+    // restarts the container for degraded delivery; /readyz returns 503 so
+    // orchestrators/operators can see real readiness.
+    const degraded = req.url === '/readyz' && health.degraded;
+    json(res, degraded ? 503 : 200, { status: health.degraded ? 'degraded' : 'ok', detail: health.detail });
     return;
   }
   if (req.method !== 'POST' || req.url !== '/alerts') {
@@ -198,9 +282,7 @@ const server = http.createServer(async (req, res) => {
     const payload = JSON.parse(body.toString('utf8')) as unknown;
     const receipt = summarizeAlertPayload(payload);
     await persistReceipt(receipt);
-    void forward(receipt).catch((error) => {
-      console.error('[alert-receiver] forward failed:', (error as Error).message);
-    });
+    enqueueForward(receipt);
     json(res, 202, { accepted: true });
   } catch (error) {
     const tooLarge = (error as Error).message === 'request body too large';

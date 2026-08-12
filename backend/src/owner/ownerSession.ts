@@ -2,9 +2,11 @@ import type { Request } from 'express';
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
 
 export type OwnerSession = {
-  v: 2;
+  v: 3;
   mqttUsername: string;
   exp: number;
+  /** Credential generation this session was minted under (BUG-010). */
+  gen: number;
   legacy?: boolean;
 };
 
@@ -19,9 +21,10 @@ export function encryptOwnerSession(payload: OwnerSession): string {
   const key = getOwnerCookieKey();
   const cipher = createCipheriv('aes-256-gcm', key, iv);
   const plaintext = Buffer.from(JSON.stringify({
-    v: 2,
+    v: 3,
     mqttUsername: payload.mqttUsername.trim(),
     exp: payload.exp,
+    gen: payload.gen,
   }), 'utf8');
   const encrypted = Buffer.concat([cipher.update(plaintext), cipher.final()]);
   const tag = cipher.getAuthTag();
@@ -45,12 +48,16 @@ export function decryptOwnerSession(token: string): OwnerSession | null {
       : '';
     const exp = parsed['exp'];
     if (!mqttUsername || typeof exp !== 'number' || !Number.isFinite(exp)) return null;
-    if (parsed['v'] === 2) return { v: 2, mqttUsername, exp };
+    const gen = typeof parsed['gen'] === 'number' && Number.isFinite(parsed['gen'])
+      ? parsed['gen']
+      : 0;
+    if (parsed['v'] === 3) return { v: 3, mqttUsername, exp, gen };
+    if (parsed['v'] === 2) return { v: 3, mqttUsername, exp, gen, legacy: true };
 
     // A username-bearing v1 cookie is an identity hint only. Embedded node IDs
     // are ignored and current server-side authorization is re-read.
     if (Array.isArray(parsed['nodeIds'])) {
-      return { v: 2, mqttUsername, exp, legacy: true };
+      return { v: 3, mqttUsername, exp, gen, legacy: true };
     }
     return null;
   } catch {

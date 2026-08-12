@@ -10,7 +10,7 @@ import { MapboxOverlay } from '@deck.gl/mapbox';
 import { ArcLayer, LineLayer, PathLayer, ScatterplotLayer } from '@deck.gl/layers';
 import { HeatmapLayer } from '@deck.gl/aggregation-layers';
 import type { Layer } from '@deck.gl/core';
-import maplibregl from 'maplibre-gl';
+import * as maplibregl from 'maplibre-gl';
 import { PACKET_ARC_TTL_MS, type PacketArc } from '../../hooks/useNodes.js';
 import type { HiddenMaskGeometry } from '../../utils/pathing.js';
 import { maskPoint } from '../../utils/pathing.js';

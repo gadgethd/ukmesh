@@ -33,6 +33,7 @@ import {
 import {
   autoLinkOwnerNodeIds,
   buildOwnerDashboard,
+  getOwnerCredentialGeneration,
   invalidateOwnerNodeIdCache,
   resolveOwnerNodeIds,
   verifyMqttCredentials,
@@ -114,7 +115,9 @@ router.use(nodeStatusRoutes);
 router.use(radioRoutes);
 registerProductFeatureRoutes(router, query);
 const OWNER_COOKIE_NAME = 'meshcore_owner_session';
-const OWNER_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+// 7 days: revocation is now immediate via the credential-generation check
+// (BUG-010), so a long cookie lifetime no longer delays incident response.
+const OWNER_SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const OWNER_LAST_HOP_CACHE_TTL_MS = 60 * 60 * 1000;
 const MQTT_USERNAME_MAX_LEN = 128;
 const MQTT_PASSWORD_MAX_LEN = 128;
@@ -132,6 +135,15 @@ async function requireOwnerSession(req: Request, res: Response): Promise<string[
   if (!session) {
     res.clearCookie(OWNER_COOKIE_NAME, { path: '/' });
     res.status(401).json({ error: 'Not logged in' });
+    return null;
+  }
+  // BUG-010: reject sessions minted under a revoked password. The generation
+  // is bumped when the broker rejects a previously-valid credential; sessions
+  // carrying an older generation are stale and must re-authenticate.
+  const currentGen = await getOwnerCredentialGeneration(session.mqttUsername);
+  if (session.gen !== currentGen) {
+    res.clearCookie(OWNER_COOKIE_NAME, { path: '/' });
+    res.status(401).json({ error: 'Credentials have been rotated — please log in again' });
     return null;
   }
   const nodeIds = await resolveOwnerNodeIds(session.mqttUsername);
@@ -196,6 +208,7 @@ registerOwnerRoutes(router, {
   isSecureRequest,
   getOwnerSession: getRouteOwnerSession,
   requireOwnerSession,
+  getOwnerCredentialGeneration,
   invalidateOwnerNodeIdCache,
   query,
 });

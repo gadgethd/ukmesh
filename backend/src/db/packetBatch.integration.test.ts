@@ -18,6 +18,71 @@ import {
 const { Pool } = pg;
 const databaseUrl = process.env['TEST_INGEST_DATABASE_URL'];
 
+test('base schema and every migration apply to a brand-new database', {
+  skip: databaseUrl ? false : 'TEST_INGEST_DATABASE_URL is not configured',
+}, async (t) => {
+  const adminPool = new Pool({
+    connectionString: databaseUrl,
+    application_name: 'meshcore-fresh-migrations-admin-test',
+    max: 1,
+  });
+  const databaseName = `meshcore_fresh_${process.pid}_${Date.now()}`;
+  const databaseIdentifier = `"${databaseName}"`;
+  const freshUrl = new URL(databaseUrl as string);
+  freshUrl.pathname = `/${databaseName}`;
+  let freshPool: pg.Pool | null = null;
+
+  t.after(async () => {
+    await freshPool?.end();
+    await adminPool.query(`DROP DATABASE IF EXISTS ${databaseIdentifier} WITH (FORCE)`);
+    await adminPool.end();
+  });
+
+  await adminPool.query(`CREATE DATABASE ${databaseIdentifier}`);
+  freshPool = new Pool({
+    connectionString: freshUrl.toString(),
+    application_name: 'meshcore-fresh-migrations-test',
+    max: 1,
+  });
+  const baseSql = fs.readFileSync(new URL('./schema/base.sql', import.meta.url), 'utf8');
+  await freshPool.query(baseSql);
+
+  const executed = await runMigrations(freshPool);
+  assert.ok(executed.includes(
+    '011_invalidate_pre_visibility_path_cache.sql -> 044_health_current_remove_path_history.sql',
+  ));
+  assert.ok(executed.includes(
+    '015_public_visibility_generation.sql -> 044_health_current_remove_path_history.sql',
+  ));
+  assert.deepEqual(await runMigrations(freshPool), []);
+
+  const compatibility = await freshPool.query<{
+    migration_name: string;
+    disposition: string;
+    replacement_name: string | null;
+  }>(`
+    SELECT migration_name, disposition, replacement_name
+    FROM schema_migration_compatibility
+    WHERE migration_name IN (
+      '011_invalidate_pre_visibility_path_cache.sql',
+      '015_public_visibility_generation.sql'
+    )
+    ORDER BY migration_name
+  `);
+  assert.deepEqual(compatibility.rows, [
+    {
+      migration_name: '011_invalidate_pre_visibility_path_cache.sql',
+      disposition: 'superseded-empty',
+      replacement_name: '044_health_current_remove_path_history.sql',
+    },
+    {
+      migration_name: '015_public_visibility_generation.sql',
+      disposition: 'superseded-empty',
+      replacement_name: '044_health_current_remove_path_history.sql',
+    },
+  ]);
+});
+
 test('packet batch atomically coalesces observer, sighting, and stats writes', {
   skip: databaseUrl ? false : 'TEST_INGEST_DATABASE_URL is not configured',
 }, async (t) => {
@@ -31,12 +96,17 @@ test('packet batch atomically coalesces observer, sighting, and stats writes', {
   const baseSql = fs.readFileSync(new URL('./schema/base.sql', import.meta.url), 'utf8');
   await pool.query(baseSql);
   await pool.query(`
+    CREATE TABLE path_history_cache (
+      packet_hash TEXT PRIMARY KEY
+    );
     CREATE TABLE schema_migrations (
       name TEXT PRIMARY KEY,
       applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
     INSERT INTO schema_migrations (name)
-    VALUES ('016_stale_mqtt_observer_cleanup.sql')
+    VALUES ('011_invalidate_pre_visibility_path_cache.sql'),
+           ('015_public_visibility_generation.sql'),
+           ('016_stale_mqtt_observer_cleanup.sql')
   `);
   const compatibilityNode = 'migration-compatibility-fixture';
   await pool.query(
@@ -67,6 +137,10 @@ test('packet batch atomically coalesces observer, sighting, and stats writes', {
   assert.ok(migrationRuns.flat().some(
     (name) => name.startsWith('016_private_prefixes.sql -> 026_private_visibility_schema.sql'),
   ));
+  const retiredPathCache = await pool.query<{ exists: string | null }>(
+    "SELECT to_regclass('public.path_history_cache')::text AS exists",
+  );
+  assert.equal(retiredPathCache.rows[0]?.exists, null);
 
   // Simulate a process loss after the idempotent CREATE INDEX CONCURRENTLY
   // succeeded but before its non-transactional ledger insert committed. The
@@ -153,6 +227,11 @@ test('packet batch atomically coalesces observer, sighting, and stats writes', {
   const now = Date.now();
   let statementCount = 0;
   configurePacketBatch(async (text, params) => {
+    if (text.includes('jsonb_agg(jsonb_build_object')) {
+      // Private-prefix cache refresh is bookkeeping, not part of the atomic
+      // batch statement (same convention as packetBatch.test.ts).
+      return pool.query(text, params);
+    }
     statementCount += 1;
     return pool.query(text, params);
   });
