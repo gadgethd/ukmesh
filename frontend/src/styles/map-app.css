@@ -2205,3 +2205,18 @@
     border-color: var(--accent);
   }
 }
+/* ═══ Mobile shell grid fix — floating controls no longer own a grid row ═══ */
+@media (max-width: 640px) {
+  .app-shell {
+    grid-template-rows: 48px minmax(0, 1fr);
+  }
+  /* Legend chip: sits below the floating Layers/Live bar instead of the old
+     240px controls stack. */
+  .map-area .node-legend {
+    top: 108px;
+  }
+  /* Activity replay: same — below the floating bar, right side. */
+  .app-shell .map-layer ~ .timeline-control {
+    top: calc(48px + 56px + 8px);
+  }
+}
