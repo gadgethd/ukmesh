@@ -30,6 +30,9 @@ LABEL org.opencontainers.image.revision="${SOURCE_REVISION}" \
 COPY --from=frontend-builder /build/frontend/dist /usr/share/nginx/html
 COPY nginx.website.conf /etc/nginx/conf.d/default.conf
 COPY nginx.security-headers.conf /etc/nginx/snippets/security-headers.conf
+# .mjs (ES module workers, e.g. maplibre-gl) must be served as JS, not the
+# nginx default (application/octet-stream) — add the mapping inside mime.types.
+RUN sed -i 's/^}$/    application\/javascript mjs;\n}/' /etc/nginx/mime.types
 RUN chown -R nginx:nginx /var/cache/nginx /etc/nginx/conf.d \
  && chown nginx:nginx /run
 USER 101:101
