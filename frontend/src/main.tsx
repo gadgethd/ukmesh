@@ -15,11 +15,13 @@ import {
   PUBLIC_ROUTES,
   type PublicRouteComponent,
 } from './config/publicRoutes.js';
+import { installClientErrorReporting } from './telemetry/clientErrors.js';
 
 const App = lazy(() => import('./App.js').then(({ App: Component }) => ({ default: Component })));
 const OpenSourcePage = lazy(() => import('./pages/OpenSourcePage.js').then(({ OpenSourcePage: Component }) => ({ default: Component })));
 const StatsPage = lazy(() => import('./pages/StatsPage.js').then(({ StatsPage: Component }) => ({ default: Component })));
 const ContactPage = lazy(() => import('./pages/ContactPage.js').then(({ ContactPage: Component }) => ({ default: Component })));
+const PrivacyPage = lazy(() => import('./pages/PrivacyPage.js').then(({ PrivacyPage: Component }) => ({ default: Component })));
 const OwnerPortalPage = lazy(() => import('./pages/OwnerPortalPage.js').then(({ OwnerPortalPage: Component }) => ({ default: Component })));
 const UKLayout = lazy(() => import('./pages/ukmesh/UKLayout.js').then(({ UKLayout: Component }) => ({ default: Component })));
 const UKHomePage = lazy(() => import('./pages/ukmesh/UKHomePage.js').then(({ UKHomePage: Component }) => ({ default: Component })));
@@ -45,6 +47,7 @@ const PUBLIC_ROUTE_ELEMENTS: Record<PublicRouteComponent, React.ReactElement> = 
   spam: <SpamPage />,
   topology: <TopologyPage />,
   contact: <ContactPage />,
+  privacy: <PrivacyPage />,
 };
 
 const root = document.getElementById('root')!;
@@ -63,6 +66,8 @@ const isAppDomain = !appHostname || hostname === appHostname || (isLocalhost && 
 if (isAppDomain) document.title = 'MeshCore Analytics';
 
 async function bootstrap(): Promise<void> {
+  // Client error capture must be installed before any module can throw.
+  installClientErrorReporting();
   // The map is not mounted until its same-origin kill switches have resolved.
   // initializeRuntimeFeatures handles timeout/malformed/offline failures by
   // publishing the all-disabled snapshot.

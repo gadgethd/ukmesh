@@ -37,7 +37,7 @@ type WorkerSnapshot = {
 };
 
 type RetentionTarget = {
-  table: 'worker_health_snapshots' | 'frontend_error_events' | 'owner_alert_deliveries' | 'operational_check_results' | 'observer_region_packet_sightings' | 'observer_region_observer_sightings' | 'link_job_commits' | 'ml_model_variant_packet_results';
+  table: 'worker_health_snapshots' | 'frontend_error_events' | 'owner_alert_deliveries' | 'operational_check_results' | 'observer_region_packet_sightings' | 'observer_region_observer_sightings' | 'link_job_commits' | 'ml_model_variant_packet_results' | 'packet_decryptions';
   timestampColumn: 'ts' | 'time' | 'created_at' | 'completed_at' | 'last_seen';
   retention: string;
   batchSize: number;
@@ -59,6 +59,7 @@ const RETENTION_TARGETS: RetentionTarget[] = [
   { table: 'observer_region_observer_sightings', timestampColumn: 'last_seen', retention: '31 days', batchSize: 5_000 },
   { table: 'link_job_commits', timestampColumn: 'completed_at', retention: '180 days', batchSize: 5_000 },
   { table: 'ml_model_variant_packet_results', timestampColumn: 'created_at', retention: '180 days', batchSize: 5_000 },
+  { table: 'packet_decryptions', timestampColumn: 'created_at', retention: '30 days', batchSize: 2_000 },
 ];
 
 function refreshBackupAgeMetrics(now = new Date()): void {

@@ -10,7 +10,8 @@ export type PublicRouteComponent =
   | 'stats'
   | 'spam'
   | 'topology'
-  | 'contact';
+  | 'contact'
+  | 'privacy';
 
 export type PublicRouteDefinition = {
   path: string;
@@ -97,6 +98,13 @@ export const PUBLIC_ROUTES: readonly PublicRouteDefinition[] = [
     component: 'topology',
     title: 'Repeater Topology — UK Mesh Network',
     description: 'Explore recent viable repeater relationships, highly connected relay hubs, and observed MeshCore network topology across the UK.',
+    sitemap: true,
+  },
+  {
+    path: '/privacy',
+    component: 'privacy',
+    title: 'Privacy — UK Mesh Network',
+    description: 'What data UK Mesh Analytics collects, why, how long it is kept, and how to exercise your rights.',
     sitemap: true,
   },
   {

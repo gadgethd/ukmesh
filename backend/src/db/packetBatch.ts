@@ -277,6 +277,20 @@ async function writeBatch(batch: PendingPacket[], idempotent: boolean): Promise<
          FROM ${persistenceSource}
          RETURNING 1
        ),
+       path_inserted AS (
+         INSERT INTO packet_paths (
+           time, packet_hash, rx_node_id, src_node_id, topic, topic_prefix,
+           route_type, hop_count, rssi, snr, path_hashes, path_hash_size_bytes,
+           is_private, visibility_ok, network, observation_id
+         )
+         SELECT time, packet_hash, rx_node_id, src_node_id, topic, topic_prefix,
+                route_type, hop_count, rssi, snr, path_hashes, path_hash_size_bytes,
+                is_private, path_is_valid AND NOT is_private, network, gen_random_uuid()
+         FROM ${persistenceSource}
+         WHERE path_hashes IS NOT NULL AND path_hash_size_bytes > 1
+         ON CONFLICT DO NOTHING
+         RETURNING 1
+       ),
        observer_updates AS (
          INSERT INTO nodes (
            node_id, iata, observer_iata, last_seen, last_rx_at, is_online,

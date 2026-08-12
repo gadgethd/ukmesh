@@ -236,6 +236,8 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
         <Link to="/stats">Stats</Link>
         <span className="site-footer__sep">·</span>
         <Link to="/open-source">Open Source</Link>
+        <span className="site-footer__sep">·</span>
+        <Link to="/privacy">Privacy</Link>
         {showLiveMap && (
           <>
             <span className="site-footer__sep">·</span>
@@ -248,7 +250,7 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
         <div className="cookie-banner" role="dialog" aria-live="polite" aria-label="Cookie notice">
           <div className="cookie-banner__body">
             <strong>Cookies, sadly.</strong>
-            <p>We only use them for the boring useful bits, like keeping logins alive and remembering site choices. No secret biscuit syndicate.</p>
+            <p>We only use them for the boring useful bits, like keeping logins alive and remembering site choices. No secret biscuit syndicate. <Link to="/privacy">Privacy policy</Link>.</p>
           </div>
           <button type="button" className="cookie-banner__button" onClick={acceptCookies}>Accept</button>
         </div>

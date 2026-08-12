@@ -428,32 +428,6 @@ export const App: React.FC = () => {
     prevHexClashesRef.current = isHexClashes;
   }, [filters.hexClashes, filters.clientNodes]);
 
-  useEffect(() => {
-    const postError = (kind: string, message: string, stack?: string) => {
-      void fetch('/api/telemetry/frontend-error', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ kind, message, stack, page: window.location.href, userAgent: navigator.userAgent }),
-        signal: AbortSignal.timeout(OTHER_FETCH_TIMEOUT_MS),
-      }).catch(() => {});
-    };
-
-    const onError = (event: ErrorEvent) => {
-      postError('error', event.message ?? 'unknown error', event.error?.stack);
-    };
-    const onRejection = (event: PromiseRejectionEvent) => {
-      const reason = event.reason instanceof Error ? event.reason : new Error(String(event.reason));
-      postError('unhandledrejection', reason.message, reason.stack);
-    };
-
-    window.addEventListener('error', onError);
-    window.addEventListener('unhandledrejection', onRejection);
-    return () => {
-      window.removeEventListener('error', onError);
-      window.removeEventListener('unhandledrejection', onRejection);
-    };
-  }, []);
-
   const dismissDisclaimer = useCallback(() => {
     localStorage.setItem(DISCLAIMER_KEY, '1');
     setShowDisclaimer(false);
