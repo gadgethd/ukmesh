@@ -256,7 +256,7 @@ services:
       STALE_MQTT_OBSERVER_CLEANUP_INTERVAL_MS: ${STALE_MQTT_OBSERVER_CLEANUP_INTERVAL_MS:-21600000}
       HEALTH_VOLUME_PATHS: database=/health-volumes/database=${HEALTH_DATABASE_BUDGET_BYTES:-322122547200},redis=/health-volumes/redis=${HEALTH_REDIS_BUDGET_BYTES:-4294967296},terrain=/health-volumes/terrain=${HEALTH_TERRAIN_BUDGET_BYTES:-53687091200},logs=/health-volumes/logs=${HEALTH_LOG_BUDGET_BYTES:-21474836480}
       DATA_LIFECYCLE_RETENTION_ENABLED: "true"
-      DATA_LIFECYCLE_RETENTION_TARGETS: worker_health_snapshots,operational_check_results
+      DATA_LIFECYCLE_RETENTION_TARGETS: ${DATA_LIFECYCLE_RETENTION_TARGETS:-worker_health_snapshots,operational_check_results}
       NODE_ENV: production
     depends_on:
       db-migrate:
