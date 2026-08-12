@@ -1,5 +1,6 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import viteSeoPlugin from './src/plugins/vite-seo.js';
@@ -8,22 +9,25 @@ import viteSeoPlugin from './src/plugins/vite-seo.js';
  * maplibre-gl v6 loads its WebWorker via new URL(<var>, import.meta.url) —
  * the URL is built dynamically, so Rollup cannot statically rewrite it and no
  * worker asset is ever emitted. At runtime the browser requests
- * /assets/maplibre-gl-worker.mjs, which 404s (nginx SPA fallback serves HTML),
- * and the map renders dead (no tiles, no node dots). Emit the worker file
- * explicitly so the runtime request resolves.
+ * /assets/maplibre-gl-worker.mjs (which imports ./maplibre-gl-shared.mjs),
+ * both 404 (nginx SPA fallback serves HTML), and the map renders dead (no
+ * tiles, no node dots). Emit every .mjs from the maplibre dist so the runtime
+ * requests resolve.
  */
 function maplibreWorkerPlugin(): Plugin {
   return {
     name: 'maplibre-worker-emit',
     generateBundle() {
-      const workerPath = fileURLToPath(
-        new URL('./node_modules/maplibre-gl/dist/maplibre-gl-worker.mjs', import.meta.url),
-      );
-      this.emitFile({
-        type: 'asset',
-        fileName: 'assets/maplibre-gl-worker.mjs',
-        source: readFileSync(workerPath),
-      });
+      const distDir = fileURLToPath(new URL('./node_modules/maplibre-gl/dist', import.meta.url));
+      for (const file of readdirSync(distDir)) {
+        if (file.endsWith('.mjs') && !file.endsWith('.map')) {
+          this.emitFile({
+            type: 'asset',
+            fileName: `assets/${file}`,
+            source: readFileSync(join(distDir, file)),
+          });
+        }
+      }
     },
   };
 }
