@@ -1,9 +1,35 @@
-import { defineConfig } from 'vite';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import viteSeoPlugin from './src/plugins/vite-seo.js';
 
+/**
+ * maplibre-gl v6 loads its WebWorker via new URL(<var>, import.meta.url) —
+ * the URL is built dynamically, so Rollup cannot statically rewrite it and no
+ * worker asset is ever emitted. At runtime the browser requests
+ * /assets/maplibre-gl-worker.mjs, which 404s (nginx SPA fallback serves HTML),
+ * and the map renders dead (no tiles, no node dots). Emit the worker file
+ * explicitly so the runtime request resolves.
+ */
+function maplibreWorkerPlugin(): Plugin {
+  return {
+    name: 'maplibre-worker-emit',
+    generateBundle() {
+      const workerPath = fileURLToPath(
+        new URL('./node_modules/maplibre-gl/dist/maplibre-gl-worker.mjs', import.meta.url),
+      );
+      this.emitFile({
+        type: 'asset',
+        fileName: 'assets/maplibre-gl-worker.mjs',
+        source: readFileSync(workerPath),
+      });
+    },
+  };
+}
+
 export default defineConfig({
-  plugins: [react(), viteSeoPlugin()],
+  plugins: [react(), viteSeoPlugin(), maplibreWorkerPlugin()],
   optimizeDeps: {
     // maplibre-gl v6 loads its worker via new URL(..., import.meta.url) —
     // vite's dep pre-bundling rewrites that to node_modules/.vite/deps/maplibre-gl-worker.mjs
