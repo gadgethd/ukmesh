@@ -128,7 +128,7 @@ export const OwnerPortalPage: React.FC = () => {
 
   const handleLogin = (event: FormEvent) => {
     event.preventDefault();
-    if (!mqttUsername.trim() || !mqttPassword.trim()) {
+    if (!mqttUsername.trim() || !mqttPassword) {
       setError('Enter your MQTT username and password.');
       return;
     }
@@ -144,7 +144,7 @@ export const OwnerPortalPage: React.FC = () => {
           },
           body: JSON.stringify({
             mqttUsername: loginUsername,
-            mqttPassword: mqttPassword.trim(),
+            mqttPassword,
           }),
         }, {
           timeoutMs: 15_000,

@@ -56,7 +56,8 @@ test('session polling does not reset the repeater owner content', async ({ page 
   });
 
   await page.goto('/login');
-  await expect(page.getByText('Alpha Repeater', { exact: true })).toBeVisible();
+  const identities = page.getByLabel('Owned repeater identities');
+  await expect(identities.getByText('Alpha Repeater', { exact: true })).toBeVisible();
   await expect(page.locator('.owner-section-tabs')).toHaveCount(0);
   await expect(page.locator('.owner-settings')).toHaveCount(0);
 
@@ -70,7 +71,7 @@ test('session polling does not reset the repeater owner content', async ({ page 
   await page.clock.fastForward(15_001);
   await sessionRefresh;
   await page.clock.fastForward(100);
-  await expect(page.getByText('Alpha Repeater', { exact: true })).toBeVisible();
+  await expect(identities.getByText('Alpha Repeater', { exact: true })).toBeVisible();
   await expect(page.getByText('Unnamed', { exact: true })).toHaveCount(0);
   expect(liveRequests).toBe(initialLiveRequests + 1);
 });

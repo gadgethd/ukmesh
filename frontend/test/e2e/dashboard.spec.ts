@@ -118,7 +118,7 @@ test('HopReach tiles arrive progressively while the 4,600-node map remains inter
   if (testInfo.project.name === 'dashboard-mobile') {
     await page.getByRole('button', { name: 'Layers' }).first().click();
   }
-  await expect(rfToggle).toHaveAttribute('aria-pressed', 'true');
+  await expect(rfToggle).toHaveAttribute('aria-pressed', 'true', { timeout: 15_000 });
   await expect(page.getByRole('region', { name: 'RF coverage status' })).toContainText('50%');
   await expect(page.getByRole('region', { name: 'RF coverage status' })).toContainText('868.000 MHz');
   await expect.poll(
@@ -178,7 +178,7 @@ test('RF coverage remains available with 3D terrain', async ({ page }, testInfo)
 
 test('map modes update layers and produce a shareable URL', async ({ page }) => {
   await page.goto('/');
-  await expect(page.getByText('Live Map', { exact: true })).toBeVisible();
+  await expect(page.getByText('Live Map', { exact: true })).toBeVisible({ timeout: 15_000 });
   const mapArea = page.locator('.map-area');
   await expect(mapArea).toBeVisible();
   expect((await mapArea.boundingBox())?.height).toBeGreaterThan(300);

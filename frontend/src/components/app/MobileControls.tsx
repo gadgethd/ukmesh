@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import type maplibregl from 'maplibre-gl';
+import type * as maplibregl from 'maplibre-gl';
 import { NodeSearch } from '../Map/NodeSearch.js';
 import { visibleFilterRows, type Filters } from '../FilterPanel/FilterPanel.js';
 import type { MapMode } from '../../config/mapModes.js';

@@ -91,10 +91,14 @@ export function registerExportRoutes(router: Router, deps: Deps): void {
   });
 
   router.get('/v1/exports/nodes.:format', deps.exportLimiter, async (req, res) => {
-    const format = parseEnum(req.params['format']?.toLowerCase(), {
-      name: 'format',
-      values: ['csv', 'geojson'] as const,
-    });
+    const rawFormat = req.params['format'];
+    const format = parseEnum(
+      (Array.isArray(rawFormat) ? rawFormat[0] : rawFormat)?.toLowerCase(),
+      {
+        name: 'format',
+        values: ['csv', 'geojson'] as const,
+      },
+    );
     if (!format) {
       res.status(404).json({ error: 'Supported formats are csv and geojson' });
       return;
