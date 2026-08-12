@@ -41,7 +41,7 @@ import { useWatchlist } from '../hooks/useWatchlist.js';
 import { isStatsPayloadEmpty } from './statsState.js';
 import './path-modal.css';
 import './stats-page.css';
-import { fmtAxisDay, fmtAxisTime } from './statsTimeFormat.js';
+import { fmtAxisDay, fmtAxisTime, fmtPeakHour } from './statsTimeFormat.js';
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 export const StatsPage: React.FC = () => {
@@ -173,7 +173,7 @@ export const StatsPage: React.FC = () => {
                   <StatCard label="Radios heard (24h)" value={formatCount(data.summary.uniqueRadios24h)} color={C_GREEN} />
                   <StatCard
                     label="Peak hour"
-                    value={data.summary.peakHour ?? '—'}
+                    value={data.summary.peakHour ? fmtPeakHour(data.summary.peakHour) : '—'}
                     sub={data.summary.peakHour ? `${formatCount(data.summary.peakHourCount)} packets` : undefined}
                     color={C_AMBER}
                   />

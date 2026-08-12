@@ -23,3 +23,11 @@ export function fmtAxisDay(value: unknown): string {
     ? d.toLocaleDateString('en-GB', { weekday: 'short', month: 'short', day: 'numeric' })
     : String(value);
 }
+
+/** Format an ISO/UTC timestamp as a compact local date+time (e.g. "12 Aug, 07:00"). */
+export function fmtPeakHour(value: unknown): string {
+  const d = new Date(String(value));
+  return Number.isFinite(d.getTime())
+    ? d.toLocaleString('en-GB', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+    : String(value);
+}

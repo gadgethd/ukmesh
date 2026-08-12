@@ -342,6 +342,34 @@
 @media (max-width: 480px) {
   .stats-page__summary {
     grid-template-columns: repeat(2, 1fr);
+    gap: 10px;
+  }
+  .stats-page__tabs {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    padding-bottom: 2px;
+  }
+  .stats-page__tab {
+    flex: 0 0 auto;
+    min-height: 40px;
+    display: inline-flex;
+    align-items: center;
+  }
+  .stats-page__chart-header {
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 4px 10px;
+  }
+  .stats-page__stat {
+    padding: 10px 12px;
+  }
+  .stats-page__stat-value {
+    overflow-wrap: anywhere;
+  }
+  .stats-page__refresh-state {
+    flex-wrap: wrap;
+    row-gap: 6px;
   }
   .stats-page__observer-card-head {
     flex-direction: column;
