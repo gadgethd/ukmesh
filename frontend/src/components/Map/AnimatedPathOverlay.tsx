@@ -4,6 +4,7 @@ import { ArcLayer, ScatterplotLayer } from '@deck.gl/layers';
 import { MapboxOverlay } from '@deck.gl/mapbox';
 import type * as maplibregl from 'maplibre-gl';
 import { TERRAIN_CONFIG } from './mapConfig.js';
+import { ensureMapboxOverlayCompatibility } from './mapboxCompat.js';
 import {
   PATH_ARC_BLOOM_WIDTH,
   PATH_ARC_CORE_WIDTH,
@@ -581,6 +582,7 @@ export const AnimatedPathOverlay: React.FC<{
 
   useEffect(() => {
     if (!map) return undefined;
+    ensureMapboxOverlayCompatibility(map);
     const overlay = new MapboxOverlay({ interleaved: false, layers: [] });
     map.addControl(overlay as unknown as maplibregl.IControl);
     overlayRef.current = overlay;

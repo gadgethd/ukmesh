@@ -1,4 +1,4 @@
-import type maplibregl from 'maplibre-gl';
+import type * as maplibregl from 'maplibre-gl';
 
 /**
  * deck.gl's MapboxOverlay (9.3.x) reads maplibre internals that maplibre-gl v6
