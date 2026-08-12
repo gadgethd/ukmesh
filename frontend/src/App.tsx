@@ -555,7 +555,10 @@ export const App: React.FC = () => {
         fullScreenMap={fullScreenMap}
         onToggleFullScreenMap={() => setFullScreenMap((value) => !value)}
         feedOpen={mobileFeedOpen}
-        onToggleFeed={() => setMobileFeedOpen((value) => !value)}
+        onToggleFeed={() => {
+          setMobileFeedOpen((value) => !value);
+          if (!filters.livePackets) handleFiltersChange({ ...filters, livePackets: true });
+        }}
       />
 
       <div className="map-layer">

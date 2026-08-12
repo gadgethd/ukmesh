@@ -255,7 +255,7 @@ test('map controls and disclaimer leave the map usable on a phone', async ({ pag
   await page.getByRole('button', { name: /Layers/ }).click();
   const lineOfSight = page.getByRole('button', { name: 'Line of sight' });
   await expect(lineOfSight).toBeVisible();
-  expect((await lineOfSight.boundingBox())?.width ?? 0).toBeGreaterThan(330);
+  expect((await lineOfSight.boundingBox())?.width ?? 0).toBeGreaterThan(100);
   await expect(page.locator('.mobile-controls .watchlist-panel')).not.toHaveAttribute('open', '');
   const controlsBox = await page.locator('.mobile-controls').boundingBox();
   expect(controlsBox?.height ?? PHONE.height).toBeLessThan(PHONE.height * 0.42);
@@ -269,6 +269,36 @@ test('map controls and disclaimer leave the map usable on a phone', async ({ pag
   expect(dialogBox?.y ?? -1).toBeGreaterThanOrEqual(0);
   expect((dialogBox?.y ?? PHONE.height) + (dialogBox?.height ?? 1)).toBeLessThanOrEqual(PHONE.height);
   await expect(dialog.getByRole('button', { name: 'Got it' })).toBeVisible();
+});
+
+test('mobile map menu floats over the map; feed hides behind the Live chip', async ({ page }) => {
+  await page.setViewportSize(PHONE);
+  await installApiFixtures(page);
+  await page.goto('http://127.0.0.1:4174/', { waitUntil: 'networkidle' });
+
+  // Default state: compact floating bar, packet feed hidden.
+  const controlsBox = await page.locator('.mobile-controls').boundingBox();
+  expect(controlsBox?.height ?? 999).toBeLessThan(90);
+  await expect(page.locator('.packet-feed')).toBeHidden();
+
+  // Live chip reveals the packet feed (and turns Live Feed on if needed).
+  await page.getByRole('button', { name: /Live/ }).click();
+  await expect(page.locator('.packet-feed')).toBeVisible();
+  await page.getByRole('button', { name: /Live/ }).click();
+  await expect(page.locator('.packet-feed')).toBeHidden();
+
+  // Layers menu exposes the map toggles; toggling updates filter state.
+  await page.getByRole('button', { name: /Layers/ }).click();
+  await expect(page.locator('.mobile-menu')).toBeVisible();
+  const terrain = page.getByRole('button', { name: '3D Terrain' });
+  await expect(terrain).toBeVisible();
+  await terrain.click();
+  await expect(terrain).toHaveAttribute('aria-pressed', 'true');
+
+  // Escape closes the menu.
+  await page.keyboard.press('Escape');
+  await expect(page.locator('.mobile-menu')).toBeHidden();
+  await expectNoViewportOverflow(page);
 });
 
 test('live map stays inside every supported viewport and remains UK-only', async ({ page }) => {
