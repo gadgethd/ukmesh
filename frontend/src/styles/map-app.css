@@ -1736,60 +1736,12 @@
 }
 @media (max-width: 640px) {
   .filter-panel { display: none; }
-  .mobile-controls {
-    display: flex;
-    flex-direction: column;
-    width: 100%;
-    min-width: 0;
-    min-height: 0;
-    max-height: min(34dvh, 240px);
-    overflow-y: auto;
-    overscroll-behavior: contain;
-    background: var(--bg-panel);
-    border-bottom: 1px solid var(--border);
-  }
   .rf-coverage-status {
     left: 8px;
     bottom: 8px;
     width: min(330px, calc(100% - 16px));
   }
   .rf-coverage-details { grid-template-columns: 1fr 1fr; }
-  .mobile-controls__primary {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    gap: 8px;
-    min-width: 0;
-    padding: 8px 12px;
-    border-bottom: 1px solid var(--border);
-  }
-  .mobile-controls__primary .map-modes {
-    display: contents;
-  }
-  .mobile-controls__primary .map-modes__buttons {
-    grid-column: 1 / -1;
-    min-width: 0;
-  }
-  .mobile-controls__primary .map-modes__button {
-    min-width: 0;
-    margin: 0;
-  }
-  .mobile-controls__primary .map-modes__share {
-    grid-column: 1;
-    min-width: 0;
-    margin: 0;
-  }
-  .mobile-controls__primary .mobile-fullscreen-toggle {
-    grid-column: 2;
-    min-width: 0;
-    margin: 0;
-    padding: 7px 8px;
-  }
-  .mobile-controls__primary--fullscreen {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  .mobile-controls__primary--fullscreen .mobile-fullscreen-toggle {
-    grid-column: 1;
-  }
   .mobile-map-tools {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2026,5 +1978,230 @@
   }
   .app-shell > .packet-feed {
     bottom: calc(8px + env(safe-area-inset-bottom, 0px));
+  }
+}
+/* ═══ Mobile map menu — de-cramp pass (2026-08-12) ═════════════════════════
+   Appended after the earlier responsive blocks so these rules win the
+   cascade. Only active ≤640px. Desktop layout untouched. */
+
+.rf-coverage-details-toggle {
+  display: none;
+}
+
+@media (max-width: 640px) {
+  .mobile-controls {
+    position: fixed;
+    top: 56px;
+    left: 8px;
+    z-index: 900;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    width: auto;
+    min-width: 0;
+    min-height: 0;
+    max-width: calc(100vw - 16px);
+    max-height: none;
+    overflow: visible;
+    overscroll-behavior: contain;
+    background: none;
+    border: 0;
+    border-bottom: 0;
+  }
+  .mobile-controls--fullscreen {
+    top: 56px;
+    right: 8px;
+    left: auto;
+  }
+  .mobile-controls__bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .mobile-menu-toggle,
+  .mobile-feed-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    min-height: 44px;
+    padding: 8px 13px;
+    border: 1px solid var(--border-bright);
+    border-radius: var(--radius-md);
+    background: rgba(8, 13, 20, 0.92);
+    color: var(--text-primary);
+    font: 700 11px var(--font-mono);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
+    cursor: pointer;
+  }
+  .mobile-menu-toggle[aria-expanded='true'] {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  .mobile-feed-toggle[aria-pressed='true'] {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: rgba(0, 196, 255, 0.14);
+  }
+  .mobile-menu-toggle__icon {
+    font-size: 14px;
+    line-height: 1;
+  }
+  .mobile-menu-toggle__badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 5px;
+    border-radius: 999px;
+    background: var(--accent);
+    color: var(--bg-base);
+    font-size: 10px;
+    font-weight: 700;
+  }
+  .mobile-menu {
+    position: fixed;
+    top: 108px;
+    left: 8px;
+    z-index: 950;
+    width: min(350px, calc(100vw - 16px));
+    max-height: calc(100dvh - 124px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    border: 1px solid var(--border-bright);
+    border-radius: var(--radius-lg);
+    background: var(--bg-panel);
+    box-shadow: 0 10px 34px rgba(0, 0, 0, 0.5);
+  }
+  .mobile-menu__head {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-panel);
+  }
+  .mobile-menu__title {
+    color: var(--text-primary);
+    font: 700 11px var(--font-mono);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .mobile-menu__close {
+    padding: 4px 8px;
+    border: 0;
+    background: none;
+    color: var(--text-secondary);
+    font-size: 15px;
+    cursor: pointer;
+  }
+  .mobile-menu__close:hover,
+  .mobile-menu__close:focus-visible {
+    color: var(--accent);
+  }
+  .mobile-menu__section {
+    padding: 10px 14px 12px;
+    border-top: 1px solid var(--border);
+  }
+  .mobile-menu__section:first-of-type {
+    border-top: 0;
+  }
+  .mobile-menu__heading {
+    margin: 0 0 9px;
+    color: var(--text-secondary);
+    font: 700 10px var(--font-mono);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .mobile-menu .mobile-filter-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+  }
+  .mobile-menu .mobile-filter-grid .filter-row {
+    min-height: 44px;
+    padding: 9px 8px;
+  }
+  .mobile-menu .map-modes {
+    display: block;
+    margin: 0;
+  }
+  .mobile-menu .map-modes__buttons {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 6px;
+  }
+  .mobile-menu .map-modes__button {
+    min-height: 40px;
+    margin: 0;
+  }
+  .mobile-menu .map-modes__share {
+    width: 100%;
+    margin: 8px 0 0;
+  }
+  .mobile-menu .mobile-fullscreen-toggle {
+    width: 100%;
+    margin-top: 8px;
+    padding: 9px 10px;
+    border: 1px solid var(--accent);
+    border-radius: var(--radius-md);
+    background: rgba(8, 13, 20, 0.92);
+    color: var(--text-primary);
+    font: 11px var(--font-mono);
+  }
+  .mobile-menu .mobile-map-tools {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+    padding: 0;
+    border: 0;
+  }
+  .mobile-menu .mobile-map-tools__button {
+    min-height: 44px;
+    padding: 9px 8px;
+    border: 1px solid var(--border-bright);
+    border-radius: var(--radius);
+    background: var(--bg-panel-alt);
+    color: var(--text-primary);
+    font: 11px var(--font-mono);
+  }
+  .mobile-menu .mobile-search {
+    display: block;
+    padding: 0;
+    border: 0;
+  }
+  /* Packet feed stays hidden on mobile until the Live chip is pressed. */
+  .app-shell:not([data-feed-open='true']) .packet-feed {
+    display: none;
+  }
+  /* Coverage details collapse behind the toggle on mobile. */
+  .rf-coverage-details-wrap:not(.rf-coverage-details-wrap--open)
+    :is(.rf-coverage-details, .rf-coverage-note) {
+    display: none;
+  }
+  .rf-coverage-details-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-top: 8px;
+    padding: 8px 10px;
+    border: 1px solid var(--border-bright);
+    border-radius: var(--radius);
+    background: var(--bg-panel-alt);
+    color: var(--text-secondary);
+    font: 10px var(--font-mono);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    cursor: pointer;
+  }
+  .rf-coverage-details-toggle:hover,
+  .rf-coverage-details-toggle:focus-visible {
+    color: var(--accent);
+    border-color: var(--accent);
   }
 }

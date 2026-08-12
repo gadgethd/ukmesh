@@ -1,3 +1,5 @@
+import { useState } from 'react';
+
 import {
   rfNodeCoverageState,
   type RfCoverageMeta,
@@ -38,6 +40,7 @@ export function RfCoverageStatus({
   onClearNode?: () => void;
   visible: boolean;
 }) {
+  const [detailsOpen, setDetailsOpen] = useState(false);
   if (!visible) return null;
   const nodeEntry = nodePublicKey ? meta?.node_coverage?.[nodePublicKey.toLowerCase()] : undefined;
   const product = nodePublicKey ? nodeEntry?.standard : meta?.coverage?.[tier];
@@ -94,6 +97,7 @@ export function RfCoverageStatus({
         <div className="rf-coverage-gradient" aria-hidden="true" />
         <div className="rf-coverage-gradient-labels"><span>Below threshold</span><span>Strong margin</span></div>
         {product ? (
+          <div className={`rf-coverage-details-wrap${detailsOpen ? ' rf-coverage-details-wrap--open' : ''}`}>
           <dl className="rf-coverage-details">
             <div><dt>Frequency</dt><dd>{product.frequency_mhz.toFixed(3)} MHz</dd></div>
             <div><dt>Generated</dt><dd>{new Date(product.generated_at ?? meta?.generated_at ?? '').toLocaleString()}</dd></div>
@@ -101,6 +105,16 @@ export function RfCoverageStatus({
             <div><dt>Source</dt><dd>{meta?.run?.source_version ?? meta?.version ?? 'unknown'}</dd></div>
             {nodePublicKey && <div><dt>Status</dt><dd>{nodeState === 'pending' ? 'Pending' : nodeState === 'stale' ? 'Stale' : 'Available'}</dd></div>}
           </dl>
+            {product?.assumptions?.note && <p className="rf-coverage-note">{product.assumptions.note}</p>}
+            <button
+              type="button"
+              className="rf-coverage-details-toggle"
+              onClick={() => setDetailsOpen((value) => !value)}
+              aria-expanded={detailsOpen}
+            >
+              {detailsOpen ? 'Hide details ▴' : 'Show details ▾'}
+            </button>
+          </div>
         ) : (
           <p className="rf-coverage-waiting">
             {nodePublicKey
@@ -110,7 +124,6 @@ export function RfCoverageStatus({
               : 'Standard coverage is being prepared.'}
           </p>
         )}
-        {product?.assumptions?.note && <p className="rf-coverage-note">{product.assumptions.note}</p>}
       </div>
     </section>
   );
