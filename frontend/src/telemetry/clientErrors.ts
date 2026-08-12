@@ -7,7 +7,7 @@
 
 const TELEMETRY_OFF = (): boolean =>
   typeof window !== 'undefined' &&
-  new URLSearchParams(window.location.search).has('telemetry=off');
+  new URLSearchParams(window.location.search).get('telemetry') === 'off';
 
 const MAX_MESSAGE = 500;
 const MAX_STACK = 4000;
