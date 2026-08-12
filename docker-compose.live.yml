@@ -8,6 +8,15 @@
 # meshcore-infra project on this external network and must be healthy before the
 # application project is reconciled.
 services:
+  db-migrate:
+    # Upstream's CI-oriented compose makes db-migrate depend on timescaledb
+    # (service_healthy), which only exists in docker-compose.ci.yml. On this
+    # host timescaledb is an EXTERNAL service of the meshcore-infra project
+    # (data-plane split 2026-08-09), so the dependency cannot resolve and would
+    # invalidate the whole project. The infra project already guarantees the DB
+    # is healthy before the app project is reconciled.
+    depends_on: !reset {}
+
   backend:
     environment:
       TRUSTED_PROXY_PEERS: ${TRUSTED_PROXY_PEERS:-172.30.0.10,172.30.0.11,172.30.0.12}
