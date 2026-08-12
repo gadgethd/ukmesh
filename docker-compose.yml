@@ -464,6 +464,8 @@ services:
     depends_on:
       backend:
         condition: service_healthy
+    volumes:
+      - ${TERRAIN_TILES_PATH:-./terrain-tiles}:/terrain-tiles:ro
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=16m,mode=1777
       - /var/cache/nginx:rw,noexec,nosuid,size=32m,uid=101,gid=101,mode=0755
@@ -596,6 +598,8 @@ services:
     depends_on:
       backend:
         condition: service_healthy
+    volumes:
+      - ${TERRAIN_TILES_PATH:-./terrain-tiles}:/terrain-tiles:ro
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=16m,mode=1777
       - /var/cache/nginx:rw,noexec,nosuid,size=32m,uid=101,gid=101,mode=0755
