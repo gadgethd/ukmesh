@@ -5,7 +5,9 @@
  * No raw IP, no user identifiers, no cookies, no localStorage.
  */
 
-const TELEMETRY_OFF = new URLSearchParams(window.location.search).has('telemetry=off');
+const TELEMETRY_OFF = (): boolean =>
+  typeof window !== 'undefined' &&
+  new URLSearchParams(window.location.search).has('telemetry=off');
 
 const MAX_MESSAGE = 500;
 const MAX_STACK = 4000;
@@ -23,7 +25,7 @@ const NOISE_PATTERNS: readonly RegExp[] = [
 ];
 
 export function isTelemetryDisabled(): boolean {
-  return TELEMETRY_OFF;
+  return TELEMETRY_OFF();
 }
 
 export function isNoise(message: string): boolean {
@@ -70,7 +72,7 @@ export function classifyErrorEvent(event: unknown): ClassifiedError | null {
 }
 
 export function postTelemetry(classified: ClassifiedError): void {
-  if (TELEMETRY_OFF) return;
+  if (TELEMETRY_OFF()) return;
   void fetch('/api/telemetry/frontend-error', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -86,7 +88,7 @@ export function postTelemetry(classified: ClassifiedError): void {
 }
 
 export function installClientErrorReporting(): void {
-  if (TELEMETRY_OFF) return;
+  if (TELEMETRY_OFF()) return;
 
   window.addEventListener('error', (event) => {
     const classified = classifyErrorEvent(event);
