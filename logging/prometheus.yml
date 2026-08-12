@@ -31,6 +31,10 @@ scrape_configs:
         labels:
           role: link
 
+  - job_name: mosquitto-exporter
+    static_configs:
+      - targets: [mosquitto-exporter:9234]
+
   - job_name: postgres
     static_configs:
       - targets: [postgres-exporter:9187]
