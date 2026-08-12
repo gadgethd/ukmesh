@@ -16,6 +16,7 @@ import type { HiddenMaskGeometry } from '../../utils/pathing.js';
 import { maskPoint } from '../../utils/pathing.js';
 import type { ClashPathLine, CustomLosPoint, CustomLosSegment, LosProfile } from './types.js';
 import { TERRAIN_CONFIG } from './mapConfig.js';
+import { ensureMapboxOverlayCompatibility } from './mapboxCompat.js';
 import {
   PATH_ARC_BLOOM_WIDTH,
   PATH_ARC_CORE_WIDTH,
@@ -421,6 +422,7 @@ export const DeckGLOverlay: React.FC<Props> = ({
   useEffect(() => {
     if (!map) return;
 
+    ensureMapboxOverlayCompatibility(map);
     const overlay = new MapboxOverlay({ interleaved: false, layers: [] });
     // MapboxOverlay implements IControl — addControl works with MapLibre GL
     map.addControl(overlay as unknown as maplibregl.IControl);
