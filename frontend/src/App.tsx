@@ -115,6 +115,7 @@ export const App: React.FC = () => {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(() => new URLSearchParams(window.location.search).get('node'));
   const [filtersCollapsed, setFiltersCollapsed] = useState<boolean>(() => !!new URLSearchParams(window.location.search).get('node'));
   const [fullScreenMap, setFullScreenMap] = useState(false);
+  const [mobileFeedOpen, setMobileFeedOpen] = useState(false);
   const [highContrast, setHighContrast] = useState(() => localStorage.getItem('meshcore-contrast') === 'high');
   // MapLibre map instance — used by MobileControls/NodeSearch for flyTo
   const [mlMap, setMlMap] = useState<maplibregl.Map | null>(null);
@@ -524,7 +525,7 @@ export const App: React.FC = () => {
   }, [handleShare]);
 
   return (
-    <div className="app-shell" data-node-open={selectedNodeId ? 'true' : undefined} data-live-feed={filters.livePackets ? 'true' : undefined} data-mobile-fullscreen={fullScreenMap ? 'true' : undefined}>
+    <div className="app-shell" data-node-open={selectedNodeId ? 'true' : undefined} data-live-feed={filters.livePackets ? 'true' : undefined} data-mobile-fullscreen={fullScreenMap ? 'true' : undefined} data-feed-open={mobileFeedOpen ? 'true' : undefined}>
       <AppTopBar
         homeUrl={site.appHomeUrl}
         wsState={wsState}
@@ -553,6 +554,8 @@ export const App: React.FC = () => {
         onNodeSelect={setSelectedNodeId}
         fullScreenMap={fullScreenMap}
         onToggleFullScreenMap={() => setFullScreenMap((value) => !value)}
+        feedOpen={mobileFeedOpen}
+        onToggleFeed={() => setMobileFeedOpen((value) => !value)}
       />
 
       <div className="map-layer">
