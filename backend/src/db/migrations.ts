@@ -8,6 +8,14 @@ const MIGRATIONS_TABLE = 'schema_migrations';
 const MIGRATION_COMPATIBILITY_TABLE = 'schema_migration_compatibility';
 const MIGRATION_LOCK_NAME = 'meshcore-analytics-schema-migrations-v1';
 const NON_TRANSACTIONAL_DIRECTIVE = '-- meshcore:migration-mode non-transactional';
+// 050 originally contained its own BEGIN/COMMIT, which violated runner
+// atomicity. Accept only that exact shipped checksum while replacing the
+// ledger checksum with the transaction-safe file; every other drift fails.
+const APPROVED_MIGRATION_CONTENT_REVISIONS = new Map<string, ReadonlySet<string>>([
+  ['050_packet_paths_and_retention.sql', new Set([
+    '89cab60d6577d7d0d0865addfed5a36b39d069be549aa04f5839f73005af4885',
+  ])],
+]);
 export const NONEMPTY_PRIVATE_PREFIX_SUPERSESSION_APPROVAL =
   'supersede-016-and-017-with-authoritative-privacy-and-026';
 const EMPTY_DATABASE_SUPERSESSIONS = new Map<string, string>([
@@ -153,6 +161,34 @@ export async function runMigrations(pool: pg.Pool): Promise<string[]> {
         continue;
       }
       if (recorded !== migration.checksumSha256) {
+        if (APPROVED_MIGRATION_CONTENT_REVISIONS.get(migration.name)?.has(recorded)) {
+          await client.query('BEGIN');
+          try {
+            await client.query(
+              `UPDATE ${MIGRATIONS_TABLE}
+                  SET checksum_sha256 = $2
+                WHERE name = $1 AND checksum_sha256 = $3`,
+              [migration.name, migration.checksumSha256, recorded],
+            );
+            await client.query(
+              `INSERT INTO ${MIGRATION_COMPATIBILITY_TABLE}
+                (migration_name, checksum_sha256, disposition, replacement_name)
+               VALUES ($1, $2, 'content-revision', $3)
+               ON CONFLICT (migration_name) DO UPDATE SET
+                 checksum_sha256 = EXCLUDED.checksum_sha256,
+                 disposition = EXCLUDED.disposition,
+                 replacement_name = EXCLUDED.replacement_name,
+                 recorded_at = NOW()`,
+              [migration.name, migration.checksumSha256, `replaces:${recorded}`],
+            );
+            await client.query('COMMIT');
+          } catch (error) {
+            await client.query('ROLLBACK');
+            throw error;
+          }
+          applied.set(migration.name, migration.checksumSha256);
+          continue;
+        }
         throw new Error(
           `migration checksum drift for ${migration.name}: `
           + `database=${recorded} repository=${migration.checksumSha256}`,

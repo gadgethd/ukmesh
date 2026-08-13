@@ -1,5 +1,5 @@
 import type { QueryResultRow } from 'pg';
-import { publicPacketPrivacySql } from '../api/utils/networkFilters.js';
+import { publicPacketPathPrivacySql } from '../api/utils/networkFilters.js';
 
 type QueryFn = <T extends QueryResultRow = QueryResultRow>(
   text: string,
@@ -82,7 +82,7 @@ export async function listMultibyteFactChunks(
     `SELECT chunk_schema, chunk_name, range_start, range_end, is_compressed
        FROM timescaledb_information.chunks
       WHERE hypertable_schema = 'public'
-        AND hypertable_name = 'packets'
+        AND hypertable_name = 'packet_paths'
         AND range_end >= $1::timestamptz
         AND range_start <= $2::timestamptz
       ORDER BY range_start ASC`,
@@ -116,7 +116,7 @@ export async function setMultibyteFactChunkCompression(
 export function multibyteObservationIdBatchSql(): string {
   return `WITH candidates AS MATERIALIZED (
     SELECT p.tableoid AS source_tableoid, p.ctid AS source_ctid
-    FROM packets p
+    FROM packet_paths p
     WHERE p.time >= $1::timestamptz
       AND p.time <= $2::timestamptz
       AND p.observation_id IS NULL
@@ -125,7 +125,7 @@ export function multibyteObservationIdBatchSql(): string {
     ORDER BY p.time ASC
     LIMIT $3::integer
   ), updated AS (
-    UPDATE packets p
+    UPDATE packet_paths p
        SET observation_id = gen_random_uuid()
       FROM candidates
      WHERE p.tableoid = candidates.source_tableoid
@@ -159,7 +159,7 @@ export async function backfillMultibyteObservationIds(
 }
 
 export function multibyteFactBackfillSql(): string {
-  const publicVisibility = publicPacketPrivacySql('p');
+  const publicVisibility = publicPacketPathPrivacySql('p');
   return `WITH source_rows AS MATERIALIZED (
     SELECT
       p.observation_id,
@@ -175,7 +175,7 @@ export function multibyteFactBackfillSql(): string {
       p.path_hash_size_bytes,
       rx.role AS rx_role,
       ${publicVisibility} AS current_visibility_ok
-    FROM packets p
+    FROM packet_paths p
     LEFT JOIN node_identity_aliases rx_alias
       ON rx_alias.source_node_id = UPPER(BTRIM(p.rx_node_id))
     LEFT JOIN node_identity_nodes rx

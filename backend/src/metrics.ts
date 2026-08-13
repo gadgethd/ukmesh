@@ -276,6 +276,24 @@ export const backupAgeSeconds = new Gauge({
   registers: [metricsRegistry],
 });
 
+export const packetPathsRows30d = new Gauge({
+  name: 'meshcore_packet_paths_rows_30d',
+  help: 'Durable packet path rows written in the trailing 30 days.',
+  registers: [metricsRegistry],
+});
+
+export const packetPathsBytesPerRow = new Gauge({
+  name: 'meshcore_packet_paths_bytes_per_row',
+  help: 'Approximate total packet_paths bytes per retained row.',
+  registers: [metricsRegistry],
+});
+
+export const packetPathsOverdueUncompressedChunks = new Gauge({
+  name: 'meshcore_packet_paths_overdue_uncompressed_chunks',
+  help: 'Packet path chunks older than the 14-day policy plus one-day scheduling allowance that remain uncompressed.',
+  registers: [metricsRegistry],
+});
+
 const HTTP_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS', 'HEAD']);
 const METRIC_NETWORKS = new Set(['ukmesh', 'teesside', 'test']);
 const METRIC_ANALYSIS_WORKLOADS = new Set(['spam-analysis', 'path-learning']);

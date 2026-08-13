@@ -47,6 +47,22 @@ export function publicPacketPrivacySql(alias?: string): string {
   )`;
 }
 
+/** Durable packet paths outlive packet privacy bits. Derive visibility from
+ * the current private-prefix tables whenever a retained path is consumed. */
+export function publicPacketPathPrivacySql(alias = 'packet_paths'): string {
+  const prefix = alias ? `${alias}.` : '';
+  return `(
+    meshcore_path_is_valid(${prefix}path_hashes, ${prefix}path_hash_size_bytes)
+    AND NOT meshcore_path_matches_private(
+      ${prefix}network,
+      ${prefix}rx_node_id,
+      ${prefix}src_node_id,
+      ${prefix}path_hashes,
+      ${prefix}path_hash_size_bytes
+    )
+  )`;
+}
+
 function publicPacketPrivacyConditions(prefix: string): string[] {
   const alias = prefix.endsWith('.') ? prefix.slice(0, -1) : prefix;
   return [publicPacketPrivacySql(alias || undefined)];

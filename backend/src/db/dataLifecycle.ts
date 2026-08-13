@@ -8,10 +8,24 @@ export type DataLifecyclePolicy = Readonly<{
   timestampColumn: string;
   retention: string;
   kind: 'hypertable' | 'row-table';
-  compressAfter?: string;
-  compressionSegmentBy?: string;
   featureImpact: readonly string[];
 }>;
+
+export type DataCompressionPolicy = Readonly<{
+  table: 'packets' | 'packet_paths' | 'node_status_samples' | 'node_neighbor_samples';
+  compressAfter: string;
+  compressionSegmentBy: 'network';
+  compressionOrderBy: 'time DESC';
+}>;
+
+// Compression-only targets are intentionally separate from deletable targets:
+// packet_paths is present here and can never enter a retention allowlist.
+export const DATA_COMPRESSION_POLICIES: readonly DataCompressionPolicy[] = Object.freeze([
+  { table: 'packets', compressAfter: '14 days', compressionSegmentBy: 'network', compressionOrderBy: 'time DESC' },
+  { table: 'packet_paths', compressAfter: '14 days', compressionSegmentBy: 'network', compressionOrderBy: 'time DESC' },
+  { table: 'node_status_samples', compressAfter: '14 days', compressionSegmentBy: 'network', compressionOrderBy: 'time DESC' },
+  { table: 'node_neighbor_samples', compressAfter: '1 day', compressionSegmentBy: 'network', compressionOrderBy: 'time DESC' },
+]);
 
 export const DATA_LIFECYCLE_POLICIES: readonly DataLifecyclePolicy[] = Object.freeze([
   {
@@ -19,8 +33,6 @@ export const DATA_LIFECYCLE_POLICIES: readonly DataLifecyclePolicy[] = Object.fr
     timestampColumn: 'time',
     retention: '30 days',
     kind: 'hypertable',
-    compressAfter: '7 days',
-    compressionSegmentBy: 'network',
     featureImpact: [
       'message content and raw packet data older than 30 days are removed',
       'raw pathing data is preserved content-stripped in packet_paths (no retention)',
@@ -32,8 +44,6 @@ export const DATA_LIFECYCLE_POLICIES: readonly DataLifecyclePolicy[] = Object.fr
     timestampColumn: 'time',
     retention: '180 days',
     kind: 'hypertable',
-    compressAfter: '7 days',
-    compressionSegmentBy: 'network',
     featureImpact: [
       'owner status telemetry older than 180 days becomes restore-only',
     ],
@@ -43,8 +53,6 @@ export const DATA_LIFECYCLE_POLICIES: readonly DataLifecyclePolicy[] = Object.fr
     timestampColumn: 'time',
     retention: '7 days',
     kind: 'hypertable',
-    compressAfter: '1 day',
-    compressionSegmentBy: 'network',
     featureImpact: [
       'owner heard-neighbor history older than seven days becomes restore-only',
     ],
@@ -136,11 +144,25 @@ export function lifecyclePolicy(table: string): DataLifecyclePolicy {
   return policy;
 }
 
+export function compressionPolicy(table: string): DataCompressionPolicy {
+  const policy = DATA_COMPRESSION_POLICIES.find((candidate) => candidate.table === table);
+  if (!policy) throw new Error(`unsupported compression target: ${table}`);
+  return policy;
+}
+
 export function configuredLifecycleTargets(raw: string | undefined): Set<string> {
   const targets = new Set(
     String(raw ?? '').split(',').map((value) => value.trim()).filter(Boolean),
   );
   for (const target of targets) lifecyclePolicy(target);
+  return targets;
+}
+
+export function configuredCompressionTargets(raw: string | undefined): Set<string> {
+  const targets = new Set(
+    String(raw ?? '').split(',').map((value) => value.trim()).filter(Boolean),
+  );
+  for (const target of targets) compressionPolicy(target);
   return targets;
 }
 
@@ -150,20 +172,24 @@ export function assertDataLifecycleGate(options: {
   approval: string | undefined;
   env?: NodeJS.ProcessEnv;
   now?: Date;
-}): DataLifecyclePolicy {
+}): DataLifecyclePolicy | DataCompressionPolicy {
   const env = options.env ?? process.env;
   const now = options.now ?? new Date();
-  const policy = lifecyclePolicy(options.target);
+  const policy = options.action === 'compression'
+    ? compressionPolicy(options.target)
+    : lifecyclePolicy(options.target);
   const flag = options.action === 'compression'
     ? 'DATA_LIFECYCLE_COMPRESSION_ENABLED'
     : 'DATA_LIFECYCLE_RETENTION_ENABLED';
   if (env[flag] !== 'true') throw new Error(`${flag}=true is required`);
-  if (options.action === 'compression' && policy.kind !== 'hypertable') {
-    throw new Error(`${policy.table} is not a compression target`);
-  }
-  const targets = configuredLifecycleTargets(env['DATA_LIFECYCLE_RETENTION_TARGETS']);
+  const targets = options.action === 'compression'
+    ? configuredCompressionTargets(env['DATA_LIFECYCLE_COMPRESSION_TARGETS'])
+    : configuredLifecycleTargets(env['DATA_LIFECYCLE_RETENTION_TARGETS']);
+  const targetVariable = options.action === 'compression'
+    ? 'DATA_LIFECYCLE_COMPRESSION_TARGETS'
+    : 'DATA_LIFECYCLE_RETENTION_TARGETS';
   if (!targets.has(policy.table)) {
-    throw new Error(`DATA_LIFECYCLE_RETENTION_TARGETS must include ${policy.table}`);
+    throw new Error(`${targetVariable} must include ${policy.table}`);
   }
   const expectedApproval = `apply-data-lifecycle-${options.action}-${policy.table}`;
   if (options.approval !== expectedApproval) {

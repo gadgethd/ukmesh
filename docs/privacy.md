@@ -34,7 +34,7 @@ The service stores radio traffic observed on the MeshCore network.
 
 | Data | Retained | Rationale |
 |---|---|---|
-| `packets` — message content + raw bytes + metadata | **30 days** (timescaledb retention job) | network diagnostics; content is not kept long-term |
+| `packets` — message content + raw bytes + metadata | **at most 30 days** (Timescale chunk policy + bounded exact-row boundary cleanup) | network diagnostics; content is not kept long-term |
 | `packet_decryptions` — full decrypted messages | **30 days** (operational retention loop) | diagnostics only |
 | `packet_paths` — path metadata (node IDs, timing, signal, hashes) | **indefinite, content-stripped** | raw pathing analytics is the product |
 | `multibyte_path_facts`, `multihop_paths_weekly`, `path_*_priors` — derived path stats | indefinite | derived, pseudonymous |
@@ -55,6 +55,9 @@ The service stores radio traffic observed on the MeshCore network.
 
 - Path/long-lived tables NEVER gain `payload`, `raw_hex`, or coordinate
   columns. Content-bearing tables always have a retention policy.
+- Retained path visibility is derived from the current private-node prefix
+  tables. Stored `packet_paths` flags are a trigger-maintained cache and are
+  never the authority for a public or derived read.
 - Decryption outputs land only in short-retention tables (30 days).
 - New derived tables get a lifecycle policy at creation.
 - Erasure (Art 17): owner-portal-linked nodes are mappable — node-scoped

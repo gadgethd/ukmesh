@@ -16,6 +16,9 @@ import {
   linkQueueLeases,
   linkQueueOldestAgeSeconds,
   linkQueueRetries,
+  packetPathsBytesPerRow,
+  packetPathsOverdueUncompressedChunks,
+  packetPathsRows30d,
   workerHeartbeatAgeSeconds,
 } from '../metrics.js';
 
@@ -36,15 +39,18 @@ type WorkerSnapshot = {
   oldest_age_s?: number;
 };
 
-type RetentionTarget = {
-  table: 'worker_health_snapshots' | 'frontend_error_events' | 'owner_alert_deliveries' | 'operational_check_results' | 'observer_region_packet_sightings' | 'observer_region_observer_sightings' | 'link_job_commits' | 'ml_model_variant_packet_results' | 'packet_decryptions';
-  timestampColumn: 'ts' | 'time' | 'created_at' | 'completed_at' | 'last_seen';
+export type RetentionTarget = {
+  table: 'packets' | 'worker_health_snapshots' | 'frontend_error_events' | 'owner_alert_deliveries' | 'operational_check_results' | 'observer_region_packet_sightings' | 'observer_region_observer_sightings' | 'link_job_commits' | 'ml_model_variant_packet_results' | 'packet_decryptions' | 'observer_registration_requests' | 'operator_audit_events';
+  timestampColumn: 'ts' | 'time' | 'created_at' | 'updated_at' | 'completed_at' | 'last_seen';
   retention: string;
   batchSize: number;
   extraPredicate?: string;
 };
 
-const RETENTION_TARGETS: RetentionTarget[] = [
+export const RETENTION_TARGETS: readonly RetentionTarget[] = [
+  // Timescale drops complete chunks; this bounded boundary cleanup makes the
+  // packet-content 30-day privacy limit exact for the partial oldest chunk.
+  { table: 'packets', timestampColumn: 'time', retention: '30 days', batchSize: 25_000 },
   { table: 'worker_health_snapshots', timestampColumn: 'ts', retention: '7 days', batchSize: 10_000 },
   { table: 'frontend_error_events', timestampColumn: 'time', retention: '30 days', batchSize: 2_000 },
   {
@@ -60,6 +66,14 @@ const RETENTION_TARGETS: RetentionTarget[] = [
   { table: 'link_job_commits', timestampColumn: 'completed_at', retention: '180 days', batchSize: 5_000 },
   { table: 'ml_model_variant_packet_results', timestampColumn: 'created_at', retention: '180 days', batchSize: 5_000 },
   { table: 'packet_decryptions', timestampColumn: 'created_at', retention: '30 days', batchSize: 2_000 },
+  {
+    table: 'observer_registration_requests',
+    timestampColumn: 'updated_at',
+    retention: '365 days',
+    batchSize: 1_000,
+    extraPredicate: `status IN ('rejected', 'expired', 'provisioned')`,
+  },
+  { table: 'operator_audit_events', timestampColumn: 'created_at', retention: '730 days', batchSize: 2_000 },
 ];
 
 function refreshBackupAgeMetrics(now = new Date()): void {
@@ -82,6 +96,33 @@ function refreshBackupAgeMetrics(now = new Date()): void {
     // signature-verified receipt can be loaded.
   }
 }
+
+async function refreshPacketPathCapacityMetrics(): Promise<void> {
+  const result = await query<{
+    rows_30d: string;
+    approximate_rows: string;
+    total_bytes: string;
+    overdue_uncompressed_chunks: string;
+  }>(`
+    SELECT
+      (SELECT COUNT(*)::text FROM packet_paths
+        WHERE time >= NOW() - INTERVAL '30 days') AS rows_30d,
+      hypertable_approximate_row_count('packet_paths'::regclass)::text AS approximate_rows,
+      pg_total_relation_size('packet_paths'::regclass)::text AS total_bytes,
+      (SELECT COUNT(*)::text
+         FROM timescaledb_information.chunks
+        WHERE hypertable_schema = 'public'
+          AND hypertable_name = 'packet_paths'
+          AND range_end < NOW() - INTERVAL '15 days'
+          AND NOT is_compressed) AS overdue_uncompressed_chunks
+  `);
+  const row = result.rows[0];
+  const approximateRows = Number(row?.approximate_rows ?? 0);
+  const totalBytes = Number(row?.total_bytes ?? 0);
+  packetPathsRows30d.set(Number(row?.rows_30d ?? 0));
+  packetPathsBytesPerRow.set(approximateRows > 0 ? totalBytes / approximateRows : 0);
+  packetPathsOverdueUncompressedChunks.set(Number(row?.overdue_uncompressed_chunks ?? 0));
+}
 const OPERATIONAL_RETENTION_ENABLED =
   process.env['DATA_LIFECYCLE_RETENTION_ENABLED'] === 'true';
 const OPERATIONAL_RETENTION_TARGETS = configuredLifecycleTargets(
@@ -102,23 +143,29 @@ function redis(): Redis {
   return redisClient;
 }
 
-async function deleteExpiredRows(target: RetentionTarget): Promise<void> {
+export function retentionDeleteSql(target: RetentionTarget): string {
   // Identifiers come from the closed RetentionTarget union above. PostgreSQL
   // cannot parameterize identifiers, but the retention interval and batch size
   // remain parameters.
-  await query(
-    `WITH expired AS (
-       SELECT ctid
+  return `WITH expired AS MATERIALIZED (
+       SELECT tableoid, ctid
        FROM ${target.table}
        WHERE ${target.timestampColumn} < NOW() - $1::interval
          ${target.extraPredicate ? `AND ${target.extraPredicate}` : ''}
+       ORDER BY ${target.timestampColumn} ASC, tableoid, ctid
        LIMIT $2
      )
      DELETE FROM ${target.table} AS target
      USING expired
-     WHERE target.ctid = expired.ctid`,
-    [target.retention, target.batchSize],
-  );
+     WHERE target.tableoid = expired.tableoid
+       AND target.ctid = expired.ctid`;
+}
+
+export async function deleteExpiredRows(
+  target: RetentionTarget,
+  execute: (text: string, params?: unknown[]) => Promise<unknown> = query,
+): Promise<void> {
+  await execute(retentionDeleteSql(target), [target.retention, target.batchSize]);
 }
 
 function toPct(num: number): number {
@@ -463,6 +510,7 @@ async function redisDurabilityState(): Promise<{
 }
 
 export async function captureWorkerHealthSnapshot(): Promise<void> {
+  await refreshPacketPathCapacityMetrics();
   const capturedAt = new Date().toISOString();
   const rows = (await currentWorkers()).map((row) => row.worker_name === 'health-worker'
     ? {

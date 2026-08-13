@@ -55,11 +55,12 @@ resume without skipping or double-counting a slice.
 
 ## History contract and retention inventory
 
-Retention is disabled by default. The longest raw-packet dependency is the
-120-day path-learning window. Interactive paths use seven days, public and
-owner dashboards use at most 30 days, and public-map node freshness uses 28
-days. The proposed raw packet and status-sample retention is therefore 180
-days. Privacy-filtered hourly/daily chart aggregates, model parameters, current
+Content-bearing packets have a hard 30-day bound. Timescale drops complete
+chunks, while the health worker deletes exact expired rows from the partial
+boundary chunk in deterministic 25,000-row batches; new packet chunks are one
+day. Content-free path reconstruction reads `packet_paths`, so it continues
+after the source packet expires. Status samples retain 180 days and neighbor
+samples seven days. Privacy-filtered aggregates, model parameters, current
 node/link/coverage state, and privacy state remain longer lived.
 
 Run the exact, read-only inventory before considering compression or deletion:
@@ -76,7 +77,8 @@ Compression and retention are separate, table-at-a-time changes. Both require:
 
 - a named, fresh database backup;
 - a successful isolated restore verification from the last 30 days;
-- the target in `DATA_LIFECYCLE_RETENTION_TARGETS`;
+- the target in `DATA_LIFECYCLE_RETENTION_TARGETS` for deletion or
+  `DATA_LIFECYCLE_COMPRESSION_TARGETS` for compression;
 - the action flag set to `true`; and
 - an exact per-table approval argument.
 
@@ -84,7 +86,7 @@ Example compression rollout:
 
 ```bash
 DATA_LIFECYCLE_COMPRESSION_ENABLED=true
-DATA_LIFECYCLE_RETENTION_TARGETS=packets
+DATA_LIFECYCLE_COMPRESSION_TARGETS=packets,packet_paths,node_status_samples,node_neighbor_samples
 DATA_LIFECYCLE_BACKUP_REFERENCE=backup-20260729
 DATA_LIFECYCLE_RESTORE_VERIFIED_AT=2026-07-29T12:00:00Z
 docker compose exec backend npm run db:lifecycle -- \
@@ -106,7 +108,16 @@ performed by the health worker only for targets explicitly listed in
 `DATA_LIFECYCLE_RETENTION_TARGETS`. Failed/pending owner alert deliveries are
 not discarded while they remain retryable.
 
-Owner/private data uses the same 180-day raw-packet boundary. An owner export
+Compression state is migration-defined: `packets`, `packet_paths`, and
+`node_status_samples` compress after 14 days (matching the reviewed live
+setting), while seven-day `node_neighbor_samples` compress after one day.
+`packet_paths` is compression-only and is rejected by the retention registry.
+At the audited 10,000–23,000 path rows/day and roughly 1 kB/uncompressed row,
+uncompressed growth would be about 3.6–8.4 GB/year; alert if the 30-day row-rate
+or bytes/row exceeds that reviewed band, or if any path chunk older than 15 days
+is uncompressed.
+
+Owner/private packet content uses the same 30-day hard boundary. An owner export
 must be completed before enabling deletion if older raw evidence is required.
 Removing raw data is irreversible without the named restore; turning the flag
 off stops future policy runs but does not recreate deleted chunks.
