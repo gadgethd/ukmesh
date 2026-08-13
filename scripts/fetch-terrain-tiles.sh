@@ -12,7 +12,7 @@ set -euo pipefail
 
 OUT="${1:-terrain-tiles}"
 : "${LON_MIN:=-11}"; : "${LON_MAX:=3}"; : "${LAT_MIN:=49.5}"; : "${LAT_MAX:=61}"
-: "${Z_MIN:=5}";     : "${Z_MAX:=12}";  : "${JOBS:=32}"
+: "${Z_MIN:=0}";     : "${Z_MAX:=12}";  : "${JOBS:=32}"
 
 BASE="https://s3.amazonaws.com/elevation-tiles-prod/terrarium"
 mkdir -p "$OUT"
