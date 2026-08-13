@@ -4,7 +4,9 @@ umask 077
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 project_dir="$(cd -- "${script_dir}/.." && pwd)"
-project_name="${COMPOSE_PROJECT_NAME:-meshcore-analytics}"
+app_project_name="${COMPOSE_PROJECT_NAME:-meshcore-analytics}"
+infra_project_dir="${MESHCORE_INFRA_DIR:-${project_dir}/../meshcore-infra}"
+infra_project_name="${MESHCORE_INFRA_PROJECT_NAME:-meshcore-infra}"
 output_dir="${BACKUP_OUTPUT_DIR:?BACKUP_OUTPUT_DIR must name an encrypted backup target}"
 encryption_cert="${BACKUP_ENCRYPTION_CERT:?BACKUP_ENCRYPTION_CERT must name a public X.509 certificate}"
 signing_key="${BACKUP_RECEIPT_SIGNING_KEY:?BACKUP_RECEIPT_SIGNING_KEY must name the offline receipt signing key}"
@@ -27,6 +29,10 @@ for path in "$encryption_cert" "$signing_key"; do
     exit 66
   }
 done
+test -f "$infra_project_dir/docker-compose.yml" || {
+  echo "meshcore-infra compose file is missing: $infra_project_dir/docker-compose.yml" >&2
+  exit 66
+}
 openssl x509 -in "$encryption_cert" -noout >/dev/null
 openssl pkey -in "$signing_key" -noout >/dev/null
 
@@ -60,9 +66,22 @@ if (( (8#$env_mode & 8#077) != 0 )); then
   echo "protected runtime configuration .env must not be group/world accessible" >&2
   exit 66
 fi
-docker compose --project-name "$project_name" config -q
+app_compose=(
+  docker compose --project-directory "$project_dir"
+  -f "$project_dir/docker-compose.yml"
+  -f "$project_dir/docker-compose.live.yml"
+  --project-name "$app_project_name"
+)
+infra_compose=(
+  docker compose --project-directory "$infra_project_dir"
+  -f "$infra_project_dir/docker-compose.yml"
+  --project-name "$infra_project_name"
+)
+"${app_compose[@]}" config -q
+"${infra_compose[@]}" config -q
+declare -A service_container_ids=()
 for service in timescaledb redis mosquitto; do
-  container_id="$(docker compose --project-name "$project_name" ps -q "$service")"
+  container_id="$("${infra_compose[@]}" ps -q "$service")"
   test -n "$container_id" || {
     echo "required service is not running: $service" >&2
     exit 69
@@ -71,7 +90,11 @@ for service in timescaledb redis mosquitto; do
     echo "required service is not running: $service" >&2
     exit 69
   fi
+  service_container_ids["$service"]="$container_id"
 done
+timescaledb_container="${service_container_ids[timescaledb]}"
+redis_container="${service_container_ids[redis]}"
+mosquitto_container="${service_container_ids[mosquitto]}"
 
 started_at="$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"
 backup_id="backup-$(date -u +%Y%m%dT%H%M%SZ)-$(git rev-parse --short=12 HEAD)"
@@ -104,33 +127,34 @@ cleanup() {
 trap cleanup EXIT
 
 echo "Creating consistent PostgreSQL custom-format dumps..."
-docker compose --project-name "$project_name" exec -T timescaledb \
+docker exec -i "$timescaledb_container" \
   pg_dump -U "$db_user" -d "$analytics_db" \
   --format=custom --compress=6 --no-owner --no-acl \
   >"$payload_dir/analytics.dump"
-docker compose --project-name "$project_name" exec -T timescaledb \
+docker exec -i "$timescaledb_container" \
   pg_dump -U "$db_user" -d "$owner_db" \
   --format=custom --compress=6 --no-owner --no-acl \
   >"$payload_dir/owner-auth.dump"
 
 schema_version="$(
-  docker compose --project-name "$project_name" exec -T timescaledb \
+  docker exec -i "$timescaledb_container" \
     psql -U "$db_user" -d "$analytics_db" -Atc \
     "SELECT COALESCE(MAX(((regexp_match(name, '^([0-9]+)_'))[1])::int), 0) FROM schema_migrations"
 )"
 schema_version="${schema_version//$'\r'/}"
 
 echo "Checkpointing Redis durable queues and state..."
-docker compose --project-name "$project_name" exec -T redis sh -c \
+docker exec -i "$redis_container" sh -c \
   'redis-cli -a "$REDIS_PASSWORD" --no-auth-warning BGSAVE >/dev/null || true'
 redis_ready="false"
 for _ in $(seq 1 120); do
   persistence="$(
-    docker compose --project-name "$project_name" exec -T redis sh -c \
+    docker exec -i "$redis_container" sh -c \
       'redis-cli -a "$REDIS_PASSWORD" --no-auth-warning INFO persistence'
   )"
-  if printf '%s' "$persistence" | tr -d '\r' | grep -q '^rdb_bgsave_in_progress:0$' \
-    && printf '%s' "$persistence" | tr -d '\r' | grep -q '^rdb_last_bgsave_status:ok$'; then
+  persistence="${persistence//$'\r'/}"
+  if grep -q '^rdb_bgsave_in_progress:0$' <<<"$persistence" \
+    && grep -q '^rdb_last_bgsave_status:ok$' <<<"$persistence"; then
     redis_ready="true"
     break
   fi
@@ -140,27 +164,35 @@ test "$redis_ready" = "true" || {
   echo "Redis persistence checkpoint did not complete successfully" >&2
   exit 75
 }
-docker compose --project-name "$project_name" exec -T redis \
+docker exec -i "$redis_container" \
   tar -C /data -czf - . >"$payload_dir/redis-state.tgz"
 
 echo "Flushing and capturing Mosquitto credentials, ACL, and persistence..."
-docker compose --project-name "$project_name" exec -T mosquitto sh -c \
+docker exec -i "$mosquitto_container" sh -c \
   'kill -USR1 1; sleep 1; tar -C /mosquitto/data -czf - .' \
   >"$payload_dir/mosquitto-state.tgz"
-tar -C "$project_dir" -czf "$payload_dir/mosquitto-config.tgz" \
+mosquitto_config_stage="$tmp_dir/mosquitto-configuration"
+mkdir -p "$mosquitto_config_stage/mosquitto"
+docker exec -i "$mosquitto_container" \
+  tar -C /mosquitto/config -cf - mosquitto.conf acl passwd \
+  | tar -C "$mosquitto_config_stage/mosquitto" -xf -
+tar -C "$mosquitto_config_stage" -czf "$payload_dir/mosquitto-config.tgz" \
   mosquitto/mosquitto.conf mosquitto/acl mosquitto/passwd
 tar -C "$project_dir" -czf "$payload_dir/configuration.tgz" \
   .env .env.example .trivyignore.yaml \
-  docker-compose.yml \
+  docker-compose.yml docker-compose.live.yml docker-compose.ci.yml \
+  docker-compose.infra-client.yml compose.phase4.yml \
   Dockerfile Dockerfile.app Dockerfile.backend Dockerfile.website \
   Dockerfile.mesh-health-check Dockerfile.mosquitto-reloader \
-  viewshed-worker/Dockerfile ml-path-learner/Dockerfile \
+  viewshed-worker/Dockerfile \
   nginx.app.conf nginx.website.conf nginx.security-headers.conf \
   anubis/botPolicy.yaml docker/mosquitto-reloader.py \
   logging \
   backend/src/db/migrations backend/src/db/schema backend/src/db/owner-auth.sql \
-  scripts/backup.sh scripts/restore-drill.sh scripts/replace-container.sh \
+  scripts/backup.sh scripts/restore-drill.sh scripts/sync-latest.sh scripts/replace-container.sh \
   scripts/bootstrap-mosquitto.sh vacuum-compressed-chunks.sh
+tar -C "$infra_project_dir" -czf "$payload_dir/infra-configuration.tgz" \
+  .env docker-compose.yml README.md ROLLBACK.md
 
 completed_at="$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"
 manifest_path="$payload_dir/manifest.json"
@@ -195,7 +227,7 @@ jq -n \
     started_at: $started_at,
     completed_at: $completed_at,
     schema_version: $schema_version,
-    datasets: ["analytics", "owner_auth", "mosquitto", "redis", "configuration"],
+    datasets: ["analytics", "owner_auth", "mosquitto", "redis", "configuration", "infra_configuration"],
     files: $files
   }' >"$manifest_path"
 
@@ -252,7 +284,7 @@ jq -n \
     archive: $archive,
     archive_sha256: $archive_sha256,
     archive_bytes: $archive_bytes,
-    datasets: ["analytics", "owner_auth", "mosquitto", "redis", "configuration"],
+    datasets: ["analytics", "owner_auth", "mosquitto", "redis", "configuration", "infra_configuration"],
     encryption: "CMS-AES-256-CBC-CHUNKED-v1",
     status: "complete"
   }' >"$receipt_partial"

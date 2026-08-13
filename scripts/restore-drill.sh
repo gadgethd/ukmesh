@@ -62,6 +62,7 @@ backend_name="${run_id}-backend"
 postgres_volume="${run_id}-postgres-data"
 redis_volume="${run_id}-redis-data"
 mosquitto_volume="${run_id}-mosquitto-data"
+mosquitto_config_volume="${run_id}-mosquitto-config"
 application_image="${run_id}-application"
 tmp_dir="$(mktemp -d)"
 payload_dir="$tmp_dir/payload"
@@ -98,7 +99,7 @@ cleanup() {
     >/dev/null 2>&1 || true
   docker network rm "$network_name" >/dev/null 2>&1 || true
   docker volume rm \
-    "$postgres_volume" "$redis_volume" "$mosquitto_volume" \
+    "$postgres_volume" "$redis_volume" "$mosquitto_volume" "$mosquitto_config_volume" \
     >/dev/null 2>&1 || true
   docker image rm "$application_image" >/dev/null 2>&1 || true
   rm -rf "$tmp_dir"
@@ -193,20 +194,31 @@ while IFS= read -r payload_name; do
 done < <(jq -r '.files | keys[]' "$manifest_path")
 for required_payload in \
   analytics.dump owner-auth.dump redis-state.tgz mosquitto-state.tgz \
-  mosquitto-config.tgz configuration.tgz; do
+  mosquitto-config.tgz configuration.tgz infra-configuration.tgz; do
   jq -e --arg name "$required_payload" '.files[$name] != null' \
     "$manifest_path" >/dev/null || {
       echo "missing backup payload: $required_payload" >&2
       exit 65
     }
 done
+infra_configuration_members="$(tar -tzf "$payload_dir/infra-configuration.tgz")"
+for required_infra_configuration in \
+  .env docker-compose.yml README.md ROLLBACK.md; do
+  grep -Fx "$required_infra_configuration" \
+    <<<"$infra_configuration_members" >/dev/null || {
+      echo "missing protected infra recovery configuration: $required_infra_configuration" >&2
+      exit 65
+    }
+done
 configuration_members="$(tar -tzf "$payload_dir/configuration.tgz")"
 for required_configuration in \
-  .env docker-compose.yml Dockerfile.backend Dockerfile.mosquitto-reloader \
+  .env docker-compose.yml docker-compose.live.yml docker-compose.ci.yml \
+  docker-compose.infra-client.yml compose.phase4.yml \
+  Dockerfile.backend Dockerfile.mosquitto-reloader \
   anubis/botPolicy.yaml logging/prometheus.yml logging/alertmanager.yml \
-  backend/src/db/schema/base.sql scripts/backup.sh scripts/restore-drill.sh \
+  backend/src/db/schema/base.sql scripts/backup.sh scripts/restore-drill.sh scripts/sync-latest.sh \
   scripts/replace-container.sh; do
-  printf '%s\n' "$configuration_members" | grep -Fxq "$required_configuration" || {
+  grep -Fx "$required_configuration" <<<"$configuration_members" >/dev/null || {
     echo "missing protected recovery configuration: $required_configuration" >&2
     exit 65
   }
@@ -214,8 +226,8 @@ done
 mosquitto_configuration_members="$(tar -tzf "$payload_dir/mosquitto-config.tgz")"
 for required_mosquitto_configuration in \
   mosquitto/mosquitto.conf mosquitto/acl mosquitto/passwd; do
-  printf '%s\n' "$mosquitto_configuration_members" \
-    | grep -Fxq "$required_mosquitto_configuration" || {
+  grep -Fx "$required_mosquitto_configuration" \
+    <<<"$mosquitto_configuration_members" >/dev/null || {
       echo "missing Mosquitto recovery configuration: $required_mosquitto_configuration" >&2
       exit 65
     }
@@ -225,6 +237,7 @@ docker network create "$network_name" >/dev/null
 docker volume create "$postgres_volume" >/dev/null
 docker volume create "$redis_volume" >/dev/null
 docker volume create "$mosquitto_volume" >/dev/null
+docker volume create "$mosquitto_config_volume" >/dev/null
 
 docker run -d \
   --name "$postgres_name" \
@@ -237,13 +250,15 @@ docker run -d \
   "$timescale_image" \
   postgres -c autovacuum=off >/dev/null
 for _ in $(seq 1 240); do
-  if docker logs "$postgres_name" 2>&1 | grep -q 'PostgreSQL init process complete' &&
+  postgres_logs="$(docker logs "$postgres_name" 2>&1)"
+  if grep -q 'PostgreSQL init process complete' <<<"$postgres_logs" &&
     docker exec "$postgres_name" pg_isready -U meshcore -d meshcore >/dev/null 2>&1; then
     break
   fi
   sleep 0.5
 done
-docker logs "$postgres_name" 2>&1 | grep -q 'PostgreSQL init process complete'
+postgres_logs="$(docker logs "$postgres_name" 2>&1)"
+grep -q 'PostgreSQL init process complete' <<<"$postgres_logs"
 docker exec "$postgres_name" pg_isready -U meshcore -d meshcore >/dev/null
 docker exec "$postgres_name" createdb -U meshcore meshcore_owner_auth
 docker exec -i "$postgres_name" pg_restore \
@@ -255,11 +270,11 @@ docker exec -i "$postgres_name" pg_restore \
 echo "PostgreSQL datasets restored."
 
 echo "Restoring Redis durable state..."
-docker run --rm \
+docker run --rm -i \
   -v "$redis_volume:/restore" \
-  -v "$payload_dir:/payload:ro" \
   "$busybox_image" \
-  sh -c 'tar -C /restore -xzf /payload/redis-state.tgz' >/dev/null
+  sh -c 'tar -C /restore -xzf -' \
+  <"$payload_dir/redis-state.tgz" >/dev/null
 docker run -d \
   --name "$redis_name" \
   --network "$network_name" \
@@ -273,8 +288,9 @@ docker run -d \
   --maxmemory-policy noeviction >/dev/null
 redis_ready="false"
 for _ in $(seq 1 60); do
-  if docker exec "$redis_name" redis-cli -a "$restore_password" --no-auth-warning ping \
-    2>/dev/null | grep -q PONG; then
+  redis_ping="$(docker exec "$redis_name" redis-cli -a "$restore_password" --no-auth-warning ping \
+    2>/dev/null || true)"
+  if grep -Fxq PONG <<<"$redis_ping"; then
     redis_ready="true"
     break
   fi
@@ -302,17 +318,22 @@ done
 # uid. The parent remains 0700 on the host, while this signed, short-lived
 # child directory is traversable only through the container's read-only bind.
 chmod 0755 "$tmp_dir/mosquitto"
-docker run --rm \
+tar -C "$tmp_dir/mosquitto" -cf - mosquitto.conf acl passwd \
+  | docker run --rm -i \
+      -v "$mosquitto_config_volume:/restore" \
+      "$busybox_image" \
+      sh -c 'tar -C /restore -xf -' >/dev/null
+docker run --rm -i \
   -v "$mosquitto_volume:/restore" \
-  -v "$payload_dir:/payload:ro" \
   "$busybox_image" \
-  sh -c 'tar -C /restore -xzf /payload/mosquitto-state.tgz; chown -R 1883:1883 /restore' \
+  sh -c 'tar -C /restore -xzf -; chown -R 1883:1883 /restore' \
+  <"$payload_dir/mosquitto-state.tgz" \
   >/dev/null
 docker run -d \
   --name "$mosquitto_name" \
   --network "$network_name" \
   --network-alias mosquitto \
-  -v "$tmp_dir/mosquitto:/mosquitto/config:ro" \
+  -v "$mosquitto_config_volume:/mosquitto/config:ro" \
   -v "$mosquitto_volume:/mosquitto/data" \
   "$mosquitto_image" >/dev/null
 mosquitto_ready="false"
@@ -356,7 +377,7 @@ docker run -d \
   --cap-drop ALL \
   --security-opt no-new-privileges:true \
   --tmpfs /tmp:rw,noexec,nosuid,size=64m \
-  -v "$tmp_dir/mosquitto/acl:/mosquitto/config/acl:ro" \
+  -v "$mosquitto_config_volume:/mosquitto/config:ro" \
   -e "DATABASE_URL=$database_url" \
   -e "OWNER_DATABASE_URL=$owner_database_url" \
   -e "REDIS_URL=$redis_url" \
@@ -464,7 +485,7 @@ jq -n \
     archive_sha256: $archive_sha256,
     source_revision: $source_revision,
     schema_version: $schema_version,
-    datasets: ["analytics", "owner_auth", "mosquitto", "redis", "configuration"],
+    datasets: ["analytics", "owner_auth", "mosquitto", "redis", "configuration", "infra_configuration"],
     evidence: {
       integrity: $integrity,
       owner_lookup_count: $owner_lookup_count
