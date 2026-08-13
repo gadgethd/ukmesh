@@ -26,8 +26,16 @@ const mqttAuditRetentionDays = Math.min(
 
 function getPrimaryDatabaseUrl(): string {
   const raw = String(process.env['DATABASE_URL'] ?? '').trim();
-  if (!raw) throw new Error('DATABASE_URL is required');
-  return raw;
+  if (raw) return raw;
+  const password = String(process.env['POSTGRES_PASSWORD'] ?? '');
+  if (!password) throw new Error('DATABASE_URL or POSTGRES_PASSWORD is required');
+  const url = new URL('postgresql://127.0.0.1:5432/meshcore');
+  url.username = String(process.env['POSTGRES_USER'] ?? 'meshcore');
+  url.password = password;
+  url.hostname = String(process.env['POSTGRES_HOST'] ?? '127.0.0.1');
+  url.port = String(process.env['POSTGRES_PORT'] ?? '5432');
+  url.pathname = `/${String(process.env['POSTGRES_DB'] ?? 'meshcore')}`;
+  return url.toString();
 }
 function withDatabaseName(connectionString: string, databaseName: string): string {
   const url = new URL(connectionString);

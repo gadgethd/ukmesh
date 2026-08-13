@@ -1,17 +1,28 @@
 import {
   closeOwnerAuthDb,
+  getOwnerAclReadiness,
   getOwnerAuthorizationInventory,
   getOwnerAuthorizationSnapshot,
-  initOwnerAuthDb,
 } from '../db/ownerAuth.js';
 import { parseAcl, readAclFile, renderOwnerAcl } from '../mqtt/aclManager.js';
 import { parseOwnerGrantConfig } from '../owner/ownerGrantConfig.js';
+import {
+  buildOwnerInventoryBaseline,
+  loadOwnerInventoryBaseline,
+  validateOwnerInventoryBaseline,
+  writeOwnerInventoryBaseline,
+} from '../owner/ownerInventoryBaseline.js';
+
+function argValue(name: string): string | undefined {
+  const prefix = `${name}=`;
+  return process.argv.find((arg) => arg.startsWith(prefix))?.slice(prefix.length);
+}
 
 async function main(): Promise<void> {
-  await initOwnerAuthDb();
-  const [database, snapshot] = await Promise.all([
+  const [database, snapshot, aclState] = await Promise.all([
     getOwnerAuthorizationInventory(),
     getOwnerAuthorizationSnapshot(),
+    getOwnerAclReadiness(),
   ]);
   const aclContent = readAclFile();
   const parsedAcl = parseAcl(aclContent);
@@ -42,7 +53,22 @@ async function main(): Promise<void> {
         candidate.mqttUsername === grant.mqttUsername && candidate.nodeId === grant.nodeId) === index);
   const proposedBackfill = legacyAclGrants.filter((grant) =>
     !configKeys.has(`${grant.mqttUsername}\0${grant.nodeId}`)
-    && !unmanagedUsers.includes(grant.mqttUsername));
+      && !unmanagedUsers.includes(grant.mqttUsername));
+  const inventoryBaseline = buildOwnerInventoryBaseline({
+    accounts: database.accounts,
+    configuredGrants: configured,
+    aclContent,
+    aclState,
+  });
+  const exportPath = argValue('--export');
+  if (exportPath) writeOwnerInventoryBaseline(exportPath, inventoryBaseline);
+  const baselinePath = argValue('--baseline');
+  const baselineValidation = baselinePath
+    ? validateOwnerInventoryBaseline(
+        loadOwnerInventoryBaseline(baselinePath),
+        inventoryBaseline,
+      )
+    : null;
 
   const report = {
     generatedAt: new Date().toISOString(),
@@ -62,10 +88,28 @@ async function main(): Promise<void> {
       desiredGeneration: rendered.generation,
     },
     proposedBackfill,
+    inventoryBaseline,
+    baselineValidation,
     warning: 'proposedBackfill is inventory only; review each owner/node pair before adding it to operator configuration',
   };
-  process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
-  if (process.argv.includes('--require-complete') && !report.cutoverReady) process.exitCode = 2;
+  if (process.argv.includes('--show-details')) {
+    process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+  } else {
+    process.stdout.write(`${JSON.stringify({
+      generatedAt: inventoryBaseline.generatedAt,
+      cutoverReady: report.cutoverReady,
+      counts: inventoryBaseline.counts,
+      configuredGeneration: inventoryBaseline.configuredGeneration,
+      aclState: inventoryBaseline.aclState,
+      contentSha256: inventoryBaseline.contentSha256,
+      legacyDisposition: inventoryBaseline.legacyDisposition,
+      exportPath: exportPath ?? null,
+      baselinePath: baselinePath ?? null,
+      baselineValidation,
+    }, null, 2)}\n`);
+  }
+  if (process.argv.includes('--require-complete')
+    && (!report.cutoverReady || baselineValidation?.ok === false)) process.exitCode = 2;
 }
 
 main()
