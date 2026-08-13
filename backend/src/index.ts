@@ -5,7 +5,12 @@ import compression from 'compression';
 import cors from 'cors';
 import { closeDb, initDb, pool, query } from './db/index.js';
 import { refreshNodeIdentityAliases } from './db/nodeIdentity.js';
-import { closeOwnerAuthDb, getOwnerAclReadiness, initOwnerAuthDb } from './db/ownerAuth.js';
+import {
+  closeOwnerAuthDb,
+  getOwnerAclReadiness,
+  getOwnerAuthorizationInventory,
+  initOwnerAuthDb,
+} from './db/ownerAuth.js';
 import { getMqttRuntimeStatus, startMqttClient, stopMqttClient, onPacket, onNodeSeen, onNodeUpsert } from './mqtt/client.js';
 import {
   startMqttConnectionMonitor,
@@ -43,6 +48,13 @@ import {
 import { closeOperatorOperations } from './operations/operatorOperations.js';
 import { createGlobalApiLimiter } from './api/bootstrap/limiters.js';
 import { createHopReachCompatibilityRoutes } from './api/hopreachCompatibility.js';
+import { readAclFile } from './mqtt/aclManager.js';
+import { parseOwnerGrantConfig } from './owner/ownerGrantConfig.js';
+import {
+  buildOwnerInventoryBaseline,
+  loadOwnerInventoryBaseline,
+  validateOwnerInventoryBaseline,
+} from './owner/ownerInventoryBaseline.js';
 
 const ALLOWED_ORIGINS = (process.env['ALLOWED_ORIGINS'] ?? '')
   .split(',')
@@ -284,23 +296,53 @@ async function main() {
         appliedGeneration: null as string | null,
         lastVerifiedAt: null as string | null,
         lastError: null as string | null,
+        inventoryBaseline: {
+          required: Boolean(process.env['OWNER_AUTH_INVENTORY_BASELINE_PATH']),
+          ok: !process.env['OWNER_AUTH_INVENTORY_BASELINE_PATH'],
+          mismatches: [] as string[],
+        },
       },
       analysis: [] as Awaited<ReturnType<typeof getAnalysisWorkloadStates>>,
     };
     try {
       await query('SELECT 1');
       checks.database = true;
-      Object.assign(checks.ownerAuthorization, await getOwnerAclReadiness());
+      const aclState = await getOwnerAclReadiness();
+      Object.assign(checks.ownerAuthorization, aclState);
+      const ownerBaselinePath = String(
+        process.env['OWNER_AUTH_INVENTORY_BASELINE_PATH'] ?? '',
+      ).trim();
+      if (ownerBaselinePath) {
+        const databaseInventory = await getOwnerAuthorizationInventory();
+        const current = buildOwnerInventoryBaseline({
+          accounts: databaseInventory.accounts,
+          configuredGrants: parseOwnerGrantConfig(
+            String(process.env['OWNER_MQTT_USERNAME_MAP'] ?? ''),
+          ),
+          aclContent: readAclFile(),
+          aclState,
+        });
+        const validation = validateOwnerInventoryBaseline(
+          loadOwnerInventoryBaseline(ownerBaselinePath),
+          current,
+        );
+        checks.ownerAuthorization.inventoryBaseline = {
+          required: true,
+          ...validation,
+        };
+      }
       checks.analysis = await getAnalysisWorkloadStates();
     } catch (err) {
       console.error('[readyz] database check failed:', (err as Error).message);
     }
-    const ownerAclReady = checks.ownerAuthorization.aclMode !== 'apply'
+    const ownerAclGenerationReady = checks.ownerAuthorization.aclMode !== 'apply'
       || (
         checks.ownerAuthorization.desiredGeneration !== null
         && checks.ownerAuthorization.desiredGeneration === checks.ownerAuthorization.appliedGeneration
         && checks.ownerAuthorization.lastError === null
       );
+    const ownerAclReady = ownerAclGenerationReady
+      && checks.ownerAuthorization.inventoryBaseline.ok;
     const ready = !lifecycle.isDraining
       && checks.database
       && ownerAclReady

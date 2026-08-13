@@ -88,6 +88,7 @@ services:
       OWNER_ACL_MODE: ${OWNER_ACL_MODE:-shadow}
       OWNER_ACL_UNMANAGED_USERS: ${OWNER_ACL_UNMANAGED_USERS:-backend,test,test2}
       OWNER_ACL_ALLOW_EMPTY_USERS: ${OWNER_ACL_ALLOW_EMPTY_USERS:-}
+      OWNER_AUTH_INVENTORY_BASELINE_PATH: ${OWNER_AUTH_INVENTORY_BASELINE_PATH:-}
       OWNER_ACL_SHADOW_PATH: /tmp/meshcore-owner-acl.shadow
       MOSQUITTO_ACL_PATH: /mosquitto/config/acl
       OWNER_ACL_RELOAD_URL: http://mosquitto-reloader:8080/reload
@@ -163,6 +164,7 @@ services:
       HEALTH_VOLUME_PATHS: database=/health-volumes/database=${HEALTH_DATABASE_BUDGET_BYTES:-322122547200},redis=/health-volumes/redis=${HEALTH_REDIS_BUDGET_BYTES:-4294967296},terrain=/health-volumes/terrain=${HEALTH_TERRAIN_BUDGET_BYTES:-53687091200},logs=/health-volumes/logs=${HEALTH_LOG_BUDGET_BYTES:-21474836480}
       DATA_LIFECYCLE_RETENTION_ENABLED: ${DATA_LIFECYCLE_RETENTION_ENABLED:-false}
       DATA_LIFECYCLE_COMPRESSION_ENABLED: ${DATA_LIFECYCLE_COMPRESSION_ENABLED:-false}
+      DATA_LIFECYCLE_COMPRESSION_TARGETS: ${DATA_LIFECYCLE_COMPRESSION_TARGETS:-packets,packet_paths,node_status_samples,node_neighbor_samples}
       DATA_LIFECYCLE_RETENTION_TARGETS: ${DATA_LIFECYCLE_RETENTION_TARGETS:-}
       DATA_LIFECYCLE_RESTORE_RECEIPT_PATH: /backup-receipts/latest.json
       DATA_LIFECYCLE_RESTORE_RECEIPT_SIGNATURE_PATH: /backup-receipts/latest.json.sig
@@ -183,6 +185,7 @@ services:
       - srtm_data:/health-volumes/terrain:ro
       - loki_data:/health-volumes/logs:ro
       - ${BACKUP_RECEIPT_HOST_DIR:-./backup-receipts}:/backup-receipts:ro
+      - ${OWNER_AUTH_INVENTORY_HOST_DIR:-./backup-receipts}:/owner-auth-inventory:ro
     group_add:
       - "1883"
     read_only: true
@@ -256,7 +259,7 @@ services:
       STALE_MQTT_OBSERVER_CLEANUP_INTERVAL_MS: ${STALE_MQTT_OBSERVER_CLEANUP_INTERVAL_MS:-21600000}
       HEALTH_VOLUME_PATHS: database=/health-volumes/database=${HEALTH_DATABASE_BUDGET_BYTES:-322122547200},redis=/health-volumes/redis=${HEALTH_REDIS_BUDGET_BYTES:-4294967296},terrain=/health-volumes/terrain=${HEALTH_TERRAIN_BUDGET_BYTES:-53687091200},logs=/health-volumes/logs=${HEALTH_LOG_BUDGET_BYTES:-21474836480}
       DATA_LIFECYCLE_RETENTION_ENABLED: "true"
-      DATA_LIFECYCLE_RETENTION_TARGETS: ${DATA_LIFECYCLE_RETENTION_TARGETS:-worker_health_snapshots,operational_check_results}
+      DATA_LIFECYCLE_RETENTION_TARGETS: ${DATA_LIFECYCLE_RETENTION_TARGETS:-packets,worker_health_snapshots,frontend_error_events,owner_alert_deliveries,operational_check_results,observer_region_packet_sightings,observer_region_observer_sightings,link_job_commits,ml_model_variant_packet_results,packet_decryptions,observer_registration_requests,operator_audit_events}
       NODE_ENV: production
     depends_on:
       db-migrate:
