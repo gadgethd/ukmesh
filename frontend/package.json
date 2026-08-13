@@ -15,11 +15,11 @@
     "test:mobile": "playwright test mobile.spec.ts --project=mobile-regression"
   },
   "dependencies": {
-    "@deck.gl/aggregation-layers": "^9.3.8",
-    "@deck.gl/core": "^9.3.8",
-    "@deck.gl/extensions": "^9.3.8",
-    "@deck.gl/layers": "^9.3.8",
-    "@deck.gl/mapbox": "^9.3.8",
+    "@deck.gl/aggregation-layers": "^9.3.9",
+    "@deck.gl/core": "^9.3.9",
+    "@deck.gl/extensions": "^9.3.9",
+    "@deck.gl/layers": "^9.3.9",
+    "@deck.gl/mapbox": "^9.3.9",
     "d3-force": "^3.0.0",
     "fuse.js": "^7.5.0",
     "maplibre-gl": "^6.2.0",
@@ -40,7 +40,7 @@
     "@types/react-dom": "^19.2.4",
     "@vitejs/plugin-react": "^6.0.5",
     "postcss": "8.5.26",
-    "tsx": "^4.23.11",
+    "tsx": "^4.23.12",
     "typescript": "^7.0.2",
     "vite": "^8.2.1"
   },
