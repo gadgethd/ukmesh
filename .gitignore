@@ -56,6 +56,8 @@ audit.md
 NEW_PATHING_SYSTEM.md
 local-vs-github-pr-plan.md
 /.env.bak-*
+/backups/
+/backup-receipts/owner-grants-*.json
 
 terrain-tiles/
 
