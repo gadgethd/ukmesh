@@ -1,6 +1,21 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { classifyErrorEvent, isNoise } from './clientErrors.js';
+import {
+  classifyErrorEvent,
+  installClientErrorReporting,
+  isNoise,
+  isTelemetryDisabled,
+  postTelemetry,
+} from './clientErrors.js';
+
+function replaceGlobal(name: 'window' | 'navigator' | 'fetch', value: unknown): () => void {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, name);
+  Object.defineProperty(globalThis, name, { configurable: true, writable: true, value });
+  return () => {
+    if (previous) Object.defineProperty(globalThis, name, previous);
+    else Reflect.deleteProperty(globalThis, name);
+  };
+}
 
 test('classifies runtime error events by message', () => {
   const result = classifyErrorEvent({ message: 'boom', error: new Error('boom') });
@@ -48,4 +63,55 @@ test('truncates long messages to 500 chars', () => {
 test('noise filter matches terrain-tiles and misses real bugs', () => {
   assert.equal(isNoise('Failed to load /terrain-tiles/12/345/678.png'), true);
   assert.equal(isNoise('real bug'), false);
+});
+
+test('telemetry query gate is import-safe without window and matches only off', () => {
+  const restoreWindow = replaceGlobal('window', undefined);
+  try {
+    assert.equal(isTelemetryDisabled(), false);
+  } finally {
+    restoreWindow();
+  }
+
+  const restoreOffWindow = replaceGlobal('window', { location: { search: '?telemetry=off' } });
+  try {
+    assert.equal(isTelemetryDisabled(), true);
+  } finally {
+    restoreOffWindow();
+  }
+
+  const restoreOtherWindow = replaceGlobal('window', { location: { search: '?telemetry=false' } });
+  try {
+    assert.equal(isTelemetryDisabled(), false);
+  } finally {
+    restoreOtherWindow();
+  }
+});
+
+test('telemetry=off suppresses fetch and handler/console-hook installation', () => {
+  let fetchCalls = 0;
+  let handlerCalls = 0;
+  const browserWindow = {
+    location: { search: '?telemetry=off', pathname: '/private-query-stripped' },
+    addEventListener: () => { handlerCalls += 1; },
+  };
+  const restoreWindow = replaceGlobal('window', browserWindow);
+  const restoreNavigator = replaceGlobal('navigator', { userAgent: 'test-agent' });
+  const restoreFetch = replaceGlobal('fetch', () => {
+    fetchCalls += 1;
+    return Promise.resolve({ ok: true });
+  });
+  const originalConsoleError = console.error;
+  try {
+    postTelemetry({ kind: 'error', message: 'suppressed' });
+    installClientErrorReporting();
+    assert.equal(fetchCalls, 0);
+    assert.equal(handlerCalls, 0);
+    assert.equal(console.error, originalConsoleError);
+  } finally {
+    console.error = originalConsoleError;
+    restoreFetch();
+    restoreNavigator();
+    restoreWindow();
+  }
 });

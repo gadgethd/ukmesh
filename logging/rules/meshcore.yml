@@ -196,6 +196,26 @@ groups:
           owner: meshcore-operations
           runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#hostdiskspacelow
 
+      - alert: PacketPathsGrowthHigh
+        expr: meshcore_packet_paths_rows_30d{role="health"} / 30 > 30000
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: Durable packet path growth exceeds 30,000 rows per day
+          owner: meshcore-operations
+          runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#packetpathscapacity
+
+      - alert: PacketPathsCompressionOverdue
+        expr: meshcore_packet_paths_overdue_uncompressed_chunks{role="health"} > 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: One or more durable packet path chunks missed compression
+          owner: meshcore-operations
+          runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#packetpathscapacity
+
   - name: meshcore-data-integrity
     interval: 30s
     rules:

@@ -340,20 +340,20 @@ jobs:
             mosquitto_pub -h 127.0.0.1 -p 1883 \
               -u "$publisher_user" -P "$publisher_password" \
               -t "meshcore-test/CI/${observer}/packets" \
-              -m '{"packet_type":1,"RSSI":-75,"SNR":8,"direction":"rx","raw":"0D02AABBDEADBEEF"}'
+              -m '{"packet_type":1,"RSSI":-75,"SNR":8,"direction":"rx","raw":"0D42AABBCCDDDEADBEEF"}'
           readback=""
           for _ in $(seq 1 30); do
             readback="$(
               docker compose -f docker-compose.yml -f docker-compose.ci.yml --project-name "$project" exec -T timescaledb \
                 psql -U meshcore -d meshcore -Atc \
-                "SELECT EXISTS(SELECT 1 FROM nodes WHERE node_id = '${observer}' AND network = 'test'), EXISTS(SELECT 1 FROM packets WHERE rx_node_id = '${observer}' AND network = 'test'), EXISTS(SELECT 1 FROM packet_hourly_stats WHERE network = 'test')"
+                "SELECT EXISTS(SELECT 1 FROM nodes WHERE node_id = '${observer}' AND network = 'test'), EXISTS(SELECT 1 FROM packets WHERE rx_node_id = '${observer}' AND network = 'test'), EXISTS(SELECT 1 FROM packet_paths WHERE rx_node_id = '${observer}' AND network = 'test'), EXISTS(SELECT 1 FROM packet_hourly_stats WHERE network = 'test')"
             )"
-            if [ "$readback" = "t|t|t" ]; then
+            if [ "$readback" = "t|t|t|t" ]; then
               break
             fi
             sleep 1
           done
-          test "$readback" = "t|t|t"
+          test "$readback" = "t|t|t|t"
           if ! wait "$ws_pid"; then
             cat "$ws_log"
             exit 1

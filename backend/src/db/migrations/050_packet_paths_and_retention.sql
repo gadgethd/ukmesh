@@ -8,8 +8,6 @@
 -- 2. Retention jobs: DATA_LIFECYCLE_POLICIES declared retentions but no
 --    timescaledb jobs were ever scheduled; align the DB with the policies.
 
-BEGIN;
-
 -- ---------------------------------------------------------------------------
 -- 1. packet_paths hypertable (no retention policy — kept forever)
 -- ---------------------------------------------------------------------------
@@ -75,5 +73,3 @@ SELECT add_retention_policy('node_status_samples', INTERVAL '180 days', if_not_e
 
 SELECT remove_retention_policy('node_neighbor_samples', if_exists => TRUE);
 SELECT add_retention_policy('node_neighbor_samples', INTERVAL '7 days', if_not_exists => TRUE);
-
-COMMIT;

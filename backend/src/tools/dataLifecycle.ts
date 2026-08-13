@@ -1,6 +1,8 @@
 import { pool, query } from '../db/index.js';
 import {
   assertDataLifecycleGate,
+  compressionPolicy,
+  DATA_COMPRESSION_POLICIES,
   DATA_LIFECYCLE_POLICIES,
   lifecyclePolicy,
 } from '../db/dataLifecycle.js';
@@ -61,14 +63,45 @@ async function inventory(): Promise<void> {
       featureImpact: policy.featureImpact,
     });
   }
+  for (const policy of DATA_COMPRESSION_POLICIES) {
+    if (DATA_LIFECYCLE_POLICIES.some((candidate) => candidate.table === policy.table)) continue;
+    const result = await query<{
+      oldest_at: string | null;
+      newest_at: string | null;
+      total_bytes: string;
+      compressed_chunks: string;
+    }>(
+      `SELECT MIN(time)::text AS oldest_at,
+              MAX(time)::text AS newest_at,
+              pg_total_relation_size($1::regclass)::text AS total_bytes,
+              (SELECT COUNT(*)::text
+                 FROM timescaledb_information.chunks
+                WHERE hypertable_schema = 'public'
+                  AND hypertable_name = $2
+                  AND is_compressed) AS compressed_chunks
+         FROM ${policy.table}`,
+      [policy.table, policy.table],
+    );
+    console.log('[data-lifecycle] inventory', {
+      table: policy.table,
+      retention: null,
+      compressAfter: policy.compressAfter,
+      compressedChunks: Number(result.rows[0]?.compressed_chunks ?? 0),
+      oldestAt: result.rows[0]?.oldest_at ?? null,
+      newestAt: result.rows[0]?.newest_at ?? null,
+      totalBytes: Number(result.rows[0]?.total_bytes ?? 0),
+      featureImpact: ['compression-only; packet path rows are never deleted'],
+    });
+  }
 }
 
 async function applyCompression(target: string, approval: string | undefined): Promise<void> {
-  const policy = assertDataLifecycleGate({
+  assertDataLifecycleGate({
     action: 'compression',
     target,
     approval,
   });
+  const policy = compressionPolicy(target);
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -77,7 +110,8 @@ async function applyCompression(target: string, approval: string | undefined): P
     await client.query(
       `ALTER TABLE ${policy.table} SET (
          timescaledb.compress,
-         timescaledb.compress_segmentby = '${policy.compressionSegmentBy}'
+         timescaledb.compress_segmentby = '${policy.compressionSegmentBy}',
+         timescaledb.compress_orderby = '${policy.compressionOrderBy}'
        )`,
     );
     await client.query(
@@ -102,11 +136,12 @@ async function applyCompression(target: string, approval: string | undefined): P
 }
 
 async function applyRetention(target: string, approval: string | undefined): Promise<void> {
-  const policy = assertDataLifecycleGate({
+  assertDataLifecycleGate({
     action: 'retention',
     target,
     approval,
   });
+  const policy = lifecyclePolicy(target);
   if (policy.kind === 'hypertable') {
     await query(
       `SELECT add_retention_policy(
@@ -141,10 +176,14 @@ async function main(): Promise<void> {
   }
   const target = argValue('--target');
   if (!target) throw new Error('--target=<table> is required');
-  lifecyclePolicy(target);
   const approval = argValue('--approve');
-  if (compression) await applyCompression(target, approval);
-  else await applyRetention(target, approval);
+  if (compression) {
+    compressionPolicy(target);
+    await applyCompression(target, approval);
+  } else {
+    lifecyclePolicy(target);
+    await applyRetention(target, approval);
+  }
 }
 
 main()

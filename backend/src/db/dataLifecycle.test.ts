@@ -6,6 +6,8 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   assertDataLifecycleGate,
+  compressionPolicy,
+  configuredCompressionTargets,
   configuredLifecycleTargets,
   lifecyclePolicy,
 } from './dataLifecycle.js';
@@ -48,14 +50,19 @@ function receiptEnvironment(restoreVerifiedAt = '2026-07-28T12:00:00.000Z') {
 test('data lifecycle targets are closed and destructive gates fail closed', () => {
   assert.equal(lifecyclePolicy('packets').retention, '30 days');
   assert.equal(lifecyclePolicy('node_neighbor_samples').retention, '7 days');
+  assert.equal(compressionPolicy('packets').compressAfter, '14 days');
+  assert.equal(compressionPolicy('packet_paths').compressAfter, '14 days');
+  assert.throws(() => lifecyclePolicy('packet_paths'), /unsupported data lifecycle target/);
   assert.throws(() => lifecyclePolicy('made_up'), /unsupported/);
   assert.throws(() => configuredLifecycleTargets('packets,made_up'), /unsupported/);
+  assert.throws(() => configuredCompressionTargets('packets,made_up'), /unsupported/);
 
   const now = new Date('2026-07-29T12:00:00.000Z');
   const validEnv = {
     DATA_LIFECYCLE_RETENTION_ENABLED: 'true',
     DATA_LIFECYCLE_COMPRESSION_ENABLED: 'true',
     DATA_LIFECYCLE_RETENTION_TARGETS: 'packets',
+    DATA_LIFECYCLE_COMPRESSION_TARGETS: 'packets,packet_paths',
     ...receiptEnvironment(),
   };
   assert.equal(assertDataLifecycleGate({
@@ -85,8 +92,15 @@ test('data lifecycle targets are closed and destructive gates fail closed', () =
     approval: 'apply-data-lifecycle-compression-frontend_error_events',
     env: {
       ...validEnv,
-      DATA_LIFECYCLE_RETENTION_TARGETS: 'frontend_error_events',
+      DATA_LIFECYCLE_COMPRESSION_TARGETS: 'frontend_error_events',
     },
     now,
-  }), /not a compression target/);
+  }), /unsupported compression target/);
+  assert.equal(assertDataLifecycleGate({
+    action: 'compression',
+    target: 'packet_paths',
+    approval: 'apply-data-lifecycle-compression-packet_paths',
+    env: validEnv,
+    now,
+  }).table, 'packet_paths');
 });

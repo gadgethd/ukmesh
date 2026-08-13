@@ -13,6 +13,8 @@ import {
 
 test('multibyte fact backfill keys every observation row instead of packet hashes', () => {
   const sql = multibyteFactBackfillSql();
+  assert.match(sql, /FROM packet_paths p/);
+  assert.doesNotMatch(sql, /FROM packets p/);
   assert.match(sql, /p\.observation_id/);
   assert.match(sql, /p\.observation_id IS NOT NULL/);
   assert.match(sql, /ON CONFLICT \(observation_id\)/);
@@ -58,6 +60,8 @@ test('off-peak fact writes split one selected chunk into bounded statement windo
 
 test('historical observation ids are populated oldest-first in bounded physical-row batches', async () => {
   const sql = multibyteObservationIdBatchSql();
+  assert.match(sql, /FROM packet_paths p/);
+  assert.match(sql, /UPDATE packet_paths p/);
   assert.match(sql, /p\.observation_id IS NULL/);
   assert.match(sql, /ORDER BY p\.time ASC/);
   assert.doesNotMatch(sql, /ORDER BY p\.time ASC, p\.tableoid/);

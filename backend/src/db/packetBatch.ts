@@ -254,6 +254,7 @@ async function writeBatch(batch: PendingPacket[], idempotent: boolean): Promise<
        ) AS (VALUES ${values}),
        classified AS MATERIALIZED (
          SELECT i.*,
+           gen_random_uuid() AS observation_id,
            CASE
              WHEN i.prefix_cache_generation = visibility.generation THEN i.classified_private
              ELSE TRUE
@@ -270,7 +271,7 @@ async function writeBatch(batch: PendingPacket[], idempotent: boolean): Promise<
            advert_count, path_hashes, path_hash_size_bytes, network, transport_codes,
            region_scope, is_private, visibility_ok
          )
-         SELECT gen_random_uuid(), time, packet_hash, rx_node_id, src_node_id, topic, topic_prefix, iata,
+         SELECT observation_id, time, packet_hash, rx_node_id, src_node_id, topic, topic_prefix, iata,
                 packet_type, route_type, hop_count, rssi, snr, payload::jsonb, companion_sender, raw_hex,
                 advert_count, path_hashes, path_hash_size_bytes, network, transport_codes,
                 region_scope, is_private, path_is_valid AND NOT is_private
@@ -285,7 +286,7 @@ async function writeBatch(batch: PendingPacket[], idempotent: boolean): Promise<
          )
          SELECT time, packet_hash, rx_node_id, src_node_id, topic, topic_prefix,
                 route_type, hop_count, rssi, snr, path_hashes, path_hash_size_bytes,
-                is_private, path_is_valid AND NOT is_private, network, gen_random_uuid()
+                is_private, path_is_valid AND NOT is_private, network, observation_id
          FROM ${persistenceSource}
          WHERE path_hashes IS NOT NULL AND path_hash_size_bytes > 1
          ON CONFLICT DO NOTHING

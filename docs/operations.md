@@ -351,6 +351,15 @@ databases and signed backups. Prune only explicitly identified unused build
 cache/images or let the bounded SRTM/log policies converge; never run a broad
 volume prune.
 
+### PacketPathsCapacity
+
+Compare the health-worker `meshcore_packet_paths_rows_30d`,
+`meshcore_packet_paths_bytes_per_row`, and overdue-chunk gauges with the
+reviewed 10,000–23,000 rows/day and roughly 1 kB/row baseline. If compression
+is overdue, inspect the `packet_paths` compression job and Timescale worker
+headroom; never add a retention job for this table. For genuine growth, forecast
+the next 12 months against free disk before changing storage or ingest policy.
+
 ### BackupReceiptMissing
 
 Check the receipt mount, signature/key permissions, and backup job result.
