@@ -808,6 +808,43 @@ export async function getNodeAdverts(nodePublicKey: string, hours = 24, limit = 
   return res.rows;
 }
 
+/**
+ * Top adverting repeaters over a rolling window. Counts come from
+ * node_counted_adverts (deduplicated per canonical advert hash, ~16k rows),
+ * joined to the node identity view for display fields. Cheap enough to run
+ * directly; the route wraps it in a 1h in-memory cache.
+ */
+export async function getTopAdvertingRepeaters(hours = 24, limit = 10, network = 'ukmesh') {
+  const scope = buildScopePlaceholders(3, network);
+  const res = await pool.query(
+    `SELECT
+       nca.node_id,
+       n.name,
+       COALESCE(n.observer_iata, n.iata) AS iata,
+       n.role,
+       n.lat,
+       n.lon,
+       ${nodeEffectiveLastSeenSql('n')} AS last_seen,
+       ${nodeEffectiveOnlineSql('n')} AS is_online,
+       n.advert_count,
+       COUNT(*) AS adverts_in_window,
+       MAX(nca.counted_at) AS last_advert_at
+     FROM node_counted_adverts nca
+     JOIN node_identity_nodes n ON n.node_id = nca.node_id
+     WHERE nca.counted_at > NOW() - INTERVAL '1 hour' * $1
+       AND n.role = 2
+       AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
+       ${buildNodeScopeClause(scope, 'n')}
+     GROUP BY nca.node_id, n.name, COALESCE(n.observer_iata, n.iata), n.role,
+              n.lat, n.lon, ${nodeEffectiveLastSeenSql('n')},
+              ${nodeEffectiveOnlineSql('n')}, n.advert_count
+     ORDER BY adverts_in_window DESC, n.name ASC NULLS LAST
+     LIMIT $2`,
+    [hours, limit, ...scope.params]
+  );
+  return res.rows;
+}
+
 export async function getRecentPackets(
   limit = 200,
   network?: string,

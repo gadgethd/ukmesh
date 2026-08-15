@@ -171,4 +171,10 @@ export const CACHE_POLICY_REGISTRY: readonly CachePolicyRecord[] = Object.freeze
     scope: 'one resolver invocation', invalidation: 'discarded with invocation',
     negativeCaching: 'local null memoization', singleFlight: 'not applicable',
   },
+  {
+    source: 'src/api/routes/nodes.ts#topAdvertsCache',
+    disposition: 'bounded-cache', maxEntries: 32, maxBytes: 256 << 10, ttlMs: 60 * 60_000,
+    scope: 'network + hours + limit', invalidation: 'TTL',
+    negativeCaching: 'completed rows only', singleFlight: 'not applicable',
+  },
 ]);
