@@ -155,7 +155,7 @@ export const UKInstallPage: React.FC = () => {
           Check the{' '}
           <a href="https://app.ukmesh.com">live map</a>{' '}
           to see if your node appears. Come say hello on the MeshCore Discord.
-          DM <strong>ibengr</strong> if you have any questions.
+          DM <strong>sudogadget</strong> if you have any questions.
         </p>
         <a
           href="https://meshcore.gg/"
@@ -177,7 +177,7 @@ export const UKInstallPage: React.FC = () => {
           connected to the node over USB. The bridge publishes what the node hears to the shared UK Mesh broker.
         </p>
         <div className="prose-note">
-          <strong>Access is by request.</strong> Message <strong>ibengr</strong> on Discord to get MQTT credentials before setting this up.
+          <strong>Access is by request.</strong> Message <strong>sudogadget</strong> on Discord to get MQTT credentials before setting this up.
         </div>
         <div className="code-block" tabIndex={0} aria-label="Observer configuration example">
           <pre>{'curl -fsSL https://raw.githubusercontent.com/Cisien/meshcoretomqtt/main/install.sh | bash'}</pre>
