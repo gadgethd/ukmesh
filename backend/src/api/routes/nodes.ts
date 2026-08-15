@@ -208,9 +208,15 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
         return;
       }
       const rows = await getTopAdvertingRepeaters(hours, limit, network);
-      topAdvertsCache.set(cacheKey, { ts: Date.now(), data: rows });
+      // COUNT(*) arrives as a string from node-postgres; coerce to number so
+      // the public contract exposes a numeric adverts_in_window.
+      const normalized = (rows as Array<Record<string, unknown>>).map((row) => ({
+        ...row,
+        adverts_in_window: Number(row.adverts_in_window ?? 0),
+      }));
+      topAdvertsCache.set(cacheKey, { ts: Date.now(), data: normalized });
       res.setHeader('Cache-Control', 'public, max-age=3600, stale-while-revalidate=600');
-      res.json(rows);
+      res.json(normalized);
     } catch (err) {
       console.error('[api] GET /nodes/top-adverts', (err as Error).message);
       res.status(500).json({ error: 'Internal server error' });
