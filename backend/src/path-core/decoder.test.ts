@@ -80,6 +80,20 @@ test('decodes the strongest coherent chain from supplied evidence', () => {
   assert.equal(decoded.get(1)?.nodeId, 'C');
 });
 
+test('backtracks one coherent chain instead of splicing tied max-marginals', () => {
+  const decoded = decodePath(['AA', 'BB'], evidence(new Map([
+    ['AA', [node('A', 51, 0), node('B', 55, 0)]],
+    // Candidate order deliberately makes independent per-position argmaxes
+    // choose A then D, even though only A→C and B→D are physical.
+    ['BB', [node('D', 55, 0), node('C', 51, 0)]],
+  ])));
+
+  assert.deepEqual(
+    [...decoded.values()].map((hop) => hop.nodeId),
+    ['B', 'D'],
+  );
+});
+
 test('chooses the real argmax even when the candidate has no prior support', () => {
   const decoded = decodePath(
     ['AA'],

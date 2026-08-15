@@ -7,6 +7,8 @@ import {
   cachedTerrainElevation,
   easeArcProgress,
   interpolateArcPosition,
+  OBSERVER_LAYER_ID,
+  observerLayerForFrame,
   registerAerialPaths,
   renderedPosition,
   terrainAwarePosition,
@@ -42,6 +44,21 @@ test('new packet paths coexist without resetting earlier path lifetimes', () => 
   registerAerialPaths(registry, [packetB], 900);
   assert.equal(registry.get(packetAKey)?.startedAt, 100);
   assert.equal(registry.get(packetBKey)?.startedAt, 500, 'unchanged paths do not restart their TTL');
+});
+
+test('observer dots retain one un-stroked layer across data updates', () => {
+  const populated = observerLayerForFrame([{
+    position: [-1, 51],
+    nodeId: 'observer-a',
+    renderedPosition: [-1, 51, 0],
+  }]);
+  const empty = observerLayerForFrame([]);
+
+  assert.equal(populated.id, OBSERVER_LAYER_ID);
+  assert.equal(empty.id, OBSERVER_LAYER_ID);
+  assert.equal(populated.props.stroked, false);
+  assert.equal(populated.props.getLineWidth, 0);
+  assert.deepEqual(empty.props.data, []);
 });
 
 test('a later observer reuses the common trunk and registers only its new branch', () => {
