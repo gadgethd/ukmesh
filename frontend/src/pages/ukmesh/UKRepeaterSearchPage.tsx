@@ -46,6 +46,20 @@ interface AdvertPacket {
   packet_hash: string;
 }
 
+interface TopAdvertNode {
+  node_id: string;
+  name?: string;
+  iata?: string;
+  role?: number;
+  lat?: number;
+  lon?: number;
+  last_seen: string;
+  is_online: boolean;
+  advert_count?: number;
+  adverts_in_window: number;
+  last_advert_at: string;
+}
+
 type NodeDetailBundle = { links: NodeLink[]; history: PacketHistory[]; adverts: AdvertPacket[] };
 type PublicMapPage = {
   nodes: MeshNode[];
@@ -258,6 +272,7 @@ export const UKRepeaterSearchPage: React.FC = () => {
   const [nodes, setNodes] = useState<MeshNode[]>([]);
   const [loadingNodes, setLoadingNodes] = useState(true);
   const [nodesError, setNodesError] = useState<string | null>(null);
+  const [topAdverts, setTopAdverts] = useState<TopAdvertNode[]>([]);
   const [selectedNode, setSelectedNode] = useState<MeshNode | null>(null);
   const [links, setLinks] = useState<NodeLink[]>([]);
   const [history, setHistory] = useState<PacketHistory[]>([]);
@@ -294,6 +309,29 @@ export const UKRepeaterSearchPage: React.FC = () => {
       controller.abort();
     };
   }, [network, observer, runtimeFeatures.privacyGeneration]);
+
+  // Top adverting repeaters (last 24h) — served from a 1h backend cache.
+  useEffect(() => {
+    const controller = new AbortController();
+    setTopAdverts([]);
+    fetchJson<TopAdvertNode[]>(
+      withScopeParams('/api/nodes/top-adverts?hours=24&limit=10', { network, observer }),
+      { signal: controller.signal, cache: 'default' },
+      { timeoutMs: 10_000, maxBytes: 2 * 1024 * 1024 },
+    )
+      .then(rows => {
+        if (!controller.signal.aborted) {
+          setTopAdverts(Array.isArray(rows) ? rows : []);
+        }
+      })
+      .catch(() => {
+        // Degrade silently: the list is a convenience on top of search.
+        if (!controller.signal.aborted) setTopAdverts([]);
+      });
+    return () => {
+      controller.abort();
+    };
+  }, [network, observer]);
 
   useEffect(() => () => selectionControllerRef.current?.abort(), []);
 
@@ -435,7 +473,48 @@ export const UKRepeaterSearchPage: React.FC = () => {
                     <path d="m21 21-4.35-4.35" />
                   </svg>
                   <h3>Select a Repeater</h3>
-                  <p>Search for a repeater above to view its details, neighbours, and packet history.</p>
+                  <p>Search for a repeater above, or pick one from the most active below.</p>
+                  {topAdverts.length > 0 ? (
+                    <div className="repeater-top-list">
+                      <p className="repeater-top-list__heading">Top adverting repeaters — last 24 hours</p>
+                      <ol className="repeater-top-list__items">
+                        {topAdverts.map((entry, index) => (
+                          <li key={entry.node_id}>
+                            <button
+                              type="button"
+                              className="repeater-top-list__item"
+                              onClick={() => {
+                                void selectNode({
+                                  node_id: entry.node_id,
+                                  name: entry.name,
+                                  lat: entry.lat,
+                                  lon: entry.lon,
+                                  iata: entry.iata,
+                                  role: entry.role,
+                                  last_seen: entry.last_seen,
+                                  is_online: entry.is_online,
+                                  advert_count: entry.advert_count,
+                                  public_key: entry.node_id,
+                                });
+                              }}
+                            >
+                              <span className="repeater-top-list__rank">{index + 1}</span>
+                              <span className="repeater-top-list__name">
+                                {entry.name || entry.node_id.slice(0, 16)}
+                                {entry.iata ? <span className="repeater-top-list__iata">{entry.iata}</span> : null}
+                              </span>
+                              <span className="repeater-top-list__adverts">
+                                {entry.adverts_in_window.toLocaleString()} advert{entry.adverts_in_window !== 1 ? 's' : ''}
+                                <span className={`repeater-top-list__status ${entry.is_online ? 'repeater-top-list__status--online' : 'repeater-top-list__status--offline'}`}>
+                                  {entry.is_online ? 'Online' : 'Offline'}
+                                </span>
+                              </span>
+                            </button>
+                          </li>
+                        ))}
+                      </ol>
+                    </div>
+                  ) : null}
                 </div>
               )}
             </div>

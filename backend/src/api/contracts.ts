@@ -130,6 +130,7 @@ const PUBLIC_GET = [
   '/nodes/:id/history',
   '/nodes/:id/links',
   '/nodes/map',
+  '/nodes/top-adverts',
   '/observer-activity',
   '/observers/health',
   '/packets/:hash',

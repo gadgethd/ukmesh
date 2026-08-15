@@ -402,6 +402,93 @@
   margin: 0 auto;
   line-height: 1.45;
 }
+.repeater-page .repeater-details-card__empty .repeater-top-list {
+  max-width: 560px;
+  margin: 20px auto 0;
+  text-align: left;
+}
+.repeater-page .repeater-top-list__heading {
+  margin: 0 0 8px;
+  font: 11px var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  max-width: none;
+}
+.repeater-page .repeater-top-list__items {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--bg-panel);
+}
+.repeater-page .repeater-top-list__item {
+  display: grid;
+  grid-template-columns: 28px 1fr auto;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 11px 14px;
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.repeater-page .repeater-top-list__item:last-child {
+  border-bottom: none;
+}
+.repeater-page .repeater-top-list__item:hover {
+  background: var(--bg-hover);
+  border-bottom-color: var(--border-bright);
+}
+.repeater-page .repeater-top-list__rank {
+  font: 12px var(--font-mono);
+  color: var(--accent);
+  opacity: 0.85;
+}
+.repeater-page .repeater-top-list__name {
+  font-weight: 600;
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.repeater-page .repeater-top-list__iata {
+  margin-left: 8px;
+  font: 11px var(--font-mono);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 6px;
+  vertical-align: 1px;
+}
+.repeater-page .repeater-top-list__adverts {
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.repeater-page .repeater-top-list__status {
+  font: 10px var(--font-mono);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 999px;
+}
+.repeater-page .repeater-top-list__status--online {
+  color: #4ade80;
+  background: rgba(74, 222, 128, 0.12);
+}
+.repeater-page .repeater-top-list__status--offline {
+  color: var(--text-secondary);
+  background: rgba(138, 166, 196, 0.12);
+}
 .site-layout:has(.repeater-page) .site-footer,
 .site-layout:has(.companion-page) .site-footer {
   color: var(--text-secondary);

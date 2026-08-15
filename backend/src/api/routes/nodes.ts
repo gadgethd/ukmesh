@@ -34,7 +34,12 @@ type GetNodesFn = (
 ) => Promise<NodeRecord[]>;
 type GetNodeHistoryFn = (nodeId: string, hours: number, network: string) => Promise<unknown>;
 type GetNodeAdvertsFn = (publicKey: string, hours: number, limit: number, network: string) => Promise<unknown>;
+type GetTopAdvertingRepeatersFn = (hours: number, limit: number, network: string) => Promise<unknown[]>;
 type RequireLocalOnlyFn = (req: Request, res: Response) => boolean;
+
+/** Top-adverting repeater list is public and changes slowly — 1h in-memory cache. */
+const TOP_ADVERTS_CACHE_TTL_MS = 60 * 60 * 1000;
+const topAdvertsCache = new Map<string, { ts: number; data: unknown[] }>();
 
 type InferredMultibyteNode = {
   node_id: string;
@@ -65,6 +70,7 @@ type NodesRouteDeps = {
   getNodes: GetNodesFn;
   getNodeHistory: GetNodeHistoryFn;
   getNodeAdverts: GetNodeAdvertsFn;
+  getTopAdvertingRepeaters: GetTopAdvertingRepeatersFn;
   nodeRepository: NodeRepository;
   requireLocalOnly: RequireLocalOnlyFn;
   networkFilters: (network?: string, observer?: string) => NetworkFilters;
@@ -83,6 +89,7 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
     getNodes,
     getNodeHistory,
     getNodeAdverts,
+    getTopAdvertingRepeaters,
     nodeRepository,
     requireLocalOnly,
     networkFilters,
@@ -174,6 +181,38 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
         return;
       }
       console.error('[api] GET /nodes/map', (err as Error).message);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  });
+
+  router.get('/nodes/top-adverts', nodesLimiter, async (req, res) => {
+    try {
+      const network = resolvePublicNetworkScope(req.query['network'], req.headers);
+      const hours = parseBoundedInteger(req.query['hours'], {
+        name: 'hours',
+        min: 1,
+        max: 168,
+        defaultValue: 24,
+      })!;
+      const limit = parseBoundedInteger(req.query['limit'], {
+        name: 'limit',
+        min: 1,
+        max: 25,
+        defaultValue: 10,
+      })!;
+      const cacheKey = `${network ?? 'all'}:${hours}:${limit}`;
+      const cached = topAdvertsCache.get(cacheKey);
+      if (cached && Date.now() - cached.ts < TOP_ADVERTS_CACHE_TTL_MS) {
+        res.setHeader('Cache-Control', 'public, max-age=3600, stale-while-revalidate=600');
+        res.json(cached.data);
+        return;
+      }
+      const rows = await getTopAdvertingRepeaters(hours, limit, network);
+      topAdvertsCache.set(cacheKey, { ts: Date.now(), data: rows });
+      res.setHeader('Cache-Control', 'public, max-age=3600, stale-while-revalidate=600');
+      res.json(rows);
+    } catch (err) {
+      console.error('[api] GET /nodes/top-adverts', (err as Error).message);
       res.status(500).json({ error: 'Internal server error' });
     }
   });
