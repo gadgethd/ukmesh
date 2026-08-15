@@ -501,7 +501,6 @@ export const UKRepeaterSearchPage: React.FC = () => {
                               <span className="repeater-top-list__rank">{index + 1}</span>
                               <span className="repeater-top-list__name">
                                 {entry.name || entry.node_id.slice(0, 16)}
-                                {entry.iata ? <span className="repeater-top-list__iata">{entry.iata}</span> : null}
                               </span>
                               <span className="repeater-top-list__adverts">
                                 {entry.adverts_in_window.toLocaleString()} advert{entry.adverts_in_window !== 1 ? 's' : ''}

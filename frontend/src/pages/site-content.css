@@ -457,15 +457,6 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.repeater-page .repeater-top-list__iata {
-  margin-left: 8px;
-  font: 11px var(--font-mono);
-  color: var(--text-secondary);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 1px 6px;
-  vertical-align: 1px;
-}
 .repeater-page .repeater-top-list__adverts {
   font-size: 12px;
   color: var(--text-secondary);
