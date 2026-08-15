@@ -495,6 +495,7 @@ export function decodePathWithScore(
 
   // Best prefix score ending at columns[position][candidate].
   const forward: number[][] = columns.map((column) => new Array(column.length).fill(-Infinity));
+  const previousCandidate: number[][] = columns.map((column) => new Array(column.length).fill(-1));
   for (let candidate = 0; candidate < columns[0]!.length; candidate++) {
     const startTransition = evidence.sourceAnchor
       ? endpointTransitionScore(endpointCandidate(evidence.sourceAnchor), columns[0]![candidate]!, evidence)
@@ -508,6 +509,7 @@ export function decodePathWithScore(
       const currentEmission = emissions[position]![current]!;
       if (!isFinite(currentEmission)) continue;
       let best = -Infinity;
+      let bestPrevious = -1;
       for (let previous = 0; previous < columns[position - 1]!.length; previous++) {
         if (!isFinite(forward[position - 1]![previous]!)) continue;
         const transition = transitionScore(
@@ -518,9 +520,15 @@ export function decodePathWithScore(
         );
         if (!isFinite(transition)) continue;
         const total = forward[position - 1]![previous]! + transition;
-        if (total > best) best = total;
+        if (total > best) {
+          best = total;
+          bestPrevious = previous;
+        }
       }
-      if (isFinite(best)) forward[position]![current] = best + currentEmission;
+      if (isFinite(best)) {
+        forward[position]![current] = best + currentEmission;
+        previousCandidate[position]![current] = bestPrevious;
+      }
     }
   }
 
@@ -549,31 +557,53 @@ export function decodePathWithScore(
         const total = transition + nextEmission + backward[position + 1]![next]!;
         if (total > best) best = total;
       }
-      backward[position]![current] = isFinite(best) ? best : 0;
+      backward[position]![current] = best;
+    }
+  }
+
+  // Backtrack one globally coherent Viterbi chain. Max-marginal argmaxes are
+  // useful for confidence, but choosing them independently can splice two
+  // equally-scored physical paths into an adjacent hop that was never viable.
+  let score = -Infinity;
+  let terminalCandidate = -1;
+  for (let candidate = 0; candidate < columns[pathLength - 1]!.length; candidate++) {
+    const total = forward[pathLength - 1]![candidate]!
+      + backward[pathLength - 1]![candidate]!;
+    if (total > score) {
+      score = total;
+      terminalCandidate = candidate;
+    }
+  }
+  const chosenCandidates = new Array<number>(pathLength).fill(-1);
+  if (terminalCandidate >= 0 && isFinite(score)) {
+    chosenCandidates[pathLength - 1] = terminalCandidate;
+    for (let position = pathLength - 1; position > 0; position--) {
+      const chosen = chosenCandidates[position]!;
+      if (chosen < 0) break;
+      chosenCandidates[position - 1] = previousCandidate[position]![chosen]!;
     }
   }
 
   for (let position = 0; position < pathLength; position++) {
     const hash = canonicalHashes[position]!;
-    let bestCandidate = -1;
-    let bestMarginal = -Infinity;
-    let secondMarginal = -Infinity;
+    const chosenCandidate = chosenCandidates[position]!;
+    const chosenMarginal = chosenCandidate >= 0
+      ? forward[position]![chosenCandidate]! + backward[position]![chosenCandidate]!
+      : -Infinity;
+    let bestAlternativeMarginal = -Infinity;
     for (let candidate = 0; candidate < columns[position]!.length; candidate++) {
+      if (candidate === chosenCandidate) continue;
       if (!isFinite(forward[position]![candidate]!)
           || !isFinite(backward[position]![candidate]!)) continue;
       const marginal = forward[position]![candidate]! + backward[position]![candidate]!;
-      if (marginal > bestMarginal) {
-        secondMarginal = bestMarginal;
-        bestMarginal = marginal;
-        bestCandidate = candidate;
-      } else if (marginal > secondMarginal) {
-        secondMarginal = marginal;
-      }
+      if (marginal > bestAlternativeMarginal) bestAlternativeMarginal = marginal;
     }
-    const best = bestCandidate >= 0
-      ? columns[position]![bestCandidate]!
+    const best = chosenCandidate >= 0
+      ? columns[position]![chosenCandidate]!
       : UNRESOLVED_CANDIDATE;
-    const margin = isFinite(secondMarginal) ? bestMarginal - secondMarginal : Infinity;
+    const margin = isFinite(bestAlternativeMarginal)
+      ? chosenMarginal - bestAlternativeMarginal
+      : Infinity;
     decoded.set(position, {
       hash,
       nodeId: best.nodeId,
@@ -581,16 +611,9 @@ export function decodePathWithScore(
       lat: best.lat,
       lon: best.lon,
       margin,
-      ambiguous: best.nodeId !== null && isFinite(secondMarginal)
+      ambiguous: best.nodeId !== null && isFinite(bestAlternativeMarginal)
         && margin < evidence.ambiguityDelta,
     });
-  }
-
-  let score = -Infinity;
-  for (let candidate = 0; candidate < columns[pathLength - 1]!.length; candidate++) {
-    const total = forward[pathLength - 1]![candidate]!
-      + backward[pathLength - 1]![candidate]!;
-    if (total > score) score = total;
   }
   return { hops: decoded, score };
 }

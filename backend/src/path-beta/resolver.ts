@@ -19,6 +19,7 @@ import {
   decodeBetaCanonicalGroup,
   decodeBetaCanonicalGroupWithHeldPath,
   groupCompatibleObservations,
+  mergeCompatiblePathHashes,
   projectCanonicalPathForObserver,
   type BetaObserverEntry,
   type BetaPathProjection,
@@ -56,19 +57,48 @@ function edgeKey(receiverRegion: string, bucket: number, fromId: string, toId: s
   return `${receiverRegion}|${bucket}|${fromId}|${toId}`;
 }
 
+export type PathPrefixPriorEvidence = {
+  prefix: string;
+  receiver_region: string;
+  prev_prefix: string | null;
+  node_id: string;
+  count: number;
+};
+
+/** Collapse confirmed 2/3-byte training facts into calibrated one-byte priors. */
+export function buildOneBytePrefixProbabilities(
+  rows: readonly PathPrefixPriorEvidence[],
+): Map<string, number> {
+  const choiceCounts = new Map<string, number>();
+  const groupTotals = new Map<string, number>();
+  for (const row of rows) {
+    const prefix = normalizePathHash(row.prefix).slice(0, 2);
+    const previous = normalizePathHash(row.prev_prefix).slice(0, 2);
+    const count = Math.max(0, Number(row.count) || 0);
+    if (prefix.length !== 2 || !row.receiver_region || !row.node_id || count === 0) continue;
+    const group = `${row.receiver_region}|${prefix}|${previous}`;
+    const choice = `${group}|${row.node_id}`;
+    choiceCounts.set(choice, (choiceCounts.get(choice) ?? 0) + count);
+    groupTotals.set(group, (groupTotals.get(group) ?? 0) + count);
+  }
+
+  const probabilities = new Map<string, number>();
+  for (const [choice, count] of choiceCounts) {
+    const separator = choice.lastIndexOf('|');
+    const group = separator >= 0 ? choice.slice(0, separator) : '';
+    const total = groupTotals.get(group) ?? 0;
+    if (total > 0) probabilities.set(choice, count / total);
+  }
+  return probabilities;
+}
+
 async function buildLearningModel(
   network: string,
   signal?: AbortSignal,
 ): Promise<PathLearningModel> {
   const [prefixRows, transitionRows, edgeRows, motifRows, calibrationRows] = await Promise.all([
-    query<{
-      prefix: string;
-      receiver_region: string;
-      prev_prefix: string | null;
-      node_id: string;
-      probability: number;
-    }>(
-      `SELECT prefix, receiver_region, prev_prefix, node_id, probability
+    query<PathPrefixPriorEvidence>(
+      `SELECT prefix, receiver_region, prev_prefix, node_id, count
        FROM path_prefix_priors
        WHERE network = $1
        ORDER BY count DESC
@@ -129,13 +159,7 @@ async function buildLearningModel(
     ),
   ]);
 
-  const prefixProbabilities = new Map<string, number>();
-  for (const row of prefixRows.rows) {
-    prefixProbabilities.set(
-      `${row.receiver_region}|${normalizePathHash(row.prefix)}|${normalizePathHash(row.prev_prefix)}|${row.node_id}`,
-      Number(row.probability),
-    );
-  }
+  const prefixProbabilities = buildOneBytePrefixProbabilities(prefixRows.rows);
 
   const transitionProbabilities = new Map<string, number>();
   for (const row of transitionRows.rows) {
@@ -301,7 +325,7 @@ async function loadContext(
   return context;
 }
 
-type PreparedPacketObservation = {
+export type PreparedPacketObservation = {
   packet: PathPacket;
   rx: MeshNode | null;
   hashes: string[];
@@ -347,20 +371,32 @@ function preparePacketObservation(packet: PathPacket, rx: MeshNode | null): Prep
 }
 
 function compareCanonicalObservation(a: PreparedPacketObservation, b: PreparedPacketObservation): number {
-  return b.hops.length - a.hops.length
+  return Number(b.packet.path_hash_size_bytes ?? 0) - Number(a.packet.path_hash_size_bytes ?? 0)
+    || b.hops.length - a.hops.length
     || b.rawHops.length - a.rawHops.length
-    || Number(Boolean(b.packet.path_hash_size_bytes)) - Number(Boolean(a.packet.path_hash_size_bytes))
     || Number(Boolean(b.packet.src_node_id)) - Number(Boolean(a.packet.src_node_id))
     || Number(b.packet.hop_count ?? 0) - Number(a.packet.hop_count ?? 0);
 }
 
 function comparePreferredObservation(a: PreparedPacketObservation, b: PreparedPacketObservation): number {
   return b.hops.length - a.hops.length
-    || Number(Boolean(b.packet.path_hash_size_bytes)) - Number(Boolean(a.packet.path_hash_size_bytes))
+    || Number(b.packet.path_hash_size_bytes ?? 0) - Number(a.packet.path_hash_size_bytes ?? 0)
     || Number(Boolean(b.packet.src_node_id)) - Number(Boolean(a.packet.src_node_id))
     || a.rawHops.length - b.rawHops.length
     || Number(a.packet.hop_count ?? Number.MAX_SAFE_INTEGER)
       - Number(b.packet.hop_count ?? Number.MAX_SAFE_INTEGER);
+}
+
+export function mergeObserverEvidence(
+  previous: PreparedPacketObservation,
+  current: PreparedPacketObservation,
+): PreparedPacketObservation {
+  const mergedHops = mergeCompatiblePathHashes(previous.hops, current.hops);
+  if (!mergedHops) {
+    return compareCanonicalObservation(current, previous) < 0 ? current : previous;
+  }
+  const preferred = comparePreferredObservation(current, previous) < 0 ? current : previous;
+  return { ...preferred, hops: mergedHops };
 }
 
 function toObserverEntry(prepared: PreparedPacketObservation): BetaObserverEntry | null {
@@ -662,9 +698,7 @@ export async function resolveBetaPathForPacketHash(
     if (prepared.ignoreForPathing) continue;
     const key = row.rx_node_id ?? '__no_observer__';
     const previous = preparedByObserver.get(key);
-    if (!previous || compareCanonicalObservation(prepared, previous) < 0) {
-      preparedByObserver.set(key, prepared);
-    }
+    preparedByObserver.set(key, previous ? mergeObserverEvidence(previous, prepared) : prepared);
   }
   const selected = [...preparedByObserver.values()].sort(comparePreferredObservation)[0];
   if (!selected) return null;
@@ -801,9 +835,7 @@ async function resolveMultiObserverBetaPathFromRows(
     const prepared = preparePacketObservation(row, context.nodesById.get(row.rx_node_id) ?? null);
     if (prepared.ignoreForPathing) continue;
     const previous = byObserver.get(row.rx_node_id);
-    if (!previous || compareCanonicalObservation(prepared, previous) < 0) {
-      byObserver.set(row.rx_node_id, prepared);
-    }
+    byObserver.set(row.rx_node_id, previous ? mergeObserverEvidence(previous, prepared) : prepared);
   }
   if (byObserver.size > PATH_MULTI_MAX_OBSERVERS) throw new Error('PATH_HISTORY_LIMIT');
 

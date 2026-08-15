@@ -57,7 +57,7 @@ type RenderedNode = AerialPathNode & {
   opacity: number;
 };
 
-type RenderedObserverNode = AerialPathNode & {
+export type RenderedObserverNode = AerialPathNode & {
   renderedPosition: DeckPosition;
 };
 
@@ -86,6 +86,7 @@ export type PathRegistryEntry = {
 };
 
 const EMPTY_OBSERVER_NODES: AerialPathNode[] = [];
+export const OBSERVER_LAYER_ID = 'resolved-path-observers-stable-fill-v2';
 
 function aerialNodeKey(node: AerialPathNode): string {
   return `${node.position[0].toFixed(6)},${node.position[1].toFixed(6)}`;
@@ -447,6 +448,27 @@ function uniqueNodes(segments: RenderedSegment[]): RenderedNode[] {
   return [...nodesByKey.values()];
 }
 
+/** Keep one Deck.gl layer alive while its observer data changes in place. */
+export function observerLayerForFrame(
+  observerNodes: RenderedObserverNode[],
+  onNodeClick?: (node: AerialPathNode) => void,
+): ScatterplotLayer<RenderedObserverNode> {
+  return new ScatterplotLayer<RenderedObserverNode>({
+    id: OBSERVER_LAYER_ID,
+    data: observerNodes,
+    getPosition: (node) => node.renderedPosition,
+    getFillColor: [59, 130, 246, 255],
+    getRadius: 8,
+    radiusUnits: 'pixels',
+    // The base-map node remains underneath this fill. A transient outline on
+    // a newly-created layer exposed its white stroke during packet changes.
+    stroked: false,
+    getLineWidth: 0,
+    pickable: Boolean(onNodeClick),
+    onClick: ({ object }: PickingInfo<AerialPathNode>) => { if (object) onNodeClick?.(object); },
+  });
+}
+
 function layersForFrame(
   segments: RenderedSegment[],
   nodes: RenderedNode[],
@@ -501,22 +523,10 @@ function layersForFrame(
     }));
   }
 
-  if (observerNodes.length > 0) {
-    layers.push(new ScatterplotLayer<RenderedObserverNode>({
-      id: 'resolved-path-observers',
-      data: observerNodes,
-      getPosition: (node) => node.renderedPosition,
-      getFillColor: [59, 130, 246, 255],
-      getLineColor: [255, 255, 255, 235],
-      getRadius: 8,
-      radiusUnits: 'pixels',
-      stroked: true,
-      lineWidthUnits: 'pixels',
-      getLineWidth: 2,
-      pickable: Boolean(onNodeClick),
-      onClick: ({ object }: PickingInfo<AerialPathNode>) => { if (object) onNodeClick?.(object); },
-    }));
-  }
+  // Always submit the same layer ID, including for an empty data set. Deck.gl
+  // then transfers layer state across packet updates instead of destroying and
+  // recreating the observer layer on an empty/non-empty transition.
+  layers.push(observerLayerForFrame(observerNodes, onNodeClick));
 
   if (pulses.length > 0) {
     layers.push(new ScatterplotLayer<LeadingPulse>({

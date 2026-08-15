@@ -75,6 +75,16 @@ test('groups only prefix-compatible observer paths under one canonical decode', 
   assert.deepEqual(groups[1]?.canonicalHashes, ['CC']);
 });
 
+test('merges multibyte confirmations into a longer one-byte canonical path', () => {
+  const coarse = entry('coarse', ['AA', 'BB', 'CC']);
+  const confirmed = entry('confirmed', ['AA01', 'BB02']);
+  const groups = groupCompatibleObservations([coarse, confirmed]);
+
+  assert.equal(groups.length, 1);
+  assert.deepEqual(groups[0]?.canonicalHashes, ['AA01', 'BB02', 'CC']);
+  assert.deepEqual(new Set(groups[0]?.members), new Set([coarse, confirmed]));
+});
+
 test('beta canonical groups use the shared decoder evidence model', () => {
   const candidates = [
     meshNode('AA01', 51.0, 0.02),
@@ -98,6 +108,30 @@ test('beta canonical groups use the shared decoder evidence model', () => {
 
   assert.equal(decoded.hops.get(0)?.nodeId, 'AA01');
   assert.equal(decoded.hops.get(1)?.nodeId, 'BB01');
+});
+
+test('locks confirmed multibyte hops and decodes the remaining one-byte gap', () => {
+  const candidates = [
+    meshNode('AA01', 51.0, 0.02),
+    meshNode('AAFF', 51.0, 0.03),
+    meshNode('BB01', 51.2, 0.02),
+    meshNode('BB02', 51.2, 0.03),
+  ];
+  const betaContext = context(candidates);
+  betaContext.learningModel.prefixProbabilities.set('unknown|BB|AA|BB01', 0.2);
+  betaContext.learningModel.prefixProbabilities.set('unknown|BB|AA|BB02', 0.9);
+
+  const coarse = entry('coarse', ['AA', 'BB']);
+  coarse.rx = meshNode('coarse', 51.3, 0.03);
+  const confirmed = entry('confirmed', ['AA01']);
+  confirmed.rx = meshNode('confirmed', 51.05, 0.02);
+  const [group] = groupCompatibleObservations([coarse, confirmed]);
+  const decoded = decodeBetaCanonicalGroup(group!, betaContext);
+
+  assert.deepEqual(decoded.canonicalHashes, ['AA01', 'BB']);
+  assert.equal(decoded.hops.get(0)?.nodeId, 'AA01');
+  assert.equal(decoded.hops.get(0)?.margin, Infinity);
+  assert.equal(decoded.hops.get(1)?.nodeId, 'BB02');
 });
 
 test('observer projection breaks at unresolved hops and never invents a connecting path', () => {

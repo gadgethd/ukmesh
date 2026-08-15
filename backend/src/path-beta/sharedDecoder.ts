@@ -57,24 +57,59 @@ export type BetaPathProjection = {
 function pathsArePrefixCompatible(a: readonly string[], b: readonly string[]): boolean {
   const length = Math.min(a.length, b.length);
   for (let position = 0; position < length; position++) {
-    if (normalizePathHash(a[position]) !== normalizePathHash(b[position])) return false;
+    const left = normalizePathHash(a[position]);
+    const right = normalizePathHash(b[position]);
+    const shortestLength = Math.min(left.length, right.length);
+    if (left.slice(0, shortestLength) !== right.slice(0, shortestLength)) return false;
   }
   return true;
+}
+
+export function mergeCompatiblePathHashes(a: readonly string[], b: readonly string[]): string[] | null {
+  if (!pathsArePrefixCompatible(a, b)) return null;
+  const merged: string[] = [];
+  const length = Math.max(a.length, b.length);
+  for (let position = 0; position < length; position++) {
+    const left = normalizePathHash(a[position]);
+    const right = normalizePathHash(b[position]);
+    merged.push(left.length >= right.length ? left : right);
+  }
+  return merged;
+}
+
+function pathSpecificity(hashes: readonly string[]): number {
+  return hashes.reduce((total, hash) => total + normalizePathHash(hash).length, 0);
 }
 
 /** Group observer views exactly as the lazy resolver does: compatible prefixes share one decode. */
 export function groupCompatibleObservations(entries: readonly BetaObserverEntry[]): BetaCanonicalGroup[] {
   const sorted = [...entries]
     .filter((entry) => entry.hops.length > 0)
-    .sort((a, b) => b.hops.length - a.hops.length || a.observerId.localeCompare(b.observerId));
+    .sort((a, b) => pathSpecificity(b.hops) - pathSpecificity(a.hops)
+      || b.hops.length - a.hops.length
+      || a.observerId.localeCompare(b.observerId));
   const groups: BetaCanonicalGroup[] = [];
   for (const entry of sorted) {
-    const existing = groups.find((group) => pathsArePrefixCompatible(group.canonicalHashes, entry.hops));
+    const compatible = groups.flatMap((group) => {
+      const merged = mergeCompatiblePathHashes(group.canonicalHashes, entry.hops);
+      return merged ? [{ group, merged }] : [];
+    });
+    // A coarse one-byte observation can match two conflicting confirmed
+    // routes. Keep it separate instead of attaching it to whichever group was
+    // encountered first and inheriting arbitrary multibyte anchors.
+    const exact = compatible.find(({ group }) => (
+      group.canonicalHashes.length === entry.hops.length
+      && group.canonicalHashes.every((hash, position) => (
+        normalizePathHash(hash) === normalizePathHash(entry.hops[position])
+      ))
+    ));
+    const selected = exact ?? (compatible.length === 1 ? compatible[0] : undefined);
+    const existing = selected?.group;
     if (existing) {
       existing.members.push(entry);
-      if (entry.hops.length > existing.canonicalHashes.length) existing.canonicalHashes = [...entry.hops];
+      existing.canonicalHashes = selected!.merged;
     } else {
-      groups.push({ canonicalHashes: [...entry.hops], members: [entry] });
+      groups.push({ canonicalHashes: entry.hops.map(normalizePathHash), members: [entry] });
     }
   }
   return groups;
@@ -90,16 +125,18 @@ function uniqueRegions(entries: readonly BetaObserverEntry[]): string[] {
   return [...regions];
 }
 
-function directAnchorMap(group: BetaCanonicalGroup): Map<string, ObserverAnchor[]> {
-  const anchors = new Map<string, ObserverAnchor[]>();
+function directAnchorMap(group: BetaCanonicalGroup): Map<number, ObserverAnchor[]> {
+  const anchors = new Map<number, ObserverAnchor[]>();
   for (const entry of group.members) {
     if (!hasCoords(entry.rx)) continue;
     const position = entry.hops.length - 1;
     if (position < 0) continue;
     const hash = entry.hops[position];
-    if (!hash || normalizePathHash(group.canonicalHashes[position]) !== normalizePathHash(hash)) continue;
-    const key = `${position}:${normalizePathHash(hash)}`;
-    const values = anchors.get(key) ?? [];
+    if (!hash || !pathsArePrefixCompatible(
+      [group.canonicalHashes[position] ?? ''],
+      [hash],
+    )) continue;
+    const values = anchors.get(position) ?? [];
     if (!values.some((value) => value.nodeId === entry.observerId)) {
       values.push({
         lat: entry.rx.lat!,
@@ -108,9 +145,34 @@ function directAnchorMap(group: BetaCanonicalGroup): Map<string, ObserverAnchor[
         elevationM: entry.rx.elevation_m,
       });
     }
-    anchors.set(key, values);
+    anchors.set(position, values);
   }
   return anchors;
+}
+
+/** Resolve only collision-free 2/3-byte observations into hard trellis locks. */
+function confirmedMultibyteAssignments(
+  group: BetaCanonicalGroup,
+  candidates: readonly MeshNode[],
+): Map<number, string> {
+  const evidenceByPosition = new Map<number, Set<string>>();
+  for (const member of group.members) {
+    for (let position = 0; position < member.hops.length; position++) {
+      const hash = normalizePathHash(member.hops[position]);
+      if (hash.length < 4) continue;
+      const matches = candidates.filter((node) => nodePathHash(node.node_id, hash) === hash);
+      if (matches.length !== 1) continue;
+      const values = evidenceByPosition.get(position) ?? new Set<string>();
+      values.add(matches[0]!.node_id);
+      evidenceByPosition.set(position, values);
+    }
+  }
+
+  const confirmed = new Map<number, string>();
+  for (const [position, values] of evidenceByPosition) {
+    if (values.size === 1) confirmed.set(position, values.values().next().value!);
+  }
+  return confirmed;
 }
 
 function regionalMaximum(regions: readonly string[], read: (region: string) => number | undefined): number {
@@ -135,10 +197,16 @@ export function decodeBetaCanonicalGroup(
   baselineNodeIds?: readonly string[],
 ): BetaSharedDecode {
   const canonicalHashes = group.canonicalHashes.map(normalizePathHash).filter(Boolean);
+  const sourceNode = group.members
+    .map((entry) => entry.packet.src_node_id
+      ? context.nodesById.get(entry.packet.src_node_id) ?? null
+      : null)
+    .find(hasCoords);
   const observerCoordinates = group.members
     .map((entry) => entry.rx)
     .filter(hasCoords)
     .map((node) => ({ lat: node.lat!, lon: node.lon! }));
+  if (sourceNode) observerCoordinates.push({ lat: sourceNode.lat!, lon: sourceNode.lon! });
   const bounds = buildObserverBounds(observerCoordinates, pathingConfig.maxHopKm);
   const candidateEvidence: CandidateNodeEvidence[] = context.repeaterNodes.map((node) => ({
     nodeId: node.node_id,
@@ -148,16 +216,32 @@ export function decodeBetaCanonicalGroup(
     elevationM: node.elevation_m,
   }));
   const candidatesByHash = indexCandidatesByHash(canonicalHashes, candidateEvidence, bounds);
+  const confirmed = confirmedMultibyteAssignments(group, context.repeaterNodes);
+  // A confirmed relay may sit outside the observer-only candidate bound on a
+  // long path. Preserve that direct evidence explicitly before locking it.
+  for (const [position, nodeId] of confirmed) {
+    const hash = canonicalHashes[position];
+    const node = context.nodesById.get(nodeId);
+    if (!hash || !hasCoords(node)) continue;
+    const values = candidatesByHash.get(hash) ?? [];
+    if (!values.some((candidate) => candidate.nodeId === nodeId)) {
+      values.push({
+        nodeId: node.node_id,
+        name: node.name,
+        lat: node.lat!,
+        lon: node.lon!,
+        elevationM: node.elevation_m,
+      });
+      candidatesByHash.set(hash, values);
+    }
+  }
+  const locked = new Map(fixed ?? []);
+  for (const [position, nodeId] of confirmed) locked.set(position, nodeId);
   const anchors = directAnchorMap(group);
   const regions = uniqueRegions(group.members);
   const bucketHours = context.learningModel.bucketHours || 6;
   const bucket = currentHourBucket(bucketHours);
   const stickyStrength = clamp(1 - Number(stickyAgeFraction ?? 0), 0, 1);
-  const sourceNode = group.members
-    .map((entry) => entry.packet.src_node_id
-      ? context.nodesById.get(entry.packet.src_node_id) ?? null
-      : null)
-    .find(hasCoords);
 
   const evidence: PathDecoderEvidence = {
     weights: SCORE,
@@ -168,7 +252,7 @@ export function decodeBetaCanonicalGroup(
     ambiguityDelta: AMBIG_DELTA,
     maxColumnCandidates: MAX_COL,
     candidatesByHash,
-    fixed,
+    fixed: locked.size > 0 ? locked : undefined,
     sourceAnchor: sourceNode ? {
       lat: sourceNode.lat!,
       lon: sourceNode.lon!,
@@ -176,10 +260,10 @@ export function decodeBetaCanonicalGroup(
       elevationM: sourceNode.elevation_m,
     } : undefined,
     endpointTransitionsGateOnly: true,
-    directAnchors: (position, hash) => anchors.get(`${position}:${normalizePathHash(hash)}`) ?? [],
+    directAnchors: (position) => anchors.get(position) ?? [],
     prefixProbability: (nodeId, hash, previousHash) => {
-      const prefix = normalizePathHash(hash);
-      const previous = normalizePathHash(previousHash);
+      const prefix = normalizePathHash(hash).slice(0, 2);
+      const previous = normalizePathHash(previousHash).slice(0, 2);
       const learned = regionalMaximum(regions, (region) => (
         context.learningModel.prefixProbabilities.get(`${region}|${prefix}|${previous}|${nodeId}`)
         ?? context.learningModel.prefixProbabilities.get(`${region}|${prefix}||${nodeId}`)
