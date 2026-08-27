@@ -10,12 +10,12 @@
     "typecheck":          "tsc --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --strict --types node generate-observer-key.ts register-observer.ts"
   },
   "dependencies": {
-    "pg": "^8.13.1"
+    "pg": "^8.23.0"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",
     "@types/pg": "^8.21.0",
-    "tsx": "^4.23.11",
+    "tsx": "^4.23.12",
     "typescript": "^7.0.2"
   }
 }
