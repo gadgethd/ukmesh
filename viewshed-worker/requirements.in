@@ -1,7 +1,7 @@
-redis==5.0.8
-psycopg2-binary==2.9.11
-requests==2.32.3
-prometheus-client==0.21.1
+redis==8.1.0
+psycopg2-binary==2.9.12
+requests==2.34.2
+prometheus-client==0.26.0
 # shapely is inherited from the base image's python3-shapely apt package
 # (built for the image's Python 3.14 / GEOS 3.14 ABI). No pip wheel exists for
 # cp314, and source builds are incompatible with GEOS 3.14 headers, so it must
@@ -10,5 +10,5 @@ prometheus-client==0.21.1
 # C extension is built against that ABI; letting scipy pull another numpy into
 # the venv breaks `from osgeo import gdal_array` ("numpy.core.multiarray failed
 # to import") and thus all elevation sampling / coverage computation.
-numpy==2.3.5
-scipy==1.16.3
+numpy==2.5.2
+scipy==1.18.0
