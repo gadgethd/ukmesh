@@ -27,12 +27,10 @@ import {
   DEFAULT_ZOOM,
   EMPTY_FC,
   MAP_ARC_REFRESH_INTERVAL_MS,
-  MAP_LABEL_COLORS,
-  MAP_RASTER_PAINT,
   MAP_REFRESH_INTERVAL_MS,
-  MAP_STYLE,
-  MAP_STYLE_LIGHT,
   NODE_STALE_AFTER_MS,
+  OPENFREEMAP_STYLE_DARK,
+  OPENFREEMAP_STYLE_LIGHT,
   TERRAIN_CONFIG,
   TERRAIN_DEM_SOURCE,
 } from './mapConfig.js';
@@ -144,6 +142,8 @@ export function MapLibreMap({
   const maxHexClashHopsRef = useRef(maxHexClashHops);
   const viewshedEnabledRef = useRef(viewshedEnabled);
   const mapLightRef = useRef(mapLight);
+  const styleUrlRef = useRef(mapLight ? OPENFREEMAP_STYLE_LIGHT : OPENFREEMAP_STYLE_DARK);
+  const hasLoadedStyleRef = useRef(false);
   const pathNodeIdsRef = useRef(useOverlayStore.getState().pathNodeIds);
   const replayNodeIdsRef = useRef(useOverlayStore.getState().replayNodeIds);
   const setClashPathLines = useOverlayStore((state) => state.setClashPathLines);
@@ -196,72 +196,8 @@ export function MapLibreMap({
     void import('maplibre-gl/dist/maplibre-gl.css');
   }, []);
 
-  // -- Map theme (light/dark) -------------------------------------------------
   useEffect(() => {
-      const theme = mapLight ? 'light' : 'dark';
-      mapLightRef.current = mapLight;
-      const map = mapRef.current;
-      if (map && mapLoadedRef.current) {
-        const oldId = mapLight ? 'carto-dark' : 'carto-light';
-        const newId = mapLight ? 'carto-light' : 'carto-dark';
-        const variant = mapLight ? 'light_nolabels' : 'dark_nolabels';
-        if (map.getSource(newId)) return;
-        if (map.getLayer('background')) map.removeLayer('background');
-        if (map.getLayer('bg-fill')) map.removeLayer('bg-fill');
-        if (map.getSource(oldId)) map.removeSource(oldId);
-        map.addSource(newId, {
-          type: 'raster',
-          tiles: ['a', 'b', 'c', 'd'].map(
-            (s) => `https://${s}.basemaps.cartocdn.com/${variant}/{z}/{x}/{y}{r}.png`,
-          ),
-          tileSize: 256,
-          attribution:
-            '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
-          maxzoom: 19,
-        });
-        // Insert bg-fill + basemap at the very bottom
-        const firstLayer = map.getStyle().layers[0]?.id;
-        map.addLayer(
-          { id: 'bg-fill', type: 'background', paint: { 'background-color': mapLight ? '#edf2f7' : '#080d14' } },
-          firstLayer,
-        );
-        map.addLayer(
-          {
-            id: 'background',
-            type: 'raster',
-            source: newId,
-            paint: MAP_RASTER_PAINT[mapLight ? 'light' : 'dark'],
-          },
-          map.getStyle().layers[1]?.id,  // after bg-fill, before vector labels
-        );
-
-        const labelColors = mapLight ? MAP_LABEL_COLORS.light : MAP_LABEL_COLORS.dark;
-        for (const [layerId, colorKey] of [
-          ['map-labels-place', 'place'],
-          ['map-labels-water', 'water'],
-          ['map-labels-road', 'road'],
-        ] as const) {
-          if (!map.getLayer(layerId)) continue;
-          map.setPaintProperty(layerId, 'text-color', labelColors[colorKey]);
-          map.setPaintProperty(layerId, 'text-halo-color', labelColors.halo);
-          map.setPaintProperty(layerId, 'text-halo-width', colorKey === 'place' ? 1.7 : 1.5);
-          map.setPaintProperty(layerId, 'text-halo-blur', 0.1);
-        }
-
-        applyMapOverlayTheme(map, theme);
-        const nodes = nodesRef.current;
-        const viablePairs = viablePairsRef.current;
-        const linkMetrics = linkMetricsRef.current;
-        const hiddenMask = hiddenCoordMaskRef.current;
-        const links = showLinksRef.current
-          ? buildLinksGeoJSON(nodes, viablePairs, linkMetrics, hiddenMask, theme)
-          : EMPTY_FC;
-        (map.getSource('viable-links') as maplibregl.GeoJSONSource | undefined)?.setData(links);
-        const plannedLinks = viewshedEnabledRef.current && showLinksRef.current
-          ? buildPlannedLinksGeoJSON(plannedRepeatersRef.current, nodes, hiddenMask, theme)
-          : EMPTY_FC;
-        (map.getSource('planned-links') as maplibregl.GeoJSONSource | undefined)?.setData(plannedLinks);
-      }
+    mapLightRef.current = mapLight;
   }, [mapLight]);
 
   // -- LOS profiles (client-side, multi-node, auto-expire) -------------------
@@ -661,6 +597,64 @@ export function MapLibreMap({
     if (dirty.plannedLinks || dirty.nodes || dirty.links) updatePlannedLinks();
   }, [viewshedEnabled, focusedNodeId, focusedPrefixNodeIds, setClashPathLines, updatePlannedLinks]);
 
+  const restoreTerrain = useCallback((map: maplibregl.Map, animatePitch = false) => {
+    if (!showTerrainRef.current) return;
+    try {
+      if (!map.getSource('terrain-dem')) {
+        map.addSource('terrain-dem', TERRAIN_DEM_SOURCE);
+        const src = map.getSource('terrain-dem') as maplibregl.RasterDEMTileSource | undefined;
+        src?.on('error', (e: maplibregl.ErrorEvent) => console.error('[terrain] source error:', e));
+      }
+      if (!map.getLayer('hillshade')) {
+        const hillshadeLayer = {
+          id: 'hillshade', type: 'hillshade' as const, source: 'terrain-dem', minzoom: 7,
+          paint: {
+            'hillshade-exaggeration': 0.7,
+            'hillshade-shadow-color': '#000000',
+            'hillshade-highlight-color': '#ffffff',
+            'hillshade-illumination-anchor': 'viewport' as const,
+          },
+        };
+        if (map.getLayer('node-dots')) map.addLayer(hillshadeLayer, 'node-dots');
+        else map.addLayer(hillshadeLayer);
+      }
+      map.setSky({ 'atmosphere-blend': 0.5 });
+      map.setMaxPitch(85);
+      map.setTerrain(TERRAIN_CONFIG);
+      if (animatePitch) map.easeTo({ pitch: 45, duration: 600 });
+    } catch (err) {
+      console.error('[terrain] restore failed:', err);
+    }
+  }, []);
+
+  const rehydrateMapStyle = useCallback((map: maplibregl.Map, animateTerrain = false) => {
+    mapLoadedRef.current = true;
+    installMapSourcesAndLayers(map, {
+      showLinks: showLinksRef.current,
+      mapLight: mapLightRef.current,
+    });
+    applyMapOverlayTheme(map, mapLightRef.current ? 'light' : 'dark');
+
+    // setStyle removes all application sources and layers, so force every
+    // source to refresh from the current refs after installing the new style.
+    dirtyFlagsRef.current = { ...ALL_MAP_SOURCE_DIRTY_FLAGS };
+    refreshMapSources();
+
+    const visiblePlans = viewshedEnabledRef.current ? plannedRepeatersRef.current : [];
+    (map.getSource('planned-coverage') as maplibregl.GeoJSONSource | undefined)
+      ?.setData(buildPlannedCoverageGeoJSON(visiblePlans));
+    (map.getSource('planned-pins') as maplibregl.GeoJSONSource | undefined)
+      ?.setData(buildPlannedPinGeoJSON(visiblePlans));
+
+    const selectedFilter: maplibregl.FilterSpecification = [
+      '==', ['get', 'node_id'], selectedNodeIdRef.current ?? '__none__',
+    ];
+    if (map.getLayer('node-dots-selected-halo')) map.setFilter('node-dots-selected-halo', selectedFilter);
+    if (map.getLayer('node-dots-selected')) map.setFilter('node-dots-selected', selectedFilter);
+
+    restoreTerrain(map, animateTerrain);
+  }, [refreshMapSources, restoreTerrain]);
+
   const scheduleRefresh = useCallback((flags: Partial<MapSourceDirtyFlags> = ALL_MAP_SOURCE_DIRTY_FLAGS) => {
     dirtyFlagsRef.current = mergeMapSourceDirtyFlags(dirtyFlagsRef.current, flags);
     if (refreshTimerRef.current !== null) return;
@@ -729,27 +723,43 @@ export function MapLibreMap({
 
   useEffect(() => {
     if (!containerRef.current) return;
+    hasLoadedStyleRef.current = false;
+    styleUrlRef.current = mapLight ? OPENFREEMAP_STYLE_LIGHT : OPENFREEMAP_STYLE_DARK;
 
     const map = new maplibregl.Map({
       container: containerRef.current,
-      style: mapLight ? MAP_STYLE_LIGHT : MAP_STYLE,
+      style: mapLight ? OPENFREEMAP_STYLE_LIGHT : OPENFREEMAP_STYLE_DARK,
       center: initialView ? [initialView.lon, initialView.lat] : [DEFAULT_CENTER[1], DEFAULT_CENTER[0]],
       zoom: initialView?.zoom ?? DEFAULT_ZOOM,
       maxPitch: 0,
       minZoom: 6,
-      attributionControl: false,
     });
 
+    mapRef.current = map;
+    // MapLibre adds this control by default when attributionControl is not
+    // disabled. Keep an explicit compact fallback for alternate MapLibre
+    // builds without creating a duplicate control in the standard build.
+    if (!map.getContainer().querySelector('.maplibregl-ctrl-attrib')) {
+      map.addControl(new maplibregl.AttributionControl({ compact: true }));
+    }
+
+    const handleStyleLoad = () => {
+      const targetStyle = mapLightRef.current ? OPENFREEMAP_STYLE_LIGHT : OPENFREEMAP_STYLE_DARK;
+      if (styleUrlRef.current !== targetStyle) {
+        styleUrlRef.current = targetStyle;
+        mapLoadedRef.current = false;
+        map.setStyle(targetStyle);
+        return;
+      }
+      rehydrateMapStyle(map, !hasLoadedStyleRef.current);
+      hasLoadedStyleRef.current = true;
+    };
+    map.on('style.load', handleStyleLoad);
+
     map.on('load', () => {
-      mapLoadedRef.current = true;
-      mapRef.current = map;
       map.setPadding(mapPaddingForNode(null));
       onMapReady?.(map);
 
-      installMapSourcesAndLayers(map, {
-        showLinks: showLinksRef.current,
-        mapLight: mapLightRef.current,
-      });
       // ── Click handler ──────────────────────────────────────────────────────
       map.on('click', 'planned-pins-dot', (e) => {
         if (!viewshedEnabledRef.current) return;
@@ -841,46 +851,31 @@ export function MapLibreMap({
         map.getCanvas().style.cursor = viewshedEnabledRef.current && useOverlayStore.getState().planRepeaterMode ? 'crosshair' : '';
       });
 
-      refreshMapSources();
-
-      // Apply any pre-existing selection (e.g. ?node= deep link) to the highlight.
-      if (selectedNodeIdRef.current) {
-        map.setFilter('node-dots-selected-halo', ['==', ['get', 'node_id'], selectedNodeIdRef.current]);
-        map.setFilter('node-dots-selected', ['==', ['get', 'node_id'], selectedNodeIdRef.current]);
-      }
-
-      // Restore terrain if it was saved in preferences
-      if (showTerrainRef.current) {
-        console.log('[terrain] restoring on load, config:', JSON.stringify(TERRAIN_DEM_SOURCE));
-        try {
-          map.addSource('terrain-dem', TERRAIN_DEM_SOURCE);
-          const src = map.getSource('terrain-dem') as maplibregl.RasterDEMTileSource | undefined;
-          src?.on('error', (e: maplibregl.ErrorEvent) => console.error('[terrain] source error (load):', e));
-          map.addLayer({
-            id: 'hillshade', type: 'hillshade', source: 'terrain-dem', minzoom: 7,
-            paint: { 'hillshade-exaggeration': 0.7, 'hillshade-shadow-color': '#000000', 'hillshade-highlight-color': '#ffffff', 'hillshade-illumination-anchor': 'viewport' },
-          }, 'node-dots');
-          map.setSky({ 'atmosphere-blend': 0.5 });
-          map.setMaxPitch(85);
-          map.setTerrain(TERRAIN_CONFIG);
-          console.log('[terrain] restored on load, getTerrain()=', JSON.stringify(map.getTerrain()));
-          map.easeTo({ pitch: 45, duration: 600 });
-        } catch (err) {
-          console.error('[terrain] restore on load failed:', err);
-        }
-      }
     });
 
     return () => {
       mapLoadedRef.current = false;
+      hasLoadedStyleRef.current = false;
       setClashPathLines([]);
+      map.off('style.load', handleStyleLoad);
       map.remove();
       mapRef.current = null;
     };
   // Initial theme is captured on mount; subsequent theme changes are applied by
   // the dedicated theme effect without rebuilding the MapLibre instance.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialView, onMapReady, onNodeSelect, refreshMapSources, setClashPathLines]);
+  }, [initialView, onMapReady, onNodeSelect, refreshMapSources, rehydrateMapStyle, setClashPathLines]);
+
+  // -- Map theme (light/dark) -------------------------------------------------
+  useEffect(() => {
+    const map = mapRef.current;
+    const targetStyle = mapLight ? OPENFREEMAP_STYLE_LIGHT : OPENFREEMAP_STYLE_DARK;
+    if (!map || !mapLoadedRef.current || styleUrlRef.current === targetStyle) return;
+
+    styleUrlRef.current = targetStyle;
+    mapLoadedRef.current = false;
+    map.setStyle(targetStyle);
+  }, [mapLight]);
 
   // -- Imperative source updates ---------------------------------------------
 
@@ -893,32 +888,9 @@ export function MapLibreMap({
   useEffect(() => {
     showTerrainRef.current = showTerrain;
     const map = mapRef.current;
-    console.log('[terrain] effect: showTerrain=', showTerrain, 'map=', !!map, 'loaded=', mapLoadedRef.current);
     if (!map || !mapLoadedRef.current) return;
     if (showTerrain) {
-      try {
-        if (!map.getSource('terrain-dem')) {
-          map.addSource('terrain-dem', TERRAIN_DEM_SOURCE);
-          console.log('[terrain] source added, config:', JSON.stringify(TERRAIN_DEM_SOURCE));
-          const src = map.getSource('terrain-dem') as maplibregl.RasterDEMTileSource | undefined;
-          src?.on('error', (e: maplibregl.ErrorEvent) => console.error('[terrain] source error:', e));
-        }
-        if (!map.getLayer('hillshade')) {
-          map.addLayer({
-            id: 'hillshade', type: 'hillshade', source: 'terrain-dem', minzoom: 7,
-            paint: { 'hillshade-exaggeration': 0.7, 'hillshade-shadow-color': '#000000', 'hillshade-highlight-color': '#ffffff', 'hillshade-illumination-anchor': 'viewport' },
-          }, 'node-dots');
-          console.log('[terrain] hillshade layer added');
-        }
-        map.setSky({ 'atmosphere-blend': 0.5 });
-        map.setMaxPitch(85);
-        console.log('[terrain] calling setTerrain with:', JSON.stringify(TERRAIN_CONFIG));
-        map.setTerrain(TERRAIN_CONFIG);
-        console.log('[terrain] setTerrain complete, getTerrain()=', JSON.stringify(map.getTerrain()));
-        map.easeTo({ pitch: 45, duration: 600 });
-      } catch (err) {
-        console.error('[terrain] setup failed:', err);
-      }
+      restoreTerrain(map, true);
     } else {
       map.setTerrain(null);
       if (map.getLayer('hillshade')) map.removeLayer('hillshade');
@@ -927,7 +899,7 @@ export function MapLibreMap({
       map.easeTo({ pitch: 0, duration: 400 });
       setTimeout(() => map.setMaxPitch(0), 400);
     }
-  }, [showTerrain]);
+  }, [restoreTerrain, showTerrain]);
 
   useEffect(() => {
     showClientNodesRef.current = showClientNodes;
