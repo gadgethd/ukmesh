@@ -1,7 +1,41 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 
+const TEST_MAP_STYLE = {
+  version: 8,
+  sources: {
+    openmaptiles: {
+      type: 'vector',
+      url: 'https://tiles.openfreemap.org/planet',
+    },
+  },
+  glyphs: 'https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf',
+  layers: [
+    { id: 'bg', type: 'background', paint: { 'background-color': '#080d14' } },
+  ],
+};
+
+async function installMapRoutes(page: Page, delayPlanetMetadata = false) {
+  await page.route('https://tiles.openfreemap.org/**', async (route) => {
+    const pathname = new URL(route.request().url()).pathname;
+    if (pathname === '/styles/dark' || pathname === '/styles/positron') {
+      await route.fulfill({ json: TEST_MAP_STYLE });
+      return;
+    }
+    if (pathname === '/planet' && delayPlanetMetadata) {
+      await new Promise((resolve) => setTimeout(resolve, 1_500));
+      await route.continue();
+      return;
+    }
+    await route.abort();
+  });
+}
+
 test.beforeEach(async ({ page }) => {
+  await installMapRoutes(page);
+  await page.route('**/*basemaps.cartocdn.com/**', () => {
+    throw new Error('CARTO tiles should not be requested after OpenFreeMap migration');
+  });
   await page.addInitScript(() => {
     localStorage.setItem('meshcore-disclaimer-dismissed', '1');
 
@@ -147,10 +181,8 @@ test('enabled HopReach coverage survives metadata winning the initial map-load r
     const path = new URL(request.url()).pathname;
     if (path.startsWith('/rf-coverage/tiles/standard/')) tileRequests.push(path);
   });
-  await page.route('**/vector/carto.streets/v1/tiles.json', async (route) => {
-    await new Promise((resolve) => setTimeout(resolve, 1_500));
-    await route.continue();
-  });
+  await page.unroute('https://tiles.openfreemap.org/**');
+  await installMapRoutes(page, true);
 
   await page.goto('/', { waitUntil: 'domcontentloaded' });
 
