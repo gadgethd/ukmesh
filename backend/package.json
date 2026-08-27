@@ -42,7 +42,7 @@
     "@types/cors": "^2.8.17",
     "@types/express": "^5.0.6",
     "@types/node": "^26.2.0",
-    "@types/pg": "^8.21.0",
+    "@types/pg": "^8.23.1",
     "@types/ws": "^8.5.12",
     "tsx": "^4.23.12",
     "typescript": "^7.0.2"
