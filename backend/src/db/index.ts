@@ -1298,6 +1298,7 @@ export type ViableLinkRow = {
   itm_path_loss_db: number | null;
   count_a_to_b: number;
   count_b_to_a: number;
+  last_observed: string;
 };
 
 /** Returns viable links with metrics so UI can render precomputed styles immediately. */
@@ -1334,7 +1335,8 @@ export async function getViableLinks(
            nl.itm_viable,
            nl.itm_path_loss_db,
            nl.count_a_to_b,
-           nl.count_b_to_a
+           nl.count_b_to_a,
+           nl.last_observed::text AS last_observed
          FROM node_identity_links nl
          LEFT JOIN (
            SELECT node_a_id, node_b_id,
@@ -1368,7 +1370,8 @@ export async function getViableLinks(
        nl.itm_viable,
        nl.itm_path_loss_db,
        nl.count_a_to_b,
-       nl.count_b_to_a
+       nl.count_b_to_a,
+       nl.last_observed::text AS last_observed
      FROM node_identity_links nl
      LEFT JOIN (
        SELECT node_a_id, node_b_id,
