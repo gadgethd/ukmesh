@@ -11,4 +11,4 @@ prometheus-client==0.26.0
 # the venv breaks `from osgeo import gdal_array` ("numpy.core.multiarray failed
 # to import") and thus all elevation sampling / coverage computation.
 numpy==2.5.2
-scipy==1.18.0
+scipy==1.18.1
