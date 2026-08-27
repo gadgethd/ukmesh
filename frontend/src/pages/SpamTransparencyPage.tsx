@@ -177,8 +177,8 @@ const OriginMiniMap = memo(function OriginMiniMap({
       style: MAP_STYLE,
       bounds,
       fitBoundsOptions: { padding: 40, maxZoom: 10 },
-      attributionControl: false,
     });
+    map.addControl(new maplibregl.AttributionControl({ compact: true }));
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
     map.on('load', () => {
       map.addSource('zone', {
@@ -488,8 +488,8 @@ export function SpamPage() {
       style: MAP_STYLE,
       center: [-2.5, 54.0],
       zoom: 4.6,
-      attributionControl: false,
     });
+    map.addControl(new maplibregl.AttributionControl({ compact: true }));
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
     map.on('load', () => {
       map.addSource('zones', { type: 'geojson', data: EMPTY_FC });

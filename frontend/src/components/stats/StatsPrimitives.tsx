@@ -1,6 +1,7 @@
 import React, { lazy, memo, Suspense, useEffect } from 'react';
 import type * as maplibregl from 'maplibre-gl';
 import { AnimatedPathOverlay, type AerialPath } from '../Map/AnimatedPathOverlay.js';
+import { OPENFREEMAP_STYLE_DARK } from '../Map/mapConfig.js';
 
 export const C_CYAN = '#00c4ff';
 export const C_GREEN = '#00e676';
@@ -253,13 +254,6 @@ export const EmptyPacketState: React.FC<{ label?: string }> = ({
   label = 'No packet data in this window.',
 }) => <div className="stats-page__empty">{label}</div>;
 
-const CARTO_DARK_TILES = [
-  'https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
-  'https://b.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
-  'https://c.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
-  'https://d.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
-];
-
 export const DecodedPathMapView: React.FC<{ nodes: DecodedPathNode[] }> = ({ nodes }) => {
   const containerRef = React.useRef<HTMLDivElement>(null);
   const [mapInstance, setMapInstance] = React.useState<maplibregl.Map | null>(null);
@@ -284,23 +278,11 @@ export const DecodedPathMapView: React.FC<{ nodes: DecodedPathNode[] }> = ({ nod
       const maplibre = maplibreModule;
       map = new maplibre.Map({
         container: containerRef.current,
-        style: {
-          version: 8,
-          sources: {
-            tiles: {
-              type: 'raster',
-              tiles: CARTO_DARK_TILES,
-              tileSize: 256,
-              maxzoom: 19,
-              attribution: '© OpenStreetMap © CARTO',
-            },
-          },
-          layers: [{ id: 'bg', type: 'raster', source: 'tiles' }],
-        },
+        style: OPENFREEMAP_STYLE_DARK,
         center: [Number(nodes[0]!.lon), Number(nodes[0]!.lat)],
         zoom: 8,
-        attributionControl: false,
       });
+      map.addControl(new maplibre.AttributionControl({ compact: true }));
       map.on('load', () => {
         if (cancelled || !map) return;
         const bounds = new maplibre.LngLatBounds();

@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type * as maplibregl from 'maplibre-gl';
 import { AnimatedPathOverlay, type AerialPath, type AerialPathNode } from '../../components/Map/AnimatedPathOverlay.js';
 import { LoadingIndicator } from '../../components/LoadingIndicator.js';
+import { OPENFREEMAP_STYLE_DARK } from '../../components/Map/mapConfig.js';
 import type { MeshNode } from '../../hooks/useNodes.js';
 import {
   multiObserverPathRoutes,
@@ -41,13 +42,6 @@ export type LazyPathResult = {
   observerCount: number;
   paths: LazyPath[];
 };
-
-const CARTO_TILES = [
-  'https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
-  'https://b.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
-  'https://c.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
-  'https://d.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
-];
 
 function lazyPathRuns(nodes: readonly LazyPathNode[]): LazyPathNode[][] {
   const runs: LazyPathNode[][] = [];
@@ -193,17 +187,13 @@ export const PathMap: React.FC<{
       maplibreRef.current = maplibre;
       nextMap = new maplibre.Map({
         container: containerRef.current,
-        style: {
-          version: 8,
-          sources: { tiles: { type: 'raster', tiles: CARTO_TILES, tileSize: 256, maxzoom: 19, attribution: '© OpenStreetMap © CARTO' } },
-          layers: [{ id: 'bg', type: 'raster', source: 'tiles' }],
-        },
+        style: OPENFREEMAP_STYLE_DARK,
         center: [0, 51.5],
         zoom: 6,
         pitch: 50,
         bearing: -8,
-        attributionControl: false,
       });
+      nextMap.addControl(new maplibre.AttributionControl({ compact: true }));
       mapRef.current = nextMap;
       nextMap.on('load', () => {
         if (cancelled || !nextMap) return;

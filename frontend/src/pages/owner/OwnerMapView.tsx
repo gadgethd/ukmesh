@@ -111,8 +111,8 @@ export const OwnerMapView: React.FC<{
       style: MAP_STYLE,
       center: [DEFAULT_CENTER[1], DEFAULT_CENTER[0]],
       zoom: 7,
-      attributionControl: false,
     });
+    map.addControl(new maplibregl.AttributionControl({ compact: true }));
     mapRef.current = map;
 
     // Keep the map as a static regional backdrop while preserving marker clicks.
