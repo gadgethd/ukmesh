@@ -134,7 +134,7 @@ test('service worker activation is explicit and tile pruning uses persisted meta
   const tileCache = await fixture.cacheStorage.open(String(fixture.runtime.policy['tileCache']));
   assert.equal(tileCache.keysCalls, 1, 'metadata performs one cold-start cache scan');
   for (let index = 0; index < 8; index += 1) {
-    const request = new Request(`https://a.basemaps.cartocdn.com/dark/${index}.png`);
+    const request = new Request(`https://tiles.openfreemap.org/planet/v2/20250801/14/8192/5461.pbf?tile=${index}`);
     const response = await fixture.runtime.handleFetch(request);
     assert.equal(await response.text(), 'tile');
   }
