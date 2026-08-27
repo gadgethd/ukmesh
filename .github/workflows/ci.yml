@@ -79,8 +79,6 @@ jobs:
         run: npm audit --audit-level=high
       - run: npm test
       - run: npm run build
-      - run: npx playwright install --with-deps chromium
-      - run: npm run test:e2e
 
   workers-and-compose:
     name: Workers and Compose
@@ -361,6 +359,12 @@ jobs:
             exit 1
           fi
           grep -q '^mqtt-packet-fanout-ok$' "$ws_log"
+      - name: Install Playwright for E2E tests
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+      - name: Run E2E tests against live stack
+        working-directory: frontend
+        run: npm run test:e2e
       - name: Validate monitoring configuration
         run: |
           docker run --rm \
