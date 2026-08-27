@@ -1,10 +1,10 @@
 export const SW_CACHE_POLICY = Object.freeze({
-  version: 'v6',
-  tileCache: 'meshcore-tiles-v6',
-  appCache: 'meshcore-app-v6',
-  metadataCache: 'meshcore-meta-v6',
-  previousTileCache: 'meshcore-tiles-v5',
-  previousAppCache: 'meshcore-app-v5',
+  version: 'v7',
+  tileCache: 'meshcore-tiles-v7',
+  appCache: 'meshcore-app-v7',
+  metadataCache: 'meshcore-meta-v7',
+  previousTileCache: 'meshcore-tiles-v6',
+  previousAppCache: 'meshcore-app-v6',
   maxTileEntries: 6_000,
   maxTileBytes: 96 * 1024 * 1024,
   pruneTargetRatio: 0.9,
@@ -13,7 +13,12 @@ export const SW_CACHE_POLICY = Object.freeze({
 });
 
 function isTileUrl(url) {
-  return url.includes('basemaps.cartocdn.com');
+  try {
+    const parsed = new URL(url);
+    return parsed.hostname === 'tiles.openfreemap.org';
+  } catch {
+    return false;
+  }
 }
 
 function isAppAssetUrl(url, origin) {
@@ -88,7 +93,7 @@ export function createTileMetadata(initial = []) {
 export function createServiceWorkerRuntime(environment) {
   const policy = { ...SW_CACHE_POLICY, ...(environment.policy ?? {}) };
   const now = environment.now ?? Date.now;
-  const metadataUrl = new URL('/__meshcore_sw_metadata_v6__', environment.origin).toString();
+  const metadataUrl = new URL('/__meshcore_sw_metadata_v7__', environment.origin).toString();
   let metadata;
   let metadataState = {
     version: 1,

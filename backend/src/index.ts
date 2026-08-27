@@ -253,7 +253,7 @@ async function main() {
     res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
     res.setHeader(
       'Content-Security-Policy',
-      "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob: https://basemaps.cartocdn.com https://*.basemaps.cartocdn.com https://openstreetmap.org https://*.openstreetmap.org; connect-src 'self' wss: https:; font-src 'self' data:",
+      "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob: https://tiles.openfreemap.org https://openstreetmap.org https://*.openstreetmap.org; connect-src 'self' wss: https:; font-src 'self' data:",
     );
     next();
   });
