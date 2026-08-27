@@ -1,6 +1,20 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 
 const NODE_ID = 'A'.repeat(64);
+
+const TEST_MAP_STYLE = {
+  version: 8,
+  sources: {
+    openmaptiles: {
+      type: 'vector',
+      url: 'https://tiles.openfreemap.org/planet',
+    },
+  },
+  glyphs: 'https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf',
+  layers: [
+    { id: 'bg', type: 'background', paint: { 'background-color': '#080d14' } },
+  ],
+};
 
 const dashboard = {
   nodes: [{
@@ -18,13 +32,25 @@ const dashboard = {
   }],
 };
 
+async function installMapRoutes(page: Page) {
+  await page.route('https://tiles.openfreemap.org/**', async (route) => {
+    const pathname = new URL(route.request().url()).pathname;
+    if (pathname === '/styles/dark' || pathname === '/styles/positron') {
+      await route.fulfill({ json: TEST_MAP_STYLE });
+      return;
+    }
+    await route.abort();
+  });
+  await page.route('**/*basemaps.cartocdn.com/**', (route) => route.abort());
+}
+
 test('session polling does not reset the repeater owner content', async ({ page }) => {
   let sessionRequests = 0;
   let liveRequests = 0;
   let liveRequestLimit: number | null = null;
 
   await page.clock.install({ time: new Date('2026-07-16T12:00:00Z') });
-  await page.route('https://*.basemaps.cartocdn.com/**', (route) => route.abort());
+  await installMapRoutes(page);
   await page.route('**/api/owner/session', async (route) => {
     sessionRequests += 1;
     await route.fulfill({ json: { ok: true, dashboard, mqttUsername: 'alpha-owner' } });
@@ -92,7 +118,7 @@ test('owner map construction remains one across repeated live polls', async ({ p
       }
     }).observe(document, { childList: true, subtree: true });
   });
-  await page.route('https://*.basemaps.cartocdn.com/**', (route) => route.abort());
+  await installMapRoutes(page);
   await page.route('**/api/owner/session', (route) => route.fulfill({
     json: { ok: true, dashboard, mqttUsername: 'alpha-owner' },
   }));

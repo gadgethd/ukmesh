@@ -3,6 +3,20 @@ import AxeBuilder from '@axe-core/playwright';
 
 const NODE_ID = 'A'.repeat(64);
 
+const TEST_MAP_STYLE = {
+  version: 8,
+  sources: {
+    openmaptiles: {
+      type: 'vector',
+      url: 'https://tiles.openfreemap.org/planet',
+    },
+  },
+  glyphs: 'https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf',
+  layers: [
+    { id: 'bg', type: 'background', paint: { 'background-color': '#080d14' } },
+  ],
+};
+
 const chartStats = {
   packetsPerHour: [{ hour: '12:00', count: 24 }],
   packetsPerDay: [{ day: 'Mon', count: 120 }],
@@ -155,12 +169,24 @@ async function fulfillApi(route: Route) {
   return route.fulfill({ json: {} });
 }
 
+async function installMapRoutes(page: Page) {
+  await page.route('https://tiles.openfreemap.org/**', async (route) => {
+    const pathname = new URL(route.request().url()).pathname;
+    if (pathname === '/styles/dark' || pathname === '/styles/positron') {
+      await route.fulfill({ json: TEST_MAP_STYLE });
+      return;
+    }
+    await route.abort();
+  });
+  await page.route('**/*basemaps.cartocdn.com/**', (route) => route.abort());
+}
+
 async function installFixtures(page: Page, dismissDisclaimer = true) {
   await page.addInitScript((dismiss) => {
     localStorage.setItem('meshcore-cookie-consent-v1', '1');
     if (dismiss) localStorage.setItem('meshcore-disclaimer-dismissed', '1');
   }, dismissDisclaimer);
-  await page.route('https://*.basemaps.cartocdn.com/**', (route) => route.abort());
+  await installMapRoutes(page);
   await page.route('**/api/**', fulfillApi);
 }
 
