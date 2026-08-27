@@ -736,13 +736,6 @@ export function MapLibreMap({
     });
 
     mapRef.current = map;
-    // MapLibre adds this control by default when attributionControl is not
-    // disabled. Keep an explicit compact fallback for alternate MapLibre
-    // builds without creating a duplicate control in the standard build.
-    if (!map.getContainer().querySelector('.maplibregl-ctrl-attrib')) {
-      map.addControl(new maplibregl.AttributionControl({ compact: true }));
-    }
-
     const handleStyleLoad = () => {
       const targetStyle = mapLightRef.current ? OPENFREEMAP_STYLE_LIGHT : OPENFREEMAP_STYLE_DARK;
       if (styleUrlRef.current !== targetStyle) {

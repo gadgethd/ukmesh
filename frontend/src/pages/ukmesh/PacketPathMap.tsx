@@ -193,7 +193,6 @@ export const PathMap: React.FC<{
         pitch: 50,
         bearing: -8,
       });
-      nextMap.addControl(new maplibre.AttributionControl({ compact: true }));
       mapRef.current = nextMap;
       nextMap.on('load', () => {
         if (cancelled || !nextMap) return;

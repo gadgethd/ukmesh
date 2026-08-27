@@ -282,7 +282,6 @@ export const DecodedPathMapView: React.FC<{ nodes: DecodedPathNode[] }> = ({ nod
         center: [Number(nodes[0]!.lon), Number(nodes[0]!.lat)],
         zoom: 8,
       });
-      map.addControl(new maplibre.AttributionControl({ compact: true }));
       map.on('load', () => {
         if (cancelled || !map) return;
         const bounds = new maplibre.LngLatBounds();
