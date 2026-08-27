@@ -13,6 +13,14 @@ import {
 const SOURCE_ID = 'hopreach-rf-source';
 const LAYER_ID = 'hopreach-rf-layer';
 
+function getFirstSymbolLayerId(map: maplibregl.Map): string | undefined {
+  const layers = map.getStyle().layers;
+  for (const layer of layers) {
+    if (layer.type === 'symbol') return layer.id;
+  }
+  return undefined;
+}
+
 function removeRfLayers(map: maplibregl.Map): void {
   if (map.getLayer(LAYER_ID)) map.removeLayer(LAYER_ID);
   if (map.getSource(SOURCE_ID)) map.removeSource(SOURCE_ID);
@@ -61,11 +69,7 @@ export function RfCoverageOverlay({
       releaseDataset = null;
       if (!visible || tiles.length === 0) return;
 
-      const beforeId = map.getLayer('map-labels-water')
-        ? 'map-labels-water'
-        : map.getLayer('privacy-rings-layer')
-          ? 'privacy-rings-layer'
-          : undefined;
+      const beforeId = getFirstSymbolLayerId(map);
 
       const dataset = registerRfRasterDataset(
         tiles.map((tile) => ({

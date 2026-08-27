@@ -34,9 +34,17 @@ type TopologyMapOverlayProps = Omit<TopologyMapProps, 'network' | 'observer' | '
   onNodeSelect: (nodeId: string) => void;
 };
 
+function getFirstSymbolLayerId(map: maplibregl.Map): string | undefined {
+  const layers = map.getStyle().layers;
+  for (const layer of layers) {
+    if (layer.type === 'symbol') return layer.id;
+  }
+  return undefined;
+}
+
 function addTopologyLayer(map: maplibregl.Map, layer: maplibregl.LayerSpecification): void {
   if (map.getLayer(layer.id)) return;
-  const beforeId = map.getLayer('map-labels-water') ? 'map-labels-water' : undefined;
+  const beforeId = getFirstSymbolLayerId(map);
   if (beforeId) map.addLayer(layer, beforeId);
   else map.addLayer(layer);
 }
