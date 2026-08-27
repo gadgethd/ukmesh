@@ -23,6 +23,7 @@ import {
   websocketAdmissionsTotal,
   websocketClients,
 } from '../metrics.js';
+import { selectInitialViableLinks } from './initialStateLinks.js';
 
 const REDIS_CHANNEL = 'meshcore:live';
 const LOG_WS_PACKETS = process.env['LOG_WS_PACKETS'] === '1';
@@ -44,6 +45,7 @@ const WS_MAX_PENDING_HANDSHAKES = boundedEnvInteger('WS_MAX_PENDING_HANDSHAKES',
 const WS_INITIAL_STATE_CONCURRENCY = boundedEnvInteger('WS_INITIAL_STATE_CONCURRENCY', 8, 1, 128);
 const WS_INITIAL_STATE_QUEUE_MAX = boundedEnvInteger('WS_INITIAL_STATE_QUEUE_MAX', 64, 0, 1_000);
 const WS_INITIAL_STATE_MAX_BYTES = boundedEnvInteger('WS_INITIAL_STATE_MAX_BYTES', 4 * 1_048_576, 16 * 1024, 32 * 1_048_576);
+const WS_INITIAL_STATE_MAX_VIABLE_LINKS = boundedEnvInteger('WS_INITIAL_STATE_MAX_VIABLE_LINKS', 20_000, 1, 100_000);
 const WS_INITIAL_STATE_DB_TIMEOUT_MS = boundedEnvInteger('WS_INITIAL_STATE_DB_TIMEOUT_MS', 8_000, 1_000, 60_000);
 const WS_HEARTBEAT_INTERVAL_MS = boundedEnvInteger('WS_HEARTBEAT_INTERVAL_MS', 30_000, 5_000, 120_000);
 
@@ -119,9 +121,11 @@ function estimatedJsonBytes(value: unknown, stopAfter: number): number {
     if (current == null) {
       bytes += 4;
     } else if (typeof current === 'string') {
-      bytes += Buffer.byteLength(current) + 2;
-    } else if (typeof current === 'number' || typeof current === 'boolean') {
-      bytes += 24;
+      bytes += Buffer.byteLength(current, 'utf8') + 2;
+    } else if (typeof current === 'number') {
+      bytes += String(current).length + 4;
+    } else if (typeof current === 'boolean') {
+      bytes += current ? 4 : 5;
     } else if (Array.isArray(current)) {
       bytes += current.length + 2;
       stack.push(...current);
@@ -145,7 +149,6 @@ function initialStateEstimateExceedsLimit(entry: InitialStateEntry): boolean {
       packets: entry.packets,
       messages: entry.messages,
       viable_links: entry.viableLinks,
-      viable_pairs: entry.viableLinks.map((link) => [link.node_a_id, link.node_b_id]),
     },
     ts: Date.now(),
   }, WS_INITIAL_STATE_MAX_BYTES) > WS_INITIAL_STATE_MAX_BYTES;
@@ -238,10 +241,13 @@ async function fetchInitialState(network: string | undefined, observer: string |
         .map((node) => slimInitialNode(node as InitialStateRow));
       const slimPackets = packets.map((packet) => slimInitialPacket(packet as InitialStateRow));
       const slimMessages = messages.map((message) => slimInitialPacket(message as InitialStateRow));
-      const viableLinks = rawViableLinks.filter((link) => (
-        !publicPrivacy.hasNode(link.node_a_id)
-        && !publicPrivacy.hasNode(link.node_b_id)
-      ));
+      const viableLinks = selectInitialViableLinks(
+        rawViableLinks.filter((link) => (
+          !publicPrivacy.hasNode(link.node_a_id)
+          && !publicPrivacy.hasNode(link.node_b_id)
+        )),
+        WS_INITIAL_STATE_MAX_VIABLE_LINKS,
+      );
       const entry: InitialStateEntry = {
         ts: Date.now(),
         nodes,
@@ -553,10 +559,9 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
           if (rxNodeId) scope.nodeIds.add(rxNodeId);
           if (srcNodeId) scope.nodeIds.add(srcNodeId);
         }
-        const viablePairs = viableLinks.map((l) => [l.node_a_id, l.node_b_id] as [string, string]);
         const initMsg: WSMessage = {
           type: 'initial_state',
-          data: { nodes, packets, messages, viable_pairs: viablePairs, viable_links: viableLinks },
+          data: { nodes, packets, messages, viable_links: viableLinks },
           ts: Date.now(),
         };
         const serialized = JSON.stringify(initMsg);
@@ -578,7 +583,7 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({
           type: 'initial_state',
-          data: { nodes: [], packets: [], messages: [], viable_pairs: [], viable_links: [] },
+          data: { nodes: [], packets: [], messages: [], viable_links: [] },
           ts: Date.now(),
         } satisfies WSMessage));
       }
