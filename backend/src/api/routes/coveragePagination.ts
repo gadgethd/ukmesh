@@ -1,3 +1,5 @@
+import { API_ERROR_CODES, ApiInputError } from '../errors.js';
+
 export type CoverageBounds = {
   minLon: number;
   minLat: number;
@@ -28,11 +30,14 @@ export function parseCoverageBounds(value: unknown): CoverageBounds | null {
 export function parseCoverageLimit(value: unknown): number {
   if (value === undefined || value === null || value === '') return COVERAGE_DEFAULT_LIMIT;
   if (typeof value !== 'string' || !/^[1-9]\d*$/.test(value)) {
-    throw new ApiInputError('limit must be a positive integer');
+    throw new ApiInputError('limit must be a positive integer', API_ERROR_CODES.invalidInteger);
   }
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed) || parsed > COVERAGE_MAX_LIMIT) {
-    throw new ApiInputError(`limit must be between 1 and ${COVERAGE_MAX_LIMIT}`);
+    throw new ApiInputError(
+      `limit must be between 1 and ${COVERAGE_MAX_LIMIT}`,
+      API_ERROR_CODES.integerOutOfRange,
+    );
   }
   return parsed;
 }
@@ -74,4 +79,3 @@ export function boundCoveragePage<T extends { node_id: string }>(
     nextCursor: hasMore && items.length > 0 ? items[items.length - 1]!.node_id : null,
   };
 }
-import { ApiInputError } from '../errors.js';

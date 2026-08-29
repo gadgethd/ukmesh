@@ -15,6 +15,7 @@ import {
   ownerAlertRuleRows,
   upsertOwnerAlertRule,
 } from '../../repositories/ownerAlerts.js';
+import { API_ERROR_CODES, sendApiError } from '../errors.js';
 
 type OwnerDashboard = {
   nodes: unknown[];
@@ -105,19 +106,19 @@ export function registerOwnerRoutes(router: Router, deps: OwnerRouteDeps): void 
       // permanently unauthenticatable (username trimming is fine).
       const mqttPassword = String(body?.mqttPassword ?? '');
       if (!mqttUsername || !mqttPassword) {
-        res.status(400).json({ error: 'Missing MQTT username or password' });
+        sendApiError(res, 400, 'Missing MQTT username or password', API_ERROR_CODES.invalidCredentials);
         return;
       }
       if (mqttUsername.length > deps.mqttUsernameMaxLen || mqttPassword.length > deps.mqttPasswordMaxLen) {
-        res.status(400).json({ error: 'MQTT username or password is too long' });
+        sendApiError(res, 400, 'MQTT username or password is too long', API_ERROR_CODES.invalidCredentials);
         return;
       }
       if (deps.hasControlChars(mqttUsername) || deps.hasControlChars(mqttPassword)) {
-        res.status(400).json({ error: 'MQTT username or password contains invalid characters' });
+        sendApiError(res, 400, 'MQTT username or password contains invalid characters', API_ERROR_CODES.invalidCredentials);
         return;
       }
       if (!/^[a-zA-Z0-9_\-.@]+$/.test(mqttUsername)) {
-        res.status(400).json({ error: 'Invalid MQTT username format' });
+        sendApiError(res, 400, 'Invalid MQTT username format', API_ERROR_CODES.invalidCredentials);
         return;
       }
 
@@ -295,14 +296,19 @@ export function registerOwnerRoutes(router: Router, deps: OwnerRouteDeps): void 
         || threshold <= 0
         || threshold > 1_000_000
       ) {
-        res.status(400).json({ error: 'Invalid owner alert rule' });
+        sendApiError(res, 400, 'Invalid owner alert rule', API_ERROR_CODES.invalidAlertRule);
         return;
       }
       if (webhook) {
         try {
           await resolveWebhookTarget(webhook);
         } catch {
-          res.status(400).json({ error: 'Webhook destination is not permitted' });
+          sendApiError(
+            res,
+            400,
+            'Webhook destination is not permitted',
+            API_ERROR_CODES.invalidWebhookDestination,
+          );
           return;
         }
       }

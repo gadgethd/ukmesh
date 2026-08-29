@@ -3,7 +3,13 @@ import type { IncomingMessage } from 'node:http';
 import type { Server } from 'node:http';
 import { Redis } from 'ioredis';
 import type { WSMessage, LivePacket } from '../types/index.js';
-import { getNodes, getRecentPackets, getRecentMessages, getViableLinks } from '../db/index.js';
+import {
+  getNodes,
+  getPublicVisibilityGeneration,
+  getRecentPackets,
+  getRecentMessages,
+  getViableLinks,
+} from '../db/index.js';
 import {
   PublicAllScopeForbiddenError,
   resolvePublicNetworkScope,
@@ -190,14 +196,30 @@ const initialStateCache = new BoundedTtlMap<string, InitialStateEntry>({
   ttlMs: INITIAL_STATE_TTL_MS,
 });
 const initialStateInflight = new Map<string, Promise<InitialStateEntry>>();
-const publicPrivacy = new PublicWsPrivacyIndex();
+function invalidatePublicProjectionCaches(): void {
+  initialStateCache.clear();
+  viableLinksCache.clear();
+}
+
+const publicPrivacy = new PublicWsPrivacyIndex(invalidatePublicProjectionCaches);
 let privacyRefreshInFlight: Promise<void> | null = null;
+let indexedVisibilityGeneration: number | null = null;
 
 function refreshPrivacyIndex(): Promise<void> {
   if (privacyRefreshInFlight) return privacyRefreshInFlight;
-  const tracked = Promise.all([getNodes('ukmesh'), getNodes('test')])
-    .then(([productionNodes, testNodes]) => {
-      publicPrivacy.replace([...productionNodes, ...testNodes]);
+  const tracked = getPublicVisibilityGeneration()
+    .then(async (visibilityGeneration) => {
+      const [productionNodes, testNodes] = await Promise.all([
+        getNodes('ukmesh'),
+        getNodes('test'),
+      ]);
+      if (await getPublicVisibilityGeneration() !== visibilityGeneration) {
+        throw new Error('WS_PRIVACY_CHANGED_DURING_INDEX_REFRESH');
+      }
+      const setChanged = publicPrivacy.replace([...productionNodes, ...testNodes]);
+      const generationChanged = indexedVisibilityGeneration !== visibilityGeneration;
+      indexedVisibilityGeneration = visibilityGeneration;
+      if (generationChanged && !setChanged) invalidatePublicProjectionCaches();
     })
     .catch((error: unknown) => {
       console.error('[ws] privacy index refresh failed:', (error as Error).message);
@@ -209,8 +231,24 @@ function refreshPrivacyIndex(): Promise<void> {
   return tracked;
 }
 
-async function fetchInitialState(network: string | undefined, observer: string | undefined): Promise<InitialStateEntry> {
-  const key = `${network ?? ''}:${observer ?? ''}`;
+async function fetchInitialState(
+  network: string | undefined,
+  observer: string | undefined,
+  privacyRetry = 0,
+): Promise<InitialStateEntry> {
+  let visibilityGeneration = await getPublicVisibilityGeneration();
+  if (!publicPrivacy.isReady || indexedVisibilityGeneration !== visibilityGeneration) {
+    await refreshPrivacyIndex();
+    visibilityGeneration = await getPublicVisibilityGeneration();
+    if (
+      !publicPrivacy.isReady
+      || indexedVisibilityGeneration !== visibilityGeneration
+    ) {
+      throw new Error('WS_PRIVACY_INDEX_UNAVAILABLE');
+    }
+  }
+  const privacyRevision = publicPrivacy.currentRevision;
+  const key = `${network ?? ''}:${observer ?? ''}:privacy-${privacyRevision}:visibility-${visibilityGeneration}`;
   const cached = initialStateCache.get(key);
   if (cached && (Date.now() - cached.ts) < INITIAL_STATE_TTL_MS) return cached;
 
@@ -234,7 +272,7 @@ async function fetchInitialState(network: string | undefined, observer: string |
         getNodes(network, observer, 'slim', signal),
         getRecentPackets(7, network, observer, 'full', signal),
         getRecentMessages(200, network, observer, signal),
-        getCachedViableLinks(network, observer, signal),
+        getCachedViableLinks(network, observer, visibilityGeneration, signal),
       ]);
       const nodes = rawNodes
         .filter((node) => !isPrivateNode(node.name))
@@ -248,6 +286,14 @@ async function fetchInitialState(network: string | undefined, observer: string |
         )),
         WS_INITIAL_STATE_MAX_VIABLE_LINKS,
       );
+      if (
+        publicPrivacy.currentRevision !== privacyRevision
+        || await getPublicVisibilityGeneration() !== visibilityGeneration
+      ) {
+        await refreshPrivacyIndex();
+        if (privacyRetry >= 1) throw new Error('WS_PRIVACY_CHANGED_DURING_INITIAL_STATE');
+        return fetchInitialState(network, observer, privacyRetry + 1);
+      }
       const entry: InitialStateEntry = {
         ts: Date.now(),
         nodes,
@@ -277,16 +323,21 @@ function normalizeObserver(value: string | null): string | undefined {
   return trimmed && /^[0-9a-f]{64}$/.test(trimmed) ? trimmed : undefined;
 }
 
-function cacheKey(network?: string, observer?: string): string {
-  return `${network ?? 'all'}|${observer ?? 'all'}`;
+function cacheKey(
+  network: string | undefined,
+  observer: string | undefined,
+  visibilityGeneration: number,
+): string {
+  return `${network ?? 'all'}|${observer ?? 'all'}|privacy-${publicPrivacy.currentRevision}|visibility-${visibilityGeneration}`;
 }
 
 async function getCachedViableLinks(
-  network?: string,
-  observer?: string,
+  network: string | undefined,
+  observer: string | undefined,
+  visibilityGeneration: number,
   signal?: AbortSignal,
 ) {
-  const key = cacheKey(network, observer);
+  const key = cacheKey(network, observer, visibilityGeneration);
   const cached = viableLinksCache.get(key);
   if (cached && (Date.now() - cached.ts) < VIABLE_LINK_CACHE_TTL_MS) return cached.data;
   const data = await getViableLinks(network, observer, signal);

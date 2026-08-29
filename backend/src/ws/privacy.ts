@@ -4,25 +4,48 @@ import { isPrivateNode } from '../api/utils/privateNode.js';
 export class PublicWsPrivacyIndex {
   private readonly nodeIds = new Set<string>();
   private ready = false;
+  private revision = 0;
+
+  constructor(private readonly onChange: () => void = () => {}) {}
 
   get isReady(): boolean {
     return this.ready;
   }
 
-  replace(nodes: Array<{ node_id?: unknown; name?: unknown }>): void {
-    this.nodeIds.clear();
-    for (const node of nodes) {
-      if (isPrivateNode(typeof node.name === 'string' ? node.name : null)) {
-        this.remember(String(node.node_id ?? ''));
-      }
-    }
-    this.ready = true;
+  get currentRevision(): number {
+    return this.revision;
   }
 
-  remember(nodeId: string): void {
+  replace(nodes: Array<{ node_id?: unknown; name?: unknown }>): boolean {
+    const next = new Set<string>();
+    for (const node of nodes) {
+      if (isPrivateNode(typeof node.name === 'string' ? node.name : null)) {
+        const normalized = String(node.node_id ?? '').trim().toLowerCase();
+        if (/^[0-9a-f]{64}$/.test(normalized)) next.add(normalized);
+      }
+    }
+    const changed = !this.ready
+      || next.size !== this.nodeIds.size
+      || [...next].some((nodeId) => !this.nodeIds.has(nodeId));
+    if (changed) {
+      this.nodeIds.clear();
+      for (const nodeId of next) this.nodeIds.add(nodeId);
+    }
+    this.ready = true;
+    if (changed) {
+      this.revision += 1;
+      this.onChange();
+    }
+    return changed;
+  }
+
+  remember(nodeId: string): boolean {
     const normalized = nodeId.trim().toLowerCase();
-    if (!/^[0-9a-f]{64}$/.test(normalized)) return;
+    if (!/^[0-9a-f]{64}$/.test(normalized) || this.nodeIds.has(normalized)) return false;
     this.nodeIds.add(normalized);
+    this.revision += 1;
+    this.onChange();
+    return true;
   }
 
   hasNode(nodeId: unknown): boolean {

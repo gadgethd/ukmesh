@@ -18,6 +18,9 @@ import {
   parseEnum,
   parseHexIdentifier,
 } from '../utils/input.js';
+import { BoundedTtlMap } from '../../cache/boundedTtlMap.js';
+import { withStablePublicVisibility } from '../../privacy/visibilityFence.js';
+import { ApiInputError } from '../errors.js';
 
 type NodeRecord = {
   node_id: string;
@@ -39,7 +42,12 @@ type RequireLocalOnlyFn = (req: Request, res: Response) => boolean;
 
 /** Top-adverting repeater list is public and changes slowly — 1h in-memory cache. */
 const TOP_ADVERTS_CACHE_TTL_MS = 60 * 60 * 1000;
-const topAdvertsCache = new Map<string, { ts: number; data: unknown[] }>();
+const topAdvertsCache = new BoundedTtlMap<string, { ts: number; data: unknown[] }>({
+  name: 'api_top_adverts',
+  maxEntries: 32,
+  maxWeight: 256 * 1024,
+  ttlMs: TOP_ADVERTS_CACHE_TTL_MS,
+});
 
 type InferredMultibyteNode = {
   node_id: string;
@@ -132,6 +140,7 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const observer = normalizeObserverQuery(req.query['observer']);
       const nodes = await getNodes(network, observer, fields);
+      res.setHeader('X-Response-Profile', fields);
       res.json(nodes.filter((node) => !isPrivateNode(node.name)).map(redactPrivateNode));
     } catch (err) {
       console.error('[api] GET /nodes', (err as Error).message);
@@ -177,8 +186,7 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
       });
     } catch (err) {
       if (err instanceof PublicMapInputError) {
-        res.status(400).json({ error: err.message });
-        return;
+        throw new ApiInputError(err.message, err.code);
       }
       console.error('[api] GET /nodes/map', (err as Error).message);
       res.status(500).json({ error: 'Internal server error' });
@@ -200,24 +208,27 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
         max: 25,
         defaultValue: 10,
       })!;
-      const cacheKey = `${network ?? 'all'}:${hours}:${limit}`;
-      const cached = topAdvertsCache.get(cacheKey);
-      if (cached && Date.now() - cached.ts < TOP_ADVERTS_CACHE_TTL_MS) {
-        res.setHeader('Cache-Control', 'public, max-age=3600, stale-while-revalidate=600');
-        res.json(cached.data);
-        return;
-      }
-      const rows = await getTopAdvertingRepeaters(hours, limit, network);
-      // COUNT(*) arrives as a string from node-postgres; coerce to number so
-      // the public contract exposes a numeric adverts_in_window.
-      const normalized = (rows as Array<Record<string, unknown>>).map((row) => ({
-        ...row,
-        adverts_in_window: Number(row.adverts_in_window ?? 0),
-      }));
-      topAdvertsCache.set(cacheKey, { ts: Date.now(), data: normalized });
+      const normalized = await withStablePublicVisibility(
+        getPublicVisibilityGeneration,
+        async (visibilityGeneration) => {
+          const cacheKey = `${network ?? 'all'}:${hours}:${limit}:visibility-${visibilityGeneration}`;
+          const cached = topAdvertsCache.get(cacheKey);
+          if (cached && Date.now() - cached.ts < TOP_ADVERTS_CACHE_TTL_MS) return cached.data;
+          const rows = await getTopAdvertingRepeaters(hours, limit, network);
+          // COUNT(*) arrives as a string from node-postgres; coerce to number so
+          // the public contract exposes a numeric adverts_in_window.
+          const data = (rows as Array<Record<string, unknown>>).map((row) => ({
+            ...row,
+            adverts_in_window: Number(row.adverts_in_window ?? 0),
+          }));
+          topAdvertsCache.set(cacheKey, { ts: Date.now(), data });
+          return data;
+        },
+      );
       res.setHeader('Cache-Control', 'public, max-age=3600, stale-while-revalidate=600');
       res.json(normalized);
     } catch (err) {
+      if (err instanceof ApiInputError) throw err;
       console.error('[api] GET /nodes/top-adverts', (err as Error).message);
       res.status(500).json({ error: 'Internal server error' });
     }
@@ -439,33 +450,37 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
     });
     try {
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
-      const filters = networkFilters(network);
-      const cacheKey = `${network}:${id.toUpperCase()}`;
-      const cached = nodeLinksCache.get(cacheKey);
-      if (cached && Date.now() - cached.ts < nodeLinksCacheTtlMs) {
-        res.json(cached.data);
-        return;
-      }
-      const loadLinks = () => nodeRepository.listNodeLinks(id, filters);
-      let inflight = nodeLinksInflight.get(cacheKey);
-      if (!inflight) {
-        const tracked = loadLinks()
-          .then((rows) => {
-            nodeLinksCache.set(cacheKey, { ts: Date.now(), data: rows });
-            return rows;
-          })
-          .finally(() => {
-            if (nodeLinksInflight.get(cacheKey) === tracked) nodeLinksInflight.delete(cacheKey);
-          });
-        inflight = tracked;
-        nodeLinksInflight.set(cacheKey, tracked);
-      }
-      if (cached) {
+      const response = await withStablePublicVisibility(
+        getPublicVisibilityGeneration,
+        async (visibilityGeneration) => {
+          const filters = networkFilters(network);
+          const cacheKey = `${network}:${id.toUpperCase()}:visibility-${visibilityGeneration}`;
+          const cached = nodeLinksCache.get(cacheKey);
+          if (cached && Date.now() - cached.ts < nodeLinksCacheTtlMs) {
+            return { data: cached.data, stale: false };
+          }
+          const loadLinks = () => nodeRepository.listNodeLinks(id, filters);
+          let inflight = nodeLinksInflight.get(cacheKey);
+          if (!inflight) {
+            const tracked = loadLinks()
+              .then((rows) => {
+                nodeLinksCache.set(cacheKey, { ts: Date.now(), data: rows });
+                return rows;
+              })
+              .finally(() => {
+                if (nodeLinksInflight.get(cacheKey) === tracked) nodeLinksInflight.delete(cacheKey);
+              });
+            inflight = tracked;
+            nodeLinksInflight.set(cacheKey, tracked);
+          }
+          if (cached) return { data: cached.data, stale: true };
+          return { data: await inflight, stale: false };
+        },
+      );
+      if (response.stale) {
         res.setHeader('Warning', '110 - "Response is stale"');
-        res.json(cached.data);
-        return;
       }
-      res.json(await inflight);
+      res.json(response.data);
     } catch (err) {
       console.error('[api] GET /nodes/:id/links', (err as Error).message);
       res.status(500).json({ error: 'Internal server error' });

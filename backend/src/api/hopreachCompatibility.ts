@@ -2,6 +2,7 @@ import { isIP } from 'node:net';
 import { Router, type Request, type Response } from 'express';
 import type { QueryResultRow } from 'pg';
 import { BoundedTtlMap } from '../cache/boundedTtlMap.js';
+import { API_ERROR_CODES, sendApiError } from './errors.js';
 
 type QueryFn = <T extends QueryResultRow = QueryResultRow>(
   text: string,
@@ -238,7 +239,7 @@ export function createHopReachCompatibilityRoutes(query: QueryFn): Router {
     const limit = boundedInteger(req.query['limit'], MAX_PAGE_SIZE, 1, MAX_PAGE_SIZE);
     const offset = boundedInteger(req.query['offset'], 0, 0, MAX_OFFSET);
     if (limit === null || offset === null) {
-      res.status(400).json({ error: 'invalid pagination' });
+      sendApiError(res, 400, 'invalid pagination', API_ERROR_CODES.invalidInteger);
       return;
     }
     try {
@@ -279,7 +280,12 @@ export function createHopReachCompatibilityRoutes(query: QueryFn): Router {
     const publicKeys = validPublicKeys((req.body as Record<string, unknown> | undefined)?.['public_keys']);
     const days = boundedInteger((req.body as Record<string, unknown> | undefined)?.['days'], 14, 1, 90);
     if (publicKeys === null || days === null) {
-      res.status(400).json({ error: 'public_keys and days are invalid or exceed bounds' });
+      sendApiError(
+        res,
+        400,
+        'public_keys and days are invalid or exceed bounds',
+        API_ERROR_CODES.invalidInput,
+      );
       return;
     }
     try {
@@ -307,7 +313,12 @@ export function createHopReachCompatibilityRoutes(query: QueryFn): Router {
     const publicKey = String(req.params['pubkey'] ?? '');
     const days = boundedInteger(req.query['days'], 14, 1, 90);
     if (!/^[0-9a-f]{64}$/i.test(publicKey) || days === null) {
-      res.status(400).json({ error: 'invalid public key or days' });
+      sendApiError(
+        res,
+        400,
+        'invalid public key or days',
+        API_ERROR_CODES.invalidInput,
+      );
       return;
     }
     try {

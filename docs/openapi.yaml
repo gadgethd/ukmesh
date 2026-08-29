@@ -57,11 +57,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -81,6 +91,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -100,6 +118,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -138,11 +164,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -162,6 +198,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -181,6 +225,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -219,11 +271,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -243,6 +305,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -262,6 +332,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -311,11 +389,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -335,6 +423,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -354,6 +450,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -392,11 +496,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -416,6 +530,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -435,6 +557,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -484,11 +614,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -508,6 +648,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -527,6 +675,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -566,11 +722,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -590,6 +756,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -609,6 +783,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -697,11 +879,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -721,6 +913,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -740,6 +940,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -778,11 +986,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -802,6 +1020,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -821,6 +1047,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -859,11 +1093,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -883,6 +1127,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -902,6 +1154,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -951,11 +1211,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -975,6 +1245,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -994,6 +1272,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -1032,11 +1318,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -1056,6 +1352,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -1075,6 +1379,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -1094,6 +1406,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -1113,6 +1433,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -1156,11 +1484,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -1180,6 +1518,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -1199,6 +1545,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -1237,11 +1591,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -1261,6 +1625,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -1280,6 +1652,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -1318,11 +1698,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -1342,6 +1732,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -1361,6 +1759,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -1379,7 +1785,22 @@
           "public"
         ],
         "x-access": "public",
-        "parameters": [],
+        "parameters": [
+          {
+            "name": "fields",
+            "in": "query",
+            "required": false,
+            "description": "Response profile; full remains the compatibility default.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "slim",
+                "full"
+              ],
+              "default": "full"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful response",
@@ -1399,11 +1820,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -1423,6 +1854,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -1442,6 +1881,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -1491,11 +1938,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -1515,6 +1972,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -1534,6 +1999,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -1583,11 +2056,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -1607,6 +2090,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -1626,6 +2117,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -1675,11 +2174,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -1699,6 +2208,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -1718,6 +2235,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -1756,11 +2281,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -1780,6 +2315,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -1799,6 +2342,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -1837,11 +2388,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -1861,6 +2422,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -1880,6 +2449,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -1918,11 +2495,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -1942,6 +2529,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -1961,6 +2556,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -1999,11 +2602,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -2023,6 +2636,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -2042,6 +2663,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -2080,11 +2709,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -2104,6 +2743,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -2123,6 +2770,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -2195,11 +2850,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -2219,6 +2884,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -2238,6 +2911,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -2257,6 +2938,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -2276,6 +2965,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -2319,11 +3016,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -2343,6 +3050,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -2362,6 +3077,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -2381,6 +3104,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -2400,6 +3131,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -2441,11 +3180,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -2465,6 +3214,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -2484,6 +3241,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -2503,6 +3268,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -2522,6 +3295,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -2568,11 +3349,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -2592,6 +3383,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -2611,6 +3410,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -2630,6 +3437,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -2649,6 +3464,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -2703,11 +3526,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -2727,6 +3560,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -2746,6 +3587,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -2765,6 +3614,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -2784,6 +3641,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -2827,11 +3692,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -2851,6 +3726,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -2870,6 +3753,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -2889,6 +3780,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -2908,6 +3807,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -2951,11 +3858,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -2975,6 +3892,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -2994,6 +3919,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -3013,6 +3946,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -3032,6 +3973,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -3075,11 +4024,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -3099,6 +4058,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -3118,6 +4085,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -3137,6 +4112,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -3156,6 +4139,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -3199,11 +4190,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -3223,6 +4224,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -3242,6 +4251,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -3261,6 +4278,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -3280,6 +4305,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -3323,11 +4356,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -3347,6 +4390,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -3366,6 +4417,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -3385,6 +4444,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -3404,6 +4471,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -3447,11 +4522,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -3471,6 +4556,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -3490,6 +4583,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -3509,6 +4610,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -3528,6 +4637,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -3582,11 +4699,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -3606,6 +4733,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -3625,6 +4760,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -3643,7 +4786,32 @@
           "public"
         ],
         "x-access": "public",
-        "parameters": [],
+        "parameters": [
+          {
+            "name": "fields",
+            "in": "query",
+            "required": false,
+            "description": "Response profile; full remains the compatibility default.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "slim",
+                "full"
+              ],
+              "default": "full"
+            }
+          },
+          {
+            "name": "raw",
+            "in": "query",
+            "required": false,
+            "description": "Return observation events instead of aggregated packets.",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful response",
@@ -3663,11 +4831,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -3687,6 +4865,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -3706,6 +4892,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -3744,11 +4938,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -3768,6 +4972,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -3787,6 +4999,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -3825,11 +5045,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -3849,6 +5079,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -3868,6 +5106,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -3949,11 +5195,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -3973,6 +5229,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -3992,6 +5256,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -4053,11 +5325,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -4077,6 +5359,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -4096,6 +5386,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -4134,11 +5432,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -4158,6 +5466,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -4177,6 +5493,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -4215,11 +5539,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -4239,6 +5573,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -4258,6 +5600,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -4366,11 +5716,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -4390,6 +5750,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -4409,6 +5777,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -4447,11 +5823,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -4471,6 +5857,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -4490,6 +5884,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -4528,11 +5930,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -4552,6 +5964,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -4571,6 +5991,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -4609,11 +6037,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -4633,6 +6071,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -4652,6 +6098,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -4690,11 +6144,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -4714,6 +6178,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -4733,6 +6205,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -4771,11 +6251,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -4795,6 +6285,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -4814,6 +6312,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -4852,11 +6358,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -4876,6 +6392,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -4895,6 +6419,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -4944,11 +6476,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -4968,6 +6510,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -4987,6 +6537,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -5025,11 +6583,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -5049,6 +6617,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -5068,6 +6644,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -5106,11 +6690,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -5130,6 +6724,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -5149,6 +6751,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -5198,11 +6808,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -5222,6 +6842,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -5241,6 +6869,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -5279,11 +6915,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -5303,6 +6949,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -5322,6 +6976,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -5360,11 +7022,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -5384,6 +7056,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -5403,6 +7083,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -5441,11 +7129,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -5465,6 +7163,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -5484,6 +7190,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -5522,11 +7236,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -5546,6 +7270,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -5565,6 +7297,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -5603,11 +7343,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -5627,6 +7377,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -5646,6 +7404,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -5684,11 +7450,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -5708,6 +7484,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -5727,6 +7511,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -5776,11 +7568,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -5800,6 +7602,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -5819,6 +7629,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -5857,11 +7675,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -5881,6 +7709,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -5900,6 +7736,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -5938,11 +7782,21 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "error"
+                    "error",
+                    "code",
+                    "requestId"
                   ],
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -5962,6 +7816,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -5981,6 +7843,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -6024,6 +7894,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -6043,6 +7921,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -6062,6 +7948,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -6081,6 +7975,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -6100,6 +8002,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -6188,6 +8098,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -6207,6 +8125,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -6226,6 +8152,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -6245,6 +8179,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -6264,6 +8206,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -6321,6 +8271,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -6340,6 +8298,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -6359,6 +8325,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -6378,6 +8352,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -6397,6 +8379,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -6454,6 +8444,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -6473,6 +8471,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -6492,6 +8498,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -6511,6 +8525,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -6530,6 +8552,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -6598,6 +8628,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -6617,6 +8655,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -6636,6 +8682,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -6655,6 +8709,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -6674,6 +8736,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -6731,6 +8801,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -6750,6 +8828,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -6769,6 +8855,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -6788,6 +8882,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -6807,6 +8909,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -6864,6 +8974,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -6883,6 +9001,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -6902,6 +9028,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -6921,6 +9055,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -6940,6 +9082,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -6997,6 +9147,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -7016,6 +9174,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -7035,6 +9201,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -7084,6 +9258,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -7103,6 +9285,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -7122,6 +9312,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -7141,6 +9339,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -7160,6 +9366,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -7217,6 +9431,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -7236,6 +9458,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -7255,6 +9485,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -7274,6 +9512,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -7293,6 +9539,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -7361,6 +9615,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -7380,6 +9642,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -7399,6 +9669,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -7418,6 +9696,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -7437,6 +9723,14 @@
                   "properties": {
                     "error": {
                       "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "additionalProperties": false
@@ -7488,6 +9782,14 @@
         "properties": {
           "error": {
             "type": "string"
+          },
+          "code": {
+            "type": "string",
+            "pattern": "^[A-Z][A-Z0-9_]*$"
+          },
+          "requestId": {
+            "type": "string",
+            "format": "uuid"
           }
         },
         "additionalProperties": false

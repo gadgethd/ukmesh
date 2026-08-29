@@ -37,3 +37,34 @@ test('channel feed history route forwards its bounded channel and scope', async 
     server.close();
   }
 });
+
+test('recent packets forwards an opt-in slim profile without changing the full default', async () => {
+  const profiles: Array<'full' | 'slim' | undefined> = [];
+  const router = Router();
+  registerMiscRoutes(router, {
+    query: async () => ({ rows: [] }),
+    getRecentPackets: async (_limit, _network, _observer, fields) => {
+      profiles.push(fields);
+      return [{ packet_hash: 'packet' }];
+    },
+    getRecentPacketEvents: async () => [],
+    getPacketDetail: async () => null,
+    getChannelMessageHistory: async () => [],
+    getPublicVisibilityGeneration: async () => 1,
+    packetDetailLimiter: passThroughLimiter as Parameters<typeof registerMiscRoutes>[1]['packetDetailLimiter'],
+  });
+  const app = express();
+  app.use(router);
+  const server = app.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  try {
+    const { port } = server.address() as AddressInfo;
+    const full = await fetch(`http://127.0.0.1:${port}/packets/recent?limit=1`);
+    const slim = await fetch(`http://127.0.0.1:${port}/packets/recent?limit=1&fields=slim`);
+    assert.equal(full.headers.get('x-response-profile'), 'full');
+    assert.equal(slim.headers.get('x-response-profile'), 'slim');
+    assert.deepEqual(profiles, ['full', 'slim']);
+  } finally {
+    server.close();
+  }
+});

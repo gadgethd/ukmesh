@@ -32,6 +32,7 @@ import {
   type QueueAction,
   type QueueName,
 } from '../operations/operatorOperations.js';
+import { API_ERROR_CODES, sendApiError } from '../api/errors.js';
 
 type QueryFn = <T extends QueryResultRow = QueryResultRow>(
   text: string,
@@ -213,7 +214,12 @@ export function createBackendSiteRoutes(deps: BackendSiteDeps): Router {
       return;
     }
     if (!isSupportedOperatorTransport(req)) {
-      res.status(400).json({ error: 'Use local HTTPS or a localhost tunnel' });
+      sendApiError(
+        res,
+        400,
+        'Use local HTTPS or a localhost tunnel',
+        API_ERROR_CODES.invalidTransport,
+      );
       return;
     }
     if (!String(req.headers['content-type'] ?? '').toLowerCase().startsWith('application/json')) {
@@ -273,7 +279,12 @@ export function createBackendSiteRoutes(deps: BackendSiteDeps): Router {
         idempotencyKey: validateIdempotencyKey(req.headers['idempotency-key']),
       };
     } catch {
-      res.status(400).json({ error: 'A valid Idempotency-Key header is required' });
+      sendApiError(
+        res,
+        400,
+        'A valid Idempotency-Key header is required',
+        API_ERROR_CODES.invalidIdempotencyKey,
+      );
       return null;
     }
   }
@@ -329,7 +340,11 @@ export function createBackendSiteRoutes(deps: BackendSiteDeps): Router {
     } catch (error) {
       const code = (error as Error).message;
       if (code.startsWith('INVALID_') || code === 'CONFIRMATION_REQUIRED') {
-        res.status(code === 'INVALID_OBSERVER_STATE' ? 409 : 400).json({ error: code });
+        if (code === 'INVALID_OBSERVER_STATE') {
+          res.status(409).json({ error: code });
+        } else {
+          sendApiError(res, 400, code, API_ERROR_CODES.invalidInput);
+        }
         return;
       }
       if (code === 'IDEMPOTENCY_KEY_REUSED') {
@@ -419,7 +434,7 @@ export function createBackendSiteRoutes(deps: BackendSiteDeps): Router {
     } catch (error) {
       const code = (error as Error).message;
       if (code.startsWith('INVALID_')) {
-        res.status(400).json({ error: code });
+        sendApiError(res, 400, code, API_ERROR_CODES.invalidInput);
         return;
       }
       if (code === 'IDEMPOTENCY_KEY_REUSED' || code === 'PLANNED_PUBLICATION_UNCHANGED') {

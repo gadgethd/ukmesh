@@ -16,6 +16,7 @@ import {
   decodePlannedNodeCursor,
   listPublicPlannedNodes,
 } from '../../repositories/plannedNodes.js';
+import { API_ERROR_CODES, ApiInputError } from '../errors.js';
 
 type QueryFn = <T extends QueryResultRow = QueryResultRow>(
   text: string,
@@ -89,6 +90,7 @@ export function registerMiscRoutes(router: Router, deps: MiscRouteDeps): void {
       const packets = raw
         ? await getRecentPacketEvents(limit, network, observer)
         : await getRecentPackets(limit, network, observer, fields);
+      res.setHeader('X-Response-Profile', raw ? 'raw' : fields);
       res.json(packets);
     } catch (err) {
       console.error('[api] GET /packets/recent', (err as Error).message);
@@ -193,8 +195,7 @@ export function registerMiscRoutes(router: Router, deps: MiscRouteDeps): void {
       res.json(page);
     } catch (err) {
       if ((err as Error).message === 'INVALID_PLANNED_NODE_CURSOR') {
-        res.status(400).json({ error: 'Invalid planned-node cursor' });
-        return;
+        throw new ApiInputError('Invalid planned-node cursor', API_ERROR_CODES.invalidCursor);
       }
       console.error('[api] GET /planned-nodes', (err as Error).message);
       res.status(500).json({ error: 'Internal server error' });

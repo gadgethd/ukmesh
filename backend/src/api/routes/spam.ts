@@ -8,6 +8,7 @@ import {
   parseBoundedInteger,
   parseEnum,
 } from '../utils/input.js';
+import { API_ERROR_CODES, sendApiError } from '../errors.js';
 
 interface SpamRouteDeps {
   expensiveLimiter: RequestHandler;
@@ -93,7 +94,7 @@ export function registerSpamRoutes(router: Router, deps: SpamRouteDeps): void {
     const rawId = req.params.id;
     const id = Array.isArray(rawId) ? rawId[0] : rawId;
     if (!id || !/^[0-9a-f]{16}$/.test(id)) {
-      res.status(400).json({ error: 'invalid incident id' });
+      sendApiError(res, 400, 'invalid incident id', API_ERROR_CODES.invalidIncidentId);
       return;
     }
     try {
@@ -232,7 +233,7 @@ export function registerSpamRoutes(router: Router, deps: SpamRouteDeps): void {
     const rawId = req.params.id;
     const id = Array.isArray(rawId) ? rawId[0] : rawId;
     if (!id || !/^[0-9a-fA-F]{64}$/.test(id)) {
-      res.status(400).json({ error: 'invalid node id' });
+      sendApiError(res, 400, 'invalid node id', API_ERROR_CODES.invalidNodeId);
       return;
     }
     try {

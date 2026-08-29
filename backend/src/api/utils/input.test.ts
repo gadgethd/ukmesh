@@ -7,6 +7,17 @@ import {
   parseCursor,
   parseHexIdentifier,
 } from './input.js';
+import { API_ERROR_CODES, ApiInputError } from '../errors.js';
+
+function validationCode(run: () => unknown): string | undefined {
+  try {
+    run();
+    return undefined;
+  } catch (error) {
+    assert.ok(error instanceof ApiInputError);
+    return error.code;
+  }
+}
 
 test('bounded integers reject ambiguous, non-finite, fractional, negative, and oversized values', () => {
   const parse = (value: unknown) => parseBoundedInteger(value, {
@@ -20,6 +31,8 @@ test('bounded integers reject ambiguous, non-finite, fractional, negative, and o
   for (const value of [['1', '2'], 'NaN', 'Infinity', '1.5', '-1', '01', '101']) {
     assert.throws(() => parse(value));
   }
+  assert.equal(validationCode(() => parse('NaN')), API_ERROR_CODES.invalidInteger);
+  assert.equal(validationCode(() => parse('101')), API_ERROR_CODES.integerOutOfRange);
 });
 
 test('coordinates, hashes, and cursors accept only bounded canonical values', () => {
@@ -35,4 +48,16 @@ test('coordinates, hashes, and cursors accept only bounded canonical values', ()
   assert.equal(parseBoolean('true', { name: 'enabled' }), true);
   assert.equal(parseBoolean('0', { name: 'enabled' }), false);
   assert.throws(() => parseBoolean('yes', { name: 'enabled' }));
+  assert.equal(
+    validationCode(() => parseHexIdentifier('xyz', { name: 'hash', maxLength: 8 })),
+    API_ERROR_CODES.invalidHexIdentifier,
+  );
+  assert.equal(
+    validationCode(() => parseCursor('not/a/cursor')),
+    API_ERROR_CODES.invalidCursor,
+  );
+  assert.equal(
+    validationCode(() => parseBoolean('yes', { name: 'enabled' })),
+    API_ERROR_CODES.invalidBoolean,
+  );
 });

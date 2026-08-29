@@ -8,7 +8,7 @@ export const UKHomePage: React.FC = () => {
   const [recent, setRecent] = useState<Array<{ packet_hash: string; time: string; summary?: string | null; packet_type?: number | null }>>([]);
   useEffect(() => {
     const controller = new AbortController();
-    void fetch('/api/packets/recent?network=ukmesh&limit=5', { signal: controller.signal })
+    void fetch('/api/packets/recent?network=ukmesh&limit=5&fields=slim', { signal: controller.signal })
       .then((response) => response.json())
       .then((packets) => setRecent(Array.isArray(packets) ? packets : []))
       .catch(() => {});

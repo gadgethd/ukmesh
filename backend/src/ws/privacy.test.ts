@@ -12,8 +12,12 @@ test('live packets fail closed until the privacy index is ready', () => {
 });
 
 test('private identities and relay prefixes are suppressed', () => {
-  const privacy = new PublicWsPrivacyIndex();
-  privacy.replace([{ node_id: privateId, name: 'Home 🚫' }]);
+  let changes = 0;
+  const privacy = new PublicWsPrivacyIndex(() => { changes += 1; });
+  assert.equal(privacy.replace([{ node_id: privateId, name: 'Home 🚫' }]), true);
+  assert.equal(privacy.replace([{ node_id: privateId, name: 'Home 🚫' }]), false);
+  assert.equal(privacy.currentRevision, 1);
+  assert.equal(changes, 1);
 
   assert.equal(privacy.packetHasPrivateParticipant({
     srcNodeId: privateId,
@@ -29,6 +33,30 @@ test('private identities and relay prefixes are suppressed', () => {
     pathHashSizeBytes: 2,
     visibilityOk: true,
   }), false);
+});
+
+test('live opt-outs advance the privacy revision exactly once', () => {
+  let changes = 0;
+  const privacy = new PublicWsPrivacyIndex(() => { changes += 1; });
+  privacy.replace([]);
+  const readyRevision = privacy.currentRevision;
+
+  assert.equal(privacy.remember(privateId), true);
+  assert.equal(privacy.remember(privateId.toUpperCase()), false);
+  assert.equal(privacy.currentRevision, readyRevision + 1);
+  assert.equal(changes, 2);
+});
+
+test('authoritative refreshes invalidate when a private identity becomes public', () => {
+  let changes = 0;
+  const privacy = new PublicWsPrivacyIndex(() => { changes += 1; });
+  privacy.replace([{ node_id: privateId, name: 'Private 🚫' }]);
+  const privateRevision = privacy.currentRevision;
+
+  assert.equal(privacy.replace([{ node_id: privateId, name: 'Public again' }]), true);
+  assert.equal(privacy.hasNode(privateId), false);
+  assert.equal(privacy.currentRevision, privateRevision + 1);
+  assert.equal(changes, 2);
 });
 
 test('private node and link events are suppressed and live opt-outs update the index', () => {

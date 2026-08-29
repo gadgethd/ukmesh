@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {
+  API_VALIDATION_ERROR_SCHEMA,
   API_CONTRACTS,
   COMMON_ERROR_SCHEMA,
   OPERATOR_CONTRACTS,
@@ -67,7 +68,13 @@ function operation(contract: ApiContract): Record<string, unknown> {
           },
       '400': {
         description: 'Invalid or out-of-bounds request',
-        content: { 'application/json': { schema: COMMON_ERROR_SCHEMA } },
+        content: {
+          'application/json': {
+            schema: contract.access === 'operator'
+              ? COMMON_ERROR_SCHEMA
+              : API_VALIDATION_ERROR_SCHEMA,
+          },
+        },
       },
       '429': {
         description: 'Rate limit exceeded',

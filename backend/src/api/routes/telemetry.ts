@@ -2,6 +2,7 @@ import type { Router } from 'express';
 import type { QueryResultRow } from 'pg';
 import { createHash, createHmac } from 'node:crypto';
 import { TELEMETRY_LIMITER } from '../bootstrap/limiters.js';
+import { API_ERROR_CODES, sendApiError } from '../errors.js';
 
 type QueryFn = <T extends QueryResultRow = QueryResultRow>(
   text: string,
@@ -27,7 +28,7 @@ export function registerTelemetryRoutes(router: Router, deps: TelemetryRouteDeps
 
       const message = String(body.message ?? '').replace(/\s+/g, ' ').trim().slice(0, 500);
       if (!message) {
-        res.status(400).json({ error: 'Missing message' });
+        sendApiError(res, 400, 'Missing message', API_ERROR_CODES.missingMessage);
         return;
       }
 

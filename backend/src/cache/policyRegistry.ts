@@ -60,7 +60,7 @@ export const CACHE_POLICY_REGISTRY: readonly CachePolicyRecord[] = Object.freeze
   {
     source: 'src/api/bootstrap/caches.ts#nodeLinksCache',
     disposition: 'bounded-cache', maxEntries: 4_096, maxBytes: 32 << 20, ttlMs: 5 * 60_000,
-    scope: 'network + observer + node', invalidation: 'TTL',
+    scope: 'network + node + visibility generation', invalidation: 'generation check + TTL',
     negativeCaching: 'empty link response allowed', singleFlight: 'nodeLinksInflight',
   },
   {
@@ -144,13 +144,13 @@ export const CACHE_POLICY_REGISTRY: readonly CachePolicyRecord[] = Object.freeze
   {
     source: 'src/ws/server.ts#viableLinksCache',
     disposition: 'bounded-cache', maxEntries: 50, maxBytes: 16 << 20, ttlMs: 5 * 60_000,
-    scope: 'network + observer', invalidation: 'TTL',
+    scope: 'network + observer + privacy revision + visibility generation', invalidation: 'live/refresh privacy revision + generation check + TTL',
     negativeCaching: 'completed empty link set', singleFlight: 'initialStateInflight',
   },
   {
     source: 'src/ws/server.ts#initialStateCache',
     disposition: 'bounded-cache', maxEntries: 128, maxBytes: 48 << 20, ttlMs: 60_000,
-    scope: 'network + observer + privacy projection', invalidation: 'TTL + live updates',
+    scope: 'network + observer + privacy revision + visibility generation', invalidation: 'live/refresh privacy revision + generation publication fence + TTL',
     negativeCaching: 'completed empty state', singleFlight: 'initialStateInflight (cap 128)',
   },
   {
@@ -174,7 +174,7 @@ export const CACHE_POLICY_REGISTRY: readonly CachePolicyRecord[] = Object.freeze
   {
     source: 'src/api/routes/nodes.ts#topAdvertsCache',
     disposition: 'bounded-cache', maxEntries: 32, maxBytes: 256 << 10, ttlMs: 60 * 60_000,
-    scope: 'network + hours + limit', invalidation: 'TTL',
+    scope: 'network + hours + limit + visibility generation', invalidation: 'generation check + TTL',
     negativeCaching: 'completed rows only', singleFlight: 'not applicable',
   },
 ]);

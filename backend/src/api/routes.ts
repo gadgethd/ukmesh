@@ -83,30 +83,34 @@ import {
 } from '../http/requestScope.js';
 import { assertUniqueRouteRegistry } from './routeRegistry.js';
 import { assertContractCoverage } from './contracts.js';
-import { ApiInputError, wrapAsyncHandlers } from './errors.js';
+import { API_ERROR_CODES, ApiInputError, wrapAsyncHandlers } from './errors.js';
 import { withHeavyWorkAdmission } from '../analysis/heavyWorkAdmission.js';
 
 const router = Router();
 // Anonymous cross-network aggregation is not a public API capability. Operator
 // diagnostics must use separately authenticated/local-only entry points.
-router.use((req, res, next) => {
+router.use((req, _res, next) => {
   try {
     resolvePublicNetworkScope(req.query['network'], req.headers);
     normalizeObserverQuery(req.query['observer']);
   } catch (error) {
-    if (
-      !(error instanceof PublicAllScopeForbiddenError)
-      && !(error instanceof InvalidPublicNetworkScopeError)
-      && !(error instanceof ApiInputError)
-    ) {
+    if (error instanceof ApiInputError) {
       next(error);
       return;
     }
-    res.status(400).json({
-      error: error instanceof PublicAllScopeForbiddenError
-        ? 'The all-network scope is not available on public endpoints'
-        : 'Invalid public request scope',
-    });
+    if (
+      error instanceof PublicAllScopeForbiddenError
+      || error instanceof InvalidPublicNetworkScopeError
+    ) {
+      next(new ApiInputError(
+        error instanceof PublicAllScopeForbiddenError
+          ? 'The all-network scope is not available on public endpoints'
+          : 'Invalid public request scope',
+        API_ERROR_CODES.invalidNetworkScope,
+      ));
+      return;
+    }
+    next(error);
     return;
   }
   next();

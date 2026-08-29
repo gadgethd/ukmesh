@@ -57,3 +57,15 @@ test('slow path contracts cover status, mode query, and pending response', () =>
     true,
   );
 });
+
+test('slim response profiles are opt-in and retain full compatibility defaults', () => {
+  for (const path of ['/nodes', '/packets/recent']) {
+    const contract = API_CONTRACTS.find((entry) => entry.path === path);
+    const fields = contract?.queryParameters?.find((parameter) => parameter['name'] === 'fields');
+    assert.deepEqual(fields?.['schema'], {
+      type: 'string',
+      enum: ['slim', 'full'],
+      default: 'full',
+    });
+  }
+});

@@ -12,6 +12,7 @@ import {
   submitObserverRegistration,
   visibleLinkNodeIds,
 } from '../../repositories/productFeatures.js';
+import { API_ERROR_CODES, sendApiError } from '../errors.js';
 
 type QueryFn = <T extends QueryResultRow = QueryResultRow>(text: string, params?: unknown[]) => Promise<{ rows: T[] }>;
 
@@ -63,11 +64,16 @@ export function registerProductFeatureRoutes(router: Router, query: QueryFn): vo
     })!;
     const parts = linkId.split(/:|--/).map((part) => part.trim().toUpperCase());
     if (parts.length !== 2 || parts.some((part) => !/^[0-9A-F]{6,64}$/.test(part))) {
-      res.status(400).json({ error: 'Link id must be nodeA:nodeB' });
+      sendApiError(res, 400, 'Link id must be nodeA:nodeB', API_ERROR_CODES.invalidLinkId);
       return;
     }
     if (parts[0] === parts[1]) {
-      res.status(400).json({ error: 'Link id must contain two different nodes' });
+      sendApiError(
+        res,
+        400,
+        'Link id must contain two different nodes',
+        API_ERROR_CODES.invalidLinkId,
+      );
       return;
     }
     const hours = parseBoundedInteger(req.query['hours'], {
@@ -113,7 +119,12 @@ export function registerProductFeatureRoutes(router: Router, query: QueryFn): vo
     try {
       input = normalizeObserverRegistration(req.body);
     } catch {
-      res.status(400).json({ error: 'A 64-character public key, IATA region, and contact are required' });
+      sendApiError(
+        res,
+        400,
+        'A 64-character public key, IATA region, and contact are required',
+        API_ERROR_CODES.invalidObserverRegistration,
+      );
       return;
     }
     try {

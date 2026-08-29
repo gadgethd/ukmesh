@@ -22,7 +22,19 @@ export const PUBLIC_MAP_MAX_PAGE_ROWS = 2000;
 export const PUBLIC_MAP_MAX_PAGE_BYTES = 1_500_000;
 export const PUBLIC_MAP_SNAPSHOT_MAX_AGE_MS = 30 * 60_000;
 
-export class PublicMapInputError extends Error {}
+type PublicMapErrorCode =
+  | 'INVALID_FIELDS'
+  | 'INVALID_INTEGER'
+  | 'INTEGER_OUT_OF_RANGE'
+  | 'INVALID_SNAPSHOT'
+  | 'INVALID_CURSOR';
+
+export class PublicMapInputError extends Error {
+  constructor(message: string, readonly code: PublicMapErrorCode) {
+    super(message);
+    this.name = 'PublicMapInputError';
+  }
+}
 
 function safeAlias(alias: string): string {
   if (!/^[a-z][a-z0-9_]*$/i.test(alias)) {
@@ -61,7 +73,7 @@ export function parsePublicMapFields(value: unknown): PublicMapField[] {
     return [...PUBLIC_MAP_ALLOWED_FIELDS];
   }
   if (typeof value !== 'string' || value.length > 512) {
-    throw new PublicMapInputError('fields is invalid');
+    throw new PublicMapInputError('fields is invalid', 'INVALID_FIELDS');
   }
   const rawFields = value
     .split(',')
@@ -72,7 +84,7 @@ export function parsePublicMapFields(value: unknown): PublicMapField[] {
     || rawFields.some((field) =>
       !PUBLIC_MAP_ALLOWED_FIELDS.includes(field as PublicMapField))
   ) {
-    throw new PublicMapInputError('fields contains an unsupported field');
+    throw new PublicMapInputError('fields contains an unsupported field', 'INVALID_FIELDS');
   }
   const requested = rawFields as PublicMapField[];
   return requested.length > 0
@@ -85,12 +97,13 @@ export function parsePublicMapLimit(value: unknown): number {
     return PUBLIC_MAP_DEFAULT_PAGE_ROWS;
   }
   if (typeof value !== 'string' || !/^[1-9]\d*$/.test(value)) {
-    throw new PublicMapInputError('limit must be a positive integer');
+    throw new PublicMapInputError('limit must be a positive integer', 'INVALID_INTEGER');
   }
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed) || parsed > PUBLIC_MAP_MAX_PAGE_ROWS) {
     throw new PublicMapInputError(
       `limit must be between 1 and ${PUBLIC_MAP_MAX_PAGE_ROWS}`,
+      'INTEGER_OUT_OF_RANGE',
     );
   }
   return parsed;
@@ -104,14 +117,14 @@ export function parsePublicMapSnapshot(
     return new Date(nowMs).toISOString();
   }
   if (typeof value !== 'string' || value.length > 40) {
-    throw new PublicMapInputError('snapshot is invalid');
+    throw new PublicMapInputError('snapshot is invalid', 'INVALID_SNAPSHOT');
   }
   const parsed = Date.parse(value);
   if (!Number.isFinite(parsed)
       || new Date(parsed).toISOString() !== value
       || parsed > nowMs + 60_000
       || parsed < nowMs - PUBLIC_MAP_SNAPSHOT_MAX_AGE_MS) {
-    throw new PublicMapInputError('snapshot is expired or invalid');
+    throw new PublicMapInputError('snapshot is expired or invalid', 'INVALID_SNAPSHOT');
   }
   return value;
 }
@@ -126,7 +139,7 @@ export function encodePublicMapCursor(nodeId: string): string {
 export function parsePublicMapCursor(value: unknown): string | null {
   if (value === undefined || value === null || value === '') return null;
   if (typeof value !== 'string' || value.length > 512) {
-    throw new PublicMapInputError('cursor is invalid');
+    throw new PublicMapInputError('cursor is invalid', 'INVALID_CURSOR');
   }
   try {
     const decoded = JSON.parse(Buffer.from(value, 'base64url').toString('utf8')) as {
@@ -144,7 +157,7 @@ export function parsePublicMapCursor(value: unknown): string | null {
     }
     return decoded.nodeId;
   } catch {
-    throw new PublicMapInputError('cursor is invalid');
+    throw new PublicMapInputError('cursor is invalid', 'INVALID_CURSOR');
   }
 }
 

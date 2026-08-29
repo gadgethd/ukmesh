@@ -8,6 +8,17 @@ test-results/
 
 # Environment variables — never commit real credentials
 .env
+.env.*
+!.env.example
+secrets/
+credentials/
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.secret
 
 # Local semantic code index
 .tokensave/

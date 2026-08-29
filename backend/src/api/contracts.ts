@@ -18,10 +18,23 @@ export type ApiContract = {
   }>>;
 };
 
+const ERROR_PROPERTIES = {
+  error: { type: 'string' },
+  code: { type: 'string', pattern: '^[A-Z][A-Z0-9_]*$' },
+  requestId: { type: 'string', format: 'uuid' },
+};
+
 const ERROR_SCHEMA = {
   type: 'object',
   required: ['error'],
-  properties: { error: { type: 'string' } },
+  properties: ERROR_PROPERTIES,
+  additionalProperties: false,
+};
+
+const VALIDATION_ERROR_SCHEMA = {
+  type: 'object',
+  required: ['error', 'code', 'requestId'],
+  properties: ERROR_PROPERTIES,
   additionalProperties: false,
 };
 
@@ -233,6 +246,39 @@ export const API_CONTRACTS: readonly ApiContract[] = [
       ],
     };
   }
+  if (contract.path === '/nodes') {
+    return {
+      ...contract,
+      queryParameters: [{
+        name: 'fields',
+        in: 'query',
+        required: false,
+        description: 'Response profile; full remains the compatibility default.',
+        schema: { type: 'string', enum: ['slim', 'full'], default: 'full' },
+      }],
+    };
+  }
+  if (contract.path === '/packets/recent') {
+    return {
+      ...contract,
+      queryParameters: [
+        {
+          name: 'fields',
+          in: 'query',
+          required: false,
+          description: 'Response profile; full remains the compatibility default.',
+          schema: { type: 'string', enum: ['slim', 'full'], default: 'full' },
+        },
+        {
+          name: 'raw',
+          in: 'query',
+          required: false,
+          description: 'Return observation events instead of aggregated packets.',
+          schema: { type: 'boolean', default: false },
+        },
+      ],
+    };
+  }
   if (contract.path === '/observers/register') {
     return {
       ...contract,
@@ -293,3 +339,4 @@ export function assertContractCoverage(router: Router): void {
 }
 
 export const COMMON_ERROR_SCHEMA = ERROR_SCHEMA;
+export const API_VALIDATION_ERROR_SCHEMA = VALIDATION_ERROR_SCHEMA;
