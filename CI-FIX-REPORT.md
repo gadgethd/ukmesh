@@ -36,6 +36,14 @@ registered `trap cleanup EXIT`, which removed the uniquely named stack when that
 shell step ended. The later E2E step therefore could not actually run against
 the stack it was intended to test once the missing executable was fixed.
 
+Once those two blockers were fixed, Actions run
+[`33248343224`](https://github.com/gadgethd/ukmesh/actions/runs/33248343224)
+executed the browser suite and exposed three older UI/test failures: the cookie
+notice Privacy link used the browser-default low-contrast link colour, and two
+dashboard-mobile scenarios still assumed the pre-menu layout. One attempted to
+click the Precision coverage control through the open Layers menu; the other
+looked for the Diagnose mode without opening that menu, including after reload.
+
 ### Contract failure
 
 The Backend job reported:
@@ -56,6 +64,9 @@ contract check current at 63 API routes and 11 operator routes.
 - The smoke step no longer destroys its Compose project before E2E.
 - A dedicated `if: always()` step removes the uniquely named Compose project,
   volumes, and orphans after E2E, including when build, install, or tests fail.
+- The cookie notice Privacy link now uses the accessible site accent colour.
+- Mobile dashboard scenarios explicitly close or open the Layers menu before
+  interacting with controls that are outside or inside it, respectively.
 - `docs/openapi.yaml` was regenerated from the authoritative API contracts.
 - No dependencies were added or changed.
 

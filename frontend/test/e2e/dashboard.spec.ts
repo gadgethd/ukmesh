@@ -160,6 +160,9 @@ test('HopReach tiles arrive progressively while the 4,600-node map remains inter
     { timeout: 15_000 },
   ).toBe(true);
   await expect(page.getByRole('button', { name: 'Precision' })).toBeVisible({ timeout: 8_000 });
+  if (testInfo.project.name === 'dashboard-mobile') {
+    await page.getByRole('button', { name: 'Close menu' }).click();
+  }
   await page.getByRole('button', { name: 'Precision' }).click();
   await expect(page.getByRole('button', { name: 'Precision' })).toHaveAttribute('aria-pressed', 'true');
   await expect.poll(
@@ -208,7 +211,7 @@ test('RF coverage remains available with 3D terrain', async ({ page }, testInfo)
   await expect(page).toHaveURL(/layers=[^&]*terrain[^&]*coverage/);
 });
 
-test('map modes update layers and produce a shareable URL', async ({ page }) => {
+test('map modes update layers and produce a shareable URL', async ({ page }, testInfo) => {
   await page.goto('/');
   await expect(page.getByText('Live Map', { exact: true })).toBeVisible({ timeout: 15_000 });
   const mapArea = page.locator('.map-area');
@@ -219,6 +222,9 @@ test('map modes update layers and produce a shareable URL', async ({ page }) => 
     .filter((violation) => violation.impact === 'critical' || violation.impact === 'serious')
     .map((violation) => ({ id: violation.id, targets: violation.nodes.map((node) => node.target.join(' ')) }))).toEqual([]);
 
+  if (testInfo.project.name === 'dashboard-mobile') {
+    await page.getByRole('button', { name: 'Layers' }).first().click();
+  }
   const diagnose = page.getByRole('button', { name: 'Diagnose' }).first();
   await diagnose.click();
   await expect(diagnose).toHaveAttribute('aria-pressed', 'true');
@@ -227,5 +233,8 @@ test('map modes update layers and produce a shareable URL', async ({ page }) => 
   await expect(page).toHaveURL(/layers=.*clashes/);
 
   await page.reload();
+  if (testInfo.project.name === 'dashboard-mobile') {
+    await page.getByRole('button', { name: 'Layers' }).first().click();
+  }
   await expect(page.getByRole('button', { name: 'Diagnose' }).first()).toHaveAttribute('aria-pressed', 'true');
 });
