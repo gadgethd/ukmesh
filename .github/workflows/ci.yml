@@ -209,13 +209,6 @@ jobs:
           publisher_user="ci-e2e-publisher"
           publisher_password="ci-e2e-publisher-password"
           observer="CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"
-          cleanup() {
-            docker compose -f docker-compose.yml -f docker-compose.ci.yml \
-              --project-name "$project" \
-              --profile dev \
-              down --volumes --remove-orphans
-          }
-          trap cleanup EXIT
           # Create each Argon2 entry independently. Updating an existing
           # password file with this image is not reliable on hosted runners.
           docker run --rm \
@@ -361,10 +354,19 @@ jobs:
           grep -q '^mqtt-packet-fanout-ok$' "$ws_log"
       - name: Install Playwright for E2E tests
         working-directory: frontend
-        run: npx playwright install --with-deps chromium
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
       - name: Run E2E tests against live stack
         working-directory: frontend
         run: npm run test:e2e
+      - name: Clean up live E2E stack
+        if: always()
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.ci.yml \
+            --project-name "meshcore-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --profile dev \
+            down --volumes --remove-orphans
       - name: Validate monitoring configuration
         run: |
           docker run --rm \
