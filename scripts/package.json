@@ -6,7 +6,7 @@
   "scripts": {
     "generate-key":       "tsx generate-observer-key.ts",
     "register-observer":  "tsx register-observer.ts",
-    "test":               "bash test-generate-observer-key.sh",
+    "test":               "bash test-generate-observer-key.sh && bash test-newuser.sh",
     "typecheck":          "tsc --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --strict --types node generate-observer-key.ts register-observer.ts"
   },
   "dependencies": {

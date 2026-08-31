@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { resolveDbAssetPath } from './assets.js';
 import { boundedIntegerSetting } from '../platform/config/boundedNumber.js';
+import { planOperatorConfiguredOwnerGrantSync } from '../owner/ownerGrantReconciliation.js';
 
 const { Pool } = pg;
 const OWNER_DB_NAME = process.env['OWNER_POSTGRES_DB'] ?? 'meshcore_owner_auth';
@@ -346,35 +347,43 @@ export async function syncOperatorConfiguredOwnerGrants(
   generation: string,
 ): Promise<void> {
   const normalized = grants.map((grant) => normalizeGrant(grant.mqttUsername, grant.nodeId));
-  const desiredKeys = new Set(normalized.map((grant) => `${grant.mqttUsername}\0${grant.nodeId}`));
   const current = await ownerPool.query<{
     mqtt_username: string;
     node_id: string;
-    revoked_at: string | null;
+    revoked_at: string | Date | null;
     verification_method: string | null;
     grant_generation: string | null;
+    updated_at: string | Date | null;
   }>(
-    `SELECT mqtt_username, node_id, revoked_at, verification_method, grant_generation
+    `SELECT mqtt_username, node_id, revoked_at, verification_method, grant_generation, updated_at
        FROM owner_account_nodes`,
   );
 
-  for (const grant of normalized) {
-    const row = current.rows.find((candidate) =>
-      candidate.mqtt_username === grant.mqttUsername && candidate.node_id === grant.nodeId);
-    if (row?.revoked_at) continue;
-    if (row?.verification_method === 'operator-database') continue;
-    if (row?.verification_method === 'operator-config' && row.grant_generation === generation) continue;
-    await upsertVerifiedOwnerGrant(grant.mqttUsername, grant.nodeId, {
-      verificationMethod: 'operator-config',
-      actor: 'config-reconciler',
-      generation,
-    });
-  }
-  for (const row of current.rows) {
-    if (row.verification_method !== 'operator-config'
-      || row.revoked_at
-      || desiredKeys.has(`${row.mqtt_username}\0${row.node_id}`)) continue;
-    await revokeOwnerGrant(row.mqtt_username, row.node_id, {
+  const actions = planOperatorConfiguredOwnerGrantSync(
+    normalized,
+    current.rows.map((row) => ({
+      mqttUsername: row.mqtt_username,
+      nodeId: row.node_id,
+      revokedAt: row.revoked_at,
+      verificationMethod: row.verification_method,
+      grantGeneration: row.grant_generation,
+      updatedAt: row.updated_at,
+    })),
+    generation,
+  );
+
+  for (const action of actions) {
+    if (action.type === 'upsert') {
+      await upsertVerifiedOwnerGrant(action.grant.mqttUsername, action.grant.nodeId, {
+        verificationMethod: 'operator-config',
+        actor: 'config-reconciler',
+        reason: action.reauthorize ? 'restored from operator configuration' : undefined,
+        generation,
+        reauthorize: action.reauthorize,
+      });
+      continue;
+    }
+    await revokeOwnerGrant(action.grant.mqttUsername, action.grant.nodeId, {
       actor: 'config-reconciler',
       reason: 'removed from operator configuration',
       generation,

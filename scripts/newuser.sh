@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-readonly REPO_DIR='/home/ben/ukmesh/meshcore-analytics'
+readonly REPO_DIR="${NEWUSER_REPO_DIR:-/home/ben/ukmesh/meshcore-analytics}"
 readonly ENV_FILE="${REPO_DIR}/.env"
 readonly MOSQUITTO_CONTAINER="$(docker ps --format '{{.Names}}' | grep -E '^meshcore-infra-mosquitto-1$|mosquitto-1$' | head -1)"
 readonly BACKEND_CONTAINER='meshcore-analytics-backend-1'
@@ -18,6 +18,7 @@ usage() {
   cat <<'EOF'
 Usage: newuser [--timeout <duration>] <username> [key1,key2,...]
        newuser --watch [--timeout <duration>] <username>
+       newuser --link [--timeout <duration>] <username> [key1,key2,...]
 
 Creates one MQTT/owner-dashboard account. A missing username is prompted for.
 Each key must be a 64-character hexadecimal MeshCore public key.
@@ -27,6 +28,8 @@ fresh Mosquitto logs for the user's first device contact. The default discovery
 timeout is 15 minutes; durations accept seconds or an s, m, or h suffix.
 
 --watch resumes discovery for an existing credential-only user.
+--link adds one or more nodes to an existing owner without changing its password.
+When link keys are omitted, the next node observed for that user is added.
 EOF
 }
 
@@ -337,11 +340,18 @@ verify_broker_login() {
 
 main() {
 watch_mode=0
+link_mode=0
 timeout_value=$DEFAULT_DISCOVERY_TIMEOUT_SECONDS
 while (( $# > 0 )); do
   case $1 in
     --watch)
+      (( ! link_mode )) || die '--watch and --link are mutually exclusive'
       watch_mode=1
+      shift
+      ;;
+    --link)
+      (( ! watch_mode )) || die '--watch and --link are mutually exclusive'
+      link_mode=1
       shift
       ;;
     --timeout)
@@ -373,6 +383,8 @@ done
 
 if (( watch_mode )); then
   (( $# == 1 )) || { usage >&2; return 2; }
+elif (( link_mode )); then
+  (( $# >= 1 && $# <= 2 )) || { usage >&2; return 2; }
 else
   (( $# <= 2 )) || { usage >&2; return 2; }
 fi
@@ -411,6 +423,10 @@ discovery_mode=0
 if (( watch_mode )) || (( ${#keys[@]} == 0 )); then
   discovery_mode=1
 fi
+existing_credential_mode=0
+if (( watch_mode || link_mode )); then
+  existing_credential_mode=1
+fi
 
 for command_name in docker openssl awk flock mktemp chmod mv date sleep; do
   command -v "$command_name" >/dev/null || die "required command not found: ${command_name}"
@@ -434,14 +450,21 @@ mapfile -t owner_map_lines < <(awk '/^OWNER_MQTT_USERNAME_MAP=/{ print }' "$ENV_
 old_owner_map=${owner_map_lines[0]#OWNER_MQTT_USERNAME_MAP=}
 
 IFS=',' read -r -a existing_entries <<<"$old_owner_map"
+owner_map_has_username=0
 for existing_entry in "${existing_entries[@]}"; do
   existing_entry="$(trim "$existing_entry")"
   [[ -z $existing_entry ]] && continue
   [[ $existing_entry == *=* ]] || die 'existing OWNER_MQTT_USERNAME_MAP is malformed'
   existing_username="$(trim "${existing_entry%%=*}")"
-  [[ $existing_username != "$username" ]] \
-    || die "username already exists in OWNER_MQTT_USERNAME_MAP: ${username}"
+  if [[ $existing_username == "$username" ]]; then
+    owner_map_has_username=1
+    (( link_mode )) \
+      || die "username already exists in OWNER_MQTT_USERNAME_MAP: ${username}"
+  fi
 done
+if (( link_mode && ! owner_map_has_username )); then
+  die "username does not exist in OWNER_MQTT_USERNAME_MAP: ${username}"
+fi
 
 passwd_exists=0
 if docker exec "$MOSQUITTO_CONTAINER" sh -c '
@@ -457,13 +480,13 @@ else
   (( passwd_check_status == 1 )) \
     || die 'could not inspect Mosquitto passwd'
 fi
-if (( watch_mode )); then
+if (( existing_credential_mode )); then
   (( passwd_exists )) || die "username does not exist in Mosquitto passwd: ${username}"
 else
   (( ! passwd_exists )) || die "username already exists in Mosquitto passwd: ${username}"
 fi
 
-if (( ! watch_mode )); then
+if (( ! existing_credential_mode )); then
   if docker exec "$MOSQUITTO_CONTAINER" awk -v username="$username" '
       $1 == "user" && $2 == username { found = 1 }
       END { exit found ? 0 : 1 }
@@ -503,6 +526,11 @@ SQL
     [[ $existing_owner_node_count == 0 ]] \
       || die "owner database already has node grants for username: ${username}"
   fi
+elif (( link_mode )); then
+  [[ $owner_db_state != missing ]] \
+    || die "username does not exist in owner database: ${username}"
+  owner_db_preexisting=1
+  [[ $owner_db_state == active ]] && owner_db_restore_active=true
 else
   [[ $owner_db_state == missing ]] \
     || die "username already exists in owner database: ${username}"
@@ -561,10 +589,16 @@ trap 'rollback 1' EXIT
 
 password=''
 discovery_since=''
-if (( watch_mode )); then
+if (( existing_credential_mode )); then
   preserve_credential=1
-  discovery_since="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-  log "resuming discovery for ${username}; reconnect the device using its existing credential"
+  if (( discovery_mode )); then
+    discovery_since="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+    if (( link_mode )); then
+      log "discovering an additional node for ${username}; reconnect it using the existing credential"
+    else
+      log "resuming discovery for ${username}; reconnect the device using its existing credential"
+    fi
+  fi
 else
   if (( discovery_mode )); then
     discovery_since="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
@@ -603,6 +637,8 @@ if (( discovery_mode )); then
     trap - ERR INT TERM EXIT
     if (( watch_mode )); then
       log "discovery timed out; reconnect the device and retry: newuser --watch --timeout ${timeout_value} ${username}"
+    elif (( link_mode )); then
+      log "discovery timed out; reconnect the additional device and retry: newuser --link --timeout ${timeout_value} ${username}"
     else
       log "discovery timed out; the broker credential remains valid"
       log "resume after reconnecting the device: newuser --watch --timeout ${timeout_value} ${username}"
@@ -610,10 +646,6 @@ if (( discovery_mode )); then
     return "$discovery_status"
   fi
 fi
-
-key_pipe="$(IFS='|'; printf '%s' "${keys[*]}")"
-key_csv="$(IFS=','; printf '%s' "${keys[*]}")"
-new_entry="${username}=${key_pipe}"
 
 flock -x 9  # re-acquire for the mutation phase
 
@@ -626,14 +658,45 @@ mapfile -t owner_map_lines < <(awk '/^OWNER_MQTT_USERNAME_MAP=/{ print }' "$ENV_
   || die "expected exactly one OWNER_MQTT_USERNAME_MAP line in ${ENV_FILE}"
 old_owner_map=${owner_map_lines[0]#OWNER_MQTT_USERNAME_MAP=}
 IFS=',' read -r -a existing_entries <<<"$old_owner_map"
+declare -A configured_keys=()
+owner_map_has_username=0
 for existing_entry in "${existing_entries[@]}"; do
   existing_entry="$(trim "$existing_entry")"
   [[ -z $existing_entry ]] && continue
   [[ $existing_entry == *=* ]] || die 'existing OWNER_MQTT_USERNAME_MAP is malformed'
   existing_username="$(trim "${existing_entry%%=*}" )"
-  [[ $existing_username != "$username" ]] \
-    || die "username already exists in OWNER_MQTT_USERNAME_MAP: ${username}"
+  if [[ $existing_username == "$username" ]]; then
+    owner_map_has_username=1
+    (( link_mode )) \
+      || die "username already exists in OWNER_MQTT_USERNAME_MAP: ${username}"
+    existing_key_list="$(trim "${existing_entry#*=}")"
+    IFS='|' read -r -a existing_keys <<<"$existing_key_list"
+    for existing_key in "${existing_keys[@]}"; do
+      existing_key="$(trim "$existing_key")"
+      existing_key=${existing_key^^}
+      [[ $existing_key =~ ^[0-9A-F]{64}$ ]] \
+        || die 'existing OWNER_MQTT_USERNAME_MAP is malformed'
+      configured_keys[$existing_key]=1
+    done
+  fi
 done
+if (( link_mode )); then
+  (( owner_map_has_username )) \
+    || die "username does not exist in OWNER_MQTT_USERNAME_MAP: ${username}"
+  declare -a unconfigured_keys=()
+  for key in "${keys[@]}"; do
+    if [[ -z ${configured_keys[$key]+set} ]]; then
+      unconfigured_keys+=("$key")
+    fi
+  done
+  (( ${#unconfigured_keys[@]} > 0 )) \
+    || die "all requested nodes are already linked to username: ${username}"
+  keys=("${unconfigured_keys[@]}")
+fi
+
+key_pipe="$(IFS='|'; printf '%s' "${keys[*]}")"
+key_csv="$(IFS=','; printf '%s' "${keys[*]}")"
+new_entry="${username}=${key_pipe}"
 
 if [[ -n $old_owner_map ]]; then
   new_owner_map="${old_owner_map},${new_entry}"
@@ -715,7 +778,7 @@ for key in "${keys[@]}"; do
     || die "ACL readback is incomplete for ${username}=${key}"
 done
 
-if (( watch_mode )); then
+if (( existing_credential_mode )); then
   log 'existing broker password is unchanged; ACL and database readbacks verified'
 else
   # ownerAccess.verifyMqttCredentials() performs a clean MQTT CONNECT over this
@@ -750,7 +813,7 @@ db_changed=0
 printf '\nProvisioned MQTT owner account\n'
 printf 'Broker: %s\n' "$BROKER_URL"
 printf 'Username: %s\n' "$username"
-if (( watch_mode )); then
+if (( existing_credential_mode )); then
   printf 'Password: unchanged (existing credential)\n'
 else
   printf 'Password: %s\n' "$password"
