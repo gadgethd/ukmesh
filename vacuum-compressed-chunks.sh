@@ -59,8 +59,18 @@ if [ -n "$chunk" ]; then
 fi
 
 cd "$repo_dir"
-docker compose config -q
-psql_command=(docker compose exec -T timescaledb psql -X -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-meshcore}" -d "$database")
+# Resolve the compose project that owns the timescaledb service. The test harness
+# drives the script with COMPOSE_FILE/COMPOSE_PROJECT_NAME set (its own fixture);
+# in the two-project production layout the database lives in the separate
+# meshcore-infra project (mirrors scripts/backup.sh).
+if [ -z "${COMPOSE_FILE:-}" ]; then
+  infra_dir="${MESHCORE_INFRA_DIR:-${repo_dir}/../meshcore-infra}"
+  compose_base=(docker compose --project-directory "$infra_dir" -f "$infra_dir/docker-compose.yml" --project-name "${MESHCORE_INFRA_PROJECT_NAME:-meshcore-infra}")
+else
+  compose_base=(docker compose)
+fi
+"${compose_base[@]}" config -q
+psql_command=("${compose_base[@]}" exec -T timescaledb psql -X -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-meshcore}" -d "$database")
 
 database_exists="$("${psql_command[@]}" -Atc \
   "SELECT 1 FROM pg_database WHERE datname = current_database() AND NOT datistemplate")"
@@ -128,7 +138,7 @@ case "$action" in
     ;;
 esac
 available_bytes="$(
-  docker compose exec -T timescaledb \
+  "${compose_base[@]}" exec -T timescaledb \
     df -PB1 /var/lib/postgresql/data | awk 'NR==2 {print $4}'
 )"
 
