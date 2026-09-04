@@ -60,3 +60,38 @@ test('bounded cache overwrite accounts weight once and reports hit/miss/eviction
   });
   cache.shutdown();
 });
+
+test('sweeps respect replacement deadlines, access order, and backwards clock changes', () => {
+  let now = 100;
+  const cache = new BoundedTtlMap<string, string>({
+    maxEntries: 4, maxWeight: 100, ttlMs: 100, now: () => now,
+  });
+  try {
+    cache.set('replaced', 'old');
+    now = 150;
+    cache.set('replaced', 'new');
+    now = 50;
+    cache.set('earlier', 'value');
+    cache.get('replaced'); // LRU order must not determine expiry order.
+    now = 150;
+    cache.sweep();
+    assert.equal(cache.has('earlier'), false);
+    assert.equal(cache.get('replaced'), 'new');
+    now = 200; // The overwritten value's original expiry is harmless.
+    cache.sweep();
+    assert.equal(cache.size, 1);
+    now = 250;
+    cache.sweep();
+    assert.equal(cache.size, 0);
+    assert.equal(cache.weight(), 0);
+    assert.equal(cache.metrics().expiries, 2);
+    cache.clear();
+    now = 0;
+    cache.set('after-clear', 'value');
+    now = 100;
+    cache.sweep();
+    assert.equal(cache.size, 0);
+  } finally {
+    cache.shutdown();
+  }
+});
