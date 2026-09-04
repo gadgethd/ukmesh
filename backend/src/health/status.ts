@@ -3,6 +3,7 @@ import { Redis } from 'ioredis';
 import { query } from '../db/index.js';
 import { getRedisConnectionOptions, getRedisUrl } from '../platform/config/redis.js';
 import { configuredLifecycleTargets } from '../db/dataLifecycle.js';
+import { INGEST_HEALTH_SQL, PATH_HASH_HEALTH_SQL } from './packetDiagnostics.js';
 import {
   loadVerifiedRestoreReceipt,
   REQUIRED_BACKUP_DATASETS,
@@ -632,7 +633,7 @@ export async function getWorkerHealthOverview() {
   // Compute system stats once — cpuUsagePct() diffs against lastCpuSample,
   // so calling it twice in one request gives a garbage near-zero second reading.
   const sysStats = systemStats();
-  const [workers, history, errors1h, ingest, pathHashWidths, multibyteSummary, operationalChecks, databaseMaintenance, databaseRuntime, redisDurability] = await Promise.all([
+  const [workers, history, errors1h, ingest, pathDiagnostics, operationalChecks, databaseMaintenance, databaseRuntime, redisDurability] = await Promise.all([
     currentWorkerStatuses(sysStats),
     query<{
       ts: string;
@@ -657,82 +658,16 @@ export async function getWorkerHealthOverview() {
       stale_threshold_minutes: string;
       global_last_packet_at: string | null;
     }>(
-       `WITH latest_rx AS (
-         -- Bounded to the active_rx window below; an unbounded scan of the
-         -- packets hypertable here takes 20s+ and gives identical results.
-         SELECT rx_node_id, MAX(time) AS last_packet_at
-      FROM packets
-         WHERE time > NOW() - INTERVAL '3 days'
-           AND rx_node_id IS NOT NULL
-           AND rx_node_id <> ''
-           AND network IS DISTINCT FROM 'test'
-           AND split_part(topic, '/', 1) <> 'meshcore-test'
-         GROUP BY rx_node_id
-       ),
-       test_active AS (
-         SELECT rx_node_id
-         FROM packets
-         WHERE time > NOW() - INTERVAL '3 days'
-           AND rx_node_id IS NOT NULL AND rx_node_id <> ''
-         GROUP BY rx_node_id
-         HAVING MAX(time) = MAX(time) FILTER (WHERE network = 'test')
-       ),
-       active_rx AS (
-         SELECT rx_node_id, last_packet_at
-         FROM latest_rx
-         WHERE last_packet_at > NOW() - INTERVAL '3 days'
-           AND rx_node_id NOT IN (SELECT rx_node_id FROM test_active)
-       )
-       SELECT
-         COUNT(*) FILTER (WHERE last_packet_at < NOW() - INTERVAL '15 minutes')::text AS stale_nodes,
-         COUNT(*)::text AS active_nodes,
-         MAX(
-           CASE
-             WHEN last_packet_at < NOW() - INTERVAL '15 minutes'
-             THEN FLOOR(EXTRACT(EPOCH FROM (NOW() - last_packet_at)) / 60)
-             ELSE NULL
-           END
-         )::text AS max_stale_minutes,
-         '15'::text AS stale_threshold_minutes,
-         (SELECT MAX(time)::text
-          FROM packets
-          WHERE network IS DISTINCT FROM 'test'
-            AND split_part(topic, '/', 1) <> 'meshcore-test') AS global_last_packet_at
-       FROM active_rx`,
+      INGEST_HEALTH_SQL,
     ),
     query<{
-      hash_hex_len: string;
-      hop_count: string;
-    }>(
-      `SELECT length(h)::text AS hash_hex_len, COUNT(*)::text AS hop_count
-       FROM packets p
-       CROSS JOIN LATERAL unnest(p.path_hashes) AS h
-       WHERE p.time > NOW() - INTERVAL '24 hours'
-         AND p.network IS DISTINCT FROM 'test'
-       GROUP BY 1`,
-    ),
-    query<{
+      one_byte: string;
+      two_byte: string;
+      three_byte: string;
       latest_multibyte_at: string | null;
       multibyte_packets_24h: string;
     }>(
-      `SELECT
-         MAX(time) FILTER (
-           WHERE EXISTS (
-             SELECT 1
-             FROM unnest(path_hashes) AS h
-             WHERE length(h) > 2
-           )
-         )::text AS latest_multibyte_at,
-         COUNT(*) FILTER (
-           WHERE EXISTS (
-             SELECT 1
-             FROM unnest(path_hashes) AS h
-             WHERE length(h) > 2
-           )
-         )::text AS multibyte_packets_24h
-       FROM packets
-       WHERE time > NOW() - INTERVAL '24 hours'
-        AND network IS DISTINCT FROM 'test'`,
+      PATH_HASH_HEALTH_SQL,
     ),
     getOperationalChecksCached(),
     query<{
@@ -774,25 +709,12 @@ export async function getWorkerHealthOverview() {
   const activeNodes = Number(ingestRow?.active_nodes ?? 0);
   const maxStaleMinutes = Number(ingestRow?.max_stale_minutes ?? 0);
   const staleThresholdMinutes = Number(ingestRow?.stale_threshold_minutes ?? 15);
-  const widthToBucket: Record<number, 'one_byte' | 'two_byte' | 'three_byte'> = {
-    2: 'one_byte',
-    4: 'two_byte',
-    6: 'three_byte',
-  };
+  const multibyteRow = pathDiagnostics.rows[0];
   const pathHashStats = {
-    one_byte: 0,
-    two_byte: 0,
-    three_byte: 0,
+    one_byte: Number(multibyteRow?.one_byte ?? 0),
+    two_byte: Number(multibyteRow?.two_byte ?? 0),
+    three_byte: Number(multibyteRow?.three_byte ?? 0),
   };
-
-  for (const row of pathHashWidths.rows) {
-    const width = Number(row.hash_hex_len ?? 0);
-    const bucket = widthToBucket[width];
-    if (!bucket) continue;
-    pathHashStats[bucket] += Number(row.hop_count ?? 0);
-  }
-
-  const multibyteRow = multibyteSummary.rows[0];
   const problems: HealthProblem[] = [];
   const lastPacketAt = ingestRow?.global_last_packet_at ? Date.parse(ingestRow.global_last_packet_at) : Number.NaN;
   const packetAgeMinutes = Number.isFinite(lastPacketAt) ? Math.floor((Date.now() - lastPacketAt) / 60_000) : null;
