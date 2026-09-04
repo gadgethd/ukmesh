@@ -17,13 +17,10 @@
   "dependencies": {
     "@deck.gl/aggregation-layers": "^9.4.0",
     "@deck.gl/core": "^9.4.0",
-    "@deck.gl/extensions": "^9.4.0",
     "@deck.gl/layers": "^9.3.10",
     "@deck.gl/mapbox": "^9.4.0",
-    "d3-force": "^3.0.0",
     "fuse.js": "^7.5.0",
     "maplibre-gl": "^6.10.0",
-    "polygon-clipping": "^0.15.7",
     "react": "19.3.0",
     "react-aria-components": "^1.21.1",
     "react-dom": "19.3.0",
@@ -35,7 +32,6 @@
   "devDependencies": {
     "@axe-core/playwright": "^4.13.0",
     "@playwright/test": "^1.63.0",
-    "@types/d3-force": "^3.0.10",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.1",
