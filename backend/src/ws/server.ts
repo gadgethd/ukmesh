@@ -524,6 +524,18 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
     };
     clientScopes.set(ws, scope);
 
+    // Install cleanup before initial-state work can reject, close the socket,
+    // or outlive a client that disconnects during the database read.
+    ws.on('close', () => {
+      clientScopes.delete(ws);
+      messageQueue.delete(ws);
+      websocketClients.set(wss.clients.size);
+      console.log('[ws] client disconnected, total:', wss.clients.size);
+    });
+    ws.on('error', (err) => {
+      console.error('[ws] client error', err.message);
+    });
+
     // Synthetic handshake probes explicitly opt out of the expensive initial
     // state. The WebSocket control-frame ping/pong still proves the full HTTP
     // upgrade and bidirectional socket path without touching PostgreSQL.
@@ -588,17 +600,6 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
         } satisfies WSMessage));
       }
     }
-
-    ws.on('close', () => {
-      clientScopes.delete(ws);
-      messageQueue.delete(ws);
-      websocketClients.set(wss.clients.size);
-      console.log('[ws] client disconnected, total:', wss.clients.size);
-    });
-
-    ws.on('error', (err) => {
-      console.error('[ws] client error', err.message);
-    });
   });
 
   const heartbeatTimer = setInterval(() => {
