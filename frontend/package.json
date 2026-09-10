@@ -15,36 +15,36 @@
     "test:mobile": "playwright test mobile.spec.ts --project=mobile-regression"
   },
   "dependencies": {
-    "@deck.gl/aggregation-layers": "^9.3.10",
-    "@deck.gl/core": "^9.3.10",
-    "@deck.gl/extensions": "^9.3.10",
+    "@deck.gl/aggregation-layers": "^9.4.0",
+    "@deck.gl/core": "^9.4.0",
+    "@deck.gl/extensions": "^9.4.0",
     "@deck.gl/layers": "^9.3.10",
-    "@deck.gl/mapbox": "^9.3.10",
+    "@deck.gl/mapbox": "^9.4.0",
     "d3-force": "^3.0.0",
     "fuse.js": "^7.5.0",
-    "maplibre-gl": "^6.5.0",
+    "maplibre-gl": "^6.7.0",
     "polygon-clipping": "^0.15.7",
     "react": "19.2.8",
-    "react-aria-components": "^1.20.0",
+    "react-aria-components": "^1.21.1",
     "react-dom": "19.2.8",
     "react-is": "^19.2.8",
-    "react-router": "8.3.0",
+    "react-router": "8.3.1",
     "recharts": "^3.10.1",
     "zustand": "^5.0.15"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.13.0",
-    "@playwright/test": "^1.62.1",
+    "@playwright/test": "^1.63.0",
     "@types/d3-force": "^3.0.10",
     "@types/react": "^19.2.18",
-    "@types/react-dom": "^19.2.5",
-    "@vitejs/plugin-react": "^6.1.0",
-    "postcss": "8.5.26",
-    "tsx": "^4.23.12",
+    "@types/react-dom": "^19.2.7",
+    "@vitejs/plugin-react": "^6.1.1",
+    "postcss": "8.5.28",
+    "tsx": "^4.23.13",
     "typescript": "^7.0.2",
     "vite": "^8.2.2"
   },
   "overrides": {
-    "postcss": "8.5.26"
+    "postcss": "8.5.28"
   }
 }
