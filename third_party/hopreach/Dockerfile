@@ -4,7 +4,11 @@
 # COVERAGE_GPU_MODE) links against wgpu-native's prebuilt static libs, which
 # target glibc. The runtime stage below has to follow suit for the same
 # reason.
-FROM golang:1.25.7-bookworm@sha256:564e366a28ad1d70f460a2b97d1d299a562f08707eb0ecb24b659e5bd6c108e1 AS build
+# Go 1.25.13 over 1.25.7: fixes CVE-2026-25679 (net/url IPv6 host parsing)
+# and the other reachable stdlib HIGHs in the old builder (CVE-2026-39821
+# x/net/idna, CVE-2026-56853 net/http, CVE-2026-33818 encoding/asn1, ...).
+# Digest pinned so the builder can't drift under the tag.
+FROM golang:1.25.13-bookworm@sha256:e401dae1bf814e29204a8cb7915682e1780951e609ca0dd8865ee1937f510c48 AS build
 # VERSION is passed by .github/workflows/release.yml as the git tag that
 # triggered this build (e.g. v0.1.8) — "dev" (buildinfo's own default,
 # unmistakable in the UI/analytics page) if built some other way, e.g.
@@ -26,7 +30,7 @@ RUN CGO_ENABLED=1 go build -ldflags "-X hopreach/internal/buildinfo.Version=${VE
 # drifting JS copy. wasm_exec.js (Go's own runtime shim) is copied from
 # this same build stage so it's always paired with the Go version that
 # actually compiled the module.
-FROM golang:1.25.7-bookworm@sha256:564e366a28ad1d70f460a2b97d1d299a562f08707eb0ecb24b659e5bd6c108e1 AS wasmbuild
+FROM golang:1.25.13-bookworm@sha256:e401dae1bf814e29204a8cb7915682e1780951e609ca0dd8865ee1937f510c48 AS wasmbuild
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
