@@ -228,6 +228,43 @@ The public `/health` page polls the aggregated `/api/health` contract every minu
 - [SRTM cache, alert delivery, observer review, and planned publication](runbook-srtm-alerts-observers.md)
 - [Database compression and retention gates](db-lifecycle.md)
 
+### Owner authorization baseline refresh
+
+`/readyz` fails closed when the current owner accounts, grants, configured grants,
+or ACL generations differ from `OWNER_AUTH_INVENTORY_BASELINE_PATH`. This means
+an owner grant or `OWNER_MQTT_USERNAME_MAP` entry changed after the baseline was
+recorded. Drift is expected after every approved grant change and is not itself
+an incident, but it must be reviewed before the baseline is refreshed.
+
+1. Identify the change from the audit trail and confirm it was approved:
+
+   ```bash
+   docker exec -e PGOPTIONS='-c default_transaction_read_only=on' \
+     meshcore-infra-timescaledb-1 psql -U meshcore -d meshcore_owner_auth -X \
+     -c "SELECT occurred_at, event_type, source, actor FROM owner_grant_audit \
+         WHERE occurred_at > now() - interval '30 days' ORDER BY occurred_at DESC"
+   ```
+
+2. Generate and validate a fresh baseline with the running image (read-only
+   against the database; it only writes the new baseline file):
+
+   ```bash
+   scripts/refresh-owner-baseline.sh
+   ```
+
+3. Activate it after reviewing the printed counts/generations:
+
+   ```bash
+   scripts/refresh-owner-baseline.sh --apply --recreate
+   curl -fsS http://127.0.0.1:3000/readyz
+   ```
+
+The script refuses to overwrite an existing baseline, backs up `.env` before
+editing, keeps the previous baseline for rollback, and validates the new file
+against the live inventory before activation. To roll back, point
+`OWNER_AUTH_INVENTORY_BASELINE_PATH` at the previous file and recreate the
+backend.
+
 Use the `/operations`, `/observer-registrations`, and operator audit pages for
 normal mutations. They enforce authorization, CSRF, typed confirmation,
 idempotency, capacity, and audit rules that direct Redis/SQL edits bypass.
