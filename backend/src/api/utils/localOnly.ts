@@ -26,7 +26,8 @@ function isPrivateClientIp(ip: string): boolean {
   return false;
 }
 
-export function requireLocalOnly(req: Request, res: Response): boolean {
+/** Non-mutating half of {@link requireLocalOnly}: is the peer on the local/private network? */
+export function isLocalClientRequest(req: Request): boolean {
   // Forwarded headers are set by the proxy chain for public traffic. A genuine
   // local request has none of these, or only carries private hop addresses.
   // If ANY forwarded address is a public IP, this is proxied public traffic —
@@ -44,7 +45,6 @@ export function requireLocalOnly(req: Request, res: Response): boolean {
     (forwarded.length > 0 && !isTrustedProxyPeer(peer))
     || forwarded.some((ip) => !isPrivateClientIp(ip))
   ) {
-    res.status(403).json({ error: 'Local access only' });
     return false;
   }
 
@@ -53,16 +53,24 @@ export function requireLocalOnly(req: Request, res: Response): boolean {
     ...forwarded,
   ].filter(Boolean) as string[];
 
-  if (!candidates.some((ip) => isPrivateClientIp(ip) || (isIP(ip) === 0 && ip === 'localhost'))) {
-    res.status(403).json({ error: 'Local access only' });
-    return false;
-  }
+  return candidates.some((ip) => isPrivateClientIp(ip) || (isIP(ip) === 0 && ip === 'localhost'));
+}
 
+/** Non-mutating half of {@link requireLocalOnly}: does the request carry a valid operator token? */
+export function hasOperatorAuthorization(req: Request): boolean {
   const expected = process.env['OPERATOR_SITE_TOKEN'];
   const authorization = String(req.headers.authorization ?? '');
   const bearer = authorization.startsWith('Bearer ') ? authorization.slice(7).trim() : '';
   const provided = String(req.headers['x-operator-token'] ?? bearer);
-  if (!operatorTokenIsConfigured(expected) || !verifyOperatorToken(expected, provided)) {
+  return operatorTokenIsConfigured(expected) && verifyOperatorToken(expected, provided);
+}
+
+export function requireLocalOnly(req: Request, res: Response): boolean {
+  if (!isLocalClientRequest(req)) {
+    res.status(403).json({ error: 'Local access only' });
+    return false;
+  }
+  if (!hasOperatorAuthorization(req)) {
     res.status(401).json({ error: 'Operator authentication required' });
     return false;
   }

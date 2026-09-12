@@ -3,7 +3,7 @@ import type { QueryResultRow } from 'pg';
 type QueryFn = <T extends QueryResultRow = QueryResultRow>(
   text: string,
   params?: unknown[],
-) => Promise<{ rows: T[] }>;
+) => Promise<{ rows: T[]; rowCount: number | null }>;
 
 export async function ownerAlertRuleRows(
   query: QueryFn,
@@ -111,10 +111,11 @@ export async function deleteOwnerAlertRule(
   ruleId: string,
   ownerUsername: string,
   nodeIds: string[],
-): Promise<void> {
-  await query(
+): Promise<boolean> {
+  const result = await query(
     `DELETE FROM owner_alert_rules
       WHERE id = $1 AND owner_username = $2 AND node_id = ANY($3::text[])`,
     [ruleId, ownerUsername, nodeIds],
   );
+  return (result.rowCount ?? 0) > 0;
 }

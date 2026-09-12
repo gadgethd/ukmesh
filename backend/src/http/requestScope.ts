@@ -52,6 +52,54 @@ export function resolveRequestNetwork(
   return normalized ?? fallback;
 }
 
+export type PublicScopeHandshakeResult =
+  | { ok: true }
+  | { ok: false; statusCode: 400; reason: PublicScopeHandshakeReason; message: string };
+
+export type PublicScopeHandshakeReason =
+  | 'invalid_scope'
+  | 'all_scope_forbidden'
+  | 'unexpected_error';
+
+/**
+ * Total, fail-closed validation for HTTP/WebSocket handshakes. This function
+ * never throws: every failure is returned as a bounded rejection reason so a
+ * caller's upgrade callback can always respond exactly once instead of leaking
+ * an exception into the process-level uncaughtException handler.
+ */
+export function validatePublicNetworkScopeForHandshake(
+  requested: unknown,
+  headers: IncomingHttpHeaders,
+): PublicScopeHandshakeResult {
+  try {
+    resolvePublicNetworkScope(requested, headers);
+    return { ok: true };
+  } catch (error) {
+    if (error instanceof PublicAllScopeForbiddenError) {
+      return {
+        ok: false,
+        statusCode: 400,
+        reason: 'all_scope_forbidden',
+        message: 'The all-network scope is not available',
+      };
+    }
+    if (error instanceof InvalidPublicNetworkScopeError) {
+      return {
+        ok: false,
+        statusCode: 400,
+        reason: 'invalid_scope',
+        message: 'Invalid network scope',
+      };
+    }
+    return {
+      ok: false,
+      statusCode: 400,
+      reason: 'unexpected_error',
+      message: 'Bad Request',
+    };
+  }
+}
+
 export function resolvePublicNetworkScope(
   requested: unknown,
   headers: IncomingHttpHeaders,

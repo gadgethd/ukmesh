@@ -9,6 +9,7 @@ import {
 } from '../../path-beta/slowMode.js';
 import { normalizeObserverQuery } from '../utils/observer.js';
 import { parseBoundedInteger, parseHexIdentifier } from '../utils/input.js';
+import { isLocalClientRequest, requireLocalOnly } from '../utils/localOnly.js';
 import type { HeldPathEntry } from '../../path-beta/resolveCache.js';
 
 type ResolvePoolFn = {
@@ -175,6 +176,14 @@ export function registerPathingRoutes(router: Router, deps: PathingRouteDeps): v
   });
 
   router.get('/path-learning', deps.pathLearningLimiter, async (req, res) => {
+    // UM-07: this is an internal model export, not a public feed. Proxied
+    // public traffic gets a 404 that hides the endpoint; on-host callers must
+    // clear the existing local + operator guard before any model is loaded.
+    if (!isLocalClientRequest(req)) {
+      res.status(404).json({ error: 'Not found' });
+      return;
+    }
+    if (!requireLocalOnly(req, res)) return;
     const limit = parseBoundedInteger(req.query['limit'], {
       name: 'limit',
       defaultValue: 6000,

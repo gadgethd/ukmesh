@@ -1,6 +1,10 @@
 import { Router } from 'express';
 import { HEALTH_CACHE_TTL_MS, healthSnapshot } from '../bootstrap/caches.js';
-import { toPublicHealthOverview } from '../../health/status.js';
+import {
+  hasOperatorAuthorization,
+  isLocalClientRequest,
+} from '../utils/localOnly.js';
+import { registerHealthRoutes } from './healthRoutes.js';
 
 const router = Router();
 const refreshTimer = setInterval(() => {
@@ -11,21 +15,10 @@ setImmediate(() => {
   void healthSnapshot.refresh();
 });
 
-router.get('/health', (_req, res) => {
-  const current = healthSnapshot.read();
-  if (!current.ready) {
-    res.setHeader('Cache-Control', 'public, max-age=5');
-    res.status(503).json({
-      status: 'initializing',
-      generatedAt: current.generatedAt == null
-        ? null
-        : new Date(current.generatedAt).toISOString(),
-      lastError: current.lastError,
-    });
-    return;
-  }
-  res.setHeader('Cache-Control', 'public, max-age=30, stale-while-revalidate=60');
-  res.json(toPublicHealthOverview(current.data));
+registerHealthRoutes(router, {
+  readSnapshot: () => healthSnapshot.read(),
+  isLocalClient: isLocalClientRequest,
+  hasOperatorAuthorization,
 });
 
 export default router;

@@ -33,7 +33,7 @@ type IsSecureRequestFn = (req: Request) => boolean;
 type GetOwnerSessionFn = (req: Request) => OwnerSession | null;
 type RequireOwnerSessionFn = (req: Request, res: Response) => Promise<string[] | null>;
 type GetOwnerCredentialGenerationFn = (mqttUsername: string) => Promise<number>;
-type QueryFn = <T extends import('pg').QueryResultRow = import('pg').QueryResultRow>(text: string, params?: unknown[]) => Promise<{ rows: T[] }>;
+type QueryFn = <T extends import('pg').QueryResultRow = import('pg').QueryResultRow>(text: string, params?: unknown[]) => Promise<{ rows: T[]; rowCount: number | null }>;
 
 type OwnerRouteDeps = {
   ownerCookieName: string;
@@ -396,12 +396,16 @@ export function registerOwnerRoutes(router: Router, deps: OwnerRouteDeps): void 
       const ownedNodeIds = await deps.requireOwnerSession(req, res);
       if (!ownedNodeIds) return;
       const session = deps.getOwnerSession(req);
-      await deleteOwnerAlertRule(
+      const deleted = await deleteOwnerAlertRule(
         deps.query,
         ruleId,
         session!.mqttUsername,
         ownedNodeIds,
       );
+      if (!deleted) {
+        res.status(404).json({ error: 'Alert rule not found' });
+        return;
+      }
       res.status(204).end();
     } catch (error) {
       console.error('[api] DELETE /owner/alert-rules/:id', (error as Error).message);

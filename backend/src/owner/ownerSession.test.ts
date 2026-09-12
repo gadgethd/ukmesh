@@ -26,6 +26,32 @@ test('owner session v3 carries identity, expiry and credential generation', () =
   }
 });
 
+test('owner session round-trip authenticates the 16-byte GCM tag and rejects tampering', () => {
+  const previous = process.env['OWNER_COOKIE_SECRET'];
+  process.env['OWNER_COOKIE_SECRET'] = 'test-owner-cookie-secret-at-least-32-bytes';
+  try {
+    const payload = {
+      v: 3 as const,
+      mqttUsername: 'owner',
+      exp: 2_000_000_000_000,
+      gen: 3,
+    };
+    const token = encryptOwnerSession(payload);
+    const [ivB64, tagB64, ciphertextB64] = token.split('.');
+    assert.ok(ivB64 && tagB64 && ciphertextB64);
+    assert.equal(Buffer.from(tagB64, 'base64url').length, 16);
+    assert.deepEqual(decryptOwnerSession(token), payload);
+
+    const tamperedTag = Buffer.from(tagB64, 'base64url');
+    tamperedTag[0] = (tamperedTag[0] ?? 0) ^ 0xff;
+    const tampered = `${ivB64}.${tamperedTag.toString('base64url')}.${ciphertextB64}`;
+    assert.equal(decryptOwnerSession(tampered), null);
+  } finally {
+    if (previous === undefined) delete process.env['OWNER_COOKIE_SECRET'];
+    else process.env['OWNER_COOKIE_SECRET'] = previous;
+  }
+});
+
 test('legacy v2 session decrypts as v3 with gen 0 (upgrade path)', () => {
   const previous = process.env['OWNER_COOKIE_SECRET'];
   process.env['OWNER_COOKIE_SECRET'] = 'test-owner-cookie-secret-at-least-32-bytes';

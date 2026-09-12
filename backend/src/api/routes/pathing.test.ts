@@ -65,3 +65,56 @@ test('lazy path saturation is exposed as a retryable response', async () => {
     });
   });
 });
+
+test('path learning export is hidden from proxied public callers', async () => {
+  await withPathingServer(async () => null, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/path-learning`, {
+      headers: { 'x-forwarded-for': '203.0.113.10' },
+    });
+    assert.equal(response.status, 404);
+    assert.deepEqual(await response.json(), { error: 'Not found' });
+  });
+});
+
+test('path learning export requires the operator token for local callers', async (t) => {
+  const previousToken = process.env['OPERATOR_SITE_TOKEN'];
+  delete process.env['OPERATOR_SITE_TOKEN'];
+  t.after(() => {
+    if (previousToken === undefined) delete process.env['OPERATOR_SITE_TOKEN'];
+    else process.env['OPERATOR_SITE_TOKEN'] = previousToken;
+  });
+
+  await withPathingServer(async () => null, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/path-learning`);
+    assert.equal(response.status, 401);
+    assert.deepEqual(await response.json(), { error: 'Operator authentication required' });
+  });
+});
+
+test('path learning export stays available to authenticated local operators', async (t) => {
+  const previousToken = process.env['OPERATOR_SITE_TOKEN'];
+  process.env['OPERATOR_SITE_TOKEN'] = 'test-operator-token-with-at-least-32-chars';
+  t.after(() => {
+    if (previousToken === undefined) delete process.env['OPERATOR_SITE_TOKEN'];
+    else process.env['OPERATOR_SITE_TOKEN'] = previousToken;
+  });
+
+  await withPathingServer(async () => null, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/path-learning`, {
+      headers: { 'x-operator-token': process.env['OPERATOR_SITE_TOKEN'] ?? '' },
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json() as {
+      network: string;
+      prefixPriors: unknown[];
+      transitionPriors: unknown[];
+      edgePriors: unknown[];
+      motifPriors: unknown[];
+    };
+    assert.equal(body.network, 'ukmesh');
+    assert.deepEqual(body.prefixPriors, []);
+    assert.deepEqual(body.transitionPriors, []);
+    assert.deepEqual(body.edgePriors, []);
+    assert.deepEqual(body.motifPriors, []);
+  });
+});

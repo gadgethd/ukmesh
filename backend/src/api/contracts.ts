@@ -140,7 +140,6 @@ const PUBLIC_GET = [
   '/path-beta/resolve-multi',
   '/path-beta/slow-mode',
   '/path-lazy/resolve',
-  '/path-learning',
   '/planned-nodes',
   '/radio-history',
   '/radio-stats',
@@ -173,7 +172,7 @@ const OWNER_GET = [
 
 export const API_CONTRACTS: readonly ApiContract[] = [
   ...contracts('GET', PUBLIC_GET, 'public'),
-  ...contracts('GET', ['/local/test-diagnostics'], 'test'),
+  ...contracts('GET', ['/local/test-diagnostics', '/path-learning'], 'test'),
   ...contracts('GET', OWNER_GET, 'owner'),
   ...contracts('POST', ['/coverage/planned', '/observers/register', '/telemetry/frontend-error'], 'public'),
   ...contracts('POST', [

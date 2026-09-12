@@ -5,8 +5,8 @@ import { Redis } from 'ioredis';
 import type { WSMessage, LivePacket } from '../types/index.js';
 import { getNodes, getRecentPackets, getRecentMessages, getViableLinks } from '../db/index.js';
 import {
-  PublicAllScopeForbiddenError,
   resolvePublicNetworkScope,
+  validatePublicNetworkScopeForHandshake,
 } from '../http/requestScope.js';
 import { networkMatchesScope } from '../networks.js';
 import { getRedisConnectionOptions, getRedisUrl } from '../platform/config/redis.js';
@@ -212,7 +212,9 @@ function refreshPrivacyIndex(): Promise<void> {
 async function fetchInitialState(network: string | undefined, observer: string | undefined): Promise<InitialStateEntry> {
   const key = `${network ?? ''}:${observer ?? ''}`;
   const cached = initialStateCache.get(key);
-  if (cached && (Date.now() - cached.ts) < INITIAL_STATE_TTL_MS) return cached;
+  if (cached && (Date.now() - cached.ts) < INITIAL_STATE_TTL_MS) {
+    return refilterInitialState(cached);
+  }
 
   // If a fetch is already in flight for this key, share it — don't pile on the DB.
   const existing = initialStateInflight.get(key);
@@ -255,8 +257,9 @@ async function fetchInitialState(network: string | undefined, observer: string |
         messages: slimMessages,
         viableLinks,
       };
-      initialStateCache.set(key, entry);
-      return entry;
+      const filteredEntry = refilterInitialState(entry);
+      initialStateCache.set(key, filteredEntry);
+      return filteredEntry;
     } finally {
       initialStateInflight.delete(key);
     }
@@ -278,7 +281,33 @@ function normalizeObserver(value: string | null): string | undefined {
 }
 
 function cacheKey(network?: string, observer?: string): string {
-  return `${network ?? 'all'}|${observer ?? 'all'}`;
+  // The privacy generation is part of the key: when a node opts out (live
+  // remember() or the periodic replace()), every warm snapshot that could
+  // contain it becomes unreachable instead of being served for the TTL.
+  return `${network ?? 'all'}|${observer ?? 'all'}|g${publicPrivacy.generation}`;
+}
+
+function refilterInitialState(entry: InitialStateEntry): InitialStateEntry {
+  const nodes = entry.nodes.filter((node) => {
+    if (isPrivateNode(typeof node['name'] === 'string' ? node['name'] : null)) return false;
+    return !publicPrivacy.hasNode(node['node_id']);
+  });
+  const packetKept = (row: InitialStateRow): boolean => {
+    if (publicPrivacy.hasNode(row['rx_node_id'])) return false;
+    if (publicPrivacy.hasNode(row['src_node_id'])) return false;
+    if (row['visibility_ok'] === false) return false;
+    return true;
+  };
+  const packets = entry.packets.filter(packetKept);
+  const messages = entry.messages.filter(packetKept);
+  if (
+    nodes.length === entry.nodes.length
+    && packets.length === entry.packets.length
+    && messages.length === entry.messages.length
+  ) {
+    return entry;
+  }
+  return { ...entry, nodes, packets, messages };
 }
 
 async function getCachedViableLinks(
@@ -429,59 +458,78 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
     path: '/ws',
     maxPayload: WS_MAX_PAYLOAD_BYTES,
     verifyClient: (info, done) => {
-      const origin = info.origin;
-      if (origin && !ALLOWED_ORIGINS.includes(origin)) {
-        websocketAdmissionsTotal.inc({ outcome: 'origin_denied' });
-        done(false, 403, 'Forbidden');
-        return;
-      }
       try {
+        const origin = info.origin;
+        if (origin && !ALLOWED_ORIGINS.includes(origin)) {
+          websocketAdmissionsTotal.inc({ outcome: 'origin_denied' });
+          done(false, 403, 'Forbidden');
+          return;
+        }
         const reqUrl = new URL(info.req.url ?? '/', 'http://localhost');
-        resolvePublicNetworkScope(reqUrl.searchParams.get('network'), info.req.headers);
+        const networkValues = reqUrl.searchParams.getAll('network');
+        if (networkValues.length > 1) {
+          websocketAdmissionsTotal.inc({ outcome: 'invalid_scope' });
+          done(false, 400, 'Invalid network scope');
+          return;
+        }
+        const scopeCheck = validatePublicNetworkScopeForHandshake(
+          networkValues[0],
+          info.req.headers,
+        );
+        if (!scopeCheck.ok) {
+          websocketAdmissionsTotal.inc({ outcome: scopeCheck.reason });
+          done(false, scopeCheck.statusCode, scopeCheck.message);
+          return;
+        }
+        const peer = trustedClientIp(info.req);
+        const now = Date.now();
+        if (handshakeWindows.size >= 4_096 && !handshakeWindows.has(peer)) {
+          const oldest = handshakeWindows.keys().next().value as string | undefined;
+          if (oldest) handshakeWindows.delete(oldest);
+        }
+        let peerWindow = handshakeWindows.get(peer);
+        if (!peerWindow || now - peerWindow.startedAt >= 60_000) {
+          peerWindow = { startedAt: now, count: 0 };
+          handshakeWindows.set(peer, peerWindow);
+        }
+        peerWindow.count += 1;
+        if (
+          peerWindow.count > WS_HANDSHAKES_PER_IP_PER_MINUTE
+          || (connectionsByPeer.get(peer) ?? 0) >= WS_MAX_CONNECTIONS_PER_IP
+        ) {
+          websocketAdmissionsTotal.inc({ outcome: 'rate_limited' });
+          done(false, 429, 'Too Many Requests', { 'Retry-After': '5' });
+          return;
+        }
+        const admission = websocketAdmissionDecision(
+          { activeConnections: wss.clients.size, pendingHandshakes },
+          {
+            maxConnections: WS_MAX_CONNECTIONS,
+            maxPendingHandshakes: WS_MAX_PENDING_HANDSHAKES,
+          },
+        );
+        if (!admission.allowed) {
+          websocketAdmissionsTotal.inc({ outcome: 'capacity_denied' });
+          done(false, admission.statusCode, admission.reason, { 'Retry-After': '5' });
+          return;
+        }
+        pendingHandshakes += 1;
+        const timer = setTimeout(() => releasePendingHandshake(info.req), 10_000);
+        timer.unref();
+        pendingHandshakeTimers.set(info.req.socket, timer);
+        websocketAdmissionsTotal.inc({ outcome: 'accepted' });
+        done(true);
       } catch (error) {
-        if (!(error instanceof PublicAllScopeForbiddenError)) throw error;
-        websocketAdmissionsTotal.inc({ outcome: 'scope_denied' });
-        done(false, 400, 'The all-network scope is not available');
-        return;
+        websocketAdmissionsTotal.inc({ outcome: 'unexpected_error' });
+        console.error(
+          `[ws] handshake verification failed: ${(error as Error)?.name ?? 'Error'}`,
+        );
+        try {
+          done(false, 400, 'Bad Request');
+        } catch {
+          /* the upgrade may already be settled; never rethrow into the process */
+        }
       }
-      const peer = trustedClientIp(info.req);
-      const now = Date.now();
-      if (handshakeWindows.size >= 4_096 && !handshakeWindows.has(peer)) {
-        const oldest = handshakeWindows.keys().next().value as string | undefined;
-        if (oldest) handshakeWindows.delete(oldest);
-      }
-      let peerWindow = handshakeWindows.get(peer);
-      if (!peerWindow || now - peerWindow.startedAt >= 60_000) {
-        peerWindow = { startedAt: now, count: 0 };
-        handshakeWindows.set(peer, peerWindow);
-      }
-      peerWindow.count += 1;
-      if (
-        peerWindow.count > WS_HANDSHAKES_PER_IP_PER_MINUTE
-        || (connectionsByPeer.get(peer) ?? 0) >= WS_MAX_CONNECTIONS_PER_IP
-      ) {
-        websocketAdmissionsTotal.inc({ outcome: 'rate_limited' });
-        done(false, 429, 'Too Many Requests', { 'Retry-After': '5' });
-        return;
-      }
-      const admission = websocketAdmissionDecision(
-        { activeConnections: wss.clients.size, pendingHandshakes },
-        {
-          maxConnections: WS_MAX_CONNECTIONS,
-          maxPendingHandshakes: WS_MAX_PENDING_HANDSHAKES,
-        },
-      );
-      if (!admission.allowed) {
-        websocketAdmissionsTotal.inc({ outcome: 'capacity_denied' });
-        done(false, admission.statusCode, admission.reason, { 'Retry-After': '5' });
-        return;
-      }
-      pendingHandshakes += 1;
-      const timer = setTimeout(() => releasePendingHandshake(info.req), 10_000);
-      timer.unref();
-      pendingHandshakeTimers.set(info.req.socket, timer);
-      websocketAdmissionsTotal.inc({ outcome: 'accepted' });
-      done(true);
     },
   });
 

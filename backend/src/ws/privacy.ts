@@ -4,25 +4,39 @@ import { isPrivateNode } from '../api/utils/privateNode.js';
 export class PublicWsPrivacyIndex {
   private readonly nodeIds = new Set<string>();
   private ready = false;
+  private generationValue = 0;
 
   get isReady(): boolean {
     return this.ready;
+  }
+
+  /**
+   * Monotonic counter that changes whenever the privacy set changes. Cache keys
+   * include it so a node that opts out can never be served from a snapshot that
+   * was warmed while it was still public.
+   */
+  get generation(): number {
+    return this.generationValue;
   }
 
   replace(nodes: Array<{ node_id?: unknown; name?: unknown }>): void {
     this.nodeIds.clear();
     for (const node of nodes) {
       if (isPrivateNode(typeof node.name === 'string' ? node.name : null)) {
-        this.remember(String(node.node_id ?? ''));
+        const normalized = String(node.node_id ?? '').trim().toLowerCase();
+        if (/^[0-9a-f]{64}$/.test(normalized)) this.nodeIds.add(normalized);
       }
     }
     this.ready = true;
+    this.generationValue += 1;
   }
 
   remember(nodeId: string): void {
     const normalized = nodeId.trim().toLowerCase();
     if (!/^[0-9a-f]{64}$/.test(normalized)) return;
+    if (this.nodeIds.has(normalized)) return;
     this.nodeIds.add(normalized);
+    this.generationValue += 1;
   }
 
   hasNode(nodeId: unknown): boolean {

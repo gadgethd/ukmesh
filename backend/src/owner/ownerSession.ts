@@ -39,7 +39,7 @@ export function decryptOwnerSession(token: string): OwnerSession | null {
     const tag = Buffer.from(tagB64, 'base64url');
     const ciphertext = Buffer.from(ciphertextB64, 'base64url');
     const key = getOwnerCookieKey();
-    const decipher = createDecipheriv('aes-256-gcm', key, iv);
+    const decipher = createDecipheriv('aes-256-gcm', key, iv, { authTagLength: 16 });
     decipher.setAuthTag(tag);
     const decoded = Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString('utf8');
     const parsed = JSON.parse(decoded) as Record<string, unknown>;

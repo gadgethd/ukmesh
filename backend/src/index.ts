@@ -27,6 +27,7 @@ import {
 } from './queue/publisher.js';
 import { createBackendSiteRoutes } from './backend-site/routes.js';
 import { isTrustedProxyPeer } from './http/trustedProxy.js';
+import { isLocalClientRequest, hasOperatorAuthorization } from './api/utils/localOnly.js';
 import { startOwnerAuthorizationReconciler, stopOwnerAuthorizationReconciler } from './owner/ownerAclReconciler.js';
 import { getAnalysisWorkloadStates } from './analysis/runState.js';
 import { applySecurityHeaders } from './security/operatorAuth.js';
@@ -227,6 +228,7 @@ async function main() {
 
   // 3. Express app
   const app = express();
+  app.disable('x-powered-by');
   app.use(requestContextMiddleware);
   app.use(observeHttpRequest);
 
@@ -237,12 +239,14 @@ async function main() {
   // Gzip compression for bounded JSON and static responses.
   app.use(compression());
 
-  // CORS — allow only our own domains for browser cross-origin requests
+  // CORS — allow only our own domains for browser cross-origin requests.
+  // Disallowed origins get a normal response without CORS headers; raising an
+  // Error here would route through the 500 error handler instead.
   app.use(cors({
     origin: (origin, cb) => {
       // No origin = same-origin request (or curl/server-to-server) — allow
       if (!origin || ALLOWED_ORIGINS.includes(origin)) cb(null, true);
-      else cb(new Error('CORS: origin not allowed'));
+      else cb(null, false);
     },
   }));
 
@@ -284,7 +288,7 @@ async function main() {
 
   // Health check
   app.get('/healthz', (_req, res) => res.json({ status: 'ok', ts: Date.now() }));
-  app.get('/readyz', async (_req, res) => {
+  app.get('/readyz', async (req, res) => {
     const checks = {
       database: false,
       mqtt: MQTT_INGEST_ENABLED ? getMqttRuntimeStatus() : { state: 'disabled', changedAt: new Date().toISOString() },
@@ -347,6 +351,14 @@ async function main() {
       && checks.database
       && ownerAclReady
       && (!MQTT_INGEST_ENABLED || checks.mqtt.state === 'connected');
+    // Internal callers (synthetic monitor, blackbox exporter, loopback) keep the
+    // detailed payload. Public/browser traffic gets status only so operational
+    // internals (worker errors, ACL generations, baseline mismatches) are not
+    // exposed on the internet.
+    if (!isLocalClientRequest(req) && !hasOperatorAuthorization(req)) {
+      res.status(ready ? 200 : 503).json({ status: ready ? 'ready' : 'degraded', ts: Date.now() });
+      return;
+    }
     res.status(ready ? 200 : 503).json({ status: ready ? 'ready' : 'degraded', checks, ts: Date.now() });
   });
   app.use(apiErrorMiddleware);
