@@ -22,7 +22,7 @@
     "@deck.gl/mapbox": "^9.3.10",
     "d3-force": "^3.0.0",
     "fuse.js": "^7.5.0",
-    "maplibre-gl": "^6.4.0",
+    "maplibre-gl": "^6.4.1",
     "polygon-clipping": "^0.15.7",
     "react": "19.2.8",
     "react-aria-components": "^1.20.0",
