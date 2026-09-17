@@ -76,12 +76,14 @@ services:
       MQTT_USERNAME: ${MQTT_USERNAME:-backend}
       MQTT_PASSWORD: ${MQTT_PASSWORD}
       MQTT_CLIENT_ID: ${MQTT_CLIENT_ID:-meshcore-analytics-ingest}
+      MESHCORE_SITE_ID: ${MESHCORE_SITE_ID:-ukmesh}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD required}
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET required}
       PORT: ${PORT:-3000}
       METRICS_PORT: ${METRICS_PORT:-9091}
       MESHCORE_CHANNEL_SECRETS: ${MESHCORE_CHANNEL_SECRETS:-}
+      MESHCORE_REGION_NAMES: ${MESHCORE_REGION_NAMES:-eng-ne,Europe,Global}
       OWNER_DATABASE_URL: ${OWNER_DATABASE_URL:-postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${OWNER_POSTGRES_DB:-meshcore_owner_auth}}
       OWNER_MQTT_USERNAME_MAP: ${OWNER_MQTT_USERNAME_MAP:-}
       OWNER_AUTHORIZATION_MODE: ${OWNER_AUTHORIZATION_MODE:-shadow}
@@ -94,6 +96,10 @@ services:
       OWNER_ACL_RELOAD_URL: http://mosquitto-reloader:8080/reload
       OWNER_ACL_RELOAD_TOKEN: ${JWT_SECRET:?JWT_SECRET required}
       OWNER_COOKIE_SECRET: ${OWNER_COOKIE_SECRET:-}
+      OWNER_PACKET_SHARE_OWNER_USERNAMES: ${OWNER_PACKET_SHARE_OWNER_USERNAMES:-node1,gnomemoe}
+      OWNER_PACKET_SHARE_ENCRYPTION_KEY: ${OWNER_PACKET_SHARE_ENCRYPTION_KEY:-}
+      OWNER_PACKET_SHARE_POLL_INTERVAL_MS: ${OWNER_PACKET_SHARE_POLL_INTERVAL_MS:-5000}
+      OWNER_PACKET_SHARE_BATCH_SIZE: ${OWNER_PACKET_SHARE_BATCH_SIZE:-25}
       OPERATOR_SITE_TOKEN: ${OPERATOR_SITE_TOKEN:?OPERATOR_SITE_TOKEN required}
       TRUSTED_PROXY_PEERS: ${TRUSTED_PROXY_PEERS:-172.30.0.10,172.30.0.11,172.30.0.12}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3003,http://localhost:3004,https://ukmesh.com,https://www.ukmesh.com,https://app.ukmesh.com,https://test.ukmesh.com}
@@ -259,7 +265,7 @@ services:
       STALE_MQTT_OBSERVER_CLEANUP_INTERVAL_MS: ${STALE_MQTT_OBSERVER_CLEANUP_INTERVAL_MS:-21600000}
       HEALTH_VOLUME_PATHS: database=/health-volumes/database=${HEALTH_DATABASE_BUDGET_BYTES:-322122547200},redis=/health-volumes/redis=${HEALTH_REDIS_BUDGET_BYTES:-4294967296},terrain=/health-volumes/terrain=${HEALTH_TERRAIN_BUDGET_BYTES:-53687091200},logs=/health-volumes/logs=${HEALTH_LOG_BUDGET_BYTES:-21474836480}
       DATA_LIFECYCLE_RETENTION_ENABLED: "true"
-      DATA_LIFECYCLE_RETENTION_TARGETS: ${DATA_LIFECYCLE_RETENTION_TARGETS:-packets,worker_health_snapshots,frontend_error_events,owner_alert_deliveries,operational_check_results,observer_region_packet_sightings,observer_region_observer_sightings,link_job_commits,ml_model_variant_packet_results,packet_decryptions,observer_registration_requests,operator_audit_events}
+      DATA_LIFECYCLE_RETENTION_TARGETS: ${DATA_LIFECYCLE_RETENTION_TARGETS:-packets,worker_health_snapshots,frontend_error_events,owner_alert_deliveries,owner_packet_share_deliveries,operational_check_results,observer_region_packet_sightings,observer_region_observer_sightings,link_job_commits,ml_model_variant_packet_results,packet_decryptions,observer_registration_requests,operator_audit_events}
       NODE_ENV: production
     depends_on:
       db-migrate:
@@ -269,6 +275,29 @@ services:
       - redis_data:/health-volumes/redis:ro
       - srtm_data:/health-volumes/terrain:ro
       - loki_data:/health-volumes/logs:ro
+
+  # Tags new public-channel messages with TypeSafe/Jev (shadow-mode trial,
+  # added 2026-09-17 by Hermes for Ben). Results land in message_tags; nothing
+  # user-visible reads it yet. Monitoring: tagger_state + container logs.
+  tagger-worker:
+    <<: [*internal-hosts, *application-hardening]
+    image: ${TAGGER_WORKER_IMAGE:-meshcore-analytics-tagger-worker:local}
+    build:
+      context: ./tagger-worker
+      dockerfile: Dockerfile
+    restart: always
+    logging: *json-log-limits
+    mem_limit: "256m"
+    memswap_limit: "256m"
+    cpus: 1.0
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}
+      DATABASE_APPLICATION_NAME: ukmesh-tagger-worker
+      TYPESAFE_API_KEY: ${TYPESAFE_API_KEY:-}
+      TAGGER_START: ${TAGGER_START:-}
+      TAGGER_POLL_S: ${TAGGER_POLL_S:-5}
+      TAGGER_CALL_FLOOR_S: ${TAGGER_CALL_FLOOR_S:-0.5}
+      PYTHONDONTWRITEBYTECODE: "1"
 
   synthetic-monitor:
     <<: [*internal-hosts, *application-hardening]
@@ -534,6 +563,7 @@ services:
       MQTT_WS_PATH: /
       MQTT_TLS: "false"
       DASH_BROKER_HOST: ${HEALTHCHECK_DASH_BROKER_HOST:-mqtt.ukmesh.com}
+      WEBSOCKET_ALLOWED_ORIGINS: ${HEALTHCHECK_WEBSOCKET_ALLOWED_ORIGINS:-https://healthcheck.ukmesh.com}
       TEST_CHANNEL_NAME: ${HEALTHCHECK_TEST_CHANNEL_NAME:-ukmeshtest}
       TEST_CHANNEL_SECRET: ${HEALTHCHECK_TEST_CHANNEL_SECRET:-}
       TEST_CHANNEL_SECRET_SOURCE_NAME: ${HEALTHCHECK_TEST_CHANNEL_SECRET_SOURCE_NAME:-test}
@@ -896,7 +926,7 @@ services:
     volumes:
       - alert_receiver_data:/var/lib/meshcore-alerts
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz >/dev/null"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/readyz >/dev/null"]
       interval: 30s
       timeout: 5s
       retries: 5
