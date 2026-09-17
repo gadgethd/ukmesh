@@ -1127,6 +1127,7 @@ export async function getRecentPacketEvents(limit = 200, network?: string, obser
        ON src_alias.source_node_id = UPPER(BTRIM(p.src_node_id))
      WHERE p.time > NOW() - INTERVAL '24 hours'
          ${buildPacketScopeClause(scope, 'p', network)}
+         ${regionClause}
          ${buildPublicPacketPrivacyClause('p')}
      ORDER BY p.time DESC
      LIMIT $1`,

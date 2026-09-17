@@ -28,7 +28,22 @@ type GetRecentPacketsFn = (
   observer?: string,
   fields?: 'full' | 'slim',
 ) => Promise<unknown>;
-type GetRecentPacketEventsFn = (limit: number, network?: string, observer?: string) => Promise<unknown>;
+type GetRecentPacketEventsFn = (
+  limit: number,
+  network?: string,
+  observer?: string,
+  region?: string,
+) => Promise<unknown>;
+
+// Region scope filter (e.g. 'eng-ne' / '#eng-ne' -> stored form '#eng-ne').
+const REGION_SCOPE_PATTERN = /^[a-z0-9][a-z0-9_-]{0,31}$/;
+
+function normalizeRegionScope(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const bare = value.trim().toLowerCase().replace(/^#/, '');
+  if (!REGION_SCOPE_PATTERN.test(bare)) return undefined;
+  return `#${bare}`;
+}
 type GetPacketDetailFn = (hash: string, network?: string) => Promise<unknown>;
 type GetChannelMessageHistoryFn = (
   channel: string,
@@ -78,6 +93,7 @@ export function registerMiscRoutes(router: Router, deps: MiscRouteDeps): void {
       max: 1000,
     });
     const raw = parseBoolean(req.query['raw'], { name: 'raw' });
+    const region = normalizeRegionScope(req.query['region']);
     const fields = parseEnum(req.query['fields'], {
       name: 'fields',
       values: ['slim', 'full'] as const,
@@ -87,7 +103,7 @@ export function registerMiscRoutes(router: Router, deps: MiscRouteDeps): void {
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const observer = normalizeObserverQuery(req.query['observer']);
       const packets = raw
-        ? await getRecentPacketEvents(limit, network, observer)
+        ? await getRecentPacketEvents(limit, network, observer, region)
         : await getRecentPackets(limit, network, observer, fields);
       res.json(packets);
     } catch (err) {
