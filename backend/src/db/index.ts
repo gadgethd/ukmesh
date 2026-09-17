@@ -1118,7 +1118,8 @@ export async function getRecentPacketEvents(limit = 200, network?: string, obser
         p.topic, p.iata,
         p.packet_type, p.hop_count, p.rssi, p.snr, p.payload,
         p.payload->>'_summary' AS summary,
-        p.advert_count, p.path_hashes, p.path_hash_size_bytes
+        p.advert_count, p.path_hashes, p.path_hash_size_bytes,
+        p.region_scope
      FROM packets p
      LEFT JOIN node_identity_aliases rx_alias
        ON rx_alias.source_node_id = UPPER(BTRIM(p.rx_node_id))
