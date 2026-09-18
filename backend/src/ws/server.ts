@@ -110,6 +110,8 @@ function slimInitialPacket(raw: InitialStateRow): InitialStateRow {
     path_hash_size_bytes: raw['path_hash_size_bytes'],
     rx_count: raw['rx_count'],
     tx_count: raw['tx_count'],
+    tags: raw['tags'],
+    tag_confidence: raw['tag_confidence'],
   };
 }
 

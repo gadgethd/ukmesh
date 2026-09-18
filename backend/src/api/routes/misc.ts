@@ -51,6 +51,7 @@ type GetChannelMessageHistoryFn = (
   network?: string,
   observer?: string,
 ) => Promise<unknown>;
+type GetRecentMessageTagsFn = (limit: number, network?: string) => Promise<unknown>;
 
 type MiscRouteDeps = {
   query: QueryFn;
@@ -58,6 +59,7 @@ type MiscRouteDeps = {
   getRecentPacketEvents: GetRecentPacketEventsFn;
   getPacketDetail: GetPacketDetailFn;
   getChannelMessageHistory: GetChannelMessageHistoryFn;
+  getRecentMessageTags: GetRecentMessageTagsFn;
   getPublicVisibilityGeneration: () => Promise<number>;
   packetDetailLimiter: ReturnType<typeof import('express-rate-limit').rateLimit>;
 };
@@ -69,6 +71,7 @@ export function registerMiscRoutes(router: Router, deps: MiscRouteDeps): void {
     getRecentPacketEvents,
     getPacketDetail,
     getChannelMessageHistory,
+    getRecentMessageTags,
     getPublicVisibilityGeneration,
     packetDetailLimiter,
   } = deps;
@@ -133,6 +136,27 @@ export function registerMiscRoutes(router: Router, deps: MiscRouteDeps): void {
       res.json(messages);
     } catch (err) {
       console.error('[api] GET /feed/messages', (err as Error).message);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  });
+
+  // Message tags (kind / speaker / topic / flags) for live feed enrichment.
+  // Tags are written ~2s after a packet by tagger-worker; the frontend patches
+  // rows by hash. Public visibility + network scope enforced in the query.
+  router.get('/tags/recent', async (req, res) => {
+    const limit = parseBoundedInteger(req.query['limit'], {
+      name: 'limit',
+      defaultValue: 200,
+      min: 1,
+      max: 500,
+    });
+    try {
+      const network = resolvePublicNetworkScope(req.query['network'], req.headers);
+      const tags = await getRecentMessageTags(limit, network);
+      res.setHeader('Cache-Control', 'no-store');
+      res.json(tags);
+    } catch (err) {
+      console.error('[api] GET /tags/recent', (err as Error).message);
       res.status(500).json({ error: 'Internal server error' });
     }
   });

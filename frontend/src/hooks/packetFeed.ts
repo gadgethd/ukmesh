@@ -4,6 +4,52 @@ import { canonicalNodeId, canonicalOptionalNodeId } from '../utils/nodeIds.js';
 export const FEED_MAX_PACKETS = 50;
 export const FEED_MAX_MESSAGES = 200;
 
+/** Message tags produced by the tagger-worker (TypeSafe/Jev). Flags are 0..1
+ *  confidences; kind/topic/speaker are choices with their own confidences. */
+export type MessageTags = {
+  kind?: string;
+  topic?: string;
+  speaker?: string;
+  safety?: number;
+  directed?: number;
+  mentions_location?: number;
+};
+
+export type TagConfidence = {
+  kind?: number;
+  topic?: number;
+  speaker?: number;
+};
+
+/** One row of GET /api/tags/recent (live feed enrichment by packet hash). */
+export type TaggedMessage = {
+  packet_hash: string;
+  tags: MessageTags;
+  confidence?: TagConfidence | null;
+  tagged_at?: string;
+};
+
+export function messageTagKind(packet: { tags?: MessageTags }): string | null {
+  const kind = packet.tags?.kind;
+  return typeof kind === 'string' && kind.trim() ? kind.trim() : null;
+}
+
+export function messageTagTitle(packet: { tags?: MessageTags; tag_confidence?: TagConfidence }): string {
+  const tags = packet.tags ?? {};
+  const parts: string[] = [];
+  if (tags.kind) parts.push(`kind: ${tags.kind}`);
+  if (tags.topic) parts.push(`topic: ${tags.topic}`);
+  if (tags.speaker) parts.push(`speaker: ${tags.speaker}`);
+  const flags: string[] = [];
+  if ((tags.safety ?? 0) >= 0.5) flags.push('safety');
+  if ((tags.directed ?? 0) >= 0.5) flags.push('directed');
+  if ((tags.mentions_location ?? 0) >= 0.5) flags.push('location');
+  if (flags.length > 0) parts.push(`flags: ${flags.join(', ')}`);
+  const conf = packet.tag_confidence?.kind;
+  if (typeof conf === 'number') parts.push(`kind confidence ${(conf * 100).toFixed(0)}%`);
+  return parts.join(' · ');
+}
+
 export type RecentPacketRow = {
   time: string;
   packet_hash: string;
@@ -22,6 +68,8 @@ export type RecentPacketRow = {
   path_hashes?: string[] | null;
   rx_count?: number | null;
   tx_count?: number | null;
+  tags?: MessageTags | null;
+  tag_confidence?: TagConfidence | null;
 };
 
 export function normalizeIatas(values: Array<string | null | undefined>): string[] {
@@ -102,6 +150,9 @@ export function mergeAggregatedPacket(current: AggregatedPacket, next: Aggregate
     txCount: Math.max(current.txCount, next.txCount),
     ts: Math.max(current.ts, next.ts),
     advertCount: Math.max(current.advertCount ?? 0, next.advertCount ?? 0) || undefined,
+    tags: next.tags ?? current.tags,
+    tagConfidence: next.tagConfidence ?? current.tagConfidence,
+    taggedAt: next.taggedAt ?? current.taggedAt,
   };
 
   if (packetInfoScore(mergedCandidate) >= packetInfoScore(current)) return mergedCandidate;
@@ -145,6 +196,8 @@ export function mapRecentRows(rows: RecentPacketRow[]): AggregatedPacket[] {
       txCount: Number(row.tx_count ?? 0),
       ts: new Date(row.time).getTime(),
       advertCount: row.advert_count ?? undefined,
+      tags: row.tags ?? undefined,
+      tagConfidence: row.tag_confidence ?? undefined,
     };
     const current = mapped.get(packetHash);
     mapped.set(packetHash, current ? mergeAggregatedPacket(current, next) : next);
@@ -182,6 +235,8 @@ export function mapMessageRows(rows: RecentPacketRow[]): AggregatedPacket[] {
       txCount: Number(row.tx_count ?? 0),
       ts: new Date(row.time).getTime(),
       advertCount: row.advert_count ?? undefined,
+      tags: row.tags ?? undefined,
+      tagConfidence: row.tag_confidence ?? undefined,
     };
     const current = mapped.get(packetHash);
     mapped.set(packetHash, current ? mergeAggregatedPacket(current, next) : next);
