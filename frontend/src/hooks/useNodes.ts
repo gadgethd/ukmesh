@@ -8,6 +8,8 @@ import {
   mergePackets,
   packetInfoScore,
   type RecentPacketRow,
+  type MessageTags,
+  type TagConfidence,
   FEED_MAX_MESSAGES,
   FEED_MAX_PACKETS,
 } from './packetFeed.js';
@@ -69,6 +71,9 @@ export interface AggregatedPacket {
   txCount:      number;
   ts:           number;
   advertCount?: number;
+  tags?:        MessageTags;
+  tagConfidence?: TagConfidence;
+  taggedAt?:    string;
 }
 
 export interface PacketArc {
@@ -268,6 +273,29 @@ function handleInitialState(
     arcs: [],
     activeNodes: new Set(),
   });
+}
+
+/** Patch tags onto cached rows as the tagger finishes them (tags are produced a
+ *  few seconds after arrival, so live WS rows start untagged). Idempotent:
+ *  rows already carrying the same tagged_at are left untouched. */
+function applyMessageTags(entries: Array<{ packet_hash?: string; tags?: MessageTags; confidence?: TagConfidence | null; tagged_at?: string }>): void {
+  const byHash = new Map<string, { tags: MessageTags; confidence?: TagConfidence | null; tagged_at?: string }>();
+  for (const entry of entries) {
+    const hash = String(entry.packet_hash ?? '').trim().toUpperCase();
+    if (hash && entry.tags) byHash.set(hash, { tags: entry.tags, confidence: entry.confidence, tagged_at: entry.tagged_at });
+  }
+  if (byHash.size === 0) return;
+  let changed = false;
+  const patchList = (list: AggregatedPacket[]): AggregatedPacket[] => list.map((packet) => {
+    const entry = byHash.get(packet.packetHash);
+    if (!entry) return packet;
+    if (packet.taggedAt && entry.tagged_at && packet.taggedAt === entry.tagged_at) return packet;
+    changed = true;
+    return { ...packet, tags: entry.tags, tagConfidence: entry.confidence ?? undefined, taggedAt: entry.tagged_at };
+  });
+  const packets = patchList(state.packets);
+  const messages = patchList(state.messages);
+  if (changed) setState({ ...state, packets, messages });
 }
 
 function replaceRecentPackets(rows: RecentPacketRow[], epoch?: number) {
@@ -519,6 +547,7 @@ export const nodeStore = {
   handleNodeUpsertBatch,
   setArcCollectionEnabled,
   pruneExpiredArcs,
+  applyMessageTags,
 };
 
 export function useNodeMap(): Map<string, MeshNode> {

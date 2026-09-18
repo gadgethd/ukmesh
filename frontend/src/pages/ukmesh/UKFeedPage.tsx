@@ -9,6 +9,8 @@ import {
 } from '../../hooks/useNodes.js';
 import { mapMessageRows, type RecentPacketRow } from '../../hooks/packetFeed.js';
 import { useAppMessageHandler } from '../../hooks/useAppMessageHandler.js';
+import { useMessageTags } from '../../hooks/useMessageTags.js';
+import { messageTagKind, messageTagTitle } from '../../hooks/packetFeed.js';
 import {
   ApiResponseError,
   chartStatsEndpoint,
@@ -113,6 +115,9 @@ export const UKFeedPage: React.FC = () => {
   });
 
   const wsConnection = useWebSocket(handleWSMessage, scope, scopeEpoch);
+
+  // Live tag enrichment: tags land ~2s after a packet, so patch rows by hash.
+  useMessageTags(scope, scopeKey);
 
   useEffect(() => {
     historyRequestRef.current?.abort();
@@ -315,6 +320,9 @@ export const UKFeedPage: React.FC = () => {
     return filteredPackets.slice(0, MAX_PACKETS);
   }, [filteredPackets]);
   const virtualRows = useMemo(() => {
+    // Rows are natural-height; tagged rows add one ~18px chips line under the
+    // meta section. Keep the estimate aligned with the taller (tagged) case so
+    // spacers never underestimate and rows cannot overlap (2026-09-17).
     const rowHeight = 76;
     const visibleHeight = Math.max(320, viewportHeight - 200);
     const start = Math.max(0, Math.floor(listScrollTop / rowHeight) - 5);
@@ -653,6 +661,13 @@ export const UKFeedPage: React.FC = () => {
                       <span className="uk-feed-packet-row__hash dev-status-mono">{packet.packet_hash}</span>
                       <span className="uk-feed-packet-row__observer">{observerDisplay}</span>
                     </div>
+                    {messageTagKind(packet) && (
+                      <div className="uk-feed-packet-row__tags">
+                        <span className="msg-tag-chip" title={messageTagTitle(packet)}>
+                          {messageTagKind(packet)}
+                        </span>
+                      </div>
+                    )}
                     <p className="uk-feed-packet-row__summary">{packetSummary(packet, nodeMap)}</p>
                   </article>
                 </React.Fragment>
@@ -687,6 +702,11 @@ export const UKFeedPage: React.FC = () => {
                   {selectedPacket.hop_count != null && (
                     <span className="feed-detail__badge feed-detail__badge--muted">
                       {selectedPacket.hop_count} hop{selectedPacket.hop_count !== 1 ? 's' : ''}
+                    </span>
+                  )}
+                  {messageTagKind(selectedPacket) && (
+                    <span className="msg-tag-chip" title={messageTagTitle(selectedPacket)}>
+                      {messageTagKind(selectedPacket)}
                     </span>
                   )}
                 </div>
@@ -746,6 +766,11 @@ export const UKFeedPage: React.FC = () => {
                   {selectedPacket.hop_count != null && (
                     <span className="feed-detail__badge feed-detail__badge--muted">
                       {selectedPacket.hop_count} hop{selectedPacket.hop_count !== 1 ? 's' : ''}
+                    </span>
+                  )}
+                  {messageTagKind(selectedPacket) && (
+                    <span className="msg-tag-chip" title={messageTagTitle(selectedPacket)}>
+                      {messageTagKind(selectedPacket)}
                     </span>
                   )}
                   <button type="button" className="uk-feed-stats__close" onClick={() => setSelectedPacketHash(null)} aria-label="Clear selected packet">✕</button>

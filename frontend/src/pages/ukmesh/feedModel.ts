@@ -1,4 +1,5 @@
 import type { AggregatedPacket, MeshNode } from '../../hooks/useNodes.js';
+import type { MessageTags, TagConfidence } from '../../hooks/packetFeed.js';
 import { ScopedCache } from '../../utils/scopedCache.js';
 import type { LazyPathNode, LazyPathResult } from './PacketDetailPanel.js';
 
@@ -21,6 +22,8 @@ export type FeedPacket = {
   tx_count?: number;
   summary?: string | null;
   path_hashes?: string[] | null;
+  tags?: MessageTags;
+  tag_confidence?: TagConfidence;
 };
 
 export const TYPE_LABELS: Record<number, string> = {
@@ -217,6 +220,8 @@ export function aggregatedPacketToFeedPacket(packet: AggregatedPacket): FeedPack
     tx_count: packet.txCount,
     summary: packet.summary ?? null,
     path_hashes: (packet.path as string[] | undefined) ?? null,
+    tags: packet.tags,
+    tag_confidence: packet.tagConfidence,
   };
 }
 
@@ -251,7 +256,7 @@ export function mergeFeedPacketObservations(current: FeedPacket, next: FeedPacke
     ...(next.observer_iatas ?? []),
     next.iata,
   ]);
-  return {
+  const merged: FeedPacket = {
     ...latest,
     first_seen_time: firstSeenCandidates.length > 0
       ? new Date(Math.min(...firstSeenCandidates)).toISOString()
@@ -267,6 +272,13 @@ export function mergeFeedPacketObservations(current: FeedPacket, next: FeedPacke
     rx_count: Math.max(current.rx_count ?? 0, next.rx_count ?? 0),
     tx_count: Math.max(current.tx_count ?? 0, next.tx_count ?? 0),
   };
+  // Tags only exist once the tagger has run; keep the key absent when untagged
+  // so feed-row shapes stay stable for callers and tests.
+  const tags = latest.tags ?? current.tags ?? next.tags;
+  if (tags !== undefined) merged.tags = tags;
+  const tagConfidence = latest.tag_confidence ?? current.tag_confidence ?? next.tag_confidence;
+  if (tagConfidence !== undefined) merged.tag_confidence = tagConfidence;
+  return merged;
 }
 
 export function packetObserverIatas(packet: FeedPacket, nodeMap: Map<string, MeshNode>): string[] {

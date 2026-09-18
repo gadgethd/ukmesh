@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { LazyPathResult } from '../pages/ukmesh/PacketDetailPanel.js';
 import type { MultiObserverBetaResponse } from './packetPathOverlayUtils.js';
+import type { MessageTags, TagConfidence } from './packetFeed.js';
 import { useRuntimeFeatures } from '../config/runtimeFeatures.js';
 import { ApiResponseError, fetchJson, withScopeParams } from '../utils/api.js';
 import { ScopedCache } from '../utils/scopedCache.js';
@@ -21,6 +22,8 @@ export type PacketDetail = {
   pathHashes: string[] | null;
   pathHashSizeBytes: number | null;
   rawHex: string | null;
+  tags?: MessageTags | null;
+  tagConfidence?: TagConfidence | null;
   observations: Array<{ rxNodeId: string | null; iata: string | null; time: string; rssi: number | null; snr: number | null; hopCount: number | null }>;
 };
 

@@ -25,11 +25,13 @@ import {
   getPacketDetail,
   getPublicVisibilityGeneration,
   getChannelMessageHistory,
+  getRecentMessageTags,
   getRecentPacketEvents,
   getRecentPackets,
   analyticsQuery,
   pool,
   query,
+  withTransaction,
 } from '../db/index.js';
 import {
   autoLinkOwnerNodeIds,
@@ -188,6 +190,7 @@ registerMiscRoutes(router, {
   getRecentPacketEvents,
   getPacketDetail,
   getChannelMessageHistory,
+  getRecentMessageTags,
   getPublicVisibilityGeneration,
   packetDetailLimiter: PACKET_DETAIL_LIMITER,
 });
@@ -213,6 +216,7 @@ registerOwnerRoutes(router, {
   getOwnerCredentialGeneration,
   invalidateOwnerNodeIdCache,
   query,
+  withTransaction,
 });
 registerPathingRoutes(router, {
   pathBetaLimiter: PATH_BETA_LIMITER,
