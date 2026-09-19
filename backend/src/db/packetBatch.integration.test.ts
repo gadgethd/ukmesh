@@ -102,6 +102,7 @@ test('base schema and every migration apply to a brand-new database', {
   assert.deepEqual(executed, [
     '050_packet_paths_and_retention.sql',
     '051_reset_readiness.sql',
+    '055_message_tags.sql',
   ]);
   assert.deepEqual(await runMigrations(freshPool), []);
 
