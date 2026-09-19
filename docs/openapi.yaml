@@ -619,64 +619,6 @@
         }
       }
     },
-    "/api/tags/recent": {
-      "get": {
-        "summary": "Read recent message tags for live feed enrichment",
-        "operationId": "get-tags-recent",
-        "tags": [
-          "public"
-        ],
-        "x-access": "public",
-        "parameters": [
-          {
-            "name": "limit",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 500,
-              "default": 200
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "array",
-                  "maxItems": 500,
-                  "items": {
-                    "type": "object",
-                    "required": [
-                      "packet_hash",
-                      "tags"
-                    ],
-                    "properties": {
-                      "packet_hash": {
-                        "type": "string"
-                      },
-                      "tags": {
-                        "type": "object"
-                      },
-                      "confidence": {
-                        "type": "object"
-                      },
-                      "tagged_at": {
-                        "type": "string",
-                        "format": "date-time"
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/feed/messages": {
       "get": {
         "summary": "Read historical messages for one channel",
@@ -5878,6 +5820,87 @@
       "get": {
         "summary": "Read stats charts",
         "operationId": "get-stats-charts",
+        "tags": [
+          "public"
+        ],
+        "x-access": "public",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid or out-of-bounds request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tags/recent": {
+      "get": {
+        "summary": "Read tags recent",
+        "operationId": "get-tags-recent",
         "tags": [
           "public"
         ],
