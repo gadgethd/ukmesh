@@ -91,34 +91,6 @@ const FEED_MESSAGE_HISTORY_SCHEMA = {
   },
 };
 
-const OWNER_PACKET_SHARING_SCHEMA = {
-  type: 'object',
-  required: ['nodeId', 'featureEnabled', 'enabled', 'destinations'],
-  properties: {
-    nodeId: { type: 'string', pattern: '^[0-9A-Fa-f]{64}$' },
-    featureEnabled: { type: 'boolean' },
-    enabled: { type: 'boolean' },
-    destinations: {
-      type: 'array',
-      items: {
-        type: 'object',
-        required: ['id', 'name', 'websiteUrl', 'description', 'configured', 'selected', 'lastForwardedAt'],
-        properties: {
-          id: { type: 'string', pattern: '^[a-z0-9][a-z0-9_-]{0,63}$' },
-          name: { type: 'string', minLength: 1, maxLength: 120 },
-          websiteUrl: { type: ['string', 'null'], format: 'uri', maxLength: 2_048 },
-          description: { type: ['string', 'null'], maxLength: 160 },
-          configured: { type: 'boolean' },
-          selected: { type: 'boolean' },
-          lastForwardedAt: { type: ['string', 'null'], format: 'date-time' },
-        },
-        additionalProperties: false,
-      },
-    },
-  },
-  additionalProperties: false,
-};
-
 function humanize(path: string): string {
   return path
     .replace(/^\/v1\//, '')
@@ -197,7 +169,6 @@ const OWNER_GET = [
   '/owner/csrf',
   '/owner/live',
   '/owner/live-last-hop',
-  '/owner/packet-sharing',
   '/owner/session',
 ] as const;
 
@@ -211,7 +182,6 @@ export const API_CONTRACTS: readonly ApiContract[] = [
     '/owner/alert-rules/:id/test',
     '/owner/login',
     '/owner/logout',
-    '/owner/packet-sharing',
   ], 'owner'),
   ...contracts('DELETE', ['/coverage/planned/:planId'], 'public'),
   ...contracts('DELETE', ['/owner/alert-rules/:id'], 'owner'),
@@ -278,59 +248,6 @@ export const API_CONTRACTS: readonly ApiContract[] = [
           contact: { type: 'string', maxLength: 200 },
         },
         additionalProperties: false,
-      },
-    };
-  }
-  if (contract.path === '/owner/packet-sharing' && contract.method === 'GET') {
-    return {
-      ...contract,
-      summary: 'Read owner packet-sharing settings',
-      responseSchema: OWNER_PACKET_SHARING_SCHEMA,
-      queryParameters: [{
-        name: 'nodeId',
-        in: 'query',
-        required: false,
-        schema: { type: 'string', pattern: '^[0-9A-Fa-f]{64}$' },
-      }],
-    };
-  }
-  if (contract.path === '/owner/packet-sharing' && contract.method === 'POST') {
-    return {
-      ...contract,
-      summary: 'Update owner packet-sharing settings',
-      requestSchema: {
-        type: 'object',
-        required: ['nodeId', 'enabled', 'destinationIds'],
-        properties: {
-          nodeId: { type: 'string', pattern: '^[0-9A-Fa-f]{64}$' },
-          enabled: { type: 'boolean' },
-          destinationIds: {
-            type: 'array',
-            maxItems: 32,
-            items: { type: 'string', pattern: '^[a-z0-9][a-z0-9_-]{0,63}$' },
-          },
-        },
-        additionalProperties: false,
-      },
-      responseSchema: {
-        type: 'object',
-        required: ['nodeId', 'enabled', 'destinationIds'],
-        properties: {
-          nodeId: { type: 'string', pattern: '^[0-9A-Fa-f]{64}$' },
-          enabled: { type: 'boolean' },
-          destinationIds: {
-            type: 'array',
-            maxItems: 32,
-            items: { type: 'string', pattern: '^[a-z0-9][a-z0-9_-]{0,63}$' },
-          },
-        },
-        additionalProperties: false,
-      },
-      additionalResponses: {
-        '409': {
-          description: 'One or more selected destinations are not configured',
-          responseSchema: ERROR_SCHEMA,
-        },
       },
     };
   }
