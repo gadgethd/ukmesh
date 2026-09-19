@@ -249,7 +249,7 @@ jobs:
             --profile dev \
             build \
               backend app-ukmesh website-ukmesh website-dev mesh-health-check \
-              mosquitto-reloader link-worker hopreach
+              mosquitto-reloader link-worker tagger-worker hopreach
           docker compose -f docker-compose.yml -f docker-compose.ci.yml \
             --project-name "$project" \
             --profile dev \
