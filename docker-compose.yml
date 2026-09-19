@@ -926,7 +926,7 @@ services:
     volumes:
       - alert_receiver_data:/var/lib/meshcore-alerts
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/readyz >/dev/null"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz >/dev/null"]
       interval: 30s
       timeout: 5s
       retries: 5
