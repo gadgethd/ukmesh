@@ -27,3 +27,11 @@ Error: contracts without routes: GET /owner/packet-sharing, POST /owner/packet-s
 **Fix.** Drop the stray contract entries (`backend/src/api/contracts.ts`, −83 lines) and regenerate `docs/openapi.yaml` (−403 lines). `npm run contract:check` is green (64 API + 11 operator routes, down from 66). The packet-sharing feature stays on its own workstream; its contracts return when its routes land.
 
 **Deploy-day note.** The branch's backend image now boots clean on an empty-volume stack; the smoke step should proceed past the backend health gate.
+
+## Update — run 4 (contracts fix in): final inherited gap
+
+Run 4 (`45af592a`) brought the full stack up — backend Healthy, every service healthy except `alert-receiver`, which `up --wait` aborted on (12:06Z).
+
+**Cause:** `a8921b8` also flipped alert-receiver's compose healthcheck from `/healthz` to `/readyz` (undocumented in that commit, whose message covers only the region-probe list). The worker's `/readyz` deliberately returns **503 in archive-only mode** (`ALERT_FORWARD_URL` unset — exactly the CI configuration), and the worker source documents `/healthz` as the compose check ("/healthz always 200 so the compose healthcheck (wget -qO-) never restarts the container for degraded delivery"). Consequence: any deployment without alert forwarding configured reports permanently unhealthy.
+
+**Fix:** revert the healthcheck to `/healthz` (compose only; the worker's liveness/readiness split is untouched and remains correct for operators and monitoring).
