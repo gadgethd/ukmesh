@@ -1,0 +1,20 @@
+   workload    | scope  |  status   | count | avg_seconds
+---------------+--------+-----------+-------+-------------
+ path-learning | all    | complete  |    24 |      29.848
+ path-learning | test   | complete  |    24 |       0.832
+ path-learning | ukmesh | complete  |    24 |      29.689
+ spam-analysis | public | complete  |   255 |       3.667
+ spam-analysis | public | timed_out |    30 |       5.395
+(5 rows)
+
+   workload    | scope  | last_status |       last_complete_at        | active_run_id | active_attempt |                   last_error
+---------------+--------+-------------+-------------------------------+---------------+----------------+-------------------------------------------------
+ path-history  | test   | stale       |                               |               |            107 | empty selection
+ path-history  | ukmesh | failed      | 2026-08-09 17:25:04.720858+00 |               |            148 | relation "ml_path_prefix_scores" does not exist
+ spam-analysis | public | complete    | 2026-09-19 10:17:11.112679+00 |               |          14696 |
+(3 rows)
+
+      to_regclass      | to_regclass
+-----------------------+-------------
+ ml_path_prefix_scores |
+(1 row)

@@ -1,0 +1,52 @@
+{
+  "capturedAt": "2026-09-19T10:10:53.700Z",
+  "results": [
+    {
+      "trial": 1,
+      "label": "before",
+      "wallMs": 6905.34516,
+      "executionMs": 6867.619,
+      "rows": 20
+    },
+    {
+      "trial": 1,
+      "label": "after",
+      "wallMs": 292.1242910000001,
+      "executionMs": 281.524,
+      "rows": 20
+    },
+    {
+      "trial": 2,
+      "label": "before",
+      "wallMs": 6619.167835000001,
+      "executionMs": 6611.297,
+      "rows": 20
+    },
+    {
+      "trial": 2,
+      "label": "after",
+      "wallMs": 294.577279000001,
+      "executionMs": 286.269,
+      "rows": 20
+    },
+    {
+      "trial": 3,
+      "label": "before",
+      "wallMs": 6786.408831000001,
+      "executionMs": 6779.078,
+      "rows": 20
+    },
+    {
+      "trial": 3,
+      "label": "after",
+      "wallMs": 318.86123600000064,
+      "executionMs": 310.512,
+      "rows": 20
+    }
+  ],
+  "equality": {
+    "original_rows": "20",
+    "fixed_rows": "20",
+    "differences": "0"
+  }
+}

@@ -1,0 +1,43 @@
+Captured: 2026-09-19T10:21:07.539006+00:00
+
+SELECT pid, client_addr, application_name, state, xact_start, wait_event_type, wait_event FROM pg_stat_activity WHERE state='idle in transaction' OR pid=3098497;
+ pid | client_addr | application_name | state | xact_start | wait_event_type | wait_event
+-----+-------------+------------------+-------+------------+-----------------+------------
+(0 rows)
+
+
+Network IPAM: [{"Subnet":"172.30.0.0/24","IPRange":"172.30.0.128/25","Gateway":"172.30.0.128"}]
+meshcore-analytics-app-ukmesh-1 172.30.0.10/24
+meshcore-infra-mosquitto-exporter-1 172.30.0.147/24
+meshcore-analytics-node-exporter-1 172.30.0.129/24
+meshcore-analytics-tagger-worker-1 172.30.0.141/24
+meshcore-analytics-website-ukmesh-1 172.30.0.11/24
+meshcore-infra-mosquitto-1 172.30.0.134/24
+meshcore-infra-mosquitto-reloader-1 172.30.0.142/24
+meshcore-analytics-alertmanager-1 172.30.0.138/24
+meshcore-teesside-compat-api-1 172.30.0.152/24
+meshcore-beacon-ukmesh-beacon-server-1 172.30.0.154/24
+meshcore-analytics-blackbox-exporter-1 172.30.0.131/24
+meshcore-analytics-redis-exporter-1 172.30.0.145/24
+meshcore-analytics-postgres-exporter-1 172.30.0.140/24
+meshcore-analytics-path-learning-worker-1 172.30.0.137/24
+meshcore-discord-bot 172.30.0.153/24
+meshcore-analytics-synthetic-monitor-1 172.30.0.146/24
+meshcore-analytics-loki-1 172.30.0.133/24
+meshcore-analytics-alloy-1 172.30.0.139/24
+meshcore-infra-redis-1 172.30.0.132/24
+meshcore-analytics-health-worker-1 172.30.0.143/24
+meshcore-analytics-anubis-website-ukmesh-1 172.30.0.20/24
+meshcore-analytics-hopreach-1 172.30.0.148/24
+meshcore-analytics-alert-receiver-1 172.30.0.144/24
+meshcore-teesside-website-northeast-1 172.30.0.151/24
+meshcore-infra-timescaledb-1 172.30.0.130/24
+meshcore-analytics-grafana-1 172.30.0.150/24
+meshcore-analytics-prometheus-1 172.30.0.149/24
+meshcore-analytics-anubis-health-check-1 172.30.0.22/24
+meshcore-analytics-mesh-health-check-1 172.30.0.135/24
+meshcore-analytics-link-worker-1 172.30.0.136/24
+meshcore-analytics-anubis-app-ukmesh-1 172.30.0.21/24
+cloudflared-http2 172.30.0.155/24
+meshcore-analytics-backend-1 172.30.0.156/24
+meshcore-analytics-website-dev-1 172.30.0.12/24

@@ -70,3 +70,28 @@ test('owner baseline is mode-0600, exclusive, checksummed, and tamper-evident', 
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test('semantic comparison ignores serialization and grant ordering but retains real drift', () => {
+  const baseline = fixture();
+  const reordered = {
+    ...baseline,
+    counts: Object.fromEntries(Object.entries(baseline.counts).reverse()) as typeof baseline.counts,
+    activeGrants: [...baseline.activeGrants].reverse().map(({ nodeId, verificationMethod, mqttUsername }) =>
+      ({ verificationMethod, nodeId, mqttUsername })),
+    aclGrants: [...baseline.aclGrants].reverse(),
+  };
+  assert.deepEqual(validateOwnerInventoryBaseline(baseline, reordered), { ok: true, mismatches: [] });
+  reordered.activeGrants.push({ ...reordered.activeGrants[0]! });
+  assert.deepEqual(validateOwnerInventoryBaseline(baseline, reordered), { ok: false, mismatches: ['activeGrants'] });
+});
+
+test('matching live ACL generations do not approve a changed inventory', () => {
+  const baseline = fixture();
+  const current = { ...baseline, configuredGeneration: 'changed', aclState: {
+    desiredGeneration: 'new', renderedGeneration: 'new', appliedGeneration: 'new', lastError: null,
+  } };
+  assert.deepEqual(validateOwnerInventoryBaseline(baseline, current), {
+    ok: false,
+    mismatches: ['configuredGeneration', 'aclDesiredGeneration', 'aclRenderedGeneration', 'aclAppliedGeneration'],
+  });
+});

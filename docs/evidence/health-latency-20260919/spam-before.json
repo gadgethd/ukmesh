@@ -1,0 +1,18 @@
+{
+  "capturedAt": "2026-09-19T10:12:19.723Z",
+  "messages": 2000,
+  "incidents": 1,
+  "loadMs": 1172.2221920000002,
+  "buildMs": 2230.089287,
+  "totalMs": 3402.3114789999995,
+  "budgetMs": 5000,
+  "withinBudget": true,
+  "queries": [
+    {
+      "sql": "SELECT p.rx_node_id, p.hop_count, p.path_hashes, n.lat AS olat, n.lon AS olon",
+      "ms": 519.4398539999997,
+      "rows": 0
+    }
+  ],
+  "persisted": false
+}

@@ -53,6 +53,17 @@ export type OwnerInventoryBaseline = {
 type BaselineContent = Omit<OwnerInventoryBaseline, 'contentSha256'>;
 
 function canonicalJson(value: unknown): string {
+  // v1 checksums cover the original serialization. Keep this stable so existing
+  // signed-off inventory files remain readable; semantic comparison is separate.
+  return JSON.stringify(value);
+}
+
+function semanticJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(semanticJson).sort().join(',')}]`;
+  if (value !== null && typeof value === 'object') {
+    return `{${Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
+      .map(([key, item]) => `${JSON.stringify(key)}:${semanticJson(item)}`).join(',')}}`;
+  }
   return JSON.stringify(value);
 }
 
@@ -115,7 +126,11 @@ export function buildOwnerInventoryBaseline(input: {
 }
 
 export function loadOwnerInventoryBaseline(filePath: string): OwnerInventoryBaseline {
-  const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8')) as OwnerInventoryBaseline;
+  return parseOwnerInventoryBaseline(fs.readFileSync(filePath, 'utf8'));
+}
+
+export function parseOwnerInventoryBaseline(content: string): OwnerInventoryBaseline {
+  const parsed = JSON.parse(content) as OwnerInventoryBaseline;
   if (parsed.format !== OWNER_INVENTORY_BASELINE_FORMAT) {
     throw new Error('OWNER_INVENTORY_BASELINE_FORMAT_INVALID');
   }
@@ -145,7 +160,9 @@ export function validateOwnerInventoryBaseline(
 ): { ok: boolean; mismatches: string[] } {
   const mismatches: string[] = [];
   const compare = (name: string, expected: unknown, actual: unknown) => {
-    if (canonicalJson(expected) !== canonicalJson(actual)) mismatches.push(name);
+    // Grants are a multiset, not an ordered list. JSON property order and the
+    // host's locale must not change readiness. Duplicate grants still differ.
+    if (semanticJson(expected) !== semanticJson(actual)) mismatches.push(name);
   };
   compare('counts', baseline.counts, current.counts);
   compare('activeGrants', baseline.activeGrants, current.activeGrants);
@@ -156,4 +173,26 @@ export function validateOwnerInventoryBaseline(
   compare('aclLastError', baseline.aclState.lastError, current.aclState.lastError);
   compare('aclReadback', baseline.aclGrants, current.aclGrants);
   return { ok: mismatches.length === 0, mismatches };
+}
+
+/** Safe for health output: counts and generation hashes, never owner identities. */
+export function describeOwnerInventoryDrift(
+  baseline: OwnerInventoryBaseline,
+  current: OwnerInventoryBaseline,
+) {
+  return {
+    baselineGeneratedAt: baseline.generatedAt,
+    counts: Object.fromEntries(Object.entries(baseline.counts).flatMap(([key, expected]) => {
+      const actual = current.counts[key as keyof typeof current.counts];
+      return expected === actual ? [] : [[key, { expected, actual }]];
+    })),
+    configuredGeneration: {
+      expected: baseline.configuredGeneration,
+      actual: current.configuredGeneration,
+    },
+    aclGeneration: {
+      expected: baseline.aclState,
+      actual: current.aclState,
+    },
+  };
 }

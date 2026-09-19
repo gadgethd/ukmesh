@@ -3,6 +3,8 @@ import os from 'node:os';
 import { pool, query } from '../db/index.js';
 import type { BoundedRunStatus } from './boundedRun.js';
 import { assertAnalysisPublicationLease } from './publicationFence.js';
+import { analysisRetirement, normalizeRetiredAnalysisState, RETIRED_ANALYSIS_WORKLOADS } from './workloadPolicy.js';
+export { normalizeRetiredAnalysisState } from './workloadPolicy.js';
 import {
   analysisActiveLeases,
   analysisLeaseEventsTotal,
@@ -96,6 +98,9 @@ export class AnalysisLegacyRunRequiresCleanupError extends Error {
 export async function beginAnalysisRun(
   input: BeginAnalysisRunInput,
 ): Promise<AnalysisRunHandle> {
+  if (RETIRED_ANALYSIS_WORKLOADS.has(input.workload)) {
+    throw new Error(`ANALYSIS_WORKLOAD_RETIRED:${input.workload}`);
+  }
   const runId = randomUUID();
   const leaseToken = randomUUID();
   const deadlineMs = Math.max(
@@ -572,6 +577,7 @@ export async function getAnalysisWorkloadStates(): Promise<Array<{
   activeAttempt: number;
   lastTerminalReason: string | null;
   lastError: string | null;
+  retirement: ReturnType<typeof analysisRetirement>;
 }>> {
   const result = await query<{
     workload: string;
@@ -593,17 +599,25 @@ export async function getAnalysisWorkloadStates(): Promise<Array<{
        FROM analysis_workload_state
       ORDER BY workload, scope`,
   );
-  return result.rows.map((row) => ({
-    workload: row.workload,
-    scope: row.scope,
-    lastStatus: row.last_status,
-    lastCompleteAt: row.last_complete_at,
-    activeRunId: row.active_run_id,
-    activeLeaseOwner: row.active_lease_owner,
-    activeLeaseExpiresAt: row.active_lease_expires_at,
-    activeRunDeadlineAt: row.active_run_deadline_at,
-    activeAttempt: row.active_attempt,
-    lastTerminalReason: row.last_terminal_reason,
-    lastError: row.last_error,
-  }));
+  return result.rows.map((row) => {
+    const state = {
+      workload: row.workload,
+      activeRunId: row.active_run_id,
+      lastStatus: row.last_status,
+      lastTerminalReason: row.last_terminal_reason,
+      lastError: row.last_error,
+    };
+    return {
+      workload: row.workload,
+      scope: row.scope,
+      lastCompleteAt: row.last_complete_at,
+      activeRunId: row.active_run_id,
+      activeLeaseOwner: row.active_lease_owner,
+      activeLeaseExpiresAt: row.active_lease_expires_at,
+      activeRunDeadlineAt: row.active_run_deadline_at,
+      activeAttempt: row.active_attempt,
+      ...normalizeRetiredAnalysisState(state),
+      retirement: analysisRetirement(state),
+    };
+  });
 }

@@ -3,6 +3,7 @@ import type { QueryResultRow } from 'pg';
 import { resolvePublicNetworkScope } from '../../http/requestScope.js';
 import { normalizeObserverQuery } from '../utils/observer.js';
 import { expandResolverScope } from '../../networks.js';
+import { MQTT_NODES_SQL } from '../../repositories/mqttNodes.js';
 import { networkFilters } from '../utils/networkFilters.js';
 import { getPublicRuntimeFeatureConfig } from '../../features.js';
 import {
@@ -246,8 +247,6 @@ export function registerMiscRoutes(router: Router, deps: MiscRouteDeps): void {
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const networkValues = expandResolverScope(network);
       const params: unknown[] = [networkValues, networkValues];
-      const networkClause = 'AND nss.network = ANY($1::text[])';
-      const packetNetworkClause = 'AND network = ANY($2::text[])';
       const result = await query<{
         node_id: string;
         name: string | null;
@@ -261,33 +260,7 @@ export function registerMiscRoutes(router: Router, deps: MiscRouteDeps): void {
         stats: Record<string, unknown> | null;
         packets_24h: string;
       }>(
-
-        `SELECT DISTINCT ON (nss.node_id)
-           nss.node_id,
-           n.name,
-           nss.time AS last_seen,
-           nss.battery_mv,
-           nss.uptime_secs,
-           nss.channel_utilization,
-           nss.air_util_tx,
-           nss.rx_air_secs,
-           nss.tx_air_secs,
-           nss.stats,
-           COALESCE(pc.packet_count, 0) AS packets_24h
-         FROM node_identity_status_samples nss
-         LEFT JOIN node_identity_nodes n ON n.node_id = nss.node_id
-         LEFT JOIN (
-           SELECT meshcore_canonical_node_id(rx_node_id) AS rx_node_id, COUNT(*) AS packet_count
-           FROM packets
-           WHERE time > NOW() - INTERVAL '24 hours'
-             AND rx_node_id IS NOT NULL
-             ${packetNetworkClause}
-           GROUP BY meshcore_canonical_node_id(rx_node_id)
-         ) pc ON pc.rx_node_id = nss.node_id
-         WHERE nss.time > NOW() - INTERVAL '15 minutes'
-           AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
-           ${networkClause}
-         ORDER BY nss.node_id, COALESCE(nss.uptime_secs, 0) DESC, nss.time DESC`,
+        MQTT_NODES_SQL,
         params,
       );
       res.json(result.rows.filter((r) => Number(r.packets_24h) > 0));

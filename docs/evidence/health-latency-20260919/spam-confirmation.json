@@ -1,0 +1,25 @@
+{
+  "capturedAt": "2026-09-19T10:29:10.660Z",
+  "messages": 2000,
+  "incidents": 1,
+  "loadMs": 1118.477887,
+  "buildMs": 1278.6220650000002,
+  "totalMs": 2397.099952,
+  "budgetMs": 5000,
+  "withinBudget": true,
+  "queries": [
+    {
+      "sql": "SELECT p.rx_node_id, p.hop_count, p.path_hashes, n.lat AS olat, n.lon AS olon",
+      "ms": 491.84631899999977,
+      "rows": 0
+    }
+  ],
+  "comparison": {
+    "oldClusterMs": 1178.5350970000004,
+    "newClusterMs": 680.0381659999994,
+    "equal": true,
+    "oldDigest": "66f73c63b6356a3be783660ac6f17855a19cfcd891a33f76631d3489e6013959",
+    "newDigest": "66f73c63b6356a3be783660ac6f17855a19cfcd891a33f76631d3489e6013959"
+  },
+  "persisted": false
+}

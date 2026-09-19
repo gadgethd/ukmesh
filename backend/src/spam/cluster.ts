@@ -59,11 +59,16 @@ function combinedJoinScore(
   cfg: SpamMessageConfig,
 ): number {
   const rep = cluster.representative;
-  const textSim = messageSimilarity(candidate.norm, rep.norm);
   const nameSim = usernameSimilarity(candidate.sender, rep.sender);
 
   // Two messages both carrying the spam-page marker are very likely related.
   const bothMarker = candidate.norm.hasSpamMarker && rep.norm.hasSpamMarker;
+  const minimumTextScore = Math.min(
+    cfg.textSimThreshold,
+    bothMarker ? cfg.textSimThresholdWithName * 0.75 : 1,
+    nameSim >= cfg.usernameSimThreshold ? cfg.textSimThresholdWithName : 1,
+  );
+  const textSim = messageSimilarity(candidate.norm, rep.norm, minimumTextScore);
 
   if (textSim >= cfg.textSimThreshold) return textSim;
   if (bothMarker && textSim >= cfg.textSimThresholdWithName * 0.75) return Math.max(textSim, 0.8);
@@ -388,20 +393,22 @@ export function clusterMessages(records: MessageRecord[], cfg: SpamMessageConfig
         }
       }
     }
-    const candidateIndexes = open
-      .map((cluster, index) => ({ cluster, index }))
-      .sort((a, b) => b.cluster.lastSeen - a.cluster.lastSeen)
-      .slice(0, cfg.maxCandidateClusters)
-      .map(({ index }) => index);
-    for (let offset = 0; bestIdx < 0 && offset < candidateIndexes.length; offset += 1) {
-      if (offset % 8 === 0) assertWithinBudget(deadline);
-      const i = candidateIndexes[offset]!;
-      const cl = open[i]!;
-      if (cl.representative.network !== rec.network) continue;
-      const s = combinedJoinScore(rec, cl, cfg);
-      if (s > bestScore) {
-        bestScore = s;
-        bestIdx = i;
+    if (bestIdx < 0) {
+      const candidateIndexes = open
+        .map((cluster, index) => ({ cluster, index }))
+        .sort((a, b) => b.cluster.lastSeen - a.cluster.lastSeen)
+        .slice(0, cfg.maxCandidateClusters)
+        .map(({ index }) => index);
+      for (let offset = 0; bestIdx < 0 && offset < candidateIndexes.length; offset += 1) {
+        if (offset % 8 === 0) assertWithinBudget(deadline);
+        const i = candidateIndexes[offset]!;
+        const cl = open[i]!;
+        if (cl.representative.network !== rec.network) continue;
+        const s = combinedJoinScore(rec, cl, cfg);
+        if (s > bestScore) {
+          bestScore = s;
+          bestIdx = i;
+        }
       }
     }
 

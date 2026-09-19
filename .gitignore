@@ -62,3 +62,4 @@ local-vs-github-pr-plan.md
 terrain-tiles/
 
 /.env.bak-*
+.health-latency-local/

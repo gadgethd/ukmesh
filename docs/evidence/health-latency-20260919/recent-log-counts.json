@@ -1,0 +1,14 @@
+{
+  "from": "2026-09-18T10:19:47.944944+00:00",
+  "to": "2026-09-19T10:19:47.944944+00:00",
+  "container": "meshcore-analytics-backend-1",
+  "lines": 48405,
+  "identityMismatchRejections": 1,
+  "rejectionsByHour": {
+    "2026-09-18T11": 1
+  },
+  "connectionMonitorLines": 5538,
+  "connectionMonitorEacces": 0,
+  "firstLogAt": "2026-09-18T11:44:21.675817000Z",
+  "lastLogAt": "2026-09-19T10:19:11.066959000Z"
+}

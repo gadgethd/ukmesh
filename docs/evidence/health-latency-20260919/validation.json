@@ -1,0 +1,53 @@
+{
+  "capturedAt": "2026-09-19T10:32:43.133281+00:00",
+  "node": "v22.22.1",
+  "npm": "9.2.0",
+  "checks": [
+    {
+      "command": "npm run typecheck --prefix backend",
+      "result": "passed",
+      "summary": []
+    },
+    {
+      "command": "npm run build --prefix backend",
+      "result": "passed",
+      "summary": []
+    },
+    {
+      "command": "npm test --prefix backend",
+      "result": "passed",
+      "summary": [
+        "# tests 328",
+        "# pass 328",
+        "# fail 0",
+        "# skipped 0",
+        "# duration_ms 16908.422755"
+      ]
+    },
+    {
+      "command": "npm run build --prefix frontend",
+      "result": "passed",
+      "summary": [
+        "\u2713 built in 2.02s"
+      ]
+    },
+    {
+      "command": "npm test --prefix frontend",
+      "result": "passed",
+      "summary": [
+        "# tests 99",
+        "# pass 99",
+        "# fail 0",
+        "# skipped 0",
+        "# duration_ms 7980.628263"
+      ]
+    },
+    {
+      "command": "cd frontend && npx playwright test feed-virtualizer.spec.ts --project=public-desktop",
+      "result": "passed",
+      "summary": [
+        "  2 passed (9.8s)"
+      ]
+    }
+  ]
+}

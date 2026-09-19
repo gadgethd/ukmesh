@@ -27,6 +27,22 @@ let monitorTimer: NodeJS.Timeout | null = null;
 let retryTimer: NodeJS.Timeout | null = null;
 let monitorInFlight: Promise<void> | null = null;
 let monitorStopping = false;
+let unavailableReason: string | null = null;
+
+function reportLogUnavailable(error: unknown): void {
+  const reason = (error as NodeJS.ErrnoException)?.code ?? String(error);
+  if (reason === unavailableReason) return;
+  unavailableReason = reason;
+  // This is optional audit telemetry, not ownership/ACL authorization. Keep
+  // retrying so permission repairs or log rotation recover without a restart.
+  console.warn(`[conn-monitor] audit log unavailable (${reason}); observations paused, retrying; ownership enforcement is independent`);
+}
+
+function reportLogAvailable(): void {
+  if (unavailableReason === null) return;
+  console.log('[conn-monitor] audit log access recovered; observations resumed');
+  unavailableReason = null;
+}
 
 function pruneClientObservations(now = Date.now()): void {
   for (const [clientId, observation] of clientToUsername) {
@@ -124,15 +140,6 @@ async function scanRange(start: number, end: number): Promise<void> {
 
 export function startMqttConnectionMonitor(): void {
   if (monitorStopping || monitorTimer || retryTimer || monitorInFlight) return;
-  if (!fs.existsSync(LOG_PATH)) {
-    console.warn('[conn-monitor] log not found at', LOG_PATH, '— retrying in 30s');
-    retryTimer = setTimeout(() => {
-      retryTimer = null;
-      startMqttConnectionMonitor();
-    }, 30_000);
-    retryTimer.unref();
-    return;
-  }
 
   let position = 0;
   let pollInFlight = false;
@@ -141,6 +148,7 @@ export function startMqttConnectionMonitor(): void {
     const start = Math.max(0, size - HISTORICAL_SCAN_BYTES);
     if (start < size) await scanRange(start, size - 1);
     position = size;
+    reportLogAvailable();
     console.log('[conn-monitor] ready in audit-only mode; logs cannot grant ownership');
   }
 
@@ -152,9 +160,12 @@ export function startMqttConnectionMonitor(): void {
         await scanRange(position, size - 1);
         position = size;
       }
+      reportLogAvailable();
       pruneClientObservations();
-    } catch {
-      // Log may be unavailable briefly during rotation.
+    } catch (error) {
+      // Log rotation and permission errors are retried, with one warning per
+      // changed failure instead of startup noise every 30 seconds.
+      reportLogUnavailable(error);
     }
   }
 
@@ -174,7 +185,7 @@ export function startMqttConnectionMonitor(): void {
     monitorTimer.unref();
   }).catch((error: Error) => {
     if (monitorStopping) return;
-    console.error('[conn-monitor] init error:', error.message);
+    reportLogUnavailable(error);
     retryTimer = setTimeout(() => {
       retryTimer = null;
       startMqttConnectionMonitor();

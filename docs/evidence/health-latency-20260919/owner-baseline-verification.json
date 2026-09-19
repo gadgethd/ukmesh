@@ -1,0 +1,438 @@
+{
+  "capturedAt": "2026-09-19T10:08:41.231Z",
+  "counts": {
+    "activeAccounts": 28,
+    "activeGrants": 53,
+    "operatorConfig": 14,
+    "operatorDatabase": 39,
+    "legacyOrNullMethod": 0,
+    "configuredGrants": 14,
+    "aclGrants": 53
+  },
+  "reports": [
+    {
+      "name": "owner-grants-20260815T224953Z.json",
+      "active": false,
+      "ok": false,
+      "mismatches": [
+        "counts",
+        "activeGrants",
+        "configuredGeneration",
+        "aclDesiredGeneration",
+        "aclRenderedGeneration",
+        "aclAppliedGeneration",
+        "aclReadback"
+      ],
+      "drift": {
+        "baselineGeneratedAt": "2026-08-15T22:49:53.688Z",
+        "counts": {
+          "activeAccounts": {
+            "expected": 27,
+            "actual": 28
+          },
+          "activeGrants": {
+            "expected": 43,
+            "actual": 53
+          },
+          "operatorConfig": {
+            "expected": 6,
+            "actual": 14
+          },
+          "operatorDatabase": {
+            "expected": 37,
+            "actual": 39
+          },
+          "configuredGrants": {
+            "expected": 6,
+            "actual": 14
+          },
+          "aclGrants": {
+            "expected": 43,
+            "actual": 53
+          }
+        },
+        "configuredGeneration": {
+          "expected": "b04e2a73af705289c87eca53d0d8931da24080f5f720830dc55944973ee84546",
+          "actual": "798a6853ed9a94315301d30299cb26d9b9ecc4ccfacb3bf87707267babeb8e59"
+        },
+        "aclGeneration": {
+          "expected": {
+            "desiredGeneration": "3e406e813ba8f2d37f499a1369aa130b61103c247546be82fcc9a3090c8f0f8f",
+            "renderedGeneration": "3e406e813ba8f2d37f499a1369aa130b61103c247546be82fcc9a3090c8f0f8f",
+            "appliedGeneration": "3e406e813ba8f2d37f499a1369aa130b61103c247546be82fcc9a3090c8f0f8f",
+            "lastVerifiedAt": "2026-08-15T22:49:40.001Z",
+            "lastError": null
+          },
+          "actual": {
+            "desiredGeneration": "da5f0eb7195f452aaa1fc6688f6c099dc6a4e92e1cfd5e45d6581e55d0645139",
+            "renderedGeneration": "da5f0eb7195f452aaa1fc6688f6c099dc6a4e92e1cfd5e45d6581e55d0645139",
+            "appliedGeneration": "da5f0eb7195f452aaa1fc6688f6c099dc6a4e92e1cfd5e45d6581e55d0645139",
+            "lastVerifiedAt": "2026-09-19T10:08:10.214Z",
+            "lastError": null
+          }
+        }
+      }
+    },
+    {
+      "name": "owner-grants-20260820T094800Z.json",
+      "active": false,
+      "ok": false,
+      "mismatches": [
+        "counts",
+        "activeGrants",
+        "configuredGeneration",
+        "aclDesiredGeneration",
+        "aclRenderedGeneration",
+        "aclAppliedGeneration",
+        "aclReadback"
+      ],
+      "drift": {
+        "baselineGeneratedAt": "2026-08-20T09:46:26.994Z",
+        "counts": {
+          "activeGrants": {
+            "expected": 44,
+            "actual": 53
+          },
+          "operatorConfig": {
+            "expected": 7,
+            "actual": 14
+          },
+          "operatorDatabase": {
+            "expected": 37,
+            "actual": 39
+          },
+          "configuredGrants": {
+            "expected": 7,
+            "actual": 14
+          },
+          "aclGrants": {
+            "expected": 44,
+            "actual": 53
+          }
+        },
+        "configuredGeneration": {
+          "expected": "65acc3e766846f1eea2bd8eb2fa953c213a1f9b440ee7ff6904acc48d6e610a6",
+          "actual": "798a6853ed9a94315301d30299cb26d9b9ecc4ccfacb3bf87707267babeb8e59"
+        },
+        "aclGeneration": {
+          "expected": {
+            "desiredGeneration": "cd7d4bfe32cceb031a305d58d10a49bbdfb42bffd42e3a4adf0b72324c787541",
+            "renderedGeneration": "cd7d4bfe32cceb031a305d58d10a49bbdfb42bffd42e3a4adf0b72324c787541",
+            "appliedGeneration": "cd7d4bfe32cceb031a305d58d10a49bbdfb42bffd42e3a4adf0b72324c787541",
+            "lastVerifiedAt": "2026-08-20T09:45:53.366Z",
+            "lastError": null
+          },
+          "actual": {
+            "desiredGeneration": "da5f0eb7195f452aaa1fc6688f6c099dc6a4e92e1cfd5e45d6581e55d0645139",
+            "renderedGeneration": "da5f0eb7195f452aaa1fc6688f6c099dc6a4e92e1cfd5e45d6581e55d0645139",
+            "appliedGeneration": "da5f0eb7195f452aaa1fc6688f6c099dc6a4e92e1cfd5e45d6581e55d0645139",
+            "lastVerifiedAt": "2026-09-19T10:08:10.214Z",
+            "lastError": null
+          }
+        }
+      }
+    },
+    {
+      "name": "owner-grants-20260905-path-deploy.json",
+      "active": false,
+      "ok": false,
+      "mismatches": [
+        "counts",
+        "activeGrants",
+        "configuredGeneration",
+        "aclDesiredGeneration",
+        "aclRenderedGeneration",
+        "aclAppliedGeneration",
+        "aclReadback"
+      ],
+      "drift": {
+        "baselineGeneratedAt": "2026-09-05T01:55:16.350Z",
+        "counts": {
+          "activeGrants": {
+            "expected": 45,
+            "actual": 53
+          },
+          "operatorConfig": {
+            "expected": 8,
+            "actual": 14
+          },
+          "operatorDatabase": {
+            "expected": 37,
+            "actual": 39
+          },
+          "configuredGrants": {
+            "expected": 8,
+            "actual": 14
+          },
+          "aclGrants": {
+            "expected": 45,
+            "actual": 53
+          }
+        },
+        "configuredGeneration": {
+          "expected": "ed31fc5d93ec076e55d07c20c481e1b95dfe6156bae34e77d1295e9158a9243b",
+          "actual": "798a6853ed9a94315301d30299cb26d9b9ecc4ccfacb3bf87707267babeb8e59"
+        },
+        "aclGeneration": {
+          "expected": {
+            "desiredGeneration": "5b002d05f6fd7eb796fc2f99c5d903dc78479597e173ddd038f5eb7de7a2906e",
+            "renderedGeneration": "5b002d05f6fd7eb796fc2f99c5d903dc78479597e173ddd038f5eb7de7a2906e",
+            "appliedGeneration": "5b002d05f6fd7eb796fc2f99c5d903dc78479597e173ddd038f5eb7de7a2906e",
+            "lastVerifiedAt": "2026-09-05T01:54:59.236Z",
+            "lastError": null
+          },
+          "actual": {
+            "desiredGeneration": "da5f0eb7195f452aaa1fc6688f6c099dc6a4e92e1cfd5e45d6581e55d0645139",
+            "renderedGeneration": "da5f0eb7195f452aaa1fc6688f6c099dc6a4e92e1cfd5e45d6581e55d0645139",
+            "appliedGeneration": "da5f0eb7195f452aaa1fc6688f6c099dc6a4e92e1cfd5e45d6581e55d0645139",
+            "lastVerifiedAt": "2026-09-19T10:08:10.214Z",
+            "lastError": null
+          }
+        }
+      }
+    },
+    {
+      "name": "owner-grants-20260912-rebaseline.json",
+      "active": false,
+      "ok": false,
+      "mismatches": [
+        "counts",
+        "activeGrants",
+        "configuredGeneration",
+        "aclDesiredGeneration",
+        "aclRenderedGeneration",
+        "aclAppliedGeneration",
+        "aclReadback"
+      ],
+      "drift": {
+        "baselineGeneratedAt": "2026-09-12T16:52:33.683Z",
+        "counts": {
+          "activeGrants": {
+            "expected": 46,
+            "actual": 53
+          },
+          "operatorConfig": {
+            "expected": 9,
+            "actual": 14
+          },
+          "operatorDatabase": {
+            "expected": 37,
+            "actual": 39
+          },
+          "configuredGrants": {
+            "expected": 9,
+            "actual": 14
+          },
+          "aclGrants": {
+            "expected": 46,
+            "actual": 53
+          }
+        },
+        "configuredGeneration": {
+          "expected": "bafe988b9960d5743f965db09450bf29d86cc658692d19b4023ebe03631dc1eb",
+          "actual": "798a6853ed9a94315301d30299cb26d9b9ecc4ccfacb3bf87707267babeb8e59"
+        },
+        "aclGeneration": {
+          "expected": {
+            "desiredGeneration": "71b44fa88f031f02a19eb10fb471f0a3f88c83c5b21b0b8278d93566558dbff4",
+            "renderedGeneration": "71b44fa88f031f02a19eb10fb471f0a3f88c83c5b21b0b8278d93566558dbff4",
+            "appliedGeneration": "71b44fa88f031f02a19eb10fb471f0a3f88c83c5b21b0b8278d93566558dbff4",
+            "lastVerifiedAt": "2026-09-12T16:52:18.846Z",
+            "lastError": null
+          },
+          "actual": {
+            "desiredGeneration": "da5f0eb7195f452aaa1fc6688f6c099dc6a4e92e1cfd5e45d6581e55d0645139",
+            "renderedGeneration": "da5f0eb7195f452aaa1fc6688f6c099dc6a4e92e1cfd5e45d6581e55d0645139",
+            "appliedGeneration": "da5f0eb7195f452aaa1fc6688f6c099dc6a4e92e1cfd5e45d6581e55d0645139",
+            "lastVerifiedAt": "2026-09-19T10:08:10.214Z",
+            "lastError": null
+          }
+        }
+      }
+    },
+    {
+      "name": "owner-grants-20260913-rebaseline.json",
+      "active": false,
+      "ok": false,
+      "mismatches": [
+        "counts",
+        "activeGrants",
+        "configuredGeneration",
+        "aclDesiredGeneration",
+        "aclRenderedGeneration",
+        "aclAppliedGeneration",
+        "aclReadback"
+      ],
+      "drift": {
+        "baselineGeneratedAt": "2026-09-13T17:34:53.684Z",
+        "counts": {
+          "activeGrants": {
+            "expected": 47,
+            "actual": 53
+          },
+          "operatorConfig": {
+            "expected": 10,
+            "actual": 14
+          },
+          "operatorDatabase": {
+            "expected": 37,
+            "actual": 39
+          },
+          "configuredGrants": {
+            "expected": 10,
+            "actual": 14
+          },
+          "aclGrants": {
+            "expected": 47,
+            "actual": 53
+          }
+        },
+        "configuredGeneration": {
+          "expected": "916c10f16810a4a5378979445c83fd49121ed6d40981580125e319a6a2faa253",
+          "actual": "798a6853ed9a94315301d30299cb26d9b9ecc4ccfacb3bf87707267babeb8e59"
+        },
+        "aclGeneration": {
+          "expected": {
+            "desiredGeneration": "5bb0aa14b049798ba7bc1788d02e65e09169ff58bdda91ed7c12db54368691f0",
+            "renderedGeneration": "5bb0aa14b049798ba7bc1788d02e65e09169ff58bdda91ed7c12db54368691f0",
+            "appliedGeneration": "5bb0aa14b049798ba7bc1788d02e65e09169ff58bdda91ed7c12db54368691f0",
+            "lastVerifiedAt": "2026-09-13T17:34:32.389Z",
+            "lastError": null
+          },
+          "actual": {
+            "desiredGeneration": "da5f0eb7195f452aaa1fc6688f6c099dc6a4e92e1cfd5e45d6581e55d0645139",
+            "renderedGeneration": "da5f0eb7195f452aaa1fc6688f6c099dc6a4e92e1cfd5e45d6581e55d0645139",
+            "appliedGeneration": "da5f0eb7195f452aaa1fc6688f6c099dc6a4e92e1cfd5e45d6581e55d0645139",
+            "lastVerifiedAt": "2026-09-19T10:08:10.214Z",
+            "lastError": null
+          }
+        }
+      }
+    },
+    {
+      "name": "owner-grants-20260914-rebaseline.json",
+      "active": false,
+      "ok": false,
+      "mismatches": [
+        "counts",
+        "activeGrants",
+        "configuredGeneration",
+        "aclDesiredGeneration",
+        "aclRenderedGeneration",
+        "aclAppliedGeneration",
+        "aclReadback"
+      ],
+      "drift": {
+        "baselineGeneratedAt": "2026-09-14T10:18:31.123Z",
+        "counts": {
+          "activeGrants": {
+            "expected": 48,
+            "actual": 53
+          },
+          "operatorConfig": {
+            "expected": 11,
+            "actual": 14
+          },
+          "operatorDatabase": {
+            "expected": 37,
+            "actual": 39
+          },
+          "configuredGrants": {
+            "expected": 11,
+            "actual": 14
+          },
+          "aclGrants": {
+            "expected": 48,
+            "actual": 53
+          }
+        },
+        "configuredGeneration": {
+          "expected": "ecc26082592abebaec1d1f7812452b3666706b46aec787d5585b6f19179cc98d",
+          "actual": "798a6853ed9a94315301d30299cb26d9b9ecc4ccfacb3bf87707267babeb8e59"
+        },
+        "aclGeneration": {
+          "expected": {
+            "desiredGeneration": "9713a634c4390689a427fc77d81023af3fbfdec959cd4ecf57a16cd5d3a33d08",
+            "renderedGeneration": "9713a634c4390689a427fc77d81023af3fbfdec959cd4ecf57a16cd5d3a33d08",
+            "appliedGeneration": "9713a634c4390689a427fc77d81023af3fbfdec959cd4ecf57a16cd5d3a33d08",
+            "lastVerifiedAt": "2026-09-14T10:17:58.087Z",
+            "lastError": null
+          },
+          "actual": {
+            "desiredGeneration": "da5f0eb7195f452aaa1fc6688f6c099dc6a4e92e1cfd5e45d6581e55d0645139",
+            "renderedGeneration": "da5f0eb7195f452aaa1fc6688f6c099dc6a4e92e1cfd5e45d6581e55d0645139",
+            "appliedGeneration": "da5f0eb7195f452aaa1fc6688f6c099dc6a4e92e1cfd5e45d6581e55d0645139",
+            "lastVerifiedAt": "2026-09-19T10:08:10.214Z",
+            "lastError": null
+          }
+        }
+      }
+    },
+    {
+      "name": "owner-grants-20260914b-rebaseline.json",
+      "active": false,
+      "ok": false,
+      "mismatches": [
+        "counts",
+        "activeGrants",
+        "configuredGeneration",
+        "aclDesiredGeneration",
+        "aclRenderedGeneration",
+        "aclAppliedGeneration",
+        "aclReadback"
+      ],
+      "drift": {
+        "baselineGeneratedAt": "2026-09-14T17:15:36.326Z",
+        "counts": {
+          "activeGrants": {
+            "expected": 49,
+            "actual": 53
+          },
+          "operatorConfig": {
+            "expected": 12,
+            "actual": 14
+          },
+          "operatorDatabase": {
+            "expected": 37,
+            "actual": 39
+          },
+          "configuredGrants": {
+            "expected": 12,
+            "actual": 14
+          },
+          "aclGrants": {
+            "expected": 49,
+            "actual": 53
+          }
+        },
+        "configuredGeneration": {
+          "expected": "461ec7f6504059b720b8065d3eb3d9ac966a6e35cabb2ab1909af65a3cca3924",
+          "actual": "798a6853ed9a94315301d30299cb26d9b9ecc4ccfacb3bf87707267babeb8e59"
+        },
+        "aclGeneration": {
+          "expected": {
+            "desiredGeneration": "f1b98f5da8d64901bdea172510bad12417d77bfa70455d70b3d66ea69d47db50",
+            "renderedGeneration": "f1b98f5da8d64901bdea172510bad12417d77bfa70455d70b3d66ea69d47db50",
+            "appliedGeneration": "f1b98f5da8d64901bdea172510bad12417d77bfa70455d70b3d66ea69d47db50",
+            "lastVerifiedAt": "2026-09-14T17:15:18.063Z",
+            "lastError": null
+          },
+          "actual": {
+            "desiredGeneration": "da5f0eb7195f452aaa1fc6688f6c099dc6a4e92e1cfd5e45d6581e55d0645139",
+            "renderedGeneration": "da5f0eb7195f452aaa1fc6688f6c099dc6a4e92e1cfd5e45d6581e55d0645139",
+            "appliedGeneration": "da5f0eb7195f452aaa1fc6688f6c099dc6a4e92e1cfd5e45d6581e55d0645139",
+            "lastVerifiedAt": "2026-09-19T10:08:10.214Z",
+            "lastError": null
+          }
+        }
+      }
+    },
+    {
+      "name": "owner-grants-20260918T114407Z-rebaseline.json",
+      "active": true,
+      "ok": true,
+      "mismatches": [],
+      "drift": null
+    }
+  ]
+}

@@ -1,0 +1,116 @@
+[
+  {
+    "workload": "path-history",
+    "scope": "test",
+    "lastCompleteAt": null,
+    "activeRunId": null,
+    "activeLeaseOwner": null,
+    "activeLeaseExpiresAt": null,
+    "activeRunDeadlineAt": null,
+    "activeAttempt": 107,
+    "lastStatus": "unavailable",
+    "lastTerminalReason": "retired",
+    "lastError": null,
+    "retirement": {
+      "reason": "API and worker removed; cache dropped by migration 044. Use on-demand paths and path-learning.",
+      "unexpectedActiveRun": false,
+      "historicalState": {
+        "lastStatus": "stale",
+        "lastTerminalReason": "empty selection",
+        "lastError": "empty selection"
+      }
+    }
+  },
+  {
+    "workload": "path-history",
+    "scope": "ukmesh",
+    "lastCompleteAt": "2026-08-09T17:25:04.720Z",
+    "activeRunId": null,
+    "activeLeaseOwner": null,
+    "activeLeaseExpiresAt": null,
+    "activeRunDeadlineAt": null,
+    "activeAttempt": 148,
+    "lastStatus": "unavailable",
+    "lastTerminalReason": "retired",
+    "lastError": null,
+    "retirement": {
+      "reason": "API and worker removed; cache dropped by migration 044. Use on-demand paths and path-learning.",
+      "unexpectedActiveRun": false,
+      "historicalState": {
+        "lastStatus": "failed",
+        "lastTerminalReason": "relation \"ml_path_prefix_scores\" does not exist",
+        "lastError": "relation \"ml_path_prefix_scores\" does not exist"
+      }
+    }
+  },
+  {
+    "workload": "path-learning",
+    "scope": "all",
+    "lastCompleteAt": "2026-09-19T10:02:43.943Z",
+    "activeRunId": null,
+    "activeLeaseOwner": null,
+    "activeLeaseExpiresAt": null,
+    "activeRunDeadlineAt": null,
+    "activeAttempt": 1252,
+    "lastStatus": "complete",
+    "lastTerminalReason": "complete",
+    "lastError": null,
+    "retirement": null
+  },
+  {
+    "workload": "path-learning",
+    "scope": "northeast",
+    "lastCompleteAt": "2026-08-21T10:54:41.044Z",
+    "activeRunId": null,
+    "activeLeaseOwner": null,
+    "activeLeaseExpiresAt": null,
+    "activeRunDeadlineAt": null,
+    "activeAttempt": 559,
+    "lastStatus": "complete",
+    "lastTerminalReason": "complete",
+    "lastError": null,
+    "retirement": null
+  },
+  {
+    "workload": "path-learning",
+    "scope": "test",
+    "lastCompleteAt": "2026-09-19T10:01:41.320Z",
+    "activeRunId": null,
+    "activeLeaseOwner": null,
+    "activeLeaseExpiresAt": null,
+    "activeRunDeadlineAt": null,
+    "activeAttempt": 446,
+    "lastStatus": "complete",
+    "lastTerminalReason": "complete",
+    "lastError": null,
+    "retirement": null
+  },
+  {
+    "workload": "path-learning",
+    "scope": "ukmesh",
+    "lastCompleteAt": "2026-09-19T10:02:11.497Z",
+    "activeRunId": null,
+    "activeLeaseOwner": null,
+    "activeLeaseExpiresAt": null,
+    "activeRunDeadlineAt": null,
+    "activeAttempt": 1255,
+    "lastStatus": "complete",
+    "lastTerminalReason": "complete",
+    "lastError": null,
+    "retirement": null
+  },
+  {
+    "workload": "spam-analysis",
+    "scope": "public",
+    "lastCompleteAt": "2026-09-19T10:17:11.112Z",
+    "activeRunId": null,
+    "activeLeaseOwner": null,
+    "activeLeaseExpiresAt": null,
+    "activeRunDeadlineAt": null,
+    "activeAttempt": 14696,
+    "lastStatus": "complete",
+    "lastTerminalReason": "complete",
+    "lastError": null,
+    "retirement": null
+  }
+]

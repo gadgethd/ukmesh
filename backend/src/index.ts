@@ -52,6 +52,7 @@ import { readAclFile } from './mqtt/aclManager.js';
 import { parseOwnerGrantConfig } from './owner/ownerGrantConfig.js';
 import {
   buildOwnerInventoryBaseline,
+  describeOwnerInventoryDrift,
   loadOwnerInventoryBaseline,
   validateOwnerInventoryBaseline,
 } from './owner/ownerInventoryBaseline.js';
@@ -300,6 +301,7 @@ async function main() {
           required: Boolean(process.env['OWNER_AUTH_INVENTORY_BASELINE_PATH']),
           ok: !process.env['OWNER_AUTH_INVENTORY_BASELINE_PATH'],
           mismatches: [] as string[],
+          drift: null as ReturnType<typeof describeOwnerInventoryDrift> | null,
         },
       },
       analysis: [] as Awaited<ReturnType<typeof getAnalysisWorkloadStates>>,
@@ -322,13 +324,12 @@ async function main() {
           aclContent: readAclFile(),
           aclState,
         });
-        const validation = validateOwnerInventoryBaseline(
-          loadOwnerInventoryBaseline(ownerBaselinePath),
-          current,
-        );
+        const baseline = loadOwnerInventoryBaseline(ownerBaselinePath);
+        const validation = validateOwnerInventoryBaseline(baseline, current);
         checks.ownerAuthorization.inventoryBaseline = {
           required: true,
           ...validation,
+          drift: validation.ok ? null : describeOwnerInventoryDrift(baseline, current),
         };
       }
       checks.analysis = await getAnalysisWorkloadStates();

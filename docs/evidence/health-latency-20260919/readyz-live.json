@@ -1,0 +1,118 @@
+{
+  "status": "ready",
+  "checks": {
+    "database": true,
+    "mqtt": {
+      "state": "connected",
+      "changedAt": "2026-09-18T11:45:14.134Z"
+    },
+    "ownerAuthorization": {
+      "mode": "enforce",
+      "aclMode": "apply",
+      "desiredGeneration": "da5f0eb7195f452aaa1fc6688f6c099dc6a4e92e1cfd5e45d6581e55d0645139",
+      "renderedGeneration": "da5f0eb7195f452aaa1fc6688f6c099dc6a4e92e1cfd5e45d6581e55d0645139",
+      "appliedGeneration": "da5f0eb7195f452aaa1fc6688f6c099dc6a4e92e1cfd5e45d6581e55d0645139",
+      "lastVerifiedAt": "2026-09-19T10:20:10.214Z",
+      "lastError": null,
+      "inventoryBaseline": {
+        "required": true,
+        "ok": true,
+        "mismatches": []
+      }
+    },
+    "analysis": [
+      {
+        "workload": "path-history",
+        "scope": "test",
+        "lastStatus": "stale",
+        "lastCompleteAt": null,
+        "activeRunId": null,
+        "activeLeaseOwner": null,
+        "activeLeaseExpiresAt": null,
+        "activeRunDeadlineAt": null,
+        "activeAttempt": 107,
+        "lastTerminalReason": "empty selection",
+        "lastError": "empty selection"
+      },
+      {
+        "workload": "path-history",
+        "scope": "ukmesh",
+        "lastStatus": "failed",
+        "lastCompleteAt": "2026-08-09T17:25:04.720Z",
+        "activeRunId": null,
+        "activeLeaseOwner": null,
+        "activeLeaseExpiresAt": null,
+        "activeRunDeadlineAt": null,
+        "activeAttempt": 148,
+        "lastTerminalReason": "relation \"ml_path_prefix_scores\" does not exist",
+        "lastError": "relation \"ml_path_prefix_scores\" does not exist"
+      },
+      {
+        "workload": "path-learning",
+        "scope": "all",
+        "lastStatus": "complete",
+        "lastCompleteAt": "2026-09-19T10:02:43.943Z",
+        "activeRunId": null,
+        "activeLeaseOwner": null,
+        "activeLeaseExpiresAt": null,
+        "activeRunDeadlineAt": null,
+        "activeAttempt": 1252,
+        "lastTerminalReason": "complete",
+        "lastError": null
+      },
+      {
+        "workload": "path-learning",
+        "scope": "northeast",
+        "lastStatus": "complete",
+        "lastCompleteAt": "2026-08-21T10:54:41.044Z",
+        "activeRunId": null,
+        "activeLeaseOwner": null,
+        "activeLeaseExpiresAt": null,
+        "activeRunDeadlineAt": null,
+        "activeAttempt": 559,
+        "lastTerminalReason": "complete",
+        "lastError": null
+      },
+      {
+        "workload": "path-learning",
+        "scope": "test",
+        "lastStatus": "complete",
+        "lastCompleteAt": "2026-09-19T10:01:41.320Z",
+        "activeRunId": null,
+        "activeLeaseOwner": null,
+        "activeLeaseExpiresAt": null,
+        "activeRunDeadlineAt": null,
+        "activeAttempt": 446,
+        "lastTerminalReason": "complete",
+        "lastError": null
+      },
+      {
+        "workload": "path-learning",
+        "scope": "ukmesh",
+        "lastStatus": "complete",
+        "lastCompleteAt": "2026-09-19T10:02:11.497Z",
+        "activeRunId": null,
+        "activeLeaseOwner": null,
+        "activeLeaseExpiresAt": null,
+        "activeRunDeadlineAt": null,
+        "activeAttempt": 1255,
+        "lastTerminalReason": "complete",
+        "lastError": null
+      },
+      {
+        "workload": "spam-analysis",
+        "scope": "public",
+        "lastStatus": "complete",
+        "lastCompleteAt": "2026-09-19T10:17:11.112Z",
+        "activeRunId": null,
+        "activeLeaseOwner": null,
+        "activeLeaseExpiresAt": null,
+        "activeRunDeadlineAt": null,
+        "activeAttempt": 14696,
+        "lastTerminalReason": "complete",
+        "lastError": null
+      }
+    ]
+  },
+  "ts": 1789813267584
+}

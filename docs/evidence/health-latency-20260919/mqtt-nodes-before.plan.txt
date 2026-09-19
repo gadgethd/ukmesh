@@ -1,0 +1,153 @@
+                                                                                                                                                                                                                                                                                                                                                                                                                                                      QUERY PLAN
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Unique  (cost=59126.73..59130.23 rows=34 width=541) (actual time=7077.233..7080.504 rows=20 loops=1)
+   Output: (COALESCE(la.canonical_node_id, upper(btrim(s.node_id)))), n.name, s."time", s.battery_mv, s.uptime_secs, s.channel_utilization, s.air_util_tx, s.rx_air_secs, s.tx_air_secs, s.stats, (COALESCE(pc.packet_count, '0'::bigint)), (COALESCE(s.uptime_secs, '0'::bigint))
+   Buffers: shared hit=184400 read=314
+   ->  Incremental Sort  (cost=59126.73..59130.15 rows=34 width=541) (actual time=7077.230..7080.463 rows=203 loops=1)
+         Output: (COALESCE(la.canonical_node_id, upper(btrim(s.node_id)))), n.name, s."time", s.battery_mv, s.uptime_secs, s.channel_utilization, s.air_util_tx, s.rx_air_secs, s.tx_air_secs, s.stats, (COALESCE(pc.packet_count, '0'::bigint)), (COALESCE(s.uptime_secs, '0'::bigint))
+         Sort Key: (COALESCE(la.canonical_node_id, upper(btrim(s.node_id)))), (COALESCE(s.uptime_secs, '0'::bigint)) DESC, s."time" DESC
+         Presorted Key: (COALESCE(la.canonical_node_id, upper(btrim(s.node_id))))
+         Full-sort Groups: 5  Sort Method: quicksort  Average Memory: 68kB  Peak Memory: 68kB
+         Buffers: shared hit=184400 read=314
+         ->  Merge Left Join  (cost=59126.66..59128.62 rows=34 width=541) (actual time=7075.372..7079.012 rows=203 loops=1)
+               Output: COALESCE(la.canonical_node_id, upper(btrim(s.node_id))), n.name, s."time", s.battery_mv, s.uptime_secs, s.channel_utilization, s.air_util_tx, s.rx_air_secs, s.tx_air_secs, s.stats, COALESCE(pc.packet_count, '0'::bigint), COALESCE(s.uptime_secs, '0'::bigint)
+               Inner Unique: true
+               Merge Cond: (COALESCE(la.canonical_node_id, upper(btrim(s.node_id))) = pc.rx_node_id)
+               Buffers: shared hit=184394 read=314
+               ->  Merge Left Join  (cost=6578.42..6579.69 rows=34 width=623) (actual time=191.969..195.166 rows=203 loops=1)
+                     Output: s.node_id, s."time", s.battery_mv, s.uptime_secs, s.channel_utilization, s.air_util_tx, s.rx_air_secs, s.tx_air_secs, s.stats, la.canonical_node_id, n.name
+                     Merge Cond: ((COALESCE(la.canonical_node_id, upper(btrim(s.node_id)))) = n.node_id)
+                     Filter: ((n.name IS NULL) OR (n.name !~~ '%🚫%'::text))
+                     Buffers: shared hit=1769
+                     ->  Sort  (cost=21.22..21.30 rows=34 width=591) (actual time=1.091..1.145 rows=203 loops=1)
+                           Output: s.node_id, s."time", s.battery_mv, s.uptime_secs, s.channel_utilization, s.air_util_tx, s.rx_air_secs, s.tx_air_secs, s.stats, la.canonical_node_id, (COALESCE(la.canonical_node_id, upper(btrim(s.node_id))))
+                           Sort Key: (COALESCE(la.canonical_node_id, upper(btrim(s.node_id))))
+                           Sort Method: quicksort  Memory: 166kB
+                           Buffers: shared hit=105
+                           ->  Hash Left Join  (cost=14.04..20.35 rows=34 width=591) (actual time=0.170..0.810 rows=203 loops=1)
+                                 Output: s.node_id, s."time", s.battery_mv, s.uptime_secs, s.channel_utilization, s.air_util_tx, s.rx_air_secs, s.tx_air_secs, s.stats, la.canonical_node_id, COALESCE(la.canonical_node_id, upper(btrim(s.node_id)))
+                                 Inner Unique: true
+                                 Hash Cond: (upper(btrim(s.node_id)) = la.source_node_id)
+                                 Buffers: shared hit=105
+                                 ->  Custom Scan (ChunkAppend) on public.node_status_samples s  (cost=0.29..6.50 rows=34 width=526) (actual time=0.038..0.278 rows=203 loops=1)
+                                       Output: s.node_id, s."time", s.battery_mv, s.uptime_secs, s.channel_utilization, s.air_util_tx, s.rx_air_secs, s.tx_air_secs, s.stats
+                                       Startup Exclusion: true
+                                       Runtime Exclusion: false
+                                       Chunks excluded during startup: 0
+                                       Buffers: shared hit=92
+                                       ->  Index Scan using _hyper_2_217_chunk_node_status_samples_time_idx on _timescaledb_internal._hyper_2_217_chunk s_1  (cost=0.29..6.50 rows=34 width=526) (actual time=0.037..0.259 rows=203 loops=1)
+                                             Output: s_1.node_id, s_1."time", s_1.battery_mv, s_1.uptime_secs, s_1.channel_utilization, s_1.air_util_tx, s_1.rx_air_secs, s_1.tx_air_secs, s_1.stats
+                                             Index Cond: (s_1."time" > (now() - '00:15:00'::interval))
+                                             Filter: (s_1.network = ANY ('{ukmesh,northeast,teesside}'::text[]))
+                                             Rows Removed by Filter: 15
+                                             Buffers: shared hit=92
+                                 ->  Hash  (cost=13.33..13.33 rows=33 width=130) (actual time=0.091..0.092 rows=33 loops=1)
+                                       Output: la.canonical_node_id, la.source_node_id
+                                       Buckets: 1024  Batches: 1  Memory Usage: 14kB
+                                       Buffers: shared hit=13
+                                       ->  Seq Scan on public.node_identity_aliases la  (cost=0.00..13.33 rows=33 width=130) (actual time=0.035..0.068 rows=33 loops=1)
+                                             Output: la.canonical_node_id, la.source_node_id
+                                             Buffers: shared hit=13
+                     ->  Sort  (cost=6557.21..6557.40 rows=76 width=64) (actual time=190.682..191.512 rows=15213 loops=1)
+                           Output: n.name, n.node_id
+                           Sort Key: n.node_id
+                           Sort Method: quicksort  Memory: 1973kB
+                           Buffers: shared hit=1664
+                           ->  Subquery Scan on n  (cost=6552.55..6554.83 rows=76 width=64) (actual time=115.205..184.967 rows=15142 loops=1)
+                                 Output: n.name, n.node_id
+                                 Buffers: shared hit=1664
+                                 ->  CTE Scan on v  (cost=6552.55..6554.07 rows=76 width=381) (actual time=115.203..183.353 rows=15142 loops=1)
+                                       Output: v.node_id, v.name, NULL::double precision, NULL::double precision, NULL::timestamp with time zone, NULL::boolean, NULL::text, NULL::text, NULL::text, NULL::timestamp with time zone, NULL::text, NULL::integer, NULL::integer, NULL::double precision, NULL::text, NULL::timestamp with time zone, NULL::timestamp with time zone, NULL::timestamp with time zone, NULL::timestamp with time zone, NULL::timestamp with time zone, NULL::text, NULL::text[], NULL::integer
+                                       Buffers: shared hit=1664
+                                       CTE v
+                                         ->  Merge Join  (cost=5066.04..6552.55 rows=76 width=381) (actual time=115.196..163.165 rows=15142 loops=1)
+                                               Output: r.canonical_node_id, r.name, r.lat, r.lon, r.last_seen, (bool_or(COALESCE(mapped.is_online, false))), r.hardware_model, r.firmware_version, r.public_key, (min(mapped.created_at)), r.iata, r.role, ((sum(COALESCE(mapped.advert_count, 0)))::integer), r.elevation_m, r.network, (max(mapped.last_predicted_online_at)), (max(mapped.last_path_evidence_at)), (max(mapped.last_mqtt_observer_seen_at)), (max(mapped.last_rx_at)), (max(mapped.last_status_at)), r.observer_iata, (array_agg(mapped.node_id ORDER BY mapped.node_id)), ((count(*))::integer)
+                                               Inner Unique: true
+                                               Merge Cond: (r.canonical_node_id = mapped.canonical_node_id)
+                                               Buffers: shared hit=1664
+                                               CTE mapped
+                                                 ->  Hash Left Join  (cost=13.74..1934.01 rows=15175 width=308) (actual time=0.094..40.400 rows=15175 loops=1)
+                                                       Output: n_1.node_id, n_1.name, n_1.lat, n_1.lon, n_1.last_seen, n_1.is_online, n_1.hardware_model, n_1.firmware_version, n_1.public_key, n_1.created_at, n_1.iata, n_1.role, n_1.advert_count, n_1.elevation_m, n_1.network, n_1.last_predicted_online_at, n_1.last_path_evidence_at, n_1.last_mqtt_observer_seen_at, n_1.last_rx_at, n_1.last_status_at, n_1.observer_iata, COALESCE(la_1.canonical_node_id, upper(btrim(n_1.node_id)))
+                                                       Inner Unique: true
+                                                       Hash Cond: (upper(btrim(n_1.node_id)) = la_1.source_node_id)
+                                                       Buffers: shared hit=1661
+                                                       ->  Seq Scan on public.nodes n_1  (cost=0.00..1799.75 rows=15175 width=276) (actual time=0.032..9.282 rows=15175 loops=1)
+                                                             Output: n_1.node_id, n_1.name, n_1.lat, n_1.lon, n_1.last_seen, n_1.is_online, n_1.hardware_model, n_1.firmware_version, n_1.public_key, n_1.created_at, n_1.iata, n_1.role, n_1.advert_count, n_1.elevation_m, n_1.network, n_1.last_predicted_online_at, n_1.last_path_evidence_at, n_1.last_mqtt_observer_seen_at, n_1.last_rx_at, n_1.last_status_at, n_1.observer_iata
+                                                             Buffers: shared hit=1648
+                                                       ->  Hash  (cost=13.33..13.33 rows=33 width=130) (actual time=0.034..0.036 rows=33 loops=1)
+                                                             Output: la_1.canonical_node_id, la_1.source_node_id
+                                                             Buckets: 1024  Batches: 1  Memory Usage: 14kB
+                                                             Buffers: shared hit=13
+                                                             ->  Seq Scan on public.node_identity_aliases la_1  (cost=0.00..13.33 rows=33 width=130) (actual time=0.005..0.014 rows=33 loops=1)
+                                                                   Output: la_1.canonical_node_id, la_1.source_node_id
+                                                                   Buffers: shared hit=13
+                                               ->  Subquery Scan on r  (cost=1774.67..2798.98 rows=76 width=292) (actual time=86.093..104.944 rows=15142 loops=1)
+                                                     Output: r.node_id, r.name, r.lat, r.lon, r.last_seen, r.is_online, r.hardware_model, r.firmware_version, r.public_key, r.created_at, r.iata, r.role, r.advert_count, r.elevation_m, r.network, r.last_predicted_online_at, r.last_path_evidence_at, r.last_mqtt_observer_seen_at, r.last_rx_at, r.last_status_at, r.observer_iata, r.canonical_node_id, r.representative_rank, (CASE WHEN ((m.role = 2) AND (m.lat >= '-90'::double precision) AND (m.lat <= '90'::double precision) AND (m.lon >= '-180'::double precision) AND (m.lon <= '180'::double precision) AND ((abs(m.lat) >= '1e-09'::double precision) OR (abs(m.lon) >= '1e-09'::double precision))) THEN 0 WHEN (m.role = 2) THEN 1 WHEN (COALESCE(m.advert_count, 0) > 0) THEN 2 ELSE 3 END), (COALESCE(m.advert_count, 0))
+                                                     Filter: (r.representative_rank = 1)
+                                                     Buffers: shared hit=1664
+                                                     ->  WindowAgg  (cost=1774.67..2609.30 rows=15175 width=393) (actual time=86.091..103.338 rows=15142 loops=1)
+                                                           Output: m.node_id, m.name, m.lat, m.lon, m.last_seen, NULL::boolean, m.hardware_model, m.firmware_version, m.public_key, NULL::timestamp with time zone, m.iata, m.role, NULL::integer, m.elevation_m, m.network, NULL::timestamp with time zone, NULL::timestamp with time zone, NULL::timestamp with time zone, NULL::timestamp with time zone, NULL::timestamp with time zone, m.observer_iata, m.canonical_node_id, row_number() OVER (?), (CASE WHEN ((m.role = 2) AND (m.lat >= '-90'::double precision) AND (m.lat <= '90'::double precision) AND (m.lon >= '-180'::double precision) AND (m.lon <= '180'::double precision) AND ((abs(m.lat) >= '1e-09'::double precision) OR (abs(m.lon) >= '1e-09'::double precision))) THEN 0 WHEN (m.role = 2) THEN 1 WHEN (COALESCE(m.advert_count, 0) > 0) THEN 2 ELSE 3 END), (COALESCE(m.advert_count, 0))
+                                                           Run Condition: (row_number() OVER (?) <= 1)
+                                                           Buffers: shared hit=1664
+                                                           ->  Sort  (cost=1774.67..1812.61 rows=15175 width=332) (actual time=86.057..89.851 rows=15175 loops=1)
+                                                                 Output: m.node_id, m.last_seen, m.canonical_node_id, (CASE WHEN ((m.role = 2) AND (m.lat >= '-90'::double precision) AND (m.lat <= '90'::double precision) AND (m.lon >= '-180'::double precision) AND (m.lon <= '180'::double precision) AND ((abs(m.lat) >= '1e-09'::double precision) OR (abs(m.lon) >= '1e-09'::double precision))) THEN 0 WHEN (m.role = 2) THEN 1 WHEN (COALESCE(m.advert_count, 0) > 0) THEN 2 ELSE 3 END), (COALESCE(m.advert_count, 0)), m.name, m.lat, m.lon, m.hardware_model, m.firmware_version, m.public_key, m.iata, m.role, m.elevation_m, m.network, m.observer_iata
+                                                                 Sort Key: m.canonical_node_id, (CASE WHEN ((m.role = 2) AND (m.lat >= '-90'::double precision) AND (m.lat <= '90'::double precision) AND (m.lon >= '-180'::double precision) AND (m.lon <= '180'::double precision) AND ((abs(m.lat) >= '1e-09'::double precision) OR (abs(m.lon) >= '1e-09'::double precision))) THEN 0 WHEN (m.role = 2) THEN 1 WHEN (COALESCE(m.advert_count, 0) > 0) THEN 2 ELSE 3 END), (COALESCE(m.advert_count, 0)) DESC, m.last_seen DESC NULLS LAST, m.node_id
+                                                                 Sort Method: quicksort  Memory: 4884kB
+                                                                 Buffers: shared hit=1664
+                                                                 ->  CTE Scan on mapped m  (cost=0.00..720.81 rows=15175 width=332) (actual time=0.099..59.138 rows=15175 loops=1)
+                                                                       Output: m.node_id, m.last_seen, m.canonical_node_id, CASE WHEN ((m.role = 2) AND (m.lat >= '-90'::double precision) AND (m.lat <= '90'::double precision) AND (m.lon >= '-180'::double precision) AND (m.lon <= '180'::double precision) AND ((abs(m.lat) >= '1e-09'::double precision) OR (abs(m.lon) >= '1e-09'::double precision))) THEN 0 WHEN (m.role = 2) THEN 1 WHEN (COALESCE(m.advert_count, 0) > 0) THEN 2 ELSE 3 END, COALESCE(m.advert_count, 0), m.name, m.lat, m.lon, m.hardware_model, m.firmware_version, m.public_key, m.iata, m.role, m.elevation_m, m.network, m.observer_iata
+                                                                       Buffers: shared hit=1661
+                                               ->  GroupAggregate  (cost=1357.36..1816.11 rows=200 width=129) (actual time=29.095..49.296 rows=15142 loops=1)
+                                                     Output: mapped.canonical_node_id, bool_or(COALESCE(mapped.is_online, false)), NULL::timestamp with time zone, max(mapped.last_predicted_online_at), max(mapped.last_path_evidence_at), max(mapped.last_mqtt_observer_seen_at), max(mapped.last_rx_at), max(mapped.last_status_at), min(mapped.created_at), (sum(COALESCE(mapped.advert_count, 0)))::integer, array_agg(mapped.node_id ORDER BY mapped.node_id), (count(*))::integer
+                                                     Group Key: mapped.canonical_node_id
+                                                     ->  Sort  (cost=1357.36..1395.30 rows=15175 width=117) (actual time=29.059..32.457 rows=15175 loops=1)
+                                                           Output: mapped.canonical_node_id, mapped.is_online, mapped.last_predicted_online_at, mapped.last_path_evidence_at, mapped.last_mqtt_observer_seen_at, mapped.last_rx_at, mapped.last_status_at, mapped.created_at, mapped.advert_count, mapped.node_id
+                                                           Sort Key: mapped.canonical_node_id, mapped.node_id
+                                                           Sort Method: quicksort  Memory: 3201kB
+                                                           ->  CTE Scan on mapped  (cost=0.00..303.50 rows=15175 width=117) (actual time=0.003..4.189 rows=15175 loops=1)
+                                                                 Output: mapped.canonical_node_id, mapped.is_online, mapped.last_predicted_online_at, mapped.last_path_evidence_at, mapped.last_mqtt_observer_seen_at, mapped.last_rx_at, mapped.last_status_at, mapped.created_at, mapped.advert_count, mapped.node_id
+               ->  Sort  (cost=52548.24..52548.29 rows=23 width=40) (actual time=6883.380..6883.389 rows=22 loops=1)
+                     Output: pc.packet_count, pc.rx_node_id
+                     Sort Key: pc.rx_node_id
+                     Sort Method: quicksort  Memory: 27kB
+                     Buffers: shared hit=182625 read=314
+                     ->  Subquery Scan on pc  (cost=52541.51..52547.72 rows=23 width=40) (actual time=6883.303..6883.313 rows=22 loops=1)
+                           Output: pc.packet_count, pc.rx_node_id
+                           Buffers: shared hit=182625 read=314
+                           ->  Finalize HashAggregate  (cost=52541.51..52547.49 rows=23 width=40) (actual time=6883.301..6883.308 rows=22 loops=1)
+                                 Output: (meshcore_canonical_node_id(packets.rx_node_id)), count(*)
+                                 Group Key: (meshcore_canonical_node_id(packets.rx_node_id))
+                                 Batches: 1  Memory Usage: 24kB
+                                 Buffers: shared hit=182625 read=314
+                                 ->  Custom Scan (ChunkAppend) on public.packets  (cost=0.42..52541.28 rows=46 width=40) (actual time=4335.493..6883.271 rows=43 loops=1)
+                                       Output: (meshcore_canonical_node_id(packets.rx_node_id)), (PARTIAL count(*))
+                                       Startup Exclusion: true
+                                       Runtime Exclusion: false
+                                       Chunks excluded during startup: 0
+                                       Buffers: shared hit=182625 read=314
+                                       ->  Partial HashAggregate  (cost=33870.16..33876.14 rows=23 width=40) (actual time=4335.489..4335.493 rows=21 loops=1)
+                                             Output: (meshcore_canonical_node_id(_hyper_1_221_chunk.rx_node_id)), PARTIAL count(*)
+                                             Group Key: meshcore_canonical_node_id(_hyper_1_221_chunk.rx_node_id)
+                                             Batches: 1  Memory Usage: 24kB
+                                             Buffers: shared hit=117710
+                                             ->  Index Only Scan using _hyper_1_221_chunk_idx_packets_observer_region on _timescaledb_internal._hyper_1_221_chunk  (cost=0.42..33370.90 rows=99852 width=32) (actual time=1.241..4249.117 rows=102479 loops=1)
+                                                   Output: meshcore_canonical_node_id(_hyper_1_221_chunk.rx_node_id)
+                                                   Index Cond: ((_hyper_1_221_chunk.network = ANY ('{ukmesh,northeast,teesside}'::text[])) AND (_hyper_1_221_chunk."time" > (now() - '24:00:00'::interval)) AND (_hyper_1_221_chunk.rx_node_id IS NOT NULL))
+                                                   Heap Fetches: 26589
+                                                   Buffers: shared hit=117710
+                                       ->  Partial HashAggregate  (cost=18659.15..18665.13 rows=23 width=40) (actual time=2547.758..2547.763 rows=22 loops=1)
+                                             Output: (meshcore_canonical_node_id(_hyper_1_224_chunk.rx_node_id)), PARTIAL count(*)
+                                             Group Key: meshcore_canonical_node_id(_hyper_1_224_chunk.rx_node_id)
+                                             Batches: 1  Memory Usage: 24kB
+                                             Buffers: shared hit=64915 read=314
+                                             ->  Index Only Scan using _hyper_1_224_chunk_idx_packets_observer_region on _timescaledb_internal._hyper_1_224_chunk  (cost=0.42..18359.02 rows=60026 width=32) (actual time=0.610..2492.026 rows=59979 loops=1)
+                                                   Output: meshcore_canonical_node_id(_hyper_1_224_chunk.rx_node_id)
+                                                   Index Cond: ((_hyper_1_224_chunk.network = ANY ('{ukmesh,northeast,teesside}'::text[])) AND (_hyper_1_224_chunk."time" > (now() - '24:00:00'::interval)) AND (_hyper_1_224_chunk.rx_node_id IS NOT NULL))
+                                                   Heap Fetches: 5089
+                                                   Buffers: shared hit=64915 read=314
+ Settings: max_parallel_workers_per_gather = '0', work_mem = '10076kB', effective_io_concurrency = '256', random_page_cost = '1.1', effective_cache_size = '1475MB', jit = 'off'
+ Planning:
+   Buffers: shared hit=2383
+ Planning Time: 24.691 ms
+ Execution Time: 7088.160 ms
+(150 rows)

@@ -39,6 +39,41 @@ export function levenshteinRatio(a: string, b: string): number {
   return 1 - levenshtein(a, b) / maxLen;
 }
 
+/** Exact inside the requested distance band; larger distances cannot affect
+ * the caller's decision. Avoid the full quadratic matrix for unrelated text. */
+function boundedLevenshtein(a: string, b: string, limit: number): number {
+  if (Math.abs(a.length - b.length) > limit) return limit + 1;
+  let prefix = 0;
+  while (prefix < a.length && prefix < b.length && a[prefix] === b[prefix]) prefix += 1;
+  a = a.slice(prefix);
+  b = b.slice(prefix);
+  while (a.length && b.length && a[a.length - 1] === b[b.length - 1]) {
+    a = a.slice(0, -1);
+    b = b.slice(0, -1);
+  }
+  if (!a.length || !b.length) return Math.max(a.length, b.length);
+  let previous = new Int32Array(b.length + 1).fill(limit + 1);
+  let current = new Int32Array(b.length + 1).fill(limit + 1);
+  for (let j = 0; j <= Math.min(b.length, limit); j += 1) previous[j] = j;
+  for (let i = 1; i <= a.length; i += 1) {
+    const start = Math.max(1, i - limit);
+    const end = Math.min(b.length, i + limit);
+    current[0] = i <= limit ? i : limit + 1;
+    if (start > 1) current[start - 1] = limit + 1;
+    if (end < b.length) current[end + 1] = limit + 1;
+    let minimum = limit + 1;
+    for (let j = start; j <= end; j += 1) {
+      const distance = Math.min(previous[j]! + 1, current[j - 1]! + 1,
+        previous[j - 1]! + (a.charCodeAt(i - 1) === b.charCodeAt(j - 1) ? 0 : 1));
+      current[j] = distance;
+      minimum = Math.min(minimum, distance);
+    }
+    if (minimum > limit) return limit + 1;
+    [previous, current] = [current, previous];
+  }
+  return previous[b.length]!;
+}
+
 /** Character trigrams of a string (with a leading/trailing pad). */
 export function trigrams(s: string): Set<string> {
   const padded = `  ${s} `;
@@ -75,7 +110,7 @@ export function jaccard<T>(a: Set<T>, b: Set<T>): number {
  * reordered words). The max keeps any single strong signal from being
  * diluted by a weaker one.
  */
-export function messageSimilarity(a: NormalizedMessage, b: NormalizedMessage): number {
+export function messageSimilarity(a: NormalizedMessage, b: NormalizedMessage, minimumScore = 0): number {
   const sa = a.normalized;
   const sb = b.normalized;
 
@@ -83,23 +118,24 @@ export function messageSimilarity(a: NormalizedMessage, b: NormalizedMessage): n
   if (sa.length === 0 || sb.length === 0) return 0;
   if (sa === sb) return 1;
 
-  // Shared canonical URL is a very strong signal on its own.
+  // Shared canonical URL is a very strong signal on its own. Preserve the
+  // original URL branch (it intentionally does not use token/trigram scores).
+  let sharedUrl = false;
   if (a.urls.length > 0 && b.urls.length > 0) {
     const setB = new Set(b.urls);
-    if (a.urls.some((u) => setB.has(u))) {
-      const lev = levenshteinRatio(sa, sb);
-      return Math.max(0.85, lev);
-    }
+    sharedUrl = a.urls.some((u) => setB.has(u));
   }
-
-  const lev = levenshteinRatio(sa, sb);
-  if (Math.max(sa.length, sb.length) < 12) {
-    return lev;
-  }
-
-  const dice = diceCoefficient(trigrams(sa), trigrams(sb));
-  const tok = jaccard(new Set(a.tokens), new Set(b.tokens));
-  return Math.max(dice, tok, lev);
+  const length = Math.max(sa.length, sb.length);
+  const lower = sharedUrl ? 0.85 : length < 12 ? 0 : Math.max(
+    diceCoefficient(trigrams(sa), trigrams(sb)), jaccard(new Set(a.tokens), new Set(b.tokens)),
+  );
+  const threshold = Math.max(lower, minimumScore);
+  // Ceil admits the boundary despite floating-point rounding. Values below the
+  // required score can return zero; every eligible score remains exact.
+  const limit = Math.max(0, Math.ceil((1 - threshold) * length));
+  const distance = boundedLevenshtein(sa, sb, limit);
+  const similarity = Math.max(lower, distance <= limit ? 1 - distance / length : 0);
+  return similarity >= minimumScore ? similarity : 0;
 }
 
 /**
