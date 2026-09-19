@@ -2,6 +2,8 @@
 
 Branch: `fix/health-latency-bundle`. Base: `1d86e043a515d3c2ca381660866ff03eb2833a0a` (includes the four locally deployed commits named in the brief).
 
+Implementation commit: `333f180530211acaf61104ea8ef69929bd9dbad0`. The subsequent evidence commit records inherited CI failures discovered after pushing.
+
 All source changes are in this worktree. No deployments, restarts, session termination, production SQL writes/DDL, baseline replacement, ACL changes, or `.env` edits were performed. The dirty main checkout and other stacks were left alone.
 
 **Open investigation:** the historical idle session cannot be attributed to an individual process from the retained evidence. It had already disappeared before the first inspection. Do not interpret the performance fix or this handoff as proof of an idle-transaction leak fix. The requested full query/application name or saved host socket/process mapping is still needed for that part of #271.
@@ -126,9 +128,12 @@ npx playwright test feed-virtualizer.spec.ts --project=public-desktop
 
 No production integration tests or migration runner were invoked. All backend unit tests passed, including the previously broken build/import scope. Browser dependency launch failures were resolved locally before the passing browser run; no system packages were installed.
 
+**CI is not green.** [Run 35437795246](https://github.com/gadgethd/ukmesh/actions/runs/35437795246) passed its secret scan, but the backend contract gate and frontend dependency audit failed before CI reached their unit tests. Local checks above remain valid. The backend gate reports `docs/openapi.yaml is stale`; the identical command also fails in an archive of the untouched base commit inside this worktree. The frontend audit reports the existing locked `maplibre-gl` version vulnerable to `GHSA-jrc7-96c5-q579` (critical). Both frontend manifests/lockfile, the OpenAPI document, and its generator are byte-identical to the base. `preexisting-ci-failures.json` records the audit and hashes proving those inputs are inherited. No audit threshold or contract gate was relaxed. The independent Workers and Compose job was still running when these results were recorded.
+
 ## Deploy day — Ben after review
 
 1. Use the reviewed branch revision in a clean release checkout; preserve the unrelated dirty main WIP.
+   Address the inherited stale OpenAPI artifact and MapLibre dependency advisory in the release review before promoting an image; this bundle does not claim passing CI.
 2. **Migrations/indexes: none for this bundle.** Do not re-create retired path-history tables or rewrite analysis history. Do not refresh the owner baseline just to clear a mismatch; the currently approved September 18 file already matches.
 3. Build the backend image (`Dockerfile.backend`, `BACKEND_IMAGE`), UKMesh website image (`Dockerfile.website`, `WEBSITE_IMAGE`) and app image (`Dockerfile.app`, `APP_IMAGE`) from the same reviewed revision with their existing production build arguments.
 4. Roll out only `backend`, `website-ukmesh`, and `app-ukmesh` using the normal reviewed deployment procedure. No infrastructure, tagger, path-learning/health worker, nemesh, sec-test or webflasher change is needed for this bundle.

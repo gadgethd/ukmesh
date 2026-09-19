@@ -1,0 +1,81 @@
+{
+  "base": "1d86e043a515d3c2ca381660866ff03eb2833a0a",
+  "codeCommit": "333f180530211acaf61104ea8ef69929bd9dbad0",
+  "run": "https://github.com/gadgethd/ukmesh/actions/runs/35437795246",
+  "baseContractCheck": "> meshcore-analytics-backend@1.0.0 contract:check\n> tsx src/tools/generateOpenApi.ts --check\n\ndocs/openapi.yaml is stale; run npm run contract:generate",
+  "branchContractCheck": "> meshcore-analytics-backend@1.0.0 contract:check\n> tsx src/tools/generateOpenApi.ts --check\n\ndocs/openapi.yaml is stale; run npm run contract:generate",
+  "unchangedInputs": [
+    {
+      "path": "frontend/package.json",
+      "unchangedFromBase": true,
+      "sha256": "a373855b82157432f2442b1373d6206d533c7d48f68139c1f458c24578fccff3"
+    },
+    {
+      "path": "frontend/package-lock.json",
+      "unchangedFromBase": true,
+      "sha256": "e0a8c0b2a0e0d5feb067bfde195765f09e17daed9495877bc327f0238dd6a044"
+    },
+    {
+      "path": "docs/openapi.yaml",
+      "unchangedFromBase": true,
+      "sha256": "1046908683d1086b92115ccc30a44b781e3f12104d78c38feb68e44950c09918"
+    },
+    {
+      "path": "backend/src/tools/generateOpenApi.ts",
+      "unchangedFromBase": true,
+      "sha256": "e7b51468e9141a2304ccc66854300a1b4bcb6ab49b7f5e3b0b2dd6e9a511347d"
+    }
+  ],
+  "frontendAudit": {
+    "auditReportVersion": 2,
+    "vulnerabilities": {
+      "maplibre-gl": {
+        "name": "maplibre-gl",
+        "severity": "critical",
+        "isDirect": true,
+        "via": [
+          {
+            "source": 1193680,
+            "name": "maplibre-gl",
+            "dependency": "maplibre-gl",
+            "title": "MapLibre GL JS: XSS Sanitizer Bypass in DOM.sanitize() via Live NamedNodeMap Removal Skip",
+            "url": "https://github.com/advisories/GHSA-jrc7-96c5-q579",
+            "severity": "critical",
+            "cwe": [
+              "CWE-79"
+            ],
+            "cvss": {
+              "score": 10,
+              "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:N"
+            },
+            "range": "<=6.4.0"
+          }
+        ],
+        "effects": [],
+        "range": "<=6.4.0",
+        "nodes": [
+          "node_modules/maplibre-gl"
+        ],
+        "fixAvailable": true
+      }
+    },
+    "metadata": {
+      "vulnerabilities": {
+        "info": 0,
+        "low": 0,
+        "moderate": 0,
+        "high": 0,
+        "critical": 1,
+        "total": 1
+      },
+      "dependencies": {
+        "prod": 138,
+        "dev": 97,
+        "optional": 73,
+        "peer": 0,
+        "peerOptional": 0,
+        "total": 234
+      }
+    }
+  }
+}
