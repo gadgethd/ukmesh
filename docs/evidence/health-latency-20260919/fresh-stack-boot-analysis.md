@@ -35,3 +35,11 @@ Run 4 (`45af592a`) brought the full stack up — backend Healthy, every service 
 **Cause:** `a8921b8` also flipped alert-receiver's compose healthcheck from `/healthz` to `/readyz` (undocumented in that commit, whose message covers only the region-probe list). The worker's `/readyz` deliberately returns **503 in archive-only mode** (`ALERT_FORWARD_URL` unset — exactly the CI configuration), and the worker source documents `/healthz` as the compose check ("/healthz always 200 so the compose healthcheck (wget -qO-) never restarts the container for degraded delivery"). Consequence: any deployment without alert forwarding configured reports permanently unhealthy.
 
 **Fix:** revert the healthcheck to `/healthz` (compose only; the worker's liveness/readiness split is untouched and remains correct for operators and monitoring).
+
+## Update — run 5: WS fanout failure -> message_tags migration
+
+Run 5 (`ba46e141`) passed `up --wait` with every service healthy (alert-receiver fix confirmed) and died at the final assertion: "timed out waiting for MQTT packet WebSocket fanout" (12:22Z). The DB readback in the same block passed, so MQTT ingest and packet writes were fine.
+
+**Cause:** the WS initial-state queries now JOIN `message_tags` (tags work, `1d86e04`), and `message_tags` was created only by `tagger_worker.py` startup DDL -- which sits after its `TYPESAFE_API_KEY` gate and exits 2 when the key is unset (CI's, and any fresh, configuration). No migration created the table. Every WS connect therefore failed in `fetchInitialState`, the server closed the client (`1013 initial state is temporarily unavailable`), and the fanout check timed out.
+
+**Fix:** `055_message_tags.sql` -- tagger schema (message_tags, tagger_state, tagger_retry) now lives in the migration ledger (idempotent; no-op where the worker already created the tables; 052-054 left free for the packet-share workstream). Verified on a fresh stack: migrations apply through `055_message_tags.sql` and the feed/WS queries execute without the missing-relation error.
