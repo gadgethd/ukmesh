@@ -512,6 +512,10 @@
   line-height: 1.45;
 }
 
+.cookie-banner__body a {
+  color: var(--accent);
+}
+
 .cookie-banner__button {
   flex-shrink: 0;
   min-width: 88px;
