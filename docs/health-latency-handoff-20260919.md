@@ -140,3 +140,18 @@ No production integration tests or migration runner were invoked. All backend un
 5. Verify both frontend `/readyz` checks, live `/api/mqtt-nodes?network=northeast` timing, the owner verification tool, retired path-history metadata, and the next actual spam run's completion/budget. Check the feed with wrapped observers and tags on desktop/mobile. If an idle transaction reappears, capture client port/application/process evidence before it disappears; this bundle does not claim to fix an unidentified historical owner.
 
 No deploy action in this list has been performed by this session.
+
+## CI status update (2026-09-19, Hermes watch close-out)
+
+`fix/health-latency-bundle` is **fully green** on GitHub Actions for the first time with the local commit stack: run [35444333110](https://github.com/gadgethd/ukmesh/actions/runs/35444333110) @ `30cf6a8` -- Backend OK, Frontend OK, Secret scan OK, Workers and Compose OK (smoke stack up + WS fanout OK, Playwright E2E 34/34, monitoring config validation OK, vacuum maintenance gates OK, immutable release rollback + schema compatibility gates OK).
+
+Five inherited gaps were fixed on this branch to get there (evidence in `docs/evidence/health-latency-20260919/`):
+1. `tagger-worker` missing from the CI build list.
+2. `tagger-worker/Dockerfile` never committed (existed only on the VPS checkout).
+3. `/owner/packet-sharing` contracts without routes -- the backend's import-time contract assert killed every fresh stack (the actual "unhealthy backend" root cause).
+4. `alert-receiver` healthcheck flipped to `/readyz`, which 503s in archive-only mode (no `ALERT_FORWARD_URL`) -- reverted to `/healthz` per the worker's documented design.
+5. `message_tags` existed only via the optional tagger worker's startup DDL (gated behind `TYPESAFE_API_KEY`) -- moved into migrations as `055_message_tags.sql`.
+
+Two pile-side CI/test edits were also restored: frontend `npm ci` + post-E2E stack cleanup in ci.yml; the fresh-DB migration test list, the mobile-menu E2E steps, and the cookie-banner link colour.
+
+Deploy note (unchanged): nothing in this bundle requires an infra or tagger deploy; backend + frontends + schema migration 055 ship together.
