@@ -1221,17 +1221,49 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
            ${filters.packetsAlias('p')}
          GROUP BY COALESCE(rx_alias.canonical_node_id, UPPER(BTRIM(p.rx_node_id)))
        ),
+       prefix_map AS MATERIALIZED (
+         -- 3-byte path-hash prefix -> canonical node id, so relay evidence
+         -- (a repeater's prefix appearing in a packet's path_hashes) can be
+         -- attributed to the node that forwarded the packet.
+         SELECT LEFT(node_id, 6) AS prefix, node_id AS canonical_node_id
+         FROM node_identity_nodes
+         UNION
+         SELECT LEFT(source_node_id, 6) AS prefix, canonical_node_id
+         FROM node_identity_aliases
+       ),
        tx AS (
-         SELECT COALESCE(src_alias.canonical_node_id, UPPER(BTRIM(p.src_node_id))) AS node_id,
-                COUNT(p.packet_hash)::text AS tx_24h,
-                MAX(p.time)::text AS last_tx
-         FROM packets p
-         LEFT JOIN node_identity_aliases src_alias
-           ON src_alias.source_node_id = UPPER(BTRIM(p.src_node_id))
-         WHERE p.time > NOW() - INTERVAL '24 hours'
-           AND p.src_node_id IS NOT NULL
-           ${filters.packetsAlias('p')}
-         GROUP BY COALESCE(src_alias.canonical_node_id, UPPER(BTRIM(p.src_node_id)))
+         -- tx_24h = distinct packets the node transmitted in the last 24 hours:
+         --   * packets it originated (alias-resolved src rows), and
+         --   * packets it relayed (its 3-byte prefix present in path_hashes).
+         -- Counting originations only showed "tx 0" for repeaters that relayed
+         -- hundreds of packets/day but advertise rarely (2026-09-22 fix).
+         SELECT node_id,
+                COUNT(DISTINCT packet_hash)::text AS tx_24h,
+                MAX(time)::text AS last_tx
+         FROM (
+           SELECT COALESCE(src_alias.canonical_node_id, UPPER(BTRIM(p.src_node_id))) AS node_id,
+                  p.packet_hash,
+                  p.time
+           FROM packets p
+           LEFT JOIN node_identity_aliases src_alias
+             ON src_alias.source_node_id = UPPER(BTRIM(p.src_node_id))
+           WHERE p.time > NOW() - INTERVAL '24 hours'
+             AND p.src_node_id IS NOT NULL
+             ${filters.packetsAlias('p')}
+           UNION ALL
+           SELECT prefix_map.canonical_node_id AS node_id,
+                  p.packet_hash,
+                  p.time
+           FROM packets p
+           CROSS JOIN LATERAL unnest(p.path_hashes) AS path_element
+           JOIN prefix_map ON prefix_map.prefix = path_element
+           WHERE p.time > NOW() - INTERVAL '24 hours'
+             AND p.path_hash_size_bytes >= 3
+             AND p.path_hashes IS NOT NULL
+             AND LENGTH(path_element) = 6
+             ${filters.packetsAlias('p')}
+         ) attributed
+         GROUP BY node_id
        )
        SELECT
          n.node_id,
