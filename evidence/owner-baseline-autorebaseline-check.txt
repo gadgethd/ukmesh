@@ -3,7 +3,7 @@
   "action": "skip",
   "reason": "owner-baseline-current",
   "mismatches": [],
-  "refreshScriptAvailable": false,
+  "refreshScriptAvailable": true,
   "scriptValidation": "not-run-in-check-mode",
   "applied": false
 }

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import {
   decideOwnerBaselineAction,
@@ -107,18 +108,28 @@ test('missing and inconsistent readiness data aborts', () => {
   })).reason, 'owner-baseline-drift-without-degraded-readiness');
 });
 
-test('refresh validation requires exit code zero and baselineOk exactly true', () => {
-  const output = [
-    'Generating owner baseline',
-    '{',
-    '  "exportPath": "/tmp/owner-grants.json",',
-    '  "baselineOk": true,',
-    '  "mismatches": []',
-    '}',
-    'Baseline validated.',
-  ].join('\n');
+test('refresh validation parses the refresh script summary and requires exit code zero', () => {
+  // Mirrors the summary emitted by scripts/refresh-owner-baseline.sh; fixture values are synthetic.
+  const output = readFileSync(new URL('./fixtures/refresh-owner-baseline-output.txt', import.meta.url), 'utf8');
   const summary = parseRefreshValidationSummary(output);
-  assert.deepEqual(summary, { exportPath: '/tmp/owner-grants.json', baselineOk: true, mismatches: [] });
+  assert.deepEqual(summary, {
+    exportPath: '/tmp/owner-baseline-validation-abc123/owner-grants-20260922T120000Z-rebaseline.json',
+    generatedAt: '2026-09-22T12:00:00.000Z',
+    counts: {
+      activeAccounts: 2,
+      activeGrants: 2,
+      operatorConfig: 1,
+      operatorDatabase: 1,
+      legacyOrNullMethod: 0,
+      configuredGrants: 2,
+      aclGrants: 2,
+    },
+    configuredGeneration: '0123456789ab',
+    aclDesiredGeneration: 'abcdef012345',
+    contentSha256: 'fedcba987654',
+    baselineOk: true,
+    mismatches: [],
+  });
   assert.equal(refreshValidationPassed(0, summary), true);
   assert.equal(refreshValidationPassed(1, summary), false);
   assert.equal(refreshValidationPassed(0, { baselineOk: false }), false);
