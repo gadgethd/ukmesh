@@ -1,0 +1,14 @@
+[Unit]
+Description=Validate and rebaseline owner authorization inventory when its ACL generation drifts
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/ukmesh/meshcore-analytics
+Environment=OWNER_BASELINE_READYZ_URL=http://127.0.0.1:3000/readyz
+UMask=0077
+NoNewPrivileges=true
+StandardOutput=journal
+StandardError=journal
+SuccessExitStatus=75
+ExecStart=/usr/bin/flock --nonblock --conflict-exit-code 75 %t/owner-baseline-autorebaseline.lock /usr/bin/node backend/dist/tools/autoRebaseline.js
+TimeoutStartSec=15min

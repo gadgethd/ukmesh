@@ -1,0 +1,9 @@
+{
+  "mode": "check",
+  "action": "skip",
+  "reason": "owner-baseline-current",
+  "mismatches": [],
+  "refreshScriptAvailable": false,
+  "scriptValidation": "not-run-in-check-mode",
+  "applied": false
+}
