@@ -246,7 +246,8 @@ CREATE TABLE IF NOT EXISTS node_status_samples (
   rx_air_secs          BIGINT,
   channel_utilization  DOUBLE PRECISION,
   air_util_tx          DOUBLE PRECISION,
-  stats                JSONB
+  stats                JSONB,
+  status               TEXT
 );
 
 SELECT create_hypertable('node_status_samples', 'time', if_not_exists => TRUE);

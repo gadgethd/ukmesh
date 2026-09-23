@@ -13,6 +13,7 @@ import { buildChannelEntries, buildCombinedKeyStore, buildSummary } from './chan
 import { shouldDiscardUnverifiedTxAdvert, statusEnvelopeTargetsObserver } from './identityBinding.js';
 import { extractNeighborNodes } from './neighborPayload.js';
 import { parseMqttTopic } from './topic.js';
+import { persistStatusTelemetrySample } from './statusTelemetry.js';
 import {
   boundedNetworkMetricLabel,
   mqttIngestActive,
@@ -185,112 +186,6 @@ function isEmptyPacketEnvelope(json: Record<string, unknown>, rawHex: string, pa
     && packetType == null
     && (declaredLen ?? 0) <= 0
     && (payloadLen ?? 0) <= 0;
-}
-
-function toRecord(value: unknown): Record<string, unknown> | undefined {
-  return value && typeof value === 'object' && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : undefined;
-}
-
-function readNum(obj: Record<string, unknown> | undefined, ...keys: string[]): number | undefined {
-  if (!obj) return undefined;
-  for (const key of keys) {
-    if (!(key in obj)) continue;
-    const n = toNum(obj[key]);
-    if (n != null) return n;
-  }
-  return undefined;
-}
-
-type StatusTelemetrySample = {
-  batteryMv?: number;
-  uptimeSecs?: number;
-  txAirSecs?: number;
-  rxAirSecs?: number;
-  channelUtilization?: number;
-  airUtilTx?: number;
-  stats?: Record<string, unknown>;
-};
-
-const OWNER_STATUS_STATS_KEYS = new Set([
-  'battery_mv', 'solar_mv', 'board_temp_c', 'wifi_rssi', 'wifi_ssid', 'wifi_uptime_ms',
-  'ntp_synced', 'ntp_sync_age_ms', 'boot_count', 'reset_reason', 'max_loop_ms',
-  'max_loop_at_ms', 'nodes_heard_24h', 'channel_utilization', 'air_util_tx', 'air_util_rx',
-  'last_rx_rssi', 'last_rx_snr', 'tx_power_dbm', 'config_version', 'config_crc32',
-  'fs_free_bytes', 'fs_total_bytes', 'nvs_free_entries', 'channel_id', 'git_commit', 'boot_epoch',
-]);
-
-function extractStatusTelemetry(
-  json: Record<string, unknown>,
-  options?: { allowRawStatsOnly?: boolean },
-): StatusTelemetrySample | null {
-  const stats = toRecord(json['stats']);
-  const hasRawStats = Boolean(stats && Object.keys(stats).length > 0);
-  const hasOwnerStats = Boolean(
-    stats && (
-      Object.keys(stats).some((key) => OWNER_STATUS_STATS_KEYS.has(key))
-      || toRecord(stats['mqtt'])
-    ),
-  );
-  const batteryMv = readNum(stats, 'battery_mv', 'batteryMv');
-  const uptimeSecs = (() => {
-    const direct = readNum(stats, 'uptime_secs', 'uptimeSecs');
-    if (direct != null) return direct;
-    const uptimeMs = readNum(stats, 'uptime_ms', 'uptimeMs');
-    if (uptimeMs == null) return undefined;
-    return Math.floor(uptimeMs / 1000);
-  })();
-  const txAirSecs = readNum(stats, 'tx_air_secs', 'txAirSecs');
-  const rxAirSecs = readNum(stats, 'rx_air_secs', 'rxAirSecs');
-  const channelUtilization = readNum(
-    stats,
-    'channel_utilization',
-    'channel_utilization_pct',
-    'channel_util',
-    'channelUtil',
-    'channelUtilization',
-  );
-  const airUtilTx = readNum(
-    stats,
-    'air_util_tx',
-    'air_util_tx_pct',
-    'tx_air_util',
-    'tx_air_utilization',
-    'airUtilTx',
-  );
-
-  if (
-    batteryMv == null
-    && uptimeSecs == null
-    && txAirSecs == null
-    && rxAirSecs == null
-    && channelUtilization == null
-    && airUtilTx == null
-  ) {
-    if ((options?.allowRawStatsOnly || hasOwnerStats) && hasRawStats) {
-      return {
-        batteryMv,
-        uptimeSecs,
-        txAirSecs,
-        rxAirSecs,
-        channelUtilization,
-        airUtilTx,
-        stats,
-      };
-    }
-    return null;
-  }
-
-  return {
-    batteryMv,
-    uptimeSecs,
-    txAirSecs,
-    rxAirSecs,
-    channelUtilization,
-    airUtilTx,
-    stats,
-  };
 }
 
 /** In-flight pre-resolve tracking — prevents duplicate concurrent resolutions for the same hash/network. */
@@ -558,22 +453,11 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
       allowTestOverride: network === 'test' && nodeId === observerKey,
       mqttObserver: true,
     })];
-    const telemetry = extractStatusTelemetry(json, {
-      allowRawStatsOnly: network === 'test',
-    });
-    if (telemetry) {
-      writes.push(insertNodeStatusSample({
-        nodeId,
-        network,
-        batteryMv: telemetry.batteryMv,
-        uptimeSecs: telemetry.uptimeSecs,
-        txAirSecs: telemetry.txAirSecs,
-        rxAirSecs: telemetry.rxAirSecs,
-        channelUtilization: telemetry.channelUtilization,
-        airUtilTx: telemetry.airUtilTx,
-        stats: telemetry.stats,
-      }));
-    }
+    writes.push(persistStatusTelemetrySample(
+      json,
+      { nodeId, network, allowRawStatsOnly: network === 'test' },
+      insertNodeStatusSample,
+    ));
     const writeResults = await Promise.allSettled(writes);
     for (const result of writeResults) {
       if (result.status === 'rejected') {

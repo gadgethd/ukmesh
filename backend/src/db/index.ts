@@ -682,12 +682,13 @@ export async function insertNodeStatusSample(sample: {
   channelUtilization?: number | null;
   airUtilTx?: number | null;
   stats?: Record<string, unknown> | null;
+  status?: string | null;
 }): Promise<void> {
   await pool.query(
     `WITH sample_insert AS (
        INSERT INTO node_status_samples
-       (time, node_id, network, battery_mv, uptime_secs, tx_air_secs, rx_air_secs, channel_utilization, air_util_tx, stats)
-       VALUES (NOW(), $1, $2, $3, $4, $5, $6, $7, $8, $9)
+       (time, node_id, network, battery_mv, uptime_secs, tx_air_secs, rx_air_secs, channel_utilization, air_util_tx, stats, status)
+       VALUES (NOW(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING time
      )
      UPDATE nodes
@@ -705,6 +706,7 @@ export async function insertNodeStatusSample(sample: {
       sample.channelUtilization ?? null,
       sample.airUtilTx ?? null,
       sample.stats ? JSON.stringify(sample.stats) : null,
+      sample.status ?? null,
     ],
   );
 }
