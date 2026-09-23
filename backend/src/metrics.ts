@@ -118,20 +118,14 @@ export const httpRequestDuration = new Histogram({
 
 export const mqttIngestOutcomesTotal = new Counter({
   name: 'meshcore_mqtt_ingest_outcomes_total',
-  help: 'MQTT ingest tasks by bounded outcome.',
+  help: 'MQTT ingest messages by durable handler outcome.',
   labelNames: ['outcome'] as const,
-  registers: [metricsRegistry],
-});
-
-export const mqttIngestQueueDepth = new Gauge({
-  name: 'meshcore_mqtt_ingest_queue_depth',
-  help: 'MQTT messages waiting in the bounded ingest queue.',
   registers: [metricsRegistry],
 });
 
 export const mqttIngestActive = new Gauge({
   name: 'meshcore_mqtt_ingest_active',
-  help: 'MQTT ingest tasks currently executing.',
+  help: 'MQTT messages currently being processed before acknowledgement.',
   registers: [metricsRegistry],
 });
 

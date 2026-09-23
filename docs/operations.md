@@ -119,7 +119,7 @@ cd backend
 npm run load:realtime -- --duration 30 --concurrency 25 --max-p95-ms 1500
 ```
 
-Use `--mqtt-messages 5000` to exercise the bounded MQTT ingest queue with isolated, rejected test envelopes, and `--slow-ws-clients 10` to hold non-reading WebSocket clients during the run. MQTT mode uses `MQTT_BROKER_URL`, `MQTT_USERNAME`, and `MQTT_PASSWORD`; never point it at a broker outside the deployment under test.
+Use `--mqtt-messages 5000` to exercise MQTT ingest backpressure with isolated, rejected test envelopes, and `--slow-ws-clients 10` to hold non-reading WebSocket clients during the run. MQTT mode uses `MQTT_BROKER_URL`, `MQTT_USERNAME`, and `MQTT_PASSWORD`; never point it at a broker outside the deployment under test.
 
 The internal HopReach compatibility load path is covered by
 `backend/src/api/hopreachCompatibility.test.ts`. Its UK-size test performs ten
@@ -360,6 +360,16 @@ is overdue, inspect the `packet_paths` compression job and Timescale worker
 headroom; never add a retention job for this table. For genuine growth, forecast
 the next 12 months against free disk before changing storage or ingest policy.
 
+### Durable MQTT ingestion
+
+The MQTT client uses the library's inbound message callback for backpressure;
+QoS 1 PUBACK follows successful database persistence. A database failure is
+returned as a handler error, leaving the broker delivery unacknowledged for
+redelivery and keeping readiness failed until a durable write succeeds. Inspect
+the `failure`, `packet_persist_failure`, `status_persist_failure`, or
+`neighbors_persist_failure` ingest outcomes and resolve the database issue;
+do not clear the broker session or discard its inflight delivery.
+
 ### BackupReceiptMissing
 
 Check the receipt mount, signature/key permissions, and backup job result.
@@ -380,16 +390,15 @@ identify the malformed observer/client version without weakening validation.
 
 ## Spring-clean additions (2026-08-06)
 
-### MQTT ingest resilience (`90d0dce`)
+### MQTT ingest resilience
 
-Ingest was silently lossy: failed packet-batch DB writes were logged +
-DISCARDED (no retry), and the MQTT client used a CLEAN session (missed
-messages on reconnect). Fix: idempotent transient batch retries + stable
-`clean=false` QoS-1 MQTT session (broker sees `meshcore-analytics-ingest`
-with `c0`) + ingest outcome/retry metrics. The backend does NOT dedupe
-inserts (DISTINCT ON is readers/backfills only) — envelope-vs-packet count
-differences vs services counting every MQTT message are expected, not loss.
-Full audit: `INGEST-AUDIT-2026-08-06.md` in the repo root.
+The MQTT client keeps a stable `clean=false` QoS-1 session and uses MQTT.js
+message handling as the backpressure boundary. It sends PUBACK only after
+packet, status, or neighbour persistence completes. Persistence failures are
+propagated to MQTT.js and close the connection without PUBACK so the persistent
+broker session redelivers the message. The process-local packet dedupe marker
+is written only after packet-batch commit. The broker session is
+`meshcore-analytics-ingest` (Mosquitto reports `c0`).
 
 ### Feed history contract
 
