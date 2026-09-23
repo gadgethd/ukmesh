@@ -9,7 +9,19 @@ import {
   isOwnerSessionResponse,
   isValidMapCoord,
   nodeRoleLabel,
+  ownerLoginCredentials,
+  ownerLoginValidationError,
 } from './ownerPortalModel.js';
+
+test('owner login trims only the username and preserves password whitespace', () => {
+  assert.equal(ownerLoginValidationError(' owner ', ' password '), null);
+  assert.deepEqual(ownerLoginCredentials(' owner ', ' password '), {
+    mqttUsername: 'owner',
+    mqttPassword: ' password ',
+  });
+  assert.match(ownerLoginValidationError('owner', '\tpassword') ?? '', /invalid characters/);
+  assert.match(ownerLoginValidationError('owner', 'x'.repeat(129)) ?? '', /too long/);
+});
 
 test('owner map coordinate policy rejects placeholders and invalid coordinates', () => {
   assert.equal(isValidMapCoord(51.5, -0.1), true);

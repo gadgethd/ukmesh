@@ -4,6 +4,8 @@ on:
   push:
     branches: ['**']
   pull_request:
+  schedule:
+    - cron: '17 4 * * *'
 
 permissions:
   contents: read
@@ -14,6 +16,7 @@ concurrency:
 
 jobs:
   backend:
+    if: github.event_name != 'schedule'
     name: Backend
     runs-on: ubuntu-latest
     services:
@@ -62,6 +65,7 @@ jobs:
       - run: npm run build
 
   frontend:
+    if: github.event_name != 'schedule'
     name: Frontend
     runs-on: ubuntu-latest
     defaults:
@@ -81,6 +85,7 @@ jobs:
       - run: npm run build
 
   workers-and-compose:
+    if: github.event_name != 'schedule'
     name: Workers and Compose
     runs-on: ubuntu-latest
     env:
@@ -393,6 +398,8 @@ jobs:
         run: scripts/test-vacuum-maintenance.sh
       - name: Test immutable release rollback and schema compatibility gates
         run: scripts/test-replace-container.sh
+      - name: Test split infrastructure resolver dry run
+        run: scripts/test-infra-compose.sh
 
   secrets:
     name: Secret scan
@@ -405,3 +412,7 @@ jobs:
         uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_VERSION: 8.30.0
+      - name: Scan full repository history on push and pull request
+        if: github.event_name != 'schedule'
+        run: gitleaks git --redact --no-banner --log-opts=--all

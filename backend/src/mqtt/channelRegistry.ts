@@ -1,11 +1,9 @@
 /**
- * Channel registry — the single source of truth for MeshCore channel secrets.
+ * Channel registry — explicitly public defaults plus confidential environment keys.
  *
- * VALIDATED_CHANNELS are the default secrets baked into the service (all
- * recovered/community-known channels, verified to decrypt real group text).
- * MESHCORE_CHANNEL_SECRETS (env, 'name:hex' or bare 'hex', comma-separated)
- * APPENDS extra channels on top — useful for community-shared secrets that
- * shouldn't be committed.
+ * PUBLIC_CHANNELS contains only recovered/community-known material intentionally
+ * classified as public. MESHCORE_CHANNEL_SECRETS ('name:hex' or bare 'hex',
+ * comma-separated) adds confidential keys without committing their values.
  *
  * Also hosts the summary + channel-identification helpers so the ingest
  * pipeline and offline tools (e.g. backfillDecrypt) share one implementation.
@@ -15,18 +13,21 @@ import type { GroupTextPayload } from '@michaelhart/meshcore-decoder';
 import { decodePacketCompat } from './decodePacket.js';
 import { BoundedTtlMap } from '../cache/boundedTtlMap.js';
 
+export type ChannelClassification = 'public' | 'confidential';
+
 export interface ChannelEntry {
+  classification: ChannelClassification;
   name: string;
   secret: string;
   keyStore: ReturnType<typeof MeshCoreDecoder.createKeyStore>;
 }
 
 /**
- * Default channels — recovered via the meshcore wordlist/derivation audit
- * (2026-08-06) and validated: each key decrypts real human-readable group
- * text (sane epoch timestamp + printable text) on the UK Mesh network.
+ * Every committed value is intentionally public: recovered/community-known
+ * channels from the 2026-08-06 derivation audit, validated against real UK Mesh
+ * group text. Confidential channel keys belong in MESHCORE_CHANNEL_SECRETS.
  */
-export const VALIDATED_CHANNELS: ReadonlyArray<{ name: string; secret: string }> = [
+export const PUBLIC_CHANNELS: ReadonlyArray<{ name: string; secret: string }> = [
   { name: 'Public',    secret: '8b3387e9c5cdea6ac9e5edbaa115cd72' },
   { name: 'test',      secret: '9cd8fcf22a47333b591d96a2b848b73f' },
   { name: 'bot',       secret: 'eb50a1bcb3e4e5d7bf69a57c9dada211' },
@@ -70,9 +71,13 @@ export const VALIDATED_CHANNELS: ReadonlyArray<{ name: string; secret: string }>
   { name: 'uk',        secret: '22b2eed34b5cc429ce1dc5e88635ff84' },
 ];
 
+/** @deprecated Use PUBLIC_CHANNELS to make the source classification explicit. */
+export const VALIDATED_CHANNELS = PUBLIC_CHANNELS;
+
 /** Build the channel entry list: committed defaults + env extras (dedup by secret). */
 export function buildChannelEntries(envValue?: string): ChannelEntry[] {
-  const entries: ChannelEntry[] = VALIDATED_CHANNELS.map(({ name, secret }) => ({
+  const entries: ChannelEntry[] = PUBLIC_CHANNELS.map(({ name, secret }) => ({
+    classification: 'public',
     name,
     secret,
     keyStore: MeshCoreDecoder.createKeyStore({ channelSecrets: [secret] }),
@@ -84,7 +89,12 @@ export function buildChannelEntries(envValue?: string): ChannelEntry[] {
     const secret = colon > 0 ? raw.slice(colon + 1) : raw;
     if (seen.has(secret.toLowerCase())) continue;
     seen.add(secret.toLowerCase());
-    entries.push({ name, secret, keyStore: MeshCoreDecoder.createKeyStore({ channelSecrets: [secret] }) });
+    entries.push({
+      classification: 'confidential',
+      name,
+      secret,
+      keyStore: MeshCoreDecoder.createKeyStore({ channelSecrets: [secret] }),
+    });
   }
   return entries;
 }
