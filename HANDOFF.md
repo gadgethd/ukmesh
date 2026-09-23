@@ -1,76 +1,38 @@
-# B1 owner baseline auto-rebaseline handoff
+# Mission C5a handoff
 
-## Status
+Status: done  
+Branch: `fix/ukmesh-highs-a`  
+Push state: not pushed; coordinator relays this branch.
 
-The refresh-script dependency is resolved. The reviewed script and operations
-documentation from `4be9542` are now on this branch as cherry-pick `7f8f4b8`.
-The script MD5 is `5479d7aa1fee57d4f81d35e4fdf69699`, matching the requested
-deployed version. The parser's expected summary format matches the checked-in
-script's validation output emitter, and a fixture-based parser test covers that
-format. The fixture uses synthetic values; the full refresh validation pass has
-not been run.
+## Commits
 
-## Branch and commits
+- `865b5dd` — `fix(api): allowlist public node status fields`
+- `794ee7d` — `fix(ops): resolve split infrastructure containers exactly`
 
-- Branch: `fix/baseline-auto-rebaseline` (initial B1 base: `d44ef5e`).
-- Prior B1 commits: `4325f98` (`feat(ops): auto-rebaseline owner ACL inventory`)
-  and `ead7ee9` (`docs(ops): handoff owner baseline autorebaseline`).
-- Dependency commit: `7f8f4b8`, cherry-picked from reviewed source commit
-  `4be9542` (`ops: add reviewed owner-authorization baseline refresh script`).
-- This B1b handoff, evidence, and parser fixture update is committed separately.
-- Push state: not pushed; coordinator relays the branch.
+## Changes
 
-## Files changed
+- #42: `/node-status/latest` and `/mqtt-nodes` return explicit public fields. Raw status JSON, hardware/firmware details, and unknown fields are omitted. Existing historical rows remain unchanged; no database sanitisation is needed because these public responses now use field-by-field projections. Owner-authenticated status handling is unchanged.
+- #46: Added a shared resolver for exact `timescaledb`, `redis`, and `mosquitto` services in an external Compose project/file. Backup, release migration verification, provisioning, network relabeling, and chunk maintenance use it. Backup archives the Compose file it actually selected. The isolated restore drill continues to target its generated disposable containers on a private network.
+- Updated the privacy and operations runbooks and added a non-destructive resolver dry-run to CI.
 
-- `backend/src/owner/autoRebaseline.ts` — readiness decisions and refresh
-  validation summary parsing.
-- `backend/src/tools/autoRebaseline.ts` — read-only check and timer wrapper.
-- `deploy/systemd/user/owner-baseline-autorebaseline.service` and
-  `deploy/systemd/user/owner-baseline-autorebaseline.timer` — user service and
-  ten-minute timer units.
-- `INSTALL.md` — VPS install, verification, and disable instructions for Ben.
-- `scripts/refresh-owner-baseline.sh` — reviewed validation and optional apply
-  script; executable bit preserved.
-- `docs/operations.md` — reviewed owner-baseline refresh procedure.
-- `backend/src/owner/autoRebaseline.test.ts` — fixture-backed validation output
-  parser test.
-- `backend/src/owner/fixtures/refresh-owner-baseline-output.txt` — sample
-  stdout matching the script's summary emitter; fixture values are synthetic.
-- `evidence/owner-baseline-autorebaseline-check.txt` — latest read-only check
-  output.
-- `HANDOFF.md` — this report.
+## Tests and checks
 
-## Tests and evidence
+- `cd backend && TMPDIR="$OLDPWD/.tmp-c5a" node --import tsx --test src/api/routes/misc.test.ts src/api/routes/nodeStatus.test.ts` — passed, 3/3.
+- `cd backend && npm run typecheck` — passed.
+- `TMPDIR="$PWD/.tmp-c5a" npm --prefix scripts test --cache="$PWD/.tmp-c5a/npm-cache"` — passed (observer-key, resolver dry-run, and newuser tests).
+- `TMPDIR="$PWD/.tmp-c5a" scripts/test-replace-container.sh` — passed.
+- `bash -n` on modified shell scripts and `git diff --check` — passed.
+- `scripts/test-vacuum-maintenance.sh` was not run because it starts a Docker test container, prohibited by the VPS constraints. CI retains this existing integration test.
 
-- Focused test: `cd backend && node --import tsx --test src/owner/autoRebaseline.test.ts` — passed, 6 tests.
-- Backend type check: `npm --prefix backend run typecheck` — passed.
-- Backend build: `npm --prefix backend run build` — passed.
-- Read-only check: `node backend/dist/tools/autoRebaseline.js --check` — passed
-  with `action=skip`, `reason=owner-baseline-current`, `mismatches=[]`,
-  `refreshScriptAvailable=true`, `scriptValidation=not-run-in-check-mode`, and
-  `applied=false`.
+Backend and scripts dependencies were installed from their lockfiles with npm caches inside this worktree.
 
-Exact `--check` output:
+## Gated items for Ben
 
-```json
-{
-  "mode": "check",
-  "action": "skip",
-  "reason": "owner-baseline-current",
-  "mismatches": [],
-  "refreshScriptAvailable": true,
-  "scriptValidation": "not-run-in-check-mode",
-  "applied": false
-}
-```
+- Run the real encrypted backup and isolated restore drill on an approved operations host before relying on the updated backup chain. Follow [the backup/restore runbook](docs/runbook-backup-restore.md).
+- Deployment and any production migration remain for the coordinator/Ben. No live database writes or service/container operations were performed here.
 
-No refresh script invocation, `--apply`, service/container action, timer
-installation, or timer enablement was performed.
+## Workspace note
 
-## Ben-gated next steps
+The temporary npm cache directory `.tmp-c5a/` remains untracked in this worktree. The cleanup command was rejected by the execution guard with: “rm -f style commands are not permitted. Use a safer approach”.
 
-- Run the full no-apply refresh validation pass and review its result. This was
-  not run here because the brief gates it to Ben; the script's validation
-  requires starting a one-shot container and writes a candidate baseline.
-- After review, install and enable the user timer using the instructions in
-  `INSTALL.md`. No unit was installed or enabled by this task.
+OpenViking and Tokensave tools were not exposed in this session, so shared-memory and semantic-index actions were unavailable.
