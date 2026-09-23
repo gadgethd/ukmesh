@@ -107,6 +107,13 @@ export const DATA_LIFECYCLE_POLICIES: readonly DataLifecyclePolicy[] = Object.fr
     featureImpact: ['delivered owner-alert audit rows older than 90 days are removed'],
   },
   {
+    table: 'owner_packet_share_deliveries',
+    timestampColumn: 'created_at',
+    retention: '30 days',
+    kind: 'row-table',
+    featureImpact: ['terminal owner packet-sharing queue and audit rows older than 30 days are removed'],
+  },
+  {
     table: 'observer_registration_requests',
     timestampColumn: 'updated_at',
     retention: '365 days',
