@@ -239,7 +239,10 @@ function json(res: ServerResponse, statusCode: number, payload: unknown): void {
 const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && (req.url === '/healthz' || req.url === '/readyz')) {
     const health = deliveryHealth();
-    json(res, health.degraded ? 503 : 200, {
+    // Compose uses /healthz as a liveness probe. Keep a running receiver
+    // healthy there while /readyz reports degraded forwarding availability.
+    const readinessFailed = req.url === '/readyz' && health.degraded;
+    json(res, readinessFailed ? 503 : 200, {
       status: health.degraded ? 'degraded' : 'ok',
       detail: health.detail,
       pending_count: health.metrics.pendingCount,

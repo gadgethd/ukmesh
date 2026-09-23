@@ -30,13 +30,21 @@ for _ in $(seq 1 40); do
   sleep 0.25
 done
 health_code="$(curl --silent --output "$tmp_dir/health.json" --write-out '%{http_code}' "http://127.0.0.1:${port}/healthz")"
-test "$health_code" = 503
+test "$health_code" = 200
 node -e '
   const health = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
   if (health.status !== "degraded" || !health.detail.includes("archive-only")) {
-    throw new Error(`unexpected archive-only health: ${JSON.stringify(health)}`);
+    throw new Error(`unexpected archive-only liveness response: ${JSON.stringify(health)}`);
   }
 ' "$tmp_dir/health.json"
+ready_code="$(curl --silent --output "$tmp_dir/ready.json" --write-out '%{http_code}' "http://127.0.0.1:${port}/readyz")"
+test "$ready_code" = 503
+node -e '
+  const ready = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+  if (ready.status !== "degraded" || !ready.detail.includes("archive-only")) {
+    throw new Error(`unexpected archive-only readiness response: ${JSON.stringify(ready)}`);
+  }
+' "$tmp_dir/ready.json"
 
 curl --fail --silent \
   -H 'content-type: application/json' \
