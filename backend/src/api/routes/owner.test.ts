@@ -82,3 +82,36 @@ test('owner session route rejects cookies from an older credential generation', 
     ownerServer.restore();
   }
 });
+
+test('owner login verifies the exact password string, including surrounding whitespace', async () => {
+  let receivedCredentials: [string, string] | undefined;
+  const ownerServer = await startOwnerRoutes({
+    verifyCredentials: async (username, password) => {
+      receivedCredentials = [username, password];
+      return true;
+    },
+  });
+
+  try {
+    const csrfResponse = await fetch(`${ownerServer.baseUrl}/owner/csrf`);
+    const { csrfToken } = await csrfResponse.json() as { csrfToken: string };
+    const csrfCookie = csrfResponse.headers.get('set-cookie')?.split(';', 1)[0];
+    assert.ok(csrfCookie);
+
+    const response = await fetch(`${ownerServer.baseUrl}/owner/login`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        cookie: csrfCookie,
+        'x-csrf-token': csrfToken,
+      },
+      body: JSON.stringify({ mqttUsername: ' owner ', mqttPassword: ' password ' }),
+    });
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(receivedCredentials, ['owner', ' password ']);
+  } finally {
+    await ownerServer.close();
+    ownerServer.restore();
+  }
+});
