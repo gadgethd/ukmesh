@@ -270,6 +270,29 @@ the reloader logs. Do not regenerate credentials over an existing set. If ACL
 reconciliation caused the alert, keep the last verified ACL and roll back that
 change.
 
+### Denied PUBLISH on `/raw` (#269 / #213)
+
+**Disposition:** keep these denials. They are expected log noise from publishers
+using a topic outside the supported observer contract; the evidence does not
+show a packet-ingest gap.
+
+The B4 review brief reports about 233 Mosquitto `Denied PUBLISH` lines from
+`ESP32_a806F8` for `meshcore/LBA/8CA23B78…/raw`, associated with a granted node,
+plus a separate `meshmonitor-observer EXT` `/raw` family. The count and client
+identities above come from that supplied log review; they were not re-counted
+against the live broker during this code change.
+
+The renderer in `backend/src/mqtt/aclManager.ts` grants owner writes to
+`packets`, `status`, `neighbors`, and `neighbours`. `backend/src/mqtt/topic.ts`
+accepts those suffixes and rejects `/raw`. Packet bytes are carried in the
+`raw` JSON field on the `/packets` envelope and decoded in
+`backend/src/mqtt/client.ts`; there is no `/raw` topic consumer. Granting the
+extra suffix would authorize a broker topic that the backend does not ingest.
+
+Reopen this ruling if a supported publisher is denied on `/packets`, or if the
+ingest contract is deliberately extended with a `/raw` consumer. The topic
+parser test keeps the current rejection explicit.
+
 ### MeshIngestSilent
 
 Check backend MQTT readiness, broker connected-client events, public topic
