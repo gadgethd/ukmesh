@@ -1,49 +1,40 @@
-# Mission C5c handoff
+# Mission C5d handoff
 
-Status: complete locally
-Branch: fix/ukmesh-auth-users
-Push state: not pushed; coordinator relays these commits.
+Status: implemented; production rollout remains gated.
+Branch: `fix/ukmesh-ops-pipeline`
+Base: fetched `origin/main` at `2fa80fa`.
+Push state: not pushed; coordinator relays this branch.
 
 ## Commits
 
-- 9ce8633 — security: classify channel keys and baseline reviewed findings
-- b50ecfa — security: revalidate MQTT auth and revoke owner sessions
-- c1bc7c8 — test(ops): cover concurrent newuser grant updates
-- a6b7a49 — fix(ops): preserve executable newuser test
-- 771fc6f — fix(ops): cover partial newuser rollback failures
-- 2be3357 — fix(owner): preserve password whitespace during login
+- `4c549bb` — `test(viewshed): inject post-commit side-effect failures`
+- `1d4d594` — `fix(deploy): rollback on unhealthy or mismatched sites`
+- `f48c652` — `fix(alerts): persist forwarding queue across restarts`
+- `d93030c` — `perf(stats): add per-network aggregate cutover controls`
 
 ## Changes
 
-- #50: Classified the 41 committed recovered/community-known channels as intentionally public; environment-supplied keys are classified confidential. Replaced broad Gitleaks regex exceptions with 47 exact reviewed fingerprints and added full-history scans on push/PR plus a scheduled scan. A synthetic unclassified key was still rejected by Gitleaks.
-- #51: Removed positive MQTT credential caching. Existing credential-generation checks now fail closed on Redis read errors. Added owner-auth:revoke and dist/tools/revokeOwnerSessions.js for immediate session revocation after external MQTT password resets; the seven-day session lifetime was already in place.
-- #52: Added a two-process regression test that adds a grant during discovery and verifies the first process preserves it after reacquiring the lock. The reread/merge logic was already present.
-- #53: Marked credential, environment, and database mutations before issuing them so an interrupted/failed command reaches rollback. Added failures after credential, environment, database, and ACL changes.
-- #58: Kept username normalization and preserved password whitespace through browser and backend login validation. Added frontend and API tests.
+- #47: the fetched main already contained the Redis completion marker and replay path. Added fault injection at link admission, both notification publishes, and marker persistence to verify retry behavior through the already-calculated path. Per the brief, this new test was not run.
+- #54: deployment now waits for a running, healthy container and a successful HTTP response, rejects empty bundle lists and mismatches, and rolls back the prior pin on any failure. Rollback checks the restored service and supports an empty prior pin. Added mocked deploy tests.
+- #55: forwarding records are fsynced into the mounted queue before HTTP 202. Startup restores pending records; retries use bounded backoff and dead-letter files. Health JSON exposes queue age, pending/dead-letter counts, last success, and last error. Archive-only mode returns degraded status. Updated the alert runbook and its archive-only test expectation.
+- #57: existing aggregate controls now accept comma-separated network names through the Compose-forwarded variables; shadow comparisons can run while reads stay off. Chart scans share one `asOf` value, cancel as a batch on query failure, and enforce duration, timeout, and returned-row budgets. True PostgreSQL rows-scanned counts are not exposed by the current query API; review query plans and DB scan telemetry during the gated shadow period.
 
-## Main overlap and audit note
-
-Fetched origin/main before editing; it had no changes to these target files. This worktree remains based on the open #99 resolver branch. Existing session generations, seven-day expiry, newuser map reread/EXIT trap, and backend password preservation were already present in the base; this mission closed the remaining gaps and added regression tests.
-
-The brief cites a historical broker credential. Gitleaks 8.30.0 scanned all 476 commits reachable from the fetched refs and found 47 historical hits, all reviewed as public channel values, test fixtures, or generated revision identifiers. It found no separate broker credential in those refs. The exact baseline does not allowlist an unidentified credential; Ben should still rotate the credential identified by the audit and confirm its source/history.
+PR #99 and #100 have no functional overlap with the changed worker, deploy, alert receiver, or stats repository code. PR #100 edits other sections of `docs/operations.md`. Both PRs also add `HANDOFF.md`; combine their handoff sections when integrating those branches.
 
 ## Tests and checks
 
-- cd backend && node --import tsx --test src/mqtt/channelRegistry.test.ts src/owner/mqttCredentialVerifier.test.ts src/owner/ownerSession.test.ts src/api/routes/owner.test.ts — passed, 7/7.
-- cd backend && ./node_modules/.bin/tsc --noEmit — passed.
-- cd frontend && ./node_modules/.bin/tsx --test src/pages/owner/ownerPortalModel.test.ts — passed, 5/5.
-- cd frontend && ./node_modules/.bin/tsc --noEmit — passed.
-- cd scripts && NPM_CONFIG_CACHE="$PWD/.tmp/npm-cache" TMPDIR="$PWD/.tmp" npm test — passed (observer-key, infrastructure resolver, concurrent newuser, and rollback tests).
-- gitleaks 8.30.0 git --config .gitleaks.toml --log-opts=--all --redact --no-banner — passed; 476 commits scanned, no unclassified findings.
-- git diff --check — passed.
+- From `backend`: `node --import tsx --test src/workers/alertDeliveryQueue.test.ts src/workers/alert-receiver.test.ts src/stats/statsRepository.test.ts` — passed, 18/18.
+- From `backend`: `npm run typecheck` — passed.
+- From the worktree root: `bash -n scripts/deploy-website.sh scripts/test-deploy-website.sh scripts/test-alert-receiver.sh && bash scripts/test-deploy-website.sh` — passed.
+- `git diff --check` — passed.
+- `viewshed-worker/tests/test_side_effect_markers.py` was not executed, as required by #47. `scripts/test-alert-receiver.sh` was not run because it starts a receiver process, prohibited by the host constraint.
+
+No services or containers were started, no live DB writes or config edits were made, and no push was attempted.
 
 ## Gated items for Ben
 
-- Rotate the MQTT broker credential identified in the audit. No broker/service/database operations were performed here.
-- Confirm all 41 committed channel values are intentionally public. Move any confidential value to managed environment configuration before deployment.
-- After deploying the backend tool, run node dist/tools/revokeOwnerSessions.js <mqtt-username> immediately after each MQTT password reset. Do not consider the reset complete unless the command succeeds.
-- Coordinate merge/push and deployment. Nothing was pushed or merged from this host.
+- Backfill and catch up hourly rollups, set `STATS_AGGREGATE_SHADOW_ENABLED=ukmesh`, and review clean parity logs before setting `STATS_AGGREGATE_READS_ENABLED=ukmesh`. Keep the shadow window short and review DB scan plans/telemetry because the application result-row guard is not a scanned-row counter.
+- Confirm `ALERT_FORWARD_URL` is valid in production and inspect `/healthz` after the approved config rollout. Archive-only operation now reports HTTP 503 health.
+- The C5d `HANDOFF.md` must be combined with the handoff content being added by open PRs #99/#100.
 
-## Workspace note
-
-Backend/frontend dependencies were installed from lockfiles into ignored node_modules. I initially ran those two npm ci commands without setting NPM_CONFIG_CACHE, so npm used its default host cache outside the worktree; subsequent script dependency installation used a worktree-local cache. No live checkout, .env, service/container, or database was changed, and no push was made.
+Open question: which database scan telemetry should be used to set a production rows-scanned threshold before additional networks switch to aggregates?
