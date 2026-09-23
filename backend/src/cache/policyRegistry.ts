@@ -177,4 +177,10 @@ export const CACHE_POLICY_REGISTRY: readonly CachePolicyRecord[] = Object.freeze
     scope: 'network + hours + limit', invalidation: 'TTL',
     negativeCaching: 'completed rows only', singleFlight: 'not applicable',
   },
+  {
+    source: 'src/tools/benchmarkBoundedCache.ts#cache',
+    disposition: 'request-local-exclusion',
+    scope: 'one standalone benchmark sample', invalidation: 'shutdown after each sample',
+    negativeCaching: 'none', singleFlight: 'synchronous standalone tool',
+  },
 ]);
