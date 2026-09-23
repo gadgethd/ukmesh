@@ -157,6 +157,33 @@ export async function query<T extends pg.QueryResultRow = pg.QueryResultRow>(
   return queryPool<T>(pool, 'oltp', text, params, signal);
 }
 
+export type DatabaseQueryFn = <T extends pg.QueryResultRow = pg.QueryResultRow>(
+  text: string,
+  params?: unknown[],
+) => Promise<{ rows: T[] }>;
+
+export async function withTransaction<T>(work: (transactionQuery: DatabaseQueryFn) => Promise<T>): Promise<T> {
+  const client = await pool.connect();
+  const transactionQuery: DatabaseQueryFn = async <R extends pg.QueryResultRow = pg.QueryResultRow>(
+    text: string,
+    params?: unknown[],
+  ) => {
+    const result = await client.query<R>(text, params);
+    return { rows: result.rows };
+  };
+  try {
+    await client.query('BEGIN');
+    const result = await work(transactionQuery);
+    await client.query('COMMIT');
+    return result;
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 export async function namedQuery<T extends pg.QueryResultRow = pg.QueryResultRow>(
   name: string,
   text: string,

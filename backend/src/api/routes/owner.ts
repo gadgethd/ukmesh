@@ -5,6 +5,12 @@ import type { OwnerSession } from '../../owner/ownerSession.js';
 import { createCsrfToken, readCookie, requireDoubleSubmitCsrf } from '../../security/operatorAuth.js';
 import { resolveWebhookTarget } from '../../security/outboundWebhook.js';
 import {
+  destinationConfigured,
+  publicDestinationView,
+} from '../../owner/packetShareConfig.js';
+import { hasPacketShareEncryptionKey } from '../../owner/packetShareCrypto.js';
+import { createPacketShareRepository, type PacketShareTransactionFn } from '../../owner/packetShareRepository.js';
+import {
   deliverDueOwnerAlerts,
   queueOwnerTestDelivery,
 } from '../../owner/alertRules.js';
@@ -57,12 +63,14 @@ type OwnerRouteDeps = {
   getOwnerCredentialGeneration: GetOwnerCredentialGenerationFn;
   invalidateOwnerNodeIdCache: (mqttUsername: string) => void;
   query: QueryFn;
+  withTransaction?: PacketShareTransactionFn;
 };
 
 export function registerOwnerRoutes(router: Router, deps: OwnerRouteDeps): void {
   const repository = createOwnerRepository({
     query: deps.query,
   });
+  const packetShareRepository = createPacketShareRepository(deps.query, deps.withTransaction);
 
   const service = createOwnerService({
     ownerLiveCacheTtlMs: deps.ownerLiveCacheTtlMs,
@@ -248,6 +256,121 @@ export function registerOwnerRoutes(router: Router, deps: OwnerRouteDeps): void 
         return;
       }
       console.error('[api] GET /owner/live-last-hop', message);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  });
+
+  router.get('/owner/packet-sharing', async (req, res) => {
+    let requestedNodeId: string | undefined;
+    try {
+      requestedNodeId = parseBoundedString(req.query['nodeId'], {
+        name: 'nodeId',
+        maxLength: 64,
+        pattern: /^[0-9a-fA-F]{64}$/,
+      })?.toUpperCase();
+    } catch {
+      res.status(400).json({ error: 'Invalid packet sharing settings' });
+      return;
+    }
+    try {
+      const ownedNodeIds = await deps.requireOwnerSession(req, res);
+      if (!ownedNodeIds) return;
+      const session = deps.getOwnerSession(req)!;
+      const ownedNodeIdSet = new Set(ownedNodeIds.map((nodeId) => nodeId.toUpperCase()));
+      const nodeId = requestedNodeId ?? ownedNodeIds[0]?.toUpperCase();
+      if (!nodeId || !ownedNodeIdSet.has(nodeId)) {
+        res.status(403).json({ error: 'Node is not owned by this session' });
+        return;
+      }
+      const [destinations, selectedIds, lastForwardedAt] = await Promise.all([
+        packetShareRepository.listDestinations(),
+        packetShareRepository.listOwnerRules(session.mqttUsername, nodeId),
+        packetShareRepository.listLastForwardedAt(session.mqttUsername, nodeId),
+      ]);
+      const selected = new Set(selectedIds);
+      const encryptionKeyAvailable = hasPacketShareEncryptionKey();
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({
+        nodeId,
+        featureEnabled: true,
+        enabled: selectedIds.length > 0,
+        destinations: destinations.map((destination) => publicDestinationView(
+          destination,
+          selected.has(destination.destination_id),
+          encryptionKeyAvailable,
+          lastForwardedAt.get(destination.destination_id) ?? null,
+        )),
+      });
+    } catch (error) {
+      console.error('[api] GET /owner/packet-sharing', (error as Error).message);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  });
+
+  router.post('/owner/packet-sharing', csrfProtection, async (req, res) => {
+    try {
+      const ownedNodeIds = await deps.requireOwnerSession(req, res);
+      if (!ownedNodeIds) return;
+      const session = deps.getOwnerSession(req)!;
+      const rawBody = req.body as unknown;
+      if (!rawBody || typeof rawBody !== 'object' || Array.isArray(rawBody)) {
+        res.status(400).json({ error: 'Invalid packet sharing settings' });
+        return;
+      }
+      const body = rawBody as {
+        nodeId?: unknown;
+        enabled?: unknown;
+        destinationIds?: unknown;
+      };
+      if (Object.keys(rawBody).some((key) => !['nodeId', 'enabled', 'destinationIds'].includes(key))) {
+        res.status(400).json({ error: 'Invalid packet sharing settings' });
+        return;
+      }
+      const nodeId = typeof body.nodeId === 'string' ? body.nodeId.trim().toUpperCase() : '';
+      const ownedNodeIdSet = new Set(ownedNodeIds.map((ownedNodeId) => ownedNodeId.toUpperCase()));
+      const rawDestinationIds = body.destinationIds;
+      const enabled = body.enabled;
+      if (!Array.isArray(rawDestinationIds)
+        || rawDestinationIds.length > 32
+        || !rawDestinationIds.every((value) => typeof value === 'string')
+        || typeof enabled !== 'boolean'
+      ) {
+        res.status(400).json({ error: 'Invalid packet sharing settings' });
+        return;
+      }
+      const destinationIds = Array.from(new Set(rawDestinationIds.map((value) => value.trim().toLowerCase())));
+      if (!/^[0-9A-F]{64}$/.test(nodeId)
+        || destinationIds.some((destinationId) => !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(destinationId))) {
+        res.status(400).json({ error: 'Invalid packet sharing settings' });
+        return;
+      }
+      if (!ownedNodeIdSet.has(nodeId)) {
+        res.status(403).json({ error: 'Node is not owned by this session' });
+        return;
+      }
+      const destinations = await packetShareRepository.listDestinations();
+      const byId = new Map(destinations.map((destination) => [destination.destination_id, destination]));
+      const encryptionKeyAvailable = hasPacketShareEncryptionKey();
+      if (enabled && destinationIds.some((destinationId) => {
+        const destination = byId.get(destinationId);
+        return !destination || !destinationConfigured(destination, encryptionKeyAvailable);
+      })) {
+        res.status(409).json({ error: 'One or more selected destinations are not configured' });
+        return;
+      }
+      const persistedDestinationIds = await packetShareRepository.replaceOwnerRules(
+        session.mqttUsername,
+        nodeId,
+        destinationIds,
+        enabled,
+      );
+      res.status(200).json({
+        nodeId,
+        enabled: enabled && persistedDestinationIds.length > 0,
+        destinationIds: persistedDestinationIds,
+      });
+    } catch (error) {
+      console.error('[api] POST /owner/packet-sharing', (error as Error).message);
       res.status(500).json({ error: 'Internal server error' });
     }
   });

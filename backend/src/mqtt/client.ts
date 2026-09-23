@@ -21,7 +21,7 @@ import {
   mqttMessagesTotal,
 } from '../metrics.js';
 
-type PacketCallback      = (packet: LivePacket) => void;
+type PacketCallback      = (packet: LivePacket, upstreamEnvelope?: Record<string, unknown>) => void;
 type NodeCallback        = (nodeId: string, meta?: { network?: string; observerId?: string }) => void;
 type NodeUpsertCallback  = (node: Record<string, unknown>) => void;
 
@@ -55,8 +55,8 @@ export function onPacket(cb: PacketCallback)         { subscribers.push(cb); }
 export function onNodeSeen(cb: NodeCallback)         { nodeSubscribers.push(cb); }
 export function onNodeUpsert(cb: NodeUpsertCallback) { upsertSubscribers.push(cb); }
 
-function emit(packet: LivePacket) {
-  for (const cb of subscribers) cb(packet);
+function emit(packet: LivePacket, upstreamEnvelope?: Record<string, unknown>) {
+  for (const cb of subscribers) cb(packet, upstreamEnvelope);
 }
 
 // Debounced node update batching — 500 ms window
@@ -872,7 +872,7 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
     });
     livePacket.isPrivate = visibility.isPrivate;
     livePacket.visibilityOk = visibility.visibilityOk;
-    emit(livePacket);
+    emit(livePacket, json);
     invalidateResolveCache(finalHash);
     mqttIngestOutcomesTotal.inc({ outcome: 'packet_persisted' });
 

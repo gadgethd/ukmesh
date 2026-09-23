@@ -14,6 +14,7 @@
     "stats:seed-chart-snapshot": "node dist/tools/seedStatsChartSnapshot.js",
     "db:lifecycle": "node dist/tools/dataLifecycle.js",
     "owner-auth:inventory": "node dist/tools/inventoryOwnerAuthorization.js",
+    "owner-packet-share:encrypt-secret": "node dist/tools/encryptPacketShareSecret.js",
     "analysis:cleanup-orphans": "node dist/tools/cleanupOrphanedAnalysisRuns.js",
     "bench:decode": "tsx src/tools/benchmarkPacketDecode.ts",
     "load:realtime": "tsx src/tools/loadRealtime.ts",

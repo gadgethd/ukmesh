@@ -135,6 +135,19 @@ export const mqttIngestActive = new Gauge({
   registers: [metricsRegistry],
 });
 
+export const packetShareOutcomesTotal = new Counter({
+  name: 'meshcore_owner_packet_share_outcomes_total',
+  help: 'Owner packet sharing decisions and delivery outcomes.',
+  labelNames: ['outcome'] as const,
+  registers: [metricsRegistry],
+});
+
+export const packetShareQueueDepth = new Gauge({
+  name: 'meshcore_owner_packet_share_queue_depth',
+  help: 'Owner packet sharing deliveries currently claimed for processing.',
+  registers: [metricsRegistry],
+});
+
 export const dbQueriesTotal = new Counter({
   name: 'meshcore_db_queries_total',
   help: 'Database queries by pool and bounded outcome.',
