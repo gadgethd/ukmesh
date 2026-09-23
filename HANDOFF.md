@@ -1,31 +1,38 @@
-# Mission B4 — small batch
+# Mission C5a handoff
 
-## Status
+Status: done  
+Branch: `fix/ukmesh-highs-a`  
+Push state: not pushed; coordinator relays this branch.
 
-Complete on `fix/ukmesh-b4-small`, based on `origin/main` at `2fa80fa`.
+## Commits
 
-## Item disposition
+- `865b5dd` — `fix(api): allowlist public node status fields`
+- `794ee7d` — `fix(ops): resolve split infrastructure containers exactly`
 
-- **#301 — fixed.** Added the retired-workload policy for `path-history`, re-exported `normalizeRetiredAnalysisState` from `runState.ts`, normalized retired state in readiness output, and retained the original failure under `retirement.historicalState`. New leases for the retired workload are rejected. Coverage exercises normalization, audit retention, active-run visibility, and rejection in both scopes.
-- **#303 — fixed with measured rows (option a).** A `ResizeObserver` records rendered border-box heights by scope and packet hash. Prefix offsets drive both spacers and the visible range; unseen rows use 76px only as an initial estimate. Scroll anchoring preserves the first visible packet as measurements and packet order change. Row content remains unclipped.
-- **#269 / #213 — triaged as expected denials.** Keep the `/raw` denials. The owner ACL renderer and backend topic parser accept the four supported suffixes; raw packet bytes are the `raw` JSON field on `/packets`, and the backend has no `/raw` topic consumer. Documented the log evidence and ruling in `docs/operations.md`; added a parser assertion that `/raw` remains unsupported. No ACL renderer change is needed.
+## Changes
 
-## Mission commits
+- #42: `/node-status/latest` and `/mqtt-nodes` return explicit public fields. Raw status JSON, hardware/firmware details, and unknown fields are omitted. Existing historical rows remain unchanged; no database sanitisation is needed because these public responses now use field-by-field projections. Owner-authenticated status handling is unchanged.
+- #46: Added a shared resolver for exact `timescaledb`, `redis`, and `mosquitto` services in an external Compose project/file. Backup, release migration verification, provisioning, network relabeling, and chunk maintenance use it. Backup archives the Compose file it actually selected. The isolated restore drill continues to target its generated disposable containers on a private network.
+- Updated the privacy and operations runbooks and added a non-destructive resolver dry-run to CI.
 
-- #301: `d834ba8` — `fix(analysis): restore retired run-state policy (#301)`
-- #303: `078e21b` — `fix(feed): measure UK feed virtual row heights (#303)`
-- #269 / #213: `6c47b7f` — `docs(mqtt): document denied raw publish disposition (#269 #213)`
+## Tests and checks
 
-## Tests and typechecks
+- `cd backend && TMPDIR="$OLDPWD/.tmp-c5a" node --import tsx --test src/api/routes/misc.test.ts src/api/routes/nodeStatus.test.ts` — passed, 3/3.
+- `cd backend && npm run typecheck` — passed.
+- `TMPDIR="$PWD/.tmp-c5a" npm --prefix scripts test --cache="$PWD/.tmp-c5a/npm-cache"` — passed (observer-key, resolver dry-run, and newuser tests).
+- `TMPDIR="$PWD/.tmp-c5a" scripts/test-replace-container.sh` — passed.
+- `bash -n` on modified shell scripts and `git diff --check` — passed.
+- `scripts/test-vacuum-maintenance.sh` was not run because it starts a Docker test container, prohibited by the VPS constraints. CI retains this existing integration test.
 
-- `cd backend && node --import tsx --test $(find src -name '*.test.ts' ! -name '*.integration.test.ts' -print)` — **328 passed, 0 failed**.
-- `cd frontend && npm test` — **100 passed, 0 failed**.
-- `cd frontend && node --import tsx --test src/hooks/measuredVirtualRows.test.ts` — **3 passed, 0 failed**.
-- `cd backend && npm run typecheck` — **passed**.
-- `cd frontend && ./node_modules/.bin/tsc --noEmit -p tsconfig.json` — **passed**.
+Backend and scripts dependencies were installed from their lockfiles with npm caches inside this worktree.
 
-## Gated items and open question
+## Gated items for Ben
 
-No service/container actions, live database writes, ACL edits or reloads, pushes, or merges were performed. Database integration and browser E2E suites were not run. The supplied log review does not identify who owns the `meshmonitor-observer EXT` publisher; that does not change the ACL disposition.
+- Run the real encrypted backup and isolated restore drill on an approved operations host before relying on the updated backup chain. Follow [the backup/restore runbook](docs/runbook-backup-restore.md).
+- Deployment and any production migration remain for the coordinator/Ben. No live database writes or service/container operations were performed here.
 
-**Next:** coordinator/Hermes can relay the local commits. Trace the `meshmonitor-observer EXT` publisher only if stopping its unsupported `/raw` attempts is desired.
+## Workspace note
+
+The temporary npm cache directory `.tmp-c5a/` remains untracked in this worktree. The cleanup command was rejected by the execution guard with: “rm -f style commands are not permitted. Use a safer approach”.
+
+OpenViking and Tokensave tools were not exposed in this session, so shared-memory and semantic-index actions were unavailable.
