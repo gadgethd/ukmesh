@@ -206,12 +206,12 @@ tests:
               runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#coretelemetrygrowthhigh
 
   - name: telemetry lifecycle coverage
-    interval: 1h
+    interval: 1m
     input_series:
       - series: 'meshcore_core_telemetry_expired_chunks{role="health",table="node_status_samples"}'
-        values: 0 1+0x40
+        values: 0 1x1800
       - series: 'meshcore_core_telemetry_overdue_uncompressed_chunks{role="health",table="node_neighbor_samples"}'
-        values: 1x8
+        values: 1x360
     alert_rule_test:
       - eval_time: 29h
         alertname: CoreTelemetryRetentionOverdue
