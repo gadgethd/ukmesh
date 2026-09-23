@@ -49,6 +49,16 @@ done
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 project_dir="$(cd -- "${script_dir}/.." && pwd)"
 project_name="${COMPOSE_PROJECT_NAME:-meshcore-analytics}"
+if [ -n "${MESHCORE_INFRA_COMPOSE_FILE:-}" ]; then
+  infra_compose_file="$MESHCORE_INFRA_COMPOSE_FILE"
+  infra_project_dir="${MESHCORE_INFRA_PROJECT_DIR:-${MESHCORE_INFRA_DIR:-$(dirname -- "$infra_compose_file")}}"
+else
+  infra_project_dir="${MESHCORE_INFRA_PROJECT_DIR:-${MESHCORE_INFRA_DIR:-${project_dir}/../meshcore-infra}}"
+  infra_compose_file="$infra_project_dir/docker-compose.yml"
+fi
+export MESHCORE_INFRA_PROJECT_DIR="$infra_project_dir"
+export MESHCORE_INFRA_COMPOSE_FILE="$infra_compose_file"
+source "$script_dir/lib/infra-compose.sh"
 release_dir="${RELEASE_STATUS_DIR:-/home/ben/meshcore-releases}"
 cosign_key="${COSIGN_PUBLIC_KEY:-}"
 cosign_identity_regexp="${COSIGN_CERTIFICATE_IDENTITY_REGEXP:-}"
@@ -126,6 +136,8 @@ if ! docker compose --project-name "$project_name" config --services | grep -Fxq
   echo "unknown Compose service: $service" >&2
   exit 65
 fi
+meshcore_infra_compose config -q
+timescaledb_container="$(resolve_infra_container timescaledb)"
 if [ "$(git rev-parse HEAD)" != "$source_revision" ]; then
   echo "working checkout does not match the release source revision" >&2
   exit 65
@@ -255,7 +267,7 @@ echo "Running the required migration job with the signed backend image..."
 BACKEND_IMAGE="$backend_image" \
   docker compose --project-name "$project_name" run --rm db-migrate
 schema_version="$(
-  docker compose --project-name "$project_name" exec -T timescaledb \
+  docker exec -i "$timescaledb_container" \
     psql -U "${POSTGRES_USER:-meshcore}" -d "${POSTGRES_DB:-meshcore}" -Atc \
     "SELECT COALESCE(MAX(((regexp_match(name, '^([0-9]+)_'))[1])::int), 0) FROM schema_migrations"
 )"

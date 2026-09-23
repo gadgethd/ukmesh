@@ -59,6 +59,12 @@ export MESHCORE_INFRA_PROJECT_NAME=meshcore-infra
 scripts/backup.sh
 ```
 
+`MESHCORE_INFRA_COMPOSE_FILE` can select a non-default external Compose file;
+`MESHCORE_INFRA_PROJECT_DIR` can set its project directory explicitly. The
+shared resolver checks that Compose project and requires one running container
+for each exact `timescaledb`, `redis`, and `mosquitto` service. It does not
+search container names across projects.
+
 For the returned receipt and archive:
 
 ```bash

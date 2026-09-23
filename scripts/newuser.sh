@@ -3,11 +3,22 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
+readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly REPO_DIR="${NEWUSER_REPO_DIR:-/home/ben/ukmesh/meshcore-analytics}"
 readonly ENV_FILE="${REPO_DIR}/.env"
-readonly MOSQUITTO_CONTAINER="$(docker ps --format '{{.Names}}' | grep -E '^meshcore-infra-mosquitto-1$|mosquitto-1$' | head -1)"
+if [ -n "${MESHCORE_INFRA_COMPOSE_FILE:-}" ]; then
+  infra_compose_file="$MESHCORE_INFRA_COMPOSE_FILE"
+  infra_project_dir="${MESHCORE_INFRA_PROJECT_DIR:-${MESHCORE_INFRA_DIR:-$(dirname -- "$infra_compose_file")}}"
+else
+  infra_project_dir="${MESHCORE_INFRA_PROJECT_DIR:-${MESHCORE_INFRA_DIR:-$(dirname -- "$REPO_DIR")/meshcore-infra}}"
+  infra_compose_file="$infra_project_dir/docker-compose.yml"
+fi
+export MESHCORE_INFRA_PROJECT_DIR="$infra_project_dir"
+export MESHCORE_INFRA_COMPOSE_FILE="$infra_compose_file"
+source "$SCRIPT_DIR/lib/infra-compose.sh"
+readonly MOSQUITTO_CONTAINER="$(resolve_infra_container mosquitto)"
 readonly BACKEND_CONTAINER='meshcore-analytics-backend-1'
-readonly TIMESCALEDB_CONTAINER="$(docker ps --format '{{.Names}}' | grep -E '^meshcore-infra-timescaledb-1$|timescaledb-1$' | head -1)"
+readonly TIMESCALEDB_CONTAINER="$(resolve_infra_container timescaledb)"
 readonly OWNER_DATABASE='meshcore_owner_auth'
 readonly POSTGRES_USER='meshcore'
 readonly BROKER_URL='wss://mqtt.ukmesh.com:443'
