@@ -227,4 +227,31 @@ expected_map="OWNER_MQTT_USERNAME_MAP=alice=${NODE_A},bob=${NODE_C},charlie=${NO
 [[ $(<"$SANDBOX/repo/.env") == "$expected_map" ]] \
   || { printf 'concurrent owner map lost a grant: %s\n' "$(<"$SANDBOX/repo/.env")" >&2; exit 1; }
 
-printf 'newuser concurrent-discovery regression test passed\n'
+# Inject failures after each mutation class and check that EXIT rollback is
+# idempotent and restores the mocked broker/config/database state.
+for stage in credential environment db acl; do
+  init_sandbox "rollback-${stage}" "alice=${NODE_A}"
+  if run_newuser "$SANDBOX" "$SANDBOX/output.log" alice alice "$stage" dave "$NODE_B"; then
+    printf 'expected injected %s failure\n' "$stage" >&2
+    exit 1
+  fi
+  [[ $(<"$SANDBOX/repo/.env") == "OWNER_MQTT_USERNAME_MAP=alice=${NODE_A}" ]] \
+    || { printf '%s failure did not restore the environment map\n' "$stage" >&2; exit 1; }
+  [[ ! -e $SANDBOX/credential-state ]] \
+    || { printf '%s failure left a broker credential behind\n' "$stage" >&2; exit 1; }
+  [[ ! -e $SANDBOX/db-state ]] \
+    || { printf '%s failure left owner database state behind\n' "$stage" >&2; exit 1; }
+  if [[ $stage == credential ]]; then
+    assert_file_contains "$SANDBOX/docker.log" 'CREDENTIAL_DELETE dave'
+  fi
+  if [[ $stage == db || $stage == acl ]]; then
+    assert_file_contains "$SANDBOX/docker.log" 'DB_ROLLBACK dave'
+  fi
+  if [[ $stage == acl ]]; then
+    compose_count="$(grep -c '^COMPOSE_BACKEND$' "$SANDBOX/docker.log")"
+    [[ $compose_count -ge 2 ]] \
+      || { printf 'ACL failure did not reapply restored backend config\n' >&2; exit 1; }
+  fi
+done
+
+printf 'newuser concurrency and rollback regression tests passed\n'
