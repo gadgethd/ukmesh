@@ -64,7 +64,23 @@ The service stores radio traffic observed on the MeshCore network.
   deletion procedure in the ops playbook (rows by src/rx node id across
   packets, packet_paths, decryptions, path facts).
 
-## 3. Cookies
+## 3. Device status telemetry
+
+Status samples retain a JSON telemetry object for the authenticated owner
+portal. The unauthenticated `/node-status/latest` and `/mqtt-nodes` APIs expose
+only their explicit public fields: node identity, sample/availability data,
+battery, uptime, airtime, channel utilization, and recent packet counts. They
+do not return the telemetry object or forward unrecognized fields. Wi-Fi
+identifiers, MQTT broker/account details, reset and configuration fields,
+firmware metadata, and filesystem details are available only through
+owner-authenticated endpoints. Unrecognized keys stay in storage until they
+are deliberately added to a response contract.
+
+Existing status samples do not need a database rewrite: public responses are
+projected through the same field allowlist regardless of when the sample was
+stored.
+
+## 4. Cookies
 
 LocalStorage-only choices (cookie consent, theme). No third-party cookies.
 PECR does not apply to the mesh radio data (not a public electronic
