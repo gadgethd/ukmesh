@@ -153,8 +153,12 @@ class SideEffectMarkerTest(unittest.TestCase):
                 }.get(boundary)
                 r.fail_marker_set = boundary == 'marker'
                 db = SequenceDb([
-                    (None, 2, None), (geom, strength, 5_000.0, 12.0), (54.0, -1.5),
-                    (None, 2, None), (geom, strength, 5_000.0, 12.0), (54.0, -1.5),
+                    [(None, 2, None)],  # first delivery: node eligibility
+                    [(geom, strength, 5_000.0, 12.0)],  # replay: coverage row
+                    [(54.0, -1.5)],  # replay: node position
+                    [(None, 2, None)],  # retry: node eligibility
+                    [(geom, strength, 5_000.0, 12.0)],  # replay: coverage row
+                    [(54.0, -1.5)],  # replay: node position
                 ])
                 enqueue_calls = 0
 
