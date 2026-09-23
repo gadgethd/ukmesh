@@ -17,7 +17,7 @@
     "analysis:cleanup-orphans": "node dist/tools/cleanupOrphanedAnalysisRuns.js",
     "bench:decode": "tsx src/tools/benchmarkPacketDecode.ts",
     "load:realtime": "tsx src/tools/loadRealtime.ts",
-    "test": "node --import tsx --test $(find src -name '*.test.ts' ! -name '*.integration.test.ts' -print)",
+    "test": "node --import tsx --test $(find src -name '*.test.ts' ! -name '*.integration.test.ts' -print) && bash ../scripts/test-alert-receiver.sh",
     "test:analysis-integration": "node --import tsx --test src/analysis/runState.integration.test.ts",
     "test:ingest-integration": "node --import tsx --test src/db/packetBatch.integration.test.ts",
     "typecheck": "tsc --noEmit",
