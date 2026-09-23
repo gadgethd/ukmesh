@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-tmp_dir="$(mktemp -d)"
+tmp_dir="$(mktemp -d "${repo_dir}/.test-alert-receiver.XXXXXX")"
 port="$((18080 + ($$ % 1000)))"
 receiver_pid=""
 
@@ -24,12 +24,19 @@ trap cleanup EXIT
 receiver_pid="$!"
 
 for _ in $(seq 1 40); do
-  if curl --fail --silent "http://127.0.0.1:${port}/healthz" >/dev/null; then
+  if curl --silent "http://127.0.0.1:${port}/healthz" >/dev/null; then
     break
   fi
   sleep 0.25
 done
-curl --fail --silent "http://127.0.0.1:${port}/healthz" >/dev/null
+health_code="$(curl --silent --output "$tmp_dir/health.json" --write-out '%{http_code}' "http://127.0.0.1:${port}/healthz")"
+test "$health_code" = 503
+node -e '
+  const health = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+  if (health.status !== "degraded" || !health.detail.includes("archive-only")) {
+    throw new Error(`unexpected archive-only health: ${JSON.stringify(health)}`);
+  }
+' "$tmp_dir/health.json"
 
 curl --fail --silent \
   -H 'content-type: application/json' \

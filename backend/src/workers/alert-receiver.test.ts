@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { buildAlertForwardPayload, summarizeAlertPayload } from './alert-receiver.js';
+import {
+  buildAlertForwardPayload,
+  deriveDeliveryHealth,
+  summarizeAlertPayload,
+} from './alert-receiver.js';
 
 test('summarizes Alertmanager notifications without persisting annotations or labels', () => {
   const receipt = summarizeAlertPayload({
@@ -78,4 +82,43 @@ test('bounds Discord content when an Alertmanager notification has many long nam
   });
 
   assert.equal(buildAlertForwardPayload(receipt).content.length, 2_000);
+});
+
+test('reports archive-only mode as degraded even though receipt persistence is available', () => {
+  assert.deepEqual(
+    deriveDeliveryHealth(false, false, {
+      pendingCount: 0,
+      oldestQueueAgeSeconds: 0,
+      deadLetterCount: 0,
+      lastSuccessAt: null,
+      lastError: null,
+    }),
+    { degraded: true, detail: 'archive-only mode: ALERT_FORWARD_URL is not configured' },
+  );
+});
+
+test('reports forwarding backlog and dead letters as degraded', () => {
+  const metrics = {
+    pendingCount: 2,
+    oldestQueueAgeSeconds: 301,
+    deadLetterCount: 1,
+    lastSuccessAt: '2026-09-23T09:59:00.000Z',
+    lastError: 'endpoint unavailable',
+  };
+  assert.deepEqual(deriveDeliveryHealth(true, true, metrics), {
+    degraded: true,
+    detail: '1 alert(s) are dead-lettered',
+  });
+  assert.deepEqual(deriveDeliveryHealth(true, false, metrics), {
+    degraded: true,
+    detail: 'durable forwarding queue is not ready',
+  });
+  assert.deepEqual(deriveDeliveryHealth(true, true, {
+    ...metrics,
+    oldestQueueAgeSeconds: 0,
+    deadLetterCount: 0,
+  }), {
+    degraded: true,
+    detail: 'a forwarding attempt failed; retry is pending',
+  });
 });
