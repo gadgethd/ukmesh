@@ -57,3 +57,22 @@ test('slow path contracts cover status, mode query, and pending response', () =>
     true,
   );
 });
+
+test('owner packet-sharing contracts cover bounded owner settings and destination metadata', () => {
+  const get = API_CONTRACTS.find((entry) => entry.method === 'GET' && entry.path === '/owner/packet-sharing');
+  assert.equal(get?.access, 'owner');
+  assert.deepEqual(get?.queryParameters?.[0]?.['schema'], {
+    type: 'string',
+    pattern: '^[0-9A-Fa-f]{64}$',
+  });
+  assert.deepEqual((get?.responseSchema?.['required'] as string[] | undefined)?.sort(), [
+    'destinations', 'enabled', 'featureEnabled', 'nodeId',
+  ]);
+
+  const post = API_CONTRACTS.find((entry) => entry.method === 'POST' && entry.path === '/owner/packet-sharing');
+  assert.equal(post?.access, 'owner');
+  assert.deepEqual((post?.requestSchema?.['required'] as string[] | undefined)?.sort(), [
+    'destinationIds', 'enabled', 'nodeId',
+  ]);
+  assert.equal(post?.additionalResponses?.['409']?.responseSchema['properties'] != null, true);
+});
