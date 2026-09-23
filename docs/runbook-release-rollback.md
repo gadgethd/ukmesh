@@ -45,12 +45,21 @@ export COSIGN_CERTIFICATE_OIDC_ISSUER='https://token.actions.githubusercontent.c
 export RESTORE_RECEIPT_PATH=/secure/receipts/latest.json
 export RESTORE_RECEIPT_VERIFY_KEY=/secure/receipts/verify.pem
 export RELEASE_RECEIPT_SIGNING_KEY=/secure/release/receipt-signing.pem
+export MESHCORE_INFRA_DIR=/home/ben/ukmesh/meshcore-infra
+export MESHCORE_INFRA_PROJECT_NAME=meshcore-infra
 
 scripts/replace-container.sh backend \
   --image="$BACKEND_IMAGE" \
   --backend-image="$BACKEND_IMAGE" \
   --source-revision="$SOURCE_REVISION"
 ```
+
+If the infrastructure Compose file has another path, set
+`MESHCORE_INFRA_COMPOSE_FILE` and, when needed,
+`MESHCORE_INFRA_PROJECT_DIR`. The release script validates that external
+project and resolves its single running `timescaledb` container before it
+starts the migration job; the post-migration schema check uses that exact
+container ID.
 
 Repeat for each application service, passing its digest as `--image` and the
 same signed backend digest as `--backend-image`. The script verifies signatures
