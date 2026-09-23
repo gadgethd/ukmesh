@@ -1,10 +1,24 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-cd "$(dirname "$0")/.."
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+project_dir="$(cd -- "$script_dir/.." && pwd)"
+cd "$project_dir"
+
+if [ -n "${MESHCORE_INFRA_COMPOSE_FILE:-}" ]; then
+  infra_compose_file="$MESHCORE_INFRA_COMPOSE_FILE"
+  infra_project_dir="${MESHCORE_INFRA_PROJECT_DIR:-${MESHCORE_INFRA_DIR:-$(dirname -- "$infra_compose_file")}}"
+else
+  infra_project_dir="${MESHCORE_INFRA_PROJECT_DIR:-${MESHCORE_INFRA_DIR:-${project_dir}/../meshcore-infra}}"
+  infra_compose_file="$infra_project_dir/docker-compose.yml"
+fi
+export MESHCORE_INFRA_PROJECT_DIR="$infra_project_dir"
+export MESHCORE_INFRA_COMPOSE_FILE="$infra_compose_file"
+source "$script_dir/lib/infra-compose.sh"
 
 MODE="${1:-audit}"
-PSQL=(docker compose exec -T timescaledb psql -U "${POSTGRES_USER:-meshcore}" -d "${POSTGRES_DB:-meshcore}" -v ON_ERROR_STOP=1 -X)
+timescaledb_container="$(resolve_infra_container timescaledb)"
+PSQL=(docker exec -i "$timescaledb_container" psql -U "${POSTGRES_USER:-meshcore}" -d "${POSTGRES_DB:-meshcore}" -v ON_ERROR_STOP=1 -X)
 LEGACY_SQL="'teesside','northeast'"
 RUN_ID="${NETWORK_UNIFICATION_RUN_ID:-network-unification-$(date -u +%Y%m%dT%H%M%SZ)}"
 

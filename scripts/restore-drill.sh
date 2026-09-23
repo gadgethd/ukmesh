@@ -53,6 +53,8 @@ test "$actual_archive_sha" = "$expected_archive_sha" || {
   exit 65
 }
 
+# This drill uses generated container names on a private network; all restore
+# and smoke commands target those disposable containers directly.
 run_id="meshcore-restore-$$"
 network_name="${run_id}-network"
 postgres_name="${run_id}-postgres"

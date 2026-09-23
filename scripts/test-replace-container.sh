@@ -61,46 +61,64 @@ command_name="${1:-}"
 shift || true
 case "$command_name" in
   compose)
-    if [ "${1:-}" = "--project-name" ]; then
-      shift 2
-    fi
-    case "${1:-}" in
-      config)
-        if [ "${2:-}" = "--services" ]; then
-          printf '%s\n' backend db-migrate timescaledb
-        elif [ "${2:-}" != "-q" ]; then
-          printf 'services: {}\n'
-        fi
-        ;;
-      ps)
-        printf 'current-backend\n'
-        ;;
-      run)
-        test "${*: -1}" = "db-migrate"
-        ;;
-      exec)
-        if [[ " $* " == *" timescaledb "* ]]; then
-          printf '30\n'
-        elif [[ "$*" == *"/readyz"* ]]; then
-          printf '{"status":"ready"}\n'
-        elif [[ "$*" == *"/metrics"* ]]; then
-          printf 'meshcore_process_start_time_seconds 1\n'
-        else
-          printf 'unexpected docker compose exec invocation: %s\n' "$*" >&2
-          exit 91
-        fi
-        ;;
-      up)
-        if [ "${MOCK_FAIL_DESIRED_DEPLOY:-false}" = "true" ] \
-          && [ "${BACKEND_IMAGE:-}" = "$MOCK_DESIRED_IMAGE" ]; then
-          exit 1
-        fi
-        ;;
-      *)
-        printf 'unexpected docker compose invocation: %s\n' "$*" >&2
-        exit 92
-        ;;
-    esac
+    project_name=''
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --project-name)
+          project_name="$2"
+          shift 2
+          ;;
+        --project-directory|-f)
+          shift 2
+          ;;
+        config)
+          if [ "${2:-}" = "--services" ]; then
+            printf '%s\n' backend db-migrate
+          elif [ "${2:-}" != "-q" ]; then
+            printf 'services: {}\n'
+          fi
+          exit 0
+          ;;
+        ps)
+          shift
+          test "${1:-}" = '-q'
+          service="${2:-}"
+          if [ "$project_name" = 'meshcore-infra' ]; then
+            test "$service" = 'timescaledb'
+            printf 'infra-timescaledb\n'
+          else
+            printf 'current-backend\n'
+          fi
+          exit 0
+          ;;
+        run)
+          test "${*: -1}" = "db-migrate"
+          exit 0
+          ;;
+        exec)
+          if [[ "$*" == *"/readyz"* ]]; then
+            printf '{"status":"ready"}\n'
+          elif [[ "$*" == *"/metrics"* ]]; then
+            printf 'meshcore_process_start_time_seconds 1\n'
+          else
+            printf 'unexpected docker compose exec invocation: %s\n' "$*" >&2
+            exit 91
+          fi
+          exit 0
+          ;;
+        up)
+          if [ "${MOCK_FAIL_DESIRED_DEPLOY:-false}" = "true" ] \
+            && [ "${BACKEND_IMAGE:-}" = "$MOCK_DESIRED_IMAGE" ]; then
+            exit 1
+          fi
+          exit 0
+          ;;
+        *)
+          printf 'unexpected docker compose invocation: %s\n' "$*" >&2
+          exit 92
+          ;;
+      esac
+    done
     ;;
   pull)
     ;;
@@ -124,6 +142,9 @@ case "$command_name" in
       *'.State.Running'*)
         printf 'true\n'
         ;;
+      *'.State.Status'*)
+        printf 'running\n'
+        ;;
       *'.State.Health'*)
         printf 'healthy\n'
         ;;
@@ -137,6 +158,10 @@ case "$command_name" in
     printf 'compat-container-id\n'
     ;;
   exec)
+    if [[ "$*" == *"infra-timescaledb"*"psql"* ]]; then
+      printf '30\n'
+      exit 0
+    fi
     if [ "${MOCK_COMPAT_READY:-true}" != "true" ]; then
       exit 1
     fi
@@ -178,12 +203,15 @@ run_case() {
   trap 'rm -rf -- "$test_root"' RETURN
 
   mkdir -p \
-    "${test_root}/project/scripts" \
+    "${test_root}/project/scripts/lib" \
+    "${test_root}/infra" \
     "${test_root}/fake-bin" \
     "${test_root}/releases"
   cp "$replace_script" "${test_root}/project/scripts/replace-container.sh"
+  cp "${script_dir}/lib/infra-compose.sh" "${test_root}/project/scripts/lib/infra-compose.sh"
   chmod 0755 "${test_root}/project/scripts/replace-container.sh"
   printf 'services: {}\n' >"${test_root}/project/docker-compose.yml"
+  printf 'services: {}\n' >"${test_root}/infra/docker-compose.yml"
 
   local now
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -228,6 +256,7 @@ run_case() {
     RESTORE_RECEIPT_PATH="${test_root}/restore-receipt.json" \
     RESTORE_RECEIPT_VERIFY_KEY="${test_root}/receipt-verify.pem" \
     RELEASE_STATUS_DIR="${test_root}/releases" \
+    MESHCORE_INFRA_PROJECT_DIR="${test_root}/infra" \
     COMPATIBILITY_TIMEOUT_SECONDS=1 \
     "${test_root}/project/scripts/replace-container.sh" \
       backend \
@@ -252,6 +281,12 @@ run_case() {
   test "$(jq -r '.status' "$release_status")" = "$expected_status"
   test "$(jq -r '.schema_version' "$release_status")" = "30"
   test "$(jq -r '.prior_image' "$release_status")" = "$prior_image"
+  local resolver_line migration_line
+  resolver_line="$(grep -nF 'ps -q timescaledb' "${test_root}/docker.log" | cut -d: -f1)"
+  migration_line="$(grep -nF 'compose --project-name meshcore-analytics run --rm db-migrate' "${test_root}/docker.log" | cut -d: -f1)"
+  test "$resolver_line" -lt "$migration_line"
+  grep -Fq 'exec -i infra-timescaledb psql -U meshcore -d meshcore -Atc' \
+    "${test_root}/docker.log"
 
   local up_count
   up_count="$(

@@ -393,6 +393,8 @@ jobs:
         run: scripts/test-vacuum-maintenance.sh
       - name: Test immutable release rollback and schema compatibility gates
         run: scripts/test-replace-container.sh
+      - name: Test split infrastructure resolver dry run
+        run: scripts/test-infra-compose.sh
 
   secrets:
     name: Secret scan
