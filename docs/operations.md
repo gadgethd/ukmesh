@@ -137,8 +137,13 @@ docker compose exec backend node dist/tools/backfillStatsRollups.js --apply --ho
 ```
 
 The first command is a read-only inventory. The checkpoint and the rollup
-slice commit together, so interruption resumes without double-counting. Set
-`STATS_AGGREGATE_READS_ENABLED=true` only after backfill. Once the
+slice commit together, so interruption resumes without double-counting. The
+`STATS_AGGREGATE_READS_ENABLED` and `STATS_AGGREGATE_SHADOW_ENABLED` settings
+accept comma-separated network names; `true` retains the all-network mode.
+Start with `STATS_AGGREGATE_SHADOW_ENABLED=ukmesh` while reads remain disabled.
+The bounded aggregate query and its legacy comparison run off the response path
+even in this shadow-only mode. Set `STATS_AGGREGATE_READS_ENABLED=ukmesh` only
+after backfill and a clean parity window. Once the
 aggregate-writing backend is live, reconcile the partial cutover hour:
 
 ```bash
@@ -153,8 +158,8 @@ gap above 48 hours requires a newly reviewed historical backfill. Transactions
 that arrive during a rebuild increment the reconstructed rows after its lock is
 released.
 
-A short validation window may additionally set
-`STATS_AGGREGATE_SHADOW_ENABLED=true`. The comparison pins one cutoff, scans
+A short validation window may set
+`STATS_AGGREGATE_SHADOW_ENABLED=ukmesh`. The comparison pins one cutoff, scans
 the recent source rows once, and runs off the response path with one in-flight
 comparison per scope and a five-minute minimum interval. Dimension keys must
 match exactly. Count differences may be at most five packets or 0.1%,
@@ -163,6 +168,15 @@ snapshots. Treat any `[stats-aggregate-shadow] mismatch` or
 `[stats-aggregate-shadow] failed` as a failed rollout and turn aggregate reads
 back off. Shadow mode deliberately adds a raw validation scan and must not
 remain enabled.
+
+Chart queries also share one `asOf` cutoff. `STATS_QUERY_DURATION_BUDGET_MS`
+defaults to 60 seconds, `STATS_CHART_QUERY_TIMEOUT_MS` defaults to 120 seconds,
+and `STATS_CHART_MAX_RESULT_ROWS` defaults to 100,000. A query that exceeds a
+budget fails the chart refresh and is logged with a `[stats-query-budget]`
+record; the existing stale snapshot remains available. The result-row limit is
+an output-size guard. It does not measure rows scanned inside PostgreSQL, so
+keep reviewing query plans and database scan telemetry before enabling reads on
+additional networks.
 
 Production aggregate reads combine maintained full-hour rows with raw boundary
 fragments, preserving the legacy exact rolling 24-hour/seven-day windows while

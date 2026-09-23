@@ -2,9 +2,24 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { QueryResultRow } from 'pg';
 import {
+  bindChartSnapshot,
   compareAggregateShadowRows,
   createStatsRepository,
 } from './statsRepository.js';
+
+test('pins repeated chart NOW expressions to one timestamp and parameter', () => {
+  const asOf = new Date('2026-09-23T10:15:00.000Z');
+  const snapshot = bindChartSnapshot(
+    "SELECT * FROM packets WHERE time > NOW() - INTERVAL '24 hours' AND time <= NOW()",
+    ['ukmesh'],
+    asOf,
+  );
+  assert.equal(
+    snapshot.text,
+    "SELECT * FROM packets WHERE time > $2::timestamptz - INTERVAL '24 hours' AND time <= $2::timestamptz",
+  );
+  assert.deepEqual(snapshot.params, ['ukmesh', asOf.toISOString()]);
+});
 
 test('multibyte fact cutover removes both raw decode scans and binds the privacy generation', async () => {
   const calls: Array<{ text: string; params?: unknown[] }> = [];
@@ -178,6 +193,89 @@ test('canonical charts coalesce six high-volume dimensions into one maintained a
   assert.equal(calls.filter((sql) => sql.includes('FROM packet_hourly_stats')).length, 0);
   assert.ok(calls.some((sql) =>
     sql.includes("time_bucket('1 hour', p.time) AS bucket, COUNT(*)::int AS count")));
+});
+
+test('per-network shadowing runs before reads are enabled and stays off for other networks', async () => {
+  const calls: Array<{ text: string; params?: unknown[] }> = [];
+  const query = async <T extends QueryResultRow = QueryResultRow>(
+    text: string,
+    params?: unknown[],
+  ): Promise<{ rows: T[] }> => {
+    calls.push({ text, params });
+    return { rows: [] };
+  };
+  const shadowRepository = createStatsRepository({
+    query,
+    networkFilters: () => ({
+      params: ['ukmesh'],
+      packets: 'AND network = $1',
+      packetsAlias: (alias: string) => `AND ${alias}.network = $1`,
+      nodes: 'AND network = $1',
+      nodesAlias: (alias: string) => `AND ${alias}.network = $1`,
+    }),
+    aggregateShadowNetworks: ['ukmesh'],
+  });
+
+  await shadowRepository.fetchChartsData('ukmesh', undefined);
+  assert.ok(calls.some((call) => call.text.includes('FROM packet_hourly_stats')));
+  assert.ok(calls.some((call) => call.text.includes('WITH scoped AS MATERIALIZED')));
+  assert.ok(calls.every((call) => !/\bNOW\(\)/i.test(call.text)));
+
+  calls.length = 0;
+  const readRepository = createStatsRepository({
+    query,
+    networkFilters: () => ({
+      params: ['ukmesh'],
+      packets: 'AND network = $1',
+      packetsAlias: (alias: string) => `AND ${alias}.network = $1`,
+      nodes: 'AND network = $1',
+      nodesAlias: (alias: string) => `AND ${alias}.network = $1`,
+    }),
+    aggregateReadNetworks: ['ukmesh'],
+  });
+  await readRepository.fetchChartsData('ukmesh', undefined);
+  assert.ok(calls.some((call) => call.text.includes('FROM packet_hourly_stats')));
+
+  calls.length = 0;
+  await readRepository.fetchChartsData('test', undefined);
+  assert.equal(calls.some((call) => call.text.includes('FROM packet_hourly_stats')), false);
+});
+
+test('Compose aggregate switch accepts a comma-separated network value', async () => {
+  const previousReads = process.env['STATS_AGGREGATE_READS_ENABLED'];
+  const previousShadow = process.env['STATS_AGGREGATE_SHADOW_ENABLED'];
+  process.env['STATS_AGGREGATE_READS_ENABLED'] = 'ukmesh';
+  process.env['STATS_AGGREGATE_SHADOW_ENABLED'] = 'false';
+  try {
+    const calls: string[] = [];
+    const query = async <T extends QueryResultRow = QueryResultRow>(
+      text: string,
+    ): Promise<{ rows: T[] }> => {
+      calls.push(text);
+      return { rows: [] };
+    };
+    const repository = createStatsRepository({
+      query,
+      networkFilters: () => ({
+        params: ['ukmesh'],
+        packets: 'AND network = $1',
+        packetsAlias: (alias: string) => `AND ${alias}.network = $1`,
+        nodes: 'AND network = $1',
+        nodesAlias: (alias: string) => `AND ${alias}.network = $1`,
+      }),
+    });
+    await repository.fetchChartsData('ukmesh', undefined);
+    assert.ok(calls.some((sql) => sql.includes('FROM packet_hourly_stats')));
+
+    calls.length = 0;
+    await repository.fetchChartsData('test', undefined);
+    assert.equal(calls.some((sql) => sql.includes('FROM packet_hourly_stats')), false);
+  } finally {
+    if (previousReads === undefined) delete process.env['STATS_AGGREGATE_READS_ENABLED'];
+    else process.env['STATS_AGGREGATE_READS_ENABLED'] = previousReads;
+    if (previousShadow === undefined) delete process.env['STATS_AGGREGATE_SHADOW_ENABLED'];
+    else process.env['STATS_AGGREGATE_SHADOW_ENABLED'] = previousShadow;
+  }
 });
 
 test('map summary uses the same coordinate, role, and 14-day freshness rules as the map', async () => {
