@@ -73,35 +73,95 @@ It reports exact expired rows, expired/compressed Timescale chunks, relation
 bytes, oldest/newest timestamps, and the affected features for every target.
 The inventory can be expensive by design; run it away from peak ingest.
 
-Compression and retention are separate, table-at-a-time changes. Both require:
+Compression and retention are separate, table-at-a-time changes. Migration
+050 declares Timescale retention policies for packets, status samples, and
+neighbour samples. The base schema previously removed the packet policy during
+schema initialization; it no longer does. If a policy is absent, use the
+receipt-gated apply command below after verifying a named backup and completing
+an isolated restore drill. Compression remains a separate receipt-gated
+operator action. The application fails startup when an enabled core lifecycle
+action omits a required target.
+
+Each gated per-table apply command requires:
 
 - a named, fresh database backup;
-- a successful isolated restore verification from the last 30 days;
+- a signed restore receipt verified within the configured receipt age (seven
+  days by default);
 - the target in `DATA_LIFECYCLE_RETENTION_TARGETS` for deletion or
   `DATA_LIFECYCLE_COMPRESSION_TARGETS` for compression;
 - the action flag set to `true`; and
 - an exact per-table approval argument.
 
-Example compression rollout:
+The receipt path, detached signature, and verification key are mounted into
+the backend as `DATA_LIFECYCLE_RESTORE_RECEIPT_PATH`,
+`DATA_LIFECYCLE_RESTORE_RECEIPT_SIGNATURE_PATH`, and
+`DATA_LIFECYCLE_RECEIPT_VERIFY_KEY_PATH`. Confirm those files are from the
+completed isolated restore drill before proceeding. The signed receipt contains
+the backup identifier and restore checks.
+
+First inspect the read-only inventory and record the named backup and restore
+receipt for the change:
 
 ```bash
-DATA_LIFECYCLE_COMPRESSION_ENABLED=true
-DATA_LIFECYCLE_COMPRESSION_TARGETS=packets,packet_paths,node_status_samples,node_neighbor_samples
-DATA_LIFECYCLE_BACKUP_REFERENCE=backup-20260729
-DATA_LIFECYCLE_RESTORE_VERIFIED_AT=2026-07-29T12:00:00Z
-docker compose exec backend npm run db:lifecycle -- \
-  --apply-compression --target=packets \
-  --approve=apply-data-lifecycle-compression-packets
+docker compose exec backend npm run db:lifecycle
 ```
 
-Measure query CPU, ingest WAL, and storage after cold-chunk compression. Only
-after aggregate cutover and another inventory may retention be enabled:
+After approval, enable the reviewed core retention windows with one explicit
+command per table. The packet content window is 30 days in the current
+repository policy; status telemetry is 180 days and neighbour telemetry is
+seven days. `packet_paths` is never a retention target:
 
 ```bash
-docker compose exec backend npm run db:lifecycle -- \
+docker compose exec -e DATA_LIFECYCLE_RETENTION_ENABLED=true backend npm run db:lifecycle -- \
   --apply-retention --target=packets \
   --approve=apply-data-lifecycle-retention-packets
+docker compose exec -e DATA_LIFECYCLE_RETENTION_ENABLED=true backend npm run db:lifecycle -- \
+  --apply-retention --target=node_status_samples \
+  --approve=apply-data-lifecycle-retention-node_status_samples
+docker compose exec -e DATA_LIFECYCLE_RETENTION_ENABLED=true backend npm run db:lifecycle -- \
+  --apply-retention --target=node_neighbor_samples \
+  --approve=apply-data-lifecycle-retention-node_neighbor_samples
 ```
+
+Apply compression per table after checking the inventory and database/WAL
+headroom. The reviewed policy compresses packets, path rows, and status after
+14 days, and neighbour samples after one day:
+
+```bash
+docker compose exec -e DATA_LIFECYCLE_COMPRESSION_ENABLED=true backend npm run db:lifecycle -- \
+  --apply-compression --target=packets \
+  --approve=apply-data-lifecycle-compression-packets
+docker compose exec -e DATA_LIFECYCLE_COMPRESSION_ENABLED=true backend npm run db:lifecycle -- \
+  --apply-compression --target=packet_paths \
+  --approve=apply-data-lifecycle-compression-packet_paths
+docker compose exec -e DATA_LIFECYCLE_COMPRESSION_ENABLED=true backend npm run db:lifecycle -- \
+  --apply-compression --target=node_status_samples \
+  --approve=apply-data-lifecycle-compression-node_status_samples
+docker compose exec -e DATA_LIFECYCLE_COMPRESSION_ENABLED=true backend npm run db:lifecycle -- \
+  --apply-compression --target=node_neighbor_samples \
+  --approve=apply-data-lifecycle-compression-node_neighbor_samples
+```
+
+Measure query CPU, ingest WAL, and storage after cold-chunk compression. Check
+the read-only inventory and Prometheus chunk/byte gauges after each change.
+Set the production configuration flags only after every required core target
+is present; missing targets make the application fail closed.
+
+## Expired forensic data
+
+Expired packet content, status samples, and neighbour history are not served by
+the production application. For forensic access, restore a named backup that
+predates the expiry into an isolated restore environment, keep the database and
+application read-only, disable MQTT ingest and all background writers, and
+limit access to the authorized investigation. Never restore old data over the
+production database or reconnect an isolated forensic copy to public APIs.
+The backup and restore workflow is documented in
+[`runbook-backup-restore.md`](runbook-backup-restore.md).
+
+Prometheus tracks retained hypertable bytes/chunks, expired chunks,
+compression-overdue chunks, and host free-space trends. Follow the matching
+first-response steps in [`operations.md`](operations.md) for growth,
+retention, compression, or disk exhaustion alerts.
 
 Hypertable retention uses a Timescale policy. Row-table deletion is bounded and
 performed by the health worker only for targets explicitly listed in

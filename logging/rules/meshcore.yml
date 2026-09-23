@@ -177,6 +177,46 @@ groups:
           owner: meshcore-operations
           runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#hostdiskspacelow
 
+      - alert: HostDiskExhaustionForecast
+        expr: predict_linear(node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs"}[6h], 86400) < 0
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: Host filesystem {{ $labels.mountpoint }} is forecast to fill within 24 hours
+          owner: meshcore-operations
+          runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#hostdiskexhaustionforecast
+
+      - alert: CoreTelemetryGrowthHigh
+        expr: sum by (table) (deriv(meshcore_core_telemetry_hypertable_bytes{role="health"}[7d]) * 604800) > 1073741824
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: Core telemetry hypertable {{ $labels.table }} is growing by over 1 GiB per week
+          owner: meshcore-operations
+          runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#coretelemetrygrowthhigh
+
+      - alert: CoreTelemetryRetentionOverdue
+        expr: meshcore_core_telemetry_expired_chunks{role="health"} > 0
+        for: 27h
+        labels:
+          severity: critical
+        annotations:
+          summary: Core telemetry hypertable {{ $labels.table }} has expired chunks still present
+          owner: meshcore-operations
+          runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#coretelemetryretentionoverdue
+
+      - alert: CoreTelemetryCompressionOverdue
+        expr: meshcore_core_telemetry_overdue_uncompressed_chunks{role="health"} > 0
+        for: 3h
+        labels:
+          severity: warning
+        annotations:
+          summary: Core telemetry hypertable {{ $labels.table }} has chunks overdue for compression
+          owner: meshcore-operations
+          runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#coretelemetrycompressionoverdue
+
       - alert: PacketPathsGrowthHigh
         expr: meshcore_packet_paths_rows_30d{role="health"} / 30 > 30000
         for: 30m
