@@ -138,6 +138,50 @@ export const DATA_LIFECYCLE_POLICIES: readonly DataLifecyclePolicy[] = Object.fr
   },
 ]);
 
+export const REQUIRED_CORE_RETENTION_TARGETS = Object.freeze([
+  'packets',
+  'node_status_samples',
+  'node_neighbor_samples',
+] as const);
+
+export const REQUIRED_CORE_COMPRESSION_TARGETS = Object.freeze([
+  'packets',
+  'packet_paths',
+  'node_status_samples',
+  'node_neighbor_samples',
+] as const);
+
+export type DataLifecycleConfigurationStatus = Readonly<{
+  retentionEnabled: boolean;
+  compressionEnabled: boolean;
+  missingRetentionTargets: readonly string[];
+  missingCompressionTargets: readonly string[];
+  ready: boolean;
+}>;
+
+export function dataLifecycleConfigurationStatus(
+  env: NodeJS.ProcessEnv = process.env,
+): DataLifecycleConfigurationStatus {
+  const retentionEnabled = env['DATA_LIFECYCLE_RETENTION_ENABLED'] === 'true';
+  const compressionEnabled = env['DATA_LIFECYCLE_COMPRESSION_ENABLED'] === 'true';
+  const retentionTargets = configuredLifecycleTargets(env['DATA_LIFECYCLE_RETENTION_TARGETS']);
+  const compressionTargets = configuredCompressionTargets(env['DATA_LIFECYCLE_COMPRESSION_TARGETS']);
+  const missingRetentionTargets = REQUIRED_CORE_RETENTION_TARGETS.filter(
+    (target) => !retentionTargets.has(target),
+  );
+  const missingCompressionTargets = REQUIRED_CORE_COMPRESSION_TARGETS.filter(
+    (target) => !compressionTargets.has(target),
+  );
+  return {
+    retentionEnabled,
+    compressionEnabled,
+    missingRetentionTargets,
+    missingCompressionTargets,
+    ready: (!retentionEnabled || missingRetentionTargets.length === 0)
+      && (!compressionEnabled || missingCompressionTargets.length === 0),
+  };
+}
+
 export function lifecyclePolicy(table: string): DataLifecyclePolicy {
   const policy = DATA_LIFECYCLE_POLICIES.find((candidate) => candidate.table === table);
   if (!policy) throw new Error(`unsupported data lifecycle target: ${table}`);
@@ -185,9 +229,18 @@ export function assertDataLifecycleGate(options: {
   const targets = options.action === 'compression'
     ? configuredCompressionTargets(env['DATA_LIFECYCLE_COMPRESSION_TARGETS'])
     : configuredLifecycleTargets(env['DATA_LIFECYCLE_RETENTION_TARGETS']);
+  const requiredTargets = options.action === 'compression'
+    ? REQUIRED_CORE_COMPRESSION_TARGETS
+    : REQUIRED_CORE_RETENTION_TARGETS;
   const targetVariable = options.action === 'compression'
     ? 'DATA_LIFECYCLE_COMPRESSION_TARGETS'
     : 'DATA_LIFECYCLE_RETENTION_TARGETS';
+  const missingRequiredTargets = requiredTargets.filter((target) => !targets.has(target));
+  if (missingRequiredTargets.length > 0) {
+    throw new Error(
+      `${targetVariable} must include required core targets: ${missingRequiredTargets.join(',')}`,
+    );
+  }
   if (!targets.has(policy.table)) {
     throw new Error(`${targetVariable} must include ${policy.table}`);
   }

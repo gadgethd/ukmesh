@@ -351,6 +351,36 @@ databases and signed backups. Prune only explicitly identified unused build
 cache/images or let the bounded SRTM/log policies converge; never run a broad
 volume prune.
 
+### HostDiskExhaustionForecast
+
+Treat a sustained forecast of disk exhaustion within 24 hours as an incident
+before the low-space threshold fires. Identify the filesystem and its largest
+consumers, compare the database hypertable and chunk growth gauges, pause
+optional backfills, and preserve backup capacity. Do not remove database
+chunks or volumes to make space; follow the signed backup and lifecycle gates.
+
+### CoreTelemetryGrowthHigh
+
+Compare the per-table byte and chunk gauges with the retention and compression
+policies, then run the read-only `npm run db:lifecycle` inventory during a low
+traffic window. Check for missed retention/compression jobs and forecast the
+next 30 days of disk use. Changes to destructive retention require the current
+signed backup/restore receipt and the per-table approval in `docs/db-lifecycle.md`.
+
+### CoreTelemetryRetentionOverdue
+
+Use read-only queries against `timescaledb_information.jobs` and
+`timescaledb_information.chunks` to identify the missing or failing policy for
+the labelled table. Verify backup and isolated restore evidence before running
+the gated per-table lifecycle command. Keep expired forensic access isolated
+and read-only; never expose restored expired rows through production APIs.
+
+### CoreTelemetryCompressionOverdue
+
+Inspect the labelled table's compression policy and Timescale job history, as
+well as worker capacity and recent database/WAL pressure. Apply compression
+only through the per-table, receipt-gated command in `docs/db-lifecycle.md`.
+
 ### PacketPathsCapacity
 
 Compare the health-worker `meshcore_packet_paths_rows_30d`,

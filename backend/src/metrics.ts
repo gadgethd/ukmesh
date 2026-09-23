@@ -288,6 +288,34 @@ export const packetPathsOverdueUncompressedChunks = new Gauge({
   registers: [metricsRegistry],
 });
 
+export const coreTelemetryHypertableBytes = new Gauge({
+  name: 'meshcore_core_telemetry_hypertable_bytes',
+  help: 'Total chunk bytes for core high-volume telemetry hypertables.',
+  labelNames: ['table'] as const,
+  registers: [metricsRegistry],
+});
+
+export const coreTelemetryHypertableChunks = new Gauge({
+  name: 'meshcore_core_telemetry_hypertable_chunks',
+  help: 'Chunk count for core high-volume telemetry hypertables.',
+  labelNames: ['table'] as const,
+  registers: [metricsRegistry],
+});
+
+export const coreTelemetryExpiredChunks = new Gauge({
+  name: 'meshcore_core_telemetry_expired_chunks',
+  help: 'Fully expired core telemetry chunks still present beyond the reviewed retention window.',
+  labelNames: ['table'] as const,
+  registers: [metricsRegistry],
+});
+
+export const coreTelemetryUncompressedChunks = new Gauge({
+  name: 'meshcore_core_telemetry_overdue_uncompressed_chunks',
+  help: 'Core telemetry chunks still uncompressed after the configured age plus a one-day schedule allowance.',
+  labelNames: ['table'] as const,
+  registers: [metricsRegistry],
+});
+
 const HTTP_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS', 'HEAD']);
 const METRIC_NETWORKS = new Set(['ukmesh', 'teesside', 'test']);
 const METRIC_ANALYSIS_WORKLOADS = new Set(['spam-analysis', 'path-learning']);

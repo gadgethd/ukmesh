@@ -9,6 +9,7 @@ import {
   compressionPolicy,
   configuredCompressionTargets,
   configuredLifecycleTargets,
+  dataLifecycleConfigurationStatus,
   lifecyclePolicy,
 } from './dataLifecycle.js';
 
@@ -61,8 +62,9 @@ test('data lifecycle targets are closed and destructive gates fail closed', () =
   const validEnv = {
     DATA_LIFECYCLE_RETENTION_ENABLED: 'true',
     DATA_LIFECYCLE_COMPRESSION_ENABLED: 'true',
-    DATA_LIFECYCLE_RETENTION_TARGETS: 'packets',
-    DATA_LIFECYCLE_COMPRESSION_TARGETS: 'packets,packet_paths',
+    DATA_LIFECYCLE_RETENTION_TARGETS: 'packets,node_status_samples,node_neighbor_samples',
+    DATA_LIFECYCLE_COMPRESSION_TARGETS:
+      'packets,packet_paths,node_status_samples,node_neighbor_samples',
     ...receiptEnvironment(),
   };
   assert.equal(assertDataLifecycleGate({
@@ -96,6 +98,16 @@ test('data lifecycle targets are closed and destructive gates fail closed', () =
     },
     now,
   }), /unsupported compression target/);
+  assert.throws(() => assertDataLifecycleGate({
+    action: 'retention',
+    target: 'packets',
+    approval: 'apply-data-lifecycle-retention-packets',
+    env: {
+      ...validEnv,
+      DATA_LIFECYCLE_RETENTION_TARGETS: 'packets',
+    },
+    now,
+  }), /must include required core targets/);
   assert.equal(assertDataLifecycleGate({
     action: 'compression',
     target: 'packet_paths',
@@ -103,4 +115,35 @@ test('data lifecycle targets are closed and destructive gates fail closed', () =
     env: validEnv,
     now,
   }).table, 'packet_paths');
+});
+
+test('enabled high-volume lifecycle work requires every reviewed core target', () => {
+  const incomplete = dataLifecycleConfigurationStatus({
+    DATA_LIFECYCLE_RETENTION_ENABLED: 'true',
+    DATA_LIFECYCLE_RETENTION_TARGETS: 'packets',
+    DATA_LIFECYCLE_COMPRESSION_ENABLED: 'true',
+    DATA_LIFECYCLE_COMPRESSION_TARGETS: 'packets,packet_paths',
+  });
+  assert.equal(incomplete.ready, false);
+  assert.deepEqual(incomplete.missingRetentionTargets, [
+    'node_status_samples',
+    'node_neighbor_samples',
+  ]);
+  assert.deepEqual(incomplete.missingCompressionTargets, [
+    'node_status_samples',
+    'node_neighbor_samples',
+  ]);
+
+  const complete = dataLifecycleConfigurationStatus({
+    DATA_LIFECYCLE_RETENTION_ENABLED: 'true',
+    DATA_LIFECYCLE_RETENTION_TARGETS: 'packets,node_status_samples,node_neighbor_samples',
+    DATA_LIFECYCLE_COMPRESSION_ENABLED: 'true',
+    DATA_LIFECYCLE_COMPRESSION_TARGETS:
+      'packets,packet_paths,node_status_samples,node_neighbor_samples',
+  });
+  assert.equal(complete.ready, true);
+  assert.deepEqual(complete.missingRetentionTargets, []);
+  assert.deepEqual(complete.missingCompressionTargets, []);
+
+  assert.equal(dataLifecycleConfigurationStatus({}).ready, true);
 });

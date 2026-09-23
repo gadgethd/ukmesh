@@ -1,5 +1,5 @@
 -- MeshCore Analytics — Database Schema
--- TimescaleDB, no automatic data retention (all data kept indefinitely)
+-- TimescaleDB base schema; retention is managed by versioned lifecycle policy.
 
 CREATE EXTENSION IF NOT EXISTS timescaledb;
 
@@ -61,7 +61,7 @@ ALTER TABLE nodes ADD COLUMN IF NOT EXISTS last_predicted_online_at TIMESTAMPTZ;
 ALTER TABLE nodes ADD COLUMN IF NOT EXISTS last_path_evidence_at TIMESTAMPTZ;
 ALTER TABLE nodes ADD COLUMN IF NOT EXISTS last_mqtt_observer_seen_at TIMESTAMPTZ;
 
--- ─── Packets hypertable (no retention — data kept indefinitely) ──────────
+-- ─── Packets hypertable ──────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS packets (
   time          TIMESTAMPTZ      NOT NULL DEFAULT NOW(),
@@ -82,23 +82,6 @@ CREATE TABLE IF NOT EXISTS packets (
 );
 
 SELECT create_hypertable('packets', 'time', if_not_exists => TRUE);
-
--- Remove any existing retention policy so packets are kept indefinitely.
-DO $$
-DECLARE
-  _job_id INTEGER;
-BEGIN
-  SELECT job_id INTO _job_id
-  FROM timescaledb_information.jobs
-  WHERE proc_name = 'policy_retention'
-    AND config->>'hypertable_id' = (
-      SELECT id::text FROM _timescaledb_catalog.hypertable WHERE table_name = 'packets'
-    );
-
-  IF _job_id IS NOT NULL THEN
-    PERFORM remove_retention_policy('packets');
-  END IF;
-END $$;
 
 ALTER TABLE packets ADD COLUMN IF NOT EXISTS advert_count INTEGER;
 ALTER TABLE packets ADD COLUMN IF NOT EXISTS path_hashes TEXT[];
