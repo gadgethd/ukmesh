@@ -25,14 +25,23 @@ class FakeRedis:
     def __init__(self):
         self.data = {}
         self.published = []
+        self.publish_count = 0
+        self.fail_publish_at = None
+        self.fail_marker_set = False
 
     def exists(self, key):
         return 1 if key in self.data else 0
 
     def set(self, key, value, ex=None):
+        if self.fail_marker_set and key.startswith('viewshed:side-effects:'):
+            self.fail_marker_set = False
+            raise RuntimeError('injected completion-marker failure')
         self.data[key] = value
 
     def publish(self, channel, message):
+        self.publish_count += 1
+        if self.publish_count == self.fail_publish_at:
+            raise RuntimeError('injected notification failure')
         self.published.append((channel, json.loads(message)))
 
 
@@ -65,6 +74,15 @@ class FakeDb:
 
     def cursor(self):
         return FakeCursor(self.rows)
+
+
+class SequenceDb:
+    """Return one row set per cursor so process_job retry paths are realistic."""
+    def __init__(self, cursor_rows):
+        self.cursor_rows = iter(cursor_rows)
+
+    def cursor(self):
+        return FakeCursor(next(self.cursor_rows))
 
 
 class SideEffectMarkerTest(unittest.TestCase):
@@ -119,6 +137,52 @@ class SideEffectMarkerTest(unittest.TestCase):
         worker.replay_coverage_side_effects(db, r, 'E' * 64)
         self.assertEqual(r.published, [])
         self.assertFalse(worker.side_effects_complete(r, 'E' * 64))
+
+    def test_post_commit_faults_replay_on_retry_at_every_boundary(self):
+        """Coverage is already committed; any incomplete Redis effect must retry."""
+        node = 'F' * 64
+        geom = {'type': 'Polygon', 'coordinates': []}
+        strength = {'s1': {'type': 'Polygon', 'coordinates': []}}
+
+        for boundary in ('link_admission', 'coverage_notification', 'node_notification', 'marker'):
+            with self.subTest(boundary=boundary):
+                r = FakeRedis()
+                r.fail_publish_at = {
+                    'coverage_notification': 1,
+                    'node_notification': 2,
+                }.get(boundary)
+                r.fail_marker_set = boundary == 'marker'
+                db = SequenceDb([
+                    (None, 2, None), (geom, strength, 5_000.0, 12.0), (54.0, -1.5),
+                    (None, 2, None), (geom, strength, 5_000.0, 12.0), (54.0, -1.5),
+                ])
+                enqueue_calls = 0
+
+                def enqueue(*args, **kwargs):
+                    nonlocal enqueue_calls
+                    enqueue_calls += 1
+                    if boundary == 'link_admission' and enqueue_calls == 1:
+                        raise RuntimeError('injected link admission failure')
+                    return 1
+
+                job = {'node_id': node, 'lat': 54.0, 'lon': -1.5}
+                with mock.patch.object(worker, 'already_calculated', return_value=True), \
+                     mock.patch.object(worker, 'WORKER_MODE', 'all'), \
+                     mock.patch.object(worker, 'enqueue_physical_link_jobs_for_node', side_effect=enqueue):
+                    with self.assertRaises(RuntimeError):
+                        worker.process_job(db, r, job)
+                    self.assertFalse(worker.side_effects_complete(r, node))
+
+                    # The next delivery takes the already-calculated branch and
+                    # reconciles the missing side effects before returning.
+                    worker.process_job(db, r, job)
+
+                self.assertTrue(worker.side_effects_complete(r, node))
+                expected_notifications = {
+                    'node_notification': 3,
+                    'marker': 4,
+                }.get(boundary, 2)
+                self.assertEqual(len(r.published), expected_notifications)
 
 
 if __name__ == '__main__':
