@@ -85,6 +85,27 @@ test('node store ignores late updates from a prior scope epoch', () => {
   assert.equal(nodeStore.getState().nodes.has(OTHER_NODE_ID), true);
 });
 
+test('non-chat packets preserve the message snapshot while mixed batches update chat counts', () => {
+  const epoch = nodeStore.reset('message-snapshot');
+  const packet = { id: 'chat', packetHash: 'ABCD', packetType: 5, topic: 'mesh/packet', ts: NOW };
+  nodeStore.handlePacket(packet, epoch);
+  const before = nodeStore.getState().messages;
+  nodeStore.handlePacket({ ...packet, id: 'advert', packetHash: '1234', packetType: 4 }, epoch);
+  assert.equal(nodeStore.getState().messages, before, 'useMessages must not re-render for adverts');
+  nodeStore.handlePacket([
+    { ...packet, packetHash: '5678', packetType: 4 },
+    { ...packet, ts: NOW + 1 },
+    { ...packet, packetHash: 'BCDE', ts: NOW + 2 },
+  ], epoch);
+  const after = nodeStore.getState().messages;
+  assert.notEqual(after, before);
+  assert.deepEqual(after.map(({ packetHash, rxCount }) => ({ packetHash, rxCount })), [
+    { packetHash: 'BCDE', rxCount: 1 },
+    { packetHash: 'ABCD', rxCount: 2 },
+  ]);
+  assert.equal(before[0]?.rxCount, 1, 'previous snapshots remain immutable');
+});
+
 test('map marks nodes stale after 14 days and hides ordinary nodes after 28 days', () => {
   const nodes = new Map<string, MeshNode>([
     [NODE_ID, meshNode(NODE_ID, NODE_STALE_AFTER_MS - 1, { role: 1 })],
