@@ -617,9 +617,12 @@ else
   password="$(openssl rand -hex 24)"
 
   log 'creating persistent Mosquitto credential'
+  # Mark the transaction as owning this username before invoking the mutating
+  # command. If it changes the passwd file and then exits unsuccessfully, EXIT
+  # rollback must still remove the partial credential.
+  credential_created=1
   docker exec "$MOSQUITTO_CONTAINER" \
     mosquitto_passwd -b /mosquitto/config/passwd "$username" "$password"
-  credential_created=1
   # mosquitto only re-reads password_file on SIGHUP; the reconciler reloads
   # every ~60s but a device may connect before then, so reload immediately.
   docker exec "$MOSQUITTO_CONTAINER" sh -c 'kill -HUP 1' >/dev/null 2>&1 \
@@ -715,10 +718,11 @@ else
   new_owner_map=$new_entry
 fi
 log 'adding deduplicated owner grant to OWNER_MQTT_USERNAME_MAP'
-replace_owner_map "$new_owner_map"
 env_changed=1
+replace_owner_map "$new_owner_map"
 
 log 'inserting verified owner account and node grant rows'
+db_changed=1
 docker exec -i "$TIMESCALEDB_CONTAINER" \
   psql -X -q -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$OWNER_DATABASE" \
     -v "mqtt_username=${username}" -v "node_ids=${key_csv}" >/dev/null <<'SQL'
@@ -759,7 +763,6 @@ SET verification_method = 'operator-config',
     updated_at = NOW();
 COMMIT;
 SQL
-db_changed=1
 
 log 'recreating only the backend to reconcile owner grants and reload the ACL'
 apply_backend_config
