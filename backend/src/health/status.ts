@@ -2,7 +2,10 @@ import fs from 'node:fs';
 import { Redis } from 'ioredis';
 import { query } from '../db/index.js';
 import { getRedisConnectionOptions, getRedisUrl } from '../platform/config/redis.js';
-import { configuredLifecycleTargets } from '../db/dataLifecycle.js';
+import {
+  configuredLifecycleTargets,
+  dataLifecycleConfigurationStatus,
+} from '../db/dataLifecycle.js';
 import { INGEST_HEALTH_SQL, PATH_HASH_HEALTH_SQL } from './packetDiagnostics.js';
 import {
   loadVerifiedRestoreReceipt,
@@ -10,6 +13,10 @@ import {
 } from '../backup/receipt.js';
 import {
   backupAgeSeconds,
+  coreTelemetryExpiredChunks,
+  coreTelemetryHypertableBytes,
+  coreTelemetryHypertableChunks,
+  coreTelemetryUncompressedChunks,
   linkQueueBytes,
   linkQueueDeadBytes,
   linkQueueDeadJobs,
@@ -124,11 +131,82 @@ async function refreshPacketPathCapacityMetrics(): Promise<void> {
   packetPathsBytesPerRow.set(approximateRows > 0 ? totalBytes / approximateRows : 0);
   packetPathsOverdueUncompressedChunks.set(Number(row?.overdue_uncompressed_chunks ?? 0));
 }
+
+const CORE_TELEMETRY_TABLES = [
+  'packets',
+  'node_status_samples',
+  'node_neighbor_samples',
+] as const;
+
+async function refreshCoreTelemetryCapacityMetrics(): Promise<void> {
+  for (const table of CORE_TELEMETRY_TABLES) {
+    coreTelemetryHypertableBytes.set({ table }, 0);
+    coreTelemetryHypertableChunks.set({ table }, 0);
+    coreTelemetryExpiredChunks.set({ table }, 0);
+    coreTelemetryUncompressedChunks.set({ table }, 0);
+  }
+  const result = await query<{
+    table_name: string;
+    chunk_count: string;
+    total_bytes: string;
+    expired_chunks: string;
+    overdue_uncompressed_chunks: string;
+  }>(`
+    WITH lifecycle_targets (table_name, retention, compress_after) AS (
+      VALUES
+        ('packets', INTERVAL '30 days', INTERVAL '15 days'),
+        ('node_status_samples', INTERVAL '180 days', INTERVAL '15 days'),
+        ('node_neighbor_samples', INTERVAL '7 days', INTERVAL '2 days')
+    )
+    SELECT target.table_name,
+           COUNT(chunk.chunk_name)::text AS chunk_count,
+           COALESCE(SUM(CASE
+             WHEN chunk.chunk_name IS NULL THEN 0
+             ELSE pg_total_relation_size(
+               format('%I.%I', chunk.chunk_schema, chunk.chunk_name)::regclass
+             )
+           END), 0)::text AS total_bytes,
+           COUNT(chunk.chunk_name) FILTER (
+             WHERE chunk.range_end < NOW() - target.retention
+           )::text AS expired_chunks,
+           COUNT(chunk.chunk_name) FILTER (
+             WHERE NOT COALESCE(chunk.is_compressed, FALSE)
+               AND chunk.range_end < NOW() - target.compress_after - INTERVAL '1 day'
+           )::text AS overdue_uncompressed_chunks
+      FROM lifecycle_targets target
+      LEFT JOIN timescaledb_information.chunks chunk
+        ON chunk.hypertable_schema = 'public'
+       AND chunk.hypertable_name = target.table_name
+     GROUP BY target.table_name
+  `);
+  for (const row of result.rows) {
+    const labels = { table: row.table_name };
+    coreTelemetryHypertableBytes.set(labels, Number(row.total_bytes ?? 0));
+    coreTelemetryHypertableChunks.set(labels, Number(row.chunk_count ?? 0));
+    coreTelemetryExpiredChunks.set(labels, Number(row.expired_chunks ?? 0));
+    coreTelemetryUncompressedChunks.set(
+      labels,
+      Number(row.overdue_uncompressed_chunks ?? 0),
+    );
+  }
+}
 const OPERATIONAL_RETENTION_ENABLED =
   process.env['DATA_LIFECYCLE_RETENTION_ENABLED'] === 'true';
 const OPERATIONAL_RETENTION_TARGETS = configuredLifecycleTargets(
   process.env['DATA_LIFECYCLE_RETENTION_TARGETS'],
 );
+const DATA_LIFECYCLE_CONFIGURATION = dataLifecycleConfigurationStatus();
+if (!DATA_LIFECYCLE_CONFIGURATION.ready) {
+  const missing = [
+    ...(DATA_LIFECYCLE_CONFIGURATION.retentionEnabled
+      ? DATA_LIFECYCLE_CONFIGURATION.missingRetentionTargets.map((target) => `retention:${target}`)
+      : []),
+    ...(DATA_LIFECYCLE_CONFIGURATION.compressionEnabled
+      ? DATA_LIFECYCLE_CONFIGURATION.missingCompressionTargets.map((target) => `compression:${target}`)
+      : []),
+  ];
+  throw new Error(`DATA_LIFECYCLE_REQUIRED_TARGETS_MISSING:${missing.join(',')}`);
+}
 const SYNTHETIC_SUCCESS_TTL_MS = Math.max(
   16 * 60_000,
   Number(process.env['SYNTHETIC_SUCCESS_TTL_MS'] ?? 16 * 60_000) || 16 * 60_000,
@@ -512,6 +590,7 @@ async function redisDurabilityState(): Promise<{
 
 export async function captureWorkerHealthSnapshot(): Promise<void> {
   await refreshPacketPathCapacityMetrics();
+  await refreshCoreTelemetryCapacityMetrics();
   const capturedAt = new Date().toISOString();
   const rows = (await currentWorkers()).map((row) => row.worker_name === 'health-worker'
     ? {

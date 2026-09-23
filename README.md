@@ -350,13 +350,19 @@ MeshCore Devices
 
 ## Data Retention
 
-- Compression and destructive retention ship disabled. Raw packets and status
-  samples remain intact until a table-specific, backup- and restore-gated
-  lifecycle rollout is approved.
-- The proposed raw retention window is 180 days, preserving the longest
-  120-day learner dependency. Privacy-safe hourly/daily aggregates and current
-  node/link/model state remain longer lived. Legacy `node_coverage` is retained
-  for one release as inactive rollback data only.
+- The reviewed core telemetry windows are 30 days for raw packets, 180 days
+  for status samples, and seven days for neighbour samples. Content-stripped
+  `packet_paths` remain available for path reconstruction and are never
+  retention-deleted. Privacy-safe aggregates and current node/link/model state
+  remain longer lived.
+- Migration 050 declares the core Timescale retention policies. Repairing a
+  missing policy and enabling compression require a fresh signed
+  backup/restore receipt and per-table approval. When lifecycle actions are
+  enabled, startup fails closed if required core targets are missing from the
+  configured allowlists.
+- Expired forensic data is available only by restoring a suitable pre-expiry
+  backup into an isolated, read-only environment; do not restore it over
+  production.
 - Operational row-table cleanup is bounded and runs only when both
   `DATA_LIFECYCLE_RETENTION_ENABLED=true` and the exact table appears in
   `DATA_LIFECYCLE_RETENTION_TARGETS`.

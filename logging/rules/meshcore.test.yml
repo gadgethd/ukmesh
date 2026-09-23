@@ -19,32 +19,7 @@ tests:
         values: 0x8
       - series: 'meshcore_worker_heartbeat_age_seconds{worker="link"}'
         values: 200x8
-      - series: 'meshcore_mqtt_ingest_queue_depth{job="meshcore-backend"}'
-        values: 900x8
-      - series: 'meshcore_mqtt_ingest_outcomes_total{job="meshcore-backend",outcome="queue_full"}'
-        values: 0 0 1 2 3 4 5 6
     alert_rule_test:
-      - eval_time: 6m
-        alertname: MqttIngestQueueDepthHigh
-        exp_alerts:
-          - exp_labels:
-              job: meshcore-backend
-              severity: warning
-            exp_annotations:
-              summary: The MQTT ingest queue has remained above 800 messages
-              owner: meshcore-operations
-              runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#mqttingestqueuedepthhigh
-      - eval_time: 3m
-        alertname: MqttIngestQueueFull
-        exp_alerts:
-          - exp_labels:
-              job: meshcore-backend
-              outcome: queue_full
-              severity: critical
-            exp_annotations:
-              summary: The MQTT ingest queue is rejecting messages at capacity
-              owner: meshcore-operations
-              runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#mqttingestqueuefull
       - eval_time: 6m
         alertname: QueueAgeHigh
         exp_alerts:
@@ -114,6 +89,8 @@ tests:
         values: 5x14
       - series: 'node_filesystem_size_bytes{fstype="ext4",mountpoint="/data"}'
         values: 100x14
+      - series: 'node_filesystem_avail_bytes{fstype="ext4",mountpoint="/forecast"}'
+        values: 10000 9900 9800 9700 9600 9500 9400 9300 9200 9100 9000 8900 8800 8700 8600 8500 8400 8300 8200 8100 8000
       - series: 'meshcore_backup_age_seconds{dataset="analytics"}'
         values: 90000x14
       - series: 'meshcore_backup_age_seconds{dataset="owner_auth"}'
@@ -150,6 +127,17 @@ tests:
               summary: Host filesystem /data has less than 10 percent free
               owner: meshcore-operations
               runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#hostdiskspacelow
+      - eval_time: 20m
+        alertname: HostDiskExhaustionForecast
+        exp_alerts:
+          - exp_labels:
+              fstype: ext4
+              mountpoint: /forecast
+              severity: critical
+            exp_annotations:
+              summary: Host filesystem /forecast is forecast to fill within 24 hours
+              owner: meshcore-operations
+              runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#hostdiskexhaustionforecast
       - eval_time: 11m
         alertname: BackupReceiptMissing
         exp_alerts:
@@ -199,3 +187,51 @@ tests:
               summary: Packet visibility validation is rejecting elevated telemetry
               owner: meshcore-operations
               runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#telemetryintegrityfailures
+
+  - name: telemetry growth forecast
+    interval: 1d
+    input_series:
+      - series: 'meshcore_core_telemetry_hypertable_bytes{role="health",table="packets"}'
+        values: 1000000000 3000000000 5000000000 7000000000 9000000000 11000000000 13000000000 15000000000 17000000000
+    alert_rule_test:
+      - eval_time: 8d1h
+        alertname: CoreTelemetryGrowthHigh
+        exp_alerts:
+          - exp_labels:
+              table: packets
+              severity: warning
+            exp_annotations:
+              summary: Core telemetry hypertable packets is growing by over 1 GiB per week
+              owner: meshcore-operations
+              runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#coretelemetrygrowthhigh
+
+  - name: telemetry lifecycle coverage
+    interval: 1m
+    input_series:
+      - series: 'meshcore_core_telemetry_expired_chunks{role="health",table="node_status_samples"}'
+        values: 0 1x1800
+      - series: 'meshcore_core_telemetry_overdue_uncompressed_chunks{role="health",table="node_neighbor_samples"}'
+        values: 1x360
+    alert_rule_test:
+      - eval_time: 29h
+        alertname: CoreTelemetryRetentionOverdue
+        exp_alerts:
+          - exp_labels:
+              role: health
+              table: node_status_samples
+              severity: critical
+            exp_annotations:
+              summary: Core telemetry hypertable node_status_samples has expired chunks still present
+              owner: meshcore-operations
+              runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#coretelemetryretentionoverdue
+      - eval_time: 4h
+        alertname: CoreTelemetryCompressionOverdue
+        exp_alerts:
+          - exp_labels:
+              role: health
+              table: node_neighbor_samples
+              severity: warning
+            exp_annotations:
+              summary: Core telemetry hypertable node_neighbor_samples has chunks overdue for compression
+              owner: meshcore-operations
+              runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#coretelemetrycompressionoverdue
