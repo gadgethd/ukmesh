@@ -1,0 +1,11 @@
+[Unit]
+Description=Check owner authorization inventory baseline for ACL generation drift
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=10min
+AccuracySec=1min
+Unit=owner-baseline-autorebaseline.service
+
+[Install]
+WantedBy=timers.target
