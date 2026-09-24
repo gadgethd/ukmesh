@@ -1,5 +1,5 @@
 redis==8.1.0
-psycopg2-binary==2.9.12
+psycopg2-binary==2.9.13
 requests==2.34.2
 prometheus-client==0.26.0
 # shapely is inherited from the base image's python3-shapely apt package
@@ -10,5 +10,5 @@ prometheus-client==0.26.0
 # C extension is built against that ABI; letting scipy pull another numpy into
 # the venv breaks `from osgeo import gdal_array` ("numpy.core.multiarray failed
 # to import") and thus all elevation sampling / coverage computation.
-numpy==2.5.2
+numpy==2.5.3
 scipy==1.18.1
