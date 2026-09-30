@@ -124,12 +124,6 @@ export const CACHE_POLICY_REGISTRY: readonly CachePolicyRecord[] = Object.freeze
     negativeCaching: 'empty verified grant list', singleFlight: 'ownerNodeIdInflight (cap 128)',
   },
   {
-    source: 'src/owner/ownerAccess.ts#authCache',
-    disposition: 'bounded-cache', maxEntries: 512, maxBytes: 2 << 20, ttlMs: 5 * 60_000,
-    scope: 'owner username + credential digest', invalidation: 'credential mismatch + TTL',
-    negativeCaching: 'positive results only', singleFlight: 'broker connection timeout',
-  },
-  {
     source: 'src/owner/ownerService.ts#ownerLastHopCache',
     disposition: 'bounded-cache', maxEntries: 1_024, maxBytes: 64 << 20, ttlMs: 60 * 60_000,
     scope: 'authorized node', invalidation: 'logout + TTL',

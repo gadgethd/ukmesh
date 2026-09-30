@@ -138,9 +138,8 @@ async function requireOwnerSession(req: Request, res: Response): Promise<string[
     res.status(401).json({ error: 'Not logged in' });
     return null;
   }
-  // BUG-010: reject sessions minted under a revoked password. The generation
-  // is bumped when the broker rejects a previously-valid credential; sessions
-  // carrying an older generation are stale and must re-authenticate.
+  // Reject sessions minted before an operator password reset. The revocation
+  // tool bumps the generation; every owner request checks it before authorizing.
   const currentGen = await getOwnerCredentialGeneration(session.mqttUsername);
   if (session.gen !== currentGen) {
     res.clearCookie(OWNER_COOKIE_NAME, { path: '/' });
