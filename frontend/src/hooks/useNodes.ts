@@ -359,10 +359,14 @@ function handlePacket(packetOrArray: LivePacketData | LivePacketData[], epoch?: 
 
   // Also maintain the messages (type=5 only) array separately so GRP messages
   // are never evicted by a flood of ADV packets.
-  let nextMessages = state.messages.slice();
-  const messageIndex = new Map(nextMessages.map((message, index) => [message.packetHash, index]));
+  let nextMessages = state.messages;
+  let messageIndex: Map<string, number> | undefined;
   for (const packet of incomingPackets) {
     if (packet.packetType !== 5) continue;
+    if (!messageIndex) {
+      nextMessages = state.messages.slice();
+      messageIndex = new Map(nextMessages.map((message, index) => [message.packetHash, index]));
+    }
     const msgIdx = messageIndex.get(packet.packetHash) ?? -1;
     if (msgIdx >= 0) {
       const cur = nextMessages[msgIdx]!;
@@ -388,8 +392,10 @@ function handlePacket(packetOrArray: LivePacketData | LivePacketData[], epoch?: 
       nextMessages.push(entry);
     }
   }
-  nextMessages.sort((a, b) => b.ts - a.ts);
-  if (nextMessages.length > FEED_MAX_MESSAGES) nextMessages.length = FEED_MAX_MESSAGES;
+  if (messageIndex) {
+    nextMessages.sort((a, b) => b.ts - a.ts);
+    if (nextMessages.length > FEED_MAX_MESSAGES) nextMessages.length = FEED_MAX_MESSAGES;
+  }
 
   let nextArcs = state.arcs.filter((arc) => Date.now() - arc.ts < PACKET_ARC_TTL_MS);
   if (state.arcCollectionEnabled) {
