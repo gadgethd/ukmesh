@@ -44,6 +44,30 @@ export function publicPacketPrivacySql(alias?: string): string {
       WHERE cached_visibility.singleton = TRUE
         AND cached_visibility.visibility_generation = current_visibility.generation
     )
+    AND NOT EXISTS (
+      SELECT 1
+      FROM privacy_rematerialization_queue remat
+      WHERE remat.target = 'packets'
+        AND remat.status IN ('pending', 'processing', 'failed')
+        AND (
+          ${prefix}rx_node_id = remat.node_id
+          OR ${prefix}src_node_id = remat.node_id
+          OR (
+            (${prefix}network = remat.network
+              OR (${prefix}network IN ('ukmesh', 'northeast', 'teesside')
+                AND remat.network IN ('ukmesh', 'northeast', 'teesside')))
+            AND EXISTS (
+              SELECT 1
+              FROM unnest(COALESCE(${prefix}path_hashes, ARRAY[]::text[])) AS packet_prefix
+              WHERE UPPER(packet_prefix) IN (
+                UPPER(LEFT(remat.node_id, 2)),
+                UPPER(LEFT(remat.node_id, 4)),
+                UPPER(LEFT(remat.node_id, 6))
+              )
+            )
+          )
+        )
+    )
   )`;
 }
 

@@ -257,6 +257,7 @@ services:
       DATABASE_SKIP_SCHEMA_INIT: "true"
       STALE_MQTT_OBSERVER_CLEANUP_DAYS: ${STALE_MQTT_OBSERVER_CLEANUP_DAYS:-30}
       STALE_MQTT_OBSERVER_CLEANUP_INTERVAL_MS: ${STALE_MQTT_OBSERVER_CLEANUP_INTERVAL_MS:-21600000}
+      PRIVACY_REMAT_MAX_ATTEMPTS: ${PRIVACY_REMAT_MAX_ATTEMPTS:-8}
       HEALTH_VOLUME_PATHS: database=/health-volumes/database=${HEALTH_DATABASE_BUDGET_BYTES:-322122547200},redis=/health-volumes/redis=${HEALTH_REDIS_BUDGET_BYTES:-4294967296},terrain=/health-volumes/terrain=${HEALTH_TERRAIN_BUDGET_BYTES:-53687091200},logs=/health-volumes/logs=${HEALTH_LOG_BUDGET_BYTES:-21474836480}
       DATA_LIFECYCLE_RETENTION_ENABLED: "true"
       DATA_LIFECYCLE_RETENTION_TARGETS: ${DATA_LIFECYCLE_RETENTION_TARGETS:-packets,worker_health_snapshots,frontend_error_events,owner_alert_deliveries,operational_check_results,observer_region_packet_sightings,observer_region_observer_sightings,link_job_commits,ml_model_variant_packet_results,packet_decryptions,observer_registration_requests,operator_audit_events}
@@ -269,6 +270,32 @@ services:
       - redis_data:/health-volumes/redis:ro
       - srtm_data:/health-volumes/terrain:ro
       - loki_data:/health-volumes/logs:ro
+
+  privacy-remat-worker:
+    <<: [*internal-hosts, *application-hardening]
+    image: ${BACKEND_IMAGE:-meshcore-analytics-backend:local}
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+      args:
+        SOURCE_REVISION: ${SOURCE_REVISION:-local}
+    restart: always
+    logging: *json-log-limits
+    mem_limit: "512m"
+    memswap_limit: "512m"
+    command: ["node", "dist/workers/privacy-rematerialization.js"]
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}
+      DATABASE_APPLICATION_NAME: meshcore-privacy-remat
+      DATABASE_SKIP_SCHEMA_INIT: "true"
+      DATABASE_STATEMENT_TIMEOUT_MS: 900000
+      PRIVACY_REMAT_INTERVAL_MS: ${PRIVACY_REMAT_INTERVAL_MS:-120000}
+      PRIVACY_REMAT_MAX_ATTEMPTS: ${PRIVACY_REMAT_MAX_ATTEMPTS:-8}
+      PRIVACY_REMAT_CHUNK_PAUSE_MS: ${PRIVACY_REMAT_CHUNK_PAUSE_MS:-500}
+      NODE_ENV: production
+    depends_on:
+      db-migrate:
+        condition: service_completed_successfully
 
   synthetic-monitor:
     <<: [*internal-hosts, *application-hardening]

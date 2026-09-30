@@ -198,7 +198,7 @@ jobs:
           done < <(sed -n 's/^[[:space:]]*file: //p' .github/workflows/release.yml)
           compose_services="$(docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile dev config --services)"
           for service in \
-            db-migrate backend app-ukmesh website-ukmesh website-dev mesh-health-check \
+            db-migrate backend privacy-remat-worker app-ukmesh website-ukmesh website-dev mesh-health-check \
             mosquitto-reloader link-worker link-backfill-worker hopreach \
             timescaledb mosquitto; do
             grep -Fxq "$service" <<<"$compose_services"

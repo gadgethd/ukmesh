@@ -20,6 +20,7 @@ import {
   flush,
   type PacketBatchInput,
 } from './packetBatch.js';
+import { processNextPrivacyRematerialization } from '../workers/privacy-rematerialization.js';
 
 const { Pool } = pg;
 const databaseUrl = process.env['TEST_INGEST_DATABASE_URL'];
@@ -102,6 +103,7 @@ test('base schema and every migration apply to a brand-new database', {
   assert.deepEqual(executed, [
     '050_packet_paths_and_retention.sql',
     '051_reset_readiness.sql',
+    '056_async_privacy_rematerialization.sql',
   ]);
   assert.deepEqual(await runMigrations(freshPool), []);
 
@@ -249,6 +251,169 @@ test('base schema and every migration apply to a brand-new database', {
   ]);
 });
 
+test('privacy rename commits and rematerializes a compressed chunk above the old DML budget', {
+  skip: databaseUrl ? false : 'TEST_INGEST_DATABASE_URL is not configured',
+}, async (t) => {
+  const adminPool = new Pool({ connectionString: databaseUrl, max: 1 });
+  const databaseName = `meshcore_remat_${process.pid}_${Date.now()}`;
+  const databaseIdentifier = `"${databaseName}"`;
+  const url = new URL(databaseUrl as string);
+  url.pathname = `/${databaseName}`;
+  let pool: pg.Pool | null = null;
+  t.after(async () => {
+    await pool?.end();
+    await adminPool.query(`DROP DATABASE IF EXISTS ${databaseIdentifier} WITH (FORCE)`);
+    await adminPool.end();
+  });
+
+  await adminPool.query(`CREATE DATABASE ${databaseIdentifier}`);
+  pool = new Pool({ connectionString: url.toString(), max: 2 });
+  await pool.query(fs.readFileSync(new URL('./schema/base.sql', import.meta.url), 'utf8'));
+  await runMigrations(pool);
+
+  const nodeId = 'F'.repeat(64);
+  await pool.query(`INSERT INTO nodes (node_id, name, network) VALUES ($1, 'incident public', 'ukmesh')
+    ON CONFLICT (node_id) DO UPDATE SET name = EXCLUDED.name`, [nodeId]);
+  configurePacketBatch((text, params) => pool!.query(text, params));
+  const now = new Date();
+  const smallPackets: PacketBatchInput[] = [0, 1, 2].map((index) => ({
+    time: new Date(now.getTime() + index),
+    packetHash: `incident-small-${index}`,
+    rxNodeId: nodeId,
+    srcNodeId: nodeId,
+    topic: 'meshcore/ZZZ/incident',
+    topicPrefix: 'meshcore',
+    iata: 'ZZZ',
+    packetType: 4,
+    routeType: 0,
+    hopCount: 1,
+    rssi: -80,
+    snr: 5,
+    payloadJson: '{}',
+    companionSender: null,
+    rawHex: '00',
+    advertCount: null,
+    pathHashes: [nodeId.slice(0, 4)],
+    pathHashSizeBytes: 2,
+    network: 'ukmesh',
+    transportCodes: null,
+    regionScope: null,
+  }));
+  const writes = smallPackets.map((packet) => enqueuePacket(packet));
+  await flush();
+  assert.equal((await Promise.all(writes)).length, 3);
+  await pool.query(`
+    INSERT INTO packets (time, packet_hash, topic, network)
+    VALUES ($1, 'incident-unrelated', 'meshcore/ZZZ/unrelated', 'ukmesh')
+  `, [new Date(now.getTime() + 10_000)]);
+
+  const fixtureTime = new Date(now);
+  fixtureTime.setUTCHours(12, 0, 0, 0);
+  fixtureTime.setUTCDate(fixtureTime.getUTCDate() - 2);
+  const fixtureRows = 100_001;
+  const inserted = await pool.query(`
+    INSERT INTO packets (time, packet_hash, rx_node_id, src_node_id, topic, network)
+    SELECT $1::timestamptz, 'incident-compressed-' || n::text, $2, $2,
+           'meshcore/ZZZ/incident-compressed', 'ukmesh'
+      FROM generate_series(1, $3::int) AS n
+  `, [fixtureTime, nodeId, fixtureRows]);
+  assert.equal(inserted.rowCount, fixtureRows);
+  const chunk = await pool.query<{ chunk_schema: string; chunk_name: string }>(`
+    SELECT chunk_schema, chunk_name FROM timescaledb_information.chunks
+     WHERE hypertable_name = 'packets' AND range_start <= $1 AND range_end > $1
+  `, [fixtureTime]);
+  assert.equal(chunk.rows.length, 1);
+  const chunkName = `"${chunk.rows[0]!.chunk_schema}"."${chunk.rows[0]!.chunk_name}"`;
+  await pool.query('SELECT compress_chunk($1::regclass)', [chunkName]);
+  const compressed = await pool.query<{ is_compressed: boolean }>(`
+    SELECT is_compressed FROM timescaledb_information.chunks
+     WHERE hypertable_name = 'packets' AND chunk_schema = $1 AND chunk_name = $2
+  `, [chunk.rows[0]!.chunk_schema, chunk.rows[0]!.chunk_name]);
+  assert.equal(compressed.rows[0]?.is_compressed, true);
+
+  const pair = async () => {
+    const result = await pool!.query<{ public_generation: string; materialized_generation: string }>(`
+      SELECT p.generation::text AS public_generation,
+             m.visibility_generation::text AS materialized_generation
+        FROM public_visibility_state p
+        JOIN packet_visibility_materialization_state m ON p.singleton = m.singleton
+    `);
+    assert.equal(result.rows[0]?.public_generation, result.rows[0]?.materialized_generation);
+    return Number(result.rows[0]?.public_generation);
+  };
+  const initialGeneration = await pair();
+  await pool.query("UPDATE nodes SET name = 'incident private 🚫' WHERE node_id = $1", [nodeId]);
+  assert.equal((await pool.query<{ name: string }>('SELECT name FROM nodes WHERE node_id = $1', [nodeId])).rows[0]?.name, 'incident private 🚫');
+  assert.equal(await pair(), initialGeneration);
+  const queued = await pool.query<{ target: string; status: string }>(`
+    SELECT target, status FROM privacy_rematerialization_queue WHERE node_id = $1 ORDER BY target
+  `, [nodeId]);
+  assert.deepEqual(queued.rows, [
+    { target: 'packet_paths', status: 'pending' },
+    { target: 'packets', status: 'pending' },
+  ]);
+  const duringPendingPacket = {
+    ...smallPackets[0]!,
+    time: new Date(now.getTime() + 5_000),
+    packetHash: 'incident-during-pending',
+  };
+  const pendingWrite = enqueuePacket(duringPendingPacket);
+  await flush();
+  assert.deepEqual(await pendingWrite, { isPrivate: true, visibilityOk: false });
+  const persistedPending = await pool.query<{ is_private: boolean; visibility_ok: boolean }>(
+    'SELECT is_private, visibility_ok FROM packets WHERE packet_hash = $1',
+    [duringPendingPacket.packetHash],
+  );
+  assert.deepEqual(persistedPending.rows, [{ is_private: true, visibility_ok: false }]);
+  const publicScope = networkFilters('ukmesh');
+  const visibleDuringPending = await pool.query<{ packet_hash: string }>(`
+    SELECT packet_hash FROM packets
+     WHERE packet_hash = ANY($2::text[]) ${publicScope.packets}
+     ORDER BY packet_hash
+  `, [publicScope.params[0], [smallPackets[0]!.packetHash, 'incident-unrelated']]);
+  assert.deepEqual(visibleDuringPending.rows, [{ packet_hash: 'incident-unrelated' }]);
+
+  // The old trigger's default 100k decompression budget cannot update this
+  // chunk; the worker transaction explicitly removes that per-DML limit.
+  const limitedClient = await pool.connect();
+  try {
+    await limitedClient.query('BEGIN');
+    await limitedClient.query('SET LOCAL timescaledb.max_tuples_decompressed_per_dml_transaction = 100000');
+    await assert.rejects(limitedClient.query(`
+      UPDATE packets SET is_private = is_private WHERE time = $1 AND rx_node_id = $2
+    `, [fixtureTime, nodeId]), /decompress|tuple|limit/i);
+  } finally {
+    await limitedClient.query('ROLLBACK');
+    limitedClient.release();
+  }
+
+  assert.equal(await processNextPrivacyRematerialization(pool, { chunkPauseMs: 0 }), true);
+  assert.ok(await pair() > initialGeneration);
+  assert.equal(await processNextPrivacyRematerialization(pool, { chunkPauseMs: 0 }), true);
+  const privateRows = await pool.query<{ count: string }>(`
+    SELECT COUNT(*)::text AS count FROM packets
+     WHERE time = $1 AND rx_node_id = $2 AND is_private AND NOT visibility_ok
+  `, [fixtureTime, nodeId]);
+  assert.equal(privateRows.rows[0]?.count, String(fixtureRows));
+  const privatePaths = await pool.query<{ count: string }>(`
+    SELECT COUNT(*)::text AS count FROM packet_paths
+     WHERE rx_node_id = $1 AND is_private AND NOT visibility_ok
+  `, [nodeId]);
+  assert.equal(privatePaths.rows[0]?.count, '4');
+
+  const beforePublicGeneration = await pair();
+  await pool.query("UPDATE nodes SET name = 'incident public' WHERE node_id = $1", [nodeId]);
+  assert.equal(await pair(), beforePublicGeneration);
+  assert.equal(await processNextPrivacyRematerialization(pool, { chunkPauseMs: 0 }), true);
+  assert.equal(await processNextPrivacyRematerialization(pool, { chunkPauseMs: 0 }), true);
+  assert.ok(await pair() > beforePublicGeneration);
+  const publicRows = await pool.query<{ count: string }>(`
+    SELECT COUNT(*)::text AS count FROM packets
+     WHERE time = $1 AND rx_node_id = $2 AND NOT is_private AND visibility_ok
+  `, [fixtureTime, nodeId]);
+  assert.equal(publicRows.rows[0]?.count, String(fixtureRows));
+});
+
 test('packet batch atomically coalesces observer, sighting, and stats writes', {
   skip: databaseUrl ? false : 'TEST_INGEST_DATABASE_URL is not configured',
 }, async (t) => {
@@ -296,7 +461,8 @@ test('packet batch atomically coalesces observer, sighting, and stats writes', {
       process.env['MIGRATION_016_PRIVATE_PREFIXES_APPROVAL'] = previousApproval;
     }
   }
-  await pool.query('DELETE FROM nodes WHERE node_id = $1', [compatibilityNode]);
+  // Retain the public fixture: deleting a node cascades a direct prefix-table
+  // statement and deliberately invalidates the existing identity fence.
   const migrationRunLengths = migrationRuns.map((run) => run.length).sort((a, b) => a - b);
   assert.equal(migrationRunLengths[0], 0);
   assert.ok((migrationRunLengths[1] ?? 0) > 0);
@@ -379,10 +545,38 @@ test('packet batch atomically coalesces observer, sighting, and stats writes', {
     'DELETE FROM packets WHERE packet_hash = ANY($1::text[])',
     [Object.values(legacyHashes)],
   );
-  await pool.query(
-    'DELETE FROM nodes WHERE node_id = ANY($1::text[])',
-    [[legacyPrivateNode, legacyPublicNode]],
-  );
+  // Leave these isolated test identities in the scratch database. Their
+  // deletion would independently invalidate the legacy identity fence.
+  await pool.query('DELETE FROM privacy_rematerialization_queue');
+
+  const visibilityPair = async () => {
+    const result = await pool.query<{ public_generation: string; materialized_generation: string }>(`
+      SELECT public.generation::text AS public_generation,
+             materialized.visibility_generation::text AS materialized_generation
+        FROM public_visibility_state public
+        JOIN packet_visibility_materialization_state materialized ON materialized.singleton = public.singleton
+       WHERE public.singleton = TRUE
+    `);
+    assert.equal(result.rows[0]?.public_generation, result.rows[0]?.materialized_generation);
+    return Number(result.rows[0]?.public_generation);
+  };
+  const runQueuedRemat = async (nodeId: string) => {
+    const queue = await pool.query<{ target: string; status: string }>(`
+      SELECT target, status FROM privacy_rematerialization_queue
+       WHERE node_id = $1 ORDER BY target
+    `, [nodeId]);
+    assert.deepEqual(queue.rows, [
+      { target: 'packet_paths', status: 'pending' },
+      { target: 'packets', status: 'pending' },
+    ]);
+    assert.equal(await processNextPrivacyRematerialization(pool, { chunkPauseMs: 0 }), true);
+    await visibilityPair();
+    assert.equal(await processNextPrivacyRematerialization(pool, { chunkPauseMs: 0 }), true);
+    const completed = await pool.query<{ status: string }>(
+      'SELECT status FROM privacy_rematerialization_queue WHERE node_id = $1', [nodeId],
+    );
+    assert.deepEqual(completed.rows.map((row) => row.status), ['done', 'done']);
+  };
 
   const network = `ingest_${suffix}`;
   const observerId = `A${suffix.padStart(63, 'A')}`.slice(0, 64);
@@ -574,10 +768,17 @@ test('packet batch atomically coalesces observer, sighting, and stats writes', {
     }
     assert.deepEqual(shadowWarnings, []);
 
+    const beforePrivateGeneration = await visibilityPair();
     await pool.query(
       `UPDATE nodes SET name = 'integration observer 🚫' WHERE node_id = $1`,
       [observerId],
     );
+    assert.equal((await pool.query<{ name: string }>(
+      'SELECT name FROM nodes WHERE node_id = $1', [observerId],
+    )).rows[0]?.name, 'integration observer 🚫');
+    assert.equal(await visibilityPair(), beforePrivateGeneration);
+    await runQueuedRemat(observerId);
+    assert.ok(await visibilityPair() > beforePrivateGeneration);
     const privateBeforeRetention = await pool.query<{
       private_packets: string;
       private_paths: string;
@@ -593,10 +794,13 @@ test('packet batch atomically coalesces observer, sighting, and stats writes', {
       private_paths: '3',
     });
 
+    const beforePublicGeneration = await visibilityPair();
     await pool.query(
       `UPDATE nodes SET name = 'integration observer' WHERE node_id = $1`,
       [observerId],
     );
+    assert.equal(await visibilityPair(), beforePublicGeneration);
+    await runQueuedRemat(observerId);
     const publicBeforeRetention = await pool.query<{
       public_packets: string;
       public_paths: string;
@@ -624,6 +828,7 @@ test('packet batch atomically coalesces observer, sighting, and stats writes', {
       `UPDATE nodes SET name = 'integration observer 🚫' WHERE node_id = $1`,
       [observerId],
     );
+    await runQueuedRemat(observerId);
     const privateAfterRetention = await pool.query<{
       packet_count: string;
       private_paths: string;
@@ -641,6 +846,7 @@ test('packet batch atomically coalesces observer, sighting, and stats writes', {
       `UPDATE nodes SET name = 'integration observer' WHERE node_id = $1`,
       [observerId],
     );
+    await runQueuedRemat(observerId);
 
     const visibility = await pool.query<{ generation: string }>(
       `SELECT generation::text FROM public_visibility_state WHERE singleton = TRUE`,

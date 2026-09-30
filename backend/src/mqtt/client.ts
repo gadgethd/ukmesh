@@ -738,33 +738,38 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
             }
 
             if (!isSpam) {
-              const nodeUpdate = await upsertNode(nodeId, {
-                name:      advertName,
-                lat:       advertLat,
-                lon:       advertLon,
-                role:      appData?.['deviceRole'] as number | undefined,
-                iata:      nodeIata,
-                publicKey: senderKey,
-                network,
-                advertHash: canonicalPacketId,
-              });
-              advertCount = nodeUpdate.advertCount;
+              try {
+                const nodeUpdate = await upsertNode(nodeId, {
+                  name:      advertName,
+                  lat:       advertLat,
+                  lon:       advertLon,
+                  role:      appData?.['deviceRole'] as number | undefined,
+                  iata:      nodeIata,
+                  publicKey: senderKey,
+                  network,
+                  advertHash: canonicalPacketId,
+                });
+                advertCount = nodeUpdate.advertCount;
 
-              emitNodeUpsert({
-                node_id:      nodeId,
-                name:         advertName,
-                lat:          advertLat,
-                lon:          advertLon,
-                role:         appData?.['deviceRole'] as number | undefined,
-                iata,
-                network,
-                observer_id:  observerKey,
-                public_key:   senderKey,
-                last_seen:    new Date().toISOString(),
-                is_online:    true,
-                advert_count: advertCount,
-                coordinates_changed: nodeUpdate.coordinatesChanged,
-              });
+                emitNodeUpsert({
+                  node_id:      nodeId,
+                  name:         advertName,
+                  lat:          advertLat,
+                  lon:          advertLon,
+                  role:         appData?.['deviceRole'] as number | undefined,
+                  iata,
+                  network,
+                  observer_id:  observerKey,
+                  public_key:   senderKey,
+                  last_seen:    new Date().toISOString(),
+                  is_online:    true,
+                  advert_count: advertCount,
+                  coordinates_changed: nodeUpdate.coordinatesChanged,
+                });
+              } catch (err) {
+                mqttIngestOutcomesTotal.inc({ outcome: 'advert_persist_failure' });
+                console.error('[mqtt] advert node upsert failed:', (err as Error).message);
+              }
             }
           }
 
