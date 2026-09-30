@@ -50,6 +50,8 @@ import { createGlobalApiLimiter } from './api/bootstrap/limiters.js';
 import { createHopReachCompatibilityRoutes } from './api/hopreachCompatibility.js';
 import { readAclFile } from './mqtt/aclManager.js';
 import { parseOwnerGrantConfig } from './owner/ownerGrantConfig.js';
+import { createPacketShareForwarder } from './owner/packetShareForwarder.js';
+import { createPacketShareRepository } from './owner/packetShareRepository.js';
 import {
   buildOwnerInventoryBaseline,
   loadOwnerInventoryBaseline,
@@ -74,6 +76,9 @@ const SHUTDOWN_DEADLINE_MS = Math.min(
 );
 const NODE_IDENTITY_REFRESH_INTERVAL_MS = 30 * 60_000;
 const lifecycle = new LifecycleCoordinator(SHUTDOWN_DEADLINE_MS);
+const packetShareForwarder = createPacketShareForwarder({
+  repository: createPacketShareRepository(query),
+});
 let shutdownExitCode = 0;
 let forceCloseHttpConnections = () => {};
 let nodeIdentityRefreshTimer: NodeJS.Timeout | null = null;
@@ -112,6 +117,11 @@ lifecycle.register({
   name: 'queue-publisher',
   stage: 30,
   close: closeQueuePublisher,
+});
+lifecycle.register({
+  name: 'owner-packet-share-forwarder',
+  stage: 30,
+  close: packetShareForwarder.stop,
 });
 lifecycle.register({
   name: 'operator-operations',
@@ -203,8 +213,13 @@ async function main() {
   }
 
   // 3. Wire up MQTT → WS broadcast
-  onPacket((packet) => {
+  onPacket((packet, upstreamEnvelope) => {
     broadcastPacket(packet);
+    if (upstreamEnvelope) {
+      void packetShareForwarder.enqueuePacket(packet, upstreamEnvelope).catch((error: unknown) => {
+        console.error('[packet-share] packet handling failed:', error instanceof Error ? error.message : error);
+      });
+    }
     if (packet.path?.length && packet.rxNodeId) {
       void queueLinkJob(
         packet.packetHash,
@@ -404,6 +419,7 @@ async function main() {
   });
   startMetricsServer(METRICS_PORT);
 
+  packetShareForwarder.start();
   if (MQTT_INGEST_ENABLED) {
     void startMqttClient().catch((err: unknown) => {
       console.error('[mqtt] failed to start client:', err instanceof Error ? err.message : err);

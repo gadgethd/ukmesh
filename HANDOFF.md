@@ -1,40 +1,29 @@
-# Mission C5d handoff
+# B3 packet-sharing handoff
 
-Status: implemented; production rollout remains gated.
-Branch: `fix/ukmesh-ops-pipeline`
-Base: fetched `origin/main` at `2fa80fa`.
-Push state: not pushed; coordinator relays this branch.
+## Status
 
-## Commits
+Backend packet-sharing routes, contracts, persistence, forwarding, and tests are committed locally in `fbf9803` (`feat(owner): add owner-controlled packet sharing`). No migration was applied, no service was restarted, and nothing was pushed.
 
-- `4c549bb` — `test(viewshed): inject post-commit side-effect failures`
-- `1d4d594` — `fix(deploy): rollback on unhealthy or mismatched sites`
-- `f48c652` — `fix(alerts): persist forwarding queue across restarts`
-- `d93030c` — `perf(stats): add per-network aggregate cutover controls`
+## WIP inventory
 
-## Changes
+The packet-sharing slice rescued from the main checkout contains migrations 052–054 for destination/rule/delivery tables, destination metadata, and default-off rules; owner GET/POST routes and contracts; broker-secret encryption; destination configuration and delivery-queue services; MQTT forwarding and worker wiring; and route/config/forwarder tests. The main checkout also has mixed public-feed, tagger, owner-portal, and unrelated backend work.
 
-- #47: the fetched main already contained the Redis completion marker and replay path. Added fault injection at link admission, both notification publishes, and marker persistence to verify retry behavior through the already-calculated path. Per the brief, this new test was not run.
-- #54: deployment now waits for a running, healthy container and a successful HTTP response, rejects empty bundle lists and mismatches, and rolls back the prior pin on any failure. Rollback checks the restored service and supports an empty prior pin. Added mocked deploy tests.
-- #55: forwarding records are fsynced into the mounted queue before HTTP 202. Startup restores pending records; retries use bounded backoff and dead-letter files. Health JSON exposes queue age, pending/dead-letter counts, last success, and last error. Archive-only mode returns degraded status. Updated the alert runbook and its archive-only test expectation.
-- #57: existing aggregate controls now accept comma-separated network names through the Compose-forwarded variables; shadow comparisons can run while reads stay off. Chart scans share one `asOf` value, cancel as a batch on query failure, and enforce duration, timeout, and returned-row budgets. True PostgreSQL rows-scanned counts are not exposed by the current query API; review query plans and DB scan telemetry during the gated shadow period.
+The main checkout and its WIP remain untouched. The packet-sharing backend copy there becomes redundant after this change is merged and deployed. The mixed owner-portal UI edits were not included in the backend scope in this brief and need separate disposition if they are not handled elsewhere.
 
-PR #99 and #100 have no functional overlap with the changed worker, deploy, alert receiver, or stats repository code. PR #100 edits other sections of `docs/operations.md`. Both PRs also add `HANDOFF.md`; combine their handoff sections when integrating those branches.
+## Migration decision
 
-## Tests and checks
+Kept the supplied `052_owner_packet_sharing.sql`, `053_owner_packet_share_destination_metadata.sql`, and `054_owner_packet_share_default_off.sql` names. No duplicate prefix exists for these files in the target worktree, so no renumbering was needed. Prefix 055 is reserved by `055_message_tags.sql` on `fix/health-latency-bundle`; the separate untracked `055_public_feed.sql` in the main checkout was not copied.
 
-- From `backend`: `node --import tsx --test src/workers/alertDeliveryQueue.test.ts src/workers/alert-receiver.test.ts src/stats/statsRepository.test.ts` — passed, 18/18.
-- From `backend`: `npm run typecheck` — passed.
-- From the worktree root: `bash -n scripts/deploy-website.sh scripts/test-deploy-website.sh scripts/test-alert-receiver.sh && bash scripts/test-deploy-website.sh` — passed.
+## Tests
+
+- `cd backend && npm test` — passed, 341 tests.
+- `cd backend && npm run typecheck` — passed.
 - `git diff --check` — passed.
-- `viewshed-worker/tests/test_side_effect_markers.py` was not executed, as required by #47. `scripts/test-alert-receiver.sh` was not run because it starts a receiver process, prohibited by the host constraint.
 
-No services or containers were started, no live DB writes or config edits were made, and no push was attempted.
+The worktree had no installed dependencies. Tests reused the existing main-checkout `backend/node_modules` through a temporary symlink in this worktree; the symlink was removed afterward. No tests wrote to a live database.
 
-## Gated items for Ben
+## Gated items and open questions
 
-- Backfill and catch up hourly rollups, set `STATS_AGGREGATE_SHADOW_ENABLED=ukmesh`, and review clean parity logs before setting `STATS_AGGREGATE_READS_ENABLED=ukmesh`. Keep the shadow window short and review DB scan plans/telemetry because the application result-row guard is not a scanned-row counter.
-- Confirm `ALERT_FORWARD_URL` is valid in production and inspect `/healthz` after the approved config rollout. Archive-only operation now reports HTTP 503 health.
-- The C5d `HANDOFF.md` must be combined with the handoff content being added by open PRs #99/#100.
-
-Open question: which database scan telemetry should be used to set a production rows-scanned threshold before additional networks switch to aggregates?
+- Ben owns migration application and deployment.
+- The target worktree does not contain the `OWNER_PACKET_SHARE_*` Compose passthroughs or `owner_packet_share_deliveries` in the retention target list described by the brief. No `.env` or config files were changed under the VPS constraint. Before deployment, Ben must confirm the runtime passes `OWNER_PACKET_SHARE_ENCRYPTION_KEY` to the backend and includes `owner_packet_share_deliveries` in lifecycle retention targets. Poll interval and batch size have code defaults.
+- Confirm whether the packet-sharing owner-portal UI edits in the main checkout are tracked in another change; they were left untouched and are not in `fbf9803`.
