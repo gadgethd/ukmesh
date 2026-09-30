@@ -1,0 +1,31 @@
+Generating owner baseline from meshcore-analytics-backend:2026.09.22 (container meshcore-analytics-backend-1)
+Validating the generated baseline
+{
+  "exportPath": "/tmp/owner-baseline-validation-abc123/owner-grants-20260922T120000Z-rebaseline.json",
+  "generatedAt": "2026-09-22T12:00:00.000Z",
+  "counts": {
+    "activeAccounts": 2,
+    "activeGrants": 2,
+    "operatorConfig": 1,
+    "operatorDatabase": 1,
+    "legacyOrNullMethod": 0,
+    "configuredGrants": 2,
+    "aclGrants": 2
+  },
+  "configuredGeneration": "0123456789ab",
+  "aclDesiredGeneration": "abcdef012345",
+  "contentSha256": "fedcba987654",
+  "baselineOk": true,
+  "mismatches": []
+}
+
+Baseline validated. It is NOT active until OWNER_AUTH_INVENTORY_BASELINE_PATH
+points at it and the backend is recreated.
+
+To activate:
+  1. review the summary above and confirm the grant changes are approved
+  2. set OWNER_AUTH_INVENTORY_BASELINE_PATH=/owner-auth-inventory/owner-grants-20260922T120000Z-rebaseline.json in .env
+  3. docker compose -f docker-compose.yml -f docker-compose.live.yml up -d --no-build --no-deps backend
+  4. curl -fsS http://127.0.0.1:3000/readyz
+
+Or re-run with --apply (and optionally --recreate).
