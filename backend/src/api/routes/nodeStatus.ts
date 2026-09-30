@@ -7,6 +7,10 @@ import {
   parseBoundedInteger,
   parseBoundedString,
 } from '../utils/input.js';
+import {
+  toPublicLatestNodeStatusDTO,
+  type PublicLatestNodeStatusDTO,
+} from '../publicStatus.js';
 
 const router = Router();
 
@@ -26,28 +30,11 @@ router.get('/node-status/latest', async (req, res) => {
     }
 
     const identityWhereClause = `WHERE ${identityConditions.join(' AND ')}`;
-    const result = await query<{
-      time: string;
-      node_id: string;
-      network: string | null;
-      battery_mv: number | null;
-      uptime_secs: number | null;
-      tx_air_secs: number | null;
-      rx_air_secs: number | null;
-      channel_utilization: number | null;
-      air_util_tx: number | null;
-      stats: Record<string, unknown> | null;
-      name: string | null;
-      iata: string | null;
-      hardware_model: string | null;
-      firmware_version: string | null;
-    }>(
+    const result = await query<PublicLatestNodeStatusDTO>(
       `WITH identity_sources AS MATERIALIZED (
          SELECT n.node_id AS canonical_id,
                 n.name,
                 n.iata,
-                n.hardware_model,
-                n.firmware_version,
                 source.source_node_id
          FROM node_identity_nodes n
          CROSS JOIN LATERAL unnest(n.identity_source_ids) AS source(source_node_id)
@@ -63,15 +50,12 @@ router.get('/node-status/latest', async (req, res) => {
            nss.rx_air_secs,
            nss.channel_utilization,
            nss.air_util_tx,
-           nss.stats,
            s.name,
-           s.iata,
-           s.hardware_model,
-           s.firmware_version
+           s.iata
          FROM identity_sources s
          JOIN LATERAL (
            SELECT time, network, battery_mv, uptime_secs, tx_air_secs,
-                  rx_air_secs, channel_utilization, air_util_tx, stats
+                  rx_air_secs, channel_utilization, air_util_tx
            FROM node_status_samples
            WHERE node_id = s.source_node_id
              AND network = ANY($1::text[])
@@ -85,7 +69,7 @@ router.get('/node-status/latest', async (req, res) => {
       params,
     );
 
-    res.json(result.rows);
+    res.json(result.rows.map(toPublicLatestNodeStatusDTO));
   } catch (err) {
     console.error('[api] GET /node-status/latest', (err as Error).message);
     res.status(500).json({ error: 'Internal server error' });

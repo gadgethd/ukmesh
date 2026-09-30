@@ -16,6 +16,7 @@ import {
   decodePlannedNodeCursor,
   listPublicPlannedNodes,
 } from '../../repositories/plannedNodes.js';
+import { toPublicMqttNodeStatusDTO } from '../publicStatus.js';
 
 type QueryFn = <T extends QueryResultRow = QueryResultRow>(
   text: string,
@@ -218,7 +219,6 @@ export function registerMiscRoutes(router: Router, deps: MiscRouteDeps): void {
         air_util_tx: number | null;
         rx_air_secs: number | null;
         tx_air_secs: number | null;
-        stats: Record<string, unknown> | null;
         packets_24h: string;
       }>(
 
@@ -232,7 +232,6 @@ export function registerMiscRoutes(router: Router, deps: MiscRouteDeps): void {
            nss.air_util_tx,
            nss.rx_air_secs,
            nss.tx_air_secs,
-           nss.stats,
            COALESCE(pc.packet_count, 0) AS packets_24h
          FROM node_identity_status_samples nss
          LEFT JOIN node_identity_nodes n ON n.node_id = nss.node_id
@@ -250,7 +249,9 @@ export function registerMiscRoutes(router: Router, deps: MiscRouteDeps): void {
          ORDER BY nss.node_id, COALESCE(nss.uptime_secs, 0) DESC, nss.time DESC`,
         params,
       );
-      res.json(result.rows.filter((r) => Number(r.packets_24h) > 0));
+      res.json(result.rows
+        .filter((r) => Number(r.packets_24h) > 0)
+        .map(toPublicMqttNodeStatusDTO));
     } catch (err) {
       console.error('[api] GET /mqtt-nodes', (err as Error).message);
       res.status(500).json({ error: 'Internal server error' });
