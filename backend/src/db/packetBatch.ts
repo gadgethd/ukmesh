@@ -246,6 +246,12 @@ async function writeBatch(batch: PendingPacket[], idempotent: boolean): Promise<
           WHERE singleton = TRUE
           FOR KEY SHARE
        ),
+       privacy_remat_state AS MATERIALIZED (
+         SELECT EXISTS (
+           SELECT 1 FROM privacy_rematerialization_queue
+            WHERE status IN ('pending', 'processing', 'failed')
+         ) AS active
+       ),
        incoming (
          row_id, time, packet_hash, rx_node_id, src_node_id, topic, topic_prefix,
          iata, packet_type, route_type, hop_count, rssi, snr, payload, companion_sender, raw_hex,
@@ -256,12 +262,17 @@ async function writeBatch(batch: PendingPacket[], idempotent: boolean): Promise<
          SELECT i.*,
            gen_random_uuid() AS observation_id,
            CASE
+             WHEN remat.active THEN meshcore_path_matches_private(
+               i.network, i.rx_node_id, i.src_node_id,
+               i.path_hashes, i.path_hash_size_bytes
+             )
              WHEN i.prefix_cache_generation = visibility.generation THEN i.classified_private
              ELSE TRUE
            END AS is_private,
            i.prefix_cache_generation = visibility.generation AS prefix_cache_fresh
          FROM incoming i
          CROSS JOIN current_visibility visibility
+         CROSS JOIN privacy_remat_state remat
        ),
        ${idempotencyCte}
        inserted AS (

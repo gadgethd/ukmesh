@@ -299,6 +299,7 @@ const METRIC_NETWORKS = new Set(['ukmesh', 'teesside', 'test']);
 const METRIC_ANALYSIS_WORKLOADS = new Set(['spam-analysis', 'path-learning']);
 const METRIC_WORKERS = new Set([
   'health',
+  'privacy_remat',
   'path_learning',
   'synthetic',
   'link_backfill',
@@ -306,6 +307,8 @@ const METRIC_WORKERS = new Set([
 ]);
 const METRIC_WORKER_PHASES = new Set([
   'snapshot',
+  'pass',
+  'chunk',
   'cleanup',
   'rebuild',
   'refresh',

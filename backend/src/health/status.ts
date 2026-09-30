@@ -633,7 +633,7 @@ export async function getWorkerHealthOverview() {
   // Compute system stats once — cpuUsagePct() diffs against lastCpuSample,
   // so calling it twice in one request gives a garbage near-zero second reading.
   const sysStats = systemStats();
-  const [workers, history, errors1h, ingest, pathDiagnostics, operationalChecks, databaseMaintenance, databaseRuntime, redisDurability] = await Promise.all([
+  const [workers, history, errors1h, ingest, pathDiagnostics, operationalChecks, databaseMaintenance, databaseRuntime, redisDurability, privacyRemat] = await Promise.all([
     currentWorkerStatuses(sysStats),
     query<{
       ts: string;
@@ -702,6 +702,23 @@ export async function getWorkerHealthOverview() {
        WHERE datname = current_database()`,
     ),
     redisDurabilityState(),
+    query<{
+      pending: string;
+      processing: string;
+      failed: string;
+      failed_retryable: string;
+      failed_exhausted: string;
+      oldest_pending_age_seconds: string | null;
+    }>(`
+      SELECT COUNT(*) FILTER (WHERE status = 'pending')::text AS pending,
+             COUNT(*) FILTER (WHERE status = 'processing')::text AS processing,
+             COUNT(*) FILTER (WHERE status = 'failed')::text AS failed,
+             COUNT(*) FILTER (WHERE status = 'failed' AND attempts < $1)::text AS failed_retryable,
+             COUNT(*) FILTER (WHERE status = 'failed' AND attempts >= $1)::text AS failed_exhausted,
+             MAX(EXTRACT(EPOCH FROM (NOW() - requested_at)))
+               FILTER (WHERE status = 'pending')::text AS oldest_pending_age_seconds
+        FROM privacy_rematerialization_queue
+    `, [Math.min(100, Math.max(1, Number(process.env['PRIVACY_REMAT_MAX_ATTEMPTS'] ?? 8) || 8))]),
   ]);
 
   const ingestRow = ingest.rows[0];
@@ -777,6 +794,17 @@ export async function getWorkerHealthOverview() {
       message: `${tablesNeedingVacuum} database table(s) exceed the dead-row vacuum threshold`,
     });
   }
+  const privacyRematRow = privacyRemat.rows[0];
+  const privacyRematProblem = privacyRematerializationBacklogProblem({
+    pending: Number(privacyRematRow?.pending ?? 0),
+    processing: Number(privacyRematRow?.processing ?? 0),
+    failed: Number(privacyRematRow?.failed ?? 0),
+    failedRetryable: Number(privacyRematRow?.failed_retryable ?? 0),
+    failedExhausted: Number(privacyRematRow?.failed_exhausted ?? 0),
+    oldestPendingAgeSeconds: privacyRematRow?.oldest_pending_age_seconds == null
+      ? null : Number(privacyRematRow.oldest_pending_age_seconds),
+  });
+  if (privacyRematProblem) problems.push(privacyRematProblem);
   if (redisDurability.maxmemory_policy !== 'noeviction') {
     problems.push({
       code: 'redis_eviction_policy_unsafe',
@@ -836,6 +864,27 @@ export type HealthProblem = {
   severity: 'warning' | 'critical';
   message: string;
 };
+
+export function privacyRematerializationBacklogProblem(state: {
+  pending: number;
+  processing: number;
+  failed: number;
+  failedRetryable: number;
+  failedExhausted: number;
+  oldestPendingAgeSeconds: number | null;
+}): HealthProblem | null {
+  const age = state.oldestPendingAgeSeconds ?? 0;
+  const severity = age > 6 * 60 * 60 || state.failedExhausted > 0
+    ? 'critical'
+    : age > 30 * 60 || state.failedRetryable > 0 ? 'warning' : null;
+  if (!severity) return null;
+  return {
+    code: 'privacy_rematerialization_backlog',
+    severity,
+    message: `Privacy rematerialization pending=${state.pending} processing=${state.processing} `
+      + `failed=${state.failed} oldest_pending_age_minutes=${Math.floor(age / 60)}`,
+  };
+}
 
 /**
  * Anonymous browser diagnostics are reported to operators but are deliberately
