@@ -26,7 +26,7 @@ ENV VITE_SITE_HOME_URL=$VITE_SITE_HOME_URL
 ENV VITE_RF_COVERAGE_ENABLED=$VITE_RF_COVERAGE_ENABLED
 RUN npm run build
 
-FROM nginx:alpine@sha256:a9ae6f6d078d477e21323310498e5196cb2b7c0aedd9e07b7306612077227d7c
+FROM nginx:alpine@sha256:df221db836e1754089190208cee7eeda94f233197056426eda74a43ab1abeac2
 ARG SOURCE_REVISION=unknown
 LABEL org.opencontainers.image.revision="${SOURCE_REVISION}" \
       org.opencontainers.image.source="https://github.com/gadgethd/ukmesh"
