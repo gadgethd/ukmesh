@@ -1,29 +1,44 @@
-# B3 packet-sharing handoff
+# Handoff — Mission B2 · MQTT Will fake telemetry (#332)
 
 ## Status
 
-Backend packet-sharing routes, contracts, persistence, forwarding, and tests are committed locally in `fbf9803` (`feat(owner): add owner-controlled packet sharing`). No migration was applied, no service was restarted, and nothing was pushed.
+Done. Offline Will payloads are skipped for status samples, ordinary telemetry stores its top-level status, and the schema migration is included but unapplied.
 
-## WIP inventory
+## Branch and commits
 
-The packet-sharing slice rescued from the main checkout contains migrations 052–054 for destination/rule/delivery tables, destination metadata, and default-off rules; owner GET/POST routes and contracts; broker-secret encryption; destination configuration and delivery-queue services; MQTT forwarding and worker wiring; and route/config/forwarder tests. The main checkout also has mixed public-feed, tagger, owner-portal, and unrelated backend work.
+- Branch: `fix/mqtt-will-telemetry`
+- Base: `d44ef5e` (`origin/main`)
+- Implementation: `ad473779ce0f1ff250f6a9494d8abe9abba7a9f1` — `fix(mqtt): skip offline status telemetry samples`
+- Push state: not pushed; coordinator relays this branch.
 
-The main checkout and its WIP remain untouched. The packet-sharing backend copy there becomes redundant after this change is merged and deployed. The mixed owner-portal UI edits were not included in the backend scope in this brief and need separate disposition if they are not handled elsewhere.
+## Files changed
 
-## Migration decision
+- `backend/src/mqtt/client.ts`
+- `backend/src/mqtt/statusTelemetry.ts`
+- `backend/src/mqtt/statusTelemetry.test.ts`
+- `backend/src/db/index.ts`
+- `backend/src/db/schema/base.sql`
+- `backend/src/db/migrations/057_node_status_sample_status.sql`
 
-Kept the supplied `052_owner_packet_sharing.sql`, `053_owner_packet_share_destination_metadata.sql`, and `054_owner_packet_share_default_off.sql` names. No duplicate prefix exists for these files in the target worktree, so no renumbering was needed. Prefix 055 is reserved by `055_message_tags.sql` on `fix/health-latency-bundle`; the separate untracked `055_public_feed.sql` in the main checkout was not copied.
+## Checks
 
-## Tests
+Commands were run from `backend/`:
 
-- `cd backend && npm test` — passed, 341 tests.
-- `cd backend && npm run typecheck` — passed.
-- `git diff --check` — passed.
+- `node --import tsx --test src/mqtt/statusTelemetry.test.ts` — passed, 2 tests.
+- `npm test` — passed, 326 tests, 0 failures. The script excludes `*.integration.test.ts`.
+- `npm run typecheck` — passed.
 
-The worktree had no installed dependencies. Tests reused the existing main-checkout `backend/node_modules` through a temporary symlink in this worktree; the symlink was removed afterward. No tests wrote to a live database.
+## Gated items for Ben
 
-## Gated items and open questions
+- Apply migration `057_node_status_sample_status.sql` through the normal deployment process, then deploy the ingest change. No live DB writes, migration application, or service restarts were performed in this worktree session.
+- Historical rows and retained broker messages were not modified; clearing retained messages is out of scope for #332.
 
-- Ben owns migration application and deployment.
-- The target worktree does not contain the `OWNER_PACKET_SHARE_*` Compose passthroughs or `owner_packet_share_deliveries` in the retention target list described by the brief. No `.env` or config files were changed under the VPS constraint. Before deployment, Ben must confirm the runtime passes `OWNER_PACKET_SHARE_ENCRYPTION_KEY` to the backend and includes `owner_packet_share_deliveries` in lifecycle retention targets. Poll interval and batch size have code defaults.
-- Confirm whether the packet-sharing owner-portal UI edits in the main checkout are tracked in another change; they were left untouched and are not in `fbf9803`.
+## Open questions
+
+None.
+
+## Evidence paths
+
+- `BRIEF.md` — mission and constraints.
+- `backend/src/mqtt/statusTelemetry.test.ts` — offline Will skip, ordinary sample storage, and top-level status coverage.
+- `backend/src/db/migrations/057_node_status_sample_status.sql` — additive status column migration.

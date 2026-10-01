@@ -107,6 +107,7 @@ test('base schema and every migration apply to a brand-new database', {
     '053_owner_packet_share_destination_metadata.sql',
     '054_owner_packet_share_default_off.sql',
     '056_async_privacy_rematerialization.sql',
+    '057_node_status_sample_status.sql',
   ]);
   assert.deepEqual(await runMigrations(freshPool), []);
 
