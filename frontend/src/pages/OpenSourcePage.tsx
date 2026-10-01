@@ -23,7 +23,6 @@ const FRONTEND: LibEntry[] = [
   { name: 'Zustand',             role: 'Lightweight client state management for UI atoms',           url: 'https://zustand-demo.pmnd.rs' },
   { name: 'react-router',        role: 'Client-side routing between pages',                          url: 'https://reactrouter.com' },
   { name: 'Recharts',            role: 'Chart components for stats and history graphs',              url: 'https://recharts.org' },
-  { name: 'polygon-clipping',    role: 'Client-side geospatial polygon operations',                   url: 'https://github.com/mfogel/polygon-clipping' },
 ];
 
 const BACKEND: LibEntry[] = [
