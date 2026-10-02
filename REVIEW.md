@@ -397,7 +397,7 @@ result. Focused owner/prewarm tests pass **15/15**; backend typecheck and full
 At this safety checkpoint all implementation changes were committed and pushed
 on the private branch. The expanded browser run on isolated ports 4363–4365
 finished **54/55**: the multi-viewport mobile map test timed out at `page.goto`
-with `waitUntil: 'networkidle'`. Its retained trace and test-server output are
+with `waitUntil: 'networkidle'`. Its retained trace and test-server output
 were investigated and resolved in the following sections; the later complete
 61-case run passed. The two feed cases passed at this checkpoint, including
 the new breakpoint and filter checks.
