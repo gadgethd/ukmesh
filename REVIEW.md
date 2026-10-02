@@ -315,6 +315,16 @@ evidence from the same exporter. The threshold and holdoff are unchanged.
 `.ukmesh-tools/promtool check rules logging/rules/meshcore.yml` passes **24 rules**.
 This reproduces rule semantics locally, not live alert frequency.
 
+Expanded both feed browser cases to switch across the 860px breakpoint in both
+directions while scrolled, checking that the visible packet identity survives
+the change between document and internal scrolling. The desktop case also
+filters a scrolled list down to one row, asserts its scroll reset and unchanged
+page position, then restores the feed. No virtualizer source change was needed.
+`cd frontend && PLAYWRIGHT_PORT_BASE=4363 npx playwright test
+feed-virtualizer.spec.ts --project=public-desktop --workers=2
+--trace=retain-on-failure --output=../.ukmesh-tools/stretch-feed-results`:
+**2/2 pass**, no retries or page errors.
+
 ## Final verification and publication
 
 Source commits: `9a5e838` (retirement), `2d2b425` (prewarm), `236e948`

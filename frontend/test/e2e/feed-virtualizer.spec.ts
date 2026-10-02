@@ -110,6 +110,22 @@ for (const width of [390, 1280]) {
     const beforePrepend = await anchor(page);
     await page.evaluate(() => (window as unknown as { prependFeed(): void }).prependFeed());
     await assertAnchor(page, beforePrepend);
+    // Filtering a desktop list until it no longer overflows must reset its
+    // own scroll position without scrolling the page past the search controls.
+    if (width === 1280) {
+      const pageScroll = await page.evaluate(() => window.scrollY);
+      await page.getByPlaceholder(/search/i).fill('new arrival');
+      await expect(list.locator('article')).toHaveCount(1);
+      await expect.poll(() => list.evaluate(element => element.scrollTop)).toBe(0);
+      await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(pageScroll);
+      await page.getByPlaceholder(/search/i).fill('');
+      await expect(list.locator('article').first()).toBeVisible();
+      await scrollList(page, 1700);
+    }
+    const beforeModeSwitch = await anchor(page);
+    await page.setViewportSize({ width: width === 390 ? 1280 : 390, height: 650 });
+    await assertContiguous(page);
+    await expect.poll(async () => (await anchor(page)).label).toBe(beforeModeSwitch.label);
     await page.setViewportSize({ width: width === 390 ? 700 : 850, height: 650 });
     await assertContiguous(page);
     await scrollList(page, 100_000);
