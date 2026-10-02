@@ -394,12 +394,13 @@ checks overlapping warm requests issue one query, and then checks the refreshed
 result. Focused owner/prewarm tests pass **15/15**; backend typecheck and full
 `npm test` pass **358/358**, with no failures or skips.
 
-Safety checkpoint: all implementation changes are committed and pushed on the
-private branch. The latest expanded full browser run on isolated ports 4363–4365
+At this safety checkpoint all implementation changes were committed and pushed
+on the private branch. The expanded browser run on isolated ports 4363–4365
 finished **54/55**: the multi-viewport mobile map test timed out at `page.goto`
 with `waitUntil: 'networkidle'`. Its retained trace and test-server output are
-being investigated; the latest full matrix is not claimed green. The two feed
-cases passed, including the new breakpoint and filter checks.
+were investigated and resolved in the following sections; the later complete
+61-case run passed. The two feed cases passed at this checkpoint, including
+the new breakpoint and filter checks.
 
 The viewport trace showed the first two of seven sequential map navigations
 consuming about 15 seconds of one 30-second test budget, including public
@@ -442,7 +443,7 @@ outside that catch. The next scrape can initialize successfully and recover.
 **6/6 pass**; backend typecheck passes. The first full backend rerun was
 **358/359** because the unchanged worker-pool replacement test timed out its
 fresh worker startup inside a 750ms budget under concurrent verification load.
-That separate test failure is being investigated; 359/359 is not yet claimed.
+The worker-pool correction and passing full rerun are described below.
 
 The worker-pool regression now controls the 750ms deadline with Node's mock
 clock rather than imposing that same wall-time budget on replacement thread
@@ -467,7 +468,7 @@ test/e2e/owner.spec.ts test/e2e/dashboard.spec.ts
 --grep 'session polling|owner map construction|map modes' --workers=1
 --trace=retain-on-failure --output=../.ukmesh-tools/stretch-bootstrap-results`:
 **4/4 pass**, no retries. Backend build also passes after the collector fix.
-The complete matrix is being rerun against these updated checks.
+The subsequent complete matrix passed 61/61, as recorded below.
 
 Feed geometry now also checks **1,413 fractional viewport/overscan windows**
 across 50 mixed-height rows, including positions before/after the list and
@@ -583,6 +584,13 @@ canonicalizer and a one-hour `time_bucket` shim. It does not exercise the real
 identity views, alias reconciliation, TimescaleDB extension or production load.
 Backend typecheck passes with the fixture included.
 
+The cleanup freshness audit traced `last_path_evidence_at` to trustworthy
+multibyte flood-path evidence carrying the packet's observation time. The
+legacy `last_predicted_online_at` writer records resolution time; read-only
+path evaluation explicitly disables that update. Cleanup conservatively
+retains both signals, and the SQL fixtures verify that fresh values prevent
+deletion. Production resolution frequency and resulting retention are unmeasured.
+
 ## Feed verification in Firefox and WebKit
 
 `frontend/playwright.feed-cross-browser.config.ts` adds an optional profile for
@@ -651,6 +659,12 @@ Further verification commits: `4a73ca0` (reporter-matched alerts), `2d6b703`
 The final documentation commit records this audit and the validation below.
 Full unit suites are rerun after it, before publication.
 
+Checkpoint `ace67e4` passed the complete local Chromium matrix **61/61** in
+4.7 minutes, with no retries or skips, after the new anchor-readiness/focus
+fixture changes. Post-commit backend/frontend unit suites passed **362/362**
+and **100/100**, respectively. The optional Firefox/WebKit profile passed
+**4/4**, and the affected Chromium feed cases passed **2/2**.
+
 | Exact command | Result |
 | --- | --- |
 | `cd backend && npm test` | **362/362 pass**, 0 fail, 0 skipped. Expands to the brief's `node --import tsx --test $(find src -name '*.test.ts' ! -name '*.integration.test.ts' -print)`. |
@@ -660,9 +674,10 @@ Full unit suites are rerun after it, before publication.
 | `cd frontend && npm run build` | TypeScript + Vite pass; existing chunk-size warning. |
 | `cd backend && npm run contract:check` | Pass: **63 API + 11 operator routes** current. |
 | `cd frontend && PLAYWRIGHT_PORT_BASE=4273 npx playwright test feed-virtualizer.spec.ts --project=public-desktop` | **2/2 pass**. |
-| `cd frontend && PLAYWRIGHT_PORT_BASE=4273 npx playwright test --workers=2` | Historical **55/55 pass**. The later expanded run was **54/55** before the viewport test was split; the current **61-case** matrix is being rerun with local map fixtures and one worker. |
-| `cd frontend && PLAYWRIGHT_PORT_BASE=4363 npx playwright test --workers=1 --trace=retain-on-failure --output=../.ukmesh-tools/stretch-matrix-final-results` | **59/61** before explicit owner/map-reload readiness checks; those 4 affected cases pass after the change. Complete rerun pending. |
+| `cd frontend && PLAYWRIGHT_PORT_BASE=4273 npx playwright test --workers=2` | Historical **55/55 pass**; the expanded run was **54/55** before the viewport case split and local map fixtures. The later 61-case matrix passes. |
+| `cd frontend && PLAYWRIGHT_PORT_BASE=4363 npx playwright test --workers=1 --trace=retain-on-failure --output=../.ukmesh-tools/stretch-matrix-final-results` | Historical **59/61** before owner/map-reload readiness checks; affected cases and the subsequent complete matrix pass. |
 | `cd frontend && PLAYWRIGHT_PORT_BASE=4363 npx playwright test --workers=1 --trace=retain-on-failure --output=../.ukmesh-tools/stretch-matrix-ready-results` | **61/61 pass**, all four projects, no retries or skips. |
+| `cd frontend && PLAYWRIGHT_PORT_BASE=4363 npx playwright test --workers=1 --trace=retain-on-failure --output=../.ukmesh-tools/matrix-ace67e4-results` | **61/61 pass** on `ace67e4`, all four projects, no retries or skips, 4.7 minutes. |
 | Final Chromium feed command above | **2/2 pass** after anchor-readiness/focus fixture changes. |
 | Optional Firefox/WebKit profile command above | **4/4 pass**, no retries or skips, including both responsive widths in each engine. |
 | Direct cross-browser config/test typecheck above | Pass with `--ignoreConfig`; first invocation reported TS5112. |
@@ -702,10 +717,18 @@ Verify with `git rev-parse HEAD` and `git ls-remote --heads origin
 fix/ukmesh-burn-20261002`; the two full SHAs must match. Remote `ukmesh-w5`
 remains `73ee00406e7cb0b7251220abbff73144615a8b90`. No force push is used.
 The operator reviews against that integration base; opening a draft PR is optional.
-Inspected workflow triggers: branch pushes request CI; `gh run list --branch
-fix/ukmesh-burn-20261002` currently returns no runs, so remote CI execution is not
-claimed. All three repository workflows are listed as active. `release.yml` requires a
-published release or explicit dispatch. No deployment/release workflow is invoked.
+Inspected workflow triggers: branch pushes and pull requests request CI. An
+earlier `gh run list --branch` listing showed no runs; the explicit repository
+Actions API subsequently returned the branch's actual runs. On `ace67e4`,
+[Frontend mobile](https://github.com/gadgethd/ukmesh/actions/runs/37048306966)
+passed; the [pull-request CI](https://github.com/gadgethd/ukmesh/actions/runs/37048306846)
+backend, frontend and secret-scan jobs passed. The Workers and Compose job and
+[push CI](https://github.com/gadgethd/ukmesh/actions/runs/37048301559) were still
+running at the 2026-10-02 18:46 UTC check; a complete CI verdict is not claimed
+for that checkpoint. These jobs use disposable GitHub runner stacks. All three
+repository workflows are active. `release.yml` requires a published release or
+explicit dispatch. No deployment/release workflow is invoked. Current results
+are linked from the [PR Checks tab](https://github.com/gadgethd/ukmesh/pull/113/checks).
 Ignored local logs contain TAP/build/browser output, and ignored tooling holds
 standalone promtool, PGlite and embedded-postgres. None is part of the shipped runtime.
 Draft PR: https://github.com/gadgethd/ukmesh/pull/113, against `ukmesh-w5`.
