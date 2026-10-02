@@ -400,6 +400,18 @@ with `waitUntil: 'networkidle'`. Its retained trace and test-server output are
 being investigated; the latest full matrix is not claimed green. The two feed
 cases passed, including the new breakpoint and filter checks.
 
+The viewport trace showed the first two of seven sequential map navigations
+consuming about 15 seconds of one 30-second test budget, including public
+OpenFreeMap requests. The viewport regression is now seven independently timed
+cases; each still loads the map from scratch, checks all geometry, and verifies
+UK-only API requests. No timeout or geometry tolerance was increased.
+`cd frontend && PLAYWRIGHT_PORT_BASE=4363 npx playwright test
+test/e2e/mobile.spec.ts --grep 'live map stays inside' --workers=2
+--trace=retain-on-failure --output=../.ukmesh-tools/stretch-viewport-results`:
+**7/7 pass**, no retries. The complete matrix now contains 61 cases and will be
+rerun. Terrain tests also expose missing local DEM fixtures returning SPA HTML;
+that test-harness gap is being investigated separately from the viewport budget.
+
 ## Final verification and publication
 
 Source commits: `9a5e838` (retirement), `2d2b425` (prewarm), `236e948`
@@ -442,8 +454,8 @@ Completion audit against the supplied brief:
 | Requirement | Reviewable result and evidence |
 | --- | --- |
 | Retired-workload unit-suite repair | Historical policy and current callers restored; 3 focused tests and the complete backend suite pass. |
-| Owner prewarm observability and bounded load | Progress every ten nodes, in-flight 20s warning, configurable cap of two, ownership-scoped single-flight and shutdown; 11 focused tests pass. Live cold-pass time/load remains unmeasured. |
-| Link heartbeat source and alert semantics | Per-scrape genuine Redis heartbeat; missing/stale active queues covered by 5 source/metric tests and 7 Prometheus scenario groups. Live alert firing is not claimed. |
+| Owner prewarm observability and bounded load | Progress every ten nodes, in-flight 20s warning, configurable cap of two, ownership-scoped single-flight, responsive fresh-cache reads and shutdown; 15 focused tests pass. Live cold-pass time/load remains unmeasured. |
+| Link heartbeat source and alert semantics | Per-scrape genuine Redis heartbeat; missing/stale active queues covered by 5 source/metric tests and 10 Prometheus scenario groups, including independent scrape reporters. Live alert firing is not claimed. |
 | Variable-height UK feed | ResizeObserver measurements and anchored offsets at both widths; 2 frontend geometry tests plus 2 expanded browser cases pass. |
 | Compose adoption guard | Local failing mocked reproduction, pre-mutation rejection, 16 passing replacement drills, including the pipefail regression. No live Docker inspection. |
 | Inactive-node archive/delete for every role | Role/bridge-independent selection, archive-before-delete transaction, private identity retention, late-sighting revalidation and preservation of a current privacy fence; 10 unit and 11 SQL fixture tests pass. No live deletion or migration. |

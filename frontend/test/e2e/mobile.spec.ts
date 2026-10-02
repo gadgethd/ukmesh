@@ -302,15 +302,15 @@ test('mobile map menu floats over the map; feed hides behind the Live chip', asy
   await expectNoViewportOverflow(page);
 });
 
-test('live map stays inside every supported viewport and remains UK-only', async ({ page }) => {
-  await installApiFixtures(page);
-  const apiRequests: string[] = [];
-  page.on('request', (request) => {
-    const url = new URL(request.url());
-    if (url.pathname.startsWith('/api/')) apiRequests.push(url.href);
-  });
+for (const width of [320, 375, 640, 768, 1024, 1280, 1440]) {
+  test(`live map stays inside the ${width}px viewport and remains UK-only`, async ({ page }) => {
+    await installApiFixtures(page);
+    const apiRequests: string[] = [];
+    page.on('request', (request) => {
+      const url = new URL(request.url());
+      if (url.pathname.startsWith('/api/')) apiRequests.push(url.href);
+    });
 
-  for (const width of [320, 375, 640, 768, 1024, 1280, 1440]) {
     await page.setViewportSize({ width, height: width <= 375 ? 667 : 800 });
     await page.goto(`${dashboardOrigin}/?network=teesside`, { waitUntil: 'networkidle' });
     await expect(page.locator('.map-area')).toBeVisible();
@@ -330,12 +330,11 @@ test('live map stays inside every supported viewport and remains UK-only', async
       expect(controlsBox!.x + controlsBox!.width).toBeLessThanOrEqual(width + 0.5);
     }
     await expectNoViewportOverflow(page);
-  }
-
-  expect(apiRequests.some((url) => new URL(url).searchParams.get('network') === 'ukmesh')).toBe(true);
-  expect(apiRequests.some((url) => new URL(url).searchParams.get('network') === 'teesside')).toBe(false);
-  expect(apiRequests.some((url) => new URL(url).pathname === '/api/observers/health')).toBe(false);
-});
+    expect(apiRequests.some((url) => new URL(url).searchParams.get('network') === 'ukmesh')).toBe(true);
+    expect(apiRequests.some((url) => new URL(url).searchParams.get('network') === 'teesside')).toBe(false);
+    expect(apiRequests.some((url) => new URL(url).pathname === '/api/observers/health')).toBe(false);
+  });
+}
 
 test('repeater search results stay bounded and scroll inside the menu', async ({ page }) => {
   await page.setViewportSize(PHONE);
