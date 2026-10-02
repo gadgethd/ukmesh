@@ -120,3 +120,83 @@ test('stopping drains current refreshes and prevents further admissions', async 
   });
   await assert.rejects(prewarm.run(), /PREWARM_STOPPED/);
 });
+
+test('scheduled passes wait for completion before starting their interval and start is idempotent', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  let loads = 0;
+  let refreshes = 0;
+  const prewarm = createOwnerLastHopPrewarm({
+    log: capturedLog().log,
+    loadOwners: async () => { loads++; return [{ mqttUsername: 'a', nodeIds: ['one'] }]; },
+    refresh: async () => { refreshes++; await gate; },
+  });
+  t.after(() => prewarm.stop());
+  prewarm.start(100);
+  prewarm.start(100);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  t.mock.timers.tick(1_000);
+  assert.equal(loads, 1, 'a long pass cannot overlap or accumulate interval ticks');
+  assert.equal(refreshes, 1);
+  release();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  t.mock.timers.tick(99);
+  assert.equal(loads, 1, 'the interval begins when the pass completes');
+  t.mock.timers.tick(1);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(loads, 2);
+  assert.equal(refreshes, 2);
+  await prewarm.stop();
+  t.mock.timers.tick(1_000);
+  assert.equal(loads, 2, 'shutdown cancels the next scheduled pass');
+});
+
+test('a failed owner enumeration logs the failure and the next scheduled pass recovers', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const captured = capturedLog();
+  let loads = 0;
+  let refreshes = 0;
+  const prewarm = createOwnerLastHopPrewarm({
+    log: captured.log,
+    loadOwners: async () => {
+      if (++loads === 1) throw new Error('owner inventory unavailable');
+      return [{ mqttUsername: 'a', nodeIds: ['one'] }];
+    },
+    refresh: async () => { refreshes++; },
+  });
+  t.after(() => prewarm.stop());
+  prewarm.start(100);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(refreshes, 0);
+  assert.deepEqual(captured.entries, [{
+    level: 'warn', message: '[owner-last-hop-prewarm] pass failed', detail: 'owner inventory unavailable',
+  }]);
+  t.mock.timers.tick(100);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(loads, 2);
+  assert.equal(refreshes, 1);
+  assert.deepEqual(captured.entries.at(-1)?.detail, {
+    owners: 1, ownersTotal: 1, nodes: 1, nodesTotal: 1, refreshed: 1, failed: 0,
+  });
+});
+
+test('shutdown during owner enumeration drains the pass without admitting a refresh', async () => {
+  let release!: (owners: Array<{ mqttUsername: string; nodeIds: string[] }>) => void;
+  const inventory = new Promise<Array<{ mqttUsername: string; nodeIds: string[] }>>((resolve) => { release = resolve; });
+  let refreshes = 0;
+  const prewarm = createOwnerLastHopPrewarm({
+    log: capturedLog().log,
+    loadOwners: () => inventory,
+    refresh: async () => { refreshes++; },
+  });
+  const pass = prewarm.run();
+  const stopping = prewarm.stop();
+  release([{ mqttUsername: 'a', nodeIds: ['one', 'two'] }]);
+  await stopping;
+  assert.equal(refreshes, 0);
+  assert.deepEqual(await pass, {
+    owners: 0, ownersTotal: 1, nodes: 0, nodesTotal: 2, refreshed: 0, failed: 0,
+  });
+  await assert.rejects(prewarm.run(), /PREWARM_STOPPED/);
+});
