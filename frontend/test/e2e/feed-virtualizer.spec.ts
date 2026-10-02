@@ -16,19 +16,36 @@ async function assertContiguous(page: Page) {
   expect(Math.max(...geometry.heights) - Math.min(...geometry.heights)).toBeGreaterThan(10);
 }
 
-async function anchor(page: Page) {
+async function readAnchor(page: Page) {
   return page.locator('.uk-feed-packets-list').evaluate(container => {
-    const top = container.scrollHeight > container.clientHeight + 1 ? container.getBoundingClientRect().top : 0;
-    const row = [...container.querySelectorAll('article')].find(element => element.getBoundingClientRect().bottom > top + 1)!;
-    return { label: row.getAttribute('aria-label'), offset: row.getBoundingClientRect().top - top };
+    const internal = container.scrollHeight > container.clientHeight + 1;
+    const bounds = container.getBoundingClientRect();
+    const top = internal ? bounds.top : 0;
+    const bottom = internal ? Math.min(bounds.bottom, window.innerHeight) : window.innerHeight;
+    const row = [...container.querySelectorAll('article')].find(element => {
+      const rect = element.getBoundingClientRect();
+      return rect.bottom > top + 1 && rect.top < bottom;
+    });
+    return row ? { label: row.getAttribute('aria-label'), offset: row.getBoundingClientRect().top - top } : null;
   });
+}
+
+async function anchor(page: Page): Promise<{ label: string | null; offset: number }> {
+  let current: Awaited<ReturnType<typeof readAnchor>> = null;
+  // Programmatic scrolling moves pixels before React commits its new row range.
+  // Require a visible row on the ordinary assertion deadline before capturing it.
+  await expect.poll(async () => {
+    current = await readAnchor(page);
+    return current !== null;
+  }).toBe(true);
+  return current!;
 }
 
 async function assertAnchor(page: Page, expected: Awaited<ReturnType<typeof anchor>>) {
   // Browser scroll positions round fractional border-box offsets to pixels.
   await expect.poll(async () => {
-    const current = await anchor(page);
-    return current.label === expected.label && Math.abs(current.offset - expected.offset) < 1;
+    const current = await readAnchor(page);
+    return current !== null && current.label === expected.label && Math.abs(current.offset - expected.offset) < 1;
   }).toBe(true);
 }
 
@@ -120,12 +137,14 @@ for (const width of [390, 1280]) {
       await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(pageScroll);
       await page.getByPlaceholder(/search/i).fill('');
       await expect(list.locator('article').first()).toBeVisible();
+      // Finish searching before capturing a browsing anchor across a resize.
+      await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
       await scrollList(page, 1700);
     }
     const beforeModeSwitch = await anchor(page);
     await page.setViewportSize({ width: width === 390 ? 1280 : 390, height: 650 });
     await assertContiguous(page);
-    await expect.poll(async () => (await anchor(page)).label).toBe(beforeModeSwitch.label);
+    await expect.poll(async () => (await readAnchor(page))?.label).toBe(beforeModeSwitch.label);
     await page.setViewportSize({ width: width === 390 ? 700 : 850, height: 650 });
     await assertContiguous(page);
     await scrollList(page, 100_000);

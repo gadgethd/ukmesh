@@ -583,6 +583,54 @@ canonicalizer and a one-hour `time_bucket` shim. It does not exercise the real
 identity views, alias reconciliation, TimescaleDB extension or production load.
 Backend typecheck passes with the fixture included.
 
+## Feed verification in Firefox and WebKit
+
+`frontend/playwright.feed-cross-browser.config.ts` adds an optional profile for
+the two existing responsive feed cases in Firefox **153.0** and Playwright
+WebKit **26.5** on Linux. The default profile still lists **61** Chromium cases;
+the optional profile lists **4**, runs one worker and has zero retries.
+
+The first cross-browser run passed **1/4**: immediate anchor reads could run
+before React committed rows after a programmatic scroll. Anchor capture now
+waits on the normal assertion deadline for a row intersecting the viewport,
+and preservation checks use a nullable read within their existing poll. The
+one-pixel position/contiguity limits and virtualization bounds remain intact.
+The next run passed **3/4**; WebKit kept the search caret visible during the
+desktop-to-mobile resize. Completing the search interaction with blur before
+resuming browsing makes that case pass using the existing virtualizer hook.
+The complete optional profile now passes **4/4**, no skips or retries. The
+affected Chromium feed cases also pass **2/2**.
+
+Exact optional-profile command used on this host:
+
+```sh
+cd frontend
+LD_LIBRARY_PATH="$PWD/../.ukmesh-tools/webkit-system-libs/root/usr/lib/x86_64-linux-gnu" PLAYWRIGHT_BROWSERS_PATH="$PWD/../.ukmesh-tools/playwright-browsers" PLAYWRIGHT_PORT_BASE=4413 npx playwright test --config=playwright.feed-cross-browser.config.ts --trace=retain-on-failure --output=../.ukmesh-tools/feed-cross-browser-final-results
+```
+
+The browsers were downloaded with `PLAYWRIGHT_BROWSERS_PATH` pointing into
+ignored tooling. This host required `libevent-2.1-7t64`,
+`libgstreamer-plugins-bad1.0-0`, `libavif16`, `libgav1-1` and `libyuv0`; `apt
+download` and `dpkg-deb --extract` placed them under ignored tooling, and their
+libraries were linked into the ignored WebKit bundle's `sys/lib`. Its launcher
+replaces `LD_LIBRARY_PATH`, so the bundle links are necessary here. No system
+package install or environment-file change was made. These Linux engine tests
+do not establish behavior on a physical Safari/iOS device.
+
+Additional exact commands:
+
+```sh
+cd frontend
+PLAYWRIGHT_PORT_BASE=4433 npx playwright test feed-virtualizer.spec.ts --project=public-desktop --workers=1 --trace=retain-on-failure --output=../.ukmesh-tools/feed-chromium-final-results
+npx tsc --ignoreConfig --noEmit --module NodeNext --moduleResolution NodeNext --target ES2022 --skipLibCheck --types node --strict playwright.feed-cross-browser.config.ts test/e2e/feed-virtualizer.spec.ts
+npm run build
+```
+
+Chromium: **2/2 pass**; direct config/test typecheck passes; production TypeScript
+and Vite build pass with the existing chunk-size warning. TypeScript requires
+`--ignoreConfig` for this ad hoc file-based check (the first invocation without
+it reported TS5112). The frontend unit suite remains **100/100**.
+
 ## Final verification and publication
 
 Source commits: `9a5e838` (retirement), `2d2b425` (prewarm), `236e948`
@@ -615,6 +663,9 @@ Full unit suites are rerun after it, before publication.
 | `cd frontend && PLAYWRIGHT_PORT_BASE=4273 npx playwright test --workers=2` | Historical **55/55 pass**. The later expanded run was **54/55** before the viewport test was split; the current **61-case** matrix is being rerun with local map fixtures and one worker. |
 | `cd frontend && PLAYWRIGHT_PORT_BASE=4363 npx playwright test --workers=1 --trace=retain-on-failure --output=../.ukmesh-tools/stretch-matrix-final-results` | **59/61** before explicit owner/map-reload readiness checks; those 4 affected cases pass after the change. Complete rerun pending. |
 | `cd frontend && PLAYWRIGHT_PORT_BASE=4363 npx playwright test --workers=1 --trace=retain-on-failure --output=../.ukmesh-tools/stretch-matrix-ready-results` | **61/61 pass**, all four projects, no retries or skips. |
+| Final Chromium feed command above | **2/2 pass** after anchor-readiness/focus fixture changes. |
+| Optional Firefox/WebKit profile command above | **4/4 pass**, no retries or skips, including both responsive widths in each engine. |
+| Direct cross-browser config/test typecheck above | Pass with `--ignoreConfig`; first invocation reported TS5112. |
 | Fresh-cache targeted browser command below | **4/4 pass** with fresh caches; no retries. |
 | `.ukmesh-tools/promtool check rules logging/rules/meshcore.yml` | **24 rules valid**. |
 | `.ukmesh-tools/promtool test rules logging/rules/meshcore.test.yml` | **10 scenario groups pass**. |
@@ -640,7 +691,7 @@ Completion audit against the supplied brief:
 | Retired-workload unit-suite repair | Historical policy and current callers restored; 3 focused tests and the complete backend suite pass. |
 | Owner prewarm observability and bounded load | Progress every ten nodes, in-flight 20s warning, configurable cap of two, ownership-scoped single-flight, responsive fresh-cache reads, replacement of renamed/reclassified groups and shutdown; 17 focused tests pass. Live cold-pass time/load remains unmeasured. |
 | Link heartbeat source and alert semantics | Per-scrape genuine Redis heartbeat, including client-initialization failure/recovery; 6 source/metric tests and 10 Prometheus scenario groups, including independent scrape reporters. Live alert firing is not claimed. |
-| Variable-height UK feed | ResizeObserver measurements and anchored offsets at both widths; 3 frontend geometry tests plus 2 expanded browser cases pass. |
+| Variable-height UK feed | ResizeObserver measurements and anchored offsets at both widths; 3 frontend geometry tests, 2 Chromium feed cases and 4 Firefox/WebKit cases pass. |
 | Compose adoption guard | Local failing mocked reproduction, pre-mutation rejection, 16 passing replacement drills, including the pipefail regression. No live Docker inspection. |
 | Inactive-node archive/delete for every role | Role/bridge-independent selection, archive-before-delete transaction, private identity retention, late-sighting revalidation, visibility-before-node lock order and preservation of a current privacy fence; 11 unit, 13 SQL fixture and 11 native concurrency tests pass. No live deletion or migration. |
 | Final verification and private-branch publication | Full backend/frontend units run on the final documentation HEAD; non-forced branch push and matching remote SHA required before handoff. |
