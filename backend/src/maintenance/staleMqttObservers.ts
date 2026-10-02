@@ -34,13 +34,23 @@ function boundedThresholdDays(value: number | undefined): number {
   return Math.min(365, Math.max(30, Math.trunc(value!)));
 }
 
-/**
- * Archive and remove repeater-class nodes whose own observer MQTT feed has
- * been silent for the configured period. Authentication and packet history
- * live in separate tables and are deliberately outside this transaction.
- */
 export async function cleanupStaleMqttObservers(
   options: CleanupOptions = {},
+): Promise<StaleMqttObserverCleanupResult> {
+  return cleanupNodeRecords('mqtt-observer', options);
+}
+
+/** Archive inactive nodes of every role, including nodes never bridged to MQTT. */
+export async function cleanupInactiveNodes(
+  options: CleanupOptions = {},
+): Promise<StaleMqttObserverCleanupResult> {
+  return cleanupNodeRecords('inactive-node', options);
+}
+
+/** Authentication and packet history are deliberately outside this transaction. */
+async function cleanupNodeRecords(
+  kind: 'mqtt-observer' | 'inactive-node',
+  options: CleanupOptions,
 ): Promise<StaleMqttObserverCleanupResult> {
   const cleanupPool = (options.cleanupPool ?? pool) as unknown as CleanupPool;
   const thresholdDays = boundedThresholdDays(options.thresholdDays);
@@ -50,15 +60,29 @@ export async function cleanupStaleMqttObservers(
     await client.query('BEGIN');
     await client.query(`SELECT pg_advisory_xact_lock(hashtext('stale-mqtt-observer-cleanup'))`);
 
-    // Lock the node row used by MQTT's atomic observer upsert. If an observer
+    // Lock the node row used by MQTT's atomic upsert. If a node
     // returns during cleanup, it either becomes fresh before this selection or
     // waits and recreates itself immediately after the deletion commits.
+    const staleCondition = kind === 'mqtt-observer'
+      ? `last_mqtt_observer_seen_at < NOW() - ($1 * INTERVAL '1 day')
+         AND (role IS NULL OR role = 2)`
+      : `GREATEST(last_seen, last_mqtt_observer_seen_at, last_path_evidence_at,
+                  last_predicted_online_at, created_at) < NOW() - ($1 * INTERVAL '1 day')
+         AND NOT EXISTS (
+           SELECT 1 FROM node_network_sightings s
+            WHERE s.node_id = n.node_id
+              AND s.last_seen_at >= NOW() - ($1 * INTERVAL '1 day')
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM observer_region_observer_sightings s
+            WHERE s.rx_node_id = n.node_id
+              AND s.last_seen >= NOW() - ($1 * INTERVAL '1 day')
+         )`;
     const candidates = await client.query<{ node_id: string }>(
       `SELECT node_id
-         FROM nodes
-        WHERE last_mqtt_observer_seen_at < NOW() - ($1 * INTERVAL '1 day')
+         FROM nodes n
+        WHERE ${staleCondition}
           AND network IS DISTINCT FROM 'test'
-          AND (role IS NULL OR role = 2)
         ORDER BY node_id
         FOR UPDATE`,
       [thresholdDays],
@@ -75,8 +99,10 @@ export async function cleanupStaleMqttObservers(
       };
     }
 
-    const batchId = options.batchId ?? `stale-mqtt-observer-${new Date().toISOString()}-${crypto.randomUUID()}`;
-    const reason = `MQTT observer silent for at least ${thresholdDays} days`;
+    const batchId = options.batchId ?? `stale-${kind}-${new Date().toISOString()}-${crypto.randomUUID()}`;
+    const reason = kind === 'mqtt-observer'
+      ? `MQTT observer silent for at least ${thresholdDays} days`
+      : `Node has no observed activity for at least ${thresholdDays} days`;
 
     await client.query(
       `INSERT INTO maintenance_removed_records (batch_id, source_table, record_data, reason)

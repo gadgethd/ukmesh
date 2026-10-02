@@ -1,16 +1,18 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { cleanupStaleMqttObservers } from './staleMqttObservers.js';
+import { cleanupInactiveNodes, cleanupStaleMqttObservers } from './staleMqttObservers.js';
 
 type StubResult = { rows: Array<Record<string, unknown>>; rowCount: number };
 
-function stubPool(results: StubResult[]) {
+function stubPool(results: Array<StubResult | Error>) {
   const calls: Array<{ text: string; values?: unknown[] }> = [];
   let released = false;
   const client = {
     async query(text: string, values?: unknown[]) {
       calls.push({ text, values });
-      return results.shift() ?? { rows: [], rowCount: 0 };
+      const result = results.shift() ?? { rows: [], rowCount: 0 };
+      if (result instanceof Error) throw result;
+      return result;
     },
     release() {
       released = true;
@@ -44,6 +46,74 @@ test('does nothing when no MQTT observers have crossed the stale threshold', asy
     networkSightings: 0,
   });
   assert.equal(stub.calls.some((call) => call.text.includes('DELETE FROM nodes')), false);
+  assert.equal(stub.released(), true);
+});
+
+test('inactive-node cleanup has no role or prior MQTT requirement and considers every activity clock', async () => {
+  const stub = stubPool([]);
+  const result = await cleanupInactiveNodes({ cleanupPool: stub.pool, thresholdDays: 10 });
+  assert.equal(result.candidates, 0);
+  const selection = stub.calls[2]!;
+  assert.equal(selection.values?.[0], 30);
+  assert.match(selection.text, /GREATEST\(last_seen, last_mqtt_observer_seen_at, last_path_evidence_at,\s+last_predicted_online_at, created_at\)/);
+  assert.match(selection.text, /network IS DISTINCT FROM 'test'/);
+  assert.match(selection.text, /FOR UPDATE/);
+  assert.match(selection.text, /s.node_id = n.node_id/);
+  assert.match(selection.text, /s.last_seen_at >= NOW/);
+  assert.match(selection.text, /s.rx_node_id = n.node_id/);
+  assert.match(selection.text, /s.last_seen >= NOW/);
+  assert.doesNotMatch(selection.text, /role\s*(?:=|IS)|last_mqtt_observer_seen_at IS NOT NULL/);
+  assert.equal(stub.calls.some((call) => call.text.includes('DELETE')), false);
+  assert.equal(stub.released(), true);
+});
+
+test('inactive companions, room servers and never-bridged nodes are archived before any delete', async () => {
+  const ids = ['A'.repeat(64), 'B'.repeat(64), 'C'.repeat(64)];
+  const stub = stubPool([
+    { rows: [], rowCount: 0 }, { rows: [], rowCount: 0 },
+    { rows: ids.map((node_id) => ({ node_id })), rowCount: 3 },
+    { rows: [], rowCount: 3 }, { rows: [], rowCount: 2 }, { rows: [], rowCount: 4 },
+    { rows: [], rowCount: 2 }, { rows: [], rowCount: 4 }, { rows: [], rowCount: 3 },
+  ]);
+  const result = await cleanupInactiveNodes({ cleanupPool: stub.pool, batchId: 'inactive-batch', thresholdDays: 45 });
+  assert.deepEqual(result, {
+    batchId: 'inactive-batch', candidates: 3, nodes: 3, observerSightings: 2, networkSightings: 4,
+  });
+  const archiveCalls = stub.calls.filter((call) => call.text.includes('INSERT INTO maintenance_removed_records'));
+  assert.equal(archiveCalls.length, 3);
+  for (const call of archiveCalls) {
+    assert.deepEqual(call.values, ['inactive-batch', 'Node has no observed activity for at least 45 days', ids]);
+  }
+  const lastArchive = stub.calls.findLastIndex((call) => call.text.includes('INSERT INTO maintenance_removed_records'));
+  const firstDelete = stub.calls.findIndex((call) => call.text.includes('DELETE FROM'));
+  assert.ok(lastArchive < firstDelete);
+  assert.equal(stub.calls.at(-1)?.text, 'COMMIT');
+  assert.equal(stub.released(), true);
+});
+
+test('archive failure rolls back and admits no delete', async () => {
+  const stub = stubPool([
+    { rows: [], rowCount: 0 }, { rows: [], rowCount: 0 },
+    { rows: [{ node_id: 'A'.repeat(64) }], rowCount: 1 },
+    new Error('archive failed'),
+  ]);
+  await assert.rejects(cleanupInactiveNodes({ cleanupPool: stub.pool }), /archive failed/);
+  assert.equal(stub.calls.at(-1)?.text, 'ROLLBACK');
+  assert.equal(stub.calls.some((call) => call.text.includes('DELETE FROM')), false);
+  assert.equal(stub.released(), true);
+});
+
+test('delete failure rolls back the archive and earlier visibility deletes together', async () => {
+  const stub = stubPool([
+    { rows: [], rowCount: 0 }, { rows: [], rowCount: 0 },
+    { rows: [{ node_id: 'A'.repeat(64) }], rowCount: 1 },
+    { rows: [], rowCount: 1 }, { rows: [], rowCount: 1 }, { rows: [], rowCount: 1 },
+    { rows: [], rowCount: 1 }, { rows: [], rowCount: 1 },
+    new Error('delete failed'),
+  ]);
+  await assert.rejects(cleanupInactiveNodes({ cleanupPool: stub.pool }), /delete failed/);
+  assert.equal(stub.calls.at(-1)?.text, 'ROLLBACK');
+  assert.equal(stub.calls.some((call) => call.text === 'COMMIT'), false);
   assert.equal(stub.released(), true);
 });
 

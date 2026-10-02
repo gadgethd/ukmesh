@@ -163,7 +163,49 @@ compatibility, plus empty labels, missing config-file label, wrong directory and
 wrong project). Gap cases assert no pull, migration/replacement or release receipt.
 Live adoption and operator reconciliation remain unverified and deploy-gated.
 
-- #447 stale node archive/delete: pending implementation and tests.
+### #447 — Archive/delete inactive nodes of every role
+
+The existing cleanup selected only `(role IS NULL OR role = 2)` and required an
+old, non-null `last_mqtt_observer_seen_at`, so roles 1/3 and never-bridged nodes
+could not enter its archive/delete path. Added a separate `cleanupInactiveNodes`
+pass to the health worker's existing initial/six-hour maintenance schedule.
+The original observer policy remains separate.
+
+Inactive selection considers the latest node, MQTT, path, predicted-online and
+creation timestamps, and retains nodes with recent network or observer sightings.
+Source inspection found packet ingestion updates network sightings independently
+of the source node's main timestamp; those rollups therefore also fence deletion.
+The threshold stays bounded to 30–365 days. Test-network nodes, recent nodes and
+records with wholly unknown age remain protected. No prior bridge or role filter
+is required.
+
+The existing transaction/advisory lock archives complete node and visibility
+records into `maintenance_removed_records` before any delete, then removes the
+two visibility sets and nodes together. Any failure rolls everything back.
+Authentication and packet-history tables are outside the cleanup. No schema or
+migration change is needed.
+
+Validation: `cd backend && node --import tsx --test
+src/maintenance/staleMqttObservers.test.ts`: **6/6 pass**. `cd backend && npm run
+typecheck` passes. Supplementary isolated PostgreSQL 18.3 / PGlite 0.5.8 tests
+execute the actual selection, advisory lock, archive and delete SQL against
+minimal in-memory fixture tables. They verify roles 1/3, never-bridged nodes,
+retention by each freshness source, test/unknown-age exclusions, archive readback,
+preserved auth/history fixtures, and real transaction rollback on injected archive
+and node-delete errors: **3/3 pass**, 0 skipped.
+
+Reproduce without a server or repository dependency change, from the worktree root:
+
+```sh
+npm install --prefix .ukmesh-tools/pglite --no-package-lock --ignore-scripts @electric-sql/pglite@0.5.8
+cd backend
+TEST_NODE_CLEANUP_PGLITE_MODULE="file://$PWD/../.ukmesh-tools/pglite/node_modules/@electric-sql/pglite/dist/index.js" node --import tsx --test src/maintenance/staleMqttObservers.integration.test.ts
+```
+
+The optional fixture test is excluded by the normal unit command. It does not
+apply project migrations or exercise TimescaleDB, production triggers, concurrent
+ingestion, production candidate counts or cleanup cost; those remain unverified.
+
 - Full backend/frontend suites on final HEAD: pending.
 - Other proxy heartbeat signals and alert consumers: pending audit.
 
