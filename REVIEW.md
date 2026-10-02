@@ -468,6 +468,14 @@ test/e2e/owner.spec.ts test/e2e/dashboard.spec.ts
 **4/4 pass**, no retries. Backend build also passes after the collector fix.
 The complete matrix is being rerun against these updated checks.
 
+Feed geometry now also checks **1,413 fractional viewport/overscan windows**
+across 50 mixed-height rows, including positions before/after the list and
+overscan larger than the entire list. A direct row-intersection oracle checks
+every visible row is retained; rendered rows plus top/bottom spacers must equal
+the complete measured height. `cd frontend && node --import tsx --test
+src/hooks/measuredVirtualRows.test.ts`: **3/3 pass**. Full frontend `npm test`:
+**100/100**, no failures or skips. No feed runtime code changed in this step.
+
 ## Final verification and publication
 
 Source commits: `9a5e838` (retirement), `2d2b425` (prewarm), `236e948`
@@ -482,7 +490,7 @@ Full unit suites are rerun after it, before publication.
 | Exact command | Result |
 | --- | --- |
 | `cd backend && npm test` | **359/359 pass**, 0 fail, 0 skipped. Expands to the brief's `node --import tsx --test $(find src -name '*.test.ts' ! -name '*.integration.test.ts' -print)`. |
-| `cd frontend && npm test` | **99/99 pass**, 0 fail, 0 skipped. |
+| `cd frontend && npm test` | **100/100 pass**, 0 fail, 0 skipped. |
 | `cd backend && npm run typecheck` | Pass. |
 | `cd backend && npm run build` | Pass. |
 | `cd frontend && npm run build` | TypeScript + Vite pass; existing chunk-size warning. |
@@ -513,7 +521,7 @@ Completion audit against the supplied brief:
 | Retired-workload unit-suite repair | Historical policy and current callers restored; 3 focused tests and the complete backend suite pass. |
 | Owner prewarm observability and bounded load | Progress every ten nodes, in-flight 20s warning, configurable cap of two, ownership-scoped single-flight, responsive fresh-cache reads and shutdown; 15 focused tests pass. Live cold-pass time/load remains unmeasured. |
 | Link heartbeat source and alert semantics | Per-scrape genuine Redis heartbeat, including client-initialization failure/recovery; 6 source/metric tests and 10 Prometheus scenario groups, including independent scrape reporters. Live alert firing is not claimed. |
-| Variable-height UK feed | ResizeObserver measurements and anchored offsets at both widths; 2 frontend geometry tests plus 2 expanded browser cases pass. |
+| Variable-height UK feed | ResizeObserver measurements and anchored offsets at both widths; 3 frontend geometry tests plus 2 expanded browser cases pass. |
 | Compose adoption guard | Local failing mocked reproduction, pre-mutation rejection, 16 passing replacement drills, including the pipefail regression. No live Docker inspection. |
 | Inactive-node archive/delete for every role | Role/bridge-independent selection, archive-before-delete transaction, private identity retention, late-sighting revalidation and preservation of a current privacy fence; 10 unit and 11 SQL fixture tests pass. No live deletion or migration. |
 | Final verification and private-branch publication | Full backend/frontend units run on the final documentation HEAD; non-forced branch push and matching remote SHA required before handoff. |
