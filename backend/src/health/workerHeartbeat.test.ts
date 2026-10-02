@@ -58,3 +58,20 @@ test('each metrics scrape collects a fresh heartbeat and reflects expiry and rec
   assert.match(await metricsRegistry.metrics(), /\{worker="link"\} 0\n/);
   assert.equal(reads, 4);
 });
+
+test('Redis client initialization failure exports an unknown heartbeat and the next scrape recovers', async (t) => {
+  t.after(() => { setWorkerHeartbeatCollector(null); workerHeartbeatAgeSeconds.reset(); });
+  let initializationFails = true;
+  workerHeartbeatAgeSeconds.set({ worker: 'link' }, 0);
+  setWorkerHeartbeatCollector(linkWorkerHeartbeatCollector(
+    () => {
+      if (initializationFails) throw new Error('Redis client initialization failed');
+      return { get: async () => '995' };
+    },
+    workerHeartbeatAgeSeconds,
+    () => 1_000_000,
+  ));
+  assert.match(await metricsRegistry.metrics(), /\{worker="link"\} -1\n/);
+  initializationFails = false;
+  assert.match(await metricsRegistry.metrics(), /\{worker="link"\} 5\n/);
+});

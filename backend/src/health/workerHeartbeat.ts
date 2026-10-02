@@ -35,6 +35,12 @@ export function linkWorkerHeartbeatCollector(
   now: () => number = Date.now,
 ): () => Promise<void> {
   return async () => {
-    gauge.set({ worker: 'link' }, await readLinkWorkerHeartbeatAge(client(), now));
+    let age = -1;
+    try {
+      age = await readLinkWorkerHeartbeatAge(client(), now);
+    } catch {
+      // Client initialization can fail before the bounded Redis read begins.
+    }
+    gauge.set({ worker: 'link' }, age);
   };
 }

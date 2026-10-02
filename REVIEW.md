@@ -432,6 +432,17 @@ The final matrix uses one browser worker to reduce local software-rendering
 contention. These synthetic tiles verify loading/decoding behavior, not real
 terrain elevation accuracy or production rendering performance.
 
+A metrics-scrape regression also reproduced a synchronous Redis client-factory
+failure escaping before the bounded heartbeat read: the whole registry scrape
+threw instead of replacing a previous healthy link value. The collector now
+catches initialization failure and exports **-1**, while keeping gauge writes
+outside that catch. The next scrape can initialize successfully and recover.
+`cd backend && node --import tsx --test src/health/workerHeartbeat.test.ts`:
+**6/6 pass**; backend typecheck passes. The first full backend rerun was
+**358/359** because the unchanged worker-pool replacement test timed out its
+fresh worker startup inside a 750ms budget under concurrent verification load.
+That separate test failure is being investigated; 359/359 is not yet claimed.
+
 ## Final verification and publication
 
 Source commits: `9a5e838` (retirement), `2d2b425` (prewarm), `236e948`
@@ -475,7 +486,7 @@ Completion audit against the supplied brief:
 | --- | --- |
 | Retired-workload unit-suite repair | Historical policy and current callers restored; 3 focused tests and the complete backend suite pass. |
 | Owner prewarm observability and bounded load | Progress every ten nodes, in-flight 20s warning, configurable cap of two, ownership-scoped single-flight, responsive fresh-cache reads and shutdown; 15 focused tests pass. Live cold-pass time/load remains unmeasured. |
-| Link heartbeat source and alert semantics | Per-scrape genuine Redis heartbeat; missing/stale active queues covered by 5 source/metric tests and 10 Prometheus scenario groups, including independent scrape reporters. Live alert firing is not claimed. |
+| Link heartbeat source and alert semantics | Per-scrape genuine Redis heartbeat, including client-initialization failure/recovery; 6 source/metric tests and 10 Prometheus scenario groups, including independent scrape reporters. Live alert firing is not claimed. |
 | Variable-height UK feed | ResizeObserver measurements and anchored offsets at both widths; 2 frontend geometry tests plus 2 expanded browser cases pass. |
 | Compose adoption guard | Local failing mocked reproduction, pre-mutation rejection, 16 passing replacement drills, including the pipefail regression. No live Docker inspection. |
 | Inactive-node archive/delete for every role | Role/bridge-independent selection, archive-before-delete transaction, private identity retention, late-sighting revalidation and preservation of a current privacy fence; 10 unit and 11 SQL fixture tests pass. No live deletion or migration. |
