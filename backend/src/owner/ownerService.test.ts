@@ -87,6 +87,39 @@ test('a warm refresh updates the current bucket, retains history and trims the r
   assert.equal(since.length, 2, 'the completed warm refresh serves the next foreground read');
 });
 
+test('warm last-hop refreshes replace groups when peer names or resolution change', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-02T12:00:00Z') });
+  const previous = '2026-10-02T10:00:00.000Z';
+  const latest = '2026-10-02T11:00:00.000Z';
+  const historical = lastHopRow(previous, 3);
+  const renamed = { ...lastHopRow(latest, 4), last_hop_name: 'Renamed peer' };
+  const resolved = { ...lastHopRow(latest, 2), last_hop_node_id: 'new-peer', last_hop_name: 'New peer' };
+  const service = lastHopService(async (_nodes, _scope, cursor) => ({ rows: cursor === undefined
+    ? [historical, lastHopRow(latest, 4), {
+      ...lastHopRow(latest, 2), last_hop_node_id: null, last_hop_name: 'Unresolved', resolution: 'unresolved',
+    }]
+    : [renamed, resolved] }));
+  await service.getOwnerLastHopStrength(['a'], 'a');
+  const refreshed = await service.getOwnerLastHopStrength(['a'], 'a', true);
+  assert.deepEqual(refreshed.points.map(point => [point.bucket, point.lastHopNodeId, point.lastHopName, point.resolution, point.sampleCount]), [
+    [previous, 'peer', 'Peer', 'resolved', 3],
+    [latest, 'peer', 'Renamed peer', 'resolved', 4],
+    [latest, 'new-peer', 'New peer', 'resolved', 2],
+  ]);
+  assert.deepEqual(await service.getOwnerLastHopStrength(['a'], 'a'), refreshed);
+});
+
+test('an empty warm last-hop result removes obsolete current groups and preserves earlier history', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-02T12:00:00Z') });
+  const previous = '2026-10-02T10:00:00.000Z';
+  const latest = '2026-10-02T11:00:00.000Z';
+  const service = lastHopService(async (_nodes, _scope, cursor) => ({ rows: cursor === undefined
+    ? [lastHopRow(previous, 3), lastHopRow(latest, 2)] : [] }));
+  await service.getOwnerLastHopStrength(['a'], 'a');
+  const refreshed = await service.getOwnerLastHopStrength(['a'], 'a', true);
+  assert.deepEqual(refreshed.points.map(point => [point.bucket, point.sampleCount]), [[previous, 3]]);
+});
+
 test('a failed warm refresh preserves the prior foreground cache and allows a later retry', async (t) => {
   t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-02T12:00:00Z') });
   let calls = 0;

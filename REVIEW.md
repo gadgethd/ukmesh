@@ -67,7 +67,8 @@ passes cannot overlap. Start/end logs and every ten completed nodes report
 owners/nodes completed and total, refreshed and failed. A refresh warns at 20s
 while still in flight; failures are counted and do not stop the pass.
 
-Forced warm refreshes retain incremental last-hop merging. Foreground reads and
+Forced warm refreshes replace groups in the inclusive latest-bucket query window
+and retain earlier history. Foreground reads and
 warm refreshes share in-flight work. Cache keys include all owned nodes because
 that exclusion set changes the last-hop query; warming a shared node for one
 owner must not serve another owner's exclusion scope.
@@ -529,6 +530,24 @@ suite now passes **5/5**, with no skips; the same command above applies.
 Backend typecheck passes, and all temporary native database directories are
 removed after the run.
 
+## Last-hop regrouping during warm refreshes
+
+Two new regressions reproduced stale groups after successful incremental
+refreshes. The SQL groups by bucket, peer identity, current name and resolution;
+the cache previously upserted those keys without removing groups that the new
+query no longer returned. A peer rename or unresolved-to-resolved transition
+doubled the affected bucket's sample count, and an empty query retained obsolete
+groups. The tests failed **2/2** before the fix.
+
+The cache now replaces all groups at or after the inclusive query cursor while
+retaining earlier buckets and the rolling seven-day trim. Query scope, cache
+keys, single-flight and failure preservation are unchanged. This also preserves
+the repository's current ordering within each refreshed bucket. Exact focused
+command: `cd backend && node --import tsx --test
+src/owner/ownerService.test.ts src/owner/ownerLastHopPrewarm.test.ts`: **17/17
+pass**, 0 failures or skips. Backend typecheck passes. This verifies response
+replacement with controlled repository results; no live owner query is claimed.
+
 ## Final verification and publication
 
 Source commits: `9a5e838` (retirement), `2d2b425` (prewarm), `236e948`
@@ -549,7 +568,7 @@ Full unit suites are rerun after it, before publication.
 
 | Exact command | Result |
 | --- | --- |
-| `cd backend && npm test` | **360/360 pass**, 0 fail, 0 skipped. Expands to the brief's `node --import tsx --test $(find src -name '*.test.ts' ! -name '*.integration.test.ts' -print)`. |
+| `cd backend && npm test` | **362/362 pass**, 0 fail, 0 skipped. Expands to the brief's `node --import tsx --test $(find src -name '*.test.ts' ! -name '*.integration.test.ts' -print)`. |
 | `cd frontend && npm test` | **100/100 pass**, 0 fail, 0 skipped. |
 | `cd backend && npm run typecheck` | Pass. |
 | `cd backend && npm run build` | Pass. |
@@ -581,7 +600,7 @@ Completion audit against the supplied brief:
 | Requirement | Reviewable result and evidence |
 | --- | --- |
 | Retired-workload unit-suite repair | Historical policy and current callers restored; 3 focused tests and the complete backend suite pass. |
-| Owner prewarm observability and bounded load | Progress every ten nodes, in-flight 20s warning, configurable cap of two, ownership-scoped single-flight, responsive fresh-cache reads and shutdown; 15 focused tests pass. Live cold-pass time/load remains unmeasured. |
+| Owner prewarm observability and bounded load | Progress every ten nodes, in-flight 20s warning, configurable cap of two, ownership-scoped single-flight, responsive fresh-cache reads, replacement of renamed/reclassified groups and shutdown; 17 focused tests pass. Live cold-pass time/load remains unmeasured. |
 | Link heartbeat source and alert semantics | Per-scrape genuine Redis heartbeat, including client-initialization failure/recovery; 6 source/metric tests and 10 Prometheus scenario groups, including independent scrape reporters. Live alert firing is not claimed. |
 | Variable-height UK feed | ResizeObserver measurements and anchored offsets at both widths; 3 frontend geometry tests plus 2 expanded browser cases pass. |
 | Compose adoption guard | Local failing mocked reproduction, pre-mutation rejection, 16 passing replacement drills, including the pipefail regression. No live Docker inspection. |

@@ -157,15 +157,14 @@ export function createOwnerService(deps: OwnerServiceDeps) {
       .sort((a, b) => a.bucket.localeCompare(b.bucket));
   }
 
-  function mergeLastHopPoints(existing: LastHopStrengthPoint[], recent: LastHopStrengthPoint[]): LastHopStrengthPoint[] {
-    const merged = new Map<string, LastHopStrengthPoint>();
-    for (const point of existing) {
-      merged.set(`${point.bucket}|${point.lastHopNodeId ?? ''}|${point.lastHopName}|${point.resolution}`, point);
-    }
-    for (const point of recent) {
-      merged.set(`${point.bucket}|${point.lastHopNodeId ?? ''}|${point.lastHopName}|${point.resolution}`, point);
-    }
-    return trimLastHopPoints(Array.from(merged.values()));
+  function replaceLastHopPoints(existing: LastHopStrengthPoint[], recent: LastHopStrengthPoint[], since: string): LastHopStrengthPoint[] {
+    // The inclusive query recomputes every group from this bucket onward. Peer
+    // renames, resolution changes or removals must replace the old groups too.
+    const cursor = Date.parse(since);
+    return trimLastHopPoints([
+      ...existing.filter((point) => Date.parse(point.bucket) < cursor),
+      ...recent,
+    ]);
   }
 
   function latestBucketOf(points: LastHopStrengthPoint[]): string | null {
@@ -559,7 +558,7 @@ export function createOwnerService(deps: OwnerServiceDeps) {
       } else {
         const recent = await buildOwnerLastHopResponse(selectedNodeId, ownedNodeIds, cacheEntry.latestBucket);
         responseData = {
-          points: mergeLastHopPoints(cacheEntry.data.points, recent.points),
+          points: replaceLastHopPoints(cacheEntry.data.points, recent.points, cacheEntry.latestBucket),
         };
       }
       ownerLastHopCache.set(cacheKey, {
