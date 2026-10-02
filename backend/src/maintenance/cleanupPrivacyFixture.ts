@@ -43,4 +43,3 @@ export async function installPrivacyTriggers(db: { exec(sql: string): Promise<un
       FOR EACH ROW EXECUTE FUNCTION classify_packet_path_privacy();
   `);
 }
-

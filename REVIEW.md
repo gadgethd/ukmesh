@@ -117,6 +117,18 @@ into an ignored worktree-local tools directory, without starting a container.
 Archive SHA256: `2a542df32eac02ee17b9d844fb2aa1de00dafa5476579ba8a3ba862e9d572ea0`,
 matching the official listing. Live metric/alert behavior remains deploy-gated.
 
+Publisher-side verification now exercises the actual
+`link_queue_v3.start_worker_heartbeat` thread with recording Redis clients:
+immediate publication, integer Unix seconds, ten-second refresh requests,
+45-second expiry requests, failed-write reconnect, client-creation recovery,
+an already-stopped worker and interruption of a real ten-second wait on
+shutdown. The five tests use controlled waits for retry/cadence checks and
+a real event for shutdown; no Redis service or production client is accessed.
+Exact command: `PYTHONPATH=viewshed-worker python3 -m unittest discover -s
+viewshed-worker/tests -p test_link_worker_heartbeat.py -v`: **5/5 pass**.
+This verifies the publisher's Redis command contract, not live Redis expiry
+or production alert behavior. The worker implementation is unchanged.
+
 ## 4. UK feed virtualizer — #303
 
 Implemented option (a): natural border-box measurements from `ResizeObserver`,
@@ -676,6 +688,9 @@ Checkpoint `ace67e4` passed the complete local Chromium matrix **61/61** in
 fixture changes. Post-commit backend/frontend unit suites passed **362/362**
 and **100/100**, respectively. The optional Firefox/WebKit profile passed
 **4/4**, and the affected Chromium feed cases passed **2/2**.
+After the shared privacy-trigger fixture and native fence cases were committed,
+`fcac2a9` also passed both full unit suites (**362/362 backend**, **100/100
+frontend**, no failures or skips) and the backend build.
 
 | Exact command | Result |
 | --- | --- |
@@ -696,6 +711,7 @@ and **100/100**, respectively. The optional Firefox/WebKit profile passed
 | Fresh-cache targeted browser command below | **4/4 pass** with fresh caches; no retries. |
 | `.ukmesh-tools/promtool check rules logging/rules/meshcore.yml` | **24 rules valid**. |
 | `.ukmesh-tools/promtool test rules logging/rules/meshcore.test.yml` | **10 scenario groups pass**. |
+| `PYTHONPATH=viewshed-worker python3 -m unittest discover -s viewshed-worker/tests -p test_link_worker_heartbeat.py -v` | **5/5 publisher lifecycle tests pass**; recording Redis clients, actual heartbeat thread, no live service. |
 | `bash -n scripts/check-compose-adoption.sh scripts/replace-container.sh scripts/test-replace-container.sh` | Pass. |
 | `TMPDIR="$PWD/.ukmesh-tools/tmp" bash scripts/test-replace-container.sh` | **16/16 mocked drills pass**. |
 | Optional isolated cleanup PGlite integration command above | **13/13 pass**, 0 skipped. |
@@ -717,7 +733,7 @@ Completion audit against the supplied brief:
 | --- | --- |
 | Retired-workload unit-suite repair | Historical policy and current callers restored; 3 focused tests and the complete backend suite pass. |
 | Owner prewarm observability and bounded load | Progress every ten nodes, in-flight 20s warning, configurable cap of two, ownership-scoped single-flight, responsive fresh-cache reads, replacement of renamed/reclassified groups and shutdown; 17 focused tests pass. Live cold-pass time/load remains unmeasured. |
-| Link heartbeat source and alert semantics | Per-scrape genuine Redis heartbeat, including client-initialization failure/recovery; 6 source/metric tests and 10 Prometheus scenario groups, including independent scrape reporters. Live alert firing is not claimed. |
+| Link heartbeat source and alert semantics | Per-scrape genuine Redis heartbeat, including client-initialization failure/recovery; 6 source/metric tests, 5 publisher lifecycle tests and 10 Prometheus scenario groups, including independent scrape reporters. Live alert firing is not claimed. |
 | Variable-height UK feed | ResizeObserver measurements and anchored offsets at both widths; 3 frontend geometry tests, 2 Chromium feed cases and 4 Firefox/WebKit cases pass. |
 | Compose adoption guard | Local failing mocked reproduction, pre-mutation rejection, 16 passing replacement drills, including the pipefail regression. No live Docker inspection. |
 | Inactive-node archive/delete for every role | Role/bridge-independent selection, archive-before-delete transaction, private identity retention, late-sighting revalidation, visibility-before-node lock order and preservation of a current privacy fence; 11 unit, 13 PostgreSQL-WASM and 14 native PostgreSQL fixtures pass. No live deletion or migration. |
