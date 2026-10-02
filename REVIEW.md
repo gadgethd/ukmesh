@@ -1,0 +1,75 @@
+# UKMesh fix review — 2026-10-02
+
+Branch: `fix/ukmesh-burn-20261002`. Base: `73ee004` (`ukmesh-w5`).
+Scope: the UKMesh burn brief, including the stretch queue. All edits and local
+verification stay in this worktree. No deployment, container restart, migration,
+live-tree access, or environment change is authorized or performed.
+
+## Baseline and evidence
+
+- Read `knowledge.md`, `AI_MEMORY.md`, and the full supplied brief, and consulted
+  OpenViking. Tokensave tools and `.tokensave/tokensave.db` are absent here, so
+  structural investigation uses scoped source searches and Git objects.
+- The initial worktree was clean. `git symbolic-ref refs/remotes/origin/HEAD`
+  fails because the local symbolic ref is absent. `git ls-remote --symref origin
+  HEAD` and `gh repo view gadgethd/ukmesh --json defaultBranchRef,nameWithOwner`
+  both identify `main` (remote HEAD `74d3ff1`). The requested integration base
+  remains `ukmesh-w5`; changing it would change the brief's scope.
+- Dependencies were missing; `npm ci` in `backend` and `frontend` installed the
+  committed lockfiles without changing them. Initial backend `npm test` after
+  installation: **327/327 pass, 0 fail, 0 skipped**.
+- The brief describes additional untracked live-checkout code. Neither
+  `runState.test.ts` nor `ownerLastHopPrewarm.ts` exists on the initial branch.
+  Git history contains the former and its full policy in `d834ba8`, and an
+  earlier feed measurement implementation in `333f180`. No live checkout was
+  inspected or copied.
+- `push.md` is ignored but absent from this worktree and all Git history. Its
+  location has been requested; push validation and disposition will be recorded
+  before publishing.
+- Issue numbers in the brief are not assumed to be GitHub issue IDs:
+  `gh issue view 438 --repo gadgethd/ukmesh` finds no such issue. The supplied
+  brief is the requirements source.
+
+## 1. Unit suite — #536 / #437 / #301
+
+Decision: option (c), restore the complete intended retired-workload policy,
+including the missing export and production callers, from the isolated prior
+fix `d834ba8`. The initial `runState.ts` exactly matches that commit's parent.
+This is not a dummy export to make a test load: migration 044 explicitly removed
+the path-history cache, API and worker; `beginAnalysisRun` must reject a new
+retired lease, and `getAnalysisWorkloadStates` must describe retirement while
+preserving historical failures for audit. Supported workloads and unexpected
+active retired runs continue to expose their actual status and errors.
+
+Evidence: after restoring only the historical test and `workloadPolicy.ts`,
+`cd backend && node --import tsx --test src/analysis/runState.test.ts` fails with
+`SyntaxError: ... does not provide an export named 'normalizeRetiredAnalysisState'`.
+After restoring the source policy wiring, the same command passes **3/3**, with
+no database needed. `cd backend && npm test` now passes **330/330**, 0 fail,
+0 skipped; `cd backend && npm run typecheck` passes. Final-HEAD rerun pending.
+
+## 2. Owner last-hop prewarm — #438
+
+Implementation and validation pending.
+
+## 3. Heartbeat alert semantics — #543 / #507
+
+Implementation and validation pending.
+
+## 4. UK feed virtualizer — #303
+
+Implementation and validation pending.
+
+## Stretch queue
+
+- #424 Compose adoption guard: pending reproduction and local guard verification.
+- #447 stale node archive/delete: pending implementation and tests.
+- Full backend/frontend suites on final HEAD: pending.
+- Other proxy heartbeat signals and alert consumers: pending audit.
+
+## Deployment gate, limitations and open questions
+
+The operator must separately review, merge and deploy code/rules. Local tests
+cannot prove live DB load, cold-pass wall time, Redis freshness in production,
+alert recovery or container adoption. This session will not perform those
+operations. `push.md` is the outstanding process-document question.
