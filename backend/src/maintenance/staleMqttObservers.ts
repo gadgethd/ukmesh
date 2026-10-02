@@ -63,9 +63,8 @@ async function cleanupNodeRecords(
     await client.query('BEGIN');
     await client.query(`SELECT pg_advisory_xact_lock(hashtext('stale-mqtt-observer-cleanup'))`);
 
-    // Lock the node row used by MQTT's atomic upsert. If a node
-    // returns during cleanup, it either becomes fresh before this selection or
-    // waits and recreates itself immediately after the deletion commits.
+    // Discover candidates without node locks. Packet ingestion pins visibility
+    // before updating nodes; cleanup must acquire locks in that same order.
     const staleCondition = kind === 'mqtt-observer'
       ? `last_mqtt_observer_seen_at < NOW() - ($1 * INTERVAL '1 day')
          AND (role IS NULL OR role = 2)`
@@ -94,7 +93,7 @@ async function cleanupNodeRecords(
             SELECT 1 FROM private_node_prefixes p WHERE p.node_id = n.node_id
           )`;
     const candidates = await client.query<{ node_id: string }>(
-      `${candidateSelection} ORDER BY node_id FOR UPDATE`,
+      `${candidateSelection} ORDER BY node_id`,
       [thresholdDays],
     );
     let nodeIds = candidates.rows.map((row) => row.node_id);
@@ -106,8 +105,7 @@ async function cleanupNodeRecords(
     // The prefix FK's cascading DELETE fires its statement trigger even when
     // these public nodes have no prefixes. At trigger depth 1 it advances the
     // public generation without re-fencing stored packets. Serialize that
-    // change, and preserve only a fence that was already current. The locked
-    // candidates cannot gain a privacy marker/prefix before deletion.
+    // change, and preserve only a fence that was already current.
     const visibilityState = await client.query<{ materialization_current: boolean }>(
       `SELECT visibility.generation = materialized.visibility_generation AS materialization_current
          FROM public_visibility_state visibility
@@ -116,19 +114,18 @@ async function cleanupNodeRecords(
         WHERE visibility.singleton = TRUE
         FOR UPDATE OF visibility`,
     );
-    if (kind === 'inactive-node') {
-      // Packet ingestion locks this visibility row FOR KEY SHARE before its
-      // RF rollups. A batch may finish while cleanup waits for FOR UPDATE;
-      // recheck those independently updated sightings before archival.
-      const stillInactive = await client.query<{ node_id: string }>(
-        `${candidateSelection} AND n.node_id = ANY($2::text[]) ORDER BY node_id FOR UPDATE`,
-        [thresholdDays, nodeIds],
-      );
-      nodeIds = stillInactive.rows.map((row) => row.node_id);
-      if (nodeIds.length === 0) {
-        await client.query('COMMIT');
-        return noCandidates;
-      }
+    // Recheck both policies after waiting for visibility: ingestion may have
+    // refreshed nodes/rollups or a privacy writer may have changed consent.
+    // Skip busy nodes instead of waiting on a writer that itself needs the
+    // visibility lock. Unlocked public candidates stay locked until commit.
+    const stillInactive = await client.query<{ node_id: string }>(
+      `${candidateSelection} AND n.node_id = ANY($2::text[]) ORDER BY node_id FOR UPDATE SKIP LOCKED`,
+      [thresholdDays, nodeIds],
+    );
+    nodeIds = stillInactive.rows.map((row) => row.node_id);
+    if (nodeIds.length === 0) {
+      await client.query('COMMIT');
+      return noCandidates;
     }
 
     const batchId = options.batchId ?? `stale-${kind}-${new Date().toISOString()}-${crypto.randomUUID()}`;

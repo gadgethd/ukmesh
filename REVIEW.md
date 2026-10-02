@@ -485,6 +485,42 @@ the existing chunk-size warning. All code/test changes are committed and pushed;
 the working tree is clean at this checkpoint. The burn remains active until
 the requested stop signal.
 
+Further lock-order verification reproduced **40P01 deadlocks** for both cleanup
+policies on a disposable native PostgreSQL **16.14** cluster: cleanup locked
+nodes before waiting for visibility, while a separate ingestion transaction
+held visibility `FOR KEY SHARE` and then updated the same node. A third case
+reproduced a busy-node lock timeout (**55P03**). The cluster uses a fresh ignored
+data directory, an allocated loopback port, synthetic credentials and automatic
+shutdown/removal. No existing database or container is used. The standalone
+test tool is [embedded-postgres](https://github.com/leinelissen/embedded-postgres)
+`16.14.0-beta.17`, installed only under ignored tooling.
+
+Both policies now discover candidates without node locks, lock visibility,
+then re-evaluate the complete original predicate and lock eligible nodes with
+`FOR UPDATE SKIP LOCKED`. This matches ingestion's lock order and avoids waiting
+on busy row writers that may themselves need visibility. Fresh/private changes
+withdraw their candidates; busy nodes remain for a later pass. Archival and
+deletion still happen only after successful revalidation and node locking.
+
+Native lock tests changed from **0/3** to **3/3 pass**, no skips:
+
+```sh
+cd backend
+TEST_NODE_CLEANUP_POSTGRES_MODULE="file://$PWD/../.ukmesh-tools/embedded-postgres/node_modules/embedded-postgres/dist/index.js" node --import tsx --test src/maintenance/staleMqttObservers.native.integration.test.ts
+```
+
+The native fixtures execute the actual cleanup function with simultaneous SQL
+connections and the visibility/node locking pattern from `packetBatch.ts`.
+They do not execute the entire ingestion pipeline or measure live workloads.
+The PGlite boundary hook now identifies the unlocked discovery query; its RF
+freshness assertions remain intact. Two added boundary cases use the actual
+privacy triggers to retain new consent and private packet flags for both
+policies. Those consent cases remain controlled single-connection fixtures.
+The optional PGlite suite passes **13/13**; focused cleanup units pass **11/11**;
+full backend `npm test` passes **360/360**, all without failures or skips.
+Backend typecheck passes. Production lock duration/candidate volume and other
+concurrent writers remain unmeasured.
+
 ## Final verification and publication
 
 Source commits: `9a5e838` (retirement), `2d2b425` (prewarm), `236e948`
@@ -505,7 +541,7 @@ Full unit suites are rerun after it, before publication.
 
 | Exact command | Result |
 | --- | --- |
-| `cd backend && npm test` | **359/359 pass**, 0 fail, 0 skipped. Expands to the brief's `node --import tsx --test $(find src -name '*.test.ts' ! -name '*.integration.test.ts' -print)`. |
+| `cd backend && npm test` | **360/360 pass**, 0 fail, 0 skipped. Expands to the brief's `node --import tsx --test $(find src -name '*.test.ts' ! -name '*.integration.test.ts' -print)`. |
 | `cd frontend && npm test` | **100/100 pass**, 0 fail, 0 skipped. |
 | `cd backend && npm run typecheck` | Pass. |
 | `cd backend && npm run build` | Pass. |
@@ -520,7 +556,8 @@ Full unit suites are rerun after it, before publication.
 | `.ukmesh-tools/promtool test rules logging/rules/meshcore.test.yml` | **10 scenario groups pass**. |
 | `bash -n scripts/check-compose-adoption.sh scripts/replace-container.sh scripts/test-replace-container.sh` | Pass. |
 | `TMPDIR="$PWD/.ukmesh-tools/tmp" bash scripts/test-replace-container.sh` | **16/16 mocked drills pass**. |
-| Optional isolated cleanup integration command above | **11/11 pass**, 0 skipped. |
+| Optional isolated cleanup PGlite integration command above | **13/13 pass**, 0 skipped. |
+| Optional isolated cleanup native PostgreSQL command above | **3/3 pass**, 0 skipped, including actual concurrent transactions. |
 | `git diff --check 73ee004` | Pass; scoped review found no migration, schema, environment-file, lockfile or unrelated source edits. |
 | `cd frontend && npm run lint:css` | Existing **6 duplicate-selector failures** in unchanged files; left out of scope. |
 
@@ -540,7 +577,7 @@ Completion audit against the supplied brief:
 | Link heartbeat source and alert semantics | Per-scrape genuine Redis heartbeat, including client-initialization failure/recovery; 6 source/metric tests and 10 Prometheus scenario groups, including independent scrape reporters. Live alert firing is not claimed. |
 | Variable-height UK feed | ResizeObserver measurements and anchored offsets at both widths; 3 frontend geometry tests plus 2 expanded browser cases pass. |
 | Compose adoption guard | Local failing mocked reproduction, pre-mutation rejection, 16 passing replacement drills, including the pipefail regression. No live Docker inspection. |
-| Inactive-node archive/delete for every role | Role/bridge-independent selection, archive-before-delete transaction, private identity retention, late-sighting revalidation and preservation of a current privacy fence; 10 unit and 11 SQL fixture tests pass. No live deletion or migration. |
+| Inactive-node archive/delete for every role | Role/bridge-independent selection, archive-before-delete transaction, private identity retention, late-sighting revalidation, visibility-before-node lock order and preservation of a current privacy fence; 11 unit, 13 SQL fixture and 3 native concurrency tests pass. No live deletion or migration. |
 | Final verification and private-branch publication | Full backend/frontend units run on the final documentation HEAD; non-forced branch push and matching remote SHA required before handoff. |
 | Other heartbeat proxies | Source/cadence/alert-consumer findings recorded above; the health-worker false-positive candidate remains a source-based follow-up. |
 
@@ -554,7 +591,7 @@ fix/ukmesh-burn-20261002` currently returns no runs, so remote CI execution is n
 claimed. All three repository workflows are listed as active. `release.yml` requires a
 published release or explicit dispatch. No deployment/release workflow is invoked.
 Ignored local logs contain TAP/build/browser output, and ignored tooling holds
-standalone promtool and PGlite. Neither is part of the shipped runtime.
+standalone promtool, PGlite and embedded-postgres. None is part of the shipped runtime.
 Draft PR: https://github.com/gadgethd/ukmesh/pull/113, against `ukmesh-w5`.
 
 ## Deployment gate, limitations and open questions

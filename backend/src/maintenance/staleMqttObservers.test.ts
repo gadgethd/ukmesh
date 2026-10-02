@@ -59,7 +59,7 @@ test('inactive-node cleanup has no role or prior MQTT requirement and considers 
   assert.match(selection.text, /network IS DISTINCT FROM 'test'/);
   assert.match(selection.text, /COALESCE\(n.name, ''\) NOT LIKE '%🚫%'/);
   assert.match(selection.text, /private_node_prefixes p WHERE p.node_id = n.node_id/);
-  assert.match(selection.text, /FOR UPDATE/);
+  assert.doesNotMatch(selection.text, /FOR UPDATE/);
   assert.match(selection.text, /s.node_id = n.node_id/);
   assert.match(selection.text, /s.last_seen_at >= NOW/);
   assert.match(selection.text, /s.rx_node_id = n.node_id/);
@@ -181,6 +181,7 @@ test('archives visibility records before deleting stale observer nodes', async (
     { rows: [], rowCount: 0 }, // advisory lock
     { rows: [{ node_id: 'A'.repeat(64) }], rowCount: 1 },
     { rows: [{ materialization_current: true }], rowCount: 1 }, // visibility lock
+    { rows: [{ node_id: 'A'.repeat(64) }], rowCount: 1 }, // locked revalidation
     { rows: [], rowCount: 1 }, // archive nodes
     { rows: [], rowCount: 1 }, // archive observer sightings
     { rows: [], rowCount: 1 }, // archive network sightings
@@ -224,4 +225,24 @@ test('candidates withdrawn after the visibility lock are never archived or delet
   assert.equal(stub.calls.at(-1)?.text, 'COMMIT');
   assert.deepEqual(stub.calls[4]?.values, [30, ['now-fresh']]);
   assert.equal(stub.released(), true);
+});
+
+test('both cleanup policies take visibility before node locks and skip busy candidates', async () => {
+  for (const cleanup of [cleanupInactiveNodes, cleanupStaleMqttObservers]) {
+    const stub = stubPool([
+      { rows: [], rowCount: 0 }, { rows: [], rowCount: 0 },
+      { rows: [{ node_id: 'busy' }], rowCount: 1 },
+      { rows: [{ materialization_current: true }], rowCount: 1 },
+      { rows: [], rowCount: 0 },
+    ]);
+    const result = await cleanup({ cleanupPool: stub.pool });
+    assert.equal(result.nodes, 0);
+    assert.doesNotMatch(stub.calls[2]!.text, /FOR UPDATE/);
+    assert.match(stub.calls[3]!.text, /FOR UPDATE OF visibility/);
+    assert.match(stub.calls[4]!.text, /FOR UPDATE SKIP LOCKED/);
+    assert.deepEqual(stub.calls[4]!.values, [30, ['busy']]);
+    assert.equal(stub.calls.some((call) => call.text.includes('INSERT INTO maintenance_removed_records') || call.text.includes('DELETE FROM')), false);
+    assert.equal(stub.calls.at(-1)?.text, 'COMMIT');
+    assert.equal(stub.released(), true);
+  }
 });

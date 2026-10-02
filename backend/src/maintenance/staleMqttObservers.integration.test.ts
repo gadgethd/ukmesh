@@ -289,7 +289,8 @@ test('PostgreSQL inactive cleanup rechecks RF sightings that arrive after the in
         ...client,
         async query(text: string, values?: unknown[]) {
           const result = await client.query(text, values);
-          if (!injected && text.includes('SELECT node_id') && text.includes('FOR UPDATE')) {
+          if (!injected && text.trim().startsWith('SELECT node_id')) {
+            assert.doesNotMatch(text, /FOR UPDATE/, 'candidate discovery must not lock nodes ahead of visibility');
             injected = true;
             // Simulate source-node RF rollups becoming fresh between the first
             // candidate snapshot and the visibility lock that fences ingestion.
@@ -309,3 +310,38 @@ test('PostgreSQL inactive cleanup rechecks RF sightings that arrive after the in
   assert.equal((await f.db.query("SELECT COUNT(*)::int AS count FROM maintenance_removed_records WHERE record_data->>'node_id' IN ('companion', 'room-server') OR record_data->>'rx_node_id' = 'room-server'")).rows[0].count, 0,
     'withdrawn candidates and their visibility records must not enter the removal archive');
 });
+
+for (const cleanup of [cleanupInactiveNodes, cleanupStaleMqttObservers]) {
+  test(`PostgreSQL ${cleanup.name} retains privacy changes observed after discovery`, options, async (t) => {
+    const f = await fixture();
+    t.after(() => f.db.close());
+    if (cleanup === cleanupStaleMqttObservers) {
+      await f.db.exec(`UPDATE nodes SET role = 2, last_mqtt_observer_seen_at = NOW() - INTERVAL '31 days' WHERE node_id = 'companion'`);
+    }
+    await installPrivacyTriggers(f.db);
+    let injected = false;
+    const cleanupPool = { async connect() {
+      const client = await f.cleanupPool.connect();
+      return { ...client, async query(text: string, values?: unknown[]) {
+        const result = await client.query(text, values);
+        if (!injected && text.trim().startsWith('SELECT node_id')) {
+          injected = true;
+          assert.doesNotMatch(text, /FOR UPDATE/);
+          await f.db.exec(`UPDATE nodes SET name = '🚫 Dormant private companion' WHERE node_id = 'companion'`);
+        }
+        return result;
+      } };
+    } };
+    const result = await cleanup({ cleanupPool });
+    assert.equal(injected, true);
+    assert.equal(result.nodes, cleanup === cleanupInactiveNodes ? 3 : 0);
+    assert.equal((await f.db.query("SELECT COUNT(*)::int AS count FROM nodes WHERE node_id = 'companion'")).rows[0].count, 1);
+    assert.equal((await f.db.query("SELECT COUNT(*)::int AS count FROM private_node_prefixes WHERE node_id = 'companion'")).rows[0].count, 3);
+    assert.deepEqual((await f.db.query("SELECT is_private, visibility_ok FROM packets WHERE src_node_id = 'companion'")).rows,
+      [{ is_private: true, visibility_ok: false }]);
+    assert.equal((await f.db.query("SELECT COUNT(*)::int AS count FROM maintenance_removed_records WHERE record_data->>'node_id' = 'companion' OR record_data->>'rx_node_id' = 'companion'")).rows[0].count, 0);
+    const fence = (await f.db.query(`SELECT visibility.generation = materialized.visibility_generation AS current
+      FROM public_visibility_state visibility CROSS JOIN packet_visibility_materialization_state materialized`)).rows[0];
+    assert.equal(fence.current, true);
+  });
+}
