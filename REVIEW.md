@@ -23,9 +23,11 @@ live-tree access, or environment change is authorized or performed.
   Git history contains the former and its full policy in `d834ba8`, and an
   earlier feed measurement implementation in `333f180`. No live checkout was
   inspected or copied.
-- `push.md` is ignored but absent from this worktree and all Git history. Its
-  location has been requested; push validation and disposition will be recorded
-  before publishing.
+- `push.md` is ignored but absent from this worktree and all Git history. An
+  optional location question received no answer during the work; OpenViking
+  supplies no copy. Its exact discipline cannot be verified. The authorized
+  fallback is a clean, reviewed and tested private branch, a non-forced push to
+  that branch only, and an exact remote-SHA check. No merge or deployment follows.
 - Issue numbers in the brief are not assumed to be GitHub issue IDs:
   `gh issue view 438 --repo gadgethd/ukmesh` finds no such issue. The supplied
   brief is the requirements source.
@@ -46,7 +48,8 @@ Evidence: after restoring only the historical test and `workloadPolicy.ts`,
 `SyntaxError: ... does not provide an export named 'normalizeRetiredAnalysisState'`.
 After restoring the source policy wiring, the same command passes **3/3**, with
 no database needed. `cd backend && npm test` now passes **330/330**, 0 fail,
-0 skipped; `cd backend && npm run typecheck` passes. Final-HEAD rerun pending.
+0 skipped; `cd backend && npm run typecheck` passes. Final suite results appear
+below.
 
 ## 2. Owner last-hop prewarm — #438
 
@@ -132,7 +135,7 @@ could not connect to its trusted Node service, so these checks use the repositor
 Playwright CLI. `cd frontend && npm run build` passes with the existing large-chunk
 warning. Production traffic and the complete existing E2E matrix were not tested.
 
-`cd frontend && npm run lint:css` reports **6 pre-existing duplicate declarations**
+`cd frontend && npm run lint:css` reports **6 pre-existing duplicate selectors**
 in unchanged `globals.css`, `map-app.css` and `owner-portal.css`. Their diff against
 `73ee004` is empty; this change edits no CSS files.
 
@@ -206,12 +209,66 @@ The optional fixture test is excluded by the normal unit command. It does not
 apply project migrations or exercise TimescaleDB, production triggers, concurrent
 ingestion, production candidate counts or cleanup cost; those remain unverified.
 
-- Full backend/frontend suites on final HEAD: pending.
-- Other proxy heartbeat signals and alert consumers: pending audit.
+### Other heartbeat proxy signals — alert-semantics follow-up findings
+
+Scoped audit command: `rg -n 'worker_heartbeat_age_seconds|worker_heartbeat_timestamp_seconds|setHeartbeatAge' backend/src viewshed-worker logging`.
+`docker-compose.yml:811` mounts `logging/rules` into Prometheus's rules directory;
+`logging/prometheus.yml:5` loads `/etc/prometheus/rules/meshcore.yml`. The edited rule is
+therefore the repository's active Compose rule source; deployed mounts were not
+inspected.
+
+| Signal | Source and cadence | Alert consumer / finding |
+| --- | --- | --- |
+| `worker="link"` age | Previously `MAX(node_links.itm_computed_at)`; now the independent Redis heartbeat, collected per scrape. | `ActiveQueueWorkerHeartbeatStale` fixed in this branch; DB write activity remains separate. |
+| `worker="health"` age | `currentWorkers` reads the previous `MAX(worker_health_snapshots.ts)` before `captureWorkerHealthSnapshot` writes the current snapshot (`backend/src/health/status.ts:378`, `:519`). `backend/src/workers/health.ts:9` schedules the next capture five minutes after completion. | `HealthWorkerHeartbeatStale` still uses `>180` or `<0` for 3m (`logging/rules/meshcore.yml:126`). A normal previous-snapshot age is about 300s and remains frozen between captures. **Source-based inference: another false-positive candidate.** Follow up with a genuine health-process heartbeat and producer/job scoping, plus healthy-cadence regression tests. No live firing frequency is claimed. |
+| `worker="path_learning"` age | `MAX(path_model_calibration.updated_at)` from published calibration (`status.ts:377`, `path-learning/rebuild.ts:440`); default rebuild cadence one hour (`workers/path-learning.ts:7`). | No current rule consumes this label. It describes publication freshness, not process liveness; keep those concepts separate before adding alerts. |
+| `worker="link_backfill"` age | `MAX(node_links.last_observed)` (`status.ts:385`), the newest observation. | No current rule consumes this label. Observation recency cannot prove a backfill process is alive or making progress. |
+| Python `meshcore_worker_heartbeat_timestamp_seconds` | Set by `viewshed-worker/worker_metrics.py:58`. Link updates are on the main loop (`worker.py:2516`); the Redis thread is independent (`link_queue_v3.py:587`). Viewshed's independent thread also updates its exported heartbeat (`worker.py:2483`). | No current rule consumes the timestamp metric. It is unsuitable as a ten-second link-heartbeat substitute without changing its producer cadence. `WorkerMetricsDown` checks exporter `up`, which proves reachability rather than work-loop progress. |
+
+Queue oldest-job age and backup/restore receipt age describe backlog/freshness
+explicitly, rather than being renamed as liveness. The health-worker issue and
+the two unused proxy labels are filed here for follow-up, as requested; this
+branch changes only the link heartbeat semantics.
+
+## Final verification and publication
+
+Source commits: `9a5e838` (retirement), `2d2b425` (prewarm), `236e948`
+(heartbeat), `1f2bc76` (feed), `4b30eb0` (Compose guard), `6dda582` (cleanup).
+The final documentation commit records this audit and the validation below.
+Full unit suites are rerun after it, before publication.
+
+| Exact command | Result |
+| --- | --- |
+| `cd backend && npm test` | **347/347 pass**, 0 fail, 0 skipped. Expands to the brief's `node --import tsx --test $(find src -name '*.test.ts' ! -name '*.integration.test.ts' -print)`. |
+| `cd frontend && npm test` | **99/99 pass**, 0 fail, 0 skipped. |
+| `cd backend && npm run typecheck` | Pass. |
+| `cd backend && npm run build` | Pass. |
+| `cd frontend && npm run build` | TypeScript + Vite pass; existing chunk-size warning. |
+| `cd backend && npm run contract:check` | Pass: **63 API + 11 operator routes** current. |
+| `cd frontend && PLAYWRIGHT_PORT_BASE=4273 npx playwright test feed-virtualizer.spec.ts --project=public-desktop` | **2/2 pass**. |
+| `.ukmesh-tools/promtool check rules logging/rules/meshcore.yml` | **24 rules valid**. |
+| `.ukmesh-tools/promtool test rules logging/rules/meshcore.test.yml` | **7 scenario groups pass**. |
+| `bash -n scripts/check-compose-adoption.sh scripts/replace-container.sh scripts/test-replace-container.sh` | Pass. |
+| `TMPDIR="$PWD/.ukmesh-tools/tmp" bash scripts/test-replace-container.sh` | **6/6 mocked drills pass**. |
+| Optional isolated cleanup integration command above | **3/3 pass**, 0 skipped. |
+| `git diff --check 73ee004` | Pass; scoped review found no migration, schema, environment-file, lockfile or unrelated source edits. |
+| `cd frontend && npm run lint:css` | Existing **6 duplicate-selector failures** in unchanged files; left out of scope. |
+
+Publication command: `git push -u origin fix/ukmesh-burn-20261002`.
+Verify with `git rev-parse HEAD` and `git ls-remote --heads origin
+fix/ukmesh-burn-20261002`; the two full SHAs must match. Remote `ukmesh-w5`
+remains `73ee00406e7cb0b7251220abbff73144615a8b90`. No force push is used.
+The operator reviews against that integration base; opening a draft PR is optional.
+Inspected workflow triggers: branch pushes run CI; `release.yml` requires a
+published release or explicit dispatch. No deployment/release workflow is invoked.
+Ignored local logs contain TAP/build/browser output, and ignored tooling holds
+standalone promtool and PGlite. Neither is part of the shipped runtime.
 
 ## Deployment gate, limitations and open questions
 
 The operator must separately review, merge and deploy code/rules. Local tests
 cannot prove live DB load, cold-pass wall time, Redis freshness in production,
 alert recovery or container adoption. This session will not perform those
-operations. `push.md` is the outstanding process-document question.
+operations. No migrations were run, no environment files were changed, and no
+live checkout or other burn worktree was accessed. `push.md` remains unavailable;
+the exact requested document-specific push discipline is not claimed.
