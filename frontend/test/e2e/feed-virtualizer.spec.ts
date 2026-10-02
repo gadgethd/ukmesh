@@ -43,7 +43,10 @@ for (const width of [390, 1280]) {
   test(`measured feed rows survive wrapping, enrichment, prepends and resize at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 800 });
     const errors: string[] = [];
-    page.on('pageerror', error => errors.push(error.message));
+    page.on('pageerror', error => {
+      errors.push(error.message);
+      console.error('[feed-virtualizer] page error:', error.message);
+    });
     await page.route('**/api/**', route => {
       const url = route.request().url();
       return route.fulfill({ json: url.includes('runtime-config') ? { version: 1, packetArcs: false, heatmap: false, privacyGeneration: 1, refreshAfterSeconds: 30 }
@@ -67,6 +70,7 @@ for (const width of [390, 1280]) {
         close() { this.readyState = 3; }
         constructor() {
           super();
+          let arrivals = 0;
           const publish = () => this.onmessage?.(new MessageEvent('message', { data: JSON.stringify({
             type: 'initial_state', data: { nodes: [], packets }, ts: Date.now(),
           }) }));
@@ -77,7 +81,9 @@ for (const width of [390, 1280]) {
               publish();
             },
             prependFeed: () => {
-              packets.unshift({ ...packets[1]!, packet_hash: 'F'.repeat(64), time: new Date(Date.now() + 1000).toISOString(), summary: 'new arrival' });
+              arrivals++;
+              packets.unshift({ ...packets[1]!, packet_hash: arrivals.toString(16).toUpperCase().padStart(64, 'F'),
+                time: new Date(Date.now() + arrivals * 1000).toISOString(), summary: `new arrival ${arrivals}` });
               packets.pop();
               publish();
             },
@@ -89,7 +95,9 @@ for (const width of [390, 1280]) {
     });
     await page.goto('/feed');
     const list = page.locator('.uk-feed-packets-list');
-    await expect(list.locator('article').first()).toBeVisible();
+    // Initial code loading and runtime-config bootstrap can be cold in the
+    // full matrix. Keep the geometry checks on their normal assertion budget.
+    await expect(list.locator('article').first()).toBeVisible({ timeout: 15_000 });
     await assertContiguous(page);
     await scrollList(page, 1700);
     await expect.poll(() => list.evaluate(element => element.scrollHeight > element.clientHeight + 1
@@ -110,6 +118,20 @@ for (const width of [390, 1280]) {
     await page.getByPlaceholder(/search/i).fill('new arrival');
     await expect(list.locator('article')).toHaveCount(1);
     await expect.poll(() => list.evaluate(element => element.scrollTop)).toBe(0);
+    // Empty filters must clear spacers, and restoring traffic must remount
+    // measured rows correctly in both internal and document scrolling modes.
+    await page.getByPlaceholder(/search/i).fill('no fixture matches this query');
+    await expect(list.locator('article')).toHaveCount(0);
+    await expect(list.locator('.dev-status-empty')).toBeVisible();
+    await page.getByPlaceholder(/search/i).fill('');
+    await expect(list.locator('article').first()).toBeVisible();
+    await assertContiguous(page);
+    await scrollList(page, 0);
+    await page.evaluate(() => (window as unknown as { prependFeed(): void }).prependFeed());
+    await expect(list.locator('article').first()).toHaveAttribute('aria-label', `Open packet ${'F'.repeat(63)}2`);
+    await expect(list.locator('article').first()).toBeVisible();
+    await expect.poll(() => list.evaluate(element => element.scrollHeight > element.clientHeight + 1
+      ? element.scrollTop : -element.getBoundingClientRect().top)).toBeLessThan(1);
     expect(errors).toEqual([]);
   });
 }
