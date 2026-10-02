@@ -1,5 +1,8 @@
 import { defineConfig, devices } from '@playwright/test';
 
+// Parallel worktrees can select isolated ports instead of reusing a stale server.
+const portBase = Number(process.env['PLAYWRIGHT_PORT_BASE'] ?? 4173);
+
 export default defineConfig({
   testDir: './test/e2e',
   fullyParallel: true,
@@ -13,18 +16,18 @@ export default defineConfig({
   projects: [
     {
       name: 'public-desktop',
-      testMatch: /(?:accessibility|owner|public)\.spec\.ts/,
-      use: { ...devices['Desktop Chrome'], baseURL: 'http://127.0.0.1:4173' },
+      testMatch: /(?:accessibility|owner|public|feed-virtualizer)\.spec\.ts/,
+      use: { ...devices['Desktop Chrome'], baseURL: `http://127.0.0.1:${portBase}` },
     },
     {
       name: 'dashboard-desktop',
       testMatch: /dashboard\.spec\.ts/,
-      use: { ...devices['Desktop Chrome'], baseURL: 'http://127.0.0.1:4174' },
+      use: { ...devices['Desktop Chrome'], baseURL: `http://127.0.0.1:${portBase + 1}` },
     },
     {
       name: 'dashboard-mobile',
       testMatch: /dashboard\.spec\.ts/,
-      use: { ...devices['Pixel 7'], baseURL: 'http://127.0.0.1:4174' },
+      use: { ...devices['Pixel 7'], baseURL: `http://127.0.0.1:${portBase + 1}` },
     },
     {
       name: 'mobile-regression',
@@ -34,18 +37,18 @@ export default defineConfig({
   ],
   webServer: [
     {
-      command: 'VITE_APP_HOSTNAME=app.invalid VITE_SITE=ukmesh npm run dev -- --host 127.0.0.1 --port 4173',
-      port: 4173,
+      command: `VITE_APP_HOSTNAME=app.invalid VITE_SITE=ukmesh npm run dev -- --host 127.0.0.1 --port ${portBase} --strictPort`,
+      port: portBase,
       reuseExistingServer: !process.env['CI'],
     },
     {
-      command: 'VITE_APP_HOSTNAME=127.0.0.1 VITE_SITE=ukmesh VITE_NETWORK=ukmesh VITE_RF_COVERAGE_ENABLED=true npm run dev -- --host 127.0.0.1 --port 4174',
-      port: 4174,
+      command: `VITE_APP_HOSTNAME=127.0.0.1 VITE_SITE=ukmesh VITE_NETWORK=ukmesh VITE_RF_COVERAGE_ENABLED=true npm run dev -- --host 127.0.0.1 --port ${portBase + 1} --strictPort`,
+      port: portBase + 1,
       reuseExistingServer: !process.env['CI'],
     },
     {
-      command: 'VITE_APP_HOSTNAME=app.invalid VITE_SITE=dev npm run dev -- --host 127.0.0.1 --port 4175',
-      port: 4175,
+      command: `VITE_APP_HOSTNAME=app.invalid VITE_SITE=dev npm run dev -- --host 127.0.0.1 --port ${portBase + 2} --strictPort`,
+      port: portBase + 2,
       reuseExistingServer: !process.env['CI'],
     },
   ],

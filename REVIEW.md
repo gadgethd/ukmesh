@@ -108,7 +108,33 @@ matching the official listing. Live metric/alert behavior remains deploy-gated.
 
 ## 4. UK feed virtualizer — #303
 
-Implementation and validation pending.
+Implemented option (a): natural border-box measurements from `ResizeObserver`,
+identity-keyed height storage, prefix offsets and a binary visible-range lookup.
+The previous `76px * index` arithmetic placed spacers according to an assumed
+height even when metadata wrapped. The 76px estimate now applies only to unseen
+rows; rendered rows use their actual fractional-pixel heights.
+
+Stable packet/scope identities retain measurements across filtering and prepends.
+Width changes invalidate offscreen measurements. Layout measurement and scroll
+anchoring preserve the visible packet through observer enrichment and new
+arrivals; a feed at the top remains pinned to live traffic. Both the desktop
+internal scroller and mobile document scrolling are supported. Details remain
+outside the packet list.
+
+Validation: `cd frontend && npm test`: **99/99 pass**, including **2/2** new
+offset/range tests. `cd frontend && PLAYWRIGHT_PORT_BASE=4273 npx playwright test
+feed-virtualizer.spec.ts --project=public-desktop`: **2/2 pass** in Chromium,
+at 390px and 1280px, checking variable heights, contiguous rows and spacers,
+scroll-anchor preservation, enrichment, prepends, resizing, bottom reachability,
+filter reset and absence of page errors. Test-only isolated ports avoid borrowing
+other sessions' servers; default ports are unchanged. The in-app Browser runtime
+could not connect to its trusted Node service, so these checks use the repository's
+Playwright CLI. `cd frontend && npm run build` passes with the existing large-chunk
+warning. Production traffic and the complete existing E2E matrix were not tested.
+
+`cd frontend && npm run lint:css` reports **6 pre-existing duplicate declarations**
+in unchanged `globals.css`, `map-app.css` and `owner-portal.css`. Their diff against
+`73ee004` is empty; this change edits no CSS files.
 
 ## Stretch queue
 
