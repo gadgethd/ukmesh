@@ -212,6 +212,8 @@ test('RF coverage remains available with 3D terrain', async ({ page }, testInfo)
 });
 
 test('map modes update layers and produce a shareable URL', async ({ page }, testInfo) => {
+  // Two 4,600-node bootstraps and an axe scan share this budget, including cold Vite compilation.
+  test.setTimeout(45_000);
   await page.goto('/');
   await expect(page.getByText('Live Map', { exact: true })).toBeVisible({ timeout: 15_000 });
   const mapArea = page.locator('.map-area');
