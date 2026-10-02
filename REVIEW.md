@@ -761,6 +761,41 @@ Ignored local logs contain TAP/build/browser output, and ignored tooling holds
 standalone promtool, PGlite and embedded-postgres. None is part of the shipped runtime.
 Draft PR: https://github.com/gadgethd/ukmesh/pull/113, against `ukmesh-w5`.
 
+## Stop-signal handoff — 2026-10-02 19:06 UTC
+
+Ben's wrap-up signal ends the burn. The latest implementation/test checkpoint
+is `7a1598e660367879a91762f55bb45e8474f53034`, already pushed with a matching
+remote SHA and a clean worktree. Both full unit suites passed on that commit:
+**362/362 backend**, **100/100 frontend**, zero failures or skips. The five
+Python heartbeat-publisher tests pass. The final commit only records this
+handoff; both full unit suites are rerun on it before the final summary, where
+its exact SHA and remote verification are reported.
+
+The four priority items and both implementation stretch items are complete
+on the private branch. Draft PR **#113** remains open against `ukmesh-w5`.
+At the 19:06 UTC check, `7a1598e`'s frontend, secret-scan and mobile checks
+had passed; [backend and Workers/Compose CI](https://github.com/gadgethd/ukmesh/actions/runs/37051638102)
+were still running. This is not a complete green remote-CI verdict. The final
+documentation push may supersede these runs; use the PR Checks tab for their
+current state.
+
+Remaining work is operator review/merge/deployment and production validation:
+DB load and lock duration, cleanup candidates, cold prewarm duration, actual
+Redis freshness and alert recovery, and Compose adoption on the live host.
+The health-worker snapshot-age/cadence mismatch remains the source-based
+follow-up documented above. Linux WebKit testing does not verify a physical
+Safari/iOS device. Existing CSS lint failures and the chunk-size warning remain.
+The requested `push.md` was unavailable, so its document-specific discipline
+cannot be verified; pushes were non-forced and remote SHAs were checked.
+
+Optional deeper coverage was not added after the stop signal: native
+PostgreSQL archive/delete/fence failure injection for both cleanup policies,
+and native current/gapped/missing-fence cases for the older MQTT-only policy.
+The existing PostgreSQL-WASM suite covers the three failure stages and both
+policies' privacy behavior. Native PostgreSQL coverage remains **14 cases**:
+11 concurrent-writer cases and three full-trigger fence cases for inactive-node
+cleanup. No incomplete edits or new production scope remain in the worktree.
+
 ## Deployment gate, limitations and open questions
 
 The operator must separately review, merge and deploy code/rules. Local tests
