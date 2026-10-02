@@ -476,6 +476,15 @@ the complete measured height. `cd frontend && node --import tsx --test
 src/hooks/measuredVirtualRows.test.ts`: **3/3 pass**. Full frontend `npm test`:
 **100/100**, no failures or skips. No feed runtime code changed in this step.
 
+The complete browser rerun with explicit readiness and valid local raster
+fixtures passed **61/61**, no retries or skips, in 5.6 minutes:
+`cd frontend && PLAYWRIGHT_PORT_BASE=4363 npx playwright test --workers=1
+--trace=retain-on-failure --output=../.ukmesh-tools/stretch-matrix-ready-results`.
+Frontend TypeScript/Vite build also passes after the new geometry checks, with
+the existing chunk-size warning. All code/test changes are committed and pushed;
+the working tree is clean at this checkpoint. The burn remains active until
+the requested stop signal.
+
 ## Final verification and publication
 
 Source commits: `9a5e838` (retirement), `2d2b425` (prewarm), `236e948`
@@ -484,6 +493,13 @@ Continuation commits: `ab5d5b8` (cleanup privacy), `56bfcb6` (Compose pipefail),
 `2f8f03e` (scheduler regressions), `bbb14a1` (E2E isolation), `fb981e0` (feed
 filter/arrival regressions), `62d9a9f` (map-mode cold-start budget). Each change
 stays on the private branch.
+Further verification commits: `4a73ca0` (reporter-matched alerts), `2d6b703`
+(feed breakpoint/filter checks), `29c5111` (incremental owner-cache checks),
+`a030ea7` (cleanup materialization fence), `9c7cb49` (late-sighting recheck),
+`e754f46` (responsive fresh-cache reads), `2960f5f` (separate viewport cases),
+`f5ac2c9` (valid raster fixtures), `a705b89` (Redis initialization recovery),
+`b561632` (deterministic worker deadlines), `6cf1f70` (bootstrap readiness),
+`3689c01` (fractional feed-range invariants).
 The final documentation commit records this audit and the validation below.
 Full unit suites are rerun after it, before publication.
 
@@ -498,6 +514,7 @@ Full unit suites are rerun after it, before publication.
 | `cd frontend && PLAYWRIGHT_PORT_BASE=4273 npx playwright test feed-virtualizer.spec.ts --project=public-desktop` | **2/2 pass**. |
 | `cd frontend && PLAYWRIGHT_PORT_BASE=4273 npx playwright test --workers=2` | Historical **55/55 pass**. The later expanded run was **54/55** before the viewport test was split; the current **61-case** matrix is being rerun with local map fixtures and one worker. |
 | `cd frontend && PLAYWRIGHT_PORT_BASE=4363 npx playwright test --workers=1 --trace=retain-on-failure --output=../.ukmesh-tools/stretch-matrix-final-results` | **59/61** before explicit owner/map-reload readiness checks; those 4 affected cases pass after the change. Complete rerun pending. |
+| `cd frontend && PLAYWRIGHT_PORT_BASE=4363 npx playwright test --workers=1 --trace=retain-on-failure --output=../.ukmesh-tools/stretch-matrix-ready-results` | **61/61 pass**, all four projects, no retries or skips. |
 | Fresh-cache targeted browser command below | **4/4 pass** with fresh caches; no retries. |
 | `.ukmesh-tools/promtool check rules logging/rules/meshcore.yml` | **24 rules valid**. |
 | `.ukmesh-tools/promtool test rules logging/rules/meshcore.test.yml` | **10 scenario groups pass**. |
@@ -538,6 +555,7 @@ claimed. All three repository workflows are listed as active. `release.yml` requ
 published release or explicit dispatch. No deployment/release workflow is invoked.
 Ignored local logs contain TAP/build/browser output, and ignored tooling holds
 standalone promtool and PGlite. Neither is part of the shipped runtime.
+Draft PR: https://github.com/gadgethd/ukmesh/pull/113, against `ukmesh-w5`.
 
 ## Deployment gate, limitations and open questions
 
