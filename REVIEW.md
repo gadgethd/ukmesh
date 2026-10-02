@@ -136,15 +136,44 @@ offset/range tests. `cd frontend && PLAYWRIGHT_PORT_BASE=4273 npx playwright tes
 feed-virtualizer.spec.ts --project=public-desktop`: **2/2 pass** in Chromium,
 at 390px and 1280px, checking variable heights, contiguous rows and spacers,
 scroll-anchor preservation, enrichment, prepends, resizing, bottom reachability,
-filter reset and absence of page errors. Test-only isolated ports avoid borrowing
+filter reset, empty-filter recovery, new arrivals pinned at the top and absence of
+page errors. Test-only isolated ports avoid borrowing
 other sessions' servers; default ports are unchanged. The in-app Browser runtime
 could not connect to its trusted Node service, so these checks use the repository's
 Playwright CLI. `cd frontend && npm run build` passes with the existing large-chunk
-warning. Production traffic and the complete existing E2E matrix were not tested.
+warning. The complete fixture-based E2E matrix passes **55/55**, with no retries;
+production traffic is not tested.
 
 `cd frontend && npm run lint:css` reports **6 pre-existing duplicate selectors**
 in unchanged `globals.css`, `map-app.css` and `owner-portal.css`. Their diff against
 `73ee004` is empty; this change edits no CSS files.
+
+Continuation adds empty-filter/repopulation and top-pinned arrival assertions at
+both widths. Each arrival has a distinct packet identity. Only the initial row
+readiness wait increases from 5s to the existing application's 15s bootstrap
+budget; row geometry and scroll-anchor assertions retain their previous limits.
+
+Browser verification also uncovered incomplete test-server isolation: mobile and
+accessibility tests still navigated to hardcoded ports 4173–4175 even when the
+config selected another port range. They now share the config's origins. An
+explicit `PLAYWRIGHT_PORT_BASE` refuses to borrow existing servers. The three
+Vite test servers also receive separate dependency caches per port range and
+site role through a test-only config; the production Vite config is unchanged.
+Installed Vite source confirms optimization replaces the shared dependency cache;
+concurrent replacement is a source-based explanation for the earlier dynamic
+module fetch failure, rather than a proven production cause.
+
+The first full run passed 53/55; both failures passed unchanged in isolation.
+After cache isolation, a run passed 54/55 with the feed's 5s initial readiness
+wait expiring before geometry assertions. The expanded feed tests and 15s
+readiness wait then passed the full **55/55** matrix without retries. A subsequent
+fresh-cache four-case check passed both feed widths and tablet topology but the
+mobile map-mode test exceeded its 30s total budget. Its unchanged isolated trace
+passed in 19.3s and shows two 4,600-node map bootstraps plus an accessibility scan.
+That test now has a scoped 45s total budget; its functional assertions are
+unchanged. The final fresh-cache check on ports 4303–4305 passes **4/4**, without
+retries. These results establish local fixture behavior, not production performance
+or the absence of every intermittent browser failure.
 
 ## Stretch queue
 
@@ -222,8 +251,10 @@ TEST_NODE_CLEANUP_PGLITE_MODULE="file://$PWD/../.ukmesh-tools/pglite/node_module
 ```
 
 The optional fixture test is excluded by the normal unit command. It does not
-apply project migrations or exercise TimescaleDB, production triggers, concurrent
-ingestion, production candidate counts or cleanup cost; those remain unverified.
+apply project migrations or exercise TimescaleDB, the complete production trigger
+chain, concurrent ingestion, production candidate counts or cleanup cost; those
+remain unverified. The privacy function tested below is the sole production
+trigger definition installed into the fixture.
 
 Continuation found a real privacy interaction omitted by the initial fixture.
 The current `sync_private_node_prefixes()` definition in migration 049 treats
@@ -269,25 +300,51 @@ branch changes only the link heartbeat semantics.
 
 Source commits: `9a5e838` (retirement), `2d2b425` (prewarm), `236e948`
 (heartbeat), `1f2bc76` (feed), `4b30eb0` (Compose guard), `6dda582` (cleanup).
+Continuation commits: `ab5d5b8` (cleanup privacy), `56bfcb6` (Compose pipefail),
+`2f8f03e` (scheduler regressions), `bbb14a1` (E2E isolation), `fb981e0` (feed
+filter/arrival regressions), `62d9a9f` (map-mode cold-start budget). Each change
+stays on the private branch.
 The final documentation commit records this audit and the validation below.
 Full unit suites are rerun after it, before publication.
 
 | Exact command | Result |
 | --- | --- |
-| `cd backend && npm test` | **347/347 pass**, 0 fail, 0 skipped. Expands to the brief's `node --import tsx --test $(find src -name '*.test.ts' ! -name '*.integration.test.ts' -print)`. |
+| `cd backend && npm test` | **350/350 pass**, 0 fail, 0 skipped. Expands to the brief's `node --import tsx --test $(find src -name '*.test.ts' ! -name '*.integration.test.ts' -print)`. |
 | `cd frontend && npm test` | **99/99 pass**, 0 fail, 0 skipped. |
 | `cd backend && npm run typecheck` | Pass. |
 | `cd backend && npm run build` | Pass. |
 | `cd frontend && npm run build` | TypeScript + Vite pass; existing chunk-size warning. |
 | `cd backend && npm run contract:check` | Pass: **63 API + 11 operator routes** current. |
 | `cd frontend && PLAYWRIGHT_PORT_BASE=4273 npx playwright test feed-virtualizer.spec.ts --project=public-desktop` | **2/2 pass**. |
+| `cd frontend && PLAYWRIGHT_PORT_BASE=4273 npx playwright test --workers=2` | **55/55 pass** across public desktop, dashboard desktop/mobile and mobile regression projects; no retries. |
+| Fresh-cache targeted browser command below | **4/4 pass** with fresh caches; no retries. |
 | `.ukmesh-tools/promtool check rules logging/rules/meshcore.yml` | **24 rules valid**. |
 | `.ukmesh-tools/promtool test rules logging/rules/meshcore.test.yml` | **7 scenario groups pass**. |
 | `bash -n scripts/check-compose-adoption.sh scripts/replace-container.sh scripts/test-replace-container.sh` | Pass. |
-| `TMPDIR="$PWD/.ukmesh-tools/tmp" bash scripts/test-replace-container.sh` | **6/6 mocked drills pass**. |
-| Optional isolated cleanup integration command above | **3/3 pass**, 0 skipped. |
+| `TMPDIR="$PWD/.ukmesh-tools/tmp" bash scripts/test-replace-container.sh` | **16/16 mocked drills pass**. |
+| Optional isolated cleanup integration command above | **7/7 pass**, 0 skipped. |
 | `git diff --check 73ee004` | Pass; scoped review found no migration, schema, environment-file, lockfile or unrelated source edits. |
 | `cd frontend && npm run lint:css` | Existing **6 duplicate-selector failures** in unchanged files; left out of scope. |
+
+Fresh-cache command, from the worktree root:
+
+```sh
+cd frontend
+PLAYWRIGHT_PORT_BASE=4303 npx playwright test feed-virtualizer.spec.ts public.spec.ts dashboard.spec.ts --project=public-desktop --project=dashboard-mobile --grep 'measured feed rows|tablet topology|map modes' --workers=2 --trace=retain-on-failure --output=../.ukmesh-tools/cold-final-results
+```
+
+Completion audit against the supplied brief:
+
+| Requirement | Reviewable result and evidence |
+| --- | --- |
+| Retired-workload unit-suite repair | Historical policy and current callers restored; 3 focused tests and the complete backend suite pass. |
+| Owner prewarm observability and bounded load | Progress every ten nodes, in-flight 20s warning, configurable cap of two, ownership-scoped single-flight and shutdown; 11 focused tests pass. Live cold-pass time/load remains unmeasured. |
+| Link heartbeat source and alert semantics | Per-scrape genuine Redis heartbeat; missing/stale active queues covered by 5 source/metric tests and 7 Prometheus scenario groups. Live alert firing is not claimed. |
+| Variable-height UK feed | ResizeObserver measurements and anchored offsets at both widths; 2 frontend geometry tests plus 2 expanded browser cases pass. |
+| Compose adoption guard | Local failing mocked reproduction, pre-mutation rejection, 16 passing replacement drills, including the pipefail regression. No live Docker inspection. |
+| Inactive-node archive/delete for every role | Role/bridge-independent selection, archive-before-delete transaction and private identity retention; 6 unit and 7 SQL fixture tests pass. No live deletion or migration. |
+| Final verification and private-branch publication | Full backend/frontend units run on the final documentation HEAD; non-forced branch push and matching remote SHA required before handoff. |
+| Other heartbeat proxies | Source/cadence/alert-consumer findings recorded above; the health-worker false-positive candidate remains a source-based follow-up. |
 
 Publication command: `git push -u origin fix/ukmesh-burn-20261002`.
 Verify with `git rev-parse HEAD` and `git ls-remote --heads origin
