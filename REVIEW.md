@@ -325,6 +325,14 @@ feed-virtualizer.spec.ts --project=public-desktop --workers=2
 --trace=retain-on-failure --output=../.ukmesh-tools/stretch-feed-results`:
 **2/2 pass**, no retries or page errors.
 
+Owner-cache verification now checks a real warm refresh: inclusive latest-bucket
+updates replace the old aggregate, earlier history remains, and the rolling
+seven-day cutoff removes expired points. A failed warm refresh keeps useful
+foreground data and permits retry; TTL expiry starts a fresh bounded-window
+query rather than reusing an old cursor. These use fixed mocked dates and require
+no source change. `cd backend && node --import tsx --test
+src/owner/ownerLastHopPrewarm.test.ts src/owner/ownerService.test.ts`: **14/14 pass**.
+
 ## Final verification and publication
 
 Source commits: `9a5e838` (retirement), `2d2b425` (prewarm), `236e948`

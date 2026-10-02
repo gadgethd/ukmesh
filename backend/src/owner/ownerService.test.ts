@@ -57,3 +57,59 @@ test('a failed last-hop refresh releases single-flight state for retry', async (
   assert.deepEqual(await service.getOwnerLastHopStrength(['a'], 'a', true), { points: [] });
   assert.equal(calls, 2);
 });
+
+function lastHopRow(bucket: string, sampleCount = 1) {
+  return { bucket, last_hop_node_id: 'peer', last_hop_name: 'Peer', resolution: 'resolved' as const,
+    avg_snr: 4, avg_rssi: -90, sample_count: sampleCount };
+}
+
+test('a warm refresh updates the current bucket, retains history and trims the rolling seven-day window', async (t) => {
+  const now = Date.parse('2026-10-02T12:00:00Z');
+  t.mock.timers.enable({ apis: ['Date'], now });
+  const expiring = new Date(now - 7 * 24 * 60 * 60_000 + 1_000).toISOString();
+  const previous = '2026-10-02T10:00:00.000Z';
+  const latest = '2026-10-02T11:00:00.000Z';
+  const since: Array<string | undefined> = [];
+  const service = lastHopService(async (_nodes, _scope, cursor) => {
+    since.push(cursor);
+    return { rows: cursor === undefined
+      ? [lastHopRow(expiring), lastHopRow(previous), lastHopRow(latest)]
+      : [lastHopRow(latest, 9), lastHopRow('2026-10-02T12:00:00.000Z', 2)] };
+  });
+  assert.equal((await service.getOwnerLastHopStrength(['a'], 'a')).points.length, 3);
+  t.mock.timers.tick(2_000);
+  const refreshed = await service.getOwnerLastHopStrength(['a'], 'a', true);
+  assert.deepEqual(since, [undefined, latest]);
+  assert.deepEqual(refreshed.points.map(point => [point.bucket, point.sampleCount]), [
+    [previous, 1], [latest, 9], ['2026-10-02T12:00:00.000Z', 2],
+  ]);
+  assert.deepEqual(await service.getOwnerLastHopStrength(['a'], 'a'), refreshed);
+  assert.equal(since.length, 2, 'the completed warm refresh serves the next foreground read');
+});
+
+test('a failed warm refresh preserves the prior foreground cache and allows a later retry', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-02T12:00:00Z') });
+  let calls = 0;
+  const service = lastHopService(async () => {
+    if (++calls === 2) throw new Error('warm query failed');
+    return { rows: [lastHopRow('2026-10-02T11:00:00.000Z', calls)] };
+  });
+  const cached = await service.getOwnerLastHopStrength(['a'], 'a');
+  await assert.rejects(service.getOwnerLastHopStrength(['a'], 'a', true), /warm query failed/);
+  assert.deepEqual(await service.getOwnerLastHopStrength(['a'], 'a'), cached);
+  assert.equal(calls, 2, 'failed refreshes must not evict useful cached data');
+  assert.equal((await service.getOwnerLastHopStrength(['a'], 'a', true)).points[0]?.sampleCount, 3);
+});
+
+test('expired last-hop caches start a fresh bounded-window query instead of reusing an old cursor', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-02T12:00:00Z') });
+  const since: Array<string | undefined> = [];
+  const service = lastHopService(async (_nodes, _scope, cursor) => {
+    since.push(cursor);
+    return { rows: [lastHopRow('2026-10-02T11:00:00.000Z')] };
+  });
+  await service.getOwnerLastHopStrength(['a'], 'a');
+  t.mock.timers.tick(60_000);
+  await service.getOwnerLastHopStrength(['a'], 'a', true);
+  assert.deepEqual(since, [undefined, undefined]);
+});
