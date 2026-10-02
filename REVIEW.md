@@ -452,6 +452,22 @@ Its independent test-runner deadline remains 10 seconds.
 **3/3 pass**. The full backend rerun then passed **359/359**, no failures or
 skips. No production worker-pool timeout or scheduling code changed.
 
+The first complete matrix with real raster fixtures finished **59/61**. The
+remaining traces showed the owner first-load assertion checking while the page
+still displayed `Loading...`, and the desktop map's post-reload assertion
+looking for Diagnose before the second bootstrap had finished. Both checks had
+only the default 5-second assertion budget. Owner tests now use the shared map
+metadata fixture and a valid runtime-config response; first-load readiness gets
+15 seconds. The map-mode test explicitly awaits Live Map after reload using the
+same 15-second readiness check as its initial load, before testing persistence.
+Polling/lifecycle and mode-state assertions keep their normal budgets.
+`cd frontend && PLAYWRIGHT_PORT_BASE=4363 npx playwright test
+test/e2e/owner.spec.ts test/e2e/dashboard.spec.ts
+--grep 'session polling|owner map construction|map modes' --workers=1
+--trace=retain-on-failure --output=../.ukmesh-tools/stretch-bootstrap-results`:
+**4/4 pass**, no retries. Backend build also passes after the collector fix.
+The complete matrix is being rerun against these updated checks.
+
 ## Final verification and publication
 
 Source commits: `9a5e838` (retirement), `2d2b425` (prewarm), `236e948`
@@ -465,7 +481,7 @@ Full unit suites are rerun after it, before publication.
 
 | Exact command | Result |
 | --- | --- |
-| `cd backend && npm test` | **358/358 pass**, 0 fail, 0 skipped. Expands to the brief's `node --import tsx --test $(find src -name '*.test.ts' ! -name '*.integration.test.ts' -print)`. |
+| `cd backend && npm test` | **359/359 pass**, 0 fail, 0 skipped. Expands to the brief's `node --import tsx --test $(find src -name '*.test.ts' ! -name '*.integration.test.ts' -print)`. |
 | `cd frontend && npm test` | **99/99 pass**, 0 fail, 0 skipped. |
 | `cd backend && npm run typecheck` | Pass. |
 | `cd backend && npm run build` | Pass. |
@@ -473,6 +489,7 @@ Full unit suites are rerun after it, before publication.
 | `cd backend && npm run contract:check` | Pass: **63 API + 11 operator routes** current. |
 | `cd frontend && PLAYWRIGHT_PORT_BASE=4273 npx playwright test feed-virtualizer.spec.ts --project=public-desktop` | **2/2 pass**. |
 | `cd frontend && PLAYWRIGHT_PORT_BASE=4273 npx playwright test --workers=2` | Historical **55/55 pass**. The later expanded run was **54/55** before the viewport test was split; the current **61-case** matrix is being rerun with local map fixtures and one worker. |
+| `cd frontend && PLAYWRIGHT_PORT_BASE=4363 npx playwright test --workers=1 --trace=retain-on-failure --output=../.ukmesh-tools/stretch-matrix-final-results` | **59/61** before explicit owner/map-reload readiness checks; those 4 affected cases pass after the change. Complete rerun pending. |
 | Fresh-cache targeted browser command below | **4/4 pass** with fresh caches; no retries. |
 | `.ukmesh-tools/promtool check rules logging/rules/meshcore.yml` | **24 rules valid**. |
 | `.ukmesh-tools/promtool test rules logging/rules/meshcore.test.yml` | **10 scenario groups pass**. |

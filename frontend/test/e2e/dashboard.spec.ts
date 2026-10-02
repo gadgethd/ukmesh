@@ -234,6 +234,7 @@ test('map modes update layers and produce a shareable URL', async ({ page }, tes
   await expect(page).toHaveURL(/layers=.*clashes/);
 
   await page.reload();
+  await expect(page.getByText('Live Map', { exact: true })).toBeVisible({ timeout: 15_000 });
   if (testInfo.project.name === 'dashboard-mobile') {
     await page.getByRole('button', { name: 'Layers' }).first().click();
   }
