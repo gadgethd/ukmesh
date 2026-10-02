@@ -75,6 +75,7 @@ test('inactive companions, room servers and never-bridged nodes are archived bef
     { rows: [], rowCount: 0 }, { rows: [], rowCount: 0 },
     { rows: ids.map((node_id) => ({ node_id })), rowCount: 3 },
     { rows: [], rowCount: 3 }, { rows: [], rowCount: 2 }, { rows: [], rowCount: 4 },
+    { rows: [{ materialization_current: true }], rowCount: 1 },
     { rows: [], rowCount: 2 }, { rows: [], rowCount: 4 }, { rows: [], rowCount: 3 },
   ]);
   const result = await cleanupInactiveNodes({ cleanupPool: stub.pool, batchId: 'inactive-batch', thresholdDays: 45 });
@@ -90,6 +91,10 @@ test('inactive companions, room servers and never-bridged nodes are archived bef
   const firstDelete = stub.calls.findIndex((call) => call.text.includes('DELETE FROM'));
   assert.ok(lastArchive < firstDelete);
   assert.equal(stub.calls.at(-1)?.text, 'COMMIT');
+  const lockIndex = stub.calls.findIndex((call) => call.text.includes('FOR UPDATE OF visibility'));
+  const fenceIndex = stub.calls.findIndex((call) => call.text.includes('UPDATE packet_visibility_materialization_state'));
+  assert.ok(lastArchive < lockIndex && lockIndex < firstDelete);
+  assert.ok(fenceIndex > stub.calls.findLastIndex((call) => call.text.includes('DELETE FROM')));
   assert.equal(stub.released(), true);
 });
 
@@ -110,10 +115,54 @@ test('delete failure rolls back the archive and earlier visibility deletes toget
     { rows: [], rowCount: 0 }, { rows: [], rowCount: 0 },
     { rows: [{ node_id: 'A'.repeat(64) }], rowCount: 1 },
     { rows: [], rowCount: 1 }, { rows: [], rowCount: 1 }, { rows: [], rowCount: 1 },
+    { rows: [{ materialization_current: true }], rowCount: 1 },
     { rows: [], rowCount: 1 }, { rows: [], rowCount: 1 },
     new Error('delete failed'),
   ]);
   await assert.rejects(cleanupInactiveNodes({ cleanupPool: stub.pool }), /delete failed/);
+  assert.equal(stub.calls.at(-1)?.text, 'ROLLBACK');
+  assert.equal(stub.calls.some((call) => call.text === 'COMMIT'), false);
+  assert.equal(stub.released(), true);
+});
+
+test('a visibility-lock failure rolls back the archives before any delete', async () => {
+  const stub = stubPool([
+    { rows: [], rowCount: 0 }, { rows: [], rowCount: 0 },
+    { rows: [{ node_id: 'public' }], rowCount: 1 },
+    { rows: [], rowCount: 1 }, { rows: [], rowCount: 0 }, { rows: [], rowCount: 0 },
+    new Error('visibility lock failed'),
+  ]);
+  await assert.rejects(cleanupInactiveNodes({ cleanupPool: stub.pool }), /visibility lock failed/);
+  assert.equal(stub.calls.at(-1)?.text, 'ROLLBACK');
+  assert.equal(stub.calls.some((call) => call.text.includes('DELETE FROM')), false);
+  assert.equal(stub.released(), true);
+});
+
+test('cleanup never certifies a pre-existing stale or missing privacy materialization', async () => {
+  for (const rows of [[{ materialization_current: false }], []]) {
+    const stub = stubPool([
+      { rows: [], rowCount: 0 }, { rows: [], rowCount: 0 },
+      { rows: [{ node_id: 'public' }], rowCount: 1 },
+      { rows: [], rowCount: 1 }, { rows: [], rowCount: 0 }, { rows: [], rowCount: 0 },
+      { rows, rowCount: rows.length },
+      { rows: [], rowCount: 0 }, { rows: [], rowCount: 0 }, { rows: [], rowCount: 1 },
+    ]);
+    await cleanupInactiveNodes({ cleanupPool: stub.pool });
+    assert.equal(stub.calls.some((call) => call.text.includes('UPDATE packet_visibility_materialization_state')), false);
+    assert.equal(stub.calls.at(-1)?.text, 'COMMIT');
+  }
+});
+
+test('fence-update failure rolls back every archive and delete before releasing the client', async () => {
+  const stub = stubPool([
+    { rows: [], rowCount: 0 }, { rows: [], rowCount: 0 },
+    { rows: [{ node_id: 'public' }], rowCount: 1 },
+    { rows: [], rowCount: 1 }, { rows: [], rowCount: 0 }, { rows: [], rowCount: 0 },
+    { rows: [{ materialization_current: true }], rowCount: 1 },
+    { rows: [], rowCount: 0 }, { rows: [], rowCount: 0 }, { rows: [], rowCount: 1 },
+    new Error('fence update failed'),
+  ]);
+  await assert.rejects(cleanupInactiveNodes({ cleanupPool: stub.pool }), /fence update failed/);
   assert.equal(stub.calls.at(-1)?.text, 'ROLLBACK');
   assert.equal(stub.calls.some((call) => call.text === 'COMMIT'), false);
   assert.equal(stub.released(), true);
@@ -127,9 +176,11 @@ test('archives visibility records before deleting stale observer nodes', async (
     { rows: [], rowCount: 1 }, // archive nodes
     { rows: [], rowCount: 1 }, // archive observer sightings
     { rows: [], rowCount: 1 }, // archive network sightings
+    { rows: [{ materialization_current: true }], rowCount: 1 }, // visibility lock
     { rows: [{ value: 1 }], rowCount: 1 }, // delete observer sightings
     { rows: [{ value: 1 }], rowCount: 1 }, // delete network sightings
     { rows: [{ value: 1 }], rowCount: 1 }, // delete nodes
+    { rows: [], rowCount: 1 }, // preserve the initially current privacy fence
     { rows: [], rowCount: 0 }, // COMMIT
   ]);
 

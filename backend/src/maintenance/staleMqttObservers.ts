@@ -134,6 +134,20 @@ async function cleanupNodeRecords(
       [batchId, reason, nodeIds],
     );
 
+    // The prefix FK's cascading DELETE fires its statement trigger even when
+    // these public nodes have no prefixes. At trigger depth 1 it advances the
+    // public generation without re-fencing stored packets. Serialize that
+    // change, and preserve only a fence that was already current. The locked
+    // candidates cannot gain a privacy marker/prefix before deletion.
+    const visibilityState = await client.query<{ materialization_current: boolean }>(
+      `SELECT visibility.generation = materialized.visibility_generation AS materialization_current
+         FROM public_visibility_state visibility
+         LEFT JOIN packet_visibility_materialization_state materialized
+           ON materialized.singleton = visibility.singleton
+        WHERE visibility.singleton = TRUE
+        FOR UPDATE OF visibility`,
+    );
+
     const observerSightings = await client.query(
       `DELETE FROM observer_region_observer_sightings
         WHERE rx_node_id = ANY($1::text[])
@@ -152,6 +166,16 @@ async function cleanupNodeRecords(
         RETURNING 1`,
       [nodeIds],
     );
+
+    if (visibilityState.rows[0]?.materialization_current === true) {
+      await client.query(
+        `UPDATE packet_visibility_materialization_state materialized
+            SET visibility_generation = visibility.generation, updated_at = NOW()
+           FROM public_visibility_state visibility
+          WHERE materialized.singleton = TRUE AND visibility.singleton = TRUE
+            AND materialized.visibility_generation IS DISTINCT FROM visibility.generation`,
+      );
+    }
 
     await client.query('COMMIT');
     return {

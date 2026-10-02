@@ -251,10 +251,11 @@ TEST_NODE_CLEANUP_PGLITE_MODULE="file://$PWD/../.ukmesh-tools/pglite/node_module
 ```
 
 The optional fixture test is excluded by the normal unit command. It does not
-apply project migrations or exercise TimescaleDB, the complete production trigger
-chain, concurrent ingestion, production candidate counts or cleanup cost; those
-remain unverified. The privacy function tested below is the sole production
-trigger definition installed into the fixture.
+apply project migrations or exercise TimescaleDB, the complete production schema,
+concurrent ingestion, production candidate counts or cleanup cost; those remain
+unverified. The final-stretch fixtures below expand the original single privacy
+function to the current node privacy/generation trigger chain and packet-path
+classifiers, extracted from the existing migration definitions.
 
 Continuation found a real privacy interaction omitted by the initial fixture.
 The current `sync_private_node_prefixes()` definition in migration 049 treats
@@ -333,6 +334,38 @@ query rather than reusing an old cursor. These use fixed mocked dates and requir
 no source change. `cd backend && node --import tsx --test
 src/owner/ownerLastHopPrewarm.test.ts src/owner/ownerService.test.ts`: **14/14 pass**.
 
+The expanded cleanup fixture found a second privacy interaction: the
+`private_node_prefixes` foreign key's `ON DELETE CASCADE` fires its statement
+trigger even when a deleted public node has no prefixes. A separate minimal
+PostgreSQL experiment records **trigger depth 1**. Migration 042's depth guard
+therefore treats this as direct prefix maintenance, advances the public
+generation and leaves the packet materialization fence stale. The isolated
+current-trigger fixture reproduced **generation 2 -> 3, fence remaining 2**.
+PostgreSQL documents that [foreign-key referential actions execute ordinary SQL
+and fire referencing-table triggers](https://www.postgresql.org/docs/18/trigger-definition.html).
+
+Both cleanup policies now lock the public visibility state after archival and
+before deletion. Since selected identities have no privacy marker/prefix and
+their node rows remain locked, this removal cannot change packet privacy bits.
+Only an **already-current** materialization fence is carried forward to the
+new public generation, in the same transaction. An existing mismatch or missing
+materialization is never certified. Visibility-lock or fence-update failure
+rolls back the archives and every deletion. No migration or trigger definition
+is changed.
+
+The fixture installs the exact relevant functions from migrations 042/049/051,
+with production node/prefix trigger names, prefix FK, and packet-path classifier.
+It checks both cleanup policies, retained private packets and packet paths,
+preserved mismatched-prefix states, current fences after public deletion, and
+real rollback on archive/delete/fence-update errors. Archive replay into the
+disposable fixture restores complete node and both visibility records, including
+nullable fields and a populated additional hardware column. The optional SQL
+command above now passes **10/10**, with no skips; the focused cleanup unit
+command passes **9/9**. Full backend `npm test`: **356/356**, no failures or skips.
+Backend typecheck/build, frontend build and the **63 API + 11 operator** contract
+check pass. Concurrent production ingestion and visibility-lock duration remain
+unmeasured; this is stronger isolated verification, not a live database claim.
+
 ## Final verification and publication
 
 Source commits: `9a5e838` (retirement), `2d2b425` (prewarm), `236e948`
@@ -346,7 +379,7 @@ Full unit suites are rerun after it, before publication.
 
 | Exact command | Result |
 | --- | --- |
-| `cd backend && npm test` | **350/350 pass**, 0 fail, 0 skipped. Expands to the brief's `node --import tsx --test $(find src -name '*.test.ts' ! -name '*.integration.test.ts' -print)`. |
+| `cd backend && npm test` | **356/356 pass**, 0 fail, 0 skipped. Expands to the brief's `node --import tsx --test $(find src -name '*.test.ts' ! -name '*.integration.test.ts' -print)`. |
 | `cd frontend && npm test` | **99/99 pass**, 0 fail, 0 skipped. |
 | `cd backend && npm run typecheck` | Pass. |
 | `cd backend && npm run build` | Pass. |
@@ -356,10 +389,10 @@ Full unit suites are rerun after it, before publication.
 | `cd frontend && PLAYWRIGHT_PORT_BASE=4273 npx playwright test --workers=2` | **55/55 pass** across public desktop, dashboard desktop/mobile and mobile regression projects; no retries. |
 | Fresh-cache targeted browser command below | **4/4 pass** with fresh caches; no retries. |
 | `.ukmesh-tools/promtool check rules logging/rules/meshcore.yml` | **24 rules valid**. |
-| `.ukmesh-tools/promtool test rules logging/rules/meshcore.test.yml` | **7 scenario groups pass**. |
+| `.ukmesh-tools/promtool test rules logging/rules/meshcore.test.yml` | **10 scenario groups pass**. |
 | `bash -n scripts/check-compose-adoption.sh scripts/replace-container.sh scripts/test-replace-container.sh` | Pass. |
 | `TMPDIR="$PWD/.ukmesh-tools/tmp" bash scripts/test-replace-container.sh` | **16/16 mocked drills pass**. |
-| Optional isolated cleanup integration command above | **7/7 pass**, 0 skipped. |
+| Optional isolated cleanup integration command above | **10/10 pass**, 0 skipped. |
 | `git diff --check 73ee004` | Pass; scoped review found no migration, schema, environment-file, lockfile or unrelated source edits. |
 | `cd frontend && npm run lint:css` | Existing **6 duplicate-selector failures** in unchanged files; left out of scope. |
 
@@ -379,7 +412,7 @@ Completion audit against the supplied brief:
 | Link heartbeat source and alert semantics | Per-scrape genuine Redis heartbeat; missing/stale active queues covered by 5 source/metric tests and 7 Prometheus scenario groups. Live alert firing is not claimed. |
 | Variable-height UK feed | ResizeObserver measurements and anchored offsets at both widths; 2 frontend geometry tests plus 2 expanded browser cases pass. |
 | Compose adoption guard | Local failing mocked reproduction, pre-mutation rejection, 16 passing replacement drills, including the pipefail regression. No live Docker inspection. |
-| Inactive-node archive/delete for every role | Role/bridge-independent selection, archive-before-delete transaction and private identity retention; 6 unit and 7 SQL fixture tests pass. No live deletion or migration. |
+| Inactive-node archive/delete for every role | Role/bridge-independent selection, archive-before-delete transaction, private identity retention and preservation of a current privacy fence; 9 unit and 10 SQL fixture tests pass. No live deletion or migration. |
 | Final verification and private-branch publication | Full backend/frontend units run on the final documentation HEAD; non-forced branch push and matching remote SHA required before handoff. |
 | Other heartbeat proxies | Source/cadence/alert-consumer findings recorded above; the health-worker false-positive candidate remains a source-based follow-up. |
 
@@ -388,7 +421,9 @@ Verify with `git rev-parse HEAD` and `git ls-remote --heads origin
 fix/ukmesh-burn-20261002`; the two full SHAs must match. Remote `ukmesh-w5`
 remains `73ee00406e7cb0b7251220abbff73144615a8b90`. No force push is used.
 The operator reviews against that integration base; opening a draft PR is optional.
-Inspected workflow triggers: branch pushes run CI; `release.yml` requires a
+Inspected workflow triggers: branch pushes request CI; `gh run list --branch
+fix/ukmesh-burn-20261002` currently returns no runs, so remote CI execution is not
+claimed. All three repository workflows are listed as active. `release.yml` requires a
 published release or explicit dispatch. No deployment/release workflow is invoked.
 Ignored local logs contain TAP/build/browser output, and ignored tooling holds
 standalone promtool and PGlite. Neither is part of the shipped runtime.
