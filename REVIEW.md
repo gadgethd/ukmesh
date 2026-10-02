@@ -79,7 +79,32 @@ Production cold-pass time and DB load are not measured.
 
 ## 3. Heartbeat alert semantics — #543 / #507
 
-Implementation and validation pending.
+Confirmed `currentWorkers` set `worker="link"` from `MAX(itm_computed_at)`.
+Replaced that source with Redis `meshcore:link:v3:worker_heartbeat`. The current
+worker's independent thread writes Unix seconds every 10s with a **45s TTL**
+(the brief's 39s is a live observation, not the source's configured TTL).
+`last_activity_at` still reports ITM write activity separately.
+
+The Prometheus gauge collects Redis on each scrape, rather than freezing the
+age until the five-minute health pass. Reads time out at 2s; missing, invalid,
+excessively future or unreadable timestamps publish `-1`, replacing any earlier
+healthy value. The queue alert now handles `< 0` as well as `> 180`, with the
+existing three-minute holdoff. No threshold increase is needed for a genuine
+ten-second heartbeat. Empty queues do not trigger this alert.
+
+Validation: `cd backend && node --import tsx --test
+src/health/workerHeartbeat.test.ts`: **5/5 pass**, including the real Redis key,
+timestamp validation, expiry/failure, bounded timeout, repeated real metric
+scrapes and recovery. `npm run typecheck` passes; `npm test`: **343/343 pass**,
+0 fail, 0 skipped. `.ukmesh-tools/promtool check rules
+logging/rules/meshcore.yml`: **24 rules valid**. `.ukmesh-tools/promtool test rules
+logging/rules/meshcore.test.yml`: **7 scenario groups pass**, including batch
+gaps, missing heartbeats, holdoff, recovery, idle queues and existing stale cases.
+
+Standalone promtool 3.15.0 was downloaded from the [official release listing](https://prometheus.io/download/?trk=direct)
+into an ignored worktree-local tools directory, without starting a container.
+Archive SHA256: `2a542df32eac02ee17b9d844fb2aa1de00dafa5476579ba8a3ba862e9d572ea0`,
+matching the official listing. Live metric/alert behavior remains deploy-gated.
 
 ## 4. UK feed virtualizer — #303
 

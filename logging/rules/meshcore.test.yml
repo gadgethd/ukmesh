@@ -4,6 +4,66 @@ rule_files:
 evaluation_interval: 1m
 
 tests:
+  - name: fresh real link heartbeats stay healthy throughout a fifteen-minute ITM batch gap
+    interval: 1m
+    input_series:
+      - series: meshcore_link_queue_active_jobs
+        values: 12x20
+      - series: 'meshcore_worker_heartbeat_age_seconds{worker="link"}'
+        values: 5x20
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: ActiveQueueWorkerHeartbeatStale
+        exp_alerts: []
+
+  - name: expired link heartbeat with queued work alerts after holdoff and recovers
+    interval: 1m
+    input_series:
+      - series: meshcore_link_queue_active_jobs
+        values: 12x9
+      - series: 'meshcore_worker_heartbeat_age_seconds{worker="link"}'
+        values: 5 -1 -1 -1 -1 -1 5 5 5 5
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: ActiveQueueWorkerHeartbeatStale
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: ActiveQueueWorkerHeartbeatStale
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: A worker with queued work has a stale heartbeat
+              owner: meshcore-operations
+              runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#activequeueworkerheartbeatstale
+      - eval_time: 6m
+        alertname: ActiveQueueWorkerHeartbeatStale
+        exp_alerts: []
+
+  - name: a missing link heartbeat without queued work does not page
+    interval: 1m
+    input_series:
+      - series: meshcore_link_queue_active_jobs
+        values: 0x8
+      - series: 'meshcore_worker_heartbeat_age_seconds{worker="link"}'
+        values: -1x8
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: ActiveQueueWorkerHeartbeatStale
+        exp_alerts: []
+
+  - name: a brief missing heartbeat does not outlast the three-minute holdoff
+    interval: 1m
+    input_series:
+      - series: meshcore_link_queue_active_jobs
+        values: 12x8
+      - series: 'meshcore_worker_heartbeat_age_seconds{worker="link"}'
+        values: 5 -1 -1 5 5 5 5 5 5
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: ActiveQueueWorkerHeartbeatStale
+        exp_alerts: []
+
   - name: bounded queues and stopped workers produce their documented alerts
     interval: 1m
     input_series:
