@@ -5,6 +5,7 @@ import { createServer } from 'node:net';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
+import { installPrivacyTriggers } from './cleanupPrivacyFixture.js';
 import { cleanupInactiveNodes, cleanupStaleMqttObservers } from './staleMqttObservers.js';
 
 // Optional native PostgreSQL for real multi-connection lock tests. This starts
@@ -218,5 +219,53 @@ for (const cleanup of [cleanupInactiveNodes, cleanupStaleMqttObservers]) {
     assert.deepEqual((await f.observer.query('SELECT name FROM nodes')).rows, [{ name: 'Private 🚫' }]);
     assert.equal((await f.observer.query('SELECT COUNT(*)::int AS count FROM maintenance_removed_records')).rows[0].count, 0);
     assert.equal((await cleanup({ cleanupPool: f.pool })).nodes, 0, 'the next pass must retain the committed privacy marker');
+  });
+}
+
+for (const fence of ['current', 'gap', 'missing'] as const) {
+  test(`native public-node cleanup preserves the ${fence} privacy fence with production triggers`, options, async (t) => {
+    const f = await fixture();
+    t.after(() => f.close());
+    await f.observer.query(`
+      ALTER TABLE public_visibility_state ADD COLUMN updated_at TIMESTAMPTZ DEFAULT NOW();
+      ALTER TABLE private_node_prefixes
+        ADD COLUMN network TEXT, ADD COLUMN prefix_size_bytes INTEGER,
+        ADD COLUMN prefix TEXT, ADD COLUMN updated_at TIMESTAMPTZ DEFAULT NOW(),
+        ADD PRIMARY KEY (node_id, network, prefix_size_bytes);
+      CREATE TABLE packets (src_node_id TEXT, payload TEXT);
+    `);
+    await installPrivacyTriggers({ exec: sql => f.observer.query(sql) });
+    await f.observer.query(`
+      INSERT INTO packets (src_node_id, rx_node_id, path_hashes, path_hash_size_bytes)
+        VALUES ('public-source', 'public-receiver', ARRAY['AB'], 1);
+      INSERT INTO packet_paths (src_node_id, rx_node_id, path_hashes, path_hash_size_bytes)
+        VALUES ('public-source', 'public-receiver', ARRAY['AB'], 1);
+    `);
+    if (fence === 'gap') {
+      await f.observer.query('UPDATE public_visibility_state SET generation = 5');
+      await f.observer.query('UPDATE packet_visibility_materialization_state SET visibility_generation = 3');
+    } else if (fence === 'missing') {
+      await f.observer.query('DELETE FROM packet_visibility_materialization_state');
+    }
+    const generations = `SELECT visibility.generation::int AS generation,
+      materialized.visibility_generation::int AS materialized_generation
+      FROM public_visibility_state visibility
+      LEFT JOIN packet_visibility_materialization_state materialized USING (singleton)`;
+    const flags = `SELECT 'packet' AS kind, is_private, visibility_ok FROM packets
+      UNION ALL SELECT 'path', is_private, visibility_ok FROM packet_paths ORDER BY kind`;
+    const before = (await f.observer.query(generations)).rows[0];
+    const beforeFlags = (await f.observer.query(flags)).rows;
+    assert.deepEqual(beforeFlags, [
+      { kind: 'packet', is_private: false, visibility_ok: true },
+      { kind: 'path', is_private: false, visibility_ok: true },
+    ]);
+    assert.equal((await cleanupInactiveNodes({ cleanupPool: f.pool })).nodes, 1);
+    const after = (await f.observer.query(generations)).rows[0];
+    assert.ok(after.generation > before.generation, 'the empty prefix FK cascade must execute the production generation trigger');
+    assert.equal(after.materialized_generation, fence === 'current' ? after.generation : before.materialized_generation,
+      'only an already-current fence may advance with the public deletion');
+    assert.deepEqual((await f.observer.query(flags)).rows, beforeFlags, 'public deletion must retain stored packet and path visibility');
+    assert.equal((await f.observer.query("SELECT COUNT(*)::int AS count FROM maintenance_removed_records WHERE source_table = 'nodes'")).rows[0].count, 1);
+    assert.equal((await f.observer.query('SELECT COUNT(*)::int AS count FROM nodes')).rows[0].count, 0);
   });
 }

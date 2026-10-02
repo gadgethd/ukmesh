@@ -549,6 +549,18 @@ backend typecheck passes and every fixture directory is removed. Only this
 BEFORE function is installed in those cases; the remaining production privacy
 materialization chain is covered by the separate SQL fixture suite.
 
+Three further native PostgreSQL **16.14** cases now execute that entire relevant
+production privacy trigger chain. They confirm that the empty public-node
+prefix FK cascade advances visibility generation, that an already-current
+packet fence advances with it, and that pre-existing gapped or missing fences
+remain uncertified. Stored public packet/path flags remain unchanged, and the
+node is archived before deletion. The native suite passes **14/14**, no skips;
+the PostgreSQL-WASM suite remains **13/13**, no skips. Both engines now use
+`cleanupPrivacyFixture.ts`, moved without changing its function/trigger
+implementation. Backend typecheck passes and no native fixture directories
+remain. These are isolated schemas/functions, without production migrations,
+TimescaleDB or live data.
+
 ## Last-hop regrouping during warm refreshes
 
 Two new regressions reproduced stale groups after successful incremental
@@ -687,7 +699,7 @@ and **100/100**, respectively. The optional Firefox/WebKit profile passed
 | `bash -n scripts/check-compose-adoption.sh scripts/replace-container.sh scripts/test-replace-container.sh` | Pass. |
 | `TMPDIR="$PWD/.ukmesh-tools/tmp" bash scripts/test-replace-container.sh` | **16/16 mocked drills pass**. |
 | Optional isolated cleanup PGlite integration command above | **13/13 pass**, 0 skipped. |
-| Optional isolated cleanup native PostgreSQL command above | **11/11 pass**, 0 skipped, including actual concurrent transactions, RF-only arrivals, committed consent and the waiting production consent-lock trigger. |
+| Optional isolated cleanup native PostgreSQL command above | **14/14 pass**, 0 skipped: 11 concurrent-writer cases plus 3 fence cases using the full relevant production trigger chain. |
 | Optional isolated last-hop PGlite integration command above | **1/1 pass**, 0 skipped; actual repository SQL, peer regrouping, averages and empty refresh. |
 | `git diff --check 73ee004` | Pass; scoped review found no migration, schema, environment-file, lockfile or unrelated source edits. |
 | `cd frontend && npm run lint:css` | Existing **6 duplicate-selector failures** in unchanged files; left out of scope. |
@@ -708,7 +720,7 @@ Completion audit against the supplied brief:
 | Link heartbeat source and alert semantics | Per-scrape genuine Redis heartbeat, including client-initialization failure/recovery; 6 source/metric tests and 10 Prometheus scenario groups, including independent scrape reporters. Live alert firing is not claimed. |
 | Variable-height UK feed | ResizeObserver measurements and anchored offsets at both widths; 3 frontend geometry tests, 2 Chromium feed cases and 4 Firefox/WebKit cases pass. |
 | Compose adoption guard | Local failing mocked reproduction, pre-mutation rejection, 16 passing replacement drills, including the pipefail regression. No live Docker inspection. |
-| Inactive-node archive/delete for every role | Role/bridge-independent selection, archive-before-delete transaction, private identity retention, late-sighting revalidation, visibility-before-node lock order and preservation of a current privacy fence; 11 unit, 13 SQL fixture and 11 native concurrency tests pass. No live deletion or migration. |
+| Inactive-node archive/delete for every role | Role/bridge-independent selection, archive-before-delete transaction, private identity retention, late-sighting revalidation, visibility-before-node lock order and preservation of a current privacy fence; 11 unit, 13 PostgreSQL-WASM and 14 native PostgreSQL fixtures pass. No live deletion or migration. |
 | Final verification and private-branch publication | Full backend/frontend units run on the final documentation HEAD; non-forced branch push and matching remote SHA required before handoff. |
 | Other heartbeat proxies | Source/cadence/alert-consumer findings recorded above; the health-worker false-positive candidate remains a source-based follow-up. |
 
