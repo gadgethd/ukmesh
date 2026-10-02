@@ -443,6 +443,15 @@ outside that catch. The next scrape can initialize successfully and recover.
 fresh worker startup inside a 750ms budget under concurrent verification load.
 That separate test failure is being investigated; 359/359 is not yet claimed.
 
+The worker-pool regression now controls the 750ms deadline with Node's mock
+clock rather than imposing that same wall-time budget on replacement thread
+startup. It checks that active and queued jobs remain pending at 749ms, both
+expire at 750ms, queues drain, and a real replacement worker returns a new job.
+Its independent test-runner deadline remains 10 seconds.
+`cd backend && node --import tsx --test src/path-beta/workerPool.test.ts`:
+**3/3 pass**. The full backend rerun then passed **359/359**, no failures or
+skips. No production worker-pool timeout or scheduling code changed.
+
 ## Final verification and publication
 
 Source commits: `9a5e838` (retirement), `2d2b425` (prewarm), `236e948`
