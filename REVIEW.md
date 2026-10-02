@@ -548,6 +548,23 @@ src/owner/ownerService.test.ts src/owner/ownerLastHopPrewarm.test.ts`: **17/17
 pass**, 0 failures or skips. Backend typecheck passes. This verifies response
 replacement with controlled repository results; no live owner query is claimed.
 
+An optional isolated SQL fixture now executes the actual
+`createOwnerRepository.fetchLastHopStrength` query through the service. It seeds
+three current-bucket packets, renames a peer, adds a newly resolvable peer and
+checks that the refreshed result still has exactly three current samples with
+the correct averages. Removing those current packets leaves only the earlier
+cached history. **1/1 passes**, 0 skipped, with:
+
+```sh
+cd backend
+TEST_OWNER_LAST_HOP_PGLITE_MODULE="file://$PWD/../.ukmesh-tools/pglite/node_modules/@electric-sql/pglite/dist/index.js" node --import tsx --test src/owner/ownerService.integration.test.ts
+```
+
+The fixture uses PostgreSQL-WASM with minimal identity tables, an identity
+canonicalizer and a one-hour `time_bucket` shim. It does not exercise the real
+identity views, alias reconciliation, TimescaleDB extension or production load.
+Backend typecheck passes with the fixture included.
+
 ## Final verification and publication
 
 Source commits: `9a5e838` (retirement), `2d2b425` (prewarm), `236e948`
@@ -585,6 +602,7 @@ Full unit suites are rerun after it, before publication.
 | `TMPDIR="$PWD/.ukmesh-tools/tmp" bash scripts/test-replace-container.sh` | **16/16 mocked drills pass**. |
 | Optional isolated cleanup PGlite integration command above | **13/13 pass**, 0 skipped. |
 | Optional isolated cleanup native PostgreSQL command above | **5/5 pass**, 0 skipped, including actual concurrent transactions and RF-only arrivals. |
+| Optional isolated last-hop PGlite integration command above | **1/1 pass**, 0 skipped; actual repository SQL, peer regrouping, averages and empty refresh. |
 | `git diff --check 73ee004` | Pass; scoped review found no migration, schema, environment-file, lockfile or unrelated source edits. |
 | `cd frontend && npm run lint:css` | Existing **6 duplicate-selector failures** in unchanged files; left out of scope. |
 
