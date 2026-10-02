@@ -138,7 +138,31 @@ in unchanged `globals.css`, `map-app.css` and `owner-portal.css`. Their diff aga
 
 ## Stretch queue
 
-- #424 Compose adoption guard: pending reproduction and local guard verification.
+### #424 — Compose adoption guard
+
+The replacement script previously trusted Compose's selected container without
+checking its adoption metadata. A mocked backend with missing labels reached
+replacement: before the guard, `TMPDIR="$PWD/.ukmesh-tools/tmp" bash
+scripts/test-replace-container.sh` failed with `adoption_empty_stops_before_mutation:
+expected Compose adoption rejection (65), got 0`. This reproduces the config gap
+locally; it is not a claim about current live Docker state.
+
+Added a read-only `scripts/check-compose-adoption.sh SERVICE` preflight. It requires
+exactly one current container with matching project, service, physical working
+directory and a config-file list containing this checkout's `docker-compose.yml`.
+`replace-container.sh` checks the requested service and backend before signature
+checks, pulls, receipts, migration runs or Compose replacement. Gaps stop with
+exit 65 and an operator-reconciliation message. No automatic adoption or network
+recreation is attempted. Operators can run the preflight separately when reviewing
+a deployment; this session runs it only through mocked Docker.
+
+Validation: `bash -n scripts/check-compose-adoption.sh scripts/replace-container.sh
+scripts/test-replace-container.sh` passes. `TMPDIR="$PWD/.ukmesh-tools/tmp" bash
+scripts/test-replace-container.sh`: **6/6 drills pass** (existing rollback and
+compatibility, plus empty labels, missing config-file label, wrong directory and
+wrong project). Gap cases assert no pull, migration/replacement or release receipt.
+Live adoption and operator reconciliation remain unverified and deploy-gated.
+
 - #447 stale node archive/delete: pending implementation and tests.
 - Full backend/frontend suites on final HEAD: pending.
 - Other proxy heartbeat signals and alert consumers: pending audit.

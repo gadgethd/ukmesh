@@ -135,6 +135,14 @@ if ! git diff --quiet || ! git diff --cached --quiet; then
   exit 65
 fi
 
+# A manually recreated backend may retain project/service labels but have empty
+# config_files/working_dir labels. Reject before pulls, migrations or compose up;
+# otherwise Compose can try to replace a shared network it does not own cleanly.
+"${script_dir}/check-compose-adoption.sh" "$service"
+if [ "$service" != backend ]; then
+  "${script_dir}/check-compose-adoption.sh" backend
+fi
+
 verify_cosign_signature() {
   local image="$1"
   if [ -n "$cosign_key" ]; then
