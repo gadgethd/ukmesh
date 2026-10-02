@@ -98,8 +98,14 @@ async function waitForLock(observer: any, pid: number) {
   assert.fail('cleanup did not reach the competing visibility lock');
 }
 
-for (const cleanup of [cleanupInactiveNodes, cleanupStaleMqttObservers]) {
-  test(`native ${cleanup.name} lets fresh ingestion finish without a node/visibility deadlock`, options, async (t) => {
+const nodeRefresh = `UPDATE nodes SET last_seen = NOW(), last_mqtt_observer_seen_at = NOW() WHERE node_id = 'dormant'`;
+for (const { cleanup, evidence, statement } of [
+  { cleanup: cleanupInactiveNodes, evidence: 'node timestamp', statement: nodeRefresh },
+  { cleanup: cleanupStaleMqttObservers, evidence: 'node timestamp', statement: nodeRefresh },
+  { cleanup: cleanupInactiveNodes, evidence: 'source RF sighting', statement: `INSERT INTO node_network_sightings VALUES ('dormant', NOW())` },
+  { cleanup: cleanupInactiveNodes, evidence: 'observer RF sighting', statement: `INSERT INTO observer_region_observer_sightings VALUES ('dormant', NOW())` },
+]) {
+  test(`native ${cleanup.name} retains a concurrent ${evidence} refresh`, options, async (t) => {
     const f = await fixture();
     const selected = gate();
     const resume = gate();
@@ -123,16 +129,17 @@ for (const cleanup of [cleanupInactiveNodes, cleanupStaleMqttObservers]) {
     );
     await selected.promise;
     await f.writer.query('BEGIN');
-    // Same lock ordering as packetBatch's classification and observer upsert.
+    // Same visibility pin as packetBatch's classification before node/RF writes.
     await f.writer.query('SELECT generation FROM public_visibility_state WHERE singleton = TRUE FOR KEY SHARE');
     resume.resolve();
     await waitForLock(f.observer, f.pid);
-    await f.writer.query(`UPDATE nodes SET last_seen = NOW(), last_mqtt_observer_seen_at = NOW() WHERE node_id = 'dormant'`);
+    await f.writer.query(statement);
     await f.writer.query('COMMIT');
     const result = await cleanupResult;
     assert.equal(result.ok, true, result.ok ? '' : String(result.error));
     if (!result.ok) throw result.error;
     assert.equal(result.value.nodes, 0);
+    assert.equal(result.value.candidates, 0);
     assert.equal((await f.observer.query('SELECT COUNT(*)::int AS count FROM nodes')).rows[0].count, 1);
     assert.equal((await f.observer.query('SELECT COUNT(*)::int AS count FROM maintenance_removed_records')).rows[0].count, 0);
   });
