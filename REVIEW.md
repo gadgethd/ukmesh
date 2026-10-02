@@ -538,6 +538,16 @@ temporary native database directories remain. These cases model the consent
 writer's visibility-lock protocol with minimal tables; the separate SQL fixture
 suite executes the full production privacy trigger chain.
 
+Two reverse-order cases execute the production
+`lock_packet_visibility_for_node_privacy_change` BEFORE function. Cleanup first
+locks visibility; a competing private-name UPDATE locks the node and then waits
+inside that trigger. Both cleanup policies skip the busy row, commit and release
+visibility, allowing consent to commit without a deadlock or archive. A later
+pass retains the now-private node. The native suite passes **11/11**, 0 skipped;
+backend typecheck passes and every fixture directory is removed. Only this
+BEFORE function is installed in those cases; the remaining production privacy
+materialization chain is covered by the separate SQL fixture suite.
+
 ## Last-hop regrouping during warm refreshes
 
 Two new regressions reproduced stale groups after successful incremental
@@ -587,7 +597,9 @@ Further verification commits: `4a73ca0` (reporter-matched alerts), `2d6b703`
 `e754f46` (responsive fresh-cache reads), `2960f5f` (separate viewport cases),
 `f5ac2c9` (valid raster fixtures), `a705b89` (Redis initialization recovery),
 `b561632` (deterministic worker deadlines), `6cf1f70` (bootstrap readiness),
-`3689c01` (fractional feed-range invariants).
+`3689c01` (fractional feed-range invariants), `77b4ae7` (cleanup lock order),
+`62597ee` (concurrent RF arrivals), `c09fcc4` (last-hop group replacement),
+`d67ac63` (actual last-hop SQL), `17a41aa` (committed consent).
 The final documentation commit records this audit and the validation below.
 Full unit suites are rerun after it, before publication.
 
@@ -609,7 +621,7 @@ Full unit suites are rerun after it, before publication.
 | `bash -n scripts/check-compose-adoption.sh scripts/replace-container.sh scripts/test-replace-container.sh` | Pass. |
 | `TMPDIR="$PWD/.ukmesh-tools/tmp" bash scripts/test-replace-container.sh` | **16/16 mocked drills pass**. |
 | Optional isolated cleanup PGlite integration command above | **13/13 pass**, 0 skipped. |
-| Optional isolated cleanup native PostgreSQL command above | **9/9 pass**, 0 skipped, including actual concurrent transactions, RF-only arrivals and committed consent. |
+| Optional isolated cleanup native PostgreSQL command above | **11/11 pass**, 0 skipped, including actual concurrent transactions, RF-only arrivals, committed consent and the waiting production consent-lock trigger. |
 | Optional isolated last-hop PGlite integration command above | **1/1 pass**, 0 skipped; actual repository SQL, peer regrouping, averages and empty refresh. |
 | `git diff --check 73ee004` | Pass; scoped review found no migration, schema, environment-file, lockfile or unrelated source edits. |
 | `cd frontend && npm run lint:css` | Existing **6 duplicate-selector failures** in unchanged files; left out of scope. |
@@ -630,7 +642,7 @@ Completion audit against the supplied brief:
 | Link heartbeat source and alert semantics | Per-scrape genuine Redis heartbeat, including client-initialization failure/recovery; 6 source/metric tests and 10 Prometheus scenario groups, including independent scrape reporters. Live alert firing is not claimed. |
 | Variable-height UK feed | ResizeObserver measurements and anchored offsets at both widths; 3 frontend geometry tests plus 2 expanded browser cases pass. |
 | Compose adoption guard | Local failing mocked reproduction, pre-mutation rejection, 16 passing replacement drills, including the pipefail regression. No live Docker inspection. |
-| Inactive-node archive/delete for every role | Role/bridge-independent selection, archive-before-delete transaction, private identity retention, late-sighting revalidation, visibility-before-node lock order and preservation of a current privacy fence; 11 unit, 13 SQL fixture and 9 native concurrency tests pass. No live deletion or migration. |
+| Inactive-node archive/delete for every role | Role/bridge-independent selection, archive-before-delete transaction, private identity retention, late-sighting revalidation, visibility-before-node lock order and preservation of a current privacy fence; 11 unit, 13 SQL fixture and 11 native concurrency tests pass. No live deletion or migration. |
 | Final verification and private-branch publication | Full backend/frontend units run on the final documentation HEAD; non-forced branch push and matching remote SHA required before handoff. |
 | Other heartbeat proxies | Source/cadence/alert-consumer findings recorded above; the health-worker false-positive candidate remains a source-based follow-up. |
 

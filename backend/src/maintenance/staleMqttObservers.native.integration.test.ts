@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
@@ -88,14 +88,14 @@ async function fixture() {
   }
 }
 
-async function waitForLock(observer: any, pid: number) {
+async function waitForLock(observer: any, pid: number, participant = 'cleanup') {
   const deadline = Date.now() + 4_000;
   while (Date.now() < deadline) {
     const state = await observer.query('SELECT wait_event_type FROM pg_stat_activity WHERE pid = $1', [pid]);
     if (state.rows[0]?.wait_event_type === 'Lock') return;
     await delay(10);
   }
-  assert.fail('cleanup did not reach the competing visibility lock');
+  assert.fail(`${participant} did not reach the competing visibility lock`);
 }
 
 const nodeRefresh = `UPDATE nodes SET last_seen = NOW(), last_mqtt_observer_seen_at = NOW() WHERE node_id = 'dormant'`;
@@ -165,3 +165,58 @@ test('native cleanup skips a busy node row and can archive it on the next pass',
   assert.equal(retried.nodes, 1);
   assert.equal((await f.observer.query('SELECT COUNT(*)::int AS count FROM nodes')).rows[0].count, 0);
 });
+
+for (const cleanup of [cleanupInactiveNodes, cleanupStaleMqttObservers]) {
+  test(`native ${cleanup.name} yields a busy node to a waiting consent trigger`, options, async (t) => {
+    const f = await fixture();
+    const visibilityLocked = gate();
+    const resume = gate();
+    t.after(async () => { resume.resolve(); await f.close(); });
+    // Execute only the production BEFORE trigger function in this new cluster,
+    // not the migration or the remaining privacy materialization chain.
+    const source = await readFile(new URL('../db/migrations/042_packet_visibility_fence.sql', import.meta.url), 'utf8');
+    const definition = source.match(/CREATE OR REPLACE FUNCTION lock_packet_visibility_for_node_privacy_change\([\s\S]*?^\$\$;/m)?.[0];
+    assert.ok(definition);
+    await f.observer.query(definition);
+    await f.observer.query(`CREATE TRIGGER nodes_packet_visibility_serialization
+      BEFORE INSERT OR UPDATE OR DELETE ON nodes FOR EACH ROW
+      EXECUTE FUNCTION lock_packet_visibility_for_node_privacy_change()`);
+    const pool = { async connect() { return {
+      async query(text: string, values?: unknown[]) {
+        const result = await f.cleanupClient.query(text, values);
+        if (text.includes('FOR UPDATE OF visibility')) {
+          visibilityLocked.resolve();
+          await resume.promise;
+        }
+        return result;
+      },
+      release() {},
+    }; } };
+    const cleanupResult = cleanup({ cleanupPool: pool }).then(
+      (value) => ({ ok: true as const, value }),
+      (error) => ({ ok: false as const, error }),
+    );
+    await visibilityLocked.promise;
+    await f.writer.query('BEGIN');
+    const writerPid = (await f.writer.query('SELECT pg_backend_pid() AS pid')).rows[0].pid;
+    // UPDATE locks the node before its BEFORE trigger waits for visibility.
+    const consentResult = f.writer.query(`UPDATE nodes SET name = 'Private 🚫' WHERE node_id = 'dormant'`).then(
+      (value: { rowCount: number }) => ({ ok: true as const, value }),
+      (error: unknown) => ({ ok: false as const, error }),
+    );
+    await waitForLock(f.observer, writerPid, 'consent writer');
+    resume.resolve();
+    const result = await cleanupResult;
+    assert.equal(result.ok, true, result.ok ? '' : String(result.error));
+    if (!result.ok) throw result.error;
+    assert.equal(result.value.nodes, 0);
+    const consent = await consentResult;
+    assert.equal(consent.ok, true, consent.ok ? '' : String(consent.error));
+    if (!consent.ok) throw consent.error;
+    assert.equal(consent.value.rowCount, 1);
+    await f.writer.query('COMMIT');
+    assert.deepEqual((await f.observer.query('SELECT name FROM nodes')).rows, [{ name: 'Private 🚫' }]);
+    assert.equal((await f.observer.query('SELECT COUNT(*)::int AS count FROM maintenance_removed_records')).rows[0].count, 0);
+    assert.equal((await cleanup({ cleanupPool: f.pool })).nodes, 0, 'the next pass must retain the committed privacy marker');
+  });
+}
