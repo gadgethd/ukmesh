@@ -1,3 +1,4 @@
+import { publicOrigin, dashboardOrigin, devOrigin } from './localServers.js';
 import { expect, test, type Page } from '@playwright/test';
 
 const PHONE = { width: 375, height: 667 };
@@ -147,16 +148,16 @@ async function expectNoViewportOverflow(page: Page) {
 }
 
 const routedViews = [
-  ['UK home', 'http://127.0.0.1:4173/'],
-  ['UK feed', 'http://127.0.0.1:4173/feed'],
-  ['UK repeaters', 'http://127.0.0.1:4173/repeater'],
-  ['UK companions', 'http://127.0.0.1:4173/companion'],
-  ['UK install', 'http://127.0.0.1:4173/install'],
-  ['UK open source', 'http://127.0.0.1:4173/open-source'],
-  ['UK stats', 'http://127.0.0.1:4173/stats'],
-  ['UK login', 'http://127.0.0.1:4173/login'],
-  ['UK docs', 'http://127.0.0.1:4173/docs'],
-  ['test site home', 'http://127.0.0.1:4175/'],
+  ['UK home', `${publicOrigin}/`],
+  ['UK feed', `${publicOrigin}/feed`],
+  ['UK repeaters', `${publicOrigin}/repeater`],
+  ['UK companions', `${publicOrigin}/companion`],
+  ['UK install', `${publicOrigin}/install`],
+  ['UK open source', `${publicOrigin}/open-source`],
+  ['UK stats', `${publicOrigin}/stats`],
+  ['UK login', `${publicOrigin}/login`],
+  ['UK docs', `${publicOrigin}/docs`],
+  ['test site home', `${devOrigin}/`],
 ] as const;
 
 for (const [name, url] of routedViews) {
@@ -176,7 +177,7 @@ for (const [name, url] of routedViews) {
 test('shared navigation stays compact and dismisses without navigation', async ({ page }) => {
   await page.setViewportSize(PHONE);
   await installApiFixtures(page);
-  await page.goto('http://127.0.0.1:4173/feed', { waitUntil: 'networkidle' });
+  await page.goto(`${publicOrigin}/feed`, { waitUntil: 'networkidle' });
 
   const openMenu = page.getByRole('button', { name: 'Open menu' });
   await openMenu.click();
@@ -196,7 +197,7 @@ test('shared navigation stays compact and dismisses without navigation', async (
 test('shared navigation collapses before tablet links can wrap', async ({ page }) => {
   await page.setViewportSize({ width: 768, height: 667 });
   await installApiFixtures(page);
-  await page.goto('http://127.0.0.1:4173/feed', { waitUntil: 'networkidle' });
+  await page.goto(`${publicOrigin}/feed`, { waitUntil: 'networkidle' });
 
   const menu = page.locator('#site-navigation');
   const openMenu = page.getByRole('button', { name: 'Open menu' });
@@ -212,7 +213,7 @@ test('shared navigation collapses before tablet links can wrap', async ({ page }
 test('phone home and feed give primary content the full available width', async ({ page }) => {
   await page.setViewportSize(PHONE);
   await installApiFixtures(page);
-  await page.goto('http://127.0.0.1:4173/', { waitUntil: 'networkidle' });
+  await page.goto(`${publicOrigin}/`, { waitUntil: 'networkidle' });
 
   const introBox = await page.locator('.site-home__intro').boundingBox();
   const panelBox = await page.locator('.site-home__panel').boundingBox();
@@ -223,7 +224,7 @@ test('phone home and feed give primary content the full available width', async 
   )).toBe(1);
   await expectNoViewportOverflow(page);
 
-  await page.goto('http://127.0.0.1:4173/feed', { waitUntil: 'networkidle' });
+  await page.goto(`${publicOrigin}/feed`, { waitUntil: 'networkidle' });
   const channelsBox = await page.locator('.uk-feed-channels').boundingBox();
   const chatBox = await page.locator('.uk-feed-chat').boundingBox();
   expect(channelsBox?.height ?? PHONE.height).toBeLessThan(64);
@@ -235,14 +236,14 @@ test('phone home and feed give primary content the full available width', async 
 test('tablet home and feed avoid squeezed desktop columns', async ({ page }) => {
   await page.setViewportSize({ width: 768, height: 667 });
   await installApiFixtures(page);
-  await page.goto('http://127.0.0.1:4173/', { waitUntil: 'networkidle' });
+  await page.goto(`${publicOrigin}/`, { waitUntil: 'networkidle' });
 
   expect(await page.locator('.site-home__grid').evaluate(
     (element) => getComputedStyle(element).gridTemplateColumns.split(' ').length,
   )).toBe(1);
   expect((await page.locator('.site-home__intro').boundingBox())?.width ?? 0).toBeGreaterThan(720);
 
-  await page.goto('http://127.0.0.1:4173/feed', { waitUntil: 'networkidle' });
+  await page.goto(`${publicOrigin}/feed`, { waitUntil: 'networkidle' });
   expect((await page.locator('.uk-feed-chat').boundingBox())?.width ?? 0).toBeGreaterThan(740);
   await expect(page.locator('.uk-feed-right')).toBeHidden();
 });
@@ -250,7 +251,7 @@ test('tablet home and feed avoid squeezed desktop columns', async ({ page }) => 
 test('map controls and disclaimer leave the map usable on a phone', async ({ page }) => {
   await page.setViewportSize(PHONE);
   await installApiFixtures(page);
-  await page.goto('http://127.0.0.1:4174/', { waitUntil: 'networkidle' });
+  await page.goto(`${dashboardOrigin}/`, { waitUntil: 'networkidle' });
 
   await page.getByRole('button', { name: /Layers/ }).click();
   const lineOfSight = page.getByRole('button', { name: 'Line of sight' });
@@ -274,7 +275,7 @@ test('map controls and disclaimer leave the map usable on a phone', async ({ pag
 test('mobile map menu floats over the map; feed hides behind the Live chip', async ({ page }) => {
   await page.setViewportSize(PHONE);
   await installApiFixtures(page);
-  await page.goto('http://127.0.0.1:4174/', { waitUntil: 'networkidle' });
+  await page.goto(`${dashboardOrigin}/`, { waitUntil: 'networkidle' });
 
   // Default state: compact floating bar, packet feed hidden.
   const controlsBox = await page.locator('.mobile-controls').boundingBox();
@@ -311,7 +312,7 @@ test('live map stays inside every supported viewport and remains UK-only', async
 
   for (const width of [320, 375, 640, 768, 1024, 1280, 1440]) {
     await page.setViewportSize({ width, height: width <= 375 ? 667 : 800 });
-    await page.goto('http://127.0.0.1:4174/?network=teesside', { waitUntil: 'networkidle' });
+    await page.goto(`${dashboardOrigin}/?network=teesside`, { waitUntil: 'networkidle' });
     await expect(page.locator('.map-area')).toBeVisible();
     await expect(page.getByLabel('Network region')).toHaveCount(0);
 
@@ -339,7 +340,7 @@ test('live map stays inside every supported viewport and remains UK-only', async
 test('repeater search results stay bounded and scroll inside the menu', async ({ page }) => {
   await page.setViewportSize(PHONE);
   await installApiFixtures(page);
-  await page.goto('http://127.0.0.1:4173/repeater', { waitUntil: 'networkidle' });
+  await page.goto(`${publicOrigin}/repeater`, { waitUntil: 'networkidle' });
 
   await page.getByRole('combobox', { name: 'Search repeaters' }).fill('Repeater');
   const results = page.locator('.repeater-search-box__results');
@@ -356,7 +357,7 @@ test('repeater search results stay bounded and scroll inside the menu', async ({
 test('stats path modal fits the viewport and keeps its close action reachable', async ({ page }) => {
   await page.setViewportSize(PHONE);
   await installApiFixtures(page);
-  await page.goto('http://127.0.0.1:4173/stats', { waitUntil: 'networkidle' });
+  await page.goto(`${publicOrigin}/stats`, { waitUntil: 'networkidle' });
 
   await page.getByRole('tab', { name: 'Paths' }).click();
   await page.getByRole('button', { name: 'North -> South' }).click();
@@ -370,7 +371,7 @@ test('stats path modal fits the viewport and keeps its close action reachable', 
 
 test('repeater-tree modal remains centred and fully reachable at every target width', async ({ page }) => {
   await installApiFixtures(page);
-  await page.goto('http://127.0.0.1:4173/feed', { waitUntil: 'networkidle' });
+  await page.goto(`${publicOrigin}/feed`, { waitUntil: 'networkidle' });
 
   await page.evaluate(() => {
     const overlay = document.createElement('div');
@@ -399,7 +400,7 @@ test('repeater-tree modal remains centred and fully reachable at every target wi
 test('narrow 320px pages keep primary content inside the viewport', async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 568 });
   await installApiFixtures(page);
-  await page.goto('http://127.0.0.1:4173/', { waitUntil: 'networkidle' });
+  await page.goto(`${publicOrigin}/`, { waitUntil: 'networkidle' });
   await expectNoViewportOverflow(page);
   const introBox = await page.locator('.site-home__intro').boundingBox();
   expect(introBox?.width ?? 320).toBeLessThan(320);
