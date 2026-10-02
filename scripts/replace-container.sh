@@ -122,7 +122,9 @@ done
 
 cd "$project_dir"
 docker compose --project-name "$project_name" config -q
-if ! docker compose --project-name "$project_name" config --services | grep -Fxq -- "$service"; then
+# Consume the whole service list: grep -q can close the pipe early and turn
+# Compose's SIGPIPE into a false rejection under pipefail.
+if ! docker compose --project-name "$project_name" config --services | grep -Fx -- "$service" >/dev/null; then
   echo "unknown Compose service: $service" >&2
   exit 65
 fi
