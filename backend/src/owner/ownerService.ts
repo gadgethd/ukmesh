@@ -90,6 +90,13 @@ export function createOwnerService(deps: OwnerServiceDeps) {
     maxWeight: 64 * 1024 * 1024,
     ttlMs: ownerLastHopCacheTtlMs,
   });
+  const ownerLastHopInflight = new Map<string, Promise<OwnerLastHopResponse>>();
+
+  function lastHopCacheKey(nodeId: string, ownedNodeIds: string[]): string {
+    // Last-hop analysis excludes every node owned by this owner, so a shared
+    // node must never reuse a result from a different ownership scope.
+    return `${nodeId}|${[...new Set(ownedNodeIds)].sort().join(',')}`;
+  }
   const ownerDashboardCache = new BoundedTtlMap<string, {
     ts: number;
     dashboard: OwnerDashboard;
@@ -524,7 +531,7 @@ export function createOwnerService(deps: OwnerServiceDeps) {
     return responseData;
   }
 
-  async function getOwnerLastHopStrength(ownedNodeIds: string[], requestedNodeId?: string): Promise<OwnerLastHopResponse> {
+  async function getOwnerLastHopStrength(ownedNodeIds: string[], requestedNodeId?: string, refresh = false): Promise<OwnerLastHopResponse> {
     if (ownedNodeIds.length < 1) {
       throw new Error('NO_OWNED_NODES');
     }
@@ -536,28 +543,34 @@ export function createOwnerService(deps: OwnerServiceDeps) {
       throw new Error('NODE_NOT_OWNED');
     }
 
-    const cacheKey = selectedNodeId;
+    const cacheKey = lastHopCacheKey(selectedNodeId, ownedNodeIds);
+    const inFlight = ownerLastHopInflight.get(cacheKey);
+    if (inFlight) return inFlight;
     const cacheEntry = ownerLastHopCache.get(cacheKey);
-    if (cacheEntry && Date.now() - cacheEntry.ts < ownerLastHopCacheTtlMs) {
+    if (!refresh && cacheEntry && Date.now() - cacheEntry.ts < ownerLastHopCacheTtlMs) {
       return cacheEntry.data;
     }
 
-    let responseData: OwnerLastHopResponse;
-    if (!cacheEntry || !cacheEntry.latestBucket) {
-      responseData = await buildOwnerLastHopResponse(selectedNodeId, ownedNodeIds);
-    } else {
-      const recent = await buildOwnerLastHopResponse(selectedNodeId, ownedNodeIds, cacheEntry.latestBucket);
-      responseData = {
-        points: mergeLastHopPoints(cacheEntry.data.points, recent.points),
-      };
-    }
-
-    ownerLastHopCache.set(cacheKey, {
-      ts: Date.now(),
-      data: responseData,
-      latestBucket: latestBucketOf(responseData.points),
+    const load = async () => {
+      let responseData: OwnerLastHopResponse;
+      if (!cacheEntry || !cacheEntry.latestBucket) {
+        responseData = await buildOwnerLastHopResponse(selectedNodeId, ownedNodeIds);
+      } else {
+        const recent = await buildOwnerLastHopResponse(selectedNodeId, ownedNodeIds, cacheEntry.latestBucket);
+        responseData = {
+          points: mergeLastHopPoints(cacheEntry.data.points, recent.points),
+        };
+      }
+      ownerLastHopCache.set(cacheKey, {
+        ts: Date.now(), data: responseData, latestBucket: latestBucketOf(responseData.points),
+      });
+      return responseData;
+    };
+    const tracked = load().finally(() => {
+      if (ownerLastHopInflight.get(cacheKey) === tracked) ownerLastHopInflight.delete(cacheKey);
     });
-    return responseData;
+    ownerLastHopInflight.set(cacheKey, tracked);
+    return tracked;
   }
 
   function clearOwnerSession(mqttUsername: string): void {
@@ -566,7 +579,7 @@ export function createOwnerService(deps: OwnerServiceDeps) {
     ownerDashboardCache.delete(cacheKey);
     for (const nodeId of nodeIds) {
       ownerLiveCache.delete(nodeId);
-      ownerLastHopCache.delete(nodeId);
+      ownerLastHopCache.delete(lastHopCacheKey(nodeId, nodeIds));
     }
     invalidateOwnerNodeIdCache(mqttUsername);
   }

@@ -50,7 +50,32 @@ no database needed. `cd backend && npm test` now passes **330/330**, 0 fail,
 
 ## 2. Owner last-hop prewarm — #438
 
-Implementation and validation pending.
+The named file is absent from the integration base. Recreated a prewarmer around
+the existing `ownerService.getOwnerLastHopStrength` cache and wired it after
+owner-auth initialization, with lifecycle shutdown draining. This branch exposes
+one rolling seven-day result (`ownerRepository.fetchLastHopStrength`), not the
+live brief's two separate windows; no speculative window API was added.
+
+Each pass enumerates active, verified owner grants, deduplicates nodes per owner,
+and refreshes at most two owner/node pairs concurrently. Optional
+`OWNER_LAST_HOP_PREWARM_CONCURRENCY=1` selects sequential work; values above two
+remain capped at two. The next pass starts 30 minutes after completion, so cold
+passes cannot overlap. Start/end logs and every ten completed nodes report
+owners/nodes completed and total, refreshed and failed. A refresh warns at 20s
+while still in flight; failures are counted and do not stop the pass.
+
+Forced warm refreshes retain incremental last-hop merging. Foreground reads and
+warm refreshes share in-flight work. Cache keys include all owned nodes because
+that exclusion set changes the last-hop query; warming a shared node for one
+owner must not serve another owner's exclusion scope.
+
+Validation: `cd backend && node --import tsx --test
+src/owner/ownerLastHopPrewarm.test.ts src/owner/ownerService.test.ts`:
+**8/8 pass**, covering the concurrency cap, progress/failure/owner accounting,
+single-flight, deduplication, an in-flight slow failure, shutdown admission,
+cache ownership scope and retry. `cd backend && npm run typecheck` passes;
+`cd backend && npm test`: **338/338 pass**, 0 fail, 0 skipped.
+Production cold-pass time and DB load are not measured.
 
 ## 3. Heartbeat alert semantics — #543 / #507
 
