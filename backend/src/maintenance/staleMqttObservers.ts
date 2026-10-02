@@ -83,6 +83,14 @@ async function cleanupNodeRecords(
          FROM nodes n
         WHERE ${staleCondition}
           AND network IS DISTINCT FROM 'test'
+          -- Node deletion cascades its privacy prefixes and the existing
+          -- node trigger then republishes previously private packet history.
+          -- Age alone must never lift that privacy decision. Keep the identity
+          -- until a separate privacy-preserving tombstone policy is available.
+          AND COALESCE(n.name, '') NOT LIKE '%🚫%'
+          AND NOT EXISTS (
+            SELECT 1 FROM private_node_prefixes p WHERE p.node_id = n.node_id
+          )
         ORDER BY node_id
         FOR UPDATE`,
       [thresholdDays],

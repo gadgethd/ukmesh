@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import test from 'node:test';
-import { cleanupInactiveNodes } from './staleMqttObservers.js';
+import { cleanupInactiveNodes, cleanupStaleMqttObservers } from './staleMqttObservers.js';
 
 // Optional, isolated PostgreSQL-WASM verification; never connects to a server.
 // Point this at an independently installed PGlite module's file: URL.
@@ -12,7 +13,7 @@ async function fixture() {
   const db = await PGlite.create();
   await db.exec(`
     CREATE TABLE nodes (
-      node_id TEXT PRIMARY KEY, role INTEGER, network TEXT,
+      node_id TEXT PRIMARY KEY, name TEXT, role INTEGER, network TEXT,
       last_seen TIMESTAMPTZ, last_mqtt_observer_seen_at TIMESTAMPTZ,
       last_path_evidence_at TIMESTAMPTZ, last_predicted_online_at TIMESTAMPTZ,
       created_at TIMESTAMPTZ
@@ -24,6 +25,12 @@ async function fixture() {
     );
     CREATE TABLE owner_grants (node_id TEXT, owner_id TEXT);
     CREATE TABLE packets (src_node_id TEXT, payload TEXT);
+    CREATE TABLE private_node_prefixes (
+      node_id TEXT REFERENCES nodes(node_id) ON DELETE CASCADE,
+      network TEXT, prefix_size_bytes INTEGER, prefix TEXT,
+      updated_at TIMESTAMPTZ DEFAULT NOW(),
+      PRIMARY KEY (node_id, network, prefix_size_bytes)
+    );
     INSERT INTO nodes (node_id, role, network, last_seen, created_at) VALUES
       ('companion', 1, 'ukmesh', NOW() - INTERVAL '31 days', NOW() - INTERVAL '90 days'),
       ('room-server', 3, 'ukmesh', NOW() - INTERVAL '31 days', NOW() - INTERVAL '90 days'),
@@ -108,3 +115,79 @@ for (const stage of ['archive', 'delete']) {
     assert.equal(f.released(), true);
   });
 }
+
+for (const cleanup of [cleanupInactiveNodes, cleanupStaleMqttObservers]) {
+  test(`PostgreSQL ${cleanup.name} preserves private identity and packet privacy with the current node trigger`, options, async (t) => {
+    const f = await fixture();
+    t.after(() => f.db.close());
+    await f.db.exec(`ALTER TABLE packets
+      ADD COLUMN rx_node_id TEXT, ADD COLUMN network TEXT DEFAULT 'ukmesh',
+      ADD COLUMN path_hashes TEXT[], ADD COLUMN path_hash_size_bytes INTEGER,
+      ADD COLUMN is_private BOOLEAN DEFAULT FALSE, ADD COLUMN visibility_ok BOOLEAN DEFAULT TRUE;`);
+    // Execute only the real trigger definition in this disposable fixture.
+    // Never apply migrations to an application database.
+    const migration = await readFile(new URL('../db/migrations/049_guard_packet_privacy_rewrite.sql', import.meta.url), 'utf8');
+    const triggerFunction = migration.match(/CREATE OR REPLACE FUNCTION sync_private_node_prefixes\(\)[\s\S]*?^\$\$;/m)?.[0];
+    assert.ok(triggerFunction, 'the production privacy trigger definition must be present');
+    await f.db.exec(`${triggerFunction}
+      CREATE TRIGGER nodes_private_prefix_materialization AFTER INSERT OR UPDATE OR DELETE ON nodes
+        FOR EACH ROW EXECUTE FUNCTION sync_private_node_prefixes();
+      INSERT INTO nodes (node_id, name, role, network, last_seen, last_mqtt_observer_seen_at, created_at)
+        VALUES ('private-node', 'Quiet 🚫 node', 2, 'ukmesh', NOW() - INTERVAL '45 days',
+                NOW() - INTERVAL '45 days', NOW() - INTERVAL '90 days');
+      INSERT INTO packets (src_node_id, payload, is_private, visibility_ok)
+        VALUES ('private-node', 'private history', TRUE, FALSE);
+      INSERT INTO nodes (node_id, name, role, network, last_seen, last_mqtt_observer_seen_at, created_at) VALUES
+        ('prefix-only', 'Index protects privacy', 2, 'ukmesh', NOW() - INTERVAL '45 days',
+         NOW() - INTERVAL '45 days', NOW() - INTERVAL '90 days'),
+        ('marker-only', 'Marker protects 🚫 privacy', 2, 'ukmesh', NOW() - INTERVAL '45 days',
+         NOW() - INTERVAL '45 days', NOW() - INTERVAL '90 days');
+      INSERT INTO private_node_prefixes (node_id, network, prefix_size_bytes, prefix)
+        VALUES ('prefix-only', 'ukmesh', 1, 'AB');
+      DELETE FROM private_node_prefixes WHERE node_id = 'marker-only';`);
+    const privacyNodes = "SELECT * FROM nodes WHERE node_id IN ('private-node', 'prefix-only', 'marker-only') ORDER BY node_id";
+    const before = (await f.db.query(privacyNodes)).rows;
+    await cleanup({ cleanupPool: f.cleanupPool });
+    const packet = await f.db.query("SELECT is_private, visibility_ok FROM packets WHERE src_node_id = 'private-node'");
+    assert.deepEqual(packet.rows, [{ is_private: true, visibility_ok: false }],
+      'maintenance must not turn a private deletion into consent to publish its packet history');
+    assert.deepEqual((await f.db.query(privacyNodes)).rows, before);
+    assert.equal((await f.db.query('SELECT COUNT(*)::int AS count FROM private_node_prefixes')).rows[0].count, 4);
+    assert.equal((await f.db.query("SELECT COUNT(*)::int AS count FROM maintenance_removed_records WHERE record_data->>'node_id' IN ('private-node', 'prefix-only', 'marker-only')")).rows[0].count, 0);
+  });
+}
+
+test('PostgreSQL inactive cleanup retains the exact threshold boundary', options, async (t) => {
+  const f = await fixture();
+  t.after(() => f.db.close());
+  const cleanupPool = {
+    async connect() {
+      const client = await f.cleanupPool.connect();
+      return {
+        ...client,
+        async query(text: string, values?: unknown[]) {
+          const result = await client.query(text, values);
+          // Pin setup and selection to cleanup's identical transaction clock.
+          if (text === 'BEGIN') await f.db.query(`INSERT INTO nodes (node_id, role, network, last_seen, created_at) VALUES
+            ('exact-boundary', 1, 'ukmesh', NOW() - INTERVAL '30 days', NOW() - INTERVAL '90 days'),
+            ('just-stale', 3, 'ukmesh', NOW() - INTERVAL '30 days 1 second', NOW() - INTERVAL '90 days');`);
+          return result;
+        },
+      };
+    },
+  };
+  const result = await cleanupInactiveNodes({ cleanupPool, batchId: 'boundary-batch' });
+  assert.equal(result.nodes, 5);
+  assert.deepEqual((await f.db.query("SELECT node_id FROM nodes WHERE node_id IN ('exact-boundary', 'just-stale')")).rows,
+    [{ node_id: 'exact-boundary' }]);
+});
+
+test('PostgreSQL inactive cleanup is idempotent without duplicate archives', options, async (t) => {
+  const f = await fixture();
+  t.after(() => f.db.close());
+  await cleanupInactiveNodes({ cleanupPool: f.cleanupPool, batchId: 'first-pass' });
+  const before = await f.snapshot();
+  const repeat = await cleanupInactiveNodes({ cleanupPool: f.cleanupPool });
+  assert.deepEqual(repeat, { batchId: null, candidates: 0, nodes: 0, observerSightings: 0, networkSightings: 0 });
+  assert.deepEqual(await f.snapshot(), before, 'a second pass must not produce duplicate archives or deletes');
+});

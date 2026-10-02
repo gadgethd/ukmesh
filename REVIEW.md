@@ -80,6 +80,13 @@ cache ownership scope and retry. `cd backend && npm run typecheck` passes;
 `cd backend && npm test`: **338/338 pass**, 0 fail, 0 skipped.
 Production cold-pass time and DB load are not measured.
 
+Continuation verification adds three scheduler regressions: a long pass cannot
+overlap and starts its delay only after completion, enumeration failures recover
+on the next scheduled pass, and shutdown during enumeration admits no refresh.
+`cd backend && node --import tsx --test src/owner/ownerLastHopPrewarm.test.ts
+src/owner/ownerService.test.ts`: **11/11 pass**. No scheduler source change was
+needed; mocked clocks exercise the real scheduling and shutdown paths.
+
 ## 3. Heartbeat alert semantics — #543 / #507
 
 Confirmed `currentWorkers` set `worker="link"` from `MAX(itm_computed_at)`.
@@ -166,6 +173,15 @@ compatibility, plus empty labels, missing config-file label, wrong directory and
 wrong project). Gap cases assert no pull, migration/replacement or release receipt.
 Live adoption and operator reconciliation remain unverified and deploy-gated.
 
+Continuation expands this to **16/16 mocked drills**: wrong-service labels,
+absent/multiple containers, null/malformed labels, overlay-only config rejection,
+base-plus-overlay acceptance, and separate frontend/backend preflights. Every
+adoption rejection also asserts that image signature verification has not begun.
+A 10,000-service fixture reproduced an additional bug: `config --services |
+grep -Fxq` under `pipefail` rejected an existing backend with exit 65 when the
+producer hit SIGPIPE. The check now consumes the entire list with `grep -Fx`
+redirected to `/dev/null`. The same large-list drill passes after the fix.
+
 ### #447 — Archive/delete inactive nodes of every role
 
 The existing cleanup selected only `(role IS NULL OR role = 2)` and required an
@@ -208,6 +224,25 @@ TEST_NODE_CLEANUP_PGLITE_MODULE="file://$PWD/../.ukmesh-tools/pglite/node_module
 The optional fixture test is excluded by the normal unit command. It does not
 apply project migrations or exercise TimescaleDB, production triggers, concurrent
 ingestion, production candidate counts or cleanup cost; those remain unverified.
+
+Continuation found a real privacy interaction omitted by the initial fixture.
+The current `sync_private_node_prefixes()` definition in migration 049 treats
+deleting a private node as a privacy transition, removes its prefixes and makes
+historical packets public. Isolated PostgreSQL tests execute that exact function
+against fixture tables (no application migration or server) and reproduced
+`is_private: true -> false`, `visibility_ok: false -> true` for both cleanup
+policies. Both selectors now retain names containing the privacy marker **or**
+identities present in `private_node_prefixes`, including mismatched name/index
+states. Age does not revoke the user's privacy choice. Public inactive nodes of
+all roles and bridge states still take the archive/delete path.
+
+The SQL fixture now has **7/7 pass**, including the actual privacy trigger for
+both policies, the exact 30-day boundary, idempotent repeat passes, archive
+readback and transaction rollback. The optional integration command above is
+unchanged; `cd backend && node --import tsx --test
+src/maintenance/staleMqttObservers.test.ts` remains **6/6 pass**. Removing a
+private identity while retaining its privacy decision requires a separate
+tombstone design; no schema change is introduced in this constrained branch.
 
 ### Other heartbeat proxy signals — alert-semantics follow-up findings
 

@@ -57,6 +57,8 @@ test('inactive-node cleanup has no role or prior MQTT requirement and considers 
   assert.equal(selection.values?.[0], 30);
   assert.match(selection.text, /GREATEST\(last_seen, last_mqtt_observer_seen_at, last_path_evidence_at,\s+last_predicted_online_at, created_at\)/);
   assert.match(selection.text, /network IS DISTINCT FROM 'test'/);
+  assert.match(selection.text, /COALESCE\(n.name, ''\) NOT LIKE '%🚫%'/);
+  assert.match(selection.text, /private_node_prefixes p WHERE p.node_id = n.node_id/);
   assert.match(selection.text, /FOR UPDATE/);
   assert.match(selection.text, /s.node_id = n.node_id/);
   assert.match(selection.text, /s.last_seen_at >= NOW/);
@@ -143,6 +145,7 @@ test('archives visibility records before deleting stale observer nodes', async (
   assert.equal(stub.calls[2]?.values?.[0], 30, 'threshold is never allowed below one month');
   assert.match(stub.calls[2]?.text ?? '', /last_mqtt_observer_seen_at/);
   assert.match(stub.calls[2]?.text ?? '', /\(role IS NULL OR role = 2\)/);
+  assert.match(stub.calls[2]?.text ?? '', /private_node_prefixes p WHERE p.node_id = n.node_id/);
   const archiveIndex = stub.calls.findIndex((call) => call.text.includes("SELECT $1, 'nodes'"));
   const deleteIndex = stub.calls.findIndex((call) => call.text.includes('DELETE FROM nodes'));
   assert.ok(archiveIndex >= 0 && archiveIndex < deleteIndex);
