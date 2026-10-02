@@ -113,3 +113,32 @@ test('expired last-hop caches start a fresh bounded-window query instead of reus
   await service.getOwnerLastHopStrength(['a'], 'a', true);
   assert.deepEqual(since, [undefined, undefined]);
 });
+
+test('fresh foreground last-hop data stays responsive while a background warm refresh is pending', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-02T12:00:00Z') });
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  let calls = 0;
+  const service = lastHopService(async () => {
+    const count = ++calls;
+    if (count === 2) await gate;
+    return { rows: [lastHopRow('2026-10-02T11:00:00.000Z', count)] };
+  });
+  const cached = await service.getOwnerLastHopStrength(['a'], 'a');
+  const warming = service.getOwnerLastHopStrength(['a'], 'a', true);
+  t.after(async () => { release(); await warming; });
+  const joinedWarm = service.getOwnerLastHopStrength(['a'], 'a', true);
+  let foregroundSettled = false;
+  const foreground = service.getOwnerLastHopStrength(['a'], 'a').then(result => {
+    foregroundSettled = true;
+    return result;
+  });
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(foregroundSettled, true, 'a fresh cache hit must not wait for a slow background query');
+  assert.deepEqual(await foreground, cached);
+  assert.equal(calls, 2, 'overlapping warm requests still share the one refresh');
+  release();
+  assert.deepEqual(await joinedWarm, await warming);
+  assert.equal((await service.getOwnerLastHopStrength(['a'], 'a')).points[0]?.sampleCount, 2);
+  assert.equal(calls, 2);
+});

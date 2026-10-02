@@ -384,6 +384,22 @@ test. `cd backend && node --import tsx --test
 src/maintenance/staleMqttObservers.test.ts`: **10/10**. Backend typecheck passes;
 `cd backend && npm test`: **357/357**, no failures or skips.
 
+The owner cache responsiveness regression failed before the fix: a fresh
+foreground cache hit joined a pending forced prewarm query and did not resolve
+until that query finished. Fresh foreground reads now return the existing cache
+immediately. Cold/expired reads and forced refreshes still share in-flight work.
+The test holds a background refresh open, checks the immediate cached response,
+checks overlapping warm requests issue one query, and then checks the refreshed
+result. Focused owner/prewarm tests pass **15/15**; backend typecheck and full
+`npm test` pass **358/358**, with no failures or skips.
+
+Safety checkpoint: all implementation changes are committed and pushed on the
+private branch. The latest expanded full browser run on isolated ports 4363–4365
+finished **54/55**: the multi-viewport mobile map test timed out at `page.goto`
+with `waitUntil: 'networkidle'`. Its retained trace and test-server output are
+being investigated; the latest full matrix is not claimed green. The two feed
+cases passed, including the new breakpoint and filter checks.
+
 ## Final verification and publication
 
 Source commits: `9a5e838` (retirement), `2d2b425` (prewarm), `236e948`
@@ -397,7 +413,7 @@ Full unit suites are rerun after it, before publication.
 
 | Exact command | Result |
 | --- | --- |
-| `cd backend && npm test` | **357/357 pass**, 0 fail, 0 skipped. Expands to the brief's `node --import tsx --test $(find src -name '*.test.ts' ! -name '*.integration.test.ts' -print)`. |
+| `cd backend && npm test` | **358/358 pass**, 0 fail, 0 skipped. Expands to the brief's `node --import tsx --test $(find src -name '*.test.ts' ! -name '*.integration.test.ts' -print)`. |
 | `cd frontend && npm test` | **99/99 pass**, 0 fail, 0 skipped. |
 | `cd backend && npm run typecheck` | Pass. |
 | `cd backend && npm run build` | Pass. |

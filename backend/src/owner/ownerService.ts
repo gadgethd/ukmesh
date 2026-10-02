@@ -544,12 +544,13 @@ export function createOwnerService(deps: OwnerServiceDeps) {
     }
 
     const cacheKey = lastHopCacheKey(selectedNodeId, ownedNodeIds);
-    const inFlight = ownerLastHopInflight.get(cacheKey);
-    if (inFlight) return inFlight;
+    // Serve fresh foreground hits while the background pass fills a replacement.
     const cacheEntry = ownerLastHopCache.get(cacheKey);
     if (!refresh && cacheEntry && Date.now() - cacheEntry.ts < ownerLastHopCacheTtlMs) {
       return cacheEntry.data;
     }
+    const inFlight = ownerLastHopInflight.get(cacheKey);
+    if (inFlight) return inFlight;
 
     const load = async () => {
       let responseData: OwnerLastHopResponse;
