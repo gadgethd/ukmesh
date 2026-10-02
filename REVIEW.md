@@ -409,8 +409,28 @@ UK-only API requests. No timeout or geometry tolerance was increased.
 test/e2e/mobile.spec.ts --grep 'live map stays inside' --workers=2
 --trace=retain-on-failure --output=../.ukmesh-tools/stretch-viewport-results`:
 **7/7 pass**, no retries. The complete matrix now contains 61 cases and will be
-rerun. Terrain tests also expose missing local DEM fixtures returning SPA HTML;
-that test-harness gap is being investigated separately from the viewport budget.
+rerun.
+
+Strengthening the terrain check reproduced a test-harness gap: local DEM
+requests returned **200 text/html**, and the old RF PNG also produced image
+decode errors. Shared test routes now serve a valid 256px RGB flat Terrarium
+tile (zero metres) and a valid 256px RGBA RF tile. OpenFreeMap style/metadata
+responses are local; the metadata race still delays the response by 1.5s.
+The two RF metadata stages now stop advancing their revision after completion.
+Terrain checks require successful PNG responses, decode both images in the
+browser, check dimensions and reject terrain/RF tile-load error messages.
+Real DEM rendering takes more time than rejecting HTML; that test has a 60s
+budget, with existing UI assertion timeouts unchanged.
+
+`cd frontend && PLAYWRIGHT_PORT_BASE=4363 npx playwright test
+test/e2e/dashboard.spec.ts --grep 'RF coverage remains available with 3D terrain|metadata winning'
+--workers=1 --trace=retain-on-failure
+--output=../.ukmesh-tools/stretch-terrain-serial-results`: **4/4 pass**, no retries.
+A prior parallel run of the stricter checks had startup timeouts and a dynamic
+import failure with `ERR_NETWORK_CHANGED`; its traces retain that evidence.
+The final matrix uses one browser worker to reduce local software-rendering
+contention. These synthetic tiles verify loading/decoding behavior, not real
+terrain elevation accuracy or production rendering performance.
 
 ## Final verification and publication
 
@@ -432,7 +452,7 @@ Full unit suites are rerun after it, before publication.
 | `cd frontend && npm run build` | TypeScript + Vite pass; existing chunk-size warning. |
 | `cd backend && npm run contract:check` | Pass: **63 API + 11 operator routes** current. |
 | `cd frontend && PLAYWRIGHT_PORT_BASE=4273 npx playwright test feed-virtualizer.spec.ts --project=public-desktop` | **2/2 pass**. |
-| `cd frontend && PLAYWRIGHT_PORT_BASE=4273 npx playwright test --workers=2` | **55/55 pass** across public desktop, dashboard desktop/mobile and mobile regression projects; no retries. |
+| `cd frontend && PLAYWRIGHT_PORT_BASE=4273 npx playwright test --workers=2` | Historical **55/55 pass**. The later expanded run was **54/55** before the viewport test was split; the current **61-case** matrix is being rerun with local map fixtures and one worker. |
 | Fresh-cache targeted browser command below | **4/4 pass** with fresh caches; no retries. |
 | `.ukmesh-tools/promtool check rules logging/rules/meshcore.yml` | **24 rules valid**. |
 | `.ukmesh-tools/promtool test rules logging/rules/meshcore.test.yml` | **10 scenario groups pass**. |

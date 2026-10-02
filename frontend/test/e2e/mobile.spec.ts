@@ -1,5 +1,6 @@
 import { publicOrigin, dashboardOrigin, devOrigin } from './localServers.js';
 import { expect, test, type Page } from '@playwright/test';
+import { installMapRoutes, installTerrainRoutes } from './mapFixtures.js';
 
 const PHONE = { width: 375, height: 667 };
 
@@ -76,6 +77,8 @@ const repeaterNodes = Array.from({ length: 12 }, (_, index) => ({
 }));
 
 async function installApiFixtures(page: Page) {
+  await installMapRoutes(page);
+  await installTerrainRoutes(page);
   await page.addInitScript(() => {
     localStorage.setItem('meshcore-cookie-consent-v1', '1');
     localStorage.setItem('meshcore-disclaimer-dismissed', '1');
