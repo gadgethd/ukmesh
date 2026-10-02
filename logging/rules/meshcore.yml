@@ -146,7 +146,9 @@ groups:
       - alert: ActiveQueueWorkerHeartbeatStale
         # Redis worker heartbeat: ten-second cadence, 45-second TTL. Missing
         # heartbeat is unhealthy too; ITM writes may legitimately pause for 15m.
-        expr: meshcore_link_queue_active_jobs > 0 and on() (meshcore_worker_heartbeat_age_seconds{worker="link"} < 0 or meshcore_worker_heartbeat_age_seconds{worker="link"} > 180)
+        # Compare each reporter's own queue and heartbeat. A failed Redis read
+        # on a different exporter must not page for this reporter's healthy queue.
+        expr: meshcore_link_queue_active_jobs > 0 and on(job, instance) (meshcore_worker_heartbeat_age_seconds{worker="link"} < 0 or meshcore_worker_heartbeat_age_seconds{worker="link"} > 180)
         for: 3m
         labels:
           severity: critical

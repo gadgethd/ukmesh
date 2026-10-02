@@ -296,6 +296,25 @@ explicitly, rather than being renamed as liveness. The health-worker issue and
 the two unused proxy labels are filed here for follow-up, as requested; this
 branch changes only the link heartbeat semantics.
 
+## Final-stretch verification
+
+Revalidated the clean, pushed continuation HEAD `68d018a` before further work.
+Fresh local runs pass **350/350 backend units**, **99/99 frontend units** and
+**7/7 isolated cleanup SQL fixtures**, with no failures or skips. The replacement
+drills remain **16/16**, and all **24 Prometheus rules** remain valid.
+
+Production scrape labels uncovered another link-alert false-positive path:
+`and on()` paired every nonempty queue with any stale heartbeat across all
+reporters. Three new Prometheus scenarios failed before the fix: a backend Redis
+failure paged for a healthy health-worker queue, an idle stale reporter paged for
+a healthy same-job instance, and one stale reporter paged for both queues.
+The rule now matches `job` and `instance`, keeping queue evidence and heartbeat
+evidence from the same exporter. The threshold and holdoff are unchanged.
+`.ukmesh-tools/promtool test rules logging/rules/meshcore.test.yml` passes all
+**10 scenario groups**, including scoped true-stale alert holdoff and recovery.
+`.ukmesh-tools/promtool check rules logging/rules/meshcore.yml` passes **24 rules**.
+This reproduces rule semantics locally, not live alert frequency.
+
 ## Final verification and publication
 
 Source commits: `9a5e838` (retirement), `2d2b425` (prewarm), `236e948`
