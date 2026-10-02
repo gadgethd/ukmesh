@@ -99,11 +99,15 @@ async function waitForLock(observer: any, pid: number) {
 }
 
 const nodeRefresh = `UPDATE nodes SET last_seen = NOW(), last_mqtt_observer_seen_at = NOW() WHERE node_id = 'dormant'`;
-for (const { cleanup, evidence, statement } of [
-  { cleanup: cleanupInactiveNodes, evidence: 'node timestamp', statement: nodeRefresh },
-  { cleanup: cleanupStaleMqttObservers, evidence: 'node timestamp', statement: nodeRefresh },
-  { cleanup: cleanupInactiveNodes, evidence: 'source RF sighting', statement: `INSERT INTO node_network_sightings VALUES ('dormant', NOW())` },
-  { cleanup: cleanupInactiveNodes, evidence: 'observer RF sighting', statement: `INSERT INTO observer_region_observer_sightings VALUES ('dormant', NOW())` },
+for (const { cleanup, evidence, statement, visibilityLock } of [
+  { cleanup: cleanupInactiveNodes, evidence: 'node timestamp', statement: nodeRefresh, visibilityLock: 'KEY SHARE' },
+  { cleanup: cleanupStaleMqttObservers, evidence: 'node timestamp', statement: nodeRefresh, visibilityLock: 'KEY SHARE' },
+  { cleanup: cleanupInactiveNodes, evidence: 'source RF sighting', statement: `INSERT INTO node_network_sightings VALUES ('dormant', NOW())`, visibilityLock: 'KEY SHARE' },
+  { cleanup: cleanupInactiveNodes, evidence: 'observer RF sighting', statement: `INSERT INTO observer_region_observer_sightings VALUES ('dormant', NOW())`, visibilityLock: 'KEY SHARE' },
+  ...[cleanupInactiveNodes, cleanupStaleMqttObservers].flatMap(cleanup => [
+    { cleanup, evidence: 'privacy prefix', statement: `INSERT INTO private_node_prefixes VALUES ('dormant')`, visibilityLock: 'UPDATE' },
+    { cleanup, evidence: 'privacy marker', statement: `UPDATE nodes SET name = 'Private 🚫' WHERE node_id = 'dormant'`, visibilityLock: 'UPDATE' },
+  ]),
 ]) {
   test(`native ${cleanup.name} retains a concurrent ${evidence} refresh`, options, async (t) => {
     const f = await fixture();
@@ -129,8 +133,9 @@ for (const { cleanup, evidence, statement } of [
     );
     await selected.promise;
     await f.writer.query('BEGIN');
-    // Same visibility pin as packetBatch's classification before node/RF writes.
-    await f.writer.query('SELECT generation FROM public_visibility_state WHERE singleton = TRUE FOR KEY SHARE');
+    // Packet classification pins KEY SHARE; consent changes require UPDATE.
+    // The fixture uses these lock protocols without installing privacy triggers.
+    await f.writer.query(`SELECT generation FROM public_visibility_state WHERE singleton = TRUE FOR ${visibilityLock}`);
     resume.resolve();
     await waitForLock(f.observer, f.pid);
     await f.writer.query(statement);
