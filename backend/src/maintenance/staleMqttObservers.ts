@@ -55,6 +55,9 @@ async function cleanupNodeRecords(
   const cleanupPool = (options.cleanupPool ?? pool) as unknown as CleanupPool;
   const thresholdDays = boundedThresholdDays(options.thresholdDays);
   const client = await cleanupPool.connect();
+  const noCandidates: StaleMqttObserverCleanupResult = {
+    batchId: null, candidates: 0, nodes: 0, observerSightings: 0, networkSightings: 0,
+  };
 
   try {
     await client.query('BEGIN');
@@ -78,8 +81,7 @@ async function cleanupNodeRecords(
             WHERE s.rx_node_id = n.node_id
               AND s.last_seen >= NOW() - ($1 * INTERVAL '1 day')
          )`;
-    const candidates = await client.query<{ node_id: string }>(
-      `SELECT node_id
+    const candidateSelection = `SELECT node_id
          FROM nodes n
         WHERE ${staleCondition}
           AND network IS DISTINCT FROM 'test'
@@ -90,21 +92,43 @@ async function cleanupNodeRecords(
           AND COALESCE(n.name, '') NOT LIKE '%🚫%'
           AND NOT EXISTS (
             SELECT 1 FROM private_node_prefixes p WHERE p.node_id = n.node_id
-          )
-        ORDER BY node_id
-        FOR UPDATE`,
+          )`;
+    const candidates = await client.query<{ node_id: string }>(
+      `${candidateSelection} ORDER BY node_id FOR UPDATE`,
       [thresholdDays],
     );
-    const nodeIds = candidates.rows.map((row) => row.node_id);
+    let nodeIds = candidates.rows.map((row) => row.node_id);
     if (nodeIds.length === 0) {
       await client.query('COMMIT');
-      return {
-        batchId: null,
-        candidates: 0,
-        nodes: 0,
-        observerSightings: 0,
-        networkSightings: 0,
-      };
+      return noCandidates;
+    }
+
+    // The prefix FK's cascading DELETE fires its statement trigger even when
+    // these public nodes have no prefixes. At trigger depth 1 it advances the
+    // public generation without re-fencing stored packets. Serialize that
+    // change, and preserve only a fence that was already current. The locked
+    // candidates cannot gain a privacy marker/prefix before deletion.
+    const visibilityState = await client.query<{ materialization_current: boolean }>(
+      `SELECT visibility.generation = materialized.visibility_generation AS materialization_current
+         FROM public_visibility_state visibility
+         LEFT JOIN packet_visibility_materialization_state materialized
+           ON materialized.singleton = visibility.singleton
+        WHERE visibility.singleton = TRUE
+        FOR UPDATE OF visibility`,
+    );
+    if (kind === 'inactive-node') {
+      // Packet ingestion locks this visibility row FOR KEY SHARE before its
+      // RF rollups. A batch may finish while cleanup waits for FOR UPDATE;
+      // recheck those independently updated sightings before archival.
+      const stillInactive = await client.query<{ node_id: string }>(
+        `${candidateSelection} AND n.node_id = ANY($2::text[]) ORDER BY node_id FOR UPDATE`,
+        [thresholdDays, nodeIds],
+      );
+      nodeIds = stillInactive.rows.map((row) => row.node_id);
+      if (nodeIds.length === 0) {
+        await client.query('COMMIT');
+        return noCandidates;
+      }
     }
 
     const batchId = options.batchId ?? `stale-${kind}-${new Date().toISOString()}-${crypto.randomUUID()}`;
@@ -132,20 +156,6 @@ async function cleanupNodeRecords(
          FROM node_network_sightings s
         WHERE s.node_id = ANY($3::text[])`,
       [batchId, reason, nodeIds],
-    );
-
-    // The prefix FK's cascading DELETE fires its statement trigger even when
-    // these public nodes have no prefixes. At trigger depth 1 it advances the
-    // public generation without re-fencing stored packets. Serialize that
-    // change, and preserve only a fence that was already current. The locked
-    // candidates cannot gain a privacy marker/prefix before deletion.
-    const visibilityState = await client.query<{ materialization_current: boolean }>(
-      `SELECT visibility.generation = materialized.visibility_generation AS materialization_current
-         FROM public_visibility_state visibility
-         LEFT JOIN packet_visibility_materialization_state materialized
-           ON materialized.singleton = visibility.singleton
-        WHERE visibility.singleton = TRUE
-        FOR UPDATE OF visibility`,
     );
 
     const observerSightings = await client.query(

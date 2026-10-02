@@ -344,14 +344,14 @@ current-trigger fixture reproduced **generation 2 -> 3, fence remaining 2**.
 PostgreSQL documents that [foreign-key referential actions execute ordinary SQL
 and fire referencing-table triggers](https://www.postgresql.org/docs/18/trigger-definition.html).
 
-Both cleanup policies now lock the public visibility state after archival and
-before deletion. Since selected identities have no privacy marker/prefix and
+Both cleanup policies now lock the public visibility state before archival and
+deletion. Since selected identities have no privacy marker/prefix and
 their node rows remain locked, this removal cannot change packet privacy bits.
 Only an **already-current** materialization fence is carried forward to the
 new public generation, in the same transaction. An existing mismatch or missing
-materialization is never certified. Visibility-lock or fence-update failure
-rolls back the archives and every deletion. No migration or trigger definition
-is changed.
+materialization is never certified. Visibility-lock failure admits no archive
+or delete; fence-update failure rolls back both. No migration or trigger
+definition is changed.
 
 The fixture installs the exact relevant functions from migrations 042/049/051,
 with production node/prefix trigger names, prefix FK, and packet-path classifier.
@@ -366,6 +366,24 @@ Backend typecheck/build, frontend build and the **63 API + 11 operator** contrac
 check pass. Concurrent production ingestion and visibility-lock duration remain
 unmeasured; this is stronger isolated verification, not a live database claim.
 
+A controlled-arrival SQL fixture then reproduced another inactivity gap:
+fresh source-node RF/observer sightings inserted between the initial candidate
+snapshot and the visibility lock were still deleted (**4 nodes removed instead
+of 2**). `packetBatch.ts` takes `FOR KEY SHARE` on the same visibility row before
+updating those rollups. Inactive cleanup now takes its `FOR UPDATE` lock and
+rechecks the original candidates against the complete freshness/privacy predicate
+before archival; the row lock fences later packet-ingestion batches until commit.
+Candidates withdrawn by new sightings produce neither removal archives nor
+deletes. An all-withdrawn pass returns the usual empty result. The old MQTT
+observer policy retains its own predicate.
+
+The controlled arrival passes against actual SQL after the fix, and the full
+optional fixture suite passes **11/11**, with no skips. This models the query
+boundary in one disposable connection; it is not a concurrent-ingestion load
+test. `cd backend && node --import tsx --test
+src/maintenance/staleMqttObservers.test.ts`: **10/10**. Backend typecheck passes;
+`cd backend && npm test`: **357/357**, no failures or skips.
+
 ## Final verification and publication
 
 Source commits: `9a5e838` (retirement), `2d2b425` (prewarm), `236e948`
@@ -379,7 +397,7 @@ Full unit suites are rerun after it, before publication.
 
 | Exact command | Result |
 | --- | --- |
-| `cd backend && npm test` | **356/356 pass**, 0 fail, 0 skipped. Expands to the brief's `node --import tsx --test $(find src -name '*.test.ts' ! -name '*.integration.test.ts' -print)`. |
+| `cd backend && npm test` | **357/357 pass**, 0 fail, 0 skipped. Expands to the brief's `node --import tsx --test $(find src -name '*.test.ts' ! -name '*.integration.test.ts' -print)`. |
 | `cd frontend && npm test` | **99/99 pass**, 0 fail, 0 skipped. |
 | `cd backend && npm run typecheck` | Pass. |
 | `cd backend && npm run build` | Pass. |
@@ -392,7 +410,7 @@ Full unit suites are rerun after it, before publication.
 | `.ukmesh-tools/promtool test rules logging/rules/meshcore.test.yml` | **10 scenario groups pass**. |
 | `bash -n scripts/check-compose-adoption.sh scripts/replace-container.sh scripts/test-replace-container.sh` | Pass. |
 | `TMPDIR="$PWD/.ukmesh-tools/tmp" bash scripts/test-replace-container.sh` | **16/16 mocked drills pass**. |
-| Optional isolated cleanup integration command above | **10/10 pass**, 0 skipped. |
+| Optional isolated cleanup integration command above | **11/11 pass**, 0 skipped. |
 | `git diff --check 73ee004` | Pass; scoped review found no migration, schema, environment-file, lockfile or unrelated source edits. |
 | `cd frontend && npm run lint:css` | Existing **6 duplicate-selector failures** in unchanged files; left out of scope. |
 
@@ -412,7 +430,7 @@ Completion audit against the supplied brief:
 | Link heartbeat source and alert semantics | Per-scrape genuine Redis heartbeat; missing/stale active queues covered by 5 source/metric tests and 7 Prometheus scenario groups. Live alert firing is not claimed. |
 | Variable-height UK feed | ResizeObserver measurements and anchored offsets at both widths; 2 frontend geometry tests plus 2 expanded browser cases pass. |
 | Compose adoption guard | Local failing mocked reproduction, pre-mutation rejection, 16 passing replacement drills, including the pipefail regression. No live Docker inspection. |
-| Inactive-node archive/delete for every role | Role/bridge-independent selection, archive-before-delete transaction, private identity retention and preservation of a current privacy fence; 9 unit and 10 SQL fixture tests pass. No live deletion or migration. |
+| Inactive-node archive/delete for every role | Role/bridge-independent selection, archive-before-delete transaction, private identity retention, late-sighting revalidation and preservation of a current privacy fence; 10 unit and 11 SQL fixture tests pass. No live deletion or migration. |
 | Final verification and private-branch publication | Full backend/frontend units run on the final documentation HEAD; non-forced branch push and matching remote SHA required before handoff. |
 | Other heartbeat proxies | Source/cadence/alert-consumer findings recorded above; the health-worker false-positive candidate remains a source-based follow-up. |
 

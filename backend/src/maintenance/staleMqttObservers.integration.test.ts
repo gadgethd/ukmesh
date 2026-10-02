@@ -277,3 +277,35 @@ test('PostgreSQL inactive cleanup is idempotent without duplicate archives', opt
   assert.deepEqual(repeat, { batchId: null, candidates: 0, nodes: 0, observerSightings: 0, networkSightings: 0 });
   assert.deepEqual(await f.snapshot(), before, 'a second pass must not produce duplicate archives or deletes');
 });
+
+test('PostgreSQL inactive cleanup rechecks RF sightings that arrive after the initial candidate snapshot', options, async (t) => {
+  const f = await fixture();
+  t.after(() => f.db.close());
+  let injected = false;
+  const cleanupPool = {
+    async connect() {
+      const client = await f.cleanupPool.connect();
+      return {
+        ...client,
+        async query(text: string, values?: unknown[]) {
+          const result = await client.query(text, values);
+          if (!injected && text.includes('SELECT node_id') && text.includes('FOR UPDATE')) {
+            injected = true;
+            // Simulate source-node RF rollups becoming fresh between the first
+            // candidate snapshot and the visibility lock that fences ingestion.
+            await f.db.exec(`UPDATE node_network_sightings SET last_seen_at = NOW() WHERE node_id = 'companion';
+              INSERT INTO observer_region_observer_sightings VALUES ('room-server', 'ABC', NOW());`);
+          }
+          return result;
+        },
+      };
+    },
+  };
+  const result = await cleanupInactiveNodes({ cleanupPool, batchId: 'arrival-batch' });
+  assert.equal(injected, true);
+  assert.equal(result.nodes, 2, 'late-fresh companion and room-server sightings must withdraw their candidates');
+  assert.deepEqual((await f.db.query("SELECT node_id FROM nodes WHERE node_id IN ('companion', 'room-server') ORDER BY node_id")).rows,
+    [{ node_id: 'companion' }, { node_id: 'room-server' }]);
+  assert.equal((await f.db.query("SELECT COUNT(*)::int AS count FROM maintenance_removed_records WHERE record_data->>'node_id' IN ('companion', 'room-server') OR record_data->>'rx_node_id' = 'room-server'")).rows[0].count, 0,
+    'withdrawn candidates and their visibility records must not enter the removal archive');
+});
