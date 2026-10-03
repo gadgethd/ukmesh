@@ -18,19 +18,19 @@
 
 ## Item #543 — link-worker heartbeat alert
 
-**Status:** FIXED in [PR #115](https://github.com/gadgethd/ukmesh/pull/115), commit `13f03de`.
+**Status:** ALREADY FIXED on `main` by `b40793f` (the #114 re-land). The newer main implementation supersedes this branch's alternative and is covered by [main's review](https://github.com/gadgethd/ukmesh/blob/main/REVIEW.md). PR #115 was closed as redundant after it became conflicting with `main`.
 
-**Files changed:** `backend/src/health/status.ts`, `backend/src/metrics.ts`, `logging/rules/meshcore.yml`, `logging/rules/meshcore.test.yml`, and `docs/operations.md`.
+**Files changed:** On `main`: `backend/src/health/status.ts`, `backend/src/health/workerHeartbeat.ts`, `backend/src/health/workerHeartbeat.test.ts`, `backend/src/metrics.ts`, `logging/rules/meshcore.yml`, `logging/rules/meshcore.test.yml`, and `viewshed-worker/tests/test_link_worker_heartbeat.py`.
 
-**Why:** `ActiveQueueWorkerHeartbeatStale` used `MAX(node_links.itm_computed_at)` as if it were process liveness. It now uses the RF link worker's own `meshcore_worker_heartbeat_timestamp_seconds{worker="link"}` metric and alerts after 600 seconds of staleness with the existing three-minute hold. The backend metric derived from database timestamps is now `meshcore_worker_data_age_seconds`; the health alert and runbook identify snapshot freshness separately from process liveness. The `link`, `path_learning`, `health`, and `link_backfill` values all measure persisted-data recency.
+**Why:** `ActiveQueueWorkerHeartbeatStale` originally used `MAX(node_links.itm_computed_at)` as if it were process liveness. Main now reads the link worker's Redis heartbeat (`meshcore:link:v3:worker_heartbeat`) on every scrape, treats a missing or invalid heartbeat as unhealthy, and alerts for a queued worker when heartbeat age is over 180 seconds or missing, with the existing three-minute hold. The publisher refreshes every ten seconds with a 45-second TTL. This directly measures worker liveness and preserves the existing metric name.
 
-**Tests run:** `npm run typecheck` passed; `node --import tsx --test src/metrics.test.ts` passed 2/2; the full backend `npm test` suite passed 374/374; Prometheus config and rules validation passed; Alertmanager config validation passed. The rule test verifies that stale database data alone does not fire the queued-link liveness alert and that a genuinely stale in-process heartbeat does.
+**Tests run:** Main's review records `node --import tsx --test src/health/workerHeartbeat.test.ts` (5/5), publisher tests `python3 -m unittest discover -s viewshed-worker/tests -p test_link_worker_heartbeat.py -v` (5/5), backend suite 343/343, Prometheus rules validation (24 rules), and 7 rule-test scenario groups. The superseded PR branch separately passed `npm run typecheck`, metrics tests 2/2, full backend suite 374/374, Prometheus/Alertmanager validation, and CI run #484 on head `ccd5a9b`; it is not the implementation retained on main.
 
-**PROOF:** `docker run --rm -v "$PWD/logging/rules:/rules:ro" --entrypoint /bin/promtool prom/prometheus@sha256:63805ebb8d2b3920190daf1cb14a60871b16fd38bed42b857a3182bc621f4996 test rules /rules/meshcore.test.yml` -> `/SUCCESS/`
+**PROOF:** Main's review documents the Redis publisher cadence/TTL tests, missing and stale-heartbeat rule cases, and the live-queue alert holdoff. The upstream implementation is on `main` at `b40793f`.
 
-**Deliberately left out:** No deployment or live service changes; the brief prohibits them.
+**Deliberately left out:** No deployment or live service changes; the brief prohibits them. The alternative implementation from commit `13f03de` was not carried across the conflicting main landing.
 
-**Open questions:** Check out-of-repository dashboards or alerts for consumers of the renamed `meshcore_worker_heartbeat_age_seconds` metric before deployment, and review the latest PR #115 CI result before merge.
+**Open questions:** No code work remains for #543 in this wave. Production Redis freshness and alert recovery remain deployment-time checks documented in main's review.
 
 ## Item #437 — orphan `runState.test.ts`
 
