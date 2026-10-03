@@ -833,15 +833,17 @@ This section supplements the existing main review with the coordinator update an
 
 **Files changed:** On `main`: `backend/src/health/status.ts`, `backend/src/health/workerHeartbeat.ts`, `backend/src/health/workerHeartbeat.test.ts`, `backend/src/metrics.ts`, `logging/rules/meshcore.yml`, `logging/rules/meshcore.test.yml`, and `viewshed-worker/tests/test_link_worker_heartbeat.py`.
 
-**Why:** `ActiveQueueWorkerHeartbeatStale` originally used `MAX(node_links.itm_computed_at)` as if it were process liveness. Main now reads the link worker's Redis heartbeat (`meshcore:link:v3:worker_heartbeat`) on every scrape, treats a missing or invalid heartbeat as unhealthy, and alerts for a queued worker when heartbeat age is over 180 seconds or missing, with the existing three-minute hold. The publisher refreshes every ten seconds with a 45-second TTL. This directly measures worker liveness and preserves the existing metric name.
+**Why:** `ActiveQueueWorkerHeartbeatStale` originally used `MAX(node_links.itm_computed_at)` as if it were process liveness. Main now reads the link worker's Redis heartbeat (`meshcore:link:v3:worker_heartbeat`) on every scrape, treats a missing or invalid heartbeat as unhealthy, and alerts for queued work when heartbeat age is over 180 seconds or missing, with the existing three-minute hold and same-reporter matching. The publisher refreshes every ten seconds with a 45-second TTL. This directly measures liveness for `worker="link"`; the same metric still carries legacy data-age values for other worker labels, detailed below.
 
 **Tests run:** The current `backend/src/health/workerHeartbeat.test.ts` on main has six cases covering timestamp validation, fifteen-minute ITM gaps, expiry/failure, bounded scrape timeout, per-scrape recovery, and Redis client initialization failure. Publisher tests `python3 -m unittest discover -s viewshed-worker/tests -p test_link_worker_heartbeat.py -v` passed 5/5. The earlier main review records the then-current worker test 5/5 and backend suite 343/343; PR #114's Backend, Frontend, Workers/Compose, mobile, and Secret scan checks all passed before merge. The superseded PR #115 branch separately passed `npm run typecheck`, metrics tests 2/2, full backend suite 374/374, Prometheus/Alertmanager validation, and CI run #484 on head `ccd5a9b`; it is not the implementation retained on main.
+
+**Other role labels checked:** `worker="path_learning"` is `MAX(path_model_calibration.updated_at)` and `worker="link_backfill"` is `MAX(node_links.last_observed)`; neither has a current alert consumer, and both are data freshness rather than process liveness. `worker="health"` is the prior `MAX(worker_health_snapshots.ts)`, but `HealthWorkerHeartbeatStale` consumes it at `>180` seconds or missing for 3m while `backend/src/workers/health.ts` captures snapshots every 5m. This remains a separate source-based false-positive candidate; the detailed source audit is preserved in the earlier “Other heartbeat proxy signals” section. No live firing frequency is claimed, and this follow-up is not changed by the link-only fix.
 
 **PROOF:** Main's review documents the Redis publisher cadence/TTL tests, missing and stale-heartbeat rule cases, and the live-queue alert holdoff. The upstream implementation is on `main` at `b40793f`.
 
 **Deliberately left out:** No deployment or live service changes; the brief prohibits them. The alternative implementation from commit `13f03de` was not carried across the conflicting main landing.
 
-**Open questions:** No code work remains for #543 in this wave. Production Redis freshness and alert recovery remain deployment-time checks documented in main's review.
+**Open questions:** The link-worker alert logic is fixed on `main`. The separate health-snapshot alert candidate above still needs its own decision and regression test; the path-learning and link-backfill labels should remain clearly identified as data-age signals if they gain alert consumers. Production Redis freshness and recovery remain deployment-time checks documented in main's review.
 
 ## Item #437 — orphan `runState.test.ts`
 
@@ -849,7 +851,7 @@ This section supplements the existing main review with the coordinator update an
 
 **Files changed:** None. `backend/src/analysis/runState.ts` exports `normalizeRetiredAnalysisState`, and `backend/src/analysis/runState.test.ts` is tracked.
 
-**Why:** The missing export described by the backlog item was restored in commit `9a5e838` before this wave.
+**Why:** Current `main` contains the restored export and tracked test in commit `4940c2e` (`fix: ukmesh small batch — run-state policy, measured feed rows, /raw disposition (#102)`). The branch-only commit `9a5e838` is not in `main`'s ancestry and is not used as proof for this handoff.
 
 **Tests run:** `node --import tsx --test src/analysis/runState.test.ts` passed 3/3; the full backend `npm test` suite passed 374/374.
 
@@ -865,11 +867,11 @@ This section supplements the existing main review with the coordinator update an
 
 **Files changed:** None; the export and test are present on main.
 
-**Why:** Commit `9a5e838` restored the export and the current focused test passes.
+**Why:** Commit `4940c2e` on `main` includes the export, policy implementation, and test; the current focused test passes.
 
 **Tests run:** `node --import tsx --test src/analysis/runState.test.ts` passed 3/3; the full backend `npm test` suite passed 374/374.
 
-**PROOF:** `git show 9a5e838:backend/src/analysis/runState.ts | rg -n normalizeRetiredAnalysisState` -> `/export \{ normalizeRetiredAnalysisState \} from '\.\/workloadPolicy\.js'/`
+**PROOF:** `git show 4940c2e:backend/src/analysis/runState.ts | rg -n normalizeRetiredAnalysisState` -> `/export \{ normalizeRetiredAnalysisState \} from '\.\/workloadPolicy\.js'/`
 
 **Deliberately left out:** No duplicate fix for the same file/API.
 
@@ -877,11 +879,11 @@ This section supplements the existing main review with the coordinator update an
 
 ## Item #536 — stale deploy-tree `runState.test.ts`
 
-**Status:** CLOSED-ALREADY for this repository state; duplicate of #437/#301.
+**Status:** CLOSED-ALREADY for the tracked repository source; the separate VPS deploy-tree copy remains UNVERIFIED/OPEN. Duplicate of #437/#301 for the source fix.
 
 **Files changed:** None; the current repository tracks the test and exports the imported function.
 
-**Why:** The stale untracked deploy-tree copy described in the backlog is not the state of this worktree. The current tracked test imports an existing export and passes.
+**Why:** This worktree and `main` track the test and export the imported function. The brief prohibits touching the live checkout, so the reported untracked VPS copy cannot be confirmed or removed in this wave.
 
 **Tests run:** `node --import tsx --test src/analysis/runState.test.ts` passed 3/3; the full backend `npm test` suite passed 374/374.
 
@@ -898,5 +900,5 @@ Starting from the coordinator review branch head `cae0523` (based on current `ma
 - Focused current-source run: `cd backend && node --import tsx --test src/analysis/runState.test.ts src/health/workerHeartbeat.test.ts` passed 9/9 (the three runState cases and six heartbeat cases).
 - Current backend suite: `cd backend && npm test` passed 406/406, including the alert-receiver shell gate.
 - Link-worker heartbeat publisher: `cd viewshed-worker && python3 -m unittest discover -s tests -p test_link_worker_heartbeat.py -v` passed 5/5.
-- PR #116 CI run #492 passed all four jobs: Backend, Frontend, Workers and Compose, and Secret scan. PR #116 remains open for coordinator review; PR #114 is merged to `main`, and the superseded PR #115 is closed unmerged.
+- The runState test is tracked and the export is present on `main` in `4940c2e`; the current focused test passes 3/3. PR #116 CI runs #492 and #497 passed all four jobs: Backend, Frontend, Workers and Compose, and Secret scan. PR #116 remains open for coordinator review; PR #114 is merged to `main`, and the superseded PR #115 is closed unmerged.
 - No code, deployment, live-service, or `fix113-on-main` changes were made in this verification refresh.
