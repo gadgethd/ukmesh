@@ -804,3 +804,82 @@ alert recovery or container adoption. This session will not perform those
 operations. No migrations were run, no environment files were changed, and no
 live checkout or other burn worktree was accessed. `push.md` remains unavailable;
 the exact requested document-specific push discipline is not claimed.
+
+---
+
+# Backlog round 2 — ukmesh (2026-10-03)
+
+Worktree: `/home/ben/worktrees/meshcore-analytics/backlog2-20261003`
+Branch: `backlog2-20261003`
+Base: `b40793f` (`origin/main`, PR #114 re-land)
+
+This section records the five items assigned in BRIEF-R2-B. The pre-existing
+review above is preserved; it belongs to an earlier burn and branch.
+
+## #455 — dead-only vacuum backlog and alerting
+
+Status: fixed in the analytics repository.
+
+- `backend/src/health/status.ts` now counts a table when either the existing
+  relative dead-row condition matches or `n_dead_tup > 50000`, so a deleted
+  TimescaleDB chunk is not hidden by a small `n_live_tup` estimate.
+- `logging/rules/meshcore.yml` adds `DatabaseVacuumBacklog`; its test fixture
+  proves that a table with one live row and 60,000 dead rows fires after 10m.
+- `docs/operations.md` documents the bounded operator response and explicitly
+  rules out deleting chunks or the database volume.
+
+Proof: `vacuum health counts dead-only tables and preserves severity thresholds`
+passes; pinned `promtool check config` and `promtool test rules` both pass.
+The rule and health gate are repository changes only—deployment and live alert
+verification remain for the normal operator rollout.
+
+## #447 — cleanup of role 1/3 and never-bridged nodes
+
+Status: already fixed on the supplied base; no duplicate patch was added.
+
+`b40793f` already contains the role/bridge-independent `cleanupInactiveNodes`
+predicate. `backend/src/maintenance/staleMqttObservers.test.ts` asserts that
+inactive cleanup has no role or prior-MQTT requirement, and the optional
+PostgreSQL fixture `PostgreSQL archives inactive roles 1/3 and never-bridged
+nodes while retaining every fresh clock` covers the reported cases. This
+verifies the root-cause fix in the branch without claiming that the historical
+5,287 live rows were deleted during this repo-only task.
+
+## #426 — corrupted advert-key variants
+
+Status: fixed for new ingest in the analytics repository.
+
+`backend/src/mqtt/decodePacket.ts` verifies the complete MeshCore Ed25519 advert
+signature before identity is trusted. `backend/src/mqtt/client.ts` records the
+raw packet telemetry but does not expose the advertised identity or call
+`evaluateAdvert`/`upsertNode` for an invalid signature. Existing bogus rows are
+not mass-deleted here: that would require a reviewed data-remediation operation
+outside this no-deploy worktree task.
+
+Proof: `only a valid Ed25519 advert may establish node identity` passes with a
+known valid advert and a tampered advert; the advert-count integrity test also
+guards that upsert remains inside the verification gate. TypeScript and the
+full backend suite pass.
+
+## #436 and #435 — Watchtower `/watch`
+
+Status: omitted from this repository by an explicit source boundary.
+
+The assigned Watchtower code is in the separate `gadgethd/meshcore-discord-bot`
+repository (`discord.ts` and the monitor JSON identified by the sweep report),
+which is not present in this worktree. No analytics-side integration point can
+change its ambiguous-match wording/candidate suggestions (#436) or refresh
+monitor display names after node renames (#435). No sibling checkout was read
+or modified, so these require a separate PR in the Watchtower repository.
+
+## Validation and constraints
+
+- Focused backend tests: 20 passing, including #455, #426, and the existing
+  #447 cleanup assertions.
+- `npm run typecheck`: passed.
+- `npm test`: 408 passing plus the synthetic alert-receiver check.
+- Prometheus config and rule tests: passed with the CI-pinned `promtool` image.
+- No VPS deployment, database cleanup, container restart, merge, or unrelated
+  branch push was performed.
+
+PR link: pending

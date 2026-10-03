@@ -11,5 +11,7 @@ test('advert count is folded into node UPSERT with durable canonical-hash dedupl
   assert.match(dbSource, /advert_count\s+= nodes\.advert_count \+ \(SELECT COUNT\(\*\) FROM advert_once\)/);
   assert.doesNotMatch(dbSource, /function incrementAdvertCount/);
   assert.match(mqttSource, /advertHash: canonicalPacketId/);
+  assert.match(mqttSource, /const advertSignatureValid = await verifyAdvertSignature\(decoded\)/);
+  assert.match(mqttSource, /if \(advertSignatureValid && network !== 'test'\)/);
   assert.doesNotMatch(mqttSource, /tryCountAdvert|countedAdvertHashes/);
 });

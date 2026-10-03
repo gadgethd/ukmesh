@@ -206,6 +206,10 @@ tests:
         values: 0x14
       - series: 'meshcore_db_pool_connections{state="primary_waiting"}'
         values: 1x14
+      - series: 'pg_stat_user_tables_n_live_tup{relname="dead_only"}'
+        values: 1x14
+      - series: 'pg_stat_user_tables_n_dead_tup{relname="dead_only"}'
+        values: 60000x14
       - series: 'node_filesystem_avail_bytes{fstype="ext4",mountpoint="/data"}'
         values: 5x14
       - series: 'node_filesystem_size_bytes{fstype="ext4",mountpoint="/data"}'
@@ -237,6 +241,16 @@ tests:
               summary: Application database pool has waiting callers
               owner: meshcore-operations
               runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#databasepoolsaturated
+      - eval_time: 11m
+        alertname: DatabaseVacuumBacklog
+        exp_alerts:
+          - exp_labels:
+              relname: dead_only
+              severity: warning
+            exp_annotations:
+              summary: PostgreSQL table dead_only has a vacuum backlog
+              owner: meshcore-operations
+              runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#databasevacuumbacklog
       - eval_time: 11m
         alertname: HostDiskSpaceLow
         exp_alerts:

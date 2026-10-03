@@ -161,6 +161,25 @@ groups:
           owner: meshcore-operations
           runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#databasepoolsaturated
 
+      - alert: DatabaseVacuumBacklog
+        # Keep the SQL health gate and the exporter alert aligned. The
+        # absolute branch catches dead-only Timescale chunks whose live-row
+        # estimate has already fallen below the relative threshold.
+        expr: |
+          pg_stat_user_tables_n_dead_tup > 50000
+          or (
+            pg_stat_user_tables_n_live_tup > 10000
+            and pg_stat_user_tables_n_dead_tup > 10000
+            and pg_stat_user_tables_n_dead_tup > pg_stat_user_tables_n_live_tup * 0.1
+          )
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: PostgreSQL table {{ $labels.relname }} has a vacuum backlog
+          owner: meshcore-operations
+          runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#databasevacuumbacklog
+
       - alert: DatabaseWalRateHigh
         expr: rate(pg_wal_bytes[15m]) > 52428800
         for: 15m

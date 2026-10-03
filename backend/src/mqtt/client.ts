@@ -8,7 +8,7 @@ import { resolvePool } from '../path-beta/resolvePool.js';
 import { scheduleSlowResolution } from '../path-beta/slowMode.js';
 import { pathingConfig } from '../platform/config/pathing.js';
 import type { LivePacket } from '../types/index.js';
-import { decodePacketCompat } from './decodePacket.js';
+import { decodePacketCompat, verifyAdvertSignature } from './decodePacket.js';
 import { buildChannelEntries, buildCombinedKeyStore, buildSummary } from './channelRegistry.js';
 import { shouldDiscardUnverifiedTxAdvert, statusEnvelopeTargetsObserver } from './identityBinding.js';
 import { extractNeighborNodes } from './neighborPayload.js';
@@ -582,8 +582,17 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
           const senderKey = normalizeNodeId(inner?.['publicKey']);
           const nodeId    = senderKey ?? observerKey;
           const nodeIata  = topicIataForNode(nodeId, observerKey, iata);
+          const advertSignatureValid = await verifyAdvertSignature(decoded);
 
-          if (network !== 'test') {
+          if (!advertSignatureValid) {
+            mqttIngestOutcomesTotal.inc({ outcome: 'invalid_advert_signature' });
+            console.warn(
+              `[mqtt] ignoring advert identity with invalid signature: key=${senderKey?.slice(0, 16) ?? 'unknown'}…`,
+            );
+            summary = undefined;
+          }
+
+          if (advertSignatureValid && network !== 'test') {
             const advertName = appData?.['name'] as string | undefined;
             const advertLat  = loc?.['latitude'];
             const advertLon  = loc?.['longitude'];
@@ -660,8 +669,8 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
             }
           }
 
-          innerPayload = inner;
-          srcNodeId = senderKey;
+          innerPayload = advertSignatureValid ? inner : undefined;
+          srcNodeId = advertSignatureValid ? senderKey : undefined;
         } else if (decoded.payloadType === 5) {
           innerPayload = decodedInner as unknown as Record<string, unknown> | undefined;
         } else if (decoded.payloadType === 7) {
