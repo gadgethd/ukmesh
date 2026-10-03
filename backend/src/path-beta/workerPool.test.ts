@@ -29,13 +29,23 @@ test('worker pool bounds queued interactive work without losing accepted jobs', 
   }
 });
 
-test('worker pool timeout includes queue and execution time and replaces the worker', async () => {
+test('worker pool timeout includes queue and execution time and replaces the worker', { timeout: 10_000 }, async (t) => {
+  // Advance the pool deadline deterministically; replacement thread startup
+  // is not a 750ms performance assertion on a shared test host.
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   const pool = new WorkerPool(fixtureUrl, 1, 1, 1, 750);
   try {
-    await assert.rejects(
-      pool.run({ value: 'late', delayMs: 1_500 }),
-      WorkerPoolTimeoutError,
-    );
+    const active = pool.run({ value: 'late', delayMs: 1_500 });
+    const queued = pool.run({ value: 'queued', delayMs: 1 });
+    const expired = Promise.all([
+      assert.rejects(active, WorkerPoolTimeoutError),
+      assert.rejects(queued, WorkerPoolTimeoutError),
+    ]);
+    t.mock.timers.tick(749);
+    assert.deepEqual(pool.snapshot(), { active: 1, interactiveQueued: 1, backgroundQueued: 0 });
+    t.mock.timers.tick(1);
+    await expired;
+    assert.deepEqual(pool.snapshot(), { active: 0, interactiveQueued: 0, backgroundQueued: 0 });
     assert.equal(await pool.run<string>({ value: 'recovered', delayMs: 1 }), 'recovered');
   } finally {
     await pool.close();
