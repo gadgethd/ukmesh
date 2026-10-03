@@ -839,7 +839,7 @@ This section supplements the existing main review with the coordinator update an
 
 **Other role labels checked:** `worker="path_learning"` is `MAX(path_model_calibration.updated_at)` and `worker="link_backfill"` is `MAX(node_links.last_observed)`; neither has a current alert consumer, and both are data freshness rather than process liveness. `worker="health"` is the prior `MAX(worker_health_snapshots.ts)`, but `HealthWorkerHeartbeatStale` consumes it at `>180` seconds or missing for 3m while `backend/src/workers/health.ts` captures snapshots every 5m. This remains a separate source-based false-positive candidate; the detailed source audit is preserved in the earlier “Other heartbeat proxy signals” section. No live firing frequency is claimed, and this follow-up is not changed by the link-only fix.
 
-**PROOF:** Main's review documents the Redis publisher cadence/TTL tests, missing and stale-heartbeat rule cases, and the live-queue alert holdoff. The upstream implementation is on `main` at `b40793f`.
+**PROOF:** `git show b40793f:backend/src/health/status.ts | rg 'readLinkWorkerHeartbeatAge\(r\)'` -> `/readLinkWorkerHeartbeatAge\(r\)/`; `git show b40793f:logging/rules/meshcore.test.yml | rg 'fifteen-minute ITM batch gap|expired link heartbeat'` -> `/fifteen-minute ITM batch gap|expired link heartbeat/`. The [main review's heartbeat section](https://github.com/gadgethd/ukmesh/blob/main/REVIEW.md#3-heartbeat-alert-semantics--543--507) records the promtool rule checks and publisher tests with their results.
 
 **Deliberately left out:** No deployment or live service changes; the brief prohibits them. The alternative implementation from commit `13f03de` was not carried across the conflicting main landing.
 
