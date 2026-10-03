@@ -890,3 +890,13 @@ This section supplements the existing main review with the coordinator update an
 **Deliberately left out:** No deletion or duplicate export was added.
 
 **Open questions:** The item also described an untracked copy on the VPS deploy tree. That external checkout was not inspected or edited; reconcile the local artifact separately when permitted.
+
+## Verification refresh — current worktree (2026-10-03)
+
+Starting from the coordinator review branch head `cae0523` (based on current `main` `b40793f`), this worktree added only this verification record. The branch changes only `REVIEW.md` against `main`; earlier per-item test counts above are retained as the evidence recorded at that review checkpoint.
+
+- Focused current-source run: `cd backend && node --import tsx --test src/analysis/runState.test.ts src/health/workerHeartbeat.test.ts` passed 9/9 (the three runState cases and six heartbeat cases).
+- Current backend suite: `cd backend && npm test` passed 406/406, including the alert-receiver shell gate.
+- Link-worker heartbeat publisher: `cd viewshed-worker && python3 -m unittest discover -s tests -p test_link_worker_heartbeat.py -v` passed 5/5.
+- PR #116 CI run #492 passed all four jobs: Backend, Frontend, Workers and Compose, and Secret scan. PR #116 remains open for coordinator review; PR #114 is merged to `main`, and the superseded PR #115 is closed unmerged.
+- No code, deployment, live-service, or `fix113-on-main` changes were made in this verification refresh.
