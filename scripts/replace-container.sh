@@ -122,7 +122,9 @@ done
 
 cd "$project_dir"
 docker compose --project-name "$project_name" config -q
-if ! docker compose --project-name "$project_name" config --services | grep -Fxq -- "$service"; then
+# Consume the whole service list: grep -q can close the pipe early and turn
+# Compose's SIGPIPE into a false rejection under pipefail.
+if ! docker compose --project-name "$project_name" config --services | grep -Fx -- "$service" >/dev/null; then
   echo "unknown Compose service: $service" >&2
   exit 65
 fi
@@ -133,6 +135,14 @@ fi
 if ! git diff --quiet || ! git diff --cached --quiet; then
   echo "immutable releases require a clean tracked working tree" >&2
   exit 65
+fi
+
+# A manually recreated backend may retain project/service labels but have empty
+# config_files/working_dir labels. Reject before pulls, migrations or compose up;
+# otherwise Compose can try to replace a shared network it does not own cleanly.
+"${script_dir}/check-compose-adoption.sh" "$service"
+if [ "$service" != backend ]; then
+  "${script_dir}/check-compose-adoption.sh" backend
 fi
 
 verify_cosign_signature() {

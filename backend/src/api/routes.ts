@@ -85,6 +85,7 @@ import { assertUniqueRouteRegistry } from './routeRegistry.js';
 import { assertContractCoverage } from './contracts.js';
 import { API_ERROR_CODES, ApiInputError, wrapAsyncHandlers } from './errors.js';
 import { withHeavyWorkAdmission } from '../analysis/heavyWorkAdmission.js';
+import { getOwnerAuthorizationSnapshot } from '../db/ownerAuth.js';
 
 const router = Router();
 // Anonymous cross-network aggregation is not a public API capability. Operator
@@ -195,7 +196,7 @@ registerMiscRoutes(router, {
   getPublicVisibilityGeneration,
   packetDetailLimiter: PACKET_DETAIL_LIMITER,
 });
-registerOwnerRoutes(router, {
+const ownerLastHopPrewarm = registerOwnerRoutes(router, {
   ownerCookieName: OWNER_COOKIE_NAME,
   ownerLiveCacheTtlMs: OWNER_LIVE_CACHE_TTL_MS,
   ownerLiveCache,
@@ -217,7 +218,12 @@ registerOwnerRoutes(router, {
   getOwnerCredentialGeneration,
   invalidateOwnerNodeIdCache,
   query,
+  loadPrewarmOwners: async () => (await getOwnerAuthorizationSnapshot())
+    .filter((owner) => owner.isActive && owner.nodeIds.length > 0),
 });
+
+export const startOwnerLastHopPrewarm = () => ownerLastHopPrewarm.start();
+export const stopOwnerLastHopPrewarm = () => ownerLastHopPrewarm.stop();
 registerPathingRoutes(router, {
   pathBetaLimiter: PATH_BETA_LIMITER,
   pathLearningLimiter: PATH_LEARNING_LIMITER,

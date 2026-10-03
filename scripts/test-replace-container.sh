@@ -67,13 +67,25 @@ case "$command_name" in
     case "${1:-}" in
       config)
         if [ "${2:-}" = "--services" ]; then
-          printf '%s\n' backend db-migrate timescaledb
+          printf '%s\n' backend db-migrate timescaledb app-ukmesh
+          if [ "${MOCK_ADOPTION_MODE:-valid}" = long_service_list ]; then
+            # More than a pipe buffer: an early grep -q exit must not turn
+            # Compose's SIGPIPE into an incorrect unknown-service rejection.
+            for ((index = 0; index < 10000; index++)); do printf 'fixture-service-%s\n' "$index"; done
+          fi
         elif [ "${2:-}" != "-q" ]; then
           printf 'services: {}\n'
         fi
         ;;
       ps)
-        printf 'current-backend\n'
+        service="${@: -1}"
+        mode=valid
+        if [ "$service" = "$MOCK_ADOPTION_SERVICE" ]; then mode="$MOCK_ADOPTION_MODE"; fi
+        case "$mode" in
+          no_container) ;;
+          multiple_containers) printf 'current-%s\nother-%s\n' "$service" "$service" ;;
+          *) printf 'current-%s\n' "$service" ;;
+        esac
         ;;
       run)
         test "${*: -1}" = "db-migrate"
@@ -112,6 +124,28 @@ case "$command_name" in
     case "$*" in
       *'.Config.Image'*)
         printf '%s\n' "$MOCK_PRIOR_IMAGE"
+        ;;
+      *'.Config.Labels'*)
+        service="${1#current-}"
+        mode=valid
+        if [ "$service" = "$MOCK_ADOPTION_SERVICE" ]; then mode="$MOCK_ADOPTION_MODE"; fi
+        if [ "$mode" = malformed_labels ]; then printf 'invalid JSON\n'; exit 0; fi
+        jq -n --arg directory "$MOCK_PROJECT_DIR" --arg mode "$mode" --arg service "$service" '
+          {
+            "com.docker.compose.project": "meshcore-analytics",
+            "com.docker.compose.service": $service,
+            "com.docker.compose.project.working_dir": $directory,
+            "com.docker.compose.project.config_files": ($directory + "/docker-compose.yml")
+          }
+          | if $mode == "empty" then {}
+            elif $mode == "missing_config" then .["com.docker.compose.project.config_files"] = ""
+            elif $mode == "wrong_directory" then .["com.docker.compose.project.working_dir"] = "/wrong-source"
+            elif $mode == "wrong_project" then .["com.docker.compose.project"] = "wrong-project"
+            elif $mode == "wrong_service" then .["com.docker.compose.service"] = "wrong-service"
+            elif $mode == "null_labels" then null
+            elif $mode == "overlay_only" then .["com.docker.compose.project.config_files"] = ($directory + "/docker-compose.live.yml")
+            elif $mode == "overlay" then .["com.docker.compose.project.config_files"] += ("," + $directory + "/docker-compose.live.yml")
+            else . end'
         ;;
       *'.Config.Env'*)
         printf '%s\n' \
@@ -173,6 +207,9 @@ run_case() {
   local expected_status="$4"
   local expected_up_count="$5"
   local signature_mode="$6"
+  local adoption_mode="${7:-valid}"
+  local service="${8:-backend}"
+  local adoption_service="${9:-$service}"
   local test_root
   test_root="$(mktemp -d)"
   trap 'rm -rf -- "$test_root"' RETURN
@@ -182,6 +219,9 @@ run_case() {
     "${test_root}/fake-bin" \
     "${test_root}/releases"
   cp "$replace_script" "${test_root}/project/scripts/replace-container.sh"
+  if [ -f "${script_dir}/check-compose-adoption.sh" ]; then
+    cp "${script_dir}/check-compose-adoption.sh" "${test_root}/project/scripts/check-compose-adoption.sh"
+  fi
   chmod 0755 "${test_root}/project/scripts/replace-container.sh"
   printf 'services: {}\n' >"${test_root}/project/docker-compose.yml"
 
@@ -216,6 +256,9 @@ run_case() {
   set +e
   PATH="${test_root}/fake-bin:${PATH}" \
     MOCK_SOURCE_REVISION="$source_revision" \
+    MOCK_PROJECT_DIR="${test_root}/project" \
+    MOCK_ADOPTION_MODE="$adoption_mode" \
+    MOCK_ADOPTION_SERVICE="$adoption_service" \
     MOCK_DESIRED_IMAGE="$desired_image" \
     MOCK_PRIOR_IMAGE="$prior_image" \
     MOCK_COMPAT_READY="$compat_ready" \
@@ -230,7 +273,7 @@ run_case() {
     RELEASE_STATUS_DIR="${test_root}/releases" \
     COMPATIBILITY_TIMEOUT_SECONDS=1 \
     "${test_root}/project/scripts/replace-container.sh" \
-      backend \
+      "$service" \
       "--image=${desired_image}" \
       "--backend-image=${desired_image}" \
       "--source-revision=${source_revision}" \
@@ -238,6 +281,22 @@ run_case() {
   local status=$?
   set -e
 
+  if [ "$adoption_mode" != "valid" ] && [ "$adoption_mode" != "overlay" ] && [ "$adoption_mode" != "long_service_list" ]; then
+    if [ "$status" -ne 65 ]; then
+      printf '%s: expected Compose adoption rejection (65), got %s\n' "$case_name" "$status" >&2
+      return 1
+    fi
+    grep -q 'not Compose-adoptable' "${test_root}/stderr.log"
+    grep -q "service ${adoption_service} is not Compose-adoptable" "${test_root}/stderr.log"
+    test ! -s "${test_root}/cosign.log"
+    if grep -Eq '^(pull |compose .* (up|run) )' "${test_root}/docker.log"; then
+      echo 'adoption guard allowed a mutation before rejection' >&2
+      return 1
+    fi
+    test -z "$(find "${test_root}/releases" -type f -print -quit)"
+    printf '%s passed\n' "$case_name"
+    return 0
+  fi
   if [ "$status" -eq 0 ]; then
     printf '%s: expected a controlled failure\n' "$case_name" >&2
     return 1
@@ -248,7 +307,11 @@ run_case() {
     find "${test_root}/releases" -maxdepth 1 -type f -name '*.json' \
       -print -quit
   )"
-  test -n "$release_status"
+  if [ -z "$release_status" ]; then
+    printf '%s: expected a controlled release receipt, got exit %s\n' "$case_name" "$status" >&2
+    cat "${test_root}/stderr.log" >&2
+    return 1
+  fi
   test "$(jq -r '.status' "$release_status")" = "$expected_status"
   test "$(jq -r '.schema_version' "$release_status")" = "30"
   test "$(jq -r '.prior_image' "$release_status")" = "$prior_image"
@@ -272,6 +335,7 @@ run_case() {
   else
     grep -q -- '--key' "${test_root}/cosign.log"
   fi
+  printf '%s passed\n' "$case_name"
 }
 
 run_case \
@@ -289,4 +353,13 @@ run_case \
   0 \
   keyless
 
-printf 'replace-container rollback and compatibility drills passed\n'
+for adoption_mode in empty missing_config wrong_directory wrong_project wrong_service no_container multiple_containers null_labels malformed_labels overlay_only; do
+  run_case "adoption_${adoption_mode}_stops_before_mutation" true false stopped 0 public-key "$adoption_mode"
+done
+
+run_case overlay_labels_remain_adoptable false false stopped 0 keyless overlay
+run_case long_service_list_remains_adoptable false false stopped 0 keyless long_service_list
+run_case invalid_frontend_stops_before_mutation true false stopped 0 public-key empty app-ukmesh
+run_case valid_frontend_with_invalid_backend_stops_before_mutation true false stopped 0 public-key empty app-ukmesh backend
+
+printf 'replace-container rollback, compatibility and Compose adoption drills passed (16/16)\n'

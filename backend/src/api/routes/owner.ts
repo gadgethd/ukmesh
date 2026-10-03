@@ -1,6 +1,7 @@
 import type { Request, Response, Router } from 'express';
 import { createOwnerRepository } from '../../owner/ownerRepository.js';
 import { createOwnerService } from '../../owner/ownerService.js';
+import { createOwnerLastHopPrewarm, type OwnerLastHopPrewarmTarget } from '../../owner/ownerLastHopPrewarm.js';
 import type { OwnerSession } from '../../owner/ownerSession.js';
 import { createCsrfToken, readCookie, requireDoubleSubmitCsrf } from '../../security/operatorAuth.js';
 import { resolveWebhookTarget } from '../../security/outboundWebhook.js';
@@ -58,9 +59,10 @@ type OwnerRouteDeps = {
   getOwnerCredentialGeneration: GetOwnerCredentialGenerationFn;
   invalidateOwnerNodeIdCache: (mqttUsername: string) => void;
   query: QueryFn;
+  loadPrewarmOwners: () => Promise<OwnerLastHopPrewarmTarget[]>;
 };
 
-export function registerOwnerRoutes(router: Router, deps: OwnerRouteDeps): void {
+export function registerOwnerRoutes(router: Router, deps: OwnerRouteDeps) {
   const repository = createOwnerRepository({
     query: deps.query,
   });
@@ -76,6 +78,11 @@ export function registerOwnerRoutes(router: Router, deps: OwnerRouteDeps): void 
     buildOwnerDashboard: deps.buildOwnerDashboard,
     repository,
     invalidateOwnerNodeIdCache: deps.invalidateOwnerNodeIdCache,
+  });
+  const prewarm = createOwnerLastHopPrewarm({
+    loadOwners: deps.loadPrewarmOwners,
+    refresh: (owner, nodeId) => service.getOwnerLastHopStrength(owner.nodeIds, nodeId, true),
+    concurrency: process.env['OWNER_LAST_HOP_PREWARM_CONCURRENCY'],
   });
 
   const csrfCookieName = 'meshcore_owner_csrf';
@@ -430,4 +437,5 @@ export function registerOwnerRoutes(router: Router, deps: OwnerRouteDeps): void 
     });
     res.json({ ok: true });
   });
+  return prewarm;
 }
