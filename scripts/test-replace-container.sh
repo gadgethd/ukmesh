@@ -128,6 +128,10 @@ case "$command_name" in
     ;;
   inspect)
     case "$*" in
+      *'.Config.Labels'*)
+        printf '{"com.docker.compose.project":"meshcore-analytics","com.docker.compose.service":"backend","com.docker.compose.project.working_dir":"%s","com.docker.compose.project.config_files":"%s"}\n' \
+          "$PWD" "$PWD/docker-compose.yml"
+        ;;
       *'.Config.Image'*)
         printf '%s\n' "$MOCK_PRIOR_IMAGE"
         ;;
@@ -208,6 +212,7 @@ run_case() {
     "${test_root}/fake-bin" \
     "${test_root}/releases"
   cp "$replace_script" "${test_root}/project/scripts/replace-container.sh"
+  cp "${script_dir}/check-compose-adoption.sh" "${test_root}/project/scripts/check-compose-adoption.sh"
   cp "${script_dir}/lib/infra-compose.sh" "${test_root}/project/scripts/lib/infra-compose.sh"
   chmod 0755 "${test_root}/project/scripts/replace-container.sh"
   printf 'services: {}\n' >"${test_root}/project/docker-compose.yml"
