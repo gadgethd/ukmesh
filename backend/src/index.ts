@@ -17,7 +17,7 @@ import {
   stopMqttConnectionMonitor,
 } from './mqtt/connectionMonitor.js';
 import { initWebSocketServer, closeWebSocketServer, broadcastPacket, broadcastNodeUpdate, broadcastNodeUpsert } from './ws/server.js';
-import apiRoutes from './api/routes.js';
+import apiRoutes, { startOwnerLastHopPrewarm, stopOwnerLastHopPrewarm } from './api/routes.js';
 import { startRegisteredStatsWarmup } from './api/routes/stats.js';
 import { initSpamMessageAnalyzer, stopSpamMessageAnalyzer } from './spam/analyzer.js';
 import {
@@ -102,6 +102,11 @@ lifecycle.register({
   name: 'owner-authorization-reconciler',
   stage: 10,
   close: stopOwnerAuthorizationReconciler,
+});
+lifecycle.register({
+  name: 'owner-last-hop-prewarm',
+  stage: 10,
+  close: stopOwnerLastHopPrewarm,
 });
 lifecycle.register({
   name: 'mqtt-ingest',
@@ -204,6 +209,7 @@ async function main() {
   startRegisteredStatsWarmup();
   await initOwnerAuthDb();
   await startOwnerAuthorizationReconciler();
+  startOwnerLastHopPrewarm();
 
   // 2. Start the audit-only MQTT connection monitor.
   if (MQTT_INGEST_ENABLED) {

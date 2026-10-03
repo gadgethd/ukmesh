@@ -227,11 +227,20 @@ export const analysisActiveLeases = new Gauge({
   registers: [metricsRegistry],
 });
 
+let workerHeartbeatCollector: (() => Promise<void>) | null = null;
+
+export function setWorkerHeartbeatCollector(collector: (() => Promise<void>) | null): void {
+  workerHeartbeatCollector = collector;
+}
+
 export const workerHeartbeatAgeSeconds = new Gauge({
   name: 'meshcore_worker_heartbeat_age_seconds',
   help: 'Age of the last worker heartbeat by bounded worker role.',
   labelNames: ['worker'] as const,
   registers: [metricsRegistry],
+  async collect() {
+    await workerHeartbeatCollector?.();
+  },
 });
 
 export const workerOutcomesTotal = new Counter({

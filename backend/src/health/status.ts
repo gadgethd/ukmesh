@@ -7,6 +7,7 @@ import {
   dataLifecycleConfigurationStatus,
 } from '../db/dataLifecycle.js';
 import { INGEST_HEALTH_SQL, PATH_HASH_HEALTH_SQL } from './packetDiagnostics.js';
+import { linkWorkerHeartbeatCollector, readLinkWorkerHeartbeatAge } from './workerHeartbeat.js';
 import {
   loadVerifiedRestoreReceipt,
   REQUIRED_BACKUP_DATASETS,
@@ -28,6 +29,7 @@ import {
   packetPathsOverdueUncompressedChunks,
   packetPathsRows30d,
   workerHeartbeatAgeSeconds,
+  setWorkerHeartbeatCollector,
 } from '../metrics.js';
 
 type WorkerSnapshot = {
@@ -221,6 +223,10 @@ function redis(): Redis {
   }
   return redisClient;
 }
+
+// Collect on every scrape, not only the five-minute health snapshot cadence.
+// DB write recency remains last_activity_at; it cannot stand in for liveness.
+setWorkerHeartbeatCollector(linkWorkerHeartbeatCollector(redis, workerHeartbeatAgeSeconds));
 
 export function retentionDeleteSql(target: RetentionTarget): string {
   // Identifiers come from the closed RetentionTarget union above. PostgreSQL
@@ -419,6 +425,7 @@ async function currentWorkers(precomputedStats?: ReturnType<typeof systemStats>)
     linkQueue,
     linkRecent,
     linkLast,
+    linkHeartbeatAge,
     learning,
     healthActivity,
     backfillState,
@@ -445,6 +452,7 @@ async function currentWorkers(precomputedStats?: ReturnType<typeof systemStats>)
     }),
     query<{ count: string }>(`SELECT COUNT(*) AS count FROM node_links WHERE itm_computed_at > NOW() - INTERVAL '1 hour'`),
     query<{ ts: string | null }>(`SELECT MAX(itm_computed_at)::text AS ts FROM node_links`),
+    readLinkWorkerHeartbeatAge(r),
     query<{ ts: string | null }>(`SELECT MAX(updated_at)::text AS ts FROM path_model_calibration`),
     query<{ count: string; ts: string | null }>(
       `SELECT COUNT(*) FILTER (WHERE ts > NOW() - INTERVAL '1 hour') AS count,
@@ -483,7 +491,7 @@ async function currentWorkers(precomputedStats?: ReturnType<typeof systemStats>)
       : -1;
     workerHeartbeatAgeSeconds.set({ worker }, Number.isFinite(age) ? age : -1);
   };
-  setHeartbeatAge('link', linkLast.rows[0]?.ts);
+  workerHeartbeatAgeSeconds.set({ worker: 'link' }, linkHeartbeatAge);
   setHeartbeatAge('path_learning', learningLast);
   setHeartbeatAge('health', healthLastTs);
   setHeartbeatAge('link_backfill', backfillLast);

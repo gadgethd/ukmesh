@@ -1,3 +1,4 @@
+import { dashboardOrigin } from './localServers.js';
 import { expect, test, type Page, type Route } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 
@@ -257,7 +258,7 @@ for (const route of publicRoutes) {
 
 test('dashboard dialogs trap focus, close with Escape, and restore the trigger', async ({ page }) => {
   await installFixtures(page, false);
-  await page.goto('http://127.0.0.1:4174/');
+  await page.goto(`${dashboardOrigin}/`);
 
   const initialDialog = page.getByRole('dialog', { name: 'Data disclaimer' });
   await expect(initialDialog).toBeVisible();
@@ -335,7 +336,7 @@ test('repeater search exposes keyboard selection and tolerates IME composition',
 test('reduced-motion preference removes repeating CSS animation', async ({ page }) => {
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await installFixtures(page);
-  await page.goto('http://127.0.0.1:4174/');
+  await page.goto(`${dashboardOrigin}/`);
   const repeating = await page.evaluate(() => Array.from(document.querySelectorAll('*'))
     .filter((element) => {
       const style = getComputedStyle(element);
@@ -348,7 +349,7 @@ test('reduced-motion preference removes repeating CSS animation', async ({ page 
 test('keyboard-only dashboard flow selects a node, reads details, and toggles a packet row', async ({ page }) => {
   await installFixtures(page);
   await installDashboardWebSocket(page);
-  await page.goto('http://127.0.0.1:4174/');
+  await page.goto(`${dashboardOrigin}/`);
 
   const packet = page.locator('.packet-item').filter({ hasText: 'Keyboard fixture message' });
   await expect(packet).toHaveAttribute('aria-label', /Pin GRP packet/);
