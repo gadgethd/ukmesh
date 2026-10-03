@@ -374,23 +374,35 @@ Preserve both worker logs and the analysis run record. The publication fence
 prevents a stale writer from committing. Let the current lease expire, resume
 from its checkpoint, and investigate clock, database, or long-step latency.
 
-### HealthWorkerHeartbeatStale
+The `meshcore_worker_data_age_seconds` gauges describe persisted database data,
+not process liveness: `link` uses `node_links.itm_computed_at`, `path_learning`
+uses `path_model_calibration.updated_at`, `health` uses
+`worker_health_snapshots.ts`, and `link_backfill` uses
+`node_links.last_observed`. Use the link worker's own heartbeat metric when
+checking link process liveness.
 
-Check the `health-worker` container, database reachability, and its last
-successful snapshot. Restart only that worker; public health may be stale but
-the API should remain available.
+### HealthWorkerSnapshotStale
+
+Check the `health-worker` scrape target, database reachability, and the latest
+row in `worker_health_snapshots`. This alert measures persisted snapshot
+freshness; `WorkerMetricsDown` reports process or scrape failure. Public health
+may be stale while the API remains available.
 
 ### WorkerMetricsDown
 
 Identify the `role` label, inspect that worker's health endpoint and container
-state, and restart only the affected worker. If work is queued, treat a stale
-heartbeat as the higher-priority symptom.
+state, and restart only the affected worker. For a link worker with queued work,
+also check `ActiveQueueWorkerHeartbeatStale` and its independent heartbeat.
 
 ### ActiveQueueWorkerHeartbeatStale
 
-Stop new optional work, confirm the queue retains its leased payloads, and
-restart the affected link worker. Allow lease recovery to requeue;
-do not manually duplicate the job.
+Check the `link-worker` scrape target and
+`meshcore_worker_heartbeat_timestamp_seconds{worker="link"}`. This alert fires
+when the queue has active jobs and that in-process heartbeat is older than ten
+minutes; it does not depend on the cadence of `node_links.itm_computed_at`
+writes. Confirm the queue retains its leased payloads, then restart the link
+worker if its heartbeat is stale. Allow lease recovery to requeue; do not
+manually duplicate the job.
 
 ### DatabaseUnavailable
 

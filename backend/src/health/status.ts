@@ -27,7 +27,7 @@ import {
   packetPathsBytesPerRow,
   packetPathsOverdueUncompressedChunks,
   packetPathsRows30d,
-  workerHeartbeatAgeSeconds,
+  workerDataAgeSeconds,
 } from '../metrics.js';
 
 type WorkerSnapshot = {
@@ -477,16 +477,16 @@ async function currentWorkers(precomputedStats?: ReturnType<typeof systemStats>)
   linkQueueLeases.set(linkQueue.leases);
   linkQueueRetries.set(linkQueue.retries);
   linkQueueOldestAgeSeconds.set(linkQueue.oldestAgeSeconds);
-  const setHeartbeatAge = (worker: string, timestamp: string | null | undefined) => {
+  const setDataAge = (worker: string, timestamp: string | null | undefined) => {
     const age = timestamp
       ? Math.max(0, (Date.now() - Date.parse(timestamp)) / 1_000)
       : -1;
-    workerHeartbeatAgeSeconds.set({ worker }, Number.isFinite(age) ? age : -1);
+    workerDataAgeSeconds.set({ worker }, Number.isFinite(age) ? age : -1);
   };
-  setHeartbeatAge('link', linkLast.rows[0]?.ts);
-  setHeartbeatAge('path_learning', learningLast);
-  setHeartbeatAge('health', healthLastTs);
-  setHeartbeatAge('link_backfill', backfillLast);
+  setDataAge('link', linkLast.rows[0]?.ts);
+  setDataAge('path_learning', learningLast);
+  setDataAge('health', healthLastTs);
+  setDataAge('link_backfill', backfillLast);
   return [
     {
       worker_name: 'link-worker',

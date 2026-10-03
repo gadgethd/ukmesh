@@ -227,9 +227,9 @@ export const analysisActiveLeases = new Gauge({
   registers: [metricsRegistry],
 });
 
-export const workerHeartbeatAgeSeconds = new Gauge({
-  name: 'meshcore_worker_heartbeat_age_seconds',
-  help: 'Age of the last worker heartbeat by bounded worker role.',
+export const workerDataAgeSeconds = new Gauge({
+  name: 'meshcore_worker_data_age_seconds',
+  help: 'Age of the latest persisted database data associated with each worker role; this measures data freshness, not process liveness.',
   labelNames: ['worker'] as const,
   registers: [metricsRegistry],
 });

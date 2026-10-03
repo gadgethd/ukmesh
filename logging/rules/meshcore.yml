@@ -104,15 +104,15 @@ groups:
           owner: meshcore-operations
           runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#analysisleaselost
 
-      - alert: HealthWorkerHeartbeatStale
-        expr: meshcore_worker_heartbeat_age_seconds{worker="health"} < 0 or meshcore_worker_heartbeat_age_seconds{worker="health"} > 180
+      - alert: HealthWorkerSnapshotStale
+        expr: meshcore_worker_data_age_seconds{worker="health"} < 0 or meshcore_worker_data_age_seconds{worker="health"} > 180
         for: 3m
         labels:
           severity: critical
         annotations:
-          summary: Health worker heartbeat is stale or missing
+          summary: Health worker status snapshot is stale or missing
           owner: meshcore-operations
-          runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#healthworkerheartbeatstale
+          runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#healthworkersnapshotstale
 
       - alert: WorkerMetricsDown
         expr: up{job="meshcore-workers"} == 0
@@ -125,12 +125,16 @@ groups:
           runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#workermetricsdown
 
       - alert: ActiveQueueWorkerHeartbeatStale
-        expr: meshcore_link_queue_active_jobs > 0 and on() meshcore_worker_heartbeat_age_seconds{worker="link"} > 180
+        # Link-worker reports an independent in-process heartbeat about every five minutes.
+        # Two missed intervals plus margin avoids confusing normal ITM write gaps with a dead worker.
+        expr: >-
+          meshcore_link_queue_active_jobs > 0 and on()
+          (time() - meshcore_worker_heartbeat_timestamp_seconds{worker="link"} > 600)
         for: 3m
         labels:
           severity: critical
         annotations:
-          summary: A worker with queued work has a stale heartbeat
+          summary: Link worker has queued jobs but its own heartbeat is stale
           owner: meshcore-operations
           runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#activequeueworkerheartbeatstale
 
