@@ -412,6 +412,15 @@ Inspect waiting/active connection metrics, slow route latency and PostgreSQL
 activity. Shed optional analysis/load, identify the bounded slow query, and
 avoid increasing pool size until connection and memory headroom are measured.
 
+### DatabaseVacuumBacklog
+
+Inspect the `relname` table label, `n_dead_tup`, `n_live_tup`, and recent
+autovacuum activity in PostgreSQL. A table with more than 50,000 dead tuples
+is actionable even when its live-row estimate is small (as can happen for a
+TimescaleDB chunk after deletes); run the reviewed bounded vacuum procedure and
+confirm that both the alert and `/api/health` clear. Do not drop chunks or
+delete the database volume as a response.
+
 ### DatabaseWalRateHigh
 
 Identify current maintenance, backfill, compression or ingest activity. Pause

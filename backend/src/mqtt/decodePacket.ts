@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { MeshCoreDecoder } from '@michaelhart/meshcore-decoder';
+import { Ed25519SignatureVerifier, MeshCoreDecoder } from '@michaelhart/meshcore-decoder';
 
 type KeyStore = ReturnType<typeof MeshCoreDecoder.createKeyStore>;
 
@@ -36,6 +36,51 @@ export type CompatDecodedPacket = {
   /** SHA-256 of route/path-invariant wire content; safe to use as a packet identity. */
   canonicalPacketId?: string;
 };
+
+/**
+ * Advert public keys are identity claims, not trusted metadata. Verify the
+ * signature over the complete advert before allowing the caller to upsert the
+ * advertised node. Invalid adverts remain available as packet telemetry, but
+ * they cannot create or mutate node identity.
+ */
+export async function verifyAdvertSignature(
+  packet: CompatDecodedPacket['decoded'],
+): Promise<boolean> {
+  if (!packet || packet.payloadType !== 4 || packet.isValid !== true) return false;
+  const decoded = packet.payload.decoded;
+  if (!decoded || typeof decoded !== 'object') return false;
+
+  const advert = decoded as unknown as Record<string, unknown>;
+  const publicKey = advert['publicKey'];
+  const signature = advert['signature'];
+  const timestamp = advert['timestamp'];
+  const payload = packet.payload.raw;
+  if (typeof payload !== 'string') return false;
+  const appDataHex = payload.slice((32 + 4 + 64) * 2);
+
+  if (
+    advert['isValid'] !== true
+    || typeof publicKey !== 'string'
+    || !/^[0-9A-Fa-f]{64}$/.test(publicKey)
+    || typeof signature !== 'string'
+    || !/^[0-9A-Fa-f]{128}$/.test(signature)
+    || typeof timestamp !== 'number'
+    || !Number.isInteger(timestamp)
+    || (appDataHex.length % 2) !== 0
+    || !/^[0-9A-Fa-f]+$/.test(appDataHex)
+  ) return false;
+
+  try {
+    return await Ed25519SignatureVerifier.verifyAdvertisementSignature(
+      publicKey,
+      signature,
+      timestamp,
+      appDataHex,
+    );
+  } catch {
+    return false;
+  }
+}
 
 function hexToBytes(rawHex: string): Uint8Array | null {
   const hex = rawHex.trim();

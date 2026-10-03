@@ -716,6 +716,24 @@ async function getOperationalChecksCached(): Promise<{ rows: OperationalCheckRow
   return { rows: await operationalChecksInflight! };
 }
 
+/**
+ * Count tables whose dead tuples indicate a vacuum backlog. The absolute
+ * branch is intentional: TimescaleDB chunks can report very few live tuples
+ * after deletes, so the relative n_live_tup threshold alone misses them.
+ */
+export const DATABASE_MAINTENANCE_SQL = `SELECT
+         pg_database_size(current_database())::text AS database_size_bytes,
+         COALESCE(SUM(n_dead_tup), 0)::text AS dead_rows,
+         MIN(last_autovacuum)::text AS oldest_vacuum_at,
+         COUNT(*) FILTER (
+           WHERE (
+             n_live_tup > 10000
+             AND n_dead_tup > GREATEST(10000, n_live_tup * 0.1)
+           )
+           OR n_dead_tup > 50000
+         )::text AS tables_needing_vacuum
+       FROM pg_stat_user_tables`;
+
 export async function getWorkerHealthOverview() {
   // Compute system stats once — cpuUsagePct() diffs against lastCpuSample,
   // so calling it twice in one request gives a garbage near-zero second reading.
@@ -762,17 +780,7 @@ export async function getWorkerHealthOverview() {
       dead_rows: string;
       oldest_vacuum_at: string | null;
       tables_needing_vacuum: string;
-    }>(
-      `SELECT
-         pg_database_size(current_database())::text AS database_size_bytes,
-         COALESCE(SUM(n_dead_tup), 0)::text AS dead_rows,
-         MIN(last_autovacuum)::text AS oldest_vacuum_at,
-         COUNT(*) FILTER (
-           WHERE n_live_tup > 10000
-             AND n_dead_tup > GREATEST(10000, n_live_tup * 0.1)
-         )::text AS tables_needing_vacuum
-       FROM pg_stat_user_tables`,
-    ),
+    }>(DATABASE_MAINTENANCE_SQL),
     query<{
       connection_count: string;
       max_connections: string;
@@ -874,13 +882,8 @@ export async function getWorkerHealthOverview() {
   }
   const maintenance = databaseMaintenance.rows[0];
   const tablesNeedingVacuum = Number(maintenance?.tables_needing_vacuum ?? 0);
-  if (tablesNeedingVacuum > 0) {
-    problems.push({
-      code: 'database_vacuum_backlog',
-      severity: tablesNeedingVacuum >= 3 ? 'critical' : 'warning',
-      message: `${tablesNeedingVacuum} database table(s) exceed the dead-row vacuum threshold`,
-    });
-  }
+  const vacuumProblem = databaseVacuumBacklogProblem(tablesNeedingVacuum);
+  if (vacuumProblem) problems.push(vacuumProblem);
   const privacyRematRow = privacyRemat.rows[0];
   const privacyRematProblem = privacyRematerializationBacklogProblem({
     pending: Number(privacyRematRow?.pending ?? 0),
@@ -951,6 +954,15 @@ export type HealthProblem = {
   severity: 'warning' | 'critical';
   message: string;
 };
+
+export function databaseVacuumBacklogProblem(tablesNeedingVacuum: number): HealthProblem | null {
+  if (!Number.isFinite(tablesNeedingVacuum) || tablesNeedingVacuum <= 0) return null;
+  return {
+    code: 'database_vacuum_backlog',
+    severity: tablesNeedingVacuum >= 3 ? 'critical' : 'warning',
+    message: `${Math.floor(tablesNeedingVacuum)} database table(s) exceed the dead-row vacuum threshold`,
+  };
+}
 
 export function privacyRematerializationBacklogProblem(state: {
   pending: number;
