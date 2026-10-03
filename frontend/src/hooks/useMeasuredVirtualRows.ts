@@ -43,6 +43,7 @@ export function useMeasuredVirtualRows(
   const observer = useRef<ResizeObserver | null>(null);
   const width = useRef(0);
   const scroll = useRef(0);
+  const mode = useRef<boolean | undefined>(undefined);
   const [revision, setRevision] = useState(0);
   const [viewport, setViewport] = useState({ scrollTop: 0, height: 0 });
   const offsets = useMemo(() => rowOffsets(keys, heights.current), [keys, revision]);
@@ -51,11 +52,23 @@ export function useMeasuredVirtualRows(
   const updateViewport = useCallback(() => {
     const container = containerRef.current;
     if (!container) return;
-    const { scrollTop, height } = readViewport(container);
-    scroll.current = scrollTop;
-    setViewport((current) => current.scrollTop === scrollTop && current.height === height
+    const { internal, scrollTop, height } = readViewport(container);
+    const switched = mode.current !== undefined && mode.current !== internal;
+    mode.current = internal;
+    // A scroll-mode flip (internal container <-> document scrolling) resets the
+    // raw reading before React commits its new row range. Under React 19.3 the
+    // window scroll listener can fire before that commit, so the anchor effect
+    // would see 0 and drop the position. Transfer the last known content offset
+    // so the same packet stays visible across the flip.
+    if (switched && scroll.current > 1 && scrollTop < 1) {
+      writeScroll(container, scroll.current);
+      scroll.current = readViewport(container).scrollTop;
+    } else {
+      scroll.current = scrollTop;
+    }
+    setViewport((current) => current.scrollTop === scroll.current && current.height === height
       ? current
-      : { scrollTop, height });
+      : { scrollTop: scroll.current, height });
   }, [containerRef]);
 
   const measure = useCallback(() => {
