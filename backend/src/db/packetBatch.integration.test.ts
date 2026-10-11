@@ -28,12 +28,15 @@ import { packetAlreadyPersisted } from '../mqtt/observationIdentity.js';
 const { Pool } = pg;
 const databaseUrl = process.env['TEST_INGEST_DATABASE_URL'];
 
-function testTransaction(pool: pg.Pool) {
+function testTransaction(pool: pg.Pool, observeQuery?: (text: string) => void) {
   return async <T>(work: (query: QueryFn) => Promise<T>): Promise<T> => {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      const result = await work((sql, params) => client.query(sql, params));
+      const result = await work((sql, params) => {
+        observeQuery?.(sql);
+        return client.query(sql, params);
+      });
       await client.query('COMMIT');
       return result;
     } catch (error) {
@@ -709,9 +712,10 @@ test('packet batch atomically coalesces observer, sighting, and stats writes', {
       // batch statement (same convention as packetBatch.test.ts).
       return pool.query(text, params);
     }
-    if (!text.includes('pg_try_advisory_xact_lock')) statementCount += 1;
     return pool.query(text, params);
-  }, testTransaction(pool));
+  }, testTransaction(pool, (text) => {
+    if (text.includes('WITH current_visibility AS MATERIALIZED')) statementCount += 1;
+  }));
 
   const makePacket = (index: number, hopCount: number): PacketBatchInput => ({
     time: new Date(now + index * 1_000),
