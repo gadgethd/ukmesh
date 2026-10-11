@@ -57,7 +57,8 @@ docker compose run --rm --no-deps backend node dist/ram/drain.js
 
 The command starts one writer, waits for the stream to become empty after the
 120-second committed-entry reader overlap, joins the writer, confirms an empty
-PEL, and reconciles the byte counter to zero. The default deadline is ten
+PEL and quarantine, and reconciles the byte counter to zero. Review any
+quarantined raw evidence before retrying the drain. The default deadline is ten
 minutes; set `MQTT_RAM_DRAIN_DEADLINE_MS` between 130000 and 3600000 for a
 larger backlog. Exit code 0 and `RAM_DRAIN_COMPLETE` are required before
 changing mode. On timeout, PostgreSQL failure or a nonempty PEL, it exits

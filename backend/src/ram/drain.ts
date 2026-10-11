@@ -7,7 +7,7 @@ import { Redis } from 'ioredis';
 import { query, closeDb, withTransaction } from '../db/index.js';
 import { configurePacketBatch } from '../db/packetBatch.js';
 import { getRedisConnectionOptions, getRedisUrl } from '../platform/config/redis.js';
-import { getRamStreamKey } from './protocol.js';
+import { getRamQuarantineKey, getRamStreamKey } from './protocol.js';
 import { closeRamStore, reconcileRamQueueBytes } from './liveStore.js';
 import { startRamWriter, closeRamWriter } from './writerRuntime.js';
 
@@ -40,6 +40,10 @@ async function main(): Promise<void> {
         }
         if (await reconcileRamQueueBytes() !== 0) {
           throw new Error('RAM_DRAIN_INCOMPLETE: byte counter is not zero');
+        }
+        const quarantined = await redis.xlen(getRamQuarantineKey());
+        if (quarantined > 0) {
+          throw new Error(`RAM_DRAIN_INCOMPLETE: ${quarantined} quarantined entries require review`);
         }
         console.log('RAM_DRAIN_COMPLETE: stream empty, writer PEL empty, retention swept');
         return;

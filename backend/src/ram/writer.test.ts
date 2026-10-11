@@ -258,7 +258,7 @@ test('F11 a permanent SQL poison row is quarantined while a valid neighbor commi
   const badId = fake.seedEntry(bad);
   const goodId = fake.seedEntry(good);
   const poison = Object.assign(new Error('invalid packet row'), { code: '23514' });
-  const { writer } = makeWriter(fake, () => 1_700_000_100_000, async (entries) => {
+  const { writer, healthyCount, failedCount } = makeWriter(fake, () => 1_700_000_100_000, async (entries) => {
     const rows = entries as PersistEntry[];
     if (rows.length > 1 || rows[0]?.observationId === bad.observationId) throw poison;
   }, { batchSize: 2 });
@@ -270,6 +270,8 @@ test('F11 a permanent SQL poison row is quarantined while a valid neighbor commi
   assert.equal(fake.deleted.includes(badId), true);
   assert.equal(fake.deleted.includes(goodId), false, 'committed overlap remains readable');
   assert.equal(fake.pending.size, 0);
+  assert.equal(healthyCount(), 0, 'quarantining a poison observation cannot clear writer failure');
+  assert.equal(failedCount(), 1);
 });
 
 type PersistCall = { count: number; idempotent: boolean };
@@ -282,6 +284,7 @@ function makeWriter(
 ) {
   const calls: PersistCall[] = [];
   let healthy = 0;
+  let failed = 0;
   const writer = createRamWriter({
     redis: fake as unknown as RamWriterRedis,
     persist: async (entries, idempotent) => {
@@ -300,9 +303,12 @@ function makeWriter(
     markHealthy: () => {
       healthy += 1;
     },
+    markFailed: () => {
+      failed += 1;
+    },
     log: () => undefined,
   });
-  return { writer, calls, healthyCount: () => healthy };
+  return { writer, calls, healthyCount: () => healthy, failedCount: () => failed };
 }
 
 test('flushDecision: none / size / age', () => {

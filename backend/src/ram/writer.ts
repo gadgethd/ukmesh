@@ -432,6 +432,7 @@ export function createRamWriter(deps: RamWriterDeps): RamWriter {
         // each distinct observation independently so valid work behind it
         // can commit. Quarantine is durable before any poison row is acked.
         let unresolved = false;
+        let quarantined = false;
         let accepted = 0;
         for (const item of persistBatch) {
           const copies = batch.filter((candidate) => candidate.entry.observationId === item.entry.observationId);
@@ -455,14 +456,16 @@ export function createRamWriter(deps: RamWriterDeps): RamWriter {
             for (const copy of copies) {
               if (!await quarantineMalformed(copy.id, copy.raw, 'sql-poison', copy.entry.deliveryKey)) {
                 unresolved = true;
+              } else {
+                quarantined = true;
               }
             }
           }
         }
         for (const id of ids) accIds.delete(id);
         ramCommitBatchSize.observe(accepted);
-        ramCommitTotal.inc({ outcome: unresolved ? 'failure' : 'success' });
-        if (unresolved) deps.markFailed?.(error);
+        ramCommitTotal.inc({ outcome: unresolved || quarantined ? 'failure' : 'success' });
+        if (unresolved || quarantined) deps.markFailed?.(error);
         else deps.markHealthy();
         return;
       }
