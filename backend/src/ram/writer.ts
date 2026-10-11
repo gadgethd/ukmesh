@@ -19,6 +19,7 @@
  * backoff; a crashed writer's in-flight entries are reclaimed from the PEL
  * (own '0' reads + XAUTOCLAIM).
  */
+import { createHash } from 'node:crypto';
 import {
   isRetryableDatabaseError,
   retryDelay,
@@ -29,6 +30,7 @@ import {
   decodeRamStreamValue,
   encodeCommitMarker,
   entryFieldName,
+  getRamQuarantineKey,
   getRamQueueBytesKey,
   RAM_ENTRY_OVERHEAD_BYTES,
   type RamPendingEntry,
@@ -38,6 +40,7 @@ import {
   ramCommitDuration,
   ramCommitTotal,
   ramBatchDedupeTotal,
+  ramQuarantinedTotal,
   ramReclaimedTotal,
   ramRetryTotal,
   ramSweepDeletedTotal,
@@ -60,6 +63,8 @@ export interface RamWriterRedis {
   xack(key: string, group: string, ...ids: string[]): Promise<number>;
   xdel(key: string, ...ids: string[]): Promise<number>;
   xadd(key: string, id: string, field: string, value: string): Promise<string>;
+  /** XADD with an approximate MAXLEN cap; used for the bounded quarantine stream. */
+  xaddWithLimit(key: string, maxLen: number, field: string, value: string): Promise<string>;
   xautoclaim(
     key: string,
     group: string,
@@ -123,6 +128,9 @@ const MIN_RETENTION_MS = 5_000;
 const SWEEP_INTERVAL_MS = 10_000;
 const SWEEP_SCAN_LIMIT = 2_000;
 const PEL_LIST_LIMIT = 5_000;
+/** Bounded recovery evidence for undecodable entries. */
+const QUARANTINE_MAX_LEN = 500;
+const QUARANTINE_VALUE_CAP = 65_536;
 const FAILURE_BACKOFF_START_MS = 5_000;
 const FAILURE_BACKOFF_MAX_MS = 30_000;
 
@@ -204,6 +212,35 @@ export function createRamWriter(deps: RamWriterDeps): RamWriter {
     return Buffer.byteLength(value) + RAM_ENTRY_OVERHEAD_BYTES;
   }
 
+  /**
+   * Undecodable entries are acknowledged so they can never block the stream,
+   * but not discarded silently: a bounded quarantine stream keeps the raw
+   * value (size-capped) plus its digest for recovery, while the structured
+   * log line carries only the id, byte length and digest — never content.
+   */
+  async function quarantineMalformed(id: string, value: string): Promise<void> {
+    ramQuarantinedTotal.inc();
+    const bytes = Buffer.byteLength(value);
+    const digest = createHash('sha256').update(value).digest('hex');
+    deps.log(`[ram] quarantined undecodable stream entry id=${id} bytes=${bytes} sha256=${digest}`);
+    try {
+      await deps.redis.xaddWithLimit(
+        getRamQuarantineKey(),
+        QUARANTINE_MAX_LEN,
+        'q',
+        JSON.stringify({
+          src: id,
+          at: deps.now(),
+          sha256: digest,
+          bytes,
+          raw: value.length <= QUARANTINE_VALUE_CAP ? value : '',
+        }),
+      );
+    } catch (error) {
+      deps.log('[ram] quarantine write failed', error);
+    }
+  }
+
   function appendEntries(entries: StreamEntry[]): number {
     let added = 0;
     for (const item of entries) {
@@ -233,7 +270,9 @@ export function createRamWriter(deps: RamWriterDeps): RamWriter {
       for (const [id, fields] of items) {
         const decoded = decodeRamStreamValue(fields[1]);
         if (!decoded) {
-          // Unparseable value: acknowledge + delete so it can never block the stream.
+          // Unparseable value: preserve bounded recovery evidence, then
+          // acknowledge + delete so it can never block the stream.
+          await quarantineMalformed(id, fields[1]);
           await deps.redis.xack(deps.streamKey(), deps.group(), id).catch(() => 0);
           await deps.redis.xdel(deps.streamKey(), id).catch(() => 0);
           continue;

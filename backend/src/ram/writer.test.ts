@@ -99,6 +99,12 @@ class FakeRedis {
     return ids.length;
   }
 
+  quarantined: string[] = [];
+  async xaddWithLimit(_key: string, _maxLen: number, _field: string, value: string): Promise<string> {
+    this.quarantined.push(value);
+    return 'q-1';
+  }
+
   async xautoclaim(): Promise<[string, Array<[string, string[]]>, string[]]> {
     this.claimCalls += 1;
     return ['0-0', [], []];
@@ -384,7 +390,7 @@ test('markers are consumed and acknowledged without persistence', async () => {
   assert.equal(fake.acked.includes(markerId), true);
 });
 
-test('unparseable stream values are acknowledged and deleted', async () => {
+test('unparseable stream values are quarantined, acknowledged and deleted', async () => {
   const fake = new FakeRedis();
   const now = () => 1_700_000_600_000;
   const id = `${1_700_000_600_000}-7`;
@@ -397,6 +403,13 @@ test('unparseable stream values are acknowledged and deleted', async () => {
   assert.equal(calls.length, 0);
   assert.equal(fake.acked.includes(id), true);
   assert.equal(fake.deleted.includes(id), true);
+  assert.equal(fake.quarantined.length, 1, 'recovery evidence is preserved');
+  const record = JSON.parse(fake.quarantined[0] ?? '{}') as Record<string, unknown>;
+  assert.equal(record['src'], id);
+  assert.equal(record['bytes'], Buffer.byteLength('not-json'));
+  assert.equal(typeof record['sha256'], 'string');
+  assert.equal((record['sha256'] as string).length, 64);
+  assert.equal(record['raw'], 'not-json');
 });
 
 test('drain flushes everything that remains', async () => {

@@ -584,6 +584,12 @@ export const ramBatchDedupeTotal = new Counter({
   registers: [metricsRegistry],
 });
 
+export const ramQuarantinedTotal = new Counter({
+  name: 'meshcore_ram_ingest_quarantined_total',
+  help: 'Undecodable stream entries moved to the bounded quarantine stream.',
+  registers: [metricsRegistry],
+});
+
 export const ramSweepDeletedTotal = new Counter({
   name: 'meshcore_ram_ingest_sweep_deleted_total',
   help: 'Committed, acknowledged stream entries reclaimed by the retention sweep.',

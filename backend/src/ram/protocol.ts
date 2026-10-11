@@ -47,6 +47,11 @@ export function getRamQueueBytesKey(): string {
   return `${getRamStreamKey()}:bytes`;
 }
 
+/** Bounded dead-letter stream for undecodable entries (recovery evidence). */
+export function getRamQuarantineKey(): string {
+  return `${getRamStreamKey()}:quarantine`;
+}
+
 export function getRamConsumerName(): string {
   const value = process.env['MQTT_RAM_CONSUMER_NAME']?.trim();
   return value && value.length > 0 ? value : 'backend';
