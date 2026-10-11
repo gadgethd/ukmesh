@@ -16,6 +16,9 @@ import { parseMqttTopic } from './topic.js';
 import { createDurableMqttHandleMessage } from './durableHandler.js';
 import { waitForInFlightPacket } from './dedupeRegistry.js';
 import { persistStatusTelemetrySample } from './statusTelemetry.js';
+import { observationIdentityKey, packetAlreadyPersisted, type ObservationIdentity } from './observationIdentity.js';
+import { assertSupportedIngestConnections } from './ingestConfig.js';
+import { waitForShutdownStep } from './shutdownDeadline.js';
 import {
   boundedNetworkMetricLabel,
   mqttIngestAckDuration,
@@ -217,9 +220,8 @@ setInterval(() => {
 }, 60_000).unref();
 
 /**
- * Per-observer packet dedup — prevents relay copies of the same packet from being
- * ingested multiple times when they arrive at the same observer with the same hop count.
- * Keyed by "packetHash:observerKey:hopCount". Entries expire after 120 seconds.
+ * Process-local observation dedup. The same identity is used for claim arbitration,
+ * batch collapse and the persisted DUP probe. Entries expire after 120 seconds.
  */
 const seenPackets = new Map<string, number>();
 const SEEN_PACKETS_MAX = 50_000;
@@ -232,20 +234,16 @@ setInterval(() => {
   }
 }, 60_000).unref();
 
-function packetDedupeKey(packetHash: string, observerKey: string, hopCount: number | undefined): string {
-  return `${packetHash}:${observerKey}:${hopCount ?? '?'}`;
+function isDuplicatePacket(key: string): boolean {
+  return seenPackets.has(key);
 }
 
-function isDuplicatePacket(packetHash: string, observerKey: string, hopCount: number | undefined): boolean {
-  return seenPackets.has(packetDedupeKey(packetHash, observerKey, hopCount));
-}
-
-function rememberPacket(packetHash: string, observerKey: string, hopCount: number | undefined): void {
+function rememberPacket(key: string): void {
   if (seenPackets.size >= SEEN_PACKETS_MAX) {
     const oldest = seenPackets.keys().next().value;
     if (oldest !== undefined) seenPackets.delete(oldest);
   }
-  seenPackets.set(packetDedupeKey(packetHash, observerKey, hopCount), Date.now());
+  seenPackets.set(key, Date.now());
 }
 
 /**
@@ -261,32 +259,6 @@ const inFlightPackets = new Map<string, Promise<void>>();
 // (safe: everything here is explicitly best-effort) and counted.
 const POST_PERSIST_MAX_INFLIGHT = 64;
 let postPersistInFlight = 0;
-
-/**
- * Database-level duplicate confirmation for QoS 1 redeliveries — the in-memory
- * filters do not survive a restart. Bounded to the retained packet window so
- * the probe stays on the packet_hash index.
- */
-async function packetAlreadyPersisted(
-  packetHash: string,
-  rxNodeId: string,
-  topic: string,
-  network: string,
-): Promise<boolean> {
-  const result = await query<{ present: boolean }>(
-    `SELECT EXISTS (
-       SELECT 1
-         FROM packets
-        WHERE packet_hash = $1
-          AND rx_node_id = $2
-          AND topic = $3
-          AND network = $4
-          AND time > NOW() - INTERVAL '30 days'
-     ) AS present`,
-    [packetHash, rxNodeId, topic, network],
-  );
-  return Boolean(result.rows[0]?.present);
-}
 
 /**
  * Channel registry — built once at startup.
@@ -309,12 +281,9 @@ const MQTT_CLIENT_ID = String(
   process.env['MQTT_CLIENT_ID'] ?? 'meshcore-analytics-ingest',
 ).trim() || 'meshcore-analytics-ingest';
 /**
- * Number of ingest connections to the broker. Each connection is a strictly
- * serial durable pipeline (mqtt.js dispatches the next packet only after the
- * previous one is acknowledged), so this is the supported way to run more
- * than one persistence flow; messages are distributed between the connections
- * with a shared subscription. 1 preserves the historical single-connection
- * behaviour exactly.
+ * The default and only qualified topology is one durable connection. The
+ * configured value is checked before connecting; shared sessions need a
+ * successful restart and resize qualification before they can be enabled.
  */
 const MQTT_INGEST_CONNECTIONS = boundedEnvInteger('MQTT_INGEST_CONNECTIONS', 1, 1, 16);
 const MQTT_INGEST_SHARE_GROUP = String(
@@ -379,6 +348,7 @@ function reportMqttIngestFailure(client: MqttClient, error: Error): void {
 
 export async function startMqttClient(): Promise<void> {
   if (mqttStopping) return;
+  assertSupportedIngestConnections(MQTT_INGEST_CONNECTIONS);
   // Must complete before connecting to MQTT — the broker replays buffered
   // messages immediately on connect, and knownNodeIds must be populated first.
   await initSpamDetector();
@@ -454,14 +424,15 @@ export async function startMqttClient(): Promise<void> {
 
 export async function stopMqttClient(timeoutMs = 20_000): Promise<void> {
   mqttStopping = true;
+  const deadline = Date.now() + timeoutMs;
   const clients = mqttClients.splice(0, mqttClients.length);
   for (const client of clients) {
     client.removeAllListeners('reconnect');
-    await client.endAsync(false).catch((error: unknown) => {
+    await waitForShutdownStep(client.endAsync(false), deadline, 'disconnect').catch((error: unknown) => {
+      if (error instanceof Error && error.message.startsWith('MQTT_DRAIN_TIMEOUT:')) throw error;
       console.error('[mqtt] disconnect failed:', error instanceof Error ? error.message : error);
     });
   }
-  const deadline = Date.now() + timeoutMs;
   while (activeMqttIngests > 0 && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
@@ -474,7 +445,7 @@ export async function stopMqttClient(timeoutMs = 20_000): Promise<void> {
     clearTimeout(nodeFlushTimer);
     flushPendingNodeEmits();
   }
-  await closePacketBatch();
+  await waitForShutdownStep(closePacketBatch(), deadline, 'batch');
   setMqttRuntimeStatus('disconnected');
 }
 
@@ -790,9 +761,20 @@ async function handleMessage(topic: string, rawPayload: Buffer, redelivered = fa
   // comes from validated route/path-invariant wire content.
   const finalHash = canonicalPacketId ?? upstreamPacketHash(json['hash']) ?? crypto.randomUUID();
 
-  const dedupeKey = packetDedupeKey(finalHash, observerKey, decodedHops);
+  const observationIdentity: ObservationIdentity = {
+    packetHash: finalHash,
+    rxNodeId: observerKey,
+    topic,
+    network,
+    hopCount: decodedHops ?? null,
+    routeType: decodedRouteType ?? null,
+    pathHashes: path ?? null,
+    pathHashSizeBytes: decodedPathHashSizeBytes ?? null,
+    direction: direction ?? null,
+  };
+  const dedupeKey = observationIdentityKey(observationIdentity);
 
-  if (isDuplicatePacket(finalHash, observerKey, decodedHops)) {
+  if (isDuplicatePacket(dedupeKey)) {
     // This marker is written only after the matching packet is committed.
     // A broker redelivery after a lost PUBACK confirms the durable outcome.
     markMqttPersistenceHealthy();
@@ -822,8 +804,8 @@ async function handleMessage(topic: string, rawPayload: Buffer, redelivered = fa
 
   // Decoded payloads omit mctomqtt's envelope direction. Keep that metadata in
   // the stored JSON so RX/TX counts do not classify every decoded packet as RX.
-  const packetPayload = innerPayload && direction
-    ? { ...innerPayload, direction }
+  const packetPayload = direction
+    ? { ...(innerPayload ?? json), direction }
     : (innerPayload ?? json);
 
   const livePacket: LivePacket = {
@@ -869,7 +851,7 @@ async function handleMessage(topic: string, rawPayload: Buffer, redelivered = fa
       transportCodes: decodedTransportCodes,
       regionScope:    decodedRegionScope,
     });
-    rememberPacket(finalHash, observerKey, decodedHops);
+    rememberPacket(dedupeKey);
     markMqttPersistenceHealthy();
     emitNode(observerKey, { network, observerId: observerKey });
     livePacket.isPrivate = visibility.isPrivate;
@@ -892,7 +874,10 @@ async function handleMessage(topic: string, rawPayload: Buffer, redelivered = fa
     // crash must not be persisted or counted a second time. Confirm against
     // the retained window before writing (inside the claim so the registered
     // claim promise covers this path too).
-    if (redelivered && await packetAlreadyPersisted(finalHash, observerKey, topic, network)) {
+    if (redelivered && await packetAlreadyPersisted(
+      (sql, params) => query<{ present: boolean }>(sql, params),
+      observationIdentity,
+    )) {
       markMqttPersistenceHealthy();
       mqttIngestOutcomesTotal.inc({ outcome: 'duplicate_packet' });
       return;

@@ -13,6 +13,7 @@ import {
   PrivatePrefixCache,
   type PrivatePrefixRow,
 } from '../privacy/privatePrefixCache.js';
+import { observationIdentityKey } from '../mqtt/observationIdentity.js';
 
 const MAX_BATCH_SIZE = 50;
 /**
@@ -192,7 +193,26 @@ function collapseDuplicatePackets(batch: PendingPacket[]): PendingPacket[] {
   const groups = new Map<string, PendingPacket[]>();
   const kept: PendingPacket[] = [];
   for (const item of batch) {
-    const key = `${item.packet.packetHash}:${item.packet.rxNodeId ?? ''}:${item.packet.hopCount ?? '?'}`;
+    let direction: 'rx' | 'tx' | null = null;
+    if (item.packet.payloadJson) {
+      try {
+        const payload = JSON.parse(item.packet.payloadJson) as Record<string, unknown>;
+        if (payload['direction'] === 'rx' || payload['direction'] === 'tx') direction = payload['direction'];
+      } catch {
+        // Invalid JSON belongs to SQL validation, not batch arbitration.
+      }
+    }
+    const key = observationIdentityKey({
+      packetHash: item.packet.packetHash,
+      rxNodeId: item.packet.rxNodeId,
+      topic: item.packet.topic,
+      network: item.packet.network,
+      hopCount: item.packet.hopCount,
+      routeType: item.packet.routeType,
+      pathHashes: item.packet.pathHashes,
+      pathHashSizeBytes: item.packet.pathHashSizeBytes,
+      direction,
+    });
     const group = groups.get(key);
     if (group) group.push(item);
     else {
@@ -297,6 +317,11 @@ async function writeBatch(batch: PendingPacket[], idempotent: boolean): Promise<
              AND existing.rx_node_id IS NOT DISTINCT FROM c.rx_node_id
              AND existing.topic = c.topic
              AND existing.network = c.network
+             AND existing.hop_count IS NOT DISTINCT FROM c.hop_count
+             AND existing.route_type IS NOT DISTINCT FROM c.route_type
+             AND existing.path_hashes IS NOT DISTINCT FROM c.path_hashes
+             AND existing.path_hash_size_bytes IS NOT DISTINCT FROM c.path_hash_size_bytes
+             AND (existing.payload->>'direction') IS NOT DISTINCT FROM (c.payload::jsonb->>'direction')
          )
        ),`
     : '';

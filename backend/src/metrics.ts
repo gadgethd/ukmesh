@@ -503,9 +503,11 @@ export function updateDbPoolMetrics(
 export const postPersistInFlightGauge = new Gauge({
   name: 'meshcore_mqtt_post_persist_inflight',
   help: 'Best-effort post-persist follow-ups currently in flight (bounded).',
+  registers: [metricsRegistry],
 });
 
 export const postPersistDroppedTotal = new Counter({
   name: 'meshcore_mqtt_post_persist_dropped_total',
   help: 'Best-effort post-persist follow-ups dropped because the in-flight bound was reached.',
+  registers: [metricsRegistry],
 });
