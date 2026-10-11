@@ -360,6 +360,8 @@ test('F06 real PG snapshot and Redis expiry preserve the captured handoff', {
   assert.deepEqual(merged.map((row) => row.packet_hash), [input.packetHash]);
   const later = await readRecentWithPending(async () => (await pool.query(`
     SELECT packet_hash, time, network, ARRAY[observation_id::text] AS _observation_ids,
+           (SELECT generation::text FROM public_visibility_state WHERE singleton) AS _policy_generation,
+           0 AS _representative_rank,
            1::int AS rx_count, 0::int AS tx_count FROM packets`)).rows,
   { limit: 10, network: 'ukmesh', resolveAliases: async () => new Map() });
   assert.deepEqual(new Set(later.map((row) => row.packet_hash)), new Set([input.packetHash, '61'.repeat(32)]));
@@ -726,12 +728,21 @@ test('privacy rename commits and rematerializes a compressed chunk above the old
 test('packet batch atomically coalesces observer, sighting, and stats writes', {
   skip: databaseUrl ? false : 'TEST_INGEST_DATABASE_URL is not configured',
 }, async (t) => {
+  const admin = new Pool({ connectionString: databaseUrl, max: 1 });
+  const name = `meshcore_coalesce_${process.pid}_${Date.now()}`;
+  await admin.query(`CREATE DATABASE "${name}"`);
+  const ownedUrl = new URL(databaseUrl!);
+  ownedUrl.pathname = `/${name}`;
   const pool = new Pool({
-    connectionString: databaseUrl,
+    connectionString: ownedUrl.toString(),
     application_name: 'meshcore-ingest-integration-test',
     max: 2,
   });
-  t.after(() => pool.end());
+  t.after(async () => {
+    await pool.end();
+    await admin.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
+    await admin.end();
+  });
 
   const baseSql = fs.readFileSync(new URL('./schema/base.sql', import.meta.url), 'utf8');
   await pool.query(baseSql);

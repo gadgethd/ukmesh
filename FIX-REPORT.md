@@ -2,6 +2,70 @@
 
 Specification: `/home/ben/ukmesh-fix-context-20261011/SOL-REVIEW.md`. This is a working record; **the full repair objective is not yet achieved**. Status below reflects inspected code and completed verification only.
 
+## Current F01/F05/F12/F13/F16 working-tree wave
+
+The RAM documentation checkpoint `c98c2f53e2921bed017fa1d0ecc2016f20a5c374`
+is pushed; its workflows
+[38177795874](https://github.com/gadgethd/ukmesh/actions/runs/38177795874) and
+[38177798421](https://github.com/gadgethd/ukmesh/actions/runs/38177798421)
+both concluded success. The runtime changes described next are newer and
+await their own commit/CI; earlier historical evidence below is unchanged.
+
+F01 SQL aggregates now carry the snapshot generation and fail closed when
+current authority differs. WS initial caches recheck generation before delivery.
+MQTT and WS live events use bounded batches with one current authority query,
+including active-payload byte reservations and unavailable/overflow metrics.
+The actual ready WebSocket test reproduced the old privacy bypass, then passed
+observer/path revocation, authority failure, cached reconnect refusal and
+**800/800** allowed deliveries. This proves that isolated ready-reader gate,
+not whole-stack MQTT performance.
+
+F12/F13 real SQL/RAM comparisons cover family and unrelated network scopes,
+alias/canonical/other observers, full/slim fields, RX/TX and repeated sightings,
+representative replacement, five-minute filtering, message rows and page limits.
+SQL includes aggregates for captured overlap hashes so a pending representative
+moving onto page one retains older committed observations. Dates retain
+milliseconds; ties use observation IDs and packet hashes. The fixture exposed
+and repaired F05's stable-ID/natural-dedupe interaction: two distinct IDs with
+identical fields remain separate observations. Legacy entries without IDs
+retain the natural-identity fallback. A genuine older Repeatable Read snapshot
+is rejected after the authority generation changes.
+
+CoreScope's uncommitted F01/F16 implementation requires a dedicated SQLite
+public projection and private ingestor provenance journal. On a policy change
+it fences readiness, removes revoked journal records and reconstructs copied
+and derived measurements. The server stays read-only and checks authority
+before and after buffered API reads and before bounded WS fanout; cache/index
+generations are replaced. Old untracked data is preserved and fenced instead
+of silently purged. Duplicate-source enrichment preserves participant evidence.
+Its actual PostgreSQL-authority/SQLite regression covers observer, source and
+all one/two/three-byte prefix revocation across the UK family while preserving
+an unrelated network; the final full-suite result is pending.
+
+F16 adds `/internal/ingest/public/{policy,entries}`, disabled unless a bearer
+secret of at least 32 characters is configured. Every captured read filters
+against current authority; private entries advance only the opaque cursor.
+CoreScope public mode accepts this HTTP source and rejects raw Redis URL/DSN
+configuration, requiring the paired PG ledger. Tests cover credentials, limits,
+cursor ordering, unavailable authority and projection crash/replay barriers.
+Operational principal isolation, loaded headroom, final drain/rollback and
+whole-stack performance remain required.
+
+Owned evidence is under
+`verification-sol-20261011/evidence/`: `ukmesh-ws-authority-baseline-ready.log`
+and `ukmesh-ws-authority-after.log`, `ukmesh-read-paging-before.log` /
+`ukmesh-read-paging-stable-id.log`, `ukmesh-f13-ties-before.log`,
+`core-f01-copied-before.log`, `core-f01-untracked-node-before-valid.log`,
+`core-f01-enrichment-before.log`, and `core-public-paired-final2.log`.
+The final full backend run passes **476/476** in **202.440s**, including the
+alert receiver; typecheck passes. The complete integration command passes
+**7 PostgreSQL + 2 Redis + 1 WS tests**, zero skips, after giving the legacy
+empty-schema fixture its own database. Evidence is
+`ukmesh-public-final-full-tests.log` / `ukmesh-public-final-full-integration.log`.
+CoreScope's server suite passes in **103.965s**; its final ingestor gate is
+still running. The expanded image harness requires exactly ten passing tests.
+Production and the original bench services remain unchanged.
+
 ## Branches and gates
 
 **Successor progress, 2026-10-11.** The authoritative remote checkpoints were

@@ -40,6 +40,7 @@ export type MergeOptions = {
   resolveAliases?: (nodeIds: string[]) => Promise<Map<string, string>>;
   /** Restrict pending contributions to these packet types (e.g. [5] for message history). */
   packetTypes?: number[];
+  rowKind?: 'packets' | 'messages';
   /** Capture before starting the SQL read to survive overlap expiry. */
   pendingSnapshot?: PendingStreamEntry[];
 };
@@ -50,6 +51,7 @@ function upper(value: unknown): string | null {
 }
 
 function timeMs(value: unknown): number {
+  if (value instanceof Date) return value.getTime();
   const parsed = Date.parse(String(value ?? ''));
   return Number.isFinite(parsed) ? parsed : 0;
 }
@@ -97,19 +99,21 @@ function canonical(value: string | null, aliases: Map<string, string>): string |
   return value ? aliases.get(value) ?? value : null;
 }
 
-function representativeRank(item: EntryWithTx): number {
+function representativeRank(item: EntryWithTx, rowKind: 'packets' | 'messages'): number {
   const { entry } = item;
   const { payload } = entryPayload(entry);
+  if (rowKind === 'messages') return entry.input.srcNodeId !== null ? 1 : 0;
   return (payload && Object.hasOwn(payload, 'appData') ? 16 : 0)
-    + (upper(entry.input.srcNodeId) ? 8 : 0)
+    + (entry.input.srcNodeId !== null ? 8 : 0)
     + (entry.input.advertCount !== null && entry.input.advertCount !== undefined ? 4 : 0)
     + (entry.input.packetType === 4 ? 2 : 0);
 }
 
 /** Aggregate pending observations into a single row (mirrors the SQL observer aggregation). */
-function buildMergedRow(group: EntryWithTx[], includePayload: boolean, fields: 'full' | 'slim', aliases: Map<string, string>): RecentRow {
-  const newestFirst = [...group].sort((a, b) => representativeRank(b) - representativeRank(a)
-    || timeMs(b.entry.input.time) - timeMs(a.entry.input.time));
+function buildMergedRow(group: EntryWithTx[], includePayload: boolean, fields: 'full' | 'slim', aliases: Map<string, string>, rowKind: 'packets' | 'messages'): RecentRow {
+  const newestFirst = [...group].sort((a, b) => representativeRank(b, rowKind) - representativeRank(a, rowKind)
+    || timeMs(b.entry.input.time) - timeMs(a.entry.input.time)
+    || b.entry.observationId.localeCompare(a.entry.observationId));
   const representative = newestFirst[0]!;
   const observers = new Set<string>();
   const iatas = new Set<string>();
@@ -118,7 +122,7 @@ function buildMergedRow(group: EntryWithTx[], includePayload: boolean, fields: '
   for (const { entry, isTx } of group) {
     const rx = canonical(upper(entry.input.rxNodeId), aliases);
     if (rx) observers.add(rx);
-    if (entry.input.iata) iatas.add(entry.input.iata);
+    if (entry.input.iata?.trim()) iatas.add(entry.input.iata);
     if (isTx) txCount += 1;
     else rxCount += 1;
   }
@@ -137,21 +141,23 @@ function buildMergedRow(group: EntryWithTx[], includePayload: boolean, fields: '
     advert_count: input.advertCount,
     path_hashes: input.pathHashes,
     path_hash_size_bytes: input.pathHashSizeBytes,
-    ...(fields === 'full' ? {
+    ...(rowKind === 'messages' ? { topic: input.topic, iata: input.iata } : fields === 'full' ? {
       topic: input.topic, topic_prefix: input.topicPrefix, iata: input.iata,
       route_type: input.routeType, network: input.network,
       transport_codes: input.transportCodes, region_scope: input.regionScope,
     } : {}),
-    observer_node_ids: [...observers],
-    observer_iatas: [...iatas],
+    observer_node_ids: observers.size ? [...observers].sort() : null,
+    observer_iatas: iatas.size ? [...iatas].sort() : null,
     rx_count: rxCount,
     tx_count: txCount,
-    ...(includePayload ? { payload } : {}),
+    ...(includePayload || rowKind === 'messages' ? { payload } : {}),
+    _representative_rank: representativeRank(representative, rowKind),
+    _representative_id: representative.entry.observationId,
   };
 }
 
 /** Add genuinely new pending observations to an existing database row. */
-function augmentRow(row: RecentRow, group: EntryWithTx[], aliases: Map<string, string>): void {
+function augmentRow(row: RecentRow, group: EntryWithTx[], aliases: Map<string, string>, opts: MergeOptions): void {
   const committedIds = new Set<string>(
     Array.isArray(row['_observation_ids'])
       ? (row['_observation_ids'] as unknown[]).map(String)
@@ -171,15 +177,26 @@ function augmentRow(row: RecentRow, group: EntryWithTx[], aliases: Map<string, s
     committedIds.add(entry.observationId);
     const rx = canonical(upper(entry.input.rxNodeId), aliases);
     if (rx) existing.add(rx);
-    if (entry.input.iata) iatas.add(entry.input.iata);
+    if (entry.input.iata?.trim()) iatas.add(entry.input.iata);
     if (isTx) txAdd += 1;
     else rxAdd += 1;
   }
   if (rxAdd + txAdd > 0) {
-    row['observer_node_ids'] = [...existing];
-    row['observer_iatas'] = [...iatas];
+    row['observer_node_ids'] = existing.size ? [...existing].sort() : null;
+    row['observer_iatas'] = iatas.size ? [...iatas].sort() : null;
     row['rx_count'] = Number(row['rx_count'] ?? 0) + rxAdd;
     row['tx_count'] = Number(row['tx_count'] ?? 0) + txAdd;
+  }
+  const candidate = buildMergedRow(group, opts.includePayload === true, opts.fields ?? 'full', aliases, opts.rowKind ?? 'packets');
+  const rank = Number(candidate['_representative_rank']);
+  const oldRank = Number(row['_representative_rank']);
+  const candidateTime = timeMs(candidate['time']), rowTime = timeMs(row['time']);
+  if (rank > oldRank || (rank === oldRank && (candidateTime > rowTime
+    || (candidateTime === rowTime && String(candidate['_representative_id']) > String(row['_representative_id'] ?? ''))))) {
+    // Counts describe all observations; representative fields follow the same
+    // SQL preference across both sources, including retained overlap.
+    const { observer_node_ids: _nodes, observer_iatas: _iatas, rx_count: _rx, tx_count: _tx, ...fields } = candidate;
+    Object.assign(row, fields);
   }
 }
 
@@ -187,6 +204,9 @@ function stripInternalIds<T>(rows: T[]): T[] {
   for (const row of rows) {
     if (row && typeof row === 'object') delete (row as RecentRow)['_observation_ids'];
     if (row && typeof row === 'object') delete (row as RecentRow)['_policy_network'];
+    if (row && typeof row === 'object') delete (row as RecentRow)['_policy_generation'];
+    if (row && typeof row === 'object') delete (row as RecentRow)['_representative_rank'];
+    if (row && typeof row === 'object') delete (row as RecentRow)['_representative_id'];
   }
   return rows;
 }
@@ -199,12 +219,13 @@ function stripInternalIds<T>(rows: T[]): T[] {
  * Permission is checked after SQL, never frozen with the captured payload.
  */
 export async function readRecentWithPending<T>(
-  loadRows: () => Promise<T[]>,
+  loadRows: (overlapHashes: string[]) => Promise<T[]>,
   opts: MergeOptions,
 ): Promise<T[]> {
   const pendingSnapshot = getRamIngestMode() === 'ram'
     ? await readPendingEntries(opts.limit) : [];
-  return mergePendingPacketsIntoRecentRows(await loadRows(), { ...opts, pendingSnapshot });
+  const overlapHashes = [...new Set(pendingSnapshot.map(({ entry }) => entry.input.packetHash))];
+  return mergePendingPacketsIntoRecentRows(await loadRows(overlapHashes), { ...opts, pendingSnapshot });
 }
 
 export async function mergePendingPacketsIntoRecentRows<T>(
@@ -215,7 +236,8 @@ export async function mergePendingPacketsIntoRecentRows<T>(
   try {
     const policy = await loadCurrentPublicPrivacyPolicy();
     if (!policy) return [];
-    const base = (rows as unknown as RecentRow[]).filter((row) => policy.classify({
+    const base = (rows as unknown as RecentRow[]).filter((row) =>
+      Number(row['_policy_generation']) === policy.currentGeneration && policy.classify({
       network: String(row['network'] ?? row['_policy_network'] ?? opts.network ?? ''),
       rxNodeId: typeof row['rx_node_id'] === 'string' ? row['rx_node_id'] : null,
       srcNodeId: typeof row['src_node_id'] === 'string' ? row['src_node_id'] : null,
@@ -226,7 +248,7 @@ export async function mergePendingPacketsIntoRecentRows<T>(
     // distinct hashes. Sampling only the newest N observations would hide a
     // matching hash behind a large observer fanout or other packet types.
     const pending = opts.pendingSnapshot ?? await readPendingEntries(opts.limit);
-    if (pending.length === 0) return stripInternalIds(base as unknown as T[]);
+    if (pending.length === 0) return stripInternalIds(base.slice(0, opts.limit) as unknown as T[]);
     const cutoff = (opts.nowMs ?? Date.now()) - (opts.windowMs ?? (opts.packetTypes ? 86_400_000 : 300_000));
     const eligible = pending.filter(({ entry }) => {
       const input = entry.input;
@@ -243,7 +265,7 @@ export async function mergePendingPacketsIntoRecentRows<T>(
         pathHashSizeBytes: input.pathHashSizeBytes,
       }).visibilityOk;
     });
-    if (eligible.length === 0) return stripInternalIds(base as unknown as T[]);
+    if (eligible.length === 0) return stripInternalIds(base.slice(0, opts.limit) as unknown as T[]);
     const nodeIds = new Set<string>();
     if (opts.observer) nodeIds.add(opts.observer.toUpperCase());
     for (const { entry } of eligible) {
@@ -280,15 +302,14 @@ export async function mergePendingPacketsIntoRecentRows<T>(
       if (dbRow) {
         // The database already carries a row (possibly with its own observer
         // set): augment it with genuinely new pending observations only.
-        augmentRow(dbRow, group, aliases);
+        augmentRow(dbRow, group, aliases, opts);
         continue;
       }
-      merged.push(buildMergedRow(group, opts.includePayload === true, opts.fields ?? 'full', aliases));
+      merged.push(buildMergedRow(group, opts.includePayload === true, opts.fields ?? 'full', aliases, opts.rowKind ?? 'packets'));
     }
-    if (merged.length === 0) return stripInternalIds(base as unknown as T[]);
-
     const combined = [...base, ...merged];
-    combined.sort((left, right) => timeMs(right['time']) - timeMs(left['time']));
+    combined.sort((left, right) => timeMs(right['time']) - timeMs(left['time'])
+      || String(left['packet_hash']).localeCompare(String(right['packet_hash'])));
     return stripInternalIds(combined.slice(0, opts.limit) as unknown as T[]);
   } catch (error) {
     console.error('[ram] live merge failed (returning database rows only)', (error as Error).message);

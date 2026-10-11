@@ -1,5 +1,33 @@
 # UKMesh ingestion repair plan — 2026-10-11
 
+## Current authorization/read wave
+
+The working tree adds F01 generation fences to SQL aggregates, WS initial
+cache delivery and bounded live batches. F12/F13 parity now includes the
+requested SQL page plus aggregates for captured overlap hashes, final paging
+after merge, canonical aliases, stable-ID counts, representative ranking and
+millisecond/tie ordering. The real fixture also found an F05 interaction:
+natural-identity replay suppression must apply only to entries without a
+stable observation ID; distinct stable IDs are arbitrated by the ledger.
+
+CoreScope public mode uses a dedicated revocable SQLite projection and private
+ingestor replay journal. The read-only server checks upstream authority before
+and after API reads and before WS fanout. Generation changes rebuild copied
+measurement/derived data and replace caches. Existing untracked/mixed data is
+preserved and initialization refused. The filtered credentialed HTTP live
+source removes the public companion's raw Redis credential; PostgreSQL's
+committed-order ledger remains required. This stays within the review's
+authorization, identity and handoff design.
+
+Focused and real regressions pass, including the ready WS 800-message gate
+and the paired crash gate through the projection. RAM typecheck and full
+backend tests pass 476/476 (202.440s); integration passes 7 PG + 2 Redis +
+1 WS test, with zero skips. CoreScope server passes (103.965s); its final
+ingestor suite remains running. After committing/pushing and green CI, continue
+F09/F14 loaded headroom/accounting, F15 held runtime shutdown and F16 actual
+principal isolation/drain, then final source-labelled images and whole-stack
+performance. The overall mission remains active.
+
 Specification: `/home/ben/ukmesh-fix-context-20261011/SOL-REVIEW.md`, especially findings F01–F17, §§4, 7–9. This plan records implementation order and will be updated as evidence changes. The independent review takes precedence over the earlier fix checklist.
 
 ## Boundaries and sequence

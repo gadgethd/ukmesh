@@ -6,16 +6,49 @@ Redis Stream admission; the writer commits each observation later. A Redis loss
 before PostgreSQL commit can therefore lose already acknowledged telemetry.
 Keep the Redis instance dedicated to this queue, persistent (AOF), and on a
 `noeviction` policy. Do not expose the raw stream to public API credentials;
-only backend and the explicitly configured private companion reader should
-have stream access.
+only the backend and a separate quarantine operator should have raw stream
+access. Public companions use the credentialed filtered HTTP source below.
 
 The pending live overlay applies to recent packet lists and the initial
 WebSocket packet/message lists. Packet detail and long channel history remain
 PostgreSQL views and become available after commit; they do not advertise
 pending entries. Recent packets use a five-minute window, while the initial
 message list uses 24 hours. The overlay reads at most the configured 10,000
-stream entries per request; a larger legacy stream must be drained before
+stream entries per request. SQL also returns aggregates for captured RAM
+hashes, and the merged distinct-hash page is limited after representative
+selection. A larger legacy stream must be drained before
 turning on RAM mode.
+
+## Public companion authorization
+
+Set `MQTT_RAM_PUBLIC_READ_TOKEN` to a random secret of at least 32 characters;
+Compose passes it to the backend. The endpoint is disabled when unset. Give
+the companion this token, not a Redis credential. Restrict the endpoint's
+network reachability to the companion:
+
+- `GET /internal/ingest/public/policy` returns the current completed public
+  policy generation, or 503 while authority is unavailable or rematerializing.
+- `GET /internal/ingest/public/entries?after=0-0&limit=500` returns currently
+  public observations with stable IDs and a `nextCursor`. The limit is 1–500.
+  Send `Authorization: Bearer <token>` to both endpoints. Private observations
+  advance the opaque stream cursor without exposing their payloads.
+
+Authorization uses a fresh policy snapshot after each captured read. REST
+merges reject SQL aggregates from an older generation. Initial WebSocket
+caches carry a generation and recheck it before delivery. Live MQTT and
+WebSocket delivery use one authority query per bounded batch, with explicit
+overflow/unavailable counters in `meshcore_public_live_outcomes_total`.
+This contract authorizes a captured delivery batch at that final check;
+already delivered data and network bytes in flight cannot be recalled.
+
+The stream is a bounded live overlap. Pair it with PostgreSQL's committed-order
+ledger and coverage fence for completeness across retention or cursor loss.
+The repaired CoreScope public mode additionally requires an empty dedicated
+SQLite measurement database, an ingestor-owned provenance journal and a server
+revocation fence. Its ingestor rebuilds copied and derived measurements on a
+generation change; the read-only server returns 503 until that generation is
+complete and matches current authority. Preserve an old untracked database
+and backfill a new dedicated database rather than purging mixed-source data.
 
 ## Enable and monitor
 

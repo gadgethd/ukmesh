@@ -19,6 +19,7 @@ import {
   stopMqttConnectionMonitor,
 } from './mqtt/connectionMonitor.js';
 import { initWebSocketServer, closeWebSocketServer, broadcastPacket, broadcastNodeUpdate, broadcastNodeUpsert } from './ws/server.js';
+import { createPublicRamSource } from './ram/publicSource.js';
 import apiRoutes, { startOwnerLastHopPrewarm, stopOwnerLastHopPrewarm } from './api/routes.js';
 import { startRegisteredStatsWarmup } from './api/routes/stats.js';
 import { initSpamMessageAnalyzer, stopSpamMessageAnalyzer } from './spam/analyzer.js';
@@ -316,6 +317,7 @@ async function main() {
 
   // API routes
   app.use('/api', apiRoutes);
+  app.use('/internal/ingest/public', createPublicRamSource());
 
   // Health check
   app.get('/healthz', (_req, res) => res.json({ status: 'ok', ts: Date.now() }));

@@ -22,6 +22,7 @@ import { persistStatusTelemetrySample } from './statusTelemetry.js';
 import { observationIdentityKey, packetAlreadyPersisted, type ObservationIdentity } from './observationIdentity.js';
 import { assertSupportedIngestConnections } from './ingestConfig.js';
 import { waitForShutdownStep } from './shutdownDeadline.js';
+import { createPublicBatch } from '../privacy/publicBatch.js';
 import {
   boundedNetworkMetricLabel,
   mqttIngestAckDuration,
@@ -30,6 +31,7 @@ import {
   mqttMessagesTotal,
   postPersistDroppedTotal,
   postPersistInFlightGauge,
+  publicLiveOutcomesTotal,
 } from '../metrics.js';
 
 type PacketCallback      = (packet: LivePacket, upstreamEnvelope?: Record<string, unknown>) => void;
@@ -50,6 +52,20 @@ let mqttRuntimeStatus: MqttRuntimeStatus = { state: 'starting', changedAt: new D
 const mqttClients: MqttClient[] = [];
 let mqttStopping = false;
 const MQTT_INGEST_MODE = getRamIngestMode();
+const publicPackets = createPublicBatch<{ packet: LivePacket; publish: () => void }>({
+  maxItems: 10_000, maxBytes: 8 * 1_048_576,
+  loadPolicy: loadCurrentPublicPrivacyPolicy,
+  refused: (outcome, count) => publicLiveOutcomesTotal.inc({ phase: 'mqtt', outcome }, count),
+  deliver: (items, policy) => {
+    for (const { packet, publish } of items) {
+      const current = policy.classify({ network: packet.network ?? '',
+        rxNodeId: packet.rxNodeId ?? null, srcNodeId: packet.srcNodeId ?? null,
+        pathHashes: packet.path ?? null, pathHashSizeBytes: packet.pathHashSizeBytes ?? null });
+      publicLiveOutcomesTotal.inc({ phase: 'mqtt', outcome: current.visibilityOk ? 'authorized' : 'private' });
+      if (current.visibilityOk) { packet.isPrivate = false; packet.visibilityOk = true; publish(); }
+    }
+  },
+});
 let mqttDurabilityFailure: string | undefined;
 
 function setMqttRuntimeStatus(state: MqttRuntimeStatus['state'], lastError?: string): void {
@@ -454,6 +470,7 @@ export async function stopMqttClient(timeoutMs = 20_000): Promise<void> {
     flushPendingNodeEmits();
   }
   await waitForShutdownStep(closePacketBatch(), deadline, 'batch');
+  await waitForShutdownStep(publicPackets.close(), deadline, 'public-live');
   setMqttRuntimeStatus('disconnected');
 }
 
@@ -893,21 +910,8 @@ async function handleMessage(
       }
     };
     if (MQTT_INGEST_MODE === 'ram') {
-      // Public emission is independent of broker acknowledgement. It uses a
-      // fresh authority snapshot; a PG outage suppresses the public event.
-      void loadCurrentPublicPrivacyPolicy().then((policy) => {
-        if (!policy) return;
-        const current = policy.classify({
-          network, rxNodeId: observerKey, srcNodeId: srcNodeId ?? null,
-          pathHashes: path ?? null, pathHashSizeBytes: decodedPathHashSizeBytes ?? null,
-        });
-        if (!current.visibilityOk) return;
-        livePacket.isPrivate = false;
-        livePacket.visibilityOk = true;
-        publishLive();
-      }).catch((error: unknown) => {
-        console.error('[mqtt] public live authority unavailable:', error instanceof Error ? error.message : error);
-      });
+      publicPackets.enqueue({ packet: livePacket, publish: publishLive },
+        Buffer.byteLength(JSON.stringify([livePacket, json])));
     } else publishLive();
     invalidateResolveCache(finalHash);
     mqttIngestOutcomesTotal.inc({

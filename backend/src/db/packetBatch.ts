@@ -395,17 +395,14 @@ export async function persistEntriesCore(
   }).join(',\n');
 
   const candidateSource = idempotent ? 'novel_rows' : 'classified';
-  // Replay safety (RAM-mode crash recovery): when running idempotent, a batch
-  // is filtered twice — first against duplicate identities WITHIN the batch
-  // (row-numbered by the same sighting identity the existence check uses),
-  // then against rows already present in the database (covers replays after
-  // crashes and ambiguous commit outcomes, where the SAME frozen entry is
-  // delivered again with identical observation fields).
+  // Stable upstream IDs are arbitrated by the ledger, preserving distinct
+  // sightings even when all their observation fields match. The legacy
+  // natural-identity fallback applies only to entries without an upstream ID.
   const idempotencyCte = idempotent
     ? `deduped AS MATERIALIZED (
          SELECT c.*,
                 ROW_NUMBER() OVER (
-                  PARTITION BY c.time, c.packet_hash, c.rx_node_id, c.topic, c.network,
+                  PARTITION BY c.observation_id_in, c.time, c.packet_hash, c.rx_node_id, c.topic, c.network,
                                c.hop_count, c.route_type, c.path_hashes, c.path_hash_size_bytes,
                                (c.payload::jsonb->>'direction')
                   ORDER BY c.row_id
@@ -416,7 +413,7 @@ export async function persistEntriesCore(
          SELECT d.*
          FROM deduped d
          WHERE d.identity_rank = 1
-           AND NOT EXISTS (
+           AND (d.observation_id_in IS NOT NULL OR NOT EXISTS (
              SELECT 1
              FROM packets existing
              WHERE existing.time = d.time
@@ -429,7 +426,7 @@ export async function persistEntriesCore(
                AND existing.path_hashes IS NOT DISTINCT FROM d.path_hashes
                AND existing.path_hash_size_bytes IS NOT DISTINCT FROM d.path_hash_size_bytes
                AND (existing.payload->>'direction') IS NOT DISTINCT FROM (d.payload::jsonb->>'direction')
-           )
+           ))
        ),`
     : '';
   // The lock must be a separate command on the same transaction/client. In

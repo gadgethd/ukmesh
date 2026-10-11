@@ -30,6 +30,13 @@ export const websocketClients = new Gauge({
   registers: [metricsRegistry],
 });
 
+export const publicLiveOutcomesTotal = new Counter({
+  name: 'meshcore_public_live_outcomes_total',
+  help: 'Public live events authorized or suppressed at a bounded delivery batch.',
+  labelNames: ['phase', 'outcome'] as const,
+  registers: [metricsRegistry],
+});
+
 export const statsRecomputeTotal = new Counter({
   name: 'meshcore_stats_recompute_total',
   help: 'Cold statistics recomputations.',

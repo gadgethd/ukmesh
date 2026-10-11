@@ -342,7 +342,7 @@ export type PendingStreamEntry = { id: string; entry: RamPendingEntry };
  * The caller deduplicates by observation ID against the same PG read snapshot.
  * A cumulative marker cannot classify entries admitted during a commit.
  */
-export async function readPendingEntries(limit: number): Promise<PendingStreamEntry[]> {
+export async function readPendingEntries(limit: number, strict = false): Promise<PendingStreamEntry[]> {
   if (getRamIngestMode() !== 'ram' || limit <= 0) return [];
   try {
     const client = getClient();
@@ -362,6 +362,7 @@ export async function readPendingEntries(limit: number): Promise<PendingStreamEn
     }
     return out.reverse();
   } catch (error) {
+    if (strict) throw error;
     console.error('[ram] pending read failed', (error as Error).message);
     return [];
   }

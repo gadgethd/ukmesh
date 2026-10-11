@@ -11,6 +11,7 @@ import {
   configurePacketBatch,
   enqueuePacket,
   type PacketBatchResult,
+  type QueryFn,
 } from './packetBatch.js';
 import { nodeAliasArraySql, publicPacketPrivacySql } from '../api/utils/networkFilters.js';
 import {
@@ -814,13 +815,21 @@ export async function getRecentPackets(
   observer?: string,
   fields: 'full' | 'slim' = 'full',
   signal?: AbortSignal,
+  readQuery: QueryFn = query,
+  overlapHashes: string[] = [],
 ) {
   const includeObservationIds = getRamIngestMode() === 'ram';
   const scope = buildScopePlaceholders(2, network, observer);
+  const overlapParam = includeObservationIds && overlapHashes.length > 0 ? `$${2 + scope.params.length}` : null;
   const fiveMinAgo = 'NOW() - INTERVAL \'5 minutes\'';
-  const res = await query(
+  const res = await readQuery(
     `WITH recent_packets AS (
       SELECT DISTINCT ON (p.packet_hash)
+             ${includeObservationIds ? `(CASE WHEN p.payload ? 'appData' THEN 16 ELSE 0 END
+               + CASE WHEN p.src_node_id IS NOT NULL THEN 8 ELSE 0 END
+               + CASE WHEN p.advert_count IS NOT NULL THEN 4 ELSE 0 END
+               + CASE WHEN p.packet_type = 4 THEN 2 ELSE 0 END) AS _representative_rank,` : ''}
+             ${includeObservationIds ? 'p.observation_id::text AS _representative_id,' : ''}
              p.time, p.packet_hash,
              COALESCE(pa_rx.canonical_node_id, upper(btrim(p.rx_node_id))) AS rx_node_id,
              COALESCE(pa_src.canonical_node_id, upper(btrim(p.src_node_id))) AS src_node_id, p.topic,
@@ -840,7 +849,7 @@ export async function getRecentPackets(
                CASE WHEN p.src_node_id IS NOT NULL THEN 1 ELSE 0 END DESC,
                CASE WHEN p.advert_count IS NOT NULL THEN 1 ELSE 0 END DESC,
                CASE WHEN p.packet_type = 4 THEN 1 ELSE 0 END DESC,
-               p.time DESC
+               p.time DESC, p.observation_id DESC NULLS LAST
     ),
     packet_stats AS (
       SELECT 
@@ -868,13 +877,17 @@ export async function getRecentPackets(
       ${fields === 'full'
         ? 'rp.topic, rp.topic_prefix, rp.iata, rp.route_type, rp.network, rp.transport_codes, rp.region_scope,'
         : ''}
-      ${includeObservationIds ? 'ps._observation_ids, rp.network AS _policy_network,' : ''}
+      ${includeObservationIds ? `ps._observation_ids, rp.network AS _policy_network,
+        (SELECT generation::text FROM public_visibility_state WHERE singleton) AS _policy_generation,
+        rp._representative_rank, rp._representative_id,` : ''}
       ps.observer_node_ids, ps.observer_iatas, ps.rx_count, ps.tx_count
     FROM recent_packets rp
     LEFT JOIN packet_stats ps ON ps.packet_hash = rp.packet_hash
-    ORDER BY rp.time DESC
-    LIMIT $1`,
-    [limit, ...scope.params],
+    ${overlapParam ? `WHERE rp.packet_hash = ANY(${overlapParam}::text[])
+      OR rp.packet_hash IN (SELECT packet_hash FROM recent_packets ORDER BY time DESC, packet_hash LIMIT $1)` : ''}
+    ORDER BY rp.time DESC, rp.packet_hash
+    LIMIT $1${overlapParam ? ` + CARDINALITY(${overlapParam}::text[])` : ''}`,
+    [limit, ...scope.params, ...(overlapParam ? [overlapHashes] : [])],
     signal,
   );
   return res.rows;
@@ -890,12 +903,17 @@ export async function getRecentMessages(
   network?: string,
   observer?: string,
   signal?: AbortSignal,
+  readQuery: QueryFn = query,
+  overlapHashes: string[] = [],
 ) {
   const includeObservationIds = getRamIngestMode() === 'ram';
   const scope = buildScopePlaceholders(2, network, observer);
-  const res = await query(
+  const overlapParam = includeObservationIds && overlapHashes.length > 0 ? `$${2 + scope.params.length}` : null;
+  const res = await readQuery(
     `WITH recent_msgs AS (
       SELECT DISTINCT ON (p.packet_hash)
+             ${includeObservationIds ? 'CASE WHEN p.src_node_id IS NOT NULL THEN 1 ELSE 0 END AS _representative_rank,' : ''}
+             ${includeObservationIds ? 'p.observation_id::text AS _representative_id,' : ''}
              p.time, p.packet_hash,
              COALESCE(pa_rx.canonical_node_id, upper(btrim(p.rx_node_id))) AS rx_node_id,
              COALESCE(pa_src.canonical_node_id, upper(btrim(p.src_node_id))) AS src_node_id, p.topic,
@@ -914,7 +932,7 @@ export async function getRecentMessages(
         ${buildPublicPacketPrivacyClause('p')}
       ORDER BY p.packet_hash,
                CASE WHEN p.src_node_id IS NOT NULL THEN 1 ELSE 0 END DESC,
-               p.time DESC
+               p.time DESC, p.observation_id DESC NULLS LAST
     ),
     msg_stats AS (
       SELECT
@@ -939,13 +957,17 @@ export async function getRecentMessages(
       m.time, m.packet_hash, m.rx_node_id, m.src_node_id, m.topic, m.iata,
       m.packet_type, m.hop_count, m.rssi, m.snr, m.payload,
       m.summary, m.advert_count, m.path_hashes, m.path_hash_size_bytes,
-      ${includeObservationIds ? 'ms._observation_ids, m.network AS _policy_network,' : ''}
+      ${includeObservationIds ? `ms._observation_ids, m.network AS _policy_network,
+        (SELECT generation::text FROM public_visibility_state WHERE singleton) AS _policy_generation,
+        m._representative_rank, m._representative_id,` : ''}
       ms.observer_node_ids, ms.observer_iatas, ms.rx_count, ms.tx_count
     FROM recent_msgs m
     LEFT JOIN msg_stats ms ON ms.packet_hash = m.packet_hash
-    ORDER BY m.time DESC
-    LIMIT $1`,
-    [limit, ...scope.params],
+    ${overlapParam ? `WHERE m.packet_hash = ANY(${overlapParam}::text[])
+      OR m.packet_hash IN (SELECT packet_hash FROM recent_msgs ORDER BY time DESC, packet_hash LIMIT $1)` : ''}
+    ORDER BY m.time DESC, m.packet_hash
+    LIMIT $1${overlapParam ? ` + CARDINALITY(${overlapParam}::text[])` : ''}`,
+    [limit, ...scope.params, ...(overlapParam ? [overlapHashes] : [])],
     signal,
   );
   return res.rows;

@@ -333,7 +333,8 @@ test('merged reads append only public, scoped, non-duplicate pending rows', asyn
     ['100-0', ['e', encodePendingEntry(entryFor('34'.repeat(32), { time: '2026-10-11T12:10:00.000Z' }))]], // public, new (newer than the DB row)
   ];
   configureRamStore(fake);
-  const rows = [{ packet_hash: 'ab'.repeat(32), time: new Date('2026-10-11T12:04:00.000Z') }];
+  const rows = [{ packet_hash: 'ab'.repeat(32), time: new Date('2026-10-11T12:04:00.000Z'),
+    _policy_generation: '7', _representative_rank: 2 }];
   const merged = await mergePendingPacketsIntoRecentRows(rows, { limit: 10, network: 'ukmesh' });
   assert.equal(merged.length, 3, 'formerly private admission follows current public policy');
   assert.equal(merged[0]?.['packet_hash'], '34'.repeat(32)); // newer pending first
@@ -395,6 +396,7 @@ test('F12 merge deduplicates committed overlap by ID and counts a new same-obser
       rx_count: 1,
       tx_count: 0,
       _observation_ids: [entryFor(h).observationId],
+      _policy_generation: '7', _representative_rank: 2,
     },
   ];
   const merged = await mergePendingPacketsIntoRecentRows(rows, { limit: 10, network: 'ukmesh' });
@@ -478,6 +480,52 @@ test('F01 a privacy flip overrides the loaded public cache for RAM and PG rows',
   assert.deepEqual(await mergePendingPacketsIntoRecentRows(oldPgRow, { limit: 10, network: 'ukmesh' }), []);
 });
 
+test('F01 old SQL aggregate contributions fail closed across a policy generation change', async () => {
+  const privateObserver = 'aa'.repeat(32).toUpperCase();
+  configurePacketBatch(async () => ({ rows: [{
+    generation: '10', materialized_generation: '10', remat_active: false,
+    prefixes: [{ node_id: privateObserver, network: 'teesside', prefix_size_bytes: 1, prefix: 'AA' }],
+  }] }));
+  configureRamStore(new FakeStore());
+  const snapshot = [{ packet_hash: 'fe'.repeat(32), time: '2026-10-11T12:00:00Z',
+    rx_node_id: 'cd'.repeat(32), network: 'northeast',
+    observer_node_ids: ['CD'.repeat(32), privateObserver], rx_count: 2,
+    _policy_generation: '9' }];
+  const merged = await mergeRecentRows(snapshot, { limit: 10, network: 'ukmesh' });
+  assert.deepEqual(merged, [], 'a public representative cannot authorize stale aggregate participants');
+  assert.deepEqual(await mergeRecentRows([{ ...snapshot[0], _policy_generation: undefined }],
+    { limit: 10 }), [], 'missing generation cannot authorize a SQL aggregate');
+});
+
+test('F13 a better pending representative replaces SQL fields and reorders the whole page', async () => {
+  await loadPublicPrivacyCache();
+  const fake = new FakeStore();
+  const hash = '83'.repeat(32);
+  const entry = entryFor(hash, { rx: 'aa'.repeat(32), time: '2026-10-11T13:01:00.000Z' });
+  entry.input.payloadJson = '{"appData":{},"_summary":"decoded","direction":"tx"}';
+  entry.input.iata = 'AAA';
+  fake.rev = [['400-0', ['e', encodePendingEntry(entry)]]];
+  configureRamStore(fake);
+  const rows = [
+    { packet_hash: '84'.repeat(32), time: '2026-10-11T13:00:30.000Z', _policy_generation: '7' },
+    { packet_hash: hash, time: '2026-10-11T13:00:00.000Z', summary: 'encrypted',
+      rx_node_id: 'cd'.repeat(32), observer_node_ids: ['CD'.repeat(32)], observer_iatas: ['ZZZ'],
+      rx_count: 1, tx_count: 0, _observation_ids: ['11111111-1111-1111-1111-111111111111'],
+      _policy_generation: '7', _representative_rank: 2 },
+  ];
+  const merged = await mergeRecentRows(rows, { limit: 2, network: 'ukmesh',
+    nowMs: Date.parse('2026-10-11T13:01:01Z'), resolveAliases: async () => new Map() });
+  assert.equal(merged[0]?.packet_hash, hash, 'augmentation alone must also sort/page');
+  assert.equal(merged[0]?.summary, 'decoded');
+  assert.equal(merged[0]?.rx_node_id, 'AA'.repeat(32));
+  assert.deepEqual(merged[0]?.observer_node_ids, ['AA'.repeat(32), 'CD'.repeat(32)]);
+  assert.deepEqual(merged[0]?.observer_iatas, ['AAA', 'ZZZ']);
+  assert.equal(merged[0]?.rx_count, 1);
+  assert.equal(merged[0]?.tx_count, 1);
+  assert.equal('_representative_rank' in merged[0]!, false);
+  assert.equal('_policy_generation' in merged[0]!, false);
+});
+
 test('F13 RAM recent rows honor family scope, aliases, window, and slim DTO', async () => {
   await loadPublicPrivacyCache();
   const fake = new FakeStore();
@@ -505,4 +553,22 @@ test('F13 RAM recent rows honor family scope, aliases, window, and slim DTO', as
   assert.equal(rows[0]?.['rx_node_id'], canonical);
   assert.equal('topic' in rows[0]!, false);
   assert.equal('network' in rows[0]!, false);
+});
+
+test('F13 representative ties use stable identity and paging preserves milliseconds', async () => {
+  await loadPublicPrivacyCache();
+  configureRamStore(new FakeStore());
+  const hash = '85'.repeat(32);
+  const olderID = '11111111-1111-4111-8111-111111111111';
+  const entry = entryFor(hash, { time: '2026-10-11T13:00:00.100Z' });
+  entry.observationId = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+  entry.input.rssi = -25;
+  const row = { packet_hash:hash, time:new Date('2026-10-11T13:00:00.100Z'), rssi:-90,
+    _policy_generation:'7', _representative_rank:2, _representative_id:olderID,
+    _observation_ids:[olderID], network:'ukmesh' };
+  const merged = await mergeRecentRows([row], {limit:1, network:'ukmesh',
+    pendingSnapshot:[{id:'400-0',entry}], nowMs:Date.parse('2026-10-11T13:00:01Z'),
+    resolveAliases:async()=>new Map()});
+  assert.equal(merged[0]?.rssi,-25,'equal-rank, equal-time representative chooses greatest stable ID');
+  assert.equal('_representative_id' in merged[0]!,false);
 });

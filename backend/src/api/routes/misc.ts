@@ -30,6 +30,8 @@ type GetRecentPacketsFn = (
   observer?: string,
   fields?: 'full' | 'slim',
   signal?: AbortSignal,
+  readQuery?: QueryFn,
+  overlapHashes?: string[],
 ) => Promise<unknown>;
 type GetRecentPacketEventsFn = (limit: number, network?: string, observer?: string) => Promise<unknown>;
 type GetPacketDetailFn = (hash: string, network?: string) => Promise<unknown>;
@@ -92,8 +94,8 @@ export function registerMiscRoutes(router: Router, deps: MiscRouteDeps): void {
       const packets = raw
         ? await getRecentPacketEvents(limit, network, observer)
         : await readRecentWithPending(
-            () => getRecentPackets(
-              limit, network, observer, fields, AbortSignal.timeout(30_000),
+            (overlapHashes) => getRecentPackets(
+              limit, network, observer, fields, AbortSignal.timeout(30_000), undefined, overlapHashes,
             ) as Promise<Record<string, unknown>[]>,
             { limit, network, observer, fields },
           );
