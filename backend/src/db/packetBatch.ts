@@ -351,14 +351,14 @@ export async function persistEntriesCore(
          ) AS active
        ),
        incoming (
-         row_id, observation_id, time, packet_hash, rx_node_id, src_node_id, topic, topic_prefix,
+         row_id, observation_id_in, time, packet_hash, rx_node_id, src_node_id, topic, topic_prefix,
          iata, packet_type, route_type, hop_count, rssi, snr, payload, companion_sender, raw_hex,
          advert_count, path_hashes, path_hash_size_bytes, network, transport_codes, region_scope,
          prefix_cache_generation, classified_private, path_is_valid
        ) AS (VALUES ${values}),
        classified AS MATERIALIZED (
          SELECT i.*,
-           COALESCE(i.observation_id, gen_random_uuid()) AS observation_id,
+           COALESCE(i.observation_id_in, gen_random_uuid()) AS observation_id,
            CASE
              WHEN remat.active THEN meshcore_path_matches_private(
                i.network, i.rx_node_id, i.src_node_id,
