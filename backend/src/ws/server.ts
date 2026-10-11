@@ -24,7 +24,7 @@ import {
   websocketClients,
 } from '../metrics.js';
 import { selectInitialViableLinks } from './initialStateLinks.js';
-import { mergePendingPacketsIntoRecentRows } from '../ram/liveRead.js';
+import { readRecentWithPending } from '../ram/liveRead.js';
 
 const REDIS_CHANNEL = 'meshcore:live';
 const LOG_WS_PACKETS = process.env['LOG_WS_PACKETS'] === '1';
@@ -233,12 +233,12 @@ async function fetchInitialState(network: string | undefined, observer: string |
       //   seed a proper message cache on first load instead of relying on live traffic.
       const [rawNodes, packets, messages, rawViableLinks] = await Promise.all([
         getNodes(network, observer, 'slim', signal),
-        mergePendingPacketsIntoRecentRows(
-          await getRecentPackets(7, network, observer, 'full', signal),
+        readRecentWithPending(
+          () => getRecentPackets(7, network, observer, 'full', signal),
           { limit: 7, network, observer },
         ),
-        mergePendingPacketsIntoRecentRows(
-          await getRecentMessages(200, network, observer, signal),
+        readRecentWithPending(
+          () => getRecentMessages(200, network, observer, signal),
           // Message history is group-text only: keep the pending merge in the
           // same contract as getRecentMessages (packet_type = 5).
           { limit: 200, network, observer, includePayload: true, packetTypes: [5] },

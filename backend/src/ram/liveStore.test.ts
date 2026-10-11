@@ -267,6 +267,22 @@ test('F06 an old pending hole remains discoverable behind newer retained entries
   assert.equal(seen.some(({ id }) => id === '101-0'), true);
 });
 
+test('F06 a captured overlap survives retention expiry after the SQL snapshot', async () => {
+  await loadPublicPrivacyCache();
+  const fake = new FakeStore();
+  const hash = '60'.repeat(32);
+  fake.rev = [['101-0', ['e', encodePendingEntry(entryFor(hash))]]];
+  configureRamStore(fake);
+  const pendingSnapshot = await readPendingEntries(10);
+  // The SQL snapshot preceded commit. Redis cleanup then removes the copy
+  // before authorization/merge. Only the captured overlap closes this gap.
+  const rows: Record<string, unknown>[] = [];
+  fake.rev = [];
+  const opts = { limit: 10, network: 'ukmesh', pendingSnapshot };
+  const merged = await mergePendingPacketsIntoRecentRows(rows, opts);
+  assert.deepEqual(merged.map((row) => row['packet_hash']), [hash]);
+});
+
 test('oldest pending age is computed from the oldest entry (markers skipped)', () => {
   const entries: Array<[string, string[]]> = [
     ['900-0', ['e', encodeCommitMarker({ kind: 'commit', through: '800-0', atMs: 1, packets: 1 })]],

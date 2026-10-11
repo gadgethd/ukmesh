@@ -17,7 +17,7 @@ import {
   listPublicPlannedNodes,
 } from '../../repositories/plannedNodes.js';
 import { toPublicMqttNodeStatusDTO } from '../publicStatus.js';
-import { mergePendingPacketsIntoRecentRows } from '../../ram/liveRead.js';
+import { readRecentWithPending } from '../../ram/liveRead.js';
 
 type QueryFn = <T extends QueryResultRow = QueryResultRow>(
   text: string,
@@ -91,10 +91,10 @@ export function registerMiscRoutes(router: Router, deps: MiscRouteDeps): void {
       const observer = normalizeObserverQuery(req.query['observer']);
       const packets = raw
         ? await getRecentPacketEvents(limit, network, observer)
-        : await mergePendingPacketsIntoRecentRows(
-            (await getRecentPackets(
+        : await readRecentWithPending(
+            () => getRecentPackets(
               limit, network, observer, fields, AbortSignal.timeout(30_000),
-            )) as Record<string, unknown>[],
+            ) as Promise<Record<string, unknown>[]>,
             { limit, network, observer, fields },
           );
       res.json(packets);

@@ -64,8 +64,17 @@ larger backlog. Exit code 0 and `RAM_DRAIN_COMPLETE` are required before
 changing mode. On timeout, PostgreSQL failure or a nonempty PEL, it exits
 nonzero and reports `RAM_DRAIN_INCOMPLETE`; keep RAM mode and rerun the drain
 after repairing the dependency. The drain intentionally does not initialize
-schema or run migrations. Apply migration 058 through the normal release
-process before enabling RAM mode.
+schema or run migrations. Apply migrations 058 and 059 through the normal
+release process before enabling RAM mode or a paired CoreScope reader.
+Migration 059 takes the packet writer lock, assigns missing historical UUIDs
+(including compressed packets), and backfills retained history into the
+committed-order ledger. Its coverage fence commits atomically with the
+backfill. Schedule this one-time maintenance transaction for the retained
+history size; ingestion retries while the lock is held. It does not change
+packet, path or statistics totals. CoreScope requires the coverage fence;
+an empty or lost sequence cursor replays all retained ledger history with
+stable-ID deduplication. History already removed by retention cannot be
+recovered by either source.
 
 Once the drain has succeeded, set `MQTT_INGEST_MODE=durable`, check
 `docker compose config`, and start the backend with the approved image. Check

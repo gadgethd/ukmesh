@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import test from 'node:test';
 import pg from 'pg';
+import { Redis } from 'ioredis';
 import { networkFilters } from '../api/utils/networkFilters.js';
 import {
   deleteExpiredRows,
@@ -24,9 +25,15 @@ import {
 } from './packetBatch.js';
 import { processNextPrivacyRematerialization } from '../workers/privacy-rematerialization.js';
 import { packetAlreadyPersisted } from '../mqtt/observationIdentity.js';
+import { admitPacketToRam, configureRamStore } from '../ram/liveStore.js';
+import { readRecentWithPending } from '../ram/liveRead.js';
+import { createRamWriter } from '../ram/writer.js';
+import { getRamStreamKey } from '../ram/protocol.js';
 
 const { Pool } = pg;
 const databaseUrl = process.env['TEST_INGEST_DATABASE_URL'];
+const redisUrl = process.env['TEST_REDIS_URL'];
+const localRedis = redisUrl && ['127.0.0.1', 'localhost'].includes(new URL(redisUrl).hostname);
 
 function testTransaction(pool: pg.Pool, observeQuery?: (text: string) => void) {
   return async <T>(work: (query: QueryFn) => Promise<T>): Promise<T> => {
@@ -132,6 +139,7 @@ test('base schema and every migration apply to a brand-new database', {
     '056_async_privacy_rematerialization.sql',
     '057_node_status_sample_status.sql',
     '058_ingest_observation_ledger.sql',
+    '059_ingest_ledger_historical_coverage.sql',
   ]);
   assert.deepEqual(await runMigrations(freshPool), []);
 
@@ -277,6 +285,187 @@ test('base schema and every migration apply to a brand-new database', {
       replacement_name: '044_health_current_remove_path_history.sql',
     },
   ]);
+});
+
+test('F06 real PG snapshot and Redis expiry preserve the captured handoff', {
+  skip: databaseUrl && localRedis ? false : 'local PostgreSQL/Redis fixtures are required',
+}, async (t) => {
+  const admin = new Pool({ connectionString: databaseUrl, max: 1 });
+  const name = `meshcore_f06_${process.pid}_${Date.now()}`;
+  const url = new URL(databaseUrl as string);
+  url.pathname = `/${name}`;
+  await admin.query(`CREATE DATABASE "${name}"`);
+  const pool = new Pool({ connectionString: url.toString(), max: 3 });
+  const redis = new Redis(redisUrl!, { lazyConnect: true, enableOfflineQueue: false });
+  const previousMode = process.env['MQTT_INGEST_MODE'];
+  const previousKey = process.env['MQTT_RAM_STREAM_KEY'];
+  process.env['MQTT_INGEST_MODE'] = 'ram';
+  process.env['MQTT_RAM_STREAM_KEY'] = `meshcore:ingest:f06:${process.pid}:${Date.now()}`;
+  const key = getRamStreamKey();
+  t.after(async () => {
+    configureRamStore(null);
+    configurePacketBatch(null);
+    const keys = await redis.keys(`${key}*`);
+    if (keys.length) await redis.del(...keys);
+    await redis.quit();
+    await pool.end();
+    await admin.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
+    await admin.end();
+    if (previousMode === undefined) delete process.env['MQTT_INGEST_MODE'];
+    else process.env['MQTT_INGEST_MODE'] = previousMode;
+    if (previousKey === undefined) delete process.env['MQTT_RAM_STREAM_KEY'];
+    else process.env['MQTT_RAM_STREAM_KEY'] = previousKey;
+  });
+  await redis.connect();
+  configureRamStore(redis);
+  await pool.query(fs.readFileSync(new URL('./schema/base.sql', import.meta.url), 'utf8'));
+  await runMigrations(pool);
+  configurePacketBatch((sql, params) => pool.query(sql, params), testTransaction(pool));
+  const input = { packetHash: '60'.repeat(32), rxNodeId: null,
+    topic: 'meshcore/ZZZ/handoff/packets', rawHex: '00', network: 'ukmesh', packetType: 5 };
+  const first = await admitPacketToRam(input);
+  let second: Awaited<ReturnType<typeof admitPacketToRam>> | undefined;
+  let now = Date.now();
+  const writer = createRamWriter({ redis,
+    persist: async (entries) => {
+      await persistEntriesCore(entries, (sql, params) => pool.query(sql, params), true, testTransaction(pool));
+      if (!second) second = await admitPacketToRam({ ...input, packetHash: '61'.repeat(32) });
+      return entries.length;
+    },
+    now: () => now, sleep: async () => undefined, batchSize: () => 1,
+    maxAgeMs: () => 1, streamKey: () => key, group: () => 'f06',
+    consumer: () => 'f06', statsTick: null, markHealthy: () => undefined,
+    onCommitted: null, log: () => undefined,
+  });
+  await writer.start();
+  const merged = await readRecentWithPending(async () => {
+    const snapshot = await pool.connect();
+    try {
+      await snapshot.query('BEGIN ISOLATION LEVEL REPEATABLE READ');
+      assert.equal((await snapshot.query('SELECT COUNT(*)::int AS n FROM packets')).rows[0].n, 0);
+      await writer.tickOnce(); // commit A; admit B inside its persist callback
+      assert.ok(second);
+      now += 120_001;
+      await writer.sweepRetained();
+      assert.equal(await redis.xlen(key), 1, 'only the new admission remains');
+      const rows = (await snapshot.query('SELECT packet_hash, time FROM packets')).rows;
+      assert.equal(rows.length, 0, 'the real SQL snapshot predates A');
+      await snapshot.query('COMMIT');
+      return rows;
+    } finally {
+      await snapshot.query('ROLLBACK');
+      snapshot.release();
+    }
+  }, { limit: 10, network: 'ukmesh', resolveAliases: async () => new Map() });
+  assert.deepEqual(merged.map((row) => row.packet_hash), [input.packetHash]);
+  const later = await readRecentWithPending(async () => (await pool.query(`
+    SELECT packet_hash, time, network, ARRAY[observation_id::text] AS _observation_ids,
+           1::int AS rx_count, 0::int AS tx_count FROM packets`)).rows,
+  { limit: 10, network: 'ukmesh', resolveAliases: async () => new Map() });
+  assert.deepEqual(new Set(later.map((row) => row.packet_hash)), new Set([input.packetHash, '61'.repeat(32)]));
+  const durableIds = (await pool.query('SELECT observation_id::text FROM packets')).rows.map((row) => row.observation_id);
+  assert.deepEqual(durableIds, [first.observationId]);
+  assert.equal(later.every((row) => row.rx_count === 1), true);
+  assert.equal((await redis.xpending(key, 'f06'))[0], 0);
+});
+
+test('F07 historical and compressed observations enter the complete ledger atomically', {
+  skip: databaseUrl ? false : 'TEST_INGEST_DATABASE_URL is not configured',
+}, async (t) => {
+  const admin = new Pool({ connectionString: databaseUrl, max: 1 });
+  const name = `meshcore_f07_${process.pid}_${Date.now()}`;
+  const url = new URL(databaseUrl as string);
+  url.pathname = `/${name}`;
+  await admin.query(`CREATE DATABASE "${name}"`);
+  const pool = new Pool({ connectionString: url.toString(), max: 3 });
+  t.after(async () => {
+    await pool.end();
+    await admin.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
+    await admin.end();
+  });
+  await pool.query(fs.readFileSync(new URL('./schema/base.sql', import.meta.url), 'utf8'));
+  const oldTime = new Date(Date.now() - 20 * 86_400_000);
+  let seeded = false;
+  const interrupted = {
+    connect: async () => {
+      const client = await pool.connect();
+      return {
+        query: async (sql: string, params?: unknown[]) => {
+          if (sql.includes('INSERT INTO schema_migrations')
+            && params?.[0] === '059_ingest_ledger_historical_coverage.sql') {
+            throw new Error('F07_BACKFILL_INTERRUPTED');
+          }
+          const result = await client.query(sql, params);
+          if (!seeded && sql.includes('CREATE TABLE IF NOT EXISTS ingest_observation_ledger (')) {
+            seeded = true;
+            await client.query(`INSERT INTO packets
+              (time, packet_hash, topic, network, raw_hex, observation_id)
+              VALUES ($1, 'old-id', 'meshcore/ZZZ/old/packets', 'ukmesh', '00',
+                      '77777777-7777-4777-8777-777777777777'),
+                     ($1, 'old-null', 'meshcore/ZZZ/old/packets', 'ukmesh', '00', NULL),
+                     ($1, 'old-null', 'meshcore/ZZZ/old/packets', 'ukmesh', '00', NULL)`, [oldTime]);
+            // Simulate chunks predating the UUID-populating INSERT trigger.
+            await client.query("UPDATE packets SET observation_id = NULL WHERE packet_hash = 'old-null'");
+            await client.query(`SELECT compress_chunk(format('%I.%I', chunk_schema, chunk_name)::regclass)
+              FROM timescaledb_information.chunks WHERE hypertable_name = 'packets'`);
+          }
+          return result;
+        },
+        release: () => client.release(),
+      };
+    },
+  } as unknown as pg.Pool;
+  await assert.rejects(runMigrations(interrupted), /F07_BACKFILL_INTERRUPTED/);
+  assert.equal((await pool.query('SELECT COUNT(*)::int AS n FROM ingest_observation_ledger')).rows[0].n, 0);
+  assert.equal((await pool.query('SELECT COUNT(*)::int AS n FROM packets WHERE observation_id IS NULL')).rows[0].n, 2);
+  assert.equal((await pool.query("SELECT to_regclass('ingest_observation_ledger_coverage') AS fence")).rows[0].fence, null);
+
+  const holder = await pool.connect();
+  await holder.query('BEGIN');
+  await holder.query("SELECT pg_advisory_xact_lock(hashtext('meshcore:packet-batch-writer'))");
+  let entered!: () => void;
+  const entering = new Promise<void>((resolve) => { entered = resolve; });
+  let migrationPid = 0;
+  const contended = {
+    connect: async () => {
+      const client = await pool.connect();
+      migrationPid = (await client.query('SELECT pg_backend_pid() AS pid')).rows[0].pid;
+      return {
+        query: async (sql: string, params?: unknown[]) => {
+          if (sql.includes('CREATE TABLE IF NOT EXISTS ingest_observation_ledger_coverage')) entered();
+          return client.query(sql, params);
+        },
+        release: () => client.release(),
+      };
+    },
+  } as unknown as pg.Pool;
+  const migration = runMigrations(contended);
+  try {
+    await entering;
+    // Prove the migration is waiting on this exact writer, not a sleep.
+    for (let attempt = 0; ; attempt += 1) {
+      const blocked = await pool.query('SELECT cardinality(pg_blocking_pids($1)) > 0 AS blocked', [migrationPid]);
+      if (blocked.rows[0].blocked) break;
+      assert.ok(attempt < 100, 'backfill must acquire the writer transaction lock');
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    await holder.query(`INSERT INTO packets (time, packet_hash, topic, network, raw_hex)
+      VALUES ($1, 'commit-before-lock-release', 'meshcore/ZZZ/old/packets', 'ukmesh', '00')`, [new Date()]);
+  } finally {
+    await holder.query('COMMIT');
+    holder.release();
+  }
+  await migration;
+  const copied = await pool.query(`SELECT l.observation_id::text, p.packet_hash
+    FROM ingest_observation_ledger l JOIN packets p
+      ON p.observation_id = l.observation_id AND p.time = l.observed_at ORDER BY l.seq`);
+  assert.equal(copied.rows.length, 4);
+  assert.equal(new Set(copied.rows.map((row) => row.observation_id)).size, 4);
+  assert.ok(copied.rows.some((row) => row.observation_id === '77777777-7777-4777-8777-777777777777'));
+  assert.equal((await pool.query('SELECT version FROM ingest_observation_ledger_coverage WHERE singleton')).rows[0].version, 1);
+  const identities = copied.rows.map((row) => row.observation_id);
+  assert.deepEqual(await runMigrations(pool), []);
+  assert.deepEqual((await pool.query('SELECT observation_id::text FROM ingest_observation_ledger ORDER BY seq')).rows.map((row) => row.observation_id), identities);
 });
 
 test('F02 contended lock and replay never change historical tables', {

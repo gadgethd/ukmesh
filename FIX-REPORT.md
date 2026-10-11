@@ -4,6 +4,64 @@ Specification: `/home/ben/ukmesh-fix-context-20261011/SOL-REVIEW.md`. This is a 
 
 ## Branches and gates
 
+**Successor progress, 2026-10-11.** The authoritative remote checkpoints were
+perf `8968078` and RAM `e0bddc1`, both matching their local worktrees. Perf
+workflows `38174016916` / `38174021349` and RAM checkpoint workflows
+`38174696402` / `38174699642` have now concluded **success**.
+
+The next repair wave implements F06 snapshot ordering and F07 historical
+coverage and adds a real F08/F17 crash/restart gate. Its UKMesh typecheck and
+full backend suite pass **469/469** (`/tmp/ukmesh-sol-ram-final-tests.log`).
+The complete ingest integration command passes **6 PostgreSQL + 2 Redis tests**
+using a newly created disposable PostgreSQL database and an independently
+created Redis fixture (`/tmp/ukmesh-sol-full-ingest-integration.log`).
+Focused CoreScope F07/F08/F17 tests pass with real PostgreSQL/Redis/SQLite
+(`/tmp/core-sol-f08-integration-after.log`); full Go suites are still running.
+No new repair-wave push or CI success is claimed yet.
+
+F06's new unit failed on the checkpoint (`/tmp/ukmesh-f06-before.log`), then
+passed with `readRecentWithPending`. The real fixture captures Redis before
+starting SQL, holds a pre-commit Repeatable Read snapshot, commits A while
+admitting B, expires retained A from Redis, and proves A still appears exactly
+once. A later request sees A and B. REST recent packets and both WS initial
+packet/message paths use this ordering; authorization runs after SQL.
+
+F07's regression failed at the checkpoint (`/tmp/ukmesh-f07-before.log`). New
+migration 059 backfills pre-ledger history under the writer transaction lock,
+assigns missing UUIDs in compressed history once, preserves existing IDs and
+publishes a coverage fence atomically. An injected migration-ledger failure
+rolls back UUIDs and coverage; retry after a contended writer commit succeeds.
+CoreScope requires the fence. Its real PG-to-SQLite test rejects incomplete
+coverage, ingests historical and older late commits, and safely replays after
+cursor-file loss. History already deleted by PG retention remains unavailable.
+
+The F08 paired-source gate reads actual PostgreSQL ledger and Redis entries,
+kills a disposable ingestor test process while its last submitted write is
+active with an empty queue, reopens the same SQLite/WAL, injects a SQLite
+observation failure and proves both cursor files retain the last safe state.
+Successful retry completes both cursors with two observations and exactly two
+observer count increments, in both source orders. It exposed a further F17
+restart defect: shared schema reapplication rebuilt the broad legacy identity
+index and could collapse distinct upstream IDs. The new shared-schema
+regression reproduced that deletion (`/tmp/core-sol-f17-restart-before.log`);
+schema setup now defers upstream identity indexes to the ingestor migration,
+and startup checks/repairs the actual index state despite a done marker.
+
+The first local backend suite failed a real-time 50ms slow-mode assertion
+under CPU load; its clock is now deterministic and the full suite passes.
+The first full PG invocation used an already initialized bench database and
+failed its final empty-schema fixture; the successful rerun used a new owned
+database. One intentionally stopped diagnostic CoreScope test left its owned
+fixture schema for cleanup; no production data or services were involved.
+
+Remaining mission work: F01 copied-data revocation and generation transitions;
+F09/F14 memory/accounting and metric semantics; F12/F13 SQL read parity;
+F15 held-write runtime shutdown; F16 ACL/public-source isolation; the ready
+WebSocket reader gap; final source-labelled builds, integrity/performance
+gates, final CI, PR descriptions, relay commit evidence and report audit.
+The predecessor handoff below is historical and is superseded for F06–F08/F17
+by this successor evidence. The full objective is still active.
+
 | Work | Current evidence |
 |---|---|
 | UKMesh #122 | Repair code `cbf78a8a6c8d0f11da200eed0bcf9f4161c5dd2f` and handoff commit `89680782c3c6a0e517640c9e02fca59f5c8a0bee` are pushed to `perf/mqtt-ingest-20261011`. The handoff commit archives `TASK-BRIEF.md` and two patch scripts; runtime code is unchanged. Local `npx tsc --noEmit` and backend `npm test` 418/418 pass at this head (`/tmp/ukmesh-perf-handoff-npm-test.log`); earlier 9/9 focused F03/F04/F14/F15 tests passed. [Code-head CI 38154922672](https://github.com/gadgethd/ukmesh/actions/runs/38154922672) succeeded in all four jobs. New handoff-head CI status is below. |
@@ -20,9 +78,9 @@ Specification: `/home/ben/ukmesh-fix-context-20261011/SOL-REVIEW.md`. This is a 
 | F03 | Fixed on #122 and merged into #125 | `backend/src/mqtt/observationIdentity.ts`, `client.ts`, `db/packetBatch.ts`; unit and real-PG regression passed on #122 CI. |
 | F04 | Fixed on #122 and merged into #125 | `backend/src/mqtt/ingestConfig.ts` rejects N>1 before connect; regression passes. |
 | F05 | Implemented for UKMesh; final-head gates pass | Delivery-key replay ledger in `ram/liveStore.ts`, stable observation ID and PG ledger; lost-reply and same-ms unit/PG integration regressions added. Real-PG and real-Redis CI tests pass. Final-head crash and ambiguous SQL-commit replay pass; a deterministic real-Redis XADD followed by a lost reply recovers the original observation ID with stream length one. |
-| F06 | Partial | Per-entry commit state, retained overlap and stable-ID dedupe in `ram/liveStore.ts`, `writer.ts`, `liveRead.ts`; marker-gap and PEL-hole unit regressions pass. A final-head admit-during-commit gate showed both observations visible before and after the first PG commit, with the second still pending. Broader snapshot/retention integration remains. |
-| F07 | Implemented for post-migration UKMesh rows; historical backfill blocked | #125 migration 058 provides a committed-order ledger under the batch advisory lock. CoreScope PG follower uses `seq > cursor`; Redis-only config is rejected and a missing ledger disables the paired source. `TestF07LedgerCursorUsesCommitOrderRatherThanObservedTime` and the late-observed-commit PG regression pass. Existing packets are absent from the new ledger, and the ledger follower does not backfill those pre-migration rows; an explicit historical backfill is required before using it as a complete source. |
-| F08 | Implemented, full Go suites pass | CoreScope `ingest_buffer.go` tracked completion, `source_batch.go`, both sources, and packet-path `main.go` propagate write errors and hold the cursor. F08 blocked-last-job, admission failure, SQLite failure and observation insert failure tests pass. Real two-source crash integration remains. |
+| F06 | Implemented; real snapshot/expiry regression passes | Per-entry commit state, retained overlap and stable-ID dedupe plus `readRecentWithPending` before-SQL capture on REST/WS. `F06 real PG snapshot and Redis expiry preserve the captured handoff` covers concurrent admission and retention expiry. Final image gate remains. |
+| F07 | Implemented; historical/late-commit/cursor-loss regressions pass | Migration 059 adds atomic compressed-history backfill and coverage fence without changing 058. CoreScope requires coverage and follows `seq > cursor`. `F07 historical and compressed observations enter the complete ledger atomically` and `TestF07RealLedgerHistoricalCoverageLateCommitAndCursorLoss` pass. Final image/paired offline gate remains. |
+| F08 | Implemented; real paired crash/failure regression passes | Both CoreScope sources use `finishSourceBatch`; `TestF08RealPairedSourcesCrashFailureAndRestartBothOrders` proves active-last-job process crash, same-SQLite/WAL restart, actual observation insert failure, held cursors and successful replay. Full successor Go suites are pending. |
 | F09 | Partial | One-time atomic cleanup, bounded reconciliation and retained accounting in `ram/liveStore.ts`, `writer.ts`; replay, cleanup and real-Redis lost-counter reconciliation tests pass. Final-head concurrent byte admission passes at the enforced 1 MiB minimum. Startup/retention accounting in the final-head bench remains. |
 | F10 | Implemented; group-loss integration passes | Supervised startup, NOGROUP repair, periodic bounded foreign PEL reclaim, and stale-PEL/progress readiness in `index.ts`, `ram/writer.ts`, `writerRuntime.ts`; unit regressions and a final-head real-Redis group-destruction/recovery gate pass. |
 | F11 | Implemented; final-head fault gate passes | Real ioredis XADD quarantine, common validated decode, and rowwise permanent SQL poison isolation in `ram/writer.ts`, `protocol.ts`; malformed PEL, poison-neighbor and real-Redis quarantine tests pass. A final-head simulated permanent SQLSTATE 23514 in a two-row batch quarantined only the poison row through real ioredis, committed its valid neighbor in PG, and left PEL zero. |

@@ -42,6 +42,34 @@ Production and running services remain untouched. No deployment, service restart
 
 ## Current state
 
+### Successor execution — 2026-10-11
+
+Remote checkpoints match local heads: perf `8968078`, RAM `e0bddc1`.
+Perf CI `38174016916` and `38174021349` concluded success; the two
+`e0bddc1` RAM workflows are running. Next implement F07 historical ledger
+coverage in a new transactional migration (do not change migration 058's
+shipped checksum). Take the same writer lock in a separate command before
+backfill, assign missing historical UUIDs, preserve existing identities,
+and publish a coverage fence only with the committed backfill. CoreScope
+must require that fence for ledger completeness. Regressions cover old and
+compressed packets, rollback/retry, contended writer ordering, late commits
+and cursor reset. Then continue the outstanding F01/F06/F08/F09/F12–F16
+gates above; no architecture substitution or production changes.
+
+F06 now captures bounded Redis overlap before the REST/WS SQL query begins,
+then applies current authorization after SQL and stable-ID deduplication.
+Its unit regression failed at the checkpoint; the real PG/Redis gate holds
+a Repeatable Read snapshot, commits A while admitting B, expires retained A,
+and proves A remains readable and B appears on the next read. F07 migration
+059 and its interrupted/compressed/contended backfill regression pass.
+CoreScope's real paired-source crash gate exposed F17 restart corruption:
+shared schema setup recreated the broad legacy index after the upstream-ID
+migration, potentially deleting distinct observations. Schema reapplication
+now preserves upstream IDs and startup repairs actual missing/legacy indexes
+even when an earlier migration marker says done. Both source orders pass
+active-last-job process crash, SQLite failure, cursor hold and replay/count
+checks. Full CoreScope suites are running before its local commit.
+
 ### Owner handoff at 20:55 UTC
 
 The owner requested a stop for a GPT-6.1 Sol successor. **Do not treat the repair mission as complete.** The perf branch is pushed at `89680782c3c6a0e517640c9e02fca59f5c8a0bee` (`8968078` archives `TASK-BRIEF.md` and two review patch scripts); its repair code remains at `cbf78a8`. The RAM branch is pushed at `d1aa6ebb8405e9172a74f1f83a42782de7ecde25` (`8cace8e` archives the RAM brief, SQL capture helper and patch scripts; `d1aa6eb` merges the new perf head). Its ingestion code was bench-tested at `022b7c8`, and its later drain-only repair is `f70fe05`. Both worktrees are clean at this handoff. The local CoreScope commit `e9afb3a8a17f8b65d1463985df18984c8f8b86f4` is **not pushed**; relay it with `git format-patch -1 e9afb3a` after review.

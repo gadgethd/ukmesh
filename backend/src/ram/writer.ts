@@ -8,14 +8,14 @@
  * MQTT_RAM_MAX_AGE_MS — whichever comes first, checked on every wake (the
  * blocking read wakes at least once per second).
  *
- * Commit handoff: XACK (durable acknowledgement to the stream) → byte-budget
- * release → commit marker. Entries are NOT deleted at commit: they are
- * retained for a short overlap window so a reader that queried the database
- * just BEFORE the commit and the stream just AFTER it cannot fall into the
- * gap between the two stores. A retention sweep deletes committed entries
- * only when they are provably safe to remove: acknowledged (absent from the
- * PEL), at or below the newest commit boundary, and older than a minimum
- * retention guard. On failure the entries are left un-acked and retried with
+ * Commit handoff: mark each committed stream ID, then XACK. Entries and their
+ * byte reservation remain until final cleanup. Public readers capture Redis
+ * before starting SQL and deduplicate the overlap by observation ID, so even
+ * expiry during a slow SQL read cannot open a handoff gap. The retention sweep
+ * deletes only acknowledged entries with an individual commit timestamp past
+ * the overlap guard; it never infers completion from a newer batch. Independent
+ * readers use the durable ledger for completeness beyond this overlap.
+ * On failure the entries are left un-acked and retried with
  * backoff; a crashed writer's in-flight entries are reclaimed from the PEL
  * (own '0' reads + XAUTOCLAIM).
  */

@@ -4,7 +4,8 @@
  * The live read paths (recent packets, recent messages, WS initial state)
  * keep reading PostgreSQL. In RAM mode the batch flush window (up to
  * MQTT_RAM_MAX_AGE_MS) would hide recently admitted packets from those
- * queries, so this helper appends the pending stream entries — mapped to the
+ * queries, so readRecentWithPending captures stream overlap before starting
+ * SQL, then this helper appends those entries — mapped to the
  * same row shape the SQL queries return — on top of the database result.
  *
  * Correctness notes:
@@ -18,7 +19,7 @@
  *  - Redis failure omits the pending overlay, while the authorized PG rows
  *    remain available.
  */
-import { readPendingEntries } from './liveStore.js';
+import { readPendingEntries, type PendingStreamEntry } from './liveStore.js';
 import { loadCurrentPublicPrivacyPolicy } from '../db/packetBatch.js';
 import { query } from '../db/index.js';
 import { networkMatchesScope } from '../networks.js';
@@ -39,6 +40,8 @@ export type MergeOptions = {
   resolveAliases?: (nodeIds: string[]) => Promise<Map<string, string>>;
   /** Restrict pending contributions to these packet types (e.g. [5] for message history). */
   packetTypes?: number[];
+  /** Capture before starting the SQL read to survive overlap expiry. */
+  pendingSnapshot?: PendingStreamEntry[];
 };
 
 function upper(value: unknown): string | null {
@@ -188,6 +191,22 @@ function stripInternalIds<T>(rows: T[]): T[] {
   return rows;
 }
 
+/**
+ * Capture RAM first, then start SQL. An observation deleted before this
+ * capture has already committed and is visible to the later SQL snapshot;
+ * an observation deleted during SQL remains in this bounded capture. This
+ * ordering makes the handoff independent of SQL latency/Redis retention.
+ * Permission is checked after SQL, never frozen with the captured payload.
+ */
+export async function readRecentWithPending<T>(
+  loadRows: () => Promise<T[]>,
+  opts: MergeOptions,
+): Promise<T[]> {
+  const pendingSnapshot = getRamIngestMode() === 'ram'
+    ? await readPendingEntries(opts.limit) : [];
+  return mergePendingPacketsIntoRecentRows(await loadRows(), { ...opts, pendingSnapshot });
+}
+
 export async function mergePendingPacketsIntoRecentRows<T>(
   rows: T[],
   opts: MergeOptions,
@@ -206,7 +225,7 @@ export async function mergePendingPacketsIntoRecentRows<T>(
     // The store scans the bounded stream, then this layer filters and pages
     // distinct hashes. Sampling only the newest N observations would hide a
     // matching hash behind a large observer fanout or other packet types.
-    const pending = await readPendingEntries(opts.limit);
+    const pending = opts.pendingSnapshot ?? await readPendingEntries(opts.limit);
     if (pending.length === 0) return stripInternalIds(base as unknown as T[]);
     const cutoff = (opts.nowMs ?? Date.now()) - (opts.windowMs ?? (opts.packetTypes ? 86_400_000 : 300_000));
     const eligible = pending.filter(({ entry }) => {
