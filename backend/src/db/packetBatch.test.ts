@@ -65,7 +65,7 @@ test('packet batches retry transient database failures without losing the pendin
   assert.match(statements[1]!, /new_rows AS MATERIALIZED/);
   assert.match(statements[1]!, /existing\.packet_hash = c\.packet_hash/);
   assert.match(statements[1]!, /INSERT INTO packets \(\s*observation_id,/);
-  assert.match(statements[1]!, /gen_random_uuid\(\) AS observation_id/);
+  assert.match(statements[1]!, /COALESCE\(i\.observation_id, gen_random_uuid\(\)\) AS observation_id/);
   assert.match(statements[1]!, /SELECT observation_id, time, packet_hash/);
   assert.match(statements[1]!, /network, observation_id\s+FROM new_rows/);
   assert.match(statements[1]!, /FOR KEY SHARE/);

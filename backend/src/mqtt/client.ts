@@ -15,6 +15,8 @@ import { extractNeighborNodes } from './neighborPayload.js';
 import { parseMqttTopic } from './topic.js';
 import { createDurableMqttHandleMessage } from './durableHandler.js';
 import { waitForInFlightPacket } from './dedupeRegistry.js';
+import { admitPacketToRam } from '../ram/liveStore.js';
+import { getRamIngestMode } from '../ram/protocol.js';
 import { persistStatusTelemetrySample } from './statusTelemetry.js';
 import {
   boundedNetworkMetricLabel,
@@ -43,6 +45,7 @@ type MqttRuntimeStatus = {
 let mqttRuntimeStatus: MqttRuntimeStatus = { state: 'starting', changedAt: new Date().toISOString() };
 const mqttClients: MqttClient[] = [];
 let mqttStopping = false;
+const MQTT_INGEST_MODE = getRamIngestMode();
 let mqttDurabilityFailure: string | undefined;
 
 function setMqttRuntimeStatus(state: MqttRuntimeStatus['state'], lastError?: string): void {
@@ -59,7 +62,7 @@ export function getMqttRuntimeStatus(): MqttRuntimeStatus {
     : { ...mqttRuntimeStatus };
 }
 
-function markMqttPersistenceHealthy(): void {
+export function markMqttPersistenceHealthy(): void {
   mqttDurabilityFailure = undefined;
 }
 
@@ -849,7 +852,7 @@ async function handleMessage(topic: string, rawPayload: Buffer, redelivered = fa
   };
 
   const persistOnce = async (): Promise<void> => {
-    const visibility = await insertPacket({
+    const persistInput = {
       packetHash: finalHash,
       rxNodeId:   observerKey,
       srcNodeId,
@@ -868,9 +871,12 @@ async function handleMessage(topic: string, rawPayload: Buffer, redelivered = fa
       network,
       transportCodes: decodedTransportCodes,
       regionScope:    decodedRegionScope,
-    });
+    };
+    const visibility = MQTT_INGEST_MODE === 'ram'
+      ? await admitPacketToRam(persistInput)
+      : await insertPacket(persistInput);
     rememberPacket(finalHash, observerKey, decodedHops);
-    markMqttPersistenceHealthy();
+    if (MQTT_INGEST_MODE !== 'ram') markMqttPersistenceHealthy();
     emitNode(observerKey, { network, observerId: observerKey });
     livePacket.isPrivate = visibility.isPrivate;
     livePacket.visibilityOk = visibility.visibilityOk;
@@ -883,7 +889,9 @@ async function handleMessage(topic: string, rawPayload: Buffer, redelivered = fa
       );
     }
     invalidateResolveCache(finalHash);
-    mqttIngestOutcomesTotal.inc({ outcome: 'packet_persisted' });
+    mqttIngestOutcomesTotal.inc({
+      outcome: MQTT_INGEST_MODE === 'ram' ? 'packet_admitted' : 'packet_persisted',
+    });
   };
 
   const ingest = (async () => {
@@ -900,9 +908,11 @@ async function handleMessage(topic: string, rawPayload: Buffer, redelivered = fa
     try {
       await persistOnce();
     } catch (err) {
-      mqttIngestOutcomesTotal.inc({ outcome: 'packet_persist_failure' });
+      mqttIngestOutcomesTotal.inc({
+        outcome: MQTT_INGEST_MODE === 'ram' ? 'packet_admission_failure' : 'packet_persist_failure',
+      });
       console.error(
-        '[mqtt] db insert failed',
+        MQTT_INGEST_MODE === 'ram' ? '[mqtt] ram admission failed' : '[mqtt] db insert failed',
         err instanceof Error ? err.message : String(err),
       );
       throw err;

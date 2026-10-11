@@ -24,6 +24,7 @@ import {
   websocketClients,
 } from '../metrics.js';
 import { selectInitialViableLinks } from './initialStateLinks.js';
+import { mergePendingPacketsIntoRecentRows } from '../ram/liveRead.js';
 
 const REDIS_CHANNEL = 'meshcore:live';
 const LOG_WS_PACKETS = process.env['LOG_WS_PACKETS'] === '1';
@@ -232,8 +233,14 @@ async function fetchInitialState(network: string | undefined, observer: string |
       //   seed a proper message cache on first load instead of relying on live traffic.
       const [rawNodes, packets, messages, rawViableLinks] = await Promise.all([
         getNodes(network, observer, 'slim', signal),
-        getRecentPackets(7, network, observer, 'full', signal),
-        getRecentMessages(200, network, observer, signal),
+        mergePendingPacketsIntoRecentRows(
+          await getRecentPackets(7, network, observer, 'full', signal),
+          { limit: 7, network, observer },
+        ),
+        mergePendingPacketsIntoRecentRows(
+          await getRecentMessages(200, network, observer, signal),
+          { limit: 200, network, observer, includePayload: true },
+        ),
         getCachedViableLinks(network, observer, signal),
       ]);
       const nodes = rawNodes

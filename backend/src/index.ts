@@ -12,6 +12,8 @@ import {
   initOwnerAuthDb,
 } from './db/ownerAuth.js';
 import { getMqttRuntimeStatus, startMqttClient, stopMqttClient, onPacket, onNodeSeen, onNodeUpsert } from './mqtt/client.js';
+import { startRamWriter, closeRamWriter } from './ram/writerRuntime.js';
+import { getRamIngestMode } from './ram/protocol.js';
 import {
   startMqttConnectionMonitor,
   stopMqttConnectionMonitor,
@@ -112,6 +114,11 @@ lifecycle.register({
   name: 'mqtt-ingest',
   stage: 10,
   close: () => stopMqttClient(Math.max(1_000, SHUTDOWN_DEADLINE_MS - 5_000)),
+});
+lifecycle.register({
+  name: 'ram-ingest-writer',
+  stage: 30,
+  close: () => closeRamWriter(Math.max(1_000, SHUTDOWN_DEADLINE_MS - 10_000)),
 });
 lifecycle.register({
   name: 'path-resolve-workers',
@@ -429,6 +436,11 @@ async function main() {
   if (MQTT_INGEST_ENABLED) {
     void startMqttClient().catch((err: unknown) => {
       console.error('[mqtt] failed to start client:', err instanceof Error ? err.message : err);
+    });
+  }
+  if (getRamIngestMode() === 'ram') {
+    void startRamWriter().catch((err: unknown) => {
+      console.error('[ram] failed to start writer:', err instanceof Error ? err.message : err);
     });
   }
 

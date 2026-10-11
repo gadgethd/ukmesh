@@ -11,6 +11,8 @@ import {
 } from '../metrics.js';
 import {
   PrivatePrefixCache,
+  type PacketPrivacyClassification,
+  type PacketPrivacyInput,
   type PrivatePrefixRow,
 } from '../privacy/privatePrefixCache.js';
 
@@ -80,6 +82,19 @@ export type PacketBatchResult = {
   visibilityOk: boolean;
 };
 
+/** One packet for persistEntriesCore: batch input + optional stable observation identity. */
+export type PersistEntry = {
+  input: PacketBatchInput;
+  observationId: string | null;
+};
+
+export type PersistRow = {
+  row_id: number;
+  is_private: boolean;
+  visibility_ok: boolean;
+  prefix_cache_fresh: boolean;
+};
+
 type QueryFn = <T extends QueryResultRow = QueryResultRow>(
   text: string,
   params?: unknown[],
@@ -104,6 +119,25 @@ export function configurePacketBatch(query: QueryFn): void {
   queryFn = query;
   privatePrefixCache = new PrivatePrefixCache();
   privatePrefixRefresh = null;
+}
+
+/**
+ * Admission-time classification for RAM-mode ingest: loads the cache once if
+ * it has never been populated, then classifies against the shared cache
+ * instance. The database re-classifies authoritatively at commit (fail-closed
+ * fence), so a stale cache can only ever delay visibility, never leak.
+ */
+export async function classifyForAdmission(
+  input: PacketPrivacyInput,
+): Promise<PacketPrivacyClassification> {
+  if (privatePrefixCache.currentGeneration < 1 && queryFn) {
+    try {
+      await refreshPrivatePrefixCache(queryFn);
+    } catch (error) {
+      console.error('[db] private prefix cache refresh failed', (error as Error).message);
+    }
+  }
+  return privatePrefixCache.classify(input);
 }
 
 function refreshPrivatePrefixCache(query: QueryFn): Promise<void> {
@@ -152,7 +186,7 @@ function scheduleFlush(): void {
   timer.unref();
 }
 
-function isRetryableDatabaseError(error: unknown): boolean {
+export function isRetryableDatabaseError(error: unknown): boolean {
   if (typeof error === 'object' && error !== null && 'code' in error) {
     const code = (error as { code?: unknown }).code;
     if (typeof code === 'string' && RETRYABLE_DATABASE_CODES.has(code)) return true;
@@ -161,7 +195,7 @@ function isRetryableDatabaseError(error: unknown): boolean {
   return /connection terminated|database system is not yet accepting connections|server closed the connection unexpectedly|connection reset|connection refused|could not connect/i.test(message);
 }
 
-function retryDelay(attempt: number): number {
+export function retryDelay(attempt: number): number {
   return RETRY_DELAYS_MS[Math.min(attempt, RETRY_DELAYS_MS.length - 1)] ?? 4_000;
 }
 
@@ -222,10 +256,11 @@ function collapseDuplicatePackets(batch: PendingPacket[]): PendingPacket[] {
   return kept;
 }
 
-async function writeBatch(batch: PendingPacket[], idempotent: boolean): Promise<void> {
-  const query = queryFn;
-  if (!query) throw new Error('PACKET_BATCH_NOT_CONFIGURED');
-
+export async function persistEntriesCore(
+  entries: PersistEntry[],
+  query: QueryFn,
+  idempotent: boolean,
+): Promise<PersistRow[]> {
   if (privatePrefixCache.currentGeneration < 1) {
     try {
       await refreshPrivatePrefixCache(query);
@@ -234,14 +269,14 @@ async function writeBatch(batch: PendingPacket[], idempotent: boolean): Promise<
     }
   }
 
-  const columnsPerRow = 25;
+  const columnsPerRow = 26;
   const casts = [
-    'int', 'timestamptz', 'text', 'text', 'text', 'text', 'text', 'text',
+    'int', 'uuid', 'timestamptz', 'text', 'text', 'text', 'text', 'text', 'text',
     'int', 'int', 'int', 'double precision', 'double precision', 'text', 'text',
     'text', 'int', 'text[]', 'int', 'text', 'text', 'text', 'bigint', 'boolean', 'boolean',
   ];
   const params: unknown[] = [];
-  const values = batch.map(({ packet }, rowIndex) => {
+  const values = entries.map(({ input: packet, observationId }, rowIndex) => {
     const offset = rowIndex * columnsPerRow;
     const privacy = privatePrefixCache.classify({
       network: packet.network,
@@ -252,6 +287,7 @@ async function writeBatch(batch: PendingPacket[], idempotent: boolean): Promise<
     });
     params.push(
       rowIndex,
+      observationId,
       packet.time,
       packet.packetHash,
       packet.rxNodeId,
@@ -301,12 +337,7 @@ async function writeBatch(batch: PendingPacket[], idempotent: boolean): Promise<
        ),`
     : '';
 
-  const result = await query<{
-    row_id: number;
-    is_private: boolean;
-    visibility_ok: boolean;
-    prefix_cache_fresh: boolean;
-  }>(
+  const result = await query<PersistRow>(
       `WITH current_visibility AS MATERIALIZED (
          SELECT generation
            FROM public_visibility_state
@@ -320,14 +351,14 @@ async function writeBatch(batch: PendingPacket[], idempotent: boolean): Promise<
          ) AS active
        ),
        incoming (
-         row_id, time, packet_hash, rx_node_id, src_node_id, topic, topic_prefix,
+         row_id, observation_id, time, packet_hash, rx_node_id, src_node_id, topic, topic_prefix,
          iata, packet_type, route_type, hop_count, rssi, snr, payload, companion_sender, raw_hex,
          advert_count, path_hashes, path_hash_size_bytes, network, transport_codes, region_scope,
          prefix_cache_generation, classified_private, path_is_valid
        ) AS (VALUES ${values}),
        classified AS MATERIALIZED (
          SELECT i.*,
-           gen_random_uuid() AS observation_id,
+           COALESCE(i.observation_id, gen_random_uuid()) AS observation_id,
            CASE
              WHEN remat.active THEN meshcore_path_matches_private(
                i.network, i.rx_node_id, i.src_node_id,
@@ -548,14 +579,25 @@ async function writeBatch(batch: PendingPacket[], idempotent: boolean): Promise<
       params,
     );
 
-  if (result.rows.length !== batch.length) throw new Error('PACKET_BATCH_RESULT_MISMATCH');
+  if (result.rows.length !== entries.length) throw new Error('PACKET_BATCH_RESULT_MISMATCH');
   if (result.rows.some((row) => !row.prefix_cache_fresh)) {
     void refreshPrivatePrefixCache(query).catch((error: unknown) => {
       console.error('[db] private prefix cache refresh failed', (error as Error).message);
     });
   }
+  return result.rows;
+}
+
+async function writeBatch(batch: PendingPacket[], idempotent: boolean): Promise<void> {
+  const query = queryFn;
+  if (!query) throw new Error('PACKET_BATCH_NOT_CONFIGURED');
+  const rows = await persistEntriesCore(
+    batch.map(({ packet }) => ({ input: packet, observationId: null })),
+    query,
+    idempotent,
+  );
   const settledAt = process.hrtime.bigint();
-  for (const row of result.rows) {
+  for (const row of rows) {
     const item = batch[row.row_id];
     if (item) {
       packetBatchQueueWait.observe(Number(settledAt - item.enqueuedNs) / 1e9);
