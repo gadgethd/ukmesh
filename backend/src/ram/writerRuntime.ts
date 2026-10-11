@@ -8,7 +8,7 @@
 import { Redis } from 'ioredis';
 import { getRedisConnectionOptions, getRedisUrl } from '../platform/config/redis.js';
 import { query } from '../db/index.js';
-import { persistEntriesCore } from '../db/packetBatch.js';
+import { persistEntriesCore, refreshAdmissionPrivacyCache } from '../db/packetBatch.js';
 import { markMqttPersistenceHealthy } from '../mqtt/client.js';
 import { refreshPendingStats } from './liveStore.js';
 import {
@@ -21,6 +21,10 @@ import {
 import { createRamWriter, type RamWriterRedis } from './writer.js';
 
 let singleton: ReturnType<typeof createRamWriter> | null = null;
+
+/** Bound on the stale-cache window for admission-time visibility flags. */
+const PRIVACY_REFRESH_INTERVAL_MS = 30_000;
+let lastPrivacyRefreshAt = 0;
 
 function productionRedis(): RamWriterRedis {
   const client = new Redis(getRedisUrl(), {
@@ -47,7 +51,19 @@ export async function startRamWriter(): Promise<void> {
     streamKey: getRamStreamKey,
     group: getRamConsumerGroup,
     consumer: getRamConsumerName,
-    statsTick: refreshPendingStats,
+    statsTick: async () => {
+      await refreshPendingStats();
+      const now = Date.now();
+      if (now - lastPrivacyRefreshAt >= PRIVACY_REFRESH_INTERVAL_MS) {
+        lastPrivacyRefreshAt = now;
+        await refreshAdmissionPrivacyCache().catch((error: unknown) => {
+          console.error(
+            '[ram] privacy cache refresh failed',
+            error instanceof Error ? error.message : error,
+          );
+        });
+      }
+    },
     markHealthy: markMqttPersistenceHealthy,
     log: (message, error) => {
       console.error(message, error instanceof Error ? error.message : (error ?? ''));

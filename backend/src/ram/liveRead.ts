@@ -16,6 +16,7 @@
  *    unchanged, never an error.
  */
 import { readPendingEntries } from './liveStore.js';
+import { classifyForAdmission } from '../db/packetBatch.js';
 import { getRamIngestMode } from './protocol.js';
 
 export type RecentRow = Record<string, unknown>;
@@ -57,6 +58,18 @@ export async function mergePendingPacketsIntoRecentRows<T>(
     for (const { entry } of pending) {
       if (!entry.visibilityOk) continue;
       const input = entry.input;
+      // Re-classify against the CURRENT privacy cache: the entry's baked-in
+      // flags can lag a node-privacy flip, so a pending packet that is now
+      // private must not appear in public merged reads. Fails closed when the
+      // cache is not loaded (generation 0 -> visibilityOk false).
+      const fresh = await classifyForAdmission({
+        network: input.network,
+        rxNodeId: input.rxNodeId,
+        srcNodeId: input.srcNodeId,
+        pathHashes: input.pathHashes,
+        pathHashSizeBytes: input.pathHashSizeBytes,
+      });
+      if (!fresh.visibilityOk) continue;
       if (opts.network && input.network !== opts.network) continue;
       if (opts.observer && upper(input.rxNodeId) !== opts.observer.toUpperCase()) continue;
       const hash = String(input.packetHash ?? '').toLowerCase();

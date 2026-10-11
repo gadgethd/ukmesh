@@ -18,6 +18,7 @@ import {
   type RamPendingEntry,
 } from './protocol.js';
 import type { InsertPacketInput } from '../db/packetInput.js';
+import { classifyForAdmission, configurePacketBatch } from '../db/packetBatch.js';
 
 class FakeStore implements RamStoreRedis {
   len = 0;
@@ -161,7 +162,21 @@ test('readPendingEntries skips markers and returns oldest-last', async () => {
   assert.equal(pending[1]?.id, '99-0');
 });
 
+async function loadPublicPrivacyCache(): Promise<void> {
+  configurePacketBatch(async () => ({
+    rows: [{ generation: '7', prefixes: [] }],
+  }));
+  await classifyForAdmission({
+    network: 'ukmesh',
+    rxNodeId: null,
+    srcNodeId: null,
+    pathHashes: null,
+    pathHashSizeBytes: null,
+  });
+}
+
 test('merged reads append only public, scoped, non-duplicate pending rows', async () => {
+  await loadPublicPrivacyCache();
   const fake = new FakeStore();
   fake.rev = [
     ['103-0', ['e', encodePendingEntry(entryFor('ab'.repeat(32), { time: '2026-10-11T12:05:00.000Z' }))]], // dup of DB row
@@ -185,4 +200,34 @@ test('merged reads append only public, scoped, non-duplicate pending rows', asyn
     includePayload: true,
   });
   assert.equal((withPayload[0]?.['payload'] as Record<string, unknown>)?.['direction'], 'rx');
+});
+
+test('merged reads drop pending entries the current privacy cache now classifies private', async () => {
+  // Load a cache where the entry's observer node is private.
+  configurePacketBatch(async () => ({
+    rows: [{
+      generation: '8',
+      prefixes: [{
+        node_id: 'cd'.repeat(32).toUpperCase(),
+        network: 'ukmesh',
+        prefix_size_bytes: 1,
+        prefix: 'CD',
+      }],
+    }],
+  }));
+  await classifyForAdmission({
+    network: 'ukmesh',
+    rxNodeId: null,
+    srcNodeId: null,
+    pathHashes: null,
+    pathHashSizeBytes: null,
+  });
+
+  const fake = new FakeStore();
+  fake.rev = [
+    ['200-0', ['e', encodePendingEntry(entryFor('55'.repeat(32), { time: '2026-10-11T12:30:00.000Z' }))]],
+  ];
+  configureRamStore(fake);
+  const merged = await mergePendingPacketsIntoRecentRows([], { limit: 10, network: 'ukmesh' });
+  assert.equal(merged.length, 0, 'now-private pending entry must not appear in public merges');
 });

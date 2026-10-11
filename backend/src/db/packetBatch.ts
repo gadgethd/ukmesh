@@ -140,6 +140,16 @@ export async function classifyForAdmission(
   return privatePrefixCache.classify(input);
 }
 
+/**
+ * Refresh the admission-time privacy cache. The RAM writer calls this on a
+ * slow cadence so a node-privacy flip bounds the stale-cache window even
+ * without traffic-driven refreshes; concurrent calls share one refresh.
+ */
+export async function refreshAdmissionPrivacyCache(): Promise<void> {
+  if (!queryFn) return;
+  await refreshPrivatePrefixCache(queryFn);
+}
+
 function refreshPrivatePrefixCache(query: QueryFn): Promise<void> {
   if (privatePrefixRefresh) return privatePrefixRefresh;
   const refresh = query<{
