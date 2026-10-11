@@ -17,6 +17,7 @@ import { createDurableMqttHandleMessage } from './durableHandler.js';
 import { persistStatusTelemetrySample } from './statusTelemetry.js';
 import {
   boundedNetworkMetricLabel,
+  mqttIngestAckDuration,
   mqttIngestActive,
   mqttIngestOutcomesTotal,
   mqttMessagesTotal,
@@ -37,7 +38,7 @@ type MqttRuntimeStatus = {
 };
 
 let mqttRuntimeStatus: MqttRuntimeStatus = { state: 'starting', changedAt: new Date().toISOString() };
-let mqttClient: MqttClient | null = null;
+const mqttClients: MqttClient[] = [];
 let mqttStopping = false;
 let mqttDurabilityFailure: string | undefined;
 
@@ -245,6 +246,41 @@ function rememberPacket(packetHash: string, observerKey: string, hopCount: numbe
 }
 
 /**
+ * Packets currently being persisted, keyed like `seenPackets`. A second copy
+ * of the same packet arriving while the first is still in flight (possible
+ * once more than one connection can ingest concurrently) waits for the first
+ * attempt: success resolves this copy as a duplicate, failure leaves nothing
+ * committed so this copy persists on its own.
+ */
+const inFlightPackets = new Map<string, Promise<void>>();
+
+/**
+ * Database-level duplicate confirmation for QoS 1 redeliveries — the in-memory
+ * filters do not survive a restart. Bounded to the retained packet window so
+ * the probe stays on the packet_hash index.
+ */
+async function packetAlreadyPersisted(
+  packetHash: string,
+  rxNodeId: string,
+  topic: string,
+  network: string,
+): Promise<boolean> {
+  const result = await query<{ present: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1
+         FROM packets
+        WHERE packet_hash = $1
+          AND rx_node_id = $2
+          AND topic = $3
+          AND network = $4
+          AND time > NOW() - INTERVAL '30 days'
+     ) AS present`,
+    [packetHash, rxNodeId, topic, network],
+  );
+  return Boolean(result.rows[0]?.present);
+}
+
+/**
  * Channel registry — built once at startup.
  * MESHCORE_CHANNEL_SECRETS supports 'name:hex' or bare 'hex' entries (comma-separated).
  * The default public channel is always included.
@@ -264,6 +300,18 @@ const MQTT_MAX_PAYLOAD_BYTES = boundedEnvInteger('MQTT_MAX_PAYLOAD_BYTES', 64 * 
 const MQTT_CLIENT_ID = String(
   process.env['MQTT_CLIENT_ID'] ?? 'meshcore-analytics-ingest',
 ).trim() || 'meshcore-analytics-ingest';
+/**
+ * Number of ingest connections to the broker. Each connection is a strictly
+ * serial durable pipeline (mqtt.js dispatches the next packet only after the
+ * previous one is acknowledged), so this is the supported way to run more
+ * than one persistence flow; messages are distributed between the connections
+ * with a shared subscription. 1 preserves the historical single-connection
+ * behaviour exactly.
+ */
+const MQTT_INGEST_CONNECTIONS = boundedEnvInteger('MQTT_INGEST_CONNECTIONS', 1, 1, 16);
+const MQTT_INGEST_SHARE_GROUP = String(
+  process.env['MQTT_INGEST_SHARE_GROUP'] ?? 'meshcore-ingest',
+).trim() || 'meshcore-ingest';
 
 let activeMqttIngests = 0;
 let droppedMqttMessages = 0;
@@ -282,7 +330,8 @@ function reportDroppedMqttMessage(
   lastMqttDropLogAt = now;
 }
 
-function handleIncomingMqttPacket(packet: { topic: string; payload: Buffer | string }): Promise<void> {
+function handleIncomingMqttPacket(packet: { topic: string; payload: Buffer | string; dup?: boolean }): Promise<void> {
+  const startedAt = process.hrtime.bigint();
   const rawPayload = Buffer.isBuffer(packet.payload)
     ? packet.payload
     : Buffer.from(packet.payload);
@@ -300,22 +349,23 @@ function handleIncomingMqttPacket(packet: { topic: string; payload: Buffer | str
 
   activeMqttIngests += 1;
   mqttIngestActive.set(activeMqttIngests);
-  return handleMessage(packet.topic, rawPayload)
+  return handleMessage(packet.topic, rawPayload, packet.dup === true)
     .then(() => mqttIngestOutcomesTotal.inc({ outcome: 'processed' }))
     .finally(() => {
+      mqttIngestAckDuration.observe(Number(process.hrtime.bigint() - startedAt) / 1e9);
       activeMqttIngests -= 1;
       mqttIngestActive.set(activeMqttIngests);
     });
 }
 
-function reportMqttIngestFailure(error: Error): void {
+function reportMqttIngestFailure(client: MqttClient, error: Error): void {
   mqttIngestOutcomesTotal.inc({ outcome: 'failure' });
   mqttDurabilityFailure = error.message.slice(0, 200) || 'MQTT persistence failed';
   console.error('[mqtt] durable ingest failed; leaving delivery unacknowledged:', error.message);
   // MQTT.js forwards handleMessage errors to its parser callback, which does
   // not send PUBACK. Close the stream so the persistent broker session
   // redelivers the unacknowledged QoS 1 message instead of leaving it inflight.
-  if (!mqttStopping && mqttClient?.connected) mqttClient.stream.destroy();
+  if (!mqttStopping && client.connected) client.stream.destroy();
 }
 
 
@@ -334,53 +384,70 @@ export async function startMqttClient(): Promise<void> {
   console.log(`[mqtt] durable ingest maxPayload=${MQTT_MAX_PAYLOAD_BYTES}`);
   console.log(`[mqtt] persistent session clientId=${MQTT_CLIENT_ID} subscriptionQos=1`);
 
-  const client = mqtt.connect(brokerUrl, {
-    reconnectPeriod: 5000,
-    connectTimeout: 30000,
-    clean: false,
-    clientId: MQTT_CLIENT_ID,
-    username: process.env['MQTT_USERNAME'],
-    password: process.env['MQTT_PASSWORD'],
-  });
-  mqttClient = client;
-  client.handleMessage = createDurableMqttHandleMessage(
-    handleIncomingMqttPacket,
-    reportMqttIngestFailure,
-  );
-
-  client.on('connect', () => {
-    setMqttRuntimeStatus('connected');
-    console.log('[mqtt] connected');
-    for (const prefix of TOPIC_PREFIXES) {
-      client.subscribe(`${prefix}/#`, { qos: 1 }, (err) => {
-        if (err) console.error(`[mqtt] subscribe error (${prefix}/#)`, err.message);
-        else      console.log(`[mqtt] subscribed to ${prefix}/#`);
-      });
-    }
-  });
-
-  client.on('error', (err) => {
-    setMqttRuntimeStatus('error', err.message);
-    console.error('[mqtt] error', err.message);
-  });
-  client.on('offline', () => setMqttRuntimeStatus('disconnected'));
-  client.on('close', () => {
-    setMqttRuntimeStatus('disconnected');
-    void flushPacketBatch().catch((err: unknown) => {
-      console.error('[mqtt] packet batch close flush failed:', (err as Error).message);
+  console.log(`[mqtt] connections=${MQTT_INGEST_CONNECTIONS}`);
+  for (let index = 0; index < MQTT_INGEST_CONNECTIONS; index += 1) {
+    const connectionLabel = MQTT_INGEST_CONNECTIONS > 1
+      ? ` (connection ${index + 1}/${MQTT_INGEST_CONNECTIONS})`
+      : '';
+    const client = mqtt.connect(brokerUrl, {
+      reconnectPeriod: 5000,
+      connectTimeout: 30000,
+      clean: false,
+      clientId: MQTT_INGEST_CONNECTIONS > 1 ? `${MQTT_CLIENT_ID}-${index + 1}` : MQTT_CLIENT_ID,
+      username: process.env['MQTT_USERNAME'],
+      password: process.env['MQTT_PASSWORD'],
     });
-  });
-  client.on('reconnect', () => {
-    setMqttRuntimeStatus('reconnecting');
-    console.log('[mqtt] reconnecting…');
-  });
+    mqttClients.push(client);
+    client.handleMessage = createDurableMqttHandleMessage(
+      handleIncomingMqttPacket,
+      (error) => reportMqttIngestFailure(client, error),
+    );
+
+    client.on('connect', () => {
+      setMqttRuntimeStatus('connected');
+      console.log(`[mqtt] connected${connectionLabel}`);
+      for (const prefix of TOPIC_PREFIXES) {
+        // A shared subscription spreads messages across the ingest
+        // connections; a single connection keeps the historical direct
+        // subscription and its topic-ACL behaviour exactly.
+        const topicFilter = MQTT_INGEST_CONNECTIONS > 1
+          ? `$share/${MQTT_INGEST_SHARE_GROUP}/${prefix}/#`
+          : `${prefix}/#`;
+        client.subscribe(topicFilter, { qos: 1 }, (err) => {
+          if (err) console.error(`[mqtt] subscribe error (${topicFilter})`, err.message);
+          else      console.log(`[mqtt] subscribed to ${topicFilter}${connectionLabel}`);
+        });
+      }
+    });
+
+    client.on('error', (err) => {
+      setMqttRuntimeStatus('error', err.message);
+      console.error('[mqtt] error', err.message);
+    });
+    client.on('offline', () => {
+      if (!mqttClients.some((candidate) => candidate.connected)) {
+        setMqttRuntimeStatus('disconnected');
+      }
+    });
+    client.on('close', () => {
+      if (!mqttClients.some((candidate) => candidate.connected)) {
+        setMqttRuntimeStatus('disconnected');
+      }
+      void flushPacketBatch().catch((err: unknown) => {
+        console.error('[mqtt] packet batch close flush failed:', (err as Error).message);
+      });
+    });
+    client.on('reconnect', () => {
+      setMqttRuntimeStatus('reconnecting');
+      console.log(`[mqtt] reconnecting…${connectionLabel}`);
+    });
+  }
 }
 
 export async function stopMqttClient(timeoutMs = 20_000): Promise<void> {
   mqttStopping = true;
-  const client = mqttClient;
-  mqttClient = null;
-  if (client) {
+  const clients = mqttClients.splice(0, mqttClients.length);
+  for (const client of clients) {
     client.removeAllListeners('reconnect');
     await client.endAsync(false).catch((error: unknown) => {
       console.error('[mqtt] disconnect failed:', error instanceof Error ? error.message : error);
@@ -403,7 +470,7 @@ export async function stopMqttClient(timeoutMs = 20_000): Promise<void> {
   setMqttRuntimeStatus('disconnected');
 }
 
-async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
+async function handleMessage(topic: string, rawPayload: Buffer, redelivered = false): Promise<void> {
   const topicParts = parseMqttTopic(topic, TOPIC_PREFIXES, BLOCKED_PUBLIC_IATAS);
   if (!topicParts) {
     mqttIngestOutcomesTotal.inc({ outcome: 'invalid_topic' });
@@ -715,9 +782,33 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
   // comes from validated route/path-invariant wire content.
   const finalHash = canonicalPacketId ?? upstreamPacketHash(json['hash']) ?? crypto.randomUUID();
 
+  const dedupeKey = packetDedupeKey(finalHash, observerKey, decodedHops);
+
   if (isDuplicatePacket(finalHash, observerKey, decodedHops)) {
     // This marker is written only after the matching packet is committed.
     // A broker redelivery after a lost PUBACK confirms the durable outcome.
+    markMqttPersistenceHealthy();
+    mqttIngestOutcomesTotal.inc({ outcome: 'duplicate_packet' });
+    return;
+  }
+
+  const inFlight = inFlightPackets.get(dedupeKey);
+  if (inFlight) {
+    // The same packet is already being persisted by a concurrent ingest.
+    // Wait for its outcome: success makes this copy a confirmed duplicate,
+    // failure means nothing was committed and this copy persists below.
+    const persisted = await inFlight.then(() => true, () => false);
+    if (persisted) {
+      markMqttPersistenceHealthy();
+      mqttIngestOutcomesTotal.inc({ outcome: 'duplicate_packet' });
+      return;
+    }
+  }
+
+  // After a restart there is no in-memory dedup state to match against: a
+  // QoS 1 redelivery whose original commit survived the crash must not be
+  // persisted or counted a second time. Confirm against the retained window.
+  if (redelivered && await packetAlreadyPersisted(finalHash, observerKey, topic, network)) {
     markMqttPersistenceHealthy();
     mqttIngestOutcomesTotal.inc({ outcome: 'duplicate_packet' });
     return;
@@ -751,7 +842,7 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
     ts:         Date.now(),
   };
 
-  try {
+  const persistOnce = async (): Promise<void> => {
     const visibility = await insertPacket({
       packetHash: finalHash,
       rxNodeId:   observerKey,
@@ -787,86 +878,129 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
     }
     invalidateResolveCache(finalHash);
     mqttIngestOutcomesTotal.inc({ outcome: 'packet_persisted' });
+  };
 
-    // A repeater appearing in a multibyte (2–3 byte) path hash almost certainly
-    // relayed this packet. Resolve only a unique historic row with stored
-    // coordinates, then broadcast the full row so clients which no longer hold
-    // the stale node can restore it at its original location. Best-effort.
-    if (decodedPathHashSizeBytes != null && decodedPathHashSizeBytes >= 2 && path && path.length > 0) {
-      try {
-        const historicNodes = await recordMultibyteEvidence(
-          path,
-          decodedPathHashSizeBytes,
-          new Date(),
-          decodedRouteType,
-          network,
-        );
-        for (const node of historicNodes) emitNodeUpsert({ ...node });
-      } catch (err) {
-        console.error('[mqtt] recordMultibyteEvidence error:', (err as Error).message);
-      }
-      // Slow mode: schedule ONE final multi-observer resolution after the
-      // propagation window closes so the complete observer set is included
-      // (idempotent per packet hash; best-effort).
-      if (path.length >= pathingConfig.slowModeMinPathHops) {
-        scheduleSlowResolution(finalHash, network);
-      }
+  const ingest = (async () => {
+    try {
+      await persistOnce();
+    } catch (err) {
+      mqttIngestOutcomesTotal.inc({ outcome: 'packet_persist_failure' });
+      console.error(
+        '[mqtt] db insert failed',
+        err instanceof Error ? err.message : String(err),
+      );
+      throw err;
     }
+    // Best-effort live-map follow-ups run once the durable write is done and
+    // outside the acknowledgement path: PUBACK is released as soon as the
+    // write commits and these resolve asynchronously.
+    void runPostPersistFollowUps({
+      finalHash,
+      decodedPathHashSizeBytes,
+      path,
+      decodedRouteType,
+      network,
+      resolvedPacketType,
+    }).catch((err: unknown) => {
+      console.error(
+        '[mqtt] post-persist follow-up failed:',
+        err instanceof Error ? err.message : String(err),
+      );
+    });
+  })();
 
-    // Pre-resolve path for ADV/GRP packets so the cache is warm before the browser requests it.
-    // Bursty multi-observer packets can arrive repeatedly for the same hash; throttle those
-    // warmups so live ingest cannot monopolise the shared path resolver pool.
-    const preResolveKey = `${finalHash}|${network}`;
-    const lastPreResolve = preResolveLastStarted.get(preResolveKey) ?? 0;
-    const shouldPreResolve =
-      PRE_RESOLVE_ENABLED
-      && (resolvedPacketType === 4 || resolvedPacketType === 5)
-      && !preResolveInFlight.has(preResolveKey)
-      && Date.now() - lastPreResolve >= PRE_RESOLVE_MIN_INTERVAL_MS;
-    if (shouldPreResolve) {
-      preResolveInFlight.add(preResolveKey);
-      if (
-        !preResolveLastStarted.has(preResolveKey)
-        && preResolveLastStarted.size >= PRE_RESOLVE_HISTORY_MAX
-      ) {
-        const oldest = preResolveLastStarted.keys().next().value;
-        if (oldest !== undefined) preResolveLastStarted.delete(oldest);
-      }
-      preResolveLastStarted.set(preResolveKey, Date.now());
-      const ck = `m|${finalHash}|${network}`;
-      // Pass any previously resolved high-confidence hop assignments so the solver reuses them
-      const stickyEntry = getStickyNodeMap(finalHash, network);
-      const stickyMap = stickyEntry ? Object.fromEntries(stickyEntry.hashToNodeId) : undefined;
-      const stickyAgeFraction = stickyEntry?.ageFraction;
-      const heldPath = getHeldPath(finalHash, network);
-      resolvePool.runBackground<{
-        stickyUpdates?: Record<string, string>;
-        canonicalPath?: Array<{ nodeId?: string | null }>;
-      }>({ type: 'resolveMulti', packetHash: finalHash, network, ...(stickyMap ? { stickyMap, stickyAgeFraction } : {}), ...(heldPath ? { heldPath } : {}) })
-        .then((result) => {
-          if (result) {
-            const { stickyUpdates, ...cacheableResult } = result;
-            setResolveCache(ck, cacheableResult);
-            if (stickyUpdates && Object.keys(stickyUpdates).length > 0) {
-              mergeStickyNodes(finalHash, network, stickyUpdates);
-            }
-            const heldNodes = result.canonicalPath?.map((hop) => hop.nodeId ?? '').filter(Boolean) ?? [];
-            if (heldNodes.length > 0 && heldNodes.length === result.canonicalPath?.length) {
-              setHeldPath(finalHash, network, { path: heldNodes, resolvedAt: Date.now(), physical: true });
-            }
-          }
-        })
-        .catch(() => { /* best-effort */ })
-        .finally(() => { preResolveInFlight.delete(preResolveKey); });
-    }
-  } catch (err) {
-    mqttIngestOutcomesTotal.inc({ outcome: 'packet_persist_failure' });
-    console.error(
-      '[mqtt] db insert failed',
-      err instanceof Error ? err.message : String(err),
-    );
-    throw err;
+  inFlightPackets.set(dedupeKey, ingest);
+  try {
+    await ingest;
+  } finally {
+    if (inFlightPackets.get(dedupeKey) === ingest) inFlightPackets.delete(dedupeKey);
   }
+}
+
+/**
+ * Best-effort live-map work that does not need to hold the QoS 1
+ * acknowledgement: multibyte path evidence, slow-mode scheduling and cache
+ * warm-up all resolve after the durable write and run concurrently with the
+ * next message's persistence.
+ */
+async function runPostPersistFollowUps(args: {
+  finalHash: string;
+  decodedPathHashSizeBytes: number | undefined;
+  path: string[] | undefined;
+  decodedRouteType: number | undefined;
+  network: string;
+  resolvedPacketType: number | undefined;
+}): Promise<void> {
+  const { finalHash, decodedPathHashSizeBytes, path, decodedRouteType, network, resolvedPacketType } = args;
+
+  // A repeater appearing in a multibyte (2–3 byte) path hash almost certainly
+  // relayed this packet. Resolve only a unique historic row with stored
+  // coordinates, then broadcast the full row so clients which no longer hold
+  // the stale node can restore it at its original location. Best-effort.
+  if (decodedPathHashSizeBytes != null && decodedPathHashSizeBytes >= 2 && path && path.length > 0) {
+    try {
+      const historicNodes = await recordMultibyteEvidence(
+        path,
+        decodedPathHashSizeBytes,
+        new Date(),
+        decodedRouteType,
+        network,
+      );
+      for (const node of historicNodes) emitNodeUpsert({ ...node });
+    } catch (err) {
+      console.error('[mqtt] recordMultibyteEvidence error:', (err as Error).message);
+    }
+    // Slow mode: schedule ONE final multi-observer resolution after the
+    // propagation window closes so the complete observer set is included
+    // (idempotent per packet hash; best-effort).
+    if (path.length >= pathingConfig.slowModeMinPathHops) {
+      scheduleSlowResolution(finalHash, network);
+    }
+  }
+
+  // Pre-resolve path for ADV/GRP packets so the cache is warm before the browser requests it.
+  // Bursty multi-observer packets can arrive repeatedly for the same hash; throttle those
+  // warmups so live ingest cannot monopolise the shared path resolver pool.
+  if (!PRE_RESOLVE_ENABLED || (resolvedPacketType !== 4 && resolvedPacketType !== 5)) return;
+  const preResolveKey = `${finalHash}|${network}`;
+  const lastPreResolve = preResolveLastStarted.get(preResolveKey) ?? 0;
+  if (preResolveInFlight.has(preResolveKey) || Date.now() - lastPreResolve < PRE_RESOLVE_MIN_INTERVAL_MS) {
+    return;
+  }
+  preResolveInFlight.add(preResolveKey);
+  if (
+    !preResolveLastStarted.has(preResolveKey)
+    && preResolveLastStarted.size >= PRE_RESOLVE_HISTORY_MAX
+  ) {
+    const oldest = preResolveLastStarted.keys().next().value;
+    if (oldest !== undefined) preResolveLastStarted.delete(oldest);
+  }
+  preResolveLastStarted.set(preResolveKey, Date.now());
+  const ck = `m|${finalHash}|${network}`;
+  // Pass any previously resolved high-confidence hop assignments so the solver reuses them
+  const stickyEntry = getStickyNodeMap(finalHash, network);
+  const stickyMap = stickyEntry ? Object.fromEntries(stickyEntry.hashToNodeId) : undefined;
+  const stickyAgeFraction = stickyEntry?.ageFraction;
+  const heldPath = getHeldPath(finalHash, network);
+  resolvePool.runBackground<{
+    stickyUpdates?: Record<string, string>;
+    canonicalPath?: Array<{ nodeId?: string | null }>;
+  }>({ type: 'resolveMulti', packetHash: finalHash, network, ...(stickyMap ? { stickyMap, stickyAgeFraction } : {}), ...(heldPath ? { heldPath } : {}) })
+    .then((result) => {
+      if (result) {
+        const { stickyUpdates, ...cacheableResult } = result;
+        setResolveCache(ck, cacheableResult);
+        if (stickyUpdates && Object.keys(stickyUpdates).length > 0) {
+          mergeStickyNodes(finalHash, network, stickyUpdates);
+        }
+        const heldNodes = result.canonicalPath?.map((hop) => hop.nodeId ?? '').filter(Boolean) ?? [];
+        if (heldNodes.length > 0 && heldNodes.length === result.canonicalPath?.length) {
+          setHeldPath(finalHash, network, { path: heldNodes, resolvedAt: Date.now(), physical: true });
+        }
+      }
+    })
+    .catch(() => { /* best-effort */ })
+    .finally(() => { preResolveInFlight.delete(preResolveKey); });
 }
 
 export async function backfillHistoricalLinks(

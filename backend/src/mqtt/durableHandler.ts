@@ -1,6 +1,8 @@
 export type DurableMqttPacket = {
   topic: string;
   payload: Buffer | string;
+  /** QoS 1 redelivery flag, set by the broker on retransmission. */
+  dup?: boolean;
 };
 
 export type MqttHandleMessageCallback = (error?: Error) => void;
