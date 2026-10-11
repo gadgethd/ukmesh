@@ -4,7 +4,7 @@ Specification: `/home/ben/ukmesh-fix-context-20261011/SOL-REVIEW.md`, especially
 
 ## Boundaries and sequence
 
-Production and running services remain untouched. No deployment, service restart, PR merge, or CoreScope push. The bench rig's `FINAL-CHAIN-DONE` marker was observed at 17:39:52 UTC; isolated bench verification began afterward. Durable ingestion stays the default; RAM ingestion remains opt-in. Existing untracked worktree files are preserved.
+Production and running services remain untouched. No deployment, service restart, PR merge, or CoreScope push. The bench rig's `FINAL-CHAIN-DONE` marker was observed at 17:39:52 UTC; isolated bench verification began afterward. Durable ingestion stays the default; RAM ingestion remains opt-in. Review scratch files and briefs are committed on both branches for handoff.
 
 1. On `perf/mqtt-ingest-20261011` (#122), add failing regressions, repair F03/F04 and its F14/F15 items, run TypeScript and the full backend suite, commit and push, then watch CI to success. Keep the N=1 supported default and gate N>1 pending pinned broker qualification.
 2. Merge the pushed perf head into `experiment/ram-first-ingest-20261011` (#125), preserving the stack and recording the merge in both PR descriptions. Repair shared SQL safety first, then identity/privacy/handoff, then writer/read/recovery/operational contracts. Add a regression for each finding before its fix. Run the full backend and targeted integration gates, commit and push, and watch CI to success.
@@ -42,4 +42,32 @@ Production and running services remain untouched. No deployment, service restart
 
 ## Current state
 
-The perf branch is pushed at `cbf78a8` with F03/F04/F14/F15 regressions; CI run `38154922672` succeeded. The RAM branch merged that head in `ebab933` and pushed repairs through `022b7c8`; its four-job CI run `38160316617` succeeded, including real PostgreSQL and Redis integration, E2E and empty-volume Compose smoke. CoreScope F01/F07/F08/F17 repairs are committed locally at `e9afb3a`; both full Go suites pass, with no push from this host. The isolated final-head crash replay, ambiguous commit, count/byte admission, privacy-flip boundary, fault gates and exact-identity scenario matrix passed against `022b7c8`. A default-broker saturation run lost messages; a sized-broker retest passed. Six joined-reader matched-window runs passed database identities, but the RAM burst WebSocket probe saw only 2/800 and the low-rate RAM PG follower only 300/360 in its bounded window. Standalone drain exposed readiness and worker-shutdown defects; `f70fe05` fixes them and its isolated drain, quarantine refusal and durable rollback gate passed. TypeScript, contract, build and all 468 backend unit tests pass on `f70fe05`; final report commit, push and CI remain. Public revocation of previously copied CoreScope data, pre-ledger backfill and raw-stream ACL isolation remain unresolved release blockers; #125 stays draft.
+### Owner handoff at 20:55 UTC
+
+The owner requested a stop for a GPT-6.1 Sol successor. **Do not treat the repair mission as complete.** The perf branch is pushed at `89680782c3c6a0e517640c9e02fca59f5c8a0bee` (`8968078` archives `TASK-BRIEF.md` and two review patch scripts); its repair code remains at `cbf78a8`. The RAM branch is pushed at `d1aa6ebb8405e9172a74f1f83a42782de7ecde25` (`8cace8e` archives the RAM brief, SQL capture helper and patch scripts; `d1aa6eb` merges the new perf head). Its ingestion code was bench-tested at `022b7c8`, and its later drain-only repair is `f70fe05`. Both worktrees are clean at this handoff. The local CoreScope commit `e9afb3a8a17f8b65d1463985df18984c8f8b86f4` is **not pushed**; relay it with `git format-patch -1 e9afb3a` after review.
+
+Local pre-push gates pass: perf `npx tsc --noEmit` and backend `npm test` 418/418 (`/tmp/ukmesh-perf-handoff-npm-test.log`); RAM typecheck and backend 468/468 (`/tmp/ukmesh-ram-handoff-npm-test.log`). Earlier full Go suites in CoreScope `cmd/ingestor` and `cmd/server` pass. Code-head CI `38154922672` (#122) and `38160316617` (#125) succeeded. At 20:55 UTC the new handoff-head perf runs `38174016916` and `38174021349`, RAM runs `38174191342` and `38174195183`, and preceding RAM runs `38173522331` and `38173526291` had not all concluded. Check their actual conclusions; do not assume success. Any documentation push after this snapshot triggers a newer CI run.
+
+Next, verify the latest remote heads and green CI, then update both existing PR descriptions to the final hashes/evidence while leaving #122 open non-draft and #125 draft. `/tmp/ukmesh-pr125-body.md` is a prepared #125 draft with `FINAL_HEAD` and `FINAL_CI` placeholders. The remaining release work is specified per finding in the handoff table in `FIX-REPORT.md`, especially F01 copied-data revocation, F07 pre-ledger backfill, F06 snapshot/retention, F08 two-source crash, F09 retained-budget reconciliation, F13 parity, F14 load semantics, F15 held-write runtime shutdown, F16 raw-stream ACL isolation, and the ready-reader WebSocket gap. No production system was changed.
+
+| Finding | Status | Successor's next step |
+|---|---|---|
+| F01 | In progress | Implement immediate revocation for copied CoreScope data; test privacy flips after copy and rerun the post-rematerialization public audit. |
+| F02 | Complete | Verify latest CI, then retain its real-PG lock/replay gate. |
+| F03 | Complete | Verify latest CI; supported replay identity is covered. |
+| F04 | Complete for N=1 | Keep N>1 gated unless separately qualified across broker restart/resize. |
+| F05 | Complete | Verify latest CI and retain lost-reply/same-ms regressions. |
+| F06 | In progress | Add snapshot-before-commit and retention-expiry real PG/Redis handoff test with a concurrent admission. |
+| F07 | In progress | Implement/test pre-migration ledger backfill, then prove offline, late-commit and cursor-loss completeness. |
+| F08 | In progress | Run a real paired-source SQLite crash/failure test proving cursor barriers for the active last job. |
+| F09 | In progress | Test startup/retained byte reconciliation and Redis memory headroom through replay and expiry. |
+| F10 | Complete | Verify latest CI and retain real NOGROUP recovery gate. |
+| F11 | Complete | Verify latest CI and retain real-ioredis poison/quarantine gate. |
+| F12 | In progress | Compare merged same/multi-observer counts and representative selection to real SQL across handoff. |
+| F13 | In progress | Extend SQL/RAM parity to paging, sampling, representative fields and all supported scope/alias variants. |
+| F14 | In progress | Assert every served metric's semantics under known loaded, zero-capacity and retained states. |
+| F15 | In progress | Inject held persist during runtime SIGTERM and repair the bench post-restart drain oracle. |
+| F16 | In progress | Prove CoreScope raw-stream Redis ACL isolation and rerun final drain/rollback on that configuration. |
+| F17 | Complete at code/regression scope | Validate paired-source crash operation under F08. |
+
+No top-level finding is wholly not started; the named integration, backfill and ACL gates above are not yet implemented or proven. The detailed evidence and limitations for each finding are in `FIX-REPORT.md`.
