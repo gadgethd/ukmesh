@@ -68,7 +68,24 @@ migration, potentially deleting distinct observations. Schema reapplication
 now preserves upstream IDs and startup repairs actual missing/legacy indexes
 even when an earlier migration marker says done. Both source orders pass
 active-last-job process crash, SQLite failure, cursor hold and replay/count
-checks. Full CoreScope suites are running before its local commit.
+checks. Full ingestor/server/shared-schema suites pass. CoreScope is committed
+locally at `ff9eb3b` (not pushed); both unrelayed commits are exported in the
+owned bench verification evidence directory. RAM `6ed4296` is pushed; its
+source-labelled image passed all eight compiled PostgreSQL/Redis regression
+tests with zero skips. Both code-head CI workflows `38176440656` and
+`38176443793` concluded success in all four jobs.
+Fresh full local gates also pass with two CPUs per suite to bound fixture
+startup contention: perf 418/418, RAM 469/469, and both typechecks.
+Existing bench services and production remain untouched. Next prioritize F01
+copied-data revocation, then the F09/F12–F16 operational/read gates and the ready
+WebSocket gap. Preserve the new fixtures and logs in `verification-sol-20261011`;
+Docker cannot bind the tool session's private `/tmp` files directly.
+
+For F01, also test the SQL snapshot's aggregate observation/observer fields
+against a newer authorization generation. The current merge reclassifies the
+representative packet, so a privacy transition after SQL must not preserve
+older aggregate contributions from other observers or paths. Carry and check
+the SQL snapshot generation as part of the current-authority contract.
 
 ### Owner handoff at 20:55 UTC
 

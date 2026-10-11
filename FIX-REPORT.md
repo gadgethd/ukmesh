@@ -16,8 +16,44 @@ The complete ingest integration command passes **6 PostgreSQL + 2 Redis tests**
 using a newly created disposable PostgreSQL database and an independently
 created Redis fixture (`/tmp/ukmesh-sol-full-ingest-integration.log`).
 Focused CoreScope F07/F08/F17 tests pass with real PostgreSQL/Redis/SQLite
-(`/tmp/core-sol-f08-integration-after.log`); full Go suites are still running.
-No new repair-wave push or CI success is claimed yet.
+(`/tmp/core-sol-f08-integration-after.log`). Full successor Go suites pass:
+ingestor **222.972s**, server **116.673s**, shared schema **0.530s**. Logs are
+`/tmp/core-sol-full-ingestor.log`, `/tmp/core-sol-full-server.log` and
+`/tmp/core-sol-full-dbschema.log`.
+
+RAM `6ed4296e988f1ec69640d02443f551d37c619400` is pushed and verified by
+`git ls-remote`. Its workflows
+[38176440656](https://github.com/gadgethd/ukmesh/actions/runs/38176440656) and
+[38176443793](https://github.com/gadgethd/ukmesh/actions/runs/38176443793)
+both concluded **success in all four jobs**, including full Backend and
+Workers/Compose/E2E/empty-volume gates. Both PR descriptions are updated; #122 remains
+open/non-draft and #125 remains open/draft. #122's title now describes the
+supported N=1 repair instead of obsolete multi-connection performance.
+
+CoreScope is locally committed at `ff9eb3b93c9addbb29feb9debcc12e6cb99d5c8d`.
+Both `e9afb3a` and `ff9eb3b` await relay; CoreScope was not pushed. Export with
+`git -C /home/ben/corescope-ukmesh/src format-patch --stdout 90c104eab51618894a3b69ab521829f39313e261..ff9eb3b93c9addbb29feb9debcc12e6cb99d5c8d`.
+The ready patch is `/tmp/corescope-sol-relay-20261011.patch` (2383 lines).
+Evidence logs and the patch are also preserved in the new owned
+`/home/ben/ukmesh-bench/mqtt-ingest-perf-20261011/verification-sol-20261011/evidence/`
+directory so tool-session temporary files are not the sole handoff artifacts.
+
+Both uniquely tagged verification images built successfully: RAM
+`mqttbench-backend:sol-handoff-6ed4296-20261011` has image ID
+`sha256:563424ed79ac51abc2eb70cf8f2080bec9961e6c0622f1948233bfeaf92b0859`
+and revision label `6ed4296`; durable
+`mqttbench-backend:sol-durable-8968078-20261011` has image ID
+`sha256:f501da065bf98e219c54d335dfad6703d430b51e6437d49a63140341dc72a637`
+and label `8968078`. Existing bench services were unchanged. The completed
+compiled-regression gate against the RAM image was launched by the new owned
+`verification-sol-20261011/run-image-integrity.sh` under the bench directory.
+It mounts only tests, executes shipped modules and requires eight passing,
+zero-skipped tests; exit-zero/zero-tests cannot pass.
+The `6ed4296` image passed **8/8**, zero skips, in **72.190s**, including real
+snapshot/expiry, historical/compressed/contended backfill, refused-write,
+replay and quarantine cases. Its evidence is
+`logs/sol-image-integrity-shared-path-6ed4296-20261011.log` under the bench
+directory (`IMAGE-INTEGRITY-END code=0 complete=true`).
 
 F06's new unit failed on the checkpoint (`/tmp/ukmesh-f06-before.log`), then
 passed with `readRecentWithPending`. The real fixture captures Redis before
@@ -49,10 +85,21 @@ and startup checks/repairs the actual index state despite a done marker.
 
 The first local backend suite failed a real-time 50ms slow-mode assertion
 under CPU load; its clock is now deterministic and the full suite passes.
+Concurrent fresh suite reruns then hit the existing two-second worker-fixture
+startup timeout on both branches. Complete suites are being rerun with two
+CPUs per suite (same test files/assertions) to bound test-process contention.
+Both complete reruns passed: perf **418/418** in **138.715s**, RAM **469/469**
+in **210.111s**, with typechecks and the alert receiver gate passing. Logs are
+`evidence/perf-8968078-two-cpu-tests.log` and
+`evidence/ram-6ed4296-two-cpu-tests.log` in the owned verification directory.
 The first full PG invocation used an already initialized bench database and
 failed its final empty-schema fixture; the successful rerun used a new owned
-database. One intentionally stopped diagnostic CoreScope test left its owned
-fixture schema for cleanup; no production data or services were involved.
+database. One intentionally stopped diagnostic CoreScope test left an owned
+fixture schema; that exact schema was removed. No production data or services
+were involved. Preliminary image-fixture packaging had missing assets or zero
+tests; neither is accepted as a pass. Docker's daemon does not share the tool
+session's `/tmp`, so fixtures now use the shared, newly owned bench verification
+directory. The corrected image run's exact eight-test result is verified above.
 
 Remaining mission work: F01 copied-data revocation and generation transitions;
 F09/F14 memory/accounting and metric semantics; F12/F13 SQL read parity;
@@ -80,7 +127,7 @@ by this successor evidence. The full objective is still active.
 | F05 | Implemented for UKMesh; final-head gates pass | Delivery-key replay ledger in `ram/liveStore.ts`, stable observation ID and PG ledger; lost-reply and same-ms unit/PG integration regressions added. Real-PG and real-Redis CI tests pass. Final-head crash and ambiguous SQL-commit replay pass; a deterministic real-Redis XADD followed by a lost reply recovers the original observation ID with stream length one. |
 | F06 | Implemented; real snapshot/expiry regression passes | Per-entry commit state, retained overlap and stable-ID dedupe plus `readRecentWithPending` before-SQL capture on REST/WS. `F06 real PG snapshot and Redis expiry preserve the captured handoff` covers concurrent admission and retention expiry. Final image gate remains. |
 | F07 | Implemented; historical/late-commit/cursor-loss regressions pass | Migration 059 adds atomic compressed-history backfill and coverage fence without changing 058. CoreScope requires coverage and follows `seq > cursor`. `F07 historical and compressed observations enter the complete ledger atomically` and `TestF07RealLedgerHistoricalCoverageLateCommitAndCursorLoss` pass. Final image/paired offline gate remains. |
-| F08 | Implemented; real paired crash/failure regression passes | Both CoreScope sources use `finishSourceBatch`; `TestF08RealPairedSourcesCrashFailureAndRestartBothOrders` proves active-last-job process crash, same-SQLite/WAL restart, actual observation insert failure, held cursors and successful replay. Full successor Go suites are pending. |
+| F08 | Implemented; real paired crash/failure and full Go suites pass | Both CoreScope sources use `finishSourceBatch`; `TestF08RealPairedSourcesCrashFailureAndRestartBothOrders` proves active-last-job process crash, same-SQLite/WAL restart, actual observation insert failure, held cursors and successful replay. Full successor ingestor/server/schema suites pass at `ff9eb3b`. |
 | F09 | Partial | One-time atomic cleanup, bounded reconciliation and retained accounting in `ram/liveStore.ts`, `writer.ts`; replay, cleanup and real-Redis lost-counter reconciliation tests pass. Final-head concurrent byte admission passes at the enforced 1 MiB minimum. Startup/retention accounting in the final-head bench remains. |
 | F10 | Implemented; group-loss integration passes | Supervised startup, NOGROUP repair, periodic bounded foreign PEL reclaim, and stale-PEL/progress readiness in `index.ts`, `ram/writer.ts`, `writerRuntime.ts`; unit regressions and a final-head real-Redis group-destruction/recovery gate pass. |
 | F11 | Implemented; final-head fault gate passes | Real ioredis XADD quarantine, common validated decode, and rowwise permanent SQL poison isolation in `ram/writer.ts`, `protocol.ts`; malformed PEL, poison-neighbor and real-Redis quarantine tests pass. A final-head simulated permanent SQLSTATE 23514 in a two-row batch quarantined only the poison row through real ioredis, committed its valid neighbor in PG, and left PEL zero. |
@@ -89,7 +136,7 @@ by this successor evidence. The full objective is still active.
 | F14 | Partial | #122 metric registration fixed. #125 separates pending/retained/PEL gauges, byte budget and minimum admitted-age ordering; commit batch histogram now counts actual inserted PG rows. A final-head live metric scrape confirms all those series are served under load. Final load validation remains. |
 | F15 | Implemented, boundary still partly unit-tested | #122 deadline fixed. #125 shares one shutdown deadline, joins writer loop, detects PEL on drain and closes clients; `drainLifecycle.test.ts` holds an active persist past shutdown. Isolated runtime SIGTERM logged graceful completion in about two seconds and its 300/300 exact identities, side effects, queue, PEL and bytes passed a manual post-restart gate. The bench's stock wait script missed this because `processed` has no zero-valued series after restart; no held active persist was injected into that runtime run. |
 | F16 | Partial | Compose variables and CI render assertion, `docs/ram-first-ingestion.md`, and `node dist/ram/drain.js` added. The drain waits for Redis readiness, reuses the ready client for final byte reconciliation, closes path-resolution workers, and refuses a nonempty quarantine as well as nonempty stream/PEL/byte reservation. Isolated standalone drain, quarantine refusal and durable rollback passed on `f70fe05`. Raw-stream Redis ACL isolation remains. |
-| F17 | Implemented, full Go suites pass | CoreScope preserves upstream UUID in SQLite and updates observer count only for a newly inserted observation. Async indexes hold paired sources until ready. `TestF17TwoSourceObservationIdentityAndCountInBothOrders` and migration readiness test pass. |
+| F17 | Implemented including restart repair; full Go suites pass | CoreScope preserves upstream UUID and increments observer count once. `ff9eb3b` prevents schema reapply from rebuilding the broad legacy index and deleting distinct IDs, and repairs actual missing/legacy index state despite done migration markers. `TestF17UpstreamIdentitySurvivesSchemaReapply`, both-order identity/count and real crash/restart tests pass. |
 
 ## Successor handoff — 2026-10-11 20:55 UTC
 
