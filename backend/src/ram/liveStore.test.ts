@@ -81,7 +81,17 @@ function sampleInput(hash = 'ab'.repeat(32)): InsertPacketInput {
   };
 }
 
-function entryFor(hash: string, opts: { visibilityOk?: boolean; network?: string; time?: string } = {}): RamPendingEntry {
+function entryFor(
+  hash: string,
+  opts: {
+    visibilityOk?: boolean;
+    network?: string;
+    time?: string;
+    rx?: string | null;
+    src?: string | null;
+    type?: number;
+  } = {},
+): RamPendingEntry {
   return {
     observationId: `obs-${hash.slice(0, 6)}`,
     admittedAtMs: 1_700_000_000_000,
@@ -90,12 +100,12 @@ function entryFor(hash: string, opts: { visibilityOk?: boolean; network?: string
     input: {
       time: new Date(opts.time ?? '2026-10-11T12:00:00.000Z'),
       packetHash: hash,
-      rxNodeId: 'cd'.repeat(32),
-      srcNodeId: null,
+      rxNodeId: opts.rx === undefined ? 'cd'.repeat(32) : opts.rx,
+      srcNodeId: opts.src ?? null,
       topic: 'meshcore/EGNX/OBSERVER/packets',
       topicPrefix: 'meshcore',
       iata: 'EGNX',
-      packetType: 4,
+      packetType: opts.type ?? 4,
       routeType: 1,
       hopCount: 2,
       rssi: -80,
@@ -248,6 +258,72 @@ test('merged reads append only public, scoped, non-duplicate pending rows', asyn
     includePayload: true,
   });
   assert.equal((withPayload[0]?.['payload'] as Record<string, unknown>)?.['direction'], 'rx');
+});
+
+test('pending observations of one hash aggregate into a single row with combined observers', async () => {
+  await loadPublicPrivacyCache();
+  const fake = new FakeStore();
+  const h = '77'.repeat(32);
+  fake.rev = [
+    ['300-2', ['e', encodePendingEntry(entryFor(h, { rx: 'aa'.repeat(32), time: '2026-10-11T13:00:02.000Z' }))]],
+    ['300-1', ['e', encodePendingEntry(entryFor(h, { rx: 'bb'.repeat(32), time: '2026-10-11T13:00:02.000Z' }))]],
+    ['300-0', ['e', encodePendingEntry(entryFor(h, { rx: 'cc'.repeat(32), time: '2026-10-11T13:00:02.000Z' }))]],
+  ];
+  configureRamStore(fake);
+  const merged = await mergePendingPacketsIntoRecentRows([], { limit: 10, network: 'ukmesh' });
+  assert.equal(merged.length, 1, 'one row for one RF packet observed by three receivers');
+  const row = merged[0]!;
+  const observers = (row['observer_node_ids'] as string[]).map((v) => v.toUpperCase()).sort();
+  assert.deepEqual(observers, ['AA'.repeat(32), 'BB'.repeat(32), 'CC'.repeat(32)].sort());
+  assert.equal(row['rx_count'], 3);
+  assert.equal(row['tx_count'], 0);
+});
+
+test('pending observations augment a database row without double counting the same observer', async () => {
+  await loadPublicPrivacyCache();
+  const fake = new FakeStore();
+  const h = '88'.repeat(32);
+  fake.rev = [
+    ['301-1', ['e', encodePendingEntry(entryFor(h, { rx: 'cd'.repeat(32), time: '2026-10-11T13:01:00.000Z' }))]],
+    ['301-0', ['e', encodePendingEntry(entryFor(h, { rx: 'ee'.repeat(32), time: '2026-10-11T13:01:00.000Z' }))]],
+  ];
+  configureRamStore(fake);
+  const rows = [
+    {
+      packet_hash: h,
+      time: new Date('2026-10-11T13:00:59.000Z'),
+      observer_node_ids: ['CD'.repeat(32)],
+      observer_iatas: ['EGNX'],
+      rx_count: 1,
+      tx_count: 0,
+    },
+  ];
+  const merged = await mergePendingPacketsIntoRecentRows(rows, { limit: 10, network: 'ukmesh' });
+  assert.equal(merged.length, 1);
+  const row = merged[0]!;
+  assert.equal(row['rx_count'], 2, 'same-observer pending entry must not re-count the committed observation');
+  assert.equal((row['observer_node_ids'] as string[]).includes('EE'.repeat(32)), true);
+  assert.equal((row['observer_node_ids'] as string[]).length, 2);
+});
+
+test('packetTypes restricts merged contributions (message history stays group-text only)', async () => {
+  await loadPublicPrivacyCache();
+  const fake = new FakeStore();
+  fake.rev = [
+    ['302-1', ['e', encodePendingEntry(entryFor('44'.repeat(32), { type: 4, time: '2026-10-11T13:02:00.000Z' }))]],
+    ['302-0', ['e', encodePendingEntry(entryFor('55'.repeat(32), { type: 5, time: '2026-10-11T13:02:01.000Z' }))]],
+  ];
+  configureRamStore(fake);
+  const filtered = await mergePendingPacketsIntoRecentRows([], {
+    limit: 10,
+    network: 'ukmesh',
+    packetTypes: [5],
+  });
+  assert.equal(filtered.length, 1);
+  assert.equal(filtered[0]?.['packet_type'], 5);
+
+  const all = await mergePendingPacketsIntoRecentRows([], { limit: 10, network: 'ukmesh' });
+  assert.equal(all.length, 2, 'without a type filter both types merge');
 });
 
 test('merged reads drop pending entries the current privacy cache now classifies private', async () => {

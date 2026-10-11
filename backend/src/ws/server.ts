@@ -239,7 +239,9 @@ async function fetchInitialState(network: string | undefined, observer: string |
         ),
         mergePendingPacketsIntoRecentRows(
           await getRecentMessages(200, network, observer, signal),
-          { limit: 200, network, observer, includePayload: true },
+          // Message history is group-text only: keep the pending merge in the
+          // same contract as getRecentMessages (packet_type = 5).
+          { limit: 200, network, observer, includePayload: true, packetTypes: [5] },
         ),
         getCachedViableLinks(network, observer, signal),
       ]);
