@@ -435,14 +435,27 @@ async function main() {
   startMetricsServer(METRICS_PORT);
 
   packetShareForwarder.start();
-  if (MQTT_INGEST_ENABLED) {
-    void startMqttClient().catch((err: unknown) => {
+  if (getRamIngestMode() === 'ram') {
+    void (async () => {
+      let delayMs = 1_000;
+      while (!lifecycle.isDraining) {
+        try {
+          await startRamWriter();
+          break;
+        } catch (err) {
+          console.error('[ram] writer startup failed, retrying:', err instanceof Error ? err.message : err);
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+          delayMs = Math.min(delayMs * 2, 30_000);
+        }
+      }
+      // Early PUBACK is available only after the writer is operational.
+      if (MQTT_INGEST_ENABLED && !lifecycle.isDraining) await startMqttClient();
+    })().catch((err: unknown) => {
       console.error('[mqtt] failed to start client:', err instanceof Error ? err.message : err);
     });
-  }
-  if (getRamIngestMode() === 'ram') {
-    void startRamWriter().catch((err: unknown) => {
-      console.error('[ram] failed to start writer:', err instanceof Error ? err.message : err);
+  } else if (MQTT_INGEST_ENABLED) {
+    void startMqttClient().catch((err: unknown) => {
+      console.error('[mqtt] failed to start client:', err instanceof Error ? err.message : err);
     });
   }
 

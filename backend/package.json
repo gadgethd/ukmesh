@@ -21,7 +21,7 @@
     "load:realtime": "tsx src/tools/loadRealtime.ts",
     "test": "node --import tsx --test $(find src -name '*.test.ts' ! -name '*.integration.test.ts' -print) && bash ../scripts/test-alert-receiver.sh",
     "test:analysis-integration": "node --import tsx --test src/analysis/runState.integration.test.ts",
-    "test:ingest-integration": "node --import tsx --test src/db/packetBatch.integration.test.ts",
+    "test:ingest-integration": "node --import tsx --test src/db/packetBatch.integration.test.ts src/ram/ram.integration.test.ts",
     "typecheck": "tsc --noEmit",
     "contract:generate": "tsx src/tools/generateOpenApi.ts",
     "contract:check": "tsx src/tools/generateOpenApi.ts --check",

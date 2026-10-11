@@ -33,8 +33,9 @@ function sampleInput(hash: string): PacketBatchInput {
 }
 
 function sampleEntry(admittedAtMs: number, hash = 'ab'.repeat(32)): RamPendingEntry {
+  const seed = hash.slice(0, 32).padEnd(32, '0');
   return {
-    observationId: `obs-${hash.slice(0, 8)}-${admittedAtMs}`,
+    observationId: `${seed.slice(0, 8)}-${seed.slice(8, 12)}-${seed.slice(12, 16)}-${seed.slice(16, 20)}-${seed.slice(20, 32)}`,
     admittedAtMs,
     isPrivate: false,
     visibilityOk: true,
@@ -50,6 +51,10 @@ class FakeRedis {
   deleted: string[] = [];
   groupCreated = false;
   claimCalls = 0;
+  foreignClaimReady = false;
+  quarantineFails = false;
+  cleanupFails = false;
+  commitTimes = new Map<string, string>();
   private clock = 1_700_000_000_000;
 
   async xgroup(command: string): Promise<unknown> {
@@ -59,13 +64,21 @@ class FakeRedis {
     return 'OK';
   }
 
-  async xadd(_key: string, _id: string, field: string, value: string): Promise<string> {
+  quarantined: string[] = [];
+  async xadd(_key: string, idOrCommand: string, ...args: (string | number)[]): Promise<string> {
+    if (idOrCommand === 'MAXLEN') {
+      if (this.quarantineFails) throw new Error('quarantine unavailable');
+      this.quarantined.push(String(args[4]));
+      return 'q-1';
+    }
+    const [field, value] = args.map(String);
     const id = `${this.clock++}-0`;
-    this.entries.push({ id, fields: [field, value] });
+    this.entries.push({ id, fields: [field!, value!] });
     return id;
   }
 
   async xreadgroup(...args: (string | number)[]): Promise<Array<[string, Array<[string, string[]]>]> | null> {
+    if (!this.groupCreated) throw new Error('NOGROUP No such key or consumer group');
     const streamsAt = args.indexOf('STREAMS');
     const after = String(args[streamsAt + 2]);
     const countAt = args.indexOf('COUNT');
@@ -80,6 +93,7 @@ class FakeRedis {
     }
     if (after === '0') {
       const items = [...this.pending.entries()]
+        .filter(([, item]) => item.consumer === 'backend')
         .filter(([id]) => this.entries.some((entry) => entry.id === id))
         .slice(0, count);
       return items.length ? [[STREAM, items.map(([id, item]) => [id, item.fields])]] : null;
@@ -94,19 +108,21 @@ class FakeRedis {
   }
 
   async xdel(_key: string, ...ids: string[]): Promise<number> {
+    const present = ids.filter((id) => this.entries.some((entry) => entry.id === id));
     this.entries = this.entries.filter((entry) => !ids.includes(entry.id));
-    this.deleted.push(...ids);
-    return ids.length;
-  }
-
-  quarantined: string[] = [];
-  async xaddWithLimit(_key: string, _maxLen: number, _field: string, value: string): Promise<string> {
-    this.quarantined.push(value);
-    return 'q-1';
+    this.deleted.push(...present);
+    return present.length;
   }
 
   async xautoclaim(): Promise<[string, Array<[string, string[]]>, string[]]> {
     this.claimCalls += 1;
+    if (this.foreignClaimReady) {
+      const old = [...this.pending.entries()]
+        .filter(([, item]) => item.consumer !== 'backend')
+        .map(([id, item]) => [id, item.fields] as [string, string[]]);
+      for (const [id] of old) this.pending.get(id)!.consumer = 'backend';
+      return ['0-0', old, []];
+    }
     return ['0-0', [], []];
   }
 
@@ -138,6 +154,27 @@ class FakeRedis {
     return -this.bytesReleased;
   }
 
+  async hset(_key: string, field: string, value: string): Promise<number> {
+    this.commitTimes.set(field, value);
+    return 1;
+  }
+
+  async hget(_key: string, field: string): Promise<string | null> {
+    return this.commitTimes.get(field) ?? null;
+  }
+
+  async eval(_script: string, numKeys: number, ...args: (string | number)[]): Promise<unknown> {
+    assert.equal(numKeys, 4);
+    if (this.cleanupFails) throw new Error('cleanup unavailable');
+    const id = String(args[4]);
+    const at = Number(this.commitTimes.get(id));
+    if (!Number.isFinite(at) || at > Number(args[6])) return 0;
+    const removed = await this.xdel(String(args[0]), id);
+    this.commitTimes.delete(id);
+    if (removed) this.bytesReleased += Number(args[5]);
+    return removed;
+  }
+
   seedEntry(entry: RamPendingEntry): string {
     const id = `${this.clock++}-0`;
     this.entries.push({ id, fields: ['e', encodePendingEntry(entry)] });
@@ -150,6 +187,62 @@ class FakeRedis {
     return id;
   }
 }
+
+test('F10 destroyed group is repaired before another admitted entry is stranded', async () => {
+  const fake = new FakeRedis();
+  const { writer, calls } = makeWriter(fake, () => 1_700_000_100_000, async () => undefined, {
+    batchSize: 1,
+  });
+  await writer.start();
+  fake.groupCreated = false;
+  fake.seedEntry(sampleEntry(1_700_000_099_000));
+  await writer.tickOnce();
+  assert.equal(fake.groupCreated, true);
+  assert.equal(calls.length, 1);
+});
+
+test('F10 young foreign PEL is reclaimed after it ages without a restart', async () => {
+  const fake = new FakeRedis();
+  let nowMs = 1_700_000_100_000;
+  const entry = sampleEntry(1_700_000_099_000);
+  const id = fake.seedEntry(entry);
+  fake.delivered.add(id);
+  fake.pending.set(id, { consumer: 'old-writer', fields: ['e', encodePendingEntry(entry)] });
+  const { writer, calls } = makeWriter(fake, () => nowMs, async () => undefined, {
+    batchSize: 1,
+  });
+  await writer.start();
+  assert.equal(calls.length, 0);
+  fake.foreignClaimReady = true;
+  nowMs += 11_000;
+  await writer.tickOnce();
+  assert.equal(calls.length, 1);
+  assert.equal(fake.acked.includes(id), true);
+});
+
+test('F11 malformed entries survive quarantine failure and clear from own PEL after recovery', async () => {
+  const fake = new FakeRedis();
+  const badId = '1699999999999-0';
+  fake.entries.push({ id: badId, fields: ['e', 'not-json'] });
+  const goodId = fake.seedEntry(sampleEntry(1_700_000_000_000));
+  fake.quarantineFails = true;
+  const { writer, calls } = makeWriter(fake, () => 1_700_000_100_000, async () => undefined, {
+    batchSize: 2,
+    maxAgeMs: 1,
+  });
+  await writer.start();
+  await writer.tickOnce();
+  assert.equal(fake.deleted.includes(badId), false, 'source survives failed quarantine');
+  assert.equal(fake.pending.has(badId), true);
+  assert.equal(calls.length, 1, 'valid entry behind malformed entry still commits');
+  assert.equal(fake.acked.includes(goodId), true);
+
+  fake.quarantineFails = false;
+  await writer.tickOnce();
+  assert.equal(fake.quarantined.length, 1);
+  assert.equal(fake.pending.has(badId), false);
+  assert.equal(fake.deleted.includes(badId), true);
+});
 
 type PersistCall = { count: number; idempotent: boolean };
 
@@ -192,9 +285,16 @@ test('flushDecision: none / size / age', () => {
   assert.equal(flushDecision(young, 121_000, 100, 120_000), 'age');
 });
 
+test('F14 an older reclaimed entry behind a young entry triggers the age flush', () => {
+  const young = sampleEntry(10_000);
+  const old = sampleEntry(1_000, 'cd'.repeat(32));
+  assert.equal(flushDecision([{ entry: young }, { entry: old }], 11_000, 100, 5_000), 'age');
+});
+
 test('flushes when the batch reaches the size trigger and bookkeeps the stream', async () => {
   const fake = new FakeRedis();
-  const now = () => 1_700_000_010_000;
+  let nowMs = 1_700_000_010_000;
+  const now = () => nowMs;
   fake.seedEntry(sampleEntry(now() - 500));
   fake.seedEntry(sampleEntry(now() - 400, 'cd'.repeat(32)));
   fake.seedEntry(sampleEntry(now() - 300, 'ef'.repeat(32)));
@@ -211,21 +311,69 @@ test('flushes when the batch reaches the size trigger and bookkeeps the stream',
   assert.equal(fake.deleted.length, 0, 'committed entries are retained for the handoff overlap');
   assert.equal(writer.accumulatorSize(), 0);
   assert.equal(healthyCount(), 1);
-  assert.ok(fake.bytesReleased > 0, 'byte budget released at commit');
+  assert.equal(fake.bytesReleased, 0, 'retained payload remains in byte budget');
 
-  // Entries are still readable (retained) plus the commit marker.
+  // Entries stay readable during the handoff overlap.
   const remaining = fake.entries.map((entry) => decodeRamStreamValue(entry.fields[1]));
   assert.equal(remaining.filter((v) => v && v.kind === 'entry').length, 3, 'entries retained pre-sweep');
-  assert.ok(remaining.some((v) => v && v.kind === 'commit'));
+  assert.equal(remaining.some((v) => v && v.kind === 'commit'), false);
 
   // The retention sweep removes committed, acknowledged, old-enough entries.
+  nowMs += 121_000;
   await writer.sweepRetained();
   assert.equal(fake.deleted.length, 3, 'safe sweep deletes the committed batch');
+  assert.ok(fake.bytesReleased > 0, 'budget releases when bytes are deleted');
+});
+
+test('F06 retention starts at commit time even for an old admission', async () => {
+  const fake = new FakeRedis();
+  const nowMs = 1_700_000_100_000;
+  const oldId = fake.seedEntry(sampleEntry(nowMs - 120_000));
+  const { writer } = makeWriter(fake, () => nowMs, async () => undefined, {
+    batchSize: 1,
+  });
+  await writer.start();
+  await writer.tickOnce();
+  await writer.sweepRetained();
+  assert.equal(fake.deleted.includes(oldId), false, 'recent commit is retained');
+});
+
+test('F09 interrupted cleanup releases bytes exactly once on retry', async () => {
+  const fake = new FakeRedis();
+  let nowMs = 1_700_000_100_000;
+  const id = fake.seedEntry(sampleEntry(nowMs - 1_000));
+  const { writer } = makeWriter(fake, () => nowMs, async () => undefined, {
+    batchSize: 1,
+  });
+  await writer.start();
+  await writer.tickOnce();
+  nowMs += 121_000;
+  fake.cleanupFails = true;
+  await writer.sweepRetained();
+  assert.equal(fake.entries.some((entry) => entry.id === id), true);
+  assert.equal(fake.bytesReleased, 0);
+  fake.cleanupFails = false;
+  await writer.sweepRetained();
+  const released = fake.bytesReleased;
+  assert.ok(released > 0);
+  await writer.sweepRetained();
+  assert.equal(fake.bytesReleased, released);
+  assert.equal(fake.deleted.filter((deleted) => deleted === id).length, 1);
+});
+
+test('F15 drain reports an uncommitted PEL after a permanent write failure', async () => {
+  const fake = new FakeRedis();
+  fake.seedEntry(sampleEntry(1_700_000_099_000));
+  const { writer } = makeWriter(fake, () => 1_700_000_100_000,
+    async () => { throw new Error('permanent SQL rejection'); }, { batchSize: 1 });
+  await writer.start();
+  await writer.tickOnce();
+  await assert.rejects(writer.drain(0), /RAM_DRAIN_INCOMPLETE:pel=/);
 });
 
 test('retention sweep never deletes pending or recent entries', async () => {
   const fake = new FakeRedis();
-  let nowMs = 1_700_000_000_500; // cutoff = now - 5000 = ..._995_500 < entry ids
+  let nowMs = 1_700_000_000_500; // recent commits remain inside the overlap guard
   const now = () => nowMs;
   fake.seedEntry(sampleEntry(nowMs - 400));
   fake.seedEntry(sampleEntry(nowMs - 300, 'cd'.repeat(32)));
@@ -241,7 +389,7 @@ test('retention sweep never deletes pending or recent entries', async () => {
   fake.entries.push({ id: failedId, fields: ['e', encodePendingEntry(sampleEntry(nowMs - 10_000, 'ef'.repeat(32)))] });
   fake.pending.set(failedId, { consumer: 'backend', fields: fake.entries[fake.entries.length - 1]!.fields });
 
-  nowMs += 10_000;
+  nowMs += 121_000;
   await writer.sweepRetained();
   assert.equal(fake.deleted.length, 2, 'committed, acked entries past the retention guard are swept');
   assert.equal(fake.deleted.includes(failedId), false, 'PEL entries (failed batches) must survive the sweep');
@@ -329,9 +477,9 @@ test('exhausted commit failure leaves entries un-acked for later recovery', asyn
 test('entries sharing one observation identity collapse within a flush', async () => {
   const fake = new FakeRedis();
   const now = () => 1_700_000_800_000;
-  // Same identity: identical time (frozen in the entry input), hash, rx, topic, network.
-  fake.seedEntry(sampleEntry(now() - 2_000, 'ab'.repeat(32)));
-  fake.seedEntry(sampleEntry(now() - 1_500, 'ab'.repeat(32)));
+  const same = sampleEntry(now() - 2_000, 'ab'.repeat(32));
+  fake.seedEntry(same);
+  fake.seedEntry({ ...same });
 
   const { writer, calls } = makeWriter(fake, now, async () => undefined, { batchSize: 2 });
   await writer.start();
@@ -341,6 +489,25 @@ test('entries sharing one observation identity collapse within a flush', async (
   assert.equal(calls[0]?.count, 1, 'duplicate identity must be collapsed before persistence');
   assert.equal(fake.acked.length, 2, 'both originals are acknowledged (same observation)');
   assert.equal(writer.accumulatorSize(), 0);
+});
+
+test('F05 two same-millisecond sightings with distinct hop/path and IDs both persist', async () => {
+  const fake = new FakeRedis();
+  const at = 1_700_000_800_000;
+  const first = sampleEntry(at, 'cd'.repeat(32));
+  const second = {
+    ...sampleEntry(at, 'cd'.repeat(32)),
+    observationId: '12345678-1234-1234-1234-123456789abc',
+    input: { ...first.input, hopCount: 3, pathHashes: ['ABCD'] },
+  };
+  fake.seedEntry(first);
+  fake.seedEntry(second);
+  const { writer, calls } = makeWriter(fake, () => at + 1_000, async () => undefined, {
+    batchSize: 2,
+  });
+  await writer.start();
+  await writer.tickOnce();
+  assert.equal(calls[0]?.count, 2);
 });
 
 test('post-commit hook fires for the committed batch only after success', async () => {

@@ -18,13 +18,32 @@ import {
   configurePacketBatch,
   enqueuePacket,
   flush,
+  persistEntriesCore,
   type PacketBatchInput,
+  type QueryFn,
 } from './packetBatch.js';
 import { processNextPrivacyRematerialization } from '../workers/privacy-rematerialization.js';
 import { packetAlreadyPersisted } from '../mqtt/observationIdentity.js';
 
 const { Pool } = pg;
 const databaseUrl = process.env['TEST_INGEST_DATABASE_URL'];
+
+function testTransaction(pool: pg.Pool) {
+  return async <T>(work: (query: QueryFn) => Promise<T>): Promise<T> => {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const result = await work((sql, params) => client.query(sql, params));
+      await client.query('COMMIT');
+      return result;
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+  };
+}
 
 test('base schema and every migration apply to a brand-new database', {
   skip: databaseUrl ? false : 'TEST_INGEST_DATABASE_URL is not configured',
@@ -109,6 +128,7 @@ test('base schema and every migration apply to a brand-new database', {
     '054_owner_packet_share_default_off.sql',
     '056_async_privacy_rematerialization.sql',
     '057_node_status_sample_status.sql',
+    '058_ingest_observation_ledger.sql',
   ]);
   assert.deepEqual(await runMigrations(freshPool), []);
 
@@ -256,6 +276,79 @@ test('base schema and every migration apply to a brand-new database', {
   ]);
 });
 
+test('F02 contended lock and replay never change historical tables', {
+  skip: databaseUrl ? false : 'TEST_INGEST_DATABASE_URL is not configured',
+}, async (t) => {
+  const admin = new Pool({ connectionString: databaseUrl, max: 1 });
+  const name = `meshcore_f02_${process.pid}_${Date.now()}`;
+  const url = new URL(databaseUrl as string);
+  url.pathname = `/${name}`;
+  await admin.query(`CREATE DATABASE "${name}"`);
+  const pool = new Pool({ connectionString: url.toString(), max: 3 });
+  t.after(async () => {
+    await pool.end();
+    await admin.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
+    await admin.end();
+  });
+  await pool.query(fs.readFileSync(new URL('./schema/base.sql', import.meta.url), 'utf8'));
+  await runMigrations(pool);
+  const network = `f02_${process.pid}`;
+  const observer = 'A'.repeat(64);
+  const source = 'B'.repeat(64);
+  const input: PacketBatchInput = {
+    time: new Date(), packetHash: `f02-${process.pid}`, rxNodeId: observer,
+    srcNodeId: source, topic: `meshcore/ZZZ/${observer}/packets`,
+    topicPrefix: 'meshcore', iata: 'ZZZ', packetType: 5, routeType: 0,
+    hopCount: 2, rssi: -80, snr: 5, payloadJson: '{}',
+    companionSender: null, rawHex: '00', advertCount: null,
+    pathHashes: ['ABCD', 'BEEF'], pathHashSizeBytes: 2,
+    network, transportCodes: null, regionScope: null,
+  };
+  const entry = [{ input, observationId: '11111111-1111-4111-8111-111111111111' }];
+  const query = (sql: string, params?: unknown[]) => pool.query(sql, params);
+  const transaction = testTransaction(pool);
+  const counts = async () => (await pool.query<{
+    packets: string; paths: string; hourly: string; daily: string;
+    nodes: string; sightings: string; regions: string;
+  }>(`
+    SELECT
+      (SELECT COUNT(*)::text FROM packets WHERE network = $1) AS packets,
+      (SELECT COUNT(*)::text FROM packet_paths WHERE network = $1) AS paths,
+      (SELECT COALESCE(SUM(packet_count), 0)::text FROM packet_hourly_stats WHERE network = $1) AS hourly,
+      (SELECT COUNT(*)::text FROM packet_daily_stats WHERE network = $1) AS daily,
+      (SELECT COUNT(*)::text FROM nodes WHERE node_id = $2) AS nodes,
+      (SELECT COUNT(*)::text FROM node_network_sightings WHERE network = $1) AS sightings,
+      (SELECT COUNT(*)::text FROM observer_region_packet_sightings WHERE network = $1) AS regions
+  `, [network, observer])).rows[0]!;
+
+  const holder = await pool.connect();
+  try {
+    await holder.query('BEGIN');
+    await holder.query("SELECT pg_advisory_xact_lock(hashtext('meshcore:packet-batch-writer'))");
+    await assert.rejects(persistEntriesCore(entry, query, true, transaction), /PACKET_BATCH_LOCK_BUSY/);
+    assert.deepEqual(await counts(), {
+      packets: '0', paths: '0', hourly: '0', daily: '0',
+      nodes: '0', sightings: '0', regions: '0',
+    });
+  } finally {
+    await holder.query('COMMIT');
+    holder.release();
+  }
+  await persistEntriesCore(entry, query, true, transaction);
+  const once = await counts();
+  assert.deepEqual(once, {
+    packets: '1', paths: '1', hourly: '1', daily: '1',
+    nodes: '1', sightings: '1', regions: '1',
+  });
+  await persistEntriesCore(entry, query, true, transaction);
+  assert.deepEqual(await counts(), once);
+  await persistEntriesCore([{
+    input: { ...input, time: new Date(input.time.getTime() + 1) },
+    observationId: entry[0]!.observationId,
+  }], query, true, transaction);
+  assert.deepEqual(await counts(), once, 'observation ID survives a changed retry timestamp');
+});
+
 test('privacy rename commits and rematerializes a compressed chunk above the old DML budget', {
   skip: databaseUrl ? false : 'TEST_INGEST_DATABASE_URL is not configured',
 }, async (t) => {
@@ -279,7 +372,7 @@ test('privacy rename commits and rematerializes a compressed chunk above the old
   const nodeId = 'F'.repeat(64);
   await pool.query(`INSERT INTO nodes (node_id, name, network) VALUES ($1, 'incident public', 'ukmesh')
     ON CONFLICT (node_id) DO UPDATE SET name = EXCLUDED.name`, [nodeId]);
-  configurePacketBatch((text, params) => pool!.query(text, params));
+  configurePacketBatch((text, params) => pool!.query(text, params), testTransaction(pool));
   const now = new Date();
   const smallPackets: PacketBatchInput[] = [0, 1, 2].map((index) => ({
     time: new Date(now.getTime() + index),
@@ -597,9 +690,9 @@ test('packet batch atomically coalesces observer, sighting, and stats writes', {
       // batch statement (same convention as packetBatch.test.ts).
       return pool.query(text, params);
     }
-    statementCount += 1;
+    if (!text.includes('pg_try_advisory_xact_lock')) statementCount += 1;
     return pool.query(text, params);
-  });
+  }, testTransaction(pool));
 
   const makePacket = (index: number, hopCount: number): PacketBatchInput => ({
     time: new Date(now + index * 1_000),

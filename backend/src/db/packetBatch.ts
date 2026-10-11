@@ -94,13 +94,13 @@ export type PersistRow = {
   is_private: boolean;
   visibility_ok: boolean;
   prefix_cache_fresh: boolean;
-  lock_ok: boolean;
 };
 
-type QueryFn = <T extends QueryResultRow = QueryResultRow>(
+export type QueryFn = <T extends QueryResultRow = QueryResultRow>(
   text: string,
   params?: unknown[],
 ) => Promise<{ rows: T[] }>;
+export type TransactionRunner = <T>(work: (query: QueryFn) => Promise<T>) => Promise<T>;
 
 type PendingPacket = {
   packet: PacketBatchInput;
@@ -110,6 +110,7 @@ type PendingPacket = {
 };
 
 let queryFn: QueryFn | null = null;
+let transactionRunner: TransactionRunner | null = null;
 let timer: NodeJS.Timeout | null = null;
 let activeFlush: Promise<void> | null = null;
 let draining = false;
@@ -117,8 +118,9 @@ const pending: PendingPacket[] = [];
 let privatePrefixCache = new PrivatePrefixCache();
 let privatePrefixRefresh: Promise<void> | null = null;
 
-export function configurePacketBatch(query: QueryFn): void {
+export function configurePacketBatch(query: QueryFn, transaction?: TransactionRunner): void {
   queryFn = query;
+  transactionRunner = transaction ?? null;
   privatePrefixCache = new PrivatePrefixCache();
   privatePrefixRefresh = null;
 }
@@ -140,6 +142,44 @@ export async function classifyForAdmission(
     }
   }
   return privatePrefixCache.classify(input);
+}
+
+/** Load one authoritative policy snapshot for an entire public read batch. */
+export async function loadCurrentPublicPrivacyPolicy(): Promise<PrivatePrefixCache | null> {
+  if (!queryFn) return null;
+  const { rows } = await queryFn<{
+    generation: string;
+    materialized_generation: string;
+    remat_active: boolean;
+    prefixes: PrivatePrefixRow[];
+  }>(`
+    SELECT visibility.generation::text AS generation,
+           materialized.visibility_generation::text AS materialized_generation,
+           EXISTS (
+             SELECT 1 FROM privacy_rematerialization_queue
+              WHERE status IN ('pending', 'processing', 'failed')
+           ) AS remat_active,
+           COALESCE(jsonb_agg(jsonb_build_object(
+             'node_id', prefix.node_id,
+             'network', prefix.network,
+             'prefix_size_bytes', prefix.prefix_size_bytes,
+             'prefix', prefix.prefix
+           )) FILTER (WHERE prefix.node_id IS NOT NULL), '[]'::jsonb) AS prefixes
+      FROM public_visibility_state visibility
+      JOIN packet_visibility_materialization_state materialized
+        ON materialized.singleton = visibility.singleton
+      LEFT JOIN private_node_prefixes prefix ON TRUE
+     WHERE visibility.singleton = TRUE
+     GROUP BY visibility.generation, materialized.visibility_generation
+  `);
+  const state = rows[0];
+  const generation = Number(state?.generation);
+  if (!state || !Number.isSafeInteger(generation) || generation < 1
+    || Number(state.materialized_generation) !== generation
+    || state.remat_active !== false || !Array.isArray(state.prefixes)) return null;
+  const policy = new PrivatePrefixCache();
+  policy.replace(generation, state.prefixes);
+  return policy;
 }
 
 /**
@@ -291,6 +331,7 @@ export async function persistEntriesCore(
   entries: PersistEntry[],
   query: QueryFn,
   idempotent: boolean,
+  transaction: TransactionRunner,
 ): Promise<PersistRow[]> {
   if (privatePrefixCache.currentGeneration < 1) {
     try {
@@ -351,7 +392,7 @@ export async function persistEntriesCore(
     return `(${placeholders.join(', ')})`;
   }).join(',\n');
 
-  const persistenceSource = idempotent ? 'new_rows' : 'classified';
+  const candidateSource = idempotent ? 'novel_rows' : 'classified';
   // Replay safety (RAM-mode crash recovery): when running idempotent, a batch
   // is filtered twice — first against duplicate identities WITHIN the batch
   // (row-numbered by the same sighting identity the existence check uses),
@@ -369,7 +410,7 @@ export async function persistEntriesCore(
                 ) AS identity_rank
          FROM classified c
        ),
-       new_rows AS MATERIALIZED (
+       novel_rows AS MATERIALIZED (
          SELECT d.*
          FROM deduped d
          WHERE d.identity_rank = 1
@@ -389,15 +430,17 @@ export async function persistEntriesCore(
            )
        ),`
     : '';
-  // Serialize writers with a transaction-scoped advisory lock: NOT EXISTS
-  // alone cannot prevent two concurrent writers from both passing the
-  // existence check. Every insert is gated on the lock; when it is held the
-  // batch writes nothing and reports lock_ok=false so the caller retries.
-  const lockCte = `locked AS MATERIALIZED (
-         SELECT pg_try_advisory_xact_lock(hashtext('meshcore:packet-batch-writer')) AS ok
-       ),`;
-
-  const result = await query<PersistRow>(
+  // The lock must be a separate command on the same transaction/client. In
+  // Read Committed, the following mutation statement then receives a fresh
+  // snapshot and sees a competing writer's committed observation.
+  const rows = await transaction(async (txQuery) => {
+    const lock = await txQuery<{ ok: boolean }>(
+      "SELECT pg_try_advisory_xact_lock(hashtext('meshcore:packet-batch-writer')) AS ok",
+    );
+    if (lock.rows[0]?.ok !== true) {
+      throw new Error('PACKET_BATCH_LOCK_BUSY: another writer holds the packet batch lock');
+    }
+    const result = await txQuery<PersistRow>(
       `WITH current_visibility AS MATERIALIZED (
          SELECT generation
            FROM public_visibility_state
@@ -410,7 +453,6 @@ export async function persistEntriesCore(
             WHERE status IN ('pending', 'processing', 'failed')
          ) AS active
        ),
-       ${lockCte}
        incoming (
          row_id, observation_id_in, time, packet_hash, rx_node_id, src_node_id, topic, topic_prefix,
          iata, packet_type, route_type, hop_count, rssi, snr, payload, companion_sender, raw_hex,
@@ -434,6 +476,24 @@ export async function persistEntriesCore(
          CROSS JOIN privacy_remat_state remat
        ),
        ${idempotencyCte}
+       candidate_rows AS MATERIALIZED (
+         SELECT DISTINCT ON (observation_id) *
+         FROM ${candidateSource}
+         ORDER BY observation_id, row_id
+       ),
+       claimed AS (
+         INSERT INTO ingest_observation_ledger
+           (observation_id, observed_at, packet_hash, network)
+         SELECT observation_id, time, packet_hash, network
+         FROM candidate_rows
+         WHERE TRUE
+         ON CONFLICT (observation_id) DO NOTHING
+         RETURNING observation_id
+       ),
+       new_rows AS MATERIALIZED (
+         SELECT c.* FROM candidate_rows c
+         JOIN claimed USING (observation_id)
+       ),
        inserted AS (
          INSERT INTO packets (
            observation_id, time, packet_hash, rx_node_id, src_node_id, topic, topic_prefix, iata,
@@ -445,8 +505,7 @@ export async function persistEntriesCore(
                 packet_type, route_type, hop_count, rssi, snr, payload::jsonb, companion_sender, raw_hex,
                 advert_count, path_hashes, path_hash_size_bytes, network, transport_codes,
                 region_scope, is_private, path_is_valid AND NOT is_private
-         FROM ${persistenceSource} CROSS JOIN locked
-         WHERE locked.ok
+         FROM new_rows
          RETURNING 1
        ),
        path_inserted AS (
@@ -458,8 +517,8 @@ export async function persistEntriesCore(
          SELECT time, packet_hash, rx_node_id, src_node_id, topic, topic_prefix,
                 route_type, hop_count, rssi, snr, path_hashes, path_hash_size_bytes,
                 is_private, path_is_valid AND NOT is_private, network, observation_id
-         FROM ${persistenceSource} CROSS JOIN locked
-         WHERE locked.ok AND path_hashes IS NOT NULL AND path_hash_size_bytes > 1
+         FROM new_rows
+         WHERE path_hashes IS NOT NULL AND path_hash_size_bytes > 1
          ON CONFLICT DO NOTHING
          RETURNING 1
        ),
@@ -470,8 +529,8 @@ export async function persistEntriesCore(
          )
          SELECT DISTINCT ON (rx_node_id)
            rx_node_id, iata, iata, time, time, TRUE, network, time
-         FROM ${persistenceSource} CROSS JOIN locked
-         WHERE locked.ok AND rx_node_id IS NOT NULL AND rx_node_id <> ''
+         FROM new_rows
+         WHERE rx_node_id IS NOT NULL AND rx_node_id <> ''
          ORDER BY rx_node_id, time DESC
          ON CONFLICT (node_id) DO UPDATE SET
            last_rx_at = GREATEST(nodes.last_rx_at, EXCLUDED.last_rx_at),
@@ -494,8 +553,8 @@ export async function persistEntriesCore(
          INSERT INTO node_network_sightings
            (node_id, network, first_seen_at, last_seen_at)
          SELECT src_node_id, network, MIN(time), MAX(time)
-         FROM ${persistenceSource} CROSS JOIN locked
-         WHERE locked.ok AND src_node_id IS NOT NULL
+         FROM new_rows
+         WHERE src_node_id IS NOT NULL
            AND src_node_id <> ''
            AND network <> 'test'
          GROUP BY src_node_id, network
@@ -517,8 +576,8 @@ export async function persistEntriesCore(
            hop_count,
            packet_hash,
            time
-         FROM ${persistenceSource} CROSS JOIN locked
-         WHERE locked.ok AND path_is_valid
+         FROM new_rows
+         WHERE path_is_valid
            AND NOT is_private
            AND hop_count IS NOT NULL
          ORDER BY network, hop_count DESC, row_id ASC
@@ -557,9 +616,8 @@ export async function persistEntriesCore(
            COALESCE(SUM(snr), 0)::double precision,
            COUNT(snr)::bigint,
            NOW()
-         FROM ${persistenceSource} CROSS JOIN locked
-         WHERE locked.ok AND network = 'test'
-            OR topic_prefix <> 'meshcore-test'
+         FROM new_rows
+         WHERE (network = 'test' OR topic_prefix <> 'meshcore-test')
          GROUP BY
            network,
            date_trunc('hour', time),
@@ -584,8 +642,8 @@ export async function persistEntriesCore(
          INSERT INTO observer_region_packet_sightings
            (network, iata, packet_hash, first_seen, last_seen)
          SELECT network, iata, packet_hash, MIN(time), MAX(time)
-         FROM ${persistenceSource} CROSS JOIN locked
-         WHERE locked.ok AND network <> 'test'
+         FROM new_rows
+         WHERE network <> 'test'
            AND path_is_valid
            AND NOT is_private
            AND iata IS NOT NULL
@@ -608,8 +666,8 @@ export async function persistEntriesCore(
          INSERT INTO observer_region_observer_sightings
            (network, iata, rx_node_id, first_seen, last_seen)
          SELECT network, iata, rx_node_id, MIN(time), MAX(time)
-         FROM ${persistenceSource} CROSS JOIN locked
-         WHERE locked.ok AND network <> 'test'
+         FROM new_rows
+         WHERE network <> 'test'
            AND path_is_valid
            AND NOT is_private
            AND iata IS NOT NULL
@@ -629,7 +687,6 @@ export async function persistEntriesCore(
        )
        SELECT row_id, is_private, path_is_valid AND NOT is_private AS visibility_ok,
               prefix_cache_fresh,
-              (SELECT ok FROM locked) AS lock_ok,
               (SELECT COUNT(*) FROM inserted) AS inserted_count,
               (SELECT COUNT(*) FROM observer_updates) AS observer_update_count,
               (SELECT COUNT(*) FROM network_sightings) AS network_sighting_count,
@@ -641,26 +698,27 @@ export async function persistEntriesCore(
        ORDER BY row_id`,
       params,
     );
-
-  if (result.rows.length !== entries.length) throw new Error('PACKET_BATCH_RESULT_MISMATCH');
-  if (result.rows.some((row) => !row.lock_ok)) {
-    throw new Error('PACKET_BATCH_LOCK_BUSY: another writer holds the packet batch lock');
-  }
-  if (result.rows.some((row) => !row.prefix_cache_fresh)) {
+    if (result.rows.length !== entries.length) throw new Error('PACKET_BATCH_RESULT_MISMATCH');
+    return result.rows;
+  });
+  if (rows.some((row) => !row.prefix_cache_fresh)) {
     void refreshPrivatePrefixCache(query).catch((error: unknown) => {
       console.error('[db] private prefix cache refresh failed', (error as Error).message);
     });
   }
-  return result.rows;
+  return rows;
 }
 
 async function writeBatch(batch: PendingPacket[], idempotent: boolean): Promise<void> {
   const query = queryFn;
   if (!query) throw new Error('PACKET_BATCH_NOT_CONFIGURED');
+  const transaction = transactionRunner;
+  if (!transaction) throw new Error('PACKET_BATCH_TRANSACTION_NOT_CONFIGURED');
   const rows = await persistEntriesCore(
     batch.map(({ packet }) => ({ input: packet, observationId: null })),
     query,
     idempotent,
+    transaction,
   );
   const settledAt = process.hrtime.bigint();
   for (const row of rows) {

@@ -31,6 +31,16 @@ test('private identities and relay prefixes are suppressed', () => {
   }), false);
 });
 
+test('F01 known private observer or source suppresses a stale visibility flag', () => {
+  const privacy = new PublicWsPrivacyIndex();
+  privacy.replace([{ node_id: privateId, name: 'Private 🚫' }]);
+  assert.equal(privacy.packetHasPrivateParticipant({ rxNodeId: privateId, visibilityOk: true }), true);
+  assert.equal(privacy.packetHasPrivateParticipant({ srcNodeId: privateId, visibilityOk: true }), true);
+  assert.equal(privacy.packetHasPrivateParticipant({
+    path: [privateId.slice(0, 4)], pathHashSizeBytes: 2, visibilityOk: true,
+  }), true);
+});
+
 test('private node and link events are suppressed and live opt-outs update the index', () => {
   const privacy = new PublicWsPrivacyIndex();
   privacy.replace([]);

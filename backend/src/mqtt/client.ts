@@ -1,7 +1,8 @@
 import mqtt, { type MqttClient } from 'mqtt';
+import { createHash } from 'node:crypto';
 import { calcRegionKey, transportCodeMatchesRegion } from '@michaelhart/meshcore-decoder';
 import { insertNodeNeighborSample, insertNodeStatusSample, insertPacket, upsertNode, query, insertOrUpdateSpamSuspect, recordMultibyteEvidence } from '../db/index.js';
-import { closePacketBatch, flush as flushPacketBatch } from '../db/packetBatch.js';
+import { closePacketBatch, flush as flushPacketBatch, loadCurrentPublicPrivacyPolicy } from '../db/packetBatch.js';
 import { evaluateAdvert, initSpamDetector } from './spamDetector.js';
 import { invalidateResolveCache, setResolveCache, getStickyNodeMap, mergeStickyNodes, getHeldPath, setHeldPath } from '../path-beta/resolveCache.js';
 import { resolvePool } from '../path-beta/resolvePool.js';
@@ -67,6 +68,10 @@ export function getMqttRuntimeStatus(): MqttRuntimeStatus {
 
 export function markMqttPersistenceHealthy(): void {
   mqttDurabilityFailure = undefined;
+}
+
+export function markMqttPersistenceFailed(error: unknown): void {
+  mqttDurabilityFailure = (error instanceof Error ? error.message : String(error)).slice(0, 200);
 }
 
 export function onPacket(cb: PacketCallback)         { subscribers.push(cb); }
@@ -310,7 +315,7 @@ function reportDroppedMqttMessage(
   lastMqttDropLogAt = now;
 }
 
-function handleIncomingMqttPacket(packet: { topic: string; payload: Buffer | string; dup?: boolean }): Promise<void> {
+function handleIncomingMqttPacket(packet: { topic: string; payload: Buffer | string; dup?: boolean; messageId?: number }): Promise<void> {
   const startedAt = process.hrtime.bigint();
   const rawPayload = Buffer.isBuffer(packet.payload)
     ? packet.payload
@@ -329,7 +334,7 @@ function handleIncomingMqttPacket(packet: { topic: string; payload: Buffer | str
 
   activeMqttIngests += 1;
   mqttIngestActive.set(activeMqttIngests);
-  return handleMessage(packet.topic, rawPayload, packet.dup === true)
+  return handleMessage(packet.topic, rawPayload, packet.dup === true, packet.messageId)
     .then(() => mqttIngestOutcomesTotal.inc({ outcome: 'processed' }))
     .finally(() => {
       mqttIngestAckDuration.observe(Number(process.hrtime.bigint() - startedAt) / 1e9);
@@ -452,7 +457,12 @@ export async function stopMqttClient(timeoutMs = 20_000): Promise<void> {
   setMqttRuntimeStatus('disconnected');
 }
 
-async function handleMessage(topic: string, rawPayload: Buffer, redelivered = false): Promise<void> {
+async function handleMessage(
+  topic: string,
+  rawPayload: Buffer,
+  redelivered = false,
+  messageId?: number,
+): Promise<void> {
   const topicParts = parseMqttTopic(topic, TOPIC_PREFIXES, BLOCKED_PUBLIC_IATAS);
   if (!topicParts) {
     mqttIngestOutcomesTotal.inc({ outcome: 'invalid_topic' });
@@ -776,6 +786,16 @@ async function handleMessage(topic: string, rawPayload: Buffer, redelivered = fa
     direction: direction ?? null,
   };
   const dedupeKey = observationIdentityKey(observationIdentity);
+  const ramDeliveryKey = MQTT_INGEST_MODE === 'ram'
+    ? (() => {
+      if (!Number.isInteger(messageId) || messageId! < 1 || messageId! > 65_535) {
+        throw new Error('MQTT_RAM_DELIVERY_ID_MISSING');
+      }
+      return createHash('sha256').update(JSON.stringify([
+        MQTT_CLIENT_ID, messageId, topic, rawPayload.toString('hex'), dedupeKey,
+      ])).digest('hex');
+    })()
+    : null;
 
   if (isDuplicatePacket(dedupeKey)) {
     // This marker is written only after the matching packet is committed.
@@ -855,21 +875,40 @@ async function handleMessage(topic: string, rawPayload: Buffer, redelivered = fa
       regionScope:    decodedRegionScope,
     };
     const visibility = MQTT_INGEST_MODE === 'ram'
-      ? await admitPacketToRam(persistInput)
+      ? await admitPacketToRam(persistInput, { key: ramDeliveryKey!, redelivered })
       : await insertPacket(persistInput);
     rememberPacket(dedupeKey);
     if (MQTT_INGEST_MODE !== 'ram') markMqttPersistenceHealthy();
-    emitNode(observerKey, { network, observerId: observerKey });
     livePacket.isPrivate = visibility.isPrivate;
     livePacket.visibilityOk = visibility.visibilityOk;
-    try {
-      emit(livePacket, json);
-    } catch (error) {
-      console.error(
-        '[mqtt] packet subscriber failed after durable ingest:',
-        error instanceof Error ? error.message : String(error),
-      );
-    }
+    const publishLive = (): void => {
+      emitNode(observerKey, { network, observerId: observerKey });
+      try {
+        emit(livePacket, json);
+      } catch (error) {
+        console.error(
+          '[mqtt] packet subscriber failed after ingest:',
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+    };
+    if (MQTT_INGEST_MODE === 'ram') {
+      // Public emission is independent of broker acknowledgement. It uses a
+      // fresh authority snapshot; a PG outage suppresses the public event.
+      void loadCurrentPublicPrivacyPolicy().then((policy) => {
+        if (!policy) return;
+        const current = policy.classify({
+          network, rxNodeId: observerKey, srcNodeId: srcNodeId ?? null,
+          pathHashes: path ?? null, pathHashSizeBytes: decodedPathHashSizeBytes ?? null,
+        });
+        if (!current.visibilityOk) return;
+        livePacket.isPrivate = false;
+        livePacket.visibilityOk = true;
+        publishLive();
+      }).catch((error: unknown) => {
+        console.error('[mqtt] public live authority unavailable:', error instanceof Error ? error.message : error);
+      });
+    } else publishLive();
     invalidateResolveCache(finalHash);
     mqttIngestOutcomesTotal.inc({
       outcome: MQTT_INGEST_MODE === 'ram' ? 'packet_admitted' : 'packet_persisted',

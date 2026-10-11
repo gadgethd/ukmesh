@@ -24,8 +24,12 @@ import { buildPacketBatchInput, type InsertPacketInput } from '../db/packetInput
 import { classifyForAdmission } from '../db/packetBatch.js';
 import {
   decodeRamStreamValue,
+  accountedRamEntryBytes,
   encodePendingEntry,
   entryFieldName,
+  getRamAdmissionKey,
+  getRamCommittedKey,
+  getRamConsumerGroup,
   getRamIngestMode,
   getRamQueueBytesKey,
   getRamQueueMaxBytes,
@@ -38,6 +42,10 @@ import {
   ramAdmissionDuration,
   ramAdmissionsTotal,
   ramEarliestPendingAge,
+  ramPendingDepth,
+  ramRetainedDepth,
+  ramPelDepth,
+  ramOldestPelAge,
   ramQueueBytes,
   ramQueueDepth,
 } from '../metrics.js';
@@ -60,13 +68,20 @@ export interface RamStoreRedis {
   ): Promise<Array<[string, string[]]>>;
   memory(subcommand: string, key: string): Promise<number>;
   eval(script: string, numKeys: number, ...args: (string | number)[]): Promise<unknown>;
+  hmget(key: string, ...fields: string[]): Promise<Array<string | null>>;
+  xpending(key: string, group: string): Promise<unknown>;
 }
 
 /**
  * Atomic admission: check count, check bytes, add, account — one server-side
- * step. Returns the new entry id, -1 (count exhausted) or -2 (bytes budget).
+ * step. A retransmitted delivery returns the original encoded entry before
+ * capacity checks. The ledger key is removed only with final stream cleanup.
  */
 const ADMIT_SCRIPT = `
+if tonumber(ARGV[6]) == 1 then
+  local existing = redis.call('GET', KEYS[3])
+  if existing then return {1, existing} end
+end
 local len = redis.call('XLEN', KEYS[1])
 if len >= tonumber(ARGV[1]) then return -1 end
 local used = tonumber(redis.call('GET', KEYS[2]) or '0')
@@ -74,8 +89,43 @@ local add = tonumber(ARGV[3])
 if used + add > tonumber(ARGV[2]) then return -2 end
 local id = redis.call('XADD', KEYS[1], '*', ARGV[4], ARGV[5])
 redis.call('INCRBY', KEYS[2], add)
-return id
+redis.call('SET', KEYS[3], ARGV[5])
+return {0, ARGV[5]}
 `;
+
+// The stream has a strict admission count bound. Recomputing the companion
+// counter in one Redis command cannot race XADD or final cleanup; both are
+// Lua commands on the same server. Refuse an unexpectedly oversized stream.
+const RECONCILE_BYTES_SCRIPT = `
+local limit = tonumber(ARGV[1])
+local rows = redis.call('XRANGE', KEYS[1], '-', '+', 'COUNT', limit + 1)
+if #rows > limit then return -1 end
+local total = 0
+for _, row in ipairs(rows) do
+  local fields = row[2]
+  local value = fields[2] or ''
+  total = total + string.len(value) * 2 + tonumber(ARGV[2])
+end
+redis.call('SET', KEYS[2], total)
+return total
+`;
+
+export async function reconcileRamQueueBytes(): Promise<number> {
+  const result = await getClient().eval(
+    RECONCILE_BYTES_SCRIPT,
+    2,
+    getRamStreamKey(),
+    getRamQueueBytesKey(),
+    getRamQueueMaxPackets(),
+    RAM_ENTRY_OVERHEAD_BYTES,
+  );
+  if (typeof result !== 'number' || result < 0) {
+    throw new Error('RAM_QUEUE_BYTES_RECONCILIATION_REFUSED');
+  }
+  return result;
+}
+
+export type RamDelivery = { key: string; redelivered: boolean };
 
 export type RamAdmissionResult = {
   observationId: string;
@@ -143,15 +193,16 @@ export async function closeRamStore(): Promise<void> {
 export function oldestPendingAgeSeconds(
   entries: Array<[string, string[]]>,
   nowMs: number,
+  committedIds: ReadonlySet<string> = new Set(),
 ): number | null {
+  let oldestAt = Number.POSITIVE_INFINITY;
   for (const [id, fields] of entries) {
+    if (committedIds.has(id)) continue;
     const decoded = decodeRamStreamValue(fields[1]);
     if (!decoded || decoded.kind !== 'entry') continue;
-    const ms = Number(id.split('-')[0]);
-    if (!Number.isFinite(ms)) continue;
-    return Math.max(0, (nowMs - ms) / 1000);
+    oldestAt = Math.min(oldestAt, decoded.entry.admittedAtMs);
   }
-  return null;
+  return Number.isFinite(oldestAt) ? Math.max(0, (nowMs - oldestAt) / 1000) : null;
 }
 
 /** Refresh queue gauges (count, bytes, oldest pending age). Called by the writer tick. */
@@ -162,17 +213,31 @@ export async function refreshPendingStats(): Promise<void> {
   // Oldest-first sample: XREVRANGE reported the NEWEST entry's age, which is
   // always ~0 in a busy queue and hid stuck deliveries. XRANGE returns the
   // oldest entries, where the genuinely oldest pending observation lives.
-  const [len, mem, oldestFirst] = await Promise.all([
+  const [len, mem, oldestFirst, pel] = await Promise.all([
     client.xlen(key),
     client.memory('USAGE', key).catch(() => cachedBytes),
-    client.xrange(key, '-', '+', 'COUNT', 50),
+    client.xrange(key, '-', '+', 'COUNT', getRamQueueMaxPackets()),
+    client.xpending(key, getRamConsumerGroup()),
   ]);
   cachedBytes = typeof mem === 'number' && Number.isFinite(mem) ? mem : cachedBytes;
   ramQueueDepth.set(len);
   ramQueueBytes.set(cachedBytes);
-  const oldestAge = oldestPendingAgeSeconds(oldestFirst, Date.now());
-  if (oldestAge !== null) {
-    ramEarliestPendingAge.set(oldestAge);
+  const entryIds = oldestFirst
+    .filter(([, fields]) => decodeRamStreamValue(fields[1])?.kind === 'entry')
+    .map(([id]) => id);
+  const committedValues = entryIds.length
+    ? await client.hmget(getRamCommittedKey(), ...entryIds)
+    : [];
+  const committedIds = new Set(entryIds.filter((_, index) => committedValues[index] !== null));
+  ramPendingDepth.set(entryIds.length - committedIds.size);
+  ramRetainedDepth.set(committedIds.size);
+  ramEarliestPendingAge.set(oldestPendingAgeSeconds(oldestFirst, Date.now(), committedIds) ?? 0);
+  if (Array.isArray(pel)) {
+    const count = Number(pel[0]);
+    ramPelDepth.set(Number.isFinite(count) ? count : 0);
+    const oldestId = typeof pel[1] === 'string' ? pel[1] : null;
+    const oldestMs = oldestId ? Number(oldestId.split('-')[0]) : NaN;
+    ramOldestPelAge.set(Number.isFinite(oldestMs) ? Math.max(0, (Date.now() - oldestMs) / 1000) : 0);
   }
 }
 
@@ -182,7 +247,10 @@ export async function refreshPendingStats(): Promise<void> {
  * Throws RamAdmissionRefusedError when the packet cannot be admitted — the
  * caller must NOT acknowledge the broker in that case.
  */
-export async function admitPacketToRam(p: InsertPacketInput): Promise<RamAdmissionResult> {
+export async function admitPacketToRam(
+  p: InsertPacketInput,
+  delivery?: RamDelivery,
+): Promise<RamAdmissionResult> {
   const startedNs = process.hrtime.bigint();
   const input = buildPacketBatchInput(p);
 
@@ -204,29 +272,33 @@ export async function admitPacketToRam(p: InsertPacketInput): Promise<RamAdmissi
   const maxBytes = getRamQueueMaxBytes();
 
   try {
+    const deliveryKey = delivery?.key ?? randomUUID();
     const entry: RamPendingEntry = {
       observationId: randomUUID(),
+      deliveryKey,
       admittedAtMs: Date.now(),
       isPrivate,
       visibilityOk,
       input,
     };
     const value = encodePendingEntry(entry);
-    const entryBytes = Buffer.byteLength(value) + RAM_ENTRY_OVERHEAD_BYTES;
+    const entryBytes = accountedRamEntryBytes(value);
 
     // Count check, byte check, XADD and byte accounting in one atomic
     // server-side step: concurrent connections cannot both pass the same
     // capacity check.
     const result = await client.eval(
       ADMIT_SCRIPT,
-      2,
+      3,
       key,
       getRamQueueBytesKey(),
+      getRamAdmissionKey(deliveryKey),
       maxPackets,
       maxBytes,
       entryBytes,
       entryFieldName(),
       value,
+      delivery?.redelivered ? 1 : 0,
     );
     if (result === -1) {
       ramAdmissionsTotal.inc({ outcome: 'queue_full' });
@@ -236,12 +308,16 @@ export async function admitPacketToRam(p: InsertPacketInput): Promise<RamAdmissi
       ramAdmissionsTotal.inc({ outcome: 'queue_bytes' });
       throw new RamAdmissionRefusedError('queue_bytes');
     }
-    if (typeof result !== 'string' || result.length === 0) {
+    if (!Array.isArray(result) || result.length !== 2 || typeof result[1] !== 'string') {
       throw new RamAdmissionRefusedError('redis_unavailable', new Error('unexpected eval reply'));
+    }
+    const stored = decodeRamStreamValue(result[1]);
+    if (!stored || stored.kind !== 'entry') {
+      throw new RamAdmissionRefusedError('redis_unavailable', new Error('invalid stored admission'));
     }
     ramAdmissionsTotal.inc({ outcome: 'admitted' });
     ramAdmissionDuration.observe(Number(process.hrtime.bigint() - startedNs) / 1e9);
-    return { observationId: entry.observationId, isPrivate, visibilityOk };
+    return { observationId: stored.entry.observationId, isPrivate, visibilityOk };
   } catch (error) {
     if (error instanceof RamAdmissionRefusedError) throw error;
     ramAdmissionsTotal.inc({ outcome: 'redis_error' });
@@ -252,14 +328,12 @@ export async function admitPacketToRam(p: InsertPacketInput): Promise<RamAdmissi
 export type PendingStreamEntry = { id: string; entry: RamPendingEntry };
 
 /**
- * Read the newest pending (not yet committed) entries, newest first →
- * returned oldest-last. Committed entries are retained briefly in the stream
- * (handoff-overlap window), so the latest commit marker is the boundary:
- * entries at or below it are committed and excluded. Best-effort: returns []
- * on any Redis failure.
+ * Read newest stream entries, including the retained post-commit overlap.
+ * The caller deduplicates by observation ID against the same PG read snapshot.
+ * A cumulative marker cannot classify entries admitted during a commit.
  */
 export async function readPendingEntries(limit: number): Promise<PendingStreamEntry[]> {
-  if (getRamIngestMode() !== 'ram') return [];
+  if (getRamIngestMode() !== 'ram' || limit <= 0) return [];
   try {
     const client = getClient();
     const raw = await client.xrevrange(
@@ -267,17 +341,13 @@ export async function readPendingEntries(limit: number): Promise<PendingStreamEn
       '+',
       '-',
       'COUNT',
-      Math.min(2_000, limit * 3 + 25),
+      getRamQueueMaxPackets(),
     );
     const out: PendingStreamEntry[] = [];
     for (const [id, fields] of raw) {
       const decoded = decodeRamStreamValue(fields[1]);
       if (!decoded) continue;
-      // Latest commit boundary: everything at or below the newest marker is
-      // committed (entries are retained briefly for the overlap window) and
-      // must not be reported as pending.
-      if (decoded.kind === 'commit') break;
-      if (out.length >= limit) break;
+      if (decoded.kind === 'commit') continue; // legacy marker, not an authority boundary
       out.push({ id, entry: decoded.entry });
     }
     return out.reverse();

@@ -30,6 +30,9 @@ class FakeStore implements RamStoreRedis {
   xlenError: Error | null = null;
   maxPacketsSeen: unknown = null;
   maxBytesSeen: unknown = null;
+  ledger = new Map<string, string>();
+  committed = new Set<string>();
+  loseReplyOnce = false;
 
   async xlen(): Promise<number> {
     if (this.xlenError) throw this.xlenError;
@@ -37,12 +40,17 @@ class FakeStore implements RamStoreRedis {
   }
 
   /** Mirrors ADMIT_SCRIPT semantics against the fake's state. */
-  async eval(_script: string, _numKeys: number, ...args: (string | number)[]): Promise<unknown> {
+  async eval(_script: string, numKeys: number, ...args: (string | number)[]): Promise<unknown> {
     if (this.xlenError) throw this.xlenError;
-    const maxPackets = Number(args[2]);
-    const maxBytes = Number(args[3]);
-    const add = Number(args[4]);
-    const value = String(args[6]);
+    const ledgerKey = numKeys === 3 ? String(args[2]) : '';
+    const offset = numKeys;
+    const maxPackets = Number(args[offset]);
+    const maxBytes = Number(args[offset + 1]);
+    const add = Number(args[offset + 2]);
+    const value = String(args[offset + 4]);
+    if (numKeys === 3 && Number(args[offset + 5]) === 1 && this.ledger.has(ledgerKey)) {
+      return [1, this.ledger.get(ledgerKey)];
+    }
     this.maxPacketsSeen = maxPackets;
     this.maxBytesSeen = maxBytes;
     if (this.len >= maxPackets) return -1;
@@ -50,7 +58,12 @@ class FakeStore implements RamStoreRedis {
     this.len += 1;
     this.bytes += add;
     this.added.push(value);
-    return `${1_700_000_000_000 + this.added.length}-0`;
+    if (numKeys === 3) this.ledger.set(ledgerKey, value);
+    if (this.loseReplyOnce) {
+      this.loseReplyOnce = false;
+      throw new Error('socket closed after Redis committed the admission');
+    }
+    return numKeys === 3 ? [0, value] : `${1_700_000_000_000 + this.added.length}-0`;
   }
 
   async xrevrange(): Promise<Array<[string, string[]]>> {
@@ -63,6 +76,14 @@ class FakeStore implements RamStoreRedis {
 
   async memory(): Promise<number> {
     return this.bytes;
+  }
+
+  async hmget(_key: string, ...fields: string[]): Promise<Array<string | null>> {
+    return fields.map((field) => this.committed.has(field) ? '1700000000000' : null);
+  }
+
+  async xpending(): Promise<unknown> {
+    return [0, null, null, []];
   }
 }
 
@@ -92,8 +113,9 @@ function entryFor(
     type?: number;
   } = {},
 ): RamPendingEntry {
+  const seed = hash.slice(0, 32).padEnd(32, '0');
   return {
-    observationId: `obs-${hash.slice(0, 6)}`,
+    observationId: `${seed.slice(0, 8)}-${seed.slice(8, 12)}-${seed.slice(12, 16)}-${seed.slice(16, 20)}-${seed.slice(20, 32)}`,
     admittedAtMs: 1_700_000_000_000,
     isPrivate: opts.visibilityOk === false,
     visibilityOk: opts.visibilityOk !== false,
@@ -175,7 +197,8 @@ test('admission enforces both bounds atomically and accounts conservative entry 
   assert.equal(fake.maxPacketsSeen, 5_000);
   assert.equal(fake.maxBytesSeen, 33_554_432);
   const raw = fake.added[0] ?? '';
-  assert.equal(fake.bytes, Buffer.byteLength(raw) + 256, 'byte counter = value + entry overhead');
+  assert.equal(fake.bytes, Buffer.byteLength(raw) * 2 + 512,
+    'byte counter reserves stream, delivery ledger and bookkeeping');
   assert.equal(fake.len, 1, 'count increments inside the atomic step');
 });
 
@@ -189,7 +212,24 @@ test('admission reports redis unavailability distinctly', async () => {
   );
 });
 
-test('readPendingEntries stops at the latest commit marker (retained committed entries excluded)', async () => {
+test('F05 lost Redis reply recovers the original observation ID without a second XADD', async () => {
+  const fake = new FakeStore();
+  fake.loseReplyOnce = true;
+  configureRamStore(fake);
+  await assert.rejects(
+    admitPacketToRam(sampleInput(), { key: 'client-1:42:payload-a', redelivered: false }),
+    /RAM_INGEST_REFUSED:redis_unavailable/,
+  );
+  const originalId = JSON.parse(fake.added[0]!)['o'] as string;
+  const recovered = await admitPacketToRam(sampleInput(), {
+    key: 'client-1:42:payload-a', redelivered: true,
+  });
+  assert.equal(recovered.observationId, originalId);
+  assert.equal(fake.added.length, 1);
+  assert.equal(fake.len, 1);
+});
+
+test('F06 retained overlap and newer admission remain readable across a commit marker', async () => {
   const fake = new FakeStore();
   // Newest first: one pending entry above the newest marker; everything at or
   // below the marker is committed (retained for the overlap window).
@@ -201,15 +241,26 @@ test('readPendingEntries stops at the latest commit marker (retained committed e
   ];
   configureRamStore(fake);
   const pending = await readPendingEntries(10);
-  assert.equal(pending.length, 1, 'only entries newer than the newest marker are pending');
-  assert.equal(pending[0]?.id, '103-0');
+  assert.deepEqual(pending.map(({ id }) => id), ['100-0', '101-0', '103-0']);
+});
+
+test('F06 an old pending hole remains discoverable behind newer retained entries', async () => {
+  const fake = new FakeStore();
+  fake.rev = [
+    ['103-0', ['e', encodePendingEntry(entryFor('aa'.repeat(32)))]],
+    ['102-0', ['e', encodePendingEntry(entryFor('bb'.repeat(32)))]],
+    ['101-0', ['e', encodePendingEntry(entryFor('cc'.repeat(32)))]],
+  ];
+  configureRamStore(fake);
+  const seen = await readPendingEntries(1);
+  assert.equal(seen.some(({ id }) => id === '101-0'), true);
 });
 
 test('oldest pending age is computed from the oldest entry (markers skipped)', () => {
   const entries: Array<[string, string[]]> = [
     ['900-0', ['e', encodeCommitMarker({ kind: 'commit', through: '800-0', atMs: 1, packets: 1 })]],
-    ['1000-0', ['e', encodePendingEntry(entryFor('aa'.repeat(32)))]],
-    ['5000-0', ['e', encodePendingEntry(entryFor('bb'.repeat(32)))]],
+    ['1000-0', ['e', encodePendingEntry({ ...entryFor('aa'.repeat(32)), admittedAtMs: 1_000 })]],
+    ['5000-0', ['e', encodePendingEntry({ ...entryFor('bb'.repeat(32)), admittedAtMs: 5_000 })]],
   ];
   assert.equal(oldestPendingAgeSeconds(entries, 6_000), 5, 'oldest pending is the 1000-0 entry');
   assert.equal(oldestPendingAgeSeconds([], 6_000), null);
@@ -220,9 +271,21 @@ test('oldest pending age is computed from the oldest entry (markers skipped)', (
   );
 });
 
+test('F14 pending age uses admitted time and skips committed overlap', () => {
+  const young = { ...entryFor('aa'.repeat(32)), admittedAtMs: 5_000 };
+  const old = { ...entryFor('bb'.repeat(32)), admittedAtMs: 1_000 };
+  const entries: Array<[string, string[]]> = [
+    ['100-0', ['e', encodePendingEntry(young)]],
+    ['200-0', ['e', encodePendingEntry(old)]],
+  ];
+  assert.equal(oldestPendingAgeSeconds(entries, 6_000), 5);
+  assert.equal(oldestPendingAgeSeconds(entries, 6_000, new Set(['200-0'])), 1);
+  assert.equal(oldestPendingAgeSeconds(entries, 6_000, new Set(['100-0', '200-0'])), null);
+});
+
 async function loadPublicPrivacyCache(): Promise<void> {
   configurePacketBatch(async () => ({
-    rows: [{ generation: '7', prefixes: [] }],
+    rows: [{ generation: '7', materialized_generation: '7', remat_active: false, prefixes: [] }],
   }));
   await classifyForAdmission({
     network: 'ukmesh',
@@ -245,9 +308,10 @@ test('merged reads append only public, scoped, non-duplicate pending rows', asyn
   configureRamStore(fake);
   const rows = [{ packet_hash: 'ab'.repeat(32), time: new Date('2026-10-11T12:04:00.000Z') }];
   const merged = await mergePendingPacketsIntoRecentRows(rows, { limit: 10, network: 'ukmesh' });
-  assert.equal(merged.length, 2);
+  assert.equal(merged.length, 3, 'formerly private admission follows current public policy');
   assert.equal(merged[0]?.['packet_hash'], '34'.repeat(32)); // newer pending first
   assert.equal(merged[1]?.['packet_hash'], 'ab'.repeat(32));
+  assert.equal(merged[2]?.['packet_hash'], 'ef'.repeat(32));
   assert.equal(merged[0]?.['rx_count'], 1);
   assert.equal(merged[0]?.['tx_count'], 0);
   assert.equal(merged[0]?.['observer_iatas'] ? (merged[0]?.['observer_iatas'] as string[])[0] : null, 'EGNX');
@@ -265,9 +329,9 @@ test('pending observations of one hash aggregate into a single row with combined
   const fake = new FakeStore();
   const h = '77'.repeat(32);
   fake.rev = [
-    ['300-2', ['e', encodePendingEntry(entryFor(h, { rx: 'aa'.repeat(32), time: '2026-10-11T13:00:02.000Z' }))]],
-    ['300-1', ['e', encodePendingEntry(entryFor(h, { rx: 'bb'.repeat(32), time: '2026-10-11T13:00:02.000Z' }))]],
-    ['300-0', ['e', encodePendingEntry(entryFor(h, { rx: 'cc'.repeat(32), time: '2026-10-11T13:00:02.000Z' }))]],
+    ['300-2', ['e', encodePendingEntry({ ...entryFor(h, { rx: 'aa'.repeat(32), time: '2026-10-11T13:00:02.000Z' }), observationId: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' })]],
+    ['300-1', ['e', encodePendingEntry({ ...entryFor(h, { rx: 'bb'.repeat(32), time: '2026-10-11T13:00:02.000Z' }), observationId: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb' })]],
+    ['300-0', ['e', encodePendingEntry({ ...entryFor(h, { rx: 'cc'.repeat(32), time: '2026-10-11T13:00:02.000Z' }), observationId: 'cccccccc-cccc-cccc-cccc-cccccccccccc' })]],
   ];
   configureRamStore(fake);
   const merged = await mergePendingPacketsIntoRecentRows([], { limit: 10, network: 'ukmesh' });
@@ -279,13 +343,20 @@ test('pending observations of one hash aggregate into a single row with combined
   assert.equal(row['tx_count'], 0);
 });
 
-test('pending observations augment a database row without double counting the same observer', async () => {
+test('F12 merge deduplicates committed overlap by ID and counts a new same-observer sighting', async () => {
   await loadPublicPrivacyCache();
   const fake = new FakeStore();
   const h = '88'.repeat(32);
   fake.rev = [
+    ['301-2', ['e', encodePendingEntry({
+      ...entryFor(h, { rx: 'cd'.repeat(32), time: '2026-10-11T13:01:00.000Z' }),
+      observationId: '11111111-1111-1111-1111-111111111111',
+    })]],
     ['301-1', ['e', encodePendingEntry(entryFor(h, { rx: 'cd'.repeat(32), time: '2026-10-11T13:01:00.000Z' }))]],
-    ['301-0', ['e', encodePendingEntry(entryFor(h, { rx: 'ee'.repeat(32), time: '2026-10-11T13:01:00.000Z' }))]],
+    ['301-0', ['e', encodePendingEntry({
+      ...entryFor(h, { rx: 'ee'.repeat(32), time: '2026-10-11T13:01:00.000Z' }),
+      observationId: '22222222-2222-2222-2222-222222222222',
+    })]],
   ];
   configureRamStore(fake);
   const rows = [
@@ -296,12 +367,14 @@ test('pending observations augment a database row without double counting the sa
       observer_iatas: ['EGNX'],
       rx_count: 1,
       tx_count: 0,
+      _observation_ids: [entryFor(h).observationId],
     },
   ];
   const merged = await mergePendingPacketsIntoRecentRows(rows, { limit: 10, network: 'ukmesh' });
   assert.equal(merged.length, 1);
   const row = merged[0]!;
-  assert.equal(row['rx_count'], 2, 'same-observer pending entry must not re-count the committed observation');
+  assert.equal(row['rx_count'], 3, 'new sightings count even when an observer was already present');
+  assert.equal('_observation_ids' in row, false, 'internal identities are not sent to public clients');
   assert.equal((row['observer_node_ids'] as string[]).includes('EE'.repeat(32)), true);
   assert.equal((row['observer_node_ids'] as string[]).length, 2);
 });
@@ -330,7 +403,7 @@ test('merged reads drop pending entries the current privacy cache now classifies
   // Load a cache where the entry's observer node is private.
   configurePacketBatch(async () => ({
     rows: [{
-      generation: '8',
+      generation: '8', materialized_generation: '8', remat_active: false,
       prefixes: [{
         node_id: 'cd'.repeat(32).toUpperCase(),
         network: 'ukmesh',
@@ -354,4 +427,26 @@ test('merged reads drop pending entries the current privacy cache now classifies
   configureRamStore(fake);
   const merged = await mergePendingPacketsIntoRecentRows([], { limit: 10, network: 'ukmesh' });
   assert.equal(merged.length, 0, 'now-private pending entry must not appear in public merges');
+});
+
+test('F01 a privacy flip overrides the loaded public cache for RAM and PG rows', async () => {
+  let prefixes: Array<{ node_id: string; network: string; prefix_size_bytes: number; prefix: string }> = [];
+  configurePacketBatch(async () => ({ rows: [{
+    generation: '9', materialized_generation: '9', remat_active: false,
+    prefixes,
+  }] }));
+  await classifyForAdmission({
+    network: 'ukmesh', rxNodeId: 'cd'.repeat(32), srcNodeId: null,
+    pathHashes: null, pathHashSizeBytes: null,
+  });
+  const fake = new FakeStore();
+  const entry = entryFor('fe'.repeat(32), { rx: 'cd'.repeat(32) });
+  fake.rev = [['100-0', ['e', encodePendingEntry(entry)]]];
+  configureRamStore(fake);
+  prefixes = [{ node_id: 'cd'.repeat(32).toUpperCase(), network: 'ukmesh',
+    prefix_size_bytes: 1, prefix: 'CD' }];
+  const oldPgRow = [{ packet_hash: entry.input.packetHash, time: entry.input.time,
+    rx_node_id: entry.input.rxNodeId, src_node_id: null, network: 'ukmesh',
+    path_hashes: null, path_hash_size_bytes: null }];
+  assert.deepEqual(await mergePendingPacketsIntoRecentRows(oldPgRow, { limit: 10, network: 'ukmesh' }), []);
 });

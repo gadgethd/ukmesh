@@ -28,6 +28,7 @@ import {
 } from '../repositories/pathEvidence.js';
 import { channelHashesForName } from '../mqtt/channelRegistry.js';
 import { buildPacketBatchInput, type InsertPacketInput } from './packetInput.js';
+import { getRamIngestMode } from '../ram/protocol.js';
 
 const { Pool } = pg;
 const COORDINATE_RECALC_THRESHOLD_M = Number(process.env['NODE_COORDINATE_RECALC_THRESHOLD_M'] ?? 25);
@@ -47,7 +48,7 @@ const pool = new Pool({
 pool.on('error', (err) => {
   console.error('[db] unexpected pool error', err.message);
 });
-configurePacketBatch((text, params) => pool.query(text, params));
+configurePacketBatch((text, params) => pool.query(text, params), withTransaction);
 
 // Dedicated pool for long-running analytical queries (e.g. refreshRecentPathEvidence).
 // Kept separate so slow analytics can never exhaust the OLTP pool and take down the API.
@@ -814,6 +815,7 @@ export async function getRecentPackets(
   fields: 'full' | 'slim' = 'full',
   signal?: AbortSignal,
 ) {
+  const includeObservationIds = getRamIngestMode() === 'ram';
   const scope = buildScopePlaceholders(2, network, observer);
   const fiveMinAgo = 'NOW() - INTERVAL \'5 minutes\'';
   const res = await query(
@@ -843,6 +845,8 @@ export async function getRecentPackets(
     packet_stats AS (
       SELECT 
         packet_hash,
+        ${includeObservationIds ? `ARRAY_AGG(DISTINCT packets.observation_id::text)
+          FILTER (WHERE packets.observation_id IS NOT NULL) AS _observation_ids,` : ''}
         ARRAY_AGG(DISTINCT COALESCE(pa2.canonical_node_id, upper(btrim(packets.rx_node_id)))
                   ORDER BY COALESCE(pa2.canonical_node_id, upper(btrim(packets.rx_node_id))))
           FILTER (WHERE packets.rx_node_id IS NOT NULL) AS observer_node_ids,
@@ -864,6 +868,7 @@ export async function getRecentPackets(
       ${fields === 'full'
         ? 'rp.topic, rp.topic_prefix, rp.iata, rp.route_type, rp.network, rp.transport_codes, rp.region_scope,'
         : ''}
+      ${includeObservationIds ? 'ps._observation_ids, rp.network AS _policy_network,' : ''}
       ps.observer_node_ids, ps.observer_iatas, ps.rx_count, ps.tx_count
     FROM recent_packets rp
     LEFT JOIN packet_stats ps ON ps.packet_hash = rp.packet_hash
@@ -886,6 +891,7 @@ export async function getRecentMessages(
   observer?: string,
   signal?: AbortSignal,
 ) {
+  const includeObservationIds = getRamIngestMode() === 'ram';
   const scope = buildScopePlaceholders(2, network, observer);
   const res = await query(
     `WITH recent_msgs AS (
@@ -913,6 +919,8 @@ export async function getRecentMessages(
     msg_stats AS (
       SELECT
         packet_hash,
+        ${includeObservationIds ? `ARRAY_AGG(DISTINCT packets.observation_id::text)
+          FILTER (WHERE packets.observation_id IS NOT NULL) AS _observation_ids,` : ''}
         ARRAY_AGG(DISTINCT COALESCE(pa2.canonical_node_id, upper(btrim(packets.rx_node_id)))
                   ORDER BY COALESCE(pa2.canonical_node_id, upper(btrim(packets.rx_node_id))))
           FILTER (WHERE packets.rx_node_id IS NOT NULL) AS observer_node_ids,
@@ -931,6 +939,7 @@ export async function getRecentMessages(
       m.time, m.packet_hash, m.rx_node_id, m.src_node_id, m.topic, m.iata,
       m.packet_type, m.hop_count, m.rssi, m.snr, m.payload,
       m.summary, m.advert_count, m.path_hashes, m.path_hash_size_bytes,
+      ${includeObservationIds ? 'ms._observation_ids, m.network AS _policy_network,' : ''}
       ms.observer_node_ids, ms.observer_iatas, ms.rx_count, ms.tx_count
     FROM recent_msgs m
     LEFT JOIN msg_stats ms ON ms.packet_hash = m.packet_hash

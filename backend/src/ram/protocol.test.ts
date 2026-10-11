@@ -98,6 +98,18 @@ test('garbage values decode to null', () => {
   assert.equal(decodeRamStreamValue('{"v":1,"k":"p","o":"id","a":1,"d":{}}'), null);
 });
 
+test('F11 rejects invalid UUIDs, SQL integers, JSON and path arrays before persistence', () => {
+  const base = JSON.parse(encodePendingEntry(sampleEntry())) as Record<string, unknown>;
+  const invalid = [
+    { ...base, o: 'not-a-uuid' },
+    { ...base, d: { ...(base['d'] as object), packetType: 2 ** 40 } },
+    { ...base, d: { ...(base['d'] as object), rssi: 'bad' } },
+    { ...base, d: { ...(base['d'] as object), payloadJson: '{bad-json' } },
+    { ...base, d: { ...(base['d'] as object), pathHashes: [42] } },
+  ];
+  for (const value of invalid) assert.equal(decodeRamStreamValue(JSON.stringify(value)), null);
+});
+
 test('private entries encode their classification flags', () => {
   const entry = sampleEntry();
   entry.isPrivate = true;

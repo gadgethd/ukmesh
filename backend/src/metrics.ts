@@ -515,7 +515,31 @@ export const postPersistDroppedTotal = new Counter({
 // ---------------------------------------------------------------- RAM ingest
 export const ramQueueDepth = new Gauge({
   name: 'meshcore_ram_ingest_queue_depth',
-  help: 'Pending packets in the RAM ingest stream.',
+  help: 'All entries still resident in the RAM ingest stream, including retained committed overlap.',
+  registers: [metricsRegistry],
+});
+
+export const ramPendingDepth = new Gauge({
+  name: 'meshcore_ram_ingest_pending_depth',
+  help: 'Uncommitted observations in the bounded RAM ingest stream sample.',
+  registers: [metricsRegistry],
+});
+
+export const ramRetainedDepth = new Gauge({
+  name: 'meshcore_ram_ingest_retained_depth',
+  help: 'Committed observations retained for public-read handoff.',
+  registers: [metricsRegistry],
+});
+
+export const ramPelDepth = new Gauge({
+  name: 'meshcore_ram_ingest_pel_depth',
+  help: 'Consumer-group pending-entry-list size.',
+  registers: [metricsRegistry],
+});
+
+export const ramOldestPelAge = new Gauge({
+  name: 'meshcore_ram_ingest_oldest_pel_age_seconds',
+  help: 'Age of the oldest consumer-group pending stream ID.',
   registers: [metricsRegistry],
 });
 

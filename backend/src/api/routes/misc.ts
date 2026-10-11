@@ -29,6 +29,7 @@ type GetRecentPacketsFn = (
   network?: string,
   observer?: string,
   fields?: 'full' | 'slim',
+  signal?: AbortSignal,
 ) => Promise<unknown>;
 type GetRecentPacketEventsFn = (limit: number, network?: string, observer?: string) => Promise<unknown>;
 type GetPacketDetailFn = (hash: string, network?: string) => Promise<unknown>;
@@ -91,8 +92,10 @@ export function registerMiscRoutes(router: Router, deps: MiscRouteDeps): void {
       const packets = raw
         ? await getRecentPacketEvents(limit, network, observer)
         : await mergePendingPacketsIntoRecentRows(
-            (await getRecentPackets(limit, network, observer, fields)) as Record<string, unknown>[],
-            { limit, network, observer },
+            (await getRecentPackets(
+              limit, network, observer, fields, AbortSignal.timeout(30_000),
+            )) as Record<string, unknown>[],
+            { limit, network, observer, fields },
           );
       res.json(packets);
     } catch (err) {
