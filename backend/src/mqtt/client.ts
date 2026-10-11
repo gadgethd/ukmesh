@@ -14,6 +14,7 @@ import { shouldDiscardUnverifiedTxAdvert, statusEnvelopeTargetsObserver } from '
 import { extractNeighborNodes } from './neighborPayload.js';
 import { parseMqttTopic } from './topic.js';
 import { createDurableMqttHandleMessage } from './durableHandler.js';
+import { waitForInFlightPacket } from './dedupeRegistry.js';
 import { persistStatusTelemetrySample } from './statusTelemetry.js';
 import {
   boundedNetworkMetricLabel,
@@ -21,6 +22,8 @@ import {
   mqttIngestActive,
   mqttIngestOutcomesTotal,
   mqttMessagesTotal,
+  postPersistDroppedTotal,
+  postPersistInFlightGauge,
 } from '../metrics.js';
 
 type PacketCallback      = (packet: LivePacket, upstreamEnvelope?: Record<string, unknown>) => void;
@@ -253,6 +256,11 @@ function rememberPacket(packetHash: string, observerKey: string, hopCount: numbe
  * committed so this copy persists on its own.
  */
 const inFlightPackets = new Map<string, Promise<void>>();
+// Best-effort post-persist follow-ups are bounded: a stalled database must
+// not grow the in-flight set without limit. Over the bound they are dropped
+// (safe: everything here is explicitly best-effort) and counted.
+const POST_PERSIST_MAX_INFLIGHT = 64;
+let postPersistInFlight = 0;
 
 /**
  * Database-level duplicate confirmation for QoS 1 redeliveries — the in-memory
@@ -792,23 +800,21 @@ async function handleMessage(topic: string, rawPayload: Buffer, redelivered = fa
     return;
   }
 
-  const inFlight = inFlightPackets.get(dedupeKey);
-  if (inFlight) {
-    // The same packet is already being persisted by a concurrent ingest.
-    // Wait for its outcome: success makes this copy a confirmed duplicate,
-    // failure means nothing was committed and this copy persists below.
-    const persisted = await inFlight.then(() => true, () => false);
-    if (persisted) {
-      markMqttPersistenceHealthy();
-      mqttIngestOutcomesTotal.inc({ outcome: 'duplicate_packet' });
-      return;
-    }
-  }
+  // Arbitration against concurrent copies of this packet. The claim below is
+  // registered inside waitForInFlightPacket in the same microtask as its
+  // re-check, so after a failed predecessor exactly one waiter becomes the
+  // successor and the rest queue behind it (never two concurrent retries).
+  let claimResolve!: () => void;
+  let claimReject!: (error: unknown) => void;
+  const claim = new Promise<void>((resolve, reject) => {
+    claimResolve = resolve;
+    claimReject = reject;
+  });
+  claim.catch(() => { /* waiters observe failure via their own handlers */ });
 
-  // After a restart there is no in-memory dedup state to match against: a
-  // QoS 1 redelivery whose original commit survived the crash must not be
-  // persisted or counted a second time. Confirm against the retained window.
-  if (redelivered && await packetAlreadyPersisted(finalHash, observerKey, topic, network)) {
+  const claimState = await waitForInFlightPacket(inFlightPackets, dedupeKey, claim);
+  if (claimState === 'duplicate') {
+    claimResolve(); // never registered; settle for tidiness
     markMqttPersistenceHealthy();
     mqttIngestOutcomesTotal.inc({ outcome: 'duplicate_packet' });
     return;
@@ -881,6 +887,16 @@ async function handleMessage(topic: string, rawPayload: Buffer, redelivered = fa
   };
 
   const ingest = (async () => {
+    // Claimed above. After a restart there is no in-memory dedup state to
+    // match against: a QoS 1 redelivery whose original commit survived the
+    // crash must not be persisted or counted a second time. Confirm against
+    // the retained window before writing (inside the claim so the registered
+    // claim promise covers this path too).
+    if (redelivered && await packetAlreadyPersisted(finalHash, observerKey, topic, network)) {
+      markMqttPersistenceHealthy();
+      mqttIngestOutcomesTotal.inc({ outcome: 'duplicate_packet' });
+      return;
+    }
     try {
       await persistOnce();
     } catch (err) {
@@ -893,27 +909,41 @@ async function handleMessage(topic: string, rawPayload: Buffer, redelivered = fa
     }
     // Best-effort live-map follow-ups run once the durable write is done and
     // outside the acknowledgement path: PUBACK is released as soon as the
-    // write commits and these resolve asynchronously.
-    void runPostPersistFollowUps({
-      finalHash,
-      decodedPathHashSizeBytes,
-      path,
-      decodedRouteType,
-      network,
-      resolvedPacketType,
-    }).catch((err: unknown) => {
-      console.error(
-        '[mqtt] post-persist follow-up failed:',
-        err instanceof Error ? err.message : String(err),
-      );
-    });
+    // write commits and these resolve asynchronously. The in-flight count is
+    // bounded so a database stall cannot grow them without limit; over the
+    // bound they are dropped (best-effort) and counted.
+    if (postPersistInFlight >= POST_PERSIST_MAX_INFLIGHT) {
+      postPersistDroppedTotal.inc();
+    } else {
+      postPersistInFlight++;
+      postPersistInFlightGauge.set(postPersistInFlight);
+      void runPostPersistFollowUps({
+        finalHash,
+        decodedPathHashSizeBytes,
+        path,
+        decodedRouteType,
+        network,
+        resolvedPacketType,
+      }).catch((err: unknown) => {
+        console.error(
+          '[mqtt] post-persist follow-up failed:',
+          err instanceof Error ? err.message : String(err),
+        );
+      }).finally(() => {
+        postPersistInFlight--;
+        postPersistInFlightGauge.set(postPersistInFlight);
+      });
+    }
   })();
 
-  inFlightPackets.set(dedupeKey, ingest);
+  void ingest.then(
+    () => claimResolve(),
+    (err: unknown) => claimReject(err),
+  );
   try {
     await ingest;
   } finally {
-    if (inFlightPackets.get(dedupeKey) === ingest) inFlightPackets.delete(dedupeKey);
+    if (inFlightPackets.get(dedupeKey) === claim) inFlightPackets.delete(dedupeKey);
   }
 }
 

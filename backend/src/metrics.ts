@@ -499,3 +499,13 @@ export function updateDbPoolMetrics(
   dbPoolTotal.set({ state: `${poolName}_idle` }, snapshot.idleCount);
   dbPoolTotal.set({ state: `${poolName}_waiting` }, snapshot.waitingCount);
 }
+
+export const postPersistInFlightGauge = new Gauge({
+  name: 'meshcore_mqtt_post_persist_inflight',
+  help: 'Best-effort post-persist follow-ups currently in flight (bounded).',
+});
+
+export const postPersistDroppedTotal = new Counter({
+  name: 'meshcore_mqtt_post_persist_dropped_total',
+  help: 'Best-effort post-persist follow-ups dropped because the in-flight bound was reached.',
+});
