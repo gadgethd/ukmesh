@@ -922,26 +922,19 @@ async function handleMessage(topic: string, rawPayload: Buffer, redelivered = fa
     // write commits and these resolve asynchronously. The in-flight count is
     // bounded so a database stall cannot grow them without limit; over the
     // bound they are dropped (best-effort) and counted.
-    if (postPersistInFlight >= POST_PERSIST_MAX_INFLIGHT) {
-      postPersistDroppedTotal.inc();
-    } else {
-      postPersistInFlight++;
-      postPersistInFlightGauge.set(postPersistInFlight);
-      void runPostPersistFollowUps({
+    // RAM mode releases the MQTT acknowledgement at admission, far earlier
+    // than the batch commit. Commit-dependent live-map work must not run
+    // against rows that are not in PostgreSQL yet, so it is deferred to the
+    // RAM writer's post-commit hook (see ram/writerRuntime.ts). The durable
+    // path keeps running it right here, after the committed write.
+    if (MQTT_INGEST_MODE !== 'ram') {
+      schedulePostPersistFollowUps({
         finalHash,
         decodedPathHashSizeBytes,
         path,
         decodedRouteType,
         network,
         resolvedPacketType,
-      }).catch((err: unknown) => {
-        console.error(
-          '[mqtt] post-persist follow-up failed:',
-          err instanceof Error ? err.message : String(err),
-        );
-      }).finally(() => {
-        postPersistInFlight--;
-        postPersistInFlightGauge.set(postPersistInFlight);
       });
     }
   })();
@@ -963,14 +956,43 @@ async function handleMessage(topic: string, rawPayload: Buffer, redelivered = fa
  * warm-up all resolve after the durable write and run concurrently with the
  * next message's persistence.
  */
-async function runPostPersistFollowUps(args: {
+export type PostPersistFollowUpArgs = {
   finalHash: string;
   decodedPathHashSizeBytes: number | undefined;
   path: string[] | undefined;
   decodedRouteType: number | undefined;
   network: string;
   resolvedPacketType: number | undefined;
-}): Promise<void> {
+};
+
+/**
+ * Run the best-effort live-map follow-ups under the global in-flight bound.
+ * Shared by the durable ingest path (after the committed write) and by the
+ * RAM writer's post-commit hook, so a stall cannot grow the in-flight set
+ * without limit in either mode; over the bound they are dropped (best-effort)
+ * and counted.
+ */
+export function schedulePostPersistFollowUps(args: PostPersistFollowUpArgs): void {
+  if (postPersistInFlight >= POST_PERSIST_MAX_INFLIGHT) {
+    postPersistDroppedTotal.inc();
+    return;
+  }
+  postPersistInFlight++;
+  postPersistInFlightGauge.set(postPersistInFlight);
+  void runPostPersistFollowUps(args)
+    .catch((err: unknown) => {
+      console.error(
+        '[mqtt] post-persist follow-up failed:',
+        err instanceof Error ? err.message : String(err),
+      );
+    })
+    .finally(() => {
+      postPersistInFlight--;
+      postPersistInFlightGauge.set(postPersistInFlight);
+    });
+}
+
+async function runPostPersistFollowUps(args: PostPersistFollowUpArgs): Promise<void> {
   const { finalHash, decodedPathHashSizeBytes, path, decodedRouteType, network, resolvedPacketType } = args;
 
   // A repeater appearing in a multibyte (2–3 byte) path hash almost certainly

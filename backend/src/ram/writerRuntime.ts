@@ -9,7 +9,8 @@ import { Redis } from 'ioredis';
 import { getRedisConnectionOptions, getRedisUrl } from '../platform/config/redis.js';
 import { query } from '../db/index.js';
 import { persistEntriesCore, refreshAdmissionPrivacyCache } from '../db/packetBatch.js';
-import { markMqttPersistenceHealthy } from '../mqtt/client.js';
+import { markMqttPersistenceHealthy, schedulePostPersistFollowUps } from '../mqtt/client.js';
+import { queueLinkJob } from '../queue/publisher.js';
 import { refreshPendingStats } from './liveStore.js';
 import {
   getRamBatchSize,
@@ -61,6 +62,36 @@ export async function startRamWriter(): Promise<void> {
             '[ram] privacy cache refresh failed',
             error instanceof Error ? error.message : error,
           );
+        });
+      }
+    },
+    onCommitted: (entries) => {
+      // Commit-dependent live-map work, mirroring the durable post-persist
+      // path: the link queue and the live-map follow-ups both read packet
+      // rows from PostgreSQL, so they run here — after the batch commit.
+      for (const { entry } of entries) {
+        const input = entry.input;
+        if (input.pathHashes && input.pathHashes.length > 0 && input.rxNodeId) {
+          void queueLinkJob(
+            input.packetHash,
+            input.rxNodeId,
+            input.srcNodeId ?? undefined,
+            input.pathHashes,
+            input.hopCount ?? undefined,
+            input.pathHashSizeBytes ?? undefined,
+          ).then((admission) => {
+            if (admission && ['full', 'oversized', 'worker_unavailable'].includes(admission.status)) {
+              console.warn('[link-queue] live observation not admitted', admission.status, input.packetHash);
+            }
+          }).catch((error: Error) => console.error('[link-queue] live admission failed', error.message));
+        }
+        schedulePostPersistFollowUps({
+          finalHash: input.packetHash,
+          decodedPathHashSizeBytes: input.pathHashSizeBytes ?? undefined,
+          path: input.pathHashes ?? undefined,
+          decodedRouteType: input.routeType ?? undefined,
+          network: input.network,
+          resolvedPacketType: input.packetType ?? undefined,
         });
       }
     },

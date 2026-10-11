@@ -151,7 +151,7 @@ function makeWriter(
   fake: FakeRedis,
   now: () => number,
   persistImpl: (entries: unknown[], idempotent: boolean) => Promise<void>,
-  opts: { batchSize?: number; maxAgeMs?: number } = {},
+  opts: { batchSize?: number; maxAgeMs?: number; onCommitted?: ((entries: unknown[]) => void) | null } = {},
 ) {
   const calls: PersistCall[] = [];
   let healthy = 0;
@@ -169,6 +169,7 @@ function makeWriter(
     group: () => 'ingest-writers',
     consumer: () => 'backend',
     statsTick: null,
+    onCommitted: opts.onCommitted ?? null,
     markHealthy: () => {
       healthy += 1;
     },
@@ -334,6 +335,40 @@ test('entries sharing one observation identity collapse within a flush', async (
   assert.equal(calls[0]?.count, 1, 'duplicate identity must be collapsed before persistence');
   assert.equal(fake.acked.length, 2, 'both originals are acknowledged (same observation)');
   assert.equal(writer.accumulatorSize(), 0);
+});
+
+test('post-commit hook fires for the committed batch only after success', async () => {
+  const fake = new FakeRedis();
+  const now = () => 1_700_000_700_000;
+  fake.seedEntry(sampleEntry(now() - 1_000));
+  fake.seedEntry(sampleEntry(now() - 900, 'cd'.repeat(32)));
+
+  const seen: unknown[][] = [];
+  const { writer } = makeWriter(fake, now, async () => undefined, {
+    batchSize: 2,
+    onCommitted: (entries) => seen.push(entries),
+  });
+  await writer.start();
+  await writer.tickOnce();
+
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0]?.length, 2, 'hook receives the persisted batch');
+  assert.equal(fake.acked.length, 2, 'hook runs after the acknowledgement bookkeeping');
+
+  // A failing commit must not fire the hook.
+  fake.seedEntry(sampleEntry(now() - 800, 'ef'.repeat(32)));
+  fake.seedEntry(sampleEntry(now() - 700, '12'.repeat(32)));
+  const failing = makeWriter(
+    fake,
+    now,
+    async () => {
+      throw new Error('connection terminated unexpectedly');
+    },
+    { batchSize: 2, onCommitted: (entries) => seen.push(entries) },
+  );
+  await failing.writer.start();
+  await failing.writer.tickOnce();
+  assert.equal(seen.length, 1, 'no hook on failed commits');
 });
 
 test('markers are consumed and acknowledged without persistence', async () => {

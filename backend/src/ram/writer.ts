@@ -102,6 +102,8 @@ export type RamWriterDeps = {
   consumer: () => string;
   statsTick: (() => Promise<void>) | null;
   markHealthy: () => void;
+  /** Runs after a batch commits (bookkeeping included); receives the persisted batch. */
+  onCommitted: ((entries: StreamEntry[]) => void) | null;
   log: (message: string, error?: unknown) => void;
 };
 
@@ -298,8 +300,9 @@ export function createRamWriter(deps: RamWriterDeps): RamWriter {
     const ids = batch.map((item) => item.id);
     const startedNs = process.hrtime.bigint();
     const nowMs = deps.now();
+    const persistBatch = collapseBatchEntries(batch);
     try {
-      await persistWithRetry(collapseBatchEntries(batch));
+      await persistWithRetry(persistBatch);
     } catch (error) {
       // Leave the entries un-acked so they stay recoverable in the PEL; drop
       // them from memory and back off so a database outage cannot spin.
@@ -357,6 +360,13 @@ export function createRamWriter(deps: RamWriterDeps): RamWriter {
       ramVisibilityLatency.observe(Math.max(0, (finishedMs - item.entry.admittedAtMs) / 1000));
     }
     deps.markHealthy();
+    if (deps.onCommitted) {
+      try {
+        deps.onCommitted(persistBatch);
+      } catch (error) {
+        deps.log('[ram] post-commit hook failed', error);
+      }
+    }
   }
 
   async function pruneMarkers(): Promise<void> {

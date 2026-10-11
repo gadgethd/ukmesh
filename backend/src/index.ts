@@ -233,7 +233,9 @@ async function main() {
         console.error('[packet-share] packet handling failed:', error instanceof Error ? error.message : error);
       });
     }
-    if (packet.path?.length && packet.rxNodeId) {
+    // RAM mode defers commit-dependent link admission to the writer's
+    // post-commit hook (the link worker reads packet rows from PostgreSQL).
+    if (getRamIngestMode() !== 'ram' && packet.path?.length && packet.rxNodeId) {
       void queueLinkJob(
         packet.packetHash,
         packet.rxNodeId,
