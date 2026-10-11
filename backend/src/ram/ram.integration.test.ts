@@ -20,8 +20,19 @@ const localRedis = redisUrl && ['127.0.0.1', 'localhost'].includes(new URL(redis
 async function fixture(t: { after: (callback: () => Promise<void>) => void }): Promise<Redis> {
   process.env['MQTT_INGEST_MODE'] = 'ram';
   process.env['MQTT_RAM_STREAM_KEY'] = `meshcore:ingest:integration:${process.pid}:${Date.now()}`;
-  const client = new Redis(redisUrl!, { maxRetriesPerRequest: 1, enableOfflineQueue: false });
-  await client.ping();
+  const client = new Redis(redisUrl!, {
+    lazyConnect: true,
+    connectTimeout: 5_000,
+    maxRetriesPerRequest: 1,
+    enableOfflineQueue: false,
+  });
+  try {
+    await client.connect();
+    await client.ping();
+  } catch (error) {
+    client.disconnect();
+    throw error;
+  }
   configureRamStore(client);
   t.after(async () => {
     configureRamStore(null);
