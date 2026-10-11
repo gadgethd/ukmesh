@@ -1,9 +1,13 @@
 # UKMesh ingestion review repair report — 2026-10-11
 
-The F01–F17 repair mission remains active. This report replaces the earlier
-handoff status tables. Code fixes and completed evidence are recorded below;
-the final whole-stack campaign and final-head CI are still required. The
-specification is `/home/ben/ukmesh-fix-context-20261011/SOL-REVIEW.md`.
+The F01–F17 review repairs are complete for the supported N=1 configuration.
+Every finding has a failing-before/passing-after regression, and the final-code
+local, compiled-image, paired-service and CI gates pass. Both UKMesh branches
+are pushed; three clean CoreScope commits await coordinator relay as requested.
+The specification is `/home/ben/ukmesh-fix-context-20261011/SOL-REVIEW.md`.
+This report identifies the production-code revision used in the campaign.
+The final documentation-only checkpoint has identical runtime build inputs;
+its exact hash and fresh CI runs are recorded in PR #125 and the final handoff.
 
 ## Branch and validation checkpoint
 
@@ -12,22 +16,19 @@ specification is `/home/ben/ukmesh-fix-context-20261011/SOL-REVIEW.md`.
   (138.715s). Both workflows [38174016916](https://github.com/gadgethd/ukmesh/actions/runs/38174016916)
   and [38174021349](https://github.com/gadgethd/ukmesh/actions/runs/38174021349)
   concluded success in every job. N=1 is supported; N>1 is explicitly gated.
-- RAM/#125: public-read code checkpoint
-  `c683acdec8572e6b6dbc5ba07ccdfcbb062f10ce`, pushed and remote-verified.
-  Both workflows [38180468916](https://github.com/gadgethd/ukmesh/actions/runs/38180468916)
-  and [38180473812](https://github.com/gadgethd/ukmesh/actions/runs/38180473812)
-  concluded success in every job. Its typecheck, **476/476** full backend
-  suite, **7 PG + 2 Redis + 1 WS** integration tests, and exact compiled
-  image gate **10/10**, zero skips, passed.
-- New RAM operational/read wave: all local gates pass, awaiting commit/push
-  and its own CI. Final typecheck/build and **479/479** backend tests pass
-  (193.952s), including the alert receiver. Full ingest integration passes
-  **7 PostgreSQL + 3 Redis + 1 WS**, zero skips. The strict owned-ACL gate
-  passes exactly **4 operational + 1 compiled-process test**, zero skips;
+- RAM/#125 code head: `c02aa32fd9f5a6e6d97e8f553214e7543dcb0fce`,
+  pushed and remote-verified. Both workflows
+  [38182374772](https://github.com/gadgethd/ukmesh/actions/runs/38182374772)
+  and [38182378151](https://github.com/gadgethd/ukmesh/actions/runs/38182378151)
+  concluded success in every job. Typecheck/build and **479/479** backend
+  tests pass; the final release rerun also passes in 201.590s, including
+  the alert receiver. Full ingest integration
+  passes **7 PostgreSQL + 3 Redis + 1 WS**, zero skips. The strict owned-ACL
+  gate passes exactly **4 operational + 1 compiled-process test**, zero skips;
   runtime suite 152.153s. Loaded resident-memory refusal, real HTTP gauges,
   held SQL/SIGTERM recovery, quarantine refusal, actual retention expiry,
-  standalone drain and durable rollback are all verified. The final Compose
-  render passes all ten RAM/public-source settings, without outputting secrets.
+  standalone drain and durable rollback are verified. Compose renders pass
+  all ten RAM/public-source settings without outputting secrets.
 - CoreScope local head: `07f05cd5562ac27478f4a46b5dd13d157e661162`, clean,
   committed and **not pushed**. Full `cmd/ingestor` passes (234.242s),
   including real PG/Redis integration; full `cmd/server` passes (103.965s).
@@ -35,39 +36,51 @@ specification is `/home/ben/ukmesh-fix-context-20261011/SOL-REVIEW.md`.
 
 Evidence below is in the newly owned directory
 `/home/ben/ukmesh-bench/mqtt-ingest-perf-20261011/verification-sol-20261011/evidence/`.
-The image `mqttbench-backend:sol-public-c683acd-20261011` carries source label
-`c683acd` and configuration digest
-`sha256:d96f200660518a8453fd494513193e0814cfb4bee9a4bfee10aa2e1a44094adc`.
-`ukmesh-public-c683acd-image-integrity-pinned.log` proves exactly ten passing,
-zero-skipped tests against shipped modules (88.480s). The test source is pinned
-with `git show` to the image label. Missing mounts or zero-test exits cannot
-pass. A newer operational image is still required.
+The campaign image `mqttbench-backend:sol-operational-c02aa32-20261011` carries
+revision label `c02aa32` (resolving to the full code head above) and configuration digest
+`sha256:c4fd5e12407e419cd2b30e7adc0bcff3808261043d672feead342067a77a87f6`.
+`ukmesh-c02aa32-image-integrity.log` proves **11/11**, zero skips (93.434s),
+and `ukmesh-c02aa32-image-operational.log` proves **4/4 + 1/1**, zero skips,
+including the actual compiled process gate (148.978s). Fixture sources are
+pinned with `git show` to that image label and import only shipped modules.
+Missing mounts, zero-test exits or skipped fixtures cannot pass.
 
 ## Findings and regression evidence
 
-“Implemented” describes code/regression scope; final release gates are listed
-separately. Every finding has a regression that reproduced the reviewed defect.
+“Fixed” describes the reviewed defect within the qualified N=1 scope. Every finding has a regression that reproduced the reviewed defect.
 Later boundary defects also received new failing regressions.
 
 | Finding | Status | Repair and evidence |
 |---|---|---|
-| F01 | Implemented; final paired public audit remains | Fresh completed policy/generation fences govern SQL aggregates, captured RAM, WS initial caches and bounded MQTT/WS live batches. SQL snapshot generation is never permission after a change. The final fence follows alias/summary waits. Tests: `F01 old SQL aggregate contributions fail closed across a policy generation change`, `F01 alias lookup cannot deliver a captured generation after authority changes`, actual ready WS observer/path flip, unavailable authority, cached reconnect and **800/800** allowed messages. CoreScope uses a dedicated revocable SQLite projection and private provenance journal; the read-only server fences REST/WS and replaces generation caches. Actual PG/SQLite tests revoke copied observer/source/all 1/2/3-byte prefixes across UK families while preserving unrelated networks; held REST and actual WS tests pass. |
-| F02 | Implemented and real-PG verified | Same-client explicit transaction acquires the writer lock in a separate statement, then stable-ID ledger arbitrates every mutation. `F02 contended lock and replay never change historical tables` proves refusal changes no packet/path/hourly/daily/node/sighting/region table and replay changes none. This also addresses §7's lock/snapshot caveat. |
+| F01 | Fixed; actual paired public audit passed | Fresh completed policy/generation fences govern SQL aggregates, captured RAM, WS initial caches and bounded MQTT/WS live batches. SQL snapshot generation is never permission after a change. The final fence follows alias/summary waits. Tests: `F01 old SQL aggregate contributions fail closed across a policy generation change`, `F01 alias lookup cannot deliver a captured generation after authority changes`, actual ready WS observer/path flip, unavailable authority, cached reconnect and **800/800** allowed messages. CoreScope uses a dedicated revocable SQLite projection and private provenance journal; the read-only server fences REST/WS and replaces generation caches. Actual PG/SQLite tests revoke copied observer/source/all 1/2/3-byte prefixes across UK families while preserving unrelated networks; held REST and actual WS tests pass. |
+| F02 | Fixed and real-PG verified | Same-client explicit transaction acquires the writer lock in a separate statement, then stable-ID ledger arbitrates every mutation. `F02 contended lock and replay never change historical tables` proves refusal changes no packet/path/hourly/daily/node/sighting/region table and replay changes none. This also addresses §7's lock/snapshot caveat. |
 | F03 | Fixed on #122, merged into #125 | Canonical observation identity distinguishes observer, path, hop, scope, direction and raw frame; restart probes use the same identity. Named F03 identity/probe and real-PG regressions pass. |
 | F04 | Fixed for supported N=1 | Unsupported shared-subscription N>1 configuration is rejected before connecting. `F04 shared-subscription N>1 is gated until restart and resize recovery is qualified` passes. No multicore recovery claim is made. |
-| F05 | Implemented and real PG/Redis verified | Admission creates a stable UUID before Redis's ambiguous boundary; the bounded delivery ledger returns the stored entry on retry. PG's identity ledger preserves distinct stable IDs even with identical natural fields; natural fallback is restricted to legacy entries without IDs. Lost Redis reply, distinct same-ms identities and the wider SQL fixture pass. |
-| F06 | Implemented and real PG/Redis verified | Per-entry commit timestamps retain payload/reservation for 120 seconds after commit. REST/WS capture bounded Redis overlap before SQL and deduplicate by stable UUID. `F06 real PG snapshot and Redis expiry preserve the captured handoff` holds an older Repeatable Read snapshot, commits A while admitting B, deletes expired A, and proves captured A plus later B remain discoverable exactly once. |
-| F07 | Implemented; final offline paired audit remains | Migration 059 backfills historical/compressed observations under the same writer lock, preserves/assigns UUIDs and commits a coverage fence atomically. CoreScope requires coverage and uses committed-order `seq`, replaying retained history after cursor loss and generation change. Historical, interrupted migration, contended writer, older late commit and lost-cursor regressions pass. Deleted upstream retention is outside recoverable history. |
-| F08 | Implemented and actual crash/SQLite failure verified | Both sources wait for tracked batch completion including the active last job; errors leave cursors behind. `TestF08RealPairedSourcesCrashFailureAndRestartBothOrders` reads real PG/Redis, kills an owned child at that boundary, reopens the same SQLite/WAL, injects observation failure and proves safe cursor hold/replay in both orders through the public projection. |
-| F09 | Implemented and actual resident-memory verified | Atomic final deletion releases reservation once; bounded Redis-side reconciliation serializes with admission/cleanup. Retained records and ambiguous delivery copies remain reserved. Startup/admission require bounded noeviction Redis and 32 MiB recovery headroom. Real concurrent admission/reconciliation, lost counter, retained replay and lost cleanup reply pass. Encoded quarantine is capped at 16 KiB and exactly 500 records; actual physical allocation fits the separate headroom. Unsafe configuration regression fails on `c683acd`; valid-budget admission also refuses when other resident keys consume the recovery space. |
-| F10 | Implemented and real group-loss verified | Supervised startup retries before MQTT intake; failed state is cleared. NOGROUP repairs the group, young foreign PEL is periodically/boundedly reclaimed, and commit/stall failures affect MQTT readiness. F10 group-loss and aging foreign-PEL regressions plus the historical compiled fault gate pass. |
-| F11 | Implemented and real-ioredis verified | Real XADD/trim quarantine precedes source cleanup; all read paths share validated decode. Permanent SQL poison is isolated so its valid neighbor commits. Quarantine failure retains source. Real malformed/quarantine, own/reclaimed PEL and SQLSTATE 23514 poison-neighbor tests pass; escaping no longer inflates encoded evidence above its cap. |
-| F12 | Implemented and real SQL/RAM verified | UUIDs distinguish overlap from new observations, including repeated sightings by one observer. Canonical observer arrays and RX/TX counts match real SQL across handoff, alias/family scopes and paging. |
-| F13 | Implemented and wide real SQL/RAM verified | Bounded whole-stream capture, SQL aggregates for overlap hashes, representative rank/UUID ties, millisecond order, final distinct-hash paging, windows, full/slim/message fields, alias/family scopes and decrypted/JSON summary extraction match SQL. New fallback regression failed before repair. Packet detail and long channel history are explicitly PG views until commit; documented pending lists do not promise those views. |
-| F14 | Implemented and loaded HTTP-scrape verified | Follow-up metrics use the served registry. Pending/retained/PEL/physical/reserved gauges are separate; minimum admitted age, zero-capacity read skip and bounded reclaim are tested. Loaded-state and missing-stream gauges are asserted through the actual HTTP metrics server. Commit histogram counts actual inserted observations. Missing-group/null-memory regression reproduced stale gauges before repair. |
-| F15 | Implemented; corrected campaign oracle remains | MQTT uses one deadline beginning before disconnect. RAM joins the active loop before draining and returns incomplete on deadline/PEL/failure; owned clients close. Unit held-write regressions and actual compiled SIGTERM gate pass: a held INSERT causes exit 1 at two seconds, then recovery waits for release and commits the original UUID with every DB side effect exactly once. The stock old bench oracle is unsuitable; the new campaign must use independent identity/state checks. |
-| F16 | Implemented; final whole-stack configuration audit remains | Compose passes RAM settings and the filtered bearer HTTP token; durable stays default. Public CoreScope receives no raw Redis URL/DSN and requires the paired PG ledger/projection. Actual Redis principals deny public/operator raw stream access, separate quarantine review, and HTTP revocation filtering passes. The compiled runtime uses the restricted writer principal and proves quarantine refusal, real retention sweep, zero stream/PEL/reservation and standalone drain before durable rollback. Final Compose render passes; whole-stack rerun remains. |
-| F17 | Implemented and actual restart/both-order verified | CoreScope preserves upstream UUID, enriches duplicates without incrementing derived counts and retains original privacy participants. Schema reapplication preserves distinct upstream identities and repairs actual legacy/missing indexes despite migration markers. F17 schema, both-order identity/count and paired crash/replay tests pass. |
+| F05 | Fixed and real PG/Redis verified | Admission creates a stable UUID before Redis's ambiguous boundary; the bounded delivery ledger returns the stored entry on retry. PG's identity ledger preserves distinct stable IDs even with identical natural fields; natural fallback is restricted to legacy entries without IDs. Lost Redis reply, distinct same-ms identities and the wider SQL fixture pass. |
+| F06 | Fixed and real PG/Redis verified | Per-entry commit timestamps retain payload/reservation for 120 seconds after commit. REST/WS capture bounded Redis overlap before SQL and deduplicate by stable UUID. `F06 real PG snapshot and Redis expiry preserve the captured handoff` holds an older Repeatable Read snapshot, commits A while admitting B, deletes expired A, and proves captured A plus later B remain discoverable exactly once. |
+| F07 | Fixed; actual offline/cursor-loss audit passed | Migration 059 backfills historical/compressed observations under the same writer lock, preserves/assigns UUIDs and commits a coverage fence atomically. CoreScope requires coverage and uses committed-order `seq`, replaying retained history after cursor loss and generation change. Historical, interrupted migration, contended writer, older late commit and lost-cursor regressions pass. Deleted upstream retention is outside recoverable history. |
+| F08 | Fixed and actual crash/SQLite failure verified | Both sources wait for tracked batch completion including the active last job; errors leave cursors behind. `TestF08RealPairedSourcesCrashFailureAndRestartBothOrders` reads real PG/Redis, kills an owned child at that boundary, reopens the same SQLite/WAL, injects observation failure and proves safe cursor hold/replay in both orders through the public projection. |
+| F09 | Fixed and actual resident-memory verified | Atomic final deletion releases reservation once; bounded Redis-side reconciliation serializes with admission/cleanup. Retained records and ambiguous delivery copies remain reserved. Startup/admission require bounded noeviction Redis and 32 MiB recovery headroom. Real concurrent admission/reconciliation, lost counter, retained replay and lost cleanup reply pass. Encoded quarantine is capped at 16 KiB and exactly 500 records; actual physical allocation fits the separate headroom. Unsafe configuration regression fails on `c683acd`; valid-budget admission also refuses when other resident keys consume the recovery space. |
+| F10 | Fixed and real group-loss verified | Supervised startup retries before MQTT intake; failed state is cleared. NOGROUP repairs the group, young foreign PEL is periodically/boundedly reclaimed, and commit/stall failures affect MQTT readiness. F10 group-loss and aging foreign-PEL regressions plus the historical compiled fault gate pass. |
+| F11 | Fixed and real-ioredis verified | Real XADD/trim quarantine precedes source cleanup; all read paths share validated decode. Permanent SQL poison is isolated so its valid neighbor commits. Quarantine failure retains source. Real malformed/quarantine, own/reclaimed PEL and SQLSTATE 23514 poison-neighbor tests pass; escaping no longer inflates encoded evidence above its cap. |
+| F12 | Fixed and real SQL/RAM verified | UUIDs distinguish overlap from new observations, including repeated sightings by one observer. Canonical observer arrays and RX/TX counts match real SQL across handoff, alias/family scopes and paging. |
+| F13 | Fixed and wide real SQL/RAM verified | Bounded whole-stream capture, SQL aggregates for overlap hashes, representative rank/UUID ties, millisecond order, final distinct-hash paging, windows, full/slim/message fields, alias/family scopes and decrypted/JSON summary extraction match SQL. New fallback regression failed before repair. Packet detail and long channel history are explicitly PG views until commit; documented pending lists do not promise those views. |
+| F14 | Fixed and loaded HTTP-scrape verified | Follow-up metrics use the served registry. Pending/retained/PEL/physical/reserved gauges are separate; minimum admitted age, zero-capacity read skip and bounded reclaim are tested. Loaded-state and missing-stream gauges are asserted through the actual HTTP metrics server. Commit histogram counts actual inserted observations. Missing-group/null-memory regression reproduced stale gauges before repair. |
+| F15 | Fixed; compiled drain and exact campaign oracle passed | MQTT uses one deadline beginning before disconnect. RAM joins the active loop before draining and returns incomplete on deadline/PEL/failure; owned clients close. Unit held-write regressions and actual compiled SIGTERM gate pass: a held INSERT causes exit 1 at two seconds, then recovery waits for release and commits the original UUID with every DB side effect exactly once. The owned campaign uses independent identity/state checks and proves full physical drain; the stock old bench oracle remains unsuitable. |
+| F16 | Fixed; actual configuration/ACL/rollback audits passed | Compose passes RAM settings and the filtered bearer HTTP token; durable stays default. The public server receives no raw PG/Redis credential; its private ingestor uses a restricted PG reader, filtered HTTP and the committed ledger/projection. Actual Redis principals deny public/operator raw stream access, separate quarantine review, and HTTP revocation filtering passes. The compiled runtime uses the restricted writer principal and proves quarantine refusal, real retention sweep, zero stream/PEL/reservation and standalone drain before durable rollback. Both final Compose renders pass; actual paired public server has no raw Redis/PG credential. |
+| F17 | Fixed and actual restart/both-order verified | CoreScope preserves upstream UUID, enriches duplicates without incrementing derived counts and retains original privacy participants. Schema reapplication preserves distinct upstream identities and repairs actual legacy/missing indexes despite migration markers. F17 schema, both-order identity/count and paired crash/replay tests pass. |
+
+## Code and fixture references
+
+| Findings | Production code | Regression fixtures |
+|---|---|---|
+| F01 | `backend/src/ram/liveRead.ts`, `publicSource.ts`, `backend/src/privacy/privatePrefixCache.ts`, `backend/src/mqtt/client.ts`, `backend/src/ws/server.ts`; CoreScope `cmd/ingestor/public_projection.go`, `public_live_source.go`, `cmd/server/public_projection.go` | `backend/src/ws/publicAuthorization.integration.test.ts`, `backend/src/db/recentRead.integration.test.ts`, `backend/src/ram/operational.integration.test.ts`; CoreScope public projection/source tests; actual paired audits |
+| F02/F05 | `backend/src/db/packetBatch.ts`, migrations 058/059 | `backend/src/db/packetBatch.integration.test.ts`, `backend/src/ram/ram.integration.test.ts` |
+| F03/F04 | `backend/src/mqtt/observationIdentity.ts`, `durableHandler.ts`, `client.ts` | observation identity/durable handler tests and real PG ledger fixture |
+| F06/F09–F11/F14/F15 | `backend/src/ram/liveStore.ts`, `writer.ts`, `writerRuntime.ts`, `protocol.ts`, `memory.ts`, `drain.ts`; `backend/src/metrics.ts`, `mqtt/shutdownDeadline.ts` | RAM unit/PG/Redis/operational/runtime fixtures and MQTT deadline tests |
+| F07/F08/F17 | migration 059; CoreScope `cmd/ingestor/postgres_source.go`, `redis_source.go`, `public_live_source.go`, `ingest_buffer.go`, `source_identity.go`, `internal/dbschema/dbschema.go` | CoreScope source/buffer/paired integration and schema restart fixtures; actual offline audit |
+| F12/F13 | `backend/src/ram/liveRead.ts`, `backend/src/db/index.ts` | `backend/src/db/recentRead.integration.test.ts`, `backend/src/ram/liveStore.test.ts` |
+| F16 | `docker-compose.yml`, `scripts/test-ram-redis-acl.mjs`, `docs/ram-first-ingestion.md` | actual Compose render, ACL operational and compiled rollback fixtures |
 
 ## Recent evidence and relay
 
@@ -96,22 +109,141 @@ Three clean local CoreScope commits await coordinator relay, in this order:
    provenance reconstruction, filtered live source and fenced public server.
 
 The ready three-commit patch is
-`evidence/corescope-sol-relay-20261011.patch` (4681 lines). Recreate it with:
+`evidence/corescope-sol-relay-final-20261011.patch` (4681 lines; SHA-256
+`ca17c74daeb01904244bdd4eea74357477a448e63f5d787a50b1f483fdb59768`). Recreate it with:
 
 ```sh
 git -C /home/ben/corescope-ukmesh/src format-patch --stdout 90c104eab51618894a3b69ab521829f39313e261..07f05cd5562ac27478f4a46b5dd13d157e661162
 ```
 
-## Remaining acceptance and limitations
+## Paired-service acceptance
 
-Commit/push the locally verified RAM wave, watch both new CI
-workflows to actual success, build a source-labelled image and rerun the strict
-compiled gates. Then run an independently isolated whole-stack campaign with
-actual CoreScope processes, ready/joined readers, exact observation and
-side-effect checks, complete measurement windows, Redis AOF, PG WAL and physical
-I/O. Compare durable/RAM using the same final code and repeated workloads;
-report overhead as well as latency. Update both existing PR descriptions while
-preserving #122 open/non-draft and #125 open/draft. Do not merge or deploy.
+The actual paired privacy audit passed. Pending rematerialization closed
+CoreScope reads; completed generation 3 removed two copied revoked observers
+while three allowed controls remained visible. Actual UKMesh live WS delivered
+4/4 allowed controls and zero revoked frames; the filtered source excluded the
+same private raw observations. Authority loss returned 503 from CoreScope and
+the filtered source. Restoration replayed retained PG ledger history. Separate
+public-server configuration contains no raw PG or Redis credential. Evidence:
+`whole-stack-paired-privacy.log` and `whole-stack/runs/paired-privacy-audit.json`.
+The actual offline/cursor-loss audit also passed after Redis retention expired:
+**100 MQTT observations + 1 older-timestamp late commit**, exact upstream UUIDs
+**101/101**, recovered into a fresh CoreScope projection with missing cursors.
+The late observation has ledger sequence 119 after the prior maximum 118 while
+its timestamp is older. The complete projection has **119 observations = 119
+journal records = 119 derived observer contributions**. Redis stream, pending,
+PEL and reservation are all zero. Real retained cleanup waited 126.384s after
+commit; no fake clock or early trim was used. Evidence:
+`whole-stack-paired-offline.log` and `whole-stack/runs/paired-offline-audit.json`.
+The repeated final-code matrix passed all 14 runs; its results follow below. The current campaign owns every service and run directory.
+It measures six enabled pipeline containers (UKMesh, Redis, TimescaleDB,
+Mosquitto, CoreScope ingestor and read-only server), plus its Node publisher/
+HTTP/PG/WS probe controller and a per-run SQLite reader. Prepared synthetic
+frames, container startup and image builds precede the measurement baseline.
+All reader tasks, WebSocket clients, publishers and per-run SQLite children
+stop and join before the endpoint; retained cleanup has separate CPU, PG,
+AOF and physical I/O snapshots. Memory is a simultaneous sum, sampled at about
+one second, including page cache; it is not the sum of component maxima.
+Docker daemon/host overhead, other VPS applications, optional observed-link
+workers and a production-sized history are outside this fixture. The optional
+observed-link worker is absent; its bounded post-commit admission reports
+`worker_unavailable`. Nothing here qualifies N>1 or a production deployment.
+
+SQLite latency records when the probe can confirm the stable upstream UUID
+which PG exposes at commit, so it does not measure early live-copy visibility.
+CoreScope REST observes raw frames independently and measures that visible
+path. Latencies are matched to the publisher's per-frame timestamp, with
+readiness completed first. Three burst/10/s repetitions use alternating mode
+order; the 2/s tail case is a single diagnostic pair. Endpoint durations can
+differ between modes. PG statistics and container physical I/O cover these
+completed windows; checkpoint activity and background maintenance can add
+writes. AOF size deltas are reported only if no rewrite occurred, with rewrite,
+fsync and write-status fields retained in each raw artifact. These are scoped
+synthetic measurements, not packet-attributed physical I/O or whole-VPS savings.
+
+## Final-code measured campaign
+
+All **14 measured runs / 6,840 observations** pass exact hash/observer/path
+identity sets, distinct PG UUIDs, packet/ledger/path/hourly/RSSI/SNR/region
+side-effect deltas and the daily maximum-hop invariant. Every run's five
+readers sees its full expected set. Pending and PEL are zero at commit;
+physical stream and reservation are zero only after real retained expiry.
+No processed counter or permissive XLEN threshold participates in the oracle.
+Each owned backend then exits zero after SIGTERM. The source-labelled
+production image and actual CoreScope binaries match the manifest above.
+
+CPU/memory/I/O below use the common completed reader window for each run.
+Cleanup uses its own subsequent measured window. Cells are arithmetic means
+of the stated repetitions; CPU/memory ranges are observed run ranges, and
+latency cells are means of per-run matched p50/p95. The low-tail pair has one
+repetition. Raw snapshots and expected/actual identity sets remain in
+`whole-stack/runs/<run>.json`. The AOF had no rewrites or delayed-fsync errors
+in any measured window.
+
+| Workload | Mode | Repeats | CPU s/1k to joined readers | Backend CPU s/1k | Cleanup CPU s/1k | PG WAL MiB | Redis AOF MiB | Physical writes MiB | Simultaneous memory MiB |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| burst 800 | durable | 3 | 64.25 (58.94–69.76) | 14.46 | 0.01 | 6.93 | 0.00 | 134.90 | 542.96–641.66 |
+| burst 800 | ram | 3 | 42.81 (39.98–46.01) | 14.19 | 39.52 | 5.26 | 1.98 | 160.55 | 571.95–680.01 |
+| sustained 300 | durable | 3 | 96.26 (95.16–97.64) | 27.21 | 0.05 | 2.90 | 0.00 | 52.08 | 623.45–679.05 |
+| sustained 300 | ram | 3 | 101.41 (100.00–102.23) | 39.17 | 67.14 | 1.97 | 0.79 | 59.93 | 622.36–694.77 |
+| low-tail 120 | durable | 1 | 291.02 (291.02–291.02) | 97.67 | 0.06 | 2.48 | 0.00 | 28.75 | 697.27–697.27 |
+| low-tail 120 | ram | 1 | 763.44 (763.44–763.44) | 293.27 | 103.39 | 0.90 | 0.33 | 34.27 | 695.02–695.02 |
+
+| Workload | Mode | UK WS p50 / p95 ms | UK API p50 / p95 ms | PG p50 / p95 ms | Core SQLite ID check p50 / p95 ms | CoreScope REST p50 / p95 ms |
+|---|---|---:|---:|---:|---:|---:|
+| burst 800 | durable | 19240 / 36336 | 19495 / 36743 | 19389 / 36648 | 20579 / 37046 | 21845 / 37806 |
+| burst 800 | ram | 1567 / 2575 | 2109 / 3222 | 6600 / 11651 | 7457 / 13101 | 20924 / 24334 |
+| sustained 300 | durable | 68 / 127 | 348 / 541 | 331 / 525 | 935 / 1476 | 1577 / 2564 |
+| sustained 300 | ram | 49 / 107 | 432 / 676 | 6339 / 10839 | 6344 / 10844 | 1445 / 3183 |
+| low-tail 120 | durable | 67 / 123 | 270 / 432 | 236 / 409 | 781 / 1316 | 1331 / 2011 |
+| low-tail 120 | ram | 49 / 89 | 307 / 464 | 30885 / 118420 | 30887 / 118422 | 982 / 1765 |
+
+Through full physical drain, whole-fixture CPU seconds per 1,000 are
+**64.26 durable / 82.33 RAM** for burst, **96.30 / 168.56** at 10/s, and
+**291.08 / 866.83** for the single 2/s tail pair. Excluding the two
+instrumentation processes, six-container totals through drain are respectively
+**55.37 / 66.01**, **80.47 / 138.14**, and **221.43 / 700.07**.
+Thus the measured cleanup cost is not solely the controller. RAM improves
+UKMesh burst live latency and reduces PG WAL/fsyncs, but does not establish a
+whole-fixture CPU saving through retained cleanup. At ordinary rates PG
+visibility waits for batches; packet detail/history retain that delay. Memory
+ranges overlap, and RAM adds AOF writes and CoreScope/Redis bookkeeping.
+No production or whole-VPS efficiency improvement is claimed.
+
+Mean PG committed transactions / WAL fsyncs in the common reader window:
+burst durable **3,444 / 854**, RAM **1,603 / 67**; sustained durable
+**1,667 / 327**, RAM **1,883 / 25**; low-tail durable **1,885 / 140**, RAM
+**6,641 / 22**. These include queries and background work, not just packet
+transactions. A checkpoint occurred in one of the three durable sustained
+windows and in the RAM low-tail window; other measured reader windows had
+none. Full-drain PG WAL / Redis AOF growth averages: burst durable
+**6.93 / 0 MiB**, RAM **5.68 / 2.29 MiB**; sustained durable **2.90 / 0 MiB**,
+RAM **1.97 / 0.91 MiB**; low-tail durable **2.48 / 0 MiB**, RAM
+**1.63 / 0.38 MiB**. Physical I/O includes SQLite, filesystem and background
+maintenance, so it cannot be attributed solely to packet persistence.
+
+Evidence: `whole-stack-final-code-campaign.log`,
+`whole-stack-final-campaign-analysis.md`, `whole-stack/runs/campaign-analysis.json`,
+`whole-stack/runs/source-and-service-manifest.json` and the per-run snapshots.
+The separate **3,000-observation saturation gate passed**: PG **3,000/3,000**,
+CoreScope **3,000/3,000**, WS **3,000/3,000**, exact identities and historical
+side effects, and zero final stream/PEL/reservation. The captured actual metrics
+scrape records pending **0**, retained **3,000**, PEL **0**, and reservation
+**7,224,000 bytes** before retention expiry. A later diagnostic scrape crossed
+expiry; it was not counted as a gate. Evidence: `whole-stack-saturation-3000.log`,
+`whole-stack/runs/saturation-3000-integrity.json` and its saved metrics.
+
+An independent final audit compares all **9,959** retained upstream ledger UUIDs
+with all **9,959** CoreScope UUIDs and checks each run's exact raw/direction/
+network/observer/path tuple. The UUID set SHA-256 is identical on both sides:
+`93e9060fe4a8201e85180f616db50273c68647514480330cab0c1a102b240e55`.
+CoreScope **observations = journal records = derived observer contributions =
+9,959**. This includes **9,840** measured/stress observations plus the earlier
+119 audit observations. Every tested stream, PEL and reservation is empty.
+Evidence: `whole-stack-final-identity-audit.log` and
+`whole-stack/runs/final-identity-audit.json`. Public configuration responses
+also expose none of the fixture's bearer tokens, passwords or other secrets;
+see `whole-stack/runs/public-config-credential-audit.json`.
 
 RAM remains opt-in: ACK precedes PG commit and a Redis loss can lose acknowledged
 telemetry. Current policy unavailability/rematerialization deliberately makes
@@ -119,8 +251,8 @@ public reads unavailable. Previously delivered/network-in-flight bytes cannot
 be recalled. Old untracked/mixed CoreScope data is preserved and fenced; migrate
 to a new dedicated projection backed by retained PG history. Best-effort
 post-commit enrichment is bounded but not transactional/exactly once. N>1
-remains gated. No whole-stack savings or three-repeat performance claim exists
-for the new code yet. The historical measurements below remain evidence only
+remains gated. The repeated final-code measurements above qualify only this owned fixture;
+no whole-VPS or production savings claim is made. The historical measurements below remain evidence only
 for their explicitly older revisions.
 
 ## Historical bench measurements — earlier code only
@@ -167,4 +299,5 @@ was personally observed at 17:39:52 UTC before isolated verification began.
 New fixtures use disposable owned DBs/keys/containers/processes and the owned
 `verification-sol-20261011` directory; other run directories remain read-only.
 One old owned WS diagnostic process was stopped after its evidence was captured.
-CoreScope has not been pushed. The full mission remains active.
+CoreScope has not been pushed. All requested code and verification work is complete; CoreScope relay is the
+coordinator’s next action. The PRs retain their requested draft states.

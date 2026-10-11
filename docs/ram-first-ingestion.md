@@ -6,8 +6,8 @@ Redis Stream admission; the writer commits each observation later. A Redis loss
 before PostgreSQL commit can therefore lose already acknowledged telemetry.
 Keep the Redis queue private, persistent (AOF), and on a bounded
 `noeviction` instance. Do not expose the raw stream to public API credentials;
-only the backend and a separate quarantine operator should have raw stream
-access. Public companions use the credentialed filtered HTTP source below.
+only the backend should have raw stream access. Give a separate operator
+access to bounded quarantine evidence. Public companions use the credentialed filtered HTTP source below.
 
 The pending live overlay applies to recent packet lists and the initial
 WebSocket packet/message lists. Packet detail and long channel history remain
@@ -71,7 +71,8 @@ self-contained test stack. The drain commands below use the same selected
 deployment files. Neither render command changes a running service.
 
 Use a canary or isolated fixture first. Monitor `/readyz`,
-`ram_pending_depth`, `ram_retained_depth`, `ram_pel_depth`, the oldest pending
+`meshcore_ram_ingest_pending_depth`, `meshcore_ram_ingest_retained_depth`,
+`meshcore_ram_ingest_pel_depth`, the oldest pending
 age, admission refusals, commit failures, PostgreSQL disk/WAL and Redis
 memory/AOF. A full queue refuses admission and must leave MQTT QoS 1 delivery
 unacknowledged. A PostgreSQL outage makes the public RAM merge unavailable

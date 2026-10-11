@@ -1,7 +1,7 @@
 # UKMesh ingestion review repair plan — 2026-10-11
 
 Specification: `/home/ben/ukmesh-fix-context-20261011/SOL-REVIEW.md`.
-The full F01–F17 mission remains active. This current plan supersedes the
+The F01–F17 code and verification work is complete for N=1. This plan supersedes the
 historical handoff tables, which remain available in git history.
 
 ## Completed sequence
@@ -41,29 +41,34 @@ New regressions reproduce old failures. Final full backend suite passes
 479/479 (193.952s), typecheck/build pass, full ingest integration passes
 7 PG + 3 Redis + 1 WS, and the strict actual ACL/runtime gate passes exactly
 4+1 tests with zero skips (runtime 152.153s). Loaded resident-memory refusal
-and all ten Compose RAM/public-source settings pass. Next commit/push and CI.
+and all ten Compose RAM/public-source settings pass. The wave is pushed at `c02aa32`; workflows 38182374772 / 38182378151
+passed every job. Its pinned labelled image passes exactly 11 + 4 + 1 compiled
+tests with zero skips. Actual paired privacy/rematerialization, copied-data
+revocation, unavailable authority and private-to-public replay pass.
 
-## Remaining work, in order
+## Final acceptance
 
-1. Commit/push the locally verified operational/read RAM wave and watch
-   its new full CI to actual success. Existing green CI
-   is evidence only for its matching revision.
-2. Build a uniquely labelled final RAM image; pin compiled fixture sources
-   to that label and require exact nonzero test totals with zero skips.
-3. Use newly owned isolated services/processes for a whole-stack campaign;
-   preserve original services and all other run directories. Replace the
-   old processed/XLEN drain oracle with exact expected identities, every
-   side-effect total, actual pending/PEL and completion barriers. Wait for
-   readers to be ready and stop/join each one at the recorded endpoint.
-4. Audit actual paired CoreScope source/server privacy transitions after
-   rematerialization, late commit/offline/cursor loss and restricted public
-   credentials. Measure backend and whole-stack CPU/memory, Redis AOF,
-   PG WAL/checkpoints and physical I/O over the same completed window;
-   compare final-code durable/RAM workloads with repetitions.
-5. Refresh both existing PR finding maps, hashes, CI links, evidence and
-   limitations. Keep #122 open/non-draft and #125 draft. Finalize FIX-REPORT
-   and the three-commit CoreScope relay patch, then verify remote UK heads,
-   clean local CoreScope commits and green current CI before completion.
+1. The operational code head `c02aa32` is pushed and both full CI workflows
+   passed every job. Its labelled image passes exactly 11 integration + 4
+   operational + 1 compiled runtime tests, zero skips. Final local release
+   typecheck/full backend suite passes 479/479 (201.590s).
+2. Actual paired privacy/rematerialization, copied-data revocation, private-to-
+   public replay, unavailable authority, restricted public credentials, late
+   commit/offline/cursor loss and real retention expiry pass.
+3. All 14 measured runs (6,840 observations) and the 3,000-observation saturation
+   integrity run pass exact identity/side-effect/reader/drain gates. Independent
+   PG/CoreScope UUID sets match 9,959/9,959, with identical journal/derived counts
+   and zero final stream/PEL/reservation. Whole-fixture CPU/memory, AOF, WAL,
+   checkpoints, transactions and physical I/O are recorded over completed
+   windows. Three burst/10/s repetitions and a diagnostic 2/s tail pair show
+   latency gains and additional retained-cleanup costs; no production savings
+   claim is made.
+4. The documentation-only checkpoint has the same runtime build inputs. Its
+   own source-pinned image gates and fresh CI are recorded with the exact
+   branch hash in PR #125 and the final handoff. Both existing PR descriptions
+   carry the final finding map/evidence; #122 stays open/non-draft and #125
+   open/draft. The ready three-commit CoreScope relay patch is
+   `evidence/corescope-sol-relay-final-20261011.patch`; no CoreScope push.
 
 ## Boundaries
 
