@@ -82,6 +82,14 @@ export type RamWriterDeps = {
 };
 
 const MAX_PERSIST_ATTEMPTS = 7;
+/**
+ * Hard cap per flush. 26 columns per row against Postgres's 65,535 bind
+ * parameter ceiling: 2,000 rows = 52,000 parameters, comfortably under the
+ * limit while still draining reclaimed backlogs quickly. The normal loop
+ * flushes at the configured batch size; this only bounds startup reclaim
+ * of a large leftover PEL.
+ */
+const MAX_FLUSH_PACKETS = 2_000;
 const MARKERS_KEPT = 20;
 const STATS_INTERVAL_MS = 5_000;
 const FAILURE_BACKOFF_START_MS = 5_000;
@@ -204,7 +212,7 @@ export function createRamWriter(deps: RamWriterDeps): RamWriter {
 
   async function flush(reason: 'size' | 'age' | 'drain'): Promise<void> {
     if (acc.length === 0) return;
-    const batch = acc.splice(0, acc.length);
+    const batch = acc.splice(0, Math.min(acc.length, MAX_FLUSH_PACKETS));
     const ids = batch.map((item) => item.id);
     const startedNs = process.hrtime.bigint();
     const nowMs = deps.now();
