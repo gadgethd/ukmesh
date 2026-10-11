@@ -1,7 +1,10 @@
 import type { QueryResultRow } from 'pg';
 import {
+  packetBatchDedupeTotal,
   packetBatchDuration,
   packetBatchFlushTotal,
+  packetBatchQueueDepth,
+  packetBatchQueueWait,
   packetBatchRetryTotal,
   packetBatchSize,
   privacyFilterTotal,
@@ -12,9 +15,26 @@ import {
 } from '../privacy/privatePrefixCache.js';
 
 const MAX_BATCH_SIZE = 50;
-const FLUSH_INTERVAL_MS = 50;
+/**
+ * How long a batch may wait for company before flushing. The historical fixed
+ * 50ms wait taxed every singleton batch, and a strictly serial ingest loop
+ * produces nothing else. 0 flushes as soon as an entry is enqueued.
+ */
+const FLUSH_INTERVAL_MS = boundedEnvInteger('MQTT_INGEST_FLUSH_MS', 10, 0, 1_000);
+/**
+ * Upper bound on entries waiting to be persisted. Reaching it refuses new
+ * entries instead of growing without limit; the ingest layer treats the
+ * refusal as a durable failure (no acknowledgement, broker redelivers).
+ */
+const MAX_QUEUE_DEPTH = boundedEnvInteger('MQTT_INGEST_QUEUE_MAX', 1_000, 1, 100_000);
 const MAX_WRITE_ATTEMPTS = 7;
 const RETRY_DELAYS_MS = [100, 250, 500, 1_000, 2_000, 4_000] as const;
+
+function boundedEnvInteger(name: string, fallback: number, min: number, max: number): number {
+  const parsed = Number(process.env[name]);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, Math.trunc(parsed)));
+}
 
 const RETRYABLE_DATABASE_CODES = new Set([
   '08000', // connection_exception
@@ -69,6 +89,7 @@ type PendingPacket = {
   packet: PacketBatchInput;
   resolve: (result: PacketBatchResult) => void;
   reject: (error: unknown) => void;
+  enqueuedNs: bigint;
 };
 
 let queryFn: QueryFn | null = null;
@@ -147,12 +168,58 @@ function retryDelay(attempt: number): number {
 export function enqueuePacket(packet: PacketBatchInput): Promise<PacketBatchResult> {
   if (draining) return Promise.reject(new Error('PACKET_BATCH_DRAINING'));
   if (!queryFn) return Promise.reject(new Error('PACKET_BATCH_NOT_CONFIGURED'));
+  if (pending.length >= MAX_QUEUE_DEPTH) {
+    return Promise.reject(new Error('PACKET_BATCH_QUEUE_FULL'));
+  }
   const result = new Promise<PacketBatchResult>((resolve, reject) => {
-    pending.push({ packet, resolve, reject });
+    pending.push({ packet, resolve, reject, enqueuedNs: process.hrtime.bigint() });
   });
-  if (pending.length >= MAX_BATCH_SIZE) void flush();
+  packetBatchQueueDepth.set(pending.length);
+  if (pending.length >= MAX_BATCH_SIZE || FLUSH_INTERVAL_MS === 0) void flush();
   else scheduleFlush();
   return result;
+}
+
+/**
+ * Collapses duplicate packets inside one batch: the same hash, observer and
+ * hop count as an earlier entry resolves with that entry's outcome instead of
+ * being persisted twice. This mirrors the in-memory duplicate filter of the
+ * MQTT ingest path, which is checked before an asynchronous insert and so is
+ * race-prone once more than one ingest can be in flight at a time.
+ */
+function collapseDuplicatePackets(batch: PendingPacket[]): PendingPacket[] {
+  if (batch.length < 2) return batch;
+  const groups = new Map<string, PendingPacket[]>();
+  const kept: PendingPacket[] = [];
+  for (const item of batch) {
+    const key = `${item.packet.packetHash}:${item.packet.rxNodeId ?? ''}:${item.packet.hopCount ?? '?'}`;
+    const group = groups.get(key);
+    if (group) group.push(item);
+    else {
+      groups.set(key, [item]);
+      kept.push(item);
+    }
+  }
+  if (kept.length === batch.length) return batch;
+  let collapsed = 0;
+  for (const group of groups.values()) {
+    if (group.length < 2) continue;
+    const first = group[0]!;
+    const duplicates = group.slice(1);
+    const resolveFirst = first.resolve;
+    const rejectFirst = first.reject;
+    first.resolve = (result) => {
+      resolveFirst(result);
+      for (const duplicate of duplicates) duplicate.resolve({ ...result });
+    };
+    first.reject = (error) => {
+      rejectFirst(error);
+      for (const duplicate of duplicates) duplicate.reject(error);
+    };
+    collapsed += duplicates.length;
+  }
+  packetBatchDedupeTotal.inc(collapsed);
+  return kept;
 }
 
 async function writeBatch(batch: PendingPacket[], idempotent: boolean): Promise<void> {
@@ -487,7 +554,12 @@ async function writeBatch(batch: PendingPacket[], idempotent: boolean): Promise<
       console.error('[db] private prefix cache refresh failed', (error as Error).message);
     });
   }
+  const settledAt = process.hrtime.bigint();
   for (const row of result.rows) {
+    const item = batch[row.row_id];
+    if (item) {
+      packetBatchQueueWait.observe(Number(settledAt - item.enqueuedNs) / 1e9);
+    }
     privacyFilterTotal.inc({
       operation: 'packet_ingest',
       outcome: row.visibility_ok ? 'public' : (row.is_private ? 'private' : 'invalid'),
@@ -540,11 +612,12 @@ export function flush(): Promise<void> {
 
   activeFlush = (async () => {
     while (pending.length > 0) {
-      const batch = pending.splice(0, MAX_BATCH_SIZE);
+      const batch = collapseDuplicatePackets(pending.splice(0, MAX_BATCH_SIZE));
       await writeBatchWithRetry(batch);
     }
   })().finally(() => {
     activeFlush = null;
+    packetBatchQueueDepth.set(pending.length);
     if (pending.length > 0) scheduleFlush();
   });
   return activeFlush;
