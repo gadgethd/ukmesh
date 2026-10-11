@@ -15,6 +15,7 @@ import {
   type PacketPrivacyInput,
   type PrivatePrefixRow,
 } from '../privacy/privatePrefixCache.js';
+import { observationIdentityKey } from '../mqtt/observationIdentity.js';
 
 const MAX_BATCH_SIZE = 50;
 /**
@@ -237,7 +238,26 @@ function collapseDuplicatePackets(batch: PendingPacket[]): PendingPacket[] {
   const groups = new Map<string, PendingPacket[]>();
   const kept: PendingPacket[] = [];
   for (const item of batch) {
-    const key = `${item.packet.packetHash}:${item.packet.rxNodeId ?? ''}:${item.packet.hopCount ?? '?'}`;
+    let direction: 'rx' | 'tx' | null = null;
+    if (item.packet.payloadJson) {
+      try {
+        const payload = JSON.parse(item.packet.payloadJson) as Record<string, unknown>;
+        if (payload['direction'] === 'rx' || payload['direction'] === 'tx') direction = payload['direction'];
+      } catch {
+        // Invalid JSON belongs to SQL validation, not batch arbitration.
+      }
+    }
+    const key = observationIdentityKey({
+      packetHash: item.packet.packetHash,
+      rxNodeId: item.packet.rxNodeId,
+      topic: item.packet.topic,
+      network: item.packet.network,
+      hopCount: item.packet.hopCount,
+      routeType: item.packet.routeType,
+      pathHashes: item.packet.pathHashes,
+      pathHashSizeBytes: item.packet.pathHashSizeBytes,
+      direction,
+    });
     const group = groups.get(key);
     if (group) group.push(item);
     else {
@@ -334,15 +354,17 @@ export async function persistEntriesCore(
   const persistenceSource = idempotent ? 'new_rows' : 'classified';
   // Replay safety (RAM-mode crash recovery): when running idempotent, a batch
   // is filtered twice — first against duplicate identities WITHIN the batch
-  // (row-numbered by the same five-column key the existence check uses),
+  // (row-numbered by the same sighting identity the existence check uses),
   // then against rows already present in the database (covers replays after
   // crashes and ambiguous commit outcomes, where the SAME frozen entry is
-  // delivered again with identical time/packet/rx/topic/network values).
+  // delivered again with identical observation fields).
   const idempotencyCte = idempotent
     ? `deduped AS MATERIALIZED (
          SELECT c.*,
                 ROW_NUMBER() OVER (
-                  PARTITION BY c.time, c.packet_hash, COALESCE(c.rx_node_id, ''), c.topic, c.network
+                  PARTITION BY c.time, c.packet_hash, c.rx_node_id, c.topic, c.network,
+                               c.hop_count, c.route_type, c.path_hashes, c.path_hash_size_bytes,
+                               (c.payload::jsonb->>'direction')
                   ORDER BY c.row_id
                 ) AS identity_rank
          FROM classified c
@@ -359,6 +381,11 @@ export async function persistEntriesCore(
                AND existing.rx_node_id IS NOT DISTINCT FROM d.rx_node_id
                AND existing.topic = d.topic
                AND existing.network = d.network
+               AND existing.hop_count IS NOT DISTINCT FROM d.hop_count
+               AND existing.route_type IS NOT DISTINCT FROM d.route_type
+               AND existing.path_hashes IS NOT DISTINCT FROM d.path_hashes
+               AND existing.path_hash_size_bytes IS NOT DISTINCT FROM d.path_hash_size_bytes
+               AND (existing.payload->>'direction') IS NOT DISTINCT FROM (d.payload::jsonb->>'direction')
            )
        ),`
     : '';

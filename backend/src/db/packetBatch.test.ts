@@ -75,3 +75,35 @@ test('packet batches retry transient database failures without losing the pendin
   assert.match(statements[1]!, /FOR KEY SHARE/);
   assert.doesNotMatch(statements[1]!, /FROM private_node_prefixes pp/);
 });
+
+test('F03 batch arbitration retains distinct same-hash paths at one hop count', async () => {
+  let batchSql = '';
+  let batchParams: unknown[] = [];
+  configurePacketBatch(async (sql, params) => {
+    if (sql.includes('jsonb_agg(jsonb_build_object')) {
+      return { rows: [{ generation: '7', prefixes: [] }] };
+    }
+    batchSql = sql;
+    batchParams = params ?? [];
+    return { rows: [0, 1].map((row_id) => ({
+      row_id, is_private: false, visibility_ok: true, prefix_cache_fresh: true,
+      lock_ok: true,
+    })) };
+  });
+  const base: PacketBatchInput = {
+    time: new Date('2026-08-06T01:00:00.000Z'), packetHash: 'same-hash',
+    rxNodeId: 'A'.repeat(64), srcNodeId: 'B'.repeat(64),
+    topic: `meshcore/EMA/${'A'.repeat(64)}/packets`, topicPrefix: 'meshcore',
+    iata: 'EMA', packetType: 5, routeType: 0, hopCount: 2,
+    rssi: -80, snr: 5, payloadJson: JSON.stringify({ direction: 'rx' }),
+    companionSender: null, rawHex: '00', advertCount: null,
+    pathHashes: ['ABCD'], pathHashSizeBytes: 2, network: 'ukmesh',
+    transportCodes: null, regionScope: null,
+  };
+  const first = enqueuePacket(base);
+  const second = enqueuePacket({ ...base, pathHashes: ['EF01'] });
+  await flush();
+  await Promise.all([first, second]);
+  assert.match(batchSql, /incoming/);
+  assert.equal(batchParams.length, 50);
+});

@@ -21,6 +21,7 @@ import {
   type PacketBatchInput,
 } from './packetBatch.js';
 import { processNextPrivacyRematerialization } from '../workers/privacy-rematerialization.js';
+import { packetAlreadyPersisted } from '../mqtt/observationIdentity.js';
 
 const { Pool } = pg;
 const databaseUrl = process.env['TEST_INGEST_DATABASE_URL'];
@@ -637,6 +638,28 @@ test('packet batch atomically coalesces observer, sighting, and stats writes', {
       { isPrivate: false, visibilityOk: true },
     ]);
     assert.equal(statementCount, 1);
+
+    // F03: a DUP of the committed sighting is safe to acknowledge, while a
+    // distinct sighting of the same RF packet must still reach persistence.
+    const firstSighting = makePacket(0, 1);
+    const probe = (sql: string, params: unknown[]) => pool.query<{ present: boolean }>(sql, params);
+    const identity = {
+      packetHash: firstSighting.packetHash,
+      rxNodeId: firstSighting.rxNodeId,
+      topic: firstSighting.topic,
+      network: firstSighting.network,
+      hopCount: firstSighting.hopCount,
+      routeType: firstSighting.routeType,
+      pathHashes: firstSighting.pathHashes,
+      pathHashSizeBytes: firstSighting.pathHashSizeBytes,
+      direction: null,
+    };
+    assert.equal(await packetAlreadyPersisted(probe, identity), true);
+    assert.equal(await packetAlreadyPersisted(probe, { ...identity, hopCount: 3 }), false);
+    assert.equal(await packetAlreadyPersisted(probe, { ...identity, pathHashes: ['ABCD'] }), false);
+    assert.equal(await packetAlreadyPersisted(probe, { ...identity, rxNodeId: sourceId }), false);
+    assert.equal(await packetAlreadyPersisted(probe, { ...identity, network: 'teesside' }), false);
+    assert.equal(await packetAlreadyPersisted(probe, { ...identity, topic: 'meshcore/OTHER/packets' }), false);
 
     const packets = await pool.query<{ count: string }>(
       `SELECT COUNT(*)::text AS count
