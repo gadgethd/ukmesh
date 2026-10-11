@@ -32,6 +32,8 @@ import {
   getRamCommittedKey,
   getRamQuarantineKey,
   getRamQueueBytesKey,
+  RAM_QUARANTINE_MAX_ENTRIES,
+  RAM_QUARANTINE_ENTRY_MAX_BYTES,
   type RamPendingEntry,
 } from './protocol.js';
 import {
@@ -62,6 +64,7 @@ export interface RamWriterRedis {
   xack(key: string, group: string, ...ids: string[]): Promise<number>;
   xdel(key: string, ...ids: string[]): Promise<number>;
   xadd(key: string, ...args: (string | number)[]): Promise<string>;
+  xtrim(key: string, strategy: string, threshold: number): Promise<number>;
   xautoclaim(
     key: string,
     group: string,
@@ -130,8 +133,8 @@ const SWEEP_INTERVAL_MS = 10_000;
 const SWEEP_SCAN_LIMIT = 2_000;
 const PEL_LIST_LIMIT = 5_000;
 /** Bounded recovery evidence for undecodable entries. */
-const QUARANTINE_MAX_LEN = 500;
-const QUARANTINE_VALUE_CAP = 65_536;
+const QUARANTINE_MAX_LEN = RAM_QUARANTINE_MAX_ENTRIES;
+const QUARANTINE_VALUE_CAP = RAM_QUARANTINE_ENTRY_MAX_BYTES;
 const FAILURE_BACKOFF_START_MS = 5_000;
 const FAILURE_BACKOFF_MAX_MS = 30_000;
 const RECLAIM_INTERVAL_MS = 5_000;
@@ -247,6 +250,12 @@ export function createRamWriter(deps: RamWriterDeps): RamWriter {
   async function quarantineMalformed(id: string, value: string, reason = 'undecodable', deliveryKey?: string): Promise<boolean> {
     const bytes = Buffer.byteLength(value);
     const digest = createHash('sha256').update(value).digest('hex');
+    const record = {src:id,reason,at:deps.now(),sha256:digest,bytes,raw:bytes<=QUARANTINE_VALUE_CAP ? value : ''};
+    let encoded = JSON.stringify(record);
+    if (Buffer.byteLength(encoded)>QUARANTINE_VALUE_CAP) {
+      record.raw = '';
+      encoded = JSON.stringify(record);
+    }
     try {
       await deps.redis.xadd(
         getRamQuarantineKey(),
@@ -255,15 +264,12 @@ export function createRamWriter(deps: RamWriterDeps): RamWriter {
         QUARANTINE_MAX_LEN,
         '*',
         'q',
-        JSON.stringify({
-          src: id,
-          reason,
-          at: deps.now(),
-          sha256: digest,
-          bytes,
-          raw: bytes <= QUARANTINE_VALUE_CAP ? value : '',
-        }),
+        encoded,
       );
+      // Approximate XADD trimming is followed by an exact cap. Overshoot is
+      // transient and one encoded record per concurrent writer; source
+      // cleanup happens only after both commands succeed.
+      await deps.redis.xtrim(getRamQuarantineKey(), 'MAXLEN', QUARANTINE_MAX_LEN);
       ramQuarantinedTotal.inc();
       deps.log(`[ram] quarantined ${reason} stream entry id=${id} bytes=${bytes} sha256=${digest}`);
     } catch (error) {

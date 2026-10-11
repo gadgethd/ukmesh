@@ -65,6 +65,11 @@ class FakeRedis {
   }
 
   quarantined: string[] = [];
+  async xtrim(_key: string, _strategy: string, threshold: number): Promise<number> {
+    const removed = Math.max(0,this.quarantined.length-threshold);
+    this.quarantined=this.quarantined.slice(-threshold);
+    return removed;
+  }
   async xadd(_key: string, idOrCommand: string, ...args: (string | number)[]): Promise<string> {
     if (idOrCommand === 'MAXLEN') {
       if (this.quarantineFails) throw new Error('quarantine unavailable');
@@ -611,6 +616,19 @@ test('unparseable stream values are quarantined, acknowledged and deleted', asyn
   assert.equal(typeof record['sha256'], 'string');
   assert.equal((record['sha256'] as string).length, 64);
   assert.equal(record['raw'], 'not-json');
+});
+
+test('F09 quarantine caps encoded evidence bytes including JSON escaping', async () => {
+  const fake = new FakeRedis();
+  fake.entries.push({id:'1700000600000-0',fields:['e','\u0000'.repeat(16_000)]});
+  const {writer} = makeWriter(fake,()=>1_700_000_600_000,async()=>undefined,{batchSize:1});
+  await writer.start();
+  await writer.tickOnce();
+  assert.equal(fake.quarantined.length,1);
+  assert.ok(Buffer.byteLength(fake.quarantined[0]!)<=16_384,'encoded evidence exceeds the reserved per-record bound');
+  const value=JSON.parse(fake.quarantined[0]!);
+  assert.equal(value.bytes,16_000);
+  assert.equal(value.sha256.length,64);
 });
 
 test('drain flushes everything that remains', async () => {

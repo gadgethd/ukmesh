@@ -36,6 +36,7 @@ import {
   getRamQueueMaxPackets,
   getRamStreamKey,
   RAM_ENTRY_OVERHEAD_BYTES,
+  RAM_REDIS_HEADROOM_BYTES,
   type RamPendingEntry,
 } from './protocol.js';
 import {
@@ -67,7 +68,7 @@ export interface RamStoreRedis {
     max: string,
     ...args: (string | number)[]
   ): Promise<Array<[string, string[]]>>;
-  memory(subcommand: string, key: string): Promise<number>;
+  memory(subcommand: string, key: string): Promise<number | null>;
   get(key: string): Promise<string | null>;
   eval(script: string, numKeys: number, ...args: (string | number)[]): Promise<unknown>;
   hmget(key: string, ...fields: string[]): Promise<Array<string | null>>;
@@ -91,6 +92,13 @@ if (len > 0 and not recorded) or (recorded and (not tonumber(recorded) or tonumb
 local used = tonumber(recorded or '0')
 local add = tonumber(ARGV[3])
 if used + add > tonumber(ARGV[2]) then return -2 end
+local memory = redis.call('INFO', 'memory')
+local maxmemory = tonumber(string.match(memory, 'maxmemory:(%d+)')) or 0
+local resident = tonumber(string.match(memory, 'used_memory:(%d+)'))
+local policy = string.match(memory, 'maxmemory_policy:([^%s]+)')
+local headroom = tonumber(ARGV[7])
+if not resident or maxmemory == 0 or policy ~= 'noeviction' or tonumber(ARGV[2]) + headroom > maxmemory
+  or resident + add + headroom >= maxmemory then return -4 end
 local id = redis.call('XADD', KEYS[1], '*', ARGV[4], ARGV[5])
 redis.call('INCRBY', KEYS[2], add)
 redis.call('SET', KEYS[3], ARGV[5])
@@ -138,7 +146,7 @@ export type RamAdmissionResult = {
 };
 
 export class RamAdmissionRefusedError extends Error {
-  readonly reason: 'queue_full' | 'queue_bytes' | 'redis_unavailable';
+  readonly reason: 'queue_full' | 'queue_bytes' | 'redis_unavailable' | 'redis_headroom';
 
   constructor(reason: RamAdmissionRefusedError['reason'], cause?: unknown) {
     super(`RAM_INGEST_REFUSED:${reason}${cause ? `:${(cause as Error).message ?? String(cause)}` : ''}`);
@@ -223,9 +231,12 @@ export async function refreshPendingStats(): Promise<{ pending: number; pel: num
     client.memory('USAGE', key).catch(() => cachedBytes),
     client.get(getRamQueueBytesKey()),
     client.xrange(key, '-', '+', 'COUNT', getRamQueueMaxPackets()),
-    client.xpending(key, getRamConsumerGroup()),
+    client.xpending(key, getRamConsumerGroup()).catch((error: unknown) => {
+      if ((error as Error).message?.includes('NOGROUP')) return [0, null, null, []];
+      throw error;
+    }),
   ]);
-  cachedBytes = typeof mem === 'number' && Number.isFinite(mem) ? mem : cachedBytes;
+  cachedBytes = mem === null ? 0 : typeof mem === 'number' && Number.isFinite(mem) ? mem : cachedBytes;
   ramQueueDepth.set(len);
   ramQueueBytes.set(cachedBytes);
   ramQueueReservedBytes.set(Math.max(0, Number(reserved ?? 0) || 0));
@@ -304,6 +315,7 @@ export async function admitPacketToRam(
       ADMIT_SCRIPT, 3, key, getRamQueueBytesKey(), getRamAdmissionKey(deliveryKey),
       maxPackets, maxBytes, entryBytes, entryFieldName(), value,
       delivery?.redelivered ? 1 : 0,
+      RAM_REDIS_HEADROOM_BYTES,
     );
     let result = await runAdmission();
     if (result === -3) {
@@ -317,6 +329,10 @@ export async function admitPacketToRam(
     if (result === -2) {
       ramAdmissionsTotal.inc({ outcome: 'queue_bytes' });
       throw new RamAdmissionRefusedError('queue_bytes');
+    }
+    if (result === -4) {
+      ramAdmissionsTotal.inc({ outcome: 'redis_headroom' });
+      throw new RamAdmissionRefusedError('redis_headroom');
     }
     if (!Array.isArray(result) || result.length !== 2 || typeof result[1] !== 'string') {
       throw new RamAdmissionRefusedError('redis_unavailable', new Error('unexpected eval reply'));

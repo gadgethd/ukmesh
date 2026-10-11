@@ -26,7 +26,7 @@ import {
 import { processNextPrivacyRematerialization } from '../workers/privacy-rematerialization.js';
 import { packetAlreadyPersisted } from '../mqtt/observationIdentity.js';
 import { admitPacketToRam, configureRamStore } from '../ram/liveStore.js';
-import { readRecentWithPending } from '../ram/liveRead.js';
+import { readRecentWithPending, resolvePendingSummaries } from '../ram/liveRead.js';
 import { createRamWriter } from '../ram/writer.js';
 import { getRamStreamKey } from '../ram/protocol.js';
 
@@ -356,14 +356,16 @@ test('F06 real PG snapshot and Redis expiry preserve the captured handoff', {
       await snapshot.query('ROLLBACK');
       snapshot.release();
     }
-  }, { limit: 10, network: 'ukmesh', resolveAliases: async () => new Map() });
+  }, { limit: 10, network: 'ukmesh', resolveAliases: async () => new Map(),
+    resolveSummaries: entries=>resolvePendingSummaries(entries,(sql,params)=>pool.query(sql,params)) });
   assert.deepEqual(merged.map((row) => row.packet_hash), [input.packetHash]);
   const later = await readRecentWithPending(async () => (await pool.query(`
     SELECT packet_hash, time, network, ARRAY[observation_id::text] AS _observation_ids,
            (SELECT generation::text FROM public_visibility_state WHERE singleton) AS _policy_generation,
            0 AS _representative_rank,
            1::int AS rx_count, 0::int AS tx_count FROM packets`)).rows,
-  { limit: 10, network: 'ukmesh', resolveAliases: async () => new Map() });
+  { limit: 10, network: 'ukmesh', resolveAliases: async () => new Map(),
+    resolveSummaries: entries=>resolvePendingSummaries(entries,(sql,params)=>pool.query(sql,params)) });
   assert.deepEqual(new Set(later.map((row) => row.packet_hash)), new Set([input.packetHash, '61'.repeat(32)]));
   const durableIds = (await pool.query('SELECT observation_id::text FROM packets')).rows.map((row) => row.observation_id);
   assert.deepEqual(durableIds, [first.observationId]);

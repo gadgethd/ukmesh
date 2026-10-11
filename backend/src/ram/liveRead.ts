@@ -20,12 +20,13 @@
  *    remain available.
  */
 import { readPendingEntries, type PendingStreamEntry } from './liveStore.js';
-import { loadCurrentPublicPrivacyPolicy } from '../db/packetBatch.js';
+import { loadCurrentPublicPrivacyPolicy, type QueryFn } from '../db/packetBatch.js';
 import { query } from '../db/index.js';
 import { networkMatchesScope } from '../networks.js';
 import { getRamIngestMode, type RamPendingEntry } from './protocol.js';
 
 export type RecentRow = Record<string, unknown>;
+export type PendingSummary = { packet_hash: string; payload: { _summary: unknown } };
 
 export type MergeOptions = {
   limit: number;
@@ -38,6 +39,8 @@ export type MergeOptions = {
   nowMs?: number;
   /** Supplied by tests; production resolves stored node aliases in one PG query. */
   resolveAliases?: (nodeIds: string[]) => Promise<Map<string, string>>;
+  /** Match SQL JSONB text extraction and packet-decryption fallback in one query. */
+  resolveSummaries?: (entries: PendingSummary[]) => Promise<Map<string, string | null>>;
   /** Restrict pending contributions to these packet types (e.g. [5] for message history). */
   packetTypes?: number[];
   rowKind?: 'packets' | 'messages';
@@ -93,6 +96,14 @@ async function resolveCanonicalAliases(nodeIds: string[]): Promise<Map<string, s
          WHERE source_node_id = ANY($1::text[])
        )`, [nodeIds]);
   return new Map(result.rows.map((row) => [row.source_node_id, row.canonical_node_id]));
+}
+
+export async function resolvePendingSummaries(entries: PendingSummary[], readQuery: QueryFn = query): Promise<Map<string, string | null>> {
+  const result = await readQuery(`
+    SELECT p.packet_hash, COALESCE(p.payload->>'_summary', pd.summary) AS summary
+    FROM jsonb_to_recordset($1::jsonb) AS p(packet_hash text, payload jsonb)
+    LEFT JOIN packet_decryptions pd ON pd.packet_hash = p.packet_hash`, [JSON.stringify(entries)]);
+  return new Map(result.rows.map(row => [String(row.packet_hash), row.summary === null ? null : String(row.summary)]));
 }
 
 function canonical(value: string | null, aliases: Map<string, string>): string | null {
@@ -153,6 +164,7 @@ function buildMergedRow(group: EntryWithTx[], includePayload: boolean, fields: '
     ...(includePayload || rowKind === 'messages' ? { payload } : {}),
     _representative_rank: representativeRank(representative, rowKind),
     _representative_id: representative.entry.observationId,
+    _pending_summary: payload?.['_summary'] ?? null,
   };
 }
 
@@ -207,6 +219,7 @@ function stripInternalIds<T>(rows: T[]): T[] {
     if (row && typeof row === 'object') delete (row as RecentRow)['_policy_generation'];
     if (row && typeof row === 'object') delete (row as RecentRow)['_representative_rank'];
     if (row && typeof row === 'object') delete (row as RecentRow)['_representative_id'];
+    if (row && typeof row === 'object') delete (row as RecentRow)['_pending_summary'];
   }
   return rows;
 }
@@ -234,6 +247,7 @@ export async function mergePendingPacketsIntoRecentRows<T>(
 ): Promise<T[]> {
   if (getRamIngestMode() !== 'ram' || opts.limit <= 0) return stripInternalIds(rows);
   try {
+    const pending = opts.pendingSnapshot ?? await readPendingEntries(opts.limit);
     const policy = await loadCurrentPublicPrivacyPolicy();
     if (!policy) return [];
     const base = (rows as unknown as RecentRow[]).filter((row) =>
@@ -247,7 +261,6 @@ export async function mergePendingPacketsIntoRecentRows<T>(
     // The store scans the bounded stream, then this layer filters and pages
     // distinct hashes. Sampling only the newest N observations would hide a
     // matching hash behind a large observer fanout or other packet types.
-    const pending = opts.pendingSnapshot ?? await readPendingEntries(opts.limit);
     if (pending.length === 0) return stripInternalIds(base.slice(0, opts.limit) as unknown as T[]);
     const cutoff = (opts.nowMs ?? Date.now()) - (opts.windowMs ?? (opts.packetTypes ? 86_400_000 : 300_000));
     const eligible = pending.filter(({ entry }) => {
@@ -308,11 +321,23 @@ export async function mergePendingPacketsIntoRecentRows<T>(
       merged.push(buildMergedRow(group, opts.includePayload === true, opts.fields ?? 'full', aliases, opts.rowKind ?? 'packets'));
     }
     const combined = [...base, ...merged];
+    const summaries = combined.filter(row => Object.hasOwn(row, '_pending_summary') && typeof row['_pending_summary'] !== 'string')
+      .map(row => ({ packet_hash: String(row['packet_hash']), payload: { _summary: row['_pending_summary'] } }));
+    if (summaries.length) {
+      const resolved = await (opts.resolveSummaries ?? resolvePendingSummaries)(summaries);
+      for (const row of combined) if (Object.hasOwn(row, '_pending_summary') && typeof row['_pending_summary'] !== 'string') {
+        row['summary'] = resolved.get(String(row['packet_hash'])) ?? null;
+      }
+    }
+    // Alias and summary queries may wait while authorization changes. Their
+    // captured generation is never permission to deliver after those waits.
+    const current = await loadCurrentPublicPrivacyPolicy();
+    if (!current || current.currentGeneration !== policy.currentGeneration) return [];
     combined.sort((left, right) => timeMs(right['time']) - timeMs(left['time'])
       || String(left['packet_hash']).localeCompare(String(right['packet_hash'])));
     return stripInternalIds(combined.slice(0, opts.limit) as unknown as T[]);
   } catch (error) {
-    console.error('[ram] live merge failed (returning database rows only)', (error as Error).message);
+    console.error('[ram] live merge failed (public read unavailable)', (error as Error).message);
     return [];
   }
 }

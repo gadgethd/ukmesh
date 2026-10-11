@@ -8,7 +8,7 @@ import { runMigrations } from './migrations.js';
 import { configurePacketBatch, persistEntriesCore, type QueryFn } from './packetBatch.js';
 import { admitPacketToRam, configureRamStore, readPendingEntries } from '../ram/liveStore.js';
 import type { InsertPacketInput } from './packetInput.js';
-import { readRecentWithPending, mergePendingPacketsIntoRecentRows } from '../ram/liveRead.js';
+import { readRecentWithPending, mergePendingPacketsIntoRecentRows, resolvePendingSummaries, type PendingSummary } from '../ram/liveRead.js';
 import { getRamStreamKey } from '../ram/protocol.js';
 import { processNextPrivacyRematerialization } from '../workers/privacy-rematerialization.js';
 
@@ -74,6 +74,7 @@ test('F01/F05/F12/F13 real SQL and RAM contracts agree across scoped paging, sta
     (source_node_id, canonical_node_id, confidence, reason) VALUES ($1, $2, 'high', 'fixture')`, [alias, canonical]);
   while (await processNextPrivacyRematerialization(pool, { chunkPauseMs: 0 })) { /* finish fixture policy */ }
   const aliases = async () => new Map([[alias, canonical]]);
+  const summaries = (entries: PendingSummary[]) => resolvePendingSummaries(entries,query);
   const observed = Date.now();
   const base = { packetHash: '80'.repeat(32), rxNodeId: alias, topic: `meshcore/ZZZ/${alias}/packets`,
     network: 'northeast', rawHex: '00', packetType: 5, pathHashes: [] as string[],
@@ -91,13 +92,18 @@ test('F01/F05/F12/F13 real SQL and RAM contracts agree across scoped paging, sta
     await admit({ ...base, packetHash: '81'.repeat(32), time: new Date(observed - 3_500) }),
     await admit({ ...base, packetHash: '82'.repeat(32), network: 'othernet' }),
     await admit({ ...base, packetHash: '83'.repeat(32), time: new Date(observed - 301_000) }),
+    await admit({ ...base, packetHash: '84'.repeat(32), payload: {}, time:new Date(observed-2_500) }),
+    await admit({ ...base, packetHash: '85'.repeat(32), payload: {_summary:42}, time:new Date(observed-2_600) }),
+    await admit({ ...base, packetHash: '86'.repeat(32), payload: {_summary:{z:false,a:'text'}}, time:new Date(observed-2_700) }),
   ];
+  await pool.query('INSERT INTO packet_decryptions(packet_hash,decrypted,summary) VALUES ($1,$2,$3)',
+    ['84'.repeat(32),{},'decrypted fallback summary']);
   const merged = new Map<string, unknown>();
   for (const scope of [undefined, 'ukmesh', 'northeast', 'teesside', 'othernet']) {
     for (const observer of [undefined, alias, canonical, other]) {
       for (const fields of ['full', 'slim'] as const) {
         for (const limit of [1, 5]) {
-          const opts = { limit, network: scope, observer, fields, resolveAliases: aliases, nowMs: observed };
+          const opts = { limit, network: scope, observer, fields, resolveAliases: aliases, resolveSummaries:summaries, nowMs: observed };
           merged.set(JSON.stringify(opts), json(await readRecentWithPending(
             (hashes) => getRecentPackets(limit, scope, observer, fields, undefined, query, hashes), opts)));
         }
@@ -105,7 +111,7 @@ test('F01/F05/F12/F13 real SQL and RAM contracts agree across scoped paging, sta
     }
   }
   const messages = json(await readRecentWithPending((hashes) => getRecentMessages(5, 'ukmesh', undefined, undefined, query, hashes),
-    { limit: 5, network: 'ukmesh', rowKind: 'messages', packetTypes: [5], resolveAliases: aliases, nowMs: observed }));
+    { limit: 5, network: 'ukmesh', rowKind: 'messages', packetTypes: [5], resolveAliases: aliases, resolveSummaries:summaries, nowMs: observed }));
   await persistEntriesCore(pending, query, true, transaction);
   await redis.del(key); // compare against the complete SQL projection, without overlap
   for (const [serialized, expected] of merged) {
@@ -122,7 +128,7 @@ test('F01/F05/F12/F13 real SQL and RAM contracts agree across scoped paging, sta
     await snapshot.query('BEGIN ISOLATION LEVEL REPEATABLE READ');
     const before = await getRecentPackets(5, 'ukmesh', undefined, 'full', undefined,
       (sql, params) => snapshot.query(sql, params));
-    assert.equal(before[0]?.rx_count, 3);
+    assert.equal(before.find(row=>row.packet_hash==='80'.repeat(32))?.rx_count, 3);
     await pool.query('UPDATE public_visibility_state SET generation = generation + 1 WHERE singleton');
     await pool.query(`UPDATE packet_visibility_materialization_state SET visibility_generation =
       (SELECT generation FROM public_visibility_state WHERE singleton) WHERE singleton`);

@@ -21,6 +21,7 @@ import {
 } from './protocol.js';
 import { createRamWriter, type RamWriterRedis } from './writer.js';
 import { joinAndDrainRamWriter } from './drainLifecycle.js';
+import { validateRamRedisHeadroom } from './memory.js';
 
 let singleton: ReturnType<typeof createRamWriter> | null = null;
 let writerLoop: Promise<void> | null = null;
@@ -47,6 +48,8 @@ export async function startRamWriter(): Promise<void> {
   if (singleton) return;
   await reconcileRamQueueBytes();
   const redis = productionRedis();
+  try { validateRamRedisHeadroom(await redis.info('memory')); }
+  catch (error) { redis.disconnect(); throw error; }
   const writer = createRamWriter({
     redis: redis as unknown as RamWriterRedis,
     persist: async (entries, idempotent) => {

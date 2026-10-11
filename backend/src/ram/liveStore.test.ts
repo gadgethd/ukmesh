@@ -25,6 +25,9 @@ const mergePendingPacketsIntoRecentRows = <T>(rows: T[], opts: MergeOptions): Pr
   mergeRecentRows(rows, {
     windowMs: Number.MAX_SAFE_INTEGER,
     resolveAliases: async () => new Map(),
+    resolveSummaries: async entries => new Map(entries.map(entry => [entry.packet_hash,
+      entry.payload._summary === null ? null : typeof entry.payload._summary === 'string'
+        ? entry.payload._summary : JSON.stringify(entry.payload._summary)])),
     ...opts,
   });
 
@@ -571,4 +574,14 @@ test('F13 representative ties use stable identity and paging preserves milliseco
     resolveAliases:async()=>new Map()});
   assert.equal(merged[0]?.rssi,-25,'equal-rank, equal-time representative chooses greatest stable ID');
   assert.equal('_representative_id' in merged[0]!,false);
+});
+
+test('F01 alias lookup cannot deliver a captured generation after authority changes', async () => {
+  let generation=7;
+  configurePacketBatch(async()=>({rows:[{generation,materialized_generation:generation,remat_active:false,prefixes:[]}]}));
+  configureRamStore(new FakeStore());
+  const entry=entryFor('86'.repeat(32));
+  const rows=await mergePendingPacketsIntoRecentRows([], {limit:1,pendingSnapshot:[{id:'401-0',entry}],
+    resolveAliases:async()=>{generation=8;return new Map();}});
+  assert.deepEqual(rows,[],'the final delivery fence must follow all asynchronous enrichment');
 });

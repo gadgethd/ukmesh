@@ -43,6 +43,12 @@ export function getRamConsumerGroup(): string {
  */
 export const RAM_ENTRY_OVERHEAD_BYTES = 512;
 
+// Separate working space for bounded quarantine, PEL/markers and allocator
+// slack. The queue reservation is an application budget, not a RAM measure.
+export const RAM_REDIS_HEADROOM_BYTES = 32 * 1_048_576;
+export const RAM_QUARANTINE_MAX_ENTRIES = 500;
+export const RAM_QUARANTINE_ENTRY_MAX_BYTES = 16_384;
+
 /** Reserve space for both stream payload and ambiguous-reply delivery record. */
 export function accountedRamEntryBytes(value: string): number {
   return Buffer.byteLength(value) * 2 + RAM_ENTRY_OVERHEAD_BYTES;

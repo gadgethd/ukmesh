@@ -61,8 +61,13 @@ jobs:
       - run: npm run contract:check
       - run: npm test
       - run: npm run test:analysis-integration
+      - name: Configure bounded RAM Redis fixture
+        run: |
+          docker exec '${{ job.services.redis.id }}' redis-cli CONFIG SET maxmemory 96mb
+          docker exec '${{ job.services.redis.id }}' redis-cli CONFIG SET maxmemory-policy noeviction
       - run: npm run test:ingest-integration
       - run: npm run build
+      - run: npm run test:ram-operational
 
   frontend:
     if: github.event_name != 'schedule'

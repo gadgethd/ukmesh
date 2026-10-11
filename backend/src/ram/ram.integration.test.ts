@@ -1,18 +1,22 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { once } from 'node:events';
 import { Redis } from 'ioredis';
 import {
   admitPacketToRam,
   configureRamStore,
   reconcileRamQueueBytes,
+  refreshPendingStats,
 } from './liveStore.js';
 import {
   accountedRamEntryBytes,
   getRamQueueBytesKey,
   getRamQuarantineKey,
   getRamStreamKey,
+  getRamConsumerGroup,
 } from './protocol.js';
 import { createRamWriter } from './writer.js';
+import { startMetricsServer, closeMetricsServer } from '../metricsServer.js';
 
 const redisUrl = process.env['TEST_REDIS_URL'];
 const localRedis = redisUrl && ['127.0.0.1', 'localhost'].includes(new URL(redisUrl).hostname);
@@ -48,6 +52,43 @@ const packet = () => ({
   topic: `meshcore/ZZZ/${'CD'.repeat(32)}/packets`,
   rawHex: 'DEADBEEF', packetType: 4, routeType: 1, hopCount: 2,
   pathHashes: ['ABCD'], pathHashSizeBytes: 2, network: 'ukmesh',
+});
+
+test('F14 real loaded and empty queue gauges match pending, retained, PEL and bytes', {
+  skip: localRedis ? false : 'TEST_REDIS_URL must point to a loopback fixture',
+}, async (t) => {
+  const client = await fixture(t);
+  const key = getRamStreamKey(), group = getRamConsumerGroup();
+  await client.xgroup('CREATE', key, group, '0', 'MKSTREAM');
+  const metrics=startMetricsServer(0);await once(metrics,'listening');
+  t.after(closeMetricsServer);
+  const address=metrics.address();assert.ok(address&&typeof address!=='string');
+  const gauge = async (suffix: string) => {
+    const response=await fetch(`http://127.0.0.1:${address.port}/metrics`);
+    assert.equal(response.status,200);
+    const metric=(await response.text()).match(new RegExp(`^meshcore_ram_ingest_${suffix} ([0-9.e+-]+)$`,'m'));
+    assert.ok(metric,`${suffix} must be exposed by the actual HTTP metrics server`);
+    return Number(metric[1]);
+  };
+  await Promise.all(Array.from({length:6},(_,i)=>admitPacketToRam({...packet(),packetHash:i.toString(16).padStart(64,'0')})));
+  const rows = await client.xrange(key,'-','+');
+  await client.xreadgroup('GROUP',group,'loaded-metrics','COUNT',2,'STREAMS',key,'>');
+  await client.hset(`${key}:committed`,rows[2]![0],String(Date.now()),rows[3]![0],String(Date.now()));
+  await refreshPendingStats();
+  assert.equal(await gauge('queue_depth'),6);
+  assert.equal(await gauge('pending_depth'),4);
+  assert.equal(await gauge('retained_depth'),2);
+  assert.equal(await gauge('pel_depth'),2);
+  assert.ok(Number(await gauge('queue_bytes'))>0);
+  assert.equal(await gauge('queue_reserved_bytes'),rows.reduce((n,row)=>n+accountedRamEntryBytes(row[1][1]!),0));
+  await client.xack(key,group,...rows.map(([id])=>id));
+  await client.xdel(key,...rows.map(([id])=>id));
+  await client.del(key,`${key}:committed`);
+  await reconcileRamQueueBytes();
+  await refreshPendingStats();
+  for(const suffix of ['queue_depth','pending_depth','retained_depth','pel_depth','queue_bytes','queue_reserved_bytes','oldest_pending_age_seconds','oldest_pel_age_seconds']) {
+    assert.equal(await gauge(suffix),0,`empty ${suffix} must not retain its loaded value`);
+  }
 });
 
 test('real Redis F05/F09 admission replay and atomic byte reconciliation', {

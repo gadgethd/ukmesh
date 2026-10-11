@@ -4,8 +4,8 @@ RAM mode is opt-in. Durable mode remains the default and acknowledges QoS 1
 deliveries after PostgreSQL persistence. RAM mode acknowledges after a bounded
 Redis Stream admission; the writer commits each observation later. A Redis loss
 before PostgreSQL commit can therefore lose already acknowledged telemetry.
-Keep the Redis instance dedicated to this queue, persistent (AOF), and on a
-`noeviction` policy. Do not expose the raw stream to public API credentials;
+Keep the Redis queue private, persistent (AOF), and on a bounded
+`noeviction` instance. Do not expose the raw stream to public API credentials;
 only the backend and a separate quarantine operator should have raw stream
 access. Public companions use the credentialed filtered HTTP source below.
 
@@ -60,8 +60,15 @@ Set `MQTT_INGEST_MODE=ram` in the Compose `.env`. The standard
 configuration before a maintenance change:
 
 ```sh
-docker compose config --format json | jq '.services.backend.environment | with_entries(select(.key | startswith("MQTT_RAM_") or . == "MQTT_INGEST_MODE"))'
+export COMPOSE_FILE=docker-compose.yml:docker-compose.live.yml
+docker compose config --format json | jq '.services.backend.environment | with_entries(select(.key | (startswith("MQTT_RAM_") and . != "MQTT_RAM_PUBLIC_READ_TOKEN") or . == "MQTT_INGEST_MODE"))'
 ```
+
+Keep the deployment's established Compose file selection. The example uses
+the split-host live overlay; the base file alone does not define its external
+data-plane services. CI renders the base plus `docker-compose.ci.yml` as its
+self-contained test stack. The drain commands below use the same selected
+deployment files. Neither render command changes a running service.
 
 Use a canary or isolated fixture first. Monitor `/readyz`,
 `ram_pending_depth`, `ram_retained_depth`, `ram_pel_depth`, the oldest pending
@@ -72,9 +79,32 @@ when current privacy authority cannot be established. Queue age is a healthy
 writer flush trigger, not a completion guarantee during an outage.
 
 The queue has a hard count bound and conservative byte reservation, including
-retained entries and ambiguous admission delivery records. Size Redis
-`maxmemory` above the queue budget plus AOF, PEL, quarantine and other key
-headroom. Do not use Redis eviction to make room for acknowledged packets.
+retained entries and ambiguous admission delivery records. RAM startup and
+each new admission require a finite Redis `maxmemory`, `noeviction`, and at
+least **32 MiB** beyond the configured queue budget. Admission also checks
+current `used_memory` atomically with reservation, leaving that 32 MiB free.
+Unsafe startup is retried before MQTT admission starts; unsafe new admission
+reports `redis_headroom` and receives no PUBACK. A replay returns its original
+stored identity even if capacity is now unavailable. Quarantine is exactly
+capped at 500 records and 16 KiB per encoded record, including JSON escaping;
+oversized raw values retain their byte length and SHA-256 instead of content.
+The separate headroom covers quarantine, PEL, commit metadata and allocator
+slack. Application reservations are not a measurement of process RSS, AOF
+buffers, other keys or the container's physical memory. Size the container and
+storage above those additional costs and measure them in the completed window.
+Do not use Redis eviction to make room for acknowledged packets.
+
+For a dedicated stream principal, the required Redis permissions are
+`+@connection +@stream +@string +@hash +del +eval +evalsha +info +memory`,
+restricted to the configured stream and its `:*` bookkeeping keys. Add only
+the normal backend's separately required queue/cache permissions if sharing
+its existing Redis instance. The quarantine operator needs `XRANGE`, `XLEN`,
+`DEL` and `MEMORY` on `<stream>:quarantine`, without access to the raw stream
+or delivery ledger. Disable the default user or remove its unauthenticated
+access; keep credentials in private ACL files. The public CoreScope companion
+uses only the filtered HTTP token and its restricted PostgreSQL reader, with
+no raw Redis credential. These principals are exercised against real Redis
+by `npm run test:ram-operational`; the test owns its container and credentials.
 
 ## Drain and return to durable mode
 
