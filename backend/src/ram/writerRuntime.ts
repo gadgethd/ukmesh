@@ -20,6 +20,7 @@ import {
   getRamStreamKey,
 } from './protocol.js';
 import { createRamWriter, type RamWriterRedis } from './writer.js';
+import { joinAndDrainRamWriter } from './drainLifecycle.js';
 
 let singleton: ReturnType<typeof createRamWriter> | null = null;
 let writerLoop: Promise<void> | null = null;
@@ -29,6 +30,7 @@ let writerRedis: Redis | null = null;
 const PRIVACY_REFRESH_INTERVAL_MS = 30_000;
 let lastPrivacyRefreshAt = 0;
 let lastBytesReconcileAt = 0;
+let pendingSince = 0;
 
 function productionRedis(): Redis {
   const client = new Redis(getRedisUrl(), {
@@ -48,7 +50,8 @@ export async function startRamWriter(): Promise<void> {
   const writer = createRamWriter({
     redis: redis as unknown as RamWriterRedis,
     persist: async (entries, idempotent) => {
-      await persistEntriesCore(entries, query, idempotent, withTransaction);
+      const rows = await persistEntriesCore(entries, query, idempotent, withTransaction);
+      return Number(rows[0]?.inserted_count ?? 0);
     },
     now: () => Date.now(),
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
@@ -58,8 +61,17 @@ export async function startRamWriter(): Promise<void> {
     group: getRamConsumerGroup,
     consumer: getRamConsumerName,
     statsTick: async () => {
-      await refreshPendingStats();
+      const depth = await refreshPendingStats();
       const now = Date.now();
+      const stalledAfter = Math.max(180_000, getRamMaxAgeMs() * 2);
+      if (depth && depth.pending > 0) {
+        if (pendingSince === 0) pendingSince = now;
+        if (now - pendingSince > stalledAfter || depth.oldestPelAgeSeconds * 1000 > stalledAfter) {
+          markMqttPersistenceFailed(new Error(`RAM_WRITER_STALLED:pending=${depth.pending} pel=${depth.pel}`));
+        }
+      } else {
+        pendingSince = 0;
+      }
       if (now - lastBytesReconcileAt >= 30_000) {
         await reconcileRamQueueBytes();
         lastBytesReconcileAt = now;
@@ -75,6 +87,7 @@ export async function startRamWriter(): Promise<void> {
       }
     },
     onCommitted: (entries) => {
+      pendingSince = 0;
       // Commit-dependent live-map work, mirroring the durable post-persist
       // path: the link queue and the live-map follow-ups both read packet
       // rows from PostgreSQL, so they run here — after the batch commit.
@@ -105,6 +118,7 @@ export async function startRamWriter(): Promise<void> {
       }
     },
     markHealthy: markMqttPersistenceHealthy,
+    markFailed: markMqttPersistenceFailed,
     log: (message, error) => {
       console.error(message, error instanceof Error ? error.message : (error ?? ''));
     },
@@ -135,27 +149,17 @@ export async function closeRamWriter(deadlineMs = 30_000): Promise<void> {
   if (!singleton) return;
   const writer = singleton;
   const deadline = Date.now() + deadlineMs;
-  const withinDeadline = async (work: Promise<void>, stage: string): Promise<void> => {
-    const remaining = deadline - Date.now();
-    if (remaining <= 0) throw new Error(`RAM_DRAIN_TIMEOUT:${stage}`);
-    let timer: NodeJS.Timeout | undefined;
-    try {
-      await Promise.race([
-        work,
-        new Promise<never>((_, reject) => {
-          timer = setTimeout(() => reject(new Error(`RAM_DRAIN_TIMEOUT:${stage}`)), remaining);
-        }),
-      ]);
-    } finally {
-      if (timer) clearTimeout(timer);
+  try {
+    await joinAndDrainRamWriter(writer, writerLoop ?? Promise.resolve(), deadline);
+  } finally {
+    singleton = null;
+    writerLoop = null;
+    const owned = writerRedis;
+    writerRedis = null;
+    if (owned) {
+      if (Date.now() >= deadline) owned.disconnect();
+      else await owned.quit().catch(() => owned.disconnect());
     }
-  };
-  writer.requestStop();
-  await withinDeadline(writerLoop ?? Promise.resolve(), 'writer-loop');
-  await withinDeadline(writer.drain(Math.max(0, deadline - Date.now())), 'pending-drain');
-  singleton = null;
-  writerLoop = null;
-  await writerRedis?.quit().catch(() => undefined);
-  writerRedis = null;
-  await closeRamStore();
+    await closeRamStore();
+  }
 }

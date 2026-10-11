@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { compareStreamIds, createRamWriter, flushDecision, type RamWriterRedis } from './writer.js';
 import { decodeRamStreamValue, encodeCommitMarker, encodePendingEntry, type RamPendingEntry } from './protocol.js';
-import type { PacketBatchInput } from '../db/packetBatch.js';
+import type { PacketBatchInput, PersistEntry } from '../db/packetBatch.js';
 
 const STREAM = 'meshcore:ingest:pending';
 
@@ -166,6 +166,13 @@ class FakeRedis {
   async eval(_script: string, numKeys: number, ...args: (string | number)[]): Promise<unknown> {
     assert.equal(numKeys, 4);
     if (this.cleanupFails) throw new Error('cleanup unavailable');
+    if (_script.includes("local acked = redis.call('XACK'")) {
+      const id = String(args[5]);
+      await this.xack(String(args[0]), String(args[4]), id);
+      const removed = await this.xdel(String(args[0]), id);
+      if (removed) this.bytesReleased += Number(args[6]);
+      return removed;
+    }
     const id = String(args[4]);
     const at = Number(this.commitTimes.get(id));
     if (!Number.isFinite(at) || at > Number(args[6])) return 0;
@@ -242,6 +249,27 @@ test('F11 malformed entries survive quarantine failure and clear from own PEL af
   assert.equal(fake.quarantined.length, 1);
   assert.equal(fake.pending.has(badId), false);
   assert.equal(fake.deleted.includes(badId), true);
+});
+
+test('F11 a permanent SQL poison row is quarantined while a valid neighbor commits', async () => {
+  const fake = new FakeRedis();
+  const bad = sampleEntry(1_700_000_000_000, 'aa'.repeat(32));
+  const good = sampleEntry(1_700_000_000_000, 'bb'.repeat(32));
+  const badId = fake.seedEntry(bad);
+  const goodId = fake.seedEntry(good);
+  const poison = Object.assign(new Error('invalid packet row'), { code: '23514' });
+  const { writer } = makeWriter(fake, () => 1_700_000_100_000, async (entries) => {
+    const rows = entries as PersistEntry[];
+    if (rows.length > 1 || rows[0]?.observationId === bad.observationId) throw poison;
+  }, { batchSize: 2 });
+  await writer.start();
+  await writer.tickOnce();
+  assert.equal(fake.quarantined.length, 1);
+  assert.equal(fake.acked.includes(badId), true);
+  assert.equal(fake.acked.includes(goodId), true);
+  assert.equal(fake.deleted.includes(badId), true);
+  assert.equal(fake.deleted.includes(goodId), false, 'committed overlap remains readable');
+  assert.equal(fake.pending.size, 0);
 });
 
 type PersistCall = { count: number; idempotent: boolean };

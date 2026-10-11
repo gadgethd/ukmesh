@@ -53,6 +53,12 @@ test('real Redis F05/F09 admission replay and atomic byte reconciliation', {
   await client.set(getRamQueueBytesKey(), '1');
   assert.equal(await reconcileRamQueueBytes(), accountedRamEntryBytes(encoded));
   assert.equal(Number(await client.get(getRamQueueBytesKey())), accountedRamEntryBytes(encoded));
+  await client.del(getRamQueueBytesKey());
+  await admitPacketToRam({ ...packet(), packetHash: 'EF'.repeat(32) }, { key: 'delivery-43', redelivered: false });
+  const afterRecovery = await client.xrange(getRamStreamKey(), '-', '+');
+  const expected = afterRecovery.reduce((sum, row) => sum + accountedRamEntryBytes(row[1][1]!), 0);
+  assert.equal(Number(await client.get(getRamQueueBytesKey())), expected,
+    'F09 admission reconciles a lost counter before reserving a second entry');
 });
 
 test('real ioredis F11 quarantine preserves malformed source until bounded XADD succeeds', {

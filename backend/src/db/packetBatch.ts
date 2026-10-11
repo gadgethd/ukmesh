@@ -94,11 +94,13 @@ export type PersistRow = {
   is_private: boolean;
   visibility_ok: boolean;
   prefix_cache_fresh: boolean;
+  inserted_count: string;
 };
 
 export type QueryFn = <T extends QueryResultRow = QueryResultRow>(
   text: string,
   params?: unknown[],
+  signal?: AbortSignal,
 ) => Promise<{ rows: T[] }>;
 export type TransactionRunner = <T>(work: (query: QueryFn) => Promise<T>) => Promise<T>;
 
@@ -171,7 +173,7 @@ export async function loadCurrentPublicPrivacyPolicy(): Promise<PrivatePrefixCac
       LEFT JOIN private_node_prefixes prefix ON TRUE
      WHERE visibility.singleton = TRUE
      GROUP BY visibility.generation, materialized.visibility_generation
-  `);
+  `, [], AbortSignal.timeout(30_000));
   const state = rows[0];
   const generation = Number(state?.generation);
   if (!state || !Number.isSafeInteger(generation) || generation < 1

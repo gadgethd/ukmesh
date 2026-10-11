@@ -47,6 +47,7 @@ import {
   ramPelDepth,
   ramOldestPelAge,
   ramQueueBytes,
+  ramQueueReservedBytes,
   ramQueueDepth,
 } from '../metrics.js';
 
@@ -67,6 +68,7 @@ export interface RamStoreRedis {
     ...args: (string | number)[]
   ): Promise<Array<[string, string[]]>>;
   memory(subcommand: string, key: string): Promise<number>;
+  get(key: string): Promise<string | null>;
   eval(script: string, numKeys: number, ...args: (string | number)[]): Promise<unknown>;
   hmget(key: string, ...fields: string[]): Promise<Array<string | null>>;
   xpending(key: string, group: string): Promise<unknown>;
@@ -84,7 +86,9 @@ if tonumber(ARGV[6]) == 1 then
 end
 local len = redis.call('XLEN', KEYS[1])
 if len >= tonumber(ARGV[1]) then return -1 end
-local used = tonumber(redis.call('GET', KEYS[2]) or '0')
+local recorded = redis.call('GET', KEYS[2])
+if (len > 0 and not recorded) or (recorded and (not tonumber(recorded) or tonumber(recorded) < 0)) then return -3 end
+local used = tonumber(recorded or '0')
 local add = tonumber(ARGV[3])
 if used + add > tonumber(ARGV[2]) then return -2 end
 local id = redis.call('XADD', KEYS[1], '*', ARGV[4], ARGV[5])
@@ -163,6 +167,7 @@ function getClient(): RamStoreRedis {
     ...getRedisConnectionOptions(),
     maxRetriesPerRequest: 2,
     enableOfflineQueue: false,
+    commandTimeout: 30_000,
   });
   owned.on('error', (error: Error) => {
     console.error('[ram] redis error', error.message);
@@ -206,22 +211,24 @@ export function oldestPendingAgeSeconds(
 }
 
 /** Refresh queue gauges (count, bytes, oldest pending age). Called by the writer tick. */
-export async function refreshPendingStats(): Promise<void> {
-  if (getRamIngestMode() !== 'ram') return;
+export async function refreshPendingStats(): Promise<{ pending: number; pel: number; oldestPelAgeSeconds: number } | null> {
+  if (getRamIngestMode() !== 'ram') return null;
   const client = getClient();
   const key = getRamStreamKey();
   // Oldest-first sample: XREVRANGE reported the NEWEST entry's age, which is
   // always ~0 in a busy queue and hid stuck deliveries. XRANGE returns the
   // oldest entries, where the genuinely oldest pending observation lives.
-  const [len, mem, oldestFirst, pel] = await Promise.all([
+  const [len, mem, reserved, oldestFirst, pel] = await Promise.all([
     client.xlen(key),
     client.memory('USAGE', key).catch(() => cachedBytes),
+    client.get(getRamQueueBytesKey()),
     client.xrange(key, '-', '+', 'COUNT', getRamQueueMaxPackets()),
     client.xpending(key, getRamConsumerGroup()),
   ]);
   cachedBytes = typeof mem === 'number' && Number.isFinite(mem) ? mem : cachedBytes;
   ramQueueDepth.set(len);
   ramQueueBytes.set(cachedBytes);
+  ramQueueReservedBytes.set(Math.max(0, Number(reserved ?? 0) || 0));
   const entryIds = oldestFirst
     .filter(([, fields]) => decodeRamStreamValue(fields[1])?.kind === 'entry')
     .map(([id]) => id);
@@ -229,16 +236,22 @@ export async function refreshPendingStats(): Promise<void> {
     ? await client.hmget(getRamCommittedKey(), ...entryIds)
     : [];
   const committedIds = new Set(entryIds.filter((_, index) => committedValues[index] !== null));
-  ramPendingDepth.set(entryIds.length - committedIds.size);
+  const pendingCount = entryIds.length - committedIds.size;
+  ramPendingDepth.set(pendingCount);
   ramRetainedDepth.set(committedIds.size);
   ramEarliestPendingAge.set(oldestPendingAgeSeconds(oldestFirst, Date.now(), committedIds) ?? 0);
+  let pelCount = 0;
+  let oldestPelAgeSeconds = 0;
   if (Array.isArray(pel)) {
     const count = Number(pel[0]);
-    ramPelDepth.set(Number.isFinite(count) ? count : 0);
+    pelCount = Number.isFinite(count) ? count : 0;
+    ramPelDepth.set(pelCount);
     const oldestId = typeof pel[1] === 'string' ? pel[1] : null;
     const oldestMs = oldestId ? Number(oldestId.split('-')[0]) : NaN;
-    ramOldestPelAge.set(Number.isFinite(oldestMs) ? Math.max(0, (Date.now() - oldestMs) / 1000) : 0);
+    oldestPelAgeSeconds = Number.isFinite(oldestMs) ? Math.max(0, (Date.now() - oldestMs) / 1000) : 0;
+    ramOldestPelAge.set(oldestPelAgeSeconds);
   }
+  return { pending: pendingCount, pel: pelCount, oldestPelAgeSeconds };
 }
 
 /**
@@ -287,19 +300,16 @@ export async function admitPacketToRam(
     // Count check, byte check, XADD and byte accounting in one atomic
     // server-side step: concurrent connections cannot both pass the same
     // capacity check.
-    const result = await client.eval(
-      ADMIT_SCRIPT,
-      3,
-      key,
-      getRamQueueBytesKey(),
-      getRamAdmissionKey(deliveryKey),
-      maxPackets,
-      maxBytes,
-      entryBytes,
-      entryFieldName(),
-      value,
+    const runAdmission = () => client.eval(
+      ADMIT_SCRIPT, 3, key, getRamQueueBytesKey(), getRamAdmissionKey(deliveryKey),
+      maxPackets, maxBytes, entryBytes, entryFieldName(), value,
       delivery?.redelivered ? 1 : 0,
     );
+    let result = await runAdmission();
+    if (result === -3) {
+      await reconcileRamQueueBytes();
+      result = await runAdmission();
+    }
     if (result === -1) {
       ramAdmissionsTotal.inc({ outcome: 'queue_full' });
       throw new RamAdmissionRefusedError('queue_full');

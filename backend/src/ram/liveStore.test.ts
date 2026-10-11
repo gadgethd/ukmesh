@@ -12,7 +12,7 @@ import {
   readPendingEntries,
   type RamStoreRedis,
 } from './liveStore.js';
-import { mergePendingPacketsIntoRecentRows } from './liveRead.js';
+import { mergePendingPacketsIntoRecentRows as mergeRecentRows, type MergeOptions } from './liveRead.js';
 import {
   encodeCommitMarker,
   encodePendingEntry,
@@ -20,6 +20,13 @@ import {
 } from './protocol.js';
 import type { InsertPacketInput } from '../db/packetInput.js';
 import { classifyForAdmission, configurePacketBatch } from '../db/packetBatch.js';
+
+const mergePendingPacketsIntoRecentRows = <T>(rows: T[], opts: MergeOptions): Promise<T[]> =>
+  mergeRecentRows(rows, {
+    windowMs: Number.MAX_SAFE_INTEGER,
+    resolveAliases: async () => new Map(),
+    ...opts,
+  });
 
 class FakeStore implements RamStoreRedis {
   len = 0;
@@ -76,6 +83,10 @@ class FakeStore implements RamStoreRedis {
 
   async memory(): Promise<number> {
     return this.bytes;
+  }
+
+  async get(): Promise<string> {
+    return String(this.bytes);
   }
 
   async hmget(_key: string, ...fields: string[]): Promise<Array<string | null>> {
@@ -449,4 +460,33 @@ test('F01 a privacy flip overrides the loaded public cache for RAM and PG rows',
     rx_node_id: entry.input.rxNodeId, src_node_id: null, network: 'ukmesh',
     path_hashes: null, path_hash_size_bytes: null }];
   assert.deepEqual(await mergePendingPacketsIntoRecentRows(oldPgRow, { limit: 10, network: 'ukmesh' }), []);
+});
+
+test('F13 RAM recent rows honor family scope, aliases, window, and slim DTO', async () => {
+  await loadPublicPrivacyCache();
+  const fake = new FakeStore();
+  const alias = 'aa'.repeat(32).toUpperCase();
+  const canonical = 'bb'.repeat(32).toUpperCase();
+  fake.rev = [
+    ['305-3', ['e', encodePendingEntry(entryFor('90'.repeat(32), {
+      network: 'northeast', rx: alias, time: '2026-10-11T17:00:00.000Z',
+    }))]],
+    ['305-2', ['e', encodePendingEntry(entryFor('91'.repeat(32), {
+      network: 'teesside', rx: alias, time: '2026-10-11T16:54:59.000Z',
+    }))]],
+    ['305-1', ['e', encodePendingEntry(entryFor('92'.repeat(32), {
+      network: 'othernet', rx: alias, time: '2026-10-11T17:00:00.000Z',
+    }))]],
+  ];
+  configureRamStore(fake);
+  const rows = await mergeRecentRows([], {
+    limit: 1, network: 'ukmesh', observer: canonical, fields: 'slim',
+    nowMs: Date.parse('2026-10-11T17:00:00.000Z'),
+    resolveAliases: async () => new Map([[alias, canonical]]),
+  });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]?.['packet_hash'], '90'.repeat(32));
+  assert.equal(rows[0]?.['rx_node_id'], canonical);
+  assert.equal('topic' in rows[0]!, false);
+  assert.equal('network' in rows[0]!, false);
 });

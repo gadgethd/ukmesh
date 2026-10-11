@@ -549,6 +549,12 @@ export const ramQueueBytes = new Gauge({
   registers: [metricsRegistry],
 });
 
+export const ramQueueReservedBytes = new Gauge({
+  name: 'meshcore_ram_ingest_queue_reserved_bytes',
+  help: 'Conservative admission byte budget reserved by pending and retained RAM entries.',
+  registers: [metricsRegistry],
+});
+
 export const ramEarliestPendingAge = new Gauge({
   name: 'meshcore_ram_ingest_oldest_pending_age_seconds',
   help: 'Age of the oldest packet still pending in the RAM ingest stream.',
@@ -586,7 +592,7 @@ export const ramCommitDuration = new Histogram({
 
 export const ramCommitBatchSize = new Histogram({
   name: 'meshcore_ram_ingest_commit_batch_size',
-  help: 'Packets committed per RAM ingest batch.',
+  help: 'New packet rows inserted by each successful RAM ingest batch (replays count zero).',
   buckets: [1, 2, 5, 10, 20, 35, 50, 100, 250, 500],
   registers: [metricsRegistry],
 });

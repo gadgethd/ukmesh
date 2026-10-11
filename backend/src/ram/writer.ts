@@ -46,7 +46,7 @@ import {
   ramVisibilityLatency,
 } from '../metrics.js';
 
-type StreamEntry = { id: string; entry: RamPendingEntry; bytes: number };
+type StreamEntry = { id: string; entry: RamPendingEntry; bytes: number; raw: string };
 
 export interface RamWriterRedis {
   xgroup(
@@ -97,7 +97,7 @@ export interface RamWriterRedis {
 
 export type RamWriterDeps = {
   redis: RamWriterRedis;
-  persist: (entries: PersistEntry[], idempotent: boolean) => Promise<void>;
+  persist: (entries: PersistEntry[], idempotent: boolean) => Promise<number | void>;
   now: () => number;
   sleep: (ms: number) => Promise<void>;
   batchSize: () => number;
@@ -107,6 +107,7 @@ export type RamWriterDeps = {
   consumer: () => string;
   statsTick: (() => Promise<void>) | null;
   markHealthy: () => void;
+  markFailed?: (error: unknown) => void;
   /** Runs after a batch commits (bookkeeping included); receives the persisted batch. */
   onCommitted: ((entries: StreamEntry[]) => void) | null;
   log: (message: string, error?: unknown) => void;
@@ -137,6 +138,11 @@ const RECLAIM_INTERVAL_MS = 5_000;
 const RECLAIM_PAGE_SIZE = 500;
 const RECLAIM_PAGES_PER_PASS = 4;
 
+function isPermanentPacketError(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === 'string' && new Set(['22001', '22003', '22P02', '23502', '23514']).has(code);
+}
+
 // Deletion and accounting form one Redis command. A retry cannot release the
 // same bytes twice: only a successful XDEL decrements the budget. The commit
 // timestamp is checked again in Lua because a sweep may race a replay.
@@ -149,6 +155,20 @@ if removed == 1 then
   if tonumber(ARGV[4]) == 1 then redis.call('DEL', KEYS[4]) end
 end
 redis.call('HDEL', KEYS[3], ARGV[1])
+return removed
+`;
+
+// A quarantined value is retained in the bounded evidence stream before this
+// script runs. Source deletion, PEL release and byte accounting then happen
+// together, including delivery-ledger cleanup for valid SQL poison rows.
+const QUARANTINE_CLEANUP_SCRIPT = `
+local acked = redis.call('XACK', KEYS[1], ARGV[1], ARGV[2])
+local removed = redis.call('XDEL', KEYS[1], ARGV[2])
+if removed == 1 then
+  redis.call('DECRBY', KEYS[2], tonumber(ARGV[3]))
+  redis.call('HDEL', KEYS[3], ARGV[2])
+  if tonumber(ARGV[4]) == 1 then redis.call('DEL', KEYS[4]) end
+end
 return removed
 `;
 
@@ -224,7 +244,7 @@ export function createRamWriter(deps: RamWriterDeps): RamWriter {
    * value (size-capped) plus its digest for recovery, while the structured
    * log line carries only the id, byte length and digest — never content.
    */
-  async function quarantineMalformed(id: string, value: string): Promise<boolean> {
+  async function quarantineMalformed(id: string, value: string, reason = 'undecodable', deliveryKey?: string): Promise<boolean> {
     const bytes = Buffer.byteLength(value);
     const digest = createHash('sha256').update(value).digest('hex');
     try {
@@ -237,6 +257,7 @@ export function createRamWriter(deps: RamWriterDeps): RamWriter {
         'q',
         JSON.stringify({
           src: id,
+          reason,
           at: deps.now(),
           sha256: digest,
           bytes,
@@ -244,14 +265,23 @@ export function createRamWriter(deps: RamWriterDeps): RamWriter {
         }),
       );
       ramQuarantinedTotal.inc();
-      deps.log(`[ram] quarantined undecodable stream entry id=${id} bytes=${bytes} sha256=${digest}`);
+      deps.log(`[ram] quarantined ${reason} stream entry id=${id} bytes=${bytes} sha256=${digest}`);
     } catch (error) {
       deps.log('[ram] quarantine write failed', error);
       return false;
     }
-    await deps.redis.xack(deps.streamKey(), deps.group(), id);
-    await deps.redis.xdel(deps.streamKey(), id);
-    return true;
+    try {
+      return await deps.redis.eval(
+        QUARANTINE_CLEANUP_SCRIPT,
+        4,
+        deps.streamKey(), getRamQueueBytesKey(), getRamCommittedKey(),
+        deliveryKey ? getRamAdmissionKey(deliveryKey) : `${deps.streamKey()}:unused`,
+        deps.group(), id, entryBytes(value), deliveryKey ? 1 : 0,
+      ) === 1;
+    } catch (error) {
+      deps.log('[ram] quarantine cleanup failed; source retained', error);
+      return false;
+    }
   }
 
   function appendEntries(entries: StreamEntry[]): number {
@@ -294,7 +324,7 @@ export function createRamWriter(deps: RamWriterDeps): RamWriter {
           continue;
         }
         appendEntries([
-          { id, entry: decoded.entry, bytes: entryBytes(fields[1]) },
+          { id, entry: decoded.entry, bytes: entryBytes(fields[1]), raw: fields[1] },
         ]);
       }
     }
@@ -317,7 +347,7 @@ export function createRamWriter(deps: RamWriterDeps): RamWriter {
       for (const [id, fields] of items) {
         const decoded = decodeRamStreamValue(fields[1]);
         if (decoded && decoded.kind === 'entry') {
-          appendEntries([{ id, entry: decoded.entry, bytes: entryBytes(fields[1]) }]);
+          appendEntries([{ id, entry: decoded.entry, bytes: entryBytes(fields[1]), raw: fields[1] }]);
         } else if (!decoded) {
           await quarantineMalformed(id, fields[1] ?? '').catch((error: unknown) => {
             deps.log('[ram] malformed own-PEL cleanup failed', error);
@@ -349,7 +379,7 @@ export function createRamWriter(deps: RamWriterDeps): RamWriter {
         for (const [id, fields] of claimed) {
           const decoded = decodeRamStreamValue(fields[1]);
           if (decoded && decoded.kind === 'entry') {
-            appendEntries([{ id, entry: decoded.entry, bytes: entryBytes(fields[1] ?? '') }]);
+            appendEntries([{ id, entry: decoded.entry, bytes: entryBytes(fields[1] ?? ''), raw: fields[1] ?? '' }]);
           } else if (!decoded) {
             await quarantineMalformed(id, fields[1] ?? '').catch((error: unknown) => {
               deps.log('[ram] malformed reclaimed cleanup failed', error);
@@ -365,7 +395,7 @@ export function createRamWriter(deps: RamWriterDeps): RamWriter {
     }
   }
 
-  async function persistWithRetry(batch: StreamEntry[]): Promise<void> {
+  async function persistWithRetry(batch: StreamEntry[]): Promise<number | void> {
     let attempt = 0;
     for (;;) {
       try {
@@ -376,8 +406,7 @@ export function createRamWriter(deps: RamWriterDeps): RamWriter {
         // Always idempotent: a replay after a crash (or an ambiguous commit)
         // re-delivers the SAME frozen entries, and the existence check keyed
         // on their identity must apply from the first attempt.
-        await deps.persist(entries, true);
-        return;
+        return await deps.persist(entries, true);
       } catch (error) {
         attempt += 1;
         if (attempt >= MAX_PERSIST_ATTEMPTS || !isRetryableDatabaseError(error)) throw error;
@@ -394,9 +423,49 @@ export function createRamWriter(deps: RamWriterDeps): RamWriter {
     const startedNs = process.hrtime.bigint();
     const nowMs = deps.now();
     const persistBatch = collapseBatchEntries(batch);
+    let insertedCount: number | void;
     try {
-      await persistWithRetry(persistBatch);
+      insertedCount = await persistWithRetry(persistBatch);
     } catch (error) {
+      if (isPermanentPacketError(error)) {
+        // A batch-level constraint error may identify one poison row. Retry
+        // each distinct observation independently so valid work behind it
+        // can commit. Quarantine is durable before any poison row is acked.
+        let unresolved = false;
+        let accepted = 0;
+        for (const item of persistBatch) {
+          const copies = batch.filter((candidate) => candidate.entry.observationId === item.entry.observationId);
+          try {
+            const count = await persistWithRetry([item]);
+            accepted += typeof count === 'number' ? count : 1;
+            const committedAt = String(deps.now());
+            for (const copy of copies) await deps.redis.hset(getRamCommittedKey(), copy.id, committedAt);
+            await deps.redis.xack(deps.streamKey(), deps.group(), ...copies.map((copy) => copy.id));
+            try {
+              deps.onCommitted?.([item]);
+            } catch (hookError) {
+              deps.log('[ram] post-commit hook failed', hookError);
+            }
+          } catch (rowError) {
+            if (!isPermanentPacketError(rowError)) {
+              unresolved = true;
+              deps.log('[ram] isolated row failed transiently; left in PEL', rowError);
+              continue;
+            }
+            for (const copy of copies) {
+              if (!await quarantineMalformed(copy.id, copy.raw, 'sql-poison', copy.entry.deliveryKey)) {
+                unresolved = true;
+              }
+            }
+          }
+        }
+        for (const id of ids) accIds.delete(id);
+        ramCommitBatchSize.observe(accepted);
+        ramCommitTotal.inc({ outcome: unresolved ? 'failure' : 'success' });
+        if (unresolved) deps.markFailed?.(error);
+        else deps.markHealthy();
+        return;
+      }
       // Leave the entries un-acked so they stay recoverable in the PEL; drop
       // them from memory and back off so a database outage cannot spin.
       for (const id of ids) accIds.delete(id);
@@ -406,6 +475,7 @@ export function createRamWriter(deps: RamWriterDeps): RamWriter {
         FAILURE_BACKOFF_START_MS * consecutiveFlushFailures,
       );
       ramCommitTotal.inc({ outcome: 'failure' });
+      deps.markFailed?.(error);
       ramCommitDuration.observe(
         { outcome: 'failure' },
         Number(process.hrtime.bigint() - startedNs) / 1e9,
@@ -422,6 +492,7 @@ export function createRamWriter(deps: RamWriterDeps): RamWriter {
     for (const id of ids) accIds.delete(id);
     const streamKey = deps.streamKey();
     const group = deps.group();
+    let bookkeepingFailed = false;
     try {
       const committedAt = String(deps.now());
       for (const id of ids) {
@@ -429,6 +500,8 @@ export function createRamWriter(deps: RamWriterDeps): RamWriter {
       }
       await deps.redis.xack(streamKey, group, ...ids);
     } catch (error) {
+      bookkeepingFailed = true;
+      deps.markFailed?.(error);
       // Commit succeeded; bookkeeping failed. Entries are retained and the
       // retention sweep re-deletes idempotently, so do not fail the flush —
       // surface and continue.
@@ -436,7 +509,7 @@ export function createRamWriter(deps: RamWriterDeps): RamWriter {
     }
     const finishedMs = deps.now();
     ramCommitTotal.inc({ outcome: 'success' });
-    ramCommitBatchSize.observe(batch.length);
+    ramCommitBatchSize.observe(typeof insertedCount === 'number' ? insertedCount : persistBatch.length);
     ramCommitDuration.observe(
       { outcome: 'success' },
       Number(process.hrtime.bigint() - startedNs) / 1e9,
@@ -444,7 +517,7 @@ export function createRamWriter(deps: RamWriterDeps): RamWriter {
     for (const item of batch) {
       ramVisibilityLatency.observe(Math.max(0, (finishedMs - item.entry.admittedAtMs) / 1000));
     }
-    deps.markHealthy();
+    if (!bookkeepingFailed) deps.markHealthy();
     if (deps.onCommitted) {
       try {
         deps.onCommitted(persistBatch);

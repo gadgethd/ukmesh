@@ -82,6 +82,10 @@ const packetShareForwarder = createPacketShareForwarder({
   repository: createPacketShareRepository(query),
 });
 let shutdownExitCode = 0;
+let shutdownDeadlineAt = 0;
+function shutdownTimeLeft(): number {
+  return Math.max(1, (shutdownDeadlineAt || Date.now() + SHUTDOWN_DEADLINE_MS) - Date.now());
+}
 let forceCloseHttpConnections = () => {};
 let nodeIdentityRefreshTimer: NodeJS.Timeout | null = null;
 
@@ -113,12 +117,12 @@ lifecycle.register({
 lifecycle.register({
   name: 'mqtt-ingest',
   stage: 10,
-  close: () => stopMqttClient(Math.max(1_000, SHUTDOWN_DEADLINE_MS - 5_000)),
+  close: () => stopMqttClient(shutdownTimeLeft()),
 });
 lifecycle.register({
   name: 'ram-ingest-writer',
   stage: 30,
-  close: () => closeRamWriter(Math.max(1_000, SHUTDOWN_DEADLINE_MS - 10_000)),
+  close: () => closeRamWriter(shutdownTimeLeft()),
 });
 lifecycle.register({
   name: 'path-resolve-workers',
@@ -166,6 +170,7 @@ lifecycle.register({
 
 async function shutdown(reason: string, exitCode: number): Promise<void> {
   shutdownExitCode = Math.max(shutdownExitCode, exitCode);
+  if (shutdownDeadlineAt === 0) shutdownDeadlineAt = Date.now() + SHUTDOWN_DEADLINE_MS;
   if (!lifecycle.isDraining) console.log(`[app] draining after ${reason}`);
   try {
     await lifecycle.drain(reason);

@@ -347,6 +347,25 @@ test('F02 contended lock and replay never change historical tables', {
     observationId: entry[0]!.observationId,
   }], query, true, transaction);
   assert.deepEqual(await counts(), once, 'observation ID survives a changed retry timestamp');
+
+  const later = '22222222-2222-4222-8222-222222222222';
+  const lateCommit = '33333333-3333-4333-8333-333333333333';
+  await persistEntriesCore([{ input: { ...input, packetHash: `f07-later-${process.pid}`,
+    time: new Date(input.time.getTime() + 60_000) }, observationId: later }], query, true, transaction);
+  await persistEntriesCore([{ input: { ...input, packetHash: `f07-late-${process.pid}`,
+    time: new Date(input.time.getTime() - 60_000) }, observationId: lateCommit }], query, true, transaction);
+  const order = await pool.query<{ seq: string; observation_id: string; observed_at: Date }>(`
+    SELECT seq::text, observation_id::text, observed_at
+    FROM ingest_observation_ledger WHERE observation_id = ANY($1::uuid[]) ORDER BY seq
+  `, [[later, lateCommit]]);
+  assert.deepEqual(order.rows.map((row) => row.observation_id), [later, lateCommit],
+    'F07 ledger cursor follows completed writes even when the second observation is older');
+  assert.ok(order.rows[1]!.observed_at < order.rows[0]!.observed_at);
+  const afterCursor = await pool.query<{ observation_id: string }>(`
+    SELECT observation_id::text FROM ingest_observation_ledger
+    WHERE seq > $1 ORDER BY seq
+  `, [order.rows[0]!.seq]);
+  assert.equal(afterCursor.rows.some((row) => row.observation_id === lateCommit), true);
 });
 
 test('privacy rename commits and rematerializes a compressed chunk above the old DML budget', {
