@@ -7,6 +7,7 @@ import test from 'node:test';
 import {
   admitPacketToRam,
   configureRamStore,
+  oldestPendingAgeSeconds,
   RamAdmissionRefusedError,
   readPendingEntries,
   type RamStoreRedis,
@@ -25,20 +26,39 @@ class FakeStore implements RamStoreRedis {
   bytes = 0;
   added: string[] = [];
   rev: Array<[string, string[]]> = [];
+  rangeOldestFirst: Array<[string, string[]]> = [];
   xlenError: Error | null = null;
+  maxPacketsSeen: unknown = null;
+  maxBytesSeen: unknown = null;
 
   async xlen(): Promise<number> {
     if (this.xlenError) throw this.xlenError;
     return this.len;
   }
 
-  async xadd(_key: string, _id: string, _field: string, value: string): Promise<string> {
+  /** Mirrors ADMIT_SCRIPT semantics against the fake's state. */
+  async eval(_script: string, _numKeys: number, ...args: (string | number)[]): Promise<unknown> {
+    if (this.xlenError) throw this.xlenError;
+    const maxPackets = Number(args[2]);
+    const maxBytes = Number(args[3]);
+    const add = Number(args[4]);
+    const value = String(args[6]);
+    this.maxPacketsSeen = maxPackets;
+    this.maxBytesSeen = maxBytes;
+    if (this.len >= maxPackets) return -1;
+    if (this.bytes + add > maxBytes) return -2;
+    this.len += 1;
+    this.bytes += add;
     this.added.push(value);
     return `${1_700_000_000_000 + this.added.length}-0`;
   }
 
   async xrevrange(): Promise<Array<[string, string[]]>> {
     return this.rev;
+  }
+
+  async xrange(): Promise<Array<[string, string[]]>> {
+    return this.rangeOldestFirst;
   }
 
   async memory(): Promise<number> {
@@ -128,7 +148,7 @@ test('admission refuses when the packet-count bound is reached', async () => {
 
 test('admission refuses when the byte bound is reached', async () => {
   const fake = new FakeStore();
-  fake.len = 3_000; // ≥ half the packet bound → forces a stats refresh
+  fake.len = 3_000;
   fake.bytes = 33_554_432; // default MQTT_RAM_QUEUE_MAX_BYTES
   configureRamStore(fake);
   await assert.rejects(
@@ -136,6 +156,17 @@ test('admission refuses when the byte bound is reached', async () => {
     (error: unknown) => error instanceof RamAdmissionRefusedError && error.reason === 'queue_bytes',
   );
   assert.equal(fake.added.length, 0);
+});
+
+test('admission enforces both bounds atomically and accounts conservative entry bytes', async () => {
+  const fake = new FakeStore();
+  configureRamStore(fake);
+  await admitPacketToRam(sampleInput());
+  assert.equal(fake.maxPacketsSeen, 5_000);
+  assert.equal(fake.maxBytesSeen, 33_554_432);
+  const raw = fake.added[0] ?? '';
+  assert.equal(fake.bytes, Buffer.byteLength(raw) + 256, 'byte counter = value + entry overhead');
+  assert.equal(fake.len, 1, 'count increments inside the atomic step');
 });
 
 test('admission reports redis unavailability distinctly', async () => {
@@ -148,18 +179,35 @@ test('admission reports redis unavailability distinctly', async () => {
   );
 });
 
-test('readPendingEntries skips markers and returns oldest-last', async () => {
+test('readPendingEntries stops at the latest commit marker (retained committed entries excluded)', async () => {
   const fake = new FakeStore();
+  // Newest first: one pending entry above the newest marker; everything at or
+  // below the marker is committed (retained for the overlap window).
   fake.rev = [
-    ['100-0', ['e', encodeCommitMarker({ kind: 'commit', through: '99-0', atMs: 1, packets: 1 })]],
-    ['99-0', ['e', encodePendingEntry(entryFor('99'.repeat(32)))]],
-    ['98-0', ['e', encodePendingEntry(entryFor('98'.repeat(32)))]],
+    ['103-0', ['e', encodePendingEntry(entryFor('03'.repeat(32)))]],
+    ['102-0', ['e', encodeCommitMarker({ kind: 'commit', through: '101-0', atMs: 2, packets: 2 })]],
+    ['101-0', ['e', encodePendingEntry(entryFor('01'.repeat(32)))]],
+    ['100-0', ['e', encodePendingEntry(entryFor('00'.repeat(32)))]],
   ];
   configureRamStore(fake);
   const pending = await readPendingEntries(10);
-  assert.equal(pending.length, 2);
-  assert.equal(pending[0]?.id, '98-0');
-  assert.equal(pending[1]?.id, '99-0');
+  assert.equal(pending.length, 1, 'only entries newer than the newest marker are pending');
+  assert.equal(pending[0]?.id, '103-0');
+});
+
+test('oldest pending age is computed from the oldest entry (markers skipped)', () => {
+  const entries: Array<[string, string[]]> = [
+    ['900-0', ['e', encodeCommitMarker({ kind: 'commit', through: '800-0', atMs: 1, packets: 1 })]],
+    ['1000-0', ['e', encodePendingEntry(entryFor('aa'.repeat(32)))]],
+    ['5000-0', ['e', encodePendingEntry(entryFor('bb'.repeat(32)))]],
+  ];
+  assert.equal(oldestPendingAgeSeconds(entries, 6_000), 5, 'oldest pending is the 1000-0 entry');
+  assert.equal(oldestPendingAgeSeconds([], 6_000), null);
+  assert.equal(
+    oldestPendingAgeSeconds([['200-0', ['e', 'not-json']]], 6_000),
+    null,
+    'undecodable entries are skipped',
+  );
 });
 
 async function loadPublicPrivacyCache(): Promise<void> {

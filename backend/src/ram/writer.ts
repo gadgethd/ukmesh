@@ -8,11 +8,16 @@
  * MQTT_RAM_MAX_AGE_MS — whichever comes first, checked on every wake (the
  * blocking read wakes at least once per second).
  *
- * Commit handoff: XACK (durable acknowledgement to the stream) → XDEL (entry
- * leaves the stream; the database is now the only source) → commit marker
- * (observability + consumers that want an explicit boundary). On failure the
- * entries are left un-acked and retried with backoff; a crashed writer's
- * in-flight entries are reclaimed from the PEL (own '0' reads + XAUTOCLAIM).
+ * Commit handoff: XACK (durable acknowledgement to the stream) → byte-budget
+ * release → commit marker. Entries are NOT deleted at commit: they are
+ * retained for a short overlap window so a reader that queried the database
+ * just BEFORE the commit and the stream just AFTER it cannot fall into the
+ * gap between the two stores. A retention sweep deletes committed entries
+ * only when they are provably safe to remove: acknowledged (absent from the
+ * PEL), at or below the newest commit boundary, and older than a minimum
+ * retention guard. On failure the entries are left un-acked and retried with
+ * backoff; a crashed writer's in-flight entries are reclaimed from the PEL
+ * (own '0' reads + XAUTOCLAIM).
  */
 import {
   isRetryableDatabaseError,
@@ -24,6 +29,8 @@ import {
   decodeRamStreamValue,
   encodeCommitMarker,
   entryFieldName,
+  getRamQueueBytesKey,
+  RAM_ENTRY_OVERHEAD_BYTES,
   type RamPendingEntry,
 } from './protocol.js';
 import {
@@ -33,10 +40,11 @@ import {
   ramBatchDedupeTotal,
   ramReclaimedTotal,
   ramRetryTotal,
+  ramSweepDeletedTotal,
   ramVisibilityLatency,
 } from '../metrics.js';
 
-type StreamEntry = { id: string; entry: RamPendingEntry };
+type StreamEntry = { id: string; entry: RamPendingEntry; bytes: number };
 
 export interface RamWriterRedis {
   xgroup(
@@ -66,6 +74,20 @@ export interface RamWriterRedis {
     max: string,
     ...args: (string | number)[]
   ): Promise<Array<[string, string[]]>>;
+  xrevrange(
+    key: string,
+    max: string,
+    min: string,
+    ...args: (string | number)[]
+  ): Promise<Array<[string, string[]]>>;
+  xpending(
+    key: string,
+    group: string,
+    start: string,
+    end: string,
+    count: number,
+  ): Promise<Array<[string, string, number, number]>>;
+  decrby(key: string, amount: number): Promise<number>;
 }
 
 export type RamWriterDeps = {
@@ -94,6 +116,11 @@ const MAX_PERSIST_ATTEMPTS = 7;
 const MAX_FLUSH_PACKETS = 2_000;
 const MARKERS_KEPT = 20;
 const STATS_INTERVAL_MS = 5_000;
+/** Committed entries are retained at least this long before the sweep may delete them. */
+const MIN_RETENTION_MS = 5_000;
+const SWEEP_INTERVAL_MS = 10_000;
+const SWEEP_SCAN_LIMIT = 2_000;
+const PEL_LIST_LIMIT = 5_000;
 const FAILURE_BACKOFF_START_MS = 5_000;
 const FAILURE_BACKOFF_MAX_MS = 30_000;
 
@@ -124,6 +151,15 @@ export function collapseBatchEntries(batch: StreamEntry[]): StreamEntry[] {
   return kept;
 }
 
+/** Numeric stream-id comparison ("<ms>-<seq>"): correct across digit lengths. */
+export function compareStreamIds(a: string, b: string): number {
+  const [ams, aseq = '0'] = a.split('-');
+  const [bms, bseq = '0'] = b.split('-');
+  const ms = Number(ams) - Number(bms);
+  if (ms !== 0) return ms;
+  return Number(aseq) - Number(bseq);
+}
+
 /** Pure flush trigger used by the loop and by unit tests. */
 export function flushDecision(
   acc: Array<{ entry: RamPendingEntry }>,
@@ -145,6 +181,8 @@ type RamWriter = {
   drain(deadlineMs: number): Promise<void>;
   /** Test-only: run exactly one loop iteration. */
   tickOnce(): Promise<void>;
+  /** Delete committed entries that are provably safe to remove. */
+  sweepRetained(): Promise<void>;
   accumulatorSize(): number;
 };
 
@@ -153,8 +191,16 @@ export function createRamWriter(deps: RamWriterDeps): RamWriter {
   const accIds = new Set<string>();
   let running = false;
   let lastStatsAt = 0;
+  let lastSweepAt = 0;
+  // Newest commit boundary known to this writer instance (set in flush, seeded
+  // on startup): the retention sweep's safety anchor.
+  let lastThrough: string | null = null;
   let consecutiveFlushFailures = 0;
   let retryAfterMs = 0;
+
+  function entryBytes(value: string): number {
+    return Buffer.byteLength(value) + RAM_ENTRY_OVERHEAD_BYTES;
+  }
 
   function appendEntries(entries: StreamEntry[]): number {
     let added = 0;
@@ -194,7 +240,9 @@ export function createRamWriter(deps: RamWriterDeps): RamWriter {
           await deps.redis.xack(deps.streamKey(), deps.group(), id).catch(() => 0);
           continue;
         }
-        appendEntries([{ id, entry: decoded.entry }]);
+        appendEntries([
+          { id, entry: decoded.entry, bytes: entryBytes(fields[1]) },
+        ]);
       }
     }
   }
@@ -215,7 +263,9 @@ export function createRamWriter(deps: RamWriterDeps): RamWriter {
     for (const [, items] of res) {
       for (const [id, fields] of items) {
         const decoded = decodeRamStreamValue(fields[1]);
-        if (decoded && decoded.kind === 'entry') appendEntries([{ id, entry: decoded.entry }]);
+        if (decoded && decoded.kind === 'entry') {
+          appendEntries([{ id, entry: decoded.entry, bytes: entryBytes(fields[1]) }]);
+        }
       }
     }
   }
@@ -278,7 +328,8 @@ export function createRamWriter(deps: RamWriterDeps): RamWriter {
     const group = deps.group();
     try {
       await deps.redis.xack(streamKey, group, ...ids);
-      await deps.redis.xdel(streamKey, ...ids);
+      const releasedBytes = batch.reduce((sum, item) => sum + item.bytes, 0);
+      await deps.redis.decrby(getRamQueueBytesKey(), releasedBytes).catch(() => 0);
       const lastId = ids[ids.length - 1];
       if (lastId) {
         await deps.redis.xadd(
@@ -287,10 +338,12 @@ export function createRamWriter(deps: RamWriterDeps): RamWriter {
           entryFieldName(),
           encodeCommitMarker({ kind: 'commit', through: lastId, atMs: deps.now(), packets: batch.length }),
         );
+        lastThrough = lastId;
       }
     } catch (error) {
-      // Commit succeeded; bookkeeping failed. Readers dedupe committed rows by
-      // identity, so do not fail the flush — surface and continue.
+      // Commit succeeded; bookkeeping failed. Entries are retained and the
+      // retention sweep re-deletes idempotently, so do not fail the flush —
+      // surface and continue.
       deps.log('[ram] post-commit stream bookkeeping failed', error);
     }
     const finishedMs = deps.now();
@@ -323,6 +376,50 @@ export function createRamWriter(deps: RamWriterDeps): RamWriter {
     }
   }
 
+  /**
+   * Wait — deletion safety: an entry may only be removed when it is
+   * acknowledged (not in the group PEL), at or below the newest commit
+   * boundary, and past the minimum retention guard. Entries from failed
+   * batches (out-of-order commits) stay in the PEL and are never touched.
+   */
+  async function sweepRetained(): Promise<void> {
+    const streamKey = deps.streamKey();
+    const group = deps.group();
+    try {
+      let through = lastThrough;
+      if (!through) {
+        const newest = await deps.redis.xrevrange(streamKey, '+', '-', 'COUNT', 500);
+        for (const [, fields] of newest) {
+          const decoded = decodeRamStreamValue(fields[1]);
+          if (decoded && decoded.kind === 'commit') {
+            through = decoded.marker.through;
+            break;
+          }
+        }
+      }
+      if (!through) return;
+      const pel = await deps.redis.xpending(streamKey, group, '-', '+', PEL_LIST_LIMIT).catch(() => null);
+      if (!pel || pel.length >= PEL_LIST_LIMIT) return; // couldn't prove safety — skip
+      const pelIds = new Set(pel.map(([id]) => id));
+      const oldest = await deps.redis.xrange(streamKey, '-', '+', 'COUNT', SWEEP_SCAN_LIMIT);
+      const cutoffMs = deps.now() - MIN_RETENTION_MS;
+      const remove: string[] = [];
+      for (const [id] of oldest) {
+        if (compareStreamIds(id, through) > 0) break; // ordered ids: past this = pending/newer
+        if (pelIds.has(id)) continue;
+        const ms = Number(id.split('-')[0]);
+        if (!Number.isFinite(ms) || ms > cutoffMs) continue;
+        remove.push(id);
+      }
+      if (remove.length > 0) {
+        await deps.redis.xdel(streamKey, ...remove).catch(() => 0);
+        ramSweepDeletedTotal.inc(remove.length);
+      }
+    } catch {
+      /* best-effort */
+    }
+  }
+
   async function tickOnce(): Promise<void> {
     const nowMs = deps.now();
     const batchSize = deps.batchSize();
@@ -341,6 +438,10 @@ export function createRamWriter(deps: RamWriterDeps): RamWriter {
       lastStatsAt = nowMs;
       await deps.statsTick().catch(() => undefined);
       await pruneMarkers();
+    }
+    if (nowMs - lastSweepAt >= SWEEP_INTERVAL_MS) {
+      lastSweepAt = nowMs;
+      await sweepRetained();
     }
     // 4. Flush when the batch is full, the oldest entry is over the age bound,
     //    or (shutdown) whenever anything remains.
@@ -382,11 +483,26 @@ export function createRamWriter(deps: RamWriterDeps): RamWriter {
           ramReclaimedTotal.inc(claimed.length);
           for (const [id, fields] of claimed) {
             const decoded = decodeRamStreamValue(fields[1]);
-            if (decoded && decoded.kind === 'entry') appendEntries([{ id, entry: decoded.entry }]);
+            if (decoded && decoded.kind === 'entry') {
+              appendEntries([{ id, entry: decoded.entry, bytes: entryBytes(fields[1]) }]);
+            }
           }
         }
         if (!next || next === '0-0' || next === '0') break;
         cursor = next;
+      }
+      // Seed the retention-sweep anchor from the newest marker present.
+      try {
+        const newest = await deps.redis.xrevrange(streamKey, '+', '-', 'COUNT', 500);
+        for (const [, fields] of newest) {
+          const decoded = decodeRamStreamValue(fields[1]);
+          if (decoded && decoded.kind === 'commit') {
+            lastThrough = decoded.marker.through;
+            break;
+          }
+        }
+      } catch {
+        /* best-effort */
       }
       running = true;
       deps.log(`[ram] writer started (group=${group}, consumer=${deps.consumer()}, stream=${streamKey})`);
@@ -410,6 +526,7 @@ export function createRamWriter(deps: RamWriterDeps): RamWriter {
       }
     },
     tickOnce,
+    sweepRetained,
     accumulatorSize: () => acc.length,
   };
 }

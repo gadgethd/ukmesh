@@ -9,9 +9,13 @@
  * redelivery, never in an acknowledged-but-lost packet.
  *
  * Bounds (strict, admission-side — entries are never silently trimmed):
- *  - packet count: XLEN checked before every admission;
- *  - bytes: MEMORY USAGE of the stream key, refreshed by the writer tick
- *    (≤1 s cadence) and lazily on admission when the queue is filling.
+ *  - packet count and byte budget are enforced ATOMICALLY by a Lua script:
+ *    the XLEN check, the running byte counter (a companion key maintained at
+ *    admission and release) and the XADD all run server-side in one step, so
+ *    concurrent MQTT connections cannot race past the same capacity check.
+ *  - byte accounting is conservative (raw value + fixed per-entry overhead)
+ *    and reconciled against the real stream on writer startup and on a slow
+ *    cadence, keeping the counter honest across crashes and failed cleanups.
  */
 import { randomUUID } from 'node:crypto';
 import { Redis } from 'ioredis';
@@ -23,9 +27,11 @@ import {
   encodePendingEntry,
   entryFieldName,
   getRamIngestMode,
+  getRamQueueBytesKey,
   getRamQueueMaxBytes,
   getRamQueueMaxPackets,
   getRamStreamKey,
+  RAM_ENTRY_OVERHEAD_BYTES,
   type RamPendingEntry,
 } from './protocol.js';
 import {
@@ -46,8 +52,30 @@ export interface RamStoreRedis {
     min: string,
     ...args: (string | number)[]
   ): Promise<Array<[string, string[]]>>;
+  xrange(
+    key: string,
+    min: string,
+    max: string,
+    ...args: (string | number)[]
+  ): Promise<Array<[string, string[]]>>;
   memory(subcommand: string, key: string): Promise<number>;
+  eval(script: string, numKeys: number, ...args: (string | number)[]): Promise<unknown>;
 }
+
+/**
+ * Atomic admission: check count, check bytes, add, account — one server-side
+ * step. Returns the new entry id, -1 (count exhausted) or -2 (bytes budget).
+ */
+const ADMIT_SCRIPT = `
+local len = redis.call('XLEN', KEYS[1])
+if len >= tonumber(ARGV[1]) then return -1 end
+local used = tonumber(redis.call('GET', KEYS[2]) or '0')
+local add = tonumber(ARGV[3])
+if used + add > tonumber(ARGV[2]) then return -2 end
+local id = redis.call('XADD', KEYS[1], '*', ARGV[4], ARGV[5])
+redis.call('INCRBY', KEYS[2], add)
+return id
+`;
 
 export type RamAdmissionResult = {
   observationId: string;
@@ -67,13 +95,11 @@ export class RamAdmissionRefusedError extends Error {
 
 let redis: RamStoreRedis | null = null;
 let redisOwned = false;
-let lastStatsAtMs = 0;
 let cachedBytes = 0;
 
 export function configureRamStore(client: RamStoreRedis | null): void {
   redis = client;
   redisOwned = false;
-  lastStatsAtMs = 0;
   cachedBytes = 0;
 }
 
@@ -108,29 +134,45 @@ export async function closeRamStore(): Promise<void> {
   redisOwned = false;
 }
 
+/**
+ * Age (seconds) of the OLDEST genuinely pending observation given a
+ * oldest-first entry list. Markers and undecodable records are skipped;
+ * committed entries are excluded by the writer's retention trim, so the first
+ * decodable entry is the oldest uncommitted observation. Pure for testing.
+ */
+export function oldestPendingAgeSeconds(
+  entries: Array<[string, string[]]>,
+  nowMs: number,
+): number | null {
+  for (const [id, fields] of entries) {
+    const decoded = decodeRamStreamValue(fields[1]);
+    if (!decoded || decoded.kind !== 'entry') continue;
+    const ms = Number(id.split('-')[0]);
+    if (!Number.isFinite(ms)) continue;
+    return Math.max(0, (nowMs - ms) / 1000);
+  }
+  return null;
+}
+
 /** Refresh queue gauges (count, bytes, oldest pending age). Called by the writer tick. */
 export async function refreshPendingStats(): Promise<void> {
   if (getRamIngestMode() !== 'ram') return;
   const client = getClient();
   const key = getRamStreamKey();
-  const [len, mem, recent] = await Promise.all([
+  // Oldest-first sample: XREVRANGE reported the NEWEST entry's age, which is
+  // always ~0 in a busy queue and hid stuck deliveries. XRANGE returns the
+  // oldest entries, where the genuinely oldest pending observation lives.
+  const [len, mem, oldestFirst] = await Promise.all([
     client.xlen(key),
     client.memory('USAGE', key).catch(() => cachedBytes),
-    client.xrevrange(key, '+', '-', 'COUNT', 50),
+    client.xrange(key, '-', '+', 'COUNT', 50),
   ]);
   cachedBytes = typeof mem === 'number' && Number.isFinite(mem) ? mem : cachedBytes;
-  lastStatsAtMs = Date.now();
   ramQueueDepth.set(len);
   ramQueueBytes.set(cachedBytes);
-  for (const [id, fields] of recent) {
-    const decoded = decodeRamStreamValue(fields[1]);
-    if (decoded && decoded.kind === 'entry') {
-      const ms = Number(id.split('-')[0]);
-      if (Number.isFinite(ms)) {
-        ramEarliestPendingAge.set(Math.max(0, (Date.now() - ms) / 1000));
-      }
-      break;
-    }
+  const oldestAge = oldestPendingAgeSeconds(oldestFirst, Date.now());
+  if (oldestAge !== null) {
+    ramEarliestPendingAge.set(oldestAge);
   }
 }
 
@@ -162,21 +204,6 @@ export async function admitPacketToRam(p: InsertPacketInput): Promise<RamAdmissi
   const maxBytes = getRamQueueMaxBytes();
 
   try {
-    const len = await client.xlen(key);
-    if (len >= maxPackets) {
-      ramAdmissionsTotal.inc({ outcome: 'queue_full' });
-      throw new RamAdmissionRefusedError('queue_full');
-    }
-    // Byte bound uses the writer-maintained cache; refresh lazily when the
-    // queue is filling and the cached value is stale (≤5 s behind reality).
-    if (len >= maxPackets * 0.5 && Date.now() - lastStatsAtMs > 5_000) {
-      await refreshPendingStats();
-    }
-    if (cachedBytes >= maxBytes) {
-      ramAdmissionsTotal.inc({ outcome: 'queue_bytes' });
-      throw new RamAdmissionRefusedError('queue_bytes');
-    }
-
     const entry: RamPendingEntry = {
       observationId: randomUUID(),
       admittedAtMs: Date.now(),
@@ -184,7 +211,34 @@ export async function admitPacketToRam(p: InsertPacketInput): Promise<RamAdmissi
       visibilityOk,
       input,
     };
-    await client.xadd(key, '*', entryFieldName(), encodePendingEntry(entry));
+    const value = encodePendingEntry(entry);
+    const entryBytes = Buffer.byteLength(value) + RAM_ENTRY_OVERHEAD_BYTES;
+
+    // Count check, byte check, XADD and byte accounting in one atomic
+    // server-side step: concurrent connections cannot both pass the same
+    // capacity check.
+    const result = await client.eval(
+      ADMIT_SCRIPT,
+      2,
+      key,
+      getRamQueueBytesKey(),
+      maxPackets,
+      maxBytes,
+      entryBytes,
+      entryFieldName(),
+      value,
+    );
+    if (result === -1) {
+      ramAdmissionsTotal.inc({ outcome: 'queue_full' });
+      throw new RamAdmissionRefusedError('queue_full');
+    }
+    if (result === -2) {
+      ramAdmissionsTotal.inc({ outcome: 'queue_bytes' });
+      throw new RamAdmissionRefusedError('queue_bytes');
+    }
+    if (typeof result !== 'string' || result.length === 0) {
+      throw new RamAdmissionRefusedError('redis_unavailable', new Error('unexpected eval reply'));
+    }
     ramAdmissionsTotal.inc({ outcome: 'admitted' });
     ramAdmissionDuration.observe(Number(process.hrtime.bigint() - startedNs) / 1e9);
     return { observationId: entry.observationId, isPrivate, visibilityOk };
@@ -199,9 +253,10 @@ export type PendingStreamEntry = { id: string; entry: RamPendingEntry };
 
 /**
  * Read the newest pending (not yet committed) entries, newest first →
- * returned oldest-last. Committed entries are removed from the stream at
- * commit time, so anything present here is genuinely pending; commit markers
- * are skipped. Best-effort: returns [] on any Redis failure.
+ * returned oldest-last. Committed entries are retained briefly in the stream
+ * (handoff-overlap window), so the latest commit marker is the boundary:
+ * entries at or below it are committed and excluded. Best-effort: returns []
+ * on any Redis failure.
  */
 export async function readPendingEntries(limit: number): Promise<PendingStreamEntry[]> {
   if (getRamIngestMode() !== 'ram') return [];
@@ -216,10 +271,13 @@ export async function readPendingEntries(limit: number): Promise<PendingStreamEn
     );
     const out: PendingStreamEntry[] = [];
     for (const [id, fields] of raw) {
-      if (out.length >= limit) break;
       const decoded = decodeRamStreamValue(fields[1]);
       if (!decoded) continue;
-      if (decoded.kind === 'commit') continue;
+      // Latest commit boundary: everything at or below the newest marker is
+      // committed (entries are retained briefly for the overlap window) and
+      // must not be reported as pending.
+      if (decoded.kind === 'commit') break;
+      if (out.length >= limit) break;
       out.push({ id, entry: decoded.entry });
     }
     return out.reverse();

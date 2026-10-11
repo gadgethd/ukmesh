@@ -584,6 +584,12 @@ export const ramBatchDedupeTotal = new Counter({
   registers: [metricsRegistry],
 });
 
+export const ramSweepDeletedTotal = new Counter({
+  name: 'meshcore_ram_ingest_sweep_deleted_total',
+  help: 'Committed, acknowledged stream entries reclaimed by the retention sweep.',
+  registers: [metricsRegistry],
+});
+
 export const ramReclaimedTotal = new Counter({
   name: 'meshcore_ram_ingest_reclaimed_total',
   help: 'Un-acked stream entries reclaimed by a (re)started writer.',

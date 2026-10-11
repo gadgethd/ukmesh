@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createRamWriter, flushDecision, type RamWriterRedis } from './writer.js';
+import { compareStreamIds, createRamWriter, flushDecision, type RamWriterRedis } from './writer.js';
 import { decodeRamStreamValue, encodeCommitMarker, encodePendingEntry, type RamPendingEntry } from './protocol.js';
 import type { PacketBatchInput } from '../db/packetBatch.js';
 
@@ -107,7 +107,29 @@ class FakeRedis {
   async xrange(_key: string, _min: string, _max: string, ...args: (string | number)[]): Promise<Array<[string, string[]]>> {
     const countAt = args.indexOf('COUNT');
     const count = countAt >= 0 ? Number(args[countAt + 1]) : 100;
-    return this.entries.slice(0, count).map((entry) => [entry.id, entry.fields]);
+    return [...this.entries]
+      .sort((a, b) => compareStreamIds(a.id, b.id))
+      .slice(0, count)
+      .map((entry) => [entry.id, entry.fields]);
+  }
+
+  async xrevrange(_key: string, _max: string, _min: string, ...args: (string | number)[]): Promise<Array<[string, string[]]>> {
+    const countAt = args.indexOf('COUNT');
+    const count = countAt >= 0 ? Number(args[countAt + 1]) : 100;
+    return [...this.entries]
+      .sort((a, b) => compareStreamIds(b.id, a.id))
+      .slice(0, count)
+      .map((entry) => [entry.id, entry.fields]);
+  }
+
+  async xpending(_key: string, _group: string, _start: string, _end: string, count: number): Promise<Array<[string, string, number, number]>> {
+    return [...this.pending.keys()].slice(0, count).map((id) => [id, 'backend', 0, 1]);
+  }
+
+  bytesReleased = 0;
+  async decrby(_key: string, amount: number): Promise<number> {
+    this.bytesReleased += amount;
+    return -this.bytesReleased;
   }
 
   seedEntry(entry: RamPendingEntry): string {
@@ -178,18 +200,44 @@ test('flushes when the batch reaches the size trigger and bookkeeps the stream',
   assert.equal(calls[0]?.count, 3);
   assert.equal(calls[0]?.idempotent, true); // replay-safe from the first attempt
   assert.equal(fake.acked.length, 3);
-  assert.equal(fake.deleted.length, 3);
   assert.equal(fake.pending.size, 0);
+  assert.equal(fake.deleted.length, 0, 'committed entries are retained for the handoff overlap');
   assert.equal(writer.accumulatorSize(), 0);
   assert.equal(healthyCount(), 1);
+  assert.ok(fake.bytesReleased > 0, 'byte budget released at commit');
 
-  // A commit marker was appended (only remaining stream value).
+  // Entries are still readable (retained) plus the commit marker.
   const remaining = fake.entries.map((entry) => decodeRamStreamValue(entry.fields[1]));
-  assert.equal(remaining.length, 1);
-  assert.ok(remaining[0] && remaining[0].kind === 'commit');
-  if (remaining[0]?.kind === 'commit') {
-    assert.equal(remaining[0].marker.packets, 3);
-  }
+  assert.equal(remaining.filter((v) => v && v.kind === 'entry').length, 3, 'entries retained pre-sweep');
+  assert.ok(remaining.some((v) => v && v.kind === 'commit'));
+
+  // The retention sweep removes committed, acknowledged, old-enough entries.
+  await writer.sweepRetained();
+  assert.equal(fake.deleted.length, 3, 'safe sweep deletes the committed batch');
+});
+
+test('retention sweep never deletes pending or recent entries', async () => {
+  const fake = new FakeRedis();
+  let nowMs = 1_700_000_000_500; // cutoff = now - 5000 = ..._995_500 < entry ids
+  const now = () => nowMs;
+  fake.seedEntry(sampleEntry(nowMs - 400));
+  fake.seedEntry(sampleEntry(nowMs - 300, 'cd'.repeat(32)));
+  const { writer } = makeWriter(fake, now, async () => undefined, { batchSize: 2 });
+  await writer.start();
+  await writer.tickOnce(); // commits the two entries
+
+  await writer.sweepRetained();
+  assert.equal(fake.deleted.length, 0, 'entries inside the minimum retention window are kept');
+
+  // A delivered-but-unacked entry from a failed batch (in the PEL): never swept.
+  const failedId = '1699999999998-0';
+  fake.entries.push({ id: failedId, fields: ['e', encodePendingEntry(sampleEntry(nowMs - 10_000, 'ef'.repeat(32)))] });
+  fake.pending.set(failedId, { consumer: 'backend', fields: fake.entries[fake.entries.length - 1]!.fields });
+
+  nowMs += 10_000;
+  await writer.sweepRetained();
+  assert.equal(fake.deleted.length, 2, 'committed, acked entries past the retention guard are swept');
+  assert.equal(fake.deleted.includes(failedId), false, 'PEL entries (failed batches) must survive the sweep');
 });
 
 test('flushes when the oldest entry reaches the age trigger', async () => {

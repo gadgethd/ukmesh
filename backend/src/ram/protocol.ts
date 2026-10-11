@@ -36,6 +36,17 @@ export function getRamConsumerGroup(): string {
   return value && value.length > 0 ? value : 'ingest-writers';
 }
 
+/**
+ * Conservative per-entry overhead added to the raw value length when
+ * accounting the queue byte budget (stream id, field name, listpack entry
+ * overhead and allocator slack). The budget must never underestimate.
+ */
+export const RAM_ENTRY_OVERHEAD_BYTES = 256;
+
+export function getRamQueueBytesKey(): string {
+  return `${getRamStreamKey()}:bytes`;
+}
+
 export function getRamConsumerName(): string {
   const value = process.env['MQTT_RAM_CONSUMER_NAME']?.trim();
   return value && value.length > 0 ? value : 'backend';
