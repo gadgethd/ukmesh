@@ -176,7 +176,7 @@ test('flushes when the batch reaches the size trigger and bookkeeps the stream',
 
   assert.equal(calls.length, 1);
   assert.equal(calls[0]?.count, 3);
-  assert.equal(calls[0]?.idempotent, false);
+  assert.equal(calls[0]?.idempotent, true); // replay-safe from the first attempt
   assert.equal(fake.acked.length, 3);
   assert.equal(fake.deleted.length, 3);
   assert.equal(fake.pending.size, 0);
@@ -218,7 +218,7 @@ test('does not flush a small, young batch', async () => {
   assert.equal(writer.accumulatorSize(), 1);
 });
 
-test('transient commit failure retries within the flush and uses idempotent retries', async () => {
+test('transient commit failure retries within the flush (idempotent throughout)', async () => {
   const fake = new FakeRedis();
   const now = () => 1_700_000_300_000;
   fake.seedEntry(sampleEntry(now() - 1_000));
@@ -234,7 +234,7 @@ test('transient commit failure retries within the flush and uses idempotent retr
 
   assert.equal(attempts, 2);
   assert.equal(calls.length, 2);
-  assert.equal(calls[0]?.idempotent, false);
+  assert.equal(calls[0]?.idempotent, true);
   assert.equal(calls[1]?.idempotent, true);
   assert.equal(fake.acked.length, 2);
 });
@@ -269,6 +269,23 @@ test('exhausted commit failure leaves entries un-acked for later recovery', asyn
   assert.equal(fake.acked.includes(seeded), true);
   assert.equal(fake.pending.size, 0);
   assert.equal(calls[calls.length - 1]?.count, 1);
+});
+
+test('entries sharing one observation identity collapse within a flush', async () => {
+  const fake = new FakeRedis();
+  const now = () => 1_700_000_800_000;
+  // Same identity: identical time (frozen in the entry input), hash, rx, topic, network.
+  fake.seedEntry(sampleEntry(now() - 2_000, 'ab'.repeat(32)));
+  fake.seedEntry(sampleEntry(now() - 1_500, 'ab'.repeat(32)));
+
+  const { writer, calls } = makeWriter(fake, now, async () => undefined, { batchSize: 2 });
+  await writer.start();
+  await writer.tickOnce();
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.count, 1, 'duplicate identity must be collapsed before persistence');
+  assert.equal(fake.acked.length, 2, 'both originals are acknowledged (same observation)');
+  assert.equal(writer.accumulatorSize(), 0);
 });
 
 test('markers are consumed and acknowledged without persistence', async () => {

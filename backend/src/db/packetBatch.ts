@@ -93,6 +93,7 @@ export type PersistRow = {
   is_private: boolean;
   visibility_ok: boolean;
   prefix_cache_fresh: boolean;
+  lock_ok: boolean;
 };
 
 type QueryFn = <T extends QueryResultRow = QueryResultRow>(
@@ -202,7 +203,7 @@ export function isRetryableDatabaseError(error: unknown): boolean {
     if (typeof code === 'string' && RETRYABLE_DATABASE_CODES.has(code)) return true;
   }
   const message = error instanceof Error ? error.message : String(error);
-  return /connection terminated|database system is not yet accepting connections|server closed the connection unexpectedly|connection reset|connection refused|could not connect/i.test(message);
+  return /connection terminated|database system is not yet accepting connections|server closed the connection unexpectedly|connection reset|connection refused|could not connect|PACKET_BATCH_LOCK_BUSY/i.test(message);
 }
 
 export function retryDelay(attempt: number): number {
@@ -331,21 +332,43 @@ export async function persistEntriesCore(
   }).join(',\n');
 
   const persistenceSource = idempotent ? 'new_rows' : 'classified';
+  // Replay safety (RAM-mode crash recovery): when running idempotent, a batch
+  // is filtered twice — first against duplicate identities WITHIN the batch
+  // (row-numbered by the same five-column key the existence check uses),
+  // then against rows already present in the database (covers replays after
+  // crashes and ambiguous commit outcomes, where the SAME frozen entry is
+  // delivered again with identical time/packet/rx/topic/network values).
   const idempotencyCte = idempotent
-    ? `new_rows AS MATERIALIZED (
-         SELECT c.*
+    ? `deduped AS MATERIALIZED (
+         SELECT c.*,
+                ROW_NUMBER() OVER (
+                  PARTITION BY c.time, c.packet_hash, COALESCE(c.rx_node_id, ''), c.topic, c.network
+                  ORDER BY c.row_id
+                ) AS identity_rank
          FROM classified c
-         WHERE NOT EXISTS (
-           SELECT 1
-           FROM packets existing
-           WHERE existing.time = c.time
-             AND existing.packet_hash = c.packet_hash
-             AND existing.rx_node_id IS NOT DISTINCT FROM c.rx_node_id
-             AND existing.topic = c.topic
-             AND existing.network = c.network
-         )
+       ),
+       new_rows AS MATERIALIZED (
+         SELECT d.*
+         FROM deduped d
+         WHERE d.identity_rank = 1
+           AND NOT EXISTS (
+             SELECT 1
+             FROM packets existing
+             WHERE existing.time = d.time
+               AND existing.packet_hash = d.packet_hash
+               AND existing.rx_node_id IS NOT DISTINCT FROM d.rx_node_id
+               AND existing.topic = d.topic
+               AND existing.network = d.network
+           )
        ),`
     : '';
+  // Serialize writers with a transaction-scoped advisory lock: NOT EXISTS
+  // alone cannot prevent two concurrent writers from both passing the
+  // existence check. Every insert is gated on the lock; when it is held the
+  // batch writes nothing and reports lock_ok=false so the caller retries.
+  const lockCte = `locked AS MATERIALIZED (
+         SELECT pg_try_advisory_xact_lock(hashtext('meshcore:packet-batch-writer')) AS ok
+       ),`;
 
   const result = await query<PersistRow>(
       `WITH current_visibility AS MATERIALIZED (
@@ -360,6 +383,7 @@ export async function persistEntriesCore(
             WHERE status IN ('pending', 'processing', 'failed')
          ) AS active
        ),
+       ${lockCte}
        incoming (
          row_id, observation_id_in, time, packet_hash, rx_node_id, src_node_id, topic, topic_prefix,
          iata, packet_type, route_type, hop_count, rssi, snr, payload, companion_sender, raw_hex,
@@ -394,7 +418,8 @@ export async function persistEntriesCore(
                 packet_type, route_type, hop_count, rssi, snr, payload::jsonb, companion_sender, raw_hex,
                 advert_count, path_hashes, path_hash_size_bytes, network, transport_codes,
                 region_scope, is_private, path_is_valid AND NOT is_private
-         FROM ${persistenceSource}
+         FROM ${persistenceSource} CROSS JOIN locked
+         WHERE locked.ok
          RETURNING 1
        ),
        path_inserted AS (
@@ -406,8 +431,8 @@ export async function persistEntriesCore(
          SELECT time, packet_hash, rx_node_id, src_node_id, topic, topic_prefix,
                 route_type, hop_count, rssi, snr, path_hashes, path_hash_size_bytes,
                 is_private, path_is_valid AND NOT is_private, network, observation_id
-         FROM ${persistenceSource}
-         WHERE path_hashes IS NOT NULL AND path_hash_size_bytes > 1
+         FROM ${persistenceSource} CROSS JOIN locked
+         WHERE locked.ok AND path_hashes IS NOT NULL AND path_hash_size_bytes > 1
          ON CONFLICT DO NOTHING
          RETURNING 1
        ),
@@ -418,8 +443,8 @@ export async function persistEntriesCore(
          )
          SELECT DISTINCT ON (rx_node_id)
            rx_node_id, iata, iata, time, time, TRUE, network, time
-         FROM ${persistenceSource}
-         WHERE rx_node_id IS NOT NULL AND rx_node_id <> ''
+         FROM ${persistenceSource} CROSS JOIN locked
+         WHERE locked.ok AND rx_node_id IS NOT NULL AND rx_node_id <> ''
          ORDER BY rx_node_id, time DESC
          ON CONFLICT (node_id) DO UPDATE SET
            last_rx_at = GREATEST(nodes.last_rx_at, EXCLUDED.last_rx_at),
@@ -442,8 +467,8 @@ export async function persistEntriesCore(
          INSERT INTO node_network_sightings
            (node_id, network, first_seen_at, last_seen_at)
          SELECT src_node_id, network, MIN(time), MAX(time)
-         FROM ${persistenceSource}
-         WHERE src_node_id IS NOT NULL
+         FROM ${persistenceSource} CROSS JOIN locked
+         WHERE locked.ok AND src_node_id IS NOT NULL
            AND src_node_id <> ''
            AND network <> 'test'
          GROUP BY src_node_id, network
@@ -465,8 +490,8 @@ export async function persistEntriesCore(
            hop_count,
            packet_hash,
            time
-         FROM ${persistenceSource}
-         WHERE path_is_valid
+         FROM ${persistenceSource} CROSS JOIN locked
+         WHERE locked.ok AND path_is_valid
            AND NOT is_private
            AND hop_count IS NOT NULL
          ORDER BY network, hop_count DESC, row_id ASC
@@ -505,8 +530,8 @@ export async function persistEntriesCore(
            COALESCE(SUM(snr), 0)::double precision,
            COUNT(snr)::bigint,
            NOW()
-         FROM ${persistenceSource}
-         WHERE network = 'test'
+         FROM ${persistenceSource} CROSS JOIN locked
+         WHERE locked.ok AND network = 'test'
             OR topic_prefix <> 'meshcore-test'
          GROUP BY
            network,
@@ -532,8 +557,8 @@ export async function persistEntriesCore(
          INSERT INTO observer_region_packet_sightings
            (network, iata, packet_hash, first_seen, last_seen)
          SELECT network, iata, packet_hash, MIN(time), MAX(time)
-         FROM ${persistenceSource}
-         WHERE network <> 'test'
+         FROM ${persistenceSource} CROSS JOIN locked
+         WHERE locked.ok AND network <> 'test'
            AND path_is_valid
            AND NOT is_private
            AND iata IS NOT NULL
@@ -556,8 +581,8 @@ export async function persistEntriesCore(
          INSERT INTO observer_region_observer_sightings
            (network, iata, rx_node_id, first_seen, last_seen)
          SELECT network, iata, rx_node_id, MIN(time), MAX(time)
-         FROM ${persistenceSource}
-         WHERE network <> 'test'
+         FROM ${persistenceSource} CROSS JOIN locked
+         WHERE locked.ok AND network <> 'test'
            AND path_is_valid
            AND NOT is_private
            AND iata IS NOT NULL
@@ -577,6 +602,7 @@ export async function persistEntriesCore(
        )
        SELECT row_id, is_private, path_is_valid AND NOT is_private AS visibility_ok,
               prefix_cache_fresh,
+              (SELECT ok FROM locked) AS lock_ok,
               (SELECT COUNT(*) FROM inserted) AS inserted_count,
               (SELECT COUNT(*) FROM observer_updates) AS observer_update_count,
               (SELECT COUNT(*) FROM network_sightings) AS network_sighting_count,
@@ -590,6 +616,9 @@ export async function persistEntriesCore(
     );
 
   if (result.rows.length !== entries.length) throw new Error('PACKET_BATCH_RESULT_MISMATCH');
+  if (result.rows.some((row) => !row.lock_ok)) {
+    throw new Error('PACKET_BATCH_LOCK_BUSY: another writer holds the packet batch lock');
+  }
   if (result.rows.some((row) => !row.prefix_cache_fresh)) {
     void refreshPrivatePrefixCache(query).catch((error: unknown) => {
       console.error('[db] private prefix cache refresh failed', (error as Error).message);

@@ -17,6 +17,7 @@
 import {
   isRetryableDatabaseError,
   retryDelay,
+  type PacketBatchInput,
   type PersistEntry,
 } from '../db/packetBatch.js';
 import {
@@ -29,6 +30,7 @@ import {
   ramCommitBatchSize,
   ramCommitDuration,
   ramCommitTotal,
+  ramBatchDedupeTotal,
   ramReclaimedTotal,
   ramRetryTotal,
   ramVisibilityLatency,
@@ -94,6 +96,33 @@ const MARKERS_KEPT = 20;
 const STATS_INTERVAL_MS = 5_000;
 const FAILURE_BACKOFF_START_MS = 5_000;
 const FAILURE_BACKOFF_MAX_MS = 30_000;
+
+/** Identity used for intra-batch replay dedupe (mirrors the SQL existence check). */
+export function persistIdentityKey(input: PacketBatchInput): string {
+  return [
+    input.time.toISOString(),
+    input.packetHash,
+    input.rxNodeId ?? '',
+    input.topic,
+    input.network,
+  ].join('\u0000');
+}
+
+/** Collapse entries that share a single observation identity within one flush. */
+export function collapseBatchEntries(batch: StreamEntry[]): StreamEntry[] {
+  if (batch.length < 2) return batch;
+  const seen = new Set<string>();
+  const kept: StreamEntry[] = [];
+  for (const item of batch) {
+    const key = persistIdentityKey(item.entry.input);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    kept.push(item);
+  }
+  const dropped = batch.length - kept.length;
+  if (dropped > 0) ramBatchDedupeTotal.inc(dropped);
+  return kept;
+}
 
 /** Pure flush trigger used by the loop and by unit tests. */
 export function flushDecision(
@@ -199,7 +228,10 @@ export function createRamWriter(deps: RamWriterDeps): RamWriter {
           input: entry.input,
           observationId: entry.observationId,
         }));
-        await deps.persist(entries, attempt > 0);
+        // Always idempotent: a replay after a crash (or an ambiguous commit)
+        // re-delivers the SAME frozen entries, and the existence check keyed
+        // on their identity must apply from the first attempt.
+        await deps.persist(entries, true);
         return;
       } catch (error) {
         attempt += 1;
@@ -217,7 +249,7 @@ export function createRamWriter(deps: RamWriterDeps): RamWriter {
     const startedNs = process.hrtime.bigint();
     const nowMs = deps.now();
     try {
-      await persistWithRetry(batch);
+      await persistWithRetry(collapseBatchEntries(batch));
     } catch (error) {
       // Leave the entries un-acked so they stay recoverable in the PEL; drop
       // them from memory and back off so a database outage cannot spin.

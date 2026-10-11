@@ -578,6 +578,12 @@ export const ramRetryTotal = new Counter({
   registers: [metricsRegistry],
 });
 
+export const ramBatchDedupeTotal = new Counter({
+  name: 'meshcore_ram_ingest_batch_dedupe_total',
+  help: 'Replay-duplicate entries collapsed within a RAM ingest flush.',
+  registers: [metricsRegistry],
+});
+
 export const ramReclaimedTotal = new Counter({
   name: 'meshcore_ram_ingest_reclaimed_total',
   help: 'Un-acked stream entries reclaimed by a (re)started writer.',

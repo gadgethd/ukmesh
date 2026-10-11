@@ -24,7 +24,7 @@ test('packet batches retry transient database failures without losing the pendin
         row_id: 0,
         is_private: false,
         visibility_ok: true,
-        prefix_cache_fresh: true,
+        prefix_cache_fresh: true, lock_ok: true,
       }],
     };
   });
@@ -63,7 +63,11 @@ test('packet batches retry transient database failures without losing the pendin
   assert.equal(attempts, 3);
   assert.doesNotMatch(statements[0]!, /new_rows AS MATERIALIZED/);
   assert.match(statements[1]!, /new_rows AS MATERIALIZED/);
-  assert.match(statements[1]!, /existing\.packet_hash = c\.packet_hash/);
+  assert.match(statements[1]!, /existing\.packet_hash = d\.packet_hash/);
+  assert.match(statements[1]!, /ROW_NUMBER\(\) OVER/);
+  assert.match(statements[1]!, /pg_try_advisory_xact_lock\(hashtext\(.meshcore:packet-batch-writer.\)\)/);
+  assert.match(statements[1]!, /locked AS MATERIALIZED/);
+  assert.match(statements[1]!, /AS lock_ok/);
   assert.match(statements[1]!, /INSERT INTO packets \(\s*observation_id,/);
   assert.match(statements[1]!, /COALESCE\(i\.observation_id_in, gen_random_uuid\(\)\) AS observation_id/);
   assert.match(statements[1]!, /SELECT observation_id, time, packet_hash/);
