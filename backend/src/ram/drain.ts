@@ -6,9 +6,10 @@
 import { Redis } from 'ioredis';
 import { query, closeDb, withTransaction } from '../db/index.js';
 import { configurePacketBatch } from '../db/packetBatch.js';
+import { resolvePool } from '../path-beta/resolvePool.js';
 import { getRedisConnectionOptions, getRedisUrl } from '../platform/config/redis.js';
 import { getRamQuarantineKey, getRamStreamKey } from './protocol.js';
-import { closeRamStore, reconcileRamQueueBytes } from './liveStore.js';
+import { closeRamStore, configureRamStore, reconcileRamQueueBytes, type RamStoreRedis } from './liveStore.js';
 import { startRamWriter, closeRamWriter } from './writerRuntime.js';
 
 async function main(): Promise<void> {
@@ -22,11 +23,14 @@ async function main(): Promise<void> {
   const redis = new Redis(getRedisUrl(), {
     ...getRedisConnectionOptions(), maxRetriesPerRequest: 2,
     enableOfflineQueue: false,
+    lazyConnect: true,
   });
   let started = false;
   try {
     await query('SELECT 1');
+    await redis.connect();
     await redis.ping();
+    configureRamStore(redis as unknown as RamStoreRedis);
     await startRamWriter();
     started = true;
     const stream = getRamStreamKey();
@@ -35,6 +39,9 @@ async function main(): Promise<void> {
       if (count === 0) {
         await closeRamWriter(Math.max(1, stopAt - Date.now()));
         started = false;
+        // closeRamWriter releases the shared store; retain this ready client
+        // for the final byte reconciliation instead of racing a new connect.
+        configureRamStore(redis as unknown as RamStoreRedis);
         if (await redis.xlen(stream) !== 0) {
           throw new Error('RAM_DRAIN_INCOMPLETE: stream received new entries during drain');
         }
@@ -57,8 +64,9 @@ async function main(): Promise<void> {
         console.error('[ram] final drain incomplete', error);
       });
     }
-    redis.disconnect();
     await closeRamStore();
+    redis.disconnect();
+    await resolvePool.close();
     await closeDb();
   }
 }
