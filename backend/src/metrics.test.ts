@@ -54,3 +54,9 @@ test('dynamic metric dimensions collapse unknown values into bounded buckets', (
   assert.equal(boundedNetworkMetricLabel('customer-created-network'), 'other');
   assert.equal(boundedAnalysisWorkloadLabel('run-123456'), 'other');
 });
+
+test('F14 follow-up inflight and drop metrics appear in the served registry', async () => {
+  const scrape = await metricsRegistry.metrics();
+  assert.match(scrape, /meshcore_mqtt_post_persist_inflight/);
+  assert.match(scrape, /meshcore_mqtt_post_persist_dropped_total/);
+});

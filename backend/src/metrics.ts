@@ -185,6 +185,32 @@ export const packetBatchDuration = new Histogram({
   registers: [metricsRegistry],
 });
 
+export const packetBatchQueueDepth = new Gauge({
+  name: 'meshcore_packet_batch_queue_depth',
+  help: 'Packet batch entries waiting to be persisted.',
+  registers: [metricsRegistry],
+});
+
+export const packetBatchQueueWait = new Histogram({
+  name: 'meshcore_packet_batch_queue_wait_seconds',
+  help: 'Time from packet batch enqueue to commit.',
+  buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 15],
+  registers: [metricsRegistry],
+});
+
+export const packetBatchDedupeTotal = new Counter({
+  name: 'meshcore_packet_batch_dedupe_total',
+  help: 'Duplicate packets collapsed inside a batch before persistence.',
+  registers: [metricsRegistry],
+});
+
+export const mqttIngestAckDuration = new Histogram({
+  name: 'meshcore_mqtt_ingest_ack_duration_seconds',
+  help: 'MQTT ingest processing time from receipt to acknowledgement.',
+  buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 15, 30],
+  registers: [metricsRegistry],
+});
+
 export const websocketAdmissionsTotal = new Counter({
   name: 'meshcore_websocket_admissions_total',
   help: 'WebSocket handshake decisions by bounded outcome.',
@@ -473,3 +499,15 @@ export function updateDbPoolMetrics(
   dbPoolTotal.set({ state: `${poolName}_idle` }, snapshot.idleCount);
   dbPoolTotal.set({ state: `${poolName}_waiting` }, snapshot.waitingCount);
 }
+
+export const postPersistInFlightGauge = new Gauge({
+  name: 'meshcore_mqtt_post_persist_inflight',
+  help: 'Best-effort post-persist follow-ups currently in flight (bounded).',
+  registers: [metricsRegistry],
+});
+
+export const postPersistDroppedTotal = new Counter({
+  name: 'meshcore_mqtt_post_persist_dropped_total',
+  help: 'Best-effort post-persist follow-ups dropped because the in-flight bound was reached.',
+  registers: [metricsRegistry],
+});
