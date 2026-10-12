@@ -61,8 +61,13 @@ jobs:
       - run: npm run contract:check
       - run: npm test
       - run: npm run test:analysis-integration
+      - name: Configure bounded RAM Redis fixture
+        run: |
+          docker exec '${{ job.services.redis.id }}' redis-cli CONFIG SET maxmemory 96mb
+          docker exec '${{ job.services.redis.id }}' redis-cli CONFIG SET maxmemory-policy noeviction
       - run: npm run test:ingest-integration
       - run: npm run build
+      - run: npm run test:ram-operational
 
   frontend:
     if: github.event_name != 'schedule'
@@ -191,6 +196,12 @@ jobs:
                 | index("max_worker_processes=24") != null)
               and (.networks.default.ipam.config[0].ip_range
                 == "172.30.0.128/25")' >/dev/null
+          MQTT_INGEST_MODE=ram MQTT_RAM_BATCH_SIZE=37 \
+            docker compose -f docker-compose.yml -f docker-compose.ci.yml config --format json \
+            | jq -e '
+              .services.backend.environment.MQTT_INGEST_MODE == "ram"
+              and .services.backend.environment.MQTT_RAM_BATCH_SIZE == "37"
+              and .services.backend.environment.MQTT_RAM_QUEUE_MAX_BYTES == "33554432"' >/dev/null
       - name: Validate tracked build and Compose inventory
         run: |
           while IFS= read -r context; do

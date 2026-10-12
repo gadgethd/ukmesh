@@ -12,11 +12,14 @@ import {
   initOwnerAuthDb,
 } from './db/ownerAuth.js';
 import { getMqttRuntimeStatus, startMqttClient, stopMqttClient, onPacket, onNodeSeen, onNodeUpsert } from './mqtt/client.js';
+import { startRamWriter, closeRamWriter } from './ram/writerRuntime.js';
+import { getRamIngestMode } from './ram/protocol.js';
 import {
   startMqttConnectionMonitor,
   stopMqttConnectionMonitor,
 } from './mqtt/connectionMonitor.js';
 import { initWebSocketServer, closeWebSocketServer, broadcastPacket, broadcastNodeUpdate, broadcastNodeUpsert } from './ws/server.js';
+import { createPublicRamSource } from './ram/publicSource.js';
 import apiRoutes, { startOwnerLastHopPrewarm, stopOwnerLastHopPrewarm } from './api/routes.js';
 import { startRegisteredStatsWarmup } from './api/routes/stats.js';
 import { initSpamMessageAnalyzer, stopSpamMessageAnalyzer } from './spam/analyzer.js';
@@ -80,6 +83,10 @@ const packetShareForwarder = createPacketShareForwarder({
   repository: createPacketShareRepository(query),
 });
 let shutdownExitCode = 0;
+let shutdownDeadlineAt = 0;
+function shutdownTimeLeft(): number {
+  return Math.max(1, (shutdownDeadlineAt || Date.now() + SHUTDOWN_DEADLINE_MS) - Date.now());
+}
 let forceCloseHttpConnections = () => {};
 let nodeIdentityRefreshTimer: NodeJS.Timeout | null = null;
 
@@ -111,7 +118,12 @@ lifecycle.register({
 lifecycle.register({
   name: 'mqtt-ingest',
   stage: 10,
-  close: () => stopMqttClient(Math.max(1_000, SHUTDOWN_DEADLINE_MS - 5_000)),
+  close: () => stopMqttClient(shutdownTimeLeft()),
+});
+lifecycle.register({
+  name: 'ram-ingest-writer',
+  stage: 30,
+  close: () => closeRamWriter(shutdownTimeLeft()),
 });
 lifecycle.register({
   name: 'path-resolve-workers',
@@ -159,6 +171,7 @@ lifecycle.register({
 
 async function shutdown(reason: string, exitCode: number): Promise<void> {
   shutdownExitCode = Math.max(shutdownExitCode, exitCode);
+  if (shutdownDeadlineAt === 0) shutdownDeadlineAt = Date.now() + SHUTDOWN_DEADLINE_MS;
   if (!lifecycle.isDraining) console.log(`[app] draining after ${reason}`);
   try {
     await lifecycle.drain(reason);
@@ -226,7 +239,9 @@ async function main() {
         console.error('[packet-share] packet handling failed:', error instanceof Error ? error.message : error);
       });
     }
-    if (packet.path?.length && packet.rxNodeId) {
+    // RAM mode defers commit-dependent link admission to the writer's
+    // post-commit hook (the link worker reads packet rows from PostgreSQL).
+    if (getRamIngestMode() !== 'ram' && packet.path?.length && packet.rxNodeId) {
       void queueLinkJob(
         packet.packetHash,
         packet.rxNodeId,
@@ -302,6 +317,7 @@ async function main() {
 
   // API routes
   app.use('/api', apiRoutes);
+  app.use('/internal/ingest/public', createPublicRamSource());
 
   // Health check
   app.get('/healthz', (_req, res) => res.json({ status: 'ok', ts: Date.now() }));
@@ -426,7 +442,25 @@ async function main() {
   startMetricsServer(METRICS_PORT);
 
   packetShareForwarder.start();
-  if (MQTT_INGEST_ENABLED) {
+  if (getRamIngestMode() === 'ram') {
+    void (async () => {
+      let delayMs = 1_000;
+      while (!lifecycle.isDraining) {
+        try {
+          await startRamWriter();
+          break;
+        } catch (err) {
+          console.error('[ram] writer startup failed, retrying:', err instanceof Error ? err.message : err);
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+          delayMs = Math.min(delayMs * 2, 30_000);
+        }
+      }
+      // Early PUBACK is available only after the writer is operational.
+      if (MQTT_INGEST_ENABLED && !lifecycle.isDraining) await startMqttClient();
+    })().catch((err: unknown) => {
+      console.error('[mqtt] failed to start client:', err instanceof Error ? err.message : err);
+    });
+  } else if (MQTT_INGEST_ENABLED) {
     void startMqttClient().catch((err: unknown) => {
       console.error('[mqtt] failed to start client:', err instanceof Error ? err.message : err);
     });

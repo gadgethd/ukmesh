@@ -17,13 +17,17 @@ import {
   websocketAdmissionDecision,
 } from './limits.js';
 import { isPrivateNode } from '../api/utils/privateNode.js';
-import { PublicWsPrivacyIndex } from './privacy.js';
+import { authorizePublicWsMessage, PublicWsPrivacyIndex } from './privacy.js';
+import { loadCurrentPublicPrivacyPolicy } from '../db/packetBatch.js';
+import { createPublicBatch } from '../privacy/publicBatch.js';
 import { trustedClientIp } from '../http/trustedProxy.js';
 import {
   websocketAdmissionsTotal,
   websocketClients,
+  publicLiveOutcomesTotal,
 } from '../metrics.js';
 import { selectInitialViableLinks } from './initialStateLinks.js';
+import { readRecentWithPending } from '../ram/liveRead.js';
 
 const REDIS_CHANNEL = 'meshcore:live';
 const LOG_WS_PACKETS = process.env['LOG_WS_PACKETS'] === '1';
@@ -178,6 +182,7 @@ const viableLinksCache = new BoundedTtlMap<string, {
 const INITIAL_STATE_TTL_MS = 60_000; // 60 s — live WS updates keep clients current
 type InitialStateEntry = {
   ts: number;
+  generation: number;
   nodes: InitialStateRow[];
   packets: InitialStateRow[];
   messages: InitialStateRow[];
@@ -210,9 +215,11 @@ function refreshPrivacyIndex(): Promise<void> {
 }
 
 async function fetchInitialState(network: string | undefined, observer: string | undefined): Promise<InitialStateEntry> {
+  const policy = await loadCurrentPublicPrivacyPolicy();
+  if (!policy) throw new Error('WS_PUBLIC_AUTHORITY_UNAVAILABLE');
   const key = `${network ?? ''}:${observer ?? ''}`;
   const cached = initialStateCache.get(key);
-  if (cached && (Date.now() - cached.ts) < INITIAL_STATE_TTL_MS) return cached;
+  if (cached && cached.generation === policy.currentGeneration && (Date.now() - cached.ts) < INITIAL_STATE_TTL_MS) return cached;
 
   // If a fetch is already in flight for this key, share it — don't pile on the DB.
   const existing = initialStateInflight.get(key);
@@ -232,9 +239,17 @@ async function fetchInitialState(network: string | undefined, observer: string |
       //   seed a proper message cache on first load instead of relying on live traffic.
       const [rawNodes, packets, messages, rawViableLinks] = await Promise.all([
         getNodes(network, observer, 'slim', signal),
-        getRecentPackets(7, network, observer, 'full', signal),
-        getRecentMessages(200, network, observer, signal),
-        getCachedViableLinks(network, observer, signal),
+        readRecentWithPending(
+          (hashes) => getRecentPackets(7, network, observer, 'full', signal, undefined, hashes),
+          { limit: 7, network, observer },
+        ),
+        readRecentWithPending(
+          (hashes) => getRecentMessages(200, network, observer, signal, undefined, hashes),
+          // Message history is group-text only: keep the pending merge in the
+          // same contract as getRecentMessages (packet_type = 5).
+          { limit: 200, network, observer, includePayload: true, packetTypes: [5], rowKind: 'messages' },
+        ),
+        getCachedViableLinks(network, observer, signal, policy.currentGeneration),
       ]);
       const nodes = rawNodes
         .filter((node) => !isPrivateNode(node.name))
@@ -250,11 +265,14 @@ async function fetchInitialState(network: string | undefined, observer: string |
       );
       const entry: InitialStateEntry = {
         ts: Date.now(),
+        generation: policy.currentGeneration,
         nodes,
         packets: slimPackets,
         messages: slimMessages,
         viableLinks,
       };
+      const current = await loadCurrentPublicPrivacyPolicy();
+      if (!current || current.currentGeneration !== entry.generation) throw new Error('WS_INITIAL_STATE_POLICY_CHANGED');
       initialStateCache.set(key, entry);
       return entry;
     } finally {
@@ -285,8 +303,9 @@ async function getCachedViableLinks(
   network?: string,
   observer?: string,
   signal?: AbortSignal,
+  generation = 0,
 ) {
-  const key = cacheKey(network, observer);
+  const key = `${cacheKey(network, observer)}:${generation}`;
   const cached = viableLinksCache.get(key);
   if (cached && (Date.now() - cached.ts) < VIABLE_LINK_CACHE_TTL_MS) return cached.data;
   const data = await getViableLinks(network, observer, signal);
@@ -486,15 +505,7 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
   });
 
   const clientScopes = new Map<WebSocket, ClientScope>();
-  type QueuedClientMessages = {
-    messages: string[];
-    byteLength: number;
-  };
-  const messageQueue = new Map<WebSocket, QueuedClientMessages>();
-  let flushTimeout: ReturnType<typeof setTimeout> | null = null;
-
   const disconnectSlowClient = (client: WebSocket, reason: string) => {
-    messageQueue.delete(client);
     console.warn(`[ws] disconnecting slow client: ${reason}`);
     client.terminate();
   };
@@ -528,7 +539,6 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
     // or outlive a client that disconnects during the database read.
     ws.on('close', () => {
       clientScopes.delete(ws);
-      messageQueue.delete(ws);
       websocketClients.set(wss.clients.size);
       console.log('[ws] client disconnected, total:', wss.clients.size);
     });
@@ -581,6 +591,8 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
           ws.close(1013, 'initial state is temporarily unavailable');
           return;
         }
+        const current = await loadCurrentPublicPrivacyPolicy();
+        if (!current || current.currentGeneration !== entry.generation) throw new Error('WS_INITIAL_STATE_POLICY_CHANGED');
         if (ws.readyState === WebSocket.OPEN) ws.send(serialized);
       } catch (err) {
         console.error('[ws] initial state error', (err as Error).message);
@@ -620,101 +632,51 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
     clearInterval(privacyRefreshTimer);
   });
 
-  const flushMessageQueue = () => {
-    if (messageQueue.size === 0) {
-      flushTimeout = null;
-      return;
-    }
-
-    for (const [client, queued] of messageQueue) {
-      if (client.readyState !== WebSocket.OPEN || queued.messages.length === 0) continue;
-      if (client.bufferedAmount > WS_MAX_BUFFERED_BYTES) {
-        disconnectSlowClient(client, `socket buffer exceeded ${WS_MAX_BUFFERED_BYTES} bytes`);
-        continue;
+  const publicMessages = createPublicBatch<WSMessage>({
+    maxItems: 10_000, maxBytes: WS_MAX_QUEUE_BYTES,
+    loadPolicy: loadCurrentPublicPrivacyPolicy,
+    refused: (outcome, count) => publicLiveOutcomesTotal.inc({ phase: 'ws', outcome }, count),
+    deliver: (items, policy) => {
+      // Query once for the captured broadcast batch, classify each event once,
+      // then fan out synchronously. No stale per-client queues survive a fence.
+      const authorized: Array<{ message: WSMessage; serialized: string; bytes: number }> = [];
+      for (const item of items) {
+        const message = authorizePublicWsMessage(item, policy);
+        publicLiveOutcomesTotal.inc({ phase: 'ws', outcome: message ? 'authorized' : 'private' });
+        if (message) {
+          const serialized = JSON.stringify(message);
+          authorized.push({ message, serialized, bytes: Buffer.byteLength(serialized) });
+        }
       }
-
-      // Send all queued messages - join with newlines for efficiency
-      client.send(queued.messages.join('\n'));
-    }
-
-    messageQueue.clear();
-    flushTimeout = null;
-  };
-
-  const scheduleFlush = () => {
-    if (flushTimeout !== null) return;
-    flushTimeout = setTimeout(flushMessageQueue, 16);
-  };
-
-  // Fan-out Redis messages to all connected WS clients - now batched
-  sub.on('message', (_channel: string, messageStr: string) => {
-    if (wss.clients.size === 0) return;
-    let parsed: WSMessage | null = null;
-    try {
-      parsed = JSON.parse(messageStr) as WSMessage;
-    } catch {
-      return;
-    }
-    parsed = publicPrivacy.filterMessage(parsed);
-    if (!parsed) return;
-    messageStr = JSON.stringify(parsed);
-
-    if (LOG_WS_PACKETS && parsed?.type === 'packet') {
-      console.log('[ws-sub] received packet:', (parsed.data as LivePacket)?.packetHash);
-    }
-
-    const messageByteLength = Buffer.byteLength(messageStr);
-    if (messageByteLength > WS_MAX_QUEUE_BYTES) {
-      console.warn(`[ws] skipping oversized live message (${messageByteLength} bytes)`);
-      return;
-    }
-
-    const isLiveFeedPacket = parsed?.type === 'packet'
-      && Number((parsed.data as { packetType?: number } | null)?.packetType) === 5;
-
-    for (const client of wss.clients) {
-      if (client.readyState !== WebSocket.OPEN) continue;
-      const scope = clientScopes.get(client);
-      if (parsed && scope && !shouldSendMessage(parsed, scope)) continue;
-      if (parsed && scope) trackScopedNodes(parsed, scope);
-
-      // GRP chat packets power the live feed — send immediately so the UI
-      // never waits on the 16ms batch timer. Other events stay batched.
-      if (isLiveFeedPacket) {
-        if (client.bufferedAmount > WS_MAX_BUFFERED_BYTES) {
-          disconnectSlowClient(client, `socket buffer exceeded ${WS_MAX_BUFFERED_BYTES} bytes`);
+      for (const client of wss.clients) {
+        if (client.readyState !== WebSocket.OPEN) continue;
+        const scope = clientScopes.get(client);
+        const lines: string[] = [];
+        let bytes = 0;
+        for (const item of authorized) {
+          if (scope && !shouldSendMessage(item.message, scope)) continue;
+          if (scope) trackScopedNodes(item.message, scope);
+          lines.push(item.serialized); bytes += item.bytes + 1;
+        }
+        if (!lines.length) continue;
+        if (client.bufferedAmount > WS_MAX_BUFFERED_BYTES || bytes > WS_MAX_QUEUE_BYTES) {
+          disconnectSlowClient(client, 'public live delivery exceeded the bounded socket budget');
           continue;
         }
-        // Flush any already-queued events first so ordering stays intact.
-        const existing = messageQueue.get(client);
-        if (existing && existing.messages.length > 0) {
-          client.send(existing.messages.join('\n') + '\n' + messageStr);
-          messageQueue.delete(client);
-        } else {
-          client.send(messageStr);
-        }
-        continue;
+        client.send(lines.join('\n'));
       }
+    },
+  });
+  wss.once('close', () => { void publicMessages.close(); });
 
-      // Queue messages briefly for batched fan-out, with per-client bounds so
-      // a stalled browser cannot retain an unbounded live-event backlog.
-      const existing = messageQueue.get(client);
-      if (
-        client.bufferedAmount > WS_MAX_BUFFERED_BYTES
-        || (existing?.byteLength ?? 0) + messageByteLength > WS_MAX_QUEUE_BYTES
-      ) {
-        disconnectSlowClient(client, `live queue exceeded ${WS_MAX_QUEUE_BYTES} bytes`);
-        continue;
-      }
-      if (existing) {
-        existing.messages.push(messageStr);
-        existing.byteLength += messageByteLength;
-      } else {
-        messageQueue.set(client, { messages: [messageStr], byteLength: messageByteLength });
-      }
+  sub.on('message', (_channel: string, messageStr: string) => {
+    if (wss.clients.size === 0) return;
+    let message: WSMessage;
+    try { message = JSON.parse(messageStr) as WSMessage; } catch { return; }
+    if (LOG_WS_PACKETS && message.type === 'packet') {
+      console.log('[ws-sub] received packet:', (message.data as LivePacket)?.packetHash);
     }
-
-    if (!isLiveFeedPacket) scheduleFlush();
+    publicMessages.enqueue(message, Buffer.byteLength(messageStr));
   });
 
   return wss;
