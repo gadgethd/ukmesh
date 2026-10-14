@@ -215,7 +215,7 @@ jobs:
           compose_services="$(docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile dev config --services)"
           for service in \
             db-migrate backend privacy-remat-worker app-ukmesh website-ukmesh website-dev mesh-health-check \
-            mosquitto-reloader link-worker link-backfill-worker hopreach \
+            mosquitto-reloader link-worker link-backfill-worker hopreach tagger-worker \
             timescaledb mosquitto; do
             grep -Fxq "$service" <<<"$compose_services"
           done
@@ -264,7 +264,7 @@ jobs:
             --project-name "$project" \
             --profile dev \
             build \
-              backend app-ukmesh website-ukmesh website-dev mesh-health-check \
+              backend app-ukmesh website-ukmesh website-dev mesh-health-check tagger-worker \
               mosquitto-reloader link-worker hopreach
           docker compose -f docker-compose.yml -f docker-compose.ci.yml \
             --project-name "$project" \
