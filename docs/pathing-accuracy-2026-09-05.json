@@ -1,0 +1,374 @@
+{
+  "baselineCommit": "1eefb50b31fda8d79ef383a658764671c65cb46a",
+  "snapshotSha256": "f92b5be6776f589ab3c237875c449989545ba56a6c15d9e0ec220b6cf2047632",
+  "capturedAt": "2026-09-05 01:18:07.69378+00",
+  "trainingBuckets": [
+    0,
+    69
+  ],
+  "developmentBuckets": [
+    70,
+    84
+  ],
+  "evaluationBuckets": [
+    85,
+    99
+  ],
+  "trainingSplitVerified": "Running worker had no PATH_LEARNING_TRAINING_SPLIT_PERCENT override; source default is 70.",
+  "readOnlySnapshot": true,
+  "comparisons": {
+    "lazy-single": {
+      "baseline": {
+        "snapshotSha256": "f92b5be6776f589ab3c237875c449989545ba56a6c15d9e0ec220b6cf2047632",
+        "capturedAt": "2026-09-05 01:18:07.69378+00",
+        "decoder": "1eefb50:lazy",
+        "split": "test",
+        "mode": "single",
+        "routes": 1377,
+        "excluded": 410,
+        "routeCorrect": 1035,
+        "totalHops": 9190,
+        "correctHops": 8351,
+        "routeAccuracy": 0.7516339869281046,
+        "hopAccuracy": 0.9087051142546246,
+        "rawThreeByteCorrect": 1184,
+        "uniqueRoutes": 1292,
+        "medianMs": 34.32457699999213,
+        "p95Ms": 64.22827799999504,
+        "p99Ms": 107.54097700000057
+      },
+      "current": {
+        "snapshotSha256": "f92b5be6776f589ab3c237875c449989545ba56a6c15d9e0ec220b6cf2047632",
+        "capturedAt": "2026-09-05 01:18:07.69378+00",
+        "decoder": "current",
+        "split": "test",
+        "mode": "single",
+        "routes": 1377,
+        "excluded": 410,
+        "routeCorrect": 1131,
+        "totalHops": 9190,
+        "correctHops": 8710,
+        "routeAccuracy": 0.8213507625272332,
+        "hopAccuracy": 0.9477693144722524,
+        "rawThreeByteCorrect": 1377,
+        "uniqueRoutes": 1292,
+        "medianMs": 11.225374000001466,
+        "p95Ms": 30.753426999999647,
+        "p99Ms": 41.991972999996506
+      },
+      "improved": 106,
+      "regressed": 10,
+      "routeGainPercentagePoints": 6.971677559912854,
+      "hopGainPercentagePoints": 3.9064200217627856,
+      "uniqueRouteGain95IntervalPercentagePoints": [
+        5.882352941176471,
+        9.055727554179567
+      ],
+      "strata": {
+        "known-source": {
+          "routes": 295,
+          "baselineCorrect": 227,
+          "currentCorrect": 234
+        },
+        "hops-7-12": {
+          "routes": 440,
+          "baselineCorrect": 284,
+          "currentCorrect": 338
+        },
+        "hops-2-3": {
+          "routes": 144,
+          "baselineCorrect": 131,
+          "currentCorrect": 130
+        },
+        "unknown-source": {
+          "routes": 1082,
+          "baselineCorrect": 808,
+          "currentCorrect": 897
+        },
+        "hops-4-6": {
+          "routes": 689,
+          "baselineCorrect": 597,
+          "currentCorrect": 604
+        },
+        "hops-13+": {
+          "routes": 104,
+          "baselineCorrect": 23,
+          "currentCorrect": 59
+        }
+      }
+    },
+    "lazy-multi": {
+      "baseline": {
+        "snapshotSha256": "f92b5be6776f589ab3c237875c449989545ba56a6c15d9e0ec220b6cf2047632",
+        "capturedAt": "2026-09-05 01:18:07.69378+00",
+        "decoder": "1eefb50:lazy",
+        "split": "test",
+        "mode": "multi",
+        "routes": 1377,
+        "excluded": 410,
+        "routeCorrect": 1078,
+        "totalHops": 9190,
+        "correctHops": 8617,
+        "routeAccuracy": 0.7828612926652142,
+        "hopAccuracy": 0.9376496191512513,
+        "rawThreeByteCorrect": 1246,
+        "uniqueRoutes": 1292,
+        "medianMs": 54.398984999992535,
+        "p95Ms": 150.54681999999957,
+        "p99Ms": 206.64727600000333
+      },
+      "current": {
+        "snapshotSha256": "f92b5be6776f589ab3c237875c449989545ba56a6c15d9e0ec220b6cf2047632",
+        "capturedAt": "2026-09-05 01:18:07.69378+00",
+        "decoder": "current",
+        "split": "test",
+        "mode": "multi",
+        "routes": 1377,
+        "excluded": 410,
+        "routeCorrect": 1135,
+        "totalHops": 9190,
+        "correctHops": 8716,
+        "routeAccuracy": 0.8242556281771968,
+        "hopAccuracy": 0.9484221980413493,
+        "rawThreeByteCorrect": 1377,
+        "uniqueRoutes": 1292,
+        "medianMs": 10.617765000000873,
+        "p95Ms": 30.299431999999797,
+        "p99Ms": 42.795510999999806
+      },
+      "improved": 71,
+      "regressed": 14,
+      "routeGainPercentagePoints": 4.139433551198257,
+      "hopGainPercentagePoints": 1.0772578890097932,
+      "uniqueRouteGain95IntervalPercentagePoints": [
+        3.018575851393189,
+        5.804953560371517
+      ],
+      "strata": {
+        "known-source": {
+          "routes": 295,
+          "baselineCorrect": 222,
+          "currentCorrect": 234
+        },
+        "hops-7-12": {
+          "routes": 440,
+          "baselineCorrect": 314,
+          "currentCorrect": 338
+        },
+        "hops-2-3": {
+          "routes": 144,
+          "baselineCorrect": 128,
+          "currentCorrect": 130
+        },
+        "unknown-source": {
+          "routes": 1082,
+          "baselineCorrect": 856,
+          "currentCorrect": 901
+        },
+        "hops-4-6": {
+          "routes": 689,
+          "baselineCorrect": 592,
+          "currentCorrect": 607
+        },
+        "hops-13+": {
+          "routes": 104,
+          "baselineCorrect": 44,
+          "currentCorrect": 60
+        }
+      }
+    },
+    "beta-single": {
+      "baseline": {
+        "snapshotSha256": "f92b5be6776f589ab3c237875c449989545ba56a6c15d9e0ec220b6cf2047632",
+        "capturedAt": "2026-09-05 01:18:07.69378+00",
+        "decoder": "1eefb50:beta",
+        "split": "test",
+        "mode": "single",
+        "routes": 1377,
+        "excluded": 410,
+        "routeCorrect": 479,
+        "totalHops": 9190,
+        "correctHops": 6315,
+        "routeAccuracy": 0.3478576615831518,
+        "hopAccuracy": 0.6871599564744287,
+        "rawThreeByteCorrect": 1165,
+        "uniqueRoutes": 1292,
+        "medianMs": 2.602124000000913,
+        "p95Ms": 9.193194999999832,
+        "p99Ms": 14.868608999999196
+      },
+      "current": {
+        "snapshotSha256": "f92b5be6776f589ab3c237875c449989545ba56a6c15d9e0ec220b6cf2047632",
+        "capturedAt": "2026-09-05 01:18:07.69378+00",
+        "decoder": "current",
+        "split": "test",
+        "mode": "single",
+        "routes": 1377,
+        "excluded": 410,
+        "routeCorrect": 1131,
+        "totalHops": 9190,
+        "correctHops": 8710,
+        "routeAccuracy": 0.8213507625272332,
+        "hopAccuracy": 0.9477693144722524,
+        "rawThreeByteCorrect": 1377,
+        "uniqueRoutes": 1292,
+        "medianMs": 11.225374000001466,
+        "p95Ms": 30.753426999999647,
+        "p99Ms": 41.991972999996506
+      },
+      "improved": 684,
+      "regressed": 32,
+      "routeGainPercentagePoints": 47.34931009440813,
+      "hopGainPercentagePoints": 26.06093579978237,
+      "uniqueRouteGain95IntervalPercentagePoints": [
+        45.04643962848297,
+        51.0061919504644
+      ],
+      "strata": {
+        "known-source": {
+          "routes": 295,
+          "baselineCorrect": 118,
+          "currentCorrect": 234
+        },
+        "hops-7-12": {
+          "routes": 440,
+          "baselineCorrect": 86,
+          "currentCorrect": 338
+        },
+        "hops-2-3": {
+          "routes": 144,
+          "baselineCorrect": 90,
+          "currentCorrect": 130
+        },
+        "unknown-source": {
+          "routes": 1082,
+          "baselineCorrect": 361,
+          "currentCorrect": 897
+        },
+        "hops-4-6": {
+          "routes": 689,
+          "baselineCorrect": 301,
+          "currentCorrect": 604
+        },
+        "hops-13+": {
+          "routes": 104,
+          "baselineCorrect": 2,
+          "currentCorrect": 59
+        }
+      }
+    },
+    "beta-multi": {
+      "baseline": {
+        "snapshotSha256": "f92b5be6776f589ab3c237875c449989545ba56a6c15d9e0ec220b6cf2047632",
+        "capturedAt": "2026-09-05 01:18:07.69378+00",
+        "decoder": "1eefb50:beta",
+        "split": "test",
+        "mode": "multi",
+        "routes": 1377,
+        "excluded": 410,
+        "routeCorrect": 485,
+        "totalHops": 9190,
+        "correctHops": 6318,
+        "routeAccuracy": 0.3522149600580973,
+        "hopAccuracy": 0.6874863982589772,
+        "rawThreeByteCorrect": 1142,
+        "uniqueRoutes": 1292,
+        "medianMs": 2.552361000000019,
+        "p95Ms": 6.777016999999432,
+        "p99Ms": 10.883194999998523
+      },
+      "current": {
+        "snapshotSha256": "f92b5be6776f589ab3c237875c449989545ba56a6c15d9e0ec220b6cf2047632",
+        "capturedAt": "2026-09-05 01:18:07.69378+00",
+        "decoder": "current",
+        "split": "test",
+        "mode": "multi",
+        "routes": 1377,
+        "excluded": 410,
+        "routeCorrect": 1135,
+        "totalHops": 9190,
+        "correctHops": 8716,
+        "routeAccuracy": 0.8242556281771968,
+        "hopAccuracy": 0.9484221980413493,
+        "rawThreeByteCorrect": 1377,
+        "uniqueRoutes": 1292,
+        "medianMs": 10.617765000000873,
+        "p95Ms": 30.299431999999797,
+        "p99Ms": 42.795510999999806
+      },
+      "improved": 679,
+      "regressed": 29,
+      "routeGainPercentagePoints": 47.20406681190995,
+      "hopGainPercentagePoints": 26.093579978237216,
+      "uniqueRouteGain95IntervalPercentagePoints": [
+        44.81424148606811,
+        50.77399380804953
+      ],
+      "strata": {
+        "known-source": {
+          "routes": 295,
+          "baselineCorrect": 118,
+          "currentCorrect": 234
+        },
+        "hops-7-12": {
+          "routes": 440,
+          "baselineCorrect": 90,
+          "currentCorrect": 338
+        },
+        "hops-2-3": {
+          "routes": 144,
+          "baselineCorrect": 89,
+          "currentCorrect": 130
+        },
+        "unknown-source": {
+          "routes": 1082,
+          "baselineCorrect": 367,
+          "currentCorrect": 901
+        },
+        "hops-4-6": {
+          "routes": 689,
+          "baselineCorrect": 304,
+          "currentCorrect": 607
+        },
+        "hops-13+": {
+          "routes": 104,
+          "baselineCorrect": 2,
+          "currentCorrect": 60
+        }
+      }
+    }
+  },
+  "productionSmoke": {
+    "readOnlyDatabaseFence": true,
+    "coldContextDetailMs": 3232.646745,
+    "oneByteWarmDetailMs": 286.86554200000046,
+    "threeByteWarmDetailMs": 500.3961670000008,
+    "oneByteObserverPaths": 7,
+    "threeByteObserverPaths": 19,
+    "allSingleMultiAndDetailResponsesPresent": true,
+    "observerProjectionChecksPassed": true,
+    "note": "Two packet smoke test during concurrent test/replay load; not a latency distribution."
+  },
+  "validation": {
+    "backendBuild": "passed",
+    "backendTypecheck": "passed",
+    "frontendTypecheck": "passed",
+    "pathTests": {
+      "passed": 56,
+      "failed": 0
+    },
+    "frontendPathTests": {
+      "passed": 9,
+      "failed": 0
+    },
+    "fullBackendSuite": {
+      "passed": 336,
+      "failed": 3,
+      "preExistingUntrackedFailures": [
+        "backend/src/analysis/runState.test.ts",
+        "backend/src/api/routes/rfValidation.test.ts",
+        "backend/src/repositories/networkAnalysis.test.ts"
+      ]
+    }
+  }
+}

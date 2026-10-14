@@ -16,6 +16,7 @@ import { rfNodeCoverageState, useRfCoverage, type RfCoverageTierName } from './h
 import { useDashboardStats, type DashboardStats } from './hooks/useDashboardStats.js';
 import { linkStateStore } from './hooks/useLinkState.js';
 import { useAppMessageHandler } from './hooks/useAppMessageHandler.js';
+import { useMessageTags } from './hooks/useMessageTags.js';
 import {
   HEATMAP_CAPABLE,
   PACKET_ARCS_CAPABLE,
@@ -469,6 +470,8 @@ export const App: React.FC = () => {
     { network: networkFilter, observer: observerFilter },
     scopeState.nodeEpoch,
   );
+  // Live tag enrichment for the feed panel (tags land ~2s after a packet).
+  useMessageTags({ network: networkFilter, observer: observerFilter }, realtimeScopeKey);
   const wsState = wsConnection.readyState;
   wsConnectedRef.current = wsState === 'connected';
 

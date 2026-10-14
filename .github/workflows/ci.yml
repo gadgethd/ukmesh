@@ -225,6 +225,13 @@ jobs:
           publisher_user="ci-e2e-publisher"
           publisher_password="ci-e2e-publisher-password"
           observer="CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"
+          cleanup() {
+            docker compose -f docker-compose.yml -f docker-compose.ci.yml \
+              --project-name "$project" \
+              --profile dev \
+              down --volumes --remove-orphans
+          }
+          trap cleanup EXIT
           # Create each Argon2 entry independently. Updating an existing
           # password file with this image is not reliable on hosted runners.
           docker run --rm \

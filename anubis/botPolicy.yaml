@@ -21,6 +21,34 @@ bots:
     path_regex: ^/terrain-tiles/
     action: ALLOW
 
+  # ── Link-preview bots: allow so shared links render embeds ────────────────
+  # Discordbot/LinkedInBot UAs contain "Mozilla", which otherwise trips the
+  # generic-browser WEIGH rule (+10 -> challenge they cannot solve).
+  # These agents only fetch public pages for unfurling; UA-only ALLOW is fine.
+  # NOTE: AI-search carve-out (OAI-SearchBot etc.) intentionally not enabled;
+  # see FIX-PACK section 2.2 in ~/.review-notes/nemesh-seo-2026-10-11/ to enable.
+  - name: allow-link-preview-bots
+    user_agent_regex: >-
+      (?i)Discordbot|LinkedInBot|Slackbot|Twitterbot|TelegramBot|WhatsApp|facebookexternalhit|Facebot|Pinterestbot|redditbot
+    action: ALLOW
+
+  # ── IndexNow key file: always allow ───────────────────────────────────────
+  # Search engines fetch /assets/<32-hex>.txt from arbitrary IPs/UAs to verify
+  # site ownership for IndexNow submissions; those fetchers carry "Mozilla"
+  # in the UA and would otherwise be challenged (returning HTML instead of
+  # the key, which fails verification with a 422). Static file, exact pattern.
+  - name: allow-indexnow-key
+    path_regex: ^/(assets/)?[0-9a-f]{32}\.txt$
+    action: ALLOW
+
+  # ── Google tooling: GSC URL Inspection, Rich Results test, PageSpeed Insights ──
+  # These fetchers run from Google infra but not necessarily from the published
+  # googlebot IP ranges, so the UA+IP-gated googlebot allow rule can miss them.
+  - name: allow-google-tools
+    user_agent_regex: >-
+      (?i)Google-InspectionTool|Chrome-Lighthouse|Google-PageSpeedInsights|Google-Structured-Data-Testing-Tool|Google-Site-Verification
+    action: ALLOW
+
   # ── Built-in deny rules for pathological bots ──────────────────────────────
   - import: (data)/bots/_deny-pathological.yaml
   - import: (data)/bots/aggressive-brazilian-scrapers.yaml

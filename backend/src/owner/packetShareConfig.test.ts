@@ -3,9 +3,12 @@ import test from 'node:test';
 import {
   buildPacketSharePayload,
   destinationConfigured,
+  destinationAcceptsPacket,
+  destinationAllowedForOwner,
   isValidPacketShareWebsiteUrl,
   isForwardablePacket,
   renderPacketShareTopic,
+  renderDestinationTopic,
 } from './packetShareConfig.js';
 import { decryptPacketShareSecret, encryptPacketShareSecret } from './packetShareCrypto.js';
 import type { LivePacket } from '../types/index.js';
@@ -110,4 +113,38 @@ test('packet share secrets round-trip with authenticated encryption', () => {
   const encrypted = encryptPacketShareSecret('broker-password', 'test-encryption-key');
   assert.equal(decryptPacketShareSecret(encrypted, 'test-encryption-key'), 'broker-password');
   assert.throws(() => decryptPacketShareSecret(encrypted, 'wrong-encryption-key'));
+});
+
+test('account and observer restrictions require exact matches', () => {
+  const scope = { allowed_owner_username: 'node1', allowed_node_id: packet.rxNodeId };
+  assert.equal(destinationAllowedForOwner(scope, 'node1', packet.rxNodeId!), true);
+  assert.equal(destinationAllowedForOwner(scope, 'node2', packet.rxNodeId!), false);
+  assert.equal(destinationAllowedForOwner(scope, 'NODE1', packet.rxNodeId!), false);
+  assert.equal(destinationAllowedForOwner(scope, 'node1', 'C'.repeat(64)), false);
+});
+
+test('advert TX mode preserves RX but rejects other transmissions and relayed adverts', () => {
+  const destination = { tx_mode: 'advert' as const };
+  assert.equal(destinationAcceptsPacket(destination, { ...packet, direction: 'rx' }, {}), true);
+  assert.equal(destinationAcceptsPacket(destination, { ...packet, direction: 'tx' }, {}), false);
+  assert.equal(destinationAcceptsPacket(destination, { ...packet, packetType: 4, direction: 'tx', srcNodeId: packet.rxNodeId }, {}), true);
+  assert.equal(destinationAcceptsPacket(destination, { ...packet, packetType: 4, direction: 'tx', srcNodeId: 'C'.repeat(64) }, {}), false);
+  assert.equal(destinationAcceptsPacket(destination, packet, { direction: 'tx' }), false);
+  assert.equal(destinationAcceptsPacket(destination, { ...packet, direction: 'unknown' }, {}), false);
+});
+
+test('ScotMesh uses MME and the relay identity in the MQTT topic and origin_id', () => {
+  const relayPublicKey = 'D'.repeat(64);
+  const destination = {
+    destination_id: 'scotmesh', display_name: 'ScotMesh', enabled: true,
+    broker_url: 'wss://scotmesh-mqtt.mm7roq.compute.oarc.uk:443/',
+    topic_template: 'meshcore/MME/{observerId}/packets',
+    broker_username: `v1_${relayPublicKey}`, broker_password_ciphertext: null,
+    auth_mode: 'meshcore_jwt' as const,
+  };
+  assert.equal(renderDestinationTopic(destination, packet), `meshcore/MME/${relayPublicKey}/packets`);
+  const payload = buildPacketSharePayload(packet, { raw: '0102', origin: 'Gadget-RPT-TBeam', origin_id: packet.rxNodeId }, destination);
+  assert.equal(payload.origin_id, relayPublicKey);
+  assert.equal(payload.origin, 'Gadget-RPT-TBeam');
+  assert.equal(payload.raw, '0102');
 });

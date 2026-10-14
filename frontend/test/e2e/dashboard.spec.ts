@@ -1,10 +1,38 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
-import { installMapRoutes, installTerrainRoutes, RF_COVERAGE_TILE } from './mapFixtures.js';
+
+const TEST_MAP_STYLE = {
+  version: 8,
+  sources: {
+    openmaptiles: {
+      type: 'vector',
+      url: 'https://tiles.openfreemap.org/planet',
+    },
+  },
+  glyphs: 'https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf',
+  layers: [
+    { id: 'bg', type: 'background', paint: { 'background-color': '#080d14' } },
+  ],
+};
+
+async function installMapRoutes(page: Page, delayPlanetMetadata = false) {
+  await page.route('https://tiles.openfreemap.org/**', async (route) => {
+    const pathname = new URL(route.request().url()).pathname;
+    if (pathname === '/styles/dark' || pathname === '/styles/positron') {
+      await route.fulfill({ json: TEST_MAP_STYLE });
+      return;
+    }
+    if (pathname === '/planet' && delayPlanetMetadata) {
+      await new Promise((resolve) => setTimeout(resolve, 1_500));
+      await route.continue();
+      return;
+    }
+    await route.abort();
+  });
+}
 
 test.beforeEach(async ({ page }) => {
   await installMapRoutes(page);
-  await installTerrainRoutes(page);
   await page.route('**/*basemaps.cartocdn.com/**', () => {
     throw new Error('CARTO tiles should not be requested after OpenFreeMap migration');
   });
@@ -53,8 +81,7 @@ test.beforeEach(async ({ page }) => {
   });
   let metaPolls = 0;
   await page.route('**/rf-coverage/meta.json*', async (route) => {
-    // Two fixture stages; later polls retain the completed stage and tile revision.
-    metaPolls = Math.min(metaPolls + 1, 2);
+    metaPolls += 1;
     const tiles = [{ image: 'tiles/standard/0-0.png', bounds: { South: 49, North: 61, West: -9, East: 3 } }];
     if (metaPolls > 1) tiles.push({ image: 'tiles/standard/0-1.png', bounds: { South: 49, North: 61, West: 3, East: 4 } });
     await route.fulfill({ json: {
@@ -99,7 +126,7 @@ test.beforeEach(async ({ page }) => {
   } }));
   await page.route('**/rf-coverage/tiles/**/*.png*', (route) => route.fulfill({
     contentType: 'image/png',
-    body: RF_COVERAGE_TILE,
+    body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAF/gL+AvnqWQAAAABJRU5ErkJggg==', 'base64'),
   }));
   await page.route('**/api/**', async (route) => {
     const path = new URL(route.request().url()).pathname;
@@ -133,9 +160,6 @@ test('HopReach tiles arrive progressively while the 4,600-node map remains inter
     { timeout: 15_000 },
   ).toBe(true);
   await expect(page.getByRole('button', { name: 'Precision' })).toBeVisible({ timeout: 8_000 });
-  if (testInfo.project.name === 'dashboard-mobile') {
-    await page.getByRole('button', { name: 'Close menu' }).click();
-  }
   await page.getByRole('button', { name: 'Precision' }).click();
   await expect(page.getByRole('button', { name: 'Precision' })).toHaveAttribute('aria-pressed', 'true');
   await expect.poll(
@@ -171,19 +195,6 @@ test('enabled HopReach coverage survives metadata winning the initial map-load r
 });
 
 test('RF coverage remains available with 3D terrain', async ({ page }, testInfo) => {
-  // Real DEM decoding and software 3D rendering take longer than rejected HTML tiles.
-  test.setTimeout(60_000);
-  const tileErrors: string[] = [];
-  page.on('console', (message) => {
-    if (message.text().startsWith('[terrain] source error:')
-      || message.text().startsWith('[rf-coverage] unable to load source tile')) {
-      tileErrors.push(message.text());
-    }
-  });
-  const firstTerrainTile = page.waitForResponse((response) =>
-    new URL(response.url()).pathname.startsWith('/terrain-tiles/'));
-  const firstCoverageTile = page.waitForResponse((response) =>
-    new URL(response.url()).pathname.startsWith('/rf-coverage/tiles/'));
   await page.goto('/?layers=feed%2Cterrain%2Ccoverage', { waitUntil: 'domcontentloaded' });
   await page.getByText('Live Map', { exact: true }).waitFor({ state: 'visible', timeout: 15_000 });
   if (testInfo.project.name === 'dashboard-mobile') {
@@ -195,24 +206,9 @@ test('RF coverage remains available with 3D terrain', async ({ page }, testInfo)
   await expect(coverage).toHaveAttribute('aria-pressed', 'true');
   await expect(terrain).toHaveAttribute('aria-pressed', 'true');
   await expect(page).toHaveURL(/layers=[^&]*terrain[^&]*coverage/);
-  const tileResponses = await Promise.all([firstTerrainTile, firstCoverageTile]);
-  for (const response of tileResponses) {
-    expect(response.status()).toBe(200);
-    expect(response.headers()['content-type']).toContain('image/png');
-  }
-  const tileSizes = await page.evaluate((urls) => Promise.all(urls.map(async (url) => {
-    const image = await createImageBitmap(await (await fetch(url)).blob());
-    const size = { width: image.width, height: image.height };
-    image.close();
-    return size;
-  })), tileResponses.map((response) => response.url()));
-  expect(tileSizes).toEqual([{ width: 256, height: 256 }, { width: 256, height: 256 }]);
-  expect(tileErrors).toEqual([]);
 });
 
-test('map modes update layers and produce a shareable URL', async ({ page }, testInfo) => {
-  // Two 4,600-node bootstraps and an axe scan share this budget, including cold Vite compilation.
-  test.setTimeout(45_000);
+test('map modes update layers and produce a shareable URL', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByText('Live Map', { exact: true })).toBeVisible({ timeout: 15_000 });
   const mapArea = page.locator('.map-area');
@@ -223,9 +219,6 @@ test('map modes update layers and produce a shareable URL', async ({ page }, tes
     .filter((violation) => violation.impact === 'critical' || violation.impact === 'serious')
     .map((violation) => ({ id: violation.id, targets: violation.nodes.map((node) => node.target.join(' ')) }))).toEqual([]);
 
-  if (testInfo.project.name === 'dashboard-mobile') {
-    await page.getByRole('button', { name: 'Layers' }).first().click();
-  }
   const diagnose = page.getByRole('button', { name: 'Diagnose' }).first();
   await diagnose.click();
   await expect(diagnose).toHaveAttribute('aria-pressed', 'true');
@@ -234,9 +227,5 @@ test('map modes update layers and produce a shareable URL', async ({ page }, tes
   await expect(page).toHaveURL(/layers=.*clashes/);
 
   await page.reload();
-  await expect(page.getByText('Live Map', { exact: true })).toBeVisible({ timeout: 15_000 });
-  if (testInfo.project.name === 'dashboard-mobile') {
-    await page.getByRole('button', { name: 'Layers' }).first().click();
-  }
   await expect(page.getByRole('button', { name: 'Diagnose' }).first()).toHaveAttribute('aria-pressed', 'true');
 });

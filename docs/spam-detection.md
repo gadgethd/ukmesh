@@ -100,8 +100,10 @@ A cluster only becomes an incident when it is genuine abuse, not normal traffic:
   *or* the spam marker. Trivial/connectivity messages (`test`, `ack`, `morning`,
   `gm`, …) never qualify on their own.
 - **Requires a suspicious sender pattern** — a single repeating sender, one
-  dominant sender, or **rotating similar usernames**. Many *dissimilar* people
-  sending the same thing is treated as broad legitimate chatter, not one abuser.
+  dominant sender, **rotating similar usernames**, or a **rotating-ID botnet**
+  (see below). Many *dissimilar* **people** sending the same thing is treated
+  as broad legitimate chatter, not one abuser — but "many senders" made of
+  single-shot machine-named identities is a botnet, not people.
 - The **test channel is excluded by default** (it carries repeated test traffic
   by design). Configurable via `SPAM_MESSAGE_EXCLUDE_CHANNELS`. A flood that
   *also* hits another channel (e.g. Public) is still caught via those copies.
@@ -115,6 +117,29 @@ A cluster only becomes an incident when it is genuine abuse, not normal traffic:
   strong automated-abuse signal on its own and is scored up — but a benign
   test/connectivity flood is never rewarded, so it stays below the public floor
   no matter how large it grows.
+
+### Rotating-ID botnets
+
+A distinct abuse class: the **same canned line blasted from many fresh sender
+IDs** — one message per ID, in timed bursts (a handful of IDs within minutes),
+then quiet. Per-sender rate logic sees nothing; the tell is one text arriving
+from many *one-shot* identities. A cluster is flagged `rotatingIdentities`
+when ALL of:
+
+- ≥ `SPAM_MESSAGE_ROTATING_MIN_SENDERS` distinct senders,
+- ≥ `SPAM_MESSAGE_ROTATING_SINGLE_SHOT_SHARE` of them appear exactly once in the
+  analysis window (one-shot identities, not established members),
+- ≥ `SPAM_MESSAGE_ROTATING_MACHINE_NAME_SHARE` of the names look
+  machine-generated (`looksMachineGeneratedName` in `normalize.ts`:
+  separator-free base32-ish tokens, ≥1 digit, vowel-poor, mostly uppercase —
+  amateur-callsign shapes and human composites are excluded), and
+- ≥ `SPAM_MESSAGE_ROTATING_MIN_BURST_SENDERS` distinct senders inside one burst
+  window.
+
+Flagged clusters are exempted from the broad-chatter rejection, scored +0.3, and
+carry the reason "N single-shot identities (X% machine-style names, N within
+10 min) posted near-identical text". First production catch: the Oct-2026
+anti-Kirby campaign — 9 incidents, 8–15 sender IDs each, confidence 0.54–0.81.
 
 ## Incident lifecycle
 
@@ -145,6 +170,10 @@ All knobs live in `backend/src/spam/config.ts` and read from the environment.
 | `SPAM_MESSAGE_MAX_INDEPENDENT_SENDERS` | `4` | Above this (dissimilar) → broad chatter |
 | `SPAM_MESSAGE_DOMINANT_SENDER_SHARE` | `0.6` | One sender at this share qualifies |
 | `SPAM_MESSAGE_FLOOD_MIN_MESSAGES` | `25` | ≥ this many near-duplicates → sustained-flood boost |
+| `SPAM_MESSAGE_ROTATING_MIN_SENDERS` | `5` | Min distinct senders for rotating-ID detection |
+| `SPAM_MESSAGE_ROTATING_SINGLE_SHOT_SHARE` | `0.8` | Share of senders seen exactly once in the window |
+| `SPAM_MESSAGE_ROTATING_MACHINE_NAME_SHARE` | `0.5` | Share of names that must look machine-generated |
+| `SPAM_MESSAGE_ROTATING_MIN_BURST_SENDERS` | `3` | Min distinct senders inside one burst window |
 | `SPAM_MESSAGE_EXCLUDE_CHANNELS` | `test` | Channel labels skipped (comma list) |
 | `SPAM_MESSAGE_PUBLIC_MIN_SCORE` | `0.5` | Confidence floor for public list / status |
 | `SPAM_MESSAGE_ONGOING_WINDOW_MIN` | `30` | How long an incident stays "ongoing" |
@@ -171,8 +200,9 @@ Two separate confidences are shown:
 
 - **Detection confidence** (incident `confidence`, 0–1) — how strongly the
   pattern resembles spam. Built from volume, burst density, sustained-flood
-  size, repeated links, the spam marker, and rotating sender names; content
-  dominated by connectivity/test tokens is dampened. `High ≥ 0.66`,
+  size, repeated links, the spam marker, rotating sender names, and
+  rotating-identity evidence; content dominated by connectivity/test tokens is
+  dampened. `High ≥ 0.66`,
   `Medium ≥ 0.4`, else `Low`. Only incidents at/above
   `SPAM_MESSAGE_PUBLIC_MIN_SCORE` appear publicly by default.
 - **Origin confidence** (origin `confidence` + `level`) — how trustworthy the
@@ -247,6 +277,13 @@ docker compose exec backend node dist/tools/recomputeSpamMessages.js --hours 720
 # apply
 docker compose exec backend node dist/tools/recomputeSpamMessages.js --hours 720 --apply
 ```
+
+If the analyzer log shows `status=timed_out`, the run's work exceeded
+`SPAM_MESSAGE_ANALYSIS_BUDGET_MS` — the 5 s default is tuned for quiet days;
+busy spam days need ~30–60 s (each public incident resolves relay paths for
+origin). Raise it in `.env` (e.g. `SPAM_MESSAGE_ANALYSIS_BUDGET_MS=60000`) and
+recreate the backend. The recompute tool loads more rows than the analyzer and
+may need `SPAM_MESSAGE_MAX_MESSAGES` raised for wide windows.
 
 ## Tests
 

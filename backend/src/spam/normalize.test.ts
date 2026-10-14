@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeMessage, normalizeUsername, canonicalizeUrl, collapseRepeats, SPAM_MARKER } from './normalize.js';
+import { normalizeMessage, normalizeUsername, canonicalizeUrl, collapseRepeats, looksMachineGeneratedName, SPAM_MARKER } from './normalize.js';
 
 test('lowercases, trims and collapses whitespace', () => {
   const n = normalizeMessage('  Hello   WORLD  ');
@@ -56,4 +56,21 @@ test('handles null / empty input safely', () => {
   assert.equal(n.normalized, '');
   assert.deepEqual(n.tokens, []);
   assert.equal(normalizeUsername(undefined), '');
+});
+
+test('machine-generated names are detected (keygen-style botnet ids)', () => {
+  // Observed rotating-ID spammer style: separator-free base32-ish tokens.
+  for (const id of ['0CYT64KV', '1KG3RWU7', '43DBCEEF5C', '5ZA1J31M', '16V0OP2W', 'H5M6N2P8', 'BKGL7DMF', '8SPLFZAP']) {
+    assert.equal(looksMachineGeneratedName(id), true, `${id} should look machine-generated`);
+  }
+});
+
+test('human and amateur-radio handles are not machine-generated', () => {
+  for (const name of [
+    'M7GQW', 'MU6GBG', 'G0SYR', '2E0ABC', 'GW4ABC', 'GB3WF',
+    'Rob M7JCN V3', 'Dave-S75', 'Grog 🚲', 'Simeon', 'Timberland',
+    'Delta4zer0', 'eyrie', 'Alice', '12345678', 'test',
+  ]) {
+    assert.equal(looksMachineGeneratedName(name), false, `${name} should not look machine-generated`);
+  }
 });

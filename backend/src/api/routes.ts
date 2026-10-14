@@ -25,6 +25,7 @@ import {
   getPacketDetail,
   getPublicVisibilityGeneration,
   getChannelMessageHistory,
+  getRecentMessageTags,
   getRecentPacketEvents,
   getRecentPackets,
   analyticsQuery,
@@ -63,6 +64,7 @@ import radioRoutes from './routes/radio.js';
 import { registerCoverageRoutes } from './routes/coverage.js';
 import { registerPlannedCoverageRoutes } from './routes/plannedCoverage.js';
 import { registerOwnerRoutes } from './routes/owner.js';
+import { reconcileOwnerAuthorization } from '../owner/ownerAclReconciler.js';
 import { registerPathingRoutes } from './routes/pathing.js';
 import { registerStatsRoutes } from './routes/stats.js';
 import { registerTelemetryRoutes } from './routes/telemetry.js';
@@ -70,6 +72,7 @@ import { createNodeRepository } from '../repositories/nodes.js';
 import { createPlannedCoverageRepository } from '../repositories/plannedCoverage.js';
 import { registerSpamRoutes } from './routes/spam.js';
 import { registerTopologyRoutes } from './routes/topology.js';
+import { registerRegionsRoutes } from './routes/regions.js';
 import { registerActivityTimelineRoutes } from './routes/activityTimeline.js';
 import { registerRfValidationRoutes } from './routes/rfValidation.js';
 import { registerExportRoutes } from './routes/exports.js';
@@ -86,7 +89,6 @@ import { assertUniqueRouteRegistry } from './routeRegistry.js';
 import { assertContractCoverage } from './contracts.js';
 import { ApiInputError, wrapAsyncHandlers } from './errors.js';
 import { withHeavyWorkAdmission } from '../analysis/heavyWorkAdmission.js';
-import { getOwnerAuthorizationSnapshot } from '../db/ownerAuth.js';
 
 const router = Router();
 // Anonymous cross-network aggregation is not a public API capability. Operator
@@ -140,8 +142,9 @@ async function requireOwnerSession(req: Request, res: Response): Promise<string[
     res.status(401).json({ error: 'Not logged in' });
     return null;
   }
-  // Reject sessions minted before an operator password reset. The revocation
-  // tool bumps the generation; every owner request checks it before authorizing.
+  // BUG-010: reject sessions minted under a revoked password. The generation
+  // is bumped when the broker rejects a previously-valid credential; sessions
+  // carrying an older generation are stale and must re-authenticate.
   const currentGen = await getOwnerCredentialGeneration(session.mqttUsername);
   if (session.gen !== currentGen) {
     res.clearCookie(OWNER_COOKIE_NAME, { path: '/' });
@@ -189,10 +192,11 @@ registerMiscRoutes(router, {
   getRecentPacketEvents,
   getPacketDetail,
   getChannelMessageHistory,
+  getRecentMessageTags,
   getPublicVisibilityGeneration,
   packetDetailLimiter: PACKET_DETAIL_LIMITER,
 });
-const ownerLastHopPrewarm = registerOwnerRoutes(router, {
+registerOwnerRoutes(router, {
   ownerCookieName: OWNER_COOKIE_NAME,
   ownerLiveCacheTtlMs: OWNER_LIVE_CACHE_TTL_MS,
   ownerLiveCache,
@@ -213,14 +217,10 @@ const ownerLastHopPrewarm = registerOwnerRoutes(router, {
   requireOwnerSession,
   getOwnerCredentialGeneration,
   invalidateOwnerNodeIdCache,
+  reconcileOwnerAuthorization,
   query,
   withTransaction,
-  loadPrewarmOwners: async () => (await getOwnerAuthorizationSnapshot())
-    .filter((owner) => owner.isActive && owner.nodeIds.length > 0),
 });
-
-export const startOwnerLastHopPrewarm = () => ownerLastHopPrewarm.start();
-export const stopOwnerLastHopPrewarm = () => ownerLastHopPrewarm.stop();
 registerPathingRoutes(router, {
   pathBetaLimiter: PATH_BETA_LIMITER,
   pathLearningLimiter: PATH_LEARNING_LIMITER,
@@ -255,6 +255,11 @@ registerTopologyRoutes(router, {
   query,
   networkFilters,
   getPublicVisibilityGeneration,
+  limiter: EXPENSIVE_LIMITER,
+});
+registerRegionsRoutes(router, {
+  query,
+  networkFilters,
   limiter: EXPENSIVE_LIMITER,
 });
 registerActivityTimelineRoutes(router, {

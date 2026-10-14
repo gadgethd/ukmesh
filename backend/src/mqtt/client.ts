@@ -370,6 +370,13 @@ function reportMqttIngestFailure(client: MqttClient, error: Error): void {
 }
 
 
+/** Publish through the authenticated ingest connection on the internal broker. */
+export async function publishMqtt(topic: string, payload: string): Promise<void> {
+  const client = mqttClients.find((candidate) => candidate.connected);
+  if (!client) throw new Error("MQTT_PUBLISH_NOT_CONNECTED");
+  await client.publishAsync(topic, payload, { qos: 0, retain: false });
+}
+
 export async function startMqttClient(): Promise<void> {
   if (mqttStopping) return;
   assertSupportedIngestConnections(MQTT_INGEST_CONNECTIONS);

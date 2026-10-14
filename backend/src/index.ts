@@ -9,9 +9,10 @@ import {
   closeOwnerAuthDb,
   getOwnerAclReadiness,
   getOwnerAuthorizationInventory,
+  getOwnerAuthorizationSnapshot,
   initOwnerAuthDb,
 } from './db/ownerAuth.js';
-import { getMqttRuntimeStatus, startMqttClient, stopMqttClient, onPacket, onNodeSeen, onNodeUpsert } from './mqtt/client.js';
+import { getMqttRuntimeStatus, publishMqtt, startMqttClient, stopMqttClient, onPacket, onNodeSeen, onNodeUpsert } from './mqtt/client.js';
 import { startRamWriter, closeRamWriter } from './ram/writerRuntime.js';
 import { getRamIngestMode } from './ram/protocol.js';
 import {
@@ -20,7 +21,7 @@ import {
 } from './mqtt/connectionMonitor.js';
 import { initWebSocketServer, closeWebSocketServer, broadcastPacket, broadcastNodeUpdate, broadcastNodeUpsert } from './ws/server.js';
 import { createPublicRamSource } from './ram/publicSource.js';
-import apiRoutes, { startOwnerLastHopPrewarm, stopOwnerLastHopPrewarm } from './api/routes.js';
+import apiRoutes from './api/routes.js';
 import { startRegisteredStatsWarmup } from './api/routes/stats.js';
 import { initSpamMessageAnalyzer, stopSpamMessageAnalyzer } from './spam/analyzer.js';
 import {
@@ -31,6 +32,8 @@ import {
 import { createBackendSiteRoutes } from './backend-site/routes.js';
 import { isTrustedProxyPeer } from './http/trustedProxy.js';
 import { startOwnerAuthorizationReconciler, stopOwnerAuthorizationReconciler } from './owner/ownerAclReconciler.js';
+import { createOwnerLastHopPrewarm } from './owner/ownerLastHopPrewarm.js';
+import { getRegisteredOwnerService } from './api/routes/owner.js';
 import { getAnalysisWorkloadStates } from './analysis/runState.js';
 import { applySecurityHeaders } from './security/operatorAuth.js';
 import { closeMetricsServer, startMetricsServer } from './metricsServer.js';
@@ -55,6 +58,8 @@ import { readAclFile } from './mqtt/aclManager.js';
 import { parseOwnerGrantConfig } from './owner/ownerGrantConfig.js';
 import { createPacketShareForwarder } from './owner/packetShareForwarder.js';
 import { createPacketShareRepository } from './owner/packetShareRepository.js';
+import { createPublicFeedForwarder } from './owner/publicFeedForwarder.js';
+import { createPublicFeedRepository } from './owner/publicFeedRepository.js';
 import {
   buildOwnerInventoryBaseline,
   loadOwnerInventoryBaseline,
@@ -78,9 +83,22 @@ const SHUTDOWN_DEADLINE_MS = Math.min(
   Math.max(1_000, Number(process.env['SHUTDOWN_DEADLINE_MS'] ?? 30_000) || 30_000),
 );
 const NODE_IDENTITY_REFRESH_INTERVAL_MS = 30 * 60_000;
+const OWNER_LAST_HOP_PREWARM_INTERVAL_MS = Number(process.env['OWNER_LAST_HOP_PREWARM_INTERVAL_MS'] ?? 15 * 60_000);
+const OWNER_LAST_HOP_PREWARM_NODE_DELAY_MS = Number(process.env['OWNER_LAST_HOP_PREWARM_NODE_DELAY_MS'] ?? 150);
 const lifecycle = new LifecycleCoordinator(SHUTDOWN_DEADLINE_MS);
 const packetShareForwarder = createPacketShareForwarder({
   repository: createPacketShareRepository(query),
+});
+const publicFeedForwarder = createPublicFeedForwarder({
+  repository: createPublicFeedRepository(query),
+  getOwnerAuthorizationSnapshot,
+  // The public namespace is on the same authenticated Mosquitto instance as
+  // ingest. Reusing this connection avoids a second credentialed publisher
+  // and keeps the public namespace behind the backend ACL only.
+  publisherFactory: () => ({
+    publish: publishMqtt,
+    close: async () => undefined,
+  }),
 });
 let shutdownExitCode = 0;
 let shutdownDeadlineAt = 0;
@@ -89,6 +107,7 @@ function shutdownTimeLeft(): number {
 }
 let forceCloseHttpConnections = () => {};
 let nodeIdentityRefreshTimer: NodeJS.Timeout | null = null;
+let ownerLastHopPrewarmStop: (() => void) | null = null;
 
 lifecycle.register({
   name: 'queue-admission',
@@ -113,7 +132,10 @@ lifecycle.register({
 lifecycle.register({
   name: 'owner-last-hop-prewarm',
   stage: 10,
-  close: stopOwnerLastHopPrewarm,
+  close: () => {
+    ownerLastHopPrewarmStop?.();
+    ownerLastHopPrewarmStop = null;
+  },
 });
 lifecycle.register({
   name: 'mqtt-ingest',
@@ -139,6 +161,11 @@ lifecycle.register({
   name: 'owner-packet-share-forwarder',
   stage: 30,
   close: packetShareForwarder.stop,
+});
+lifecycle.register({
+  name: 'public-feed-forwarder',
+  stage: 30,
+  close: publicFeedForwarder.stop,
 });
 lifecycle.register({
   name: 'operator-operations',
@@ -222,7 +249,21 @@ async function main() {
   startRegisteredStatsWarmup();
   await initOwnerAuthDb();
   await startOwnerAuthorizationReconciler();
-  startOwnerLastHopPrewarm();
+  // Keep the owner dashboard RX-strength cache warm for every active MQTT owner
+  // so the panel (and its 7d/30d toggle) never pays for a cold scan on open.
+  const ownerService = getRegisteredOwnerService();
+  if (ownerService) {
+    ownerLastHopPrewarmStop = createOwnerLastHopPrewarm({
+      listOwnerNodes: getOwnerAuthorizationSnapshot,
+      refreshLastHop: (ownedNodeIds, nodeId, windowDays, minAgeMs) => (
+        ownerService.refreshOwnerLastHopStrength(ownedNodeIds, nodeId, windowDays, minAgeMs)
+      ),
+      intervalMs: OWNER_LAST_HOP_PREWARM_INTERVAL_MS,
+      nodeDelayMs: OWNER_LAST_HOP_PREWARM_NODE_DELAY_MS,
+    });
+  } else {
+    console.warn('[owner-last-hop-prewarm] owner service is not registered; prewarm disabled');
+  }
 
   // 2. Start the audit-only MQTT connection monitor.
   if (MQTT_INGEST_ENABLED) {
@@ -237,6 +278,9 @@ async function main() {
     if (upstreamEnvelope) {
       void packetShareForwarder.enqueuePacket(packet, upstreamEnvelope).catch((error: unknown) => {
         console.error('[packet-share] packet handling failed:', error instanceof Error ? error.message : error);
+      });
+      void publicFeedForwarder.enqueuePacket(packet, upstreamEnvelope).catch((error: unknown) => {
+        console.error('[public-feed] packet handling failed:', error instanceof Error ? error.message : error);
       });
     }
     // RAM mode defers commit-dependent link admission to the writer's
@@ -442,6 +486,7 @@ async function main() {
   startMetricsServer(METRICS_PORT);
 
   packetShareForwarder.start();
+  publicFeedForwarder.start();
   if (getRamIngestMode() === 'ram') {
     void (async () => {
       let delayMs = 1_000;

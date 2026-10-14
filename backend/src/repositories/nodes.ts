@@ -1,5 +1,5 @@
 import type { QueryResultRow } from 'pg';
-import type { NetworkFilters } from '../api/utils/networkFilters.js';
+import { nodeAliasArraySql, type NetworkFilters } from '../api/utils/networkFilters.js';
 import { publicMapFreshPredicate } from '../nodes/publicMap.js';
 import {
   nodeEffectiveLastSeenSql,
@@ -25,6 +25,8 @@ export type NodeLinkRow = {
   itm_path_loss_db: number | null;
   count_this_to_peer: number;
   count_peer_to_this: number;
+  last_observed: string | null;
+  recent_count_72h: number;
 };
 
 export type TestDiagnosticsData = {
@@ -230,39 +232,101 @@ export function createNodeRepository(query: QueryFn): NodeRepository {
 
     async listNodeLinks(nodeId, filters) {
       const idParam = `$${filters.params.length + 1}`;
-      return (await query<NodeLinkRow>(
-        `WITH source_node AS MATERIALIZED (
+      const links = (await query<Omit<NodeLinkRow, 'recent_count_72h'>>(
+        `WITH requested_identity AS MATERIALIZED (
+           SELECT COALESCE(
+             (SELECT canonical_node_id FROM node_identity_aliases
+               WHERE source_node_id = UPPER(BTRIM(${idParam}))),
+             UPPER(BTRIM(${idParam}))
+           ) AS node_id
+         ), link_nodes AS MATERIALIZED (
+           SELECT node_id, name, network FROM node_identity_nodes
+         ), source_node AS MATERIALIZED (
            SELECT node_id
-             FROM node_identity_nodes sn
-            WHERE node_id = meshcore_canonical_node_id(${idParam})
+             FROM link_nodes sn
+            WHERE node_id = (SELECT node_id FROM requested_identity)
               AND (name IS NULL OR name NOT LIKE '%🚫%')
               ${filters.nodesAlias('sn')}
          ),
          relevant_links AS MATERIALIZED (
            SELECT
-             CASE WHEN nl.node_a_id = meshcore_canonical_node_id(${idParam})
+             CASE WHEN nl.node_a_id = (SELECT node_id FROM requested_identity)
                   THEN nl.node_b_id ELSE nl.node_a_id END AS peer_id,
              nl.observed_count,
+             nl.last_observed,
              nl.itm_path_loss_db,
-             CASE WHEN nl.node_a_id = meshcore_canonical_node_id(${idParam})
+             CASE WHEN nl.node_a_id = (SELECT node_id FROM requested_identity)
                   THEN nl.count_a_to_b ELSE nl.count_b_to_a END AS count_this_to_peer,
-             CASE WHEN nl.node_a_id = meshcore_canonical_node_id(${idParam})
+             CASE WHEN nl.node_a_id = (SELECT node_id FROM requested_identity)
                   THEN nl.count_b_to_a ELSE nl.count_a_to_b END AS count_peer_to_this
              FROM node_identity_links nl
-            WHERE (nl.node_a_id = meshcore_canonical_node_id(${idParam})
-                   OR nl.node_b_id = meshcore_canonical_node_id(${idParam}))
+            WHERE (nl.node_a_id = (SELECT node_id FROM requested_identity)
+                   OR nl.node_b_id = (SELECT node_id FROM requested_identity))
               AND (nl.itm_viable = TRUE OR nl.force_viable = TRUE)
               AND EXISTS (SELECT 1 FROM source_node)
          )
          SELECT
            rl.peer_id, peer.name AS peer_name, rl.observed_count,
-           rl.itm_path_loss_db, rl.count_this_to_peer, rl.count_peer_to_this
+           rl.itm_path_loss_db, rl.count_this_to_peer, rl.count_peer_to_this,
+           to_char(rl.last_observed AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS last_observed
            FROM relevant_links rl
-           JOIN node_identity_nodes peer ON peer.node_id = rl.peer_id
+           JOIN link_nodes peer ON peer.node_id = rl.peer_id
           WHERE (peer.name IS NULL OR peer.name NOT LIKE '%🚫%')
             ${filters.nodesAlias('peer')}
           ORDER BY rl.observed_count DESC`,
         [...filters.params, nodeId],
+      )).rows;
+      if (links.length === 0) return [];
+
+      // Resolve the visible link set first. The materialized identity views are
+      // expensive; share their node projection above, then keep this one packet
+      // aggregate indexed and bounded independently of those view plans.
+      // last_observed is the worker's latest observation in either direction,
+      // not necessarily direct. Count all public packet rows for canonical src/rx
+      // pairs (including relayed packets), not distinct hashes or lifetime hits.
+      // The sparkline uses the same pairing, but additionally needs signal data
+      // and caps its points; neither restriction applies to this 72-hour count.
+      const linksParam = `$${filters.params.length + 2}`;
+      return (await query<NodeLinkRow>(
+        `WITH source_ids AS MATERIALIZED (
+           SELECT ${nodeAliasArraySql(idParam)} AS ids
+         ), visible_links AS MATERIALIZED (
+           SELECT * FROM jsonb_to_recordset(${linksParam}::jsonb) AS link(
+             peer_id text, peer_name text, observed_count integer,
+             itm_path_loss_db double precision, count_this_to_peer integer,
+             count_peer_to_this integer, last_observed text
+           )
+         ), peer_aliases AS MATERIALIZED (
+           SELECT vl.peer_id, UNNEST(${nodeAliasArraySql('vl.peer_id')}) AS source_node_id
+             FROM visible_links vl
+         ), peer_ids AS MATERIALIZED (
+           SELECT ARRAY(SELECT source_node_id FROM peer_aliases) AS ids
+         ), recent_counts AS (
+           SELECT pa.peer_id, COUNT(*)::integer AS recent_count_72h
+             FROM packets p
+             JOIN peer_aliases pa ON pa.source_node_id = CASE
+               WHEN p.rx_node_id = ANY((SELECT ids FROM source_ids)::text[])
+                 THEN p.src_node_id ELSE p.rx_node_id END
+            WHERE p.time > NOW() - INTERVAL '72 hours'
+              AND p.time <= NOW()
+              AND p.src_node_id IS NOT NULL
+              AND (
+                (p.rx_node_id = ANY((SELECT ids FROM source_ids)::text[])
+                  AND p.src_node_id = ANY((SELECT ids FROM peer_ids)::text[]))
+                OR (p.src_node_id = ANY((SELECT ids FROM source_ids)::text[])
+                  AND p.rx_node_id = ANY((SELECT ids FROM peer_ids)::text[]))
+              )
+              ${filters.packetsAlias('p')}
+            GROUP BY pa.peer_id
+         )
+         SELECT vl.peer_id, vl.peer_name, vl.observed_count,
+           vl.itm_path_loss_db, vl.count_this_to_peer, vl.count_peer_to_this,
+           vl.last_observed,
+           COALESCE(rc.recent_count_72h, 0)::integer AS recent_count_72h
+           FROM visible_links vl
+           LEFT JOIN recent_counts rc ON rc.peer_id = vl.peer_id
+          ORDER BY vl.observed_count DESC`,
+        [...filters.params, nodeId, JSON.stringify(links)],
       )).rows;
     },
   };

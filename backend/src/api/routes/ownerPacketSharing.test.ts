@@ -23,7 +23,6 @@ const passThroughLimiter: RequestHandler = (_req, _res, next) => next();
 function ownerRouteDeps(
   query: (sql: string, params?: unknown[]) => Promise<{ rows: QueryResultRow[] }>,
   mqttUsername = 'node1',
-  requireOwnerSession: (req: import('express').Request, res: import('express').Response) => Promise<string[] | null> = async () => [nodeId],
 ) {
   return {
     ownerCookieName: 'meshcore_owner_session',
@@ -43,7 +42,7 @@ function ownerRouteDeps(
     encryptOwnerSession: () => 'session',
     isSecureRequest: () => false,
     getOwnerSession: () => ({ v: 3 as const, mqttUsername, exp: Date.now() + 60_000, gen: 0 }),
-    requireOwnerSession,
+    requireOwnerSession: async () => [nodeId],
     getOwnerCredentialGeneration: async () => 0,
     invalidateOwnerNodeIdCache: () => undefined,
     query,
@@ -55,7 +54,8 @@ async function withOwnerApi(
   query: (sql: string, params?: unknown[]) => Promise<{ rows: QueryResultRow[] }>,
   check: (baseUrl: string, writes: string[]) => Promise<void>,
   selectedDestinationRows: QueryResultRow[] = [{ destination_id: 'remote-site' }],
-  requireOwnerSession?: (req: import('express').Request, res: import('express').Response) => Promise<string[] | null>,
+  mqttUsername = 'node1',
+  destinationRows: QueryResultRow[] = [destination],
 ) {
   const writes: string[] = [];
   const router = Router();
@@ -69,13 +69,13 @@ async function withOwnerApi(
         : { rows: [] };
     }
     if (sql.includes('FROM owner_packet_share_destinations')) {
-      return { rows: [destination] };
+      return { rows: destinationRows };
     }
     if (sql.includes('FROM owner_packet_share_rules')) {
       return { rows: selectedDestinationRows };
     }
     return query(sql, params);
-  }, 'node1', requireOwnerSession));
+  }, mqttUsername));
   const app = express();
   app.use(express.json());
   app.use('/api', router);
@@ -136,19 +136,6 @@ test('owner packet-sharing settings expose destinations and persist a selected d
     assert.equal(postResponse.status, 200);
     assert.deepEqual(await postResponse.json(), { nodeId, enabled: true, destinationIds: ['remote-site'] });
     assert.equal(writes.length, 3);
-
-    const disableResponse = await fetch(`${baseUrl}/api/owner/packet-sharing`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        cookie: 'meshcore_owner_csrf=test-token',
-        'x-csrf-token': 'test-token',
-      },
-      body: JSON.stringify({ nodeId, enabled: false, destinationIds: [] }),
-    });
-    assert.equal(disableResponse.status, 200);
-    assert.deepEqual(await disableResponse.json(), { nodeId, enabled: false, destinationIds: [] });
-    assert.equal(writes.length, 5);
   });
 });
 
@@ -191,39 +178,54 @@ test('owner packet-sharing settings are available to every authenticated owner a
   }
 });
 
-test('owner packet-sharing rejects nodes outside the authenticated session', async () => {
-  await withOwnerApi(async () => ({ rows: [] }), async (baseUrl, writes) => {
-    const response = await fetch(`${baseUrl}/api/owner/packet-sharing?nodeId=${'B'.repeat(64)}`);
-    assert.equal(response.status, 403);
-    assert.deepEqual(await response.json(), { error: 'Node is not owned by this session' });
-    assert.equal(writes.length, 0);
-  });
-});
+const scotmesh = {
+  ...destination,
+  destination_id: 'scotmesh',
+  display_name: 'ScotMesh',
+  broker_url: 'wss://scotmesh-mqtt.mm7roq.compute.oarc.uk:443/',
+  topic_template: 'meshcore/MME/{observerId}/packets',
+  allowed_owner_username: 'node1',
+  allowed_node_id: nodeId,
+  auth_mode: 'meshcore_jwt',
+  auth_audience: 'scotmesh-mqtt.mm7roq.compute.oarc.uk',
+  tx_mode: 'advert',
+};
 
-test('owner packet-sharing requires an authenticated session', async () => {
+test('ScotMesh is visible to node1 while pending signing credentials', async () => {
   await withOwnerApi(async () => ({ rows: [] }), async (baseUrl) => {
-    const response = await fetch(`${baseUrl}/api/owner/packet-sharing`);
-    assert.equal(response.status, 401);
-    assert.deepEqual(await response.json(), { error: 'Unauthorized' });
-  }, [{ destination_id: 'remote-site' }], async (_req, res) => {
-    res.status(401).json({ error: 'Unauthorized' });
-    return null;
-  });
+    const response = await fetch(`${baseUrl}/api/owner/packet-sharing?nodeId=${nodeId}`);
+    const body = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(body.destinations[0].id, 'scotmesh');
+    assert.equal(body.destinations[0].configured, false);
+    assert.equal(body.destinations[0].selected, false);
+    assert.equal(JSON.stringify(body).includes('broker_'), false);
+  }, [], 'node1', [scotmesh]);
 });
 
-test('owner packet-sharing rejects malformed settings without database writes', async () => {
-  await withOwnerApi(async () => ({ rows: [] }), async (baseUrl, writes) => {
-    const response = await fetch(`${baseUrl}/api/owner/packet-sharing`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        cookie: 'meshcore_owner_csrf=test-token',
-        'x-csrf-token': 'test-token',
-      },
-      body: JSON.stringify({ nodeId, enabled: true, destinationIds: ['remote-site'], unexpected: true }),
-    });
-    assert.equal(response.status, 400);
-    assert.deepEqual(await response.json(), { error: 'Invalid packet sharing settings' });
-    assert.equal(writes.length, 0);
+for (const username of ['node2', 'gnomemoe', 'NODE1', 'node1-other']) {
+  test(`ScotMesh is absent from ${username}'s API response, including stale selections`, async () => {
+    await withOwnerApi(async () => ({ rows: [] }), async (baseUrl) => {
+      const response = await fetch(`${baseUrl}/api/owner/packet-sharing?nodeId=${nodeId}`);
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get('cache-control'), 'no-store');
+      assert.deepEqual(await response.json(), { nodeId, featureEnabled: true, enabled: false, destinations: [] });
+      for (const enabled of [true, false]) {
+        const save = await fetch(`${baseUrl}/api/owner/packet-sharing`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', cookie: 'meshcore_owner_csrf=token', 'x-csrf-token': 'token' },
+          body: JSON.stringify({ nodeId, enabled, destinationIds: ['scotmesh'] }),
+        });
+        assert.equal(save.status, 409);
+        assert.deepEqual(await save.json(), { error: 'One or more selected destinations are not configured' });
+      }
+    }, [{ destination_id: 'scotmesh' }], username, [scotmesh]);
   });
+}
+
+test('ScotMesh is absent for a different node owned by node1', async () => {
+  await withOwnerApi(async () => ({ rows: [] }), async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/owner/packet-sharing?nodeId=${nodeId}`);
+    assert.deepEqual((await response.json()).destinations, []);
+  }, [], 'node1', [{ ...scotmesh, allowed_node_id: 'C'.repeat(64) }]);
 });

@@ -21,24 +21,6 @@ export function nodeRoleLabel(role: number | null): string {
   return 'Repeater';
 }
 
-export type OwnerLoginCredentials = { mqttUsername: string; mqttPassword: string };
-
-export function ownerLoginValidationError(mqttUsername: string, mqttPassword: string): string | null {
-  const normalizedUsername = mqttUsername.trim();
-  if (!normalizedUsername || !mqttPassword) return 'Enter your MQTT username and password.';
-  if (normalizedUsername.length > 128 || mqttPassword.length > 128) {
-    return 'MQTT username or password is too long.';
-  }
-  if (/[\u0000-\u001F\u007F]/.test(normalizedUsername) || /[\u0000-\u001F\u007F]/.test(mqttPassword)) {
-    return 'MQTT username or password contains invalid characters.';
-  }
-  return null;
-}
-
-export function ownerLoginCredentials(mqttUsername: string, mqttPassword: string): OwnerLoginCredentials {
-  return { mqttUsername: mqttUsername.trim(), mqttPassword };
-}
-
 export type OwnerDashboard = {
   nodes: OwnerNode[];
 };
@@ -48,6 +30,39 @@ export type OwnerSessionResponse = {
   dashboard: OwnerDashboard;
   mqttUsername?: string | null;
 };
+
+export type OwnerPacketSharingDestination = {
+  id: string;
+  name: string;
+  websiteUrl: string | null;
+  description: string | null;
+  configured: boolean;
+  selected: boolean;
+  lastForwardedAt: string | null;
+};
+
+export type OwnerPacketSharing = {
+  nodeId: string;
+  featureEnabled: boolean;
+  enabled: boolean;
+  destinations: OwnerPacketSharingDestination[];
+};
+
+export type OwnerPublicFeed = {
+  featureEnabled: boolean;
+  configured: boolean;
+  brokerUrl: string | null;
+  enabled: boolean;
+  nodeCount: number;
+  eligible: boolean;
+  recentPacketCount: number;
+  topicFilters: string[];
+  lastForwardedAt: string | null;
+};
+
+export function isPacketSharingOwner(username: string | null | undefined): boolean {
+  return typeof username === 'string' && username.trim().length > 0;
+}
 
 const OWNER_SESSION_EVENT = 'meshcore-owner-session';
 const LAST_HOP_EXCLUDED_COOKIE = 'meshcore-owner-last-hop-hidden-v1';
@@ -208,6 +223,8 @@ export type OwnerLiveResponse = {
   }>;
   status: OwnerStatus | null;
   heardNeighbors: HeardNeighbor[];
+  heardNeighborsSource?: 'reported' | 'direct_packets' | 'none';
+  heardNeighborsSampledAt?: string | null;
   packetsSent24h: number;
   packetsReceived24h: number;
   alerts: Array<{ level: 'info' | 'warn' | 'error'; message: string }>;
@@ -224,12 +241,21 @@ export type LastHopStrengthPoint = {
   sampleCount: number;
 };
 
+export type LastHopWindow = '7d' | '30d';
+
+export const LAST_HOP_WINDOW_OPTIONS: readonly LastHopWindow[] = ['7d', '30d'];
+
+export function lastHopWindowLabel(value: LastHopWindow): string {
+  return value === '30d' ? '30 days' : '7 days';
+}
+
 export type OwnerLastHopStrengthResponse = {
   points: LastHopStrengthPoint[];
 };
 
-// Scope: authenticated owner session + public privacy generation. This cache is
-// cleared at logout/session expiry and bounded to 128 series or 12 MiB.
+// Scope: authenticated owner session + public privacy generation + selected time
+// window. This cache is cleared at logout/session expiry and bounded to 128
+// series or 12 MiB.
 export const lastHopSeriesCache = new ScopedCache<LastHopStrengthPoint[]>({
   name: 'owner-last-hop',
   ttlMs: 5 * 60_000,
@@ -252,6 +278,92 @@ export function isOwnerSessionResponse(value: unknown): value is OwnerSessionRes
       && Array.isArray(node['members'])
       && node['members'].every((member) => typeof member === 'string'))
     && (value['mqttUsername'] == null || typeof value['mqttUsername'] === 'string');
+}
+
+export function isOwnerPacketSharingResponse(value: unknown): value is OwnerPacketSharing {
+  if (!isRecord(value)
+    || typeof value['nodeId'] !== 'string'
+    || !/^[0-9A-Fa-f]{64}$/.test(value['nodeId'])
+    || typeof value['featureEnabled'] !== 'boolean'
+    || typeof value['enabled'] !== 'boolean'
+    || !Array.isArray(value['destinations'])) return false;
+  return value['destinations'].every((destination) => isRecord(destination)
+    && typeof destination['id'] === 'string'
+    && /^[a-z0-9][a-z0-9_-]{0,63}$/.test(destination['id'])
+    && typeof destination['name'] === 'string'
+    && destination['name'].length >= 1
+    && destination['name'].length <= 120
+    && (destination['websiteUrl'] == null || isSafePacketShareWebsiteUrl(destination['websiteUrl']))
+    && (destination['description'] == null || (
+      typeof destination['description'] === 'string'
+      && destination['description'].length >= 1
+      && destination['description'].length <= 160
+    ))
+    && typeof destination['configured'] === 'boolean'
+    && typeof destination['selected'] === 'boolean'
+    && (destination['lastForwardedAt'] == null || (
+      typeof destination['lastForwardedAt'] === 'string'
+      && destination['lastForwardedAt'].length <= 64
+      && Number.isFinite(Date.parse(destination['lastForwardedAt']))
+    )));
+}
+
+function isSafePacketShareWebsiteUrl(value: unknown): value is string {
+  if (typeof value !== 'string' || value.length < 1 || value.length > 2_048) return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' && Boolean(url.hostname) && !url.username && !url.password;
+  } catch {
+    return false;
+  }
+}
+
+export async function fetchOwnerPacketSharing(
+  nodeId: string,
+  signal?: AbortSignal,
+): Promise<OwnerPacketSharing> {
+  return fetchJson<OwnerPacketSharing>(
+    `/api/owner/packet-sharing?nodeId=${encodeURIComponent(nodeId)}`,
+    { cache: 'no-store', signal },
+    { timeoutMs: 10_000, maxBytes: 128 * 1024, validate: isOwnerPacketSharingResponse },
+  );
+}
+
+export function isOwnerPublicFeedResponse(value: unknown): value is OwnerPublicFeed {
+  return isRecord(value)
+    && typeof value['featureEnabled'] === 'boolean'
+    && typeof value['configured'] === 'boolean'
+    && (value['brokerUrl'] == null || (
+      typeof value['brokerUrl'] === 'string'
+      && value['brokerUrl'].length <= 2_048
+    ))
+    && typeof value['enabled'] === 'boolean'
+    && typeof value['nodeCount'] === 'number'
+    && Number.isInteger(value['nodeCount'])
+    && value['nodeCount'] >= 0
+    && typeof value['eligible'] === 'boolean'
+    && typeof value['recentPacketCount'] === 'number'
+    && Number.isInteger(value['recentPacketCount'])
+    && value['recentPacketCount'] >= 0
+    && Array.isArray(value['topicFilters'])
+    && value['topicFilters'].length <= 1
+    && value['topicFilters'].every((topic) => (
+      typeof topic === 'string'
+      && /^public\/\+\/\+\/packets$/.test(topic)
+    ))
+    && (value['lastForwardedAt'] == null || (
+      typeof value['lastForwardedAt'] === 'string'
+      && value['lastForwardedAt'].length <= 64
+      && Number.isFinite(Date.parse(value['lastForwardedAt']))
+    ));
+}
+
+export async function fetchOwnerPublicFeed(signal?: AbortSignal): Promise<OwnerPublicFeed> {
+  return fetchJson<OwnerPublicFeed>(
+    '/api/owner/public-feed',
+    { cache: 'no-store', signal },
+    { timeoutMs: 10_000, maxBytes: 32 * 1024, validate: isOwnerPublicFeedResponse },
+  );
 }
 
 export function isOwnerLiveResponse(value: unknown): value is OwnerLiveResponse {

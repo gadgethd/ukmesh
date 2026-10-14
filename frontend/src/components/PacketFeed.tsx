@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useMessages, useNodeMap } from '../hooks/useNodes.js';
-import { aggregatedPacketObserverIataLabel } from '../hooks/packetFeed.js';
+import { aggregatedPacketObserverIataLabel, messageTagKind, messageTagTitle } from '../hooks/packetFeed.js';
 import { useOverlayStore } from '../store/overlayStore.js';
 import { useWatchlist } from '../hooks/useWatchlist.js';
 import type { AggregatedPacket } from '../hooks/useNodes.js';
@@ -91,6 +91,11 @@ const PacketFeedItem: React.FC<PacketFeedItemProps> = React.memo(({
             </span>
           </>}
         </span>
+        {messageTagKind(p) && (
+          <span className="packet-item__tags">
+            <span className="packet-item__tag msg-tag-chip" title={messageTagTitle(p)}>{messageTagKind(p)}</span>
+          </span>
+        )}
       </div>
       <div className="packet-item__actions">
         <button
