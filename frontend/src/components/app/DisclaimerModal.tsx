@@ -25,7 +25,7 @@ export const DisclaimerModal: React.FC<DisclaimerModalProps> = ({ viewshedEnable
             relay node ID hashes in the width chosen by the sending node. Depending on firmware and
             settings that can be 1, 2, or 3 bytes per hop, so path resolution matches the exact
             hash width present in the packet against known nodes. If multiple nodes still share the
-            same hash at that width, the closest or strongest candidate is chosen, but the actual
+            same hash at that width: resolved detail views choose the closest or strongest candidate, while the live map leaves a one-byte hash matching several nodes unresolved rather than guessing. The actual
             path the packet took may have been different.
           </p>
         </section>
