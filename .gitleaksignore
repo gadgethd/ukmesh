@@ -49,3 +49,8 @@ cd9ee586364ed70c5298d36eba0bb92958725b2d:website-live-manifest.staging.json:gene
 cd9ee586364ed70c5298d36eba0bb92958725b2d:website-live-manifest.json:generic-api-key:40
 5210aba5e37b928db3744057beb78f2c17f92263:website-live-manifest.json:generic-api-key:38
 ac4ee2afecc16ed67fdc09cf70953dc85d3a4c5a:website-live-manifest.staging.json:generic-api-key:38
+# MeshCore documented public channel material (publicly known 16-byte key;
+# see MeshCore docs/companion_protocol.md). History-only occurrences from the
+# deploy-sync commit 1d24322; both files were later removed from main.
+1d243222ef464a2e4c95cbce9e7a4ecd166534db:backend/backfill-region-names.mjs:generic-api-key:42
+1d243222ef464a2e4c95cbce9e7a4ecd166534db:backend/src/tools/rebuildRegionParticipation.ts:generic-api-key:45
