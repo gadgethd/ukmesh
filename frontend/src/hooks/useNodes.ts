@@ -8,6 +8,8 @@ import {
   mergePackets,
   packetInfoScore,
   type RecentPacketRow,
+  type MessageTags,
+  type TagConfidence,
   FEED_MAX_MESSAGES,
   FEED_MAX_PACKETS,
 } from './packetFeed.js';
@@ -69,6 +71,9 @@ export interface AggregatedPacket {
   txCount:      number;
   ts:           number;
   advertCount?: number;
+  tags?:        MessageTags;
+  tagConfidence?: TagConfidence;
+  taggedAt?:    string;
 }
 
 export interface PacketArc {
@@ -270,6 +275,29 @@ function handleInitialState(
   });
 }
 
+/** Patch tags onto cached rows as the tagger finishes them (tags are produced a
+ *  few seconds after arrival, so live WS rows start untagged). Idempotent:
+ *  rows already carrying the same tagged_at are left untouched. */
+function applyMessageTags(entries: Array<{ packet_hash?: string; tags?: MessageTags; confidence?: TagConfidence | null; tagged_at?: string }>): void {
+  const byHash = new Map<string, { tags: MessageTags; confidence?: TagConfidence | null; tagged_at?: string }>();
+  for (const entry of entries) {
+    const hash = String(entry.packet_hash ?? '').trim().toUpperCase();
+    if (hash && entry.tags) byHash.set(hash, { tags: entry.tags, confidence: entry.confidence, tagged_at: entry.tagged_at });
+  }
+  if (byHash.size === 0) return;
+  let changed = false;
+  const patchList = (list: AggregatedPacket[]): AggregatedPacket[] => list.map((packet) => {
+    const entry = byHash.get(packet.packetHash);
+    if (!entry) return packet;
+    if (packet.taggedAt && entry.tagged_at && packet.taggedAt === entry.tagged_at) return packet;
+    changed = true;
+    return { ...packet, tags: entry.tags, tagConfidence: entry.confidence ?? undefined, taggedAt: entry.tagged_at };
+  });
+  const packets = patchList(state.packets);
+  const messages = patchList(state.messages);
+  if (changed) setState({ ...state, packets, messages });
+}
+
 function replaceRecentPackets(rows: RecentPacketRow[], epoch?: number) {
   if (!acceptsEpoch(epoch)) return;
   const mapped = mapRecentRows(rows);
@@ -359,14 +387,10 @@ function handlePacket(packetOrArray: LivePacketData | LivePacketData[], epoch?: 
 
   // Also maintain the messages (type=5 only) array separately so GRP messages
   // are never evicted by a flood of ADV packets.
-  let nextMessages = state.messages;
-  let messageIndex: Map<string, number> | undefined;
+  let nextMessages = state.messages.slice();
+  const messageIndex = new Map(nextMessages.map((message, index) => [message.packetHash, index]));
   for (const packet of incomingPackets) {
     if (packet.packetType !== 5) continue;
-    if (!messageIndex) {
-      nextMessages = state.messages.slice();
-      messageIndex = new Map(nextMessages.map((message, index) => [message.packetHash, index]));
-    }
     const msgIdx = messageIndex.get(packet.packetHash) ?? -1;
     if (msgIdx >= 0) {
       const cur = nextMessages[msgIdx]!;
@@ -392,10 +416,8 @@ function handlePacket(packetOrArray: LivePacketData | LivePacketData[], epoch?: 
       nextMessages.push(entry);
     }
   }
-  if (messageIndex) {
-    nextMessages.sort((a, b) => b.ts - a.ts);
-    if (nextMessages.length > FEED_MAX_MESSAGES) nextMessages.length = FEED_MAX_MESSAGES;
-  }
+  nextMessages.sort((a, b) => b.ts - a.ts);
+  if (nextMessages.length > FEED_MAX_MESSAGES) nextMessages.length = FEED_MAX_MESSAGES;
 
   let nextArcs = state.arcs.filter((arc) => Date.now() - arc.ts < PACKET_ARC_TTL_MS);
   if (state.arcCollectionEnabled) {
@@ -525,6 +547,7 @@ export const nodeStore = {
   handleNodeUpsertBatch,
   setArcCollectionEnabled,
   pruneExpiredArcs,
+  applyMessageTags,
 };
 
 export function useNodeMap(): Map<string, MeshNode> {

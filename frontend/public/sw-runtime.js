@@ -1,10 +1,10 @@
 export const SW_CACHE_POLICY = Object.freeze({
-  version: 'v7',
-  tileCache: 'meshcore-tiles-v7',
-  appCache: 'meshcore-app-v7',
-  metadataCache: 'meshcore-meta-v7',
-  previousTileCache: 'meshcore-tiles-v6',
-  previousAppCache: 'meshcore-app-v6',
+  version: 'v8',
+  tileCache: 'meshcore-tiles-v8',
+  appCache: 'meshcore-app-v8',
+  metadataCache: 'meshcore-meta-v8',
+  previousTileCache: 'meshcore-tiles-v7',
+  previousAppCache: 'meshcore-app-v7',
   maxTileEntries: 6_000,
   maxTileBytes: 96 * 1024 * 1024,
   pruneTargetRatio: 0.9,
@@ -93,7 +93,7 @@ export function createTileMetadata(initial = []) {
 export function createServiceWorkerRuntime(environment) {
   const policy = { ...SW_CACHE_POLICY, ...(environment.policy ?? {}) };
   const now = environment.now ?? Date.now;
-  const metadataUrl = new URL('/__meshcore_sw_metadata_v7__', environment.origin).toString();
+  const metadataUrl = new URL('/__meshcore_sw_metadata_v8__', environment.origin).toString();
   let metadata;
   let metadataState = {
     version: 1,

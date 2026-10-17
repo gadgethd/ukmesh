@@ -4,19 +4,24 @@ import type { LivePacket } from '../types/index.js';
 import {
   buildPacketSharePayload,
   destinationConfigured,
+  destinationAcceptsPacket,
+  destinationAllowedForOwner,
   isForwardablePacket,
   isValidPacketShareBrokerUrl,
   packetShareEventKey,
-  renderPacketShareTopic,
+  renderDestinationTopic,
   type PacketShareDestinationRow,
 } from './packetShareConfig.js';
-import { decryptPacketShareSecret, hasPacketShareEncryptionKey } from './packetShareCrypto.js';
+import { hasPacketShareEncryptionKey } from './packetShareCrypto.js';
+import { packetShareCredentials } from './packetShareAuth.js';
 import type { PacketShareDeliveryRow, PacketShareRepository } from './packetShareRepository.js';
 import { packetShareOutcomesTotal, packetShareQueueDepth } from '../metrics.js';
 
 const DEFAULT_POLL_INTERVAL_MS = 5_000;
 const DEFAULT_BATCH_SIZE = 25;
 const PUBLISH_TIMEOUT_MS = 10_000;
+const DEFAULT_PUBLISH_ACK_TIMEOUT_MS = 10_000;
+const DEFAULT_DELIVER_TIMEOUT_MS = 30_000;
 
 export type PacketSharePublisher = {
   publish: (topic: string, payload: string) => Promise<void>;
@@ -30,6 +35,21 @@ export type PacketSharePublisherFactory = (
 function positiveIntegerSetting(name: string, fallback: number, max: number): number {
   const parsed = Number(process.env[name]);
   return Number.isFinite(parsed) && parsed > 0 ? Math.min(max, Math.floor(parsed)) : fallback;
+}
+
+// A hung publisher promise must never be able to block the single-flight
+// delivery loop. The 2026-10-12 wedge: a QoS-1 publish on a silently-dead
+// connection never settled, freezing delivery for every destination until
+// the process was restarted.
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${message} (after ${timeoutMs}ms)`)), timeoutMs);
+    timer.unref();
+    promise.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (error) => { clearTimeout(timer); reject(error); },
+    );
+  });
 }
 
 function destinationUrl(destination: PacketShareDestinationRow): URL {
@@ -47,12 +67,18 @@ function destinationFingerprint(destination: PacketShareDestinationRow): string 
     destination.topic_template,
     destination.broker_username,
     destination.broker_password_ciphertext,
+    destination.auth_mode,
+    destination.auth_audience,
   ]);
 }
 
-function connectMqttPublisher(destination: PacketShareDestinationRow): PacketSharePublisher {
+function connectMqttPublisher(
+  destination: PacketShareDestinationRow,
+  publishAckTimeoutMs: number,
+): PacketSharePublisher {
   let client: MqttClient | null = null;
   let connecting: Promise<MqttClient> | null = null;
+  let credentialsExpireAt = Infinity;
 
   const closeClient = async (force = true): Promise<void> => {
     const current = client;
@@ -62,51 +88,56 @@ function connectMqttPublisher(destination: PacketShareDestinationRow): PacketSha
   };
 
   const connect = async (): Promise<MqttClient> => {
-    if (client?.connected) return client;
+    if (client?.connected && Date.now() / 1_000 < credentialsExpireAt - 60) return client;
     if (connecting) return connecting;
-    const url = destinationUrl(destination);
-    const encryptedPassword = destination.broker_password_ciphertext?.trim() || '';
-    const password = encryptedPassword
-      ? decryptPacketShareSecret(encryptedPassword)
-      : undefined;
-    const created = mqtt.connect(url.toString(), {
-      clientId: `meshcore-share-${randomUUID().replaceAll('-', '').slice(0, 24)}`,
-      username: destination.broker_username?.trim() || undefined,
-      password,
-      clean: true,
-      reconnectPeriod: 0,
-      connectTimeout: PUBLISH_TIMEOUT_MS,
-    });
-    client = created;
-    created.on('error', (error) => {
-      console.error(`[packet-share] MQTT destination ${destination.destination_id} error:`, error.message);
-    });
-    connecting = new Promise<MqttClient>((resolve, reject) => {
-      let settled = false;
-      let timer: NodeJS.Timeout;
-      const cleanup = () => {
-        clearTimeout(timer);
-        created.removeListener('connect', onConnect);
-        created.removeListener('close', onClose);
-      };
-      const finish = (error?: Error) => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        if (error) {
-          if (client === created) client = null;
-          created.end(true);
-          reject(error);
-        } else {
-          resolve(created);
-        }
-      };
-      const onConnect = () => finish();
-      const onClose = () => finish(new Error('destination MQTT connection closed before connect'));
-      timer = setTimeout(() => finish(new Error('destination MQTT connection timed out')), PUBLISH_TIMEOUT_MS);
-      created.once('connect', onConnect);
-      created.once('close', onClose);
-    }).finally(() => {
+    connecting = (async () => {
+      if (client) {
+        const expired = client;
+        client = null;
+        await expired.endAsync(true).catch(() => undefined);
+      }
+      const url = destinationUrl(destination);
+      const credentials = await packetShareCredentials(destination);
+      credentialsExpireAt = credentials.expiresAt;
+      const created = mqtt.connect(url.toString(), {
+        clientId: `meshcore-share-${randomUUID().replaceAll('-', '').slice(0, 24)}`,
+        username: credentials.username,
+        password: credentials.password,
+        clean: true,
+        reconnectPeriod: 0,
+        connectTimeout: PUBLISH_TIMEOUT_MS,
+      });
+      client = created;
+      created.on('error', (error) => {
+        console.error(`[packet-share] MQTT destination ${destination.destination_id} error:`, error.message);
+      });
+      return new Promise<MqttClient>((resolve, reject) => {
+        let settled = false;
+        let timer: NodeJS.Timeout;
+        const cleanup = () => {
+          clearTimeout(timer);
+          created.removeListener('connect', onConnect);
+          created.removeListener('close', onClose);
+        };
+        const finish = (error?: Error) => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          if (error) {
+            if (client === created) client = null;
+            created.end(true);
+            reject(error);
+          } else {
+            resolve(created);
+          }
+        };
+        const onConnect = () => finish();
+        const onClose = () => finish(new Error('destination MQTT connection closed before connect'));
+        timer = setTimeout(() => finish(new Error('destination MQTT connection timed out')), PUBLISH_TIMEOUT_MS);
+        created.once('connect', onConnect);
+        created.once('close', onClose);
+      });
+    })().finally(() => {
       connecting = null;
     });
     return connecting;
@@ -115,7 +146,18 @@ function connectMqttPublisher(destination: PacketShareDestinationRow): PacketSha
   return {
     async publish(topic: string, payload: string): Promise<void> {
       const current = await connect();
-      await current.publishAsync(topic, payload, { qos: 1 });
+      try {
+        await withTimeout(
+          current.publishAsync(topic, payload, { qos: 1 }),
+          publishAckTimeoutMs,
+          'destination MQTT publish timed out',
+        );
+      } catch (error) {
+        // A publish left in an unknown state must not linger: discard the
+        // client so the next attempt reconnects with fresh credentials.
+        await closeClient(true);
+        throw error;
+      }
       if (!current.connected) {
         await closeClient();
         throw new Error('destination MQTT connection closed after publish');
@@ -130,10 +172,19 @@ export type PacketShareForwarderDeps = {
   publisherFactory?: PacketSharePublisherFactory;
   pollIntervalMs?: number;
   batchSize?: number;
+  publishAckTimeoutMs?: number;
+  deliverTimeoutMs?: number;
 };
 
 export function createPacketShareForwarder(deps: PacketShareForwarderDeps) {
-  const publisherFactory = deps.publisherFactory ?? connectMqttPublisher;
+  const publishAckTimeoutMs = deps.publishAckTimeoutMs ?? positiveIntegerSetting(
+    'OWNER_PACKET_SHARE_PUBLISH_TIMEOUT_MS', DEFAULT_PUBLISH_ACK_TIMEOUT_MS, 120_000,
+  );
+  const deliverTimeoutMs = deps.deliverTimeoutMs ?? positiveIntegerSetting(
+    'OWNER_PACKET_SHARE_DELIVER_TIMEOUT_MS', DEFAULT_DELIVER_TIMEOUT_MS, 600_000,
+  );
+  const publisherFactory: PacketSharePublisherFactory = deps.publisherFactory
+    ?? ((destination) => connectMqttPublisher(destination, publishAckTimeoutMs));
   const pollIntervalMs = deps.pollIntervalMs ?? positiveIntegerSetting(
     'OWNER_PACKET_SHARE_POLL_INTERVAL_MS', DEFAULT_POLL_INTERVAL_MS, 60_000,
   );
@@ -167,13 +218,15 @@ export function createPacketShareForwarder(deps: PacketShareForwarderDeps) {
     if (targets.length < 1) return;
 
     for (const target of targets) {
+      if (!destinationAllowedForOwner(target, target.owner_username, packet.rxNodeId!)
+        || !destinationAcceptsPacket(target, packet, upstreamEnvelope)) continue;
       if (!destinationConfigured(target, hasPacketShareEncryptionKey())) {
         packetShareOutcomesTotal.inc({ outcome: 'unconfigured' });
         continue;
       }
       let destinationTopic: string;
       try {
-        destinationTopic = renderPacketShareTopic(target.topic_template!, packet);
+        destinationTopic = renderDestinationTopic(target, packet);
       } catch (error) {
         packetShareOutcomesTotal.inc({ outcome: 'invalid_destination' });
         console.error('[packet-share] invalid destination topic:', error instanceof Error ? error.message : error);
@@ -181,7 +234,7 @@ export function createPacketShareForwarder(deps: PacketShareForwarderDeps) {
       }
       try {
         const eventKey = packetShareEventKey(target.owner_username, target.destination_id, packet);
-        const payload = buildPacketSharePayload(packet, upstreamEnvelope);
+        const payload = buildPacketSharePayload(packet, upstreamEnvelope, target);
         const inserted = await deps.repository.enqueueDelivery({
           ownerUsername: target.owner_username,
           nodeId: packet.rxNodeId!,
@@ -202,14 +255,19 @@ export function createPacketShareForwarder(deps: PacketShareForwarderDeps) {
 
   async function deliver(row: PacketShareDeliveryRow, claimToken: string): Promise<void> {
     const destination = await deps.repository.getDestination(row.destination_id);
-    if (!destination || !destinationConfigured(destination, hasPacketShareEncryptionKey())) {
+    if (!destination || !destinationAllowedForOwner(destination, row.owner_username, row.node_id)
+      || !destinationConfigured(destination, hasPacketShareEncryptionKey())) {
       await deps.repository.markFailed(row.id, claimToken, row.attempts, 'destination is missing or incomplete');
       packetShareOutcomesTotal.inc({ outcome: 'delivery_error' });
       return;
     }
     try {
       const publisher = await publisherFor(destination);
-      await publisher.publish(row.destination_topic, JSON.stringify(row.payload));
+      await withTimeout(
+        publisher.publish(row.destination_topic, JSON.stringify(row.payload)),
+        publishAckTimeoutMs,
+        'destination MQTT publish timed out',
+      );
       await deps.repository.markSucceeded(row.id, claimToken);
       packetShareOutcomesTotal.inc({ outcome: 'delivered' });
     } catch (error) {
@@ -236,7 +294,23 @@ export function createPacketShareForwarder(deps: PacketShareForwarderDeps) {
         const claimToken = randomUUID();
         const rows = await deps.repository.claimDue(batchSize, claimToken);
         packetShareQueueDepth.set(rows.length);
-        await Promise.all(rows.map((row) => deliver(row, claimToken)));
+        await Promise.all(rows.map(async (row) => {
+          try {
+            await withTimeout(
+              deliver(row, claimToken),
+              deliverTimeoutMs,
+              `delivery timed out (row ${row.id}, ${row.destination_id})`,
+            );
+          } catch (error) {
+            // Last-resort guard: a delivery that never settled must not wedge
+            // the loop. Release the claim so the row retries on a backoff.
+            const message = error instanceof Error ? error.message : String(error);
+            console.error('[packet-share] delivery aborted:', message);
+            await deps.repository.markFailed(row.id, claimToken, row.attempts, message)
+              .catch(() => undefined);
+            packetShareOutcomesTotal.inc({ outcome: 'delivery_error' });
+          }
+        }));
       } catch (error) {
         packetShareOutcomesTotal.inc({ outcome: 'worker_error' });
         console.error('[packet-share] worker error:', error instanceof Error ? error.message : error);

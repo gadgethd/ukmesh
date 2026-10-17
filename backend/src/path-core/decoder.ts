@@ -74,7 +74,7 @@ export type PathDecoderEvidence = {
   unresolvedBaseline: number;
   ambiguityDelta: number;
   maxColumnCandidates: number;
-  candidatesByHash: ReadonlyMap<string, readonly CandidateNode[]>;
+  candidatesByHash: ReadonlyMap<string, readonly CandidateNodeEvidence[]>;
   directAnchors: (position: number, hash: string) => readonly ObserverAnchor[];
   sourceAnchor?: ObserverAnchor;
   terminalAnchors?: readonly ObserverAnchor[];
@@ -88,6 +88,10 @@ export type PathDecoderEvidence = {
   ) => { possible: boolean; score: number };
   /** Endpoint anchors use only hard gates plus the bounded physics tiebreaker. */
   endpointTransitionsGateOnly?: boolean;
+  /** Include directed evidence for each directly receiving observer. */
+  scoreDirectAnchorTransitions?: boolean;
+  /** Missing coordinates require observed directed edges on both sides. */
+  requireUnpositionedTransitionEvidence?: boolean;
   prefixProbability: (nodeId: string, hash: string, prevHash: string | null) => number;
   positionPrefixCount?: (position: number, nodeId: string, hash: string) => number;
   corridorPriorCount?: (position: number, nodeId: string) => number;
@@ -213,24 +217,34 @@ export function indexCandidatesByHash(
   hashes: readonly string[],
   candidates: readonly CandidateNodeEvidence[],
   bounds: GeographicBounds | null,
-): Map<string, CandidateNode[]> {
-  const result = new Map<string, CandidateNode[]>();
+  includeUnpositioned = false,
+): Map<string, CandidateNodeEvidence[]> {
+  const result = new Map<string, CandidateNodeEvidence[]>();
+  const hashesByByte = new Map<string, string[]>();
+  for (const hash of new Set(hashes)) {
+    const byte = hash.slice(0, 2).toUpperCase();
+    const values = hashesByByte.get(byte) ?? [];
+    values.push(hash);
+    hashesByByte.set(byte, values);
+  }
   for (const candidate of candidates) {
-    if (candidate.lat == null || candidate.lon == null
-        || candidate.lat === 0 || candidate.lon === 0) continue;
-    const point = { lat: candidate.lat, lon: candidate.lon };
-    if (bounds && !isInBounds(point, bounds)) continue;
+    const positioned = !(candidate.lat == null || candidate.lon == null
+        || !Number.isFinite(candidate.lat) || !Number.isFinite(candidate.lon)
+        || (candidate.lat === 0 && candidate.lon === 0));
+    if (!positioned && !includeUnpositioned) continue;
+    const point = { lat: candidate.lat!, lon: candidate.lon! };
+    if (positioned && bounds && !isInBounds(point, bounds)) continue;
     const upperNodeId = candidate.nodeId.toUpperCase();
-    for (const hash of hashes) {
+    for (const hash of hashesByByte.get(upperNodeId.slice(0, 2)) ?? []) {
       if (!upperNodeId.startsWith(hash)) continue;
       if (!result.has(hash)) result.set(hash, []);
       result.get(hash)!.push({
         nodeId: candidate.nodeId,
         name: candidate.name,
-        lat: candidate.lat,
-        lon: candidate.lon,
+        lat: positioned ? candidate.lat : null,
+        lon: positioned ? candidate.lon : null,
+        elevationM: candidate.elevationM,
       });
-      break;
     }
   }
   return result;
@@ -249,9 +263,16 @@ function emissionScore(
 
   const positioned = candidate.lat != null && candidate.lon != null;
   let directPhysicsScore = 0;
-  if (anchors.length > 0) {
-    if (!positioned) return -Infinity;
-    if (minDistanceToSet({ lat: candidate.lat!, lon: candidate.lon! }, anchors) > evidence.maxHopKm) {
+  if (anchors.length > 0 && !positioned) {
+    if (!evidence.requireUnpositionedTransitionEvidence || !evidence.scoreDirectAnchorTransitions) return -Infinity;
+    directPhysicsScore = Math.max(...anchors.map((anchor) => endpointTransitionScore(
+      candidate, endpointCandidate(anchor), evidence, position + 1,
+    )));
+    if (!Number.isFinite(directPhysicsScore)) return -Infinity;
+  }
+  if (anchors.length > 0 && positioned) {
+    if (!evidence.physicalTransition
+        && minDistanceToSet({ lat: candidate.lat!, lon: candidate.lon! }, anchors) > evidence.maxHopKm) {
       return -Infinity;
     }
     if (evidence.physicalTransition) {
@@ -262,7 +283,9 @@ function emissionScore(
           endpointCandidate(anchor) as CandidateNode,
           distanceKm(candidate as CandidateNode, anchor),
         );
-        if (physics.possible) bestPhysics = Math.max(bestPhysics, physics.score);
+        if (physics.possible) bestPhysics = Math.max(bestPhysics, evidence.scoreDirectAnchorTransitions
+          ? endpointTransitionScore(candidate, endpointCandidate(anchor), evidence, position + 1)
+          : physics.score);
       }
       if (!isFinite(bestPhysics)) return -Infinity;
       directPhysicsScore = bestPhysics;
@@ -296,7 +319,7 @@ function emissionScore(
       * Math.log1p(Math.max(0, evidence.corridorPriorCount(position, candidate.nodeId)));
   }
 
-  if (evidence.weights.corridorInterpolation !== 0 && evidence.corridorInterpolation) {
+  if (positioned && evidence.weights.corridorInterpolation !== 0 && evidence.corridorInterpolation) {
     score += evidence.weights.corridorInterpolation
       * evidence.corridorInterpolation(position, pathLength, candidate as CandidateNode);
   }
@@ -310,13 +333,16 @@ function transitionScore(
   evidence: PathDecoderEvidence,
 ): number {
   if (previous.nodeId === null || current.nodeId === null) return 0;
+  if (evidence.requireUnpositionedTransitionEvidence
+      && (previous.lat == null || previous.lon == null || current.lat == null || current.lon == null)
+      && evidence.transitionProbability(previous.nodeId, current.nodeId) <= 0) return -Infinity;
   let score = 0;
   if (previous.lat != null && previous.lon != null && current.lat != null && current.lon != null) {
     const distance = distanceKm(
       { lat: previous.lat, lon: previous.lon },
       { lat: current.lat, lon: current.lon },
     );
-    if (distance > evidence.maxHopKm) return -Infinity;
+    if (!evidence.physicalTransition && distance > evidence.maxHopKm) return -Infinity;
     if (evidence.physicalTransition) {
       const physics = evidence.physicalTransition(
         previous as CandidateNode,
@@ -355,11 +381,12 @@ function endpointTransitionScore(
   from: DecoderCandidate,
   to: DecoderCandidate,
   evidence: PathDecoderEvidence,
+  position = 0,
 ): number {
-  if (!evidence.endpointTransitionsGateOnly) return transitionScore(0, from, to, evidence);
+  if (!evidence.endpointTransitionsGateOnly) return transitionScore(position, from, to, evidence);
   if (from.lat == null || from.lon == null || to.lat == null || to.lon == null) return -Infinity;
   const distance = distanceKm(from as CandidateNode, to as CandidateNode);
-  if (distance > evidence.maxHopKm) return -Infinity;
+  if (!evidence.physicalTransition && distance > evidence.maxHopKm) return -Infinity;
   if (!evidence.physicalTransition) return 0;
   const physics = evidence.physicalTransition(from as CandidateNode, to as CandidateNode, distance);
   return physics.possible ? physics.score : -Infinity;
@@ -493,6 +520,19 @@ export function decodePathWithScore(
     )));
   }
 
+  // Forward and backward passes use identical transitions. Cache each edge
+  // once: terrain checks, geographic distances and learned lookups dominate
+  // the cost of decoding densely colliding one-byte columns.
+  const transitions: number[][][] = columns.map((column, position) => position === 0 ? []
+    : columns[position - 1]!.map(() => new Array<number>(column.length).fill(NaN)));
+  const edgeScore = (position: number, previous: number, current: number): number => {
+    const row = transitions[position]![previous]!;
+    if (Number.isNaN(row[current])) row[current] = transitionScore(
+      position, columns[position - 1]![previous]!, columns[position]![current]!, evidence,
+    );
+    return row[current]!;
+  };
+
   // Best prefix score ending at columns[position][candidate].
   const forward: number[][] = columns.map((column) => new Array(column.length).fill(-Infinity));
   const previousCandidate: number[][] = columns.map((column) => new Array(column.length).fill(-1));
@@ -512,12 +552,7 @@ export function decodePathWithScore(
       let bestPrevious = -1;
       for (let previous = 0; previous < columns[position - 1]!.length; previous++) {
         if (!isFinite(forward[position - 1]![previous]!)) continue;
-        const transition = transitionScore(
-          position,
-          columns[position - 1]![previous]!,
-          columns[position]![current]!,
-          evidence,
-        );
+        const transition = edgeScore(position, previous, current);
         if (!isFinite(transition)) continue;
         const total = forward[position - 1]![previous]! + transition;
         if (total > best) {
@@ -547,12 +582,7 @@ export function decodePathWithScore(
       for (let next = 0; next < columns[position + 1]!.length; next++) {
         const nextEmission = emissions[position + 1]![next]!;
         if (!isFinite(nextEmission) || !isFinite(backward[position + 1]![next]!)) continue;
-        const transition = transitionScore(
-          position + 1,
-          columns[position]![current]!,
-          columns[position + 1]![next]!,
-          evidence,
-        );
+        const transition = edgeScore(position + 1, current, next);
         if (!isFinite(transition)) continue;
         const total = transition + nextEmission + backward[position + 1]![next]!;
         if (total > best) best = total;

@@ -15,7 +15,6 @@ import { ensureMultibyteFactsCoverWindow } from './multibytePathFacts.js';
 type QueryFn = <T extends QueryResultRow = QueryResultRow>(
   text: string,
   params?: unknown[],
-  signal?: AbortSignal,
 ) => Promise<{ rows: T[] }>;
 
 type StatsRepositoryDeps = {
@@ -23,8 +22,6 @@ type StatsRepositoryDeps = {
   query: QueryFn;
   aggregateReadsEnabled?: boolean;
   aggregateShadowEnabled?: boolean;
-  aggregateReadNetworks?: readonly string[];
-  aggregateShadowNetworks?: readonly string[];
 };
 
 export type StatsRepository = ReturnType<typeof createStatsRepository>;
@@ -52,40 +49,6 @@ function normalizedDimensionKey(row: QueryResultRow): string {
         ];
       }),
   ));
-}
-
-function settingInteger(name: string, fallback: number, minimum: number, maximum: number): number {
-  const raw = process.env[name];
-  if (raw === undefined || raw.trim() === '') return fallback;
-  const parsed = Number(raw);
-  if (!Number.isSafeInteger(parsed) || parsed < minimum || parsed > maximum) {
-    console.error(`[stats-query-budget] invalid ${name}; using ${fallback}`);
-    return fallback;
-  }
-  return parsed;
-}
-
-export function bindChartSnapshot(
-  text: string,
-  params: unknown[],
-  asOf: Date,
-): { text: string; params: unknown[] } {
-  if (!/\bNOW\(\)/i.test(text)) return { text, params };
-  const snapshotParam = `$${params.length + 1}::timestamptz`;
-  return {
-    text: text.replace(/\bNOW\(\)/gi, snapshotParam),
-    params: [...params, asOf.toISOString()],
-  };
-}
-
-function networkSwitches(...values: Array<string | undefined>): Set<string> {
-  return new Set(
-    values
-      .flatMap((raw) => String(raw ?? '').split(','))
-      .map((network) => network.trim().toLowerCase())
-      .filter((network) => network !== 'true' && network !== 'false')
-      .filter(Boolean),
-  );
 }
 
 /**
@@ -139,9 +102,6 @@ export function compareAggregateShadowRows(
 
 export function createStatsRepository(deps: StatsRepositoryDeps) {
   const { networkFilters } = deps;
-  const queryBudgetMs = settingInteger('STATS_QUERY_DURATION_BUDGET_MS', 60_000, 1_000, 600_000);
-  const queryTimeoutMs = settingInteger('STATS_CHART_QUERY_TIMEOUT_MS', 120_000, 1_000, 300_000);
-  const maxResultRows = settingInteger('STATS_CHART_MAX_RESULT_ROWS', 100_000, 1, 1_000_000);
   const queryConcurrency = Math.max(
     1,
     Math.min(8, Math.trunc(Number(process.env['STATS_DB_QUERY_CONCURRENCY'] ?? 2) || 2)),
@@ -169,56 +129,14 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
   const query: QueryFn = async <T extends QueryResultRow = QueryResultRow>(
     text: string,
     params?: unknown[],
-    parentSignal?: AbortSignal,
   ) => {
-    const controller = new AbortController();
-    const startedAt = performance.now();
-    let timeoutFired = false;
-    let acquired = false;
-    const abortFromParent = () => controller.abort(parentSignal?.reason);
-    if (parentSignal?.aborted) abortFromParent();
-    else parentSignal?.addEventListener('abort', abortFromParent, { once: true });
-    const timeout = setTimeout(() => {
-      timeoutFired = true;
-      controller.abort(new Error(`STATS_QUERY_TIMEOUT_${queryTimeoutMs}MS`));
-    }, queryTimeoutMs);
+    await acquireQuerySlot();
     try {
-      await acquireQuerySlot();
-      acquired = true;
-      controller.signal.throwIfAborted();
-      const result = await deps.query<T>(text, params, controller.signal);
-      const durationMs = Math.round(performance.now() - startedAt);
-      const source = text.match(/\bFROM\s+([a-z_][a-z0-9_.]*)/i)?.[1] ?? 'unknown';
-      if (durationMs > queryBudgetMs || result.rows.length > maxResultRows) {
-        console.error('[stats-query-budget] exceeded', {
-          source,
-          durationMs,
-          durationBudgetMs: queryBudgetMs,
-          returnedRows: result.rows.length,
-          returnedRowBudget: maxResultRows,
-        });
-        throw new Error('STATS_QUERY_BUDGET_EXCEEDED');
-      }
-      return result;
-    } catch (error) {
-      const durationMs = Math.round(performance.now() - startedAt);
-      if (timeoutFired || durationMs > queryBudgetMs) {
-        const source = text.match(/\bFROM\s+([a-z_][a-z0-9_.]*)/i)?.[1] ?? 'unknown';
-        console.error('[stats-query-budget] query failed after budget', {
-          source,
-          durationMs,
-          durationBudgetMs: queryBudgetMs,
-          queryTimeoutMs,
-        });
-      }
-      throw error;
+      return await deps.query<T>(text, params);
     } finally {
-      clearTimeout(timeout);
-      parentSignal?.removeEventListener('abort', abortFromParent);
-      if (acquired) releaseQuerySlot();
+      releaseQuerySlot();
     }
   };
-  const limitedQuery: QueryFn = query;
 
   async function loadChartSnapshot(scope: string, visibilityGeneration: number) {
     return loadStoredChartSnapshot(query, scope, visibilityGeneration);
@@ -239,13 +157,9 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
     );
   }
 
-  async function fetchObserverRegionSummary(
-    network: string | undefined,
-    observer: string | undefined,
-    queryFn: QueryFn = query,
-  ) {
+  async function fetchObserverRegionSummary(network: string | undefined, observer: string | undefined) {
     const filters = networkFilters(network, observer, { includePrivacy: false });
-    return queryFn(`
+    return query(`
       SELECT
         COALESCE(NULLIF(TRIM(UPPER(p.iata)), ''), 'UNK') AS iata,
         COUNT(DISTINCT p.packet_hash) FILTER (WHERE p.time > NOW() - INTERVAL '24 hours') AS packets_24h,
@@ -315,28 +229,10 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
     transportCodes: QueryResultRow[];
   };
 
-  // Compose already forwards these two settings. Preserve `true` as global
-  // enablement while allowing a comma-separated per-network rollout.
-  const readSwitch = String(process.env['STATS_AGGREGATE_READS_ENABLED'] ?? '').trim().toLowerCase();
-  const shadowSwitch = String(process.env['STATS_AGGREGATE_SHADOW_ENABLED'] ?? '').trim().toLowerCase();
-  const aggregateReadNetworks = new Set([
-    ...networkSwitches(process.env['STATS_AGGREGATE_READ_NETWORKS'], readSwitch),
-    ...(deps.aggregateReadNetworks ?? []).map((network) => network.trim().toLowerCase()).filter(Boolean),
-  ]);
-  const aggregateShadowNetworks = new Set([
-    ...networkSwitches(process.env['STATS_AGGREGATE_SHADOW_NETWORKS'], shadowSwitch),
-    ...(deps.aggregateShadowNetworks ?? []).map((network) => network.trim().toLowerCase()).filter(Boolean),
-  ]);
-  const aggregateReadsEnabledFor = (network: string | undefined): boolean => (
-    deps.aggregateReadsEnabled
-    ?? (readSwitch === 'true'
-      || aggregateReadNetworks.has((network ?? 'public').trim().toLowerCase()))
-  );
-  const aggregateShadowEnabledFor = (network: string | undefined): boolean => (
-    deps.aggregateShadowEnabled
-    ?? (shadowSwitch === 'true'
-      || aggregateShadowNetworks.has((network ?? 'public').trim().toLowerCase()))
-  );
+  const aggregateReadsEnabled = deps.aggregateReadsEnabled
+    ?? process.env['STATS_AGGREGATE_READS_ENABLED'] === 'true';
+  const aggregateShadowEnabled = deps.aggregateShadowEnabled
+    ?? process.env['STATS_AGGREGATE_SHADOW_ENABLED'] === 'true';
   const aggregateShadowInFlight = new Map<string, Promise<void>>();
   const aggregateShadowLastStartedAt = new Map<string, number>();
   const aggregateShadowMinimumIntervalMs = 5 * 60_000;
@@ -378,7 +274,6 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
   async function fetchAggregateChartParts(
     network: string | undefined,
     asOf: Date,
-    signal?: AbortSignal,
   ): Promise<AggregateChartParts> {
     const scope = aggregateScope(network);
     const filters = networkFilters(network, undefined);
@@ -584,7 +479,6 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
         bounds.fullStart7d.toISOString(),
         bounds.fullEnd.toISOString(),
       ],
-      signal,
     );
     const row = result.rows[0];
     return {
@@ -793,26 +687,6 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
     const filters = networkFilters(network, observer);
     const totalFilters = networkFilters(network, observer, { includePrivacy: false });
     const aggregateAsOf = new Date();
-    const chartAbort = new AbortController();
-    const chartQuery: QueryFn = async <T extends QueryResultRow = QueryResultRow>(
-      text: string,
-      params: unknown[] = filters.params,
-      signal: AbortSignal = chartAbort.signal,
-    ) => {
-      const snapshot = bindChartSnapshot(text, params, aggregateAsOf);
-      try {
-        return await limitedQuery<T>(snapshot.text, snapshot.params, signal);
-      } catch (error) {
-        if (!chartAbort.signal.aborted) chartAbort.abort(error);
-        throw error;
-      }
-    };
-    // Shadow the repository query helper for this function so every raw chart
-    // query, including observer summaries and fact readiness checks, shares one
-    // bounded asOf timestamp.
-    const query = chartQuery;
-    const aggregateReadsEnabled = aggregateReadsEnabledFor(network);
-    const aggregateShadowEnabled = aggregateShadowEnabledFor(network);
     const multibyteCutoffPlaceholder = `$${filters.params.length + 1}`;
     const multibyteGenerationPlaceholder = `$${filters.params.length + 2}`;
     const multibyteFactParams = [
@@ -944,31 +818,15 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
        ORDER BY b.day`,
       multibyteFactParams,
     );
-    const aggregatePartsPromise = (aggregateReadsEnabled || aggregateShadowEnabled) && !observer
-      ? fetchAggregateChartParts(network, aggregateAsOf, chartAbort.signal)
+    const aggregatePartsPromise = aggregateReadsEnabled && !observer
+      ? fetchAggregateChartParts(network, aggregateAsOf)
       : null;
-    if (aggregatePartsPromise && aggregateReadsEnabled) {
-      void aggregatePartsPromise.catch((error: unknown) => {
-        if (!chartAbort.signal.aborted) chartAbort.abort(error);
-      });
-    }
-    if (aggregatePartsPromise && aggregateShadowEnabled) {
-      void aggregatePartsPromise
-        .then((aggregate) => scheduleAggregateShadow(network, aggregateAsOf, aggregate))
-        .catch((error: unknown) => {
-          console.warn('[stats-aggregate-shadow] aggregate fetch failed', {
-            network: network ?? 'public',
-            error: error instanceof Error ? error.message : String(error),
-          });
-        });
-    }
-    const aggregateReadPartsPromise = aggregateReadsEnabled ? aggregatePartsPromise : null;
     const aggregateRows = (
       key: keyof AggregateChartParts,
       legacy: () => Promise<{ rows: QueryResultRow[] }>,
     ): Promise<{ rows: QueryResultRow[] }> => (
-      aggregateReadPartsPromise
-        ? aggregateReadPartsPromise.then((parts) => ({ rows: parts[key] }))
+      aggregatePartsPromise
+        ? aggregatePartsPromise.then((parts) => ({ rows: parts[key] }))
         : legacy()
     );
 
@@ -1082,7 +940,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
             WHERE p.time > NOW() - INTERVAL '24 hours'
               AND p.src_node_id IS NOT NULL ${filters.packetsAlias('p')}) AS unique_radios_24h
       `, filters.params),
-      fetchObserverRegionSummary(network, observer, query),
+      fetchObserverRegionSummary(network, observer),
       query(`
         SELECT
           COALESCE(NULLIF(TRIM(UPPER(p.iata)), ''), 'UNK') AS iata,
@@ -1207,6 +1065,12 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
       transportCodesResult,
       pathDecodeTrendResult,
     };
+    if (aggregatePartsPromise && aggregateShadowEnabled) {
+      const aggregate = await aggregatePartsPromise;
+      // The comparison is bounded to the six switched dimensions, uses one
+      // materialized recent packet scan and runs off the response path.
+      scheduleAggregateShadow(network, aggregateAsOf, aggregate);
+    }
     return response;
   }
 
@@ -1357,17 +1221,49 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
            ${filters.packetsAlias('p')}
          GROUP BY COALESCE(rx_alias.canonical_node_id, UPPER(BTRIM(p.rx_node_id)))
        ),
+       prefix_map AS MATERIALIZED (
+         -- 3-byte path-hash prefix -> canonical node id, so relay evidence
+         -- (a repeater's prefix appearing in a packet's path_hashes) can be
+         -- attributed to the node that forwarded the packet.
+         SELECT LEFT(node_id, 6) AS prefix, node_id AS canonical_node_id
+         FROM node_identity_nodes
+         UNION
+         SELECT LEFT(source_node_id, 6) AS prefix, canonical_node_id
+         FROM node_identity_aliases
+       ),
        tx AS (
-         SELECT COALESCE(src_alias.canonical_node_id, UPPER(BTRIM(p.src_node_id))) AS node_id,
-                COUNT(p.packet_hash)::text AS tx_24h,
-                MAX(p.time)::text AS last_tx
-         FROM packets p
-         LEFT JOIN node_identity_aliases src_alias
-           ON src_alias.source_node_id = UPPER(BTRIM(p.src_node_id))
-         WHERE p.time > NOW() - INTERVAL '24 hours'
-           AND p.src_node_id IS NOT NULL
-           ${filters.packetsAlias('p')}
-         GROUP BY COALESCE(src_alias.canonical_node_id, UPPER(BTRIM(p.src_node_id)))
+         -- tx_24h = distinct packets the node transmitted in the last 24 hours:
+         --   * packets it originated (alias-resolved src rows), and
+         --   * packets it relayed (its 3-byte prefix present in path_hashes).
+         -- Counting originations only showed "tx 0" for repeaters that relayed
+         -- hundreds of packets/day but advertise rarely (2026-09-22 fix).
+         SELECT node_id,
+                COUNT(DISTINCT packet_hash)::text AS tx_24h,
+                MAX(time)::text AS last_tx
+         FROM (
+           SELECT COALESCE(src_alias.canonical_node_id, UPPER(BTRIM(p.src_node_id))) AS node_id,
+                  p.packet_hash,
+                  p.time
+           FROM packets p
+           LEFT JOIN node_identity_aliases src_alias
+             ON src_alias.source_node_id = UPPER(BTRIM(p.src_node_id))
+           WHERE p.time > NOW() - INTERVAL '24 hours'
+             AND p.src_node_id IS NOT NULL
+             ${filters.packetsAlias('p')}
+           UNION ALL
+           SELECT prefix_map.canonical_node_id AS node_id,
+                  p.packet_hash,
+                  p.time
+           FROM packets p
+           CROSS JOIN LATERAL unnest(p.path_hashes) AS path_element
+           JOIN prefix_map ON prefix_map.prefix = path_element
+           WHERE p.time > NOW() - INTERVAL '24 hours'
+             AND p.path_hash_size_bytes >= 3
+             AND p.path_hashes IS NOT NULL
+             AND LENGTH(path_element) = 6
+             ${filters.packetsAlias('p')}
+         ) attributed
+         GROUP BY node_id
        )
        SELECT
          n.node_id,

@@ -268,3 +268,34 @@ test('canonical URL index prevents interleaved decoys evicting variant spam', ()
   assert.ok(target);
   assert.equal(target.messageCount, 8);
 });
+
+test('a rotating-ID botnet flood (many single-shot machine-named senders) is caught', () => {
+  // Real-world pattern (Oct 2026): the anti-Kirby spammer rotated through
+  // fresh keygen-style node identities, each posting the same slogan once.
+  // These are not "many independent people": every identity appears exactly
+  // once in the window and the names are machine-generated — so the cluster
+  // must qualify as an incident, not be dismissed as broad chatter.
+  const text = 'still clinging to the trademarks like a desperate leech';
+  const ids = [
+    '0CYT64KV', '1KG3RWU7', '16V0OP2W', '2H6WCDJW', '5ZA1J31M',
+    '6KE2E6P6', '7F32S5OK', 'C23R8J39', 'DP8INYG2', 'G6B8QHA3',
+  ];
+  const records = ids.map((id, i) => rec(text, id, i));
+  const incidents = clusterMessages(records, cfg());
+  assert.equal(incidents.length, 1, 'the rotating-ID flood should form one incident');
+  assert.equal(incidents[0]!.messageCount, ids.length);
+  assert.ok(
+    incidents[0]!.score >= DEFAULT_SPAM_MESSAGE_CONFIG.publicMinScore,
+    `expected score above the public floor, got ${incidents[0]!.score}`,
+  );
+  assert.ok(incidents[0]!.reasons.some((r) => /single-shot/i.test(r)));
+});
+
+test('single-shot human chatter is still treated as broad chatter', () => {
+  // Guard for the rotating-identity exemption: many one-shot senders with
+  // human names (a meme / coordinated greeting) must stay chatter.
+  const text = 'happy birthday to the repeater that never sleeps';
+  const names = ['Alice', 'Bob', 'Carol', 'Dave', 'Erin', 'Frank', 'Grace', 'Heidi'];
+  const records = names.map((n, i) => rec(text, n, i));
+  assert.equal(clusterMessages(records, cfg()).length, 0);
+});

@@ -21,6 +21,7 @@
     "@deck.gl/mapbox": "^9.4.0",
     "fuse.js": "^7.5.0",
     "maplibre-gl": "^6.11.2",
+    "polygon-clipping": "^0.15.7",
     "react": "19.3.0",
     "react-aria-components": "^1.21.1",
     "react-dom": "19.3.0",

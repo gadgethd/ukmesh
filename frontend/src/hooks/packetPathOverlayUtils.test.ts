@@ -97,3 +97,21 @@ test('multi-observer projections retain every branch and de-duplicate their comm
   assert.equal(routes[0]?.nodes[0]?.nodeId, 'node-0', 'canonical hop metadata is retained');
   assert.equal(routes[0]?.nodes[2]?.nodeId, null, 'observer endpoints remain valid coordinate-only nodes');
 });
+
+test('co-located relays keep their own branch identities instead of borrowing another route label', () => {
+  const a = { ...node(0, 51, -1), nodeId: 'AA0001', name: 'relay a' };
+  const b = { ...node(0, 51, -1), nodeId: 'BB0002', name: 'relay b' };
+  const response: MultiObserverBetaResponse = {
+    packetHash: 'ABC', network: 'ukmesh', canonicalPath: [a], observers: [], confidence: 1,
+    results: [a, b].map((hop) => ({
+      ok: true, packetHash: 'ABC', mode: 'resolved', canonicalPath: [hop], observers: [], confidence: 1,
+      purplePath: [[51, -1], [52, -2]],
+    })),
+  };
+  const routes = multiObserverPathRoutes(response);
+  assert.equal(routes.length, 2);
+  assert.deepEqual(routes.map((route) => route.nodes[0]?.nodeId), ['AA0001', 'BB0002']);
+  response.results![0]!.canonicalPath = [a, { ...b, position: 1 }];
+  assert.equal(multiObserverPathRoutes(response)[0]?.nodes[0]?.nodeId, null,
+    'a coordinate shared by several positions must not invent a node identity');
+});

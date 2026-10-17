@@ -130,6 +130,12 @@ export const mqttIngestOutcomesTotal = new Counter({
   registers: [metricsRegistry],
 });
 
+export const mqttIngestQueueDepth = new Gauge({
+  name: 'meshcore_mqtt_ingest_queue_depth',
+  help: 'MQTT messages waiting in the bounded ingest queue.',
+  registers: [metricsRegistry],
+});
+
 export const mqttIngestActive = new Gauge({
   name: 'meshcore_mqtt_ingest_active',
   help: 'MQTT messages currently being processed before acknowledgement.',
@@ -146,6 +152,19 @@ export const packetShareOutcomesTotal = new Counter({
 export const packetShareQueueDepth = new Gauge({
   name: 'meshcore_owner_packet_share_queue_depth',
   help: 'Owner packet sharing deliveries currently claimed for processing.',
+  registers: [metricsRegistry],
+});
+
+export const publicFeedOutcomesTotal = new Counter({
+  name: 'meshcore_public_feed_outcomes_total',
+  help: 'Public MeshCore feed decisions and delivery outcomes.',
+  labelNames: ['outcome'] as const,
+  registers: [metricsRegistry],
+});
+
+export const publicFeedQueueDepth = new Gauge({
+  name: 'meshcore_public_feed_queue_depth',
+  help: 'Public MeshCore feed deliveries currently claimed for processing.',
   registers: [metricsRegistry],
 });
 

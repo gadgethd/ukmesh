@@ -1,6 +1,7 @@
 import {
   buildObserverBounds,
   decodePathWithScore,
+  distanceKm,
   evaluatePhysicalHop,
   indexCandidatesByHash,
   scoreFixedPath,
@@ -17,9 +18,11 @@ import {
   ML_DOMINANT_THRESHOLD,
   NULL_BASELINE,
   SCORE,
+  CORRIDOR_INTERPOLATION_KM,
+  OBSERVER_DISTANCE_DECAY_KM,
 } from '../path-shared/scoring.js';
 import { nodePathHash, normalizePathHash } from '../path-hash/utils.js';
-import { clamp, hasCoords, linkKey } from './geometry.js';
+import { clamp, hasCoords, isValidMapCoord, linkKey } from './geometry.js';
 import type { BetaResolveContext, MeshNode, PathPacket } from './types.js';
 
 export type BetaObserverEntry = {
@@ -207,16 +210,27 @@ export function decodeBetaCanonicalGroup(
     .filter(hasCoords)
     .map((node) => ({ lat: node.lat!, lon: node.lon! }));
   if (sourceNode) observerCoordinates.push({ lat: sourceNode.lat!, lon: sourceNode.lon! });
-  const bounds = buildObserverBounds(observerCoordinates, pathingConfig.maxHopKm);
-  const candidateEvidence: CandidateNodeEvidence[] = context.repeaterNodes.map((node) => ({
+  // A flood can wander many hops beyond the receiving observer's region.
+  // A one-hop region bound silently discarded the start of long routes.
+  const bounds = buildObserverBounds(observerCoordinates, pathingConfig.maxHopKm * Math.max(1, canonicalHashes.length));
+  const candidateNodes = [...context.repeaterNodes];
+  if (context.learningModel.champion) {
+    for (const node of context.nodesById.values()) {
+      if (!isValidMapCoord(node.lat, node.lon) && (node.role === null || node.role === 2)
+          && context.learningModel.champion.prefixCounts.has(`${node.node_id.slice(0, 2).toUpperCase()}|${node.node_id}`)) {
+        candidateNodes.push(node);
+      }
+    }
+  }
+  const candidateEvidence: CandidateNodeEvidence[] = candidateNodes.map((node) => ({
     nodeId: node.node_id,
     name: node.name,
-    lat: node.lat,
-    lon: node.lon,
+    lat: hasCoords(node) ? node.lat : null,
+    lon: hasCoords(node) ? node.lon : null,
     elevationM: node.elevation_m,
   }));
-  const candidatesByHash = indexCandidatesByHash(canonicalHashes, candidateEvidence, bounds);
-  const confirmed = confirmedMultibyteAssignments(group, context.repeaterNodes);
+  const candidatesByHash = indexCandidatesByHash(canonicalHashes, candidateEvidence, bounds, Boolean(context.learningModel.champion));
+  const confirmed = confirmedMultibyteAssignments(group, [...context.nodesById.values()]);
   // A confirmed relay may sit outside the observer-only candidate bound on a
   // long path. Preserve that direct evidence explicitly before locking it.
   for (const [position, nodeId] of confirmed) {
@@ -242,6 +256,19 @@ export function decodeBetaCanonicalGroup(
   const bucketHours = context.learningModel.bucketHours || 6;
   const bucket = currentHourBucket(bucketHours);
   const stickyStrength = clamp(1 - Number(stickyAgeFraction ?? 0), 0, 1);
+  const champion = context.learningModel.champion;
+  const confirmedEdges = new Set<string>();
+  for (let position = 1; position < canonicalHashes.length; position++) {
+    const from = confirmed.get(position - 1);
+    const to = confirmed.get(position);
+    if (from && to) confirmedEdges.add(`${from}|${to}`);
+  }
+  for (const member of group.members) {
+    const first = confirmed.get(0);
+    const last = confirmed.get(member.hops.length - 1);
+    if (first && member.packet.src_node_id) confirmedEdges.add(`${member.packet.src_node_id}|${first}`);
+    if (last) confirmedEdges.add(`${last}|${member.observerId}`);
+  }
 
   const evidence: PathDecoderEvidence = {
     weights: SCORE,
@@ -259,10 +286,13 @@ export function decodeBetaCanonicalGroup(
       nodeId: sourceNode.node_id,
       elevationM: sourceNode.elevation_m,
     } : undefined,
-    endpointTransitionsGateOnly: true,
+    endpointTransitionsGateOnly: !champion,
+    scoreDirectAnchorTransitions: Boolean(champion),
+    requireUnpositionedTransitionEvidence: Boolean(champion),
     directAnchors: (position) => anchors.get(position) ?? [],
     prefixProbability: (nodeId, hash, previousHash) => {
       const prefix = normalizePathHash(hash).slice(0, 2);
+      if (champion) return champion.prefixCounts.get(`${prefix}|${nodeId}`) ?? 0;
       const previous = normalizePathHash(previousHash).slice(0, 2);
       const learned = regionalMaximum(regions, (region) => (
         context.learningModel.prefixProbabilities.get(`${region}|${prefix}|${previous}|${nodeId}`)
@@ -271,14 +301,55 @@ export function decodeBetaCanonicalGroup(
       const sticky = stickyMap?.get(prefix) === nodeId ? stickyStrength : 0;
       return Math.max(learned, sticky);
     },
+    positionPrefixCount: (position, nodeId, hash) => (
+      champion?.positionPrefixCounts.get(`${hash.slice(0, 2)}|${position}|${nodeId}`) ?? 0
+    ),
+    corridorPriorCount: (position, nodeId) => {
+      let best = 0;
+      for (const member of group.members) {
+        if (position >= member.hops.length || !member.packet.src_node_id) continue;
+        best = Math.max(best, champion?.corridorCounts.get(
+          `${member.packet.src_node_id}|${member.observerId}|${position}|${nodeId}`,
+        ) ?? 0);
+      }
+      return best;
+    },
+    observerDistance: (candidate) => {
+      if (!champion) return 0;
+      let nearest = Infinity;
+      for (const member of group.members) {
+        if (hasCoords(member.rx)) nearest = Math.min(nearest, distanceKm(candidate, { lat: member.rx.lat!, lon: member.rx.lon! }));
+      }
+      return Number.isFinite(nearest) ? -nearest / OBSERVER_DISTANCE_DECAY_KM : 0;
+    },
+    corridorInterpolation: (position, _pathLength, candidate) => {
+      if (!champion || !sourceNode) return 0;
+      let nearest = Infinity;
+      for (const member of group.members) {
+        if (position >= member.hops.length || !hasCoords(member.rx)) continue;
+        const fraction = member.hops.length <= 1 ? 0.5 : position / (member.hops.length - 1);
+        nearest = Math.min(nearest, distanceKm(candidate, {
+          lat: sourceNode.lat! + (member.rx.lat! - sourceNode.lat!) * fraction,
+          lon: sourceNode.lon! + (member.rx.lon! - sourceNode.lon!) * fraction,
+        }));
+      }
+      return Number.isFinite(nearest) ? -nearest / CORRIDOR_INTERPOLATION_KM : 0;
+    },
     mlPrefixScore: () => 0,
     directedEdgeScore: (fromNodeId, toNodeId) => regionalMaximum(regions, (region) => (
       context.learningModel.edgeScores.get(`${region}|${bucket}|${fromNodeId}|${toNodeId}`)
       ?? context.learningModel.edgeScores.get(`${region}|-1|${fromNodeId}|${toNodeId}`)
     )),
-    transitionProbability: (fromNodeId, toNodeId) => regionalMaximum(regions, (region) => (
+    transitionProbability: (fromNodeId, toNodeId) => champion
+      ? champion.transitionCounts.get(`${fromNodeId}|${toNodeId}`) ?? 0
+      : regionalMaximum(regions, (region) => (
       context.learningModel.transitionProbabilities.get(`${region}|${fromNodeId}|${toNodeId}`)
     )),
+    positionConditionalTransition: (position, fromNodeId, toNodeId) => (
+      champion?.positionTransitionCounts.get(`${position}|${fromNodeId}|${toNodeId}`) ?? 0
+    ),
+    isItmViable: (fromNodeId, toNodeId) => champion != null
+      && context.linkMetrics.get(linkKey(fromNodeId, toNodeId))?.itm_viable === true,
     motifProbability: (fromNodeId, toNodeId) => regionalMaximum(regions, (region) => (
       context.learningModel.motifProbabilities.get(`${region}|${bucket}|2|${fromNodeId}>${toNodeId}`)
       ?? context.learningModel.motifProbabilities.get(`${region}|-1|2|${fromNodeId}>${toNodeId}`)
@@ -303,7 +374,11 @@ export function decodeBetaCanonicalGroup(
         antennaHeightM: pathingConfig.defaultAntennaHeightM,
       });
       return {
-        possible: physics.possible,
+        // Radio observations identify an actual edge. Terrain and current
+        // coordinates are estimates and cannot disprove that identity.
+        possible: confirmedEdges.has(`${from.nodeId}|${to.nodeId}`)
+          || (champion?.verifiedEdgeCounts.get(`${from.nodeId}|${to.nodeId}`) ?? 0) >= 2
+          || physics.possible,
         score: pathingConfig.physicsSoftMarginWeight * physics.softMargin,
       };
     },
@@ -311,6 +386,19 @@ export function decodeBetaCanonicalGroup(
 
   const decoded = decodePathWithScore(canonicalHashes, evidence);
   const hops = decoded.hops;
+  // Identity in a collision-free multibyte observation is direct evidence,
+  // even when the node has since moved or has no usable map coordinates.
+  // Preserve those IDs if missing geometry prevents a complete trellis solve.
+  for (const [position, nodeId] of confirmed) {
+    const node = context.nodesById.get(nodeId);
+    if (!node) continue;
+    hops.set(position, {
+      hash: canonicalHashes[position]!, nodeId, name: node.name,
+      lat: hasCoords(node) ? node.lat : null,
+      lon: hasCoords(node) ? node.lon : null,
+      margin: Infinity, ambiguous: false,
+    });
+  }
   const hopConfidences = new Map<number, number>();
   for (const [position, hop] of hops) hopConfidences.set(position, marginConfidence(hop));
   return {
@@ -326,6 +414,7 @@ export function decodeBetaCanonicalGroup(
 
 function hardHopPossible(from: MeshNode, to: MeshNode, context: BetaResolveContext): boolean {
   if (!hasCoords(from) || !hasCoords(to)) return false;
+  if ((context.learningModel.champion?.verifiedEdgeCounts.get(`${from.node_id}|${to.node_id}`) ?? 0) >= 2) return true;
   return evaluatePhysicalHop(
     { lat: from.lat!, lon: from.lon!, elevationM: from.elevation_m },
     { lat: to.lat!, lon: to.lon!, elevationM: to.elevation_m },
@@ -378,27 +467,30 @@ function materializeHeldDecode(
   group: BetaCanonicalGroup,
   context: BetaResolveContext,
   nodeIds: readonly string[],
+  evidence: BetaSharedDecode,
 ): BetaSharedDecode {
   const canonicalHashes = group.canonicalHashes.map(normalizePathHash).filter(Boolean);
   const hops = new Map<number, DecodedHop>();
   const hopConfidences = new Map<number, number>();
   for (let position = 0; position < canonicalHashes.length; position++) {
     const node = context.nodesById.get(nodeIds[position]!);
+    const current = evidence.hops.get(position);
+    const unchanged = current?.nodeId === node?.node_id;
     hops.set(position, {
       hash: canonicalHashes[position]!,
       nodeId: node?.node_id ?? null,
       name: node?.name ?? null,
       lat: node?.lat ?? null,
       lon: node?.lon ?? null,
-      margin: Infinity,
-      ambiguous: false,
+      margin: unchanged ? current!.margin : 0,
+      ambiguous: !unchanged || current!.ambiguous,
     });
-    hopConfidences.set(position, node ? 1 : 0);
+    hopConfidences.set(position, unchanged ? evidence.hopConfidences.get(position) ?? 0 : 0);
   }
-  return { canonicalHashes, hops, hopConfidences, score: 0 };
+  return { canonicalHashes, hops, hopConfidences, score: evidence.baselineScore };
 }
 
-/** Hold a physical path and refine only the two observer-nearest positions. */
+/** Reconsider the whole chain when later observers supply better evidence. */
 export function decodeBetaCanonicalGroupWithHeldPath(
   group: BetaCanonicalGroup,
   context: BetaResolveContext,
@@ -415,35 +507,18 @@ export function decodeBetaCanonicalGroupWithHeldPath(
     };
   }
 
-  let current = [...heldNodeIds];
-  let refined = false;
-  const lastPosition = current.length - 1;
-  for (let position = lastPosition; position >= Math.max(0, lastPosition - 1); position--) {
-    const fixed = new Map<number, string>();
-    current.forEach((nodeId, index) => { if (index !== position) fixed.set(index, nodeId); });
-    const candidate = decodeBetaCanonicalGroup(
-      group,
-      context,
-      stickyMap,
-      stickyAgeFraction,
-      fixed,
-      current,
-    );
-    const candidateHop = candidate.hops.get(position);
-    if (candidateHop?.nodeId
-        && candidateHop.nodeId !== current[position]
-        && Number.isFinite(candidate.score)
-        && Number.isFinite(candidate.baselineScore)
-        && candidate.score! >= candidate.baselineScore! + HELD_PATH_REFINEMENT_MARGIN) {
-      current[position] = candidateHop.nodeId;
-      refined = true;
-    }
+  const candidate = decodeBetaCanonicalGroup(group, context, stickyMap, stickyAgeFraction, undefined, heldNodeIds);
+  const changed = heldNodeIds.some((nodeId, position) => candidate.hops.get(position)?.nodeId !== nodeId);
+  if (changed && Number.isFinite(candidate.score)
+      && (!Number.isFinite(candidate.baselineScore)
+        || candidate.score! >= candidate.baselineScore! + HELD_PATH_REFINEMENT_MARGIN)) {
+    return { ...candidate, held: true, physical: true, refined: true };
   }
   return {
-    ...materializeHeldDecode(group, context, current),
+    ...materializeHeldDecode(group, context, heldNodeIds, candidate),
     held: true,
     physical: true,
-    refined,
+    refined: false,
   };
 }
 
@@ -454,11 +529,10 @@ type PositionedPoint = {
   receiver: boolean;
 };
 
-function shouldPrependSource(entry: BetaObserverEntry, source: MeshNode | null): source is MeshNode {
-  if (!hasCoords(source)) return false;
-  if (entry.packet.packet_type === 4) return true;
-  const firstHash = entry.hops[0];
-  return Boolean(firstHash && nodePathHash(source.node_id, firstHash) !== normalizePathHash(firstHash));
+function shouldPrependSource(source: MeshNode | null, decoded: BetaSharedDecode): source is MeshNode {
+  // A one-byte prefix match is not an identity match. Only omit the source
+  // when the first resolved relay already represents that exact node.
+  return hasCoords(source) && decoded.hops.get(0)?.nodeId !== source.node_id;
 }
 
 /** Project one observer's DTO path from its group's canonical decode without inventing fallback edges. */
@@ -469,7 +543,7 @@ export function projectCanonicalPathForObserver(
   source: MeshNode | null,
 ): BetaPathProjection {
   const points: PositionedPoint[] = [];
-  if (shouldPrependSource(entry, source)) {
+  if (shouldPrependSource(source, decoded)) {
     points.push({
       coordinate: [source.lat!, source.lon!],
       nodeId: source.node_id,

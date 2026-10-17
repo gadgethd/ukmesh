@@ -1,4 +1,8 @@
 import {
+  closeDb,
+  query,
+} from '../db/index.js';
+import {
   closeOwnerAuthDb,
   getOwnerAclReadiness,
   getOwnerAuthorizationInventory,
@@ -6,6 +10,10 @@ import {
 } from '../db/ownerAuth.js';
 import { parseAcl, readAclFile, renderOwnerAcl } from '../mqtt/aclManager.js';
 import { parseOwnerGrantConfig } from '../owner/ownerGrantConfig.js';
+import { getPublicFeedConfig } from '../owner/publicFeedConfig.js';
+import {
+  getActivePublicFeedReaderUsernames,
+} from '../owner/publicFeedRepository.js';
 import {
   buildOwnerInventoryBaseline,
   loadOwnerInventoryBaseline,
@@ -27,18 +35,53 @@ async function main(): Promise<void> {
   const aclContent = readAclFile();
   const parsedAcl = parseAcl(aclContent);
   const configured = parseOwnerGrantConfig(String(process.env['OWNER_MQTT_USERNAME_MAP'] ?? ''));
+  const publicFeedConfig = getPublicFeedConfig();
+  const publicFeedReaders = publicFeedConfig.configured
+    ? await getActivePublicFeedReaderUsernames(query)
+    : new Set<string>();
+  const explicitPublicFeedReaders = String(process.env['OWNER_ACL_PUBLIC_FEED_READ_USERS'] ?? '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const explicitPublicFeedReaderSet = new Set(explicitPublicFeedReaders);
+  const grants = snapshot.map((account) => {
+    const publicFeedRead = explicitPublicFeedReaderSet.has(account.mqttUsername)
+      || (account.isActive && publicFeedReaders.has(account.mqttUsername));
+    return {
+      mqttUsername: account.mqttUsername,
+      nodeIds: account.isActive ? account.nodeIds : [],
+      ...(publicFeedRead ? { publicFeedRead: true } : {}),
+    };
+  });
+  const snapshotUsernames = new Set(grants.map((grant) => grant.mqttUsername));
+  for (const mqttUsername of explicitPublicFeedReaders) {
+    if (snapshotUsernames.has(mqttUsername)) continue;
+    grants.push({
+      mqttUsername,
+      nodeIds: [],
+      publicFeedRead: true,
+    });
+  }
   const unmanagedUsers = String(process.env['OWNER_ACL_UNMANAGED_USERS'] ?? 'backend,test,test2')
     .split(',')
     .map((value) => value.trim())
     .filter(Boolean);
   const rendered = renderOwnerAcl(
     aclContent,
-    snapshot.map((account) => ({
-      mqttUsername: account.mqttUsername,
-      nodeIds: account.nodeIds,
-    })),
+    grants,
     unmanagedUsers,
-    String(process.env['OWNER_ACL_ALLOW_EMPTY_USERS'] ?? '').split(',').map((value) => value.trim()).filter(Boolean),
+    [
+      ...String(process.env['OWNER_ACL_ALLOW_EMPTY_USERS'] ?? '')
+        .split(',')
+        .map((value) => value.trim())
+        .filter(Boolean),
+      ...explicitPublicFeedReaders,
+    ],
+    [String(process.env['MQTT_USERNAME'] ?? 'backend').trim() || 'backend'],
+    String(process.env['OWNER_ACL_SYSTEM_READWRITE_TOPICS'] ?? 'public/#')
+      .split(',')
+      .map((value) => value.trim())
+      .filter(Boolean),
   );
   const configKeys = new Set(configured.map((grant) => `${grant.mqttUsername}\0${grant.nodeId}`));
   const legacyAclGrants = parsedAcl.stanzas.flatMap((stanza) =>
@@ -117,4 +160,7 @@ main()
     console.error('[owner-auth-inventory]', error.message);
     process.exitCode = 1;
   })
-  .finally(() => closeOwnerAuthDb().catch(() => undefined));
+.finally(async () => {
+  await closeDb().catch(() => undefined);
+  await closeOwnerAuthDb().catch(() => undefined);
+});

@@ -36,6 +36,7 @@ The service stores radio traffic observed on the MeshCore network.
 |---|---|---|
 | `packets` — message content + raw bytes + metadata | **at most 30 days** (Timescale chunk policy + bounded exact-row boundary cleanup) | network diagnostics; content is not kept long-term |
 | `packet_decryptions` — full decrypted messages | **30 days** (operational retention loop) | diagnostics only |
+| `owner_packet_share_deliveries` — validated packet payload and delivery metadata | **30 days after terminal delivery** (operational retention loop) | durable site-to-site delivery and deduplication; retryable rows remain until terminal |
 | `packet_paths` — path metadata (node IDs, timing, signal, hashes) | **indefinite, content-stripped** | raw pathing analytics is the product |
 | `multibyte_path_facts`, `multihop_paths_weekly`, `path_*_priors` — derived path stats | indefinite | derived, pseudonymous |
 | `packet_daily_stats` / `packet_hourly_stats` | indefinite | anonymous aggregates |
@@ -64,23 +65,7 @@ The service stores radio traffic observed on the MeshCore network.
   deletion procedure in the ops playbook (rows by src/rx node id across
   packets, packet_paths, decryptions, path facts).
 
-## 3. Device status telemetry
-
-Status samples retain a JSON telemetry object for the authenticated owner
-portal. The unauthenticated `/node-status/latest` and `/mqtt-nodes` APIs expose
-only their explicit public fields: node identity, sample/availability data,
-battery, uptime, airtime, channel utilization, and recent packet counts. They
-do not return the telemetry object or forward unrecognized fields. Wi-Fi
-identifiers, MQTT broker/account details, reset and configuration fields,
-firmware metadata, and filesystem details are available only through
-owner-authenticated endpoints. Unrecognized keys stay in storage until they
-are deliberately added to a response contract.
-
-Existing status samples do not need a database rewrite: public responses are
-projected through the same field allowlist regardless of when the sample was
-stored.
-
-## 4. Cookies
+## 3. Cookies
 
 LocalStorage-only choices (cookie consent, theme). No third-party cookies.
 PECR does not apply to the mesh radio data (not a public electronic

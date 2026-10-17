@@ -42,10 +42,10 @@ export const DATA_LIFECYCLE_POLICIES: readonly DataLifecyclePolicy[] = Object.fr
   {
     table: 'node_status_samples',
     timestampColumn: 'time',
-    retention: '180 days',
+    retention: '30 days',
     kind: 'hypertable',
     featureImpact: [
-      'owner status telemetry older than 180 days becomes restore-only',
+      'owner status telemetry older than 30 days becomes restore-only',
     ],
   },
   {
@@ -112,6 +112,13 @@ export const DATA_LIFECYCLE_POLICIES: readonly DataLifecyclePolicy[] = Object.fr
     retention: '30 days',
     kind: 'row-table',
     featureImpact: ['terminal owner packet-sharing queue and audit rows older than 30 days are removed'],
+  },
+  {
+    table: 'public_feed_deliveries',
+    timestampColumn: 'created_at',
+    retention: '30 days',
+    kind: 'row-table',
+    featureImpact: ['terminal public-feed queue and audit rows older than 30 days are removed'],
   },
   {
     table: 'observer_registration_requests',

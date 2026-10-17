@@ -136,10 +136,13 @@ test('base schema and every migration apply to a brand-new database', {
     '052_owner_packet_sharing.sql',
     '053_owner_packet_share_destination_metadata.sql',
     '054_owner_packet_share_default_off.sql',
+    '055_public_feed.sql',
     '056_async_privacy_rematerialization.sql',
     '057_node_status_sample_status.sql',
     '058_ingest_observation_ledger.sql',
     '059_ingest_ledger_historical_coverage.sql',
+    '060_region_scope_participation.sql',
+    '061_packet_share_owner_scope_and_jwt.sql',
   ]);
   assert.deepEqual(await runMigrations(freshPool), []);
 

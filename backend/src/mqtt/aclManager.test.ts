@@ -128,6 +128,60 @@ test('renderer grants only bounded broker uptime reads to the configured monitor
   );
 });
 
+test('public-feed opt-in adds one curated read filter without granting public publish', () => {
+  const rendered = renderOwnerAcl('', [
+    {
+      mqttUsername: 'active-owner',
+      nodeIds: [NODE_ID],
+      publicFeedRead: true,
+    },
+  ], []);
+
+  assert.match(rendered.content, /user active-owner\ntopic read public\/\+\/\+\/packets/);
+  assert.doesNotMatch(rendered.content, /topic read meshcore\/\+\/\+\/packets/);
+  assert.doesNotMatch(rendered.content, /topic (?:write|readwrite) public\/\+\/\+\/packets/);
+  assert.deepEqual(rendered.semantic, [{
+    mqttUsername: 'active-owner',
+    nodeIds: [NODE_ID],
+    publicFeedRead: true,
+  }]);
+  validateRenderedOwnerAcl(rendered.content, rendered);
+});
+
+test('an explicit read-only subscriber replaces a legacy aggregate wildcard', () => {
+  const rendered = renderOwnerAcl(
+    'user soulway\ntopic read meshcore/+/+/packets\n',
+    [{
+      mqttUsername: 'soulway',
+      nodeIds: [],
+      publicFeedRead: true,
+    }],
+    ['soulway'],
+    ['soulway'],
+  );
+
+  assert.match(rendered.content, /user soulway\ntopic read public\/\+\/\+\/packets/);
+  assert.doesNotMatch(rendered.content, /topic read meshcore\/\+\/\+\/packets/);
+  assert.doesNotMatch(rendered.content, /topic write|topic readwrite/);
+  validateRenderedOwnerAcl(rendered.content, rendered);
+});
+
+test('only the retained backend account receives the public namespace write permission', () => {
+  const rendered = renderOwnerAcl(
+    'user backend\ntopic readwrite meshcore/#\n',
+    [{ mqttUsername: 'soulway', nodeIds: [], publicFeedRead: true }],
+    ['backend'],
+    ['soulway'],
+    ['backend'],
+    ['public/#'],
+  );
+
+  assert.match(rendered.content, /user backend[\s\S]*topic readwrite public\/#/);
+  assert.match(rendered.content, /user soulway\ntopic read public\/\+\/\+\/packets/);
+  assert.doesNotMatch(rendered.content, /user soulway[\s\S]*topic (?:write|readwrite) public\/#/);
+  validateRenderedOwnerAcl(rendered.content, rendered);
+});
+
 test('cutover validation blocks empty managed accounts unless explicitly reviewed', () => {
   const blocked = renderOwnerAcl('', [{ mqttUsername: 'revoked', nodeIds: [] }], []);
   assert.equal(blocked.validation.ok, false);

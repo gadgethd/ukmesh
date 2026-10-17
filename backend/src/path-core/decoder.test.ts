@@ -5,6 +5,8 @@ import {
   decodePath,
   evaluatePhysicalHop,
   indexCandidatesByHash,
+  decodePathWithScore,
+  scoreFixedPath,
   type CandidateNode,
   type PathDecoderEvidence,
 } from './decoder.js';
@@ -23,6 +25,36 @@ const node = (nodeId: string, lat: number, lon: number): CandidateNode => ({
   name: nodeId,
   lat,
   lon,
+});
+
+test('indexes every matching width, de-duplicates repeated hashes and preserves elevation', () => {
+  const indexed = indexCandidatesByHash(['AA', 'AABBCC', 'AA'], [
+    { nodeId: 'AABBCC00', name: null, lat: 51, lon: 0, elevationM: 456 },
+  ], null);
+  assert.equal(indexed.get('AA')?.length, 1);
+  assert.equal(indexed.get('AABBCC')?.[0]?.elevationM, 456);
+});
+
+test('direct radio evidence can override a geographic cutoff without bypassing other gates', () => {
+  const decoded = decodePath(['AA', 'BB'], evidence(new Map([
+    ['AA', [node('A', 51, 1)]], ['BB', [node('B', 53, 1), node('C', 54, 1)]],
+  ]), { maxHopKm: 100, physicalTransition: (from, to) => ({ possible: from.nodeId === 'A' && to.nodeId === 'B', score: 0 }) }));
+  assert.deepEqual([...decoded.values()].map((hop) => hop.nodeId), ['A', 'B']);
+});
+
+test('cached transitions preserve the complete chain score and score each edge once', () => {
+  const counts = new Map<string, number>();
+  const ev = evidence(new Map([
+    ['AA', [node('A', 51, 1), node('B', 51, 1)]],
+    ['BB', [node('C', 51.1, 1), node('D', 51.1, 1)]],
+  ]), { directedEdgeScore: (a, b) => {
+    const key = `${a}|${b}`;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+    return 0;
+  } });
+  const result = decodePathWithScore(['AA', 'BB'], ev);
+  assert.deepEqual([...counts.values()], [1, 1, 1, 1]);
+  assert.equal(result.score, scoreFixedPath(['AA', 'BB'], [...result.hops.values()].map((h) => h.nodeId!), ev));
 });
 
 function evidence(

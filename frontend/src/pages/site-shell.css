@@ -26,6 +26,17 @@
   color: #66829e;
 }
 
+/* Cookie-banner inline link — footer-link treatment (default browser blue
+   fails the a11y contrast gate on the dark panel). */
+.site-layout .cookie-banner__body p a {
+  color: #b4c6d8;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.site-layout .cookie-banner__body p a:hover {
+  color: var(--text-primary);
+}
+
 /* ── Navigation ────────────────────────────────────────────────────────── */
 .site-nav {
   display: flex;

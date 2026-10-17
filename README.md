@@ -14,7 +14,7 @@ A real-time analytics platform for [MeshCore](https://meshcore.io) networks. It 
 - Regional health scoring and predicted-versus-observed RF validation
 - Local saved searches/watchlists for nodes, observers, regions, packet types, and incidents
 - Privacy-filtered CSV/GeoJSON exports with a versioned OpenAPI contract
-- Beta path prediction model with concurrent worker pool and hourly path-learning prior rebuilds
+- Shared Viterbi path resolver with multibyte evidence, a concurrent worker pool, hourly prior rebuilds and [repeatable accuracy checks](docs/pathing.md)
 - Multibyte path-hash support (1-byte, 2-byte, 3-byte) throughout the live ingest and pathing stack
 - Decoded live packet feed (Advert, GroupText, DM, ACK, Path, Trace)
 - Stats pages and chart endpoints for packet rates, radios, hops, and activity
@@ -22,6 +22,7 @@ A real-time analytics platform for [MeshCore](https://meshcore.io) networks. It 
 - UK site Feed page for public MQTT observer traffic visibility
 - Repeater owner portal with MQTT username/password login and encrypted cookie session
 - Owner dashboard with repeater summary, direct sender map, live packets, advert trend, heard-by list, link health, and alerts
+- Opt-in owner public MQTT feed with CoreScope-compatible MeshCore packet output
 - Multi-network ingestion (`meshcore/*` and `ukmesh/*`) with per-site filtering
 - Isolated test-feed support via `meshcore-test/*` and `test.ukmesh.com`
 - Multi-observer deduplication by packet hash
@@ -164,20 +165,28 @@ Copy `.env.example` to `.env` and fill in your values. All variables used by the
 | `MQTT_BROKER_URL` | `ws://mosquitto:9001` | Mosquitto WebSocket URL (internal) |
 | `MQTT_USERNAME` | `backend` | MQTT client username |
 | `MQTT_PASSWORD` | *(required)* | MQTT client password |
+| `MESHCORE_SITE_ID` | `ukmesh` | Stable identifier added to site-to-site packet relay metadata |
 | `REDIS_PASSWORD` | *(required)* | Password for the bundled Redis service; passed separately from the URL so reserved characters are safe |
 | `REDIS_URL` | `redis://redis:6379` | Redis URL for WebSocket pub/sub |
 | `JWT_SECRET` | *(required)* | Secret for JWT verification |
 | `ALLOWED_ORIGINS` | `http://localhost:3001,http://localhost:3002` | Comma-separated browser origins allowed for CORS and WebSocket |
 | `API_RATE_LIMIT_MAX` | `120` | Per-client public API requests/minute; raise only in an isolated load-test project |
 | `VITE_APP_HOSTNAME` | *(blank — always shows dashboard)* | If set, only this hostname serves the analytics dashboard; all others serve the public website layout |
-| `MESHCORE_CHANNEL_SECRETS` | *(blank)* | Confidential channel keys for decrypting GroupText packets, managed through environment configuration. Format: `name:hex` or bare hex. The explicitly public `PUBLIC_CHANNELS` defaults are always included. |
+| `MESHCORE_CHANNEL_SECRETS` | *(blank)* | Comma-separated channel secrets for decrypting GroupText packets. Format: `name:hex` or bare hex. The default MeshCore public channel key is always included. |
 | `OWNER_DATABASE_URL` | *(optional)* | Separate Postgres database URL for owner portal username → repeater mappings |
 | `OWNER_COOKIE_SECRET` | *(optional but recommended)* | Secret used to encrypt/sign the owner session cookie |
 | `OWNER_MQTT_USERNAME_MAP` | *(empty)* | Operator-managed owner grants in the format `user=nodeId1|nodeId2,...` |
+| `OWNER_PACKET_SHARE_ENCRYPTION_KEY` | *(empty)* | Key used to encrypt destination MQTT passwords; required when a destination uses authentication |
+| `OWNER_PACKET_SHARE_POLL_INTERVAL_MS` | `5000` | Packet-sharing delivery queue poll interval |
+| `OWNER_PACKET_SHARE_BATCH_SIZE` | `25` | Maximum packet-sharing deliveries claimed per poll |
+| `PUBLIC_FEED_PUBLISH_ENABLED` | `false` | Operator kill switch for the authentication-locked UKmesh MQTT feed; owner switches remain off by default |
+| `PUBLIC_FEED_BROKER_URL` | *(empty)* | Deployment-only MQTT/MQTTS/WS/WSS endpoint shown in the owner dashboard; packets remain on the UKmesh broker and no separate publisher credential is used |
 | `OWNER_AUTHORIZATION_MODE` | `shadow` | `shadow` preserves read-only legacy ACL compatibility; `enforce` accepts verified database/config grants only |
 | `OWNER_ACL_MODE` | `shadow` | `shadow` renders and validates without changing Mosquitto; `apply` atomically installs and verifies the canonical ACL |
 | `OWNER_ACL_UNMANAGED_USERS` | `backend,test,test2` | Exact broker accounts intentionally preserved outside owner grant management |
 | `OWNER_ACL_ALLOW_EMPTY_USERS` | *(empty)* | Explicitly reviewed owner accounts allowed to render with no publish grants |
+| `OWNER_ACL_PUBLIC_FEED_READ_USERS` | *(empty)* | Operator-approved read-only MQTT subscribers; they receive the curated public feed only |
+| `OWNER_ACL_SYSTEM_READWRITE_TOPICS` | `public/#` | Broker topics the internal backend account may publish while rendering the public feed |
 | `RF_COVERAGE_ENABLED` | `true` | Compile the native HopReach layer into the production app image |
 | `HOPREACH_IMAGE` | `meshcore-analytics-hopreach:local` | Immutable HopReach calculator image override |
 | `HOPREACH_CPUS` | `4.0` | Calculator CPU limit |
@@ -203,6 +212,146 @@ docker compose up -d --no-build --force-recreate backend
 Browsers load `/api/runtime-config` before the map starts and refresh it within
 `PUBLIC_FEATURE_CONFIG_TTL_SECONDS`. A failed, malformed, or timed-out request
 disables all three layers.
+
+---
+
+## Owner Packet Sharing
+
+Packet sharing is available to every authenticated UKMesh owner. The owner
+dashboard can enable sharing for an owned observer and select only destination
+rows that an operator has already provisioned in
+`owner_packet_share_destinations`. Toggle and destination changes save
+immediately. Each destination can also carry an HTTPS `website_url` and short
+`description`; the owner UI renders those as a linked destination name with
+hover text, so adding another site only requires another operator-managed
+destination row.
+
+Availability does not enable forwarding. New owner/node selections start with
+every destination off, and a destination is forwarded only after that owner
+explicitly enables it.
+
+Destinations may set `allowed_owner_username` and `allowed_node_id` to restrict
+visibility and forwarding to an exact account and observer. These restrictions
+apply to API reads, saves, queue insertion and delivery. NULL scopes preserve
+destinations available to all owners.
+
+ScotMesh is restricted to **node1**, uses IATA **MME**, and connects over TLS
+WebSockets to `scotmesh-mqtt.mm7roq.compute.oarc.uk:443` with the same JWT
+audience. Provisioning creates no enabled sharing rule. Its
+`tx_mode = 'advert'` matches `set mqtt.tx advert`: received packets are included,
+while transmitted packets must be the observer's own adverts.
+
+Prepare an encrypted relay identity for a verified node1 observer with the
+deployment's `DATABASE_URL`, owner database settings and
+`OWNER_PACKET_SHARE_ENCRYPTION_KEY` in the environment:
+
+```bash
+npm --prefix backend run owner-packet-share:prepare-scotmesh -- \
+  ACTIVE_OBSERVER_PUBLIC_KEY .private-config/scotmesh-node1.json
+```
+
+The command creates a new MeshCore relay signing key, stores only its encrypted
+form in a file readable by its owner, and refuses to overwrite an existing
+file. It does not change the radio's key or publish any packets. Apply migration
+058 and deploy the owner-scoped backend **before** provisioning its destination
+row; the previous backend cannot hide restricted destinations. Then run:
+
+```bash
+npm --prefix backend run owner-packet-share:provision-scotmesh -- \
+  .private-config/scotmesh-node1.json
+```
+
+The provisioning command validates the encrypted key, checks the verified
+node1 grant again, and imports the complete configuration without enabling
+forwarding. The schema
+migration deliberately does not insert the restricted destination while the
+previous backend may still be running. For `auth_mode = 'meshcore_jwt'`,
+`broker_password_ciphertext` contains the encrypted 64-byte MeshCore signing
+key, rather than a static broker password. The relay signs a fresh one-hour
+token on each connection and renews it before expiry. ScotMesh's MQTT topic
+and `origin_id` use the generated relay public key, while the original raw
+radio packet and observer name are preserved. Turn the ScotMesh switch on in
+node1's dashboard after provisioning.
+
+The relay uses outbound MQTT. `mqtts://` is the expected production transport;
+`wss://`, `mqtt://`, and `ws://` are accepted for controlled testing. The
+dashboard browser WebSocket remains a separate live-display transport.
+
+Destination rows are deliberately not writable through the owner API. Broker
+passwords are stored as AES-GCM ciphertext. To prepare a password for an
+operator SQL insert after `OWNER_PACKET_SHARE_ENCRYPTION_KEY` has been set:
+
+```bash
+printf '%s' 'destination-password' \
+  | OWNER_PACKET_SHARE_ENCRYPTION_KEY='deployment-secret' \
+    npm --prefix backend run owner-packet-share:encrypt-secret
+```
+
+Store the resulting ciphertext in `broker_password_ciphertext`, then insert an
+enabled destination with its fixed broker URL and topic template. Supported
+template values are `{network}`, `{iata}`, `{observerId}`, and `{packetHash}`.
+The owner toggle remains unavailable while no complete destination exists.
+
+For a broker that permits an anonymous publisher, the operator provisioning
+shape is:
+
+```sql
+INSERT INTO owner_packet_share_destinations (
+  destination_id, display_name, website_url, description,
+  broker_url, topic_template, enabled
+) VALUES (
+  'remote-site', 'Remote site', 'https://destination.example',
+  'Short destination description', 'mqtts://broker.example:8883',
+  'replicated/{network}/{observerId}/packets', TRUE
+);
+```
+
+## Owner Public Feed
+
+The owner dashboard also has a separate account-level `Public feed` switch.
+It is off by default and applies to every node currently owned by that account.
+New or revoked owner-node grants are reconciled from the verified owner-auth
+database automatically. Disabling the switch removes its read ACL immediately.
+An account can enable the
+switch only after at least one eligible public packet has been observed from
+one of its nodes in the previous 24 hours.
+
+The feed is served by the authentication-locked UKmesh MQTT broker at the
+deployment-configured endpoint. The backend republishes only eligible packets
+from opted-in active owners into the curated CoreScope-compatible namespace
+`public/<IATA_REGION>/<OBSERVER_ID>/packets` with the normal MeshCore JSON
+payload. The canonical ingest namespace remains private to its owners and the
+backend.
+
+An owner who has opted in and remains active receives one read-only ACL filter
+for `public/+/+/packets`, so the owner can use the existing MQTT username and
+password used to publish observer packets. A named subscriber configured in
+`OWNER_ACL_PUBLIC_FEED_READ_USERS` receives the same read-only filter without
+publish permission. The read grant is removed when the owner disables the
+switch or has no eligible packet activity for 24 hours. The dashboard lists
+the curated filter and explains that packets are observable over the internet
+and that the site operator cannot verify what external subscribers do with the
+data.
+The public endpoint is deployment configuration and is not stored with
+credentials in source control.
+
+For an ACL-based broker, the intended public-feed permission shape is:
+
+```text
+user <opted-in-active-owner>
+topic read public/+/+/packets
+```
+
+Only the internal backend account receives `topic readwrite public/#` so it can
+republish approved packets. The generated owner ACL applies directly to the
+Mosquitto broker managed by this deployment.
+
+External subscriber accounts remain operator-managed and read-only. The
+backend never receives their passwords and cannot inspect what a subscriber
+does after receiving a packet.
+
+Authenticated destinations also set `broker_username` and the encrypted
+`broker_password_ciphertext` value from the command above.
 
 ---
 
@@ -350,19 +499,13 @@ MeshCore Devices
 
 ## Data Retention
 
-- The reviewed core telemetry windows are 30 days for raw packets, 180 days
-  for status samples, and seven days for neighbour samples. Content-stripped
-  `packet_paths` remain available for path reconstruction and are never
-  retention-deleted. Privacy-safe aggregates and current node/link/model state
-  remain longer lived.
-- Migration 050 declares the core Timescale retention policies. Repairing a
-  missing policy and enabling compression require a fresh signed
-  backup/restore receipt and per-table approval. When lifecycle actions are
-  enabled, startup fails closed if required core targets are missing from the
-  configured allowlists.
-- Expired forensic data is available only by restoring a suitable pre-expiry
-  backup into an isolated, read-only environment; do not restore it over
-  production.
+- Compression and destructive retention ship disabled. Raw packets and status
+  samples remain intact until a table-specific, backup- and restore-gated
+  lifecycle rollout is approved.
+- The proposed raw retention window is 180 days, preserving the longest
+  120-day learner dependency. Privacy-safe hourly/daily aggregates and current
+  node/link/model state remain longer lived. Legacy `node_coverage` is retained
+  for one release as inactive rollback data only.
 - Operational row-table cleanup is bounded and runs only when both
   `DATA_LIFECYCLE_RETENTION_ENABLED=true` and the exact table appears in
   `DATA_LIFECYCLE_RETENTION_TARGETS`.

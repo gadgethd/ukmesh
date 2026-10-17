@@ -149,6 +149,8 @@ function buildMergedRow(group: EntryWithTx[], includePayload: boolean, fields: '
     rssi: input.rssi,
     snr: input.snr,
     summary,
+    tags: null,
+    tag_confidence: null,
     advert_count: input.advertCount,
     path_hashes: input.pathHashes,
     path_hash_size_bytes: input.pathHashSizeBytes,
@@ -207,7 +209,7 @@ function augmentRow(row: RecentRow, group: EntryWithTx[], aliases: Map<string, s
     || (candidateTime === rowTime && String(candidate['_representative_id']) > String(row['_representative_id'] ?? ''))))) {
     // Counts describe all observations; representative fields follow the same
     // SQL preference across both sources, including retained overlap.
-    const { observer_node_ids: _nodes, observer_iatas: _iatas, rx_count: _rx, tx_count: _tx, ...fields } = candidate;
+    const { observer_node_ids: _nodes, observer_iatas: _iatas, rx_count: _rx, tx_count: _tx, tags: _tags, tag_confidence: _tagConfidence, ...fields } = candidate;
     Object.assign(row, fields);
   }
 }
