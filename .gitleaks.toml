@@ -2,3 +2,7 @@ title = "UK Mesh gitleaks configuration"
 
 [extend]
 useDefault = true
+
+[allowlist]
+description = "Reviewed MeshCore public-channel material: the documented public channel key is published by the protocol, is not an application credential, and must not be treated as a leak. Private channel material enters only via MESHCORE_CHANNEL_SECRETS."
+regexes = ['''8b3387e9c5cdea6ac9e5edbaa115cd72''']
