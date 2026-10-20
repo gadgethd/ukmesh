@@ -50,7 +50,7 @@ type WorkerSnapshot = {
 };
 
 export type RetentionTarget = {
-  table: 'packets' | 'worker_health_snapshots' | 'frontend_error_events' | 'owner_alert_deliveries' | 'operational_check_results' | 'observer_region_packet_sightings' | 'observer_region_observer_sightings' | 'link_job_commits' | 'ml_model_variant_packet_results' | 'packet_decryptions' | 'observer_registration_requests' | 'operator_audit_events';
+  table: 'packets' | 'worker_health_snapshots' | 'frontend_error_events' | 'owner_alert_deliveries' | 'owner_packet_share_deliveries' | 'public_feed_deliveries' | 'operational_check_results' | 'observer_region_packet_sightings' | 'observer_region_observer_sightings' | 'link_job_commits' | 'ml_model_variant_packet_results' | 'packet_decryptions' | 'observer_registration_requests' | 'operator_audit_events' | 'node_status_samples';
   timestampColumn: 'ts' | 'time' | 'created_at' | 'updated_at' | 'completed_at' | 'last_seen';
   retention: string;
   batchSize: number;
@@ -59,8 +59,9 @@ export type RetentionTarget = {
 
 export const RETENTION_TARGETS: readonly RetentionTarget[] = [
   // Timescale drops complete chunks; this bounded boundary cleanup makes the
-  // packet-content 30-day privacy limit exact for the partial oldest chunk.
+  // listed 30-day privacy limits exact for the partial oldest chunk.
   { table: 'packets', timestampColumn: 'time', retention: '30 days', batchSize: 25_000 },
+  { table: 'node_status_samples', timestampColumn: 'time', retention: '30 days', batchSize: 25_000 },
   { table: 'worker_health_snapshots', timestampColumn: 'ts', retention: '7 days', batchSize: 10_000 },
   { table: 'frontend_error_events', timestampColumn: 'time', retention: '30 days', batchSize: 2_000 },
   {
@@ -69,6 +70,20 @@ export const RETENTION_TARGETS: readonly RetentionTarget[] = [
     retention: '90 days',
     batchSize: 1_000,
     extraPredicate: `(status = 'succeeded' OR attempts >= 5)`,
+  },
+  {
+    table: 'owner_packet_share_deliveries',
+    timestampColumn: 'created_at',
+    retention: '30 days',
+    batchSize: 2_000,
+    extraPredicate: `status IN ('succeeded', 'dead_lettered')`,
+  },
+  {
+    table: 'public_feed_deliveries',
+    timestampColumn: 'created_at',
+    retention: '30 days',
+    batchSize: 2_000,
+    extraPredicate: `status IN ('succeeded', 'dead_lettered')`,
   },
   { table: 'operational_check_results', timestampColumn: 'ts', retention: '14 days', batchSize: 2_000 },
   { table: 'observer_region_packet_sightings', timestampColumn: 'last_seen', retention: '8 days', batchSize: 25_000 },
@@ -895,6 +910,7 @@ export async function getWorkerHealthOverview() {
       ? null : Number(privacyRematRow.oldest_pending_age_seconds),
   });
   if (privacyRematProblem) problems.push(privacyRematProblem);
+
   if (redisDurability.maxmemory_policy !== 'noeviction') {
     problems.push({
       code: 'redis_eviction_policy_unsafe',

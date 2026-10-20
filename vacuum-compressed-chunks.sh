@@ -59,14 +59,20 @@ if [ -n "$chunk" ]; then
 fi
 
 cd "$repo_dir"
+# Resolve the compose project that owns the timescaledb service. The test harness
+# drives the script with COMPOSE_FILE/COMPOSE_PROJECT_NAME set (its own fixture);
+# in the two-project production layout the database lives in the separate
+# meshcore-infra project (mirrors scripts/backup.sh).
 if [ -n "${MESHCORE_INFRA_COMPOSE_FILE:-}" ]; then
   infra_compose_file="$MESHCORE_INFRA_COMPOSE_FILE"
   infra_project_dir="${MESHCORE_INFRA_PROJECT_DIR:-${MESHCORE_INFRA_DIR:-$(dirname -- "$infra_compose_file")}}"
   infra_project_name="${MESHCORE_INFRA_PROJECT_NAME:-meshcore-infra}"
 elif [ -n "${COMPOSE_FILE:-}" ]; then
+  # Caller-supplied project (test harness). Keep the ambient project name, as a
+  # bare `docker compose` call would, so container lookups hit that project.
   infra_compose_file="$COMPOSE_FILE"
   infra_project_dir="$(dirname -- "$infra_compose_file")"
-  infra_project_name="${COMPOSE_PROJECT_NAME:-meshcore-infra}"
+  infra_project_name="${COMPOSE_PROJECT_NAME:-$(basename -- "$infra_project_dir")}"
 else
   infra_project_dir="${MESHCORE_INFRA_PROJECT_DIR:-${MESHCORE_INFRA_DIR:-${repo_dir}/../meshcore-infra}}"
   infra_compose_file="$infra_project_dir/docker-compose.yml"

@@ -161,6 +161,10 @@ function buildMergedRow(group: EntryWithTx[], includePayload: boolean, fields: '
     observer_iatas: iatas.size ? [...iatas].sort() : null,
     rx_count: rxCount,
     tx_count: txCount,
+    // RAM rows must carry the same tag columns as the SQL projection; the
+    // overlay merge excludes them so a pending row can never clobber committed tags.
+    tags: null,
+    tag_confidence: null,
     ...(includePayload || rowKind === 'messages' ? { payload } : {}),
     _representative_rank: representativeRank(representative, rowKind),
     _representative_id: representative.entry.observationId,
@@ -207,7 +211,8 @@ function augmentRow(row: RecentRow, group: EntryWithTx[], aliases: Map<string, s
     || (candidateTime === rowTime && String(candidate['_representative_id']) > String(row['_representative_id'] ?? ''))))) {
     // Counts describe all observations; representative fields follow the same
     // SQL preference across both sources, including retained overlap.
-    const { observer_node_ids: _nodes, observer_iatas: _iatas, rx_count: _rx, tx_count: _tx, ...fields } = candidate;
+    const { observer_node_ids: _nodes, observer_iatas: _iatas, rx_count: _rx, tx_count: _tx,
+      tags: _tags, tag_confidence: _tagConfidence, ...fields } = candidate;
     Object.assign(row, fields);
   }
 }

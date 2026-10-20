@@ -1173,3 +1173,30 @@
     border-bottom: 1px solid var(--border);
   }
 }
+
+/* ── Message tags (tagger-worker / Jev) ────────────────────────────────────── */
+.uk-feed-packet-row__tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 2px 0 0;
+}
+.msg-tag-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 6px;
+  border-radius: 999px;
+  border: 1px solid rgba(38, 198, 162, 0.45);
+  background: rgba(38, 198, 162, 0.12);
+  color: #9fe8d6;
+  font-size: 10px;
+  line-height: 16px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.feed-detail__tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}

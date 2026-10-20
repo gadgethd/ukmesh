@@ -130,17 +130,28 @@ test('base schema and every migration apply to a brand-new database', {
   });
 
   const executed = await runMigrations(freshPool);
-  assert.deepEqual(executed, [
+  // Production's reviewed baseline: every name its deployed ledger already has
+  // must still apply to a brand-new database.
+  const reviewedProductionBaseline = [
     '050_packet_paths_and_retention.sql',
     '051_reset_readiness.sql',
-    '052_owner_packet_sharing.sql',
-    '053_owner_packet_share_destination_metadata.sql',
-    '054_owner_packet_share_default_off.sql',
     '056_async_privacy_rematerialization.sql',
-    '057_node_status_sample_status.sql',
-    '058_ingest_observation_ledger.sql',
-    '059_ingest_ledger_historical_coverage.sql',
-  ]);
+    '059_ingest_observation_ledger.sql',
+    '060_ingest_ledger_historical_coverage.sql',
+  ];
+  for (const name of reviewedProductionBaseline) {
+    assert.ok(executed.includes(name), `${name} did not apply to a fresh database`);
+  }
+  // The merged tree also carries main's migrations under their own filenames
+  // (both branches shipped 052/055/057/058, see LEGACY_DUPLICATE_PREFIXES), so
+  // the exact expectation is the loader's post-050 order instead of a literal
+  // that would pin one branch's numbering.
+  assert.deepEqual(
+    executed,
+    loadMigrationFiles()
+      .map((migration) => migration.name)
+      .filter((name) => name >= '050_packet_paths_and_retention.sql'),
+  );
   assert.deepEqual(await runMigrations(freshPool), []);
 
   const ledger = await freshPool.query<{
@@ -396,7 +407,7 @@ test('F07 historical and compressed observations enter the complete ledger atomi
       return {
         query: async (sql: string, params?: unknown[]) => {
           if (sql.includes('INSERT INTO schema_migrations')
-            && params?.[0] === '059_ingest_ledger_historical_coverage.sql') {
+            && params?.[0] === '060_ingest_ledger_historical_coverage.sql') {
             throw new Error('F07_BACKFILL_INTERRUPTED');
           }
           const result = await client.query(sql, params);

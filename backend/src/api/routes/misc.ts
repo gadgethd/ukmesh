@@ -33,7 +33,22 @@ type GetRecentPacketsFn = (
   readQuery?: QueryFn,
   overlapHashes?: string[],
 ) => Promise<unknown>;
-type GetRecentPacketEventsFn = (limit: number, network?: string, observer?: string) => Promise<unknown>;
+type GetRecentPacketEventsFn = (
+  limit: number,
+  network?: string,
+  observer?: string,
+  region?: string,
+) => Promise<unknown>;
+
+// Region scope filter (e.g. 'eng-ne' / '#eng-ne' -> stored form '#eng-ne').
+const REGION_SCOPE_PATTERN = /^[a-z0-9][a-z0-9_-]{0,31}$/;
+
+function normalizeRegionScope(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const bare = value.trim().toLowerCase().replace(/^#/, '');
+  if (!REGION_SCOPE_PATTERN.test(bare)) return undefined;
+  return `#${bare}`;
+}
 type GetPacketDetailFn = (hash: string, network?: string) => Promise<unknown>;
 type GetChannelMessageHistoryFn = (
   channel: string,
@@ -41,6 +56,7 @@ type GetChannelMessageHistoryFn = (
   network?: string,
   observer?: string,
 ) => Promise<unknown>;
+type GetRecentMessageTagsFn = (limit: number, network?: string) => Promise<unknown>;
 
 type MiscRouteDeps = {
   query: QueryFn;
@@ -48,6 +64,7 @@ type MiscRouteDeps = {
   getRecentPacketEvents: GetRecentPacketEventsFn;
   getPacketDetail: GetPacketDetailFn;
   getChannelMessageHistory: GetChannelMessageHistoryFn;
+  getRecentMessageTags: GetRecentMessageTagsFn;
   getPublicVisibilityGeneration: () => Promise<number>;
   packetDetailLimiter: ReturnType<typeof import('express-rate-limit').rateLimit>;
 };
@@ -59,6 +76,7 @@ export function registerMiscRoutes(router: Router, deps: MiscRouteDeps): void {
     getRecentPacketEvents,
     getPacketDetail,
     getChannelMessageHistory,
+    getRecentMessageTags,
     getPublicVisibilityGeneration,
     packetDetailLimiter,
   } = deps;
@@ -83,6 +101,7 @@ export function registerMiscRoutes(router: Router, deps: MiscRouteDeps): void {
       max: 1000,
     });
     const raw = parseBoolean(req.query['raw'], { name: 'raw' });
+    const region = normalizeRegionScope(req.query['region']);
     const fields = parseEnum(req.query['fields'], {
       name: 'fields',
       values: ['slim', 'full'] as const,
@@ -92,7 +111,7 @@ export function registerMiscRoutes(router: Router, deps: MiscRouteDeps): void {
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const observer = normalizeObserverQuery(req.query['observer']);
       const packets = raw
-        ? await getRecentPacketEvents(limit, network, observer)
+        ? await getRecentPacketEvents(limit, network, observer, region)
         : await readRecentWithPending(
             (overlapHashes) => getRecentPackets(
               limit, network, observer, fields, AbortSignal.timeout(30_000), undefined, overlapHashes,
@@ -127,6 +146,27 @@ export function registerMiscRoutes(router: Router, deps: MiscRouteDeps): void {
       res.json(messages);
     } catch (err) {
       console.error('[api] GET /feed/messages', (err as Error).message);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  });
+
+  // Message tags (kind / speaker / topic / flags) for live feed enrichment.
+  // Tags are written ~2s after a packet by tagger-worker; the frontend patches
+  // rows by hash. Public visibility + network scope enforced in the query.
+  router.get('/tags/recent', async (req, res) => {
+    const limit = parseBoundedInteger(req.query['limit'], {
+      name: 'limit',
+      defaultValue: 200,
+      min: 1,
+      max: 500,
+    });
+    try {
+      const network = resolvePublicNetworkScope(req.query['network'], req.headers);
+      const tags = await getRecentMessageTags(limit, network);
+      res.setHeader('Cache-Control', 'no-store');
+      res.json(tags);
+    } catch (err) {
+      console.error('[api] GET /tags/recent', (err as Error).message);
       res.status(500).json({ error: 'Internal server error' });
     }
   });

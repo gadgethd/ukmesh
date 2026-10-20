@@ -146,6 +146,11 @@ async function queryPool<T extends pg.QueryResultRow = pg.QueryResultRow>(
   }
 }
 
+export type DatabaseQueryFn = <T extends pg.QueryResultRow = pg.QueryResultRow>(
+  text: string,
+  params?: unknown[],
+) => Promise<{ rows: T[] }>;
+
 export async function query<T extends pg.QueryResultRow = pg.QueryResultRow>(
   text: string,
   params?: unknown[],
@@ -153,11 +158,6 @@ export async function query<T extends pg.QueryResultRow = pg.QueryResultRow>(
 ): Promise<pg.QueryResult<T>> {
   return queryPool<T>(pool, 'oltp', text, params, signal);
 }
-
-export type DatabaseQueryFn = <T extends pg.QueryResultRow = pg.QueryResultRow>(
-  text: string,
-  params?: unknown[],
-) => Promise<{ rows: T[] }>;
 
 export async function withTransaction<T>(work: (transactionQuery: DatabaseQueryFn) => Promise<T>): Promise<T> {
   const client = await pool.connect();
@@ -735,17 +735,35 @@ export async function getNodes(
 
 export async function getNodeHistory(nodeId: string, hours = 24, network = 'ukmesh') {
   const scope = buildScopePlaceholders(3, network);
+  const aliases = nodeAliasArraySql('$1');
+  // Both consumers describe general activity, including for observers that
+  // are also repeaters. Include receptions and known origins for every role.
+  // Drive each direction with the canonical alias array and an equality
+  // lookup: a combined OR/ANY lets LIMIT choose a scan of time-ordered traffic
+  // for quiet nodes. Per-alias limits keep both node/time indexes useful even
+  // at 28 days; the final limit retains the newest 500 observations overall.
+  const packetsFor = (column: 'rx_node_id' | 'src_node_id') => `
+    SELECT p.time, p.packet_hash,
+           COALESCE(src_alias.canonical_node_id, UPPER(BTRIM(p.src_node_id))) AS src_node_id,
+           topic, packet_type, hop_count, rssi, snr, payload
+    FROM packets p
+    LEFT JOIN node_identity_aliases src_alias
+      ON src_alias.source_node_id = UPPER(BTRIM(p.src_node_id))
+    WHERE p.${column} = requested.node_id
+      ${column === 'src_node_id' ? `AND NOT COALESCE(p.rx_node_id = ANY(${aliases}), FALSE)` : ''}
+      AND p.time > NOW() - INTERVAL '1 hour' * $2
+      AND p.time <= NOW()
+      ${buildPacketScopeClause(scope, 'p', network)}
+      ${buildPublicPacketPrivacyClause('p')}
+    ORDER BY time DESC LIMIT 500`;
   const res = await pool.query(
-    `SELECT p.time, p.packet_hash,
-            COALESCE(src_alias.canonical_node_id, UPPER(BTRIM(p.src_node_id))) AS src_node_id,
-            topic, packet_type, hop_count, rssi, snr, payload
-     FROM packets p
-     LEFT JOIN node_identity_aliases src_alias
-       ON src_alias.source_node_id = UPPER(BTRIM(p.src_node_id))
-     WHERE p.rx_node_id = ANY(${nodeAliasArraySql('$1')})
-       AND p.time > NOW() - INTERVAL '1 hour' * $2
-       ${buildPacketScopeClause(scope, 'p', network)}
-       ${buildPublicPacketPrivacyClause('p')}
+    `SELECT recent.*
+     FROM unnest(${aliases}) requested(node_id)
+     CROSS JOIN LATERAL (
+       (${packetsFor('rx_node_id')})
+       UNION ALL
+       (${packetsFor('src_node_id')})
+     ) recent
      ORDER BY time DESC LIMIT 500`,
     [nodeId, hours, ...scope.params]
   );
@@ -880,9 +898,11 @@ export async function getRecentPackets(
       ${includeObservationIds ? `ps._observation_ids, rp.network AS _policy_network,
         (SELECT generation::text FROM public_visibility_state WHERE singleton) AS _policy_generation,
         rp._representative_rank, rp._representative_id,` : ''}
-      ps.observer_node_ids, ps.observer_iatas, ps.rx_count, ps.tx_count
+      ps.observer_node_ids, ps.observer_iatas, ps.rx_count, ps.tx_count,
+      mt.tags, mt.confidence AS tag_confidence
     FROM recent_packets rp
     LEFT JOIN packet_stats ps ON ps.packet_hash = rp.packet_hash
+    LEFT JOIN message_tags mt ON mt.packet_hash = rp.packet_hash
     ${overlapParam ? `WHERE rp.packet_hash = ANY(${overlapParam}::text[])
       OR rp.packet_hash IN (SELECT packet_hash FROM recent_packets ORDER BY time DESC, packet_hash LIMIT $1)` : ''}
     ORDER BY rp.time DESC, rp.packet_hash
@@ -960,15 +980,43 @@ export async function getRecentMessages(
       ${includeObservationIds ? `ms._observation_ids, m.network AS _policy_network,
         (SELECT generation::text FROM public_visibility_state WHERE singleton) AS _policy_generation,
         m._representative_rank, m._representative_id,` : ''}
-      ms.observer_node_ids, ms.observer_iatas, ms.rx_count, ms.tx_count
+      ms.observer_node_ids, ms.observer_iatas, ms.rx_count, ms.tx_count,
+      mt.tags, mt.confidence AS tag_confidence
     FROM recent_msgs m
     LEFT JOIN msg_stats ms ON ms.packet_hash = m.packet_hash
+    LEFT JOIN message_tags mt ON mt.packet_hash = m.packet_hash
     ${overlapParam ? `WHERE m.packet_hash = ANY(${overlapParam}::text[])
       OR m.packet_hash IN (SELECT packet_hash FROM recent_msgs ORDER BY time DESC, packet_hash LIMIT $1)` : ''}
     ORDER BY m.time DESC, m.packet_hash
     LIMIT $1${overlapParam ? ` + CARDINALITY(${overlapParam}::text[])` : ''}`,
     [limit, ...scope.params, ...(overlapParam ? [overlapHashes] : [])],
     signal,
+  );
+  return res.rows;
+}
+
+/**
+ * Recent message tags for live feed enrichment. Tags are produced by the
+ * tagger-worker a few seconds after a packet arrives, so the live WS feed can
+ * never carry them inline; the frontend polls this and patches rows by hash.
+ * Only tags whose packet is publicly visible and in scope are returned.
+ */
+export async function getRecentMessageTags(limit = 200, network?: string) {
+  const scope = buildScopePlaceholders(2, network);
+  const res = await query(
+    `SELECT mt.packet_hash, mt.tags, mt.confidence, mt.tagged_at
+       FROM message_tags mt
+      WHERE mt.tagged_at > NOW() - INTERVAL '24 hours'
+        AND EXISTS (
+          SELECT 1 FROM packets p
+           WHERE p.packet_hash = mt.packet_hash
+             AND p.time > NOW() - INTERVAL '24 hours'
+             ${buildPacketScopeClause(scope, 'p', network)}
+             ${buildPublicPacketPrivacyClause('p')}
+        )
+      ORDER BY mt.tagged_at DESC
+      LIMIT $1`,
+    [limit, ...scope.params],
   );
   return res.rows;
 }
@@ -1082,8 +1130,10 @@ export async function getChannelMessageHistory(
       CASE WHEN m.rx_node_id IS NOT NULL THEN ARRAY[m.rx_node_id]::text[] ELSE ARRAY[]::text[] END AS observer_node_ids,
       CASE WHEN NULLIF(TRIM(m.iata), '') IS NOT NULL THEN ARRAY[m.iata]::text[] ELSE ARRAY[]::text[] END AS observer_iatas,
       CASE WHEN COALESCE(m.payload->>'direction', 'rx') <> 'tx' THEN 1 ELSE 0 END::int AS rx_count,
-      CASE WHEN COALESCE(m.payload->>'direction', 'rx') = 'tx' THEN 1 ELSE 0 END::int AS tx_count
+      CASE WHEN COALESCE(m.payload->>'direction', 'rx') = 'tx' THEN 1 ELSE 0 END::int AS tx_count,
+      mt.tags, mt.confidence AS tag_confidence
     FROM channel_candidates m
+    LEFT JOIN message_tags mt ON mt.packet_hash = m.packet_hash
     WHERE 1 = 1
       ${buildPublicPacketPrivacyClause('m')}
     ORDER BY m.time DESC`,
@@ -1100,9 +1150,14 @@ export async function getChannelMessageHistory(
   });
 }
 
-export async function getRecentPacketEvents(limit = 200, network?: string, observer?: string) {
+export async function getRecentPacketEvents(limit = 200, network?: string, observer?: string, regionScope?: string) {
   const scope = buildScopePlaceholders(2, network, observer);
   const params: unknown[] = [limit, ...scope.params];
+  let regionClause = '';
+  if (regionScope) {
+    params.push(regionScope);
+    regionClause = `AND p.region_scope = $${params.length}`;
+  }
   const res = await pool.query(
     `SELECT
         p.time, p.packet_hash,
@@ -1111,7 +1166,8 @@ export async function getRecentPacketEvents(limit = 200, network?: string, obser
         p.topic, p.iata,
         p.packet_type, p.hop_count, p.rssi, p.snr, p.payload,
         p.payload->>'_summary' AS summary,
-        p.advert_count, p.path_hashes, p.path_hash_size_bytes
+        p.advert_count, p.path_hashes, p.path_hash_size_bytes,
+        p.region_scope
      FROM packets p
      LEFT JOIN node_identity_aliases rx_alias
        ON rx_alias.source_node_id = UPPER(BTRIM(p.rx_node_id))
@@ -1119,6 +1175,7 @@ export async function getRecentPacketEvents(limit = 200, network?: string, obser
        ON src_alias.source_node_id = UPPER(BTRIM(p.src_node_id))
      WHERE p.time > NOW() - INTERVAL '24 hours'
          ${buildPacketScopeClause(scope, 'p', network)}
+         ${regionClause}
          ${buildPublicPacketPrivacyClause('p')}
      ORDER BY p.time DESC
      LIMIT $1`,
@@ -1133,8 +1190,10 @@ export async function getPacketDetail(hash: string, network = 'ukmesh') {
     pool.query(
       `SELECT p.time, p.packet_hash, p.rx_node_id, p.src_node_id, p.topic, p.iata,
               p.packet_type, p.route_type, p.hop_count, p.rssi, p.snr,
-              p.payload, p.path_hashes, p.path_hash_size_bytes, p.raw_hex
+              p.payload, p.path_hashes, p.path_hash_size_bytes, p.raw_hex,
+              mt.tags, mt.confidence AS tag_confidence
        FROM packets p
+       LEFT JOIN message_tags mt ON mt.packet_hash = p.packet_hash
        WHERE p.packet_hash = $1
          ${buildPacketScopeClause(scope, 'p', network)}
          ${buildPublicPacketPrivacyClause('p')}
@@ -1176,6 +1235,8 @@ export async function getPacketDetail(hash: string, network = 'ukmesh') {
     pathHashes: row.path_hashes as string[] | null,
     pathHashSizeBytes: row.path_hash_size_bytes as number | null,
     rawHex: row.raw_hex as string | null,
+    tags: (row.tags as Record<string, unknown> | null) ?? null,
+    tagConfidence: (row.tag_confidence as Record<string, unknown> | null) ?? null,
     observations: observations.rows.map((r) => ({
       rxNodeId: r.rx_node_id as string | null,
       iata: r.iata as string | null,

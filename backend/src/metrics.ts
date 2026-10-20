@@ -149,6 +149,19 @@ export const packetShareQueueDepth = new Gauge({
   registers: [metricsRegistry],
 });
 
+export const publicFeedOutcomesTotal = new Counter({
+  name: 'meshcore_public_feed_outcomes_total',
+  help: 'Public MeshCore feed decisions and delivery outcomes.',
+  labelNames: ['outcome'] as const,
+  registers: [metricsRegistry],
+});
+
+export const publicFeedQueueDepth = new Gauge({
+  name: 'meshcore_public_feed_queue_depth',
+  help: 'Public MeshCore feed deliveries currently claimed for processing.',
+  registers: [metricsRegistry],
+});
+
 export const dbQueriesTotal = new Counter({
   name: 'meshcore_db_queries_total',
   help: 'Database queries by pool and bounded outcome.',

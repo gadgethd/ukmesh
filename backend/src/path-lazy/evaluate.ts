@@ -1,5 +1,7 @@
 /**
- * Gold-packet accuracy harness for all path-resolution jobs.
+ * Historical path diagnostics, retained for debugging old jobs.
+ * This harness does not enforce a held-out split and filters long routes.
+ * Use tools/pathAccuracy.ts for reproducible accuracy comparisons.
  *
  * Ground truth: multibyte packets (path_hash_size_bytes > 1) whose every relay
  * hash uniquely resolves to exactly one positioned node in the network scope.
@@ -585,6 +587,7 @@ function printStratification(
 }
 
 async function main() {
+  console.warn('[evaluate] Historical diagnostics only; use npm run path:accuracy for held-out accuracy measurements.');
   const network = process.argv[2] ?? 'ukmesh';
   const sampleSize = Number(process.argv[3] ?? 400);
   const selectedJobs = selectedJobNames();

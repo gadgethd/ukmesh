@@ -1,9 +1,11 @@
-import type { QueryResultRow } from 'pg';
+import pg, { type QueryResultRow } from 'pg';
+import { databaseConfig } from '../platform/config/database.js';
 import type { NetworkFilters } from '../api/utils/networkFilters.js';
 
 type QueryFn = <T extends QueryResultRow = QueryResultRow>(
   text: string,
   params?: unknown[],
+  signal?: AbortSignal,
 ) => Promise<{ rows: T[] }>;
 
 export type TopologyRow = {
@@ -330,57 +332,150 @@ export async function standaloneTopologyRows(query: QueryFn, filters: NetworkFil
   );
 }
 
+export const RF_VALIDATION_DB_TIMEOUT_MS = 3_500;
+
+// RF validation must not inherit the shared pool's potentially unlimited
+// analytics timeout. This small, lazy pool is read-only and bounds execution
+// on the server even if the requesting browser or backend disconnects.
+export const rfValidationPool = new pg.Pool({
+  connectionString: process.env['DATABASE_URL'],
+  application_name: `${databaseConfig.applicationName}-rf-validation`,
+  options: `-c default_transaction_read_only=on${databaseConfig.schema ? ` -c search_path=${databaseConfig.schema},public` : ''}`,
+  max: 2,
+  connectionTimeoutMillis: 500,
+  idleTimeoutMillis: 10_000,
+  allowExitOnIdle: true,
+  statement_timeout: RF_VALIDATION_DB_TIMEOUT_MS,
+  query_timeout: RF_VALIDATION_DB_TIMEOUT_MS + 250,
+});
+rfValidationPool.on('error', (error) => {
+  console.error('[rf-validation] database connection error', error.message);
+});
+
+export async function queryRfValidation<T extends QueryResultRow = QueryResultRow>(
+  text: string,
+  params?: unknown[],
+  signal?: AbortSignal,
+): Promise<{ rows: T[] }> {
+  signal?.throwIfAborted();
+  const client = await rfValidationPool.connect();
+  let released = false;
+  let onAbort: (() => void) | undefined;
+  try {
+    signal?.throwIfAborted();
+    const aborted = new Promise<never>((_resolve, reject) => {
+      if (!signal) return;
+      onAbort = () => {
+        // Destroy rather than return a connection with an in-flight query.
+        // The server timeout remains the independent cancellation backstop.
+        released = true;
+        client.release(true);
+        reject(signal.reason);
+      };
+      signal.addEventListener('abort', onAbort, { once: true });
+    });
+    return await Promise.race([client.query<T>(text, params), aborted]);
+  } finally {
+    if (onAbort) signal?.removeEventListener('abort', onAbort);
+    if (!released) client.release(signal?.aborted === true);
+  }
+}
+
+type RfValidationRow = {
+  node_a_id: string;
+  node_b_id: string;
+  name_a: string | null;
+  name_b: string | null;
+  observed_count: string | number;
+  multibyte_observed_count: string | number;
+  itm_path_loss_db: number | null;
+  itm_viable: boolean | null;
+  force_viable: boolean;
+  last_observed: string;
+  classification: string;
+};
+
 export async function rfValidationRows(
   query: QueryFn,
   filters: NetworkFilters,
   limit: number,
-) {
-  const limitParam = `$${filters.params.length + 1}`;
-  return query<{
-    node_a_id: string;
-    node_b_id: string;
-    name_a: string | null;
-    name_b: string | null;
-    observed_count: string;
-    multibyte_observed_count: string;
-    itm_path_loss_db: number | null;
-    itm_viable: boolean | null;
-    force_viable: boolean;
-    last_observed: string;
-    classification: string;
-  }>(
-    `SELECT
-       nl.node_a_id, nl.node_b_id, a.name AS name_a, b.name AS name_b,
-       nl.observed_count, nl.multibyte_observed_count, nl.itm_path_loss_db,
-       nl.itm_viable, nl.force_viable, nl.last_observed::text,
+  signal?: AbortSignal,
+): Promise<{ rows: RfValidationRow[] }> {
+  // The identity-node view estimates ~1 eligible row where production has
+  // thousands. Joining it twice to identity links caused millions of nested
+  // loop comparisons. Resolve scope once, then pass the actual ids into the
+  // link query so its hash joins have accurate input cardinality.
+  const nodes = await query<{ node_id: string; name: string | null }>(
+    `SELECT n.node_id, n.name
+     FROM node_identity_nodes n
+     WHERE (n.role IS NULL OR n.role = 2)
+       AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
+       ${filters.nodesAlias('n')}`,
+    filters.params,
+    signal,
+  );
+  signal?.throwIfAborted();
+  const names = new Map(nodes.rows.map((node) => [node.node_id, node.name]));
+  if (names.size === 0) return { rows: [] };
+  const result = await query<Omit<RfValidationRow, 'name_a' | 'name_b'>>(
+    `WITH eligible_ids AS MATERIALIZED (
+       SELECT unnest($1::text[]) AS node_id
+     ), recent_links AS MATERIALIZED (
+       SELECT
+         COALESCE(la.canonical_node_id, UPPER(BTRIM(nl.node_a_id))) AS raw_a,
+         COALESCE(lb.canonical_node_id, UPPER(BTRIM(nl.node_b_id))) AS raw_b,
+         nl.observed_count, nl.multibyte_observed_count, nl.itm_path_loss_db,
+         nl.itm_viable, nl.force_viable, nl.last_observed
+       FROM node_links nl
+       LEFT JOIN node_identity_aliases la
+         ON la.source_node_id = UPPER(BTRIM(nl.node_a_id))
+       LEFT JOIN node_identity_aliases lb
+         ON lb.source_node_id = UPPER(BTRIM(nl.node_b_id))
+       WHERE nl.last_observed > NOW() - INTERVAL '30 days'
+     ), aggregated_links AS (
+       SELECT LEAST(raw_a, raw_b) AS node_a_id,
+         GREATEST(raw_a, raw_b) AS node_b_id,
+         SUM(observed_count)::integer AS observed_count,
+         SUM(multibyte_observed_count)::integer AS multibyte_observed_count,
+         MIN(itm_path_loss_db) AS itm_path_loss_db,
+         BOOL_OR(itm_viable) AS itm_viable,
+         BOOL_OR(force_viable) AS force_viable,
+         MAX(last_observed) AS last_observed
+       FROM recent_links
+       WHERE raw_a <> raw_b
+         AND raw_a IN (SELECT node_id FROM eligible_ids)
+         AND raw_b IN (SELECT node_id FROM eligible_ids)
+       GROUP BY LEAST(raw_a, raw_b), GREATEST(raw_a, raw_b)
+     )
+     SELECT node_a_id, node_b_id,
+       observed_count, multibyte_observed_count, itm_path_loss_db,
+       itm_viable, force_viable, last_observed::text,
        CASE
-         WHEN nl.force_viable THEN 'operator_override'
-         WHEN nl.itm_viable = false AND nl.multibyte_observed_count > 0 THEN 'observed_unexpected'
-         WHEN nl.itm_viable = false AND nl.observed_count >= 10 THEN 'observed_unexpected'
-         WHEN nl.itm_viable = true AND nl.observed_count <= 2 AND nl.last_observed < NOW() - INTERVAL '7 days' THEN 'weak_model_evidence'
+         WHEN force_viable THEN 'operator_override'
+         WHEN itm_viable = false AND multibyte_observed_count > 0 THEN 'observed_unexpected'
+         WHEN itm_viable = false AND observed_count >= 10 THEN 'observed_unexpected'
+         WHEN itm_viable = true AND observed_count <= 2 AND last_observed < NOW() - INTERVAL '7 days' THEN 'weak_model_evidence'
          ELSE 'match'
        END AS classification
-     FROM node_identity_links nl
-     JOIN node_identity_nodes a ON a.node_id = nl.node_a_id
-     JOIN node_identity_nodes b ON b.node_id = nl.node_b_id
-     WHERE nl.last_observed > NOW() - INTERVAL '30 days'
-       AND (a.name IS NULL OR a.name NOT LIKE '%🚫%')
-       AND (b.name IS NULL OR b.name NOT LIKE '%🚫%')
-       AND (a.role IS NULL OR a.role = 2)
-       AND (b.role IS NULL OR b.role = 2)
-       ${filters.nodesAlias('a')}
-       ${filters.nodesAlias('b')}
+     FROM aggregated_links
      ORDER BY
        CASE
-         WHEN nl.itm_viable = false AND nl.multibyte_observed_count > 0 THEN 0
-         WHEN nl.force_viable THEN 1
-         WHEN nl.itm_viable = false AND nl.observed_count >= 10 THEN 2
-         WHEN nl.itm_viable = true AND nl.observed_count <= 2 THEN 3
+         WHEN itm_viable = false AND multibyte_observed_count > 0 THEN 0
+         WHEN force_viable THEN 1
+         WHEN itm_viable = false AND observed_count >= 10 THEN 2
+         WHEN itm_viable = true AND observed_count <= 2 THEN 3
          ELSE 4
        END,
-       nl.multibyte_observed_count DESC,
-       nl.observed_count DESC
-     LIMIT ${limitParam}`,
-    [...filters.params, limit],
+       multibyte_observed_count DESC, observed_count DESC, node_a_id, node_b_id
+     LIMIT $2`,
+    [[...names.keys()], Math.max(1, Math.min(250, Math.trunc(limit) || 100))],
+    signal,
   );
+  signal?.throwIfAborted();
+  // Enrich only the bounded result, and fail closed if an endpoint is absent
+  // from the public scope (including when a test/custom query supplies rows).
+  return { rows: result.rows
+    .filter((row) => names.has(row.node_a_id) && names.has(row.node_b_id))
+    .slice(0, limit)
+    .map((row) => ({ ...row, name_a: names.get(row.node_a_id)!, name_b: names.get(row.node_b_id)! })) };
 }

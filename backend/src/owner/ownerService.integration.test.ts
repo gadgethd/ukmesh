@@ -56,7 +56,8 @@ test('actual last-hop SQL replaces renamed and newly resolved groups during a wa
     UPDATE node_identity_nodes SET name = 'Renamed peer' WHERE node_id = 'AA01';
     INSERT INTO node_identity_nodes (node_id, name, role) VALUES ('CC01', 'New peer', 2);
   `);
-  const refreshed = await service.getOwnerLastHopStrength(['BB01'], 'BB01', true);
+  await service.refreshOwnerLastHopStrength(['BB01'], 'BB01', 7, 0);
+  const refreshed = await service.getOwnerLastHopStrength(['BB01'], 'BB01');
   assert.deepEqual(refreshed.points.filter(point => point.bucket < latest), history);
   assert.deepEqual(refreshed.points.filter(point => point.bucket === latest).map(point => [
     point.lastHopNodeId, point.lastHopName, point.resolution, point.sampleCount, point.avgSnr, point.avgRssi,
@@ -66,6 +67,7 @@ test('actual last-hop SQL replaces renamed and newly resolved groups during a wa
   assert.equal(refreshed.points.reduce((total, point) => total + point.sampleCount, 0), 4, 'regrouping must not double-count packets');
 
   await db.query('DELETE FROM node_identity_packets WHERE time >= $1::timestamptz', [latest]);
-  assert.deepEqual((await service.getOwnerLastHopStrength(['BB01'], 'BB01', true)).points, history,
+  await service.refreshOwnerLastHopStrength(['BB01'], 'BB01', 7, 0);
+  assert.deepEqual((await service.getOwnerLastHopStrength(['BB01'], 'BB01')).points, history,
     'an empty refreshed query removes the vanished current groups');
 });

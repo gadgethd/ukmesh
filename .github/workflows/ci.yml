@@ -258,11 +258,11 @@ jobs:
             --profile dev \
             build \
               backend app-ukmesh website-ukmesh website-dev mesh-health-check \
-              mosquitto-reloader link-worker hopreach
+              mosquitto-reloader link-worker hopreach tagger-worker
           docker compose -f docker-compose.yml -f docker-compose.ci.yml \
             --project-name "$project" \
             --profile dev \
-            up --detach --no-build --scale link-backfill-worker=0 \
+            up --detach --no-build --scale link-backfill-worker=0 --scale tagger-worker=0 \
               --wait --wait-timeout 360
           # link-backfill-worker is intentionally a finite job. Running it
           # separately lets Compose wait for the long-lived stack without

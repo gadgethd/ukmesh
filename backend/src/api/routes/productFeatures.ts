@@ -85,7 +85,7 @@ export function registerProductFeatureRoutes(router: Router, query: QueryFn): vo
         res.status(404).json({ error: 'Link not found' });
         return;
       }
-      const result = await linkHistoryRows(query, nodeA, nodeB, hours);
+      const result = await linkHistoryRows(query, nodeA, nodeB, hours, networks);
       res.setHeader('Cache-Control', 'public, max-age=60, stale-while-revalidate=300');
       res.json({ linkId: `${nodeA}:${nodeB}`, network, hours, points: result.rows });
     } catch (error) {

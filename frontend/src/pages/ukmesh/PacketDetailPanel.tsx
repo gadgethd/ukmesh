@@ -3,6 +3,7 @@ import { LoadingIndicator } from '../../components/LoadingIndicator.js';
 import type { MeshNode } from '../../hooks/useNodes.js';
 import type { FeedPacket } from './UKFeedPage.js';
 import { usePacketDetailData, type RadioState } from '../../hooks/usePacketDetailData.js';
+import type { MessageTags, TagConfidence } from '../../hooks/packetFeed.js';
 import {
   PathMap,
   type LazyPath,
@@ -334,6 +335,32 @@ export const PacketDetailPanel: React.FC<{
           </div>
         </div>
       </div>
+
+      {/* Message tags (tagger-worker / Jev) */}
+      {(() => {
+        const tags = (packet.tags ?? detail?.tags) as MessageTags | undefined | null;
+        if (!tags || Object.keys(tags).length === 0) return null;
+        const conf = (packet.tag_confidence ?? detail?.tagConfidence) as TagConfidence | undefined | null;
+        const chips: string[] = [];
+        if (tags.kind) chips.push(tags.kind);
+        if (tags.topic) chips.push(`topic: ${tags.topic}`);
+        if (tags.speaker) chips.push(`speaker: ${tags.speaker}`);
+        if ((tags.safety ?? 0) >= 0.5) chips.push('⚠ safety');
+        if ((tags.directed ?? 0) >= 0.5) chips.push('directed');
+        if ((tags.mentions_location ?? 0) >= 0.5) chips.push('mentions location');
+        return (
+          <div className="feed-detail__section">
+            <div className="feed-detail__section-title">
+              Message tags{typeof conf?.kind === 'number' ? ` · kind ${(conf.kind * 100).toFixed(0)}%` : ''}
+            </div>
+            <div className="feed-detail__tags">
+              {chips.map((chip) => (
+                <span key={chip} className="msg-tag-chip">{chip}</span>
+              ))}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Observer table */}
       {detail?.observations && detail.observations.length > 0 && (

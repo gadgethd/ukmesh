@@ -4,9 +4,7 @@
  * keeping the main event loop free during CPU-heavy path computation.
  */
 import { parentPort } from 'worker_threads';
-import { query } from '../db/index.js';
-import { lazyResolvePath } from '../path-lazy/lazyResolver.js';
-import { resolveBetaPathForPacketHash, resolveMultiObserverBetaPath } from './resolver.js';
+import { resolveBetaPathForPacketHash, resolveMultiObserverBetaPath, resolveLazyPathForPacketHash } from './resolver.js';
 import { getHeldPath, setHeldPath, type HeldPathEntry } from './resolveCache.js';
 
 if (!parentPort) throw new Error('resolveWorker must run as a worker thread');
@@ -26,7 +24,7 @@ parentPort.on('message', (msg: WorkerMessage) => {
   const stickyMap = msg.stickyMap ? new Map(Object.entries(msg.stickyMap)) : undefined;
   const heldPath = msg.heldPath ?? getHeldPath(msg.packetHash, msg.network);
   const run = msg.type === 'resolveLazy'
-    ? lazyResolvePath(msg.packetHash, msg.network, query)
+    ? resolveLazyPathForPacketHash(msg.packetHash, msg.network)
     : msg.type === 'resolveMulti'
       ? resolveMultiObserverBetaPath(msg.packetHash, msg.network, stickyMap, msg.stickyAgeFraction, { heldPath })
       : resolveBetaPathForPacketHash(

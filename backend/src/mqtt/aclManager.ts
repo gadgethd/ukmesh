@@ -3,7 +3,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { ownerAclReloadTotal } from '../metrics.js';
 
-export const OWNER_ACL_RENDERER_VERSION = 'meshcore-owner-acl/v2-sys-read';
+export const OWNER_ACL_RENDERER_VERSION = 'meshcore-owner-acl/v5-public-feed-namespace';
 const MANAGED_BEGIN = '# BEGIN MESHCORE OWNER ACL';
 const MANAGED_END = '# END MESHCORE OWNER ACL';
 const NODE_ID_RE = /^[0-9A-F]{64}$/;
@@ -11,6 +11,8 @@ const NODE_ID_RE = /^[0-9A-F]{64}$/;
 export type OwnerAclGrant = {
   mqttUsername: string;
   nodeIds: string[];
+  /** Grants read access to the curated public-feed namespace. */
+  publicFeedRead?: boolean;
 };
 
 export type AclDirectiveClass =
@@ -40,6 +42,7 @@ export type OwnerAclRenderResult = {
   content: string;
   semantic: OwnerAclGrant[];
   systemReadUsers: string[];
+  systemReadwriteTopics: string[];
   validation: {
     ok: boolean;
     ambiguousUsers: string[];
@@ -58,6 +61,13 @@ function normalizeUsername(value: string): string {
 
 function normalizeNodeIds(nodeIds: string[]): string[] {
   return Array.from(new Set(nodeIds.map((value) => value.trim().toUpperCase()).filter((value) => NODE_ID_RE.test(value)))).sort();
+}
+
+function normalizeAclTopics(topics: Iterable<string>): string[] {
+  return Array.from(new Set([...topics].map((value) => value.trim()).filter(Boolean).map((topic) => {
+    if (/\s|[\u0000\r\n]/.test(topic)) throw new Error(`INVALID_ACL_TOPIC:${topic}`);
+    return topic;
+  }))).sort();
 }
 
 function stripManagedSection(content: string): { content: string; found: boolean; errors: string[] } {
@@ -142,6 +152,9 @@ function buildManagedSection(
   for (const grant of grants) {
     lines.push(`user ${grant.mqttUsername}`);
     if (systemReadUsers.has(grant.mqttUsername)) lines.push('topic read $SYS/broker/uptime');
+    if (grant.publicFeedRead) {
+      lines.push('topic read public/+/+/packets');
+    }
     for (const nodeId of grant.nodeIds) {
       lines.push(`topic write meshcore/+/${nodeId}/packets`);
       lines.push(`topic write meshcore/+/${nodeId}/status`);
@@ -168,17 +181,23 @@ export function renderOwnerAcl(
   unmanagedUsers: Iterable<string>,
   allowedEmptyUsers: Iterable<string> = [],
   systemReadUsers: Iterable<string> = [],
+  systemReadwriteTopics: Iterable<string> = [],
 ): OwnerAclRenderResult {
   const normalized = grants.map((grant) => ({
     mqttUsername: normalizeUsername(grant.mqttUsername),
     nodeIds: normalizeNodeIds(grant.nodeIds),
+    ...(grant.publicFeedRead ? {
+      publicFeedRead: true,
+    } : {}),
   }));
   // An explicit operator grant is the declaration that an account has become
   // managed. This permits a staged owner to remain in the unmanaged list
   // until its grant is reviewed, without requiring a live .env edit alongside
   // the grant.
   const configuredUsernames = new Set(
-    normalized.filter((grant) => grant.nodeIds.length > 0).map((grant) => grant.mqttUsername),
+    normalized
+      .filter((grant) => grant.nodeIds.length > 0 || grant.publicFeedRead)
+      .map((grant) => grant.mqttUsername),
   );
   const unmanaged = new Set(
     [...unmanagedUsers]
@@ -194,12 +213,14 @@ export function renderOwnerAcl(
     [...systemReadUsers].map((value) => normalizeUsername(value)),
   )).sort();
   const systemReadUserSet = new Set(normalizedSystemReadUsers);
+  const normalizedSystemReadwriteTopics = normalizeAclTopics(systemReadwriteTopics);
 
   const generation = createHash('sha256')
     .update(JSON.stringify({
       renderer: OWNER_ACL_RENDERER_VERSION,
       grants: sortedNormalized,
       systemReadUsers: normalizedSystemReadUsers,
+      systemReadwriteTopics: normalizedSystemReadwriteTopics,
     }))
     .digest('hex');
   const stripped = stripManagedSection(existingContent);
@@ -233,6 +254,13 @@ export function renderOwnerAcl(
     ) {
       retainedLines.push('topic read $SYS/broker/uptime');
     }
+    if (systemReadUserSet.has(stanza.username)) {
+      for (const topic of normalizedSystemReadwriteTopics) {
+        if (!retainedLines.some((line) => line.trim() === `topic readwrite ${topic}`)) {
+          retainedLines.push(`topic readwrite ${topic}`);
+        }
+      }
+    }
     output.push(...retainedLines);
     while (output.at(-1)?.trim() === '') output.pop();
   }
@@ -247,6 +275,7 @@ export function renderOwnerAcl(
     content,
     semantic: sortedNormalized,
     systemReadUsers: normalizedSystemReadUsers,
+    systemReadwriteTopics: normalizedSystemReadwriteTopics,
     validation: {
       ok: parsed.errors.length === 0
         && parsed.duplicateUsers.length === 0
@@ -270,6 +299,12 @@ export function validateRenderedOwnerAcl(content: string, expected: OwnerAclRend
     throw new Error('OWNER_ACL_MANAGED_MARKERS_MISSING');
   }
   for (const grant of expected.semantic) {
+    const stanza = parseAcl(content).stanzas.find((candidate) => candidate.username === grant.mqttUsername);
+    if (grant.publicFeedRead) {
+      if (!stanza?.directives.some((directive) => directive.line === 'topic read public/+/+/packets')) {
+        throw new Error(`OWNER_ACL_PUBLIC_FEED_READ_MISMATCH:${grant.mqttUsername}`);
+      }
+    }
     for (const nodeId of grant.nodeIds) {
       if (!content.includes(`topic write meshcore/+/${nodeId}/packets`)
         || !content.includes(`topic write meshcore/+/${nodeId}/status`)
@@ -287,6 +322,14 @@ export function validateRenderedOwnerAcl(content: string, expected: OwnerAclRend
     const stanza = parseAcl(content).stanzas.find((candidate) => candidate.username === username);
     if (!stanza?.directives.some((directive) => directive.line === 'topic read $SYS/broker/uptime')) {
       throw new Error(`OWNER_ACL_SYSTEM_READ_MISMATCH:${username}`);
+    }
+  }
+  for (const username of expected.systemReadUsers) {
+    const stanza = parseAcl(content).stanzas.find((candidate) => candidate.username === username);
+    for (const topic of expected.systemReadwriteTopics) {
+      if (!stanza?.directives.some((directive) => directive.line === `topic readwrite ${topic}`)) {
+        throw new Error(`OWNER_ACL_SYSTEM_READWRITE_MISMATCH:${username}:${topic}`);
+      }
     }
   }
 }
@@ -308,10 +351,10 @@ export function userExistsInAclContent(content: string, mqttUsername: string): b
 
 export function updateUserAclContent(content: string, mqttUsername: string, nodeIds: string[]): string {
   const parsed = parseAcl(content);
-  const grants = parsed.stanzas
+  const grants: OwnerAclGrant[] = parsed.stanzas
     .filter((stanza) => stanza.username !== mqttUsername)
     .map((stanza) => ({ mqttUsername: stanza.username, nodeIds: getNodeIdsForUserInAcl(content, stanza.username) }));
-  grants.push({ mqttUsername, nodeIds });
+  grants.push({ mqttUsername, nodeIds, publicFeedRead: false });
   return renderOwnerAcl('', grants, [], grants.filter((grant) => grant.nodeIds.length === 0).map((grant) => grant.mqttUsername)).content;
 }
 

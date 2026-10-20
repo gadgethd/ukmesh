@@ -1,6 +1,6 @@
 import type { DatabaseQueryFn } from '../db/index.js';
 import type { LivePacket } from '../types/index.js';
-import type { PacketShareDestinationRow, PacketShareTarget } from './packetShareConfig.js';
+import { destinationAllowedForOwner, type PacketShareDestinationRow, type PacketShareTarget } from './packetShareConfig.js';
 
 export type PacketShareQueryFn = DatabaseQueryFn;
 export type PacketShareTransactionFn = <T>(work: (query: PacketShareQueryFn) => Promise<T>) => Promise<T>;
@@ -22,22 +22,27 @@ export function createPacketShareRepository(
   query: PacketShareQueryFn,
   transaction?: PacketShareTransactionFn,
 ) {
-  async function listDestinations(): Promise<PacketShareDestinationRow[]> {
+  async function listDestinations(ownerUsername: string, nodeId: string): Promise<PacketShareDestinationRow[]> {
     const result = await query<PacketShareDestinationRow>(
       `SELECT destination_id, display_name, website_url, description,
               broker_url, topic_template,
-              broker_username, broker_password_ciphertext, enabled
+              broker_username, broker_password_ciphertext, enabled,
+              allowed_owner_username, allowed_node_id, auth_mode, auth_audience, tx_mode
          FROM owner_packet_share_destinations
+        WHERE (allowed_owner_username IS NULL OR allowed_owner_username = $1)
+          AND (allowed_node_id IS NULL OR allowed_node_id = $2)
         ORDER BY display_name, destination_id`,
+      [ownerUsername, nodeId],
     );
-    return result.rows;
+    return result.rows.filter((row) => destinationAllowedForOwner(row, ownerUsername, nodeId));
   }
 
   async function getDestination(destinationId: string): Promise<PacketShareDestinationRow | null> {
     const result = await query<PacketShareDestinationRow>(
       `SELECT destination_id, display_name, website_url, description,
               broker_url, topic_template,
-              broker_username, broker_password_ciphertext, enabled
+              broker_username, broker_password_ciphertext, enabled,
+              allowed_owner_username, allowed_node_id, auth_mode, auth_audience, tx_mode
          FROM owner_packet_share_destinations
         WHERE destination_id = $1`,
       [destinationId],
@@ -47,10 +52,13 @@ export function createPacketShareRepository(
 
   async function listOwnerRules(ownerUsername: string, nodeId: string): Promise<string[]> {
     const result = await query<{ destination_id: string }>(
-      `SELECT destination_id
-         FROM owner_packet_share_rules
-        WHERE owner_username = $1 AND node_id = $2 AND enabled = TRUE
-        ORDER BY destination_id`,
+      `SELECT rules.destination_id
+         FROM owner_packet_share_rules rules
+         JOIN owner_packet_share_destinations destination USING (destination_id)
+        WHERE rules.owner_username = $1 AND rules.node_id = $2 AND rules.enabled = TRUE
+          AND (destination.allowed_owner_username IS NULL OR destination.allowed_owner_username = $1)
+          AND (destination.allowed_node_id IS NULL OR destination.allowed_node_id = $2)
+        ORDER BY rules.destination_id`,
       [ownerUsername, nodeId],
     );
     return result.rows.map((row) => row.destination_id);
@@ -77,17 +85,20 @@ export function createPacketShareRepository(
               destination.website_url, destination.description,
               destination.broker_url, destination.topic_template,
               destination.broker_username, destination.broker_password_ciphertext,
-              destination.enabled
+              destination.enabled, destination.allowed_owner_username, destination.allowed_node_id,
+              destination.auth_mode, destination.auth_audience, destination.tx_mode
          FROM owner_packet_share_rules rules
          JOIN owner_packet_share_destinations destination
            ON destination.destination_id = rules.destination_id
         WHERE rules.node_id = $1
           AND rules.enabled = TRUE
           AND destination.enabled = TRUE
+          AND (destination.allowed_owner_username IS NULL OR destination.allowed_owner_username = rules.owner_username)
+          AND (destination.allowed_node_id IS NULL OR destination.allowed_node_id = rules.node_id)
         ORDER BY destination.destination_id`,
       [nodeId],
     );
-    return result.rows;
+    return result.rows.filter((row) => destinationAllowedForOwner(row, row.owner_username, row.node_id));
   }
 
   async function replaceOwnerRules(
@@ -122,6 +133,8 @@ export function createPacketShareRepository(
            FROM owner_packet_share_destinations
           WHERE destination_id = ANY($3::text[])
             AND enabled = TRUE
+            AND (allowed_owner_username IS NULL OR allowed_owner_username = $1)
+            AND (allowed_node_id IS NULL OR allowed_node_id = $2)
          RETURNING destination_id`,
         [ownerUsername, nodeId, destinationIds],
       );
@@ -158,6 +171,8 @@ export function createPacketShareRepository(
              AND rules.destination_id = $3
              AND rules.enabled = TRUE
              AND destination.enabled = TRUE
+             AND (destination.allowed_owner_username IS NULL OR destination.allowed_owner_username = rules.owner_username)
+             AND (destination.allowed_node_id IS NULL OR destination.allowed_node_id = rules.node_id)
         )
        ON CONFLICT (event_key) DO NOTHING
        RETURNING id`,

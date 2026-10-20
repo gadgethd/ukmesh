@@ -1,5 +1,5 @@
 export const pathingConfig = {
-  maxBetaHops: 25,
+  maxBetaHops: 64,
   purpleThreshold: 0.45,
   earthEffectiveRadiusM: 6_371_000 / (1 - 0.25),
   defaultAntennaHeightM: 15,

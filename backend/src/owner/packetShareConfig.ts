@@ -15,6 +15,11 @@ export type PacketShareDestinationRow = {
   topic_template: string | null;
   broker_username: string | null;
   broker_password_ciphertext: string | null;
+  allowed_owner_username?: string | null;
+  allowed_node_id?: string | null;
+  auth_mode?: 'password' | 'meshcore_jwt';
+  auth_audience?: string | null;
+  tx_mode?: 'on' | 'advert';
   enabled: boolean;
 };
 
@@ -79,7 +84,7 @@ export function isValidPacketShareTopicTemplate(template: string | null): boolea
 }
 
 export function destinationConfigured(
-  destination: Pick<PacketShareDestinationRow, 'enabled' | 'broker_url' | 'topic_template' | 'broker_username' | 'broker_password_ciphertext'>,
+  destination: Pick<PacketShareDestinationRow, 'enabled' | 'broker_url' | 'topic_template' | 'broker_username' | 'broker_password_ciphertext' | 'auth_mode' | 'auth_audience'>,
   encryptionKeyAvailable = true,
 ): boolean {
   if (!destination.enabled
@@ -89,7 +94,35 @@ export function destinationConfigured(
   const password = destination.broker_password_ciphertext?.trim() || '';
   if (Boolean(username) !== Boolean(password)) return false;
   if (password && (!encryptionKeyAvailable || !isPacketShareSecretCiphertext(password))) return false;
+  if (destination.auth_mode === 'meshcore_jwt') {
+    const url = new URL(destination.broker_url!.trim());
+    if (url.protocol !== 'wss:'
+      || destination.auth_audience !== url.hostname
+      || !/^v1_[0-9A-F]{64}$/.test(username)
+      || !password) return false;
+  }
   return true;
+}
+
+export function destinationAllowedForOwner(
+  destination: Pick<PacketShareDestinationRow, 'allowed_owner_username' | 'allowed_node_id'>,
+  ownerUsername: string,
+  nodeId: string,
+): boolean {
+  return (destination.allowed_owner_username == null || destination.allowed_owner_username === ownerUsername)
+    && (destination.allowed_node_id == null || destination.allowed_node_id === nodeId);
+}
+
+/** Match mqtt.tx advert: receive capture stays enabled; TX includes only own adverts. */
+export function destinationAcceptsPacket(
+  destination: Pick<PacketShareDestinationRow, 'tx_mode'>,
+  packet: LivePacket,
+  upstreamEnvelope: Record<string, unknown>,
+): boolean {
+  if (destination.tx_mode !== 'advert') return true;
+  const direction = String(packet.direction ?? upstreamEnvelope['direction'] ?? 'rx').trim().toLowerCase();
+  if (direction === 'rx') return true;
+  return direction === 'tx' && packet.packetType === 4 && packet.srcNodeId === packet.rxNodeId;
 }
 
 export function renderPacketShareTopic(template: string, packet: LivePacket): string {
@@ -109,6 +142,13 @@ export function renderPacketShareTopic(template: string, packet: LivePacket): st
     throw new Error('invalid packet share destination topic');
   }
   return rendered;
+}
+
+export function renderDestinationTopic(destination: PacketShareDestinationRow, packet: LivePacket): string {
+  const observerId = destination.auth_mode === 'meshcore_jwt'
+    ? destination.broker_username?.slice(3)
+    : packet.rxNodeId;
+  return renderPacketShareTopic(destination.topic_template!, { ...packet, rxNodeId: observerId });
 }
 
 function copyEnvelopeValue(target: PacketShareForwardPayload, source: Record<string, unknown>, key: string): void {
@@ -138,6 +178,7 @@ function packetDateParts(packet: LivePacket, timestamp: unknown): { time: string
 export function buildPacketSharePayload(
   packet: LivePacket,
   upstreamEnvelope: Record<string, unknown>,
+  destination?: PacketShareDestinationRow,
 ): PacketShareForwardPayload {
   const envelope: PacketShareForwardPayload = {};
   for (const key of [
@@ -150,10 +191,12 @@ export function buildPacketSharePayload(
   if (!('timestamp' in envelope)) envelope.timestamp = new Date(packet.ts).toISOString();
   if (!('hash' in envelope)) envelope.hash = packet.packetHash;
   if (!('type' in envelope)) envelope.type = 'PACKET';
-  if (!('direction' in envelope)) envelope.direction = 'rx';
+  if (!('direction' in envelope)) envelope.direction = packet.direction === 'tx' ? 'tx' : 'rx';
   if (!('origin_id' in envelope) && packet.rxNodeId) envelope.origin_id = packet.rxNodeId;
   if (!('packet_type' in envelope) && packet.packetType != null) envelope.packet_type = String(packet.packetType);
   if (!('len' in envelope) && typeof envelope.raw === 'string') envelope.len = String(Math.floor(envelope.raw.length / 2));
+  // JWT brokers authorize both the topic and origin_id against the relay identity.
+  if (destination?.auth_mode === 'meshcore_jwt') envelope.origin_id = destination.broker_username!.slice(3);
 
   const dateParts = packetDateParts(packet, envelope.timestamp);
   if (dateParts.time) envelope.time = dateParts.time;

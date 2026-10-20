@@ -59,7 +59,7 @@ Content-bearing packets have a hard 30-day bound. Timescale drops complete
 chunks, while the health worker deletes exact expired rows from the partial
 boundary chunk in deterministic 25,000-row batches; new packet chunks are one
 day. Content-free path reconstruction reads `packet_paths`, so it continues
-after the source packet expires. Status samples retain 180 days and neighbor
+after the source packet expires. Status samples retain 30 days and neighbor
 samples seven days. Privacy-filtered aggregates, model parameters, current
 node/link/coverage state, and privacy state remain longer lived.
 
@@ -166,7 +166,11 @@ retention, compression, or disk exhaustion alerts.
 Hypertable retention uses a Timescale policy. Row-table deletion is bounded and
 performed by the health worker only for targets explicitly listed in
 `DATA_LIFECYCLE_RETENTION_TARGETS`. Failed/pending owner alert deliveries are
-not discarded while they remain retryable.
+not discarded while they remain retryable. Owner packet-sharing deliveries
+follow the same rule and retain their bounded relay payload for 30 days after
+they reach a terminal status.
+Public-feed delivery rows follow the same rule and retain their bounded public
+packet envelope for 30 days after reaching a terminal status.
 
 Compression state is migration-defined: `packets`, `packet_paths`, and
 `node_status_samples` compress after 14 days (matching the reviewed live
