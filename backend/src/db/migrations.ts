@@ -32,6 +32,18 @@ const LEGACY_DUPLICATE_PREFIXES = new Map<string, ReadonlySet<string>>([
     '016_private_prefixes.sql',
     '016_stale_mqtt_observer_cleanup.sql',
   ])],
+  // Both pairs shipped on the live deployment before prefix enforcement was
+  // added; the ledger holds both rows and a fresh database must replay the
+  // same history. Filenames are the ledger key, so they cannot be renumbered
+  // without re-executing applied migrations.
+  ['052', new Set([
+    '052_node_identity_packets_raw_columns.sql',
+    '052_owner_packet_sharing.sql',
+  ])],
+  ['055', new Set([
+    '055_message_tags.sql',
+    '055_public_feed.sql',
+  ])],
 ]);
 
 export interface MigrationFile {

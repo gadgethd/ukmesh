@@ -172,7 +172,7 @@ Copy `.env.example` to `.env` and fill in your values. All variables used by the
 | `ALLOWED_ORIGINS` | `http://localhost:3001,http://localhost:3002` | Comma-separated browser origins allowed for CORS and WebSocket |
 | `API_RATE_LIMIT_MAX` | `120` | Per-client public API requests/minute; raise only in an isolated load-test project |
 | `VITE_APP_HOSTNAME` | *(blank — always shows dashboard)* | If set, only this hostname serves the analytics dashboard; all others serve the public website layout |
-| `MESHCORE_CHANNEL_SECRETS` | *(blank)* | Comma-separated channel secrets for decrypting GroupText packets. Format: `name:hex` or bare hex. The default MeshCore public channel key is always included. |
+| `MESHCORE_CHANNEL_SECRETS` | *(blank)* | Confidential channel keys for decrypting GroupText packets, managed through environment configuration. Format: `name:hex` or bare hex. The explicitly public `PUBLIC_CHANNELS` defaults are always included. |
 | `OWNER_DATABASE_URL` | *(optional)* | Separate Postgres database URL for owner portal username → repeater mappings |
 | `OWNER_COOKIE_SECRET` | *(optional but recommended)* | Secret used to encrypt/sign the owner session cookie |
 | `OWNER_MQTT_USERNAME_MAP` | *(empty)* | Operator-managed owner grants in the format `user=nodeId1|nodeId2,...` |
@@ -499,13 +499,19 @@ MeshCore Devices
 
 ## Data Retention
 
-- Compression and destructive retention ship disabled. Raw packets and status
-  samples remain intact until a table-specific, backup- and restore-gated
-  lifecycle rollout is approved.
-- The proposed raw retention window is 180 days, preserving the longest
-  120-day learner dependency. Privacy-safe hourly/daily aggregates and current
-  node/link/model state remain longer lived. Legacy `node_coverage` is retained
-  for one release as inactive rollback data only.
+- The reviewed core telemetry windows are 30 days for raw packets, 180 days
+  for status samples, and seven days for neighbour samples. Content-stripped
+  `packet_paths` remain available for path reconstruction and are never
+  retention-deleted. Privacy-safe aggregates and current node/link/model state
+  remain longer lived.
+- Migration 050 declares the core Timescale retention policies. Repairing a
+  missing policy and enabling compression require a fresh signed
+  backup/restore receipt and per-table approval. When lifecycle actions are
+  enabled, startup fails closed if required core targets are missing from the
+  configured allowlists.
+- Expired forensic data is available only by restoring a suitable pre-expiry
+  backup into an isolated, read-only environment; do not restore it over
+  production.
 - Operational row-table cleanup is bounded and runs only when both
   `DATA_LIFECYCLE_RETENTION_ENABLED=true` and the exact table appears in
   `DATA_LIFECYCLE_RETENTION_TARGETS`.

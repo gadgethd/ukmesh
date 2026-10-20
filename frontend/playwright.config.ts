@@ -1,4 +1,8 @@
 import { defineConfig, devices } from '@playwright/test';
+import { portBase, publicOrigin, dashboardOrigin } from './test/e2e/localServers.js';
+
+// Parallel worktrees can select isolated ports instead of reusing a stale server.
+const reuseExistingServer = !process.env['CI'] && !process.env['PLAYWRIGHT_PORT_BASE'];
 
 export default defineConfig({
   testDir: './test/e2e',
@@ -13,18 +17,18 @@ export default defineConfig({
   projects: [
     {
       name: 'public-desktop',
-      testMatch: /(?:accessibility|owner|public)\.spec\.ts/,
-      use: { ...devices['Desktop Chrome'], baseURL: 'http://127.0.0.1:4173' },
+      testMatch: /(?:accessibility|owner|public|feed-virtualizer)\.spec\.ts/,
+      use: { ...devices['Desktop Chrome'], baseURL: publicOrigin },
     },
     {
       name: 'dashboard-desktop',
       testMatch: /dashboard\.spec\.ts/,
-      use: { ...devices['Desktop Chrome'], baseURL: 'http://127.0.0.1:4174' },
+      use: { ...devices['Desktop Chrome'], baseURL: dashboardOrigin },
     },
     {
       name: 'dashboard-mobile',
       testMatch: /dashboard\.spec\.ts/,
-      use: { ...devices['Pixel 7'], baseURL: 'http://127.0.0.1:4174' },
+      use: { ...devices['Pixel 7'], baseURL: dashboardOrigin },
     },
     {
       name: 'mobile-regression',
@@ -34,19 +38,19 @@ export default defineConfig({
   ],
   webServer: [
     {
-      command: 'VITE_APP_HOSTNAME=app.invalid VITE_SITE=ukmesh npm run dev -- --host 127.0.0.1 --port 4173',
-      port: 4173,
-      reuseExistingServer: !process.env['CI'],
+      command: `VITE_APP_HOSTNAME=app.invalid VITE_SITE=ukmesh npm run dev -- --config playwright.vite.config.ts --host 127.0.0.1 --port ${portBase} --strictPort`,
+      port: portBase,
+      reuseExistingServer,
     },
     {
-      command: 'VITE_APP_HOSTNAME=127.0.0.1 VITE_SITE=ukmesh VITE_NETWORK=ukmesh VITE_RF_COVERAGE_ENABLED=true npm run dev -- --host 127.0.0.1 --port 4174',
-      port: 4174,
-      reuseExistingServer: !process.env['CI'],
+      command: `VITE_APP_HOSTNAME=127.0.0.1 VITE_SITE=ukmesh VITE_NETWORK=ukmesh VITE_RF_COVERAGE_ENABLED=true npm run dev -- --config playwright.vite.config.ts --host 127.0.0.1 --port ${portBase + 1} --strictPort`,
+      port: portBase + 1,
+      reuseExistingServer,
     },
     {
-      command: 'VITE_APP_HOSTNAME=app.invalid VITE_SITE=dev npm run dev -- --host 127.0.0.1 --port 4175',
-      port: 4175,
-      reuseExistingServer: !process.env['CI'],
+      command: `VITE_APP_HOSTNAME=app.invalid VITE_SITE=dev npm run dev -- --config playwright.vite.config.ts --host 127.0.0.1 --port ${portBase + 2} --strictPort`,
+      port: portBase + 2,
+      reuseExistingServer,
     },
   ],
 });

@@ -21,6 +21,24 @@ export function nodeRoleLabel(role: number | null): string {
   return 'Repeater';
 }
 
+export type OwnerLoginCredentials = { mqttUsername: string; mqttPassword: string };
+
+export function ownerLoginValidationError(mqttUsername: string, mqttPassword: string): string | null {
+  const normalizedUsername = mqttUsername.trim();
+  if (!normalizedUsername || !mqttPassword) return 'Enter your MQTT username and password.';
+  if (normalizedUsername.length > 128 || mqttPassword.length > 128) {
+    return 'MQTT username or password is too long.';
+  }
+  if (/[\u0000-\u001F\u007F]/.test(normalizedUsername) || /[\u0000-\u001F\u007F]/.test(mqttPassword)) {
+    return 'MQTT username or password contains invalid characters.';
+  }
+  return null;
+}
+
+export function ownerLoginCredentials(mqttUsername: string, mqttPassword: string): OwnerLoginCredentials {
+  return { mqttUsername: mqttUsername.trim(), mqttPassword };
+}
+
 export type OwnerDashboard = {
   nodes: OwnerNode[];
 };

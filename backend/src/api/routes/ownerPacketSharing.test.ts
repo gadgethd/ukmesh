@@ -23,6 +23,7 @@ const passThroughLimiter: RequestHandler = (_req, _res, next) => next();
 function ownerRouteDeps(
   query: (sql: string, params?: unknown[]) => Promise<{ rows: QueryResultRow[] }>,
   mqttUsername = 'node1',
+  requireOwnerSession: (req: import('express').Request, res: import('express').Response) => Promise<string[] | null> = async () => [nodeId],
 ) {
   return {
     ownerCookieName: 'meshcore_owner_session',
@@ -42,7 +43,7 @@ function ownerRouteDeps(
     encryptOwnerSession: () => 'session',
     isSecureRequest: () => false,
     getOwnerSession: () => ({ v: 3 as const, mqttUsername, exp: Date.now() + 60_000, gen: 0 }),
-    requireOwnerSession: async () => [nodeId],
+    requireOwnerSession,
     getOwnerCredentialGeneration: async () => 0,
     invalidateOwnerNodeIdCache: () => undefined,
     query,
@@ -56,6 +57,7 @@ async function withOwnerApi(
   selectedDestinationRows: QueryResultRow[] = [{ destination_id: 'remote-site' }],
   mqttUsername = 'node1',
   destinationRows: QueryResultRow[] = [destination],
+  requireOwnerSession?: (req: import('express').Request, res: import('express').Response) => Promise<string[] | null>,
 ) {
   const writes: string[] = [];
   const router = Router();
@@ -75,7 +77,7 @@ async function withOwnerApi(
       return { rows: selectedDestinationRows };
     }
     return query(sql, params);
-  }, mqttUsername));
+  }, mqttUsername, requireOwnerSession));
   const app = express();
   app.use(express.json());
   app.use('/api', router);
@@ -176,6 +178,26 @@ test('owner packet-sharing settings are available to every authenticated owner a
     server.closeAllConnections();
     await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   }
+});
+
+test('owner packet-sharing rejects nodes outside the authenticated session', async () => {
+  await withOwnerApi(async () => ({ rows: [] }), async (baseUrl, writes) => {
+    const response = await fetch(`${baseUrl}/api/owner/packet-sharing?nodeId=${'B'.repeat(64)}`);
+    assert.equal(response.status, 403);
+    assert.deepEqual(await response.json(), { error: 'Node is not owned by this session' });
+    assert.equal(writes.length, 0);
+  });
+});
+
+test('owner packet-sharing requires an authenticated session', async () => {
+  await withOwnerApi(async () => ({ rows: [] }), async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/owner/packet-sharing`);
+    assert.equal(response.status, 401);
+    assert.deepEqual(await response.json(), { error: 'Unauthorized' });
+  }, [{ destination_id: 'remote-site' }], 'node1', [destination], async (_req, res) => {
+    res.status(401).json({ error: 'Unauthorized' });
+    return null;
+  });
 });
 
 const scotmesh = {

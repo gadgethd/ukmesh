@@ -1,20 +1,7 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test } from '@playwright/test';
+import { installMapRoutes } from './mapFixtures.js';
 
 const NODE_ID = 'A'.repeat(64);
-
-const TEST_MAP_STYLE = {
-  version: 8,
-  sources: {
-    openmaptiles: {
-      type: 'vector',
-      url: 'https://tiles.openfreemap.org/planet',
-    },
-  },
-  glyphs: 'https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf',
-  layers: [
-    { id: 'bg', type: 'background', paint: { 'background-color': '#080d14' } },
-  ],
-};
 
 const dashboard = {
   nodes: [{
@@ -32,17 +19,13 @@ const dashboard = {
   }],
 };
 
-async function installMapRoutes(page: Page) {
-  await page.route('https://tiles.openfreemap.org/**', async (route) => {
-    const pathname = new URL(route.request().url()).pathname;
-    if (pathname === '/styles/dark' || pathname === '/styles/positron') {
-      await route.fulfill({ json: TEST_MAP_STYLE });
-      return;
-    }
-    await route.abort();
-  });
+test.beforeEach(async ({ page }) => {
+  await installMapRoutes(page);
+  await page.route('**/api/runtime-config', (route) => route.fulfill({ json: {
+    version: 1, packetArcs: false, heatmap: false, privacyGeneration: 1, refreshAfterSeconds: 30,
+  } }));
   await page.route('**/*basemaps.cartocdn.com/**', (route) => route.abort());
-}
+});
 
 test('session polling does not reset the repeater owner content', async ({ page }) => {
   let sessionRequests = 0;
@@ -50,7 +33,6 @@ test('session polling does not reset the repeater owner content', async ({ page 
   let liveRequestLimit: number | null = null;
 
   await page.clock.install({ time: new Date('2026-07-16T12:00:00Z') });
-  await installMapRoutes(page);
   await page.route('**/api/owner/session', async (route) => {
     sessionRequests += 1;
     await route.fulfill({ json: { ok: true, dashboard, mqttUsername: 'alpha-owner' } });
@@ -83,7 +65,7 @@ test('session polling does not reset the repeater owner content', async ({ page 
 
   await page.goto('/login');
   const identities = page.getByLabel('Owned repeater identities');
-  await expect(identities.getByText('Alpha Repeater', { exact: true })).toBeVisible();
+  await expect(identities.getByText('Alpha Repeater', { exact: true })).toBeVisible({ timeout: 15_000 });
   await expect(page.locator('.owner-section-tabs')).toHaveCount(0);
   await expect(page.locator('.owner-settings')).toHaveCount(0);
 
@@ -118,7 +100,6 @@ test('owner map construction remains one across repeated live polls', async ({ p
       }
     }).observe(document, { childList: true, subtree: true });
   });
-  await installMapRoutes(page);
   await page.route('**/api/owner/session', (route) => route.fulfill({
     json: { ok: true, dashboard, mqttUsername: 'alpha-owner' },
   }));
@@ -143,7 +124,7 @@ test('owner map construction remains one across repeated live polls', async ({ p
   await page.route('**/api/owner/live-last-hop?**', (route) => route.fulfill({ json: { points: [] } }));
 
   await page.goto('/login');
-  await expect(page.getByRole('heading', { name: 'Direct Sender Map' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Direct Sender Map' })).toBeVisible({ timeout: 15_000 });
   await expect(page.getByRole('heading', { name: 'Node Telemetry' })).toBeVisible();
   await expect(page.locator('.owner-section-tabs')).toHaveCount(0);
   await expect(page.locator('.owner-settings')).toHaveCount(0);

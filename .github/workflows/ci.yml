@@ -4,6 +4,8 @@ on:
   push:
     branches: ['**']
   pull_request:
+  schedule:
+    - cron: '17 4 * * *'
 
 permissions:
   contents: read
@@ -14,6 +16,7 @@ concurrency:
 
 jobs:
   backend:
+    if: github.event_name != 'schedule'
     name: Backend
     runs-on: ubuntu-latest
     services:
@@ -58,10 +61,16 @@ jobs:
       - run: npm run contract:check
       - run: npm test
       - run: npm run test:analysis-integration
+      - name: Configure bounded RAM Redis fixture
+        run: |
+          docker exec '${{ job.services.redis.id }}' redis-cli CONFIG SET maxmemory 96mb
+          docker exec '${{ job.services.redis.id }}' redis-cli CONFIG SET maxmemory-policy noeviction
       - run: npm run test:ingest-integration
       - run: npm run build
+      - run: npm run test:ram-operational
 
   frontend:
+    if: github.event_name != 'schedule'
     name: Frontend
     runs-on: ubuntu-latest
     defaults:
@@ -81,6 +90,7 @@ jobs:
       - run: npm run build
 
   workers-and-compose:
+    if: github.event_name != 'schedule'
     name: Workers and Compose
     runs-on: ubuntu-latest
     env:
@@ -186,6 +196,12 @@ jobs:
                 | index("max_worker_processes=24") != null)
               and (.networks.default.ipam.config[0].ip_range
                 == "172.30.0.128/25")' >/dev/null
+          MQTT_INGEST_MODE=ram MQTT_RAM_BATCH_SIZE=37 \
+            docker compose -f docker-compose.yml -f docker-compose.ci.yml config --format json \
+            | jq -e '
+              .services.backend.environment.MQTT_INGEST_MODE == "ram"
+              and .services.backend.environment.MQTT_RAM_BATCH_SIZE == "37"
+              and .services.backend.environment.MQTT_RAM_QUEUE_MAX_BYTES == "33554432"' >/dev/null
       - name: Validate tracked build and Compose inventory
         run: |
           while IFS= read -r context; do
@@ -198,7 +214,7 @@ jobs:
           done < <(sed -n 's/^[[:space:]]*file: //p' .github/workflows/release.yml)
           compose_services="$(docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile dev config --services)"
           for service in \
-            db-migrate backend app-ukmesh website-ukmesh website-dev mesh-health-check \
+            db-migrate backend privacy-remat-worker app-ukmesh website-ukmesh website-dev mesh-health-check \
             mosquitto-reloader link-worker link-backfill-worker hopreach \
             timescaledb mosquitto; do
             grep -Fxq "$service" <<<"$compose_services"
@@ -209,13 +225,6 @@ jobs:
           publisher_user="ci-e2e-publisher"
           publisher_password="ci-e2e-publisher-password"
           observer="CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"
-          cleanup() {
-            docker compose -f docker-compose.yml -f docker-compose.ci.yml \
-              --project-name "$project" \
-              --profile dev \
-              down --volumes --remove-orphans
-          }
-          trap cleanup EXIT
           # Create each Argon2 entry independently. Updating an existing
           # password file with this image is not reliable on hosted runners.
           docker run --rm \
@@ -361,10 +370,19 @@ jobs:
           grep -q '^mqtt-packet-fanout-ok$' "$ws_log"
       - name: Install Playwright for E2E tests
         working-directory: frontend
-        run: npx playwright install --with-deps chromium
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
       - name: Run E2E tests against live stack
         working-directory: frontend
         run: npm run test:e2e
+      - name: Clean up live E2E stack
+        if: always()
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.ci.yml \
+            --project-name "meshcore-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --profile dev \
+            down --volumes --remove-orphans
       - name: Validate monitoring configuration
         run: |
           docker run --rm \
@@ -391,6 +409,8 @@ jobs:
         run: scripts/test-vacuum-maintenance.sh
       - name: Test immutable release rollback and schema compatibility gates
         run: scripts/test-replace-container.sh
+      - name: Test split infrastructure resolver dry run
+        run: scripts/test-infra-compose.sh
 
   secrets:
     name: Secret scan
@@ -403,3 +423,7 @@ jobs:
         uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_VERSION: 8.30.0
+      - name: Scan full repository history on push and pull request
+        if: github.event_name != 'schedule'
+        run: gitleaks git --redact --no-banner --log-opts=--all

@@ -29,8 +29,18 @@ dead-letter reason.
 
 Alertmanager groups by alert name/severity, sends firing and resolved events to
 the internal receiver, and retains its own state for 120 hours. The receiver
-stores bounded, rotated summaries in `alert_receiver_data`; optional forwarding
-uses `ALERT_FORWARD_URL`.
+stores bounded, rotated summaries in `alert_receiver_data`. When
+`ALERT_FORWARD_URL` is configured, the receiver fsyncs each forwarding record
+into `alerts.jsonl.queue` before returning HTTP 202, then retries with bounded
+backoff and moves exhausted deliveries into a `.dead.json` record. Pending items
+and the last successful delivery time survive receiver restarts.
+
+If `ALERT_FORWARD_URL` is unset or invalid, the receiver operates in archive-only
+mode. It still accepts alerts after the local receipt is persisted, but both
+`/healthz` and `/readyz` return 503 so Compose and operators see degraded
+delivery. Health JSON includes `pending_count`, `queue_oldest_age_seconds`,
+`dead_letter_count`, `last_success_at`, and `last_error`. Resolve any dead-letter
+or aged-queue condition before treating a firing alert as delivered.
 
 ```bash
 docker compose exec -T alertmanager amtool \

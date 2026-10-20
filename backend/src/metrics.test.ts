@@ -19,6 +19,7 @@ const ALLOWED_LABEL_NAMES = new Set([
   'state',
   'status',
   'status_class',
+  'table',
   'kind',
   'major',
   'minor',

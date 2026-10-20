@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { defineConfig, type Plugin } from 'vite';
@@ -11,22 +11,21 @@ import viteSeoPlugin from './src/plugins/vite-seo.js';
  * worker asset is ever emitted. At runtime the browser requests
  * /assets/maplibre-gl-worker.mjs (which imports ./maplibre-gl-shared.mjs),
  * both 404 (nginx SPA fallback serves HTML), and the map renders dead (no
- * tiles, no node dots). Emit every .mjs from the maplibre dist so the runtime
- * requests resolve.
+ * tiles, no node dots). Emit the production worker and its shared module so
+ * the runtime requests resolve. The main module is already bundled by Vite;
+ * the development builds are not runtime dependencies of this worker.
  */
 function maplibreWorkerPlugin(): Plugin {
   return {
     name: 'maplibre-worker-emit',
     generateBundle() {
       const distDir = fileURLToPath(new URL('./node_modules/maplibre-gl/dist', import.meta.url));
-      for (const file of readdirSync(distDir)) {
-        if (file.endsWith('.mjs') && !file.endsWith('.map')) {
-          this.emitFile({
-            type: 'asset',
-            fileName: `assets/${file}`,
-            source: readFileSync(join(distDir, file)),
-          });
-        }
+      for (const file of ['maplibre-gl-worker.mjs', 'maplibre-gl-shared.mjs']) {
+        this.emitFile({
+          type: 'asset',
+          fileName: `assets/${file}`,
+          source: readFileSync(join(distDir, file)),
+        });
       }
     },
   };

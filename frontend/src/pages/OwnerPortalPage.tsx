@@ -26,6 +26,8 @@ import {
   lastHopSeriesCache,
   linkBadge,
   nodeRoleLabel,
+  ownerLoginCredentials,
+  ownerLoginValidationError,
   publishOwnerSession,
   type LastHopStrengthPoint,
   type LastHopWindow,
@@ -190,13 +192,14 @@ export const OwnerPortalPage: React.FC = () => {
 
   const handleLogin = (event: FormEvent) => {
     event.preventDefault();
-    if (!mqttUsername.trim() || !mqttPassword) {
-      setError('Enter your MQTT username and password.');
+    const validationError = ownerLoginValidationError(mqttUsername, mqttPassword);
+    if (validationError) {
+      setError(validationError);
       return;
     }
     setSubmitting(true);
     setError(null);
-    const loginUsername = mqttUsername.trim();
+    const credentials = ownerLoginCredentials(mqttUsername, mqttPassword);
     fetchOwnerCsrfToken()
       .then((csrfToken) => fetchJson<OwnerSessionResponse>('/api/owner/login', {
           method: 'POST',
@@ -204,10 +207,7 @@ export const OwnerPortalPage: React.FC = () => {
             'Content-Type': 'application/json',
             'X-CSRF-Token': csrfToken,
           },
-          body: JSON.stringify({
-            mqttUsername: loginUsername,
-            mqttPassword,
-          }),
+          body: JSON.stringify(credentials),
         }, {
           timeoutMs: 15_000,
           maxBytes: 2 * 1024 * 1024,
@@ -217,8 +217,8 @@ export const OwnerPortalPage: React.FC = () => {
       .then((json) => {
         lastHopSeriesCache.clear();
         setDashboard(json.dashboard);
-        setOwnerSessionKey(json.mqttUsername ?? loginUsername);
-        publishOwnerSession(json.mqttUsername ?? loginUsername);
+        setOwnerSessionKey(json.mqttUsername ?? credentials.mqttUsername);
+        publishOwnerSession(json.mqttUsername ?? credentials.mqttUsername);
         if (json.dashboard.nodes[0]?.node_id) {
           setSelectedNodeId(json.dashboard.nodes[0].node_id);
         }
