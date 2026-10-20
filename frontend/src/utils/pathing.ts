@@ -131,6 +131,13 @@ export function resolvePathWaypoints(
     );
     if (candidates.length === 0) continue;
 
+    // A 1-byte (2 hex char) prefix matches dozens of live nodes; picking any
+    // single candidate here would assert a relay identity the packet cannot
+    // evidence. Leave the hop unresolved instead, matching the evidence rule
+    // the lazy/beta path resolvers apply. Multi-byte prefixes keep the
+    // nearest-candidate pick.
+    if (prefix.length <= 2 && candidates.length > 1) continue;
+
     let best = candidates[0]!;
     if (candidates.length > 1) {
       if (src) {

@@ -10,6 +10,7 @@ export type PublicRouteComponent =
   | 'stats'
   | 'spam'
   | 'topology'
+  | 'regions'
   | 'contact'
   | 'privacy';
 
@@ -114,7 +115,13 @@ export const PUBLIC_ROUTES: readonly PublicRouteDefinition[] = [
     description: 'Log in to manage your MeshCore repeater node on the UK Mesh network.',
     sitemap: false,
   },
-  { path: '/regions', redirectTo: '/', sitemap: false },
+  {
+    path: '/regions',
+    component: 'regions',
+    title: 'Regions — UK Mesh Network',
+    description: 'MeshCore region scoping on the UK mesh: which regions carry scoped flood traffic, the repeaters relaying it, and their observed regional footprints.',
+    sitemap: true,
+  },
   { path: '/about', redirectTo: '/', sitemap: false },
   { path: '/mqtt', redirectTo: '/install', sitemap: false },
 ] as const;

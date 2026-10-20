@@ -9,6 +9,7 @@ import {
   type BetaSharedDecode,
 } from './sharedDecoder.js';
 import type { BetaResolveContext, MeshNode, PathPacket } from './types.js';
+import { buildChampionPriors } from './championPriors.js';
 
 const meshNode = (node_id: string, lat: number, lon: number, iata: string | null = null): MeshNode => ({
   node_id,
@@ -19,6 +20,79 @@ const meshNode = (node_id: string, lat: number, lon: number, iata: string | null
   role: 2,
   elevation_m: null,
   last_seen: null,
+});
+
+test('source and learned route-position evidence resolve an otherwise equal one-byte collision', () => {
+  const source = meshNode('SRC', 51, 1);
+  const good = meshNode('AA01', 51.1, 1);
+  const other = meshNode('AA02', 51.1, 1);
+  const observer = entry('RX', ['AA']);
+  observer.rx = meshNode('RX', 51.2, 1);
+  observer.packet.src_node_id = source.node_id;
+  const ctx = context([source, other, good, observer.rx]);
+  ctx.learningModel.champion = buildChampionPriors({
+    positionPrefixes: [{ prefix: 'AA', position: 0, node_id: good.node_id, count: 10 }],
+    corridors: [{ src_node_id: 'SRC', rx_node_id: 'RX', position: 0, node_id: good.node_id, count: 4 }],
+    transitions: [{ from_node_id: 'SRC', to_node_id: good.node_id, count: 10 }],
+    positionTransitions: [{ position: 0, from_node_id: 'SRC', to_node_id: good.node_id, count: 10 }],
+  });
+  assert.equal(decodeBetaCanonicalGroup({ canonicalHashes: ['AA'], members: [observer] }, ctx).hops.get(0)?.nodeId, good.node_id);
+});
+
+test('confirmed identities survive missing coordinates and terrain disagreement', () => {
+  const absent = meshNode('AA0001', 0, 0);
+  const remote = meshNode('BB0002', 57, 1);
+  const observer = entry('RX', ['AA0001', 'BB0002']);
+  observer.rx = meshNode('RX', 51, 1);
+  const ctx = context([absent, remote, observer.rx]);
+  const result = decodeBetaCanonicalGroup({ canonicalHashes: observer.hops, members: [observer] }, ctx);
+  assert.deepEqual([...result.hops.values()].map((hop) => hop.nodeId), ['AA0001', 'BB0002']);
+  assert.equal(result.hops.get(0)?.lat, null);
+  assert.equal(result.hops.get(0)?.lon, null);
+});
+
+test('later evidence can refine a held hop at the beginning of a long route', () => {
+  const nodes = ['AA01', 'AA02', 'BB01', 'CC01', 'DD01'].map((id) => meshNode(id, 51, 1));
+  const observer = entry('RX', ['AA', 'BB', 'CC', 'DD']);
+  observer.rx = meshNode('RX', 51.1, 1);
+  const ctx = context([...nodes, observer.rx]);
+  ctx.learningModel.prefixProbabilities.set('unknown|AA||AA02', 1);
+  const result = decodeBetaCanonicalGroupWithHeldPath({ canonicalHashes: observer.hops, members: [observer] }, ctx,
+    ['AA01', 'BB01', 'CC01', 'DD01']);
+  assert.equal(result.refined, true);
+  assert.equal(result.hops.get(0)?.nodeId, 'AA02');
+});
+
+test('a missing-position candidate needs a real directed edge to its observer', () => {
+  const missing = meshNode('AA01', 0, 0);
+  const plausible = meshNode('AA02', 51.1, 1);
+  const observer = entry('RX', ['AA']);
+  observer.rx = meshNode('RX', 51.2, 1);
+  const ctx = context([missing, plausible, observer.rx]);
+  const rows = {
+    positionPrefixes: [{ prefix: 'AA', position: 0, node_id: 'AA01', count: 1000 }],
+    corridors: [], transitions: [], positionTransitions: [],
+  };
+  ctx.learningModel.champion = buildChampionPriors(rows);
+  assert.equal(decodeBetaCanonicalGroup({ canonicalHashes: ['AA'], members: [observer] }, ctx).hops.get(0)?.nodeId, 'AA02');
+  ctx.learningModel.champion = buildChampionPriors({ ...rows, transitions: [{ from_node_id: 'AA01', to_node_id: 'RX', count: 10 }] });
+  const hop = decodeBetaCanonicalGroup({ canonicalHashes: ['AA'], members: [observer] }, ctx).hops.get(0);
+  assert.equal(hop?.nodeId, 'AA01');
+  assert.equal(hop?.lat, null);
+});
+
+test('a relay sharing the source prefix does not erase the source endpoint', () => {
+  const source = meshNode('AA0001', 51, 1);
+  const relay = meshNode('AA0002', 51.1, 1);
+  const observer = entry('RX', ['AA']);
+  observer.rx = meshNode('RX', 51.2, 1);
+  const ctx = context([source, relay, observer.rx]);
+  const decoded: BetaSharedDecode = {
+    canonicalHashes: ['AA'], hopConfidences: new Map([[0, 1]]),
+    hops: new Map([[0, { hash: 'AA', nodeId: relay.node_id, name: relay.name, lat: relay.lat, lon: relay.lon, margin: 1, ambiguous: false }]]),
+  };
+  assert.deepEqual(projectCanonicalPathForObserver(observer, decoded, ctx, source).purplePath,
+    [[51, 1], [51.1, 1], [51.2, 1]]);
 });
 
 function packet(rx_node_id: string, path_hashes: string[], packet_type = 0): PathPacket {

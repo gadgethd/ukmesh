@@ -118,7 +118,7 @@ export function registerExportRoutes(router: Router, deps: Deps): void {
         role: number | null; iata: string | null; last_seen: string | null; hardware_model: string | null;
       }>(
         `SELECT node_id, name, lat, lon, role, iata, last_seen::text, hardware_model
-         FROM node_identity_nodes
+         FROM node_identity_nodes AS nodes
          WHERE lat IS NOT NULL AND lon IS NOT NULL
            AND (name IS NULL OR name NOT LIKE '%🚫%')
            ${filters.nodes}

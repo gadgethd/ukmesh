@@ -16,6 +16,7 @@ import {
   decodePlannedNodeCursor,
   listPublicPlannedNodes,
 } from '../../repositories/plannedNodes.js';
+import { readRecentWithPending } from '../../ram/liveRead.js';
 
 type QueryFn = <T extends QueryResultRow = QueryResultRow>(
   text: string,
@@ -27,6 +28,9 @@ type GetRecentPacketsFn = (
   network?: string,
   observer?: string,
   fields?: 'full' | 'slim',
+  signal?: AbortSignal,
+  readQuery?: QueryFn,
+  overlapHashes?: string[],
 ) => Promise<unknown>;
 type GetRecentPacketEventsFn = (
   limit: number,
@@ -107,7 +111,12 @@ export function registerMiscRoutes(router: Router, deps: MiscRouteDeps): void {
       const observer = normalizeObserverQuery(req.query['observer']);
       const packets = raw
         ? await getRecentPacketEvents(limit, network, observer, region)
-        : await getRecentPackets(limit, network, observer, fields);
+        : await readRecentWithPending(
+            (overlapHashes) => getRecentPackets(
+              limit, network, observer, fields, AbortSignal.timeout(30_000), undefined, overlapHashes,
+            ) as Promise<Record<string, unknown>[]>,
+            { limit, network, observer, fields },
+          );
       res.json(packets);
     } catch (err) {
       console.error('[api] GET /packets/recent', (err as Error).message);

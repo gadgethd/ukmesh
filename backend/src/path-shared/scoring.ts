@@ -1,16 +1,14 @@
 /**
  * Shared scoring weights and prior key-formats for the path resolvers.
  *
- * The shared decoder scores candidate hops with prefix/transition/edge/motif
- * priors, ML scores, node_links, and hop distance. The lazy resolver uses it
- * today; the beta resolvers will adopt it in later extraction phases.
+ * All production path surfaces use the shared decoder and count-based
+ * multibyte priors, observer anchors, geographic and terrain evidence.
  *
  * This module is the single source of truth for:
  *   - the prior key formats (must match how `path-learning/rebuild.ts` stores them);
  *   - the relative scoring weights used by the Viterbi decoder.
  *
- * `path-beta/resolver.ts` predates this module and still has its own inline
- * weights; later phases will converge it here. New code should import from here.
+ * Evidence providers should import this table rather than duplicating weights.
  */
 
 /** Generous but realistic upper bound for a single LoRa hop, in km. */

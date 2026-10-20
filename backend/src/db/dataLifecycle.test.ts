@@ -49,6 +49,7 @@ function receiptEnvironment(restoreVerifiedAt = '2026-07-28T12:00:00.000Z') {
 
 test('data lifecycle targets are closed and destructive gates fail closed', () => {
   assert.equal(lifecyclePolicy('packets').retention, '30 days');
+  assert.equal(lifecyclePolicy('owner_packet_share_deliveries').retention, '30 days');
   assert.equal(lifecyclePolicy('node_neighbor_samples').retention, '7 days');
   assert.equal(compressionPolicy('packets').compressAfter, '14 days');
   assert.equal(compressionPolicy('packet_paths').compressAfter, '14 days');

@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { query } from '../db/index.js';
 import {
   getOwnerAuthorizationSnapshot,
   saveOwnerAclArtifact,
@@ -14,6 +15,10 @@ import {
   writeAclAtomically,
 } from '../mqtt/aclManager.js';
 import { ownerGrantConfigGeneration, parseOwnerGrantConfig } from './ownerGrantConfig.js';
+import { getPublicFeedConfig } from './publicFeedConfig.js';
+import {
+  getActivePublicFeedReaderUsernames,
+} from './publicFeedRepository.js';
 
 export type OwnerAclMode = 'shadow' | 'apply';
 
@@ -37,6 +42,20 @@ function allowedEmptyAclUsers(): string[] {
     .filter(Boolean);
 }
 
+function configuredPublicFeedReaders(): string[] {
+  return String(process.env['OWNER_ACL_PUBLIC_FEED_READ_USERS'] ?? '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+function systemReadwriteAclTopics(): string[] {
+  return String(process.env['OWNER_ACL_SYSTEM_READWRITE_TOPICS'] ?? 'public/#')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
 let inFlight: Promise<void> | null = null;
 let reconcileTimer: NodeJS.Timeout | null = null;
 
@@ -49,16 +68,42 @@ export function reconcileOwnerAuthorization(): Promise<void> {
     await syncOperatorConfiguredOwnerGrants(configured, configGeneration);
 
     const snapshot = await getOwnerAuthorizationSnapshot();
+    const publicFeedConfig = getPublicFeedConfig();
+    const publicFeedReaders = publicFeedConfig.configured
+      ? await getActivePublicFeedReaderUsernames(query)
+      : new Set<string>();
+    const explicitPublicFeedReaders = configuredPublicFeedReaders();
+    const explicitPublicFeedReaderSet = new Set(explicitPublicFeedReaders);
+    const grants = snapshot.map((account) => {
+      const publicFeedRead = explicitPublicFeedReaderSet.has(account.mqttUsername)
+        || (account.isActive && publicFeedReaders.has(account.mqttUsername));
+      return {
+        mqttUsername: account.mqttUsername,
+        nodeIds: account.isActive ? account.nodeIds : [],
+        ...(publicFeedRead ? { publicFeedRead: true } : {}),
+      };
+    });
+    const snapshotUsernames = new Set(grants.map((grant) => grant.mqttUsername));
+    for (const mqttUsername of explicitPublicFeedReaders) {
+      if (snapshotUsernames.has(mqttUsername)) continue;
+      // An explicit subscriber is managed even when the public feed is
+      // temporarily empty or disabled. That removes any stale broad ACL and
+      // leaves the account read-only with no topic access until a node is
+      // explicitly opted in and active.
+      grants.push({
+        mqttUsername,
+        nodeIds: [],
+        publicFeedRead: true,
+      });
+    }
     const currentContent = readAclFile();
     const rendered = renderOwnerAcl(
       currentContent,
-      snapshot.map((account) => ({
-        mqttUsername: account.mqttUsername,
-        nodeIds: account.isActive ? account.nodeIds : [],
-      })),
+      grants,
       unmanagedAclUsers(),
-      allowedEmptyAclUsers(),
+      [...allowedEmptyAclUsers(), ...explicitPublicFeedReaders],
       [String(process.env['MQTT_USERNAME'] ?? 'backend').trim() || 'backend'],
+      systemReadwriteAclTopics(),
     );
     await updateOwnerAclState({ desiredGeneration: rendered.generation });
     await saveOwnerAclArtifact({

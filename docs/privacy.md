@@ -36,6 +36,7 @@ The service stores radio traffic observed on the MeshCore network.
 |---|---|---|
 | `packets` — message content + raw bytes + metadata | **at most 30 days** (Timescale chunk policy + bounded exact-row boundary cleanup) | network diagnostics; content is not kept long-term |
 | `packet_decryptions` — full decrypted messages | **30 days** (operational retention loop) | diagnostics only |
+| `owner_packet_share_deliveries` — validated packet payload and delivery metadata | **30 days after terminal delivery** (operational retention loop) | durable site-to-site delivery and deduplication; retryable rows remain until terminal |
 | `packet_paths` — path metadata (node IDs, timing, signal, hashes) | **indefinite, content-stripped** | raw pathing analytics is the product |
 | `multibyte_path_facts`, `multihop_paths_weekly`, `path_*_priors` — derived path stats | indefinite | derived, pseudonymous |
 | `packet_daily_stats` / `packet_hourly_stats` | indefinite | anonymous aggregates |

@@ -64,6 +64,7 @@ import radioRoutes from './routes/radio.js';
 import { registerCoverageRoutes } from './routes/coverage.js';
 import { registerPlannedCoverageRoutes } from './routes/plannedCoverage.js';
 import { registerOwnerRoutes } from './routes/owner.js';
+import { reconcileOwnerAuthorization } from '../owner/ownerAclReconciler.js';
 import { registerPathingRoutes } from './routes/pathing.js';
 import { registerStatsRoutes } from './routes/stats.js';
 import { registerTelemetryRoutes } from './routes/telemetry.js';
@@ -71,6 +72,7 @@ import { createNodeRepository } from '../repositories/nodes.js';
 import { createPlannedCoverageRepository } from '../repositories/plannedCoverage.js';
 import { registerSpamRoutes } from './routes/spam.js';
 import { registerTopologyRoutes } from './routes/topology.js';
+import { registerRegionsRoutes } from './routes/regions.js';
 import { registerActivityTimelineRoutes } from './routes/activityTimeline.js';
 import { registerRfValidationRoutes } from './routes/rfValidation.js';
 import { registerExportRoutes } from './routes/exports.js';
@@ -215,6 +217,7 @@ registerOwnerRoutes(router, {
   requireOwnerSession,
   getOwnerCredentialGeneration,
   invalidateOwnerNodeIdCache,
+  reconcileOwnerAuthorization,
   query,
   withTransaction,
 });
@@ -252,6 +255,11 @@ registerTopologyRoutes(router, {
   query,
   networkFilters,
   getPublicVisibilityGeneration,
+  limiter: EXPENSIVE_LIMITER,
+});
+registerRegionsRoutes(router, {
+  query,
+  networkFilters,
   limiter: EXPENSIVE_LIMITER,
 });
 registerActivityTimelineRoutes(router, {

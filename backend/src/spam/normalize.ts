@@ -111,3 +111,53 @@ export function normalizeUsername(input: string | null | undefined): string {
   name = collapseRepeats(name);
   return name.replace(/\s+/g, ' ').trim();
 }
+
+/**
+ * Heuristic: does a display name look machine-generated (a keygen-style random
+ * token) rather than a human handle? One signal among several for
+ * rotating-identity botnet detection — never sufficient on its own.
+ *
+ * Observed botnet style: separator-free base32-ish tokens such as
+ * "0CYT64KV", "1KG3RWU7", "43DBCEEF5C", "5ZA1J31M", "16V0OP2W".
+ * Human / amateur-radio handles ("M7GQW", "MU6GBG", "2E0ABC", "Rob M7JCN V3",
+ * "Dave-S75", "Grog 🚲") must NOT match: composite names carry separators and
+ * callsigns keep a single digit next to letters.
+ */
+export function looksMachineGeneratedName(input: string | null | undefined): boolean {
+  const raw = (input ?? '').normalize('NFKC').trim();
+  if (raw.length === 0) return false;
+
+  // Strip pictographic decoration, then require a single alphanumeric token:
+  // any remaining separator/punctuation marks the name as composite (human).
+  const stripped = raw
+    .replace(/[\p{Extended_Pictographic}\uFE0F\u200D]/gu, '')
+    .trim();
+  if (stripped.length === 0) return false;
+  if (/[^A-Za-z0-9]/.test(stripped)) return false;
+
+  const compact = stripped;
+  if (compact.length < 6 || compact.length > 14) return false;
+
+  const upper = compact.toUpperCase();
+  const letterChars = compact.replace(/[^A-Za-z]/g, '');
+  const letters = upper.replace(/[^A-Z]/g, '');
+  const digits = upper.replace(/[^0-9]/g, '');
+  // At least one digit and mostly-uppercase token (keygen style); human-ish
+  // mixed case is rejected. One digit is enough — the botnet also uses
+  // single-digit ids like "BKGL7DMF"; callsign shapes are excluded below.
+  if (letters.length < 3 || digits.length === 0) return false;
+
+  // Mostly-uppercase token (keygen style); human-ish mixed case is rejected.
+  const upperCount = (letterChars.match(/[A-Z]/g) ?? []).length;
+  if (upperCount / letterChars.length < 0.7) return false;
+
+  // Amateur-callsign shapes (M7GQW, G0SYR, MU6GBG, 2E0ABC, GW4ABC) are human.
+  if (/^[A-Z]{1,3}[0-9][A-Z]{1,4}$/.test(upper)) return false;
+  if (/^[0-9][A-Z][0-9][A-Z]{1,3}$/.test(upper)) return false;
+
+  // Keygen strings are vowel-poor.
+  const vowels = (letters.match(/[AEIOUY]/g) ?? []).length;
+  if (vowels / letters.length > 0.34) return false;
+
+  return true;
+}

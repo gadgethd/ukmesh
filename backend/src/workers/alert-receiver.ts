@@ -208,6 +208,8 @@ async function deadLetter(receipt: AlertReceipt, reason: string): Promise<void> 
 
 /** Enqueue a receipt for durable forwarding with bounded retries. */
 function enqueueForward(receipt: AlertReceipt): void {
+  // Archiving is still useful when unconfigured, but it is not a delivery.
+  if (!FORWARD_URL) return;
   const key = `${receipt.alert_names.join(',')}:${receipt.received_at}`;
   if (delivery.has(key) && delivery.get(key)!.pending) return; // already in flight
   delivery.set(key, { attempts: 0, lastAttempt: 0, pending: true });
@@ -251,7 +253,7 @@ function deliveryHealth(): { degraded: boolean; detail: string } {
   if (stuck.length > 0) {
     return { degraded: true, detail: `${stuck.length} alert(s) undelivered for over 5 minutes` };
   }
-  return { degraded: false, detail: `delivering to ${FORWARD_URL}` };
+  return { degraded: false, detail: 'forwarding configured; successful delivery recorded' };
 }
 
 function json(res: ServerResponse, statusCode: number, payload: unknown): void {
@@ -266,9 +268,8 @@ function json(res: ServerResponse, statusCode: number, payload: unknown): void {
 const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && (req.url === '/healthz' || req.url === '/readyz')) {
     const health = deliveryHealth();
-    // /healthz always 200 so the compose healthcheck (wget -qO-) never
-    // restarts the container for degraded delivery; /readyz returns 503 so
-    // orchestrators/operators can see real readiness.
+    // Liveness stays independent of delivery. Compose checks /readyz so
+    // archive-only or unproven delivery cannot produce a healthy indicator.
     const degraded = req.url === '/readyz' && health.degraded;
     json(res, degraded ? 503 : 200, { status: health.degraded ? 'degraded' : 'ok', detail: health.detail });
     return;
@@ -302,8 +303,11 @@ function shutdown(signal: string): void {
 const isMain = process.argv[1] !== undefined
   && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isMain) {
+  if (!FORWARD_URL) {
+    console.warn('[alert-receiver] DEGRADED: ALERT_FORWARD_URL is unset or invalid; forwardConfigured=false; alerts will be archived only; /readyz returns 503');
+  }
   server.listen(PORT, '0.0.0.0', () => {
-    console.log(`[alert-receiver] listening on internal port ${PORT}`);
+    console.log(`[alert-receiver] listening on internal port ${PORT}; forwardConfigured=${Boolean(FORWARD_URL)}`);
   });
   process.once('SIGTERM', () => shutdown('SIGTERM'));
   process.once('SIGINT', () => shutdown('SIGINT'));

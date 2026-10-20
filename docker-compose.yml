@@ -90,16 +90,22 @@ services:
       OWNER_ACL_MODE: ${OWNER_ACL_MODE:-shadow}
       OWNER_ACL_UNMANAGED_USERS: ${OWNER_ACL_UNMANAGED_USERS:-backend,test,test2}
       OWNER_ACL_ALLOW_EMPTY_USERS: ${OWNER_ACL_ALLOW_EMPTY_USERS:-}
+      OWNER_ACL_PUBLIC_FEED_READ_USERS: ${OWNER_ACL_PUBLIC_FEED_READ_USERS:-}
+      OWNER_ACL_SYSTEM_READWRITE_TOPICS: ${OWNER_ACL_SYSTEM_READWRITE_TOPICS:-public/#}
       OWNER_AUTH_INVENTORY_BASELINE_PATH: ${OWNER_AUTH_INVENTORY_BASELINE_PATH:-}
       OWNER_ACL_SHADOW_PATH: /tmp/meshcore-owner-acl.shadow
       MOSQUITTO_ACL_PATH: /mosquitto/config/acl
       OWNER_ACL_RELOAD_URL: http://mosquitto-reloader:8080/reload
       OWNER_ACL_RELOAD_TOKEN: ${JWT_SECRET:?JWT_SECRET required}
       OWNER_COOKIE_SECRET: ${OWNER_COOKIE_SECRET:-}
-      OWNER_PACKET_SHARE_OWNER_USERNAMES: ${OWNER_PACKET_SHARE_OWNER_USERNAMES:-node1,gnomemoe}
       OWNER_PACKET_SHARE_ENCRYPTION_KEY: ${OWNER_PACKET_SHARE_ENCRYPTION_KEY:-}
       OWNER_PACKET_SHARE_POLL_INTERVAL_MS: ${OWNER_PACKET_SHARE_POLL_INTERVAL_MS:-5000}
       OWNER_PACKET_SHARE_BATCH_SIZE: ${OWNER_PACKET_SHARE_BATCH_SIZE:-25}
+      # The public feed is the authentication-locked UKmesh Mosquitto endpoint.
+      # The URL is display/configuration metadata; packets already flow through
+      # this broker, and opted-in owners receive a read-only ACL grant.
+      PUBLIC_FEED_PUBLISH_ENABLED: ${PUBLIC_FEED_PUBLISH_ENABLED:-false}
+      PUBLIC_FEED_BROKER_URL: ${PUBLIC_FEED_BROKER_URL:-}
       OPERATOR_SITE_TOKEN: ${OPERATOR_SITE_TOKEN:?OPERATOR_SITE_TOKEN required}
       TRUSTED_PROXY_PEERS: ${TRUSTED_PROXY_PEERS:-172.30.0.10,172.30.0.11,172.30.0.12}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3003,http://localhost:3004,https://ukmesh.com,https://www.ukmesh.com,https://app.ukmesh.com,https://test.ukmesh.com}
@@ -122,9 +128,21 @@ services:
       WS_INITIAL_STATE_DB_TIMEOUT_MS: ${WS_INITIAL_STATE_DB_TIMEOUT_MS:-30000}
       WS_INITIAL_STATE_MAX_BYTES: ${WS_INITIAL_STATE_MAX_BYTES:-16777216}
       MQTT_MAX_PAYLOAD_BYTES: ${MQTT_MAX_PAYLOAD_BYTES:-65536}
-      MQTT_INGEST_CONCURRENCY: ${MQTT_INGEST_CONCURRENCY:-8}
+      MQTT_INGEST_CONNECTIONS: ${MQTT_INGEST_CONNECTIONS:-1}
+      MQTT_INGEST_SHARE_GROUP: ${MQTT_INGEST_SHARE_GROUP:-meshcore-ingest}
+      MQTT_INGEST_FLUSH_MS: ${MQTT_INGEST_FLUSH_MS:-10}
       # The 30s lifecycle deadline reserves 25s for MQTT disconnect and queue drain.
-      MQTT_INGEST_QUEUE_MAX: ${MQTT_INGEST_QUEUE_MAX:-20000}
+      MQTT_INGEST_QUEUE_MAX: ${MQTT_INGEST_QUEUE_MAX:-1000}
+      MQTT_INGEST_MODE: ${MQTT_INGEST_MODE:-durable}
+      MQTT_RAM_BATCH_SIZE: ${MQTT_RAM_BATCH_SIZE:-100}
+      MQTT_RAM_MAX_AGE_MS: ${MQTT_RAM_MAX_AGE_MS:-120000}
+      MQTT_RAM_QUEUE_MAX_PACKETS: ${MQTT_RAM_QUEUE_MAX_PACKETS:-5000}
+      MQTT_RAM_QUEUE_MAX_BYTES: ${MQTT_RAM_QUEUE_MAX_BYTES:-33554432}
+      MQTT_RAM_STREAM_KEY: ${MQTT_RAM_STREAM_KEY:-meshcore:ingest:pending}
+      MQTT_RAM_CONSUMER_GROUP: ${MQTT_RAM_CONSUMER_GROUP:-ingest-writers}
+      MQTT_RAM_CONSUMER_NAME: ${MQTT_RAM_CONSUMER_NAME:-backend}
+      MQTT_RAM_DRAIN_DEADLINE_MS: ${MQTT_RAM_DRAIN_DEADLINE_MS:-600000}
+      MQTT_RAM_PUBLIC_READ_TOKEN: ${MQTT_RAM_PUBLIC_READ_TOKEN:-}
       PATH_RESOLVE_WORKERS: ${PATH_RESOLVE_WORKERS:-2}
       PATH_RESOLVE_BACKGROUND_QUEUE_MAX: ${PATH_RESOLVE_BACKGROUND_QUEUE_MAX:-128}
       PATH_RESOLVE_INTERACTIVE_QUEUE_MAX: ${PATH_RESOLVE_INTERACTIVE_QUEUE_MAX:-32}
@@ -263,9 +281,10 @@ services:
       DATABASE_SKIP_SCHEMA_INIT: "true"
       STALE_MQTT_OBSERVER_CLEANUP_DAYS: ${STALE_MQTT_OBSERVER_CLEANUP_DAYS:-30}
       STALE_MQTT_OBSERVER_CLEANUP_INTERVAL_MS: ${STALE_MQTT_OBSERVER_CLEANUP_INTERVAL_MS:-21600000}
+      PRIVACY_REMAT_MAX_ATTEMPTS: ${PRIVACY_REMAT_MAX_ATTEMPTS:-8}
       HEALTH_VOLUME_PATHS: database=/health-volumes/database=${HEALTH_DATABASE_BUDGET_BYTES:-322122547200},redis=/health-volumes/redis=${HEALTH_REDIS_BUDGET_BYTES:-4294967296},terrain=/health-volumes/terrain=${HEALTH_TERRAIN_BUDGET_BYTES:-53687091200},logs=/health-volumes/logs=${HEALTH_LOG_BUDGET_BYTES:-21474836480}
       DATA_LIFECYCLE_RETENTION_ENABLED: "true"
-      DATA_LIFECYCLE_RETENTION_TARGETS: ${DATA_LIFECYCLE_RETENTION_TARGETS:-packets,worker_health_snapshots,frontend_error_events,owner_alert_deliveries,owner_packet_share_deliveries,operational_check_results,observer_region_packet_sightings,observer_region_observer_sightings,link_job_commits,ml_model_variant_packet_results,packet_decryptions,observer_registration_requests,operator_audit_events}
+      DATA_LIFECYCLE_RETENTION_TARGETS: ${DATA_LIFECYCLE_RETENTION_TARGETS:-packets,worker_health_snapshots,frontend_error_events,owner_alert_deliveries,owner_packet_share_deliveries,public_feed_deliveries,operational_check_results,observer_region_packet_sightings,observer_region_observer_sightings,link_job_commits,ml_model_variant_packet_results,packet_decryptions,observer_registration_requests,operator_audit_events}
       NODE_ENV: production
     depends_on:
       db-migrate:
@@ -298,6 +317,32 @@ services:
       TAGGER_POLL_S: ${TAGGER_POLL_S:-5}
       TAGGER_CALL_FLOOR_S: ${TAGGER_CALL_FLOOR_S:-0.5}
       PYTHONDONTWRITEBYTECODE: "1"
+
+  privacy-remat-worker:
+    <<: [*internal-hosts, *application-hardening]
+    image: ${BACKEND_IMAGE:-meshcore-analytics-backend:local}
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+      args:
+        SOURCE_REVISION: ${SOURCE_REVISION:-local}
+    restart: always
+    logging: *json-log-limits
+    mem_limit: "512m"
+    memswap_limit: "512m"
+    command: ["node", "dist/workers/privacy-rematerialization.js"]
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}
+      DATABASE_APPLICATION_NAME: meshcore-privacy-remat
+      DATABASE_SKIP_SCHEMA_INIT: "true"
+      DATABASE_STATEMENT_TIMEOUT_MS: 900000
+      PRIVACY_REMAT_INTERVAL_MS: ${PRIVACY_REMAT_INTERVAL_MS:-120000}
+      PRIVACY_REMAT_MAX_ATTEMPTS: ${PRIVACY_REMAT_MAX_ATTEMPTS:-8}
+      PRIVACY_REMAT_CHUNK_PAUSE_MS: ${PRIVACY_REMAT_CHUNK_PAUSE_MS:-500}
+      NODE_ENV: production
+    depends_on:
+      db-migrate:
+        condition: service_completed_successfully
 
   synthetic-monitor:
     <<: [*internal-hosts, *application-hardening]

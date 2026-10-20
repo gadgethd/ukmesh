@@ -6,7 +6,11 @@ function signalValue(value: number | null, suffix: string): string {
   return `${value.toFixed(1)} ${suffix}`;
 }
 
-export const OwnerHeardNeighbors: React.FC<{ neighbors: HeardNeighbor[] }> = ({ neighbors }) => {
+export const OwnerHeardNeighbors: React.FC<{
+  neighbors: HeardNeighbor[];
+  source?: 'reported' | 'direct_packets' | 'none';
+  sampledAt?: string | null;
+}> = ({ neighbors, source, sampledAt: reportedSampleTime }) => {
   const rows = useMemo(
     () => [...neighbors]
       .sort((a, b) => {
@@ -18,19 +22,24 @@ export const OwnerHeardNeighbors: React.FC<{ neighbors: HeardNeighbor[] }> = ({ 
       .slice(0, 32),
     [neighbors],
   );
-  const sampledAt = rows.find((neighbor) => neighbor.sampled_at)?.sampled_at ?? null;
+  const sampledAt = reportedSampleTime ?? rows.find((neighbor) => neighbor.sampled_at)?.sampled_at ?? null;
+  const directPackets = source === 'direct_packets';
 
   if (rows.length === 0) {
-    return <p className="prose-note owner-neighbors-empty">No neighbor sample has been received for this node yet.</p>;
+    return <p className="prose-note owner-neighbors-empty">{source === 'reported'
+      ? `The latest reported neighbor list is empty.${sampledAt ? ` Sampled ${new Date(sampledAt).toLocaleString()}.` : ''}`
+      : 'No neighbor list was reported in the last 7 days and no direct senders were observed in the last 24 hours.'}</p>;
   }
 
   return (
     <div className="owner-neighbors">
-      <div className="owner-neighbors__meta">Latest sample: {sampledAt ? new Date(sampledAt).toLocaleString() : '—'}</div>
+      <div className="owner-neighbors__meta">{directPackets
+        ? 'No neighbor list reported in the last 7 days. Showing direct senders from received packets in the last 24 hours, with average signal strength.'
+        : `Latest reported sample: ${sampledAt ? new Date(sampledAt).toLocaleString() : '—'}`}</div>
       <div className="owner-neighbors__table-wrap">
         <table className="owner-neighbors__table">
           <thead>
-            <tr><th scope="col">ID</th><th scope="col">RSSI</th><th scope="col">SNR</th><th scope="col">Last seen</th></tr>
+            <tr><th scope="col">ID</th><th scope="col">{directPackets ? 'Avg RSSI' : 'RSSI'}</th><th scope="col">{directPackets ? 'Avg SNR' : 'SNR'}</th><th scope="col">Last seen</th></tr>
           </thead>
           <tbody>
             {rows.map((neighbor, index) => (

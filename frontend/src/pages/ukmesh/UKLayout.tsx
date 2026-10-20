@@ -20,7 +20,7 @@ export const UKLayout: React.FC = () => {
       showFeed
       showRepeaterSearch
       showCompanion
-      showRegions={false}
+      showRegions
       showTopology
       showSpam
       showAbout={false}

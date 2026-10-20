@@ -33,6 +33,13 @@ import type {
   PathPacket,
 } from './types.js';
 import type { HeldPathEntry } from './resolveCache.js';
+import { loadChampionPriors } from './championPriors.js';
+import type { LazyPath, LazyPathNode, LazyPathResult } from '../path-lazy/lazyResolver.js';
+import { expandResolverScope } from '../networks.js';
+
+function resolverScope(network: string): string[] | null {
+  return network === 'all' ? null : expandResolverScope(network);
+}
 
 const contextCache = new BoundedTtlMap<string, BetaResolveContext>({
   name: 'path_context',
@@ -96,7 +103,7 @@ async function buildLearningModel(
   network: string,
   signal?: AbortSignal,
 ): Promise<PathLearningModel> {
-  const [prefixRows, transitionRows, edgeRows, motifRows, calibrationRows] = await Promise.all([
+  const [prefixRows, transitionRows, edgeRows, motifRows, calibrationRows, champion] = await Promise.all([
     query<PathPrefixPriorEvidence>(
       `SELECT prefix, receiver_region, prev_prefix, node_id, count
        FROM path_prefix_priors
@@ -157,6 +164,7 @@ async function buildLearningModel(
       [network],
       signal,
     ),
+    loadChampionPriors(network, query, signal),
   ]);
 
   const prefixProbabilities = buildOneBytePrefixProbabilities(prefixRows.rows);
@@ -208,6 +216,7 @@ async function buildLearningModel(
 
   const calibration = calibrationRows.rows[0];
   return {
+    champion,
     prefixProbabilities,
     transitionProbabilities,
     edgeScores,
@@ -258,9 +267,9 @@ async function loadContext(
     query<MeshNode>(
       `SELECT node_id, name, lat, lon, iata, role, elevation_m, last_seen::text AS last_seen
        FROM nodes
-       WHERE ($1 = 'all' OR network = $1)
+       WHERE ($1::text[] IS NULL OR network = ANY($1))
          AND (name IS NULL OR name NOT LIKE '%🚫%')`,
-      [network],
+      [resolverScope(network)],
       options?.signal,
     ),
     query<{
@@ -281,8 +290,8 @@ async function loadContext(
        WHERE (nl.itm_viable IS NOT NULL OR nl.force_viable = true)
          AND (a.name IS NULL OR a.name NOT LIKE '%🚫%')
          AND (b.name IS NULL OR b.name NOT LIKE '%🚫%')
-         AND ($1 = 'all' OR (a.network = $1 AND b.network = $1))`,
-      [network],
+         AND ($1::text[] IS NULL OR (a.network = ANY($1) AND b.network = ANY($1)))`,
+      [resolverScope(network)],
       options?.signal,
     ),
     buildLearningModel(network, options?.signal),
@@ -340,32 +349,36 @@ function matchesObserverPathHash(rx: MeshNode | null, hash: string | undefined):
   return Boolean(normalized && nodePathHash(rx.node_id, normalized) === normalized);
 }
 
-function trimObserverTerminalHop(hops: string[], rx: MeshNode | null): string[] {
+function trimObserverTerminalHop(hops: string[], rx: MeshNode | null, packet: PathPacket): string[] {
+  // RX paths describe the transmitting relays. A short-hash collision with
+  // the receiver is not evidence that it appended itself to that path.
+  if (packet.direction === 'rx') return hops;
   if (!rx || rx.role !== 2 || hops.length <= 1) return hops;
   return matchesObserverPathHash(rx, hops[hops.length - 1]) ? hops.slice(0, -1) : hops;
 }
 
-function preparePacketObservation(packet: PathPacket, rx: MeshNode | null): PreparedPacketObservation {
-  const hashes = (packet.path_hashes ?? []).map(normalizePathHash).filter(Boolean);
+export function preparePacketObservation(packet: PathPacket, rx: MeshNode | null): PreparedPacketObservation {
+  const hashes = (packet.path_hashes ?? []).map(normalizePathHash);
   const expectedHexLength = packet.path_hash_size_bytes == null ? null : packet.path_hash_size_bytes * 2;
-  const validatedHashes = expectedHexLength == null
-    ? hashes
-    : hashes.filter((hash) => hash.length === expectedHexLength);
+  const invalidHashes = (expectedHexLength != null && ![2, 4, 6].includes(expectedHexLength))
+    || hashes.some((hash) => !/^(?:[0-9A-F]{2}){1,3}$/.test(hash)
+      || (expectedHexLength != null && hash.length !== expectedHexLength));
   const rawHops = packet.hop_count == null
-    ? validatedHashes
-    : validatedHashes.slice(0, Math.max(0, packet.hop_count));
+    ? hashes
+    : hashes.slice(0, Math.max(0, packet.hop_count));
   const ignoreForPathing = Boolean(
-    rx?.role === 2
+    invalidHashes || (packet.route_type != null && packet.route_type !== 0 && packet.route_type !== 1)
+    || (packet.direction !== 'rx' && rx?.role === 2
     && rawHops.length >= 3
     && matchesObserverPathHash(rx, rawHops[0])
-    && matchesObserverPathHash(rx, rawHops[rawHops.length - 1]),
+    && matchesObserverPathHash(rx, rawHops[rawHops.length - 1])),
   );
   return {
     packet,
     rx,
     hashes,
     rawHops,
-    hops: trimObserverTerminalHop(rawHops, rx),
+    hops: trimObserverTerminalHop(rawHops, rx, packet),
     ignoreForPathing,
   };
 }
@@ -408,6 +421,26 @@ function toObserverEntry(prepared: PreparedPacketObservation): BetaObserverEntry
     hashes: prepared.hashes,
     hops: prepared.hops,
   };
+}
+
+/** Flood copies can reach the same observer along different routes. Keep
+ * those variants; collapsing them to one row loses valid multibyte evidence. */
+export function prepareObservationEntries(rows: readonly PathPacket[], context: BetaResolveContext): BetaObserverEntry[] {
+  const variants = new Map<string, BetaObserverEntry>();
+  const observers = new Set<string>();
+  for (const row of rows) {
+    if (!row.rx_node_id) continue;
+    const prepared = preparePacketObservation(row, context.nodesById.get(row.rx_node_id) ?? null);
+    if (prepared.ignoreForPathing || prepared.hops.length === 0 || prepared.hops.length >= MAX_BETA_HOPS) continue;
+    const entry = toObserverEntry(prepared);
+    if (!entry) continue;
+    observers.add(entry.observerId);
+    const key = `${entry.observerId}|${entry.hops.join(',')}`;
+    const previous = variants.get(key);
+    if (!previous || (!previous.packet.src_node_id && row.src_node_id)) variants.set(key, entry);
+  }
+  if (observers.size > PATH_MULTI_MAX_OBSERVERS) throw new Error('PATH_HISTORY_LIMIT');
+  return [...variants.values()];
 }
 
 function findSharedPathPrefix(pathsByObserver: readonly string[][]): string[] {
@@ -654,10 +687,10 @@ export async function resolveBetaPathForPacketHash(
 ): Promise<BetaResolvedPayload | null> {
   throwIfResolutionAborted(options);
   const packetResult = await query<PathPacket>(
-    `SELECT packet_hash, rx_node_id, src_node_id, packet_type, hop_count, path_hashes, path_hash_size_bytes
+    `SELECT packet_hash, rx_node_id, src_node_id, packet_type, route_type, payload->>'direction' AS direction, hop_count, path_hashes, path_hash_size_bytes
      FROM packets
      WHERE packet_hash = $1
-       AND ($2 = 'all' OR network = $2)
+       AND ($2::text[] IS NULL OR network = ANY($2))
        ${observer ? 'AND rx_node_id = $3' : ''}
        AND NOT EXISTS (
          SELECT 1 FROM nodes private_node
@@ -679,7 +712,7 @@ export async function resolveBetaPathForPacketHash(
               hop_count ASC NULLS LAST,
               time ASC
      LIMIT 32`,
-    observer ? [packetHash, network, observer] : [packetHash, network],
+    observer ? [packetHash, resolverScope(network), observer] : [packetHash, resolverScope(network)],
     options?.signal,
   );
   if (packetResult.rows.length === 0) return null;
@@ -731,7 +764,7 @@ export async function resolveBetaPathForPacketHash(
     : null;
   const projection = projectCanonicalPathForObserver(selectedEntry, decoded, context, source);
   const payload = payloadFromProjection(packetHash, selectedEntry, projection, {
-    canonicalPath: buildCanonicalPath(decoded),
+    canonicalPath: buildCanonicalPath(decoded).slice(0, selectedEntry.hops.length),
     observers: [{ observerId: selectedEntry.observerId }],
     network,
   });
@@ -829,21 +862,7 @@ async function resolveMultiObserverBetaPathFromRows(
   stickyAgeFraction?: number,
   options?: PathResolutionOptions,
 ): Promise<MultiObserverResolvedPayload | null> {
-  const byObserver = new Map<string, PreparedPacketObservation>();
-  for (const row of rows) {
-    if (!row.rx_node_id) continue;
-    const prepared = preparePacketObservation(row, context.nodesById.get(row.rx_node_id) ?? null);
-    if (prepared.ignoreForPathing) continue;
-    const previous = byObserver.get(row.rx_node_id);
-    byObserver.set(row.rx_node_id, previous ? mergeObserverEvidence(previous, prepared) : prepared);
-  }
-  if (byObserver.size > PATH_MULTI_MAX_OBSERVERS) throw new Error('PATH_HISTORY_LIMIT');
-
-  const entries = [...byObserver.values()]
-    .map(toObserverEntry)
-    .filter((entry): entry is BetaObserverEntry => (
-      entry !== null && entry.hops.length > 0 && entry.hops.length < MAX_BETA_HOPS
-    ));
+  const entries = prepareObservationEntries(rows, context);
   if (entries.length === 0) return null;
 
   const groups = groupCompatibleObservations(entries);
@@ -886,8 +905,8 @@ async function resolveMultiObserverBetaPathFromRows(
         : null;
       const projection = projectCanonicalPathForObserver(entry, decoded, context, source);
       const payload = payloadFromProjection(packetHash, entry, projection, {
-        canonicalPath: buildCanonicalPath(decoded),
-        observers: group.members.map((member) => ({ observerId: member.observerId })),
+        canonicalPath: buildCanonicalPath(decoded).slice(0, entry.hops.length),
+        observers: [...new Set(group.members.map((member) => member.observerId))].map((observerId) => ({ observerId })),
         network,
       });
       results.push(maskResolvedPayload(payload, hiddenCoordMask));
@@ -913,10 +932,10 @@ async function resolveMultiObserverBetaPathFromRows(
     ok: true,
     packetHash,
     network,
-    observerCount: entries.length,
+    observerCount: new Set(entries.map((entry) => entry.observerId)).size,
     sharedPrefixLength,
     canonicalPath: firstCanonicalPath,
-    observers: entries.map((entry) => ({ observerId: entry.observerId })),
+    observers: [...new Set(entries.map((entry) => entry.observerId))].map((observerId) => ({ observerId })),
     confidence: results[0]?.confidence ?? null,
     results,
     ...(regionLinks.length > 0 ? { regionLinks } : {}),
@@ -924,19 +943,15 @@ async function resolveMultiObserverBetaPathFromRows(
   };
 }
 
-export async function resolveMultiObserverBetaPath(
-  packetHash: string,
-  network: string,
-  stickyMap?: Map<string, string>,
-  stickyAgeFraction?: number,
-  options?: PathResolutionOptions,
-): Promise<MultiObserverResolvedPayload | null> {
+async function loadMultiObserverInputs(
+  packetHash: string, network: string, options?: PathResolutionOptions,
+): Promise<{ rows: PathPacket[]; context: BetaResolveContext } | null> {
   throwIfResolutionAborted(options);
   const allResult = await query<PathPacket>(
-    `SELECT packet_hash, rx_node_id, src_node_id, packet_type, hop_count, path_hashes, path_hash_size_bytes
+    `SELECT packet_hash, rx_node_id, src_node_id, packet_type, route_type, payload->>'direction' AS direction, hop_count, path_hashes, path_hash_size_bytes
      FROM packets
      WHERE packet_hash = $1
-       AND ($2 = 'all' OR network = $2)
+       AND ($2::text[] IS NULL OR network = ANY($2))
        AND time >= NOW() - ($3::int * INTERVAL '1 hour')
        AND rx_node_id IS NOT NULL
        AND NOT EXISTS (
@@ -959,7 +974,7 @@ export async function resolveMultiObserverBetaPath(
               hop_count ASC NULLS LAST,
               time ASC
      LIMIT $4`,
-    [packetHash, network, PATH_MULTI_HISTORY_WINDOW_HOURS, PATH_MULTI_MAX_SCAN_ROWS + 1],
+    [packetHash, resolverScope(network), PATH_MULTI_HISTORY_WINDOW_HOURS, PATH_MULTI_MAX_SCAN_ROWS + 1],
     options?.signal,
   );
   if (allResult.rows.length === 0) return null;
@@ -971,11 +986,23 @@ export async function resolveMultiObserverBetaPath(
     signal: options?.signal,
   });
   throwIfResolutionAborted(options);
+  return { rows: allResult.rows, context };
+}
+
+export async function resolveMultiObserverBetaPath(
+  packetHash: string,
+  network: string,
+  stickyMap?: Map<string, string>,
+  stickyAgeFraction?: number,
+  options?: PathResolutionOptions,
+): Promise<MultiObserverResolvedPayload | null> {
+  const inputs = await loadMultiObserverInputs(packetHash, network, options);
+  if (!inputs) return null;
   return resolveMultiObserverBetaPathFromRows(
     packetHash,
     network,
-    allResult.rows,
-    context,
+    inputs.rows,
+    inputs.context,
     stickyMap,
     stickyAgeFraction,
     options,
@@ -986,6 +1013,54 @@ export type MultiObserverPathBatch = {
   results: Map<string, MultiObserverResolvedPayload | null>;
   limitedPacketHashes: Set<string>;
 };
+
+/** The packet detail view and live overlay share candidates, priors and decode. */
+export async function resolveLazyPathForPacketHash(
+  packetHash: string, network: string, options?: PathResolutionOptions,
+): Promise<LazyPathResult | null> {
+  const inputs = await loadMultiObserverInputs(packetHash, network, options);
+  if (!inputs) return null;
+  const { context } = inputs;
+  const entries = prepareObservationEntries(inputs.rows, context);
+  return decodeLazyPathEntries(packetHash, entries, context, options);
+}
+
+export function decodeLazyPathEntries(
+  packetHash: string, entries: readonly BetaObserverEntry[], context: BetaResolveContext,
+  options?: PathResolutionOptions,
+): LazyPathResult | null {
+  const observerCount = new Set(entries.map((entry) => entry.observerId)).size;
+  const paths: LazyPath[] = [];
+  for (const group of groupCompatibleObservations(entries)) {
+    throwIfResolutionAborted(options);
+    const decoded = decodeBetaCanonicalGroup(group, context);
+    const canonicalPath: LazyPathNode[] = buildCanonicalPath(decoded).map((hop) => ({
+      ...hop,
+      appearances: new Set(group.members.filter((member) => member.hops.length > hop.position).map((member) => member.observerId)).size,
+      totalObservations: observerCount,
+      isObserver: false,
+    }));
+    for (const member of group.members) {
+      // Each observer's route ends at its own reception. Interleaving other
+      // observers into one polyline invents observer-to-relay radio hops.
+      const observerPath = canonicalPath.slice(0, member.hops.length);
+      observerPath.push({
+        position: member.hops.length, hash: member.observerId, nodeId: member.observerId,
+        name: member.rx.name, lat: member.rx.lat, lon: member.rx.lon,
+        appearances: 1, totalObservations: observerCount, ambiguous: false, isObserver: true,
+      });
+      paths.push({
+        canonicalPath: observerPath,
+        coordinates: observerPath.filter((hop) => hop.lat != null && hop.lon != null)
+          .map((hop) => [hop.lat!, hop.lon!]),
+        matchedHops: observerPath.filter((hop) => !hop.isObserver && hop.nodeId != null && !hop.ambiguous).length,
+        totalHops: member.hops.length,
+        observerIds: [member.observerId],
+      });
+    }
+  }
+  return paths.length > 0 ? { packetHash, observerCount, paths } : null;
+}
 
 export async function createMultiObserverPathBatchResolver(
   network: string,
@@ -1014,17 +1089,17 @@ export async function createMultiObserverPathBatchResolver(
       if (packetHashes.length === 0) return { results, limitedPacketHashes };
 
       const packetResult = await namedQuery<PathPacket>(
-        'path-history-observations-v1',
+        'path-history-observations-v2',
         `SELECT observation.packet_hash, observation.rx_node_id, observation.src_node_id,
-                observation.packet_type, observation.hop_count, observation.path_hashes,
+                observation.packet_type, observation.route_type, observation.direction, observation.hop_count, observation.path_hashes,
                 observation.path_hash_size_bytes
            FROM unnest($1::text[]) WITH ORDINALITY AS requested(packet_hash, selection_order)
            CROSS JOIN LATERAL (
-             SELECT p.packet_hash, p.rx_node_id, p.src_node_id, p.packet_type,
+             SELECT p.packet_hash, p.rx_node_id, p.src_node_id, p.packet_type, p.route_type, p.payload->>'direction' AS direction,
                     p.hop_count, p.path_hashes, p.path_hash_size_bytes, p.time
                FROM packets p
               WHERE p.packet_hash = requested.packet_hash
-                AND ($2 = 'all' OR p.network = $2)
+                AND ($2::text[] IS NULL OR p.network = ANY($2))
                 AND p.time >= $3
                 AND p.time <= $4
                 AND p.rx_node_id IS NOT NULL
@@ -1055,7 +1130,7 @@ export async function createMultiObserverPathBatchResolver(
                    CASE WHEN observation.src_node_id IS NOT NULL THEN 1 ELSE 0 END DESC,
                    observation.hop_count ASC NULLS LAST,
                    observation.time ASC`,
-        [packetHashes, network, windowStart, windowEnd, PATH_MULTI_MAX_SCAN_ROWS + 1],
+        [packetHashes, resolverScope(network), windowStart, windowEnd, PATH_MULTI_MAX_SCAN_ROWS + 1],
         batchSignal,
       );
       batchSignal?.throwIfAborted();
