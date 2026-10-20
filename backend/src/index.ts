@@ -370,8 +370,8 @@ async function main() {
       database: false,
       mqtt: MQTT_INGEST_ENABLED ? getMqttRuntimeStatus() : { state: 'disabled', changedAt: new Date().toISOString() },
       ownerAuthorization: {
-        mode: String(process.env['OWNER_AUTHORIZATION_MODE'] ?? 'shadow'),
-        aclMode: String(process.env['OWNER_ACL_MODE'] ?? 'shadow'),
+        mode: String(process.env['OWNER_AUTHORIZATION_MODE'] ?? 'enforce'),
+        aclMode: String(process.env['OWNER_ACL_MODE'] ?? 'apply'),
         desiredGeneration: null as string | null,
         renderedGeneration: null as string | null,
         appliedGeneration: null as string | null,
@@ -475,6 +475,14 @@ async function main() {
   }
   if (!WS_ENABLED) {
     console.warn('[ws] disabled by WS_ENABLED');
+  }
+
+  const ownerAuthorizationMode = String(process.env['OWNER_AUTHORIZATION_MODE'] ?? 'enforce').toLowerCase();
+  const ownerAclMode = String(process.env['OWNER_ACL_MODE'] ?? 'apply').toLowerCase();
+  if (ownerAuthorizationMode === 'shadow' || ownerAclMode === 'shadow') {
+    console.warn(
+      `[owner-auth] WARNING: shadow mode enabled (authorization=${ownerAuthorizationMode}, acl=${ownerAclMode}) — DB-authoritative enforcement is OFF`,
+    );
   }
 
   // 5. Serve the API before long-running ingest warmup. Spam detector caches
