@@ -5,6 +5,7 @@ import { normalizeObserverQuery } from '../utils/observer.js';
 import { expandResolverScope } from '../../networks.js';
 import { networkFilters } from '../utils/networkFilters.js';
 import { getPublicRuntimeFeatureConfig } from '../../features.js';
+import { isPublicChannelName } from '../../mqtt/channelRegistry.js';
 import {
   parseBoolean,
   parseBoundedInteger,
@@ -138,6 +139,10 @@ export function registerMiscRoutes(router: Router, deps: MiscRouteDeps): void {
       min: 1,
       max: 50,
     });
+    if (!isPublicChannelName(channel)) {
+      res.status(404).json({ error: 'Channel is not public' });
+      return;
+    }
     try {
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const observer = normalizeObserverQuery(req.query['observer']);

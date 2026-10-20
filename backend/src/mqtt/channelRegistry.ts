@@ -128,6 +128,68 @@ export function buildCombinedKeyStore(entries: ChannelEntry[]) {
   return MeshCoreDecoder.createKeyStore({ channelSecrets: entries.map((e) => e.secret) });
 }
 
+/**
+ * Channel names whose plaintext may be published by the public API.
+ *
+ * Committed PUBLIC_CHANNELS are public by definition. Environment-supplied
+ * secrets are confidential unless their name is explicitly added to
+ * PUBLIC_DECRYPT_CHANNELS (comma-separated, default empty = deny).
+ */
+export function isPublicChannelName(
+  name: string,
+  allowlist = process.env['PUBLIC_DECRYPT_CHANNELS'],
+): boolean {
+  const normalized = name.trim().toLowerCase();
+  if (PUBLIC_CHANNELS.some((channel) => channel.name.toLowerCase() === normalized)) return true;
+  return String(allowlist ?? '')
+    .split(',')
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean)
+    .includes(normalized);
+}
+
+/** Wire-level hashes whose plaintext the public API may return. */
+export function publicChannelHashes(
+  secretsEnv = process.env['MESHCORE_CHANNEL_SECRETS'],
+  allowlist = process.env['PUBLIC_DECRYPT_CHANNELS'],
+): Set<string> {
+  const hashes = new Set<string>();
+  for (const entry of buildChannelEntries(secretsEnv)) {
+    if (entry.classification === 'public' || isPublicChannelName(entry.name, allowlist)) {
+      hashes.add(ChannelCrypto.calculateChannelHash(entry.secret).toLowerCase());
+    }
+  }
+  return hashes;
+}
+
+export function isPublicChannelHash(
+  hash: string,
+  secretsEnv = process.env['MESHCORE_CHANNEL_SECRETS'],
+  allowlist = process.env['PUBLIC_DECRYPT_CHANNELS'],
+): boolean {
+  const normalized = hash.trim().toLowerCase();
+  return normalized.length > 0 && publicChannelHashes(secretsEnv, allowlist).has(normalized);
+}
+
+/**
+ * Strip plaintext from a packet payload unless its channel is explicitly public.
+ * Keeps the pre-computed summary for public channels only; confidential channel
+ * content never leaves the database through the public packet-detail API.
+ */
+export function sanitizePublicPacketPayload(
+  payload: Record<string, unknown> | null,
+  secretsEnv = process.env['MESHCORE_CHANNEL_SECRETS'],
+  allowlist = process.env['PUBLIC_DECRYPT_CHANNELS'],
+): Record<string, unknown> | null {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return payload;
+  const decrypted = payload['decrypted'];
+  if (!decrypted || typeof decrypted !== 'object' || Array.isArray(decrypted)) return payload;
+  const channelHash = String((decrypted as Record<string, unknown>)['channelHash'] ?? '');
+  if (channelHash && isPublicChannelHash(channelHash, secretsEnv, allowlist)) return payload;
+  const { decrypted: _decrypted, _summary: _summary, ...rest } = payload;
+  return rest;
+}
+
 // Small cache so relay copies of the same GroupText don't trigger re-decodes
 const channelCache = new BoundedTtlMap<string, string | null>({
   name: 'mqtt_channels',
