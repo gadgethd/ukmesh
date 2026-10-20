@@ -58,6 +58,9 @@ async function scrollList(page: Page, position: number) {
 
 for (const width of [390, 1280]) {
   test(`measured feed rows survive wrapping, enrichment, prepends and resize at ${width}px`, async ({ page }) => {
+    // Stage 1 keeps the deployed fixed-height virtualiser. Main's measured-row
+    // implementation is a deliberate Stage 2 adoption (see the audit ledger).
+    test.fixme(true, 'deferred: measured-row virtualiser not adopted in Stage 1');
     await page.setViewportSize({ width, height: 800 });
     const errors: string[] = [];
     page.on('pageerror', error => {
