@@ -56,7 +56,7 @@ export async function resolveOwnerNodeIds(mqttUsername: string): Promise<string[
 
   const load = async (): Promise<string[]> => {
     const verified = normalizeNodeIds(await getOwnerNodeIdsForUsername(cacheKey));
-    const mode = String(process.env['OWNER_AUTHORIZATION_MODE'] ?? 'shadow').trim().toLowerCase();
+    const mode = String(process.env['OWNER_AUTHORIZATION_MODE'] ?? 'enforce').trim().toLowerCase();
     if (mode === 'enforce') return verified;
     if (mode !== 'shadow') throw new Error(`INVALID_OWNER_AUTHORIZATION_MODE:${mode}`);
     if (verified.length > 0) return verified;

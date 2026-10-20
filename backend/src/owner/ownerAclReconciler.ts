@@ -23,7 +23,7 @@ import {
 export type OwnerAclMode = 'shadow' | 'apply';
 
 function ownerAclMode(): OwnerAclMode {
-  const value = String(process.env['OWNER_ACL_MODE'] ?? 'shadow').trim().toLowerCase();
+  const value = String(process.env['OWNER_ACL_MODE'] ?? 'apply').trim().toLowerCase();
   if (value !== 'shadow' && value !== 'apply') throw new Error(`INVALID_OWNER_ACL_MODE:${value}`);
   return value;
 }

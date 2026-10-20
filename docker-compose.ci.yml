@@ -127,3 +127,11 @@ services:
       interval: 30s
       timeout: 5s
       retries: 5
+
+  backend:
+    # The empty-volume smoke stack has no owner-auth database or ACL file, so it
+    # explicitly opts into the now-opt-in shadow mode. Production defaults to
+    # enforce/apply and sets both explicitly in its .env.
+    environment:
+      OWNER_AUTHORIZATION_MODE: shadow
+      OWNER_ACL_MODE: shadow
