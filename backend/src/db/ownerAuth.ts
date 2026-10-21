@@ -136,8 +136,8 @@ export async function createOwnerSession(
     await client.query('BEGIN');
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`owner-session:${normalized}`]);
     await client.query(
-      `INSERT INTO owner_sessions (session_id, mqtt_username, expires_at)
-       VALUES ($1, $2, to_timestamp($3 / 1000.0))`,
+      `INSERT INTO owner_sessions (session_id, mqtt_username, created_at, last_seen_at, expires_at)
+       VALUES ($1, $2, clock_timestamp(), clock_timestamp(), to_timestamp($3 / 1000.0))`,
       [sessionId, normalized, expiresAt],
     );
     await client.query(
@@ -153,8 +153,9 @@ export async function createOwnerSession(
           SET revoked_at = NOW()
          FROM ranked
         WHERE target.session_id = ranked.session_id
-          AND ranked.retained_rank > $2`,
-      [normalized, ownerSessionMaxPerUser],
+          AND ranked.retained_rank > $2
+          AND target.session_id <> $3`,
+      [normalized, ownerSessionMaxPerUser, sessionId],
     );
     await client.query(
       `DELETE FROM owner_sessions
@@ -522,7 +523,6 @@ export async function revokeOwnerGrant(
 ): Promise<void> {
   const grant = normalizeGrant(mqttUsername, nodeId);
   const client = await ownerPool.connect();
-  let revokeSessions = false;
   try {
     await client.query('BEGIN');
     const updated = await client.query<{ verification_method: OwnerGrantVerificationMethod }>(
@@ -549,10 +549,21 @@ export async function revokeOwnerGrant(
             WHERE oan.mqtt_username = $1
               AND oa.is_active = TRUE
               AND oan.revoked_at IS NULL
+              AND oan.verified_at IS NOT NULL
+              AND oan.verification_method IN ('operator-config', 'operator-database')
+              AND oan.node_id ~ '^[0-9A-F]{64}$'
          ) AS active`,
         [grant.mqttUsername],
       );
-      revokeSessions = remaining.rows[0]?.active !== true;
+      if (remaining.rows[0]?.active !== true) {
+        await client.query(
+          `UPDATE owner_sessions
+              SET revoked_at = NOW()
+            WHERE mqtt_username = $1
+              AND revoked_at IS NULL`,
+          [grant.mqttUsername],
+        );
+      }
     }
     await client.query('COMMIT');
   } catch (error) {
@@ -561,7 +572,6 @@ export async function revokeOwnerGrant(
   } finally {
     client.release();
   }
-  if (revokeSessions) await revokeOwnerSessionsForUsername(grant.mqttUsername);
 }
 
 export async function recordUntrustedMqttNodeObservation(mqttUsername: string, nodeId: string): Promise<void> {

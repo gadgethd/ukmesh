@@ -179,7 +179,8 @@ export function registerOwnerRoutes(router: Router, deps: OwnerRouteDeps): void 
         res.status(403).json({ error: 'No active node found for this MQTT username yet' });
         return;
       }
-      if ((err as Error).message === 'OWNER_SESSION_STORE_UNAVAILABLE') {
+      if ((err as Error).message === 'OWNER_SESSION_STORE_UNAVAILABLE'
+        || (err as Error).message === 'OWNER_CREDENTIAL_GENERATION_UNAVAILABLE') {
         res.status(503).json({ error: 'Owner session store is temporarily unavailable' });
         return;
       }
