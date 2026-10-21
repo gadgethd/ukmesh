@@ -435,12 +435,22 @@ export function registerOwnerRoutes(router: Router, deps: OwnerRouteDeps): void 
         res.status(409).json({ error: 'Public feed is not configured by the operator' });
         return;
       }
+      const previousEnabled = currentStatus.enabled;
       await publicFeedRepository.setEnabled(session.mqttUsername, ownedNodeIds, enabled);
       if (deps.reconcileOwnerAuthorization) {
         try {
           await deps.reconcileOwnerAuthorization();
         } catch (error) {
           console.error('[api] public-feed ACL reconciliation failed', (error as Error).message);
+          // The broker is the enforcement point. If the ACL reload failed, put the
+          // database back to the state the broker is still enforcing so a disable
+          // never reports failure while access remains granted (and an enable never
+          // reports failure while remaining ungranted).
+          try {
+            await publicFeedRepository.setEnabled(session.mqttUsername, ownedNodeIds, previousEnabled);
+          } catch (rollbackError) {
+            console.error('[api] public-feed state rollback failed', (rollbackError as Error).message);
+          }
           res.status(503).json({ error: 'Public feed access could not be updated yet' });
           return;
         }
