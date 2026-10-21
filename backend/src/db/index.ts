@@ -27,7 +27,7 @@ import {
   reactivateHistoricPathNodes,
   type HistoricPathNode,
 } from '../repositories/pathEvidence.js';
-import { channelHashesForName } from '../mqtt/channelRegistry.js';
+import { channelHashesForName, isPublicChannelName, sanitizePublicPacketPayload } from '../mqtt/channelRegistry.js';
 import { buildPacketBatchInput, type InsertPacketInput } from './packetInput.js';
 import { getRamIngestMode } from '../ram/protocol.js';
 
@@ -1033,6 +1033,7 @@ export async function getChannelMessageHistory(
   observer?: string,
 ) {
   const normalizedChannel = channel.trim().toLowerCase();
+  if (!isPublicChannelName(normalizedChannel)) return [];
   const channelHashes = channelHashesForName(normalizedChannel);
   const scope = buildScopePlaceholders(6, network, observer);
   // A historical packet may retain the ingest-time "[encrypted]" marker in
@@ -1231,7 +1232,7 @@ export async function getPacketDetail(hash: string, network = 'ukmesh') {
     hopCount: row.hop_count as number | null,
     rssi: row.rssi as number | null,
     snr: row.snr as number | null,
-    payload: row.payload as Record<string, unknown> | null,
+    payload: sanitizePublicPacketPayload(row.payload as Record<string, unknown> | null),
     pathHashes: row.path_hashes as string[] | null,
     pathHashSizeBytes: row.path_hash_size_bytes as number | null,
     rawHex: row.raw_hex as string | null,
