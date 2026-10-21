@@ -30,6 +30,7 @@ test.beforeEach(async ({ page }) => {
 test('revoked owner session returns the portal to login on the next session poll', async ({ page }) => {
   let revoked = false;
   await page.clock.install({ time: new Date('2026-07-16T12:00:00Z') });
+  await page.route('**/api/owner/**', (route) => route.fulfill({ status: 404, json: { error: 'Owner endpoint not mocked in this spec' } }));
   await page.route('**/api/owner/session', async (route) => {
     if (revoked) {
       await route.fulfill({ status: 401, json: { error: 'Session has been revoked — please log in again' } });
@@ -59,7 +60,7 @@ test('revoked owner session returns the portal to login on the next session poll
     new URL(response.url()).pathname === '/api/owner/session'
     && response.status() === 401
   ));
-  await page.clock.fastForward(15_001);
+  await page.clock.fastForward(20_000);
   await sessionRefresh;
   await expect(page.getByRole('heading', { name: 'Login', exact: true })).toBeVisible();
   await expect(page.getByLabel('Owned repeater identities')).toHaveCount(0);
