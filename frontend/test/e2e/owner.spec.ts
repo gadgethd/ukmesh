@@ -27,6 +27,44 @@ test.beforeEach(async ({ page }) => {
   await page.route('**/*basemaps.cartocdn.com/**', (route) => route.abort());
 });
 
+test('revoked owner session returns the portal to login on the next session poll', async ({ page }) => {
+  let revoked = false;
+  await page.clock.install({ time: new Date('2026-07-16T12:00:00Z') });
+  await page.route('**/api/owner/session', async (route) => {
+    if (revoked) {
+      await route.fulfill({ status: 401, json: { error: 'Session has been revoked — please log in again' } });
+      return;
+    }
+    await route.fulfill({ json: { ok: true, dashboard, mqttUsername: 'alpha-owner' } });
+  });
+  await page.route('**/api/owner/live?**', (route) => route.fulfill({ json: {
+    nodeId: NODE_ID,
+    ownerNode: dashboard.nodes[0],
+    incomingPeers: [],
+    heardBy: [],
+    linkHealth: [],
+    advertTrend24h: [],
+    telemetry24h: [],
+    packetsSent24h: 1,
+    packetsReceived24h: 1,
+    alerts: [],
+    recentPackets: [],
+  } }));
+  await page.route('**/api/owner/live-last-hop?**', (route) => route.fulfill({ json: { points: [] } }));
+
+  await page.goto('/login');
+  await expect(page.getByLabel('Owned repeater identities').getByText('Alpha Repeater', { exact: true })).toBeVisible({ timeout: 15_000 });
+  revoked = true;
+  const sessionRefresh = page.waitForResponse((response) => (
+    new URL(response.url()).pathname === '/api/owner/session'
+    && response.status() === 401
+  ));
+  await page.clock.fastForward(15_001);
+  await sessionRefresh;
+  await expect(page.getByRole('heading', { name: 'Login', exact: true })).toBeVisible();
+  await expect(page.getByLabel('Owned repeater identities')).toHaveCount(0);
+});
+
 test('session polling does not reset the repeater owner content', async ({ page }) => {
   // Production owner polling predates main's /api/owner/session cadence and is
   // authoritative for Stage 1; session-polling parity is a Stage 2 item.

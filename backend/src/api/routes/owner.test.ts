@@ -13,6 +13,7 @@ const TEST_COOKIE_SECRET = 'test-owner-cookie-secret-at-least-32-bytes';
 
 async function startOwnerRoutes(options: {
   currentGeneration?: () => Promise<number>;
+  sessionActive?: () => Promise<boolean>;
   verifyCredentials?: (username: string, password: string) => Promise<boolean>;
 } = {}): Promise<{ baseUrl: string; close: () => Promise<void>; restore: () => void }> {
   const previousSecret = process.env['OWNER_COOKIE_SECRET'];
@@ -38,6 +39,14 @@ async function startOwnerRoutes(options: {
     getOwnerSession: (req) => getOwnerSession(req, 'meshcore_owner_session'),
     requireOwnerSession: async () => [NODE_ID],
     getOwnerCredentialGeneration: options.currentGeneration ?? (async () => 2),
+    createOwnerSession: async () => ({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      expiresAt: Date.now() + 60_000,
+    }),
+    isOwnerSessionActive: options.sessionActive ?? (async () => true),
+    touchOwnerSession: async () => undefined,
+    revokeOwnerSession: async () => undefined,
+    revokeOwnerSessionsForUsername: async () => undefined,
     invalidateOwnerNodeIdCache: () => undefined,
     query: async <T extends QueryResultRow = QueryResultRow>() => ({ rows: [] as T[] }),
   });
@@ -64,8 +73,9 @@ async function startOwnerRoutes(options: {
 test('owner session route rejects cookies from an older credential generation', async () => {
   const ownerServer = await startOwnerRoutes();
   const token = encryptOwnerSession({
-    v: 3,
+    v: 4,
     mqttUsername: 'owner',
+    sid: '11111111-1111-4111-8111-111111111111',
     exp: Date.now() + 60_000,
     gen: 1,
   });
@@ -77,6 +87,29 @@ test('owner session route rejects cookies from an older credential generation', 
 
     assert.equal(response.status, 401);
     assert.equal((await response.json() as { error: string }).error, 'Credentials have been rotated — please log in again');
+  } finally {
+    await ownerServer.close();
+    ownerServer.restore();
+  }
+});
+
+test('owner session route rejects a revoked server-side session', async () => {
+  const ownerServer = await startOwnerRoutes({ sessionActive: async () => false });
+  const token = encryptOwnerSession({
+    v: 4,
+    mqttUsername: 'owner',
+    sid: '11111111-1111-4111-8111-111111111111',
+    exp: Date.now() + 60_000,
+    gen: 2,
+  });
+
+  try {
+    const response = await fetch(`${ownerServer.baseUrl}/owner/session`, {
+      headers: { cookie: `meshcore_owner_session=${token}` },
+    });
+
+    assert.equal(response.status, 401);
+    assert.equal((await response.json() as { error: string }).error, 'Session has been revoked — please log in again');
   } finally {
     await ownerServer.close();
     ownerServer.restore();

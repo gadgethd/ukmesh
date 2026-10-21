@@ -1,4 +1,4 @@
-import { Request, Response, Router } from 'express';
+import { Request, Router } from 'express';
 import {
   CHARTS_CACHE_TTL_MS,
   CHARTS_CACHE_STALE_TTL_MS,
@@ -65,6 +65,13 @@ import { registerCoverageRoutes } from './routes/coverage.js';
 import { registerPlannedCoverageRoutes } from './routes/plannedCoverage.js';
 import { registerOwnerRoutes } from './routes/owner.js';
 import { reconcileOwnerAuthorization } from '../owner/ownerAclReconciler.js';
+import {
+  createOwnerSession,
+  isOwnerSessionActive,
+  revokeOwnerSession,
+  revokeOwnerSessionsForUsername,
+  touchOwnerSession,
+} from '../db/ownerAuth.js';
 import { registerPathingRoutes } from './routes/pathing.js';
 import { registerStatsRoutes } from './routes/stats.js';
 import { registerTelemetryRoutes } from './routes/telemetry.js';
@@ -88,6 +95,7 @@ import {
 import { assertUniqueRouteRegistry } from './routeRegistry.js';
 import { assertContractCoverage } from './contracts.js';
 import { ApiInputError, wrapAsyncHandlers } from './errors.js';
+import { createOwnerSessionGuard } from './ownerSessionGuard.js';
 import { withHeavyWorkAdmission } from '../analysis/heavyWorkAdmission.js';
 
 const router = Router();
@@ -135,30 +143,14 @@ function getRouteOwnerSession(req: Request) {
   return getOwnerSession(req, OWNER_COOKIE_NAME);
 }
 
-async function requireOwnerSession(req: Request, res: Response): Promise<string[] | null> {
-  const session = getRouteOwnerSession(req);
-  if (!session) {
-    res.clearCookie(OWNER_COOKIE_NAME, { path: '/' });
-    res.status(401).json({ error: 'Not logged in' });
-    return null;
-  }
-  // BUG-010: reject sessions minted under a revoked password. The generation
-  // is bumped when the broker rejects a previously-valid credential; sessions
-  // carrying an older generation are stale and must re-authenticate.
-  const currentGen = await getOwnerCredentialGeneration(session.mqttUsername);
-  if (session.gen !== currentGen) {
-    res.clearCookie(OWNER_COOKIE_NAME, { path: '/' });
-    res.status(401).json({ error: 'Credentials have been rotated — please log in again' });
-    return null;
-  }
-  const nodeIds = await resolveOwnerNodeIds(session.mqttUsername);
-  if (nodeIds.length < 1) {
-    res.clearCookie(OWNER_COOKIE_NAME, { path: '/' });
-    res.status(401).json({ error: 'Owner authorization has been revoked' });
-    return null;
-  }
-  return nodeIds;
-}
+const requireOwnerSession = createOwnerSessionGuard({
+  ownerCookieName: OWNER_COOKIE_NAME,
+  getOwnerSession: getRouteOwnerSession,
+  getOwnerCredentialGeneration,
+  isOwnerSessionActive,
+  touchOwnerSession,
+  resolveOwnerNodeIds,
+});
 
 registerCoverageRoutes(router, {
   coverageLimiter: COVERAGE_LIMITER,
@@ -216,6 +208,11 @@ registerOwnerRoutes(router, {
   getOwnerSession: getRouteOwnerSession,
   requireOwnerSession,
   getOwnerCredentialGeneration,
+  createOwnerSession,
+  isOwnerSessionActive,
+  touchOwnerSession,
+  revokeOwnerSession,
+  revokeOwnerSessionsForUsername,
   invalidateOwnerNodeIdCache,
   reconcileOwnerAuthorization,
   query,
