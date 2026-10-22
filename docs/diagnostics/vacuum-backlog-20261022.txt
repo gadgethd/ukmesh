@@ -1,0 +1,102 @@
+Pager usage is off.
+BEGIN
+SET
+SET
+SET
+          measured_at          | current_database | current_user | server_version | read_only
+-------------------------------+------------------+--------------+----------------+-----------
+ 2026-10-22 14:25:27.529259+00 | meshcore         | meshcore     | 16.11          | on
+(1 row)
+
+                 name                  |  setting  | unit |       source
+---------------------------------------+-----------+------+--------------------
+ autovacuum                            | on        |      | default
+ autovacuum_analyze_scale_factor       | 0.1       |      | default
+ autovacuum_analyze_threshold          | 50        |      | default
+ autovacuum_freeze_max_age             | 200000000 |      | default
+ autovacuum_max_workers                | 3         |      | configuration file
+ autovacuum_multixact_freeze_max_age   | 400000000 |      | default
+ autovacuum_naptime                    | 10        | s    | configuration file
+ autovacuum_vacuum_cost_delay          | 2         | ms   | default
+ autovacuum_vacuum_cost_limit          | -1        |      | default
+ autovacuum_vacuum_insert_scale_factor | 0.2       |      | default
+ autovacuum_vacuum_insert_threshold    | 1000      |      | default
+ autovacuum_vacuum_scale_factor        | 0.2       |      | default
+ autovacuum_vacuum_threshold           | 50        |      | default
+ autovacuum_work_mem                   | -1        | kB   | default
+ maintenance_work_mem                  | 251903    | kB   | configuration file
+ max_prepared_transactions             | 0         |      | default
+ max_worker_processes                  | 24        |      | command line
+ track_counts                          | on        |      | default
+ vacuum_cost_delay                     | 0         | ms   | default
+ vacuum_cost_limit                     | 200       |      | default
+(20 rows)
+
+ database_size_bytes | dead_rows |       oldest_vacuum_at        | tables_needing_vacuum
+---------------------+-----------+-------------------------------+-----------------------
+ 17721029091         | 507348    | 2026-10-20 15:41:37.193334+00 | 0
+(1 row)
+
+      schemaname       |                 relname                 |  reltuples   | n_live_tup | n_dead_tup | health_dead_row_threshold | needs_vacuum | n_tup_ins | n_tup_upd | n_tup_hot_upd | n_tup_del | last_vacuum |        last_autovacuum        | last_analyze |       last_autoanalyze        | vacuum_count | autovacuum_count |                                reloptions                                | table_bytes | index_bytes | total_bytes
+-----------------------+-----------------------------------------+--------------+------------+------------+---------------------------+--------------+-----------+-----------+---------------+-----------+-------------+-------------------------------+--------------+-------------------------------+--------------+------------------+--------------------------------------------------------------------------+-------------+-------------+-------------
+ public                | multibyte_path_facts                    | 2.469879e+06 |    2473913 |     285751 |        494025.80000000005 | f            |     86321 |   2860342 |            50 |         0 |             | 2026-10-22 06:07:27.164047+00 |              | 2026-10-22 12:05:03.200668+00 |            0 |                5 |                                                                          |  1801912320 |   400474112 |  2202386432
+ public                | packet_hourly_stats                     |       909590 |     914989 |     108459 |                    181968 | f            |     45095 |    257250 |        254193 |         0 |             |                               |              | 2026-10-22 08:10:50.694911+00 |            0 |                0 |                                                                          |   144916480 |    81289216 |   226205696
+ public                | observer_region_packet_sightings        |       233931 |     238022 |      35785 |        46836.200000000004 | f            |     62512 |     90869 |             0 |     20668 |             | 2026-10-21 16:55:15.159896+00 |              | 2026-10-22 11:29:06.44+00     |            0 |                2 |                                                                          |    34660352 |   276357120 |   311017472
+ public                | owner_packet_share_deliveries           |       234784 |     241414 |      27746 |                   47006.8 | f            |     21185 |     42430 |             0 |         0 |             | 2026-10-20 20:28:26.808679+00 |              | 2026-10-21 18:20:55.586581+00 |            0 |                1 |                                                                          |   307871744 |   107323392 |   415195136
+ public                | public_feed_deliveries                  |        98132 |      99444 |      18531 |                   19676.4 | f            |      4475 |      8964 |             0 |         0 |             |                               |              | 2026-10-21 19:38:46.719846+00 |            0 |                0 |                                                                          |    96845824 |    32071680 |   128917504
+ public                | node_identity_links                     |       166632 |     166695 |       5834 |                     10000 | f            |     31658 |         0 |             0 |     31354 |             | 2026-10-22 03:15:13.289109+00 |              | 2026-10-22 04:00:23.240615+00 |            0 |                3 | {autovacuum_vacuum_scale_factor=0.05}                                    |    40845312 |    80838656 |   121683968
+ public                | node_links                              |       131925 |     131948 |       5775 |                     10000 | f            |       305 |     97308 |            11 |         0 |             | 2026-10-22 11:33:00.218495+00 |              | 2026-10-22 07:27:07.253258+00 |            0 |               12 | {autovacuum_vacuum_scale_factor=0.05}                                    |   113221632 |    44351488 |   157573120
+ public                | nodes                                   |        13764 |      13765 |       4579 |                     10000 | f            |       141 |   1097433 |        656596 |      9417 |             | 2026-10-22 13:57:27.133178+00 |              | 2026-10-22 13:57:16.321617+00 |            0 |              129 | {autovacuum_vacuum_scale_factor=0.5,autovacuum_analyze_scale_factor=0.5} |    73490432 |   100376576 |   173867008
+ public                | path_motif_priors                       |       110714 |     110774 |       4036 |                     10000 | f            |     14581 |    169028 |        123468 |      9799 |             | 2026-10-22 13:05:04.967151+00 |              | 2026-10-22 12:05:49.07874+00  |            0 |               23 | {autovacuum_vacuum_scale_factor=0.05}                                    |    41467904 |   402554880 |   444022784
+ public                | path_transition_priors                  |        19592 |      19587 |       2632 |                     10000 | f            |      2348 |     96970 |         90731 |      2000 |             | 2026-10-22 11:05:36.739611+00 |              | 2026-10-22 14:05:01.072423+00 |            0 |               11 |                                                                          |     8265728 |    31907840 |    40173568
+ public                | node_network_sightings                  |        23665 |      23675 |       2513 |                     10000 | f            |       297 |     48060 |         47903 |     10636 |             | 2026-10-22 08:35:46.860157+00 |              | 2026-10-22 12:38:19.111234+00 |            0 |                4 |                                                                          |     5611520 |     4587520 |    10199040
+ public                | path_position_prefix_priors             |         6697 |       6727 |       1132 |                     10000 | f            |      1518 |     26228 |         23965 |       400 |             | 2026-10-22 05:05:49.230475+00 |              | 2026-10-22 14:05:01.193656+00 |            0 |                9 |                                                                          |     1695744 |     2269184 |     3964928
+ public                | node_identity_sightings                 |        23574 |      23574 |       1126 |                     10000 | f            |      8736 |         0 |             0 |     19051 |             | 2026-10-22 06:45:07.676025+00 |              | 2026-10-22 08:00:08.156425+00 |            0 |                3 |                                                                          |     4784128 |    18186240 |    22970368
+ public                | analysis_runs                           |        29623 |        830 |        843 |                     10000 | f            |       830 |      1662 |           826 |         0 |             |                               |              |                               |            0 |                0 |                                                                          |    21733376 |     9330688 |    31064064
+ public                | path_prefix_priors                      |        41538 |      41514 |        805 |                     10000 | f            |      2733 |     37211 |         33117 |      3285 |             | 2026-10-22 13:05:54.266772+00 |              | 2026-10-22 11:05:37.423802+00 |            0 |               10 | {autovacuum_vacuum_scale_factor=0.05}                                    |     9248768 |    58679296 |    67928064
+ public                | path_corridor_priors                    |         3985 |       3956 |        332 |                     10000 | f            |       786 |      2028 |          1638 |       346 |             | 2026-10-21 20:05:20.198002+00 |              | 2026-10-22 12:05:19.336969+00 |            0 |                1 |                                                                          |     5849088 |    28835840 |    34684928
+ public                | worker_health_snapshots                 |         8052 |       8052 |        316 |                     10000 | f            |       952 |         0 |             0 |       952 |             | 2026-10-20 15:41:37.193334+00 |              | 2026-10-20 20:17:13.987902+00 |            0 |                1 |                                                                          |     1122304 |    19775488 |    20897792
+ public                | path_position_transition_priors         |         2944 |       2928 |        280 |                     10000 | f            |       470 |      3902 |          3602 |       172 |             | 2026-10-22 01:04:47.389715+00 |              | 2026-10-22 10:05:28.635468+00 |            0 |                1 |                                                                          |     1835008 |     5767168 |     7602176
+ public                | operational_check_results               |        29171 |      30084 |        222 |                     10000 | f            |      4800 |         0 |             0 |      1589 |             | 2026-10-20 19:32:33.959082+00 |              | 2026-10-22 03:00:23.636254+00 |            0 |                1 |                                                                          |     3031040 |     6979584 |    10010624
+ public                | spam_suspects                           |         3891 |          1 |        216 |                     10000 | f            |         1 |       216 |             0 |         0 |             |                               |              |                               |            0 |                0 |                                                                          |     2793472 |    13967360 |    16760832
+ public                | path_slow_resolutions                   |       216288 |      12399 |         94 |        43307.600000000006 | f            |     12399 |        94 |             0 |         0 |             |                               |              |                               |            0 |                0 |                                                                          |   398163968 |    38772736 |   436936704
+ public                | spam_message_members                    |         1178 |       1178 |         65 |                     10000 | f            |      4355 |         0 |             0 |      4326 |             | 2026-10-22 14:01:16.225221+00 |              | 2026-10-22 14:01:16.265405+00 |            0 |               16 |                                                                          |     2342912 |      679936 |     3022848
+ _timescaledb_internal | bgw_job_stat                            |            9 |          0 |         39 |                     10000 | f            |         0 |        39 |            39 |         0 |             |                               |              |                               |            0 |                0 |                                                                          |       40960 |       16384 |       57344
+ public                | packet_daily_stats                      |          197 |          2 |         33 |                     10000 | f            |         2 |        33 |             0 |         0 |             |                               |              |                               |            0 |                0 |                                                                          |       65536 |       49152 |      114688
+ public                | worker_health_current                   |            4 |          4 |         32 |                     10000 | f            |         0 |       952 |           952 |         0 |             | 2026-10-20 21:42:23.477984+00 |              | 2026-10-20 21:57:22.934889+00 |            0 |               17 |                                                                          |      114688 |       16384 |      131072
+ public                | analysis_workload_state                 |            7 |          7 |         28 |                     10000 | f            |         0 |      1664 |             0 |         0 |             | 2026-10-22 13:25:46.479945+00 |              | 2026-10-22 13:30:39.438276+00 |            0 |               32 |                                                                          |      131072 |       32768 |      163840
+ public                | spam_message_incidents                  |           73 |         73 |         25 |                     10000 | f            |         3 |       421 |           413 |         0 |             |                               |              | 2026-10-22 12:50:05.645858+00 |            0 |                0 |                                                                          |      901120 |       49152 |      950272
+ public                | packet_visibility_materialization_state |            1 |          0 |         18 |                     10000 | f            |         0 |        18 |            18 |         0 |             |                               |              |                               |            0 |                0 |                                                                          |       40960 |       16384 |       57344
+ public                | public_visibility_state                 |            1 |          0 |         18 |                     10000 | f            |         0 |        18 |            18 |         0 |             |                               |              |                               |            0 |                0 |                                                                          |       40960 |       16384 |       57344
+ public                | path_model_calibration                  |            4 |          4 |         17 |                     10000 | f            |         0 |       118 |           118 |         0 |             |                               |              | 2026-10-22 07:04:59.496947+00 |            0 |                0 |                                                                          |       57344 |       16384 |       73728
+(30 rows)
+
+   pid   | datname  |  backend_type  | application_name | state  | transaction_age |    query_age    | backend_xid | backend_xmin | wait_event_type | wait_event | blockers
+---------+----------+----------------+------------------+--------+-----------------+-----------------+-------------+--------------+-----------------+------------+----------
+ 4164893 | meshcore | client backend |                  | active | 00:00:10.912921 | 00:00:10.539898 |             |   2150156089 |                 |            | {}
+ 4164896 | meshcore | client backend | meshcore-backend | active | 00:00:03.134097 | 00:00:03.122643 |             |   2150156101 |                 |            | {}
+(2 rows)
+
+ transaction | prepared | prepared_age | owner | database
+-------------+----------+--------------+-------+----------
+(0 rows)
+
+ slot_name | slot_type | database | active | xmin | catalog_xmin | restart_lsn | confirmed_flush_lsn
+-----------+-----------+----------+--------+------+--------------+-------------+---------------------
+(0 rows)
+
+ pid | datname | relation | phase | heap_blks_total | heap_blks_scanned | heap_blks_vacuumed | index_vacuum_count
+-----+---------+----------+-------+-----------------+-------------------+--------------------+--------------------
+(0 rows)
+
+ datname  | stats_reset | deadlocks | xact_commit | xact_rollback
+----------+-------------+-----------+-------------+---------------
+ meshcore |             |         0 |     3845184 |           683
+(1 row)
+
+ database_xid_age | freeze_max_age
+------------------+----------------
+        132622753 | 200000000
+(1 row)
+
+COMMIT
