@@ -1,1436 +1,356 @@
-# Deploy-tree rescue — 2026-10-22 (#535)
+# `/api/mqtt-nodes` performance review — 2026-10-22
 
-Branch: `burn/deploy-tree-rescue-20261022`
+Branch: `burn/mqtt-nodes-perf-20261022`
+Base: `bec753b5e95893acf159d0ef08ce79057d98c6f8` (`main`)
+Implementation and evidence commit: `eef1244eca884b4f03c12775c2e2e9fcb47895a8`
+PR: https://github.com/gadgethd/ukmesh/pull/142
 
-PR: https://github.com/gadgethd/ukmesh/pull/144 (draft, against `main`)
+The proposed handler meets the <1 second p50 target on the real anonymous
+UKMesh scope: **548.563 ms HTTP p50**, including a reused SSH transport to the
+production database. SQL execution p50 fell from **6,893.302 ms to 203.435 ms**.
+This is a branch implementation measured through a local handler harness, not
+a deployment or a measurement of a changed public production endpoint.
 
-Evidence commit: `d6a2759bcd0a34c662109c1db989868bdb9eb16d`
+## Change and rationale
 
-Audited main: `bec753b5e95893acf159d0ef08ce79057d98c6f8`
+The packet subquery now counts observations by raw `rx_node_id` first, then
+canonicalizes those receiver groups and sums their counts. The measured plan
+reads 129,755 observations but canonicalizes just 26 receiver groups, instead
+of applying the stable SQL function while grouping every observation.
+`SUM(bigint)` returns PostgreSQL `numeric`, so the final sum is explicitly
+cast back to `bigint`, preserving the original `COUNT(*)` result type and
+string serialization. Each observation still counts, including repeated packet
+hashes, and multiple raw aliases still contribute to one canonical receiver.
 
-## Outcome and scope
+The identity views, representative-name selection, uptime-first status ordering,
+15-minute/24-hour windows, network parameters, hidden-name exclusion, zero-count
+filter and public DTO remain unchanged. Anonymous callers and legacy network
+labels expand to `['ukmesh','northeast','teesside']`; test traffic stays separate.
 
-The readable feature work described by backlog #535 has already been rescued.
-[PR #133](https://github.com/gadgethd/ukmesh/pull/133) merged on October 20;
-its recovery commit `48fb91acda7978fae2e56215879b7b16502ec0d2` and merge
-`1ef0cf38a554c44bdef604cfb701ae2627d7454e` are ancestors of audited main.
-All five commits still reported as local by the VPS's stale `origin/main`
-are also actual ancestors of audited main. No duplicate feature branches,
-rebases or cherry-picks were needed. The one new branch records independently
-checked rescue evidence and the unresolved configuration questions.
+The source change is 12 added / 5 removed SQL lines. Other files contain
+regressions, the original query as an independent oracle, an opt-in read-only
+benchmark and review evidence. The existing PostgreSQL integration command now
+includes the new regression. No package dependency or lockfile changed.
 
-This PR adds the complete visible file ledger, source/main Git blob IDs and
-a verifier that reads local Git objects. The `.gitignore` addition keeps the
-private capture and tool scratch out of commits. It imports **zero additional
-application source files** and retains every audited class-A file unchanged.
-The existing REVIEW history is preserved below this new report.
+## Measurements and alternatives
 
-The read-only inventory ran at **2026-10-22 14:21:39 UTC (15:21:39 BST)**.
-At **14:28:27 UTC**, a second read verified all 211 readable file blobs,
-all 221 visible status entries and the VPS HEAD were unchanged. This is source
-tree evidence, not proof of the files inside running images. No deployment,
-restart, live database query/write, live configuration change, privilege
-elevation, or deploy-tree/index/ref write was performed.
+All VPS database commands used `default_transaction_read_only=on`, explicit
+`BEGIN READ ONLY`, a 30-second statement timeout and a 2-second lock timeout.
+The equality and interleaved comparison ran in repeatable-read transactions,
+so both variants saw the same data and `NOW()`. Five SQL samples per variant
+were interleaved, reversing variant order on alternate rounds. No cache flush,
+restart, database object creation, migration or data modification was used.
+These are small, mostly warm-cache samples under concurrent production load;
+they do not establish p95 or behavior at a substantially larger future scope.
 
-## Inventory and classification
-
-The VPS tree is still at `1f94bd8ef35c2a7553f13e4e9a603054c6fb6400`.
-Its `origin/main` is `3777cc9a2dfb989aa3111e3019cf7f7c6f32d022`;
-that stale comparison explains why Git still reports five local commits.
-
-| Visible status | Count |
-| --- | ---: |
-| Modified (` M`) | 94 |
-| Deleted (` D`) | 9 |
-| Unmerged index (`UU`) | 3 |
-| Untracked (`??`, individual files) | 115 |
-| **Total visible status paths** | **221** |
-
-| Class | Meaning | Count | Destination |
-| --- | --- | ---: | --- |
-| A | Live feature, test or supporting source/configuration | 208 | Already rescued on `origin/main`; retain newer fixes |
-| B | Generated/configuration housekeeping or private environment backup | 4 | Three already on main; private environment contents excluded |
-| C | Stale report/screenshot artifacts | 9 | Deletions already recorded on main |
-| **Total classified visible paths** | | **221** | |
-| U, supplemental | Tracked `mosquitto/mosquitto.conf`, unreadable on disk | 1 known path | Parked; not part of the 221 visible status paths |
-
-`mosquitto/` itself cannot be enumerated, so its additional untracked entries
-are an **unknown count**, not zero. The index lists `mosquitto/mosquitto.conf`,
-but an index blob does not prove the file's disk contents. This limitation is
-recorded explicitly rather than treating the status output as a complete
-inventory of an inaccessible directory.
-
-| Content disposition | Count | Evidence |
-| --- | ---: | --- |
-| Byte-identical to audited main | 187 | Captured bytes equal main Git blob; includes three B housekeeping files |
-| Historical version superseded by main | 23 | Captured bytes equal recovery commit `48fb91ac` exactly |
-| Compose local probe override | 1 | Recovery Compose bytes plus only alert-receiver `/readyz` → `/healthz` |
-| Already-deleted stale artifacts | 9 | Absent on VPS and audited main |
-| Private environment backup excluded | 1 | Filename/status only; no contents read or copied |
-| **Total** | **221** | |
-
-For every visible modified/deleted/unmerged tracked path, a binary-safe
-`git diff --no-ext-diff --no-textconv --binary HEAD -- PATH` was captured
-locally. Untracked readable files were copied directly. Raw snapshots,
-per-file diffs, the five-commit patch stream and test logs remain only in
-ignored `.deploy-rescue-private/`; no environment backup was copied there.
-The JSON ledger includes the private capture's SHA-256 so its relationship to
-the public metadata can be verified without publishing the raw snapshot.
-
-## Five-commit rescue proof
-
-Each command `git merge-base --is-ancestor SHA bec753b5e95893acf159d0ef08ce79057d98c6f8`
-returned **0**. The original commits are retained, so rebasing copies would
-provide no additional rescue.
-
-| Original VPS commit | Feature | Destination |
+| Approach | Measured result | Decision |
 | --- | --- | --- |
-| `a8921b89f0de80f32c3e5af79886817077f24c34` | Region-name probe list | Main through merged #133 |
-| `ffa3160348543097cfd6509f66169e618f0183e2` | Raw packet `region_scope` projection | Main through merged #133 |
-| `4bf39aea946aa71117984b813ecd18067fe229e7` | Raw packet region filter | Main through merged #133 |
-| `1d86e043a515d3c2ca381660866ff03eb2833a0a` | Live message tags | Main through merged #133 |
-| `1f94bd8ef35c2a7553f13e4e9a603054c6fb6400` | Observer transmitted-packet counts | Main through merged #133 |
+| Original query | SQL execution p50 **6,893.302 ms**; HTTP p50 **8,775.144 ms** | Baseline. |
+| Aggregate raw receivers before canonicalization | SQL execution p50 **203.435 ms**; HTTP p50 **548.563 ms** | Chosen: meets target with fresh reads and a small SQL change. |
+| Also replace the identity view with name-only representative selection | SQL execution p50 **112.795 ms** | Rejected: saves about 91 ms but duplicates central ranking rules and creates another place to maintain identity semantics. Live snapshot rows matched, but the extra complexity is unnecessary for this target. |
+| Precomputed canonical-count rollup, read-path proxy | SQL execution p50 **136.331 ms**, with 26 counts frozen into `VALUES` | Rejected: only about 67 ms below the chosen query, before ingest/refresh/expiry/alias-update maintenance costs. This is a read-path lower bound, not a maintained-rollup benchmark. No materialized view or rollup table was created. |
+| 15-second endpoint response-cache prototype over the original query | Warm-hit p50 **4.796 ms**; cold request **8,798.319 ms**; 1 DB query for 6 requests | Rejected: cold latency persists and TTL expiry would allow stale status/counts/names for up to 15 seconds without invalidation. The query rewrite meets the target on every sampled uncached request. |
 
-`git cherry origin/main 1f94bd8ef35c2a7553f13e4e9a603054c6fb6400`
-and `git log --oneline origin/main..1f94bd8ef35c2a7553f13e4e9a603054c6fb6400`
-both produced **no output** in this worktree. In contrast, the same range
-against the VPS's stale tracking ref produces the five rows above.
+For the rollup proxy, counts were obtained read-only and represented as constant
+rows for the endpoint's read phase. The repeatable reproduction in
+`rollup-proxy.sql` takes a fresh snapshot and uses PostgreSQL `format('%L', ...)`
+to quote values before EXPLAINing the read phase. It measured **177.284 ms** on
+that separate reproduction. Refresh and backfill costs remain unmeasured;
+that limitation is part of the reason not to select it.
 
-## Rescue map for a future main-based release
+The first HTTP pass opened a new SSH connection per query: before p50
+**12,322.603 ms**, after **1,169.728 ms**. This measures transport setup in
+addition to the handler and database, so both that result and the reused-SSH
+result are retained. With connection reuse, the after samples were
+**657.984, 589.490, 422.218, 548.563, 490.278 ms**, all below one second.
+The real Express route, scope resolution, filtering and DTO run locally; only
+its database adapter uses remote read-only psql. Bigint fields are explicitly
+transported as strings. No remote HTTP server or application process was started.
+This does not substitute for a normal pooled-connection check after an operator
+chooses to deploy.
 
-Every exact path/class/destination is in the ledger below and
-[`evidence/deploy-rescue-20261022.json`](evidence/deploy-rescue-20261022.json).
-The grouped map is for navigation; shared entrypoints, contracts and manifests
-support multiple features.
+Full evidence is in [docs/performance/mqtt-nodes-20261022](docs/performance/mqtt-nodes-20261022):
 
-| Feature | Source anchors to preserve | Local verification / destination |
-| --- | --- | --- |
-| Public-feed reader ACL | `mqtt/aclManager.ts`, `owner/ownerAclReconciler.ts`, `tools/inventoryOwnerAuthorization.ts`, `.env.example`, Compose | Already in #133. Existing renderer tests cover `soulway`, replacement of a raw wildcard with `topic read public/+/+/packets`, no subscriber publish permission and backend-only `public/#` writes. |
-| Public-feed opt-in and forwarding | `owner/publicFeed{Config,Repository,Forwarder}.ts`, `api/routes/owner.ts`, `055_public_feed.sql`, owner public-feed UI | Existing configuration/repository/forwarder/route/UI tests pass. Retain #138's rollback on failed ACL reconciliation. |
-| Owner packet sharing | `owner/packetShare*.ts`, sharing migrations, owner routes/UI and Scotmesh tools | #101 plus newer #133 production implementation. Existing auth/config/forwarder/route/UI tests pass; DB integration not rerun here. |
-| Regions and participation | Regions API/repository/tooling, scope decoders, membership, RegionsMap/RegionsPage, `057_region_scope_participation.sql` | Already in #133; backend/frontend unit suites cover scope and model cases. Keep merged migration filenames. |
-| Durable/RAM ingest and tags | `mqtt/`, `ram/`, packet batch/input, observation-ledger migrations, tagger worker | #122/#125 plus #133 and `ec593306` tag parity fix. Unit suites pass; SQL/Redis integration is not claimed here. |
-| Privacy rematerialization and websocket boundaries | Privacy batch helpers, privacy worker/migration, websocket privacy/server | Already in main/#133; unit suites pass. Source equality does not prove current live privacy state. |
-| Pathing and accuracy | Path beta/core/lazy/learning/shared modules, path accuracy tools/docs, overlay utilities | Already in #133; decoder/resolver/rebuild and frontend model tests pass. |
-| Owner dashboard and topology | Owner service/repository/prewarm/charts, confirmed neighbours, topology/region models | Already in #133. The current timer-based prewarm is retained; historical alternative prewarm/virtualizer work is not reintroduced. |
-| Spam detection | `spam/{cluster,config,normalize}` and tests/docs | Byte-identical to main; existing unit cases pass. |
-| Operations and health | Lifecycle targets, metrics/status, alert receiver, split-infra/adoption-aware replacement script, bot/RF config | Retain main's newer protections. A historical unused ingest-queue gauge is already archived in #133; it is not imported over current durable-handler metrics. |
+- `before-plan.txt` and `after-plan.txt`: full initial EXPLAIN ANALYZE/BUFFERS plans.
+- `before.sql` and `after.sql`: the exact queries, expanded to production scope.
+- `sql-timings.txt`: all five comparison timings per variant and medians.
+- `names-only.sql`, `names-only-plan.txt`, `rollup-proxy.sql` and `rollup-proxy-plan.txt`: alternative evidence.
+- `http-new-ssh.jsonl` and `http-reused-ssh.jsonl`: verbatim HTTP benchmark output.
+- `equality.txt`: live read-only comparison; **23 rows before, 23 after, 0 differences** in either direction using `EXCEPT ALL`; the name-only alternative also had 0 differences.
+- `verification.txt`: local test summaries. Plans retain their textual content with trailing whitespace trimmed.
 
-Main's intentional changes relative to the archived production versions must
-remain: public-status field allowlists (#99), split-infra/adoption checks and
-pipefail fix (#114), core lifecycle target checks (#100), combined health
-diagnostics (#88), genuine heartbeat/dead-only vacuum fixes (#114/#117), owner
-credential validation, receipt-write recovery (#104), tag-column parity
-(`ec593306`), status-column insertion/migration (`b9672524`), fail-closed owner
-defaults (`cecc6b0f`), public-channel gating (#137), and public-feed rollback
-(#138). The per-file reasons identify which apply to each of the 23 historical
-versions. None of those old files should be copied wholesale over main.
+## Cache invalidation semantics
 
-To reproduce this audit without VPS access:
+No application, browser or shared-response cache was added. No new
+`Cache-Control`, TTL, invalidation hook, background refresh or stale-on-error
+behavior exists in the shipped handler. Each request reads the current database
+snapshot, so new observations, canonical alias changes and hidden-name changes
+are reflected on the next request, subject to normal transaction visibility.
+The isolated PostgreSQL test exercises all three changes through the actual
+HTTP route. The 15-second cache exists only inside the opt-in benchmark process
+for repeated requests to its single fixed anonymous URL; it is not wired into
+the application.
 
-```sh
-python3 scripts/verify-deploy-rescue.py
-python3 scripts/verify-deploy-rescue.py --candidate HEAD
-```
+## Exact verification commands and output
 
-The optional candidate check requires the audited baseline in its ancestry and
-flags **any byte change** to the 208 class-A files for human review. It is a
-conservative snapshot comparison, not a semantic feature test or deployment
-gate. A legitimate future feature edit can require review without being a
-regression. With the local capture available, add
-`--capture .deploy-rescue-private/inventory.json` to validate its checksum,
-path/status coverage and every readable source blob.
-
-## Deliberately excluded, parked questions and deployment boundary
-
-1. **Unreadable broker directory:** What differs in disk
-   `mosquitto/mosquitto.conf`, and which additional untracked files exist in
-   `mosquitto/`? Ordinary SSH reads return `PermissionError` / Git permission
-   warnings. No sudo, Docker, permission change or other bypass was attempted.
-   This is an unresolved inventory gap, not a claim that broker configuration
-   is rescued or safe for deployment.
-2. **Private environment:** `.env.pre-reconcile-20261020` is class B and was
-   deliberately not read/copied. Current ignored `.env`, ACL/password files,
-   keys and private identities are outside the public rescue. Operators must
-   separately preserve/reconcile private configuration and lifecycle/owner
-   authorization flags before deployment. #133 documented a lifecycle-target
-   precondition; this session did not read current values and does not claim
-   that the historical mismatch still exists.
-3. **Local probe override:** Is changing only the production alert receiver
-   from delivery readiness `/readyz` to liveness `/healthz` intentional?
-   Current main's test explicitly requires `/readyz`, and #133's CI exception
-   intentionally applies `/healthz` only to CI. Keep main unchanged and park
-   the unexplained production override; do not guess operator intent.
-4. **Stale conflict index:** VPS `misc.ts`, `db/index.ts`, and `ws/server.ts`
-   remain `UU` with three index stages. Their readable files contain no
-   conflict markers; two are byte-exact in #133 and the websocket file equals
-   main. `MERGE_HEAD` does not exist, so this is not evidence of an active
-   merge. Repairing the deploy index/tree is outside this read-only task.
-5. **Existing open #127:** That earlier sync PR remains open and untouched.
-   Its proposed migration renumbering differs from the already-merged #133
-   history. Do not apply it blindly as the source rescue for this snapshot;
-   any closure or rework belongs to a separate authorized review.
-6. **Runtime/deployment:** No image rebuild on the VPS, runtime provenance
-   claim, live DB migration/cleanup, service restart, merge or deploy is part
-   of this PR. Local code evidence does not prove production behavior. The
-   current deferred browser/prewarm coverage documented by #133 remains a
-   separate follow-up, not new scope for this rescue.
-
-## Verification commands and observed results
-
-Dependencies were installed only under this worktree with:
-`cd backend && npm ci --cache ../.deploy-rescue-private/npm-cache --ignore-scripts`
-and the equivalent frontend command with `npm-cache-frontend`.
-
-For the confined unit-suite runs, the exact commands from the root were:
+Initial and final backend checks, from `backend/`:
 
 ```sh
-cd backend
-TMPDIR="$PWD/../.deploy-rescue-private/tmp" npm_config_cache="$PWD/../.deploy-rescue-private/npm-cache" npm test
-# In a separate shell from the root:
-cd frontend
-TMPDIR="$PWD/../.deploy-rescue-private/tmp" npm_config_cache="$PWD/../.deploy-rescue-private/npm-cache-frontend" npm test
+npm ci --cache ../.mqttperf-evidence/npm-cache --no-audit --no-fund
+npm test
+TMPDIR="$PWD/../.mqttperf-evidence/tmp" npm test
+npm run typecheck
+npm run build
+npm run contract:check
+node_modules/.bin/tsc --ignoreConfig --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --esModuleInterop --skipLibCheck --strict src/api/routes/misc.test.ts src/api/routes/mqttNodes.integration.test.ts
+TMPDIR="$PWD/../.mqttperf-evidence/tmp" node --import tsx --test src/api/routes/misc.test.ts
 ```
 
-| Exact command / check | Result |
-| --- | --- |
-| Confined backend `npm test` above | 559 tests: **556 pass, 0 fail, 3 skipped**, plus synthetic firing/recovery receiver check |
-| Confined frontend `npm test` above | 155 tests: **149 pass, 0 fail, 6 skipped** |
-| `cd backend && npm run typecheck` | Pass |
-| `cd backend && npm run contract:check` | Pass: **71 API + 11 operator routes** current |
-| `cd backend && TMPDIR="$PWD/../.deploy-rescue-private/tmp" npm run build` | Pass |
-| `cd frontend && TMPDIR="$PWD/../.deploy-rescue-private/tmp" npm run build` | Pass; existing Vite >500 kB chunk warning |
-| `python3 scripts/verify-deploy-rescue.py --capture .deploy-rescue-private/inventory.json --candidate HEAD` | Pass: all 221 paths/statuses and 211 source blobs; all 208 class-A candidate files unchanged; five commits upstream |
-| `python3 scripts/verify-deploy-rescue.py --candidate 1f94bd8ef35c2a7553f13e4e9a603054c6fb6400` | Expected **exit 1**: old VPS HEAD does not contain audited main |
-| Read-only second VPS inventory/blob check | All 211 blobs, 221 status paths and HEAD unchanged at 14:28:27 UTC |
-| `git diff --check origin/main` | Pass |
-| `git check-ignore .deploy-rescue-private/inventory.json` | Private capture excluded |
+The initial suite passed **556/559**, with 3 skipped and 0 failures. The final
+suite, including the added contract test, printed:
 
-No local database-backed integration or browser E2E result is claimed. Skips
-are reported rather than counted as passes. No new application tests were
-added because no application behavior changed; existing feature tests and
-independent blob/ancestry evidence cover the rescue claims. Raw stdout/stderr
-for the listed local runs is retained in ignored `.deploy-rescue-private/`.
-Remote CI is reported from the actual PR checks at handoff, separately from
-these verified local results.
+```text
+# tests 560
+# suites 0
+# pass 557
+# fail 0
+# cancelled 0
+# skipped 3
+# todo 0
+# duration_ms 91463.570492
+Synthetic firing and recovery reached the bounded test receiver.
+```
 
-## Publication and PROOF
+The three skips are pre-existing opt-in live RF/history/export EXPLAIN tests,
+not the new regression. Source typecheck, strict test-file typecheck and build
+passed. Contract output:
 
-Only `burn/deploy-tree-rescue-20261022` is created/pushed by this task, from
-this worktree. Publication uses ordinary `git push`, never force-push. The
-evidence commit is `d6a2759bcd0a34c662109c1db989868bdb9eb16d`; the following
-documentation commit contains this report. Its exact SHA and the matching
-remote/PR head are reported at handoff; a commit cannot contain its own SHA.
+```text
+OpenAPI contract current: 71 API and 11 operator routes
+```
+
+The focused HTTP tests printed **3 tests, 3 passed, 0 failed/skipped**.
+Coverage includes exact public fields, omitted private/future fields, null
+counters, count strings above JavaScript's safe-integer range, zero-count
+filtering and anonymous/legacy/test request parameters.
+
+The actual PostgreSQL regression command is:
 
 ```sh
-git log --oneline origin/main..HEAD
-git rev-parse HEAD
-git ls-remote --heads origin burn/deploy-tree-rescue-20261022
-gh pr view 144 --repo gadgethd/ukmesh --json url,state,isDraft,baseRefName,headRefName,headRefOid
+# From backend; TEST_INGEST_DATABASE_URL must identify a disposable loopback DB.
+node --import tsx --test src/api/routes/mqttNodes.integration.test.ts
 ```
 
-The branch log contains the evidence commit above and the subsequent review
-commit. PR: **https://github.com/gadgethd/ukmesh/pull/144**. Feature destination
-PR already merged: **https://github.com/gadgethd/ukmesh/pull/133**. Ledger
-counts: **A=208, B=4, C=9 (221 visible), plus U=1 known unreadable tracked
-path and an unenumerated directory**. All five original VPS commits are on
-main; zero additional readable feature files need extraction. The explicit
-parked questions above prevent treating this audit as deployment clearance.
-
-## Continuation audit — 2026-10-22 15:51 UTC (16:51 BST)
-
-Resumed from `97d5111e6c35479e22c84a67859aa0ebb2cf468d` after reading the
-brief, this report and the branch log. The prior turn made concrete progress:
-the evidence and review commits were already pushed, with draft #144 open.
-The continuation changes only this report to record independently rechecked
-completion evidence; no additional source extraction is warranted.
-
-At this audit, `git ls-remote --heads origin main` still returned audited main
-`bec753b5e95893acf159d0ef08ce79057d98c6f8`. Local HEAD, remote branch head and
-PR #144's `headRefOid` all matched `97d5111e`. The offline verifier with both
-`--capture .deploy-rescue-private/inventory.json --candidate HEAD` passed
-again. The old VPS HEAD was again rejected with exit 1 by `--candidate`,
-because it lacks the audited-main baseline. This continuation did not contact
-the VPS; the inventory observation remains dated 14:28:27 UTC.
-
-An independent comparison found the Markdown and JSON ledgers agree exactly
-on all **221 paths, classes, dispositions, destinations and reasons**. The
-private capture contains successful, nonempty per-file diff results for all
-**106 modified/deleted/unmerged tracked paths**, and contents for all **211
-readable files**. The private environment backup contains only its filename,
-status and exclusion marker. All 23 historical-source diffs were reviewed
-against their retention reasons; newer main safeguards remain intact.
-
-Both GitHub CI workflows completed successfully for `97d5111e`:
-
-- [Pull-request CI, run 39796810383](https://github.com/gadgethd/ukmesh/actions/runs/39796810383)
-  finished at 15:02:14 UTC. Backend, Frontend, Workers and Compose, and Secret
-  scan all passed. Backend step results include analysis/ingest integration
-  and RAM operational checks. Workers and Compose includes clean-volume image
-  smoke, monitoring validation and browser E2E on its disposable runner.
-  The browser log reports **29 passed, 4 skipped, 1 flaky**; the RF coverage
-  terrain case passed on retry. This is not a retry-free browser result.
-- [Push CI, run 39796800912](https://github.com/gadgethd/ukmesh/actions/runs/39796800912)
-  finished at 15:01:35 UTC with the same four jobs successful.
-
-These are remote results for the stated checkpoint, separate from the local
-unit/build results above. A later documentation commit triggers its own CI;
-the successful checkpoint is not presented as a result for that later SHA.
-The inspected run metadata, job steps and logs came from:
+It ran with a fresh loopback-only embedded PostgreSQL **18.4.0-beta.17** fixture
+under `.mqttperf-evidence/`, a random test password and worktree-local `TMPDIR`.
+The exact local launcher command was:
 
 ```sh
-gh api repos/gadgethd/ukmesh/actions/runs/39796810383
-gh api repos/gadgethd/ukmesh/actions/runs/39796810383/jobs
-gh api repos/gadgethd/ukmesh/actions/runs/39796800912
-gh run view 39796810383 --repo gadgethd/ukmesh --log
+TMPDIR="$PWD/.mqttperf-evidence/tmp" node .mqttperf-evidence/run-postgres.mjs
 ```
 
-| Brief requirement | Completion evidence / explicit boundary |
-| --- | --- |
-| Read-only inventory, local commits and per-file diffs | Private capture; 221 visible paths, 106 successful tracked-path diffs, 211 readable blobs and the original five-commit patch stream. Unreadable broker paths are explicitly parked, with unknown additional entry count. |
-| Every visible file classified with a reason and destination | All 221 Markdown rows independently matched to JSON; A=208, B=4, C=9. Supplemental U records the inaccessible broker file/directory. |
-| Coherent feature extraction on current main | All five original commits and recovery #133 are ancestors of current main; 187 files identical, 23 historical versions preserved in #133, one probe override parked. Existing merged features are not duplicated. |
-| Private branch pushed and PR opened with exact scope | #144 is open against main; its body lists the five commits, links the complete file ledger and identifies all exclusions. Local/remote/PR checkpoint SHAs matched. The final documentation head is rechecked after normal push. |
-| Rescue map and unrescued work | Feature map and exact file ledger above; broker visibility, private configuration, probe intent and stale conflict index remain explicit operator questions, as the brief permits for unattributable files. |
-| Verification, PROOF and committed review | Offline verifier, negative old-candidate check, exact ledger comparison, retained local test/build logs and completed checkpoint CI; branch-only log and final remote SHA verified at handoff. |
+The launcher/tooling is ignored local infrastructure, not a runtime dependency.
+The test is committed and uses the existing disposable PostgreSQL service in CI
+via `npm run test:ingest-integration`; it creates a unique schema in one
+transaction and rolls it back. It refuses non-loopback URLs. It uses the real
+canonical function and status view from migration 036, fixture names for the
+unchanged node view, and the frozen original endpoint SQL as an oracle.
 
-The bounded rescue deliverables are complete with the parked gaps disclosed.
-This does not establish that the unreadable broker contents are rescued or
-that a release can safely proceed. Broker visibility, private configuration
-and the unexplained probe override still need operator resolution before a
-future release.
+```text
+# tests 5
+# suites 0
+# pass 5
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+```
+
+These checks cover aliases with case/whitespace normalization, multiple aliases
+merging into a canonical receiver, all production labels, isolated test traffic,
+24-hour/15-minute windows, null/empty receiver observations, duplicate hashes,
+missing names/counters, hidden/stale/zero-count nodes, uptime/time ordering,
+`bigint` SQL type, immediate updates and an empty result.
+
+Initial EXPLAIN commands, from the worktree root:
+
+```sh
+ssh -p 32720 -o BatchMode=yes -o ConnectTimeout=10 -o ProxyJump=none ben@57.129.131.35 'docker exec -i -e PGOPTIONS="-c default_transaction_read_only=on -c statement_timeout=30000 -c lock_timeout=2000" meshcore-infra-timescaledb-1 psql -X -U meshcore -d meshcore -v ON_ERROR_STOP=1' < .mqttperf-evidence/before-explain.sql > .mqttperf-evidence/before-plan.txt
+ssh -p 32720 -o BatchMode=yes -o ConnectTimeout=10 -o ProxyJump=none ben@57.129.131.35 'docker exec -i -e PGOPTIONS="-c default_transaction_read_only=on -c statement_timeout=30000 -c lock_timeout=2000" meshcore-infra-timescaledb-1 psql -X -U meshcore -d meshcore -v ON_ERROR_STOP=1' < .mqttperf-evidence/counts-first-explain.sql > .mqttperf-evidence/counts-first-plan.txt
+```
+
+The inputs wrap the committed `before.sql`/`after.sql` with `BEGIN READ ONLY;`,
+`EXPLAIN (ANALYZE, BUFFERS, SETTINGS, SUMMARY, TIMING OFF)` and `ROLLBACK;`.
+The initial output lines, quoted verbatim, were:
+
+```text
+ Planning Time: 50.469 ms
+ Execution Time: 6607.320 ms
+ Planning Time: 59.431 ms
+ Execution Time: 207.755 ms
+```
+
+The five-round comparison used the same command with input
+`.mqttperf-evidence/repeats.sql` and output `.mqttperf-evidence/repeats-plan.txt`.
+That input emits each of the committed before/after/name-only queries after
+EXPLAIN inside one repeatable-read read-only transaction; the full extracted
+timings are committed in `sql-timings.txt`.
+
+The committed rollup-proxy reproduction was run exactly as follows:
+
+```sh
+ssh -p 32720 -o BatchMode=yes -o ConnectTimeout=10 -o ProxyJump=none ben@57.129.131.35 'docker exec -i -e PGOPTIONS="-c default_transaction_read_only=on -c statement_timeout=30000 -c lock_timeout=2000" meshcore-infra-timescaledb-1 psql -X -U meshcore -d meshcore -v ON_ERROR_STOP=1' < docs/performance/mqtt-nodes-20261022/rollup-proxy.sql > .mqttperf-evidence/rollup-proxy-reproduction.txt
+```
+
+The HTTP comparison command, from `backend/`, was:
+
+```sh
+MQTT_PERF_SSH_TARGET=ben@57.129.131.35 MQTT_PERF_SSH_PORT=32720 MQTT_PERF_SSH_CONTROL_PATH="$PWD/../.mqttperf-evidence/s" node --import tsx src/tools/benchmarkMqttNodes.ts > ../.mqttperf-evidence/http-reused-ssh.txt 2>&1
+ssh -p 32720 -o ProxyJump=none -S ../.mqttperf-evidence/s -O exit ben@57.129.131.35
+```
+
+Before/after output, quoted verbatim:
+
+```json
+{"mode":"before","scope":["ukmesh","northeast","teesside"],"samples_ms":[8775.144,9018.247,8495.012,9025.393,7880.597],"p50_ms":8775.144,"database_queries":5}
+{"mode":"after","scope":["ukmesh","northeast","teesside"],"samples_ms":[657.984,589.49,422.218,548.563,490.278],"p50_ms":548.563,"database_queries":5}
+```
+
+`git diff --check` and a comparison of the final route SQL against measured
+`after.sql` (ignoring comments and whitespace) also passed.
+
+## Continuation completion audit — 15:53 BST
+
+The continuation audited pushed HEAD `f95ad42020c7858830667faf9c545c079f38c41e`
+against the brief, original handler, measured queries, fixture oracle and PR.
+The original oracle and before measurement match the base handler; the after
+measurement matches the current handler after parameter substitution and
+removal of comments/whitespace. The response fields, bigint count type,
+network/window predicates, alias semantics and ordering are preserved.
+No further application change was needed.
+
+[CI run 39785176256](https://github.com/gadgethd/ukmesh/actions/runs/39785176256)
+completed successfully at that exact HEAD: Backend, Frontend, Workers and
+Compose, and Secret scan. The actual Backend job log confirms that the new
+PostgreSQL regression and all four subtests ran and passed, rather than skipping.
+The existing PR has no review comments or requested changes. The remote branch
+and PR head both matched the local commit when inspected.
+
+The following commands were rerun in the continuation, using the same local
+fixture and read-only remote safeguards described above:
+
+```sh
+# From the worktree root:
+TMPDIR="$PWD/.mqttperf-evidence/tmp" node .mqttperf-evidence/run-postgres.mjs > .mqttperf-evidence/resume-sql-tests.txt 2>&1
+# From backend/:
+TMPDIR="$PWD/../.mqttperf-evidence/tmp" node --import tsx --test src/api/routes/misc.test.ts > ../.mqttperf-evidence/resume-route-tests.txt 2>&1
+TMPDIR="$PWD/../.mqttperf-evidence/tmp" MQTT_PERF_SSH_TARGET=ben@57.129.131.35 MQTT_PERF_SSH_PORT=32720 MQTT_PERF_SSH_CONTROL_PATH="$PWD/../.mqttperf-evidence/s" node --import tsx src/tools/benchmarkMqttNodes.ts > ../.mqttperf-evidence/resume-http-reused-ssh.txt 2>&1
+# From the worktree root, repeat the original snapshot comparison, then close the local SSH master:
+ssh -p 32720 -o BatchMode=yes -o ConnectTimeout=10 -o ProxyJump=none -S .mqttperf-evidence/s ben@57.129.131.35 'docker exec -i -e PGOPTIONS="-c default_transaction_read_only=on -c statement_timeout=30000 -c lock_timeout=2000" meshcore-infra-timescaledb-1 psql -X -U meshcore -d meshcore -v ON_ERROR_STOP=1' < .mqttperf-evidence/equality.sql > .mqttperf-evidence/resume-equality.txt
+ssh -p 32720 -o ProxyJump=none -S .mqttperf-evidence/s -O exit ben@57.129.131.35
+```
+
+The PostgreSQL regression again passed **5/5, zero skips**; focused HTTP tests
+passed **3/3, zero skips**. The fresh live comparison again returned **23 rows
+before, 23 after, zero differences**. Verbatim fresh HTTP before/after output:
+
+```json
+{"mode":"before","scope":["ukmesh","northeast","teesside"],"samples_ms":[10450.707,10538.907,7790.226,8564.191,9159.034],"p50_ms":9159.034,"database_queries":5}
+{"mode":"after","scope":["ukmesh","northeast","teesside"],"samples_ms":[777.87,761.479,924.97,784.056,617.875],"p50_ms":777.87,"database_queries":5}
+```
+
+All five fresh uncached after samples were below one second. These are another
+small sample through the same local handler/remote read-only adapter, with the
+same transport and production-deployment limitations stated above. Committed
+`resume-http-reused-ssh.jsonl`, `resume-equality.txt` and
+`resume-verification.txt` retain this evidence. The continuation changes only
+the review and evidence; the application and tests remain at implementation
+commit `eef1244eca884b4f03c12775c2e2e9fcb47895a8`.
+
+## Final continuation audit — 16:51 BST
+
+The next continuation checked pushed HEAD
+`02c2699c5cc886820de246e4e79b36e2dc58bfa1` against the brief and PR.
+The original SQL oracle still matches the base handler, both measured queries
+match their handlers, and the committed benchmark percentiles match their raw
+samples. No application or test change was needed.
+
+The focused HTTP tests again passed **3/3**, and the disposable PostgreSQL
+regression again passed **5/5**, both with zero skips. Using the same exact
+commands listed in the previous continuation, with output names changed from
+`resume-*` to `final-*`, the fresh repeatable-read read-only comparison returned
+**23 rows before, 23 after, zero differences**. The fresh HTTP output was:
+
+```json
+{"mode":"before","scope":["ukmesh","northeast","teesside"],"samples_ms":[9832.011,8557.604,9522.517,7722.685,8313.036],"p50_ms":8557.604,"database_queries":5}
+{"mode":"after","scope":["ukmesh","northeast","teesside"],"samples_ms":[514.287,468.481,588.657,509.152,516.109],"p50_ms":514.287,"database_queries":5}
+```
+
+All five uncached after samples were below 600 ms. The same local-handler,
+remote-database transport and small-sample limitations apply. The fresh cache
+prototype remained a benchmark-only experiment: cold request **7,706.664 ms**,
+five warm hits at **7.546 ms p50**, one database query. These results and test
+summaries are retained in `final-http-reused-ssh.jsonl`, `final-equality.txt`
+and `final-verification.txt` in the evidence directory.
+
+[Push CI run 39799957604](https://github.com/gadgethd/ukmesh/actions/runs/39799957604)
+passed all four jobs at the inspected HEAD. Its Backend job log confirms the
+new PostgreSQL regression ran and passed all four subtests without skipping.
+The corresponding
+[PR CI run 39799966252](https://github.com/gadgethd/ukmesh/actions/runs/39799966252)
+passed Backend, Frontend and Secret scan, but its first Workers and Compose
+attempt timed out in the existing `RF coverage remains available with 3D terrain`
+desktop browser test at 60 seconds, including its test retry. The same job
+passed on the push run. The failed PR job was rerun without changing application
+code; current PR checks remain authoritative for its final result. No terrain
+or unrelated frontend change was made to this performance branch.
+
+## Deliberately left out, open questions and rollback
+
+No identity-view rewrite, materialized count table, schema migration, HTTP
+cache, invalidation bus, refresh worker, index or new runtime dependency was
+added. No unrelated endpoint or frontend behavior was changed. No agent was
+spawned, no live service restarted, no live config edited, and no live database
+write or migration was performed. Only this worktree's branch was pushed; no
+merge, release or deployment was requested.
+
+The operator still needs to review/merge and decide whether to deploy. After a
+normal deployment, confirm the actual pooled-connection endpoint latency and
+continued SQL-plan shape under the live request rate. The new PostgreSQL
+regression is wired into CI; current PR checks are authoritative for remote
+status. No claim is made that every unrelated repository integration suite was
+run locally. Future packet-volume growth can justify revisiting rollups; ingest
+maintenance, moving-window expiry and alias-update backfills need separate
+measurement if that happens.
+
+Rollback is an application-code revert of the implementation commit, through a
+separate reviewed PR. There is no migration or database object to roll back and
+no rollback SQL is required. Reverting restores the original query and its
+latency; it does not modify data. This session performs no rollback or deploy.
+
+The previous root review covered unrelated historical work; it remains in git
+history at the base commit. This file now describes the requested performance
+branch. The following documentation commit records the PR URL and this review;
+its exact final HEAD is reported in the handoff and verified against the remote.
 
 ## Honest mistake inventory
 
-- The first verifier attempted a repository-wide readiness-probe replacement
-  and correctly stopped on multiple matches. It now scopes the reconstruction
-  to `alert-receiver` and verifies the resulting exact captured Git blob.
-- The initial standard test commands used the suite-default OS temp directory
-  and npm's default cache, so local tool scratch was not fully confined to the
-  worktree. The verification reruns set worktree-local `TMPDIR` and npm cache;
-  no live/project source outside the worktree was edited. The builds set local
-  `TMPDIR`, but did not override npm's default cache. This local scratch-scope
-  mistake does not change the read-only VPS evidence.
-
-## File-by-file ledger
-
-`origin/main` in every destination below means audited commit `bec753b5`,
-already reachable from this evidence branch. The evidence branch does not
-replace the feature destination. Class A files with historical versions retain
-the newer main implementation; their original disk bytes remain provable from
-the recovery commit. Supplemental class U is listed above, outside this visible
-221-path table.
-
-| VPS path | Class / disposition | Destination | Reason |
-| --- | --- | --- | --- |
-| `.env.example` | A / historical-superseded | origin/main (already rescued) | Keep main public-channel opt-in and enforce/apply defaults; feed-reader variable is preserved. |
-| `.gitignore` | B / identical-main | origin/main (existing housekeeping) | Ignore-rule housekeeping already on main; no environment, key or plan files imported. |
-| `DB-AUDIT-FIX-2026-08-13.md` | C / deleted-upstream | origin/main (existing housekeeping) | Stale report/screenshot deletion already recorded on main; no runtime feature to extract. |
-| `FEED-HISTORY-2026-08-06-bot.png` | C / deleted-upstream | origin/main (existing housekeeping) | Stale report/screenshot deletion already recorded on main; no runtime feature to extract. |
-| `README.md` | A / historical-superseded | origin/main (already rescued) | Keep main confidentiality wording and reviewed lifecycle/forensic policy; live feature documentation remains. |
-| `SEO-ROLLBACK-2026-08-08.txt` | C / deleted-upstream | origin/main (existing housekeeping) | Stale report/screenshot deletion already recorded on main; no runtime feature to extract. |
-| `SPRING-DASHBOARD-2026-08-06.png` | C / deleted-upstream | origin/main (existing housekeeping) | Stale report/screenshot deletion already recorded on main; no runtime feature to extract. |
-| `SPRING-INSTALL-AUDIT-2026-08-06.png` | C / deleted-upstream | origin/main (existing housekeeping) | Stale report/screenshot deletion already recorded on main; no runtime feature to extract. |
-| `SPRING-MAPFEED-2026-08-06.png` | C / deleted-upstream | origin/main (existing housekeeping) | Stale report/screenshot deletion already recorded on main; no runtime feature to extract. |
-| `SPRING-PAGES-2026-08-06.png` | C / deleted-upstream | origin/main (existing housekeeping) | Stale report/screenshot deletion already recorded on main; no runtime feature to extract. |
-| `SPRING-TOPOLOGY-2026-08-06.png` | C / deleted-upstream | origin/main (existing housekeeping) | Stale report/screenshot deletion already recorded on main; no runtime feature to extract. |
-| `TERRAIN-V6-REPORT.md` | C / deleted-upstream | origin/main (existing housekeeping) | Stale report/screenshot deletion already recorded on main; no runtime feature to extract. |
-| `anubis/botPolicy.yaml` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/package.json` | A / historical-superseded | origin/main (already rescued) | Keep main dependency pins, session-revoke command and expanded verification scripts. |
-| `backend/src/api/contracts.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/api/routes.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/api/routes/exports.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/api/routes/exports.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/api/routes/misc.ts` | A / historical-superseded | origin/main (already rescued) | Keep main public-channel gate and public status allowlist; snapshot bytes already in recovery commit. |
-| `backend/src/api/routes/owner.ts` | A / historical-superseded | origin/main (already rescued) | Keep main public-feed rollback on failed ACL reconciliation (PR #138). |
-| `backend/src/api/routes/productFeatures.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/api/routes/rfValidation.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/api/utils/networkFilters.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/api/utils/networkFilters.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/db/dataLifecycle.test.ts` | A / historical-superseded | origin/main (already rescued) | Keep main required-core-target regressions; older production test already archived. |
-| `backend/src/db/dataLifecycle.ts` | A / historical-superseded | origin/main (already rescued) | Keep main fail-closed required-core-target checks; production lifecycle targets are retained. |
-| `backend/src/db/index.ts` | A / historical-superseded | origin/main (already rescued) | Keep main public-channel/payload sanitization and status-column insertion; snapshot already archived. |
-| `backend/src/db/packetBatch.integration.test.ts` | A / historical-superseded | origin/main (already rescued) | Keep reconciled fresh-bootstrap migration expectations; do not reintroduce obsolete five-name assertion. |
-| `backend/src/db/packetBatch.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/db/packetBatch.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/db/packetVisibilityFence.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/db/publicVisibilityMigration.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/health/status.ts` | A / historical-superseded | origin/main (already rescued) | Keep combined diagnostics, genuine heartbeat, vacuum and lifecycle metrics; older bounded scans already archived. |
-| `backend/src/health/statusIntegrity.test.ts` | A / historical-superseded | origin/main (already rescued) | Keep main dead-only vacuum regression plus production privacy-rematerialization cases. |
-| `backend/src/health/statusRetention.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/index.ts` | A / historical-superseded | origin/main (already rescued) | Keep main fail-closed owner defaults and shadow warning; public-feed/prewarm wiring remains. |
-| `backend/src/metrics.test.ts` | A / historical-superseded | origin/main (already rescued) | Keep main bounded table label used by lifecycle metrics. |
-| `backend/src/metrics.ts` | A / historical-superseded | origin/main (already rescued) | Keep main durable-handler and scrape heartbeat/lifecycle metrics; old unused queue-depth declaration is archived. |
-| `backend/src/mqtt/aclManager.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/mqtt/aclManager.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/mqtt/client.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/mqtt/decodePacket.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/owner/ownerAclReconciler.ts` | A / historical-superseded | origin/main (already rescued) | Keep main apply default; explicit and opted-in public-feed reader grant logic is retained. |
-| `backend/src/owner/ownerDashboard.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/owner/ownerDashboard.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/owner/ownerRepository.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/owner/ownerService.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/path-beta/resolveWorker.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/path-beta/resolver.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/path-beta/resolverContext.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/path-beta/sharedDecoder.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/path-beta/sharedDecoder.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/path-beta/slowMode.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/path-beta/types.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/path-core/decoder.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/path-core/decoder.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/path-lazy/evaluate.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/path-lazy/lazyResolver.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/path-learning/rebuild.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/path-learning/rebuild.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/path-shared/scoring.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/platform/config/pathing.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/repositories/networkAnalysis.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/repositories/nodes.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/repositories/nodes.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/repositories/productFeatures.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/repositories/productFeatures.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/spam/cluster.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/spam/cluster.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/spam/config.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/spam/normalize.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/spam/normalize.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/tools/inventoryOwnerAuthorization.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/workers/alert-receiver.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/workers/alert-receiver.ts` | A / historical-superseded | origin/main (already rescued) | Keep main recovery of receipt appends after a previous failure. |
-| `backend/src/ws/privacy.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/ws/privacy.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/ws/server.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backup-receipts/latest.json` | B / identical-main | origin/main (existing housekeeping) | Generated signed restore-receipt artifact already identical to main; do not regenerate or copy live receipts. |
-| `backup-receipts/latest.json.sig` | B / identical-main | origin/main (existing housekeeping) | Generated signed restore-receipt artifact already identical to main; do not regenerate or copy live receipts. |
-| `docker-compose.yml` | A / parked-local-probe | origin/main (already rescued) | Keep main readiness probe and fail-closed/channel defaults; local liveness override is parked for operator intent review. |
-| `docs/db-lifecycle.md` | A / historical-superseded | origin/main (already rescued) | Keep main signed-receipt, required-target and forensic guidance; old text already archived. |
-| `docs/openapi.yaml` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `docs/pathing.md` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `docs/privacy.md` | A / historical-superseded | origin/main (already rescued) | Keep main public-status telemetry allowlist documentation. |
-| `docs/spam-detection.md` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `frontend/public/sw-runtime.js` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `frontend/src/components/app/DisclaimerModal.tsx` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `frontend/src/components/owner/OwnerPortalSections.tsx` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `frontend/src/config/publicRoutes.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `frontend/src/hooks/packetPathOverlayUtils.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `frontend/src/hooks/packetPathOverlayUtils.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `frontend/src/hooks/useVisibilityPoll.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `frontend/src/hooks/useVisibilityPoll.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `frontend/src/main.tsx` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `frontend/src/pages/OwnerPortalPage.tsx` | A / historical-superseded | origin/main (already rescued) | Keep main owner credential validation; live packet-sharing/public-feed UI is retained. |
-| `frontend/src/pages/TopologyPage.tsx` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `frontend/src/pages/owner-portal.css` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `frontend/src/pages/owner/OwnerHeardNeighbors.tsx` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `frontend/src/pages/owner/OwnerPortalCharts.tsx` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `frontend/src/pages/owner/ownerPortalModel.ts` | A / historical-superseded | origin/main (already rescued) | Keep main bounded/control-character credential validation helpers. |
-| `frontend/src/pages/ukmesh/UKLayout.tsx` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `frontend/src/pages/ukmesh/UKRepeaterSearchPage.tsx` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `frontend/src/utils/pathing.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `rf-coverage/config.ukmesh.yaml` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `scripts/replace-container.sh` | A / historical-superseded | origin/main (already rescued) | Keep main split-infrastructure resolution, adoption preflight and pipefail fix. |
-| `.env.pre-reconcile-20261020` | B / excluded-secret | parked: operator private configuration | Credential-bearing environment backup: contents not read/copied; operator-owned private configuration. |
-| `backend/backfill-region-names.mjs` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/api/routes/auditwave.integration.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/api/routes/auditwave.performance.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/api/routes/nodeLinks.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/api/routes/ownerPacketSharing.test.ts` | A / historical-superseded | origin/main (already rescued) | Keep main owned-node and authenticated-session regressions. |
-| `backend/src/api/routes/ownerPublicFeed.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/api/routes/productFeatures.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/api/routes/regions.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/api/routes/regions.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/api/routes/rfValidation.integration.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/api/routes/rfValidation.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/db/migrations/052_owner_packet_sharing.sql` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/db/migrations/053_owner_packet_share_destination_metadata.sql` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/db/migrations/054_owner_packet_share_default_off.sql` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/db/migrations/055_public_feed.sql` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/db/migrations/056_async_privacy_rematerialization.sql` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/db/migrations/057_region_scope_participation.sql` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/db/migrations/058_packet_share_owner_scope_and_jwt.sql` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/db/migrations/059_ingest_observation_ledger.sql` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/db/migrations/060_ingest_ledger_historical_coverage.sql` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/db/nodeHistory.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/db/packetInput.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/db/recentRead.integration.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/mqtt/dedupeRegistry.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/mqtt/dedupeRegistry.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/mqtt/durableHandler.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/mqtt/durableHandler.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/mqtt/ingestConfig.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/mqtt/ingestConfig.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/mqtt/observationIdentity.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/mqtt/observationIdentity.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/mqtt/shutdownDeadline.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/mqtt/shutdownDeadline.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/mqtt/statusTelemetry.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/mqtt/statusTelemetry.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/owner/ownerLastHopPrewarm.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/owner/ownerRepository.integration.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/owner/ownerService.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/owner/packetShareAuth.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/owner/packetShareAuth.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/owner/packetShareConfig.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/owner/packetShareConfig.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/owner/packetShareCrypto.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/owner/packetShareForwarder.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/owner/packetShareForwarder.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/owner/packetShareRepository.integration.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/owner/packetShareRepository.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/owner/publicFeedConfig.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/owner/publicFeedConfig.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/owner/publicFeedForwarder.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/owner/publicFeedForwarder.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/owner/publicFeedRepository.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/owner/publicFeedRepository.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/path-beta/championPriors.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/path-beta/championPriors.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/privacy/publicBatch.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/privacy/publicBatch.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/ram/drain.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/ram/drainLifecycle.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/ram/drainLifecycle.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/ram/liveRead.ts` | A / historical-superseded | origin/main (already rescued) | Keep main tags/tag_confidence SQL-to-RAM parity and committed-tag preservation. |
-| `backend/src/ram/liveStore.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/ram/liveStore.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/ram/memory.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/ram/memory.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/ram/operational.integration.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/ram/protocol.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/ram/protocol.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/ram/publicSource.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/ram/publicSource.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/ram/ram.integration.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/ram/runtime.integration.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/ram/writer.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/ram/writer.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/ram/writerRuntime.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/regions/memberShare.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/regions/memberShare.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/regions/regionNames.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/regions/scopeDecode.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/regions/scopeDecode.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/repositories/networkAnalysis.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/repositories/nodeLinks.integration.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/repositories/productFeatures.integration.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/tools/encryptPacketShareSecret.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/tools/pathAccuracy.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/tools/pathAccuracy.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/tools/prepareScotmesh.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/tools/provisionScotmesh.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/tools/rebuildRegionParticipation.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/workers/privacy-rematerialization.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `backend/src/ws/publicAuthorization.integration.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `docs/pathing-accuracy-2026-09-05.json` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `docs/pathing-accuracy-2026-09-05.md` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `frontend/src/components/ConfirmedNeighbours.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `frontend/src/components/ConfirmedNeighbours.tsx` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `frontend/src/components/Map/RegionsMap.tsx` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `frontend/src/components/Map/regionOverlay.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `frontend/src/components/Map/regionOverlay.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `frontend/src/components/owner/OwnerPacketSharingSection.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `frontend/src/components/owner/OwnerPublicFeedSection.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `frontend/src/pages/OwnerPortalPage.browser.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `frontend/src/pages/RegionsPage.tsx` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `frontend/src/pages/TopologyPage.browser.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `frontend/src/pages/TopologyPage.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `frontend/src/pages/owner/OwnerPanelState.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `frontend/src/pages/owner/OwnerPanelState.tsx` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `frontend/src/pages/owner/packetShareModel.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `frontend/src/pages/regions-page.css` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `frontend/src/pages/regionsModel.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `frontend/src/pages/regionsModel.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `frontend/src/utils/pathing.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `scripts/refresh-owner-baseline.sh` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `scripts/test-ram-redis-acl.mjs` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-| `tagger-worker/Dockerfile` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
-
----
-
-# Historical reviews (preserved)
-
-# UKMesh fix review — 2026-10-02
-
-Branch: `fix/ukmesh-burn-20261002`. Base: `73ee004` (`ukmesh-w5`).
-Scope: the UKMesh burn brief, including the stretch queue. All edits and local
-verification stay in this worktree. No deployment, container restart, migration,
-live-tree access, or environment change is authorized or performed.
-
-## Baseline and evidence
-
-- Read `knowledge.md`, `AI_MEMORY.md`, and the full supplied brief, and consulted
-  OpenViking. Tokensave tools and `.tokensave/tokensave.db` are absent here, so
-  structural investigation uses scoped source searches and Git objects.
-- The initial worktree was clean. `git symbolic-ref refs/remotes/origin/HEAD`
-  fails because the local symbolic ref is absent. `git ls-remote --symref origin
-  HEAD` and `gh repo view gadgethd/ukmesh --json defaultBranchRef,nameWithOwner`
-  both identify `main` (remote HEAD `74d3ff1`). The requested integration base
-  remains `ukmesh-w5`; changing it would change the brief's scope.
-- Dependencies were missing; `npm ci` in `backend` and `frontend` installed the
-  committed lockfiles without changing them. Initial backend `npm test` after
-  installation: **327/327 pass, 0 fail, 0 skipped**.
-- The brief describes additional untracked live-checkout code. Neither
-  `runState.test.ts` nor `ownerLastHopPrewarm.ts` exists on the initial branch.
-  Git history contains the former and its full policy in `d834ba8`, and an
-  earlier feed measurement implementation in `333f180`. No live checkout was
-  inspected or copied.
-- `push.md` is ignored but absent from this worktree and all Git history. An
-  optional location question received no answer during the work; OpenViking
-  supplies no copy. Its exact discipline cannot be verified. The authorized
-  fallback is a clean, reviewed and tested private branch, a non-forced push to
-  that branch only, and an exact remote-SHA check. No merge or deployment follows.
-- Issue numbers in the brief are not assumed to be GitHub issue IDs:
-  `gh issue view 438 --repo gadgethd/ukmesh` finds no such issue. The supplied
-  brief is the requirements source.
-
-## 1. Unit suite — #536 / #437 / #301
-
-Decision: option (c), restore the complete intended retired-workload policy,
-including the missing export and production callers, from the isolated prior
-fix `d834ba8`. The initial `runState.ts` exactly matches that commit's parent.
-This is not a dummy export to make a test load: migration 044 explicitly removed
-the path-history cache, API and worker; `beginAnalysisRun` must reject a new
-retired lease, and `getAnalysisWorkloadStates` must describe retirement while
-preserving historical failures for audit. Supported workloads and unexpected
-active retired runs continue to expose their actual status and errors.
-
-Evidence: after restoring only the historical test and `workloadPolicy.ts`,
-`cd backend && node --import tsx --test src/analysis/runState.test.ts` fails with
-`SyntaxError: ... does not provide an export named 'normalizeRetiredAnalysisState'`.
-After restoring the source policy wiring, the same command passes **3/3**, with
-no database needed. `cd backend && npm test` now passes **330/330**, 0 fail,
-0 skipped; `cd backend && npm run typecheck` passes. Final suite results appear
-below.
-
-## 2. Owner last-hop prewarm — #438
-
-The named file is absent from the integration base. Recreated a prewarmer around
-the existing `ownerService.getOwnerLastHopStrength` cache and wired it after
-owner-auth initialization, with lifecycle shutdown draining. This branch exposes
-one rolling seven-day result (`ownerRepository.fetchLastHopStrength`), not the
-live brief's two separate windows; no speculative window API was added.
-
-Each pass enumerates active, verified owner grants, deduplicates nodes per owner,
-and refreshes at most two owner/node pairs concurrently. Optional
-`OWNER_LAST_HOP_PREWARM_CONCURRENCY=1` selects sequential work; values above two
-remain capped at two. The next pass starts 30 minutes after completion, so cold
-passes cannot overlap. Start/end logs and every ten completed nodes report
-owners/nodes completed and total, refreshed and failed. A refresh warns at 20s
-while still in flight; failures are counted and do not stop the pass.
-
-Forced warm refreshes replace groups in the inclusive latest-bucket query window
-and retain earlier history. Foreground reads and
-warm refreshes share in-flight work. Cache keys include all owned nodes because
-that exclusion set changes the last-hop query; warming a shared node for one
-owner must not serve another owner's exclusion scope.
-
-Validation: `cd backend && node --import tsx --test
-src/owner/ownerLastHopPrewarm.test.ts src/owner/ownerService.test.ts`:
-**8/8 pass**, covering the concurrency cap, progress/failure/owner accounting,
-single-flight, deduplication, an in-flight slow failure, shutdown admission,
-cache ownership scope and retry. `cd backend && npm run typecheck` passes;
-`cd backend && npm test`: **338/338 pass**, 0 fail, 0 skipped.
-Production cold-pass time and DB load are not measured.
-
-Continuation verification adds three scheduler regressions: a long pass cannot
-overlap and starts its delay only after completion, enumeration failures recover
-on the next scheduled pass, and shutdown during enumeration admits no refresh.
-`cd backend && node --import tsx --test src/owner/ownerLastHopPrewarm.test.ts
-src/owner/ownerService.test.ts`: **11/11 pass**. No scheduler source change was
-needed; mocked clocks exercise the real scheduling and shutdown paths.
-
-## 3. Heartbeat alert semantics — #543 / #507
-
-Confirmed `currentWorkers` set `worker="link"` from `MAX(itm_computed_at)`.
-Replaced that source with Redis `meshcore:link:v3:worker_heartbeat`. The current
-worker's independent thread writes Unix seconds every 10s with a **45s TTL**
-(the brief's 39s is a live observation, not the source's configured TTL).
-`last_activity_at` still reports ITM write activity separately.
-
-The Prometheus gauge collects Redis on each scrape, rather than freezing the
-age until the five-minute health pass. Reads time out at 2s; missing, invalid,
-excessively future or unreadable timestamps publish `-1`, replacing any earlier
-healthy value. The queue alert now handles `< 0` as well as `> 180`, with the
-existing three-minute holdoff. No threshold increase is needed for a genuine
-ten-second heartbeat. Empty queues do not trigger this alert.
-
-Validation: `cd backend && node --import tsx --test
-src/health/workerHeartbeat.test.ts`: **5/5 pass**, including the real Redis key,
-timestamp validation, expiry/failure, bounded timeout, repeated real metric
-scrapes and recovery. `npm run typecheck` passes; `npm test`: **343/343 pass**,
-0 fail, 0 skipped. `.ukmesh-tools/promtool check rules
-logging/rules/meshcore.yml`: **24 rules valid**. `.ukmesh-tools/promtool test rules
-logging/rules/meshcore.test.yml`: **7 scenario groups pass**, including batch
-gaps, missing heartbeats, holdoff, recovery, idle queues and existing stale cases.
-
-Standalone promtool 3.15.0 was downloaded from the [official release listing](https://prometheus.io/download/?trk=direct)
-into an ignored worktree-local tools directory, without starting a container.
-Archive SHA256: `2a542df32eac02ee17b9d844fb2aa1de00dafa5476579ba8a3ba862e9d572ea0`,
-matching the official listing. Live metric/alert behavior remains deploy-gated.
-
-Publisher-side verification now exercises the actual
-`link_queue_v3.start_worker_heartbeat` thread with recording Redis clients:
-immediate publication, integer Unix seconds, ten-second refresh requests,
-45-second expiry requests, failed-write reconnect, client-creation recovery,
-an already-stopped worker and interruption of a real ten-second wait on
-shutdown. The five tests use controlled waits for retry/cadence checks and
-a real event for shutdown; no Redis service or production client is accessed.
-Exact command: `PYTHONPATH=viewshed-worker python3 -m unittest discover -s
-viewshed-worker/tests -p test_link_worker_heartbeat.py -v`: **5/5 pass**.
-This verifies the publisher's Redis command contract, not live Redis expiry
-or production alert behavior. The worker implementation is unchanged.
-
-## 4. UK feed virtualizer — #303
-
-Implemented option (a): natural border-box measurements from `ResizeObserver`,
-identity-keyed height storage, prefix offsets and a binary visible-range lookup.
-The previous `76px * index` arithmetic placed spacers according to an assumed
-height even when metadata wrapped. The 76px estimate now applies only to unseen
-rows; rendered rows use their actual fractional-pixel heights.
-
-Stable packet/scope identities retain measurements across filtering and prepends.
-Width changes invalidate offscreen measurements. Layout measurement and scroll
-anchoring preserve the visible packet through observer enrichment and new
-arrivals; a feed at the top remains pinned to live traffic. Both the desktop
-internal scroller and mobile document scrolling are supported. Details remain
-outside the packet list.
-
-Validation: `cd frontend && npm test`: **99/99 pass**, including **2/2** new
-offset/range tests. `cd frontend && PLAYWRIGHT_PORT_BASE=4273 npx playwright test
-feed-virtualizer.spec.ts --project=public-desktop`: **2/2 pass** in Chromium,
-at 390px and 1280px, checking variable heights, contiguous rows and spacers,
-scroll-anchor preservation, enrichment, prepends, resizing, bottom reachability,
-filter reset, empty-filter recovery, new arrivals pinned at the top and absence of
-page errors. Test-only isolated ports avoid borrowing
-other sessions' servers; default ports are unchanged. The in-app Browser runtime
-could not connect to its trusted Node service, so these checks use the repository's
-Playwright CLI. `cd frontend && npm run build` passes with the existing large-chunk
-warning. The complete fixture-based E2E matrix passes **55/55**, with no retries;
-production traffic is not tested.
-
-`cd frontend && npm run lint:css` reports **6 pre-existing duplicate selectors**
-in unchanged `globals.css`, `map-app.css` and `owner-portal.css`. Their diff against
-`73ee004` is empty; this change edits no CSS files.
-
-Continuation adds empty-filter/repopulation and top-pinned arrival assertions at
-both widths. Each arrival has a distinct packet identity. Only the initial row
-readiness wait increases from 5s to the existing application's 15s bootstrap
-budget; row geometry and scroll-anchor assertions retain their previous limits.
-
-Browser verification also uncovered incomplete test-server isolation: mobile and
-accessibility tests still navigated to hardcoded ports 4173–4175 even when the
-config selected another port range. They now share the config's origins. An
-explicit `PLAYWRIGHT_PORT_BASE` refuses to borrow existing servers. The three
-Vite test servers also receive separate dependency caches per port range and
-site role through a test-only config; the production Vite config is unchanged.
-Installed Vite source confirms optimization replaces the shared dependency cache;
-concurrent replacement is a source-based explanation for the earlier dynamic
-module fetch failure, rather than a proven production cause.
-
-The first full run passed 53/55; both failures passed unchanged in isolation.
-After cache isolation, a run passed 54/55 with the feed's 5s initial readiness
-wait expiring before geometry assertions. The expanded feed tests and 15s
-readiness wait then passed the full **55/55** matrix without retries. A subsequent
-fresh-cache four-case check passed both feed widths and tablet topology but the
-mobile map-mode test exceeded its 30s total budget. Its unchanged isolated trace
-passed in 19.3s and shows two 4,600-node map bootstraps plus an accessibility scan.
-That test now has a scoped 45s total budget; its functional assertions are
-unchanged. The final fresh-cache check on ports 4303–4305 passes **4/4**, without
-retries. These results establish local fixture behavior, not production performance
-or the absence of every intermittent browser failure.
-
-## Stretch queue
-
-### #424 — Compose adoption guard
-
-The replacement script previously trusted Compose's selected container without
-checking its adoption metadata. A mocked backend with missing labels reached
-replacement: before the guard, `TMPDIR="$PWD/.ukmesh-tools/tmp" bash
-scripts/test-replace-container.sh` failed with `adoption_empty_stops_before_mutation:
-expected Compose adoption rejection (65), got 0`. This reproduces the config gap
-locally; it is not a claim about current live Docker state.
-
-Added a read-only `scripts/check-compose-adoption.sh SERVICE` preflight. It requires
-exactly one current container with matching project, service, physical working
-directory and a config-file list containing this checkout's `docker-compose.yml`.
-`replace-container.sh` checks the requested service and backend before signature
-checks, pulls, receipts, migration runs or Compose replacement. Gaps stop with
-exit 65 and an operator-reconciliation message. No automatic adoption or network
-recreation is attempted. Operators can run the preflight separately when reviewing
-a deployment; this session runs it only through mocked Docker.
-
-Validation: `bash -n scripts/check-compose-adoption.sh scripts/replace-container.sh
-scripts/test-replace-container.sh` passes. `TMPDIR="$PWD/.ukmesh-tools/tmp" bash
-scripts/test-replace-container.sh`: **6/6 drills pass** (existing rollback and
-compatibility, plus empty labels, missing config-file label, wrong directory and
-wrong project). Gap cases assert no pull, migration/replacement or release receipt.
-Live adoption and operator reconciliation remain unverified and deploy-gated.
-
-Continuation expands this to **16/16 mocked drills**: wrong-service labels,
-absent/multiple containers, null/malformed labels, overlay-only config rejection,
-base-plus-overlay acceptance, and separate frontend/backend preflights. Every
-adoption rejection also asserts that image signature verification has not begun.
-A 10,000-service fixture reproduced an additional bug: `config --services |
-grep -Fxq` under `pipefail` rejected an existing backend with exit 65 when the
-producer hit SIGPIPE. The check now consumes the entire list with `grep -Fx`
-redirected to `/dev/null`. The same large-list drill passes after the fix.
-
-### #447 — Archive/delete inactive nodes of every role
-
-The existing cleanup selected only `(role IS NULL OR role = 2)` and required an
-old, non-null `last_mqtt_observer_seen_at`, so roles 1/3 and never-bridged nodes
-could not enter its archive/delete path. Added a separate `cleanupInactiveNodes`
-pass to the health worker's existing initial/six-hour maintenance schedule.
-The original observer policy remains separate.
-
-Inactive selection considers the latest node, MQTT, path, predicted-online and
-creation timestamps, and retains nodes with recent network or observer sightings.
-Source inspection found packet ingestion updates network sightings independently
-of the source node's main timestamp; those rollups therefore also fence deletion.
-The threshold stays bounded to 30–365 days. Test-network nodes, recent nodes and
-records with wholly unknown age remain protected. No prior bridge or role filter
-is required.
-
-The existing transaction/advisory lock archives complete node and visibility
-records into `maintenance_removed_records` before any delete, then removes the
-two visibility sets and nodes together. Any failure rolls everything back.
-Authentication and packet-history tables are outside the cleanup. No schema or
-migration change is needed.
-
-Validation: `cd backend && node --import tsx --test
-src/maintenance/staleMqttObservers.test.ts`: **6/6 pass**. `cd backend && npm run
-typecheck` passes. Supplementary isolated PostgreSQL 18.3 / PGlite 0.5.8 tests
-execute the actual selection, advisory lock, archive and delete SQL against
-minimal in-memory fixture tables. They verify roles 1/3, never-bridged nodes,
-retention by each freshness source, test/unknown-age exclusions, archive readback,
-preserved auth/history fixtures, and real transaction rollback on injected archive
-and node-delete errors: **3/3 pass**, 0 skipped.
-
-Reproduce without a server or repository dependency change, from the worktree root:
-
-```sh
-npm install --prefix .ukmesh-tools/pglite --no-package-lock --ignore-scripts @electric-sql/pglite@0.5.8
-cd backend
-TEST_NODE_CLEANUP_PGLITE_MODULE="file://$PWD/../.ukmesh-tools/pglite/node_modules/@electric-sql/pglite/dist/index.js" node --import tsx --test src/maintenance/staleMqttObservers.integration.test.ts
-```
-
-The optional fixture test is excluded by the normal unit command. It does not
-apply project migrations or exercise TimescaleDB, the complete production schema,
-concurrent ingestion, production candidate counts or cleanup cost; those remain
-unverified. The final-stretch fixtures below expand the original single privacy
-function to the current node privacy/generation trigger chain and packet-path
-classifiers, extracted from the existing migration definitions.
-
-Continuation found a real privacy interaction omitted by the initial fixture.
-The current `sync_private_node_prefixes()` definition in migration 049 treats
-deleting a private node as a privacy transition, removes its prefixes and makes
-historical packets public. Isolated PostgreSQL tests execute that exact function
-against fixture tables (no application migration or server) and reproduced
-`is_private: true -> false`, `visibility_ok: false -> true` for both cleanup
-policies. Both selectors now retain names containing the privacy marker **or**
-identities present in `private_node_prefixes`, including mismatched name/index
-states. Age does not revoke the user's privacy choice. Public inactive nodes of
-all roles and bridge states still take the archive/delete path.
-
-The SQL fixture now has **7/7 pass**, including the actual privacy trigger for
-both policies, the exact 30-day boundary, idempotent repeat passes, archive
-readback and transaction rollback. The optional integration command above is
-unchanged; `cd backend && node --import tsx --test
-src/maintenance/staleMqttObservers.test.ts` remains **6/6 pass**. Removing a
-private identity while retaining its privacy decision requires a separate
-tombstone design; no schema change is introduced in this constrained branch.
-
-### Other heartbeat proxy signals — alert-semantics follow-up findings
-
-Scoped audit command: `rg -n 'worker_heartbeat_age_seconds|worker_heartbeat_timestamp_seconds|setHeartbeatAge' backend/src viewshed-worker logging`.
-`docker-compose.yml:811` mounts `logging/rules` into Prometheus's rules directory;
-`logging/prometheus.yml:5` loads `/etc/prometheus/rules/meshcore.yml`. The edited rule is
-therefore the repository's active Compose rule source; deployed mounts were not
-inspected.
-
-| Signal | Source and cadence | Alert consumer / finding |
-| --- | --- | --- |
-| `worker="link"` age | Previously `MAX(node_links.itm_computed_at)`; now the independent Redis heartbeat, collected per scrape. | `ActiveQueueWorkerHeartbeatStale` fixed in this branch; DB write activity remains separate. |
-| `worker="health"` age | `currentWorkers` reads the previous `MAX(worker_health_snapshots.ts)` before `captureWorkerHealthSnapshot` writes the current snapshot (`backend/src/health/status.ts:378`, `:519`). `backend/src/workers/health.ts:9` schedules the next capture five minutes after completion. | `HealthWorkerHeartbeatStale` still uses `>180` or `<0` for 3m (`logging/rules/meshcore.yml:126`). A normal previous-snapshot age is about 300s and remains frozen between captures. **Source-based inference: another false-positive candidate.** Follow up with a genuine health-process heartbeat and producer/job scoping, plus healthy-cadence regression tests. No live firing frequency is claimed. |
-| `worker="path_learning"` age | `MAX(path_model_calibration.updated_at)` from published calibration (`status.ts:377`, `path-learning/rebuild.ts:440`); default rebuild cadence one hour (`workers/path-learning.ts:7`). | No current rule consumes this label. It describes publication freshness, not process liveness; keep those concepts separate before adding alerts. |
-| `worker="link_backfill"` age | `MAX(node_links.last_observed)` (`status.ts:385`), the newest observation. | No current rule consumes this label. Observation recency cannot prove a backfill process is alive or making progress. |
-| Python `meshcore_worker_heartbeat_timestamp_seconds` | Set by `viewshed-worker/worker_metrics.py:58`. Link updates are on the main loop (`worker.py:2516`); the Redis thread is independent (`link_queue_v3.py:587`). Viewshed's independent thread also updates its exported heartbeat (`worker.py:2483`). | No current rule consumes the timestamp metric. It is unsuitable as a ten-second link-heartbeat substitute without changing its producer cadence. `WorkerMetricsDown` checks exporter `up`, which proves reachability rather than work-loop progress. |
-
-Queue oldest-job age and backup/restore receipt age describe backlog/freshness
-explicitly, rather than being renamed as liveness. The health-worker issue and
-the two unused proxy labels are filed here for follow-up, as requested; this
-branch changes only the link heartbeat semantics.
-
-## Final-stretch verification
-
-Revalidated the clean, pushed continuation HEAD `68d018a` before further work.
-Fresh local runs pass **350/350 backend units**, **99/99 frontend units** and
-**7/7 isolated cleanup SQL fixtures**, with no failures or skips. The replacement
-drills remain **16/16**, and all **24 Prometheus rules** remain valid.
-
-Production scrape labels uncovered another link-alert false-positive path:
-`and on()` paired every nonempty queue with any stale heartbeat across all
-reporters. Three new Prometheus scenarios failed before the fix: a backend Redis
-failure paged for a healthy health-worker queue, an idle stale reporter paged for
-a healthy same-job instance, and one stale reporter paged for both queues.
-The rule now matches `job` and `instance`, keeping queue evidence and heartbeat
-evidence from the same exporter. The threshold and holdoff are unchanged.
-`.ukmesh-tools/promtool test rules logging/rules/meshcore.test.yml` passes all
-**10 scenario groups**, including scoped true-stale alert holdoff and recovery.
-`.ukmesh-tools/promtool check rules logging/rules/meshcore.yml` passes **24 rules**.
-This reproduces rule semantics locally, not live alert frequency.
-
-Expanded both feed browser cases to switch across the 860px breakpoint in both
-directions while scrolled, checking that the visible packet identity survives
-the change between document and internal scrolling. The desktop case also
-filters a scrolled list down to one row, asserts its scroll reset and unchanged
-page position, then restores the feed. No virtualizer source change was needed.
-`cd frontend && PLAYWRIGHT_PORT_BASE=4363 npx playwright test
-feed-virtualizer.spec.ts --project=public-desktop --workers=2
---trace=retain-on-failure --output=../.ukmesh-tools/stretch-feed-results`:
-**2/2 pass**, no retries or page errors.
-
-Owner-cache verification now checks a real warm refresh: inclusive latest-bucket
-updates replace the old aggregate, earlier history remains, and the rolling
-seven-day cutoff removes expired points. A failed warm refresh keeps useful
-foreground data and permits retry; TTL expiry starts a fresh bounded-window
-query rather than reusing an old cursor. These use fixed mocked dates and require
-no source change. `cd backend && node --import tsx --test
-src/owner/ownerLastHopPrewarm.test.ts src/owner/ownerService.test.ts`: **14/14 pass**.
-
-The expanded cleanup fixture found a second privacy interaction: the
-`private_node_prefixes` foreign key's `ON DELETE CASCADE` fires its statement
-trigger even when a deleted public node has no prefixes. A separate minimal
-PostgreSQL experiment records **trigger depth 1**. Migration 042's depth guard
-therefore treats this as direct prefix maintenance, advances the public
-generation and leaves the packet materialization fence stale. The isolated
-current-trigger fixture reproduced **generation 2 -> 3, fence remaining 2**.
-PostgreSQL documents that [foreign-key referential actions execute ordinary SQL
-and fire referencing-table triggers](https://www.postgresql.org/docs/18/trigger-definition.html).
-
-Both cleanup policies now lock the public visibility state before archival and
-deletion. Since selected identities have no privacy marker/prefix and
-their node rows remain locked, this removal cannot change packet privacy bits.
-Only an **already-current** materialization fence is carried forward to the
-new public generation, in the same transaction. An existing mismatch or missing
-materialization is never certified. Visibility-lock failure admits no archive
-or delete; fence-update failure rolls back both. No migration or trigger
-definition is changed.
-
-The fixture installs the exact relevant functions from migrations 042/049/051,
-with production node/prefix trigger names, prefix FK, and packet-path classifier.
-It checks both cleanup policies, retained private packets and packet paths,
-preserved mismatched-prefix states, current fences after public deletion, and
-real rollback on archive/delete/fence-update errors. Archive replay into the
-disposable fixture restores complete node and both visibility records, including
-nullable fields and a populated additional hardware column. The optional SQL
-command above now passes **10/10**, with no skips; the focused cleanup unit
-command passes **9/9**. Full backend `npm test`: **356/356**, no failures or skips.
-Backend typecheck/build, frontend build and the **63 API + 11 operator** contract
-check pass. Concurrent production ingestion and visibility-lock duration remain
-unmeasured; this is stronger isolated verification, not a live database claim.
-
-A controlled-arrival SQL fixture then reproduced another inactivity gap:
-fresh source-node RF/observer sightings inserted between the initial candidate
-snapshot and the visibility lock were still deleted (**4 nodes removed instead
-of 2**). `packetBatch.ts` takes `FOR KEY SHARE` on the same visibility row before
-updating those rollups. Inactive cleanup now takes its `FOR UPDATE` lock and
-rechecks the original candidates against the complete freshness/privacy predicate
-before archival; the row lock fences later packet-ingestion batches until commit.
-Candidates withdrawn by new sightings produce neither removal archives nor
-deletes. An all-withdrawn pass returns the usual empty result. The old MQTT
-observer policy retains its own predicate.
-
-The controlled arrival passes against actual SQL after the fix, and the full
-optional fixture suite passes **11/11**, with no skips. This models the query
-boundary in one disposable connection; it is not a concurrent-ingestion load
-test. `cd backend && node --import tsx --test
-src/maintenance/staleMqttObservers.test.ts`: **10/10**. Backend typecheck passes;
-`cd backend && npm test`: **357/357**, no failures or skips.
-
-The owner cache responsiveness regression failed before the fix: a fresh
-foreground cache hit joined a pending forced prewarm query and did not resolve
-until that query finished. Fresh foreground reads now return the existing cache
-immediately. Cold/expired reads and forced refreshes still share in-flight work.
-The test holds a background refresh open, checks the immediate cached response,
-checks overlapping warm requests issue one query, and then checks the refreshed
-result. Focused owner/prewarm tests pass **15/15**; backend typecheck and full
-`npm test` pass **358/358**, with no failures or skips.
-
-At this safety checkpoint all implementation changes were committed and pushed
-on the private branch. The expanded browser run on isolated ports 4363–4365
-finished **54/55**: the multi-viewport mobile map test timed out at `page.goto`
-with `waitUntil: 'networkidle'`. Its retained trace and test-server output
-were investigated and resolved in the following sections; the later complete
-61-case run passed. The two feed cases passed at this checkpoint, including
-the new breakpoint and filter checks.
-
-The viewport trace showed the first two of seven sequential map navigations
-consuming about 15 seconds of one 30-second test budget, including public
-OpenFreeMap requests. The viewport regression is now seven independently timed
-cases; each still loads the map from scratch, checks all geometry, and verifies
-UK-only API requests. No timeout or geometry tolerance was increased.
-`cd frontend && PLAYWRIGHT_PORT_BASE=4363 npx playwright test
-test/e2e/mobile.spec.ts --grep 'live map stays inside' --workers=2
---trace=retain-on-failure --output=../.ukmesh-tools/stretch-viewport-results`:
-**7/7 pass**, no retries. The complete matrix now contains 61 cases and will be
-rerun.
-
-Strengthening the terrain check reproduced a test-harness gap: local DEM
-requests returned **200 text/html**, and the old RF PNG also produced image
-decode errors. Shared test routes now serve a valid 256px RGB flat Terrarium
-tile (zero metres) and a valid 256px RGBA RF tile. OpenFreeMap style/metadata
-responses are local; the metadata race still delays the response by 1.5s.
-The two RF metadata stages now stop advancing their revision after completion.
-Terrain checks require successful PNG responses, decode both images in the
-browser, check dimensions and reject terrain/RF tile-load error messages.
-Real DEM rendering takes more time than rejecting HTML; that test has a 60s
-budget, with existing UI assertion timeouts unchanged.
-
-`cd frontend && PLAYWRIGHT_PORT_BASE=4363 npx playwright test
-test/e2e/dashboard.spec.ts --grep 'RF coverage remains available with 3D terrain|metadata winning'
---workers=1 --trace=retain-on-failure
---output=../.ukmesh-tools/stretch-terrain-serial-results`: **4/4 pass**, no retries.
-A prior parallel run of the stricter checks had startup timeouts and a dynamic
-import failure with `ERR_NETWORK_CHANGED`; its traces retain that evidence.
-The final matrix uses one browser worker to reduce local software-rendering
-contention. These synthetic tiles verify loading/decoding behavior, not real
-terrain elevation accuracy or production rendering performance.
-
-A metrics-scrape regression also reproduced a synchronous Redis client-factory
-failure escaping before the bounded heartbeat read: the whole registry scrape
-threw instead of replacing a previous healthy link value. The collector now
-catches initialization failure and exports **-1**, while keeping gauge writes
-outside that catch. The next scrape can initialize successfully and recover.
-`cd backend && node --import tsx --test src/health/workerHeartbeat.test.ts`:
-**6/6 pass**; backend typecheck passes. The first full backend rerun was
-**358/359** because the unchanged worker-pool replacement test timed out its
-fresh worker startup inside a 750ms budget under concurrent verification load.
-The worker-pool correction and passing full rerun are described below.
-
-The worker-pool regression now controls the 750ms deadline with Node's mock
-clock rather than imposing that same wall-time budget on replacement thread
-startup. It checks that active and queued jobs remain pending at 749ms, both
-expire at 750ms, queues drain, and a real replacement worker returns a new job.
-Its independent test-runner deadline remains 10 seconds.
-`cd backend && node --import tsx --test src/path-beta/workerPool.test.ts`:
-**3/3 pass**. The full backend rerun then passed **359/359**, no failures or
-skips. No production worker-pool timeout or scheduling code changed.
-
-The first complete matrix with real raster fixtures finished **59/61**. The
-remaining traces showed the owner first-load assertion checking while the page
-still displayed `Loading...`, and the desktop map's post-reload assertion
-looking for Diagnose before the second bootstrap had finished. Both checks had
-only the default 5-second assertion budget. Owner tests now use the shared map
-metadata fixture and a valid runtime-config response; first-load readiness gets
-15 seconds. The map-mode test explicitly awaits Live Map after reload using the
-same 15-second readiness check as its initial load, before testing persistence.
-Polling/lifecycle and mode-state assertions keep their normal budgets.
-`cd frontend && PLAYWRIGHT_PORT_BASE=4363 npx playwright test
-test/e2e/owner.spec.ts test/e2e/dashboard.spec.ts
---grep 'session polling|owner map construction|map modes' --workers=1
---trace=retain-on-failure --output=../.ukmesh-tools/stretch-bootstrap-results`:
-**4/4 pass**, no retries. Backend build also passes after the collector fix.
-The subsequent complete matrix passed 61/61, as recorded below.
-
-Feed geometry now also checks **1,413 fractional viewport/overscan windows**
-across 50 mixed-height rows, including positions before/after the list and
-overscan larger than the entire list. A direct row-intersection oracle checks
-every visible row is retained; rendered rows plus top/bottom spacers must equal
-the complete measured height. `cd frontend && node --import tsx --test
-src/hooks/measuredVirtualRows.test.ts`: **3/3 pass**. Full frontend `npm test`:
-**100/100**, no failures or skips. No feed runtime code changed in this step.
-
-The complete browser rerun with explicit readiness and valid local raster
-fixtures passed **61/61**, no retries or skips, in 5.6 minutes:
-`cd frontend && PLAYWRIGHT_PORT_BASE=4363 npx playwright test --workers=1
---trace=retain-on-failure --output=../.ukmesh-tools/stretch-matrix-ready-results`.
-Frontend TypeScript/Vite build also passes after the new geometry checks, with
-the existing chunk-size warning. All code/test changes are committed and pushed;
-the working tree is clean at this checkpoint. The burn remains active until
-the requested stop signal.
-
-Further lock-order verification reproduced **40P01 deadlocks** for both cleanup
-policies on a disposable native PostgreSQL **16.14** cluster: cleanup locked
-nodes before waiting for visibility, while a separate ingestion transaction
-held visibility `FOR KEY SHARE` and then updated the same node. A third case
-reproduced a busy-node lock timeout (**55P03**). The cluster uses a fresh ignored
-data directory, an allocated loopback port, synthetic credentials and automatic
-shutdown/removal. No existing database or container is used. The standalone
-test tool is [embedded-postgres](https://github.com/leinelissen/embedded-postgres)
-`16.14.0-beta.17`, installed only under ignored tooling.
-
-Both policies now discover candidates without node locks, lock visibility,
-then re-evaluate the complete original predicate and lock eligible nodes with
-`FOR UPDATE SKIP LOCKED`. This matches ingestion's lock order and avoids waiting
-on busy row writers that may themselves need visibility. Fresh/private changes
-withdraw their candidates; busy nodes remain for a later pass. Archival and
-deletion still happen only after successful revalidation and node locking.
-
-Native lock tests changed from **0/3** to **3/3 pass**, no skips:
-
-```sh
-cd backend
-TEST_NODE_CLEANUP_POSTGRES_MODULE="file://$PWD/../.ukmesh-tools/embedded-postgres/node_modules/embedded-postgres/dist/index.js" node --import tsx --test src/maintenance/staleMqttObservers.native.integration.test.ts
-```
-
-The native fixtures execute the actual cleanup function with simultaneous SQL
-connections and the visibility/node locking pattern from `packetBatch.ts`.
-They do not execute the entire ingestion pipeline or measure live workloads.
-The PGlite boundary hook now identifies the unlocked discovery query; its RF
-freshness assertions remain intact. Two added boundary cases use the actual
-privacy triggers to retain new consent and private packet flags for both
-policies. Those consent cases remain controlled single-connection fixtures.
-The optional PGlite suite passes **13/13**; focused cleanup units pass **11/11**;
-full backend `npm test` passes **360/360**, all without failures or skips.
-Backend typecheck passes. Production lock duration/candidate volume and other
-concurrent writers remain unmeasured.
-
-Two additional native cases keep the node timestamps stale while a competing
-visibility-pinned transaction commits only a source-network or observer-region
-RF sighting. Inactive cleanup observes each new sighting after acquiring
-visibility and withdraws the node without an archive or delete. The native
-suite now passes **5/5**, with no skips; the same command above applies.
-Backend typecheck passes, and all temporary native database directories are
-removed after the run.
-
-Four more native cases commit a new privacy prefix or private-name marker while
-each cleanup policy waits for an exclusive visibility lock. Both policies
-observe the committed consent, retain the node and leave the archive empty.
-The native suite passes **9/9**, no skips; backend typecheck passes and no
-temporary native database directories remain. These cases model the consent
-writer's visibility-lock protocol with minimal tables; the separate SQL fixture
-suite executes the full production privacy trigger chain.
-
-Two reverse-order cases execute the production
-`lock_packet_visibility_for_node_privacy_change` BEFORE function. Cleanup first
-locks visibility; a competing private-name UPDATE locks the node and then waits
-inside that trigger. Both cleanup policies skip the busy row, commit and release
-visibility, allowing consent to commit without a deadlock or archive. A later
-pass retains the now-private node. The native suite passes **11/11**, 0 skipped;
-backend typecheck passes and every fixture directory is removed. Only this
-BEFORE function is installed in those cases; the remaining production privacy
-materialization chain is covered by the separate SQL fixture suite.
-
-Three further native PostgreSQL **16.14** cases now execute that entire relevant
-production privacy trigger chain. They confirm that the empty public-node
-prefix FK cascade advances visibility generation, that an already-current
-packet fence advances with it, and that pre-existing gapped or missing fences
-remain uncertified. Stored public packet/path flags remain unchanged, and the
-node is archived before deletion. The native suite passes **14/14**, no skips;
-the PostgreSQL-WASM suite remains **13/13**, no skips. Both engines now use
-`cleanupPrivacyFixture.ts`, moved without changing its function/trigger
-implementation. Backend typecheck passes and no native fixture directories
-remain. These are isolated schemas/functions, without production migrations,
-TimescaleDB or live data.
-
-## Last-hop regrouping during warm refreshes
-
-Two new regressions reproduced stale groups after successful incremental
-refreshes. The SQL groups by bucket, peer identity, current name and resolution;
-the cache previously upserted those keys without removing groups that the new
-query no longer returned. A peer rename or unresolved-to-resolved transition
-doubled the affected bucket's sample count, and an empty query retained obsolete
-groups. The tests failed **2/2** before the fix.
-
-The cache now replaces all groups at or after the inclusive query cursor while
-retaining earlier buckets and the rolling seven-day trim. Query scope, cache
-keys, single-flight and failure preservation are unchanged. This also preserves
-the repository's current ordering within each refreshed bucket. Exact focused
-command: `cd backend && node --import tsx --test
-src/owner/ownerService.test.ts src/owner/ownerLastHopPrewarm.test.ts`: **17/17
-pass**, 0 failures or skips. Backend typecheck passes. This verifies response
-replacement with controlled repository results; no live owner query is claimed.
-
-An optional isolated SQL fixture now executes the actual
-`createOwnerRepository.fetchLastHopStrength` query through the service. It seeds
-three current-bucket packets, renames a peer, adds a newly resolvable peer and
-checks that the refreshed result still has exactly three current samples with
-the correct averages. Removing those current packets leaves only the earlier
-cached history. **1/1 passes**, 0 skipped, with:
-
-```sh
-cd backend
-TEST_OWNER_LAST_HOP_PGLITE_MODULE="file://$PWD/../.ukmesh-tools/pglite/node_modules/@electric-sql/pglite/dist/index.js" node --import tsx --test src/owner/ownerService.integration.test.ts
-```
-
-The fixture uses PostgreSQL-WASM with minimal identity tables, an identity
-canonicalizer and a one-hour `time_bucket` shim. It does not exercise the real
-identity views, alias reconciliation, TimescaleDB extension or production load.
-Backend typecheck passes with the fixture included.
-
-The cleanup freshness audit traced `last_path_evidence_at` to trustworthy
-multibyte flood-path evidence carrying the packet's observation time. The
-legacy `last_predicted_online_at` writer records resolution time; read-only
-path evaluation explicitly disables that update. Cleanup conservatively
-retains both signals, and the SQL fixtures verify that fresh values prevent
-deletion. Production resolution frequency and resulting retention are unmeasured.
-
-## Feed verification in Firefox and WebKit
-
-`frontend/playwright.feed-cross-browser.config.ts` adds an optional profile for
-the two existing responsive feed cases in Firefox **153.0** and Playwright
-WebKit **26.5** on Linux. The default profile still lists **61** Chromium cases;
-the optional profile lists **4**, runs one worker and has zero retries.
-
-The first cross-browser run passed **1/4**: immediate anchor reads could run
-before React committed rows after a programmatic scroll. Anchor capture now
-waits on the normal assertion deadline for a row intersecting the viewport,
-and preservation checks use a nullable read within their existing poll. The
-one-pixel position/contiguity limits and virtualization bounds remain intact.
-The next run passed **3/4**; WebKit kept the search caret visible during the
-desktop-to-mobile resize. Completing the search interaction with blur before
-resuming browsing makes that case pass using the existing virtualizer hook.
-The complete optional profile now passes **4/4**, no skips or retries. The
-affected Chromium feed cases also pass **2/2**.
-
-Exact optional-profile command used on this host:
-
-```sh
-cd frontend
-LD_LIBRARY_PATH="$PWD/../.ukmesh-tools/webkit-system-libs/root/usr/lib/x86_64-linux-gnu" PLAYWRIGHT_BROWSERS_PATH="$PWD/../.ukmesh-tools/playwright-browsers" PLAYWRIGHT_PORT_BASE=4413 npx playwright test --config=playwright.feed-cross-browser.config.ts --trace=retain-on-failure --output=../.ukmesh-tools/feed-cross-browser-final-results
-```
-
-The browsers were downloaded with `PLAYWRIGHT_BROWSERS_PATH` pointing into
-ignored tooling. This host required `libevent-2.1-7t64`,
-`libgstreamer-plugins-bad1.0-0`, `libavif16`, `libgav1-1` and `libyuv0`; `apt
-download` and `dpkg-deb --extract` placed them under ignored tooling, and their
-libraries were linked into the ignored WebKit bundle's `sys/lib`. Its launcher
-replaces `LD_LIBRARY_PATH`, so the bundle links are necessary here. No system
-package install or environment-file change was made. These Linux engine tests
-do not establish behavior on a physical Safari/iOS device.
-
-Additional exact commands:
-
-```sh
-cd frontend
-PLAYWRIGHT_PORT_BASE=4433 npx playwright test feed-virtualizer.spec.ts --project=public-desktop --workers=1 --trace=retain-on-failure --output=../.ukmesh-tools/feed-chromium-final-results
-npx tsc --ignoreConfig --noEmit --module NodeNext --moduleResolution NodeNext --target ES2022 --skipLibCheck --types node --strict playwright.feed-cross-browser.config.ts test/e2e/feed-virtualizer.spec.ts
-npm run build
-```
-
-Chromium: **2/2 pass**; direct config/test typecheck passes; production TypeScript
-and Vite build pass with the existing chunk-size warning. TypeScript requires
-`--ignoreConfig` for this ad hoc file-based check (the first invocation without
-it reported TS5112). The frontend unit suite remains **100/100**.
-
-## Final verification and publication
-
-Source commits: `9a5e838` (retirement), `2d2b425` (prewarm), `236e948`
-(heartbeat), `1f2bc76` (feed), `4b30eb0` (Compose guard), `6dda582` (cleanup).
-Continuation commits: `ab5d5b8` (cleanup privacy), `56bfcb6` (Compose pipefail),
-`2f8f03e` (scheduler regressions), `bbb14a1` (E2E isolation), `fb981e0` (feed
-filter/arrival regressions), `62d9a9f` (map-mode cold-start budget). Each change
-stays on the private branch.
-Further verification commits: `4a73ca0` (reporter-matched alerts), `2d6b703`
-(feed breakpoint/filter checks), `29c5111` (incremental owner-cache checks),
-`a030ea7` (cleanup materialization fence), `9c7cb49` (late-sighting recheck),
-`e754f46` (responsive fresh-cache reads), `2960f5f` (separate viewport cases),
-`f5ac2c9` (valid raster fixtures), `a705b89` (Redis initialization recovery),
-`b561632` (deterministic worker deadlines), `6cf1f70` (bootstrap readiness),
-`3689c01` (fractional feed-range invariants), `77b4ae7` (cleanup lock order),
-`62597ee` (concurrent RF arrivals), `c09fcc4` (last-hop group replacement),
-`d67ac63` (actual last-hop SQL), `17a41aa` (committed consent).
-The final documentation commit records this audit and the validation below.
-Full unit suites are rerun after it, before publication.
-
-Checkpoint `ace67e4` passed the complete local Chromium matrix **61/61** in
-4.7 minutes, with no retries or skips, after the new anchor-readiness/focus
-fixture changes. Post-commit backend/frontend unit suites passed **362/362**
-and **100/100**, respectively. The optional Firefox/WebKit profile passed
-**4/4**, and the affected Chromium feed cases passed **2/2**.
-After the shared privacy-trigger fixture and native fence cases were committed,
-`fcac2a9` also passed both full unit suites (**362/362 backend**, **100/100
-frontend**, no failures or skips) and the backend build.
-
-| Exact command | Result |
-| --- | --- |
-| `cd backend && npm test` | **362/362 pass**, 0 fail, 0 skipped. Expands to the brief's `node --import tsx --test $(find src -name '*.test.ts' ! -name '*.integration.test.ts' -print)`. |
-| `cd frontend && npm test` | **100/100 pass**, 0 fail, 0 skipped. |
-| `cd backend && npm run typecheck` | Pass. |
-| `cd backend && npm run build` | Pass. |
-| `cd frontend && npm run build` | TypeScript + Vite pass; existing chunk-size warning. |
-| `cd backend && npm run contract:check` | Pass: **63 API + 11 operator routes** current. |
-| `cd frontend && PLAYWRIGHT_PORT_BASE=4273 npx playwright test feed-virtualizer.spec.ts --project=public-desktop` | **2/2 pass**. |
-| `cd frontend && PLAYWRIGHT_PORT_BASE=4273 npx playwright test --workers=2` | Historical **55/55 pass**; the expanded run was **54/55** before the viewport case split and local map fixtures. The later 61-case matrix passes. |
-| `cd frontend && PLAYWRIGHT_PORT_BASE=4363 npx playwright test --workers=1 --trace=retain-on-failure --output=../.ukmesh-tools/stretch-matrix-final-results` | Historical **59/61** before owner/map-reload readiness checks; affected cases and the subsequent complete matrix pass. |
-| `cd frontend && PLAYWRIGHT_PORT_BASE=4363 npx playwright test --workers=1 --trace=retain-on-failure --output=../.ukmesh-tools/stretch-matrix-ready-results` | **61/61 pass**, all four projects, no retries or skips. |
-| `cd frontend && PLAYWRIGHT_PORT_BASE=4363 npx playwright test --workers=1 --trace=retain-on-failure --output=../.ukmesh-tools/matrix-ace67e4-results` | **61/61 pass** on `ace67e4`, all four projects, no retries or skips, 4.7 minutes. |
-| Final Chromium feed command above | **2/2 pass** after anchor-readiness/focus fixture changes. |
-| Optional Firefox/WebKit profile command above | **4/4 pass**, no retries or skips, including both responsive widths in each engine. |
-| Direct cross-browser config/test typecheck above | Pass with `--ignoreConfig`; first invocation reported TS5112. |
-| Fresh-cache targeted browser command below | **4/4 pass** with fresh caches; no retries. |
-| `.ukmesh-tools/promtool check rules logging/rules/meshcore.yml` | **24 rules valid**. |
-| `.ukmesh-tools/promtool test rules logging/rules/meshcore.test.yml` | **10 scenario groups pass**. |
-| `PYTHONPATH=viewshed-worker python3 -m unittest discover -s viewshed-worker/tests -p test_link_worker_heartbeat.py -v` | **5/5 publisher lifecycle tests pass**; recording Redis clients, actual heartbeat thread, no live service. |
-| `bash -n scripts/check-compose-adoption.sh scripts/replace-container.sh scripts/test-replace-container.sh` | Pass. |
-| `TMPDIR="$PWD/.ukmesh-tools/tmp" bash scripts/test-replace-container.sh` | **16/16 mocked drills pass**. |
-| Optional isolated cleanup PGlite integration command above | **13/13 pass**, 0 skipped. |
-| Optional isolated cleanup native PostgreSQL command above | **14/14 pass**, 0 skipped: 11 concurrent-writer cases plus 3 fence cases using the full relevant production trigger chain. |
-| Optional isolated last-hop PGlite integration command above | **1/1 pass**, 0 skipped; actual repository SQL, peer regrouping, averages and empty refresh. |
-| `git diff --check 73ee004` | Pass; scoped review found no migration, schema, environment-file, lockfile or unrelated source edits. |
-| `cd frontend && npm run lint:css` | Existing **6 duplicate-selector failures** in unchanged files; left out of scope. |
-
-Fresh-cache command, from the worktree root:
-
-```sh
-cd frontend
-PLAYWRIGHT_PORT_BASE=4303 npx playwright test feed-virtualizer.spec.ts public.spec.ts dashboard.spec.ts --project=public-desktop --project=dashboard-mobile --grep 'measured feed rows|tablet topology|map modes' --workers=2 --trace=retain-on-failure --output=../.ukmesh-tools/cold-final-results
-```
-
-Completion audit against the supplied brief:
-
-| Requirement | Reviewable result and evidence |
-| --- | --- |
-| Retired-workload unit-suite repair | Historical policy and current callers restored; 3 focused tests and the complete backend suite pass. |
-| Owner prewarm observability and bounded load | Progress every ten nodes, in-flight 20s warning, configurable cap of two, ownership-scoped single-flight, responsive fresh-cache reads, replacement of renamed/reclassified groups and shutdown; 17 focused tests pass. Live cold-pass time/load remains unmeasured. |
-| Link heartbeat source and alert semantics | Per-scrape genuine Redis heartbeat, including client-initialization failure/recovery; 6 source/metric tests, 5 publisher lifecycle tests and 10 Prometheus scenario groups, including independent scrape reporters. Live alert firing is not claimed. |
-| Variable-height UK feed | ResizeObserver measurements and anchored offsets at both widths; 3 frontend geometry tests, 2 Chromium feed cases and 4 Firefox/WebKit cases pass. |
-| Compose adoption guard | Local failing mocked reproduction, pre-mutation rejection, 16 passing replacement drills, including the pipefail regression. No live Docker inspection. |
-| Inactive-node archive/delete for every role | Role/bridge-independent selection, archive-before-delete transaction, private identity retention, late-sighting revalidation, visibility-before-node lock order and preservation of a current privacy fence; 11 unit, 13 PostgreSQL-WASM and 14 native PostgreSQL fixtures pass. No live deletion or migration. |
-| Final verification and private-branch publication | Full backend/frontend units run on the final documentation HEAD; non-forced branch push and matching remote SHA required before handoff. |
-| Other heartbeat proxies | Source/cadence/alert-consumer findings recorded above; the health-worker false-positive candidate remains a source-based follow-up. |
-
-Publication command: `git push -u origin fix/ukmesh-burn-20261002`.
-Verify with `git rev-parse HEAD` and `git ls-remote --heads origin
-fix/ukmesh-burn-20261002`; the two full SHAs must match. Remote `ukmesh-w5`
-remains `73ee00406e7cb0b7251220abbff73144615a8b90`. No force push is used.
-The operator reviews against that integration base; opening a draft PR is optional.
-Inspected workflow triggers: branch pushes and pull requests request CI. An
-earlier `gh run list --branch` listing showed no runs; the explicit repository
-Actions API subsequently returned the branch's actual runs. On `ace67e4`,
-[Frontend mobile](https://github.com/gadgethd/ukmesh/actions/runs/37048306966)
-passed; the [pull-request CI](https://github.com/gadgethd/ukmesh/actions/runs/37048306846)
-backend, frontend and secret-scan jobs passed. The Workers and Compose job and
-[push CI](https://github.com/gadgethd/ukmesh/actions/runs/37048301559) were still
-running at the 2026-10-02 18:46 UTC check; a complete CI verdict is not claimed
-for that checkpoint. These jobs use disposable GitHub runner stacks. All three
-repository workflows are active. `release.yml` requires a published release or
-explicit dispatch. No deployment/release workflow is invoked. Current results
-are linked from the [PR Checks tab](https://github.com/gadgethd/ukmesh/pull/113/checks).
-Ignored local logs contain TAP/build/browser output, and ignored tooling holds
-standalone promtool, PGlite and embedded-postgres. None is part of the shipped runtime.
-Draft PR: https://github.com/gadgethd/ukmesh/pull/113, against `ukmesh-w5`.
-
-## Stop-signal handoff — 2026-10-02 19:06 UTC
-
-Ben's wrap-up signal ends the burn. The latest implementation/test checkpoint
-is `7a1598e660367879a91762f55bb45e8474f53034`, already pushed with a matching
-remote SHA and a clean worktree. Both full unit suites passed on that commit:
-**362/362 backend**, **100/100 frontend**, zero failures or skips. The five
-Python heartbeat-publisher tests pass. The final commit only records this
-handoff; both full unit suites are rerun on it before the final summary, where
-its exact SHA and remote verification are reported.
-
-The four priority items and both implementation stretch items are complete
-on the private branch. Draft PR **#113** remains open against `ukmesh-w5`.
-At the 19:06 UTC check, `7a1598e`'s frontend, secret-scan and mobile checks
-had passed; [backend and Workers/Compose CI](https://github.com/gadgethd/ukmesh/actions/runs/37051638102)
-were still running. This is not a complete green remote-CI verdict. The final
-documentation push may supersede these runs; use the PR Checks tab for their
-current state.
-
-Remaining work is operator review/merge/deployment and production validation:
-DB load and lock duration, cleanup candidates, cold prewarm duration, actual
-Redis freshness and alert recovery, and Compose adoption on the live host.
-The health-worker snapshot-age/cadence mismatch remains the source-based
-follow-up documented above. Linux WebKit testing does not verify a physical
-Safari/iOS device. Existing CSS lint failures and the chunk-size warning remain.
-The requested `push.md` was unavailable, so its document-specific discipline
-cannot be verified; pushes were non-forced and remote SHAs were checked.
-
-Optional deeper coverage was not added after the stop signal: native
-PostgreSQL archive/delete/fence failure injection for both cleanup policies,
-and native current/gapped/missing-fence cases for the older MQTT-only policy.
-The existing PostgreSQL-WASM suite covers the three failure stages and both
-policies' privacy behavior. Native PostgreSQL coverage remains **14 cases**:
-11 concurrent-writer cases and three full-trigger fence cases for inactive-node
-cleanup. No incomplete edits or new production scope remain in the worktree.
-
-## Deployment gate, limitations and open questions
-
-The operator must separately review, merge and deploy code/rules. Local tests
-cannot prove live DB load, cold-pass wall time, Redis freshness in production,
-alert recovery or container adoption. This session will not perform those
-operations. No migrations were run, no environment files were changed, and no
-live checkout or other burn worktree was accessed. `push.md` remains unavailable;
-the exact requested document-specific push discipline is not claimed.
-
----
-
-# Backlog round 2 — ukmesh (2026-10-03)
-
-Worktree: `/home/ben/worktrees/meshcore-analytics/backlog2-20261003`
-Branch: `backlog2-20261003`
-Base: `b40793f` (`origin/main`, PR #114 re-land)
-
-This section records the five items assigned in BRIEF-R2-B. The pre-existing
-review above is preserved; it belongs to an earlier burn and branch.
-
-## #455 — dead-only vacuum backlog and alerting
-
-Status: fixed in the analytics repository.
-
-- `backend/src/health/status.ts` now counts a table when either the existing
-  relative dead-row condition matches or `n_dead_tup > 50000`, so a deleted
-  TimescaleDB chunk is not hidden by a small `n_live_tup` estimate.
-- `logging/rules/meshcore.yml` adds `DatabaseVacuumBacklog`; its test fixture
-  proves that a table with one live row and 60,000 dead rows fires after 10m.
-- `docs/operations.md` documents the bounded operator response and explicitly
-  rules out deleting chunks or the database volume.
-
-Proof: `vacuum health counts dead-only tables and preserves severity thresholds`
-passes; pinned `promtool check config` and `promtool test rules` both pass.
-The rule and health gate are repository changes only—deployment and live alert
-verification remain for the normal operator rollout.
-
-## #447 — cleanup of role 1/3 and never-bridged nodes
-
-Status: already fixed on the supplied base; no duplicate patch was added.
-
-`b40793f` already contains the role/bridge-independent `cleanupInactiveNodes`
-predicate. `backend/src/maintenance/staleMqttObservers.test.ts` asserts that
-inactive cleanup has no role or prior-MQTT requirement, and the optional
-PostgreSQL fixture `PostgreSQL archives inactive roles 1/3 and never-bridged
-nodes while retaining every fresh clock` covers the reported cases. This
-verifies the root-cause fix in the branch without claiming that the historical
-5,287 live rows were deleted during this repo-only task.
-
-## #426 — corrupted advert-key variants
-
-Status: fixed for new ingest in the analytics repository.
-
-`backend/src/mqtt/decodePacket.ts` verifies the complete MeshCore Ed25519 advert
-signature before identity is trusted. `backend/src/mqtt/client.ts` records the
-raw packet telemetry but does not expose the advertised identity or call
-`evaluateAdvert`/`upsertNode` for an invalid signature. Existing bogus rows are
-not mass-deleted here: that would require a reviewed data-remediation operation
-outside this no-deploy worktree task.
-
-Proof: `only a valid Ed25519 advert may establish node identity` passes with a
-known valid advert and a tampered advert; the advert-count integrity test also
-guards that upsert remains inside the verification gate. TypeScript and the
-full backend suite pass.
-
-## #436 and #435 — Watchtower `/watch`
-
-Status: omitted from this repository by an explicit source boundary.
-
-The assigned Watchtower code is in the separate `gadgethd/meshcore-discord-bot`
-repository (`discord.ts` and the monitor JSON identified by the sweep report),
-which is not present in this worktree. No analytics-side integration point can
-change its ambiguous-match wording/candidate suggestions (#436) or refresh
-monitor display names after node renames (#435). No sibling checkout was read
-or modified, so these require a separate PR in the Watchtower repository.
-
-## Validation and constraints
-
-- Focused backend tests: 20 passing, including #455, #426, and the existing
-  #447 cleanup assertions.
-- `npm run typecheck`: passed.
-- `npm test`: 408 passing plus the synthetic alert-receiver check.
-- Prometheus config and rule tests: passed with the CI-pinned `promtool` image.
-- No VPS deployment, database cleanup, container restart, merge, or unrelated
-  branch push was performed.
-
-PR link: https://github.com/gadgethd/ukmesh/pull/117
+- The first HTTP pass included a new SSH connection for every query; its
+  1,169.728 ms after-p50 cannot establish a sub-second HTTP result. It is
+  retained alongside the connection-reuse measurement, with transport scope
+  stated explicitly.
+- The first multiplexing attempt exceeded the Unix socket pathname limit and
+  failed before issuing a query. The benchmark now normalizes the pathname,
+  rejects overlong paths and was rerun with a short socket path.
+- Optional strict checking of test files found implicit-any parameters in the
+  new generic mock and an existing mock. Both are explicitly typed; that check
+  and the focused tests pass.
+- The initial baseline suite inherited the default OS temporary directory for
+  its disposable fixtures. Later suite and PostgreSQL fixture runs explicitly
+  use a worktree-local `TMPDIR`; no live configuration or data was edited.
+- A few read-only evidence inspections used the wrong working-directory-relative
+  paths, and the first staged whitespace check found an extra blank line in a
+  captured plan. The paths were corrected and the final artifact whitespace was
+  fixed without changing any measurements.
+
+PROOF: SQL p50 6893.302 ms -> 203.435 ms; HTTP p50 8775.144 ms -> 548.563 ms on anonymous production scope; 557 unit passes/3 pre-existing skips, 3 focused HTTP passes, 5 PostgreSQL passes, typechecks/build/71+11-route contract PASS; implementation SHA eef1244eca884b4f03c12775c2e2e9fcb47895a8; PR https://github.com/gadgethd/ukmesh/pull/142.

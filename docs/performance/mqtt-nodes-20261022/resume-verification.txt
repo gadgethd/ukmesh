@@ -1,0 +1,29 @@
+Continuation verification at f95ad42020c7858830667faf9c545c079f38c41e
+
+PASS: original oracle matches base route SQL; measured before/after SQL matches the actual handlers.
+PASS: committed HTTP p50 values equal medians of all recorded before/after samples.
+PASS: fresh HTTP benchmark makes 5 uncached DB reads per variant on production scope; all after samples are below 1000 ms.
+PASS: git diff --check bec753b5..HEAD.
+
+resume-route-tests.txt
+# tests 3
+# pass 3
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 9348.118812
+
+resume-sql-tests.txt
+# tests 5
+# pass 5
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 2792.92249
+
+CI: https://github.com/gadgethd/ukmesh/actions/runs/39785176256
+HEAD: f95ad42020c7858830667faf9c545c079f38c41e
+Backend, Frontend, Workers and Compose, Secret scan: success
+Backend job 119846821259 log confirms all four MQTT subtests and their parent passed without skipping.
