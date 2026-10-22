@@ -1045,3 +1045,99 @@ printed more historical review/memory text than necessary; subsequent reads were
 bounded. The four deliberately failing regression tests were expected and then
 passed with the implementation. No production mutation, accidental deploy,
 secret exposure or failed final verification was observed.
+
+## Continuation audit and evidence-cap correction — 2026-10-22
+
+The continuation began from clean, published commit
+`ef5f6ea7995cd0e5f01c544b9713e3e8bd1cfc0b`. PR #141 was open against
+`main`, its head matched that commit, and all eight reported CI jobs passed.
+The preceding session therefore made verified progress. Its original detector
+rules and remaining production-validation limitations above still apply.
+
+The audit found one adjacent persistence defect in the existing evidence
+sampler: legal evidence limits of **1** or **2** could retain **3** records,
+because first/representative/newest anchors were inserted without checking the
+limit. This contradicted the promised bounded evidence after campaign merging.
+The sampler now checks capacity for every insertion and prioritizes newest
+activity, then the earliest endpoint, then the representative message. Larger
+samples continue to retain those anchors and a spread of recent/history records;
+campaign counts and confidence are unchanged.
+
+The new unit regression checks every budget from 1 through 20 with reverse input
+order, strict cardinality, unique IDs, chronological output, newest activity,
+both endpoints when space permits, and representative retention from 3 upward.
+The new SQL regression repeatedly publishes one merged 25-transmission campaign
+with evidence budgets 1/2/3/8 and reads it through the actual public detail query:
+the timeline respects each cap while the campaign count remains 25.
+
+### Requirement audit
+
+| Requirement | Current code and verification evidence |
+| --- | --- |
+| Targeted member floor | `transmissionFloor` and production-policy tests catch 6/7 rotating IDs; reject 5, seven repeats from one sender and seven SNR acknowledgements. |
+| Mixed machine-name rotating signal | Default share 0.3; eleven-ID/four-machine fixture catches the old 0.5 rejection; inclusive 3/10 and excluded 2/9 boundaries pass. |
+| Busy-day analysis coverage | Default 5,000, hard ceiling 10,000; actual loader SQL loads 2,907 synthetic transmissions and catches the seven-ID burst lost at 2,000. Lookahead/cap unit tests verify aggregate warnings and bounded metric labels. |
+| Multi-burst persistence/display | Campaigns merge before incident capping and sanitization. Unit and SQL tests verify 25-message union, latest activity, strongest confidence, row/public JSON/timeline consistency, historical first-seen time and rejection of stale snapshots. |
+| Evidence and transaction constraints | Budgets 1–20 pass unit checks and 1/2/3/8 pass actual SQL/public-read checks. Duplicate-key rejection, rollback, publication fencing and lifecycle expiration tests pass. |
+| False-positive controls | Chatter, human names, reused identities, trivial content, test channel and insufficient density remain covered. No live precision claim is made. |
+| Authorized scope | Only this worktree was edited; no live data, deployment, restart, merge, config changes or agent delegation. All added data is invented. |
+
+### Continuation verification
+
+Commands run from `backend/`; output redirects and logs are confined to ignored
+`node_modules/.cache/spam-resume-*.log`. Environment variables that could enable
+external database/Redis integrations were unset as shown below.
+
+| Exact command (before output redirection) | Result |
+| --- | --- |
+| `node --import tsx --test src/spam/repository.test.ts` (new regression before sampler fix) | **5 passed, 1 failed**; the new test reproduced 3 retained members at limit 1. |
+| `env -u DATABASE_URL -u TEST_ANALYSIS_DATABASE_URL -u TEST_INGEST_DATABASE_URL -u TEST_REDIS_URL -u TEST_REDIS_PASSWORD -u TEST_NODE_CLEANUP_POSTGRES_MODULE -u TEST_NODE_CLEANUP_PGLITE_MODULE TEST_SPAM_PGLITE_MODULE="file://$PWD/node_modules/.cache/spam-sql/node_modules/@electric-sql/pglite/dist/index.js" node --import tsx --test src/spam/*.test.ts` | **85 passed, 0 failed, 0 skipped**, 88.4 s: 80 units and 5 isolated SQL integration cases. |
+| `env -u DATABASE_URL -u TEST_ANALYSIS_DATABASE_URL -u TEST_INGEST_DATABASE_URL -u TEST_REDIS_URL -u TEST_REDIS_PASSWORD -u TEST_NODE_CLEANUP_POSTGRES_MODULE -u TEST_NODE_CLEANUP_PGLITE_MODULE npm_config_cache="$PWD/node_modules/.cache/npm" timeout 600s npm test` | **572 tests: 569 passed, 0 failed, 3 existing opt-in skips**, 138.5 s; synthetic alert firing/recovery receiver **passed**. |
+| `npm run typecheck` | Pass. |
+| `npm run build` | Pass. |
+| `npm run contract:check` | Pass: **71 API and 11 operator routes** current. |
+| `git diff --check` (worktree root) | Pass. |
+
+No additional dependencies were installed in this continuation.
+OpenViking was consulted; TokenSave returned no related symbols from its stale
+index and the worktree has no `.tokensave/tokensave.db`, so scoped file reads
+and the actual test results supplied the evidence.
+
+Deliberately left out: production replay, native PostgreSQL concurrency and
+operator rollout remain outside this code-only branch. Small evidence budgets
+necessarily omit some historical/representative samples; complete campaign
+counts still cover the selected window. There are no new product questions.
+
+Continuation mistake inventory: initial discovery used the wrong memory tool
+name pattern and printed excessive metadata/history; the corrected discovery
+found the tools. A batched semantic query delayed otherwise ready results, so
+independent verification continued while it completed. The one failing new
+regression was intentional and passed after the fix. No forbidden mutation
+was performed.
+
+### Continuation publication and proof
+
+Evidence-cap correction commit:
+`d4e07aa9f628763a7176326ea9e053a6d192b63b`, pushed normally to
+`burn/spam-rotating-ids-20261022`. PR metadata confirmed the same head and
+open/unmerged state: https://github.com/gadgethd/ukmesh/pull/141.
+The PR description now records the final **85/85** detector and
+**569 passed / 0 failed / 3 existing skips** backend results.
+
+The following commit only records this continuation review. Its exact SHA is
+reported in the final handoff using the required proof command:
+
+```sh
+git -C /home/ben/worktrees/ukmesh/burn-spam-20261022 log -1 --format=%H
+```
+
+Pair that SHA with the exact detector/full-backend commands and results in the
+continuation verification table. Final gates check that the tested source/test
+trees match the correction commit, the worktree is clean, and remote branch
+and PR heads match the final documentation commit. New publication triggers
+fresh CI runs; the initial eight passing checks apply to the starting commit,
+and are not claimed as the result for this new head.
+
+The authorized branch implementation and local verification are complete.
+Operator review, eventual merge and any production validation/deployment remain
+separate follow-up work; none were performed here.
