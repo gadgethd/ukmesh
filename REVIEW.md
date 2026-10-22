@@ -1,3 +1,5 @@
+> Current task: see [Rotating-ID detector review — 2026-10-22](#rotating-id-detector-review--2026-10-22) below. Earlier reviews are preserved as historical context.
+
 # UKMesh fix review — 2026-10-02
 
 Branch: `fix/ukmesh-burn-20261002`. Base: `73ee004` (`ukmesh-w5`).
@@ -883,3 +885,163 @@ or modified, so these require a separate PR in the Watchtower repository.
   branch push was performed.
 
 PR link: https://github.com/gadgethd/ukmesh/pull/117
+
+
+---
+
+# Rotating-ID detector review — 2026-10-22
+
+Branch: `burn/spam-rotating-ids-20261022`.
+Base: `bec753b5e95893acf159d0ef08ce79057d98c6f8` (`origin/main`).
+Scope: the supplied spam-detector brief and the four confirmed mechanisms in
+backlog #618, read directly through the backlog's read-only item endpoint.
+All new fixture names and message bodies are invented. No live packet records
+or personal data were copied, and no live database connection was used.
+
+## Changes and exact detection rules
+
+1. **Small rotating bursts:** the ordinary transmission floor remains **8**.
+   A burst gets the lower **6** floor only when the entire existing rotating-ID
+   profile holds: at least **5 distinct senders**, at least **80% single-shot**
+   within the selected analysis corpus, at least **30% machine-style names**,
+   and at least **3 distinct senders within 10 minutes**. The regular substantive
+   content, minimum burst-density and excluded-channel gates also apply.
+   `SPAM_MESSAGE_ROTATING_MIN_TRANSMISSIONS` tunes the exception; it cannot raise
+   the ordinary floor. Scoring uses the same effective floor, so qualifying
+   smaller bursts have a nonnegative, consistent volume contribution. The
+   synthetic seven-message/seven-ID promo spans two minutes and scores above
+   the public threshold; five-message bursts and seven repeats from one sender
+   remain rejected.
+2. **Machine-name share:** the default
+   `SPAM_MESSAGE_ROTATING_MACHINE_NAME_SHARE` is **0.3**, using the option tested
+   in the backlog investigation. The per-name uppercase/digit/callsign/vowel
+   heuristic is unchanged. An eleven-ID burst with four machine-style names
+   (**4/11 = 36%**) now qualifies; the fixture explicitly reproduces rejection
+   at the old 50% setting. Boundary controls accept 3/10 and reject 2/9.
+3. **Analysis headroom and visibility:** the default message budget increases
+   from **2,000 to 5,000**, retaining the existing hard ceiling of **10,000**.
+   Candidate SQL reads one lookahead row beyond its independent candidate cap,
+   then discards it before observer materialization. Actual candidate/message/
+   incident truncation emits aggregate warnings and increments
+   `meshcore_spam_analysis_truncations_total` with one of three bounded `phase`
+   labels. Exactly full pages are not falsely reported as truncated. The actual
+   loader SQL test places 2,900 higher-priority connectivity transmissions ahead
+   of a seven-ID burst: the old 2,000 cap loses it, while the new default loads
+   all 2,907 and detects it. Privacy filtering and all work/evidence budgets
+   remain in place.
+4. **Multi-burst persistence and public display:** qualifying bursts sharing the
+   existing network/text campaign key are combined **before the incident cap,
+   origin estimation and sanitization**. Their distinct transmissions, observers,
+   channels and sender names are unioned. Activity follows the newest burst;
+   confidence and its labeled reasons come from the strongest qualifying burst.
+   Thus an older 17-message burst plus a newer weaker eight-message burst become
+   one 25-message campaign, active at the newest timestamp, rather than two
+   writes whose order chooses a winner. Origin estimation uses the merged
+   observations. Evidence is sampled after merging, preserving the existing cap.
+   Persistence rejects duplicate keys before acquiring a connection, preserves
+   historical first-seen time in both the row and public JSON, and skips older
+   snapshots without replacing the newer member set. Upsert counts reflect
+   actual accepted writes. Transaction rollback, publication fencing and
+   lifecycle closure remain enforced. Public API reads are exercised against
+   the persisted SQL fixture; no frontend change is needed for the stale-row
+   display bug.
+
+## False positives and remaining risks
+
+The ordinary eight-message floor prevents the reported seven-message automatic
+SNR-ack shape from entering through the exception. Regression controls cover
+human chatter, similar human names, established/reused senders, trivial messages,
+excluded test traffic, insufficient density and insufficient machine-name share.
+The existing amateur-radio callsign/human-name tests still pass. The lower share
+is a heuristic: coordinated legitimate messages with enough fresh machine-style
+names can still match. Synthetic regressions do **not** establish a production
+false-positive rate; no 30-day live replay was performed.
+
+A selected/capped corpus can overestimate single-shot identities, and days above
+5,000 messages can still lose candidates. Such truncation is now observable;
+it is not complete traffic coverage. Runtime and SQL budgets can still expire
+under production load. A local 5,000-record synthetic clustering stress probe
+completed in 492 ms under the unchanged 5,000 ms clustering budget, but this is
+not a database benchmark or production capacity measurement. Its common text
+prefix and similar generated sender names yield one cluster, so it is not a
+negative precision control.
+
+The campaign key still groups identical normalized text on one network; separate
+actors reusing a slogan can share a row. Only qualifying bursts are merged;
+a later subthreshold trickle does not extend activity. Counts and strongest-burst
+confidence cover the selected rolling window, not lifetime totals; first-seen
+history is retained when an old burst leaves that window. A fresh run with the
+same newest timestamp may recompute window statistics; strictly older snapshots
+are ignored. Legacy rows are corrected by a subsequent accepted analysis pass;
+this code-only task does not rewrite live historical data. Existing environment
+overrides can retain old thresholds until an operator reviews them.
+
+## Deliberately left out and open questions
+
+- No deployment, service restart, live configuration change, live database write,
+  data remediation, main-branch push, merge or delegated agent/session.
+- No live SSH/DB replay, unbounded analysis, new persistent schema or relaxation
+  of the per-name heuristic. New tests use the repository's optional PGlite
+  fixture pattern and do not add a runtime or lockfile dependency.
+- Operator follow-up: review the 30% share against representative retained
+  traffic, inspect environment overrides, and measure production query/load and
+  truncation rates after any separately authorized rollout. Native PostgreSQL
+  concurrency and actual production traffic were not tested here.
+
+## Verification
+
+Commands below ran from `backend/` unless stated otherwise. Logs and the optional
+SQL engine are under ignored `backend/node_modules/.cache/`; no system packages
+were installed. Tests did not load production environment files.
+
+| Exact command | Result |
+| --- | --- |
+| `npm ci --cache "$PWD/.npm-cache" --no-audit --no-fund` | 185 packages installed; the cache was moved into ignored `node_modules/.cache/npm` afterward. |
+| `node --import tsx --test src/spam/*.test.ts` (before edits) | **67 passed, 0 failed, 0 skipped**. |
+| `node --import tsx --test src/spam/cluster.test.ts` (new regressions before the fix) | **21 passed, 4 failed**: targeted floor, mixed machine-name share and same-key burst regressions reproduced. |
+| `node --import tsx --test src/spam/cluster.test.ts` (after the fix) | **25 passed, 0 failed, 0 skipped**. |
+| `node --import tsx --test src/spam/*.test.ts` (after unit changes, before adding the opt-in integration file) | **79 passed, 0 failed, 0 skipped**. |
+| `npm install --prefix node_modules/.cache/spam-sql --cache node_modules/.cache/npm --no-audit --no-fund @electric-sql/pglite@0.3.14` | One optional SQL-test package installed inside the worktree, outside tracked manifests. |
+| `TEST_SPAM_PGLITE_MODULE="file://$PWD/node_modules/.cache/spam-sql/node_modules/@electric-sql/pglite/dist/index.js" node --import tsx --test src/spam/repository.integration.test.ts` | **4 passed, 0 failed, 0 skipped**, about 29.5 s. Real repository SQL and migration schemas in isolated PostgreSQL-WASM memory; no server connection. |
+| `env -u DATABASE_URL -u TEST_ANALYSIS_DATABASE_URL -u TEST_INGEST_DATABASE_URL -u TEST_REDIS_URL -u TEST_REDIS_PASSWORD -u TEST_NODE_CLEANUP_POSTGRES_MODULE -u TEST_NODE_CLEANUP_PGLITE_MODULE npm_config_cache="$PWD/node_modules/.cache/npm" timeout 600s npm test` | **571 tests: 568 passed, 0 failed, 3 skipped**, 81.7 s, plus synthetic alert firing/recovery receiver **passed**. The three existing skips are opt-in live read-only EXPLAIN tests (RF repositories, history queries and node export); live checks were not enabled. |
+| `npm run typecheck` | Pass. |
+| `npm run build` | Pass. |
+| `npm run contract:check` | Pass: **71 API and 11 operator routes** current. |
+| `git diff --check` (worktree root) | Pass. |
+
+The optional SQL suite verifies merged row/public-JSON/timeline agreement,
+historical first-seen consistency, rejection of older closed snapshots,
+member preservation, lifecycle expiration, transactional rollback, publication
+fencing, busy-day loader behavior and explicit truncation reporting. Existing
+unit and metrics tests run as part of the complete backend suite. No frontend
+source changed.
+
+## Publication and proof
+
+Implementation commit: PENDING_PUBLICATION_SHA.
+PR URL: PENDING_PUBLICATION_URL.
+The final documentation commit only updates this handoff; its SHA is reported
+in the final response and can be obtained with the required proof command:
+
+```sh
+git -C /home/ben/worktrees/ukmesh/burn-spam-20261022 log -1 --format=%H
+```
+
+The proof pairs that final SHA with the full backend command above:
+**568 passed, 0 failed, 3 existing opt-in skips**, plus the passing synthetic
+alert receiver; detector units **79/79** and isolated SQL checks **4/4** pass.
+Remote publication, matching branch/PR head and a clean post-commit worktree
+are verified before the final handoff. Remaining work is operator review and
+any separately authorized production validation/rollout.
+
+## Honest mistake inventory
+
+The first tool-discovery expression used the wrong OpenViking name pattern and
+I initially reported the tool unavailable; a corrected discovery found it and
+I consulted the relevant memory before implementation. TokenSave's context query
+did not return during the initial wait, and no local SQLite index exists in this
+worktree; scoped file reads supplied the code evidence. Initial exploration also
+printed more historical review/memory text than necessary; subsequent reads were
+bounded. The four deliberately failing regression tests were expected and then
+passed with the implementation. No production mutation, accidental deploy,
+secret exposure or failed final verification was observed.

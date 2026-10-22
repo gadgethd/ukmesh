@@ -4,6 +4,7 @@ import { normalizeMessage } from './normalize.js';
 import type { Incident, IncidentStatus, MessageRecord, ObserverObservation, OriginEstimate } from './types.js';
 import type { PublicIncident } from './sanitize.js';
 import type { SpamMessageConfig } from './config.js';
+import { reportSpamAnalysisTruncation } from './limits.js';
 import { privateNodePacketNetworkMatchSql } from '../privacy/networkScope.js';
 import {
   assertAnalysisPublicationLease,
@@ -147,14 +148,19 @@ export async function loadRecentMessages(
       NETWORKS,
       cfg.minTransmissions,
       cfg.maxIndependentSenders,
-      cfg.maxCandidatePacketRows,
+      cfg.maxCandidatePacketRows + 1,
     ],
     signal,
   );
 
   if (msgRes.rows.length === 0) return [];
 
-  const selectedRows = msgRes.rows.slice(0, cfg.maxMessagesPerRun);
+  // One lookahead row distinguishes a full page from actual truncation without
+  // materializing an unbounded corpus. The omitted count is a lower bound.
+  reportSpamAnalysisTruncation('candidates', msgRes.rows.length, cfg.maxCandidatePacketRows);
+  const candidateRows = msgRes.rows.slice(0, cfg.maxCandidatePacketRows);
+  reportSpamAnalysisTruncation('messages', candidateRows.length, cfg.maxMessagesPerRun);
+  const selectedRows = candidateRows.slice(0, cfg.maxMessagesPerRun);
   const hashes = selectedRows.map((r) => r.packet_hash);
   const obsRes = await analyticsQuery<ObsRow>(
     `WITH ranked_observers AS (
@@ -294,16 +300,18 @@ export function selectIncidentEvidenceMembers(
 }
 
 /**
- * Replace the in-window incidents with a freshly computed set.
- * - Upserts each incident, preserving the earliest `first_seen` ever recorded.
- * - Deletes only in-window incidents that vanished this run (frozen history
- *   outside the window is left untouched).
+ * Publish one already-merged campaign per key. Preserve historical first_seen
+ * in both the row and public JSON, and never let an older bounded snapshot
+ * replace newer activity/evidence. Missing campaigns are not absence evidence.
  */
 export async function persistIncidents(
   items: PersistableIncident[],
   cfg: SpamMessageConfig,
   analysisRun: AnalysisPublicationHandle,
 ): Promise<PersistResult> {
+  if (new Set(items.map((item) => item.incident.key)).size !== items.length) {
+    throw new Error('SPAM_DUPLICATE_INCIDENT_KEYS: merge qualifying bursts before publication');
+  }
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -311,11 +319,10 @@ export async function persistIncidents(
     await assertAnalysisPublicationLease(client, analysisRun);
 
     let active = 0;
+    let upserted = 0;
 
     for (const { incident, origin, status, publicJson } of items) {
-      if (status === 'active') active += 1;
-
-      await client.query(
+      const published = await client.query(
         `INSERT INTO spam_message_incidents
            (incident_key, network, status, first_seen, last_seen, message_count, observer_count,
             channels, username_variants, sender_names, representative_text, canonical_text,
@@ -342,8 +349,11 @@ export async function persistIncidents(
            origin_region     = EXCLUDED.origin_region,
            origin_confidence = EXCLUDED.origin_confidence,
            origin_level      = EXCLUDED.origin_level,
-           public_json       = EXCLUDED.public_json,
-           updated_at        = NOW()`,
+           public_json       = jsonb_set(EXCLUDED.public_json, '{firstSeen}',
+                                 to_jsonb(LEAST(spam_message_incidents.first_seen, EXCLUDED.first_seen)), true),
+           updated_at        = NOW()
+         WHERE EXCLUDED.last_seen >= spam_message_incidents.last_seen
+         RETURNING incident_key`,
         [
           incident.key,
           incident.network,
@@ -369,6 +379,10 @@ export async function persistIncidents(
           JSON.stringify(publicJson),
         ],
       );
+
+      if (published.rows.length === 0) continue;
+      upserted += 1;
+      if (status === 'active') active += 1;
 
       // Replace members for this incident.
       await client.query('DELETE FROM spam_message_members WHERE incident_key = $1', [incident.key]);
@@ -433,7 +447,7 @@ export async function persistIncidents(
     await assertAnalysisPublicationLease(client, analysisRun);
     await client.query('COMMIT');
     return {
-      upserted: items.length,
+      upserted,
       removed,
       active,
       lifecycleExpired: lifecycle.rowCount ?? 0,
