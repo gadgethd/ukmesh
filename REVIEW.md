@@ -883,3 +883,182 @@ or modified, so these require a separate PR in the Watchtower repository.
   branch push was performed.
 
 PR link: https://github.com/gadgethd/ukmesh/pull/117
+
+---
+
+# Public-visibility fence — 2026-10-22 (backlog 672)
+
+This section supersedes earlier review sections only for this branch's privacy
+work. Worktree: `/home/ben/worktrees/ukmesh/burn-privacy-20261022`.
+Branch: `burn/privacy-fence-20261022`. Base: `bec753b5e95893acf159d0ef08ce79057d98c6f8`.
+Implementation commit: `97a007af1098906653c8a5d8be354f0f3c3789d2`. PR: https://github.com/gadgethd/ukmesh/pull/143 (against `main`).
+The final handoff documentation commit changes only this review; the implementation
+SHA identifies the tested code and SQL exactly.
+
+## Changes and trigger semantics
+
+The local full-schema PostgreSQL/TimescaleDB reproduction confirms that deleting
+an ordinary public node issues an FK-cascade DELETE against the prefix table
+with **zero affected rows**. The previous statement trigger still moved the
+public/materialized pair from **1/1 to 2/1**. The empty cascade is not reliably
+identified by `pg_trigger_depth() > 1`.
+
+Migration **062** replaces the prefix statement trigger with one trigger per
+operation and transition tables. Empty INSERT/UPDATE/DELETE statements, including
+empty FK cascades, leave the pair unchanged. A direct change with affected rows,
+an actual prefix-removing cascade, and TRUNCATE continue to advance only the
+public generation. Nested node-trigger maintenance retains 056's queue behavior.
+This avoids guessing that every cascade is harmless: deleting a real privacy
+prefix must retain a fence until materialization is verified.
+
+Alias changes and successful node-scoped worker completions previously stamped
+the current materialized generation unconditionally. Both now advance an existing
+**current** materialization only. A pre-existing gap or missing materialization
+row survives unrelated alias changes and scoped worker passes. Healthy operation
+continues to advance the generation pair normally.
+
+The new `privacy:converge` command defaults to a read-only consistent inventory.
+Its explicit apply mode requires the reviewed generation, takes maintenance
+locks on policy/queue/data writers, reclassifies **every retained packet and path**,
+verifies both stores, completes pending/failed work, and publishes a newly
+incremented pair in one transaction. It refuses processing claims and changed
+or missing public state. A healthy repeat apply leaves data and timestamps alone.
+CLI diagnostics omit server data and connection strings.
+
+## Why the change preserves privacy
+
+Only empty prefix statements bypass invalidation; they cannot change the private
+prefix set. Actual direct/cascade prefix changes retain their fail-closed gap,
+and node transitions retain their pending/failed queue gates. Neither an alias
+change nor a partial node-scoped rematerialization can certify an unrelated gap.
+
+Convergence applies the existing prefix/network policy, including direct source
+and observer matches, all three path widths, shared UK network scope, framing,
+and case-normalized legacy hashes. Invalid/unknown framing and NULL hops become
+hidden. It never clears a fence by copying generation numbers alone. Policy,
+queue and both stores are frozen while full classification and readback run;
+errors before commit roll back all changes. Injected path-write, readback, queue
+and publication failures verify that atomicity. The query-plan workaround
+(`SET LOCAL max_parallel_workers_per_gather = 0`) and compressed DML budget are
+transaction local and leave server and subsequent pooled-query settings alone.
+
+## Convergence runbook and rollback
+
+The permanent [runbook](docs/privacy-convergence.md) is linked from
+[Operations](docs/operations.md). With the reviewed build and migration installed,
+from `backend/` and with the intended `DATABASE_URL` already configured:
+
+```sh
+npm run privacy:converge
+npm run privacy:converge -- --apply --expected-generation=42
+npm run privacy:converge
+```
+
+Replace `42` with the inventory's reviewed positive generation. Apply requires a
+maintenance window: node, prefix, alias, queue, packet and path writers wait for
+the full transaction. The lock timeout is 5s; statement timeouts default to 30s
+for inventory and 15m for apply, configurable to 1h per statement. Lock contention
+or uncertain connection outcomes require another inventory before retrying.
+Processing work must finish; orphaned processing claims require operator
+investigation. Current prefix policy must be intentional before convergence,
+especially after actual node/prefix deletion.
+
+Executable inverse SQL:
+`backend/src/db/rollback/062_prefix_visibility_statement_fence.sql`.
+It restores the old identity function and prefix statement trigger in its own
+bounded transaction, without changing packet/queue data or generation values.
+It restores the original false-invalidation/alias behavior as well. The worker
+guard and convergence tool support either trigger layout. Keep the production
+migration ledger intact; the runner will retain 062's checksum and not silently
+reapply it. A future forward rollout needs reviewed reapplication/new SQL.
+The fixture verifies rollback, a populated upgrade through the real runner,
+idempotent checksums, and atomic rollback of a failed migration transaction.
+Convergence itself has no stale-data reversal: change policy through its normal
+path and rematerialize, rather than rolling back generations or privacy flags.
+
+## Verification
+
+All database writes below target owned, loopback-only, disposable local test
+fixtures. No application Compose stack, live database or live configuration was
+used. OpenViking was consulted and reusable root-cause/workaround knowledge was
+stored. TokenSave returned no relevant symbols, so source and executable database
+behavior supplied the evidence.
+
+| Exact command / scope | Final result |
+| --- | --- |
+| `bash scripts/test-privacy-fence.sh` from worktree root | **16/16 pass, 0 skipped, exit 0**. Full base schema and migration chain; shipped-bug repro, direct insert/update/delete/TRUNCATE, empty and real/public/private cascades, queue gates, convergence, SELECT-only CLI dry-run, legacy framing, generation race, missing state, transaction-local planner settings, four failure stages, competing writers/repair and compressed history. **100,001 compressed rows in each store**, including 300-day-old rows, reclassified and verified. |
+| `cd backend && npm test` | **559 pass, 3 skipped, 0 fail** (562 total), plus the synthetic alert-receiver firing/recovery drill. The three skips are optional live read-only EXPLAIN tests; this session does not access that database. |
+| Existing integration command and recovery below | **7/7 SQL + 3/3 Redis + 1/1 WebSocket pass; final serial combined command exits 0**, no skips. |
+| `cd backend && npm run typecheck && npm run build && npm run contract:check` | Pass; **71 API + 11 operator routes** current. |
+| `cd backend && node --import tsx --test src/privacy/convergence.test.ts` | **3/3 pass**: CLI mode/argument guards, validation before connecting, and diagnostic redaction. |
+| `cd backend && npm run privacy:converge -- --help` | Pass without a database connection. |
+| Compiled CLI dry-run and apply against the owned local fixture | Dry-run read a healthy **3/3**; a direct local prefix mutation made **4/3**; explicit apply converged it with no flag rewrites. A separate legacy fixture repaired **two invalid rows in each store**, with zero mismatches afterward. |
+| `bash -n scripts/test-privacy-fence.sh`; `git diff --cached --check` | Pass. |
+| Gitleaks 8.30.0 `stdin --redact --no-banner --config /repo/.gitleaks.toml` against the staged patch in an isolated container | No leaks found; only public, test-only fixture passwords are added. |
+
+Local repro command (owns and removes its test container):
+
+```sh
+bash scripts/test-privacy-fence.sh
+```
+
+It reports `BASELINE REPRO: empty FK-cascade DELETE changes 1/1 -> 2/1 with zero
+prefix rows`; after the migration the empty cascade stays **1/1**. For an already
+owned test service, `cd backend && TEST_PRIVACY_DATABASE_URL=<loopback-test-url>
+npm run test:privacy-integration` runs the same suite and creates its own uniquely
+named database and SELECT-only role, removing them afterward.
+
+Existing integration invocation:
+
+```sh
+cd backend
+TEST_INGEST_DATABASE_URL=<owned-loopback-postgres-url> TEST_REDIS_URL=<owned-loopback-redis-url> npm run test:ingest-integration
+```
+
+The first combined run passed **7/7 SQL** and **3/3 Redis** cases, while the
+WebSocket case exceeded its 40s budget under concurrent heavy verification.
+The unchanged WebSocket test passed **1/1** in isolation in 10s. The final
+serial combined command then passed **7/7 SQL, 3/3 Redis and 1/1 WebSocket**,
+with no skips and exit 0 (WebSocket 4.4s):
+
+```sh
+cd backend
+TEST_INGEST_DATABASE_URL=<owned-loopback-postgres-url> TEST_REDIS_URL=<owned-loopback-redis-url> timeout 60s node --import tsx --test src/ws/publicAuthorization.integration.test.ts
+```
+
+## Deliberately left out and open questions
+
+No deploy, service restart, live DB/config change, merge, main push, agent spawn
+or system-package installation is part of this work. Changes are confined to this
+worktree and its explicitly named feature branch. Existing historical migrations
+and prior review sections are preserved; 062 and its rollback are new files.
+
+Production data volume, runtime, lock duration, WAL/free-space cost and the
+maintenance window remain unmeasured. The full repair deliberately favors a
+single verified policy snapshot over concurrent writer availability. An orphaned
+processing claim needs operator investigation. Deleted private identities retain
+the existing current-prefix policy; a privacy tombstone design is separate work.
+Derived snapshots rebuild through their existing generation invalidation, without
+a new rebuild/orchestration policy in this PR. Remote CI status: queued/running when the review was written; current results are on the [PR checks tab](https://github.com/gadgethd/ukmesh/pull/143/checks).
+
+## Honest mistake inventory
+
+- The first large compressed regression exposed a parallel Timescale readback
+  error (`subplan ... was not initialized`). That repair rolled back. A smaller
+  forced-parallel fixture isolated it; disabling vectorized aggregation did not
+  help, while transaction-local serial execution did. The final large test uses
+  the verified workaround.
+- I edited the test shell script while an earlier copy was still reading its
+  file. Its tests passed, then Bash read a shifted trailing fragment and exited
+  127. The finished script was rerun unchanged; its full exit status is required
+  for the final proof.
+- The legacy-row fixture initially used `ALTER ... DISABLE TRIGGER`, unsupported
+  on columnstore-enabled hypertables. It now uses a transaction-local replica
+  role exclusively in the owned fixture database. The production tool never
+  disables triggers or changes replication role.
+- The first combined integration run's WebSocket timeout is recorded above;
+  the final serial combined command passed; no unrelated source or timeout
+  setting was changed to hide it.
+
+PROOF: **16/16 pass, 0 skipped, exit 0**; local repro `bash scripts/test-privacy-fence.sh`;
+implementation commit `97a007af1098906653c8a5d8be354f0f3c3789d2`; PR https://github.com/gadgethd/ukmesh/pull/143.
