@@ -64,6 +64,14 @@ the environment and run `scripts/bootstrap-mosquitto.sh`. The helper creates a
 backend-only read ACL and password file, refuses partial or symlinked state, and
 does not replace an existing credential set.
 
+## Public packet visibility recovery
+
+Use the [privacy convergence runbook](privacy-convergence.md) when public and
+materialized generations differ or privacy work remains pending/failed. The
+`privacy:converge` command defaults to a read-only inventory. Its explicit apply
+mode locks policy/data writers and reclassifies both retained packet stores
+before publishing a verified generation; it requires a maintenance window.
+
 ## Legacy schema-16 compatibility cutover
 
 An existing database that has `016_stale_mqtt_observer_cleanup.sql` but not
