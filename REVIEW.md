@@ -1018,8 +1018,8 @@ source changed.
 
 ## Publication and proof
 
-Implementation commit: PENDING_PUBLICATION_SHA.
-PR URL: PENDING_PUBLICATION_URL.
+Implementation commit: `d9461c2c1cab2ed0965ecf84e4a319023725cd29`.
+PR URL: https://github.com/gadgethd/ukmesh/pull/141.
 The final documentation commit only updates this handoff; its SHA is reported
 in the final response and can be obtained with the required proof command:
 
