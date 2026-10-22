@@ -267,6 +267,44 @@ same transport and production-deployment limitations stated above. Committed
 the review and evidence; the application and tests remain at implementation
 commit `eef1244eca884b4f03c12775c2e2e9fcb47895a8`.
 
+## Final continuation audit — 16:51 BST
+
+The next continuation checked pushed HEAD
+`02c2699c5cc886820de246e4e79b36e2dc58bfa1` against the brief and PR.
+The original SQL oracle still matches the base handler, both measured queries
+match their handlers, and the committed benchmark percentiles match their raw
+samples. No application or test change was needed.
+
+The focused HTTP tests again passed **3/3**, and the disposable PostgreSQL
+regression again passed **5/5**, both with zero skips. Using the same exact
+commands listed in the previous continuation, with output names changed from
+`resume-*` to `final-*`, the fresh repeatable-read read-only comparison returned
+**23 rows before, 23 after, zero differences**. The fresh HTTP output was:
+
+```json
+{"mode":"before","scope":["ukmesh","northeast","teesside"],"samples_ms":[9832.011,8557.604,9522.517,7722.685,8313.036],"p50_ms":8557.604,"database_queries":5}
+{"mode":"after","scope":["ukmesh","northeast","teesside"],"samples_ms":[514.287,468.481,588.657,509.152,516.109],"p50_ms":514.287,"database_queries":5}
+```
+
+All five uncached after samples were below 600 ms. The same local-handler,
+remote-database transport and small-sample limitations apply. The fresh cache
+prototype remained a benchmark-only experiment: cold request **7,706.664 ms**,
+five warm hits at **7.546 ms p50**, one database query. These results and test
+summaries are retained in `final-http-reused-ssh.jsonl`, `final-equality.txt`
+and `final-verification.txt` in the evidence directory.
+
+[Push CI run 39799957604](https://github.com/gadgethd/ukmesh/actions/runs/39799957604)
+passed all four jobs at the inspected HEAD. Its Backend job log confirms the
+new PostgreSQL regression ran and passed all four subtests without skipping.
+The corresponding
+[PR CI run 39799966252](https://github.com/gadgethd/ukmesh/actions/runs/39799966252)
+passed Backend, Frontend and Secret scan, but its first Workers and Compose
+attempt timed out in the existing `RF coverage remains available with 3D terrain`
+desktop browser test at 60 seconds, including its test retry. The same job
+passed on the push run. The failed PR job was rerun without changing application
+code; current PR checks remain authoritative for its final result. No terrain
+or unrelated frontend change was made to this performance branch.
+
 ## Deliberately left out, open questions and rollback
 
 No identity-view rewrite, materialized count table, schema migration, HTTP
