@@ -33,6 +33,20 @@ test('bounded incident evidence retains first, representative, and newest observ
   assert.deepEqual(selected.map((item) => item.observedAt), [...selected].map((item) => item.observedAt).sort((a, b) => a - b));
 });
 
+test('small evidence budgets stay strict and prioritize newest activity, then endpoints', () => {
+  const members = Array.from({ length: 20 }, (_, index) =>
+    member(index, index === 7 ? 'representative' : `message-${index}`)).reverse();
+  for (let limit = 1; limit <= members.length; limit += 1) {
+    const selected = selectIncidentEvidenceMembers(members, limit, 'representative');
+    assert.equal(selected.length, limit, `evidence limit ${limit} must be respected`);
+    assert.equal(new Set(selected.map((item) => item.id)).size, limit);
+    assert.equal(selected.at(-1)!.id, 'hash-19', 'always retain newest activity');
+    if (limit >= 2) assert.equal(selected[0]!.id, 'hash-0', 'retain both endpoints when possible');
+    if (limit >= 3) assert.ok(selected.some((item) => item.id === 'hash-7'), 'then retain the representative');
+    assert.deepEqual(selected.map((item) => item.observedAt), [...selected].map((item) => item.observedAt).sort((a, b) => a - b));
+  }
+});
+
 function row(index: number, summary = '[Public] synthetic message') {
   return {
     packet_hash: `packet-${index}`,

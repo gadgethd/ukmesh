@@ -182,6 +182,9 @@ Separate qualifying bursts with the same network/text signature share one row:
 activity follows the newest burst, message/observer counts cover their union in
 the analyzed window, and reasons identify the strongest burst used for confidence.
 Member evidence is sampled only after merging, under its existing evidence cap.
+The cap is strict even at one or two records: keep the newest observation first,
+then the earliest endpoint, then the representative message as space permits.
+Campaign message counts still describe every qualifying transmission in the window.
 When an older burst leaves the rolling window, historical first-seen time remains
 while current-window counts/confidence may change.
 

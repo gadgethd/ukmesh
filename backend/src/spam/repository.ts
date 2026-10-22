@@ -280,8 +280,11 @@ export function selectIncidentEvidenceMembers(
   const chronological = [...members].sort((a, b) => a.observedAt - b.observedAt);
   const selected = new Map<string, MessageRecord>();
   const add = (member: MessageRecord | undefined) => {
-    if (member) selected.set(member.id, member);
+    if (member && selected.size < boundedLimit) selected.set(member.id, member);
   };
+  // Small budgets cannot retain every anchor. Prioritize current activity,
+  // then the historical endpoint, then a representative message.
+  add(chronological.at(-1));
   add(chronological[0]);
   add(chronological.find((member) => member.text === representativeText));
   const newestBudget = Math.max(1, Math.floor(boundedLimit / 2));

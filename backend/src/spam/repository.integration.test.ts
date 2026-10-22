@@ -122,6 +122,22 @@ test('PostgreSQL ignores older closed snapshots without replacing newer campaign
   assert.equal((await getPublicIncident(items[0]!.incident.key))!.status, 'closed');
 });
 
+test('PostgreSQL keeps merged campaign counts while strictly bounding sampled evidence', options, async (t) => {
+  const f = await fixture(t);
+  const now = Date.now();
+  const old = burst(17, now - 180 * MIN, 0);
+  const fresh = burst(8, now, 17);
+  const items = buildIncidents([...old, ...fresh], now, CFG);
+  for (const limit of [1, 2, 3, 8]) {
+    await persistIncidents(items, { ...CFG, maxEvidenceMembersPerIncident: limit }, f.run);
+    const detail = await getPublicIncident(items[0]!.incident.key);
+    assert.equal(detail!.messageCount, 25, 'campaign counts describe all qualifying bursts');
+    assert.equal(detail!.timeline.length, limit, 'persist only the configured evidence sample');
+    assert.equal(detail!.timeline.at(-1)!.observedAt, new Date(now).toISOString());
+    if (limit >= 2) assert.equal(detail!.timeline[0]!.observedAt, new Date(old[0]!.observedAt).toISOString());
+  }
+});
+
 test('PostgreSQL rolls back row/member changes and still enforces the publication fence', options, async (t) => {
   const f = await fixture(t);
   const now = Date.now();
