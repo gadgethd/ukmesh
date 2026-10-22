@@ -237,6 +237,69 @@ path and an unenumerated directory**. All five original VPS commits are on
 main; zero additional readable feature files need extraction. The explicit
 parked questions above prevent treating this audit as deployment clearance.
 
+## Continuation audit — 2026-10-22 15:51 UTC (16:51 BST)
+
+Resumed from `97d5111e6c35479e22c84a67859aa0ebb2cf468d` after reading the
+brief, this report and the branch log. The prior turn made concrete progress:
+the evidence and review commits were already pushed, with draft #144 open.
+The continuation changes only this report to record independently rechecked
+completion evidence; no additional source extraction is warranted.
+
+At this audit, `git ls-remote --heads origin main` still returned audited main
+`bec753b5e95893acf159d0ef08ce79057d98c6f8`. Local HEAD, remote branch head and
+PR #144's `headRefOid` all matched `97d5111e`. The offline verifier with both
+`--capture .deploy-rescue-private/inventory.json --candidate HEAD` passed
+again. The old VPS HEAD was again rejected with exit 1 by `--candidate`,
+because it lacks the audited-main baseline. This continuation did not contact
+the VPS; the inventory observation remains dated 14:28:27 UTC.
+
+An independent comparison found the Markdown and JSON ledgers agree exactly
+on all **221 paths, classes, dispositions, destinations and reasons**. The
+private capture contains successful, nonempty per-file diff results for all
+**106 modified/deleted/unmerged tracked paths**, and contents for all **211
+readable files**. The private environment backup contains only its filename,
+status and exclusion marker. All 23 historical-source diffs were reviewed
+against their retention reasons; newer main safeguards remain intact.
+
+Both GitHub CI workflows completed successfully for `97d5111e`:
+
+- [Pull-request CI, run 39796810383](https://github.com/gadgethd/ukmesh/actions/runs/39796810383)
+  finished at 15:02:14 UTC. Backend, Frontend, Workers and Compose, and Secret
+  scan all passed. Backend step results include analysis/ingest integration
+  and RAM operational checks. Workers and Compose includes clean-volume image
+  smoke, monitoring validation and browser E2E on its disposable runner.
+  The browser log reports **29 passed, 4 skipped, 1 flaky**; the RF coverage
+  terrain case passed on retry. This is not a retry-free browser result.
+- [Push CI, run 39796800912](https://github.com/gadgethd/ukmesh/actions/runs/39796800912)
+  finished at 15:01:35 UTC with the same four jobs successful.
+
+These are remote results for the stated checkpoint, separate from the local
+unit/build results above. A later documentation commit triggers its own CI;
+the successful checkpoint is not presented as a result for that later SHA.
+The inspected run metadata, job steps and logs came from:
+
+```sh
+gh api repos/gadgethd/ukmesh/actions/runs/39796810383
+gh api repos/gadgethd/ukmesh/actions/runs/39796810383/jobs
+gh api repos/gadgethd/ukmesh/actions/runs/39796800912
+gh run view 39796810383 --repo gadgethd/ukmesh --log
+```
+
+| Brief requirement | Completion evidence / explicit boundary |
+| --- | --- |
+| Read-only inventory, local commits and per-file diffs | Private capture; 221 visible paths, 106 successful tracked-path diffs, 211 readable blobs and the original five-commit patch stream. Unreadable broker paths are explicitly parked, with unknown additional entry count. |
+| Every visible file classified with a reason and destination | All 221 Markdown rows independently matched to JSON; A=208, B=4, C=9. Supplemental U records the inaccessible broker file/directory. |
+| Coherent feature extraction on current main | All five original commits and recovery #133 are ancestors of current main; 187 files identical, 23 historical versions preserved in #133, one probe override parked. Existing merged features are not duplicated. |
+| Private branch pushed and PR opened with exact scope | #144 is open against main; its body lists the five commits, links the complete file ledger and identifies all exclusions. Local/remote/PR checkpoint SHAs matched. The final documentation head is rechecked after normal push. |
+| Rescue map and unrescued work | Feature map and exact file ledger above; broker visibility, private configuration, probe intent and stale conflict index remain explicit operator questions, as the brief permits for unattributable files. |
+| Verification, PROOF and committed review | Offline verifier, negative old-candidate check, exact ledger comparison, retained local test/build logs and completed checkpoint CI; branch-only log and final remote SHA verified at handoff. |
+
+The bounded rescue deliverables are complete with the parked gaps disclosed.
+This does not establish that the unreadable broker contents are rescued or
+that a release can safely proceed. Broker visibility, private configuration
+and the unexplained probe override still need operator resolution before a
+future release.
+
 ## Honest mistake inventory
 
 - The first verifier attempted a repository-wide readiness-probe replacement
