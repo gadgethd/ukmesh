@@ -290,11 +290,18 @@ export function registerMiscRoutes(router: Router, deps: MiscRouteDeps): void {
          FROM node_identity_status_samples nss
          LEFT JOIN node_identity_nodes n ON n.node_id = nss.node_id
          LEFT JOIN (
-           SELECT meshcore_canonical_node_id(rx_node_id) AS rx_node_id, COUNT(*) AS packet_count
-           FROM packets
-           WHERE time > NOW() - INTERVAL '24 hours'
-             AND rx_node_id IS NOT NULL
-             ${packetNetworkClause}
+           -- Canonicalize per receiver, not per observation. Keep COUNT's bigint
+           -- result type: SUM(bigint) otherwise becomes numeric in PostgreSQL.
+           SELECT meshcore_canonical_node_id(rx_node_id) AS rx_node_id,
+                  SUM(packet_count)::bigint AS packet_count
+           FROM (
+             SELECT rx_node_id, COUNT(*) AS packet_count
+             FROM packets
+             WHERE time > NOW() - INTERVAL '24 hours'
+               AND rx_node_id IS NOT NULL
+               ${packetNetworkClause}
+             GROUP BY rx_node_id
+           ) raw_counts
            GROUP BY meshcore_canonical_node_id(rx_node_id)
          ) pc ON pc.rx_node_id = nss.node_id
          WHERE nss.time > NOW() - INTERVAL '15 minutes'
