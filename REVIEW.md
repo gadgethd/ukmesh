@@ -251,7 +251,19 @@ git diff --check
   16.11; compiled/source output matches the committed SQL byte for byte.
   Old/new query proof: **5 → 0**, with the live endpoint unchanged.
 
-Implementation commit and PR: recorded in the final handoff update below.
+Implementation commit (code, tests, diagnostic, evidence and initial review):
+`767f37e04211ac6c281ba07b59b8dfe7b6b02a90`.
+PR: [gadgethd/ukmesh#145](https://github.com/gadgethd/ukmesh/pull/145), open
+against `main` from `burn/vacuum-backlog-20261022`. A documentation-only handoff
+commit records these identifiers; the final tip is available with
+`git rev-parse HEAD` and in the PR's head SHA.
+
+At the first push (14:34 UTC), GitHub's Backend, Frontend, Workers/Compose and
+Secret scan checks were queued. This is not a claim that CI passed; use the
+PR checks for current results. Local results and their scope are recorded
+above. Remaining operator work is review and a separately authorized normal
+release if accepted. There is no presently indicated manual VACUUM from these
+measurements, and none has been executed.
 
 ## Honest mistake inventory
 
@@ -269,4 +281,5 @@ Implementation commit and PR: recorded in the final handoff update below.
 PROOF: read-only diagnostic and old/new SQL inputs/outputs committed above;
 five below-trigger tables, zero pinned long transactions/prepared xacts/slots,
 SQL **21/21**, backend **556 pass / 3 existing skips**, typecheck/build pass;
-implementation SHA and PR are in the final handoff update.
+implementation **767f37e04211ac6c281ba07b59b8dfe7b6b02a90**;
+PR **https://github.com/gadgethd/ukmesh/pull/145**.
