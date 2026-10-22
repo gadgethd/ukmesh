@@ -1,0 +1,12 @@
+BEGIN
+ transaction_read_only
+-----------------------
+ on
+(1 row)
+
+ before_rows | after_rows | differences | names_only_differences
+-------------+------------+-------------+------------------------
+          23 |         23 |           0 |                      0
+(1 row)
+
+ROLLBACK
