@@ -1039,7 +1039,12 @@ single verified policy snapshot over concurrent writer availability. An orphaned
 processing claim needs operator investigation. Deleted private identities retain
 the existing current-prefix policy; a privacy tombstone design is separate work.
 Derived snapshots rebuild through their existing generation invalidation, without
-a new rebuild/orchestration policy in this PR. Remote CI status: queued/running when the review was written; current results are on the [PR checks tab](https://github.com/gadgethd/ukmesh/pull/143/checks).
+a new rebuild/orchestration policy in this PR. At the 2026-10-22 14:52 UTC
+continuation check, all **eight CI checks passed** on
+`03d9692efd021f48b1997e09658e8a1faa03b50d`: Backend, Frontend, Workers and Compose,
+and Secret scan for both push and pull request. The explicit commit check-runs
+API confirmed each check's head SHA. Later documentation pushes have their own
+results on the [PR checks tab](https://github.com/gadgethd/ukmesh/pull/143/checks).
 
 ## Honest mistake inventory
 
@@ -1062,3 +1067,36 @@ a new rebuild/orchestration policy in this PR. Remote CI status: queued/running 
 
 PROOF: **16/16 pass, 0 skipped, exit 0**; local repro `bash scripts/test-privacy-fence.sh`;
 implementation commit `97a007af1098906653c8a5d8be354f0f3c3789d2`; PR https://github.com/gadgethd/ukmesh/pull/143.
+
+## Continuation audit — 2026-10-22 14:55 UTC
+
+Resumed from this review and git history, with a clean worktree at
+`03d9692efd021f48b1997e09658e8a1faa03b50d`. The remote feature branch and open
+PR #143 both matched that SHA; the PR targets `main`. Audited migration 062,
+its executable rollback, worker advancement, the convergence implementation,
+CLI, runbook and regression assertions against all four brief requirements.
+No implementation changes were needed; this follow-up changes only this review.
+
+Fresh verification of the unchanged implementation:
+
+- `bash scripts/test-privacy-fence.sh`: **16 pass, 0 fail, 0 skipped, exit 0**
+  in 225s, including the original empty-cascade reproduction, migration
+  rollback/reapply, real prefix changes, atomic failure cases, and **100,001
+  compressed historical rows in each store**. The fixture container was removed
+  successfully; no containers with its test label remained afterward.
+- `cd backend && npm test`: **559 pass, 0 fail, 3 skipped, exit 0**, plus the
+  successful synthetic alert firing/recovery drill. Skips remain the three
+  optional live-database EXPLAIN tests. Local output is retained only in ignored
+  `.ukmesh-tools/verification/backend-20261022-resume.log`.
+- `cd backend && npm run typecheck && npm run build && npm run contract:check && node --import tsx --test src/privacy/convergence.test.ts && npm run privacy:converge -- --help`:
+  **exit 0**; 71 API and 11 operator contracts current, **3/3 CLI tests pass**.
+- `git diff --check bec753b5..HEAD`: **exit 0** before this documentation edit;
+  the documentation patch also passes `git diff --check`.
+- `gh api repos/gadgethd/ukmesh/commits/03d9692efd021f48b1997e09658e8a1faa03b50d/check-runs`:
+  **8/8 completed successfully**, each reporting that exact head SHA.
+
+The earlier session made concrete implementation and handoff progress; this
+continuation verifies the complete requested state and refreshes its evidence.
+No new failed checks or implementation mistakes arose during this continuation.
+Production review, merge, rollout and maintenance-window sizing remain separate
+operator actions outside this branch-only envelope.
