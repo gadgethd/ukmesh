@@ -299,3 +299,82 @@ test('single-shot human chatter is still treated as broad chatter', () => {
   const records = names.map((n, i) => rec(text, n, i));
   assert.equal(clusterMessages(records, cfg()).length, 0);
 });
+
+// Invented names/text with the reported burst shapes; no production records.
+const machineIds = ['R7K2X9PM', '5BQ8T3NW', 'Z6D4V1CK', '8JF2G9SL', 'N1X8R4BT', '6WK3P9DZ', 'T9L5B2CQ'];
+const promoText = 'Try our new radio community at https://mesh.example.org/join today';
+
+test('production policy catches a seven-message rotating-ID promo in two minutes', () => {
+  const records = machineIds.map((id, i) => rec(promoText, id, i / 3));
+  const incidents = clusterMessages(records, DEFAULT_SPAM_MESSAGE_CONFIG);
+  assert.equal(incidents.length, 1);
+  assert.equal(incidents[0]!.messageCount, 7);
+  assert.ok(incidents[0]!.score >= DEFAULT_SPAM_MESSAGE_CONFIG.publicMinScore);
+  assert.ok(incidents[0]!.reasons.some((reason) => reason.includes('single-shot')));
+});
+
+test('only the full rotating-ID profile gets the lower six-transmission floor', () => {
+  const rotating = machineIds.slice(0, 6).map((id, i) => rec(promoText, id, i / 3));
+  assert.equal(clusterMessages(rotating, DEFAULT_SPAM_MESSAGE_CONFIG).length, 1);
+  assert.equal(clusterMessages(rotating.slice(0, 5), DEFAULT_SPAM_MESSAGE_CONFIG).length, 0);
+  assert.equal(clusterMessages(
+    rotating.map((record) => ({ ...record, sender: 'PromoRelay' })), DEFAULT_SPAM_MESSAGE_CONFIG,
+  ).length, 0, 'a repeating sender/link alone must still need eight transmissions');
+  assert.equal(clusterMessages(
+    rotating.map((record, i) => ({ ...record, sender: `RadioFriend${i}` })), DEFAULT_SPAM_MESSAGE_CONFIG,
+  ).length, 0, 'similar human names do not get the rotating-ID exception');
+  assert.equal(clusterMessages(
+    rotating.map((record, i) => ({ ...record, observedAt: i * 11 * MIN })), DEFAULT_SPAM_MESSAGE_CONFIG,
+  ).length, 0, 'one-shot IDs without a burst are insufficient');
+});
+
+test('seven automatic SNR acknowledgements still fail the ordinary eight-message floor', () => {
+  const records = Array.from({ length: 7 }, (_, i) => rec('Automatic SNR acknowledgement received at relay', 'AckRelay', i / 3));
+  assert.equal(DEFAULT_SPAM_MESSAGE_CONFIG.minTransmissions, 8);
+  assert.equal(clusterMessages(records, DEFAULT_SPAM_MESSAGE_CONFIG).length, 0);
+});
+
+test('rotating-ID exception preserves benign, excluded-channel and established-sender guards', () => {
+  assert.equal(clusterMessages(machineIds.map((id, i) => rec('test rx ack 73', id, i / 3)), DEFAULT_SPAM_MESSAGE_CONFIG).length, 0);
+  assert.equal(clusterMessages(machineIds.map((id, i) => rec(promoText, id, i / 3, 'test')), DEFAULT_SPAM_MESSAGE_CONFIG).length, 0);
+  const records = machineIds.map((id, i) => rec(promoText, id, i / 3));
+  records.push(...machineIds.map((id, i) => rec(`Independent conversation ${i}`, id, 20 + i)));
+  assert.equal(clusterMessages(records, DEFAULT_SPAM_MESSAGE_CONFIG).length, 0, 'reused IDs are not single-shot');
+});
+
+test('eleven single-shot IDs with four machine-style names clear the production share gate', () => {
+  // Seven vowel-rich IDs deliberately fail the existing machine-name heuristic.
+  const ids = [...machineIds.slice(0, 4), 'A9UQO2EN', 'E4BIA8UT', 'Y7OKA3IR', 'O5TUE6AW', 'I2VAE9OX', 'U8AFO1EL', 'Q3EUI7AB'];
+  const records = ids.map((id, i) => rec('The fictional trademark campaign keeps repeating this canned slogan', id, i / 6));
+  assert.equal(clusterMessages(records, { ...DEFAULT_SPAM_MESSAGE_CONFIG, rotatingMachineNameShare: 0.5 }).length, 0,
+    'the fixture must reproduce the old share-gate rejection');
+  const incidents = clusterMessages(records, DEFAULT_SPAM_MESSAGE_CONFIG);
+  assert.equal(incidents.length, 1);
+  assert.ok(incidents[0]!.score >= DEFAULT_SPAM_MESSAGE_CONFIG.publicMinScore);
+  assert.ok(incidents[0]!.reasons.some((reason) => reason.includes('36% machine-style')));
+  assert.equal(clusterMessages(records.slice(1), DEFAULT_SPAM_MESSAGE_CONFIG).length, 1, '3/10 is the inclusive boundary');
+  assert.equal(clusterMessages(records.slice(2), DEFAULT_SPAM_MESSAGE_CONFIG).length, 0, '2/9 stays below the share gate');
+});
+
+test('same-signature bursts form one campaign before the incident cap, preserving strongest evidence', () => {
+  const text = 'Repeated campaign promotion at https://campaign.example.org/join';
+  const older = Array.from({ length: 17 }, (_, i) => rec(text, 'CampaignRelay', i / 3));
+  const newer = Array.from({ length: 8 }, (_, i) => rec(text, 'CampaignRelay', 120 + i / 3));
+  const other = Array.from({ length: 8 }, (_, i) => rec('Separate offer at https://other.example.net', 'OtherRelay', 60 + i / 3));
+  older[0]!.observers = [{ observerId: 'west', lat: 53, lon: -2 }];
+  newer[0]!.observers = [{ observerId: 'east', lat: 53, lon: -1 }];
+  const config = { ...DEFAULT_SPAM_MESSAGE_CONFIG, maxIncidentsPerRun: 2 };
+  const campaign = clusterMessages([...older, ...newer], config);
+  assert.equal(campaign.length, 1, 'same incident key must be written only once');
+  assert.equal(campaign[0]!.messageCount, 25, 'count the union of distinct transmissions');
+  assert.equal(campaign[0]!.members.length, 25);
+  assert.equal(campaign[0]!.observerCount, 2);
+  assert.equal(campaign[0]!.firstSeen, older[0]!.observedAt);
+  assert.equal(campaign[0]!.lastSeen, newer.at(-1)!.observedAt);
+  assert.equal(campaign[0]!.score, clusterMessages(older, config)[0]!.score, 'a weaker new burst cannot dilute strong evidence');
+  assert.match(campaign[0]!.reasons.join(' '), /2 bursts/);
+  const records = [...older, ...other, ...newer];
+  const incidents = clusterMessages(records, config);
+  assert.equal(new Set(incidents.map((incident) => incident.key)).size, 2, 'duplicate keys cannot crowd another campaign out of the cap');
+  assert.deepEqual(clusterMessages([...records].reverse(), config), incidents, 'input order cannot choose the winning burst');
+});

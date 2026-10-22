@@ -168,22 +168,27 @@ async function complete(pool: pg.Pool, row: QueueRow): Promise<void> {
     `, [row.id]);
     if (completion.rowCount !== 1) throw new Error('PRIVACY_REMAT_CLAIM_LOST');
 
-    // A re-request that arrived during this pass still needs a complete pass;
-    // only a fully completed request may claim a new materialized generation.
+    // A re-request still needs a full pass. A node-scoped pass also cannot
+    // repair an unrelated direct-prefix fence: carry materialization forward
+    // only if it was current before this completion. Full convergence owns
+    // recovery of a pre-existing gap (including a missing state row).
     if (completion.rows[0]?.status === 'done') await client.query(`
-      WITH next_generation AS (
-        UPDATE public_visibility_state
-           SET generation = generation + 1,
+      WITH previous_generation AS MATERIALIZED (
+        SELECT generation FROM public_visibility_state
+         WHERE singleton = TRUE FOR UPDATE
+      ), next_generation AS (
+        UPDATE public_visibility_state visibility
+           SET generation = visibility.generation + 1,
                updated_at = NOW()
-         WHERE singleton = TRUE
-         RETURNING generation
+          FROM previous_generation previous
+         WHERE visibility.singleton = TRUE
+         RETURNING visibility.generation, previous.generation AS previous_generation
       )
-      INSERT INTO packet_visibility_materialization_state
-        (singleton, visibility_generation, updated_at)
-      SELECT TRUE, generation, NOW() FROM next_generation
-      ON CONFLICT (singleton) DO UPDATE SET
-        visibility_generation = EXCLUDED.visibility_generation,
-        updated_at = EXCLUDED.updated_at
+      UPDATE packet_visibility_materialization_state materialized
+         SET visibility_generation = next.generation, updated_at = NOW()
+        FROM next_generation next
+       WHERE materialized.singleton = TRUE
+         AND materialized.visibility_generation = next.previous_generation
     `);
     await client.query('COMMIT');
     console.log(`[privacy-remat] pass complete id=${row.id} status=${completion.rows[0]?.status}`);

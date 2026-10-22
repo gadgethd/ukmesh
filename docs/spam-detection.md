@@ -86,16 +86,21 @@ encrypted and are never inspected.
    islands. With fewer than `originMinObservers` geolocated receivers the origin
    is reported as `insufficient` (no map zone) rather than guessed.
 5. **Sanitize** (`sanitize.ts`) — the single gate to public output (see Privacy).
-6. **Persist** (`repository.ts`) — upsert incidents; `first_seen` preserved via
-   `LEAST`; in-window incidents that no longer cluster are removed; older history
-   is frozen.
+6. **Persist** (`repository.ts`) — merge qualifying bursts sharing a campaign
+   key before origin estimation and sanitization, then upsert once per key.
+   The campaign retains the union of transmissions, newest activity and strongest
+   qualifying burst's confidence. Preserve historical `first_seen` in both the
+   row and public JSON. An older snapshot cannot replace newer activity or its
+   member evidence. A bounded pass never deletes campaigns it did not see.
 
 ## What counts as spam (and what doesn't)
 
 A cluster only becomes an incident when it is genuine abuse, not normal traffic:
 
 - **Requires** `minTransmissions` near-duplicates with `minBurst` inside one
-  burst window.
+  burst window. Only the full rotating-ID profile below gets the lower
+  `rotatingMinTransmissions` floor (six by default); ordinary repeats still
+  require eight transmissions.
 - **Requires substantive content** — at least `minContentChars`, *or* a URL,
   *or* the spam marker. Trivial/connectivity messages (`test`, `ack`, `morning`,
   `gm`, …) never qualify on their own.
@@ -129,7 +134,7 @@ when ALL of:
 - ≥ `SPAM_MESSAGE_ROTATING_MIN_SENDERS` distinct senders,
 - ≥ `SPAM_MESSAGE_ROTATING_SINGLE_SHOT_SHARE` of them appear exactly once in the
   analysis window (one-shot identities, not established members),
-- ≥ `SPAM_MESSAGE_ROTATING_MACHINE_NAME_SHARE` of the names look
+- ≥ `SPAM_MESSAGE_ROTATING_MACHINE_NAME_SHARE` (30% by default) of the names look
   machine-generated (`looksMachineGeneratedName` in `normalize.ts`:
   separator-free base32-ish tokens, ≥1 digit, vowel-poor, mostly uppercase —
   amateur-callsign shapes and human composites are excluded), and
@@ -141,6 +146,30 @@ carry the reason "N single-shot identities (X% machine-style names, N within
 10 min) posted near-identical text". First production catch: the Oct-2026
 anti-Kirby campaign — 9 incidents, 8–15 sender IDs each, confidence 0.54–0.81.
 
+The lower transmission floor applies only when **all four** profile conditions
+hold. The volume component uses that same floor when scoring rotating bursts.
+The 30% name share accommodates bursts mixing vowel-poor and vowel-rich random
+IDs without weakening the individual name heuristic or classifying every
+uppercase human handle as machine-generated. Human chatter, established senders,
+trivial messages and excluded test-channel traffic retain their existing guards.
+
+### Bounded analysis and truncation
+
+The default message budget is 5,000 logical transmissions per pass, with an
+operator-configurable hard ceiling of 10,000. This gives headroom above the
+reported approximately 2,900-message day; it is still a bounded sample on busier
+days. Candidate materialization is independently bounded (10,000 by default),
+as are observer evidence, work time and published campaigns.
+
+The candidate query reads one extra row to distinguish an exactly full page
+from truncation. Exceeding a candidate, message or incident limit emits an
+aggregate warning and increments
+`meshcore_spam_analysis_truncations_total{phase="candidates|messages|incidents"}`
+(one of those three phase values per event). Warning counts are lower bounds
+when the candidate query was itself capped. They contain no sender names or
+message text. These limits do not constitute evidence that unseen traffic is
+clean, and existing incidents are not deleted because of an incomplete pass.
+
 ## Incident lifecycle
 
 - **active / ongoing** while the last matching message is within
@@ -149,6 +178,15 @@ anti-Kirby campaign — 9 incidents, 8–15 sender IDs each, confidence 0.54–0
 
 The periodic analyzer recomputes recent incidents every
 `SPAM_MESSAGE_INTERVAL_MS` and re-evaluates active→closed transitions each run.
+Separate qualifying bursts with the same network/text signature share one row:
+activity follows the newest burst, message/observer counts cover their union in
+the analyzed window, and reasons identify the strongest burst used for confidence.
+Member evidence is sampled only after merging, under its existing evidence cap.
+The cap is strict even at one or two records: keep the newest observation first,
+then the earliest endpoint, then the representative message as space permits.
+Campaign message counts still describe every qualifying transmission in the window.
+When an older burst leaves the rolling window, historical first-seen time remains
+while current-window counts/confidence may change.
 
 ## Configuration
 
@@ -159,6 +197,8 @@ All knobs live in `backend/src/spam/config.ts` and read from the environment.
 | `SPAM_MESSAGE_ANALYZER_ENABLED` | `true` | Run the in-process periodic analyzer |
 | `SPAM_MESSAGE_INTERVAL_MS` | `300000` | Analyzer interval (5 min) |
 | `SPAM_MESSAGE_WINDOW_HOURS` | `24` | Rolling window the analyzer (re)clusters |
+| `SPAM_MESSAGE_MAX_MESSAGES` | `5000` | Per-pass message budget, clamped to 100–10000; truncation is reported |
+| `SPAM_MESSAGE_MAX_CANDIDATE_ROWS` | `10000` | Candidate materialization budget, plus one lookahead row |
 | `SPAM_MESSAGE_TEXT_SIM` | `0.82` | Min text similarity to join a cluster |
 | `SPAM_MESSAGE_TEXT_SIM_NAME` | `0.6` | Lower text bar when usernames are similar |
 | `SPAM_MESSAGE_NAME_SIM` | `0.7` | Min username similarity (evidence) |
@@ -171,8 +211,9 @@ All knobs live in `backend/src/spam/config.ts` and read from the environment.
 | `SPAM_MESSAGE_DOMINANT_SENDER_SHARE` | `0.6` | One sender at this share qualifies |
 | `SPAM_MESSAGE_FLOOD_MIN_MESSAGES` | `25` | ≥ this many near-duplicates → sustained-flood boost |
 | `SPAM_MESSAGE_ROTATING_MIN_SENDERS` | `5` | Min distinct senders for rotating-ID detection |
+| `SPAM_MESSAGE_ROTATING_MIN_TRANSMISSIONS` | `6` | Lower floor only for the full rotating-ID profile; never raises the ordinary floor |
 | `SPAM_MESSAGE_ROTATING_SINGLE_SHOT_SHARE` | `0.8` | Share of senders seen exactly once in the window |
-| `SPAM_MESSAGE_ROTATING_MACHINE_NAME_SHARE` | `0.5` | Share of names that must look machine-generated |
+| `SPAM_MESSAGE_ROTATING_MACHINE_NAME_SHARE` | `0.3` | Share of names that must look machine-generated |
 | `SPAM_MESSAGE_ROTATING_MIN_BURST_SENDERS` | `3` | Min distinct senders inside one burst window |
 | `SPAM_MESSAGE_EXCLUDE_CHANNELS` | `test` | Channel labels skipped (comma list) |
 | `SPAM_MESSAGE_PUBLIC_MIN_SCORE` | `0.5` | Confidence floor for public list / status |

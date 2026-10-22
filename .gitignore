@@ -11,6 +11,7 @@ test-results/
 
 # Local semantic code index
 .tokensave/
+/.ukmesh-tools/
 
 # Worktree-local verification tools and package cache
 .ukmesh-tools/
@@ -76,5 +77,7 @@ terrain-tiles/
 *.bak
 *.bak-*
 
+# Private read-only deploy-tree rescue evidence (never publish)
+/.deploy-rescue-private/
 # Local endpoint performance measurements and isolated test tooling
 /.mqttperf-evidence/
