@@ -1,3 +1,491 @@
+# Deploy-tree rescue — 2026-10-22 (#535)
+
+Branch: `burn/deploy-tree-rescue-20261022`
+
+PR: https://github.com/gadgethd/ukmesh/pull/144 (draft, against `main`)
+
+Evidence commit: `d6a2759bcd0a34c662109c1db989868bdb9eb16d`
+
+Audited main: `bec753b5e95893acf159d0ef08ce79057d98c6f8`
+
+## Outcome and scope
+
+The readable feature work described by backlog #535 has already been rescued.
+[PR #133](https://github.com/gadgethd/ukmesh/pull/133) merged on October 20;
+its recovery commit `48fb91acda7978fae2e56215879b7b16502ec0d2` and merge
+`1ef0cf38a554c44bdef604cfb701ae2627d7454e` are ancestors of audited main.
+All five commits still reported as local by the VPS's stale `origin/main`
+are also actual ancestors of audited main. No duplicate feature branches,
+rebases or cherry-picks were needed. The one new branch records independently
+checked rescue evidence and the unresolved configuration questions.
+
+This PR adds the complete visible file ledger, source/main Git blob IDs and
+a verifier that reads local Git objects. The `.gitignore` addition keeps the
+private capture and tool scratch out of commits. It imports **zero additional
+application source files** and retains every audited class-A file unchanged.
+The existing REVIEW history is preserved below this new report.
+
+The read-only inventory ran at **2026-10-22 14:21:39 UTC (15:21:39 BST)**.
+At **14:28:27 UTC**, a second read verified all 211 readable file blobs,
+all 221 visible status entries and the VPS HEAD were unchanged. This is source
+tree evidence, not proof of the files inside running images. No deployment,
+restart, live database query/write, live configuration change, privilege
+elevation, or deploy-tree/index/ref write was performed.
+
+## Inventory and classification
+
+The VPS tree is still at `1f94bd8ef35c2a7553f13e4e9a603054c6fb6400`.
+Its `origin/main` is `3777cc9a2dfb989aa3111e3019cf7f7c6f32d022`;
+that stale comparison explains why Git still reports five local commits.
+
+| Visible status | Count |
+| --- | ---: |
+| Modified (` M`) | 94 |
+| Deleted (` D`) | 9 |
+| Unmerged index (`UU`) | 3 |
+| Untracked (`??`, individual files) | 115 |
+| **Total visible status paths** | **221** |
+
+| Class | Meaning | Count | Destination |
+| --- | --- | ---: | --- |
+| A | Live feature, test or supporting source/configuration | 208 | Already rescued on `origin/main`; retain newer fixes |
+| B | Generated/configuration housekeeping or private environment backup | 4 | Three already on main; private environment contents excluded |
+| C | Stale report/screenshot artifacts | 9 | Deletions already recorded on main |
+| **Total classified visible paths** | | **221** | |
+| U, supplemental | Tracked `mosquitto/mosquitto.conf`, unreadable on disk | 1 known path | Parked; not part of the 221 visible status paths |
+
+`mosquitto/` itself cannot be enumerated, so its additional untracked entries
+are an **unknown count**, not zero. The index lists `mosquitto/mosquitto.conf`,
+but an index blob does not prove the file's disk contents. This limitation is
+recorded explicitly rather than treating the status output as a complete
+inventory of an inaccessible directory.
+
+| Content disposition | Count | Evidence |
+| --- | ---: | --- |
+| Byte-identical to audited main | 187 | Captured bytes equal main Git blob; includes three B housekeeping files |
+| Historical version superseded by main | 23 | Captured bytes equal recovery commit `48fb91ac` exactly |
+| Compose local probe override | 1 | Recovery Compose bytes plus only alert-receiver `/readyz` → `/healthz` |
+| Already-deleted stale artifacts | 9 | Absent on VPS and audited main |
+| Private environment backup excluded | 1 | Filename/status only; no contents read or copied |
+| **Total** | **221** | |
+
+For every visible modified/deleted/unmerged tracked path, a binary-safe
+`git diff --no-ext-diff --no-textconv --binary HEAD -- PATH` was captured
+locally. Untracked readable files were copied directly. Raw snapshots,
+per-file diffs, the five-commit patch stream and test logs remain only in
+ignored `.deploy-rescue-private/`; no environment backup was copied there.
+The JSON ledger includes the private capture's SHA-256 so its relationship to
+the public metadata can be verified without publishing the raw snapshot.
+
+## Five-commit rescue proof
+
+Each command `git merge-base --is-ancestor SHA bec753b5e95893acf159d0ef08ce79057d98c6f8`
+returned **0**. The original commits are retained, so rebasing copies would
+provide no additional rescue.
+
+| Original VPS commit | Feature | Destination |
+| --- | --- | --- |
+| `a8921b89f0de80f32c3e5af79886817077f24c34` | Region-name probe list | Main through merged #133 |
+| `ffa3160348543097cfd6509f66169e618f0183e2` | Raw packet `region_scope` projection | Main through merged #133 |
+| `4bf39aea946aa71117984b813ecd18067fe229e7` | Raw packet region filter | Main through merged #133 |
+| `1d86e043a515d3c2ca381660866ff03eb2833a0a` | Live message tags | Main through merged #133 |
+| `1f94bd8ef35c2a7553f13e4e9a603054c6fb6400` | Observer transmitted-packet counts | Main through merged #133 |
+
+`git cherry origin/main 1f94bd8ef35c2a7553f13e4e9a603054c6fb6400`
+and `git log --oneline origin/main..1f94bd8ef35c2a7553f13e4e9a603054c6fb6400`
+both produced **no output** in this worktree. In contrast, the same range
+against the VPS's stale tracking ref produces the five rows above.
+
+## Rescue map for a future main-based release
+
+Every exact path/class/destination is in the ledger below and
+[`evidence/deploy-rescue-20261022.json`](evidence/deploy-rescue-20261022.json).
+The grouped map is for navigation; shared entrypoints, contracts and manifests
+support multiple features.
+
+| Feature | Source anchors to preserve | Local verification / destination |
+| --- | --- | --- |
+| Public-feed reader ACL | `mqtt/aclManager.ts`, `owner/ownerAclReconciler.ts`, `tools/inventoryOwnerAuthorization.ts`, `.env.example`, Compose | Already in #133. Existing renderer tests cover `soulway`, replacement of a raw wildcard with `topic read public/+/+/packets`, no subscriber publish permission and backend-only `public/#` writes. |
+| Public-feed opt-in and forwarding | `owner/publicFeed{Config,Repository,Forwarder}.ts`, `api/routes/owner.ts`, `055_public_feed.sql`, owner public-feed UI | Existing configuration/repository/forwarder/route/UI tests pass. Retain #138's rollback on failed ACL reconciliation. |
+| Owner packet sharing | `owner/packetShare*.ts`, sharing migrations, owner routes/UI and Scotmesh tools | #101 plus newer #133 production implementation. Existing auth/config/forwarder/route/UI tests pass; DB integration not rerun here. |
+| Regions and participation | Regions API/repository/tooling, scope decoders, membership, RegionsMap/RegionsPage, `057_region_scope_participation.sql` | Already in #133; backend/frontend unit suites cover scope and model cases. Keep merged migration filenames. |
+| Durable/RAM ingest and tags | `mqtt/`, `ram/`, packet batch/input, observation-ledger migrations, tagger worker | #122/#125 plus #133 and `ec593306` tag parity fix. Unit suites pass; SQL/Redis integration is not claimed here. |
+| Privacy rematerialization and websocket boundaries | Privacy batch helpers, privacy worker/migration, websocket privacy/server | Already in main/#133; unit suites pass. Source equality does not prove current live privacy state. |
+| Pathing and accuracy | Path beta/core/lazy/learning/shared modules, path accuracy tools/docs, overlay utilities | Already in #133; decoder/resolver/rebuild and frontend model tests pass. |
+| Owner dashboard and topology | Owner service/repository/prewarm/charts, confirmed neighbours, topology/region models | Already in #133. The current timer-based prewarm is retained; historical alternative prewarm/virtualizer work is not reintroduced. |
+| Spam detection | `spam/{cluster,config,normalize}` and tests/docs | Byte-identical to main; existing unit cases pass. |
+| Operations and health | Lifecycle targets, metrics/status, alert receiver, split-infra/adoption-aware replacement script, bot/RF config | Retain main's newer protections. A historical unused ingest-queue gauge is already archived in #133; it is not imported over current durable-handler metrics. |
+
+Main's intentional changes relative to the archived production versions must
+remain: public-status field allowlists (#99), split-infra/adoption checks and
+pipefail fix (#114), core lifecycle target checks (#100), combined health
+diagnostics (#88), genuine heartbeat/dead-only vacuum fixes (#114/#117), owner
+credential validation, receipt-write recovery (#104), tag-column parity
+(`ec593306`), status-column insertion/migration (`b9672524`), fail-closed owner
+defaults (`cecc6b0f`), public-channel gating (#137), and public-feed rollback
+(#138). The per-file reasons identify which apply to each of the 23 historical
+versions. None of those old files should be copied wholesale over main.
+
+To reproduce this audit without VPS access:
+
+```sh
+python3 scripts/verify-deploy-rescue.py
+python3 scripts/verify-deploy-rescue.py --candidate HEAD
+```
+
+The optional candidate check requires the audited baseline in its ancestry and
+flags **any byte change** to the 208 class-A files for human review. It is a
+conservative snapshot comparison, not a semantic feature test or deployment
+gate. A legitimate future feature edit can require review without being a
+regression. With the local capture available, add
+`--capture .deploy-rescue-private/inventory.json` to validate its checksum,
+path/status coverage and every readable source blob.
+
+## Deliberately excluded, parked questions and deployment boundary
+
+1. **Unreadable broker directory:** What differs in disk
+   `mosquitto/mosquitto.conf`, and which additional untracked files exist in
+   `mosquitto/`? Ordinary SSH reads return `PermissionError` / Git permission
+   warnings. No sudo, Docker, permission change or other bypass was attempted.
+   This is an unresolved inventory gap, not a claim that broker configuration
+   is rescued or safe for deployment.
+2. **Private environment:** `.env.pre-reconcile-20261020` is class B and was
+   deliberately not read/copied. Current ignored `.env`, ACL/password files,
+   keys and private identities are outside the public rescue. Operators must
+   separately preserve/reconcile private configuration and lifecycle/owner
+   authorization flags before deployment. #133 documented a lifecycle-target
+   precondition; this session did not read current values and does not claim
+   that the historical mismatch still exists.
+3. **Local probe override:** Is changing only the production alert receiver
+   from delivery readiness `/readyz` to liveness `/healthz` intentional?
+   Current main's test explicitly requires `/readyz`, and #133's CI exception
+   intentionally applies `/healthz` only to CI. Keep main unchanged and park
+   the unexplained production override; do not guess operator intent.
+4. **Stale conflict index:** VPS `misc.ts`, `db/index.ts`, and `ws/server.ts`
+   remain `UU` with three index stages. Their readable files contain no
+   conflict markers; two are byte-exact in #133 and the websocket file equals
+   main. `MERGE_HEAD` does not exist, so this is not evidence of an active
+   merge. Repairing the deploy index/tree is outside this read-only task.
+5. **Existing open #127:** That earlier sync PR remains open and untouched.
+   Its proposed migration renumbering differs from the already-merged #133
+   history. Do not apply it blindly as the source rescue for this snapshot;
+   any closure or rework belongs to a separate authorized review.
+6. **Runtime/deployment:** No image rebuild on the VPS, runtime provenance
+   claim, live DB migration/cleanup, service restart, merge or deploy is part
+   of this PR. Local code evidence does not prove production behavior. The
+   current deferred browser/prewarm coverage documented by #133 remains a
+   separate follow-up, not new scope for this rescue.
+
+## Verification commands and observed results
+
+Dependencies were installed only under this worktree with:
+`cd backend && npm ci --cache ../.deploy-rescue-private/npm-cache --ignore-scripts`
+and the equivalent frontend command with `npm-cache-frontend`.
+
+For the confined unit-suite runs, the exact commands from the root were:
+
+```sh
+cd backend
+TMPDIR="$PWD/../.deploy-rescue-private/tmp" npm_config_cache="$PWD/../.deploy-rescue-private/npm-cache" npm test
+# In a separate shell from the root:
+cd frontend
+TMPDIR="$PWD/../.deploy-rescue-private/tmp" npm_config_cache="$PWD/../.deploy-rescue-private/npm-cache-frontend" npm test
+```
+
+| Exact command / check | Result |
+| --- | --- |
+| Confined backend `npm test` above | 559 tests: **556 pass, 0 fail, 3 skipped**, plus synthetic firing/recovery receiver check |
+| Confined frontend `npm test` above | 155 tests: **149 pass, 0 fail, 6 skipped** |
+| `cd backend && npm run typecheck` | Pass |
+| `cd backend && npm run contract:check` | Pass: **71 API + 11 operator routes** current |
+| `cd backend && TMPDIR="$PWD/../.deploy-rescue-private/tmp" npm run build` | Pass |
+| `cd frontend && TMPDIR="$PWD/../.deploy-rescue-private/tmp" npm run build` | Pass; existing Vite >500 kB chunk warning |
+| `python3 scripts/verify-deploy-rescue.py --capture .deploy-rescue-private/inventory.json --candidate HEAD` | Pass: all 221 paths/statuses and 211 source blobs; all 208 class-A candidate files unchanged; five commits upstream |
+| `python3 scripts/verify-deploy-rescue.py --candidate 1f94bd8ef35c2a7553f13e4e9a603054c6fb6400` | Expected **exit 1**: old VPS HEAD does not contain audited main |
+| Read-only second VPS inventory/blob check | All 211 blobs, 221 status paths and HEAD unchanged at 14:28:27 UTC |
+| `git diff --check origin/main` | Pass |
+| `git check-ignore .deploy-rescue-private/inventory.json` | Private capture excluded |
+
+No local database-backed integration or browser E2E result is claimed. Skips
+are reported rather than counted as passes. No new application tests were
+added because no application behavior changed; existing feature tests and
+independent blob/ancestry evidence cover the rescue claims. Raw stdout/stderr
+for the listed local runs is retained in ignored `.deploy-rescue-private/`.
+Remote CI is reported from the actual PR checks at handoff, separately from
+these verified local results.
+
+## Publication and PROOF
+
+Only `burn/deploy-tree-rescue-20261022` is created/pushed by this task, from
+this worktree. Publication uses ordinary `git push`, never force-push. The
+evidence commit is `d6a2759bcd0a34c662109c1db989868bdb9eb16d`; the following
+documentation commit contains this report. Its exact SHA and the matching
+remote/PR head are reported at handoff; a commit cannot contain its own SHA.
+
+```sh
+git log --oneline origin/main..HEAD
+git rev-parse HEAD
+git ls-remote --heads origin burn/deploy-tree-rescue-20261022
+gh pr view 144 --repo gadgethd/ukmesh --json url,state,isDraft,baseRefName,headRefName,headRefOid
+```
+
+The branch log contains the evidence commit above and the subsequent review
+commit. PR: **https://github.com/gadgethd/ukmesh/pull/144**. Feature destination
+PR already merged: **https://github.com/gadgethd/ukmesh/pull/133**. Ledger
+counts: **A=208, B=4, C=9 (221 visible), plus U=1 known unreadable tracked
+path and an unenumerated directory**. All five original VPS commits are on
+main; zero additional readable feature files need extraction. The explicit
+parked questions above prevent treating this audit as deployment clearance.
+
+## Honest mistake inventory
+
+- The first verifier attempted a repository-wide readiness-probe replacement
+  and correctly stopped on multiple matches. It now scopes the reconstruction
+  to `alert-receiver` and verifies the resulting exact captured Git blob.
+- The initial standard test commands used the suite-default OS temp directory
+  and npm's default cache, so local tool scratch was not fully confined to the
+  worktree. The verification reruns set worktree-local `TMPDIR` and npm cache;
+  no live/project source outside the worktree was edited. The builds set local
+  `TMPDIR`, but did not override npm's default cache. This local scratch-scope
+  mistake does not change the read-only VPS evidence.
+
+## File-by-file ledger
+
+`origin/main` in every destination below means audited commit `bec753b5`,
+already reachable from this evidence branch. The evidence branch does not
+replace the feature destination. Class A files with historical versions retain
+the newer main implementation; their original disk bytes remain provable from
+the recovery commit. Supplemental class U is listed above, outside this visible
+221-path table.
+
+| VPS path | Class / disposition | Destination | Reason |
+| --- | --- | --- | --- |
+| `.env.example` | A / historical-superseded | origin/main (already rescued) | Keep main public-channel opt-in and enforce/apply defaults; feed-reader variable is preserved. |
+| `.gitignore` | B / identical-main | origin/main (existing housekeeping) | Ignore-rule housekeeping already on main; no environment, key or plan files imported. |
+| `DB-AUDIT-FIX-2026-08-13.md` | C / deleted-upstream | origin/main (existing housekeeping) | Stale report/screenshot deletion already recorded on main; no runtime feature to extract. |
+| `FEED-HISTORY-2026-08-06-bot.png` | C / deleted-upstream | origin/main (existing housekeeping) | Stale report/screenshot deletion already recorded on main; no runtime feature to extract. |
+| `README.md` | A / historical-superseded | origin/main (already rescued) | Keep main confidentiality wording and reviewed lifecycle/forensic policy; live feature documentation remains. |
+| `SEO-ROLLBACK-2026-08-08.txt` | C / deleted-upstream | origin/main (existing housekeeping) | Stale report/screenshot deletion already recorded on main; no runtime feature to extract. |
+| `SPRING-DASHBOARD-2026-08-06.png` | C / deleted-upstream | origin/main (existing housekeeping) | Stale report/screenshot deletion already recorded on main; no runtime feature to extract. |
+| `SPRING-INSTALL-AUDIT-2026-08-06.png` | C / deleted-upstream | origin/main (existing housekeeping) | Stale report/screenshot deletion already recorded on main; no runtime feature to extract. |
+| `SPRING-MAPFEED-2026-08-06.png` | C / deleted-upstream | origin/main (existing housekeeping) | Stale report/screenshot deletion already recorded on main; no runtime feature to extract. |
+| `SPRING-PAGES-2026-08-06.png` | C / deleted-upstream | origin/main (existing housekeeping) | Stale report/screenshot deletion already recorded on main; no runtime feature to extract. |
+| `SPRING-TOPOLOGY-2026-08-06.png` | C / deleted-upstream | origin/main (existing housekeeping) | Stale report/screenshot deletion already recorded on main; no runtime feature to extract. |
+| `TERRAIN-V6-REPORT.md` | C / deleted-upstream | origin/main (existing housekeeping) | Stale report/screenshot deletion already recorded on main; no runtime feature to extract. |
+| `anubis/botPolicy.yaml` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/package.json` | A / historical-superseded | origin/main (already rescued) | Keep main dependency pins, session-revoke command and expanded verification scripts. |
+| `backend/src/api/contracts.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/api/routes.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/api/routes/exports.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/api/routes/exports.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/api/routes/misc.ts` | A / historical-superseded | origin/main (already rescued) | Keep main public-channel gate and public status allowlist; snapshot bytes already in recovery commit. |
+| `backend/src/api/routes/owner.ts` | A / historical-superseded | origin/main (already rescued) | Keep main public-feed rollback on failed ACL reconciliation (PR #138). |
+| `backend/src/api/routes/productFeatures.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/api/routes/rfValidation.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/api/utils/networkFilters.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/api/utils/networkFilters.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/db/dataLifecycle.test.ts` | A / historical-superseded | origin/main (already rescued) | Keep main required-core-target regressions; older production test already archived. |
+| `backend/src/db/dataLifecycle.ts` | A / historical-superseded | origin/main (already rescued) | Keep main fail-closed required-core-target checks; production lifecycle targets are retained. |
+| `backend/src/db/index.ts` | A / historical-superseded | origin/main (already rescued) | Keep main public-channel/payload sanitization and status-column insertion; snapshot already archived. |
+| `backend/src/db/packetBatch.integration.test.ts` | A / historical-superseded | origin/main (already rescued) | Keep reconciled fresh-bootstrap migration expectations; do not reintroduce obsolete five-name assertion. |
+| `backend/src/db/packetBatch.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/db/packetBatch.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/db/packetVisibilityFence.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/db/publicVisibilityMigration.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/health/status.ts` | A / historical-superseded | origin/main (already rescued) | Keep combined diagnostics, genuine heartbeat, vacuum and lifecycle metrics; older bounded scans already archived. |
+| `backend/src/health/statusIntegrity.test.ts` | A / historical-superseded | origin/main (already rescued) | Keep main dead-only vacuum regression plus production privacy-rematerialization cases. |
+| `backend/src/health/statusRetention.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/index.ts` | A / historical-superseded | origin/main (already rescued) | Keep main fail-closed owner defaults and shadow warning; public-feed/prewarm wiring remains. |
+| `backend/src/metrics.test.ts` | A / historical-superseded | origin/main (already rescued) | Keep main bounded table label used by lifecycle metrics. |
+| `backend/src/metrics.ts` | A / historical-superseded | origin/main (already rescued) | Keep main durable-handler and scrape heartbeat/lifecycle metrics; old unused queue-depth declaration is archived. |
+| `backend/src/mqtt/aclManager.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/mqtt/aclManager.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/mqtt/client.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/mqtt/decodePacket.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/owner/ownerAclReconciler.ts` | A / historical-superseded | origin/main (already rescued) | Keep main apply default; explicit and opted-in public-feed reader grant logic is retained. |
+| `backend/src/owner/ownerDashboard.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/owner/ownerDashboard.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/owner/ownerRepository.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/owner/ownerService.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/path-beta/resolveWorker.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/path-beta/resolver.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/path-beta/resolverContext.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/path-beta/sharedDecoder.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/path-beta/sharedDecoder.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/path-beta/slowMode.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/path-beta/types.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/path-core/decoder.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/path-core/decoder.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/path-lazy/evaluate.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/path-lazy/lazyResolver.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/path-learning/rebuild.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/path-learning/rebuild.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/path-shared/scoring.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/platform/config/pathing.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/repositories/networkAnalysis.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/repositories/nodes.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/repositories/nodes.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/repositories/productFeatures.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/repositories/productFeatures.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/spam/cluster.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/spam/cluster.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/spam/config.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/spam/normalize.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/spam/normalize.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/tools/inventoryOwnerAuthorization.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/workers/alert-receiver.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/workers/alert-receiver.ts` | A / historical-superseded | origin/main (already rescued) | Keep main recovery of receipt appends after a previous failure. |
+| `backend/src/ws/privacy.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/ws/privacy.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/ws/server.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backup-receipts/latest.json` | B / identical-main | origin/main (existing housekeeping) | Generated signed restore-receipt artifact already identical to main; do not regenerate or copy live receipts. |
+| `backup-receipts/latest.json.sig` | B / identical-main | origin/main (existing housekeeping) | Generated signed restore-receipt artifact already identical to main; do not regenerate or copy live receipts. |
+| `docker-compose.yml` | A / parked-local-probe | origin/main (already rescued) | Keep main readiness probe and fail-closed/channel defaults; local liveness override is parked for operator intent review. |
+| `docs/db-lifecycle.md` | A / historical-superseded | origin/main (already rescued) | Keep main signed-receipt, required-target and forensic guidance; old text already archived. |
+| `docs/openapi.yaml` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `docs/pathing.md` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `docs/privacy.md` | A / historical-superseded | origin/main (already rescued) | Keep main public-status telemetry allowlist documentation. |
+| `docs/spam-detection.md` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `frontend/public/sw-runtime.js` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `frontend/src/components/app/DisclaimerModal.tsx` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `frontend/src/components/owner/OwnerPortalSections.tsx` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `frontend/src/config/publicRoutes.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `frontend/src/hooks/packetPathOverlayUtils.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `frontend/src/hooks/packetPathOverlayUtils.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `frontend/src/hooks/useVisibilityPoll.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `frontend/src/hooks/useVisibilityPoll.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `frontend/src/main.tsx` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `frontend/src/pages/OwnerPortalPage.tsx` | A / historical-superseded | origin/main (already rescued) | Keep main owner credential validation; live packet-sharing/public-feed UI is retained. |
+| `frontend/src/pages/TopologyPage.tsx` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `frontend/src/pages/owner-portal.css` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `frontend/src/pages/owner/OwnerHeardNeighbors.tsx` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `frontend/src/pages/owner/OwnerPortalCharts.tsx` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `frontend/src/pages/owner/ownerPortalModel.ts` | A / historical-superseded | origin/main (already rescued) | Keep main bounded/control-character credential validation helpers. |
+| `frontend/src/pages/ukmesh/UKLayout.tsx` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `frontend/src/pages/ukmesh/UKRepeaterSearchPage.tsx` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `frontend/src/utils/pathing.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `rf-coverage/config.ukmesh.yaml` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `scripts/replace-container.sh` | A / historical-superseded | origin/main (already rescued) | Keep main split-infrastructure resolution, adoption preflight and pipefail fix. |
+| `.env.pre-reconcile-20261020` | B / excluded-secret | parked: operator private configuration | Credential-bearing environment backup: contents not read/copied; operator-owned private configuration. |
+| `backend/backfill-region-names.mjs` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/api/routes/auditwave.integration.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/api/routes/auditwave.performance.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/api/routes/nodeLinks.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/api/routes/ownerPacketSharing.test.ts` | A / historical-superseded | origin/main (already rescued) | Keep main owned-node and authenticated-session regressions. |
+| `backend/src/api/routes/ownerPublicFeed.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/api/routes/productFeatures.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/api/routes/regions.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/api/routes/regions.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/api/routes/rfValidation.integration.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/api/routes/rfValidation.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/db/migrations/052_owner_packet_sharing.sql` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/db/migrations/053_owner_packet_share_destination_metadata.sql` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/db/migrations/054_owner_packet_share_default_off.sql` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/db/migrations/055_public_feed.sql` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/db/migrations/056_async_privacy_rematerialization.sql` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/db/migrations/057_region_scope_participation.sql` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/db/migrations/058_packet_share_owner_scope_and_jwt.sql` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/db/migrations/059_ingest_observation_ledger.sql` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/db/migrations/060_ingest_ledger_historical_coverage.sql` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/db/nodeHistory.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/db/packetInput.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/db/recentRead.integration.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/mqtt/dedupeRegistry.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/mqtt/dedupeRegistry.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/mqtt/durableHandler.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/mqtt/durableHandler.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/mqtt/ingestConfig.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/mqtt/ingestConfig.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/mqtt/observationIdentity.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/mqtt/observationIdentity.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/mqtt/shutdownDeadline.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/mqtt/shutdownDeadline.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/mqtt/statusTelemetry.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/mqtt/statusTelemetry.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/owner/ownerLastHopPrewarm.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/owner/ownerRepository.integration.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/owner/ownerService.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/owner/packetShareAuth.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/owner/packetShareAuth.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/owner/packetShareConfig.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/owner/packetShareConfig.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/owner/packetShareCrypto.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/owner/packetShareForwarder.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/owner/packetShareForwarder.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/owner/packetShareRepository.integration.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/owner/packetShareRepository.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/owner/publicFeedConfig.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/owner/publicFeedConfig.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/owner/publicFeedForwarder.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/owner/publicFeedForwarder.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/owner/publicFeedRepository.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/owner/publicFeedRepository.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/path-beta/championPriors.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/path-beta/championPriors.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/privacy/publicBatch.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/privacy/publicBatch.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/ram/drain.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/ram/drainLifecycle.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/ram/drainLifecycle.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/ram/liveRead.ts` | A / historical-superseded | origin/main (already rescued) | Keep main tags/tag_confidence SQL-to-RAM parity and committed-tag preservation. |
+| `backend/src/ram/liveStore.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/ram/liveStore.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/ram/memory.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/ram/memory.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/ram/operational.integration.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/ram/protocol.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/ram/protocol.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/ram/publicSource.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/ram/publicSource.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/ram/ram.integration.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/ram/runtime.integration.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/ram/writer.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/ram/writer.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/ram/writerRuntime.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/regions/memberShare.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/regions/memberShare.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/regions/regionNames.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/regions/scopeDecode.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/regions/scopeDecode.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/repositories/networkAnalysis.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/repositories/nodeLinks.integration.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/repositories/productFeatures.integration.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/tools/encryptPacketShareSecret.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/tools/pathAccuracy.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/tools/pathAccuracy.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/tools/prepareScotmesh.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/tools/provisionScotmesh.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/tools/rebuildRegionParticipation.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/workers/privacy-rematerialization.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `backend/src/ws/publicAuthorization.integration.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `docs/pathing-accuracy-2026-09-05.json` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `docs/pathing-accuracy-2026-09-05.md` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `frontend/src/components/ConfirmedNeighbours.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `frontend/src/components/ConfirmedNeighbours.tsx` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `frontend/src/components/Map/RegionsMap.tsx` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `frontend/src/components/Map/regionOverlay.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `frontend/src/components/Map/regionOverlay.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `frontend/src/components/owner/OwnerPacketSharingSection.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `frontend/src/components/owner/OwnerPublicFeedSection.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `frontend/src/pages/OwnerPortalPage.browser.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `frontend/src/pages/RegionsPage.tsx` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `frontend/src/pages/TopologyPage.browser.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `frontend/src/pages/TopologyPage.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `frontend/src/pages/owner/OwnerPanelState.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `frontend/src/pages/owner/OwnerPanelState.tsx` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `frontend/src/pages/owner/packetShareModel.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `frontend/src/pages/regions-page.css` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `frontend/src/pages/regionsModel.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `frontend/src/pages/regionsModel.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `frontend/src/utils/pathing.test.ts` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `scripts/refresh-owner-baseline.sh` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `scripts/test-ram-redis-acl.mjs` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+| `tagger-worker/Dockerfile` | A / identical-main | origin/main (already rescued) | Byte-identical to audited main; live feature/support already rescued by merged history. |
+
+---
+
+# Historical reviews (preserved)
+
 # UKMesh fix review — 2026-10-02
 
 Branch: `fix/ukmesh-burn-20261002`. Base: `73ee004` (`ukmesh-w5`).
