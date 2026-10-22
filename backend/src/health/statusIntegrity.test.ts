@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
-  DATABASE_MAINTENANCE_SQL,
   databaseVacuumBacklogProblem,
   privacyRematerializationBacklogProblem,
   summarizeAuthoritativeHealth,
@@ -40,11 +39,12 @@ test('privacy rematerialization backlog ignores active work and classifies stale
   assert.equal(privacyRematerializationBacklogProblem({ ...state, pending: 1, oldestPendingAgeSeconds: 21_601 })?.severity, 'critical');
 });
 
-test('vacuum health counts dead-only tables and preserves severity thresholds', () => {
-  assert.match(DATABASE_MAINTENANCE_SQL, /n_live_tup > 10000/);
-  assert.match(DATABASE_MAINTENANCE_SQL, /OR n_dead_tup > 50000/);
+test('vacuum backlog counts preserve warning and critical severity thresholds', () => {
   assert.equal(databaseVacuumBacklogProblem(0), null);
   assert.equal(databaseVacuumBacklogProblem(1)?.severity, 'warning');
+  assert.equal(databaseVacuumBacklogProblem(2)?.severity, 'warning');
   assert.equal(databaseVacuumBacklogProblem(3)?.severity, 'critical');
   assert.equal(databaseVacuumBacklogProblem(Number.NaN), null);
+  assert.equal(databaseVacuumBacklogProblem(-1), null);
+  assert.equal(databaseVacuumBacklogProblem(Number.POSITIVE_INFINITY), null);
 });

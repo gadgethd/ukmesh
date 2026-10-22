@@ -13,6 +13,9 @@ test-results/
 .tokensave/
 /.ukmesh-tools/
 
+# Worktree-local verification tools and package cache
+.ukmesh-tools/
+
 # Mosquitto credentials (generated file, not for source control)
 mosquitto/passwd
 mosquitto/acl

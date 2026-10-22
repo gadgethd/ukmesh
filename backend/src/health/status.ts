@@ -7,6 +7,8 @@ import {
   dataLifecycleConfigurationStatus,
 } from '../db/dataLifecycle.js';
 import { INGEST_HEALTH_SQL, PATH_HASH_HEALTH_SQL } from './packetDiagnostics.js';
+import { DATABASE_MAINTENANCE_SQL } from './vacuumBacklog.js';
+export { DATABASE_MAINTENANCE_SQL } from './vacuumBacklog.js';
 import { linkWorkerHeartbeatCollector, readLinkWorkerHeartbeatAge } from './workerHeartbeat.js';
 import {
   loadVerifiedRestoreReceipt,
@@ -731,24 +733,6 @@ async function getOperationalChecksCached(): Promise<{ rows: OperationalCheckRow
   return { rows: await operationalChecksInflight! };
 }
 
-/**
- * Count tables whose dead tuples indicate a vacuum backlog. The absolute
- * branch is intentional: TimescaleDB chunks can report very few live tuples
- * after deletes, so the relative n_live_tup threshold alone misses them.
- */
-export const DATABASE_MAINTENANCE_SQL = `SELECT
-         pg_database_size(current_database())::text AS database_size_bytes,
-         COALESCE(SUM(n_dead_tup), 0)::text AS dead_rows,
-         MIN(last_autovacuum)::text AS oldest_vacuum_at,
-         COUNT(*) FILTER (
-           WHERE (
-             n_live_tup > 10000
-             AND n_dead_tup > GREATEST(10000, n_live_tup * 0.1)
-           )
-           OR n_dead_tup > 50000
-         )::text AS tables_needing_vacuum
-       FROM pg_stat_user_tables`;
-
 export async function getWorkerHealthOverview() {
   // Compute system stats once — cpuUsagePct() diffs against lastCpuSample,
   // so calling it twice in one request gives a garbage near-zero second reading.
@@ -976,7 +960,7 @@ export function databaseVacuumBacklogProblem(tablesNeedingVacuum: number): Healt
   return {
     code: 'database_vacuum_backlog',
     severity: tablesNeedingVacuum >= 3 ? 'critical' : 'warning',
-    message: `${Math.floor(tablesNeedingVacuum)} database table(s) exceed the dead-row vacuum threshold`,
+    message: `${Math.floor(tablesNeedingVacuum)} database table(s) exceed the configured vacuum trigger (10,000 dead-row minimum)`,
   };
 }
 
