@@ -85,4 +85,3 @@
  Planning Time: 15.033 ms
  Execution Time: 149.625 ms
 (84 rows)
-
