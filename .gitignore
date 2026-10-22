@@ -11,6 +11,7 @@ test-results/
 
 # Local semantic code index
 .tokensave/
+/.ukmesh-tools/
 
 # Mosquitto credentials (generated file, not for source control)
 mosquitto/passwd
