@@ -273,6 +273,13 @@ export const analysisActiveLeases = new Gauge({
   registers: [metricsRegistry],
 });
 
+export const spamAnalysisTruncationsTotal = new Counter({
+  name: 'meshcore_spam_analysis_truncations_total',
+  help: 'Spam analysis passes that exceeded a bounded candidate, message or incident limit.',
+  labelNames: ['phase'] as const,
+  registers: [metricsRegistry],
+});
+
 let workerHeartbeatCollector: (() => Promise<void>) | null = null;
 
 export function setWorkerHeartbeatCollector(collector: (() => Promise<void>) | null): void {

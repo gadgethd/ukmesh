@@ -3,6 +3,7 @@ import type { Incident, IncidentStatus, MessageRecord } from './types.js';
 import type { SpamMessageConfig } from './config.js';
 import { messageSimilarity, usernameSimilarity } from './similarity.js';
 import { normalizeUsername, looksMachineGeneratedName } from './normalize.js';
+import { reportSpamAnalysisTruncation } from './limits.js';
 
 // Trivial / connectivity tokens that are normal mesh chatter, never spam on
 // their own. A cluster made up solely of these (and short) is not an incident.
@@ -298,7 +299,7 @@ function scoreIncident(
   const canonicalText = modalNormalized(sorted).norm.normalized;
 
   // Volume + burst density form the baseline.
-  const volume = Math.min(1, (count - cfg.minTransmissions + 1) / 8);
+  const volume = Math.min(1, Math.max(0, (count - transmissionFloor(sender, cfg) + 1) / 8));
   const density = Math.min(1, burst / Math.max(cfg.minBurst * 2, 4));
   let score = 0.3 * volume + 0.2 * density;
 
@@ -347,6 +348,12 @@ function scoreIncident(
   return { score, reasons };
 }
 
+function transmissionFloor(sender: SenderProfile, cfg: SpamMessageConfig): number {
+  return sender.rotatingIdentities
+    ? Math.min(cfg.minTransmissions, cfg.rotatingMinTransmissions)
+    : cfg.minTransmissions;
+}
+
 function finalizeIncident(
   members: MessageRecord[],
   cfg: SpamMessageConfig,
@@ -371,6 +378,7 @@ function finalizeIncident(
 
   const canonical = rep.norm.normalized;
   const sender = profileSenders(sorted, cfg, corpusSenderCounts);
+  if (members.length < transmissionFloor(sender, cfg)) return null;
   if (!qualifies(canonical, hasMarker, hasUrl, sender, cfg)) return null;
 
   const { score, reasons } = scoreIncident(sorted, hasMarker, hasUrl, sender, cfg);
@@ -395,6 +403,45 @@ function finalizeIncident(
 }
 
 /**
+ * The stable key identifies a campaign, while the join window identifies its
+ * individual bursts. Publish one campaign with all qualifying transmissions,
+ * its newest activity and the confidence/evidence of its strongest burst.
+ * A quiet, weaker recurrence must not erase an earlier strong detection.
+ */
+function mergeIncidentBursts(incidents: Incident[]): Incident[] {
+  const byKey = new Map<string, Incident[]>();
+  for (const incident of incidents) {
+    const bursts = byKey.get(incident.key) ?? [];
+    bursts.push(incident);
+    byKey.set(incident.key, bursts);
+  }
+  return [...byKey.values()].map((bursts) => {
+    if (bursts.length === 1) return bursts[0]!;
+    const strongest = [...bursts].sort((a, b) =>
+      b.score - a.score || b.lastSeen - a.lastSeen || a.firstSeen - b.firstSeen)[0]!;
+    const members = [...new Map(bursts.flatMap((burst) => burst.members).map((member) => [member.id, member])).values()]
+      .sort((a, b) => a.observedAt - b.observedAt || a.id.localeCompare(b.id));
+    return {
+      ...strongest,
+      members,
+      firstSeen: members[0]!.observedAt,
+      lastSeen: members.at(-1)!.observedAt,
+      messageCount: members.length,
+      observerCount: new Set(members.flatMap((member) => member.observers.map((observer) => observer.observerId))).size,
+      channels: [...new Set(members.map((member) => member.channelLabel).filter(Boolean))].sort(),
+      senderNames: [...new Set(members.map((member) => member.sender).filter(Boolean))],
+      hasSpamMarker: bursts.some((burst) => burst.hasSpamMarker),
+      hasUrl: bursts.some((burst) => burst.hasUrl),
+      reasons: [
+        `${members.length} near-duplicate messages across ${bursts.length} bursts`,
+        'confidence based on the strongest qualifying burst:',
+        ...strongest.reasons,
+      ],
+    };
+  });
+}
+
+/**
  * Cluster a batch of message records into spam incidents.
  *
  * Online greedy clustering over time-sorted records: each message joins the
@@ -410,6 +457,7 @@ export function clusterMessages(records: MessageRecord[], cfg: SpamMessageConfig
     excluded.size > 0
       ? records.filter((r) => !excluded.has((r.channelLabel ?? '').toLowerCase()))
       : records;
+  reportSpamAnalysisTruncation('messages', eligible.length, cfg.maxMessagesPerRun);
   const sorted = [...eligible]
     .slice(0, cfg.maxMessagesPerRun)
     .sort((a, b) => a.observedAt - b.observedAt);
@@ -532,15 +580,17 @@ export function clusterMessages(records: MessageRecord[], cfg: SpamMessageConfig
   const incidents: Incident[] = [];
   for (const cl of all) {
     assertWithinBudget(deadline);
-    if (cl.members.length < cfg.minTransmissions) continue;
+    if (cl.members.length < Math.min(cfg.minTransmissions, cfg.rotatingMinTransmissions)) continue;
     const sortedMembers = [...cl.members].sort((a, b) => a.observedAt - b.observedAt);
     if (maxBurstDensity(sortedMembers, cfg.burstWindowMs) < cfg.minBurst) continue;
     const incident = finalizeIncident(cl.members, cfg, corpusSenderCounts);
     if (incident) incidents.push(incident);
   }
 
-  incidents.sort((a, b) => b.lastSeen - a.lastSeen);
-  return incidents.slice(0, cfg.maxIncidentsPerRun);
+  const campaigns = mergeIncidentBursts(incidents);
+  campaigns.sort((a, b) => b.lastSeen - a.lastSeen || a.key.localeCompare(b.key));
+  reportSpamAnalysisTruncation('incidents', campaigns.length, cfg.maxIncidentsPerRun);
+  return campaigns.slice(0, cfg.maxIncidentsPerRun);
 }
 
 /** Whether an incident is still ongoing given the current time. */
