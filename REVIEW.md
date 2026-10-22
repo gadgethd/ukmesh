@@ -1,285 +1,356 @@
-# UKMesh vacuum backlog diagnosis — 2026-10-22
+# `/api/mqtt-nodes` performance review — 2026-10-22
 
-Branch: `burn/vacuum-backlog-20261022`. Base: `bec753b5` (`origin/main`).
-Scope: backlog #649 and the supplied `BRIEF-ukmesh-vacuum.md` only.
-The previous root review is preserved verbatim in
-[`docs/reviews/2026-10-02-burn.md`](docs/reviews/2026-10-02-burn.md).
+Branch: `burn/mqtt-nodes-perf-20261022`
+Base: `bec753b5e95893acf159d0ef08ce79057d98c6f8` (`main`)
+Implementation and evidence commit: `eef1244eca884b4f03c12775c2e2e9fcb47895a8`
+PR: https://github.com/gadgethd/ukmesh/pull/142
 
-## Result and diagnosis
+The proposed handler meets the <1 second p50 target on the real anonymous
+UKMesh scope: **548.563 ms HTTP p50**, including a reused SSH transport to the
+production database. SQL execution p50 fell from **6,893.302 ms to 203.435 ms**.
+This is a branch implementation measured through a local handler harness, not
+a deployment or a measurement of a changed public production endpoint.
 
-The measured critical vacuum alert is a **health-check false positive over
-ordinary accumulated update churn**, not evidence that autovacuum is stuck.
-The old predicate flags five tables which have not reached PostgreSQL's
-configured dead-tuple vacuum triggers. It treats 50,000 dead rows as a backlog
-regardless of table size, and also alerts at 10% dead/live while this database
-normally starts vacuuming at about 20% of `pg_class.reltuples`.
+## Change and rationale
 
-The exact old and new queries in the same read-only transaction returned
-**5 versus 0** tables needing vacuum. The new catalog query's measured
-execution time was **15.184 ms**, planning **6.526 ms**. No application table
-scan, maintenance operation, DDL or live data/config write was performed.
-The unchanged live `/api/health` still returned `database_vacuum_backlog` with
-critical severity. This branch has not been deployed and does not claim that
-the live alert has cleared.
+The packet subquery now counts observations by raw `rx_node_id` first, then
+canonicalizes those receiver groups and sums their counts. The measured plan
+reads 129,755 observations but canonicalizes just 26 receiver groups, instead
+of applying the stable SQL function while grouping every observation.
+`SUM(bigint)` returns PostgreSQL `numeric`, so the final sum is explicitly
+cast back to `bigint`, preserving the original `COUNT(*)` result type and
+string serialization. Each observation still counts, including repeated packet
+hashes, and multiple raw aliases still contribute to one canonical receiver.
 
-This diagnosis is about the present observations. The supplied October 12
-probe is historical context, not a measurement repeated at that date. These
-snapshots cannot prove which writer produced every dead tuple or rule out
-intermittent past vacuum contention or physical index bloat.
+The identity views, representative-name selection, uptime-first status ordering,
+15-minute/24-hour windows, network parameters, hidden-name exclusion, zero-count
+filter and public DTO remain unchanged. Anonymous callers and legacy network
+labels expand to `['ukmesh','northeast','teesside']`; test traffic stays separate.
 
-## Measured evidence and exact queries
+The source change is 12 added / 5 removed SQL lines. Other files contain
+regressions, the original query as an independent oracle, an opt-in read-only
+benchmark and review evidence. The existing PostgreSQL integration command now
+includes the new regression. No package dependency or lockfile changed.
 
-Host: `ben@57.129.131.35`, SSH port `32720`. Live container discovered with
-read-only `docker ps`: `meshcore-infra-timescaledb-1`. Database and role:
-`meshcore`, as documented in README/Compose and confirmed by the connection.
-PostgreSQL **16.11**; `transaction_read_only=on` was checked in every diagnostic
-snapshot. No credentials or environment files were read or printed.
+## Measurements and alternatives
 
-The committed SQL files are frozen copies of the exact diagnostic and
-comparison inputs sent to psql; adjacent text files contain their output:
+All VPS database commands used `default_transaction_read_only=on`, explicit
+`BEGIN READ ONLY`, a 30-second statement timeout and a 2-second lock timeout.
+The equality and interleaved comparison ran in repeatable-read transactions,
+so both variants saw the same data and `NOW()`. Five SQL samples per variant
+were interleaved, reversing variant order on alternate rounds. No cache flush,
+restart, database object creation, migration or data modification was used.
+These are small, mostly warm-cache samples under concurrent production load;
+they do not establish p95 or behavior at a substantially larger future scope.
 
-- [Diagnostic SQL](docs/diagnostics/vacuum-backlog-20261022.sql) and
-  [output](docs/diagnostics/vacuum-backlog-20261022.txt), measured
-  **2026-10-22 14:25:27 UTC / 15:25:27 BST**.
-- [Old/new comparison and EXPLAIN SQL](docs/diagnostics/vacuum-backlog-comparison-20261022.sql)
-  and [output](docs/diagnostics/vacuum-backlog-comparison-20261022.txt).
+| Approach | Measured result | Decision |
+| --- | --- | --- |
+| Original query | SQL execution p50 **6,893.302 ms**; HTTP p50 **8,775.144 ms** | Baseline. |
+| Aggregate raw receivers before canonicalization | SQL execution p50 **203.435 ms**; HTTP p50 **548.563 ms** | Chosen: meets target with fresh reads and a small SQL change. |
+| Also replace the identity view with name-only representative selection | SQL execution p50 **112.795 ms** | Rejected: saves about 91 ms but duplicates central ranking rules and creates another place to maintain identity semantics. Live snapshot rows matched, but the extra complexity is unnecessary for this target. |
+| Precomputed canonical-count rollup, read-path proxy | SQL execution p50 **136.331 ms**, with 26 counts frozen into `VALUES` | Rejected: only about 67 ms below the chosen query, before ingest/refresh/expiry/alias-update maintenance costs. This is a read-path lower bound, not a maintained-rollup benchmark. No materialized view or rollup table was created. |
+| 15-second endpoint response-cache prototype over the original query | Warm-hit p50 **4.796 ms**; cold request **8,798.319 ms**; 1 DB query for 6 requests | Rejected: cold latency persists and TTL expiry would allow stale status/counts/names for up to 15 seconds without invalidation. The query rewrite meets the target on every sampled uncached request. |
 
-Only trailing spaces from psql's table formatting were stripped from the
-output files; query inputs and measured values are preserved.
+For the rollup proxy, counts were obtained read-only and represented as constant
+rows for the endpoint's read phase. The repeatable reproduction in
+`rollup-proxy.sql` takes a fresh snapshot and uses PostgreSQL `format('%L', ...)`
+to quote values before EXPLAINing the read phase. It measured **177.284 ms** on
+that separate reproduction. Refresh and backfill costs remain unmeasured;
+that limitation is part of the reason not to select it.
 
-All five old-check candidates have no per-table reloptions and therefore use
-`autovacuum_vacuum_threshold=50`, `autovacuum_vacuum_scale_factor=0.2`:
+The first HTTP pass opened a new SSH connection per query: before p50
+**12,322.603 ms**, after **1,169.728 ms**. This measures transport setup in
+addition to the handler and database, so both that result and the reused-SSH
+result are retained. With connection reuse, the after samples were
+**657.984, 589.490, 422.218, 548.563, 490.278 ms**, all below one second.
+The real Express route, scope resolution, filtering and DTO run locally; only
+its database adapter uses remote read-only psql. Bigint fields are explicitly
+transported as strings. No remote HTTP server or application process was started.
+This does not substitute for a normal pooled-connection check after an operator
+chooses to deploy.
 
-| Table | Estimated live | Estimated dead | `reltuples` | Vacuum trigger, approximately | Total bytes |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| `multibyte_path_facts` | 2,473,913 | 285,751 | 2,469,879 | 494,026 | 2,202,386,432 |
-| `packet_hourly_stats` | 914,989 | 108,459 | 909,590 | 181,968 | 226,205,696 |
-| `observer_region_packet_sightings` | 238,022 | 35,785 | 233,931 | 46,836 | 311,017,472 |
-| `owner_packet_share_deliveries` | 241,414 | 27,746 | 234,784 | 47,007 | 415,195,136 |
-| `public_feed_deliveries` | 99,444 | 18,531 | 98,132 | 19,676 | 128,917,504 |
+Full evidence is in [docs/performance/mqtt-nodes-20261022](docs/performance/mqtt-nodes-20261022):
 
-`multibyte_path_facts` has **1,801,912,320 table bytes** (including associated
-TOAST), **400,474,112 index bytes**, **5** autovacuums in the available counters,
-and last autovacuum **2026-10-22 06:07:27.164047 UTC**. Counters show
-**2,860,342 updates**, **50 HOT updates**, **86,321 inserts**, **0 deletes**.
-Its dead-row estimate stayed **285,751** across the initial 14:21 and 14:25
-probes while live rows increased. The repository's fact trigger and backfill
-both use `ON CONFLICT ... DO UPDATE`; this is a plausible source of update
-churn, not a proven attribution of the historical counters to one writer.
+- `before-plan.txt` and `after-plan.txt`: full initial EXPLAIN ANALYZE/BUFFERS plans.
+- `before.sql` and `after.sql`: the exact queries, expanded to production scope.
+- `sql-timings.txt`: all five comparison timings per variant and medians.
+- `names-only.sql`, `names-only-plan.txt`, `rollup-proxy.sql` and `rollup-proxy-plan.txt`: alternative evidence.
+- `http-new-ssh.jsonl` and `http-reused-ssh.jsonl`: verbatim HTTP benchmark output.
+- `equality.txt`: live read-only comparison; **23 rows before, 23 after, 0 differences** in either direction using `EXCEPT ALL`; the name-only alternative also had 0 differences.
+- `verification.txt`: local test summaries. Plans retain their textual content with trailing whitespace trimmed.
 
-The diagnostic also collected:
+## Cache invalidation semantics
 
-- Autovacuum **on**, `track_counts` **on**, **3** maximum workers,
-  naptime **10 s**, vacuum cost delay **2 ms**, cost limit **-1** (uses
-  vacuum cost limit **200**), work memory **-1** (uses maintenance memory
-  **251,903 kB**). Insert trigger **1000 + 0.2 × row estimate**;
-  analyze trigger **50 + 0.1 × row estimate**.
-- Other table overrides include scale **0.05** for `node_links`,
-  `node_identity_links`, `path_motif_priors`, `path_prefix_priors`; `nodes`
-  uses vacuum/analyze scale **0.5**. The health query honors overrides.
-- **0 transactions older than one minute**, **0 prepared transactions**,
-  **0 replication slots**, **0 active vacuum progress rows** in the snapshots.
-  The longest displayed transaction with a pinned xmin was about **19 s** in
-  the first probe and **11 s** in the committed diagnostic. Blocker arrays
-  were empty for those displayed sessions. SQL text/GIDs are omitted.
-- Database size **17,721,029,091 bytes**, dead-row estimate **507,348**;
-  database XID age **132,622,753**, configured freeze maximum **200,000,000**.
-  These are observations, not a comprehensive wraparound/bloat assessment.
-  `stats_reset` was null; counters have no claimed measurement interval.
+No application, browser or shared-response cache was added. No new
+`Cache-Control`, TTL, invalidation hook, background refresh or stale-on-error
+behavior exists in the shipped handler. Each request reads the current database
+snapshot, so new observations, canonical alias changes and hidden-name changes
+are reflected on the next request, subject to normal transaction visibility.
+The isolated PostgreSQL test exercises all three changes through the actual
+HTTP route. The 15-second cache exists only inside the opt-in benchmark process
+for repeated requests to its single fixed anonymous URL; it is not wired into
+the application.
 
-## What changed and threshold decision
+## Exact verification commands and output
 
-`backend/src/health/vacuumBacklog.ts` shares the catalog query between the
-health endpoint and the diagnostic emitter. For enabled autovacuum and
-statistics, a table counts only when its estimated dead rows exceed:
-
-```text
-max(10,000, effective vacuum base + effective vacuum scale × max(reltuples, 0))
-```
-
-The effective base/scale are the table's storage parameters or current server
-defaults. This follows PostgreSQL 16's documented scheduling inputs rather
-than assuming a fixed percentage of `n_live_tup`.
-[PostgreSQL 16 autovacuum documentation](https://www.postgresql.org/docs/16/routine-vacuuming.html#AUTOVACUUM).
-
-The 10,000-row noise floor retains the previous minimum scale of actionable
-health alerts on small tables. Dead-only tables are still considered; there
-is no positive-live-row admission guard. Disabled global/table autovacuum or
-disabled statistics collection uses that conservative floor for observed
-dead rows. Disabled statistics can make counts stale; this is not a substitute
-for separately monitoring statistics collection. The existing severity rule
-is preserved: **1–2** qualifying tables warn, **3+** are critical.
-
-No table-specific exemption, larger arbitrary absolute cutoff or alert-code
-removal was added. A table above its configured trigger still qualifies,
-even during an active vacuum; repeated diagnostics distinguish a transient
-eligible table from a persistent backlog. Insert/freeze vacuums are separate
-from this dead-row check. Catalog estimates are approximate, and
-`oldest_vacuum_at` remains the legacy aggregate minimum of non-null
-autovacuum timestamps, not evidence that the worst table is overdue.
-
-No migration or reloption change is appropriate from these measurements.
-Lowering the table's 20% trigger solely to satisfy the old health check would
-increase vacuum work without evidence of a failed scheduler. There is no new
-DDL and therefore no migration rollback SQL to apply.
-
-## Fleet diagnostic and operator runbook
-
-From a checkout of this branch, build once and emit read-only psql input:
+Initial and final backend checks, from `backend/`:
 
 ```sh
-cd backend
-npm run build
-cd ..
-mkdir -p .ukmesh-tools
-node backend/dist/tools/diagnoseVacuumBacklog.js > .ukmesh-tools/vacuum-diagnosis.sql
-ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=yes \
-  -p 32720 ben@57.129.131.35 \
-  "docker exec -i -e PGOPTIONS='-c default_transaction_read_only=on -c statement_timeout=10000 -c lock_timeout=2000 -c application_name=ukmesh-vacuum-diagnosis' meshcore-infra-timescaledb-1 psql -X -v ON_ERROR_STOP=1 -P pager=off -U meshcore -d meshcore" \
-  < .ukmesh-tools/vacuum-diagnosis.sql
-```
-
-The tool only writes SQL to stdout;
-it loads no credentials, opens no database connection, and imports no
-application bootstrap/migration code. The emitted SQL uses `BEGIN READ ONLY`,
-a 10 s statement limit, 2 s lock limit and 30 s idle transaction limit.
-The outer `PGOPTIONS` independently defaults the session to read-only.
-Inspect activity metadata, prepared transaction ages, replication horizons
-and active vacuum progress alongside the per-table threshold/size output.
-Repeat after a normal work interval if a table is above its trigger. No
-transaction cancellation, slot removal or vacuum is part of this script.
-
-**Ben-only maintenance, if fresh evidence warrants it; NOT RUN in this task.**
-No immediate manual vacuum is indicated by the recorded measurements. If a
-real backlog persists, review the fresh diagnostics and any pinned xmin or
-worker contention first. Do not automatically kill transactions. After Ben
-chooses targeted maintenance, this is the exact bounded command for the
-named table, outside any transaction block:
-
-```sh
-ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=yes \
-  -p 32720 ben@57.129.131.35 \
-  "docker exec -i meshcore-infra-timescaledb-1 psql -X -v ON_ERROR_STOP=1 -P pager=off -U meshcore -d meshcore" <<'SQL'
-SET statement_timeout = '15min';
-SET lock_timeout = '5s';
-SET maintenance_work_mem = '64MB';
-VACUUM (VERBOSE, ANALYZE, PARALLEL 0, TRUNCATE FALSE) public.multibyte_path_facts;
-SQL
-```
-
-The memory/parallel limits reflect the shared-memory failure recorded in the
-earlier fleet maintenance incident. Tail truncation is disabled to avoid its
-exclusive-lock attempt. Ben should rerun the read-only diagnostic afterward
-and compare dead rows, vacuum timestamps/counts, blockers and API incidents.
-Do not substitute database-wide vacuum, `VACUUM FULL` or reindexing for this
-specific action without a separate diagnosis. Ordinary vacuum marks space
-reusable; it does not promise a smaller filesystem footprint.
-[PostgreSQL 16 vacuum behavior](https://www.postgresql.org/docs/16/routine-vacuuming.html#VACUUM-FOR-SPACE-RECOVERY).
-
-## Rollback and deliberately left out
-
-Rollback is a code revert of this branch's implementation commit followed by
-the owner's separately authorized normal release procedure. No deployment is
-performed here. The previous predicate will again flag the measured five
-tables. There is no database rollback: no schema, reloption, data, service,
-live config or live checkout was changed. A future ordinary vacuum itself
-has no inverse SQL; it preserves logical rows.
-
-Left out: automatic VACUUM/DDL, scheduler tuning, new retention/backfill
-behavior, physical bloat measurements requiring extensions/table scans,
-transaction termination, new dashboards, deploy/restart/merge, and unrelated
-health incidents. Open questions are whether long-term fact/index growth
-merits a separately measured tuning change, and whether the existing
-three-table severity rule should become a sustained/impact-based policy.
-The current evidence does not justify either additional change.
-
-## Verification and handoff
-
-Exact local verification commands (from the worktree root unless shown):
-
-```sh
-mkdir -p .ukmesh-tools/tmp
-cd backend
-npm ci --cache "$PWD/../.ukmesh-tools/npm-cache" --no-audit --no-fund
+npm ci --cache ../.mqttperf-evidence/npm-cache --no-audit --no-fund
+npm test
+TMPDIR="$PWD/../.mqttperf-evidence/tmp" npm test
 npm run typecheck
 npm run build
-TMPDIR="$PWD/../.ukmesh-tools/tmp" npm run contract:check
-TMPDIR="$PWD/../.ukmesh-tools/tmp" npm test
-TMPDIR="$PWD/../.ukmesh-tools/tmp" node --import tsx --test src/api/hopreachCompatibility.test.ts
-TMPDIR="$PWD/../.ukmesh-tools/tmp" node --import tsx --test --test-concurrency=4 \
-  $(rg --files src -g '*.test.ts' -g '!*.integration.test.ts')
-TMPDIR="$PWD/../.ukmesh-tools/tmp" bash ../scripts/test-alert-receiver.sh
-cd ..
-npm install --prefix .ukmesh-tools/pglite --cache .ukmesh-tools/npm-cache \
-  --no-package-lock --ignore-scripts --no-audit --no-fund @electric-sql/pglite@0.5.8
-cd backend
-TMPDIR="$PWD/../.ukmesh-tools/tmp" \
-TEST_VACUUM_PGLITE_MODULE="file://$PWD/../.ukmesh-tools/pglite/node_modules/@electric-sql/pglite/dist/index.js" \
-  npm run test:vacuum-integration
-cd ..
-node backend/dist/tools/diagnoseVacuumBacklog.js > .ukmesh-tools/vacuum-diagnosis-built.sql
-cmp docs/diagnostics/vacuum-backlog-20261022.sql .ukmesh-tools/vacuum-diagnosis-built.sql
-git diff --check
+npm run contract:check
+node_modules/.bin/tsc --ignoreConfig --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --esModuleInterop --skipLibCheck --strict src/api/routes/misc.test.ts src/api/routes/mqttNodes.integration.test.ts
+TMPDIR="$PWD/../.mqttperf-evidence/tmp" node --import tsx --test src/api/routes/misc.test.ts
 ```
 
-- Typecheck and build: pass.
-- OpenAPI contract check: pass, **71 API and 11 operator routes** current.
-- Backend suite: **556 passed / 559 total, 0 failed, 3 skipped**. Skips are
-  existing opt-in live RF/history/export EXPLAIN tests. The local synthetic
-  alert-receiver firing/recovery drill also passed.
-- A repeat of default `npm test` returned **555 pass, 1 fail, 3 skips**:
-  the unchanged HopReach calibration test expected at least one `COALESCED`
-  HTTP response inside its 250 ms fixture window. Its single backend load
-  assertion passed. The unchanged test file passed **3/3** in isolation;
-  scheduling under the concurrent suite is a plausible cause, not a proven
-  root cause. No HopReach source/test change was made in this branch.
-- The full suite with `--test-concurrency=4` then passed **556 / 559,
-  0 failures, 3 existing skips**; the following alert-receiver drill passed.
-  This covers the same unit test files without relying on the failed run.
-- Vacuum SQL tests: **21/21 passed, 0 skipped**, using isolated PostgreSQL-WASM
-  (PGlite 0.5.8). They execute the production threshold expression against
-  synthetic SQL values: all five measured candidates, real backlog,
-  equality/one-row boundaries, server defaults, each/both/zero overrides,
-  unrelated options, dead-only/unknown estimates, small-table floor and
-  disabled global/table vacuum/statistics. The complete catalog query also
-  executes under a read-only transaction.
-- CI additionally runs `npm run test:vacuum-integration` against its existing
-  disposable PostgreSQL service via `TEST_VACUUM_DATABASE_URL`. No new runtime
-  or repository package dependency was added. CI status is recorded below
-  after the branch is pushed.
-- Exact generated diagnostic SQL ran successfully against live PostgreSQL
-  16.11; compiled/source output matches the committed SQL byte for byte.
-  Old/new query proof: **5 → 0**, with the live endpoint unchanged.
+The initial suite passed **556/559**, with 3 skipped and 0 failures. The final
+suite, including the added contract test, printed:
 
-Implementation commit (code, tests, diagnostic, evidence and initial review):
-`767f37e04211ac6c281ba07b59b8dfe7b6b02a90`.
-PR: [gadgethd/ukmesh#145](https://github.com/gadgethd/ukmesh/pull/145), open
-against `main` from `burn/vacuum-backlog-20261022`. A documentation-only handoff
-commit records these identifiers; the final tip is available with
-`git rev-parse HEAD` and in the PR's head SHA.
+```text
+# tests 560
+# suites 0
+# pass 557
+# fail 0
+# cancelled 0
+# skipped 3
+# todo 0
+# duration_ms 91463.570492
+Synthetic firing and recovery reached the bounded test receiver.
+```
 
-At the first push (14:34 UTC), GitHub's Backend, Frontend, Workers/Compose and
-Secret scan checks were queued. This is not a claim that CI passed; use the
-PR checks for current results. Local results and their scope are recorded
-above. Remaining operator work is review and a separately authorized normal
-release if accepted. There is no presently indicated manual VACUUM from these
-measurements, and none has been executed.
+The three skips are pre-existing opt-in live RF/history/export EXPLAIN tests,
+not the new regression. Source typecheck, strict test-file typecheck and build
+passed. Contract output:
+
+```text
+OpenAPI contract current: 71 API and 11 operator routes
+```
+
+The focused HTTP tests printed **3 tests, 3 passed, 0 failed/skipped**.
+Coverage includes exact public fields, omitted private/future fields, null
+counters, count strings above JavaScript's safe-integer range, zero-count
+filtering and anonymous/legacy/test request parameters.
+
+The actual PostgreSQL regression command is:
+
+```sh
+# From backend; TEST_INGEST_DATABASE_URL must identify a disposable loopback DB.
+node --import tsx --test src/api/routes/mqttNodes.integration.test.ts
+```
+
+It ran with a fresh loopback-only embedded PostgreSQL **18.4.0-beta.17** fixture
+under `.mqttperf-evidence/`, a random test password and worktree-local `TMPDIR`.
+The exact local launcher command was:
+
+```sh
+TMPDIR="$PWD/.mqttperf-evidence/tmp" node .mqttperf-evidence/run-postgres.mjs
+```
+
+The launcher/tooling is ignored local infrastructure, not a runtime dependency.
+The test is committed and uses the existing disposable PostgreSQL service in CI
+via `npm run test:ingest-integration`; it creates a unique schema in one
+transaction and rolls it back. It refuses non-loopback URLs. It uses the real
+canonical function and status view from migration 036, fixture names for the
+unchanged node view, and the frozen original endpoint SQL as an oracle.
+
+```text
+# tests 5
+# suites 0
+# pass 5
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+```
+
+These checks cover aliases with case/whitespace normalization, multiple aliases
+merging into a canonical receiver, all production labels, isolated test traffic,
+24-hour/15-minute windows, null/empty receiver observations, duplicate hashes,
+missing names/counters, hidden/stale/zero-count nodes, uptime/time ordering,
+`bigint` SQL type, immediate updates and an empty result.
+
+Initial EXPLAIN commands, from the worktree root:
+
+```sh
+ssh -p 32720 -o BatchMode=yes -o ConnectTimeout=10 -o ProxyJump=none ben@57.129.131.35 'docker exec -i -e PGOPTIONS="-c default_transaction_read_only=on -c statement_timeout=30000 -c lock_timeout=2000" meshcore-infra-timescaledb-1 psql -X -U meshcore -d meshcore -v ON_ERROR_STOP=1' < .mqttperf-evidence/before-explain.sql > .mqttperf-evidence/before-plan.txt
+ssh -p 32720 -o BatchMode=yes -o ConnectTimeout=10 -o ProxyJump=none ben@57.129.131.35 'docker exec -i -e PGOPTIONS="-c default_transaction_read_only=on -c statement_timeout=30000 -c lock_timeout=2000" meshcore-infra-timescaledb-1 psql -X -U meshcore -d meshcore -v ON_ERROR_STOP=1' < .mqttperf-evidence/counts-first-explain.sql > .mqttperf-evidence/counts-first-plan.txt
+```
+
+The inputs wrap the committed `before.sql`/`after.sql` with `BEGIN READ ONLY;`,
+`EXPLAIN (ANALYZE, BUFFERS, SETTINGS, SUMMARY, TIMING OFF)` and `ROLLBACK;`.
+The initial output lines, quoted verbatim, were:
+
+```text
+ Planning Time: 50.469 ms
+ Execution Time: 6607.320 ms
+ Planning Time: 59.431 ms
+ Execution Time: 207.755 ms
+```
+
+The five-round comparison used the same command with input
+`.mqttperf-evidence/repeats.sql` and output `.mqttperf-evidence/repeats-plan.txt`.
+That input emits each of the committed before/after/name-only queries after
+EXPLAIN inside one repeatable-read read-only transaction; the full extracted
+timings are committed in `sql-timings.txt`.
+
+The committed rollup-proxy reproduction was run exactly as follows:
+
+```sh
+ssh -p 32720 -o BatchMode=yes -o ConnectTimeout=10 -o ProxyJump=none ben@57.129.131.35 'docker exec -i -e PGOPTIONS="-c default_transaction_read_only=on -c statement_timeout=30000 -c lock_timeout=2000" meshcore-infra-timescaledb-1 psql -X -U meshcore -d meshcore -v ON_ERROR_STOP=1' < docs/performance/mqtt-nodes-20261022/rollup-proxy.sql > .mqttperf-evidence/rollup-proxy-reproduction.txt
+```
+
+The HTTP comparison command, from `backend/`, was:
+
+```sh
+MQTT_PERF_SSH_TARGET=ben@57.129.131.35 MQTT_PERF_SSH_PORT=32720 MQTT_PERF_SSH_CONTROL_PATH="$PWD/../.mqttperf-evidence/s" node --import tsx src/tools/benchmarkMqttNodes.ts > ../.mqttperf-evidence/http-reused-ssh.txt 2>&1
+ssh -p 32720 -o ProxyJump=none -S ../.mqttperf-evidence/s -O exit ben@57.129.131.35
+```
+
+Before/after output, quoted verbatim:
+
+```json
+{"mode":"before","scope":["ukmesh","northeast","teesside"],"samples_ms":[8775.144,9018.247,8495.012,9025.393,7880.597],"p50_ms":8775.144,"database_queries":5}
+{"mode":"after","scope":["ukmesh","northeast","teesside"],"samples_ms":[657.984,589.49,422.218,548.563,490.278],"p50_ms":548.563,"database_queries":5}
+```
+
+`git diff --check` and a comparison of the final route SQL against measured
+`after.sql` (ignoring comments and whitespace) also passed.
+
+## Continuation completion audit — 15:53 BST
+
+The continuation audited pushed HEAD `f95ad42020c7858830667faf9c545c079f38c41e`
+against the brief, original handler, measured queries, fixture oracle and PR.
+The original oracle and before measurement match the base handler; the after
+measurement matches the current handler after parameter substitution and
+removal of comments/whitespace. The response fields, bigint count type,
+network/window predicates, alias semantics and ordering are preserved.
+No further application change was needed.
+
+[CI run 39785176256](https://github.com/gadgethd/ukmesh/actions/runs/39785176256)
+completed successfully at that exact HEAD: Backend, Frontend, Workers and
+Compose, and Secret scan. The actual Backend job log confirms that the new
+PostgreSQL regression and all four subtests ran and passed, rather than skipping.
+The existing PR has no review comments or requested changes. The remote branch
+and PR head both matched the local commit when inspected.
+
+The following commands were rerun in the continuation, using the same local
+fixture and read-only remote safeguards described above:
+
+```sh
+# From the worktree root:
+TMPDIR="$PWD/.mqttperf-evidence/tmp" node .mqttperf-evidence/run-postgres.mjs > .mqttperf-evidence/resume-sql-tests.txt 2>&1
+# From backend/:
+TMPDIR="$PWD/../.mqttperf-evidence/tmp" node --import tsx --test src/api/routes/misc.test.ts > ../.mqttperf-evidence/resume-route-tests.txt 2>&1
+TMPDIR="$PWD/../.mqttperf-evidence/tmp" MQTT_PERF_SSH_TARGET=ben@57.129.131.35 MQTT_PERF_SSH_PORT=32720 MQTT_PERF_SSH_CONTROL_PATH="$PWD/../.mqttperf-evidence/s" node --import tsx src/tools/benchmarkMqttNodes.ts > ../.mqttperf-evidence/resume-http-reused-ssh.txt 2>&1
+# From the worktree root, repeat the original snapshot comparison, then close the local SSH master:
+ssh -p 32720 -o BatchMode=yes -o ConnectTimeout=10 -o ProxyJump=none -S .mqttperf-evidence/s ben@57.129.131.35 'docker exec -i -e PGOPTIONS="-c default_transaction_read_only=on -c statement_timeout=30000 -c lock_timeout=2000" meshcore-infra-timescaledb-1 psql -X -U meshcore -d meshcore -v ON_ERROR_STOP=1' < .mqttperf-evidence/equality.sql > .mqttperf-evidence/resume-equality.txt
+ssh -p 32720 -o ProxyJump=none -S .mqttperf-evidence/s -O exit ben@57.129.131.35
+```
+
+The PostgreSQL regression again passed **5/5, zero skips**; focused HTTP tests
+passed **3/3, zero skips**. The fresh live comparison again returned **23 rows
+before, 23 after, zero differences**. Verbatim fresh HTTP before/after output:
+
+```json
+{"mode":"before","scope":["ukmesh","northeast","teesside"],"samples_ms":[10450.707,10538.907,7790.226,8564.191,9159.034],"p50_ms":9159.034,"database_queries":5}
+{"mode":"after","scope":["ukmesh","northeast","teesside"],"samples_ms":[777.87,761.479,924.97,784.056,617.875],"p50_ms":777.87,"database_queries":5}
+```
+
+All five fresh uncached after samples were below one second. These are another
+small sample through the same local handler/remote read-only adapter, with the
+same transport and production-deployment limitations stated above. Committed
+`resume-http-reused-ssh.jsonl`, `resume-equality.txt` and
+`resume-verification.txt` retain this evidence. The continuation changes only
+the review and evidence; the application and tests remain at implementation
+commit `eef1244eca884b4f03c12775c2e2e9fcb47895a8`.
+
+## Final continuation audit — 16:51 BST
+
+The next continuation checked pushed HEAD
+`02c2699c5cc886820de246e4e79b36e2dc58bfa1` against the brief and PR.
+The original SQL oracle still matches the base handler, both measured queries
+match their handlers, and the committed benchmark percentiles match their raw
+samples. No application or test change was needed.
+
+The focused HTTP tests again passed **3/3**, and the disposable PostgreSQL
+regression again passed **5/5**, both with zero skips. Using the same exact
+commands listed in the previous continuation, with output names changed from
+`resume-*` to `final-*`, the fresh repeatable-read read-only comparison returned
+**23 rows before, 23 after, zero differences**. The fresh HTTP output was:
+
+```json
+{"mode":"before","scope":["ukmesh","northeast","teesside"],"samples_ms":[9832.011,8557.604,9522.517,7722.685,8313.036],"p50_ms":8557.604,"database_queries":5}
+{"mode":"after","scope":["ukmesh","northeast","teesside"],"samples_ms":[514.287,468.481,588.657,509.152,516.109],"p50_ms":514.287,"database_queries":5}
+```
+
+All five uncached after samples were below 600 ms. The same local-handler,
+remote-database transport and small-sample limitations apply. The fresh cache
+prototype remained a benchmark-only experiment: cold request **7,706.664 ms**,
+five warm hits at **7.546 ms p50**, one database query. These results and test
+summaries are retained in `final-http-reused-ssh.jsonl`, `final-equality.txt`
+and `final-verification.txt` in the evidence directory.
+
+[Push CI run 39799957604](https://github.com/gadgethd/ukmesh/actions/runs/39799957604)
+passed all four jobs at the inspected HEAD. Its Backend job log confirms the
+new PostgreSQL regression ran and passed all four subtests without skipping.
+The corresponding
+[PR CI run 39799966252](https://github.com/gadgethd/ukmesh/actions/runs/39799966252)
+passed Backend, Frontend and Secret scan, but its first Workers and Compose
+attempt timed out in the existing `RF coverage remains available with 3D terrain`
+desktop browser test at 60 seconds, including its test retry. The same job
+passed on the push run. The failed PR job was rerun without changing application
+code; current PR checks remain authoritative for its final result. No terrain
+or unrelated frontend change was made to this performance branch.
+
+## Deliberately left out, open questions and rollback
+
+No identity-view rewrite, materialized count table, schema migration, HTTP
+cache, invalidation bus, refresh worker, index or new runtime dependency was
+added. No unrelated endpoint or frontend behavior was changed. No agent was
+spawned, no live service restarted, no live config edited, and no live database
+write or migration was performed. Only this worktree's branch was pushed; no
+merge, release or deployment was requested.
+
+The operator still needs to review/merge and decide whether to deploy. After a
+normal deployment, confirm the actual pooled-connection endpoint latency and
+continued SQL-plan shape under the live request rate. The new PostgreSQL
+regression is wired into CI; current PR checks are authoritative for remote
+status. No claim is made that every unrelated repository integration suite was
+run locally. Future packet-volume growth can justify revisiting rollups; ingest
+maintenance, moving-window expiry and alias-update backfills need separate
+measurement if that happens.
+
+Rollback is an application-code revert of the implementation commit, through a
+separate reviewed PR. There is no migration or database object to roll back and
+no rollback SQL is required. Reverting restores the original query and its
+latency; it does not modify data. This session performs no rollback or deploy.
+
+The previous root review covered unrelated historical work; it remains in git
+history at the base commit. This file now describes the requested performance
+branch. The following documentation commit records the PR URL and this review;
+its exact final HEAD is reported in the handoff and verified against the remote.
 
 ## Honest mistake inventory
 
-- The first API probe looked for private `problems`/`database` fields; the
-  public projection exposes `incidents`. The corrected probe confirmed the
-  critical vacuum incident. No schema or endpoint change was needed.
-- TokenSave context timed out after 300 s, and the worktree has no local
-  `.tokensave/tokensave.db`; scoped source reads supplied the missing context.
-- The first full unit run used default test temporary paths. Subsequent
-  verification sets `TMPDIR` inside this worktree; authored code, tooling,
-  npm cache and evidence are worktree-local. No live config was touched.
-- The default suite repeat exposed an unrelated timing-sensitive HopReach
-  test after the first full run passed; both outcomes are recorded above.
+- The first HTTP pass included a new SSH connection for every query; its
+  1,169.728 ms after-p50 cannot establish a sub-second HTTP result. It is
+  retained alongside the connection-reuse measurement, with transport scope
+  stated explicitly.
+- The first multiplexing attempt exceeded the Unix socket pathname limit and
+  failed before issuing a query. The benchmark now normalizes the pathname,
+  rejects overlong paths and was rerun with a short socket path.
+- Optional strict checking of test files found implicit-any parameters in the
+  new generic mock and an existing mock. Both are explicitly typed; that check
+  and the focused tests pass.
+- The initial baseline suite inherited the default OS temporary directory for
+  its disposable fixtures. Later suite and PostgreSQL fixture runs explicitly
+  use a worktree-local `TMPDIR`; no live configuration or data was edited.
+- A few read-only evidence inspections used the wrong working-directory-relative
+  paths, and the first staged whitespace check found an extra blank line in a
+  captured plan. The paths were corrected and the final artifact whitespace was
+  fixed without changing any measurements.
 
-PROOF: read-only diagnostic and old/new SQL inputs/outputs committed above;
-five below-trigger tables, zero pinned long transactions/prepared xacts/slots,
-SQL **21/21**, backend **556 pass / 3 existing skips**, typecheck/build pass;
-implementation **767f37e04211ac6c281ba07b59b8dfe7b6b02a90**;
-PR **https://github.com/gadgethd/ukmesh/pull/145**.
+PROOF: SQL p50 6893.302 ms -> 203.435 ms; HTTP p50 8775.144 ms -> 548.563 ms on anonymous production scope; 557 unit passes/3 pre-existing skips, 3 focused HTTP passes, 5 PostgreSQL passes, typechecks/build/71+11-route contract PASS; implementation SHA eef1244eca884b4f03c12775c2e2e9fcb47895a8; PR https://github.com/gadgethd/ukmesh/pull/142.

@@ -26,7 +26,7 @@
     "test": "node --import tsx --test $(find src -name '*.test.ts' ! -name '*.integration.test.ts' -print) && bash ../scripts/test-alert-receiver.sh",
     "test:analysis-integration": "node --import tsx --test src/analysis/runState.integration.test.ts",
     "test:vacuum-integration": "node --import tsx --test src/health/vacuumBacklog.integration.test.ts",
-    "test:ingest-integration": "timeout 300s node --import tsx --test src/db/packetBatch.integration.test.ts src/db/recentRead.integration.test.ts && timeout 90s node --import tsx --test src/ram/ram.integration.test.ts && timeout 60s node --import tsx --test src/ws/publicAuthorization.integration.test.ts",
+    "test:ingest-integration": "timeout 300s node --import tsx --test src/db/packetBatch.integration.test.ts src/db/recentRead.integration.test.ts src/api/routes/mqttNodes.integration.test.ts && timeout 90s node --import tsx --test src/ram/ram.integration.test.ts && timeout 60s node --import tsx --test src/ws/publicAuthorization.integration.test.ts",
     "test:ram-operational": "timeout 300s node ../scripts/test-ram-redis-acl.mjs",
     "typecheck": "tsc --noEmit",
     "contract:generate": "tsx src/tools/generateOpenApi.ts",

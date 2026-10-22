@@ -1,0 +1,87 @@
+                                                   QUERY PLAN
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Unique  (cost=13176.13..13185.73 rows=135 width=132) (actual rows=23 loops=1)
+   Buffers: shared hit=9087 read=22
+   ->  Incremental Sort  (cost=13176.13..13185.39 rows=135 width=132) (actual rows=160 loops=1)
+         Sort Key: (COALESCE(la.canonical_node_id, upper(btrim(s.node_id)))), (COALESCE(s.uptime_secs, '0'::bigint)) DESC, s."time" DESC
+         Presorted Key: (COALESCE(la.canonical_node_id, upper(btrim(s.node_id))))
+         Full-sort Groups: 5  Sort Method: quicksort  Average Memory: 33kB  Peak Memory: 33kB
+         Buffers: shared hit=9087 read=22
+         ->  Merge Left Join  (cost=13176.09..13179.32 rows=135 width=132) (actual rows=160 loops=1)
+               Merge Cond: ((COALESCE(la.canonical_node_id, upper(btrim(s.node_id)))) = n.node_id)
+               Filter: ((n.name IS NULL) OR (n.name !~~ '%🚫%'::text))
+               Buffers: shared hit=9081 read=22
+               ->  Sort  (cost=54.19..54.53 rows=136 width=190) (actual rows=160 loops=1)
+                     Sort Key: (COALESCE(la.canonical_node_id, upper(btrim(s.node_id))))
+                     Sort Method: quicksort  Memory: 59kB
+                     Buffers: shared hit=86 read=22
+                     ->  Hash Left Join  (cost=1.22..49.37 rows=136 width=190) (actual rows=160 loops=1)
+                           Hash Cond: (COALESCE(la.canonical_node_id, upper(btrim(s.node_id))) = "*VALUES*".column1)
+                           Buffers: shared hit=86 read=22
+                           ->  Nested Loop Left Join  (cost=0.57..47.69 rows=136 width=182) (actual rows=160 loops=1)
+                                 Buffers: shared hit=86 read=22
+                                 ->  Custom Scan (ChunkAppend) on node_status_samples s  (cost=0.29..23.92 rows=136 width=117) (actual rows=160 loops=1)
+                                       Chunks excluded during startup: 0
+                                       Buffers: shared hit=40 read=22
+                                       ->  Index Scan using _hyper_2_316_chunk_node_status_samples_time_idx on _hyper_2_316_chunk s_1  (cost=0.29..23.92 rows=136 width=117) (actual rows=160 loops=1)
+                                             Index Cond: ("time" > (now() - '00:15:00'::interval))
+                                             Filter: (network = ANY ('{ukmesh,northeast,teesside}'::text[]))
+                                             Buffers: shared hit=40 read=22
+                                 ->  Memoize  (cost=0.28..0.57 rows=1 width=130) (actual rows=0 loops=160)
+                                       Cache Key: upper(btrim(s.node_id))
+                                       Cache Mode: logical
+                                       Hits: 137  Misses: 23  Evictions: 0  Overflows: 0  Memory Usage: 3kB
+                                       Buffers: shared hit=46
+                                       ->  Index Scan using node_identity_aliases_pkey on node_identity_aliases la  (cost=0.27..0.56 rows=1 width=130) (actual rows=0 loops=23)
+                                             Index Cond: (source_node_id = upper(btrim(s.node_id)))
+                                             Buffers: shared hit=46
+                           ->  Hash  (cost=0.33..0.33 rows=26 width=40) (actual rows=26 loops=1)
+                                 Buckets: 1024  Batches: 1  Memory Usage: 11kB
+                                 ->  Values Scan on "*VALUES*"  (cost=0.00..0.33 rows=26 width=40) (actual rows=26 loops=1)
+               ->  Sort  (cost=13121.91..13122.07 rows=64 width=64) (actual rows=8460 loops=1)
+                     Sort Key: n.node_id
+                     Sort Method: quicksort  Memory: 1270kB
+                     Buffers: shared hit=8995
+                     ->  Subquery Scan on n  (cost=13118.07..13119.99 rows=64 width=64) (actual rows=8366 loops=1)
+                           Buffers: shared hit=8995
+                           ->  CTE Scan on v  (cost=13118.07..13119.35 rows=64 width=381) (actual rows=8366 loops=1)
+                                 Buffers: shared hit=8995
+                                 CTE v
+                                   ->  Merge Join  (cost=11854.79..13118.07 rows=64 width=381) (actual rows=8366 loops=1)
+                                         Merge Cond: (r.canonical_node_id = mapped.canonical_node_id)
+                                         Buffers: shared hit=8995
+                                         CTE mapped
+                                           ->  Hash Left Join  (cost=30.16..9225.37 rows=12887 width=312) (actual rows=8462 loops=1)
+                                                 Hash Cond: (upper(btrim(n_1.node_id)) = la_1.source_node_id)
+                                                 Buffers: shared hit=8992
+                                                 ->  Seq Scan on nodes n_1  (cost=0.00..9092.87 rows=12887 width=280) (actual rows=8462 loops=1)
+                                                       Buffers: shared hit=8964
+                                                 ->  Hash  (cost=28.96..28.96 rows=96 width=130) (actual rows=96 loops=1)
+                                                       Buckets: 1024  Batches: 1  Memory Usage: 24kB
+                                                       Buffers: shared hit=28
+                                                       ->  Seq Scan on node_identity_aliases la_1  (cost=0.00..28.96 rows=96 width=130) (actual rows=96 loops=1)
+                                                             Buffers: shared hit=28
+                                         ->  Subquery Scan on r  (cost=1491.90..2361.78 rows=64 width=292) (actual rows=8366 loops=1)
+                                               Filter: (r.representative_rank = 1)
+                                               Buffers: shared hit=8995
+                                               ->  WindowAgg  (cost=1491.90..2200.69 rows=12887 width=393) (actual rows=8366 loops=1)
+                                                     Run Condition: (row_number() OVER (?) <= 1)
+                                                     Buffers: shared hit=8995
+                                                     ->  Sort  (cost=1491.90..1524.12 rows=12887 width=332) (actual rows=8462 loops=1)
+                                                           Sort Key: m.canonical_node_id, (CASE WHEN ((m.role = 2) AND (m.lat >= '-90'::double precision) AND (m.lat <= '90'::double precision) AND (m.lon >= '-180'::double precision) AND (m.lon <= '180'::double precision) AND ((abs(m.lat) >= '1e-09'::double precision) OR (abs(m.lon) >= '1e-09'::double precision))) THEN 0 WHEN (m.role = 2) THEN 1 WHEN (COALESCE(m.advert_count, 0) > 0) THEN 2 ELSE 3 END), (COALESCE(m.advert_count, 0)) DESC, m.last_seen DESC NULLS LAST, m.node_id
+                                                           Sort Method: quicksort  Memory: 2925kB
+                                                           Buffers: shared hit=8995
+                                                           ->  CTE Scan on mapped m  (cost=0.00..612.13 rows=12887 width=332) (actual rows=8462 loops=1)
+                                                                 Buffers: shared hit=8992
+                                         ->  GroupAggregate  (cost=1137.51..1527.62 rows=200 width=129) (actual rows=8366 loops=1)
+                                               Group Key: mapped.canonical_node_id
+                                               ->  Sort  (cost=1137.51..1169.73 rows=12887 width=117) (actual rows=8462 loops=1)
+                                                     Sort Key: mapped.canonical_node_id, mapped.node_id
+                                                     Sort Method: quicksort  Memory: 1988kB
+                                                     ->  CTE Scan on mapped  (cost=0.00..257.74 rows=12887 width=117) (actual rows=8462 loops=1)
+ Settings: max_parallel_workers_per_gather = '0', work_mem = '10076kB', effective_io_concurrency = '256', random_page_cost = '1.1', effective_cache_size = '1475MB', jit = 'off'
+ Planning:
+   Buffers: shared hit=1246 read=34
+ Planning Time: 15.033 ms
+ Execution Time: 149.625 ms
+(84 rows)

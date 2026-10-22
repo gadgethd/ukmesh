@@ -75,3 +75,6 @@ terrain-tiles/
 /plans/
 *.bak
 *.bak-*
+
+# Local endpoint performance measurements and isolated test tooling
+/.mqttperf-evidence/

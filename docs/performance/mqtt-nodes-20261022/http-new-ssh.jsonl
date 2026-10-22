@@ -1,0 +1,3 @@
+{"mode":"before","scope":["ukmesh","northeast","teesside"],"samples_ms":[12322.603,12977.061,14756.077,8574.157,9896.226],"p50_ms":12322.603,"database_queries":5}
+{"mode":"after","scope":["ukmesh","northeast","teesside"],"samples_ms":[1225.666,1105.41,1124.953,1169.728,1616.606],"p50_ms":1169.728,"database_queries":5}
+{"mode":"cache-prototype","scope":["ukmesh","northeast","teesside"],"samples_ms":[9169.618,25.777,2.886,9.433,1.63,9.11],"p50_ms":9.433,"database_queries":1,"cold_ms":9169.618,"hit_p50_ms":9.11,"ttl_ms":15000}
