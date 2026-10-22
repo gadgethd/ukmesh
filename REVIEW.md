@@ -219,6 +219,54 @@ Before/after output, quoted verbatim:
 `git diff --check` and a comparison of the final route SQL against measured
 `after.sql` (ignoring comments and whitespace) also passed.
 
+## Continuation completion audit — 15:53 BST
+
+The continuation audited pushed HEAD `f95ad42020c7858830667faf9c545c079f38c41e`
+against the brief, original handler, measured queries, fixture oracle and PR.
+The original oracle and before measurement match the base handler; the after
+measurement matches the current handler after parameter substitution and
+removal of comments/whitespace. The response fields, bigint count type,
+network/window predicates, alias semantics and ordering are preserved.
+No further application change was needed.
+
+[CI run 39785176256](https://github.com/gadgethd/ukmesh/actions/runs/39785176256)
+completed successfully at that exact HEAD: Backend, Frontend, Workers and
+Compose, and Secret scan. The actual Backend job log confirms that the new
+PostgreSQL regression and all four subtests ran and passed, rather than skipping.
+The existing PR has no review comments or requested changes. The remote branch
+and PR head both matched the local commit when inspected.
+
+The following commands were rerun in the continuation, using the same local
+fixture and read-only remote safeguards described above:
+
+```sh
+# From the worktree root:
+TMPDIR="$PWD/.mqttperf-evidence/tmp" node .mqttperf-evidence/run-postgres.mjs > .mqttperf-evidence/resume-sql-tests.txt 2>&1
+# From backend/:
+TMPDIR="$PWD/../.mqttperf-evidence/tmp" node --import tsx --test src/api/routes/misc.test.ts > ../.mqttperf-evidence/resume-route-tests.txt 2>&1
+TMPDIR="$PWD/../.mqttperf-evidence/tmp" MQTT_PERF_SSH_TARGET=ben@57.129.131.35 MQTT_PERF_SSH_PORT=32720 MQTT_PERF_SSH_CONTROL_PATH="$PWD/../.mqttperf-evidence/s" node --import tsx src/tools/benchmarkMqttNodes.ts > ../.mqttperf-evidence/resume-http-reused-ssh.txt 2>&1
+# From the worktree root, repeat the original snapshot comparison, then close the local SSH master:
+ssh -p 32720 -o BatchMode=yes -o ConnectTimeout=10 -o ProxyJump=none -S .mqttperf-evidence/s ben@57.129.131.35 'docker exec -i -e PGOPTIONS="-c default_transaction_read_only=on -c statement_timeout=30000 -c lock_timeout=2000" meshcore-infra-timescaledb-1 psql -X -U meshcore -d meshcore -v ON_ERROR_STOP=1' < .mqttperf-evidence/equality.sql > .mqttperf-evidence/resume-equality.txt
+ssh -p 32720 -o ProxyJump=none -S .mqttperf-evidence/s -O exit ben@57.129.131.35
+```
+
+The PostgreSQL regression again passed **5/5, zero skips**; focused HTTP tests
+passed **3/3, zero skips**. The fresh live comparison again returned **23 rows
+before, 23 after, zero differences**. Verbatim fresh HTTP before/after output:
+
+```json
+{"mode":"before","scope":["ukmesh","northeast","teesside"],"samples_ms":[10450.707,10538.907,7790.226,8564.191,9159.034],"p50_ms":9159.034,"database_queries":5}
+{"mode":"after","scope":["ukmesh","northeast","teesside"],"samples_ms":[777.87,761.479,924.97,784.056,617.875],"p50_ms":777.87,"database_queries":5}
+```
+
+All five fresh uncached after samples were below one second. These are another
+small sample through the same local handler/remote read-only adapter, with the
+same transport and production-deployment limitations stated above. Committed
+`resume-http-reused-ssh.jsonl`, `resume-equality.txt` and
+`resume-verification.txt` retain this evidence. The continuation changes only
+the review and evidence; the application and tests remain at implementation
+commit `eef1244eca884b4f03c12775c2e2e9fcb47895a8`.
+
 ## Deliberately left out, open questions and rollback
 
 No identity-view rewrite, materialized count table, schema migration, HTTP
