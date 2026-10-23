@@ -39,6 +39,7 @@ export function useWebSocket(onMessage: MessageHandler, scope: ApiScope = {}, sc
     const params = new URLSearchParams();
     if (scope.network) params.set('network', scope.network);
     if (scope.observer) params.set('observer', scope.observer);
+    if (scope.region) params.set('region', scope.region);
     const query = params.toString();
     const suffix = query ? `?${query}` : '';
     const url = `${protocol}//${window.location.host}/ws${suffix}`;
@@ -86,7 +87,7 @@ export function useWebSocket(onMessage: MessageHandler, scope: ApiScope = {}, sc
     ws.onerror = () => {
       ws.close();
     };
-  }, [scope.network, scope.observer, scopeEpoch]);
+  }, [scope.network, scope.observer, scope.region, scopeEpoch]);
 
   useEffect(() => {
     shouldReconnectRef.current = true;

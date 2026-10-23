@@ -28,6 +28,8 @@ import {
 } from '../metrics.js';
 import { selectInitialViableLinks } from './initialStateLinks.js';
 import { readRecentWithPending } from '../ram/liveRead.js';
+import { parseRegionFilter } from '../regions/filter.js';
+import { ApiInputError } from '../api/errors.js';
 
 const REDIS_CHANNEL = 'meshcore:live';
 const LOG_WS_PACKETS = process.env['LOG_WS_PACKETS'] === '1';
@@ -216,10 +218,10 @@ function refreshPrivacyIndex(): Promise<void> {
   return tracked;
 }
 
-async function fetchInitialState(network: string | undefined, observer: string | undefined): Promise<InitialStateEntry> {
+async function fetchInitialState(network: string | undefined, observer: string | undefined, region?: string): Promise<InitialStateEntry> {
   const policy = await loadCurrentPublicPrivacyPolicy();
   if (!policy) throw new Error('WS_PUBLIC_AUTHORITY_UNAVAILABLE');
-  const key = `${network ?? ''}:${observer ?? ''}`;
+  const key = `${network ?? ''}:${observer ?? ''}${region ? `:region-${region}` : ''}`;
   const cached = initialStateCache.get(key);
   if (cached && cached.generation === policy.currentGeneration && (Date.now() - cached.ts) < INITIAL_STATE_TTL_MS) return cached;
 
@@ -240,28 +242,31 @@ async function fetchInitialState(network: string | undefined, observer: string |
       // getRecentMessages: last 200 GRP (type=5) from Postgres so the feed can
       //   seed a proper message cache on first load instead of relying on live traffic.
       const [rawNodes, packets, messages, rawViableLinks] = await Promise.all([
-        getNodes(network, observer, 'slim', signal),
+        getNodes(network, observer, 'slim', signal, region),
         readRecentWithPending(
-          (hashes) => getRecentPackets(7, network, observer, 'full', signal, undefined, hashes),
-          { limit: 7, network, observer },
+          (hashes) => getRecentPackets(7, network, observer, 'full', signal, undefined, hashes, region),
+          { limit: 7, network, observer, region },
         ),
         readRecentWithPending(
-          (hashes) => getRecentMessages(200, network, observer, signal, undefined, hashes),
+          (hashes) => getRecentMessages(200, network, observer, signal, undefined, hashes, region),
           // Message history is group-text only: keep the pending merge in the
           // same contract as getRecentMessages (packet_type = 5).
-          { limit: 200, network, observer, includePayload: true, packetTypes: [5], rowKind: 'messages' },
+          { limit: 200, network, observer, region, includePayload: true, packetTypes: [5], rowKind: 'messages' },
         ),
-        getCachedViableLinks(network, observer, signal, policy.currentGeneration),
+        getCachedViableLinks(network, observer, signal, policy.currentGeneration, region),
       ]);
       const nodes = rawNodes
         .filter((node) => !isPrivateNode(node.name))
         .map((node) => slimInitialNode(node as InitialStateRow));
       const slimPackets = packets.map((packet) => slimInitialPacket(packet as InitialStateRow));
       const slimMessages = messages.map((message) => slimInitialPacket(message as InitialStateRow));
+      const regionNodeIds = new Set(nodes.map((node) => String(node['node_id']).toUpperCase()));
       const viableLinks = selectInitialViableLinks(
         rawViableLinks.filter((link) => (
           !publicPrivacy.hasNode(link.node_a_id)
           && !publicPrivacy.hasNode(link.node_b_id)
+          && (!region || (regionNodeIds.has(link.node_a_id.toUpperCase())
+            && regionNodeIds.has(link.node_b_id.toUpperCase())))
         )),
         WS_INITIAL_STATE_MAX_VIABLE_LINKS,
       );
@@ -286,9 +291,10 @@ async function fetchInitialState(network: string | undefined, observer: string |
   return promise;
 }
 
-type ClientScope = {
+export type ClientScope = {
   network?: string;
   observer?: string;
+  region?: string;
   nodeIds: Set<string>;
 };
 
@@ -306,16 +312,18 @@ async function getCachedViableLinks(
   observer?: string,
   signal?: AbortSignal,
   generation = 0,
+  region?: string,
 ) {
-  const key = `${cacheKey(network, observer)}:${generation}`;
+  const key = `${cacheKey(network, observer)}:${generation}${region ? `:region-${region}` : ''}`;
   const cached = viableLinksCache.get(key);
   if (cached && (Date.now() - cached.ts) < VIABLE_LINK_CACHE_TTL_MS) return cached.data;
-  const data = await getViableLinks(network, observer, signal);
+  const data = await getViableLinks(network, observer, signal, region);
   viableLinksCache.set(key, { ts: Date.now(), data });
   return data;
 }
 
-function packetMatchesScope(packet: Partial<LivePacket>, scope: ClientScope): boolean {
+export function packetMatchesScope(packet: Partial<LivePacket>, scope: ClientScope): boolean {
+  if (scope.region && packet.regionScope !== `#${scope.region}`) return false;
   if (scope.network && packet.network && !networkMatchesScope(packet.network, scope.network)) return false;
   if (!scope.network && !scope.observer && packet.network === 'test') return false;
   if (scope.observer) {
@@ -328,11 +336,11 @@ function packetMatchesScope(packet: Partial<LivePacket>, scope: ClientScope): bo
 function nodeMatchesScope(nodeId: string | undefined, scope: ClientScope): boolean {
   if (!nodeId) return false;
   // IDs are pre-normalised to lowercase at broadcast time; no allocation needed
-  if (scope.observer && nodeId === scope.observer) return true;
+  if (!scope.region && scope.observer && nodeId === scope.observer) return true;
   return scope.nodeIds.has(nodeId);
 }
 
-function shouldSendMessage(msg: WSMessage, scope: ClientScope): boolean {
+export function shouldSendMessage(msg: WSMessage, scope: ClientScope): boolean {
   if (msg.type === 'packet') {
     return packetMatchesScope(msg.data as Partial<LivePacket>, scope);
   }
@@ -341,7 +349,7 @@ function shouldSendMessage(msg: WSMessage, scope: ClientScope): boolean {
     const data = msg.data as { nodeId?: string; network?: string; observerId?: string };
     if (scope.network && data.network && !networkMatchesScope(data.network, scope.network)) return false;
     if (!scope.network && !scope.observer && data.network === 'test') return false;
-    if (!scope.network && !scope.observer) return true;
+    if (!scope.region && !scope.network && !scope.observer) return true;
     if (scope.observer && data.observerId && data.observerId !== scope.observer && !nodeMatchesScope(data.nodeId, scope)) {
       return false;
     }
@@ -352,7 +360,8 @@ function shouldSendMessage(msg: WSMessage, scope: ClientScope): boolean {
     const data = msg.data as { node_id?: string; network?: string; observer_id?: string };
     if (scope.network && data.network && !networkMatchesScope(data.network, scope.network)) return false;
     if (!scope.network && !scope.observer && data.network === 'test') return false;
-    if (!scope.network && !scope.observer) return true;
+    if (!scope.region && !scope.network && !scope.observer) return true;
+    if (scope.region) return nodeMatchesScope(data.node_id, scope);
     if (scope.observer) {
       if (data.observer_id && data.observer_id === scope.observer) return true;
       if (data.observer_id && data.observer_id !== scope.observer && !nodeMatchesScope(data.node_id, scope)) {
@@ -364,13 +373,17 @@ function shouldSendMessage(msg: WSMessage, scope: ClientScope): boolean {
 
   if (msg.type === 'link_update') {
     const data = msg.data as { node_a_id?: string; node_b_id?: string };
-    return nodeMatchesScope(data.node_a_id, scope) || nodeMatchesScope(data.node_b_id, scope);
+    return scope.region
+      ? nodeMatchesScope(data.node_a_id, scope) && nodeMatchesScope(data.node_b_id, scope)
+      : nodeMatchesScope(data.node_a_id, scope) || nodeMatchesScope(data.node_b_id, scope);
   }
 
   return true;
 }
 
-function trackScopedNodes(msg: WSMessage, scope: ClientScope): void {
+export function trackScopedNodes(msg: WSMessage, scope: ClientScope): void {
+  // Packet endpoints are not evidence of Phase A relay membership.
+  if (scope.region) return;
   if (msg.type === 'packet') {
     // rxNodeId/srcNodeId are hex public keys — always lowercase
     const data = msg.data as Partial<LivePacket>;
@@ -459,10 +472,12 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
       try {
         const reqUrl = new URL(info.req.url ?? '/', 'http://localhost');
         resolvePublicNetworkScope(reqUrl.searchParams.get('network'), info.req.headers);
+        const regions = reqUrl.searchParams.getAll('region');
+        parseRegionFilter(regions.length > 1 ? regions : regions[0]);
       } catch (error) {
-        if (!(error instanceof PublicAllScopeForbiddenError)) throw error;
+        if (!(error instanceof PublicAllScopeForbiddenError) && !(error instanceof ApiInputError)) throw error;
         websocketAdmissionsTotal.inc({ outcome: 'scope_denied' });
-        done(false, 400, 'The all-network scope is not available');
+        done(false, 400, error.message);
         return;
       }
       const peer = trustedClientIp(info.req);
@@ -530,9 +545,11 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
     const reqUrl  = new URL(req.url ?? '/', 'http://localhost');
     const network = resolvePublicNetworkScope(reqUrl.searchParams.get('network'), req.headers);
     const observer = normalizeObserver(reqUrl.searchParams.get('observer'));
+    const region = parseRegionFilter(reqUrl.searchParams.get('region'));
     const scope: ClientScope = {
       network,
       observer,
+      region,
       nodeIds: new Set<string>(),
     };
     clientScopes.set(ws, scope);
@@ -558,7 +575,7 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
       // Send initial state: served from cache so concurrent connects don't exhaust the DB pool.
       try {
         const entry = await initialStateGate.run(
-          () => fetchInitialState(network, observer),
+          () => fetchInitialState(network, observer, region),
         );
         if (initialStateEstimateExceedsLimit(entry)) {
           console.warn('[ws] initial state estimate exceeds configured limit', {
@@ -577,7 +594,7 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
           const nodeId = String((node as { node_id?: string }).node_id ?? '').toLowerCase();
           if (nodeId) scope.nodeIds.add(nodeId);
         }
-        for (const packet of packets) {
+        for (const packet of region ? [] : packets) {
           const rxNodeId = String((packet as { rx_node_id?: string }).rx_node_id ?? '').toLowerCase();
           const srcNodeId = String((packet as { src_node_id?: string }).src_node_id ?? '').toLowerCase();
           if (rxNodeId) scope.nodeIds.add(rxNodeId);

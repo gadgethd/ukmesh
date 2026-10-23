@@ -19,6 +19,7 @@ import {
 } from '../../repositories/plannedNodes.js';
 import { toPublicMqttNodeStatusDTO } from '../publicStatus.js';
 import { readRecentWithPending } from '../../ram/liveRead.js';
+import { parseRegionFilter } from '../../regions/filter.js';
 
 type QueryFn = <T extends QueryResultRow = QueryResultRow>(
   text: string,
@@ -33,6 +34,7 @@ type GetRecentPacketsFn = (
   signal?: AbortSignal,
   readQuery?: QueryFn,
   overlapHashes?: string[],
+  region?: string,
 ) => Promise<unknown>;
 type GetRecentPacketEventsFn = (
   limit: number,
@@ -41,15 +43,6 @@ type GetRecentPacketEventsFn = (
   region?: string,
 ) => Promise<unknown>;
 
-// Region scope filter (e.g. 'eng-ne' / '#eng-ne' -> stored form '#eng-ne').
-const REGION_SCOPE_PATTERN = /^[a-z0-9][a-z0-9_-]{0,31}$/;
-
-function normalizeRegionScope(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  const bare = value.trim().toLowerCase().replace(/^#/, '');
-  if (!REGION_SCOPE_PATTERN.test(bare)) return undefined;
-  return `#${bare}`;
-}
 type GetPacketDetailFn = (hash: string, network?: string) => Promise<unknown>;
 type GetChannelMessageHistoryFn = (
   channel: string,
@@ -102,7 +95,7 @@ export function registerMiscRoutes(router: Router, deps: MiscRouteDeps): void {
       max: 1000,
     });
     const raw = parseBoolean(req.query['raw'], { name: 'raw' });
-    const region = normalizeRegionScope(req.query['region']);
+    const region = parseRegionFilter(req.query['region']);
     const fields = parseEnum(req.query['fields'], {
       name: 'fields',
       values: ['slim', 'full'] as const,
@@ -116,8 +109,9 @@ export function registerMiscRoutes(router: Router, deps: MiscRouteDeps): void {
         : await readRecentWithPending(
             (overlapHashes) => getRecentPackets(
               limit, network, observer, fields, AbortSignal.timeout(30_000), undefined, overlapHashes,
+              ...(region ? [region] : []),
             ) as Promise<Record<string, unknown>[]>,
-            { limit, network, observer, fields },
+            { limit, network, observer, fields, ...(region ? { region } : {}) },
           );
       res.json(packets);
     } catch (err) {

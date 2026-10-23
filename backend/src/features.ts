@@ -10,6 +10,7 @@ export type PublicRuntimeFeatureConfig = {
   inferredNodes: boolean;
   packetArcs: boolean;
   heatmap: boolean;
+  regionScoping: boolean;
   privacyGeneration: number;
   refreshAfterSeconds: number;
 };
@@ -41,6 +42,7 @@ export function getPublicRuntimeFeatureConfig(
     inferredNodes: envFlagEnabled(env['PUBLIC_FEATURE_INFERRED_NODES_ENABLED'], false),
     packetArcs: envFlagEnabled(env['PUBLIC_FEATURE_PACKET_ARCS_ENABLED'], false),
     heatmap: envFlagEnabled(env['PUBLIC_FEATURE_HEATMAP_ENABLED'], false),
+    regionScoping: envFlagEnabled(env['PUBLIC_FEATURE_REGION_SCOPING_ENABLED'], false),
     privacyGeneration: Number.isSafeInteger(privacyGeneration) && privacyGeneration >= 0
       ? privacyGeneration
       : 0,
