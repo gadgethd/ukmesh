@@ -414,6 +414,15 @@ heartbeat as the higher-priority symptom.
 
 ### ActiveQueueWorkerHeartbeatStale
 
+The link worker publishes a Unix timestamp to Redis every ten seconds with a
+45-second TTL, independently of ITM output (which can have roughly 50-minute
+gaps). Each metrics scrape reads that key; an expired, unreadable or invalid
+heartbeat exports `-1`. With queued work on the same `job`/`instance`, an age
+above 45 seconds or `-1` must persist for three minutes to page. With 15-second
+scrapes and rule evaluations, a stopped publisher should page within about
+four minutes of its last heartbeat. A brief read failure resets on recovery;
+an idle queue does not page. Do not raise this limit to match ITM publication.
+
 Stop new optional work, confirm the queue retains its leased payloads, and
 restart the affected link worker. Allow lease recovery to requeue;
 do not manually duplicate the job.
