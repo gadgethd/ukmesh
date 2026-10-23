@@ -3,6 +3,7 @@
 Branch: `burn/ukmesh-ingest-20261023`, based on
 `73ab7d4fc63e4968a5fd46af022696ad69d16d9b`.
 Implementation: `0ada4674b376bf62f5352ea50c296c9a08729bb0`.
+Runtime fixture follow-up: `03dd07c63d24c307ef7ab5ed46d78e19e83c65a6`.
 Public tracking: [issue #147](https://github.com/gadgethd/ukmesh/issues/147),
 [PR #151](https://github.com/gadgethd/ukmesh/pull/151).
 One PR covers the connection-monitor and ingest work because both change the
@@ -163,9 +164,45 @@ Commands below use the repo root unless a different directory is stated.
 
 The native integration test is also included in the repository's
 `test:ingest-integration` command, using CI's isolated loopback test database.
-The larger TimescaleDB/Redis integration stack was not run locally; no existing
-server or container was used. GitHub CI was queued/running when the PR opened;
-that is not claimed as a green CI result.
+The larger TimescaleDB/Redis integration stack was not completed locally; no
+existing server or container was used. Fresh local fixture attempts
+encountered startup timeouts and bind-mount ownership failures. A non-root
+PostgreSQL fixture then started successfully. Its Redis ACL harness could not start because this local
+Docker daemon remaps user IDs, making the harness's host-UID bind mounts
+inaccessible. These attempts are not counted as passing tests. The existing
+harness ran in CI instead; no unrelated harness or runtime policy was changed.
+
+### CI follow-up: actual runtime shutdown gate
+
+CI at `548b541cd9d37d05bd76690cc3f87229a1b74989` passed typechecking,
+contracts, units, ingest integration (including the new native timeout test),
+privacy integration and build, but failed the final RAM operational gate:
+`Timed out waiting for held real INSERT`. The real INSERT was blocked and its
+statements timed out as expected; the observer still filtered
+`pg_stat_activity.application_name` by the general pool name. The new ingest
+pool has the `-ingest` suffix, so the observer could never see it.
+
+Commit `03dd07c63d24c307ef7ab5ed46d78e19e83c65a6` changes only that observer
+to target the dedicated pool. It retains every held-INSERT, shutdown deadline,
+unacknowledged-entry, replay, quarantine, rollback and exactly-once assertion.
+The [backend CI job](https://github.com/gadgethd/ukmesh/actions/runs/39923228958/job/120313355870)
+then passed every step, including all five operational integration cases with
+zero skips. The entire
+[CI workflow](https://github.com/gadgethd/ukmesh/actions/runs/39923228958)
+then completed successfully for that exact commit: Backend, Frontend, Workers
+and Compose, and Secret scan all passed. Workers and Compose included the
+fresh-stack readiness smoke, E2E tests, monitoring validation, maintenance
+safety, and rollback/schema gates. The following handoff update changes only
+this document; the passing workflow is explicitly tied to the code/test commit
+above, rather than to a future documentation commit.
+
+| Exact command | Observed result |
+| --- | --- |
+| `gh run view 39921779408 --json status,conclusion,jobs` | Original-head backend job failed at `Run npm run test:ram-operational`; other backend steps passed. |
+| `gh api repos/gadgethd/ukmesh/actions/jobs/120308740683/logs > .ukmesh-tools/ci-backend-120308740683.log` | Retrieved terminal job logs while the overall workflow was still running; confirmed the stale application-name lookup. |
+| `python3 .ukmesh-tools/run-owned-ram-gate.py > .ukmesh-tools/ram-operational-owned.log 2>&1` | Local disposable-fixture attempts stopped on the permission limitations above; no passing RAM operational result claimed. |
+| `gh run view 39923228958 --json status,conclusion,headSha,jobs > .ukmesh-tools/ci-final-39923228958.json` | Workflow completed with conclusion `success` at `03dd07c63d24c307ef7ab5ed46d78e19e83c65a6`; all four jobs succeeded. |
+| `gh api repos/gadgethd/ukmesh/actions/jobs/120313355870/logs > .ukmesh-tools/ci-backend-120313355870.log` | Retrieved passing corrected-head backend logs, including four Redis operational cases and the real-process shutdown/recovery case. |
 
 Earlier verification attempts exposed fixture/setup issues that were corrected:
 monitor tests initially imported owner-auth configuration before injecting their
