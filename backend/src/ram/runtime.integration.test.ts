@@ -103,8 +103,9 @@ test('F15/F16 actual SIGTERM joins held PostgreSQL persistence, recovers identit
     (SELECT COALESCE(SUM(packet_count),0)::int FROM packet_hourly_stats WHERE network=$1) hourly,
     (SELECT COUNT(*)::int FROM packet_daily_stats WHERE network=$1) daily,
     (SELECT COUNT(*)::int FROM observer_region_packet_sightings WHERE network=$1) regions`,[name])).rows[0];
+  // Packet persistence runs on the dedicated ingest pool, not the general pool.
   const blocked=async(applicationName:string)=>Number((await pool.query(`SELECT COUNT(*) n FROM pg_stat_activity
-    WHERE datname=$1 AND application_name=$2 AND wait_event='advisory'`,[name,applicationName])).rows[0].n)>0;
+    WHERE datname=$1 AND application_name=$2 AND wait_event='advisory'`,[name,`${applicationName}-ingest`])).rows[0].n)>0;
   const first=await launch('ram',2_000);
   await until(()=>blocked(first.applicationName),25_000,'held real INSERT');
   assert.equal(Number(await redis.get(key+':bytes')),bytes,'writer startup reconciles the lost reservation');
