@@ -1,6 +1,10 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Response } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 import { installMapRoutes, installTerrainRoutes, RF_COVERAGE_TILE } from './mapFixtures.js';
+
+// Service-worker fetches bypass page.route and can load the public basemap
+// instead of these fixtures. Keep all dashboard tile readiness under routing.
+test.use({ serviceWorkers: 'block' });
 
 test.beforeEach(async ({ page }) => {
   await installMapRoutes(page);
@@ -180,12 +184,30 @@ test('RF coverage remains available with 3D terrain', async ({ page }, testInfo)
       tileErrors.push(message.text());
     }
   });
-  const firstTerrainTile = page.waitForResponse((response) =>
-    new URL(response.url()).pathname.startsWith('/terrain-tiles/'));
-  const firstCoverageTile = page.waitForResponse((response) =>
-    new URL(response.url()).pathname.startsWith('/rf-coverage/tiles/'));
+  // Retain responses without starting promises that can reject while navigation
+  // or a mobile menu action is still running. Assert each loading stage below.
+  const firstTiles = new Map<string, Response>();
+  page.on('response', (response) => {
+    const path = new URL(response.url()).pathname;
+    const kind = path.startsWith('/terrain-tiles/') ? 'terrain'
+      : path.startsWith('/rf-coverage/tiles/') ? 'coverage' : null;
+    if (kind && !firstTiles.has(kind)) firstTiles.set(kind, response);
+  });
   await page.goto('/?layers=feed%2Cterrain%2Ccoverage', { waitUntil: 'domcontentloaded' });
-  await page.getByText('Live Map', { exact: true }).waitFor({ state: 'visible', timeout: 15_000 });
+  // Wait on the resources the test needs before interacting with a busy 3D
+  // canvas. A visible title does not mean the map sources have initialized.
+  await test.step('wait for terrain and RF coverage fixture readiness', async () => {
+    await expect.poll(() => ({
+      terrain: firstTiles.get('terrain')?.status(),
+      coverage: firstTiles.get('coverage')?.status(),
+    }), {
+      message: 'MapLibre must request both terrain and RF coverage fixture tiles',
+      // Share the existing 60s test budget with cold software DEM decoding;
+      // leave the remaining budget for layer assertions and bitmap decoding.
+      timeout: 45_000,
+    }).toEqual({ terrain: 200, coverage: 200 });
+  });
+  await expect(page.getByText('Live Map', { exact: true })).toBeVisible();
   if (testInfo.project.name === 'dashboard-mobile') {
     await page.getByRole('button', { name: 'Layers' }).first().click();
   }
@@ -195,8 +217,9 @@ test('RF coverage remains available with 3D terrain', async ({ page }, testInfo)
   await expect(coverage).toHaveAttribute('aria-pressed', 'true');
   await expect(terrain).toHaveAttribute('aria-pressed', 'true');
   await expect(page).toHaveURL(/layers=[^&]*terrain[^&]*coverage/);
-  const tileResponses = await Promise.all([firstTerrainTile, firstCoverageTile]);
+  const tileResponses = [firstTiles.get('terrain')!, firstTiles.get('coverage')!];
   for (const response of tileResponses) {
+    expect(response.fromServiceWorker(), 'fixture tile must pass through Playwright routing').toBe(false);
     expect(response.status()).toBe(200);
     expect(response.headers()['content-type']).toContain('image/png');
   }
