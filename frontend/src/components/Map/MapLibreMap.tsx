@@ -124,11 +124,12 @@ export function MapLibreMap({
   mapLight,
   network,
   observer,
+  region,
   privacyGeneration,
   showMapChrome = true,
 }: MapLibreMapProps) {
-  const requestScope = useMemo(() => ({ network, observer }), [network, observer]);
-  const requestScopeKey = `${network ?? 'all'}|${observer ?? 'all'}|privacy-${privacyGeneration}`;
+  const requestScope = useMemo(() => ({ network, observer, region }), [network, observer, region]);
+  const requestScopeKey = `${network ?? 'all'}|${observer ?? 'all'}|privacy-${privacyGeneration}${region ? `|region-${region}` : ''}`;
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const mapLoadedRef = useRef(false);

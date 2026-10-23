@@ -22,12 +22,12 @@ export default defineConfig({
     },
     {
       name: 'dashboard-desktop',
-      testMatch: /dashboard\.spec\.ts/,
+      testMatch: /(?:dashboard|regions)\.spec\.ts/,
       use: { ...devices['Desktop Chrome'], baseURL: dashboardOrigin },
     },
     {
       name: 'dashboard-mobile',
-      testMatch: /dashboard\.spec\.ts/,
+      testMatch: /(?:dashboard|regions)\.spec\.ts/,
       use: { ...devices['Pixel 7'], baseURL: dashboardOrigin },
     },
     {

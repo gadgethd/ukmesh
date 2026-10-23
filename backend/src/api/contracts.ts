@@ -353,6 +353,16 @@ export const API_CONTRACTS: readonly ApiContract[] = [
   ...contracts('DELETE', ['/coverage/planned/:planId'], 'public'),
   ...contracts('DELETE', ['/owner/alert-rules/:id'], 'owner'),
 ].map((contract): ApiContract => {
+  if (['/nodes', '/nodes/map', '/nodes/:id/links', '/packets/recent', '/path-beta/multibyte-paths'].includes(contract.path)) {
+    return {
+      ...contract,
+      queryParameters: [{
+        name: 'region', in: 'query', required: false,
+        description: 'Optional case-sensitive Phase A region name (leading # accepted). Requires PUBLIC_FEATURE_REGION_SCOPING_ENABLED; disabled or invalid selections return 400. Omit for the existing network-wide view. Node and historical-link views use relay membership; recent packets use attributed transport scope.',
+        schema: { type: 'string', pattern: '^#?[A-Za-z0-9][A-Za-z0-9_-]{0,63}$', maxLength: 65 },
+      }],
+    };
+  }
   if (contract.path === '/path-beta/slow-mode') {
     return {
       ...contract,

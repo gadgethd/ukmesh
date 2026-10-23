@@ -1379,7 +1379,19 @@
           "public"
         ],
         "x-access": "public",
-        "parameters": [],
+        "parameters": [
+          {
+            "name": "region",
+            "in": "query",
+            "required": false,
+            "description": "Optional case-sensitive Phase A region name (leading # accepted). Requires PUBLIC_FEATURE_REGION_SCOPING_ENABLED; disabled or invalid selections return 400. Omit for the existing network-wide view. Node and historical-link views use relay membership; recent packets use attributed transport scope.",
+            "schema": {
+              "type": "string",
+              "pattern": "^#?[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
+              "maxLength": 65
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful response",
@@ -1654,6 +1666,17 @@
               "minLength": 1,
               "maxLength": 200
             }
+          },
+          {
+            "name": "region",
+            "in": "query",
+            "required": false,
+            "description": "Optional case-sensitive Phase A region name (leading # accepted). Requires PUBLIC_FEATURE_REGION_SCOPING_ENABLED; disabled or invalid selections return 400. Omit for the existing network-wide view. Node and historical-link views use relay membership; recent packets use attributed transport scope.",
+            "schema": {
+              "type": "string",
+              "pattern": "^#?[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
+              "maxLength": 65
+            }
           }
         ],
         "responses": {
@@ -1736,7 +1759,19 @@
           "public"
         ],
         "x-access": "public",
-        "parameters": [],
+        "parameters": [
+          {
+            "name": "region",
+            "in": "query",
+            "required": false,
+            "description": "Optional case-sensitive Phase A region name (leading # accepted). Requires PUBLIC_FEATURE_REGION_SCOPING_ENABLED; disabled or invalid selections return 400. Omit for the existing network-wide view. Node and historical-link views use relay membership; recent packets use attributed transport scope.",
+            "schema": {
+              "type": "string",
+              "pattern": "^#?[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
+              "maxLength": 65
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful response",
@@ -4461,7 +4496,19 @@
           "public"
         ],
         "x-access": "public",
-        "parameters": [],
+        "parameters": [
+          {
+            "name": "region",
+            "in": "query",
+            "required": false,
+            "description": "Optional case-sensitive Phase A region name (leading # accepted). Requires PUBLIC_FEATURE_REGION_SCOPING_ENABLED; disabled or invalid selections return 400. Omit for the existing network-wide view. Node and historical-link views use relay membership; recent packets use attributed transport scope.",
+            "schema": {
+              "type": "string",
+              "pattern": "^#?[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
+              "maxLength": 65
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful response",
@@ -4542,7 +4589,19 @@
           "public"
         ],
         "x-access": "public",
-        "parameters": [],
+        "parameters": [
+          {
+            "name": "region",
+            "in": "query",
+            "required": false,
+            "description": "Optional case-sensitive Phase A region name (leading # accepted). Requires PUBLIC_FEATURE_REGION_SCOPING_ENABLED; disabled or invalid selections return 400. Omit for the existing network-wide view. Node and historical-link views use relay membership; recent packets use attributed transport scope.",
+            "schema": {
+              "type": "string",
+              "pattern": "^#?[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
+              "maxLength": 65
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful response",
