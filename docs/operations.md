@@ -310,6 +310,24 @@ Read `/readyz` and act on the named dependency. Check PostgreSQL, Redis, and
 Mosquitto before restarting the API. Liveness remaining green is expected
 during a dependency outage.
 
+`checks.mqttConnectionMonitor` reports broker-log read and audit-write failures
+when MQTT ingest is enabled. `init:EACCES` or `poll:EACCES` means the backend
+cannot read `MOSQUITTO_LOG_PATH`; inspect that mount's ownership and permissions.
+`audit:<code>` means an observation could not be persisted. Idle log polls do
+not clear that failure; a later successful audit write does. Logs remain
+audit-only and never grant node ownership. An inaccessible/missing log degrades
+readiness and reaches the existing two-minute `BackendNotReady` alert.
+
+Ingest SQL uses a separate two-connection pool with a 10-second server statement
+timeout. `MQTT_INGEST_STATEMENT_TIMEOUT_MS` accepts 100–30000 ms; the general
+`DATABASE_STATEMENT_TIMEOUT_MS` cannot disable or extend this ingest bound.
+`[ingest-db] query timed out` and
+`meshcore_db_queries_total{pool="ingest",outcome="timed_out"}` identify cancelled
+statements without exposing SQL or packet contents. The client read fallback
+has one second of grace; transaction sockets that hit it are discarded.
+Failed durable packet writes remain unacknowledged, and failed RAM-writer
+commits remain pending for retry.
+
 ### SyntheticProbeFailed
 
 Compare the failing blackbox target with direct localhost liveness, stats, and
@@ -436,6 +454,11 @@ the optional writer and check replica/backup capacity. A short known migration
 burst may be observed; sustained unexplained WAL is an incident.
 
 ### HostDiskSpaceLow
+
+The existing node-exporter rule includes the data filesystem and fires at
+90% usage (10% available or less) sustained for ten minutes. Configured-volume
+health separately warns at 80% of a directory budget and is critical at 90%;
+that budget measurement is not the host filesystem's free-space measurement.
 
 Stop optional RF/backfill work and identify the mount from the alert. Preserve
 databases and signed backups. Prune only explicitly identified unused build

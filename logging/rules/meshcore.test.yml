@@ -259,7 +259,7 @@ tests:
               mountpoint: /data
               severity: critical
             exp_annotations:
-              summary: Host filesystem /data has less than 10 percent free
+              summary: Host filesystem /data has 10 percent free or less
               owner: meshcore-operations
               runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#hostdiskspacelow
       - eval_time: 20m
@@ -273,6 +273,7 @@ tests:
               summary: Host filesystem /forecast is forecast to fill within 24 hours
               owner: meshcore-operations
               runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#hostdiskexhaustionforecast
+
       - eval_time: 11m
         alertname: BackupReceiptMissing
         exp_alerts:
@@ -370,3 +371,36 @@ tests:
               summary: Core telemetry hypertable node_neighbor_samples has chunks overdue for compression
               owner: meshcore-operations
               runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#coretelemetrycompressionoverdue
+
+  - name: data filesystem alerts at exactly ninety percent after holdoff and recovers
+    interval: 1m
+    input_series:
+      - series: 'node_filesystem_avail_bytes{fstype="ext4",mountpoint="/data"}'
+        values: 11x10 10x11 11x2
+      - series: 'node_filesystem_size_bytes{fstype="ext4",mountpoint="/data"}'
+        values: 100x25
+      - series: 'node_filesystem_avail_bytes{fstype="overlay",mountpoint="/"}'
+        values: 0x25
+      - series: 'node_filesystem_size_bytes{fstype="overlay",mountpoint="/"}'
+        values: 100x25
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: HostDiskSpaceLow
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: HostDiskSpaceLow
+        exp_alerts: []
+      - eval_time: 21m
+        alertname: HostDiskSpaceLow
+        exp_alerts:
+          - exp_labels:
+              fstype: ext4
+              mountpoint: /data
+              severity: critical
+            exp_annotations:
+              summary: Host filesystem /data has 10 percent free or less
+              owner: meshcore-operations
+              runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#hostdiskspacelow
+      - eval_time: 23m
+        alertname: HostDiskSpaceLow
+        exp_alerts: []

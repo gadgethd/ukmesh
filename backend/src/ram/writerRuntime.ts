@@ -7,7 +7,7 @@
  */
 import { Redis } from 'ioredis';
 import { getRedisConnectionOptions, getRedisUrl } from '../platform/config/redis.js';
-import { query, withTransaction } from '../db/index.js';
+import { ingestQuery as query, withIngestTransaction as withTransaction } from '../db/ingest.js';
 import { persistEntriesCore, refreshAdmissionPrivacyCache } from '../db/packetBatch.js';
 import { markMqttPersistenceFailed, markMqttPersistenceHealthy, schedulePostPersistFollowUps } from '../mqtt/client.js';
 import { queueLinkJob } from '../queue/publisher.js';
