@@ -13,6 +13,7 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 fixture_id="$(docker run --detach --rm \
+  --shm-size=1g \
   --name "ukmesh-privacy-test-${UID}-$$" \
   --label ukmesh.test=privacy-fence \
   --publish 127.0.0.1::5432 \

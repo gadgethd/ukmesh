@@ -18,6 +18,8 @@ services:
         max-file: "3"
     mem_limit: "4g"
     memswap_limit: "4g"
+    # POSIX dynamic shared memory for parallel maintenance; avoid Docker's 64m default.
+    shm_size: "1g"
     stop_grace_period: 2m
     # The image currently tunes timescaledb.max_background_workers to 16.
     # Leave headroom for the Timescale launcher/schedulers, logical replication,
