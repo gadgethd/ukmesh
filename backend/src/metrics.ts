@@ -17,6 +17,13 @@ export const mqttMessagesTotal = new Counter({
   registers: [metricsRegistry],
 });
 
+export const mqttDeniedPublishesTotal = new Counter({
+  name: 'meshcore_mqtt_denied_publishes_total',
+  help: 'Denied PUBLISH broker-log observations by bounded topic suffix and scan phase; history may replay at startup.',
+  labelNames: ['kind', 'phase'] as const,
+  registers: [metricsRegistry],
+});
+
 export const ownerAclReloadTotal = new Counter({
   name: 'meshcore_owner_acl_reload_total',
   help: 'Authenticated Mosquitto ACL reload requests by bounded outcome.',
