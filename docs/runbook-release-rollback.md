@@ -77,6 +77,35 @@ the exact prompt printed by the script:
 This is not a general signature bypass. Record the approval and do not use it
 again after the first signed digest is live.
 
+## Compose adoption preflight
+
+`scripts/replace-container.sh` checks the selected service and backend before
+pulling images, running migrations or replacing containers. You can run the
+same read-only check separately from the application checkout:
+
+```bash
+scripts/check-compose-adoption.sh backend
+```
+
+Exactly one running container must carry this checkout's project, service,
+working-directory and base Compose-file labels. A missing or mismatched label
+stops replacement with exit 65. If Compose selects no container, the check also
+looks for an unlabelled or stopped container occupying the configured name.
+Docker or configuration lookup failures stop with exit 69.
+
+The error prints an exact, shell-quoted reconciliation command using the detected
+container IDs, project and any explicit `COMPOSE_FILE`/`COMPOSE_PATH_SEPARATOR`.
+For an existing conflicting container it uses `docker rm -f -- <detected-id>`
+followed by `docker compose --project-name <project> up -d --no-deps --no-build
+<service>` and reruns the check; an absent container needs only the latter steps.
+The check never executes these commands. Before an operator runs the printed
+command in an approved maintenance window, verify that the authoritative Compose
+files and image pins reproduce the current environment and mounts. On the live
+host retain the external-network overlay (`docker-compose.live.yml`). The repair
+causes service downtime but does not remove volumes or recreate sibling services.
+Do not retry replacement or use `--force-recreate` to bypass this failure. Once
+the preflight passes, resume the signed release procedure above.
+
 ## Stop and rollback conditions
 
 Stop immediately for a privacy regression, cross-network response, migration
