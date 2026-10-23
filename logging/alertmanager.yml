@@ -13,6 +13,12 @@ receivers:
     webhook_configs:
       - url: http://alert-receiver:8080/alerts
         send_resolved: true
+        http_config:
+          authorization:
+            type: Bearer
+            # Provisioned at deploy time with the same value as
+            # ALERT_RECEIVER_TOKEN; the receiver rejects unauthenticated posts.
+            credentials_file: /etc/alertmanager/alert_receiver_token
 
 inhibit_rules:
   - source_matchers:

@@ -428,7 +428,18 @@ async function main() {
       && checks.database
       && ownerAclReady
       && (!MQTT_INGEST_ENABLED || checks.mqtt.state === 'connected');
-    res.status(ready ? 200 : 503).json({ status: ready ? 'ready' : 'degraded', checks, ts: Date.now() });
+    // Public readiness is a documented coarse projection. Owner-authorization
+    // generations, reconciliation errors and workload identity stay on the
+    // local-only operator surface (/local-api/health) - they are not needed by
+    // an anonymous probe and leak control-plane state.
+    res.status(ready ? 200 : 503).json({
+      status: ready ? 'ready' : 'degraded',
+      checks: {
+        database: checks.database,
+        mqtt: { state: checks.mqtt.state },
+      },
+      ts: Date.now(),
+    });
   });
   app.use(apiErrorMiddleware);
 

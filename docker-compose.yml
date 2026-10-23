@@ -369,6 +369,7 @@ services:
       SYNTHETIC_INITIAL_STATE_TIMEOUT_MS: ${SYNTHETIC_INITIAL_STATE_TIMEOUT_MS:-35000}
       SYNTHETIC_FAILURE_THRESHOLD: ${SYNTHETIC_FAILURE_THRESHOLD:-3}
       ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-http://alert-receiver:8080/alerts}
+      ALERT_RECEIVER_TOKEN: ${ALERT_RECEIVER_TOKEN:-}
       NODE_ENV: production
     depends_on:
       db-migrate:
@@ -967,6 +968,7 @@ services:
       DATABASE_APPLICATION_NAME: meshcore-alert-receiver
       ALERT_FORWARD_URL: ${ALERT_FORWARD_URL:-}
       ALERT_RECEIVER_PATH: /var/lib/meshcore-alerts/alerts.jsonl
+      ALERT_RECEIVER_TOKEN: ${ALERT_RECEIVER_TOKEN:-}
       NODE_ENV: production
     volumes:
       - alert_receiver_data:/var/lib/meshcore-alerts
@@ -997,6 +999,7 @@ services:
       - /tmp:rw,noexec,nosuid,size=16m
     volumes:
       - ./logging/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - ./logging/alert_receiver_token:/etc/alertmanager/alert_receiver_token:ro
       - alertmanager_data:/alertmanager
     healthcheck:
       test: ["CMD", "/bin/wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9093/-/ready"]

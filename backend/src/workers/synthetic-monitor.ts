@@ -30,6 +30,9 @@ const INITIAL_STATE_TIMEOUT_MS = boundedNumber(
 );
 const FAILURE_THRESHOLD = boundedNumber(process.env['SYNTHETIC_FAILURE_THRESHOLD'], 3, 1);
 const ALERT_WEBHOOK_URL = String(process.env['ALERT_WEBHOOK_URL'] ?? '').trim();
+// Must match the receiver's ALERT_RECEIVER_TOKEN; the receiver refuses posts
+// without it so a forged receipt cannot reach the operator webhook.
+const ALERT_RECEIVER_TOKEN = String(process.env['ALERT_RECEIVER_TOKEN'] ?? '').trim();
 const states = new Map<string, AlertState>();
 
 function elapsedMs(started: number): number {
@@ -133,7 +136,10 @@ async function notify(kind: 'alert' | 'recovery', result: CheckResult): Promise<
   try {
     await fetch(ALERT_WEBHOOK_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(ALERT_RECEIVER_TOKEN ? { Authorization: `Bearer ${ALERT_RECEIVER_TOKEN}` } : {}),
+      },
       body: JSON.stringify(payload),
       signal: controller.signal,
     });

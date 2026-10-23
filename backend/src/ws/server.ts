@@ -5,6 +5,7 @@ import { Redis } from 'ioredis';
 import type { WSMessage, LivePacket } from '../types/index.js';
 import { getNodes, getRecentPackets, getRecentMessages, getViableLinks } from '../db/index.js';
 import {
+  InvalidPublicNetworkScopeError,
   PublicAllScopeForbiddenError,
   resolvePublicNetworkScope,
 } from '../http/requestScope.js';
@@ -460,6 +461,11 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
         const reqUrl = new URL(info.req.url ?? '/', 'http://localhost');
         resolvePublicNetworkScope(reqUrl.searchParams.get('network'), info.req.headers);
       } catch (error) {
+        if (error instanceof InvalidPublicNetworkScopeError) {
+          websocketAdmissionsTotal.inc({ outcome: 'scope_denied' });
+          done(false, 400, 'Invalid network scope');
+          return;
+        }
         if (!(error instanceof PublicAllScopeForbiddenError)) throw error;
         websocketAdmissionsTotal.inc({ outcome: 'scope_denied' });
         done(false, 400, 'The all-network scope is not available');

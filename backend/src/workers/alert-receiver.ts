@@ -1,5 +1,6 @@
 import http, { type IncomingMessage, type ServerResponse } from 'node:http';
 import { appendFile, mkdir, rename, stat } from 'node:fs/promises';
+import { timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import {
@@ -15,6 +16,11 @@ const PORT = boundedInteger(process.env['ALERT_RECEIVER_PORT'], 8080, 1, 65_535)
 const MAX_BODY_BYTES = boundedInteger(process.env['ALERT_RECEIVER_MAX_BODY_BYTES'], 262_144, 1_024, 1_048_576);
 const MAX_LOG_BYTES = boundedInteger(process.env['ALERT_RECEIVER_MAX_LOG_BYTES'], 1_048_576, 65_536, 100 * 1_048_576);
 const RECEIPT_PATH = process.env['ALERT_RECEIVER_PATH'] ?? '/var/lib/meshcore-alerts/alerts.jsonl';
+// Shared secret required on POST /alerts. Fail closed when unset: the receiver
+// accepts forged receipts from any peer on the compose bridge otherwise, and a
+// forged receipt reaches the operator webhook. Deploy sets this for both the
+// receiver and every sender (Alertmanager bearer token).
+const RECEIVER_TOKEN = String(process.env['ALERT_RECEIVER_TOKEN'] ?? '').trim();
 const FORWARD_URL = validForwardUrl(process.env['ALERT_FORWARD_URL']);
 const FORWARD_TIMEOUT_MS = boundedInteger(process.env['ALERT_FORWARD_TIMEOUT_MS'], 10_000, 1_000, 60_000);
 const FORWARD_QUEUE_MAX_ITEMS = boundedInteger(process.env['ALERT_FORWARD_QUEUE_MAX_ITEMS'], 10_000, 1, 100_000);
@@ -236,6 +242,15 @@ function json(res: ServerResponse, statusCode: number, payload: unknown): void {
   res.end(JSON.stringify(payload));
 }
 
+function authorizedAlertPost(req: IncomingMessage): boolean {
+  if (!RECEIVER_TOKEN) return false;
+  const header = String(req.headers['authorization'] ?? '');
+  const expected = `Bearer ${RECEIVER_TOKEN}`;
+  const provided = Buffer.from(header, 'utf8');
+  const wanted = Buffer.from(expected, 'utf8');
+  return provided.length === wanted.length && timingSafeEqual(provided, wanted);
+}
+
 const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && (req.url === '/healthz' || req.url === '/readyz')) {
     const health = deliveryHealth();
@@ -258,6 +273,17 @@ const server = http.createServer(async (req, res) => {
     return;
   }
   let payload: unknown;
+
+  if (!RECEIVER_TOKEN) {
+    // Fail closed: without a shared secret any peer on the bridge can forge a
+    // receipt that is then forwarded to the operator webhook.
+    json(res, 503, { error: 'alert receiver token is not configured' });
+    return;
+  }
+  if (!authorizedAlertPost(req)) {
+    json(res, 401, { error: 'unauthorized' });
+    return;
+  }
   try {
     const body = await readBody(req);
     payload = JSON.parse(body.toString('utf8')) as unknown;
