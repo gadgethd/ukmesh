@@ -1,0 +1,34 @@
+{
+  "status": "offline",
+  "origin": "Fixture MQTT repeater",
+  "origin_id": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+  "model": "Heltec V3",
+  "firmware_version": "1.16.0",
+  "radio": "SX1262 869.525/250/11/5",
+  "client_version": "MeshCore-MQTT",
+  "timestamp": null,
+  "stats": {
+    "uptime_ms": 1250,
+    "boot_count": 1,
+    "reset_reason": "power_on",
+    "wifi_rssi": -62,
+    "wifi_ssid": "fixture-network",
+    "ntp_synced": false,
+    "battery_mv": 4200,
+    "uptime_secs": 1,
+    "tx_air_secs": 0,
+    "rx_air_secs": 0,
+    "channel_utilization": 0,
+    "air_util_tx": 0,
+    "air_util_rx": 0,
+    "mqtt": {
+      "broker_index": 0,
+      "connect_attempts": 0,
+      "connect_events": 0,
+      "disconnect_events": 0,
+      "connected": false,
+      "uptime_ms": 0,
+      "last_offline_epoch": 0
+    }
+  }
+}
