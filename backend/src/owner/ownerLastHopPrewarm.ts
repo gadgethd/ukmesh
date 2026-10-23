@@ -42,12 +42,24 @@ export function createOwnerLastHopPrewarm(deps: OwnerLastHopPrewarmDeps): () => 
     const startedAt = Date.now();
     let owners = 0;
     let nodes = 0;
+    let nodesTotal = 0;
     let refreshed = 0;
     let skipped = 0;
     let failed = 0;
+    const logProgress = (stage: string) => console.log(`[owner-last-hop-prewarm] ${stage}`, {
+      owners,
+      nodes,
+      nodesTotal,
+      refreshed,
+      skipped,
+      failed,
+      durationMs: Date.now() - startedAt,
+    });
     try {
       const active = (await deps.listOwnerNodes()).filter((account) => account.isActive && account.nodeIds.length > 0);
       owners = active.length;
+      nodesTotal = active.reduce((total, account) => total + account.nodeIds.length, 0);
+      logProgress('pass started');
       for (const account of active) {
         if (stopped) break;
         for (const nodeId of account.nodeIds) {
@@ -68,17 +80,11 @@ export function createOwnerLastHopPrewarm(deps: OwnerLastHopPrewarmDeps): () => 
               });
             }
           }
+          if (nodes % 10 === 0) logProgress('pass progress');
           if (deps.nodeDelayMs > 0) await sleep(deps.nodeDelayMs);
         }
       }
-      console.log('[owner-last-hop-prewarm] pass complete', {
-        owners,
-        nodes,
-        refreshed,
-        skipped,
-        failed,
-        durationMs: Date.now() - startedAt,
-      });
+      logProgress('pass complete');
     } catch (error) {
       console.warn('[owner-last-hop-prewarm] pass failed', error instanceof Error ? error.message : error);
     } finally {
