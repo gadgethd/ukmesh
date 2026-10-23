@@ -120,6 +120,43 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
+test('former node names resolve to the current name in map search', async ({ page }, testInfo) => {
+  test.setTimeout(90_000);
+  const queries: string[] = [];
+  let releaseOld!: () => void;
+  const oldResponse = new Promise<void>(resolve => { releaseOld = resolve; });
+  await page.route('**/api/nodes/map?**', async route => {
+    const params = new URL(route.request().url()).searchParams;
+    const q = params.get('q');
+    expect(params.get('network')).toBe('ukmesh');
+    if (q) queries.push(q);
+    if (q === 'DelayedFormer') await oldResponse;
+    return route.fulfill({ json: {
+      nodes: q === 'HarbourBeacon' || q === 'DelayedFormer' ? [{
+        node_id: 'A'.repeat(64), name: 'Ridge current', lat: 54.5, lon: -1.5,
+        role: 2, last_seen: new Date().toISOString(), is_online: true,
+      }] : [],
+      page: { complete: true, nextCursor: null, snapshot: new Date().toISOString() },
+    } });
+  });
+  try {
+    await page.goto('/');
+    if (testInfo.project.name === 'dashboard-mobile') {
+      await page.getByRole('button', { name: 'Layers' }).first().click();
+    }
+    const input = page.getByRole('combobox', { name: 'Search map nodes' }).filter({ visible: true });
+    await input.fill('HarbourBeacon');
+    await expect(page.getByRole('option', { name: /Ridge current/ })).toBeVisible();
+    expect(queries).toContain('HarbourBeacon');
+    await input.fill('DelayedFormer');
+    await expect.poll(() => queries).toContain('DelayedFormer');
+    await input.fill('NoHistoryMatch');
+    await expect.poll(() => queries).toContain('NoHistoryMatch');
+    releaseOld();
+    await expect(page.getByRole('option', { name: /Ridge current/ })).toHaveCount(0);
+  } finally { releaseOld(); }
+});
+
 test('HopReach tiles arrive progressively while the 4,600-node map remains interactive', async ({ page }, testInfo) => {
   const requests: string[] = [];
   page.on('request', (request) => requests.push(new URL(request.url()).pathname));

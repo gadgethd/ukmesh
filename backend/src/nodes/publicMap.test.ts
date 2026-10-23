@@ -9,9 +9,19 @@ import {
   parsePublicMapFields,
   parsePublicMapCursor,
   parsePublicMapLimit,
+  parsePublicMapQuery,
   parsePublicMapSnapshot,
   publicMapFreshPredicate,
 } from './publicMap.js';
+
+test('public map search accepts literal names and rejects ambiguous or unbounded queries', () => {
+  assert.equal(parsePublicMapQuery(undefined), undefined);
+  assert.equal(parsePublicMapQuery('  '), undefined);
+  assert.equal(parsePublicMapQuery(' Old_100% '), 'Old_100%');
+  for (const value of [['one', 'two'], {}, 'x'.repeat(161), 'nul\u0000name']) {
+    assert.throws(() => parsePublicMapQuery(value), PublicMapInputError);
+  }
+});
 
 test('public map field selection rejects ambiguous or unknown projections', () => {
   assert.deepEqual(parsePublicMapFields('name,lat'), ['node_id', 'name', 'lat']);
