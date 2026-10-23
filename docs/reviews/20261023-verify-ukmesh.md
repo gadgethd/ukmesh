@@ -187,3 +187,5 @@ Targeted commands come from the relevant branch’s review document, package scr
 - burn/ukmesh-pr127-20261023: SAFE TO MERGE — documented backend/frontend unit and build gates at 73ab7d4fc63e4968a5fd46af022696ad69d16d9b.
 
 The PROOF receipt identifies the matrix content commit; a subsequent report-only commit records that known hash.
+
+PROOF: matrix committed at `docs/reviews/20261023-verify-ukmesh.md` on branch `verify/ukmesh-20261023` at sha 2a37774492f783ca7f7ce8c6b463cd17f0a0f8f0, with one verdict line per branch
