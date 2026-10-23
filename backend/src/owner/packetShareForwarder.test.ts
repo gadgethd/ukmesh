@@ -78,6 +78,7 @@ test('forwarder queues one selected owner packet and publishes it through the MQ
     close: async () => undefined,
   };
   const forwarder = createPacketShareForwarder({
+    isOwnerNodeGrantActive: async () => true,
     repository,
     publisherFactory: () => publisher,
   });
@@ -107,7 +108,8 @@ test('forwarder does not queue a privacy-rejected packet', async () => {
   const repository = {
     activeTargets: async () => { targets += 1; return []; },
   } as unknown as PacketShareRepository;
-  const forwarder = createPacketShareForwarder({ repository });
+  const forwarder = createPacketShareForwarder({
+    isOwnerNodeGrantActive: async () => true, repository });
   await forwarder.enqueuePacket({ ...packet, visibilityOk: false }, { raw: '0102' });
   await forwarder.stop();
   assert.equal(targets, 0);
@@ -130,7 +132,8 @@ test('forwarder rejects a stale queued ScotMesh delivery for another account or 
     getDestination: async () => ({ allowed_owner_username: 'node1', allowed_node_id: packet.rxNodeId }),
     markFailed: async () => { failed += 1; },
   } as unknown as PacketShareRepository;
-  const forwarder = createPacketShareForwarder({ repository, publisherFactory: () => {
+  const forwarder = createPacketShareForwarder({
+    isOwnerNodeGrantActive: async () => true, repository, publisherFactory: () => {
     published += 1;
     throw new Error('unauthorized destination reached publisher');
   } });
@@ -162,7 +165,8 @@ test('ScotMesh queues only the scoped repeater and applies advert TX mode with i
       reclaimExpiredClaims: async () => 0,
       claimDue: async () => [],
     } as unknown as PacketShareRepository;
-    const forwarder = createPacketShareForwarder({ repository });
+    const forwarder = createPacketShareForwarder({
+    isOwnerNodeGrantActive: async () => true, repository });
     await forwarder.enqueuePacket({ ...packet, direction: 'rx' }, { raw: '0102' });
     await forwarder.enqueuePacket({ ...packet, direction: 'tx' }, { raw: '0102' });
     await forwarder.enqueuePacket({ ...packet, direction: 'tx', packetType: 4, srcNodeId: packet.rxNodeId }, { raw: '0102' });
@@ -224,6 +228,7 @@ test('forwarder survives a hung publish: times out, fails for retry, then delive
   const published: string[] = [];
   let factories = 0;
   const forwarder = createPacketShareForwarder({
+    isOwnerNodeGrantActive: async () => true,
     repository,
     publisherFactory: () => {
       factories += 1;
@@ -276,6 +281,7 @@ test('forwarder aborts a delivery past the per-row deadline even when the publis
     },
   } as unknown as PacketShareRepository;
   const forwarder = createPacketShareForwarder({
+    isOwnerNodeGrantActive: async () => true,
     repository,
     publisherFactory: () => ({
       publish: () => new Promise<void>(() => undefined),
