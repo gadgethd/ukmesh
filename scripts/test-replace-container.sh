@@ -80,7 +80,11 @@ case "$command_name" in
               for ((index = 0; index < 10000; index++)); do printf 'fixture-service-%s\n' "$index"; done
             fi
           elif [ "${2:-}" != "-q" ]; then
-            printf 'services: {}\n'
+            if [ "${2:-}" = "--format" ]; then
+              printf '{"services":{}}\n'
+            else
+              printf 'services: {}\n'
+            fi
           fi
           exit 0
           ;;
@@ -136,6 +140,10 @@ case "$command_name" in
     done
     ;;
   pull)
+    ;;
+  ps)
+    # No name conflict in the absent-container drill.
+    test "$MOCK_ADOPTION_MODE" = no_container
     ;;
   image)
     test "${1:-}" = "inspect"
@@ -320,6 +328,11 @@ run_case() {
     fi
     grep -q 'not Compose-adoptable' "${test_root}/stderr.log"
     grep -q "service ${adoption_service} is not Compose-adoptable" "${test_root}/stderr.log"
+    grep -Fq 'up -d --no-deps --no-build' "${test_root}/stderr.log"
+    grep -Fq 'check-compose-adoption.sh' "${test_root}/stderr.log"
+    if [ "$adoption_mode" != no_container ]; then
+      grep -Fq "docker rm -f -- current-${adoption_service}" "${test_root}/stderr.log"
+    fi
     test ! -s "${test_root}/cosign.log"
     if grep -Eq '^(pull |compose .* (up|run) )' "${test_root}/docker.log"; then
       echo 'adoption guard allowed a mutation before rejection' >&2
@@ -403,3 +416,4 @@ run_case invalid_frontend_stops_before_mutation true false stopped 0 public-key 
 run_case valid_frontend_with_invalid_backend_stops_before_mutation true false stopped 0 public-key empty app-ukmesh backend
 
 printf 'replace-container rollback, compatibility and Compose adoption drills passed (16/16)\n'
+bash "${script_dir}/test-check-compose-adoption.sh"
