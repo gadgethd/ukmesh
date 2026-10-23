@@ -31,7 +31,6 @@ import {
   analyticsQuery,
   pool,
   query,
-  withTransaction,
 } from '../db/index.js';
 import {
   autoLinkOwnerNodeIds,
@@ -219,7 +218,6 @@ registerOwnerRoutes(router, {
   invalidateOwnerNodeIdCache,
   reconcileOwnerAuthorization,
   query,
-  withTransaction,
 });
 registerPathingRoutes(router, {
   pathBetaLimiter: PATH_BETA_LIMITER,
