@@ -269,8 +269,10 @@ jobs:
           docker compose -f docker-compose.yml -f docker-compose.ci.yml \
             --project-name "$project" \
             --profile dev \
-            up --detach --no-build --scale link-backfill-worker=0 \
+            up --detach --no-build --scale link-backfill-worker=0 --scale tagger-worker=0 \
               --wait --wait-timeout 360
+          # Build tagger-worker above, but keep it stopped in the smoke stack:
+          # its runtime requires a real TYPESAFE_API_KEY, absent from CI.
           # link-backfill-worker is intentionally a finite job. Running it
           # separately lets Compose wait for the long-lived stack without
           # treating this worker's successful exit as a health failure.
