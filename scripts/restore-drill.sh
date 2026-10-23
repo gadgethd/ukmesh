@@ -12,6 +12,10 @@ decryption_cert="${BACKUP_DECRYPTION_CERT:?BACKUP_DECRYPTION_CERT is required}"
 decryption_key="${BACKUP_DECRYPTION_KEY:?BACKUP_DECRYPTION_KEY is required}"
 restore_signing_key="${RESTORE_RECEIPT_SIGNING_KEY:?RESTORE_RECEIPT_SIGNING_KEY is required}"
 restore_verify_key="${RESTORE_RECEIPT_VERIFY_KEY:?RESTORE_RECEIPT_VERIFY_KEY is required}"
+# The receipt, its signature, and the key that verifies it must never travel
+# together: a swapped receipt that carries its own verify key verifies itself.
+# The key is provisioned separately and pinned here by fingerprint.
+restore_verify_key_sha256="${RESTORE_RECEIPT_VERIFY_KEY_SHA256:?RESTORE_RECEIPT_VERIFY_KEY_SHA256 is required (out-of-band pin for the receipt verify key)}"
 receipt_dir="${RESTORE_RECEIPT_DIR:?RESTORE_RECEIPT_DIR is required}"
 
 timescale_image="timescale/timescaledb@sha256:22e8a5ae7aef121d1537afe946dd7cc5deeeb63ab36ce19849d671bd3b663509"
@@ -19,7 +23,7 @@ redis_image="redis@sha256:8b81dd37ff027bec4e516d41acfbe9fe2460070dc6d4a4570a2ac5
 mosquitto_image="eclipse-mosquitto@sha256:9cfdd46ad59f3e3e5f592f6baf57ab23e1ad00605509d0f5c1e9b179c5314d87"
 busybox_image="busybox@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028"
 
-for command in docker openssl jq tar sha256sum stat head; do
+for command in docker openssl jq tar sha256sum stat head realpath; do
   command -v "$command" >/dev/null || {
     echo "required command is unavailable: $command" >&2
     exit 69
@@ -33,6 +37,30 @@ for path in \
     exit 66
   }
 done
+restore_verify_key_sha256="$(
+  printf '%s' "${restore_verify_key_sha256#sha256:}" | tr 'A-F' 'a-f'
+)"
+if ! [[ "$restore_verify_key_sha256" =~ ^[a-f0-9]{64}$ ]]; then
+  echo "RESTORE_RECEIPT_VERIFY_KEY_SHA256 must be a sha256 fingerprint of 64 hex characters" >&2
+  exit 78
+fi
+restore_verify_key_real="$(realpath -m -- "$restore_verify_key")"
+receipt_dir_real="$(realpath -m -- "$receipt_dir")"
+receipt_dir_real="${receipt_dir_real%/}"
+case "$restore_verify_key_real" in
+  "$receipt_dir_real"/*)
+    echo "RESTORE_RECEIPT_VERIFY_KEY must be provisioned outside RESTORE_RECEIPT_DIR" >&2
+    exit 78
+    ;;
+esac
+actual_verify_key_sha256="$(
+  openssl pkey -pubin -in "$restore_verify_key" -outform DER | sha256sum | awk '{print $1}'
+)"
+if [ "$actual_verify_key_sha256" != "$restore_verify_key_sha256" ]; then
+  echo "restore receipt verify key does not match RESTORE_RECEIPT_VERIFY_KEY_SHA256" >&2
+  exit 78
+fi
+
 openssl dgst -sha256 -verify "$backup_verify_key" \
   -signature "$backup_signature" "$backup_receipt" >/dev/null
 
@@ -74,7 +102,6 @@ restore_password="$(openssl rand -hex 24)"
 restore_jwt="$(openssl rand -hex 32)"
 receipt_partial=""
 signature_partial=""
-verify_partial=""
 receipt_publish_started="false"
 receipt_publish_complete="false"
 previous_receipt_dir="$tmp_dir/previous-receipt"
@@ -82,7 +109,7 @@ previous_receipt_dir="$tmp_dir/previous-receipt"
 cleanup() {
   if [ "$receipt_publish_started" = "true" ] \
     && [ "$receipt_publish_complete" != "true" ]; then
-    for receipt_name in latest.json latest.json.sig verify.pem; do
+    for receipt_name in latest.json latest.json.sig; do
       if [ -f "$previous_receipt_dir/$receipt_name" ]; then
         cp -p "$previous_receipt_dir/$receipt_name" "$receipt_dir/$receipt_name"
       else
@@ -91,7 +118,7 @@ cleanup() {
     done
   fi
   for incomplete_receipt in \
-    "$receipt_partial" "$signature_partial" "$verify_partial"; do
+    "$receipt_partial" "$signature_partial"; do
     if [ -n "$incomplete_receipt" ]; then
       rm -f -- "$incomplete_receipt"
     fi
@@ -460,7 +487,6 @@ mkdir -p "$receipt_dir"
 chmod 0700 "$receipt_dir"
 receipt_partial="$receipt_dir/latest.json.partial"
 signature_partial="$receipt_dir/latest.json.sig.partial"
-verify_partial="$receipt_dir/verify.pem.partial"
 
 jq -n \
   --arg receipt_id "$receipt_id" \
@@ -470,6 +496,7 @@ jq -n \
   --arg restore_verified_at "$restore_verified_at" \
   --arg archive_sha256 "$actual_archive_sha" \
   --arg source_revision "$source_revision" \
+  --arg verify_key_sha256 "sha256:$restore_verify_key_sha256" \
   --argjson restore_duration_seconds "$restore_duration_seconds" \
   --argjson recovery_point_age_seconds "$recovery_point_age_seconds" \
   --argjson schema_version "$schema_version" \
@@ -486,6 +513,7 @@ jq -n \
     recovery_point_age_seconds: $recovery_point_age_seconds,
     archive_sha256: $archive_sha256,
     source_revision: $source_revision,
+    verify_key_sha256: $verify_key_sha256,
     schema_version: $schema_version,
     datasets: ["analytics", "owner_auth", "mosquitto", "redis", "configuration", "infra_configuration"],
     evidence: {
@@ -505,19 +533,22 @@ openssl dgst -sha256 -sign "$restore_signing_key" \
 openssl dgst -sha256 -verify "$restore_verify_key" \
   -signature "$signature_partial" "$receipt_partial" >/dev/null
 
-cp "$restore_verify_key" "$verify_partial"
 mkdir -p "$previous_receipt_dir"
-for receipt_name in latest.json latest.json.sig verify.pem; do
+for receipt_name in latest.json latest.json.sig; do
   if [ -f "$receipt_dir/$receipt_name" ]; then
     cp -p "$receipt_dir/$receipt_name" "$previous_receipt_dir/$receipt_name"
   fi
 done
 receipt_publish_started="true"
-mv "$verify_partial" "$receipt_dir/verify.pem"
 mv "$signature_partial" "$receipt_dir/latest.json.sig"
 mv "$receipt_partial" "$receipt_dir/latest.json"
-sync "$receipt_dir/latest.json" "$receipt_dir/latest.json.sig" "$receipt_dir/verify.pem"
+sync "$receipt_dir/latest.json" "$receipt_dir/latest.json.sig"
 receipt_publish_complete="true"
+
+if [ -e "$receipt_dir/verify.pem" ]; then
+  echo "warning: $receipt_dir/verify.pem is a retired co-located trust anchor;" \
+    "it is no longer published or refreshed and must not verify receipts." >&2
+fi
 
 echo "Isolated restore drill passed:"
 jq -n \

@@ -192,7 +192,11 @@ services:
       DATA_LIFECYCLE_RETENTION_TARGETS: ${DATA_LIFECYCLE_RETENTION_TARGETS:-}
       DATA_LIFECYCLE_RESTORE_RECEIPT_PATH: /backup-receipts/latest.json
       DATA_LIFECYCLE_RESTORE_RECEIPT_SIGNATURE_PATH: /backup-receipts/latest.json.sig
-      DATA_LIFECYCLE_RECEIPT_VERIFY_KEY_PATH: /backup-receipts/verify.pem
+      DATA_LIFECYCLE_RECEIPT_VERIFY_KEY_PATH: /etc/meshcore/restore-receipt/verify.pem
+      # Out-of-band pin of the verify key's sha256 fingerprint. The key must be
+      # mounted from outside the receipts directory: a receipt that carries its
+      # own verify key verifies itself.
+      DATA_LIFECYCLE_RECEIPT_VERIFY_KEY_SHA256: ${DATA_LIFECYCLE_RECEIPT_VERIFY_KEY_SHA256:-}
       DATA_LIFECYCLE_RECEIPT_MAX_AGE_DAYS: ${DATA_LIFECYCLE_RECEIPT_MAX_AGE_DAYS:-7}
       SYNTHETIC_SUCCESS_TTL_MS: ${SYNTHETIC_SUCCESS_TTL_MS:-960000}
       NODE_ENV: production
@@ -209,6 +213,7 @@ services:
       - srtm_data:/health-volumes/terrain:ro
       - loki_data:/health-volumes/logs:ro
       - ${BACKUP_RECEIPT_HOST_DIR:-./backup-receipts}:/backup-receipts:ro
+      - ${RESTORE_RECEIPT_TRUST_HOST_DIR:-./restore-receipt-trust}:/etc/meshcore/restore-receipt:ro
       - ${OWNER_AUTH_INVENTORY_HOST_DIR:-./backup-receipts}:/owner-auth-inventory:ro
     group_add:
       - "1883"

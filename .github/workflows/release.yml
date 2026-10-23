@@ -141,20 +141,10 @@ jobs:
           format: spdx-json
           output-file: sbom-${{ matrix.component }}.spdx.json
           upload-artifact: false
-      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
-      - name: Sign and attach SBOM attestation
-        env:
-          DIGEST: ${{ steps.build.outputs.digest }}
-        run: |
-          image="${REGISTRY}/${IMAGE_NAME}@${DIGEST}"
-          cosign sign --yes "$image"
-          cosign attest --yes \
-            --predicate "sbom-${{ matrix.component }}.spdx.json" \
-            --type spdxjson "$image"
-          cosign verify "$image" \
-            --certificate-identity-regexp "^https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@" \
-            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-            > "signature-${{ matrix.component }}.json"
+      # Keyless signing is deliberately not part of this job: it lives in the
+      # `sign` job below, which is restricted to version tags and gated by the
+      # protected `release-signing` environment. Branch dispatches still build,
+      # scan, and publish images; they simply cannot produce a release signature.
       - id: provenance
         name: Publish registry provenance
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
@@ -196,4 +186,84 @@ jobs:
             inventory-${{ matrix.component }}.json
             sbom-${{ matrix.component }}.spdx.json
             trivy-${{ matrix.component }}.json
-            signature-${{ matrix.component }}.json
+
+  sign:
+    name: Sign ${{ matrix.component }}
+    needs: image
+    # Only a version tag may produce a release signature. `workflow_dispatch`
+    # is unqualified, so this guard is the control that keeps a branch run from
+    # minting a signature that verifies against a release identity.
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    # Required reviewers are configured on this environment in repository
+    # settings: the job blocks until an approver releases it. The environment
+    # also scopes any secrets used for signing to tagged releases only.
+    environment:
+      name: release-signing
+      url: https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }}
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - component: backend
+          - component: combined
+          - component: app
+          - component: website
+          - component: rf-worker
+          - component: hopreach
+          - component: mosquitto-reloader
+          - component: health-check
+    steps:
+      - name: Download the image job's release evidence
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-${{ github.sha }}-${{ matrix.component }}
+          path: evidence
+      - name: Require the inventory to name an immutable digest
+        id: image
+        run: |
+          set -euo pipefail
+          image="$(jq -r '.image' "evidence/inventory-${{ matrix.component }}.json")"
+          if ! [[ "$image" =~ ^ghcr\.io/[A-Za-z0-9._/-]+@sha256:[a-f0-9]{64}$ ]]; then
+            echo "release inventory does not name an immutable image digest: $image" >&2
+            exit 65
+          fi
+          printf 'image=%s\n' "$image" >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - name: Sign and attest the approved digest
+        env:
+          IMAGE: ${{ steps.image.outputs.image }}
+          COMPONENT: ${{ matrix.component }}
+        run: |
+          set -euo pipefail
+          # Defence in depth: the job-level guard is the primary control, and
+          # this keeps signing impossible if that guard is ever edited away.
+          case "$GITHUB_REF" in
+            refs/tags/v*) ;;
+            *) echo "refusing to sign a non-tag ref: $GITHUB_REF" >&2; exit 65 ;;
+          esac
+          cosign sign --yes "$IMAGE"
+          cosign attest --yes \
+            --predicate "evidence/sbom-${COMPONENT}.spdx.json" \
+            --type spdxjson "$IMAGE"
+          cosign verify "$IMAGE" \
+            --certificate-identity-regexp "^https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            > "signature-${COMPONENT}.json"
+          jq -e 'length > 0' "signature-${COMPONENT}.json" >/dev/null
+      - name: Publish signature evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-signature-${{ github.sha }}-${{ matrix.component }}
+          if-no-files-found: error
+          retention-days: 90
+          path: signature-${{ matrix.component }}.json

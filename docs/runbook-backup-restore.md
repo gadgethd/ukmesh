@@ -130,14 +130,20 @@ export BACKUP_DECRYPTION_CERT=/secure/meshcore-backup-keys/encrypt.pem
 export BACKUP_DECRYPTION_KEY=/secure/meshcore-backup-keys/decrypt.pem
 export RESTORE_RECEIPT_SIGNING_KEY=/secure/meshcore-backup-keys/receipt-signing.pem
 export RESTORE_RECEIPT_VERIFY_KEY=/secure/meshcore-backup-keys/receipt-verify.pem
+# Out-of-band pin of the verify key. Required: the drill refuses to verify a
+# receipt when the key is absent, unpinned, or co-located with the receipt.
+export RESTORE_RECEIPT_VERIFY_KEY_SHA256="$(openssl pkey -pubin -in "$RESTORE_RECEIPT_VERIFY_KEY" -outform DER | sha256sum | awk '{print $1}')"
 export RESTORE_RECEIPT_DIR=/secure/meshcore-restore-receipts
 
 scripts/restore-drill.sh "$ARCHIVE" "$RECEIPT"
 ```
 
-Verify `latest.json`, `latest.json.sig`, and `verify.pem`, then set
+Verify `latest.json` and `latest.json.sig` against the separately provisioned
+verify key (pinned by sha256), then set
 `BACKUP_RECEIPT_HOST_DIR` to that receipt directory so backend health and
-destructive lifecycle gates see the same signed evidence.
+destructive lifecycle gates see the same signed evidence. The verifier key is
+mounted from its own directory (`RESTORE_RECEIPT_TRUST_HOST_DIR`), never from
+the receipts directory.
 
 ## Disaster recovery
 

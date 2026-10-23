@@ -43,7 +43,9 @@ Set immutable values and invoke the controlled replacement:
 export COSIGN_CERTIFICATE_IDENTITY_REGEXP='^https://github.com/OWNER/REPOSITORY/.github/workflows/release.yml@'
 export COSIGN_CERTIFICATE_OIDC_ISSUER='https://token.actions.githubusercontent.com'
 export RESTORE_RECEIPT_PATH=/secure/receipts/latest.json
-export RESTORE_RECEIPT_VERIFY_KEY=/secure/receipts/verify.pem
+# The verify key lives outside the receipts directory and is pinned by sha256.
+export RESTORE_RECEIPT_VERIFY_KEY=/secure/restore-receipt-trust/verify.pem
+export RESTORE_RECEIPT_VERIFY_KEY_SHA256="$(openssl pkey -pubin -in "$RESTORE_RECEIPT_VERIFY_KEY" -outform DER | sha256sum | awk '{print $1}')"
 export RELEASE_RECEIPT_SIGNING_KEY=/secure/release/receipt-signing.pem
 
 scripts/replace-container.sh backend \

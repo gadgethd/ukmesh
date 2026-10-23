@@ -77,7 +77,8 @@ perfTest('EXPLAIN actual node export SQL including its 5000-node maximum', { tim
   const app = express(), router = Router();
   const limiter: RequestHandler = (_req, _res, next) => next();
   registerExportRoutes(router, { networkFilters,
-    exportLimiter: limiter as Parameters<typeof registerExportRoutes>[1]['exportLimiter'], query: measuredQuery('exports') });
+    exportLimiter: limiter as Parameters<typeof registerExportRoutes>[1]['exportLimiter'],
+    getPublicVisibilityGeneration: async () => 1, query: measuredQuery('exports') });
   app.use(router);
   const server = app.listen(0, '127.0.0.1');
   await once(server, 'listening');

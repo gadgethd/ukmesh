@@ -158,6 +158,7 @@ sqlTest('exports execute real SQL with the correct alias and omit private, unpos
   const limiter: RequestHandler = (_req, _res, next) => next();
   registerExportRoutes(router, { networkFilters,
     exportLimiter: limiter as Parameters<typeof registerExportRoutes>[1]['exportLimiter'],
+    getPublicVisibilityGeneration: async () => 1,
     query: fixtureQuery({ nodes: [node(A), node(B, { network: 'other' }), node(C, { name: '🚫 Private' }),
       node(D, { network: 'test' }), node(F, { lat: null })], sighted: true }),
   });
