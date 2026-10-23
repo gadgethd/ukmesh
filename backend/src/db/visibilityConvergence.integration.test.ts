@@ -6,6 +6,11 @@ import { promisify } from 'node:util';
 import pg from 'pg';
 import { publicPacketPrivacySql } from '../api/utils/networkFilters.js';
 import { convergePacketVisibility } from '../privacy/convergence.js';
+import {
+  createPrivacyGenerationReconciler,
+  PRIVACY_GENERATION_HEALTH_SQL,
+  type PrivacyGenerationSnapshot,
+} from '../privacy/generationHealth.js';
 import { processNextPrivacyRematerialization } from '../workers/privacy-rematerialization.js';
 import { runMigrations } from './migrations.js';
 
@@ -240,6 +245,71 @@ test('local TimescaleDB visibility-fence reproduction, regression and convergenc
     const converged = await snapshot();
     assert.deepEqual((await repair()).updated, { packets: 0, packet_paths: 0, queue: 0 });
     assert.deepEqual(await snapshot(), converged);
+  });
+
+  await t.test('generation health is SELECT-only, detects empty-queue drift and missing artefacts, and recovers without repair', async () => {
+    await reset();
+    const readOnlyURL = new URL(url);
+    readOnlyURL.username = readOnlyRole;
+    readOnlyURL.password = 'privacy_test_readonly';
+    const reader = new pg.Pool({
+      connectionString: readOnlyURL.toString(), max: 1, connectionTimeoutMillis: 1_000,
+      statement_timeout: 1_000, query_timeout: 1_500,
+      options: '-c default_transaction_read_only=on',
+    });
+    const inspect = async () => {
+      const before = await snapshot();
+      const reconcile = createPrivacyGenerationReconciler(
+        () => reader.query<PrivacyGenerationSnapshot>(PRIVACY_GENERATION_HEALTH_SQL), () => {},
+      );
+      const result = await reconcile();
+      assert.deepEqual(await snapshot(), before, 'observation must preserve data, queue, generations and timestamps');
+      return result;
+    };
+    try {
+      assert.equal((await reader.query('SHOW transaction_read_only')).rows[0].transaction_read_only, 'on');
+      await assert.rejects(reader.query('UPDATE public_visibility_state SET generation = generation + 1'),
+        /read-only|permission denied/);
+      assert.deepEqual(await inspect(), {
+        desiredGeneration: '1', materializedGeneration: '1', appliedGeneration: '1',
+        queueActive: false, healthy: true, reason: 'healthy',
+      });
+      await pool.query('UPDATE public_visibility_state SET generation = 2');
+      const desiredAhead = await inspect();
+      assert.equal(desiredAhead.reason, 'desired_ahead');
+      assert.equal(desiredAhead.queueActive, false, '#672 must alert even with an empty queue');
+      assert.equal(desiredAhead.appliedGeneration, null, 'a divergent generation is never globally admitted');
+      await pool.query('UPDATE packet_visibility_materialization_state SET visibility_generation = 3');
+      const certificateAhead = await inspect();
+      assert.equal(certificateAhead.reason, 'materialized_ahead');
+      assert.equal(certificateAhead.healthy, false);
+      assert.equal(certificateAhead.appliedGeneration, null);
+      await pool.query('DELETE FROM packet_visibility_materialization_state');
+      assert.equal((await inspect()).reason, 'materialized_missing');
+      await pool.query('DELETE FROM public_visibility_state');
+      assert.equal((await inspect()).reason, 'desired_missing');
+      await pool.query('INSERT INTO public_visibility_state(singleton,generation) VALUES (TRUE,1)');
+      await reset();
+      await pool.query(`INSERT INTO privacy_rematerialization_queue(node_id,target,status)
+        VALUES ($1,'packets','pending')`, [nodeId]);
+      for (const status of ['pending', 'processing', 'failed']) {
+        await pool.query('UPDATE privacy_rematerialization_queue SET status = $1', [status]);
+        const state = await inspect();
+        assert.equal(state.reason, 'queue_active');
+        assert.equal(state.appliedGeneration, null);
+      }
+      await pool.query("UPDATE privacy_rematerialization_queue SET status = 'done'");
+      assert.equal((await inspect()).healthy, true);
+      await pool.query('ALTER TABLE packet_visibility_materialization_state RENAME TO fixture_missing_materialization');
+      try {
+        const reconcile = createPrivacyGenerationReconciler(
+          () => reader.query<PrivacyGenerationSnapshot>(PRIVACY_GENERATION_HEALTH_SQL), () => {},
+        );
+        assert.equal((await reconcile()).reason, 'read_failed', 'a missing relation must fail closed too');
+      } finally {
+        await pool.query('ALTER TABLE fixture_missing_materialization RENAME TO packet_visibility_materialization_state');
+      }
+    } finally { await reader.end(); }
   });
 
   await t.test('stale reviewed generation, active processing and missing public state abort without changes', async () => {
