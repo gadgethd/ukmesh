@@ -126,3 +126,5 @@ From the repository root, `git diff --check` passed. Ignored evidence logs:
   action was required to implement or verify these acceptance gates. Operator
   review, merge and any later rollout remain outside this lane. No branch push
   or PR publication was performed.
+
+PROOF: targeted backend tests green + `docs/reviews/20261023-ukmesh-data.md` committed at sha c51cc744284e04bce766e82d8d649cdbee281c2e
