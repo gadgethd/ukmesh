@@ -45,6 +45,7 @@ export type NodeRepository = {
     snapshot: string,
     cursor: string | null,
     limit: number,
+    search?: string,
   ) => Promise<Array<Record<string, unknown>>>;
   listAllNodeIds: () => Promise<Array<{ node_id: string }>>;
   listInferredPackets: (
@@ -183,10 +184,25 @@ export function createNodeRepository(query: QueryFn): NodeRepository {
       };
     },
 
-    async listPublicMapRows(fields, filters, snapshot, cursor, limit) {
+    async listPublicMapRows(fields, filters, snapshot, cursor, limit, search) {
       const snapshotParameter = filters.params.length + 1;
       const cursorParameter = snapshotParameter + 1;
       const limitParameter = cursorParameter + 1;
+      const searchParameter = `$${limitParameter + 1}`;
+      const searchCondition = search ? `AND (
+        STRPOS(LOWER(COALESCE(n.name, '')), LOWER(${searchParameter})) > 0
+        OR STRPOS(LOWER(n.node_id), LOWER(${searchParameter})) > 0
+        OR STRPOS(LOWER(COALESCE(n.iata, '')), LOWER(${searchParameter})) > 0
+        OR EXISTS (
+          SELECT 1 FROM node_name_history history
+          JOIN nodes name_source ON name_source.node_id = history.node_id
+          WHERE history.node_id = ANY(n.identity_source_ids)
+            AND history.name NOT LIKE '%🚫%'
+            AND (name_source.name IS NULL OR name_source.name NOT LIKE '%🚫%')
+            AND (name_source.network IS DISTINCT FROM 'test' OR n.network = 'test')
+            AND STRPOS(LOWER(history.name), LOWER(${searchParameter})) > 0
+        )
+      )` : '';
       const selectedFields = fields
         .map((field) => {
           if (field === 'last_seen') {
@@ -203,10 +219,11 @@ export function createNodeRepository(query: QueryFn): NodeRepository {
            FROM node_identity_nodes n
           WHERE ${publicMapFreshPredicate('n', `$${snapshotParameter}::timestamptz`)}
             ${filters.nodesAlias('n')}
+            ${searchCondition}
             AND ($${cursorParameter}::text IS NULL OR n.node_id > $${cursorParameter})
           ORDER BY n.node_id
           LIMIT $${limitParameter}`,
-        [...filters.params, snapshot, cursor, limit + 1],
+        [...filters.params, snapshot, cursor, limit + 1, ...(search ? [search] : [])],
       );
       return result.rows;
     },

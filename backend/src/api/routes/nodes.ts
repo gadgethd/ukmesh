@@ -11,6 +11,7 @@ import {
   parsePublicMapCursor,
   parsePublicMapFields,
   parsePublicMapLimit,
+  parsePublicMapQuery,
   parsePublicMapSnapshot,
 } from '../../nodes/publicMap.js';
 import {
@@ -148,12 +149,14 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
       const limit = parsePublicMapLimit(req.query['limit']);
       const snapshot = parsePublicMapSnapshot(req.query['snapshot']);
       const cursor = parsePublicMapCursor(req.query['cursor']);
+      const search = parsePublicMapQuery(req.query['q']);
       const result = await nodeRepository.listPublicMapRows(
         fields,
         filters,
         snapshot,
         cursor,
         limit,
+        search,
       );
       const hasExtraRow = result.length > limit;
       const fitted = fitPublicMapRowsToByteBudget(result, limit);
@@ -162,7 +165,7 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
       const nextCursor = complete || rows.length < 1
         ? null
         : encodePublicMapCursor(String(rows[rows.length - 1]!['node_id']));
-      res.setHeader('Cache-Control', 'public, max-age=30, stale-while-revalidate=60');
+      res.setHeader('Cache-Control', search ? 'no-store' : 'public, max-age=30, stale-while-revalidate=60');
       res.setHeader('X-Map-Snapshot', snapshot);
       res.setHeader('X-Map-Complete', complete ? 'true' : 'false');
       res.json({

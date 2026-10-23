@@ -404,6 +404,17 @@ export const API_CONTRACTS: readonly ApiContract[] = [
       },
     };
   }
+  if (contract.path === '/nodes/map') {
+    return {
+      ...contract,
+      summary: 'List public map nodes, optionally matching current or former names',
+      queryParameters: [{
+        name: 'q', in: 'query', required: false,
+        description: 'Case-insensitive literal substring of a current/former name, node key or IATA',
+        schema: { type: 'string', maxLength: 160 },
+      }],
+    };
+  }
   if (contract.path === '/planned-nodes') {
     return { ...contract, summary: 'List explicitly published planned nodes', responseSchema: PLANNED_NODE_PAGE_SCHEMA };
   }

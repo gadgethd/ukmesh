@@ -1730,13 +1730,24 @@
     },
     "/api/nodes/map": {
       "get": {
-        "summary": "Read nodes map",
+        "summary": "List public map nodes, optionally matching current or former names",
         "operationId": "get-nodes-map",
         "tags": [
           "public"
         ],
         "x-access": "public",
-        "parameters": [],
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "description": "Case-insensitive literal substring of a current/former name, node key or IATA",
+            "schema": {
+              "type": "string",
+              "maxLength": 160
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful response",
