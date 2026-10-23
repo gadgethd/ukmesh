@@ -188,6 +188,8 @@ expected_map="OWNER_MQTT_USERNAME_MAP=alice=${NODE_A},bob=${NODE_C},alice=${NODE
 [[ $(<"$SANDBOX/repo/.env") == "$expected_map" ]] \
   || { printf 'unexpected owner map: %s\n' "$(<"$SANDBOX/repo/.env")" >&2; exit 1; }
 assert_file_contains "$SANDBOX/output.log" 'Password: unchanged (existing credential)'
+assert_file_contains "$SANDBOX/output.log" 'set mqtt.1.topic.root meshcore/{IATA}/{PUBLIC_KEY}/packets'
+assert_file_contains "$SANDBOX/output.log" 'The default root "meshcore" is denied'
 assert_file_contains "$SANDBOX/docker.log" 'INSERT INTO owner_account_nodes'
 assert_file_contains "$SANDBOX/docker.log" 'COMPOSE_BACKEND'
 if grep -Fq 'CREDENTIAL_CREATE alice' "$SANDBOX/docker.log"; then

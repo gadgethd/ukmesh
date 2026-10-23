@@ -10,6 +10,7 @@ import {
   parseMosquittoConnection,
   parseOwnerNodeTopic,
 } from './brokerLog.js';
+import { mqttOnboardingDiagnostics } from './onboardingDiagnostics.js';
 
 const LOG_PATH = process.env['MOSQUITTO_LOG_PATH'] ?? '/mosquitto/log/mosquitto.log';
 const POLL_INTERVAL_MS = Number(process.env['MQTT_CONN_MONITOR_POLL_MS'] ?? 2_000);
@@ -90,9 +91,14 @@ export function observeBrokerLogLine(line: string, now = Date.now()): BrokerSecu
   if (observation && now - observation.seenAt > CLIENT_TTL_MS) {
     clientToUsername.delete(denied.clientId);
   }
+  const mqttUsername = clientToUsername.get(denied.clientId)?.mqttUsername ?? null;
+  const logTimestamp = /^(\d+(?:\.\d+)?):\s/.exec(line);
+  if (mqttUsername && logTimestamp) {
+    mqttOnboardingDiagnostics.record(mqttUsername, denied.topic, Number(logTimestamp[1]) * 1_000);
+  }
   return {
     kind: 'denied-publish',
-    mqttUsername: clientToUsername.get(denied.clientId)?.mqttUsername ?? null,
+    mqttUsername,
     clientId: denied.clientId,
     topic: denied.topic,
     claimedNodeId: parseOwnerNodeTopic(denied.topic),

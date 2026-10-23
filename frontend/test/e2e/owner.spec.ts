@@ -27,6 +27,57 @@ test.beforeEach(async ({ page }) => {
   await page.route('**/*basemaps.cartocdn.com/**', (route) => route.abort());
 });
 
+test('unlinked owner sees the broker denial fix and can open the exact setup section', async ({ page }) => {
+  await page.route('**/api/owner/session', route => route.fulfill({ status: 401, json: { error: 'Not logged in' } }));
+  await page.route('**/api/owner/csrf', route => route.fulfill({ json: { csrfToken: 'fixture-csrf' } }));
+  await page.route('**/api/owner/login', route => route.fulfill({ status: 403, json: {
+    error: 'The broker denied a publish to "meshcore". Set Topic root to meshcore/{IATA}/{PUBLIC_KEY}/packets and apply the settings.',
+  } }));
+  await page.goto('/login');
+  await page.getByLabel('MQTT username', { exact: true }).fill('unlinked-owner');
+  await page.getByLabel('MQTT password', { exact: true }).fill('fixture-password');
+  await page.getByRole('button', { name: 'Login', exact: true }).click();
+  const error = page.getByRole('alert').filter({ hasText: 'The broker denied' });
+  await expect(error).toContainText('meshcore/{IATA}/{PUBLIC_KEY}/packets');
+  await expect(page.getByRole('heading', { name: 'Repeater owner dashboard' })).toHaveCount(0);
+  await error.getByRole('link', { name: 'MQTT setup and troubleshooting' }).click();
+  await expect(page).toHaveURL(/\/install#mqtt-observer$/);
+  await expect(page.getByRole('heading', { name: 'Firmware MQTT settings: change the default topic root' })).toBeVisible();
+  await expect(page.getByLabel('Firmware MQTT topic root', { exact: true }).locator('pre')).toHaveText('meshcore/{IATA}/{PUBLIC_KEY}/packets');
+  await expect(page.getByLabel('Firmware MQTT topic root repair commands')).toContainText('get mqtt.1.topic.root');
+});
+
+test('linked owner sees a recent default-root denial and the hint clears on session refresh', async ({ page }) => {
+  let showDiagnostic = true;
+  let requests = 0;
+  await page.clock.install();
+  await page.route('**/api/owner/session', route => {
+    requests += 1;
+    return route.fulfill({ json: { ok: true, mqttUsername: 'linked-owner', dashboard: {
+      ...dashboard,
+      mqttDiagnostic: showDiagnostic ? {
+        code: 'MQTT_DEFAULT_TOPIC_ROOT',
+        message: 'The broker denied a publish to "meshcore". Set Topic root to meshcore/{IATA}/{PUBLIC_KEY}/packets.',
+        observedAt: new Date().toISOString(),
+      } : null,
+    } } });
+  });
+  await page.route('**/api/owner/live?**', route => route.fulfill({ status: 503, json: { error: 'Fixture has no live data' } }));
+  await page.route('**/api/owner/live-last-hop?**', route => route.fulfill({ json: { points: [] } }));
+  await page.route('**/api/owner/public-feed', route => route.fulfill({ status: 503, json: { error: 'Fixture' } }));
+  await page.route('**/api/owner/packet-sharing?**', route => route.fulfill({ status: 503, json: { error: 'Fixture' } }));
+  await page.goto('/login');
+  const hint = page.getByRole('status').filter({ hasText: 'Recent MQTT publish denial' });
+  await expect(hint).toContainText('meshcore/{IATA}/{PUBLIC_KEY}/packets');
+  await expect(page.getByLabel('Owned repeater identities')).toContainText('Alpha Repeater');
+  showDiagnostic = false;
+  const before = requests;
+  await page.clock.fastForward(15_001);
+  await expect.poll(() => requests).toBeGreaterThan(before);
+  await expect(hint).toHaveCount(0);
+  await expect(page.getByLabel('Owned repeater identities')).toContainText('Alpha Repeater');
+});
+
 test('session polling does not reset the repeater owner content', async ({ page }) => {
   // Production owner polling predates main's /api/owner/session cadence and is
   // authoritative for Stage 1; session-polling parity is a Stage 2 item.

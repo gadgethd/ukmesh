@@ -479,6 +479,7 @@ const METRIC_CACHES = new Set([
   'owner_auth',
   'owner_nodes',
   'owner_dashboard',
+  'mqtt_onboarding',
   'owner_last_hop',
   'path_context',
   'path_resolution',
