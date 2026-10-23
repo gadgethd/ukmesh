@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import './styles/map-app.css';
 import type * as maplibregl from 'maplibre-gl';
 import { MapLibreMap } from './components/Map/MapLibreMap.js';
@@ -149,23 +149,22 @@ export const App: React.FC = () => {
   const networkFilter = site.networkFilter ?? 'ukmesh';
   const observerFilter = site.observerId;
   const realtimeScopeKey = `${networkFilter}|${observerFilter ?? 'all'}|privacy-${runtimeFeatures.privacyGeneration}${region ? `|region-${region}` : ''}`;
-  const scopeStateRef = useRef<{
-    key: string;
-    nodeEpoch: number;
-    linkEpoch: number;
-  } | null>(null);
-  if (scopeStateRef.current?.key !== realtimeScopeKey) {
-    scopeStateRef.current = {
+  const [scopeState, setScopeState] = useState({ key: '', nodeEpoch: -1, linkEpoch: -1 });
+  const scopeReady = scopeState.key === realtimeScopeKey;
+  // Publish external-store resets after React commits, before painting. Doing
+  // this during render updates mounted subscribers such as NodeSearch mid-render.
+  useLayoutEffect(() => {
+    if (scopeState.key === realtimeScopeKey) return;
+    setScopeState({
       key: realtimeScopeKey,
       nodeEpoch: nodeStore.reset(realtimeScopeKey),
       linkEpoch: linkStateStore.reset(realtimeScopeKey),
-    };
-  }
-  const scopeState = scopeStateRef.current;
+    });
+  }, [realtimeScopeKey, scopeState.key]);
 
   const stats = useDashboardStats(fetchedStats, realtimeScopeKey);
   const previousRegionRef = useRef(region);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (previousRegionRef.current !== region) {
       setSelectedNodeId(null);
       useOverlayStore.getState().clearPinnedPacket();
@@ -314,6 +313,7 @@ export const App: React.FC = () => {
 
   // Keep the fast poll to live data that changes independently of the socket.
   useEffect(() => {
+    if (!scopeReady) return;
     let cancelled = false;
     let timer: number | null = null;
     let controller: AbortController | null = null;
@@ -377,7 +377,7 @@ export const App: React.FC = () => {
       controller?.abort();
       if (timer) window.clearTimeout(timer);
     };
-  }, [isPageVisible, networkFilter, observerFilter, region, scopeState.nodeEpoch]);
+  }, [isPageVisible, networkFilter, observerFilter, region, scopeReady, scopeState.nodeEpoch]);
 
   useEffect(() => {
     if (!filters.packetHistory && !(heatmapEnabled && filters.heatmap)) {
@@ -482,6 +482,7 @@ export const App: React.FC = () => {
     handleMessage,
     { network: networkFilter, observer: observerFilter, region },
     scopeState.nodeEpoch,
+    scopeReady,
   );
   // Live tag enrichment for the feed panel (tags land ~2s after a packet).
   useMessageTags({ network: networkFilter, observer: observerFilter }, realtimeScopeKey);
@@ -583,7 +584,7 @@ export const App: React.FC = () => {
           visible={RF_COVERAGE_ENABLED && filters.coverage}
         />
         <LiveOverlayController
-          key={realtimeScopeKey}
+          scopeKey={realtimeScopeKey}
           map={mlMap}
           filters={filters}
           network={networkFilter}

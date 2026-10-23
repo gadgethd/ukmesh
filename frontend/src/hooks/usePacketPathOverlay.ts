@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { AggregatedPacket } from './useNodes.js';
 import { useNodeMap, useMessages, usePackets } from './useNodes.js';
 import { withScopeParams, uncachedEndpoint } from '../utils/api.js';
@@ -24,6 +24,7 @@ const RECENT_PREDICTION_TTL_MS = 45_000;
 const MAX_RECENT_PREDICTIONS = 48;
 
 type UsePacketPathOverlayParams = {
+  scopeKey?: string;
   filters: Filters;
   network?: string;
   observer?: string;
@@ -120,6 +121,7 @@ function packetResolutionKey(packet: AggregatedPacket | null | undefined, networ
 }
 
 export function usePacketPathOverlay({
+  scopeKey,
   filters,
   network,
   observer,
@@ -274,7 +276,7 @@ export function usePacketPathOverlay({
     mode?: 'slow',
   ): Promise<MultiObserverBetaResponse | null> => {
     prunePredictionCache();
-    const key = cacheKey(packetHash, observerIds, networkName);
+    const key = `${scopeKey ?? ''}|${cacheKey(packetHash, observerIds, networkName)}`;
     const inflightKey = mode === 'slow' ? `${key}|slow` : key;
     // Slow-mode requests must not be served from the eager cache or deduped
     // onto an in-flight eager fetch — the whole point is the post-window set.
@@ -305,7 +307,7 @@ export function usePacketPathOverlay({
       });
     multiInflightRef.current.set(inflightKey, promise);
     return promise;
-  }, [prunePredictionCache]);
+  }, [prunePredictionCache, scopeKey]);
 
   const latestPacket = messages[0] ?? null;
   const latestResolutionKey = packetResolutionKey(latestPacket, network, observer);
@@ -313,6 +315,22 @@ export function usePacketPathOverlay({
     ? (packets.find((packet) => packet.id === pinnedPacketId) ?? pinnedPacketSnapshot)
     : (filters.betaPaths ? latestPacket : null);
   const betaEffectThrottleRef = useRef<number | null>(null);
+  const previousScopeRef = useRef(scopeKey);
+  useLayoutEffect(() => {
+    if (previousScopeRef.current === scopeKey) return;
+    previousScopeRef.current = scopeKey;
+    activeReqSeqRef.current += 1;
+    pinnedOverlayKeyRef.current = '';
+    stopPathTimers();
+    if (pinnedTimerRef.current) clearTimeout(pinnedTimerRef.current);
+    if (betaEffectThrottleRef.current !== null) clearTimeout(betaEffectThrottleRef.current);
+    pinnedTimerRef.current = null;
+    betaEffectThrottleRef.current = null;
+    recentPredictionsRef.current.clear();
+    multiPredictionCacheRef.current.clear();
+    multiInflightRef.current.clear();
+    clearPathState();
+  }, [scopeKey, stopPathTimers, clearPathState]);
 
   // Keep a ref to the latest message so this effect runs only when the active
   // packet identity changes, not on every packet-feed update.
