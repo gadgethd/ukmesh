@@ -8,6 +8,12 @@ import {
 } from '../db/dataLifecycle.js';
 import { INGEST_HEALTH_SQL, PATH_HASH_HEALTH_SQL } from './packetDiagnostics.js';
 import { DATABASE_MAINTENANCE_SQL } from './vacuumBacklog.js';
+import {
+  createPrivacyGenerationReconciler,
+  PRIVACY_GENERATION_HEALTH_SQL,
+  type PrivacyGenerationHealth,
+  type PrivacyGenerationSnapshot,
+} from '../privacy/generationHealth.js';
 export { DATABASE_MAINTENANCE_SQL } from './vacuumBacklog.js';
 import { linkWorkerHeartbeatCollector, readLinkWorkerHeartbeatAge } from './workerHeartbeat.js';
 import {
@@ -32,7 +38,14 @@ import {
   packetPathsRows30d,
   workerHeartbeatAgeSeconds,
   setWorkerHeartbeatCollector,
+  setPrivacyGenerationHealthCollector,
 } from '../metrics.js';
+
+const reconcilePrivacyGenerations = createPrivacyGenerationReconciler(
+  (signal) => query<PrivacyGenerationSnapshot>(PRIVACY_GENERATION_HEALTH_SQL, undefined, signal),
+);
+// Scrapes observe independently of the slower dashboard/health-worker queries.
+setPrivacyGenerationHealthCollector(async () => (await reconcilePrivacyGenerations()).healthy);
 
 type WorkerSnapshot = {
   worker_name: string;
@@ -737,7 +750,7 @@ export async function getWorkerHealthOverview() {
   // Compute system stats once — cpuUsagePct() diffs against lastCpuSample,
   // so calling it twice in one request gives a garbage near-zero second reading.
   const sysStats = systemStats();
-  const [workers, history, errors1h, ingest, pathDiagnostics, operationalChecks, databaseMaintenance, databaseRuntime, redisDurability, privacyRemat] = await Promise.all([
+  const [workers, history, errors1h, ingest, pathDiagnostics, operationalChecks, databaseMaintenance, databaseRuntime, redisDurability, privacyRemat, privacyGenerations] = await Promise.all([
     currentWorkerStatuses(sysStats),
     query<{
       ts: string;
@@ -813,6 +826,7 @@ export async function getWorkerHealthOverview() {
                FILTER (WHERE status = 'pending')::text AS oldest_pending_age_seconds
         FROM privacy_rematerialization_queue
     `, [Math.min(100, Math.max(1, Number(process.env['PRIVACY_REMAT_MAX_ATTEMPTS'] ?? 8) || 8))]),
+    reconcilePrivacyGenerations(),
   ]);
 
   const ingestRow = ingest.rows[0];
@@ -894,6 +908,8 @@ export async function getWorkerHealthOverview() {
       ? null : Number(privacyRematRow.oldest_pending_age_seconds),
   });
   if (privacyRematProblem) problems.push(privacyRematProblem);
+  const generationProblem = privacyGenerationProblem(privacyGenerations);
+  if (generationProblem) problems.push(generationProblem);
 
   if (redisDurability.maxmemory_policy !== 'noeviction') {
     problems.push({
@@ -929,6 +945,7 @@ export async function getWorkerHealthOverview() {
       cache_hit_ratio: Number(databaseRuntime.rows[0]?.cache_hit_ratio ?? 0),
     },
     redis: redisDurability,
+    privacy_visibility: privacyGenerations,
     system: sysStats,
     workers,
     history: history.rows,
@@ -954,6 +971,14 @@ export type HealthProblem = {
   severity: 'warning' | 'critical';
   message: string;
 };
+
+export function privacyGenerationProblem(state: PrivacyGenerationHealth): HealthProblem | null {
+  return state.healthy ? null : {
+    code: 'privacy_generation_unhealthy',
+    severity: 'critical',
+    message: `Privacy generation check failed: ${state.reason}`,
+  };
+}
 
 export function databaseVacuumBacklogProblem(tablesNeedingVacuum: number): HealthProblem | null {
   if (!Number.isFinite(tablesNeedingVacuum) || tablesNeedingVacuum <= 0) return null;

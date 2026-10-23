@@ -3,8 +3,11 @@ import test from 'node:test';
 import {
   databaseVacuumBacklogProblem,
   privacyRematerializationBacklogProblem,
+  privacyGenerationProblem,
   summarizeAuthoritativeHealth,
+  toPublicHealthOverview,
 } from './status.js';
+import { evaluatePrivacyGenerations } from '../privacy/generationHealth.js';
 
 test('anonymous frontend diagnostics cannot forge health severity', () => {
   assert.deepEqual(summarizeAuthoritativeHealth([], 1_000_000), {
@@ -47,4 +50,21 @@ test('vacuum backlog counts preserve warning and critical severity thresholds', 
   assert.equal(databaseVacuumBacklogProblem(Number.NaN), null);
   assert.equal(databaseVacuumBacklogProblem(-1), null);
   assert.equal(databaseVacuumBacklogProblem(Number.POSITIVE_INFINITY), null);
+});
+
+test('privacy generation drift with an empty queue is an authoritative, publicly redacted incident', () => {
+  const healthy = evaluatePrivacyGenerations({
+    desiredGeneration: '42', materializedGeneration: '42', appliedGeneration: '42', queueActive: false,
+  });
+  assert.equal(privacyGenerationProblem(healthy), null);
+  const drift = evaluatePrivacyGenerations({ ...healthy, desiredGeneration: '43', appliedGeneration: null });
+  const problem = privacyGenerationProblem(drift)!;
+  assert.equal(summarizeAuthoritativeHealth([problem], 0).status, 'critical');
+  const publicHealth = toPublicHealthOverview({
+    status: 'critical', problems: [problem], privacy_visibility: drift,
+    system: { disk: { used_pct: 0 }, generated_at: 'fixture' },
+    maintenance: { active: false, message: null }, ingest: { packet_age_minutes: 0 }, workers: [],
+  } as never);
+  assert.deepEqual(publicHealth.incidents, [{ code: 'privacy_generation_unhealthy', severity: 'critical' }]);
+  assert.doesNotMatch(JSON.stringify(publicHealth), /desiredGeneration|materializedGeneration|appliedGeneration|desired_ahead/);
 });

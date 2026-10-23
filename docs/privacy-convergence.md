@@ -15,6 +15,72 @@ It operates on **all retained rows in both `packets` and `packet_paths`**, inclu
 compressed history. It does not alter privacy choices, delete rows, migrate the
 database, manage services, or refresh derived chart/path snapshots.
 
+## Generation health
+
+The read-only generation reconciler observes a single database snapshot:
+
+| Field | Authoritative source / meaning |
+| --- | --- |
+| `desiredGeneration` | `public_visibility_state.generation`: current policy generation. |
+| `materializedGeneration` | `packet_visibility_materialization_state.visibility_generation`: the stored packet-flag certificate. |
+| `appliedGeneration` | Generation admissible to the **global public-read gate**: the materialized generation only when it equals desired and no pending/processing/failed rematerialization exists; otherwise `null`. |
+
+There are two persisted privacy generation records in this repository. Applied
+is a derived admission result, not a third durable record, an in-memory cache
+stamp, a chart generation or CoreScope's replay cursor. This signal does not
+claim to verify a downstream consumer's independently applied generation.
+It matches global batch admission (`loadCurrentPublicPrivacyPolicy`); individual
+SQL packet reads additionally have node-scoped queue filtering. Pending work
+can therefore make this signal unhealthy while unaffected SQL rows remain readable.
+
+`meshcore_privacy_generation_healthy` is a single unlabelled boolean gauge:
+`1` means all three reported generations agree and the queue is inactive;
+`0` means divergence, missing/invalid state, active work, or a failed/timed-out
+observation. Generations remain decimal strings in diagnostics so comparisons
+never round large integers; values unsupported by the public reader fail closed.
+Each observation emits one JSON log with `event: "privacy_generation_health"`,
+the same `healthy` value, a bounded `reason`, the generation triple and
+`queueActive`. It contains no node identities, packet data or raw DB errors.
+
+The existing backend and health-worker `/metrics` scrapes drive observations,
+independently of dashboard queries or cleanup. The cached `/api/health` overview
+also observes the same reconciler and adds the critical incident
+`privacy_generation_unhealthy`; public responses expose only its code and
+severity. Detailed operator health includes `privacy_visibility`. Liveness and
+dependency `/readyz` retain their existing meaning. No new CLI is required.
+
+The probe issues one SELECT: two singleton lookups and queue `EXISTS` using the
+status index. It does not count/scan packet history, prefixes, charts or queue
+contents. Observations return within two seconds, abort the application's DB
+query on timeout, and share at most one pending read across scrapes/health.
+If pool acquisition is still draining after timeout, observations remain
+unhealthy until it settles; no additional queries accumulate. A later fresh
+observation can recover the signal. No generation, timestamp, queue status or
+packet flag is changed, and no repair function is called.
+
+The existing Prometheus rule file adds `PrivacyGenerationUnhealthy` when the
+backend gauge stays zero **or absent** for five minutes. This holdoff allows
+short rematerialization work to settle; the gauge and health incident change
+immediately. Alert resolution requires a successful healthy observation.
+The existing backend scrape target and rule mount already provide wiring;
+activation requires the normal reviewed release of code and monitoring rules.
+This change does not deploy or reload either one.
+
+On an alert:
+
+1. Inspect the structured event and internal health detail. A missing relation,
+   read failure or absent metric is unavailable evidence, never proof of convergence.
+2. For `desired_ahead`/`materialized_ahead` with `queueActive: false`, investigate
+   recent policy changes and confirm migration 062 is installed through normal
+   operator procedures. An empty queue does not certify packet flags.
+3. For `queue_active`, inspect the existing rematerialization backlog/worker
+   diagnostics. Do not reset a processing claim or copy generation numbers.
+4. An authorized operator may run the read-only inventory described below to
+   audit stored flags. Any repair is a separately reviewed maintenance action.
+5. Verify the gauge returns to `1`, the health incident clears and the alert
+   resolves. This check certifies the generation fence, not correctness of all
+   historical flags or downstream replay freshness.
+
 ## Inventory and repair
 
 Use the reviewed backend build with migration 062 applied through the normal

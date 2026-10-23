@@ -331,6 +331,25 @@ export const privacyFilterTotal = new Counter({
   registers: [metricsRegistry],
 });
 
+let privacyGenerationHealthCollector: (() => Promise<boolean>) | null = null;
+
+export function setPrivacyGenerationHealthCollector(collector: () => Promise<boolean>): void {
+  privacyGenerationHealthCollector = collector;
+}
+
+export const privacyGenerationHealthy = new Gauge({
+  name: 'meshcore_privacy_generation_healthy',
+  help: 'One when desired, materialized and globally admissible privacy generations agree; zero on drift or an unavailable observation.',
+  registers: [metricsRegistry],
+  async collect() {
+    this.set(0);
+    if (privacyGenerationHealthCollector) {
+      try { this.set(await privacyGenerationHealthCollector() ? 1 : 0); }
+      catch { this.set(0); }
+    }
+  },
+});
+
 export const gracefulShutdownTotal = new Counter({
   name: 'meshcore_graceful_shutdown_total',
   help: 'Graceful shutdown attempts by bounded outcome.',
