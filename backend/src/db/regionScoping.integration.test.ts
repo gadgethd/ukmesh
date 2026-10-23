@@ -22,11 +22,14 @@ test('region reads preserve identity/privacy semantics and use indexes in real P
   const pool = new pg.Pool({ connectionString: owned.toString(), max: 2 });
   // Capture the original method before redirecting application pools to our fixture.
   const query = pool.query.bind(pool);
+  const previousMode = process.env['MQTT_INGEST_MODE'];
   t.after(async () => {
     t.mock.restoreAll();
     await pool.end();
     await admin.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
     await admin.end();
+    if (previousMode === undefined) delete process.env['MQTT_INGEST_MODE'];
+    else process.env['MQTT_INGEST_MODE'] = previousMode;
   });
   await query(fs.readFileSync(new URL('./schema/base.sql', import.meta.url), 'utf8'));
   await runMigrations(pool);
@@ -86,6 +89,16 @@ test('region reads preserve identity/privacy semantics and use indexes in real P
   assert.equal(messages[0]?.['rx_count'], 1);
   const events = await getRecentPacketEvents(100, 'ukmesh', undefined, 'Europe');
   assert.deepEqual(events.map((row) => row['packet_hash']), ['regional']);
+  // RAM overlap adds a placeholder after region; execute that SQL too, rather
+  // than relying on string assertions for the shifted parameter positions.
+  process.env['MQTT_INGEST_MODE'] = 'ram';
+  const overlapPackets = await getRecentPackets(100, 'ukmesh', undefined, 'full', undefined, undefined, ['regional'], 'Europe');
+  const overlapMessages = await getRecentMessages(100, 'ukmesh', undefined, undefined, undefined, ['regional'], 'Europe');
+  for (const rows of [overlapPackets, overlapMessages]) {
+    assert.deepEqual(rows.map((row) => row['packet_hash']), ['regional']);
+    assert.equal(rows[0]?.['rx_count'], 1);
+  }
+  process.env['MQTT_INGEST_MODE'] = previousMode;
   assert.deepEqual(await getMultibytePathSegments('ukmesh', undefined, 'Europe'), { maxCount: 0, segments: [] });
   assert.deepEqual(await getViableLinks('ukmesh', undefined, undefined, 'Europe'), []);
 

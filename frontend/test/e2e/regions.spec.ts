@@ -46,9 +46,16 @@ async function installRegionFixture(page: Page, enabled: boolean, delayEng = fal
   let releaseEng = () => {};
   const held = new Promise<void>((resolve) => { releaseEng = resolve; });
   const requested: URL[] = [];
+  const crashes: unknown[] = [];
   await page.route('**/api/**', async (route) => {
     const url = new URL(route.request().url());
     requested.push(url);
+    if (url.pathname.endsWith('/telemetry/frontend-error')) {
+      const crash = route.request().postDataJSON();
+      crashes.push(crash);
+      console.log('Browser telemetry:', JSON.stringify(crash));
+      return route.fulfill({ json: { ok: true } });
+    }
     if (url.pathname.endsWith('/runtime-config')) {
       return route.fulfill({ json: { version: 1, packetArcs: false, heatmap: false,
         regionScoping: enabled, privacyGeneration: 1, refreshAfterSeconds: 30 } });
@@ -67,7 +74,7 @@ async function installRegionFixture(page: Page, enabled: boolean, delayEng = fal
     } });
     return route.fulfill({ json: {} });
   });
-  return { requested, releaseEng, disable: () => { enabled = false; } };
+  return { requested, crashes, releaseEng, disable: () => { enabled = false; } };
 }
 
 async function snapshot(page: Page) {
@@ -89,6 +96,7 @@ test('default-off ignores region hashes and preserves global socket/poll request
   expect(fixture.requested.some((url) => url.pathname.endsWith('/regions/summary'))).toBe(false);
   expect(fixture.requested.some((url) => url.searchParams.has('region'))).toBe(false);
   expect(await page.evaluate(() => (window as unknown as { regionSockets: { url: string }[] }).regionSockets.every((socket) => !new URL(socket.url).searchParams.has('region')))).toBe(true);
+  expect(fixture.crashes).toEqual([]);
 });
 
 test('region selection round-trips reload, browser history and All regions', async ({ page }, testInfo) => {
@@ -102,6 +110,7 @@ test('region selection round-trips reload, browser history and All regions', asy
   await expect.poll(async () => (await snapshot(page)).names).toEqual(['Europe']);
   await expect(page).toHaveURL(/#note=keep&region=Europe$/);
   await page.reload();
+  await page.locator('.app-shell').waitFor({ timeout: 15_000 });
   await expect(select).toHaveValue('Europe');
   await expect.poll(async () => (await snapshot(page)).names).toEqual(['Europe']);
   await select.selectOption('');
@@ -114,6 +123,8 @@ test('region selection round-trips reload, browser history and All regions', asy
   await expect(select).toHaveValue('');
   await select.selectOption('Europe');
   await expect.poll(async () => (await snapshot(page)).names).toEqual(['Europe']);
+  await expect(select).toBeVisible();
+  expect(fixture.crashes).toEqual([]);
   const bounds = await select.boundingBox();
   expect(bounds!.x).toBeGreaterThanOrEqual(0);
   expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(page.viewportSize()!.width);
@@ -158,4 +169,5 @@ test('late old-region responses cannot repopulate the new scope and runtime disa
   await expect(select).toHaveCount(0);
   await expect.poll(async () => (await snapshot(page)).names).toEqual(['Europe', 'eng-ne']);
   expect((await snapshot(page)).scope).not.toContain('region-');
+  expect(fixture.crashes).toEqual([]);
 });
