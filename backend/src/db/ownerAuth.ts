@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { resolveDbAssetPath } from './assets.js';
 import { boundedIntegerSetting } from '../platform/config/boundedNumber.js';
 import { planOperatorConfiguredOwnerGrantSync } from '../owner/ownerGrantReconciliation.js';
+import type { AppliedOwnerAclArtifact } from '../owner/ownerInventoryReadiness.js';
 
 const { Pool } = pg;
 const OWNER_DB_NAME = process.env['OWNER_POSTGRES_DB'] ?? 'meshcore_owner_auth';
@@ -533,6 +534,28 @@ export async function getOwnerAclReadiness(): Promise<{
     lastVerifiedAt: row?.last_verified_at ?? null,
     lastError: row?.last_error ?? null,
   };
+}
+
+export async function getAppliedOwnerAclArtifact(generation: string): Promise<AppliedOwnerAclArtifact | null> {
+  const result = await ownerPool.query<{
+    generation: string;
+    renderer_version: string;
+    content_sha256: string;
+    content: string;
+  }>(
+    `SELECT generation, renderer_version, content_sha256, content
+       FROM owner_acl_artifacts
+      WHERE generation = $1 AND mode = 'apply' AND applied_at IS NOT NULL
+        AND validation_json->>'ok' = 'true'`,
+    [generation],
+  );
+  const row = result.rows[0];
+  return row ? {
+    generation: row.generation,
+    rendererVersion: row.renderer_version,
+    contentSha256: row.content_sha256,
+    content: row.content,
+  } : null;
 }
 
 export async function saveOwnerAclArtifact(input: {
