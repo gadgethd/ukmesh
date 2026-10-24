@@ -349,6 +349,7 @@ export const API_CONTRACTS: readonly ApiContract[] = [
     '/owner/logout',
     '/owner/packet-sharing',
     '/owner/public-feed',
+    '/owner/sessions/revoke-all',
   ], 'owner'),
   ...contracts('DELETE', ['/coverage/planned/:planId'], 'public'),
   ...contracts('DELETE', ['/owner/alert-rules/:id'], 'owner'),

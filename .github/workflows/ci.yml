@@ -45,6 +45,7 @@ jobs:
       TEST_ANALYSIS_DATABASE_URL: postgresql://postgres:analysis-test-password@127.0.0.1:55433/postgres
       TEST_VACUUM_DATABASE_URL: postgresql://postgres:analysis-test-password@127.0.0.1:55433/postgres
       TEST_INGEST_DATABASE_URL: postgresql://postgres:analysis-test-password@127.0.0.1:55433/postgres
+      TEST_OWNER_DATABASE_URL: postgresql://postgres:analysis-test-password@127.0.0.1:55433/meshcore_owner_auth_ci
     defaults:
       run:
         working-directory: backend
@@ -61,6 +62,7 @@ jobs:
       - run: npm run typecheck
       - run: npm run contract:check
       - run: npm test
+      - run: npm run test:owner-integration
       - run: npm run test:analysis-integration
       - run: npm run test:vacuum-integration
       - name: Configure bounded RAM Redis fixture

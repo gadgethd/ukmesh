@@ -24,6 +24,14 @@ const mqttAuditRetentionDays = Math.min(
   365,
   Math.max(1, Number(process.env['MQTT_AUDIT_RETENTION_DAYS'] ?? 30) || 30),
 );
+const ownerSessionMaxPerUser = Math.min(
+  100,
+  Math.max(2, Number(process.env['OWNER_SESSION_MAX_PER_USER'] ?? 20) || 20),
+);
+const ownerSessionRetentionDays = Math.min(
+  365,
+  Math.max(7, Number(process.env['OWNER_SESSION_RETENTION_DAYS'] ?? 30) || 30),
+);
 
 function getPrimaryDatabaseUrl(): string {
   const raw = String(process.env['DATABASE_URL'] ?? '').trim();
@@ -111,6 +119,123 @@ export async function initOwnerAuthDb(): Promise<void> {
   const sql = fs.readFileSync(schemaPath, 'utf8');
   await ownerPool.query(sql);
   console.log('[owner-auth] schema initialised');
+}
+
+export async function createOwnerSession(
+  mqttUsername: string,
+  ttlMs: number,
+): Promise<{ sessionId: string; expiresAt: number }> {
+  const normalized = mqttUsername.trim();
+  if (!normalized) throw new Error('OWNER_SESSION_USERNAME_REQUIRED');
+  if (!Number.isSafeInteger(ttlMs) || ttlMs <= 0) throw new Error('OWNER_SESSION_TTL_INVALID');
+  const sessionId = randomUUID();
+  const expiresAt = Date.now() + ttlMs;
+  let client: pg.PoolClient | undefined;
+  try {
+    client = await ownerPool.connect();
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`owner-session:${normalized}`]);
+    await client.query(
+      `INSERT INTO owner_sessions (session_id, mqtt_username, created_at, last_seen_at, expires_at)
+       VALUES ($1, $2, clock_timestamp(), clock_timestamp(), to_timestamp($3 / 1000.0))`,
+      [sessionId, normalized, expiresAt],
+    );
+    await client.query(
+      `WITH ranked AS (
+         SELECT session_id,
+                ROW_NUMBER() OVER (ORDER BY created_at DESC, session_id DESC) AS retained_rank
+           FROM owner_sessions
+          WHERE mqtt_username = $1
+            AND revoked_at IS NULL
+            AND expires_at > NOW()
+       )
+       UPDATE owner_sessions target
+          SET revoked_at = NOW()
+         FROM ranked
+        WHERE target.session_id = ranked.session_id
+          AND ranked.retained_rank > $2
+          AND target.session_id <> $3`,
+      [normalized, ownerSessionMaxPerUser, sessionId],
+    );
+    await client.query(
+      `DELETE FROM owner_sessions
+        WHERE (revoked_at IS NOT NULL OR expires_at <= NOW())
+          AND COALESCE(revoked_at, expires_at) < NOW() - ($1 * INTERVAL '1 day')`,
+      [ownerSessionRetentionDays],
+    );
+    await client.query('COMMIT');
+  } catch (error) {
+    await client?.query('ROLLBACK').catch(() => undefined);
+    throw new Error('OWNER_SESSION_STORE_UNAVAILABLE', { cause: error });
+  } finally {
+    client?.release();
+  }
+  return { sessionId, expiresAt };
+}
+
+export async function isOwnerSessionActive(sessionId: string, mqttUsername: string): Promise<boolean> {
+  const normalized = mqttUsername.trim();
+  if (!sessionId || !normalized) return false;
+  try {
+    const result = await ownerPool.query<{ active: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1
+           FROM owner_sessions
+          WHERE session_id = $1
+            AND mqtt_username = $2
+            AND revoked_at IS NULL
+            AND expires_at > NOW()
+       ) AS active`,
+      [sessionId, normalized],
+    );
+    return result.rows[0]?.active === true;
+  } catch (error) {
+    throw new Error('OWNER_SESSION_STORE_UNAVAILABLE', { cause: error });
+  }
+}
+
+export async function touchOwnerSession(sessionId: string): Promise<void> {
+  if (!sessionId) return;
+  await ownerPool.query(
+    `UPDATE owner_sessions
+        SET last_seen_at = NOW()
+      WHERE session_id = $1
+        AND revoked_at IS NULL
+        AND expires_at > NOW()
+        AND last_seen_at < NOW() - INTERVAL '5 minutes'`,
+    [sessionId],
+  );
+}
+
+export async function revokeOwnerSession(sessionId: string): Promise<void> {
+  if (!sessionId) return;
+  await ownerPool.query(
+    `UPDATE owner_sessions
+        SET revoked_at = NOW()
+      WHERE session_id = $1
+        AND revoked_at IS NULL`,
+    [sessionId],
+  );
+}
+
+export async function revokeOwnerSessionsForUsername(mqttUsername: string): Promise<void> {
+  const normalized = mqttUsername.trim();
+  if (!normalized) return;
+  await ownerPool.query(
+    `UPDATE owner_sessions
+        SET revoked_at = NOW()
+      WHERE mqtt_username = $1
+        AND revoked_at IS NULL`,
+    [normalized],
+  );
+}
+
+export async function revokeAllOwnerSessions(): Promise<void> {
+  await ownerPool.query(
+    `UPDATE owner_sessions
+        SET revoked_at = NOW()
+      WHERE revoked_at IS NULL`,
+  );
 }
 
 export async function getOwnerNodeIdsForUsername(mqttUsername: string): Promise<string[]> {
@@ -416,6 +541,29 @@ export async function revokeOwnerGrant(
         reason: options.reason,
         generation: options.generation,
       });
+      const remaining = await client.query<{ active: boolean }>(
+        `SELECT EXISTS (
+           SELECT 1
+             FROM owner_account_nodes oan
+             JOIN owner_accounts oa ON oa.mqtt_username = oan.mqtt_username
+            WHERE oan.mqtt_username = $1
+              AND oa.is_active = TRUE
+              AND oan.revoked_at IS NULL
+              AND oan.verified_at IS NOT NULL
+              AND oan.verification_method IN ('operator-config', 'operator-database')
+              AND oan.node_id ~ '^[0-9A-F]{64}$'
+         ) AS active`,
+        [grant.mqttUsername],
+      );
+      if (remaining.rows[0]?.active !== true) {
+        await client.query(
+          `UPDATE owner_sessions
+              SET revoked_at = NOW()
+            WHERE mqtt_username = $1
+              AND revoked_at IS NULL`,
+          [grant.mqttUsername],
+        );
+      }
     }
     await client.query('COMMIT');
   } catch (error) {
