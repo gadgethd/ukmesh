@@ -54,12 +54,3 @@ ac4ee2afecc16ed67fdc09cf70953dc85d3a4c5a:website-live-manifest.staging.json:gene
 # deploy-sync commit 1d24322; both files were later removed from main.
 1d243222ef464a2e4c95cbce9e7a4ecd166534db:backend/backfill-region-names.mjs:generic-api-key:42
 1d243222ef464a2e4c95cbce9e7a4ecd166534db:backend/src/tools/rebuildRegionParticipation.ts:generic-api-key:45
-
-# MeshCore public node public keys used as fixtures in the mqtt test suite
-# (backend/src/mqtt/*.test.ts, commit c0eac55). These are public keys, not
-# secrets: they are the observable identity of nodes in meshcore/<IATA>/<KEY>/
-# topics and are published by design. No credential material.
-c0eac55e03923ea4ade18a27edde63d0f2247f76:backend/src/mqtt/topic.test.ts:generic-api-key:***
-c0eac55e03923ea4ade18a27edde63d0f2247f76:backend/src/mqtt/aclManager.test.ts:generic-api-key:***
-c0eac55e03923ea4ade18a27edde63d0f2247f76:backend/src/mqtt/brokerLog.test.ts:generic-api-key:***
-c0eac55e03923ea4ade18a27edde63d0f2247f76:backend/src/mqtt/connectionMonitor.test.ts:generic-api-key:***
