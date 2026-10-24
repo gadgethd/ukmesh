@@ -331,15 +331,26 @@ change.
 
 ### Denied PUBLISH on `/raw` (#269 / #213)
 
-**Disposition:** keep these denials. They are expected log noise from publishers
-using a topic outside the supported observer contract; the evidence does not
-show a packet-ingest gap.
+**Disposition:** `/raw` is an unsupported secondary publication. Keep the
+restricted ACL and fix the publisher. The separate `meshmonitor-observer` EXT
+family published supported `/packets` and `/status` topics: its historical
+denials were an onboarding/grant gap. The earlier version of this runbook
+incorrectly called that family `/raw` noise.
 
-The B4 review brief reports about 233 Mosquitto `Denied PUBLISH` lines from
-`ESP32_a806F8` for `meshcore/LBA/8CA23B78…/raw`, associated with a granted node,
-plus a separate `meshmonitor-observer EXT` `/raw` family. The count and client
-identities above come from that supplied log review; they were not re-counted
-against the live broker during this code change.
+The [2026-10-23 evidence review](reviews/20261023-ukmesh-broker.md) records exact
+keys, clients, commands, windows, and counts. Four retained broker archives
+contain **2,356** `/raw` denials from `ESP32_a806F8`, on
+`meshcore/LBA/8CA23B78908F366D2D9F63EFE4A5726D685332FD3EC9AFF1B3B6CFF22EC2AE8A/raw`.
+The current-log snapshot contains zero further denials from that client.
+Accepted `/packets` messages for the same key are present in the archive.
+
+The current `meshmonitor-observer-nevrg6ol` authenticates as `nick`. It has
+**zero denied publishes** in the retained files and accepted packets on
+`meshcore/EXT/67969D8FF8A2DE6FFF873638CCAB3F70E38111BE3BD599F75E9D21D907B217B5/packets`.
+The live ACL already grants this key's packet/status/neighbor topics. Historical
+broker output preserved in shared memory shows `meshmonitor-observer-qy92lten`
+denied on this key's `/status` and `/packets` topics; it does not establish a
+current fault. `EXT` is a valid IATA covered by the ACL's `+` segment.
 
 The renderer in `backend/src/mqtt/aclManager.ts` grants owner writes to
 `packets`, `status`, `neighbors`, and `neighbours`. `backend/src/mqtt/topic.ts`
@@ -348,9 +359,51 @@ accepts those suffixes and rejects `/raw`. Packet bytes are carried in the
 `backend/src/mqtt/client.ts`; there is no `/raw` topic consumer. Granting the
 extra suffix would authorize a broker topic that the backend does not ingest.
 
-Reopen this ruling if a supported publisher is denied on `/packets`, or if the
-ingest contract is deliberately extended with a `/raw` consumer. The topic
-parser test keeps the current rejection explicit.
+**Mick / ESP32 operator:** disable the secondary send to the exact `/raw` topic
+above in the publisher's topic configuration. Keep
+`meshcore/LBA/8CA23B78908F366D2D9F63EFE4A5726D685332FD3EC9AFF1B3B6CFF22EC2AE8A/packets`
+and its existing JSON envelope, including the `raw` hex field, and retain status
+and neighbor publication. If the firmware has no per-topic switch, ask its
+maintainer to remove the secondary `/raw` send; a firmware-specific switch has
+not been verified. Do not send a bare hex payload to `/packets`. Check fresh
+broker logs after the change: accepted packets should continue and `/raw`
+denials for this client should cease. No credential or owner grant change is
+needed for this optional, unused output.
+
+**Nick / meshmonitor operator:** retain username `nick` and base topic
+`meshcore/EXT/67969D8FF8A2DE6FFF873638CCAB3F70E38111BE3BD599F75E9D21D907B217B5`;
+publish the normal JSON envelopes on `/packets` and `/status`. The current
+evidence requires no client change. If supported topics become denied again,
+confirm the actual device key and username, then have an operator review the
+existing owner grant and [approved registration/provisioning workflow](runbook-srtm-alerts-observers.md#observer-registration).
+The reviewed grant must cover that exact key; broker connection success alone
+does not grant publish permission. Verify the reconciler's rendered ACL and
+fresh accepted messages after any approved correction. Avoid duplicate
+accounts, automatic grants from logs, and edits to the managed ACL.
+
+**Visibility:** the backend connection monitor reads the broker log's existing
+read-only mount. Every parsed denial increments
+`meshcore_mqtt_denied_publishes_total{kind,phase}`. `kind` is one of `raw`,
+`packets`, `status`, `neighbors`, `neighbours`, or `other`; `phase` is `history`
+or `live`. Client IDs, usernames, and topics appear only in the backend's
+`[conn-monitor] denied publish` JSON log records, with a per-scan occurrence
+count. Repeated client/topic/username groups coalesce within a scan. At most 64
+groups are logged per scan; excess occurrences are reported as
+`denied publish details omitted` and still counted by the metric. Detail fields
+are capped at 512 characters with `truncated=true`; use the broker source log
+for full longer values. Missing or expired connection context gives a null
+username and does not suppress telemetry. These observations cannot grant
+ownership or change the ACL.
+
+Use `sum by (kind) (increase(meshcore_mqtt_denied_publishes_total{phase="live"}[10m]))`
+to inspect recent recurrence, then find the exact client and topic in backend
+logs. History scans replay at startup (at most the last 50 MB); exclude
+`phase="history"` from live recurrence queries. These are counts of log
+observations, not durable, lifetime broker totals. The monitor polls every two
+seconds by default and depends on readable broker logs with denial logging
+enabled. Supported-topic denials need grant/configuration investigation;
+`/raw` needs the publisher correction above. Reopen the `/raw` policy only if
+the ingest contract deliberately adds a consumer for it.
 
 ### MeshIngestSilent
 
