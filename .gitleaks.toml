@@ -5,4 +5,13 @@ useDefault = true
 
 [allowlist]
 description = "Reviewed MeshCore public-channel material: the documented public channel key is published by the protocol, is not an application credential, and must not be treated as a leak. Private channel material enters only via MESHCORE_CHANNEL_SECRETS."
-regexes = ['''8b3387e9c5cdea6ac9e5edbaa115cd72''']
+regexes = [
+  '''8b3387e9c5cdea6ac9e5edbaa115cd72''',
+  # MeshCore node public keys used as fixtures in the backend/src/mqtt test
+  # suite (commit c0eac55). A node public key is the node's advertised
+  # identity in meshcore/<IATA>/<KEY>/packets topics, published by design --
+  # not a credential. Kept here rather than per-line in .gitleaksignore so
+  # the allowance survives edits to the test files.
+  '''67969D8FF8A2DE6FFF873638CCAB3F70E38111BE3BD599F75E9D21D907B217B5''',
+  '''8CA23B78908F366D2D9F63EFE4A5726D685332FD3EC9AFF1B3B6CFF22EC2AE8A''',
+]
