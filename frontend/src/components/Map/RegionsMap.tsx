@@ -87,92 +87,105 @@ function RegionsMapOverlay({
   onRegionSelect,
   onRepeaterSelect,
 }: RegionsMapOverlayProps): null {
+  const [styleGeneration, setStyleGeneration] = useState(0);
   useEffect(() => {
-    map.addSource('region-areas', {
-      type: 'geojson',
-      data: { type: 'FeatureCollection', features: [] },
-    });
-    map.addSource('region-repeaters', {
-      type: 'geojson',
-      data: { type: 'FeatureCollection', features: [] },
-    });
+    const install = () => {
+      // A replacement style can still be fetching when this effect mounts.
+      // getStyle() is absent until its JSON is installed; isStyleLoaded() also
+      // waits for tiles/images and is too strict for adding application layers.
+      if (!map.getStyle()) return;
+      if (!map.getSource('region-areas')) map.addSource('region-areas', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] },
+      });
+      if (!map.getSource('region-repeaters')) map.addSource('region-repeaters', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] },
+      });
 
-    addRegionsLayer(map, {
-      ...regionAreaBase,
-      id: REGION_AREAS_FILL_LAYER,
-      paint: {
-        'fill-color': ['get', 'color'],
-        'fill-opacity': ['get', 'fill_opacity'],
-      },
-    });
-    addRegionsLayer(map, {
-      ...regionLineBase,
-      id: REGION_AREAS_LINE_LAYER,
-      paint: {
-        'line-color': ['get', 'color'],
-        'line-width': ['get', 'line_width'],
-        'line-opacity': ['get', 'line_opacity'],
-      },
-    });
-    addRegionsLayer(map, {
-      ...regionRepeaterBase,
-      id: REGION_REPEATER_HIT_LAYER,
-      paint: {
-        'circle-radius': ['interpolate', ['linear'], ['zoom'], 5, 9, 8, 11, 12, 15],
-        'circle-color': '#ffffff',
-        'circle-opacity': 0,
-        'circle-stroke-opacity': 0,
-      },
-    });
-    addRegionsLayer(map, {
-      ...regionRepeaterBase,
-      id: REGION_REPEATER_HALO_LAYER,
-      paint: {
-        'circle-radius': ['+', ['get', 'radius'], 5],
-        'circle-color': [
-          'case',
-          ['get', 'selected'], '#f8fafc',
-          ['==', ['get', 'status'], 'green'], '#22c55e',
-          '#ef4444',
-        ],
-        'circle-opacity': ['case', ['get', 'selected'], 0.3, 0.08],
-        'circle-blur': 0.55,
-      },
-    });
-    addRegionsLayer(map, {
-      ...regionRepeaterBase,
-      id: REGION_REPEATER_LAYER,
-      paint: {
-        'circle-radius': [
-          'interpolate', ['linear'], ['zoom'],
-          5, ['case', ['==', ['get', 'status'], 'green'], 3.6, 3],
-          8, ['case', ['==', ['get', 'status'], 'green'], 5.4, 4.2],
-          12, ['case', ['==', ['get', 'status'], 'green'], 7.5, 6],
-        ],
-        'circle-color': [
-          'case',
-          ['get', 'selected'], '#f8fafc',
-          ['==', ['get', 'status'], 'green'], '#22c55e',
-          '#ef4444',
-        ],
-        'circle-opacity': [
-          'case',
-          ['get', 'selected'], 1,
-          ['==', ['get', 'tier'], 'confirmed'], 0.95,
-          ['==', ['get', 'tier'], 'probable'], 0.8,
-          ['==', ['get', 'tier'], 'single'], 0.55,
-          0.72,
-        ],
-        'circle-stroke-color': [
-          'case',
-          ['get', 'selected'], '#ffffff',
-          ['==', ['get', 'status'], 'green'], '#052e16',
-          '#450a0a',
-        ],
-        'circle-stroke-width': ['case', ['get', 'selected'], 2.4, 1.1],
-        'circle-stroke-opacity': 0.92,
-      },
-    });
+      addRegionsLayer(map, {
+        ...regionAreaBase,
+        id: REGION_AREAS_FILL_LAYER,
+        paint: {
+          'fill-color': ['get', 'color'],
+          'fill-opacity': ['get', 'fill_opacity'],
+        },
+      });
+      addRegionsLayer(map, {
+        ...regionLineBase,
+        id: REGION_AREAS_LINE_LAYER,
+        paint: {
+          'line-color': ['get', 'color'],
+          'line-width': ['get', 'line_width'],
+          'line-opacity': ['get', 'line_opacity'],
+        },
+      });
+      addRegionsLayer(map, {
+        ...regionRepeaterBase,
+        id: REGION_REPEATER_HIT_LAYER,
+        paint: {
+          'circle-radius': ['interpolate', ['linear'], ['zoom'], 5, 9, 8, 11, 12, 15],
+          'circle-color': '#ffffff',
+          'circle-opacity': 0,
+          'circle-stroke-opacity': 0,
+        },
+      });
+      addRegionsLayer(map, {
+        ...regionRepeaterBase,
+        id: REGION_REPEATER_HALO_LAYER,
+        paint: {
+          'circle-radius': ['+', ['get', 'radius'], 5],
+          'circle-color': [
+            'case',
+            ['get', 'selected'], '#f8fafc',
+            ['==', ['get', 'status'], 'green'], '#22c55e',
+            '#ef4444',
+          ],
+          'circle-opacity': ['case', ['get', 'selected'], 0.3, 0.08],
+          'circle-blur': 0.55,
+        },
+      });
+      addRegionsLayer(map, {
+        ...regionRepeaterBase,
+        id: REGION_REPEATER_LAYER,
+        paint: {
+          'circle-radius': [
+            'interpolate', ['linear'], ['zoom'],
+            5, ['case', ['==', ['get', 'status'], 'green'], 3.6, 3],
+            8, ['case', ['==', ['get', 'status'], 'green'], 5.4, 4.2],
+            12, ['case', ['==', ['get', 'status'], 'green'], 7.5, 6],
+          ],
+          'circle-color': [
+            'case',
+            ['get', 'selected'], '#f8fafc',
+            ['==', ['get', 'status'], 'green'], '#22c55e',
+            '#ef4444',
+          ],
+          'circle-opacity': [
+            'case',
+            ['get', 'selected'], 1,
+            ['==', ['get', 'tier'], 'confirmed'], 0.95,
+            ['==', ['get', 'tier'], 'probable'], 0.8,
+            ['==', ['get', 'tier'], 'single'], 0.55,
+            0.72,
+          ],
+          'circle-stroke-color': [
+            'case',
+            ['get', 'selected'], '#ffffff',
+            ['==', ['get', 'status'], 'green'], '#052e16',
+            '#450a0a',
+          ],
+          'circle-stroke-width': ['case', ['get', 'selected'], 2.4, 1.1],
+          'circle-stroke-opacity': 0.92,
+        },
+      });
+
+      // Reapply current data, selection and visibility even if their React
+      // dependencies did not change while setStyle removed the old sources.
+      setStyleGeneration(generation => generation + 1);
+    };
+    map.on('style.load', install);
+    install();
 
     const handleRepeaterClick = (event: maplibregl.MapLayerMouseEvent) => {
       const nodeId = event.features?.[0]?.properties?.['node_id'];
@@ -197,6 +210,7 @@ function RegionsMapOverlay({
     map.addControl(navigation, 'top-right');
 
     return () => {
+      map.off('style.load', install);
       map.off('click', REGION_REPEATER_HIT_LAYER, handleRepeaterClick);
       map.off('click', REGION_AREAS_FILL_LAYER, handleAreaClick);
       map.off('mouseenter', REGION_REPEATER_HIT_LAYER, handlePointerEnter);
@@ -221,11 +235,13 @@ function RegionsMapOverlay({
   }, [map, onRegionSelect, onRepeaterSelect]);
 
   useEffect(() => {
+    if (!map.getStyle()) return;
     const areasSource = map.getSource('region-areas') as maplibregl.GeoJSONSource | undefined;
     areasSource?.setData(buildRegionAreasGeoJSON(regions, selectedRegion));
-  }, [map, regions, selectedRegion]);
+  }, [map, styleGeneration, regions, selectedRegion]);
 
   useEffect(() => {
+    if (!map.getStyle()) return;
     const repeatersSource = map.getSource('region-repeaters') as maplibregl.GeoJSONSource | undefined;
     if (!repeatersSource) return;
     const filters: RegionRepeaterFilters = {
@@ -244,9 +260,10 @@ function RegionsMapOverlay({
         properties: { ...feature.properties, radius: feature.properties['status'] === 'green' ? 4.5 : 3.8 },
       })),
     });
-  }, [map, repeaters, roleFilter, statusFilter, regionFilter, memberIds, selectedNodeId]);
+  }, [map, styleGeneration, repeaters, roleFilter, statusFilter, regionFilter, memberIds, selectedNodeId]);
 
   useEffect(() => {
+    if (!map.getStyle()) return;
     for (const [layerId, visible] of [
       [REGION_AREAS_FILL_LAYER, shapesVisible],
       [REGION_AREAS_LINE_LAYER, shapesVisible],
@@ -258,7 +275,7 @@ function RegionsMapOverlay({
         map.setLayoutProperty(layerId, 'visibility', visible ? 'visible' : 'none');
       }
     }
-  }, [map, shapesVisible, repeatersVisible]);
+  }, [map, styleGeneration, shapesVisible, repeatersVisible]);
 
   return null;
 }
