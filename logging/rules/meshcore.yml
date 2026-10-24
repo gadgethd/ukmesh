@@ -191,12 +191,12 @@ groups:
           runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#databasewalratehigh
 
       - alert: HostDiskSpaceLow
-        expr: node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs"} < 0.10
+        expr: node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs"} <= 0.10
         for: 10m
         labels:
           severity: critical
         annotations:
-          summary: Host filesystem {{ $labels.mountpoint }} has less than 10 percent free
+          summary: Host filesystem {{ $labels.mountpoint }} has 10 percent free or less
           owner: meshcore-operations
           runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#hostdiskspacelow
 

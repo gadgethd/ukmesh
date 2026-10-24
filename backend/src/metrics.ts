@@ -177,6 +177,19 @@ export const dbQueryDuration = new Histogram({
   registers: [metricsRegistry],
 });
 
+export const mqttConnectionMonitorHealthy = new Gauge({
+  name: 'meshcore_mqtt_connection_monitor_healthy',
+  help: 'Whether the broker-log monitor has completed a read without outstanding read or audit-write failures.',
+  registers: [metricsRegistry],
+});
+
+export const mqttConnectionMonitorErrorsTotal = new Counter({
+  name: 'meshcore_mqtt_connection_monitor_errors_total',
+  help: 'Broker-log monitor failures by bounded phase.',
+  labelNames: ['phase'] as const,
+  registers: [metricsRegistry],
+});
+
 export const packetBatchFlushTotal = new Counter({
   name: 'meshcore_packet_batch_flush_total',
   help: 'Atomic packet batch flushes by bounded outcome.',
@@ -519,7 +532,7 @@ export function observeHttpRequest(req: Request, res: Response, next: NextFuncti
 }
 
 export function updateDbPoolMetrics(
-  poolName: 'oltp' | 'analytics' | 'owner_auth',
+  poolName: 'oltp' | 'analytics' | 'owner_auth' | 'ingest',
   snapshot: { totalCount: number; idleCount: number; waitingCount: number },
 ): void {
   dbPoolTotal.set({ state: `${poolName}_total` }, snapshot.totalCount);
