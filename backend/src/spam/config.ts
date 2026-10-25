@@ -62,6 +62,18 @@ export interface SpamMessageConfig {
   /** At/above this message count a qualified cluster is treated as a sustained
    *  flood and scored up — an automated, high-volume abuse signal on its own. */
   floodMinMessages: number;
+  /** Rotating-identity (botnet) detection: a cluster whose senders are many
+   *  single-shot, machine-named identities posting within one burst is an
+   *  automated flood, not broad human participation. Minimum distinct senders
+   *  before the rotating-identity path can apply. */
+  rotatingMinSenders: number;
+  /** ...share of those senders that must appear exactly once in the analysis
+   *  window (a one-shot identity, not an established member). */
+  rotatingSingleShotShare: number;
+  /** ...share of sender names that must look machine-generated (keygen-style). */
+  rotatingMachineNameShare: number;
+  /** ...distinct senders required inside a single burst window. */
+  rotatingMinBurstSenders: number;
   /** Channel labels excluded from spam detection (the test channel by design
    *  carries repeated test traffic that is not abuse). */
   excludeChannels: string[];
@@ -132,6 +144,10 @@ export function loadSpamMessageConfig(): SpamMessageConfig {
     maxIndependentSenders: envNum('SPAM_MESSAGE_MAX_INDEPENDENT_SENDERS', 4),
     dominantSenderShare: envNum('SPAM_MESSAGE_DOMINANT_SENDER_SHARE', 0.6),
     floodMinMessages: envNum('SPAM_MESSAGE_FLOOD_MIN_MESSAGES', 25),
+    rotatingMinSenders: envNum('SPAM_MESSAGE_ROTATING_MIN_SENDERS', 5),
+    rotatingSingleShotShare: envNum('SPAM_MESSAGE_ROTATING_SINGLE_SHOT_SHARE', 0.8),
+    rotatingMachineNameShare: envNum('SPAM_MESSAGE_ROTATING_MACHINE_NAME_SHARE', 0.5),
+    rotatingMinBurstSenders: envNum('SPAM_MESSAGE_ROTATING_MIN_BURST_SENDERS', 3),
     excludeChannels: (process.env['SPAM_MESSAGE_EXCLUDE_CHANNELS'] ?? 'test')
       .split(',')
       .map((s) => s.trim().toLowerCase())

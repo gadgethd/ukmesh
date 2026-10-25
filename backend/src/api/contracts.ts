@@ -119,6 +119,138 @@ const OWNER_PACKET_SHARING_SCHEMA = {
   additionalProperties: false,
 };
 
+const OWNER_PUBLIC_FEED_SCHEMA = {
+  type: 'object',
+  required: [
+    'featureEnabled',
+    'configured',
+    'brokerUrl',
+    'enabled',
+    'nodeCount',
+    'eligible',
+    'recentPacketCount',
+    'topicFilters',
+    'lastForwardedAt',
+  ],
+  properties: {
+    featureEnabled: { type: 'boolean' },
+    configured: { type: 'boolean' },
+    brokerUrl: { type: ['string', 'null'], format: 'uri', maxLength: 2_048 },
+    enabled: { type: 'boolean' },
+    nodeCount: { type: 'integer', minimum: 0 },
+    eligible: { type: 'boolean' },
+    recentPacketCount: { type: 'integer', minimum: 0 },
+    topicFilters: {
+      type: 'array',
+      maxItems: 1,
+      items: { type: 'string', pattern: '^public/\\+/\\+/packets$' },
+    },
+    lastForwardedAt: { type: ['string', 'null'], format: 'date-time' },
+  },
+  additionalProperties: false,
+};
+
+const REGION_MEMBER_SCHEMA = {
+  type: 'object',
+  required: ['nodeId', 'name', 'role', 'lat', 'lon', 'packets', 'isBridge'],
+  properties: {
+    nodeId: { type: 'string', pattern: '^[0-9A-F]{64}$' },
+    name: { type: ['string', 'null'] },
+    role: { type: ['integer', 'null'] },
+    lat: { type: ['number', 'null'], minimum: -90, maximum: 90 },
+    lon: { type: ['number', 'null'], minimum: -180, maximum: 180 },
+    packets: { type: 'integer', minimum: 0 },
+    isBridge: { type: 'boolean' },
+  },
+  additionalProperties: false,
+};
+
+const REGION_SUMMARY_SCHEMA = {
+  type: 'object',
+  required: ['generatedAt', 'windowDays', 'regions'],
+  properties: {
+    generatedAt: { type: ['string', 'null'], format: 'date-time' },
+    windowDays: { type: ['integer', 'null'], minimum: 1, maximum: 365 },
+    regions: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['name', 'packetsTotal', 'memberCount', 'repeaterMemberCount', 'confidence', 'members'],
+        properties: {
+          name: { type: 'string', minLength: 1, maxLength: 64 },
+          packetsTotal: { type: 'integer', minimum: 0 },
+          memberCount: { type: 'integer', minimum: 0 },
+          repeaterMemberCount: { type: 'integer', minimum: 0 },
+          confidence: { type: 'string', enum: ['confirmed', 'probable', 'single'] },
+          firstSeen: { type: ['string', 'null'], format: 'date-time' },
+          lastSeen: { type: ['string', 'null'], format: 'date-time' },
+          members: { type: 'array', items: REGION_MEMBER_SCHEMA },
+        },
+        additionalProperties: false,
+      },
+    },
+  },
+  additionalProperties: false,
+};
+
+const REGION_REPEATERS_SCHEMA = {
+  type: 'object',
+  required: ['generatedAt', 'repeaters'],
+  properties: {
+    generatedAt: { type: ['string', 'null'], format: 'date-time' },
+    repeaters: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['nodeId', 'status', 'evidence', 'scopedPackets', 'unscopedPackets7d', 'regions'],
+        properties: {
+          nodeId: { type: 'string', pattern: '^[0-9A-F]{64}$' },
+          name: { type: ['string', 'null'] },
+          role: { type: ['integer', 'null'] },
+          lat: { type: ['number', 'null'], minimum: -90, maximum: 90 },
+          lon: { type: ['number', 'null'], minimum: -180, maximum: 180 },
+          status: { type: 'string', enum: ['green', 'red'] },
+          evidence: { type: 'string' },
+          scopedPackets: { type: 'integer', minimum: 0 },
+          unscopedPackets7d: { type: 'integer', minimum: 0 },
+          regions: { type: 'object', additionalProperties: { type: 'integer', minimum: 0 } },
+        },
+        additionalProperties: false,
+      },
+    },
+  },
+  additionalProperties: false,
+};
+
+const REGION_SCOPE_SCHEMA = {
+  type: 'object',
+  required: ['nodeId', 'status', 'evidence', 'scopedPackets', 'unscopedPackets7d', 'regions'],
+  properties: {
+    nodeId: { type: 'string', pattern: '^[0-9A-F]{64}$' },
+    name: { type: ['string', 'null'] },
+    role: { type: ['integer', 'null'] },
+    lat: { type: ['number', 'null'], minimum: -90, maximum: 90 },
+    lon: { type: ['number', 'null'], minimum: -180, maximum: 180 },
+    status: { type: 'string', enum: ['green', 'red', 'unobserved'] },
+    evidence: { type: 'string' },
+    scopedPackets: { type: 'integer', minimum: 0 },
+    unscopedPackets7d: { type: 'integer', minimum: 0 },
+    regions: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['region', 'packets'],
+        properties: {
+          region: { type: 'string', minLength: 1, maxLength: 64 },
+          packets: { type: 'integer', minimum: 0 },
+        },
+        additionalProperties: false,
+      },
+    },
+  },
+  additionalProperties: false,
+};
+
 function humanize(path: string): string {
   return path
     .replace(/^\/v1\//, '')
@@ -172,6 +304,9 @@ const PUBLIC_GET = [
   '/planned-nodes',
   '/radio-history',
   '/radio-stats',
+  '/regions/repeaters',
+  '/regions/summary',
+  '/repeaters/:id/scope',
   '/repeaters/firmware',
   '/rf-validation',
   '/runtime-config',
@@ -198,6 +333,7 @@ const OWNER_GET = [
   '/owner/live',
   '/owner/live-last-hop',
   '/owner/packet-sharing',
+  '/owner/public-feed',
   '/owner/session',
 ] as const;
 
@@ -212,6 +348,7 @@ export const API_CONTRACTS: readonly ApiContract[] = [
     '/owner/login',
     '/owner/logout',
     '/owner/packet-sharing',
+    '/owner/public-feed',
   ], 'owner'),
   ...contracts('DELETE', ['/coverage/planned/:planId'], 'public'),
   ...contracts('DELETE', ['/owner/alert-rules/:id'], 'owner'),
@@ -236,6 +373,33 @@ export const API_CONTRACTS: readonly ApiContract[] = [
         '202': {
           description: 'Slow-mode propagation window is still pending',
           responseSchema: SLOW_MODE_PENDING_SCHEMA,
+        },
+      },
+    };
+  }
+  if (contract.path === '/regions/summary') {
+    return {
+      ...contract,
+      summary: 'Read per-region scoped-traffic participation summary',
+      responseSchema: REGION_SUMMARY_SCHEMA,
+    };
+  }
+  if (contract.path === '/regions/repeaters') {
+    return {
+      ...contract,
+      summary: 'List repeaters classified by region-capability',
+      responseSchema: REGION_REPEATERS_SCHEMA,
+    };
+  }
+  if (contract.path === '/repeaters/:id/scope') {
+    return {
+      ...contract,
+      summary: 'Read one repeater\'s region scoping detail',
+      responseSchema: REGION_SCOPE_SCHEMA,
+      additionalResponses: {
+        '404': {
+          description: 'The repeater is not known to the region-scope tables',
+          responseSchema: ERROR_SCHEMA,
         },
       },
     };
@@ -332,6 +496,35 @@ export const API_CONTRACTS: readonly ApiContract[] = [
           responseSchema: ERROR_SCHEMA,
         },
       },
+    };
+  }
+  if (contract.path === '/owner/public-feed') {
+    return {
+      ...contract,
+      summary: contract.method === 'GET'
+        ? 'Read owner public-feed settings'
+        : 'Update owner public-feed settings',
+      ...(contract.method === 'GET'
+        ? { responseSchema: OWNER_PUBLIC_FEED_SCHEMA }
+        : {
+            requestSchema: {
+              type: 'object',
+              required: ['enabled'],
+              properties: { enabled: { type: 'boolean' } },
+              additionalProperties: false,
+            },
+            responseSchema: OWNER_PUBLIC_FEED_SCHEMA,
+            additionalResponses: {
+              '409': {
+                description: 'The public feed is not configured or the owner has no eligible packet activity',
+                responseSchema: ERROR_SCHEMA,
+              },
+              '503': {
+                description: 'The broker ACL could not be updated',
+                responseSchema: ERROR_SCHEMA,
+              },
+            },
+          }),
     };
   }
   return contract;

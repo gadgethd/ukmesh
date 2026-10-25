@@ -1,8 +1,37 @@
 import type { LivePacket, WSMessage } from '../types/index.js';
 import { isPrivateNode } from '../api/utils/privateNode.js';
+import type { PrivatePrefixCache } from '../privacy/privatePrefixCache.js';
+
+/** Current authority for all public message types; frozen flags are metadata. */
+export function authorizePublicWsMessage(message: WSMessage, policy: PrivatePrefixCache): WSMessage | null {
+  if (!message.data || typeof message.data !== 'object') return null;
+  const data = message.data as Record<string, unknown>;
+  const network = String(data['network'] ?? '');
+  if (!network.trim()) return null;
+  const classify = (rx: unknown, src: unknown, path: unknown = null, size: unknown = null) => policy.classify({
+    network, rxNodeId: typeof rx === 'string' ? rx : null, srcNodeId: typeof src === 'string' ? src : null,
+    pathHashes: Array.isArray(path) ? path as string[] : null, pathHashSizeBytes: typeof size === 'number' ? size : null,
+  }).visibilityOk;
+  if (message.type === 'packet') {
+    if (!classify(data['rxNodeId'], data['srcNodeId'], data['path'], data['pathHashSizeBytes'])) return null;
+    const packet = data as unknown as LivePacket;
+    const appData = packet.payload?.['appData'];
+    const name = appData && typeof appData === 'object' ? (appData as Record<string, unknown>)['name'] : packet.payload?.['name'];
+    if (packet.packetType === 4 && isPrivateNode(typeof name === 'string' ? name : null)) return null;
+    return { ...message, data: { ...data, visibilityOk: true, isPrivate: false } };
+  }
+  if (message.type === 'node_upsert') {
+    if (isPrivateNode(typeof data['name'] === 'string' ? data['name'] : null)) return null;
+    return classify(data['observer_id'], data['node_id']) ? message : null;
+  }
+  if (message.type === 'node_update') return classify(data['observerId'], data['nodeId']) ? message : null;
+  if (message.type === 'link_update') return classify(data['node_a_id'], data['node_b_id']) ? message : null;
+  return null; // Initial state has a separate generation-fenced query contract.
+}
 
 export class PublicWsPrivacyIndex {
   private readonly nodeIds = new Set<string>();
+  private readonly prefixes = new Set<string>();
   private ready = false;
 
   get isReady(): boolean {
@@ -11,6 +40,7 @@ export class PublicWsPrivacyIndex {
 
   replace(nodes: Array<{ node_id?: unknown; name?: unknown }>): void {
     this.nodeIds.clear();
+    this.prefixes.clear();
     for (const node of nodes) {
       if (isPrivateNode(typeof node.name === 'string' ? node.name : null)) {
         this.remember(String(node.node_id ?? ''));
@@ -23,6 +53,7 @@ export class PublicWsPrivacyIndex {
     const normalized = nodeId.trim().toLowerCase();
     if (!/^[0-9a-f]{64}$/.test(normalized)) return;
     this.nodeIds.add(normalized);
+    for (const size of [1, 2, 3]) this.prefixes.add(`${size}:${normalized.slice(0, size * 2)}`);
   }
 
   hasNode(nodeId: unknown): boolean {
@@ -47,9 +78,13 @@ export class PublicWsPrivacyIndex {
         return true;
       }
     }
-    // MQTT ingest and persisted packet rows share the same materialized
-    // visibility decision. Missing state is rejected rather than re-running
-    // path-prefix privacy logic on every WebSocket subscriber.
+    if (this.hasNode(packet.rxNodeId) || this.hasNode(packet.srcNodeId)) return true;
+    const size = packet.pathHashSizeBytes;
+    if (Number.isInteger(size) && size! >= 1 && size! <= 3 && Array.isArray(packet.path)) {
+      for (const hash of packet.path) {
+        if (this.prefixes.has(`${size}:${String(hash).toLowerCase()}`)) return true;
+      }
+    }
     return packet.visibilityOk !== true;
   }
 

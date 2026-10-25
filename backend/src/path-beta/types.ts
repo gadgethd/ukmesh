@@ -1,3 +1,5 @@
+import type { ChampionPriors } from './championPriors.js';
+
 export type MeshNode = {
   node_id: string;
   name: string | null;
@@ -21,6 +23,7 @@ export type LinkMetrics = {
 };
 
 export type PathLearningModel = {
+  champion?: ChampionPriors;
   prefixProbabilities: Map<string, number>;
   transitionProbabilities: Map<string, number>;
   edgeScores: Map<string, number>;
@@ -32,6 +35,8 @@ export type PathLearningModel = {
 
 
 export type PathPacket = {
+  direction?: string | null;
+  route_type?: number | null;
   packet_hash: string;
   rx_node_id: string | null;
   src_node_id: string | null;

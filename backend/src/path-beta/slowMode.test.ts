@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import test, { beforeEach } from 'node:test';
-import { setTimeout as sleep } from 'node:timers/promises';
+import { setImmediate as nextTurn } from 'node:timers/promises';
 
 // Env is read at CALL time (window/enabled/pending-max), so tests can flip
-// it per test. Use a tiny real window — Node 18 has no mock timers here.
+// it per test. Mock the clock: a loaded CI host can exhaust a real 50ms
+// window before the assertions run, even though the scheduler is correct.
 process.env['PATH_SLOW_MODE_ENABLED'] = 'true';
 process.env['PATH_SLOW_MODE_WINDOW_MS'] = '40';
 
@@ -40,7 +41,8 @@ const recorder = {
   },
 };
 
-beforeEach(() => {
+beforeEach((t) => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 1_700_000_000_000 });
   process.env['PATH_SLOW_MODE_ENABLED'] = 'true';
   process.env['PATH_SLOW_MODE_WINDOW_MS'] = '40';
   delete process.env['PATH_SLOW_MODE_PENDING_MAX'];
@@ -51,14 +53,15 @@ beforeEach(() => {
   recorder.calls.length = 0;
 });
 
-test('schedule is idempotent per (hash, network) and runs ONE final resolve', async () => {
+test('schedule is idempotent per (hash, network) and runs ONE final resolve', async (t) => {
   scheduleSlowResolution('AA11', 'ukmesh');
   scheduleSlowResolution('AA11', 'ukmesh');
   scheduleSlowResolution('AA11', 'othernet');
   assert.equal(slowModePendingCount(), 2);
   assert.ok(slowModeRemainingMs('AA11', 'ukmesh') > 0);
 
-  await sleep(120); // window is 40ms — let it fire
+  t.mock.timers.tick(120);
+  await nextTurn(); // finish the resolver's promise chain
 
   assert.equal(slowModePendingCount(), 0);
   assert.equal(slowModeRemainingMs('AA11', 'ukmesh'), 0);
@@ -87,13 +90,14 @@ test('pending set is bounded and evicts oldest on overflow', () => {
   assert.ok(slowModeRemainingMs('C3', 'ukmesh') > 0);
 });
 
-test('remaining ms tracks the window and reaches 0 after close', async () => {
+test('remaining ms tracks the window and reaches 0 after close', async (t) => {
   process.env['PATH_SLOW_MODE_WINDOW_MS'] = '60';
   scheduleSlowResolution('DD33', 'ukmesh');
   const t0 = Date.now();
   const remaining = slowModeRemainingMs('DD33', 'ukmesh');
   assert.ok(remaining > 0 && remaining <= 60);
-  await sleep(150);
+  t.mock.timers.tick(150);
+  await nextTurn();
   assert.equal(slowModeRemainingMs('DD33', 'ukmesh'), 0);
   assert.ok(Date.now() - t0 >= 50);
 });

@@ -1,15 +1,15 @@
 {
   "format": "meshcore-restore-receipt-v1",
-  "receipt_id": "restore-20260813T032656Z-20260813T031400Z-2c1dd39b7173",
-  "backup_id": "backup-20260813T031400Z-2c1dd39b7173",
-  "backup_completed_at": "2026-08-13T03:18:09.000Z",
-  "restore_started_at": "2026-08-13T03:20:02.000Z",
-  "restore_verified_at": "2026-08-13T03:26:56.000Z",
-  "restore_duration_seconds": 414,
-  "recovery_point_age_seconds": 527,
-  "archive_sha256": "6466077779be65d3f843843b3fbf57cd33abad671391c5744e93d3a0fe1911a7",
-  "source_revision": "2c1dd39b7173e2cb97164a6e9dbe9e1f600b6aaa",
-  "schema_version": 51,
+  "receipt_id": "restore-20261024T161112Z-20261024T013003Z-1f94bd8ef35c",
+  "backup_id": "backup-20261024T013003Z-1f94bd8ef35c",
+  "backup_completed_at": "2026-10-24T01:36:11.000Z",
+  "restore_started_at": "2026-10-24T16:00:41.000Z",
+  "restore_verified_at": "2026-10-24T16:11:12.000Z",
+  "restore_duration_seconds": 631,
+  "recovery_point_age_seconds": 52501,
+  "archive_sha256": "3dbca2b3f0965832749520a3eda618f42ccd7810b3bc3a288c57ae72322c5a33",
+  "source_revision": "1f94bd8ef35c2a7553f13e4e9a603054c6fb6400",
+  "schema_version": 62,
   "datasets": [
     "analytics",
     "owner_auth",
@@ -21,11 +21,11 @@
   "evidence": {
     "integrity": {
       "packet_sample_rows": 1000,
-      "packet_sample_md5": "d975a0fd34eee068df4eabf80f7d52ae",
+      "packet_sample_md5": "0d174b5da72a6625ad773ae11478b99f",
       "node_sample_rows": 1000,
-      "node_sample_md5": "5d1a8fea57b96209ad404739fbaa6628"
+      "node_sample_md5": "88a1a7b15b0768005e27c5ad9edfe9d9"
     },
-    "owner_lookup_count": 47
+    "owner_lookup_count": 67
   },
   "checks": {
     "migrations": "passed",

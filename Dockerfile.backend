@@ -16,7 +16,8 @@ RUN npm ci --omit=dev --audit \
   && npm cache clean --force \
   && rm -rf /usr/local/lib/node_modules/npm \
   && rm -f /usr/local/bin/npm /usr/local/bin/npx
-RUN mkdir -p /var/lib/meshcore-alerts && chown 1000:1000 /var/lib/meshcore-alerts
+RUN mkdir -p /var/lib/meshcore-alerts /var/lib/meshcore-synthetic \
+  && chown 1000:1000 /var/lib/meshcore-alerts /var/lib/meshcore-synthetic
 COPY --from=backend-builder /build/backend/dist ./dist
 COPY --from=backend-builder /build/backend/src/db/schema ./dist/db/schema
 COPY --from=backend-builder /build/backend/src/db/migrations ./dist/db/migrations

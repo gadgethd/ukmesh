@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
-import { pathLearningInputHash } from './rebuild.js';
+import { pathLearningInputHash, resolvePathForPacket } from './rebuild.js';
+import { buildNodePathHashIndex } from '../path-hash/utils.js';
 
 const baseInput = {
   modelNetwork: 'ukmesh',
@@ -33,6 +34,17 @@ test('path-learning input hash fences bounds, source rows, and privacy generatio
     ...baseInput,
     packets: [{ ...baseInput.packets[0]!, path_hashes: ['DD'] }],
   }), baseline);
+});
+
+test('training keeps original positions across missing relays and preserves verified loops', () => {
+  const a = { node_id: 'AA0011', lat: 51, lon: 1, elevation_m: null, iata: null };
+  const b = { ...a, node_id: 'BB0022' };
+  const rx = { ...a, node_id: 'CC0033' };
+  const index = buildNodePathHashIndex([a, b, rx]);
+  const gap = resolvePathForPacket(['AA0011', 'FFFFFF', 'BB0022'], undefined, rx, index, new Set());
+  assert.deepEqual(gap.map((hop) => hop.position), [0, 2]);
+  const loop = resolvePathForPacket(['AA0011', 'BB0022', 'AA0011'], undefined, rx, index, new Set());
+  assert.deepEqual(loop.map((hop) => hop.node.node_id), ['AA0011', 'BB0022', 'AA0011']);
 });
 
 test('rebuild has no full-table-per-network replacement path and retains all fallback', async () => {

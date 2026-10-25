@@ -55,7 +55,7 @@ function compareRows(left: OwnerDashboardRow, right: OwnerDashboardRow): number 
  * rows are also combined here because owner authorization can retain older
  * keys that the evidence-based global merge intentionally leaves separate.
  * Their keys stay visible in `members`, while the freshest row supplies the
- * display position and metadata.
+ * display position, metadata, and the authorized key used by the live endpoints.
  */
 export function groupOwnerNodes(
   rows: OwnerDashboardRow[],
@@ -84,8 +84,13 @@ export function groupOwnerNodes(
     const ordered = [...group].sort(compareRows);
     const representative = ordered[0]!;
     const members = Array.from(new Set(group.flatMap((row) => row.members))).sort();
-    const accessNodeId = authorized.find((nodeId) => members.includes(nodeId))
-      ?? representative.canonical_id;
+    // owner-dashboard-freshest-member: prefer the freshest row that has an
+    // authorized key so the live endpoints load the most recently seen member
+    // (owner authorization can retain older keys that sort first by node_id).
+    const accessNodeId = ordered.reduce<string | null>(
+      (found, row) => found ?? authorized.find((nodeId) => row.members.includes(nodeId)) ?? null,
+      null,
+    ) ?? representative.canonical_id;
 
     return {
       node_id: accessNodeId,

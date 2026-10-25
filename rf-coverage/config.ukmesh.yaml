@@ -55,7 +55,7 @@ coverage:
   progressive_publication: true
   publication_tile_size: 1024
   precision_min_free_disk_gb: 8
-  precision_chunk_budget_mb: 0
+  precision_chunk_budget_mb: 1024
   min_recompute_interval_hours: 6
   standard_requires_gpu: false
   calibrated_requires_gpu: false
@@ -75,7 +75,11 @@ calibration:
 gpu:
   mode: cpu
   remote:
-    broker_addr: ""
+    broker_addr: "100.127.15.104:19100"
+    max_in_flight: 2
+    # P11 (2026-10-25): after 240 min of non-busy errors the run is PARKED
+    # (ErrRemoteParked, exit 3) with its checkpoint intact — never CPU.
+    retry_error_stall_minutes: 240
 
 schedule:
   cron: "0 1 * * 0"

@@ -1,15 +1,18 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Area, AreaChart, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import {
+  LAST_HOP_WINDOW_OPTIONS,
   OWNER_AXIS_COLOR as AXIS_COLOR,
   OWNER_LABEL_COLOR as LABEL_COLOR,
   OWNER_TOOLTIP_BG as TIP_BG,
   OWNER_TOOLTIP_BORDER as TIP_BORDER,
   formatCompactTs,
   formatDurationMs,
+  lastHopWindowLabel,
   readExcludedLastHopSeries,
   writeExcludedLastHopSeries,
   type LastHopStrengthPoint,
+  type LastHopWindow,
   type OwnerLiveResponse,
 } from './ownerPortalModel.js';
 export const TrendBars: React.FC<{ points: Array<{ bucket: string; adverts: number }> }> = ({ points }) => {
@@ -93,6 +96,25 @@ const OwnerTelemetryTooltip: React.FC<{
 const LAST_HOP_COLORS = ['#00c4ff', '#6ddc7a', '#ff9f43', '#f472b6', '#a78bfa', '#facc15'];
 const MIN_LAST_HOP_SAMPLES = 10;
 
+const LastHopWindowToggle: React.FC<{
+  value: LastHopWindow;
+  onChange: (value: LastHopWindow) => void;
+}> = ({ value, onChange }) => (
+  <div className="owner-telemetry-metric__window-toggle" role="group" aria-label="RX strength time window">
+    {LAST_HOP_WINDOW_OPTIONS.map((option) => (
+      <button
+        key={option}
+        type="button"
+        className={`owner-telemetry-metric__window-btn${value === option ? ' owner-telemetry-metric__window-btn--active' : ''}`}
+        aria-pressed={value === option}
+        onClick={() => onChange(option)}
+      >
+        {option}
+      </button>
+    ))}
+  </div>
+);
+
 const LastHopStrengthTooltip: React.FC<{
   active?: boolean;
   payload?: Array<{ dataKey: string; value: number; color: string; payload: Record<string, unknown> }>;
@@ -118,7 +140,16 @@ const LastHopStrengthTooltip: React.FC<{
   );
 };
 
-export const LastHopStrengthChart: React.FC<{ nodeId: string; points: LastHopStrengthPoint[]; isPassiveRepeater?: boolean }> = ({ nodeId, points, isPassiveRepeater }) => {
+export const LastHopStrengthChart: React.FC<{
+  nodeId: string;
+  points: LastHopStrengthPoint[];
+  timeWindow: LastHopWindow;
+  onTimeWindowChange: (value: LastHopWindow) => void;
+  isPassiveRepeater?: boolean;
+  compareSeries?: Array<{ id: string; name: string; points: LastHopStrengthPoint[] }>;
+}> = ({ nodeId, points, timeWindow, onTimeWindowChange, isPassiveRepeater, compareSeries }) => {
+  const compareMode = Boolean(compareSeries && compareSeries.length >= 2);
+  const bucketLabel = timeWindow === '30d' ? '12h' : 'hourly';
   const [selectedSeriesKey, setSelectedSeriesKey] = useState<string | null>(null);
   const [excludedSeriesKeys, setExcludedSeriesKeys] = useState<string[]>(() => readExcludedLastHopSeries(nodeId));
   const visiblePoints = useMemo(
@@ -133,52 +164,90 @@ export const LastHopStrengthChart: React.FC<{ nodeId: string; points: LastHopStr
   }, [nodeId]);
 
   const chartState = useMemo(() => {
-    const totals = new Map<string, {
+    type ChartSeriesTotals = {
       key: string;
       label: string;
       totalSamples: number;
       bucketCount: number;
       buckets: Set<string>;
       resolution: LastHopStrengthPoint['resolution'];
-    }>();
-    for (const point of visiblePoints) {
-      const key = point.lastHopNodeId ?? `unresolved:${point.lastHopName}`;
-      const existing = totals.get(key);
-      if (existing) {
-        existing.totalSamples += point.sampleCount;
-        existing.buckets.add(point.bucket);
-        existing.bucketCount = existing.buckets.size;
-      } else {
-        totals.set(key, {
+    };
+    const totals = new Map<string, ChartSeriesTotals>();
+    const bucketed = new Map<string, Record<string, string | number | null>>();
+    const addSample = (bucket: string, key: string, value: number | null, samples: number) => {
+      const entry = bucketed.get(bucket) ?? { bucket };
+      entry[key] = value;
+      entry[`${key}__samples`] = samples;
+      bucketed.set(bucket, entry);
+    };
+
+    if (compareMode && compareSeries) {
+      // Compare mode: one line per selected repeater. Each bucket value is the
+      // sample-weighted average SNR across that repeater's last-hop series.
+      const accumulators = new Map<string, Map<string, { sum: number; samples: number }>>();
+      for (const node of compareSeries) {
+        const key = `cmp:${node.id}`;
+        const nodeTotals = totals.get(key) ?? {
           key,
-          label: point.lastHopName,
-          totalSamples: point.sampleCount,
-          bucketCount: 1,
-          buckets: new Set([point.bucket]),
-          resolution: point.resolution,
-        });
+          label: node.name,
+          totalSamples: 0,
+          bucketCount: 0,
+          buckets: new Set<string>(),
+          resolution: 'resolved' as const,
+        };
+        totals.set(key, nodeTotals);
+        const perBucket = accumulators.get(key) ?? new Map<string, { sum: number; samples: number }>();
+        accumulators.set(key, perBucket);
+        for (const point of node.points) {
+          if (point.resolution === 'unresolved' || point.avgSnr == null) continue;
+          const samples = Math.max(1, point.sampleCount);
+          const acc = perBucket.get(point.bucket) ?? { sum: 0, samples: 0 };
+          acc.sum += point.avgSnr * samples;
+          acc.samples += samples;
+          perBucket.set(point.bucket, acc);
+          nodeTotals.totalSamples += point.sampleCount;
+          nodeTotals.buckets.add(point.bucket);
+        }
+        nodeTotals.bucketCount = nodeTotals.buckets.size;
+      }
+      for (const [key, perBucket] of accumulators) {
+        for (const [bucket, acc] of perBucket) {
+          if (acc.samples < 1) continue;
+          addSample(bucket, key, Number((acc.sum / acc.samples).toFixed(2)), acc.samples);
+        }
+      }
+    } else {
+      for (const point of visiblePoints) {
+        const key = point.lastHopNodeId ?? `unresolved:${point.lastHopName}`;
+        const existing = totals.get(key);
+        if (existing) {
+          existing.totalSamples += point.sampleCount;
+          existing.buckets.add(point.bucket);
+          existing.bucketCount = existing.buckets.size;
+        } else {
+          totals.set(key, {
+            key,
+            label: point.lastHopName,
+            totalSamples: point.sampleCount,
+            bucketCount: 1,
+            buckets: new Set([point.bucket]),
+            resolution: point.resolution,
+          });
+        }
+        addSample(point.bucket, key, point.avgSnr, point.sampleCount);
       }
     }
 
     const allSeries = Array.from(totals.values())
-      .filter((series) => series.totalSamples >= MIN_LAST_HOP_SAMPLES)
-      .sort((a, b) => b.totalSamples - a.totalSamples || a.label.localeCompare(b.label));
+      .filter((series) => (compareMode ? series.totalSamples > 0 : series.totalSamples >= MIN_LAST_HOP_SAMPLES))
+      .sort(compareMode
+        ? (a, b) => a.label.localeCompare(b.label)
+        : (a, b) => b.totalSamples - a.totalSamples || a.label.localeCompare(b.label));
     const includedSeries = allSeries.filter((series) => !excludedSet.has(series.key));
     const selected = selectedSeriesKey
       ? includedSeries.filter((series) => series.key === selectedSeriesKey)
-      : includedSeries.slice(0, 6);
-    const selectedKeys = new Set(selected.map((series) => series.key));
+      : includedSeries.slice(0, compareMode ? 8 : 6);
     const seriesByKey = new Map(allSeries.map((series) => [series.key, series] as const));
-
-    const bucketed = new Map<string, Record<string, string | number | null>>();
-    for (const point of visiblePoints) {
-      const key = point.lastHopNodeId ?? `unresolved:${point.lastHopName}`;
-      if (!selectedKeys.has(key)) continue;
-      const entry = bucketed.get(point.bucket) ?? { bucket: point.bucket };
-      entry[key] = point.avgSnr;
-      entry[`${key}__samples`] = point.sampleCount;
-      bucketed.set(point.bucket, entry);
-    }
 
     return {
       allSeries,
@@ -188,7 +257,7 @@ export const LastHopStrengthChart: React.FC<{ nodeId: string; points: LastHopStr
       seriesByKey,
       data: Array.from(bucketed.values()).sort((a, b) => String(a.bucket).localeCompare(String(b.bucket))),
     };
-  }, [excludedSet, selectedSeriesKey, visiblePoints]);
+  }, [compareMode, compareSeries, excludedSet, selectedSeriesKey, visiblePoints]);
 
   useEffect(() => {
     if (selectedSeriesKey && !chartState.allSeries.some((series) => series.key === selectedSeriesKey)) {
@@ -203,8 +272,11 @@ export const LastHopStrengthChart: React.FC<{ nodeId: string; points: LastHopStr
   }, [excludedSet, selectedSeriesKey]);
 
   useEffect(() => {
+    // Compare-mode exclusions are session-only; the persisted list is keyed to
+    // last-hop series, not repeaters.
+    if (compareMode) return;
     writeExcludedLastHopSeries(nodeId, excludedSeriesKeys);
-  }, [excludedSeriesKeys, nodeId]);
+  }, [excludedSeriesKeys, nodeId, compareMode]);
 
   const toggleSeriesExclusion = (seriesKey: string) => {
     setExcludedSeriesKeys((current) => (
@@ -228,23 +300,27 @@ export const LastHopStrengthChart: React.FC<{ nodeId: string; points: LastHopStr
       <article className="owner-telemetry-metric">
         <div className="owner-panel__head owner-panel__head--compact">
           <div>
-            <h3>RX Strength by Last Hop <span className="owner-telemetry-metric__hint">(Node names are predicted based on the first two hex characters in the path)</span></h3>
-            <p>Average SNR over the last 7 days</p>
+            <h3>RX Strength by Last Hop <span className="owner-telemetry-metric__hint">{compareMode ? '(One line per selected repeater)' : '(Node names are predicted based on the first two hex characters in the path)'}</span></h3>
+            <p>{compareMode ? 'Comparing the selected repeaters' : `Average SNR over the last ${lastHopWindowLabel(timeWindow)}`}</p>
           </div>
         </div>
         <div
           className="owner-telemetry-metric__chart"
           role="img"
-          aria-label="No last-hop signal series with at least ten samples are available"
+          aria-label={compareMode
+            ? 'No comparable RX samples for the selected repeaters yet'
+            : 'No last-hop signal series with at least ten samples are available'}
         >
           <div className="owner-telemetry-metric__empty">
-            {isPassiveRepeater
-              ? 'This node does not report received packets via MQTT — rx signal data is captured by its companion node'
-              : 'No last-hop repeaters with 10+ samples yet'}
+            {compareMode
+              ? 'No comparable RX samples for the selected repeaters yet'
+              : isPassiveRepeater
+                ? 'This node does not report received packets via MQTT — rx signal data is captured by its companion node'
+                : 'No last-hop repeaters with 10+ samples yet'}
           </div>
         </div>
         <div className="owner-telemetry-metric__footer">
-          <span>Last 7d</span>
+          <LastHopWindowToggle value={timeWindow} onChange={onTimeWindowChange} />
           <span>Minimum 10 samples</span>
         </div>
       </article>
@@ -267,15 +343,19 @@ export const LastHopStrengthChart: React.FC<{ nodeId: string; points: LastHopStr
       <article className="owner-telemetry-metric owner-telemetry-metric--wide owner-telemetry-metric--tall">
         <div className="owner-panel__head owner-panel__head--compact">
           <div>
-            <h3>RX Strength by Last Hop <span className="owner-telemetry-metric__hint">(Node names are predicted based on the first two hex characters in the path)</span></h3>
-            <p>{latestActive || (chartState.includedSeries.length > 0 ? 'Average SNR over the last 7 days' : 'All eligible repeaters are currently hidden')}</p>
+            <h3>RX Strength by Last Hop <span className="owner-telemetry-metric__hint">{compareMode ? '(One line per selected repeater)' : '(Node names are predicted based on the first two hex characters in the path)'}</span></h3>
+            <p>{compareMode
+              ? `Comparing ${chartState.includedSeries.length} repeater${chartState.includedSeries.length === 1 ? '' : 's'} · average SNR over the last ${lastHopWindowLabel(timeWindow)}`
+              : (latestActive || (chartState.includedSeries.length > 0 ? `Average SNR over the last ${lastHopWindowLabel(timeWindow)}` : 'All eligible repeaters are currently hidden'))}</p>
           </div>
           <strong className="owner-telemetry-metric__value">{chartState.series.length}</strong>
         </div>
         <div
           className="owner-telemetry-metric__chart"
           role="img"
-          aria-label={latestActive || `${chartState.series.length} last-hop signal series over seven days`}
+          aria-label={compareMode
+            ? `Comparing ${chartState.includedSeries.length} repeaters: average SNR over the last ${lastHopWindowLabel(timeWindow)}`
+            : (latestActive || `${chartState.series.length} last-hop signal series over the last ${lastHopWindowLabel(timeWindow)}`)}
         >
           {chartState.series.length > 0 && chartState.data.length > 0 ? (
             <ResponsiveContainer width="100%" height="100%">
@@ -310,11 +390,13 @@ export const LastHopStrengthChart: React.FC<{ nodeId: string; points: LastHopStr
           )}
         </div>
         <div className="owner-telemetry-metric__footer">
-          <span>Last 7d</span>
+          <LastHopWindowToggle value={timeWindow} onChange={onTimeWindowChange} />
           <span>
             {selectedSeriesKey
               ? 'Focused on one repeater'
-              : `${chartState.includedSeries.length} shown of ${chartState.allSeries.length}`}
+              : compareMode
+                ? `${chartState.includedSeries.length} of ${chartState.allSeries.length} repeaters`
+                : `${chartState.includedSeries.length} shown of ${chartState.allSeries.length}`}
             {chartState.excludedCount > 0 ? ` · ${chartState.excludedCount} hidden` : ''}
           </span>
         </div>
@@ -350,7 +432,7 @@ export const LastHopStrengthChart: React.FC<{ nodeId: string; points: LastHopStr
               type="button"
               className={`owner-telemetry-metric__series-btn${selectedSeriesKey === series.key ? ' owner-telemetry-metric__series-btn--active' : ''}`}
               onClick={() => setSelectedSeriesKey(series.key)}
-              title={`${series.label} · ${series.bucketCount} hourly buckets · ${series.totalSamples} packets in last 7d`}
+              title={`${series.label} · ${series.bucketCount} ${bucketLabel} buckets · ${series.totalSamples} packets in last ${timeWindow}`}
             >
               {series.label} ({series.totalSamples})
             </button>
