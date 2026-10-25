@@ -13,6 +13,13 @@ bots:
     path_regex: ^/ws(/.*)?$
     action: ALLOW
 
+  # ── PWA shell: service worker and manifest must never be challenged ────────
+  # An HTML challenge returned for /sw.js breaks registration and update,
+  # stranding clients on a stale app cache after a deploy.
+  - name: allow-pwa-shell
+    path_regex: ^/(sw\.js|sw-runtime\.js|manifest\.json|workbox-[^/]+\.js)$
+    action: ALLOW
+
   # ── Terrain tile paths: always allow, no challenge ─────────────────────────
   # Static elevation tiles are public read-only data (no sensitive content).
   # Bypassing Anubis here lets Cloudflare cache them without cookie headers
