@@ -5,6 +5,7 @@ import { getRedisConnectionOptions, getRedisUrl } from '../platform/config/redis
 import {
   configuredLifecycleTargets,
   dataLifecycleConfigurationStatus,
+  lifecyclePolicy,
 } from '../db/dataLifecycle.js';
 import { INGEST_HEALTH_SQL, PATH_HASH_HEALTH_SQL } from './packetDiagnostics.js';
 import { DATABASE_MAINTENANCE_SQL } from './vacuumBacklog.js';
@@ -286,6 +287,17 @@ export async function deleteExpiredRows(
   target: RetentionTarget,
   execute: (text: string, params?: unknown[]) => Promise<unknown> = query,
 ): Promise<void> {
+  // Row-level DELETE on a compressed hypertable forces transparent
+  // decompression and can exceed TimescaleDB's per-DML decompression limit.
+  // Whole-chunk drops are the supported retention path; the boundary chunk is
+  // kept until it is fully expired, so retention can overshoot by one chunk.
+  if (lifecyclePolicy(target.table).kind === 'hypertable') {
+    await execute(
+      'SELECT drop_chunks($1::regclass, older_than => $2::interval)',
+      [target.table, target.retention],
+    );
+    return;
+  }
   await execute(retentionDeleteSql(target), [target.retention, target.batchSize]);
 }
 
