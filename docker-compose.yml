@@ -295,6 +295,11 @@ services:
       HEALTH_VOLUME_PATHS: database=/health-volumes/database=${HEALTH_DATABASE_BUDGET_BYTES:-322122547200},redis=/health-volumes/redis=${HEALTH_REDIS_BUDGET_BYTES:-4294967296},terrain=/health-volumes/terrain=${HEALTH_TERRAIN_BUDGET_BYTES:-53687091200},logs=/health-volumes/logs=${HEALTH_LOG_BUDGET_BYTES:-21474836480}
       DATA_LIFECYCLE_RETENTION_ENABLED: "true"
       DATA_LIFECYCLE_RETENTION_TARGETS: ${DATA_LIFECYCLE_RETENTION_TARGETS:-packets,worker_health_snapshots,frontend_error_events,owner_alert_deliveries,owner_packet_share_deliveries,public_feed_deliveries,operational_check_results,observer_region_packet_sightings,observer_region_observer_sightings,link_job_commits,ml_model_variant_packet_results,packet_decryptions,observer_registration_requests,operator_audit_events}
+      DATA_LIFECYCLE_RESTORE_RECEIPT_PATH: /backup-receipts/latest.json
+      DATA_LIFECYCLE_RESTORE_RECEIPT_SIGNATURE_PATH: /backup-receipts/latest.json.sig
+      DATA_LIFECYCLE_RECEIPT_VERIFY_KEY_PATH: /etc/meshcore/restore-receipt/verify.pem
+      DATA_LIFECYCLE_RECEIPT_VERIFY_KEY_SHA256: ${DATA_LIFECYCLE_RECEIPT_VERIFY_KEY_SHA256:-}
+      DATA_LIFECYCLE_RECEIPT_MAX_AGE_DAYS: ${DATA_LIFECYCLE_RECEIPT_MAX_AGE_DAYS:-7}
       NODE_ENV: production
     depends_on:
       db-migrate:
@@ -304,6 +309,8 @@ services:
       - redis_data:/health-volumes/redis:ro
       - srtm_data:/health-volumes/terrain:ro
       - loki_data:/health-volumes/logs:ro
+      - ${BACKUP_RECEIPT_HOST_DIR:-./backup-receipts}:/backup-receipts:ro
+      - ${RESTORE_RECEIPT_TRUST_HOST_DIR:-./restore-receipt-trust}:/etc/meshcore/restore-receipt:ro
 
   # Tags new public-channel messages with TypeSafe/Jev (shadow-mode trial,
   # added 2026-09-17 by Hermes for Ben). Results land in message_tags; nothing
