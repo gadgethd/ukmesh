@@ -222,6 +222,57 @@ const REGION_REPEATERS_SCHEMA = {
   additionalProperties: false,
 };
 
+const UNATTRIBUTED_CLUSTER_SCHEMA = {
+  type: 'object',
+  required: ['id', 'lat', 'lon', 'packets', 'nodeCount', 'firstSeen', 'lastSeen', 'topNodes'],
+  properties: {
+    id: { type: 'string', pattern: '^u[0-9]{1,3}$' },
+    lat: { type: 'number', minimum: -90, maximum: 90 },
+    lon: { type: 'number', minimum: -180, maximum: 180 },
+    packets: { type: 'integer', minimum: 1 },
+    nodeCount: { type: 'integer', minimum: 0 },
+    firstSeen: { type: ['string', 'null'], format: 'date-time' },
+    lastSeen: { type: ['string', 'null'], format: 'date-time' },
+    topNodes: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['nodeId', 'name', 'lat', 'lon', 'packets'],
+        properties: {
+          nodeId: { type: 'string', pattern: '^[0-9A-F]{64}$' },
+          name: { type: ['string', 'null'] },
+          lat: { type: 'number', minimum: -90, maximum: 90 },
+          lon: { type: 'number', minimum: -180, maximum: 180 },
+          packets: { type: 'integer', minimum: 1 },
+        },
+        additionalProperties: false,
+      },
+    },
+  },
+  additionalProperties: false,
+};
+
+const REGION_UNATTRIBUTED_SCHEMA = {
+  type: 'object',
+  required: ['generatedAt', 'windowDays', 'clusters', 'totals'],
+  properties: {
+    generatedAt: { type: ['string', 'null'], format: 'date-time' },
+    windowDays: { type: ['integer', 'null'], minimum: 1, maximum: 365 },
+    clusters: { type: 'array', items: UNATTRIBUTED_CLUSTER_SCHEMA },
+    totals: {
+      type: 'object',
+      required: ['clusters', 'packets', 'nodes'],
+      properties: {
+        clusters: { type: 'integer', minimum: 0 },
+        packets: { type: 'integer', minimum: 0 },
+        nodes: { type: 'integer', minimum: 0 },
+      },
+      additionalProperties: false,
+    },
+  },
+  additionalProperties: false,
+};
+
 const REGION_SCOPE_SCHEMA = {
   type: 'object',
   required: ['nodeId', 'status', 'evidence', 'scopedPackets', 'unscopedPackets7d', 'regions'],
@@ -306,6 +357,7 @@ const PUBLIC_GET = [
   '/radio-stats',
   '/regions/repeaters',
   '/regions/summary',
+  '/regions/unattributed',
   '/repeaters/:id/scope',
   '/repeaters/firmware',
   '/rf-validation',
@@ -417,6 +469,13 @@ export const API_CONTRACTS: readonly ApiContract[] = [
       ...contract,
       summary: 'List repeaters classified by region-capability',
       responseSchema: REGION_REPEATERS_SCHEMA,
+    };
+  }
+  if (contract.path === '/regions/unattributed') {
+    return {
+      ...contract,
+      summary: 'List geographic footprints of scoped traffic no public region name explains',
+      responseSchema: REGION_UNATTRIBUTED_SCHEMA,
     };
   }
   if (contract.path === '/repeaters/:id/scope') {

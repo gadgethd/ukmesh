@@ -77,3 +77,8 @@
   .regions-page__map { min-height: 430px; height: 62vh; }
   .regions-page__map-legend { right: 10px; bottom: 10px; max-width: calc(100% - 20px); }
 }
+
+/* Unnamed region footprints — scoped traffic whose region name cannot be derived. */
+.regions-page__legend-swatch--unnamed { width: 18px; height: 10px; border-radius: 2px; border: 1px dashed #cbd5e1; background: rgba(148, 163, 184, 0.12); }
+.regions-page__unnamed-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 8px; margin-bottom: 4px; border: 1px dashed rgba(203, 213, 225, 0.35); border-radius: 4px; }
+.regions-page__unnamed-dot { display: inline-block; width: 8px; height: 8px; margin-right: 7px; border-radius: 50%; border: 1px dashed #cbd5e1; background: rgba(148, 163, 184, 0.25); vertical-align: middle; }

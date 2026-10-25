@@ -5,9 +5,10 @@ import { DEFAULT_CENTER } from './mapConfig.js';
 import {
   buildRegionAreasGeoJSON,
   buildRegionRepeatersGeoJSON,
+  buildUnattributedGeoJSON,
   type RegionRepeaterFilters,
 } from './regionOverlay.js';
-import type { RegionRepeater, RegionSummary } from '../../pages/regionsModel.js';
+import type { RegionRepeater, RegionSummary, UnattributedCluster } from '../../pages/regionsModel.js';
 
 const REGION_AREAS_FILL_LAYER = 'region-areas-fill';
 const REGION_AREAS_LINE_LAYER = 'region-areas-line';
@@ -15,6 +16,10 @@ const REGION_REPEATER_HIT_LAYER = 'region-repeater-hit';
 const REGION_REPEATER_HALO_LAYER = 'region-repeater-halo';
 const REGION_REPEATER_LAYER = 'region-repeater';
 const REGIONS_INITIAL_VIEW = { lat: DEFAULT_CENTER[0], lon: -2.3, zoom: 5.7 } as const;
+const UNATTRIBUTED_SOURCE = 'region-unattributed';
+const UNATTRIBUTED_FILL_LAYER = 'region-unattributed-fill';
+const UNATTRIBUTED_LINE_LAYER = 'region-unattributed-line';
+const UNATTRIBUTED_LABEL_LAYER = 'region-unattributed-label';
 
 type RegionsMapProps = {
   regions: readonly RegionSummary[];
@@ -22,6 +27,8 @@ type RegionsMapProps = {
   repeaters: readonly RegionRepeater[];
   shapesVisible: boolean;
   repeatersVisible: boolean;
+  unattributed: readonly UnattributedCluster[];
+  unattributedVisible: boolean;
   roleFilter: 'repeaters' | 'all';
   statusFilter: 'all' | 'green' | 'red';
   regionFilter: string | null;
@@ -78,6 +85,8 @@ function RegionsMapOverlay({
   repeaters,
   shapesVisible,
   repeatersVisible,
+  unattributed,
+  unattributedVisible,
   roleFilter,
   statusFilter,
   regionFilter,
@@ -99,6 +108,10 @@ function RegionsMapOverlay({
         data: { type: 'FeatureCollection', features: [] },
       });
       if (!map.getSource('region-repeaters')) map.addSource('region-repeaters', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] },
+      });
+      if (!map.getSource(UNATTRIBUTED_SOURCE)) map.addSource(UNATTRIBUTED_SOURCE, {
         type: 'geojson',
         data: { type: 'FeatureCollection', features: [] },
       });
@@ -180,6 +193,44 @@ function RegionsMapOverlay({
         },
       });
 
+      addRegionsLayer(map, {
+        id: UNATTRIBUTED_FILL_LAYER,
+        type: 'fill',
+        source: UNATTRIBUTED_SOURCE,
+        paint: {
+          'fill-color': '#94a3b8',
+          'fill-opacity': 0.07,
+        },
+      });
+      addRegionsLayer(map, {
+        id: UNATTRIBUTED_LINE_LAYER,
+        type: 'line',
+        source: UNATTRIBUTED_SOURCE,
+        layout: { 'line-cap': 'round', 'line-join': 'round' },
+        paint: {
+          'line-color': '#cbd5e1',
+          'line-width': 1.3,
+          'line-opacity': 0.8,
+          'line-dasharray': [2, 2],
+        },
+      });
+      addRegionsLayer(map, {
+        id: UNATTRIBUTED_LABEL_LAYER,
+        type: 'symbol',
+        source: UNATTRIBUTED_SOURCE,
+        layout: {
+          'text-field': ['get', 'label'],
+          'text-size': 10.5,
+          'text-anchor': 'center',
+          'text-allow-overlap': false,
+        },
+        paint: {
+          'text-color': '#e2e8f0',
+          'text-halo-color': '#020617',
+          'text-halo-width': 1.6,
+        },
+      });
+
       // Reapply current data, selection and visibility even if their React
       // dependencies did not change while setStyle removed the old sources.
       setStyleGeneration(generation => generation + 1);
@@ -225,11 +276,15 @@ function RegionsMapOverlay({
           REGION_REPEATER_HIT_LAYER,
           REGION_AREAS_LINE_LAYER,
           REGION_AREAS_FILL_LAYER,
+          UNATTRIBUTED_LABEL_LAYER,
+          UNATTRIBUTED_LINE_LAYER,
+          UNATTRIBUTED_FILL_LAYER,
         ]) {
           if (map.getLayer(layerId)) map.removeLayer(layerId);
         }
         if (map.getSource('region-repeaters')) map.removeSource('region-repeaters');
         if (map.getSource('region-areas')) map.removeSource('region-areas');
+        if (map.getSource(UNATTRIBUTED_SOURCE)) map.removeSource(UNATTRIBUTED_SOURCE);
       } catch { /* MapLibreMap owns final map teardown */ }
     };
   }, [map, onRegionSelect, onRepeaterSelect]);
@@ -264,18 +319,27 @@ function RegionsMapOverlay({
 
   useEffect(() => {
     if (!map.getStyle()) return;
+    const unattributedSource = map.getSource(UNATTRIBUTED_SOURCE) as maplibregl.GeoJSONSource | undefined;
+    unattributedSource?.setData(buildUnattributedGeoJSON(unattributed));
+  }, [map, styleGeneration, unattributed]);
+
+  useEffect(() => {
+    if (!map.getStyle()) return;
     for (const [layerId, visible] of [
       [REGION_AREAS_FILL_LAYER, shapesVisible],
       [REGION_AREAS_LINE_LAYER, shapesVisible],
       [REGION_REPEATER_HIT_LAYER, repeatersVisible],
       [REGION_REPEATER_HALO_LAYER, repeatersVisible],
       [REGION_REPEATER_LAYER, repeatersVisible],
+      [UNATTRIBUTED_FILL_LAYER, unattributedVisible],
+      [UNATTRIBUTED_LINE_LAYER, unattributedVisible],
+      [UNATTRIBUTED_LABEL_LAYER, unattributedVisible],
     ] as const) {
       if (map.getLayer(layerId)) {
         map.setLayoutProperty(layerId, 'visibility', visible ? 'visible' : 'none');
       }
     }
-  }, [map, styleGeneration, shapesVisible, repeatersVisible]);
+  }, [map, styleGeneration, shapesVisible, repeatersVisible, unattributedVisible]);
 
   return null;
 }
@@ -286,6 +350,8 @@ export function RegionsMap({
   repeaters,
   shapesVisible,
   repeatersVisible,
+  unattributed,
+  unattributedVisible,
   roleFilter,
   statusFilter,
   regionFilter,
@@ -328,6 +394,8 @@ export function RegionsMap({
           repeaters={repeaters}
           shapesVisible={shapesVisible}
           repeatersVisible={repeatersVisible}
+          unattributed={unattributed}
+          unattributedVisible={unattributedVisible}
           roleFilter={roleFilter}
           statusFilter={statusFilter}
           regionFilter={regionFilter}
@@ -340,7 +408,7 @@ export function RegionsMap({
       )}
       <div className="regions-page__map-meta" aria-live="polite">
         <strong>Region scoping</strong>
-        <span>{shapedRegions} region shapes · {locatedRepeaters} mapped repeaters</span>
+        <span>{shapedRegions} region shapes · {locatedRepeaters} mapped repeaters{unattributed.length > 0 ? ` · ${unattributed.length} unnamed footprints` : ''}</span>
         <span>
           {regionFilter
             ? `Filtered to ${regionFilter}`
@@ -353,6 +421,7 @@ export function RegionsMap({
         <span><i className="regions-page__legend-swatch regions-page__legend-swatch--green" /> Region-capable repeater · solid = strong evidence</span>
         <span><i className="regions-page__legend-swatch regions-page__legend-swatch--red" /> No scoped relay observed</span>
         <span><i className="regions-page__legend-swatch regions-page__legend-swatch--area" /> Region footprint (convex hull of members relaying ≥10% of region traffic; bridge repeaters excluded)</span>
+        <span><i className="regions-page__legend-swatch regions-page__legend-swatch--unnamed" /> Unnamed footprint — scoped traffic whose region name cannot be derived (private regions by design)</span>
       </div>
     </div>
   );
