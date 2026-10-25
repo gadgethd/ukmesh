@@ -55,7 +55,7 @@ test('name retention and search execute the production write paths, migration, i
     optimizedIdentity.indexOf('CREATE OR REPLACE VIEW node_identity_nodes AS'),
     optimizedIdentity.lastIndexOf('COMMIT;'),
   ));
-  const migration = await readFile(new URL('./migrations/063_node_name_history.sql', import.meta.url), 'utf8');
+  const migration = await readFile(new URL('./migrations/064_node_name_history.sql', import.meta.url), 'utf8');
   await db.exec(`BEGIN; ${migration} COMMIT;`);
   assert.equal((await db.query('SELECT * FROM node_name_history')).rows.length, 0, 'migration must not backfill nodes');
 

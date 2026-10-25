@@ -30,7 +30,7 @@ retained replay use the same extractor; no broker retain flag is required.
 
 ### #631 — retain and resolve former names
 
-New additive migration `063_node_name_history.sql` creates a history table,
+New additive migration `064_node_name_history.sql` creates a history table,
 function and `AFTER INSERT OR UPDATE OF name` trigger. It captures both old and
 new nonblank names atomically with the node write, including the old name on
 an existing node's first post-install rename. It covers both `upsertNode`
