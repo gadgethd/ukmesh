@@ -5,6 +5,7 @@ import { getRedisConnectionOptions, getRedisUrl } from '../platform/config/redis
 import {
   configuredLifecycleTargets,
   dataLifecycleConfigurationStatus,
+  lifecyclePolicy,
 } from '../db/dataLifecycle.js';
 import { INGEST_HEALTH_SQL, PATH_HASH_HEALTH_SQL } from './packetDiagnostics.js';
 import { DATABASE_MAINTENANCE_SQL } from './vacuumBacklog.js';
@@ -282,10 +283,78 @@ export function retentionDeleteSql(target: RetentionTarget): string {
        ${target.extraPredicate ? `AND ${target.extraPredicate}` : ''}`;
 }
 
+async function rowsOf(
+  execute: (text: string, params?: unknown[]) => Promise<unknown>,
+  text: string,
+  params?: unknown[],
+): Promise<Array<Record<string, unknown>>> {
+  const result = (await execute(text, params)) as { rows?: Array<Record<string, unknown>> } | undefined;
+  return result?.rows ?? [];
+}
+
 export async function deleteExpiredRows(
   target: RetentionTarget,
   execute: (text: string, params?: unknown[]) => Promise<unknown> = query,
 ): Promise<void> {
+  // Row-level DELETE on a compressed hypertable forces transparent
+  // decompression and can exceed TimescaleDB's per-DML decompression limit.
+  // Whole-chunk drops are the supported retention path; the boundary chunk is
+  // kept until it is fully expired, so retention can overshoot by one chunk.
+  if (lifecyclePolicy(target.table).kind === 'hypertable') {
+    try {
+      // Remove every chunk that is entirely past the retention horizon without
+      // decompressing anything.
+      await execute(
+        'SELECT drop_chunks($1::regclass, older_than => $2::interval)',
+        [target.table, target.retention],
+      );
+      // The boundary chunk can still hold a few expired rows next to retained
+      // ones. Row DML on a compressed chunk is rejected by TimescaleDB's
+      // decompression limit, so decompress just that chunk, delete, recompress.
+      const chunks = await rowsOf(
+        execute,
+        `SELECT format('%I.%I', chunk_schema, chunk_name) AS chunk, is_compressed
+           FROM timescaledb_information.chunks
+          WHERE hypertable_name = $1
+            AND range_end > now() - $2::interval
+          ORDER BY range_end ASC
+          LIMIT 1`,
+        [target.table, target.retention],
+      );
+      const chunk = chunks[0];
+      if (!chunk) return;
+      const chunkName = String(chunk['chunk']);
+      const expired = await rowsOf(
+        execute,
+        `SELECT 1 FROM ${chunkName}
+          WHERE ${target.timestampColumn} < now() - $1::interval
+          LIMIT 1`,
+        [target.retention],
+      );
+      if (expired.length === 0) return;
+      await execute('SELECT decompress_chunk($1::regclass, if_compressed => true)', [chunkName]);
+      try {
+        // Delete only inside this chunk. A table-wide boundary can reach into
+        // older compressed chunks that were not decompressed and trip the
+        // per-DML decompression limit again.
+        await execute(
+          `DELETE FROM ${chunkName}
+            WHERE ${target.timestampColumn} < now() - $1::interval
+            ${target.extraPredicate ? `AND ${target.extraPredicate}` : ''}`,
+          [target.retention],
+        );
+      } finally {
+        if (chunk['is_compressed'] === true) {
+          await execute('SELECT compress_chunk($1::regclass, if_not_compressed => true)', [chunkName]);
+        }
+      }
+      return;
+    } catch (error) {
+      // Non-Timescale databases (unit/integration fixtures) have plain tables.
+      const code = (error as { code?: string }).code;
+      if (code !== '42809' && code !== '42883' && code !== '42P01') throw error;
+    }
+  }
   await execute(retentionDeleteSql(target), [target.retention, target.batchSize]);
 }
 

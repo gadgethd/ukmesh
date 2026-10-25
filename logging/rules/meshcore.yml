@@ -304,12 +304,12 @@ groups:
           runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#backupreceiptmissing
 
       - alert: BackupStale
-        expr: meshcore_backup_age_seconds{dataset=~"analytics|owner_auth|mosquitto"} > 86400
+        expr: meshcore_backup_age_seconds{dataset=~"analytics|owner_auth|mosquitto"} > 604800
         for: 10m
         labels:
           severity: critical
         annotations:
-          summary: Verified {{ $labels.dataset }} backup receipt is older than 24 hours
+          summary: Verified {{ $labels.dataset }} restore receipt is older than 7 days
           owner: meshcore-operations
           runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#backupstale
 
