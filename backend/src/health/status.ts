@@ -262,18 +262,24 @@ export function retentionDeleteSql(target: RetentionTarget): string {
   // Identifiers come from the closed RetentionTarget union above. PostgreSQL
   // cannot parameterize identifiers, but the retention interval and batch size
   // remain parameters.
+  // Compressed hypertables reject ctid (transparent decompression only
+  // supports tableoid), so bound the batch by the oldest retained timestamp
+  // instead of physical row identity. A NULL boundary (nothing expired) makes
+  // the DELETE a no-op.
   return `WITH expired AS MATERIALIZED (
-       SELECT tableoid, ctid
-       FROM ${target.table}
-       WHERE ${target.timestampColumn} < NOW() - $1::interval
-         ${target.extraPredicate ? `AND ${target.extraPredicate}` : ''}
-       ORDER BY ${target.timestampColumn} ASC, tableoid, ctid
-       LIMIT $2
+       SELECT MAX(${target.timestampColumn}) AS boundary
+       FROM (
+         SELECT ${target.timestampColumn}
+         FROM ${target.table}
+         WHERE ${target.timestampColumn} < NOW() - $1::interval
+           ${target.extraPredicate ? `AND ${target.extraPredicate}` : ''}
+         ORDER BY ${target.timestampColumn} ASC
+         LIMIT $2
+       ) AS oldest
      )
      DELETE FROM ${target.table} AS target
-     USING expired
-     WHERE target.tableoid = expired.tableoid
-       AND target.ctid = expired.ctid`;
+     WHERE target.${target.timestampColumn} < (SELECT boundary FROM expired)
+       ${target.extraPredicate ? `AND ${target.extraPredicate}` : ''}`;
 }
 
 export async function deleteExpiredRows(
