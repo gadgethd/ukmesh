@@ -2,12 +2,12 @@ import type { Request } from 'express';
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
 
 export type OwnerSession = {
-  v: 3;
+  v: 4;
   mqttUsername: string;
+  sid: string;
   exp: number;
   /** Credential generation this session was minted under (BUG-010). */
   gen: number;
-  legacy?: boolean;
 };
 
 function getOwnerCookieKey(): Buffer {
@@ -21,8 +21,9 @@ export function encryptOwnerSession(payload: OwnerSession): string {
   const key = getOwnerCookieKey();
   const cipher = createCipheriv('aes-256-gcm', key, iv);
   const plaintext = Buffer.from(JSON.stringify({
-    v: 3,
+    v: 4,
     mqttUsername: payload.mqttUsername.trim(),
+    sid: payload.sid,
     exp: payload.exp,
     gen: payload.gen,
   }), 'utf8');
@@ -43,23 +44,22 @@ export function decryptOwnerSession(token: string): OwnerSession | null {
     decipher.setAuthTag(tag);
     const decoded = Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString('utf8');
     const parsed = JSON.parse(decoded) as Record<string, unknown>;
+    if (parsed['v'] !== 4) return null;
     const mqttUsername = typeof parsed['mqttUsername'] === 'string'
       ? parsed['mqttUsername'].trim()
       : '';
+    const sid = typeof parsed['sid'] === 'string' ? parsed['sid'].trim() : '';
     const exp = parsed['exp'];
-    if (!mqttUsername || typeof exp !== 'number' || !Number.isFinite(exp)) return null;
-    const gen = typeof parsed['gen'] === 'number' && Number.isFinite(parsed['gen'])
-      ? parsed['gen']
-      : 0;
-    if (parsed['v'] === 3) return { v: 3, mqttUsername, exp, gen };
-    if (parsed['v'] === 2) return { v: 3, mqttUsername, exp, gen, legacy: true };
-
-    // A username-bearing v1 cookie is an identity hint only. Embedded node IDs
-    // are ignored and current server-side authorization is re-read.
-    if (Array.isArray(parsed['nodeIds'])) {
-      return { v: 3, mqttUsername, exp, gen, legacy: true };
-    }
-    return null;
+    const gen = parsed['gen'];
+    if (!mqttUsername
+      || !sid
+      || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(sid)
+      || typeof exp !== 'number'
+      || !Number.isFinite(exp)
+      || typeof gen !== 'number'
+      || !Number.isSafeInteger(gen)
+      || gen < 0) return null;
+    return { v: 4, mqttUsername, sid, exp, gen };
   } catch {
     return null;
   }

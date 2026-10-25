@@ -25,6 +25,7 @@
     "path:accuracy": "tsx src/tools/pathAccuracy.ts",
     "load:realtime": "tsx src/tools/loadRealtime.ts",
     "test": "node --import tsx --test $(find src -name '*.test.ts' ! -name '*.integration.test.ts' -print) && bash ../scripts/test-alert-receiver.sh",
+    "test:owner-integration": "timeout 120s node --import tsx --test src/db/ownerAuth.integration.test.ts",
     "test:analysis-integration": "node --import tsx --test src/analysis/runState.integration.test.ts",
     "test:vacuum-integration": "node --import tsx --test src/health/vacuumBacklog.integration.test.ts",
     "test:privacy-integration": "node --import tsx --test src/db/visibilityConvergence.integration.test.ts",

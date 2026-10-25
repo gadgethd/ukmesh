@@ -44,6 +44,11 @@ type IsSecureRequestFn = (req: Request) => boolean;
 type GetOwnerSessionFn = (req: Request) => OwnerSession | null;
 type RequireOwnerSessionFn = (req: Request, res: Response) => Promise<string[] | null>;
 type GetOwnerCredentialGenerationFn = (mqttUsername: string) => Promise<number>;
+type CreateOwnerSessionFn = (mqttUsername: string, ttlMs: number) => Promise<{ sessionId: string; expiresAt: number }>;
+type IsOwnerSessionActiveFn = (sessionId: string, mqttUsername: string) => Promise<boolean>;
+type TouchOwnerSessionFn = (sessionId: string) => Promise<void>;
+type RevokeOwnerSessionFn = (sessionId: string) => Promise<void>;
+type RevokeOwnerSessionsForUsernameFn = (mqttUsername: string) => Promise<void>;
 type ReconcileOwnerAuthorizationFn = () => Promise<void>;
 type QueryFn = <T extends import('pg').QueryResultRow = import('pg').QueryResultRow>(text: string, params?: unknown[]) => Promise<{ rows: T[] }>;
 
@@ -69,6 +74,11 @@ type OwnerRouteDeps = {
   getOwnerSession: GetOwnerSessionFn;
   requireOwnerSession: RequireOwnerSessionFn;
   getOwnerCredentialGeneration: GetOwnerCredentialGenerationFn;
+  createOwnerSession: CreateOwnerSessionFn;
+  isOwnerSessionActive: IsOwnerSessionActiveFn;
+  touchOwnerSession: TouchOwnerSessionFn;
+  revokeOwnerSession: RevokeOwnerSessionFn;
+  revokeOwnerSessionsForUsername: RevokeOwnerSessionsForUsernameFn;
   invalidateOwnerNodeIdCache: (mqttUsername: string) => void;
   reconcileOwnerAuthorization?: ReconcileOwnerAuthorizationFn;
   query: QueryFn;
@@ -144,10 +154,12 @@ export function registerOwnerRoutes(router: Router, deps: OwnerRouteDeps): void 
 
       const { dashboard } = await service.authenticateOwner(mqttUsername, mqttPassword);
       const gen = await deps.getOwnerCredentialGeneration(mqttUsername);
+      const serverSession = await deps.createOwnerSession(mqttUsername, deps.ownerSessionTtlMs);
       const token = deps.encryptOwnerSession({
-        v: 3,
-        exp: Date.now() + deps.ownerSessionTtlMs,
+        v: 4,
         mqttUsername,
+        sid: serverSession.sessionId,
+        exp: serverSession.expiresAt,
         gen,
       });
       res.cookie(deps.ownerCookieName, token, {
@@ -167,6 +179,11 @@ export function registerOwnerRoutes(router: Router, deps: OwnerRouteDeps): void 
         res.status(403).json({ error: 'No active node found for this MQTT username yet' });
         return;
       }
+      if ((err as Error).message === 'OWNER_SESSION_STORE_UNAVAILABLE'
+        || (err as Error).message === 'OWNER_CREDENTIAL_GENERATION_UNAVAILABLE') {
+        res.status(503).json({ error: 'Owner session store is temporarily unavailable' });
+        return;
+      }
       console.error('[api] POST /owner/login', (err as Error).message);
       res.status(500).json({ error: 'Internal server error' });
     }
@@ -182,9 +199,13 @@ export function registerOwnerRoutes(router: Router, deps: OwnerRouteDeps): void 
         return;
       }
 
-      // BUG-010: reject sessions minted under a revoked password (same check as
-      // requireOwnerSession) and upgrade legacy cookies to the generationed v3
-      // format so future revocations can invalidate them.
+      const active = await deps.isOwnerSessionActive(session.sid, session.mqttUsername);
+      if (!active) {
+        res.clearCookie(deps.ownerCookieName, { path: '/' });
+        res.status(401).json({ error: 'Session has been revoked — please log in again' });
+        return;
+      }
+
       const currentGen = await deps.getOwnerCredentialGeneration(session.mqttUsername);
       if (session.gen !== currentGen) {
         res.clearCookie(deps.ownerCookieName, { path: '/' });
@@ -193,25 +214,19 @@ export function registerOwnerRoutes(router: Router, deps: OwnerRouteDeps): void 
       }
 
       const { dashboard } = await service.getSessionDashboard(session);
-      if (session.legacy || session.v !== 3) {
-        res.cookie(deps.ownerCookieName, deps.encryptOwnerSession({
-          v: 3,
-          mqttUsername: session.mqttUsername,
-          exp: session.exp,
-          gen: session.gen,
-        }), {
-          httpOnly: true,
-          secure: deps.isSecureRequest(req),
-          sameSite: 'strict',
-          path: '/',
-          maxAge: Math.max(0, session.exp - Date.now()),
-        });
-      }
+      void deps.touchOwnerSession(session.sid).catch((error) => {
+        console.warn('[owner-session] touch failed', error instanceof Error ? error.message : error);
+      });
       res.json({ ok: true, dashboard, mqttUsername: session.mqttUsername });
     } catch (err) {
       if ((err as Error).message === 'NO_ACTIVE_OWNER_NODE') {
         res.clearCookie(deps.ownerCookieName, { path: '/' });
         res.status(401).json({ error: 'No active node found for this MQTT username yet' });
+        return;
+      }
+      if ((err as Error).message === 'OWNER_CREDENTIAL_GENERATION_UNAVAILABLE'
+        || (err as Error).message === 'OWNER_SESSION_STORE_UNAVAILABLE') {
+        res.status(503).json({ error: 'Owner session store is temporarily unavailable' });
         return;
       }
       console.error('[api] GET /owner/session', (err as Error).message);
@@ -634,9 +649,42 @@ export function registerOwnerRoutes(router: Router, deps: OwnerRouteDeps): void 
     }
   });
 
+  router.post('/owner/sessions/revoke-all', csrfProtection, async (req, res) => {
+    try {
+      const ownedNodeIds = await deps.requireOwnerSession(req, res);
+      if (!ownedNodeIds) return;
+      const session = deps.getOwnerSession(req);
+      if (!session) {
+        res.clearCookie(deps.ownerCookieName, { path: '/' });
+        res.status(401).json({ error: 'Not logged in' });
+        return;
+      }
+      await deps.revokeOwnerSessionsForUsername(session.mqttUsername);
+      service.clearOwnerSession(session.mqttUsername);
+      res.clearCookie(deps.ownerCookieName, {
+        path: '/',
+        secure: deps.isSecureRequest(req),
+        sameSite: 'strict',
+      });
+      res.json({ ok: true });
+    } catch (error) {
+      console.error('[api] POST /owner/sessions/revoke-all', (error as Error).message);
+      res.status(503).json({ error: 'Owner session store is temporarily unavailable' });
+    }
+  });
+
   router.post('/owner/logout', csrfProtection, async (req, res) => {
     const session = deps.getOwnerSession(req);
-    if (session) service.clearOwnerSession(session.mqttUsername);
+    let status = 200;
+    if (session) {
+      try {
+        await deps.revokeOwnerSession(session.sid);
+        service.clearOwnerSession(session.mqttUsername);
+      } catch (error) {
+        console.error('[api] POST /owner/logout', (error as Error).message);
+        status = 503;
+      }
+    }
     res.clearCookie(deps.ownerCookieName, {
       path: '/',
       secure: deps.isSecureRequest(req),
@@ -647,6 +695,10 @@ export function registerOwnerRoutes(router: Router, deps: OwnerRouteDeps): void 
       secure: deps.isSecureRequest(req),
       sameSite: 'strict',
     });
+    if (status !== 200) {
+      res.status(status).json({ error: 'Owner session store is temporarily unavailable' });
+      return;
+    }
     res.json({ ok: true });
   });
 }
