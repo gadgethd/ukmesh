@@ -1,7 +1,8 @@
 rule_files:
   - meshcore.yml
 
-evaluation_interval: 1m
+# Match the worker rule group's cadence so TTL/holdoff boundaries are exercised.
+evaluation_interval: 15s
 
 tests:
   - name: equal privacy generations remain healthy and do not page
@@ -123,15 +124,69 @@ tests:
         alertname: ActiveQueueWorkerHeartbeatStale
         exp_alerts: []
 
-  - name: fresh real link heartbeats stay healthy throughout a fifteen-minute ITM batch gap
+  - name: fresh real link heartbeats stay healthy throughout two fifty-minute ITM batch gaps
     interval: 1m
+    input_series:
+      - series: meshcore_link_queue_active_jobs
+        values: 12x100
+      - series: 'meshcore_worker_heartbeat_age_seconds{worker="link"}'
+        values: 5x100
+    alert_rule_test:
+      - eval_time: 50m
+        alertname: ActiveQueueWorkerHeartbeatStale
+        exp_alerts: []
+      - eval_time: 100m
+        alertname: ActiveQueueWorkerHeartbeatStale
+        exp_alerts: []
+
+  - name: positive link heartbeat age respects the producer TTL and three-minute holdoff
+    interval: 15s
+    input_series:
+      - series: meshcore_link_queue_active_jobs
+        values: 12x40
+      - series: 'meshcore_worker_heartbeat_age_seconds{worker="link"}'
+        values: 45x16 46x13 5x10
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: ActiveQueueWorkerHeartbeatStale
+        exp_alerts: []
+      - eval_time: 7m
+        alertname: ActiveQueueWorkerHeartbeatStale
+        exp_alerts: []
+      - eval_time: 7m30s
+        alertname: ActiveQueueWorkerHeartbeatStale
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: A worker with queued work has a stale heartbeat
+              owner: meshcore-operations
+              runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#activequeueworkerheartbeatstale
+      - eval_time: 8m
+        alertname: ActiveQueueWorkerHeartbeatStale
+        exp_alerts: []
+
+  - name: a dead worker expires after 45 seconds and pages within four minutes of its last heartbeat
+    interval: 15s
     input_series:
       - series: meshcore_link_queue_active_jobs
         values: 12x20
       - series: 'meshcore_worker_heartbeat_age_seconds{worker="link"}'
-        values: 5x20
+        values: 0 15 30 -1x14 5x4
     alert_rule_test:
-      - eval_time: 20m
+      - eval_time: 3m
+        alertname: ActiveQueueWorkerHeartbeatStale
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: ActiveQueueWorkerHeartbeatStale
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: A worker with queued work has a stale heartbeat
+              owner: meshcore-operations
+              runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#activequeueworkerheartbeatstale
+      - eval_time: 5m
         alertname: ActiveQueueWorkerHeartbeatStale
         exp_alerts: []
 
