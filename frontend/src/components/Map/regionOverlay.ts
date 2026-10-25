@@ -2,8 +2,10 @@ import {
   confidenceFor,
   regionColor,
   regionRing,
+  unattributedRing,
   type RegionRepeater,
   type RegionSummary,
+  type UnattributedCluster,
 } from '../../pages/regionsModel.js';
 
 type RegionFeatureProperties = {
@@ -57,6 +59,29 @@ export function buildRegionAreasGeoJSON(
         },
       }];
     }),
+  };
+}
+
+/**
+ * Footprints for traffic that no public region name explains. Deliberately
+ * labelled "unnamed": the shape is where the packets were heard, not a guessed
+ * region name.
+ */
+export function buildUnattributedGeoJSON(
+  clusters: readonly UnattributedCluster[],
+): GeoJSON.FeatureCollection<GeoJSON.Polygon, RegionFeatureProperties> {
+  return {
+    type: 'FeatureCollection',
+    features: clusters.map((cluster) => ({
+      type: 'Feature' as const,
+      geometry: { type: 'Polygon' as const, coordinates: [unattributedRing(cluster)] },
+      properties: {
+        cluster_id: cluster.id,
+        packets: cluster.packets,
+        nodes: cluster.nodeCount,
+        label: `Unnamed · ${new Intl.NumberFormat('en-GB').format(cluster.packets)} pkts`,
+      },
+    })),
   };
 }
 
