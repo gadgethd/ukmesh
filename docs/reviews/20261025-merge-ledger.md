@@ -272,7 +272,7 @@ to the same path-learning privacy finding. No finding is dropped.
 | S15 | numeric-envelope-int-cast-ingest-livelock | ported | Security integer/float validator plus VPS stricter protocol bounds and normalized status writer. Permanent SQLSTATE classes 22/23 quarantine; operational errors retry. Envelope/status/durable-handler tests. |
 | S16 | unverified-envelope-as-decoded-content | ported | `buildPersistedPacketPayload` strips publisher-derived fields unless decode is verified; live and durable egress receive stripped envelopes. `unverifiedPayload.test.ts`. |
 | S17 | nodes-export:public-cache-not-keyed-to-visibility-generation | ported | `routes/exports.ts` adds generation read/re-read, ETag/Vary, 412/no-store on requested generation mismatch and 503/no-store on unavailable authority. `exports.test.ts`. |
-| S18 | keyless-signing-identity-not-bound-to-release-ref | ported | Release signing is removed from image matrix and restricted to refs/tags/v* in a protected release-signing job with an in-script ref guard; source/YAML audit only, no workflow dispatched. |
+| S18 | keyless-signing-identity-not-bound-to-release-ref | ported | Release signing is removed from image matrix and restricted to refs/tags/v* in a release-signing environment/job with an in-script ref guard; all 8 image/sign components match. Source audit only: GitHub environment protections and workflow execution are not claimed. |
 | S19 | restore-receipt-verify-key-published-with-receipt | ported | Verifier and restore drill require a separate trust directory plus out-of-band SHA-256 pin and reject co-located/symlinked keys; Compose separates mount. `backup/receipt.test.ts`, lifecycle tests and shell syntax checks. |
 
 ## Final validation and handoff
@@ -291,8 +291,8 @@ Required final gates are clean:
 | Compose render / fixture guards | 31 services; token/trust wiring verified; infra resolver pass; adoption fixtures 9/9 |
 | Python and shell syntax | Tagger compile and changed shell scripts pass |
 
-Merge hashes, full monitoring-suite result and cleanup audit are appended
-below once their current checks finish. Evidence logs are outside the repository in
+Merge hashes and cleanup audit are recorded below. The full Prometheus rules
+suite completed successfully after the heartbeat fixture correction. Evidence logs are outside the repository in
 `/home/ben/.review-notes/ukmesh-merge-20261025/`.
 
 Before any future staging/deploy (outside this task): provision a shared
@@ -310,3 +310,36 @@ A stale unnamed-region mock response was corrected, and topology can select an
 isolated base URL. No browser visual parity or restored-database integration is
 claimed by this reconciliation. The required default frontend/DB-gated backend
 gates are reported separately from those optional attempts.
+
+### Completion audit
+
+- Main merge `882777e` has parents `1c6d95d` and `6438089`.
+- Security merge `078b417` has parents `882777e` and `b7a744b`.
+- Both requested refs are ancestors of the reconcile branch. The main merge
+  message explicitly names all 52 conflicted paths and this ledger.
+- Parsed ledger counts are exactly 52 main conflict rows, 61 security conflict
+  rows and 19 finding dispositions; no finding is dropped.
+- A fresh final live-ledger SELECT in a read-only transaction confirms all 62
+  applied filenames and SHA-256 values still match; 063–066 remain pending.
+- Every original deployed env-example key and Compose interpolation/service
+  entry remains present. The receipt/signature pair remains byte-identical.
+- `git log --oneline HEAD -- .env.pre-reconcile-20261020` is empty, the forbidden
+  file is not tracked, and `.env.example` is the only tracked env-named file.
+  Runtime alert tokens, trust material and pre-reconcile snapshots are ignored.
+- No conflict markers or unresolved index entries remain. Required typechecks,
+  builds, default test suites and contract checks are green at the security
+  merge's source content; only this final documentation audit changes later.
+- Isolated Vite test servers and task-owned Chromium processes were stopped.
+  The final monitoring replay also completed successfully; no production
+  services were restarted or deployed.
+- No live checkout files, database rows or deployment configuration were
+  modified. No push was performed. Both merge commits checkpoint the work
+  well before 07:15 GMT.
+
+Full monitoring validation: `promtool test rules logging/rules/meshcore.test.yml`
+returned **SUCCESS**, exit 0. No task test/server process remains running.
+
+Reconciliation completed and final ledger checkpointed at 2026-10-25 04:44:29 UTC.
+The remaining handoff is an independent isolated staging/browser review and
+provisioning of the documented alert token and receipt trust anchor before
+any separately authorized deployment. This branch has not been pushed.
