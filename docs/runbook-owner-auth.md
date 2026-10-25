@@ -1,5 +1,11 @@
 # Owner credential rotation
 
+For a new observer that connects but stays invisible, first check the
+[MQTT onboarding guide](mqtt-onboarding.md). Firmware topic configuration and
+verified owner grants are separate requirements; credential rotation does not
+repair either. The [generic linking design](designs/generic-owner-linking.md)
+records the current discovery/authorization boundaries and follow-up hooks.
+
 Owner cookies include the Redis credential generation that was current at login.
 The owner session route and protected owner routes compare that generation on
 each request. Cookies expire after seven days.

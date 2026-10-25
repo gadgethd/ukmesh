@@ -41,6 +41,11 @@ export function ownerLoginCredentials(mqttUsername: string, mqttPassword: string
 
 export type OwnerDashboard = {
   nodes: OwnerNode[];
+  mqttDiagnostic?: {
+    code: 'MQTT_DEFAULT_TOPIC_ROOT';
+    message: string;
+    observedAt: string;
+  } | null;
 };
 
 export type OwnerSessionResponse = {
@@ -289,12 +294,18 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
 export function isOwnerSessionResponse(value: unknown): value is OwnerSessionResponse {
   if (!isRecord(value) || value['ok'] !== true || !isRecord(value['dashboard'])) return false;
   const dashboard = value['dashboard'];
+  const diagnostic = dashboard['mqttDiagnostic'];
   return Array.isArray(dashboard['nodes'])
     && dashboard['nodes'].every((node) => isRecord(node)
       && typeof node['node_id'] === 'string'
       && typeof node['canonicalId'] === 'string'
       && Array.isArray(node['members'])
       && node['members'].every((member) => typeof member === 'string'))
+    && (diagnostic == null || (isRecord(diagnostic)
+      && diagnostic['code'] === 'MQTT_DEFAULT_TOPIC_ROOT'
+      && typeof diagnostic['message'] === 'string'
+      && typeof diagnostic['observedAt'] === 'string'
+      && Number.isFinite(Date.parse(diagnostic['observedAt']))))
     && (value['mqttUsername'] == null || typeof value['mqttUsername'] === 'string');
 }
 

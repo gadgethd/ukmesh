@@ -10,6 +10,13 @@ import {
 
 const NODE_ID = 'A1'.repeat(32);
 
+test('parses a bare default-root denial even though it contains no node key', () => {
+  const line = "1792756800: Denied PUBLISH from ESP32_123456 (d0, q0, r1, m0, 'meshcore', ... (42 bytes))";
+  assert.deepEqual(parseDeniedPublish(line), { clientId: 'ESP32_123456', topic: 'meshcore' });
+  assert.equal(parseDeniedOwnerPublish(line), null);
+  assert.equal(parseDeniedPublish('New connection from 192.0.2.1'), null);
+});
+
 test('parses the authenticated username and mctomqtt key prefix from a connection log', () => {
   const line = "1784060066: New client connected from 192.0.2.10:35816 as meshcore_A1A1A1A1A1A1_2 (p4, c1, k60, u'test.user').";
   assert.deepEqual(parseMosquittoConnection(line), {

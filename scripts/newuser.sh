@@ -209,6 +209,11 @@ Verify TLS certificates?: y
 Authentication method: username/password
 Username: ${mqtt_username}
 Password: ${mqtt_password}
+
+For built-in MQTT firmware, set IATA to your location code and Topic root to:
+  meshcore/{IATA}/{PUBLIC_KEY}/packets
+Keep the braces; the firmware expands them. The default root "meshcore" is
+denied by this broker even when login succeeds. Apply and read back the settings.
 EOF
 }
 
@@ -846,12 +851,15 @@ Current MeshCore MQTT firmware template (credentials are the values above):
   set mqtt.1.username <username-above>
   set mqtt.1.password <password-above>
   set mqtt.1.iata <IATA>
+  set mqtt.1.topic.root meshcore/{IATA}/{PUBLIC_KEY}/packets
   set mqtt.1.retain.status 1
   set mqtt.1.enabled 1
+
+Use the slot number for your UK Mesh broker. Replace <IATA> with your location
+code and keep {IATA}/{PUBLIC_KEY} in Topic root. Apply and read back the settings.
+The default root "meshcore" is denied even when MQTT login succeeds.
+If a full topic is still denied, verify the owner grant for that full public key.
 EOF
-for key in "${keys[@]}"; do
-  printf '  set mqtt.1.topic.root meshcore/<IATA>/%s/packets\n' "$key"
-done
 }
 
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then

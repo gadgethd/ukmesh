@@ -20,6 +20,7 @@ export type FetchJsonOptions<T> = {
   timeoutMs?: number;
   maxBytes?: number;
   validate?: (value: unknown) => value is T;
+  readErrorMessage?: boolean;
 };
 
 export function withScopeParams(path: string, scope: ApiScope = {}): string {
@@ -48,12 +49,30 @@ export function uncachedEndpoint(url: string): string {
 
 export async function checkedJson<T>(
   response: Response,
-  options: Pick<FetchJsonOptions<T>, 'maxBytes' | 'validate'> = {},
+  options: Pick<FetchJsonOptions<T>, 'maxBytes' | 'validate' | 'readErrorMessage'> = {},
 ): Promise<T> {
   const maxBytes = options.maxBytes ?? 5 * 1024 * 1024;
   if (!response.ok) {
+    let message = `Request failed (${response.status})`;
+    // Only callers that expect user-facing JSON errors opt in (e.g. login).
+    // Never surface a proxy's HTML error document as application copy.
+    const errorLimit = Math.min(maxBytes, 8_192);
+    const declaredLength = Number(response.headers.get('content-length'));
+    if (options.readErrorMessage && response.headers.get('content-type')?.includes('application/json')
+      && (!Number.isFinite(declaredLength) || declaredLength <= errorLimit)) {
+      try {
+        const body = await response.text();
+        if (new TextEncoder().encode(body).byteLength <= errorLimit) {
+          const value: unknown = JSON.parse(body);
+          if (value && typeof value === 'object' && 'error' in value
+            && typeof value.error === 'string' && value.error.trim() && value.error.length <= 2_048) {
+            message = value.error;
+          }
+        }
+      } catch { /* Retain the HTTP status message for unreadable error bodies. */ }
+    }
     throw new ApiResponseError(
-      `Request failed (${response.status})`,
+      message,
       response.status,
       response.url,
     );

@@ -21,6 +21,13 @@ export type CachePolicyRecord = Readonly<{
  */
 export const CACHE_POLICY_REGISTRY: readonly CachePolicyRecord[] = Object.freeze([
   {
+    source: 'src/mqtt/onboardingDiagnostics.ts#recent',
+    disposition: 'bounded-cache', maxEntries: 4_096, maxBytes: 4 << 20, ttlMs: 15 * 60_000,
+    scope: 'authenticated MQTT username; diagnostic hints only',
+    invalidation: 'event-time expiry + storage TTL; lost on process restart',
+    negativeCaching: 'none', singleFlight: 'synchronous broker-log observations',
+  },
+  {
     source: 'src/api/hopreachCompatibility.ts#nodeCountCache',
     disposition: 'bounded-cache', maxEntries: 1, maxBytes: 1_024, ttlMs: 30_000,
     scope: 'internal HopReach adapter + public repeater predicate', invalidation: 'TTL',

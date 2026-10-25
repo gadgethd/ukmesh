@@ -1,6 +1,7 @@
 import type { Request, Response, Router } from 'express';
 import { createOwnerRepository } from '../../owner/ownerRepository.js';
 import { createOwnerService } from '../../owner/ownerService.js';
+import { mqttOnboardingDiagnostics } from '../../mqtt/onboardingDiagnostics.js';
 import type { OwnerSession } from '../../owner/ownerSession.js';
 import { createCsrfToken, readCookie, requireDoubleSubmitCsrf } from '../../security/operatorAuth.js';
 import { resolveWebhookTarget } from '../../security/outboundWebhook.js';
@@ -157,14 +158,17 @@ export function registerOwnerRoutes(router: Router, deps: OwnerRouteDeps): void 
         path: '/',
         maxAge: deps.ownerSessionTtlMs,
       });
-      res.json({ ok: true, dashboard });
+      res.json({ ok: true, dashboard: { ...dashboard, mqttDiagnostic: mqttOnboardingDiagnostics.get(mqttUsername) } });
     } catch (err) {
       if ((err as Error).message === 'INVALID_MQTT_CREDENTIALS') {
         res.status(403).json({ error: 'Invalid MQTT credentials' });
         return;
       }
       if ((err as Error).message === 'NO_ACTIVE_OWNER_NODE') {
-        res.status(403).json({ error: 'No active node found for this MQTT username yet' });
+        // This error is raised only after successful broker authentication.
+        const mqttUsername = String(req.body?.mqttUsername ?? '').trim();
+        const diagnostic = mqttOnboardingDiagnostics.get(mqttUsername);
+        res.status(403).json({ error: diagnostic?.message ?? 'MQTT credentials accepted, but no linked node has reached the dashboard yet. Check the MQTT topic root and ask sudogadget to verify your full node public key is linked to this account.' });
         return;
       }
       console.error('[api] POST /owner/login', (err as Error).message);
@@ -207,7 +211,7 @@ export function registerOwnerRoutes(router: Router, deps: OwnerRouteDeps): void 
           maxAge: Math.max(0, session.exp - Date.now()),
         });
       }
-      res.json({ ok: true, dashboard, mqttUsername: session.mqttUsername });
+      res.json({ ok: true, dashboard: { ...dashboard, mqttDiagnostic: mqttOnboardingDiagnostics.get(session.mqttUsername) }, mqttUsername: session.mqttUsername });
     } catch (err) {
       if ((err as Error).message === 'NO_ACTIVE_OWNER_NODE') {
         res.clearCookie(deps.ownerCookieName, { path: '/' });

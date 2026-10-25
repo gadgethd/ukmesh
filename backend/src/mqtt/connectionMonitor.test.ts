@@ -10,6 +10,7 @@ import {
   mqttConnectionMonitorHealthy,
   mqttDeniedPublishesTotal,
 } from '../metrics.js';
+import { mqttOnboardingDiagnostics } from './onboardingDiagnostics.js';
 
 // Importing the audit repository creates a lazy pool. All writes below use an
 // injected recorder, and even an accidental connection cannot reach a real DB.
@@ -27,6 +28,8 @@ const RAW = `meshcore/LBA/${'A1'.repeat(32)}/raw`;
 const PACKETS = `meshcore/EXT/${KEY}/packets`;
 const connection = (client: string) => `1792760000: New client connected from 192.0.2.1:1 as ${client} (p4, c1, k60, u'nick').`;
 const denial = (client: string, topic: string) => `1792760001: Denied PUBLISH from ${client} (d0, q0, r0, m0, '${topic}', ... (42 bytes))`;
+const onboardConnect = (client: string, username: string) => `New client connected from 192.0.2.1 as ${client} (p2, c1, k60, u'${username}').`;
+const timedDenial = (client: string, topic = 'meshcore', time = Date.now()) => `${Math.floor(time / 1_000)}: Denied PUBLISH from ${client} (d0, q0, r0, m0, '${topic}', ... (42 bytes))`;
 
 function fixture(t: TestContext, lines?: string[]): string {
   const cache = path.resolve('node_modules/.cache');
@@ -283,4 +286,40 @@ test('audit failures cannot erase denial telemetry or trigger a log-range replay
   assert.equal(detailRows(warnings)[0]?.count, 1);
   assert.equal(errors.mock.callCount(), 1);
   assert.equal((await mqttDeniedPublishesTotal.get()).values[0]?.value, 1);
+});
+
+// ---- onboarding diagnostics ----
+
+test('only a correlated authenticated client gets a default-root diagnostic; no grant is created', () => {
+  assert.equal(observeBrokerLogLine(timedDenial('unseen'))?.mqttUsername, null);
+  assert.equal(mqttOnboardingDiagnostics.get('unknown'), null);
+  observeBrokerLogLine(onboardConnect('device', 'alice'));
+  assert.deepEqual(observeBrokerLogLine(timedDenial('device')), {
+    kind: 'denied-publish', mqttUsername: 'alice', clientId: 'device', topic: 'meshcore', claimedNodeId: null,
+  });
+  assert.equal(mqttOnboardingDiagnostics.get('alice')?.code, 'MQTT_DEFAULT_TOPIC_ROOT');
+  assert.equal(mqttOnboardingDiagnostics.get('bob'), null);
+  observeBrokerLogLine(onboardConnect('device', 'bob'));
+  observeBrokerLogLine(timedDenial('device'));
+  assert.ok(mqttOnboardingDiagnostics.get('bob'));
+});
+
+test('expired correlations and old log denials cannot create current diagnostics', () => {
+  const now = Date.now();
+  observeBrokerLogLine(onboardConnect('expired', 'expired-owner'), now - 16 * 60_000);
+  assert.equal(observeBrokerLogLine(timedDenial('expired'), now)?.mqttUsername, null);
+  assert.equal(mqttOnboardingDiagnostics.get('expired-owner'), null);
+  observeBrokerLogLine(onboardConnect('historical', 'historical-owner'));
+  observeBrokerLogLine(timedDenial('historical', 'meshcore', now - 60 * 60_000));
+  assert.equal(mqttOnboardingDiagnostics.get('historical-owner'), null);
+});
+
+test('exact-key denials remain audit observations and unsupported suffixes never gain a key', () => {
+  const nodeId = 'AB'.repeat(32);
+  observeBrokerLogLine(onboardConnect('key-device', 'key-owner'));
+  const observation = observeBrokerLogLine(timedDenial('key-device', `meshcore/NCL/${nodeId}/packets`));
+  assert.equal(observation?.kind === 'denied-publish' && observation.claimedNodeId, nodeId);
+  const raw = observeBrokerLogLine(timedDenial('key-device', `meshcore/NCL/${nodeId}/raw`));
+  assert.equal(raw?.kind === 'denied-publish' && raw.claimedNodeId, null);
+  assert.equal(mqttOnboardingDiagnostics.get('key-owner'), null);
 });
