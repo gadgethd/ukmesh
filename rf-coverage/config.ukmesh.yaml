@@ -8,6 +8,10 @@ site:
   subtitle: Canonical HopReach coverage, refreshed nightly
   active_hours: 6
   degraded_hours: 24
+  # Repeaters not heard in this many days are excluded from the coverage
+  # computation (Ben, 2026-10-25). They remain in the repeater layer and
+  # metadata; <= 0 disables the filter.
+  max_age_days: 7
 
 map:
   center_lat: 54.7
