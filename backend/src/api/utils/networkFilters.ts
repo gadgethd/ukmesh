@@ -1,8 +1,11 @@
 import { UKMESH_NETWORKS } from '../../networks.js';
 import type { VisibilityScope } from '../../http/requestScope.js';
+import { regionMemberIdsSql } from '../../regions/filter.js';
+import { regionNodeSourceSql } from '../../regions/nodeSource.js';
 
 export type NetworkFilters = {
   params: unknown[];
+  nodeSource?: string;
   packets: string;
   packetsAlias: (alias: string) => string;
   nodes: string;
@@ -99,7 +102,7 @@ function excludesLegacyTestTopic(prefix: string): string {
 export function networkFilters(
   network?: string,
   observer?: string,
-  opts?: { includePrivacy?: boolean },
+  opts?: { includePrivacy?: boolean; region?: string },
 ): NetworkFilters {
   const params: unknown[] = [];
   let networkParam: string | null = null;
@@ -120,6 +123,8 @@ export function networkFilters(
     observerParam = `$${params.length + 1}`;
     params.push(observer);
   }
+  const regionParam = opts?.region ? `$${params.length + 1}` : null;
+  if (regionParam) params.push(opts!.region);
 
   const netEq = networkParam
     ? (networkIsMulti ? `network = ANY(${networkParam})` : `network = ${networkParam}`)
@@ -144,6 +149,7 @@ export function networkFilters(
   if (opts?.includePrivacy !== false) {
     packetConditions.push(...publicPacketPrivacyConditions(''));
   }
+  if (regionParam) packetConditions.push(`region_scope = '#' || ${regionParam}::text`);
 
   const nodeConditions = (alias?: string) => {
     const prefix = alias ? `${alias}.` : '';
@@ -174,6 +180,7 @@ export function networkFilters(
         )`,
       );
     } else conditions.push(`${prefix}network IS DISTINCT FROM 'test'`);
+    if (regionParam) conditions.push(`${nodeRef} IN (${regionMemberIdsSql(regionParam)})`);
     if (observerParam) {
       const pNetCond = networkParam
         ? (networkIsMulti ? `AND p.network = ANY(${networkParam})` : `AND p.network = ${networkParam}`)
@@ -202,6 +209,7 @@ export function networkFilters(
 
   return {
     params,
+    ...(regionParam ? { nodeSource: regionNodeSourceSql(regionParam) } : {}),
     packets: packetConditions.length > 0 ? `AND ${packetConditions.join(' AND ')}` : '',
     packetsAlias: (alias: string) => {
       const prefix = `${alias}.`;
@@ -226,6 +234,7 @@ export function networkFilters(
         );
       }
       conditions.push(...publicPacketPrivacyConditions(prefix));
+      if (regionParam) conditions.push(`${prefix}region_scope = '#' || ${regionParam}::text`);
       return conditions.length > 0 ? `AND ${conditions.join(' AND ')}` : '';
     },
     nodes: nodeConditions().length > 0 ? `AND ${nodeConditions().join(' AND ')}` : '',

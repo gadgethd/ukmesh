@@ -6,16 +6,16 @@
   "scripts": {
     "generate-key":       "tsx generate-observer-key.ts",
     "register-observer":  "tsx register-observer.ts",
-    "test":               "bash test-generate-observer-key.sh",
+    "test":               "bash test-generate-observer-key.sh && bash test-infra-compose.sh && bash test-newuser.sh && bash test-deploy-website.sh",
     "typecheck":          "tsc --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --strict --types node generate-observer-key.ts register-observer.ts"
   },
   "dependencies": {
     "pg": "^8.23.0"
   },
   "devDependencies": {
-    "@types/node": "^26.2.0",
-    "@types/pg": "^8.21.0",
-    "tsx": "^4.23.12",
+    "@types/node": "^26.6.3",
+    "@types/pg": "^8.23.1",
+    "tsx": "^4.23.15",
     "typescript": "^7.0.2"
   }
 }

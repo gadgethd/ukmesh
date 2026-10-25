@@ -6,16 +6,20 @@ how historical traffic was retroactively decrypted.
 ## Key store
 
 - `backend/src/mqtt/channelRegistry.ts` is the single source of truth:
-  - `VALIDATED_CHANNELS` — default secrets baked into the image (39 entries
-    incl. Public; recovered 2026-08-06 and validated to decrypt real
-    human-readable group text).
+  - `PUBLIC_CHANNELS` — 41 recovered/community-known values intentionally
+    classified as public and baked into the image. Each was validated against
+    real human-readable UK Mesh group text.
   - `buildCombinedKeyStore()` — merges baked defaults with
-    `MESHCORE_CHANNEL_SECRETS` (env, comma-separated `name:hex` or bare hex;
-    dedupes by secret) for secrets that shouldn't be committed.
+    `MESHCORE_CHANNEL_SECRETS` (managed environment configuration, with
+    comma-separated `name:hex` or bare hex entries; dedupes by secret).
+    Environment-supplied entries are classified as confidential; never commit
+    their values or copy them into `PUBLIC_CHANNELS`.
   - `buildSummary()` / `identifyChannel()` — shared by ingest and offline
     tools.
-- ⚠️ The repo is **public**: keys in `channelRegistry.ts` are public. Keep
-  non-derivable/community keys in the env var only.
+- The repo is **public**. `PUBLIC_CHANNELS` is the explicit source classification;
+  the scanner baseline in `.gitleaksignore` records exact historical
+  commit/path/rule/line fingerprints for reviewed public values, test fixtures,
+  and generated revision identifiers. New findings remain blocking by default.
 - Reading env at startup only — after a change:
   `docker compose -f docker-compose.yml -f docker-compose.live.yml up -d --no-deps --force-recreate backend`.
 

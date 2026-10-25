@@ -64,6 +64,14 @@ the environment and run `scripts/bootstrap-mosquitto.sh`. The helper creates a
 backend-only read ACL and password file, refuses partial or symlinked state, and
 does not replace an existing credential set.
 
+## Public packet visibility recovery
+
+Use the [privacy convergence runbook](privacy-convergence.md) when public and
+materialized generations differ or privacy work remains pending/failed. The
+`privacy:converge` command defaults to a read-only inventory. Its explicit apply
+mode locks policy/data writers and reclassifies both retained packet stores
+before publishing a verified generation; it requires a maintenance window.
+
 ## Legacy schema-16 compatibility cutover
 
 An existing database that has `016_stale_mqtt_observer_cleanup.sql` but not
@@ -119,7 +127,7 @@ cd backend
 npm run load:realtime -- --duration 30 --concurrency 25 --max-p95-ms 1500
 ```
 
-Use `--mqtt-messages 5000` to exercise the bounded MQTT ingest queue with isolated, rejected test envelopes, and `--slow-ws-clients 10` to hold non-reading WebSocket clients during the run. MQTT mode uses `MQTT_BROKER_URL`, `MQTT_USERNAME`, and `MQTT_PASSWORD`; never point it at a broker outside the deployment under test.
+Use `--mqtt-messages 5000` to exercise MQTT ingest backpressure with isolated, rejected test envelopes, and `--slow-ws-clients 10` to hold non-reading WebSocket clients during the run. MQTT mode uses `MQTT_BROKER_URL`, `MQTT_USERNAME`, and `MQTT_PASSWORD`; never point it at a broker outside the deployment under test.
 
 The internal HopReach compatibility load path is covered by
 `backend/src/api/hopreachCompatibility.test.ts`. Its UK-size test performs ten
@@ -137,8 +145,13 @@ docker compose exec backend node dist/tools/backfillStatsRollups.js --apply --ho
 ```
 
 The first command is a read-only inventory. The checkpoint and the rollup
-slice commit together, so interruption resumes without double-counting. Set
-`STATS_AGGREGATE_READS_ENABLED=true` only after backfill. Once the
+slice commit together, so interruption resumes without double-counting. The
+`STATS_AGGREGATE_READS_ENABLED` and `STATS_AGGREGATE_SHADOW_ENABLED` settings
+accept comma-separated network names; `true` retains the all-network mode.
+Start with `STATS_AGGREGATE_SHADOW_ENABLED=ukmesh` while reads remain disabled.
+The bounded aggregate query and its legacy comparison run off the response path
+even in this shadow-only mode. Set `STATS_AGGREGATE_READS_ENABLED=ukmesh` only
+after backfill and a clean parity window. Once the
 aggregate-writing backend is live, reconcile the partial cutover hour:
 
 ```bash
@@ -153,8 +166,8 @@ gap above 48 hours requires a newly reviewed historical backfill. Transactions
 that arrive during a rebuild increment the reconstructed rows after its lock is
 released.
 
-A short validation window may additionally set
-`STATS_AGGREGATE_SHADOW_ENABLED=true`. The comparison pins one cutoff, scans
+A short validation window may set
+`STATS_AGGREGATE_SHADOW_ENABLED=ukmesh`. The comparison pins one cutoff, scans
 the recent source rows once, and runs off the response path with one in-flight
 comparison per scope and a five-minute minimum interval. Dimension keys must
 match exactly. Count differences may be at most five packets or 0.1%,
@@ -163,6 +176,15 @@ snapshots. Treat any `[stats-aggregate-shadow] mismatch` or
 `[stats-aggregate-shadow] failed` as a failed rollout and turn aggregate reads
 back off. Shadow mode deliberately adds a raw validation scan and must not
 remain enabled.
+
+Chart queries also share one `asOf` cutoff. `STATS_QUERY_DURATION_BUDGET_MS`
+defaults to 60 seconds, `STATS_CHART_QUERY_TIMEOUT_MS` defaults to 120 seconds,
+and `STATS_CHART_MAX_RESULT_ROWS` defaults to 100,000. A query that exceeds a
+budget fails the chart refresh and is logged with a `[stats-query-budget]`
+record; the existing stale snapshot remains available. The result-row limit is
+an output-size guard. It does not measure rows scanned inside PostgreSQL, so
+keep reviewing query plans and database scan telemetry before enabling reads on
+additional networks.
 
 Production aggregate reads combine maintained full-hour rows with raw boundary
 fragments, preserving the legacy exact rolling 24-hour/seven-day windows while
@@ -228,6 +250,43 @@ The public `/health` page polls the aggregated `/api/health` contract every minu
 - [SRTM cache, alert delivery, observer review, and planned publication](runbook-srtm-alerts-observers.md)
 - [Database compression and retention gates](db-lifecycle.md)
 
+### Owner authorization baseline refresh
+
+`/readyz` fails closed when the current owner accounts, grants, configured grants,
+or ACL generations differ from `OWNER_AUTH_INVENTORY_BASELINE_PATH`. This means
+an owner grant or `OWNER_MQTT_USERNAME_MAP` entry changed after the baseline was
+recorded. Drift is expected after every approved grant change and is not itself
+an incident, but it must be reviewed before the baseline is refreshed.
+
+1. Identify the change from the audit trail and confirm it was approved:
+
+   ```bash
+   docker exec -e PGOPTIONS='-c default_transaction_read_only=on' \
+     meshcore-infra-timescaledb-1 psql -U meshcore -d meshcore_owner_auth -X \
+     -c "SELECT occurred_at, event_type, source, actor FROM owner_grant_audit \
+         WHERE occurred_at > now() - interval '30 days' ORDER BY occurred_at DESC"
+   ```
+
+2. Generate and validate a fresh baseline with the running image (read-only
+   against the database; it only writes the new baseline file):
+
+   ```bash
+   scripts/refresh-owner-baseline.sh
+   ```
+
+3. Activate it after reviewing the printed counts/generations:
+
+   ```bash
+   scripts/refresh-owner-baseline.sh --apply --recreate
+   curl -fsS http://127.0.0.1:3000/readyz
+   ```
+
+The script refuses to overwrite an existing baseline, backs up `.env` before
+editing, keeps the previous baseline for rollback, and validates the new file
+against the live inventory before activation. To roll back, point
+`OWNER_AUTH_INVENTORY_BASELINE_PATH` at the previous file and recreate the
+backend.
+
 Use the `/operations`, `/observer-registrations`, and operator audit pages for
 normal mutations. They enforce authorization, CSRF, typed confirmation,
 idempotency, capacity, and audit rules that direct Redis/SQL edits bypass.
@@ -251,6 +310,24 @@ Read `/readyz` and act on the named dependency. Check PostgreSQL, Redis, and
 Mosquitto before restarting the API. Liveness remaining green is expected
 during a dependency outage.
 
+`checks.mqttConnectionMonitor` reports broker-log read and audit-write failures
+when MQTT ingest is enabled. `init:EACCES` or `poll:EACCES` means the backend
+cannot read `MOSQUITTO_LOG_PATH`; inspect that mount's ownership and permissions.
+`audit:<code>` means an observation could not be persisted. Idle log polls do
+not clear that failure; a later successful audit write does. Logs remain
+audit-only and never grant node ownership. An inaccessible/missing log degrades
+readiness and reaches the existing two-minute `BackendNotReady` alert.
+
+Ingest SQL uses a separate two-connection pool with a 10-second server statement
+timeout. `MQTT_INGEST_STATEMENT_TIMEOUT_MS` accepts 100–30000 ms; the general
+`DATABASE_STATEMENT_TIMEOUT_MS` cannot disable or extend this ingest bound.
+`[ingest-db] query timed out` and
+`meshcore_db_queries_total{pool="ingest",outcome="timed_out"}` identify cancelled
+statements without exposing SQL or packet contents. The client read fallback
+has one second of grace; transaction sockets that hit it are discarded.
+Failed durable packet writes remain unacknowledged, and failed RAM-writer
+commits remain pending for retry.
+
 ### SyntheticProbeFailed
 
 Compare the failing blackbox target with direct localhost liveness, stats, and
@@ -269,6 +346,82 @@ Check broker health, its WebSocket listener, password/ACL file permissions and
 the reloader logs. Do not regenerate credentials over an existing set. If ACL
 reconciliation caused the alert, keep the last verified ACL and roll back that
 change.
+
+### Denied PUBLISH on `/raw` (#269 / #213)
+
+**Disposition:** `/raw` is an unsupported secondary publication. Keep the
+restricted ACL and fix the publisher. The separate `meshmonitor-observer` EXT
+family published supported `/packets` and `/status` topics: its historical
+denials were an onboarding/grant gap. The earlier version of this runbook
+incorrectly called that family `/raw` noise.
+
+The [2026-10-23 evidence review](reviews/20261023-ukmesh-broker.md) records exact
+keys, clients, commands, windows, and counts. Four retained broker archives
+contain **2,356** `/raw` denials from `ESP32_a806F8`, on
+`meshcore/LBA/8CA23B78908F366D2D9F63EFE4A5726D685332FD3EC9AFF1B3B6CFF22EC2AE8A/raw`.
+The current-log snapshot contains zero further denials from that client.
+Accepted `/packets` messages for the same key are present in the archive.
+
+The current `meshmonitor-observer-nevrg6ol` authenticates as `nick`. It has
+**zero denied publishes** in the retained files and accepted packets on
+`meshcore/EXT/67969D8FF8A2DE6FFF873638CCAB3F70E38111BE3BD599F75E9D21D907B217B5/packets`.
+The live ACL already grants this key's packet/status/neighbor topics. Historical
+broker output preserved in shared memory shows `meshmonitor-observer-qy92lten`
+denied on this key's `/status` and `/packets` topics; it does not establish a
+current fault. `EXT` is a valid IATA covered by the ACL's `+` segment.
+
+The renderer in `backend/src/mqtt/aclManager.ts` grants owner writes to
+`packets`, `status`, `neighbors`, and `neighbours`. `backend/src/mqtt/topic.ts`
+accepts those suffixes and rejects `/raw`. Packet bytes are carried in the
+`raw` JSON field on the `/packets` envelope and decoded in
+`backend/src/mqtt/client.ts`; there is no `/raw` topic consumer. Granting the
+extra suffix would authorize a broker topic that the backend does not ingest.
+
+**Mick / ESP32 operator:** disable the secondary send to the exact `/raw` topic
+above in the publisher's topic configuration. Keep
+`meshcore/LBA/8CA23B78908F366D2D9F63EFE4A5726D685332FD3EC9AFF1B3B6CFF22EC2AE8A/packets`
+and its existing JSON envelope, including the `raw` hex field, and retain status
+and neighbor publication. If the firmware has no per-topic switch, ask its
+maintainer to remove the secondary `/raw` send; a firmware-specific switch has
+not been verified. Do not send a bare hex payload to `/packets`. Check fresh
+broker logs after the change: accepted packets should continue and `/raw`
+denials for this client should cease. No credential or owner grant change is
+needed for this optional, unused output.
+
+**Nick / meshmonitor operator:** retain username `nick` and base topic
+`meshcore/EXT/67969D8FF8A2DE6FFF873638CCAB3F70E38111BE3BD599F75E9D21D907B217B5`;
+publish the normal JSON envelopes on `/packets` and `/status`. The current
+evidence requires no client change. If supported topics become denied again,
+confirm the actual device key and username, then have an operator review the
+existing owner grant and [approved registration/provisioning workflow](runbook-srtm-alerts-observers.md#observer-registration).
+The reviewed grant must cover that exact key; broker connection success alone
+does not grant publish permission. Verify the reconciler's rendered ACL and
+fresh accepted messages after any approved correction. Avoid duplicate
+accounts, automatic grants from logs, and edits to the managed ACL.
+
+**Visibility:** the backend connection monitor reads the broker log's existing
+read-only mount. Every parsed denial increments
+`meshcore_mqtt_denied_publishes_total{kind,phase}`. `kind` is one of `raw`,
+`packets`, `status`, `neighbors`, `neighbours`, or `other`; `phase` is `history`
+or `live`. Client IDs, usernames, and topics appear only in the backend's
+`[conn-monitor] denied publish` JSON log records, with a per-scan occurrence
+count. Repeated client/topic/username groups coalesce within a scan. At most 64
+groups are logged per scan; excess occurrences are reported as
+`denied publish details omitted` and still counted by the metric. Detail fields
+are capped at 512 characters with `truncated=true`; use the broker source log
+for full longer values. Missing or expired connection context gives a null
+username and does not suppress telemetry. These observations cannot grant
+ownership or change the ACL.
+
+Use `sum by (kind) (increase(meshcore_mqtt_denied_publishes_total{phase="live"}[10m]))`
+to inspect recent recurrence, then find the exact client and topic in backend
+logs. History scans replay at startup (at most the last 50 MB); exclude
+`phase="history"` from live recurrence queries. These are counts of log
+observations, not durable, lifetime broker totals. The monitor polls every two
+seconds by default and depends on readable broker logs with denial logging
+enabled. Supported-topic denials need grant/configuration investigation;
+`/raw` needs the publisher correction above. Reopen the `/raw` policy only if
+the ingest contract deliberately adds a consumer for it.
 
 ### MeshIngestSilent
 
@@ -314,6 +467,15 @@ heartbeat as the higher-priority symptom.
 
 ### ActiveQueueWorkerHeartbeatStale
 
+The link worker publishes a Unix timestamp to Redis every ten seconds with a
+45-second TTL, independently of ITM output (which can have roughly 50-minute
+gaps). Each metrics scrape reads that key; an expired, unreadable or invalid
+heartbeat exports `-1`. With queued work on the same `job`/`instance`, an age
+above 45 seconds or `-1` must persist for three minutes to page. With 15-second
+scrapes and rule evaluations, a stopped publisher should page within about
+four minutes of its last heartbeat. A brief read failure resets on recovery;
+an idle queue does not page. Do not raise this limit to match ITM publication.
+
 Stop new optional work, confirm the queue retains its leased payloads, and
 restart the affected link worker. Allow lease recovery to requeue;
 do not manually duplicate the job.
@@ -338,6 +500,15 @@ Inspect waiting/active connection metrics, slow route latency and PostgreSQL
 activity. Shed optional analysis/load, identify the bounded slow query, and
 avoid increasing pool size until connection and memory headroom are measured.
 
+### DatabaseVacuumBacklog
+
+Inspect the `relname` table label, `n_dead_tup`, `n_live_tup`, and recent
+autovacuum activity in PostgreSQL. A table with more than 50,000 dead tuples
+is actionable even when its live-row estimate is small (as can happen for a
+TimescaleDB chunk after deletes); run the reviewed bounded vacuum procedure and
+confirm that both the alert and `/api/health` clear. Do not drop chunks or
+delete the database volume as a response.
+
 ### DatabaseWalRateHigh
 
 Identify current maintenance, backfill, compression or ingest activity. Pause
@@ -346,10 +517,45 @@ burst may be observed; sustained unexplained WAL is an incident.
 
 ### HostDiskSpaceLow
 
+The existing node-exporter rule includes the data filesystem and fires at
+90% usage (10% available or less) sustained for ten minutes. Configured-volume
+health separately warns at 80% of a directory budget and is critical at 90%;
+that budget measurement is not the host filesystem's free-space measurement.
+
 Stop optional RF/backfill work and identify the mount from the alert. Preserve
 databases and signed backups. Prune only explicitly identified unused build
 cache/images or let the bounded SRTM/log policies converge; never run a broad
 volume prune.
+
+### HostDiskExhaustionForecast
+
+Treat a sustained forecast of disk exhaustion within 24 hours as an incident
+before the low-space threshold fires. Identify the filesystem and its largest
+consumers, compare the database hypertable and chunk growth gauges, pause
+optional backfills, and preserve backup capacity. Do not remove database
+chunks or volumes to make space; follow the signed backup and lifecycle gates.
+
+### CoreTelemetryGrowthHigh
+
+Compare the per-table byte and chunk gauges with the retention and compression
+policies, then run the read-only `npm run db:lifecycle` inventory during a low
+traffic window. Check for missed retention/compression jobs and forecast the
+next 30 days of disk use. Changes to destructive retention require the current
+signed backup/restore receipt and the per-table approval in `docs/db-lifecycle.md`.
+
+### CoreTelemetryRetentionOverdue
+
+Use read-only queries against `timescaledb_information.jobs` and
+`timescaledb_information.chunks` to identify the missing or failing policy for
+the labelled table. Verify backup and isolated restore evidence before running
+the gated per-table lifecycle command. Keep expired forensic access isolated
+and read-only; never expose restored expired rows through production APIs.
+
+### CoreTelemetryCompressionOverdue
+
+Inspect the labelled table's compression policy and Timescale job history, as
+well as worker capacity and recent database/WAL pressure. Apply compression
+only through the per-table, receipt-gated command in `docs/db-lifecycle.md`.
 
 ### PacketPathsCapacity
 
@@ -359,6 +565,16 @@ reviewed 10,000–23,000 rows/day and roughly 1 kB/row baseline. If compression
 is overdue, inspect the `packet_paths` compression job and Timescale worker
 headroom; never add a retention job for this table. For genuine growth, forecast
 the next 12 months against free disk before changing storage or ingest policy.
+
+### Durable MQTT ingestion
+
+The MQTT client uses the library's inbound message callback for backpressure;
+QoS 1 PUBACK follows successful database persistence. A database failure is
+returned as a handler error, leaving the broker delivery unacknowledged for
+redelivery and keeping readiness failed until a durable write succeeds. Inspect
+the `failure`, `packet_persist_failure`, `status_persist_failure`, or
+`neighbors_persist_failure` ingest outcomes and resolve the database issue;
+do not clear the broker session or discard its inflight delivery.
 
 ### BackupReceiptMissing
 
@@ -380,16 +596,15 @@ identify the malformed observer/client version without weakening validation.
 
 ## Spring-clean additions (2026-08-06)
 
-### MQTT ingest resilience (`90d0dce`)
+### MQTT ingest resilience
 
-Ingest was silently lossy: failed packet-batch DB writes were logged +
-DISCARDED (no retry), and the MQTT client used a CLEAN session (missed
-messages on reconnect). Fix: idempotent transient batch retries + stable
-`clean=false` QoS-1 MQTT session (broker sees `meshcore-analytics-ingest`
-with `c0`) + ingest outcome/retry metrics. The backend does NOT dedupe
-inserts (DISTINCT ON is readers/backfills only) — envelope-vs-packet count
-differences vs services counting every MQTT message are expected, not loss.
-Full audit: `INGEST-AUDIT-2026-08-06.md` in the repo root.
+The MQTT client keeps a stable `clean=false` QoS-1 session and uses MQTT.js
+message handling as the backpressure boundary. It sends PUBACK only after
+packet, status, or neighbour persistence completes. Persistence failures are
+propagated to MQTT.js and close the connection without PUBACK so the persistent
+broker session redelivers the message. The process-local packet dedupe marker
+is written only after packet-batch commit. The broker session is
+`meshcore-analytics-ingest` (Mosquitto reports `c0`).
 
 ### Feed history contract
 

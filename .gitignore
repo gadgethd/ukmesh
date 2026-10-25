@@ -11,6 +11,10 @@ test-results/
 
 # Local semantic code index
 .tokensave/
+/.ukmesh-tools/
+
+# Worktree-local verification tools and package cache
+.ukmesh-tools/
 
 # Mosquitto credentials (generated file, not for source control)
 mosquitto/passwd
@@ -72,3 +76,8 @@ terrain-tiles/
 /plans/
 *.bak
 *.bak-*
+
+# Private read-only deploy-tree rescue evidence (never publish)
+/.deploy-rescue-private/
+# Local endpoint performance measurements and isolated test tooling
+/.mqttperf-evidence/

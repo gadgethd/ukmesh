@@ -1379,7 +1379,19 @@
           "public"
         ],
         "x-access": "public",
-        "parameters": [],
+        "parameters": [
+          {
+            "name": "region",
+            "in": "query",
+            "required": false,
+            "description": "Optional case-sensitive Phase A region name (leading # accepted). Requires PUBLIC_FEATURE_REGION_SCOPING_ENABLED; disabled or invalid selections return 400. Omit for the existing network-wide view. Node and historical-link views use relay membership; recent packets use attributed transport scope.",
+            "schema": {
+              "type": "string",
+              "pattern": "^#?[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
+              "maxLength": 65
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful response",
@@ -1654,6 +1666,17 @@
               "minLength": 1,
               "maxLength": 200
             }
+          },
+          {
+            "name": "region",
+            "in": "query",
+            "required": false,
+            "description": "Optional case-sensitive Phase A region name (leading # accepted). Requires PUBLIC_FEATURE_REGION_SCOPING_ENABLED; disabled or invalid selections return 400. Omit for the existing network-wide view. Node and historical-link views use relay membership; recent packets use attributed transport scope.",
+            "schema": {
+              "type": "string",
+              "pattern": "^#?[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
+              "maxLength": 65
+            }
           }
         ],
         "responses": {
@@ -1730,13 +1753,35 @@
     },
     "/api/nodes/map": {
       "get": {
-        "summary": "Read nodes map",
+        "summary": "List public map nodes, optionally matching current or former names",
         "operationId": "get-nodes-map",
         "tags": [
           "public"
         ],
         "x-access": "public",
-        "parameters": [],
+        "parameters": [
+          {
+            "name": "region",
+            "in": "query",
+            "required": false,
+            "description": "Optional case-sensitive Phase A region name (leading # accepted). Requires PUBLIC_FEATURE_REGION_SCOPING_ENABLED; disabled or invalid selections return 400. Omit for the existing network-wide view. Node and historical-link views use relay membership; recent packets use attributed transport scope.",
+            "schema": {
+              "type": "string",
+              "pattern": "^#?[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
+              "maxLength": 65
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "description": "Case-insensitive literal substring of a current/former name, node key or IATA",
+            "schema": {
+              "type": "string",
+              "maxLength": 160
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful response",
@@ -4461,7 +4506,19 @@
           "public"
         ],
         "x-access": "public",
-        "parameters": [],
+        "parameters": [
+          {
+            "name": "region",
+            "in": "query",
+            "required": false,
+            "description": "Optional case-sensitive Phase A region name (leading # accepted). Requires PUBLIC_FEATURE_REGION_SCOPING_ENABLED; disabled or invalid selections return 400. Omit for the existing network-wide view. Node and historical-link views use relay membership; recent packets use attributed transport scope.",
+            "schema": {
+              "type": "string",
+              "pattern": "^#?[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
+              "maxLength": 65
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful response",
@@ -4542,7 +4599,19 @@
           "public"
         ],
         "x-access": "public",
-        "parameters": [],
+        "parameters": [
+          {
+            "name": "region",
+            "in": "query",
+            "required": false,
+            "description": "Optional case-sensitive Phase A region name (leading # accepted). Requires PUBLIC_FEATURE_REGION_SCOPING_ENABLED; disabled or invalid selections return 400. Omit for the existing network-wide view. Node and historical-link views use relay membership; recent packets use attributed transport scope.",
+            "schema": {
+              "type": "string",
+              "pattern": "^#?[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
+              "maxLength": 65
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful response",
@@ -5716,6 +5785,228 @@
                         },
                         "additionalProperties": false
                       }
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid or out-of-bounds request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/regions/unattributed": {
+      "get": {
+        "summary": "List geographic footprints of scoped traffic no public region name explains",
+        "operationId": "get-regions-unattributed",
+        "tags": [
+          "public"
+        ],
+        "x-access": "public",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "generatedAt",
+                    "windowDays",
+                    "clusters",
+                    "totals"
+                  ],
+                  "properties": {
+                    "generatedAt": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "date-time"
+                    },
+                    "windowDays": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": 1,
+                      "maximum": 365
+                    },
+                    "clusters": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "id",
+                          "lat",
+                          "lon",
+                          "packets",
+                          "nodeCount",
+                          "firstSeen",
+                          "lastSeen",
+                          "topNodes"
+                        ],
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "pattern": "^u[0-9]{1,3}$"
+                          },
+                          "lat": {
+                            "type": "number",
+                            "minimum": -90,
+                            "maximum": 90
+                          },
+                          "lon": {
+                            "type": "number",
+                            "minimum": -180,
+                            "maximum": 180
+                          },
+                          "packets": {
+                            "type": "integer",
+                            "minimum": 1
+                          },
+                          "nodeCount": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "firstSeen": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "format": "date-time"
+                          },
+                          "lastSeen": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "format": "date-time"
+                          },
+                          "topNodes": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "required": [
+                                "nodeId",
+                                "name",
+                                "lat",
+                                "lon",
+                                "packets"
+                              ],
+                              "properties": {
+                                "nodeId": {
+                                  "type": "string",
+                                  "pattern": "^[0-9A-F]{64}$"
+                                },
+                                "name": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "lat": {
+                                  "type": "number",
+                                  "minimum": -90,
+                                  "maximum": 90
+                                },
+                                "lon": {
+                                  "type": "number",
+                                  "minimum": -180,
+                                  "maximum": 180
+                                },
+                                "packets": {
+                                  "type": "integer",
+                                  "minimum": 1
+                                }
+                              },
+                              "additionalProperties": false
+                            }
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    },
+                    "totals": {
+                      "type": "object",
+                      "required": [
+                        "clusters",
+                        "packets",
+                        "nodes"
+                      ],
+                      "properties": {
+                        "clusters": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "packets": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "nodes": {
+                          "type": "integer",
+                          "minimum": 0
+                        }
+                      },
+                      "additionalProperties": false
                     }
                   },
                   "additionalProperties": false

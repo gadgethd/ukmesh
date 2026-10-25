@@ -27,6 +27,9 @@ export class BoundedTtlMap<K, V> extends Map<K, V> {
   private readonly insertedAt = new Map<K, number>();
   private readonly weights = new Map<K, number>();
   private totalWeight = 0;
+  // A lower bound on the next expiry. Deletions may leave it conservatively
+  // early, but writes need not walk the whole cache while every entry is fresh.
+  private nextExpiryAt = Number.POSITIVE_INFINITY;
   private readonly timer: NodeJS.Timeout;
   private hits = 0;
   private misses = 0;
@@ -90,7 +93,9 @@ export class BoundedTtlMap<K, V> extends Map<K, V> {
     this.sweep();
     this.delete(key);
     super.set(key, value);
-    this.insertedAt.set(key, this.options.now?.() ?? Date.now());
+    const insertedAt = this.options.now?.() ?? Date.now();
+    this.insertedAt.set(key, insertedAt);
+    this.nextExpiryAt = Math.min(this.nextExpiryAt, insertedAt + this.options.ttlMs);
     this.weights.set(key, weight);
     this.totalWeight += weight;
     while (this.size > this.options.maxEntries || this.totalWeight > this.options.maxWeight) {
@@ -122,16 +127,21 @@ export class BoundedTtlMap<K, V> extends Map<K, V> {
     this.insertedAt.clear();
     this.weights.clear();
     this.totalWeight = 0;
+    this.nextExpiryAt = Number.POSITIVE_INFINITY;
     this.recordMetric('cleared');
     this.syncMetricGauges();
   }
 
   sweep(now = this.options.now?.() ?? Date.now()): void {
+    if (now < this.nextExpiryAt) return;
+    this.nextExpiryAt = Number.POSITIVE_INFINITY;
     for (const [key, timestamp] of this.insertedAt) {
       if (now - timestamp >= this.options.ttlMs) {
         this.expiries += 1;
         this.recordMetric('expired');
         this.delete(key);
+      } else {
+        this.nextExpiryAt = Math.min(this.nextExpiryAt, timestamp + this.options.ttlMs);
       }
     }
   }

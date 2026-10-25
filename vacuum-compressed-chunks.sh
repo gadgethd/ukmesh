@@ -63,14 +63,28 @@ cd "$repo_dir"
 # drives the script with COMPOSE_FILE/COMPOSE_PROJECT_NAME set (its own fixture);
 # in the two-project production layout the database lives in the separate
 # meshcore-infra project (mirrors scripts/backup.sh).
-if [ -z "${COMPOSE_FILE:-}" ]; then
-  infra_dir="${MESHCORE_INFRA_DIR:-${repo_dir}/../meshcore-infra}"
-  compose_base=(docker compose --project-directory "$infra_dir" -f "$infra_dir/docker-compose.yml" --project-name "${MESHCORE_INFRA_PROJECT_NAME:-meshcore-infra}")
+if [ -n "${MESHCORE_INFRA_COMPOSE_FILE:-}" ]; then
+  infra_compose_file="$MESHCORE_INFRA_COMPOSE_FILE"
+  infra_project_dir="${MESHCORE_INFRA_PROJECT_DIR:-${MESHCORE_INFRA_DIR:-$(dirname -- "$infra_compose_file")}}"
+  infra_project_name="${MESHCORE_INFRA_PROJECT_NAME:-meshcore-infra}"
+elif [ -n "${COMPOSE_FILE:-}" ]; then
+  # Caller-supplied project (test harness). Keep the ambient project name, as a
+  # bare `docker compose` call would, so container lookups hit that project.
+  infra_compose_file="$COMPOSE_FILE"
+  infra_project_dir="$(dirname -- "$infra_compose_file")"
+  infra_project_name="${COMPOSE_PROJECT_NAME:-$(basename -- "$infra_project_dir")}"
 else
-  compose_base=(docker compose)
+  infra_project_dir="${MESHCORE_INFRA_PROJECT_DIR:-${MESHCORE_INFRA_DIR:-${repo_dir}/../meshcore-infra}}"
+  infra_compose_file="$infra_project_dir/docker-compose.yml"
+  infra_project_name="${MESHCORE_INFRA_PROJECT_NAME:-meshcore-infra}"
 fi
-"${compose_base[@]}" config -q
-psql_command=("${compose_base[@]}" exec -T timescaledb psql -X -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-meshcore}" -d "$database")
+export MESHCORE_INFRA_PROJECT_DIR="$infra_project_dir"
+export MESHCORE_INFRA_COMPOSE_FILE="$infra_compose_file"
+export MESHCORE_INFRA_PROJECT_NAME="$infra_project_name"
+source "$repo_dir/scripts/lib/infra-compose.sh"
+meshcore_infra_compose config -q
+timescaledb_container="$(resolve_infra_container timescaledb)"
+psql_command=(docker exec -i "$timescaledb_container" psql -X -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-meshcore}" -d "$database")
 
 database_exists="$("${psql_command[@]}" -Atc \
   "SELECT 1 FROM pg_database WHERE datname = current_database() AND NOT datistemplate")"
@@ -138,7 +152,7 @@ case "$action" in
     ;;
 esac
 available_bytes="$(
-  "${compose_base[@]}" exec -T timescaledb \
+  docker exec "$timescaledb_container" \
     df -PB1 /var/lib/postgresql/data | awk 'NR==2 {print $4}'
 )"
 

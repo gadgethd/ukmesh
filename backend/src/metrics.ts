@@ -17,6 +17,13 @@ export const mqttMessagesTotal = new Counter({
   registers: [metricsRegistry],
 });
 
+export const mqttDeniedPublishesTotal = new Counter({
+  name: 'meshcore_mqtt_denied_publishes_total',
+  help: 'Denied PUBLISH broker-log observations by bounded topic suffix and scan phase; history may replay at startup.',
+  labelNames: ['kind', 'phase'] as const,
+  registers: [metricsRegistry],
+});
+
 export const ownerAclReloadTotal = new Counter({
   name: 'meshcore_owner_acl_reload_total',
   help: 'Authenticated Mosquitto ACL reload requests by bounded outcome.',
@@ -125,14 +132,14 @@ export const httpRequestDuration = new Histogram({
 
 export const mqttIngestOutcomesTotal = new Counter({
   name: 'meshcore_mqtt_ingest_outcomes_total',
-  help: 'MQTT ingest tasks by bounded outcome.',
+  help: 'MQTT ingest messages by durable handler outcome.',
   labelNames: ['outcome'] as const,
   registers: [metricsRegistry],
 });
 
 export const mqttIngestActive = new Gauge({
   name: 'meshcore_mqtt_ingest_active',
-  help: 'MQTT ingest tasks currently executing.',
+  help: 'MQTT messages currently being processed before acknowledgement.',
   registers: [metricsRegistry],
 });
 
@@ -186,6 +193,19 @@ export const dbQueryDuration = new Histogram({
   help: 'Database query duration by pool and bounded outcome.',
   labelNames: ['pool', 'outcome'] as const,
   buckets: [0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 15, 60, 300],
+  registers: [metricsRegistry],
+});
+
+export const mqttConnectionMonitorHealthy = new Gauge({
+  name: 'meshcore_mqtt_connection_monitor_healthy',
+  help: 'Whether the broker-log monitor has completed a read without outstanding read or audit-write failures.',
+  registers: [metricsRegistry],
+});
+
+export const mqttConnectionMonitorErrorsTotal = new Counter({
+  name: 'meshcore_mqtt_connection_monitor_errors_total',
+  help: 'Broker-log monitor failures by bounded phase.',
+  labelNames: ['phase'] as const,
   registers: [metricsRegistry],
 });
 
@@ -285,11 +305,27 @@ export const analysisActiveLeases = new Gauge({
   registers: [metricsRegistry],
 });
 
+export const spamAnalysisTruncationsTotal = new Counter({
+  name: 'meshcore_spam_analysis_truncations_total',
+  help: 'Spam analysis passes that exceeded a bounded candidate, message or incident limit.',
+  labelNames: ['phase'] as const,
+  registers: [metricsRegistry],
+});
+
+let workerHeartbeatCollector: (() => Promise<void>) | null = null;
+
+export function setWorkerHeartbeatCollector(collector: (() => Promise<void>) | null): void {
+  workerHeartbeatCollector = collector;
+}
+
 export const workerHeartbeatAgeSeconds = new Gauge({
   name: 'meshcore_worker_heartbeat_age_seconds',
   help: 'Age of the last worker heartbeat by bounded worker role.',
   labelNames: ['worker'] as const,
   registers: [metricsRegistry],
+  async collect() {
+    await workerHeartbeatCollector?.();
+  },
 });
 
 export const workerOutcomesTotal = new Counter({
@@ -327,6 +363,25 @@ export const privacyFilterTotal = new Counter({
   registers: [metricsRegistry],
 });
 
+let privacyGenerationHealthCollector: (() => Promise<boolean>) | null = null;
+
+export function setPrivacyGenerationHealthCollector(collector: () => Promise<boolean>): void {
+  privacyGenerationHealthCollector = collector;
+}
+
+export const privacyGenerationHealthy = new Gauge({
+  name: 'meshcore_privacy_generation_healthy',
+  help: 'One when desired, materialized and globally admissible privacy generations agree; zero on drift or an unavailable observation.',
+  registers: [metricsRegistry],
+  async collect() {
+    this.set(0);
+    if (privacyGenerationHealthCollector) {
+      try { this.set(await privacyGenerationHealthCollector() ? 1 : 0); }
+      catch { this.set(0); }
+    }
+  },
+});
+
 export const gracefulShutdownTotal = new Counter({
   name: 'meshcore_graceful_shutdown_total',
   help: 'Graceful shutdown attempts by bounded outcome.',
@@ -356,6 +411,34 @@ export const packetPathsBytesPerRow = new Gauge({
 export const packetPathsOverdueUncompressedChunks = new Gauge({
   name: 'meshcore_packet_paths_overdue_uncompressed_chunks',
   help: 'Packet path chunks older than the 14-day policy plus one-day scheduling allowance that remain uncompressed.',
+  registers: [metricsRegistry],
+});
+
+export const coreTelemetryHypertableBytes = new Gauge({
+  name: 'meshcore_core_telemetry_hypertable_bytes',
+  help: 'Total chunk bytes for core high-volume telemetry hypertables.',
+  labelNames: ['table'] as const,
+  registers: [metricsRegistry],
+});
+
+export const coreTelemetryHypertableChunks = new Gauge({
+  name: 'meshcore_core_telemetry_hypertable_chunks',
+  help: 'Chunk count for core high-volume telemetry hypertables.',
+  labelNames: ['table'] as const,
+  registers: [metricsRegistry],
+});
+
+export const coreTelemetryExpiredChunks = new Gauge({
+  name: 'meshcore_core_telemetry_expired_chunks',
+  help: 'Fully expired core telemetry chunks still present beyond the reviewed retention window.',
+  labelNames: ['table'] as const,
+  registers: [metricsRegistry],
+});
+
+export const coreTelemetryUncompressedChunks = new Gauge({
+  name: 'meshcore_core_telemetry_overdue_uncompressed_chunks',
+  help: 'Core telemetry chunks still uncompressed after the configured age plus a one-day schedule allowance.',
+  labelNames: ['table'] as const,
   registers: [metricsRegistry],
 });
 
@@ -413,6 +496,7 @@ const METRIC_CACHES = new Set([
   'owner_auth',
   'owner_nodes',
   'owner_dashboard',
+  'mqtt_onboarding',
   'owner_last_hop',
   'path_context',
   'path_resolution',
@@ -492,7 +576,7 @@ export function observeHttpRequest(req: Request, res: Response, next: NextFuncti
 }
 
 export function updateDbPoolMetrics(
-  poolName: 'oltp' | 'analytics' | 'owner_auth',
+  poolName: 'oltp' | 'analytics' | 'owner_auth' | 'ingest',
   snapshot: { totalCount: number; idleCount: number; waitingCount: number },
 ): void {
   dbPoolTotal.set({ state: `${poolName}_total` }, snapshot.totalCount);

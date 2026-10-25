@@ -27,9 +27,12 @@ import {
   reactivateHistoricPathNodes,
   type HistoricPathNode,
 } from '../repositories/pathEvidence.js';
-import { channelHashesForName } from '../mqtt/channelRegistry.js';
+import { channelHashesForName, isPublicChannelName, sanitizePublicPacketPayload } from '../mqtt/channelRegistry.js';
 import { buildPacketBatchInput, type InsertPacketInput } from './packetInput.js';
 import { getRamIngestMode } from '../ram/protocol.js';
+import { ingestPool, ingestQuery, withIngestTransaction } from './ingest.js';
+import { regionMemberIdsSql } from '../regions/filter.js';
+import { regionNodeSourceSql } from '../regions/nodeSource.js';
 
 const { Pool } = pg;
 const COORDINATE_RECALC_THRESHOLD_M = Number(process.env['NODE_COORDINATE_RECALC_THRESHOLD_M'] ?? 25);
@@ -49,7 +52,7 @@ const pool = new Pool({
 pool.on('error', (err) => {
   console.error('[db] unexpected pool error', err.message);
 });
-configurePacketBatch(query, withTransaction);
+configurePacketBatch(ingestQuery, withIngestTransaction);
 
 // Dedicated pool for long-running analytical queries (e.g. refreshRecentPathEvidence).
 // Kept separate so slow analytics can never exhaust the OLTP pool and take down the API.
@@ -204,9 +207,10 @@ type ScopePlaceholders = {
   networkParam: string | null;
   networkIsMulti: boolean;
   observerParam: string | null;
+  regionParam: string | null;
 };
 
-function buildScopePlaceholders(startIndex: number, network?: string, observer?: string): ScopePlaceholders {
+function buildScopePlaceholders(startIndex: number, network?: string, observer?: string, region?: string): ScopePlaceholders {
   const params: unknown[] = [];
   let idx = startIndex;
   let networkParam: string | null = null;
@@ -222,7 +226,9 @@ function buildScopePlaceholders(startIndex: number, network?: string, observer?:
   }
   const observerParam = observer ? `$${idx++}` : null;
   if (observer) params.push(observer);
-  return { params, networkParam, networkIsMulti, observerParam };
+  const regionParam = region ? `$${idx++}` : null;
+  if (region) params.push(region);
+  return { params, networkParam, networkIsMulti, observerParam, regionParam };
 }
 
 function buildPacketScopeClause(
@@ -232,6 +238,9 @@ function buildPacketScopeClause(
 ): string {
   const prefix = alias ? `${alias}.` : '';
   const conditions: string[] = [];
+  if (placeholders.regionParam) {
+    conditions.push(`${prefix}region_scope = '#' || ${placeholders.regionParam}::text`);
+  }
   if (placeholders.networkParam) {
     const netCond = placeholders.networkIsMulti
       ? `${prefix}network = ANY(${placeholders.networkParam})`
@@ -270,6 +279,9 @@ function buildNodeScopeClause(
   // must be querying the nodes table directly.
   const nodeRef = alias ? `${alias}.node_id` : 'nodes.node_id';
   const conditions: string[] = [];
+  if (placeholders.regionParam) {
+    conditions.push(`${nodeRef} IN (${regionMemberIdsSql(placeholders.regionParam)})`);
+  }
 
   if (placeholders.networkParam) {
     const netMatch = placeholders.networkIsMulti
@@ -507,7 +519,7 @@ export async function upsertNode(nodeId: string, updates: {
   // updates retain the transaction below because they also compare old values
   // and invalidate dependent coverage atomically.
   if (!hasIncomingPosition) {
-    const result = await pool.query<{ advert_count: number }>(
+    const result = await ingestQuery<{ advert_count: number }>(
       `WITH advert_once AS (
          INSERT INTO node_counted_adverts (canonical_advert_hash, node_id, counted_at)
          SELECT $13, $1, NOW()
@@ -548,17 +560,15 @@ export async function upsertNode(nodeId: string, updates: {
     return { coordinatesChanged: false, advertCount: Number(result.rows[0]?.advert_count ?? 0) };
   }
 
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
+  return withIngestTransaction(async (transactionQuery) => {
     const existing = hasIncomingPosition
-      ? await client.query<{ lat: number | null; lon: number | null }>(
+      ? await transactionQuery<{ lat: number | null; lon: number | null }>(
           'SELECT lat, lon FROM nodes WHERE node_id = $1 FOR UPDATE',
           [nodeId],
         )
       : null;
 
-    const upsert = await client.query<{ advert_count: number }>(
+    const upsert = await transactionQuery<{ advert_count: number }>(
       `WITH advert_once AS (
          INSERT INTO node_counted_adverts (canonical_advert_hash, node_id, counted_at)
          SELECT $13, $1, NOW()
@@ -610,21 +620,15 @@ export async function upsertNode(nodeId: string, updates: {
     );
 
     if (coordinatesChanged) {
-      await client.query('UPDATE nodes SET elevation_m = NULL WHERE node_id = $1', [nodeId]);
-      await client.query('DELETE FROM node_coverage WHERE node_id = $1', [nodeId]);
+      await transactionQuery('UPDATE nodes SET elevation_m = NULL WHERE node_id = $1', [nodeId]);
+      await transactionQuery('DELETE FROM node_coverage WHERE node_id = $1', [nodeId]);
     }
 
-    await client.query('COMMIT');
     return {
       coordinatesChanged,
       advertCount: Number(upsert.rows[0]?.advert_count ?? 0),
     };
-  } catch (err) {
-    await client.query('ROLLBACK');
-    throw err;
-  } finally {
-    client.release();
-  }
+  });
 }
 
 export async function insertPacket(p: InsertPacketInput): Promise<PacketBatchResult> {
@@ -644,12 +648,13 @@ export async function insertNodeStatusSample(sample: {
   channelUtilization?: number | null;
   airUtilTx?: number | null;
   stats?: Record<string, unknown> | null;
+  status?: string | null;
 }): Promise<void> {
-  await pool.query(
+  await ingestQuery(
     `WITH sample_insert AS (
        INSERT INTO node_status_samples
-       (time, node_id, network, battery_mv, uptime_secs, tx_air_secs, rx_air_secs, channel_utilization, air_util_tx, stats)
-       VALUES (NOW(), $1, $2, $3, $4, $5, $6, $7, $8, $9)
+       (time, node_id, network, battery_mv, uptime_secs, tx_air_secs, rx_air_secs, channel_utilization, air_util_tx, stats, status)
+       VALUES (NOW(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING time
      )
      UPDATE nodes
@@ -667,6 +672,7 @@ export async function insertNodeStatusSample(sample: {
       sample.channelUtilization ?? null,
       sample.airUtilTx ?? null,
       sample.stats ? JSON.stringify(sample.stats) : null,
+      sample.status ?? null,
     ],
   );
 }
@@ -676,7 +682,7 @@ export async function insertNodeNeighborSample(sample: {
   network?: string;
   neighbors: unknown[];
 }): Promise<void> {
-  await pool.query(
+  await ingestQuery(
     `INSERT INTO node_neighbor_samples (node_id, time, neighbors, network)
      VALUES ($1, NOW(), $2::jsonb, $3)`,
     [sample.nodeId, JSON.stringify(sample.neighbors), sample.network ?? 'ukmesh'],
@@ -688,8 +694,9 @@ export async function getNodes(
   observer?: string,
   fields: 'full' | 'slim' = 'full',
   signal?: AbortSignal,
+  region?: string,
 ) {
-  const scope = buildScopePlaceholders(1, network, observer);
+  const scope = buildScopePlaceholders(1, network, observer, region);
   const slimConditions = fields === 'slim'
     ? ` AND n.lat BETWEEN -90 AND 90
         AND n.lon BETWEEN -180 AND 180
@@ -722,7 +729,7 @@ export async function getNodes(
        ${nodeEffectiveOnlineSql('n')} AS is_online,
        n.advert_count
        ${optionalFields}
-     FROM node_identity_nodes n
+     FROM ${scope.regionParam ? regionNodeSourceSql(scope.regionParam) : 'node_identity_nodes'} n
      ${whereClause}
      ORDER BY ${nodeEffectiveLastSeenSql('n')} DESC`,
     scope.params,
@@ -833,9 +840,10 @@ export async function getRecentPackets(
   signal?: AbortSignal,
   readQuery: QueryFn = query,
   overlapHashes: string[] = [],
+  region?: string,
 ) {
   const includeObservationIds = getRamIngestMode() === 'ram';
-  const scope = buildScopePlaceholders(2, network, observer);
+  const scope = buildScopePlaceholders(2, network, observer, region);
   const overlapParam = includeObservationIds && overlapHashes.length > 0 ? `$${2 + scope.params.length}` : null;
   const fiveMinAgo = 'NOW() - INTERVAL \'5 minutes\'';
   const res = await readQuery(
@@ -923,9 +931,10 @@ export async function getRecentMessages(
   signal?: AbortSignal,
   readQuery: QueryFn = query,
   overlapHashes: string[] = [],
+  region?: string,
 ) {
   const includeObservationIds = getRamIngestMode() === 'ram';
-  const scope = buildScopePlaceholders(2, network, observer);
+  const scope = buildScopePlaceholders(2, network, observer, region);
   const overlapParam = includeObservationIds && overlapHashes.length > 0 ? `$${2 + scope.params.length}` : null;
   const res = await readQuery(
     `WITH recent_msgs AS (
@@ -1031,6 +1040,7 @@ export async function getChannelMessageHistory(
   observer?: string,
 ) {
   const normalizedChannel = channel.trim().toLowerCase();
+  if (!isPublicChannelName(normalizedChannel)) return [];
   const channelHashes = channelHashesForName(normalizedChannel);
   const scope = buildScopePlaceholders(6, network, observer);
   // A historical packet may retain the ingest-time "[encrypted]" marker in
@@ -1148,14 +1158,9 @@ export async function getChannelMessageHistory(
   });
 }
 
-export async function getRecentPacketEvents(limit = 200, network?: string, observer?: string, regionScope?: string) {
-  const scope = buildScopePlaceholders(2, network, observer);
+export async function getRecentPacketEvents(limit = 200, network?: string, observer?: string, region?: string) {
+  const scope = buildScopePlaceholders(2, network, observer, region);
   const params: unknown[] = [limit, ...scope.params];
-  let regionClause = '';
-  if (regionScope) {
-    params.push(regionScope);
-    regionClause = `AND p.region_scope = $${params.length}`;
-  }
   const res = await pool.query(
     `SELECT
         p.time, p.packet_hash,
@@ -1173,7 +1178,6 @@ export async function getRecentPacketEvents(limit = 200, network?: string, obser
        ON src_alias.source_node_id = UPPER(BTRIM(p.src_node_id))
      WHERE p.time > NOW() - INTERVAL '24 hours'
          ${buildPacketScopeClause(scope, 'p', network)}
-         ${regionClause}
          ${buildPublicPacketPrivacyClause('p')}
      ORDER BY p.time DESC
      LIMIT $1`,
@@ -1229,7 +1233,7 @@ export async function getPacketDetail(hash: string, network = 'ukmesh') {
     hopCount: row.hop_count as number | null,
     rssi: row.rssi as number | null,
     snr: row.snr as number | null,
-    payload: row.payload as Record<string, unknown> | null,
+    payload: sanitizePublicPacketPayload(row.payload as Record<string, unknown> | null),
     pathHashes: row.path_hashes as string[] | null,
     pathHashSizeBytes: row.path_hash_size_bytes as number | null,
     rawHex: row.raw_hex as string | null,
@@ -1266,11 +1270,11 @@ export type MultibytePathSegmentRow = {
   count: number;
 };
 
-export async function getMultibytePathSegments(network?: string, observer?: string): Promise<{
+export async function getMultibytePathSegments(network?: string, observer?: string, region?: string): Promise<{
   maxCount: number;
   segments: MultibytePathSegmentRow[];
 }> {
-  const scope = buildScopePlaceholders(1, network, observer);
+  const scope = buildScopePlaceholders(1, network, observer, region);
   const params: unknown[] = [...scope.params];
 
   // Two simple statements joined in JS. A single JOIN blob makes the planner
@@ -1286,7 +1290,7 @@ export async function getMultibytePathSegments(network?: string, observer?: stri
       name: string | null;
     }>(
       `SELECT node_id, lat, lon, name
-       FROM node_identity_nodes n
+       FROM ${scope.regionParam ? regionNodeSourceSql(scope.regionParam) : 'node_identity_nodes'} n
        WHERE 1=1${buildNodeScopeClause(scope, 'n')}`,
       params,
     ),
@@ -1298,7 +1302,10 @@ export async function getMultibytePathSegments(network?: string, observer?: stri
       `SELECT node_a_id, node_b_id, multibyte_observed_count
        FROM node_identity_links
        WHERE multibyte_observed_count > 0
-         AND itm_viable = true`,
+         AND itm_viable = true
+         ${scope.regionParam ? `AND node_a_id IN (${regionMemberIdsSql('$1')})
+           AND node_b_id IN (${regionMemberIdsSql('$1')})` : ''}`,
+      scope.regionParam ? [region] : undefined,
     ),
   ]);
 
@@ -1358,7 +1365,28 @@ export async function getViableLinks(
   network?: string,
   observer?: string,
   signal?: AbortSignal,
+  region?: string,
 ): Promise<ViableLinkRow[]> {
+  if (region) {
+    const nodes = await getNodes(network, observer, 'full', signal, region);
+    const ids = nodes.filter((node) => !node.name?.includes('🚫')).map((node) => node.node_id);
+    const result = await query<ViableLinkRow>(
+      `SELECT nl.node_a_id, nl.node_b_id, nl.observed_count, nl.multibyte_observed_count,
+         COALESCE(nr.neighbor_report_count, 0) AS neighbor_report_count,
+         nr.neighbor_best_snr_db, nl.itm_viable, nl.itm_path_loss_db,
+         nl.count_a_to_b, nl.count_b_to_a, nl.last_observed::text AS last_observed
+       FROM node_identity_links nl
+       LEFT JOIN LATERAL (
+         SELECT SUM(sample_count)::int AS neighbor_report_count, MAX(best_snr_db) AS neighbor_best_snr_db
+         FROM node_identity_link_radio_reports r
+         WHERE r.node_a_id = nl.node_a_id AND r.node_b_id = nl.node_b_id
+       ) nr ON TRUE
+       WHERE nl.node_a_id = ANY($1::text[]) AND nl.node_b_id = ANY($1::text[])
+         AND (nl.itm_viable = true OR nl.force_viable = true)`,
+      [ids], signal,
+    );
+    return result.rows;
+  }
   if (network && !observer) {
     const scopedNetworks = network === 'ukmesh' ? UKMESH_NETWORKS : [network];
     // Keep the identity scope and link scan as separate statements. The
@@ -1448,7 +1476,7 @@ export async function getViableLinks(
 export { pool, analyticsPool };
 
 export async function closeDb(): Promise<void> {
-  await Promise.all([pool.end(), analyticsPool.end()]);
+  await Promise.all([pool.end(), analyticsPool.end(), ingestPool.end()]);
 }
 
 // ---------------------------------------------------------------------------

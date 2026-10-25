@@ -21,6 +21,13 @@ export type CachePolicyRecord = Readonly<{
  */
 export const CACHE_POLICY_REGISTRY: readonly CachePolicyRecord[] = Object.freeze([
   {
+    source: 'src/mqtt/onboardingDiagnostics.ts#recent',
+    disposition: 'bounded-cache', maxEntries: 4_096, maxBytes: 4 << 20, ttlMs: 15 * 60_000,
+    scope: 'authenticated MQTT username; diagnostic hints only',
+    invalidation: 'event-time expiry + storage TTL; lost on process restart',
+    negativeCaching: 'none', singleFlight: 'synchronous broker-log observations',
+  },
+  {
     source: 'src/api/hopreachCompatibility.ts#nodeCountCache',
     disposition: 'bounded-cache', maxEntries: 1, maxBytes: 1_024, ttlMs: 30_000,
     scope: 'internal HopReach adapter + public repeater predicate', invalidation: 'TTL',
@@ -124,12 +131,6 @@ export const CACHE_POLICY_REGISTRY: readonly CachePolicyRecord[] = Object.freeze
     negativeCaching: 'empty verified grant list', singleFlight: 'ownerNodeIdInflight (cap 128)',
   },
   {
-    source: 'src/owner/ownerAccess.ts#authCache',
-    disposition: 'bounded-cache', maxEntries: 512, maxBytes: 2 << 20, ttlMs: 5 * 60_000,
-    scope: 'owner username + credential digest', invalidation: 'credential mismatch + TTL',
-    negativeCaching: 'positive results only', singleFlight: 'broker connection timeout',
-  },
-  {
     source: 'src/owner/ownerService.ts#ownerLastHopCache',
     disposition: 'bounded-cache', maxEntries: 1_024, maxBytes: 64 << 20, ttlMs: 60 * 60_000,
     scope: 'authorized node', invalidation: 'logout + TTL',
@@ -176,5 +177,11 @@ export const CACHE_POLICY_REGISTRY: readonly CachePolicyRecord[] = Object.freeze
     disposition: 'bounded-cache', maxEntries: 32, maxBytes: 256 << 10, ttlMs: 60 * 60_000,
     scope: 'network + hours + limit', invalidation: 'TTL',
     negativeCaching: 'completed rows only', singleFlight: 'not applicable',
+  },
+  {
+    source: 'src/tools/benchmarkBoundedCache.ts#cache',
+    disposition: 'request-local-exclusion',
+    scope: 'one standalone benchmark sample', invalidation: 'shutdown after each sample',
+    negativeCaching: 'none', singleFlight: 'synchronous standalone tool',
   },
 ]);

@@ -7,6 +7,7 @@ import { closeDb, initDb, pool, query } from './db/index.js';
 import { refreshNodeIdentityAliases } from './db/nodeIdentity.js';
 import {
   closeOwnerAuthDb,
+  getAppliedOwnerAclArtifact,
   getOwnerAclReadiness,
   getOwnerAuthorizationInventory,
   getOwnerAuthorizationSnapshot,
@@ -16,6 +17,7 @@ import { getMqttRuntimeStatus, publishMqtt, startMqttClient, stopMqttClient, onP
 import { startRamWriter, closeRamWriter } from './ram/writerRuntime.js';
 import { getRamIngestMode } from './ram/protocol.js';
 import {
+  getMqttConnectionMonitorStatus,
   startMqttConnectionMonitor,
   stopMqttConnectionMonitor,
 } from './mqtt/connectionMonitor.js';
@@ -64,8 +66,8 @@ import { createPublicFeedRepository } from './owner/publicFeedRepository.js';
 import {
   buildOwnerInventoryBaseline,
   loadOwnerInventoryBaseline,
-  validateOwnerInventoryBaseline,
 } from './owner/ownerInventoryBaseline.js';
+import { validateOwnerInventoryReadiness } from './owner/ownerInventoryReadiness.js';
 
 const ALLOWED_ORIGINS = (process.env['ALLOWED_ORIGINS'] ?? '')
   .split(',')
@@ -86,6 +88,7 @@ const SHUTDOWN_DEADLINE_MS = Math.min(
 const NODE_IDENTITY_REFRESH_INTERVAL_MS = 30 * 60_000;
 const OWNER_LAST_HOP_PREWARM_INTERVAL_MS = Number(process.env['OWNER_LAST_HOP_PREWARM_INTERVAL_MS'] ?? 15 * 60_000);
 const OWNER_LAST_HOP_PREWARM_NODE_DELAY_MS = Number(process.env['OWNER_LAST_HOP_PREWARM_NODE_DELAY_MS'] ?? 150);
+const OWNER_LAST_HOP_PREWARM_CONCURRENCY = Number(process.env['OWNER_LAST_HOP_PREWARM_CONCURRENCY'] ?? 1);
 const lifecycle = new LifecycleCoordinator(SHUTDOWN_DEADLINE_MS);
 const packetShareForwarder = createPacketShareForwarder({
   repository: createPacketShareRepository((sql, params) => query(sql, params, AbortSignal.timeout(5_000))),
@@ -267,6 +270,7 @@ async function main() {
       ),
       intervalMs: OWNER_LAST_HOP_PREWARM_INTERVAL_MS,
       nodeDelayMs: OWNER_LAST_HOP_PREWARM_NODE_DELAY_MS,
+      concurrency: OWNER_LAST_HOP_PREWARM_CONCURRENCY,
     });
   } else {
     console.warn('[owner-last-hop-prewarm] owner service is not registered; prewarm disabled');
@@ -368,9 +372,10 @@ async function main() {
     const checks = {
       database: false,
       mqtt: MQTT_INGEST_ENABLED ? getMqttRuntimeStatus() : { state: 'disabled', changedAt: new Date().toISOString() },
+      mqttConnectionMonitor: MQTT_INGEST_ENABLED ? getMqttConnectionMonitorStatus() : { state: 'disabled' },
       ownerAuthorization: {
-        mode: String(process.env['OWNER_AUTHORIZATION_MODE'] ?? 'shadow'),
-        aclMode: String(process.env['OWNER_ACL_MODE'] ?? 'shadow'),
+        mode: String(process.env['OWNER_AUTHORIZATION_MODE'] ?? 'enforce'),
+        aclMode: String(process.env['OWNER_ACL_MODE'] ?? 'apply'),
         desiredGeneration: null as string | null,
         renderedGeneration: null as string | null,
         appliedGeneration: null as string | null,
@@ -380,6 +385,7 @@ async function main() {
           required: Boolean(process.env['OWNER_AUTH_INVENTORY_BASELINE_PATH']),
           ok: !process.env['OWNER_AUTH_INVENTORY_BASELINE_PATH'],
           mismatches: [] as string[],
+          reason: 'owner-baseline-not-checked',
         },
       },
       analysis: [] as Awaited<ReturnType<typeof getAnalysisWorkloadStates>>,
@@ -394,18 +400,21 @@ async function main() {
       ).trim();
       if (ownerBaselinePath) {
         const databaseInventory = await getOwnerAuthorizationInventory();
+        const aclContent = readAclFile();
         const current = buildOwnerInventoryBaseline({
           accounts: databaseInventory.accounts,
           configuredGrants: parseOwnerGrantConfig(
             String(process.env['OWNER_MQTT_USERNAME_MAP'] ?? ''),
           ),
-          aclContent: readAclFile(),
+          aclContent,
           aclState,
         });
-        const validation = validateOwnerInventoryBaseline(
+        const validation = await validateOwnerInventoryReadiness(
           loadOwnerInventoryBaseline(ownerBaselinePath),
           current,
+          { aclContent, loadAppliedArtifact: getAppliedOwnerAclArtifact },
         );
+        console.log('[readyz] owner inventory baseline', validation);
         checks.ownerAuthorization.inventoryBaseline = {
           required: true,
           ...validation,
@@ -426,7 +435,9 @@ async function main() {
     const ready = !lifecycle.isDraining
       && checks.database
       && ownerAclReady
-      && (!MQTT_INGEST_ENABLED || checks.mqtt.state === 'connected');
+      && (!MQTT_INGEST_ENABLED || (
+        checks.mqtt.state === 'connected' && checks.mqttConnectionMonitor.state === 'healthy'
+      ));
     res.status(ready ? 200 : 503).json({ status: ready ? 'ready' : 'degraded', checks, ts: Date.now() });
   });
   app.use(apiErrorMiddleware);
@@ -474,6 +485,14 @@ async function main() {
   }
   if (!WS_ENABLED) {
     console.warn('[ws] disabled by WS_ENABLED');
+  }
+
+  const ownerAuthorizationMode = String(process.env['OWNER_AUTHORIZATION_MODE'] ?? 'enforce').toLowerCase();
+  const ownerAclMode = String(process.env['OWNER_ACL_MODE'] ?? 'apply').toLowerCase();
+  if (ownerAuthorizationMode === 'shadow' || ownerAclMode === 'shadow') {
+    console.warn(
+      `[owner-auth] WARNING: shadow mode enabled (authorization=${ownerAuthorizationMode}, acl=${ownerAclMode}) — DB-authoritative enforcement is OFF`,
+    );
   }
 
   // 5. Serve the API before long-running ingest warmup. Spam detector caches

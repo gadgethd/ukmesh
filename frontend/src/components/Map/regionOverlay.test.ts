@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { buildRegionAreasGeoJSON, buildRegionRepeatersGeoJSON, type RegionRepeaterFilters } from './regionOverlay.js';
+import { buildRegionAreasGeoJSON, buildRegionRepeatersGeoJSON, buildUnattributedGeoJSON, type RegionRepeaterFilters } from './regionOverlay.js';
 import type { RegionRepeater, RegionSummary } from '../../pages/regionsModel.js';
 
 function repeater(overrides: Partial<RegionRepeater> = {}): RegionRepeater {
@@ -106,4 +106,25 @@ test('buildRegionAreasGeoJSON hides other regions when one is selected', () => {
   assert.equal(selectedOnly.features.length, 1);
   assert.equal(selectedOnly.features[0]?.properties?.['region'], 'northwest');
   assert.equal(selectedOnly.features[0]?.properties?.['selected'], true);
+});
+
+test('buildUnattributedGeoJSON writes a closed footprint ring per cluster', () => {
+  const collection = buildUnattributedGeoJSON([
+    { id: 'u1', lat: 51.45, lon: -2.59, packets: 1455, nodeCount: 12, firstSeen: null, lastSeen: null, topNodes: [] },
+    { id: 'u2', lat: 52.63, lon: 1.29, packets: 205, nodeCount: 4, firstSeen: null, lastSeen: null, topNodes: [] },
+  ]);
+  assert.equal(collection.features.length, 2);
+  const [first, second] = collection.features;
+  const ring = first!.geometry.coordinates[0]!;
+  assert.ok(ring.length > 8);
+  assert.deepEqual(ring[0], ring[ring.length - 1]);
+  assert.equal(first!.properties['cluster_id'], 'u1');
+  assert.equal(first!.properties['label'], 'Unnamed · 1,455 pkts');
+  assert.equal(second!.properties['cluster_id'], 'u2');
+  // A larger cluster is drawn with a wider footprint than a small one.
+  const span = (feature: typeof first): number => {
+    const lats = feature!.geometry.coordinates[0]!.map(([, lat]) => lat);
+    return Math.max(...lats) - Math.min(...lats);
+  };
+  assert.ok(span(first) > span(second));
 });

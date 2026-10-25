@@ -124,14 +124,17 @@ export function MapLibreMap({
   mapLight,
   network,
   observer,
+  region,
   privacyGeneration,
   showMapChrome = true,
 }: MapLibreMapProps) {
-  const requestScope = useMemo(() => ({ network, observer }), [network, observer]);
-  const requestScopeKey = `${network ?? 'all'}|${observer ?? 'all'}|privacy-${privacyGeneration}`;
+  const requestScope = useMemo(() => ({ network, observer, region }), [network, observer, region]);
+  const requestScopeKey = `${network ?? 'all'}|${observer ?? 'all'}|privacy-${privacyGeneration}${region ? `|region-${region}` : ''}`;
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const mapLoadedRef = useRef(false);
+  const [mapError, setMapError] = useState<string | null>(null);
+  const [mapAttempt, setMapAttempt] = useState(0);
   const nodesRef = useRef(nodeStore.getState().nodes);
   const viablePairsRef = useRef(linkStateStore.getState().viablePairsArr);
   const linkMetricsRef = useRef(linkStateStore.getState().linkMetrics);
@@ -723,20 +726,56 @@ export function MapLibreMap({
 
   useEffect(() => {
     if (!containerRef.current) return;
+    setMapError(null);
     hasLoadedStyleRef.current = false;
     styleUrlRef.current = mapLight ? OPENFREEMAP_STYLE_LIGHT : OPENFREEMAP_STYLE_DARK;
 
-    const map = new maplibregl.Map({
-      container: containerRef.current,
-      style: mapLight ? OPENFREEMAP_STYLE_LIGHT : OPENFREEMAP_STYLE_DARK,
-      center: initialView ? [initialView.lon, initialView.lat] : [DEFAULT_CENTER[1], DEFAULT_CENTER[0]],
-      zoom: initialView?.zoom ?? DEFAULT_ZOOM,
-      maxPitch: 0,
-      minZoom: 6,
-    });
+    let map: maplibregl.Map;
+    try {
+      map = new maplibregl.Map({
+        container: containerRef.current,
+        style: mapLight ? OPENFREEMAP_STYLE_LIGHT : OPENFREEMAP_STYLE_DARK,
+        center: initialView ? [initialView.lon, initialView.lat] : [DEFAULT_CENTER[1], DEFAULT_CENTER[0]],
+        zoom: initialView?.zoom ?? DEFAULT_ZOOM,
+        maxPitch: 0,
+        minZoom: 6,
+      });
+    } catch (error) {
+      console.error('[map] initialization failed:', error);
+      setMapError('The map could not start. Check that WebGL is enabled in your browser, then retry.');
+      return;
+    }
 
     mapRef.current = map;
+    let loadTimer: number | undefined;
+    let waitingForLoad = true;
+    const watchLoading = () => {
+      waitingForLoad = true;
+      window.clearTimeout(loadTimer);
+      loadTimer = window.setTimeout(() => {
+        setMapError('The map is taking too long to load. Check your connection, then retry.');
+      }, 15_000);
+    };
+    const handleIdle = () => {
+      if (!map.loaded()) return;
+      waitingForLoad = false;
+      window.clearTimeout(loadTimer);
+      setMapError(null);
+    };
+    const handleError = (event: maplibregl.ErrorEvent) => {
+      console.error('[map] resource error:', event.error);
+      if (waitingForLoad) setMapError('The map could not load. Check your connection, then retry.');
+    };
+    const handleContextLost = () => {
+      setMapError('The browser lost the map graphics connection. Retry to reload the map.');
+    };
+    watchLoading();
+    map.on('idle', handleIdle);
+    map.on('error', handleError);
+    map.on('webglcontextlost', handleContextLost);
+    map.on('webglcontextrestored', watchLoading);
     const handleStyleLoad = () => {
+      watchLoading();
       const targetStyle = mapLightRef.current ? OPENFREEMAP_STYLE_LIGHT : OPENFREEMAP_STYLE_DARK;
       if (styleUrlRef.current !== targetStyle) {
         styleUrlRef.current = targetStyle;
@@ -847,6 +886,11 @@ export function MapLibreMap({
     });
 
     return () => {
+      window.clearTimeout(loadTimer);
+      map.off('idle', handleIdle);
+      map.off('error', handleError);
+      map.off('webglcontextlost', handleContextLost);
+      map.off('webglcontextrestored', watchLoading);
       mapLoadedRef.current = false;
       hasLoadedStyleRef.current = false;
       setClashPathLines([]);
@@ -857,7 +901,7 @@ export function MapLibreMap({
   // Initial theme is captured on mount; subsequent theme changes are applied by
   // the dedicated theme effect without rebuilding the MapLibre instance.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialView, onMapReady, onNodeSelect, refreshMapSources, rehydrateMapStyle, setClashPathLines]);
+  }, [mapAttempt, initialView, onMapReady, onNodeSelect, refreshMapSources, rehydrateMapStyle, setClashPathLines]);
 
   // -- Map theme (light/dark) -------------------------------------------------
   useEffect(() => {
@@ -1059,6 +1103,16 @@ export function MapLibreMap({
       {showMapChrome && <NodeSearch map={mapRef.current} onNodeSelect={onNodeSelect} />}
       {showMapChrome && <NodeLegend mapLight={mapLight} />}
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
+      {mapError && (
+        <div role="alert" style={{
+          position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)',
+          zIndex: 3, width: 'min(360px, 85%)', padding: 16, borderRadius: 6,
+          background: '#07101d', color: '#f8fafc', border: '1px solid #64748b',
+        }}>
+          <p style={{ margin: '0 0 12px' }}>{mapError}</p>
+          <button type="button" onClick={() => setMapAttempt(attempt => attempt + 1)}>Retry map</button>
+        </div>
+      )}
 
       {/* Map tool buttons */}
       {showMapChrome && <div className="map-tools">

@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { MeshCoreDecoder } from '@michaelhart/meshcore-decoder';
-import { decodePacketCompat } from './decodePacket.js';
+import { decodePacketCompat, verifyAdvertSignature } from './decodePacket.js';
 
 const keyStore = MeshCoreDecoder.createKeyStore({ channelSecrets: [] });
+const VALID_ADVERT = '11007E7662676F7F0850A8A355BAAFBFC1EB7B4174C340442D7D7161C9474A2C94006CE7CF682E58408DD8FCC51906ECA98EBF94A037886BDADE7ECD09FD92B839491DF3809C9454F5286D1D3370AC31A34593D569E9A042A3B41FD331DFFB7E18599CE1E60992A076D50238C5B8F85757375354522F50756765744D65736820436F75676172';
 
 test('preserves native two-byte path decoding', () => {
   // Header: ACK/Flood; path length 0x42 = two 2-byte hashes.
@@ -54,4 +55,12 @@ test('does not expose metadata or an identity for malformed framing', () => {
   assert.equal(truncated.canonicalPacketId, undefined);
   assert.equal(oddLength.metadataValid, false);
   assert.equal(oddLength.canonicalPacketId, undefined);
+});
+
+test('only a valid Ed25519 advert may establish node identity', async () => {
+  const valid = decodePacketCompat(VALID_ADVERT, keyStore);
+  assert.equal(await verifyAdvertSignature(valid.decoded), true);
+
+  const tampered = decodePacketCompat(`${VALID_ADVERT.slice(0, -2)}00`, keyStore);
+  assert.equal(await verifyAdvertSignature(tampered.decoded), false);
 });

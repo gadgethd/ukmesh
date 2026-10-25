@@ -1,8 +1,8 @@
-FROM ghcr.io/osgeo/gdal:ubuntu-full-3.13.2@sha256:de280a240ef4309e6fb64b943e0472e6098099b813a6b9ff0e182bc6976a3fdb
+FROM ghcr.io/osgeo/gdal:ubuntu-full-3.13.3@sha256:2dd0f81ef927ff4c3d4dbe4f73c029dc86d4073974c0564f8e196f6e1412e2e0
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get -o APT::Update::Error-Mode=any update && apt-get install -y --no-install-recommends \
       python3-pip python3-venv python3-shapely \
     && rm -rf /var/lib/apt/lists/*
 

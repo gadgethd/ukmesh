@@ -1,11 +1,9 @@
 /**
- * Channel registry — the single source of truth for MeshCore channel secrets.
+ * Channel registry — explicitly public defaults plus confidential environment keys.
  *
- * VALIDATED_CHANNELS are the default secrets baked into the service (all
- * recovered/community-known channels, verified to decrypt real group text).
- * MESHCORE_CHANNEL_SECRETS (env, 'name:hex' or bare 'hex', comma-separated)
- * APPENDS extra channels on top — useful for community-shared secrets that
- * shouldn't be committed.
+ * PUBLIC_CHANNELS contains only recovered/community-known material intentionally
+ * classified as public. MESHCORE_CHANNEL_SECRETS ('name:hex' or bare 'hex',
+ * comma-separated) adds confidential keys without committing their values.
  *
  * Also hosts the summary + channel-identification helpers so the ingest
  * pipeline and offline tools (e.g. backfillDecrypt) share one implementation.
@@ -15,18 +13,21 @@ import type { GroupTextPayload } from '@michaelhart/meshcore-decoder';
 import { decodePacketCompat } from './decodePacket.js';
 import { BoundedTtlMap } from '../cache/boundedTtlMap.js';
 
+export type ChannelClassification = 'public' | 'confidential';
+
 export interface ChannelEntry {
+  classification: ChannelClassification;
   name: string;
   secret: string;
   keyStore: ReturnType<typeof MeshCoreDecoder.createKeyStore>;
 }
 
 /**
- * Default channels — recovered via the meshcore wordlist/derivation audit
- * (2026-08-06) and validated: each key decrypts real human-readable group
- * text (sane epoch timestamp + printable text) on the UK Mesh network.
+ * Every committed value is intentionally public: recovered/community-known
+ * channels from the 2026-08-06 derivation audit, validated against real UK Mesh
+ * group text. Confidential channel keys belong in MESHCORE_CHANNEL_SECRETS.
  */
-export const VALIDATED_CHANNELS: ReadonlyArray<{ name: string; secret: string }> = [
+export const PUBLIC_CHANNELS: ReadonlyArray<{ name: string; secret: string }> = [
   { name: 'Public',    secret: '8b3387e9c5cdea6ac9e5edbaa115cd72' },
   { name: 'test',      secret: '9cd8fcf22a47333b591d96a2b848b73f' },
   { name: 'bot',       secret: 'eb50a1bcb3e4e5d7bf69a57c9dada211' },
@@ -70,9 +71,13 @@ export const VALIDATED_CHANNELS: ReadonlyArray<{ name: string; secret: string }>
   { name: 'uk',        secret: '22b2eed34b5cc429ce1dc5e88635ff84' },
 ];
 
+/** @deprecated Use PUBLIC_CHANNELS to make the source classification explicit. */
+export const VALIDATED_CHANNELS = PUBLIC_CHANNELS;
+
 /** Build the channel entry list: committed defaults + env extras (dedup by secret). */
 export function buildChannelEntries(envValue?: string): ChannelEntry[] {
-  const entries: ChannelEntry[] = VALIDATED_CHANNELS.map(({ name, secret }) => ({
+  const entries: ChannelEntry[] = PUBLIC_CHANNELS.map(({ name, secret }) => ({
+    classification: 'public',
     name,
     secret,
     keyStore: MeshCoreDecoder.createKeyStore({ channelSecrets: [secret] }),
@@ -84,7 +89,12 @@ export function buildChannelEntries(envValue?: string): ChannelEntry[] {
     const secret = colon > 0 ? raw.slice(colon + 1) : raw;
     if (seen.has(secret.toLowerCase())) continue;
     seen.add(secret.toLowerCase());
-    entries.push({ name, secret, keyStore: MeshCoreDecoder.createKeyStore({ channelSecrets: [secret] }) });
+    entries.push({
+      classification: 'confidential',
+      name,
+      secret,
+      keyStore: MeshCoreDecoder.createKeyStore({ channelSecrets: [secret] }),
+    });
   }
   return entries;
 }
@@ -116,6 +126,68 @@ export function channelHashesForName(name: string, envValue = process.env['MESHC
 /** Combined keyStore used for decryption — one decode call per packet tries every secret. */
 export function buildCombinedKeyStore(entries: ChannelEntry[]) {
   return MeshCoreDecoder.createKeyStore({ channelSecrets: entries.map((e) => e.secret) });
+}
+
+/**
+ * Channel names whose plaintext may be published by the public API.
+ *
+ * Committed PUBLIC_CHANNELS are public by definition. Environment-supplied
+ * secrets are confidential unless their name is explicitly added to
+ * PUBLIC_DECRYPT_CHANNELS (comma-separated, default empty = deny).
+ */
+export function isPublicChannelName(
+  name: string,
+  allowlist = process.env['PUBLIC_DECRYPT_CHANNELS'],
+): boolean {
+  const normalized = name.trim().toLowerCase();
+  if (PUBLIC_CHANNELS.some((channel) => channel.name.toLowerCase() === normalized)) return true;
+  return String(allowlist ?? '')
+    .split(',')
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean)
+    .includes(normalized);
+}
+
+/** Wire-level hashes whose plaintext the public API may return. */
+export function publicChannelHashes(
+  secretsEnv = process.env['MESHCORE_CHANNEL_SECRETS'],
+  allowlist = process.env['PUBLIC_DECRYPT_CHANNELS'],
+): Set<string> {
+  const hashes = new Set<string>();
+  for (const entry of buildChannelEntries(secretsEnv)) {
+    if (entry.classification === 'public' || isPublicChannelName(entry.name, allowlist)) {
+      hashes.add(ChannelCrypto.calculateChannelHash(entry.secret).toLowerCase());
+    }
+  }
+  return hashes;
+}
+
+export function isPublicChannelHash(
+  hash: string,
+  secretsEnv = process.env['MESHCORE_CHANNEL_SECRETS'],
+  allowlist = process.env['PUBLIC_DECRYPT_CHANNELS'],
+): boolean {
+  const normalized = hash.trim().toLowerCase();
+  return normalized.length > 0 && publicChannelHashes(secretsEnv, allowlist).has(normalized);
+}
+
+/**
+ * Strip plaintext from a packet payload unless its channel is explicitly public.
+ * Keeps the pre-computed summary for public channels only; confidential channel
+ * content never leaves the database through the public packet-detail API.
+ */
+export function sanitizePublicPacketPayload(
+  payload: Record<string, unknown> | null,
+  secretsEnv = process.env['MESHCORE_CHANNEL_SECRETS'],
+  allowlist = process.env['PUBLIC_DECRYPT_CHANNELS'],
+): Record<string, unknown> | null {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return payload;
+  const decrypted = payload['decrypted'];
+  if (!decrypted || typeof decrypted !== 'object' || Array.isArray(decrypted)) return payload;
+  const channelHash = String((decrypted as Record<string, unknown>)['channelHash'] ?? '');
+  if (channelHash && isPublicChannelHash(channelHash, secretsEnv, allowlist)) return payload;
+  const { decrypted: _decrypted, _summary: _summary, ...rest } = payload;
+  return rest;
 }
 
 // Small cache so relay copies of the same GroupText don't trigger re-decodes

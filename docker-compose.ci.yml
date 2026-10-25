@@ -18,6 +18,8 @@ services:
         max-file: "3"
     mem_limit: "4g"
     memswap_limit: "4g"
+    # POSIX dynamic shared memory for parallel maintenance; avoid Docker's 64m default.
+    shm_size: "1g"
     stop_grace_period: 2m
     # The image currently tunes timescaledb.max_background_workers to 16.
     # Leave headroom for the Timescale launcher/schedulers, logical replication,
@@ -117,3 +119,21 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
+
+  alert-receiver:
+    # CI does not configure ALERT_FORWARD_URL, so the receiver correctly reports
+    # archive-only mode as NOT ready (/readyz = 503). The smoke stack only needs
+    # the process alive; production keeps the strict /readyz delivery gate.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz >/dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    # The empty-volume smoke stack has no owner-auth database or ACL file, so it
+    # explicitly opts into the now-opt-in shadow mode. Production defaults to
+    # enforce/apply and sets both explicitly in its .env.
+    environment:
+      OWNER_AUTHORIZATION_MODE: shadow
+      OWNER_ACL_MODE: shadow

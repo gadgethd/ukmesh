@@ -20,6 +20,7 @@ function positionKey(lat: number, lon: number): string {
 }
 
 type LiveOverlayControllerProps = {
+  scopeKey?: string;
   map: maplibregl.Map | null;
   filters: Filters;
   network?: string;
@@ -52,6 +53,7 @@ export function buildResolvedAerialPaths(
 }
 
 export const LiveOverlayController: React.FC<LiveOverlayControllerProps> = ({
+  scopeKey,
   map,
   filters,
   network,
@@ -118,6 +120,7 @@ export const LiveOverlayController: React.FC<LiveOverlayControllerProps> = ({
     pinnedPacketId,
     activePacketSnapshot,
   } = usePacketPathOverlay({
+    scopeKey,
     filters,
     network,
     observer,

@@ -3,7 +3,7 @@ import test from 'node:test';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { AddressInfo } from 'node:net';
@@ -146,9 +146,7 @@ test('failed stub deliveries remain unready and reach bounded retries', { timeou
     await fetch(`${child.base}/alerts`, { method: 'POST', body: JSON.stringify({
       service: 'meshcore-analytics', kind: 'alert', check: 'test-only',
     }) });
-    await waitFor(async () => (await readdir(`${child.receipt}.outbox`)).filter((name) => name.endsWith('.dead.json')), (files) => files.length === 1);
-    const dead = (await readdir(`${child.receipt}.outbox`)).find((name) => name.endsWith('.dead.json'))!;
-    assert.equal(JSON.parse(await readFile(path.join(`${child.receipt}.outbox`, dead), 'utf8')).attempts, 2);
+    await waitFor(async () => child.logs(), (logs) => logs.includes('dead-lettered after 2 attempts'));
     assert.equal(calls, 2);
     assert.equal((await fetch(`${child.base}/readyz`)).status, 503);
   } finally {

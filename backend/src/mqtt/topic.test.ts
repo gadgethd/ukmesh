@@ -44,9 +44,21 @@ test('stores test-marker IATAs under the isolated test network scope', () => {
   );
 });
 
+test('the meshmonitor EXT family uses supported public packet and status topics', () => {
+  const key = '67969D8FF8A2DE6FFF873638CCAB3F70E38111BE3BD599F75E9D21D907B217B5';
+  for (const suffix of ['packets', 'status'] as const) {
+    assert.deepEqual(parseMqttTopic(`meshcore/EXT/${key}/${suffix}`, prefixes, blocked), {
+      iata: 'EXT', observerKey: key, suffix, network: 'ukmesh',
+    });
+  }
+});
+
 test('rejects malformed and unsupported MQTT topics before persistence', () => {
   assert.equal(parseMqttTopic('meshcore/lhr/short/packets', prefixes, blocked), null);
   assert.equal(parseMqttTopic(`meshcore/lhr/${observer}/other`, prefixes, blocked), null);
+  // Raw packet bytes are the `raw` field in a /packets JSON envelope; /raw is
+  // not an ingest topic and must remain outside the observer topic contract.
+  assert.equal(parseMqttTopic(`meshcore/lhr/${observer}/raw`, prefixes, blocked), null);
   assert.equal(parseMqttTopic(`unknown/lhr/${observer}/packets`, prefixes, blocked), null);
   assert.equal(parseMqttTopic(`meshcore/lhr/${observer}/packets/extra`, prefixes, blocked), null);
 });

@@ -4,6 +4,7 @@ import {
   boundedAnalysisWorkloadLabel,
   boundedNetworkMetricLabel,
   metricsRegistry,
+  setPrivacyGenerationHealthCollector,
 } from './metrics.js';
 
 const ALLOWED_LABEL_NAMES = new Set([
@@ -19,6 +20,7 @@ const ALLOWED_LABEL_NAMES = new Set([
   'state',
   'status',
   'status_class',
+  'table',
   'kind',
   'major',
   'minor',
@@ -58,4 +60,13 @@ test('F14 follow-up inflight and drop metrics appear in the served registry', as
   const scrape = await metricsRegistry.metrics();
   assert.match(scrape, /meshcore_mqtt_post_persist_inflight/);
   assert.match(scrape, /meshcore_mqtt_post_persist_dropped_total/);
+});
+
+test('privacy generation metric is a single boolean and fails closed on collector errors', async () => {
+  setPrivacyGenerationHealthCollector(async () => true);
+  assert.match(await metricsRegistry.metrics(), /\nmeshcore_privacy_generation_healthy 1\n/);
+  setPrivacyGenerationHealthCollector(async () => false);
+  assert.match(await metricsRegistry.metrics(), /\nmeshcore_privacy_generation_healthy 0\n/);
+  setPrivacyGenerationHealthCollector(async () => { throw new Error('private diagnostics'); });
+  assert.match(await metricsRegistry.metrics(), /\nmeshcore_privacy_generation_healthy 0\n/);
 });

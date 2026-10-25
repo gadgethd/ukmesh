@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { LoadingIndicator } from '../../components/LoadingIndicator.js';
 import { getCurrentSite } from '../../config/site.js';
 import { useRuntimeFeatures } from '../../config/runtimeFeatures.js';
+import { useNodeNameSearch } from '../../hooks/useNodeNameSearch.js';
 import { fetchJson, withScopeParams } from '../../utils/api.js';
 import { ScopedCache } from '../../utils/scopedCache.js';
 import { Combobox, type ComboboxOption } from '../../components/ui/Combobox.js';
@@ -252,6 +253,7 @@ export const UKRepeaterSearchPage: React.FC = () => {
   const observer = site.observerId;
   const detailScopeKey = `${network}|${observer ?? 'all'}|privacy-${runtimeFeatures.privacyGeneration}`;
   const [searchQuery, setSearchQuery] = useState('');
+  const nameMatches = useNodeNameSearch(searchQuery);
   const [showResults, setShowResults] = useState(false);
   const [nodes, setNodes] = useState<MeshNode[]>([]);
   const [loadingNodes, setLoadingNodes] = useState(true);
@@ -322,7 +324,7 @@ export const UKRepeaterSearchPage: React.FC = () => {
   const searchResults = useMemo(() => {
     if (!searchQuery.trim()) return [];
     const q = searchQuery.toLowerCase();
-    return nodes
+    const localMatches = nodes
       .filter(n => {
         // Exclude nodes marked as disabled (🚫 in name)
         if (n.name && n.name.includes('🚫')) return false;
@@ -332,9 +334,15 @@ export const UKRepeaterSearchPage: React.FC = () => {
         const keyMatch = n.public_key && n.public_key.toLowerCase().includes(q);
         const iataMatch = n.iata && n.iata.toLowerCase().includes(q);
         return nameMatch || keyMatch || iataMatch;
-      })
-      .slice(0, 10);
-  }, [searchQuery, nodes]);
+      });
+    const matches = new Map(nameMatches
+      .filter(n => !n.name?.includes('🚫') && (n.role === undefined || n.role === null || n.role === 2))
+      .map(n => [n.node_id, n]));
+    for (const node of localMatches) {
+      if (!matches.has(node.node_id)) matches.set(node.node_id, node);
+    }
+    return Array.from(matches.values()).slice(0, 10);
+  }, [searchQuery, nodes, nameMatches]);
   const searchOptions = useMemo<ComboboxOption[]>(() => searchResults.map((node) => ({
     id: node.node_id,
     label: node.name ?? node.node_id,

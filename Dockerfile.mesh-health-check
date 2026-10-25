@@ -1,14 +1,15 @@
-FROM node:26-slim@sha256:4ebb5ace66f15a24c14c492e01a8beeed4fddf970a856109f5126e703e5fe503 AS builder
+FROM node:26-slim@sha256:ec7758ee051e457b468b32bde57b0879010b325bb9862718e9615225ce4aaae1 AS builder
 
 ARG MESH_HEALTH_CHECK_REPO=https://github.com/gadgethd/meshcore-health-check.git
 ARG MESH_HEALTH_CHECK_REF
 
 WORKDIR /app
 
-RUN apt-get update \
+RUN apt-get -o APT::Update::Error-Mode=any update \
   && apt-get install -y --no-install-recommends ca-certificates git \
-  && rm -rf /var/lib/apt/lists/* \
-  && test -n "$MESH_HEALTH_CHECK_REF" \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN test -n "$MESH_HEALTH_CHECK_REF" \
   && echo "$MESH_HEALTH_CHECK_REF" | grep -Eq '^[0-9a-f]{40}$' \
   && git init /tmp/mesh-health-check \
   && git -C /tmp/mesh-health-check remote add origin "$MESH_HEALTH_CHECK_REPO" \
@@ -29,7 +30,7 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/* /usr/local/lib/node_modules/npm \
   && rm -f /usr/local/bin/npm /usr/local/bin/npx
 
-FROM node:26-alpine@sha256:aadf416b2cdce311a8811ba3f0608a61b77dbf997500e2eafe781b51f6a0b019
+FROM node:26-alpine@sha256:0b36e8c136b94cd4fcf02188228e76c31ad5872eef3fec8cbd2eee500cfd9e80
 ARG SOURCE_REVISION=unknown
 LABEL org.opencontainers.image.revision="${SOURCE_REVISION}" \
       org.opencontainers.image.source="https://github.com/gadgethd/ukmesh"

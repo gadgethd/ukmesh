@@ -2,6 +2,7 @@ import mqtt, { type MqttClient } from 'mqtt';
 import { createHash } from 'node:crypto';
 import { calcRegionKey, transportCodeMatchesRegion } from '@michaelhart/meshcore-decoder';
 import { insertNodeNeighborSample, insertNodeStatusSample, insertPacket, upsertNode, query, insertOrUpdateSpamSuspect, recordMultibyteEvidence } from '../db/index.js';
+import { ingestQuery } from '../db/ingest.js';
 import { closePacketBatch, flush as flushPacketBatch, loadCurrentPublicPrivacyPolicy } from '../db/packetBatch.js';
 import { evaluateAdvert, initSpamDetector } from './spamDetector.js';
 import { invalidateResolveCache, setResolveCache, getStickyNodeMap, mergeStickyNodes, getHeldPath, setHeldPath } from '../path-beta/resolveCache.js';
@@ -954,7 +955,7 @@ async function handleMessage(
     // the retained window before writing (inside the claim so the registered
     // claim promise covers this path too).
     if (redelivered && await packetAlreadyPersisted(
-      (sql, params) => query<{ present: boolean }>(sql, params),
+      (sql, params) => ingestQuery<{ present: boolean }>(sql, params),
       observationIdentity,
     )) {
       markMqttPersistenceHealthy();

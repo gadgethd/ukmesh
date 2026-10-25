@@ -149,7 +149,8 @@ async function rotateIfNeeded(nextBytes: number): Promise<void> {
 let writeChain = Promise.resolve();
 function persistReceipt(receipt: AlertReceipt): Promise<void> {
   const line = `${JSON.stringify(receipt)}\n`;
-  writeChain = writeChain.then(async () => {
+  // A failed archive write must not poison every later receipt append.
+  writeChain = writeChain.catch(() => undefined).then(async () => {
     await mkdir(path.dirname(RECEIPT_PATH), { recursive: true, mode: 0o700 });
     await rotateIfNeeded(Buffer.byteLength(line));
     await appendFile(RECEIPT_PATH, line, { encoding: 'utf8', mode: 0o600 });

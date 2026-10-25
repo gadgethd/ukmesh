@@ -45,12 +45,21 @@ export COSIGN_CERTIFICATE_OIDC_ISSUER='https://token.actions.githubusercontent.c
 export RESTORE_RECEIPT_PATH=/secure/receipts/latest.json
 export RESTORE_RECEIPT_VERIFY_KEY=/secure/receipts/verify.pem
 export RELEASE_RECEIPT_SIGNING_KEY=/secure/release/receipt-signing.pem
+export MESHCORE_INFRA_DIR=/home/ben/ukmesh/meshcore-infra
+export MESHCORE_INFRA_PROJECT_NAME=meshcore-infra
 
 scripts/replace-container.sh backend \
   --image="$BACKEND_IMAGE" \
   --backend-image="$BACKEND_IMAGE" \
   --source-revision="$SOURCE_REVISION"
 ```
+
+If the infrastructure Compose file has another path, set
+`MESHCORE_INFRA_COMPOSE_FILE` and, when needed,
+`MESHCORE_INFRA_PROJECT_DIR`. The release script validates that external
+project and resolves its single running `timescaledb` container before it
+starts the migration job; the post-migration schema check uses that exact
+container ID.
 
 Repeat for each application service, passing its digest as `--image` and the
 same signed backend digest as `--backend-image`. The script verifies signatures
@@ -67,6 +76,35 @@ the exact prompt printed by the script:
 
 This is not a general signature bypass. Record the approval and do not use it
 again after the first signed digest is live.
+
+## Compose adoption preflight
+
+`scripts/replace-container.sh` checks the selected service and backend before
+pulling images, running migrations or replacing containers. You can run the
+same read-only check separately from the application checkout:
+
+```bash
+scripts/check-compose-adoption.sh backend
+```
+
+Exactly one running container must carry this checkout's project, service,
+working-directory and base Compose-file labels. A missing or mismatched label
+stops replacement with exit 65. If Compose selects no container, the check also
+looks for an unlabelled or stopped container occupying the configured name.
+Docker or configuration lookup failures stop with exit 69.
+
+The error prints an exact, shell-quoted reconciliation command using the detected
+container IDs, project and any explicit `COMPOSE_FILE`/`COMPOSE_PATH_SEPARATOR`.
+For an existing conflicting container it uses `docker rm -f -- <detected-id>`
+followed by `docker compose --project-name <project> up -d --no-deps --no-build
+<service>` and reruns the check; an absent container needs only the latter steps.
+The check never executes these commands. Before an operator runs the printed
+command in an approved maintenance window, verify that the authoritative Compose
+files and image pins reproduce the current environment and mounts. On the live
+host retain the external-network overlay (`docker-compose.live.yml`). The repair
+causes service downtime but does not remove volumes or recreate sibling services.
+Do not retry replacement or use `--force-recreate` to bypass this failure. Once
+the preflight passes, resume the signed release procedure above.
 
 ## Stop and rollback conditions
 

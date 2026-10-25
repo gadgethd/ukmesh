@@ -1,7 +1,7 @@
 import 'node:process';
 import { initDb } from '../db/index.js';
 import { captureWorkerHealthSnapshot } from '../health/status.js';
-import { cleanupStaleMqttObservers } from '../maintenance/staleMqttObservers.js';
+import { cleanupInactiveNodes, cleanupStaleMqttObservers } from '../maintenance/staleMqttObservers.js';
 import { pollOwnerAlertRules } from '../owner/alertRules.js';
 import { observeWorkerOutcome } from '../metrics.js';
 import { startWorkerMetrics } from './workerMetrics.js';
@@ -38,18 +38,25 @@ async function captureOnce(tag: 'initial' | 'scheduled') {
 }
 
 async function cleanupStaleObservers(tag: 'initial' | 'scheduled') {
-  try {
-    const result = await cleanupStaleMqttObservers({ thresholdDays: STALE_OBSERVER_CLEANUP_DAYS });
-    if (result.candidates > 0) {
-      console.log(
-        `[health] ${tag} stale MQTT observer cleanup archived batch=${result.batchId} ` +
-        `nodes=${result.nodes} observerSightings=${result.observerSightings} networkSightings=${result.networkSightings}`,
-      );
+  // Keep the observer-feed policy, and separately remove inactive companions,
+  // room servers and never-bridged nodes using their latest activity evidence.
+  for (const [label, cleanup] of [
+    ['stale MQTT observer', cleanupStaleMqttObservers],
+    ['inactive node', cleanupInactiveNodes],
+  ] as const) {
+    try {
+      const result = await cleanup({ thresholdDays: STALE_OBSERVER_CLEANUP_DAYS });
+      if (result.candidates > 0) {
+        console.log(
+          `[health] ${tag} ${label} cleanup archived batch=${result.batchId} ` +
+          `nodes=${result.nodes} observerSightings=${result.observerSightings} networkSightings=${result.networkSightings}`,
+        );
+      }
+      observeWorkerOutcome('health', 'cleanup', 'success');
+    } catch (err) {
+      observeWorkerOutcome('health', 'cleanup', 'failure');
+      console.error(`[health] ${tag} ${label} cleanup failed`, (err as Error).message);
     }
-    observeWorkerOutcome('health', 'cleanup', 'success');
-  } catch (err) {
-    observeWorkerOutcome('health', 'cleanup', 'failure');
-    console.error(`[health] ${tag} stale MQTT observer cleanup failed`, (err as Error).message);
   }
 }
 

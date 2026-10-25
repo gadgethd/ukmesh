@@ -172,7 +172,7 @@ Copy `.env.example` to `.env` and fill in your values. All variables used by the
 | `ALLOWED_ORIGINS` | `http://localhost:3001,http://localhost:3002` | Comma-separated browser origins allowed for CORS and WebSocket |
 | `API_RATE_LIMIT_MAX` | `120` | Per-client public API requests/minute; raise only in an isolated load-test project |
 | `VITE_APP_HOSTNAME` | *(blank — always shows dashboard)* | If set, only this hostname serves the analytics dashboard; all others serve the public website layout |
-| `MESHCORE_CHANNEL_SECRETS` | *(blank)* | Comma-separated channel secrets for decrypting GroupText packets. Format: `name:hex` or bare hex. The default MeshCore public channel key is always included. |
+| `MESHCORE_CHANNEL_SECRETS` | *(blank)* | Confidential channel keys for decrypting GroupText packets, managed through environment configuration. Format: `name:hex` or bare hex. The explicitly public `PUBLIC_CHANNELS` defaults are always included. |
 | `OWNER_DATABASE_URL` | *(optional)* | Separate Postgres database URL for owner portal username → repeater mappings |
 | `OWNER_COOKIE_SECRET` | *(optional but recommended)* | Secret used to encrypt/sign the owner session cookie |
 | `OWNER_MQTT_USERNAME_MAP` | *(empty)* | Operator-managed owner grants in the format `user=nodeId1|nodeId2,...` |
@@ -373,15 +373,20 @@ The bootstrap is idempotent, sets credential files to mode `0640`, refuses
 symlinks or incomplete existing state, and never overwrites live credentials.
 
 Do not create observer passwords manually. Provision every observer with
-`~/bin/newuser`; it installs and verifies the publish ACL before enabling the
-credentials.
+`~/bin/newuser`. Supply one or more full 64-character node public keys when
+known; if omitted, the helper prints the credential and watches fresh broker
+logs for a bounded discovery window. A credential-only account may authenticate
+before it has a publish grant. The helper verifies the owner rows and exact
+per-key publish ACLs before reporting provisioning complete. `--watch` resumes
+first-device discovery and `--link` adds a device for an existing owner.
 
-The host helper at `~/bin/newuser` requires one or more full 64-character node
-public keys. It validates the keys, writes and verifies exact per-key publish
-ACLs, and only then creates the MQTT password. This ordering prevents an account
-from authenticating successfully while all of its publishes are silently denied.
-In MeshCore-HA, keep `{PUBLIC_KEY}` in the topic template; the helper requires the
-actual key only to provision the server-side ACL.
+For built-in MQTT firmware, set IATA and use the complete Topic root
+`meshcore/{IATA}/{PUBLIC_KEY}/packets`. The default `meshcore` is denied even
+when login succeeds. Keep both tokens in the firmware template; the actual full
+key is needed for the server-side grant. See [MQTT onboarding and invisible-device
+troubleshooting](docs/mqtt-onboarding.md) for the exact flasher/serial fix and
+[generic owner linking](docs/designs/generic-owner-linking.md) for the remaining
+automation gap.
 
 ---
 
@@ -499,13 +504,19 @@ MeshCore Devices
 
 ## Data Retention
 
-- Compression and destructive retention ship disabled. Raw packets and status
-  samples remain intact until a table-specific, backup- and restore-gated
-  lifecycle rollout is approved.
-- The proposed raw retention window is 180 days, preserving the longest
-  120-day learner dependency. Privacy-safe hourly/daily aggregates and current
-  node/link/model state remain longer lived. Legacy `node_coverage` is retained
-  for one release as inactive rollback data only.
+- The reviewed core telemetry windows are 30 days for raw packets, 180 days
+  for status samples, and seven days for neighbour samples. Content-stripped
+  `packet_paths` remain available for path reconstruction and are never
+  retention-deleted. Privacy-safe aggregates and current node/link/model state
+  remain longer lived.
+- Migration 050 declares the core Timescale retention policies. Repairing a
+  missing policy and enabling compression require a fresh signed
+  backup/restore receipt and per-table approval. When lifecycle actions are
+  enabled, startup fails closed if required core targets are missing from the
+  configured allowlists.
+- Expired forensic data is available only by restoring a suitable pre-expiry
+  backup into an isolated, read-only environment; do not restore it over
+  production.
 - Operational row-table cleanup is bounded and runs only when both
   `DATA_LIFECYCLE_RETENTION_ENABLED=true` and the exact table appears in
   `DATA_LIFECYCLE_RETENTION_TARGETS`.

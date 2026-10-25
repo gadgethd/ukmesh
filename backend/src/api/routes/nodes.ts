@@ -3,6 +3,7 @@ import { resolvePublicNetworkScope } from '../../http/requestScope.js';
 import type { NetworkFilters } from '../utils/networkFilters.js';
 import { normalizeObserverQuery } from '../utils/observer.js';
 import { isPrivateNode, redactPrivateNode } from '../utils/privateNode.js';
+import { parseRegionFilter } from '../../regions/filter.js';
 import type { NodeRepository } from '../../repositories/nodes.js';
 import {
   PublicMapInputError,
@@ -11,6 +12,7 @@ import {
   parsePublicMapCursor,
   parsePublicMapFields,
   parsePublicMapLimit,
+  parsePublicMapQuery,
   parsePublicMapSnapshot,
 } from '../../nodes/publicMap.js';
 import {
@@ -31,6 +33,8 @@ type GetNodesFn = (
   network?: string,
   observer?: string,
   fields?: 'full' | 'slim',
+  signal?: AbortSignal,
+  region?: string,
 ) => Promise<NodeRecord[]>;
 type GetNodeHistoryFn = (nodeId: string, hours: number, network: string) => Promise<unknown>;
 type GetNodeAdvertsFn = (publicKey: string, hours: number, limit: number, network: string) => Promise<unknown>;
@@ -73,7 +77,7 @@ type NodesRouteDeps = {
   getTopAdvertingRepeaters: GetTopAdvertingRepeatersFn;
   nodeRepository: NodeRepository;
   requireLocalOnly: RequireLocalOnlyFn;
-  networkFilters: (network?: string, observer?: string) => NetworkFilters;
+  networkFilters: (network?: string, observer?: string, opts?: { region?: string }) => NetworkFilters;
   getPublicVisibilityGeneration: () => Promise<number>;
   inferredNodesCache: Map<string, { ts: number; data: unknown }>;
   inferredNodesInflight: Map<string, Promise<unknown>>;
@@ -123,6 +127,7 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
   });
 
   router.get('/nodes', nodesLimiter, async (req, res) => {
+    const region = parseRegionFilter(req.query['region']);
     const fields = parseEnum(req.query['fields'], {
       name: 'fields',
       values: ['slim', 'full'] as const,
@@ -131,7 +136,9 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
     try {
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const observer = normalizeObserverQuery(req.query['observer']);
-      const nodes = await getNodes(network, observer, fields);
+      const nodes = region
+        ? await getNodes(network, observer, fields, undefined, region)
+        : await getNodes(network, observer, fields);
       res.json(nodes.filter((node) => !isPrivateNode(node.name)).map(redactPrivateNode));
     } catch (err) {
       console.error('[api] GET /nodes', (err as Error).message);
@@ -140,20 +147,25 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
   });
 
   router.get('/nodes/map', nodesLimiter, async (req, res) => {
+    const region = parseRegionFilter(req.query['region']);
     try {
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const observer = normalizeObserverQuery(req.query['observer']);
-      const filters = networkFilters(network, observer);
+      const filters = region
+        ? networkFilters(network, observer, { region })
+        : networkFilters(network, observer);
       const fields = parsePublicMapFields(req.query['fields']);
       const limit = parsePublicMapLimit(req.query['limit']);
       const snapshot = parsePublicMapSnapshot(req.query['snapshot']);
       const cursor = parsePublicMapCursor(req.query['cursor']);
+      const search = parsePublicMapQuery(req.query['q']);
       const result = await nodeRepository.listPublicMapRows(
         fields,
         filters,
         snapshot,
         cursor,
         limit,
+        search,
       );
       const hasExtraRow = result.length > limit;
       const fitted = fitPublicMapRowsToByteBudget(result, limit);
@@ -162,7 +174,7 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
       const nextCursor = complete || rows.length < 1
         ? null
         : encodePublicMapCursor(String(rows[rows.length - 1]!['node_id']));
-      res.setHeader('Cache-Control', 'public, max-age=30, stale-while-revalidate=60');
+      res.setHeader('Cache-Control', search ? 'no-store' : 'public, max-age=30, stale-while-revalidate=60');
       res.setHeader('X-Map-Snapshot', snapshot);
       res.setHeader('X-Map-Complete', complete ? 'true' : 'false');
       res.json({
@@ -432,6 +444,7 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
   });
 
   router.get('/nodes/:id/links', async (req, res) => {
+    const region = parseRegionFilter(req.query['region']);
     const id = parseHexIdentifier(req.params['id'], {
       name: 'node ID',
       minLength: 64,
@@ -439,8 +452,8 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
     });
     try {
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
-      const filters = networkFilters(network);
-      const cacheKey = `${network}:${id.toUpperCase()}`;
+      const filters = region ? networkFilters(network, undefined, { region }) : networkFilters(network);
+      const cacheKey = `${network}:${id.toUpperCase()}${region ? `:region-${region}` : ''}`;
       const cached = nodeLinksCache.get(cacheKey);
       if (cached && Date.now() - cached.ts < nodeLinksCacheTtlMs) {
         res.json(cached.data);

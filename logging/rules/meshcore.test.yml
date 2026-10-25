@@ -1,9 +1,243 @@
 rule_files:
   - meshcore.yml
 
-evaluation_interval: 1m
+# Match the worker rule group's cadence so TTL/holdoff boundaries are exercised.
+evaluation_interval: 15s
 
 tests:
+  - name: equal privacy generations remain healthy and do not page
+    interval: 1m
+    input_series:
+      - series: 'meshcore_privacy_generation_healthy{job="meshcore-backend",instance="backend:9091"}'
+        values: 1x10
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: PrivacyGenerationUnhealthy
+        exp_alerts: []
+
+  - name: privacy generation drift pages after holdoff and clears after recovery
+    interval: 1m
+    input_series:
+      - series: 'meshcore_privacy_generation_healthy{job="meshcore-backend",instance="backend:9091"}'
+        values: 0x6 1x3
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: PrivacyGenerationUnhealthy
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: PrivacyGenerationUnhealthy
+        exp_alerts:
+          - exp_labels:
+              job: meshcore-backend
+              instance: backend:9091
+              severity: critical
+            exp_annotations:
+              summary: Public privacy generations are divergent or unavailable
+              owner: meshcore-operations
+              runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/privacy-convergence.md#generation-health
+      - eval_time: 7m
+        alertname: PrivacyGenerationUnhealthy
+        exp_alerts: []
+
+  - name: brief privacy work does not outlast the generation alert holdoff
+    interval: 1m
+    input_series:
+      - series: 'meshcore_privacy_generation_healthy{job="meshcore-backend",instance="backend:9091"}'
+        values: 0x2 1x7
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: PrivacyGenerationUnhealthy
+        exp_alerts: []
+
+  - name: missing privacy generation telemetry fails closed
+    interval: 1m
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: PrivacyGenerationUnhealthy
+        exp_alerts:
+          - exp_labels:
+              job: meshcore-backend
+              severity: critical
+            exp_annotations:
+              summary: Public privacy generations are divergent or unavailable
+              owner: meshcore-operations
+              runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/privacy-convergence.md#generation-health
+
+  - name: a failed backend heartbeat read cannot page for a healthy health-worker queue
+    interval: 1m
+    input_series:
+      - series: 'meshcore_link_queue_active_jobs{job="meshcore-workers",instance="health-worker:9091",role="health"}'
+        values: 12x8
+      - series: 'meshcore_worker_heartbeat_age_seconds{job="meshcore-workers",instance="health-worker:9091",role="health",worker="link"}'
+        values: 5x8
+      - series: 'meshcore_worker_heartbeat_age_seconds{job="meshcore-backend",instance="backend:9091",worker="link"}'
+        values: -1x8
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: ActiveQueueWorkerHeartbeatStale
+        exp_alerts: []
+
+  - name: queued work and stale heartbeat must come from the same reporter instance
+    interval: 1m
+    input_series:
+      - series: 'meshcore_link_queue_active_jobs{job="meshcore-workers",instance="healthy:9091",role="health"}'
+        values: 12x8
+      - series: 'meshcore_worker_heartbeat_age_seconds{job="meshcore-workers",instance="healthy:9091",role="health",worker="link"}'
+        values: 5x8
+      - series: 'meshcore_link_queue_active_jobs{job="meshcore-workers",instance="idle:9091",role="health"}'
+        values: 0x8
+      - series: 'meshcore_worker_heartbeat_age_seconds{job="meshcore-workers",instance="idle:9091",role="health",worker="link"}'
+        values: -1x8
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: ActiveQueueWorkerHeartbeatStale
+        exp_alerts: []
+
+  - name: a stale queued reporter pages independently and clears on its own heartbeat recovery
+    interval: 1m
+    input_series:
+      - series: 'meshcore_link_queue_active_jobs{job="meshcore-workers",instance="health-worker:9091",role="health"}'
+        values: 12x8
+      - series: 'meshcore_worker_heartbeat_age_seconds{job="meshcore-workers",instance="health-worker:9091",role="health",worker="link"}'
+        values: -1x5 5x3
+      - series: 'meshcore_link_queue_active_jobs{job="meshcore-backend",instance="backend:9091"}'
+        values: 12x8
+      - series: 'meshcore_worker_heartbeat_age_seconds{job="meshcore-backend",instance="backend:9091",worker="link"}'
+        values: 5x8
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: ActiveQueueWorkerHeartbeatStale
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: ActiveQueueWorkerHeartbeatStale
+        exp_alerts:
+          - exp_labels:
+              job: meshcore-workers
+              instance: health-worker:9091
+              role: health
+              severity: critical
+            exp_annotations:
+              summary: A worker with queued work has a stale heartbeat
+              owner: meshcore-operations
+              runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#activequeueworkerheartbeatstale
+      - eval_time: 6m
+        alertname: ActiveQueueWorkerHeartbeatStale
+        exp_alerts: []
+
+  - name: fresh real link heartbeats stay healthy throughout two fifty-minute ITM batch gaps
+    interval: 1m
+    input_series:
+      - series: meshcore_link_queue_active_jobs
+        values: 12x100
+      - series: 'meshcore_worker_heartbeat_age_seconds{worker="link"}'
+        values: 5x100
+    alert_rule_test:
+      - eval_time: 50m
+        alertname: ActiveQueueWorkerHeartbeatStale
+        exp_alerts: []
+      - eval_time: 100m
+        alertname: ActiveQueueWorkerHeartbeatStale
+        exp_alerts: []
+
+  - name: positive link heartbeat age respects the producer TTL and three-minute holdoff
+    interval: 15s
+    input_series:
+      - series: meshcore_link_queue_active_jobs
+        values: 12x40
+      - series: 'meshcore_worker_heartbeat_age_seconds{worker="link"}'
+        values: 45x16 46x13 5x10
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: ActiveQueueWorkerHeartbeatStale
+        exp_alerts: []
+      - eval_time: 7m
+        alertname: ActiveQueueWorkerHeartbeatStale
+        exp_alerts: []
+      - eval_time: 7m30s
+        alertname: ActiveQueueWorkerHeartbeatStale
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: A worker with queued work has a stale heartbeat
+              owner: meshcore-operations
+              runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#activequeueworkerheartbeatstale
+      - eval_time: 8m
+        alertname: ActiveQueueWorkerHeartbeatStale
+        exp_alerts: []
+
+  - name: a dead worker expires after 45 seconds and pages within four minutes of its last heartbeat
+    interval: 15s
+    input_series:
+      - series: meshcore_link_queue_active_jobs
+        values: 12x20
+      - series: 'meshcore_worker_heartbeat_age_seconds{worker="link"}'
+        values: 0 15 30 -1x14 5x4
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: ActiveQueueWorkerHeartbeatStale
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: ActiveQueueWorkerHeartbeatStale
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: A worker with queued work has a stale heartbeat
+              owner: meshcore-operations
+              runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#activequeueworkerheartbeatstale
+      - eval_time: 5m
+        alertname: ActiveQueueWorkerHeartbeatStale
+        exp_alerts: []
+
+  - name: expired link heartbeat with queued work alerts after holdoff and recovers
+    interval: 1m
+    input_series:
+      - series: meshcore_link_queue_active_jobs
+        values: 12x9
+      - series: 'meshcore_worker_heartbeat_age_seconds{worker="link"}'
+        values: 5 -1 -1 -1 -1 -1 5 5 5 5
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: ActiveQueueWorkerHeartbeatStale
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: ActiveQueueWorkerHeartbeatStale
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: A worker with queued work has a stale heartbeat
+              owner: meshcore-operations
+              runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#activequeueworkerheartbeatstale
+      - eval_time: 6m
+        alertname: ActiveQueueWorkerHeartbeatStale
+        exp_alerts: []
+
+  - name: a missing link heartbeat without queued work does not page
+    interval: 1m
+    input_series:
+      - series: meshcore_link_queue_active_jobs
+        values: 0x8
+      - series: 'meshcore_worker_heartbeat_age_seconds{worker="link"}'
+        values: -1x8
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: ActiveQueueWorkerHeartbeatStale
+        exp_alerts: []
+
+  - name: a brief missing heartbeat does not outlast the three-minute holdoff
+    interval: 1m
+    input_series:
+      - series: meshcore_link_queue_active_jobs
+        values: 12x8
+      - series: 'meshcore_worker_heartbeat_age_seconds{worker="link"}'
+        values: 5 -1 -1 5 5 5 5 5 5
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: ActiveQueueWorkerHeartbeatStale
+        exp_alerts: []
+
   - name: bounded queues and stopped workers produce their documented alerts
     interval: 1m
     input_series:
@@ -19,32 +253,7 @@ tests:
         values: 0x8
       - series: 'meshcore_worker_heartbeat_age_seconds{worker="link"}'
         values: 200x8
-      - series: 'meshcore_mqtt_ingest_queue_depth{job="meshcore-backend"}'
-        values: 900x8
-      - series: 'meshcore_mqtt_ingest_outcomes_total{job="meshcore-backend",outcome="queue_full"}'
-        values: 0 0 1 2 3 4 5 6
     alert_rule_test:
-      - eval_time: 6m
-        alertname: MqttIngestQueueDepthHigh
-        exp_alerts:
-          - exp_labels:
-              job: meshcore-backend
-              severity: warning
-            exp_annotations:
-              summary: The MQTT ingest queue has remained above 800 messages
-              owner: meshcore-operations
-              runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#mqttingestqueuedepthhigh
-      - eval_time: 3m
-        alertname: MqttIngestQueueFull
-        exp_alerts:
-          - exp_labels:
-              job: meshcore-backend
-              outcome: queue_full
-              severity: critical
-            exp_annotations:
-              summary: The MQTT ingest queue is rejecting messages at capacity
-              owner: meshcore-operations
-              runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#mqttingestqueuefull
       - eval_time: 6m
         alertname: QueueAgeHigh
         exp_alerts:
@@ -110,10 +319,16 @@ tests:
         values: 0x14
       - series: 'meshcore_db_pool_connections{state="primary_waiting"}'
         values: 1x14
+      - series: 'pg_stat_user_tables_n_live_tup{relname="dead_only"}'
+        values: 1x14
+      - series: 'pg_stat_user_tables_n_dead_tup{relname="dead_only"}'
+        values: 60000x14
       - series: 'node_filesystem_avail_bytes{fstype="ext4",mountpoint="/data"}'
         values: 5x14
       - series: 'node_filesystem_size_bytes{fstype="ext4",mountpoint="/data"}'
         values: 100x14
+      - series: 'node_filesystem_avail_bytes{fstype="ext4",mountpoint="/forecast"}'
+        values: 10000 9900 9800 9700 9600 9500 9400 9300 9200 9100 9000 8900 8800 8700 8600 8500 8400 8300 8200 8100 8000
       - series: 'meshcore_backup_age_seconds{dataset="analytics"}'
         values: 90000x14
       - series: 'meshcore_backup_age_seconds{dataset="owner_auth"}'
@@ -140,6 +355,16 @@ tests:
               owner: meshcore-operations
               runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#databasepoolsaturated
       - eval_time: 11m
+        alertname: DatabaseVacuumBacklog
+        exp_alerts:
+          - exp_labels:
+              relname: dead_only
+              severity: warning
+            exp_annotations:
+              summary: PostgreSQL table dead_only has a vacuum backlog
+              owner: meshcore-operations
+              runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#databasevacuumbacklog
+      - eval_time: 11m
         alertname: HostDiskSpaceLow
         exp_alerts:
           - exp_labels:
@@ -147,9 +372,21 @@ tests:
               mountpoint: /data
               severity: critical
             exp_annotations:
-              summary: Host filesystem /data has less than 10 percent free
+              summary: Host filesystem /data has 10 percent free or less
               owner: meshcore-operations
               runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#hostdiskspacelow
+      - eval_time: 20m
+        alertname: HostDiskExhaustionForecast
+        exp_alerts:
+          - exp_labels:
+              fstype: ext4
+              mountpoint: /forecast
+              severity: critical
+            exp_annotations:
+              summary: Host filesystem /forecast is forecast to fill within 24 hours
+              owner: meshcore-operations
+              runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#hostdiskexhaustionforecast
+
       - eval_time: 11m
         alertname: BackupReceiptMissing
         exp_alerts:
@@ -199,3 +436,84 @@ tests:
               summary: Packet visibility validation is rejecting elevated telemetry
               owner: meshcore-operations
               runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#telemetryintegrityfailures
+
+  - name: telemetry growth forecast
+    interval: 1d
+    input_series:
+      - series: 'meshcore_core_telemetry_hypertable_bytes{role="health",table="packets"}'
+        values: 1000000000 3000000000 5000000000 7000000000 9000000000 11000000000 13000000000 15000000000 17000000000
+    alert_rule_test:
+      - eval_time: 8d1h
+        alertname: CoreTelemetryGrowthHigh
+        exp_alerts:
+          - exp_labels:
+              table: packets
+              severity: warning
+            exp_annotations:
+              summary: Core telemetry hypertable packets is growing by over 1 GiB per week
+              owner: meshcore-operations
+              runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#coretelemetrygrowthhigh
+
+  - name: telemetry lifecycle coverage
+    interval: 1m
+    input_series:
+      - series: 'meshcore_core_telemetry_expired_chunks{role="health",table="node_status_samples"}'
+        values: 0 1x1800
+      - series: 'meshcore_core_telemetry_overdue_uncompressed_chunks{role="health",table="node_neighbor_samples"}'
+        values: 1x360
+    alert_rule_test:
+      - eval_time: 29h
+        alertname: CoreTelemetryRetentionOverdue
+        exp_alerts:
+          - exp_labels:
+              role: health
+              table: node_status_samples
+              severity: critical
+            exp_annotations:
+              summary: Core telemetry hypertable node_status_samples has expired chunks still present
+              owner: meshcore-operations
+              runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#coretelemetryretentionoverdue
+      - eval_time: 4h
+        alertname: CoreTelemetryCompressionOverdue
+        exp_alerts:
+          - exp_labels:
+              role: health
+              table: node_neighbor_samples
+              severity: warning
+            exp_annotations:
+              summary: Core telemetry hypertable node_neighbor_samples has chunks overdue for compression
+              owner: meshcore-operations
+              runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#coretelemetrycompressionoverdue
+
+  - name: data filesystem alerts at exactly ninety percent after holdoff and recovers
+    interval: 1m
+    input_series:
+      - series: 'node_filesystem_avail_bytes{fstype="ext4",mountpoint="/data"}'
+        values: 11x10 10x11 11x2
+      - series: 'node_filesystem_size_bytes{fstype="ext4",mountpoint="/data"}'
+        values: 100x25
+      - series: 'node_filesystem_avail_bytes{fstype="overlay",mountpoint="/"}'
+        values: 0x25
+      - series: 'node_filesystem_size_bytes{fstype="overlay",mountpoint="/"}'
+        values: 100x25
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: HostDiskSpaceLow
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: HostDiskSpaceLow
+        exp_alerts: []
+      - eval_time: 21m
+        alertname: HostDiskSpaceLow
+        exp_alerts:
+          - exp_labels:
+              fstype: ext4
+              mountpoint: /data
+              severity: critical
+            exp_annotations:
+              summary: Host filesystem /data has 10 percent free or less
+              owner: meshcore-operations
+              runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#hostdiskspacelow
+      - eval_time: 23m
+        alertname: HostDiskSpaceLow
+        exp_alerts: []

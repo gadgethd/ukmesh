@@ -9,7 +9,19 @@ import {
   isOwnerSessionResponse,
   isValidMapCoord,
   nodeRoleLabel,
+  ownerLoginCredentials,
+  ownerLoginValidationError,
 } from './ownerPortalModel.js';
+
+test('owner login trims only the username and preserves password whitespace', () => {
+  assert.equal(ownerLoginValidationError(' owner ', ' password '), null);
+  assert.deepEqual(ownerLoginCredentials(' owner ', ' password '), {
+    mqttUsername: 'owner',
+    mqttPassword: ' password ',
+  });
+  assert.match(ownerLoginValidationError('owner', '\tpassword') ?? '', /invalid characters/);
+  assert.match(ownerLoginValidationError('owner', 'x'.repeat(129)) ?? '', /too long/);
+});
 
 test('owner map coordinate policy rejects placeholders and invalid coordinates', () => {
   assert.equal(isValidMapCoord(51.5, -0.1), true);
@@ -79,4 +91,14 @@ test('owner response guards reject structurally incomplete payloads', () => {
       }],
     },
   }), false);
+});
+
+test('owner session guards accept an optional MQTT hint and reject malformed diagnostics', () => {
+  const response = { ok: true, dashboard: { nodes: [] } };
+  const diagnostic = { code: 'MQTT_DEFAULT_TOPIC_ROOT', message: 'Repair the topic root', observedAt: '2026-10-23T12:00:00Z' };
+  assert.equal(isOwnerSessionResponse(response), true);
+  assert.equal(isOwnerSessionResponse({ ...response, dashboard: { nodes: [], mqttDiagnostic: diagnostic } }), true);
+  for (const mqttDiagnostic of [{ ...diagnostic, message: {} }, { ...diagnostic, observedAt: 'invalid' }, { ...diagnostic, code: 'other' }]) {
+    assert.equal(isOwnerSessionResponse({ ...response, dashboard: { nodes: [], mqttDiagnostic } }), false);
+  }
 });
