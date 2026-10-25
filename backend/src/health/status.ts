@@ -334,7 +334,15 @@ export async function deleteExpiredRows(
       if (expired.length === 0) return;
       await execute('SELECT decompress_chunk($1::regclass, if_compressed => true)', [chunkName]);
       try {
-        await execute(retentionDeleteSql(target), [target.retention, target.batchSize]);
+        // Delete only inside this chunk. A table-wide boundary can reach into
+        // older compressed chunks that were not decompressed and trip the
+        // per-DML decompression limit again.
+        await execute(
+          `DELETE FROM ${chunkName}
+            WHERE ${target.timestampColumn} < now() - $1::interval
+            ${target.extraPredicate ? `AND ${target.extraPredicate}` : ''}`,
+          [target.retention],
+        );
       } finally {
         if (chunk['is_compressed'] === true) {
           await execute('SELECT compress_chunk($1::regclass, if_not_compressed => true)', [chunkName]);
