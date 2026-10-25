@@ -26,6 +26,8 @@ async function mockApi(page: Page): Promise<void> {
         ? { repeaters: members.map((member, index) => ({ ...member,
             status: index === 0 ? 'red' : 'green', scopedPackets: index === 0 ? 0 : 40,
             unscopedPackets7d: 10, regions: { northwest: 40 }, evidence: 'scoped' })) }
+        : path === '/api/regions/unattributed'
+          ? { generatedAt: null, windowDays: 92, clusters: [], totals: { clusters: 0, packets: 0, nodes: 0 } }
         : path === '/api/runtime-config'
           ? { version: 1, packetArcs: false, heatmap: false, privacyGeneration: 0, refreshAfterSeconds: 300 }
           : {};

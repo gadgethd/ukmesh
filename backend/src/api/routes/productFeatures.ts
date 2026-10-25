@@ -30,7 +30,9 @@ export function registerProductFeatureRoutes(router: Router, query: QueryFn): vo
       const networks = expandResolverScope(network);
       const result = await observerHealthRows(query, networks);
       const maxPackets = Math.max(1, ...result.rows.map((row) => Number(row.packets_48h)));
-      res.setHeader('Cache-Control', 'public, max-age=60, stale-while-revalidate=300');
+      // Generation-keyed public caching is a later step; until then this
+      // aggregate must not be shared across users or cached after a privacy rewrite.
+      res.setHeader('Cache-Control', 'private, no-store');
       res.json(result.rows.map((row) => {
         const uptime = Math.min(100, (Number(row.active_hours) / 48) * 100);
         const packetCoverage = Math.min(100, (Number(row.packets_48h) / maxPackets) * 100);

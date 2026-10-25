@@ -136,7 +136,177 @@ while independently requiring the reviewed production migration baseline.
 - Infra resolver fixtures pass; Compose adoption fixtures pass 9/9 using fake
   Docker exclusively. Receipt and signature are unchanged from VPS.
 
-## Security merge and final gates
+## Security merge — 61 conflicts
 
-Pending security merge; this section is updated after its resolution and final
-validation. Main merge decisions above remain the complete 52-file ledger.
+Security carries an older production synchronization as well as the remediation
+commits. The final code retains newer reconciled main/VPS behavior for those
+older synchronization differences and ports the remediation itself. In
+particular, the merge does not roll back bounded stats queries, credential
+verifier freshness, revocation-write failure propagation, status-column writes,
+region features, owner diagnostics, or modern frontend/CI/dependency changes.
+
+| Path | Type | Chosen side | Reason | Evidence |
+| --- | --- | --- | --- | --- |
+| `.env.example` | content | Superset | Preserve all main/VPS keys and document the new alert token and separated receipt trust configuration. | Final env/service parity; fixture-only Compose render; ignore checks |
+| `.github/workflows/ci.yml` | content | Whole reconciled main/VPS | Retain newer reconciled behavior; security-side difference is older snapshot synchronization outside its 19-finding patch set. | Three-way review, final typecheck/tests and relevant 19-finding evidence below |
+| `.gitignore` | content | Superset | Preserve main private-evidence ignores; prevent staging alert bearer file, trust directory or pre-reconcile env snapshots. | Final env/service parity; fixture-only Compose render; ignore checks |
+| `.gitleaks.toml` | content | Merged / reconciled main-VPS hunks | Retain main narrower explicit public-key allowances; security-side sync allowances are older and unrelated to the 19 fixes. | Three-way review, final typecheck/tests and relevant 19-finding evidence below |
+| `backend/package-lock.json` | content | Reconciled main/VPS | Keep newer audited main lock matching merged package manifest. | Three-way review, final typecheck/tests and relevant 19-finding evidence below |
+| `backend/src/api/contracts.ts` | content | Merged / reconciled main-VPS hunks | Keep newer main unnamed-region contracts and auto-merged security contracts. | Regenerated contract and contract:check |
+| `backend/src/api/routes.ts` | content | Merged / security hunks | Fail closed when credential-generation lookup cannot verify a session. | Three-way review, final typecheck/tests and relevant 19-finding evidence below |
+| `backend/src/api/routes/auditwave.integration.test.ts` | add/add | Merged / reconciled main-VPS hunks | Keep main newer regional/privacy API integration coverage; adapt export generation fixture below. | Three-way review, final typecheck/tests and relevant 19-finding evidence below |
+| `backend/src/api/routes/auditwave.performance.test.ts` | add/add | Merged / reconciled main-VPS hunks | Keep main newer scoped API performance coverage; adapt export generation fixture below. | Three-way review, final typecheck/tests and relevant 19-finding evidence below |
+| `backend/src/api/routes/exports.test.ts` | content | Merged / security hunks | Add security export generation mismatch, failure and mid-flight redaction regression tests. | Three-way review, final typecheck/tests and relevant 19-finding evidence below |
+| `backend/src/api/routes/misc.test.ts` | content | Merged / reconciled main-VPS hunks | Retain main public MQTT DTO and region filtering regressions. | Three-way review, final typecheck/tests and relevant 19-finding evidence below |
+| `backend/src/api/routes/owner.ts` | content | Merged / reconciled main-VPS hunks | Retain main onboarding diagnostics and transactional feed-setting rollback. | Grant/credential/share/feed regressions; full backend gate |
+| `backend/src/api/routes/ownerPacketSharing.test.ts` | content | Whole reconciled main/VPS | Retain newer reconciled behavior; security-side difference is older snapshot synchronization outside its 19-finding patch set. | Grant/credential/share/feed regressions; full backend gate |
+| `backend/src/api/routes/regions.test.ts` | add/add | Merged / reconciled main-VPS hunks | Keep main newer unattributed-region tests. | Three-way review, final typecheck/tests and relevant 19-finding evidence below |
+| `backend/src/api/routes/regions.ts` | add/add | Merged / reconciled main-VPS hunks | Keep main newer unattributed-region feature absent from old security snapshot. | Three-way review, final typecheck/tests and relevant 19-finding evidence below |
+| `backend/src/db/ownerAuth.ts` | content | Whole reconciled main/VPS | Retain newer reconciled behavior; security-side difference is older snapshot synchronization outside its 19-finding patch set. | Three-way review, final typecheck/tests and relevant 19-finding evidence below |
+| `backend/src/db/packetBatch.integration.test.ts` | content | Merged / reconciled main-VPS hunks | Retain loader-derived order and actual deployed migration filenames. | 62 live checksums; 66-file loader; no live migration run |
+| `backend/src/index.ts` | content | Manual superset | Union live-grant wiring and redacted readiness with VPS durable forwarding lifecycle, bounded repositories and main monitor readiness. | Three-way review, final typecheck/tests and relevant 19-finding evidence below |
+| `backend/src/metrics.ts` | content | Whole reconciled main/VPS | Retain newer reconciled behavior; security-side difference is older snapshot synchronization outside its 19-finding patch set. | Three-way review, final typecheck/tests and relevant 19-finding evidence below |
+| `backend/src/mqtt/client.ts` | content | Superset | Keep bounded durable intake/outbox and normalized status validation; port envelope stripping and packet domain checks; forward sanitized envelope durably. | Envelope/unverified/status/durable-intake tests; full backend gate |
+| `backend/src/mqtt/envelopeSafety.test.ts` | add/add | Union | Keep both security domain/quarantine regressions and VPS strict protocol bound regression. | Envelope/unverified/status/durable-intake tests; full backend gate |
+| `backend/src/mqtt/envelopeSafety.ts` | add/add | Superset | Security domain validator and SQLSTATE 22/23 policy plus deployed stricter protocol bounds. | Envelope/unverified/status/durable-intake tests; full backend gate |
+| `backend/src/owner/ownerAccess.ts` | content | Superset | Use verified grants only and security error class; retain main credential verifier freshness, safe integer generation checks and throwing revocation writes. | Grant/credential/share/feed regressions; full backend gate |
+| `backend/src/owner/ownerLastHopPrewarm.test.ts` | modify/delete | Reconciled main/VPS | Retain main bounded-concurrency tests; security branch deletion is from older snapshot. | Grant/credential/share/feed regressions; full backend gate |
+| `backend/src/owner/ownerLastHopPrewarm.ts` | content | Merged / reconciled main-VPS hunks | Preserve newer main bounded concurrency and progress reporting. | Grant/credential/share/feed regressions; full backend gate |
+| `backend/src/owner/ownerRepository.ts` | content | Merged / security hunks | Bind owner reads to exact live-granted node ID; remove canonical alias scope expansion. | Grant/credential/share/feed regressions; full backend gate |
+| `backend/src/owner/packetShareForwarder.test.ts` | content | Merged / security hunks | Wire explicit positive live-grant fixtures under fail-closed forwarding. | Grant/credential/share/feed regressions; full backend gate |
+| `backend/src/owner/packetShareForwarder.ts` | content | Merged / security hunks | Adopt live grant checks at enqueue and delivery; retain auto-merged VPS deadlines and retry propagation. | Grant/credential/share/feed regressions; full backend gate |
+| `backend/src/owner/packetShareRepository.integration.test.ts` | add/add | Merged / reconciled main-VPS hunks | Preserve deployed 058 owner-scope migration name. | Grant/credential/share/feed regressions; full backend gate |
+| `backend/src/owner/packetShareRepository.ts` | content | Merged / security hunks | Filter targets through live owner grants; false dead-letters, unknown defers. | Grant/credential/share/feed regressions; full backend gate |
+| `backend/src/owner/publicFeedForwarder.test.ts` | add/add | Merged / reconciled main-VPS hunks | Keep VPS hung publish/cleanup recovery regression. | Grant/credential/share/feed regressions; full backend gate |
+| `backend/src/owner/publicFeedForwarder.ts` | add/add | Merged / reconciled main-VPS hunks | Preserve deployed bounded delivery, outbox error propagation and queue-age metrics. | Grant/credential/share/feed regressions; full backend gate |
+| `backend/src/owner/publicFeedRepository.ts` | add/add | Merged / reconciled main-VPS hunks | Retain deployed queue statistics. | Grant/credential/share/feed regressions; full backend gate |
+| `backend/src/path-learning/rebuild.ts` | content | Merged / security hunks | Use canonical packet privacy in training SQL; retain scoped/model improvements outside conflict. | Three-way review, final typecheck/tests and relevant 19-finding evidence below |
+| `backend/src/ram/liveRead.ts` | content | Whole reconciled main/VPS | Retain newer reconciled behavior; security-side difference is older snapshot synchronization outside its 19-finding patch set. | Three-way review, final typecheck/tests and relevant 19-finding evidence below |
+| `backend/src/repositories/nodes.ts` | content | Merged / reconciled main-VPS hunks | Preserve regional node source; security change is an older unscoped version. | Three-way review, final typecheck/tests and relevant 19-finding evidence below |
+| `backend/src/spam/cluster.test.ts` | content | Merged / reconciled main-VPS hunks | Retain newer main rotating-burst and bounded-analysis regressions. | Canonical privacy and bounded analysis regressions; full backend gate |
+| `backend/src/spam/cluster.ts` | content | Merged / reconciled main-VPS hunks | Retain newer main rotating-ID analysis. | Canonical privacy and bounded analysis regressions; full backend gate |
+| `backend/src/spam/config.ts` | content | Merged / reconciled main-VPS hunks | Retain newer main bounded analysis configuration. | Canonical privacy and bounded analysis regressions; full backend gate |
+| `backend/src/spam/repository.ts` | content | Superset | Canonical packet privacy at ingestion and public incident/timeline reads plus main truncation budgets and additional name/content opt-outs. | Canonical privacy and bounded analysis regressions; full backend gate |
+| `backend/src/tools/rebuildRegionParticipation.ts` | add/add | Merged / reconciled main-VPS hunks | Preserve newer main unnamed-cluster rebuild. | Three-way review, final typecheck/tests and relevant 19-finding evidence below |
+| `backend/src/workers/alert-receiver.ts` | content | Security durable receiver + main/VPS protections | Use authenticated fsynced queue; retain archive-chain recovery, graceful drain, configuration diagnostics and successful-delivery readiness gate. | Authenticated local receiver and durable queue tests; full backend gate |
+| `backend/src/workers/synthetic-monitor.ts` | content | Merged / reconciled main-VPS hunks | Keep VPS durable independent alert evaluator/archive timeout; add security receiver bearer token to its send function. | Authenticated local receiver and durable queue tests; full backend gate |
+| `backend/src/ws/server.ts` | content | Merged / reconciled main-VPS hunks | Main already handles malformed scope including region errors; add explicit security InvalidPublicNetworkScopeError catch without losing either existing catch. | Three-way review, final typecheck/tests and relevant 19-finding evidence below |
+| `backup-receipts/latest.json` | content | VPS receipt pair | Keep deployed signed receipt and signature together. | Receipt and signature match deployed commit byte-for-byte |
+| `backup-receipts/latest.json.sig` | binary | VPS receipt pair | Keep deployed signed receipt and signature together. | Receipt and signature match deployed commit byte-for-byte |
+| `docker-compose.yml` | content | Merged / reconciled main-VPS hunks | Preserve main prewarm keys and union auto-merged receiver token/trust-anchor settings. | Final env/service parity; fixture-only Compose render; ignore checks |
+| `docs/openapi.yaml` | content | Reconciled main/VPS | Regenerate from final merged contracts; preserve main unnamed-region schema as starting point. | Regenerated contract and contract:check |
+| `docs/operations.md` | content | Whole reconciled main/VPS | Retain newer reconciled behavior; security-side difference is older snapshot synchronization outside its 19-finding patch set. | Three-way review, final typecheck/tests and relevant 19-finding evidence below |
+| `docs/spam-detection.md` | content | Merged / reconciled main-VPS hunks | Retain newer main analysis bounds and tuning documentation. | Three-way review, final typecheck/tests and relevant 19-finding evidence below |
+| `frontend/playwright.config.ts` | content | Whole reconciled main/VPS | Retain newer reconciled behavior; security-side difference is older snapshot synchronization outside its 19-finding patch set. | Retained newer main implementation; frontend typecheck/default tests/build |
+| `frontend/src/components/Map/RegionsMap.tsx` | add/add | Merged / reconciled main-VPS hunks | Preserve newer main/VPS frontend superset and isolated browser fixture. | Retained newer main implementation; frontend typecheck/default tests/build |
+| `frontend/src/components/Map/regionOverlay.test.ts` | add/add | Merged / reconciled main-VPS hunks | Preserve newer main/VPS frontend superset and isolated browser fixture. | Retained newer main implementation; frontend typecheck/default tests/build |
+| `frontend/src/components/Map/regionOverlay.ts` | add/add | Merged / reconciled main-VPS hunks | Preserve newer main/VPS frontend superset and isolated browser fixture. | Retained newer main implementation; frontend typecheck/default tests/build |
+| `frontend/src/pages/RegionsPage.tsx` | add/add | Merged / reconciled main-VPS hunks | Preserve newer main/VPS frontend superset and isolated browser fixture. | Retained newer main implementation; frontend typecheck/default tests/build |
+| `frontend/src/pages/TopologyPage.browser.test.ts` | add/add | Merged / reconciled main-VPS hunks | Preserve newer main/VPS frontend superset and isolated browser fixture. | Retained newer main implementation; frontend typecheck/default tests/build |
+| `frontend/src/pages/regions-page.css` | add/add | Merged / reconciled main-VPS hunks | Preserve newer main/VPS frontend superset and isolated browser fixture. | Retained newer main implementation; frontend typecheck/default tests/build |
+| `frontend/src/pages/regionsModel.ts` | add/add | Merged / reconciled main-VPS hunks | Preserve newer main/VPS frontend superset and isolated browser fixture. | Retained newer main implementation; frontend typecheck/default tests/build |
+| `frontend/test/e2e/dashboard.spec.ts` | content | Whole reconciled main/VPS | Retain newer reconciled behavior; security-side difference is older snapshot synchronization outside its 19-finding patch set. | Retained newer main implementation; frontend typecheck/default tests/build |
+| `tagger-worker/Dockerfile` | add/add | Merged / reconciled main-VPS hunks | Keep main pinned Python digest; security changes concern tagger runtime, merged separately. | Three-way review, final typecheck/tests and relevant 19-finding evidence below |
+| `vacuum-compressed-chunks.sh` | content | Merged / reconciled main-VPS hunks | Retain production-proven/main tested infra Compose resolution; old security variant is superseded. | Three-way review, final typecheck/tests and relevant 19-finding evidence below |
+
+### Additional security reconciliation evidence
+
+The security branch reintroduced three historical migration names. Each is an
+**exact SHA-256 match** for an already-applied file under the VPS ledger name;
+the redundant names are excluded from the runtime tree to avoid replaying SQL.
+No applied migration was renamed and no live ledger UPDATE was performed.
+
+| Security historical name | Retained applied name | Exact SHA-256 on both files |
+| --- | --- | --- |
+| `047_message_tags.sql` | `055_message_tags.sql` | `15ff8c67d33496d9de329388828944ea802c7ca6e925f20e2c188e1d9f7ae97c` |
+| `060_region_scope_participation.sql` | `057_region_scope_participation.sql` | `5268a785e585ac574a4d6c8cd4557d29655501278c9ea6b6e4def88b2d0745d4` |
+| `061_packet_share_owner_scope_and_jwt.sql` | `058_packet_share_owner_scope_and_jwt.sql` | `2b421801c0957873dfc2f04786061d44c4fd3ff884b394361760c5441e0a6e43` |
+
+The security validator checks the **normalized values actually inserted** for
+status telemetry. Firmware fractional uptime/airtime remains valid, whole
+seconds go into integer columns and raw stats preserve precision. Packet
+protocol bounds remain stricter than the SQL integer domain; non-finite radio
+values are rejected. Durable forwarding receives the same stripped upstream
+envelope as live consumers, so `_summary`/`decrypted` cannot bypass sanitization
+through the outbox. SQLSTATE 22/23 failures use the security permanent-error
+classification; retryable operational failures still withhold acknowledgement.
+
+Main's credential verifier and throwing generation-bump writes supersede the
+older security snapshot's cached verifier and swallowed bump errors. Read
+failures still deny sessions; verified grants are the sole portal authority.
+The receiver combines security's authenticated fsynced queue with main/VPS's
+successful-forward readiness gate, archive-chain recovery and graceful drain.
+Its fixture now authenticates real local HTTP requests, checks durable dead
+letters, and proves missing/wrong/unconfigured credentials cannot archive work.
+The onboarding fixture now supplies explicit confirmations for approved grants
+and separately proves broker log discovery cannot create an unconfirmed grant.
+
+The extra monitoring run found a stale fixture: it expected a health-worker
+alert at 200 seconds even though main correctly uses a 900-second threshold.
+The stopped-worker input is corrected to 1,000 seconds. A focused replay passes;
+the final complete rules-suite result is recorded below.
+
+### 19-finding remediation mapping
+
+IDs below enumerate the 19 audit keys recorded in remediation commit bodies
+`18e6c96` through `0b6a352`. They are distinct from the older SEC-01..SEC-16
+catalog in `docs/security-closure.md`. `722075e` is the position-prior follow-up
+to the same path-learning privacy finding. No finding is dropped.
+
+| ID | Original audit key / finding | Disposition | Merged implementation and evidence |
+| --- | --- | --- | --- |
+| S01 | observer-heard-set-node-scope-missing-publicPacketPrivacySql | ported | `api/utils/networkFilters.ts` and `db/index.ts` both embed canonical packet privacy in observer heard sets; network-filter/DB scope tests. |
+| S02 | spam-incident-publication-bypasses-packet-privacy | ported | `spam/repository.ts` gates message/observer selection and list/detail/timeline member reads; `repository.privacy.test.ts` plus existing bounded-analysis tests. |
+| S03 | observerHealthRows-public-packet-privacy-omitted | ported | `repositories/productFeatures.ts` gates packet health counts; public observer health uses private/no-store in `routes/productFeatures.ts`. |
+| S04 | training-packet-selection-omits-packet-privacy | ported | `path-learning/rebuild.ts` gates network/training selection and publication of prefix/prev-prefix priors. `pathingRepository.ts` and `path-lazy/lazyResolver.ts` filter stored prefixes, including position priors; `rebuild.privacy.test.ts`. |
+| S05 | tag_message.decrypted-reread-without-visibility-or-generation-fence | ported | Tagger re-reads exact hash/time/receiver/network with canonical privacy and suppresses no-longer-public retries; Python syntax plus source inspection; no live tagger invocation. |
+| S06 | GET-readyz.publishes-owner-authorization-and-analysis-internals | ported | `index.ts` emits only database and MQTT state publicly; retains main drain, ACL and connection-monitor readiness conditions internally. |
+| S07 | ws.verifyclient.invalid-network-scope-uncaught-exception | ported | `ws/server.ts` catches InvalidPublicNetworkScopeError and returns 400; keeps main ApiInputError/region scope handling and admission metric. |
+| S08 | POST-alerts:unauthenticated-alert-ingest-to-operator-webhook | ported | Constant-time bearer check before parsing/archiving; synthetic sender and Alertmanager carry token. Local HTTP regressions cover 401/503 and successful authenticated forwarding. |
+| S09 | includePrivacy-false-totals-published-to-anonymous-charts | ported | All totalFilters substitutions from security are ported onto main stats code; preserves timeout/cancellation, bounded rows, fixed snapshot and per-network aggregate switches. |
+| S10 | owner-credential-generation-revocation | already-in-main | Main already throws on generation read/write failures and uses a fresh credential verifier. Retain those stronger controls; security session failure projection/error type is ported. Credential-verifier and owner authority tests. |
+| S11 | shadow-fallback-regrants-revoked-acl-scope | ported | `ownerAccess.ts` uses only verifiedOwnerGrantSource in enforce and shadow modes; empty grants remain empty. `ownerAccess.test.ts` and `ownerAuthorityScope.test.ts`. |
+| S12 | newuser-broker-log-node-key-promoted-to-operator-config-grant | ported | `scripts/newuser.sh` requires exact explicit --confirm-owner-grant key set; fake-Docker fixture covers no-confirm explicit/discovery flows, confirmed concurrent updates and rollback. |
+| S13 | packet-share/forward-authority-not-bound-to-owner-grant | ported | Repository and forwarder check the same injected live grant at target selection, enqueue and delivery. False dead-letters; unknown defers. index.ts wires both layers; ownerAuthorityScope/forwarder tests. |
+| S14 | fetchOwnerLiveData:canonical-alias-expansion-unbound | ported | `ownerRepository.ts` binds exact granted node and removes canonical/alias expansion; retains main optimized indexed query structure. `ownerAuthorityScope.test.ts`. |
+| S15 | numeric-envelope-int-cast-ingest-livelock | ported | Security integer/float validator plus VPS stricter protocol bounds and normalized status writer. Permanent SQLSTATE classes 22/23 quarantine; operational errors retry. Envelope/status/durable-handler tests. |
+| S16 | unverified-envelope-as-decoded-content | ported | `buildPersistedPacketPayload` strips publisher-derived fields unless decode is verified; live and durable egress receive stripped envelopes. `unverifiedPayload.test.ts`. |
+| S17 | nodes-export:public-cache-not-keyed-to-visibility-generation | ported | `routes/exports.ts` adds generation read/re-read, ETag/Vary, 412/no-store on requested generation mismatch and 503/no-store on unavailable authority. `exports.test.ts`. |
+| S18 | keyless-signing-identity-not-bound-to-release-ref | ported | Release signing is removed from image matrix and restricted to refs/tags/v* in a protected release-signing job with an in-script ref guard; source/YAML audit only, no workflow dispatched. |
+| S19 | restore-receipt-verify-key-published-with-receipt | ported | Verifier and restore drill require a separate trust directory plus out-of-band SHA-256 pin and reject co-located/symlinked keys; Compose separates mount. `backup/receipt.test.ts`, lifecycle tests and shell syntax checks. |
+
+## Final validation and handoff
+
+Required final gates are clean:
+
+| Gate | Final result |
+| --- | --- |
+| Backend `npx tsc --noEmit` and `npm run build` | Pass |
+| Backend `npm test` | **708 total; 705 pass; 0 fail; 3 DB-gated skips**, plus authenticated receiver smoke pass |
+| Frontend `npx tsc --noEmit` and `npm run build` | Pass (existing bundle-size advisory only) |
+| Frontend default `npm test` | **166 total; 156 pass; 0 fail; 10 opt-in browser skips** |
+| `npm run contract:check` | Pass; 72 API and 11 operator routes |
+| Migration loader / applied-file parity | 66 files accepted; all 62 applied files match live SHA-256; no unapproved prefix duplicates |
+| Onboarding fake-Docker regression | Explicit confirmation, unconfirmed passive discovery, concurrency and all rollback stages pass |
+| Compose render / fixture guards | 31 services; token/trust wiring verified; infra resolver pass; adoption fixtures 9/9 |
+| Python and shell syntax | Tagger compile and changed shell scripts pass |
+
+Merge hashes, full monitoring-suite result and cleanup audit are appended
+below once their current checks finish. Evidence logs are outside the repository in
+`/home/ben/.review-notes/ukmesh-merge-20261025/`.
+
+Before any future staging/deploy (outside this task): provision a shared
+`ALERT_RECEIVER_TOKEN` and matching ignored `logging/alert_receiver_token`, and
+provision the receipt verify key in `RESTORE_RECEIPT_TRUST_HOST_DIR` with
+`DATA_LIFECYCLE_RECEIPT_VERIFY_KEY_SHA256`. No secret values are recorded here.
+The deployed receipt/signature pair remains unchanged; the new verifier will
+fail closed until the separate trust anchor is supplied.
+
+Optional browser validation limitation: the default frontend suite intentionally
+skips 10 opt-in browser cases. Additional local attempts initially lacked host
+libraries; privately extracted libraries restored Chromium launch. Authenticated
+owner/map browser cases then timed out under software WebGL and were stopped.
+A stale unnamed-region mock response was corrected, and topology can select an
+isolated base URL. No browser visual parity or restored-database integration is
+claimed by this reconciliation. The required default frontend/DB-gated backend
+gates are reported separately from those optional attempts.

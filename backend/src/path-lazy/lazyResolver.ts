@@ -45,6 +45,7 @@
  * evidence loading, observer grouping, and the public lazy-path DTO only.
  */
 import { privateNodePacketNetworkMatchSql } from '../privacy/networkScope.js';
+import { privatePrefixPathFilterSql } from '../pathing/pathingRepository.js';
 import {
   MAX_HOP_KM,
   SCORE,
@@ -447,6 +448,7 @@ export async function lazyResolvePath(
                FROM path_position_prefix_priors
               WHERE ($1::text[] IS NULL OR network = ANY($1))
                 AND prefix = ANY($2)
+                AND NOT ${privatePrefixPathFilterSql('prefix')}
               GROUP BY prefix, position, node_id`,
             [scopedNetworks, allUnique2charHashes],
           )

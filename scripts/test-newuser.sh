@@ -181,9 +181,30 @@ assert_file_contains() {
     || { printf 'expected %s to contain: %s\n' "$file" "$text" >&2; exit 1; }
 }
 
+# Supplied fingerprints and passive broker logs are evidence, never a grant.
+init_sandbox unconfirmed-explicit "alice=${NODE_A}"
+run_newuser "$SANDBOX" "$SANDBOX/output.log" alice alice '' dave "$NODE_B"
+[[ $(<"$SANDBOX/repo/.env") == "OWNER_MQTT_USERNAME_MAP=alice=${NODE_A}" ]]
+assert_file_contains "$SANDBOX/output.log" 'No owner grant was written'
+if grep -Eq '^(DB_WRITE|CREDENTIAL_CREATE|COMPOSE_BACKEND)' "$SANDBOX/docker.log"; then
+  printf 'unconfirmed explicit key mutated owner or broker state\n' >&2
+  exit 1
+fi
+
+init_sandbox unconfirmed-discovery "alice=${NODE_A}"
+: >"$SANDBOX/discovery-release"
+run_newuser "$SANDBOX" "$SANDBOX/output.log" 'alice,charlie' alice '' --watch --timeout 2 charlie
+[[ $(<"$SANDBOX/repo/.env") == "OWNER_MQTT_USERNAME_MAP=alice=${NODE_A}" ]]
+assert_file_contains "$SANDBOX/output.log" "$NODE_B"
+assert_file_contains "$SANDBOX/output.log" 'No owner grant was written'
+if grep -Eq '^(DB_WRITE|COMPOSE_BACKEND)' "$SANDBOX/docker.log"; then
+  printf 'broker log discovery created an unconfirmed owner grant\n' >&2
+  exit 1
+fi
+
 # Linking a node preserves the current map and existing broker password.
 init_sandbox link "alice=${NODE_A},bob=${NODE_C}"
-run_newuser "$SANDBOX" "$SANDBOX/output.log" 'alice' 'alice' '' --link alice "$NODE_B"
+run_newuser "$SANDBOX" "$SANDBOX/output.log" 'alice' 'alice' '' --link --confirm-owner-grant "$NODE_B" alice "$NODE_B"
 expected_map="OWNER_MQTT_USERNAME_MAP=alice=${NODE_A},bob=${NODE_C},alice=${NODE_B}"
 [[ $(<"$SANDBOX/repo/.env") == "$expected_map" ]] \
   || { printf 'unexpected owner map: %s\n' "$(<"$SANDBOX/repo/.env")" >&2; exit 1; }
@@ -214,7 +235,7 @@ FAKE_DISCOVERY_WAIT_MARKER="$SANDBOX/discovery-waiting" \
 FAKE_DISCOVERY_RELEASE="$SANDBOX/discovery-release" \
 FAKE_DISCOVERY_NODE="$NODE_B" \
 FAKE_DISCOVERY_USERNAME=charlie \
-  bash "$SCRIPT_DIR/newuser.sh" --watch --timeout 10 charlie >"$SANDBOX/watcher.log" 2>&1 &
+  bash "$SCRIPT_DIR/newuser.sh" --watch --timeout 10 --confirm-owner-grant "$NODE_B" charlie >"$SANDBOX/watcher.log" 2>&1 &
 watcher_pid=$!
 for _ in {1..100}; do
   [[ -e $SANDBOX/discovery-waiting ]] && break
@@ -222,7 +243,7 @@ for _ in {1..100}; do
 done
 [[ -e $SANDBOX/discovery-waiting ]] \
   || { kill "$watcher_pid" 2>/dev/null || true; printf 'watcher did not enter discovery\n' >&2; exit 1; }
-run_newuser "$SANDBOX" "$SANDBOX/second-run.log" 'alice,charlie' 'alice' '' bob "$NODE_C"
+run_newuser "$SANDBOX" "$SANDBOX/second-run.log" 'alice,charlie' 'alice' '' --confirm-owner-grant "$NODE_C" bob "$NODE_C"
 : >"$SANDBOX/discovery-release"
 wait "$watcher_pid"
 expected_map="OWNER_MQTT_USERNAME_MAP=alice=${NODE_A},bob=${NODE_C},charlie=${NODE_B}"
@@ -233,7 +254,7 @@ expected_map="OWNER_MQTT_USERNAME_MAP=alice=${NODE_A},bob=${NODE_C},charlie=${NO
 # idempotent and restores the mocked broker/config/database state.
 for stage in credential environment db acl; do
   init_sandbox "rollback-${stage}" "alice=${NODE_A}"
-  if run_newuser "$SANDBOX" "$SANDBOX/output.log" alice alice "$stage" dave "$NODE_B"; then
+  if run_newuser "$SANDBOX" "$SANDBOX/output.log" alice alice "$stage" --confirm-owner-grant "$NODE_B" dave "$NODE_B"; then
     printf 'expected injected %s failure\n' "$stage" >&2
     exit 1
   fi
@@ -256,4 +277,4 @@ for stage in credential environment db acl; do
   fi
 done
 
-printf 'newuser concurrency and rollback regression tests passed\n'
+printf 'newuser explicit confirmation, passive discovery, concurrency and rollback regression tests passed\n'

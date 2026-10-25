@@ -329,7 +329,8 @@ function buildNodeScopeClause(
            ON src_alias.source_node_id = UPPER(BTRIM(p.src_node_id))
          WHERE p.rx_node_id = ANY(${nodeAliasArraySql(placeholders.observerParam)})
            AND p.time > NOW() - INTERVAL '7 days'
-           AND p.src_node_id IS NOT NULL`,
+           AND p.src_node_id IS NOT NULL
+           AND ${publicPacketPrivacySql('p')}`,
       netCond,
       `)`,
     ].filter(Boolean).join(' ');

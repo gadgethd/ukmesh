@@ -248,7 +248,7 @@ tests:
       - series: meshcore_link_queue_dead_jobs
         values: 1x8
       - series: 'meshcore_worker_heartbeat_age_seconds{worker="health"}'
-        values: 200x8
+        values: 1000x8
       - series: 'up{job="meshcore-workers",role="link"}'
         values: 0x8
       - series: 'meshcore_worker_heartbeat_age_seconds{worker="link"}'

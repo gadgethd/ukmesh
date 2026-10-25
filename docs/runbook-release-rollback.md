@@ -43,7 +43,9 @@ Set immutable values and invoke the controlled replacement:
 export COSIGN_CERTIFICATE_IDENTITY_REGEXP='^https://github.com/OWNER/REPOSITORY/.github/workflows/release.yml@'
 export COSIGN_CERTIFICATE_OIDC_ISSUER='https://token.actions.githubusercontent.com'
 export RESTORE_RECEIPT_PATH=/secure/receipts/latest.json
-export RESTORE_RECEIPT_VERIFY_KEY=/secure/receipts/verify.pem
+# The verify key lives outside the receipts directory and is pinned by sha256.
+export RESTORE_RECEIPT_VERIFY_KEY=/secure/restore-receipt-trust/verify.pem
+export RESTORE_RECEIPT_VERIFY_KEY_SHA256="$(openssl pkey -pubin -in "$RESTORE_RECEIPT_VERIFY_KEY" -outform DER | sha256sum | awk '{print $1}')"
 export RELEASE_RECEIPT_SIGNING_KEY=/secure/release/receipt-signing.pem
 export MESHCORE_INFRA_DIR=/home/ben/ukmesh/meshcore-infra
 export MESHCORE_INFRA_PROJECT_NAME=meshcore-infra
@@ -60,6 +62,7 @@ If the infrastructure Compose file has another path, set
 project and resolves its single running `timescaledb` container before it
 starts the migration job; the post-migration schema check uses that exact
 container ID.
+
 
 Repeat for each application service, passing its digest as `--image` and the
 same signed backend digest as `--backend-image`. The script verifies signatures

@@ -21,6 +21,14 @@ import { waitForInFlightPacket } from './dedupeRegistry.js';
 import { admitPacketToRam } from '../ram/liveStore.js';
 import { getRamIngestMode } from '../ram/protocol.js';
 import { persistStatusTelemetrySample, persistStatusWrites } from './statusTelemetry.js';
+import {
+  buildPersistedPacketPayload,
+  ingestFailureAction,
+  packetEnvelopeViolations,
+  statusEnvelopeViolations,
+  stripDerivedPacketFields,
+  type IntegerDomainViolation,
+} from './envelopeSafety.js';
 import { observationIdentityKey, packetAlreadyPersisted, type ObservationIdentity } from './observationIdentity.js';
 import { assertSupportedIngestConnections } from './ingestConfig.js';
 import { waitForShutdownStep } from './shutdownDeadline.js';
@@ -335,6 +343,26 @@ function reportDroppedMqttMessage(
   lastMqttDropLogAt = now;
 }
 
+/**
+ * A deterministic data error cannot be fixed by redelivery: the same insert
+ * fails on every attempt while the PUBACK is withheld, which is an ingest
+ * livelock for that topic. Count the drop, log it, and acknowledge so the
+ * broker discards the message. Transient failures never reach this path.
+ */
+function quarantineEnvelope(kind: 'packet' | 'status', violations: IntegerDomainViolation[]): void {
+  mqttIngestOutcomesTotal.inc({ outcome: `${kind}_quarantined` });
+  console.warn(
+    `[mqtt] quarantined ${kind} envelope with out-of-domain field(s): ` +
+    violations.map((violation) => `${violation.field}=${String(violation.value)} (${violation.reason})`).join(', '),
+  );
+}
+
+function quarantinePersistenceFailure(error: unknown): void {
+  mqttIngestOutcomesTotal.inc({ outcome: 'packet_quarantined' });
+  const message = error instanceof Error ? error.message : String(error);
+  console.error('[mqtt] quarantined packet after deterministic persistence error:', message);
+}
+
 function handleIncomingMqttPacket(packet: { topic: string; payload: Buffer | string; dup?: boolean; messageId?: number }): Promise<void> {
   const startedAt = process.hrtime.bigint();
   const rawPayload = Buffer.isBuffer(packet.payload)
@@ -553,7 +581,16 @@ async function handleMessage(
     writes.push(persistStatusTelemetrySample(
       json,
       { nodeId, network, allowRawStatsOnly: network === 'test' },
-      insertNodeStatusSample,
+      async (sample) => {
+        // Validate the values actually destined for integer columns after the
+        // deployed firmware normalization; raw stats retain fractional detail.
+        const violations = statusEnvelopeViolations({ stats: {
+          battery_mv: sample.batteryMv, uptime_secs: sample.uptimeSecs,
+          tx_air_secs: sample.txAirSecs, rx_air_secs: sample.rxAirSecs,
+        } });
+        if (violations.length) { quarantineEnvelope('status', violations); return; }
+        await insertNodeStatusSample(sample);
+      },
     ));
     try {
       await persistStatusWrites(writes, (code) => {
@@ -814,6 +851,23 @@ async function handleMessage(
     return;
   }
 
+  // Validate against the integer columns the values are inserted into before
+  // any write: a fractional packet_type (22P02) or an int4 overflow (22003)
+  // fails on every redelivery. Rejecting here keeps the bad row out of the
+  // shared packet batch, where one failing row would reject its batch-mates.
+  const packetViolations = packetEnvelopeViolations({
+    packetType: resolvedPacketType,
+    hopCount: decodedHops,
+    pathHashSizeBytes: decodedPathHashSizeBytes,
+    advertCount,
+    snr,
+    rssi,
+  });
+  if (packetViolations.length > 0) {
+    quarantineEnvelope('packet', packetViolations);
+    return;
+  }
+
   // Decoder messageHash is deliberately not used here: it is only a 32-bit
   // display hash and collides at normal packet volumes. The canonical identity
   // comes from validated route/path-invariant wire content.
@@ -872,9 +926,13 @@ async function handleMessage(
 
   // Decoded payloads omit mctomqtt's envelope direction. Keep that metadata in
   // the stored JSON so RX/TX counts do not classify every decoded packet as RX.
-  const packetPayload = direction
-    ? { ...(innerPayload ?? json), direction }
-    : (innerPayload ?? json);
+  // Without a verified decode the envelope itself is stored, so publisher-owned
+  // `_summary`/`decrypted` keys are removed rather than persisted as if the
+  // decoder had produced them (they also feed `companion_sender`).
+  const packetPayload = buildPersistedPacketPayload(innerPayload, json, direction);
+  // Live consumers receive the upstream envelope too; hand them the same
+  // sanitised view so a forged summary is never forwarded as decoded content.
+  const upstreamEnvelope = stripDerivedPacketFields(json);
 
   const livePacket: LivePacket = {
     id:         crypto.randomUUID(),
@@ -900,7 +958,7 @@ async function handleMessage(
 
   const persistOnce = async (): Promise<void> => {
     const persistInput = {
-      forwarding: { packet: livePacket, upstreamEnvelope: json },
+      forwarding: { packet: livePacket, upstreamEnvelope },
       packetHash: finalHash,
       rxNodeId:   observerKey,
       srcNodeId,
@@ -930,7 +988,7 @@ async function handleMessage(
     const publishLive = (): void => {
       emitNode(observerKey, { network, observerId: observerKey });
       try {
-        emit(livePacket, json);
+        emit(livePacket, upstreamEnvelope);
       } catch (error) {
         console.error(
           '[mqtt] packet subscriber failed after ingest:',
@@ -940,7 +998,7 @@ async function handleMessage(
     };
     if (MQTT_INGEST_MODE === 'ram') {
       publicPackets.enqueue({ packet: livePacket, publish: publishLive },
-        Buffer.byteLength(JSON.stringify([livePacket, json])));
+        Buffer.byteLength(JSON.stringify([livePacket, upstreamEnvelope])));
     } else publishLive();
     invalidateResolveCache(finalHash);
     mqttIngestOutcomesTotal.inc({
@@ -965,6 +1023,17 @@ async function handleMessage(
     try {
       await persistOnce();
     } catch (err) {
+      // A deterministic data error (SQLSTATE class 22 data_exception / class 23
+      // integrity_constraint_violation) fails identically on every redelivery.
+      // Withholding the PUBACK for it is an ingest livelock, so quarantine the
+      // message, remember the observation (a lost-PUBACK replay is then a
+      // duplicate rather than a second attempt) and acknowledge. Transient
+      // failures still leave the message unacknowledged for redelivery.
+      if (ingestFailureAction(err) === 'ack_quarantine') {
+        quarantinePersistenceFailure(err);
+        rememberPacket(dedupeKey);
+        return;
+      }
       mqttIngestOutcomesTotal.inc({
         outcome: MQTT_INGEST_MODE === 'ram' ? 'packet_admission_failure' : 'packet_persist_failure',
       });

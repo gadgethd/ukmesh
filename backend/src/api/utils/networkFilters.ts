@@ -200,6 +200,7 @@ export function networkFilters(
               AND p.time > NOW() - INTERVAL '7 days'
               AND p.src_node_id IS NOT NULL
               ${pNetCond}
+              AND ${publicPacketPrivacySql('p')}
           )
         )`,
       );

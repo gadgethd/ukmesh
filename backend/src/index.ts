@@ -36,6 +36,7 @@ import { isTrustedProxyPeer } from './http/trustedProxy.js';
 import { startOwnerAuthorizationReconciler, stopOwnerAuthorizationReconciler } from './owner/ownerAclReconciler.js';
 import { createOwnerLastHopPrewarm } from './owner/ownerLastHopPrewarm.js';
 import { getRegisteredOwnerService } from './api/routes/owner.js';
+import { resolveOwnerNodeIds } from './owner/ownerAccess.js';
 import { getAnalysisWorkloadStates } from './analysis/runState.js';
 import { applySecurityHeaders } from './security/operatorAuth.js';
 import { closeMetricsServer, startMetricsServer } from './metricsServer.js';
@@ -90,8 +91,17 @@ const OWNER_LAST_HOP_PREWARM_INTERVAL_MS = Number(process.env['OWNER_LAST_HOP_PR
 const OWNER_LAST_HOP_PREWARM_NODE_DELAY_MS = Number(process.env['OWNER_LAST_HOP_PREWARM_NODE_DELAY_MS'] ?? 150);
 const OWNER_LAST_HOP_PREWARM_CONCURRENCY = Number(process.env['OWNER_LAST_HOP_PREWARM_CONCURRENCY'] ?? 1);
 const lifecycle = new LifecycleCoordinator(SHUTDOWN_DEADLINE_MS);
+/**
+ * Packet-share authority is the same live owner grant the owner routes
+ * evaluate per request — never the persisted rule row on its own.
+ */
+const isOwnerNodeGrantActive = async (ownerUsername: string, nodeId: string): Promise<boolean> => {
+  const grantedNodeIds = await resolveOwnerNodeIds(ownerUsername);
+  return grantedNodeIds.includes(nodeId.trim().toUpperCase());
+};
 const packetShareForwarder = createPacketShareForwarder({
-  repository: createPacketShareRepository((sql, params) => query(sql, params, AbortSignal.timeout(5_000))),
+  repository: createPacketShareRepository((sql, params) => query(sql, params, AbortSignal.timeout(5_000)), undefined, { isOwnerNodeGrantActive }),
+  isOwnerNodeGrantActive,
 });
 const publicFeedForwarder = createPublicFeedForwarder({
   repository: createPublicFeedRepository((sql, params) => query(sql, params, AbortSignal.timeout(5_000))),
@@ -435,10 +445,19 @@ async function main() {
     const ready = !lifecycle.isDraining
       && checks.database
       && ownerAclReady
-      && (!MQTT_INGEST_ENABLED || (
-        checks.mqtt.state === 'connected' && checks.mqttConnectionMonitor.state === 'healthy'
-      ));
-    res.status(ready ? 200 : 503).json({ status: ready ? 'ready' : 'degraded', checks, ts: Date.now() });
+      && (!MQTT_INGEST_ENABLED || (checks.mqtt.state === 'connected' && checks.mqttConnectionMonitor.state === 'healthy'));
+    // Public readiness is a documented coarse projection. Owner-authorization
+    // generations, reconciliation errors and workload identity stay on the
+    // local-only operator surface (/local-api/health) - they are not needed by
+    // an anonymous probe and leak control-plane state.
+    res.status(ready ? 200 : 503).json({
+      status: ready ? 'ready' : 'degraded',
+      checks: {
+        database: checks.database,
+        mqtt: { state: checks.mqtt.state },
+      },
+      ts: Date.now(),
+    });
   });
   app.use(apiErrorMiddleware);
 
