@@ -278,7 +278,7 @@ export function retentionDeleteSql(target: RetentionTarget): string {
        ) AS oldest
      )
      DELETE FROM ${target.table} AS target
-     WHERE target.${target.timestampColumn} < (SELECT boundary FROM expired)
+     WHERE target.${target.timestampColumn} <= (SELECT boundary FROM expired)
        ${target.extraPredicate ? `AND ${target.extraPredicate}` : ''}`;
 }
 
