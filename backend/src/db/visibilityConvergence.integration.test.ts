@@ -21,8 +21,8 @@ const local = databaseUrl && ['127.0.0.1', 'localhost', '[::1]'].includes(new UR
 const execute = promisify(execFile);
 const nodeId = 'AABBCC' + 'AA'.repeat(29);
 const otherId = 'BB'.repeat(32);
-const migration = fs.readFileSync(new URL('./migrations/062_prefix_visibility_statement_fence.sql', import.meta.url), 'utf8');
-const rollback = fs.readFileSync(new URL('./rollback/062_prefix_visibility_statement_fence.sql', import.meta.url), 'utf8');
+const migration = fs.readFileSync(new URL('./migrations/066_prefix_visibility_statement_fence.sql', import.meta.url), 'utf8');
+const rollback = fs.readFileSync(new URL('./rollback/066_prefix_visibility_statement_fence.sql', import.meta.url), 'utf8');
 
 test('local TimescaleDB visibility-fence reproduction, regression and convergence', {
   skip: local ? false : 'explicit loopback TEST_PRIVACY_DATABASE_URL or TEST_INGEST_DATABASE_URL required',
@@ -89,8 +89,8 @@ test('local TimescaleDB visibility-fence reproduction, regression and convergenc
     assert.equal((await pool.query('SELECT COUNT(*)::text AS count FROM private_node_prefixes')).rows[0].count, '0');
     t.diagnostic('BASELINE REPRO: empty FK-cascade DELETE changes 1/1 -> 2/1 with zero prefix rows');
     await pool.query("INSERT INTO packets(packet_hash, topic) VALUES ('upgrade-preserved', 'fixture')");
-    await pool.query("DELETE FROM schema_migrations WHERE name = '062_prefix_visibility_statement_fence.sql'");
-    assert.deepEqual(await runMigrations(pool), ['062_prefix_visibility_statement_fence.sql']);
+    await pool.query("DELETE FROM schema_migrations WHERE name = '066_prefix_visibility_statement_fence.sql'");
+    assert.deepEqual(await runMigrations(pool), ['066_prefix_visibility_statement_fence.sql']);
     assert.deepEqual(await flags('packets'), [{ packet_hash: 'upgrade-preserved', is_private: false, visibility_ok: true }]);
     // Neither migration nor rollback certifies an existing gap.
     assert.deepEqual(await pair(), { generation: '2', materialized_generation: '1' });
