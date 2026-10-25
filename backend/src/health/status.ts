@@ -147,7 +147,7 @@ async function refreshPacketPathCapacityMetrics(): Promise<void> {
     SELECT
       (SELECT COUNT(*)::text FROM packet_paths
         WHERE time >= NOW() - INTERVAL '30 days') AS rows_30d,
-      hypertable_approximate_row_count('packet_paths'::regclass)::text AS approximate_rows,
+      approximate_row_count('packet_paths'::regclass)::text AS approximate_rows,
       pg_total_relation_size('packet_paths'::regclass)::text AS total_bytes,
       (SELECT COUNT(*)::text
          FROM timescaledb_information.chunks
