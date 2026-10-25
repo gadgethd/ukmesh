@@ -1753,7 +1753,7 @@
     },
     "/api/nodes/map": {
       "get": {
-        "summary": "Read nodes map",
+        "summary": "List public map nodes, optionally matching current or former names",
         "operationId": "get-nodes-map",
         "tags": [
           "public"
@@ -1769,6 +1769,16 @@
               "type": "string",
               "pattern": "^#?[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
               "maxLength": 65
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "description": "Case-insensitive literal substring of a current/former name, node key or IATA",
+            "schema": {
+              "type": "string",
+              "maxLength": 160
             }
           }
         ],
