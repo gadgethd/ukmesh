@@ -108,6 +108,8 @@ jobs:
       GRAFANA_ADMIN_PASSWORD: ci-grafana-password
       SOURCE_REVISION: ${{ github.sha }}
       MOSQUITTO_IMAGE: eclipse-mosquitto@sha256:9cfdd46ad59f3e3e5f592f6baf57ab23e1ad00605509d0f5c1e9b179c5314d87
+      GO_TEST_IMAGE: golang:1.23-bookworm@sha256:167053a2bb901972bf2c1611f8f52c44d5fe7e762e5cab213708d82c421614db
+      BUILDKIT_PROGRESS: plain
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
@@ -127,8 +129,35 @@ jobs:
           npm test
       - name: Compile Python workers
         run: python -m py_compile viewshed-worker/worker.py viewshed-worker/link_queue_v3.py viewshed-worker/viewshed_queue_v2.py viewshed-worker/backfill_profiles.py viewshed-worker/rf/*.py
+      - name: Test CI network retries
+        run: python -m unittest discover -s scripts -p test_ci_retry.py -v
+      - name: Pull build and test images with bounded retries
+        run: |
+          python scripts/ci-retry.py pull docker pull "$GO_TEST_IMAGE"
+          # Some services reuse an image built by a different service. Exclude
+          # those local aliases as well as services with their own build block.
+          images="$(docker compose \
+            -f docker-compose.yml -f docker-compose.ci.yml --profile dev \
+            config --format json | python -c '
+          import json, sys
+          services = json.load(sys.stdin)["services"].values()
+          built = {service["image"] for service in services if "build" in service}
+          print("\n".join(sorted({service["image"] for service in services} - built)))
+          ')"
+          while IFS= read -r image; do
+            python scripts/ci-retry.py pull docker pull "$image"
+          done <<<"$images"
+          # Preload every external FROM image, including multi-stage builds.
+          # BuildKit can still request metadata; the build wrapper covers that.
+          while IFS= read -r image; do
+            python scripts/ci-retry.py pull docker pull "$image"
+          done < <(awk 'toupper($1) == "FROM" { print $2 }' \
+            Dockerfile Dockerfile.backend Dockerfile.app Dockerfile.website \
+            Dockerfile.mesh-health-check Dockerfile.mosquitto-reloader \
+            viewshed-worker/Dockerfile tagger-worker/Dockerfile \
+            third_party/hopreach/Dockerfile | sort -u)
       - name: Build worker images
-        run: docker build -f viewshed-worker/Dockerfile -t meshcore-viewshed-worker:test viewshed-worker
+        run: python scripts/ci-retry.py build docker build -f viewshed-worker/Dockerfile -t meshcore-viewshed-worker:test viewshed-worker
       - name: Test retained observed-link worker image
         run: |
           trap 'docker rm -f link-queue-test-redis >/dev/null 2>&1 || true' EXIT
@@ -156,7 +185,7 @@ jobs:
             -e HOME=/tmp \
             -v "$PWD:/work" \
             -w /work/third_party/hopreach \
-            golang:1.23-bookworm \
+            "$GO_TEST_IMAGE" \
             go test ./...
       - name: Enforce HopReach UK performance release gate
         run: |
@@ -169,7 +198,7 @@ jobs:
             -v "$PWD:/work" \
             -v "$profile_dir:/profiles" \
             -w /work \
-            golang:1.23-bookworm \
+            "$GO_TEST_IMAGE" \
             /work/scripts/benchmark-hopreach.sh
       - name: Bootstrap clean Mosquitto credentials
         env:
@@ -252,11 +281,11 @@ jobs:
             "$publisher_user" "$observer" "$observer" >>mosquitto/acl
           chmod 640 mosquitto/passwd mosquitto/acl
           scripts/bootstrap-mosquitto.sh
-          docker build \
+          python scripts/ci-retry.py build docker build \
             --build-arg SOURCE_REVISION="$SOURCE_REVISION" \
             --build-arg VITE_APP_HOSTNAME=app.ukmesh.com \
             -f Dockerfile -t meshcore-combined:test .
-          docker compose -f docker-compose.yml -f docker-compose.ci.yml \
+          python scripts/ci-retry.py build docker compose -f docker-compose.yml -f docker-compose.ci.yml \
             --project-name "$project" \
             --profile dev \
             build \
@@ -375,7 +404,8 @@ jobs:
         working-directory: frontend
         run: |
           npm ci
-          npx playwright install --with-deps chromium
+          python ../scripts/ci-retry.py apt npx playwright install-deps chromium
+          npx playwright install chromium
       - name: Run E2E tests against live stack
         working-directory: frontend
         run: npm run test:e2e

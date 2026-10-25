@@ -5,10 +5,11 @@ ARG MESH_HEALTH_CHECK_REF
 
 WORKDIR /app
 
-RUN apt-get update \
+RUN apt-get -o APT::Update::Error-Mode=any update \
   && apt-get install -y --no-install-recommends ca-certificates git \
-  && rm -rf /var/lib/apt/lists/* \
-  && test -n "$MESH_HEALTH_CHECK_REF" \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN test -n "$MESH_HEALTH_CHECK_REF" \
   && echo "$MESH_HEALTH_CHECK_REF" | grep -Eq '^[0-9a-f]{40}$' \
   && git init /tmp/mesh-health-check \
   && git -C /tmp/mesh-health-check remote add origin "$MESH_HEALTH_CHECK_REPO" \
