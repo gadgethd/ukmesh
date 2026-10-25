@@ -22,15 +22,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-cat >"$compose_file" <<'YAML'
-services:
-  timescaledb:
-    image: timescale/timescaledb@sha256:22e8a5ae7aef121d1537afe946dd7cc5deeeb63ab36ce19849d671bd3b663509
-    environment:
-      POSTGRES_DB: meshcore
-      POSTGRES_USER: meshcore
-      POSTGRES_PASSWORD: fixture-password
-YAML
+cp "$script_dir/fixtures/vacuum-compose.yml" "$compose_file"
 
 export COMPOSE_FILE="$compose_file"
 export COMPOSE_PROJECT_NAME="$project_name"

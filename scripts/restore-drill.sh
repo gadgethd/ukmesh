@@ -243,6 +243,7 @@ docker volume create "$mosquitto_config_volume" >/dev/null
 
 docker run -d \
   --name "$postgres_name" \
+  --shm-size=1g \
   --network "$network_name" \
   --network-alias timescaledb \
   -e POSTGRES_DB=meshcore \
