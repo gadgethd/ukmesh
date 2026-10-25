@@ -8,6 +8,10 @@ site:
   subtitle: Canonical HopReach coverage, refreshed nightly
   active_hours: 6
   degraded_hours: 24
+  # Repeaters not heard in this many days are excluded from the coverage
+  # computation (Ben, 2026-10-25). They remain in the repeater layer and
+  # metadata; <= 0 disables the filter.
+  max_age_days: 7
 
 map:
   center_lat: 54.7
@@ -77,6 +81,9 @@ gpu:
   remote:
     broker_addr: "100.127.15.104:19100"
     max_in_flight: 2
+    # P11 (2026-10-25): after 240 min of non-busy errors the run is PARKED
+    # (ErrRemoteParked, exit 3) with its checkpoint intact — never CPU.
+    retry_error_stall_minutes: 240
 
 schedule:
   cron: "0 1 * * 0"

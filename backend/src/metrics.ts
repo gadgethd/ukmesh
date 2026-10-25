@@ -165,7 +165,19 @@ export const publicFeedOutcomesTotal = new Counter({
 
 export const publicFeedQueueDepth = new Gauge({
   name: 'meshcore_public_feed_queue_depth',
-  help: 'Public MeshCore feed deliveries currently claimed for processing.',
+  help: 'Public MeshCore feed deliveries awaiting completion.',
+  registers: [metricsRegistry],
+});
+
+export const publicFeedOldestAgeSeconds = new Gauge({
+  name: 'meshcore_public_feed_oldest_age_seconds',
+  help: 'Age of the oldest outstanding public feed delivery.',
+  registers: [metricsRegistry],
+});
+
+export const mqttIngestQueueDepth = new Gauge({
+  name: 'meshcore_mqtt_ingest_queue_depth',
+  help: 'Received MQTT messages awaiting a durable outcome, including active writes.',
   registers: [metricsRegistry],
 });
 
@@ -434,6 +446,7 @@ const HTTP_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'
 const METRIC_NETWORKS = new Set(['ukmesh', 'teesside', 'test']);
 const METRIC_ANALYSIS_WORKLOADS = new Set(['spam-analysis', 'path-learning']);
 const METRIC_WORKERS = new Set([
+  'forwarding_outbox',
   'health',
   'privacy_remat',
   'path_learning',
@@ -442,6 +455,10 @@ const METRIC_WORKERS = new Set([
   'link',
 ]);
 const METRIC_WORKER_PHASES = new Set([
+  'handoff',
+  'poll',
+  'path_capacity',
+  'core_capacity',
   'snapshot',
   'pass',
   'chunk',

@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { generateKeyPairSync, sign } from 'node:crypto';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { restoreReceiptKeyFingerprint } from '../backup/receipt.js';
 import {
   assertDataLifecycleGate,
   compressionPolicy,
@@ -14,10 +15,16 @@ import {
 } from './dataLifecycle.js';
 
 function receiptEnvironment(restoreVerifiedAt = '2026-07-28T12:00:00.000Z') {
-  const dir = mkdtempSync(path.join(os.tmpdir(), 'meshcore-lifecycle-receipt-'));
+  const root = mkdtempSync(path.join(os.tmpdir(), 'meshcore-lifecycle-receipt-'));
+  // The verify key is a separately provisioned secret; it is never published
+  // alongside the receipt it verifies.
+  const receiptDirectory = path.join(root, 'receipts');
+  const keyDirectory = path.join(root, 'trusted-keys');
+  mkdirSync(receiptDirectory);
+  mkdirSync(keyDirectory);
   const pair = generateKeyPairSync('rsa', { modulusLength: 2048 });
-  const receiptPath = path.join(dir, 'receipt.json');
-  const verifyKeyPath = path.join(dir, 'verify.pem');
+  const receiptPath = path.join(receiptDirectory, 'receipt.json');
+  const verifyKeyPath = path.join(keyDirectory, 'verify.pem');
   const payload = {
     format: 'meshcore-restore-receipt-v1',
     receipt_id: 'restore-20260728T120000Z',
@@ -42,9 +49,11 @@ function receiptEnvironment(restoreVerifiedAt = '2026-07-28T12:00:00.000Z') {
   writeFileSync(receiptPath, bytes);
   writeFileSync(`${receiptPath}.sig`, sign('sha256', bytes, pair.privateKey));
   writeFileSync(verifyKeyPath, pair.publicKey.export({ type: 'spki', format: 'pem' }));
+  const publicKey = pair.publicKey.export({ type: 'spki', format: 'pem' });
   return {
     DATA_LIFECYCLE_RESTORE_RECEIPT_PATH: receiptPath,
     DATA_LIFECYCLE_RECEIPT_VERIFY_KEY_PATH: verifyKeyPath,
+    DATA_LIFECYCLE_RECEIPT_VERIFY_KEY_SHA256: restoreReceiptKeyFingerprint(publicKey),
   };
 }
 

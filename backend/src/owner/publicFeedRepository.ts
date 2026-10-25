@@ -431,7 +431,15 @@ export function createPublicFeedRepository(
     );
   }
 
+  async function queueStats(): Promise<{ count: number; oldestAgeSeconds: number }> {
+    const result = await query<{ count: string; age: string | null }>(`SELECT COUNT(*)::text AS count,
+      EXTRACT(EPOCH FROM NOW() - MIN(created_at))::text AS age FROM public_feed_deliveries
+      WHERE status IN ('pending', 'failed', 'delivering')`);
+    return { count: Number(result.rows[0]?.count ?? 0), oldestAgeSeconds: Math.max(0, Number(result.rows[0]?.age ?? 0)) };
+  }
+
   return {
+    queueStats,
     accountStatus,
     activeNodeIds,
     setEnabled,

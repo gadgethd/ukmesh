@@ -156,7 +156,7 @@ sqlTest('RF scopes both endpoints before its limit, allowing recent sightings bu
 sqlTest('exports execute real SQL with the correct alias and omit private, unpositioned and out-of-scope nodes', async () => {
   const app = express(), router = Router();
   const limiter: RequestHandler = (_req, _res, next) => next();
-  registerExportRoutes(router, { networkFilters,
+  registerExportRoutes(router, { networkFilters, getPublicVisibilityGeneration: async () => 1,
     exportLimiter: limiter as Parameters<typeof registerExportRoutes>[1]['exportLimiter'],
     query: fixtureQuery({ nodes: [node(A), node(B, { network: 'other' }), node(C, { name: '🚫 Private' }),
       node(D, { network: 'test' }), node(F, { lat: null })], sighted: true }),

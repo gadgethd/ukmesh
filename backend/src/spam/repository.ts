@@ -1,3 +1,4 @@
+import type { QueryResultRow } from 'pg';
 import { analyticsQuery, pool } from '../db/index.js';
 import { UKMESH_NETWORKS } from '../networks.js';
 import { normalizeMessage } from './normalize.js';
@@ -5,7 +6,7 @@ import type { Incident, IncidentStatus, MessageRecord, ObserverObservation, Orig
 import type { PublicIncident } from './sanitize.js';
 import type { SpamMessageConfig } from './config.js';
 import { reportSpamAnalysisTruncation } from './limits.js';
-import { privateNodePacketNetworkMatchSql } from '../privacy/networkScope.js';
+import { publicPacketPrivacySql } from '../api/utils/networkFilters.js';
 import {
   assertAnalysisPublicationLease,
   type AnalysisPublicationHandle,
@@ -19,6 +20,18 @@ import {
 // ---------------------------------------------------------------------------
 
 const NETWORKS: readonly string[] = UKMESH_NETWORKS;
+
+/** Minimal SQL executor so privacy-critical reads are unit-testable without a database. */
+export type SpamSqlQuery = <T extends QueryResultRow = QueryResultRow>(
+  text: string,
+  params?: unknown[],
+  signal?: AbortSignal,
+) => Promise<{ rows: T[] }>;
+
+const poolSqlQuery: SpamSqlQuery = <T extends QueryResultRow>(
+  text: string,
+  params?: unknown[],
+) => pool.query<T>(text, params);
 
 interface MsgRow {
   packet_hash: string;
@@ -79,12 +92,13 @@ export async function loadRecentMessages(
   cfg: SpamMessageConfig,
   fixedWindow?: SpamAnalysisWindow,
   signal?: AbortSignal,
+  runQuery: SpamSqlQuery = analyticsQuery,
 ): Promise<MessageRecord[]> {
   const windowEnd = fixedWindow?.end ?? new Date();
   const windowStart = fixedWindow?.start
     ?? new Date(windowEnd.getTime() - cfg.analysisWindowHours * 60 * 60 * 1000);
 
-  const msgRes = await analyticsQuery<MsgRow>(
+  const msgRes = await runQuery<MsgRow>(
     `WITH logical_messages AS (
        SELECT DISTINCT ON (p.packet_hash)
           p.packet_hash,
@@ -103,12 +117,7 @@ export async function loadRecentMessages(
          AND p.payload ? 'decrypted'
          AND p.payload->'decrypted' ? 'message'
          AND COALESCE(p.payload->'decrypted'->>'sender', '') NOT LIKE '%🚫%'
-         AND NOT EXISTS (
-           SELECT 1 FROM nodes private_node
-            WHERE private_node.name LIKE '%🚫%'
-              AND ${privateNodePacketNetworkMatchSql('private_node', 'p')}
-              AND private_node.node_id IN (p.rx_node_id, p.src_node_id)
-         )
+         AND ${publicPacketPrivacySql('p')}
        ORDER BY p.packet_hash, p.time ASC
      ),
      signature_keys AS (
@@ -162,7 +171,7 @@ export async function loadRecentMessages(
   reportSpamAnalysisTruncation('messages', candidateRows.length, cfg.maxMessagesPerRun);
   const selectedRows = candidateRows.slice(0, cfg.maxMessagesPerRun);
   const hashes = selectedRows.map((r) => r.packet_hash);
-  const obsRes = await analyticsQuery<ObsRow>(
+  const obsRes = await runQuery<ObsRow>(
     `WITH ranked_observers AS (
      SELECT p.packet_hash,
             p.rx_node_id        AS observer_id,
@@ -176,15 +185,10 @@ export async function loadRecentMessages(
        AND p.time >= $1
        AND p.time < $2
        AND p.network = ANY($3)
+       AND ${publicPacketPrivacySql('p')}
        AND p.rx_node_id IS NOT NULL
-       AND n.lat IS NOT NULL AND n.lon IS NOT NULL
        AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
-       AND NOT EXISTS (
-         SELECT 1 FROM nodes private_node
-         WHERE private_node.name LIKE '%🚫%'
-            AND ${privateNodePacketNetworkMatchSql('private_node', 'p')}
-            AND private_node.node_id IN (p.rx_node_id, p.src_node_id)
-       )
+       AND n.lat IS NOT NULL AND n.lon IS NOT NULL
        AND p.packet_hash = ANY($4)
      GROUP BY p.packet_hash, p.rx_node_id, n.lat, n.lon
      )
@@ -474,25 +478,40 @@ export interface IncidentListOptions {
   offset?: number;
 }
 
-export async function getPublicIncidents(options: IncidentListOptions = {}): Promise<PublicIncident[]> {
+export async function getPublicIncidents(
+  options: IncidentListOptions = {},
+  runQuery: SpamSqlQuery = poolSqlQuery,
+): Promise<PublicIncident[]> {
   const params: unknown[] = [];
   const where: string[] = [];
   if (options.status) {
     params.push(options.status);
-    where.push(`status = $${params.length}`);
+    where.push(`i.status = $${params.length}`);
   }
   if (options.minConfidence != null) {
     params.push(options.minConfidence);
-    where.push(`score >= $${params.length}`);
+    where.push(`i.score >= $${params.length}`);
   }
+  // Incidents persist a prepared public_json, so their member packets must be
+  // re-checked against the canonical privacy predicate at read time: a node can
+  // be marked private after the incident was written.
+  where.push(`EXISTS (
+         SELECT 1
+           FROM spam_message_members m
+           JOIN packets p
+             ON p.packet_hash = m.packet_hash
+            AND p.network = m.network
+          WHERE m.incident_key = i.incident_key
+            AND ${publicPacketPrivacySql('p')}
+       )`);
   const limit = Math.max(1, Math.min(200, Math.floor(options.limit ?? 100)));
   const offset = Math.max(0, Math.floor(options.offset ?? 0));
   params.push(limit, offset);
-  const res = await pool.query<{ public_json: PublicIncident }>(
-    `SELECT public_json
-     FROM spam_message_incidents
-     ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-     ORDER BY (status = 'active') DESC, last_seen DESC
+  const res = await runQuery<{ public_json: PublicIncident }>(
+    `SELECT i.public_json
+     FROM spam_message_incidents i
+     WHERE ${where.join(' AND ')}
+     ORDER BY (i.status = 'active') DESC, i.last_seen DESC
      LIMIT $${params.length - 1} OFFSET $${params.length}`,
     params,
   );
@@ -551,15 +570,27 @@ export interface PublicTimelineEntry {
 
 export async function getPublicIncident(
   key: string,
+  runQuery: SpamSqlQuery = poolSqlQuery,
 ): Promise<(PublicIncident & { timeline: PublicTimelineEntry[] }) | null> {
-  const res = await pool.query<{ public_json: PublicIncident }>(
-    `SELECT public_json FROM spam_message_incidents WHERE incident_key = $1`,
+  const res = await runQuery<{ public_json: PublicIncident }>(
+    `SELECT i.public_json
+       FROM spam_message_incidents i
+      WHERE i.incident_key = $1
+        AND EXISTS (
+              SELECT 1
+                FROM spam_message_members m
+                JOIN packets p
+                  ON p.packet_hash = m.packet_hash
+                 AND p.network = m.network
+               WHERE m.incident_key = i.incident_key
+                 AND ${publicPacketPrivacySql('p')}
+            )`,
     [key],
   );
   if (res.rows.length === 0) return null;
   const incident = res.rows[0]!.public_json;
 
-  const members = await pool.query<{
+  const members = await runQuery<{
     observed_at: Date;
     channel_label: string | null;
     observer_count: number;
@@ -567,10 +598,18 @@ export async function getPublicIncident(
     best_rssi: number | null;
     best_snr: number | null;
   }>(
-    `SELECT observed_at, channel_label, observer_count, min_hop_count, best_rssi, best_snr
-     FROM spam_message_members
-     WHERE incident_key = $1
-     ORDER BY observed_at ASC
+    `SELECT m.observed_at, m.channel_label, m.observer_count,
+            m.min_hop_count, m.best_rssi, m.best_snr
+     FROM spam_message_members m
+     WHERE m.incident_key = $1
+       AND EXISTS (
+             SELECT 1
+               FROM packets p
+              WHERE p.packet_hash = m.packet_hash
+                AND p.network = m.network
+                AND ${publicPacketPrivacySql('p')}
+           )
+     ORDER BY m.observed_at ASC
      LIMIT 500`,
     [key],
   );

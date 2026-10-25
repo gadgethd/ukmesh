@@ -145,7 +145,21 @@ async function requireOwnerSession(req: Request, res: Response): Promise<string[
   // BUG-010: reject sessions minted under a revoked password. The generation
   // is bumped when the broker rejects a previously-valid credential; sessions
   // carrying an older generation are stale and must re-authenticate.
-  const currentGen = await getOwnerCredentialGeneration(session.mqttUsername);
+  // Fail closed: if the generation store cannot be read, the session's
+  // revocation state is unknown, so deny it rather than defaulting to 0 (which
+  // would match every pre-rotation cookie).
+  let currentGen: number;
+  try {
+    currentGen = await getOwnerCredentialGeneration(session.mqttUsername);
+  } catch (error) {
+    console.error(
+      '[api] owner session credential-generation check failed',
+      error instanceof Error ? error.message : error,
+    );
+    res.clearCookie(OWNER_COOKIE_NAME, { path: '/' });
+    res.status(401).json({ error: 'Owner session could not be verified — please log in again' });
+    return null;
+  }
   if (session.gen !== currentGen) {
     res.clearCookie(OWNER_COOKIE_NAME, { path: '/' });
     res.status(401).json({ error: 'Credentials have been rotated — please log in again' });
@@ -276,6 +290,7 @@ registerExportRoutes(router, {
   query,
   networkFilters,
   exportLimiter: EXPORT_LIMITER,
+  getPublicVisibilityGeneration,
 });
 
 assertUniqueRouteRegistry(router);

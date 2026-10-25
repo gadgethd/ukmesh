@@ -15,11 +15,20 @@ import { buildChannelEntries, buildCombinedKeyStore, buildSummary } from './chan
 import { shouldDiscardUnverifiedTxAdvert, statusEnvelopeTargetsObserver } from './identityBinding.js';
 import { extractNeighborNodes } from './neighborPayload.js';
 import { parseMqttTopic } from './topic.js';
-import { createDurableMqttHandleMessage } from './durableHandler.js';
+import { validPacketIntegers, isPermanentDataError } from './envelopeSafety.js';
+import { installDurableMqttIntake } from './durableIntake.js';
 import { waitForInFlightPacket } from './dedupeRegistry.js';
 import { admitPacketToRam } from '../ram/liveStore.js';
 import { getRamIngestMode } from '../ram/protocol.js';
-import { persistStatusTelemetrySample } from './statusTelemetry.js';
+import { persistStatusTelemetrySample, persistStatusWrites } from './statusTelemetry.js';
+import {
+  buildPersistedPacketPayload,
+  ingestFailureAction,
+  packetEnvelopeViolations,
+  statusEnvelopeViolations,
+  stripDerivedPacketFields,
+  type IntegerDomainViolation,
+} from './envelopeSafety.js';
 import { observationIdentityKey, packetAlreadyPersisted, type ObservationIdentity } from './observationIdentity.js';
 import { assertSupportedIngestConnections } from './ingestConfig.js';
 import { waitForShutdownStep } from './shutdownDeadline.js';
@@ -28,6 +37,7 @@ import {
   boundedNetworkMetricLabel,
   mqttIngestAckDuration,
   mqttIngestActive,
+  mqttIngestQueueDepth,
   mqttIngestOutcomesTotal,
   mqttMessagesTotal,
   postPersistDroppedTotal,
@@ -51,6 +61,7 @@ type MqttRuntimeStatus = {
 
 let mqttRuntimeStatus: MqttRuntimeStatus = { state: 'starting', changedAt: new Date().toISOString() };
 const mqttClients: MqttClient[] = [];
+const durableIntakes: ReturnType<typeof installDurableMqttIntake>[] = [];
 let mqttStopping = false;
 const MQTT_INGEST_MODE = getRamIngestMode();
 const publicPackets = createPublicBatch<{ packet: LivePacket; publish: () => void }>({
@@ -332,6 +343,26 @@ function reportDroppedMqttMessage(
   lastMqttDropLogAt = now;
 }
 
+/**
+ * A deterministic data error cannot be fixed by redelivery: the same insert
+ * fails on every attempt while the PUBACK is withheld, which is an ingest
+ * livelock for that topic. Count the drop, log it, and acknowledge so the
+ * broker discards the message. Transient failures never reach this path.
+ */
+function quarantineEnvelope(kind: 'packet' | 'status', violations: IntegerDomainViolation[]): void {
+  mqttIngestOutcomesTotal.inc({ outcome: `${kind}_quarantined` });
+  console.warn(
+    `[mqtt] quarantined ${kind} envelope with out-of-domain field(s): ` +
+    violations.map((violation) => `${violation.field}=${String(violation.value)} (${violation.reason})`).join(', '),
+  );
+}
+
+function quarantinePersistenceFailure(error: unknown): void {
+  mqttIngestOutcomesTotal.inc({ outcome: 'packet_quarantined' });
+  const message = error instanceof Error ? error.message : String(error);
+  console.error('[mqtt] quarantined packet after deterministic persistence error:', message);
+}
+
 function handleIncomingMqttPacket(packet: { topic: string; payload: Buffer | string; dup?: boolean; messageId?: number }): Promise<void> {
   const startedAt = process.hrtime.bigint();
   const rawPayload = Buffer.isBuffer(packet.payload)
@@ -352,6 +383,18 @@ function handleIncomingMqttPacket(packet: { topic: string; payload: Buffer | str
   activeMqttIngests += 1;
   mqttIngestActive.set(activeMqttIngests);
   return handleMessage(packet.topic, rawPayload, packet.dup === true, packet.messageId)
+    .catch(async (error: unknown) => {
+      if (!isPermanentDataError(error)) throw error;
+      // Quarantine evidence must commit before this delivery can be acknowledged.
+      await query(`INSERT INTO ingest_rejections (message_hash, topic, reason, payload_bytes)
+        VALUES ($1, $2, $3, $4) ON CONFLICT (message_hash) DO UPDATE
+        SET last_seen_at = NOW(), occurrences = ingest_rejections.occurrences + 1`, [
+        createHash('sha256').update(packet.topic).update(rawPayload).digest('hex'),
+        packet.topic.replaceAll('\u0000', '').slice(0, 512),
+        `SQLSTATE:${(error as { code: string }).code}`, rawPayload.length,
+      ]);
+      mqttIngestOutcomesTotal.inc({ outcome: 'packet_quarantined' });
+    })
     .then(() => mqttIngestOutcomesTotal.inc({ outcome: 'processed' }))
     .finally(() => {
       mqttIngestAckDuration.observe(Number(process.hrtime.bigint() - startedAt) / 1e9);
@@ -408,10 +451,11 @@ export async function startMqttClient(): Promise<void> {
       password: process.env['MQTT_PASSWORD'],
     });
     mqttClients.push(client);
-    client.handleMessage = createDurableMqttHandleMessage(
+    durableIntakes.push(installDurableMqttIntake(client,
       handleIncomingMqttPacket,
       (error) => reportMqttIngestFailure(client, error),
-    );
+      { depth: (count) => mqttIngestQueueDepth.set(count) },
+    ));
 
     client.on('connect', () => {
       setMqttRuntimeStatus('connected');
@@ -457,6 +501,7 @@ export async function startMqttClient(): Promise<void> {
 export async function stopMqttClient(timeoutMs = 20_000): Promise<void> {
   mqttStopping = true;
   const deadline = Date.now() + timeoutMs;
+  for (const intake of durableIntakes) intake.stopAdmission();
   const clients = mqttClients.splice(0, mqttClients.length);
   for (const client of clients) {
     client.removeAllListeners('reconnect');
@@ -465,6 +510,8 @@ export async function stopMqttClient(timeoutMs = 20_000): Promise<void> {
       console.error('[mqtt] disconnect failed:', error instanceof Error ? error.message : error);
     });
   }
+  await waitForShutdownStep(Promise.all(durableIntakes.map((intake) => intake.drain())), deadline, 'intake');
+  durableIntakes.length = 0;
   while (activeMqttIngests > 0 && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
@@ -534,21 +581,27 @@ async function handleMessage(
     writes.push(persistStatusTelemetrySample(
       json,
       { nodeId, network, allowRawStatsOnly: network === 'test' },
-      insertNodeStatusSample,
+      async (sample) => {
+        // Validate the values actually destined for integer columns after the
+        // deployed firmware normalization; raw stats retain fractional detail.
+        const violations = statusEnvelopeViolations({ stats: {
+          battery_mv: sample.batteryMv, uptime_secs: sample.uptimeSecs,
+          tx_air_secs: sample.txAirSecs, rx_air_secs: sample.rxAirSecs,
+        } });
+        if (violations.length) { quarantineEnvelope('status', violations); return; }
+        await insertNodeStatusSample(sample);
+      },
     ));
-    const writeResults = await Promise.allSettled(writes);
-    const writeErrors: unknown[] = [];
-    for (const result of writeResults) {
-      if (result.status === 'rejected') {
-        mqttIngestOutcomesTotal.inc({ outcome: 'status_persist_failure' });
-        console.error(
-          '[mqtt] status persistence error:',
-          result.reason instanceof Error ? result.reason.message : String(result.reason),
-        );
-        writeErrors.push(result.reason);
-      }
+    try {
+      await persistStatusWrites(writes, (code) => {
+        mqttIngestOutcomesTotal.inc({ outcome: 'status_telemetry_rejected' });
+        console.warn('[mqtt] rejected status data:', { nodeId, code });
+      });
+    } catch (error) {
+      mqttIngestOutcomesTotal.inc({ outcome: 'status_persist_failure' });
+      console.error('[mqtt] status persistence error:', error instanceof Error ? error.message : error);
+      throw error;
     }
-    if (writeErrors.length > 0) throw writeErrors[0];
     markMqttPersistenceHealthy();
     emitNode(nodeId, { network, observerId: observerKey });
     return;
@@ -789,8 +842,29 @@ async function handleMessage(
     innerPayload = undefined;
   }
 
+  if (!validPacketIntegers({ packetType: resolvedPacketType, routeType: decodedRouteType,
+    hopCount: decodedHops, pathHashSizeBytes: decodedPathHashSizeBytes, advertCount })) {
+    throw Object.assign(new Error('Invalid packet integer field'), { code: '22003' });
+  }
   if (resolvedPacketType == null) {
     mqttIngestOutcomesTotal.inc({ outcome: 'missing_packet_type' });
+    return;
+  }
+
+  // Validate against the integer columns the values are inserted into before
+  // any write: a fractional packet_type (22P02) or an int4 overflow (22003)
+  // fails on every redelivery. Rejecting here keeps the bad row out of the
+  // shared packet batch, where one failing row would reject its batch-mates.
+  const packetViolations = packetEnvelopeViolations({
+    packetType: resolvedPacketType,
+    hopCount: decodedHops,
+    pathHashSizeBytes: decodedPathHashSizeBytes,
+    advertCount,
+    snr,
+    rssi,
+  });
+  if (packetViolations.length > 0) {
+    quarantineEnvelope('packet', packetViolations);
     return;
   }
 
@@ -852,9 +926,13 @@ async function handleMessage(
 
   // Decoded payloads omit mctomqtt's envelope direction. Keep that metadata in
   // the stored JSON so RX/TX counts do not classify every decoded packet as RX.
-  const packetPayload = direction
-    ? { ...(innerPayload ?? json), direction }
-    : (innerPayload ?? json);
+  // Without a verified decode the envelope itself is stored, so publisher-owned
+  // `_summary`/`decrypted` keys are removed rather than persisted as if the
+  // decoder had produced them (they also feed `companion_sender`).
+  const packetPayload = buildPersistedPacketPayload(innerPayload, json, direction);
+  // Live consumers receive the upstream envelope too; hand them the same
+  // sanitised view so a forged summary is never forwarded as decoded content.
+  const upstreamEnvelope = stripDerivedPacketFields(json);
 
   const livePacket: LivePacket = {
     id:         crypto.randomUUID(),
@@ -880,6 +958,7 @@ async function handleMessage(
 
   const persistOnce = async (): Promise<void> => {
     const persistInput = {
+      forwarding: { packet: livePacket, upstreamEnvelope },
       packetHash: finalHash,
       rxNodeId:   observerKey,
       srcNodeId,
@@ -909,7 +988,7 @@ async function handleMessage(
     const publishLive = (): void => {
       emitNode(observerKey, { network, observerId: observerKey });
       try {
-        emit(livePacket, json);
+        emit(livePacket, upstreamEnvelope);
       } catch (error) {
         console.error(
           '[mqtt] packet subscriber failed after ingest:',
@@ -919,7 +998,7 @@ async function handleMessage(
     };
     if (MQTT_INGEST_MODE === 'ram') {
       publicPackets.enqueue({ packet: livePacket, publish: publishLive },
-        Buffer.byteLength(JSON.stringify([livePacket, json])));
+        Buffer.byteLength(JSON.stringify([livePacket, upstreamEnvelope])));
     } else publishLive();
     invalidateResolveCache(finalHash);
     mqttIngestOutcomesTotal.inc({
@@ -944,6 +1023,17 @@ async function handleMessage(
     try {
       await persistOnce();
     } catch (err) {
+      // A deterministic data error (SQLSTATE class 22 data_exception / class 23
+      // integrity_constraint_violation) fails identically on every redelivery.
+      // Withholding the PUBACK for it is an ingest livelock, so quarantine the
+      // message, remember the observation (a lost-PUBACK replay is then a
+      // duplicate rather than a second attempt) and acknowledge. Transient
+      // failures still leave the message unacknowledged for redelivery.
+      if (ingestFailureAction(err) === 'ack_quarantine') {
+        quarantinePersistenceFailure(err);
+        rememberPacket(dedupeKey);
+        return;
+      }
       mqttIngestOutcomesTotal.inc({
         outcome: MQTT_INGEST_MODE === 'ram' ? 'packet_admission_failure' : 'packet_persist_failure',
       });

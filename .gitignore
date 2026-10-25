@@ -81,3 +81,8 @@ terrain-tiles/
 /.deploy-rescue-private/
 # Local endpoint performance measurements and isolated test tooling
 /.mqttperf-evidence/
+
+# Reconciliation secrets and separately provisioned runtime trust material.
+/.env.pre-reconcile-*
+/logging/alert_receiver_token
+/restore-receipt-trust/

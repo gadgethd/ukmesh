@@ -76,7 +76,7 @@ perfTest('EXPLAIN actual history queries for Lyneham, Gadget and an empty id, in
 perfTest('EXPLAIN actual node export SQL including its 5000-node maximum', { timeout: 15_000 }, async () => {
   const app = express(), router = Router();
   const limiter: RequestHandler = (_req, _res, next) => next();
-  registerExportRoutes(router, { networkFilters,
+  registerExportRoutes(router, { networkFilters, getPublicVisibilityGeneration: async () => 1,
     exportLimiter: limiter as Parameters<typeof registerExportRoutes>[1]['exportLimiter'], query: measuredQuery('exports') });
   app.use(router);
   const server = app.listen(0, '127.0.0.1');

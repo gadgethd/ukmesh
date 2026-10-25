@@ -16,6 +16,36 @@ const packet: LivePacket = {
   ts: Date.parse('2026-09-20T12:00:00Z'),
 };
 
+test('hung publish and hung cleanup release the worker for subsequent polls', async () => {
+  const previous = { ...process.env };
+  Object.assign(process.env, configuredEnv());
+  let claims = 0;
+  let failed = 0;
+  const repository = {
+    discardInactiveDeliveries: async () => 0,
+    reclaimExpiredClaims: async () => 0,
+    hasActiveNode: async () => true,
+    claimDue: async () => ++claims === 1 ? [{ id: 'hung', node_id: packet.rxNodeId, attempts: 1,
+      destination_topic: `public/LHR/${packet.rxNodeId}/packets`, payload: { raw: '0102' } }] : [],
+    markFailed: async () => { failed++; },
+    queueStats: async () => ({ count: 1, oldestAgeSeconds: 600 }),
+  } as unknown as PublicFeedRepository;
+  const worker = createPublicFeedForwarder({ repository, getOwnerAuthorizationSnapshot: async () => [],
+    publishTimeoutMs: 10, closeTimeoutMs: 10, deliveryTimeoutMs: 200,
+    publisherFactory: () => ({ publish: () => new Promise(() => {}), close: () => new Promise(() => {}) }),
+  });
+  try {
+    await worker.processDue();
+    assert.equal(failed, 1);
+    await worker.processDue();
+    assert.equal(claims, 2);
+    await worker.stop();
+  } finally {
+    for (const key of Object.keys(process.env)) if (!(key in previous)) delete process.env[key];
+    Object.assign(process.env, previous);
+  }
+});
+
 function configuredEnv(): Record<string, string> {
   return {
     PUBLIC_FEED_PUBLISH_ENABLED: 'true',

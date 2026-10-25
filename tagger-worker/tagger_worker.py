@@ -105,6 +105,23 @@ CREATE TABLE IF NOT EXISTS tagger_retry (
 
 _running = True
 
+# Public-read privacy predicate, mirroring the backend's publicPacketPrivacySql:
+# a row may leave the database only while its visibility bits were materialised
+# for the live visibility generation. Kept in one place so the poll, the
+# per-message re-read and the retry lookup cannot drift apart.
+PUBLIC_PACKET_PRIVACY_SQL = """
+      AND visibility_ok IS TRUE
+      AND is_private IS NOT TRUE
+      AND EXISTS (
+        SELECT 1
+        FROM packet_visibility_materialization_state cached_visibility
+        JOIN public_visibility_state current_visibility
+          ON current_visibility.singleton = cached_visibility.singleton
+        WHERE cached_visibility.singleton = TRUE
+          AND cached_visibility.visibility_generation = current_visibility.generation
+      )
+"""
+
 
 def _stop(*_a):
     global _running
@@ -146,12 +163,23 @@ def flatten(answers):
     return tags, conf
 
 
-def tag_message(cur, ph, ts):
-    """Tag one message with up to 3 inline attempts. Returns (ok, latency_ms, err)."""
-    cur.execute("""
+def tag_message(cur, ph, ts, rx_node_id, network):
+    """Tag one message with up to 3 inline attempts. Returns (ok, latency_ms, err).
+
+    The body is re-read under the full packet identity (hash, time, receiver,
+    network) plus the public privacy predicate, so a hash match can never hand a
+    private observer's copy to the tagging API.
+    """
+    cur.execute(f"""
       SELECT payload->'decrypted'->>'sender', payload->'decrypted'->>'message'
-      FROM packets WHERE packet_hash=%s LIMIT 1
-    """, (ph,))
+      FROM packets
+      WHERE packet_hash=%s
+        AND time=%s
+        AND rx_node_id IS NOT DISTINCT FROM %s
+        AND network IS NOT DISTINCT FROM %s
+        {PUBLIC_PACKET_PRIVACY_SQL}
+      LIMIT 1
+    """, (ph, ts, rx_node_id, network))
     row = cur.fetchone()
     if row is None or row[1] is None:
         return True, None, None  # nothing taggable (row vanished / no message)
@@ -180,6 +208,24 @@ def tag_message(cur, ph, ts):
     return False, None, err
 
 
+def public_packet_keys(cur, ph, ts):
+    """Resolve the public packet identity for a queued retry.
+
+    Returns None when the packet is no longer public (rematerialised private) or
+    the row is gone, so the caller drops the retry instead of re-sending it.
+    """
+    cur.execute(f"""
+      SELECT packet_hash, time, rx_node_id, network
+      FROM packets
+      WHERE packet_hash=%s
+        AND time=%s
+        {PUBLIC_PACKET_PRIVACY_SQL}
+      ORDER BY rx_node_id NULLS LAST
+      LIMIT 1
+    """, (ph, ts))
+    return cur.fetchone()
+
+
 def process_retries(cur):
     """Retry previously failed messages. Returns (ok_count, fail_count, pending)."""
     cur.execute("""
@@ -194,7 +240,12 @@ def process_retries(cur):
         if cur.fetchone():
             cur.execute("DELETE FROM tagger_retry WHERE packet_hash=%s", (ph,))
             continue
-        good, ms, err = tag_message(cur, ph, ts)
+        keys = public_packet_keys(cur, ph, ts)
+        if keys is None:
+            # Became private (or vanished) after it was queued: never re-egress.
+            cur.execute("DELETE FROM tagger_retry WHERE packet_hash=%s", (ph,))
+            continue
+        good, ms, err = tag_message(cur, *keys)
         if good:
             cur.execute("DELETE FROM tagger_retry WHERE packet_hash=%s", (ph,))
             cur.execute("UPDATE tagger_state SET retried=retried+1 WHERE id=1")
@@ -241,10 +292,10 @@ def main():
         try:
             retry_ok, retry_fail, retry_pending = process_retries(cur)
 
-            cur.execute("""
+            cur.execute(f"""
               SELECT * FROM (
                 SELECT DISTINCT ON (packet_hash)
-                       packet_hash, time,
+                       packet_hash, time, rx_node_id, network,
                        payload->'decrypted'->>'sender' AS sender,
                        payload->'decrypted'->>'message' AS message
                 FROM packets
@@ -253,23 +304,14 @@ def main():
                   AND time > %s::timestamptz - make_interval(secs => %s)
                   AND time <= now()
                   AND network = ANY(%s::text[])
-                  AND visibility_ok IS TRUE
-                  AND is_private IS NOT TRUE
-                  AND EXISTS (
-                    SELECT 1
-                    FROM packet_visibility_materialization_state cached_visibility
-                    JOIN public_visibility_state current_visibility
-                      ON current_visibility.singleton = cached_visibility.singleton
-                    WHERE cached_visibility.singleton = TRUE
-                      AND cached_visibility.visibility_generation = current_visibility.generation
-                  )
+                  {PUBLIC_PACKET_PRIVACY_SQL}
                 ORDER BY packet_hash, time DESC
               ) x ORDER BY time ASC LIMIT %s
             """, (cursor, OVERLAP_S, NETWORKS, BATCH_LIMIT))
             rows = cur.fetchall()
             new = errs = 0
             max_t = cursor
-            for ph, ts, sender, message in rows:
+            for ph, ts, rx_node_id, network, sender, message in rows:
                 if ts > max_t:
                     max_t = ts
                 cur.execute("SELECT 1 FROM message_tags WHERE packet_hash=%s", (ph,))

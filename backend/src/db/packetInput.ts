@@ -7,6 +7,7 @@ export function observerRegionFromTopic(topic: string): string | null {
 }
 
 export type InsertPacketInput = {
+  forwarding?: { packet: import('../types/index.js').LivePacket; upstreamEnvelope: Record<string, unknown> };
   packetHash: string;
   rxNodeId?: string;
   srcNodeId?: string;
@@ -53,6 +54,7 @@ export function buildPacketBatchInput(p: InsertPacketInput): PacketBatchInput {
   const topicPrefix = p.topic.split('/', 1)[0]?.trim() || '';
   const iata = observerRegionFromTopic(p.topic);
   return {
+    forwardingJson: p.forwarding ? JSON.stringify(p.forwarding) : null,
     time: new Date(),
     packetHash: p.packetHash,
     rxNodeId: p.rxNodeId ?? null,

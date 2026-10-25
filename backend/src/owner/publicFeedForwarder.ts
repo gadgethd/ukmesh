@@ -1,4 +1,5 @@
 import mqtt, { type MqttClient } from 'mqtt';
+import { withDeadline } from '../platform/deadline.js';
 import { randomUUID } from 'node:crypto';
 import type { LivePacket } from '../types/index.js';
 import {
@@ -10,7 +11,7 @@ import {
   type PublicFeedConfig,
 } from './publicFeedConfig.js';
 import type { PublicFeedDeliveryRow, PublicFeedRepository, PublicFeedAuthorizationSnapshot } from './publicFeedRepository.js';
-import { publicFeedOutcomesTotal, publicFeedQueueDepth } from '../metrics.js';
+import { publicFeedOutcomesTotal, publicFeedQueueDepth, publicFeedOldestAgeSeconds } from '../metrics.js';
 
 const DEFAULT_POLL_INTERVAL_MS = 5_000;
 const DEFAULT_BATCH_SIZE = 25;
@@ -123,6 +124,9 @@ export type PublicFeedForwarderDeps = {
   pollIntervalMs?: number;
   batchSize?: number;
   ownershipRefreshIntervalMs?: number;
+  publishTimeoutMs?: number;
+  deliveryTimeoutMs?: number;
+  closeTimeoutMs?: number;
 };
 
 export function createPublicFeedForwarder(deps: PublicFeedForwarderDeps) {
@@ -136,6 +140,11 @@ export function createPublicFeedForwarder(deps: PublicFeedForwarderDeps) {
   const ownershipRefreshIntervalMs = deps.ownershipRefreshIntervalMs ?? positiveIntegerSetting(
     'PUBLIC_FEED_OWNERSHIP_REFRESH_INTERVAL_MS', DEFAULT_OWNERSHIP_REFRESH_INTERVAL_MS, 300_000,
   );
+  const publishTimeoutMs = deps.publishTimeoutMs ?? 10_000;
+  const deliveryTimeoutMs = deps.deliveryTimeoutMs ?? 25_000;
+  const closePublisher = (publisher: PublicFeedPublisher) => withDeadline(
+    publisher.close(), deps.closeTimeoutMs ?? 2_000, 'public feed cleanup',
+  ).catch(() => undefined);
   const publishers = new Map<string, { publisher: PublicFeedPublisher; fingerprint: string }>();
   let pollTimer: NodeJS.Timeout | null = null;
   let ownershipTimer: NodeJS.Timeout | null = null;
@@ -149,7 +158,7 @@ export function createPublicFeedForwarder(deps: PublicFeedForwarderDeps) {
     if (existing?.fingerprint === fingerprint) return existing.publisher;
     if (existing) {
       publishers.delete('public-feed');
-      await existing.publisher.close().catch(() => undefined);
+      await closePublisher(existing.publisher);
     }
     const created = publisherFactory(config);
     publishers.set('public-feed', { publisher: created, fingerprint });
@@ -209,12 +218,13 @@ export function createPublicFeedForwarder(deps: PublicFeedForwarderDeps) {
     } catch (error) {
       publicFeedOutcomesTotal.inc({ outcome: 'queue_error' });
       console.error('[public-feed] queue error:', error instanceof Error ? error.message : error);
+      throw error;
       return;
     }
     void processDue();
   }
 
-  async function deliver(row: PublicFeedDeliveryRow, claimToken: string): Promise<void> {
+  async function deliver(row: PublicFeedDeliveryRow, claimToken: string, signal: AbortSignal): Promise<void> {
     // Drop deliveries created by an older deployment before they can publish
     // to the canonical ingest namespace. The curated public namespace is the
     // only destination this worker is allowed to emit.
@@ -236,7 +246,9 @@ export function createPublicFeedForwarder(deps: PublicFeedForwarderDeps) {
     }
     try {
       const publisher = await publisherFor(config);
-      await publisher.publish(row.destination_topic, JSON.stringify(row.payload));
+      signal.throwIfAborted();
+      await withDeadline(publisher.publish(row.destination_topic, JSON.stringify(row.payload)), publishTimeoutMs, 'public feed publish');
+      signal.throwIfAborted();
       await deps.repository.markSucceeded(row.id, claimToken);
       publicFeedOutcomesTotal.inc({ outcome: 'delivered' });
     } catch (error) {
@@ -244,7 +256,7 @@ export function createPublicFeedForwarder(deps: PublicFeedForwarderDeps) {
       const entry = publishers.get('public-feed');
       if (entry) {
         publishers.delete('public-feed');
-        await entry.publisher.close().catch(() => undefined);
+        await closePublisher(entry.publisher);
       }
       await deps.repository.markFailed(row.id, claimToken, row.attempts, message);
       publicFeedOutcomesTotal.inc({ outcome: 'delivery_error' });
@@ -264,13 +276,24 @@ export function createPublicFeedForwarder(deps: PublicFeedForwarderDeps) {
         if (!getPublicFeedConfig().configured) return;
         const claimToken = randomUUID();
         const rows = await deps.repository.claimDue(batchSize, claimToken);
-        publicFeedQueueDepth.set(rows.length);
-        await Promise.all(rows.map((row) => deliver(row, claimToken)));
+        await Promise.all(rows.map(async (row) => {
+          const cancellation = new AbortController();
+          try { await withDeadline(deliver(row, claimToken, cancellation.signal), deliveryTimeoutMs, 'public feed delivery'); }
+          catch (error) {
+            cancellation.abort();
+            publicFeedOutcomesTotal.inc({ outcome: 'delivery_error' });
+            await withDeadline(deps.repository.markFailed(row.id, claimToken, row.attempts,
+              error instanceof Error ? error.message : String(error)), 2_000, 'public feed claim release').catch(() => undefined);
+          }
+        }));
       } catch (error) {
         publicFeedOutcomesTotal.inc({ outcome: 'worker_error' });
         console.error('[public-feed] worker error:', error instanceof Error ? error.message : error);
       } finally {
-        publicFeedQueueDepth.set(0);
+        try {
+          const stats = await deps.repository.queueStats?.();
+          if (stats) { publicFeedQueueDepth.set(stats.count); publicFeedOldestAgeSeconds.set(stats.oldestAgeSeconds); }
+        } catch { publicFeedQueueDepth.set(-1); publicFeedOldestAgeSeconds.set(-1); }
         processing = null;
       }
     })();
@@ -298,7 +321,7 @@ export function createPublicFeedForwarder(deps: PublicFeedForwarderDeps) {
     if (ownershipRefresh) await ownershipRefresh.catch(() => undefined);
     const current = [...publishers.values()].map(({ publisher }) => publisher);
     publishers.clear();
-    await Promise.all(current.map((publisher) => publisher.close().catch(() => undefined)));
+    await Promise.all(current.map((publisher) => closePublisher(publisher)));
   }
 
   return { enqueuePacket, processDue, refreshOwnership, start, stop };

@@ -15,6 +15,7 @@ import {
   type PacketPrivacyInput,
   type PrivatePrefixRow,
 } from '../privacy/privatePrefixCache.js';
+import { isPermanentDataError } from '../mqtt/envelopeSafety.js';
 import { observationIdentityKey } from '../mqtt/observationIdentity.js';
 
 const MAX_BATCH_SIZE = 50;
@@ -55,6 +56,7 @@ const RETRYABLE_DATABASE_CODES = new Set([
 ]);
 
 export type PacketBatchInput = {
+  forwardingJson?: string | null;
   time: Date;
   packetHash: string;
   rxNodeId: string | null;
@@ -343,11 +345,11 @@ export async function persistEntriesCore(
     }
   }
 
-  const columnsPerRow = 26;
+  const columnsPerRow = 27;
   const casts = [
     'int', 'uuid', 'timestamptz', 'text', 'text', 'text', 'text', 'text', 'text',
     'int', 'int', 'int', 'double precision', 'double precision', 'text', 'text',
-    'text', 'int', 'text[]', 'int', 'text', 'text', 'text', 'bigint', 'boolean', 'boolean',
+    'text', 'int', 'text[]', 'int', 'text', 'text', 'text', 'bigint', 'boolean', 'boolean', 'jsonb',
   ];
   const params: unknown[] = [];
   const values = entries.map(({ input: packet, observationId }, rowIndex) => {
@@ -386,6 +388,7 @@ export async function persistEntriesCore(
       privacy.generation,
       privacy.isPrivate,
       privacy.pathIsValid,
+      packet.forwardingJson ?? null,
     );
     const placeholders = Array.from(
       { length: columnsPerRow },
@@ -456,7 +459,7 @@ export async function persistEntriesCore(
          row_id, observation_id_in, time, packet_hash, rx_node_id, src_node_id, topic, topic_prefix,
          iata, packet_type, route_type, hop_count, rssi, snr, payload, companion_sender, raw_hex,
          advert_count, path_hashes, path_hash_size_bytes, network, transport_codes, region_scope,
-         prefix_cache_generation, classified_private, path_is_valid
+         prefix_cache_generation, classified_private, path_is_valid, forwarding_payload
        ) AS (VALUES ${values}),
        classified AS MATERIALIZED (
          SELECT i.*,
@@ -505,6 +508,18 @@ export async function persistEntriesCore(
                 advert_count, path_hashes, path_hash_size_bytes, network, transport_codes,
                 region_scope, is_private, path_is_valid AND NOT is_private
          FROM new_rows
+         RETURNING 1
+       ),
+       forwarding_intents AS (
+         INSERT INTO packet_forwarding_outbox (observation_id, payload)
+         SELECT observation_id, forwarding_payload FROM new_rows
+         WHERE forwarding_payload IS NOT NULL AND path_is_valid AND NOT is_private
+           AND (EXISTS (SELECT 1 FROM owner_packet_share_rules rule
+                        WHERE rule.node_id = new_rows.rx_node_id AND rule.enabled)
+             OR EXISTS (SELECT 1 FROM owner_public_feed_nodes feed_node
+                        JOIN owner_public_feed_settings setting USING (owner_username)
+                        WHERE feed_node.node_id = new_rows.rx_node_id AND setting.enabled))
+         ON CONFLICT (observation_id) DO NOTHING
          RETURNING 1
        ),
        path_inserted AS (
@@ -751,6 +766,11 @@ async function writeBatchWithRetry(batch: PendingPacket[]): Promise<void> {
       );
       return;
     } catch (error) {
+      if (batch.length > 1 && isPermanentDataError(error)) {
+        // Isolate bad rows from valid neighbours in the rolled-back batch.
+        await Promise.allSettled(batch.map((item) => writeBatchWithRetry([item])));
+        return;
+      }
       lastError = error;
       const retriesRemaining = attempt < MAX_WRITE_ATTEMPTS - 1;
       if (!retriesRemaining || !isRetryableDatabaseError(error)) break;

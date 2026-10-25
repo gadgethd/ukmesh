@@ -2,6 +2,7 @@ import 'node:process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 import pg from 'pg';
+import { randomUUID } from 'node:crypto';
 import { observeWorkerOutcome } from '../metrics.js';
 import { startWorkerMetrics } from './workerMetrics.js';
 
@@ -28,6 +29,7 @@ type QueueRow = {
   attempts: number;
   requested_at: Date;
   started_at: Date;
+  claim_token: string;
 };
 type Chunk = { range_start: Date; range_end: Date };
 
@@ -111,11 +113,16 @@ const PATH_UPDATE_SQL = `UPDATE packet_paths path
              UPPER(LEFT($3, 2)), UPPER(LEFT($3, 4)), UPPER(LEFT($3, 6))
            ]::text[]))`;
 
-async function claim(pool: pg.Pool, maxAttempts: number): Promise<QueueRow | null> {
+async function claim(pool: pg.Pool, maxAttempts: number, leaseMs: number): Promise<QueueRow | null> {
+  await pool.query(`UPDATE privacy_rematerialization_queue
+    SET status = 'failed', claim_token = NULL, claim_expires_at = NULL,
+        finished_at = NOW(), last_error = 'worker lease expired'
+    WHERE status = 'processing' AND (claim_expires_at IS NULL OR claim_expires_at <= NOW())`);
   const result = await pool.query<QueueRow>(`
     UPDATE privacy_rematerialization_queue
        SET status = 'processing', started_at = NOW(), attempts = attempts + 1,
-           finished_at = NULL, last_error = NULL
+           finished_at = NULL, last_error = NULL, claim_token = $2,
+           claim_expires_at = NOW() + ($3::text || ' milliseconds')::interval
      WHERE id = (
        SELECT id FROM privacy_rematerialization_queue
         WHERE status = 'pending'
@@ -123,13 +130,19 @@ async function claim(pool: pg.Pool, maxAttempts: number): Promise<QueueRow | nul
              AND finished_at < NOW() - (attempts * attempts || ' minutes')::interval)
         ORDER BY requested_at LIMIT 1 FOR UPDATE SKIP LOCKED
      )
-     RETURNING id::text, node_id, network, target, attempts, requested_at, started_at
-  `, [maxAttempts]);
+     RETURNING id::text, node_id, network, target, attempts, requested_at, started_at, claim_token::text
+  `, [maxAttempts, randomUUID(), leaseMs]);
   return result.rows[0] ?? null;
 }
 
-async function processChunk(pool: pg.Pool, row: QueueRow, chunk: Chunk, timeoutMs: number): Promise<void> {
+async function processChunk(pool: pg.Pool, row: QueueRow, chunk: Chunk, timeoutMs: number, leaseMs: number): Promise<void> {
   for (let attempt = 1; attempt <= 3; attempt += 1) {
+    const renewal = await pool.query(`UPDATE privacy_rematerialization_queue
+        SET claim_expires_at = NOW() + ($3::text || ' milliseconds')::interval
+        WHERE id = $1 AND claim_token = $2 AND status = 'processing' AND claim_expires_at > NOW()`,
+        [row.id, row.claim_token, leaseMs]);
+    if (renewal.rowCount !== 1) throw new Error('PRIVACY_REMAT_CLAIM_LOST');
+
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
@@ -162,10 +175,11 @@ async function complete(pool: pg.Pool, row: QueueRow): Promise<void> {
       UPDATE privacy_rematerialization_queue
          SET status = CASE WHEN requested_at <= started_at THEN 'done' ELSE 'pending' END,
              finished_at = CASE WHEN requested_at <= started_at THEN NOW() ELSE NULL END,
-             last_error = NULL
-       WHERE id = $1 AND status = 'processing'
+             last_error = NULL, claim_token = NULL, claim_expires_at = NULL
+       WHERE id = $1 AND status = 'processing' AND claim_token = $2
+         AND claim_expires_at > NOW()
        RETURNING status
-    `, [row.id]);
+    `, [row.id, row.claim_token]);
     if (completion.rowCount !== 1) throw new Error('PRIVACY_REMAT_CLAIM_LOST');
 
     // A re-request still needs a full pass. A node-scoped pass also cannot
@@ -205,7 +219,9 @@ export async function processNextPrivacyRematerialization(
   pool: pg.Pool,
   options: { maxAttempts?: number; chunkPauseMs?: number; chunkStatementTimeoutMs?: number } = {},
 ): Promise<boolean> {
-  const row = await claim(pool, options.maxAttempts ?? MAX_ATTEMPTS);
+  const timeoutMs = options.chunkStatementTimeoutMs ?? CHUNK_STATEMENT_TIMEOUT_MS;
+  const leaseMs = timeoutMs + 120_000 + (options.chunkPauseMs ?? CHUNK_PAUSE_MS);
+  const row = await claim(pool, options.maxAttempts ?? MAX_ATTEMPTS, leaseMs);
   if (!row) return false;
   console.log(`[privacy-remat] pass start id=${row.id} target=${row.target} attempt=${row.attempts}`);
   try {
@@ -216,7 +232,7 @@ export async function processNextPrivacyRematerialization(
        ORDER BY range_start
     `, [row.target]);
     for (const [index, chunk] of chunks.rows.entries()) {
-      await processChunk(pool, row, chunk, options.chunkStatementTimeoutMs ?? CHUNK_STATEMENT_TIMEOUT_MS);
+      await processChunk(pool, row, chunk, timeoutMs, leaseMs);
       if (index < chunks.rows.length - 1) await delay(options.chunkPauseMs ?? CHUNK_PAUSE_MS);
     }
     await complete(pool, row);
@@ -224,9 +240,10 @@ export async function processNextPrivacyRematerialization(
     const message = error instanceof Error ? error.message : String(error);
     await pool.query(`
       UPDATE privacy_rematerialization_queue
-         SET status = 'failed', last_error = $2, finished_at = NOW()
-       WHERE id = $1 AND status = 'processing'
-    `, [row.id, message.slice(0, 2_000)]);
+         SET status = 'failed', last_error = $2, finished_at = NOW(),
+             claim_token = NULL, claim_expires_at = NULL
+       WHERE id = $1 AND status = 'processing' AND claim_token = $3
+    `, [row.id, message.slice(0, 2_000), row.claim_token]);
     observeWorkerOutcome('privacy_remat', 'pass', 'failure');
     console.error(`[privacy-remat] pass failed id=${row.id} target=${row.target}: ${message}`);
   }

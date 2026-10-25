@@ -48,6 +48,7 @@ export class DurableAlertQueue {
   private lastError: string | null = null;
   private enqueueTail: Promise<void> = Promise.resolve();
   private processing = false;
+  private closing = false;
 
   constructor(private readonly options: {
     directory: string;
@@ -130,6 +131,17 @@ export class DurableAlertQueue {
     this.timer = undefined;
   }
 
+  async close(timeoutMs = 12_000): Promise<void> {
+    this.stop();
+    this.closing = true;
+    await this.enqueueTail;
+    const deadline = Date.now() + timeoutMs;
+    while (this.processing && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    // Unfinished attempts remain fsynced and will replay after restart.
+  }
+
   metrics(now = this.now()): AlertDeliveryQueueMetrics {
     const records = [...this.records.values()];
     const oldest = records
@@ -187,6 +199,7 @@ export class DurableAlertQueue {
         .slice(0, batchSize);
 
       for (const record of due) {
+        if (this.closing) break;
         const attemptAt = this.now();
         const attempts = record.attempts + 1;
         const backoff = Math.min(

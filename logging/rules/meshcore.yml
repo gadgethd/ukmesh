@@ -53,7 +53,7 @@ groups:
           runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#mosquittounavailable
 
       - alert: MeshIngestSilent
-        expr: (sum(rate(meshcore_mqtt_messages_total[15m])) or vector(0)) == 0
+        expr: (sum(rate(meshcore_mqtt_ingest_outcomes_total{outcome=~"packet_persisted|packet_admitted"}[15m])) or vector(0)) == 0
         for: 15m
         labels:
           severity: warning
@@ -65,6 +65,25 @@ groups:
   - name: meshcore-queues-and-workers
     interval: 15s
     rules:
+      - alert: MqttIngestQueueDepthHigh
+        expr: meshcore_mqtt_ingest_queue_depth > 800
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: The MQTT ingest queue has remained above 800 messages
+          owner: meshcore-operations
+          runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#mqttingestqueuedepthhigh
+
+      - alert: MqttIngestQueueFull
+        expr: rate(meshcore_mqtt_ingest_outcomes_total{outcome="queue_full"}[5m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: The MQTT ingest queue is rejecting messages at capacity
+          owner: meshcore-operations
+          runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#mqttingestqueuefull
+
       - alert: QueueAgeHigh
         expr: meshcore_link_queue_oldest_age_seconds > 600
         for: 5m
@@ -105,7 +124,7 @@ groups:
           runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#analysisleaselost
 
       - alert: HealthWorkerHeartbeatStale
-        expr: meshcore_worker_heartbeat_age_seconds{worker="health"} < 0 or meshcore_worker_heartbeat_age_seconds{worker="health"} > 180
+        expr: meshcore_worker_heartbeat_age_seconds{worker="health"} < 0 or meshcore_worker_heartbeat_age_seconds{worker="health"} > 900 or absent(meshcore_worker_heartbeat_age_seconds{worker="health"})
         for: 3m
         labels:
           severity: critical
@@ -275,7 +294,7 @@ groups:
           runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/privacy-convergence.md#generation-health
 
       - alert: BackupReceiptMissing
-        expr: count(meshcore_backup_age_seconds{dataset=~"analytics|owner_auth|mosquitto"}) < 3
+        expr: (count(count by (dataset) (meshcore_backup_age_seconds{dataset=~"analytics|owner_auth|mosquitto"})) or vector(0)) < 3
         for: 10m
         labels:
           severity: critical
@@ -303,3 +322,35 @@ groups:
           summary: Packet visibility validation is rejecting elevated telemetry
           owner: meshcore-operations
           runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#telemetryintegrityfailures
+
+  - name: meshcore-persistence-progress
+    interval: 30s
+    rules:
+      - alert: MeshIngestPersistenceFailures
+        expr: sum(rate(meshcore_mqtt_ingest_outcomes_total{outcome=~"packet_persist_failure|packet_admission_failure|packet_quarantined"}[10m])) > 0.01
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Packet persistence is rejecting or failing deliveries
+      - alert: PublicFeedDeliveryStalled
+        expr: meshcore_public_feed_oldest_age_seconds > 300
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Public packet forwarding has outstanding deliveries older than five minutes
+      - alert: WorkerTaskFailures
+        expr: sum by (worker, phase) (increase(meshcore_worker_outcomes_total{outcome="failure"}[15m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: A background task is repeatedly failing
+      - alert: PacketForwardingDeliveryFailures
+        expr: sum(increase(meshcore_owner_packet_share_outcomes_total{outcome=~"delivery_error|worker_error|queue_error"}[15m])) > 0 or sum(increase(meshcore_public_feed_outcomes_total{outcome=~"delivery_error|worker_error|queue_error"}[15m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Packet forwarding is failing or retrying deliveries

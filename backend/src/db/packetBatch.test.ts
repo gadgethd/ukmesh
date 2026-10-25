@@ -1,11 +1,33 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { buildPacketBatchInput } from './packetInput.js';
 import {
   configurePacketBatch,
   enqueuePacket,
   flush,
   type PacketBatchInput,
 } from './packetBatch.js';
+
+test('a poison row cannot reject the valid packet sharing its transaction', async () => {
+  const query = async (sql: string, params: unknown[] = []) => {
+    if (sql.includes('jsonb_agg(jsonb_build_object')) return { rows: [{ generation: '7', prefixes: [] }] };
+    if (sql.includes('pg_try_advisory_xact_lock')) return { rows: [{ ok: true }] };
+    const count = params.length / 27;
+    for (let index = 0; index < count; index++) {
+      if (params[index * 27 + 9] === 5.5) throw Object.assign(new Error('invalid integer'), { code: '22P02' });
+    }
+    return { rows: Array.from({ length: count }, (_, row_id) => ({ row_id, is_private: false, visibility_ok: true, prefix_cache_fresh: true })) };
+  };
+  configurePacketBatch(query, async (work) => work(query));
+  const make = (packetHash: string, packetType: number) => buildPacketBatchInput({ packetHash, packetType,
+    topic: 'meshcore/LHR/fixture/packets', rawHex: '01' });
+  const valid = enqueuePacket(make('valid-neighbour', 5));
+  const invalid = enqueuePacket(make('poison', 5.5));
+  const rejected = assert.rejects(invalid, /invalid integer/);
+  await flush();
+  assert.equal((await valid).visibilityOk, true);
+  await rejected;
+});
 
 test('packet batches retry transient database failures without losing the pending row', async () => {
   let attempts = 0;
@@ -109,7 +131,7 @@ test('F03 batch arbitration retains distinct same-hash paths at one hop count', 
   await flush();
   await Promise.all([first, second]);
   assert.match(batchSql, /incoming/);
-  assert.equal(batchParams.length, 52);
+  assert.equal(batchParams.length, 54);
 });
 
 test('F02 refuses a contended writer before any mutation and gates the hourly predicate', async () => {

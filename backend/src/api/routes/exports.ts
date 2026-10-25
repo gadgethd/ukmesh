@@ -1,5 +1,6 @@
 import type { Router } from 'express';
 import type { QueryResultRow } from 'pg';
+import { createHash } from 'node:crypto';
 import { resolvePublicNetworkScope } from '../../http/requestScope.js';
 import type { NetworkFilters } from '../utils/networkFilters.js';
 import fs from 'node:fs';
@@ -17,7 +18,27 @@ type Deps = {
   query: QueryFn;
   networkFilters: (network?: string, observer?: string) => NetworkFilters;
   exportLimiter: ReturnType<typeof import('express-rate-limit').rateLimit>;
+  /** Current public privacy generation; a cache entry is only reusable for the
+   * generation it was produced under, so a redaction must invalidate exports. */
+  getPublicVisibilityGeneration: () => Promise<number>;
 };
+
+/** Exports are cacheable, but only for the privacy generation they were built
+ * under. `v` lets a client name the generation it expects: a mismatch is
+ * answered with 412 + no-store instead of replaying data from a scope that has
+ * since been redacted. */
+function exportTag(
+  generation: number,
+  scope: string,
+  format: string,
+  limit: number,
+): string {
+  const digest = createHash('sha256')
+    .update(JSON.stringify([generation, scope, format, limit]))
+    .digest('base64url')
+    .slice(0, 22);
+  return `W/"nodes-${generation}-${digest}"`;
+}
 
 export function registerExportRoutes(router: Router, deps: Deps): void {
   router.get('/v1', (_req, res) => {
@@ -109,9 +130,36 @@ export function registerExportRoutes(router: Router, deps: Deps): void {
       min: 1,
       max: 5_000,
     });
+    const requestedGeneration = req.query['v'] === undefined || req.query['v'] === ''
+      ? undefined
+      : parseBoundedInteger(req.query['v'], {
+        name: 'v',
+        min: 1,
+        max: Number.MAX_SAFE_INTEGER,
+      });
     try {
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const filters = deps.networkFilters(network);
+      let visibilityGeneration: number;
+      try {
+        visibilityGeneration = await deps.getPublicVisibilityGeneration();
+      } catch (generationError) {
+        console.error('[api] GET /v1/exports/nodes visibility generation', (generationError as Error).message);
+        res.setHeader('Cache-Control', 'no-store');
+        res.status(503).json({ error: 'Export visibility state is unavailable' });
+        return;
+      }
+      if (requestedGeneration !== undefined && requestedGeneration !== visibilityGeneration) {
+        res.setHeader('Cache-Control', 'no-store');
+        res.setHeader('Vary', 'Accept-Encoding');
+        res.setHeader('X-API-Version', '1');
+        res.setHeader('X-Visibility-Generation', String(visibilityGeneration));
+        res.status(412).json({
+          error: 'Export scope changed',
+          visibility_generation: visibilityGeneration,
+        });
+        return;
+      }
       const limitParam = `$${filters.params.length + 1}`;
       const result = await deps.query<{
         node_id: string; name: string | null; lat: number | null; lon: number | null;
@@ -127,8 +175,19 @@ export function registerExportRoutes(router: Router, deps: Deps): void {
         [...filters.params, limit],
       );
       const nodes = result.rows;
+      const confirmedGeneration = await deps.getPublicVisibilityGeneration();
       res.setHeader('X-API-Version', '1');
-      res.setHeader('Cache-Control', 'public, max-age=300, stale-while-revalidate=600');
+      res.setHeader('X-Visibility-Generation', String(confirmedGeneration));
+      // A redaction that lands while the rows are being read must not be
+      // published as cacheable: the body may predate it.
+      res.setHeader(
+        'Cache-Control',
+        confirmedGeneration === visibilityGeneration
+          ? 'public, max-age=60, stale-while-revalidate=60'
+          : 'no-store',
+      );
+      res.setHeader('ETag', exportTag(confirmedGeneration, network, format, limit));
+      res.setHeader('Vary', 'Accept-Encoding');
       if (format === 'geojson') {
         res.type('application/geo+json').json({
           type: 'FeatureCollection',
