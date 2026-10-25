@@ -7,6 +7,7 @@ import { closeDb, initDb, pool, query } from './db/index.js';
 import { refreshNodeIdentityAliases } from './db/nodeIdentity.js';
 import {
   closeOwnerAuthDb,
+  getAppliedOwnerAclArtifact,
   getOwnerAclReadiness,
   getOwnerAuthorizationInventory,
   getOwnerAuthorizationSnapshot,
@@ -63,8 +64,8 @@ import { createPublicFeedRepository } from './owner/publicFeedRepository.js';
 import {
   buildOwnerInventoryBaseline,
   loadOwnerInventoryBaseline,
-  validateOwnerInventoryBaseline,
 } from './owner/ownerInventoryBaseline.js';
+import { validateOwnerInventoryReadiness } from './owner/ownerInventoryReadiness.js';
 
 const ALLOWED_ORIGINS = (process.env['ALLOWED_ORIGINS'] ?? '')
   .split(',')
@@ -381,6 +382,7 @@ async function main() {
           required: Boolean(process.env['OWNER_AUTH_INVENTORY_BASELINE_PATH']),
           ok: !process.env['OWNER_AUTH_INVENTORY_BASELINE_PATH'],
           mismatches: [] as string[],
+          reason: 'owner-baseline-not-checked',
         },
       },
       analysis: [] as Awaited<ReturnType<typeof getAnalysisWorkloadStates>>,
@@ -395,18 +397,21 @@ async function main() {
       ).trim();
       if (ownerBaselinePath) {
         const databaseInventory = await getOwnerAuthorizationInventory();
+        const aclContent = readAclFile();
         const current = buildOwnerInventoryBaseline({
           accounts: databaseInventory.accounts,
           configuredGrants: parseOwnerGrantConfig(
             String(process.env['OWNER_MQTT_USERNAME_MAP'] ?? ''),
           ),
-          aclContent: readAclFile(),
+          aclContent,
           aclState,
         });
-        const validation = validateOwnerInventoryBaseline(
+        const validation = await validateOwnerInventoryReadiness(
           loadOwnerInventoryBaseline(ownerBaselinePath),
           current,
+          { aclContent, loadAppliedArtifact: getAppliedOwnerAclArtifact },
         );
+        console.log('[readyz] owner inventory baseline', validation);
         checks.ownerAuthorization.inventoryBaseline = {
           required: true,
           ...validation,
