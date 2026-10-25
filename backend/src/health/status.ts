@@ -292,11 +292,17 @@ export async function deleteExpiredRows(
   // Whole-chunk drops are the supported retention path; the boundary chunk is
   // kept until it is fully expired, so retention can overshoot by one chunk.
   if (lifecyclePolicy(target.table).kind === 'hypertable') {
-    await execute(
-      'SELECT drop_chunks($1::regclass, older_than => $2::interval)',
-      [target.table, target.retention],
-    );
-    return;
+    try {
+      await execute(
+        'SELECT drop_chunks($1::regclass, older_than => $2::interval)',
+        [target.table, target.retention],
+      );
+      return;
+    } catch (error) {
+      // Non-Timescale databases (unit/integration fixtures) have plain tables.
+      const code = (error as { code?: string }).code;
+      if (code !== '42809' && code !== '42883' && code !== '42P01') throw error;
+    }
   }
   await execute(retentionDeleteSql(target), [target.retention, target.batchSize]);
 }
