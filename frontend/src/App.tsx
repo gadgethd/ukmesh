@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import './styles/map-app.css';
 import type * as maplibregl from 'maplibre-gl';
 import { MapLibreMap } from './components/Map/MapLibreMap.js';
@@ -7,6 +7,8 @@ import { FilterPanel, type Filters } from './components/FilterPanel/FilterPanel.
 import { PacketFeed } from './components/PacketFeed.js';
 import { DisclaimerModal } from './components/app/DisclaimerModal.js';
 import { AppTopBar } from './components/app/AppTopBar.js';
+import { RegionSelector } from './components/app/RegionSelector.js';
+import { useRegionScope } from './hooks/useRegionScope.js';
 import { MobileControls } from './components/app/MobileControls.js';
 import { LoadingIndicator } from './components/LoadingIndicator.js';
 import { Dialog, DialogTitle } from './components/ui/Dialog.js';
@@ -71,6 +73,7 @@ export const App: React.FC = () => {
   const initialLayersSpecifiedRef = useRef(new URLSearchParams(window.location.search).has('layers'));
   const site = getCurrentSite();
   const runtimeFeatures = useRuntimeFeatures();
+  const { region, select: selectRegion } = useRegionScope(runtimeFeatures.regionScoping);
   const packetArcsEnabled = PACKET_ARCS_CAPABLE && runtimeFeatures.packetArcs;
   const heatmapEnabled = HEATMAP_CAPABLE && runtimeFeatures.heatmap;
   const [filters, setFilters] = useState<Filters>(() => {
@@ -145,22 +148,31 @@ export const App: React.FC = () => {
   // switch into another deployment's dataset.
   const networkFilter = site.networkFilter ?? 'ukmesh';
   const observerFilter = site.observerId;
-  const realtimeScopeKey = `${networkFilter}|${observerFilter ?? 'all'}|privacy-${runtimeFeatures.privacyGeneration}`;
-  const scopeStateRef = useRef<{
-    key: string;
-    nodeEpoch: number;
-    linkEpoch: number;
-  } | null>(null);
-  if (scopeStateRef.current?.key !== realtimeScopeKey) {
-    scopeStateRef.current = {
+  const realtimeScopeKey = `${networkFilter}|${observerFilter ?? 'all'}|privacy-${runtimeFeatures.privacyGeneration}${region ? `|region-${region}` : ''}`;
+  const [scopeState, setScopeState] = useState({ key: '', nodeEpoch: -1, linkEpoch: -1 });
+  const scopeReady = scopeState.key === realtimeScopeKey;
+  // Publish external-store resets after React commits, before painting. Doing
+  // this during render updates mounted subscribers such as NodeSearch mid-render.
+  useLayoutEffect(() => {
+    if (scopeState.key === realtimeScopeKey) return;
+    setScopeState({
       key: realtimeScopeKey,
       nodeEpoch: nodeStore.reset(realtimeScopeKey),
       linkEpoch: linkStateStore.reset(realtimeScopeKey),
-    };
-  }
-  const scopeState = scopeStateRef.current;
+    });
+  }, [realtimeScopeKey, scopeState.key]);
 
   const stats = useDashboardStats(fetchedStats, realtimeScopeKey);
+  const previousRegionRef = useRef(region);
+  useLayoutEffect(() => {
+    if (previousRegionRef.current !== region) {
+      setSelectedNodeId(null);
+      useOverlayStore.getState().clearPinnedPacket();
+      useOverlayStore.getState().setPathNodeIds(null);
+      useOverlayStore.getState().setPathExplanation(null);
+    }
+    previousRegionRef.current = region;
+  }, [region]);
 
   useEffect(() => {
     document.documentElement.dataset.contrast = highContrast ? 'high' : 'standard';
@@ -301,6 +313,7 @@ export const App: React.FC = () => {
 
   // Keep the fast poll to live data that changes independently of the socket.
   useEffect(() => {
+    if (!scopeReady) return;
     let cancelled = false;
     let timer: number | null = null;
     let controller: AbortController | null = null;
@@ -320,7 +333,7 @@ export const App: React.FC = () => {
 
       try {
         const [packetsRes, statsRes] = await Promise.allSettled([
-          fetch(uncachedEndpoint(withScopeParams('/api/packets/recent?limit=12', { network: networkFilter, observer: observerFilter })), {
+          fetch(uncachedEndpoint(withScopeParams('/api/packets/recent?limit=12', { network: networkFilter, observer: observerFilter, region })), {
             cache: 'no-store',
             signal: AbortSignal.any([controller.signal, AbortSignal.timeout(MAP_FETCH_TIMEOUT_MS)]),
           }),
@@ -364,7 +377,7 @@ export const App: React.FC = () => {
       controller?.abort();
       if (timer) window.clearTimeout(timer);
     };
-  }, [isPageVisible, networkFilter, observerFilter, scopeState.nodeEpoch]);
+  }, [isPageVisible, networkFilter, observerFilter, region, scopeReady, scopeState.nodeEpoch]);
 
   useEffect(() => {
     if (!filters.packetHistory && !(heatmapEnabled && filters.heatmap)) {
@@ -386,7 +399,7 @@ export const App: React.FC = () => {
       controller = new AbortController();
       try {
         const response = await fetch(
-          uncachedEndpoint(withScopeParams('/api/path-beta/multibyte-paths', { network: networkFilter, observer: observerFilter })),
+          uncachedEndpoint(withScopeParams('/api/path-beta/multibyte-paths', { network: networkFilter, observer: observerFilter, region })),
           {
             cache: 'no-store',
             signal: AbortSignal.any([controller.signal, AbortSignal.timeout(OTHER_FETCH_TIMEOUT_MS)]),
@@ -411,7 +424,7 @@ export const App: React.FC = () => {
       controller?.abort();
       if (timer) window.clearTimeout(timer);
     };
-  }, [filters.heatmap, filters.packetHistory, heatmapEnabled, isPageVisible, networkFilter, observerFilter]);
+  }, [filters.heatmap, filters.packetHistory, heatmapEnabled, isPageVisible, networkFilter, observerFilter, region]);
 
   useEffect(() => {
     const wasHexClashes = prevHexClashesRef.current;
@@ -467,8 +480,9 @@ export const App: React.FC = () => {
 
   const wsConnection = useWebSocket(
     handleMessage,
-    { network: networkFilter, observer: observerFilter },
+    { network: networkFilter, observer: observerFilter, region },
     scopeState.nodeEpoch,
+    scopeReady,
   );
   // Live tag enrichment for the feed panel (tags land ~2s after a packet).
   useMessageTags({ network: networkFilter, observer: observerFilter }, realtimeScopeKey);
@@ -515,6 +529,7 @@ export const App: React.FC = () => {
         onShowShortcuts={() => setShowShortcutGuide(true)}
         highContrast={highContrast}
         onToggleContrast={() => setHighContrast((value) => !value)}
+        regionSelector={runtimeFeatures.regionScoping && <RegionSelector network={networkFilter} region={region} onChange={selectRegion} />}
       />
 
       <MobileControls
@@ -558,6 +573,7 @@ export const App: React.FC = () => {
           mapLight={mapLight}
           network={networkFilter}
           observer={observerFilter}
+          region={region}
           privacyGeneration={runtimeFeatures.privacyGeneration}
         />
         <RfCoverageOverlay
@@ -568,6 +584,7 @@ export const App: React.FC = () => {
           visible={RF_COVERAGE_ENABLED && filters.coverage}
         />
         <LiveOverlayController
+          scopeKey={realtimeScopeKey}
           map={mlMap}
           filters={filters}
           network={networkFilter}

@@ -200,7 +200,7 @@ export function createNodeRepository(query: QueryFn): NodeRepository {
         .join(', ');
       const result = await query<Record<string, unknown>>(
         `SELECT ${selectedFields}
-           FROM node_identity_nodes n
+           FROM ${filters.nodeSource ?? 'node_identity_nodes'} n
           WHERE ${publicMapFreshPredicate('n', `$${snapshotParameter}::timestamptz`)}
             ${filters.nodesAlias('n')}
             AND ($${cursorParameter}::text IS NULL OR n.node_id > $${cursorParameter})
@@ -240,7 +240,7 @@ export function createNodeRepository(query: QueryFn): NodeRepository {
              UPPER(BTRIM(${idParam}))
            ) AS node_id
          ), link_nodes AS MATERIALIZED (
-           SELECT node_id, name, network FROM node_identity_nodes
+           SELECT node_id, name, network FROM ${filters.nodeSource ?? 'node_identity_nodes'}
          ), source_node AS MATERIALIZED (
            SELECT node_id
              FROM link_nodes sn

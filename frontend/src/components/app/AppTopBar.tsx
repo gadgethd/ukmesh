@@ -15,6 +15,7 @@ type AppTopBarProps = {
   onShowShortcuts: () => void;
   highContrast: boolean;
   onToggleContrast: () => void;
+  regionSelector?: React.ReactNode;
 };
 
 const ConnIndicator: React.FC<{ state: WSReadyState }> = ({ state }) => (
@@ -50,6 +51,7 @@ export const AppTopBar: React.FC<AppTopBarProps> = ({
   onShowShortcuts,
   highContrast,
   onToggleContrast,
+  regionSelector,
 }) => (
   <header className="topbar">
     <a href={homeUrl} className="topbar__brand" title="Home">
@@ -63,6 +65,7 @@ export const AppTopBar: React.FC<AppTopBarProps> = ({
     </div>
     <div className="topbar__divider" />
     <ConnIndicator state={wsState} />
+    {regionSelector}
     <button
       type="button"
       className={'topbar__tool-btn' + (mapLight ? ' topbar__tool-btn--active' : '')}

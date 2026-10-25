@@ -32,6 +32,7 @@ export type MergeOptions = {
   limit: number;
   network?: string;
   observer?: string;
+  region?: string;
   includePayload?: boolean;
   fields?: 'full' | 'slim';
   /** The SQL recent-packets window is five minutes; message history is 24 hours. */
@@ -270,6 +271,7 @@ export async function mergePendingPacketsIntoRecentRows<T>(
     const cutoff = (opts.nowMs ?? Date.now()) - (opts.windowMs ?? (opts.packetTypes ? 86_400_000 : 300_000));
     const eligible = pending.filter(({ entry }) => {
       const input = entry.input;
+      if (opts.region && input.regionScope !== `#${opts.region}`) return false;
       if (opts.packetTypes && !opts.packetTypes.includes(input.packetType ?? -1)) return false;
       if (timeMs(input.time) <= cutoff) return false;
       if (opts.network ? !networkMatchesScope(input.network, opts.network)

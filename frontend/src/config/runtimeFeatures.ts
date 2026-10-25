@@ -3,6 +3,7 @@ import { useSyncExternalStore } from 'react';
 export type RuntimeFeatureSnapshot = {
   packetArcs: boolean;
   heatmap: boolean;
+  regionScoping: boolean;
   privacyGeneration: number;
   refreshAfterSeconds: number;
 };
@@ -19,6 +20,7 @@ const REQUEST_TIMEOUT_MS = 3_000;
 export const FAIL_CLOSED_RUNTIME_FEATURES: RuntimeFeatureSnapshot = Object.freeze({
   packetArcs: false,
   heatmap: false,
+  regionScoping: false,
   privacyGeneration: 0,
   refreshAfterSeconds: DEFAULT_REFRESH_SECONDS,
 });
@@ -29,6 +31,7 @@ const listeners = new Set<() => void>();
 function sameSnapshot(a: RuntimeFeatureSnapshot, b: RuntimeFeatureSnapshot): boolean {
   return a.packetArcs === b.packetArcs
     && a.heatmap === b.heatmap
+    && a.regionScoping === b.regionScoping
     && a.privacyGeneration === b.privacyGeneration
     && a.refreshAfterSeconds === b.refreshAfterSeconds;
 }
@@ -63,6 +66,8 @@ export function parseRuntimeFeatureConfig(value: unknown): RuntimeFeatureSnapsho
   return {
     packetArcs: parsed.packetArcs,
     heatmap: parsed.heatmap,
+    // Older servers omit the field. Only an explicit true enables Phase B.
+    regionScoping: value['regionScoping'] === true,
     privacyGeneration: parsed.privacyGeneration,
     refreshAfterSeconds: parsed.refreshAfterSeconds,
   };

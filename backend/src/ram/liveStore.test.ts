@@ -355,6 +355,21 @@ test('merged reads append only public, scoped, non-duplicate pending rows', asyn
   assert.equal((withPayload[0]?.['payload'] as Record<string, unknown>)?.['direction'], 'rx');
 });
 
+test('regional pending overlays exclude other and unattributed packets before aggregation', async () => {
+  await loadPublicPrivacyCache();
+  const entries = ['#Europe', '#eng-ne', null].map((regionScope, index) => {
+    const entry = entryFor(String(index + 1).repeat(64));
+    entry.input.regionScope = regionScope;
+    return { id: `${100 + index}-0`, entry };
+  });
+  const regional = await mergePendingPacketsIntoRecentRows([], {
+    limit: 10, network: 'ukmesh', region: 'Europe', pendingSnapshot: entries,
+  });
+  assert.deepEqual(regional.map((row) => (row as Record<string, unknown>)['region_scope']), ['#Europe']);
+  const all = await mergePendingPacketsIntoRecentRows([], { limit: 10, network: 'ukmesh', pendingSnapshot: entries });
+  assert.equal(all.length, 3);
+});
+
 test('pending observations of one hash aggregate into a single row with combined observers', async () => {
   await loadPublicPrivacyCache();
   const fake = new FakeStore();

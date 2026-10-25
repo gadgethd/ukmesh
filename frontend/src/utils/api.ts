@@ -1,6 +1,7 @@
 export type ApiScope = {
   network?: string;
   observer?: string;
+  region?: string;
 };
 
 export class ApiResponseError extends Error {
@@ -25,6 +26,7 @@ export function withScopeParams(path: string, scope: ApiScope = {}): string {
   const params = new URLSearchParams();
   if (scope.network) params.set('network', scope.network);
   if (scope.observer) params.set('observer', scope.observer);
+  if (scope.region) params.set('region', scope.region);
   const query = params.toString();
   if (!query) return path;
   const sep = path.includes('?') ? '&' : '?';
