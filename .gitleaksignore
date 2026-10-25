@@ -1,0 +1,51 @@
+# Exact reviewed Gitleaks fingerprints (commit:path:rule:line).
+# Public MeshCore channel material; keep private channel keys in MESHCORE_CHANNEL_SECRETS.
+8b902dfb3ff08128556f22de2d239c458f782949:backend/src/mqtt/channelRegistry.ts:generic-api-key:38
+8b902dfb3ff08128556f22de2d239c458f782949:backend/src/mqtt/channelRegistry.ts:generic-api-key:42
+61fdcd9d11ef9a3aed93feb1d6cc4bf7c91e17d8:backend/src/mqtt/channelRegistry.ts:generic-api-key:30
+61fdcd9d11ef9a3aed93feb1d6cc4bf7c91e17d8:backend/src/mqtt/channelRegistry.ts:generic-api-key:31
+61fdcd9d11ef9a3aed93feb1d6cc4bf7c91e17d8:backend/src/mqtt/channelRegistry.ts:generic-api-key:32
+61fdcd9d11ef9a3aed93feb1d6cc4bf7c91e17d8:backend/src/mqtt/channelRegistry.ts:generic-api-key:33
+61fdcd9d11ef9a3aed93feb1d6cc4bf7c91e17d8:backend/src/mqtt/channelRegistry.ts:generic-api-key:34
+61fdcd9d11ef9a3aed93feb1d6cc4bf7c91e17d8:backend/src/mqtt/channelRegistry.ts:generic-api-key:35
+61fdcd9d11ef9a3aed93feb1d6cc4bf7c91e17d8:backend/src/mqtt/channelRegistry.ts:generic-api-key:36
+61fdcd9d11ef9a3aed93feb1d6cc4bf7c91e17d8:backend/src/mqtt/channelRegistry.ts:generic-api-key:37
+61fdcd9d11ef9a3aed93feb1d6cc4bf7c91e17d8:backend/src/mqtt/channelRegistry.ts:generic-api-key:38
+61fdcd9d11ef9a3aed93feb1d6cc4bf7c91e17d8:backend/src/mqtt/channelRegistry.ts:generic-api-key:39
+61fdcd9d11ef9a3aed93feb1d6cc4bf7c91e17d8:backend/src/mqtt/channelRegistry.ts:generic-api-key:42
+61fdcd9d11ef9a3aed93feb1d6cc4bf7c91e17d8:backend/src/mqtt/channelRegistry.ts:generic-api-key:43
+61fdcd9d11ef9a3aed93feb1d6cc4bf7c91e17d8:backend/src/mqtt/channelRegistry.ts:generic-api-key:46
+61fdcd9d11ef9a3aed93feb1d6cc4bf7c91e17d8:backend/src/mqtt/channelRegistry.ts:generic-api-key:47
+61fdcd9d11ef9a3aed93feb1d6cc4bf7c91e17d8:backend/src/mqtt/channelRegistry.ts:generic-api-key:48
+61fdcd9d11ef9a3aed93feb1d6cc4bf7c91e17d8:backend/src/mqtt/channelRegistry.ts:generic-api-key:49
+61fdcd9d11ef9a3aed93feb1d6cc4bf7c91e17d8:backend/src/mqtt/channelRegistry.ts:generic-api-key:50
+61fdcd9d11ef9a3aed93feb1d6cc4bf7c91e17d8:backend/src/mqtt/channelRegistry.ts:generic-api-key:51
+61fdcd9d11ef9a3aed93feb1d6cc4bf7c91e17d8:backend/src/mqtt/channelRegistry.ts:generic-api-key:52
+61fdcd9d11ef9a3aed93feb1d6cc4bf7c91e17d8:backend/src/mqtt/channelRegistry.ts:generic-api-key:53
+61fdcd9d11ef9a3aed93feb1d6cc4bf7c91e17d8:backend/src/mqtt/channelRegistry.ts:generic-api-key:54
+61fdcd9d11ef9a3aed93feb1d6cc4bf7c91e17d8:backend/src/mqtt/channelRegistry.ts:generic-api-key:55
+61fdcd9d11ef9a3aed93feb1d6cc4bf7c91e17d8:backend/src/mqtt/channelRegistry.ts:generic-api-key:56
+61fdcd9d11ef9a3aed93feb1d6cc4bf7c91e17d8:backend/src/mqtt/channelRegistry.ts:generic-api-key:57
+61fdcd9d11ef9a3aed93feb1d6cc4bf7c91e17d8:backend/src/mqtt/channelRegistry.ts:generic-api-key:58
+61fdcd9d11ef9a3aed93feb1d6cc4bf7c91e17d8:backend/src/mqtt/channelRegistry.ts:generic-api-key:59
+61fdcd9d11ef9a3aed93feb1d6cc4bf7c91e17d8:backend/src/mqtt/channelRegistry.ts:generic-api-key:60
+61fdcd9d11ef9a3aed93feb1d6cc4bf7c91e17d8:backend/src/mqtt/channelRegistry.ts:generic-api-key:61
+61fdcd9d11ef9a3aed93feb1d6cc4bf7c91e17d8:backend/src/mqtt/channelRegistry.ts:generic-api-key:62
+61fdcd9d11ef9a3aed93feb1d6cc4bf7c91e17d8:backend/src/mqtt/channelRegistry.ts:generic-api-key:63
+61fdcd9d11ef9a3aed93feb1d6cc4bf7c91e17d8:backend/src/mqtt/channelRegistry.ts:generic-api-key:65
+61fdcd9d11ef9a3aed93feb1d6cc4bf7c91e17d8:backend/src/mqtt/channelRegistry.ts:generic-api-key:66
+61fdcd9d11ef9a3aed93feb1d6cc4bf7c91e17d8:backend/src/mqtt/channelRegistry.ts:generic-api-key:67
+61fdcd9d11ef9a3aed93feb1d6cc4bf7c91e17d8:backend/src/mqtt/channelRegistry.ts:generic-api-key:68
+5db382e181591b9bf736647eb903c699223cfdc8:backend/backfill-transport-codes.mjs:generic-api-key:35
+be45a2e967ca51d909940e29ecfd531a4566d404:backend/backfill-transport-codes.mjs:generic-api-key:35
+288c66a0b6e1037c74dea4392ad0a910525333df:backend/backfill-transport-codes.mjs:generic-api-key:35
+cb713d6c1a469f634a5a11678a1b9a81fa6413a0:backend/src/mqtt/client.ts:generic-api-key:96
+# Test-only credential and token fixtures.
+1ebc496965ff61f398851dde81c9da6910ceb7e0:backend/src/security/operatorAuth.test.ts:generic-api-key:5
+d278c5072891fcfc643e050c55fb6ace908fdaa3:backend/src/security/operatorAuth.test.ts:generic-api-key:5
+93cc3e1b385fe2034876caf4af843d040da47cf1:backend/src/spam/sanitize.test.ts:generic-api-key:50
+# Generated deployment manifests containing source revision identifiers.
+cd9ee586364ed70c5298d36eba0bb92958725b2d:website-live-manifest.staging.json:generic-api-key:40
+cd9ee586364ed70c5298d36eba0bb92958725b2d:website-live-manifest.json:generic-api-key:40
+5210aba5e37b928db3744057beb78f2c17f92263:website-live-manifest.json:generic-api-key:38
+ac4ee2afecc16ed67fdc09cf70953dc85d3a4c5a:website-live-manifest.staging.json:generic-api-key:38

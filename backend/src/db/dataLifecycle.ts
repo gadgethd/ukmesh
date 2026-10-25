@@ -42,10 +42,10 @@ export const DATA_LIFECYCLE_POLICIES: readonly DataLifecyclePolicy[] = Object.fr
   {
     table: 'node_status_samples',
     timestampColumn: 'time',
-    retention: '180 days',
+    retention: '30 days',
     kind: 'hypertable',
     featureImpact: [
-      'owner status telemetry older than 180 days becomes restore-only',
+      'owner status telemetry older than 30 days becomes restore-only',
     ],
   },
   {
@@ -107,6 +107,20 @@ export const DATA_LIFECYCLE_POLICIES: readonly DataLifecyclePolicy[] = Object.fr
     featureImpact: ['delivered owner-alert audit rows older than 90 days are removed'],
   },
   {
+    table: 'owner_packet_share_deliveries',
+    timestampColumn: 'created_at',
+    retention: '30 days',
+    kind: 'row-table',
+    featureImpact: ['terminal owner packet-sharing queue and audit rows older than 30 days are removed'],
+  },
+  {
+    table: 'public_feed_deliveries',
+    timestampColumn: 'created_at',
+    retention: '30 days',
+    kind: 'row-table',
+    featureImpact: ['terminal public-feed queue and audit rows older than 30 days are removed'],
+  },
+  {
     table: 'observer_registration_requests',
     timestampColumn: 'updated_at',
     retention: '365 days',
@@ -137,6 +151,50 @@ export const DATA_LIFECYCLE_POLICIES: readonly DataLifecyclePolicy[] = Object.fr
     featureImpact: ['per-packet model evaluation evidence older than 180 days is removed'],
   },
 ]);
+
+export const REQUIRED_CORE_RETENTION_TARGETS = Object.freeze([
+  'packets',
+  'node_status_samples',
+  'node_neighbor_samples',
+] as const);
+
+export const REQUIRED_CORE_COMPRESSION_TARGETS = Object.freeze([
+  'packets',
+  'packet_paths',
+  'node_status_samples',
+  'node_neighbor_samples',
+] as const);
+
+export type DataLifecycleConfigurationStatus = Readonly<{
+  retentionEnabled: boolean;
+  compressionEnabled: boolean;
+  missingRetentionTargets: readonly string[];
+  missingCompressionTargets: readonly string[];
+  ready: boolean;
+}>;
+
+export function dataLifecycleConfigurationStatus(
+  env: NodeJS.ProcessEnv = process.env,
+): DataLifecycleConfigurationStatus {
+  const retentionEnabled = env['DATA_LIFECYCLE_RETENTION_ENABLED'] === 'true';
+  const compressionEnabled = env['DATA_LIFECYCLE_COMPRESSION_ENABLED'] === 'true';
+  const retentionTargets = configuredLifecycleTargets(env['DATA_LIFECYCLE_RETENTION_TARGETS']);
+  const compressionTargets = configuredCompressionTargets(env['DATA_LIFECYCLE_COMPRESSION_TARGETS']);
+  const missingRetentionTargets = REQUIRED_CORE_RETENTION_TARGETS.filter(
+    (target) => !retentionTargets.has(target),
+  );
+  const missingCompressionTargets = REQUIRED_CORE_COMPRESSION_TARGETS.filter(
+    (target) => !compressionTargets.has(target),
+  );
+  return {
+    retentionEnabled,
+    compressionEnabled,
+    missingRetentionTargets,
+    missingCompressionTargets,
+    ready: (!retentionEnabled || missingRetentionTargets.length === 0)
+      && (!compressionEnabled || missingCompressionTargets.length === 0),
+  };
+}
 
 export function lifecyclePolicy(table: string): DataLifecyclePolicy {
   const policy = DATA_LIFECYCLE_POLICIES.find((candidate) => candidate.table === table);
@@ -185,9 +243,18 @@ export function assertDataLifecycleGate(options: {
   const targets = options.action === 'compression'
     ? configuredCompressionTargets(env['DATA_LIFECYCLE_COMPRESSION_TARGETS'])
     : configuredLifecycleTargets(env['DATA_LIFECYCLE_RETENTION_TARGETS']);
+  const requiredTargets = options.action === 'compression'
+    ? REQUIRED_CORE_COMPRESSION_TARGETS
+    : REQUIRED_CORE_RETENTION_TARGETS;
   const targetVariable = options.action === 'compression'
     ? 'DATA_LIFECYCLE_COMPRESSION_TARGETS'
     : 'DATA_LIFECYCLE_RETENTION_TARGETS';
+  const missingRequiredTargets = requiredTargets.filter((target) => !targets.has(target));
+  if (missingRequiredTargets.length > 0) {
+    throw new Error(
+      `${targetVariable} must include required core targets: ${missingRequiredTargets.join(',')}`,
+    );
+  }
   if (!targets.has(policy.table)) {
     throw new Error(`${targetVariable} must include ${policy.table}`);
   }
@@ -199,6 +266,7 @@ export function assertDataLifecycleGate(options: {
     receiptPath: env['DATA_LIFECYCLE_RESTORE_RECEIPT_PATH'],
     signaturePath: env['DATA_LIFECYCLE_RESTORE_RECEIPT_SIGNATURE_PATH'],
     verifyKeyPath: env['DATA_LIFECYCLE_RECEIPT_VERIFY_KEY_PATH'],
+    verifyKeySha256: env['DATA_LIFECYCLE_RECEIPT_VERIFY_KEY_SHA256'],
   });
   const maximumAgeDays = Number(env['DATA_LIFECYCLE_RECEIPT_MAX_AGE_DAYS'] ?? 7);
   assertFreshRestoreReceipt(receipt, {

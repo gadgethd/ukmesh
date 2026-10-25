@@ -71,3 +71,35 @@ test('owner dashboard keeps unnamed canonical identities separate', () => {
   assert.deepEqual(nodes.map((node) => node.canonicalId).sort(), [first, second].sort());
   assert.deepEqual(nodes.map((node) => node.members), [[first], [second]].sort());
 });
+
+test('owner dashboard prefers the freshest authorized key when same-name keys are both owned', () => {
+  // Regression (2026-09-18, Thinford Repeater): two same-name keys are both
+  // authorized; owner auth returns node ids ORDER BY node_id ASC and the stale
+  // key sorts first. The dashboard must select the freshest member so the live
+  // endpoints load the active key's data instead of the dead key's zeros.
+  const staleKey = '35CD1CDD'.repeat(8);
+  const liveKey = 'F518585D'.repeat(8);
+
+  const nodes = groupOwnerNodes([
+    row({
+      canonical_id: liveKey,
+      name: 'Thinford Repeater',
+      members: [liveKey],
+      last_seen: '2026-09-18T11:38:09Z',
+      advert_count: 2147,
+    }),
+    row({
+      canonical_id: staleKey,
+      name: 'Thinford Repeater',
+      members: [staleKey],
+      last_seen: '2026-04-14T08:54:50Z',
+      advert_count: 0,
+    }),
+  ], [staleKey, liveKey].sort());
+
+  assert.equal(nodes.length, 1);
+  assert.equal(nodes[0].node_id, liveKey);
+  assert.equal(nodes[0].canonicalId, liveKey);
+  assert.deepEqual(nodes[0].members, [liveKey, staleKey].sort());
+  assert.equal(nodes[0].advert_count, 2147);
+});

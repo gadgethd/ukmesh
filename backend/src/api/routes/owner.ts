@@ -5,6 +5,17 @@ import type { OwnerSession } from '../../owner/ownerSession.js';
 import { createCsrfToken, readCookie, requireDoubleSubmitCsrf } from '../../security/operatorAuth.js';
 import { resolveWebhookTarget } from '../../security/outboundWebhook.js';
 import {
+  destinationConfigured,
+  publicDestinationView,
+} from '../../owner/packetShareConfig.js';
+import { hasPacketShareEncryptionKey } from '../../owner/packetShareCrypto.js';
+import { createPacketShareRepository, type PacketShareTransactionFn } from '../../owner/packetShareRepository.js';
+import {
+  getPublicFeedConfig,
+  PUBLIC_FEED_TOPIC_FILTER,
+} from '../../owner/publicFeedConfig.js';
+import { createPublicFeedRepository } from '../../owner/publicFeedRepository.js';
+import {
   deliverDueOwnerAlerts,
   queueOwnerTestDelivery,
 } from '../../owner/alertRules.js';
@@ -33,7 +44,10 @@ type IsSecureRequestFn = (req: Request) => boolean;
 type GetOwnerSessionFn = (req: Request) => OwnerSession | null;
 type RequireOwnerSessionFn = (req: Request, res: Response) => Promise<string[] | null>;
 type GetOwnerCredentialGenerationFn = (mqttUsername: string) => Promise<number>;
+type ReconcileOwnerAuthorizationFn = () => Promise<void>;
 type QueryFn = <T extends import('pg').QueryResultRow = import('pg').QueryResultRow>(text: string, params?: unknown[]) => Promise<{ rows: T[] }>;
+
+type OwnerService = ReturnType<typeof createOwnerService>;
 
 type OwnerRouteDeps = {
   ownerCookieName: string;
@@ -56,13 +70,19 @@ type OwnerRouteDeps = {
   requireOwnerSession: RequireOwnerSessionFn;
   getOwnerCredentialGeneration: GetOwnerCredentialGenerationFn;
   invalidateOwnerNodeIdCache: (mqttUsername: string) => void;
+  reconcileOwnerAuthorization?: ReconcileOwnerAuthorizationFn;
   query: QueryFn;
+  withTransaction?: PacketShareTransactionFn;
 };
+
+let registeredOwnerService: OwnerService | null = null;
 
 export function registerOwnerRoutes(router: Router, deps: OwnerRouteDeps): void {
   const repository = createOwnerRepository({
     query: deps.query,
   });
+  const packetShareRepository = createPacketShareRepository(deps.query, deps.withTransaction);
+  const publicFeedRepository = createPublicFeedRepository(deps.query, deps.withTransaction);
 
   const service = createOwnerService({
     ownerLiveCacheTtlMs: deps.ownerLiveCacheTtlMs,
@@ -76,6 +96,7 @@ export function registerOwnerRoutes(router: Router, deps: OwnerRouteDeps): void 
     repository,
     invalidateOwnerNodeIdCache: deps.invalidateOwnerNodeIdCache,
   });
+  registeredOwnerService = service;
 
   const csrfCookieName = 'meshcore_owner_csrf';
   const csrfProtection = requireDoubleSubmitCsrf(csrfCookieName);
@@ -233,10 +254,16 @@ export function registerOwnerRoutes(router: Router, deps: OwnerRouteDeps): void 
       maxLength: 64,
       pattern: /^[0-9a-fA-F]{64}$/,
     })?.toUpperCase();
+    const requestedWindow = parseBoundedString(req.query['window'], {
+      name: 'window',
+      maxLength: 4,
+      pattern: /^(7d|30d)$/,
+    });
+    const windowDays = requestedWindow === '30d' ? 30 : 7;
     try {
       const ownedNodeIds = await deps.requireOwnerSession(req, res);
       if (!ownedNodeIds) return;
-      res.json(await service.getOwnerLastHopStrength(ownedNodeIds, requestedNodeId));
+      res.json(await service.getOwnerLastHopStrength(ownedNodeIds, requestedNodeId, windowDays));
     } catch (err) {
       const message = (err as Error).message;
       if (message === 'NO_OWNED_NODES') {
@@ -248,6 +275,194 @@ export function registerOwnerRoutes(router: Router, deps: OwnerRouteDeps): void 
         return;
       }
       console.error('[api] GET /owner/live-last-hop', message);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  });
+
+  router.get('/owner/packet-sharing', async (req, res) => {
+    const requestedNodeId = parseBoundedString(req.query['nodeId'], {
+      name: 'nodeId',
+      maxLength: 64,
+      pattern: /^[0-9a-fA-F]{64}$/,
+    })?.toUpperCase();
+    try {
+      const ownedNodeIds = await deps.requireOwnerSession(req, res);
+      if (!ownedNodeIds) return;
+      const session = deps.getOwnerSession(req)!;
+      const nodeId = requestedNodeId ?? ownedNodeIds[0];
+      if (!nodeId || !ownedNodeIds.includes(nodeId)) {
+        res.status(403).json({ error: 'Node is not owned by this session' });
+        return;
+      }
+      const [destinations, selectedIds, lastForwardedAt] = await Promise.all([
+        packetShareRepository.listDestinations(session.mqttUsername, nodeId),
+        packetShareRepository.listOwnerRules(session.mqttUsername, nodeId),
+        packetShareRepository.listLastForwardedAt(session.mqttUsername, nodeId),
+      ]);
+      const selected = new Set(selectedIds.filter((id) => destinations.some((destination) => destination.destination_id === id)));
+      const encryptionKeyAvailable = hasPacketShareEncryptionKey();
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({
+        nodeId,
+        featureEnabled: true,
+        enabled: selected.size > 0,
+        destinations: destinations.map((destination) => publicDestinationView(
+          destination,
+          selected.has(destination.destination_id),
+          encryptionKeyAvailable,
+          lastForwardedAt.get(destination.destination_id) ?? null,
+        )),
+      });
+    } catch (error) {
+      console.error('[api] GET /owner/packet-sharing', (error as Error).message);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  });
+
+  router.post('/owner/packet-sharing', csrfProtection, async (req, res) => {
+    try {
+      const ownedNodeIds = await deps.requireOwnerSession(req, res);
+      if (!ownedNodeIds) return;
+      const session = deps.getOwnerSession(req)!;
+      const rawBody = req.body as unknown;
+      if (!rawBody || typeof rawBody !== 'object' || Array.isArray(rawBody)) {
+        res.status(400).json({ error: 'Invalid packet sharing settings' });
+        return;
+      }
+      const body = rawBody as {
+        nodeId?: unknown;
+        enabled?: unknown;
+        destinationIds?: unknown;
+      };
+      const nodeId = String(body.nodeId ?? '').trim().toUpperCase();
+      const rawDestinationIds = body.destinationIds;
+      const enabled = body.enabled;
+      const destinationIds = Array.isArray(rawDestinationIds) && rawDestinationIds.every((value) => typeof value === 'string')
+        ? Array.from(new Set(rawDestinationIds.map((value) => value.trim().toLowerCase())))
+        : [];
+      if (
+        !/^[0-9A-F]{64}$/.test(nodeId)
+        || !ownedNodeIds.includes(nodeId)
+        || typeof enabled !== 'boolean'
+        || !Array.isArray(rawDestinationIds)
+        || !rawDestinationIds.every((value) => typeof value === 'string')
+        || destinationIds.length > 32
+        || destinationIds.some((destinationId) => !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(destinationId))
+      ) {
+        res.status(400).json({ error: 'Invalid packet sharing settings' });
+        return;
+      }
+      const destinations = await packetShareRepository.listDestinations(session.mqttUsername, nodeId);
+      const byId = new Map(destinations.map((destination) => [destination.destination_id, destination]));
+      if (destinationIds.some((destinationId) => {
+        const destination = byId.get(destinationId);
+        return !destination || (enabled && !destinationConfigured(destination, hasPacketShareEncryptionKey()));
+      })) {
+        res.status(409).json({ error: 'One or more selected destinations are not configured' });
+        return;
+      }
+      const persistedDestinationIds = await packetShareRepository.replaceOwnerRules(
+        session.mqttUsername,
+        nodeId,
+        destinationIds,
+        enabled,
+      );
+      res.status(200).json({
+        nodeId,
+        enabled: enabled && persistedDestinationIds.length > 0,
+        destinationIds: persistedDestinationIds,
+      });
+    } catch (error) {
+      console.error('[api] POST /owner/packet-sharing', (error as Error).message);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  });
+
+  router.get('/owner/public-feed', async (req, res) => {
+    try {
+      const ownedNodeIds = await deps.requireOwnerSession(req, res);
+      if (!ownedNodeIds) return;
+      const session = deps.getOwnerSession(req)!;
+      const status = await publicFeedRepository.accountStatus(
+        session.mqttUsername,
+        ownedNodeIds,
+      );
+      const config = getPublicFeedConfig();
+      const topicFilters = config.configured ? [PUBLIC_FEED_TOPIC_FILTER] : [];
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({
+        featureEnabled: true,
+        configured: config.configured,
+        brokerUrl: config.brokerUrl,
+        enabled: status.enabled,
+        nodeCount: status.nodeCount,
+        eligible: status.eligible,
+        recentPacketCount: status.recentPacketCount,
+        topicFilters,
+        lastForwardedAt: status.lastForwardedAt,
+      });
+    } catch (error) {
+      console.error('[api] GET /owner/public-feed', (error as Error).message);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  });
+
+  router.post('/owner/public-feed', csrfProtection, async (req, res) => {
+    try {
+      const ownedNodeIds = await deps.requireOwnerSession(req, res);
+      if (!ownedNodeIds) return;
+      const session = deps.getOwnerSession(req)!;
+      const rawBody = req.body as unknown;
+      if (!rawBody || typeof rawBody !== 'object' || Array.isArray(rawBody)) {
+        res.status(400).json({ error: 'Invalid public feed settings' });
+        return;
+      }
+      const enabled = (rawBody as { enabled?: unknown }).enabled;
+      if (typeof enabled !== 'boolean') {
+        res.status(400).json({ error: 'Invalid public feed settings' });
+        return;
+      }
+      const config = getPublicFeedConfig();
+      const currentStatus = await publicFeedRepository.accountStatus(
+        session.mqttUsername,
+        ownedNodeIds,
+      );
+      if (enabled && !currentStatus.eligible) {
+        res.status(409).json({ error: 'Publish at least one eligible packet in the last 24 hours before enabling the public feed' });
+        return;
+      }
+      if (enabled && !config.configured) {
+        res.status(409).json({ error: 'Public feed is not configured by the operator' });
+        return;
+      }
+      await publicFeedRepository.setEnabled(session.mqttUsername, ownedNodeIds, enabled);
+      if (deps.reconcileOwnerAuthorization) {
+        try {
+          await deps.reconcileOwnerAuthorization();
+        } catch (error) {
+          console.error('[api] public-feed ACL reconciliation failed', (error as Error).message);
+          res.status(503).json({ error: 'Public feed access could not be updated yet' });
+          return;
+        }
+      }
+      const status = await publicFeedRepository.accountStatus(
+        session.mqttUsername,
+        ownedNodeIds,
+      );
+      const topicFilters = config.configured ? [PUBLIC_FEED_TOPIC_FILTER] : [];
+      res.status(200).json({
+        featureEnabled: true,
+        configured: config.configured,
+        brokerUrl: config.brokerUrl,
+        enabled: status.enabled,
+        nodeCount: status.nodeCount,
+        eligible: status.eligible,
+        recentPacketCount: status.recentPacketCount,
+        topicFilters,
+        lastForwardedAt: status.lastForwardedAt,
+      });
+    } catch (error) {
+      console.error('[api] POST /owner/public-feed', (error as Error).message);
       res.status(500).json({ error: 'Internal server error' });
     }
   });
@@ -424,4 +639,11 @@ export function registerOwnerRoutes(router: Router, deps: OwnerRouteDeps): void 
     });
     res.json({ ok: true });
   });
+}
+
+// Exposes the registered owner service so the app bootstrap can start background
+// work (e.g. the owner last-hop cache prewarm) against the same instance the
+// routes use. Returns null when the routes have not been registered yet.
+export function getRegisteredOwnerService(): OwnerService | null {
+  return registeredOwnerService;
 }

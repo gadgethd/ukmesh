@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 
 type TimerHandle = ReturnType<typeof setTimeout>;
 
@@ -69,14 +69,20 @@ export function createVisibilityPoller(options: VisibilityPollerOptions) {
     running = true;
     controller = new AbortController();
     const current = controller;
-    timeoutTimer = setTimer(() => current.abort(new DOMException('Poll timed out', 'TimeoutError')), options.timeoutMs);
+    timeoutTimer = setTimer(() => {
+      const error = new DOMException('Poll timed out', 'TimeoutError');
+      current.abort(error);
+      // A deadline is a request failure, unlike hiding the page or changing
+      // scope. Report it even if the request does not promptly reject on abort.
+      if (!stopped) options.onError?.(error);
+    }, options.timeoutMs);
     let failed = false;
     try {
       await options.poll(current.signal);
       failed = current.signal.aborted;
     } catch (error) {
       failed = true;
-      if (!current.signal.aborted) options.onError?.(error);
+      if (!stopped && !current.signal.aborted) options.onError?.(error);
     } finally {
       if (timeoutTimer !== null) clearTimer(timeoutTimer);
       timeoutTimer = null;
@@ -144,7 +150,8 @@ export type UseVisibilityPollOptions = {
 export function useVisibilityPoll(
   poll: (signal: AbortSignal) => Promise<void>,
   options: UseVisibilityPollOptions,
-): void {
+): () => void {
+  const pollerRef = useRef<ReturnType<typeof createVisibilityPoller> | null>(null);
   const pollRef = useRef(poll);
   const onErrorRef = useRef(options.onError);
   pollRef.current = poll;
@@ -166,7 +173,11 @@ export function useVisibilityPoll(
       },
       onError: (error) => onErrorRef.current?.(error),
     });
-    return () => poller.stop();
+    pollerRef.current = poller;
+    return () => {
+      poller.stop();
+      if (pollerRef.current === poller) pollerRef.current = null;
+    };
   }, [
     options.enabled,
     options.immediate,
@@ -176,4 +187,5 @@ export function useVisibilityPoll(
     options.scopeKey,
     options.timeoutMs,
   ]);
+  return useCallback(() => { void pollerRef.current?.trigger(); }, []);
 }

@@ -2,13 +2,22 @@ import fs from 'node:fs';
 import { Redis } from 'ioredis';
 import { query } from '../db/index.js';
 import { getRedisConnectionOptions, getRedisUrl } from '../platform/config/redis.js';
-import { configuredLifecycleTargets } from '../db/dataLifecycle.js';
+import {
+  configuredLifecycleTargets,
+  dataLifecycleConfigurationStatus,
+} from '../db/dataLifecycle.js';
+import { INGEST_HEALTH_SQL, PATH_HASH_HEALTH_SQL } from './packetDiagnostics.js';
+import { linkWorkerHeartbeatCollector, readLinkWorkerHeartbeatAge } from './workerHeartbeat.js';
 import {
   loadVerifiedRestoreReceipt,
   REQUIRED_BACKUP_DATASETS,
 } from '../backup/receipt.js';
 import {
   backupAgeSeconds,
+  coreTelemetryExpiredChunks,
+  coreTelemetryHypertableBytes,
+  coreTelemetryHypertableChunks,
+  coreTelemetryUncompressedChunks,
   linkQueueBytes,
   linkQueueDeadBytes,
   linkQueueDeadJobs,
@@ -20,6 +29,7 @@ import {
   packetPathsOverdueUncompressedChunks,
   packetPathsRows30d,
   workerHeartbeatAgeSeconds,
+  setWorkerHeartbeatCollector,
 } from '../metrics.js';
 
 type WorkerSnapshot = {
@@ -40,7 +50,7 @@ type WorkerSnapshot = {
 };
 
 export type RetentionTarget = {
-  table: 'packets' | 'worker_health_snapshots' | 'frontend_error_events' | 'owner_alert_deliveries' | 'operational_check_results' | 'observer_region_packet_sightings' | 'observer_region_observer_sightings' | 'link_job_commits' | 'ml_model_variant_packet_results' | 'packet_decryptions' | 'observer_registration_requests' | 'operator_audit_events';
+  table: 'packets' | 'worker_health_snapshots' | 'frontend_error_events' | 'owner_alert_deliveries' | 'owner_packet_share_deliveries' | 'public_feed_deliveries' | 'operational_check_results' | 'observer_region_packet_sightings' | 'observer_region_observer_sightings' | 'link_job_commits' | 'ml_model_variant_packet_results' | 'packet_decryptions' | 'observer_registration_requests' | 'operator_audit_events' | 'node_status_samples';
   timestampColumn: 'ts' | 'time' | 'created_at' | 'updated_at' | 'completed_at' | 'last_seen';
   retention: string;
   batchSize: number;
@@ -49,8 +59,9 @@ export type RetentionTarget = {
 
 export const RETENTION_TARGETS: readonly RetentionTarget[] = [
   // Timescale drops complete chunks; this bounded boundary cleanup makes the
-  // packet-content 30-day privacy limit exact for the partial oldest chunk.
+  // listed 30-day privacy limits exact for the partial oldest chunk.
   { table: 'packets', timestampColumn: 'time', retention: '30 days', batchSize: 25_000 },
+  { table: 'node_status_samples', timestampColumn: 'time', retention: '30 days', batchSize: 25_000 },
   { table: 'worker_health_snapshots', timestampColumn: 'ts', retention: '7 days', batchSize: 10_000 },
   { table: 'frontend_error_events', timestampColumn: 'time', retention: '30 days', batchSize: 2_000 },
   {
@@ -59,6 +70,20 @@ export const RETENTION_TARGETS: readonly RetentionTarget[] = [
     retention: '90 days',
     batchSize: 1_000,
     extraPredicate: `(status = 'succeeded' OR attempts >= 5)`,
+  },
+  {
+    table: 'owner_packet_share_deliveries',
+    timestampColumn: 'created_at',
+    retention: '30 days',
+    batchSize: 2_000,
+    extraPredicate: `status IN ('succeeded', 'dead_lettered')`,
+  },
+  {
+    table: 'public_feed_deliveries',
+    timestampColumn: 'created_at',
+    retention: '30 days',
+    batchSize: 2_000,
+    extraPredicate: `status IN ('succeeded', 'dead_lettered')`,
   },
   { table: 'operational_check_results', timestampColumn: 'ts', retention: '14 days', batchSize: 2_000 },
   { table: 'observer_region_packet_sightings', timestampColumn: 'last_seen', retention: '8 days', batchSize: 25_000 },
@@ -123,11 +148,82 @@ async function refreshPacketPathCapacityMetrics(): Promise<void> {
   packetPathsBytesPerRow.set(approximateRows > 0 ? totalBytes / approximateRows : 0);
   packetPathsOverdueUncompressedChunks.set(Number(row?.overdue_uncompressed_chunks ?? 0));
 }
+
+const CORE_TELEMETRY_TABLES = [
+  'packets',
+  'node_status_samples',
+  'node_neighbor_samples',
+] as const;
+
+async function refreshCoreTelemetryCapacityMetrics(): Promise<void> {
+  for (const table of CORE_TELEMETRY_TABLES) {
+    coreTelemetryHypertableBytes.set({ table }, 0);
+    coreTelemetryHypertableChunks.set({ table }, 0);
+    coreTelemetryExpiredChunks.set({ table }, 0);
+    coreTelemetryUncompressedChunks.set({ table }, 0);
+  }
+  const result = await query<{
+    table_name: string;
+    chunk_count: string;
+    total_bytes: string;
+    expired_chunks: string;
+    overdue_uncompressed_chunks: string;
+  }>(`
+    WITH lifecycle_targets (table_name, retention, compress_after) AS (
+      VALUES
+        ('packets', INTERVAL '30 days', INTERVAL '15 days'),
+        ('node_status_samples', INTERVAL '30 days', INTERVAL '15 days'),
+        ('node_neighbor_samples', INTERVAL '7 days', INTERVAL '2 days')
+    )
+    SELECT target.table_name,
+           COUNT(chunk.chunk_name)::text AS chunk_count,
+           COALESCE(SUM(CASE
+             WHEN chunk.chunk_name IS NULL THEN 0
+             ELSE pg_total_relation_size(
+               format('%I.%I', chunk.chunk_schema, chunk.chunk_name)::regclass
+             )
+           END), 0)::text AS total_bytes,
+           COUNT(chunk.chunk_name) FILTER (
+             WHERE chunk.range_end < NOW() - target.retention
+           )::text AS expired_chunks,
+           COUNT(chunk.chunk_name) FILTER (
+             WHERE NOT COALESCE(chunk.is_compressed, FALSE)
+               AND chunk.range_end < NOW() - target.compress_after - INTERVAL '1 day'
+           )::text AS overdue_uncompressed_chunks
+      FROM lifecycle_targets target
+      LEFT JOIN timescaledb_information.chunks chunk
+        ON chunk.hypertable_schema = 'public'
+       AND chunk.hypertable_name = target.table_name
+     GROUP BY target.table_name
+  `);
+  for (const row of result.rows) {
+    const labels = { table: row.table_name };
+    coreTelemetryHypertableBytes.set(labels, Number(row.total_bytes ?? 0));
+    coreTelemetryHypertableChunks.set(labels, Number(row.chunk_count ?? 0));
+    coreTelemetryExpiredChunks.set(labels, Number(row.expired_chunks ?? 0));
+    coreTelemetryUncompressedChunks.set(
+      labels,
+      Number(row.overdue_uncompressed_chunks ?? 0),
+    );
+  }
+}
 const OPERATIONAL_RETENTION_ENABLED =
   process.env['DATA_LIFECYCLE_RETENTION_ENABLED'] === 'true';
 const OPERATIONAL_RETENTION_TARGETS = configuredLifecycleTargets(
   process.env['DATA_LIFECYCLE_RETENTION_TARGETS'],
 );
+const DATA_LIFECYCLE_CONFIGURATION = dataLifecycleConfigurationStatus();
+if (!DATA_LIFECYCLE_CONFIGURATION.ready) {
+  const missing = [
+    ...(DATA_LIFECYCLE_CONFIGURATION.retentionEnabled
+      ? DATA_LIFECYCLE_CONFIGURATION.missingRetentionTargets.map((target) => `retention:${target}`)
+      : []),
+    ...(DATA_LIFECYCLE_CONFIGURATION.compressionEnabled
+      ? DATA_LIFECYCLE_CONFIGURATION.missingCompressionTargets.map((target) => `compression:${target}`)
+      : []),
+  ];
+  throw new Error(`DATA_LIFECYCLE_REQUIRED_TARGETS_MISSING:${missing.join(',')}`);
+}
 const SYNTHETIC_SUCCESS_TTL_MS = Math.max(
   16 * 60_000,
   Number(process.env['SYNTHETIC_SUCCESS_TTL_MS'] ?? 16 * 60_000) || 16 * 60_000,
@@ -142,6 +238,10 @@ function redis(): Redis {
   }
   return redisClient;
 }
+
+// Collect on every scrape, not only the five-minute health snapshot cadence.
+// DB write recency remains last_activity_at; it cannot stand in for liveness.
+setWorkerHeartbeatCollector(linkWorkerHeartbeatCollector(redis, workerHeartbeatAgeSeconds));
 
 export function retentionDeleteSql(target: RetentionTarget): string {
   // Identifiers come from the closed RetentionTarget union above. PostgreSQL
@@ -340,6 +440,7 @@ async function currentWorkers(precomputedStats?: ReturnType<typeof systemStats>)
     linkQueue,
     linkRecent,
     linkLast,
+    linkHeartbeatAge,
     learning,
     healthActivity,
     backfillState,
@@ -366,6 +467,7 @@ async function currentWorkers(precomputedStats?: ReturnType<typeof systemStats>)
     }),
     query<{ count: string }>(`SELECT COUNT(*) AS count FROM node_links WHERE itm_computed_at > NOW() - INTERVAL '1 hour'`),
     query<{ ts: string | null }>(`SELECT MAX(itm_computed_at)::text AS ts FROM node_links`),
+    readLinkWorkerHeartbeatAge(r),
     query<{ ts: string | null }>(`SELECT MAX(updated_at)::text AS ts FROM path_model_calibration`),
     query<{ count: string; ts: string | null }>(
       `SELECT COUNT(*) FILTER (WHERE ts > NOW() - INTERVAL '1 hour') AS count,
@@ -404,7 +506,7 @@ async function currentWorkers(precomputedStats?: ReturnType<typeof systemStats>)
       : -1;
     workerHeartbeatAgeSeconds.set({ worker }, Number.isFinite(age) ? age : -1);
   };
-  setHeartbeatAge('link', linkLast.rows[0]?.ts);
+  workerHeartbeatAgeSeconds.set({ worker: 'link' }, linkHeartbeatAge);
   setHeartbeatAge('path_learning', learningLast);
   setHeartbeatAge('health', healthLastTs);
   setHeartbeatAge('link_backfill', backfillLast);
@@ -511,6 +613,7 @@ async function redisDurabilityState(): Promise<{
 
 export async function captureWorkerHealthSnapshot(): Promise<void> {
   await refreshPacketPathCapacityMetrics();
+  await refreshCoreTelemetryCapacityMetrics();
   const capturedAt = new Date().toISOString();
   const rows = (await currentWorkers()).map((row) => row.worker_name === 'health-worker'
     ? {
@@ -628,11 +731,29 @@ async function getOperationalChecksCached(): Promise<{ rows: OperationalCheckRow
   return { rows: await operationalChecksInflight! };
 }
 
+/**
+ * Count tables whose dead tuples indicate a vacuum backlog. The absolute
+ * branch is intentional: TimescaleDB chunks can report very few live tuples
+ * after deletes, so the relative n_live_tup threshold alone misses them.
+ */
+export const DATABASE_MAINTENANCE_SQL = `SELECT
+         pg_database_size(current_database())::text AS database_size_bytes,
+         COALESCE(SUM(n_dead_tup), 0)::text AS dead_rows,
+         MIN(last_autovacuum)::text AS oldest_vacuum_at,
+         COUNT(*) FILTER (
+           WHERE (
+             n_live_tup > 10000
+             AND n_dead_tup > GREATEST(10000, n_live_tup * 0.1)
+           )
+           OR n_dead_tup > 50000
+         )::text AS tables_needing_vacuum
+       FROM pg_stat_user_tables`;
+
 export async function getWorkerHealthOverview() {
   // Compute system stats once — cpuUsagePct() diffs against lastCpuSample,
   // so calling it twice in one request gives a garbage near-zero second reading.
   const sysStats = systemStats();
-  const [workers, history, errors1h, ingest, pathHashWidths, multibyteSummary, operationalChecks, databaseMaintenance, databaseRuntime, redisDurability] = await Promise.all([
+  const [workers, history, errors1h, ingest, pathDiagnostics, operationalChecks, databaseMaintenance, databaseRuntime, redisDurability, privacyRemat] = await Promise.all([
     currentWorkerStatuses(sysStats),
     query<{
       ts: string;
@@ -657,82 +778,16 @@ export async function getWorkerHealthOverview() {
       stale_threshold_minutes: string;
       global_last_packet_at: string | null;
     }>(
-       `WITH latest_rx AS (
-         -- Bounded to the active_rx window below; an unbounded scan of the
-         -- packets hypertable here takes 20s+ and gives identical results.
-         SELECT rx_node_id, MAX(time) AS last_packet_at
-      FROM packets
-         WHERE time > NOW() - INTERVAL '3 days'
-           AND rx_node_id IS NOT NULL
-           AND rx_node_id <> ''
-           AND network IS DISTINCT FROM 'test'
-           AND split_part(topic, '/', 1) <> 'meshcore-test'
-         GROUP BY rx_node_id
-       ),
-       test_active AS (
-         SELECT rx_node_id
-         FROM packets
-         WHERE time > NOW() - INTERVAL '3 days'
-           AND rx_node_id IS NOT NULL AND rx_node_id <> ''
-         GROUP BY rx_node_id
-         HAVING MAX(time) = MAX(time) FILTER (WHERE network = 'test')
-       ),
-       active_rx AS (
-         SELECT rx_node_id, last_packet_at
-         FROM latest_rx
-         WHERE last_packet_at > NOW() - INTERVAL '3 days'
-           AND rx_node_id NOT IN (SELECT rx_node_id FROM test_active)
-       )
-       SELECT
-         COUNT(*) FILTER (WHERE last_packet_at < NOW() - INTERVAL '15 minutes')::text AS stale_nodes,
-         COUNT(*)::text AS active_nodes,
-         MAX(
-           CASE
-             WHEN last_packet_at < NOW() - INTERVAL '15 minutes'
-             THEN FLOOR(EXTRACT(EPOCH FROM (NOW() - last_packet_at)) / 60)
-             ELSE NULL
-           END
-         )::text AS max_stale_minutes,
-         '15'::text AS stale_threshold_minutes,
-         (SELECT MAX(time)::text
-          FROM packets
-          WHERE network IS DISTINCT FROM 'test'
-            AND split_part(topic, '/', 1) <> 'meshcore-test') AS global_last_packet_at
-       FROM active_rx`,
+      INGEST_HEALTH_SQL,
     ),
     query<{
-      hash_hex_len: string;
-      hop_count: string;
-    }>(
-      `SELECT length(h)::text AS hash_hex_len, COUNT(*)::text AS hop_count
-       FROM packets p
-       CROSS JOIN LATERAL unnest(p.path_hashes) AS h
-       WHERE p.time > NOW() - INTERVAL '24 hours'
-         AND p.network IS DISTINCT FROM 'test'
-       GROUP BY 1`,
-    ),
-    query<{
+      one_byte: string;
+      two_byte: string;
+      three_byte: string;
       latest_multibyte_at: string | null;
       multibyte_packets_24h: string;
     }>(
-      `SELECT
-         MAX(time) FILTER (
-           WHERE EXISTS (
-             SELECT 1
-             FROM unnest(path_hashes) AS h
-             WHERE length(h) > 2
-           )
-         )::text AS latest_multibyte_at,
-         COUNT(*) FILTER (
-           WHERE EXISTS (
-             SELECT 1
-             FROM unnest(path_hashes) AS h
-             WHERE length(h) > 2
-           )
-         )::text AS multibyte_packets_24h
-       FROM packets
-       WHERE time > NOW() - INTERVAL '24 hours'
-        AND network IS DISTINCT FROM 'test'`,
+      PATH_HASH_HEALTH_SQL,
     ),
     getOperationalChecksCached(),
     query<{
@@ -740,17 +795,7 @@ export async function getWorkerHealthOverview() {
       dead_rows: string;
       oldest_vacuum_at: string | null;
       tables_needing_vacuum: string;
-    }>(
-      `SELECT
-         pg_database_size(current_database())::text AS database_size_bytes,
-         COALESCE(SUM(n_dead_tup), 0)::text AS dead_rows,
-         MIN(last_autovacuum)::text AS oldest_vacuum_at,
-         COUNT(*) FILTER (
-           WHERE n_live_tup > 10000
-             AND n_dead_tup > GREATEST(10000, n_live_tup * 0.1)
-         )::text AS tables_needing_vacuum
-       FROM pg_stat_user_tables`,
-    ),
+    }>(DATABASE_MAINTENANCE_SQL),
     query<{
       connection_count: string;
       max_connections: string;
@@ -767,6 +812,23 @@ export async function getWorkerHealthOverview() {
        WHERE datname = current_database()`,
     ),
     redisDurabilityState(),
+    query<{
+      pending: string;
+      processing: string;
+      failed: string;
+      failed_retryable: string;
+      failed_exhausted: string;
+      oldest_pending_age_seconds: string | null;
+    }>(`
+      SELECT COUNT(*) FILTER (WHERE status = 'pending')::text AS pending,
+             COUNT(*) FILTER (WHERE status = 'processing')::text AS processing,
+             COUNT(*) FILTER (WHERE status = 'failed')::text AS failed,
+             COUNT(*) FILTER (WHERE status = 'failed' AND attempts < $1)::text AS failed_retryable,
+             COUNT(*) FILTER (WHERE status = 'failed' AND attempts >= $1)::text AS failed_exhausted,
+             MAX(EXTRACT(EPOCH FROM (NOW() - requested_at)))
+               FILTER (WHERE status = 'pending')::text AS oldest_pending_age_seconds
+        FROM privacy_rematerialization_queue
+    `, [Math.min(100, Math.max(1, Number(process.env['PRIVACY_REMAT_MAX_ATTEMPTS'] ?? 8) || 8))]),
   ]);
 
   const ingestRow = ingest.rows[0];
@@ -774,25 +836,12 @@ export async function getWorkerHealthOverview() {
   const activeNodes = Number(ingestRow?.active_nodes ?? 0);
   const maxStaleMinutes = Number(ingestRow?.max_stale_minutes ?? 0);
   const staleThresholdMinutes = Number(ingestRow?.stale_threshold_minutes ?? 15);
-  const widthToBucket: Record<number, 'one_byte' | 'two_byte' | 'three_byte'> = {
-    2: 'one_byte',
-    4: 'two_byte',
-    6: 'three_byte',
-  };
+  const multibyteRow = pathDiagnostics.rows[0];
   const pathHashStats = {
-    one_byte: 0,
-    two_byte: 0,
-    three_byte: 0,
+    one_byte: Number(multibyteRow?.one_byte ?? 0),
+    two_byte: Number(multibyteRow?.two_byte ?? 0),
+    three_byte: Number(multibyteRow?.three_byte ?? 0),
   };
-
-  for (const row of pathHashWidths.rows) {
-    const width = Number(row.hash_hex_len ?? 0);
-    const bucket = widthToBucket[width];
-    if (!bucket) continue;
-    pathHashStats[bucket] += Number(row.hop_count ?? 0);
-  }
-
-  const multibyteRow = multibyteSummary.rows[0];
   const problems: HealthProblem[] = [];
   const lastPacketAt = ingestRow?.global_last_packet_at ? Date.parse(ingestRow.global_last_packet_at) : Number.NaN;
   const packetAgeMinutes = Number.isFinite(lastPacketAt) ? Math.floor((Date.now() - lastPacketAt) / 60_000) : null;
@@ -848,13 +897,19 @@ export async function getWorkerHealthOverview() {
   }
   const maintenance = databaseMaintenance.rows[0];
   const tablesNeedingVacuum = Number(maintenance?.tables_needing_vacuum ?? 0);
-  if (tablesNeedingVacuum > 0) {
-    problems.push({
-      code: 'database_vacuum_backlog',
-      severity: tablesNeedingVacuum >= 3 ? 'critical' : 'warning',
-      message: `${tablesNeedingVacuum} database table(s) exceed the dead-row vacuum threshold`,
-    });
-  }
+  const vacuumProblem = databaseVacuumBacklogProblem(tablesNeedingVacuum);
+  if (vacuumProblem) problems.push(vacuumProblem);
+  const privacyRematRow = privacyRemat.rows[0];
+  const privacyRematProblem = privacyRematerializationBacklogProblem({
+    pending: Number(privacyRematRow?.pending ?? 0),
+    processing: Number(privacyRematRow?.processing ?? 0),
+    failed: Number(privacyRematRow?.failed ?? 0),
+    failedRetryable: Number(privacyRematRow?.failed_retryable ?? 0),
+    failedExhausted: Number(privacyRematRow?.failed_exhausted ?? 0),
+    oldestPendingAgeSeconds: privacyRematRow?.oldest_pending_age_seconds == null
+      ? null : Number(privacyRematRow.oldest_pending_age_seconds),
+  });
+  if (privacyRematProblem) problems.push(privacyRematProblem);
   if (redisDurability.maxmemory_policy !== 'noeviction') {
     problems.push({
       code: 'redis_eviction_policy_unsafe',
@@ -914,6 +969,36 @@ export type HealthProblem = {
   severity: 'warning' | 'critical';
   message: string;
 };
+
+export function databaseVacuumBacklogProblem(tablesNeedingVacuum: number): HealthProblem | null {
+  if (!Number.isFinite(tablesNeedingVacuum) || tablesNeedingVacuum <= 0) return null;
+  return {
+    code: 'database_vacuum_backlog',
+    severity: tablesNeedingVacuum >= 3 ? 'critical' : 'warning',
+    message: `${Math.floor(tablesNeedingVacuum)} database table(s) exceed the dead-row vacuum threshold`,
+  };
+}
+
+export function privacyRematerializationBacklogProblem(state: {
+  pending: number;
+  processing: number;
+  failed: number;
+  failedRetryable: number;
+  failedExhausted: number;
+  oldestPendingAgeSeconds: number | null;
+}): HealthProblem | null {
+  const age = state.oldestPendingAgeSeconds ?? 0;
+  const severity = age > 6 * 60 * 60 || state.failedExhausted > 0
+    ? 'critical'
+    : age > 30 * 60 || state.failedRetryable > 0 ? 'warning' : null;
+  if (!severity) return null;
+  return {
+    code: 'privacy_rematerialization_backlog',
+    severity,
+    message: `Privacy rematerialization pending=${state.pending} processing=${state.processing} `
+      + `failed=${state.failed} oldest_pending_age_minutes=${Math.floor(age / 60)}`,
+  };
+}
 
 /**
  * Anonymous browser diagnostics are reported to operators but are deliberately

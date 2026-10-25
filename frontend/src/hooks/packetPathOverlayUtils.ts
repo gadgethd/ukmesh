@@ -110,25 +110,26 @@ export function multiObserverPathRoutes(
 ): ResolvedPathRoute[] {
   if (!response || response.ok === false) return [];
 
-  const canonicalNodes = new Map<string, CanonicalPathNode>();
-  for (const canonicalPath of [
-    response.canonicalPath,
-    ...(response.results ?? []).map((result) => result.canonicalPath),
-  ]) {
-    for (const node of canonicalPath ?? []) {
-      if (node.lat == null || node.lon == null
-          || !Number.isFinite(node.lat) || !Number.isFinite(node.lon)) continue;
-      canonicalNodes.set(coordinateKey(node.lat, node.lon), node);
-    }
-  }
-
   const routes: ResolvedPathRoute[] = [];
   const seen = new Set<string>();
   for (const result of response.results ?? []) {
     if (!result?.ok) continue;
+    // Coordinates do not identify a relay: distinct branches can contain
+    // different nodes at the same site. Use this projection's own identities.
+    const canonicalNodes = new Map<string, CanonicalPathNode | null>();
+    for (const node of result.canonicalPath ?? []) {
+      if (node.lat == null || node.lon == null
+          || !Number.isFinite(node.lat) || !Number.isFinite(node.lon)) continue;
+      const key = coordinateKey(node.lat, node.lon);
+      const existing = canonicalNodes.get(key);
+      canonicalNodes.set(key, existing === null || (existing && existing.nodeId !== node.nodeId) ? null : node);
+    }
     for (const path of [result.purplePath, ...(result.extraPurplePaths ?? [])]) {
       if (!path || path.length < 2) continue;
-      const signature = path.map(([lat, lon]) => coordinateKey(lat, lon)).join('>');
+      const signature = path.map(([lat, lon]) => {
+        const key = coordinateKey(lat, lon);
+        return `${key}:${canonicalNodes.get(key)?.nodeId ?? ''}`;
+      }).join('>');
       if (seen.has(signature)) continue;
       seen.add(signature);
       routes.push({

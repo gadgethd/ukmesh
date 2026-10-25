@@ -14,15 +14,17 @@ export type OwnerRepository = ReturnType<typeof createOwnerRepository>;
 export function createOwnerRepository(deps: OwnerRepositoryDeps) {
   const { query } = deps;
 
-  async function fetchLastHopStrength(rxNodeIds: string[], allOwnerNodeIds: string[], since?: string) {
+  async function fetchLastHopStrength(rxNodeIds: string[], allOwnerNodeIds: string[], since?: string, windowDays = 7, bucketHours = 1) {
     // $1 = rxNodeIds (the selected node to filter received packets)
     // $2 = allOwnerNodeIds (all owned nodes to exclude from last-hop analysis)
-    // $3 = since (optional time filter)
+    // $3 = since (optional time filter) or windowDays for the default rolling window
+    // $4 = bucket size in hours: hourly for the 7d window, 12-hour chunks for 30d
     const params: unknown[] = [rxNodeIds, allOwnerNodeIds];
     const timeFilter = since
       ? `p.time >= $3::timestamptz`
-      : `p.time > NOW() - INTERVAL '7 days'`;
-    if (since) params.push(since);
+      : `p.time > NOW() - (($3::int) * INTERVAL '1 day')`;
+    params.push(since ?? windowDays);
+    params.push(Math.max(1, Math.trunc(bucketHours)));
 
     return query<{
       bucket: string;
@@ -143,7 +145,7 @@ export function createOwnerRepository(deps: OwnerRepositoryDeps) {
        ),
        classified AS (
          SELECT
-           time_bucket('1 hour', op.time)::text AS bucket,
+           time_bucket((($4::int) * INTERVAL '1 hour'), op.time)::text AS bucket,
            CASE
              WHEN op.hop_count = 0
                AND op.src_node_id IS NOT NULL
@@ -215,6 +217,12 @@ export function createOwnerRepository(deps: OwnerRepositoryDeps) {
   }
 
   async function fetchOwnerLiveData(selectedNodeId: string) {
+    // Authorization is granted for exactly this node id. Do NOT canonicalise it
+    // through node_identity_aliases and do NOT union alias sources: that table
+    // is populated by a data-driven self-advert heuristic, so expanding it here
+    // would let the selector outgrow the grant. Alias identity rows stay out of
+    // scope and are reported as unverified metadata instead.
+    const grantedNodeId = selectedNodeId.trim().toUpperCase();
     const [
       ownerNodeResult,
       incomingResult,
@@ -240,11 +248,11 @@ export function createOwnerRepository(deps: OwnerRepositoryDeps) {
         members: string[];
       }>(
         `SELECT node_id, name, network, iata, advert_count, last_seen, lat, lon, role,
-                identity_source_ids AS members
+                ARRAY[$1::text] AS members
          FROM node_identity_nodes
-         WHERE node_id = meshcore_canonical_node_id($1)
+         WHERE node_id = $1
          LIMIT 1`,
-        [selectedNodeId],
+        [grantedNodeId],
       ),
       query<{
         node_id: string;
@@ -255,6 +263,8 @@ export function createOwnerRepository(deps: OwnerRepositoryDeps) {
         lon: number | null;
         packets_24h: number;
         last_seen: string | null;
+        avg_rssi: number | null;
+        avg_snr: number | null;
       }>(
         `SELECT
            p.src_node_id AS node_id,
@@ -264,23 +274,21 @@ export function createOwnerRepository(deps: OwnerRepositoryDeps) {
            n.lat,
            n.lon,
            COUNT(*)::int AS packets_24h,
-           MAX(p.time)::text AS last_seen
+           MAX(p.time)::text AS last_seen,
+           AVG(p.rssi)::double precision AS avg_rssi,
+           AVG(p.snr)::double precision AS avg_snr
          FROM node_identity_packets p
          LEFT JOIN node_identity_nodes n ON n.node_id = p.src_node_id
-         WHERE p.rx_node_id_raw IN (
-           SELECT meshcore_canonical_node_id($1)
-           UNION
-           SELECT source_node_id FROM node_identity_aliases
-           WHERE canonical_node_id = meshcore_canonical_node_id($1)
-         )
+         WHERE p.rx_node_id_raw = $1
            AND p.hop_count = 0
+           AND COALESCE(p.payload->>'direction', 'rx') <> 'tx'
            AND p.src_node_id IS NOT NULL
-           AND p.src_node_id <> meshcore_canonical_node_id($1)
+           AND p.src_node_id <> $1
            AND p.time > NOW() - INTERVAL '24 hours'
          GROUP BY p.src_node_id, n.name, n.network, n.iata, n.lat, n.lon
          ORDER BY packets_24h DESC
          LIMIT 250`,
-        [selectedNodeId],
+        [grantedNodeId],
       ),
       query<{
         time: string;
@@ -293,7 +301,9 @@ export function createOwnerRepository(deps: OwnerRepositoryDeps) {
         sender: string | null;
         body: string | null;
       }>(
-        `WITH recent AS (
+        `WITH owner_ids AS MATERIALIZED (
+           SELECT $1::text AS node_id
+         ), recent AS MATERIALIZED (
            SELECT
              p.time,
              p.packet_type,
@@ -302,14 +312,14 @@ export function createOwnerRepository(deps: OwnerRepositoryDeps) {
              p.packet_hash,
              p.src_node_id,
              p.payload
-           FROM node_identity_packets p
-           WHERE p.rx_node_id_raw IN (
-             SELECT meshcore_canonical_node_id($1)
-             UNION
-             SELECT source_node_id FROM node_identity_aliases
-             WHERE canonical_node_id = meshcore_canonical_node_id($1)
-           )
-             AND p.time > NOW() - INTERVAL '30 days'
+           FROM owner_ids
+           CROSS JOIN LATERAL (
+             SELECT p.* FROM node_identity_packets p
+             WHERE p.rx_node_id_raw = owner_ids.node_id
+               AND p.time > NOW() - INTERVAL '30 days'
+             ORDER BY p.time DESC
+             LIMIT 5000
+           ) p
            ORDER BY p.time DESC
            LIMIT 5000
          ),
@@ -338,6 +348,13 @@ export function createOwnerRepository(deps: OwnerRepositoryDeps) {
                ORDER BY recent.time DESC
              ) AS rn
            FROM recent
+         ), latest AS MATERIALIZED (
+           -- Deduplicate and cap the feed before enriching names. Joining every
+           -- ranked packet to the identity view first created millions of pairs.
+           SELECT * FROM ranked
+           WHERE rn = 1
+           ORDER BY time DESC
+           LIMIT 9
          )
          SELECT
            r.time::text AS time,
@@ -355,12 +372,10 @@ export function createOwnerRepository(deps: OwnerRepositoryDeps) {
              r.payload->'decoded'->>'text',
              r.payload->>'message'
            ) AS body
-         FROM ranked r
+         FROM latest r
          LEFT JOIN node_identity_nodes src ON src.node_id = r.src_node_id
-         WHERE r.rn = 1
-         ORDER BY r.time DESC
-         LIMIT 9`,
-        [selectedNodeId],
+         ORDER BY r.time DESC`,
+        [grantedNodeId],
       ),
       query<{
         node_id: string;
@@ -387,19 +402,14 @@ export function createOwnerRepository(deps: OwnerRepositoryDeps) {
            MIN(p.hop_count) AS best_hops
          FROM node_identity_packets p
          LEFT JOIN node_identity_nodes n ON n.node_id = p.rx_node_id
-         WHERE p.src_node_id_raw IN (
-           SELECT meshcore_canonical_node_id($1)
-           UNION
-           SELECT source_node_id FROM node_identity_aliases
-           WHERE canonical_node_id = meshcore_canonical_node_id($1)
-         )
+         WHERE p.src_node_id_raw = $1
            AND p.rx_node_id IS NOT NULL
-           AND p.rx_node_id <> meshcore_canonical_node_id($1)
+           AND p.rx_node_id <> $1
            AND p.time > NOW() - INTERVAL '7 days'
          GROUP BY p.rx_node_id, n.name, n.network, n.iata, n.lat, n.lon
          ORDER BY packets_24h DESC, packets_7d DESC, last_seen DESC
          LIMIT 20`,
-        [selectedNodeId],
+        [grantedNodeId],
       ),
       query<{
         peer_node_id: string;
@@ -414,13 +424,13 @@ export function createOwnerRepository(deps: OwnerRepositoryDeps) {
         last_observed: string | null;
       }>(
         `SELECT
-           CASE WHEN nl.node_a_id = meshcore_canonical_node_id($1)
+           CASE WHEN nl.node_a_id = $1
                 THEN nl.node_b_id ELSE nl.node_a_id END AS peer_node_id,
            peer.name AS peer_name,
            peer.network AS peer_network,
-           CASE WHEN nl.node_a_id = meshcore_canonical_node_id($1)
+           CASE WHEN nl.node_a_id = $1
                 THEN nl.count_a_to_b ELSE nl.count_b_to_a END AS owner_to_peer,
-           CASE WHEN nl.node_a_id = meshcore_canonical_node_id($1)
+           CASE WHEN nl.node_a_id = $1
                 THEN nl.count_b_to_a ELSE nl.count_a_to_b END AS peer_to_owner,
            nl.observed_count,
            nl.itm_path_loss_db,
@@ -429,11 +439,11 @@ export function createOwnerRepository(deps: OwnerRepositoryDeps) {
            nl.last_observed::text AS last_observed
          FROM node_identity_links nl
          JOIN node_identity_nodes peer ON peer.node_id = CASE
-           WHEN nl.node_a_id = meshcore_canonical_node_id($1) THEN nl.node_b_id
+           WHEN nl.node_a_id = $1 THEN nl.node_b_id
            ELSE nl.node_a_id
          END
-         WHERE (nl.node_a_id = meshcore_canonical_node_id($1)
-                OR nl.node_b_id = meshcore_canonical_node_id($1))
+         WHERE (nl.node_a_id = $1
+                OR nl.node_b_id = $1)
            AND (
              nl.force_viable = true
              OR nl.itm_viable = true
@@ -445,24 +455,19 @@ export function createOwnerRepository(deps: OwnerRepositoryDeps) {
            nl.observed_count DESC,
            nl.itm_path_loss_db ASC NULLS LAST
          LIMIT 12`,
-        [selectedNodeId],
+        [grantedNodeId],
       ),
       query<{ bucket: string; adverts: number }>(
         `SELECT
            time_bucket('1 hour', time)::text AS bucket,
            COUNT(DISTINCT packet_hash)::int AS adverts
          FROM node_identity_packets
-         WHERE src_node_id_raw IN (
-           SELECT meshcore_canonical_node_id($1)
-           UNION
-           SELECT source_node_id FROM node_identity_aliases
-           WHERE canonical_node_id = meshcore_canonical_node_id($1)
-         )
+         WHERE src_node_id_raw = $1
            AND packet_type = 4
            AND time > NOW() - INTERVAL '24 hours'
          GROUP BY bucket
          ORDER BY bucket`,
-        [selectedNodeId],
+        [grantedNodeId],
       ),
       query<{
         time: string;
@@ -595,91 +600,62 @@ export function createOwnerRepository(deps: OwnerRepositoryDeps) {
              WHEN jsonb_typeof(stats->'tx_publish_calls') = 'number' THEN (stats->>'tx_publish_calls')::double precision
              ELSE NULL
            END AS tx_publish_calls
-         FROM node_identity_status_samples
-         WHERE node_id = meshcore_canonical_node_id($1)
+         FROM node_status_samples
+         WHERE node_id = $1
            AND network = COALESCE(
              (SELECT network FROM node_identity_nodes
-              WHERE node_id = meshcore_canonical_node_id($1)
+              WHERE node_id = $1
               LIMIT 1),
              'ukmesh'
            )
            AND time > NOW() - INTERVAL '24 hours'
-        ORDER BY time ASC`,
-        [selectedNodeId],
+         ORDER BY time ASC`,
+        [grantedNodeId],
       ),
       query<{
-        id: string;
-        rssi: number | null;
-        snr: number | null;
-        last_seen: string | null;
-        sample_time: string;
+        time: string;
+        neighbors: unknown;
       }>(
-        `WITH latest AS (
-           SELECT time, neighbors
-           FROM node_neighbor_samples
-           WHERE meshcore_canonical_node_id(node_id) = meshcore_canonical_node_id($1)
-             AND network = COALESCE(
-               (SELECT network FROM node_identity_nodes
-                WHERE node_id = meshcore_canonical_node_id($1)
-                LIMIT 1),
-               'ukmesh'
-             )
-           ORDER BY time DESC
+        `WITH owner_ids AS MATERIALIZED (
+           SELECT $1::text AS node_id
+         ), latest AS (
+           -- Probe the (node_id, time) index for the granted node only; alias
+           -- sources are not part of the authorized identity scope.
+           SELECT sample.time, sample.neighbors
+           FROM owner_ids
+           CROSS JOIN LATERAL (
+             SELECT time, neighbors
+             FROM node_neighbor_samples
+             WHERE node_id = owner_ids.node_id
+               AND time > NOW() - INTERVAL '7 days'
+               AND network = COALESCE(
+                 (SELECT network FROM node_identity_nodes
+                  WHERE node_id = $1
+                  LIMIT 1),
+                 'ukmesh'
+               )
+             ORDER BY time DESC
+             LIMIT 1
+           ) sample
+           ORDER BY sample.time DESC
            LIMIT 1
          )
-         SELECT
-           COALESCE(item->>'id', item->>'node_id', item->>'pubkey', item->>'public_key') AS id,
-           CASE
-             WHEN jsonb_typeof(item->'rssi') = 'number' THEN (item->>'rssi')::double precision
-             WHEN jsonb_typeof(item->'RSSI') = 'number' THEN (item->>'RSSI')::double precision
-             ELSE NULL
-           END AS rssi,
-           CASE
-             WHEN jsonb_typeof(item->'snr') = 'number' THEN (item->>'snr')::double precision
-             WHEN jsonb_typeof(item->'SNR') = 'number' THEN (item->>'SNR')::double precision
-             WHEN jsonb_typeof(item->'snr_db') = 'number' THEN (item->>'snr_db')::double precision
-             ELSE NULL
-           END AS snr,
-           COALESCE(
-             CASE WHEN jsonb_typeof(item->'last_seen') IN ('string', 'number') THEN item->>'last_seen' ELSE NULL END,
-             CASE WHEN jsonb_typeof(item->'lastSeen') IN ('string', 'number') THEN item->>'lastSeen' ELSE NULL END,
-             CASE WHEN jsonb_typeof(item->'heard_secs_ago') = 'number'
-                  THEN (latest.time - ((item->>'heard_secs_ago')::double precision * INTERVAL '1 second'))::text
-                  ELSE NULL END
-           ) AS last_seen,
-           latest.time::text AS sample_time
-         FROM latest
-         CROSS JOIN LATERAL jsonb_array_elements(
-           CASE WHEN jsonb_typeof(latest.neighbors) = 'array' THEN latest.neighbors ELSE '[]'::jsonb END
-         ) AS neighbor(item)
-         WHERE COALESCE(item->>'id', item->>'node_id', item->>'pubkey', item->>'public_key') IS NOT NULL
-         ORDER BY last_seen DESC NULLS LAST
-         LIMIT 32`,
-        [selectedNodeId],
+         SELECT time::text AS time, neighbors FROM latest`,
+        [grantedNodeId],
       ),
       query<{ packets_24h: number }>(
         `SELECT COUNT(*)::int AS packets_24h
          FROM node_identity_packets
-         WHERE src_node_id_raw IN (
-           SELECT meshcore_canonical_node_id($1)
-           UNION
-           SELECT source_node_id FROM node_identity_aliases
-           WHERE canonical_node_id = meshcore_canonical_node_id($1)
-         )
+         WHERE src_node_id_raw = $1
            AND time > NOW() - INTERVAL '24 hours'`,
-        [selectedNodeId],
+        [grantedNodeId],
       ),
       query<{ packets_24h: number }>(
         `SELECT COUNT(*)::int AS packets_24h
          FROM node_identity_packets
-         WHERE rx_node_id_raw IN (
-           SELECT meshcore_canonical_node_id($1)
-           UNION
-           SELECT source_node_id FROM node_identity_aliases
-           WHERE canonical_node_id = meshcore_canonical_node_id($1)
-         )
+         WHERE rx_node_id_raw = $1
            AND time > NOW() - INTERVAL '24 hours'`,
-        [selectedNodeId],
+        [grantedNodeId],
       ),
     ]);
 
@@ -694,6 +670,13 @@ export function createOwnerRepository(deps: OwnerRepositoryDeps) {
       heardNeighborsResult,
       packetsSentResult,
       packetsReceivedResult,
+      // Explicit scope record for callers: alias identity rows exist in the
+      // canonical view but were NOT selected and must be treated as unverified.
+      identityScope: {
+        grantedNodeId,
+        aliasExpansion: 'unverified' as const,
+        includedAliasNodeIds: [] as string[],
+      },
     };
   }
 

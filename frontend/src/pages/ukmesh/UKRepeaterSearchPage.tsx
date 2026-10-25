@@ -5,6 +5,7 @@ import { useRuntimeFeatures } from '../../config/runtimeFeatures.js';
 import { fetchJson, withScopeParams } from '../../utils/api.js';
 import { ScopedCache } from '../../utils/scopedCache.js';
 import { Combobox, type ComboboxOption } from '../../components/ui/Combobox.js';
+import { ConfirmedNeighbours, timeAgo, type NodeLink } from '../../components/ConfirmedNeighbours.js';
 
 interface MeshNode {
   node_id: string;
@@ -19,15 +20,6 @@ interface MeshNode {
   public_key?: string;
   advert_count?: number;
   elevation_m?: number;
-}
-
-interface NodeLink {
-  peer_id: string;
-  peer_name: string | null;
-  observed_count: number;
-  itm_path_loss_db: number | null;
-  count_this_to_peer: number;
-  count_peer_to_this: number;
 }
 
 interface PacketHistory {
@@ -162,14 +154,6 @@ async function loadCompleteNodeSnapshot(
     cursor = payload.page.nextCursor;
   }
   throw new Error('Repeater index exceeded its page budget');
-}
-
-function timeAgo(iso: string): string {
-  const secs = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
-  if (secs < 60) return `${secs}s ago`;
-  if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
-  if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`;
-  return `${Math.floor(secs / 86400)}d ago`;
 }
 
 function predictNextAdvert<T extends { time: string; packet_hash: string }>(packets: T[]): { nextAdvert: Date; avgInterval: number; samples: number } | null {
@@ -630,35 +614,7 @@ export const UKRepeaterSearchPage: React.FC = () => {
                       </svg>
                       Confirmed Neighbours {links.length > 0 && <span className="repeater-details-card__count-badge">{links.length}</span>}
                     </h3>
-                    {links.length === 0 ? (
-                      <p className="repeater-details-card__empty-msg">No neighbours found for this node.</p>
-                    ) : (
-                      <>
-                        <p className="repeater-details-card__desc">Nodes with confirmed two-way communication</p>
-                        <div className="repeater-details-card__neighbours">
-                          {links.map(link => (
-                            <div key={link.peer_id} className="repeater-details-card__neighbour">
-                              <div className="repeater-details-card__neighbour-main">
-                                <span className="repeater-details-card__neighbour-name">
-                                  {link.peer_name || `${link.peer_id.slice(0, 12)}...`}
-                                </span>
-                                <span className="repeater-details-card__neighbour-id">
-                                  {link.peer_id.slice(0, 16)}…{link.peer_id.slice(-8)}
-                                </span>
-                              </div>
-                              <div className="repeater-details-card__neighbour-stats">
-                                <span>Seen {link.observed_count}×</span>
-                                {link.itm_path_loss_db !== null && (
-                                  <span> · {Math.round(link.itm_path_loss_db)} dB loss</span>
-                                )}
-                                <span> · TX: {link.count_this_to_peer}</span>
-                                <span> · RX: {link.count_peer_to_this}</span>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </>
-                    )}
+                    <ConfirmedNeighbours links={links} />
                   </div>
 
                   <div className="repeater-details-card__section">

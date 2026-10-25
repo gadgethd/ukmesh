@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import type { Incident, IncidentStatus, MessageRecord } from './types.js';
 import type { SpamMessageConfig } from './config.js';
 import { messageSimilarity, usernameSimilarity } from './similarity.js';
-import { normalizeUsername } from './normalize.js';
+import { normalizeUsername, looksMachineGeneratedName } from './normalize.js';
 
 // Trivial / connectivity tokens that are normal mesh chatter, never spam on
 // their own. A cluster made up solely of these (and short) is not an incident.
@@ -108,6 +108,27 @@ function maxBurstDensity(sorted: MessageRecord[], windowMs: number): number {
   return best;
 }
 
+/** Max number of distinct non-empty senders inside any single sliding burst window. */
+function maxBurstSenders(sorted: MessageRecord[], windowMs: number): number {
+  const counts = new Map<string, number>();
+  let best = 0;
+  let start = 0;
+  for (let end = 0; end < sorted.length; end++) {
+    const key = normalizeUsername(sorted[end]!.sender) || '∅';
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+    while (sorted[end]!.observedAt - sorted[start]!.observedAt > windowMs) {
+      const k = normalizeUsername(sorted[start]!.sender) || '∅';
+      const remaining = (counts.get(k) ?? 1) - 1;
+      if (remaining <= 0) counts.delete(k);
+      else counts.set(k, remaining);
+      start += 1;
+    }
+    const distinctInWindow = counts.size - (counts.has('∅') ? 1 : 0);
+    best = Math.max(best, distinctInWindow);
+  }
+  return best;
+}
+
 /** Summary of who is sending the messages in a cluster. */
 interface SenderProfile {
   distinctSenders: number;
@@ -115,13 +136,28 @@ interface SenderProfile {
   dominantShare: number;
   /** >=2 distinct senders that are fuzzy-similar variants of each other. */
   rotatingSimilarNames: boolean;
+  /** Share of distinct senders appearing exactly once in the analysis window. */
+  singleShotShare: number;
+  /** Share of distinct senders whose name looks machine-generated (keygen-style). */
+  machineNameShare: number;
+  /** Most distinct senders seen inside any single burst window. */
+  burstSenderCount: number;
+  /** Many single-shot, machine-named senders inside one burst = rotating-ID
+   *  botnet, not broad human participation. */
+  rotatingIdentities: boolean;
 }
 
-function profileSenders(members: MessageRecord[], cfg: SpamMessageConfig): SenderProfile {
+function profileSenders(
+  members: MessageRecord[],
+  cfg: SpamMessageConfig,
+  corpusSenderCounts: ReadonlyMap<string, number>,
+): SenderProfile {
   const counts = new Map<string, number>();
+  const rawByKey = new Map<string, string>();
   for (const m of members) {
     const key = normalizeUsername(m.sender) || '∅';
     counts.set(key, (counts.get(key) ?? 0) + 1);
+    if (!rawByKey.has(key)) rawByKey.set(key, m.sender);
   }
   const distinct = [...counts.keys()].filter((k) => k !== '∅');
   const distinctSenders = distinct.length || (counts.has('∅') ? 1 : 0);
@@ -138,7 +174,38 @@ function profileSenders(members: MessageRecord[], cfg: SpamMessageConfig): Sende
       }
     }
   }
-  return { distinctSenders, dominantShare, rotatingSimilarNames };
+
+  // Rotating-identity (botnet) profile: how many of these "distinct senders"
+  // are actually single-shot, machine-named identities rather than people?
+  // A one-shot identity exists only for this flood, and a keygen-style name
+  // reinforces that the identity was generated, not typed by a human.
+  let singleShot = 0;
+  let machineNamed = 0;
+  for (const key of distinct) {
+    const corpusCount = corpusSenderCounts.get(key) ?? counts.get(key) ?? 1;
+    if (corpusCount <= 1) singleShot += 1;
+    if (looksMachineGeneratedName(rawByKey.get(key) ?? '')) machineNamed += 1;
+  }
+  const distinctCount = distinct.length;
+  const singleShotShare = distinctCount > 0 ? singleShot / distinctCount : 0;
+  const machineNameShare = distinctCount > 0 ? machineNamed / distinctCount : 0;
+  const burstSenderCount = maxBurstSenders(members, cfg.burstWindowMs);
+
+  const rotatingIdentities =
+    distinctCount >= cfg.rotatingMinSenders &&
+    singleShotShare >= cfg.rotatingSingleShotShare &&
+    machineNameShare >= cfg.rotatingMachineNameShare &&
+    burstSenderCount >= cfg.rotatingMinBurstSenders;
+
+  return {
+    distinctSenders,
+    dominantShare,
+    rotatingSimilarNames,
+    singleShotShare,
+    machineNameShare,
+    burstSenderCount,
+    rotatingIdentities,
+  };
 }
 
 /** Whether the canonical text is only trivial/connectivity tokens. */
@@ -194,17 +261,21 @@ function qualifies(
   if (isBenignChatter(canonical) && !hasUrl && !hasMarker) return false;
 
   // Many *dissimilar* people sending the same thing = legitimate (a meme, a
-  // greeting, a coordinated test) — not one actor abusing the network.
+  // greeting, a coordinated test) — not one actor abusing the network. The
+  // exception: "many senders" made of single-shot machine-named identities is
+  // a rotating-ID botnet, not people (each identity exists only for the flood).
   const broadChatter =
     sender.distinctSenders > cfg.maxIndependentSenders &&
     !sender.rotatingSimilarNames &&
+    !sender.rotatingIdentities &&
     sender.dominantShare < cfg.dominantSenderShare;
   if (broadChatter) return false;
 
   const senderSuspicious =
     sender.distinctSenders <= 1 ||
     sender.dominantShare >= cfg.dominantSenderShare ||
-    sender.rotatingSimilarNames;
+    sender.rotatingSimilarNames ||
+    sender.rotatingIdentities;
 
   // A few dissimilar senders, no link, no marker -> not enough to call spam.
   if (!senderSuspicious && !hasUrl && !hasMarker) return false;
@@ -234,7 +305,8 @@ function scoreIncident(
   if (hasMarker) score += 0.25;
   if (urlRepeats) score += 0.2;
   else if (hasUrl) score += 0.1;
-  if (sender.rotatingSimilarNames) score += 0.25;
+  if (sender.rotatingIdentities) score += 0.3;
+  else if (sender.rotatingSimilarNames) score += 0.25;
   else if (sender.distinctSenders <= 1 && sender.dominantShare >= 0.8) score += 0.1;
 
   // Connectivity/test floods with no link, marker or name-rotation are noise,
@@ -242,7 +314,8 @@ function scoreIncident(
   // Only content that is *dominated* by benign tokens counts (so a templated
   // flood that merely contains the word "test" is not let off the hook).
   const looksLikeTesting =
-    isBenignDominated(canonicalText) && !hasUrl && !hasMarker && !sender.rotatingSimilarNames;
+    isBenignDominated(canonicalText) && !hasUrl && !hasMarker &&
+    !sender.rotatingSimilarNames && !sender.rotatingIdentities;
 
   // A sustained, high-volume repeat of the same templated message is itself a
   // strong automated-abuse signal, regardless of what it says — but we never
@@ -258,7 +331,13 @@ function scoreIncident(
   reasons.push(`${count} near-duplicate messages`);
   reasons.push(`up to ${burst} within ${Math.round(cfg.burstWindowMs / 60000)} min`);
   if (isFlood) reasons.push('sustained high-volume flood');
-  if (sender.rotatingSimilarNames) reasons.push(`${sender.distinctSenders} similar (rotating) sender names`);
+  if (sender.rotatingIdentities) {
+    reasons.push(
+      `${sender.distinctSenders} single-shot identities ` +
+        `(${Math.round(sender.machineNameShare * 100)}% machine-style names, ` +
+        `${sender.burstSenderCount} within ${Math.round(cfg.burstWindowMs / 60000)} min) posted near-identical text`,
+    );
+  } else if (sender.rotatingSimilarNames) reasons.push(`${sender.distinctSenders} similar (rotating) sender names`);
   else if (sender.distinctSenders <= 1) reasons.push('single repeating sender');
   if (urlRepeats) reasons.push('same link repeated across messages');
   else if (hasUrl) reasons.push('contains a link');
@@ -268,7 +347,11 @@ function scoreIncident(
   return { score, reasons };
 }
 
-function finalizeIncident(members: MessageRecord[], cfg: SpamMessageConfig): Incident | null {
+function finalizeIncident(
+  members: MessageRecord[],
+  cfg: SpamMessageConfig,
+  corpusSenderCounts: ReadonlyMap<string, number>,
+): Incident | null {
   const sorted = [...members].sort((a, b) => a.observedAt - b.observedAt);
   const rep = modalNormalized(sorted);
   const network = sorted[0]!.network;
@@ -287,7 +370,7 @@ function finalizeIncident(members: MessageRecord[], cfg: SpamMessageConfig): Inc
   }
 
   const canonical = rep.norm.normalized;
-  const sender = profileSenders(sorted, cfg);
+  const sender = profileSenders(sorted, cfg, corpusSenderCounts);
   if (!qualifies(canonical, hasMarker, hasUrl, sender, cfg)) return null;
 
   const { score, reasons } = scoreIncident(sorted, hasMarker, hasUrl, sender, cfg);
@@ -330,6 +413,13 @@ export function clusterMessages(records: MessageRecord[], cfg: SpamMessageConfig
   const sorted = [...eligible]
     .slice(0, cfg.maxMessagesPerRun)
     .sort((a, b) => a.observedAt - b.observedAt);
+  // Corpus-wide sender frequency within this analysis batch: rotating-ID
+  // detection needs to know whether each sender is a one-shot identity.
+  const corpusSenderCounts = new Map<string, number>();
+  for (const record of sorted) {
+    const key = normalizeUsername(record.sender) || '∅';
+    corpusSenderCounts.set(key, (corpusSenderCounts.get(key) ?? 0) + 1);
+  }
   const open: OpenCluster[] = [];
   const closed: OpenCluster[] = [];
   const exactIndex = new Map<string, OpenCluster>();
@@ -445,7 +535,7 @@ export function clusterMessages(records: MessageRecord[], cfg: SpamMessageConfig
     if (cl.members.length < cfg.minTransmissions) continue;
     const sortedMembers = [...cl.members].sort((a, b) => a.observedAt - b.observedAt);
     if (maxBurstDensity(sortedMembers, cfg.burstWindowMs) < cfg.minBurst) continue;
-    const incident = finalizeIncident(cl.members, cfg);
+    const incident = finalizeIncident(cl.members, cfg, corpusSenderCounts);
     if (incident) incidents.push(incident);
   }
 

@@ -1,27 +1,48 @@
 import mqtt, { type MqttClient } from 'mqtt';
+import { createHash } from 'node:crypto';
 import { calcRegionKey, transportCodeMatchesRegion } from '@michaelhart/meshcore-decoder';
 import { insertNodeNeighborSample, insertNodeStatusSample, insertPacket, upsertNode, query, insertOrUpdateSpamSuspect, recordMultibyteEvidence } from '../db/index.js';
-import { closePacketBatch, flush as flushPacketBatch } from '../db/packetBatch.js';
+import { closePacketBatch, flush as flushPacketBatch, loadCurrentPublicPrivacyPolicy } from '../db/packetBatch.js';
 import { evaluateAdvert, initSpamDetector } from './spamDetector.js';
 import { invalidateResolveCache, setResolveCache, getStickyNodeMap, mergeStickyNodes, getHeldPath, setHeldPath } from '../path-beta/resolveCache.js';
 import { resolvePool } from '../path-beta/resolvePool.js';
 import { scheduleSlowResolution } from '../path-beta/slowMode.js';
 import { pathingConfig } from '../platform/config/pathing.js';
 import type { LivePacket } from '../types/index.js';
-import { decodePacketCompat } from './decodePacket.js';
+import { decodePacketCompat, verifyAdvertSignature } from './decodePacket.js';
 import { buildChannelEntries, buildCombinedKeyStore, buildSummary } from './channelRegistry.js';
 import { shouldDiscardUnverifiedTxAdvert, statusEnvelopeTargetsObserver } from './identityBinding.js';
 import { extractNeighborNodes } from './neighborPayload.js';
 import { parseMqttTopic } from './topic.js';
+import { createDurableMqttHandleMessage } from './durableHandler.js';
+import { waitForInFlightPacket } from './dedupeRegistry.js';
+import { admitPacketToRam } from '../ram/liveStore.js';
+import { getRamIngestMode } from '../ram/protocol.js';
+import { persistStatusTelemetrySample } from './statusTelemetry.js';
+import {
+  buildPersistedPacketPayload,
+  ingestFailureAction,
+  packetEnvelopeViolations,
+  statusEnvelopeViolations,
+  stripDerivedPacketFields,
+  type IntegerDomainViolation,
+} from './envelopeSafety.js';
+import { observationIdentityKey, packetAlreadyPersisted, type ObservationIdentity } from './observationIdentity.js';
+import { assertSupportedIngestConnections } from './ingestConfig.js';
+import { waitForShutdownStep } from './shutdownDeadline.js';
+import { createPublicBatch } from '../privacy/publicBatch.js';
 import {
   boundedNetworkMetricLabel,
+  mqttIngestAckDuration,
   mqttIngestActive,
   mqttIngestOutcomesTotal,
-  mqttIngestQueueDepth,
   mqttMessagesTotal,
+  postPersistDroppedTotal,
+  postPersistInFlightGauge,
+  publicLiveOutcomesTotal,
 } from '../metrics.js';
 
-type PacketCallback      = (packet: LivePacket) => void;
+type PacketCallback      = (packet: LivePacket, upstreamEnvelope?: Record<string, unknown>) => void;
 type NodeCallback        = (nodeId: string, meta?: { network?: string; observerId?: string }) => void;
 type NodeUpsertCallback  = (node: Record<string, unknown>) => void;
 
@@ -36,8 +57,24 @@ type MqttRuntimeStatus = {
 };
 
 let mqttRuntimeStatus: MqttRuntimeStatus = { state: 'starting', changedAt: new Date().toISOString() };
-let mqttClient: MqttClient | null = null;
+const mqttClients: MqttClient[] = [];
 let mqttStopping = false;
+const MQTT_INGEST_MODE = getRamIngestMode();
+const publicPackets = createPublicBatch<{ packet: LivePacket; publish: () => void }>({
+  maxItems: 10_000, maxBytes: 8 * 1_048_576,
+  loadPolicy: loadCurrentPublicPrivacyPolicy,
+  refused: (outcome, count) => publicLiveOutcomesTotal.inc({ phase: 'mqtt', outcome }, count),
+  deliver: (items, policy) => {
+    for (const { packet, publish } of items) {
+      const current = policy.classify({ network: packet.network ?? '',
+        rxNodeId: packet.rxNodeId ?? null, srcNodeId: packet.srcNodeId ?? null,
+        pathHashes: packet.path ?? null, pathHashSizeBytes: packet.pathHashSizeBytes ?? null });
+      publicLiveOutcomesTotal.inc({ phase: 'mqtt', outcome: current.visibilityOk ? 'authorized' : 'private' });
+      if (current.visibilityOk) { packet.isPrivate = false; packet.visibilityOk = true; publish(); }
+    }
+  },
+});
+let mqttDurabilityFailure: string | undefined;
 
 function setMqttRuntimeStatus(state: MqttRuntimeStatus['state'], lastError?: string): void {
   mqttRuntimeStatus = {
@@ -48,15 +85,25 @@ function setMqttRuntimeStatus(state: MqttRuntimeStatus['state'], lastError?: str
 }
 
 export function getMqttRuntimeStatus(): MqttRuntimeStatus {
-  return { ...mqttRuntimeStatus };
+  return mqttDurabilityFailure
+    ? { ...mqttRuntimeStatus, state: 'error', lastError: mqttDurabilityFailure }
+    : { ...mqttRuntimeStatus };
+}
+
+export function markMqttPersistenceHealthy(): void {
+  mqttDurabilityFailure = undefined;
+}
+
+export function markMqttPersistenceFailed(error: unknown): void {
+  mqttDurabilityFailure = (error instanceof Error ? error.message : String(error)).slice(0, 200);
 }
 
 export function onPacket(cb: PacketCallback)         { subscribers.push(cb); }
 export function onNodeSeen(cb: NodeCallback)         { nodeSubscribers.push(cb); }
 export function onNodeUpsert(cb: NodeUpsertCallback) { upsertSubscribers.push(cb); }
 
-function emit(packet: LivePacket) {
-  for (const cb of subscribers) cb(packet);
+function emit(packet: LivePacket, upstreamEnvelope?: Record<string, unknown>) {
+  for (const cb of subscribers) cb(packet, upstreamEnvelope);
 }
 
 // Debounced node update batching — 500 ms window
@@ -187,112 +234,6 @@ function isEmptyPacketEnvelope(json: Record<string, unknown>, rawHex: string, pa
     && (payloadLen ?? 0) <= 0;
 }
 
-function toRecord(value: unknown): Record<string, unknown> | undefined {
-  return value && typeof value === 'object' && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : undefined;
-}
-
-function readNum(obj: Record<string, unknown> | undefined, ...keys: string[]): number | undefined {
-  if (!obj) return undefined;
-  for (const key of keys) {
-    if (!(key in obj)) continue;
-    const n = toNum(obj[key]);
-    if (n != null) return n;
-  }
-  return undefined;
-}
-
-type StatusTelemetrySample = {
-  batteryMv?: number;
-  uptimeSecs?: number;
-  txAirSecs?: number;
-  rxAirSecs?: number;
-  channelUtilization?: number;
-  airUtilTx?: number;
-  stats?: Record<string, unknown>;
-};
-
-const OWNER_STATUS_STATS_KEYS = new Set([
-  'battery_mv', 'solar_mv', 'board_temp_c', 'wifi_rssi', 'wifi_ssid', 'wifi_uptime_ms',
-  'ntp_synced', 'ntp_sync_age_ms', 'boot_count', 'reset_reason', 'max_loop_ms',
-  'max_loop_at_ms', 'nodes_heard_24h', 'channel_utilization', 'air_util_tx', 'air_util_rx',
-  'last_rx_rssi', 'last_rx_snr', 'tx_power_dbm', 'config_version', 'config_crc32',
-  'fs_free_bytes', 'fs_total_bytes', 'nvs_free_entries', 'channel_id', 'git_commit', 'boot_epoch',
-]);
-
-function extractStatusTelemetry(
-  json: Record<string, unknown>,
-  options?: { allowRawStatsOnly?: boolean },
-): StatusTelemetrySample | null {
-  const stats = toRecord(json['stats']);
-  const hasRawStats = Boolean(stats && Object.keys(stats).length > 0);
-  const hasOwnerStats = Boolean(
-    stats && (
-      Object.keys(stats).some((key) => OWNER_STATUS_STATS_KEYS.has(key))
-      || toRecord(stats['mqtt'])
-    ),
-  );
-  const batteryMv = readNum(stats, 'battery_mv', 'batteryMv');
-  const uptimeSecs = (() => {
-    const direct = readNum(stats, 'uptime_secs', 'uptimeSecs');
-    if (direct != null) return direct;
-    const uptimeMs = readNum(stats, 'uptime_ms', 'uptimeMs');
-    if (uptimeMs == null) return undefined;
-    return Math.floor(uptimeMs / 1000);
-  })();
-  const txAirSecs = readNum(stats, 'tx_air_secs', 'txAirSecs');
-  const rxAirSecs = readNum(stats, 'rx_air_secs', 'rxAirSecs');
-  const channelUtilization = readNum(
-    stats,
-    'channel_utilization',
-    'channel_utilization_pct',
-    'channel_util',
-    'channelUtil',
-    'channelUtilization',
-  );
-  const airUtilTx = readNum(
-    stats,
-    'air_util_tx',
-    'air_util_tx_pct',
-    'tx_air_util',
-    'tx_air_utilization',
-    'airUtilTx',
-  );
-
-  if (
-    batteryMv == null
-    && uptimeSecs == null
-    && txAirSecs == null
-    && rxAirSecs == null
-    && channelUtilization == null
-    && airUtilTx == null
-  ) {
-    if ((options?.allowRawStatsOnly || hasOwnerStats) && hasRawStats) {
-      return {
-        batteryMv,
-        uptimeSecs,
-        txAirSecs,
-        rxAirSecs,
-        channelUtilization,
-        airUtilTx,
-        stats,
-      };
-    }
-    return null;
-  }
-
-  return {
-    batteryMv,
-    uptimeSecs,
-    txAirSecs,
-    rxAirSecs,
-    channelUtilization,
-    airUtilTx,
-    stats,
-  };
-}
-
 /** In-flight pre-resolve tracking — prevents duplicate concurrent resolutions for the same hash/network. */
 const preResolveInFlight = new Set<string>();
 const preResolveLastStarted = new Map<string, number>();
@@ -311,9 +252,8 @@ setInterval(() => {
 }, 60_000).unref();
 
 /**
- * Per-observer packet dedup — prevents relay copies of the same packet from being
- * ingested multiple times when they arrive at the same observer with the same hop count.
- * Keyed by "packetHash:observerKey:hopCount". Entries expire after 120 seconds.
+ * Process-local observation dedup. The same identity is used for claim arbitration,
+ * batch collapse and the persisted DUP probe. Entries expire after 120 seconds.
  */
 const seenPackets = new Map<string, number>();
 const SEEN_PACKETS_MAX = 50_000;
@@ -326,16 +266,31 @@ setInterval(() => {
   }
 }, 60_000).unref();
 
-function isDuplicatePacket(packetHash: string, observerKey: string, hopCount: number | undefined): boolean {
-  const key = `${packetHash}:${observerKey}:${hopCount ?? '?'}`;
-  if (seenPackets.has(key)) return true;
+function isDuplicatePacket(key: string): boolean {
+  return seenPackets.has(key);
+}
+
+function rememberPacket(key: string): void {
   if (seenPackets.size >= SEEN_PACKETS_MAX) {
     const oldest = seenPackets.keys().next().value;
     if (oldest !== undefined) seenPackets.delete(oldest);
   }
   seenPackets.set(key, Date.now());
-  return false;
 }
+
+/**
+ * Packets currently being persisted, keyed like `seenPackets`. A second copy
+ * of the same packet arriving while the first is still in flight (possible
+ * once more than one connection can ingest concurrently) waits for the first
+ * attempt: success resolves this copy as a duplicate, failure leaves nothing
+ * committed so this copy persists on its own.
+ */
+const inFlightPackets = new Map<string, Promise<void>>();
+// Best-effort post-persist follow-ups are bounded: a stalled database must
+// not grow the in-flight set without limit. Over the bound they are dropped
+// (safe: everything here is explicitly best-effort) and counted.
+const POST_PERSIST_MAX_INFLIGHT = 64;
+let postPersistInFlight = 0;
 
 /**
  * Channel registry — built once at startup.
@@ -354,25 +309,26 @@ function boundedEnvInteger(name: string, fallback: number, min: number, max: num
 }
 
 const MQTT_MAX_PAYLOAD_BYTES = boundedEnvInteger('MQTT_MAX_PAYLOAD_BYTES', 64 * 1024, 1_024, 1_048_576);
-const MQTT_INGEST_CONCURRENCY = boundedEnvInteger('MQTT_INGEST_CONCURRENCY', 8, 1, 32);
-const MQTT_INGEST_QUEUE_MAX = boundedEnvInteger('MQTT_INGEST_QUEUE_MAX', 1_000, 10, 20_000);
 const MQTT_CLIENT_ID = String(
   process.env['MQTT_CLIENT_ID'] ?? 'meshcore-analytics-ingest',
 ).trim() || 'meshcore-analytics-ingest';
+/**
+ * The default and only qualified topology is one durable connection. The
+ * configured value is checked before connecting; shared sessions need a
+ * successful restart and resize qualification before they can be enabled.
+ */
+const MQTT_INGEST_CONNECTIONS = boundedEnvInteger('MQTT_INGEST_CONNECTIONS', 1, 1, 16);
+const MQTT_INGEST_SHARE_GROUP = String(
+  process.env['MQTT_INGEST_SHARE_GROUP'] ?? 'meshcore-ingest',
+).trim() || 'meshcore-ingest';
 
-type MqttIngestTask = {
-  topic: string;
-  rawPayload: Buffer;
-};
-
-const mqttIngestQueue: MqttIngestTask[] = [];
 let activeMqttIngests = 0;
 let droppedMqttMessages = 0;
 let lastMqttDropLogAt = 0;
 
 function reportDroppedMqttMessage(
   reason: string,
-  outcome: 'draining' | 'queue_full' | 'oversized_payload' | 'oversized_topic',
+  outcome: 'oversized_payload' | 'oversized_topic',
 ): void {
   mqttIngestOutcomesTotal.inc({ outcome });
   droppedMqttMessages += 1;
@@ -383,45 +339,75 @@ function reportDroppedMqttMessage(
   lastMqttDropLogAt = now;
 }
 
-function drainMqttIngestQueue(): void {
-  while (activeMqttIngests < MQTT_INGEST_CONCURRENCY && mqttIngestQueue.length > 0) {
-    const task = mqttIngestQueue.shift()!;
-    activeMqttIngests += 1;
-    mqttIngestQueueDepth.set(mqttIngestQueue.length);
-    mqttIngestActive.set(activeMqttIngests);
-    void handleMessage(task.topic, task.rawPayload)
-      .then(() => mqttIngestOutcomesTotal.inc({ outcome: 'processed' }))
-      .catch((err: Error) => {
-        mqttIngestOutcomesTotal.inc({ outcome: 'failure' });
-        console.error('[mqtt] handleMessage error:', err.message);
-      })
-      .finally(() => {
-        activeMqttIngests -= 1;
-        mqttIngestActive.set(activeMqttIngests);
-        drainMqttIngestQueue();
-      });
-  }
-  mqttIngestQueueDepth.set(mqttIngestQueue.length);
+/**
+ * A deterministic data error cannot be fixed by redelivery: the same insert
+ * fails on every attempt while the PUBACK is withheld, which is an ingest
+ * livelock for that topic. Count the drop, log it, and acknowledge so the
+ * broker discards the message. Transient failures never reach this path.
+ */
+function quarantineEnvelope(kind: 'packet' | 'status', violations: IntegerDomainViolation[]): void {
+  mqttIngestOutcomesTotal.inc({ outcome: `${kind}_quarantined` });
+  console.warn(
+    `[mqtt] quarantined ${kind} envelope with out-of-domain field(s): ` +
+    violations.map((violation) => `${violation.field}=${String(violation.value)} (${violation.reason})`).join(', '),
+  );
 }
 
-function enqueueMqttMessage(topic: string, rawPayload: Buffer): void {
-  if (mqttStopping) {
-    reportDroppedMqttMessage('ingest is draining', 'draining');
-    return;
-  }
-  if (mqttIngestQueue.length >= MQTT_INGEST_QUEUE_MAX) {
-    reportDroppedMqttMessage(`ingest queue full (${MQTT_INGEST_QUEUE_MAX})`, 'queue_full');
-    return;
-  }
-  mqttIngestQueue.push({ topic, rawPayload });
-  mqttIngestOutcomesTotal.inc({ outcome: 'enqueued' });
-  mqttIngestQueueDepth.set(mqttIngestQueue.length);
-  drainMqttIngestQueue();
+function quarantinePersistenceFailure(error: unknown): void {
+  mqttIngestOutcomesTotal.inc({ outcome: 'packet_quarantined' });
+  const message = error instanceof Error ? error.message : String(error);
+  console.error('[mqtt] quarantined packet after deterministic persistence error:', message);
 }
 
+function handleIncomingMqttPacket(packet: { topic: string; payload: Buffer | string; dup?: boolean; messageId?: number }): Promise<void> {
+  const startedAt = process.hrtime.bigint();
+  const rawPayload = Buffer.isBuffer(packet.payload)
+    ? packet.payload
+    : Buffer.from(packet.payload);
+  if (rawPayload.length > MQTT_MAX_PAYLOAD_BYTES) {
+    reportDroppedMqttMessage(
+      `payload exceeds ${MQTT_MAX_PAYLOAD_BYTES} bytes`,
+      'oversized_payload',
+    );
+    return Promise.resolve();
+  }
+  if (packet.topic.length > 512) {
+    reportDroppedMqttMessage('topic exceeds 512 characters', 'oversized_topic');
+    return Promise.resolve();
+  }
+
+  activeMqttIngests += 1;
+  mqttIngestActive.set(activeMqttIngests);
+  return handleMessage(packet.topic, rawPayload, packet.dup === true, packet.messageId)
+    .then(() => mqttIngestOutcomesTotal.inc({ outcome: 'processed' }))
+    .finally(() => {
+      mqttIngestAckDuration.observe(Number(process.hrtime.bigint() - startedAt) / 1e9);
+      activeMqttIngests -= 1;
+      mqttIngestActive.set(activeMqttIngests);
+    });
+}
+
+function reportMqttIngestFailure(client: MqttClient, error: Error): void {
+  mqttIngestOutcomesTotal.inc({ outcome: 'failure' });
+  mqttDurabilityFailure = error.message.slice(0, 200) || 'MQTT persistence failed';
+  console.error('[mqtt] durable ingest failed; leaving delivery unacknowledged:', error.message);
+  // MQTT.js forwards handleMessage errors to its parser callback, which does
+  // not send PUBACK. Close the stream so the persistent broker session
+  // redelivers the unacknowledged QoS 1 message instead of leaving it inflight.
+  if (!mqttStopping && client.connected) client.stream.destroy();
+}
+
+
+/** Publish through the authenticated ingest connection on the internal broker. */
+export async function publishMqtt(topic: string, payload: string): Promise<void> {
+  const client = mqttClients.find((candidate) => candidate.connected);
+  if (!client) throw new Error("MQTT_PUBLISH_NOT_CONNECTED");
+  await client.publishAsync(topic, payload, { qos: 0, retain: false });
+}
 
 export async function startMqttClient(): Promise<void> {
   if (mqttStopping) return;
+  assertSupportedIngestConnections(MQTT_INGEST_CONNECTIONS);
   // Must complete before connecting to MQTT — the broker replays buffered
   // messages immediately on connect, and knownNodeIds must be populated first.
   await initSpamDetector();
@@ -432,89 +418,103 @@ export async function startMqttClient(): Promise<void> {
   console.log(`[mqtt] connecting to ${redactedUrl}`);
   console.log(`[mqtt] channels: ${channelEntries.map((e) => e.name).join(', ')}`);
   console.log(`[mqtt] topic prefixes: ${Array.from(TOPIC_PREFIXES).join(', ')}`);
-  console.log(`[mqtt] ingest concurrency=${MQTT_INGEST_CONCURRENCY} queue=${MQTT_INGEST_QUEUE_MAX} maxPayload=${MQTT_MAX_PAYLOAD_BYTES}`);
+  console.log(`[mqtt] durable ingest maxPayload=${MQTT_MAX_PAYLOAD_BYTES}`);
   console.log(`[mqtt] persistent session clientId=${MQTT_CLIENT_ID} subscriptionQos=1`);
 
-  const client = mqtt.connect(brokerUrl, {
-    reconnectPeriod: 5000,
-    connectTimeout: 30000,
-    clean: false,
-    clientId: MQTT_CLIENT_ID,
-    username: process.env['MQTT_USERNAME'],
-    password: process.env['MQTT_PASSWORD'],
-  });
-  mqttClient = client;
-
-  client.on('connect', () => {
-    setMqttRuntimeStatus('connected');
-    console.log('[mqtt] connected');
-    for (const prefix of TOPIC_PREFIXES) {
-      client.subscribe(`${prefix}/#`, { qos: 1 }, (err) => {
-        if (err) console.error(`[mqtt] subscribe error (${prefix}/#)`, err.message);
-        else      console.log(`[mqtt] subscribed to ${prefix}/#`);
-      });
-    }
-  });
-
-  client.on('error', (err) => {
-    setMqttRuntimeStatus('error', err.message);
-    console.error('[mqtt] error', err.message);
-  });
-  client.on('offline', () => setMqttRuntimeStatus('disconnected'));
-  client.on('close', () => {
-    setMqttRuntimeStatus('disconnected');
-    void flushPacketBatch().catch((err: unknown) => {
-      console.error('[mqtt] packet batch close flush failed:', (err as Error).message);
+  console.log(`[mqtt] connections=${MQTT_INGEST_CONNECTIONS}`);
+  for (let index = 0; index < MQTT_INGEST_CONNECTIONS; index += 1) {
+    const connectionLabel = MQTT_INGEST_CONNECTIONS > 1
+      ? ` (connection ${index + 1}/${MQTT_INGEST_CONNECTIONS})`
+      : '';
+    const client = mqtt.connect(brokerUrl, {
+      reconnectPeriod: 5000,
+      connectTimeout: 30000,
+      clean: false,
+      clientId: MQTT_INGEST_CONNECTIONS > 1 ? `${MQTT_CLIENT_ID}-${index + 1}` : MQTT_CLIENT_ID,
+      username: process.env['MQTT_USERNAME'],
+      password: process.env['MQTT_PASSWORD'],
     });
-  });
-  client.on('reconnect', () => {
-    setMqttRuntimeStatus('reconnecting');
-    console.log('[mqtt] reconnecting…');
-  });
-  client.on('message',   (topic: string, rawPayload: Buffer) => {
-    if (rawPayload.length > MQTT_MAX_PAYLOAD_BYTES) {
-      reportDroppedMqttMessage(
-        `payload exceeds ${MQTT_MAX_PAYLOAD_BYTES} bytes`,
-        'oversized_payload',
-      );
-      return;
-    }
-    if (topic.length > 512) {
-      reportDroppedMqttMessage('topic exceeds 512 characters', 'oversized_topic');
-      return;
-    }
-    enqueueMqttMessage(topic, rawPayload);
-  });
+    mqttClients.push(client);
+    client.handleMessage = createDurableMqttHandleMessage(
+      handleIncomingMqttPacket,
+      (error) => reportMqttIngestFailure(client, error),
+    );
+
+    client.on('connect', () => {
+      setMqttRuntimeStatus('connected');
+      console.log(`[mqtt] connected${connectionLabel}`);
+      for (const prefix of TOPIC_PREFIXES) {
+        // A shared subscription spreads messages across the ingest
+        // connections; a single connection keeps the historical direct
+        // subscription and its topic-ACL behaviour exactly.
+        const topicFilter = MQTT_INGEST_CONNECTIONS > 1
+          ? `$share/${MQTT_INGEST_SHARE_GROUP}/${prefix}/#`
+          : `${prefix}/#`;
+        client.subscribe(topicFilter, { qos: 1 }, (err) => {
+          if (err) console.error(`[mqtt] subscribe error (${topicFilter})`, err.message);
+          else      console.log(`[mqtt] subscribed to ${topicFilter}${connectionLabel}`);
+        });
+      }
+    });
+
+    client.on('error', (err) => {
+      setMqttRuntimeStatus('error', err.message);
+      console.error('[mqtt] error', err.message);
+    });
+    client.on('offline', () => {
+      if (!mqttClients.some((candidate) => candidate.connected)) {
+        setMqttRuntimeStatus('disconnected');
+      }
+    });
+    client.on('close', () => {
+      if (!mqttClients.some((candidate) => candidate.connected)) {
+        setMqttRuntimeStatus('disconnected');
+      }
+      void flushPacketBatch().catch((err: unknown) => {
+        console.error('[mqtt] packet batch close flush failed:', (err as Error).message);
+      });
+    });
+    client.on('reconnect', () => {
+      setMqttRuntimeStatus('reconnecting');
+      console.log(`[mqtt] reconnecting…${connectionLabel}`);
+    });
+  }
 }
 
 export async function stopMqttClient(timeoutMs = 20_000): Promise<void> {
   mqttStopping = true;
-  const client = mqttClient;
-  mqttClient = null;
-  if (client) {
+  const deadline = Date.now() + timeoutMs;
+  const clients = mqttClients.splice(0, mqttClients.length);
+  for (const client of clients) {
     client.removeAllListeners('reconnect');
-    await client.endAsync(false).catch((error: unknown) => {
+    await waitForShutdownStep(client.endAsync(false), deadline, 'disconnect').catch((error: unknown) => {
+      if (error instanceof Error && error.message.startsWith('MQTT_DRAIN_TIMEOUT:')) throw error;
       console.error('[mqtt] disconnect failed:', error instanceof Error ? error.message : error);
     });
   }
-  const deadline = Date.now() + timeoutMs;
-  while ((mqttIngestQueue.length > 0 || activeMqttIngests > 0) && Date.now() < deadline) {
+  while (activeMqttIngests > 0 && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
-  if (mqttIngestQueue.length > 0 || activeMqttIngests > 0) {
+  if (activeMqttIngests > 0) {
     throw new Error(
-      `MQTT_DRAIN_TIMEOUT:queued=${mqttIngestQueue.length}:active=${activeMqttIngests}`,
+      `MQTT_DRAIN_TIMEOUT:active=${activeMqttIngests}`,
     );
   }
   if (nodeFlushTimer) {
     clearTimeout(nodeFlushTimer);
     flushPendingNodeEmits();
   }
-  await closePacketBatch();
+  await waitForShutdownStep(closePacketBatch(), deadline, 'batch');
+  await waitForShutdownStep(publicPackets.close(), deadline, 'public-live');
   setMqttRuntimeStatus('disconnected');
 }
 
-async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
+async function handleMessage(
+  topic: string,
+  rawPayload: Buffer,
+  redelivered = false,
+  messageId?: number,
+): Promise<void> {
   const topicParts = parseMqttTopic(topic, TOPIC_PREFIXES, BLOCKED_PUBLIC_IATAS);
   if (!topicParts) {
     mqttIngestOutcomesTotal.inc({ outcome: 'invalid_topic' });
@@ -541,6 +541,15 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
     const model    = json['model']            as string | undefined;
     const firmware = json['firmware_version'] as string | undefined;
 
+    // battery_mv is INTEGER and uptime/tx/rx air seconds are BIGINT: a
+    // fractional or out-of-range value fails the insert deterministically and
+    // would otherwise be redelivered forever.
+    const statusViolations = statusEnvelopeViolations(json);
+    if (statusViolations.length > 0) {
+      quarantineEnvelope('status', statusViolations);
+      return;
+    }
+
     if (!statusEnvelopeTargetsObserver(observerKey, json)) {
       mqttIngestOutcomesTotal.inc({ outcome: 'status_identity_mismatch' });
       console.warn('[mqtt] rejected status envelope with identity mismatch');
@@ -558,29 +567,25 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
       allowTestOverride: network === 'test' && nodeId === observerKey,
       mqttObserver: true,
     })];
-    const telemetry = extractStatusTelemetry(json, {
-      allowRawStatsOnly: network === 'test',
-    });
-    if (telemetry) {
-      writes.push(insertNodeStatusSample({
-        nodeId,
-        network,
-        batteryMv: telemetry.batteryMv,
-        uptimeSecs: telemetry.uptimeSecs,
-        txAirSecs: telemetry.txAirSecs,
-        rxAirSecs: telemetry.rxAirSecs,
-        channelUtilization: telemetry.channelUtilization,
-        airUtilTx: telemetry.airUtilTx,
-        stats: telemetry.stats,
-      }));
-    }
+    writes.push(persistStatusTelemetrySample(
+      json,
+      { nodeId, network, allowRawStatsOnly: network === 'test' },
+      insertNodeStatusSample,
+    ));
     const writeResults = await Promise.allSettled(writes);
+    const writeErrors: unknown[] = [];
     for (const result of writeResults) {
       if (result.status === 'rejected') {
         mqttIngestOutcomesTotal.inc({ outcome: 'status_persist_failure' });
-        console.error('[mqtt] status persistence error:', (result.reason as Error).message);
+        console.error(
+          '[mqtt] status persistence error:',
+          result.reason instanceof Error ? result.reason.message : String(result.reason),
+        );
+        writeErrors.push(result.reason);
       }
     }
+    if (writeErrors.length > 0) throw writeErrors[0];
+    markMqttPersistenceHealthy();
     emitNode(nodeId, { network, observerId: observerKey });
     return;
   }
@@ -594,9 +599,11 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
     try {
       await insertNodeNeighborSample({ nodeId: observerKey, network, neighbors });
       mqttIngestOutcomesTotal.inc({ outcome: 'neighbors_persisted' });
+      markMqttPersistenceHealthy();
     } catch (error) {
       mqttIngestOutcomesTotal.inc({ outcome: 'neighbors_persist_failure' });
       console.error('[mqtt] neighbor persistence error:', error instanceof Error ? error.message : error);
+      throw error;
     }
     return;
   }
@@ -695,8 +702,17 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
           const senderKey = normalizeNodeId(inner?.['publicKey']);
           const nodeId    = senderKey ?? observerKey;
           const nodeIata  = topicIataForNode(nodeId, observerKey, iata);
+          const advertSignatureValid = await verifyAdvertSignature(decoded);
 
-          if (network !== 'test') {
+          if (!advertSignatureValid) {
+            mqttIngestOutcomesTotal.inc({ outcome: 'invalid_advert_signature' });
+            console.warn(
+              `[mqtt] ignoring advert identity with invalid signature: key=${senderKey?.slice(0, 16) ?? 'unknown'}…`,
+            );
+            summary = undefined;
+          }
+
+          if (advertSignatureValid && network !== 'test') {
             const advertName = appData?.['name'] as string | undefined;
             const advertLat  = loc?.['latitude'];
             const advertLon  = loc?.['longitude'];
@@ -738,38 +754,43 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
             }
 
             if (!isSpam) {
-              const nodeUpdate = await upsertNode(nodeId, {
-                name:      advertName,
-                lat:       advertLat,
-                lon:       advertLon,
-                role:      appData?.['deviceRole'] as number | undefined,
-                iata:      nodeIata,
-                publicKey: senderKey,
-                network,
-                advertHash: canonicalPacketId,
-              });
-              advertCount = nodeUpdate.advertCount;
+              try {
+                const nodeUpdate = await upsertNode(nodeId, {
+                  name:      advertName,
+                  lat:       advertLat,
+                  lon:       advertLon,
+                  role:      appData?.['deviceRole'] as number | undefined,
+                  iata:      nodeIata,
+                  publicKey: senderKey,
+                  network,
+                  advertHash: canonicalPacketId,
+                });
+                advertCount = nodeUpdate.advertCount;
 
-              emitNodeUpsert({
-                node_id:      nodeId,
-                name:         advertName,
-                lat:          advertLat,
-                lon:          advertLon,
-                role:         appData?.['deviceRole'] as number | undefined,
-                iata,
-                network,
-                observer_id:  observerKey,
-                public_key:   senderKey,
-                last_seen:    new Date().toISOString(),
-                is_online:    true,
-                advert_count: advertCount,
-                coordinates_changed: nodeUpdate.coordinatesChanged,
-              });
+                emitNodeUpsert({
+                  node_id:      nodeId,
+                  name:         advertName,
+                  lat:          advertLat,
+                  lon:          advertLon,
+                  role:         appData?.['deviceRole'] as number | undefined,
+                  iata,
+                  network,
+                  observer_id:  observerKey,
+                  public_key:   senderKey,
+                  last_seen:    new Date().toISOString(),
+                  is_online:    true,
+                  advert_count: advertCount,
+                  coordinates_changed: nodeUpdate.coordinatesChanged,
+                });
+              } catch (err) {
+                mqttIngestOutcomesTotal.inc({ outcome: 'advert_persist_failure' });
+                console.error('[mqtt] advert node upsert failed:', (err as Error).message);
+              }
             }
           }
 
-          innerPayload = inner;
-          srcNodeId = senderKey;
+          innerPayload = advertSignatureValid ? inner : undefined;
+          srcNodeId = advertSignatureValid ? senderKey : undefined;
         } else if (decoded.payloadType === 5) {
           innerPayload = decodedInner as unknown as Record<string, unknown> | undefined;
         } else if (decoded.payloadType === 7) {
@@ -809,23 +830,88 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
     return;
   }
 
+  // Validate against the integer columns the values are inserted into before
+  // any write: a fractional packet_type (22P02) or an int4 overflow (22003)
+  // fails on every redelivery. Rejecting here keeps the bad row out of the
+  // shared packet batch, where one failing row would reject its batch-mates.
+  const packetViolations = packetEnvelopeViolations({
+    packetType: resolvedPacketType,
+    hopCount: decodedHops,
+    pathHashSizeBytes: decodedPathHashSizeBytes,
+    advertCount,
+    snr,
+    rssi,
+  });
+  if (packetViolations.length > 0) {
+    quarantineEnvelope('packet', packetViolations);
+    return;
+  }
+
   // Decoder messageHash is deliberately not used here: it is only a 32-bit
   // display hash and collides at normal packet volumes. The canonical identity
   // comes from validated route/path-invariant wire content.
   const finalHash = canonicalPacketId ?? upstreamPacketHash(json['hash']) ?? crypto.randomUUID();
 
-  if (isDuplicatePacket(finalHash, observerKey, decodedHops)) {
+  const observationIdentity: ObservationIdentity = {
+    packetHash: finalHash,
+    rxNodeId: observerKey,
+    topic,
+    network,
+    hopCount: decodedHops ?? null,
+    routeType: decodedRouteType ?? null,
+    pathHashes: path ?? null,
+    pathHashSizeBytes: decodedPathHashSizeBytes ?? null,
+    direction: direction ?? null,
+  };
+  const dedupeKey = observationIdentityKey(observationIdentity);
+  const ramDeliveryKey = MQTT_INGEST_MODE === 'ram'
+    ? (() => {
+      if (!Number.isInteger(messageId) || messageId! < 1 || messageId! > 65_535) {
+        throw new Error('MQTT_RAM_DELIVERY_ID_MISSING');
+      }
+      return createHash('sha256').update(JSON.stringify([
+        MQTT_CLIENT_ID, messageId, topic, rawPayload.toString('hex'), dedupeKey,
+      ])).digest('hex');
+    })()
+    : null;
+
+  if (isDuplicatePacket(dedupeKey)) {
+    // This marker is written only after the matching packet is committed.
+    // A broker redelivery after a lost PUBACK confirms the durable outcome.
+    markMqttPersistenceHealthy();
     mqttIngestOutcomesTotal.inc({ outcome: 'duplicate_packet' });
     return;
   }
 
-  emitNode(observerKey, { network, observerId: observerKey });
+  // Arbitration against concurrent copies of this packet. The claim below is
+  // registered inside waitForInFlightPacket in the same microtask as its
+  // re-check, so after a failed predecessor exactly one waiter becomes the
+  // successor and the rest queue behind it (never two concurrent retries).
+  let claimResolve!: () => void;
+  let claimReject!: (error: unknown) => void;
+  const claim = new Promise<void>((resolve, reject) => {
+    claimResolve = resolve;
+    claimReject = reject;
+  });
+  claim.catch(() => { /* waiters observe failure via their own handlers */ });
+
+  const claimState = await waitForInFlightPacket(inFlightPackets, dedupeKey, claim);
+  if (claimState === 'duplicate') {
+    claimResolve(); // never registered; settle for tidiness
+    markMqttPersistenceHealthy();
+    mqttIngestOutcomesTotal.inc({ outcome: 'duplicate_packet' });
+    return;
+  }
 
   // Decoded payloads omit mctomqtt's envelope direction. Keep that metadata in
   // the stored JSON so RX/TX counts do not classify every decoded packet as RX.
-  const packetPayload = innerPayload && direction
-    ? { ...innerPayload, direction }
-    : (innerPayload ?? json);
+  // Without a verified decode the envelope itself is stored, so publisher-owned
+  // `_summary`/`decrypted` keys are removed rather than persisted as if the
+  // decoder had produced them (they also feed `companion_sender`).
+  const packetPayload = buildPersistedPacketPayload(innerPayload, json, direction);
+  // Live consumers receive the upstream envelope too; hand them the same
+  // sanitised view so a forged summary is never forwarded as decoded content.
+  const upstreamEnvelope = stripDerivedPacketFields(json);
 
   const livePacket: LivePacket = {
     id:         crypto.randomUUID(),
@@ -849,8 +935,8 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
     ts:         Date.now(),
   };
 
-  try {
-    const visibility = await insertPacket({
+  const persistOnce = async (): Promise<void> => {
+    const persistInput = {
       packetHash: finalHash,
       rxNodeId:   observerKey,
       srcNodeId,
@@ -869,88 +955,218 @@ async function handleMessage(topic: string, rawPayload: Buffer): Promise<void> {
       network,
       transportCodes: decodedTransportCodes,
       regionScope:    decodedRegionScope,
-    });
+    };
+    const visibility = MQTT_INGEST_MODE === 'ram'
+      ? await admitPacketToRam(persistInput, { key: ramDeliveryKey!, redelivered })
+      : await insertPacket(persistInput);
+    rememberPacket(dedupeKey);
+    if (MQTT_INGEST_MODE !== 'ram') markMqttPersistenceHealthy();
     livePacket.isPrivate = visibility.isPrivate;
     livePacket.visibilityOk = visibility.visibilityOk;
-    emit(livePacket);
-    invalidateResolveCache(finalHash);
-    mqttIngestOutcomesTotal.inc({ outcome: 'packet_persisted' });
-
-    // A repeater appearing in a multibyte (2–3 byte) path hash almost certainly
-    // relayed this packet. Resolve only a unique historic row with stored
-    // coordinates, then broadcast the full row so clients which no longer hold
-    // the stale node can restore it at its original location. Best-effort.
-    if (decodedPathHashSizeBytes != null && decodedPathHashSizeBytes >= 2 && path && path.length > 0) {
+    const publishLive = (): void => {
+      emitNode(observerKey, { network, observerId: observerKey });
       try {
-        const historicNodes = await recordMultibyteEvidence(
-          path,
-          decodedPathHashSizeBytes,
-          new Date(),
-          decodedRouteType,
-          network,
+        emit(livePacket, upstreamEnvelope);
+      } catch (error) {
+        console.error(
+          '[mqtt] packet subscriber failed after ingest:',
+          error instanceof Error ? error.message : String(error),
         );
-        for (const node of historicNodes) emitNodeUpsert({ ...node });
-      } catch (err) {
-        console.error('[mqtt] recordMultibyteEvidence error:', (err as Error).message);
       }
-      // Slow mode: schedule ONE final multi-observer resolution after the
-      // propagation window closes so the complete observer set is included
-      // (idempotent per packet hash; best-effort).
-      if (path.length >= pathingConfig.slowModeMinPathHops) {
-        scheduleSlowResolution(finalHash, network);
-      }
-    }
+    };
+    if (MQTT_INGEST_MODE === 'ram') {
+      publicPackets.enqueue({ packet: livePacket, publish: publishLive },
+        Buffer.byteLength(JSON.stringify([livePacket, upstreamEnvelope])));
+    } else publishLive();
+    invalidateResolveCache(finalHash);
+    mqttIngestOutcomesTotal.inc({
+      outcome: MQTT_INGEST_MODE === 'ram' ? 'packet_admitted' : 'packet_persisted',
+    });
+  };
 
-    // Pre-resolve path for ADV/GRP packets so the cache is warm before the browser requests it.
-    // Bursty multi-observer packets can arrive repeatedly for the same hash; throttle those
-    // warmups so live ingest cannot monopolise the shared path resolver pool.
-    const preResolveKey = `${finalHash}|${network}`;
-    const lastPreResolve = preResolveLastStarted.get(preResolveKey) ?? 0;
-    const shouldPreResolve =
-      PRE_RESOLVE_ENABLED
-      && (resolvedPacketType === 4 || resolvedPacketType === 5)
-      && !preResolveInFlight.has(preResolveKey)
-      && Date.now() - lastPreResolve >= PRE_RESOLVE_MIN_INTERVAL_MS;
-    if (shouldPreResolve) {
-      preResolveInFlight.add(preResolveKey);
-      if (
-        !preResolveLastStarted.has(preResolveKey)
-        && preResolveLastStarted.size >= PRE_RESOLVE_HISTORY_MAX
-      ) {
-        const oldest = preResolveLastStarted.keys().next().value;
-        if (oldest !== undefined) preResolveLastStarted.delete(oldest);
-      }
-      preResolveLastStarted.set(preResolveKey, Date.now());
-      const ck = `m|${finalHash}|${network}`;
-      // Pass any previously resolved high-confidence hop assignments so the solver reuses them
-      const stickyEntry = getStickyNodeMap(finalHash, network);
-      const stickyMap = stickyEntry ? Object.fromEntries(stickyEntry.hashToNodeId) : undefined;
-      const stickyAgeFraction = stickyEntry?.ageFraction;
-      const heldPath = getHeldPath(finalHash, network);
-      resolvePool.runBackground<{
-        stickyUpdates?: Record<string, string>;
-        canonicalPath?: Array<{ nodeId?: string | null }>;
-      }>({ type: 'resolveMulti', packetHash: finalHash, network, ...(stickyMap ? { stickyMap, stickyAgeFraction } : {}), ...(heldPath ? { heldPath } : {}) })
-        .then((result) => {
-          if (result) {
-            const { stickyUpdates, ...cacheableResult } = result;
-            setResolveCache(ck, cacheableResult);
-            if (stickyUpdates && Object.keys(stickyUpdates).length > 0) {
-              mergeStickyNodes(finalHash, network, stickyUpdates);
-            }
-            const heldNodes = result.canonicalPath?.map((hop) => hop.nodeId ?? '').filter(Boolean) ?? [];
-            if (heldNodes.length > 0 && heldNodes.length === result.canonicalPath?.length) {
-              setHeldPath(finalHash, network, { path: heldNodes, resolvedAt: Date.now(), physical: true });
-            }
-          }
-        })
-        .catch(() => { /* best-effort */ })
-        .finally(() => { preResolveInFlight.delete(preResolveKey); });
+  const ingest = (async () => {
+    // Claimed above. After a restart there is no in-memory dedup state to
+    // match against: a QoS 1 redelivery whose original commit survived the
+    // crash must not be persisted or counted a second time. Confirm against
+    // the retained window before writing (inside the claim so the registered
+    // claim promise covers this path too).
+    if (redelivered && await packetAlreadyPersisted(
+      (sql, params) => query<{ present: boolean }>(sql, params),
+      observationIdentity,
+    )) {
+      markMqttPersistenceHealthy();
+      mqttIngestOutcomesTotal.inc({ outcome: 'duplicate_packet' });
+      return;
     }
-  } catch (err) {
-    mqttIngestOutcomesTotal.inc({ outcome: 'packet_persist_failure' });
-    console.error('[mqtt] db insert failed', (err as Error).message);
+    try {
+      await persistOnce();
+    } catch (err) {
+      // A deterministic data error (SQLSTATE class 22 data_exception / class 23
+      // integrity_constraint_violation) fails identically on every redelivery.
+      // Withholding the PUBACK for it is an ingest livelock, so quarantine the
+      // message, remember the observation (a lost-PUBACK replay is then a
+      // duplicate rather than a second attempt) and acknowledge. Transient
+      // failures still leave the message unacknowledged for redelivery.
+      if (ingestFailureAction(err) === 'ack_quarantine') {
+        quarantinePersistenceFailure(err);
+        rememberPacket(dedupeKey);
+        return;
+      }
+      mqttIngestOutcomesTotal.inc({
+        outcome: MQTT_INGEST_MODE === 'ram' ? 'packet_admission_failure' : 'packet_persist_failure',
+      });
+      console.error(
+        MQTT_INGEST_MODE === 'ram' ? '[mqtt] ram admission failed' : '[mqtt] db insert failed',
+        err instanceof Error ? err.message : String(err),
+      );
+      throw err;
+    }
+    // Best-effort live-map follow-ups run once the durable write is done and
+    // outside the acknowledgement path: PUBACK is released as soon as the
+    // write commits and these resolve asynchronously. The in-flight count is
+    // bounded so a database stall cannot grow them without limit; over the
+    // bound they are dropped (best-effort) and counted.
+    // RAM mode releases the MQTT acknowledgement at admission, far earlier
+    // than the batch commit. Commit-dependent live-map work must not run
+    // against rows that are not in PostgreSQL yet, so it is deferred to the
+    // RAM writer's post-commit hook (see ram/writerRuntime.ts). The durable
+    // path keeps running it right here, after the committed write.
+    if (MQTT_INGEST_MODE !== 'ram') {
+      schedulePostPersistFollowUps({
+        finalHash,
+        decodedPathHashSizeBytes,
+        path,
+        decodedRouteType,
+        network,
+        resolvedPacketType,
+      });
+    }
+  })();
+
+  void ingest.then(
+    () => claimResolve(),
+    (err: unknown) => claimReject(err),
+  );
+  try {
+    await ingest;
+  } finally {
+    if (inFlightPackets.get(dedupeKey) === claim) inFlightPackets.delete(dedupeKey);
   }
+}
+
+/**
+ * Best-effort live-map work that does not need to hold the QoS 1
+ * acknowledgement: multibyte path evidence, slow-mode scheduling and cache
+ * warm-up all resolve after the durable write and run concurrently with the
+ * next message's persistence.
+ */
+export type PostPersistFollowUpArgs = {
+  finalHash: string;
+  decodedPathHashSizeBytes: number | undefined;
+  path: string[] | undefined;
+  decodedRouteType: number | undefined;
+  network: string;
+  resolvedPacketType: number | undefined;
+};
+
+/**
+ * Run the best-effort live-map follow-ups under the global in-flight bound.
+ * Shared by the durable ingest path (after the committed write) and by the
+ * RAM writer's post-commit hook, so a stall cannot grow the in-flight set
+ * without limit in either mode; over the bound they are dropped (best-effort)
+ * and counted.
+ */
+export function schedulePostPersistFollowUps(args: PostPersistFollowUpArgs): void {
+  if (postPersistInFlight >= POST_PERSIST_MAX_INFLIGHT) {
+    postPersistDroppedTotal.inc();
+    return;
+  }
+  postPersistInFlight++;
+  postPersistInFlightGauge.set(postPersistInFlight);
+  void runPostPersistFollowUps(args)
+    .catch((err: unknown) => {
+      console.error(
+        '[mqtt] post-persist follow-up failed:',
+        err instanceof Error ? err.message : String(err),
+      );
+    })
+    .finally(() => {
+      postPersistInFlight--;
+      postPersistInFlightGauge.set(postPersistInFlight);
+    });
+}
+
+async function runPostPersistFollowUps(args: PostPersistFollowUpArgs): Promise<void> {
+  const { finalHash, decodedPathHashSizeBytes, path, decodedRouteType, network, resolvedPacketType } = args;
+
+  // A repeater appearing in a multibyte (2–3 byte) path hash almost certainly
+  // relayed this packet. Resolve only a unique historic row with stored
+  // coordinates, then broadcast the full row so clients which no longer hold
+  // the stale node can restore it at its original location. Best-effort.
+  if (decodedPathHashSizeBytes != null && decodedPathHashSizeBytes >= 2 && path && path.length > 0) {
+    try {
+      const historicNodes = await recordMultibyteEvidence(
+        path,
+        decodedPathHashSizeBytes,
+        new Date(),
+        decodedRouteType,
+        network,
+      );
+      for (const node of historicNodes) emitNodeUpsert({ ...node });
+    } catch (err) {
+      console.error('[mqtt] recordMultibyteEvidence error:', (err as Error).message);
+    }
+    // Slow mode: schedule ONE final multi-observer resolution after the
+    // propagation window closes so the complete observer set is included
+    // (idempotent per packet hash; best-effort).
+    if (path.length >= pathingConfig.slowModeMinPathHops) {
+      scheduleSlowResolution(finalHash, network);
+    }
+  }
+
+  // Pre-resolve path for ADV/GRP packets so the cache is warm before the browser requests it.
+  // Bursty multi-observer packets can arrive repeatedly for the same hash; throttle those
+  // warmups so live ingest cannot monopolise the shared path resolver pool.
+  if (!PRE_RESOLVE_ENABLED || (resolvedPacketType !== 4 && resolvedPacketType !== 5)) return;
+  const preResolveKey = `${finalHash}|${network}`;
+  const lastPreResolve = preResolveLastStarted.get(preResolveKey) ?? 0;
+  if (preResolveInFlight.has(preResolveKey) || Date.now() - lastPreResolve < PRE_RESOLVE_MIN_INTERVAL_MS) {
+    return;
+  }
+  preResolveInFlight.add(preResolveKey);
+  if (
+    !preResolveLastStarted.has(preResolveKey)
+    && preResolveLastStarted.size >= PRE_RESOLVE_HISTORY_MAX
+  ) {
+    const oldest = preResolveLastStarted.keys().next().value;
+    if (oldest !== undefined) preResolveLastStarted.delete(oldest);
+  }
+  preResolveLastStarted.set(preResolveKey, Date.now());
+  const ck = `m|${finalHash}|${network}`;
+  // Pass any previously resolved high-confidence hop assignments so the solver reuses them
+  const stickyEntry = getStickyNodeMap(finalHash, network);
+  const stickyMap = stickyEntry ? Object.fromEntries(stickyEntry.hashToNodeId) : undefined;
+  const stickyAgeFraction = stickyEntry?.ageFraction;
+  const heldPath = getHeldPath(finalHash, network);
+  resolvePool.runBackground<{
+    stickyUpdates?: Record<string, string>;
+    canonicalPath?: Array<{ nodeId?: string | null }>;
+  }>({ type: 'resolveMulti', packetHash: finalHash, network, ...(stickyMap ? { stickyMap, stickyAgeFraction } : {}), ...(heldPath ? { heldPath } : {}) })
+    .then((result) => {
+      if (result) {
+        const { stickyUpdates, ...cacheableResult } = result;
+        setResolveCache(ck, cacheableResult);
+        if (stickyUpdates && Object.keys(stickyUpdates).length > 0) {
+          mergeStickyNodes(finalHash, network, stickyUpdates);
+        }
+        const heldNodes = result.canonicalPath?.map((hop) => hop.nodeId ?? '').filter(Boolean) ?? [];
+        if (heldNodes.length > 0 && heldNodes.length === result.canonicalPath?.length) {
+          setHeldPath(finalHash, network, { path: heldNodes, resolvedAt: Date.now(), physical: true });
+        }
+      }
+    })
+    .catch(() => { /* best-effort */ })
+    .finally(() => { preResolveInFlight.delete(preResolveKey); });
 }
 
 export async function backfillHistoricalLinks(

@@ -4,11 +4,9 @@ import { Redis } from 'ioredis';
 import { BoundedTtlMap } from '../cache/boundedTtlMap.js';
 import { getOwnerNodeIdsForUsername } from '../db/ownerAuth.js';
 import { query } from '../db/index.js';
-import { getNodeIdsForUserInAcl, readAclFile } from '../mqtt/aclManager.js';
 import { getRedisConnectionOptions, getRedisUrl } from '../platform/config/redis.js';
 import { reconcileOwnerAuthorization } from './ownerAclReconciler.js';
 import { groupOwnerNodes, type OwnerDashboardRow } from './ownerDashboard.js';
-import { parseOwnerGrantConfig } from './ownerGrantConfig.js';
 
 function normalizeNodeIds(nodeIds: string[]): string[] {
   return Array.from(new Set(
@@ -16,15 +14,6 @@ function normalizeNodeIds(nodeIds: string[]): string[] {
       .map((nodeId) => nodeId.trim().toUpperCase())
       .filter((nodeId) => /^[0-9A-F]{64}$/.test(nodeId)),
   )).sort();
-}
-
-function configuredOwnerNodeIds(mqttUsername: string): string[] {
-  const raw = String(process.env['OWNER_MQTT_USERNAME_MAP'] ?? '');
-  const map = new Map<string, string[]>();
-  for (const grant of parseOwnerGrantConfig(raw)) {
-    map.set(grant.mqttUsername, [...(map.get(grant.mqttUsername) ?? []), grant.nodeId]);
-  }
-  return normalizeNodeIds(map.get(mqttUsername) ?? []);
 }
 
 const OWNER_ACCESS_CACHE_TTL_MS = Number(process.env['OWNER_ACCESS_CACHE_TTL_MS'] ?? 30_000);
@@ -36,6 +25,19 @@ const ownerNodeIdCache = new BoundedTtlMap<string, { ts: number; nodeIds: string
 });
 const ownerNodeIdInflight = new Map<string, Promise<string[]>>();
 const OWNER_NODE_ID_INFLIGHT_MAX = 128;
+
+// ---- seam for unit tests (default = production implementation) -----------
+// The verified-grant reader is injectable so the authority rules can be proven
+// without Postgres. Only this module can replace it; every production caller
+// goes through the database reader.
+type VerifiedOwnerGrantSource = (mqttUsername: string) => Promise<string[]>;
+let verifiedOwnerGrantSource: VerifiedOwnerGrantSource = getOwnerNodeIdsForUsername;
+
+export function __setOwnerGrantSourceForTests(source: VerifiedOwnerGrantSource | null): void {
+  verifiedOwnerGrantSource = source ?? getOwnerNodeIdsForUsername;
+  ownerNodeIdCache.clear();
+  ownerNodeIdInflight.clear();
+}
 
 export function invalidateOwnerNodeIdCache(mqttUsername: string): void {
   ownerNodeIdCache.delete(mqttUsername.trim());
@@ -54,26 +56,20 @@ export async function resolveOwnerNodeIds(mqttUsername: string): Promise<string[
   }
 
   const load = async (): Promise<string[]> => {
-    const verified = normalizeNodeIds(await getOwnerNodeIdsForUsername(cacheKey));
     const mode = String(process.env['OWNER_AUTHORIZATION_MODE'] ?? 'shadow').trim().toLowerCase();
-    if (mode === 'enforce') return verified;
-    if (mode !== 'shadow') throw new Error(`INVALID_OWNER_AUTHORIZATION_MODE:${mode}`);
-    if (verified.length > 0) return verified;
-
-    // Transitional compatibility is deliberately read-only: the current ACL or
-    // operator config may keep an existing owner working while inventory runs,
-    // but broker logs can never create a new grant.
-    const configured = configuredOwnerNodeIds(cacheKey);
-    if (configured.length > 0) return configured;
-    try {
-      const legacy = normalizeNodeIds(getNodeIdsForUserInAcl(readAclFile(), cacheKey));
-      if (legacy.length > 0) {
-        console.warn('[owner-auth] shadow-mode legacy ACL authorization used', { mqttUsername: cacheKey });
-      }
-      return legacy;
-    } catch {
-      return [];
+    if (mode !== 'enforce' && mode !== 'shadow') {
+      throw new Error(`INVALID_OWNER_AUTHORIZATION_MODE:${mode}`);
     }
+
+    // Owner-portal authority is only ever a live, non-revoked, operator-verified
+    // grant from the owner-auth database (getOwnerNodeIdsForUsername filters
+    // verified_at/revoked_at/verification_method). OWNER_MQTT_USERNAME_MAP and
+    // broker ACL stanzas are WRITE scope: they let a credential publish, they do
+    // not establish who owns a node. The old shadow-mode fallback rebuilt
+    // authority from those sources whenever the verified list was empty, which
+    // turned broker write access into portal authority and survived revocation.
+    // An empty verified list is therefore final in EVERY mode, shadow included.
+    return normalizeNodeIds(await verifiedOwnerGrantSource(cacheKey));
   };
   const tracked = load()
     .then((nodeIds) => {
@@ -150,16 +146,39 @@ function getCredGenRedis(): Redis {
   return credGenRedis;
 }
 
-/** Current credential generation for a username (0 when never minted). */
-export async function getOwnerCredentialGeneration(mqttUsername: string): Promise<number> {
-  try {
-    const value = await getCredGenRedis().get(OWNER_CRED_GEN_KEY(mqttUsername));
-    const parsed = value === null ? NaN : Number(value);
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
-  } catch (error) {
-    console.error('[owner-credgen] read failed, treating as 0', error instanceof Error ? error.message : error);
-    return 0;
+/** The credential generation could not be read; callers must treat every session as unverified. */
+export class OwnerCredentialGenerationUnavailableError extends Error {
+  constructor(options: { cause?: unknown } = {}) {
+    super('OWNER_CREDENTIAL_GENERATION_UNAVAILABLE', options);
+    this.name = 'OwnerCredentialGenerationUnavailableError';
   }
+}
+
+/**
+ * Current credential generation for a username (0 when never minted).
+ *
+ * Fails CLOSED: when Redis cannot answer, this throws instead of returning 0.
+ * Returning 0 would compare equal to every session minted before the first
+ * rotation, silently bypassing revocation for the whole outage window.
+ */
+export async function getOwnerCredentialGeneration(mqttUsername: string): Promise<number> {
+  let value: string | null;
+  try {
+    value = await getCredGenRedis().get(OWNER_CRED_GEN_KEY(mqttUsername));
+  } catch (error) {
+    console.error(
+      '[owner-credgen] read failed; refusing to validate owner sessions',
+      error instanceof Error ? error.message : error,
+    );
+    throw new OwnerCredentialGenerationUnavailableError({ cause: error });
+  }
+  if (value === null) return 0;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    console.error('[owner-credgen] unreadable generation value; refusing to validate owner sessions');
+    throw new OwnerCredentialGenerationUnavailableError();
+  }
+  return parsed;
 }
 
 /**
@@ -175,6 +194,13 @@ export async function bumpOwnerCredentialGeneration(mqttUsername: string): Promi
   } catch (error) {
     console.error('[owner-credgen] bump failed', error instanceof Error ? error.message : error);
   }
+}
+
+export async function closeOwnerCredentialGenerationClient(): Promise<void> {
+  if (!credGenRedis) return;
+  const client = credGenRedis;
+  credGenRedis = null;
+  await client.quit();
 }
 
 function verifyMqttCredentialsViaBroker(mqttUsername: string, mqttPassword: string): Promise<boolean> {

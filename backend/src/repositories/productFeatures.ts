@@ -1,4 +1,5 @@
 import type { QueryResultRow } from 'pg';
+import { nodeAliasArraySql, publicPacketPrivacySql } from '../api/utils/networkFilters.js';
 
 export type QueryFn = <T extends QueryResultRow = QueryResultRow>(
   text: string,
@@ -58,6 +59,7 @@ export async function observerHealthRows(query: QueryFn, networks: string[]) {
        WHERE p.time > NOW() - INTERVAL '48 hours'
          AND p.network = ANY($1::text[])
          AND p.rx_node_id IS NOT NULL
+         AND ${publicPacketPrivacySql('p')}
        GROUP BY p.rx_node_id
      )
      SELECT n.node_id, n.name, n.lat, n.lon,
@@ -102,7 +104,11 @@ export async function linkHistoryRows(
   nodeA: string,
   nodeB: string,
   hours: number,
+  networks: string[],
 ) {
+  // Resolve identities before scanning packets so both endpoint predicates can
+  // use the raw-key indexes. These are source/receiver receptions, including
+  // relayed packets; their SNR is not proof of a direct RF link between peers.
   return query<{
     time: string;
     snr: number | null;
@@ -110,17 +116,40 @@ export async function linkHistoryRows(
     path_loss: number | null;
     sample_count: number;
   }>(
-    `SELECT reports.last_seen::text AS time, reports.last_snr_db AS snr,
-            NULL::double precision AS rssi, links.itm_path_loss_db AS path_loss,
-            reports.sample_count
-     FROM node_identity_link_radio_reports reports
-     LEFT JOIN node_identity_links links
-       ON links.node_a_id = reports.node_a_id AND links.node_b_id = reports.node_b_id
-     WHERE reports.node_a_id = meshcore_canonical_node_id($1)
-       AND reports.node_b_id = meshcore_canonical_node_id($2)
-       AND reports.last_seen > NOW() - ($3::text || ' hours')::interval
-     ORDER BY reports.last_seen ASC`,
-    [nodeA, nodeB, String(hours)],
+    `WITH ids AS MATERIALIZED (
+       SELECT ${nodeAliasArraySql('$1')} AS a_ids,
+              ${nodeAliasArraySql('$2')} AS b_ids
+     ), recent AS (
+       SELECT p.time, p.observation_id, p.snr, p.rssi
+       FROM packets p
+       WHERE p.time > NOW() - ($3::text || ' hours')::interval
+         AND p.time <= NOW()
+         AND p.network = ANY($4::text[])
+         AND p.src_node_id IS NOT NULL
+         AND (
+           -- Scalar initplans keep the alias arrays in the packet index predicates.
+           (p.rx_node_id = ANY((SELECT a_ids FROM ids)::text[])
+             AND p.src_node_id = ANY((SELECT b_ids FROM ids)::text[]))
+           OR (p.rx_node_id = ANY((SELECT b_ids FROM ids)::text[])
+             AND p.src_node_id = ANY((SELECT a_ids FROM ids)::text[]))
+         )
+         AND p.payload->>'direction' IS DISTINCT FROM 'tx'
+         AND (p.snr IS NOT NULL OR p.rssi IS NOT NULL)
+         AND ${publicPacketPrivacySql('p')}
+       ORDER BY p.time DESC, p.observation_id DESC
+       LIMIT 1000
+     ), path_loss AS MATERIALIZED (
+       -- Match the identity view's MIN without materializing every network link.
+       SELECT MIN(links.itm_path_loss_db) AS value
+       FROM node_links links CROSS JOIN ids
+       WHERE (links.node_a_id = ANY(ids.a_ids) AND links.node_b_id = ANY(ids.b_ids))
+          OR (links.node_a_id = ANY(ids.b_ids) AND links.node_b_id = ANY(ids.a_ids))
+     )
+     SELECT to_char(recent.time AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS time,
+            recent.snr, recent.rssi, path_loss.value AS path_loss, 1::integer AS sample_count
+     FROM recent CROSS JOIN path_loss
+     ORDER BY recent.time ASC, recent.observation_id ASC`,
+    [nodeA, nodeB, String(hours), networks],
   );
 }
 

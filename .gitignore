@@ -39,6 +39,9 @@ __pycache__/
 # Runtime logs (operational, not for source control)
 *.log
 
+# Frozen local path evaluation data and per-packet predictions
+/artifacts/path-accuracy/
+
 # Claude context file (may contain deployment-specific details)
 CLAUDE.md
 AI_MEMORY.md
@@ -62,3 +65,10 @@ local-vs-github-pr-plan.md
 terrain-tiles/
 
 /.env.bak-*
+# Encrypted deployment-specific relay identities.
+.private-config/
+
+# Local planning documents / reports (tidy folder, never committed)
+/plans/
+*.bak
+*.bak-*

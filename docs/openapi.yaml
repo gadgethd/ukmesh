@@ -3880,6 +3880,421 @@
         }
       }
     },
+    "/api/owner/public-feed": {
+      "get": {
+        "summary": "Read owner public-feed settings",
+        "operationId": "get-owner-public-feed",
+        "tags": [
+          "owner"
+        ],
+        "x-access": "owner",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "featureEnabled",
+                    "configured",
+                    "brokerUrl",
+                    "enabled",
+                    "nodeCount",
+                    "eligible",
+                    "recentPacketCount",
+                    "topicFilters",
+                    "lastForwardedAt"
+                  ],
+                  "properties": {
+                    "featureEnabled": {
+                      "type": "boolean"
+                    },
+                    "configured": {
+                      "type": "boolean"
+                    },
+                    "brokerUrl": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "uri",
+                      "maxLength": 2048
+                    },
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "nodeCount": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "eligible": {
+                      "type": "boolean"
+                    },
+                    "recentPacketCount": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "topicFilters": {
+                      "type": "array",
+                      "maxItems": 1,
+                      "items": {
+                        "type": "string",
+                        "pattern": "^public/\\+/\\+/packets$"
+                      }
+                    },
+                    "lastForwardedAt": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "date-time"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid or out-of-bounds request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authentication or CSRF validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ownerSession": []
+          }
+        ]
+      },
+      "post": {
+        "summary": "Update owner public-feed settings",
+        "operationId": "post-owner-public-feed",
+        "tags": [
+          "owner"
+        ],
+        "x-access": "owner",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "featureEnabled",
+                    "configured",
+                    "brokerUrl",
+                    "enabled",
+                    "nodeCount",
+                    "eligible",
+                    "recentPacketCount",
+                    "topicFilters",
+                    "lastForwardedAt"
+                  ],
+                  "properties": {
+                    "featureEnabled": {
+                      "type": "boolean"
+                    },
+                    "configured": {
+                      "type": "boolean"
+                    },
+                    "brokerUrl": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "uri",
+                      "maxLength": 2048
+                    },
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "nodeCount": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "eligible": {
+                      "type": "boolean"
+                    },
+                    "recentPacketCount": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "topicFilters": {
+                      "type": "array",
+                      "maxItems": 1,
+                      "items": {
+                        "type": "string",
+                        "pattern": "^public/\\+/\\+/packets$"
+                      }
+                    },
+                    "lastForwardedAt": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "date-time"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid or out-of-bounds request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authentication or CSRF validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The public feed is not configured or the owner has no eligible packet activity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The broker ACL could not be updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ownerSession": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "enabled"
+                ],
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/owner/session": {
       "get": {
         "summary": "Read owner session",
@@ -5042,6 +5457,584 @@
         }
       }
     },
+    "/api/regions/repeaters": {
+      "get": {
+        "summary": "List repeaters classified by region-capability",
+        "operationId": "get-regions-repeaters",
+        "tags": [
+          "public"
+        ],
+        "x-access": "public",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "generatedAt",
+                    "repeaters"
+                  ],
+                  "properties": {
+                    "generatedAt": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "date-time"
+                    },
+                    "repeaters": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "nodeId",
+                          "status",
+                          "evidence",
+                          "scopedPackets",
+                          "unscopedPackets7d",
+                          "regions"
+                        ],
+                        "properties": {
+                          "nodeId": {
+                            "type": "string",
+                            "pattern": "^[0-9A-F]{64}$"
+                          },
+                          "name": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "role": {
+                            "type": [
+                              "integer",
+                              "null"
+                            ]
+                          },
+                          "lat": {
+                            "type": [
+                              "number",
+                              "null"
+                            ],
+                            "minimum": -90,
+                            "maximum": 90
+                          },
+                          "lon": {
+                            "type": [
+                              "number",
+                              "null"
+                            ],
+                            "minimum": -180,
+                            "maximum": 180
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "green",
+                              "red"
+                            ]
+                          },
+                          "evidence": {
+                            "type": "string"
+                          },
+                          "scopedPackets": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "unscopedPackets7d": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "regions": {
+                            "type": "object",
+                            "additionalProperties": {
+                              "type": "integer",
+                              "minimum": 0
+                            }
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid or out-of-bounds request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/regions/summary": {
+      "get": {
+        "summary": "Read per-region scoped-traffic participation summary",
+        "operationId": "get-regions-summary",
+        "tags": [
+          "public"
+        ],
+        "x-access": "public",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "generatedAt",
+                    "windowDays",
+                    "regions"
+                  ],
+                  "properties": {
+                    "generatedAt": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "date-time"
+                    },
+                    "windowDays": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": 1,
+                      "maximum": 365
+                    },
+                    "regions": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "name",
+                          "packetsTotal",
+                          "memberCount",
+                          "repeaterMemberCount",
+                          "confidence",
+                          "members"
+                        ],
+                        "properties": {
+                          "name": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 64
+                          },
+                          "packetsTotal": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "memberCount": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "repeaterMemberCount": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "confidence": {
+                            "type": "string",
+                            "enum": [
+                              "confirmed",
+                              "probable",
+                              "single"
+                            ]
+                          },
+                          "firstSeen": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "format": "date-time"
+                          },
+                          "lastSeen": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "format": "date-time"
+                          },
+                          "members": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "required": [
+                                "nodeId",
+                                "name",
+                                "role",
+                                "lat",
+                                "lon",
+                                "packets",
+                                "isBridge"
+                              ],
+                              "properties": {
+                                "nodeId": {
+                                  "type": "string",
+                                  "pattern": "^[0-9A-F]{64}$"
+                                },
+                                "name": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "role": {
+                                  "type": [
+                                    "integer",
+                                    "null"
+                                  ]
+                                },
+                                "lat": {
+                                  "type": [
+                                    "number",
+                                    "null"
+                                  ],
+                                  "minimum": -90,
+                                  "maximum": 90
+                                },
+                                "lon": {
+                                  "type": [
+                                    "number",
+                                    "null"
+                                  ],
+                                  "minimum": -180,
+                                  "maximum": 180
+                                },
+                                "packets": {
+                                  "type": "integer",
+                                  "minimum": 0
+                                },
+                                "isBridge": {
+                                  "type": "boolean"
+                                }
+                              },
+                              "additionalProperties": false
+                            }
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid or out-of-bounds request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/repeaters/{id}/scope": {
+      "get": {
+        "summary": "Read one repeater's region scoping detail",
+        "operationId": "get-repeaters-id-scope",
+        "tags": [
+          "public"
+        ],
+        "x-access": "public",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "nodeId",
+                    "status",
+                    "evidence",
+                    "scopedPackets",
+                    "unscopedPackets7d",
+                    "regions"
+                  ],
+                  "properties": {
+                    "nodeId": {
+                      "type": "string",
+                      "pattern": "^[0-9A-F]{64}$"
+                    },
+                    "name": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "role": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "lat": {
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "minimum": -90,
+                      "maximum": 90
+                    },
+                    "lon": {
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "minimum": -180,
+                      "maximum": 180
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "green",
+                        "red",
+                        "unobserved"
+                      ]
+                    },
+                    "evidence": {
+                      "type": "string"
+                    },
+                    "scopedPackets": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "unscopedPackets7d": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "regions": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "region",
+                          "packets"
+                        ],
+                        "properties": {
+                          "region": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 64
+                          },
+                          "packets": {
+                            "type": "integer",
+                            "minimum": 0
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid or out-of-bounds request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The repeater is not known to the region-scope tables",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/repeaters/firmware": {
       "get": {
         "summary": "Read repeaters firmware",
@@ -5878,6 +6871,87 @@
       "get": {
         "summary": "Read stats charts",
         "operationId": "get-stats-charts",
+        "tags": [
+          "public"
+        ],
+        "x-access": "public",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid or out-of-bounds request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tags/recent": {
+      "get": {
+        "summary": "Read tags recent",
+        "operationId": "get-tags-recent",
         "tags": [
           "public"
         ],

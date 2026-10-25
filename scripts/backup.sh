@@ -5,8 +5,18 @@ umask 077
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 project_dir="$(cd -- "${script_dir}/.." && pwd)"
 app_project_name="${COMPOSE_PROJECT_NAME:-meshcore-analytics}"
-infra_project_dir="${MESHCORE_INFRA_DIR:-${project_dir}/../meshcore-infra}"
+if [ -n "${MESHCORE_INFRA_COMPOSE_FILE:-}" ]; then
+  infra_compose_file="$MESHCORE_INFRA_COMPOSE_FILE"
+  infra_project_dir="${MESHCORE_INFRA_PROJECT_DIR:-${MESHCORE_INFRA_DIR:-$(dirname -- "$infra_compose_file")}}"
+else
+  infra_project_dir="${MESHCORE_INFRA_PROJECT_DIR:-${MESHCORE_INFRA_DIR:-${project_dir}/../meshcore-infra}}"
+  infra_compose_file="$infra_project_dir/docker-compose.yml"
+fi
 infra_project_name="${MESHCORE_INFRA_PROJECT_NAME:-meshcore-infra}"
+export MESHCORE_INFRA_PROJECT_DIR="$infra_project_dir"
+export MESHCORE_INFRA_COMPOSE_FILE="$infra_compose_file"
+export MESHCORE_INFRA_PROJECT_NAME="$infra_project_name"
+source "$script_dir/lib/infra-compose.sh"
 output_dir="${BACKUP_OUTPUT_DIR:?BACKUP_OUTPUT_DIR must name an encrypted backup target}"
 encryption_cert="${BACKUP_ENCRYPTION_CERT:?BACKUP_ENCRYPTION_CERT must name a public X.509 certificate}"
 signing_key="${BACKUP_RECEIPT_SIGNING_KEY:?BACKUP_RECEIPT_SIGNING_KEY must name the offline receipt signing key}"
@@ -29,8 +39,8 @@ for path in "$encryption_cert" "$signing_key"; do
     exit 66
   }
 done
-test -f "$infra_project_dir/docker-compose.yml" || {
-  echo "meshcore-infra compose file is missing: $infra_project_dir/docker-compose.yml" >&2
+test -f "$infra_compose_file" || {
+  echo "infrastructure Compose file is missing: $infra_compose_file" >&2
   exit 66
 }
 openssl x509 -in "$encryption_cert" -noout >/dev/null
@@ -66,30 +76,27 @@ if (( (8#$env_mode & 8#077) != 0 )); then
   echo "protected runtime configuration .env must not be group/world accessible" >&2
   exit 66
 fi
+infra_env_file="$infra_project_dir/.env"
+if [ ! -f "$infra_env_file" ] || [ -L "$infra_env_file" ]; then
+  echo "protected infrastructure configuration .env is missing or unsafe" >&2
+  exit 66
+fi
+infra_env_mode="$(stat -c '%a' "$infra_env_file")"
+if (( (8#$infra_env_mode & 8#077) != 0 )); then
+  echo "protected infrastructure configuration .env must not be group/world accessible" >&2
+  exit 66
+fi
 app_compose=(
   docker compose --project-directory "$project_dir"
   -f "$project_dir/docker-compose.yml"
   -f "$project_dir/docker-compose.live.yml"
   --project-name "$app_project_name"
 )
-infra_compose=(
-  docker compose --project-directory "$infra_project_dir"
-  -f "$infra_project_dir/docker-compose.yml"
-  --project-name "$infra_project_name"
-)
 "${app_compose[@]}" config -q
-"${infra_compose[@]}" config -q
+meshcore_infra_compose config -q
 declare -A service_container_ids=()
 for service in timescaledb redis mosquitto; do
-  container_id="$("${infra_compose[@]}" ps -q "$service")"
-  test -n "$container_id" || {
-    echo "required service is not running: $service" >&2
-    exit 69
-  }
-  if [ "$(docker inspect "$container_id" --format '{{.State.Status}}')" != "running" ]; then
-    echo "required service is not running: $service" >&2
-    exit 69
-  fi
+  container_id="$(resolve_infra_container "$service")"
   service_container_ids["$service"]="$container_id"
 done
 timescaledb_container="${service_container_ids[timescaledb]}"
@@ -190,8 +197,15 @@ tar -C "$project_dir" -czf "$payload_dir/configuration.tgz" \
   logging \
   backend/src/db/migrations backend/src/db/schema backend/src/db/owner-auth.sql \
   scripts/backup.sh scripts/restore-drill.sh scripts/sync-latest.sh scripts/replace-container.sh \
+  scripts/lib/infra-compose.sh scripts/unify-networks.sh scripts/relabel-packets-per-chunk.sh \
   scripts/bootstrap-mosquitto.sh vacuum-compressed-chunks.sh
-tar -C "$infra_project_dir" -czf "$payload_dir/infra-configuration.tgz" \
+infra_configuration_stage="$tmp_dir/infra-configuration"
+mkdir -p "$infra_configuration_stage"
+cp -- "$infra_project_dir/.env" "$infra_configuration_stage/.env"
+cp -- "$infra_compose_file" "$infra_configuration_stage/docker-compose.yml"
+cp -- "$infra_project_dir/README.md" "$infra_configuration_stage/README.md"
+cp -- "$infra_project_dir/ROLLBACK.md" "$infra_configuration_stage/ROLLBACK.md"
+tar -C "$infra_configuration_stage" -czf "$payload_dir/infra-configuration.tgz" \
   .env docker-compose.yml README.md ROLLBACK.md
 
 completed_at="$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"

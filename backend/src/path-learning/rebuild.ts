@@ -17,6 +17,7 @@ import {
   normalizePathHash,
 } from '../path-hash/utils.js';
 import { expandResolverScope } from '../networks.js';
+import { publicPacketPrivacySql } from '../api/utils/networkFilters.js';
 import {
   PATH_LEARNING_DELTA_DEFINITIONS,
   publishPathLearningDelta,
@@ -32,6 +33,7 @@ type LearningNode = {
 };
 
 type LearningPacket = {
+  direction?: string | null;
   time: string;
   rx_node_id: string;
   src_node_id: string | null;
@@ -47,6 +49,7 @@ type LearningLink = {
 };
 
 type ResolvedHop = {
+  position: number;
   prefix: string;
   node: LearningNode;
   isUnique: boolean;
@@ -91,7 +94,7 @@ const MAX_CORRIDOR_CHOICES_PER_GROUP = 16;
 const MAX_POSITION_TRANSITIONS_PER_GROUP = 16;
 const HOUR_BUCKET_SIZE = 6;
 const PREFIX_AMBIGUITY_RADIUS_KM = 45;
-const PATH_LEARNING_ALGORITHM_VERSION = 'path-learning-v4-delta';
+const PATH_LEARNING_ALGORITHM_VERSION = 'path-learning-v5-contiguous';
 
 type PrefixPriorWriteRow = {
   prefix: string;
@@ -218,7 +221,7 @@ function localPrefixAmbiguityPenalty(
   return clamp(raw * 0.12, 0, 0.24);
 }
 
-function resolvePathForPacket(
+export function resolvePathForPacket(
   pathHashes: string[],
   srcNode: LearningNode | undefined,
   rxNode: LearningNode,
@@ -232,7 +235,7 @@ function resolvePathForPacket(
   for (let i = pathHashes.length - 1; i >= 0; i--) {
     const prefix = normalizePathHash(pathHashes[i]);
     const allCandidates = getNodesForPathHash(pathHashIndex, prefix);
-    const candidates = allCandidates.filter((n) => !visited.has(n.node_id));
+    const candidates = allCandidates.filter((n) => allCandidates.length === 1 || !visited.has(n.node_id));
     if (candidates.length === 0) continue;
 
     let best: LearningNode | null = null;
@@ -251,7 +254,7 @@ function resolvePathForPacket(
     }
 
     if (best) {
-      resolved.unshift({ prefix, node: best, isUnique: allCandidates.length === 1 });
+      resolved.unshift({ position: i, prefix, node: best, isUnique: allCandidates.length === 1 });
       visited.add(best.node_id);
       prev = best;
     }
@@ -487,11 +490,11 @@ async function publishPathLearningRowsDeltaUnderAdmission(
   }
 }
 
-export async function rebuildPathLearningModels(): Promise<void> {
-  const windowEnd = new Date();
-  const windowStart = new Date(windowEnd.getTime() - 30 * 24 * 60 * 60_000);
-  const networksResult = await analyticsQuery<{ network: string }>(
-    `SELECT DISTINCT network
+/** Networks with trainable packets in the window. Private packets must not
+ * decide which models are built, so this selector carries the same predicate as
+ * public packet reads. */
+export function pathLearningNetworksSql(): string {
+  return `SELECT DISTINCT network
      FROM packets
      WHERE network IS NOT NULL
        AND time > $1::timestamptz
@@ -500,9 +503,18 @@ export async function rebuildPathLearningModels(): Promise<void> {
        AND path_hashes IS NOT NULL
        AND cardinality(path_hashes) > 0
        AND path_hash_size_bytes >= 2
+       AND route_type IN (0, 1)
        AND mod(hashtext(packet_hash)::bigint + 2147483648, 100) < ${TRAINING_SPLIT_PERCENT}
+       AND ${publicPacketPrivacySql()}
      ORDER BY network
-     LIMIT 33`,
+     LIMIT 33`;
+}
+
+export async function rebuildPathLearningModels(): Promise<void> {
+  const windowEnd = new Date();
+  const windowStart = new Date(windowEnd.getTime() - 30 * 24 * 60 * 60_000);
+  const networksResult = await analyticsQuery<{ network: string }>(
+    pathLearningNetworksSql(),
     [windowStart, windowEnd],
   );
   if (networksResult.rows.length > 32) throw new Error('PATH_LEARNING_NETWORK_LIMIT');
@@ -565,6 +577,60 @@ async function rebuildNetwork(
   }
 }
 
+/** Training rows must satisfy exactly the public-read privacy predicate, so a
+ * packet the API hides can never influence a published path model. */
+export function pathLearningTrainingPacketsSql(
+  packetNetworkFilter: string,
+  hasSourceNetwork: boolean,
+): string {
+  const windowStartParam = hasSourceNetwork ? 2 : 1;
+  const windowEndParam = hasSourceNetwork ? 3 : 2;
+  const limitParam = hasSourceNetwork ? 4 : 3;
+  return `SELECT DISTINCT ON (packet_hash, rx_node_id, src_node_id, path_hashes)
+            time, rx_node_id, src_node_id, path_hashes, payload->>'direction' AS direction
+       FROM packets
+      WHERE rx_node_id IS NOT NULL
+        AND path_hashes IS NOT NULL
+        AND cardinality(path_hashes) > 0
+        AND path_hash_size_bytes >= 2
+        AND route_type IN (0, 1)
+        AND time > $${windowStartParam}::timestamptz
+        AND time <= $${windowEndParam}::timestamptz
+        AND mod(hashtext(packet_hash)::bigint + 2147483648, 100) < ${TRAINING_SPLIT_PERCENT}
+        AND ${publicPacketPrivacySql()}
+        ${packetNetworkFilter}
+      ORDER BY packet_hash, rx_node_id, src_node_id, path_hashes, time DESC
+      LIMIT $${limitParam}`;
+}
+
+/** `private_node_prefixes` stores 1..3-byte hashes of private node ids, so a raw
+ * path prefix is private exactly when it is a leading substring of one of those
+ * node ids. An empty prefix carries no identity and is never blocked. */
+export function isPrivatePathPrefix(
+  value: string | null | undefined,
+  privateNodeIds: Iterable<string>,
+): boolean {
+  const prefix = String(value ?? '').trim().toUpperCase();
+  if (prefix.length === 0) return false;
+  for (const nodeId of privateNodeIds) {
+    if (String(nodeId).trim().toUpperCase().startsWith(prefix)) return true;
+  }
+  return false;
+}
+
+/** Publication-side twin of the public path-read filter: a prior row whose own
+ * prefix or carried previous-hop prefix resolves onto a private node is dropped
+ * before it can reach `path_prefix_priors`. */
+export function dropPrivatePrefixRows<T extends { prefix: string; prev_prefix: string }>(
+  rows: readonly T[],
+  privateNodeIds: Iterable<string>,
+): T[] {
+  const ids = Array.from(privateNodeIds);
+  return rows.filter((row) => (
+    !isPrivatePathPrefix(row.prefix, ids) && !isPrivatePathPrefix(row.prev_prefix, ids)
+  ));
+}
+
 async function rebuildNetworkUnderLease(
   modelNetwork: string,
   sourceNetwork: string | undefined,
@@ -591,19 +657,7 @@ async function rebuildNetworkUnderLease(
   const linkParams: unknown[] = sourceNetwork ? [sourceNetwork, MAX_LEARNING_LINKS + 1] : [MAX_LEARNING_LINKS + 1];
 
   const packetsResult = await analyticsQuery<LearningPacket>(
-    `SELECT DISTINCT ON (packet_hash, rx_node_id, src_node_id, path_hashes)
-            time, rx_node_id, src_node_id, path_hashes
-       FROM packets
-      WHERE rx_node_id IS NOT NULL
-        AND path_hashes IS NOT NULL
-        AND cardinality(path_hashes) > 0
-        AND path_hash_size_bytes >= 2
-        AND time > $${sourceNetwork ? 2 : 1}::timestamptz
-        AND time <= $${sourceNetwork ? 3 : 2}::timestamptz
-        AND mod(hashtext(packet_hash)::bigint + 2147483648, 100) < ${TRAINING_SPLIT_PERCENT}
-        ${packetNetworkFilter}
-      ORDER BY packet_hash, rx_node_id, src_node_id, path_hashes, time DESC
-      LIMIT $${sourceNetwork ? 4 : 3}`,
+    pathLearningTrainingPacketsSql(packetNetworkFilter, sourceNetwork !== undefined),
     packetParams,
     heartbeat.signal,
   );
@@ -637,6 +691,15 @@ async function rebuildNetworkUnderLease(
   heartbeat.assertOwned();
   if (nodesResult.rows.length > MAX_LEARNING_NODES) throw new Error('PATH_LEARNING_NODE_LIMIT');
   const nodesById = new Map(nodesResult.rows.map((n) => [n.node_id, n]));
+  // Publication is lease-fenced on the privacy generation captured when the run
+  // started, so a private-prefix snapshot taken inside the run cannot go stale
+  // before the delta commits.
+  const privatePrefixesResult = await analyticsQuery<{ node_id: string }>(
+    'SELECT DISTINCT node_id FROM private_node_prefixes',
+    [],
+    heartbeat.signal,
+  );
+  const privateNodeIds = privatePrefixesResult.rows.map((row) => row.node_id);
 
   const pathHashIndex = buildNodePathHashIndex(nodesResult.rows);
 
@@ -708,7 +771,7 @@ async function rebuildNetworkUnderLease(
     if (hashes.length === 0) continue;
     const rx = nodesById.get(packet.rx_node_id);
     if (!rx) continue;
-    if (hashes.length > 0 && rx.node_id.toUpperCase().startsWith(hashes[hashes.length - 1]!)) {
+    if (packet.direction !== 'rx' && hashes.length > 0 && rx.node_id.toUpperCase().startsWith(hashes[hashes.length - 1]!)) {
       hashes = hashes.slice(0, -1);
     }
     if (hashes.length === 0) continue;
@@ -722,9 +785,13 @@ async function rebuildNetworkUnderLease(
     const ts = new Date(packet.time);
     const bucket = hourBucket(ts);
 
-    const fullNodes: LearningPathNode[] = [
+    const resolvedByPosition = new Map(resolved.map((hop) => [hop.position, hop]));
+    const fullNodes: (LearningPathNode | null)[] = [
       ...(src ? [{ node: src, isVerified: true }] : []),
-      ...resolved.map((hop) => ({ node: hop.node, isVerified: hop.isUnique })),
+      ...hashes.map((_, position) => {
+        const hop = resolvedByPosition.get(position);
+        return hop ? { node: hop.node, isVerified: hop.isUnique } : null;
+      }),
       { node: rx, isVerified: true },
     ];
     let successfulEdges = 0;
@@ -732,7 +799,7 @@ async function rebuildNetworkUnderLease(
     for (let i = 0; i < fullNodes.length - 1; i++) {
       const from = fullNodes[i]!;
       const to = fullNodes[i + 1]!;
-      if (!from.isVerified || !to.isVerified) continue;
+      if (!from?.isVerified || !to?.isVerified) continue;
       totalEdges++;
       if (confirmedLinks.has(linkKey(from.node.node_id, to.node.node_id))) successfulEdges++;
     }
@@ -746,7 +813,7 @@ async function rebuildNetworkUnderLease(
     for (let i = 0; i < resolved.length; i++) {
       const hop = resolved[i]!;
       if (!hop.isUnique) continue;
-      const prevPrefix = i > 0 ? resolved[i - 1]!.prefix : '';
+      const prevPrefix = hop.position > 0 ? hashes[hop.position - 1]! : '';
       const prefixGroup = `${hop.prefix}|${region}|${prevPrefix}`;
       const choiceKey = `${prefixGroup}|${hop.node.node_id}`;
       increment(prefixChoiceCounts, choiceKey);
@@ -783,7 +850,7 @@ async function rebuildNetworkUnderLease(
     for (let i = 0; i < fullNodes.length - 1; i++) {
       const from = fullNodes[i]!;
       const to = fullNodes[i + 1]!;
-      if (!from.isVerified || !to.isVerified) continue;
+      if (!from?.isVerified || !to?.isVerified) continue;
       const group = `${from.node.node_id}|${region}`;
       const edgeKey = `${group}|${to.node.node_id}`;
       increment(transitionCounts, edgeKey);
@@ -802,7 +869,7 @@ async function rebuildNetworkUnderLease(
 
       if (i < fullNodes.length - 2) {
         const next = fullNodes[i + 2]!;
-        if (!next.isVerified) continue;
+        if (!next?.isVerified) continue;
         const motif3Group = `${region}|${bucket}|${from.node.node_id}>${to.node.node_id}`;
         const motif3Key = `${motif3Group}|${from.node.node_id}>${to.node.node_id}>${next.node.node_id}`;
         increment(motif3Counts, motif3Key);
@@ -850,6 +917,9 @@ async function rebuildNetworkUnderLease(
       });
     }
   }
+  // `prev_prefix` is a raw preceding path hash carried straight from the packet;
+  // drop every prior that would republish a private node's prefix.
+  const publishablePrefixRows = dropPrivatePrefixRows(prefixRows, privateNodeIds);
 
   const groupedPositionPrefixes = new Map<string, Array<{ nodeId: string; count: number }>>();
   for (const [key, count] of positionPrefixChoiceCounts) {
@@ -1107,7 +1177,7 @@ async function rebuildNetworkUnderLease(
     recommendedThreshold,
   };
   const datasets: object[][] = [
-    prefixRows,
+    publishablePrefixRows,
     positionPrefixRows,
     corridorRows,
     transitionRows,
