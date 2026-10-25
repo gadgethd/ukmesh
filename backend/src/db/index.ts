@@ -30,6 +30,7 @@ import {
 import { channelHashesForName, isPublicChannelName, sanitizePublicPacketPayload } from '../mqtt/channelRegistry.js';
 import { buildPacketBatchInput, type InsertPacketInput } from './packetInput.js';
 import { getRamIngestMode } from '../ram/protocol.js';
+import { ingestPool, ingestQuery, withIngestTransaction } from './ingest.js';
 
 const { Pool } = pg;
 const COORDINATE_RECALC_THRESHOLD_M = Number(process.env['NODE_COORDINATE_RECALC_THRESHOLD_M'] ?? 25);
@@ -49,7 +50,7 @@ const pool = new Pool({
 pool.on('error', (err) => {
   console.error('[db] unexpected pool error', err.message);
 });
-configurePacketBatch((text, params) => pool.query(text, params), withTransaction);
+configurePacketBatch(ingestQuery, withIngestTransaction);
 
 // Dedicated pool for long-running analytical queries (e.g. refreshRecentPathEvidence).
 // Kept separate so slow analytics can never exhaust the OLTP pool and take down the API.
@@ -507,7 +508,7 @@ export async function upsertNode(nodeId: string, updates: {
   // updates retain the transaction below because they also compare old values
   // and invalidate dependent coverage atomically.
   if (!hasIncomingPosition) {
-    const result = await pool.query<{ advert_count: number }>(
+    const result = await ingestQuery<{ advert_count: number }>(
       `WITH advert_once AS (
          INSERT INTO node_counted_adverts (canonical_advert_hash, node_id, counted_at)
          SELECT $13, $1, NOW()
@@ -548,17 +549,15 @@ export async function upsertNode(nodeId: string, updates: {
     return { coordinatesChanged: false, advertCount: Number(result.rows[0]?.advert_count ?? 0) };
   }
 
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
+  return withIngestTransaction(async (transactionQuery) => {
     const existing = hasIncomingPosition
-      ? await client.query<{ lat: number | null; lon: number | null }>(
+      ? await transactionQuery<{ lat: number | null; lon: number | null }>(
           'SELECT lat, lon FROM nodes WHERE node_id = $1 FOR UPDATE',
           [nodeId],
         )
       : null;
 
-    const upsert = await client.query<{ advert_count: number }>(
+    const upsert = await transactionQuery<{ advert_count: number }>(
       `WITH advert_once AS (
          INSERT INTO node_counted_adverts (canonical_advert_hash, node_id, counted_at)
          SELECT $13, $1, NOW()
@@ -610,21 +609,15 @@ export async function upsertNode(nodeId: string, updates: {
     );
 
     if (coordinatesChanged) {
-      await client.query('UPDATE nodes SET elevation_m = NULL WHERE node_id = $1', [nodeId]);
-      await client.query('DELETE FROM node_coverage WHERE node_id = $1', [nodeId]);
+      await transactionQuery('UPDATE nodes SET elevation_m = NULL WHERE node_id = $1', [nodeId]);
+      await transactionQuery('DELETE FROM node_coverage WHERE node_id = $1', [nodeId]);
     }
 
-    await client.query('COMMIT');
     return {
       coordinatesChanged,
       advertCount: Number(upsert.rows[0]?.advert_count ?? 0),
     };
-  } catch (err) {
-    await client.query('ROLLBACK');
-    throw err;
-  } finally {
-    client.release();
-  }
+  });
 }
 
 export async function insertPacket(p: InsertPacketInput): Promise<PacketBatchResult> {
@@ -646,7 +639,7 @@ export async function insertNodeStatusSample(sample: {
   stats?: Record<string, unknown> | null;
   status?: string | null;
 }): Promise<void> {
-  await pool.query(
+  await ingestQuery(
     `WITH sample_insert AS (
        INSERT INTO node_status_samples
        (time, node_id, network, battery_mv, uptime_secs, tx_air_secs, rx_air_secs, channel_utilization, air_util_tx, stats, status)
@@ -678,7 +671,7 @@ export async function insertNodeNeighborSample(sample: {
   network?: string;
   neighbors: unknown[];
 }): Promise<void> {
-  await pool.query(
+  await ingestQuery(
     `INSERT INTO node_neighbor_samples (node_id, time, neighbors, network)
      VALUES ($1, NOW(), $2::jsonb, $3)`,
     [sample.nodeId, JSON.stringify(sample.neighbors), sample.network ?? 'ukmesh'],
@@ -1451,7 +1444,7 @@ export async function getViableLinks(
 export { pool, analyticsPool };
 
 export async function closeDb(): Promise<void> {
-  await Promise.all([pool.end(), analyticsPool.end()]);
+  await Promise.all([pool.end(), analyticsPool.end(), ingestPool.end()]);
 }
 
 // ---------------------------------------------------------------------------

@@ -17,6 +17,7 @@ import { getMqttRuntimeStatus, publishMqtt, startMqttClient, stopMqttClient, onP
 import { startRamWriter, closeRamWriter } from './ram/writerRuntime.js';
 import { getRamIngestMode } from './ram/protocol.js';
 import {
+  getMqttConnectionMonitorStatus,
   startMqttConnectionMonitor,
   stopMqttConnectionMonitor,
 } from './mqtt/connectionMonitor.js';
@@ -370,6 +371,7 @@ async function main() {
     const checks = {
       database: false,
       mqtt: MQTT_INGEST_ENABLED ? getMqttRuntimeStatus() : { state: 'disabled', changedAt: new Date().toISOString() },
+      mqttConnectionMonitor: MQTT_INGEST_ENABLED ? getMqttConnectionMonitorStatus() : { state: 'disabled' },
       ownerAuthorization: {
         mode: String(process.env['OWNER_AUTHORIZATION_MODE'] ?? 'enforce'),
         aclMode: String(process.env['OWNER_ACL_MODE'] ?? 'apply'),
@@ -432,7 +434,9 @@ async function main() {
     const ready = !lifecycle.isDraining
       && checks.database
       && ownerAclReady
-      && (!MQTT_INGEST_ENABLED || checks.mqtt.state === 'connected');
+      && (!MQTT_INGEST_ENABLED || (
+        checks.mqtt.state === 'connected' && checks.mqttConnectionMonitor.state === 'healthy'
+      ));
     res.status(ready ? 200 : 503).json({ status: ready ? 'ready' : 'degraded', checks, ts: Date.now() });
   });
   app.use(apiErrorMiddleware);

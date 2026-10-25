@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import { createInterface } from 'node:readline';
-import { recordUntrustedMqttNodeObservation } from '../db/ownerAuth.js';
+import { mqttConnectionMonitorErrorsTotal, mqttConnectionMonitorHealthy } from '../metrics.js';
 import {
   parseDeniedOwnerPublish,
   parseMeshcoreClientNodePrefix,
@@ -23,10 +23,6 @@ type ClientObservation = {
 };
 
 const clientToUsername = new Map<string, ClientObservation>();
-let monitorTimer: NodeJS.Timeout | null = null;
-let retryTimer: NodeJS.Timeout | null = null;
-let monitorInFlight: Promise<void> | null = null;
-let monitorStopping = false;
 
 function pruneClientObservations(now = Date.now()): void {
   for (const [clientId, observation] of clientToUsername) {
@@ -78,124 +74,170 @@ export function observeBrokerLogLine(line: string, now = Date.now()): BrokerSecu
   };
 }
 
-async function scanRange(start: number, end: number): Promise<void> {
-  const denied = new Map<string, { mqttUsername: string; claimedNodeId: string }>();
-  let connectionCount = 0;
-  let deniedPublishCount = 0;
-  await new Promise<void>((resolve, reject) => {
-    const stream = fs.createReadStream(LOG_PATH, { start, end });
-    const reader = createInterface({ input: stream, crlfDelay: Infinity });
-    reader.on('line', (line) => {
-      const observation = observeBrokerLogLine(line);
-      if (observation?.kind === 'connection') {
-        connectionCount += 1;
-      } else if (observation?.kind === 'denied-publish') {
-        deniedPublishCount += 1;
-        if (observation.mqttUsername && denied.size < MAX_AUDIT_OBSERVATIONS_PER_SCAN) {
-          const key = `${observation.mqttUsername}\u0000${observation.claimedNodeId}`;
-          denied.set(key, {
-            mqttUsername: observation.mqttUsername,
-            claimedNodeId: observation.claimedNodeId,
-          });
-        }
-      }
-    });
-    reader.on('close', resolve);
-    reader.on('error', reject);
-  });
+export type ConnectionMonitorStatus = {
+  state: 'starting' | 'healthy' | 'error' | 'stopped';
+  lastSuccessfulPollAt: string | null;
+  lastError: string | null;
+};
 
-  for (const observation of denied.values()) {
-    try {
-      await recordUntrustedMqttNodeObservation(observation.mqttUsername, observation.claimedNodeId);
-    } catch (error) {
-      // One failed audit row must not replay the entire broker-log range.
-      console.error('[conn-monitor] audit observation write failed:', (error as Error).message);
+export function createMqttConnectionMonitor({
+  logPath = LOG_PATH,
+  files = fs,
+  recordObservation = async (username: string, nodeId: string) => {
+    const { recordUntrustedMqttNodeObservation } = await import('../db/ownerAuth.js');
+    await recordUntrustedMqttNodeObservation(username, nodeId);
+  },
+  pollIntervalMs = POLL_INTERVAL_MS,
+  retryIntervalMs = 30_000,
+} : {
+  logPath?: string;
+  files?: Pick<typeof fs, 'statSync' | 'createReadStream'>;
+  recordObservation?: (username: string, nodeId: string) => Promise<void>;
+  pollIntervalMs?: number;
+  retryIntervalMs?: number;
+} = {}) {
+  let monitorTimer: NodeJS.Timeout | null = null;
+  let retryTimer: NodeJS.Timeout | null = null;
+  let monitorInFlight: Promise<void> | null = null;
+  let monitorStopping = false;
+  let position = 0;
+  let lastSuccessfulPollAt: string | null = null;
+  let readError: string | null = null;
+  let auditError: string | null = null;
+
+  function status(): ConnectionMonitorStatus {
+    const lastError = readError ?? auditError;
+    return {
+      state: monitorStopping ? 'stopped' : lastError ? 'error' : lastSuccessfulPollAt ? 'healthy' : 'starting',
+      lastSuccessfulPollAt,
+      lastError,
+    };
+  }
+
+  function publishHealth(): void {
+    mqttConnectionMonitorHealthy.set(status().state === 'healthy' ? 1 : 0);
+  }
+
+  function fail(phase: 'init' | 'poll' | 'audit', error: unknown): void {
+    const code = (error as NodeJS.ErrnoException | null)?.code ?? 'UNKNOWN';
+    const detail = `${phase}:${code}`;
+    if (phase === 'audit') auditError = detail;
+    else readError = detail;
+    mqttConnectionMonitorErrorsTotal.inc({ phase });
+    publishHealth();
+    console.error('[conn-monitor] failure', { phase, code, logPath });
+  }
+
+  async function scanRange(start: number, end: number): Promise<void> {
+    const denied = new Map<string, { mqttUsername: string; claimedNodeId: string }>();
+    let connectionCount = 0;
+    let deniedPublishCount = 0;
+    await new Promise<void>((resolve, reject) => {
+      const stream = files.createReadStream(logPath, { start, end });
+      const reader = createInterface({ input: stream, crlfDelay: Infinity });
+      reader.on('line', (line) => {
+        const observation = observeBrokerLogLine(line);
+        if (observation?.kind === 'connection') {
+          connectionCount += 1;
+        } else if (observation?.kind === 'denied-publish') {
+          deniedPublishCount += 1;
+          if (observation.mqttUsername && denied.size < MAX_AUDIT_OBSERVATIONS_PER_SCAN) {
+            const key = `${observation.mqttUsername}\u0000${observation.claimedNodeId}`;
+            denied.set(key, {
+              mqttUsername: observation.mqttUsername,
+              claimedNodeId: observation.claimedNodeId,
+            });
+          }
+        }
+      });
+      reader.on('close', resolve);
+      reader.on('error', reject);
+      stream.on('error', reject);
+    });
+
+    let auditFailed = false;
+    for (const observation of denied.values()) {
+      try {
+        await recordObservation(observation.mqttUsername, observation.claimedNodeId);
+      } catch (error) {
+        // One failed audit row must not replay the entire broker-log range.
+        auditFailed = true;
+        fail('audit', error);
+      }
+    }
+    if (denied.size > 0 && !auditFailed) auditError = null;
+    if (connectionCount > 0 || deniedPublishCount > 0) {
+      console.log('[conn-monitor] audit-only broker observations', {
+        connections: connectionCount,
+        deniedPublishes: deniedPublishCount,
+        retainedDeniedObservations: denied.size,
+        droppedDeniedObservations: Math.max(0, deniedPublishCount - denied.size),
+      });
     }
   }
-  if (connectionCount > 0 || deniedPublishCount > 0) {
-    console.log('[conn-monitor] audit-only broker observations', {
-      connections: connectionCount,
-      deniedPublishes: deniedPublishCount,
-      retainedDeniedObservations: denied.size,
-      droppedDeniedObservations: Math.max(0, deniedPublishCount - denied.size),
-    });
-  }
-}
 
-export function startMqttConnectionMonitor(): void {
-  if (monitorStopping || monitorTimer || retryTimer || monitorInFlight) return;
-  if (!fs.existsSync(LOG_PATH)) {
-    console.warn('[conn-monitor] log not found at', LOG_PATH, '— retrying in 30s');
-    retryTimer = setTimeout(() => {
-      retryTimer = null;
-      startMqttConnectionMonitor();
-    }, 30_000);
-    retryTimer.unref();
-    return;
-  }
-
-  let position = 0;
-  let pollInFlight = false;
-  async function init(): Promise<void> {
-    const { size } = fs.statSync(LOG_PATH);
-    const start = Math.max(0, size - HISTORICAL_SCAN_BYTES);
-    if (start < size) await scanRange(start, size - 1);
-    position = size;
-    console.log('[conn-monitor] ready in audit-only mode; logs cannot grant ownership');
-  }
-
-  async function poll(): Promise<void> {
+  async function pollOnce(initial = false): Promise<void> {
     try {
-      const { size } = fs.statSync(LOG_PATH);
+      const { size } = files.statSync(logPath);
+      if (initial) position = Math.max(0, size - HISTORICAL_SCAN_BYTES);
       if (size < position) position = 0;
       if (size > position) {
         await scanRange(position, size - 1);
         position = size;
       }
       pruneClientObservations();
-    } catch {
-      // Log may be unavailable briefly during rotation.
+      readError = null;
+      lastSuccessfulPollAt = new Date().toISOString();
+    } catch (error) {
+      // Rotation, permission failures and missing mounts all degrade readiness.
+      // Retain the cursor so a recovered read retries the failed range.
+      fail(initial ? 'init' : 'poll', error);
     }
+    publishHealth();
   }
 
-  const initialising = init().then(() => {
-    if (monitorStopping) return;
-    monitorTimer = setInterval(() => {
-      if (pollInFlight) return;
-      pollInFlight = true;
-      const polling = poll()
-        .catch((error: Error) => console.error('[conn-monitor] poll error:', error.message))
-        .finally(() => {
-          pollInFlight = false;
+  function start(): Promise<void> {
+    if (monitorStopping || monitorTimer || retryTimer || monitorInFlight) return Promise.resolve();
+    const initialising = pollOnce(true).then(() => {
+      if (monitorStopping) return;
+      if (readError) {
+        retryTimer = setTimeout(() => {
+          retryTimer = null;
+          void start();
+        }, retryIntervalMs);
+        retryTimer.unref();
+        return;
+      }
+      if (!auditError) console.log('[conn-monitor] ready in audit-only mode; logs cannot grant ownership');
+      monitorTimer = setInterval(() => {
+        if (monitorInFlight) return;
+        const polling = pollOnce().finally(() => {
           if (monitorInFlight === polling) monitorInFlight = null;
         });
-      monitorInFlight = polling;
-    }, POLL_INTERVAL_MS);
-    monitorTimer.unref();
-  }).catch((error: Error) => {
-    if (monitorStopping) return;
-    console.error('[conn-monitor] init error:', error.message);
-    retryTimer = setTimeout(() => {
-      retryTimer = null;
-      startMqttConnectionMonitor();
-    }, 30_000);
-    retryTimer.unref();
-  }).finally(() => {
-    if (monitorInFlight === initialising) monitorInFlight = null;
-  });
-  monitorInFlight = initialising;
+        monitorInFlight = polling;
+      }, pollIntervalMs);
+      monitorTimer.unref();
+    }).finally(() => {
+      if (monitorInFlight === initialising) monitorInFlight = null;
+    });
+    monitorInFlight = initialising;
+    return initialising;
+  }
+
+  async function stop(): Promise<void> {
+    monitorStopping = true;
+    if (monitorTimer) clearInterval(monitorTimer);
+    if (retryTimer) clearTimeout(retryTimer);
+    monitorTimer = retryTimer = null;
+    publishHealth();
+    await monitorInFlight;
+    monitorInFlight = null;
+  }
+
+  return { start, stop, status, pollOnce };
 }
 
-export async function stopMqttConnectionMonitor(): Promise<void> {
-  monitorStopping = true;
-  if (monitorTimer) {
-    clearInterval(monitorTimer);
-    monitorTimer = null;
-  }
-  if (retryTimer) {
-    clearTimeout(retryTimer);
-    retryTimer = null;
-  }
-  await monitorInFlight;
-  monitorInFlight = null;
-}
+const monitor = createMqttConnectionMonitor();
+export const getMqttConnectionMonitorStatus = monitor.status;
+export function startMqttConnectionMonitor(): void { void monitor.start(); }
+export const stopMqttConnectionMonitor = monitor.stop;
