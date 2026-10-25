@@ -263,6 +263,16 @@ groups:
   - name: meshcore-data-integrity
     interval: 30s
     rules:
+      - alert: PrivacyGenerationUnhealthy
+        expr: meshcore_privacy_generation_healthy{job="meshcore-backend"} == 0 or absent(meshcore_privacy_generation_healthy{job="meshcore-backend"})
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Public privacy generations are divergent or unavailable
+          owner: meshcore-operations
+          runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/privacy-convergence.md#generation-health
+
       - alert: BackupReceiptMissing
         expr: count(meshcore_backup_age_seconds{dataset=~"analytics|owner_auth|mosquitto"}) < 3
         for: 10m

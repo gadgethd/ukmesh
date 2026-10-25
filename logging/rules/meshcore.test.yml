@@ -4,6 +4,64 @@ rule_files:
 evaluation_interval: 1m
 
 tests:
+  - name: equal privacy generations remain healthy and do not page
+    interval: 1m
+    input_series:
+      - series: 'meshcore_privacy_generation_healthy{job="meshcore-backend",instance="backend:9091"}'
+        values: 1x10
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: PrivacyGenerationUnhealthy
+        exp_alerts: []
+
+  - name: privacy generation drift pages after holdoff and clears after recovery
+    interval: 1m
+    input_series:
+      - series: 'meshcore_privacy_generation_healthy{job="meshcore-backend",instance="backend:9091"}'
+        values: 0x6 1x3
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: PrivacyGenerationUnhealthy
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: PrivacyGenerationUnhealthy
+        exp_alerts:
+          - exp_labels:
+              job: meshcore-backend
+              instance: backend:9091
+              severity: critical
+            exp_annotations:
+              summary: Public privacy generations are divergent or unavailable
+              owner: meshcore-operations
+              runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/privacy-convergence.md#generation-health
+      - eval_time: 7m
+        alertname: PrivacyGenerationUnhealthy
+        exp_alerts: []
+
+  - name: brief privacy work does not outlast the generation alert holdoff
+    interval: 1m
+    input_series:
+      - series: 'meshcore_privacy_generation_healthy{job="meshcore-backend",instance="backend:9091"}'
+        values: 0x2 1x7
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: PrivacyGenerationUnhealthy
+        exp_alerts: []
+
+  - name: missing privacy generation telemetry fails closed
+    interval: 1m
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: PrivacyGenerationUnhealthy
+        exp_alerts:
+          - exp_labels:
+              job: meshcore-backend
+              severity: critical
+            exp_annotations:
+              summary: Public privacy generations are divergent or unavailable
+              owner: meshcore-operations
+              runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/privacy-convergence.md#generation-health
+
   - name: a failed backend heartbeat read cannot page for a healthy health-worker queue
     interval: 1m
     input_series:
