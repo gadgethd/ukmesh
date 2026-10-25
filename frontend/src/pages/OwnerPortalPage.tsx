@@ -1,7 +1,7 @@
 import React, { FormEvent, useEffect, useMemo, useState } from 'react';
 import './owner-portal.css';
 import { LoadingIndicator } from '../components/LoadingIndicator.js';
-import { OwnerLoginSection } from '../components/owner/OwnerPortalSections.js';
+import { OwnerLoginSection, OwnerPacketSharingSection, OwnerPublicFeedSection } from '../components/owner/OwnerPortalSections.js';
 import { useRuntimeFeatures } from '../config/runtimeFeatures.js';
 import { useVisibilityPoll } from '../hooks/useVisibilityPoll.js';
 import { ApiResponseError, fetchJson } from '../utils/api.js';
@@ -11,12 +11,16 @@ import {
   ROUTE_LABELS,
   cleanPacketBody,
   fetchOwnerCsrfToken,
+  fetchOwnerPacketSharing,
+  fetchOwnerPublicFeed,
   fmtTs,
   formatCompactTs,
   formatPathLoss,
   isOwnerLastHopStrengthResponse,
   isOwnerLiveResponse,
+  isOwnerPublicFeedResponse,
   isOwnerSessionResponse,
+  isPacketSharingOwner,
   isRecord,
   isValidMapCoord,
   lastHopSeriesCache,
@@ -24,10 +28,13 @@ import {
   nodeRoleLabel,
   publishOwnerSession,
   type LastHopStrengthPoint,
+  type LastHopWindow,
   type MappedPeer,
   type OwnerDashboard,
   type OwnerLastHopStrengthResponse,
   type OwnerLiveResponse,
+  type OwnerPacketSharing,
+  type OwnerPublicFeed,
   type OwnerSessionResponse,
 } from './owner/ownerPortalModel.js';
 import {
@@ -39,6 +46,7 @@ import {
   formatUptime,
 } from './owner/OwnerPortalCharts.js';
 import { OwnerMapView } from './owner/OwnerMapView.js';
+import { OwnerPanelState } from './owner/OwnerPanelState.js';
 import { OwnerHeardNeighbors } from './owner/OwnerHeardNeighbors.js';
 import { OwnerStatusFields } from './owner/OwnerStatusFields.js';
 export const OwnerPortalPage: React.FC = () => {
@@ -50,21 +58,75 @@ export const OwnerPortalPage: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [dashboard, setDashboard] = useState<OwnerDashboard | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string>('');
-  const [live, setLive] = useState<OwnerLiveResponse | null>(null);
+  const [liveResult, setLiveResult] = useState<{ scope: string; data: OwnerLiveResponse } | null>(null);
+  const [liveLoading, setLiveLoading] = useState(false);
   const [liveError, setLiveError] = useState<string | null>(null);
-  const [lastHopStrength, setLastHopStrength] = useState<LastHopStrengthPoint[]>([]);
+  const [lastHopResult, setLastHopResult] = useState<{ scope: string; points: LastHopStrengthPoint[] } | null>(null);
+  const [lastHopError, setLastHopError] = useState<string | null>(null);
+  const [lastHopLoading, setLastHopLoading] = useState(false);
+  const [lastHopWindow, setLastHopWindow] = useState<LastHopWindow>('7d');
+  const [compareNodeIds, setCompareNodeIds] = useState<string[]>([]);
+  const [compareSeries, setCompareSeries] = useState<Array<{ id: string; points: LastHopStrengthPoint[] }>>([]);
   const [ownerSessionKey, setOwnerSessionKey] = useState<string | null>(null);
+  const [packetSharing, setPacketSharing] = useState<OwnerPacketSharing | null>(null);
+  const [packetSharingLoading, setPacketSharingLoading] = useState(false);
+  const [packetSharingSaving, setPacketSharingSaving] = useState(false);
+  const [packetSharingError, setPacketSharingError] = useState<string | null>(null);
+  const [packetSharingDestinationIds, setPacketSharingDestinationIds] = useState<string[]>([]);
+  const [publicFeed, setPublicFeed] = useState<OwnerPublicFeed | null>(null);
+  const [publicFeedLoading, setPublicFeedLoading] = useState(false);
+  const [publicFeedSaving, setPublicFeedSaving] = useState(false);
+  const [publicFeedError, setPublicFeedError] = useState<string | null>(null);
+
+  const liveScope = `owner-live:${ownerSessionKey ?? 'none'}:${privacyGeneration}:${selectedNodeId}`;
+  const live = liveResult?.scope === liveScope ? liveResult.data : null;
+  const lastHopViewScope = `${liveScope}|window:${lastHopWindow}`;
+  const lastHopStrength = lastHopResult?.scope === lastHopViewScope ? lastHopResult.points : [];
+  const compareKey = compareNodeIds.join('|');
+  const compareActive = compareNodeIds.length >= 2;
+  const compareChartSeries = useMemo(() => {
+    if (!compareActive || compareSeries.length < 2) return undefined;
+    return compareSeries.map((entry) => ({
+      id: entry.id,
+      name: dashboard?.nodes.find((node) => node.node_id === entry.id)?.name ?? entry.id.slice(0, 8),
+      points: entry.points,
+    }));
+  }, [compareActive, compareSeries, dashboard]);
 
   const clearOwnerSession = () => {
     lastHopSeriesCache.clear();
     setDashboard(null);
     setOwnerSessionKey(null);
     setSelectedNodeId('');
-    setLive(null);
+    setLiveResult(null);
     setLiveError(null);
-    setLastHopStrength([]);
+    setLastHopResult(null);
+    setCompareNodeIds([]);
+    setCompareSeries([]);
+    setPacketSharing(null);
+    setPacketSharingDestinationIds([]);
+    setPacketSharingError(null);
+    setPublicFeed(null);
+    setPublicFeedLoading(false);
+    setPublicFeedSaving(false);
+    setPublicFeedError(null);
     setError(null);
     publishOwnerSession(null);
+  };
+
+  // Toggles a repeater in/out of the RX-strength comparison set. The first toggle
+  // seeds the set with the current primary node so a newly started comparison
+  // always contains what the owner was just looking at.
+  const toggleCompareNode = (nodeId: string) => {
+    setCompareNodeIds((current) => {
+      if (current.includes(nodeId)) {
+        const next = current.filter((id) => id !== nodeId);
+        if (next.length === 1) setSelectedNodeId(next[0]!);
+        return next;
+      }
+      const base = current.length > 0 ? current : (selectedNodeId ? [selectedNodeId] : []);
+      return base.includes(nodeId) ? base : [...base, nodeId];
+    });
   };
 
   useEffect(() => {
@@ -186,22 +248,170 @@ export const OwnerPortalPage: React.FC = () => {
   };
 
   useEffect(() => {
-    setLive(null);
+    setLiveResult(null);
     setLiveError(null);
-  }, [ownerSessionKey, selectedNodeId]);
+    setLiveLoading(false);
+  }, [liveScope]);
 
-  useVisibilityPoll(async (signal) => {
+  useEffect(() => {
+    if (!hasDashboard || !isPacketSharingOwner(ownerSessionKey) || !selectedNodeId) {
+      setPacketSharing(null);
+      setPacketSharingLoading(false);
+      setPacketSharingError(null);
+      setPacketSharingDestinationIds([]);
+      return;
+    }
+    setPacketSharing(null);
+    setPacketSharingLoading(true);
+    setPacketSharingError(null);
+    setPacketSharingDestinationIds([]);
+  }, [hasDashboard, ownerSessionKey, selectedNodeId]);
+
+  const refreshPacketSharing = useVisibilityPoll(async (signal) => {
+    if (packetSharingSaving) return;
+    const settings = await fetchOwnerPacketSharing(selectedNodeId, signal);
+    if (signal.aborted) return;
+    setPacketSharing(settings);
+    setPacketSharingDestinationIds(settings.destinations.filter((destination) => destination.selected).map((destination) => destination.id));
+    setPacketSharingLoading(false);
+    setPacketSharingError(null);
+  }, {
+    enabled: hasDashboard && isPacketSharingOwner(ownerSessionKey) && Boolean(selectedNodeId),
+    scopeKey: `owner-packet-sharing:${ownerSessionKey ?? 'none'}:${selectedNodeId}`,
+    intervalMs: 5_000,
+    timeoutMs: 10_000,
+    onError: (pollError) => {
+      if (pollError instanceof ApiResponseError && pollError.status === 401) {
+        clearOwnerSession();
+        return;
+      }
+      setPacketSharingLoading(false);
+      setPacketSharingError(pollError instanceof Error ? pollError.message : 'Unable to load packet-sharing status');
+    },
+  });
+
+  useEffect(() => {
+    if (!hasDashboard || !ownerSessionKey) {
+      setPublicFeed(null);
+      setPublicFeedLoading(false);
+      setPublicFeedError(null);
+      return;
+    }
+    setPublicFeed(null);
+    setPublicFeedLoading(true);
+    setPublicFeedError(null);
+  }, [hasDashboard, ownerSessionKey]);
+
+  const refreshPublicFeed = useVisibilityPoll(async (signal) => {
+    if (publicFeedSaving) return;
+    const settings = await fetchOwnerPublicFeed(signal);
+    if (signal.aborted) return;
+    setPublicFeed(settings);
+    setPublicFeedLoading(false);
+    setPublicFeedError(null);
+  }, {
+    enabled: hasDashboard && Boolean(ownerSessionKey),
+    scopeKey: `owner-public-feed:${ownerSessionKey ?? 'none'}`,
+    intervalMs: 5_000,
+    timeoutMs: 10_000,
+    onError: (pollError) => {
+      if (pollError instanceof ApiResponseError && pollError.status === 401) {
+        clearOwnerSession();
+        return;
+      }
+      setPublicFeedLoading(false);
+      setPublicFeedError(pollError instanceof Error ? pollError.message : 'Unable to load public-feed status');
+    },
+  });
+
+  const savePublicFeed = (enabled: boolean) => {
+    if (!publicFeed || !publicFeed.featureEnabled) return;
+    setPublicFeedSaving(true);
+    setPublicFeedError(null);
+    fetchOwnerCsrfToken()
+      .then((csrfToken) => fetchJson<OwnerPublicFeed>('/api/owner/public-feed', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
+        body: JSON.stringify({ enabled }),
+      }, {
+        timeoutMs: 10_000,
+        maxBytes: 32 * 1024,
+        validate: (value): value is OwnerPublicFeed => isOwnerPublicFeedResponse(value),
+      }))
+      .then((result) => setPublicFeed(result))
+      .catch((saveError: Error) => setPublicFeedError(saveError.message))
+      .finally(() => {
+        setPublicFeedSaving(false);
+        refreshPublicFeed();
+      });
+  };
+
+  const savePacketSharing = (nextDestinationIds: string[]) => {
+    if (!packetSharing || !packetSharing.featureEnabled) return;
+    const destinationIds = Array.from(new Set(nextDestinationIds)).sort();
+    setPacketSharingSaving(true);
+    setPacketSharingError(null);
+    fetchOwnerCsrfToken()
+      .then((csrfToken) => fetchJson<{ nodeId: string; enabled: boolean; destinationIds: string[] }>('/api/owner/packet-sharing', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
+        body: JSON.stringify({
+          nodeId: selectedNodeId,
+          enabled: destinationIds.length > 0,
+          destinationIds,
+        }),
+      }, {
+        timeoutMs: 10_000,
+        maxBytes: 32 * 1024,
+        validate: (value): value is { nodeId: string; enabled: boolean; destinationIds: string[] } => (
+          isRecord(value)
+          && typeof value['nodeId'] === 'string'
+          && typeof value['enabled'] === 'boolean'
+          && Array.isArray(value['destinationIds'])
+          && value['destinationIds'].every((id) => typeof id === 'string')
+        ),
+      }))
+      .then((result) => {
+        setPacketSharing((current) => current ? {
+          ...current,
+          enabled: result.enabled,
+          destinations: current.destinations.map((destination) => ({
+            ...destination,
+            selected: result.destinationIds.includes(destination.id),
+          })),
+        } : current);
+        setPacketSharingDestinationIds(result.destinationIds);
+      })
+      .catch((saveError: Error) => setPacketSharingError(saveError.message))
+      .finally(() => {
+        setPacketSharingSaving(false);
+        refreshPacketSharing();
+      });
+  };
+
+  const changePacketSharingDestination = (destinationId: string, selected: boolean) => {
+    const nextDestinationIds = selected
+      ? Array.from(new Set([...packetSharingDestinationIds, destinationId])).sort()
+      : packetSharingDestinationIds.filter((id) => id !== destinationId);
+    setPacketSharingDestinationIds(nextDestinationIds);
+    savePacketSharing(nextDestinationIds);
+  };
+
+  const retryLive = useVisibilityPoll(async (signal) => {
+    setLiveLoading(true);
+    setLiveError(null);
     const json = await fetchJson<OwnerLiveResponse>(
       `/api/owner/live?nodeId=${encodeURIComponent(selectedNodeId)}`,
       { cache: 'no-store', signal },
       { timeoutMs: 10_000, maxBytes: 4 * 1024 * 1024, validate: isOwnerLiveResponse },
     );
     if (signal.aborted) return;
-    setLive(json);
+    setLiveResult({ scope: liveScope, data: json });
+    setLiveLoading(false);
     setLiveError(null);
   }, {
     enabled: hasDashboard && Boolean(ownerSessionKey) && Boolean(selectedNodeId),
-    scopeKey: `owner-live:${ownerSessionKey ?? 'none'}:${privacyGeneration}:${selectedNodeId}`,
+    scopeKey: liveScope,
     intervalMs: 10_000,
     timeoutMs: 10_000,
     onError: (pollError) => {
@@ -209,32 +419,84 @@ export const OwnerPortalPage: React.FC = () => {
         clearOwnerSession();
         return;
       }
+      setLiveLoading(false);
       setLiveError(pollError instanceof Error ? pollError.message : 'Unable to load live data');
     },
   });
 
-  const lastHopScope = `owner:${ownerSessionKey ?? 'none'}|privacy:${privacyGeneration}`;
+  const lastHopScope = `owner:${ownerSessionKey ?? 'none'}|privacy:${privacyGeneration}|window:${lastHopWindow}`;
   useEffect(() => {
     const cached = selectedNodeId ? lastHopSeriesCache.get(lastHopScope, selectedNodeId) : undefined;
-    setLastHopStrength(cached ?? []);
-  }, [lastHopScope, selectedNodeId]);
+    setLastHopResult(cached ? { scope: lastHopViewScope, points: cached } : null);
+    setLastHopError(null);
+    setLastHopLoading(false);
+  }, [lastHopScope, lastHopViewScope, selectedNodeId]);
 
-  useVisibilityPoll(async (signal) => {
+  const retryLastHop = useVisibilityPoll(async (signal) => {
+    setLastHopLoading(true);
+    setLastHopError(null);
     const points = await lastHopSeriesCache.getOrLoad(lastHopScope, selectedNodeId, async () => {
       const json = await fetchJson<OwnerLastHopStrengthResponse>(
-        `/api/owner/live-last-hop?nodeId=${encodeURIComponent(selectedNodeId)}`,
+        `/api/owner/live-last-hop?nodeId=${encodeURIComponent(selectedNodeId)}&window=${lastHopWindow}`,
         { cache: 'no-store', signal },
         { timeoutMs: 15_000, maxBytes: 8 * 1024 * 1024, validate: isOwnerLastHopStrengthResponse },
       );
       return json.points;
     });
-    if (!signal.aborted) setLastHopStrength(points);
+    if (!signal.aborted) {
+      setLastHopResult({ scope: lastHopViewScope, points });
+      setLastHopLoading(false);
+    }
   }, {
     enabled: hasDashboard && Boolean(ownerSessionKey) && Boolean(selectedNodeId),
     scopeKey: `owner-last-hop:${lastHopScope}:${selectedNodeId}`,
     intervalMs: 60_000,
     timeoutMs: 15_000,
+    onError: (pollError) => {
+      if (pollError instanceof ApiResponseError && pollError.status === 401) {
+        clearOwnerSession();
+        return;
+      }
+      setLastHopLoading(false);
+      setLastHopError(pollError instanceof Error ? pollError.message : 'Unable to load RX strength');
+    },
   });
+
+  // Multi-repeater comparison: keep the last-hop series for every repeater in the
+  // compare set warm (same per-scope cache as the primary selection) so the RX
+  // chart can overlay them. Individual repeater failures are skipped.
+  useVisibilityPoll(async (signal) => {
+    const results: Array<{ id: string; points: LastHopStrengthPoint[] }> = [];
+    for (const nodeId of compareNodeIds) {
+      if (signal.aborted) return;
+      try {
+        const points = await lastHopSeriesCache.getOrLoad(lastHopScope, nodeId, async () => {
+          const json = await fetchJson<OwnerLastHopStrengthResponse>(
+            `/api/owner/live-last-hop?nodeId=${encodeURIComponent(nodeId)}&window=${lastHopWindow}`,
+            { cache: 'no-store' },
+            { timeoutMs: 15_000, maxBytes: 8 * 1024 * 1024, validate: isOwnerLastHopStrengthResponse },
+          );
+          return json.points;
+        });
+        results.push({ id: nodeId, points });
+      } catch {
+        // Skip repeaters that fail to load; the chart shows the ones that did.
+      }
+    }
+    if (!signal.aborted) setCompareSeries(results);
+  }, {
+    enabled: hasDashboard && Boolean(ownerSessionKey) && compareActive,
+    scopeKey: `owner-last-hop-compare:${lastHopScope}:${compareKey}`,
+    intervalMs: 60_000,
+    timeoutMs: 20_000,
+    onError: (pollError) => {
+      if (pollError instanceof ApiResponseError && pollError.status === 401) {
+        clearOwnerSession();
+      }
+    },
+  });
+
+  const livePanelState = { hasData: live !== null, loading: liveLoading, error: liveError, onRetry: retryLive };
 
   const mapPoints = useMemo(() => {
     const ownerNode = live?.ownerNode;
@@ -309,13 +571,18 @@ export const OwnerPortalPage: React.FC = () => {
                 {dashboard.nodes.map((node) => (
                   <article
                     key={node.canonicalId}
-                    className={`owner-node-identity${node.node_id === selectedNodeId ? ' owner-node-identity--selected' : ''}`}
+                    className={`owner-node-identity${node.node_id === selectedNodeId ? ' owner-node-identity--selected' : ''}${compareNodeIds.includes(node.node_id) ? ' owner-node-identity--comparing' : ''}`}
                     data-canonical-id={node.canonicalId}
-                    onClick={() => setSelectedNodeId(node.node_id)}
+                    onClick={() => {
+                      setSelectedNodeId(node.node_id);
+                      if (compareNodeIds.length > 1) setCompareNodeIds([node.node_id]);
+                    }}
                     onKeyDown={(e) => {
+                      if (e.target !== e.currentTarget) return;
                       if (e.key === 'Enter' || e.key === ' ') {
                         e.preventDefault();
                         setSelectedNodeId(node.node_id);
+                        if (compareNodeIds.length > 1) setCompareNodeIds([node.node_id]);
                       }
                     }}
                     role="button"
@@ -323,6 +590,21 @@ export const OwnerPortalPage: React.FC = () => {
                     aria-pressed={node.node_id === selectedNodeId}
                     title={dashboard.nodes.length > 1 ? `View ${node.name ?? 'this node'}` : undefined}
                   >
+                    {dashboard.nodes.length > 1 ? (
+                      <button
+                        type="button"
+                        className={`owner-node-identity__compare${compareNodeIds.includes(node.node_id) ? ' owner-node-identity__compare--active' : ''}`}
+                        aria-pressed={compareNodeIds.includes(node.node_id)}
+                        aria-label={`${compareNodeIds.includes(node.node_id) ? 'Remove' : 'Add'} ${node.name ?? 'this repeater'} ${compareNodeIds.includes(node.node_id) ? 'from' : 'to'} the RX strength comparison`}
+                        title={compareNodeIds.includes(node.node_id) ? 'Remove from comparison' : 'Add to comparison'}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          toggleCompareNode(node.node_id);
+                        }}
+                      >
+                        {compareNodeIds.includes(node.node_id) ? '✓' : '+'}
+                      </button>
+                    ) : null}
                     <div className="owner-node-identity__head">
                       <strong>{node.name ?? 'Unnamed node'}</strong>
                       <span>{node.members.length} member key{node.members.length === 1 ? '' : 's'}</span>
@@ -334,6 +616,7 @@ export const OwnerPortalPage: React.FC = () => {
                   </article>
                 ))}
               </div>
+              <OwnerPanelState label="Live summary" {...livePanelState}>
               <div className="site-stats-grid site-stats-grid--6 owner-summary-grid">
                 <div className="site-stat"><span className="site-stat__value">{live?.ownerNode.name ?? 'Unnamed'}</span><span className="site-stat__label">{nodeRoleLabel(live?.ownerNode.role ?? null)}</span></div>
                 <div className="site-stat"><span className="site-stat__value">{live?.ownerNode.network ?? '-'}</span><span className="site-stat__label">Network</span></div>
@@ -348,7 +631,7 @@ export const OwnerPortalPage: React.FC = () => {
                 <div className="site-stat"><span className="site-stat__value">{live?.packetsSent24h ?? 0}</span><span className="site-stat__label">Packets Sent (24h)</span></div>
                 <div className="site-stat"><span className="site-stat__value">{live?.packetsReceived24h ?? 0}</span><span className="site-stat__label">Packets Received (24h)</span></div>
               </div>
-              {liveError ? <p className="prose-note owner-login__error">Live data error: {liveError}</p> : null}
+              </OwnerPanelState>
             </section>
 
             <section className="owner-panel owner-telemetry-panel">
@@ -359,6 +642,7 @@ export const OwnerPortalPage: React.FC = () => {
                 </div>
               </div>
               <div className="owner-telemetry-strip">
+                <OwnerPanelState label="Node telemetry" {...livePanelState}>
                 {TELEMETRY_SERIES.map((series) => (
                   <TelemetryMiniChart
                     key={series.key}
@@ -375,7 +659,10 @@ export const OwnerPortalPage: React.FC = () => {
                   value={formatUptime(latestTelemetry?.uptimeSecs ?? null)}
                   meta={latestTelemetry?.uptimeSecs == null ? 'No telemetry yet' : `${latestTelemetry.uptimeSecs}s reported`}
                 />
-                <LastHopStrengthChart nodeId={selectedNodeId} points={lastHopStrength} isPassiveRepeater={live !== null && (live.incomingPeers.length === 0 && live.recentPackets.length === 0 && live.heardBy.length > 0)} />
+                </OwnerPanelState>
+                <OwnerPanelState label="RX strength" hasData={lastHopResult?.scope === lastHopViewScope} loading={lastHopLoading} error={lastHopError} onRetry={retryLastHop}>
+                <LastHopStrengthChart nodeId={selectedNodeId} points={lastHopStrength} timeWindow={lastHopWindow} onTimeWindowChange={setLastHopWindow} isPassiveRepeater={live !== null && (live.incomingPeers.length === 0 && live.recentPackets.length === 0 && live.heardBy.length > 0)} compareSeries={compareChartSeries} />
+                </OwnerPanelState>
               </div>
             </section>
 
@@ -385,9 +672,11 @@ export const OwnerPortalPage: React.FC = () => {
                   <h2>Node status</h2>
                   <p className="prose-note">Latest nullable diagnostics reported by the node.</p>
                 </div>
-                <span className="owner-status-panel__sample">{live?.status?.sampled_at ? fmtTs(live.status.sampled_at) : 'No sample'}</span>
+                <span className="owner-status-panel__sample">{live ? (live.status?.sampled_at ? fmtTs(live.status.sampled_at) : 'No sample') : '—'}</span>
               </div>
-              <OwnerStatusFields status={live?.status ?? null} />
+              <OwnerPanelState label="Node status" {...livePanelState}>
+                <OwnerStatusFields status={live?.status ?? null} />
+              </OwnerPanelState>
             </section>
 
             <div className="owner-dashboard-grid">
@@ -395,14 +684,18 @@ export const OwnerPortalPage: React.FC = () => {
                 <div className="owner-panel__head">
                   <div><h2>Direct Sender Map</h2></div>
                 </div>
+                <OwnerPanelState label="Direct Sender Map" {...livePanelState}>
                 <div className="owner-map-wrap">
                   <OwnerMapView ownerCoord={ownerCoord} peers={mapPeers} allPoints={mapPoints} />
                 </div>
+                </OwnerPanelState>
               </section>
 
               <section className="prose-section owner-panel owner-panel--alerts">
                 <div className="owner-panel__head"><h2>Alerts</h2></div>
+                <OwnerPanelState label="Alerts" {...livePanelState}>
                 <div className="owner-alerts">
+                  {live?.alerts.length === 0 ? <p className="prose-note">No active alerts.</p> : null}
                   {(live?.alerts ?? []).map((alert, idx) => (
                     <article key={`${alert.level}-${idx}`} className={`owner-alert owner-alert--${alert.level}`}>
                       <strong>{alert.level.toUpperCase()}</strong>
@@ -410,15 +703,21 @@ export const OwnerPortalPage: React.FC = () => {
                     </article>
                   ))}
                 </div>
+                </OwnerPanelState>
               </section>
 
               <section className="prose-section owner-panel owner-panel--trend">
                 <div className="owner-panel__head"><h2>Advert Trend</h2></div>
-                <TrendBars points={live?.advertTrend24h ?? []} />
+                <OwnerPanelState label="Advert Trend" {...livePanelState}>
+                {(live?.advertTrend24h ?? []).some((point) => point.adverts > 0)
+                  ? <TrendBars points={live?.advertTrend24h ?? []} />
+                  : <p className="prose-note">No adverts observed in the last 24 hours.</p>}
+                </OwnerPanelState>
               </section>
 
               <section className="prose-section owner-panel owner-panel--links">
                 <div className="owner-panel__head"><h2>RF Link Health</h2></div>
+                <OwnerPanelState label="RF Link Health" {...livePanelState}>
                 <div className="owner-list">
                   {(live?.linkHealth ?? []).slice(0, 8).map((link) => (
                     <article key={link.peer_node_id} className="owner-list__row">
@@ -438,10 +737,12 @@ export const OwnerPortalPage: React.FC = () => {
                     <p className="prose-note">No link health data has been calculated for this node yet.</p>
                   ) : null}
                 </div>
+                </OwnerPanelState>
               </section>
 
               <section className="prose-section owner-panel owner-panel--senders">
                 <div className="owner-panel__head"><h2>Direct Senders</h2></div>
+                <OwnerPanelState label="Direct Senders" {...livePanelState}>
                 <div className="owner-list">
                   {(live?.incomingPeers ?? []).slice(0, 8).map((peer) => (
                     <article key={peer.node_id} className="owner-list__row">
@@ -459,6 +760,7 @@ export const OwnerPortalPage: React.FC = () => {
                     <p className="prose-note">No direct sender nodes found in the last 24 hours.</p>
                   ) : null}
                 </div>
+                </OwnerPanelState>
               </section>
 
               <section className="prose-section owner-panel owner-panel--senders">
@@ -468,6 +770,7 @@ export const OwnerPortalPage: React.FC = () => {
                     <p className="prose-note" style={{ marginTop: 0 }}>Other nodes that received packets transmitted by this repeater (last 7d)</p>
                   </div>
                 </div>
+                <OwnerPanelState label="Nodes That Heard This Repeater" {...livePanelState}>
                 <div className="owner-list">
                   {(live?.heardBy ?? []).slice(0, 8).map((peer) => (
                     <article key={peer.node_id} className="owner-list__row">
@@ -487,20 +790,24 @@ export const OwnerPortalPage: React.FC = () => {
                     <p className="prose-note">No nodes have received packets from this node in the last 7 days.</p>
                   ) : null}
                 </div>
+                </OwnerPanelState>
               </section>
 
               <section className="prose-section owner-panel owner-panel--neighbors">
                 <div className="owner-panel__head">
                   <div>
                     <h2>Heard neighbors</h2>
-                    <p className="prose-note" style={{ marginTop: 0 }}>The latest neighbor sample, sorted by last-seen recency (up to 32 nodes).</p>
+                    <p className="prose-note" style={{ marginTop: 0 }}>Reported neighbors or directly received senders, sorted by last-seen recency (up to 32 nodes).</p>
                   </div>
                 </div>
-                <OwnerHeardNeighbors neighbors={live?.heardNeighbors ?? []} />
+                <OwnerPanelState label="Heard neighbors" {...livePanelState}>
+                <OwnerHeardNeighbors neighbors={live?.heardNeighbors ?? []} source={live?.heardNeighborsSource} sampledAt={live?.heardNeighborsSampledAt} />
+                </OwnerPanelState>
               </section>
 
               <section className="prose-section owner-panel owner-panel--packets">
                 <div className="owner-panel__head"><h2>Live Packets Received By {nodeRoleLabel(live?.ownerNode.role ?? null)}</h2></div>
+                <OwnerPanelState label="Live packets" {...livePanelState}>
                 <div className="owner-packets">
                   {(live?.recentPackets ?? []).map((packet, idx) => (
                     <article key={`${packet.time}-${packet.packet_hash ?? `row-${idx}`}`} className="owner-packet">
@@ -518,11 +825,30 @@ export const OwnerPortalPage: React.FC = () => {
                     </article>
                   ))}
                   {(live?.recentPackets ?? []).length === 0 ? (
-                    <p className="prose-note">No packets received by this node yet.</p>
+                    <p className="prose-note">No packets received by this node in the last 30 days.</p>
                   ) : null}
                 </div>
+                </OwnerPanelState>
               </section>
             </div>
+
+            {isPacketSharingOwner(ownerSessionKey) ? (
+              <OwnerPacketSharingSection
+                settings={packetSharing}
+                loading={packetSharingLoading}
+                saving={packetSharingSaving}
+                error={packetSharingError}
+                selectedDestinationIds={packetSharingDestinationIds}
+                onDestination={changePacketSharingDestination}
+              />
+            ) : null}
+            <OwnerPublicFeedSection
+              settings={publicFeed}
+              loading={publicFeedLoading}
+              saving={publicFeedSaving}
+              error={publicFeedError}
+              onEnabled={savePublicFeed}
+            />
           </>
         ) : null}
       </div>

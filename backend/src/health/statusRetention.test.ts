@@ -22,6 +22,19 @@ test('retention targets include hard packet boundary and reviewed long-lived tab
     extraPredicate: `status IN ('rejected', 'expired', 'provisioned')`,
   });
   assert.equal(byTable.get('operator_audit_events')?.retention, '730 days');
+  assert.deepEqual(byTable.get('node_status_samples'), {
+    table: 'node_status_samples',
+    timestampColumn: 'time',
+    retention: '30 days',
+    batchSize: 25_000,
+  });
+  assert.deepEqual(byTable.get('owner_packet_share_deliveries'), {
+    table: 'owner_packet_share_deliveries',
+    timestampColumn: 'created_at',
+    retention: '30 days',
+    batchSize: 2_000,
+    extraPredicate: `status IN ('succeeded', 'dead_lettered')`,
+  });
   assert.equal(byTable.has('packet_paths'), false);
 });
 

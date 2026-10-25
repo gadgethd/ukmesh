@@ -62,6 +62,8 @@ export const TopologyPage: React.FC = () => {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [strongOnly, setStrongOnly] = useState(false);
   const [rfValidation, setRfValidation] = useState<RfValidationPayload | null>(null);
+  const [rfError, setRfError] = useState(false);
+  const [rfAttempt, setRfAttempt] = useState(0);
   const [region, setRegion] = useState('all');
 
   useEffect(() => {
@@ -84,15 +86,22 @@ export const TopologyPage: React.FC = () => {
   useEffect(() => {
     const controller = new AbortController();
     setRfValidation(null);
+    setRfError(false);
     fetchJson<RfValidationPayload>(
       withScopeParams('/api/rf-validation?limit=100', { network, observer }),
       { signal: controller.signal, cache: 'no-store' },
       { timeoutMs: 15_000, maxBytes: 4 * 1024 * 1024 },
     )
-      .then(setRfValidation)
-      .catch(() => setRfValidation(null));
+      .then((result) => {
+        if (!controller.signal.aborted) setRfValidation(result);
+      })
+      .catch(() => {
+        // A request timeout is a visible failure. Only cleanup of an obsolete
+        // network/privacy scope should be ignored.
+        if (!controller.signal.aborted) setRfError(true);
+      });
     return () => controller.abort();
-  }, [network, observer, privacyGeneration]);
+  }, [network, observer, privacyGeneration, rfAttempt]);
 
   const plot = useMemo(() => {
     const nodes = (payload?.nodes ?? []).filter((node) => region === 'all' || (node.region ?? 'Unknown') === region);
@@ -199,41 +208,64 @@ export const TopologyPage: React.FC = () => {
               {payload.limited && <p className="topology-page__note">Showing the 300 strongest recent links.</p>}
             </aside>
           </div>
-
-          {rfValidation && (
-            <section className="topology-page__validation">
-              <div className="topology-page__validation-head">
-                <div><p className="topology-page__eyebrow">Model validation</p><h2>Predicted versus observed RF</h2></div>
-                <p>{rfValidation.methodology}</p>
-              </div>
-              <div className="topology-page__validation-stats">
-                <div><strong>{rfValidation.summary.evaluated}</strong><span>links evaluated</span></div>
-                <div><strong>{rfValidation.summary.observedUnexpected}</strong><span>unexpected observed links</span></div>
-                <div><strong>{rfValidation.summary.operatorOverrides}</strong><span>operator overrides</span></div>
-                <div><strong>{rfValidation.summary.weakModelEvidence}</strong><span>weak evidence</span></div>
-              </div>
-              {rfValidation.mismatches.length > 0 && (
-                <div className="topology-page__validation-table" role="table" aria-label="RF model mismatches">
-                  <div role="row" className="topology-page__validation-table-head">
-                    <span role="columnheader">Link</span>
-                    <span role="columnheader">Observations</span>
-                    <span role="columnheader">Modelled path loss</span>
-                    <span role="columnheader">Classification</span>
-                  </div>
-                  {rfValidation.mismatches.slice(0, 20).map((link) => (
-                    <div role="row" key={`${link.source}:${link.target}`}>
-                      <span role="cell">{link.sourceName ?? link.source.slice(0, 8)} ↔ {link.targetName ?? link.target.slice(0, 8)}</span>
-                      <span role="cell">{link.observations} obs · {link.strongObservations} strong</span>
-                      <span role="cell">{link.pathLossDb == null ? 'No model dB' : `${link.pathLossDb.toFixed(1)} dB`}</span>
-                      <strong role="cell">{link.classification.replace(/_/g, ' ')}</strong>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </section>
-          )}
         </>
       )}
+      <RfValidationPanel
+        data={rfValidation}
+        unavailable={rfError}
+        onRetry={() => setRfAttempt((attempt) => attempt + 1)}
+      />
     </div>
   );
 };
+
+export function RfValidationPanel({ data, unavailable, onRetry }: {
+  data: RfValidationPayload | null;
+  unavailable: boolean;
+  onRetry: () => void;
+}) {
+  return (
+    <section className="topology-page__validation">
+      <div className="topology-page__validation-head">
+        <div><p className="topology-page__eyebrow">Model validation</p><h2>Predicted versus observed RF</h2></div>
+        {data && <p>{data.methodology}</p>}
+      </div>
+      {unavailable ? (
+        <div className="topology-page__error" role="alert">
+          <p>RF validation is temporarily unavailable. Please try again shortly.</p>
+          <button type="button" onClick={onRetry}>Retry RF validation</button>
+        </div>
+      ) : !data ? (
+        <LoadingIndicator label="Loading RF validation…" variant="inline" />
+      ) : (
+        <>
+          <div className="topology-page__validation-stats">
+            <div><strong>{data.summary.evaluated}</strong><span>links evaluated</span></div>
+            <div><strong>{data.summary.observedUnexpected}</strong><span>unexpected observed links</span></div>
+            <div><strong>{data.summary.operatorOverrides}</strong><span>operator overrides</span></div>
+            <div><strong>{data.summary.weakModelEvidence}</strong><span>weak evidence</span></div>
+          </div>
+          {data.mismatches.length > 0 && (
+            <div className="topology-page__validation-table" role="table" aria-label="RF model mismatches">
+              <div role="row" className="topology-page__validation-table-head">
+                <span role="columnheader">Link</span>
+                <span role="columnheader">Observations</span>
+                <span role="columnheader">Modelled path loss</span>
+                <span role="columnheader">Classification</span>
+              </div>
+              {data.mismatches.slice(0, 20).map((link) => (
+                <div role="row" key={`${link.source}:${link.target}`}>
+                  <span role="cell">{link.sourceName ?? link.source.slice(0, 8)} ↔ {link.targetName ?? link.target.slice(0, 8)}</span>
+                  <span role="cell">{link.observations} obs · {link.strongObservations} strong</span>
+                  <span role="cell">{link.pathLossDb == null ? 'No model dB' : `${link.pathLossDb.toFixed(1)} dB`}</span>
+                  <strong role="cell">{link.classification.replace(/_/g, ' ')}</strong>
+                </div>
+              ))}
+            </div>
+          )}
+          {data.summary.evaluated === 0 && <p>No recent public repeater links are available for RF validation.</p>}
+        </>
+      )}
+    </section>
+  );
+}

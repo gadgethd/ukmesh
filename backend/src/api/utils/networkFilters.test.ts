@@ -33,7 +33,9 @@ test('public packet scopes keep legacy test-topic rows out', () => {
   assert.match(filters.packets, /is_private IS NOT TRUE/);
   assert.match(filters.packets, /packet_visibility_materialization_state/);
   assert.match(filters.packets, /cached_visibility\.visibility_generation = current_visibility\.generation/);
-  assert.doesNotMatch(filters.packets, /private_node_prefixes|unnest\(/);
+  assert.match(filters.packets, /privacy_rematerialization_queue remat/);
+  assert.match(filters.packets, /remat\.status IN \('pending', 'processing', 'failed'\)/);
+  assert.doesNotMatch(filters.packets, /private_node_prefixes/);
   assert.doesNotMatch(filters.packets, /private_node\.name LIKE '%🚫%'/);
 });
 

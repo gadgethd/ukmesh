@@ -1842,6 +1842,9 @@ def redis_connection():
         REDIS_URL,
         decode_responses=True,
         password=REDIS_PASSWORD,
+        socket_connect_timeout=5,
+        # Must exceed the maximum five-second BLPOP plus scheduling/network slack.
+        socket_timeout=30,
     )
 
 

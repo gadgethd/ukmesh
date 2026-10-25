@@ -1,5 +1,7 @@
 /**
- * Lazy path resolver — called after propagation has settled.
+ * Previous lazy resolver, retained for read-only accuracy comparisons.
+ * Production packet details use resolveLazyPathForPacketHash and the same
+ * evidence provider as the live overlays; this implementation is not routed.
  *
  * Uses path_hashes embedded in packets by relaying nodes, combined with
  * geographic anchoring from MQTT observer positions, to reconstruct the

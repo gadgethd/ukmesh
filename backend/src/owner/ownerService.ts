@@ -58,6 +58,47 @@ function neighborTimestamp(value: unknown): string | null {
   return isoTimestamp(value);
 }
 
+export function buildOwnerHeardNeighbors(
+  sample: { time: string; neighbors: unknown } | undefined,
+  directPeers: Array<{ node_id: string; last_seen: string | null; avg_rssi: number | null; avg_snr: number | null }>,
+) {
+  const sampledAt = isoTimestamp(sample?.time);
+  const reported = sample !== undefined && Array.isArray(sample.neighbors);
+  // An explicitly empty published list is authoritative. The fallback is only
+  // for nodes that have not supplied a usable list in the reporting window.
+  const neighbors = reported ? (sample.neighbors as unknown[]).flatMap((entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return [];
+    const item = entry as Record<string, unknown>;
+    const id = [item['id'], item['node_id'], item['pubkey'], item['public_key']]
+      .find((value): value is string => typeof value === 'string' && value.trim() !== '');
+    if (!id) return [];
+    const signal = (...values: unknown[]) => values.find((value): value is number => typeof value === 'number' && Number.isFinite(value)) ?? null;
+    const age = signal(item['heard_secs_ago']);
+    const relativeTime = sampledAt && age !== null && age >= 0
+      ? neighborTimestamp(Date.parse(sampledAt) / 1_000 - age)
+      : null;
+    return [{
+      id,
+      rssi: signal(item['rssi'], item['RSSI']),
+      snr: signal(item['snr'], item['SNR'], item['snr_db']),
+      last_seen_at: neighborTimestamp(item['last_seen']) ?? neighborTimestamp(item['lastSeen']) ?? relativeTime,
+      sampled_at: sampledAt,
+    }];
+  }) : directPeers.map((peer) => ({
+    id: peer.node_id,
+    rssi: nullableNumber(peer.avg_rssi),
+    snr: nullableNumber(peer.avg_snr),
+    last_seen_at: isoTimestamp(peer.last_seen),
+    sampled_at: null,
+  }));
+  neighbors.sort((a, b) => (Date.parse(b.last_seen_at ?? '') || 0) - (Date.parse(a.last_seen_at ?? '') || 0));
+  return {
+    heardNeighbors: neighbors.slice(0, 32),
+    heardNeighborsSource: reported ? 'reported' as const : directPeers.length > 0 ? 'direct_packets' as const : 'none' as const,
+    heardNeighborsSampledAt: reported ? sampledAt : null,
+  };
+}
+
 type OwnerServiceDeps = {
   ownerLiveCacheTtlMs: number;
   ownerLiveCache: Map<string, OwnerLiveCacheEntry>;
@@ -143,14 +184,14 @@ export function createOwnerService(deps: OwnerServiceDeps) {
     };
   }
 
-  function trimLastHopPoints(points: LastHopStrengthPoint[]): LastHopStrengthPoint[] {
-    const cutoff = Date.now() - (7 * 24 * 60 * 60 * 1000);
+  function trimLastHopPoints(points: LastHopStrengthPoint[], windowDays: number): LastHopStrengthPoint[] {
+    const cutoff = Date.now() - (windowDays * 24 * 60 * 60 * 1000);
     return points
       .filter((point) => Date.parse(point.bucket) >= cutoff)
       .sort((a, b) => a.bucket.localeCompare(b.bucket));
   }
 
-  function mergeLastHopPoints(existing: LastHopStrengthPoint[], recent: LastHopStrengthPoint[]): LastHopStrengthPoint[] {
+  function mergeLastHopPoints(existing: LastHopStrengthPoint[], recent: LastHopStrengthPoint[], windowDays: number): LastHopStrengthPoint[] {
     const merged = new Map<string, LastHopStrengthPoint>();
     for (const point of existing) {
       merged.set(`${point.bucket}|${point.lastHopNodeId ?? ''}|${point.lastHopName}|${point.resolution}`, point);
@@ -158,15 +199,21 @@ export function createOwnerService(deps: OwnerServiceDeps) {
     for (const point of recent) {
       merged.set(`${point.bucket}|${point.lastHopNodeId ?? ''}|${point.lastHopName}|${point.resolution}`, point);
     }
-    return trimLastHopPoints(Array.from(merged.values()));
+    return trimLastHopPoints(Array.from(merged.values()), windowDays);
   }
 
   function latestBucketOf(points: LastHopStrengthPoint[]): string | null {
     return points.length > 0 ? points[points.length - 1]!.bucket : null;
   }
 
-  async function buildOwnerLastHopResponse(nodeId: string, allOwnedNodeIds: string[], since?: string): Promise<OwnerLastHopResponse> {
-    const lastHopStrengthResult = await repository.fetchLastHopStrength([nodeId], allOwnedNodeIds, since);
+  // Longer windows aggregate into larger chunks: the 30d series renders as
+  // 12-hour buckets (~60 points) instead of ~720 hourly points per repeater.
+  function lastHopBucketHours(windowDays: number): number {
+    return windowDays > 7 ? 12 : 1;
+  }
+
+  async function buildOwnerLastHopResponse(nodeId: string, allOwnedNodeIds: string[], since?: string, windowDays = 7): Promise<OwnerLastHopResponse> {
+    const lastHopStrengthResult = await repository.fetchLastHopStrength([nodeId], allOwnedNodeIds, since, windowDays, lastHopBucketHours(windowDays));
     return mapLastHopRows(lastHopStrengthResult.rows);
   }
 
@@ -277,20 +324,7 @@ export function createOwnerService(deps: OwnerServiceDeps) {
       last_seen: row.last_seen ? new Date(row.last_seen).toISOString() : null,
     }));
 
-    const heardNeighbors = heardNeighborsResult.rows
-      .map((row) => ({
-        id: row.id,
-        rssi: nullableNumber(row.rssi),
-        snr: nullableNumber(row.snr),
-        last_seen_at: neighborTimestamp(row.last_seen),
-        sampled_at: isoTimestamp(row.sample_time),
-      }))
-      .sort((a, b) => {
-        const aTime = a.last_seen_at ? Date.parse(a.last_seen_at) : 0;
-        const bTime = b.last_seen_at ? Date.parse(b.last_seen_at) : 0;
-        return bTime - aTime;
-      })
-      .slice(0, 32);
+    const neighborData = buildOwnerHeardNeighbors(heardNeighborsResult.rows[0], filteredIncomingRows);
 
     const linkHealth = linkHealthResult.rows.map((row) => ({
       ...row,
@@ -511,7 +545,7 @@ export function createOwnerService(deps: OwnerServiceDeps) {
       advertTrend24h,
       telemetry24h,
       status,
-      heardNeighbors,
+      ...neighborData,
       packetsSent24h: Number(packetsSentResult.rows[0]?.packets_24h ?? 0),
       packetsReceived24h: Number(packetsReceivedResult.rows[0]?.packets_24h ?? 0),
       alerts,
@@ -524,7 +558,7 @@ export function createOwnerService(deps: OwnerServiceDeps) {
     return responseData;
   }
 
-  async function getOwnerLastHopStrength(ownedNodeIds: string[], requestedNodeId?: string): Promise<OwnerLastHopResponse> {
+  async function getOwnerLastHopStrength(ownedNodeIds: string[], requestedNodeId?: string, windowDays = 7): Promise<OwnerLastHopResponse> {
     if (ownedNodeIds.length < 1) {
       throw new Error('NO_OWNED_NODES');
     }
@@ -536,7 +570,9 @@ export function createOwnerService(deps: OwnerServiceDeps) {
       throw new Error('NODE_NOT_OWNED');
     }
 
-    const cacheKey = selectedNodeId;
+    // Window is part of the cache key: the 7d and 30d series build and merge
+    // independently instead of trimming each other's points.
+    const cacheKey = `${windowDays}d:${selectedNodeId}`;
     const cacheEntry = ownerLastHopCache.get(cacheKey);
     if (cacheEntry && Date.now() - cacheEntry.ts < ownerLastHopCacheTtlMs) {
       return cacheEntry.data;
@@ -544,11 +580,11 @@ export function createOwnerService(deps: OwnerServiceDeps) {
 
     let responseData: OwnerLastHopResponse;
     if (!cacheEntry || !cacheEntry.latestBucket) {
-      responseData = await buildOwnerLastHopResponse(selectedNodeId, ownedNodeIds);
+      responseData = await buildOwnerLastHopResponse(selectedNodeId, ownedNodeIds, undefined, windowDays);
     } else {
-      const recent = await buildOwnerLastHopResponse(selectedNodeId, ownedNodeIds, cacheEntry.latestBucket);
+      const recent = await buildOwnerLastHopResponse(selectedNodeId, ownedNodeIds, cacheEntry.latestBucket, windowDays);
       responseData = {
-        points: mergeLastHopPoints(cacheEntry.data.points, recent.points),
+        points: mergeLastHopPoints(cacheEntry.data.points, recent.points, windowDays),
       };
     }
 
@@ -560,13 +596,49 @@ export function createOwnerService(deps: OwnerServiceDeps) {
     return responseData;
   }
 
+  // Forced refresh used by the background prewarm loop: rebuilds (or incrementally
+  // extends) the cached last-hop series for one node/window pair without the
+  // cache-freshness shortcut, so warm entries never expire out of the bounded TTL.
+  // Returns false when a recent entry was left untouched because of minAgeMs.
+  async function refreshOwnerLastHopStrength(ownedNodeIds: string[], nodeId: string, windowDays = 7, minAgeMs = 0): Promise<boolean> {
+    if (!ownedNodeIds.includes(nodeId)) {
+      throw new Error('NODE_NOT_OWNED');
+    }
+    const cacheKey = `${windowDays}d:${nodeId}`;
+    const cacheEntry = ownerLastHopCache.get(cacheKey);
+    if (cacheEntry && minAgeMs > 0 && Date.now() - cacheEntry.ts < minAgeMs) {
+      return false;
+    }
+
+    let responseData: OwnerLastHopResponse;
+    if (cacheEntry && cacheEntry.latestBucket) {
+      const recent = await buildOwnerLastHopResponse(nodeId, ownedNodeIds, cacheEntry.latestBucket, windowDays);
+      responseData = {
+        points: mergeLastHopPoints(cacheEntry.data.points, recent.points, windowDays),
+      };
+    } else {
+      responseData = await buildOwnerLastHopResponse(nodeId, ownedNodeIds, undefined, windowDays);
+    }
+
+    ownerLastHopCache.set(cacheKey, {
+      ts: Date.now(),
+      data: responseData,
+      latestBucket: latestBucketOf(responseData.points),
+    });
+    return true;
+  }
+
   function clearOwnerSession(mqttUsername: string): void {
     const cacheKey = dashboardCacheKey(mqttUsername);
     const nodeIds = ownerDashboardCache.get(cacheKey)?.nodeIds ?? [];
     ownerDashboardCache.delete(cacheKey);
     for (const nodeId of nodeIds) {
       ownerLiveCache.delete(nodeId);
-      ownerLastHopCache.delete(nodeId);
+      for (const lastHopKey of Array.from(ownerLastHopCache.keys())) {
+        if (lastHopKey.endsWith(`:${nodeId}`)) {
+          ownerLastHopCache.delete(lastHopKey);
+        }
+      }
     }
     invalidateOwnerNodeIdCache(mqttUsername);
   }
@@ -576,6 +648,7 @@ export function createOwnerService(deps: OwnerServiceDeps) {
     getSessionDashboard,
     getOwnerLiveData,
     getOwnerLastHopStrength,
+    refreshOwnerLastHopStrength,
     clearOwnerSession,
   };
 }
