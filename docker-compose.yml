@@ -102,6 +102,9 @@ services:
       OWNER_PACKET_SHARE_ENCRYPTION_KEY: ${OWNER_PACKET_SHARE_ENCRYPTION_KEY:-}
       OWNER_PACKET_SHARE_POLL_INTERVAL_MS: ${OWNER_PACKET_SHARE_POLL_INTERVAL_MS:-5000}
       OWNER_PACKET_SHARE_BATCH_SIZE: ${OWNER_PACKET_SHARE_BATCH_SIZE:-25}
+      OWNER_LAST_HOP_PREWARM_INTERVAL_MS: ${OWNER_LAST_HOP_PREWARM_INTERVAL_MS:-900000}
+      OWNER_LAST_HOP_PREWARM_NODE_DELAY_MS: ${OWNER_LAST_HOP_PREWARM_NODE_DELAY_MS:-150}
+      OWNER_LAST_HOP_PREWARM_CONCURRENCY: ${OWNER_LAST_HOP_PREWARM_CONCURRENCY:-1}
       # The public feed is the authentication-locked UKmesh Mosquitto endpoint.
       # The URL is display/configuration metadata; packets already flow through
       # this broker, and opted-in owners receive a read-only ACL grant.

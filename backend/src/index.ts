@@ -87,6 +87,7 @@ const SHUTDOWN_DEADLINE_MS = Math.min(
 const NODE_IDENTITY_REFRESH_INTERVAL_MS = 30 * 60_000;
 const OWNER_LAST_HOP_PREWARM_INTERVAL_MS = Number(process.env['OWNER_LAST_HOP_PREWARM_INTERVAL_MS'] ?? 15 * 60_000);
 const OWNER_LAST_HOP_PREWARM_NODE_DELAY_MS = Number(process.env['OWNER_LAST_HOP_PREWARM_NODE_DELAY_MS'] ?? 150);
+const OWNER_LAST_HOP_PREWARM_CONCURRENCY = Number(process.env['OWNER_LAST_HOP_PREWARM_CONCURRENCY'] ?? 1);
 const lifecycle = new LifecycleCoordinator(SHUTDOWN_DEADLINE_MS);
 const packetShareForwarder = createPacketShareForwarder({
   repository: createPacketShareRepository(query),
@@ -262,6 +263,7 @@ async function main() {
       ),
       intervalMs: OWNER_LAST_HOP_PREWARM_INTERVAL_MS,
       nodeDelayMs: OWNER_LAST_HOP_PREWARM_NODE_DELAY_MS,
+      concurrency: OWNER_LAST_HOP_PREWARM_CONCURRENCY,
     });
   } else {
     console.warn('[owner-last-hop-prewarm] owner service is not registered; prewarm disabled');
