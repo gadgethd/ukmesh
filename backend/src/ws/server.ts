@@ -17,7 +17,6 @@ import {
   BoundedTaskQueueFullError,
   websocketAdmissionDecision,
 } from './limits.js';
-import { isPrivateNode } from '../api/utils/privateNode.js';
 import { authorizePublicWsMessage, PublicWsPrivacyIndex } from './privacy.js';
 import { loadCurrentPublicPrivacyPolicy } from '../db/packetBatch.js';
 import { createPublicBatch } from '../privacy/publicBatch.js';
@@ -28,6 +27,7 @@ import {
   publicLiveOutcomesTotal,
 } from '../metrics.js';
 import { selectInitialViableLinks } from './initialStateLinks.js';
+import { loadInitialMapNodes } from './initialStateNodes.js';
 import { readRecentWithPending } from '../ram/liveRead.js';
 import { parseRegionFilter } from '../regions/filter.js';
 import { ApiInputError } from '../api/errors.js';
@@ -242,8 +242,7 @@ async function fetchInitialState(network: string | undefined, observer: string |
       // getRecentPackets: 5-minute window, all types (fast, CTE aggregation ~16 ms).
       // getRecentMessages: last 200 GRP (type=5) from Postgres so the feed can
       //   seed a proper message cache on first load instead of relying on live traffic.
-      const [rawNodes, packets, messages, rawViableLinks] = await Promise.all([
-        getNodes(network, observer, 'slim', signal, region),
+      const [packets, messages, rawViableLinks] = await Promise.all([
         readRecentWithPending(
           (hashes) => getRecentPackets(7, network, observer, 'full', signal, undefined, hashes, region),
           { limit: 7, network, observer, region },
@@ -256,11 +255,12 @@ async function fetchInitialState(network: string | undefined, observer: string |
         ),
         getCachedViableLinks(network, observer, signal, policy.currentGeneration, region),
       ]);
-      const nodes = rawNodes
-        .filter((node) => !isPrivateNode(node.name))
-        .map((node) => slimInitialNode(node as InitialStateRow));
       const slimPackets = packets.map((packet) => slimInitialPacket(packet as InitialStateRow));
       const slimMessages = messages.map((message) => slimInitialPacket(message as InitialStateRow));
+      const rawNodes = await loadInitialMapNodes(
+        getNodes, network, observer, [...packets, ...messages], region, signal,
+      );
+      const nodes = rawNodes.map((node) => slimInitialNode(node as InitialStateRow));
       const regionNodeIds = new Set(nodes.map((node) => String(node['node_id']).toUpperCase()));
       const viableLinks = selectInitialViableLinks(
         rawViableLinks.filter((link) => (

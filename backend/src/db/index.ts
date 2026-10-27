@@ -33,6 +33,7 @@ import { getRamIngestMode } from '../ram/protocol.js';
 import { ingestPool, ingestQuery, withIngestTransaction } from './ingest.js';
 import { regionMemberIdsSql } from '../regions/filter.js';
 import { regionNodeSourceSql } from '../regions/nodeSource.js';
+import { mapVisiblePredicate, publicMapBasePredicate } from '../nodes/publicMap.js';
 
 const { Pool } = pg;
 const COORDINATE_RECALC_THRESHOLD_M = Number(process.env['NODE_COORDINATE_RECALC_THRESHOLD_M'] ?? 25);
@@ -690,21 +691,44 @@ export async function insertNodeNeighborSample(sample: {
   );
 }
 
+export type GetNodesOptions = {
+  mapVisible?: boolean;
+  /** Initial packets/links may reference nodes whose presence timestamp lags.
+   * Keep those public, positioned endpoints in the initial map union. */
+  referencedNodeIds?: readonly string[];
+};
+
 export async function getNodes(
   network?: string,
   observer?: string,
   fields: 'full' | 'slim' = 'full',
   signal?: AbortSignal,
   region?: string,
+  options: GetNodesOptions = {},
 ) {
   const scope = buildScopePlaceholders(1, network, observer, region);
-  const slimConditions = fields === 'slim'
+  const params: unknown[] = [...scope.params];
+  let mapConditions = '';
+  if (options.mapVisible) {
+    const visible = `(${mapVisiblePredicate('n')}
+      AND NOT EXISTS (SELECT 1 FROM node_map_suppressions s WHERE s.node_id = n.node_id))`;
+    if (options.referencedNodeIds?.length) {
+      params.push([...new Set(options.referencedNodeIds.map((id) => id.trim().toUpperCase()))]);
+      // The explicit safety-net union bypasses age/suppression only. Never
+      // bypass public coordinates, roles, privacy, or the requested scope.
+      mapConditions = ` AND (${visible} OR (${publicMapBasePredicate('n')}
+        AND n.node_id = ANY($${params.length}::text[])))`;
+    } else {
+      mapConditions = ` AND ${visible}`;
+    }
+  }
+  const slimConditions = fields === 'slim' && !options.mapVisible
     ? ` AND n.lat BETWEEN -90 AND 90
         AND n.lon BETWEEN -180 AND 180
         AND NOT (ABS(n.lat) < 1e-9 AND ABS(n.lon) < 1e-9)
         AND (n.role IS NULL OR n.role = 2)`
     : '';
-  const whereClause = `WHERE 1=1${buildNodeScopeClause(scope, 'n')}${slimConditions}`;
+  const whereClause = `WHERE 1=1${buildNodeScopeClause(scope, 'n')}${slimConditions}${mapConditions}`;
   const optionalFields = fields === 'full'
     ? `, n.hardware_model, n.public_key, n.elevation_m`
     : ', n.elevation_m';
@@ -733,7 +757,7 @@ export async function getNodes(
      FROM ${scope.regionParam ? regionNodeSourceSql(scope.regionParam) : 'node_identity_nodes'} n
      ${whereClause}
      ORDER BY ${nodeEffectiveLastSeenSql('n')} DESC`,
-    scope.params,
+    params,
     signal,
   );
   return res.rows;

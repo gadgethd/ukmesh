@@ -54,3 +54,34 @@ test('links endpoint serializes additive fields and retains them on a cache hit'
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
   }
 });
+
+test('nodes endpoint opts into map visibility while inferred-path matching stays unfiltered', async () => {
+  const calls: unknown[][] = [];
+  const app = express();
+  const router = Router();
+  registerNodeRoutes(router, {
+    nodeRepository: createNodeRepository(async () => ({ rows: [] })),
+    getNodes: async (...args) => { calls.push(args); return []; },
+    getNodeHistory: async () => [], getNodeAdverts: async () => [],
+    getTopAdvertingRepeaters: async () => [], requireLocalOnly: () => false,
+    networkFilters, getPublicVisibilityGeneration: async () => 1,
+    inferredNodesCache: new Map(), inferredNodesInflight: new Map(), inferredNodesCacheTtlMs: 60000,
+    nodeLinksCache: new Map(), nodeLinksInflight: new Map(), nodeLinksCacheTtlMs: 60000,
+    nodesLimiter: rateLimit({ windowMs: 60000, limit: 100 }),
+  });
+  app.use('/api', router);
+  const server = app.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  try {
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    assert.equal((await fetch(`${base}/api/nodes?network=ukmesh&fields=slim`)).status, 200);
+    assert.equal((await fetch(`${base}/api/inferred-nodes?network=ukmesh`)).status, 200);
+    assert.deepEqual(calls, [
+      ['ukmesh', undefined, 'slim', undefined, undefined, { mapVisible: true }],
+      ['ukmesh', undefined, 'slim'],
+    ]);
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  }
+});

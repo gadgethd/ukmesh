@@ -5,6 +5,7 @@ import compression from 'compression';
 import cors from 'cors';
 import { closeDb, initDb, pool, query } from './db/index.js';
 import { refreshNodeIdentityAliases } from './db/nodeIdentity.js';
+import { refreshNodeMapSuppressions } from './nodes/mapSuppressions.js';
 import {
   closeOwnerAuthDb,
   getAppliedOwnerAclArtifact,
@@ -256,11 +257,22 @@ async function main() {
   await initDb();
   const identityRefresh = await refreshNodeIdentityAliases(pool);
   console.log('[node-identity] refreshed', identityRefresh);
+  // Suppression is a display optimisation: a transient failure here must not
+  // stop the API from booting. The 30-minute timer retries.
+  await refreshNodeMapSuppressions(pool).catch((error: unknown) => {
+    console.error(
+      '[node-map] initial suppression refresh failed:',
+      error instanceof Error ? error.message : error,
+    );
+  });
   nodeIdentityRefreshTimer = setInterval(() => {
     void refreshNodeIdentityAliases(pool)
-      .then((result) => console.log('[node-identity] refreshed', result))
+      .then(async (result) => {
+        console.log('[node-identity] refreshed', result);
+        await refreshNodeMapSuppressions(pool);
+      })
       .catch((error: unknown) => {
-        console.error('[node-identity] refresh failed:', error instanceof Error ? error.message : error);
+        console.error('[node-identity/node-map] refresh failed:', error instanceof Error ? error.message : error);
       });
   }, NODE_IDENTITY_REFRESH_INTERVAL_MS);
   nodeIdentityRefreshTimer.unref();
