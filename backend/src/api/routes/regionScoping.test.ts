@@ -77,7 +77,9 @@ test('region API validates before reads, scopes each node/packet path and preser
     assert.equal(calls.length, before);
     const unscoped = await fetch(`${base}${path}`);
     assert.equal(unscoped.status, 200);
-    if (path === '/nodes') assert.deepEqual(calls.at(-1)?.args, ['ukmesh', undefined, 'full']);
+    if (path === '/nodes') {
+      assert.deepEqual(calls.at(-1)?.args, ['ukmesh', undefined, 'full', undefined, undefined, { mapVisible: true }]);
+    }
     if (path === '/packets/recent') assert.equal(calls.at(-1)?.args.length, 7);
   }
   process.env['PUBLIC_FEATURE_REGION_SCOPING_ENABLED'] = 'true';
@@ -94,6 +96,9 @@ test('region API validates before reads, scopes each node/packet path and preser
       const filters = call.args[0] as ReturnType<typeof networkFilters>;
       assert.deepEqual(filters.params, [['ukmesh', 'northeast', 'teesside'], 'Europe']);
       assert.match(filters.nodesAlias('n'), /WHERE m.region = \$2/);
+    } else if (call.path === 'nodes') {
+      assert.equal(call.args[4], 'Europe');
+      assert.deepEqual(call.args[5], { mapVisible: true });
     } else assert.equal(call.args.at(-1), 'Europe');
   }
 });
