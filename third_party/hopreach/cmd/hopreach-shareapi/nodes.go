@@ -16,6 +16,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"log"
@@ -30,6 +31,10 @@ const (
 	nodeRequestPrefix = "/api/rf/node/"
 	nodeQueueLimit    = 32
 	nodeLogPrefix     = "shareapi: rf-node: "
+	// nodeJobTimeout bounds one child process. A normal CPU footprint takes
+	// ~30 s; a stuck DEM fetch must not hold the calculator's singleton
+	// lock forever (which would also block the nightly whole-region run).
+	nodeJobTimeout = 15 * time.Minute
 	// nodeBusyRetryDelay is how long a queued job waits before retrying
 	// after the calculator reported another run in progress. The initial
 	// retries are quick (in case the other run is just finishing); after
@@ -159,11 +164,18 @@ func runNodeQueue() {
 // runNodeJob returns true when the job is finished (completed or failed
 // permanently) and false when it should be retried after a busy report.
 func runNodeJob(job nodeJob) bool {
-	cmd := exec.Command(hopreachBinary, "-node", job.publicKey)
+	ctx, cancel := context.WithTimeout(context.Background(), nodeJobTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, hopreachBinary, "-node", job.publicKey)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	runErr := cmd.Run()
+
+	if ctx.Err() == context.DeadlineExceeded {
+		log.Printf("%s%s: timed out after %s", nodeLogPrefix, shortKey(job.publicKey), nodeJobTimeout)
+		return true
+	}
 
 	var result struct {
 		State   string `json:"state"`
