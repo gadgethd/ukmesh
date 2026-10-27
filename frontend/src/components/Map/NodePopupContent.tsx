@@ -166,7 +166,7 @@ export const NodePopupContent: React.FC<{
             {rfCoverageActive ? 'Back to network coverage' : 'Show RF coverage'}
           </button>
           <span aria-live="polite" className={`node-popup__coverage-state node-popup__coverage-state--${rfCoverageState}`}>
-            {rfCoverageState === 'available' ? 'Available' : rfCoverageState === 'stale' ? 'Stale position or raster' : rfCoverageState === 'error' ? 'Calculation failed' : 'Pending calculation'}
+            {rfCoverageState === 'available' ? 'Available' : rfCoverageState === 'stale' ? 'Stale position or raster' : rfCoverageState === 'error' ? 'Unavailable' : 'Pending calculation'}
           </span>
         </div>
       )}
