@@ -205,6 +205,39 @@ func nodeTilesExist(outputDir string, entry *nodeCoverageMeta) bool {
 	return true
 }
 
+// recordNodeUnavailable makes a refused or silent request visible in the map.
+// Without an index entry the UI cannot distinguish "not applicable" from
+// "still waiting", which reads exactly like a broken button.
+func recordNodeUnavailable(cfg appConfig, publicKey string, node *corescope.Node, message string, now time.Time) {
+	index, err := readNodeCoverageIndex(cfg.outputDir)
+	if err != nil {
+		return
+	}
+	entry := index[publicKey]
+	if entry == nil {
+		entry = &nodeCoverageMeta{
+			State:       "failed",
+			RequestedAt: now.Format(time.RFC3339),
+		}
+		index[publicKey] = entry
+	}
+	if node != nil {
+		entry.PositionStatus = classifyStatus(node.LastHeard, cfg)
+		entry.LastHeard = node.LastHeard
+		if node.Lat != nil {
+			entry.Lat = *node.Lat
+		}
+		if node.Lon != nil {
+			entry.Lon = *node.Lon
+		}
+	}
+	entry.State = "failed"
+	entry.Failure = message
+	entry.UpdatedAt = now.Format(time.RFC3339)
+	entry.FreshUntil = now.Format(time.RFC3339)
+	_ = writeNodeCoverageIndex(cfg.outputDir, index)
+}
+
 func runNode(cfg appConfig, publicKey string) (result nodeRunResult, err error) {
 	result.PublicKey = publicKey
 	now := time.Now().UTC()
@@ -227,18 +260,22 @@ func runNode(cfg appConfig, publicKey string) (result nodeRunResult, err error) 
 	}
 	if node == nil {
 		result.State, result.Message = "not_found", "repeater was not returned by CoreScope"
+		recordNodeUnavailable(cfg, publicKey, nil, "Repeater is not currently published by the network, so it has no RF footprint.", now)
 		return result, nil
 	}
 	if node.Lat == nil || node.Lon == nil || math.IsNaN(*node.Lat) || math.IsNaN(*node.Lon) || math.IsInf(*node.Lat, 0) || math.IsInf(*node.Lon, 0) || *node.Lat < -90 || *node.Lat > 90 || *node.Lon < -180 || *node.Lon > 180 {
 		result.State, result.Message = "invalid_coordinates", "repeater has no valid coordinates"
+		recordNodeUnavailable(cfg, publicKey, node, "Repeater has no valid coordinates, so an RF footprint cannot be computed.", now)
 		return result, nil
 	}
 	if !region.Contains(*node.Lat, *node.Lon) {
 		result.State, result.Message = "out_of_region", "repeater is outside the configured region"
+		recordNodeUnavailable(cfg, publicKey, node, "Repeater is outside the coverage region.", now)
 		return result, nil
 	}
 	if cfg.requiredScope != "" && (node.DefaultScope == nil || strings.TrimPrefix(*node.DefaultScope, "#") != cfg.requiredScope) {
 		result.State, result.Message = "out_of_region", "repeater is outside the configured scope"
+		recordNodeUnavailable(cfg, publicKey, node, "Repeater is outside the configured coverage scope.", now)
 		return result, nil
 	}
 	positionStatus := classifyStatus(node.LastHeard, cfg)
@@ -252,6 +289,8 @@ func runNode(cfg appConfig, publicKey string) (result nodeRunResult, err error) 
 			existing.FreshUntil = now.Format(time.RFC3339)
 			existing.UpdatedAt = now.Format(time.RFC3339)
 			_ = writeNodeCoverageIndex(cfg.outputDir, index)
+		} else {
+			recordNodeUnavailable(cfg, publicKey, node, "Repeater has not been heard within the coverage freshness window, so it has no current RF footprint.", now)
 		}
 		result.State, result.Message = "stale", "repeater position is too old for current RF coverage"
 		return result, nil
