@@ -77,7 +77,7 @@ test('nodes endpoint opts into map visibility while inferred-path matching stays
     assert.equal((await fetch(`${base}/api/nodes?network=ukmesh&fields=slim`)).status, 200);
     assert.equal((await fetch(`${base}/api/inferred-nodes?network=ukmesh`)).status, 200);
     assert.deepEqual(calls, [
-      ['ukmesh', undefined, 'slim', undefined, { mapVisible: true }],
+      ['ukmesh', undefined, 'slim', undefined, undefined, { mapVisible: true }],
       ['ukmesh', undefined, 'slim'],
     ]);
   } finally {
