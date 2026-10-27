@@ -257,7 +257,14 @@ async function main() {
   await initDb();
   const identityRefresh = await refreshNodeIdentityAliases(pool);
   console.log('[node-identity] refreshed', identityRefresh);
-  await refreshNodeMapSuppressions(pool);
+  // Suppression is a display optimisation: a transient failure here must not
+  // stop the API from booting. The 30-minute timer retries.
+  await refreshNodeMapSuppressions(pool).catch((error: unknown) => {
+    console.error(
+      '[node-map] initial suppression refresh failed:',
+      error instanceof Error ? error.message : error,
+    );
+  });
   nodeIdentityRefreshTimer = setInterval(() => {
     void refreshNodeIdentityAliases(pool)
       .then(async (result) => {
