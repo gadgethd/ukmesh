@@ -1,6 +1,6 @@
 import type { QueryResultRow } from 'pg';
 import { nodeAliasArraySql, type NetworkFilters } from '../api/utils/networkFilters.js';
-import { publicMapFreshPredicate } from '../nodes/publicMap.js';
+import { mapVisiblePredicate } from '../nodes/publicMap.js';
 import {
   nodeEffectiveLastSeenSql,
   nodeEffectiveOnlineSql,
@@ -217,7 +217,8 @@ export function createNodeRepository(query: QueryFn): NodeRepository {
       const result = await query<Record<string, unknown>>(
         `SELECT ${selectedFields}
            FROM ${filters.nodeSource ?? 'node_identity_nodes'} n
-          WHERE ${publicMapFreshPredicate('n', `$${snapshotParameter}::timestamptz`)}
+          WHERE ${mapVisiblePredicate('n', `$${snapshotParameter}::timestamptz`)}
+            AND NOT EXISTS (SELECT 1 FROM node_map_suppressions s WHERE s.node_id = n.node_id)
             ${filters.nodesAlias('n')}
             ${searchCondition}
             AND ($${cursorParameter}::text IS NULL OR n.node_id > $${cursorParameter})

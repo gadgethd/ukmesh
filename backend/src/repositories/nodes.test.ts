@@ -28,6 +28,8 @@ test('public map projects path evidence as the effective seen and online state',
     /n\.last_path_evidence_at > \$2::timestamptz - INTERVAL '60 minutes'[\s\S]*THEN TRUE[\s\S]*AS is_online/,
   );
   assert.doesNotMatch(capturedSql, /n\.last_seen::text AS last_seen/);
+  assert.match(capturedSql, /NOT EXISTS \(SELECT 1 FROM node_map_suppressions s WHERE s.node_id = n.node_id\)/);
+  assert.match(capturedSql, /INTERVAL '28 days'/);
   assert.deepEqual(capturedParams, [
     ['ukmesh', 'northeast', 'teesside'],
     snapshot,

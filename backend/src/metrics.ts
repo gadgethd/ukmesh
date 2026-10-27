@@ -37,6 +37,12 @@ export const websocketClients = new Gauge({
   registers: [metricsRegistry],
 });
 
+export const mapSuppressedNodes = new Gauge({
+  name: 'meshcore_map_suppressed_nodes',
+  help: 'Stale co-located nodes excluded from the public map at the last refresh.',
+  registers: [metricsRegistry],
+});
+
 export const publicLiveOutcomesTotal = new Counter({
   name: 'meshcore_public_live_outcomes_total',
   help: 'Public live events authorized or suppressed at a bounded delivery batch.',

@@ -5,6 +5,7 @@ import { normalizeObserverQuery } from '../utils/observer.js';
 import { isPrivateNode, redactPrivateNode } from '../utils/privateNode.js';
 import { parseRegionFilter } from '../../regions/filter.js';
 import type { NodeRepository } from '../../repositories/nodes.js';
+import type { GetNodesOptions } from '../../db/index.js';
 import {
   PublicMapInputError,
   encodePublicMapCursor,
@@ -35,6 +36,7 @@ type GetNodesFn = (
   fields?: 'full' | 'slim',
   signal?: AbortSignal,
   region?: string,
+  options?: GetNodesOptions,
 ) => Promise<NodeRecord[]>;
 type GetNodeHistoryFn = (nodeId: string, hours: number, network: string) => Promise<unknown>;
 type GetNodeAdvertsFn = (publicKey: string, hours: number, limit: number, network: string) => Promise<unknown>;
@@ -137,8 +139,8 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const observer = normalizeObserverQuery(req.query['observer']);
       const nodes = region
-        ? await getNodes(network, observer, fields, undefined, region)
-        : await getNodes(network, observer, fields);
+        ? await getNodes(network, observer, fields, undefined, region, { mapVisible: true })
+        : await getNodes(network, observer, fields, undefined, undefined, { mapVisible: true });
       res.json(nodes.filter((node) => !isPrivateNode(node.name)).map(redactPrivateNode));
     } catch (err) {
       console.error('[api] GET /nodes', (err as Error).message);

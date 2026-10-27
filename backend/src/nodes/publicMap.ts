@@ -21,6 +21,7 @@ export const PUBLIC_MAP_DEFAULT_PAGE_ROWS = 1000;
 export const PUBLIC_MAP_MAX_PAGE_ROWS = 2000;
 export const PUBLIC_MAP_MAX_PAGE_BYTES = 1_500_000;
 export const PUBLIC_MAP_SNAPSHOT_MAX_AGE_MS = 30 * 60_000;
+export const PUBLIC_MAP_FRESH_WINDOW_DAYS = 28;
 
 export class PublicMapInputError extends Error {}
 
@@ -50,7 +51,7 @@ export function publicMapBasePredicate(alias = 'n'): string {
   )`;
 }
 
-export function publicMapFreshPredicate(
+export function mapVisiblePredicate(
   alias = 'n',
   referenceSql = 'NOW()',
 ): string {
@@ -58,11 +59,14 @@ export function publicMapFreshPredicate(
   return `(
     ${publicMapBasePredicate(table)}
     AND ${nodeEffectiveLastSeenSql(table)}
-      > ${referenceSql} - INTERVAL '28 days'
+      > ${referenceSql} - INTERVAL '${PUBLIC_MAP_FRESH_WINDOW_DAYS} days'
     AND ${nodeEffectiveLastSeenSql(table)}
       <= ${referenceSql}
   )`;
 }
+
+// Retain the existing export for consumers of the public map contract.
+export const publicMapFreshPredicate = mapVisiblePredicate;
 
 export function parsePublicMapFields(value: unknown): PublicMapField[] {
   if (value === undefined || value === null || value === '') {
