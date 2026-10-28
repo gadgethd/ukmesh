@@ -65,7 +65,7 @@ below. Related history reviewed: `0679fe19`, `04486cad`, `69cc48a7`, and PRs
   timestamp only for the same validated bytes, hash, renderer and apply mode.
   A changed render cannot inherit an older application certificate
   (`backend/src/owner/ownerAclArtifacts.ts:39`; actual SQL regressions at
-  `backend/src/owner/ownerAclArtifacts.integration.test.ts:24`, `:35`, `:51`).
+  `backend/src/owner/ownerAclArtifacts.integration.test.ts:52`, `:63`, `:79`).
 
 The hash transition changes IDs once even where permissions are unchanged.
 Historical applied artifacts and the existing baseline must remain available so
@@ -151,12 +151,60 @@ TMPDIR="$PWD/.ukmesh-tools/tmp" node --import tsx --test \
   src/owner/ownerAclArtifacts.integration.test.ts
 ```
 
-This fixture opens no server connection. Convergence tests inject all state,
-file and broker side effects (`backend/src/owner/ownerAclArtifacts.integration.test.ts:7`;
+This WASM fixture opens no server connection. Convergence tests inject all state,
+file and broker side effects (`backend/src/owner/ownerAclArtifacts.integration.test.ts:39`;
 `backend/src/owner/ownerAclConvergence.test.ts:16`). No production deployment,
 live DB access, migration run, live configuration edit or service restart was
 performed. No repair endpoint was needed or added; runtime recovery uses the
 existing reconciler (`backend/src/owner/ownerAclReconciler.ts:63`).
+
+## CI follow-up: historical fixture scan and automatic SQL gate
+
+Commit `d5dafe33` allowlists only the public MeshCore `testNodeKey` fixture from
+`262cc09:third_party/hopreach/cmd/hopreach-shareapi/nodes_test.go:18`, with a
+provenance comment (`.gitleaks.toml:17`). The file is absent from the current
+tree, but remains in the all-history scan. The requested command exited 0 with
+**537 commits scanned, no leaks found**, and the result was
+[posted on PR #174](https://github.com/gadgethd/ukmesh/pull/174#issuecomment-6460808740).
+Both fresh Secret scan jobs passed on that commit (runs `40633509423` and
+`40633505313`). A repeat scan after the SQL CI commit is retained in
+`evidence/2026-10-28-l3-ukmesh-privacy-fence/gitleaks-all-history-ci-followup.txt`.
+
+```sh
+docker run --rm --network none -v "$PWD":/repo:ro zricethezav/gitleaks:latest git /repo --no-banner --config /repo/.gitleaks.toml --verbose --log-opts=--all
+```
+
+Commit `c39ed9fe` makes the artifact SQL regression a Backend CI step using the
+existing disposable PostgreSQL service, with no new dependency
+(`.github/workflows/ci.yml:47`, `:67`; `backend/package.json:29`). The test reads
+only its explicit test-fixture variables, never `DATABASE_URL`; each PostgreSQL
+run creates a unique schema, sets its search path to that schema, and registers
+schema/connection cleanup before applying the test schema
+(`backend/src/owner/ownerAclArtifacts.integration.test.ts:9`, `:22`). In CI,
+missing fixture configuration throws rather than skipping (`:14`). Ordinary
+`npm test` still excludes integration files.
+
+From `backend/`, the CI command is:
+
+```sh
+TEST_OWNER_ACL_DATABASE_URL='<disposable PostgreSQL fixture URL>' npm run test:owner-acl-integration
+```
+
+Local checks on a new loopback-only, tmpfs Docker container using CI's pinned
+TimescaleDB image passed **4 tests, 0 failures, 0 skips**; the independent schema
+cleanup query found **0 remaining fixture schemas**. The container was stopped
+and automatically removed. The existing PGlite fixture also passed **4 tests,
+0 failures, 0 skips**, backend typecheck passed, and a CI invocation without
+either fixture variable exited nonzero with the expected missing-fixture error.
+Complete TAP is retained in `evidence/2026-10-28-l3-ukmesh-privacy-fence/`:
+
+- `artifact-sql-postgres-ci-followup.tap` (PostgreSQL).
+- `artifact-sql-pglite-ci-followup.tap` (PGlite).
+
+The stretch queue was not named in the original brief or handoff. Clarification
+was requested; the directly applicable optional CI follow-up below was completed
+while waiting. Release validation still needs separate authorization; shared
+writer coordination remains conditional on a multiple-writer topology.
 
 ## Deliberately left out and ranked follow-ups
 
@@ -169,10 +217,9 @@ existing reconciler (`backend/src/owner/ownerAclReconciler.ts:63`).
    one process, not multiple independent ACL writers. If multiple replicas are
    introduced, add shared writer coordination before relying on that topology
    (`backend/src/owner/ownerAclReconciler.ts:60`, `:73`).
-3. **Optional fixture in CI:** consider pinning the PostgreSQL-WASM module in
-   CI and running the artifact SQL suite there. Today it is explicitly opt-in;
-   ordinary `npm test` excludes integration files (`backend/package.json:27`;
-   `backend/src/owner/ownerAclArtifacts.integration.test.ts:8`).
+3. **Artifact SQL fixture in CI — completed:** the existing PostgreSQL CI
+   service runs the certificate regression; the optional local WASM fixture
+   remains available. See the CI follow-up above.
 4. **Separate packet-history fence:** no automatic full-history
    `privacy:converge --apply`, queue-claim reset, migration renumbering, policy
    choice change or packet rewrite was added. PR #159's read-only packet
@@ -187,6 +234,8 @@ Evidence SHA-256:
 aa08e17db80700159af0077031ebc8a2edfa2036141ddabc1c02079a3d60f6c6  before.tap
 1d9be6113e180ea0a67219028cb560a10cab83e5692fa35e40bd643657564d68  after.tap
 5d49ca4a562d8ea66779cf776b6b769cd881b318500edfb34fdbd7e5b849536a  artifact-sql.tap
+c3076f3ba3155a3a510be9a23ae8e7503c5c84d6247239156c4d1e056ab6c600  artifact-sql-pglite-ci-followup.tap
+2e6adda790adb590ee6be709b100fa8c96a692ad72ec98264bc4a7fd175d2642  artifact-sql-postgres-ci-followup.tap
 ```
 
 PROOF: https://github.com/gadgethd/ukmesh/pull/174; regression command above: before `# pass 0` / `# fail 1`, after `# pass 1` / `# fail 0`; complete before/after TAP and SHA-256 values above.
