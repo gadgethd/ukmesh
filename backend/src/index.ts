@@ -381,6 +381,7 @@ async function main() {
 
   // Defaults to 120 requests / IP / minute. Isolated load environments may
   // raise the bounded configuration without changing production policy.
+  // Telemetry uses its route budget; dashboard stats have a reserved budget.
   app.use('/api', createGlobalApiLimiter());
 
   // API routes
