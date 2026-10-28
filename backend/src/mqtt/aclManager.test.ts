@@ -13,6 +13,29 @@ import {
   validateRenderedOwnerAcl,
 } from './aclManager.js';
 
+test('ACL generations identify effective policy rather than unused options or comments', () => {
+  const grants = [{ mqttUsername: 'owner', nodeIds: ['A'.repeat(64)] }];
+  const first = renderOwnerAcl('user unmanaged\ntopic read private/#\n', grants, ['unmanaged']);
+  const repeated = renderOwnerAcl(first.content, grants, ['unmanaged']);
+  assert.equal(first.generation, repeated.generation);
+  assert.equal(first.content, repeated.content);
+  const unusedOption = renderOwnerAcl(first.content, grants, ['unmanaged'], [], [], ['unused/#']);
+  assert.equal(first.generation, unusedOption.generation);
+  const commented = renderOwnerAcl('# operator note\nuser unmanaged\n# same policy\ntopic read private/#\n', grants, ['unmanaged']);
+  assert.equal(first.generation, commented.generation);
+});
+
+test('global and unmanaged permission changes receive distinct ACL artifact generations', () => {
+  const grants = [{ mqttUsername: 'owner', nodeIds: ['A'.repeat(64)] }];
+  const render = (content: string) => renderOwnerAcl(content, grants, ['unmanaged']);
+  const original = render('user unmanaged\ntopic read private/#\n');
+  assert.notEqual(original.generation, render('user unmanaged\ntopic readwrite private/#\n').generation);
+  assert.notEqual(original.generation, render('topic read public/#\nuser unmanaged\ntopic read private/#\n').generation);
+  assert.notEqual(original.generation, renderOwnerAcl(original.content, [
+    { ...grants[0]!, publicFeedRead: true },
+  ], ['unmanaged']).generation);
+});
+
 const NODE_ID = 'A1'.repeat(32);
 const OTHER_NODE_ID = 'B2'.repeat(32);
 

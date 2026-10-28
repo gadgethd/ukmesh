@@ -83,6 +83,43 @@ On an alert:
    resolves. This check certifies the generation fence, not correctness of all
    historical flags or downstream replay freshness.
 
+## Owner ACL readiness convergence
+
+The packet-history repair below is separate from the **owner MQTT ACL**
+generation used by the `/readyz` owner inventory baseline. Owner public-feed
+switches change that ACL, not the packet materialization certificate.
+
+Owner ACL generations hash the emitted policy, including retained global and
+unmanaged rules. Unused render options and comments do not change the generation.
+The startup, periodic and public-feed reconciliation paths converge against
+fresh owner grants and feed settings. A verified unchanged render performs no
+ACL/artifact/state writes or broker reload. A desired/rendered-only bump can be
+recovered from the current applied certificate and exact file readback; other
+drift uses the normal validated apply/reload/readback path. An incomplete apply
+keeps `OWNER_ACL_APPLY_PENDING` until verification finishes, so a crash or failed
+reload cannot be mistaken for an unchanged, verified policy.
+
+In apply mode, readiness also requests that same pass when the persisted
+generation triple is unsettled or has an error. Concurrent probes share the
+attempt, failed attempts are spaced at least ten seconds apart, and readiness
+re-reads the state afterward. Startup still awaits reconciliation before the
+listener opens. This adds no endpoint, auth mechanism, baseline-file rewrite or
+packet-history repair.
+
+The baseline validator used for inventory exports stays strict. Readiness may
+admit a different settled generation only when both applied artifacts have valid
+hashes/markers and use the same renderer, the latest matches the current file,
+and their permissions are identical or differ exclusively in public-feed reads.
+Changes to owner inventory,
+non-feed directives, renderer version or missing/corrupt evidence still fail
+closed. Existing baselines and historical applied artifacts must be retained:
+the policy-hash transition changes generation IDs once, and readiness uses those
+artifacts to prove that unchanged permissions remain safe.
+
+See [the 2026-10-28 review](reviews/2026-10-28-l3-ukmesh-privacy-fence.md) for source
+locations, reproduction and exact test results. None of this invokes
+`privacy:converge --apply` automatically.
+
 ## Inventory and repair
 
 Use the reviewed backend build with migration 062 applied through the normal

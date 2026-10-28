@@ -61,7 +61,7 @@ export function classifyRenderedOwnerAclDelta(before: string, after: string): {
     : { kind: 'empty', reason: 'rendered-acl-policy-unchanged' };
 }
 
-function settled(state: OwnerAclGenerationState): boolean {
+export function isOwnerAclGenerationSettled(state: OwnerAclGenerationState): boolean {
   return Boolean(state.desiredGeneration)
     && state.desiredGeneration === state.renderedGeneration
     && state.desiredGeneration === state.appliedGeneration
@@ -77,7 +77,7 @@ function validArtifact(artifact: AppliedOwnerAclArtifact, generation: string): b
     && markers[0] === `# BEGIN MESHCORE OWNER ACL v1 generation=${generation}`;
 }
 
-/** Readiness alone may tolerate proven feed-only drift; inventory exports stay strict. */
+/** Proven identical/feed-only policies converge readiness; inventory exports stay strict. */
 export async function validateOwnerInventoryReadiness(
   baseline: OwnerInventoryBaseline,
   current: OwnerInventoryBaseline,
@@ -92,7 +92,7 @@ export async function validateOwnerInventoryReadiness(
   if (validation.mismatches.some((name) => !GENERATION_MISMATCHES.has(name))) {
     return reject('owner-inventory-scope-changed');
   }
-  if (!settled(baseline.aclState) || !settled(current.aclState)) {
+  if (!isOwnerAclGenerationSettled(baseline.aclState) || !isOwnerAclGenerationSettled(current.aclState)) {
     return reject('owner-acl-generation-not-settled');
   }
   const previousGeneration = baseline.aclState.appliedGeneration!;
@@ -116,6 +116,6 @@ export async function validateOwnerInventoryReadiness(
   }
   if (latest.content !== input.aclContent) return reject('applied-acl-readback-mismatch');
   const delta = classifyRenderedOwnerAclDelta(previous.content, latest.content);
-  if (delta.kind !== 'public-feed-only') return reject(delta.reason);
+  if (delta.kind === 'other') return reject(delta.reason);
   return { ok: true, mismatches: [], reason: delta.reason };
 }

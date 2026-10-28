@@ -77,6 +77,31 @@ test('an empty delta passes without requiring historical artifacts', async () =>
   assert.equal(classifyRenderedOwnerAclDelta(current.artifact.content, current.artifact.content).kind, 'empty');
 });
 
+test('spurious out-of-band ACL generation converges when verified applied policy is unchanged', async (t) => {
+  const previous = fixture();
+  const current = fixture();
+  const bumpedGeneration = 'f'.repeat(64);
+  current.inventory.aclState = {
+    desiredGeneration: bumpedGeneration,
+    renderedGeneration: bumpedGeneration,
+    appliedGeneration: bumpedGeneration,
+    lastError: null,
+  };
+  current.artifact = {
+    ...current.artifact,
+    generation: bumpedGeneration,
+    content: current.artifact.content.replaceAll(previous.artifact.generation, bumpedGeneration),
+  };
+  current.artifact.contentSha256 = createHash('sha256').update(current.artifact.content).digest('hex');
+  assert.deepEqual(validateOwnerInventoryBaseline(previous.inventory, current.inventory), {
+    ok: false,
+    mismatches: ['aclDesiredGeneration', 'aclRenderedGeneration', 'aclAppliedGeneration'],
+  });
+  const result = await check(previous, current);
+  t.diagnostic(`OUT-OF-BAND GENERATION: strict baseline=false; readiness=${result.ok}; reason=${result.reason}`);
+  assert.deepEqual(result, { ok: true, mismatches: [], reason: 'rendered-acl-policy-unchanged' });
+});
+
 test('feed changes mixed with non-feed permissions fail closed, including permissions missed by node readback', async () => {
   const previous = fixture({ existing: 'user unmanaged\ntopic read private/#\n' });
   const current = fixture({ feedRead: true, existing: 'user unmanaged\ntopic readwrite private/#\n' });
@@ -177,7 +202,7 @@ test('missing, corrupt, or unreadable applied artifacts leave generation mismatc
   }
 });
 
-test('readback tampering, renderer changes, and unexplained generation changes fail closed', async () => {
+test('readback tampering and renderer changes fail closed; proven equivalent policies converge', async () => {
   const previous = fixture();
   const current = fixture({ feedRead: true });
   assert.equal((await validateOwnerInventoryReadiness(previous.inventory, current.inventory, {
@@ -190,12 +215,12 @@ test('readback tampering, renderer changes, and unexplained generation changes f
   assert.equal((await check(previous, current)).reason, 'owner-acl-renderer-changed');
   current.artifact.rendererVersion = previous.artifact.rendererVersion;
 
-  // The generation changes but the policy is identical: no feed delta proves an exception.
+  // A different generation with identical, verified applied permissions is safe.
   current.artifact.content = previous.artifact.content.replaceAll(previous.artifact.generation, current.artifact.generation);
   current.artifact.contentSha256 = createHash('sha256').update(current.artifact.content).digest('hex');
   assert.deepEqual(await check(previous, current), {
-    ok: false,
-    mismatches: ['aclDesiredGeneration', 'aclRenderedGeneration', 'aclAppliedGeneration'],
+    ok: true,
+    mismatches: [],
     reason: 'rendered-acl-policy-unchanged',
   });
 });

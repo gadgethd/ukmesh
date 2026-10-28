@@ -1,0 +1,53 @@
+TAP version 13
+# Subtest: spurious out-of-band ACL generation converges when verified applied policy is unchanged
+not ok 1 - spurious out-of-band ACL generation converges when verified applied policy is unchanged
+  ---
+  duration_ms: 101.196087
+  type: 'test'
+  location: '/home/ben/ukmesh-src/backend/src/owner/ownerInventoryReadiness.test.ts:1:2952'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly deep-equal:
+    + actual - expected
+
+      {
+    +   mismatches: [
+    +     'aclDesiredGeneration',
+    +     'aclRenderedGeneration',
+    +     'aclAppliedGeneration'
+    +   ],
+    +   ok: false,
+    -   mismatches: [],
+    -   ok: true,
+        reason: 'rendered-acl-policy-unchanged'
+      }
+
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+    ok: true
+    mismatches:
+    reason: 'rendered-acl-policy-unchanged'
+  actual:
+    ok: false
+    mismatches:
+      0: 'aclDesiredGeneration'
+      1: 'aclRenderedGeneration'
+      2: 'aclAppliedGeneration'
+    reason: 'rendered-acl-policy-unchanged'
+  operator: 'deepStrictEqual'
+  stack: |-
+    TestContext.<anonymous> (/home/ben/ukmesh-src/backend/src/owner/ownerInventoryReadiness.test.ts:102:10)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
+  ...
+# OUT-OF-BAND GENERATION: strict baseline=false; readiness=false; reason=rendered-acl-policy-unchanged
+1..1
+# tests 1
+# suites 0
+# pass 0
+# fail 1
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 5024.66436
