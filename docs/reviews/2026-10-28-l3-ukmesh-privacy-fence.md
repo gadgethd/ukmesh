@@ -4,7 +4,8 @@ Branch: `burn/ukmesh-privacy-fence-20261028`, created after fetching `origin/mai
 at `5a3c9445aab0dcd540b0def01b1425d935c2e24f`. The first branch commit,
 `1aa404d95d734a994fac4577852d7d5d437e118a`, contains only the failing regression.
 The subsequent implementation commits are `cf6fdda9`, `a7fa00b3`, `81d0c24f` and `cf81568c`
-(`git log origin/main..burn/ukmesh-privacy-fence-20261028`). PR: pending creation.
+(`git log origin/main..burn/ukmesh-privacy-fence-20261028`).
+PR: [gadgethd/ukmesh#174](https://github.com/gadgethd/ukmesh/pull/174).
 
 ## Problem and root cause
 
@@ -188,5 +189,4 @@ Evidence SHA-256:
 5d49ca4a562d8ea66779cf776b6b769cd881b318500edfb34fdbd7e5b849536a  artifact-sql.tap
 ```
 
-PROOF: PR pending; regression command above: before `# pass 0` / `# fail 1`,
-after `# pass 1` / `# fail 0`; complete before/after TAP and SHA-256 values above.
+PROOF: https://github.com/gadgethd/ukmesh/pull/174; regression command above: before `# pass 0` / `# fail 1`, after `# pass 1` / `# fail 0`; complete before/after TAP and SHA-256 values above.
