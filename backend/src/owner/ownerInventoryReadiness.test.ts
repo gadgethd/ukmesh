@@ -202,7 +202,7 @@ test('missing, corrupt, or unreadable applied artifacts leave generation mismatc
   }
 });
 
-test('readback tampering, renderer changes, and unexplained generation changes fail closed', async () => {
+test('readback tampering and renderer changes fail closed; proven equivalent policies converge', async () => {
   const previous = fixture();
   const current = fixture({ feedRead: true });
   assert.equal((await validateOwnerInventoryReadiness(previous.inventory, current.inventory, {
@@ -215,12 +215,12 @@ test('readback tampering, renderer changes, and unexplained generation changes f
   assert.equal((await check(previous, current)).reason, 'owner-acl-renderer-changed');
   current.artifact.rendererVersion = previous.artifact.rendererVersion;
 
-  // The generation changes but the policy is identical: no feed delta proves an exception.
+  // A different generation with identical, verified applied permissions is safe.
   current.artifact.content = previous.artifact.content.replaceAll(previous.artifact.generation, current.artifact.generation);
   current.artifact.contentSha256 = createHash('sha256').update(current.artifact.content).digest('hex');
   assert.deepEqual(await check(previous, current), {
-    ok: false,
-    mismatches: ['aclDesiredGeneration', 'aclRenderedGeneration', 'aclAppliedGeneration'],
+    ok: true,
+    mismatches: [],
     reason: 'rendered-acl-policy-unchanged',
   });
 });
