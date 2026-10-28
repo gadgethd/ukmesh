@@ -86,7 +86,7 @@ TMPDIR="$PWD/.ukmesh-tools/tmp" node --import tsx --test \
   src/owner/ownerInventoryReadiness.test.ts
 ```
 
-Before (`1aa404d9`, exit 1; full output in
+Before (`1aa404d9`, exit 1; full output with trailing blank-line spaces trimmed in
 `evidence/2026-10-28-l3-ukmesh-privacy-fence/before.tap:1`):
 
 ```text
@@ -184,7 +184,7 @@ existing reconciler (`backend/src/owner/ownerAclReconciler.ts:63`).
 Evidence SHA-256:
 
 ```text
-3593857c8e1cc67dc53e811bf11ba5a5ecafb4d611664f23e125e0496ea99518  before.tap
+aa08e17db80700159af0077031ebc8a2edfa2036141ddabc1c02079a3d60f6c6  before.tap
 1d9be6113e180ea0a67219028cb560a10cab83e5692fa35e40bd643657564d68  after.tap
 5d49ca4a562d8ea66779cf776b6b769cd881b318500edfb34fdbd7e5b849536a  artifact-sql.tap
 ```

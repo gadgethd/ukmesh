@@ -9,7 +9,7 @@ not ok 1 - spurious out-of-band ACL generation converges when verified applied p
   error: |-
     Expected values to be strictly deep-equal:
     + actual - expected
-    
+
       {
     +   mismatches: [
     +     'aclDesiredGeneration',
@@ -21,7 +21,7 @@ not ok 1 - spurious out-of-band ACL generation converges when verified applied p
     -   ok: true,
         reason: 'rendered-acl-policy-unchanged'
       }
-    
+
   code: 'ERR_ASSERTION'
   name: 'AssertionError'
   expected:
