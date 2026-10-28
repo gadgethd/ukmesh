@@ -84,7 +84,6 @@ export async function convergeOwnerAcl(
       await ports.updateState({
         desiredGeneration: rendered.generation,
         renderedGeneration: rendered.generation,
-        appliedGeneration: rendered.generation,
         lastError: null,
         verified: true,
       });
