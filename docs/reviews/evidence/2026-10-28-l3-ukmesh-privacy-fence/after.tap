@@ -1,0 +1,17 @@
+TAP version 13
+# Subtest: spurious out-of-band ACL generation converges when verified applied policy is unchanged
+ok 1 - spurious out-of-band ACL generation converges when verified applied policy is unchanged
+  ---
+  duration_ms: 13.029627
+  type: 'test'
+  ...
+# OUT-OF-BAND GENERATION: strict baseline=false; readiness=true; reason=rendered-acl-policy-unchanged
+1..1
+# tests 1
+# suites 0
+# pass 1
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 911.5546
