@@ -9,7 +9,6 @@ import { refreshNodeMapSuppressions } from './nodes/mapSuppressions.js';
 import {
   closeOwnerAuthDb,
   getAppliedOwnerAclArtifact,
-  getOwnerAclReadiness,
   getOwnerAuthorizationInventory,
   getOwnerAuthorizationSnapshot,
   initOwnerAuthDb,
@@ -34,7 +33,7 @@ import {
 } from './queue/publisher.js';
 import { createBackendSiteRoutes } from './backend-site/routes.js';
 import { isTrustedProxyPeer } from './http/trustedProxy.js';
-import { startOwnerAuthorizationReconciler, stopOwnerAuthorizationReconciler } from './owner/ownerAclReconciler.js';
+import { getConvergedOwnerAclReadiness, startOwnerAuthorizationReconciler, stopOwnerAuthorizationReconciler } from './owner/ownerAclReconciler.js';
 import { createOwnerLastHopPrewarm } from './owner/ownerLastHopPrewarm.js';
 import { getRegisteredOwnerService } from './api/routes/owner.js';
 import { resolveOwnerNodeIds } from './owner/ownerAccess.js';
@@ -415,7 +414,7 @@ async function main() {
     try {
       await query('SELECT 1');
       checks.database = true;
-      const aclState = await getOwnerAclReadiness();
+      const aclState = await getConvergedOwnerAclReadiness();
       Object.assign(checks.ownerAuthorization, aclState);
       const ownerBaselinePath = String(
         process.env['OWNER_AUTH_INVENTORY_BASELINE_PATH'] ?? '',
@@ -449,6 +448,7 @@ async function main() {
     const ownerAclGenerationReady = checks.ownerAuthorization.aclMode !== 'apply'
       || (
         checks.ownerAuthorization.desiredGeneration !== null
+        && checks.ownerAuthorization.desiredGeneration === checks.ownerAuthorization.renderedGeneration
         && checks.ownerAuthorization.desiredGeneration === checks.ownerAuthorization.appliedGeneration
         && checks.ownerAuthorization.lastError === null
       );

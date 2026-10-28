@@ -1,20 +1,21 @@
 import fs from 'node:fs';
 import { query } from '../db/index.js';
 import {
+  getAppliedOwnerAclArtifact,
+  getOwnerAclReadiness,
   getOwnerAuthorizationSnapshot,
   saveOwnerAclArtifact,
   syncOperatorConfiguredOwnerGrants,
   updateOwnerAclState,
 } from '../db/ownerAuth.js';
 import {
-  OWNER_ACL_RENDERER_VERSION,
   readAclFile,
   reloadMosquitto,
   renderOwnerAcl,
-  validateRenderedOwnerAcl,
   writeAclAtomically,
 } from '../mqtt/aclManager.js';
 import { ownerGrantConfigGeneration, parseOwnerGrantConfig } from './ownerGrantConfig.js';
+import { convergeOwnerAcl, createOwnerAclReadinessRecovery } from './ownerAclConvergence.js';
 import { getPublicFeedConfig } from './publicFeedConfig.js';
 import {
   getActivePublicFeedReaderUsernames,
@@ -58,6 +59,16 @@ function systemReadwriteAclTopics(): string[] {
 
 let inFlight: Promise<void> | null = null;
 let reconcileTimer: NodeJS.Timeout | null = null;
+
+const recoverReadiness = createOwnerAclReadinessRecovery({
+  readState: getOwnerAclReadiness,
+  reconcile: reconcileOwnerAuthorization,
+  reportError: (error) => console.error('[owner-acl] readiness recovery failed:', error instanceof Error ? error.message : String(error)),
+});
+
+export function getConvergedOwnerAclReadiness(): ReturnType<typeof getOwnerAclReadiness> {
+  return ownerAclMode() === 'apply' ? recoverReadiness() : getOwnerAclReadiness();
+}
 
 export function reconcileOwnerAuthorization(): Promise<void> {
   if (inFlight) return inFlight;
@@ -105,66 +116,23 @@ export function reconcileOwnerAuthorization(): Promise<void> {
       [String(process.env['MQTT_USERNAME'] ?? 'backend').trim() || 'backend'],
       systemReadwriteAclTopics(),
     );
-    await updateOwnerAclState({ desiredGeneration: rendered.generation });
-    await saveOwnerAclArtifact({
-      generation: rendered.generation,
-      rendererVersion: OWNER_ACL_RENDERER_VERSION,
-      mode,
-      contentSha256: rendered.contentSha256,
-      content: rendered.content,
-      semantic: rendered.semantic,
-      validation: rendered.validation,
+    const outcome = await convergeOwnerAcl({
+      mode, currentContent, rendered,
+      allowEmptyCutover: String(process.env['OWNER_ACL_ALLOW_EMPTY_CUTOVER'] ?? '') === '1',
+    }, {
+      readState: getOwnerAclReadiness,
+      loadAppliedArtifact: getAppliedOwnerAclArtifact,
+      updateState: updateOwnerAclState,
+      saveArtifact: saveOwnerAclArtifact,
+      readAcl: readAclFile,
+      writeAcl: writeAclAtomically,
+      writeShadow: (content) => fs.writeFileSync(
+        process.env['OWNER_ACL_SHADOW_PATH'] ?? '/tmp/meshcore-owner-acl.shadow',
+        content, { encoding: 'utf8', mode: 0o600 },
+      ),
+      reload: reloadMosquitto,
     });
-    await updateOwnerAclState({
-      renderedGeneration: rendered.generation,
-      lastError: rendered.validation.ok ? null : JSON.stringify(rendered.validation),
-    });
-
-    const shadowPath = process.env['OWNER_ACL_SHADOW_PATH'] ?? '/tmp/meshcore-owner-acl.shadow';
-    fs.writeFileSync(shadowPath, rendered.content, { encoding: 'utf8', mode: 0o600 });
-    if (mode === 'shadow') {
-      console.log('[owner-acl] shadow policy rendered', {
-        generation: rendered.generation,
-        valid: rendered.validation.ok,
-        ambiguousUsers: rendered.validation.ambiguousUsers.length,
-      });
-      return;
-    }
-    if (!rendered.validation.ok) throw new Error(`OWNER_ACL_CUTOVER_BLOCKED:${JSON.stringify(rendered.validation)}`);
-    if (!rendered.semantic.some((account) => account.nodeIds.length > 0)
-      && String(process.env['OWNER_ACL_ALLOW_EMPTY_CUTOVER'] ?? '') !== '1') {
-      throw new Error('OWNER_ACL_EMPTY_CUTOVER_BLOCKED');
-    }
-
-    let aclMutated = false;
-    try {
-      writeAclAtomically(rendered.content);
-      aclMutated = true;
-      validateRenderedOwnerAcl(readAclFile(), rendered);
-      await reloadMosquitto();
-      validateRenderedOwnerAcl(readAclFile(), rendered);
-    } catch (error) {
-      // A failed readback or reload must not leave an unverified policy ready
-      // to become active on the broker's next restart.
-      if (aclMutated) writeAclAtomically(currentContent);
-      throw error;
-    }
-    await saveOwnerAclArtifact({
-      generation: rendered.generation,
-      rendererVersion: OWNER_ACL_RENDERER_VERSION,
-      mode,
-      contentSha256: rendered.contentSha256,
-      content: rendered.content,
-      semantic: rendered.semantic,
-      validation: rendered.validation,
-      applied: true,
-    });
-    await updateOwnerAclState({
-      appliedGeneration: rendered.generation,
-      lastError: null,
-      verified: true,
-    });
-    console.log('[owner-acl] applied and verified policy', { generation: rendered.generation });
+    console.log('[owner-acl] convergence', { generation: rendered.generation, outcome });
   })().catch(async (error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     await updateOwnerAclState({ lastError: message }).catch(() => undefined);
