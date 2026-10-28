@@ -1,19 +1,47 @@
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import test from 'node:test';
+import pg from 'pg';
 import { OWNER_ACL_RENDERER_VERSION, renderOwnerAcl } from '../mqtt/aclManager.js';
 import { createOwnerAclArtifactStore, type OwnerAclArtifactInput } from './ownerAclArtifacts.js';
 
-// An in-memory PostgreSQL-WASM fixture; this suite never opens a server connection.
+// Only explicitly supplied test fixtures are used, never DATABASE_URL. CI uses
+// its disposable PostgreSQL service; the in-memory WASM fixture remains useful
+// for local checks without a server.
+const databaseUrl = process.env['TEST_OWNER_ACL_DATABASE_URL'];
 const moduleUrl = process.env['TEST_OWNER_ACL_PGLITE_MODULE'];
+if (process.env['CI'] && !databaseUrl && !moduleUrl) {
+  throw new Error('Owner ACL SQL tests require an explicit test fixture in CI');
+}
 
 test('real owner ACL artifact SQL preserves certificates only for the same verified bytes', {
-  skip: moduleUrl ? false : 'TEST_OWNER_ACL_PGLITE_MODULE is not configured',
+  skip: databaseUrl || moduleUrl ? false : 'No owner ACL SQL test fixture is configured',
   timeout: 30_000,
 }, async (t) => {
-  const { PGlite } = await import(moduleUrl!);
-  const db = await PGlite.create();
-  t.after(() => db.close());
+  const db = databaseUrl ? await (async () => {
+    const client = new pg.Client({ connectionString: databaseUrl });
+    await client.connect();
+    const schema = `owner_acl_artifacts_${randomUUID().replaceAll('-', '')}`;
+    t.after(async () => {
+      try {
+        await client.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+      } finally {
+        await client.end();
+      }
+    });
+    await client.query(`CREATE SCHEMA ${schema}`);
+    await client.query(`SET search_path TO ${schema}`);
+    return {
+      exec: (sql: string) => client.query(sql),
+      query: (sql: string, params?: unknown[]) => client.query(sql, params),
+    };
+  })() : await (async () => {
+    const { PGlite } = await import(moduleUrl!);
+    const fixture = await PGlite.create();
+    t.after(() => fixture.close());
+    return fixture;
+  })();
   await db.exec(fs.readFileSync(new URL('../db/owner-auth.sql', import.meta.url), 'utf8'));
   const store = createOwnerAclArtifactStore((sql, params) => db.query(sql, params));
   const rendered = renderOwnerAcl('', [{ mqttUsername: 'owner', nodeIds: ['A'.repeat(64)] }], []);
