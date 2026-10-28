@@ -14,4 +14,8 @@ regexes = [
   # the allowance survives edits to the test files.
   '''67969D8FF8A2DE6FFF873638CCAB3F70E38111BE3BD599F75E9D21D907B217B5''',
   '''8CA23B78908F366D2D9F63EFE4A5726D685332FD3EC9AFF1B3B6CFF22EC2AE8A''',
+  # Public MeshCore node-key fixture (testNodeKey) in historical HopReach
+  # nodes_test.go, commit 262cc09. This advertised node identity is public,
+  # like the MQTT fixtures above; keep the exact value for --all scans.
+  '''85953e404cd421a5d845051a8674d52bc38de2972f2357072ec1e79a79be47ed''',
 ]
