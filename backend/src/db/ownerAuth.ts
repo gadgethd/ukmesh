@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { resolveDbAssetPath } from './assets.js';
 import { boundedIntegerSetting } from '../platform/config/boundedNumber.js';
 import { planOperatorConfiguredOwnerGrantSync } from '../owner/ownerGrantReconciliation.js';
-import type { AppliedOwnerAclArtifact } from '../owner/ownerInventoryReadiness.js';
+import { createOwnerAclArtifactStore } from '../owner/ownerAclArtifacts.js';
 
 const { Pool } = pg;
 const OWNER_DB_NAME = process.env['OWNER_POSTGRES_DB'] ?? 'meshcore_owner_auth';
@@ -536,59 +536,6 @@ export async function getOwnerAclReadiness(): Promise<{
   };
 }
 
-export async function getAppliedOwnerAclArtifact(generation: string): Promise<AppliedOwnerAclArtifact | null> {
-  const result = await ownerPool.query<{
-    generation: string;
-    renderer_version: string;
-    content_sha256: string;
-    content: string;
-  }>(
-    `SELECT generation, renderer_version, content_sha256, content
-       FROM owner_acl_artifacts
-      WHERE generation = $1 AND mode = 'apply' AND applied_at IS NOT NULL
-        AND validation_json->>'ok' = 'true'`,
-    [generation],
-  );
-  const row = result.rows[0];
-  return row ? {
-    generation: row.generation,
-    rendererVersion: row.renderer_version,
-    contentSha256: row.content_sha256,
-    content: row.content,
-  } : null;
-}
-
-export async function saveOwnerAclArtifact(input: {
-  generation: string;
-  rendererVersion: string;
-  mode: 'shadow' | 'apply';
-  contentSha256: string;
-  content: string;
-  semantic: unknown;
-  validation: unknown;
-  applied?: boolean;
-}): Promise<void> {
-  await ownerPool.query(
-    `INSERT INTO owner_acl_artifacts (
-       generation, renderer_version, mode, content_sha256, content,
-       semantic_json, validation_json, applied_at
-     ) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8)
-     ON CONFLICT (generation) DO UPDATE SET
-       mode = EXCLUDED.mode,
-       content_sha256 = EXCLUDED.content_sha256,
-       content = EXCLUDED.content,
-       semantic_json = EXCLUDED.semantic_json,
-       validation_json = EXCLUDED.validation_json,
-       applied_at = COALESCE(EXCLUDED.applied_at, owner_acl_artifacts.applied_at)`,
-    [
-      input.generation,
-      input.rendererVersion,
-      input.mode,
-      input.contentSha256,
-      input.content,
-      JSON.stringify(input.semantic),
-      JSON.stringify(input.validation),
-      input.applied ? new Date() : null,
-    ],
-  );
-}
+const ownerAclArtifactStore = createOwnerAclArtifactStore((sql, params) => ownerPool.query(sql, params));
+export const getAppliedOwnerAclArtifact = ownerAclArtifactStore.getApplied;
+export const saveOwnerAclArtifact = ownerAclArtifactStore.save;

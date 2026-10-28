@@ -7,6 +7,7 @@ import type { OwnerAclStateUpdate } from '../db/ownerAuth.js';
 import type { OwnerAclGenerationState } from './ownerInventoryBaseline.js';
 import type { AppliedOwnerAclArtifact } from './ownerInventoryReadiness.js';
 import { isOwnerAclGenerationSettled } from './ownerInventoryReadiness.js';
+import type { OwnerAclArtifactInput } from './ownerAclArtifacts.js';
 
 /** Readiness can request the same startup/periodic pass. Coalesce callers and
  * throttle failed attempts so probes cannot create a broker reload loop.
@@ -36,22 +37,11 @@ export function createOwnerAclReadinessRecovery<T extends OwnerAclGenerationStat
   };
 }
 
-type Artifact = {
-  generation: string;
-  rendererVersion: string;
-  mode: 'shadow' | 'apply';
-  contentSha256: string;
-  content: string;
-  semantic: unknown;
-  validation: unknown;
-  applied?: boolean;
-};
-
 export type OwnerAclConvergencePorts = {
   readState: () => Promise<OwnerAclGenerationState>;
   loadAppliedArtifact: (generation: string) => Promise<AppliedOwnerAclArtifact | null>;
   updateState: (update: OwnerAclStateUpdate) => Promise<void>;
-  saveArtifact: (artifact: Artifact) => Promise<void>;
+  saveArtifact: (artifact: OwnerAclArtifactInput) => Promise<void>;
   readAcl: () => string;
   writeAcl: (content: string) => void;
   writeShadow: (content: string) => void;
