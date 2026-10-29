@@ -1837,6 +1837,81 @@
   flex-shrink: 0;
 }
 
+/* Basemap health chip — shown only while retrying or on the offline fallback. */
+.map-basemap-status {
+  position: absolute;
+  left: 10px;
+  bottom: 56px;
+  z-index: 12;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(420px, calc(100% - 24px));
+  padding: 7px 10px;
+  font-size: 12px;
+  line-height: 1.3;
+  color: var(--text-primary);
+  background: rgba(8, 13, 20, 0.9);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+.map-basemap-status--fallback {
+  border-color: rgba(255, 176, 32, 0.65);
+}
+
+.map-basemap-status__text {
+  flex: 1 1 auto;
+}
+
+.map-basemap-status__retry {
+  flex: 0 0 auto;
+  padding: 4px 10px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: #080d14;
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.map-basemap-status__retry:hover {
+  background: #33cfff;
+  border-color: #33cfff;
+}
+
+/* City labels on the bundled offline basemap (DOM markers, no glyphs needed). */
+.map-fallback-label {
+  font-family: var(--font-sans, system-ui, sans-serif);
+  font-size: 11px;
+  font-weight: 500;
+  color: #c3ccd6;
+  text-shadow: 0 0 3px #000, 0 0 2px #000;
+  white-space: nowrap;
+  pointer-events: none;
+  user-select: none;
+}
+
+.map-fallback-label--rank-0 { font-size: 14px; font-weight: 700; }
+.map-fallback-label--rank-1 { font-size: 12.5px; font-weight: 600; }
+.map-fallback-label--rank-2 { font-size: 11.5px; }
+
+:root[data-theme='light'] .map-fallback-label {
+  color: #33414f;
+  text-shadow: 0 0 3px #fff, 0 0 2px #fff;
+}
+
+@media (max-width: 640px) {
+  .map-basemap-status {
+    bottom: 84px;
+    font-size: 11px;
+  }
+}
+
 @media (max-width: 640px) {
   .map-tools {
     display: none !important;

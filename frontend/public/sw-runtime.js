@@ -1,29 +1,56 @@
 export const SW_CACHE_POLICY = Object.freeze({
-  version: 'v8',
-  tileCache: 'meshcore-tiles-v8',
-  appCache: 'meshcore-app-v8',
-  metadataCache: 'meshcore-meta-v8',
-  previousTileCache: 'meshcore-tiles-v7',
-  previousAppCache: 'meshcore-app-v7',
+  version: 'v9',
+  tileCache: 'meshcore-tiles-v9',
+  appCache: 'meshcore-app-v9',
+  metadataCache: 'meshcore-meta-v9',
+  basemapMetadataCache: 'meshcore-basemap-v9',
+  previousTileCache: 'meshcore-tiles-v8',
+  previousAppCache: 'meshcore-app-v8',
+  previousMetadataCache: 'meshcore-meta-v8',
+  previousBasemapMetadataCache: 'meshcore-basemap-v8',
   maxTileEntries: 6_000,
   maxTileBytes: 96 * 1024 * 1024,
   pruneTargetRatio: 0.9,
   metadataFlushEvery: 32,
+  // Style JSON, TileJSON, sprite and glyphs are small and can change upstream
+  // (new tile snapshot, new sprite). Cache them briefly, never indefinitely.
+  basemapMetadataTtlMs: 5 * 60_000,
   rollbackWindowMs: 7 * 24 * 60 * 60_000,
 });
 
-function isTileUrl(url) {
+const BASEMAP_HOST = 'tiles.openfreemap.org';
+const BASEMAP_TILE_PATH_PREFIXES = ['/planet/', '/natural_earth/'];
+
+function isBasemapUrl(url) {
   try {
-    const parsed = new URL(url);
-    return parsed.hostname === 'tiles.openfreemap.org';
+    return new URL(url).hostname === BASEMAP_HOST;
   } catch {
     return false;
   }
 }
 
+/** Vector/raster tile bytes only — these are content-addressed by snapshot. */
+function isTileUrl(url) {
+  try {
+    const parsed = new URL(url);
+    if (parsed.hostname !== BASEMAP_HOST) return false;
+    return BASEMAP_TILE_PATH_PREFIXES.some((prefix) => parsed.pathname.startsWith(prefix));
+  } catch {
+    return false;
+  }
+}
+
+/** Style JSON, TileJSON, sprites and glyphs — revalidated, not pinned. */
+function isBasemapMetadataUrl(url) {
+  return isBasemapUrl(url) && !isTileUrl(url);
+}
+
 function isAppAssetUrl(url, origin) {
   const parsed = new URL(url, origin);
-  return parsed.origin === origin && parsed.pathname.startsWith('/assets/');
+  if (parsed.origin !== origin || !parsed.pathname.startsWith('/assets/')) return false;
+  // MapLibre's worker bundle keeps a stable filename across releases; caching
+  // it forever pairs a new page bundle with an old worker. Revalidate instead.
+  return !parsed.pathname.endsWith('.mjs');
 }
 
 function estimatedResponseBytes(response) {
@@ -93,7 +120,7 @@ export function createTileMetadata(initial = []) {
 export function createServiceWorkerRuntime(environment) {
   const policy = { ...SW_CACHE_POLICY, ...(environment.policy ?? {}) };
   const now = environment.now ?? Date.now;
-  const metadataUrl = new URL('/__meshcore_sw_metadata_v8__', environment.origin).toString();
+  const metadataUrl = new URL('/__meshcore_sw_metadata_v9__', environment.origin).toString();
   let metadata;
   let metadataState = {
     version: 1,
@@ -173,7 +200,13 @@ export function createServiceWorkerRuntime(environment) {
         policy.tileCache,
         policy.appCache,
         policy.metadataCache,
-        ...(rollbackExpired ? [] : [policy.previousTileCache, policy.previousAppCache]),
+        policy.basemapMetadataCache,
+        ...(rollbackExpired ? [] : [
+          policy.previousTileCache,
+          policy.previousAppCache,
+          policy.previousMetadataCache,
+          policy.previousBasemapMetadataCache,
+        ]),
       ]);
       await Promise.all(names.map((name) => (
         name.startsWith('meshcore-') && !retained.has(name)
@@ -193,6 +226,39 @@ export function createServiceWorkerRuntime(environment) {
   const activeTileCacheName = () => (
     metadataState.rollbackMode ? policy.previousTileCache : policy.tileCache
   );
+  const activeBasemapMetadataCacheName = () => (
+    metadataState.rollbackMode ? policy.previousBasemapMetadataCache : policy.basemapMetadataCache
+  );
+
+  /**
+   * Style JSON / TileJSON / sprites / glyphs: serve cached while fresh, then
+   * revalidate from the network. Never pin these for the cache's lifetime —
+   * a stale style can reference a tile snapshot or sprite that no longer
+   * matches what the app expects.
+   */
+  const fetchBasemapMetadata = async (request) => {
+    await readMetadata();
+    const cache = await environment.caches.open(activeBasemapMetadataCacheName());
+    const cached = await cache.match(request);
+    const cachedAt = Number(cached?.headers.get('x-meshcore-cached-at') ?? 0);
+    if (cached && now() - cachedAt < policy.basemapMetadataTtlMs) return cached;
+    try {
+      const response = await environment.fetch(request);
+      if (response.ok && !metadataState.rollbackMode) {
+        const body = await response.clone().arrayBuffer();
+        const headers = new Headers(response.headers);
+        headers.set('x-meshcore-cached-at', String(now()));
+        await cache.put(request, new Response(body, {
+          status: response.status,
+          statusText: response.statusText,
+          headers,
+        }));
+      }
+      return response;
+    } catch {
+      return cached ?? Response.error();
+    }
+  };
 
   const fetchTile = async (request, waitUntil) => {
     await readMetadata();
@@ -261,7 +327,7 @@ export function createServiceWorkerRuntime(environment) {
   return {
     policy,
     shouldHandle: (request) => (
-      isTileUrl(request.url)
+      isBasemapUrl(request.url)
       || isAppAssetUrl(request.url, environment.origin)
       || request.mode === 'navigate'
     ),
@@ -281,6 +347,7 @@ export function createServiceWorkerRuntime(environment) {
     handleFetch: async (request, waitUntil = () => {}) => {
       void cleanupOldCaches(false);
       if (isTileUrl(request.url)) return fetchTile(request, waitUntil);
+      if (isBasemapMetadataUrl(request.url)) return fetchBasemapMetadata(request);
       if (isAppAssetUrl(request.url, environment.origin)) return fetchAsset(request);
       return fetchNavigation(request);
     },
