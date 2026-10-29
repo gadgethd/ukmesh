@@ -992,7 +992,10 @@ services:
     volumes:
       - alert_receiver_data:/var/lib/meshcore-alerts
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/readyz >/dev/null"]
+      # /readyz returns 503 unless ALERT_FORWARD_URL is configured, and that
+      # variable is optional (${ALERT_FORWARD_URL:-}); archive-only is a valid
+      # mode, so probe liveness and read the degraded state from the body.
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz >/dev/null"]
       interval: 30s
       timeout: 5s
       retries: 5
