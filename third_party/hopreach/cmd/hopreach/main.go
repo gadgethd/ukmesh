@@ -27,6 +27,26 @@ import (
 	"hopreach/internal/sysinfo"
 )
 
+type commandFlags struct {
+	configPath    string
+	force         bool
+	forceAllTiers bool
+	prepare       bool
+	scheduled     bool
+	node          string
+}
+
+func registerFlags(fs *flag.FlagSet) *commandFlags {
+	opts := &commandFlags{}
+	fs.StringVar(&opts.configPath, "config", "", "path to config.yaml (default: $HOPREACH_CONFIG, then ./config.yaml)")
+	fs.BoolVar(&opts.force, "force", false, "run even if within coverage.min_recompute_interval_hours (each tier still skips itself if it already completed today — see -force-all-tiers)")
+	fs.BoolVar(&opts.forceAllTiers, "force-all-tiers", false, "also recompute every tier regardless of same-day freshness (implies -force); use after a config change that invalidates existing output, not for a routine restart/deploy")
+	fs.BoolVar(&opts.prepare, "prepare", false, "render config.js, nginx's site config, and the cron file from config.yaml, then exit")
+	fs.BoolVar(&opts.scheduled, "scheduled", false, "wait up to one hour for the calculator lock and refresh unless a run completed since the latest daily cron slot")
+	fs.StringVar(&opts.node, "node", "", "compute standard-tier coverage for one 64-hex repeater public key, then exit")
+	return opts
+}
+
 func main() {
 	// See sysinfo.ApplyGoMemoryLimit: without this, Go's GC has no
 	// awareness of this container's real memory ceiling at all, and a real
@@ -34,30 +54,29 @@ func main() {
 	// after being shrunk, right up against the exact cgroup limit.
 	sysinfo.ApplyGoMemoryLimit()
 
-	configFlag := flag.String("config", "", "path to config.yaml (default: $HOPREACH_CONFIG, then ./config.yaml)")
-	force := flag.Bool("force", false, "run even if within coverage.min_recompute_interval_hours (each tier still skips itself if it already completed today — see -force-all-tiers)")
-	forceAllTiers := flag.Bool("force-all-tiers", false, "also recompute every tier regardless of same-day freshness (implies -force); use after a config change that invalidates existing output, not for a routine restart/deploy")
-	prepare := flag.Bool("prepare", false, "render config.js, nginx's site config, and the cron file from config.yaml, then exit")
-	nodeFlag := flag.String("node", "", "compute standard-tier coverage for one 64-hex repeater public key, then exit")
+	opts := registerFlags(flag.CommandLine)
 	flag.Parse()
-	if *prepare && *nodeFlag != "" {
+	if opts.prepare && opts.node != "" {
 		log.Fatal("hopreach: -prepare and -node cannot be used together")
 	}
+	if opts.scheduled && (opts.prepare || opts.node != "") {
+		log.Fatal("hopreach: -scheduled cannot be used with -prepare or -node")
+	}
 	var nodePublicKey string
-	if *nodeFlag != "" {
+	if opts.node != "" {
 		var err error
-		nodePublicKey, err = normalizeNodePublicKey(*nodeFlag)
+		nodePublicKey, err = normalizeNodePublicKey(opts.node)
 		if err != nil {
 			log.Fatalf("hopreach: -node: %v", err)
 		}
 	}
 
-	yc, path, err := yconfig.Load(*configFlag)
+	yc, path, err := yconfig.Load(opts.configPath)
 	if err != nil {
 		log.Fatalf("hopreach: %v", err)
 	}
 
-	if *prepare {
+	if opts.prepare {
 		if err := runPrepare(yc, path); err != nil {
 			log.Fatalf("hopreach: -prepare: %v", err)
 		}
@@ -67,8 +86,17 @@ func main() {
 	// Excludes concurrent runs from whichever combination of the container's
 	// initial background run, the daily cron job, and an on-demand
 	// /admin/recompute trigger happens to overlap — see lock.go.
-	lock, err := acquireLock()
+	acquire := acquireLock
+	if opts.scheduled {
+		acquire = func() (*os.File, error) {
+			return waitForLock(acquireLock, scheduledLockTimeout, scheduledLockPollInterval)
+		}
+	}
+	lock, err := acquire()
 	if err != nil {
+		if opts.scheduled {
+			log.Fatalf("hopreach: scheduled run failed: %v", err)
+		}
 		if nodePublicKey != "" {
 			_ = json.NewEncoder(os.Stdout).Encode(nodeRunResult{PublicKey: nodePublicKey, State: "busy", Message: err.Error()})
 			return
@@ -79,8 +107,9 @@ func main() {
 	defer lock.Close()
 
 	cfg := toAppConfig(yc)
-	cfg.forceRecompute = *force || *forceAllTiers
-	cfg.forceAllTiers = *forceAllTiers
+	cfg.forceRecompute = opts.force || opts.forceAllTiers
+	cfg.forceAllTiers = opts.forceAllTiers
+	cfg.scheduled = opts.scheduled
 	if nodePublicKey != "" {
 		result, runErr := runNode(cfg, nodePublicKey)
 		if encodeErr := json.NewEncoder(os.Stdout).Encode(result); encodeErr != nil {

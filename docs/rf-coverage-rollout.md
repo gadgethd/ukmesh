@@ -154,3 +154,28 @@ release; never mix its worker/API/UI with the new release.
 At the end of the one-release rollback window, removal of `node_coverage`, old
 images, legacy queue code, or caches needs a separate reviewed change with a
 fresh backup and exact target inventory.
+
+## On-demand repeater footprints
+
+The map's node drawer offers **Show RF coverage** for any repeater with a
+64-hex public key. This path is separate from the whole-region publication:
+
+- `POST /rf-coverage/nodes/<public key>/request` is served by the app's nginx
+  and proxied to the calculator's share API on `share.public_listen_addr`
+  (`0.0.0.0:8082` in `rf-coverage/config.ukmesh.yaml`; disabled when empty).
+  The plan-share and admin routes remain loopback-only.
+- The share API validates the key, deduplicates and bounds the queue (32
+  entries), and runs `/app/hopreach -node <key>` one job at a time. The app
+  polls `meta.json` every 3 s; each entry is written `computing` first, then
+  `available` with its tiles under `tiles/nodes/<dataset>/`.
+- Node jobs take the calculator's singleton lock, exactly like the
+  whole-region run. A request that arrives during the nightly pass is queued
+  and retried (30 s for the first ten attempts, then every 5 min, giving up
+  after 6 h) instead of competing for CPU or racing `meta.json`.
+- The app's WebSocket `initial_state` must include `public_key` for repeaters.
+  When it was omitted from the slim projection, the button only appeared for
+  nodes that had arrived through a live `node_upsert`.
+- `schedule.cron` in the same config controls the whole-region refresh and is
+  rendered into `/etc/cron.d/hopreach` by `hopreach -prepare` at container
+  start. It is a nightly expression (`0 1 * * *`); each tier still skips
+  itself when it already completed that UTC day.

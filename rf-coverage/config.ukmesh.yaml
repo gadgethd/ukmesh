@@ -86,13 +86,19 @@ gpu:
     retry_error_stall_minutes: 240
 
 schedule:
-  cron: "0 1 * * 0"
+  # Nightly whole-region recomputation. Each tier still skips itself when
+  # it already completed today (coverage.min_recompute_interval_hours),
+  # so this is a daily refresh, not a full rebuild every night.
+  cron: "0 1 * * *"
 
 # HopReach's share/planner interfaces are not exposed by the UK Mesh native UI.
 share:
   ttl_days: 7
   store_dir: /data/shared-plans
   listen_addr: 127.0.0.1:8081
+  # On-demand single-repeater footprint requests (proxied by the app's
+  # nginx). Loopback above stays reserved for plan sharing and admin.
+  public_listen_addr: 0.0.0.0:8082
 
 remote_worker:
   token: ""

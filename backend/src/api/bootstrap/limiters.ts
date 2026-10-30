@@ -1,4 +1,5 @@
 import { rateLimit } from 'express-rate-limit';
+import type { RequestHandler } from 'express';
 
 export function parseApiRateLimitMax(
   value = process.env['API_RATE_LIMIT_MAX'],
@@ -10,14 +11,34 @@ export function parseApiRateLimitMax(
   return parsed;
 }
 
-export function createGlobalApiLimiter() {
-  return rateLimit({
+export function createGlobalApiLimiter(): RequestHandler {
+  const globalLimiter = rateLimit({
     windowMs: 60_000,
     max: parseApiRateLimitMax(),
     standardHeaders: true,
     legacyHeaders: false,
     message: { error: 'Too many requests, please slow down' },
   });
+  const statsLimiter = rateLimit({
+    windowMs: 60_000,
+    max: 240,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many stats requests, please slow down' },
+  });
+
+  return (req, res, next) => {
+    // Match Express's case-insensitive, optional-trailing-slash routes. Only
+    // the diagnostic POST bypasses this budget; its route retains 10/min.
+    if (req.method === 'POST' && /^\/telemetry\/frontend-error\/?$/i.test(req.path)) {
+      next();
+      return;
+    }
+    // Dashboard reads have a reserved budget. Charts and other stats work
+    // still pass through the global and existing expensive-route limiters.
+    const isStats = (req.method === 'GET' || req.method === 'HEAD') && /^\/stats\/?$/i.test(req.path);
+    return (isStats ? statsLimiter : globalLimiter)(req, res, next);
+  };
 }
 
 export const OWNER_LOGIN_LIMITER = rateLimit({

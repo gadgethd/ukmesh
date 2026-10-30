@@ -14,7 +14,7 @@ const MAX_STACK = 4000;
 const MAX_RESOURCE_MESSAGE = 200;
 
 export type ClassifiedError = {
-  kind: 'error' | 'warning' | 'unhandledrejection';
+  kind: 'error' | 'warning' | 'unhandledrejection' | 'crash';
   message: string;
   stack?: string;
 };
@@ -71,21 +71,54 @@ export function classifyErrorEvent(event: unknown): ClassifiedError | null {
   return null;
 }
 
-export function postTelemetry(classified: ClassifiedError): void {
-  if (TELEMETRY_OFF()) return;
-  void fetch('/api/telemetry/frontend-error', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      kind: classified.kind,
-      message: classified.message,
-      stack: classified.stack?.slice(0, MAX_STACK),
-      page: window.location.pathname,
-      userAgent: navigator.userAgent,
-    }),
-    keepalive: true,
-  }).catch(() => {});
+export function createTelemetryReporter(
+  fetcher: typeof fetch = (...args) => fetch(...args),
+  now = () => Date.now(),
+): (classified: ClassifiedError) => void {
+  // At most six reports/minute and twenty fingerprints for this page load.
+  // Record fingerprints before sending so simultaneous copies also coalesce.
+  const reported = new Set<string>();
+  let inFlight = false;
+  let stopped = false;
+  let nextReportAt = 0;
+  let failures = 0;
+  const backoff = () => {
+    failures += 1;
+    nextReportAt = now() + Math.min(300_000, 10_000 * 2 ** Math.min(failures, 5));
+  };
+
+  return (classified) => {
+    if (TELEMETRY_OFF() || stopped || inFlight || reported.size >= 20 || now() < nextReportAt) return;
+    const message = classified.message.slice(0, MAX_MESSAGE);
+    const fingerprint = `${classified.kind}\n${message}\n${classified.stack?.split('\n')[1] ?? ''}\n${window.location.pathname}`
+      .replace(/dataset-\d+-z\d+/g, 'dataset-<id>')
+      .replace(/\b0x[0-9a-f]+\b/gi, '<hex>')
+      .replace(/\b\d{3,}\b/g, '<number>');
+    if (reported.has(fingerprint)) return;
+    reported.add(fingerprint);
+    inFlight = true;
+    nextReportAt = now() + 10_000;
+    void Promise.resolve().then(() => fetcher('/api/telemetry/frontend-error', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        kind: classified.kind,
+        message,
+        stack: classified.stack?.slice(0, MAX_STACK),
+        page: window.location.pathname,
+        userAgent: navigator.userAgent,
+      }),
+      signal: AbortSignal.timeout(10_000),
+      keepalive: true,
+    })).then((response) => {
+      if (response.status === 429) stopped = true;
+      else if (!response.ok) backoff();
+      else failures = 0;
+    }).catch(backoff).finally(() => { inFlight = false; });
+  };
 }
+
+export const postTelemetry = createTelemetryReporter();
 
 export function installClientErrorReporting(): void {
   if (TELEMETRY_OFF()) return;
