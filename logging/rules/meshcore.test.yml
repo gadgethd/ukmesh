@@ -8,7 +8,7 @@ tests:
   - name: equal privacy generations remain healthy and do not page
     interval: 1m
     input_series:
-      - series: 'meshcore_privacy_generation_healthy{job="meshcore-backend",instance="backend:9091"}'
+      - series: 'meshcore_privacy_generation_healthy{job="meshcore-workers",role="health",instance="health-worker:9091"}'
         values: 1x10
     alert_rule_test:
       - eval_time: 10m
@@ -18,7 +18,7 @@ tests:
   - name: privacy generation drift pages after holdoff and clears after recovery
     interval: 1m
     input_series:
-      - series: 'meshcore_privacy_generation_healthy{job="meshcore-backend",instance="backend:9091"}'
+      - series: 'meshcore_privacy_generation_healthy{job="meshcore-workers",role="health",instance="health-worker:9091"}'
         values: 0x6 1x3
     alert_rule_test:
       - eval_time: 4m
@@ -28,8 +28,9 @@ tests:
         alertname: PrivacyGenerationUnhealthy
         exp_alerts:
           - exp_labels:
-              job: meshcore-backend
-              instance: backend:9091
+              job: meshcore-workers
+              role: health
+              instance: health-worker:9091
               severity: critical
             exp_annotations:
               summary: Public privacy generations are divergent or unavailable
@@ -42,7 +43,7 @@ tests:
   - name: brief privacy work does not outlast the generation alert holdoff
     interval: 1m
     input_series:
-      - series: 'meshcore_privacy_generation_healthy{job="meshcore-backend",instance="backend:9091"}'
+      - series: 'meshcore_privacy_generation_healthy{job="meshcore-workers",role="health",instance="health-worker:9091"}'
         values: 0x2 1x7
     alert_rule_test:
       - eval_time: 8m
@@ -56,7 +57,8 @@ tests:
         alertname: PrivacyGenerationUnhealthy
         exp_alerts:
           - exp_labels:
-              job: meshcore-backend
+              job: meshcore-workers
+              role: health
               severity: critical
             exp_annotations:
               summary: Public privacy generations are divergent or unavailable
