@@ -115,9 +115,9 @@ services:
       PUBLIC_FEATURE_PACKET_ARCS_ENABLED: ${PUBLIC_FEATURE_PACKET_ARCS_ENABLED:-true}
       PUBLIC_FEATURE_HEATMAP_ENABLED: ${PUBLIC_FEATURE_HEATMAP_ENABLED:-false}
       PUBLIC_FEATURE_CONFIG_TTL_SECONDS: ${PUBLIC_FEATURE_CONFIG_TTL_SECONDS:-30}
-      # 15 min: the ukmesh chart snapshot regen runs multibyte analytics that
-      # exceed 5 min on the 2vCPU VPS (was 300000; raised 2026-08-08)
-      DATABASE_STATEMENT_TIMEOUT_MS: 900000
+      # API and ingest use the OLTP deadline; identity/chart analyses use the
+      # separate analytics pool and retain its longer query budget.
+      DATABASE_STATEMENT_TIMEOUT_MS: ${DATABASE_STATEMENT_TIMEOUT_MS:-30000}
       DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-16}
       STATS_DB_QUERY_CONCURRENCY: ${STATS_DB_QUERY_CONCURRENCY:-2}
       STATS_AGGREGATE_READS_ENABLED: ${STATS_AGGREGATE_READS_ENABLED:-false}
@@ -369,6 +369,7 @@ services:
       SYNTHETIC_INITIAL_STATE_TIMEOUT_MS: ${SYNTHETIC_INITIAL_STATE_TIMEOUT_MS:-35000}
       SYNTHETIC_FAILURE_THRESHOLD: ${SYNTHETIC_FAILURE_THRESHOLD:-3}
       ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-http://alert-receiver:8080/alerts}
+      ALERT_RECEIVER_TOKEN: ${ALERT_RECEIVER_TOKEN:-}
       NODE_ENV: production
     volumes:
       - synthetic_alert_data:/var/lib/meshcore-synthetic

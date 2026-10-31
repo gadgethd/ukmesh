@@ -3,6 +3,8 @@ FROM node:26-slim@sha256:4ebb5ace66f15a24c14c492e01a8beeed4fddf970a856109f5126e7
 ARG MESH_HEALTH_CHECK_REPO=https://github.com/gadgethd/meshcore-health-check.git
 ARG MESH_HEALTH_CHECK_REF
 
+COPY docker/mesh-health-check-package-lock.json /tmp/patched-package-lock.json
+
 WORKDIR /app
 
 RUN apt-get update \
@@ -18,6 +20,7 @@ RUN apt-get update \
   && cp /tmp/mesh-health-check/package.json /tmp/mesh-health-check/package-lock.json ./ \
   && mkdir -p ./scripts \
   && cp /tmp/mesh-health-check/scripts/patch-meshcore-decoder.js ./scripts/patch-meshcore-decoder.js \
+  && cp /tmp/patched-package-lock.json ./package-lock.json \
   && npm ci --omit=dev --no-audit --fund=false \
   && cp /tmp/mesh-health-check/server.js ./ \
   && cp -a /tmp/mesh-health-check/lib ./lib \

@@ -32,6 +32,7 @@ const INITIAL_STATE_TIMEOUT_MS = boundedNumber(
 );
 const FAILURE_THRESHOLD = boundedNumber(process.env['SYNTHETIC_FAILURE_THRESHOLD'], 3, 1);
 const ALERT_WEBHOOK_URL = String(process.env['ALERT_WEBHOOK_URL'] ?? '').trim();
+const ALERT_RECEIVER_TOKEN = String(process.env['ALERT_RECEIVER_TOKEN'] ?? '').trim();
 const ALERT_DIRECTORY = process.env['SYNTHETIC_ALERT_DIRECTORY'] ?? '/var/lib/meshcore-synthetic';
 let evaluateAlerts: (results: CheckResult[]) => Promise<void>;
 let archival: Promise<void> | null = null;
@@ -122,7 +123,10 @@ async function persistResults(results: CheckResult[]): Promise<void> {
 async function notify(receipt: AlertReceipt): Promise<void> {
   if (!ALERT_WEBHOOK_URL) throw new Error('ALERT_WEBHOOK_URL is not configured');
   const response = await fetch(ALERT_WEBHOOK_URL, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    method: 'POST', headers: {
+      'Content-Type': 'application/json',
+      ...(ALERT_RECEIVER_TOKEN ? { Authorization: `Bearer ${ALERT_RECEIVER_TOKEN}` } : {}),
+    },
     body: JSON.stringify({ service: 'meshcore-analytics', check: receipt.alert_names[0],
       kind: receipt.status === 'firing' ? 'alert' : 'recovery', timestamp: receipt.received_at }),
     signal: AbortSignal.timeout(TIMEOUT_MS),

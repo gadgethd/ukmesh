@@ -90,7 +90,7 @@ jobs:
             image: meshcore-health-check
             context: .
             file: Dockerfile.mesh-health-check
-            build_args: MESH_HEALTH_CHECK_REF=952eec8e0c55d0749f9abef211c266f992c0bfc7
+            build_args: MESH_HEALTH_CHECK_REF=c93af192ec7cc0ecdfb3e9d0ea163840202ccbfc
     env:
       REGISTRY: ghcr.io
       IMAGE_NAME: ${{ github.repository_owner }}/${{ matrix.image }}
@@ -139,6 +139,14 @@ jobs:
           severity: CRITICAL
           ignore-unfixed: false
           trivyignores: .trivyignore.yaml
+      - name: Retain vulnerability results even when the gate rejects an image
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: scan-${{ github.sha }}-${{ matrix.component }}
+          path: trivy-${{ matrix.component }}.json
+          if-no-files-found: warn
+          retention-days: 90
       - name: Generate SPDX SBOM for exact digest
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
         with:

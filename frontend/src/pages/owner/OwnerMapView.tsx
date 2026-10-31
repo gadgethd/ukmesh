@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from 'react';
-import * as maplibregl from 'maplibre-gl';
+import * as maplibregl from '../../components/Map/maplibre.js';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { DEFAULT_CENTER, MAP_STYLE } from '../../components/Map/mapConfig.js';
 import type { MappedPeer } from './ownerPortalModel.js';

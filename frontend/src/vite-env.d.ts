@@ -2,6 +2,7 @@
 
 interface ImportMetaEnv {
   readonly VITE_APP_HOSTNAME: string;
+  readonly VITE_BUILD_TARGET: string | undefined;
   readonly VITE_SITE:         string; // 'ukmesh' | 'dev'
   readonly VITE_NETWORK:      string; // 'ukmesh' | 'test'
   readonly VITE_OBSERVER_ID: string;
@@ -17,3 +18,5 @@ interface ImportMetaEnv {
 interface ImportMeta {
   readonly env: ImportMetaEnv;
 }
+
+declare module 'virtual:maplibre-worker-url' { const url: string; export default url; }

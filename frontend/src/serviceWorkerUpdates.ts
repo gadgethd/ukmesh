@@ -41,7 +41,19 @@ function noteWaitingWorker(nextRegistration: ServiceWorkerRegistration): void {
   registration = nextRegistration;
   if (nextRegistration.waiting) {
     publish({ available: true, deferred: false, applying: false });
+    // A waiting worker keeps the previous cache policy (including stale map
+    // worker bundles) in control until it activates. Activate it once the user
+    // has left the tab so the next visit starts on the new policy without a
+    // surprise reload mid-session.
+    maybeAutoActivate();
   }
+}
+
+function maybeAutoActivate(): void {
+  if (!registration?.waiting) return;
+  if (typeof document === 'undefined' || document.visibilityState !== 'hidden') return;
+  if (hasBlockingInteraction()) return;
+  activateServiceWorkerUpdate();
 }
 
 /**
@@ -64,6 +76,9 @@ export function registerServiceWorker(): void {
     reloadIssued = true;
     window.location.reload();
   });
+  if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+    document.addEventListener('visibilitychange', maybeAutoActivate);
+  }
   void navigator.serviceWorker.register(serviceWorkerScriptUrl(), {
     type: 'module',
     updateViaCache: 'none',

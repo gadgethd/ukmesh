@@ -12,7 +12,7 @@ import { LoadingIndicator } from './components/LoadingIndicator.js';
 import { Dialog, DialogTitle } from './components/ui/Dialog.js';
 import { useWebSocket } from './hooks/useWebSocket.js';
 import { nodeStore } from './hooks/useNodes.js';
-import { rfNodeCoverageState, useRfCoverage, type RfCoverageTierName } from './hooks/useRfCoverage.js';
+import { requestRfNodeCoverage, rfNodeCoverageState, useRfCoverage, type RfCoverageTierName } from './hooks/useRfCoverage.js';
 import { useDashboardStats, type DashboardStats } from './hooks/useDashboardStats.js';
 import { linkStateStore } from './hooks/useLinkState.js';
 import { useAppMessageHandler } from './hooks/useAppMessageHandler.js';
@@ -249,9 +249,17 @@ export const App: React.FC = () => {
 
   const handleShowNodeRfCoverage = useCallback((publicKey: string) => {
     if (!/^[0-9a-f]{64}$/i.test(publicKey)) return;
-    setRfCoverageNodeKey(publicKey.toLowerCase());
+    const key = publicKey.toLowerCase();
+    setRfCoverageNodeKey(key);
     setFilters((current) => current.coverage ? current : { ...current, coverage: true });
-  }, []);
+    // A missing or stale footprint is computed on demand. The request is
+    // asynchronous; the polled meta.json reports progress and completion.
+    if (rfNodeCoverageState(rfCoverage.meta, key) !== 'available') {
+      void requestRfNodeCoverage(key).catch(() => {
+        /* the polled meta.json remains the source of truth */
+      });
+    }
+  }, [rfCoverage.meta]);
 
   const handleClearNodeRfCoverage = useCallback(() => setRfCoverageNodeKey(null), []);
 

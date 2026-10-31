@@ -24,7 +24,7 @@
     "load:realtime": "tsx src/tools/loadRealtime.ts",
     "test": "node --import tsx --test $(find src -name '*.test.ts' ! -name '*.integration.test.ts' -print)",
     "test:analysis-integration": "node --import tsx --test src/analysis/runState.integration.test.ts",
-    "test:ingest-integration": "node --import tsx --test src/db/packetBatch.integration.test.ts src/db/packetDailyBoundary.integration.test.ts src/db/recentRead.integration.test.ts",
+    "test:ingest-integration": "node --import tsx --test --test-concurrency=1 src/db/packetBatch.integration.test.ts src/db/packetDailyBoundary.integration.test.ts src/db/recentRead.integration.test.ts src/db/nodeIdentityRefresh.integration.test.ts src/db/ledgerArchive.integration.test.ts",
     "typecheck": "tsc --noEmit",
     "contract:generate": "tsx src/tools/generateOpenApi.ts",
     "contract:check": "tsx src/tools/generateOpenApi.ts --check",

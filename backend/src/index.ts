@@ -3,7 +3,7 @@ import http from 'node:http';
 import express from 'express';
 import compression from 'compression';
 import cors from 'cors';
-import { closeDb, initDb, pool, query } from './db/index.js';
+import { closeDb, initDb, analyticsPool, query } from './db/index.js';
 import { refreshNodeIdentityAliases } from './db/nodeIdentity.js';
 import {
   closeOwnerAuthDb,
@@ -241,10 +241,10 @@ process.on('uncaughtException', (error) => {
 async function main() {
   // 1. Initialise DB schema + retention policy
   await initDb();
-  const identityRefresh = await refreshNodeIdentityAliases(pool);
+  const identityRefresh = await refreshNodeIdentityAliases(analyticsPool, { maxAgeMs: NODE_IDENTITY_REFRESH_INTERVAL_MS });
   console.log('[node-identity] refreshed', identityRefresh);
   nodeIdentityRefreshTimer = setInterval(() => {
-    void refreshNodeIdentityAliases(pool)
+    void refreshNodeIdentityAliases(analyticsPool, { maxAgeMs: NODE_IDENTITY_REFRESH_INTERVAL_MS })
       .then((result) => console.log('[node-identity] refreshed', result))
       .catch((error: unknown) => {
         console.error('[node-identity] refresh failed:', error instanceof Error ? error.message : error);

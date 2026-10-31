@@ -12,6 +12,7 @@
     "preview": "vite preview",
     "test": "tsx --test $(find src -name '*.test.ts' -print)",
     "test:e2e": "playwright test --project=public-desktop --project=dashboard-desktop --project=dashboard-mobile",
+    "test:basemap": "VITE_APP_HOSTNAME=app.ukmesh.com VITE_BUILD_TARGET=app VITE_SITE=ukmesh VITE_NETWORK=ukmesh VITE_RF_COVERAGE_ENABLED=true npm run build && playwright test --config=playwright.basemap.config.ts",
     "test:mobile": "playwright test mobile.spec.ts --project=mobile-regression"
   },
   "dependencies": {
@@ -22,7 +23,7 @@
     "@deck.gl/mapbox": "^9.3.10",
     "d3-force": "^3.0.0",
     "fuse.js": "^7.5.0",
-    "maplibre-gl": "^6.4.0",
+    "maplibre-gl": "6.4.1",
     "polygon-clipping": "^0.15.7",
     "react": "19.2.8",
     "react-aria-components": "^1.20.0",
@@ -40,9 +41,10 @@
     "@types/react-dom": "^19.2.4",
     "@vitejs/plugin-react": "^6.0.5",
     "postcss": "8.5.26",
+    "terser": "5.51.2",
     "tsx": "^4.23.12",
     "typescript": "^7.0.2",
-    "vite": "^8.2.1"
+    "vite": "8.3.5"
   },
   "overrides": {
     "postcss": "8.5.26"

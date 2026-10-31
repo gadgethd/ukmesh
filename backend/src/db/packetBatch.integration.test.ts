@@ -144,6 +144,8 @@ test('base schema and every migration apply to a brand-new database', {
     '060_ingest_ledger_historical_coverage.sql',
     '062_silent_failure_recovery.sql',
     '068_message_tags_read_dependency.sql',
+    '069_node_identity_refresh_state.sql',
+    '070_ingest_ledger_archive.sql',
   ]);
   assert.deepEqual(await runMigrations(freshPool), []);
 
@@ -176,6 +178,7 @@ test('base schema and every migration apply to a brand-new database', {
      ORDER BY hypertable.hypertable_name
   `);
   assert.deepEqual(hypertables.rows, [
+    { hypertable_name: 'ingest_observation_archive', time_interval: '7 days', compression_enabled: true },
     { hypertable_name: 'node_neighbor_samples', time_interval: '7 days', compression_enabled: true },
     { hypertable_name: 'node_status_samples', time_interval: '7 days', compression_enabled: true },
     { hypertable_name: 'packet_paths', time_interval: '7 days', compression_enabled: true },
@@ -196,6 +199,7 @@ test('base schema and every migration apply to a brand-new database', {
      ORDER BY hypertable_name, proc_name
   `);
   assert.deepEqual(jobs.rows, [
+    { hypertable_name: 'ingest_observation_archive', proc_name: 'policy_compression', interval_value: '14 days' },
     { hypertable_name: 'node_neighbor_samples', proc_name: 'policy_compression', interval_value: '1 day' },
     { hypertable_name: 'node_neighbor_samples', proc_name: 'policy_retention', interval_value: '7 days' },
     { hypertable_name: 'node_status_samples', proc_name: 'policy_compression', interval_value: '14 days' },

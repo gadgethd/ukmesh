@@ -238,8 +238,22 @@ export const packetBatchDedupeTotal = new Counter({
 
 export const mqttIngestAckDuration = new Histogram({
   name: 'meshcore_mqtt_ingest_ack_duration_seconds',
-  help: 'MQTT ingest processing time from receipt to acknowledgement.',
+  help: 'MQTT processing time from dispatch to outcome; excludes intake waiting and wire acknowledgement.',
   buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 15, 30],
+  registers: [metricsRegistry],
+});
+
+export const mqttIntakeQueueWait = new Histogram({
+  name: 'meshcore_mqtt_intake_queue_wait_seconds',
+  help: 'Time from MQTT intake admission to persistence dispatch, including per-topic waiting.',
+  buckets: [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 5, 15, 30, 60, 120, 300],
+  registers: [metricsRegistry],
+});
+
+export const mqttWireAckDuration = new Histogram({
+  name: 'meshcore_mqtt_wire_ack_duration_seconds',
+  help: 'Time from intake admission to successful QoS 1 PUBACK write, including queue and commit waiting.',
+  buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 15, 30, 60, 120, 300],
   registers: [metricsRegistry],
 });
 

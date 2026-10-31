@@ -75,6 +75,28 @@ jobs:
       - run: npm test
       - run: npm run test:analysis-integration
       - run: npm run test:ingest-integration
+      - name: Qualify broker framing and bounded offline replay
+        run: |
+          fixture_dir="$(mktemp -d)"
+          trap 'docker rm -f broker-limits-fixture >/dev/null 2>&1 || true; rm -rf "$fixture_dir"' EXIT
+          chmod 755 "$fixture_dir"
+          cp ../mosquitto/capacity-limits.conf.example "$fixture_dir/mosquitto.conf"
+          cat >> "$fixture_dir/mosquitto.conf" <<'CONF'
+          listener 1883
+          allow_anonymous true
+          queue_qos0_messages true
+          sys_interval 1
+          CONF
+          chmod 644 "$fixture_dir/mosquitto.conf"
+          docker run -d --name broker-limits-fixture \
+            -p 127.0.0.1:18885:1883 \
+            -v "$fixture_dir/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro" \
+            eclipse-mosquitto@sha256:9cfdd46ad59f3e3e5f592f6baf57ab23e1ad00605509d0f5c1e9b179c5314d87
+          for _ in $(seq 1 30); do
+            if docker exec broker-limits-fixture mosquitto_pub -h 127.0.0.1 -t owned/ready -m ready; then break; fi
+            sleep 1
+          done
+          TEST_MQTT_BROKER_URL=mqtt://127.0.0.1:18885 node --import tsx --test src/mqtt/brokerLimits.integration.test.ts
       - run: npm run build
 
   frontend:
@@ -94,7 +116,12 @@ jobs:
       - name: Audit frontend dependencies
         run: npm audit --audit-level=high
       - run: npm test
-      - run: npm run build
+      - name: Enforce both deployed frontend artifact budgets
+        run: |
+          VITE_BUILD_TARGET=app VITE_APP_HOSTNAME=app.ukmesh.com VITE_SITE=ukmesh VITE_NETWORK=ukmesh VITE_RF_COVERAGE_ENABLED=true npm run build
+          npm run budget
+          VITE_BUILD_TARGET=public-website VITE_APP_HOSTNAME=app.ukmesh.com VITE_SITE=ukmesh npm run build
+          npm run budget
 
   workers-and-compose:
     name: Workers and Compose
@@ -107,7 +134,7 @@ jobs:
       MQTT_USERNAME: backend
       MQTT_PASSWORD: ci-mqtt-password
       ANUBIS_ED25519_PRIVATE_KEY_HEX: '0000000000000000000000000000000000000000000000000000000000000001'
-      HEALTHCHECK_SOURCE_REF: 952eec8e0c55d0749f9abef211c266f992c0bfc7
+      HEALTHCHECK_SOURCE_REF: c93af192ec7cc0ecdfb3e9d0ea163840202ccbfc
       GRAFANA_ADMIN_PASSWORD: ci-grafana-password
       SOURCE_REVISION: ${{ github.sha }}
       MOSQUITTO_IMAGE: eclipse-mosquitto@sha256:9cfdd46ad59f3e3e5f592f6baf57ab23e1ad00605509d0f5c1e9b179c5314d87
@@ -381,6 +408,9 @@ jobs:
       - name: Run E2E tests against live stack
         working-directory: frontend
         run: npm run test:e2e
+      - name: Verify production basemap worker and provider recovery
+        working-directory: frontend
+        run: npm run test:basemap
       - name: Validate monitoring configuration
         run: |
           docker run --rm \
