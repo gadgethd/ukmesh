@@ -3,12 +3,13 @@ FROM ghcr.io/osgeo/gdal:ubuntu-full-3.13.2@sha256:de280a240ef4309e6fb64b943e0472
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      python3-pip python3-venv python3-shapely \
+      python3-pip python3-venv python3-shapely libtcmalloc-minimal4 \
     && rm -rf /var/lib/apt/lists/*
 
 # Venv with system-site-packages so GDAL Python bindings + numpy are inherited
 RUN python3 -m venv /opt/venv --system-site-packages
 ENV PATH="/opt/venv/bin:$PATH"
+ENV LD_PRELOAD=libtcmalloc_minimal.so.4
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir --require-hashes -r requirements.txt
