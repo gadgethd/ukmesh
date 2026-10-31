@@ -38,13 +38,14 @@ test('retention targets include hard packet boundary and reviewed long-lived tab
   assert.equal(byTable.has('packet_paths'), false);
 });
 
-test('bounded retention deletes are deterministic and physical-row exact', async () => {
+test('bounded retention deletes are deterministic and compressed-table safe', async () => {
   const target = RETENTION_TARGETS.find(({ table }) => table === 'packet_decryptions');
   assert.ok(target);
   const sql = retentionDeleteSql(target);
-  assert.match(sql, /ORDER BY created_at ASC, tableoid, ctid/);
+  assert.match(sql, /ORDER BY created_at ASC/);
+  assert.doesNotMatch(sql, /ctid/);
   assert.match(sql, /LIMIT \$2/);
-  assert.match(sql, /target\.tableoid = expired\.tableoid/);
+  assert.match(sql, /MAX\(created_at\) AS boundary/);
 
   const calls: Array<{ text: string; params?: unknown[] }> = [];
   await deleteExpiredRows(target, async (text, params) => {

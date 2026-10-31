@@ -2,13 +2,31 @@ import fs from 'node:fs';
 import { Redis } from 'ioredis';
 import { query } from '../db/index.js';
 import { getRedisConnectionOptions, getRedisUrl } from '../platform/config/redis.js';
-import { configuredLifecycleTargets } from '../db/dataLifecycle.js';
+import {
+  configuredLifecycleTargets,
+  dataLifecycleConfigurationStatus,
+  lifecyclePolicy,
+} from '../db/dataLifecycle.js';
+import { INGEST_HEALTH_SQL, PATH_HASH_HEALTH_SQL } from './packetDiagnostics.js';
+import { DATABASE_MAINTENANCE_SQL } from './vacuumBacklog.js';
+import {
+  createPrivacyGenerationReconciler,
+  PRIVACY_GENERATION_HEALTH_SQL,
+  type PrivacyGenerationHealth,
+  type PrivacyGenerationSnapshot,
+} from '../privacy/generationHealth.js';
+export { DATABASE_MAINTENANCE_SQL } from './vacuumBacklog.js';
+import { linkWorkerHeartbeatCollector, readLinkWorkerHeartbeatAge } from './workerHeartbeat.js';
 import {
   loadVerifiedRestoreReceipt,
   REQUIRED_BACKUP_DATASETS,
 } from '../backup/receipt.js';
 import {
   backupAgeSeconds,
+  coreTelemetryExpiredChunks,
+  coreTelemetryHypertableBytes,
+  coreTelemetryHypertableChunks,
+  coreTelemetryUncompressedChunks,
   linkQueueBytes,
   linkQueueDeadBytes,
   linkQueueDeadJobs,
@@ -20,7 +38,15 @@ import {
   packetPathsOverdueUncompressedChunks,
   packetPathsRows30d,
   workerHeartbeatAgeSeconds,
+  setWorkerHeartbeatCollector,
+  setPrivacyGenerationHealthCollector,
 } from '../metrics.js';
+
+const reconcilePrivacyGenerations = createPrivacyGenerationReconciler(
+  (signal) => query<PrivacyGenerationSnapshot>(PRIVACY_GENERATION_HEALTH_SQL, undefined, signal),
+);
+// Scrapes observe independently of the slower dashboard/health-worker queries.
+setPrivacyGenerationHealthCollector(async () => (await reconcilePrivacyGenerations()).healthy);
 
 type WorkerSnapshot = {
   worker_name: string;
@@ -122,7 +148,7 @@ async function refreshPacketPathCapacityMetrics(): Promise<void> {
     SELECT
       (SELECT COUNT(*)::text FROM packet_paths
         WHERE time >= NOW() - INTERVAL '30 days') AS rows_30d,
-      hypertable_approximate_row_count('packet_paths'::regclass)::text AS approximate_rows,
+      approximate_row_count('packet_paths'::regclass)::text AS approximate_rows,
       pg_total_relation_size('packet_paths'::regclass)::text AS total_bytes,
       (SELECT COUNT(*)::text
          FROM timescaledb_information.chunks
@@ -138,11 +164,82 @@ async function refreshPacketPathCapacityMetrics(): Promise<void> {
   packetPathsBytesPerRow.set(approximateRows > 0 ? totalBytes / approximateRows : 0);
   packetPathsOverdueUncompressedChunks.set(Number(row?.overdue_uncompressed_chunks ?? 0));
 }
+
+const CORE_TELEMETRY_TABLES = [
+  'packets',
+  'node_status_samples',
+  'node_neighbor_samples',
+] as const;
+
+async function refreshCoreTelemetryCapacityMetrics(): Promise<void> {
+  for (const table of CORE_TELEMETRY_TABLES) {
+    coreTelemetryHypertableBytes.set({ table }, 0);
+    coreTelemetryHypertableChunks.set({ table }, 0);
+    coreTelemetryExpiredChunks.set({ table }, 0);
+    coreTelemetryUncompressedChunks.set({ table }, 0);
+  }
+  const result = await query<{
+    table_name: string;
+    chunk_count: string;
+    total_bytes: string;
+    expired_chunks: string;
+    overdue_uncompressed_chunks: string;
+  }>(`
+    WITH lifecycle_targets (table_name, retention, compress_after) AS (
+      VALUES
+        ('packets', INTERVAL '30 days', INTERVAL '15 days'),
+        ('node_status_samples', INTERVAL '180 days', INTERVAL '15 days'),
+        ('node_neighbor_samples', INTERVAL '7 days', INTERVAL '2 days')
+    )
+    SELECT target.table_name,
+           COUNT(chunk.chunk_name)::text AS chunk_count,
+           COALESCE(SUM(CASE
+             WHEN chunk.chunk_name IS NULL THEN 0
+             ELSE pg_total_relation_size(
+               format('%I.%I', chunk.chunk_schema, chunk.chunk_name)::regclass
+             )
+           END), 0)::text AS total_bytes,
+           COUNT(chunk.chunk_name) FILTER (
+             WHERE chunk.range_end < NOW() - target.retention
+           )::text AS expired_chunks,
+           COUNT(chunk.chunk_name) FILTER (
+             WHERE NOT COALESCE(chunk.is_compressed, FALSE)
+               AND chunk.range_end < NOW() - target.compress_after - INTERVAL '1 day'
+           )::text AS overdue_uncompressed_chunks
+      FROM lifecycle_targets target
+      LEFT JOIN timescaledb_information.chunks chunk
+        ON chunk.hypertable_schema = 'public'
+       AND chunk.hypertable_name = target.table_name
+     GROUP BY target.table_name
+  `);
+  for (const row of result.rows) {
+    const labels = { table: row.table_name };
+    coreTelemetryHypertableBytes.set(labels, Number(row.total_bytes ?? 0));
+    coreTelemetryHypertableChunks.set(labels, Number(row.chunk_count ?? 0));
+    coreTelemetryExpiredChunks.set(labels, Number(row.expired_chunks ?? 0));
+    coreTelemetryUncompressedChunks.set(
+      labels,
+      Number(row.overdue_uncompressed_chunks ?? 0),
+    );
+  }
+}
 const OPERATIONAL_RETENTION_ENABLED =
   process.env['DATA_LIFECYCLE_RETENTION_ENABLED'] === 'true';
 const OPERATIONAL_RETENTION_TARGETS = configuredLifecycleTargets(
   process.env['DATA_LIFECYCLE_RETENTION_TARGETS'],
 );
+const DATA_LIFECYCLE_CONFIGURATION = dataLifecycleConfigurationStatus();
+if (!DATA_LIFECYCLE_CONFIGURATION.ready) {
+  const missing = [
+    ...(DATA_LIFECYCLE_CONFIGURATION.retentionEnabled
+      ? DATA_LIFECYCLE_CONFIGURATION.missingRetentionTargets.map((target) => `retention:${target}`)
+      : []),
+    ...(DATA_LIFECYCLE_CONFIGURATION.compressionEnabled
+      ? DATA_LIFECYCLE_CONFIGURATION.missingCompressionTargets.map((target) => `compression:${target}`)
+      : []),
+  ];
+  throw new Error(`DATA_LIFECYCLE_REQUIRED_TARGETS_MISSING:${missing.join(',')}`);
+}
 const SYNTHETIC_SUCCESS_TTL_MS = Math.max(
   16 * 60_000,
   Number(process.env['SYNTHETIC_SUCCESS_TTL_MS'] ?? 16 * 60_000) || 16 * 60_000,
@@ -158,28 +255,106 @@ function redis(): Redis {
   return redisClient;
 }
 
+// Collect on every scrape, not only the five-minute health snapshot cadence.
+// DB write recency remains last_activity_at; it cannot stand in for liveness.
+setWorkerHeartbeatCollector(linkWorkerHeartbeatCollector(redis, workerHeartbeatAgeSeconds));
+
 export function retentionDeleteSql(target: RetentionTarget): string {
   // Identifiers come from the closed RetentionTarget union above. PostgreSQL
   // cannot parameterize identifiers, but the retention interval and batch size
   // remain parameters.
+  // Compressed hypertables reject ctid (transparent decompression only
+  // supports tableoid), so bound the batch by the oldest retained timestamp
+  // instead of physical row identity. A NULL boundary (nothing expired) makes
+  // the DELETE a no-op.
   return `WITH expired AS MATERIALIZED (
-       SELECT tableoid, ctid
-       FROM ${target.table}
-       WHERE ${target.timestampColumn} < NOW() - $1::interval
-         ${target.extraPredicate ? `AND ${target.extraPredicate}` : ''}
-       ORDER BY ${target.timestampColumn} ASC, tableoid, ctid
-       LIMIT $2
+       SELECT MAX(${target.timestampColumn}) AS boundary
+       FROM (
+         SELECT ${target.timestampColumn}
+         FROM ${target.table}
+         WHERE ${target.timestampColumn} < NOW() - $1::interval
+           ${target.extraPredicate ? `AND ${target.extraPredicate}` : ''}
+         ORDER BY ${target.timestampColumn} ASC
+         LIMIT $2
+       ) AS oldest
      )
      DELETE FROM ${target.table} AS target
-     USING expired
-     WHERE target.tableoid = expired.tableoid
-       AND target.ctid = expired.ctid`;
+     WHERE target.${target.timestampColumn} <= (SELECT boundary FROM expired)
+       ${target.extraPredicate ? `AND ${target.extraPredicate}` : ''}`;
+}
+
+async function rowsOf(
+  execute: (text: string, params?: unknown[]) => Promise<unknown>,
+  text: string,
+  params?: unknown[],
+): Promise<Array<Record<string, unknown>>> {
+  const result = (await execute(text, params)) as { rows?: Array<Record<string, unknown>> } | undefined;
+  return result?.rows ?? [];
 }
 
 export async function deleteExpiredRows(
   target: RetentionTarget,
   execute: (text: string, params?: unknown[]) => Promise<unknown> = query,
 ): Promise<void> {
+  // Row-level DELETE on a compressed hypertable forces transparent
+  // decompression and can exceed TimescaleDB's per-DML decompression limit.
+  // Whole-chunk drops are the supported retention path; the boundary chunk is
+  // kept until it is fully expired, so retention can overshoot by one chunk.
+  if (lifecyclePolicy(target.table).kind === 'hypertable') {
+    try {
+      // Remove every chunk that is entirely past the retention horizon without
+      // decompressing anything.
+      await execute(
+        'SELECT drop_chunks($1::regclass, older_than => $2::interval)',
+        [target.table, target.retention],
+      );
+      // The boundary chunk can still hold a few expired rows next to retained
+      // ones. Row DML on a compressed chunk is rejected by TimescaleDB's
+      // decompression limit, so decompress just that chunk, delete, recompress.
+      const chunks = await rowsOf(
+        execute,
+        `SELECT format('%I.%I', chunk_schema, chunk_name) AS chunk, is_compressed
+           FROM timescaledb_information.chunks
+          WHERE hypertable_name = $1
+            AND range_end > now() - $2::interval
+          ORDER BY range_end ASC
+          LIMIT 1`,
+        [target.table, target.retention],
+      );
+      const chunk = chunks[0];
+      if (!chunk) return;
+      const chunkName = String(chunk['chunk']);
+      const expired = await rowsOf(
+        execute,
+        `SELECT 1 FROM ${chunkName}
+          WHERE ${target.timestampColumn} < now() - $1::interval
+          LIMIT 1`,
+        [target.retention],
+      );
+      if (expired.length === 0) return;
+      await execute('SELECT decompress_chunk($1::regclass, if_compressed => true)', [chunkName]);
+      try {
+        // Delete only inside this chunk. A table-wide boundary can reach into
+        // older compressed chunks that were not decompressed and trip the
+        // per-DML decompression limit again.
+        await execute(
+          `DELETE FROM ${chunkName}
+            WHERE ${target.timestampColumn} < now() - $1::interval
+            ${target.extraPredicate ? `AND ${target.extraPredicate}` : ''}`,
+          [target.retention],
+        );
+      } finally {
+        if (chunk['is_compressed'] === true) {
+          await execute('SELECT compress_chunk($1::regclass, if_not_compressed => true)', [chunkName]);
+        }
+      }
+      return;
+    } catch (error) {
+      // Non-Timescale databases (unit/integration fixtures) have plain tables.
+      const code = (error as { code?: string }).code;
+      if (code !== '42809' && code !== '42883' && code !== '42P01') throw error;
+    }
+  }
   await execute(retentionDeleteSql(target), [target.retention, target.batchSize]);
 }
 
@@ -355,6 +530,7 @@ async function currentWorkers(precomputedStats?: ReturnType<typeof systemStats>)
     linkQueue,
     linkRecent,
     linkLast,
+    linkHeartbeatAge,
     learning,
     healthActivity,
     backfillState,
@@ -381,6 +557,7 @@ async function currentWorkers(precomputedStats?: ReturnType<typeof systemStats>)
     }),
     query<{ count: string }>(`SELECT COUNT(*) AS count FROM node_links WHERE itm_computed_at > NOW() - INTERVAL '1 hour'`),
     query<{ ts: string | null }>(`SELECT MAX(itm_computed_at)::text AS ts FROM node_links`),
+    readLinkWorkerHeartbeatAge(r),
     query<{ ts: string | null }>(`SELECT MAX(updated_at)::text AS ts FROM path_model_calibration`),
     query<{ count: string; ts: string | null }>(
       `SELECT COUNT(*) FILTER (WHERE ts > NOW() - INTERVAL '1 hour') AS count,
@@ -419,7 +596,7 @@ async function currentWorkers(precomputedStats?: ReturnType<typeof systemStats>)
       : -1;
     workerHeartbeatAgeSeconds.set({ worker }, Number.isFinite(age) ? age : -1);
   };
-  setHeartbeatAge('link', linkLast.rows[0]?.ts);
+  workerHeartbeatAgeSeconds.set({ worker: 'link' }, linkHeartbeatAge);
   setHeartbeatAge('path_learning', learningLast);
   setHeartbeatAge('health', healthLastTs);
   setHeartbeatAge('link_backfill', backfillLast);
@@ -526,6 +703,7 @@ async function redisDurabilityState(): Promise<{
 
 export async function captureWorkerHealthSnapshot(): Promise<void> {
   await refreshPacketPathCapacityMetrics();
+  await refreshCoreTelemetryCapacityMetrics();
   const capturedAt = new Date().toISOString();
   const rows = (await currentWorkers()).map((row) => row.worker_name === 'health-worker'
     ? {
@@ -647,7 +825,7 @@ export async function getWorkerHealthOverview() {
   // Compute system stats once — cpuUsagePct() diffs against lastCpuSample,
   // so calling it twice in one request gives a garbage near-zero second reading.
   const sysStats = systemStats();
-  const [workers, history, errors1h, ingest, pathHashWidths, multibyteSummary, operationalChecks, databaseMaintenance, databaseRuntime, redisDurability, privacyRemat] = await Promise.all([
+  const [workers, history, errors1h, ingest, pathDiagnostics, operationalChecks, databaseMaintenance, databaseRuntime, redisDurability, privacyRemat, privacyGenerations] = await Promise.all([
     currentWorkerStatuses(sysStats),
     query<{
       ts: string;
@@ -672,82 +850,16 @@ export async function getWorkerHealthOverview() {
       stale_threshold_minutes: string;
       global_last_packet_at: string | null;
     }>(
-       `WITH latest_rx AS (
-         -- Bounded to the active_rx window below; an unbounded scan of the
-         -- packets hypertable here takes 20s+ and gives identical results.
-         SELECT rx_node_id, MAX(time) AS last_packet_at
-      FROM packets
-         WHERE time > NOW() - INTERVAL '3 days'
-           AND rx_node_id IS NOT NULL
-           AND rx_node_id <> ''
-           AND network IS DISTINCT FROM 'test'
-           AND split_part(topic, '/', 1) <> 'meshcore-test'
-         GROUP BY rx_node_id
-       ),
-       test_active AS (
-         SELECT rx_node_id
-         FROM packets
-         WHERE time > NOW() - INTERVAL '3 days'
-           AND rx_node_id IS NOT NULL AND rx_node_id <> ''
-         GROUP BY rx_node_id
-         HAVING MAX(time) = MAX(time) FILTER (WHERE network = 'test')
-       ),
-       active_rx AS (
-         SELECT rx_node_id, last_packet_at
-         FROM latest_rx
-         WHERE last_packet_at > NOW() - INTERVAL '3 days'
-           AND rx_node_id NOT IN (SELECT rx_node_id FROM test_active)
-       )
-       SELECT
-         COUNT(*) FILTER (WHERE last_packet_at < NOW() - INTERVAL '15 minutes')::text AS stale_nodes,
-         COUNT(*)::text AS active_nodes,
-         MAX(
-           CASE
-             WHEN last_packet_at < NOW() - INTERVAL '15 minutes'
-             THEN FLOOR(EXTRACT(EPOCH FROM (NOW() - last_packet_at)) / 60)
-             ELSE NULL
-           END
-         )::text AS max_stale_minutes,
-         '15'::text AS stale_threshold_minutes,
-         (SELECT MAX(time)::text
-          FROM packets
-          WHERE network IS DISTINCT FROM 'test'
-            AND split_part(topic, '/', 1) <> 'meshcore-test') AS global_last_packet_at
-       FROM active_rx`,
+      INGEST_HEALTH_SQL,
     ),
     query<{
-      hash_hex_len: string;
-      hop_count: string;
-    }>(
-      `SELECT length(h)::text AS hash_hex_len, COUNT(*)::text AS hop_count
-       FROM packets p
-       CROSS JOIN LATERAL unnest(p.path_hashes) AS h
-       WHERE p.time > NOW() - INTERVAL '24 hours'
-         AND p.network IS DISTINCT FROM 'test'
-       GROUP BY 1`,
-    ),
-    query<{
+      one_byte: string;
+      two_byte: string;
+      three_byte: string;
       latest_multibyte_at: string | null;
       multibyte_packets_24h: string;
     }>(
-      `SELECT
-         MAX(time) FILTER (
-           WHERE EXISTS (
-             SELECT 1
-             FROM unnest(path_hashes) AS h
-             WHERE length(h) > 2
-           )
-         )::text AS latest_multibyte_at,
-         COUNT(*) FILTER (
-           WHERE EXISTS (
-             SELECT 1
-             FROM unnest(path_hashes) AS h
-             WHERE length(h) > 2
-           )
-         )::text AS multibyte_packets_24h
-       FROM packets
-       WHERE time > NOW() - INTERVAL '24 hours'
-        AND network IS DISTINCT FROM 'test'`,
+      PATH_HASH_HEALTH_SQL,
     ),
     getOperationalChecksCached(),
     query<{
@@ -755,17 +867,7 @@ export async function getWorkerHealthOverview() {
       dead_rows: string;
       oldest_vacuum_at: string | null;
       tables_needing_vacuum: string;
-    }>(
-      `SELECT
-         pg_database_size(current_database())::text AS database_size_bytes,
-         COALESCE(SUM(n_dead_tup), 0)::text AS dead_rows,
-         MIN(last_autovacuum)::text AS oldest_vacuum_at,
-         COUNT(*) FILTER (
-           WHERE n_live_tup > 10000
-             AND n_dead_tup > GREATEST(10000, n_live_tup * 0.1)
-         )::text AS tables_needing_vacuum
-       FROM pg_stat_user_tables`,
-    ),
+    }>(DATABASE_MAINTENANCE_SQL),
     query<{
       connection_count: string;
       max_connections: string;
@@ -799,6 +901,7 @@ export async function getWorkerHealthOverview() {
                FILTER (WHERE status = 'pending')::text AS oldest_pending_age_seconds
         FROM privacy_rematerialization_queue
     `, [Math.min(100, Math.max(1, Number(process.env['PRIVACY_REMAT_MAX_ATTEMPTS'] ?? 8) || 8))]),
+    reconcilePrivacyGenerations(),
   ]);
 
   const ingestRow = ingest.rows[0];
@@ -806,25 +909,12 @@ export async function getWorkerHealthOverview() {
   const activeNodes = Number(ingestRow?.active_nodes ?? 0);
   const maxStaleMinutes = Number(ingestRow?.max_stale_minutes ?? 0);
   const staleThresholdMinutes = Number(ingestRow?.stale_threshold_minutes ?? 15);
-  const widthToBucket: Record<number, 'one_byte' | 'two_byte' | 'three_byte'> = {
-    2: 'one_byte',
-    4: 'two_byte',
-    6: 'three_byte',
-  };
+  const multibyteRow = pathDiagnostics.rows[0];
   const pathHashStats = {
-    one_byte: 0,
-    two_byte: 0,
-    three_byte: 0,
+    one_byte: Number(multibyteRow?.one_byte ?? 0),
+    two_byte: Number(multibyteRow?.two_byte ?? 0),
+    three_byte: Number(multibyteRow?.three_byte ?? 0),
   };
-
-  for (const row of pathHashWidths.rows) {
-    const width = Number(row.hash_hex_len ?? 0);
-    const bucket = widthToBucket[width];
-    if (!bucket) continue;
-    pathHashStats[bucket] += Number(row.hop_count ?? 0);
-  }
-
-  const multibyteRow = multibyteSummary.rows[0];
   const problems: HealthProblem[] = [];
   const lastPacketAt = ingestRow?.global_last_packet_at ? Date.parse(ingestRow.global_last_packet_at) : Number.NaN;
   const packetAgeMinutes = Number.isFinite(lastPacketAt) ? Math.floor((Date.now() - lastPacketAt) / 60_000) : null;
@@ -880,13 +970,8 @@ export async function getWorkerHealthOverview() {
   }
   const maintenance = databaseMaintenance.rows[0];
   const tablesNeedingVacuum = Number(maintenance?.tables_needing_vacuum ?? 0);
-  if (tablesNeedingVacuum > 0) {
-    problems.push({
-      code: 'database_vacuum_backlog',
-      severity: tablesNeedingVacuum >= 3 ? 'critical' : 'warning',
-      message: `${tablesNeedingVacuum} database table(s) exceed the dead-row vacuum threshold`,
-    });
-  }
+  const vacuumProblem = databaseVacuumBacklogProblem(tablesNeedingVacuum);
+  if (vacuumProblem) problems.push(vacuumProblem);
   const privacyRematRow = privacyRemat.rows[0];
   const privacyRematProblem = privacyRematerializationBacklogProblem({
     pending: Number(privacyRematRow?.pending ?? 0),
@@ -898,6 +983,8 @@ export async function getWorkerHealthOverview() {
       ? null : Number(privacyRematRow.oldest_pending_age_seconds),
   });
   if (privacyRematProblem) problems.push(privacyRematProblem);
+  const generationProblem = privacyGenerationProblem(privacyGenerations);
+  if (generationProblem) problems.push(generationProblem);
 
   if (redisDurability.maxmemory_policy !== 'noeviction') {
     problems.push({
@@ -933,6 +1020,7 @@ export async function getWorkerHealthOverview() {
       cache_hit_ratio: Number(databaseRuntime.rows[0]?.cache_hit_ratio ?? 0),
     },
     redis: redisDurability,
+    privacy_visibility: privacyGenerations,
     system: sysStats,
     workers,
     history: history.rows,
@@ -958,6 +1046,23 @@ export type HealthProblem = {
   severity: 'warning' | 'critical';
   message: string;
 };
+
+export function privacyGenerationProblem(state: PrivacyGenerationHealth): HealthProblem | null {
+  return state.healthy ? null : {
+    code: 'privacy_generation_unhealthy',
+    severity: 'critical',
+    message: `Privacy generation check failed: ${state.reason}`,
+  };
+}
+
+export function databaseVacuumBacklogProblem(tablesNeedingVacuum: number): HealthProblem | null {
+  if (!Number.isFinite(tablesNeedingVacuum) || tablesNeedingVacuum <= 0) return null;
+  return {
+    code: 'database_vacuum_backlog',
+    severity: tablesNeedingVacuum >= 3 ? 'critical' : 'warning',
+    message: `${Math.floor(tablesNeedingVacuum)} database table(s) exceed the configured vacuum trigger (10,000 dead-row minimum)`,
+  };
+}
 
 export function privacyRematerializationBacklogProblem(state: {
   pending: number;

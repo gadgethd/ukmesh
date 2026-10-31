@@ -1,22 +1,30 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { generateKeyPairSync, sign } from 'node:crypto';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { restoreReceiptKeyFingerprint } from '../backup/receipt.js';
 import {
   assertDataLifecycleGate,
   compressionPolicy,
   configuredCompressionTargets,
   configuredLifecycleTargets,
+  dataLifecycleConfigurationStatus,
   lifecyclePolicy,
 } from './dataLifecycle.js';
 
 function receiptEnvironment(restoreVerifiedAt = '2026-07-28T12:00:00.000Z') {
-  const dir = mkdtempSync(path.join(os.tmpdir(), 'meshcore-lifecycle-receipt-'));
+  const root = mkdtempSync(path.join(os.tmpdir(), 'meshcore-lifecycle-receipt-'));
+  // The verify key is a separately provisioned secret; it is never published
+  // alongside the receipt it verifies.
+  const receiptDirectory = path.join(root, 'receipts');
+  const keyDirectory = path.join(root, 'trusted-keys');
+  mkdirSync(receiptDirectory);
+  mkdirSync(keyDirectory);
   const pair = generateKeyPairSync('rsa', { modulusLength: 2048 });
-  const receiptPath = path.join(dir, 'receipt.json');
-  const verifyKeyPath = path.join(dir, 'verify.pem');
+  const receiptPath = path.join(receiptDirectory, 'receipt.json');
+  const verifyKeyPath = path.join(keyDirectory, 'verify.pem');
   const payload = {
     format: 'meshcore-restore-receipt-v1',
     receipt_id: 'restore-20260728T120000Z',
@@ -41,9 +49,11 @@ function receiptEnvironment(restoreVerifiedAt = '2026-07-28T12:00:00.000Z') {
   writeFileSync(receiptPath, bytes);
   writeFileSync(`${receiptPath}.sig`, sign('sha256', bytes, pair.privateKey));
   writeFileSync(verifyKeyPath, pair.publicKey.export({ type: 'spki', format: 'pem' }));
+  const publicKey = pair.publicKey.export({ type: 'spki', format: 'pem' });
   return {
     DATA_LIFECYCLE_RESTORE_RECEIPT_PATH: receiptPath,
     DATA_LIFECYCLE_RECEIPT_VERIFY_KEY_PATH: verifyKeyPath,
+    DATA_LIFECYCLE_RECEIPT_VERIFY_KEY_SHA256: restoreReceiptKeyFingerprint(publicKey),
   };
 }
 
@@ -62,8 +72,9 @@ test('data lifecycle targets are closed and destructive gates fail closed', () =
   const validEnv = {
     DATA_LIFECYCLE_RETENTION_ENABLED: 'true',
     DATA_LIFECYCLE_COMPRESSION_ENABLED: 'true',
-    DATA_LIFECYCLE_RETENTION_TARGETS: 'packets',
-    DATA_LIFECYCLE_COMPRESSION_TARGETS: 'packets,packet_paths',
+    DATA_LIFECYCLE_RETENTION_TARGETS: 'packets,node_status_samples,node_neighbor_samples',
+    DATA_LIFECYCLE_COMPRESSION_TARGETS:
+      'packets,packet_paths,node_status_samples,node_neighbor_samples',
     ...receiptEnvironment(),
   };
   assert.equal(assertDataLifecycleGate({
@@ -97,6 +108,16 @@ test('data lifecycle targets are closed and destructive gates fail closed', () =
     },
     now,
   }), /unsupported compression target/);
+  assert.throws(() => assertDataLifecycleGate({
+    action: 'retention',
+    target: 'packets',
+    approval: 'apply-data-lifecycle-retention-packets',
+    env: {
+      ...validEnv,
+      DATA_LIFECYCLE_RETENTION_TARGETS: 'packets',
+    },
+    now,
+  }), /must include required core targets/);
   assert.equal(assertDataLifecycleGate({
     action: 'compression',
     target: 'packet_paths',
@@ -104,4 +125,35 @@ test('data lifecycle targets are closed and destructive gates fail closed', () =
     env: validEnv,
     now,
   }).table, 'packet_paths');
+});
+
+test('enabled high-volume lifecycle work requires every reviewed core target', () => {
+  const incomplete = dataLifecycleConfigurationStatus({
+    DATA_LIFECYCLE_RETENTION_ENABLED: 'true',
+    DATA_LIFECYCLE_RETENTION_TARGETS: 'packets',
+    DATA_LIFECYCLE_COMPRESSION_ENABLED: 'true',
+    DATA_LIFECYCLE_COMPRESSION_TARGETS: 'packets,packet_paths',
+  });
+  assert.equal(incomplete.ready, false);
+  assert.deepEqual(incomplete.missingRetentionTargets, [
+    'node_status_samples',
+    'node_neighbor_samples',
+  ]);
+  assert.deepEqual(incomplete.missingCompressionTargets, [
+    'node_status_samples',
+    'node_neighbor_samples',
+  ]);
+
+  const complete = dataLifecycleConfigurationStatus({
+    DATA_LIFECYCLE_RETENTION_ENABLED: 'true',
+    DATA_LIFECYCLE_RETENTION_TARGETS: 'packets,node_status_samples,node_neighbor_samples',
+    DATA_LIFECYCLE_COMPRESSION_ENABLED: 'true',
+    DATA_LIFECYCLE_COMPRESSION_TARGETS:
+      'packets,packet_paths,node_status_samples,node_neighbor_samples',
+  });
+  assert.equal(complete.ready, true);
+  assert.deepEqual(complete.missingRetentionTargets, []);
+  assert.deepEqual(complete.missingCompressionTargets, []);
+
+  assert.equal(dataLifecycleConfigurationStatus({}).ready, true);
 });
