@@ -127,7 +127,10 @@ jobs:
     name: Workers and Compose
     runs-on: ubuntu-latest
     env:
+      POSTGRES_USER: meshcore
       POSTGRES_PASSWORD: ci-postgres-password
+      ALERT_RECEIVER_TOKEN: ci-alert-receiver-token-0123456789abcdef
+      HEALTHCHECK_TEST_CHANNEL_SECRET: 0123456789abcdef0123456789abcdef
       REDIS_PASSWORD: ci-redis-password
       JWT_SECRET: ci-test-only-ci-test-only-ci-test-only-ci-test-only
       OPERATOR_SITE_TOKEN: ci-operator-site-token-0123456789abcdef0123456789abcdef
@@ -292,13 +295,20 @@ jobs:
             --project-name "$project" \
             --profile dev \
             build \
-              backend app-ukmesh website-ukmesh website-dev mesh-health-check \
+              backend app-ukmesh website-ukmesh website-dev mesh-health-check tagger-worker \
               mosquitto-reloader link-worker hopreach
           docker compose -f docker-compose.yml -f docker-compose.ci.yml \
             --project-name "$project" \
             --profile dev \
-            up --detach --no-build --scale link-backfill-worker=0 \
+            up --detach --no-build --scale link-backfill-worker=0 --scale tagger-worker=0 \
               --wait --wait-timeout 360
+          # Exercise real tagger SQL against the owned database without an external classifier.
+          database_container="$(docker compose -f docker-compose.yml -f docker-compose.ci.yml --project-name "$project" ps -q timescaledb)"
+          docker run --rm --network "container:$database_container" \
+            --entrypoint python3 \
+            -e TEST_INGEST_DATABASE_URL="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@127.0.0.1:5432/meshcore" \
+            -v "$PWD/tagger-worker:/app/tests:ro" \
+            meshcore-analytics-tagger-worker:local /app/tests/test_tagger_candidates.py
           # link-backfill-worker is intentionally a finite job. Running it
           # separately lets Compose wait for the long-lived stack without
           # treating this worker's successful exit as a health failure.

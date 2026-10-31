@@ -10,6 +10,30 @@
 # -f docker-compose.ci.yml`.
 
 services:
+  # The CI receiver uses an owned HTTP sink; no external alert destination is contacted.
+  alert-forward-sink:
+    image: ${BACKEND_IMAGE:-meshcore-analytics-backend:local}
+    command: ["node", "--input-type=module", "-e", "import http from 'node:http';http.createServer((q,r)=>{q.resume();q.on('end',()=>{r.writeHead(204);r.end();});}).listen(8080,'0.0.0.0');"]
+    read_only: true
+    cap_drop: [ALL]
+    mem_limit: "64m"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  alert-receiver:
+    environment:
+      ALERT_FORWARD_URL: http://alert-forward-sink:8080
+    depends_on:
+      alert-forward-sink:
+        condition: service_healthy
+
+  alertmanager:
+    volumes:
+      - ./logging/alertmanager.ci.yml:/etc/alertmanager/alertmanager.yml:ro
+
   timescaledb:
     image: timescale/timescaledb@sha256:22e8a5ae7aef121d1537afe946dd7cc5deeeb63ab36ce19849d671bd3b663509
     logging: &json-log-limits
