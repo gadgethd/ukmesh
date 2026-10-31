@@ -519,3 +519,31 @@ tests:
       - eval_time: 23m
         alertname: HostDiskSpaceLow
         exp_alerts: []
+  - name: durable packet path growth stays quiet at current traffic
+    interval: 1m
+    input_series:
+      - series: 'meshcore_packet_paths_rows_30d{job="meshcore-workers",role="health",instance="health-worker:9091"}'
+        values: 1650000x40
+    alert_rule_test:
+      - eval_time: 35m
+        alertname: PacketPathsGrowthHigh
+        exp_alerts: []
+
+  - name: durable packet path growth warns above the retuned ceiling
+    interval: 1m
+    input_series:
+      - series: 'meshcore_packet_paths_rows_30d{job="meshcore-workers",role="health",instance="health-worker:9091"}'
+        values: 1950000x40
+    alert_rule_test:
+      - eval_time: 35m
+        alertname: PacketPathsGrowthHigh
+        exp_alerts:
+          - exp_labels:
+              job: meshcore-workers
+              role: health
+              instance: health-worker:9091
+              severity: warning
+            exp_annotations:
+              summary: Durable packet path growth exceeds 60,000 rows per day
+              owner: meshcore-operations
+              runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#packetpathscapacity
