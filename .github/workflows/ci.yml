@@ -257,6 +257,11 @@ jobs:
           publisher_password="ci-e2e-publisher-password"
           observer="CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"
           cleanup() {
+            status=$?
+            if [ "$status" -ne 0 ]; then
+              docker compose -f docker-compose.yml -f docker-compose.ci.yml --project-name "$project" ps --all || true
+              docker compose -f docker-compose.yml -f docker-compose.ci.yml --project-name "$project" logs --tail 100 backend alert-receiver alert-forward-sink alert-receiver-bootstrap || true
+            fi
             docker compose -f docker-compose.yml -f docker-compose.ci.yml \
               --project-name "$project" \
               --profile dev \

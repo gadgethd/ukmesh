@@ -30,7 +30,25 @@ services:
       alert-forward-sink:
         condition: service_healthy
 
+  alert-receiver-bootstrap:
+    image: ${BACKEND_IMAGE:-meshcore-analytics-backend:local}
+    restart: "no"
+    read_only: true
+    cap_drop: [ALL]
+    mem_limit: "64m"
+    environment:
+      ALERT_RECEIVER_TOKEN: ${ALERT_RECEIVER_TOKEN:?CI receiver token required}
+    depends_on:
+      alert-receiver:
+        condition: service_started
+      alert-forward-sink:
+        condition: service_healthy
+    command: ["node", "--input-type=module", "-e", "const base='http://alert-receiver:8080';for(let i=0;i<120;i++){try{const r=await fetch(base+'/alerts',{method:'POST',headers:{authorization:'Bearer '+process.env.ALERT_RECEIVER_TOKEN,'content-type':'application/json'},body:JSON.stringify({source:'ci',status:'resolved',check:'owned forwarding bootstrap'})});if(r.status===202)break;if(i===119)throw Error('CI alert admission failed');}catch(e){if(i===119)throw e;}await new Promise(r=>setTimeout(r,500));}for(let i=0;i<120;i++){const r=await fetch(base+'/readyz');if(r.ok){console.log('CI receiver forwarding proof ready');process.exit(0);}await new Promise(r=>setTimeout(r,500));}throw Error('CI alert forwarding did not become ready');"]
+
   alertmanager:
+    depends_on:
+      alert-receiver-bootstrap:
+        condition: service_completed_successfully
     volumes:
       - ./logging/alertmanager.ci.yml:/etc/alertmanager/alertmanager.yml:ro
 
