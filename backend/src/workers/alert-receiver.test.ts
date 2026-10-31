@@ -58,7 +58,7 @@ async function receiver(forwardUrl: string, options: { directory?: string; keepF
   // real .env or use the live receiver for notification tests.
   const child = spawn(process.execPath, ['--import', 'tsx', 'src/workers/alert-receiver.ts'], {
     env: { PATH: process.env['PATH'], ALERT_RECEIVER_PORT: String(port), ALERT_RECEIVER_PATH: receipt,
-      ALERT_FORWARD_URL: forwardUrl, ALERT_FORWARD_MAX_ATTEMPTS: '2',
+      ALERT_RECEIVER_TOKEN: 'owned-audit-test-token', ALERT_FORWARD_URL: forwardUrl, ALERT_FORWARD_MAX_ATTEMPTS: '2',
       ALERT_FORWARD_BACKOFF_BASE_MS: '1', ALERT_FORWARD_BACKOFF_CAP_MS: '1',
       ...(options.queueMax ? { ALERT_FORWARD_QUEUE_MAX: String(options.queueMax) } : {}) },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -90,7 +90,7 @@ test('unconfigured or invalid forwarding logs a startup warning and readiness is
       const ready = await fetch(`${child.base}/readyz`);
       assert.equal(ready.status, 503);
       assert.match((await ready.json() as { detail: string }).detail, /archive-only/);
-      assert.equal((await fetch(`${child.base}/alerts`, { method: 'POST', body: JSON.stringify({
+      assert.equal((await fetch(`${child.base}/alerts`, { method: 'POST', headers: { authorization: 'Bearer owned-audit-test-token' }, body: JSON.stringify({
         service: 'meshcore-analytics', check: 'readiness', kind: 'alert',
       }) })).status, 202);
       assert.match(await readFile(child.receipt, 'utf8'), /"source":"synthetic"/);
@@ -120,7 +120,7 @@ test('Alertmanager and synthetic forwarding both require a successful stub deliv
       { alerts: [{ status: 'firing', labels: { alertname: 'BackendDown', secret: 'hidden' } }] },
       { service: 'meshcore-analytics', kind: 'recovery', check: 'dependency_readiness', detail: 'hidden' },
     ]) {
-      assert.equal((await fetch(`${child.base}/alerts`, { method: 'POST', body: JSON.stringify(payload) })).status, 202);
+      assert.equal((await fetch(`${child.base}/alerts`, { method: 'POST', headers: { authorization: 'Bearer owned-audit-test-token' }, body: JSON.stringify(payload) })).status, 202);
     }
     await waitFor(async () => received.length, (count) => count === 2);
     await waitFor(async () => (await fetch(`${child.base}/readyz`)).status, (status) => status === 200);
@@ -147,12 +147,12 @@ test('failed stub deliveries remain unready and reach bounded retries', { timeou
   await once(stub, 'listening');
   const child = await receiver(`http://127.0.0.1:${(stub.address() as AddressInfo).port}/failed`);
   try {
-    await fetch(`${child.base}/alerts`, { method: 'POST', body: JSON.stringify({
+    await fetch(`${child.base}/alerts`, { method: 'POST', headers: { authorization: 'Bearer owned-audit-test-token' }, body: JSON.stringify({
       service: 'meshcore-analytics', kind: 'alert', check: 'test-only',
     }) });
-    await waitFor(async () => (await readdir(`${child.receipt}.outbox`)).filter((name) => name.endsWith('.dead.json')), (files) => files.length === 1);
-    const dead = (await readdir(`${child.receipt}.outbox`)).find((name) => name.endsWith('.dead.json'))!;
-    assert.equal(JSON.parse(await readFile(path.join(`${child.receipt}.outbox`, dead), 'utf8')).attempts, 2);
+    await waitFor(async () => (await readdir(`${child.receipt}.queue`)).filter((name) => name.endsWith('.dead.json')), (files) => files.length === 1);
+    const dead = (await readdir(`${child.receipt}.queue`)).find((name) => name.endsWith('.dead.json'))!;
+    assert.equal(JSON.parse(await readFile(path.join(`${child.receipt}.queue`, dead), 'utf8')).attempts, 2);
     assert.equal(calls, 2);
     assert.equal((await fetch(`${child.base}/readyz`)).status, 503);
   } finally {
@@ -236,19 +236,19 @@ test('accepted alert survives receiver SIGKILL and a full queue refuses new work
   const first = await receiver(url, { keepFiles: true, queueMax: 1 });
   let second: Awaited<ReturnType<typeof receiver>> | undefined;
   try {
-    const send = () => fetch(`${first.base}/alerts`, { method: 'POST', body: JSON.stringify({
+    const send = () => fetch(`${first.base}/alerts`, { method: 'POST', headers: { authorization: 'Bearer owned-audit-test-token' }, body: JSON.stringify({
       service: 'meshcore-analytics', kind: 'alert', check: 'restart-proof',
     }) });
     assert.equal((await send()).status, 202);
     await waitFor(async () => calls, (n) => n === 1);
     assert.equal((await send()).status, 503);
-    assert.equal((await readdir(`${first.receipt}.outbox`)).filter((file) => file.endsWith('.pending.json')).length, 1);
+    assert.equal((await readdir(`${first.receipt}.queue`)).filter((file) => file.endsWith('.pending.json')).length, 1);
     await first.terminate('SIGKILL');
     hold = false;
     second = await receiver(url, { directory: first.directory, keepFiles: true });
     await waitFor(async () => (await fetch(`${second!.base}/readyz`)).status, (status) => status === 200);
     assert.equal(calls, 2, 'restart retries the fsynced forwarding intent');
-    assert.equal((await readdir(`${first.receipt}.outbox`)).filter((file) => file.endsWith('.pending.json')).length, 0);
+    assert.equal((await readdir(`${first.receipt}.queue`)).filter((file) => file.endsWith('.pending.json')).length, 0);
   } finally {
     for (const reply of replies) reply.destroy();
     await first.close();
@@ -262,7 +262,7 @@ test('accepted alert survives receiver SIGKILL and a full queue refuses new work
 
 test('receipt persistence recovers after a transient filesystem failure', { timeout: 10_000 }, async () => {
   const child = await receiver('');
-  const send = () => fetch(`${child.base}/alerts`, { method: 'POST', body: JSON.stringify({
+  const send = () => fetch(`${child.base}/alerts`, { method: 'POST', headers: { authorization: 'Bearer owned-audit-test-token' }, body: JSON.stringify({
     service: 'meshcore-analytics', kind: 'alert', check: 'filesystem-recovery',
   }) });
   try {
@@ -271,5 +271,21 @@ test('receipt persistence recovers after a transient filesystem failure', { time
     await rm(child.receipt, { recursive: true });
     assert.equal((await send()).status, 202);
     assert.match(await readFile(child.receipt, 'utf8'), /filesystem-recovery/);
+  } finally { await child.close(); }
+});
+
+test('deployed receiver bearer authentication survives the durability changes', async () => {
+  const child = await receiver('');
+  const body = JSON.stringify({ service: 'meshcore-analytics', kind: 'alert', check: 'auth-fixture' });
+  try {
+    assert.equal((await fetch(`${child.base}/alerts`, { method: 'POST', body })).status, 401);
+    assert.equal((await fetch(`${child.base}/alerts`, {
+      method: 'POST', headers: { authorization: 'Bearer wrong-test-token' }, body,
+    })).status, 401);
+    await assert.rejects(readFile(child.receipt), { code: 'ENOENT' });
+    assert.equal((await fetch(`${child.base}/alerts`, {
+      method: 'POST', headers: { authorization: 'Bearer owned-audit-test-token' }, body,
+    })).status, 202);
+    assert.equal((await readFile(child.receipt, 'utf8')).trim().split('\n').length, 1);
   } finally { await child.close(); }
 });

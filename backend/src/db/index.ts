@@ -697,9 +697,12 @@ export async function getNodes(
         AND (n.role IS NULL OR n.role = 2)`
     : '';
   const whereClause = `WHERE 1=1${buildNodeScopeClause(scope, 'n')}${slimConditions}`;
+  // public_key is what the map's per-repeater RF footprint action needs; the
+  // slim projection kept it out, so only nodes that arrived via a live
+  // node_upsert ever exposed the on-demand calculation button.
   const optionalFields = fields === 'full'
     ? `, n.hardware_model, n.public_key, n.elevation_m`
-    : ', n.elevation_m';
+    : ', n.elevation_m, n.public_key';
   const res = await query<{
     node_id: string;
     name: string | null;

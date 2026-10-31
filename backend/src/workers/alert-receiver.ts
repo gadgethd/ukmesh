@@ -1,24 +1,33 @@
 import http, { type IncomingMessage, type ServerResponse } from 'node:http';
 import { appendFile, mkdir, rename, stat } from 'node:fs/promises';
+import { timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { AlertQueueFullError, DurableAlertQueue } from './alertDeliveryQueue.js';
+import {
+  AlertQueueFullError,
+  DurableAlertQueue,
+  type AlertDeliveryQueueMetrics,
+  type AlertReceipt,
+} from './alertDeliveryQueue.js';
+
+export type { AlertReceipt } from './alertDeliveryQueue.js';
 
 const PORT = boundedInteger(process.env['ALERT_RECEIVER_PORT'], 8080, 1, 65_535);
 const MAX_BODY_BYTES = boundedInteger(process.env['ALERT_RECEIVER_MAX_BODY_BYTES'], 262_144, 1_024, 1_048_576);
 const MAX_LOG_BYTES = boundedInteger(process.env['ALERT_RECEIVER_MAX_LOG_BYTES'], 1_048_576, 65_536, 100 * 1_048_576);
 const RECEIPT_PATH = process.env['ALERT_RECEIVER_PATH'] ?? '/var/lib/meshcore-alerts/alerts.jsonl';
+// Shared secret required on POST /alerts. Fail closed when unset: the receiver
+// accepts forged receipts from any peer on the compose bridge otherwise, and a
+// forged receipt reaches the operator webhook. Deploy sets this for both the
+// receiver and every sender (Alertmanager bearer token).
+const RECEIVER_TOKEN = String(process.env['ALERT_RECEIVER_TOKEN'] ?? '').trim();
 const FORWARD_URL = validForwardUrl(process.env['ALERT_FORWARD_URL']);
 const FORWARD_TIMEOUT_MS = boundedInteger(process.env['ALERT_FORWARD_TIMEOUT_MS'], 10_000, 1_000, 60_000);
-
-export type AlertReceipt = {
-  received_at: string;
-  source: 'alertmanager' | 'synthetic' | 'unknown';
-  status: 'firing' | 'resolved' | 'recovery' | 'unknown';
-  alert_names: string[];
-  firing: number;
-  resolved: number;
-};
+const FORWARD_QUEUE_MAX_ITEMS = boundedInteger(process.env['ALERT_FORWARD_QUEUE_MAX'] ?? process.env['ALERT_FORWARD_QUEUE_MAX_ITEMS'], 1_000, 1, 100_000);
+const MAX_FORWARD_ATTEMPTS = boundedInteger(process.env['ALERT_FORWARD_MAX_ATTEMPTS'], 5, 1, 20);
+const FORWARD_BACKOFF_BASE_MS = boundedInteger(process.env['ALERT_FORWARD_BACKOFF_BASE_MS'], 1_000, 100, 60_000);
+const FORWARD_BACKOFF_CAP_MS = boundedInteger(process.env['ALERT_FORWARD_BACKOFF_CAP_MS'], 60_000, 1_000, 300_000);
+const FORWARD_QUEUE_DIR = `${RECEIPT_PATH}.queue`;
 
 export type AlertForwardPayload = {
   content: string;
@@ -176,32 +185,53 @@ async function forward(receipt: AlertReceipt): Promise<void> {
   }
 }
 
-// Persist the forwarding intent before returning 202. Reuse the bounded,
-// restartable queue rather than retaining receipts in a process-local chain.
-const forwardQueue = new DurableAlertQueue({
-  directory: `${RECEIPT_PATH}.outbox`,
-  maxItems: boundedInteger(process.env['ALERT_FORWARD_QUEUE_MAX'], 1_000, 1, 10_000),
-  maxAttempts: boundedInteger(process.env['ALERT_FORWARD_MAX_ATTEMPTS'], 5, 1, 100),
-  backoffBaseMs: boundedInteger(process.env['ALERT_FORWARD_BACKOFF_BASE_MS'], 1_000, 1, 60_000),
-  backoffCapMs: boundedInteger(process.env['ALERT_FORWARD_BACKOFF_CAP_MS'], 60_000, 1, 3_600_000),
-  send: forward,
-});
+// Delivery records are fsynced into the mounted alert volume before HTTP 202.
+// The JSONL receipt archive remains useful for local inspection, but it is not
+// the queue: queued work survives process restarts and dead letters stay visible.
+let deliveryQueue: DurableAlertQueue | null = null;
+let deliveryQueueReady = false;
 
-function deliveryHealth(): { degraded: boolean; detail: string } {
-  if (!FORWARD_URL) {
+const emptyQueueMetrics: AlertDeliveryQueueMetrics = {
+  pendingCount: 0,
+  oldestQueueAgeSeconds: 0,
+  deadLetterCount: 0,
+  lastSuccessAt: null,
+  lastError: null,
+};
+
+export function deriveDeliveryHealth(
+  forwardConfigured: boolean,
+  queueReady: boolean,
+  metrics: AlertDeliveryQueueMetrics,
+): { degraded: boolean; detail: string } {
+  if (!forwardConfigured) {
     return { degraded: true, detail: 'archive-only mode: ALERT_FORWARD_URL is not configured' };
   }
-  const state = forwardQueue.metrics();
-  if (state.deadLetterCount > 0 || state.lastError) {
-    return { degraded: true, detail: `${state.deadLetterCount} dead-lettered alert(s); delivery needs attention` };
+  if (!queueReady) return { degraded: true, detail: 'durable forwarding queue is not ready' };
+  if (!metrics.lastSuccessAt) return { degraded: true, detail: 'no successful forward since startup' };
+  if (metrics.deadLetterCount > 0) {
+    return { degraded: true, detail: `${metrics.deadLetterCount} alert(s) are dead-lettered` };
   }
-  if (!state.lastSuccessAt) {
-    return { degraded: true, detail: 'no successful forward recorded' };
+  if (metrics.lastError) {
+    return { degraded: true, detail: 'a forwarding attempt failed; retry is pending' };
   }
-  if (state.oldestQueueAgeSeconds > 300) {
-    return { degraded: true, detail: `${state.pendingCount} alert(s) undelivered for over 5 minutes` };
+  if (metrics.oldestQueueAgeSeconds > 5 * 60) {
+    return { degraded: true, detail: `oldest alert has waited ${metrics.oldestQueueAgeSeconds}s for delivery` };
   }
-  return { degraded: false, detail: 'forwarding configured; successful delivery recorded' };
+  return {
+    degraded: false,
+    detail: metrics.pendingCount > 0
+      ? `${metrics.pendingCount} alert(s) queued for forwarding`
+      : 'forwarding destination and durable queue are ready',
+  };
+}
+
+function deliveryHealth() {
+  const metrics = deliveryQueue?.metrics() ?? emptyQueueMetrics;
+  return {
+    ...deriveDeliveryHealth(Boolean(FORWARD_URL), deliveryQueueReady, metrics),
+    metrics,
+  };
 }
 
 function json(res: ServerResponse, statusCode: number, payload: unknown): void {
@@ -213,42 +243,100 @@ function json(res: ServerResponse, statusCode: number, payload: unknown): void {
   res.end(JSON.stringify(payload));
 }
 
+function authorizedAlertPost(req: IncomingMessage): boolean {
+  if (!RECEIVER_TOKEN) return false;
+  const header = String(req.headers['authorization'] ?? '');
+  const expected = `Bearer ${RECEIVER_TOKEN}`;
+  const provided = Buffer.from(header, 'utf8');
+  const wanted = Buffer.from(expected, 'utf8');
+  return provided.length === wanted.length && timingSafeEqual(provided, wanted);
+}
+
 const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && (req.url === '/healthz' || req.url === '/readyz')) {
     const health = deliveryHealth();
-    // Liveness stays independent of delivery. Compose checks /readyz so
-    // archive-only or unproven delivery cannot produce a healthy indicator.
-    const degraded = req.url === '/readyz' && health.degraded;
-    json(res, degraded ? 503 : 200, { status: health.degraded ? 'degraded' : 'ok', detail: health.detail });
+    // Compose uses /healthz as a liveness probe. Keep a running receiver
+    // healthy there while /readyz reports degraded forwarding availability.
+    const readinessFailed = req.url === '/readyz' && health.degraded;
+    json(res, readinessFailed ? 503 : 200, {
+      status: health.degraded ? 'degraded' : 'ok',
+      detail: health.detail,
+      pending_count: health.metrics.pendingCount,
+      queue_oldest_age_seconds: health.metrics.oldestQueueAgeSeconds,
+      dead_letter_count: health.metrics.deadLetterCount,
+      last_success_at: health.metrics.lastSuccessAt,
+      last_error: health.metrics.lastError,
+    });
     return;
   }
   if (req.method !== 'POST' || req.url !== '/alerts') {
     json(res, 404, { error: 'not found' });
     return;
   }
+  let payload: unknown;
+
+  if (!RECEIVER_TOKEN) {
+    // Fail closed: without a shared secret any peer on the bridge can forge a
+    // receipt that is then forwarded to the operator webhook.
+    json(res, 503, { error: 'alert receiver token is not configured' });
+    return;
+  }
+  if (!authorizedAlertPost(req)) {
+    json(res, 401, { error: 'unauthorized' });
+    return;
+  }
   try {
     const body = await readBody(req);
-    const payload = JSON.parse(body.toString('utf8')) as unknown;
-    const receipt = summarizeAlertPayload(payload);
-    await persistReceipt(receipt);
-    if (FORWARD_URL) await forwardQueue.enqueue(receipt);
-    json(res, 202, { accepted: true });
+    payload = JSON.parse(body.toString('utf8')) as unknown;
   } catch (error) {
     const tooLarge = (error as Error).message === 'request body too large';
-    if (error instanceof AlertQueueFullError) {
-      json(res, 503, { error: 'alert forwarding queue is full' });
-    } else {
-      const invalid = error instanceof SyntaxError;
-      json(res, tooLarge ? 413 : invalid ? 400 : 503, {
-        error: tooLarge ? 'request too large' : invalid ? 'invalid alert payload' : 'alert persistence unavailable',
+    json(res, tooLarge ? 413 : 400, { error: tooLarge ? 'request too large' : 'invalid alert payload' });
+    return;
+  }
+
+  const receipt = summarizeAlertPayload(payload);
+  if (FORWARD_URL) {
+    if (!deliveryQueueReady || !deliveryQueue) {
+      res.setHeader('retry-after', '5');
+      json(res, 503, { error: 'durable alert forwarding queue is not ready' });
+      return;
+    }
+    try {
+      await deliveryQueue.enqueue(receipt);
+    } catch (error) {
+      console.error('[alert-receiver] could not persist forwarding queue item:', (error as Error).message);
+      res.setHeader('retry-after', '5');
+      json(res, 503, {
+        error: error instanceof AlertQueueFullError
+          ? 'alert forwarding queue is full'
+          : 'could not persist alert for forwarding',
       });
+      return;
+    }
+    // The durable queue is authoritative for configured forwarding. Preserve
+    // the human-readable archive when possible, without discarding queued work
+    // if archive rotation or append fails.
+    try {
+      await persistReceipt(receipt);
+    } catch (error) {
+      console.error('[alert-receiver] receipt archive write failed:', (error as Error).message);
+    }
+  } else {
+    try {
+      await persistReceipt(receipt);
+    } catch (error) {
+      console.error('[alert-receiver] could not persist archive-only alert:', (error as Error).message);
+      res.setHeader('retry-after', '5');
+      json(res, 503, { error: 'could not persist alert receipt' });
+      return;
     }
   }
+  json(res, 202, { accepted: true });
 });
 
 function shutdown(signal: string): void {
-  void forwardQueue.close().catch((error: unknown) => {
-    console.error('[alert-receiver] queue shutdown failed:', error instanceof Error ? error.message : error);
+  void deliveryQueue?.close().catch((error: unknown) => {
+    console.error('[alert-receiver] queue drain failed:', error instanceof Error ? error.message : String(error));
     process.exitCode = 1;
   });
   server.close((error) => {
@@ -262,16 +350,27 @@ function shutdown(signal: string): void {
 const isMain = process.argv[1] !== undefined
   && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isMain) {
-  if (!FORWARD_URL) {
-    console.warn('[alert-receiver] DEGRADED: ALERT_FORWARD_URL is unset or invalid; forwardConfigured=false; alerts will be archived only; /readyz returns 503');
-  }
-  void forwardQueue.initialize().then(() => {
-    if (FORWARD_URL) forwardQueue.start();
+  const start = async () => {
+    if (!FORWARD_URL) console.warn('[alert-receiver] DEGRADED: ALERT_FORWARD_URL is unset or invalid; forwardConfigured=false; alerts will be archived only; /readyz returns 503');
+    if (FORWARD_URL) {
+      deliveryQueue = new DurableAlertQueue({
+        directory: FORWARD_QUEUE_DIR,
+        maxItems: FORWARD_QUEUE_MAX_ITEMS,
+        maxAttempts: MAX_FORWARD_ATTEMPTS,
+        backoffBaseMs: FORWARD_BACKOFF_BASE_MS,
+        backoffCapMs: FORWARD_BACKOFF_CAP_MS,
+        send: forward,
+      });
+      await deliveryQueue.initialize();
+      deliveryQueueReady = true;
+      deliveryQueue.start();
+    }
     server.listen(PORT, '0.0.0.0', () => {
       console.log(`[alert-receiver] listening on internal port ${PORT}; forwardConfigured=${Boolean(FORWARD_URL)}`);
     });
-  }).catch((error: unknown) => {
-    console.error('[alert-receiver] queue initialization failed:', error instanceof Error ? error.message : error);
+  };
+  void start().catch((error: unknown) => {
+    console.error('[alert-receiver] startup failed:', error instanceof Error ? error.message : String(error));
     process.exitCode = 1;
   });
   process.once('SIGTERM', () => shutdown('SIGTERM'));

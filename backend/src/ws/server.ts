@@ -91,6 +91,8 @@ function slimInitialNode(raw: InitialStateRow): InitialStateRow {
     hardware_model: raw['hardware_model'],
     advert_count: raw['advert_count'],
     elevation_m: raw['elevation_m'],
+    // Required for the per-repeater RF footprint action in the map popup.
+    public_key: raw['public_key'],
   };
 }
 
