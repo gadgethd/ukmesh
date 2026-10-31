@@ -284,7 +284,14 @@ groups:
     interval: 30s
     rules:
       - alert: PrivacyGenerationUnhealthy
-        expr: meshcore_privacy_generation_healthy{job="meshcore-backend"} == 0 or absent(meshcore_privacy_generation_healthy{job="meshcore-backend"})
+        # Every process exports this gauge and reports 0 when it does not own
+        # the collector, so the selector must stay scoped to the health worker.
+        # Unscoped, the rule pages on the 0s from path_learning/synthetic, and
+        # absent() is true forever because the backend never registers the
+        # collector. absent() inherits only the selector's equality matchers
+        # (job, role), which is why the fail-closed test expects those two
+        # labels and no instance.
+        expr: meshcore_privacy_generation_healthy{job="meshcore-workers", role="health"} == 0 or absent(meshcore_privacy_generation_healthy{job="meshcore-workers", role="health"})
         for: 5m
         labels:
           severity: critical
