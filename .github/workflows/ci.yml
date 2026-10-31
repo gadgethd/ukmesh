@@ -313,7 +313,7 @@ jobs:
             --entrypoint python3 \
             -e TEST_INGEST_DATABASE_URL="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@127.0.0.1:5432/meshcore" \
             -v "$PWD/tagger-worker:/app/tests:ro" \
-            meshcore-analytics-tagger-worker:local /app/tests/test_tagger_candidates.py
+            meshcore-analytics-tagger-worker:local -m unittest discover -s /app/tests -p test_tagger_candidates.py -v
           # link-backfill-worker is intentionally a finite job. Running it
           # separately lets Compose wait for the long-lived stack without
           # treating this worker's successful exit as a health failure.
