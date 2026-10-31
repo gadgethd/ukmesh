@@ -3,7 +3,8 @@ import type { LazyPathResult } from '../pages/ukmesh/PacketDetailPanel.js';
 import type { MultiObserverBetaResponse } from './packetPathOverlayUtils.js';
 import type { MessageTags, TagConfidence } from './packetFeed.js';
 import { useRuntimeFeatures } from '../config/runtimeFeatures.js';
-import { ApiResponseError, fetchJson, withScopeParams } from '../utils/api.js';
+import { ApiResponseError, checkedJson, fetchJson, withScopeParams } from '../utils/api.js';
+import { fetchPathResolution } from '../utils/pathResolutionRequest.js';
 import { ScopedCache } from '../utils/scopedCache.js';
 
 export type PacketDetail = {
@@ -162,14 +163,14 @@ export function usePacketDetailData(input: {
     const key = `${packetHash.toUpperCase()}:${observerKey}`;
     setPathLoading(true);
     void pathCache.getOrLoad(scopeKey, key, async () => {
-      const value = await fetchJson<MultiObserverBetaResponse>(
+      const response = await fetchPathResolution(
         withScopeParams(`/api/path-beta/resolve-multi?hash=${encodeURIComponent(packetHash)}`, {
           network,
           observer,
         }),
         { signal: controller.signal, cache: 'no-store' },
-        { timeoutMs: 12_000, maxBytes: 8 * 1024 * 1024 },
       );
+      const value = await checkedJson<MultiObserverBetaResponse>(response, { maxBytes: 8 * 1024 * 1024 });
       return Array.isArray(value.canonicalPath) && Array.isArray(value.observers) ? [value] : [];
     })
       .then((paths) => {

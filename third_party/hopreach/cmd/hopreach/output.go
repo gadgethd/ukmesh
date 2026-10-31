@@ -270,7 +270,10 @@ type nodeCoverageMeta struct {
 }
 
 type meta struct {
-	GeneratedAt           string           `json:"generated_at"`
+	GeneratedAt string `json:"generated_at"`
+	// CompletedAt is set only by the final successful publication. Keep
+	// generated_at unchanged for the ordinary startup interval guard.
+	CompletedAt           string           `json:"completed_at,omitempty"`
 	Source                string           `json:"source"`
 	Boundary              string           `json:"boundary"`
 	RequiredScope         string           `json:"required_scope"`

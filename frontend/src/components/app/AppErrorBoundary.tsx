@@ -1,4 +1,5 @@
 import React from 'react';
+import { postTelemetry } from '../../telemetry/clientErrors.js';
 
 type State = { error: Error | null };
 
@@ -10,18 +11,11 @@ export class AppErrorBoundary extends React.Component<React.PropsWithChildren, S
   }
 
   componentDidCatch(error: Error, info: React.ErrorInfo): void {
-    void fetch('/api/telemetry/frontend-error', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        kind: 'crash',
-        message: error.message,
-        stack: `${error.stack ?? ''}\n${info.componentStack}`.slice(0, 4000),
-        page: window.location.pathname,
-        userAgent: navigator.userAgent,
-      }),
-      keepalive: true,
-    }).catch(() => {});
+    postTelemetry({
+      kind: 'crash',
+      message: error.message,
+      stack: `${error.stack ?? ''}\n${info.componentStack}`,
+    });
   }
 
   render(): React.ReactNode {

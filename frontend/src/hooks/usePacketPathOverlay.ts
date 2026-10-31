@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { AggregatedPacket } from './useNodes.js';
 import { useNodeMap, useMessages, usePackets } from './useNodes.js';
 import { withScopeParams, uncachedEndpoint } from '../utils/api.js';
+import { fetchPathResolution } from '../utils/pathResolutionRequest.js';
 import type { Filters } from '../components/FilterPanel/FilterPanel.js';
 import {
   aggregateCanonicalPath,
@@ -66,7 +67,7 @@ async function fetchServerBetaMulti(
     `/api/path-beta/resolve-multi?hash=${encodeURIComponent(packetHash)}${modeQuery}`,
     { network },
   );
-  const response = await fetch(uncachedEndpoint(endpoint), { cache: 'no-store' });
+  const response = await fetchPathResolution(uncachedEndpoint(endpoint), { cache: 'no-store' });
   if (response.status === 202) {
     return response.json() as Promise<SlowModePendingResponse>;
   }
