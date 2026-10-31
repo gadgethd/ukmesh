@@ -146,18 +146,44 @@ def flatten(answers):
     return tags, conf
 
 
+def load_public_message(cur, ph):
+    """Authorize immediately before each external attempt, including retries."""
+    cur.execute("""
+      WITH policy AS (
+        SELECT EXISTS (
+          SELECT 1 FROM packet_visibility_materialization_state cached
+          JOIN public_visibility_state current ON current.singleton = cached.singleton
+          WHERE cached.singleton = TRUE AND cached.visibility_generation = current.generation
+        ) AND NOT EXISTS (
+          SELECT 1 FROM privacy_rematerialization_queue
+          WHERE status IN ('pending', 'processing', 'failed')
+        ) AS ready
+      )
+      SELECT policy.ready, candidate.sender, candidate.message FROM policy
+      LEFT JOIN LATERAL (
+        SELECT payload->'decrypted'->>'sender' AS sender,
+               payload->'decrypted'->>'message' AS message
+        FROM packets
+        WHERE packet_hash=%s AND network=ANY(%s::text[])
+          AND packet_type=5 AND visibility_ok IS TRUE AND is_private IS NOT TRUE
+          AND payload->'decrypted'->>'message' IS NOT NULL AND policy.ready
+        ORDER BY time DESC LIMIT 1
+      ) candidate ON TRUE
+    """, (ph, NETWORKS))
+    row = cur.fetchone()
+    if row is None or row[0] is not True:
+        raise RuntimeError('public visibility is unavailable')
+    return row[1:] if row[2] is not None else None
+
+
 def tag_message(cur, ph, ts):
     """Tag one message with up to 3 inline attempts. Returns (ok, latency_ms, err)."""
-    cur.execute("""
-      SELECT payload->'decrypted'->>'sender', payload->'decrypted'->>'message'
-      FROM packets WHERE packet_hash=%s LIMIT 1
-    """, (ph,))
-    row = cur.fetchone()
-    if row is None or row[1] is None:
-        return True, None, None  # nothing taggable (row vanished / no message)
-    sender, message = row
-    state = f"Message from node '{sender or 'unknown'}': \"{(message or '')[:4000]}\""
     for attempt in (1, 2, 3):
+        row = load_public_message(cur, ph)
+        if row is None:
+            return True, None, None  # deleted, private, or no longer taggable
+        sender, message = row
+        state = f"Message from node '{sender or 'unknown'}': \"{(message or '')[:4000]}\""
         try:
             resp, ms = api_tag(state)
             tags, conf = flatten(resp.get('answers'))
@@ -244,9 +270,7 @@ def main():
             cur.execute("""
               SELECT * FROM (
                 SELECT DISTINCT ON (packet_hash)
-                       packet_hash, time,
-                       payload->'decrypted'->>'sender' AS sender,
-                       payload->'decrypted'->>'message' AS message
+                       packet_hash, time
                 FROM packets
                 WHERE packet_type = 5
                   AND payload->'decrypted'->>'message' IS NOT NULL
@@ -255,6 +279,10 @@ def main():
                   AND network = ANY(%s::text[])
                   AND visibility_ok IS TRUE
                   AND is_private IS NOT TRUE
+                  AND NOT EXISTS (SELECT 1 FROM message_tags tagged
+                                  WHERE tagged.packet_hash = packets.packet_hash)
+                  AND NOT EXISTS (SELECT 1 FROM tagger_retry retry
+                                  WHERE retry.packet_hash = packets.packet_hash)
                   AND EXISTS (
                     SELECT 1
                     FROM packet_visibility_materialization_state cached_visibility
@@ -269,15 +297,21 @@ def main():
             rows = cur.fetchall()
             new = errs = 0
             max_t = cursor
-            for ph, ts, sender, message in rows:
+            for ph, ts in rows:
                 if ts > max_t:
                     max_t = ts
                 cur.execute("SELECT 1 FROM message_tags WHERE packet_hash=%s", (ph,))
                 if cur.fetchone():
                     continue
-                state = f"Message from node '{sender or 'unknown'}': \"{(message or '')[:4000]}\""
                 ans, ms, err = None, None, None
+                no_longer_public = False
                 for attempt in (1, 2, 3):
+                    current = load_public_message(cur, ph)
+                    if current is None:
+                        no_longer_public = True
+                        break
+                    sender, message = current
+                    state = f"Message from node '{sender or 'unknown'}': \"{(message or '')[:4000]}\""
                     try:
                         resp, ms = api_tag(state)
                         ans = resp.get('answers')
@@ -292,6 +326,8 @@ def main():
                     except Exception as ex:  # noqa: BLE001
                         err = str(ex)[:200]
                         time.sleep(2 * attempt)
+                if no_longer_public:
+                    continue
                 if ans:
                     tags, conf = flatten(ans)
                     cur.execute("""INSERT INTO message_tags

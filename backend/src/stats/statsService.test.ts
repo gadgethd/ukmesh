@@ -483,3 +483,26 @@ test('canonical summary cache entries cannot cross a privacy generation change',
   assert.ok(statsCache.has('ukmesh:v1'));
   assert.ok(statsCache.has('ukmesh:v2'));
 });
+
+test('observer activity cache is fenced by privacy generation, including in-flight work', async () => {
+  let generation = 1;
+  let calls = 0;
+  let changeDuringRead = false;
+  const repository = { fetchObserverActivity: async () => {
+    calls += 1;
+    if (changeDuringRead) generation += 1;
+    return { rows: generation === 1 ? [{ node_id: 'revoked-observer', rx_24h: '3', tx_24h: '1' }] : [] };
+  } } as unknown as StatsRepository;
+  const service = createStatsService({
+    statsCache: new Map(), statsCacheTtlMs: 60_000,
+    chartsCache: new Map(), chartsCacheTtlMs: 60_000, chartsInflight: new Map(),
+    repository, getPublicVisibilityGeneration: async () => generation, maskDecodedPathNodes: () => [],
+  });
+  assert.deepEqual(await service.getObserverActivity('ukmesh'), [{ node_id: 'revoked-observer', rx_24h: 3, tx_24h: 1 }]);
+  generation = 2;
+  assert.deepEqual(await service.getObserverActivity('ukmesh'), []);
+  assert.equal(calls, 2);
+  changeDuringRead = true;
+  generation = 3;
+  await assert.rejects(service.getObserverActivity('ukmesh'), /privacy generation changed/);
+});

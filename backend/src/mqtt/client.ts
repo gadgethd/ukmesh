@@ -21,7 +21,7 @@ import { admitPacketToRam } from '../ram/liveStore.js';
 import { getRamIngestMode } from '../ram/protocol.js';
 import { persistStatusTelemetrySample, persistStatusWrites } from './statusTelemetry.js';
 import { observationIdentityKey, packetAlreadyPersisted, type ObservationIdentity } from './observationIdentity.js';
-import { assertSupportedIngestConnections } from './ingestConfig.js';
+import { assertSupportedIngestConnections, loadMqttIntakeConfig } from './ingestConfig.js';
 import { waitForShutdownStep } from './shutdownDeadline.js';
 import { createPublicBatch } from '../privacy/publicBatch.js';
 import {
@@ -313,6 +313,7 @@ const MQTT_CLIENT_ID = String(
  * successful restart and resize qualification before they can be enabled.
  */
 const MQTT_INGEST_CONNECTIONS = boundedEnvInteger('MQTT_INGEST_CONNECTIONS', 1, 1, 16);
+const MQTT_INTAKE_CONFIG = loadMqttIntakeConfig(process.env);
 const MQTT_INGEST_SHARE_GROUP = String(
   process.env['MQTT_INGEST_SHARE_GROUP'] ?? 'meshcore-ingest',
 ).trim() || 'meshcore-ingest';
@@ -425,7 +426,7 @@ export async function startMqttClient(): Promise<void> {
     durableIntakes.push(installDurableMqttIntake(client,
       handleIncomingMqttPacket,
       (error) => reportMqttIngestFailure(client, error),
-      { depth: (count) => mqttIngestQueueDepth.set(count) },
+      { ...MQTT_INTAKE_CONFIG, depth: (count) => mqttIngestQueueDepth.set(count) },
     ));
 
     client.on('connect', () => {

@@ -2,6 +2,7 @@ import http, { type IncomingMessage, type ServerResponse } from 'node:http';
 import { appendFile, mkdir, rename, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { AlertQueueFullError, DurableAlertQueue } from './alertDeliveryQueue.js';
 
 const PORT = boundedInteger(process.env['ALERT_RECEIVER_PORT'], 8080, 1, 65_535);
 const MAX_BODY_BYTES = boundedInteger(process.env['ALERT_RECEIVER_MAX_BODY_BYTES'], 262_144, 1_024, 1_048_576);
@@ -149,7 +150,7 @@ async function rotateIfNeeded(nextBytes: number): Promise<void> {
 let writeChain = Promise.resolve();
 function persistReceipt(receipt: AlertReceipt): Promise<void> {
   const line = `${JSON.stringify(receipt)}\n`;
-  writeChain = writeChain.then(async () => {
+  writeChain = writeChain.catch(() => undefined).then(async () => {
     await mkdir(path.dirname(RECEIPT_PATH), { recursive: true, mode: 0o700 });
     await rotateIfNeeded(Buffer.byteLength(line));
     await appendFile(RECEIPT_PATH, line, { encoding: 'utf8', mode: 0o600 });
@@ -175,83 +176,30 @@ async function forward(receipt: AlertReceipt): Promise<void> {
   }
 }
 
-// ---- BUG-014: durable delivery state ----
-// Forwarding used to fire-and-forget: failures were logged asynchronously and
-// /healthz stayed green while alerts silently never reached an operator.
-// Now every receipt is retried with bounded exponential backoff, dead-lettered
-// after MAX_FORWARD_ATTEMPTS, and readiness reflects delivery health.
-const FORWARD_DEAD_LETTER_PATH = `${RECEIPT_PATH}.dead`;
-const MAX_FORWARD_ATTEMPTS = Number(process.env['ALERT_FORWARD_MAX_ATTEMPTS'] ?? 5);
-const FORWARD_BACKOFF_BASE_MS = Number(process.env['ALERT_FORWARD_BACKOFF_BASE_MS'] ?? 1_000);
-const FORWARD_BACKOFF_CAP_MS = Number(process.env['ALERT_FORWARD_BACKOFF_CAP_MS'] ?? 60_000);
-
-type DeliveryState = {
-  attempts: number;
-  lastAttempt: number;
-  pending: boolean;
-};
-
-const delivery = new Map<string, DeliveryState>();
-let forwardChain = Promise.resolve();
-let lastForwardSuccessAt = FORWARD_URL ? 0 : Date.now();
-
-async function deadLetter(receipt: AlertReceipt, reason: string): Promise<void> {
-  try {
-    await appendFile(FORWARD_DEAD_LETTER_PATH, `${JSON.stringify({ ...receipt, deadLetterReason: reason })}\n`, {
-      encoding: 'utf8',
-      mode: 0o600,
-    });
-  } catch (error) {
-    console.error('[alert-receiver] failed to write dead-letter:', (error as Error).message);
-  }
-}
-
-/** Enqueue a receipt for durable forwarding with bounded retries. */
-function enqueueForward(receipt: AlertReceipt): void {
-  // Archiving is still useful when unconfigured, but it is not a delivery.
-  if (!FORWARD_URL) return;
-  const key = `${receipt.alert_names.join(',')}:${receipt.received_at}`;
-  if (delivery.has(key) && delivery.get(key)!.pending) return; // already in flight
-  delivery.set(key, { attempts: 0, lastAttempt: 0, pending: true });
-
-  forwardChain = forwardChain.then(async () => {
-    while (true) {
-      const state = delivery.get(key)!;
-      if (state.attempts >= MAX_FORWARD_ATTEMPTS) {
-        state.pending = false;
-        await deadLetter(receipt, `max attempts (${MAX_FORWARD_ATTEMPTS})`);
-        console.error(`[alert-receiver] dead-lettered after ${MAX_FORWARD_ATTEMPTS} attempts: ${key}`);
-        return;
-      }
-      if (state.lastAttempt > 0) {
-        const backoff = Math.min(FORWARD_BACKOFF_CAP_MS, FORWARD_BACKOFF_BASE_MS * 2 ** (state.attempts - 1));
-        await new Promise((resolve) => setTimeout(resolve, backoff));
-      }
-      state.lastAttempt = Date.now();
-      try {
-        await forward(receipt);
-        state.pending = false;
-        lastForwardSuccessAt = Date.now();
-        return;
-      } catch (error) {
-        state.attempts += 1;
-        console.error(`[alert-receiver] forward attempt ${state.attempts}/${MAX_FORWARD_ATTEMPTS} failed:`, (error as Error).message);
-      }
-    }
-  });
-}
+// Persist the forwarding intent before returning 202. Reuse the bounded,
+// restartable queue rather than retaining receipts in a process-local chain.
+const forwardQueue = new DurableAlertQueue({
+  directory: `${RECEIPT_PATH}.outbox`,
+  maxItems: boundedInteger(process.env['ALERT_FORWARD_QUEUE_MAX'], 1_000, 1, 10_000),
+  maxAttempts: boundedInteger(process.env['ALERT_FORWARD_MAX_ATTEMPTS'], 5, 1, 100),
+  backoffBaseMs: boundedInteger(process.env['ALERT_FORWARD_BACKOFF_BASE_MS'], 1_000, 1, 60_000),
+  backoffCapMs: boundedInteger(process.env['ALERT_FORWARD_BACKOFF_CAP_MS'], 60_000, 1, 3_600_000),
+  send: forward,
+});
 
 function deliveryHealth(): { degraded: boolean; detail: string } {
   if (!FORWARD_URL) {
     return { degraded: true, detail: 'archive-only mode: ALERT_FORWARD_URL is not configured' };
   }
-  if (lastForwardSuccessAt === 0) {
-    return { degraded: true, detail: 'no successful forward since startup' };
+  const state = forwardQueue.metrics();
+  if (state.deadLetterCount > 0 || state.lastError) {
+    return { degraded: true, detail: `${state.deadLetterCount} dead-lettered alert(s); delivery needs attention` };
   }
-  const pending = [...delivery.values()].filter((state) => state.pending);
-  const stuck = pending.filter((state) => Date.now() - state.lastAttempt > 5 * 60_000);
-  if (stuck.length > 0) {
-    return { degraded: true, detail: `${stuck.length} alert(s) undelivered for over 5 minutes` };
+  if (!state.lastSuccessAt) {
+    return { degraded: true, detail: 'no successful forward recorded' };
+  }
+  if (state.oldestQueueAgeSeconds > 300) {
+    return { degraded: true, detail: `${state.pendingCount} alert(s) undelivered for over 5 minutes` };
   }
   return { degraded: false, detail: 'forwarding configured; successful delivery recorded' };
 }
@@ -283,15 +231,26 @@ const server = http.createServer(async (req, res) => {
     const payload = JSON.parse(body.toString('utf8')) as unknown;
     const receipt = summarizeAlertPayload(payload);
     await persistReceipt(receipt);
-    enqueueForward(receipt);
+    if (FORWARD_URL) await forwardQueue.enqueue(receipt);
     json(res, 202, { accepted: true });
   } catch (error) {
     const tooLarge = (error as Error).message === 'request body too large';
-    json(res, tooLarge ? 413 : 400, { error: tooLarge ? 'request too large' : 'invalid alert payload' });
+    if (error instanceof AlertQueueFullError) {
+      json(res, 503, { error: 'alert forwarding queue is full' });
+    } else {
+      const invalid = error instanceof SyntaxError;
+      json(res, tooLarge ? 413 : invalid ? 400 : 503, {
+        error: tooLarge ? 'request too large' : invalid ? 'invalid alert payload' : 'alert persistence unavailable',
+      });
+    }
   }
 });
 
 function shutdown(signal: string): void {
+  void forwardQueue.close().catch((error: unknown) => {
+    console.error('[alert-receiver] queue shutdown failed:', error instanceof Error ? error.message : error);
+    process.exitCode = 1;
+  });
   server.close((error) => {
     if (error) {
       console.error(`[alert-receiver] ${signal} shutdown failed:`, error.message);
@@ -306,8 +265,14 @@ if (isMain) {
   if (!FORWARD_URL) {
     console.warn('[alert-receiver] DEGRADED: ALERT_FORWARD_URL is unset or invalid; forwardConfigured=false; alerts will be archived only; /readyz returns 503');
   }
-  server.listen(PORT, '0.0.0.0', () => {
-    console.log(`[alert-receiver] listening on internal port ${PORT}; forwardConfigured=${Boolean(FORWARD_URL)}`);
+  void forwardQueue.initialize().then(() => {
+    if (FORWARD_URL) forwardQueue.start();
+    server.listen(PORT, '0.0.0.0', () => {
+      console.log(`[alert-receiver] listening on internal port ${PORT}; forwardConfigured=${Boolean(FORWARD_URL)}`);
+    });
+  }).catch((error: unknown) => {
+    console.error('[alert-receiver] queue initialization failed:', error instanceof Error ? error.message : error);
+    process.exitCode = 1;
   });
   process.once('SIGTERM', () => shutdown('SIGTERM'));
   process.once('SIGINT', () => shutdown('SIGINT'));

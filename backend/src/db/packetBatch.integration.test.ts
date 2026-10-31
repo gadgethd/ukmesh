@@ -133,9 +133,17 @@ test('base schema and every migration apply to a brand-new database', {
   assert.deepEqual(executed, [
     '050_packet_paths_and_retention.sql',
     '051_reset_readiness.sql',
+    '052_owner_packet_sharing.sql',
+    '053_owner_packet_share_destination_metadata.sql',
+    '054_owner_packet_share_default_off.sql',
+    '055_public_feed.sql',
     '056_async_privacy_rematerialization.sql',
+    '057_region_scope_participation.sql',
+    '058_packet_share_owner_scope_and_jwt.sql',
     '059_ingest_observation_ledger.sql',
     '060_ingest_ledger_historical_coverage.sql',
+    '062_silent_failure_recovery.sql',
+    '068_message_tags_read_dependency.sql',
   ]);
   assert.deepEqual(await runMigrations(freshPool), []);
 

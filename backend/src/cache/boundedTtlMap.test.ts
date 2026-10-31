@@ -60,3 +60,50 @@ test('bounded cache overwrite accounts weight once and reports hit/miss/eviction
   });
   cache.shutdown();
 });
+
+test('expiry bound follows overwrites, deletion, clear, and backwards clock changes', () => {
+  let now = 100;
+  const cache = new BoundedTtlMap<string, string>({
+    maxEntries: 5, maxWeight: 10, ttlMs: 100, weightOf: () => 1, now: () => now,
+  });
+  try {
+    cache.set('overwritten', 'old').set('deleted', 'old');
+    now = 150;
+    cache.set('overwritten', 'new');
+    cache.delete('deleted');
+    cache.sweep(200);
+    assert.equal(cache.size, 1, 'replaced timestamp determines expiry');
+    now = 50;
+    cache.set('backdated', 'new');
+    cache.sweep(150);
+    assert.equal(cache.has('backdated'), false, 'earlier timestamps lower the bound');
+    assert.equal(cache.get('overwritten'), 'new');
+    cache.sweep(250);
+    assert.equal(cache.size, 0);
+    assert.equal(cache.weight(), 0);
+    cache.set('cleared', 'old');
+    cache.clear();
+    now = 0;
+    cache.set('after-clear', 'new');
+    cache.sweep(100);
+    assert.equal(cache.size, 0);
+  } finally { cache.shutdown(); }
+});
+
+test('LRU reads do not postpone TTL and expired entries leave room before eviction', () => {
+  let now = 0;
+  const cache = new BoundedTtlMap<string, number>({
+    maxEntries: 2, maxWeight: 2, ttlMs: 100, weightOf: () => 1, now: () => now,
+  });
+  try {
+    cache.set('a', 1);
+    now = 50;
+    cache.set('b', 2);
+    assert.equal(cache.get('a'), 1);
+    now = 100;
+    cache.set('c', 3);
+    assert.deepEqual([...cache.keys()], ['b', 'c']);
+    assert.equal(cache.metrics().expiries, 1);
+    assert.equal(cache.metrics().evictions, 0);
+  } finally { cache.shutdown(); }
+});
