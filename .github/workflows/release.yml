@@ -44,6 +44,11 @@ jobs:
             context: .
             file: Dockerfile.backend
             build_args: ''
+          - component: tagger-worker
+            image: meshcore-tagger-worker
+            context: tagger-worker
+            file: tagger-worker/Dockerfile
+            build_args: ''
           - component: combined
             image: meshcore-combined
             context: .
