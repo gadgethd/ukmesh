@@ -16,8 +16,9 @@ export default defineConfig(({ command }) => ({
   plugins: [{
     name: 'maplibre-upstream-typescript-semantics', enforce: 'pre',
     async transform(code, id) {
-      if (!id.startsWith(mapLibreSource) || !id.endsWith('.ts')) return;
-      return transformWithOxc(code, id, {
+      const filename = id.split('?', 1)[0];
+      if (!filename.startsWith(mapLibreSource) || !filename.endsWith('.ts')) return;
+      return transformWithOxc(code, filename, {
         lang: 'ts', target: 'es2020', tsconfig: false,
         assumptions: { setPublicClassFields: true },
         typescript: { removeClassFieldsWithoutInitializer: true },
@@ -56,6 +57,9 @@ export default defineConfig(({ command }) => ({
     // vite's dep pre-bundling rewrites that to node_modules/.vite/deps/maplibre-gl-worker.mjs
     // which does not exist, killing the worker (and custom raster protocols) in dev.
     exclude: ['maplibre-gl'],
+    // The excluded upstream source graph reaches CommonJS packages directly.
+    // Prebundle these in dev so their default exports have the required interop.
+    include: ['murmurhash-js', 'earcut', '@maplibre/mlt'],
   },
   server: {
     proxy: {

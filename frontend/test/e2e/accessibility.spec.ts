@@ -205,10 +205,13 @@ async function installDashboardWebSocket(page: Page) {
       data: {
         nodes: [{
           ...repeater,
+          last_seen: new Date().toISOString(),
+          network: 'ukmesh',
           public_key: NODE_ID,
         }],
         packets: [{
-          time: '2026-07-18T12:00:00Z',
+          time: new Date().toISOString(),
+          network: 'ukmesh',
           packet_hash: 'fixture-message',
           rx_node_id: NODE_ID,
           src_node_id: NODE_ID,
