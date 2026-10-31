@@ -418,9 +418,11 @@ jobs:
             exit 1
           fi
           grep -q '^mqtt-packet-fanout-ok$' "$ws_log"
-      - name: Install Playwright for E2E tests
+      - name: Install locked frontend dependencies and Playwright for E2E tests
         working-directory: frontend
-        run: npx playwright install --with-deps chromium
+        run: |
+          npm ci
+          npx --no-install playwright install --with-deps chromium
       - name: Run E2E tests against live stack
         working-directory: frontend
         run: npm run test:e2e
