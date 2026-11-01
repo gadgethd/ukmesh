@@ -50,7 +50,11 @@ export default defineConfig(({ command }) => ({
     resolveId(id) { if (id === 'virtual:maplibre-worker-url') return '\0maplibre-worker-dev'; },
     load(id) { if (id === '\0maplibre-worker-dev') return 'import url from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";export default url;'; },
   }],
-  resolve: { alias: [{ find: /^maplibre-gl$/, replacement: path.join(mapLibreSource, 'src/index.ts') }] },
+  // Production shares the renderer/worker source graph. Development uses the
+  // upstream ESM bundle to avoid hundreds of cold source-module requests.
+  resolve: { alias: command === 'build'
+    ? [{ find: /^maplibre-gl$/, replacement: path.join(mapLibreSource, 'src/index.ts') }]
+    : [] },
   optimizeDeps: {
     // maplibre-gl v6 loads its worker via new URL(..., import.meta.url) —
     // vite's dep pre-bundling rewrites that to node_modules/.vite/deps/maplibre-gl-worker.mjs

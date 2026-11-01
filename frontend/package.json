@@ -15,7 +15,7 @@
     "test:basemap": "VITE_APP_HOSTNAME=app.ukmesh.com VITE_BUILD_TARGET=app VITE_SITE=ukmesh VITE_NETWORK=ukmesh VITE_RF_COVERAGE_ENABLED=true npm run build && playwright test --config=playwright.basemap.config.ts",
     "test:mobile": "playwright test mobile.spec.ts --project=mobile-regression",
     "test:dev-renderer": "playwright test --config=playwright.development.config.ts",
-    "test:regions": "playwright test regions.spec.ts --project=dashboard-desktop --project=dashboard-mobile"
+    "test:regions": "playwright test --config=playwright.regions.config.ts"
   },
   "dependencies": {
     "@deck.gl/aggregation-layers": "^9.4.0",

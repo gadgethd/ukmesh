@@ -315,7 +315,7 @@ for (const width of [320, 375, 640, 768, 1024, 1280, 1440]) {
     });
 
     await page.setViewportSize({ width, height: width <= 375 ? 667 : 800 });
-    await page.goto(`${dashboardOrigin}/?network=teesside`, { waitUntil: 'networkidle' });
+    await page.goto(`${dashboardOrigin}/?network=teesside`, { waitUntil: 'domcontentloaded' });
     await expect(page.locator('.map-area')).toBeVisible();
     await expect(page.getByLabel('Network region')).toHaveCount(0);
 

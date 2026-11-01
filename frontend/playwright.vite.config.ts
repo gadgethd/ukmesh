@@ -9,4 +9,10 @@ const role = process.env['VITE_SITE'] === 'dev' ? 'dev'
 
 export default defineConfig(env => mergeConfig(typeof baseConfig === 'function' ? baseConfig(env) : baseConfig, {
   cacheDir: `node_modules/.vite-playwright/${portBase}/${role}`,
+  server: {
+    proxy: {
+      '/api': 'http://127.0.0.1:1',
+      '/ws': { target: 'ws://127.0.0.1:1', ws: true },
+    },
+  },
 }));
