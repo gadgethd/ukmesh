@@ -4,7 +4,7 @@ import { createDeliveryProbe } from './deliveryProbe.js';
 import { withMqttDeliveryHealth } from '../health/mqttDelivery.js';
 import net from 'node:net';
 import { once } from 'node:events';
-import mqtt from 'mqtt';
+import { connectPersistentMqtt, subscribePersistentTopics } from './persistentClient.js';
 import mqttPacket from 'mqtt-packet';
 import { installDurableMqttIntake } from './durableIntake.js';
 
@@ -57,8 +57,9 @@ test('a stalled delivery path overrides a healthy cached overview and clears on 
   assert.equal(withMqttDeliveryHealth(overview, { ...health, state: 'healthy' }), overview);
 });
 
-test('wire: a broker delivering QoS 0 but withholding QoS 1 causes a persistent reconnect and recovers', async t => {
+for (const sessionPresent of [true, false]) test(`wire: QoS 1 stall recovers through real subscriptions on the same client (sessionPresent=${sessionPresent})`, async t => {
   let connections = 0;
+  let subscriptions = 0;
   let ordinaryPackets = 0;
   const sockets = new Set<net.Socket>();
   const states: string[] = [];
@@ -73,9 +74,14 @@ test('wire: a broker delivering QoS 0 but withholding QoS 1 causes a persistent 
     parser.on('packet', packet => {
       if (packet.cmd === 'connect') {
         assert.equal(packet.clean, false);
-        socket.write(mqttPacket.generate({ cmd: 'connack', returnCode: 0, sessionPresent: true }));
-        socket.write(mqttPacket.generate({ cmd: 'publish', topic: 'ordinary/packets',
+        socket.write(mqttPacket.generate({ cmd: 'connack', returnCode: 0, sessionPresent }));
+        socket.write(mqttPacket.generate({ cmd: 'publish', topic: 'owned/packets',
           qos: 0, payload: 'flowing', retain: false, dup: false }));
+      }
+      if (packet.cmd === 'subscribe') {
+        subscriptions++;
+        socket.write(mqttPacket.generate({ cmd: 'suback', messageId: packet.messageId,
+          granted: packet.subscriptions.map(subscription => subscription.qos) }));
       }
       if (packet.cmd === 'publish' && packet.qos === 1) {
         socket.write(mqttPacket.generate({ cmd: 'puback', messageId: packet.messageId }));
@@ -86,8 +92,8 @@ test('wire: a broker delivering QoS 0 but withholding QoS 1 causes a persistent 
   });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
-  const client = mqtt.connect(`mqtt://127.0.0.1:${(server.address() as net.AddressInfo).port}`,
-    { clean: false, clientId: 'persistent-probe-fixture', reconnectPeriod: 20 });
+  const client = connectPersistentMqtt(`mqtt://127.0.0.1:${(server.address() as net.AddressInfo).port}`,
+    { clientId: 'persistent-probe-fixture', reconnectPeriod: 20 });
   const errors: string[] = [];
   client.on('error', e => errors.push(e.message));
   const probe = createDeliveryProbe({ topic: 'owned/probe', timeoutMs: 60, intervalMs: 30,
@@ -95,7 +101,10 @@ test('wire: a broker delivering QoS 0 but withholding QoS 1 causes a persistent 
     reconnect: () => { client.stream.destroy(); }, changed: health => states.push(health.state) });
   installDurableMqttIntake(client, async packet => { if (!probe.accept(packet)) ordinaryPackets++; },
     e => errors.push(e.message));
-  client.on('connect', probe.connect);
+  client.on('connect', () => subscribePersistentTopics(client, ['owned/#'], {
+    ready: probe.connect,
+    failed: error => { errors.push(error.message); client.stream.destroy(); },
+  }));
   client.on('close', probe.disconnect);
   const timer = setInterval(probe.tick, 5);
   t.after(async () => {
@@ -111,6 +120,7 @@ test('wire: a broker delivering QoS 0 but withholding QoS 1 causes a persistent 
   assert.equal(probe.status().state, 'healthy');
   assert.ok(states.includes('stalled'));
   assert.ok(connections >= 2);
+  assert.ok(subscriptions >= 2, 'each CONNACK gets an actual SUBACK, including persistent-session reconnects');
   assert.ok(ordinaryPackets >= 2);
   assert.deepEqual(errors, []);
 });

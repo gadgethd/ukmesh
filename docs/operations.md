@@ -689,6 +689,12 @@ alerts if the delivery probe remains unhealthy for two minutes. Inspect
 `meshcore_mqtt_delivery_probe_healthy`, the last-success timestamp, recovery
 count, and `meshcore_mqtt_wire_ack_duration_seconds_count`.
 
+Every reconnect explicitly subscribes again and waits for actual SUBACKs before
+starting the probe. MQTT.js automatic resubscription is disabled so its cached
+empty subscription result cannot be mistaken for an ACL denial. The backend's
+40-second container stop grace allows its 30-second durable drain to finish;
+keep `BACKEND_STOP_GRACE_PERIOD` longer than any custom shutdown deadline.
+
 If the session remains stalled after reconnect, preserve the Mosquitto data
 volume and perform a controlled broker restart. Never clear the persistent
 session or change the ingest client ID to discard the backlog. Confirm that

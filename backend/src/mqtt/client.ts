@@ -1,4 +1,4 @@
-import mqtt, { type MqttClient } from 'mqtt';
+import type { MqttClient } from 'mqtt';
 import { createHash } from 'node:crypto';
 import { calcRegionKey, transportCodeMatchesRegion } from '@michaelhart/meshcore-decoder';
 import { insertNodeNeighborSample, insertNodeStatusSample, insertPacket, upsertNode, query, insertOrUpdateSpamSuspect, recordMultibyteEvidence } from '../db/index.js';
@@ -22,6 +22,7 @@ import { admitPacketToRam } from '../ram/liveStore.js';
 import { getRamIngestMode } from '../ram/protocol.js';
 import { persistStatusTelemetrySample, persistStatusWrites, statusObservationTime } from './statusTelemetry.js';
 import { createDeliveryProbe, type DeliveryHealth } from './deliveryProbe.js';
+import { connectPersistentMqtt, subscribePersistentTopics } from './persistentClient.js';
 import {
   buildPersistedPacketPayload,
   ingestFailureAction,
@@ -453,10 +454,9 @@ export async function startMqttClient(): Promise<void> {
     const connectionLabel = MQTT_INGEST_CONNECTIONS > 1
       ? ` (connection ${index + 1}/${MQTT_INGEST_CONNECTIONS})`
       : '';
-    const client = mqtt.connect(brokerUrl, {
+    const client = connectPersistentMqtt(brokerUrl, {
       reconnectPeriod: 5000,
       connectTimeout: 30000,
-      clean: false,
       clientId: MQTT_INGEST_CONNECTIONS > 1 ? `${MQTT_CLIENT_ID}-${index + 1}` : MQTT_CLIENT_ID,
       username: process.env['MQTT_USERNAME'],
       password: process.env['MQTT_PASSWORD'],
@@ -503,23 +503,19 @@ export async function startMqttClient(): Promise<void> {
     client.on('connect', () => {
       setMqttRuntimeStatus('connected');
       console.log(`[mqtt] connected${connectionLabel}`);
-      let subscriptionsRemaining = TOPIC_PREFIXES.size;
-      for (const prefix of TOPIC_PREFIXES) {
+      const topicFilters = Array.from(TOPIC_PREFIXES, prefix => {
         // A shared subscription spreads messages across the ingest
         // connections; a single connection keeps the historical direct
         // subscription and its topic-ACL behaviour exactly.
-        const topicFilter = MQTT_INGEST_CONNECTIONS > 1
+        return MQTT_INGEST_CONNECTIONS > 1
           ? `$share/${MQTT_INGEST_SHARE_GROUP}/${prefix}/#`
           : `${prefix}/#`;
-        client.subscribe(topicFilter, { qos: 1 }, (err, granted) => {
-          if (err || !granted?.length || granted.some((entry) => entry.qos === 128)) {
-            reportMqttIngestFailure(client, err ?? new Error('MQTT_SUBSCRIPTION_DENIED'));
-          } else {
-            console.log(`[mqtt] subscribed to ${topicFilter}${connectionLabel}`);
-            if (--subscriptionsRemaining === 0) probe.connect();
-          }
-        });
-      }
+      });
+      subscribePersistentTopics(client, topicFilters, {
+        ready: probe.connect,
+        failed: error => reportMqttIngestFailure(client, error),
+        subscribed: topic => console.log(`[mqtt] subscribed to ${topic}${connectionLabel}`),
+      });
     });
 
     client.on('error', (err) => {

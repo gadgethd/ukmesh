@@ -57,6 +57,8 @@ services:
         condition: service_healthy
   backend:
     <<: *internal-hosts
+    # The backend has a 30-second deadline to drain durable ingest on shutdown.
+    stop_grace_period: ${BACKEND_STOP_GRACE_PERIOD:-40s}
     image: ${BACKEND_IMAGE:-meshcore-analytics-backend:local}
     build:
       context: .
