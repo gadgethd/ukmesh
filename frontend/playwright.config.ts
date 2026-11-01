@@ -36,6 +36,9 @@ export default defineConfig({
     },
     {
       name: 'mobile-regression',
+      // Large software-rendered maps contend for the same CI GPU process.
+      fullyParallel: false,
+      workers: 1,
       testMatch: /mobile\.spec\.ts/,
       use: { ...devices['Desktop Chrome'] },
     },
