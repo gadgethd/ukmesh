@@ -198,32 +198,40 @@ async function installFixtures(page: Page, dismissDisclaimer = true) {
 }
 
 async function installDashboardWebSocket(page: Page) {
-  await page.routeWebSocket(/\/ws(?:\?|$)/, (socket) => {
-    socket.send(JSON.stringify({
-      type: 'initial_state',
-      ts: Date.now(),
-      data: {
-        nodes: [{
-          ...repeater,
-          last_seen: new Date().toISOString(),
-          network: 'ukmesh',
-          public_key: NODE_ID,
-        }],
-        packets: [{
-          time: new Date().toISOString(),
-          network: 'ukmesh',
-          packet_hash: 'fixture-message',
-          rx_node_id: NODE_ID,
-          src_node_id: NODE_ID,
-          packet_type: 5,
-          hop_count: 1,
-          summary: 'Keyboard fixture message',
-          path_hashes: [],
-        }],
-        viable_links: [],
-      },
-    }));
-  });
+  await page.addInitScript(({ fixtureNode, nodeId }) => {
+    const NativeWebSocket = window.WebSocket;
+    class FixtureWebSocket extends EventTarget {
+      static readonly CONNECTING = 0; static readonly OPEN = 1;
+      static readonly CLOSING = 2; static readonly CLOSED = 3;
+      readyState = FixtureWebSocket.CONNECTING;
+      onopen: ((event: Event) => void) | null = null;
+      onmessage: ((event: MessageEvent<string>) => void) | null = null;
+      onclose: ((event: CloseEvent) => void) | null = null;
+      onerror: ((event: Event) => void) | null = null;
+      constructor(url: string | URL, protocols?: string | string[]) {
+        super();
+        if (new URL(url).pathname !== '/ws') {
+          return new NativeWebSocket(url, protocols) as unknown as FixtureWebSocket;
+        }
+        window.setTimeout(() => {
+          if (this.readyState !== FixtureWebSocket.CONNECTING) return;
+          this.readyState = FixtureWebSocket.OPEN;
+          this.onopen?.(new Event('open'));
+          this.onmessage?.(new MessageEvent('message', { data: JSON.stringify({
+            type: 'initial_state', ts: Date.now(), data: {
+              nodes: [{ ...fixtureNode, last_seen: new Date().toISOString(), network: 'ukmesh', public_key: nodeId }],
+              packets: [{ time: new Date().toISOString(), network: 'ukmesh', packet_hash: 'fixture-message',
+                rx_node_id: nodeId, src_node_id: nodeId, packet_type: 5, hop_count: 1,
+                summary: 'Keyboard fixture message', path_hashes: [] }],
+              viable_links: [],
+            },
+          }) }));
+        }, 0);
+      }
+      send() {} close() { this.readyState = FixtureWebSocket.CLOSED; }
+    }
+    Object.defineProperty(window, 'WebSocket', { value: FixtureWebSocket, configurable: true });
+  }, { fixtureNode: repeater, nodeId: NODE_ID });
 }
 
 async function expectNoSeriousAxeIssues(page: Page) {

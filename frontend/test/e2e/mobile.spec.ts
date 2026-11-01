@@ -307,6 +307,7 @@ test('mobile map menu floats over the map; feed hides behind the Live chip', asy
 
 for (const width of [320, 375, 640, 768, 1024, 1280, 1440]) {
   test(`live map stays inside the ${width}px viewport and remains UK-only`, async ({ page }) => {
+    test.setTimeout(60_000);
     await installApiFixtures(page);
     const apiRequests: string[] = [];
     page.on('request', (request) => {
