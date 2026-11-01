@@ -987,7 +987,6 @@ services:
       DATABASE_APPLICATION_NAME: meshcore-alert-receiver
       ALERT_FORWARD_URL: ${ALERT_FORWARD_URL:-}
       ALERT_FORWARD_QUEUE_MAX: ${ALERT_FORWARD_QUEUE_MAX:-1000}
-      ALERT_RECEIVER_TOKEN: ${ALERT_RECEIVER_TOKEN:-}
       ALERT_RECEIVER_PATH: /var/lib/meshcore-alerts/alerts.jsonl
       ALERT_RECEIVER_TOKEN: ${ALERT_RECEIVER_TOKEN:-}
       NODE_ENV: production
