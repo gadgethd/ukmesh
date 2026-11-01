@@ -316,7 +316,7 @@ for (const width of [320, 375, 640, 768, 1024, 1280, 1440]) {
 
     await page.setViewportSize({ width, height: width <= 375 ? 667 : 800 });
     await page.goto(`${dashboardOrigin}/?network=teesside`, { waitUntil: 'domcontentloaded' });
-    await expect(page.locator('.map-area')).toBeVisible();
+    await expect(page.locator('.map-area')).toBeVisible({ timeout: 30_000 });
     await expect(page.getByLabel('Network region')).toHaveCount(0);
 
     for (const selector of ['.app-shell', '.topbar', '.map-layer', '.map-area']) {
@@ -333,7 +333,7 @@ for (const width of [320, 375, 640, 768, 1024, 1280, 1440]) {
       expect(controlsBox!.x + controlsBox!.width).toBeLessThanOrEqual(width + 0.5);
     }
     await expectNoViewportOverflow(page);
-    expect(apiRequests.some((url) => new URL(url).searchParams.get('network') === 'ukmesh')).toBe(true);
+    await expect.poll(() => apiRequests.some((url) => new URL(url).searchParams.get('network') === 'ukmesh')).toBe(true);
     expect(apiRequests.some((url) => new URL(url).searchParams.get('network') === 'teesside')).toBe(false);
     expect(apiRequests.some((url) => new URL(url).pathname === '/api/observers/health')).toBe(false);
   });

@@ -91,10 +91,13 @@ async function snapshot(page: Page) {
   });
 }
 
-test('default-off ignores region hashes and preserves global socket/poll requests', async ({ page }) => {
+test('default-off ignores region hashes and preserves global socket/poll requests', async ({ page }, testInfo) => {
   const fixture = await installRegionFixture(page, false);
   await page.goto('/#region=eng-ne');
   await page.locator('.app-shell').waitFor({ timeout: 30_000 });
+  if (testInfo.project.name.includes('mobile')) {
+    await page.getByRole('button', { name: 'Layers' }).first().click();
+  }
   const search = page.getByRole('combobox', { name: 'Search map nodes' });
   await search.fill('Europe');
   await expect(page.getByRole('option', { name: /Europe/ })).toBeVisible();

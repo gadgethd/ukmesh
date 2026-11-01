@@ -71,6 +71,12 @@ import { ScopedCache } from '../../utils/scopedCache.js';
 // initializes can strand MapLibre 6.11's in-flight DEM actor. A fresh vector
 // metadata URL still forces the failed basemap source to be replaced.
 function setBasemapStyle(map: maplibregl.Map, style: string | maplibregl.StyleSpecification, revision: number): void {
+  // An initial style that never loaded cannot be a diff/transform base.
+  // MapLibre queues transforms until style.load, which would strand fallback.
+  if (!map.getStyle()) {
+    map.setStyle(style, { diff: false });
+    return;
+  }
   map.setStyle(style, {
     diff: true,
     transformStyle: (previous, next) => {
