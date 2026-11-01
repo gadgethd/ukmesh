@@ -127,6 +127,7 @@ services:
       OWNER_ACL_RELOAD_TOKEN: ${JWT_SECRET:?JWT_SECRET required}
       MOSQUITTO_LOG_PATH: /mosquitto/log/mosquitto.log
     volumes:
+      - ./mosquitto:/mosquitto/config
       - mosquitto_log:/mosquitto/log
     depends_on:
       mosquitto:

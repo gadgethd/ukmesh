@@ -10,9 +10,49 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 TOKEN = os.environ.get("OWNER_ACL_RELOAD_TOKEN", "")
 LOG_PATH = os.environ.get("MOSQUITTO_LOG_PATH", "/mosquitto/log/mosquitto.log")
+ACL_PATH = os.environ.get("MOSQUITTO_ACL_PATH", "/mosquitto/config/acl")
+PASSWD_PATH = os.environ.get("MOSQUITTO_PASSWD_PATH", "/mosquitto/config/passwd")
 RELOAD_ACK_TIMEOUT_SECONDS = float(os.environ.get("MOSQUITTO_RELOAD_ACK_TIMEOUT_SECONDS", "3"))
 RELOAD_MARKER = b"Reloading config."
 RELOAD_LOCK = threading.Lock()
+
+
+def ensure_config_ownership() -> None:
+    """Rewrite broker config files owned by another UID as the broker runtime UID.
+
+    Mosquitto rejects password/ACL files it does not own (warning today, load
+    failure in future releases). The backend writes ``acl`` atomically as its own
+    UID, so ownership must be normalised immediately before every reload.
+    """
+    for path in (ACL_PATH, PASSWD_PATH):
+        try:
+            metadata = os.stat(path, follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        if metadata.st_uid == os.getuid():
+            continue
+        temporary = f"{path}.{os.getpid()}.owner"
+        try:
+            with open(path, "rb") as source:
+                content = source.read()
+            descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o640)
+            with os.fdopen(descriptor, "wb") as destination:
+                destination.write(content)
+                destination.flush()
+                os.fsync(destination.fileno())
+            os.chmod(temporary, 0o640)
+            os.replace(temporary, path)
+            print(
+                f"[mosquitto-reloader] normalised {path} ownership "
+                f"{metadata.st_uid}:{metadata.st_gid} -> {os.getuid()}:{os.getgid()}",
+                flush=True,
+            )
+        finally:
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
+
 
 
 def ensure_log_permissions() -> None:
@@ -110,6 +150,7 @@ class Handler(BaseHTTPRequestHandler):
             self.rfile.read(length)
         try:
             with RELOAD_LOCK:
+                ensure_config_ownership()
                 ensure_log_permissions()
                 acknowledged = signal_and_wait_for_reload()
         except (OSError, RuntimeError) as error:
