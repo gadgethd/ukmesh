@@ -99,6 +99,14 @@ drift uses the normal validated apply/reload/readback path. An incomplete apply
 keeps `OWNER_ACL_APPLY_PENDING` until verification finishes, so a crash or failed
 reload cannot be mistaken for an unchanged, verified policy.
 
+A reconciliation request arriving after a pass has captured its inputs marks
+the drain dirty. The caller awaits a trailing pass that reads the committed
+settings again, including requests arriving during that trailing pass. Requests
+before input capture coalesce. Failed passes reject waiting callers; subsequent
+startup, periodic or explicit requests retry. This process-local drain does not
+claim to coordinate multiple backend writers or persist an in-flight request
+across crashes; startup's authoritative pass remains the recovery mechanism.
+
 In apply mode, readiness also requests that same pass when the persisted
 generation triple is unsettled or has an error. Concurrent probes share the
 attempt, failed attempts are spaced at least ten seconds apart, and readiness
