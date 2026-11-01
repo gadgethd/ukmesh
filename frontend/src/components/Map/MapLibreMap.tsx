@@ -67,6 +67,39 @@ import { computeCustomLos } from '../../utils/customLos.js';
 import { fetchJson, withScopeParams, type ApiScope } from '../../utils/api.js';
 import { ScopedCache } from '../../utils/scopedCache.js';
 
+// Keep a live DEM source across basemap changes. Removing it while a worker
+// initializes can strand MapLibre 6.11's in-flight DEM actor. A fresh vector
+// metadata URL still forces the failed basemap source to be replaced.
+function setBasemapStyle(map: maplibregl.Map, style: string | maplibregl.StyleSpecification, revision: number): void {
+  // An initial style that never loaded cannot be a diff/transform base.
+  // MapLibre queues transforms until style.load, which would strand fallback.
+  if (!map.getStyle()) {
+    map.setStyle(style, { diff: false });
+    return;
+  }
+  map.setStyle(style, {
+    diff: true,
+    transformStyle: (previous, next) => {
+      const sources = { ...next.sources };
+      const basemap = sources[BASEMAP_VECTOR_SOURCE_ID];
+      if (basemap?.type === 'vector' && basemap.url) {
+        sources[BASEMAP_VECTOR_SOURCE_ID] = { ...basemap, url: refreshBasemapMetadataUrl(basemap.url, revision) };
+      }
+      const terrain = previous?.sources['terrain-dem'];
+      const layers = [...next.layers];
+      if (terrain?.type === 'raster-dem') {
+        sources['terrain-dem'] = terrain;
+        const hillshade = previous?.layers.find(layer => layer.id === 'hillshade');
+        if (hillshade && !layers.some(layer => layer.id === hillshade.id)) {
+          const firstSymbol = layers.findIndex(layer => layer.type === 'symbol');
+          layers.splice(firstSymbol < 0 ? layers.length : firstSymbol, 0, hillshade);
+        }
+      }
+      return { ...next, sources, layers, ...(terrain ? { terrain: previous?.terrain } : {}) };
+    },
+  });
+}
+
 // The node detail dock is an overlay, so node selection must never reserve
 // camera padding or shift the visible map.
 function mapPaddingForNode(_selected: string | null): { top: number; right: number; bottom: number; left: number } {
@@ -864,7 +897,7 @@ export function MapLibreMap({
       clearBasemapWatchdog();
       console.warn('[basemap] using bundled fallback:', reason);
       try {
-        map.setStyle(buildFallbackStyle(mapLightRef.current ? 'light' : 'dark'), { diff: false });
+        setBasemapStyle(map, buildFallbackStyle(mapLightRef.current ? 'light' : 'dark'), basemapNonceRef.current);
       } catch (error) {
         console.error('[basemap] fallback style failed:', error);
       }
@@ -907,7 +940,7 @@ export function MapLibreMap({
       console.warn('[basemap] retrying with cache-busted style:', reason);
       try {
         mapLoadedRef.current = false;
-        map.setStyle(styleWithNonce(remoteStyleUrl()), { diff: false });
+        setBasemapStyle(map, styleWithNonce(remoteStyleUrl()), basemapNonceRef.current);
       } catch {
         applyFallbackBasemap(reason);
         return;
@@ -931,7 +964,7 @@ export function MapLibreMap({
       try {
         styleUrlRef.current = remoteStyleUrl();
         mapLoadedRef.current = false;
-        map.setStyle(styleWithNonce(remoteStyleUrl()), { diff: false });
+        setBasemapStyle(map, styleWithNonce(remoteStyleUrl()), basemapNonceRef.current);
       } catch {
         applyFallbackBasemap('manual retry failed');
         return;
@@ -1010,7 +1043,7 @@ export function MapLibreMap({
       if (styleUrlRef.current !== targetStyle) {
         styleUrlRef.current = targetStyle;
         mapLoadedRef.current = false;
-        map.setStyle(styleWithNonce(targetStyle));
+        setBasemapStyle(map, styleWithNonce(targetStyle), basemapNonceRef.current);
         return;
       }
       rehydrateMapStyle(map, !hasLoadedStyleRef.current);
@@ -1187,7 +1220,7 @@ export function MapLibreMap({
       // Rebuild the bundled fallback in the new palette; style.load rehydrates
       // the application layers and the offline city labels.
       try {
-        map.setStyle(buildFallbackStyle(mapLight ? 'light' : 'dark'), { diff: false });
+        setBasemapStyle(map, buildFallbackStyle(mapLight ? 'light' : 'dark'), basemapNonceRef.current);
       } catch {
         // Ignore: the map is being torn down.
       }
@@ -1199,7 +1232,7 @@ export function MapLibreMap({
     styleUrlRef.current = targetStyle;
     mapLoadedRef.current = false;
     basemapStartRef.current();
-    map.setStyle(targetStyle);
+    setBasemapStyle(map, targetStyle, basemapNonceRef.current);
   }, [mapLight]);
 
   // -- Imperative source updates ---------------------------------------------

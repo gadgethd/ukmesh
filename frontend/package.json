@@ -11,10 +11,11 @@
     "soak:production": "node scripts/soak-production.mjs",
     "preview": "vite preview",
     "test": "tsx --test $(find src -name '*.test.ts' -print)",
-    "test:e2e": "playwright test --config=playwright.production.config.ts --project=public-desktop --project=dashboard-desktop --project=dashboard-mobile",
+    "test:e2e": "playwright test --config=playwright.production.config.ts --project=public-desktop --project=dashboard-desktop --project=dashboard-mobile && npm run test:regions",
     "test:basemap": "VITE_APP_HOSTNAME=app.ukmesh.com VITE_BUILD_TARGET=app VITE_SITE=ukmesh VITE_NETWORK=ukmesh VITE_RF_COVERAGE_ENABLED=true npm run build && playwright test --config=playwright.basemap.config.ts",
     "test:mobile": "playwright test mobile.spec.ts --project=mobile-regression",
-    "test:dev-renderer": "playwright test --config=playwright.development.config.ts"
+    "test:dev-renderer": "playwright test --config=playwright.development.config.ts",
+    "test:regions": "playwright test --config=playwright.regions.config.ts"
   },
   "dependencies": {
     "@deck.gl/aggregation-layers": "^9.4.0",

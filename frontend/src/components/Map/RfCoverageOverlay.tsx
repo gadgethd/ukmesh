@@ -62,8 +62,11 @@ export function RfCoverageOverlay({
     let retryFrame: number | null = null;
     let releaseDataset: (() => void) | null = null;
 
-    const render = () => {
-      if (!active || !map.isStyleLoaded()) return;
+    const render = (styleLoadEvent = false) => {
+      // style.load means sources/layers can be added even while existing
+      // terrain or basemap sources keep isStyleLoaded() false. Waiting for
+      // global idle here can leave RF missing after an automatic basemap retry.
+      if (!active || (!styleLoadEvent && !map.isStyleLoaded())) return;
       removeRfLayers(map);
       releaseDataset?.();
       releaseDataset = null;
@@ -106,10 +109,11 @@ export function RfCoverageOverlay({
     // the user toggles it. Retry on the next frame, with `idle` as a fallback,
     // and continue to handle later theme/style replacements.
     const renderOnIdle = () => render();
-    map.on('style.load', render);
+    const renderOnStyleLoad = () => render(true);
+    map.on('style.load', renderOnStyleLoad);
     if (map.isStyleLoaded()) render();
     else {
-      map.once('load', render);
+      map.once('load', renderOnStyleLoad);
       retryFrame = window.requestAnimationFrame(() => {
         retryFrame = null;
         if (map.isStyleLoaded()) render();
@@ -120,9 +124,9 @@ export function RfCoverageOverlay({
     return () => {
       active = false;
       if (retryFrame !== null) window.cancelAnimationFrame(retryFrame);
-      map.off('load', render);
+      map.off('load', renderOnStyleLoad);
       map.off('idle', renderOnIdle);
-      map.off('style.load', render);
+      map.off('style.load', renderOnStyleLoad);
       if (map.isStyleLoaded()) removeRfLayers(map);
       releaseDataset?.();
     };
