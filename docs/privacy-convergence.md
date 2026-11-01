@@ -99,12 +99,28 @@ drift uses the normal validated apply/reload/readback path. An incomplete apply
 keeps `OWNER_ACL_APPLY_PENDING` until verification finishes, so a crash or failed
 reload cannot be mistaken for an unchanged, verified policy.
 
+A reconciliation request arriving after a pass has captured its inputs marks
+the drain dirty. The caller awaits a trailing pass that reads the committed
+settings again, including requests arriving during that trailing pass. Requests
+before input capture coalesce. Failed passes reject waiting callers; subsequent
+startup, periodic or explicit requests retry. This process-local drain does not
+claim to coordinate multiple backend writers or persist an in-flight request
+across crashes; startup's authoritative pass remains the recovery mechanism.
+
 In apply mode, readiness also requests that same pass when the persisted
 generation triple is unsettled or has an error. Concurrent probes share the
 attempt, failed attempts are spaced at least ten seconds apart, and readiness
 re-reads the state afterward. Startup still awaits reconciliation before the
-listener opens. This adds no endpoint, auth mechanism, baseline-file rewrite or
-packet-history repair.
+listener opens. Recovery does not rewrite the baseline or repair packet history.
+
+`/readyz` returns only coarse database/MQTT checks. The rebaseline consumer must
+not read owner fields from that public response. On degraded readiness it reads
+the versioned `/local-api/owner-authorization` response, protected by the existing
+local-only operator authentication. This endpoint uses the same evidence loader
+as readiness. Supply `OWNER_BASELINE_OPERATOR_TOKEN` (or `OPERATOR_SITE_TOKEN`)
+to the timer/tool's environment; it is never sent to the public probe, printed,
+or forwarded across redirects. Healthy readiness needs no token. Missing
+credentials or unavailable diagnostics abort refresh without changing a baseline.
 
 The baseline validator used for inventory exports stays strict. Readiness may
 admit a different settled generation only when both applied artifacts have valid
@@ -116,11 +132,60 @@ closed. Existing baselines and historical applied artifacts must be retained:
 the policy-hash transition changes generation IDs once, and readiness uses those
 artifacts to prove that unchanged permissions remain safe.
 
+New inventory exports retain the verified applied ACL certificate inside the
+baseline checksum. This optional v1 field preserves compatibility with existing
+baselines. Export rejects an embedded certificate unless its generation, current
+settled state, renderer, hash, marker and exact ACL bytes agree. If only the
+historical SQL row is lost, readiness may use this retained certificate with the
+same permission-delta validation. A corrupt existing SQL certificate is never
+silently replaced by the fallback; a current applied certificate is still required.
+
+For a legacy baseline with no retained evidence, readiness remains closed and
+returns `repair` identifying the missing generation, old baseline checksum and
+current generation. The auto-rebaseline consumer refuses this repair request.
+Obtain a deterministic read-only plan in the backend's normal authenticated
+database environment (do not run these commands against an unreviewed database):
+
+```sh
+npm run owner-auth:inventory -- --baseline=/path/to/original.json --repair-plan --show-details
+```
+
+This mode cannot be combined with `--export` and never modifies a baseline.
+Restore the named historical applied artifact from a trusted backup. If that
+evidence is unavailable, review the complete current ACL and get explicit
+approval to establish a new baseline; export it to a **new** path using
+`--export=/path/to/new.json`, retain the original, and separately select the
+reviewed replacement through normal configuration management. No rebaseline,
+configuration change, restart or fabricated historical certificate is automatic.
+
 See [the 2026-10-28 review](reviews/2026-10-28-l3-ukmesh-privacy-fence.md) for source
 locations, reproduction and exact test results. None of this invokes
 `privacy:converge --apply` automatically.
 
 ## Inventory and repair
+
+### Deferred: unattended global-gap recovery (L3-04)
+
+Design only; no coordinator, service, timer or automatic apply is implemented
+in the 2026-11-01 owner-ACL fix wave. The numeric public-visibility fence remains
+separate from owner ACL hashes and continues using the reviewed repair below.
+
+A future coordinator should enqueue one durable job keyed to the observed
+desired/materialized generation pair. A lease and compare-and-swap claim must
+exclude competing repairs; expiry must allow recovery after a crash. Use the
+existing current-policy recomputation and readback checks, never a counter copy.
+Bound lock waits, per-batch runtime, retry count and backoff. For large histories,
+checkpoint batches with their input generation and restart invalidated work if
+policy changes. Before publishing, recheck the complete retained-row verification,
+current policy and queue under the existing publication locks. Never certify
+incomplete work or an unrelated node-scoped pass as a global repair.
+
+Expose job state, lag, attempts and bounded failure reasons on authenticated
+diagnostics. Test competing claims, expired leases, crashes at every checkpoint,
+policy changes during repair, compressed history, exhausted retries and atomic
+publication. Rollback disables scheduling and preserves jobs/evidence; it must
+not roll generation numbers backward. This work needs its own implementation
+and operational review.
 
 Use the reviewed backend build with migration 062 applied through the normal
 migration process. From `backend/`, with `DATABASE_URL` already configured for

@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
-import { getNodeIdsForUserInAcl } from '../mqtt/aclManager.js';
+import { getNodeIdsForUserInAcl, OWNER_ACL_RENDERER_VERSION } from '../mqtt/aclManager.js';
+import { validAppliedOwnerAclArtifact } from './ownerAclArtifacts.js';
+import type { AppliedOwnerAclArtifact } from './ownerInventoryReadiness.js';
 import {
   ownerGrantConfigGeneration,
   type ConfiguredOwnerGrant,
@@ -47,6 +49,8 @@ export type OwnerInventoryBaseline = {
   aclState: OwnerAclGenerationState;
   activeGrants: ActiveOwnerGrant[];
   aclGrants: Array<{ mqttUsername: string; nodeId: string }>;
+  /** Optional v1 extension: preserves verified history if its SQL row is lost. */
+  appliedAclArtifact?: AppliedOwnerAclArtifact;
   contentSha256: string;
 };
 
@@ -71,7 +75,18 @@ export function buildOwnerInventoryBaseline(input: {
   aclContent: string;
   aclState: OwnerAclGenerationState;
   generatedAt?: string;
+  appliedAclArtifact?: AppliedOwnerAclArtifact;
 }): OwnerInventoryBaseline {
+  const artifact = input.appliedAclArtifact;
+  if (artifact && (!input.aclState.appliedGeneration
+    || input.aclState.desiredGeneration !== input.aclState.appliedGeneration
+    || input.aclState.renderedGeneration !== input.aclState.appliedGeneration
+    || input.aclState.lastError !== null
+    || !validAppliedOwnerAclArtifact(artifact, input.aclState.appliedGeneration)
+    || artifact.rendererVersion !== OWNER_ACL_RENDERER_VERSION
+    || artifact.content !== input.aclContent)) {
+    throw new Error('OWNER_INVENTORY_APPLIED_ARTIFACT_INVALID');
+  }
   const activeGrants = input.accounts
     .filter((row): row is OwnerInventoryAccountRow & { nodeId: string } =>
       row.isActive
@@ -110,20 +125,28 @@ export function buildOwnerInventoryBaseline(input: {
     aclState: input.aclState,
     activeGrants,
     aclGrants,
+    ...(artifact ? { appliedAclArtifact: {
+      generation: artifact.generation, rendererVersion: artifact.rendererVersion,
+      contentSha256: artifact.contentSha256, content: artifact.content,
+    } } : {}),
   };
   return { ...content, contentSha256: contentSha256(content) };
 }
 
 export function loadOwnerInventoryBaseline(filePath: string): OwnerInventoryBaseline {
   const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8')) as OwnerInventoryBaseline;
-  if (parsed.format !== OWNER_INVENTORY_BASELINE_FORMAT) {
+  verifyOwnerInventoryBaselineIntegrity(parsed);
+  return parsed;
+}
+
+export function verifyOwnerInventoryBaselineIntegrity(baseline: OwnerInventoryBaseline): void {
+  if (baseline.format !== OWNER_INVENTORY_BASELINE_FORMAT) {
     throw new Error('OWNER_INVENTORY_BASELINE_FORMAT_INVALID');
   }
-  if (!/^[0-9a-f]{64}$/.test(parsed.contentSha256)
-    || contentSha256(withoutChecksum(parsed)) !== parsed.contentSha256) {
+  if (!/^[0-9a-f]{64}$/.test(baseline.contentSha256)
+    || contentSha256(withoutChecksum(baseline)) !== baseline.contentSha256) {
     throw new Error('OWNER_INVENTORY_BASELINE_CHECKSUM_INVALID');
   }
-  return parsed;
 }
 
 export function writeOwnerInventoryBaseline(

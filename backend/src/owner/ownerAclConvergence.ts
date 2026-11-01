@@ -9,6 +9,36 @@ import type { AppliedOwnerAclArtifact } from './ownerInventoryReadiness.js';
 import { isOwnerAclGenerationSettled } from './ownerInventoryReadiness.js';
 import type { OwnerAclArtifactInput } from './ownerAclArtifacts.js';
 
+/** A caller must await a pass whose input reads start after its request. Calls
+ * during a pass require a trailing pass; bursts before its start coalesce.
+ */
+export function createOwnerAclReconciliation(pass: () => Promise<void>) {
+  let inFlight: Promise<void> | null = null;
+  let requested = 0;
+  return {
+    reconcile(): Promise<void> {
+      requested++;
+      if (inFlight) return inFlight;
+      const run = Promise.resolve().then(async () => {
+        try {
+          let observed: number;
+          do {
+            observed = requested;
+            await pass();
+          } while (observed !== requested);
+        } finally {
+          // Clear synchronously with the last revision check. A later request
+          // must not join an already-drained promise awaiting its finalizer.
+          if (inFlight === run) inFlight = null;
+        }
+      });
+      inFlight = run;
+      return run;
+    },
+    async waitForIdle(): Promise<void> { await inFlight; },
+  };
+}
+
 /** Readiness can request the same startup/periodic pass. Coalesce callers and
  * throttle failed attempts so probes cannot create a broker reload loop.
  */
