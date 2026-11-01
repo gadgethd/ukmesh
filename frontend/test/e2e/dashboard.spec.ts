@@ -177,9 +177,6 @@ test('HopReach tiles arrive progressively while the 4,600-node map remains inter
     { timeout: 15_000 },
   ).toBe(true);
   await expect(page.getByRole('button', { name: 'Precision' })).toBeVisible({ timeout: 8_000 });
-  if (testInfo.project.name === 'dashboard-mobile') {
-    await page.getByRole('button', { name: 'Close menu' }).click();
-  }
   await page.getByRole('button', { name: 'Precision' }).click();
   await expect(page.getByRole('button', { name: 'Precision' })).toHaveAttribute('aria-pressed', 'true');
   await expect.poll(
