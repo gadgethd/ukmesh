@@ -480,6 +480,7 @@ export function buildIdentityGroups(
   const assessments: IdentityPairAssessment[] = [];
   const edges: IdentityEdge[] = [];
   for (const bucketNodes of byBucket.values()) {
+    const activeId = uniqueActiveRepeaterId(bucketNodes);
     for (let left = 0; left < bucketNodes.length; left += 1) {
       for (let right = left + 1; right < bucketNodes.length; right += 1) {
         const a = bucketNodes[left]!;
@@ -540,7 +541,6 @@ export function buildIdentityGroups(
           pairFirstAt: null,
           pairLastAt: null,
         };
-        const activeId = uniqueActiveRepeaterId(bucketNodes);
         const assessment = assessIdentityPair(a, b, evidenceA, evidenceB, pair, {
           uniqueActiveRepeaterId: activeId,
         });
