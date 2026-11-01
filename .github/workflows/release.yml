@@ -21,6 +21,8 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 22
+      - name: Verify release component coverage
+        run: scripts/check-release-components.sh
       - name: Validate vulnerability waivers
         run: node scripts/check-trivy-waivers.mjs
       - name: Require a clean commit release
@@ -70,6 +72,19 @@ jobs:
             build_args: |
               VITE_APP_HOSTNAME=app.ukmesh.com
               VITE_SITE=ukmesh
+          - component: website-dev
+            image: meshcore-website-dev
+            context: .
+            file: Dockerfile.website
+            build_args: |
+              VITE_APP_HOSTNAME=test.ukmesh.com
+              VITE_BUILD_TARGET=dev-website
+              VITE_NETWORK=test
+              VITE_SITE=dev
+              VITE_SITE_DISPLAY_NAME=UK Mesh Test
+              VITE_SITE_FOOTER_NAME=UK Mesh Test
+              VITE_SITE_APP_URL=https://test.ukmesh.com
+              VITE_SITE_HOME_URL=https://test.ukmesh.com
           - component: rf-worker
             image: meshcore-rf-worker
             context: viewshed-worker
@@ -79,7 +94,6 @@ jobs:
             image: meshcore-hopreach
             context: third_party/hopreach
             file: third_party/hopreach/Dockerfile
-            source_revision: 0230702be70a2729c5acc5640401f56ab9d65fd4
             build_args: VERSION=v0.1.32-ukmesh.3
           - component: mosquitto-reloader
             image: meshcore-mosquitto-reloader
@@ -94,7 +108,7 @@ jobs:
     env:
       REGISTRY: ghcr.io
       IMAGE_NAME: ${{ github.repository_owner }}/${{ matrix.image }}
-      SOURCE_REVISION: ${{ matrix.source_revision || github.sha }}
+      SOURCE_REVISION: ${{ github.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
@@ -223,9 +237,11 @@ jobs:
       matrix:
         include:
           - component: backend
+          - component: tagger-worker
           - component: combined
           - component: app
           - component: website
+          - component: website-dev
           - component: rf-worker
           - component: hopreach
           - component: mosquitto-reloader

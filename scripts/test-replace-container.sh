@@ -73,7 +73,7 @@ case "$command_name" in
           ;;
         config)
           if [ "${2:-}" = "--services" ]; then
-            printf '%s\n' backend db-migrate timescaledb app-ukmesh
+            printf '%s\n' backend db-migrate timescaledb app-ukmesh tagger-worker hopreach
             if [ "${MOCK_ADOPTION_MODE:-valid}" = long_service_list ]; then
               # More than a pipe buffer: an early grep -q exit must not turn
               # Compose's SIGPIPE into an incorrect unknown-service rejection.
@@ -373,6 +373,9 @@ run_case() {
       "${test_root}/docker.log" || true
   )"
   test "$up_count" -eq "$expected_up_count"
+  if [ "$up_count" -gt 0 ]; then
+    test "$(grep -Ec '^compose --project-name meshcore-analytics up .*--no-deps' "${test_root}/docker.log")" -eq "$up_count"
+  fi
   grep -Eq -- \
     '^run .* --volumes-from current-backend:ro( |$)' \
     "${test_root}/docker.log"
@@ -421,5 +424,9 @@ run_case long_service_list_remains_adoptable false false stopped 0 keyless long_
 run_case invalid_frontend_stops_before_mutation true false stopped 0 public-key empty app-ukmesh
 run_case valid_frontend_with_invalid_backend_stops_before_mutation true false stopped 0 public-key empty app-ukmesh backend
 
-printf 'replace-container rollback, compatibility and Compose adoption drills passed (16/16)\n'
+for service in tagger-worker hopreach; do
+  run_case "${service}_supports_signed_release_preflight" false false stopped 0 keyless valid "$service"
+done
+
+printf 'replace-container rollback, compatibility and Compose adoption drills passed (18/18)\n'
 bash "${script_dir}/test-check-compose-adoption.sh"

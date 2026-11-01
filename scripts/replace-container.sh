@@ -82,6 +82,8 @@ declare -A image_variables=(
   [synthetic-monitor]=BACKEND_IMAGE
   [link-backfill-worker]=BACKEND_IMAGE
   [alert-receiver]=BACKEND_IMAGE
+  [tagger-worker]=TAGGER_WORKER_IMAGE
+  [hopreach]=HOPREACH_IMAGE
   [link-worker]=RF_WORKER_IMAGE
   [viewshed-worker]=RF_WORKER_IMAGE
   [app-ukmesh]=APP_IMAGE
@@ -382,13 +384,13 @@ deploy_image() {
   if [ "$image_variable" = "BACKEND_IMAGE" ]; then
     BACKEND_IMAGE="$image" \
       docker compose --project-name "$project_name" up \
-        --detach --no-build --wait --wait-timeout 240 "$service"
+        --detach --no-build --no-deps --wait --wait-timeout 240 "$service"
   else
     env \
       "$image_variable=$image" \
       "BACKEND_IMAGE=$backend_image" \
       docker compose --project-name "$project_name" up \
-        --detach --no-build --wait --wait-timeout 240 "$service"
+        --detach --no-build --no-deps --wait --wait-timeout 240 "$service"
   fi
 }
 

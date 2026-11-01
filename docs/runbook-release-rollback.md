@@ -64,11 +64,15 @@ starts the migration job; the post-migration schema check uses that exact
 container ID.
 
 
-Repeat for each application service, passing its digest as `--image` and the
-same signed backend digest as `--backend-image`. The script verifies signatures
-and revision labels, runs migrations, starts the prior backend against the
-post-migration schema, replaces only the selected service, checks health,
-readiness and metrics, and writes a release status receipt.
+Repeat for each application service, including tagger, RF and HopReach workers,
+passing its digest as `--image` and the same signed backend digest as
+`--backend-image`. All application image revisions identify the UKMesh release
+commit; the vendored HopReach upstream revision remains in `UPSTREAM_COMMIT`.
+The release workflow builds and signs the development-site variant separately.
+`scripts/check-release-components.sh` rejects an incomplete signing matrix.
+The replacement script verifies signatures and revision labels, runs migrations,
+starts the prior backend against the post-migration schema, replaces only the selected service with `--no-deps`,
+checks health, readiness and metrics, and writes a release status receipt.
 
 An existing mutable local deployment may enter this regime once by supplying
 the exact prompt printed by the script:

@@ -294,6 +294,7 @@ jobs:
               and .services.backend.environment.MQTT_RAM_QUEUE_MAX_BYTES == "33554432"' >/dev/null
       - name: Validate tracked build and Compose inventory
         run: |
+          scripts/check-release-components.sh
           while IFS= read -r context; do
             [[ "$context" == *'$''{{'* ]] && continue
             test -d "$context"
