@@ -1,8 +1,14 @@
-import { dashboardOrigin } from './localServers.js';
-import { expect, test, type Page, type Route } from '@playwright/test';
+import { expect, test, type Page, type Route, type TestInfo } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 
 const NODE_ID = 'A'.repeat(64);
+
+function dashboardBaseUrl(info: TestInfo): string {
+  const url = info.config.projects.find((project) => project.name === 'dashboard-desktop')?.use.baseURL;
+  if (typeof url !== 'string') throw new Error('dashboard-desktop baseURL is required');
+  return url;
+}
+
 
 const TEST_MAP_STYLE = {
   version: 8,
@@ -199,10 +205,13 @@ async function installDashboardWebSocket(page: Page) {
       data: {
         nodes: [{
           ...repeater,
+          last_seen: new Date().toISOString(),
+          network: 'ukmesh',
           public_key: NODE_ID,
         }],
         packets: [{
-          time: '2026-07-18T12:00:00Z',
+          time: new Date().toISOString(),
+          network: 'ukmesh',
           packet_hash: 'fixture-message',
           rx_node_id: NODE_ID,
           src_node_id: NODE_ID,
@@ -256,9 +265,9 @@ for (const route of publicRoutes) {
   });
 }
 
-test('dashboard dialogs trap focus, close with Escape, and restore the trigger', async ({ page }) => {
+test('dashboard dialogs trap focus, close with Escape, and restore the trigger', async ({ page }, info) => {
   await installFixtures(page, false);
-  await page.goto(`${dashboardOrigin}/`);
+  await page.goto(dashboardBaseUrl(info));
 
   const initialDialog = page.getByRole('dialog', { name: 'Data disclaimer' });
   await expect(initialDialog).toBeVisible();
@@ -333,10 +342,10 @@ test('repeater search exposes keyboard selection and tolerates IME composition',
   await expect(search).toHaveValue('東');
 });
 
-test('reduced-motion preference removes repeating CSS animation', async ({ page }) => {
+test('reduced-motion preference removes repeating CSS animation', async ({ page }, info) => {
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await installFixtures(page);
-  await page.goto(`${dashboardOrigin}/`);
+  await page.goto(dashboardBaseUrl(info));
   const repeating = await page.evaluate(() => Array.from(document.querySelectorAll('*'))
     .filter((element) => {
       const style = getComputedStyle(element);
@@ -346,10 +355,10 @@ test('reduced-motion preference removes repeating CSS animation', async ({ page 
   expect(repeating).toEqual([]);
 });
 
-test('keyboard-only dashboard flow selects a node, reads details, and toggles a packet row', async ({ page }) => {
+test('keyboard-only dashboard flow selects a node, reads details, and toggles a packet row', async ({ page }, info) => {
   await installFixtures(page);
   await installDashboardWebSocket(page);
-  await page.goto(`${dashboardOrigin}/`);
+  await page.goto(dashboardBaseUrl(info));
 
   const packet = page.locator('.packet-item').filter({ hasText: 'Keyboard fixture message' });
   await expect(packet).toHaveAttribute('aria-label', /Pin GRP packet/);

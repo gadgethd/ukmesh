@@ -42,6 +42,23 @@ groups:
           owner: meshcore-operations
           runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#dependencyexporterdown
 
+      - alert: MosquittoBacklogOverflow
+        expr: increase(broker_publish_messages_dropped[5m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: Mosquitto dropped queued publications
+          description: A persistent subscriber exceeded its finite backlog capacity. Check subscriber availability and reconcile persisted observations before claiming complete replay.
+          runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#mosquittobacklogoverflow
+      - alert: MosquittoBacklogHigh
+        expr: broker_messages_stored > 7500
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: Mosquitto stored-message backlog is high
+          description: Inspect per-session consumers before the configured 10000-message or 32-MiB byte limit is reached.
+          runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#mosquittobacklogoverflow
       - alert: MosquittoUnavailable
         expr: probe_success{job="mosquitto-broker"} == 0
         for: 2m

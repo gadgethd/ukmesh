@@ -135,9 +135,18 @@ test('base schema and every migration apply to a brand-new database', {
   const reviewedProductionBaseline = [
     '050_packet_paths_and_retention.sql',
     '051_reset_readiness.sql',
+    '052_owner_packet_sharing.sql',
+    '053_owner_packet_share_destination_metadata.sql',
+    '054_owner_packet_share_default_off.sql',
+    '055_public_feed.sql',
     '056_async_privacy_rematerialization.sql',
+    '057_region_scope_participation.sql',
+    '058_packet_share_owner_scope_and_jwt.sql',
     '059_ingest_observation_ledger.sql',
     '060_ingest_ledger_historical_coverage.sql',
+    '068_message_tags_read_dependency.sql',
+    '069_node_identity_refresh_state.sql',
+    '070_ingest_ledger_archive.sql',
   ];
   for (const name of reviewedProductionBaseline) {
     assert.ok(executed.includes(name), `${name} did not apply to a fresh database`);
@@ -183,6 +192,7 @@ test('base schema and every migration apply to a brand-new database', {
      ORDER BY hypertable.hypertable_name
   `);
   assert.deepEqual(hypertables.rows, [
+    { hypertable_name: 'ingest_observation_archive', time_interval: '7 days', compression_enabled: true },
     { hypertable_name: 'node_neighbor_samples', time_interval: '7 days', compression_enabled: true },
     { hypertable_name: 'node_status_samples', time_interval: '7 days', compression_enabled: true },
     { hypertable_name: 'packet_paths', time_interval: '7 days', compression_enabled: true },
@@ -203,6 +213,7 @@ test('base schema and every migration apply to a brand-new database', {
      ORDER BY hypertable_name, proc_name
   `);
   assert.deepEqual(jobs.rows, [
+    { hypertable_name: 'ingest_observation_archive', proc_name: 'policy_compression', interval_value: '14 days' },
     { hypertable_name: 'node_neighbor_samples', proc_name: 'policy_compression', interval_value: '1 day' },
     { hypertable_name: 'node_neighbor_samples', proc_name: 'policy_retention', interval_value: '7 days' },
     { hypertable_name: 'node_status_samples', proc_name: 'policy_compression', interval_value: '14 days' },

@@ -34,6 +34,27 @@ export type BasemapHealth = {
 
 export type BasemapDecision = 'none' | 'retry' | 'fallback';
 
+/** Bypass metadata pinned by older service workers; tile snapshot URLs stay cacheable. */
+export function refreshBasemapMetadataUrl(url: string, revision: number): string {
+  try {
+    const parsed = new URL(url);
+    if (parsed.hostname !== 'tiles.openfreemap.org') return url;
+    if (parsed.pathname !== '/planet' && !parsed.pathname.startsWith('/styles/')) return url;
+    parsed.searchParams.set('v', String(revision));
+    return parsed.toString();
+  } catch {
+    return url;
+  }
+}
+
+/** isSourceLoaded means no requests remain, even if every tile failed. */
+export function isSuccessfulBasemapTile(event: {
+  sourceId?: string;
+  tile?: { state?: string };
+}): boolean {
+  return event.sourceId === BASEMAP_VECTOR_SOURCE_ID && event.tile?.state === 'loaded';
+}
+
 export function createBasemapHealth(): BasemapHealth {
   return {
     phase: 'loading',
@@ -55,14 +76,14 @@ export function noteStyleLoaded(health: BasemapHealth, now: number): BasemapHeal
   };
 }
 
-/** The basemap source reported data; the basemap is healthy. */
+/** A basemap tile was decoded successfully; the basemap is healthy. */
 export function noteSourceData(
   health: BasemapHealth,
   sourceId: string | undefined,
-  sourceLoaded: boolean,
+  tileLoaded: boolean,
   _now: number,
 ): BasemapHealth {
-  if (sourceId !== BASEMAP_VECTOR_SOURCE_ID || !sourceLoaded) return health;
+  if (sourceId !== BASEMAP_VECTOR_SOURCE_ID || !tileLoaded) return health;
   if (health.phase === 'fallback' || health.phase === 'healthy') return health;
   return {
     ...health,
@@ -125,4 +146,11 @@ export function noteFallback(health: BasemapHealth, reason: string | null = null
     tileErrors: [],
     lastError: reason ?? health.lastError,
   };
+}
+
+/** Remaining absolute attempt budget, including an early timer firing. */
+export function basemapWatchdogDelay(health: BasemapHealth, now: number): number | null {
+  if (health.phase === 'healthy' || health.phase === 'fallback' || health.styleLoadedAt == null) return null;
+  const timeout = health.phase === 'retrying' ? BASEMAP_RETRY_TIMEOUT_MS : BASEMAP_SOURCE_LOAD_TIMEOUT_MS;
+  return Math.max(1, timeout - (now - health.styleLoadedAt));
 }

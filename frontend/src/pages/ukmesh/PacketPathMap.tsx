@@ -119,7 +119,7 @@ export const PathMap: React.FC<{
 }> = ({ results, observerPositions = [], lazyPaths = [], pathScopeId = 'detail', nodeMap, isLoading = false }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
-  const maplibreRef = useRef<typeof maplibregl | null>(null);
+  const maplibreRef = useRef<Pick<typeof maplibregl, 'Map' | 'LngLatBounds' | 'Popup'> | null>(null);
   const mapReadyRef = useRef(false);
   const nodeMapRef = useRef(nodeMap);
   const observerPositionsRef = useRef(observerPositions);
@@ -179,7 +179,7 @@ export const PathMap: React.FC<{
     let cancelled = false;
     let nextMap: maplibregl.Map | null = null;
     void Promise.all([
-      import('maplibre-gl'),
+      import('../../components/Map/maplibre.js'),
       import('maplibre-gl/dist/maplibre-gl.css'),
     ]).then(([maplibreModule]) => {
       if (cancelled || !containerRef.current) return;

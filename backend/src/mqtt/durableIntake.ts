@@ -5,7 +5,7 @@ type Packet = DurableMqttPacket & { qos?: number; messageId?: number };
 type WirePacket = { cmd: string; messageId?: number };
 type Done = (error?: Error) => void;
 type Send = (packet: WirePacket, callback?: Done, ...args: unknown[]) => unknown;
-type Job = { packet: Packet; stream: object; bytes: number; ack?: WirePacket; failed?: boolean };
+type Job = { packet: Packet; stream: object; bytes: number; admittedAt: bigint; ack?: WirePacket; failed?: boolean };
 
 /**
  * MQTT.js 5.15/5.16 serializes its parser on handleMessage's callback, including
@@ -18,7 +18,11 @@ export function installDurableMqttIntake(
   client: MqttClient,
   persist: (packet: Packet) => Promise<void>,
   onFailure: (error: Error) => void,
-  options: { maxItems?: number; maxBytes?: number; concurrency?: number; depth?: (count: number) => void } = {},
+  options: {
+    maxItems?: number; maxBytes?: number; concurrency?: number; depth?: (count: number) => void;
+    observeQueueWait?: (seconds: number) => void;
+    observeWireAck?: (seconds: number) => void;
+  } = {},
 ) {
   const wire = client as unknown as { _sendPacket: Send };
   const originalSend = wire._sendPacket.bind(client);
@@ -52,12 +56,16 @@ export function installDurableMqttIntake(
       const index = pending.findIndex((job) => !topics.has(job.packet.topic));
       if (index < 0) break;
       const job = pending.splice(index, 1)[0]!;
+      options.observeQueueWait?.(Number(process.hrtime.bigint() - job.admittedAt) / 1e9);
       active += 1;
       topics.add(job.packet.topic);
       void Promise.resolve().then(() => persist(job.packet)).then(() => {
         if (job.packet.qos === 1 && !job.failed && client.connected && client.stream === job.stream) {
           if (!job.ack) throw new Error('MQTT_DURABLE_ACK_MISSING');
-          originalSend(job.ack, (error) => { if (error) fail(job, error); });
+          originalSend(job.ack, (error) => {
+            if (error) fail(job, error);
+            else options.observeWireAck?.(Number(process.hrtime.bigint() - job.admittedAt) / 1e9);
+          });
         }
       }).catch((cause: unknown) => fail(job, cause)).finally(() => {
         if (job.packet.qos === 1) sessions.get(job.stream)?.delete(job.packet.messageId!);
@@ -75,7 +83,7 @@ export function installDurableMqttIntake(
     const incoming = packet as Packet;
     const stream = client.stream;
     const size = Buffer.byteLength(incoming.payload) + Buffer.byteLength(incoming.topic);
-    const job: Job = { packet: incoming, stream, bytes: size };
+    const job: Job = { packet: incoming, stream, bytes: size, admittedAt: process.hrtime.bigint() };
     if (!accepting || (incoming.qos !== 0 && incoming.qos !== 1)) {
       fail(job, new Error('MQTT_DURABLE_INTAKE_CLOSED_OR_UNSUPPORTED_QOS'));
       callback(new Error('MQTT_DURABLE_INTAKE_CLOSED_OR_UNSUPPORTED_QOS'));

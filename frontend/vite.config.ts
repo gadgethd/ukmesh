@@ -1,43 +1,65 @@
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import { join } from 'node:path';
-import { defineConfig, type Plugin } from 'vite';
+import { defineConfig, transformWithOxc } from 'vite';
 import react from '@vitejs/plugin-react';
+import path from 'node:path';
+import fs from 'node:fs';
+import { minify } from 'terser';
+import { prepareMapLibreSource } from './src/plugins/maplibre-source.js';
+const mapLibreSource = prepareMapLibreSource();
 import viteSeoPlugin from './src/plugins/vite-seo.js';
 
-/**
- * maplibre-gl v6 loads its WebWorker via new URL(<var>, import.meta.url) —
- * the URL is built dynamically, so Rollup cannot statically rewrite it and no
- * worker asset is ever emitted. At runtime the browser requests
- * /assets/maplibre-gl-worker.mjs (which imports ./maplibre-gl-shared.mjs),
- * both 404 (nginx SPA fallback serves HTML), and the map renders dead (no
- * tiles, no node dots). Emit the production worker and its shared module so
- * the runtime requests resolve. The main module is already bundled by Vite;
- * the development builds are not runtime dependencies of this worker.
- */
-function maplibreWorkerPlugin(): Plugin {
-  return {
-    name: 'maplibre-worker-emit',
-    generateBundle() {
-      const distDir = fileURLToPath(new URL('./node_modules/maplibre-gl/dist', import.meta.url));
-      for (const file of ['maplibre-gl-worker.mjs', 'maplibre-gl-shared.mjs']) {
-        this.emitFile({
-          type: 'asset',
-          fileName: `assets/${file}`,
-          source: readFileSync(join(distDir, file)),
-        });
-      }
+const productionTarget = process.env.VITE_BUILD_TARGET || (
+  process.env.VITE_SITE === 'ukmesh' && process.env.VITE_NETWORK === 'ukmesh' ? 'app'
+    : process.env.VITE_SITE === 'dev' || process.env.VITE_NETWORK === 'test' ? 'dev-website' : 'public-website'
+);
+export default defineConfig(({ command }) => ({
+  define: command === 'build' ? { 'import.meta.env.VITE_BUILD_TARGET': JSON.stringify(productionTarget) } : {},
+  plugins: [{
+    name: 'maplibre-upstream-typescript-semantics', enforce: 'pre',
+    async transform(code, id) {
+      const filename = id.split('?', 1)[0];
+      if (!filename.startsWith(mapLibreSource) || !filename.endsWith('.ts')) return;
+      return transformWithOxc(code, filename, {
+        lang: 'ts', target: 'es2020', tsconfig: false,
+        assumptions: { setPublicClassFields: true },
+        typescript: { removeClassFieldsWithoutInitializer: true },
+      });
     },
-  };
-}
+  }, {
+    name: 'compact-production-chunks',
+    renderChunk: { order: 'post', async handler(code, chunk) {
 
-export default defineConfig({
-  plugins: [react(), viteSeoPlugin(), maplibreWorkerPlugin()],
+      const result = await minify(code, { module: true, compress: { passes: 2 }, format: { comments: /@license|@preserve|^!/ } });
+      if (!result.code) throw new Error('Chunk minification produced no output');
+      return { code: result.code, map: null };
+    } },
+  }, react(), viteSeoPlugin(), {
+    name: 'maplibre-shared-module-worker',
+    apply: 'build',
+    resolveId(id) { if (id === 'virtual:maplibre-worker-url') return '\0maplibre-worker-url'; },
+    load(id) {
+      if (id !== '\0maplibre-worker-url') return;
+      const entry = path.join(mapLibreSource, 'src/source/worker.ts');
+      const reference = this.emitFile({ type: 'chunk', id: entry, name: 'maplibre-gl-worker' });
+      return `export default import.meta.ROLLUP_FILE_URL_${reference};`;
+    },
+    generateBundle() {
+      this.emitFile({ type: 'asset', fileName: 'build-target.json', source: JSON.stringify({ target: productionTarget }) });
+      this.emitFile({ type: 'asset', fileName: 'assets/maplibre-LICENSE.txt', source: fs.readFileSync(path.resolve('node_modules/maplibre-gl/LICENSE.txt'), 'utf8') });
+    },
+  }, {
+    name: 'maplibre-worker-dev', apply: 'serve',
+    resolveId(id) { if (id === 'virtual:maplibre-worker-url') return '\0maplibre-worker-dev'; },
+    load(id) { if (id === '\0maplibre-worker-dev') return 'import url from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";export default url;'; },
+  }],
+  resolve: { alias: [{ find: /^maplibre-gl$/, replacement: path.join(mapLibreSource, 'src/index.ts') }] },
   optimizeDeps: {
     // maplibre-gl v6 loads its worker via new URL(..., import.meta.url) —
     // vite's dep pre-bundling rewrites that to node_modules/.vite/deps/maplibre-gl-worker.mjs
     // which does not exist, killing the worker (and custom raster protocols) in dev.
     exclude: ['maplibre-gl'],
+    // The excluded upstream source graph reaches CommonJS packages directly.
+    // Prebundle these in dev so their default exports have the required interop.
+    include: ['murmurhash-js', 'earcut', '@maplibre/mlt'],
   },
   server: {
     proxy: {
@@ -46,19 +68,24 @@ export default defineConfig({
     },
   },
   build: {
+
     rollupOptions: {
       output: {
         entryFileNames: 'assets/[name]-[hash].js',
         chunkFileNames: 'assets/[name]-[hash].js',
         assetFileNames: 'assets/[name]-[hash].[ext]',
-        manualChunks(id) {
-          // Keep Vite's dynamic-import helper out of the large Deck chunk so
-          // public-site routes do not preload Deck just to load a lazy route.
-          if (id === '\0vite/preload-helper.js') return 'vite-preload';
-          if (/\/node_modules\/(?:react|react-dom)\//.test(id)) return 'react';
-          return undefined;
+        codeSplitting: {
+          includeDependenciesRecursively: false,
+          groups: [
+            { name: 'map-math', test: /\/node_modules\/(?:gl-matrix|earcut|@mapbox|pbf|quickselect|tinyqueue|kdbush|@maplibre)\//, priority: 50, includeDependenciesRecursively: true },
+            { name: 'maplibre', test: /ukmesh-maplibre-source/, priority: 20 },
+            { name: 'deck', test: /\/node_modules\/(?:@deck\.gl|@luma\.gl|@math\.gl|@loaders\.gl)\//, priority: 18, includeDependenciesRecursively: true },
+            { name: 'recharts', test: /\/node_modules\/recharts\//, priority: 15, includeDependenciesRecursively: true },
+            { name: 'vite-preload', test: /vite\/preload-helper/, priority: 100 },
+            { name: 'react', test: /\/node_modules\/(?:react|react-dom)\//, priority: 40 },
+          ],
         },
       },
     },
   },
-});
+}));

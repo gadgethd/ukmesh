@@ -1,3 +1,26 @@
+import { createHash, randomUUID } from 'node:crypto';
+
+/** Stable across a restart for an undecodable, hashless MQTT envelope. */
+export function fallbackPacketIdentity(payload: Buffer): string {
+  return createHash('sha256').update('ukmesh:undecodable-envelope:v1\0').update(payload).digest('hex').toUpperCase();
+}
+
+export function ramMqttDeliveryKey(input: {
+  clientId: string; messageId?: number; qos: number; topic: string;
+  payload: Buffer; observationKey: string;
+}): string {
+  // QoS 0 has no packet identifier or broker redelivery contract. Give each
+  // delivered envelope its own admission claim; RF dedupe remains independent.
+  if (input.qos === 0) return `q0:${randomUUID()}`;
+  if (input.qos !== 1 || !Number.isInteger(input.messageId)
+    || input.messageId! < 1 || input.messageId! > 65_535) {
+    throw new Error('MQTT_RAM_DELIVERY_ID_MISSING');
+  }
+  return createHash('sha256').update(JSON.stringify([
+    input.clientId, input.messageId, input.topic, input.payload.toString('hex'), input.observationKey,
+  ])).digest('hex');
+}
+
 /** Fields that distinguish one observer's RF sighting from another. */
 export type ObservationIdentity = {
   packetHash: string;

@@ -3,7 +3,7 @@ import http from 'node:http';
 import express from 'express';
 import compression from 'compression';
 import cors from 'cors';
-import { closeDb, initDb, pool, query } from './db/index.js';
+import { closeDb, initDb, analyticsPool, pool, query } from './db/index.js';
 import { refreshNodeIdentityAliases } from './db/nodeIdentity.js';
 import { refreshNodeMapSuppressions } from './nodes/mapSuppressions.js';
 import {
@@ -254,7 +254,7 @@ process.on('uncaughtException', (error) => {
 async function main() {
   // 1. Initialise DB schema + retention policy
   await initDb();
-  const identityRefresh = await refreshNodeIdentityAliases(pool);
+  const identityRefresh = await refreshNodeIdentityAliases(analyticsPool, { maxAgeMs: NODE_IDENTITY_REFRESH_INTERVAL_MS });
   console.log('[node-identity] refreshed', identityRefresh);
   // Suppression is a display optimisation: a transient failure here must not
   // stop the API from booting. The 30-minute timer retries.
@@ -265,7 +265,7 @@ async function main() {
     );
   });
   nodeIdentityRefreshTimer = setInterval(() => {
-    void refreshNodeIdentityAliases(pool)
+    void refreshNodeIdentityAliases(analyticsPool, { maxAgeMs: NODE_IDENTITY_REFRESH_INTERVAL_MS })
       .then(async (result) => {
         console.log('[node-identity] refreshed', result);
         await refreshNodeMapSuppressions(pool);

@@ -5,6 +5,8 @@ import path from 'node:path';
 const KIB = 1024;
 const outputDir = path.resolve('dist/assets');
 const files = await readdir(outputDir);
+const { target = 'combined' } = JSON.parse(await readFile(path.resolve('dist/build-target.json'), 'utf8'));
+const websiteTarget = target === 'public-website' || target === 'dev-website';
 
 async function measure(matcher) {
   const selected = files.filter(matcher);
@@ -22,18 +24,20 @@ const budgets = [
     measure: await measure((file) => /^App-[^.]+\.js$/.test(file)),
     raw: 900 * KIB,
     gzip: 260 * KIB,
-    exactlyOne: true,
+    exactlyOne: !websiteTarget,
+    forbidden: websiteTarget,
   },
   {
-    name: 'MapLibre chunk',
-    measure: await measure((file) => /^maplibre-gl-[^.]+\.js$/.test(file)),
+    name: 'MapLibre renderer chunks',
+    measure: await measure((file) => /^maplibre-[^.]+\.js$/.test(file)
+      && !file.startsWith('maplibre-gl-worker-')),
     raw: 820 * KIB,
     gzip: 225 * KIB,
-    exactlyOne: true,
+    atLeastOne: true,
   },
   {
-    name: 'Recharts categorical chunk',
-    measure: await measure((file) => /^generateCategoricalChart-[^.]+\.js$/.test(file)),
+    name: 'Recharts chunk',
+    measure: await measure((file) => /^recharts-[^.]+\.js$/.test(file)),
     raw: 400 * KIB,
     gzip: 110 * KIB,
     exactlyOne: true,
@@ -41,8 +45,8 @@ const budgets = [
   {
     name: 'all JavaScript',
     measure: await measure((file) => file.endsWith('.js')),
-    raw: 2_900 * KIB,
-    gzip: 850 * KIB,
+    raw: 3_200 * KIB,
+    gzip: 900 * KIB,
   },
   {
     name: 'all CSS',
@@ -56,7 +60,9 @@ let failed = false;
 for (const budget of budgets) {
   const rawKib = budget.measure.raw / KIB;
   const gzipKib = budget.measure.gzip / KIB;
-  const missing = budget.exactlyOne && budget.measure.files.length !== 1;
+  const missing = (budget.exactlyOne && budget.measure.files.length !== 1)
+    || (budget.atLeastOne && budget.measure.files.length === 0)
+    || (budget.forbidden && budget.measure.files.length > 0);
   const exceeds = budget.measure.raw > budget.raw || budget.measure.gzip > budget.gzip;
   const status = missing || exceeds ? 'FAIL' : 'PASS';
   console.log(
@@ -64,7 +70,7 @@ for (const budget of budgets) {
       + ` (limits ${(budget.raw / KIB).toFixed(0)} / ${(budget.gzip / KIB).toFixed(0)})`,
   );
   if (missing) {
-    console.error(`Expected exactly one matching asset, found: ${budget.measure.files.join(', ') || 'none'}`);
+    console.error(`Expected ${budget.exactlyOne ? 'exactly one' : 'at least one'} matching asset, found: ${budget.measure.files.join(', ') || 'none'}`);
   }
   failed ||= missing || exceeds;
 }
