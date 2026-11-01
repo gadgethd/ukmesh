@@ -103,8 +103,16 @@ In apply mode, readiness also requests that same pass when the persisted
 generation triple is unsettled or has an error. Concurrent probes share the
 attempt, failed attempts are spaced at least ten seconds apart, and readiness
 re-reads the state afterward. Startup still awaits reconciliation before the
-listener opens. This adds no endpoint, auth mechanism, baseline-file rewrite or
-packet-history repair.
+listener opens. Recovery does not rewrite the baseline or repair packet history.
+
+`/readyz` returns only coarse database/MQTT checks. The rebaseline consumer must
+not read owner fields from that public response. On degraded readiness it reads
+the versioned `/local-api/owner-authorization` response, protected by the existing
+local-only operator authentication. This endpoint uses the same evidence loader
+as readiness. Supply `OWNER_BASELINE_OPERATOR_TOKEN` (or `OPERATOR_SITE_TOKEN`)
+to the timer/tool's environment; it is never sent to the public probe, printed,
+or forwarded across redirects. Healthy readiness needs no token. Missing
+credentials or unavailable diagnostics abort refresh without changing a baseline.
 
 The baseline validator used for inventory exports stays strict. Readiness may
 admit a different settled generation only when both applied artifacts have valid
