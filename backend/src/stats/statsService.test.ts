@@ -152,13 +152,14 @@ test('live observer presence is independent of historical charts and fenced by s
   const repository = { fetchLiveObserverRegions: async (network: string, observer?: string) => {
     calls++;
     return { rows: [{ iata: network === 'test' ? 'TST' : 'EDI', active_observers: observer ? '1' : '2',
-      last_packet_at: new Date().toISOString() }] };
+      last_packet_at: '2026-11-01 20:00:00.123+00' }] };
   } } as unknown as StatsRepository;
   const service = createStatsService({ statsCache: new Map(), statsCacheTtlMs: 60_000,
     chartsCache: new Map(), chartsCacheTtlMs: 60_000, chartsInflight: new Map(), repository,
     getPublicVisibilityGeneration: async () => generation, maskDecodedPathNodes: () => [] });
   const first = await service.getLiveObserverRegions('ukmesh', undefined) as any;
   assert.equal(first.regions[0].activeObservers, 2);
+  assert.equal(first.regions[0].lastPacketAt, '2026-11-01T20:00:00.123Z', 'public timestamps follow RFC 3339 across browsers');
   assert.equal(await service.getLiveObserverRegions('ukmesh', undefined), first);
   assert.equal(calls, 1);
   const scoped = await service.getLiveObserverRegions('ukmesh', 'A'.repeat(64)) as any;

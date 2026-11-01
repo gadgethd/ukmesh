@@ -164,7 +164,7 @@ export function createStatsService(deps: StatsServiceDeps) {
       if (await getPublicVisibilityGeneration() !== generation) throw new Error('observer visibility changed during refresh');
       const data = { generatedAt: new Date().toISOString(), windowMinutes: 15,
         regions: result.rows.map(row => ({ iata: row.iata,
-          activeObservers: Number(row.active_observers), lastPacketAt: row.last_packet_at })) };
+          activeObservers: Number(row.active_observers), lastPacketAt: new Date(row.last_packet_at).toISOString() })) };
       liveObserverCache.set(key, data);
       return data;
     }).finally(() => { liveObserverInflight.delete(key); });

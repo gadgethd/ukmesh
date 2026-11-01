@@ -230,7 +230,7 @@ services:
     security_opt:
       - no-new-privileges:true
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/healthz >/dev/null"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/readyz >/dev/null"]
       interval: 30s
       timeout: 10s
       retries: 6
