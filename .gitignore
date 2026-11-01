@@ -72,3 +72,6 @@ terrain-tiles/
 /plans/
 *.bak
 *.bak-*
+
+# Deployment environment backups are never source.
+/.env.pre-reconcile-*
