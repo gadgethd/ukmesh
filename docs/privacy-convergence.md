@@ -164,6 +164,29 @@ locations, reproduction and exact test results. None of this invokes
 
 ## Inventory and repair
 
+### Deferred: unattended global-gap recovery (L3-04)
+
+Design only; no coordinator, service, timer or automatic apply is implemented
+in the 2026-11-01 owner-ACL fix wave. The numeric public-visibility fence remains
+separate from owner ACL hashes and continues using the reviewed repair below.
+
+A future coordinator should enqueue one durable job keyed to the observed
+desired/materialized generation pair. A lease and compare-and-swap claim must
+exclude competing repairs; expiry must allow recovery after a crash. Use the
+existing current-policy recomputation and readback checks, never a counter copy.
+Bound lock waits, per-batch runtime, retry count and backoff. For large histories,
+checkpoint batches with their input generation and restart invalidated work if
+policy changes. Before publishing, recheck the complete retained-row verification,
+current policy and queue under the existing publication locks. Never certify
+incomplete work or an unrelated node-scoped pass as a global repair.
+
+Expose job state, lag, attempts and bounded failure reasons on authenticated
+diagnostics. Test competing claims, expired leases, crashes at every checkpoint,
+policy changes during repair, compressed history, exhausted retries and atomic
+publication. Rollback disables scheduling and preserves jobs/evidence; it must
+not roll generation numbers backward. This work needs its own implementation
+and operational review.
+
 Use the reviewed backend build with migration 062 applied through the normal
 migration process. From `backend/`, with `DATABASE_URL` already configured for
 the intended database:
