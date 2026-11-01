@@ -26,10 +26,9 @@ export default defineConfig(({ command }) => ({
     },
   }, {
     name: 'compact-production-chunks',
-    renderChunk: { order: 'post', async handler(code, chunk) {
-
+    renderChunk: { order: 'post', async handler(code) {
       const result = await minify(code, { module: true, compress: { passes: 2 }, format: { comments: /@license|@preserve|^!/ } });
-      if (!result.code) throw new Error('Chunk minification produced no output');
+      if (result.code == null) throw new Error('Chunk minification produced no output');
       return { code: result.code, map: null };
     } },
   }, react(), viteSeoPlugin(), {
