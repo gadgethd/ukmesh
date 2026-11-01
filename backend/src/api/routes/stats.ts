@@ -81,6 +81,18 @@ export function registerStatsRoutes(router: Router, deps: StatsRouteDeps): void 
 
   chartsWarmup.register(service.startChartsWarmup);
 
+  router.get('/stats/observers/live', async (req, res) => {
+    try {
+      const network = resolvePublicNetworkScope(req.query['network'], req.headers);
+      const observer = normalizeObserverQuery(req.query['observer']);
+      res.setHeader('Cache-Control', 'no-store');
+      res.json(await service.getLiveObserverRegions(network, observer));
+    } catch (error) {
+      console.error('[api] GET /stats/observers/live', (error as Error).message);
+      res.status(503).json({ error: 'Live observer data is unavailable', retryable: true });
+    }
+  });
+
   router.get('/stats', async (req, res) => {
     try {
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);

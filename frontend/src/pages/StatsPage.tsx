@@ -46,7 +46,7 @@ import { fmtAxisDay, fmtAxisTime, fmtPeakHour } from './statsTimeFormat.js';
 // ── Main page ─────────────────────────────────────────────────────────────────
 export const StatsPage: React.FC = () => {
   const watchlist = useWatchlist();
-  const { data, loading, refreshing, loadError, lastUpdatedAt, reload } = useStatsPageData();
+  const { data, loading, refreshing, loadError, lastUpdatedAt, reload, liveObservers, observerError } = useStatsPageData();
   const [searchParams, setSearchParams] = useSearchParams();
   const [selectedDecodedPath, setSelectedDecodedPath] = useState<DecodedPathSelection | null>(null);
   const requestedTab = searchParams.get('tab');
@@ -83,6 +83,18 @@ export const StatsPage: React.FC = () => {
   const transportCodes = data?.transportCodes ?? [];
   const maxTransportCodeCount = Math.max(1, ...transportCodes.map((code) => code.count));
   const dataIsEmpty = data ? isStatsPayloadEmpty(data) : false;
+  const liveByRegion = new Map(liveObservers?.regions.map(region => [region.iata, region]));
+  const observerRegions = (data?.observerRegions ?? []).map(region => ({ ...region,
+    historyAvailable: true,
+    ...(liveObservers ? { activeObservers: liveByRegion.get(region.iata)?.activeObservers ?? 0,
+      lastPacketAt: liveByRegion.get(region.iata)?.lastPacketAt ?? region.lastPacketAt } : {}),
+  }));
+  for (const region of liveObservers?.regions ?? []) {
+    if (!observerRegions.some(existing => existing.iata === region.iata)) {
+      observerRegions.push({ ...region, historyAvailable: false, observers: region.activeObservers,
+        packets24h: 0, packets7d: 0, series: [], health: { score: 0, status: 'watch', factors: {} } });
+    }
+  }
 
   useEffect(() => {
     if (activeTab !== 'observers' || !requestedRegion || !data) return;
@@ -128,7 +140,7 @@ export const StatsPage: React.FC = () => {
                 ? `${loadError}. Showing the last successful result.`
                 : refreshing
                   ? 'Refreshing stats…'
-                  : `Last updated ${lastUpdatedAt ? new Date(lastUpdatedAt).toLocaleString() : 'unknown'}`}
+                  : `Chart data as of ${lastUpdatedAt ? new Date(lastUpdatedAt).toLocaleString() : 'unknown'}`}
             </span>
             <button type="button" disabled={refreshing} onClick={() => { void reload(); }}>
               {refreshing ? 'Refreshing…' : 'Refresh'}
@@ -431,6 +443,11 @@ export const StatsPage: React.FC = () => {
 
             {activeTab === 'observers' && (
               <>
+                <p role={observerError ? 'alert' : 'status'}>
+                  {observerError ?? (liveObservers
+                    ? `Observer activity updated ${formatTimeAgo(liveObservers.generatedAt)} · active in the last ${liveObservers.windowMinutes} minutes. Historical totals and charts use the timestamp above.`
+                    : 'Loading current observer activity…')}
+                </p>
                 <div className="stats-page__summary">
                   <StatCard label="Avg observers per packet" value={data.observerDiversity.averageObserversPerPacket.toFixed(2)} color={C_PURPLE} />
                   <StatCard label="Max observers on one packet" value={formatCount(data.observerDiversity.maxObserversPerPacket)} color={C_GREEN} />
@@ -444,9 +461,9 @@ export const StatsPage: React.FC = () => {
                     <span className="stats-page__chart-title">Observer regions</span>
                     <span className="stats-page__chart-sub">sorted by observed packets over the last 7 days</span>
                   </div>
-                  {data.observerRegions.length > 0 ? (
+                  {observerRegions.length > 0 ? (
                     <div className="stats-page__observer-grid">
-                      {data.observerRegions.map((region) => (
+                      {observerRegions.map((region) => (
                         <div
                           key={region.iata}
                           id={`observer-region-${region.iata}`}
@@ -455,8 +472,9 @@ export const StatsPage: React.FC = () => {
                         >
                           <div className="stats-page__observer-card-head">
                             <span className="stats-page__observer-iata">{region.iata}</span>
-                            <span className={`stats-page__health stats-page__health--${region.health?.status ?? 'poor'}`} title="Weighted from ingest freshness, active observers, packet volume, and observer diversity">
-                              {region.health?.score ?? 0}% {region.health?.status ?? 'poor'}
+                            <span className={`stats-page__health stats-page__health--${liveObservers ? (region.activeObservers > 0 ? 'healthy' : 'watch') : region.health?.status ?? 'poor'}`} title={liveObservers ? 'Public packet reception in the last 15 minutes' : 'Health in the historical chart snapshot'}>
+                              {liveObservers ? (region.activeObservers > 0 ? 'Receiving packets' : 'No recent packets')
+                                : `${region.health?.score ?? 0}% ${region.health?.status ?? 'poor'} (snapshot)`}
                             </span>
                             <span className="stats-page__observer-last">last packet {formatTimeAgo(region.lastPacketAt)}</span>
                           </div>
@@ -467,15 +485,15 @@ export const StatsPage: React.FC = () => {
                           <div className="stats-page__observer-metrics">
                             <div className="stats-page__observer-metric">
                               <span>Packets (7D)</span>
-                              <strong>{formatCount(region.packets7d)}</strong>
+                              <strong>{region.historyAvailable ? formatCount(region.packets7d) : '—'}</strong>
                             </div>
                             <div className="stats-page__observer-metric">
                               <span>Packets (24h)</span>
-                              <strong>{formatCount(region.packets24h)}</strong>
+                              <strong>{region.historyAvailable ? formatCount(region.packets24h) : '—'}</strong>
                             </div>
                             <div className="stats-page__observer-metric">
-                              <span>Observers</span>
-                              <strong>{formatCount(region.activeObservers)}|{formatCount(region.observers)}</strong>
+                              <span>Active observers / 7D snapshot</span>
+                              <strong>{formatCount(region.activeObservers)} / {region.historyAvailable ? formatCount(region.observers) : '—'}</strong>
                             </div>
                           </div>
                           <div className="stats-page__observer-chart">

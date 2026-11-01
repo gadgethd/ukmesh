@@ -267,6 +267,20 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
     `, filters.params);
   }
 
+  async function fetchLiveObserverRegions(network: string | undefined, observer: string | undefined) {
+    const filters = networkFilters(network, observer);
+    return query<{ iata: string; active_observers: string; last_packet_at: string }>(`
+      SELECT COALESCE(NULLIF(TRIM(UPPER(p.iata)), ''), 'UNK') AS iata,
+             COUNT(DISTINCT COALESCE(a.canonical_node_id, UPPER(BTRIM(p.rx_node_id))))::text AS active_observers,
+             MAX(p.time)::text AS last_packet_at
+      FROM packets p
+      LEFT JOIN node_identity_aliases a ON a.source_node_id = UPPER(BTRIM(p.rx_node_id))
+      WHERE p.time > NOW() - INTERVAL '15 minutes' AND p.time <= NOW()
+        AND p.rx_node_id ~ '^[0-9A-Fa-f]{64}$'
+        ${filters.packetsAlias('p')}
+      GROUP BY 1 ORDER BY 1`, filters.params);
+  }
+
   async function fetchChannelTraffic(network: string | undefined, observer: string | undefined) {
     const filters = networkFilters(network, observer, { includePrivacy: false });
     return query<{ channel: string; count: string; total_count: string }>(`
@@ -1418,6 +1432,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
     loadChartSnapshot,
     saveChartSnapshot,
     fetchObserverRegionSummary,
+    fetchLiveObserverRegions,
     fetchChannelTraffic,
     fetchChartsData,
     fetchStatsSummary,

@@ -79,6 +79,16 @@ groups:
           owner: meshcore-operations
           runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#meshingestsilent
 
+      - alert: MqttDeliveryStalled
+        expr: (meshcore_mqtt_delivery_probe_healthy == 0) and on(job, instance) (meshcore_mqtt_delivery_probe_enabled == 1)
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Persistent MQTT QoS 1 delivery is stalled despite a connected ingest client
+          owner: meshcore-operations
+          runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#mqttdeliverystalled
+
   - name: meshcore-queues-and-workers
     interval: 15s
     rules:

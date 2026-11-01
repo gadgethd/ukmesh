@@ -673,3 +673,31 @@ hash must retain its classification. Queue dead letters remain until resolved.
 Normal packet/content retention, compression, signed backups and the host disk
 exhaustion forecast continue to apply. Compression reduces retained metadata;
 it does not make an infinite exact identity history occupy bounded disk.
+
+### MqttDeliveryStalled
+
+The ingest connection publishes a non-retained QoS 1 nonce every 30 seconds on
+a reserved system topic under its configured MQTT prefix. The envelope is
+consumed before application parsing and never becomes observer or packet data.
+A probe must return on that same persistent subscriber session within 60 seconds.
+QoS 0 traffic and successful socket keepalives cannot satisfy this check.
+
+A timeout marks `/readyz` unavailable and `/api/health` critical, and reconnects
+the client with its existing client ID and `clean=false`, preserving queued
+messages. Recovery attempts are limited to one per five minutes. Prometheus
+alerts if the delivery probe remains unhealthy for two minutes. Inspect
+`meshcore_mqtt_delivery_probe_healthy`, the last-success timestamp, recovery
+count, and `meshcore_mqtt_wire_ack_duration_seconds_count`.
+
+If the session remains stalled after reconnect, preserve the Mosquitto data
+volume and perform a controlled broker restart. Never clear the persistent
+session or change the ingest client ID to discard the backlog. Confirm that
+QoS 1 acknowledgements resume and status samples advance. Replayed status
+measurements keep their source timestamp; expired samples, offline Wills and
+undated retained status cannot renew observer presence.
+
+Observer activity at `/api/stats/observers/live` is privacy-filtered and scoped
+to the last 15 minutes, with a bounded 60-second cache. The Stats page refreshes
+this independently of historical charts. Charts regenerate every 30 minutes
+in the background; the previous complete snapshot remains available during
+refresh, and the page displays its generation time rather than its fetch time.

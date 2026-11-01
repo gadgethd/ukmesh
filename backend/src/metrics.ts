@@ -17,6 +17,27 @@ export const mqttMessagesTotal = new Counter({
   registers: [metricsRegistry],
 });
 
+export const mqttDeliveryProbeHealthy = new Gauge({
+  name: 'meshcore_mqtt_delivery_probe_healthy',
+  help: 'Whether the ingest session has successfully received its QoS 1 delivery probe.',
+  registers: [metricsRegistry],
+});
+export const mqttDeliveryProbeEnabled = new Gauge({
+  name: 'meshcore_mqtt_delivery_probe_enabled',
+  help: 'Whether this process owns an active MQTT ingest delivery probe.',
+  registers: [metricsRegistry],
+});
+export const mqttDeliveryProbeLastSuccess = new Gauge({
+  name: 'meshcore_mqtt_delivery_probe_last_success_timestamp_seconds',
+  help: 'Last successful broker-to-ingest QoS 1 delivery probe.',
+  registers: [metricsRegistry],
+});
+export const mqttDeliveryProbeRecoveries = new Counter({
+  name: 'meshcore_mqtt_delivery_probe_recoveries_total',
+  help: 'Persistent ingest session reconnects after a QoS 1 delivery probe timeout.',
+  registers: [metricsRegistry],
+});
+
 export const mqttDeniedPublishesTotal = new Counter({
   name: 'meshcore_mqtt_denied_publishes_total',
   help: 'Denied PUBLISH broker-log observations by bounded topic suffix and scan phase; history may replay at startup.',
@@ -524,6 +545,7 @@ const METRIC_CACHES = new Set([
   'path_sticky_nodes',
   'stats_channel',
   'stats_observer',
+  'stats_observer_live',
   'ws_initial_state',
   'ws_viable_links',
 ]);

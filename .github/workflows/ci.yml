@@ -47,6 +47,7 @@ jobs:
       TEST_OWNER_ACL_DATABASE_URL: postgresql://postgres:analysis-test-password@127.0.0.1:55433/postgres
       TEST_VACUUM_DATABASE_URL: postgresql://postgres:analysis-test-password@127.0.0.1:55433/postgres
       TEST_INGEST_DATABASE_URL: postgresql://postgres:analysis-test-password@127.0.0.1:55433/postgres
+      TEST_STATUS_DATABASE_URL: postgresql://postgres:analysis-test-password@127.0.0.1:55433/postgres
     defaults:
       run:
         working-directory: backend
@@ -87,6 +88,8 @@ jobs:
           docker exec '${{ job.services.redis.id }}' redis-cli CONFIG SET maxmemory 96mb
           docker exec '${{ job.services.redis.id }}' redis-cli CONFIG SET maxmemory-policy noeviction
       - run: npm run test:ingest-integration
+      - name: Verify observer replay timestamps
+        run: node --import tsx --test src/db/statusSampleTime.integration.test.ts src/mqtt/statusTelemetry.integration.test.ts
       - run: timeout 330s npm run test:privacy-integration
       - name: Qualify broker framing and bounded offline replay
         run: |

@@ -1,4 +1,5 @@
 export type StatusTelemetrySample = {
+  observedAt?: string;
   status?: string;
   batteryMv?: number;
   uptimeSecs?: number;
@@ -18,6 +19,8 @@ type StatusSampleOptions = {
   nodeId: string;
   network: string;
   allowRawStatsOnly?: boolean;
+  retained?: boolean;
+  nowMs?: number;
 };
 
 type StatusSampleWriter = (sample: NodeStatusSampleInput) => Promise<void>;
@@ -92,6 +95,27 @@ function envelopeStatus(json: Record<string, unknown>): string | undefined {
   if (typeof json['status'] !== 'string') return undefined;
   const status = json['status'].trim();
   return status || undefined;
+}
+
+/** Preserve measurement time when a persistent session replays a backlog. */
+export function statusObservationTime(
+  json: Record<string, unknown>,
+  options: { retained?: boolean; nowMs?: number } = {},
+): string | null {
+  const now = options.nowMs ?? Date.now();
+  if (envelopeStatus(json)?.toLowerCase() === 'offline') return null;
+  const raw = json['timestamp'];
+  const numeric = typeof raw === 'number' ? raw
+    : typeof raw === 'string' && /^\d+(\.\d+)?$/.test(raw) ? Number(raw) : undefined;
+  const parsed = numeric != null
+    ? (numeric < 100_000_000_000 ? numeric * 1000 : numeric)
+    : typeof raw === 'string' ? Date.parse(raw) : Number.NaN;
+  if (!Number.isFinite(parsed) || parsed > now + 300_000 || parsed <= 0) {
+    return options.retained ? null : new Date(now).toISOString();
+  }
+  // Expired samples must not be reintroduced into the 30-day history window.
+  if (parsed < now - 30 * 86_400_000) return null;
+  return new Date(Math.min(parsed, now)).toISOString();
 }
 
 export function extractStatusTelemetry(
@@ -185,11 +209,14 @@ export async function persistStatusTelemetrySample(
     allowRawStatsOnly: options.allowRawStatsOnly,
   });
   if (!telemetry) return false;
+  const observedAt = statusObservationTime(json, options);
+  if (!observedAt) return false;
 
   await writeSample({
     nodeId: options.nodeId,
     network: options.network,
     ...telemetry,
+    observedAt,
   });
   return true;
 }

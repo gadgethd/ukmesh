@@ -146,6 +146,31 @@ export function createStatsService(deps: StatsServiceDeps) {
   // Coordination-only maps have a hard admission cap below and entries are
   // removed in both resolve and reject paths.
   const statsInflight = new Map<string, Promise<unknown>>();
+  const liveObserverCache = new BoundedTtlMap<string, { generatedAt: string; windowMinutes: number;
+    regions: Array<{ iata: string; activeObservers: number; lastPacketAt: string }> }>({
+    name: 'stats_observer_live', maxEntries: 64, maxWeight: 2 * 1024 * 1024, ttlMs: 60_000,
+  });
+  const liveObserverInflight = new Map<string, Promise<unknown>>();
+
+  async function getLiveObserverRegions(network: string | undefined, observer: string | undefined): Promise<unknown> {
+    const generation = await getPublicVisibilityGeneration();
+    const key = `${network ?? 'ukmesh'}:${observer ?? ''}:v${generation}`;
+    const cached = liveObserverCache.get(key);
+    if (cached) return cached;
+    const existing = liveObserverInflight.get(key);
+    if (existing) return existing;
+    if (liveObserverInflight.size >= MAX_UNIQUE_STATS_INFLIGHT) throw new StatsWorkOverloadedError();
+    const work = repository.fetchLiveObserverRegions(network, observer).then(async (result) => {
+      if (await getPublicVisibilityGeneration() !== generation) throw new Error('observer visibility changed during refresh');
+      const data = { generatedAt: new Date().toISOString(), windowMinutes: 15,
+        regions: result.rows.map(row => ({ iata: row.iata,
+          activeObservers: Number(row.active_observers), lastPacketAt: row.last_packet_at })) };
+      liveObserverCache.set(key, data);
+      return data;
+    }).finally(() => { liveObserverInflight.delete(key); });
+    liveObserverInflight.set(key, work);
+    return work;
+  }
   // Observer activity runs an expensive per-packet aggregation; cache + single-
   // flight it (mirroring getStatsSummary) so concurrent/rapid polls can't pile
   // up identical queries and saturate the database CPU.
@@ -605,12 +630,10 @@ export function createStatsService(deps: StatsServiceDeps) {
     if (
       cached
       && cachedVisibilityGeneration === visibilityGeneration
-      && Date.now() - cached.ts <= chartsSnapshotStaleTtlMs
+      && Date.now() - cached.ts <= chartsCacheTtlMs
     ) {
-      // A cold process must treat the persisted snapshot's durable max-age as
-      // authoritative. The shorter in-memory cadence is only how often we
-      // check freshness; it must not force a multi-minute rebuild after every
-      // restart. Only the time-dependent region health score changes here.
+      // The normal cadence governs regeneration. The longer durable lifetime
+      // permits an immediate stale response while one background refresh runs.
       const refreshed = refreshCachedRegionHealth(cached.data);
       chartsCache.set(key, { ts: cached.ts, data: refreshed });
       return refreshed;
@@ -668,7 +691,7 @@ export function createStatsService(deps: StatsServiceDeps) {
       setTimeout(() => void warmCharts(), coldRegenDeferMs).unref();
     });
     setInterval(warmStats, statsCacheTtlMs);
-    setInterval(warmCharts, chartsCacheTtlMs);
+    setInterval(warmCharts, Math.min(60_000, chartsCacheTtlMs));
   }
 
   async function computeStatsSummary(network: string | undefined, observer: string | undefined): Promise<unknown> {
@@ -806,5 +829,6 @@ export function createStatsService(deps: StatsServiceDeps) {
     getCharts,
     getStatsSummary,
     getObserverActivity,
+    getLiveObserverRegions,
   };
 }

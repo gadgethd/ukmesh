@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFile } from 'node:fs/promises';
 import { createDurableMqttHandleMessage } from './durableHandler.js';
-import { persistStatusTelemetrySample, persistStatusWrites, type NodeStatusSampleInput } from './statusTelemetry.js';
+import { persistStatusTelemetrySample, persistStatusWrites, statusObservationTime, type NodeStatusSampleInput } from './statusTelemetry.js';
 
 const NODE_ID = 'A'.repeat(64);
 
@@ -31,12 +31,29 @@ test('the same firmware statistics are valid live telemetry, including zero coun
       { nodeId: NODE_ID, network: 'ukmesh' },
       async sample => { writes.push(sample); },
     ), true);
-    assert.deepEqual(writes, [{
+    const { observedAt, ...writtenSample } = writes[0]!;
+    assert.ok(Number.isFinite(Date.parse(observedAt!)));
+    assert.deepEqual([writtenSample], [{
       nodeId: NODE_ID, network: 'ukmesh', status,
       batteryMv: 4200, uptimeSecs: 1, txAirSecs: 0, rxAirSecs: 0,
       channelUtilization: 0, airUtilTx: 0, stats: firmwareWill.stats,
     }]);
   }
+});
+
+test('queued telemetry keeps source time; offline, undated retained and expired status cannot refresh presence', async () => {
+  const now = Date.parse('2026-11-01T20:00:00Z');
+  const timestamp = '2026-11-01T15:41:13.000Z';
+  const writes: NodeStatusSampleInput[] = [];
+  assert.equal(await persistStatusTelemetrySample({ timestamp, stats: { uptime_secs: 100 } },
+    { nodeId: NODE_ID, network: 'ukmesh', nowMs: now }, async sample => { writes.push(sample); }), true);
+  assert.equal(writes[0]?.observedAt, timestamp);
+  assert.equal(statusObservationTime({ timestamp: now / 1000 }, { nowMs: now }), new Date(now).toISOString());
+  assert.equal(statusObservationTime({ status: 'offline', timestamp }, { nowMs: now }), null);
+  assert.equal(statusObservationTime({}, { retained: true, nowMs: now }), null);
+  assert.equal(statusObservationTime({ timestamp: '2026-08-01T00:00:00Z' }, { nowMs: now }), null);
+  assert.equal(statusObservationTime({ timestamp: '2027-01-01T00:00:00Z' }, { retained: true, nowMs: now }), null);
+  assert.equal(statusObservationTime({}, { nowMs: now }), new Date(now).toISOString());
 });
 
 test('Will rejection precedes both raw owner stats and the test raw-stats fallback', async () => {

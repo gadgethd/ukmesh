@@ -97,10 +97,9 @@ test('completed canonical charts are reused while observer-scoped charts are nev
   assert.equal(admittedChartRefreshes, 1);
 });
 
-test('a valid durable chart snapshot serves a cold process without analytical queries', async () => {
-  // Older than the 30-minute in-memory cadence, but still inside the durable
-  // six-hour max age: this is the exact backend-restart regression guard.
-  const generatedAt = new Date(Date.now() - 45 * 60_000).toISOString();
+test('a fresh durable chart snapshot serves a cold process without analytical queries', async () => {
+  // A restart serves a current persisted snapshot without rebuilding it.
+  const generatedAt = new Date(Date.now() - 15 * 60_000).toISOString();
   const durable = {
     snapshot: {
       status: 'complete',
@@ -145,6 +144,30 @@ test('a valid durable chart snapshot serves a cold process without analytical qu
   assert.deepEqual(await service.getCharts('ukmesh', undefined), durable);
   assert.equal(chartCalls, 0);
   assert.equal(saves, 0);
+});
+
+test('live observer presence is independent of historical charts and fenced by scope and privacy generation', async () => {
+  let generation = 1;
+  let calls = 0;
+  const repository = { fetchLiveObserverRegions: async (network: string, observer?: string) => {
+    calls++;
+    return { rows: [{ iata: network === 'test' ? 'TST' : 'EDI', active_observers: observer ? '1' : '2',
+      last_packet_at: new Date().toISOString() }] };
+  } } as unknown as StatsRepository;
+  const service = createStatsService({ statsCache: new Map(), statsCacheTtlMs: 60_000,
+    chartsCache: new Map(), chartsCacheTtlMs: 60_000, chartsInflight: new Map(), repository,
+    getPublicVisibilityGeneration: async () => generation, maskDecodedPathNodes: () => [] });
+  const first = await service.getLiveObserverRegions('ukmesh', undefined) as any;
+  assert.equal(first.regions[0].activeObservers, 2);
+  assert.equal(await service.getLiveObserverRegions('ukmesh', undefined), first);
+  assert.equal(calls, 1);
+  const scoped = await service.getLiveObserverRegions('ukmesh', 'A'.repeat(64)) as any;
+  assert.equal(scoped.regions[0].activeObservers, 1);
+  const isolated = await service.getLiveObserverRegions('test', undefined) as any;
+  assert.equal(isolated.regions[0].iata, 'TST');
+  generation++;
+  assert.notEqual(await service.getLiveObserverRegions('ukmesh', undefined), first);
+  assert.equal(calls, 4);
 });
 
 test('a complete older-generation snapshot is served while one scope refresh runs', async () => {
@@ -312,7 +335,7 @@ test('expired persisted canonical charts are served while one refresh runs in th
     statsCacheTtlMs: 60_000,
     chartsCache,
     chartsCacheTtlMs: 1_000,
-    chartsSnapshotStaleTtlMs: 60_000,
+    chartsSnapshotStaleTtlMs: 6 * 60 * 60_000,
     chartsInflight,
     repository,
     getPublicVisibilityGeneration: async () => 1,

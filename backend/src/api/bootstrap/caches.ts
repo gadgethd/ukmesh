@@ -15,12 +15,10 @@ export const INFERRED_NODES_CACHE_STALE_TTL_MS = 30 * 60_000;
 export const NODE_LINKS_CACHE_TTL_MS = 60_000;
 export const NODE_LINKS_CACHE_STALE_TTL_MS = 5 * 60_000;
 export const HEALTH_CACHE_TTL_MS = 60_000;
-// Check durable chart freshness every 30 minutes. Regeneration is gated by the
-// persisted snapshot max age below, so a process restart cannot turn an empty
-// in-memory cache into an unnecessary analytical rebuild.
+// Regenerate charts after 30 minutes, serving the previous complete snapshot
+// immediately while a single background refresh runs, including after restart.
 export const CHARTS_CACHE_TTL_MS = 30 * 60_000;
-// A complete persisted snapshot remains current for six hours. Once expired it
-// is still the availability fallback while exactly one refresh runs.
+// Retain the complete snapshot for availability; this is not its freshness TTL.
 export const CHARTS_CACHE_STALE_TTL_MS = 6 * 60 * 60_000;
 // The owner dashboard polls /owner/live every 10s. A 5s TTL meant every poll (and
 // every node switch) re-ran 9 DB queries cold. Keep it just above the poll interval

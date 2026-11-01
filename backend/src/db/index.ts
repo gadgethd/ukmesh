@@ -641,6 +641,7 @@ export { observerRegionFromTopic, buildPacketBatchInput } from './packetInput.js
 
 
 export async function insertNodeStatusSample(sample: {
+  observedAt?: string;
   nodeId: string;
   network?: string;
   batteryMv?: number | null;
@@ -656,13 +657,13 @@ export async function insertNodeStatusSample(sample: {
     `WITH sample_insert AS (
        INSERT INTO node_status_samples
        (time, node_id, network, battery_mv, uptime_secs, tx_air_secs, rx_air_secs, channel_utilization, air_util_tx, stats, status)
-       VALUES (NOW(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       VALUES (COALESCE($11::timestamptz, NOW()), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING time
      )
      UPDATE nodes
-        SET last_status_at = (SELECT time FROM sample_insert),
+        SET last_status_at = GREATEST(last_status_at, (SELECT time FROM sample_insert)),
             last_seen = GREATEST(last_seen, (SELECT time FROM sample_insert)),
-            is_online = TRUE
+            is_online = is_online OR (SELECT time FROM sample_insert) > NOW() - INTERVAL '15 minutes'
       WHERE node_id = $1`,
     [
       sample.nodeId,
@@ -675,6 +676,7 @@ export async function insertNodeStatusSample(sample: {
       sample.airUtilTx ?? null,
       sample.stats ? JSON.stringify(sample.stats) : null,
       sample.status ?? null,
+      sample.observedAt ?? null,
     ],
   );
 }

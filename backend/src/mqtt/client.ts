@@ -20,7 +20,8 @@ import { installDurableMqttIntake } from './durableIntake.js';
 import { waitForInFlightPacket } from './dedupeRegistry.js';
 import { admitPacketToRam } from '../ram/liveStore.js';
 import { getRamIngestMode } from '../ram/protocol.js';
-import { persistStatusTelemetrySample, persistStatusWrites } from './statusTelemetry.js';
+import { persistStatusTelemetrySample, persistStatusWrites, statusObservationTime } from './statusTelemetry.js';
+import { createDeliveryProbe, type DeliveryHealth } from './deliveryProbe.js';
 import {
   buildPersistedPacketPayload,
   ingestFailureAction,
@@ -42,6 +43,10 @@ import {
   mqttIngestQueueDepth,
   mqttIngestOutcomesTotal,
   mqttMessagesTotal,
+  mqttDeliveryProbeEnabled,
+  mqttDeliveryProbeHealthy,
+  mqttDeliveryProbeLastSuccess,
+  mqttDeliveryProbeRecoveries,
   postPersistDroppedTotal,
   postPersistInFlightGauge,
   publicLiveOutcomesTotal,
@@ -59,11 +64,14 @@ type MqttRuntimeStatus = {
   state: 'starting' | 'connected' | 'disconnected' | 'reconnecting' | 'error';
   changedAt: string;
   lastError?: string;
+  delivery?: DeliveryHealth;
 };
 
 let mqttRuntimeStatus: MqttRuntimeStatus = { state: 'starting', changedAt: new Date().toISOString() };
 const mqttClients: MqttClient[] = [];
 const durableIntakes: ReturnType<typeof installDurableMqttIntake>[] = [];
+const deliveryProbes: Array<{ probe: ReturnType<typeof createDeliveryProbe>; timer: NodeJS.Timeout }> = [];
+let deliveryHealth: DeliveryHealth = { state: 'disabled', lastSuccessAt: null, recoveries: 0 };
 let mqttStopping = false;
 const MQTT_INGEST_MODE = getRamIngestMode();
 const publicPackets = createPublicBatch<{ packet: LivePacket; publish: () => void }>({
@@ -91,9 +99,9 @@ function setMqttRuntimeStatus(state: MqttRuntimeStatus['state'], lastError?: str
 }
 
 export function getMqttRuntimeStatus(): MqttRuntimeStatus {
-  return mqttDurabilityFailure
-    ? { ...mqttRuntimeStatus, state: 'error', lastError: mqttDurabilityFailure }
-    : { ...mqttRuntimeStatus };
+  const lastError = deliveryHealth.state === 'stalled' ? 'MQTT_QOS1_DELIVERY_STALLED' : mqttDurabilityFailure;
+  return { ...mqttRuntimeStatus, delivery: { ...deliveryHealth },
+    ...(lastError ? { state: 'error' as const, lastError } : {}) };
 }
 
 export function markMqttPersistenceHealthy(): void {
@@ -366,7 +374,7 @@ function quarantinePersistenceFailure(error: unknown): void {
   console.error('[mqtt] quarantined packet after deterministic persistence error:', message);
 }
 
-function handleIncomingMqttPacket(packet: { topic: string; payload: Buffer | string; dup?: boolean; messageId?: number; qos?: number }): Promise<void> {
+function handleIncomingMqttPacket(packet: { topic: string; payload: Buffer | string; dup?: boolean; messageId?: number; qos?: number; retain?: boolean }): Promise<void> {
   const startedAt = process.hrtime.bigint();
   const rawPayload = Buffer.isBuffer(packet.payload)
     ? packet.payload
@@ -385,7 +393,7 @@ function handleIncomingMqttPacket(packet: { topic: string; payload: Buffer | str
 
   activeMqttIngests += 1;
   mqttIngestActive.set(activeMqttIngests);
-  return handleMessage(packet.topic, rawPayload, packet.dup === true, packet.messageId, packet.qos ?? 1)
+  return handleMessage(packet.topic, rawPayload, packet.dup === true, packet.messageId, packet.qos ?? 1, packet.retain === true)
     .catch(async (error: unknown) => {
       if (!isPermanentDataError(error)) throw error;
       // Quarantine evidence must commit before this delivery can be acknowledged.
@@ -454,8 +462,35 @@ export async function startMqttClient(): Promise<void> {
       password: process.env['MQTT_PASSWORD'],
     });
     mqttClients.push(client);
+    mqttDeliveryProbeEnabled.set(1);
+    let previousRecoveries = 0;
+    const probeTopic = `${Array.from(TOPIC_PREFIXES)[0]}/_system/ingest/${MQTT_CLIENT_ID}`;
+    const probe = createDeliveryProbe({
+      topic: probeTopic,
+      publish: (nonce) => {
+        client.publish(probeTopic, nonce, { qos: 1, retain: false }, (error) => {
+          if (error && !mqttStopping) console.error('[mqtt] delivery probe publish failed:', error.message);
+        });
+      },
+      reconnect: () => {
+        console.error('[mqtt] QoS 1 delivery stalled; reconnecting the persistent session');
+        if (!mqttStopping && client.connected) client.stream.destroy();
+      },
+      changed: (health) => {
+        deliveryHealth = health;
+        mqttDeliveryProbeHealthy.set(health.state === 'healthy' ? 1 : 0);
+        if (health.lastSuccessAt) mqttDeliveryProbeLastSuccess.set(Date.parse(health.lastSuccessAt) / 1000);
+        if (health.recoveries > previousRecoveries) mqttDeliveryProbeRecoveries.inc(health.recoveries - previousRecoveries);
+        previousRecoveries = health.recoveries;
+      },
+    });
+    deliveryHealth = probe.status();
+    mqttDeliveryProbeHealthy.set(0);
+    const probeTimer = setInterval(probe.tick, 5_000);
+    probeTimer.unref();
+    deliveryProbes.push({ probe, timer: probeTimer });
     durableIntakes.push(installDurableMqttIntake(client,
-      handleIncomingMqttPacket,
+      (packet) => probe.accept(packet) ? Promise.resolve() : handleIncomingMqttPacket(packet),
       (error) => reportMqttIngestFailure(client, error),
       {
         ...MQTT_INTAKE_CONFIG,
@@ -468,6 +503,7 @@ export async function startMqttClient(): Promise<void> {
     client.on('connect', () => {
       setMqttRuntimeStatus('connected');
       console.log(`[mqtt] connected${connectionLabel}`);
+      let subscriptionsRemaining = TOPIC_PREFIXES.size;
       for (const prefix of TOPIC_PREFIXES) {
         // A shared subscription spreads messages across the ingest
         // connections; a single connection keeps the historical direct
@@ -475,9 +511,13 @@ export async function startMqttClient(): Promise<void> {
         const topicFilter = MQTT_INGEST_CONNECTIONS > 1
           ? `$share/${MQTT_INGEST_SHARE_GROUP}/${prefix}/#`
           : `${prefix}/#`;
-        client.subscribe(topicFilter, { qos: 1 }, (err) => {
-          if (err) console.error(`[mqtt] subscribe error (${topicFilter})`, err.message);
-          else      console.log(`[mqtt] subscribed to ${topicFilter}${connectionLabel}`);
+        client.subscribe(topicFilter, { qos: 1 }, (err, granted) => {
+          if (err || !granted?.length || granted.some((entry) => entry.qos === 128)) {
+            reportMqttIngestFailure(client, err ?? new Error('MQTT_SUBSCRIPTION_DENIED'));
+          } else {
+            console.log(`[mqtt] subscribed to ${topicFilter}${connectionLabel}`);
+            if (--subscriptionsRemaining === 0) probe.connect();
+          }
         });
       }
     });
@@ -492,6 +532,7 @@ export async function startMqttClient(): Promise<void> {
       }
     });
     client.on('close', () => {
+      probe.disconnect();
       if (!mqttClients.some((candidate) => candidate.connected)) {
         setMqttRuntimeStatus('disconnected');
       }
@@ -508,6 +549,8 @@ export async function startMqttClient(): Promise<void> {
 
 export async function stopMqttClient(timeoutMs = 20_000): Promise<void> {
   mqttStopping = true;
+  for (const { probe, timer } of deliveryProbes.splice(0)) { clearInterval(timer); probe.disconnect(); }
+  mqttDeliveryProbeEnabled.set(0);
   const deadline = Date.now() + timeoutMs;
   for (const intake of durableIntakes) intake.stopAdmission();
   const clients = mqttClients.splice(0, mqttClients.length);
@@ -543,6 +586,7 @@ async function handleMessage(
   redelivered = false,
   messageId?: number,
   qos = 1,
+  retained = false,
 ): Promise<void> {
   const topicParts = parseMqttTopic(topic, TOPIC_PREFIXES, BLOCKED_PUBLIC_IATAS);
   if (!topicParts) {
@@ -576,8 +620,11 @@ async function handleMessage(
       return;
     }
     const nodeId = observerKey;
+    const observedAt = statusObservationTime(json, { retained });
+    if (!observedAt) return;
+    const recentStatus = Date.now() - Date.parse(observedAt) <= 15 * 60_000;
     const nodeIata = topicIataForNode(nodeId, observerKey, iata);
-    const writes: Promise<unknown>[] = [upsertNode(nodeId, {
+    const writes: Promise<unknown>[] = recentStatus ? [upsertNode(nodeId, {
       name:            origin,
       iata:            nodeIata,
       publicKey:       observerKey,
@@ -586,10 +633,10 @@ async function handleMessage(
       network,
       allowTestOverride: network === 'test' && nodeId === observerKey,
       mqttObserver: true,
-    })];
+    })] : [];
     writes.push(persistStatusTelemetrySample(
       json,
-      { nodeId, network, allowRawStatsOnly: network === 'test' },
+      { nodeId, network, allowRawStatsOnly: network === 'test', retained },
       async (sample) => {
         // Validate the values actually destined for integer columns after the
         // deployed firmware normalization; raw stats retain fractional detail.
@@ -612,7 +659,7 @@ async function handleMessage(
       throw error;
     }
     markMqttPersistenceHealthy();
-    emitNode(nodeId, { network, observerId: observerKey });
+    if (recentStatus) emitNode(nodeId, { network, observerId: observerKey });
     return;
   }
 

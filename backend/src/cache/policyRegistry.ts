@@ -107,6 +107,12 @@ export const CACHE_POLICY_REGISTRY: readonly CachePolicyRecord[] = Object.freeze
     negativeCaching: 'empty completed response', singleFlight: 'observerActivityInflight',
   },
   {
+    source: 'src/stats/statsService.ts#liveObserverCache',
+    disposition: 'bounded-cache', maxEntries: 64, maxBytes: 2 << 20, ttlMs: 60_000,
+    scope: 'network + observer + visibility generation', invalidation: 'generation check + TTL',
+    negativeCaching: 'empty completed response', singleFlight: 'liveObserverInflight',
+  },
+  {
     source: 'src/path-beta/resolveCache.ts#cache',
     disposition: 'bounded-cache', maxEntries: 4_096, maxBytes: 64 << 20, ttlMs: 10 * 60_000,
     scope: 'packet + network + observer + visibility generation', invalidation: 'packet generation token',
