@@ -758,9 +758,10 @@ runtime scope disable. Production artifact checks cover the real renderer,
 terrain and RF decoding. The keyboard fixture supplies a deterministic live
 snapshot; software-rendered mobile viewport checks run serially.
 
-All 149 original local changes have a recorded disposition: 97 are preserved
-exactly, 45 are reconciled, four are superseded by newer upstream code, two
-remain protected runtime files, and one empty test artifact is archived.
+All 149 original local changes have a recorded disposition. Source changes are
+preserved exactly, reconciled or superseded by newer upstream code. Two runtime
+files remain protected, and one empty test artifact is archived. Browser fixtures
+retain Vite's real hot-reload socket while controlling the application socket.
 Full-history secret scanning remains enforced with exact reviewed public/test
 fingerprints; runtime credentials and private remediation receipts stay outside
 Git.
