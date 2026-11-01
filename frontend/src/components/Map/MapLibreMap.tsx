@@ -10,7 +10,7 @@
  */
 import { useEffect, useRef, useState, useMemo, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import * as maplibregl from 'maplibre-gl';
+import * as maplibregl from './maplibre.js';
 import type { MeshNode } from '../../hooks/useNodes.js';
 import { nodeStore } from '../../hooks/useNodes.js';
 import { linkStateStore } from '../../hooks/useLinkState.js';
@@ -67,6 +67,39 @@ import { computeCustomLos } from '../../utils/customLos.js';
 import { fetchJson, withScopeParams, type ApiScope } from '../../utils/api.js';
 import { ScopedCache } from '../../utils/scopedCache.js';
 
+// Keep a live DEM source across basemap changes. Removing it while a worker
+// initializes can strand MapLibre 6.11's in-flight DEM actor. A fresh vector
+// metadata URL still forces the failed basemap source to be replaced.
+function setBasemapStyle(map: maplibregl.Map, style: string | maplibregl.StyleSpecification, revision: number): void {
+  // An initial style that never loaded cannot be a diff/transform base.
+  // MapLibre queues transforms until style.load, which would strand fallback.
+  if (!map.getStyle()) {
+    map.setStyle(style, { diff: false });
+    return;
+  }
+  map.setStyle(style, {
+    diff: true,
+    transformStyle: (previous, next) => {
+      const sources = { ...next.sources };
+      const basemap = sources[BASEMAP_VECTOR_SOURCE_ID];
+      if (basemap?.type === 'vector' && basemap.url) {
+        sources[BASEMAP_VECTOR_SOURCE_ID] = { ...basemap, url: refreshBasemapMetadataUrl(basemap.url, revision) };
+      }
+      const terrain = previous?.sources['terrain-dem'];
+      const layers = [...next.layers];
+      if (terrain?.type === 'raster-dem') {
+        sources['terrain-dem'] = terrain;
+        const hillshade = previous?.layers.find(layer => layer.id === 'hillshade');
+        if (hillshade && !layers.some(layer => layer.id === hillshade.id)) {
+          const firstSymbol = layers.findIndex(layer => layer.type === 'symbol');
+          layers.splice(firstSymbol < 0 ? layers.length : firstSymbol, 0, hillshade);
+        }
+      }
+      return { ...next, sources, layers, ...(terrain ? { terrain: previous?.terrain } : {}) };
+    },
+  });
+}
+
 // The node detail dock is an overlay, so node selection must never reserve
 // camera padding or shift the visible map.
 function mapPaddingForNode(_selected: string | null): { top: number; right: number; bottom: number; left: number } {
@@ -109,14 +142,17 @@ import {
   BASEMAP_VECTOR_SOURCE_ID,
   createBasemapHealth,
   decideBasemapAction,
+  isSuccessfulBasemapTile,
   noteFallback,
   noteRetryStarted,
   noteSourceData,
   noteStyleLoaded,
+  basemapWatchdogDelay,
   noteTileError,
+  refreshBasemapMetadataUrl,
   type BasemapPhase,
 } from './basemapHealth.js';
-import { buildFallbackStyle, installFallbackMarkers, loadFallbackCities } from './basemapFallback.js';
+import { buildFallbackStyle, FALLBACK_RASTER_SOURCE_ID, installFallbackMarkers, loadFallbackCities } from './basemapFallback.js';
 import { applyBasemapLabelTheme, installUkPlaceLabels } from './basemapLabels.js';
 // ── Main Component ────────────────────────────────────────────────────────────
 
@@ -212,9 +248,10 @@ export function MapLibreMap({
   const basemapHealthRef = useRef(createBasemapHealth());
   const basemapModeRef = useRef<'remote' | 'fallback'>('remote');
   const basemapTimerRef = useRef<number | null>(null);
-  const basemapNonceRef = useRef(0);
+  const basemapNonceRef = useRef(Date.now());
   const basemapPhaseRef = useRef<BasemapPhase>('loading');
   const basemapRetryRef = useRef<() => void>(() => {});
+  const basemapStartRef = useRef<() => void>(() => {});
   const fallbackMarkersCleanupRef = useRef<(() => void) | null>(null);
   const mapReadyNotifiedRef = useRef(false);
   const [basemapPhase, setBasemapPhase] = useState<BasemapPhase>('loading');
@@ -759,6 +796,7 @@ export function MapLibreMap({
     setMapError(null);
     hasLoadedStyleRef.current = false;
     styleUrlRef.current = mapLight ? OPENFREEMAP_STYLE_LIGHT : OPENFREEMAP_STYLE_DARK;
+    basemapHealthRef.current = noteStyleLoaded(createBasemapHealth(), Date.now());
 
     let map: maplibregl.Map;
     try {
@@ -769,6 +807,7 @@ export function MapLibreMap({
         zoom: initialView?.zoom ?? DEFAULT_ZOOM,
         maxPitch: 0,
         minZoom: 6,
+        transformRequest: (url) => ({ url: refreshBasemapMetadataUrl(url, basemapNonceRef.current) }),
       });
     } catch (error) {
       console.error('[map] initialization failed:', error);
@@ -805,6 +844,7 @@ export function MapLibreMap({
     // ── Basemap watchdog (non-blocking failures: tiles, sprite, source) ───────
     let basemapWatchdogHandle: number | null = null;
     let interactionsInstalled = false;
+    let fallbackRasterLoaded = false;
     const loggedBasemapErrors = new Set<string>();
 
     const clearBasemapWatchdog = () => {
@@ -841,7 +881,7 @@ export function MapLibreMap({
       fallbackMarkersCleanupRef.current = null;
       void loadFallbackCities()
         .then((cities) => {
-          if (mapRef.current !== map) return;
+          if (mapRef.current !== map || basemapModeRef.current !== 'fallback' || fallbackRasterLoaded) return;
           fallbackMarkersCleanupRef.current = installFallbackMarkers(map, cities);
         })
         .catch(() => {
@@ -857,7 +897,7 @@ export function MapLibreMap({
       clearBasemapWatchdog();
       console.warn('[basemap] using bundled fallback:', reason);
       try {
-        map.setStyle(buildFallbackStyle(mapLightRef.current ? 'light' : 'dark'), { diff: false });
+        setBasemapStyle(map, buildFallbackStyle(mapLightRef.current ? 'light' : 'dark'), basemapNonceRef.current);
       } catch (error) {
         console.error('[basemap] fallback style failed:', error);
       }
@@ -871,13 +911,6 @@ export function MapLibreMap({
         if (mapRef.current !== map) return;
         if (basemapModeRef.current === 'fallback') return;
         if (basemapPhaseRef.current === 'healthy') return;
-        if (map.getSource(BASEMAP_VECTOR_SOURCE_ID) && map.isSourceLoaded(BASEMAP_VECTOR_SOURCE_ID)) {
-          basemapHealthRef.current = noteSourceData(
-            basemapHealthRef.current, BASEMAP_VECTOR_SOURCE_ID, true, Date.now(),
-          );
-          publishBasemapPhase('healthy');
-          return;
-        }
         // A style with no OpenFreeMap vector source (Regions/custom styles) has
         // no remote basemap to heal.
         if (hasLoadedStyleRef.current && !map.getSource(BASEMAP_VECTOR_SOURCE_ID)) {
@@ -890,7 +923,13 @@ export function MapLibreMap({
 
     function recoverBasemap(reason: string) {
       const decision = decideBasemapAction(basemapHealthRef.current, Date.now());
-      if (decision === 'none') return;
+      if (decision === 'none') {
+        // A timer may fire just before the wall-clock deadline, or style.load
+        // may have advanced it. Keep checking the remaining absolute budget.
+        const remaining = basemapWatchdogDelay(basemapHealthRef.current, Date.now());
+        if (remaining !== null) armBasemapWatchdog(remaining);
+        return;
+      }
       if (decision === 'fallback') {
         applyFallbackBasemap(reason);
         return;
@@ -900,7 +939,8 @@ export function MapLibreMap({
       publishBasemapPhase('retrying');
       console.warn('[basemap] retrying with cache-busted style:', reason);
       try {
-        map.setStyle(styleWithNonce(remoteStyleUrl()));
+        mapLoadedRef.current = false;
+        setBasemapStyle(map, styleWithNonce(remoteStyleUrl()), basemapNonceRef.current);
       } catch {
         applyFallbackBasemap(reason);
         return;
@@ -912,6 +952,8 @@ export function MapLibreMap({
     // again if it still cannot produce source data.
     basemapRetryRef.current = () => {
       basemapModeRef.current = 'remote';
+      fallbackMarkersCleanupRef.current?.();
+      fallbackMarkersCleanupRef.current = null;
       basemapNonceRef.current += 1;
       const now = Date.now();
       basemapHealthRef.current = noteRetryStarted(
@@ -920,7 +962,9 @@ export function MapLibreMap({
       );
       publishBasemapPhase('retrying');
       try {
-        map.setStyle(styleWithNonce(remoteStyleUrl()));
+        styleUrlRef.current = remoteStyleUrl();
+        mapLoadedRef.current = false;
+        setBasemapStyle(map, styleWithNonce(remoteStyleUrl()), basemapNonceRef.current);
       } catch {
         applyFallbackBasemap('manual retry failed');
         return;
@@ -929,10 +973,17 @@ export function MapLibreMap({
     };
 
     // ── Map event handlers ────────────────────────────────────────────────────
-    const handleSourceData = (event: { sourceId?: string }) => {
-      if (event.sourceId !== BASEMAP_VECTOR_SOURCE_ID) return;
-      if (basemapModeRef.current === 'fallback') return;
-      if (!map.isSourceLoaded(BASEMAP_VECTOR_SOURCE_ID)) return;
+    const handleSourceData = (rawEvent: unknown) => {
+      const event = rawEvent as { sourceId?: string; tile?: { state?: string } };
+      if (basemapModeRef.current === 'fallback') {
+        if (event.sourceId === FALLBACK_RASTER_SOURCE_ID && event.tile?.state === 'loaded') {
+          fallbackRasterLoaded = true;
+          fallbackMarkersCleanupRef.current?.();
+          fallbackMarkersCleanupRef.current = null;
+        }
+        return;
+      }
+      if (!isSuccessfulBasemapTile(event)) return;
       basemapHealthRef.current = noteSourceData(
         basemapHealthRef.current, BASEMAP_VECTOR_SOURCE_ID, true, Date.now(),
       );
@@ -942,14 +993,13 @@ export function MapLibreMap({
 
     const handleError = (event: maplibregl.ErrorEvent) => {
       const error = (event as unknown as { error?: Error }).error;
-      console.error('[map] resource error:', error);
       const message = String(error?.message ?? error ?? 'map error');
       // Terrain DEM gaps are expected at the edge of the tile set and are not a
       // basemap failure (the telemetry noise filter already ignores them).
       if (message.includes('/terrain-tiles/')) return;
       // Basemap failures are owned by the watchdog and the status chip; raising
       // the blocking modal as well would fight the automatic retry/fallback.
-      const isBasemapFailure = /tile|sprite|glyph|source|ajax|fetch/i.test(message);
+      const isBasemapFailure = /tile|style|sprite|glyph|worker|source|ajax|fetch|texture|webgl|context/i.test(message);
       if (isBasemapFailure && basemapModeRef.current !== 'fallback') {
         if (!loggedBasemapErrors.has(message) && loggedBasemapErrors.size < 20) {
           loggedBasemapErrors.add(message);
@@ -981,6 +1031,7 @@ export function MapLibreMap({
       // must not push the 15 s modal past the automatic fallback.
       if (basemapPhaseRef.current !== 'retrying') watchLoading();
       if (basemapModeRef.current === 'fallback') {
+        fallbackRasterLoaded = false;
         mapLoadedRef.current = true;
         rehydrateMapStyle(map, false);
         installInteractionHandlers();
@@ -992,7 +1043,7 @@ export function MapLibreMap({
       if (styleUrlRef.current !== targetStyle) {
         styleUrlRef.current = targetStyle;
         mapLoadedRef.current = false;
-        map.setStyle(styleWithNonce(targetStyle));
+        setBasemapStyle(map, styleWithNonce(targetStyle), basemapNonceRef.current);
         return;
       }
       rehydrateMapStyle(map, !hasLoadedStyleRef.current);
@@ -1005,14 +1056,6 @@ export function MapLibreMap({
       if (!basemapSource) {
         // A style without the OpenFreeMap vector source (Regions/custom styles)
         // has no remote basemap to heal.
-        publishBasemapPhase('healthy');
-        clearBasemapWatchdog();
-        return;
-      }
-      if (map.isSourceLoaded(BASEMAP_VECTOR_SOURCE_ID)) {
-        basemapHealthRef.current = noteSourceData(
-          basemapHealthRef.current, BASEMAP_VECTOR_SOURCE_ID, true, Date.now(),
-        );
         publishBasemapPhase('healthy');
         clearBasemapWatchdog();
         return;
@@ -1120,9 +1163,23 @@ export function MapLibreMap({
     }
 
     // ── Basemap health signals ────────────────────────────────────────────────
-    // `sourcedata` and `error` are registered above so style reloads (including
-    // the cache-busted basemap retry) cannot stack duplicate listeners.
     map.on('style.load', handleStyleLoad);
+
+    basemapStartRef.current = () => {
+      basemapHealthRef.current = noteStyleLoaded(createBasemapHealth(), Date.now());
+      publishBasemapPhase('loading');
+      armBasemapWatchdog(BASEMAP_SOURCE_LOAD_TIMEOUT_MS);
+    };
+
+    map.on('sourcedataloading', (event) => {
+      if (event.sourceId !== BASEMAP_VECTOR_SOURCE_ID || !event.tile) return;
+      if (basemapHealthRef.current.phase !== 'healthy') return;
+      // A new viewport needs new tiles, even after an earlier viewport worked.
+      basemapHealthRef.current = noteStyleLoaded(basemapHealthRef.current, Date.now());
+      publishBasemapPhase('loading');
+      armBasemapWatchdog(BASEMAP_SOURCE_LOAD_TIMEOUT_MS);
+    });
+
 
     return () => {
       window.clearTimeout(loadTimer);
@@ -1143,6 +1200,7 @@ export function MapLibreMap({
       basemapRetryRef.current = () => {};
       // A remount while the fallback was showing must not leave the chip up.
       setBasemapPhase('loading');
+      basemapStartRef.current = () => {};
       setClashPathLines([]);
       map.off('style.load', handleStyleLoad);
       map.remove();
@@ -1162,7 +1220,7 @@ export function MapLibreMap({
       // Rebuild the bundled fallback in the new palette; style.load rehydrates
       // the application layers and the offline city labels.
       try {
-        map.setStyle(buildFallbackStyle(mapLight ? 'light' : 'dark'), { diff: false });
+        setBasemapStyle(map, buildFallbackStyle(mapLight ? 'light' : 'dark'), basemapNonceRef.current);
       } catch {
         // Ignore: the map is being torn down.
       }
@@ -1173,7 +1231,8 @@ export function MapLibreMap({
 
     styleUrlRef.current = targetStyle;
     mapLoadedRef.current = false;
-    map.setStyle(targetStyle);
+    basemapStartRef.current();
+    setBasemapStyle(map, targetStyle, basemapNonceRef.current);
   }, [mapLight]);
 
   // -- Imperative source updates ---------------------------------------------
@@ -1361,7 +1420,7 @@ export function MapLibreMap({
   // -- Render ----------------------------------------------------------------
 
   return (
-    <div className="map-area" style={{ position: 'relative', width: '100%', height: '100%' }}>
+    <div className="map-area" data-basemap-state={basemapPhase} style={{ position: 'relative', width: '100%', height: '100%' }}>
       {showMapChrome && <NodeSearch map={mapRef.current} onNodeSelect={onNodeSelect} />}
       {showMapChrome && <NodeLegend mapLight={mapLight} />}
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
@@ -1415,7 +1474,7 @@ export function MapLibreMap({
           <span className="map-basemap-status__text">
             {basemapPhase === 'retrying'
               ? 'Reloading basemap…'
-              : 'Basemap unavailable — showing basic map'}
+              : 'Using backup basemap'}
           </span>
           {basemapPhase === 'fallback' && (
             <button

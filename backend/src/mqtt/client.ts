@@ -29,13 +29,15 @@ import {
   stripDerivedPacketFields,
   type IntegerDomainViolation,
 } from './envelopeSafety.js';
-import { observationIdentityKey, packetAlreadyPersisted, type ObservationIdentity } from './observationIdentity.js';
-import { assertSupportedIngestConnections } from './ingestConfig.js';
+import { fallbackPacketIdentity, ramMqttDeliveryKey, observationIdentityKey, packetAlreadyPersisted, type ObservationIdentity } from './observationIdentity.js';
+import { assertSupportedIngestConnections, loadMqttIntakeConfig } from './ingestConfig.js';
 import { waitForShutdownStep } from './shutdownDeadline.js';
 import { createPublicBatch } from '../privacy/publicBatch.js';
 import {
   boundedNetworkMetricLabel,
   mqttIngestAckDuration,
+  mqttIntakeQueueWait,
+  mqttWireAckDuration,
   mqttIngestActive,
   mqttIngestQueueDepth,
   mqttIngestOutcomesTotal,
@@ -322,6 +324,7 @@ const MQTT_CLIENT_ID = String(
  * successful restart and resize qualification before they can be enabled.
  */
 const MQTT_INGEST_CONNECTIONS = boundedEnvInteger('MQTT_INGEST_CONNECTIONS', 1, 1, 16);
+const MQTT_INTAKE_CONFIG = loadMqttIntakeConfig(process.env);
 const MQTT_INGEST_SHARE_GROUP = String(
   process.env['MQTT_INGEST_SHARE_GROUP'] ?? 'meshcore-ingest',
 ).trim() || 'meshcore-ingest';
@@ -363,7 +366,7 @@ function quarantinePersistenceFailure(error: unknown): void {
   console.error('[mqtt] quarantined packet after deterministic persistence error:', message);
 }
 
-function handleIncomingMqttPacket(packet: { topic: string; payload: Buffer | string; dup?: boolean; messageId?: number }): Promise<void> {
+function handleIncomingMqttPacket(packet: { topic: string; payload: Buffer | string; dup?: boolean; messageId?: number; qos?: number }): Promise<void> {
   const startedAt = process.hrtime.bigint();
   const rawPayload = Buffer.isBuffer(packet.payload)
     ? packet.payload
@@ -382,7 +385,7 @@ function handleIncomingMqttPacket(packet: { topic: string; payload: Buffer | str
 
   activeMqttIngests += 1;
   mqttIngestActive.set(activeMqttIngests);
-  return handleMessage(packet.topic, rawPayload, packet.dup === true, packet.messageId)
+  return handleMessage(packet.topic, rawPayload, packet.dup === true, packet.messageId, packet.qos ?? 1)
     .catch(async (error: unknown) => {
       if (!isPermanentDataError(error)) throw error;
       // Quarantine evidence must commit before this delivery can be acknowledged.
@@ -454,7 +457,12 @@ export async function startMqttClient(): Promise<void> {
     durableIntakes.push(installDurableMqttIntake(client,
       handleIncomingMqttPacket,
       (error) => reportMqttIngestFailure(client, error),
-      { depth: (count) => mqttIngestQueueDepth.set(count) },
+      {
+        ...MQTT_INTAKE_CONFIG,
+        depth: (count) => mqttIngestQueueDepth.set(count),
+        observeQueueWait: (seconds) => mqttIntakeQueueWait.observe(seconds),
+        observeWireAck: (seconds) => mqttWireAckDuration.observe(seconds),
+      },
     ));
 
     client.on('connect', () => {
@@ -534,6 +542,7 @@ async function handleMessage(
   rawPayload: Buffer,
   redelivered = false,
   messageId?: number,
+  qos = 1,
 ): Promise<void> {
   const topicParts = parseMqttTopic(topic, TOPIC_PREFIXES, BLOCKED_PUBLIC_IATAS);
   if (!topicParts) {
@@ -871,7 +880,7 @@ async function handleMessage(
   // Decoder messageHash is deliberately not used here: it is only a 32-bit
   // display hash and collides at normal packet volumes. The canonical identity
   // comes from validated route/path-invariant wire content.
-  const finalHash = canonicalPacketId ?? upstreamPacketHash(json['hash']) ?? crypto.randomUUID();
+  const finalHash = canonicalPacketId ?? upstreamPacketHash(json['hash']) ?? fallbackPacketIdentity(rawPayload);
 
   const observationIdentity: ObservationIdentity = {
     packetHash: finalHash,
@@ -886,14 +895,8 @@ async function handleMessage(
   };
   const dedupeKey = observationIdentityKey(observationIdentity);
   const ramDeliveryKey = MQTT_INGEST_MODE === 'ram'
-    ? (() => {
-      if (!Number.isInteger(messageId) || messageId! < 1 || messageId! > 65_535) {
-        throw new Error('MQTT_RAM_DELIVERY_ID_MISSING');
-      }
-      return createHash('sha256').update(JSON.stringify([
-        MQTT_CLIENT_ID, messageId, topic, rawPayload.toString('hex'), dedupeKey,
-      ])).digest('hex');
-    })()
+    ? ramMqttDeliveryKey({ clientId: MQTT_CLIENT_ID, messageId, qos, topic,
+      payload: rawPayload, observationKey: dedupeKey })
     : null;
 
   if (isDuplicatePacket(dedupeKey)) {

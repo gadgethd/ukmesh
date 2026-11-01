@@ -62,6 +62,22 @@ jobs:
         run: npm audit --audit-level=high
       - run: npm run typecheck
       - run: npm run contract:check
+      - name: Configure bounded Redis integration fixture
+        run: |
+          node --input-type=module <<'JS'
+          import { Redis } from 'ioredis';
+          const url = new URL(process.env.TEST_REDIS_URL);
+          if (url.hostname !== '127.0.0.1' || url.port !== '6379') {
+            throw new Error('Only the isolated CI Redis service may be configured');
+          }
+          const redis = new Redis(url.href);
+          try {
+            await redis.config('SET', 'maxmemory', '128mb');
+            await redis.config('SET', 'maxmemory-policy', 'noeviction');
+          } finally {
+            redis.disconnect();
+          }
+          JS
       - run: npm test
       - run: npm run test:analysis-integration
       - run: npm run test:owner-acl-integration
@@ -72,6 +88,28 @@ jobs:
           docker exec '${{ job.services.redis.id }}' redis-cli CONFIG SET maxmemory-policy noeviction
       - run: npm run test:ingest-integration
       - run: timeout 330s npm run test:privacy-integration
+      - name: Qualify broker framing and bounded offline replay
+        run: |
+          fixture_dir="$(mktemp -d)"
+          trap 'docker rm -f broker-limits-fixture >/dev/null 2>&1 || true; rm -rf "$fixture_dir"' EXIT
+          chmod 755 "$fixture_dir"
+          cp ../mosquitto/capacity-limits.conf.example "$fixture_dir/mosquitto.conf"
+          cat >> "$fixture_dir/mosquitto.conf" <<'CONF'
+          listener 1883
+          allow_anonymous true
+          queue_qos0_messages true
+          sys_interval 1
+          CONF
+          chmod 644 "$fixture_dir/mosquitto.conf"
+          docker run -d --name broker-limits-fixture \
+            -p 127.0.0.1:18885:1883 \
+            -v "$fixture_dir/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro" \
+            eclipse-mosquitto@sha256:9cfdd46ad59f3e3e5f592f6baf57ab23e1ad00605509d0f5c1e9b179c5314d87
+          for _ in $(seq 1 30); do
+            if docker exec broker-limits-fixture mosquitto_pub -h 127.0.0.1 -t owned/ready -m ready; then break; fi
+            sleep 1
+          done
+          TEST_MQTT_BROKER_URL=mqtt://127.0.0.1:18885 node --import tsx --test src/mqtt/brokerLimits.integration.test.ts
       - run: npm run build
       - run: npm run test:ram-operational
 
@@ -93,21 +131,30 @@ jobs:
       - name: Audit frontend dependencies
         run: npm audit --audit-level=high
       - run: npm test
-      - run: npm run build
+      - name: Enforce both deployed frontend artifact budgets
+        run: |
+          VITE_BUILD_TARGET=app VITE_APP_HOSTNAME=app.ukmesh.com VITE_SITE=ukmesh VITE_NETWORK=ukmesh VITE_RF_COVERAGE_ENABLED=true npm run build
+          npm run budget
+          VITE_BUILD_TARGET=public-website VITE_APP_HOSTNAME=app.ukmesh.com VITE_SITE=ukmesh npm run build
+          npm run budget
 
   workers-and-compose:
     if: github.event_name != 'schedule'
     name: Workers and Compose
     runs-on: ubuntu-latest
     env:
+      POSTGRES_USER: meshcore
       POSTGRES_PASSWORD: ci-postgres-password
+      ALERT_RECEIVER_TOKEN: ci-alert-receiver-token-0123456789abcdef
+      HEALTHCHECK_TEST_CHANNEL_SECRET: 0123456789abcdef0123456789abcdef
       REDIS_PASSWORD: ci-redis-password
       JWT_SECRET: ci-test-only-ci-test-only-ci-test-only-ci-test-only
       OPERATOR_SITE_TOKEN: ci-operator-site-token-0123456789abcdef0123456789abcdef
       MQTT_USERNAME: backend
       MQTT_PASSWORD: ci-mqtt-password
       ANUBIS_ED25519_PRIVATE_KEY_HEX: '0000000000000000000000000000000000000000000000000000000000000001'
-      HEALTHCHECK_SOURCE_REF: 952eec8e0c55d0749f9abef211c266f992c0bfc7
+      HEALTHCHECK_SOURCE_REF: c93af192ec7cc0ecdfb3e9d0ea163840202ccbfc
+      DATA_LIFECYCLE_RECEIPT_VERIFY_KEY_SHA256: '0000000000000000000000000000000000000000000000000000000000000000'
       GRAFANA_ADMIN_PASSWORD: ci-grafana-password
       SOURCE_REVISION: ${{ github.sha }}
       MOSQUITTO_IMAGE: eclipse-mosquitto@sha256:9cfdd46ad59f3e3e5f592f6baf57ab23e1ad00605509d0f5c1e9b179c5314d87
@@ -265,6 +312,14 @@ jobs:
           publisher_user="ci-e2e-publisher"
           publisher_password="ci-e2e-publisher-password"
           observer="CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"
+          cleanup() {
+            status=$?
+            if [ "$status" -ne 0 ]; then
+              docker compose -f docker-compose.yml -f docker-compose.ci.yml --project-name "$project" ps --all || true
+              docker compose -f docker-compose.yml -f docker-compose.ci.yml --project-name "$project" logs --tail 100 backend alert-receiver alert-forward-sink alert-receiver-bootstrap || true
+            fi
+          }
+          trap cleanup EXIT
           # Create each Argon2 entry independently. Updating an existing
           # password file with this image is not reliable on hosted runners.
           docker run --rm \
@@ -304,6 +359,13 @@ jobs:
             --profile dev \
             up --detach --no-build --scale link-backfill-worker=0 --scale tagger-worker=0 \
               --wait --wait-timeout 360
+          # Exercise real tagger SQL against the owned database without an external classifier.
+          database_container="$(docker compose -f docker-compose.yml -f docker-compose.ci.yml --project-name "$project" ps -q timescaledb)"
+          docker run --rm --network "container:$database_container" \
+            --entrypoint python3 \
+            -e TEST_INGEST_DATABASE_URL="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@127.0.0.1:5432/meshcore" \
+            -v "$PWD/tagger-worker:/app/tests:ro" \
+            meshcore-analytics-tagger-worker:local -m unittest discover -s /app/tests -p test_tagger_candidates.py -v
           # link-backfill-worker is intentionally a finite job. Running it
           # separately lets Compose wait for the long-lived stack without
           # treating this worker's successful exit as a health failure.
@@ -408,15 +470,21 @@ jobs:
             exit 1
           fi
           grep -q '^mqtt-packet-fanout-ok$' "$ws_log"
-      - name: Install Playwright for E2E tests
+      - name: Install locked frontend dependencies and Playwright for E2E tests
         working-directory: frontend
         run: |
           npm ci
-          python ../scripts/ci-retry.py apt npx playwright install-deps chromium
-          npx playwright install chromium
-      - name: Run E2E tests against live stack
+          python ../scripts/ci-retry.py apt npx --no-install playwright install-deps chromium
+          npx --no-install playwright install chromium
+      - name: Run production browser journeys
         working-directory: frontend
         run: npm run test:e2e
+      - name: Verify development renderer and worker module interop
+        working-directory: frontend
+        run: npm run test:dev-renderer
+      - name: Verify production basemap worker and provider recovery
+        working-directory: frontend
+        run: npm run test:basemap
       - name: Clean up live E2E stack
         if: always()
         run: |
@@ -452,6 +520,15 @@ jobs:
         run: scripts/test-replace-container.sh
       - name: Test split infrastructure resolver dry run
         run: scripts/test-infra-compose.sh
+
+      - name: Preserve browser failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: browser-failure-${{ github.run_id }}-${{ github.run_attempt }}
+          path: frontend/test-results
+          if-no-files-found: ignore
+          retention-days: 7
 
   secrets:
     name: Secret scan

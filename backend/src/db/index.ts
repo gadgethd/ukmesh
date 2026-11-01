@@ -989,6 +989,13 @@ export async function getRecentMessages(
                CASE WHEN p.src_node_id IS NOT NULL THEN 1 ELSE 0 END DESC,
                p.time DESC, p.observation_id DESC NULLS LAST
     ),
+    selected_msgs AS MATERIALIZED (
+      SELECT * FROM recent_msgs
+      ${overlapParam ? `WHERE packet_hash = ANY(${overlapParam}::text[])
+        OR packet_hash IN (SELECT packet_hash FROM recent_msgs ORDER BY time DESC, packet_hash LIMIT $1)` : ''}
+      ORDER BY time DESC, packet_hash
+      LIMIT $1${overlapParam ? ` + CARDINALITY(${overlapParam}::text[])` : ''}
+    ),
     msg_stats AS (
       SELECT
         packet_hash,
@@ -1002,7 +1009,7 @@ export async function getRecentMessages(
         COUNT(*) FILTER (WHERE COALESCE(payload->>'direction', 'rx') = 'tx')::int AS tx_count
       FROM packets
       LEFT JOIN node_identity_aliases pa2 ON pa2.source_node_id = upper(btrim(packets.rx_node_id))
-      WHERE packet_hash = ANY(SELECT packet_hash FROM recent_msgs)
+      WHERE packet_hash = ANY(SELECT packet_hash FROM selected_msgs)
         AND time > NOW() - INTERVAL '24 hours'
         ${buildPacketScopeClause(scope, '', network)}
         ${buildPublicPacketPrivacyClause('packets')}
@@ -1017,7 +1024,7 @@ export async function getRecentMessages(
         m._representative_rank, m._representative_id,` : ''}
       ms.observer_node_ids, ms.observer_iatas, ms.rx_count, ms.tx_count,
       mt.tags, mt.confidence AS tag_confidence
-    FROM recent_msgs m
+    FROM selected_msgs m
     LEFT JOIN msg_stats ms ON ms.packet_hash = m.packet_hash
     LEFT JOIN message_tags mt ON mt.packet_hash = m.packet_hash
     ${overlapParam ? `WHERE m.packet_hash = ANY(${overlapParam}::text[])

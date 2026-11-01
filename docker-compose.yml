@@ -120,9 +120,9 @@ services:
       PUBLIC_FEATURE_HEATMAP_ENABLED: ${PUBLIC_FEATURE_HEATMAP_ENABLED:-false}
       PUBLIC_FEATURE_REGION_SCOPING_ENABLED: ${PUBLIC_FEATURE_REGION_SCOPING_ENABLED:-false}
       PUBLIC_FEATURE_CONFIG_TTL_SECONDS: ${PUBLIC_FEATURE_CONFIG_TTL_SECONDS:-30}
-      # 15 min: the ukmesh chart snapshot regen runs multibyte analytics that
-      # exceed 5 min on the 2vCPU VPS (was 300000; raised 2026-08-08)
-      DATABASE_STATEMENT_TIMEOUT_MS: 900000
+      # API and ingest use the OLTP deadline; identity/chart analyses use the
+      # separate analytics pool and retain its longer query budget.
+      DATABASE_STATEMENT_TIMEOUT_MS: ${DATABASE_STATEMENT_TIMEOUT_MS:-30000}
       DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-16}
       STATS_DB_QUERY_CONCURRENCY: ${STATS_DB_QUERY_CONCURRENCY:-2}
       STATS_AGGREGATE_READS_ENABLED: ${STATS_AGGREGATE_READS_ENABLED:-false}
@@ -218,7 +218,7 @@ services:
       - srtm_data:/health-volumes/terrain:ro
       - loki_data:/health-volumes/logs:ro
       - ${BACKUP_RECEIPT_HOST_DIR:-./backup-receipts}:/backup-receipts:ro
-      - ${RESTORE_RECEIPT_TRUST_HOST_DIR:-./restore-receipt-trust}:/etc/meshcore/restore-receipt:ro
+      - ${RESTORE_RECEIPT_TRUST_HOST_DIR:-${BACKUP_RECEIPT_VERIFY_KEY_HOST_DIR:-./restore-receipt-trust}}:/etc/meshcore/restore-receipt:ro
       - ${OWNER_AUTH_INVENTORY_HOST_DIR:-./backup-receipts}:/owner-auth-inventory:ro
     group_add:
       - "1883"
@@ -294,7 +294,7 @@ services:
       PRIVACY_REMAT_MAX_ATTEMPTS: ${PRIVACY_REMAT_MAX_ATTEMPTS:-8}
       HEALTH_VOLUME_PATHS: database=/health-volumes/database=${HEALTH_DATABASE_BUDGET_BYTES:-322122547200},redis=/health-volumes/redis=${HEALTH_REDIS_BUDGET_BYTES:-4294967296},terrain=/health-volumes/terrain=${HEALTH_TERRAIN_BUDGET_BYTES:-53687091200},logs=/health-volumes/logs=${HEALTH_LOG_BUDGET_BYTES:-21474836480}
       DATA_LIFECYCLE_RETENTION_ENABLED: "true"
-      DATA_LIFECYCLE_RETENTION_TARGETS: ${DATA_LIFECYCLE_RETENTION_TARGETS:-packets,worker_health_snapshots,frontend_error_events,owner_alert_deliveries,owner_packet_share_deliveries,public_feed_deliveries,operational_check_results,observer_region_packet_sightings,observer_region_observer_sightings,link_job_commits,ml_model_variant_packet_results,packet_decryptions,observer_registration_requests,operator_audit_events}
+      DATA_LIFECYCLE_RETENTION_TARGETS: ${DATA_LIFECYCLE_RETENTION_TARGETS:-packets,worker_health_snapshots,frontend_error_events,owner_alert_deliveries,owner_packet_share_deliveries,public_feed_deliveries,operational_check_results,observer_region_packet_sightings,observer_region_observer_sightings,link_job_commits,ml_model_variant_packet_results,packet_decryptions,observer_registration_requests,operator_audit_events,node_status_samples,node_neighbor_samples}
       DATA_LIFECYCLE_RESTORE_RECEIPT_PATH: /backup-receipts/latest.json
       DATA_LIFECYCLE_RESTORE_RECEIPT_SIGNATURE_PATH: /backup-receipts/latest.json.sig
       DATA_LIFECYCLE_RECEIPT_VERIFY_KEY_PATH: /etc/meshcore/restore-receipt/verify.pem
@@ -310,7 +310,7 @@ services:
       - srtm_data:/health-volumes/terrain:ro
       - loki_data:/health-volumes/logs:ro
       - ${BACKUP_RECEIPT_HOST_DIR:-./backup-receipts}:/backup-receipts:ro
-      - ${RESTORE_RECEIPT_TRUST_HOST_DIR:-./restore-receipt-trust}:/etc/meshcore/restore-receipt:ro
+      - ${RESTORE_RECEIPT_TRUST_HOST_DIR:-${BACKUP_RECEIPT_VERIFY_KEY_HOST_DIR:-./restore-receipt-trust}}:/etc/meshcore/restore-receipt:ro
 
   # Tags new public-channel messages with TypeSafe/Jev (shadow-mode trial,
   # added 2026-09-17 by Hermes for Ben). Results land in message_tags; nothing
@@ -633,7 +633,7 @@ services:
       TEST_CHANNEL_SECRET: ${HEALTHCHECK_TEST_CHANNEL_SECRET:-}
       TEST_CHANNEL_SECRET_SOURCE_NAME: ${HEALTHCHECK_TEST_CHANNEL_SECRET_SOURCE_NAME:-test}
       TEST_CHANNEL_HASH: ${HEALTHCHECK_TEST_CHANNEL_HASH:-}
-      MESHCORE_CHANNEL_SECRETS: ${MESHCORE_CHANNEL_SECRETS:-}
+      MESHCORE_CHANNEL_SECRETS: ${HEALTHCHECK_MESHCORE_CHANNEL_SECRETS:-${MESHCORE_CHANNEL_SECRETS:-}}
       SESSION_TTL_SECONDS: ${HEALTHCHECK_SESSION_TTL_SECONDS:-600}
       RESULT_RETENTION_SECONDS: ${HEALTHCHECK_RESULT_RETENTION_SECONDS:-604800}
       MAX_USES_PER_CODE: ${HEALTHCHECK_MAX_USES_PER_CODE:-3}
@@ -986,6 +986,7 @@ services:
     environment:
       DATABASE_APPLICATION_NAME: meshcore-alert-receiver
       ALERT_FORWARD_URL: ${ALERT_FORWARD_URL:-}
+      ALERT_FORWARD_QUEUE_MAX: ${ALERT_FORWARD_QUEUE_MAX:-1000}
       ALERT_RECEIVER_PATH: /var/lib/meshcore-alerts/alerts.jsonl
       ALERT_RECEIVER_TOKEN: ${ALERT_RECEIVER_TOKEN:-}
       NODE_ENV: production

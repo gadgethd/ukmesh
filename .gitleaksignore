@@ -54,3 +54,47 @@ ac4ee2afecc16ed67fdc09cf70953dc85d3a4c5a:website-live-manifest.staging.json:gene
 # deploy-sync commit 1d24322; both files were later removed from main.
 1d243222ef464a2e4c95cbce9e7a4ecd166534db:backend/backfill-region-names.mjs:generic-api-key:42
 1d243222ef464a2e4c95cbce9e7a4ecd166534db:backend/src/tools/rebuildRegionParticipation.ts:generic-api-key:45
+
+# Exact public/test fingerprints retained after release-history cleanup.
+# Includes the same synthetic sanitize fixture in an older release ancestor.
+2c7ea43542701f9084bc8fe87b78afba309fec37:backend/src/spam/sanitize.test.ts:generic-api-key:50
+5f905be1bea224f9b84b40dfb13dcb116082c377:website-live-manifest.json:generic-api-key:40
+5f905be1bea224f9b84b40dfb13dcb116082c377:website-live-manifest.staging.json:generic-api-key:40
+73d16572b4edb28322df16baeeb997605d886c81:backend/src/mqtt/channelRegistry.ts:generic-api-key:31
+73d16572b4edb28322df16baeeb997605d886c81:backend/src/mqtt/channelRegistry.ts:generic-api-key:32
+73d16572b4edb28322df16baeeb997605d886c81:backend/src/mqtt/channelRegistry.ts:generic-api-key:33
+73d16572b4edb28322df16baeeb997605d886c81:backend/src/mqtt/channelRegistry.ts:generic-api-key:34
+73d16572b4edb28322df16baeeb997605d886c81:backend/src/mqtt/channelRegistry.ts:generic-api-key:35
+73d16572b4edb28322df16baeeb997605d886c81:backend/src/mqtt/channelRegistry.ts:generic-api-key:36
+73d16572b4edb28322df16baeeb997605d886c81:backend/src/mqtt/channelRegistry.ts:generic-api-key:37
+73d16572b4edb28322df16baeeb997605d886c81:backend/src/mqtt/channelRegistry.ts:generic-api-key:38
+73d16572b4edb28322df16baeeb997605d886c81:backend/src/mqtt/channelRegistry.ts:generic-api-key:39
+73d16572b4edb28322df16baeeb997605d886c81:backend/src/mqtt/channelRegistry.ts:generic-api-key:42
+73d16572b4edb28322df16baeeb997605d886c81:backend/src/mqtt/channelRegistry.ts:generic-api-key:43
+73d16572b4edb28322df16baeeb997605d886c81:backend/src/mqtt/channelRegistry.ts:generic-api-key:46
+73d16572b4edb28322df16baeeb997605d886c81:backend/src/mqtt/channelRegistry.ts:generic-api-key:47
+73d16572b4edb28322df16baeeb997605d886c81:backend/src/mqtt/channelRegistry.ts:generic-api-key:48
+73d16572b4edb28322df16baeeb997605d886c81:backend/src/mqtt/channelRegistry.ts:generic-api-key:49
+73d16572b4edb28322df16baeeb997605d886c81:backend/src/mqtt/channelRegistry.ts:generic-api-key:50
+73d16572b4edb28322df16baeeb997605d886c81:backend/src/mqtt/channelRegistry.ts:generic-api-key:51
+73d16572b4edb28322df16baeeb997605d886c81:backend/src/mqtt/channelRegistry.ts:generic-api-key:52
+73d16572b4edb28322df16baeeb997605d886c81:backend/src/mqtt/channelRegistry.ts:generic-api-key:53
+73d16572b4edb28322df16baeeb997605d886c81:backend/src/mqtt/channelRegistry.ts:generic-api-key:54
+73d16572b4edb28322df16baeeb997605d886c81:backend/src/mqtt/channelRegistry.ts:generic-api-key:55
+73d16572b4edb28322df16baeeb997605d886c81:backend/src/mqtt/channelRegistry.ts:generic-api-key:56
+73d16572b4edb28322df16baeeb997605d886c81:backend/src/mqtt/channelRegistry.ts:generic-api-key:57
+73d16572b4edb28322df16baeeb997605d886c81:backend/src/mqtt/channelRegistry.ts:generic-api-key:58
+73d16572b4edb28322df16baeeb997605d886c81:backend/src/mqtt/channelRegistry.ts:generic-api-key:59
+73d16572b4edb28322df16baeeb997605d886c81:backend/src/mqtt/channelRegistry.ts:generic-api-key:60
+73d16572b4edb28322df16baeeb997605d886c81:backend/src/mqtt/channelRegistry.ts:generic-api-key:61
+73d16572b4edb28322df16baeeb997605d886c81:backend/src/mqtt/channelRegistry.ts:generic-api-key:62
+73d16572b4edb28322df16baeeb997605d886c81:backend/src/mqtt/channelRegistry.ts:generic-api-key:63
+73d16572b4edb28322df16baeeb997605d886c81:backend/src/mqtt/channelRegistry.ts:generic-api-key:65
+73d16572b4edb28322df16baeeb997605d886c81:backend/src/mqtt/channelRegistry.ts:generic-api-key:66
+73d16572b4edb28322df16baeeb997605d886c81:backend/src/mqtt/channelRegistry.ts:generic-api-key:67
+73d16572b4edb28322df16baeeb997605d886c81:backend/src/mqtt/channelRegistry.ts:generic-api-key:68
+76b4ece87c80d8f233ff7b92bf23d40a9bc23427:website-live-manifest.json:generic-api-key:38
+7ce8fd040331ba2794eaa72f3c20bec216fe8541:backend/src/spam/sanitize.test.ts:generic-api-key:50
+b92314af87becee3f61823c1e15caaad9a9ff89e:backend/src/mqtt/channelRegistry.ts:generic-api-key:38
+b92314af87becee3f61823c1e15caaad9a9ff89e:backend/src/mqtt/channelRegistry.ts:generic-api-key:42
+ebd704d7777a87448ad7fc8f787a2b23cd0e16a8:website-live-manifest.staging.json:generic-api-key:38

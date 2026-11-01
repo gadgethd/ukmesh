@@ -13,3 +13,15 @@ export function getRedisConnectionOptions(): { password?: string } {
   const password = process.env['REDIS_PASSWORD'];
   return password ? { password } : {};
 }
+
+/** Short-lived publications must not be retained or replayed across outages. */
+export function getRedisPublisherOptions() {
+  return {
+    ...getRedisConnectionOptions(),
+    enableOfflineQueue: false,
+    maxRetriesPerRequest: 1,
+    autoResendUnfulfilledCommands: false,
+    commandTimeout: 5_000,
+    connectTimeout: 5_000,
+  } as const;
+}

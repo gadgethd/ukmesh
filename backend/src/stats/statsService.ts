@@ -764,7 +764,8 @@ export function createStatsService(deps: StatsServiceDeps) {
   }
 
   async function getObserverActivity(network: string | undefined): Promise<unknown> {
-    const key = `${network ?? 'ukmesh'}`;
+    const generation = await getPublicVisibilityGeneration();
+    const key = `${network ?? 'ukmesh'}:v${generation}`;
     const cached = observerActivityCache.get(key);
     if (cached && Date.now() - cached.ts < statsCacheTtlMs) {
       return cached.data;
@@ -778,7 +779,10 @@ export function createStatsService(deps: StatsServiceDeps) {
     }
 
     const promise = repository.fetchObserverActivity(network)
-      .then((result) => {
+      .then(async (result) => {
+        if (await getPublicVisibilityGeneration() !== generation) {
+          throw new Error('observer activity privacy generation changed before publication');
+        }
         const data = result.rows.map((r) => ({ ...r, rx_24h: Number(r.rx_24h), tx_24h: Number(r.tx_24h) }));
         observerActivityCache.set(key, { ts: Date.now(), data });
         observerActivityInflight.delete(key);

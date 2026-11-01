@@ -44,6 +44,11 @@ jobs:
             context: .
             file: Dockerfile.backend
             build_args: ''
+          - component: tagger-worker
+            image: meshcore-tagger-worker
+            context: tagger-worker
+            file: tagger-worker/Dockerfile
+            build_args: ''
           - component: combined
             image: meshcore-combined
             context: .
@@ -85,7 +90,7 @@ jobs:
             image: meshcore-health-check
             context: .
             file: Dockerfile.mesh-health-check
-            build_args: MESH_HEALTH_CHECK_REF=952eec8e0c55d0749f9abef211c266f992c0bfc7
+            build_args: MESH_HEALTH_CHECK_REF=c93af192ec7cc0ecdfb3e9d0ea163840202ccbfc
     env:
       REGISTRY: ghcr.io
       IMAGE_NAME: ${{ github.repository_owner }}/${{ matrix.image }}
@@ -134,6 +139,14 @@ jobs:
           severity: CRITICAL
           ignore-unfixed: false
           trivyignores: .trivyignore.yaml
+      - name: Retain vulnerability results even when the gate rejects an image
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: scan-${{ github.sha }}-${{ matrix.component }}
+          path: trivy-${{ matrix.component }}.json
+          if-no-files-found: warn
+          retention-days: 90
       - name: Generate SPDX SBOM for exact digest
         uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:

@@ -265,7 +265,13 @@ export function enqueuePacket(packet: PacketBatchInput): Promise<PacketBatchResu
     pending.push({ packet, resolve, reject, enqueuedNs: process.hrtime.bigint() });
   });
   packetBatchQueueDepth.set(pending.length);
-  if (pending.length >= MAX_BATCH_SIZE || FLUSH_INTERVAL_MS === 0) void flush();
+  if (pending.length >= MAX_BATCH_SIZE || FLUSH_INTERVAL_MS === 0) {
+    void flush().catch((error: unknown) => {
+      // Individual packet promises carry the error to intake/quarantine. A
+      // detached flush must not also trigger the global rejection shutdown.
+      console.error('[db] packet batch flush failed', error instanceof Error ? error.message : error);
+    });
+  }
   else scheduleFlush();
   return result;
 }
@@ -584,7 +590,7 @@ export async function persistEntriesCore(
          RETURNING 1
        ),
        daily_candidates AS (
-         SELECT DISTINCT ON (network)
+         SELECT DISTINCT ON (network, time::date)
            network,
            time::date AS day,
            hop_count,
@@ -594,7 +600,7 @@ export async function persistEntriesCore(
          WHERE path_is_valid
            AND NOT is_private
            AND hop_count IS NOT NULL
-         ORDER BY network, hop_count DESC, row_id ASC
+         ORDER BY network, time::date, hop_count DESC, row_id ASC
        ),
        daily_updates AS (
          INSERT INTO packet_daily_stats
