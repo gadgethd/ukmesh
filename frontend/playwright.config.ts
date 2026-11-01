@@ -13,6 +13,10 @@ export default defineConfig({
   use: {
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
+    launchOptions: {
+      executablePath: process.env['PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH'],
+      args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'],
+    },
   },
   projects: [
     {
