@@ -4,7 +4,7 @@ import {
   type OwnerInventoryAccountRow,
   type OwnerInventoryBaseline,
 } from './ownerInventoryBaseline.js';
-import { validateOwnerInventoryReadiness, type AppliedOwnerAclArtifact } from './ownerInventoryReadiness.js';
+import { validateOwnerInventoryReadiness, type AppliedOwnerAclArtifact, type OwnerInventoryReadinessResult } from './ownerInventoryReadiness.js';
 import type { ConfiguredOwnerGrant } from './ownerGrantConfig.js';
 
 export const OWNER_READINESS_FORMAT = 'meshcore-owner-readiness-v1';
@@ -21,7 +21,7 @@ export function createOwnerAuthorizationReadiness(input: {
   return async () => {
     const config = input.config();
     const aclState = await input.readState();
-    let inventoryBaseline = {
+    let inventoryBaseline: OwnerInventoryReadinessResult & { required: boolean } = {
       required: Boolean(config.baselinePath),
       ok: !config.baselinePath,
       mismatches: [] as string[],

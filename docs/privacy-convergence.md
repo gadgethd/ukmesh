@@ -132,6 +132,32 @@ closed. Existing baselines and historical applied artifacts must be retained:
 the policy-hash transition changes generation IDs once, and readiness uses those
 artifacts to prove that unchanged permissions remain safe.
 
+New inventory exports retain the verified applied ACL certificate inside the
+baseline checksum. This optional v1 field preserves compatibility with existing
+baselines. Export rejects an embedded certificate unless its generation, current
+settled state, renderer, hash, marker and exact ACL bytes agree. If only the
+historical SQL row is lost, readiness may use this retained certificate with the
+same permission-delta validation. A corrupt existing SQL certificate is never
+silently replaced by the fallback; a current applied certificate is still required.
+
+For a legacy baseline with no retained evidence, readiness remains closed and
+returns `repair` identifying the missing generation, old baseline checksum and
+current generation. The auto-rebaseline consumer refuses this repair request.
+Obtain a deterministic read-only plan in the backend's normal authenticated
+database environment (do not run these commands against an unreviewed database):
+
+```sh
+npm run owner-auth:inventory -- --baseline=/path/to/original.json --repair-plan --show-details
+```
+
+This mode cannot be combined with `--export` and never modifies a baseline.
+Restore the named historical applied artifact from a trusted backup. If that
+evidence is unavailable, review the complete current ACL and get explicit
+approval to establish a new baseline; export it to a **new** path using
+`--export=/path/to/new.json`, retain the original, and separately select the
+reviewed replacement through normal configuration management. No rebaseline,
+configuration change, restart or fabricated historical certificate is automatic.
+
 See [the 2026-10-28 review](reviews/2026-10-28-l3-ukmesh-privacy-fence.md) for source
 locations, reproduction and exact test results. None of this invokes
 `privacy:converge --apply` automatically.

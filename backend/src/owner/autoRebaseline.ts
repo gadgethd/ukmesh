@@ -54,6 +54,9 @@ export function decideOwnerBaselineAction(
   }
 
   const mismatches = baseline['mismatches'] as string[];
+  if (baseline['repair'] !== undefined) {
+    return abort('owner-baseline-history-repair-required', mismatches);
+  }
   if (baseline['ok'] === true) {
     return mismatches.length === 0
       ? { action: 'skip', reason: 'owner-baseline-current', mismatches }

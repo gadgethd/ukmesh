@@ -31,6 +31,7 @@ function readyz(options: {
   rendered?: string | null;
   applied?: string | null;
   lastError?: string | null;
+  repair?: unknown;
 } = {}): unknown {
   return {
     format: OWNER_READINESS_FORMAT,
@@ -44,6 +45,7 @@ function readyz(options: {
           required: true,
           ok: options.ok ?? true,
           mismatches: options.mismatches ?? [],
+          ...(options.repair === undefined ? {} : { repair: options.repair }),
         },
       },
   };
@@ -89,6 +91,15 @@ test('unrelated inventory mismatches abort instead of broadening the refresh tri
   }));
   assert.equal(result.action, 'abort');
   assert.equal(result.reason, 'unexpected-owner-baseline-mismatch');
+});
+
+test('a missing historical certificate repair cannot trigger automatic baseline replacement', () => {
+  const result = decideWithDiagnostics(503, readyz({
+    ok: false, mismatches: ['aclDesiredGeneration', 'aclRenderedGeneration', 'aclAppliedGeneration'],
+    repair: { kind: 'restore-owner-acl-history', reviewRequired: true },
+  }));
+  assert.equal(result.action, 'abort');
+  assert.equal(result.reason, 'owner-baseline-history-repair-required');
 });
 
 test('unsettled ACL state, ACL errors, or shadow mode abort', () => {
