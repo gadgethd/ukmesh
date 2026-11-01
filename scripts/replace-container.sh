@@ -297,11 +297,27 @@ network_name="$(
     --format '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}}{{"\n"}}{{end}}' \
     | head -n 1
 )"
+# Read-only ACL mounts still require the live backend's supplementary groups.
+# Keep its runtime identity when testing the prior image against the schema.
+compat_identity="$(docker inspect "$current_backend_id" \
+  --format '{"user":{{json .Config.User}},"groups":{{json .HostConfig.GroupAdd}}}')"
+compat_identity_flags=()
+compat_user="$(jq -r '.user // empty' <<<"$compat_identity")"
+if [ -n "$compat_user" ]; then
+  compat_identity_flags+=(--user "$compat_user")
+fi
+compat_groups="$(jq -r '.groups // [] | .[]' <<<"$compat_identity")"
+while IFS= read -r compat_group; do
+  if [ -n "$compat_group" ]; then
+    compat_identity_flags+=(--group-add "$compat_group")
+  fi
+done <<<"$compat_groups"
 echo "Testing the prior backend image against the post-migration schema..."
 docker run -d \
   --name "$compat_name" \
   --network "$network_name" \
   --env-file "$compat_env" \
+  "${compat_identity_flags[@]}" \
   --volumes-from "$current_backend_id:ro" \
   -e MQTT_INGEST_ENABLED=false \
   -e OWNER_AUTHORIZATION_MODE=shadow \

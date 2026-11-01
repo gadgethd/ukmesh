@@ -181,6 +181,9 @@ case "$command_name" in
           'DATABASE_URL=postgresql://meshcore:fixture@timescaledb:5432/meshcore' \
           'REDIS_URL=redis://redis:6379'
         ;;
+      *'.Config.User'*)
+        printf '{"user":"1000:1000","groups":["1883","2000"]}\n'
+        ;;
       *'.NetworkSettings.Networks'*)
         printf 'meshcore-net\n'
         ;;
@@ -200,6 +203,9 @@ case "$command_name" in
     esac
     ;;
   run)
+    # The live ACL fixture is readable only with its runtime identity/groups.
+    # A compatibility container using just the image defaults would exit.
+    [[ " $* " == *" --user 1000:1000 --group-add 1883 --group-add 2000 "* ]]
     printf 'compat-container-id\n'
     ;;
   exec)
