@@ -32,13 +32,18 @@ function vectorTile(): Buffer {
 async function fixtures(page: Page) {
   await page.addInitScript(() => {
     localStorage.setItem('meshcore-disclaimer-dismissed', '1');
+    const NativeWebSocket = window.WebSocket;
     class FixtureWebSocket extends EventTarget {
       static OPEN = 1;
       readyState = 1;
       onopen: ((event: Event) => void) | null = null;
       onmessage: ((event: MessageEvent) => void) | null = null;
-      constructor() {
+      constructor(url: string | URL, protocols?: string | string[]) {
         super();
+        // The development renderer must retain Vite's real hot-reload socket.
+        if (new URL(url).pathname !== '/ws') {
+          return new NativeWebSocket(url, protocols) as unknown as FixtureWebSocket;
+        }
         setTimeout(() => {
           this.onopen?.(new Event('open'));
           this.onmessage?.(new MessageEvent('message', { data: JSON.stringify({
@@ -52,7 +57,7 @@ async function fixtures(page: Page) {
       send() {}
       close() { this.readyState = 3; }
     }
-    Object.defineProperty(window, 'WebSocket', { value: FixtureWebSocket });
+    Object.defineProperty(window, 'WebSocket', { value: FixtureWebSocket, configurable: true });
   });
   await page.route('**/api/**', (route) => {
     const path = new URL(route.request().url()).pathname;
