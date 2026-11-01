@@ -753,6 +753,25 @@ retention. Broker reload tests and the explicit-owner-grant/discovery/rollback
 script checks pass. PR checks record the subsequent production-artifact browser,
 worker, Compose and secret-scan evidence for the final proposed revisions.
 
-The reconciliation does not promote new images or rerun a production cutover.
-Production remains pinned to the signed release described in section O. A new
-rollout must qualify its exact merged commit and images independently.
+The six regional browser checks pass, including late-response rejection and
+runtime scope disable. Production artifact checks cover the real renderer,
+terrain and RF decoding. The keyboard fixture supplies a deterministic live
+snapshot; software-rendered mobile viewport checks run serially.
+
+All 149 original local changes have a recorded disposition: 98 are preserved
+exactly, 44 are reconciled, four are superseded by newer upstream code, two
+remain protected runtime files, and one empty test artifact is archived.
+Full-history secret scanning remains enforced with exact reviewed public/test
+fingerprints; runtime credentials and private remediation receipts stay outside
+Git.
+
+The reconciliation does not promote new images. Approved credential maintenance
+recreated affected services with their existing image IDs and data mounts. Both
+stored packet-sharing passwords were re-encrypted and verified, old database,
+cache, broker, Grafana, operator, RAM-read and TypeSafe credentials were rejected,
+and the replacement Cloudflare connector registered successfully. The owner
+baseline was refreshed only after confirming the same 33 accounts and 62 grants;
+readiness and all defined container health checks recovered.
+
+Production remains on the signed application images described in section O.
+A new image rollout must qualify its exact merged commit and images independently.
