@@ -562,7 +562,7 @@ async function currentWorkers(precomputedStats?: ReturnType<typeof systemStats>)
     query<{ count: string; ts: string | null }>(
       `SELECT COUNT(*) FILTER (WHERE ts > NOW() - INTERVAL '1 hour') AS count,
               MAX(ts)::text AS ts
-       FROM worker_health_snapshots
+       FROM ops.worker_health_snapshots
        WHERE worker_name = 'health-worker'`,
     ),
     query<{ links: string; last_observed: string | null }>(
@@ -659,7 +659,7 @@ async function currentWorkerStatuses(precomputedStats: ReturnType<typeof systemS
             last_activity_at::text, cpu_load_1m, cpu_usage_pct,
             mem_used_pct, disk_used_pct, queue_bytes, dead_jobs,
             retries, active_leases, oldest_age_s, captured_at::text
-       FROM worker_health_current
+       FROM ops.worker_health_current
       ORDER BY worker_name`,
   );
   if (result.rows.length === 0) return currentWorkers(precomputedStats);
@@ -733,7 +733,7 @@ export async function captureWorkerHealthSnapshot(): Promise<void> {
            oldest_age_s double precision
          )
      ), history_write AS (
-       INSERT INTO worker_health_snapshots
+       INSERT INTO ops.worker_health_snapshots
          (ts, worker_name, status, queue_depth, processed_5m, processed_1h,
           last_activity_at, cpu_load_1m, mem_used_pct, disk_used_pct)
        SELECT $1::timestamptz, worker_name, status, queue_depth, 0, processed_1h,
@@ -741,13 +741,13 @@ export async function captureWorkerHealthSnapshot(): Promise<void> {
          FROM snapshot
        RETURNING worker_name
      ), current_cleanup AS (
-       DELETE FROM worker_health_current current
+       DELETE FROM ops.worker_health_current current
         WHERE NOT EXISTS (
           SELECT 1 FROM snapshot WHERE snapshot.worker_name = current.worker_name
         )
        RETURNING worker_name
      )
-     INSERT INTO worker_health_current
+     INSERT INTO ops.worker_health_current
        (worker_name, captured_at, status, queue_depth, processed_1h,
         last_activity_at, cpu_load_1m, cpu_usage_pct, mem_used_pct,
         disk_used_pct, queue_bytes, dead_jobs, retries, active_leases, oldest_age_s)
@@ -803,7 +803,7 @@ async function getOperationalChecksCached(): Promise<{ rows: OperationalCheckRow
     const tracked = query<OperationalCheckRow>(
       `SELECT DISTINCT ON (check_name)
          check_name, status, latency_ms, detail, ts::text
-       FROM operational_check_results
+       FROM ops.operational_check_results
        ORDER BY check_name, ts DESC`,
     )
       .then((result) => {
@@ -838,7 +838,7 @@ export async function getWorkerHealthOverview() {
       disk_used_pct: number | null;
     }>(
       `SELECT ts::text, worker_name, status, queue_depth, processed_1h, cpu_load_1m, mem_used_pct, disk_used_pct
-       FROM worker_health_snapshots
+       FROM ops.worker_health_snapshots
        ORDER BY ts DESC
        LIMIT 720`,
     ),

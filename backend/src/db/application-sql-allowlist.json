@@ -47,7 +47,6 @@
     "observer_region_packet_sightings",
     "observer_registration_requests",
     "observers",
-    "operational_check_results",
     "operator_audit_events",
     "owner_alert_deliveries",
     "owner_alert_delivery_attempts",
@@ -93,9 +92,7 @@
     "spam_suspects",
     "stats_chart_snapshots",
     "tagger_retry",
-    "tagger_state",
-    "worker_health_current",
-    "worker_health_snapshots"
+    "tagger_state"
   ],
   "files": {
     "analysis/publicationFence.ts": [
@@ -324,12 +321,9 @@
     ],
     "health/status.ts": [
       "node_links",
-      "operational_check_results",
       "packet_paths",
       "path_model_calibration",
-      "privacy_rematerialization_queue",
-      "worker_health_current",
-      "worker_health_snapshots"
+      "privacy_rematerialization_queue"
     ],
     "maintenance/staleMqttObservers.integration.test.ts": [
       "maintenance_removed_records",
@@ -726,9 +720,7 @@
       "private_node_prefixes",
       "public_visibility_state"
     ],
-    "workers/syntheticPersistence.ts": [
-      "operational_check_results"
-    ],
+    "workers/syntheticPersistence.ts": [],
     "ws/initialStateNodes.integration.test.ts": [
       "node_map_suppressions",
       "nodes"

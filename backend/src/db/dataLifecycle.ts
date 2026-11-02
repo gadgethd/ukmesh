@@ -75,6 +75,7 @@ export const DATA_LIFECYCLE_POLICIES: readonly DataLifecyclePolicy[] = Object.fr
   },
   {
     table: 'worker_health_snapshots',
+    qualifiedTable: 'ops.worker_health_snapshots',
     timestampColumn: 'ts',
     retention: '7 days',
     kind: 'row-table',
@@ -82,6 +83,7 @@ export const DATA_LIFECYCLE_POLICIES: readonly DataLifecyclePolicy[] = Object.fr
   },
   {
     table: 'operational_check_results',
+    qualifiedTable: 'ops.operational_check_results',
     timestampColumn: 'ts',
     retention: '14 days',
     kind: 'row-table',

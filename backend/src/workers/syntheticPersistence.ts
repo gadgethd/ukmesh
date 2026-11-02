@@ -17,7 +17,7 @@ export async function persistSyntheticCheckResults(
   execute: QueryFn = query,
 ): Promise<void> {
   await execute(
-    `INSERT INTO operational_check_results (check_name, status, latency_ms, detail)
+    `INSERT INTO ops.operational_check_results (check_name, status, latency_ms, detail)
      SELECT result.name, result.status, result.latency_ms, result.detail
        FROM jsonb_to_recordset($1::jsonb) AS result(
          name text,
