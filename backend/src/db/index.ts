@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import {
   analyticsStatementTimeoutMs,
   databaseConfig,
+  databaseUrlForRole,
 } from '../platform/config/database.js';
 import { resolveDbAssetPath } from './assets.js';
 import { runMigrations } from './migrations.js';
@@ -40,7 +41,7 @@ const COORDINATE_RECALC_THRESHOLD_M = Number(process.env['NODE_COORDINATE_RECALC
 const MAX_MULTIBYTE_PATH_SEGMENT_KM = 150;
 
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
+  connectionString: databaseUrlForRole('http'),
   application_name: databaseConfig.applicationName,
   options: databaseConfig.schema ? `-c search_path=${databaseConfig.schema},public` : undefined,
   max: databaseConfig.poolMax,
@@ -58,7 +59,7 @@ configurePacketBatch(ingestQuery, withIngestTransaction);
 // Dedicated pool for long-running analytical queries (e.g. refreshRecentPathEvidence).
 // Kept separate so slow analytics can never exhaust the OLTP pool and take down the API.
 const analyticsPool = new Pool({
-  connectionString: process.env.DATABASE_URL,
+  connectionString: databaseUrlForRole('worker'),
   application_name: `${databaseConfig.applicationName}-analytics`,
   options: databaseConfig.schema ? `-c search_path=${databaseConfig.schema},public` : undefined,
   max: 2,
@@ -350,7 +351,7 @@ export async function initDb(): Promise<void> {
   const schemaPath = resolveDbAssetPath('schema', 'base.sql');
   const sql = fs.readFileSync(schemaPath, 'utf8');
   const startupPool = new Pool({
-    connectionString: process.env.DATABASE_URL,
+    connectionString: databaseUrlForRole('migrate'),
     application_name: `${databaseConfig.applicationName}-startup`,
     options: databaseConfig.schema ? `-c search_path=${databaseConfig.schema},public` : undefined,
     max: 1,
