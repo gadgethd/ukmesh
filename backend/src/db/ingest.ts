@@ -1,6 +1,6 @@
 import pg from 'pg';
 import { boundedIntegerSetting } from '../platform/config/boundedNumber.js';
-import { databaseConfig } from '../platform/config/database.js';
+import { databaseConfig, databaseUrlForRole } from '../platform/config/database.js';
 import { dbQueriesTotal, dbQueryDuration, updateDbPoolMetrics } from '../metrics.js';
 import type { DatabaseQueryFn } from './index.js';
 
@@ -9,7 +9,7 @@ export function ingestPoolOptions(env: NodeJS.ProcessEnv = process.env): pg.Pool
     'MQTT_INGEST_STATEMENT_TIMEOUT_MS', env['MQTT_INGEST_STATEMENT_TIMEOUT_MS'], 10_000, 100, 30_000,
   );
   return {
-    connectionString: env['DATABASE_URL'],
+    connectionString: databaseUrlForRole('ingest', env),
     application_name: `${databaseConfig.applicationName}-ingest`,
     options: databaseConfig.schema ? `-c search_path=${databaseConfig.schema},public` : undefined,
     max: 2,

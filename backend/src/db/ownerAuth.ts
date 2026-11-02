@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { resolveDbAssetPath } from './assets.js';
 import { boundedIntegerSetting } from '../platform/config/boundedNumber.js';
+import { databaseUrlForRole } from '../platform/config/database.js';
 import { planOperatorConfiguredOwnerGrantSync } from '../owner/ownerGrantReconciliation.js';
 import { createOwnerAclArtifactStore } from '../owner/ownerAclArtifacts.js';
 
@@ -46,8 +47,11 @@ function withDatabaseName(connectionString: string, databaseName: string): strin
 }
 
 function getOwnerDatabaseUrl(): string {
-  return String(process.env['OWNER_DATABASE_URL'] ?? '').trim()
-    || withDatabaseName(getPrimaryDatabaseUrl(), OWNER_DB_NAME);
+  return databaseUrlForRole(
+    'owner',
+    process.env,
+    withDatabaseName(getPrimaryDatabaseUrl(), OWNER_DB_NAME),
+  ) ?? withDatabaseName(getPrimaryDatabaseUrl(), OWNER_DB_NAME);
 }
 
 function getAdminDatabaseUrl(): string {
