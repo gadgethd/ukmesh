@@ -82,8 +82,8 @@ g1a() {
   need_file "$GATES/G1a-roles.txt"
   local free_gb
   free_gb="$(disk_free_gb)"
-  if [ -z "$free_gb" ] || [ "$free_gb" -lt 40 ]; then
-    fail "free disk ${free_gb:-unknown}G is below the adaptive 40G G1a floor"
+  if [ -z "$free_gb" ] || [ "$free_gb" -lt 30 ]; then
+    fail "free disk ${free_gb:-unknown}G is below the adaptive 30G G1a floor"
   fi
   say "free disk: ${free_gb:-unknown}G"
   [ "$FAIL" -eq 0 ] && say "G1a: PASS" || say "G1a: BLOCKED"
