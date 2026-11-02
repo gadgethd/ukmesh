@@ -16,3 +16,29 @@ COMMENT ON SCHEMA mesh IS 'packets, observations, paths, channel messages and al
 COMMENT ON SCHEMA analytics IS 'read models for Beacon, CoreScope and Planner';
 COMMENT ON SCHEMA archive IS 'anonymised per-hop aggregates and archive manifest';
 COMMENT ON SCHEMA ops IS 'migration ledger bridge, privacy registries and operational state';
+
+-- P1-2 privacy registries. These are policy tables, never content stores.
+CREATE TABLE IF NOT EXISTS ops.channel_blocklist (
+  channel_hash TEXT PRIMARY KEY,
+  channel_name TEXT,
+  hashtag TEXT,
+  reason TEXT NOT NULL,
+  source TEXT NOT NULL,
+  added_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  added_by TEXT NOT NULL
+);
+COMMENT ON TABLE ops.channel_blocklist IS
+  'Channel publication policy keyed by full channel identity; no message content.';
+
+CREATE TABLE IF NOT EXISTS ops.node_privacy (
+  node_id TEXT PRIMARY KEY,
+  reason TEXT NOT NULL,
+  source TEXT NOT NULL,
+  marker TEXT,
+  expanded_from TEXT,
+  added_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  added_by TEXT NOT NULL
+);
+COMMENT ON TABLE ops.node_privacy IS
+  'Node identity privacy from private_node_prefixes and the 🚫 name marker; no packet content.';
+
