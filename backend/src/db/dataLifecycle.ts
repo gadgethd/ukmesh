@@ -136,6 +136,7 @@ export const DATA_LIFECYCLE_POLICIES: readonly DataLifecyclePolicy[] = Object.fr
   },
   {
     table: 'operator_audit_events',
+    qualifiedTable: 'ops.operator_audit_events',
     timestampColumn: 'created_at',
     retention: '730 days',
     kind: 'row-table',

@@ -1317,16 +1317,16 @@ test('packet batch atomically coalesces observer, sighting, and stats writes', {
     assert.deepEqual(registrationRetention.rows, [{ status: 'pending' }]);
 
     await pool.query(
-      `INSERT INTO operator_audit_events
+      `INSERT INTO ops.operator_audit_events
          (actor, action, target_type, target_id, idempotency_key, status, created_at)
        VALUES
          ('integration', 'test', 'reset', $1, $2, 'succeeded', NOW() - INTERVAL '731 days'),
          ('integration', 'test', 'reset', $3, $4, 'succeeded', NOW() - INTERVAL '729 days')`,
       [suffix, `expired-audit-${suffix}`, `${suffix}-retained`, `retained-audit-${suffix}`],
     );
-    await executeRetention(retentionTarget('operator_audit_events'));
+    await executeRetention(retentionTarget('ops.operator_audit_events'));
     const auditRetention = await pool.query<{ idempotency_key: string }>(
-      `SELECT idempotency_key FROM operator_audit_events
+      `SELECT idempotency_key FROM ops.operator_audit_events
         WHERE idempotency_key = ANY($1::text[]) ORDER BY idempotency_key`,
       [[`expired-audit-${suffix}`, `retained-audit-${suffix}`]],
     );
@@ -1370,7 +1370,7 @@ test('packet batch atomically coalesces observer, sighting, and stats writes', {
         WHERE contact IN ('terminal@example.invalid', 'pending@example.invalid')`,
     );
     await pool.query(
-      `DELETE FROM operator_audit_events WHERE idempotency_key LIKE $1`,
+      `DELETE FROM ops.operator_audit_events WHERE idempotency_key LIKE $1`,
       [`%-${suffix}`],
     );
     await pool.query('DELETE FROM nodes WHERE node_id = $1', [observerId]);
