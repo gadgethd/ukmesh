@@ -127,7 +127,7 @@ async function waitForGeneration(
     );
     const completedJobs = Number(completed.rows[0]?.count ?? 0);
     await query(
-      `UPDATE link_rebuild_runs
+      `UPDATE ops.link_rebuild_runs
           SET completed_jobs = $2, status = 'processing', updated_at = NOW()
         WHERE generation = $1`,
       [generation, completedJobs],
@@ -202,7 +202,7 @@ async function main(): Promise<void> {
     await query(`CREATE SCHEMA ${schemaName}`);
     await query(`CREATE TABLE ${schemaName}.node_links (LIKE public.node_links INCLUDING ALL)`);
     await query(
-      `INSERT INTO link_rebuild_runs (generation, schema_name, status, window_end)
+      `INSERT INTO ops.link_rebuild_runs (generation, schema_name, status, window_end)
        VALUES ($1, $2, 'preparing', $3)`,
       [generation, schemaName, windowEnd],
     );
@@ -270,7 +270,7 @@ async function main(): Promise<void> {
 
     await ensureLease();
     await query(
-      `UPDATE link_rebuild_runs
+      `UPDATE ops.link_rebuild_runs
           SET status = 'processing',
               expected_jobs = $2,
               admitted_jobs = $2,
@@ -316,7 +316,7 @@ async function main(): Promise<void> {
            SET force_viable = true`,
       );
       await client.query(
-        `UPDATE link_rebuild_runs
+        `UPDATE ops.link_rebuild_runs
             SET status = 'published', published_at = NOW(), updated_at = NOW()
           WHERE generation = $1`,
         [generation],
@@ -340,7 +340,7 @@ async function main(): Promise<void> {
     observeWorkerOutcome('link', 'rebuild', 'failure');
     if (!published) {
       await query(
-        `UPDATE link_rebuild_runs
+        `UPDATE ops.link_rebuild_runs
             SET status = 'failed', error = $2, updated_at = NOW()
           WHERE generation = $1`,
         [generation, error instanceof Error ? error.message : String(error)],

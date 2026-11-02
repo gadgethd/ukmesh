@@ -9,7 +9,6 @@
     "ingest_observation_ledger",
     "ingest_observation_ledger_coverage",
     "ingest_observation_tombstones",
-    "link_rebuild_runs",
     "maintenance_backfill_checkpoints",
     "maintenance_removed_records",
     "message_tags",
@@ -699,7 +698,6 @@
       "node_links"
     ],
     "workers/link-recompute.ts": [
-      "link_rebuild_runs",
       "node_links",
       "nodes"
     ],
