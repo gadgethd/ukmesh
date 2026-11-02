@@ -53,8 +53,8 @@ DELETE FROM ml_model_variant_packet_results WHERE model_network IN ('teesside','
                                             OR packet_network IN ('teesside','northeast');
 DO $$
 BEGIN
-  IF to_regclass('path_simulation_runs') IS NOT NULL THEN
-    EXECUTE 'DELETE FROM path_simulation_runs WHERE network IN (''teesside'',''northeast'')';
+  IF to_regclass('ops.path_simulation_runs') IS NOT NULL THEN
+    EXECUTE 'DELETE FROM ops.path_simulation_runs WHERE network IN (''teesside'',''northeast'')';
   END IF;
 END $$;
 UPDATE spam_suspects           SET network = 'ukmesh' WHERE network IN ('teesside','northeast');
