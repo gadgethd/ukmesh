@@ -4,8 +4,8 @@ import path from 'node:path';
 import type pg from 'pg';
 import { resolveDbAssetPath } from './assets.js';
 
-const MIGRATIONS_TABLE = 'schema_migrations';
-const MIGRATION_COMPATIBILITY_TABLE = 'schema_migration_compatibility';
+const MIGRATIONS_TABLE = 'public.schema_migrations';
+const MIGRATION_COMPATIBILITY_TABLE = 'public.schema_migration_compatibility';
 const MIGRATION_LOCK_NAME = 'meshcore-analytics-schema-migrations-v1';
 const NON_TRANSACTIONAL_DIRECTIVE = '-- meshcore:migration-mode non-transactional';
 // 050 originally contained its own BEGIN/COMMIT, which violated runner

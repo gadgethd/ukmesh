@@ -94,7 +94,7 @@ test('base schema and every migration apply to a brand-new database', {
         query: async (text: string, params?: unknown[]) => {
           if (
             !injectedLedgerFailure
-            && text.includes('INSERT INTO schema_migrations')
+            && text.includes('INSERT INTO public.schema_migrations')
             && params?.[0] === '050_packet_paths_and_retention.sql'
           ) {
             injectedLedgerFailure = true;
@@ -120,7 +120,7 @@ test('base schema and every migration apply to a brand-new database', {
               FROM timescaledb_information.jobs
              WHERE proc_name = 'policy_retention') AS retention_jobs,
            (SELECT COUNT(*)::text
-              FROM schema_migrations
+              FROM public.schema_migrations
              WHERE name = '050_packet_paths_and_retention.sql') AS ledger_rows
   `);
   assert.deepEqual(rolledBack050.rows[0], {
@@ -169,7 +169,7 @@ test('base schema and every migration apply to a brand-new database', {
   }>(`
     SELECT COUNT(*)::text AS migration_count,
            COUNT(*) FILTER (WHERE checksum_sha256 IS NULL)::text AS missing_checksums
-      FROM schema_migrations
+      FROM public.schema_migrations
   `);
   assert.deepEqual(ledger.rows[0], {
     migration_count: String(loadMigrationFiles().length),
@@ -288,7 +288,7 @@ test('base schema and every migration apply to a brand-new database', {
     replacement_name: string | null;
   }>(`
     SELECT migration_name, disposition, replacement_name
-    FROM schema_migration_compatibility
+    FROM public.schema_migration_compatibility
     WHERE migration_name IN (
       '011_invalidate_pre_visibility_path_cache.sql',
       '015_public_visibility_generation.sql'
@@ -417,7 +417,7 @@ test('F07 historical and compressed observations enter the complete ledger atomi
       const client = await pool.connect();
       return {
         query: async (sql: string, params?: unknown[]) => {
-          if (sql.includes('INSERT INTO schema_migrations')
+          if (sql.includes('INSERT INTO public.schema_migrations')
             && params?.[0] === '060_ingest_ledger_historical_coverage.sql') {
             throw new Error('F07_BACKFILL_INTERRUPTED');
           }
@@ -774,11 +774,11 @@ test('packet batch atomically coalesces observer, sighting, and stats writes', {
     CREATE TABLE path_history_cache (
       packet_hash TEXT PRIMARY KEY
     );
-    CREATE TABLE schema_migrations (
+    CREATE TABLE public.schema_migrations (
       name TEXT PRIMARY KEY,
       applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
-    INSERT INTO schema_migrations (name)
+    INSERT INTO public.schema_migrations (name)
     VALUES ('011_invalidate_pre_visibility_path_cache.sql'),
            ('015_public_visibility_generation.sql'),
            ('016_stale_mqtt_observer_cleanup.sql')
@@ -822,7 +822,7 @@ test('packet batch atomically coalesces observer, sighting, and stats writes', {
   // succeeded but before its non-transactional ledger insert committed. The
   // next runner must safely repeat the SQL and restore the ledger.
   await pool.query(
-    `DELETE FROM schema_migrations
+    `DELETE FROM public.schema_migrations
       WHERE name = '028_ml_cursor_index.sql'`,
   );
   assert.deepEqual(await runMigrations(pool), ['028_ml_cursor_index.sql']);
@@ -838,7 +838,7 @@ test('packet batch atomically coalesces observer, sighting, and stats writes', {
         AS non_transactional_count,
       COUNT(*) FILTER (WHERE execution_mode = 'superseded-existing')::text
         AS superseded_existing_count
-      FROM schema_migrations
+      FROM public.schema_migrations
   `);
   assert.deepEqual(migrationLedger.rows[0], {
     missing_checksums: '0',

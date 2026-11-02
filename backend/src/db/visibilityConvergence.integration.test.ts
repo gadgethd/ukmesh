@@ -89,7 +89,7 @@ test('local TimescaleDB visibility-fence reproduction, regression and convergenc
     assert.equal((await pool.query('SELECT COUNT(*)::text AS count FROM private_node_prefixes')).rows[0].count, '0');
     t.diagnostic('BASELINE REPRO: empty FK-cascade DELETE changes 1/1 -> 2/1 with zero prefix rows');
     await pool.query("INSERT INTO packets(packet_hash, topic) VALUES ('upgrade-preserved', 'fixture')");
-    await pool.query("DELETE FROM schema_migrations WHERE name = '066_prefix_visibility_statement_fence.sql'");
+    await pool.query("DELETE FROM public.schema_migrations WHERE name = '066_prefix_visibility_statement_fence.sql'");
     assert.deepEqual(await runMigrations(pool), ['066_prefix_visibility_statement_fence.sql']);
     assert.deepEqual(await flags('packets'), [{ packet_hash: 'upgrade-preserved', is_private: false, visibility_ok: true }]);
     // Neither migration nor rollback certifies an existing gap.
