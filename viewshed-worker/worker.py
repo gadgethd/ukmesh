@@ -1856,7 +1856,7 @@ def process_claimed_link_job(db, r_client, claimed) -> None:
             try:
                 with db.cursor() as cur:
                     cur.execute(
-                        'SELECT 1 FROM public.link_job_commits WHERE job_id = %s',
+                        'SELECT 1 FROM ops.link_job_commits WHERE job_id = %s',
                         (job_id,),
                     )
                     already_committed = cur.fetchone() is not None
@@ -1890,7 +1890,7 @@ def process_claimed_link_job(db, r_client, claimed) -> None:
                             json.dumps(job, separators=(',', ':'), sort_keys=True).encode()
                         ).hexdigest()
                         cur.execute(
-                            '''INSERT INTO public.link_job_commits
+                            '''INSERT INTO ops.link_job_commits
                                  (job_id, job_type, generation, logical_job_id, payload_hash)
                                VALUES (%s, %s, %s, %s, %s)
                                ON CONFLICT (job_id) DO NOTHING''',
