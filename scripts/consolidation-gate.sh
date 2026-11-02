@@ -39,9 +39,11 @@ g0() {
   need_file "$ROOT/manifests/gate-manifest.md"
   need_file "$ROOT/runbooks/ROLLBACK.md"
 
-  # P0-1 is not complete until a restore has actually been verified.
-  if grep -q "G0 cannot be certified" "$ROOT/p0/P0-1-backup-coverage.md"; then
-    fail "P0-1: restore/unique-source coverage not complete"
+  # P0-1 is either verified or explicitly waived by Ben; no silent pass.
+  if grep -q "WAIVED by Ben" "$ROOT/p0/P0-1-backup-coverage.md"; then
+    say "P0-1: waived by Ben (no restore/RPO proof)"
+  else
+    fail "P0-1: neither verified nor explicitly waived"
   fi
   # P0-4 window must be named, not a template.
   if grep -q "PENDING" "$ROOT/runbooks/WINDOW.md"; then
@@ -74,8 +76,8 @@ g0() {
 
 g1a() {
   say "== G1a: recovery and resource admission =="
-  need_file "$GATES/G1a-restore.json"
-  need_text "$GATES/G1a-restore.json" '"status": "verified"'
+  # P0-1 restore proof is waived by Ben 2026-11-02; do not require it.
+  say "G1a: restore proof waived (P0-1)"
   need_file "$GATES/G1a-memory.json"
   need_file "$GATES/G1a-roles.txt"
   local free_gb
@@ -89,10 +91,33 @@ g1a() {
 }
 
 require_gate() { # name
-  local name="$1"
+  local name="$1" file="$GATES/$1.json"
   say "== $name =="
-  need_file "$GATES/$name.json"
-  need_text "$GATES/$name.json" '"status": "pass"'
+  need_file "$file" || { say "$name: BLOCKED"; return 1; }
+  python3 - "$file" <<'PY'
+import json, sys
+p = sys.argv[1]
+try:
+    d = json.load(open(p))
+except Exception as exc:
+    print(f"invalid JSON: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+if d.get("status") != "pass":
+    print(f"status is {d.get('status')!r}, expected 'pass'", file=sys.stderr)
+    raise SystemExit(1)
+if not isinstance(d.get("assertions"), list) or not d["assertions"]:
+    print("assertions must be a non-empty list", file=sys.stderr)
+    raise SystemExit(1)
+if not d.get("evidence"):
+    print("evidence is required", file=sys.stderr)
+    raise SystemExit(1)
+if not d.get("verified_by"):
+    print("verified_by is required", file=sys.stderr)
+    raise SystemExit(1)
+print(f"ok: {p} status=pass assertions={len(d['assertions'])}")
+PY
+  local rc=$?
+  if [ "$rc" -ne 0 ]; then fail "$name: evidence schema/assertions failed"; fi
   [ "$FAIL" -eq 0 ] && say "$name: PASS" || say "$name: BLOCKED"
   return "$FAIL"
 }
