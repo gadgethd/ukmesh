@@ -351,7 +351,7 @@ export async function actOnPlannedNodePublication(
        SELECT id FROM ops.operator_audit_events WHERE idempotency_key = $4
      ),
      source AS (
-       SELECT id FROM planned_nodes WHERE id = $3::uuid
+       SELECT id FROM ops.planned_nodes WHERE id = $3::uuid
      ),
      published AS (
        INSERT INTO planned_node_publications (
@@ -548,7 +548,7 @@ export async function loadOperationsDashboard(query: QueryFn): Promise<Record<st
     ),
     query(
       `SELECT job_id, status, heartbeat_at, expires_at, error, created_at, updated_at
-         FROM planned_coverage_jobs
+         FROM ops.planned_coverage_jobs
         ORDER BY created_at DESC
         LIMIT 50`,
     ),

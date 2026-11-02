@@ -64,12 +64,12 @@ export function createPlannedCoverageRepository(pool: pg.Pool): PlannedCoverageR
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      await client.query('DELETE FROM planned_coverage_handles WHERE expires_at <= NOW()');
+      await client.query('DELETE FROM ops.planned_coverage_handles WHERE expires_at <= NOW()');
       const expired = await client.query<{ job_id: string }>(
-        `DELETE FROM planned_coverage_jobs jobs
+        `DELETE FROM ops.planned_coverage_jobs jobs
           WHERE jobs.expires_at <= NOW()
             AND NOT EXISTS (
-              SELECT 1 FROM planned_coverage_handles handles
+              SELECT 1 FROM ops.planned_coverage_handles handles
                WHERE handles.job_id = jobs.job_id
             )
         RETURNING job_id`,
@@ -112,7 +112,7 @@ export function createPlannedCoverageRepository(pool: pg.Pool): PlannedCoverageR
         );
         const reusable = await client.query<{ job_id: string }>(
           `SELECT job_id
-             FROM planned_coverage_jobs
+             FROM ops.planned_coverage_jobs
             WHERE fingerprint = $1
               AND expires_at > NOW()
               AND status IN ('queued', 'running', 'ready')
@@ -126,13 +126,13 @@ export function createPlannedCoverageRepository(pool: pg.Pool): PlannedCoverageR
           `SELECT
              (
                SELECT COUNT(*)::int
-                 FROM planned_coverage_jobs
+                 FROM ops.planned_coverage_jobs
                 WHERE expires_at > NOW()
                   AND status IN ('queued', 'running')
              ) AS outstanding_jobs,
              (
                SELECT COUNT(*)::int
-                 FROM planned_coverage_handles
+                 FROM ops.planned_coverage_handles
                 WHERE expires_at > NOW()
              ) AS outstanding_handles`,
         );
@@ -140,7 +140,7 @@ export function createPlannedCoverageRepository(pool: pg.Pool): PlannedCoverageR
         const handlesForJob = reusableJobId
           ? Number((await client.query<{ count: number }>(
             `SELECT COUNT(*)::int AS count
-               FROM planned_coverage_handles
+               FROM ops.planned_coverage_handles
               WHERE job_id = $1
                 AND expires_at > NOW()`,
             [reusableJobId],
@@ -160,7 +160,7 @@ export function createPlannedCoverageRepository(pool: pg.Pool): PlannedCoverageR
         if (reusableJobId) {
           jobId = reusableJobId;
           await client.query(
-            `UPDATE planned_coverage_jobs
+            `UPDATE ops.planned_coverage_jobs
                 SET expires_at = GREATEST(expires_at, $2),
                     updated_at = NOW()
               WHERE job_id = $1`,
@@ -174,7 +174,7 @@ export function createPlannedCoverageRepository(pool: pg.Pool): PlannedCoverageR
           );
         } else {
           await client.query(
-            `INSERT INTO planned_coverage_jobs
+            `INSERT INTO ops.planned_coverage_jobs
                (job_id, fingerprint, lat, lon, status, expires_at)
              VALUES ($1, $2, $3, $4, 'queued', $5)`,
             [jobId, input.fingerprint, input.lat, input.lon, input.expiresAt],
@@ -182,7 +182,7 @@ export function createPlannedCoverageRepository(pool: pg.Pool): PlannedCoverageR
           created = true;
         }
         await client.query(
-          `INSERT INTO planned_coverage_handles
+          `INSERT INTO ops.planned_coverage_handles
              (handle_hash, hash_alg, job_id, expires_at)
            VALUES ($1, $2, $3, $4)`,
           [input.handleHash, input.hashAlgorithm, jobId, input.expiresAt],
@@ -203,8 +203,8 @@ export function createPlannedCoverageRepository(pool: pg.Pool): PlannedCoverageR
                 coverage.antenna_height_m, coverage.radius_m, coverage.predicted_links,
                 coverage.calculated_at::text AS calculated_at,
                 handles.expires_at::text AS expires_at
-           FROM planned_coverage_handles handles
-           JOIN planned_coverage_jobs jobs ON jobs.job_id = handles.job_id
+           FROM ops.planned_coverage_handles handles
+           JOIN ops.planned_coverage_jobs jobs ON jobs.job_id = handles.job_id
            LEFT JOIN node_coverage coverage
              ON coverage.node_id = jobs.job_id AND coverage.is_planned = TRUE
           WHERE handles.handle_hash = $1
@@ -219,7 +219,7 @@ export function createPlannedCoverageRepository(pool: pg.Pool): PlannedCoverageR
 
     async deleteHandle(handleHash, hashAlgorithm) {
       await pool.query(
-        'DELETE FROM planned_coverage_handles WHERE handle_hash = $1 AND hash_alg = $2',
+        'DELETE FROM ops.planned_coverage_handles WHERE handle_hash = $1 AND hash_alg = $2',
         [handleHash, hashAlgorithm],
       );
     },
