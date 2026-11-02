@@ -1,7 +1,5 @@
 import pg from 'pg';
-import fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { resolveDbAssetPath } from './assets.js';
 import { boundedIntegerSetting } from '../platform/config/boundedNumber.js';
 import { databaseUrlForRole } from '../platform/config/database.js';
 import { planOperatorConfiguredOwnerGrantSync } from '../owner/ownerGrantReconciliation.js';
@@ -10,7 +8,6 @@ import { createOwnerAclArtifactStore } from '../owner/ownerAclArtifacts.js';
 const { Pool } = pg;
 const OWNER_DB_NAME = process.env['OWNER_POSTGRES_DB'] ?? 'meshcore_owner_auth';
 const ownerDatabaseApplicationName = String(process.env['OWNER_DATABASE_APPLICATION_NAME'] ?? 'meshcore-owner-auth').trim() || 'meshcore-owner-auth';
-const ownerAdminDatabaseApplicationName = String(process.env['OWNER_DATABASE_ADMIN_APPLICATION_NAME'] ?? 'meshcore-owner-auth-admin').trim() || 'meshcore-owner-auth-admin';
 const ownerDatabaseStatementTimeoutMs = boundedIntegerSetting(
   'OWNER_DATABASE_STATEMENT_TIMEOUT_MS',
   process.env['OWNER_DATABASE_STATEMENT_TIMEOUT_MS'],
@@ -54,10 +51,6 @@ function getOwnerDatabaseUrl(): string {
   ) ?? withDatabaseName(getPrimaryDatabaseUrl(), OWNER_DB_NAME);
 }
 
-function getAdminDatabaseUrl(): string {
-  return withDatabaseName(getPrimaryDatabaseUrl(), 'postgres');
-}
-
 const ownerPool = new Pool({
   connectionString: getOwnerDatabaseUrl(),
   application_name: ownerDatabaseApplicationName,
@@ -78,44 +71,10 @@ ownerPool.on('error', (err) => {
   console.error('[owner-auth] unexpected pool error', err.message);
 });
 
-function quoteIdentifier(value: string): string {
-  return `"${value.replace(/"/g, '""')}"`;
-}
-
-async function ensureOwnerDatabase(): Promise<void> {
-  const ownerUrl = new URL(getOwnerDatabaseUrl());
-  const databaseName = ownerUrl.pathname.replace(/^\//, '').trim();
-  if (!databaseName) throw new Error('OWNER_DATABASE_URL is missing a database name');
-
-  const adminPool = new Pool({
-    connectionString: getAdminDatabaseUrl(),
-    application_name: ownerAdminDatabaseApplicationName,
-    max: 1,
-    idleTimeoutMillis: 5_000,
-    connectionTimeoutMillis: 5_000,
-    statement_timeout: ownerDatabaseStatementTimeoutMs,
-    query_timeout: ownerDatabaseStatementTimeoutMs,
-  });
-
-  try {
-    const exists = await adminPool.query<{ exists: number }>(
-      'SELECT 1 AS exists FROM pg_database WHERE datname = $1',
-      [databaseName],
-    );
-    if (exists.rowCount && exists.rows[0]?.exists === 1) return;
-    await adminPool.query(`CREATE DATABASE ${quoteIdentifier(databaseName)}`);
-    console.log(`[owner-auth] created database ${databaseName}`);
-  } finally {
-    await adminPool.end().catch(() => undefined);
-  }
-}
-
 export async function initOwnerAuthDb(): Promise<void> {
-  await ensureOwnerDatabase();
-  const schemaPath = resolveDbAssetPath('owner-auth.sql');
-  const sql = fs.readFileSync(schemaPath, 'utf8');
-  await ownerPool.query(sql);
-  console.log('[owner-auth] schema initialised');
+  // P1-9: the owner database and schema are provisioned by an explicit
+  // migrate/operator step. The application must not CREATE DATABASE or DDL.
+  console.warn('[owner-auth] startup schema initialisation is disabled; run the owner-auth migrate job');
 }
 
 export async function getOwnerNodeIdsForUsername(mqttUsername: string): Promise<string[]> {

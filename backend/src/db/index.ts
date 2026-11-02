@@ -1,12 +1,9 @@
 import pg from 'pg';
-import fs from 'node:fs';
 import {
   analyticsStatementTimeoutMs,
   databaseConfig,
   databaseUrlForRole,
 } from '../platform/config/database.js';
-import { resolveDbAssetPath } from './assets.js';
-import { runMigrations } from './migrations.js';
 import { UKMESH_NETWORKS } from '../networks.js';
 import {
   configurePacketBatch,
@@ -343,37 +340,10 @@ function buildNodeScopeClause(
 }
 
 export async function initDb(): Promise<void> {
-  if (databaseConfig.skipSchemaInit) {
-    console.log('[db] schema initialisation skipped by DATABASE_SKIP_SCHEMA_INIT');
-    return;
-  }
-
-  const schemaPath = resolveDbAssetPath('schema', 'base.sql');
-  const sql = fs.readFileSync(schemaPath, 'utf8');
-  const startupPool = new Pool({
-    connectionString: databaseUrlForRole('migrate'),
-    application_name: `${databaseConfig.applicationName}-startup`,
-    options: databaseConfig.schema ? `-c search_path=${databaseConfig.schema},public` : undefined,
-    max: 1,
-    idleTimeoutMillis: databaseConfig.idleTimeoutMs,
-    connectionTimeoutMillis: databaseConfig.connectionTimeoutMs,
-    statement_timeout: 0,
-    query_timeout: 0,
-  });
-
-  let executedMigrations: string[] = [];
-  try {
-    if (databaseConfig.schema) {
-      await startupPool.query(`CREATE SCHEMA IF NOT EXISTS "${databaseConfig.schema}"`);
-    }
-    await startupPool.query(sql);
-    executedMigrations = await runMigrations(startupPool);
-  } finally {
-    await startupPool.end();
-  }
-  console.log(
-    `[db] base schema initialised${executedMigrations.length > 0 ? `, migrations applied: ${executedMigrations.join(', ')}` : ', no pending migrations'}`,
-  );
+  // P1-9: schema creation and migrations are an explicit migrate-job step.
+  // Keeping them on every service/worker startup races replicas, hides drift
+  // and lets an application role execute DDL.
+  console.warn('[db] startup schema initialisation is disabled; run the migrate job before starting services');
 }
 
 export async function touchNodesPredictedOnline(nodeIds: string[]): Promise<void> {
