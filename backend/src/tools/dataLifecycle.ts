@@ -31,8 +31,8 @@ async function inventory(): Promise<void> {
          MIN(${policy.timestampColumn})::text AS oldest_at,
          MAX(${policy.timestampColumn})::text AS newest_at,
          pg_total_relation_size($2::regclass)::text AS total_bytes
-       FROM ${policy.table}`,
-      [policy.retention, policy.table],
+       FROM ${policy.qualifiedTable ?? policy.table}`,
+      [policy.retention, policy.qualifiedTable ?? policy.table],
     );
     let chunks: { expired_chunks: string; compressed_chunks: string } | null = null;
     if (policy.kind === 'hypertable') {

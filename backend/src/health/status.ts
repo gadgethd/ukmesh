@@ -842,7 +842,7 @@ export async function getWorkerHealthOverview() {
        ORDER BY ts DESC
        LIMIT 720`,
     ),
-    query<{ count: string }>(`SELECT COUNT(*) AS count FROM frontend_error_events WHERE time > NOW() - INTERVAL '1 hour'`),
+    query<{ count: string }>(`SELECT COUNT(*) AS count FROM ops.frontend_error_events WHERE time > NOW() - INTERVAL '1 hour'`),
     query<{
       stale_nodes: string;
       active_nodes: string;

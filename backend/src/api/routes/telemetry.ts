@@ -50,7 +50,7 @@ export function registerTelemetryRoutes(router: Router, deps: TelemetryRouteDeps
 
       const contribution = await query<{ count: string }>(
         `SELECT COALESCE(SUM(occurrences), 0)::text AS count
-           FROM frontend_error_events
+           FROM ops.frontend_error_events
           WHERE source_hash = $1 AND last_seen_at > NOW() - INTERVAL '1 hour'`,
         [sourceHash],
       );
@@ -60,14 +60,14 @@ export function registerTelemetryRoutes(router: Router, deps: TelemetryRouteDeps
       }
 
       await query(
-        `INSERT INTO frontend_error_events
+        `INSERT INTO ops.frontend_error_events AS fee
            (kind, message, stack, page, user_agent, fingerprint, source_hash,
             bucket_start, occurrences, last_seen_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 1, NOW())
          ON CONFLICT (fingerprint, source_hash, bucket_start)
            WHERE fingerprint IS NOT NULL AND source_hash IS NOT NULL AND bucket_start IS NOT NULL
          DO UPDATE SET
-           occurrences = LEAST(frontend_error_events.occurrences + 1, 20),
+           occurrences = LEAST(fee.occurrences + 1, 20),
            last_seen_at = NOW()`,
         [
           kind,

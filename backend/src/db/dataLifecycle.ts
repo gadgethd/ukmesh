@@ -5,6 +5,7 @@ import {
 
 export type DataLifecyclePolicy = Readonly<{
   table: string;
+  qualifiedTable?: string;
   timestampColumn: string;
   retention: string;
   kind: 'hypertable' | 'row-table';
@@ -59,6 +60,7 @@ export const DATA_LIFECYCLE_POLICIES: readonly DataLifecyclePolicy[] = Object.fr
   },
   {
     table: 'frontend_error_events',
+    qualifiedTable: 'ops.frontend_error_events',
     timestampColumn: 'time',
     retention: '30 days',
     kind: 'row-table',

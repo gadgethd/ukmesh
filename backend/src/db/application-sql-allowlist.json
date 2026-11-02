@@ -4,7 +4,6 @@
   "tables": [
     "analysis_runs",
     "analysis_workload_state",
-    "frontend_error_events",
     "ingest_observation_archive",
     "ingest_observation_history",
     "ingest_observation_ledger",
@@ -173,9 +172,7 @@
     "api/routes/rfValidation.test.ts": [
       "node_identity_nodes"
     ],
-    "api/routes/telemetry.ts": [
-      "frontend_error_events"
-    ],
+    "api/routes/telemetry.ts": [],
     "api/utils/networkFilters.ts": [
       "node_identity_aliases",
       "node_identity_sightings",
@@ -331,7 +328,6 @@
       "packets"
     ],
     "health/status.ts": [
-      "frontend_error_events",
       "node_links",
       "operational_check_results",
       "packet_paths",
