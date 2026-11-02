@@ -111,6 +111,47 @@ export function loadMigrationFiles(dir = migrationsDir()): MigrationFile[] {
   });
 }
 
+async function assertCanonicalLedger(client: pg.PoolClient): Promise<void> {
+  const canonical = await client.query<{ reg: string | null }>(
+    "SELECT to_regclass('public.schema_migrations')::text AS reg",
+  );
+  const shadows = await client.query<{ schema: string }>(`
+    SELECT n.nspname AS schema
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE c.relname = 'schema_migrations'
+      AND c.relkind IN ('r', 'p')
+      AND n.nspname <> 'public'
+    ORDER BY n.nspname
+  `);
+  if (shadows.rows.length > 0) {
+    throw new Error(
+      `shadow migration ledger(s) found in: ${shadows.rows.map((row) => row.schema).join(', ')}; `
+      + 'refusing to run against an ambiguous ledger',
+    );
+  }
+
+  if (canonical.rows[0]?.reg) return;
+
+  const tables = await client.query<{ has_tables: boolean }>(`
+    SELECT EXISTS (
+      SELECT 1
+      FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE c.relkind IN ('r', 'p')
+        AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+        AND n.nspname NOT LIKE '\\_timescaledb%' ESCAPE '\\'
+        AND c.relname <> 'schema_migrations'
+    ) AS has_tables
+  `);
+  if (tables.rows[0]?.has_tables) {
+    throw new Error(
+      'public.schema_migrations is missing on a non-empty database; '
+      + 'refusing to create a new ledger or replay historical migrations',
+    );
+  }
+}
+
 export async function runMigrations(pool: pg.Pool): Promise<string[]> {
   const migrations = loadMigrationFiles();
   if (migrations.length < 1) return [];
@@ -123,6 +164,8 @@ export async function runMigrations(pool: pg.Pool): Promise<string[]> {
       [MIGRATION_LOCK_NAME],
     );
     locked = true;
+
+    await assertCanonicalLedger(client);
 
     await client.query(`
       CREATE TABLE IF NOT EXISTS ${MIGRATIONS_TABLE} (
