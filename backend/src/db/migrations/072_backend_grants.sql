@@ -26,7 +26,7 @@ REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 
 GRANT USAGE ON SCHEMA core, mesh, analytics, archive, ops TO meshcore_migrate;
 
-GRANT USAGE ON SCHEMA core, mesh TO meshcore_ingest;
+GRANT USAGE ON SCHEMA core, mesh, ops TO meshcore_ingest;
 GRANT USAGE ON SCHEMA core, mesh, analytics TO meshcore_api;
 GRANT USAGE ON SCHEMA core TO meshcore_owner;
 GRANT USAGE ON SCHEMA mesh, analytics, ops TO meshcore_worker;
