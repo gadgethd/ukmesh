@@ -1,0 +1,758 @@
+{
+  "version": 1,
+  "note": "Reviewed baseline of unqualified DML targets in application TypeScript. New entries fail the P1-6 guard; add only after review.",
+  "tables": [
+    "analysis_runs",
+    "analysis_workload_state",
+    "frontend_error_events",
+    "ingest_observation_archive",
+    "ingest_observation_history",
+    "ingest_observation_ledger",
+    "ingest_observation_ledger_coverage",
+    "ingest_observation_tombstones",
+    "ingest_rejections",
+    "last_hop_snr_daily",
+    "link_job_commits",
+    "link_rebuild_runs",
+    "maintenance_backfill_checkpoints",
+    "maintenance_removed_records",
+    "message_tags",
+    "message_tags_local",
+    "ml_gold_paths",
+    "ml_model_variant_packet_results",
+    "ml_model_variant_runs",
+    "ml_model_versions",
+    "ml_path_prefix_scores",
+    "multibyte_path_fact_state",
+    "multibyte_path_facts",
+    "multihop_paths_weekly",
+    "network_unification_runs",
+    "node_counted_adverts",
+    "node_coverage",
+    "node_identity_aliases",
+    "node_identity_link_radio_reports",
+    "node_identity_links",
+    "node_identity_match_evidence",
+    "node_identity_nodes",
+    "node_identity_packets",
+    "node_identity_refresh_state",
+    "node_identity_sightings",
+    "node_identity_status_samples",
+    "node_link_radio_reports",
+    "node_links",
+    "node_map_suppressions",
+    "node_name_history",
+    "node_neighbor_samples",
+    "node_network_sightings",
+    "node_status_samples",
+    "nodes",
+    "observer_region_observer_sightings",
+    "observer_region_packet_sightings",
+    "observer_registration_requests",
+    "observers",
+    "operational_check_results",
+    "operator_audit_events",
+    "owner_alert_deliveries",
+    "owner_alert_delivery_attempts",
+    "owner_alert_rules",
+    "owner_packet_share_deliveries",
+    "owner_packet_share_destinations",
+    "owner_packet_share_rules",
+    "owner_public_feed_nodes",
+    "owner_public_feed_settings",
+    "packet_daily_stats",
+    "packet_decryptions",
+    "packet_forwarding_outbox",
+    "packet_hourly_stats",
+    "packet_paths",
+    "packet_visibility_materialization_state",
+    "packets",
+    "path_corridor_priors",
+    "path_edge_priors",
+    "path_model_calibration",
+    "path_motif_priors",
+    "path_position_prefix_priors",
+    "path_position_transition_priors",
+    "path_prefix_priors",
+    "path_sim_evolution_state",
+    "path_sim_population",
+    "path_simulation_runs",
+    "path_slow_resolutions",
+    "path_transition_priors",
+    "planned_coverage_handles",
+    "planned_coverage_jobs",
+    "planned_node_publications",
+    "planned_nodes",
+    "privacy_rematerialization_queue",
+    "private_node_prefixes",
+    "public_feed_deliveries",
+    "public_visibility_state",
+    "region_scope_members",
+    "region_scope_run",
+    "region_scope_stats",
+    "region_scope_unattributed",
+    "repeater_scope_status",
+    "schema_migration_compatibility",
+    "schema_migrations",
+    "spam_message_incidents",
+    "spam_message_members",
+    "spam_suspects",
+    "stats_chart_snapshots",
+    "tagger_retry",
+    "tagger_state",
+    "worker_health_current",
+    "worker_health_snapshots"
+  ],
+  "files": {
+    "analysis/publicationFence.ts": [
+      "analysis_runs",
+      "analysis_workload_state",
+      "public_visibility_state"
+    ],
+    "analysis/runState.integration.test.ts": [
+      "public_visibility_state"
+    ],
+    "analysis/runState.ts": [
+      "analysis_runs",
+      "analysis_workload_state"
+    ],
+    "api/hopreachCompatibility.ts": [
+      "node_identity_links",
+      "node_identity_nodes",
+      "node_identity_sightings"
+    ],
+    "api/routes/activityTimeline.ts": [
+      "packets"
+    ],
+    "api/routes/auditwave.performance.test.ts": [
+      "node_identity_nodes"
+    ],
+    "api/routes/exports.test.ts": [
+      "node_identity_nodes"
+    ],
+    "api/routes/exports.ts": [
+      "node_identity_nodes",
+      "packets"
+    ],
+    "api/routes/misc.ts": [
+      "node_identity_nodes",
+      "node_identity_status_samples",
+      "packets"
+    ],
+    "api/routes/mqttNodes.integration.test.ts": [
+      "node_identity_aliases",
+      "node_identity_nodes",
+      "node_status_samples",
+      "packets"
+    ],
+    "api/routes/nodeStatus.ts": [
+      "node_identity_nodes",
+      "node_identity_status_samples",
+      "node_status_samples"
+    ],
+    "api/routes/ownerPacketSharing.test.ts": [
+      "owner_packet_share_deliveries",
+      "owner_packet_share_destinations",
+      "owner_packet_share_rules"
+    ],
+    "api/routes/ownerPublicFeed.test.ts": [
+      "owner_public_feed_nodes",
+      "owner_public_feed_settings"
+    ],
+    "api/routes/productFeatures.test.ts": [
+      "node_identity_nodes"
+    ],
+    "api/routes/regions.ts": [
+      "nodes",
+      "region_scope_members",
+      "region_scope_run",
+      "region_scope_stats",
+      "region_scope_unattributed",
+      "repeater_scope_status"
+    ],
+    "api/routes/rfValidation.test.ts": [
+      "node_identity_nodes"
+    ],
+    "api/routes/telemetry.ts": [
+      "frontend_error_events"
+    ],
+    "api/utils/networkFilters.ts": [
+      "node_identity_aliases",
+      "node_identity_sightings",
+      "nodes",
+      "packet_visibility_materialization_state",
+      "packets",
+      "privacy_rematerialization_queue",
+      "public_visibility_state"
+    ],
+    "db/index.ts": [
+      "message_tags",
+      "node_counted_adverts",
+      "node_coverage",
+      "node_identity_aliases",
+      "node_identity_link_radio_reports",
+      "node_identity_links",
+      "node_identity_nodes",
+      "node_identity_sightings",
+      "node_map_suppressions",
+      "node_neighbor_samples",
+      "node_status_samples",
+      "nodes",
+      "packet_decryptions",
+      "packets",
+      "public_visibility_state",
+      "spam_suspects"
+    ],
+    "db/ledgerArchive.integration.test.ts": [
+      "ingest_observation_history",
+      "ingest_observation_ledger"
+    ],
+    "db/migrations.ts": [
+      "nodes",
+      "packets"
+    ],
+    "db/nodeIdentity.ts": [
+      "node_identity_aliases",
+      "node_identity_match_evidence",
+      "node_identity_refresh_state",
+      "node_status_samples",
+      "nodes",
+      "packets",
+      "public_visibility_state"
+    ],
+    "db/nodeIdentityRefresh.integration.test.ts": [
+      "node_identity_refresh_state",
+      "nodes",
+      "public_visibility_state"
+    ],
+    "db/nodeNameHistory.integration.test.ts": [
+      "node_identity_aliases",
+      "node_name_history",
+      "node_status_samples",
+      "nodes",
+      "packets"
+    ],
+    "db/packetBatch.integration.test.ts": [
+      "ingest_observation_ledger",
+      "ingest_observation_ledger_coverage",
+      "multibyte_path_facts",
+      "node_network_sightings",
+      "nodes",
+      "observer_region_observer_sightings",
+      "observer_region_packet_sightings",
+      "observer_registration_requests",
+      "operator_audit_events",
+      "packet_daily_stats",
+      "packet_decryptions",
+      "packet_hourly_stats",
+      "packet_paths",
+      "packet_visibility_materialization_state",
+      "packets",
+      "privacy_rematerialization_queue",
+      "public_visibility_state",
+      "schema_migration_compatibility",
+      "schema_migrations"
+    ],
+    "db/packetBatch.test.ts": [
+      "ingest_observation_ledger",
+      "packets",
+      "private_node_prefixes"
+    ],
+    "db/packetBatch.ts": [
+      "ingest_observation_ledger",
+      "node_network_sightings",
+      "nodes",
+      "observer_region_observer_sightings",
+      "observer_region_packet_sightings",
+      "owner_packet_share_rules",
+      "owner_public_feed_nodes",
+      "owner_public_feed_settings",
+      "packet_daily_stats",
+      "packet_forwarding_outbox",
+      "packet_hourly_stats",
+      "packet_paths",
+      "packet_visibility_materialization_state",
+      "packets",
+      "privacy_rematerialization_queue",
+      "private_node_prefixes",
+      "public_visibility_state"
+    ],
+    "db/packetDailyBoundary.integration.test.ts": [
+      "packet_daily_stats",
+      "packets"
+    ],
+    "db/packetVisibilityFence.test.ts": [
+      "packet_paths",
+      "packets"
+    ],
+    "db/privacyCompletion.integration.test.ts": [
+      "packet_visibility_materialization_state",
+      "privacy_rematerialization_queue",
+      "public_visibility_state"
+    ],
+    "db/publicVisibilityMigration.test.ts": [
+      "public_visibility_state"
+    ],
+    "db/recentRead.integration.test.ts": [
+      "node_identity_aliases",
+      "packet_decryptions",
+      "packet_visibility_materialization_state",
+      "public_visibility_state"
+    ],
+    "db/regionScoping.integration.test.ts": [
+      "node_identity_aliases",
+      "nodes",
+      "packets",
+      "region_scope_members",
+      "region_scope_stats"
+    ],
+    "db/silentRecovery.integration.test.ts": [
+      "owner_alert_deliveries",
+      "owner_public_feed_nodes",
+      "owner_public_feed_settings",
+      "packet_forwarding_outbox",
+      "privacy_rematerialization_queue"
+    ],
+    "db/visibilityConvergence.integration.test.ts": [
+      "node_identity_aliases",
+      "nodes",
+      "packet_paths",
+      "packet_visibility_materialization_state",
+      "packets",
+      "privacy_rematerialization_queue",
+      "private_node_prefixes",
+      "public_visibility_state",
+      "schema_migrations"
+    ],
+    "health/packetDiagnostics.integration.test.ts": [
+      "packets"
+    ],
+    "health/packetDiagnostics.ts": [
+      "packets"
+    ],
+    "health/status.ts": [
+      "frontend_error_events",
+      "node_links",
+      "operational_check_results",
+      "packet_paths",
+      "path_model_calibration",
+      "privacy_rematerialization_queue",
+      "worker_health_current",
+      "worker_health_snapshots"
+    ],
+    "maintenance/staleMqttObservers.integration.test.ts": [
+      "maintenance_removed_records",
+      "node_network_sightings",
+      "nodes",
+      "observer_region_observer_sightings",
+      "packet_paths",
+      "packet_visibility_materialization_state",
+      "packets",
+      "private_node_prefixes",
+      "public_visibility_state"
+    ],
+    "maintenance/staleMqttObservers.native.integration.test.ts": [
+      "maintenance_removed_records",
+      "node_network_sightings",
+      "nodes",
+      "observer_region_observer_sightings",
+      "packet_paths",
+      "packet_visibility_materialization_state",
+      "packets",
+      "private_node_prefixes",
+      "public_visibility_state"
+    ],
+    "maintenance/staleMqttObservers.test.ts": [
+      "maintenance_removed_records",
+      "nodes",
+      "packet_visibility_materialization_state"
+    ],
+    "maintenance/staleMqttObservers.ts": [
+      "maintenance_removed_records",
+      "node_network_sightings",
+      "nodes",
+      "observer_region_observer_sightings",
+      "packet_visibility_materialization_state",
+      "private_node_prefixes",
+      "public_visibility_state"
+    ],
+    "mqtt/client.ts": [
+      "ingest_rejections",
+      "packets"
+    ],
+    "mqtt/observationIdentity.ts": [
+      "packets"
+    ],
+    "mqtt/spamDetector.ts": [
+      "nodes",
+      "packets"
+    ],
+    "nodes/mapSuppressions.ts": [
+      "node_identity_nodes",
+      "node_map_suppressions"
+    ],
+    "operations/operatorOperations.ts": [
+      "analysis_runs",
+      "ml_model_versions",
+      "observer_registration_requests",
+      "observers",
+      "operator_audit_events",
+      "path_model_calibration",
+      "planned_coverage_jobs",
+      "planned_node_publications",
+      "planned_nodes"
+    ],
+    "owner/alertRules.ts": [
+      "node_links",
+      "node_status_samples",
+      "nodes",
+      "observer_registration_requests",
+      "owner_alert_deliveries",
+      "owner_alert_delivery_attempts",
+      "owner_alert_rules"
+    ],
+    "owner/forwardingOutbox.ts": [
+      "packet_forwarding_outbox"
+    ],
+    "owner/ownerAccess.ts": [
+      "node_identity_nodes"
+    ],
+    "owner/ownerAuthorityScope.test.ts": [
+      "owner_packet_share_deliveries",
+      "owner_packet_share_rules"
+    ],
+    "owner/ownerRepository.ts": [
+      "node_identity_aliases",
+      "node_identity_links",
+      "node_identity_nodes",
+      "node_identity_packets",
+      "node_neighbor_samples",
+      "node_status_samples"
+    ],
+    "owner/ownerService.integration.test.ts": [
+      "node_identity_nodes",
+      "node_identity_packets"
+    ],
+    "owner/packetShareRepository.integration.test.ts": [
+      "owner_packet_share_destinations",
+      "owner_packet_share_rules"
+    ],
+    "owner/packetShareRepository.ts": [
+      "owner_packet_share_deliveries",
+      "owner_packet_share_destinations",
+      "owner_packet_share_rules"
+    ],
+    "owner/publicFeedRepository.ts": [
+      "owner_public_feed_nodes",
+      "owner_public_feed_settings",
+      "packets",
+      "public_feed_deliveries"
+    ],
+    "path-beta/championPriors.ts": [
+      "path_corridor_priors",
+      "path_position_prefix_priors",
+      "path_position_transition_priors",
+      "path_transition_priors"
+    ],
+    "path-beta/resolver.ts": [
+      "node_links",
+      "nodes",
+      "packets",
+      "path_edge_priors",
+      "path_model_calibration",
+      "path_motif_priors",
+      "path_prefix_priors",
+      "path_transition_priors"
+    ],
+    "path-beta/slowMode.ts": [
+      "path_slow_resolutions"
+    ],
+    "path-lazy/evaluate.ts": [
+      "nodes",
+      "packets",
+      "path_corridor_priors",
+      "path_transition_priors"
+    ],
+    "path-lazy/lazyResolver.ts": [
+      "node_links",
+      "nodes",
+      "packets",
+      "path_corridor_priors",
+      "path_model_calibration",
+      "path_position_prefix_priors",
+      "path_position_transition_priors",
+      "path_transition_priors"
+    ],
+    "path-lazy/lazyResolverLegacy.ts": [
+      "ml_path_prefix_scores",
+      "node_links",
+      "nodes",
+      "packets",
+      "path_edge_priors",
+      "path_prefix_priors"
+    ],
+    "path-learning/rebuild.privacy.test.ts": [
+      "private_node_prefixes"
+    ],
+    "path-learning/rebuild.ts": [
+      "node_links",
+      "nodes",
+      "packets",
+      "path_model_calibration",
+      "private_node_prefixes"
+    ],
+    "pathing/pathingRepository.ts": [
+      "nodes",
+      "path_edge_priors",
+      "path_model_calibration",
+      "path_motif_priors",
+      "path_prefix_priors",
+      "path_transition_priors",
+      "private_node_prefixes"
+    ],
+    "privacy/convergence.ts": [
+      "packet_visibility_materialization_state",
+      "privacy_rematerialization_queue",
+      "public_visibility_state"
+    ],
+    "privacy/generationHealth.ts": [
+      "packet_visibility_materialization_state",
+      "privacy_rematerialization_queue",
+      "public_visibility_state"
+    ],
+    "ram/liveRead.ts": [
+      "node_identity_aliases",
+      "packet_decryptions"
+    ],
+    "ram/runtime.integration.test.ts": [
+      "ingest_observation_ledger",
+      "observer_region_packet_sightings",
+      "packet_daily_stats",
+      "packet_hourly_stats",
+      "packet_paths",
+      "packets"
+    ],
+    "regions/filter.ts": [
+      "node_identity_aliases",
+      "region_scope_members"
+    ],
+    "regions/nodeSource.ts": [
+      "node_identity_aliases",
+      "nodes"
+    ],
+    "repositories/networkAnalysis.test.ts": [
+      "node_identity_nodes"
+    ],
+    "repositories/networkAnalysis.ts": [
+      "node_identity_aliases",
+      "node_identity_nodes",
+      "node_links"
+    ],
+    "repositories/nodeLinks.integration.test.ts": [
+      "node_identity_nodes",
+      "packets"
+    ],
+    "repositories/nodes.test.ts": [
+      "node_map_suppressions",
+      "packets"
+    ],
+    "repositories/nodes.ts": [
+      "node_identity_aliases",
+      "node_identity_links",
+      "node_identity_nodes",
+      "node_identity_status_samples",
+      "node_map_suppressions",
+      "node_name_history",
+      "nodes",
+      "packets"
+    ],
+    "repositories/ownerAlerts.ts": [
+      "owner_alert_deliveries",
+      "owner_alert_delivery_attempts",
+      "owner_alert_rules"
+    ],
+    "repositories/pathEvidence.ts": [
+      "nodes"
+    ],
+    "repositories/plannedCoverage.ts": [
+      "node_coverage",
+      "planned_coverage_handles",
+      "planned_coverage_jobs"
+    ],
+    "repositories/plannedNodes.ts": [
+      "planned_node_publications",
+      "planned_nodes"
+    ],
+    "repositories/productFeatures.test.ts": [
+      "node_identity_aliases",
+      "node_link_radio_reports",
+      "packets"
+    ],
+    "repositories/productFeatures.ts": [
+      "node_identity_nodes",
+      "node_identity_sightings",
+      "node_links",
+      "observer_registration_requests",
+      "packets"
+    ],
+    "spam/analyzer.ts": [
+      "spam_message_incidents"
+    ],
+    "spam/repository.integration.test.ts": [
+      "analysis_runs",
+      "analysis_workload_state",
+      "packets",
+      "spam_message_incidents",
+      "spam_message_members"
+    ],
+    "spam/repository.privacy.test.ts": [
+      "nodes",
+      "packets",
+      "spam_message_incidents",
+      "spam_message_members"
+    ],
+    "spam/repository.ts": [
+      "nodes",
+      "packets",
+      "spam_message_incidents",
+      "spam_message_members"
+    ],
+    "spam/spamResolver.test.ts": [
+      "node_links",
+      "nodes",
+      "packets"
+    ],
+    "spam/spamResolver.ts": [
+      "node_links",
+      "nodes",
+      "packets"
+    ],
+    "stats/chartSnapshot.test.ts": [
+      "public_visibility_state",
+      "stats_chart_snapshots"
+    ],
+    "stats/chartSnapshot.ts": [
+      "public_visibility_state",
+      "stats_chart_snapshots"
+    ],
+    "stats/multibytePathFacts.test.ts": [
+      "packet_paths",
+      "packets"
+    ],
+    "stats/multibytePathFacts.ts": [
+      "multibyte_path_fact_state",
+      "multibyte_path_facts",
+      "node_identity_aliases",
+      "node_identity_nodes",
+      "packet_paths"
+    ],
+    "stats/statsRepository.test.ts": [
+      "multibyte_path_fact_state",
+      "multibyte_path_facts",
+      "node_identity_aliases",
+      "packet_hourly_stats",
+      "packets"
+    ],
+    "stats/statsRepository.ts": [
+      "multibyte_path_facts",
+      "node_identity_aliases",
+      "node_identity_nodes",
+      "packet_daily_stats",
+      "packet_hourly_stats",
+      "packets"
+    ],
+    "tools/backfillDecrypt.ts": [
+      "packet_decryptions",
+      "packets"
+    ],
+    "tools/backfillMultibytePathFacts.ts": [
+      "multibyte_path_fact_state",
+      "multibyte_path_facts"
+    ],
+    "tools/backfillStatsRollups.ts": [
+      "maintenance_backfill_checkpoints",
+      "observer_region_observer_sightings",
+      "observer_region_packet_sightings",
+      "packet_daily_stats",
+      "packet_hourly_stats",
+      "packets"
+    ],
+    "tools/cleanupOrphanedAnalysisRuns.ts": [
+      "analysis_runs",
+      "analysis_workload_state"
+    ],
+    "tools/pathAccuracy.ts": [
+      "node_links",
+      "nodes",
+      "packets",
+      "path_corridor_priors",
+      "path_model_calibration",
+      "path_position_prefix_priors",
+      "path_position_transition_priors",
+      "path_prefix_priors",
+      "path_transition_priors"
+    ],
+    "tools/provisionScotmesh.ts": [
+      "owner_packet_share_destinations"
+    ],
+    "tools/rebuildRegionParticipation.ts": [
+      "nodes",
+      "packets",
+      "region_scope_members",
+      "region_scope_run",
+      "region_scope_stats",
+      "region_scope_unattributed",
+      "repeater_scope_status"
+    ],
+    "tools/recomputeSpamSuspects.ts": [
+      "packets",
+      "spam_suspects"
+    ],
+    "tools/reresolveSpamOrigins.ts": [
+      "spam_message_incidents",
+      "spam_message_members"
+    ],
+    "tools/seedStatsChartSnapshot.ts": [
+      "public_visibility_state"
+    ],
+    "tools/shadowTopologyCombined.ts": [
+      "public_visibility_state"
+    ],
+    "workers/link-backfill.ts": [
+      "node_links"
+    ],
+    "workers/link-recompute.ts": [
+      "link_job_commits",
+      "link_rebuild_runs",
+      "node_links",
+      "nodes"
+    ],
+    "workers/privacy-rematerialization.ts": [
+      "packet_paths",
+      "packet_visibility_materialization_state",
+      "packets",
+      "privacy_rematerialization_queue",
+      "private_node_prefixes",
+      "public_visibility_state"
+    ],
+    "workers/syntheticPersistence.ts": [
+      "operational_check_results"
+    ],
+    "ws/initialStateNodes.integration.test.ts": [
+      "node_map_suppressions",
+      "nodes"
+    ],
+    "ws/publicAuthorization.integration.test.ts": [
+      "nodes",
+      "packet_visibility_materialization_state",
+      "private_node_prefixes",
+      "public_visibility_state"
+    ],
+    "ws/regionScoping.integration.test.ts": [
+      "nodes",
+      "packets",
+      "region_scope_members",
+      "region_scope_stats"
+    ]
+  }
+}
