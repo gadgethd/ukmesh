@@ -398,9 +398,9 @@ function handleIncomingMqttPacket(packet: { topic: string; payload: Buffer | str
     .catch(async (error: unknown) => {
       if (!isPermanentDataError(error)) throw error;
       // Quarantine evidence must commit before this delivery can be acknowledged.
-      await query(`INSERT INTO ingest_rejections (message_hash, topic, reason, payload_bytes)
+      await query(`INSERT INTO ops.ingest_rejections AS ir (message_hash, topic, reason, payload_bytes)
         VALUES ($1, $2, $3, $4) ON CONFLICT (message_hash) DO UPDATE
-        SET last_seen_at = NOW(), occurrences = ingest_rejections.occurrences + 1`, [
+        SET last_seen_at = NOW(), occurrences = ir.occurrences + 1`, [
         createHash('sha256').update(packet.topic).update(rawPayload).digest('hex'),
         packet.topic.replaceAll('\u0000', '').slice(0, 512),
         `SQLSTATE:${(error as { code: string }).code}`, rawPayload.length,

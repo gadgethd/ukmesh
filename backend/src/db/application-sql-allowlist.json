@@ -9,8 +9,6 @@
     "ingest_observation_ledger",
     "ingest_observation_ledger_coverage",
     "ingest_observation_tombstones",
-    "ingest_rejections",
-    "link_job_commits",
     "link_rebuild_runs",
     "maintenance_backfill_checkpoints",
     "maintenance_removed_records",
@@ -78,7 +76,6 @@
     "planned_nodes",
     "privacy_rematerialization_queue",
     "private_node_prefixes",
-    "public_feed_deliveries",
     "public_visibility_state",
     "region_scope_members",
     "region_scope_run",
@@ -362,7 +359,6 @@
       "public_visibility_state"
     ],
     "mqtt/client.ts": [
-      "ingest_rejections",
       "packets"
     ],
     "mqtt/observationIdentity.ts": [
@@ -430,8 +426,7 @@
     "owner/publicFeedRepository.ts": [
       "owner_public_feed_nodes",
       "owner_public_feed_settings",
-      "packets",
-      "public_feed_deliveries"
+      "packets"
     ],
     "path-beta/championPriors.ts": [
       "path_corridor_priors",
@@ -707,7 +702,6 @@
       "node_links"
     ],
     "workers/link-recompute.ts": [
-      "link_job_commits",
       "link_rebuild_runs",
       "node_links",
       "nodes"

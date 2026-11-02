@@ -119,6 +119,7 @@ export const DATA_LIFECYCLE_POLICIES: readonly DataLifecyclePolicy[] = Object.fr
   },
   {
     table: 'public_feed_deliveries',
+    qualifiedTable: 'ops.public_feed_deliveries',
     timestampColumn: 'created_at',
     retention: '30 days',
     kind: 'row-table',
@@ -142,6 +143,7 @@ export const DATA_LIFECYCLE_POLICIES: readonly DataLifecyclePolicy[] = Object.fr
   },
   {
     table: 'link_job_commits',
+    qualifiedTable: 'ops.link_job_commits',
     timestampColumn: 'completed_at',
     retention: '180 days',
     kind: 'row-table',

@@ -122,7 +122,7 @@ async function waitForGeneration(
 ): Promise<void> {
   while (true) {
     const completed = await query<{ count: string }>(
-      'SELECT COUNT(*)::text AS count FROM link_job_commits WHERE generation = $1',
+      'SELECT COUNT(*)::text AS count FROM ops.link_job_commits WHERE generation = $1',
       [generation],
     );
     const completedJobs = Number(completed.rows[0]?.count ?? 0);
@@ -300,10 +300,10 @@ async function main(): Promise<void> {
       // incorporated into this generation. Record its stable logical ID before
       // releasing deferred work so replay becomes an idempotent ACK.
       await client.query(
-        `INSERT INTO link_job_commits
+        `INSERT INTO ops.link_job_commits
            (job_id, job_type, generation, logical_job_id, payload_hash)
          SELECT logical_job_id, job_type, NULL, logical_job_id, payload_hash
-           FROM link_job_commits
+           FROM ops.link_job_commits
           WHERE generation = $1
             AND logical_job_id IS NOT NULL
          ON CONFLICT (job_id) DO NOTHING`,

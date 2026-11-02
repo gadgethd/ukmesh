@@ -122,7 +122,7 @@ export function createPublicFeedRepository(
            ON settings.owner_username = requested.owner_username
          LEFT JOIN owner_public_feed_nodes feed_node
            ON feed_node.owner_username = requested.owner_username
-         LEFT JOIN public_feed_deliveries delivery
+         LEFT JOIN ops.public_feed_deliveries delivery
            ON delivery.node_id = feed_node.node_id
           AND delivery.status = 'succeeded'
           AND delivery.delivered_at IS NOT NULL
@@ -176,7 +176,7 @@ export function createPublicFeedRepository(
       }
       if (!enabled) {
         await runQuery(
-          `UPDATE public_feed_deliveries delivery
+          `UPDATE ops.public_feed_deliveries delivery
               SET status = 'dead_lettered',
                   last_error = 'public feed disabled',
                   claim_token = NULL,
@@ -251,7 +251,7 @@ export function createPublicFeedRepository(
         );
       }
       await runQuery(
-        `UPDATE public_feed_deliveries delivery
+        `UPDATE ops.public_feed_deliveries delivery
             SET status = 'dead_lettered',
                 last_error = 'public feed ownership changed',
                 claim_token = NULL,
@@ -294,7 +294,7 @@ export function createPublicFeedRepository(
     payload: Record<string, unknown>;
   }): Promise<boolean> {
     const result = await query(
-      `INSERT INTO public_feed_deliveries (
+      `INSERT INTO ops.public_feed_deliveries (
          node_id, event_key, packet_hash, source_topic, destination_topic, payload
        )
        SELECT $1, $2, $3, $4, $5, $6::jsonb
@@ -323,7 +323,7 @@ export function createPublicFeedRepository(
   async function reclaimExpiredClaims(now = new Date()): Promise<number> {
     const result = await query<{ count: string }>(
       `WITH reclaimed AS (
-         UPDATE public_feed_deliveries
+         UPDATE ops.public_feed_deliveries
             SET status = CASE WHEN attempts >= 5 THEN 'dead_lettered' ELSE 'failed' END,
                 next_attempt_at = NOW(),
                 claim_token = NULL,
@@ -340,7 +340,7 @@ export function createPublicFeedRepository(
 
   async function discardInactiveDeliveries(): Promise<number> {
     const result = await query<{ id: string }>(
-      `UPDATE public_feed_deliveries delivery
+      `UPDATE ops.public_feed_deliveries delivery
           SET status = 'dead_lettered',
               last_error = 'public feed is no longer enabled for this node',
               claim_token = NULL,
@@ -364,7 +364,7 @@ export function createPublicFeedRepository(
     const result = await query<PublicFeedDeliveryRow>(
       `WITH due AS (
          SELECT delivery.id
-           FROM public_feed_deliveries delivery
+           FROM ops.public_feed_deliveries delivery
           WHERE delivery.status IN ('pending', 'failed')
             AND delivery.attempts < 5
             AND delivery.next_attempt_at <= NOW()
@@ -380,7 +380,7 @@ export function createPublicFeedRepository(
           FOR UPDATE SKIP LOCKED
           LIMIT $1
        )
-       UPDATE public_feed_deliveries delivery
+       UPDATE ops.public_feed_deliveries delivery
           SET status = 'delivering',
               attempts = delivery.attempts + 1,
               last_attempt_at = NOW(),
@@ -399,7 +399,7 @@ export function createPublicFeedRepository(
 
   async function markSucceeded(id: string, claimToken: string): Promise<void> {
     await query(
-      `UPDATE public_feed_deliveries
+      `UPDATE ops.public_feed_deliveries
           SET status = 'succeeded', delivered_at = NOW(), last_error = NULL,
               claim_token = NULL, claim_expires_at = NULL, updated_at = NOW()
         WHERE id = $1 AND claim_token = $2`,
@@ -411,7 +411,7 @@ export function createPublicFeedRepository(
     const terminal = attempts >= 5;
     const delaySeconds = Math.min(300, 2 ** Math.max(0, attempts - 1));
     await query(
-      `UPDATE public_feed_deliveries
+      `UPDATE ops.public_feed_deliveries
           SET status = $3,
               next_attempt_at = NOW() + ($4::text || ' seconds')::interval,
               last_error = $5, claim_token = NULL, claim_expires_at = NULL,
@@ -423,7 +423,7 @@ export function createPublicFeedRepository(
 
   async function markDiscarded(id: string, claimToken: string, error: string): Promise<void> {
     await query(
-      `UPDATE public_feed_deliveries
+      `UPDATE ops.public_feed_deliveries
           SET status = 'dead_lettered', last_error = $3,
               claim_token = NULL, claim_expires_at = NULL, updated_at = NOW()
         WHERE id = $1 AND claim_token = $2`,
@@ -433,7 +433,7 @@ export function createPublicFeedRepository(
 
   async function queueStats(): Promise<{ count: number; oldestAgeSeconds: number }> {
     const result = await query<{ count: string; age: string | null }>(`SELECT COUNT(*)::text AS count,
-      EXTRACT(EPOCH FROM NOW() - MIN(created_at))::text AS age FROM public_feed_deliveries
+      EXTRACT(EPOCH FROM NOW() - MIN(created_at))::text AS age FROM ops.public_feed_deliveries
       WHERE status IN ('pending', 'failed', 'delivering')`);
     return { count: Number(result.rows[0]?.count ?? 0), oldestAgeSeconds: Math.max(0, Number(result.rows[0]?.age ?? 0)) };
   }
