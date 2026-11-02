@@ -42,3 +42,19 @@ CREATE TABLE IF NOT EXISTS ops.node_privacy (
 COMMENT ON TABLE ops.node_privacy IS
   'Node identity privacy from private_node_prefixes and the 🚫 name marker; no packet content.';
 
+-- Seed the node privacy registry from the two live sources that already
+-- protect planner exports. This is identity metadata only; no packet content.
+INSERT INTO ops.node_privacy (node_id, reason, source, marker, added_by)
+SELECT node_id, 'private_node_prefixes registry', 'public.private_node_prefixes', NULL,
+       '071_backend_schemas.sql'
+FROM public.private_node_prefixes
+ON CONFLICT (node_id) DO NOTHING;
+
+INSERT INTO ops.node_privacy (node_id, reason, source, marker, added_by)
+SELECT DISTINCT node_id, '🚫 name marker', 'public.nodes.name', '🚫',
+       '071_backend_schemas.sql'
+FROM public.nodes
+WHERE name LIKE '%🚫%'
+ON CONFLICT (node_id) DO NOTHING;
+
+
