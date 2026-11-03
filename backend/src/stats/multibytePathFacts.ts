@@ -116,7 +116,7 @@ export async function setMultibyteFactChunkCompression(
 export function multibyteObservationIdBatchSql(): string {
   return `WITH candidates AS MATERIALIZED (
     SELECT p.tableoid AS source_tableoid, p.ctid AS source_ctid
-    FROM packet_paths p
+    FROM mesh.packet_paths p
     WHERE p.time >= $1::timestamptz
       AND p.time <= $2::timestamptz
       AND p.observation_id IS NULL
@@ -125,7 +125,7 @@ export function multibyteObservationIdBatchSql(): string {
     ORDER BY p.time ASC
     LIMIT $3::integer
   ), updated AS (
-    UPDATE packet_paths p
+    UPDATE mesh.packet_paths p
        SET observation_id = gen_random_uuid()
       FROM candidates
      WHERE p.tableoid = candidates.source_tableoid
@@ -175,7 +175,7 @@ export function multibyteFactBackfillSql(): string {
       p.path_hash_size_bytes,
       rx.role AS rx_role,
       ${publicVisibility} AS current_visibility_ok
-    FROM packet_paths p
+    FROM mesh.packet_paths p
     LEFT JOIN core.node_identity_aliases rx_alias
       ON rx_alias.source_node_id = UPPER(BTRIM(p.rx_node_id))
     LEFT JOIN core.node_identity_nodes rx

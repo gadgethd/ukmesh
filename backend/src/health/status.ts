@@ -152,7 +152,7 @@ async function refreshPacketPathCapacityMetrics(): Promise<void> {
     overdue_uncompressed_chunks: string;
   }>(`
     SELECT
-      (SELECT COUNT(*)::text FROM packet_paths
+      (SELECT COUNT(*)::text FROM mesh.packet_paths
         WHERE time >= NOW() - INTERVAL '30 days') AS rows_30d,
       approximate_row_count('packet_paths'::regclass)::text AS approximate_rows,
       pg_total_relation_size('packet_paths'::regclass)::text AS total_bytes,

@@ -12,7 +12,6 @@
     "ml_path_prefix_scores",
     "node_identity_link_radio_reports",
     "node_link_radio_reports",
-    "packet_paths",
     "path_corridor_priors",
     "path_edge_priors",
     "path_model_calibration",
@@ -66,39 +65,28 @@
     "db/nodeIdentityRefresh.integration.test.ts": [],
     "db/nodeNameHistory.integration.test.ts": [],
     "db/packetBatch.integration.test.ts": [
-      "packet_paths",
       "schema_migration_compatibility",
       "schema_migrations"
     ],
     "db/packetBatch.test.ts": [],
-    "db/packetBatch.ts": [
-      "packet_paths"
-    ],
+    "db/packetBatch.ts": [],
     "db/packetDailyBoundary.integration.test.ts": [],
-    "db/packetVisibilityFence.test.ts": [
-      "packet_paths"
-    ],
+    "db/packetVisibilityFence.test.ts": [],
     "db/privacyCompletion.integration.test.ts": [],
     "db/publicVisibilityMigration.test.ts": [],
     "db/recentRead.integration.test.ts": [],
     "db/regionScoping.integration.test.ts": [],
     "db/silentRecovery.integration.test.ts": [],
     "db/visibilityConvergence.integration.test.ts": [
-      "packet_paths",
       "schema_migrations"
     ],
     "health/packetDiagnostics.integration.test.ts": [],
     "health/packetDiagnostics.ts": [],
     "health/status.ts": [
-      "packet_paths",
       "path_model_calibration"
     ],
-    "maintenance/staleMqttObservers.integration.test.ts": [
-      "packet_paths"
-    ],
-    "maintenance/staleMqttObservers.native.integration.test.ts": [
-      "packet_paths"
-    ],
+    "maintenance/staleMqttObservers.integration.test.ts": [],
+    "maintenance/staleMqttObservers.native.integration.test.ts": [],
     "maintenance/staleMqttObservers.test.ts": [],
     "maintenance/staleMqttObservers.ts": [],
     "mqtt/client.ts": [],
@@ -165,9 +153,7 @@
     "privacy/convergence.ts": [],
     "privacy/generationHealth.ts": [],
     "ram/liveRead.ts": [],
-    "ram/runtime.integration.test.ts": [
-      "packet_paths"
-    ],
+    "ram/runtime.integration.test.ts": [],
     "regions/filter.ts": [],
     "regions/nodeSource.ts": [],
     "repositories/networkAnalysis.test.ts": [],
@@ -208,12 +194,8 @@
     "stats/chartSnapshot.ts": [
       "stats_chart_snapshots"
     ],
-    "stats/multibytePathFacts.test.ts": [
-      "packet_paths"
-    ],
-    "stats/multibytePathFacts.ts": [
-      "packet_paths"
-    ],
+    "stats/multibytePathFacts.test.ts": [],
+    "stats/multibytePathFacts.ts": [],
     "stats/statsRepository.test.ts": [],
     "stats/statsRepository.ts": [],
     "tools/backfillDecrypt.ts": [],
@@ -244,9 +226,7 @@
     "tools/shadowTopologyCombined.ts": [],
     "workers/link-backfill.ts": [],
     "workers/link-recompute.ts": [],
-    "workers/privacy-rematerialization.ts": [
-      "packet_paths"
-    ],
+    "workers/privacy-rematerialization.ts": [],
     "workers/syntheticPersistence.ts": [],
     "ws/initialStateNodes.integration.test.ts": [],
     "ws/publicAuthorization.integration.test.ts": [],

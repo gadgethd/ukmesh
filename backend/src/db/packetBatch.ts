@@ -529,7 +529,7 @@ export async function persistEntriesCore(
          RETURNING 1
        ),
        path_inserted AS (
-         INSERT INTO packet_paths (
+         INSERT INTO mesh.packet_paths (
            time, packet_hash, rx_node_id, src_node_id, topic, topic_prefix,
            route_type, hop_count, rssi, snr, path_hashes, path_hash_size_bytes,
            is_private, visibility_ok, network, observation_id

@@ -94,7 +94,7 @@ const PACKET_UPDATE_SQL = `UPDATE mesh.packets p
          ))
      )`;
 
-const PATH_UPDATE_SQL = `UPDATE packet_paths path
+const PATH_UPDATE_SQL = `UPDATE mesh.packet_paths path
        SET is_private = meshcore_path_matches_private(
              path.network, path.rx_node_id, path.src_node_id,
              path.path_hashes, path.path_hash_size_bytes
