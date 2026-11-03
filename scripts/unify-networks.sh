@@ -68,7 +68,7 @@ relabel_status_batches() {
 mark_failed() {
   local status=$?
   trap - ERR
-  "${PSQL[@]}" -qAt -c "UPDATE network_unification_runs SET status='failed', detail=jsonb_build_object('exit_status', ${status}) WHERE run_id='${RUN_ID//\'/\'\'}';" >/dev/null || true
+  "${PSQL[@]}" -qAt -c "UPDATE ops.network_unification_runs SET status='failed', detail=jsonb_build_object('exit_status', ${status}) WHERE run_id='${RUN_ID//\'/\'\'}';" >/dev/null || true
   exit "$status"
 }
 
@@ -89,7 +89,7 @@ apply() {
   fi
 
   trap mark_failed ERR
-  "${PSQL[@]}" -qAt -c "INSERT INTO network_unification_runs (run_id,status,backup_reference) VALUES ('${RUN_ID//\'/\'\'}','running','${BACKUP_REFERENCE//\'/\'\'}') ON CONFLICT (run_id) DO UPDATE SET status='running';"
+  "${PSQL[@]}" -qAt -c "INSERT INTO ops.network_unification_runs (run_id,status,backup_reference) VALUES ('${RUN_ID//\'/\'\'}','running','${BACKUP_REFERENCE//\'/\'\'}') ON CONFLICT (run_id) DO UPDATE SET status='running';"
   audit
   log 'applying small-table and derived-table cutover'
   "${PSQL[@]}" -f scripts/unify-networks-migration.sql
@@ -98,7 +98,7 @@ apply() {
   log 'relabeling packet chunks with compression-state preservation'
   scripts/relabel-packets-per-chunk.sh
   verify
-  "${PSQL[@]}" -qAt -c "UPDATE network_unification_runs SET status='completed', completed_at=NOW(), detail=jsonb_build_object('verified_at', NOW()) WHERE run_id='${RUN_ID//\'/\'\'}';"
+  "${PSQL[@]}" -qAt -c "UPDATE ops.network_unification_runs SET status='completed', completed_at=NOW(), detail=jsonb_build_object('verified_at', NOW()) WHERE run_id='${RUN_ID//\'/\'\'}';"
   trap - ERR
   log "cutover complete run_id=${RUN_ID}"
 }
