@@ -909,7 +909,7 @@ export async function getRecentPackets(
       mt.tags, mt.confidence AS tag_confidence
     FROM recent_packets rp
     LEFT JOIN packet_stats ps ON ps.packet_hash = rp.packet_hash
-    LEFT JOIN message_tags mt ON mt.packet_hash = rp.packet_hash
+    LEFT JOIN mesh.message_tags mt ON mt.packet_hash = rp.packet_hash
     ${overlapParam ? `WHERE rp.packet_hash = ANY(${overlapParam}::text[])
       OR rp.packet_hash IN (SELECT packet_hash FROM recent_packets ORDER BY time DESC, packet_hash LIMIT $1)` : ''}
     ORDER BY rp.time DESC, rp.packet_hash
@@ -999,7 +999,7 @@ export async function getRecentMessages(
       mt.tags, mt.confidence AS tag_confidence
     FROM selected_msgs m
     LEFT JOIN msg_stats ms ON ms.packet_hash = m.packet_hash
-    LEFT JOIN message_tags mt ON mt.packet_hash = m.packet_hash
+    LEFT JOIN mesh.message_tags mt ON mt.packet_hash = m.packet_hash
     ${overlapParam ? `WHERE m.packet_hash = ANY(${overlapParam}::text[])
       OR m.packet_hash IN (SELECT packet_hash FROM recent_msgs ORDER BY time DESC, packet_hash LIMIT $1)` : ''}
     ORDER BY m.time DESC, m.packet_hash
@@ -1020,7 +1020,7 @@ export async function getRecentMessageTags(limit = 200, network?: string) {
   const scope = buildScopePlaceholders(2, network);
   const res = await query(
     `SELECT mt.packet_hash, mt.tags, mt.confidence, mt.tagged_at
-       FROM message_tags mt
+       FROM mesh.message_tags mt
       WHERE mt.tagged_at > NOW() - INTERVAL '24 hours'
         AND EXISTS (
           SELECT 1 FROM packets p
@@ -1149,7 +1149,7 @@ export async function getChannelMessageHistory(
       CASE WHEN COALESCE(m.payload->>'direction', 'rx') = 'tx' THEN 1 ELSE 0 END::int AS tx_count,
       mt.tags, mt.confidence AS tag_confidence
     FROM channel_candidates m
-    LEFT JOIN message_tags mt ON mt.packet_hash = m.packet_hash
+    LEFT JOIN mesh.message_tags mt ON mt.packet_hash = m.packet_hash
     WHERE 1 = 1
       ${buildPublicPacketPrivacyClause('m')}
     ORDER BY m.time DESC`,
@@ -1203,7 +1203,7 @@ export async function getPacketDetail(hash: string, network = 'ukmesh') {
               p.payload, p.path_hashes, p.path_hash_size_bytes, p.raw_hex,
               mt.tags, mt.confidence AS tag_confidence
        FROM packets p
-       LEFT JOIN message_tags mt ON mt.packet_hash = p.packet_hash
+       LEFT JOIN mesh.message_tags mt ON mt.packet_hash = p.packet_hash
        WHERE p.packet_hash = $1
          ${buildPacketScopeClause(scope, 'p', network)}
          ${buildPublicPacketPrivacyClause('p')}

@@ -4,7 +4,6 @@
   "tables": [
     "analysis_runs",
     "analysis_workload_state",
-    "message_tags",
     "message_tags_local",
     "ml_gold_paths",
     "ml_model_variant_packet_results",
@@ -75,7 +74,6 @@
       "packets"
     ],
     "db/index.ts": [
-      "message_tags",
       "node_identity_link_radio_reports",
       "packet_decryptions",
       "packets",
