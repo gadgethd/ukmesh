@@ -8,7 +8,7 @@
  * Then tally node -> region -> distinct packets, plus unscoped relay evidence
  * (route 1, multibyte, 7d) for the green/red classification, and refresh:
  *   region_scope_stats, region_scope_members, repeater_scope_status,
- *   region_scope_run
+ *   core.region_scope_run
  *
  * Membership floor: a node counts as a region member only when it relayed at
  * least MEMBER_MIN_SHARE_PCT (regions/memberShare.ts, currently 10%) of that
@@ -379,8 +379,8 @@ async function main(): Promise<void> {
       await client.query('DELETE FROM region_scope_members');
       await client.query('DELETE FROM region_scope_stats');
       await client.query('DELETE FROM repeater_scope_status');
-      await client.query('DELETE FROM region_scope_unattributed');
-      await client.query('DELETE FROM region_scope_run');
+      await client.query('DELETE FROM core.region_scope_unattributed');
+      await client.query('DELETE FROM core.region_scope_run');
 
       const regionNames = [...regionTotals.keys()];
       await client.query(
@@ -437,7 +437,7 @@ async function main(): Promise<void> {
       const clusters = unattributedClusters.clusters;
       if (clusters.length > 0) {
         await client.query(
-          `INSERT INTO region_scope_unattributed
+          `INSERT INTO core.region_scope_unattributed
              (cluster_id, lat, lon, packets, observers, first_seen, last_seen, top_nodes)
            SELECT cluster_id, lat, lon, packets, observers, first_seen, last_seen, top_nodes::jsonb
              FROM unnest($1::text[], $2::float8[], $3::float8[], $4::int[], $5::int[],
@@ -457,7 +457,7 @@ async function main(): Promise<void> {
       }
 
       await client.query(
-        `INSERT INTO region_scope_run (id, finished_at, window_days, scoped_packets, decoded_packets)
+        `INSERT INTO core.region_scope_run (id, finished_at, window_days, scoped_packets, decoded_packets)
          VALUES (TRUE, now(), $1, $2, $3)`,
         [windowDays, scopedRows.length, decodedCount],
       );

@@ -399,7 +399,7 @@ export function registerRegionsRoutes(router: Router, deps: RegionsRouteDeps): v
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const filters = deps.networkFilters(network);
       const [run, stats, members] = await Promise.all([
-        deps.query<RunRow>('SELECT finished_at, window_days FROM region_scope_run LIMIT 1'),
+        deps.query<RunRow>('SELECT finished_at, window_days FROM core.region_scope_run LIMIT 1'),
         deps.query<RegionStatRow>(
           `SELECT region, packets_total, member_count, repeater_member_count, first_seen, last_seen
              FROM region_scope_stats
@@ -426,7 +426,7 @@ export function registerRegionsRoutes(router: Router, deps: RegionsRouteDeps): v
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const filters = deps.networkFilters(network);
       const [run, repeaters] = await Promise.all([
-        deps.query<RunRow>('SELECT finished_at, window_days FROM region_scope_run LIMIT 1'),
+        deps.query<RunRow>('SELECT finished_at, window_days FROM core.region_scope_run LIMIT 1'),
         deps.query<RegionRepeaterRow>(
           `SELECT s.node_id, s.status, s.evidence, s.scoped_packets, s.unscoped_packets_7d, s.regions,
                   meta.name, meta.role, meta.lat, meta.lon
@@ -447,10 +447,10 @@ export function registerRegionsRoutes(router: Router, deps: RegionsRouteDeps): v
   router.get('/regions/unattributed', deps.limiter, async (_req, res) => {
     try {
       const [run, clusters] = await Promise.all([
-        deps.query<RunRow>('SELECT finished_at, window_days FROM region_scope_run LIMIT 1'),
+        deps.query<RunRow>('SELECT finished_at, window_days FROM core.region_scope_run LIMIT 1'),
         deps.query<UnattributedClusterRow>(
           `SELECT cluster_id, lat, lon, packets, observers, first_seen, last_seen, top_nodes
-             FROM region_scope_unattributed
+             FROM core.region_scope_unattributed
             ORDER BY packets DESC, cluster_id ASC`,
         ),
       ]);

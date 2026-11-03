@@ -66,9 +66,7 @@
     "planned_node_publications",
     "private_node_prefixes",
     "region_scope_members",
-    "region_scope_run",
     "region_scope_stats",
-    "region_scope_unattributed",
     "repeater_scope_status",
     "schema_migration_compatibility",
     "schema_migrations",
@@ -138,9 +136,7 @@
     "api/routes/regions.ts": [
       "nodes",
       "region_scope_members",
-      "region_scope_run",
       "region_scope_stats",
-      "region_scope_unattributed",
       "repeater_scope_status"
     ],
     "api/routes/rfValidation.test.ts": [
@@ -609,9 +605,7 @@
       "nodes",
       "packets",
       "region_scope_members",
-      "region_scope_run",
       "region_scope_stats",
-      "region_scope_unattributed",
       "repeater_scope_status"
     ],
     "tools/recomputeSpamSuspects.ts": [
