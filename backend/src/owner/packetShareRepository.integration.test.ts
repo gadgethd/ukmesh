@@ -28,7 +28,7 @@ test('PostgreSQL enforces ScotMesh owner and observer scope for reads, rules and
       await pool.query(await fs.readFile(new URL(`../db/migrations/${migration}`, import.meta.url), 'utf8'));
     }
     await pool.query(
-      `INSERT INTO owner_packet_share_destinations (destination_id, display_name, enabled, allowed_owner_username, allowed_node_id)
+      `INSERT INTO core.owner_packet_share_destinations (destination_id, display_name, enabled, allowed_owner_username, allowed_node_id)
        VALUES ('scotmesh', 'ScotMesh', TRUE, 'node1', $1), ('existing', 'Existing', TRUE, NULL, NULL)`, [nodeId],
     );
     const query: DatabaseQueryFn = async (sql, params) => pool.query(sql, params);
@@ -41,7 +41,7 @@ test('PostgreSQL enforces ScotMesh owner and observer scope for reads, rules and
     assert.deepEqual(await repository.replaceOwnerRules('node1', nodeId, ['scotmesh'], true), ['scotmesh']);
     // Simulate old rules created before scope enforcement; they must not become targets.
     await pool.query(
-      `INSERT INTO owner_packet_share_rules (owner_username, node_id, destination_id, enabled)
+      `INSERT INTO core.owner_packet_share_rules (owner_username, node_id, destination_id, enabled)
        VALUES ('node2', $1, 'scotmesh', TRUE), ('node1', $2, 'scotmesh', TRUE)`, [nodeId, 'C'.repeat(64)],
     );
     assert.deepEqual(await repository.listOwnerRules('node2', nodeId), []);

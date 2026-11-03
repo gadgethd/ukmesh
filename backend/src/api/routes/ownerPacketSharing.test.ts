@@ -62,18 +62,18 @@ async function withOwnerApi(
   const writes: string[] = [];
   const router = Router();
   registerOwnerRoutes(router, ownerRouteDeps(async (sql, params) => {
-    if (sql.startsWith('DELETE FROM owner_packet_share_rules')
-      || sql.startsWith('UPDATE owner_packet_share_deliveries')
-      || sql.startsWith('INSERT INTO owner_packet_share_rules')) {
+    if (sql.startsWith('DELETE FROM core.owner_packet_share_rules')
+      || sql.startsWith('UPDATE core.owner_packet_share_deliveries')
+      || sql.startsWith('INSERT INTO core.owner_packet_share_rules')) {
       writes.push(`${sql}\n${JSON.stringify(params ?? [])}`);
-      return sql.startsWith('INSERT INTO owner_packet_share_rules')
+      return sql.startsWith('INSERT INTO core.owner_packet_share_rules')
         ? { rows: [{ destination_id: 'remote-site' }] }
         : { rows: [] };
     }
-    if (sql.includes('FROM owner_packet_share_destinations')) {
+    if (sql.includes('FROM core.owner_packet_share_destinations')) {
       return { rows: destinationRows };
     }
-    if (sql.includes('FROM owner_packet_share_rules')) {
+    if (sql.includes('FROM core.owner_packet_share_rules')) {
       return { rows: selectedDestinationRows };
     }
     return query(sql, params);
@@ -104,7 +104,7 @@ test('owner packet-sharing settings start with every destination off', async () 
 test('owner packet-sharing settings expose destinations and persist a selected destination', async () => {
   const lastForwardedAt = '2026-09-16T22:45:00.000Z';
   await withOwnerApi(async (sql) => (
-    sql.includes('FROM owner_packet_share_deliveries')
+    sql.includes('FROM core.owner_packet_share_deliveries')
       ? { rows: [{ destination_id: 'remote-site', last_forwarded_at: lastForwardedAt }] }
       : { rows: [] }
   ), async (baseUrl, writes) => {

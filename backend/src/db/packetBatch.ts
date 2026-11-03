@@ -520,7 +520,7 @@ export async function persistEntriesCore(
          INSERT INTO packet_forwarding_outbox (observation_id, payload)
          SELECT observation_id, forwarding_payload FROM new_rows
          WHERE forwarding_payload IS NOT NULL AND path_is_valid AND NOT is_private
-           AND (EXISTS (SELECT 1 FROM owner_packet_share_rules rule
+           AND (EXISTS (SELECT 1 FROM core.owner_packet_share_rules rule
                         WHERE rule.node_id = new_rows.rx_node_id AND rule.enabled)
              OR EXISTS (SELECT 1 FROM owner_public_feed_nodes feed_node
                         JOIN owner_public_feed_settings setting USING (owner_username)

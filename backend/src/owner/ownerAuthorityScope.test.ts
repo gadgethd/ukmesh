@@ -72,7 +72,7 @@ test('an inactive owner grant blocks repository enqueue and dead-letters pending
   const calls: Array<{ text: string; params?: unknown[] }> = [];
   const query = (async (text: string, params?: unknown[]) => {
     calls.push({ text, params });
-    if (text.includes('FROM owner_packet_share_rules')) return { rows: [targetRow] };
+    if (text.includes('FROM core.owner_packet_share_rules')) return { rows: [targetRow] };
     return { rows: [] };
   }) as unknown as PacketShareQueryFn;
   let grantChecks = 0;
@@ -96,7 +96,7 @@ test('an inactive owner grant blocks repository enqueue and dead-letters pending
   assert.equal(await repository.enqueueDelivery(enqueueInput), false);
   assert.equal(grantChecks, 2);
   assert.equal(
-    calls.some((call) => call.text.includes('INSERT INTO owner_packet_share_deliveries')),
+    calls.some((call) => call.text.includes('INSERT INTO core.owner_packet_share_deliveries')),
     false,
     'no delivery row may be inserted without a live grant',
   );
@@ -210,7 +210,7 @@ test('an owner grant lookup failure suppresses forwarding without dead-lettering
   const calls: Array<{ text: string; params?: unknown[] }> = [];
   const query = (async (text: string, params?: unknown[]) => {
     calls.push({ text, params });
-    if (text.includes('FROM owner_packet_share_rules')) return { rows: [targetRow] };
+    if (text.includes('FROM core.owner_packet_share_rules')) return { rows: [targetRow] };
     return { rows: [] };
   }) as unknown as PacketShareQueryFn;
   const repository = createPacketShareRepository(query, undefined, {
@@ -225,8 +225,8 @@ test('an active owner grant still permits enqueue', async () => {
   const calls: Array<{ text: string; params?: unknown[] }> = [];
   const query = (async (text: string, params?: unknown[]) => {
     calls.push({ text, params });
-    if (text.includes('FROM owner_packet_share_rules')) return { rows: [targetRow] };
-    if (text.includes('INSERT INTO owner_packet_share_deliveries')) return { rows: [{ id: '1' }] };
+    if (text.includes('FROM core.owner_packet_share_rules')) return { rows: [targetRow] };
+    if (text.includes('INSERT INTO core.owner_packet_share_deliveries')) return { rows: [{ id: '1' }] };
     return { rows: [] };
   }) as unknown as PacketShareQueryFn;
   const repository = createPacketShareRepository(query, undefined, {
@@ -235,6 +235,6 @@ test('an active owner grant still permits enqueue', async () => {
 
   assert.equal((await repository.activeTargets(NODE)).length, 1);
   assert.equal(await repository.enqueueDelivery(enqueueInput), true);
-  assert.equal(calls.some((call) => call.text.includes('INSERT INTO owner_packet_share_deliveries')), true);
+  assert.equal(calls.some((call) => call.text.includes('INSERT INTO core.owner_packet_share_deliveries')), true);
   assert.equal(calls.some((call) => call.text.includes("status = 'dead_lettered'")), false);
 });

@@ -35,9 +35,6 @@
     "observer_region_packet_sightings",
     "observer_registration_requests",
     "observers",
-    "owner_packet_share_deliveries",
-    "owner_packet_share_destinations",
-    "owner_packet_share_rules",
     "owner_public_feed_nodes",
     "owner_public_feed_settings",
     "packet_daily_stats",
@@ -109,11 +106,7 @@
       "node_identity_status_samples",
       "node_status_samples"
     ],
-    "api/routes/ownerPacketSharing.test.ts": [
-      "owner_packet_share_deliveries",
-      "owner_packet_share_destinations",
-      "owner_packet_share_rules"
-    ],
+    "api/routes/ownerPacketSharing.test.ts": [],
     "api/routes/ownerPublicFeed.test.ts": [
       "owner_public_feed_nodes",
       "owner_public_feed_settings"
@@ -199,7 +192,6 @@
       "nodes",
       "observer_region_observer_sightings",
       "observer_region_packet_sightings",
-      "owner_packet_share_rules",
       "owner_public_feed_nodes",
       "owner_public_feed_settings",
       "packet_daily_stats",
@@ -309,10 +301,7 @@
     "owner/ownerAccess.ts": [
       "node_identity_nodes"
     ],
-    "owner/ownerAuthorityScope.test.ts": [
-      "owner_packet_share_deliveries",
-      "owner_packet_share_rules"
-    ],
+    "owner/ownerAuthorityScope.test.ts": [],
     "owner/ownerRepository.ts": [
       "node_identity_aliases",
       "node_identity_links",
@@ -325,15 +314,8 @@
       "node_identity_nodes",
       "node_identity_packets"
     ],
-    "owner/packetShareRepository.integration.test.ts": [
-      "owner_packet_share_destinations",
-      "owner_packet_share_rules"
-    ],
-    "owner/packetShareRepository.ts": [
-      "owner_packet_share_deliveries",
-      "owner_packet_share_destinations",
-      "owner_packet_share_rules"
-    ],
+    "owner/packetShareRepository.integration.test.ts": [],
+    "owner/packetShareRepository.ts": [],
     "owner/publicFeedRepository.ts": [
       "owner_public_feed_nodes",
       "owner_public_feed_settings",
@@ -557,9 +539,7 @@
       "path_prefix_priors",
       "path_transition_priors"
     ],
-    "tools/provisionScotmesh.ts": [
-      "owner_packet_share_destinations"
-    ],
+    "tools/provisionScotmesh.ts": [],
     "tools/rebuildRegionParticipation.ts": [
       "nodes",
       "packets"
