@@ -230,18 +230,18 @@ test('base schema and every migration apply to a brand-new database', {
     SELECT matviewname, ispopulated
       FROM pg_matviews
      WHERE schemaname = 'public'
-       AND matviewname IN ('node_identity_links', 'node_identity_sightings')
+       AND matviewname IN ('core.node_identity_links', 'core.node_identity_sightings')
      ORDER BY matviewname
   `);
   assert.deepEqual(matviews.rows, [
-    { matviewname: 'node_identity_links', ispopulated: true },
-    { matviewname: 'node_identity_sightings', ispopulated: true },
+    { matviewname: 'core.node_identity_links', ispopulated: true },
+    { matviewname: 'core.node_identity_sightings', ispopulated: true },
   ]);
   const identityIndexes = await freshPool.query<{ indexname: string }>(`
     SELECT indexname
       FROM pg_indexes
      WHERE schemaname = 'public'
-       AND tablename IN ('node_identity_links', 'node_identity_sightings')
+       AND tablename IN ('core.node_identity_links', 'core.node_identity_sightings')
      ORDER BY indexname
   `);
   assert.deepEqual(identityIndexes.rows.map((row) => row.indexname), [
@@ -251,8 +251,8 @@ test('base schema and every migration apply to a brand-new database', {
     'node_identity_sightings_network_node_idx',
     'node_identity_sightings_node_network_uidx',
   ]);
-  await freshPool.query('REFRESH MATERIALIZED VIEW CONCURRENTLY node_identity_links');
-  await freshPool.query('REFRESH MATERIALIZED VIEW CONCURRENTLY node_identity_sightings');
+  await freshPool.query('REFRESH MATERIALIZED VIEW CONCURRENTLY core.node_identity_links');
+  await freshPool.query('REFRESH MATERIALIZED VIEW CONCURRENTLY core.node_identity_sightings');
 
   const packetPathSchema = await freshPool.query<{
     nullable_observer: boolean;

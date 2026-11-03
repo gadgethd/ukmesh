@@ -171,7 +171,7 @@ export function networkFilters(
             ${prefix}network IS DISTINCT FROM 'test'
             AND EXISTS (
               SELECT 1
-              FROM node_identity_sightings s
+              FROM core.node_identity_sightings s
               WHERE s.node_id = ${nodeRef}
                 AND s.network ${netMatch}
                 AND s.last_seen_at > NOW() - INTERVAL '30 days'

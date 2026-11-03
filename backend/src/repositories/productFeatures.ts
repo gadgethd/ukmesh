@@ -88,7 +88,7 @@ export async function visibleLinkNodeIds(
             n.network IS DISTINCT FROM 'test'
             AND EXISTS (
               SELECT 1
-                FROM node_identity_sightings sighting
+                FROM core.node_identity_sightings sighting
                WHERE sighting.node_id = n.node_id
                  AND sighting.network = ANY($2::text[])
                  AND sighting.last_seen_at > NOW() - INTERVAL '30 days'

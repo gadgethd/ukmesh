@@ -59,7 +59,7 @@ function fixtureQuery(fixture: Fixture) {
         SELECT * FROM jsonb_to_recordset(${literal(JSON.stringify(fixture.nodes ?? [node(A), node(B), node(C), node(D)]))}::jsonb)
         AS n(node_id text,name text,role integer,network text,lat double precision,lon double precision,
           iata text,last_seen timestamptz,hardware_model text)
-      ), node_identity_sightings AS (
+      ), core.node_identity_sightings AS (
         SELECT ${literal(B)} AS node_id,'ukmesh'::text AS network,NOW() AS last_seen_at
         WHERE ${fixture.sighted ? 'TRUE' : 'FALSE'}
       ), core.node_links AS (

@@ -19,10 +19,8 @@
     "multibyte_path_fact_state",
     "multibyte_path_facts",
     "node_identity_link_radio_reports",
-    "node_identity_links",
     "node_identity_nodes",
     "node_identity_packets",
-    "node_identity_sightings",
     "node_identity_status_samples",
     "node_link_radio_reports",
     "node_neighbor_samples",
@@ -64,9 +62,7 @@
       "analysis_workload_state"
     ],
     "api/hopreachCompatibility.ts": [
-      "node_identity_links",
-      "node_identity_nodes",
-      "node_identity_sightings"
+      "node_identity_nodes"
     ],
     "api/routes/activityTimeline.ts": [
       "packets"
@@ -109,16 +105,13 @@
     ],
     "api/routes/telemetry.ts": [],
     "api/utils/networkFilters.ts": [
-      "node_identity_sightings",
       "nodes",
       "packets"
     ],
     "db/index.ts": [
       "message_tags",
       "node_identity_link_radio_reports",
-      "node_identity_links",
       "node_identity_nodes",
-      "node_identity_sightings",
       "node_neighbor_samples",
       "node_status_samples",
       "nodes",
@@ -261,7 +254,6 @@
     ],
     "owner/ownerAuthorityScope.test.ts": [],
     "owner/ownerRepository.ts": [
-      "node_identity_links",
       "node_identity_nodes",
       "node_identity_packets",
       "node_neighbor_samples",
@@ -364,7 +356,6 @@
       "packets"
     ],
     "repositories/nodes.ts": [
-      "node_identity_links",
       "node_identity_nodes",
       "node_identity_status_samples",
       "nodes",
@@ -382,7 +373,6 @@
     ],
     "repositories/productFeatures.ts": [
       "node_identity_nodes",
-      "node_identity_sightings",
       "packets"
     ],
     "spam/analyzer.ts": [

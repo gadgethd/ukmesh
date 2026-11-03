@@ -167,7 +167,7 @@ const NODE_WHERE = `
   AND (
     n.network = 'ukmesh'
     OR EXISTS (
-      SELECT 1 FROM node_identity_sightings sighting
+      SELECT 1 FROM core.node_identity_sightings sighting
       WHERE sighting.node_id = n.node_id AND sighting.network = 'ukmesh'
     )
   )`;
@@ -192,7 +192,7 @@ async function fetchLinks(query: QueryFn, publicKeys: string[], days: number) {
        END::int AS bottleneck,
        (nl.count_a_to_b > 0 AND nl.count_b_to_a > 0) AS bidir
      FROM requested
-     JOIN node_identity_links nl
+     JOIN core.node_identity_links nl
        ON nl.node_a_id = requested.source_id OR nl.node_b_id = requested.source_id
      JOIN node_identity_nodes peer
        ON peer.node_id = CASE

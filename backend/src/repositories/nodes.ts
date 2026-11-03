@@ -277,7 +277,7 @@ export function createNodeRepository(query: QueryFn): NodeRepository {
                   THEN nl.count_a_to_b ELSE nl.count_b_to_a END AS count_this_to_peer,
              CASE WHEN nl.node_a_id = (SELECT node_id FROM requested_identity)
                   THEN nl.count_b_to_a ELSE nl.count_a_to_b END AS count_peer_to_this
-             FROM node_identity_links nl
+             FROM core.node_identity_links nl
             WHERE (nl.node_a_id = (SELECT node_id FROM requested_identity)
                    OR nl.node_b_id = (SELECT node_id FROM requested_identity))
               AND (nl.itm_viable = TRUE OR nl.force_viable = TRUE)

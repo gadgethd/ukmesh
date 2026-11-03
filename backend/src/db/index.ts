@@ -297,7 +297,7 @@ function buildNodeScopeClause(
           ${prefix}network IS DISTINCT FROM 'test'
           AND EXISTS (
             SELECT 1
-            FROM node_identity_sightings s
+            FROM core.node_identity_sightings s
             WHERE s.node_id = ${nodeRef}
               AND s.network ${netMatch}
               AND s.last_seen_at > NOW() - INTERVAL '30 days'
@@ -1308,7 +1308,7 @@ export async function getMultibytePathSegments(network?: string, observer?: stri
       multibyte_observed_count: number;
     }>(
       `SELECT node_a_id, node_b_id, multibyte_observed_count
-       FROM node_identity_links
+       FROM core.node_identity_links
        WHERE multibyte_observed_count > 0
          AND itm_viable = true
          ${scope.regionParam ? `AND node_a_id IN (${regionMemberIdsSql('$1')})
@@ -1383,7 +1383,7 @@ export async function getViableLinks(
          COALESCE(nr.neighbor_report_count, 0) AS neighbor_report_count,
          nr.neighbor_best_snr_db, nl.itm_viable, nl.itm_path_loss_db,
          nl.count_a_to_b, nl.count_b_to_a, nl.last_observed::text AS last_observed
-       FROM node_identity_links nl
+       FROM core.node_identity_links nl
        LEFT JOIN LATERAL (
          SELECT SUM(sample_count)::int AS neighbor_report_count, MAX(best_snr_db) AS neighbor_best_snr_db
          FROM core.node_identity_link_radio_reports r
@@ -1425,7 +1425,7 @@ export async function getViableLinks(
            nl.count_a_to_b,
            nl.count_b_to_a,
            nl.last_observed::text AS last_observed
-         FROM node_identity_links nl
+         FROM core.node_identity_links nl
          LEFT JOIN (
            SELECT node_a_id, node_b_id,
              SUM(sample_count)::int AS neighbor_report_count,
@@ -1460,7 +1460,7 @@ export async function getViableLinks(
        nl.count_a_to_b,
        nl.count_b_to_a,
        nl.last_observed::text AS last_observed
-     FROM node_identity_links nl
+     FROM core.node_identity_links nl
      LEFT JOIN (
        SELECT node_a_id, node_b_id,
          SUM(sample_count)::int AS neighbor_report_count,

@@ -2,17 +2,20 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { loadMigrationFiles } from './migrations.js';
 
-const TARGET_QUALIFIER = /^(?:public|core|mesh|analytics|archive|ops|pg_catalog|information_schema|timescaledb_information|timescaledb_experimental|_timescaledb|unnest|pg_|(?:new|old)_[a-z0-9_]+$|SET$|NEW$|OLD$)/i;
+const TARGET_QUALIFIER = /^(?:public|core|mesh|analytics|archive|ops|pg_catalog|information_schema|timescaledb_information|timescaledb_experimental|_timescaledb|unnest|pg_|(?:new|old)_[a-z0-9_]+$|node_identity_nodes$|LATERAL$|SET$|NEW$|OLD$)/i;
 const DML_TARGET = /\b(?:FROM|JOIN|INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+([a-z_][a-z0-9_]*)/gi;
 
 function unqualifiedTargets(sql: string): string[] {
   const body = sql
     .replace(/--[^\n]*/g, '')
     .replace(/'([^']|'')*'/g, "''");
+  const ctes = new Set(
+    [...body.matchAll(/(?:\bWITH\b|,)\s*([a-z_][a-z0-9_]*)\s+AS\s*\(/gi)].map((match) => match[1]),
+  );
   const found: string[] = [];
   for (const match of body.matchAll(DML_TARGET)) {
     const target = match[1];
-    if (!target || TARGET_QUALIFIER.test(target)) continue;
+    if (!target || TARGET_QUALIFIER.test(target) || ctes.has(target)) continue;
     found.push(target);
   }
   return found;

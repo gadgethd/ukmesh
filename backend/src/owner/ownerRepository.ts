@@ -132,7 +132,7 @@ export function createOwnerRepository(deps: OwnerRepositoryDeps) {
          JOIN node_identity_nodes n
            ON (n.role IS NULL OR n.role NOT IN (1, 3))
           AND UPPER(LEFT(n.node_id, 2)) = UPPER(LEFT(uh.receiver_side_hash, 2))
-         LEFT JOIN node_identity_links nl
+         LEFT JOIN core.node_identity_links nl
            ON (
              (nl.node_a_id = uh.rx_node_id AND nl.node_b_id = n.node_id)
              OR (nl.node_b_id = uh.rx_node_id AND nl.node_a_id = n.node_id)
@@ -437,7 +437,7 @@ export function createOwnerRepository(deps: OwnerRepositoryDeps) {
            nl.itm_viable,
            nl.force_viable,
            nl.last_observed::text AS last_observed
-         FROM node_identity_links nl
+         FROM core.node_identity_links nl
          JOIN node_identity_nodes peer ON peer.node_id = CASE
            WHEN nl.node_a_id = $1 THEN nl.node_b_id
            ELSE nl.node_a_id
