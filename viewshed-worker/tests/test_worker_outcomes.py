@@ -75,7 +75,7 @@ class CoverageOutcomeTests(unittest.TestCase):
                 worker.process_job(db, redis, job)
 
         self.assertEqual(db.commits, 0)
-        self.assertFalse(any('INSERT INTO node_coverage' in query for query, _ in db.statements))
+        self.assertFalse(any('INSERT INTO core.node_coverage' in query for query, _ in db.statements))
         self.assertEqual(redis.removed, [])
 
     def test_out_of_scope_job_records_explicit_permanent_status(self):
@@ -86,7 +86,7 @@ class CoverageOutcomeTests(unittest.TestCase):
         with self.assertRaises(worker.PermanentOutOfScope):
             worker.process_job(db, redis, job)
 
-        inserts = [query for query, _ in db.statements if 'INSERT INTO node_coverage' in query]
+        inserts = [query for query, _ in db.statements if 'INSERT INTO core.node_coverage' in query]
         self.assertEqual(len(inserts), 1)
         self.assertIn("'permanent'", inserts[0])
         self.assertEqual(db.commits, 1)
