@@ -14,7 +14,7 @@ type Row = {
   packet_hash: string;
   rx_node_id: string | null;
   raw_hex: string | null;
-  chunk: string;
+  table_oid: string;
   ctid: string;
 };
 
@@ -106,9 +106,11 @@ async function packetBatch(client: pg.PoolClient, state: State, batchSize: numbe
     'length(packet_hash) = 64',
     'time <= $1',
     `tableoid IN (
-       SELECT (chunk_schema || '.' || chunk_name)::regclass
-         FROM timescaledb_information.chunks
-        WHERE hypertable_schema = 'mesh' AND hypertable_name = 'packets' AND is_compressed = FALSE
+       SELECT c.oid FROM pg_class c
+         JOIN pg_namespace n ON n.oid = c.relnamespace
+         JOIN timescaledb_information.chunks ch
+           ON ch.chunk_schema = n.nspname AND ch.chunk_name = c.relname
+        WHERE ch.hypertable_schema = 'mesh' AND ch.hypertable_name = 'packets' AND ch.is_compressed = FALSE
      )`,
   ];
   if (since) { values.push(since); where.push(`time >= $${values.length}`); }
@@ -124,7 +126,7 @@ async function packetBatch(client: pg.PoolClient, state: State, batchSize: numbe
   values.push(batchSize);
   const result = await client.query<Row>(`
     SELECT time, packet_hash, rx_node_id, raw_hex,
-           tableoid::regclass::text AS chunk, ctid::text AS ctid
+           tableoid AS table_oid, ctid::text AS ctid
       FROM mesh.packets
      WHERE ${where.join(' AND ')}
      ORDER BY time, packet_hash, COALESCE(rx_node_id, '')
@@ -173,11 +175,20 @@ async function backfillPackets(pool: pg.Pool, batchSize: number, dryRun: boolean
         }
 
         if (!dryRun && resolved.length > 0) {
+          const oids = [...new Set(resolved.map((row) => row.table_oid))];
+          const chunkNames = await client.query<{ oid: string; chunk: string }>(`
+            SELECT c.oid::text AS oid, n.nspname || '.' || c.relname AS chunk
+              FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+             WHERE c.oid = ANY($1::oid[])
+          `, [oids]);
+          const nameByOid = new Map(chunkNames.rows.map((row) => [row.oid, row.chunk]));
           const byChunk = new Map<string, Row[]>();
           for (const row of resolved) {
-            const rows = byChunk.get(row.chunk) ?? [];
+            const chunk = nameByOid.get(row.table_oid);
+            if (!chunk) throw new Error(`chunk OID ${row.table_oid} not found`);
+            const rows = byChunk.get(chunk) ?? [];
             rows.push(row);
-            byChunk.set(row.chunk, rows);
+            byChunk.set(chunk, rows);
           }
           for (const [chunk, chunkRows] of byChunk) {
             if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(chunk)) {
