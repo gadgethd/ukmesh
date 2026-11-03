@@ -283,7 +283,7 @@ export async function deliverDueOwnerAlerts(): Promise<number> {
 
 export async function expireObserverRegistrationRequests(): Promise<number> {
   const result = await query<{ id: string }>(
-    `UPDATE observer_registration_requests
+    `UPDATE core.observer_registration_requests
         SET status = 'expired',
             decision_reason = COALESCE(decision_reason, 'Request expired after 90 days'),
             updated_at = NOW()

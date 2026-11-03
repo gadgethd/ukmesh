@@ -1299,7 +1299,7 @@ test('packet batch atomically coalesces observer, sighting, and stats writes', {
 
     const registrationPrefix = suffix.padStart(64, 'E').slice(0, 64);
     await pool.query(
-      `INSERT INTO observer_registration_requests
+      `INSERT INTO core.observer_registration_requests
          (public_key, iata, contact, status, created_at, updated_at)
        VALUES
          ($1, 'ZZZ', 'terminal@example.invalid', 'rejected',
@@ -1308,9 +1308,9 @@ test('packet batch atomically coalesces observer, sighting, and stats writes', {
           NOW() - INTERVAL '366 days', NOW() - INTERVAL '366 days')`,
       [`E${registrationPrefix.slice(1)}`, `F${registrationPrefix.slice(1)}`],
     );
-    await executeRetention(retentionTarget('observer_registration_requests'));
+    await executeRetention(retentionTarget('core.observer_registration_requests'));
     const registrationRetention = await pool.query<{ status: string }>(
-      `SELECT status FROM observer_registration_requests
+      `SELECT status FROM core.observer_registration_requests
         WHERE contact IN ('terminal@example.invalid', 'pending@example.invalid')
         ORDER BY status`,
     );
@@ -1366,7 +1366,7 @@ test('packet batch atomically coalesces observer, sighting, and stats writes', {
       [`%-${suffix}`],
     );
     await pool.query(
-      `DELETE FROM observer_registration_requests
+      `DELETE FROM core.observer_registration_requests
         WHERE contact IN ('terminal@example.invalid', 'pending@example.invalid')`,
     );
     await pool.query(

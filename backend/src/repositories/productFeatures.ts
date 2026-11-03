@@ -175,7 +175,7 @@ export async function submitObserverRegistration(
 ): Promise<{ requestId: string; accepted: boolean }> {
   const result = await query<{ id: string; accepted: boolean }>(
     `WITH inserted AS (
-       INSERT INTO observer_registration_requests (
+       INSERT INTO core.observer_registration_requests (
          public_key, iata, display_name, contact, expires_at
        ) VALUES ($1, $2, $3, $4, NOW() + INTERVAL '90 days')
        ON CONFLICT (public_key) DO NOTHING
@@ -184,7 +184,7 @@ export async function submitObserverRegistration(
      SELECT id::text, TRUE AS accepted FROM inserted
      UNION ALL
      SELECT existing.id::text, FALSE
-       FROM observer_registration_requests existing
+       FROM core.observer_registration_requests existing
       WHERE existing.public_key = $1
         AND NOT EXISTS (SELECT 1 FROM inserted)
      LIMIT 1`,

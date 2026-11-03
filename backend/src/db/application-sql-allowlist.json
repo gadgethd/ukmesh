@@ -33,7 +33,6 @@
     "nodes",
     "observer_region_observer_sightings",
     "observer_region_packet_sightings",
-    "observer_registration_requests",
     "observers",
     "packet_daily_stats",
     "packet_decryptions",
@@ -167,7 +166,6 @@
       "nodes",
       "observer_region_observer_sightings",
       "observer_region_packet_sightings",
-      "observer_registration_requests",
       "packet_daily_stats",
       "packet_decryptions",
       "packet_hourly_stats",
@@ -276,15 +274,13 @@
     "operations/operatorOperations.ts": [
       "analysis_runs",
       "ml_model_versions",
-      "observer_registration_requests",
       "observers",
       "path_model_calibration"
     ],
     "owner/alertRules.ts": [
       "node_links",
       "node_status_samples",
-      "nodes",
-      "observer_registration_requests"
+      "nodes"
     ],
     "owner/forwardingOutbox.ts": [
       "packet_forwarding_outbox"
@@ -431,7 +427,6 @@
       "node_identity_nodes",
       "node_identity_sightings",
       "node_links",
-      "observer_registration_requests",
       "packets"
     ],
     "spam/analyzer.ts": [
