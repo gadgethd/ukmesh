@@ -250,7 +250,7 @@ export async function actOnObserverRegistration(
         RETURNING request.*
      ),
      provision AS (
-       INSERT INTO observers (public_key, name, location, is_active)
+       INSERT INTO core.observers (public_key, name, location, is_active)
        SELECT public_key, COALESCE(NULLIF(display_name, ''), iata), iata, TRUE
          FROM changed
         WHERE $2 = 'provision'
