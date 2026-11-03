@@ -26,6 +26,6 @@ export function packetIdentityKeySql(
     throw new Error(`unsafe SQL alias: ${JSON.stringify(alias)}`);
   }
   return authority === 'uid'
-    ? `COALESCE(encode(${alias}.packet_uid, 'hex'), ${alias}.packet_hash)`
+    ? `UPPER(COALESCE(encode(${alias}.packet_uid, 'hex'), ${alias}.packet_hash))`
     : `${alias}.packet_hash`;
 }

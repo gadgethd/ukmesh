@@ -14,7 +14,7 @@ test('packet identity read helper validates authority and aliases', () => {
   assert.equal(packetIdentityKeySql('p', 'hash'), 'p.packet_hash');
   assert.equal(
     packetIdentityKeySql('p', 'uid'),
-    "COALESCE(encode(p.packet_uid, 'hex'), p.packet_hash)",
+    "UPPER(COALESCE(encode(p.packet_uid, 'hex'), p.packet_hash))",
   );
   assert.throws(() => packetIdentityKeySql('p; DROP TABLE mesh.packets', 'uid'), /unsafe SQL alias/);
 });
@@ -31,18 +31,18 @@ test('recent readers switch identity authority without changing the public hash 
     await getRecentPackets(3, 'ukmesh');
     assert.match(
       calls.at(-1)!,
-      /DISTINCT ON \(COALESCE\(encode\(p\.packet_uid, 'hex'\), p\.packet_hash\)\)/,
+      /DISTINCT ON \(UPPER\(COALESCE\(encode\(p\.packet_uid, 'hex'\), p\.packet_hash\)\)\)/,
     );
     assert.match(
       calls.at(-1)!,
-      /ORDER BY COALESCE\(encode\(p\.packet_uid, 'hex'\), p\.packet_hash\),/,
+      /ORDER BY UPPER\(COALESCE\(encode\(p\.packet_uid, 'hex'\), p\.packet_hash\)\),/,
     );
     assert.match(calls.at(-1)!, /p\.packet_hash/);
 
     await getRecentMessages(3, 'ukmesh');
     assert.match(
       calls.at(-1)!,
-      /DISTINCT ON \(COALESCE\(encode\(p\.packet_uid, 'hex'\), p\.packet_hash\)\)/,
+      /DISTINCT ON \(UPPER\(COALESCE\(encode\(p\.packet_uid, 'hex'\), p\.packet_hash\)\)\)/,
     );
 
     process.env['PACKET_IDENTITY_READ_AUTHORITY'] = 'hash';
