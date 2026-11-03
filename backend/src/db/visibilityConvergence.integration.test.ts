@@ -49,14 +49,14 @@ test('local TimescaleDB visibility-fence reproduction, regression and convergenc
 
   const pair = async () => (await pool.query<{ generation: string; materialized_generation: string | null }>(`
     SELECT p.generation::text, m.visibility_generation::text AS materialized_generation
-      FROM public_visibility_state p LEFT JOIN packet_visibility_materialization_state m USING (singleton)
+      FROM ops.public_visibility_state p LEFT JOIN ops.packet_visibility_materialization_state m USING (singleton)
       WHERE p.singleton
   `)).rows[0];
   const reset = async () => {
     await pool.query(`TRUNCATE nodes, private_node_prefixes, node_identity_aliases,
-      privacy_rematerialization_queue, packets, packet_paths CASCADE;
-      UPDATE public_visibility_state SET generation = 1, updated_at = NOW();
-      INSERT INTO packet_visibility_materialization_state VALUES (TRUE, 1, NOW())
+      ops.privacy_rematerialization_queue, packets, packet_paths CASCADE;
+      UPDATE ops.public_visibility_state SET generation = 1, updated_at = NOW();
+      INSERT INTO ops.packet_visibility_materialization_state VALUES (TRUE, 1, NOW())
       ON CONFLICT (singleton) DO UPDATE SET visibility_generation = 1, updated_at = NOW();`);
   };
   const addNode = async (id = nodeId, privateName = false) => {
@@ -74,9 +74,9 @@ test('local TimescaleDB visibility-fence reproduction, regression and convergenc
   const snapshot = async () => (await pool.query(`SELECT
     (SELECT jsonb_agg(to_jsonb(p) ORDER BY packet_hash) FROM packets p) AS packets,
     (SELECT jsonb_agg(to_jsonb(p) ORDER BY packet_hash) FROM packet_paths p) AS paths,
-    (SELECT jsonb_agg(to_jsonb(q) ORDER BY id) FROM privacy_rematerialization_queue q) AS queue,
-    (SELECT to_jsonb(v) FROM public_visibility_state v) AS visibility,
-    (SELECT to_jsonb(m) FROM packet_visibility_materialization_state m) AS materialization`)).rows[0];
+    (SELECT jsonb_agg(to_jsonb(q) ORDER BY id) FROM ops.privacy_rematerialization_queue q) AS queue,
+    (SELECT to_jsonb(v) FROM ops.public_visibility_state v) AS visibility,
+    (SELECT to_jsonb(m) FROM ops.packet_visibility_materialization_state m) AS materialization`)).rows[0];
 
   await t.test('reproduces the shipped no-row FK cascade, then proves rollback and reapply', async () => {
     await reset();
@@ -204,7 +204,7 @@ test('local TimescaleDB visibility-fence reproduction, regression and convergenc
           (NOW(), 'bad-width', 'fixture', 'ukmesh', NULL, ARRAY['AA'], 4)`, [nodeId]);
     }
     await pool.query("UPDATE nodes SET name = 'Fixture private 🚫' WHERE node_id = $1", [nodeId]);
-    await pool.query(`UPDATE privacy_rematerialization_queue SET status = 'failed', attempts = 8,
+    await pool.query(`UPDATE ops.privacy_rematerialization_queue SET status = 'failed', attempts = 8,
       finished_at = NOW(), last_error = 'fixture exhausted' WHERE target = 'packet_paths'`);
     // Model stale historically materialized flags, including invalid framing.
     await pool.query('UPDATE packets SET is_private = FALSE, visibility_ok = TRUE');
@@ -268,46 +268,46 @@ test('local TimescaleDB visibility-fence reproduction, regression and convergenc
     };
     try {
       assert.equal((await reader.query('SHOW transaction_read_only')).rows[0].transaction_read_only, 'on');
-      await assert.rejects(reader.query('UPDATE public_visibility_state SET generation = generation + 1'),
+      await assert.rejects(reader.query('UPDATE ops.public_visibility_state SET generation = generation + 1'),
         /read-only|permission denied/);
       assert.deepEqual(await inspect(), {
         desiredGeneration: '1', materializedGeneration: '1', appliedGeneration: '1',
         queueActive: false, healthy: true, reason: 'healthy',
       });
-      await pool.query('UPDATE public_visibility_state SET generation = 2');
+      await pool.query('UPDATE ops.public_visibility_state SET generation = 2');
       const desiredAhead = await inspect();
       assert.equal(desiredAhead.reason, 'desired_ahead');
       assert.equal(desiredAhead.queueActive, false, '#672 must alert even with an empty queue');
       assert.equal(desiredAhead.appliedGeneration, null, 'a divergent generation is never globally admitted');
-      await pool.query('UPDATE packet_visibility_materialization_state SET visibility_generation = 3');
+      await pool.query('UPDATE ops.packet_visibility_materialization_state SET visibility_generation = 3');
       const certificateAhead = await inspect();
       assert.equal(certificateAhead.reason, 'materialized_ahead');
       assert.equal(certificateAhead.healthy, false);
       assert.equal(certificateAhead.appliedGeneration, null);
-      await pool.query('DELETE FROM packet_visibility_materialization_state');
+      await pool.query('DELETE FROM ops.packet_visibility_materialization_state');
       assert.equal((await inspect()).reason, 'materialized_missing');
-      await pool.query('DELETE FROM public_visibility_state');
+      await pool.query('DELETE FROM ops.public_visibility_state');
       assert.equal((await inspect()).reason, 'desired_missing');
-      await pool.query('INSERT INTO public_visibility_state(singleton,generation) VALUES (TRUE,1)');
+      await pool.query('INSERT INTO ops.public_visibility_state(singleton,generation) VALUES (TRUE,1)');
       await reset();
-      await pool.query(`INSERT INTO privacy_rematerialization_queue(node_id,target,status)
+      await pool.query(`INSERT INTO ops.privacy_rematerialization_queue(node_id,target,status)
         VALUES ($1,'packets','pending')`, [nodeId]);
       for (const status of ['pending', 'processing', 'failed']) {
-        await pool.query('UPDATE privacy_rematerialization_queue SET status = $1', [status]);
+        await pool.query('UPDATE ops.privacy_rematerialization_queue SET status = $1', [status]);
         const state = await inspect();
         assert.equal(state.reason, 'queue_active');
         assert.equal(state.appliedGeneration, null);
       }
-      await pool.query("UPDATE privacy_rematerialization_queue SET status = 'done'");
+      await pool.query("UPDATE ops.privacy_rematerialization_queue SET status = 'done'");
       assert.equal((await inspect()).healthy, true);
-      await pool.query('ALTER TABLE packet_visibility_materialization_state RENAME TO fixture_missing_materialization');
+      await pool.query('ALTER TABLE ops.packet_visibility_materialization_state RENAME TO fixture_missing_materialization');
       try {
         const reconcile = createPrivacyGenerationReconciler(
           () => reader.query<PrivacyGenerationSnapshot>(PRIVACY_GENERATION_HEALTH_SQL), () => {},
         );
         assert.equal((await reconcile()).reason, 'read_failed', 'a missing relation must fail closed too');
       } finally {
-        await pool.query('ALTER TABLE fixture_missing_materialization RENAME TO packet_visibility_materialization_state');
+        await pool.query('ALTER TABLE fixture_missing_materialization RENAME TO ops.packet_visibility_materialization_state');
       }
     } finally { await reader.end(); }
   });
@@ -317,15 +317,15 @@ test('local TimescaleDB visibility-fence reproduction, regression and convergenc
     const before = await snapshot();
     await assert.rejects(convergePacketVisibility(pool, { apply: true, expectedGeneration: '999' }), /VISIBILITY_GENERATION_CHANGED/);
     assert.deepEqual(await snapshot(), before);
-    await pool.query("UPDATE privacy_rematerialization_queue SET status = 'processing' WHERE target = 'packets'");
+    await pool.query("UPDATE ops.privacy_rematerialization_queue SET status = 'processing' WHERE target = 'packets'");
     const processing = await snapshot();
     await assert.rejects(repair(), /PRIVACY_REMATERIALIZATION_PROCESSING/);
     assert.deepEqual(await snapshot(), processing);
-    await pool.query('DELETE FROM public_visibility_state');
+    await pool.query('DELETE FROM ops.public_visibility_state');
     const missing = await snapshot();
     await assert.rejects(convergePacketVisibility(pool, { apply: true, expectedGeneration: '1' }), /VISIBILITY_GENERATION_CHANGED/);
     assert.deepEqual(await snapshot(), missing);
-    await pool.query('INSERT INTO public_visibility_state(singleton,generation) VALUES (TRUE,1)');
+    await pool.query('INSERT INTO ops.public_visibility_state(singleton,generation) VALUES (TRUE,1)');
   });
 
   await t.test('legacy unknown path sizes and NULL hops become hidden rather than NULL visibility', async () => {
@@ -355,11 +355,11 @@ test('local TimescaleDB visibility-fence reproduction, regression and convergenc
 
   await t.test('missing materialization state stays fenced through aliases and scoped passes, full repair recreates it', async () => {
     await seedStaleRows();
-    await pool.query('DELETE FROM packet_visibility_materialization_state');
+    await pool.query('DELETE FROM ops.packet_visibility_materialization_state');
     await pool.query(`INSERT INTO node_identity_aliases(source_node_id, canonical_node_id, confidence, reason)
       VALUES ($1, $2, 'high', 'fixture')`, [otherId, nodeId]);
     assert.equal((await pair()).materialized_generation, null);
-    await pool.query("UPDATE privacy_rematerialization_queue SET status = 'pending', attempts = 0");
+    await pool.query("UPDATE ops.privacy_rematerialization_queue SET status = 'pending', attempts = 0");
     await processNextPrivacyRematerialization(pool, { chunkPauseMs: 0 });
     await processNextPrivacyRematerialization(pool, { chunkPauseMs: 0 });
     assert.equal((await pair()).materialized_generation, null);
@@ -416,7 +416,7 @@ test('local TimescaleDB visibility-fence reproduction, regression and convergenc
         : "RAISE EXCEPTION 'fixture injected failure';";
       await pool.query(`CREATE OR REPLACE FUNCTION fixture_failure() RETURNS TRIGGER LANGUAGE plpgsql AS $$ BEGIN ${definition} END $$`);
       const target = stage === 'path-write' || stage === 'readback' ? 'packet_paths'
-        : stage === 'queue' ? 'privacy_rematerialization_queue' : 'packet_visibility_materialization_state';
+        : stage === 'queue' ? 'ops.privacy_rematerialization_queue' : 'ops.packet_visibility_materialization_state';
       await pool.query(`CREATE TRIGGER fixture_failure BEFORE UPDATE ON ${target} FOR EACH ROW EXECUTE FUNCTION fixture_failure()`);
       try {
         await assert.rejects(repair(), stage === 'readback' ? /PRIVACY_CONVERGENCE_READBACK_FAILED/ : /fixture injected failure/);
@@ -453,7 +453,7 @@ test('local TimescaleDB visibility-fence reproduction, regression and convergenc
       for (const statement of [
         "UPDATE nodes SET name = 'competing public'",
         "DELETE FROM private_node_prefixes",
-        "UPDATE privacy_rematerialization_queue SET status = 'processing'",
+        "UPDATE ops.privacy_rematerialization_queue SET status = 'processing'",
         "INSERT INTO packets(packet_hash,topic) VALUES ('competing','fixture')",
         "UPDATE packet_paths SET visibility_ok = TRUE",
       ]) {

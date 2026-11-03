@@ -20,8 +20,8 @@ import {
 function hasCanonicalPrivacyPredicate(sql: string): boolean {
   return /visibility_ok IS TRUE/.test(sql)
     && /is_private IS NOT TRUE/.test(sql)
-    && /packet_visibility_materialization_state/.test(sql)
-    && /public_visibility_state/.test(sql)
+    && /ops.packet_visibility_materialization_state/.test(sql)
+    && /ops.public_visibility_state/.test(sql)
     && /visibility_generation\s*=\s*current_visibility\.generation/.test(sql);
 }
 
@@ -144,7 +144,7 @@ test('canonical privacy assertion rejects the retired name-based gate', () => {
     )`;
   assert.equal(hasCanonicalPrivacyPredicate(legacyGate), false);
   assert.doesNotMatch(legacyGate, /visibility_ok IS TRUE/);
-  assert.doesNotMatch(legacyGate, /packet_visibility_materialization_state/);
+  assert.doesNotMatch(legacyGate, /ops.packet_visibility_materialization_state/);
 
   const unguarded = 'SELECT p.packet_hash FROM packets p WHERE p.packet_type = 5';
   assert.equal(hasCanonicalPrivacyPredicate(unguarded), false);

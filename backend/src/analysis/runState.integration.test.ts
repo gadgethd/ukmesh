@@ -23,11 +23,11 @@ test('analysis leases fence publication, reclaim once, and recover transaction f
   await admin.query(`CREATE SCHEMA ${schema}`);
   await admin.query(`SET search_path TO ${schema}, public`);
   await admin.query(`
-    CREATE TABLE public_visibility_state (
+    CREATE TABLE ops.public_visibility_state (
       singleton BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton),
       generation BIGINT NOT NULL
     );
-    INSERT INTO public_visibility_state (singleton, generation) VALUES (TRUE, 1);
+    INSERT INTO ops.public_visibility_state (singleton, generation) VALUES (TRUE, 1);
   `);
   const { readFile } = await import('node:fs/promises');
   const { fileURLToPath } = await import('node:url');

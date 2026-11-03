@@ -160,7 +160,7 @@ export async function loadCurrentPublicPrivacyPolicy(): Promise<PrivatePrefixCac
     SELECT visibility.generation::text AS generation,
            materialized.visibility_generation::text AS materialized_generation,
            EXISTS (
-             SELECT 1 FROM privacy_rematerialization_queue
+             SELECT 1 FROM ops.privacy_rematerialization_queue
               WHERE status IN ('pending', 'processing', 'failed')
            ) AS remat_active,
            COALESCE(jsonb_agg(jsonb_build_object(
@@ -169,8 +169,8 @@ export async function loadCurrentPublicPrivacyPolicy(): Promise<PrivatePrefixCac
              'prefix_size_bytes', prefix.prefix_size_bytes,
              'prefix', prefix.prefix
            )) FILTER (WHERE prefix.node_id IS NOT NULL), '[]'::jsonb) AS prefixes
-      FROM public_visibility_state visibility
-      JOIN packet_visibility_materialization_state materialized
+      FROM ops.public_visibility_state visibility
+      JOIN ops.packet_visibility_materialization_state materialized
         ON materialized.singleton = visibility.singleton
       LEFT JOIN private_node_prefixes prefix ON TRUE
      WHERE visibility.singleton = TRUE
@@ -213,7 +213,7 @@ function refreshPrivatePrefixCache(query: QueryFn): Promise<void> {
                 FILTER (WHERE prefix.node_id IS NOT NULL),
               '[]'::jsonb
             ) AS prefixes
-       FROM public_visibility_state visibility
+       FROM ops.public_visibility_state visibility
        LEFT JOIN private_node_prefixes prefix ON TRUE
       WHERE visibility.singleton = TRUE
       GROUP BY visibility.generation`,
@@ -451,13 +451,13 @@ export async function persistEntriesCore(
     const result = await txQuery<PersistRow>(
       `WITH current_visibility AS MATERIALIZED (
          SELECT generation
-           FROM public_visibility_state
+           FROM ops.public_visibility_state
           WHERE singleton = TRUE
           FOR KEY SHARE
        ),
        privacy_remat_state AS MATERIALIZED (
          SELECT EXISTS (
-           SELECT 1 FROM privacy_rematerialization_queue
+           SELECT 1 FROM ops.privacy_rematerialization_queue
             WHERE status IN ('pending', 'processing', 'failed')
          ) AS active
        ),

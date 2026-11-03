@@ -114,17 +114,17 @@ const PATH_UPDATE_SQL = `UPDATE packet_paths path
            ]::text[]))`;
 
 async function claim(pool: pg.Pool, maxAttempts: number, leaseMs: number): Promise<QueueRow | null> {
-  await pool.query(`UPDATE privacy_rematerialization_queue
+  await pool.query(`UPDATE ops.privacy_rematerialization_queue
     SET status = 'failed', claim_token = NULL, claim_expires_at = NULL,
         finished_at = NOW(), last_error = 'worker lease expired'
     WHERE status = 'processing' AND (claim_expires_at IS NULL OR claim_expires_at <= NOW())`);
   const result = await pool.query<QueueRow>(`
-    UPDATE privacy_rematerialization_queue
+    UPDATE ops.privacy_rematerialization_queue
        SET status = 'processing', started_at = NOW(), attempts = attempts + 1,
            finished_at = NULL, last_error = NULL, claim_token = $2,
            claim_expires_at = NOW() + ($3::text || ' milliseconds')::interval
      WHERE id = (
-       SELECT id FROM privacy_rematerialization_queue
+       SELECT id FROM ops.privacy_rematerialization_queue
         WHERE status = 'pending'
            OR (status = 'failed' AND attempts < $1
              AND finished_at < NOW() - (attempts * attempts || ' minutes')::interval)
@@ -137,7 +137,7 @@ async function claim(pool: pg.Pool, maxAttempts: number, leaseMs: number): Promi
 
 async function processChunk(pool: pg.Pool, row: QueueRow, chunk: Chunk, timeoutMs: number, leaseMs: number): Promise<void> {
   for (let attempt = 1; attempt <= 3; attempt += 1) {
-    const renewal = await pool.query(`UPDATE privacy_rematerialization_queue
+    const renewal = await pool.query(`UPDATE ops.privacy_rematerialization_queue
         SET claim_expires_at = NOW() + ($3::text || ' milliseconds')::interval
         WHERE id = $1 AND claim_token = $2 AND status = 'processing' AND claim_expires_at > NOW()`,
         [row.id, row.claim_token, leaseMs]);
@@ -172,7 +172,7 @@ async function complete(pool: pg.Pool, row: QueueRow): Promise<void> {
   try {
     await client.query('BEGIN');
     const completion = await client.query<{ status: string }>(`
-      UPDATE privacy_rematerialization_queue
+      UPDATE ops.privacy_rematerialization_queue
          SET status = CASE WHEN requested_at <= started_at THEN 'done' ELSE 'pending' END,
              finished_at = CASE WHEN requested_at <= started_at THEN NOW() ELSE NULL END,
              last_error = NULL, claim_token = NULL, claim_expires_at = NULL
@@ -188,17 +188,17 @@ async function complete(pool: pg.Pool, row: QueueRow): Promise<void> {
     // recovery of a pre-existing gap (including a missing state row).
     if (completion.rows[0]?.status === 'done') await client.query(`
       WITH previous_generation AS MATERIALIZED (
-        SELECT generation FROM public_visibility_state
+        SELECT generation FROM ops.public_visibility_state
          WHERE singleton = TRUE FOR UPDATE
       ), next_generation AS (
-        UPDATE public_visibility_state visibility
+        UPDATE ops.public_visibility_state visibility
            SET generation = visibility.generation + 1,
                updated_at = NOW()
           FROM previous_generation previous
          WHERE visibility.singleton = TRUE
          RETURNING visibility.generation, previous.generation AS previous_generation
       )
-      UPDATE packet_visibility_materialization_state materialized
+      UPDATE ops.packet_visibility_materialization_state materialized
          SET visibility_generation = next.generation, updated_at = NOW()
         FROM next_generation next
        WHERE materialized.singleton = TRUE
@@ -239,7 +239,7 @@ export async function processNextPrivacyRematerialization(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     await pool.query(`
-      UPDATE privacy_rematerialization_queue
+      UPDATE ops.privacy_rematerialization_queue
          SET status = 'failed', last_error = $2, finished_at = NOW(),
              claim_token = NULL, claim_expires_at = NULL
        WHERE id = $1 AND status = 'processing' AND claim_token = $3

@@ -57,7 +57,6 @@
     "packet_forwarding_outbox",
     "packet_hourly_stats",
     "packet_paths",
-    "packet_visibility_materialization_state",
     "packets",
     "path_corridor_priors",
     "path_edge_priors",
@@ -69,9 +68,7 @@
     "path_slow_resolutions",
     "path_transition_priors",
     "planned_node_publications",
-    "privacy_rematerialization_queue",
     "private_node_prefixes",
-    "public_visibility_state",
     "region_scope_members",
     "region_scope_run",
     "region_scope_stats",
@@ -89,12 +86,9 @@
   "files": {
     "analysis/publicationFence.ts": [
       "analysis_runs",
-      "analysis_workload_state",
-      "public_visibility_state"
+      "analysis_workload_state"
     ],
-    "analysis/runState.integration.test.ts": [
-      "public_visibility_state"
-    ],
+    "analysis/runState.integration.test.ts": [],
     "analysis/runState.ts": [
       "analysis_runs",
       "analysis_workload_state"
@@ -161,10 +155,7 @@
       "node_identity_aliases",
       "node_identity_sightings",
       "nodes",
-      "packet_visibility_materialization_state",
-      "packets",
-      "privacy_rematerialization_queue",
-      "public_visibility_state"
+      "packets"
     ],
     "db/index.ts": [
       "message_tags",
@@ -181,7 +172,6 @@
       "nodes",
       "packet_decryptions",
       "packets",
-      "public_visibility_state",
       "spam_suspects"
     ],
     "db/ledgerArchive.integration.test.ts": [
@@ -198,13 +188,11 @@
       "node_identity_refresh_state",
       "node_status_samples",
       "nodes",
-      "packets",
-      "public_visibility_state"
+      "packets"
     ],
     "db/nodeIdentityRefresh.integration.test.ts": [
       "node_identity_refresh_state",
-      "nodes",
-      "public_visibility_state"
+      "nodes"
     ],
     "db/nodeNameHistory.integration.test.ts": [
       "node_identity_aliases",
@@ -226,10 +214,7 @@
       "packet_decryptions",
       "packet_hourly_stats",
       "packet_paths",
-      "packet_visibility_materialization_state",
       "packets",
-      "privacy_rematerialization_queue",
-      "public_visibility_state",
       "schema_migration_compatibility",
       "schema_migrations"
     ],
@@ -251,11 +236,8 @@
       "packet_forwarding_outbox",
       "packet_hourly_stats",
       "packet_paths",
-      "packet_visibility_materialization_state",
       "packets",
-      "privacy_rematerialization_queue",
-      "private_node_prefixes",
-      "public_visibility_state"
+      "private_node_prefixes"
     ],
     "db/packetDailyBoundary.integration.test.ts": [
       "packet_daily_stats",
@@ -265,19 +247,11 @@
       "packet_paths",
       "packets"
     ],
-    "db/privacyCompletion.integration.test.ts": [
-      "packet_visibility_materialization_state",
-      "privacy_rematerialization_queue",
-      "public_visibility_state"
-    ],
-    "db/publicVisibilityMigration.test.ts": [
-      "public_visibility_state"
-    ],
+    "db/privacyCompletion.integration.test.ts": [],
+    "db/publicVisibilityMigration.test.ts": [],
     "db/recentRead.integration.test.ts": [
       "node_identity_aliases",
-      "packet_decryptions",
-      "packet_visibility_materialization_state",
-      "public_visibility_state"
+      "packet_decryptions"
     ],
     "db/regionScoping.integration.test.ts": [
       "node_identity_aliases",
@@ -290,18 +264,14 @@
       "owner_alert_deliveries",
       "owner_public_feed_nodes",
       "owner_public_feed_settings",
-      "packet_forwarding_outbox",
-      "privacy_rematerialization_queue"
+      "packet_forwarding_outbox"
     ],
     "db/visibilityConvergence.integration.test.ts": [
       "node_identity_aliases",
       "nodes",
       "packet_paths",
-      "packet_visibility_materialization_state",
       "packets",
-      "privacy_rematerialization_queue",
       "private_node_prefixes",
-      "public_visibility_state",
       "schema_migrations"
     ],
     "health/packetDiagnostics.integration.test.ts": [
@@ -313,8 +283,7 @@
     "health/status.ts": [
       "node_links",
       "packet_paths",
-      "path_model_calibration",
-      "privacy_rematerialization_queue"
+      "path_model_calibration"
     ],
     "maintenance/staleMqttObservers.integration.test.ts": [
       "maintenance_removed_records",
@@ -322,10 +291,8 @@
       "nodes",
       "observer_region_observer_sightings",
       "packet_paths",
-      "packet_visibility_materialization_state",
       "packets",
-      "private_node_prefixes",
-      "public_visibility_state"
+      "private_node_prefixes"
     ],
     "maintenance/staleMqttObservers.native.integration.test.ts": [
       "maintenance_removed_records",
@@ -333,24 +300,19 @@
       "nodes",
       "observer_region_observer_sightings",
       "packet_paths",
-      "packet_visibility_materialization_state",
       "packets",
-      "private_node_prefixes",
-      "public_visibility_state"
+      "private_node_prefixes"
     ],
     "maintenance/staleMqttObservers.test.ts": [
       "maintenance_removed_records",
-      "nodes",
-      "packet_visibility_materialization_state"
+      "nodes"
     ],
     "maintenance/staleMqttObservers.ts": [
       "maintenance_removed_records",
       "node_network_sightings",
       "nodes",
       "observer_region_observer_sightings",
-      "packet_visibility_materialization_state",
-      "private_node_prefixes",
-      "public_visibility_state"
+      "private_node_prefixes"
     ],
     "mqtt/client.ts": [
       "packets"
@@ -481,16 +443,8 @@
       "path_transition_priors",
       "private_node_prefixes"
     ],
-    "privacy/convergence.ts": [
-      "packet_visibility_materialization_state",
-      "privacy_rematerialization_queue",
-      "public_visibility_state"
-    ],
-    "privacy/generationHealth.ts": [
-      "packet_visibility_materialization_state",
-      "privacy_rematerialization_queue",
-      "public_visibility_state"
-    ],
+    "privacy/convergence.ts": [],
+    "privacy/generationHealth.ts": [],
     "ram/liveRead.ts": [
       "node_identity_aliases",
       "packet_decryptions"
@@ -596,11 +550,9 @@
       "packets"
     ],
     "stats/chartSnapshot.test.ts": [
-      "public_visibility_state",
       "stats_chart_snapshots"
     ],
     "stats/chartSnapshot.ts": [
-      "public_visibility_state",
       "stats_chart_snapshots"
     ],
     "stats/multibytePathFacts.test.ts": [
@@ -680,12 +632,8 @@
       "spam_message_incidents",
       "spam_message_members"
     ],
-    "tools/seedStatsChartSnapshot.ts": [
-      "public_visibility_state"
-    ],
-    "tools/shadowTopologyCombined.ts": [
-      "public_visibility_state"
-    ],
+    "tools/seedStatsChartSnapshot.ts": [],
+    "tools/shadowTopologyCombined.ts": [],
     "workers/link-backfill.ts": [
       "node_links"
     ],
@@ -695,11 +643,8 @@
     ],
     "workers/privacy-rematerialization.ts": [
       "packet_paths",
-      "packet_visibility_materialization_state",
       "packets",
-      "privacy_rematerialization_queue",
-      "private_node_prefixes",
-      "public_visibility_state"
+      "private_node_prefixes"
     ],
     "workers/syntheticPersistence.ts": [],
     "ws/initialStateNodes.integration.test.ts": [
@@ -708,9 +653,7 @@
     ],
     "ws/publicAuthorization.integration.test.ts": [
       "nodes",
-      "packet_visibility_materialization_state",
-      "private_node_prefixes",
-      "public_visibility_state"
+      "private_node_prefixes"
     ],
     "ws/regionScoping.integration.test.ts": [
       "nodes",

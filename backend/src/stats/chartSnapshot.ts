@@ -125,7 +125,7 @@ export async function saveStoredChartSnapshot(
     `INSERT INTO stats_chart_snapshots
        (scope_key, schema_version, visibility_generation, generated_at, payload, updated_at)
      SELECT $1, $2, $3, $4::timestamptz, $5::jsonb, NOW()
-       FROM public_visibility_state
+       FROM ops.public_visibility_state
       WHERE singleton = TRUE
         AND generation = $3
      ON CONFLICT (scope_key) DO UPDATE SET

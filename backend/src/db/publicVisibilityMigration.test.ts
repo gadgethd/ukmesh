@@ -20,6 +20,6 @@ test('public visibility generation changes only when node privacy changes', () =
 test('current node trigger defers visibility generation changes to rematerialization', () => {
   const currentFunction = asyncMigration.split('CREATE OR REPLACE FUNCTION bump_public_visibility_generation()', 2)[1];
   assert.ok(currentFunction);
-  assert.doesNotMatch(currentFunction, /UPDATE public_visibility_state/);
+  assert.doesNotMatch(currentFunction, /UPDATE ops.public_visibility_state/);
   assert.match(currentFunction, /IF TG_OP = 'DELETE' THEN RETURN OLD/);
 });

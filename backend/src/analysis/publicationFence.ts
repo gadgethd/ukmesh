@@ -37,7 +37,7 @@ export async function assertAnalysisPublicationLease(
           $5::bigint IS NULL
           OR EXISTS (
             SELECT 1
-              FROM public_visibility_state visibility
+              FROM ops.public_visibility_state visibility
              WHERE visibility.singleton = TRUE
                AND visibility.generation = $5::bigint
           )

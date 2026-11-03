@@ -15,10 +15,10 @@ export type PrivacyGenerationSnapshot = {
 export const PRIVACY_GENERATION_HEALTH_SQL = `
   WITH state AS (
     SELECT
-      (SELECT generation::text FROM public_visibility_state WHERE singleton = TRUE) AS desired,
-      (SELECT visibility_generation::text FROM packet_visibility_materialization_state
+      (SELECT generation::text FROM ops.public_visibility_state WHERE singleton = TRUE) AS desired,
+      (SELECT visibility_generation::text FROM ops.packet_visibility_materialization_state
         WHERE singleton = TRUE) AS materialized,
-      EXISTS (SELECT 1 FROM privacy_rematerialization_queue
+      EXISTS (SELECT 1 FROM ops.privacy_rematerialization_queue
         WHERE status IN ('pending', 'processing', 'failed')) AS queue_active
   )
   SELECT desired AS "desiredGeneration", materialized AS "materializedGeneration",

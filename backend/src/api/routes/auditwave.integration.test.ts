@@ -67,9 +67,9 @@ function fixtureQuery(fixture: Fixture) {
         FROM jsonb_to_recordset(${literal(JSON.stringify(fixture.links ?? []))}::jsonb) AS l(
           node_a_id text,node_b_id text,age double precision,observed_count integer,
           multibyte_observed_count integer,itm_path_loss_db double precision,itm_viable boolean,force_viable boolean)
-      ), packet_visibility_materialization_state AS (
+      ), ops.packet_visibility_materialization_state AS (
         SELECT TRUE AS singleton,1 AS visibility_generation
-      ), public_visibility_state AS (
+      ), ops.public_visibility_state AS (
         SELECT TRUE AS singleton,${fixture.stalePrivacy ? 2 : 1} AS generation
       ) SELECT COALESCE(jsonb_agg(to_jsonb(result)),'[]'::jsonb) FROM (${bound}) result;`;
     const child = execFileAsync('docker', ['exec', '-i', '-e',

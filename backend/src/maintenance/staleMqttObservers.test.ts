@@ -93,7 +93,7 @@ test('inactive companions, room servers and never-bridged nodes are archived bef
   assert.ok(lastArchive < firstDelete);
   assert.equal(stub.calls.at(-1)?.text, 'COMMIT');
   const lockIndex = stub.calls.findIndex((call) => call.text.includes('FOR UPDATE OF visibility'));
-  const fenceIndex = stub.calls.findIndex((call) => call.text.includes('UPDATE packet_visibility_materialization_state'));
+  const fenceIndex = stub.calls.findIndex((call) => call.text.includes('UPDATE ops.packet_visibility_materialization_state'));
   const recheckIndex = stub.calls.findIndex((call) => call.text.includes('ANY($2::text[])'));
   assert.ok(lockIndex < recheckIndex && recheckIndex < lastArchive && lastArchive < firstDelete);
   assert.ok(fenceIndex > stub.calls.findLastIndex((call) => call.text.includes('DELETE FROM')));
@@ -154,7 +154,7 @@ test('cleanup never certifies a pre-existing stale or missing privacy materializ
       { rows: [], rowCount: 0 }, { rows: [], rowCount: 0 }, { rows: [], rowCount: 1 },
     ]);
     await cleanupInactiveNodes({ cleanupPool: stub.pool });
-    assert.equal(stub.calls.some((call) => call.text.includes('UPDATE packet_visibility_materialization_state')), false);
+    assert.equal(stub.calls.some((call) => call.text.includes('UPDATE ops.packet_visibility_materialization_state')), false);
     assert.equal(stub.calls.at(-1)?.text, 'COMMIT');
   }
 });

@@ -903,7 +903,7 @@ export async function getRecentPackets(
         ? 'rp.topic, rp.topic_prefix, rp.iata, rp.route_type, rp.network, rp.transport_codes, rp.region_scope,'
         : ''}
       ${includeObservationIds ? `ps._observation_ids, rp.network AS _policy_network,
-        (SELECT generation::text FROM public_visibility_state WHERE singleton) AS _policy_generation,
+        (SELECT generation::text FROM ops.public_visibility_state WHERE singleton) AS _policy_generation,
         rp._representative_rank, rp._representative_id,` : ''}
       ps.observer_node_ids, ps.observer_iatas, ps.rx_count, ps.tx_count,
       mt.tags, mt.confidence AS tag_confidence
@@ -993,7 +993,7 @@ export async function getRecentMessages(
       m.packet_type, m.hop_count, m.rssi, m.snr, m.payload,
       m.summary, m.advert_count, m.path_hashes, m.path_hash_size_bytes,
       ${includeObservationIds ? `ms._observation_ids, m.network AS _policy_network,
-        (SELECT generation::text FROM public_visibility_state WHERE singleton) AS _policy_generation,
+        (SELECT generation::text FROM ops.public_visibility_state WHERE singleton) AS _policy_generation,
         m._representative_rank, m._representative_id,` : ''}
       ms.observer_node_ids, ms.observer_iatas, ms.rx_count, ms.tx_count,
       mt.tags, mt.confidence AS tag_confidence
@@ -1261,7 +1261,7 @@ export async function getPacketDetail(hash: string, network = 'ukmesh') {
 export async function getPublicVisibilityGeneration(signal?: AbortSignal): Promise<number> {
   const result = await query<{ generation: string }>(
     `SELECT generation::text AS generation
-       FROM public_visibility_state
+       FROM ops.public_visibility_state
       WHERE singleton = TRUE`,
     undefined,
     signal,

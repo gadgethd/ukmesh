@@ -84,9 +84,9 @@ async function links(packets: ReturnType<typeof packet>[], options: {
       ), node_identity_sightings AS (
         SELECT ${literal(peer)}::text AS node_id, 'ukmesh'::text AS network, NOW() AS last_seen_at
         WHERE ${options.sighted ? 'TRUE' : 'FALSE'}
-      ), packet_visibility_materialization_state AS (
+      ), ops.packet_visibility_materialization_state AS (
         SELECT TRUE AS singleton, 1 AS visibility_generation
-      ), public_visibility_state AS (
+      ), ops.public_visibility_state AS (
         SELECT TRUE AS singleton, ${options.stalePrivacy ? 2 : 1} AS generation
       )
       SELECT COALESCE(jsonb_agg(to_jsonb(result)), '[]'::jsonb) FROM (${bound}) result;`;

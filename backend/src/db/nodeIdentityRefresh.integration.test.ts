@@ -13,7 +13,7 @@ test('identity refresh publishes a validated generation and reuses only fresh, m
   await admin.query(`CREATE SCHEMA ${schema}`);
   const pool = new pg.Pool({connectionString: endpoint, options: `-c search_path=${schema},public`, max: 2});
   t.after(async () => {await pool.end(); await admin.query(`DROP SCHEMA ${schema} CASCADE`); await admin.end();});
-  await pool.query(`CREATE TABLE public_visibility_state(singleton boolean primary key, generation bigint); INSERT INTO public_visibility_state VALUES(true,1);
+  await pool.query(`CREATE TABLE ops.public_visibility_state(singleton boolean primary key, generation bigint); INSERT INTO ops.public_visibility_state VALUES(true,1);
     CREATE TABLE nodes(node_id text,name text,lat float,lon float,role int,advert_count int,last_seen timestamptz,network text,hardware_model text,firmware_version text);
     CREATE TABLE node_status_samples(node_id text,time timestamptz);
     CREATE TABLE packets(rx_node_id text,src_node_id text,packet_type int,time timestamptz);
@@ -26,14 +26,14 @@ test('identity refresh publishes a validated generation and reuses only fresh, m
   assert.equal(first.nodesConsidered,1); assert.equal(first.reusedRecentRefresh,undefined);
   const second = await refreshNodeIdentityAliases(pool, {maxAgeMs:1800000});
   assert.equal(second.reusedRecentRefresh,true);
-  await pool.query('UPDATE public_visibility_state SET generation=2');
+  await pool.query('UPDATE ops.public_visibility_state SET generation=2');
   const changed = await refreshNodeIdentityAliases(pool, {maxAgeMs:1800000});
   assert.equal(changed.reusedRecentRefresh,undefined);
   // A privacy transition after the read snapshot must reject publication.
   let changedDuringRead=false;
   const intercepted={connect:async()=>{const client=await pool.connect();return {query:async (sql:string,params?:unknown[])=>{
     const result=await client.query(sql,params);
-    if(sql.includes('FROM nodes')&&!changedDuringRead){changedDuringRead=true;await pool.query('UPDATE public_visibility_state SET generation=3');}
+    if(sql.includes('FROM nodes')&&!changedDuringRead){changedDuringRead=true;await pool.query('UPDATE ops.public_visibility_state SET generation=3');}
     return result;
   },release:(destroy?:boolean)=>client.release(destroy)};}};
   await assert.rejects(refreshNodeIdentityAliases(intercepted),/visibility changed/);

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { loadMigrationFiles } from './migrations.js';
 
-const TARGET_QUALIFIER = /^(?:public|core|mesh|analytics|archive|ops|pg_catalog|information_schema|timescaledb_information|timescaledb_experimental|_timescaledb|unnest|pg_)/i;
+const TARGET_QUALIFIER = /^(?:public|core|mesh|analytics|archive|ops|pg_catalog|information_schema|timescaledb_information|timescaledb_experimental|_timescaledb|unnest|pg_|(?:new|old)_[a-z0-9_]+$|SET$|NEW$|OLD$)/i;
 const DML_TARGET = /\b(?:FROM|JOIN|INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+([a-z_][a-z0-9_]*)/gi;
 
 function unqualifiedTargets(sql: string): string[] {

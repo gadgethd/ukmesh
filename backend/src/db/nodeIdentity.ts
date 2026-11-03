@@ -647,7 +647,7 @@ export async function refreshNodeIdentityAliases(
     await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
     transactionOpen = true;
     const generation = (await client.query<{ generation: string }>(
-      'SELECT generation::text FROM public_visibility_state WHERE singleton = TRUE',
+      'SELECT generation::text FROM ops.public_visibility_state WHERE singleton = TRUE',
     )).rows[0]?.generation;
     if (!generation) throw new Error('Identity refresh requires a visibility generation');
     const maxAgeMs = options.maxAgeMs ?? 0;
@@ -807,7 +807,7 @@ export async function refreshNodeIdentityAliases(
     // use the same order so their decisions cannot be overwritten or deadlock.
     await client.query('LOCK TABLE node_identity_aliases IN SHARE ROW EXCLUSIVE MODE');
     const currentGeneration = (await client.query<{ generation: string }>(
-      'SELECT generation::text FROM public_visibility_state WHERE singleton = TRUE FOR UPDATE',
+      'SELECT generation::text FROM ops.public_visibility_state WHERE singleton = TRUE FOR UPDATE',
     )).rows[0]?.generation;
     if (currentGeneration !== generation) {
       throw new Error('Identity refresh visibility changed; discard stale evidence and retry');
@@ -920,7 +920,7 @@ export async function refreshNodeIdentityAliases(
       `INSERT INTO node_identity_refresh_state
          (singleton, algorithm_version, visibility_generation, completed_at, result)
        SELECT TRUE, 1, generation, clock_timestamp(), $1::jsonb
-         FROM public_visibility_state WHERE singleton = TRUE
+         FROM ops.public_visibility_state WHERE singleton = TRUE
        ON CONFLICT (singleton) DO UPDATE SET
          algorithm_version = EXCLUDED.algorithm_version,
          visibility_generation = EXCLUDED.visibility_generation,

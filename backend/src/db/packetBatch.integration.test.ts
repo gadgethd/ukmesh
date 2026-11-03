@@ -383,7 +383,7 @@ test('F06 real PG snapshot and Redis expiry preserve the captured handoff', {
   assert.deepEqual(merged.map((row) => row.packet_hash), [input.packetHash]);
   const later = await readRecentWithPending(async () => (await pool.query(`
     SELECT packet_hash, time, network, ARRAY[observation_id::text] AS _observation_ids,
-           (SELECT generation::text FROM public_visibility_state WHERE singleton) AS _policy_generation,
+           (SELECT generation::text FROM ops.public_visibility_state WHERE singleton) AS _policy_generation,
            0 AS _representative_rank,
            1::int AS rx_count, 0::int AS tx_count FROM packets`)).rows,
   { limit: 10, network: 'ukmesh', resolveAliases: async () => new Map(),
@@ -670,8 +670,8 @@ test('privacy rename commits and rematerializes a compressed chunk above the old
     const result = await pool!.query<{ public_generation: string; materialized_generation: string }>(`
       SELECT p.generation::text AS public_generation,
              m.visibility_generation::text AS materialized_generation
-        FROM public_visibility_state p
-        JOIN packet_visibility_materialization_state m ON p.singleton = m.singleton
+        FROM ops.public_visibility_state p
+        JOIN ops.packet_visibility_materialization_state m ON p.singleton = m.singleton
     `);
     assert.equal(result.rows[0]?.public_generation, result.rows[0]?.materialized_generation);
     return Number(result.rows[0]?.public_generation);
@@ -681,7 +681,7 @@ test('privacy rename commits and rematerializes a compressed chunk above the old
   assert.equal((await pool.query<{ name: string }>('SELECT name FROM nodes WHERE node_id = $1', [nodeId])).rows[0]?.name, 'incident private 🚫');
   assert.equal(await pair(), initialGeneration);
   const queued = await pool.query<{ target: string; status: string }>(`
-    SELECT target, status FROM privacy_rematerialization_queue WHERE node_id = $1 ORDER BY target
+    SELECT target, status FROM ops.privacy_rematerialization_queue WHERE node_id = $1 ORDER BY target
   `, [nodeId]);
   assert.deepEqual(queued.rows, [
     { target: 'packet_paths', status: 'pending' },
@@ -891,14 +891,14 @@ test('packet batch atomically coalesces observer, sighting, and stats writes', {
   );
   // Leave these isolated test identities in the scratch database. Their
   // deletion would independently invalidate the legacy identity fence.
-  await pool.query('DELETE FROM privacy_rematerialization_queue');
+  await pool.query('DELETE FROM ops.privacy_rematerialization_queue');
 
   const visibilityPair = async () => {
     const result = await pool.query<{ public_generation: string; materialized_generation: string }>(`
       SELECT public.generation::text AS public_generation,
              materialized.visibility_generation::text AS materialized_generation
-        FROM public_visibility_state public
-        JOIN packet_visibility_materialization_state materialized ON materialized.singleton = public.singleton
+        FROM ops.public_visibility_state public
+        JOIN ops.packet_visibility_materialization_state materialized ON materialized.singleton = public.singleton
        WHERE public.singleton = TRUE
     `);
     assert.equal(result.rows[0]?.public_generation, result.rows[0]?.materialized_generation);
@@ -906,7 +906,7 @@ test('packet batch atomically coalesces observer, sighting, and stats writes', {
   };
   const runQueuedRemat = async (nodeId: string) => {
     const queue = await pool.query<{ target: string; status: string }>(`
-      SELECT target, status FROM privacy_rematerialization_queue
+      SELECT target, status FROM ops.privacy_rematerialization_queue
        WHERE node_id = $1 ORDER BY target
     `, [nodeId]);
     assert.deepEqual(queue.rows, [
@@ -917,7 +917,7 @@ test('packet batch atomically coalesces observer, sighting, and stats writes', {
     await visibilityPair();
     assert.equal(await processNextPrivacyRematerialization(pool, { chunkPauseMs: 0 }), true);
     const completed = await pool.query<{ status: string }>(
-      'SELECT status FROM privacy_rematerialization_queue WHERE node_id = $1', [nodeId],
+      'SELECT status FROM ops.privacy_rematerialization_queue WHERE node_id = $1', [nodeId],
     );
     assert.deepEqual(completed.rows.map((row) => row.status), ['done', 'done']);
   };
@@ -1216,7 +1216,7 @@ test('packet batch atomically coalesces observer, sighting, and stats writes', {
     await runQueuedRemat(observerId);
 
     const visibility = await pool.query<{ generation: string }>(
-      `SELECT generation::text FROM public_visibility_state WHERE singleton = TRUE`,
+      `SELECT generation::text FROM ops.public_visibility_state WHERE singleton = TRUE`,
     );
     const factResult = await backfillMultibytePathFacts(
       (text, params) => pool.query(text, params),

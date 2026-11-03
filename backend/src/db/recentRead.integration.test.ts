@@ -129,9 +129,9 @@ test('F01/F05/F12/F13 real SQL and RAM contracts agree across scoped paging, sta
     const before = await getRecentPackets(5, 'ukmesh', undefined, 'full', undefined,
       (sql, params) => snapshot.query(sql, params));
     assert.equal(before.find(row=>row.packet_hash==='80'.repeat(32))?.rx_count, 3);
-    await pool.query('UPDATE public_visibility_state SET generation = generation + 1 WHERE singleton');
-    await pool.query(`UPDATE packet_visibility_materialization_state SET visibility_generation =
-      (SELECT generation FROM public_visibility_state WHERE singleton) WHERE singleton`);
+    await pool.query('UPDATE ops.public_visibility_state SET generation = generation + 1 WHERE singleton');
+    await pool.query(`UPDATE ops.packet_visibility_materialization_state SET visibility_generation =
+      (SELECT generation FROM ops.public_visibility_state WHERE singleton) WHERE singleton`);
     assert.deepEqual(await mergePendingPacketsIntoRecentRows(before, { limit: 5, network: 'ukmesh' }), [],
       'fresh authority rejects a genuine older SQL aggregate snapshot');
     await snapshot.query('COMMIT');

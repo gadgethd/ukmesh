@@ -37,12 +37,12 @@ type PolicyState = Pick<ConvergenceState, 'generation' | 'materializedGeneration
 async function inspectPolicy(client: pg.PoolClient): Promise<PolicyState> {
   const visibility = await client.query<{ generation: string; materialized_generation: string | null }>(`
     SELECT visibility.generation::text, materialized.visibility_generation::text AS materialized_generation
-      FROM public_visibility_state visibility
-      LEFT JOIN packet_visibility_materialization_state materialized USING (singleton)
+      FROM ops.public_visibility_state visibility
+      LEFT JOIN ops.packet_visibility_materialization_state materialized USING (singleton)
      WHERE visibility.singleton = TRUE
   `);
   const queue = await client.query<{ status: string; count: string }>(`
-    SELECT status, COUNT(*)::text AS count FROM privacy_rematerialization_queue
+    SELECT status, COUNT(*)::text AS count FROM ops.privacy_rematerialization_queue
      GROUP BY status ORDER BY status
   `);
   return {
@@ -110,8 +110,8 @@ export async function convergePacketVisibility(pool: Pick<pg.Pool, 'connect'>, o
       // A competing transaction can cause a bounded deadlock/lock timeout;
       // aborting is safe, and the operator may retry after it finishes.
       await client.query(`LOCK TABLE nodes, private_node_prefixes, node_identity_aliases,
-        privacy_rematerialization_queue, packets, packet_paths IN SHARE ROW EXCLUSIVE MODE`);
-      await client.query('SELECT generation FROM public_visibility_state WHERE singleton = TRUE FOR UPDATE');
+        ops.privacy_rematerialization_queue, packets, packet_paths IN SHARE ROW EXCLUSIVE MODE`);
+      await client.query('SELECT generation FROM ops.public_visibility_state WHERE singleton = TRUE FOR UPDATE');
     }
     const policy = await inspectPolicy(client);
     // Refuse before expensive historical scans while maintenance locks are
@@ -146,14 +146,14 @@ export async function convergePacketVisibility(pool: Pick<pg.Pool, 'connect'>, o
     if (verified.tables.some((table) => table.mismatches !== '0')) {
       throw new PrivacyConvergenceError('PRIVACY_CONVERGENCE_READBACK_FAILED');
     }
-    const completed = await client.query(`UPDATE privacy_rematerialization_queue
+    const completed = await client.query(`UPDATE ops.privacy_rematerialization_queue
       SET status = 'done', finished_at = NOW(), last_error = NULL
       WHERE status IN ('pending', 'failed')`);
     updated.queue = completed.rowCount ?? 0;
     await client.query(`WITH next_generation AS (
-      UPDATE public_visibility_state SET generation = generation + 1, updated_at = NOW()
+      UPDATE ops.public_visibility_state SET generation = generation + 1, updated_at = NOW()
        WHERE singleton = TRUE RETURNING generation
-    ) INSERT INTO packet_visibility_materialization_state (singleton, visibility_generation, updated_at)
+    ) INSERT INTO ops.packet_visibility_materialization_state (singleton, visibility_generation, updated_at)
       SELECT TRUE, generation, NOW() FROM next_generation
       ON CONFLICT (singleton) DO UPDATE
         SET visibility_generation = EXCLUDED.visibility_generation, updated_at = EXCLUDED.updated_at`);

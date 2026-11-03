@@ -31,9 +31,9 @@ test('public packet scopes keep legacy test-topic rows out', () => {
   assert.match(filters.packets, /split_part\(topic, '\/', 1\)/);
   assert.match(filters.packets, /visibility_ok IS TRUE/);
   assert.match(filters.packets, /is_private IS NOT TRUE/);
-  assert.match(filters.packets, /packet_visibility_materialization_state/);
+  assert.match(filters.packets, /ops.packet_visibility_materialization_state/);
   assert.match(filters.packets, /cached_visibility\.visibility_generation = current_visibility\.generation/);
-  assert.match(filters.packets, /privacy_rematerialization_queue remat/);
+  assert.match(filters.packets, /ops.privacy_rematerialization_queue remat/);
   assert.match(filters.packets, /remat\.status IN \('pending', 'processing', 'failed'\)/);
   assert.doesNotMatch(filters.packets, /private_node_prefixes/);
   assert.doesNotMatch(filters.packets, /private_node\.name LIKE '%🚫%'/);
@@ -43,7 +43,7 @@ test('includePrivacy:false omits materialized visibility conditions', () => {
   const filters = networkFilters('ukmesh', undefined, { includePrivacy: false });
   assert.match(filters.packets, /network = ANY\(\$1\)/);
   assert.doesNotMatch(filters.packets, /visibility_ok IS TRUE/);
-  assert.doesNotMatch(filters.packets, /packet_visibility_materialization_state/);
+  assert.doesNotMatch(filters.packets, /ops.packet_visibility_materialization_state/);
   const defaulted = networkFilters('ukmesh');
   assert.match(defaulted.packets, /visibility_ok IS TRUE/);
 });

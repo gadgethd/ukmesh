@@ -69,12 +69,12 @@ test('recovery migration: atomic forwarding, hypertable capacity, and abandoned 
     pg_total_relation_size('packet_paths'::regclass)::text AS parent`);
   assert.ok(Number(sizes.rows[0].bytes) > Number(sizes.rows[0].parent));
   assert.ok(Number(sizes.rows[0].rows) >= 0);
-  await pool.query(`INSERT INTO privacy_rematerialization_queue (node_id, target, status, attempts, started_at, claim_token, claim_expires_at)
+  await pool.query(`INSERT INTO ops.privacy_rematerialization_queue (node_id, target, status, attempts, started_at, claim_token, claim_expires_at)
     VALUES ($1, 'packets', 'processing', 1, NOW() - INTERVAL '1 hour', gen_random_uuid(), NOW() - INTERVAL '1 minute')`, ['B'.repeat(64)]);
   assert.equal(await processNextPrivacyRematerialization(pool, { chunkPauseMs: 0, chunkStatementTimeoutMs: 5_000 }), false, 'expired lease enters retry backoff');
-  await pool.query("UPDATE privacy_rematerialization_queue SET finished_at = NOW() - INTERVAL '1 day'");
+  await pool.query("UPDATE ops.privacy_rematerialization_queue SET finished_at = NOW() - INTERVAL '1 day'");
   assert.equal(await processNextPrivacyRematerialization(pool, { chunkPauseMs: 0, chunkStatementTimeoutMs: 5_000 }), true);
-  const recovered = (await pool.query('SELECT status, attempts, claim_token FROM privacy_rematerialization_queue')).rows[0];
+  const recovered = (await pool.query('SELECT status, attempts, claim_token FROM ops.privacy_rematerialization_queue')).rows[0];
   assert.equal(recovered.status, 'done');
   assert.equal(recovered.attempts, 2);
   assert.equal(recovered.claim_token, null);

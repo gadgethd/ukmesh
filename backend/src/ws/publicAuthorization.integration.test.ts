@@ -70,9 +70,9 @@ test('F01 ready WebSocket batches and cached initial state obey current authorit
     // Frozen vo=1 and a stale WS private-name index cannot grant permission.
     await pool.query(`INSERT INTO private_node_prefixes(node_id, network, prefix_size_bytes, prefix)
       VALUES ($1, 'teesside', 1, 'AA'), ($2, 'teesside', 2, 'BBBB')`, [observer, 'BB'.repeat(32)]);
-    await pool.query('UPDATE public_visibility_state SET generation = generation + 1 WHERE singleton');
-    await pool.query(`UPDATE packet_visibility_materialization_state SET visibility_generation =
-      (SELECT generation FROM public_visibility_state WHERE singleton) WHERE singleton`);
+    await pool.query('UPDATE ops.public_visibility_state SET generation = generation + 1 WHERE singleton');
+    await pool.query(`UPDATE ops.packet_visibility_materialization_state SET visibility_generation =
+      (SELECT generation FROM ops.public_visibility_state WHERE singleton) WHERE singleton`);
     await pub.publish('meshcore:live', packet('revoked-observer'));
     await pub.publish('meshcore:live', packet('revoked-path', { rxNodeId: source, path: ['BBBB'], pathHashSizeBytes: 2 }));
     await delay(150);
@@ -83,7 +83,7 @@ test('F01 ready WebSocket batches and cached initial state obey current authorit
     assert.deepEqual(new Set(seen.filter((h) => h.startsWith('burst-'))), new Set(burst), 'a ready, bounded reader receives the full batch');
     // This DB is owned by the test. Missing authority suppresses broadcasts
     // and cached initial data, even though the cached epoch was once public.
-    await pool.query('ALTER TABLE public_visibility_state RENAME TO public_visibility_unavailable');
+    await pool.query('ALTER TABLE ops.public_visibility_state RENAME TO public_visibility_unavailable');
     await pub.publish('meshcore:live', packet('unavailable', { rxNodeId: source }));
     await delay(150);
     assert.equal(seen.includes('unavailable'), false);

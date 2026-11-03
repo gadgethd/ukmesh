@@ -27,7 +27,7 @@ test('path-model training selects only packets that pass the public privacy pred
     assert.ok(sql.includes(publicPacketPrivacySql()));
     assert.match(sql, /visibility_ok IS TRUE/);
     assert.match(sql, /is_private IS NOT TRUE/);
-    assert.match(sql, /packet_visibility_materialization_state|privacy_rematerialization_queue/);
+    assert.match(sql, /ops.packet_visibility_materialization_state|ops.privacy_rematerialization_queue/);
   }
 });
 

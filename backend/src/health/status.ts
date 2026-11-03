@@ -899,7 +899,7 @@ export async function getWorkerHealthOverview() {
              COUNT(*) FILTER (WHERE status = 'failed' AND attempts >= $1)::text AS failed_exhausted,
              MAX(EXTRACT(EPOCH FROM (NOW() - requested_at)))
                FILTER (WHERE status = 'pending')::text AS oldest_pending_age_seconds
-        FROM privacy_rematerialization_queue
+        FROM ops.privacy_rematerialization_queue
     `, [Math.min(100, Math.max(1, Number(process.env['PRIVACY_REMAT_MAX_ATTEMPTS'] ?? 8) || 8))]),
     reconcilePrivacyGenerations(),
   ]);

@@ -81,9 +81,9 @@ async function history(
       ), node_links AS (
         SELECT * FROM jsonb_to_recordset(${literal(JSON.stringify(links))}::jsonb)
           AS l(node_a_id text, node_b_id text, itm_path_loss_db double precision)
-      ), packet_visibility_materialization_state AS (
+      ), ops.packet_visibility_materialization_state AS (
         SELECT TRUE AS singleton, 1 AS visibility_generation
-      ), public_visibility_state AS (
+      ), ops.public_visibility_state AS (
         SELECT TRUE AS singleton, ${options.stalePrivacy ? 2 : 1} AS generation
       )
       SELECT COALESCE(jsonb_agg(to_jsonb(points)), '[]'::jsonb)

@@ -41,15 +41,15 @@ export function publicPacketPrivacySql(alias?: string): string {
     AND ${prefix}is_private IS NOT TRUE
     AND EXISTS (
       SELECT 1
-      FROM packet_visibility_materialization_state cached_visibility
-      JOIN public_visibility_state current_visibility
+      FROM ops.packet_visibility_materialization_state cached_visibility
+      JOIN ops.public_visibility_state current_visibility
         ON current_visibility.singleton = cached_visibility.singleton
       WHERE cached_visibility.singleton = TRUE
         AND cached_visibility.visibility_generation = current_visibility.generation
     )
     AND NOT EXISTS (
       SELECT 1
-      FROM privacy_rematerialization_queue remat
+      FROM ops.privacy_rematerialization_queue remat
       WHERE remat.target = 'packets'
         AND remat.status IN ('pending', 'processing', 'failed')
         AND (
