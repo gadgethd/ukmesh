@@ -555,8 +555,8 @@ async function currentWorkers(precomputedStats?: ReturnType<typeof systemStats>)
         retries: attempts.reduce((total, value) => total + Math.max(0, Number(value) - 1), 0),
       };
     }),
-    query<{ count: string }>(`SELECT COUNT(*) AS count FROM node_links WHERE itm_computed_at > NOW() - INTERVAL '1 hour'`),
-    query<{ ts: string | null }>(`SELECT MAX(itm_computed_at)::text AS ts FROM node_links`),
+    query<{ count: string }>(`SELECT COUNT(*) AS count FROM core.node_links WHERE itm_computed_at > NOW() - INTERVAL '1 hour'`),
+    query<{ ts: string | null }>(`SELECT MAX(itm_computed_at)::text AS ts FROM core.node_links`),
     readLinkWorkerHeartbeatAge(r),
     query<{ ts: string | null }>(`SELECT MAX(updated_at)::text AS ts FROM path_model_calibration`),
     query<{ count: string; ts: string | null }>(
@@ -567,7 +567,7 @@ async function currentWorkers(precomputedStats?: ReturnType<typeof systemStats>)
     ),
     query<{ links: string; last_observed: string | null }>(
       `SELECT COUNT(*)::text AS links, MAX(last_observed)::text AS last_observed
-       FROM node_links`,
+       FROM core.node_links`,
     ),
   ]);
 

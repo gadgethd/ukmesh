@@ -213,7 +213,7 @@ async function fetchLinks(query: QueryFn, publicKeys: string[], days: number) {
 
 /**
  * Internal CoreScope-shaped adapter consumed only by the HopReach calculator.
- * It intentionally exposes observed node_links, never node_coverage or any
+ * It intentionally exposes observed core.node_links, never node_coverage or any
  * predicted viewshed geometry.
  */
 export function createHopReachCompatibilityRoutes(query: QueryFn): Router {

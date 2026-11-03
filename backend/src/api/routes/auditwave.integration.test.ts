@@ -62,7 +62,7 @@ function fixtureQuery(fixture: Fixture) {
       ), node_identity_sightings AS (
         SELECT ${literal(B)} AS node_id,'ukmesh'::text AS network,NOW() AS last_seen_at
         WHERE ${fixture.sighted ? 'TRUE' : 'FALSE'}
-      ), node_links AS (
+      ), core.node_links AS (
         SELECT l.*, NOW() - age * INTERVAL '1 second' AS last_observed
         FROM jsonb_to_recordset(${literal(JSON.stringify(fixture.links ?? []))}::jsonb) AS l(
           node_a_id text,node_b_id text,age double precision,observed_count integer,

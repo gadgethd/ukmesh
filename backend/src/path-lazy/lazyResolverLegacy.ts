@@ -250,7 +250,7 @@ export async function lazyResolvePathLegacy(
   const [linkResult, prefixPriorRows, edgePriorRows, mlScoreRows] = await Promise.all([
     allCandidateNodeIds.length > 0
       ? query<{ node_a_id: string; node_b_id: string }>(
-          `SELECT node_a_id, node_b_id FROM node_links WHERE (node_a_id = ANY($1) OR node_b_id = ANY($1)) AND observed_count >= 2`,
+          `SELECT node_a_id, node_b_id FROM core.node_links WHERE (node_a_id = ANY($1) OR node_b_id = ANY($1)) AND observed_count >= 2`,
           [allCandidateNodeIds])
       : Promise.resolve({ rows: [] as { node_a_id: string; node_b_id: string }[] }),
     allUniqueHashes.length > 0

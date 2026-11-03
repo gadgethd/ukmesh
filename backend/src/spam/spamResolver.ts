@@ -93,7 +93,7 @@ interface ReceptionRow extends Record<string, unknown> {
 
 /**
  * Walk a relay path backward from the observer to the source, choosing at each
- * hop the candidate node that has a confirmed RF link (`node_links`) to the
+ * hop the candidate node that has a confirmed RF link (`core.node_links`) to the
  * previously-resolved node — else the nearest candidate within link range. Each
  * consecutive (AA,BB) hash pair is only realisable where two such repeaters sit
  * within range, so the adjacency chain disambiguates the 1-byte hashes and pins
@@ -141,7 +141,7 @@ function walkChainToSource(
  * Method: a flood is heard by many observers, each reception carrying its
  * ordered relay path. We take the lowest-hop receptions (closest to the source)
  * and walk each path BACKWARD from the observer, hop by hop, choosing at each
- * step the candidate that has a confirmed RF link (`node_links`) to the previous
+ * step the candidate that has a confirmed RF link (`core.node_links`) to the previous
  * node — else the nearest candidate within range. Because a consecutive (AA,BB)
  * hash pair is only realisable where two such repeaters are within range, the
  * adjacency chain disambiguates the 1-byte hashes; the chain's FIRST repeater is
@@ -212,7 +212,7 @@ export async function resolveSpamOrigin(
   if (nodeRes.rows.length === 0) return null;
   const index = buildNodePathHashIndex(nodeRes.rows, [2, 4, 6]);
 
-  // 3. Confirmed RF links (node_links) among the candidate universe + observers,
+  // 3. Confirmed RF links (core.node_links) among the candidate universe + observers,
   //    so each hop can be resolved to the node that actually links to the next.
   const universe = new Set<string>();
   for (const r of cohort) {
@@ -225,7 +225,7 @@ export async function resolveSpamOrigin(
   if (universe.size > 0) {
     const uni = [...universe];
     const linkRes = await query<{ node_a_id: string; node_b_id: string }>(
-      `SELECT node_a_id, node_b_id FROM node_links
+      `SELECT node_a_id, node_b_id FROM core.node_links
         WHERE node_a_id = ANY($1) AND node_b_id = ANY($1)
           AND (observed_count > 0 OR itm_viable = true OR force_viable = true)`,
       [uni],

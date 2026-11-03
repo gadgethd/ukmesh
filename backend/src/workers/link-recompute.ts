@@ -200,7 +200,7 @@ async function main(): Promise<void> {
     await ensureLease();
     windowEnd = new Date();
     await query(`CREATE SCHEMA ${schemaName}`);
-    await query(`CREATE TABLE ${schemaName}.node_links (LIKE public.node_links INCLUDING ALL)`);
+    await query(`CREATE TABLE ${schemaName}.node_links (LIKE core.node_links INCLUDING ALL)`);
     await query(
       `INSERT INTO ops.link_rebuild_runs (generation, schema_name, status, window_end)
        VALUES ($1, $2, 'preparing', $3)`,
@@ -291,11 +291,11 @@ async function main(): Promise<void> {
       await client.query('BEGIN');
       await client.query("SELECT pg_advisory_xact_lock(hashtext('meshcore-link-graph-write'))");
       await client.query(`CREATE SCHEMA ${rollbackSchema}`);
-      await client.query(`CREATE TABLE ${rollbackSchema}.node_links (LIKE public.node_links INCLUDING ALL)`);
-      await client.query(`INSERT INTO ${rollbackSchema}.node_links SELECT * FROM public.node_links`);
-      await client.query('LOCK TABLE public.node_links IN ACCESS EXCLUSIVE MODE');
-      await client.query('TRUNCATE public.node_links');
-      await client.query(`INSERT INTO public.node_links SELECT * FROM ${schemaName}.node_links`);
+      await client.query(`CREATE TABLE ${rollbackSchema}.node_links (LIKE core.node_links INCLUDING ALL)`);
+      await client.query(`INSERT INTO ${rollbackSchema}.node_links SELECT * FROM core.node_links`);
+      await client.query('LOCK TABLE core.node_links IN ACCESS EXCLUSIVE MODE');
+      await client.query('TRUNCATE core.node_links');
+      await client.query(`INSERT INTO core.node_links SELECT * FROM ${schemaName}.node_links`);
       // A live job admitted during the freeze may represent a packet already
       // incorporated into this generation. Record its stable logical ID before
       // releasing deferred work so replay becomes an idempotent ACK.
@@ -310,7 +310,7 @@ async function main(): Promise<void> {
         [generation],
       );
       await client.query(
-        `INSERT INTO public.node_links
+        `INSERT INTO core.node_links
          SELECT * FROM ${rollbackSchema}.node_links WHERE force_viable = true
          ON CONFLICT (node_a_id, node_b_id) DO UPDATE
            SET force_viable = true`,

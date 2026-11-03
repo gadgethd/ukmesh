@@ -78,7 +78,7 @@ async function history(
       ), node_identity_aliases AS (
         SELECT * FROM jsonb_to_recordset(${literal(JSON.stringify(aliases))}::jsonb)
           AS a(source_node_id text, canonical_node_id text)
-      ), node_links AS (
+      ), core.node_links AS (
         SELECT * FROM jsonb_to_recordset(${literal(JSON.stringify(links))}::jsonb)
           AS l(node_a_id text, node_b_id text, itm_path_loss_db double precision)
       ), ops.packet_visibility_materialization_state AS (

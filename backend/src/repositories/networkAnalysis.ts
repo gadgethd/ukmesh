@@ -70,7 +70,7 @@ WITH recent_links AS MATERIALIZED (
     nl.last_observed,
     nl.itm_path_loss_db,
     nl.multibyte_observed_count
-  FROM node_links nl
+  FROM core.node_links nl
   LEFT JOIN node_identity_aliases la
     ON la.source_node_id = upper(btrim(nl.node_a_id))
   LEFT JOIN node_identity_aliases lb
@@ -426,7 +426,7 @@ export async function rfValidationRows(
          COALESCE(lb.canonical_node_id, UPPER(BTRIM(nl.node_b_id))) AS raw_b,
          nl.observed_count, nl.multibyte_observed_count, nl.itm_path_loss_db,
          nl.itm_viable, nl.force_viable, nl.last_observed
-       FROM node_links nl
+       FROM core.node_links nl
        LEFT JOIN node_identity_aliases la
          ON la.source_node_id = UPPER(BTRIM(nl.node_a_id))
        LEFT JOIN node_identity_aliases lb

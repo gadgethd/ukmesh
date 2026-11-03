@@ -307,7 +307,7 @@ export async function pollOwnerAlertRules(): Promise<void> {
          WHERE node_id = rules.node_id ORDER BY time DESC LIMIT 1
        ) telemetry ON true
        LEFT JOIN LATERAL (
-         SELECT MAX(itm_path_loss_db) AS path_loss_db FROM node_links
+         SELECT MAX(itm_path_loss_db) AS path_loss_db FROM core.node_links
          WHERE node_a_id = rules.node_id OR node_b_id = rules.node_id
        ) links ON true
       WHERE rules.enabled

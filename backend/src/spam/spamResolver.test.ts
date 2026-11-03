@@ -4,7 +4,7 @@ import { resolveSpamOrigin } from './spamResolver.js';
 import { DEFAULT_SPAM_MESSAGE_CONFIG as CFG } from './config.js';
 
 // Fake DB: the resolver issues three queries — receptions (path + observer
-// hop/location), located nodes, and node_links adjacency. We answer all three
+// hop/location), located nodes, and core.node_links adjacency. We answer all three
 // from in-memory fixtures.
 type Row = Record<string, unknown>;
 type Reception = { rx_node_id: string; hop_count: number; path_hashes: string[]; olat: number; olon: number };
@@ -14,7 +14,7 @@ type Link = { node_a_id: string; node_b_id: string };
 function fakeQuery(receptions: Reception[], nodes: NodeLoc[], links: Link[] = []) {
   return async <T extends Row = Row>(text: string): Promise<{ rows: T[] }> => {
     if (/FROM packets/.test(text)) return { rows: receptions as unknown as T[] };
-    if (/FROM node_links/.test(text)) return { rows: links as unknown as T[] };
+    if (/FROM core.node_links/.test(text)) return { rows: links as unknown as T[] };
     if (/FROM nodes/.test(text)) return { rows: nodes as unknown as T[] };
     return { rows: [] };
   };
@@ -45,7 +45,7 @@ test('chain-walk anchors the first repeater near the closest observer', async ()
 
 test('confirmed RF-link adjacency overrides pure proximity', async () => {
   // Two candidates for "5F": one is GEOGRAPHICALLY closer to the second hop but
-  // has no link; the other is further but is a confirmed node_links neighbour of
+  // has no link; the other is further but is a confirmed core.node_links neighbour of
   // the second hop. The adjacency one must win (a real hop beats mere nearness).
   const receptions = Array.from({ length: 4 }, () => rx(0, ['5F', 'A1']));
   const nodes: NodeLoc[] = [

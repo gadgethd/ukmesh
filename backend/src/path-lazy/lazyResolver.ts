@@ -20,7 +20,7 @@
  *   Emission (node fit):      prefix priors, ML prefix scores, direct-receiver
  *                             observer-anchor proximity.
  *   Transition (hop fit):     hop-distance feasibility (infeasible = -Inf),
- *                             edge/transition/2-gram-motif priors, node_links.
+ *                             edge/transition/2-gram-motif priors, core.node_links.
  *
  * Forward/backward marginals from the same trellis drive the per-node
  * `ambiguous` flag (a position is ambiguous when an alternative node yields a
@@ -101,7 +101,7 @@ export type LazyPathResult = {
 };
 
 // Diagnostics only: when set, the node-id-keyed + ML signals (transition / motif
-// / edge / node_links / ML prefix scores) are forced to zero. Used by the
+// / edge / core.node_links / ML prefix scores) are forced to zero. Used by the
 // accuracy harness to measure the leakage-free floor (structural + prefix-prior
 // + geographic anchoring only). Never set in production.
 const ABLATE_LEAKY_PRIORS = process.env['LAZY_ABLATE_PRIORS'] === '1';
@@ -416,7 +416,7 @@ export async function lazyResolvePath(
   // ── 8. Fetch recorded links + path-learning priors ──────────────────────
   // Prior data comes from historical resolutions and tells us which node
   // typically appears at a hash position (prefix prior), and which node→node
-  // hops are real (transition / edge / motif priors + node_links).
+  // hops are real (transition / edge / motif priors + core.node_links).
   const allCandidateNodeIds: string[] = [];
   for (const candidates of nodesByHash.values()) {
     for (const c of candidates) allCandidateNodeIds.push(c.nodeId);
@@ -437,7 +437,7 @@ export async function lazyResolvePath(
       uniqueCandidateNodeIds.length > 0
         ? query<{ node_a_id: string; node_b_id: string; observed_count: string; itm_viable: boolean | null; force_viable: boolean }>(
             `SELECT node_a_id, node_b_id, observed_count::text, itm_viable, force_viable
-               FROM node_links
+               FROM core.node_links
               WHERE node_a_id = ANY($1) AND node_b_id = ANY($1)`,
             [uniqueCandidateNodeIds],
           )

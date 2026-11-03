@@ -284,7 +284,7 @@ async function loadContext(
     }>(
       `SELECT nl.node_a_id, nl.node_b_id, nl.observed_count, nl.multibyte_observed_count,
               nl.itm_path_loss_db, nl.itm_viable, nl.count_a_to_b, nl.count_b_to_a
-       FROM node_links nl
+       FROM core.node_links nl
        JOIN nodes a ON a.node_id = nl.node_a_id
        JOIN nodes b ON b.node_id = nl.node_b_id
        WHERE (nl.itm_viable IS NOT NULL OR nl.force_viable = true)

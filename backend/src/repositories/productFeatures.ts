@@ -141,7 +141,7 @@ export async function linkHistoryRows(
      ), path_loss AS MATERIALIZED (
        -- Match the identity view's MIN without materializing every network link.
        SELECT MIN(links.itm_path_loss_db) AS value
-       FROM node_links links CROSS JOIN ids
+       FROM core.node_links links CROSS JOIN ids
        WHERE (links.node_a_id = ANY(ids.a_ids) AND links.node_b_id = ANY(ids.b_ids))
           OR (links.node_a_id = ANY(ids.b_ids) AND links.node_b_id = ANY(ids.a_ids))
      )

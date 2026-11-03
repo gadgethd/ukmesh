@@ -26,7 +26,6 @@
     "node_identity_sightings",
     "node_identity_status_samples",
     "node_link_radio_reports",
-    "node_links",
     "node_neighbor_samples",
     "node_status_samples",
     "nodes",
@@ -225,7 +224,6 @@
       "packets"
     ],
     "health/status.ts": [
-      "node_links",
       "packet_paths",
       "path_model_calibration"
     ],
@@ -270,7 +268,6 @@
       "path_model_calibration"
     ],
     "owner/alertRules.ts": [
-      "node_links",
       "node_status_samples",
       "nodes"
     ],
@@ -305,7 +302,6 @@
       "path_transition_priors"
     ],
     "path-beta/resolver.ts": [
-      "node_links",
       "nodes",
       "packets",
       "path_edge_priors",
@@ -324,7 +320,6 @@
       "path_transition_priors"
     ],
     "path-lazy/lazyResolver.ts": [
-      "node_links",
       "nodes",
       "packets",
       "path_corridor_priors",
@@ -335,7 +330,6 @@
     ],
     "path-lazy/lazyResolverLegacy.ts": [
       "ml_path_prefix_scores",
-      "node_links",
       "nodes",
       "packets",
       "path_edge_priors",
@@ -345,7 +339,6 @@
       "private_node_prefixes"
     ],
     "path-learning/rebuild.ts": [
-      "node_links",
       "nodes",
       "packets",
       "path_model_calibration",
@@ -386,8 +379,7 @@
     ],
     "repositories/networkAnalysis.ts": [
       "node_identity_aliases",
-      "node_identity_nodes",
-      "node_links"
+      "node_identity_nodes"
     ],
     "repositories/nodeLinks.integration.test.ts": [
       "node_identity_nodes",
@@ -418,7 +410,6 @@
     "repositories/productFeatures.ts": [
       "node_identity_nodes",
       "node_identity_sightings",
-      "node_links",
       "packets"
     ],
     "spam/analyzer.ts": [
@@ -444,12 +435,10 @@
       "spam_message_members"
     ],
     "spam/spamResolver.test.ts": [
-      "node_links",
       "nodes",
       "packets"
     ],
     "spam/spamResolver.ts": [
-      "node_links",
       "nodes",
       "packets"
     ],
@@ -505,7 +494,6 @@
       "analysis_workload_state"
     ],
     "tools/pathAccuracy.ts": [
-      "node_links",
       "nodes",
       "packets",
       "path_corridor_priors",
@@ -530,11 +518,8 @@
     ],
     "tools/seedStatsChartSnapshot.ts": [],
     "tools/shadowTopologyCombined.ts": [],
-    "workers/link-backfill.ts": [
-      "node_links"
-    ],
+    "workers/link-backfill.ts": [],
     "workers/link-recompute.ts": [
-      "node_links",
       "nodes"
     ],
     "workers/privacy-rematerialization.ts": [
