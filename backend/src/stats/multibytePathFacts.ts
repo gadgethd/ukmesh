@@ -178,7 +178,7 @@ export function multibyteFactBackfillSql(): string {
     FROM packet_paths p
     LEFT JOIN core.node_identity_aliases rx_alias
       ON rx_alias.source_node_id = UPPER(BTRIM(p.rx_node_id))
-    LEFT JOIN node_identity_nodes rx
+    LEFT JOIN core.node_identity_nodes rx
       ON rx.node_id = COALESCE(rx_alias.canonical_node_id, UPPER(BTRIM(p.rx_node_id)))
     WHERE p.time >= $1::timestamptz
       AND p.time <= $2::timestamptz
@@ -220,7 +220,7 @@ export function multibyteFactBackfillSql(): string {
     SELECT UPPER(LEFT(node.node_id, 4)) AS hash,
            COUNT(*)::integer AS match_count,
            MIN(node.node_id) AS node_id
-    FROM node_identity_nodes node
+    FROM core.node_identity_nodes node
     JOIN distinct_hashes hashes
       ON LENGTH(hashes.hash) = 4
      AND hashes.hash = UPPER(LEFT(node.node_id, 4))
@@ -232,7 +232,7 @@ export function multibyteFactBackfillSql(): string {
     SELECT UPPER(LEFT(node.node_id, 6)) AS hash,
            COUNT(*)::integer AS match_count,
            MIN(node.node_id) AS node_id
-    FROM node_identity_nodes node
+    FROM core.node_identity_nodes node
     JOIN distinct_hashes hashes
       ON LENGTH(hashes.hash) = 6
      AND hashes.hash = UPPER(LEFT(node.node_id, 6))

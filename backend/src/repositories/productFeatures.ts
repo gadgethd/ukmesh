@@ -65,7 +65,7 @@ export async function observerHealthRows(query: QueryFn, networks: string[]) {
      SELECT n.node_id, n.name, n.lat, n.lon,
        oa.active_hours::text, oa.packets_48h::text, oa.unique_src_48h::text
      FROM observer_activity oa
-     JOIN node_identity_nodes n ON n.node_id = oa.rx_node_id
+     JOIN core.node_identity_nodes n ON n.node_id = oa.rx_node_id
      WHERE n.lat IS NOT NULL AND n.lon IS NOT NULL
        AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')`,
     [networks],
@@ -79,7 +79,7 @@ export async function visibleLinkNodeIds(
 ) {
   return query<{ node_id: string }>(
     `SELECT n.node_id
-       FROM node_identity_nodes n
+       FROM core.node_identity_nodes n
       WHERE n.node_id = ANY($1::text[])
         AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
         AND (
@@ -158,7 +158,7 @@ export async function repeaterFirmwareRows(query: QueryFn, networks: string[]) {
     `SELECT COALESCE(hardware_model, 'Unknown') AS hardware_model,
             COALESCE(NULLIF(firmware_version, ''), 'Unknown') AS firmware_version,
             COUNT(*)::text AS count
-     FROM node_identity_nodes
+     FROM core.node_identity_nodes
      WHERE network = ANY($1::text[])
        AND (role IS NULL OR role = 2)
        AND last_seen > NOW() - INTERVAL '30 days'

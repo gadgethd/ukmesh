@@ -902,7 +902,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
            FROM latest_fully_decoded latest
            CROSS JOIN LATERAL unnest(latest.decoded_node_ids)
              WITH ORDINALITY decoded(node_id, ord)
-           LEFT JOIN node_identity_nodes node ON node.node_id = decoded.node_id
+           LEFT JOIN core.node_identity_nodes node ON node.node_id = decoded.node_id
          ) AS latest_fully_decoded_nodes,
          (SELECT observed_at::text FROM longest_fully_decoded) AS longest_fully_decoded_at,
          (SELECT packet_hash FROM longest_fully_decoded) AS longest_fully_decoded_hash,
@@ -920,7 +920,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
            FROM longest_fully_decoded longest
            CROSS JOIN LATERAL unnest(longest.decoded_node_ids)
              WITH ORDINALITY decoded(node_id, ord)
-           LEFT JOIN node_identity_nodes node ON node.node_id = decoded.node_id
+           LEFT JOIN core.node_identity_nodes node ON node.node_id = decoded.node_id
          ) AS longest_fully_decoded_nodes`,
       multibyteFactParams,
     );
@@ -1286,17 +1286,17 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
              WHERE time > NOW() - INTERVAL '24 hours'
                AND rx_node_id IS NOT NULL AND rx_node_id <> ''
                ${filters.packets}`, filters.params),
-      query(`SELECT COUNT(*) AS count FROM node_identity_nodes nodes
+      query(`SELECT COUNT(*) AS count FROM core.node_identity_nodes nodes
              WHERE ${publicMapBasePredicate('nodes')}
                AND ${nodeEffectiveLastSeenSql('nodes')}
                      <= NOW() - INTERVAL '14 days'
                AND ${nodeEffectiveLastSeenSql('nodes')}
                      > NOW() - INTERVAL '28 days'
                ${filters.nodes}`, filters.params),
-      query(`SELECT COUNT(*) AS count FROM node_identity_nodes nodes
+      query(`SELECT COUNT(*) AS count FROM core.node_identity_nodes nodes
              WHERE ${publicMapFreshPredicate('nodes')}
                ${filters.nodes}`, filters.params),
-      query(`SELECT COUNT(*) AS count FROM node_identity_nodes nodes
+      query(`SELECT COUNT(*) AS count FROM core.node_identity_nodes nodes
              WHERE (name IS NULL OR name NOT LIKE '%🚫%')
                AND (role IS NULL OR role != 4)
                ${filters.nodes}`, filters.params),
@@ -1310,7 +1310,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
                ${filters.packetsAlias('p')}`, filters.params),
       query(`WITH intl AS (
                SELECT lat, lon, last_seen, advert_count
-               FROM node_identity_nodes nodes
+               FROM core.node_identity_nodes nodes
                WHERE lat IS NOT NULL AND lon IS NOT NULL
                  AND lat != 0 AND lon != 0
                  AND last_seen > NOW() - INTERVAL '7 days'
@@ -1373,7 +1373,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
          -- (a repeater's prefix appearing in a packet's path_hashes) can be
          -- attributed to the node that forwarded the packet.
          SELECT LEFT(node_id, 6) AS prefix, node_id AS canonical_node_id
-         FROM node_identity_nodes
+         FROM core.node_identity_nodes
          UNION
          SELECT LEFT(source_node_id, 6) AS prefix, canonical_node_id
          FROM core.node_identity_aliases
@@ -1420,7 +1420,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
          tx.last_tx,
          rx.last_rx
        FROM rx
-       JOIN node_identity_nodes n ON n.node_id = rx.node_id
+       JOIN core.node_identity_nodes n ON n.node_id = rx.node_id
        LEFT JOIN tx ON tx.node_id = rx.node_id
        WHERE n.name IS NULL OR n.name NOT LIKE '%🚫%'
        ORDER BY rx.rx_24h::bigint DESC`,

@@ -111,7 +111,7 @@ export async function combinedTopologyRows(
      ),
      eligible_nodes AS MATERIALIZED (
        SELECT n.node_id, n.name, n.lat, n.lon, n.iata
-       FROM node_identity_nodes n
+       FROM core.node_identity_nodes n
        WHERE (n.role IS NULL OR n.role = 2)
          AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
          ${filters.nodesAlias('n')}
@@ -154,7 +154,7 @@ export async function combinedTopologyRows(
          n.lon,
          n.iata,
          row_number() OVER (ORDER BY n.last_seen DESC) AS row_order
-       FROM node_identity_nodes n
+       FROM core.node_identity_nodes n
        WHERE n.last_seen > NOW() - INTERVAL '30 days'
          AND (n.role IS NULL OR n.role = 2)
          AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
@@ -278,7 +278,7 @@ export async function topologyRows(
      ),
      eligible_nodes AS MATERIALIZED (
        SELECT n.node_id, n.name, n.lat, n.lon, n.iata
-       FROM node_identity_nodes n
+       FROM core.node_identity_nodes n
        WHERE (n.role IS NULL OR n.role = 2)
          AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
          ${filters.nodesAlias('n')}
@@ -316,7 +316,7 @@ export async function standaloneTopologyRows(query: QueryFn, filters: NetworkFil
        SELECT node_b_id AS node_id FROM canonical_links
      )
      SELECT n.node_id, n.name, n.lat, n.lon, n.iata
-     FROM node_identity_nodes n
+     FROM core.node_identity_nodes n
      WHERE n.last_seen > NOW() - INTERVAL '30 days'
        AND (n.role IS NULL OR n.role = 2)
        AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
@@ -407,7 +407,7 @@ export async function rfValidationRows(
   // link query so its hash joins have accurate input cardinality.
   const nodes = await query<{ node_id: string; name: string | null }>(
     `SELECT n.node_id, n.name
-     FROM node_identity_nodes n
+     FROM core.node_identity_nodes n
      WHERE (n.role IS NULL OR n.role = 2)
        AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
        ${filters.nodesAlias('n')}`,

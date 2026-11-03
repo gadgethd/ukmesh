@@ -14,7 +14,7 @@ test('RF validation scopes endpoints without joining both identity-node projecti
   ): Promise<{ rows: T[] }> => {
     assert.equal(signal, controller.signal);
     statements.push(sql);
-    if (sql.includes('FROM node_identity_nodes')) {
+    if (sql.includes('FROM core.node_identity_nodes')) {
       return { rows: [
         { node_id: 'A', name: 'Alpha' },
         { node_id: 'B', name: 'Bravo' },
@@ -45,7 +45,7 @@ test('RF validation scopes endpoints without joining both identity-node projecti
 
   const result = await rfValidationRows(query, networkFilters('ukmesh'), 1, controller.signal);
   assert.equal(statements.length, 2);
-  assert.doesNotMatch(statements[1]!, /JOIN\s+node_identity_nodes/i);
+  assert.doesNotMatch(statements[1]!, /JOIN\s+core\.node_identity_nodes/i);
   assert.deepEqual(result.rows, [{
     node_a_id: 'A', node_b_id: 'B', observed_count: '20',
     multibyte_observed_count: '2', itm_path_loss_db: 110,

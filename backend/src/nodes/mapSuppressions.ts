@@ -127,7 +127,7 @@ export async function refreshNodeMapSuppressions(
     const { rows } = await client.query<MapSuppressionNode>(
       `SELECT n.node_id, n.network, n.lat, n.lon,
               ${nodeEffectiveLastSeenSql('n')} AS last_seen
-         FROM node_identity_nodes n
+         FROM core.node_identity_nodes n
         WHERE ${mapVisiblePredicate('n')}`,
     );
     const suppressions = computeNodeMapSuppressions(rows, clock!.computed_at.getTime(), config);

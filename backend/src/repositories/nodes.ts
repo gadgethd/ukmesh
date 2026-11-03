@@ -101,8 +101,8 @@ export function createNodeRepository(query: QueryFn): NodeRepository {
                n.iata,
                n.hardware_model,
                n.firmware_version
-             FROM node_identity_status_samples nss
-             LEFT JOIN node_identity_nodes n ON n.node_id = nss.node_id
+             FROM core.node_identity_status_samples nss
+             LEFT JOIN core.node_identity_nodes n ON n.node_id = nss.node_id
              WHERE nss.network = 'test'
              ORDER BY nss.node_id, nss.time DESC
            ) latest
@@ -121,7 +121,7 @@ export function createNodeRepository(query: QueryFn): NodeRepository {
              channel_utilization,
              air_util_tx,
              stats
-           FROM node_identity_status_samples
+           FROM core.node_identity_status_samples
            WHERE network = 'test'
            ORDER BY time DESC`,
           [],
@@ -167,7 +167,7 @@ export function createNodeRepository(query: QueryFn): NodeRepository {
                WHEN jsonb_typeof(stats->'tx_queue_depth_peak') = 'number' THEN (stats->>'tx_queue_depth_peak')::double precision
                ELSE NULL
              END AS tx_queue_depth_peak
-           FROM node_identity_status_samples
+           FROM core.node_identity_status_samples
            WHERE node_id = $1
              AND network = 'test'
              AND time > NOW() - INTERVAL '24 hours'
@@ -216,7 +216,7 @@ export function createNodeRepository(query: QueryFn): NodeRepository {
         .join(', ');
       const result = await query<Record<string, unknown>>(
         `SELECT ${selectedFields}
-           FROM ${filters.nodeSource ?? 'node_identity_nodes'} n
+           FROM ${filters.nodeSource ?? 'core.node_identity_nodes'} n
           WHERE ${mapVisiblePredicate('n', `$${snapshotParameter}::timestamptz`)}
             AND NOT EXISTS (SELECT 1 FROM core.node_map_suppressions s WHERE s.node_id = n.node_id)
             ${filters.nodesAlias('n')}
@@ -230,7 +230,7 @@ export function createNodeRepository(query: QueryFn): NodeRepository {
     },
 
     async listAllNodeIds() {
-      return (await query<{ node_id: string }>('SELECT node_id FROM node_identity_nodes')).rows;
+      return (await query<{ node_id: string }>('SELECT node_id FROM core.node_identity_nodes')).rows;
     },
 
     async listInferredPackets(scope, limit) {
@@ -258,7 +258,7 @@ export function createNodeRepository(query: QueryFn): NodeRepository {
              UPPER(BTRIM(${idParam}))
            ) AS node_id
          ), link_nodes AS MATERIALIZED (
-           SELECT node_id, name, network FROM ${filters.nodeSource ?? 'node_identity_nodes'}
+           SELECT node_id, name, network FROM ${filters.nodeSource ?? 'core.node_identity_nodes'}
          ), source_node AS MATERIALIZED (
            SELECT node_id
              FROM link_nodes sn

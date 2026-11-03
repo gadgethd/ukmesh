@@ -730,7 +730,7 @@ export async function getNodes(
        ${nodeEffectiveOnlineSql('n')} AS is_online,
        n.advert_count
        ${optionalFields}
-     FROM ${scope.regionParam ? regionNodeSourceSql(scope.regionParam) : 'node_identity_nodes'} n
+     FROM ${scope.regionParam ? regionNodeSourceSql(scope.regionParam) : 'core.node_identity_nodes'} n
      ${whereClause}
      ORDER BY ${nodeEffectiveLastSeenSql('n')} DESC`,
     params,
@@ -818,7 +818,7 @@ export async function getTopAdvertingRepeaters(hours = 24, limit = 10, network =
        COUNT(*) AS adverts_in_window,
        MAX(nca.counted_at) AS last_advert_at
      FROM core.node_counted_adverts nca
-     JOIN node_identity_nodes n ON n.node_id = nca.node_id
+     JOIN core.node_identity_nodes n ON n.node_id = nca.node_id
      WHERE nca.counted_at > NOW() - INTERVAL '1 hour' * $1
        AND n.role = 2
        AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
@@ -1298,7 +1298,7 @@ export async function getMultibytePathSegments(network?: string, observer?: stri
       name: string | null;
     }>(
       `SELECT node_id, lat, lon, name
-       FROM ${scope.regionParam ? regionNodeSourceSql(scope.regionParam) : 'node_identity_nodes'} n
+       FROM ${scope.regionParam ? regionNodeSourceSql(scope.regionParam) : 'core.node_identity_nodes'} n
        WHERE 1=1${buildNodeScopeClause(scope, 'n')}`,
       params,
     ),
@@ -1406,7 +1406,7 @@ export async function getViableLinks(
     const [nodesRes, linksRes] = await Promise.all([
       query<{ node_id: string }>(
         `SELECT DISTINCT node_id
-         FROM node_identity_nodes
+         FROM core.node_identity_nodes
          WHERE network = ANY($1::text[])
            AND (name IS NULL OR name NOT LIKE '%🚫%')`,
         [scopedNetworks],
@@ -1468,8 +1468,8 @@ export async function getViableLinks(
        FROM core.node_identity_link_radio_reports
        GROUP BY node_a_id, node_b_id
      ) nr ON nr.node_a_id = nl.node_a_id AND nr.node_b_id = nl.node_b_id
-     JOIN node_identity_nodes a ON a.node_id = nl.node_a_id
-     JOIN node_identity_nodes b ON b.node_id = nl.node_b_id
+     JOIN core.node_identity_nodes a ON a.node_id = nl.node_a_id
+     JOIN core.node_identity_nodes b ON b.node_id = nl.node_b_id
      WHERE (nl.itm_viable = true OR nl.force_viable = true)
        AND (a.name IS NULL OR a.name NOT LIKE '%🚫%')
        AND (b.name IS NULL OR b.name NOT LIKE '%🚫%')

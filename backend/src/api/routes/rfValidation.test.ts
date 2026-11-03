@@ -88,7 +88,7 @@ test('RF server statement cancellation is reported as unavailable, not an empty 
 test('RF JSON keeps classification summaries and numeric counts, including an honest empty scope', async () => {
   for (const empty of [false, true]) {
     const server = await start(async (sql) => {
-      if (sql.includes('FROM node_identity_nodes')) {
+      if (sql.includes('FROM core.node_identity_nodes')) {
         return { rows: (empty ? [] : [{ node_id: 'A', name: 'Alpha' }, { node_id: 'B', name: null }]) as never[] };
       }
       return { rows: [{ node_a_id: 'A', node_b_id: 'B', observed_count: '12', multibyte_observed_count: '3',

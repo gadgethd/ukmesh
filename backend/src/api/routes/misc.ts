@@ -281,8 +281,8 @@ export function registerMiscRoutes(router: Router, deps: MiscRouteDeps): void {
            nss.rx_air_secs,
            nss.tx_air_secs,
            COALESCE(pc.packet_count, 0) AS packets_24h
-         FROM node_identity_status_samples nss
-         LEFT JOIN node_identity_nodes n ON n.node_id = nss.node_id
+         FROM core.node_identity_status_samples nss
+         LEFT JOIN core.node_identity_nodes n ON n.node_id = nss.node_id
          LEFT JOIN (
            -- Canonicalize per receiver, not per observation. Keep COUNT's bigint
            -- result type: SUM(bigint) otherwise becomes numeric in PostgreSQL.

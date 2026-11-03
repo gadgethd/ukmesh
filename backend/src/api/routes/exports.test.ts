@@ -28,7 +28,7 @@ test('node exports use the sightings alias and retain CSV/GeoJSON contracts', as
     exportLimiter: limiter as Parameters<typeof registerExportRoutes>[1]['exportLimiter'],
     getPublicVisibilityGeneration: async () => 1,
     query: async (sql, params) => {
-      assert.match(sql, /FROM node_identity_nodes AS nodes/);
+      assert.match(sql, /FROM core.node_identity_nodes AS nodes/);
       assert.match(sql, /s.node_id = nodes.node_id/);
       assert.match(sql, /name NOT LIKE '%🚫%'/);
       assert.match(sql, /lat IS NOT NULL AND lon IS NOT NULL/);

@@ -19,9 +19,6 @@
     "multibyte_path_fact_state",
     "multibyte_path_facts",
     "node_identity_link_radio_reports",
-    "node_identity_nodes",
-    "node_identity_packets",
-    "node_identity_status_samples",
     "node_link_radio_reports",
     "packet_daily_stats",
     "packet_decryptions",
@@ -57,44 +54,27 @@
       "analysis_runs",
       "analysis_workload_state"
     ],
-    "api/hopreachCompatibility.ts": [
-      "node_identity_nodes"
-    ],
+    "api/hopreachCompatibility.ts": [],
     "api/routes/activityTimeline.ts": [
       "packets"
     ],
-    "api/routes/auditwave.performance.test.ts": [
-      "node_identity_nodes"
-    ],
-    "api/routes/exports.test.ts": [
-      "node_identity_nodes"
-    ],
+    "api/routes/auditwave.performance.test.ts": [],
+    "api/routes/exports.test.ts": [],
     "api/routes/exports.ts": [
-      "node_identity_nodes",
       "packets"
     ],
     "api/routes/misc.ts": [
-      "node_identity_nodes",
-      "node_identity_status_samples",
       "packets"
     ],
     "api/routes/mqttNodes.integration.test.ts": [
-      "node_identity_nodes",
       "packets"
     ],
-    "api/routes/nodeStatus.ts": [
-      "node_identity_nodes",
-      "node_identity_status_samples"
-    ],
+    "api/routes/nodeStatus.ts": [],
     "api/routes/ownerPacketSharing.test.ts": [],
     "api/routes/ownerPublicFeed.test.ts": [],
-    "api/routes/productFeatures.test.ts": [
-      "node_identity_nodes"
-    ],
+    "api/routes/productFeatures.test.ts": [],
     "api/routes/regions.ts": [],
-    "api/routes/rfValidation.test.ts": [
-      "node_identity_nodes"
-    ],
+    "api/routes/rfValidation.test.ts": [],
     "api/routes/telemetry.ts": [],
     "api/utils/networkFilters.ts": [
       "packets"
@@ -102,7 +82,6 @@
     "db/index.ts": [
       "message_tags",
       "node_identity_link_radio_reports",
-      "node_identity_nodes",
       "packet_decryptions",
       "packets",
       "spam_suspects"
@@ -198,9 +177,7 @@
     "mqtt/spamDetector.ts": [
       "packets"
     ],
-    "nodes/mapSuppressions.ts": [
-      "node_identity_nodes"
-    ],
+    "nodes/mapSuppressions.ts": [],
     "operations/operatorOperations.ts": [
       "analysis_runs",
       "ml_model_versions",
@@ -210,18 +187,10 @@
     "owner/forwardingOutbox.ts": [
       "packet_forwarding_outbox"
     ],
-    "owner/ownerAccess.ts": [
-      "node_identity_nodes"
-    ],
+    "owner/ownerAccess.ts": [],
     "owner/ownerAuthorityScope.test.ts": [],
-    "owner/ownerRepository.ts": [
-      "node_identity_nodes",
-      "node_identity_packets"
-    ],
-    "owner/ownerService.integration.test.ts": [
-      "node_identity_nodes",
-      "node_identity_packets"
-    ],
+    "owner/ownerRepository.ts": [],
+    "owner/ownerService.integration.test.ts": [],
     "owner/packetShareRepository.integration.test.ts": [],
     "owner/packetShareRepository.ts": [],
     "owner/publicFeedRepository.ts": [
@@ -289,22 +258,15 @@
     ],
     "regions/filter.ts": [],
     "regions/nodeSource.ts": [],
-    "repositories/networkAnalysis.test.ts": [
-      "node_identity_nodes"
-    ],
-    "repositories/networkAnalysis.ts": [
-      "node_identity_nodes"
-    ],
+    "repositories/networkAnalysis.test.ts": [],
+    "repositories/networkAnalysis.ts": [],
     "repositories/nodeLinks.integration.test.ts": [
-      "node_identity_nodes",
       "packets"
     ],
     "repositories/nodes.test.ts": [
       "packets"
     ],
     "repositories/nodes.ts": [
-      "node_identity_nodes",
-      "node_identity_status_samples",
       "packets"
     ],
     "repositories/ownerAlerts.ts": [],
@@ -316,7 +278,6 @@
       "packets"
     ],
     "repositories/productFeatures.ts": [
-      "node_identity_nodes",
       "packets"
     ],
     "spam/analyzer.ts": [
@@ -358,7 +319,6 @@
     "stats/multibytePathFacts.ts": [
       "multibyte_path_fact_state",
       "multibyte_path_facts",
-      "node_identity_nodes",
       "packet_paths"
     ],
     "stats/statsRepository.test.ts": [
@@ -369,7 +329,6 @@
     ],
     "stats/statsRepository.ts": [
       "multibyte_path_facts",
-      "node_identity_nodes",
       "packet_daily_stats",
       "packet_hourly_stats",
       "packets"

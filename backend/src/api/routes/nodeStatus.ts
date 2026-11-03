@@ -36,7 +36,7 @@ router.get('/node-status/latest', async (req, res) => {
                 n.name,
                 n.iata,
                 source.source_node_id
-         FROM node_identity_nodes n
+         FROM core.node_identity_nodes n
          CROSS JOIN LATERAL unnest(n.identity_source_ids) AS source(source_node_id)
          ${identityWhereClause}
        ), latest AS (
@@ -107,8 +107,8 @@ router.get('/node-status/history', async (req, res) => {
       const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
       const latestNode = await query<{ node_id: string }>(
         `SELECT nss.node_id
-         FROM node_identity_status_samples nss
-         JOIN node_identity_nodes n ON n.node_id = nss.node_id
+         FROM core.node_identity_status_samples nss
+         JOIN core.node_identity_nodes n ON n.node_id = nss.node_id
          ${whereClause}
            AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
          ORDER BY nss.time DESC
@@ -170,7 +170,7 @@ router.get('/node-status/history', async (req, res) => {
            WHEN jsonb_typeof(stats->'tx_queue_depth_peak') = 'number' THEN (stats->>'tx_queue_depth_peak')::double precision
            ELSE NULL
          END AS tx_queue_depth_peak
-       FROM node_identity_nodes n
+       FROM core.node_identity_nodes n
        CROSS JOIN LATERAL unnest(n.identity_source_ids) AS source(source_node_id)
        JOIN core.node_status_samples nss ON nss.node_id = source.source_node_id
        WHERE n.node_id = meshcore_canonical_node_id($1)
