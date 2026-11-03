@@ -33,7 +33,7 @@ test('name retention and search execute the production write paths, migration, i
       last_mqtt_observer_seen_at TIMESTAMPTZ, last_predicted_online_at TIMESTAMPTZ,
       last_path_evidence_at TIMESTAMPTZ, last_rx_at TIMESTAMPTZ, last_status_at TIMESTAMPTZ
     );
-    CREATE TABLE node_counted_adverts (canonical_advert_hash TEXT PRIMARY KEY, node_id TEXT, counted_at TIMESTAMPTZ);
+    CREATE SCHEMA IF NOT EXISTS ops; CREATE TABLE ops.node_counted_adverts (canonical_advert_hash TEXT PRIMARY KEY, node_id TEXT, counted_at TIMESTAMPTZ);
     CREATE TABLE node_identity_aliases (source_node_id TEXT PRIMARY KEY, canonical_node_id TEXT);
     CREATE TABLE node_network_sightings (node_id TEXT, network TEXT, first_seen_at TIMESTAMPTZ, last_seen_at TIMESTAMPTZ);
     CREATE TABLE packets (rx_node_id TEXT, src_node_id TEXT, time TIMESTAMPTZ, network TEXT);

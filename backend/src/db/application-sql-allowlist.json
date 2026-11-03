@@ -18,7 +18,6 @@
     "ml_path_prefix_scores",
     "multibyte_path_fact_state",
     "multibyte_path_facts",
-    "node_counted_adverts",
     "node_coverage",
     "node_identity_aliases",
     "node_identity_link_radio_reports",
@@ -156,7 +155,6 @@
     ],
     "db/index.ts": [
       "message_tags",
-      "node_counted_adverts",
       "node_coverage",
       "node_identity_aliases",
       "node_identity_link_radio_reports",
