@@ -10,8 +10,6 @@
     "ml_model_variant_runs",
     "ml_model_versions",
     "ml_path_prefix_scores",
-    "multibyte_path_fact_state",
-    "multibyte_path_facts",
     "node_identity_link_radio_reports",
     "node_link_radio_reports",
     "packet_daily_stats",
@@ -91,7 +89,6 @@
       "packets"
     ],
     "db/packetBatch.integration.test.ts": [
-      "multibyte_path_facts",
       "packet_daily_stats",
       "packet_decryptions",
       "packet_hourly_stats",
@@ -302,18 +299,13 @@
       "packets"
     ],
     "stats/multibytePathFacts.ts": [
-      "multibyte_path_fact_state",
-      "multibyte_path_facts",
       "packet_paths"
     ],
     "stats/statsRepository.test.ts": [
-      "multibyte_path_fact_state",
-      "multibyte_path_facts",
       "packet_hourly_stats",
       "packets"
     ],
     "stats/statsRepository.ts": [
-      "multibyte_path_facts",
       "packet_daily_stats",
       "packet_hourly_stats",
       "packets"
@@ -322,10 +314,7 @@
       "packet_decryptions",
       "packets"
     ],
-    "tools/backfillMultibytePathFacts.ts": [
-      "multibyte_path_fact_state",
-      "multibyte_path_facts"
-    ],
+    "tools/backfillMultibytePathFacts.ts": [],
     "tools/backfillStatsRollups.ts": [
       "packet_daily_stats",
       "packet_hourly_stats",

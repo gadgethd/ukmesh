@@ -28,7 +28,7 @@ test('multibyte fact cutover removes both raw decode scans and binds the privacy
     params?: unknown[],
   ): Promise<{ rows: T[] }> => {
     calls.push({ text, params });
-    if (text.includes('FROM multibyte_path_fact_state')) {
+    if (/FROM (?:mesh\.)?multibyte_path_fact_state/.test(text)) {
       return { rows: [{ ready: true }] as T[] };
     }
     return { rows: [] };
@@ -45,7 +45,7 @@ test('multibyte fact cutover removes both raw decode scans and binds the privacy
   });
 
   await repository.fetchChartsData('ukmesh', undefined, 12);
-  const factCalls = calls.filter((call) => call.text.includes('FROM multibyte_path_facts f'));
+  const factCalls = calls.filter((call) => /FROM (?:mesh\.)?multibyte_path_facts f/.test(call.text));
   assert.equal(factCalls.length, 2);
   assert.ok(factCalls.every((call) => call.params?.at(-1) === 12));
   assert.equal(calls.some((call) => call.text.includes('row_number() OVER () AS obs_id')), false);

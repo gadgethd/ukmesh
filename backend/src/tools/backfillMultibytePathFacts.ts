@@ -139,10 +139,10 @@ async function main(): Promise<void> {
           }));
         }
         await client.query(
-          `UPDATE multibyte_path_fact_state state
+          `UPDATE mesh.multibyte_path_fact_state state
               SET row_count = (
                     SELECT COUNT(*)::bigint
-                    FROM multibyte_path_facts facts
+                    FROM mesh.multibyte_path_facts facts
                     WHERE facts.visibility_generation = state.visibility_generation
                       AND facts.observed_at >= state.covered_from
                       AND facts.observed_at <= state.covered_through

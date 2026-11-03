@@ -863,7 +863,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
     }>(
       `WITH multibyte AS MATERIALIZED (
          SELECT f.*
-         FROM multibyte_path_facts f
+         FROM mesh.multibyte_path_facts f
          WHERE f.observed_at > ${multibyteCutoffPlaceholder}::timestamptz - INTERVAL '24 hours'
            AND f.observed_at <= ${multibyteCutoffPlaceholder}::timestamptz
            AND f.visibility_generation = ${multibyteGenerationPlaceholder}::bigint
@@ -940,7 +940,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
          SELECT time_bucket('1 day', f.observed_at) AS day,
                 COUNT(*)::text AS multibyte_count,
                 COUNT(*) FILTER (WHERE f.fully_decoded IS TRUE)::text AS fully_decoded_count
-         FROM multibyte_path_facts f
+         FROM mesh.multibyte_path_facts f
          WHERE f.observed_at > ${multibyteCutoffPlaceholder}::timestamptz - INTERVAL '7 days'
            AND f.observed_at <= ${multibyteCutoffPlaceholder}::timestamptz
            AND f.visibility_generation = ${multibyteGenerationPlaceholder}::bigint
