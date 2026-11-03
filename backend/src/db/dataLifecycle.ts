@@ -71,6 +71,7 @@ export const DATA_LIFECYCLE_POLICIES: readonly DataLifecyclePolicy[] = Object.fr
   },
   {
     table: 'packet_decryptions',
+    qualifiedTable: 'mesh.packet_decryptions',
     timestampColumn: 'created_at',
     retention: '30 days',
     kind: 'row-table',

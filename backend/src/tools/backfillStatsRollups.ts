@@ -52,7 +52,7 @@ async function describeHourlyBackfill(days: number): Promise<void> {
              OR COALESCE(NULLIF(p.topic_prefix, ''), split_part(p.topic, '/', 1)) <> 'meshcore-test'
            )) AS source_hours,
        (SELECT COUNT(*)::text
-          FROM packet_hourly_stats s
+          FROM mesh.packet_hourly_stats s
          WHERE s.hour >= b.window_start
            AND s.hour < b.window_end) AS existing_rollup_rows
      FROM bounds b`,
@@ -113,7 +113,7 @@ async function backfillHourlyStats(days: number, pauseMs: number): Promise<void>
       await client.query(`SET LOCAL lock_timeout = '5s'`);
       await client.query(`SET LOCAL statement_timeout = '2min'`);
       await client.query(
-        `DELETE FROM packet_hourly_stats
+        `DELETE FROM mesh.packet_hourly_stats
           WHERE hour >= $1::timestamptz AND hour < $2::timestamptz`,
         [cursor.toISOString(), sliceEnd.toISOString()],
       );
@@ -141,7 +141,7 @@ async function backfillHourlyStats(days: number, pauseMs: number): Promise<void>
              )
            GROUP BY 1, 2, 3, 4, 5, 6, 7
          ), inserted AS (
-           INSERT INTO packet_hourly_stats (
+           INSERT INTO mesh.packet_hourly_stats (
              network, hour, packet_type, hop_count, route_type,
              transport_code, region_scope, packet_count,
              rssi_sum, rssi_count, snr_sum, snr_count, updated_at
@@ -245,9 +245,9 @@ async function catchUpCurrentHour(): Promise<void> {
       await client.query('BEGIN');
       await client.query(`SET LOCAL lock_timeout = '5s'`);
       await client.query(`SET LOCAL statement_timeout = '30s'`);
-      await client.query('LOCK TABLE packet_hourly_stats IN SHARE ROW EXCLUSIVE MODE');
+      await client.query('LOCK TABLE mesh.packet_hourly_stats IN SHARE ROW EXCLUSIVE MODE');
       await client.query(
-        `DELETE FROM packet_hourly_stats
+        `DELETE FROM mesh.packet_hourly_stats
           WHERE hour >= $1::timestamptz AND hour < $2::timestamptz`,
         [cursor.toISOString(), sliceEnd.toISOString()],
       );
@@ -275,7 +275,7 @@ async function catchUpCurrentHour(): Promise<void> {
              )
            GROUP BY 1, 2, 3, 4, 5, 6, 7
          ), inserted AS (
-           INSERT INTO packet_hourly_stats (
+           INSERT INTO mesh.packet_hourly_stats (
              network, hour, packet_type, hop_count, route_type,
              transport_code, region_scope, packet_count,
              rssi_sum, rssi_count, snr_sum, snr_count, updated_at
@@ -337,7 +337,7 @@ async function backfillDailyStats(days: number): Promise<void> {
            AND ${PUBLIC_PACKET_PRIVACY_SQL}
          ORDER BY p.network, p.time::date, p.hop_count DESC, p.time DESC, p.packet_hash DESC
        ), inserted AS (
-         INSERT INTO packet_daily_stats
+         INSERT INTO mesh.packet_daily_stats
            (network, day, max_hop_count, max_hop_hash, max_hop_seen_at, updated_at)
          SELECT network, day, max_hop_count, max_hop_hash, max_hop_seen_at, NOW()
          FROM daily_max
@@ -349,15 +349,15 @@ async function backfillDailyStats(days: number): Promise<void> {
          -- A live ingest write can race this maintenance pass. Only replace a
          -- rollup with an objectively better daily candidate, never with an
          -- older/lower historical value selected before that live write.
-         WHERE packet_daily_stats.max_hop_count IS NULL
-            OR EXCLUDED.max_hop_count > packet_daily_stats.max_hop_count
+         WHERE mesh.packet_daily_stats.max_hop_count IS NULL
+            OR EXCLUDED.max_hop_count > mesh.packet_daily_stats.max_hop_count
             OR (
-              EXCLUDED.max_hop_count = packet_daily_stats.max_hop_count
+              EXCLUDED.max_hop_count = mesh.packet_daily_stats.max_hop_count
               AND (
-                EXCLUDED.max_hop_seen_at > COALESCE(packet_daily_stats.max_hop_seen_at, '-infinity'::timestamptz)
+                EXCLUDED.max_hop_seen_at > COALESCE(mesh.packet_daily_stats.max_hop_seen_at, '-infinity'::timestamptz)
                 OR (
-                  EXCLUDED.max_hop_seen_at = packet_daily_stats.max_hop_seen_at
-                  AND EXCLUDED.max_hop_hash > COALESCE(packet_daily_stats.max_hop_hash, '')
+                  EXCLUDED.max_hop_seen_at = mesh.packet_daily_stats.max_hop_seen_at
+                  AND EXCLUDED.max_hop_hash > COALESCE(mesh.packet_daily_stats.max_hop_hash, '')
                 )
               )
             )

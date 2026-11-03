@@ -863,7 +863,7 @@ export async function getRecentPackets(
              p.advert_count, p.path_hashes, p.path_hash_size_bytes,
              p.network, p.transport_codes, p.region_scope
       FROM packets p
-      LEFT JOIN packet_decryptions pd ON pd.packet_hash = p.packet_hash
+      LEFT JOIN mesh.packet_decryptions pd ON pd.packet_hash = p.packet_hash
       LEFT JOIN core.node_identity_aliases pa_rx ON pa_rx.source_node_id = upper(btrim(p.rx_node_id))
       LEFT JOIN core.node_identity_aliases pa_src ON pa_src.source_node_id = upper(btrim(p.src_node_id))
       WHERE p.time > ${fiveMinAgo}
@@ -951,7 +951,7 @@ export async function getRecentMessages(
              p.advert_count, p.path_hashes, p.path_hash_size_bytes,
              p.network
       FROM packets p
-      LEFT JOIN packet_decryptions pd ON pd.packet_hash = p.packet_hash
+      LEFT JOIN mesh.packet_decryptions pd ON pd.packet_hash = p.packet_hash
       LEFT JOIN core.node_identity_aliases pa_rx ON pa_rx.source_node_id = upper(btrim(p.rx_node_id))
       LEFT JOIN core.node_identity_aliases pa_src ON pa_src.source_node_id = upper(btrim(p.src_node_id))
       WHERE p.packet_type = 5
@@ -1052,7 +1052,7 @@ export async function getChannelMessageHistory(
   const channelHashes = channelHashesForName(normalizedChannel);
   const scope = buildScopePlaceholders(6, network, observer);
   // A historical packet may retain the ingest-time "[encrypted]" marker in
-  // payload while packet_decryptions has the channel-specific summary. Prefer
+  // payload while mesh.packet_decryptions has the channel-specific summary. Prefer
   // the durable decryption summary for channel matching and display.
   const summaryExpr = `COALESCE(NULLIF(BTRIM(pd.summary), ''), NULLIF(BTRIM(p.payload->>'_summary'), ''))`;
   const historyWindow = `NOW() - INTERVAL '90 days'`;
@@ -1066,7 +1066,7 @@ export async function getChannelMessageHistory(
     const batch = await analyticsQuery<{ packet_hash: string; time: Date }>(
       `SELECT p.time, p.packet_hash
        FROM packets p
-       LEFT JOIN packet_decryptions pd ON pd.packet_hash = p.packet_hash
+       LEFT JOIN mesh.packet_decryptions pd ON pd.packet_hash = p.packet_hash
        WHERE p.packet_type = 5
          AND p.time > ${historyWindow}
          AND (
@@ -1122,7 +1122,7 @@ export async function getChannelMessageHistory(
              p.advert_count, p.path_hashes, p.path_hash_size_bytes,
              p.network, p.visibility_ok, p.is_private
       FROM packets p
-      LEFT JOIN packet_decryptions pd ON pd.packet_hash = p.packet_hash
+      LEFT JOIN mesh.packet_decryptions pd ON pd.packet_hash = p.packet_hash
       LEFT JOIN core.node_identity_aliases rx_alias
         ON rx_alias.source_node_id = UPPER(BTRIM(p.rx_node_id))
       LEFT JOIN core.node_identity_aliases src_alias

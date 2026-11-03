@@ -416,7 +416,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
          SELECT
            s.network, s.hour, s.packet_type, s.hop_count, s.route_type,
            s.transport_code, s.region_scope, s.packet_count
-         FROM packet_hourly_stats s
+         FROM mesh.packet_hourly_stats s
          WHERE s.hour >= ${fullStart24hParam}::timestamptz
            AND s.hour < ${fullEndParam}::timestamptz
            AND ${scope.clause}
@@ -460,7 +460,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
          SELECT
            s.network, s.hour, s.packet_type, s.hop_count, s.route_type,
            s.transport_code, s.region_scope, s.packet_count
-         FROM packet_hourly_stats s
+         FROM mesh.packet_hourly_stats s
          WHERE s.hour >= ${fullStart7dParam}::timestamptz
            AND s.hour < ${fullEndParam}::timestamptz
            AND ${scope.clause}
@@ -1244,7 +1244,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
         networkClause = 'network = $1';
       }
       return query(`SELECT max_hop_count AS count, max_hop_hash AS hash
-           FROM packet_daily_stats
+           FROM mesh.packet_daily_stats
            WHERE day >= CURRENT_DATE - 30
              AND max_hop_count IS NOT NULL
              AND ${networkClause}

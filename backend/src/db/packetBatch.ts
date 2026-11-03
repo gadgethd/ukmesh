@@ -517,7 +517,7 @@ export async function persistEntriesCore(
          RETURNING 1
        ),
        forwarding_intents AS (
-         INSERT INTO packet_forwarding_outbox (observation_id, payload)
+         INSERT INTO mesh.packet_forwarding_outbox (observation_id, payload)
          SELECT observation_id, forwarding_payload FROM new_rows
          WHERE forwarding_payload IS NOT NULL AND path_is_valid AND NOT is_private
            AND (EXISTS (SELECT 1 FROM core.owner_packet_share_rules rule
@@ -603,7 +603,7 @@ export async function persistEntriesCore(
          ORDER BY network, time::date, hop_count DESC, row_id ASC
        ),
        daily_updates AS (
-         INSERT INTO packet_daily_stats
+         INSERT INTO mesh.packet_daily_stats
            (network, day, max_hop_count, max_hop_hash, max_hop_seen_at, updated_at)
          SELECT network, day, hop_count, packet_hash, time, NOW()
          FROM daily_candidates
@@ -612,12 +612,12 @@ export async function persistEntriesCore(
            max_hop_hash = EXCLUDED.max_hop_hash,
            max_hop_seen_at = EXCLUDED.max_hop_seen_at,
            updated_at = NOW()
-         WHERE packet_daily_stats.max_hop_count IS NULL
-            OR EXCLUDED.max_hop_count > packet_daily_stats.max_hop_count
+         WHERE mesh.packet_daily_stats.max_hop_count IS NULL
+            OR EXCLUDED.max_hop_count > mesh.packet_daily_stats.max_hop_count
          RETURNING 1
        ),
        hourly_updates AS (
-         INSERT INTO packet_hourly_stats (
+         INSERT INTO mesh.packet_hourly_stats (
            network, hour, packet_type, hop_count, route_type,
            transport_code, region_scope, packet_count,
            rssi_sum, rssi_count, snr_sum, snr_count, updated_at
@@ -650,11 +650,11 @@ export async function persistEntriesCore(
            network, hour, packet_type, hop_count, route_type,
            transport_code, region_scope
          ) DO UPDATE SET
-           packet_count = packet_hourly_stats.packet_count + EXCLUDED.packet_count,
-           rssi_sum = packet_hourly_stats.rssi_sum + EXCLUDED.rssi_sum,
-           rssi_count = packet_hourly_stats.rssi_count + EXCLUDED.rssi_count,
-           snr_sum = packet_hourly_stats.snr_sum + EXCLUDED.snr_sum,
-           snr_count = packet_hourly_stats.snr_count + EXCLUDED.snr_count,
+           packet_count = mesh.packet_hourly_stats.packet_count + EXCLUDED.packet_count,
+           rssi_sum = mesh.packet_hourly_stats.rssi_sum + EXCLUDED.rssi_sum,
+           rssi_count = mesh.packet_hourly_stats.rssi_count + EXCLUDED.rssi_count,
+           snr_sum = mesh.packet_hourly_stats.snr_sum + EXCLUDED.snr_sum,
+           snr_count = mesh.packet_hourly_stats.snr_count + EXCLUDED.snr_count,
            updated_at = NOW()
          RETURNING 1
        ),

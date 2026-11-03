@@ -12,10 +12,6 @@
     "ml_path_prefix_scores",
     "node_identity_link_radio_reports",
     "node_link_radio_reports",
-    "packet_daily_stats",
-    "packet_decryptions",
-    "packet_forwarding_outbox",
-    "packet_hourly_stats",
     "packet_paths",
     "packets",
     "path_corridor_priors",
@@ -73,7 +69,6 @@
     ],
     "db/index.ts": [
       "node_identity_link_radio_reports",
-      "packet_decryptions",
       "packets",
       "spam_suspects"
     ],
@@ -89,9 +84,6 @@
       "packets"
     ],
     "db/packetBatch.integration.test.ts": [
-      "packet_daily_stats",
-      "packet_decryptions",
-      "packet_hourly_stats",
       "packet_paths",
       "packets",
       "schema_migration_compatibility",
@@ -101,14 +93,10 @@
       "packets"
     ],
     "db/packetBatch.ts": [
-      "packet_daily_stats",
-      "packet_forwarding_outbox",
-      "packet_hourly_stats",
       "packet_paths",
       "packets"
     ],
     "db/packetDailyBoundary.integration.test.ts": [
-      "packet_daily_stats",
       "packets"
     ],
     "db/packetVisibilityFence.test.ts": [
@@ -117,15 +105,11 @@
     ],
     "db/privacyCompletion.integration.test.ts": [],
     "db/publicVisibilityMigration.test.ts": [],
-    "db/recentRead.integration.test.ts": [
-      "packet_decryptions"
-    ],
+    "db/recentRead.integration.test.ts": [],
     "db/regionScoping.integration.test.ts": [
       "packets"
     ],
-    "db/silentRecovery.integration.test.ts": [
-      "packet_forwarding_outbox"
-    ],
+    "db/silentRecovery.integration.test.ts": [],
     "db/visibilityConvergence.integration.test.ts": [
       "packet_paths",
       "packets",
@@ -167,9 +151,7 @@
       "path_model_calibration"
     ],
     "owner/alertRules.ts": [],
-    "owner/forwardingOutbox.ts": [
-      "packet_forwarding_outbox"
-    ],
+    "owner/forwardingOutbox.ts": [],
     "owner/ownerAccess.ts": [],
     "owner/ownerAuthorityScope.test.ts": [],
     "owner/ownerRepository.ts": [],
@@ -229,12 +211,8 @@
     ],
     "privacy/convergence.ts": [],
     "privacy/generationHealth.ts": [],
-    "ram/liveRead.ts": [
-      "packet_decryptions"
-    ],
+    "ram/liveRead.ts": [],
     "ram/runtime.integration.test.ts": [
-      "packet_daily_stats",
-      "packet_hourly_stats",
       "packet_paths",
       "packets"
     ],
@@ -302,22 +280,16 @@
       "packet_paths"
     ],
     "stats/statsRepository.test.ts": [
-      "packet_hourly_stats",
       "packets"
     ],
     "stats/statsRepository.ts": [
-      "packet_daily_stats",
-      "packet_hourly_stats",
       "packets"
     ],
     "tools/backfillDecrypt.ts": [
-      "packet_decryptions",
       "packets"
     ],
     "tools/backfillMultibytePathFacts.ts": [],
     "tools/backfillStatsRollups.ts": [
-      "packet_daily_stats",
-      "packet_hourly_stats",
       "packets"
     ],
     "tools/cleanupOrphanedAnalysisRuns.ts": [

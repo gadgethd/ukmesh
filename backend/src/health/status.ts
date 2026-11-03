@@ -111,7 +111,7 @@ export const RETENTION_TARGETS: readonly RetentionTarget[] = [
   { table: 'observer_region_observer_sightings', qualifiedTable: 'core.observer_region_observer_sightings', timestampColumn: 'last_seen', retention: '31 days', batchSize: 5_000 },
   { table: 'link_job_commits', qualifiedTable: 'ops.link_job_commits', timestampColumn: 'completed_at', retention: '180 days', batchSize: 5_000 },
   { table: 'ml_model_variant_packet_results', timestampColumn: 'created_at', retention: '180 days', batchSize: 5_000 },
-  { table: 'packet_decryptions', timestampColumn: 'created_at', retention: '30 days', batchSize: 2_000 },
+  { table: 'packet_decryptions', qualifiedTable: 'mesh.packet_decryptions', timestampColumn: 'created_at', retention: '30 days', batchSize: 2_000 },
   {
     table: 'observer_registration_requests',
     qualifiedTable: 'core.observer_registration_requests',

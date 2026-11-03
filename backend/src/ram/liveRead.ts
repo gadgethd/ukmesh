@@ -103,7 +103,7 @@ export async function resolvePendingSummaries(entries: PendingSummary[], readQue
   const result = await readQuery(`
     SELECT p.packet_hash, COALESCE(p.payload->>'_summary', pd.summary) AS summary
     FROM jsonb_to_recordset($1::jsonb) AS p(packet_hash text, payload jsonb)
-    LEFT JOIN packet_decryptions pd ON pd.packet_hash = p.packet_hash`, [JSON.stringify(entries)]);
+    LEFT JOIN mesh.packet_decryptions pd ON pd.packet_hash = p.packet_hash`, [JSON.stringify(entries)]);
   return new Map(result.rows.map(row => [String(row.packet_hash), row.summary === null ? null : String(row.summary)]));
 }
 
