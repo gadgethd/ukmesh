@@ -114,8 +114,8 @@ PUBLIC_PACKET_PRIVACY_SQL = """
       AND is_private IS NOT TRUE
       AND EXISTS (
         SELECT 1
-        FROM packet_visibility_materialization_state cached_visibility
-        JOIN public_visibility_state current_visibility
+        FROM ops.packet_visibility_materialization_state cached_visibility
+        JOIN ops.public_visibility_state current_visibility
           ON current_visibility.singleton = cached_visibility.singleton
         WHERE cached_visibility.singleton = TRUE
           AND cached_visibility.visibility_generation = current_visibility.generation
@@ -168,11 +168,11 @@ def load_public_message(cur, ph, ts, rx_node_id, network):
     cur.execute(f"""
       WITH policy AS (
         SELECT EXISTS (
-          SELECT 1 FROM packet_visibility_materialization_state cached
-          JOIN public_visibility_state current ON current.singleton = cached.singleton
+          SELECT 1 FROM ops.packet_visibility_materialization_state cached
+          JOIN ops.public_visibility_state current ON current.singleton = cached.singleton
           WHERE cached.singleton = TRUE AND cached.visibility_generation = current.generation
         ) AND NOT EXISTS (
-          SELECT 1 FROM privacy_rematerialization_queue
+          SELECT 1 FROM ops.privacy_rematerialization_queue
           WHERE status IN ('pending', 'processing', 'failed')
         ) AS ready
       )
@@ -234,11 +234,11 @@ def public_packet_keys(cur, ph, ts):
     cur.execute(f"""
       WITH policy AS (
         SELECT EXISTS (
-          SELECT 1 FROM packet_visibility_materialization_state cached
-          JOIN public_visibility_state current ON current.singleton = cached.singleton
+          SELECT 1 FROM ops.packet_visibility_materialization_state cached
+          JOIN ops.public_visibility_state current ON current.singleton = cached.singleton
           WHERE cached.singleton = TRUE AND cached.visibility_generation = current.generation
         ) AND NOT EXISTS (
-          SELECT 1 FROM privacy_rematerialization_queue
+          SELECT 1 FROM ops.privacy_rematerialization_queue
           WHERE status IN ('pending', 'processing', 'failed')
         ) AS ready
       )
