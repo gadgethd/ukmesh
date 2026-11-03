@@ -24,7 +24,7 @@ export type DataCompressionPolicy = Readonly<{
 // packet_paths is present here and can never enter a retention allowlist.
 export const DATA_COMPRESSION_POLICIES: readonly DataCompressionPolicy[] = Object.freeze([
   { table: 'packets', qualifiedTable: 'mesh.packets', compressAfter: '14 days', compressionSegmentBy: 'network', compressionOrderBy: 'time DESC' },
-  { table: 'packet_paths', compressAfter: '14 days', compressionSegmentBy: 'network', compressionOrderBy: 'time DESC' },
+  { table: 'packet_paths', qualifiedTable: 'mesh.packet_paths', compressAfter: '14 days', compressionSegmentBy: 'network', compressionOrderBy: 'time DESC' },
   { table: 'node_status_samples', qualifiedTable: 'core.node_status_samples', compressAfter: '14 days', compressionSegmentBy: 'network', compressionOrderBy: 'time DESC' },
   { table: 'node_neighbor_samples', qualifiedTable: 'core.node_neighbor_samples', compressAfter: '1 day', compressionSegmentBy: 'network', compressionOrderBy: 'time DESC' },
 ]);
@@ -161,7 +161,8 @@ export const DATA_LIFECYCLE_POLICIES: readonly DataLifecyclePolicy[] = Object.fr
     featureImpact: ['link job idempotency evidence older than 180 days is removed'],
   },
   {
-    table: 'analytics.ml_model_variant_packet_results',
+    table: 'ml_model_variant_packet_results',
+    qualifiedTable: 'analytics.ml_model_variant_packet_results',
     timestampColumn: 'created_at',
     retention: '180 days',
     kind: 'row-table',
