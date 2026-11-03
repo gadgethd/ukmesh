@@ -23,7 +23,6 @@
     "node_identity_links",
     "node_identity_nodes",
     "node_identity_packets",
-    "node_identity_refresh_state",
     "node_identity_sightings",
     "node_identity_status_samples",
     "node_link_radio_reports",
@@ -162,13 +161,11 @@
     ],
     "db/nodeIdentity.ts": [
       "node_identity_aliases",
-      "node_identity_refresh_state",
       "node_status_samples",
       "nodes",
       "packets"
     ],
     "db/nodeIdentityRefresh.integration.test.ts": [
-      "node_identity_refresh_state",
       "nodes"
     ],
     "db/nodeNameHistory.integration.test.ts": [

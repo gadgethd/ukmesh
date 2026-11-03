@@ -653,7 +653,7 @@ export async function refreshNodeIdentityAliases(
     const maxAgeMs = options.maxAgeMs ?? 0;
     if (maxAgeMs > 0) {
       const cached = (await client.query<{ result: IdentityRefreshResult }>(
-        `SELECT result FROM node_identity_refresh_state
+        `SELECT result FROM core.node_identity_refresh_state
           WHERE singleton = TRUE AND algorithm_version = 1
             AND visibility_generation = $1::bigint
             AND completed_at > NOW() - ($2::double precision * INTERVAL '1 millisecond')`,
@@ -917,7 +917,7 @@ export async function refreshNodeIdentityAliases(
       aliasRewriteSkipped,
     };
     await client.query(
-      `INSERT INTO node_identity_refresh_state
+      `INSERT INTO core.node_identity_refresh_state
          (singleton, algorithm_version, visibility_generation, completed_at, result)
        SELECT TRUE, 1, generation, clock_timestamp(), $1::jsonb
          FROM ops.public_visibility_state WHERE singleton = TRUE
