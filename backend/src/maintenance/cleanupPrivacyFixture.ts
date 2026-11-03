@@ -37,7 +37,7 @@ export async function installPrivacyTriggers(db: { exec(sql: string): Promise<un
       FOR EACH ROW EXECUTE FUNCTION bump_public_visibility_generation();
     CREATE TRIGGER nodes_private_zz_packet_path_materialization AFTER INSERT OR UPDATE OR DELETE ON nodes
       FOR EACH ROW EXECUTE FUNCTION rematerialize_packet_path_privacy();
-    CREATE TRIGGER private_node_prefixes_visibility_generation AFTER INSERT OR UPDATE OR DELETE OR TRUNCATE ON private_node_prefixes
+    CREATE TRIGGER private_node_prefixes_visibility_generation AFTER INSERT OR UPDATE OR DELETE OR TRUNCATE ON core.private_node_prefixes
       FOR EACH STATEMENT EXECUTE FUNCTION bump_visibility_for_identity_table();
     CREATE TRIGGER packet_paths_classify_privacy BEFORE INSERT OR UPDATE OF rx_node_id, src_node_id, path_hashes, path_hash_size_bytes, network ON packet_paths
       FOR EACH ROW EXECUTE FUNCTION classify_packet_path_privacy();

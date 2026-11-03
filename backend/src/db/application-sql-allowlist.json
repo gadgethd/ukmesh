@@ -41,7 +41,6 @@
     "path_prefix_priors",
     "path_slow_resolutions",
     "path_transition_priors",
-    "private_node_prefixes",
     "schema_migration_compatibility",
     "schema_migrations",
     "spam_message_incidents",
@@ -155,8 +154,7 @@
     ],
     "db/packetBatch.test.ts": [
       "ingest_observation_ledger",
-      "packets",
-      "private_node_prefixes"
+      "packets"
     ],
     "db/packetBatch.ts": [
       "ingest_observation_ledger",
@@ -165,8 +163,7 @@
       "packet_forwarding_outbox",
       "packet_hourly_stats",
       "packet_paths",
-      "packets",
-      "private_node_prefixes"
+      "packets"
     ],
     "db/packetDailyBoundary.integration.test.ts": [
       "packet_daily_stats",
@@ -192,7 +189,6 @@
       "nodes",
       "packet_paths",
       "packets",
-      "private_node_prefixes",
       "schema_migrations"
     ],
     "health/packetDiagnostics.integration.test.ts": [
@@ -208,21 +204,18 @@
     "maintenance/staleMqttObservers.integration.test.ts": [
       "nodes",
       "packet_paths",
-      "packets",
-      "private_node_prefixes"
+      "packets"
     ],
     "maintenance/staleMqttObservers.native.integration.test.ts": [
       "nodes",
       "packet_paths",
-      "packets",
-      "private_node_prefixes"
+      "packets"
     ],
     "maintenance/staleMqttObservers.test.ts": [
       "nodes"
     ],
     "maintenance/staleMqttObservers.ts": [
-      "nodes",
-      "private_node_prefixes"
+      "nodes"
     ],
     "mqtt/client.ts": [
       "packets"
@@ -308,14 +301,11 @@
       "path_edge_priors",
       "path_prefix_priors"
     ],
-    "path-learning/rebuild.privacy.test.ts": [
-      "private_node_prefixes"
-    ],
+    "path-learning/rebuild.privacy.test.ts": [],
     "path-learning/rebuild.ts": [
       "nodes",
       "packets",
-      "path_model_calibration",
-      "private_node_prefixes"
+      "path_model_calibration"
     ],
     "pathing/pathingRepository.ts": [
       "nodes",
@@ -323,8 +313,7 @@
       "path_model_calibration",
       "path_motif_priors",
       "path_prefix_priors",
-      "path_transition_priors",
-      "private_node_prefixes"
+      "path_transition_priors"
     ],
     "privacy/convergence.ts": [],
     "privacy/generationHealth.ts": [],
@@ -482,16 +471,14 @@
     ],
     "workers/privacy-rematerialization.ts": [
       "packet_paths",
-      "packets",
-      "private_node_prefixes"
+      "packets"
     ],
     "workers/syntheticPersistence.ts": [],
     "ws/initialStateNodes.integration.test.ts": [
       "nodes"
     ],
     "ws/publicAuthorization.integration.test.ts": [
-      "nodes",
-      "private_node_prefixes"
+      "nodes"
     ],
     "ws/regionScoping.integration.test.ts": [
       "nodes",

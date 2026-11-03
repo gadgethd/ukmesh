@@ -38,7 +38,7 @@ type Chunk = { range_start: Date; range_end: Date };
 const PACKET_UPDATE_SQL = `UPDATE packets p
      SET is_private = EXISTS (
            SELECT 1
-           FROM private_node_prefixes pp
+           FROM core.private_node_prefixes pp
            WHERE (
                pp.network = p.network
                OR (
@@ -62,7 +62,7 @@ const PACKET_UPDATE_SQL = `UPDATE packets p
            (COALESCE(cardinality(p.path_hashes), 0) = 0 OR p.path_hash_size_bytes BETWEEN 1 AND 3)
            AND NOT EXISTS (
              SELECT 1
-             FROM private_node_prefixes pp
+             FROM core.private_node_prefixes pp
              WHERE (
                  pp.network = p.network
                  OR (

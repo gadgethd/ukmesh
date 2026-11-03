@@ -172,7 +172,7 @@ export async function loadCurrentPublicPrivacyPolicy(): Promise<PrivatePrefixCac
       FROM ops.public_visibility_state visibility
       JOIN ops.packet_visibility_materialization_state materialized
         ON materialized.singleton = visibility.singleton
-      LEFT JOIN private_node_prefixes prefix ON TRUE
+      LEFT JOIN core.private_node_prefixes prefix ON TRUE
      WHERE visibility.singleton = TRUE
      GROUP BY visibility.generation, materialized.visibility_generation
   `, [], AbortSignal.timeout(30_000));
@@ -214,7 +214,7 @@ function refreshPrivatePrefixCache(query: QueryFn): Promise<void> {
               '[]'::jsonb
             ) AS prefixes
        FROM ops.public_visibility_state visibility
-       LEFT JOIN private_node_prefixes prefix ON TRUE
+       LEFT JOIN core.private_node_prefixes prefix ON TRUE
       WHERE visibility.singleton = TRUE
       GROUP BY visibility.generation`,
   ).then(({ rows }) => {

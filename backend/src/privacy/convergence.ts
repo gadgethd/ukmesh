@@ -109,7 +109,7 @@ export async function convergePacketVisibility(pool: Pick<pg.Pool, 'connect'>, o
       // Packet locks also exclude writers that do not pin the generation.
       // A competing transaction can cause a bounded deadlock/lock timeout;
       // aborting is safe, and the operator may retry after it finishes.
-      await client.query(`LOCK TABLE nodes, private_node_prefixes, core.node_identity_aliases,
+      await client.query(`LOCK TABLE nodes, core.private_node_prefixes, core.node_identity_aliases,
         ops.privacy_rematerialization_queue, packets, packet_paths IN SHARE ROW EXCLUSIVE MODE`);
       await client.query('SELECT generation FROM ops.public_visibility_state WHERE singleton = TRUE FOR UPDATE');
     }

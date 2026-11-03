@@ -12,7 +12,7 @@ type QueryFn = <T extends QueryResultRow = QueryResultRow>(
 export function privatePrefixPathFilterSql(columnExpr: string, alias = 'private_prefix'): string {
   return `EXISTS (
            SELECT 1
-           FROM private_node_prefixes ${alias}
+           FROM core.private_node_prefixes ${alias}
            WHERE LENGTH(${columnExpr}) > 0
              AND LEFT(UPPER(${alias}.node_id), LENGTH(${columnExpr}))
                  = UPPER(${columnExpr})

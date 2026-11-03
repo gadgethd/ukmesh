@@ -90,7 +90,7 @@ async function cleanupNodeRecords(
           -- until a separate privacy-preserving tombstone policy is available.
           AND COALESCE(n.name, '') NOT LIKE '%🚫%'
           AND NOT EXISTS (
-            SELECT 1 FROM private_node_prefixes p WHERE p.node_id = n.node_id
+            SELECT 1 FROM core.private_node_prefixes p WHERE p.node_id = n.node_id
           )`;
     const candidates = await client.query<{ node_id: string }>(
       `${candidateSelection} ORDER BY node_id`,

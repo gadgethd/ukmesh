@@ -603,7 +603,7 @@ export function pathLearningTrainingPacketsSql(
       LIMIT $${limitParam}`;
 }
 
-/** `private_node_prefixes` stores 1..3-byte hashes of private node ids, so a raw
+/** `core.private_node_prefixes` stores 1..3-byte hashes of private node ids, so a raw
  * path prefix is private exactly when it is a leading substring of one of those
  * node ids. An empty prefix carries no identity and is never blocked. */
 export function isPrivatePathPrefix(
@@ -695,7 +695,7 @@ async function rebuildNetworkUnderLease(
   // started, so a private-prefix snapshot taken inside the run cannot go stale
   // before the delta commits.
   const privatePrefixesResult = await analyticsQuery<{ node_id: string }>(
-    'SELECT DISTINCT node_id FROM private_node_prefixes',
+    'SELECT DISTINCT node_id FROM core.private_node_prefixes',
     [],
     heartbeat.signal,
   );
