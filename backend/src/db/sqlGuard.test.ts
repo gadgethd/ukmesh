@@ -10,7 +10,7 @@ function unqualifiedTargets(sql: string): string[] {
     .replace(/--[^\n]*/g, '')
     .replace(/'([^']|'')*'/g, "''");
   const ctes = new Set(
-    [...body.matchAll(/(?:\bWITH\b|,)\s*([a-z_][a-z0-9_]*)\s+AS\s*\(/gi)].map((match) => match[1]),
+    [...body.matchAll(/(?:\bWITH\b|,)\s*([a-z_][a-z0-9_]*)\s+AS\s+(?:MATERIALIZED\s+)?\(/gi)].map((match) => match[1]),
   );
   const found: string[] = [];
   for (const match of body.matchAll(DML_TARGET)) {

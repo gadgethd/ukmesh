@@ -87,7 +87,7 @@ test('packet batches retry transient database failures without losing the pendin
   assert.equal(attempts, 3);
   assert.doesNotMatch(statements[0]!, /new_rows AS MATERIALIZED/);
   assert.match(statements[3]!, /new_rows AS MATERIALIZED/);
-  assert.match(statements[3]!, /INSERT INTO ingest_observation_ledger/);
+  assert.match(statements[3]!, /INSERT INTO (?:mesh\.)?ingest_observation_ledger/);
   assert.match(statements[3]!, /JOIN claimed/);
   assert.match(statements[3]!, /existing\.packet_hash = d\.packet_hash/);
   assert.match(statements[3]!, /ROW_NUMBER\(\) OVER/);

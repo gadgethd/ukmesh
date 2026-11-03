@@ -490,7 +490,7 @@ export async function persistEntriesCore(
          ORDER BY observation_id, row_id
        ),
        claimed AS (
-         INSERT INTO ingest_observation_ledger
+         INSERT INTO mesh.ingest_observation_ledger
            (observation_id, observed_at, packet_hash, network)
          SELECT observation_id, time, packet_hash, network
          FROM candidate_rows

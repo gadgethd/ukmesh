@@ -4,11 +4,6 @@
   "tables": [
     "analysis_runs",
     "analysis_workload_state",
-    "ingest_observation_archive",
-    "ingest_observation_history",
-    "ingest_observation_ledger",
-    "ingest_observation_ledger_coverage",
-    "ingest_observation_tombstones",
     "message_tags",
     "message_tags_local",
     "ml_gold_paths",
@@ -86,10 +81,7 @@
       "packets",
       "spam_suspects"
     ],
-    "db/ledgerArchive.integration.test.ts": [
-      "ingest_observation_history",
-      "ingest_observation_ledger"
-    ],
+    "db/ledgerArchive.integration.test.ts": [],
     "db/migrations.ts": [
       "packets"
     ],
@@ -101,8 +93,6 @@
       "packets"
     ],
     "db/packetBatch.integration.test.ts": [
-      "ingest_observation_ledger",
-      "ingest_observation_ledger_coverage",
       "multibyte_path_facts",
       "packet_daily_stats",
       "packet_decryptions",
@@ -113,11 +103,9 @@
       "schema_migrations"
     ],
     "db/packetBatch.test.ts": [
-      "ingest_observation_ledger",
       "packets"
     ],
     "db/packetBatch.ts": [
-      "ingest_observation_ledger",
       "packet_daily_stats",
       "packet_forwarding_outbox",
       "packet_hourly_stats",
@@ -250,7 +238,6 @@
       "packet_decryptions"
     ],
     "ram/runtime.integration.test.ts": [
-      "ingest_observation_ledger",
       "packet_daily_stats",
       "packet_hourly_stats",
       "packet_paths",
