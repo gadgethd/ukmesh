@@ -277,7 +277,7 @@ export function retentionDeleteSql(target: RetentionTarget): string {
        SELECT MAX(${target.timestampColumn}) AS boundary
        FROM (
          SELECT ${target.timestampColumn}
-         FROM ${target.table}
+         FROM ${target.qualifiedTable ?? target.table}
          WHERE ${target.timestampColumn} < NOW() - $1::interval
            ${target.extraPredicate ? `AND ${target.extraPredicate}` : ''}
          ORDER BY ${target.timestampColumn} ASC
