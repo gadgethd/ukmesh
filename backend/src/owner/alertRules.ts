@@ -70,7 +70,7 @@ async function queueDelivery(
 ): Promise<boolean> {
   const destinationHost = new URL(webhook).hostname.toLowerCase();
   const result = await query<{ id: string }>(
-    `INSERT INTO owner_alert_deliveries
+    `INSERT INTO core.owner_alert_deliveries
        (rule_id, event_key, channel, destination_host, payload, is_test)
      VALUES ($1, $2, 'webhook', $3, $4::jsonb, $5)
      ON CONFLICT (rule_id, event_key) DO NOTHING
@@ -94,7 +94,7 @@ export async function queueOwnerTestDelivery(options: {
 }): Promise<{ queued: boolean; eventKey: string }> {
   const ruleResult = await query<Pick<Rule, 'id' | 'node_id' | 'rule_type' | 'threshold' | 'channels'>>(
     `SELECT id::text, node_id, rule_type, threshold, channels
-       FROM owner_alert_rules
+       FROM core.owner_alert_rules
       WHERE id = $1
         AND owner_username = $2
         AND node_id = ANY($3::text[])`,
@@ -112,7 +112,7 @@ export async function queueOwnerTestDelivery(options: {
   };
 }
 
-export const RECLAIM_EXPIRED_ALERT_DELIVERIES_SQL = `UPDATE owner_alert_deliveries
+export const RECLAIM_EXPIRED_ALERT_DELIVERIES_SQL = `UPDATE core.owner_alert_deliveries
         SET status = CASE WHEN attempts >= 5 THEN 'dead_lettered' ELSE 'failed' END,
             claim_token = NULL,
             claim_expires_at = NULL,
@@ -128,8 +128,8 @@ async function claimDueDeliveries(): Promise<Delivery[]> {
   const claimed = await query<Delivery>(
     `WITH due AS (
        SELECT delivery.id, rules.channels->>'webhook' AS webhook
-         FROM owner_alert_deliveries delivery
-         JOIN owner_alert_rules rules ON rules.id = delivery.rule_id
+         FROM core.owner_alert_deliveries delivery
+         JOIN core.owner_alert_rules rules ON rules.id = delivery.rule_id
         WHERE delivery.status IN ('pending', 'failed')
           AND delivery.attempts < $1
           AND delivery.next_attempt_at <= NOW()
@@ -139,7 +139,7 @@ async function claimDueDeliveries(): Promise<Delivery[]> {
         LIMIT 25
         FOR UPDATE SKIP LOCKED
      )
-     UPDATE owner_alert_deliveries delivery
+     UPDATE core.owner_alert_deliveries delivery
         SET status = 'delivering',
             attempts = attempts + 1,
             claim_token = md5(random()::text || clock_timestamp()::text || delivery.id::text),
@@ -161,8 +161,8 @@ async function hasClaimableDeliveries(): Promise<boolean> {
   const result = await query<{ claimable: boolean }>(
     `SELECT EXISTS (
        SELECT 1
-         FROM owner_alert_deliveries delivery
-         JOIN owner_alert_rules rules ON rules.id = delivery.rule_id
+         FROM core.owner_alert_deliveries delivery
+         JOIN core.owner_alert_rules rules ON rules.id = delivery.rule_id
         WHERE delivery.status IN ('pending', 'failed')
           AND delivery.attempts < $1
           AND delivery.next_attempt_at <= NOW()
@@ -170,7 +170,7 @@ async function hasClaimableDeliveries(): Promise<boolean> {
           AND rules.pause_reason IS NULL
      ) OR EXISTS (
        SELECT 1
-         FROM owner_alert_deliveries
+         FROM core.owner_alert_deliveries
         WHERE status = 'delivering'
           AND (claim_expires_at IS NULL OR claim_expires_at <= NOW())
      ) AS claimable`,
@@ -186,7 +186,7 @@ async function recordDeliverySuccess(
 ): Promise<void> {
   await query(
     `WITH completed AS (
-       UPDATE owner_alert_deliveries
+       UPDATE core.owner_alert_deliveries
           SET status = 'succeeded',
               delivered_at = NOW(),
               updated_at = NOW(),
@@ -197,7 +197,7 @@ async function recordDeliverySuccess(
         WHERE id = $1 AND claim_token = $2 AND status = 'delivering'
         RETURNING id, rule_id, attempts, channel, last_attempt_at
      ), attempt AS (
-       INSERT INTO owner_alert_delivery_attempts
+       INSERT INTO core.owner_alert_delivery_attempts
          (delivery_id, attempt_number, channel, outcome, destination_host,
           http_status, started_at)
        SELECT id, attempts, channel, 'succeeded', $3, $4, last_attempt_at
@@ -205,7 +205,7 @@ async function recordDeliverySuccess(
        ON CONFLICT (delivery_id, attempt_number) DO NOTHING
        RETURNING delivery_id
      )
-     UPDATE owner_alert_rules rules
+     UPDATE core.owner_alert_rules rules
         SET last_triggered_at = NOW(),
             last_delivery_success_at = NOW(),
             last_delivery_error = NULL,
@@ -222,7 +222,7 @@ async function recordDeliveryFailure(delivery: Delivery, error: Error): Promise<
   const message = String(error.message).slice(0, 300);
   await query(
     `WITH completed AS (
-       UPDATE owner_alert_deliveries
+       UPDATE core.owner_alert_deliveries
           SET status = $3,
               next_attempt_at = CASE
                 WHEN $3 = 'failed'
@@ -236,7 +236,7 @@ async function recordDeliveryFailure(delivery: Delivery, error: Error): Promise<
         WHERE id = $1 AND claim_token = $2 AND status = 'delivering'
         RETURNING id, rule_id, attempts, channel, destination_host, last_attempt_at
      ), attempt AS (
-       INSERT INTO owner_alert_delivery_attempts
+       INSERT INTO core.owner_alert_delivery_attempts
          (delivery_id, attempt_number, channel, outcome, destination_host,
           error, started_at)
        SELECT id, attempts, channel, 'failed', destination_host, $5, last_attempt_at
@@ -244,7 +244,7 @@ async function recordDeliveryFailure(delivery: Delivery, error: Error): Promise<
        ON CONFLICT (delivery_id, attempt_number) DO NOTHING
        RETURNING delivery_id
      )
-     UPDATE owner_alert_rules rules
+     UPDATE core.owner_alert_rules rules
         SET last_delivery_error_at = NOW(),
             last_delivery_error = $5,
             pause_reason = CASE
@@ -300,7 +300,7 @@ export async function pollOwnerAlertRules(): Promise<void> {
             nodes.last_seen::text,
             telemetry.battery_mv,
             links.path_loss_db
-       FROM owner_alert_rules rules
+       FROM core.owner_alert_rules rules
        JOIN nodes ON nodes.node_id = rules.node_id
        LEFT JOIN LATERAL (
          SELECT battery_mv FROM node_status_samples
@@ -322,7 +322,7 @@ export async function pollOwnerAlertRules(): Promise<void> {
       await queueDelivery(rule, webhook, `condition:${hourKey}`, false);
     } else {
       await query(
-        `UPDATE owner_alert_rules
+        `UPDATE core.owner_alert_rules
             SET last_triggered_at = NOW(),
                 pause_reason = 'no_delivery_channel',
                 updated_at = NOW()

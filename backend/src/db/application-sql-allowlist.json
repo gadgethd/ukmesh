@@ -35,9 +35,6 @@
     "observer_region_packet_sightings",
     "observer_registration_requests",
     "observers",
-    "owner_alert_deliveries",
-    "owner_alert_delivery_attempts",
-    "owner_alert_rules",
     "owner_packet_share_deliveries",
     "owner_packet_share_destinations",
     "owner_packet_share_rules",
@@ -232,7 +229,6 @@
       "packets"
     ],
     "db/silentRecovery.integration.test.ts": [
-      "owner_alert_deliveries",
       "owner_public_feed_nodes",
       "owner_public_feed_settings",
       "packet_forwarding_outbox"
@@ -305,10 +301,7 @@
       "node_links",
       "node_status_samples",
       "nodes",
-      "observer_registration_requests",
-      "owner_alert_deliveries",
-      "owner_alert_delivery_attempts",
-      "owner_alert_rules"
+      "observer_registration_requests"
     ],
     "owner/forwardingOutbox.ts": [
       "packet_forwarding_outbox"
@@ -452,11 +445,7 @@
       "nodes",
       "packets"
     ],
-    "repositories/ownerAlerts.ts": [
-      "owner_alert_deliveries",
-      "owner_alert_delivery_attempts",
-      "owner_alert_rules"
-    ],
+    "repositories/ownerAlerts.ts": [],
     "repositories/pathEvidence.ts": [
       "nodes"
     ],

@@ -105,6 +105,7 @@ export const DATA_LIFECYCLE_POLICIES: readonly DataLifecyclePolicy[] = Object.fr
   },
   {
     table: 'owner_alert_deliveries',
+    qualifiedTable: 'core.owner_alert_deliveries',
     timestampColumn: 'created_at',
     retention: '90 days',
     kind: 'row-table',

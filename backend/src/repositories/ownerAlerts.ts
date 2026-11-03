@@ -27,7 +27,7 @@ export async function ownerAlertRuleRows(
             pause_reason, last_triggered_at::text,
             last_delivery_success_at::text, last_delivery_error_at::text,
             last_delivery_error
-     FROM owner_alert_rules
+     FROM core.owner_alert_rules
      WHERE owner_username = $1 AND node_id = ANY($2::text[])
      ORDER BY created_at`,
     [ownerUsername, nodeIds],
@@ -46,7 +46,7 @@ export async function upsertOwnerAlertRule(
   },
 ) {
   return query(
-    `INSERT INTO owner_alert_rules (
+    `INSERT INTO core.owner_alert_rules (
        owner_username, node_id, rule_type, threshold, channels, enabled
      )
      VALUES ($1, $2, $3, $4, $5::jsonb, $6)
@@ -93,9 +93,9 @@ export async function ownerAlertDeliveryRows(
               ) FILTER (WHERE attempt.id IS NOT NULL),
               '[]'::jsonb
             ) AS attempt_history
-       FROM owner_alert_deliveries delivery
-       JOIN owner_alert_rules rules ON rules.id = delivery.rule_id
-       LEFT JOIN owner_alert_delivery_attempts attempt
+       FROM core.owner_alert_deliveries delivery
+       JOIN core.owner_alert_rules rules ON rules.id = delivery.rule_id
+       LEFT JOIN core.owner_alert_delivery_attempts attempt
          ON attempt.delivery_id = delivery.id
       WHERE rules.owner_username = $1
         AND rules.node_id = ANY($2::text[])
@@ -113,7 +113,7 @@ export async function deleteOwnerAlertRule(
   nodeIds: string[],
 ): Promise<void> {
   await query(
-    `DELETE FROM owner_alert_rules
+    `DELETE FROM core.owner_alert_rules
       WHERE id = $1 AND owner_username = $2 AND node_id = ANY($3::text[])`,
     [ruleId, ownerUsername, nodeIds],
   );
