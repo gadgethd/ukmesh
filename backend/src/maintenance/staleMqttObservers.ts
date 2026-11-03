@@ -71,7 +71,7 @@ async function cleanupNodeRecords(
       : `GREATEST(last_seen, last_mqtt_observer_seen_at, last_path_evidence_at,
                   last_predicted_online_at, created_at) < NOW() - ($1 * INTERVAL '1 day')
          AND NOT EXISTS (
-           SELECT 1 FROM node_network_sightings s
+           SELECT 1 FROM core.node_network_sightings s
             WHERE s.node_id = n.node_id
               AND s.last_seen_at >= NOW() - ($1 * INTERVAL '1 day')
          )
@@ -149,8 +149,8 @@ async function cleanupNodeRecords(
     );
     await client.query(
       `INSERT INTO ops.maintenance_removed_records (batch_id, source_table, record_data, reason)
-       SELECT $1, 'node_network_sightings', to_jsonb(s), $2
-         FROM node_network_sightings s
+       SELECT $1, 'core.node_network_sightings', to_jsonb(s), $2
+         FROM core.node_network_sightings s
         WHERE s.node_id = ANY($3::text[])`,
       [batchId, reason, nodeIds],
     );
@@ -162,7 +162,7 @@ async function cleanupNodeRecords(
       [nodeIds],
     );
     const networkSightings = await client.query(
-      `DELETE FROM node_network_sightings
+      `DELETE FROM core.node_network_sightings
         WHERE node_id = ANY($1::text[])
         RETURNING 1`,
       [nodeIds],

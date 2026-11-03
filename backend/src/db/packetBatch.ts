@@ -570,7 +570,7 @@ export async function persistEntriesCore(
          RETURNING 1
        ),
        network_sightings AS (
-         INSERT INTO node_network_sightings
+         INSERT INTO core.node_network_sightings
            (node_id, network, first_seen_at, last_seen_at)
          SELECT src_node_id, network, MIN(time), MAX(time)
          FROM new_rows
@@ -580,11 +580,11 @@ export async function persistEntriesCore(
          GROUP BY src_node_id, network
          ON CONFLICT (node_id, network) DO UPDATE SET
            first_seen_at = LEAST(
-             node_network_sightings.first_seen_at,
+             core.node_network_sightings.first_seen_at,
              EXCLUDED.first_seen_at
            ),
            last_seen_at = GREATEST(
-             node_network_sightings.last_seen_at,
+             core.node_network_sightings.last_seen_at,
              EXCLUDED.last_seen_at
            )
          RETURNING 1

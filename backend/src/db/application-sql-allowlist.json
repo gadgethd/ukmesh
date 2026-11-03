@@ -28,12 +28,10 @@
     "node_link_radio_reports",
     "node_links",
     "node_neighbor_samples",
-    "node_network_sightings",
     "node_status_samples",
     "nodes",
     "observer_region_observer_sightings",
     "observer_region_packet_sightings",
-    "observers",
     "packet_daily_stats",
     "packet_decryptions",
     "packet_forwarding_outbox",
@@ -162,7 +160,6 @@
       "ingest_observation_ledger",
       "ingest_observation_ledger_coverage",
       "multibyte_path_facts",
-      "node_network_sightings",
       "nodes",
       "observer_region_observer_sightings",
       "observer_region_packet_sightings",
@@ -181,7 +178,6 @@
     ],
     "db/packetBatch.ts": [
       "ingest_observation_ledger",
-      "node_network_sightings",
       "nodes",
       "observer_region_observer_sightings",
       "observer_region_packet_sightings",
@@ -234,7 +230,6 @@
       "path_model_calibration"
     ],
     "maintenance/staleMqttObservers.integration.test.ts": [
-      "node_network_sightings",
       "nodes",
       "observer_region_observer_sightings",
       "packet_paths",
@@ -242,7 +237,6 @@
       "private_node_prefixes"
     ],
     "maintenance/staleMqttObservers.native.integration.test.ts": [
-      "node_network_sightings",
       "nodes",
       "observer_region_observer_sightings",
       "packet_paths",
@@ -253,7 +247,6 @@
       "nodes"
     ],
     "maintenance/staleMqttObservers.ts": [
-      "node_network_sightings",
       "nodes",
       "observer_region_observer_sightings",
       "private_node_prefixes"
@@ -274,7 +267,6 @@
     "operations/operatorOperations.ts": [
       "analysis_runs",
       "ml_model_versions",
-      "observers",
       "path_model_calibration"
     ],
     "owner/alertRules.ts": [
