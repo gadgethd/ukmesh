@@ -135,7 +135,7 @@ test('24-hour chart aggregates use the complete scoped window and true signal me
     false,
     'chart queries must canonicalize through the identity alias relation',
   );
-  assert.ok(calls.some((call) => call.text.includes('LEFT JOIN node_identity_aliases')));
+  assert.ok(calls.some((call) => call.text.includes('LEFT JOIN core.node_identity_aliases')));
 });
 
 test('canonical charts coalesce six high-volume dimensions into one maintained aggregate read', async () => {

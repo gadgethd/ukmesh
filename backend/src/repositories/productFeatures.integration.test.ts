@@ -75,7 +75,7 @@ async function history(
           network text, snr double precision, rssi double precision, payload jsonb,
           visibility_ok boolean, is_private boolean, hop_count integer
         )
-      ), node_identity_aliases AS (
+      ), core.node_identity_aliases AS (
         SELECT * FROM jsonb_to_recordset(${literal(JSON.stringify(aliases))}::jsonb)
           AS a(source_node_id text, canonical_node_id text)
       ), core.node_links AS (

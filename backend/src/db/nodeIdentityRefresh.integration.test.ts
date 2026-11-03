@@ -23,7 +23,7 @@ test('identity refresh publishes a validated generation and reuses only fresh, m
     CREATE TABLE nodes(node_id text,name text,lat float,lon float,role int,advert_count int,last_seen timestamptz,network text,hardware_model text,firmware_version text);
     CREATE TABLE node_status_samples(node_id text,time timestamptz);
     CREATE TABLE packets(rx_node_id text,src_node_id text,packet_type int,time timestamptz);
-    CREATE TABLE node_identity_aliases(source_node_id text primary key,canonical_node_id text,confidence text,reason text,evidence jsonb,source_kind text,updated_at timestamptz);
+    CREATE TABLE core.node_identity_aliases(source_node_id text primary key,canonical_node_id text,confidence text,reason text,evidence jsonb,source_kind text,updated_at timestamptz);
     CREATE SCHEMA IF NOT EXISTS core; CREATE TABLE core.node_identity_match_evidence(node_a_id text,node_b_id text,decision text,confidence text,reason text,evidence jsonb,source_kind text,updated_at timestamptz,score int,primary key(node_a_id,node_b_id));`);
   const migration = fs.readFileSync(new URL('./migrations/069_core.node_identity_refresh_state.sql', import.meta.url), 'utf8');
   await pool.query('BEGIN'); await pool.query(migration); await pool.query('COMMIT');

@@ -17,7 +17,7 @@ test('actual last-hop SQL replaces renamed and newly resolved groups during a wa
   await db.exec(`
     SET TIME ZONE 'UTC';
     CREATE TABLE node_identity_nodes (node_id TEXT PRIMARY KEY, name TEXT, role INTEGER, lat DOUBLE PRECISION, lon DOUBLE PRECISION);
-    CREATE TABLE node_identity_aliases (source_node_id TEXT, canonical_node_id TEXT);
+    CREATE TABLE core.node_identity_aliases (source_node_id TEXT, canonical_node_id TEXT);
     CREATE TABLE node_identity_links (node_a_id TEXT, node_b_id TEXT, force_viable BOOLEAN, itm_viable BOOLEAN, itm_path_loss_db DOUBLE PRECISION);
     CREATE TABLE node_identity_packets (
       time TIMESTAMPTZ, packet_hash TEXT, rx_node_id_raw TEXT, rx_node_id TEXT, src_node_id TEXT,

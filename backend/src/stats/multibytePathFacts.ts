@@ -176,7 +176,7 @@ export function multibyteFactBackfillSql(): string {
       rx.role AS rx_role,
       ${publicVisibility} AS current_visibility_ok
     FROM packet_paths p
-    LEFT JOIN node_identity_aliases rx_alias
+    LEFT JOIN core.node_identity_aliases rx_alias
       ON rx_alias.source_node_id = UPPER(BTRIM(p.rx_node_id))
     LEFT JOIN node_identity_nodes rx
       ON rx.node_id = COALESCE(rx_alias.canonical_node_id, UPPER(BTRIM(p.rx_node_id)))

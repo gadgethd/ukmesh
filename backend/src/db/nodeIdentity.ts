@@ -805,7 +805,7 @@ export async function refreshNodeIdentityAliases(
     await client.query("SET LOCAL statement_timeout = '30s'");
     // Manual writers take this relation lock before their visibility trigger;
     // use the same order so their decisions cannot be overwritten or deadlock.
-    await client.query('LOCK TABLE node_identity_aliases IN SHARE ROW EXCLUSIVE MODE');
+    await client.query('LOCK TABLE core.node_identity_aliases IN SHARE ROW EXCLUSIVE MODE');
     const currentGeneration = (await client.query<{ generation: string }>(
       'SELECT generation::text FROM ops.public_visibility_state WHERE singleton = TRUE FOR UPDATE',
     )).rows[0]?.generation;
@@ -815,7 +815,7 @@ export async function refreshNodeIdentityAliases(
 
     const storedAliases = await client.query<StoredIdentityAlias>(
       `SELECT source_node_id, canonical_node_id, confidence, reason, evidence, source_kind
-         FROM node_identity_aliases
+         FROM core.node_identity_aliases
         ORDER BY source_node_id`,
     );
     const manualSourceIds = new Set(
@@ -828,7 +828,7 @@ export async function refreshNodeIdentityAliases(
     const aliasRewriteSkipped = automaticIdentityAliasSetsEqual(automaticAliases, effectiveAliases);
 
     if (!aliasRewriteSkipped) {
-      await client.query(`DELETE FROM node_identity_aliases WHERE source_kind = 'automatic'`);
+      await client.query(`DELETE FROM core.node_identity_aliases WHERE source_kind = 'automatic'`);
     }
     if (!aliasRewriteSkipped && effectiveAliases.length > 0) {
       const params: unknown[] = [];
@@ -845,7 +845,7 @@ export async function refreshNodeIdentityAliases(
         return `($${offset + 1}, $${offset + 2}, $${offset + 3}, $${offset + 4}, $${offset + 5}::jsonb, 'automatic', $${offset + 6})`;
       }).join(', ');
       await client.query(
-        `INSERT INTO node_identity_aliases
+        `INSERT INTO core.node_identity_aliases
            (source_node_id, canonical_node_id, confidence, reason, evidence, source_kind, updated_at)
          VALUES ${values}
          ON CONFLICT (source_node_id) DO UPDATE SET
@@ -854,7 +854,7 @@ export async function refreshNodeIdentityAliases(
            reason = EXCLUDED.reason,
            evidence = EXCLUDED.evidence,
            updated_at = EXCLUDED.updated_at
-         WHERE node_identity_aliases.source_kind = 'automatic'`,
+         WHERE core.node_identity_aliases.source_kind = 'automatic'`,
         params,
       );
     }

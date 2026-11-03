@@ -53,7 +53,7 @@ function fixtureQuery(fixture: Fixture) {
           age double precision, packet_hash text, rx_node_id text, src_node_id text,
           network text, topic text, topic_prefix text, visibility_ok boolean, is_private boolean,
           packet_type integer, hop_count integer, rssi double precision, snr double precision, payload jsonb)
-      ), node_identity_aliases AS (
+      ), core.node_identity_aliases AS (
         SELECT * FROM (VALUES (${literal(F)},${literal(A)})) a(source_node_id,canonical_node_id)
       ), node_identity_nodes AS (
         SELECT * FROM jsonb_to_recordset(${literal(JSON.stringify(fixture.nodes ?? [node(A), node(B), node(C), node(D)]))}::jsonb)

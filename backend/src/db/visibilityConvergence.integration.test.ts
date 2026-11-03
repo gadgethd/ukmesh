@@ -53,7 +53,7 @@ test('local TimescaleDB visibility-fence reproduction, regression and convergenc
       WHERE p.singleton
   `)).rows[0];
   const reset = async () => {
-    await pool.query(`TRUNCATE nodes, private_node_prefixes, node_identity_aliases,
+    await pool.query(`TRUNCATE nodes, private_node_prefixes, core.node_identity_aliases,
       ops.privacy_rematerialization_queue, packets, packet_paths CASCADE;
       UPDATE ops.public_visibility_state SET generation = 1, updated_at = NOW();
       INSERT INTO ops.packet_visibility_materialization_state VALUES (TRUE, 1, NOW())
@@ -169,7 +169,7 @@ test('local TimescaleDB visibility-fence reproduction, regression and convergenc
     const after = await pair();
     assert.equal(after.generation, '4');
     assert.equal(after.materialized_generation, '1', 'scoped passes cannot repair an unrelated gap');
-    await pool.query(`INSERT INTO node_identity_aliases(source_node_id, canonical_node_id, confidence, reason)
+    await pool.query(`INSERT INTO core.node_identity_aliases(source_node_id, canonical_node_id, confidence, reason)
       VALUES ($1, $2, 'high', 'fixture')`, [otherId, nodeId]);
     assert.equal((await pair()).materialized_generation, '1', 'alias change cannot repair an unrelated gap');
     await repair();
@@ -178,7 +178,7 @@ test('local TimescaleDB visibility-fence reproduction, regression and convergenc
 
   await t.test('healthy alias changes and completed node privacy work still advance the generation pair', async () => {
     await reset(); await addNode();
-    await pool.query(`INSERT INTO node_identity_aliases(source_node_id, canonical_node_id, confidence, reason)
+    await pool.query(`INSERT INTO core.node_identity_aliases(source_node_id, canonical_node_id, confidence, reason)
       VALUES ($1, $2, 'high', 'fixture')`, [otherId, nodeId]);
     assert.deepEqual(await pair(), { generation: '2', materialized_generation: '2' });
     await pool.query("UPDATE nodes SET name = 'Fixture private 🚫' WHERE node_id = $1", [nodeId]);
@@ -356,7 +356,7 @@ test('local TimescaleDB visibility-fence reproduction, regression and convergenc
   await t.test('missing materialization state stays fenced through aliases and scoped passes, full repair recreates it', async () => {
     await seedStaleRows();
     await pool.query('DELETE FROM ops.packet_visibility_materialization_state');
-    await pool.query(`INSERT INTO node_identity_aliases(source_node_id, canonical_node_id, confidence, reason)
+    await pool.query(`INSERT INTO core.node_identity_aliases(source_node_id, canonical_node_id, confidence, reason)
       VALUES ($1, $2, 'high', 'fixture')`, [otherId, nodeId]);
     assert.equal((await pair()).materialized_generation, null);
     await pool.query("UPDATE ops.privacy_rematerialization_queue SET status = 'pending', attempts = 0");

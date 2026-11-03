@@ -25,7 +25,7 @@ test('MQTT node SQL preserves the original scoped contract and reads changes imm
   const schema = `mqtt_nodes_${process.pid}_${Date.now()}`;
   await client.query(`CREATE SCHEMA ${schema}; SET LOCAL search_path = ${schema}, public`);
   await client.query(`
-    CREATE TABLE node_identity_aliases (source_node_id text PRIMARY KEY, canonical_node_id text);
+    CREATE TABLE core.node_identity_aliases (source_node_id text PRIMARY KEY, canonical_node_id text);
     CREATE TABLE node_identity_nodes (node_id text PRIMARY KEY, name text);
     CREATE TABLE node_status_samples (
       time timestamptz, node_id text, network text, battery_mv integer, uptime_secs bigint,
@@ -41,7 +41,7 @@ test('MQTT node SQL preserves the original scoped contract and reads changes imm
   const viewStart = migration.indexOf('CREATE VIEW node_identity_status_samples AS');
   await client.query(migration.slice(viewStart, migration.indexOf(';', viewStart) + 1));
   await client.query(`
-    INSERT INTO node_identity_aliases VALUES ($1, $3), ($2, $3);
+    INSERT INTO core.node_identity_aliases VALUES ($1, $3), ($2, $3);
   `, [key('F'), key('E'), key('A')]);
   await client.query(`INSERT INTO node_identity_nodes VALUES
     ($1, 'Canonical observer'), ($2, NULL), ($3, 'Hidden 🚫'),
@@ -133,7 +133,7 @@ test('MQTT node SQL preserves the original scoped contract and reads changes imm
   await t.test('ingest, alias reassignment and visibility changes are reflected on the next read', async () => {
     await packets(key('F'), 'ukmesh');
     assert.equal((await read())[0]!.packets_24h, '8');
-    await client.query('UPDATE node_identity_aliases SET canonical_node_id = $1 WHERE source_node_id = $2', [key('B'), key('F')]);
+    await client.query('UPDATE core.node_identity_aliases SET canonical_node_id = $1 WHERE source_node_id = $2', [key('B'), key('F')]);
     assert.deepEqual((await read()).map((row) => [row.node_id, row.packets_24h]), [[key('A'), '5'], [key('B'), '4']]);
     await client.query("UPDATE node_identity_nodes SET name = 'Now private 🚫' WHERE node_id = $1", [key('A')]);
     assert.deepEqual((await read()).map((row) => row.node_id), [key('B')]);

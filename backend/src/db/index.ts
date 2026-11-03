@@ -324,7 +324,7 @@ function buildNodeScopeClause(
       `OR ${nodeRef} IN (
          SELECT COALESCE(src_alias.canonical_node_id, UPPER(BTRIM(p.src_node_id)))
          FROM packets p
-         LEFT JOIN node_identity_aliases src_alias
+         LEFT JOIN core.node_identity_aliases src_alias
            ON src_alias.source_node_id = UPPER(BTRIM(p.src_node_id))
          WHERE p.rx_node_id = ANY(${nodeAliasArraySql(placeholders.observerParam)})
            AND p.time > NOW() - INTERVAL '7 days'
@@ -753,7 +753,7 @@ export async function getNodeHistory(nodeId: string, hours = 24, network = 'ukme
            COALESCE(src_alias.canonical_node_id, UPPER(BTRIM(p.src_node_id))) AS src_node_id,
            topic, packet_type, hop_count, rssi, snr, payload
     FROM packets p
-    LEFT JOIN node_identity_aliases src_alias
+    LEFT JOIN core.node_identity_aliases src_alias
       ON src_alias.source_node_id = UPPER(BTRIM(p.src_node_id))
     WHERE p.${column} = requested.node_id
       ${column === 'src_node_id' ? `AND NOT COALESCE(p.rx_node_id = ANY(${aliases}), FALSE)` : ''}
@@ -864,8 +864,8 @@ export async function getRecentPackets(
              p.network, p.transport_codes, p.region_scope
       FROM packets p
       LEFT JOIN packet_decryptions pd ON pd.packet_hash = p.packet_hash
-      LEFT JOIN node_identity_aliases pa_rx ON pa_rx.source_node_id = upper(btrim(p.rx_node_id))
-      LEFT JOIN node_identity_aliases pa_src ON pa_src.source_node_id = upper(btrim(p.src_node_id))
+      LEFT JOIN core.node_identity_aliases pa_rx ON pa_rx.source_node_id = upper(btrim(p.rx_node_id))
+      LEFT JOIN core.node_identity_aliases pa_src ON pa_src.source_node_id = upper(btrim(p.src_node_id))
       WHERE p.time > ${fiveMinAgo}
         ${buildPacketScopeClause(scope, 'p', network)}
         ${buildPublicPacketPrivacyClause('p')}
@@ -888,7 +888,7 @@ export async function getRecentPackets(
         COUNT(*) FILTER (WHERE COALESCE(payload->>'direction', 'rx') <> 'tx')::int AS rx_count,
         COUNT(*) FILTER (WHERE COALESCE(payload->>'direction', 'rx') = 'tx')::int AS tx_count
       FROM packets
-      LEFT JOIN node_identity_aliases pa2 ON pa2.source_node_id = upper(btrim(packets.rx_node_id))
+      LEFT JOIN core.node_identity_aliases pa2 ON pa2.source_node_id = upper(btrim(packets.rx_node_id))
       WHERE packet_hash = ANY(SELECT packet_hash FROM recent_packets)
         AND time > ${fiveMinAgo}
         ${buildPacketScopeClause(scope, '', network)}
@@ -952,8 +952,8 @@ export async function getRecentMessages(
              p.network
       FROM packets p
       LEFT JOIN packet_decryptions pd ON pd.packet_hash = p.packet_hash
-      LEFT JOIN node_identity_aliases pa_rx ON pa_rx.source_node_id = upper(btrim(p.rx_node_id))
-      LEFT JOIN node_identity_aliases pa_src ON pa_src.source_node_id = upper(btrim(p.src_node_id))
+      LEFT JOIN core.node_identity_aliases pa_rx ON pa_rx.source_node_id = upper(btrim(p.rx_node_id))
+      LEFT JOIN core.node_identity_aliases pa_src ON pa_src.source_node_id = upper(btrim(p.src_node_id))
       WHERE p.packet_type = 5
         AND p.time > NOW() - INTERVAL '24 hours'
         ${buildPacketScopeClause(scope, 'p', network)}
@@ -981,7 +981,7 @@ export async function getRecentMessages(
         COUNT(*) FILTER (WHERE COALESCE(payload->>'direction', 'rx') <> 'tx')::int AS rx_count,
         COUNT(*) FILTER (WHERE COALESCE(payload->>'direction', 'rx') = 'tx')::int AS tx_count
       FROM packets
-      LEFT JOIN node_identity_aliases pa2 ON pa2.source_node_id = upper(btrim(packets.rx_node_id))
+      LEFT JOIN core.node_identity_aliases pa2 ON pa2.source_node_id = upper(btrim(packets.rx_node_id))
       WHERE packet_hash = ANY(SELECT packet_hash FROM selected_msgs)
         AND time > NOW() - INTERVAL '24 hours'
         ${buildPacketScopeClause(scope, '', network)}
@@ -1123,9 +1123,9 @@ export async function getChannelMessageHistory(
              p.network, p.visibility_ok, p.is_private
       FROM packets p
       LEFT JOIN packet_decryptions pd ON pd.packet_hash = p.packet_hash
-      LEFT JOIN node_identity_aliases rx_alias
+      LEFT JOIN core.node_identity_aliases rx_alias
         ON rx_alias.source_node_id = UPPER(BTRIM(p.rx_node_id))
-      LEFT JOIN node_identity_aliases src_alias
+      LEFT JOIN core.node_identity_aliases src_alias
         ON src_alias.source_node_id = UPPER(BTRIM(p.src_node_id))
       WHERE p.packet_hash = ANY($1::text[])
         AND p.packet_type = 5
@@ -1180,9 +1180,9 @@ export async function getRecentPacketEvents(limit = 200, network?: string, obser
         p.advert_count, p.path_hashes, p.path_hash_size_bytes,
         p.region_scope
      FROM packets p
-     LEFT JOIN node_identity_aliases rx_alias
+     LEFT JOIN core.node_identity_aliases rx_alias
        ON rx_alias.source_node_id = UPPER(BTRIM(p.rx_node_id))
-     LEFT JOIN node_identity_aliases src_alias
+     LEFT JOIN core.node_identity_aliases src_alias
        ON src_alias.source_node_id = UPPER(BTRIM(p.src_node_id))
      WHERE p.time > NOW() - INTERVAL '24 hours'
          ${buildPacketScopeClause(scope, 'p', network)}
@@ -1218,7 +1218,7 @@ export async function getPacketDetail(hash: string, network = 'ukmesh') {
       `SELECT COALESCE(rx_alias.canonical_node_id, UPPER(BTRIM(p.rx_node_id))) AS rx_node_id,
               p.iata, p.time, p.rssi, p.snr, p.hop_count
        FROM packets p
-       LEFT JOIN node_identity_aliases rx_alias
+       LEFT JOIN core.node_identity_aliases rx_alias
          ON rx_alias.source_node_id = UPPER(BTRIM(p.rx_node_id))
        WHERE p.packet_hash = $1
          ${buildPacketScopeClause(scope, 'p', network)}

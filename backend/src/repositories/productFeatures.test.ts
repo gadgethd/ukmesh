@@ -40,7 +40,7 @@ test('link history binds both identities, the time window and packet network sco
   // Regressions here would either revive the orphaned source, hide aliases,
   // or turn indexed packet lookups into per-row identity function calls.
   assert.match(calls[0].sql, /FROM packets p/);
-  assert.match(calls[0].sql, /FROM node_identity_aliases alias/);
+  assert.match(calls[0].sql, /FROM core.node_identity_aliases alias/);
   assert.doesNotMatch(calls[0].sql, /node_identity_link_radio_reports/);
   assert.doesNotMatch(calls[0].sql, /meshcore_canonical_node_id\(p\./);
 });

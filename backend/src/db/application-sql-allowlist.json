@@ -18,7 +18,6 @@
     "ml_path_prefix_scores",
     "multibyte_path_fact_state",
     "multibyte_path_facts",
-    "node_identity_aliases",
     "node_identity_link_radio_reports",
     "node_identity_links",
     "node_identity_nodes",
@@ -88,7 +87,6 @@
       "packets"
     ],
     "api/routes/mqttNodes.integration.test.ts": [
-      "node_identity_aliases",
       "node_identity_nodes",
       "node_status_samples",
       "packets"
@@ -111,14 +109,12 @@
     ],
     "api/routes/telemetry.ts": [],
     "api/utils/networkFilters.ts": [
-      "node_identity_aliases",
       "node_identity_sightings",
       "nodes",
       "packets"
     ],
     "db/index.ts": [
       "message_tags",
-      "node_identity_aliases",
       "node_identity_link_radio_reports",
       "node_identity_links",
       "node_identity_nodes",
@@ -139,7 +135,6 @@
       "packets"
     ],
     "db/nodeIdentity.ts": [
-      "node_identity_aliases",
       "node_status_samples",
       "nodes",
       "packets"
@@ -148,7 +143,6 @@
       "nodes"
     ],
     "db/nodeNameHistory.integration.test.ts": [
-      "node_identity_aliases",
       "node_status_samples",
       "nodes",
       "packets"
@@ -192,11 +186,9 @@
     "db/privacyCompletion.integration.test.ts": [],
     "db/publicVisibilityMigration.test.ts": [],
     "db/recentRead.integration.test.ts": [
-      "node_identity_aliases",
       "packet_decryptions"
     ],
     "db/regionScoping.integration.test.ts": [
-      "node_identity_aliases",
       "nodes",
       "packets"
     ],
@@ -204,7 +196,6 @@
       "packet_forwarding_outbox"
     ],
     "db/visibilityConvergence.integration.test.ts": [
-      "node_identity_aliases",
       "nodes",
       "packet_paths",
       "packets",
@@ -270,7 +261,6 @@
     ],
     "owner/ownerAuthorityScope.test.ts": [],
     "owner/ownerRepository.ts": [
-      "node_identity_aliases",
       "node_identity_links",
       "node_identity_nodes",
       "node_identity_packets",
@@ -347,7 +337,6 @@
     "privacy/convergence.ts": [],
     "privacy/generationHealth.ts": [],
     "ram/liveRead.ts": [
-      "node_identity_aliases",
       "packet_decryptions"
     ],
     "ram/runtime.integration.test.ts": [
@@ -357,18 +346,14 @@
       "packet_paths",
       "packets"
     ],
-    "regions/filter.ts": [
-      "node_identity_aliases"
-    ],
+    "regions/filter.ts": [],
     "regions/nodeSource.ts": [
-      "node_identity_aliases",
       "nodes"
     ],
     "repositories/networkAnalysis.test.ts": [
       "node_identity_nodes"
     ],
     "repositories/networkAnalysis.ts": [
-      "node_identity_aliases",
       "node_identity_nodes"
     ],
     "repositories/nodeLinks.integration.test.ts": [
@@ -379,7 +364,6 @@
       "packets"
     ],
     "repositories/nodes.ts": [
-      "node_identity_aliases",
       "node_identity_links",
       "node_identity_nodes",
       "node_identity_status_samples",
@@ -393,7 +377,6 @@
     "repositories/plannedCoverage.ts": [],
     "repositories/plannedNodes.ts": [],
     "repositories/productFeatures.test.ts": [
-      "node_identity_aliases",
       "node_link_radio_reports",
       "packets"
     ],
@@ -445,20 +428,17 @@
     "stats/multibytePathFacts.ts": [
       "multibyte_path_fact_state",
       "multibyte_path_facts",
-      "node_identity_aliases",
       "node_identity_nodes",
       "packet_paths"
     ],
     "stats/statsRepository.test.ts": [
       "multibyte_path_fact_state",
       "multibyte_path_facts",
-      "node_identity_aliases",
       "packet_hourly_stats",
       "packets"
     ],
     "stats/statsRepository.ts": [
       "multibyte_path_facts",
-      "node_identity_aliases",
       "node_identity_nodes",
       "packet_daily_stats",
       "packet_hourly_stats",

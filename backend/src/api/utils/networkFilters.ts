@@ -20,7 +20,7 @@ export function nodeAliasArraySql(requestedNodeParam: string): string {
     WITH requested_identity AS MATERIALIZED (
       SELECT COALESCE(
         (SELECT alias.canonical_node_id
-           FROM node_identity_aliases alias
+           FROM core.node_identity_aliases alias
           WHERE alias.source_node_id = UPPER(BTRIM(${requestedNodeParam}))),
         UPPER(BTRIM(${requestedNodeParam}))
       ) AS canonical_node_id
@@ -28,7 +28,7 @@ export function nodeAliasArraySql(requestedNodeParam: string): string {
     SELECT canonical_node_id FROM requested_identity
     UNION
     SELECT alias.source_node_id
-      FROM node_identity_aliases alias
+      FROM core.node_identity_aliases alias
       JOIN requested_identity requested
         ON requested.canonical_node_id = alias.canonical_node_id
   )`;
@@ -194,7 +194,7 @@ export function networkFilters(
           OR ${nodeRef} IN (
             SELECT COALESCE(src_alias.canonical_node_id, UPPER(BTRIM(p.src_node_id)))
             FROM packets p
-            LEFT JOIN node_identity_aliases src_alias
+            LEFT JOIN core.node_identity_aliases src_alias
               ON src_alias.source_node_id = UPPER(BTRIM(p.src_node_id))
             WHERE p.rx_node_id = ANY(${nodeAliasArraySql(observerParam)})
               AND p.time > NOW() - INTERVAL '7 days'

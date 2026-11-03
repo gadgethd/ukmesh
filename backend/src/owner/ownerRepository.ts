@@ -72,7 +72,7 @@ export function createOwnerRepository(deps: OwnerRepositoryDeps) {
            FROM unnest($1::text[]) AS selected(id)
            UNION
            SELECT source_node_id
-           FROM node_identity_aliases
+           FROM core.node_identity_aliases
            WHERE canonical_node_id = ANY(
              SELECT meshcore_canonical_node_id(id)
              FROM unnest($1::text[]) AS selected(id)
@@ -218,7 +218,7 @@ export function createOwnerRepository(deps: OwnerRepositoryDeps) {
 
   async function fetchOwnerLiveData(selectedNodeId: string) {
     // Authorization is granted for exactly this node id. Do NOT canonicalise it
-    // through node_identity_aliases and do NOT union alias sources: that table
+    // through core.node_identity_aliases and do NOT union alias sources: that table
     // is populated by a data-driven self-advert heuristic, so expanding it here
     // would let the selector outgrow the grant. Alias identity rows stay out of
     // scope and are reported as unverified metadata instead.

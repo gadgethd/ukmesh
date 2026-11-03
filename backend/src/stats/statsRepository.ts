@@ -255,7 +255,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
         COUNT(DISTINCT COALESCE(rx_alias.canonical_node_id, UPPER(BTRIM(p.rx_node_id)))) AS observers,
         MAX(p.time)::text AS last_packet_at
       FROM packets p
-      LEFT JOIN node_identity_aliases rx_alias
+      LEFT JOIN core.node_identity_aliases rx_alias
         ON rx_alias.source_node_id = UPPER(BTRIM(p.rx_node_id))
       WHERE p.time > NOW() - INTERVAL '7 days'
         AND p.rx_node_id IS NOT NULL
@@ -274,7 +274,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
              COUNT(DISTINCT COALESCE(a.canonical_node_id, UPPER(BTRIM(p.rx_node_id))))::text AS active_observers,
              MAX(p.time)::text AS last_packet_at
       FROM packets p
-      LEFT JOIN node_identity_aliases a ON a.source_node_id = UPPER(BTRIM(p.rx_node_id))
+      LEFT JOIN core.node_identity_aliases a ON a.source_node_id = UPPER(BTRIM(p.rx_node_id))
       WHERE p.time > NOW() - INTERVAL '15 minutes' AND p.time <= NOW()
         AND p.rx_node_id ~ '^[0-9A-Fa-f]{64}$'
         ${filters.packetsAlias('p')}
@@ -1028,7 +1028,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
           SELECT time_bucket('1 hour', p.time) AS bucket,
                  COUNT(DISTINCT COALESCE(src_alias.canonical_node_id, UPPER(BTRIM(p.src_node_id))))::int AS count
           FROM packets p
-          LEFT JOIN node_identity_aliases src_alias
+          LEFT JOIN core.node_identity_aliases src_alias
             ON src_alias.source_node_id = UPPER(BTRIM(p.src_node_id))
           WHERE p.time > NOW() - INTERVAL '24 hours'
             AND p.src_node_id IS NOT NULL
@@ -1044,7 +1044,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
         SELECT time_bucket('1 day', p.time) AS day,
                COUNT(DISTINCT COALESCE(src_alias.canonical_node_id, UPPER(BTRIM(p.src_node_id)))) AS count
         FROM packets p
-        LEFT JOIN node_identity_aliases src_alias
+        LEFT JOIN core.node_identity_aliases src_alias
           ON src_alias.source_node_id = UPPER(BTRIM(p.src_node_id))
         WHERE p.time > NOW() - INTERVAL '7 days' AND p.src_node_id IS NOT NULL ${filters.packetsAlias('p')}
         GROUP BY day ORDER BY day
@@ -1089,7 +1089,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
           (SELECT COUNT(*) FROM packets WHERE time > NOW() - INTERVAL '7 days' ${filters.packets}) AS total_7d,
           (SELECT COUNT(DISTINCT COALESCE(src_alias.canonical_node_id, UPPER(BTRIM(p.src_node_id))))
              FROM packets p
-             LEFT JOIN node_identity_aliases src_alias
+             LEFT JOIN core.node_identity_aliases src_alias
                ON src_alias.source_node_id = UPPER(BTRIM(p.src_node_id))
             WHERE p.time > NOW() - INTERVAL '24 hours'
               AND p.src_node_id IS NOT NULL ${filters.packetsAlias('p')}) AS unique_radios_24h
@@ -1136,7 +1136,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
              SELECT p.packet_hash,
                     COALESCE(rx_alias.canonical_node_id, UPPER(BTRIM(p.rx_node_id))) AS rx_node_id
              FROM packets p
-             LEFT JOIN node_identity_aliases rx_alias
+             LEFT JOIN core.node_identity_aliases rx_alias
                ON rx_alias.source_node_id = UPPER(BTRIM(p.rx_node_id))
            WHERE p.time > NOW() - INTERVAL '24 hours'
              AND p.packet_hash IS NOT NULL
@@ -1256,7 +1256,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
       network != null
         ? query(`SELECT COUNT(DISTINCT COALESCE(rx_alias.canonical_node_id, UPPER(BTRIM(p.rx_node_id)))) AS count
                  FROM packets p
-                 LEFT JOIN node_identity_aliases rx_alias
+                 LEFT JOIN core.node_identity_aliases rx_alias
                    ON rx_alias.source_node_id = UPPER(BTRIM(p.rx_node_id))
                  WHERE p.time > NOW() - INTERVAL '10 minutes'
                    AND p.rx_node_id IS NOT NULL
@@ -1265,7 +1265,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
           WITH test_active AS (
            SELECT COALESCE(rx_alias.canonical_node_id, UPPER(BTRIM(p.rx_node_id))) AS rx_node_id
              FROM packets p
-             LEFT JOIN node_identity_aliases rx_alias
+             LEFT JOIN core.node_identity_aliases rx_alias
                ON rx_alias.source_node_id = UPPER(BTRIM(p.rx_node_id))
             WHERE p.rx_node_id IS NOT NULL AND p.rx_node_id <> ''
               AND p.time > NOW() - INTERVAL '7 days'
@@ -1274,7 +1274,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
           )
           SELECT COUNT(DISTINCT COALESCE(rx_alias.canonical_node_id, UPPER(BTRIM(p.rx_node_id)))) AS count
           FROM packets p
-          LEFT JOIN node_identity_aliases rx_alias
+          LEFT JOIN core.node_identity_aliases rx_alias
             ON rx_alias.source_node_id = UPPER(BTRIM(p.rx_node_id))
           WHERE p.time > NOW() - INTERVAL '10 minutes'
             AND p.rx_node_id IS NOT NULL
@@ -1303,7 +1303,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
       longestHopResult(),
       query(`SELECT COUNT(DISTINCT COALESCE(src_alias.canonical_node_id, UPPER(BTRIM(p.src_node_id)))) AS count
              FROM packets p
-             LEFT JOIN node_identity_aliases src_alias
+             LEFT JOIN core.node_identity_aliases src_alias
                ON src_alias.source_node_id = UPPER(BTRIM(p.src_node_id))
              WHERE p.time > NOW() - INTERVAL '24 hours'
                AND p.src_node_id IS NOT NULL
@@ -1361,7 +1361,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
                 COUNT(p.packet_hash)::text AS rx_24h,
                 MAX(p.time)::text AS last_rx
          FROM packets p
-         LEFT JOIN node_identity_aliases rx_alias
+         LEFT JOIN core.node_identity_aliases rx_alias
            ON rx_alias.source_node_id = UPPER(BTRIM(p.rx_node_id))
          WHERE p.time > NOW() - INTERVAL '24 hours'
            AND p.rx_node_id IS NOT NULL
@@ -1376,7 +1376,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
          FROM node_identity_nodes
          UNION
          SELECT LEFT(source_node_id, 6) AS prefix, canonical_node_id
-         FROM node_identity_aliases
+         FROM core.node_identity_aliases
        ),
        tx AS (
          -- tx_24h = distinct packets the node transmitted in the last 24 hours:
@@ -1392,7 +1392,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
                   p.packet_hash,
                   p.time
            FROM packets p
-           LEFT JOIN node_identity_aliases src_alias
+           LEFT JOIN core.node_identity_aliases src_alias
              ON src_alias.source_node_id = UPPER(BTRIM(p.src_node_id))
            WHERE p.time > NOW() - INTERVAL '24 hours'
              AND p.src_node_id IS NOT NULL

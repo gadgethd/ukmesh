@@ -23,6 +23,6 @@ export function parseRegionFilter(
 export function regionMemberIdsSql(regionParam: string): string {
   return `SELECT COALESCE(a.canonical_node_id, m.node_id)
     FROM core.region_scope_members m
-    LEFT JOIN node_identity_aliases a ON a.source_node_id = m.node_id
+    LEFT JOIN core.node_identity_aliases a ON a.source_node_id = m.node_id
     WHERE m.region = ${regionParam}`;
 }

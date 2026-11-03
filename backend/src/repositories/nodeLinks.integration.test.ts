@@ -69,7 +69,7 @@ async function links(packets: ReturnType<typeof packet>[], options: {
             is_private boolean, packet_hash text, hop_count integer,
             snr double precision, rssi double precision, payload jsonb
           )
-      ), node_identity_aliases AS (
+      ), core.node_identity_aliases AS (
         SELECT * FROM jsonb_to_recordset(${literal(JSON.stringify(aliases))}::jsonb)
           AS a(source_node_id text, canonical_node_id text)
       ), node_identity_nodes AS (

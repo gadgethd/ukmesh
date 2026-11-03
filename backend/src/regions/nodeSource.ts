@@ -25,7 +25,7 @@ export function regionNodeSourceSql(regionParam: string): string {
       WHERE n.node_id = ANY(ARRAY(
         SELECT members.node_id
         UNION
-        SELECT a.source_node_id FROM node_identity_aliases a
+        SELECT a.source_node_id FROM core.node_identity_aliases a
         WHERE a.canonical_node_id = members.node_id
       ))
       ORDER BY CASE

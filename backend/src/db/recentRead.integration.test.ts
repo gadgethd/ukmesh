@@ -70,7 +70,7 @@ test('F01/F05/F12/F13 real SQL and RAM contracts agree across scoped paging, sta
     } finally { t.mock.timers.reset(); }
   };
   const alias = 'AA'.repeat(32), canonical = 'BB'.repeat(32), other = 'CD'.repeat(32);
-  await pool.query(`INSERT INTO node_identity_aliases
+  await pool.query(`INSERT INTO core.node_identity_aliases
     (source_node_id, canonical_node_id, confidence, reason) VALUES ($1, $2, 'high', 'fixture')`, [alias, canonical]);
   while (await processNextPrivacyRematerialization(pool, { chunkPauseMs: 0 })) { /* finish fixture policy */ }
   const aliases = async () => new Map([[alias, canonical]]);

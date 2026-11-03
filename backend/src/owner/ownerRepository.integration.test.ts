@@ -19,7 +19,7 @@ async function execute(index: number, fixtures: { packets?: unknown[]; samples?:
   const canonical = requested.trim().toUpperCase() === alias ? owner : requested.trim().toUpperCase();
   const sql = queries[index]!.replaceAll('meshcore_canonical_node_id($1)', literal(canonical)).replaceAll('$1', literal(requested));
   const fixture = `WITH
-    node_identity_aliases AS (SELECT ${literal(alias)}::text AS source_node_id, ${literal(owner)}::text AS canonical_node_id),
+    core.node_identity_aliases AS (SELECT ${literal(alias)}::text AS source_node_id, ${literal(owner)}::text AS canonical_node_id),
     node_identity_nodes AS (
       SELECT node_id, 'fixture-' || LEFT(node_id, 1) AS name, 'ukmesh'::text AS network,
         'MME'::text AS iata, 54.5::double precision AS lat, -1.3::double precision AS lon

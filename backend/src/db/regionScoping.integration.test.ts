@@ -42,7 +42,7 @@ test('region reads preserve identity/privacy semantics and use indexes in real P
   await query(`INSERT INTO nodes (node_id, name, network, role, lat, lon)
     SELECT upper(md5(i::text) || md5(i::text)), 'Fixture ' || i, 'ukmesh', 2, 54, -1
     FROM generate_series(1, 12000) i`);
-  await query(`INSERT INTO node_identity_aliases
+  await query(`INSERT INTO core.node_identity_aliases
     (source_node_id, canonical_node_id, confidence, reason) VALUES ($1, $2, 'high', 'fixture')`, [b, a]);
   await query(`INSERT INTO core.region_scope_stats(region) VALUES ('Europe'), ('eng-ne')`);
   await query(`INSERT INTO core.region_scope_members(region, node_id, packets)

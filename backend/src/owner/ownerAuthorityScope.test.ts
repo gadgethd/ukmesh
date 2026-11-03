@@ -194,7 +194,7 @@ test('owner live reads stay on the granted node id and never expand canonical al
 
   assert.equal(queries.length, 10);
   for (const call of queries) {
-    assert.doesNotMatch(call.text, /node_identity_aliases/);
+    assert.doesNotMatch(call.text, /core.node_identity_aliases/);
     assert.doesNotMatch(call.text, /meshcore_canonical_node_id/);
     assert.deepEqual(call.params, [NODE], 'every selector binds the granted id verbatim');
   }

@@ -34,7 +34,7 @@ test('name retention and search execute the production write paths, migration, i
       last_path_evidence_at TIMESTAMPTZ, last_rx_at TIMESTAMPTZ, last_status_at TIMESTAMPTZ
     );
     CREATE SCHEMA IF NOT EXISTS ops; CREATE TABLE core.node_counted_adverts (canonical_advert_hash TEXT PRIMARY KEY, node_id TEXT, counted_at TIMESTAMPTZ);
-    CREATE TABLE node_identity_aliases (source_node_id TEXT PRIMARY KEY, canonical_node_id TEXT);
+    CREATE TABLE core.node_identity_aliases (source_node_id TEXT PRIMARY KEY, canonical_node_id TEXT);
     CREATE TABLE node_network_sightings (node_id TEXT, network TEXT, first_seen_at TIMESTAMPTZ, last_seen_at TIMESTAMPTZ);
     CREATE TABLE packets (rx_node_id TEXT, src_node_id TEXT, time TIMESTAMPTZ, network TEXT);
     CREATE TABLE node_status_samples (
@@ -159,7 +159,7 @@ test('name retention and search execute the production write paths, migration, i
     await write(key('F'), 'Former alias name');
     assert.equal((await search('Former alias name')).length, 2, 'a shared name must not merge independent nodes');
     await write(key('F'), 'Alias current');
-    await db.query('INSERT INTO node_identity_aliases VALUES ($1, $2)', [key('F'), key('E')]);
+    await db.query('INSERT INTO core.node_identity_aliases VALUES ($1, $2)', [key('F'), key('E')]);
     assert.deepEqual((await search('Former alias name')).map(n => [n.node_id, n.name]), [[key('E'), 'Canonical name']]);
     await write(key('F'), 'Secret alias history');
     await write(key('F'), 'Alias private 🚫');

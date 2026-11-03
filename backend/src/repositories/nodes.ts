@@ -253,7 +253,7 @@ export function createNodeRepository(query: QueryFn): NodeRepository {
       const links = (await query<Omit<NodeLinkRow, 'recent_count_72h'>>(
         `WITH requested_identity AS MATERIALIZED (
            SELECT COALESCE(
-             (SELECT canonical_node_id FROM node_identity_aliases
+             (SELECT canonical_node_id FROM core.node_identity_aliases
                WHERE source_node_id = UPPER(BTRIM(${idParam}))),
              UPPER(BTRIM(${idParam}))
            ) AS node_id
