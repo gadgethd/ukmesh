@@ -10,9 +10,10 @@ import pg from 'pg';
  */
 
 type Row = {
-  time: Date;
+  time: string;
   packet_hash: string;
   rx_node_id: string | null;
+  observation_id: string;
   raw_hex: string | null;
   ctid: string;
 };
@@ -25,10 +26,9 @@ type Counts = {
 };
 
 type State = {
-  high_water: Date | null;
-  last_time: Date | null;
-  last_hash: string | null;
-  last_rx_node_id: string | null;
+  high_water: string | null;
+  last_time: string | null;
+  last_observation_id: string | null;
 };
 
 function canonicalFromRawHex(rawHex: string | null): string | undefined {
@@ -90,7 +90,9 @@ function dsn(): string {
 
 async function loadState(client: pg.PoolClient): Promise<State> {
   const result = await client.query<State>(`
-    SELECT high_water, last_time, last_hash, last_rx_node_id
+    SELECT high_water::text AS high_water,
+           last_time::text AS last_time,
+           last_observation_id::text AS last_observation_id
       FROM ops.packet_identity_backfill_state WHERE singleton
   `);
   if (!result.rows[0]) throw new Error('packet identity backfill state row is missing');
@@ -121,23 +123,28 @@ async function packetBatch(
 ): Promise<Row[]> {
   if (!state.high_water) return [];
   const values: unknown[] = [state.high_water];
-  const where = ['packet_uid IS NULL', 'length(packet_hash) = 64', 'time <= $1'];
-  if (since) { values.push(since); where.push(`time >= $${values.length}`); }
-  if (state.last_time && state.last_hash) {
-    values.push(state.last_time, state.last_hash, state.last_rx_node_id ?? '');
-    const p = values.length - 2;
+  const where = [
+    'packet_uid IS NULL',
+    'length(packet_hash) = 64',
+    'observation_id IS NOT NULL',
+    'time <= $1::timestamptz',
+  ];
+  if (since) { values.push(since); where.push(`time >= $${values.length}::timestamptz`); }
+  if (state.last_time && state.last_observation_id) {
+    values.push(state.last_time, state.last_observation_id);
+    const p = values.length - 1;
     where.push(`(
-      time > $${p}
-      OR (time = $${p} AND packet_hash > $${p + 1})
-      OR (time = $${p} AND packet_hash = $${p + 1} AND COALESCE(rx_node_id, '') > $${p + 2})
+      time > $${p}::timestamptz
+      OR (time = $${p}::timestamptz AND observation_id > $${p + 1}::uuid)
     )`);
   }
   values.push(batchSize);
   const result = await client.query<Row>(`
-    SELECT time, packet_hash, rx_node_id, raw_hex, ctid::text AS ctid
+    SELECT time::text AS time, packet_hash, rx_node_id,
+           observation_id::text AS observation_id, raw_hex, ctid::text AS ctid
       FROM ${quoteIdent(chunk.schema)}.${quoteIdent(chunk.name)}
      WHERE ${where.join(' AND ')}
-     ORDER BY time, packet_hash, COALESCE(rx_node_id, '')
+     ORDER BY time, observation_id
      LIMIT $${values.length}
   `, values);
   return result.rows;
@@ -148,98 +155,111 @@ async function backfillPackets(pool: pg.Pool, batchSize: number, dryRun: boolean
   const total: Counts = { selected: 0, resolved: 0, unresolved: 0, mismatch: 0 };
   try {
     let state = await loadState(client);
+    if (state.last_time && !state.last_observation_id) {
+      throw new Error('legacy checkpoint has no last_observation_id; reset the checkpoint before running');
+    }
     if (!state.high_water) {
-      const highWater = await client.query<{ high_water: Date | null }>(`
-        SELECT max(time) AS high_water FROM mesh.packets
+      const highWater = await client.query<{ high_water: string | null }>(`
+        SELECT max(time)::text AS high_water FROM mesh.packets
          WHERE packet_uid IS NULL AND length(packet_hash) = 64
       `);
       state = { ...state, high_water: highWater.rows[0]?.high_water ?? null };
       if (!dryRun) {
         await client.query(`
           UPDATE ops.packet_identity_backfill_state
-             SET high_water = $1, status = 'running', updated_at = NOW()
+             SET high_water = $1::timestamptz, status = 'running', updated_at = NOW()
            WHERE singleton
         `, [state.high_water]);
       }
     }
 
     const chunks = await uncompressedChunks(client);
+    let partial = false;
     for (const chunk of chunks) {
       while (true) {
         await client.query('BEGIN');
         try {
+          const lock = await client.query<{ locked: boolean }>(
+            `SELECT pg_try_advisory_xact_lock(hashtext('meshcore.packet_identity_backfill')) AS locked`,
+          );
+          if (!lock.rows[0]?.locked) {
+            throw new Error('packet identity backfill is already running');
+          }
           const rows = await packetBatch(client, state, chunk, batchSize, since);
           if (rows.length === 0) {
             await client.query('COMMIT');
             break;
           }
 
-        const resolved: Row[] = [];
-        let unresolved = 0;
-        let mismatch = 0;
-        for (const row of rows) {
-          const uid = canonicalFromRawHex(row.raw_hex);
-          if (!uid) unresolved += 1;
-          else if (uid !== row.packet_hash) mismatch += 1;
-          else resolved.push(row);
-        }
+          const resolved: Row[] = [];
+          let unresolved = 0;
+          let mismatch = 0;
+          for (const row of rows) {
+            const uid = canonicalFromRawHex(row.raw_hex);
+            if (!uid) unresolved += 1;
+            else if (uid !== row.packet_hash.toUpperCase()) mismatch += 1;
+            else resolved.push(row);
+          }
 
-        if (!dryRun && resolved.length > 0) {
-          await client.query(`
-            UPDATE ${quoteIdent(chunk.schema)}.${quoteIdent(chunk.name)} p
-               SET packet_uid = decode(v.uid_hex, 'hex'),
-                   identity_version = 'wire-sha256-v1',
-                   identity_provenance = 'historical-raw-hex-recompute'
-              FROM (
-                SELECT unnest($1::tid[]) AS ctid,
-                       unnest($2::text[]) AS uid_hex
-              ) v
-             WHERE p.ctid = v.ctid
-               AND p.packet_uid IS NULL
-          `, [
-            resolved.map((row) => row.ctid),
-            resolved.map((row) => canonicalFromRawHex(row.raw_hex)!),
-          ]);
-        }
+          let resolvedCount = 0;
+          if (!dryRun && resolved.length > 0) {
+            const update = await client.query<{ ctid: string }>(`
+              UPDATE ${quoteIdent(chunk.schema)}.${quoteIdent(chunk.name)} p
+                 SET packet_uid = decode(v.uid_hex, 'hex'),
+                     identity_version = 'wire-sha256-v1',
+                     identity_provenance = 'historical-raw-hex-recompute'
+                FROM (
+                  SELECT unnest($1::tid[]) AS ctid,
+                         unnest($2::text[]) AS uid_hex
+                ) v
+               WHERE p.ctid = v.ctid
+                 AND p.packet_uid IS NULL
+              RETURNING p.ctid::text AS ctid
+            `, [
+              resolved.map((row) => row.ctid),
+              resolved.map((row) => canonicalFromRawHex(row.raw_hex)!),
+            ]);
+            resolvedCount = update.rowCount ?? 0;
+          }
 
-        const last = rows[rows.length - 1]!;
-        if (!dryRun) {
-          await client.query(`
-            UPDATE ops.packet_identity_backfill_state
-               SET status = 'running',
-                   last_time = $1,
-                   last_hash = $2,
-                   last_rx_node_id = $3,
-                   resolved = resolved + $4,
-                   unresolved = unresolved + $5,
-                   ambiguous = ambiguous + $6,
-                   batch_count = batch_count + 1,
-                   updated_at = NOW()
-             WHERE singleton
-          `, [last.time, last.packet_hash, last.rx_node_id, resolved.length, unresolved, mismatch]);
-        }
-        await client.query('COMMIT');
+          const last = rows[rows.length - 1]!;
+          if (!dryRun) {
+            await client.query(`
+              UPDATE ops.packet_identity_backfill_state
+                 SET status = 'running',
+                     last_time = $1::timestamptz,
+                     last_observation_id = $2::uuid,
+                     resolved = resolved + $3,
+                     unresolved = unresolved + $4,
+                     ambiguous = ambiguous + $5,
+                     batch_count = batch_count + 1,
+                     updated_at = NOW()
+               WHERE singleton
+            `, [last.time, last.observation_id, resolvedCount, unresolved, mismatch]);
+          }
+          await client.query('COMMIT');
 
-        total.selected += rows.length;
-        total.resolved += resolved.length;
-        total.unresolved += unresolved;
-        total.mismatch += mismatch;
-        console.log(JSON.stringify({ batch: rows.length, ...total, last: last.time }));
-        if (limit > 0 && total.selected >= limit) break;
-        if (dryRun || rows.length < batchSize) break;
-        state = await loadState(client);
+          total.selected += rows.length;
+          total.resolved += resolvedCount;
+          total.unresolved += unresolved;
+          total.mismatch += mismatch;
+          console.log(JSON.stringify({ batch: rows.length, ...total, last: last.time }));
+          if (limit > 0 && total.selected >= limit) { partial = true; break; }
+          if (dryRun || rows.length < batchSize) break;
+          state = await loadState(client);
         } catch (error) {
           await client.query('ROLLBACK');
           throw error;
         }
       }
+      if (partial) break;
     }
 
     if (!dryRun) {
       await client.query(`
         UPDATE ops.packet_identity_backfill_state
-           SET status = 'packets_complete', updated_at = NOW() WHERE singleton
-      `);
+           SET status = $1, updated_at = NOW() WHERE singleton
+      `, [partial ? 'running' : 'packets_complete']);
     }
     return total;
   } finally {

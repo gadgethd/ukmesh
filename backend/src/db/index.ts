@@ -857,6 +857,7 @@ export async function getRecentPackets(
                + CASE WHEN p.packet_type = 4 THEN 2 ELSE 0 END) AS _representative_rank,` : ''}
              ${includeObservationIds ? 'p.observation_id::text AS _representative_id,' : ''}
              p.time, p.packet_hash,
+             ${packetIdentityKeySql('p')} AS identity_key,
              COALESCE(pa_rx.canonical_node_id, upper(btrim(p.rx_node_id))) AS rx_node_id,
              COALESCE(pa_src.canonical_node_id, upper(btrim(p.src_node_id))) AS src_node_id, p.topic,
              p.topic_prefix, p.iata, p.packet_type, p.route_type, p.hop_count, p.rssi, p.snr,
@@ -878,8 +879,8 @@ export async function getRecentPackets(
                p.time DESC, p.observation_id DESC NULLS LAST
     ),
     packet_stats AS (
-      SELECT 
-        packet_hash,
+      SELECT
+        ${packetIdentityKeySql('packets')} AS identity_key,
         ${includeObservationIds ? `ARRAY_AGG(DISTINCT packets.observation_id::text)
           FILTER (WHERE packets.observation_id IS NOT NULL) AS _observation_ids,` : ''}
         ARRAY_AGG(DISTINCT COALESCE(pa2.canonical_node_id, upper(btrim(packets.rx_node_id)))
@@ -890,11 +891,11 @@ export async function getRecentPackets(
         COUNT(*) FILTER (WHERE COALESCE(payload->>'direction', 'rx') = 'tx')::int AS tx_count
       FROM mesh.packets
       LEFT JOIN core.node_identity_aliases pa2 ON pa2.source_node_id = upper(btrim(packets.rx_node_id))
-      WHERE packet_hash = ANY(SELECT packet_hash FROM recent_packets)
+      WHERE ${packetIdentityKeySql('packets')} = ANY(SELECT identity_key FROM recent_packets)
         AND time > ${fiveMinAgo}
         ${buildPacketScopeClause(scope, '', network)}
         ${buildPublicPacketPrivacyClause('packets')}
-      GROUP BY packet_hash
+      GROUP BY ${packetIdentityKeySql('packets')}
     )
     SELECT
       rp.time, rp.packet_hash, rp.rx_node_id, rp.src_node_id,
@@ -909,7 +910,7 @@ export async function getRecentPackets(
       ps.observer_node_ids, ps.observer_iatas, ps.rx_count, ps.tx_count,
       mt.tags, mt.confidence AS tag_confidence
     FROM recent_packets rp
-    LEFT JOIN packet_stats ps ON ps.packet_hash = rp.packet_hash
+    LEFT JOIN packet_stats ps ON ps.identity_key = rp.identity_key
     LEFT JOIN mesh.message_tags mt ON mt.packet_hash = rp.packet_hash
     ${overlapParam ? `WHERE rp.packet_hash = ANY(${overlapParam}::text[])
       OR rp.packet_hash IN (SELECT packet_hash FROM recent_packets ORDER BY time DESC, packet_hash LIMIT $1)` : ''}
@@ -944,6 +945,7 @@ export async function getRecentMessages(
              ${includeObservationIds ? 'CASE WHEN p.src_node_id IS NOT NULL THEN 1 ELSE 0 END AS _representative_rank,' : ''}
              ${includeObservationIds ? 'p.observation_id::text AS _representative_id,' : ''}
              p.time, p.packet_hash,
+             ${packetIdentityKeySql('p')} AS identity_key,
              COALESCE(pa_rx.canonical_node_id, upper(btrim(p.rx_node_id))) AS rx_node_id,
              COALESCE(pa_src.canonical_node_id, upper(btrim(p.src_node_id))) AS src_node_id, p.topic,
              p.iata,
@@ -972,7 +974,7 @@ export async function getRecentMessages(
     ),
     msg_stats AS (
       SELECT
-        packet_hash,
+        ${packetIdentityKeySql('packets')} AS identity_key,
         ${includeObservationIds ? `ARRAY_AGG(DISTINCT packets.observation_id::text)
           FILTER (WHERE packets.observation_id IS NOT NULL) AS _observation_ids,` : ''}
         ARRAY_AGG(DISTINCT COALESCE(pa2.canonical_node_id, upper(btrim(packets.rx_node_id)))
@@ -983,11 +985,11 @@ export async function getRecentMessages(
         COUNT(*) FILTER (WHERE COALESCE(payload->>'direction', 'rx') = 'tx')::int AS tx_count
       FROM mesh.packets
       LEFT JOIN core.node_identity_aliases pa2 ON pa2.source_node_id = upper(btrim(packets.rx_node_id))
-      WHERE packet_hash = ANY(SELECT packet_hash FROM selected_msgs)
+      WHERE ${packetIdentityKeySql('packets')} = ANY(SELECT identity_key FROM selected_msgs)
         AND time > NOW() - INTERVAL '24 hours'
         ${buildPacketScopeClause(scope, '', network)}
         ${buildPublicPacketPrivacyClause('packets')}
-      GROUP BY packet_hash
+      GROUP BY ${packetIdentityKeySql('packets')}
     )
     SELECT
       m.time, m.packet_hash, m.rx_node_id, m.src_node_id, m.topic, m.iata,
@@ -999,7 +1001,7 @@ export async function getRecentMessages(
       ms.observer_node_ids, ms.observer_iatas, ms.rx_count, ms.tx_count,
       mt.tags, mt.confidence AS tag_confidence
     FROM selected_msgs m
-    LEFT JOIN msg_stats ms ON ms.packet_hash = m.packet_hash
+    LEFT JOIN msg_stats ms ON ms.identity_key = m.identity_key
     LEFT JOIN mesh.message_tags mt ON mt.packet_hash = m.packet_hash
     ${overlapParam ? `WHERE m.packet_hash = ANY(${overlapParam}::text[])
       OR m.packet_hash IN (SELECT packet_hash FROM recent_msgs ORDER BY time DESC, packet_hash LIMIT $1)` : ''}
