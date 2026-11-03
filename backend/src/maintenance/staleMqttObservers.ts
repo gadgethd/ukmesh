@@ -134,21 +134,21 @@ async function cleanupNodeRecords(
       : `Node has no observed activity for at least ${thresholdDays} days`;
 
     await client.query(
-      `INSERT INTO maintenance_removed_records (batch_id, source_table, record_data, reason)
+      `INSERT INTO ops.maintenance_removed_records (batch_id, source_table, record_data, reason)
        SELECT $1, 'nodes', to_jsonb(n), $2
          FROM nodes n
         WHERE n.node_id = ANY($3::text[])`,
       [batchId, reason, nodeIds],
     );
     await client.query(
-      `INSERT INTO maintenance_removed_records (batch_id, source_table, record_data, reason)
+      `INSERT INTO ops.maintenance_removed_records (batch_id, source_table, record_data, reason)
        SELECT $1, 'observer_region_observer_sightings', to_jsonb(s), $2
          FROM observer_region_observer_sightings s
         WHERE s.rx_node_id = ANY($3::text[])`,
       [batchId, reason, nodeIds],
     );
     await client.query(
-      `INSERT INTO maintenance_removed_records (batch_id, source_table, record_data, reason)
+      `INSERT INTO ops.maintenance_removed_records (batch_id, source_table, record_data, reason)
        SELECT $1, 'node_network_sightings', to_jsonb(s), $2
          FROM node_network_sightings s
         WHERE s.node_id = ANY($3::text[])`,

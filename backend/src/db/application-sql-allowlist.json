@@ -9,8 +9,6 @@
     "ingest_observation_ledger",
     "ingest_observation_ledger_coverage",
     "ingest_observation_tombstones",
-    "maintenance_backfill_checkpoints",
-    "maintenance_removed_records",
     "message_tags",
     "message_tags_local",
     "ml_gold_paths",
@@ -286,7 +284,6 @@
       "path_model_calibration"
     ],
     "maintenance/staleMqttObservers.integration.test.ts": [
-      "maintenance_removed_records",
       "node_network_sightings",
       "nodes",
       "observer_region_observer_sightings",
@@ -295,7 +292,6 @@
       "private_node_prefixes"
     ],
     "maintenance/staleMqttObservers.native.integration.test.ts": [
-      "maintenance_removed_records",
       "node_network_sightings",
       "nodes",
       "observer_region_observer_sightings",
@@ -304,11 +300,9 @@
       "private_node_prefixes"
     ],
     "maintenance/staleMqttObservers.test.ts": [
-      "maintenance_removed_records",
       "nodes"
     ],
     "maintenance/staleMqttObservers.ts": [
-      "maintenance_removed_records",
       "node_network_sightings",
       "nodes",
       "observer_region_observer_sightings",
@@ -590,7 +584,6 @@
       "multibyte_path_facts"
     ],
     "tools/backfillStatsRollups.ts": [
-      "maintenance_backfill_checkpoints",
       "observer_region_observer_sightings",
       "observer_region_packet_sightings",
       "packet_daily_stats",

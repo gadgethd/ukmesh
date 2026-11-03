@@ -70,7 +70,7 @@ async function backfillHourlyStats(days: number, pauseMs: number): Promise<void>
     completed_at: string | null;
   }>(
     `SELECT cursor_value, window_end::text, rows_processed::text, completed_at::text
-       FROM maintenance_backfill_checkpoints
+       FROM ops.maintenance_backfill_checkpoints
       WHERE job_name = $1`,
     [jobName],
   );
@@ -159,7 +159,7 @@ async function backfillHourlyStats(days: number, pauseMs: number): Promise<void>
       processed += Number(inserted.rows[0]?.count ?? 0);
       const complete = sliceEnd >= bounds.windowEnd;
       await client.query(
-        `INSERT INTO maintenance_backfill_checkpoints (
+        `INSERT INTO ops.maintenance_backfill_checkpoints (
            job_name, cursor_value, window_end, rows_processed, updated_at, completed_at
          )
          VALUES ($1, $2, $3, $4, NOW(), CASE WHEN $5 THEN NOW() ELSE NULL END)
@@ -204,7 +204,7 @@ async function catchUpCurrentHour(): Promise<void> {
   }>(
     `SELECT (
        SELECT window_end::text
-         FROM maintenance_backfill_checkpoints
+         FROM ops.maintenance_backfill_checkpoints
         WHERE job_name = 'packet-hourly-stats-v1'
           AND completed_at IS NOT NULL
      ) AS checkpoint_end,

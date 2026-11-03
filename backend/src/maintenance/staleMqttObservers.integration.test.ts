@@ -20,7 +20,7 @@ async function fixture() {
     );
     CREATE TABLE observer_region_observer_sightings (rx_node_id TEXT, iata TEXT, last_seen TIMESTAMPTZ);
     CREATE TABLE node_network_sightings (node_id TEXT, network TEXT, last_seen_at TIMESTAMPTZ);
-    CREATE TABLE maintenance_removed_records (
+    CREATE TABLE ops.maintenance_removed_records (
       batch_id TEXT, source_table TEXT, record_data JSONB, reason TEXT
     );
     CREATE TABLE owner_grants (node_id TEXT, owner_id TEXT);
@@ -81,7 +81,7 @@ async function fixture() {
       'nodes', (SELECT jsonb_agg(n ORDER BY node_id) FROM nodes n),
       'observers', (SELECT jsonb_agg(s ORDER BY rx_node_id) FROM observer_region_observer_sightings s),
       'networks', (SELECT jsonb_agg(s ORDER BY node_id) FROM node_network_sightings s),
-      'archives', (SELECT jsonb_agg(a ORDER BY source_table, record_data::text) FROM maintenance_removed_records a),
+      'archives', (SELECT jsonb_agg(a ORDER BY source_table, record_data::text) FROM ops.maintenance_removed_records a),
       'visibility', (SELECT to_jsonb(v) FROM ops.public_visibility_state v),
       'materialization', (SELECT to_jsonb(m) FROM ops.packet_visibility_materialization_state m)
     ) AS state
@@ -102,11 +102,11 @@ test('PostgreSQL archives inactive roles 1/3 and never-bridged nodes while retai
     'mqtt-active', 'network-active', 'new-node', 'observer-active', 'path-active', 'predicted-active', 'recent', 'test-node', 'unknown-age',
   ]);
   const archived = await f.db.query(`SELECT record_data->>'node_id' AS node_id
-    FROM maintenance_removed_records WHERE source_table = 'nodes' ORDER BY node_id`);
+    FROM ops.maintenance_removed_records WHERE source_table = 'nodes' ORDER BY node_id`);
   assert.deepEqual(archived.rows.map((row: { node_id: string }) => row.node_id), [
     'companion', 'never-bridged', 'repeater', 'room-server',
   ]);
-  assert.equal((await f.db.query('SELECT COUNT(*)::int AS count FROM maintenance_removed_records')).rows[0].count, 7);
+  assert.equal((await f.db.query('SELECT COUNT(*)::int AS count FROM ops.maintenance_removed_records')).rows[0].count, 7);
   assert.deepEqual((await f.db.query('SELECT * FROM owner_grants')).rows, [{ node_id: 'companion', owner_id: 'owner-1' }]);
   assert.deepEqual((await f.db.query('SELECT * FROM packets')).rows, [{ src_node_id: 'companion', payload: 'retained history' }]);
   assert.equal(f.released(), true);
@@ -114,7 +114,7 @@ test('PostgreSQL archives inactive roles 1/3 and never-bridged nodes while retai
   // both visibility sets survive to_jsonb(), including nullable/custom fields.
   for (const table of ['nodes', 'observer_region_observer_sightings', 'node_network_sightings']) {
     await f.db.query(`INSERT INTO ${table}
-      SELECT restored.* FROM maintenance_removed_records archive
+      SELECT restored.* FROM ops.maintenance_removed_records archive
       CROSS JOIN LATERAL jsonb_populate_record(NULL::${table}, archive.record_data) restored
       WHERE archive.batch_id = 'sql-batch' AND archive.source_table = $1`, [table]);
   }
@@ -130,7 +130,7 @@ for (const stage of ['archive', 'delete', 'fence']) {
     await f.db.exec(`
       CREATE FUNCTION reject_cleanup() RETURNS trigger LANGUAGE plpgsql AS $$
       BEGIN RAISE EXCEPTION 'injected ${stage} failure'; END $$;
-      CREATE TRIGGER reject_cleanup BEFORE ${stage === 'archive' ? 'INSERT ON maintenance_removed_records'
+      CREATE TRIGGER reject_cleanup BEFORE ${stage === 'archive' ? 'INSERT ON ops.maintenance_removed_records'
         : stage === 'delete' ? 'DELETE ON nodes' : 'UPDATE ON ops.packet_visibility_materialization_state'}
       FOR EACH ROW EXECUTE FUNCTION reject_cleanup();
     `);
@@ -176,7 +176,7 @@ for (const cleanup of [cleanupInactiveNodes, cleanupStaleMqttObservers]) {
       beforeGenerations.map((row: { visibility_generation: number }) => row.visibility_generation),
       'an existing unfenced direct-prefix change must not be certified by public-node cleanup');
     assert.equal((await f.db.query('SELECT COUNT(*)::int AS count FROM private_node_prefixes')).rows[0].count, 4);
-    assert.equal((await f.db.query("SELECT COUNT(*)::int AS count FROM maintenance_removed_records WHERE record_data->>'node_id' IN ('private-node', 'prefix-only', 'marker-only')")).rows[0].count, 0);
+    assert.equal((await f.db.query("SELECT COUNT(*)::int AS count FROM ops.maintenance_removed_records WHERE record_data->>'node_id' IN ('private-node', 'prefix-only', 'marker-only')")).rows[0].count, 0);
   });
 
   test(`PostgreSQL ${cleanup.name} deletes public nodes without invalidating the current privacy fence`, options, async (t) => {
@@ -265,7 +265,7 @@ test('PostgreSQL inactive cleanup rechecks RF sightings that arrive after the in
   assert.equal(result.nodes, 2, 'late-fresh companion and room-server sightings must withdraw their candidates');
   assert.deepEqual((await f.db.query("SELECT node_id FROM nodes WHERE node_id IN ('companion', 'room-server') ORDER BY node_id")).rows,
     [{ node_id: 'companion' }, { node_id: 'room-server' }]);
-  assert.equal((await f.db.query("SELECT COUNT(*)::int AS count FROM maintenance_removed_records WHERE record_data->>'node_id' IN ('companion', 'room-server') OR record_data->>'rx_node_id' = 'room-server'")).rows[0].count, 0,
+  assert.equal((await f.db.query("SELECT COUNT(*)::int AS count FROM ops.maintenance_removed_records WHERE record_data->>'node_id' IN ('companion', 'room-server') OR record_data->>'rx_node_id' = 'room-server'")).rows[0].count, 0,
     'withdrawn candidates and their visibility records must not enter the removal archive');
 });
 
@@ -297,7 +297,7 @@ for (const cleanup of [cleanupInactiveNodes, cleanupStaleMqttObservers]) {
     assert.equal((await f.db.query("SELECT COUNT(*)::int AS count FROM private_node_prefixes WHERE node_id = 'companion'")).rows[0].count, 3);
     assert.deepEqual((await f.db.query("SELECT is_private, visibility_ok FROM packets WHERE src_node_id = 'companion'")).rows,
       [{ is_private: true, visibility_ok: false }]);
-    assert.equal((await f.db.query("SELECT COUNT(*)::int AS count FROM maintenance_removed_records WHERE record_data->>'node_id' = 'companion' OR record_data->>'rx_node_id' = 'companion'")).rows[0].count, 0);
+    assert.equal((await f.db.query("SELECT COUNT(*)::int AS count FROM ops.maintenance_removed_records WHERE record_data->>'node_id' = 'companion' OR record_data->>'rx_node_id' = 'companion'")).rows[0].count, 0);
     const fence = (await f.db.query(`SELECT visibility.generation = materialized.visibility_generation AS current
       FROM ops.public_visibility_state visibility CROSS JOIN ops.packet_visibility_materialization_state materialized`)).rows[0];
     assert.equal(fence.current, true);

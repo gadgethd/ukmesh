@@ -59,7 +59,7 @@ async function fixture() {
       );
       CREATE TABLE observer_region_observer_sightings (rx_node_id TEXT, last_seen TIMESTAMPTZ);
       CREATE TABLE node_network_sightings (node_id TEXT, last_seen_at TIMESTAMPTZ);
-      CREATE TABLE maintenance_removed_records (batch_id TEXT, source_table TEXT, record_data JSONB, reason TEXT);
+      CREATE TABLE ops.maintenance_removed_records (batch_id TEXT, source_table TEXT, record_data JSONB, reason TEXT);
       CREATE TABLE private_node_prefixes (node_id TEXT REFERENCES nodes(node_id) ON DELETE CASCADE);
       CREATE TABLE ops.public_visibility_state (singleton BOOLEAN PRIMARY KEY, generation BIGINT);
       CREATE TABLE ops.packet_visibility_materialization_state (
@@ -147,7 +147,7 @@ for (const { cleanup, evidence, statement, visibilityLock } of [
     assert.equal(result.value.nodes, 0);
     assert.equal(result.value.candidates, 0);
     assert.equal((await f.observer.query('SELECT COUNT(*)::int AS count FROM nodes')).rows[0].count, 1);
-    assert.equal((await f.observer.query('SELECT COUNT(*)::int AS count FROM maintenance_removed_records')).rows[0].count, 0);
+    assert.equal((await f.observer.query('SELECT COUNT(*)::int AS count FROM ops.maintenance_removed_records')).rows[0].count, 0);
   });
 }
 
@@ -160,7 +160,7 @@ test('native cleanup skips a busy node row and can archive it on the next pass',
   await f.cleanupClient.query(`SET lock_timeout = '1s'`);
   const skipped = await cleanupInactiveNodes({ cleanupPool: f.pool });
   assert.equal(skipped.nodes, 0);
-  assert.equal((await f.observer.query('SELECT COUNT(*)::int AS count FROM maintenance_removed_records')).rows[0].count, 0);
+  assert.equal((await f.observer.query('SELECT COUNT(*)::int AS count FROM ops.maintenance_removed_records')).rows[0].count, 0);
   await f.writer.query('COMMIT');
   const retried = await cleanupInactiveNodes({ cleanupPool: f.pool });
   assert.equal(retried.nodes, 1);
@@ -217,7 +217,7 @@ for (const cleanup of [cleanupInactiveNodes, cleanupStaleMqttObservers]) {
     assert.equal(consent.value.rowCount, 1);
     await f.writer.query('COMMIT');
     assert.deepEqual((await f.observer.query('SELECT name FROM nodes')).rows, [{ name: 'Private 🚫' }]);
-    assert.equal((await f.observer.query('SELECT COUNT(*)::int AS count FROM maintenance_removed_records')).rows[0].count, 0);
+    assert.equal((await f.observer.query('SELECT COUNT(*)::int AS count FROM ops.maintenance_removed_records')).rows[0].count, 0);
     assert.equal((await cleanup({ cleanupPool: f.pool })).nodes, 0, 'the next pass must retain the committed privacy marker');
   });
 }
@@ -265,7 +265,7 @@ for (const fence of ['current', 'gap', 'missing'] as const) {
     assert.equal(after.materialized_generation, fence === 'current' ? after.generation : before.materialized_generation,
       'only an already-current fence may advance with the public deletion');
     assert.deepEqual((await f.observer.query(flags)).rows, beforeFlags, 'public deletion must retain stored packet and path visibility');
-    assert.equal((await f.observer.query("SELECT COUNT(*)::int AS count FROM maintenance_removed_records WHERE source_table = 'nodes'")).rows[0].count, 1);
+    assert.equal((await f.observer.query("SELECT COUNT(*)::int AS count FROM ops.maintenance_removed_records WHERE source_table = 'nodes'")).rows[0].count, 1);
     assert.equal((await f.observer.query('SELECT COUNT(*)::int AS count FROM nodes')).rows[0].count, 0);
   });
 }
