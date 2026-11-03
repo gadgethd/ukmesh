@@ -41,7 +41,7 @@ def main():
                 nl.node_a_id, nl.node_b_id,
                 na.lat AS lat_a, na.lon AS lon_a, na.elevation_m AS elev_a,
                 nb.lat AS lat_b, nb.lon AS lon_b, nb.elevation_m AS elev_b
-            FROM node_links nl
+            FROM core.node_links nl
             JOIN nodes na ON na.node_id = nl.node_a_id
             JOIN nodes nb ON nb.node_id = nl.node_b_id
             WHERE nl.terrain_profile_json IS NULL
@@ -70,7 +70,7 @@ def main():
                     continue
                 with db.cursor() as cur:
                     cur.execute(
-                        'UPDATE node_links SET terrain_profile_json = %s WHERE node_a_id = %s AND node_b_id = %s',
+                        'UPDATE core.node_links SET terrain_profile_json = %s WHERE node_a_id = %s AND node_b_id = %s',
                         (json.dumps(result.profile), a_id, b_id),
                     )
                 db.commit()

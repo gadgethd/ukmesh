@@ -460,7 +460,7 @@ def refresh_radio_neighbor_reports(db, r_client, force: bool = False) -> None:
                 )
                 cur.execute(
                     '''
-                    INSERT INTO node_link_radio_reports (
+                    INSERT INTO core.node_link_radio_reports (
                       node_a_id, node_b_id, reporter_node_id, peer_node_id,
                       last_snr_db, best_snr_db, last_seen, sample_count
                     )
@@ -1136,7 +1136,7 @@ def already_calculated(db, node_id: str, *, require_predicted_links: bool = Fals
     with db.cursor() as cur:
         cur.execute(
             '''SELECT 1
-               FROM node_coverage nc
+               FROM core.node_coverage nc
                LEFT JOIN nodes n ON n.node_id = nc.node_id
                WHERE nc.node_id = %s
                  AND nc.model_version >= %s
@@ -1180,7 +1180,7 @@ def replay_coverage_side_effects(db, r_client, node_id: str) -> None:
     with db.cursor() as cur:
         cur.execute(
             '''SELECT geom, strength_geoms, radius_m, elevation_m
-               FROM node_coverage nc
+               FROM core.node_coverage nc
                LEFT JOIN nodes n ON n.node_id = nc.node_id
                WHERE nc.node_id = %s''',
             (node_id,),
@@ -1236,7 +1236,7 @@ def store_coverage(
 ):
     with db.cursor() as cur:
         cur.execute(
-            '''INSERT INTO node_coverage (
+            '''INSERT INTO core.node_coverage (
                    node_id, geom, strength_geoms, antenna_height_m, radius_m,
                    model_version, calculation_status, permanent_reason,
                    last_error, retry_after
@@ -1274,7 +1274,7 @@ def store_permanent_coverage(
     safe_reason = str(reason).strip()[:240] or 'unsupported'
     with db.cursor() as cur:
         cur.execute(
-            '''INSERT INTO node_coverage (
+            '''INSERT INTO core.node_coverage (
                    node_id, geom, strength_geoms, antenna_height_m, radius_m,
                    model_version, calculation_status, permanent_reason,
                    last_error, retry_after, is_planned
@@ -1320,7 +1320,7 @@ def load_positioned_repeaters(db) -> dict[str, dict]:
             '''
             SELECT n.node_id, n.lat, n.lon, n.elevation_m, n.name, n.role, nc.radius_m, nc.antenna_height_m
             FROM nodes n
-            LEFT JOIN node_coverage nc ON nc.node_id = n.node_id
+            LEFT JOIN core.node_coverage nc ON nc.node_id = n.node_id
             WHERE n.lat IS NOT NULL
               AND n.lon IS NOT NULL
               AND n.lat BETWEEN %s AND %s
@@ -1521,7 +1521,7 @@ def compute_planned_links(db, lat: float, lon: float, elevation_m: float,
 def store_planned_links(db, node_id: str, links: list[dict]) -> None:
     with db.cursor() as cur:
         cur.execute(
-            'UPDATE node_coverage SET predicted_links = %s::jsonb WHERE node_id = %s',
+            'UPDATE core.node_coverage SET predicted_links = %s::jsonb WHERE node_id = %s',
             (json.dumps(links), node_id),
         )
     db.commit()
@@ -1928,7 +1928,7 @@ def enqueue_physical_link_jobs_for_node(db, r_client, node_id: str, lat: float, 
             '''
             SELECT n.node_id, n.lat, n.lon, nc.radius_m
             FROM nodes n
-            LEFT JOIN node_coverage nc ON nc.node_id = n.node_id
+            LEFT JOIN core.node_coverage nc ON nc.node_id = n.node_id
             WHERE n.node_id <> %s
               AND n.lat IS NOT NULL
               AND n.lon IS NOT NULL
@@ -1961,7 +1961,7 @@ def enqueue_uncovered(db, r_client):
     # Remove any coverage that was previously computed for hidden or non-repeater nodes.
     with db.cursor() as cur:
         cur.execute("""
-            DELETE FROM node_coverage WHERE node_id IN (
+            DELETE FROM core.node_coverage WHERE node_id IN (
                 SELECT node_id FROM nodes
                 WHERE name LIKE '%🚫%' OR (role IS NOT NULL AND role != 2)
             )
@@ -1972,7 +1972,7 @@ def enqueue_uncovered(db, r_client):
         cur.execute('''
             SELECT n.node_id, n.lat, n.lon
             FROM nodes n
-            LEFT JOIN node_coverage nc ON n.node_id = nc.node_id
+            LEFT JOIN core.node_coverage nc ON n.node_id = nc.node_id
             WHERE n.lat IS NOT NULL AND n.lon IS NOT NULL
               AND n.lat BETWEEN %s AND %s
               AND n.lon BETWEEN %s AND %s
@@ -2045,7 +2045,7 @@ def recover_planned_coverage_jobs(db, r_client) -> int:
                   AND expires_at > NOW()'''
         )
         cur.execute(
-            '''DELETE FROM node_coverage coverage
+            '''DELETE FROM core.node_coverage coverage
                 USING planned_coverage_jobs jobs
                WHERE coverage.node_id = jobs.job_id
                  AND coverage.is_planned = TRUE
@@ -2170,7 +2170,7 @@ def process_planned_job(
                 (expires_at, job_id),
             )
             cur.execute(
-                '''UPDATE node_coverage
+                '''UPDATE core.node_coverage
                       SET is_planned = TRUE, expires_at = %s
                     WHERE node_id = %s''',
                 (expires_at, job_id),
@@ -2263,7 +2263,7 @@ def process_job(
             cur.execute(
                 '''SELECT n.name, n.role, nc.antenna_height_m
                    FROM nodes n
-                   LEFT JOIN node_coverage nc ON nc.node_id = n.node_id
+                   LEFT JOIN core.node_coverage nc ON nc.node_id = n.node_id
                    WHERE n.node_id = %s''',
                 (node_id,),
             )
