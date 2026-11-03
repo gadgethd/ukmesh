@@ -59,13 +59,14 @@ function canonicalFromRawHex(rawHex: string | null): string | undefined {
 }
 
 function parseArgs(argv: string[]) {
-  const args = { batchSize: 500, dryRun: false, limit: 0, phase: 'packets' };
+  const args = { batchSize: 500, dryRun: false, limit: 0, phase: 'packets', since: null as string | null };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--batch-size') args.batchSize = Number(argv[++i]);
     else if (arg === '--limit') args.limit = Number(argv[++i]);
     else if (arg === '--dry-run') args.dryRun = true;
     else if (arg === '--phase') args.phase = argv[++i] ?? 'packets';
+    else if (arg === '--since') args.since = argv[++i] ?? null;
     else throw new Error(`unknown argument: ${arg}`);
   }
   if (!Number.isInteger(args.batchSize) || args.batchSize < 1 || args.batchSize > 5000) {
@@ -95,16 +96,18 @@ async function loadState(client: pg.PoolClient): Promise<State> {
   return result.rows[0];
 }
 
-async function packetBatch(client: pg.PoolClient, state: State, batchSize: number): Promise<Row[]> {
+async function packetBatch(client: pg.PoolClient, state: State, batchSize: number, since: string | null): Promise<Row[]> {
   if (!state.high_water) return [];
   const values: unknown[] = [state.high_water];
   const where = ['packet_uid IS NULL', 'length(packet_hash) = 64', 'time <= $1'];
+  if (since) { values.push(since); where.push(`time >= $${values.length}`); }
   if (state.last_time && state.last_hash) {
     values.push(state.last_time, state.last_hash, state.last_rx_node_id ?? '');
+    const p = values.length - 2;
     where.push(`(
-      time > $2
-      OR (time = $2 AND packet_hash > $3)
-      OR (time = $2 AND packet_hash = $3 AND COALESCE(rx_node_id, '') > $4)
+      time > $${p}
+      OR (time = $${p} AND packet_hash > $${p + 1})
+      OR (time = $${p} AND packet_hash = $${p + 1} AND COALESCE(rx_node_id, '') > $${p + 2})
     )`);
   }
   values.push(batchSize);
@@ -118,7 +121,7 @@ async function packetBatch(client: pg.PoolClient, state: State, batchSize: numbe
   return result.rows;
 }
 
-async function backfillPackets(pool: pg.Pool, batchSize: number, dryRun: boolean, limit: number) {
+async function backfillPackets(pool: pg.Pool, batchSize: number, dryRun: boolean, limit: number, since: string | null) {
   const client = await pool.connect();
   const total: Counts = { selected: 0, resolved: 0, unresolved: 0, mismatch: 0 };
   try {
@@ -141,7 +144,7 @@ async function backfillPackets(pool: pg.Pool, batchSize: number, dryRun: boolean
     while (true) {
       await client.query('BEGIN');
       try {
-        const rows = await packetBatch(client, state, batchSize);
+        const rows = await packetBatch(client, state, batchSize, since);
         if (rows.length === 0) {
           await client.query('COMMIT');
           break;
@@ -230,7 +233,7 @@ async function main() {
   if (args.phase !== 'packets') throw new Error('only --phase packets is implemented in this release');
   const pool = new pg.Pool({ connectionString: dsn(), max: 1 });
   try {
-    const result = await backfillPackets(pool, args.batchSize, args.dryRun, args.limit);
+    const result = await backfillPackets(pool, args.batchSize, args.dryRun, args.limit, args.since);
     console.log(JSON.stringify({ dryRun: args.dryRun, ...result }));
   } finally {
     await pool.end();
