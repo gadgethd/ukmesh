@@ -32,6 +32,7 @@ import { ingestPool, ingestQuery, withIngestTransaction } from './ingest.js';
 import { regionMemberIdsSql } from '../regions/filter.js';
 import { regionNodeSourceSql } from '../regions/nodeSource.js';
 import { mapVisiblePredicate, publicMapBasePredicate } from '../nodes/publicMap.js';
+import { packetIdentityKeySql } from './packetIdentityRead.js';
 
 const { Pool } = pg;
 const COORDINATE_RECALC_THRESHOLD_M = Number(process.env['NODE_COORDINATE_RECALC_THRESHOLD_M'] ?? 25);
@@ -849,7 +850,7 @@ export async function getRecentPackets(
   const fiveMinAgo = 'NOW() - INTERVAL \'5 minutes\'';
   const res = await readQuery(
     `WITH recent_packets AS (
-      SELECT DISTINCT ON (p.packet_hash)
+      SELECT DISTINCT ON (${packetIdentityKeySql('p')})
              ${includeObservationIds ? `(CASE WHEN p.payload ? 'appData' THEN 16 ELSE 0 END
                + CASE WHEN p.src_node_id IS NOT NULL THEN 8 ELSE 0 END
                + CASE WHEN p.advert_count IS NOT NULL THEN 4 ELSE 0 END
@@ -869,7 +870,7 @@ export async function getRecentPackets(
       WHERE p.time > ${fiveMinAgo}
         ${buildPacketScopeClause(scope, 'p', network)}
         ${buildPublicPacketPrivacyClause('p')}
-      ORDER BY p.packet_hash,
+      ORDER BY ${packetIdentityKeySql('p')},
                CASE WHEN p.payload ? 'appData' THEN 1 ELSE 0 END DESC,
                CASE WHEN p.src_node_id IS NOT NULL THEN 1 ELSE 0 END DESC,
                CASE WHEN p.advert_count IS NOT NULL THEN 1 ELSE 0 END DESC,
@@ -939,7 +940,7 @@ export async function getRecentMessages(
   const overlapParam = includeObservationIds && overlapHashes.length > 0 ? `$${2 + scope.params.length}` : null;
   const res = await readQuery(
     `WITH recent_msgs AS (
-      SELECT DISTINCT ON (p.packet_hash)
+      SELECT DISTINCT ON (${packetIdentityKeySql('p')})
              ${includeObservationIds ? 'CASE WHEN p.src_node_id IS NOT NULL THEN 1 ELSE 0 END AS _representative_rank,' : ''}
              ${includeObservationIds ? 'p.observation_id::text AS _representative_id,' : ''}
              p.time, p.packet_hash,
@@ -958,7 +959,7 @@ export async function getRecentMessages(
         AND p.time > NOW() - INTERVAL '24 hours'
         ${buildPacketScopeClause(scope, 'p', network)}
         ${buildPublicPacketPrivacyClause('p')}
-      ORDER BY p.packet_hash,
+      ORDER BY ${packetIdentityKeySql('p')},
                CASE WHEN p.src_node_id IS NOT NULL THEN 1 ELSE 0 END DESC,
                p.time DESC, p.observation_id DESC NULLS LAST
     ),
