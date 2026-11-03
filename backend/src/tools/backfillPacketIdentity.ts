@@ -14,6 +14,8 @@ type Row = {
   packet_hash: string;
   rx_node_id: string | null;
   raw_hex: string | null;
+  chunk: string;
+  ctid: string;
 };
 
 type Counts = {
@@ -99,7 +101,16 @@ async function loadState(client: pg.PoolClient): Promise<State> {
 async function packetBatch(client: pg.PoolClient, state: State, batchSize: number, since: string | null): Promise<Row[]> {
   if (!state.high_water) return [];
   const values: unknown[] = [state.high_water];
-  const where = ['packet_uid IS NULL', 'length(packet_hash) = 64', 'time <= $1'];
+  const where = [
+    'packet_uid IS NULL',
+    'length(packet_hash) = 64',
+    'time <= $1',
+    `tableoid IN (
+       SELECT (chunk_schema || '.' || chunk_name)::regclass
+         FROM timescaledb_information.chunks
+        WHERE hypertable_schema = 'mesh' AND hypertable_name = 'packets' AND is_compressed = FALSE
+     )`,
+  ];
   if (since) { values.push(since); where.push(`time >= $${values.length}`); }
   if (state.last_time && state.last_hash) {
     values.push(state.last_time, state.last_hash, state.last_rx_node_id ?? '');
@@ -112,7 +123,8 @@ async function packetBatch(client: pg.PoolClient, state: State, batchSize: numbe
   }
   values.push(batchSize);
   const result = await client.query<Row>(`
-    SELECT time, packet_hash, rx_node_id, raw_hex
+    SELECT time, packet_hash, rx_node_id, raw_hex,
+           tableoid::regclass::text AS chunk, ctid::text AS ctid
       FROM mesh.packets
      WHERE ${where.join(' AND ')}
      ORDER BY time, packet_hash, COALESCE(rx_node_id, '')
@@ -161,27 +173,32 @@ async function backfillPackets(pool: pg.Pool, batchSize: number, dryRun: boolean
         }
 
         if (!dryRun && resolved.length > 0) {
-          await client.query(`
-            UPDATE mesh.packets p
-               SET packet_uid = decode(v.uid_hex, 'hex'),
-                   identity_version = 'wire-sha256-v1',
-                   identity_provenance = 'historical-raw-hex-recompute'
-              FROM (
-                SELECT unnest($1::timestamptz[]) AS time,
-                       unnest($2::text[]) AS packet_hash,
-                       unnest($3::text[]) AS rx_key,
-                       unnest($4::text[]) AS uid_hex
-              ) v
-             WHERE p.time = v.time
-               AND p.packet_hash = v.packet_hash
-               AND COALESCE(p.rx_node_id, '') = v.rx_key
-               AND p.packet_uid IS NULL
-          `, [
-            resolved.map((row) => row.time),
-            resolved.map((row) => row.packet_hash),
-            resolved.map((row) => row.rx_node_id ?? ''),
-            resolved.map((row) => canonicalFromRawHex(row.raw_hex)!),
-          ]);
+          const byChunk = new Map<string, Row[]>();
+          for (const row of resolved) {
+            const rows = byChunk.get(row.chunk) ?? [];
+            rows.push(row);
+            byChunk.set(row.chunk, rows);
+          }
+          for (const [chunk, chunkRows] of byChunk) {
+            if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(chunk)) {
+              throw new Error(`refusing unexpected chunk name: ${chunk}`);
+            }
+            await client.query(`
+              UPDATE "${chunk}" p
+                 SET packet_uid = decode(v.uid_hex, 'hex'),
+                     identity_version = 'wire-sha256-v1',
+                     identity_provenance = 'historical-raw-hex-recompute'
+                FROM (
+                  SELECT unnest($1::tid[]) AS ctid,
+                         unnest($2::text[]) AS uid_hex
+                ) v
+               WHERE p.ctid = v.ctid
+                 AND p.packet_uid IS NULL
+            `, [
+              chunkRows.map((row) => row.ctid),
+              chunkRows.map((row) => canonicalFromRawHex(row.raw_hex)!),
+            ]);
+          }
         }
 
         const last = rows[rows.length - 1]!;
