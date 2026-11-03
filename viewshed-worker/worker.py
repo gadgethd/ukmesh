@@ -281,7 +281,7 @@ def refresh_rf_calibration(db, force: bool = False) -> None:
         cur.execute(
             '''SELECT
                  (SELECT MAX(p.time)
-                    FROM packets p
+                    FROM mesh.packets p
                    WHERE p.snr IS NOT NULL
                      AND p.rx_node_id IS NOT NULL
                      AND p.src_node_id IS NOT NULL
@@ -305,7 +305,7 @@ def refresh_rf_calibration(db, force: bool = False) -> None:
                 GREATEST(p.rx_node_id, p.src_node_id) AS node_b_id,
                 PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY p.snr) AS median_snr_db,
                 COUNT(*)                               AS packet_count
-              FROM packets p
+              FROM mesh.packets p
               WHERE p.snr IS NOT NULL
                 AND p.rx_node_id IS NOT NULL
                 AND p.src_node_id IS NOT NULL
