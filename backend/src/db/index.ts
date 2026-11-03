@@ -684,7 +684,7 @@ export async function getNodes(
   let mapConditions = '';
   if (options.mapVisible) {
     const visible = `(${mapVisiblePredicate('n')}
-      AND NOT EXISTS (SELECT 1 FROM node_map_suppressions s WHERE s.node_id = n.node_id))`;
+      AND NOT EXISTS (SELECT 1 FROM core.node_map_suppressions s WHERE s.node_id = n.node_id))`;
     if (options.referencedNodeIds?.length) {
       params.push([...new Set(options.referencedNodeIds.map((id) => id.trim().toUpperCase()))]);
       // The explicit safety-net union bypasses age/suppression only. Never

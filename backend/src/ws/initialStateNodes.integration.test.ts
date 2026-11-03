@@ -29,10 +29,10 @@ test('map visibility, initial payload union, and migration on an isolated scratc
   try {
     await pool.query(readFileSync(new URL('../db/schema/base.sql', import.meta.url), 'utf8'));
     await runMigrations(pool);
-    const migration = readFileSync(new URL('../db/migrations/067_node_map_suppressions.sql', import.meta.url), 'utf8');
+    const migration = readFileSync(new URL('../db/migrations/067_core.node_map_suppressions.sql', import.meta.url), 'utf8');
     const count = async (label: string) => {
-      const result = await pool.query<{ count: number }>('SELECT count(*)::integer AS count FROM node_map_suppressions');
-      console.log(`[scratch ${name}] ${label}: SELECT count(*) FROM node_map_suppressions; => ${result.rows[0]!.count}`);
+      const result = await pool.query<{ count: number }>('SELECT count(*)::integer AS count FROM core.node_map_suppressions');
+      console.log(`[scratch ${name}] ${label}: SELECT count(*) FROM core.node_map_suppressions; => ${result.rows[0]!.count}`);
       return result.rows[0]!.count;
     };
     await t.test('migration is idempotent and starts empty', async () => {
@@ -77,7 +77,7 @@ test('map visibility, initial payload union, and migration on an isolated scratc
       assert.equal(await count('migration reapplied with evidence'), 2);
       await refreshNodeMapSuppressions(pool);
       assert.equal(await count('repeat refresh'), 2);
-      const evidence = await pool.query('SELECT * FROM node_map_suppressions WHERE node_id = $1', [suppressed]);
+      const evidence = await pool.query('SELECT * FROM core.node_map_suppressions WHERE node_id = $1', [suppressed]);
       assert.equal(evidence.rows[0].suppressed_by_node_id, fresh);
       assert.equal(evidence.rows[0].reason, 'stale-colocated');
       assert.equal(evidence.rows[0].distance_m, 0);
@@ -118,12 +118,12 @@ test('map visibility, initial payload union, and migration on an isolated scratc
     await t.test('failed replacement rolls back deletion and preserves the last successful gauge', async () => {
       await pool.query(`CREATE FUNCTION fail_map_suppression() RETURNS trigger LANGUAGE plpgsql AS $$
         BEGIN RAISE EXCEPTION 'injected suppression write failure'; END $$;
-        CREATE TRIGGER fail_map_suppression BEFORE INSERT ON node_map_suppressions
+        CREATE TRIGGER fail_map_suppression BEFORE INSERT ON core.node_map_suppressions
           FOR EACH ROW EXECUTE FUNCTION fail_map_suppression()`);
       await assert.rejects(refreshNodeMapSuppressions(pool), /injected suppression write failure/);
       assert.equal(await count('failed refresh rolled back'), 2);
       assert.equal((await mapSuppressedNodes.get()).values[0]!.value, 2);
-      await pool.query('DROP TRIGGER fail_map_suppression ON node_map_suppressions');
+      await pool.query('DROP TRIGGER fail_map_suppression ON core.node_map_suppressions');
     });
 
     await t.test('recent path evidence and aging fresh neighbours remove obsolete suppressions', async () => {

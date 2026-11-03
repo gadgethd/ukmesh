@@ -55,9 +55,9 @@ test('name retention and search execute the production write paths, migration, i
     optimizedIdentity.indexOf('CREATE OR REPLACE VIEW node_identity_nodes AS'),
     optimizedIdentity.lastIndexOf('COMMIT;'),
   ));
-  const migration = await readFile(new URL('./migrations/064_node_name_history.sql', import.meta.url), 'utf8');
+  const migration = await readFile(new URL('./migrations/064_core.node_name_history.sql', import.meta.url), 'utf8');
   await db.exec(`BEGIN; ${migration} COMMIT;`);
-  assert.equal((await db.query('SELECT * FROM node_name_history')).rows.length, 0, 'migration must not backfill nodes');
+  assert.equal((await db.query('SELECT * FROM core.node_name_history')).rows.length, 0, 'migration must not backfill nodes');
 
   const query = (sql: string, params?: unknown[]) => db.query(sql, params?.map(value => value ?? null));
   t.mock.method(pg.Pool.prototype, 'query', query);
@@ -108,9 +108,9 @@ test('name retention and search execute the production write paths, migration, i
     assert.equal((await search('Current hill'))[0]?.name, 'Third hill');
     assert.equal((await search('Original hill'))[0]?.name, 'Third hill');
     await write(key('A'), 'Third hill');
-    await db.exec("UPDATE node_name_history SET first_seen_at = '2020-01-01' WHERE name = 'Original hill'");
+    await db.exec("UPDATE core.node_name_history SET first_seen_at = '2020-01-01' WHERE name = 'Original hill'");
     await write(key('A'), 'Original hill');
-    const history = await db.query('SELECT name, first_seen_at, last_seen_at FROM node_name_history ORDER BY name');
+    const history = await db.query('SELECT name, first_seen_at, last_seen_at FROM core.node_name_history ORDER BY name');
     assert.equal(history.rows.length, 3, 'repeat names must not create duplicate history');
     const original = history.rows.find((row: { name: string }) => row.name === 'Original hill');
     assert.equal(new Date(original.first_seen_at).getUTCFullYear(), 2020);
@@ -127,10 +127,10 @@ test('name retention and search execute the production write paths, migration, i
     await db.query('UPDATE nodes SET name = $1 WHERE node_id = $2', ['', key('B')]);
     await db.query('UPDATE nodes SET name = NULL WHERE node_id = $1', [key('B')]);
     assert.equal((await search('Temporary'))[0]?.name, null);
-    assert.deepEqual((await db.query("SELECT name FROM node_name_history WHERE BTRIM(name) = ''")).rows, []);
-    const before = (await db.query('SELECT * FROM node_name_history ORDER BY node_id, name')).rows;
+    assert.deepEqual((await db.query("SELECT name FROM core.node_name_history WHERE BTRIM(name) = ''")).rows, []);
+    const before = (await db.query('SELECT * FROM core.node_name_history ORDER BY node_id, name')).rows;
     await upsertNode(key('A'), { mqttObserver: true });
-    assert.deepEqual((await db.query('SELECT * FROM node_name_history ORDER BY node_id, name')).rows, before);
+    assert.deepEqual((await db.query('SELECT * FROM core.node_name_history ORDER BY node_id, name')).rows, before);
   });
 
   await t.test('literal search retains network, observer, freshness and privacy gates', async () => {

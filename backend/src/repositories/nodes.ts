@@ -194,7 +194,7 @@ export function createNodeRepository(query: QueryFn): NodeRepository {
         OR STRPOS(LOWER(n.node_id), LOWER(${searchParameter})) > 0
         OR STRPOS(LOWER(COALESCE(n.iata, '')), LOWER(${searchParameter})) > 0
         OR EXISTS (
-          SELECT 1 FROM node_name_history history
+          SELECT 1 FROM core.node_name_history history
           JOIN nodes name_source ON name_source.node_id = history.node_id
           WHERE history.node_id = ANY(n.identity_source_ids)
             AND history.name NOT LIKE '%🚫%'
@@ -218,7 +218,7 @@ export function createNodeRepository(query: QueryFn): NodeRepository {
         `SELECT ${selectedFields}
            FROM ${filters.nodeSource ?? 'node_identity_nodes'} n
           WHERE ${mapVisiblePredicate('n', `$${snapshotParameter}::timestamptz`)}
-            AND NOT EXISTS (SELECT 1 FROM node_map_suppressions s WHERE s.node_id = n.node_id)
+            AND NOT EXISTS (SELECT 1 FROM core.node_map_suppressions s WHERE s.node_id = n.node_id)
             ${filters.nodesAlias('n')}
             ${searchCondition}
             AND ($${cursorParameter}::text IS NULL OR n.node_id > $${cursorParameter})

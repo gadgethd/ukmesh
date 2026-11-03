@@ -30,8 +30,6 @@
     "node_identity_status_samples",
     "node_link_radio_reports",
     "node_links",
-    "node_map_suppressions",
-    "node_name_history",
     "node_neighbor_samples",
     "node_network_sightings",
     "node_status_samples",
@@ -157,7 +155,6 @@
       "node_identity_links",
       "node_identity_nodes",
       "node_identity_sightings",
-      "node_map_suppressions",
       "node_neighbor_samples",
       "node_status_samples",
       "nodes",
@@ -187,7 +184,6 @@
     ],
     "db/nodeNameHistory.integration.test.ts": [
       "node_identity_aliases",
-      "node_name_history",
       "node_status_samples",
       "nodes",
       "packets"
@@ -312,8 +308,7 @@
       "packets"
     ],
     "nodes/mapSuppressions.ts": [
-      "node_identity_nodes",
-      "node_map_suppressions"
+      "node_identity_nodes"
     ],
     "operations/operatorOperations.ts": [
       "analysis_runs",
@@ -465,7 +460,6 @@
       "packets"
     ],
     "repositories/nodes.test.ts": [
-      "node_map_suppressions",
       "packets"
     ],
     "repositories/nodes.ts": [
@@ -473,8 +467,6 @@
       "node_identity_links",
       "node_identity_nodes",
       "node_identity_status_samples",
-      "node_map_suppressions",
-      "node_name_history",
       "nodes",
       "packets"
     ],
@@ -632,7 +624,6 @@
     ],
     "workers/syntheticPersistence.ts": [],
     "ws/initialStateNodes.integration.test.ts": [
-      "node_map_suppressions",
       "nodes"
     ],
     "ws/publicAuthorization.integration.test.ts": [
