@@ -354,7 +354,7 @@ export async function actOnPlannedNodePublication(
        SELECT id FROM ops.planned_nodes WHERE id = $3::uuid
      ),
      published AS (
-       INSERT INTO planned_node_publications (
+       INSERT INTO core.planned_node_publications (
          planned_node_id, public_name, public_lat, public_lon, public_height_m,
          region, expires_at, published_by
        )
@@ -374,7 +374,7 @@ export async function actOnPlannedNodePublication(
        RETURNING planned_node_id
      ),
      unpublished AS (
-       DELETE FROM planned_node_publications publication_row
+       DELETE FROM core.planned_node_publications publication_row
         WHERE publication_row.planned_node_id = $3::uuid
           AND $2 = 'unpublish'
           AND NOT EXISTS (SELECT 1 FROM existing)

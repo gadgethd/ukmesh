@@ -59,7 +59,6 @@
     "path_prefix_priors",
     "path_slow_resolutions",
     "path_transition_priors",
-    "planned_node_publications",
     "private_node_prefixes",
     "schema_migration_compatibility",
     "schema_migrations",
@@ -303,8 +302,7 @@
       "ml_model_versions",
       "observer_registration_requests",
       "observers",
-      "path_model_calibration",
-      "planned_node_publications"
+      "path_model_calibration"
     ],
     "owner/alertRules.ts": [
       "node_links",
@@ -466,9 +464,7 @@
       "nodes"
     ],
     "repositories/plannedCoverage.ts": [],
-    "repositories/plannedNodes.ts": [
-      "planned_node_publications"
-    ],
+    "repositories/plannedNodes.ts": [],
     "repositories/productFeatures.test.ts": [
       "node_identity_aliases",
       "node_link_radio_reports",

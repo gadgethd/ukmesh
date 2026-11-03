@@ -74,7 +74,7 @@ export async function listPublicPlannedNodes(
             region,
             published_at,
             expires_at
-       FROM planned_node_publications
+       FROM core.planned_node_publications
       WHERE expires_at > NOW()
         AND (
           $1::timestamptz IS NULL
@@ -125,7 +125,7 @@ export async function listOperatorPlannedNodes(query: QueryFn): Promise<QueryRes
             publication.published_at,
             publication.expires_at
        FROM ops.planned_nodes planned
-       LEFT JOIN planned_node_publications publication
+       LEFT JOIN core.planned_node_publications publication
          ON publication.planned_node_id = planned.id
       ORDER BY planned.created_at DESC
       LIMIT 100`,
