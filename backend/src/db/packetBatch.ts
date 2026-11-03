@@ -522,8 +522,8 @@ export async function persistEntriesCore(
          WHERE forwarding_payload IS NOT NULL AND path_is_valid AND NOT is_private
            AND (EXISTS (SELECT 1 FROM core.owner_packet_share_rules rule
                         WHERE rule.node_id = new_rows.rx_node_id AND rule.enabled)
-             OR EXISTS (SELECT 1 FROM owner_public_feed_nodes feed_node
-                        JOIN owner_public_feed_settings setting USING (owner_username)
+             OR EXISTS (SELECT 1 FROM core.owner_public_feed_nodes feed_node
+                        JOIN core.owner_public_feed_settings setting USING (owner_username)
                         WHERE feed_node.node_id = new_rows.rx_node_id AND setting.enabled))
          ON CONFLICT (observation_id) DO NOTHING
          RETURNING 1

@@ -29,8 +29,8 @@ test('recovery migration: atomic forwarding, hypertable capacity, and abandoned 
     catch (error) { await client.query('ROLLBACK'); throw error; }
     finally { client.release(); }
   };
-  await pool.query("INSERT INTO owner_public_feed_settings (owner_username, enabled) VALUES ('fixture', TRUE)");
-  await pool.query("INSERT INTO owner_public_feed_nodes (owner_username, node_id) VALUES ('fixture', $1)", ['A'.repeat(64)]);
+  await pool.query("INSERT INTO core.owner_public_feed_settings (owner_username, enabled) VALUES ('fixture', TRUE)");
+  await pool.query("INSERT INTO core.owner_public_feed_nodes (owner_username, node_id) VALUES ('fixture', $1)", ['A'.repeat(64)]);
   const input = buildPacketBatchInput({ packetHash: 'recovery-valid', rxNodeId: 'A'.repeat(64), topic: `meshcore/LHR/${'A'.repeat(64)}/packets`,
     packetType: 5, rawHex: '0102', pathHashes: ['ABCD'], pathHashSizeBytes: 2, network: 'ukmesh',
     forwarding: { packet: { id: 'fixture', packetHash: 'recovery-valid', topic: 'fixture', ts: Date.now() }, upstreamEnvelope: { raw: '0102' } } });
