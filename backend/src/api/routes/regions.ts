@@ -402,12 +402,12 @@ export function registerRegionsRoutes(router: Router, deps: RegionsRouteDeps): v
         deps.query<RunRow>('SELECT finished_at, window_days FROM core.region_scope_run LIMIT 1'),
         deps.query<RegionStatRow>(
           `SELECT region, packets_total, member_count, repeater_member_count, first_seen, last_seen
-             FROM region_scope_stats
+             FROM core.region_scope_stats
             ORDER BY packets_total DESC, region ASC`,
         ),
         deps.query<RegionMemberRow>(
           `SELECT m.region, m.node_id, m.packets, meta.name, meta.role, meta.lat, meta.lon
-             FROM region_scope_members m
+             FROM core.region_scope_members m
              ${nodeMetaLateral('m', filters)}
             ORDER BY m.region ASC, m.packets DESC, m.node_id ASC`,
           [...filters.params],
@@ -430,7 +430,7 @@ export function registerRegionsRoutes(router: Router, deps: RegionsRouteDeps): v
         deps.query<RegionRepeaterRow>(
           `SELECT s.node_id, s.status, s.evidence, s.scoped_packets, s.unscoped_packets_7d, s.regions,
                   meta.name, meta.role, meta.lat, meta.lon
-             FROM repeater_scope_status s
+             FROM core.repeater_scope_status s
              ${nodeMetaLateral('s', filters)}
             ORDER BY s.scoped_packets DESC, s.node_id ASC`,
           [...filters.params],
@@ -476,14 +476,14 @@ export function registerRegionsRoutes(router: Router, deps: RegionsRouteDeps): v
         deps.query<RegionRepeaterRow>(
           `SELECT s.node_id, s.status, s.evidence, s.scoped_packets, s.unscoped_packets_7d, s.regions,
                   meta.name, meta.role, meta.lat, meta.lon
-             FROM repeater_scope_status s
+             FROM core.repeater_scope_status s
              ${nodeMetaLateral('s', filters)}
             WHERE s.node_id = ${idParam}`,
           [...filters.params, rawId],
         ),
         deps.query<ScopeMemberRow>(
           `SELECT region, packets
-             FROM region_scope_members
+             FROM core.region_scope_members
             WHERE node_id = $1
             ORDER BY packets DESC, region ASC`,
           [rawId],

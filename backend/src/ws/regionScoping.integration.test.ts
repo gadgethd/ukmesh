@@ -31,8 +31,8 @@ test('real regional sockets isolate snapshots, caches, live packets and node mem
   const a = 'A'.repeat(64), b = 'B'.repeat(64), c = 'C'.repeat(64);
   await pool.query(`INSERT INTO nodes(node_id, network, name, role, lat, lon)
     VALUES ($1, 'ukmesh', 'Europe relay', 2, 54, -1), ($2, 'ukmesh', 'eng-ne relay', 2, 55, -2)`, [a, b]);
-  await pool.query(`INSERT INTO region_scope_stats(region) VALUES ('Europe'), ('eng-ne')`);
-  await pool.query(`INSERT INTO region_scope_members(region, node_id, packets) VALUES ('Europe', $1, 4), ('eng-ne', $2, 4)`, [a, b]);
+  await pool.query(`INSERT INTO core.region_scope_stats(region) VALUES ('Europe'), ('eng-ne')`);
+  await pool.query(`INSERT INTO core.region_scope_members(region, node_id, packets) VALUES ('Europe', $1, 4), ('eng-ne', $2, 4)`, [a, b]);
   await pool.query(`INSERT INTO packets(packet_hash, rx_node_id, topic, network, packet_type, region_scope, path_hashes, path_hash_size_bytes)
     VALUES ('Europe', $1, 'meshcore/ZZZ/fixture/packets', 'ukmesh', 5, '#Europe', ARRAY[]::text[], 1),
            ('eng-ne', $2, 'meshcore/ZZZ/fixture/packets', 'ukmesh', 5, '#eng-ne', ARRAY[]::text[], 1)`, [a, b]);

@@ -61,9 +61,6 @@
     "path_transition_priors",
     "planned_node_publications",
     "private_node_prefixes",
-    "region_scope_members",
-    "region_scope_stats",
-    "repeater_scope_status",
     "schema_migration_compatibility",
     "schema_migrations",
     "spam_message_incidents",
@@ -130,10 +127,7 @@
       "node_identity_nodes"
     ],
     "api/routes/regions.ts": [
-      "nodes",
-      "region_scope_members",
-      "region_scope_stats",
-      "repeater_scope_status"
+      "nodes"
     ],
     "api/routes/rfValidation.test.ts": [
       "node_identity_nodes"
@@ -239,9 +233,7 @@
     "db/regionScoping.integration.test.ts": [
       "node_identity_aliases",
       "nodes",
-      "packets",
-      "region_scope_members",
-      "region_scope_stats"
+      "packets"
     ],
     "db/silentRecovery.integration.test.ts": [
       "owner_alert_deliveries",
@@ -436,8 +428,7 @@
       "packets"
     ],
     "regions/filter.ts": [
-      "node_identity_aliases",
-      "region_scope_members"
+      "node_identity_aliases"
     ],
     "regions/nodeSource.ts": [
       "node_identity_aliases",
@@ -589,10 +580,7 @@
     ],
     "tools/rebuildRegionParticipation.ts": [
       "nodes",
-      "packets",
-      "region_scope_members",
-      "region_scope_stats",
-      "repeater_scope_status"
+      "packets"
     ],
     "tools/recomputeSpamSuspects.ts": [
       "packets",
@@ -626,9 +614,7 @@
     ],
     "ws/regionScoping.integration.test.ts": [
       "nodes",
-      "packets",
-      "region_scope_members",
-      "region_scope_stats"
+      "packets"
     ]
   }
 }

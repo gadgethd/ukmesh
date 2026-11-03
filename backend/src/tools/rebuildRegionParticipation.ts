@@ -7,7 +7,7 @@
  *   - resolve elements to nodes (unique prefix match only; drop ambiguous)
  * Then tally node -> region -> distinct packets, plus unscoped relay evidence
  * (route 1, multibyte, 7d) for the green/red classification, and refresh:
- *   region_scope_stats, region_scope_members, repeater_scope_status,
+ *   core.region_scope_stats, core.region_scope_members, core.repeater_scope_status,
  *   core.region_scope_run
  *
  * Membership floor: a node counts as a region member only when it relayed at
@@ -376,15 +376,15 @@ async function main(): Promise<void> {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      await client.query('DELETE FROM region_scope_members');
-      await client.query('DELETE FROM region_scope_stats');
-      await client.query('DELETE FROM repeater_scope_status');
+      await client.query('DELETE FROM core.region_scope_members');
+      await client.query('DELETE FROM core.region_scope_stats');
+      await client.query('DELETE FROM core.repeater_scope_status');
       await client.query('DELETE FROM core.region_scope_unattributed');
       await client.query('DELETE FROM core.region_scope_run');
 
       const regionNames = [...regionTotals.keys()];
       await client.query(
-        `INSERT INTO region_scope_stats
+        `INSERT INTO core.region_scope_stats
            (region, packets_total, member_count, repeater_member_count, first_seen, last_seen)
          SELECT region, packets_total, member_count, repeater_member_count, first_seen, last_seen
            FROM unnest($1::text[], $2::int[], $3::int[], $4::int[], $5::timestamptz[], $6::timestamptz[])
@@ -403,7 +403,7 @@ async function main(): Promise<void> {
       for (let offset = 0; offset < members.length; offset += MEMBER_BATCH) {
         const batch = members.slice(offset, offset + MEMBER_BATCH);
         await client.query(
-          `INSERT INTO region_scope_members (region, node_id, packets)
+          `INSERT INTO core.region_scope_members (region, node_id, packets)
            SELECT region, node_id, packets
              FROM unnest($1::text[], $2::text[], $3::int[]) AS t(region, node_id, packets)`,
           [
@@ -418,7 +418,7 @@ async function main(): Promise<void> {
       for (let offset = 0; offset < classification.length; offset += STATUS_BATCH) {
         const batch = classification.slice(offset, offset + STATUS_BATCH);
         await client.query(
-          `INSERT INTO repeater_scope_status
+          `INSERT INTO core.repeater_scope_status
              (node_id, status, evidence, scoped_packets, unscoped_packets_7d, regions)
            SELECT node_id, status, evidence, scoped_packets, unscoped_packets_7d, regions::jsonb
              FROM unnest($1::text[], $2::text[], $3::text[], $4::int[], $5::int[], $6::text[])

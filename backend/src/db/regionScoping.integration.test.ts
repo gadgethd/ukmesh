@@ -44,10 +44,10 @@ test('region reads preserve identity/privacy semantics and use indexes in real P
     FROM generate_series(1, 12000) i`);
   await query(`INSERT INTO node_identity_aliases
     (source_node_id, canonical_node_id, confidence, reason) VALUES ($1, $2, 'high', 'fixture')`, [b, a]);
-  await query(`INSERT INTO region_scope_stats(region) VALUES ('Europe'), ('eng-ne')`);
-  await query(`INSERT INTO region_scope_members(region, node_id, packets)
+  await query(`INSERT INTO core.region_scope_stats(region) VALUES ('Europe'), ('eng-ne')`);
+  await query(`INSERT INTO core.region_scope_members(region, node_id, packets)
     VALUES ('Europe', $1, 4), ('Europe', $2, 4), ('Europe', $3, 4)`, [b, c, privateId]);
-  await query(`INSERT INTO region_scope_members(region, node_id, packets)
+  await query(`INSERT INTO core.region_scope_members(region, node_id, packets)
     SELECT 'eng-ne', upper(md5(i::text) || md5(i::text)), 1 FROM generate_series(1, 12000) i`);
   await query(`INSERT INTO packets
     (packet_hash, rx_node_id, src_node_id, topic, network, packet_type, region_scope, path_hashes, path_hash_size_bytes, payload)
@@ -109,7 +109,7 @@ test('region reads preserve identity/privacy semantics and use indexes in real P
     assert.match(serialized, /Index (?:Only )?Scan|Bitmap Index Scan/);
     const visit = (node: Record<string, unknown>) => {
       if (node['Node Type'] === 'Seq Scan') {
-        assert.doesNotMatch(String(node['Relation Name']), /^(?:nodes|region_scope_members|_hyper_.*_chunk)$/,
+        assert.doesNotMatch(String(node['Relation Name']), /^(?:nodes|core.region_scope_members|_hyper_.*_chunk)$/,
           `unbounded regional read: ${serialized}`);
       }
       for (const child of (node['Plans'] ?? []) as Array<Record<string, unknown>>) visit(child);
