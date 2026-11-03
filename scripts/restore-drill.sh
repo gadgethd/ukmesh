@@ -459,7 +459,7 @@ integrity_json="$(
       LIMIT 1000
     ), node_sample AS (
       SELECT node_id, COALESCE(name, '') AS name
-      FROM nodes
+      FROM core.nodes
       ORDER BY node_id
       LIMIT 1000
     )

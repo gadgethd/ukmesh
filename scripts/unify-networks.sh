@@ -33,7 +33,7 @@ scalar() { "${PSQL[@]}" -qAt -c "$1" | tr -d '[:space:]'; }
 audit() {
   log 'network-label counts'
   "${PSQL[@]}" <<'SQL'
-SELECT 'nodes' AS relation, network, COUNT(*) FROM nodes GROUP BY network
+SELECT 'nodes' AS relation, network, COUNT(*) FROM core.nodes GROUP BY network
 UNION ALL SELECT 'node_status_samples', network, COUNT(*) FROM node_status_samples GROUP BY network
 UNION ALL SELECT 'packets', network, COUNT(*) FROM packets GROUP BY network
 UNION ALL SELECT 'node_network_sightings', network, COUNT(*) FROM node_network_sightings GROUP BY network
@@ -46,7 +46,7 @@ SQL
 
 verify() {
   local remaining
-  remaining="$(scalar "SELECT (SELECT COUNT(*) FROM nodes WHERE network IN (${LEGACY_SQL})) + (SELECT COUNT(*) FROM node_status_samples WHERE network IN (${LEGACY_SQL})) + (SELECT COUNT(*) FROM packets WHERE network IN (${LEGACY_SQL})) + (SELECT COUNT(*) FROM node_network_sightings WHERE network IN (${LEGACY_SQL}));")"
+  remaining="$(scalar "SELECT (SELECT COUNT(*) FROM core.nodes WHERE network IN (${LEGACY_SQL})) + (SELECT COUNT(*) FROM node_status_samples WHERE network IN (${LEGACY_SQL})) + (SELECT COUNT(*) FROM packets WHERE network IN (${LEGACY_SQL})) + (SELECT COUNT(*) FROM node_network_sightings WHERE network IN (${LEGACY_SQL}));")"
   audit
   if [[ "$remaining" != '0' ]]; then
     log "ERROR: ${remaining} authoritative rows still use legacy production labels"

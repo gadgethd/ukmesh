@@ -42,8 +42,8 @@ def main():
                 na.lat AS lat_a, na.lon AS lon_a, na.elevation_m AS elev_a,
                 nb.lat AS lat_b, nb.lon AS lon_b, nb.elevation_m AS elev_b
             FROM core.node_links nl
-            JOIN nodes na ON na.node_id = nl.node_a_id
-            JOIN nodes nb ON nb.node_id = nl.node_b_id
+            JOIN core.nodes na ON na.node_id = nl.node_a_id
+            JOIN core.nodes nb ON nb.node_id = nl.node_b_id
             WHERE nl.terrain_profile_json IS NULL
               AND nl.itm_computed_at IS NOT NULL
               AND na.lat IS NOT NULL AND na.lon IS NOT NULL
