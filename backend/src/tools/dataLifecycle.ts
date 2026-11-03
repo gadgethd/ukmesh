@@ -1,4 +1,14 @@
 import { pool, query } from '../db/index.js';
+function qualifiedTable(policy: { table: string; qualifiedTable?: string }): string {
+  return policy.qualifiedTable ?? policy.table;
+}
+
+function relationParts(policy: { table: string; qualifiedTable?: string }): { schema: string; name: string } {
+  const relation = qualifiedTable(policy);
+  const [schema, name] = relation.includes('.') ? relation.split('.', 2) : ['public', relation];
+  return { schema: schema!, name: name! };
+}
+
 import {
   assertDataLifecycleGate,
   compressionPolicy,
@@ -39,13 +49,13 @@ async function inventory(): Promise<void> {
       chunks = await query<{ expired_chunks: string; compressed_chunks: string }>(
         `SELECT
            COUNT(*) FILTER (
-             WHERE range_end < NOW() - $2::interval
+             WHERE range_end < NOW() - $3::interval
            )::text AS expired_chunks,
            COUNT(*) FILTER (WHERE is_compressed)::text AS compressed_chunks
          FROM timescaledb_information.chunks
-         WHERE hypertable_schema = 'public'
-           AND hypertable_name = $1`,
-        [policy.table, policy.retention],
+         WHERE hypertable_schema = $1
+           AND hypertable_name = $2`,
+        [relationParts(policy).schema, relationParts(policy).name, policy.retention],
       ).then((value) => value.rows[0] ?? {
         expired_chunks: '0',
         compressed_chunks: '0',
@@ -76,11 +86,11 @@ async function inventory(): Promise<void> {
               pg_total_relation_size($1::regclass)::text AS total_bytes,
               (SELECT COUNT(*)::text
                  FROM timescaledb_information.chunks
-                WHERE hypertable_schema = 'public'
-                  AND hypertable_name = $2
+                WHERE hypertable_schema = $2
+                  AND hypertable_name = $3
                   AND is_compressed) AS compressed_chunks
-         FROM ${policy.table}`,
-      [policy.table, policy.table],
+         FROM ${qualifiedTable(policy)}`,
+      [qualifiedTable(policy), relationParts(policy).schema, relationParts(policy).name],
     );
     console.log('[data-lifecycle] inventory', {
       table: policy.table,
@@ -108,7 +118,7 @@ async function applyCompression(target: string, approval: string | undefined): P
     await client.query(`SET LOCAL lock_timeout = '5s'`);
     await client.query(`SET LOCAL statement_timeout = '30s'`);
     await client.query(
-      `ALTER TABLE ${policy.table} SET (
+      `ALTER TABLE ${qualifiedTable(policy)} SET (
          timescaledb.compress,
          timescaledb.compress_segmentby = '${policy.compressionSegmentBy}',
          timescaledb.compress_orderby = '${policy.compressionOrderBy}'
@@ -120,7 +130,7 @@ async function applyCompression(target: string, approval: string | undefined): P
          $2::interval,
          if_not_exists => TRUE
        )`,
-      [policy.table, policy.compressAfter],
+      [qualifiedTable(policy), policy.compressAfter],
     );
     await client.query('COMMIT');
   } catch (error) {
@@ -149,7 +159,7 @@ async function applyRetention(target: string, approval: string | undefined): Pro
          $2::interval,
          if_not_exists => TRUE
        )`,
-      [policy.table, policy.retention],
+      [qualifiedTable(policy), policy.retention],
     );
   } else {
     console.log(

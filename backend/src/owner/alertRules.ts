@@ -303,7 +303,7 @@ export async function pollOwnerAlertRules(): Promise<void> {
        FROM core.owner_alert_rules rules
        JOIN nodes ON nodes.node_id = rules.node_id
        LEFT JOIN LATERAL (
-         SELECT battery_mv FROM node_status_samples
+         SELECT battery_mv FROM core.node_status_samples
          WHERE node_id = rules.node_id ORDER BY time DESC LIMIT 1
        ) telemetry ON true
        LEFT JOIN LATERAL (

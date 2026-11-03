@@ -600,7 +600,7 @@ export function createOwnerRepository(deps: OwnerRepositoryDeps) {
              WHEN jsonb_typeof(stats->'tx_publish_calls') = 'number' THEN (stats->>'tx_publish_calls')::double precision
              ELSE NULL
            END AS tx_publish_calls
-         FROM node_status_samples
+         FROM core.node_status_samples
          WHERE node_id = $1
            AND network = COALESCE(
              (SELECT network FROM node_identity_nodes
@@ -625,7 +625,7 @@ export function createOwnerRepository(deps: OwnerRepositoryDeps) {
            FROM owner_ids
            CROSS JOIN LATERAL (
              SELECT time, neighbors
-             FROM node_neighbor_samples
+             FROM core.node_neighbor_samples
              WHERE node_id = owner_ids.node_id
                AND time > NOW() - INTERVAL '7 days'
                AND network = COALESCE(

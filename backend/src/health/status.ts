@@ -79,7 +79,7 @@ export const RETENTION_TARGETS: readonly RetentionTarget[] = [
   // Timescale drops complete chunks; this bounded boundary cleanup makes the
   // listed 30-day privacy limits exact for the partial oldest chunk.
   { table: 'packets', timestampColumn: 'time', retention: '30 days', batchSize: 25_000 },
-  { table: 'node_status_samples', timestampColumn: 'time', retention: '30 days', batchSize: 25_000 },
+  { table: 'node_status_samples', qualifiedTable: 'core.node_status_samples', timestampColumn: 'time', retention: '30 days', batchSize: 25_000 },
   { table: 'worker_health_snapshots', qualifiedTable: 'ops.worker_health_snapshots', timestampColumn: 'ts', retention: '7 days', batchSize: 10_000 },
   { table: 'frontend_error_events', qualifiedTable: 'ops.frontend_error_events', timestampColumn: 'time', retention: '30 days', batchSize: 2_000 },
   {

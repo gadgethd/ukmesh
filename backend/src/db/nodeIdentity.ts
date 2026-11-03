@@ -714,7 +714,7 @@ export async function refreshNodeIdentityAliases(
       }>(
         `SELECT node_id, COUNT(*)::text AS count,
                 MIN(time) AS first_at, MAX(time) AS last_at
-           FROM node_status_samples
+           FROM core.node_status_samples
           WHERE node_id = ANY($1::text[])
           GROUP BY node_id`,
         [ids],

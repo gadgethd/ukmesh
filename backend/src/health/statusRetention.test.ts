@@ -25,6 +25,7 @@ test('retention targets include hard packet boundary and reviewed long-lived tab
   assert.equal(byTable.get('operator_audit_events')?.retention, '730 days');
   assert.deepEqual(byTable.get('node_status_samples'), {
     table: 'node_status_samples',
+    qualifiedTable: 'core.node_status_samples',
     timestampColumn: 'time',
     retention: '30 days',
     batchSize: 25_000,

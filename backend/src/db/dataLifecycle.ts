@@ -14,6 +14,7 @@ export type DataLifecyclePolicy = Readonly<{
 
 export type DataCompressionPolicy = Readonly<{
   table: 'packets' | 'packet_paths' | 'node_status_samples' | 'node_neighbor_samples';
+  qualifiedTable?: string;
   compressAfter: string;
   compressionSegmentBy: 'network';
   compressionOrderBy: 'time DESC';
@@ -24,8 +25,8 @@ export type DataCompressionPolicy = Readonly<{
 export const DATA_COMPRESSION_POLICIES: readonly DataCompressionPolicy[] = Object.freeze([
   { table: 'packets', compressAfter: '14 days', compressionSegmentBy: 'network', compressionOrderBy: 'time DESC' },
   { table: 'packet_paths', compressAfter: '14 days', compressionSegmentBy: 'network', compressionOrderBy: 'time DESC' },
-  { table: 'node_status_samples', compressAfter: '14 days', compressionSegmentBy: 'network', compressionOrderBy: 'time DESC' },
-  { table: 'node_neighbor_samples', compressAfter: '1 day', compressionSegmentBy: 'network', compressionOrderBy: 'time DESC' },
+  { table: 'node_status_samples', qualifiedTable: 'core.node_status_samples', compressAfter: '14 days', compressionSegmentBy: 'network', compressionOrderBy: 'time DESC' },
+  { table: 'node_neighbor_samples', qualifiedTable: 'core.node_neighbor_samples', compressAfter: '1 day', compressionSegmentBy: 'network', compressionOrderBy: 'time DESC' },
 ]);
 
 export const DATA_LIFECYCLE_POLICIES: readonly DataLifecyclePolicy[] = Object.freeze([
@@ -42,6 +43,7 @@ export const DATA_LIFECYCLE_POLICIES: readonly DataLifecyclePolicy[] = Object.fr
   },
   {
     table: 'node_status_samples',
+    qualifiedTable: 'core.node_status_samples',
     timestampColumn: 'time',
     retention: '30 days',
     kind: 'hypertable',
@@ -51,6 +53,7 @@ export const DATA_LIFECYCLE_POLICIES: readonly DataLifecyclePolicy[] = Object.fr
   },
   {
     table: 'node_neighbor_samples',
+    qualifiedTable: 'core.node_neighbor_samples',
     timestampColumn: 'time',
     retention: '7 days',
     kind: 'hypertable',

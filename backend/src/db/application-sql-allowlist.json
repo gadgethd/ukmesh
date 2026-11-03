@@ -23,8 +23,6 @@
     "node_identity_packets",
     "node_identity_status_samples",
     "node_link_radio_reports",
-    "node_neighbor_samples",
-    "node_status_samples",
     "nodes",
     "packet_daily_stats",
     "packet_decryptions",
@@ -83,13 +81,11 @@
     ],
     "api/routes/mqttNodes.integration.test.ts": [
       "node_identity_nodes",
-      "node_status_samples",
       "packets"
     ],
     "api/routes/nodeStatus.ts": [
       "node_identity_nodes",
-      "node_identity_status_samples",
-      "node_status_samples"
+      "node_identity_status_samples"
     ],
     "api/routes/ownerPacketSharing.test.ts": [],
     "api/routes/ownerPublicFeed.test.ts": [],
@@ -111,8 +107,6 @@
       "message_tags",
       "node_identity_link_radio_reports",
       "node_identity_nodes",
-      "node_neighbor_samples",
-      "node_status_samples",
       "nodes",
       "packet_decryptions",
       "packets",
@@ -127,7 +121,6 @@
       "packets"
     ],
     "db/nodeIdentity.ts": [
-      "node_status_samples",
       "nodes",
       "packets"
     ],
@@ -135,7 +128,6 @@
       "nodes"
     ],
     "db/nodeNameHistory.integration.test.ts": [
-      "node_status_samples",
       "nodes",
       "packets"
     ],
@@ -236,7 +228,6 @@
       "path_model_calibration"
     ],
     "owner/alertRules.ts": [
-      "node_status_samples",
       "nodes"
     ],
     "owner/forwardingOutbox.ts": [
@@ -248,9 +239,7 @@
     "owner/ownerAuthorityScope.test.ts": [],
     "owner/ownerRepository.ts": [
       "node_identity_nodes",
-      "node_identity_packets",
-      "node_neighbor_samples",
-      "node_status_samples"
+      "node_identity_packets"
     ],
     "owner/ownerService.integration.test.ts": [
       "node_identity_nodes",

@@ -56,7 +56,7 @@ router.get('/node-status/latest', async (req, res) => {
          JOIN LATERAL (
            SELECT time, network, battery_mv, uptime_secs, tx_air_secs,
                   rx_air_secs, channel_utilization, air_util_tx
-           FROM node_status_samples
+           FROM core.node_status_samples
            WHERE node_id = s.source_node_id
              AND network = ANY($1::text[])
            ORDER BY time DESC
@@ -172,7 +172,7 @@ router.get('/node-status/history', async (req, res) => {
          END AS tx_queue_depth_peak
        FROM node_identity_nodes n
        CROSS JOIN LATERAL unnest(n.identity_source_ids) AS source(source_node_id)
-       JOIN node_status_samples nss ON nss.node_id = source.source_node_id
+       JOIN core.node_status_samples nss ON nss.node_id = source.source_node_id
        WHERE n.node_id = meshcore_canonical_node_id($1)
          AND nss.network = ANY($3::text[])
          AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')

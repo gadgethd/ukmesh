@@ -626,7 +626,7 @@ export async function insertNodeStatusSample(sample: {
 }): Promise<void> {
   await ingestQuery(
     `WITH sample_insert AS (
-       INSERT INTO node_status_samples
+       INSERT INTO core.node_status_samples
        (time, node_id, network, battery_mv, uptime_secs, tx_air_secs, rx_air_secs, channel_utilization, air_util_tx, stats, status)
        VALUES (COALESCE($11::timestamptz, NOW()), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING time
@@ -658,7 +658,7 @@ export async function insertNodeNeighborSample(sample: {
   neighbors: unknown[];
 }): Promise<void> {
   await ingestQuery(
-    `INSERT INTO node_neighbor_samples (node_id, time, neighbors, network)
+    `INSERT INTO core.node_neighbor_samples (node_id, time, neighbors, network)
      VALUES ($1, NOW(), $2::jsonb, $3)`,
     [sample.nodeId, JSON.stringify(sample.neighbors), sample.network ?? 'ukmesh'],
   );
