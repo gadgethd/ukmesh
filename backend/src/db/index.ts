@@ -1386,7 +1386,7 @@ export async function getViableLinks(
        FROM node_identity_links nl
        LEFT JOIN LATERAL (
          SELECT SUM(sample_count)::int AS neighbor_report_count, MAX(best_snr_db) AS neighbor_best_snr_db
-         FROM node_identity_link_radio_reports r
+         FROM core.node_identity_link_radio_reports r
          WHERE r.node_a_id = nl.node_a_id AND r.node_b_id = nl.node_b_id
        ) nr ON TRUE
        WHERE nl.node_a_id = ANY($1::text[]) AND nl.node_b_id = ANY($1::text[])
@@ -1430,7 +1430,7 @@ export async function getViableLinks(
            SELECT node_a_id, node_b_id,
              SUM(sample_count)::int AS neighbor_report_count,
              MAX(best_snr_db) AS neighbor_best_snr_db
-           FROM node_identity_link_radio_reports
+           FROM core.node_identity_link_radio_reports
            GROUP BY node_a_id, node_b_id
          ) nr ON nr.node_a_id = nl.node_a_id AND nr.node_b_id = nl.node_b_id
          WHERE (nl.itm_viable = true OR nl.force_viable = true)`,
@@ -1465,7 +1465,7 @@ export async function getViableLinks(
        SELECT node_a_id, node_b_id,
          SUM(sample_count)::int AS neighbor_report_count,
          MAX(best_snr_db) AS neighbor_best_snr_db
-       FROM node_identity_link_radio_reports
+       FROM core.node_identity_link_radio_reports
        GROUP BY node_a_id, node_b_id
      ) nr ON nr.node_a_id = nl.node_a_id AND nr.node_b_id = nl.node_b_id
      JOIN node_identity_nodes a ON a.node_id = nl.node_a_id
