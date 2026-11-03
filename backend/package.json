@@ -27,6 +27,7 @@
     "test": "node --import tsx --test $(find src -name '*.test.ts' ! -name '*.integration.test.ts' -print) && bash ../scripts/test-alert-receiver.sh",
     "test:analysis-integration": "node --import tsx --test src/analysis/runState.integration.test.ts",
     "test:owner-acl-integration": "node --import tsx --test src/owner/ownerAclArtifacts.integration.test.ts",
+    "test:external-consumers": "npm run test:external-consumers:sql && npm run test:external-consumers:views",
     "test:external-consumers:sql": "python3 ../scripts/check_external_consumer_sql.py --root ../backend/src --root ../viewshed-worker",
     "test:external-consumers:views": "node --import tsx --test src/db/externalConsumerCompat.integration.test.ts",
     "test:vacuum-integration": "node --import tsx --test src/health/vacuumBacklog.integration.test.ts",
