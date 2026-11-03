@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
 import test from 'node:test';
 import pg from 'pg';
 import { runMigrations } from './migrations.js';
@@ -33,7 +32,6 @@ test('external consumer compatibility views survive migrations and are readable'
     await admin.end();
   });
 
-  await pool.query(fs.readFileSync(new URL('./schema/base.sql', import.meta.url), 'utf8'));
   await runMigrations(pool);
 
   for (const [viewName, target] of compatibilityViews) {
