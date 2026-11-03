@@ -66,7 +66,7 @@ function deniedTopicKind(topic: string): string {
 
 /**
  * Broker logs are observations, never authorization evidence. No code in this
- * module writes owner_account_nodes or broker ACLs.
+ * module writes core.owner_account_nodes or broker ACLs.
  */
 export function observeBrokerLogLine(line: string, now = Date.now()): BrokerSecurityObservation | null {
   const connection = parseMosquittoConnection(line);
