@@ -18,7 +18,6 @@
     "ml_path_prefix_scores",
     "multibyte_path_fact_state",
     "multibyte_path_facts",
-    "node_coverage",
     "node_identity_aliases",
     "node_identity_link_radio_reports",
     "node_identity_links",
@@ -149,7 +148,6 @@
     ],
     "db/index.ts": [
       "message_tags",
-      "node_coverage",
       "node_identity_aliases",
       "node_identity_link_radio_reports",
       "node_identity_links",
@@ -478,9 +476,7 @@
     "repositories/pathEvidence.ts": [
       "nodes"
     ],
-    "repositories/plannedCoverage.ts": [
-      "node_coverage"
-    ],
+    "repositories/plannedCoverage.ts": [],
     "repositories/plannedNodes.ts": [
       "planned_node_publications"
     ],

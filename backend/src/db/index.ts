@@ -594,7 +594,7 @@ export async function upsertNode(nodeId: string, updates: {
 
     if (coordinatesChanged) {
       await transactionQuery('UPDATE nodes SET elevation_m = NULL WHERE node_id = $1', [nodeId]);
-      await transactionQuery('DELETE FROM node_coverage WHERE node_id = $1', [nodeId]);
+      await transactionQuery('DELETE FROM core.node_coverage WHERE node_id = $1', [nodeId]);
     }
 
     return {

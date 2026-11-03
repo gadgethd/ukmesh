@@ -76,7 +76,7 @@ export function createPlannedCoverageRepository(pool: pg.Pool): PlannedCoverageR
       );
       if (expired.rows.length > 0) {
         await client.query(
-          `DELETE FROM node_coverage
+          `DELETE FROM core.node_coverage
             WHERE is_planned = TRUE
               AND node_id = ANY($1::text[])`,
           [expired.rows.map((row) => row.job_id)],
@@ -167,7 +167,7 @@ export function createPlannedCoverageRepository(pool: pg.Pool): PlannedCoverageR
             [jobId, input.expiresAt],
           );
           await client.query(
-            `UPDATE node_coverage
+            `UPDATE core.node_coverage
                 SET expires_at = GREATEST(expires_at, $2)
               WHERE node_id = $1 AND is_planned = TRUE`,
             [jobId, input.expiresAt],
@@ -205,7 +205,7 @@ export function createPlannedCoverageRepository(pool: pg.Pool): PlannedCoverageR
                 handles.expires_at::text AS expires_at
            FROM ops.planned_coverage_handles handles
            JOIN ops.planned_coverage_jobs jobs ON jobs.job_id = handles.job_id
-           LEFT JOIN node_coverage coverage
+           LEFT JOIN core.node_coverage coverage
              ON coverage.node_id = jobs.job_id AND coverage.is_planned = TRUE
           WHERE handles.handle_hash = $1
             AND handles.hash_alg = $2
