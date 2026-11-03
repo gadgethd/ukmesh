@@ -7,6 +7,7 @@
     "build": "tsc",
     "dev": "tsx watch src/index.ts",
     "spam:recompute": "node dist/tools/recomputeSpamSuspects.js",
+    "identity:backfill": "node dist/tools/backfillPacketIdentity.js",
     "spam:messages": "node dist/tools/recomputeSpamMessages.js",
     "regions:rebuild": "node dist/tools/rebuildRegionParticipation.js",
     "db:migrate": "node dist/tools/migrate.js",
