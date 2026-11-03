@@ -288,8 +288,8 @@ def refresh_rf_calibration(db, force: bool = False) -> None:
                      AND p.rx_node_id <> p.src_node_id
                      AND p.hop_count = 0
                      AND p.time > NOW() - (%s * INTERVAL '1 hour')),
-                 (SELECT MAX(nl.itm_computed_at) FROM node_links nl),
-                 (SELECT COUNT(*) FROM node_links nl
+                 (SELECT MAX(nl.itm_computed_at) FROM core.node_links nl),
+                 (SELECT COUNT(*) FROM core.node_links nl
                    WHERE nl.itm_path_loss_db IS NOT NULL AND nl.force_viable = false)''',
             (RADIO_NEIGHBOR_MAX_AGE_HOURS,),
         )
@@ -319,7 +319,7 @@ def refresh_rf_calibration(db, force: bool = False) -> None:
               nl.itm_path_loss_db,
               lps.packet_count    AS neighbor_report_count,
               lps.median_snr_db   AS neighbor_best_snr_db
-            FROM node_links nl
+            FROM core.node_links nl
             JOIN link_packet_stats lps
               ON lps.node_a_id = nl.node_a_id
              AND lps.node_b_id = nl.node_b_id
@@ -450,7 +450,7 @@ def refresh_radio_neighbor_reports(db, r_client, force: bool = False) -> None:
                 a_id, b_id = sorted((reporter_id, peer_id))
                 cur.execute(
                     '''
-                    INSERT INTO node_links (
+                    INSERT INTO core.node_links (
                       node_a_id, node_b_id, observed_count, last_observed, count_a_to_b, count_b_to_a
                     )
                     VALUES (%s, %s, 0, NOW(), 0, 0)
@@ -516,7 +516,7 @@ def refresh_support_context(db, force: bool = False) -> None:
                    AND (role IS NULL OR role = 2)
                ), viable AS (
                  SELECT node_a_id, node_b_id, itm_viable, force_viable
-                 FROM node_links
+                 FROM core.node_links
                  WHERE itm_viable = true OR force_viable = true
                )
                SELECT
@@ -551,7 +551,7 @@ def refresh_support_context(db, force: bool = False) -> None:
             '''
             SELECT nl.node_a_id, nl.node_b_id,
                    na.lat, na.lon, nb.lat, nb.lon
-            FROM node_links nl
+            FROM core.node_links nl
             JOIN nodes na ON na.node_id = nl.node_a_id
             JOIN nodes nb ON nb.node_id = nl.node_b_id
             WHERE na.lat IS NOT NULL
@@ -1357,7 +1357,7 @@ def refresh_link_topology(db, force: bool = False) -> None:
     nodes = load_positioned_repeaters(db)
     with db.cursor() as cur:
         cur.execute(
-            'SELECT node_a_id, node_b_id FROM node_links WHERE itm_viable = true OR force_viable = true',
+            'SELECT node_a_id, node_b_id FROM core.node_links WHERE itm_viable = true OR force_viable = true',
         )
         physical_pairs = {link_pair_key(a_id, b_id) for a_id, b_id in cur.fetchall()}
 
@@ -1550,7 +1550,7 @@ def upsert_link_pair(db, a_id: str, b_id: str, inc_atob: int, inc_btoa: int, inc
     obs_delta = inc_atob + inc_btoa
     with db.cursor() as cur:
         cur.execute(
-            '''INSERT INTO node_links
+            '''INSERT INTO core.node_links
                    (node_a_id, node_b_id, observed_count, last_observed,
                     count_a_to_b, count_b_to_a, multibyte_observed_count)
                VALUES (%s, %s, %s, NOW(), %s, %s, %s)
@@ -1576,14 +1576,14 @@ def ensure_physical_link_metrics(db, a_id: str, a: dict, b_id: str, b: dict):
     # race-safe insert-and-reread path for a genuinely absent pair.
     select_pair_sql = '''SELECT observed_count, itm_computed_at, itm_path_loss_db, itm_viable,
                                 count_a_to_b, count_b_to_a, multibyte_observed_count
-                         FROM node_links
+                         FROM core.node_links
                          WHERE node_a_id = %s AND node_b_id = %s'''
     with db.cursor() as cur:
         cur.execute(select_pair_sql, (a_id, b_id))
         row = cur.fetchone()
         if row is None:
             cur.execute(
-                '''INSERT INTO node_links
+                '''INSERT INTO core.node_links
                      (node_a_id, node_b_id, observed_count, last_observed,
                       count_a_to_b, count_b_to_a, multibyte_observed_count)
                    VALUES (%s, %s, 0, NOW(), 0, 0, 0)
@@ -1648,7 +1648,7 @@ def ensure_physical_link_metrics(db, a_id: str, a: dict, b_id: str, b: dict):
             itm_viable = result.viable
             with db.cursor() as cur:
                 cur.execute(
-                    '''UPDATE node_links
+                    '''UPDATE core.node_links
                        SET itm_path_loss_db = %s,
                            itm_viable = %s,
                            itm_computed_at = NOW(),
