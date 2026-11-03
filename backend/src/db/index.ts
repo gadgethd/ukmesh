@@ -494,7 +494,7 @@ export async function upsertNode(nodeId: string, updates: {
   if (!hasIncomingPosition) {
     const result = await ingestQuery<{ advert_count: number }>(
       `WITH advert_once AS (
-         INSERT INTO ops.node_counted_adverts (canonical_advert_hash, node_id, counted_at)
+         INSERT INTO core.node_counted_adverts (canonical_advert_hash, node_id, counted_at)
          SELECT $13, $1, NOW()
          WHERE $13::text IS NOT NULL
          ON CONFLICT (canonical_advert_hash) DO NOTHING
@@ -543,7 +543,7 @@ export async function upsertNode(nodeId: string, updates: {
 
     const upsert = await transactionQuery<{ advert_count: number }>(
       `WITH advert_once AS (
-         INSERT INTO ops.node_counted_adverts (canonical_advert_hash, node_id, counted_at)
+         INSERT INTO core.node_counted_adverts (canonical_advert_hash, node_id, counted_at)
          SELECT $13, $1, NOW()
          WHERE $13::text IS NOT NULL
          ON CONFLICT (canonical_advert_hash) DO NOTHING
@@ -798,7 +798,7 @@ export async function getNodeAdverts(nodePublicKey: string, hours = 24, limit = 
 
 /**
  * Top adverting repeaters over a rolling window. Counts come from
- * ops.node_counted_adverts (deduplicated per canonical advert hash, ~16k rows),
+ * core.node_counted_adverts (deduplicated per canonical advert hash, ~16k rows),
  * joined to the node identity view for display fields. Cheap enough to run
  * directly; the route wraps it in a 1h in-memory cache.
  */
@@ -817,7 +817,7 @@ export async function getTopAdvertingRepeaters(hours = 24, limit = 10, network =
        n.advert_count,
        COUNT(*) AS adverts_in_window,
        MAX(nca.counted_at) AS last_advert_at
-     FROM ops.node_counted_adverts nca
+     FROM core.node_counted_adverts nca
      JOIN node_identity_nodes n ON n.node_id = nca.node_id
      WHERE nca.counted_at > NOW() - INTERVAL '1 hour' * $1
        AND n.role = 2
