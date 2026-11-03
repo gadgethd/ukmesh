@@ -1008,7 +1008,7 @@ async function handleMessage(
       packetHash: finalHash,
       packetUid: canonicalPacketId ?? null,
       identityVersion: canonicalPacketId ? 'wire-sha256-v1' : null,
-      identityProvenance: canonicalPacketId ? 'meshcore-decoded-wire' : null,
+      identityProvenance: canonicalPacketId ? 'meshcore-decoded-wire' : 'no-verified-wire-content',
       rxNodeId:   observerKey,
       srcNodeId,
       topic,
