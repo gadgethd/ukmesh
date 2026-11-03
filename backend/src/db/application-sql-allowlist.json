@@ -2,44 +2,18 @@
   "version": 1,
   "note": "Reviewed baseline of unqualified DML targets in application TypeScript. New entries fail the P1-6 guard; add only after review.",
   "tables": [
-    "analysis_runs",
-    "analysis_workload_state",
     "message_tags_local",
-    "ml_gold_paths",
-    "ml_model_variant_packet_results",
-    "ml_model_variant_runs",
-    "ml_model_versions",
-    "ml_path_prefix_scores",
     "node_identity_link_radio_reports",
     "node_link_radio_reports",
-    "path_corridor_priors",
-    "path_edge_priors",
-    "path_model_calibration",
-    "path_motif_priors",
-    "path_position_prefix_priors",
-    "path_position_transition_priors",
-    "path_prefix_priors",
-    "path_slow_resolutions",
-    "path_transition_priors",
     "schema_migration_compatibility",
     "schema_migrations",
-    "spam_message_incidents",
-    "spam_message_members",
-    "spam_suspects",
-    "stats_chart_snapshots",
     "tagger_retry",
     "tagger_state"
   ],
   "files": {
-    "analysis/publicationFence.ts": [
-      "analysis_runs",
-      "analysis_workload_state"
-    ],
+    "analysis/publicationFence.ts": [],
     "analysis/runState.integration.test.ts": [],
-    "analysis/runState.ts": [
-      "analysis_runs",
-      "analysis_workload_state"
-    ],
+    "analysis/runState.ts": [],
     "api/hopreachCompatibility.ts": [],
     "api/routes/activityTimeline.ts": [],
     "api/routes/auditwave.performance.test.ts": [],
@@ -56,8 +30,7 @@
     "api/routes/telemetry.ts": [],
     "api/utils/networkFilters.ts": [],
     "db/index.ts": [
-      "node_identity_link_radio_reports",
-      "spam_suspects"
+      "node_identity_link_radio_reports"
     ],
     "db/ledgerArchive.integration.test.ts": [],
     "db/migrations.ts": [],
@@ -82,9 +55,7 @@
     ],
     "health/packetDiagnostics.integration.test.ts": [],
     "health/packetDiagnostics.ts": [],
-    "health/status.ts": [
-      "path_model_calibration"
-    ],
+    "health/status.ts": [],
     "maintenance/staleMqttObservers.integration.test.ts": [],
     "maintenance/staleMqttObservers.native.integration.test.ts": [],
     "maintenance/staleMqttObservers.test.ts": [],
@@ -93,11 +64,7 @@
     "mqtt/observationIdentity.ts": [],
     "mqtt/spamDetector.ts": [],
     "nodes/mapSuppressions.ts": [],
-    "operations/operatorOperations.ts": [
-      "analysis_runs",
-      "ml_model_versions",
-      "path_model_calibration"
-    ],
+    "operations/operatorOperations.ts": [],
     "owner/alertRules.ts": [],
     "owner/forwardingOutbox.ts": [],
     "owner/ownerAccess.ts": [],
@@ -107,49 +74,15 @@
     "owner/packetShareRepository.integration.test.ts": [],
     "owner/packetShareRepository.ts": [],
     "owner/publicFeedRepository.ts": [],
-    "path-beta/championPriors.ts": [
-      "path_corridor_priors",
-      "path_position_prefix_priors",
-      "path_position_transition_priors",
-      "path_transition_priors"
-    ],
-    "path-beta/resolver.ts": [
-      "path_edge_priors",
-      "path_model_calibration",
-      "path_motif_priors",
-      "path_prefix_priors",
-      "path_transition_priors"
-    ],
-    "path-beta/slowMode.ts": [
-      "path_slow_resolutions"
-    ],
-    "path-lazy/evaluate.ts": [
-      "path_corridor_priors",
-      "path_transition_priors"
-    ],
-    "path-lazy/lazyResolver.ts": [
-      "path_corridor_priors",
-      "path_model_calibration",
-      "path_position_prefix_priors",
-      "path_position_transition_priors",
-      "path_transition_priors"
-    ],
-    "path-lazy/lazyResolverLegacy.ts": [
-      "ml_path_prefix_scores",
-      "path_edge_priors",
-      "path_prefix_priors"
-    ],
+    "path-beta/championPriors.ts": [],
+    "path-beta/resolver.ts": [],
+    "path-beta/slowMode.ts": [],
+    "path-lazy/evaluate.ts": [],
+    "path-lazy/lazyResolver.ts": [],
+    "path-lazy/lazyResolverLegacy.ts": [],
     "path-learning/rebuild.privacy.test.ts": [],
-    "path-learning/rebuild.ts": [
-      "path_model_calibration"
-    ],
-    "pathing/pathingRepository.ts": [
-      "path_edge_priors",
-      "path_model_calibration",
-      "path_motif_priors",
-      "path_prefix_priors",
-      "path_transition_priors"
-    ],
+    "path-learning/rebuild.ts": [],
+    "pathing/pathingRepository.ts": [],
     "privacy/convergence.ts": [],
     "privacy/generationHealth.ts": [],
     "ram/liveRead.ts": [],
@@ -169,31 +102,14 @@
       "node_link_radio_reports"
     ],
     "repositories/productFeatures.ts": [],
-    "spam/analyzer.ts": [
-      "spam_message_incidents"
-    ],
-    "spam/repository.integration.test.ts": [
-      "analysis_runs",
-      "analysis_workload_state",
-      "spam_message_incidents",
-      "spam_message_members"
-    ],
-    "spam/repository.privacy.test.ts": [
-      "spam_message_incidents",
-      "spam_message_members"
-    ],
-    "spam/repository.ts": [
-      "spam_message_incidents",
-      "spam_message_members"
-    ],
+    "spam/analyzer.ts": [],
+    "spam/repository.integration.test.ts": [],
+    "spam/repository.privacy.test.ts": [],
+    "spam/repository.ts": [],
     "spam/spamResolver.test.ts": [],
     "spam/spamResolver.ts": [],
-    "stats/chartSnapshot.test.ts": [
-      "stats_chart_snapshots"
-    ],
-    "stats/chartSnapshot.ts": [
-      "stats_chart_snapshots"
-    ],
+    "stats/chartSnapshot.test.ts": [],
+    "stats/chartSnapshot.ts": [],
     "stats/multibytePathFacts.test.ts": [],
     "stats/multibytePathFacts.ts": [],
     "stats/statsRepository.test.ts": [],
@@ -201,27 +117,12 @@
     "tools/backfillDecrypt.ts": [],
     "tools/backfillMultibytePathFacts.ts": [],
     "tools/backfillStatsRollups.ts": [],
-    "tools/cleanupOrphanedAnalysisRuns.ts": [
-      "analysis_runs",
-      "analysis_workload_state"
-    ],
-    "tools/pathAccuracy.ts": [
-      "path_corridor_priors",
-      "path_model_calibration",
-      "path_position_prefix_priors",
-      "path_position_transition_priors",
-      "path_prefix_priors",
-      "path_transition_priors"
-    ],
+    "tools/cleanupOrphanedAnalysisRuns.ts": [],
+    "tools/pathAccuracy.ts": [],
     "tools/provisionScotmesh.ts": [],
     "tools/rebuildRegionParticipation.ts": [],
-    "tools/recomputeSpamSuspects.ts": [
-      "spam_suspects"
-    ],
-    "tools/reresolveSpamOrigins.ts": [
-      "spam_message_incidents",
-      "spam_message_members"
-    ],
+    "tools/recomputeSpamSuspects.ts": [],
+    "tools/reresolveSpamOrigins.ts": [],
     "tools/seedStatsChartSnapshot.ts": [],
     "tools/shadowTopologyCombined.ts": [],
     "workers/link-backfill.ts": [],

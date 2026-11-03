@@ -30,7 +30,7 @@ async function main(): Promise<void> {
 
   const incRes = await pool.query<IncidentRow>(
     `SELECT incident_key, network, message_count, origin_region, origin_level, public_json
-       FROM spam_message_incidents
+       FROM analytics.spam_message_incidents
       ORDER BY message_count DESC`,
   );
   console.log(`[reresolve] ${incRes.rows.length} incidents, apply=${apply}`);
@@ -38,7 +38,7 @@ async function main(): Promise<void> {
   let updated = 0;
   for (const row of incRes.rows) {
     const memRes = await pool.query<{ packet_hash: string }>(
-      `SELECT packet_hash FROM spam_message_members WHERE incident_key = $1`,
+      `SELECT packet_hash FROM analytics.spam_message_members WHERE incident_key = $1`,
       [row.incident_key],
     );
     const hashes = memRes.rows.map((r) => r.packet_hash);
@@ -70,7 +70,7 @@ async function main(): Promise<void> {
     if (apply) {
       const publicJson = { ...row.public_json, origin: sanitizeOrigin(origin, cfg) };
       await pool.query(
-        `UPDATE spam_message_incidents
+        `UPDATE analytics.spam_message_incidents
             SET origin_lat = $2, origin_lon = $3, origin_radius_km = $4, origin_region = $5,
                 origin_confidence = $6, origin_level = $7, public_json = $8, updated_at = NOW()
           WHERE incident_key = $1`,

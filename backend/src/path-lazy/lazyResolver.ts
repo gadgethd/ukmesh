@@ -445,7 +445,7 @@ export async function lazyResolvePath(
       ENABLE_POSITION_PREFIX_PRIORS && allUnique2charHashes.length > 0
         ? query<{ prefix: string; position: number; node_id: string; count: string }>(
             `SELECT prefix, position, node_id, SUM(count)::text AS count
-               FROM path_position_prefix_priors
+               FROM analytics.path_position_prefix_priors
               WHERE ($1::text[] IS NULL OR network = ANY($1))
                 AND prefix = ANY($2)
                 AND NOT ${privatePrefixPathFilterSql('prefix')}
@@ -456,7 +456,7 @@ export async function lazyResolvePath(
       ENABLE_CORRIDOR_PRIORS && corridorSourceIds.length > 0 && corridorReceiverIds.length > 0
         ? query<{ src_node_id: string; rx_node_id: string; position: number; node_id: string; count: string }>(
             `SELECT src_node_id, rx_node_id, position, node_id, SUM(count)::text AS count
-               FROM path_corridor_priors
+               FROM analytics.path_corridor_priors
               WHERE ($1::text[] IS NULL OR network = ANY($1))
                 AND src_node_id = ANY($2) AND rx_node_id = ANY($3)
               GROUP BY src_node_id, rx_node_id, position, node_id`,
@@ -466,7 +466,7 @@ export async function lazyResolvePath(
       uniqueCandidateNodeIds.length > 0
         ? query<{ from_node_id: string; to_node_id: string; count: string }>(
             `SELECT from_node_id, to_node_id, SUM(count)::text AS count
-               FROM path_transition_priors
+               FROM analytics.path_transition_priors
               WHERE ($1::text[] IS NULL OR network = ANY($1))
                 AND from_node_id = ANY($2) AND to_node_id = ANY($2)
               GROUP BY from_node_id, to_node_id`,
@@ -476,7 +476,7 @@ export async function lazyResolvePath(
       ENABLE_POSITION_TRANSITIONS && uniqueCandidateNodeIds.length > 0
         ? query<{ position: number; from_node_id: string; to_node_id: string; count: string }>(
             `SELECT position, from_node_id, to_node_id, SUM(count)::text AS count
-               FROM path_position_transition_priors
+               FROM analytics.path_position_transition_priors
               WHERE ($1::text[] IS NULL OR network = ANY($1))
                 AND from_node_id = ANY($2) AND to_node_id = ANY($2)
               GROUP BY position, from_node_id, to_node_id`,
@@ -485,7 +485,7 @@ export async function lazyResolvePath(
         : Promise.resolve({ rows: [] as { position: number; from_node_id: string; to_node_id: string; count: string }[] }),
       query<{ network: string; confidence_scale: string; confidence_bias: string; recommended_threshold: string }>(
         `SELECT network, confidence_scale::text, confidence_bias::text, recommended_threshold::text
-           FROM path_model_calibration
+           FROM analytics.path_model_calibration
           WHERE ($1::text[] IS NULL OR network = ANY($1) OR network = 'all')`,
         [scopedNetworks],
       ),

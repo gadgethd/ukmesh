@@ -106,7 +106,7 @@ async function buildLearningModel(
   const [prefixRows, transitionRows, edgeRows, motifRows, calibrationRows, champion] = await Promise.all([
     query<PathPrefixPriorEvidence>(
       `SELECT prefix, receiver_region, prev_prefix, node_id, count
-       FROM path_prefix_priors
+       FROM analytics.path_prefix_priors
        WHERE network = $1
        ORDER BY count DESC
        LIMIT $2`,
@@ -120,7 +120,7 @@ async function buildLearningModel(
       probability: number;
     }>(
       `SELECT from_node_id, to_node_id, receiver_region, probability
-       FROM path_transition_priors
+       FROM analytics.path_transition_priors
        WHERE network = $1
        ORDER BY count DESC
        LIMIT $2`,
@@ -135,7 +135,7 @@ async function buildLearningModel(
       score: number;
     }>(
       `SELECT from_node_id, to_node_id, receiver_region, hour_bucket, score
-       FROM path_edge_priors
+       FROM analytics.path_edge_priors
        WHERE network = $1
        ORDER BY score DESC, observed_count DESC
        LIMIT $2`,
@@ -150,7 +150,7 @@ async function buildLearningModel(
       probability: number;
     }>(
       `SELECT receiver_region, hour_bucket, motif_len, node_ids, probability
-       FROM path_motif_priors
+       FROM analytics.path_motif_priors
        WHERE network = $1
        ORDER BY count DESC
        LIMIT $2`,
@@ -159,7 +159,7 @@ async function buildLearningModel(
     ),
     query<{ confidence_scale: number; confidence_bias: number }>(
       `SELECT confidence_scale, confidence_bias
-       FROM path_model_calibration
+       FROM analytics.path_model_calibration
        WHERE network = $1`,
       [network],
       signal,

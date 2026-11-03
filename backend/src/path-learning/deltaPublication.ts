@@ -13,38 +13,38 @@ export type PathLearningDeltaDefinition = {
 
 export const PATH_LEARNING_DELTA_DEFINITIONS: PathLearningDeltaDefinition[] = [
   {
-    target: 'path_prefix_priors', stage: 'desired_path_prefix_priors',
+    target: 'analytics.path_prefix_priors', stage: 'desired_path_prefix_priors',
     columns: ['prefix', 'receiver_region', 'prev_prefix', 'node_id', 'count', 'probability'],
     keys: ['prefix', 'receiver_region', 'prev_prefix', 'node_id'],
     semantic: ['count', 'probability'],
     jsonRecord: 'prefix text, receiver_region text, prev_prefix text, node_id text, count integer, probability double precision',
   },
   {
-    target: 'path_position_prefix_priors', stage: 'desired_path_position_prefix_priors',
+    target: 'analytics.path_position_prefix_priors', stage: 'desired_path_position_prefix_priors',
     columns: ['prefix', 'position', 'node_id', 'count', 'probability'],
     keys: ['prefix', 'position', 'node_id'], semantic: ['count', 'probability'],
     jsonRecord: 'prefix text, position smallint, node_id text, count integer, probability double precision',
   },
   {
-    target: 'path_corridor_priors', stage: 'desired_path_corridor_priors',
+    target: 'analytics.path_corridor_priors', stage: 'desired_path_corridor_priors',
     columns: ['src_node_id', 'rx_node_id', 'position', 'node_id', 'count', 'probability'],
     keys: ['src_node_id', 'rx_node_id', 'position', 'node_id'], semantic: ['count', 'probability'],
     jsonRecord: 'src_node_id text, rx_node_id text, position smallint, node_id text, count integer, probability double precision',
   },
   {
-    target: 'path_transition_priors', stage: 'desired_path_transition_priors',
+    target: 'analytics.path_transition_priors', stage: 'desired_path_transition_priors',
     columns: ['from_node_id', 'to_node_id', 'receiver_region', 'count', 'probability'],
     keys: ['from_node_id', 'to_node_id', 'receiver_region'], semantic: ['count', 'probability'],
     jsonRecord: 'from_node_id text, to_node_id text, receiver_region text, count integer, probability double precision',
   },
   {
-    target: 'path_position_transition_priors', stage: 'desired_path_position_transition_priors',
+    target: 'analytics.path_position_transition_priors', stage: 'desired_path_position_transition_priors',
     columns: ['position', 'from_node_id', 'to_node_id', 'count', 'probability'],
     keys: ['position', 'from_node_id', 'to_node_id'], semantic: ['count', 'probability'],
     jsonRecord: 'position smallint, from_node_id text, to_node_id text, count integer, probability double precision',
   },
   {
-    target: 'path_edge_priors', stage: 'desired_path_edge_priors',
+    target: 'analytics.path_edge_priors', stage: 'desired_path_edge_priors',
     columns: [
       'from_node_id', 'to_node_id', 'receiver_region', 'hour_bucket', 'observed_count',
       'expected_count', 'missing_count', 'directional_support', 'recency_score', 'reliability',
@@ -64,7 +64,7 @@ export const PATH_LEARNING_DELTA_DEFINITIONS: PathLearningDeltaDefinition[] = [
     ].join(', '),
   },
   {
-    target: 'path_motif_priors', stage: 'desired_path_motif_priors',
+    target: 'analytics.path_motif_priors', stage: 'desired_path_motif_priors',
     columns: ['receiver_region', 'hour_bucket', 'motif_len', 'node_ids', 'count', 'probability'],
     keys: ['receiver_region', 'hour_bucket', 'motif_len', 'node_ids'],
     semantic: ['count', 'probability'],

@@ -8,10 +8,10 @@ import {
 test('every path-learning table publishes semantic deltas from a staged generation', () => {
   assert.equal(PATH_LEARNING_DELTA_DEFINITIONS.length, 7);
   assert.ok(PATH_LEARNING_DELTA_DEFINITIONS.some((definition) => (
-    definition.target === 'path_prefix_priors'
+    definition.target === 'analytics.path_prefix_priors'
   )));
   assert.ok(PATH_LEARNING_DELTA_DEFINITIONS.some((definition) => (
-    definition.target === 'path_edge_priors'
+    definition.target === 'analytics.path_edge_priors'
   )));
   for (const definition of PATH_LEARNING_DELTA_DEFINITIONS) {
     const sql = pathLearningDeltaMergeSql(definition);

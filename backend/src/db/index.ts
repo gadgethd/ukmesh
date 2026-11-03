@@ -1506,18 +1506,18 @@ export interface SpamSuspectRow {
 
 export async function insertOrUpdateSpamSuspect(s: SpamSuspectRow): Promise<void> {
   await pool.query(
-    `INSERT INTO spam_suspects
+    `INSERT INTO analytics.spam_suspects
        (time, first_seen, src_node_id, spoofed_name, public_key, claimed_lat, claimed_lon,
         canonical_key, verdict, signals, total_score, network)
      VALUES (NOW(), NOW(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
      ON CONFLICT (network, src_node_id) DO UPDATE SET
        time        = NOW(),
-       first_seen  = COALESCE(spam_suspects.first_seen, EXCLUDED.first_seen),
+       first_seen  = COALESCE(analytics.spam_suspects.first_seen, EXCLUDED.first_seen),
        verdict     = EXCLUDED.verdict,
        signals     = EXCLUDED.signals,
        total_score = EXCLUDED.total_score,
-       claimed_lat = COALESCE(EXCLUDED.claimed_lat, spam_suspects.claimed_lat),
-       claimed_lon = COALESCE(EXCLUDED.claimed_lon, spam_suspects.claimed_lon)`,
+       claimed_lat = COALESCE(EXCLUDED.claimed_lat, analytics.spam_suspects.claimed_lat),
+       claimed_lon = COALESCE(EXCLUDED.claimed_lon, analytics.spam_suspects.claimed_lon)`,
     [s.srcNodeId, s.spoofedName, s.publicKey ?? null, s.claimedLat ?? null, s.claimedLon ?? null,
      s.canonicalKey ?? null, s.verdict, JSON.stringify(s.signals), s.totalScore, s.network]
   );
@@ -1532,10 +1532,10 @@ export async function replaceSpamSuspects(
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    await client.query('DELETE FROM spam_suspects WHERE network = ANY($1)', [sourceNetworks]);
+    await client.query('DELETE FROM analytics.spam_suspects WHERE network = ANY($1)', [sourceNetworks]);
     for (const s of suspects) {
       await client.query(
-        `INSERT INTO spam_suspects
+        `INSERT INTO analytics.spam_suspects
            (time, first_seen, src_node_id, spoofed_name, public_key, claimed_lat, claimed_lon,
             canonical_key, verdict, signals, total_score, network)
          VALUES (NOW(), NOW(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
@@ -1625,7 +1625,7 @@ export async function getSpamSuspects(options: number | SpamSuspectQueryOptions 
          NULL::int AS packet_count,
          NULL::timestamptz AS first_packet,
          NULL::timestamptz AS last_packet
-       FROM spam_suspects ss
+       FROM analytics.spam_suspects ss
        WHERE ${where}
        ORDER BY ss.total_score DESC, ss.time DESC
        LIMIT $${limitParam} OFFSET $${offsetParam}`,
@@ -1649,7 +1649,7 @@ export async function getSpamSuspects(options: number | SpamSuspectQueryOptions 
          ss.network,
          ss.time,
          ss.first_seen
-       FROM spam_suspects ss
+       FROM analytics.spam_suspects ss
        WHERE ${where}
        ORDER BY ss.total_score DESC, ss.time DESC
        LIMIT $${limitParam} OFFSET $${offsetParam}
@@ -1687,7 +1687,7 @@ export async function getSpamSuspectSummary(options: SpamSuspectQueryOptions = {
   const where = buildSpamSuspectWhere(options, params);
   const res = await pool.query(
     `SELECT verdict, COUNT(*)::int AS count
-     FROM spam_suspects ss
+     FROM analytics.spam_suspects ss
      WHERE ${where}
      GROUP BY verdict`,
     params
@@ -1719,7 +1719,7 @@ export async function getSpamPacketObservers(srcNodeId: string) {
        ss.spoofed_name
      FROM mesh.packets p
      LEFT JOIN core.nodes n ON n.node_id = p.rx_node_id
-     LEFT JOIN spam_suspects ss ON ss.src_node_id = p.src_node_id
+     LEFT JOIN analytics.spam_suspects ss ON ss.src_node_id = p.src_node_id
        AND ss.network = p.network
      WHERE p.src_node_id = $1
        AND p.network = ANY($2)
@@ -1752,7 +1752,7 @@ export async function getSpamAllObservers() {
        n.lon               AS observer_lon,
        MIN(p.hop_count)    AS hop_count,
        MAX(p.rssi)         AS rssi
-     FROM spam_suspects ss
+     FROM analytics.spam_suspects ss
      JOIN mesh.packets p
        ON  p.src_node_id = ss.src_node_id
        AND p.network = ss.network

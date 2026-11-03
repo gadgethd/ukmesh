@@ -99,7 +99,7 @@ test('public incident list re-applies packet privacy to stored incidents at read
   const sql = captured[0]!;
   assert.ok(hasCanonicalPrivacyPredicate(sql));
   assert.ok(sql.includes(publicPacketPrivacySql('p')));
-  assert.match(sql, /FROM spam_message_incidents i/);
+  assert.match(sql, /FROM (?:analytics\.)?spam_message_incidents i/);
   assert.match(sql, /JOIN (?:mesh\.)?packets p/);
   assert.match(sql, /p\.packet_hash = m\.packet_hash/);
   assert.match(sql, /p\.network = m\.network/);
@@ -128,7 +128,7 @@ test('public incident detail re-applies packet privacy to the incident and its t
     assert.match(sql, /packets p/);
   }
   assert.match(captured[0]!, /JOIN (?:mesh\.)?packets p/);
-  assert.match(captured[1]!, /FROM spam_message_members m/);
+  assert.match(captured[1]!, /FROM (?:analytics\.)?spam_message_members m/);
   assert.match(captured[1]!, /p\.packet_hash = m\.packet_hash/);
 });
 

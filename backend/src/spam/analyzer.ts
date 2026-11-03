@@ -32,7 +32,7 @@ async function alertNewHighScoringIncidents(items: PersistableIncident[]): Promi
   for (const item of items) {
     if (item.status !== 'active' || item.publicJson.confidence < threshold) continue;
     const claimed = await dbQuery<{ incident_key: string }>(
-      `UPDATE spam_message_incidents
+      `UPDATE analytics.spam_message_incidents
        SET webhook_alerted_at = NOW()
        WHERE incident_key = $1 AND webhook_alerted_at IS NULL
        RETURNING incident_key`,
@@ -52,7 +52,7 @@ async function alertNewHighScoringIncidents(items: PersistableIncident[]): Promi
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
     } catch (error) {
       await dbQuery(
-        'UPDATE spam_message_incidents SET webhook_alerted_at = NULL WHERE incident_key = $1',
+        'UPDATE analytics.spam_message_incidents SET webhook_alerted_at = NULL WHERE incident_key = $1',
         [item.publicJson.id],
       );
       console.error('[spam-msg] alert webhook failed:', (error as Error).message);

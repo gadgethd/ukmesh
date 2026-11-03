@@ -255,19 +255,19 @@ export async function lazyResolvePathLegacy(
       : Promise.resolve({ rows: [] as { node_a_id: string; node_b_id: string }[] }),
     allUniqueHashes.length > 0
       ? query<{ prefix: string; prev_prefix: string | null; node_id: string; total_count: string }>(
-          `SELECT prefix, prev_prefix, node_id, SUM(count)::text as total_count FROM path_prefix_priors
+          `SELECT prefix, prev_prefix, node_id, SUM(count)::text as total_count FROM analytics.path_prefix_priors
             WHERE ($1::text[] IS NULL OR network = ANY($1)) AND prefix = ANY($2) GROUP BY prefix, prev_prefix, node_id`,
           [scopedNetworks, allUniqueHashes])
       : Promise.resolve({ rows: [] as { prefix: string; prev_prefix: string | null; node_id: string; total_count: string }[] }),
     allCandidateNodeIds.length > 0
       ? query<{ from_node_id: string; to_node_id: string; best_score: string }>(
-          `SELECT from_node_id, to_node_id, MAX(score)::text as best_score FROM path_edge_priors
+          `SELECT from_node_id, to_node_id, MAX(score)::text as best_score FROM analytics.path_edge_priors
             WHERE ($1::text[] IS NULL OR network = ANY($1)) AND (from_node_id = ANY($2) OR to_node_id = ANY($2)) GROUP BY from_node_id, to_node_id`,
           [scopedNetworks, allCandidateNodeIds])
       : Promise.resolve({ rows: [] as { from_node_id: string; to_node_id: string; best_score: string }[] }),
     allUnique2charHashes.length > 0
       ? query<{ hash_2char: string; node_id: string; score: string; observation_count: string }>(
-          `SELECT hash_2char, node_id, score::text, observation_count::text FROM ml_path_prefix_scores
+          `SELECT hash_2char, node_id, score::text, observation_count::text FROM analytics.ml_path_prefix_scores
             WHERE ($1::text[] IS NULL OR network = ANY($1)) AND hash_2char = ANY($2) AND score >= 0.80`,
           [scopedNetworks, allUnique2charHashes])
       : Promise.resolve({ rows: [] as { hash_2char: string; node_id: string; score: string; observation_count: string }[] }),

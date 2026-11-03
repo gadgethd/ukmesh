@@ -21,8 +21,8 @@ export async function assertAnalysisPublicationLease(
 ): Promise<void> {
   const result = await client.query(
     `SELECT 1
-       FROM analysis_workload_state state
-       JOIN analysis_runs run ON run.run_id = state.active_run_id
+       FROM analytics.analysis_workload_state state
+       JOIN analytics.analysis_runs run ON run.run_id = state.active_run_id
       WHERE state.workload = $1
         AND state.scope = $2
         AND state.active_run_id = $3

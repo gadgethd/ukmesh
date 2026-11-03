@@ -64,7 +64,7 @@ test('chart snapshot store pins the schema version and refuses older overwrites'
         }] as T[],
       };
     }
-    if (text.includes('INSERT INTO stats_chart_snapshots')) {
+    if (/INSERT INTO (?:analytics\.)?stats_chart_snapshots/.test(text)) {
       return { rows: [{ scope_key: 'ukmesh' }] as T[] };
     }
     return { rows: [] };

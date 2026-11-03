@@ -66,7 +66,7 @@ type WorkerSnapshot = {
 };
 
 export type RetentionTarget = {
-  table: 'packets' | 'worker_health_snapshots' | 'frontend_error_events' | 'owner_alert_deliveries' | 'owner_packet_share_deliveries' | 'public_feed_deliveries' | 'operational_check_results' | 'observer_region_packet_sightings' | 'observer_region_observer_sightings' | 'link_job_commits' | 'ml_model_variant_packet_results' | 'packet_decryptions' | 'observer_registration_requests' | 'operator_audit_events' | 'node_status_samples';
+  table: 'packets' | 'worker_health_snapshots' | 'frontend_error_events' | 'owner_alert_deliveries' | 'owner_packet_share_deliveries' | 'public_feed_deliveries' | 'operational_check_results' | 'observer_region_packet_sightings' | 'observer_region_observer_sightings' | 'link_job_commits' | 'analytics.ml_model_variant_packet_results' | 'packet_decryptions' | 'observer_registration_requests' | 'operator_audit_events' | 'node_status_samples';
   timestampColumn: 'ts' | 'time' | 'created_at' | 'updated_at' | 'completed_at' | 'last_seen';
   retention: string;
   batchSize: number;
@@ -110,7 +110,7 @@ export const RETENTION_TARGETS: readonly RetentionTarget[] = [
   { table: 'observer_region_packet_sightings', qualifiedTable: 'core.observer_region_packet_sightings', timestampColumn: 'last_seen', retention: '8 days', batchSize: 25_000 },
   { table: 'observer_region_observer_sightings', qualifiedTable: 'core.observer_region_observer_sightings', timestampColumn: 'last_seen', retention: '31 days', batchSize: 5_000 },
   { table: 'link_job_commits', qualifiedTable: 'ops.link_job_commits', timestampColumn: 'completed_at', retention: '180 days', batchSize: 5_000 },
-  { table: 'ml_model_variant_packet_results', timestampColumn: 'created_at', retention: '180 days', batchSize: 5_000 },
+  { table: 'analytics.ml_model_variant_packet_results', timestampColumn: 'created_at', retention: '180 days', batchSize: 5_000 },
   { table: 'packet_decryptions', qualifiedTable: 'mesh.packet_decryptions', timestampColumn: 'created_at', retention: '30 days', batchSize: 2_000 },
   {
     table: 'observer_registration_requests',
@@ -564,7 +564,7 @@ async function currentWorkers(precomputedStats?: ReturnType<typeof systemStats>)
     query<{ count: string }>(`SELECT COUNT(*) AS count FROM core.node_links WHERE itm_computed_at > NOW() - INTERVAL '1 hour'`),
     query<{ ts: string | null }>(`SELECT MAX(itm_computed_at)::text AS ts FROM core.node_links`),
     readLinkWorkerHeartbeatAge(r),
-    query<{ ts: string | null }>(`SELECT MAX(updated_at)::text AS ts FROM path_model_calibration`),
+    query<{ ts: string | null }>(`SELECT MAX(updated_at)::text AS ts FROM analytics.path_model_calibration`),
     query<{ count: string; ts: string | null }>(
       `SELECT COUNT(*) FILTER (WHERE ts > NOW() - INTERVAL '1 hour') AS count,
               MAX(ts)::text AS ts

@@ -542,7 +542,7 @@ export async function loadOperationsDashboard(query: QueryFn): Promise<Record<st
       `SELECT run_id, workload, scope, status, checkpoint, total_items,
               lease_owner, lease_expires_at, run_deadline_at, attempt,
               heartbeat_at, started_at, completed_at, terminal_reason
-         FROM analysis_runs
+         FROM analytics.analysis_runs
         ORDER BY started_at DESC
         LIMIT 50`,
     ),
@@ -571,8 +571,8 @@ export async function loadOperationsDashboard(query: QueryFn): Promise<Record<st
               calibration.confidence_bias,
               calibration.recommended_threshold,
               calibration.updated_at AS calibration_updated_at
-         FROM ml_model_versions versions
-         LEFT JOIN path_model_calibration calibration
+         FROM analytics.ml_model_versions versions
+         LEFT JOIN analytics.path_model_calibration calibration
            ON calibration.network = versions.network
         ORDER BY versions.trained_at DESC
         LIMIT 40`,

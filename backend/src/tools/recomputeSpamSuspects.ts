@@ -91,7 +91,7 @@ async function main(): Promise<void> {
   }
 
   const current = await query<{ verdict: string; count: string }>(
-    `SELECT verdict, COUNT(*) AS count FROM spam_suspects GROUP BY verdict ORDER BY verdict`
+    `SELECT verdict, COUNT(*) AS count FROM analytics.spam_suspects GROUP BY verdict ORDER BY verdict`
   );
 
   console.log(`[spam-recompute] evaluated ${candidates.rowCount} current advert identities`);
@@ -105,12 +105,12 @@ async function main(): Promise<void> {
   console.log('[spam-recompute] signal counts:', Object.fromEntries(Array.from(signalCounts.entries()).sort((a, b) => b[1] - a[1])));
 
   if (!APPLY) {
-    console.log('[spam-recompute] dry run only; rerun with --apply to replace spam_suspects');
+    console.log('[spam-recompute] dry run only; rerun with --apply to replace analytics.spam_suspects');
     return;
   }
 
   await replaceSpamSuspects(UKMESH_NETWORKS, suspects);
-  console.log(`[spam-recompute] replaced spam_suspects with ${suspects.length} row(s)`);
+  console.log(`[spam-recompute] replaced analytics.spam_suspects with ${suspects.length} row(s)`);
 }
 
 main()

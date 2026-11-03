@@ -161,7 +161,7 @@ export const DATA_LIFECYCLE_POLICIES: readonly DataLifecyclePolicy[] = Object.fr
     featureImpact: ['link job idempotency evidence older than 180 days is removed'],
   },
   {
-    table: 'ml_model_variant_packet_results',
+    table: 'analytics.ml_model_variant_packet_results',
     timestampColumn: 'created_at',
     retention: '180 days',
     kind: 'row-table',

@@ -16,7 +16,7 @@ import {
 // Persistence layer for message-spam detection.
 //
 // Reads decoded channel messages out of the existing `packets` hypertable and
-// writes derived incidents into `spam_message_incidents` / `_members`.
+// writes derived incidents into `analytics.spam_message_incidents` / `_members`.
 // ---------------------------------------------------------------------------
 
 const NETWORKS: readonly string[] = UKMESH_NETWORKS;
@@ -330,7 +330,7 @@ export async function persistIncidents(
 
     for (const { incident, origin, status, publicJson } of items) {
       const published = await client.query(
-        `INSERT INTO spam_message_incidents
+        `INSERT INTO analytics.spam_message_incidents
            (incident_key, network, status, first_seen, last_seen, message_count, observer_count,
             channels, username_variants, sender_names, representative_text, canonical_text,
             spam_marker, score, reasons, origin_lat, origin_lon, origin_radius_km, origin_region,
@@ -338,8 +338,8 @@ export async function persistIncidents(
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,NOW())
          ON CONFLICT (incident_key) DO UPDATE SET
            status            = EXCLUDED.status,
-           first_seen        = LEAST(spam_message_incidents.first_seen, EXCLUDED.first_seen),
-           last_seen         = GREATEST(spam_message_incidents.last_seen, EXCLUDED.last_seen),
+           first_seen        = LEAST(analytics.spam_message_incidents.first_seen, EXCLUDED.first_seen),
+           last_seen         = GREATEST(analytics.spam_message_incidents.last_seen, EXCLUDED.last_seen),
            message_count     = EXCLUDED.message_count,
            observer_count    = EXCLUDED.observer_count,
            channels          = EXCLUDED.channels,
@@ -357,9 +357,9 @@ export async function persistIncidents(
            origin_confidence = EXCLUDED.origin_confidence,
            origin_level      = EXCLUDED.origin_level,
            public_json       = jsonb_set(EXCLUDED.public_json, '{firstSeen}',
-                                 to_jsonb(LEAST(spam_message_incidents.first_seen, EXCLUDED.first_seen)), true),
+                                 to_jsonb(LEAST(analytics.spam_message_incidents.first_seen, EXCLUDED.first_seen)), true),
            updated_at        = NOW()
-         WHERE EXCLUDED.last_seen >= spam_message_incidents.last_seen
+         WHERE EXCLUDED.last_seen >= analytics.spam_message_incidents.last_seen
          RETURNING incident_key`,
         [
           incident.key,
@@ -392,7 +392,7 @@ export async function persistIncidents(
       if (status === 'active') active += 1;
 
       // Replace members for this incident.
-      await client.query('DELETE FROM spam_message_members WHERE incident_key = $1', [incident.key]);
+      await client.query('DELETE FROM analytics.spam_message_members WHERE incident_key = $1', [incident.key]);
       const evidenceMembers = selectIncidentEvidenceMembers(
         incident.members,
         cfg.maxEvidenceMembersPerIncident,
@@ -413,7 +413,7 @@ export async function persistIncidents(
           return acc == null ? o.snr : Math.max(acc, o.snr);
         }, null);
         await client.query(
-          `INSERT INTO spam_message_members
+          `INSERT INTO analytics.spam_message_members
              (incident_key, packet_hash, network, observed_at, sender, channel_label, channel_hash,
               observer_count, min_hop_count, best_rssi, best_snr)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
@@ -442,7 +442,7 @@ export async function persistIncidents(
     // Re-evaluate active/closed for ALL incidents based on age (covers ones that
     // aged out of the window this run and should now flip to closed).
     const lifecycle = await client.query(
-      `UPDATE spam_message_incidents
+      `UPDATE analytics.spam_message_incidents
          SET status = 'closed',
              public_json = jsonb_set(public_json, '{status}', '"closed"'::jsonb, true),
              updated_at = NOW()
@@ -497,7 +497,7 @@ export async function getPublicIncidents(
   // be marked private after the incident was written.
   where.push(`EXISTS (
          SELECT 1
-           FROM spam_message_members m
+           FROM analytics.spam_message_members m
            JOIN mesh.packets p
              ON p.packet_hash = m.packet_hash
             AND p.network = m.network
@@ -509,7 +509,7 @@ export async function getPublicIncidents(
   params.push(limit, offset);
   const res = await runQuery<{ public_json: PublicIncident }>(
     `SELECT i.public_json
-     FROM spam_message_incidents i
+     FROM analytics.spam_message_incidents i
      WHERE ${where.join(' AND ')}
      ORDER BY (i.status = 'active') DESC, i.last_seen DESC
      LIMIT $${params.length - 1} OFFSET $${params.length}`,
@@ -542,7 +542,7 @@ export async function getPublicStatus(minConfidence = 0): Promise<PublicStatus> 
         MAX(last_seen)                                                    AS last_incident,
         COALESCE(SUM(message_count) FILTER (WHERE last_seen > NOW() - INTERVAL '24 hours'), 0)  AS msgs_24h,
         COALESCE(SUM(observer_count) FILTER (WHERE status = 'active'), 0) AS observers_24h
-     FROM spam_message_incidents
+     FROM analytics.spam_message_incidents
      WHERE score >= $1`,
     [minConfidence],
   );
@@ -574,11 +574,11 @@ export async function getPublicIncident(
 ): Promise<(PublicIncident & { timeline: PublicTimelineEntry[] }) | null> {
   const res = await runQuery<{ public_json: PublicIncident }>(
     `SELECT i.public_json
-       FROM spam_message_incidents i
+       FROM analytics.spam_message_incidents i
       WHERE i.incident_key = $1
         AND EXISTS (
               SELECT 1
-                FROM spam_message_members m
+                FROM analytics.spam_message_members m
                 JOIN mesh.packets p
                   ON p.packet_hash = m.packet_hash
                  AND p.network = m.network
@@ -600,7 +600,7 @@ export async function getPublicIncident(
   }>(
     `SELECT m.observed_at, m.channel_label, m.observer_count,
             m.min_hop_count, m.best_rssi, m.best_snr
-     FROM spam_message_members m
+     FROM analytics.spam_message_members m
      WHERE m.incident_key = $1
        AND EXISTS (
              SELECT 1

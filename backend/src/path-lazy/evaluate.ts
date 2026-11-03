@@ -242,7 +242,7 @@ async function loadGoldPackets(network: string, sampleSize: number): Promise<Gol
       rx_node_id: string;
     }>(
       `SELECT DISTINCT src_node_id, rx_node_id
-         FROM path_corridor_priors
+         FROM analytics.path_corridor_priors
         WHERE network = ANY($1)
           AND (${pairClauses.join(' OR ')})
        `,
@@ -276,7 +276,7 @@ async function loadGoldPackets(network: string, sampleSize: number): Promise<Gol
   const pairCount = new Map<string, number>();
   if (fromIds.size > 0) {
     const rows = await analyticsQuery<{ from_node_id: string; to_node_id: string; c: string }>(
-      `SELECT from_node_id, to_node_id, SUM(count)::text as c FROM path_transition_priors
+      `SELECT from_node_id, to_node_id, SUM(count)::text as c FROM analytics.path_transition_priors
         WHERE network = ANY($1) AND from_node_id = ANY($2) AND to_node_id = ANY($3)
         GROUP BY from_node_id, to_node_id`,
       [scope, [...fromIds], [...toIds]],

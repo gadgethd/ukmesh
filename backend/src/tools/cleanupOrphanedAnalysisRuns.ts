@@ -19,8 +19,8 @@ async function inventory(lock = false): Promise<LegacyRunRow[]> {
             state.active_run_id,
             run.status AS run_status,
             run.started_at::text
-       FROM analysis_workload_state state
-       LEFT JOIN analysis_runs run ON run.run_id = state.active_run_id
+       FROM analytics.analysis_workload_state state
+       LEFT JOIN analytics.analysis_runs run ON run.run_id = state.active_run_id
       WHERE state.active_run_id IS NOT NULL
         AND state.active_lease_token IS NULL
       ORDER BY state.workload, state.scope
@@ -75,8 +75,8 @@ async function main(): Promise<void> {
               state.active_run_id,
               run.status AS run_status,
               run.started_at::text
-         FROM analysis_workload_state state
-         LEFT JOIN analysis_runs run ON run.run_id = state.active_run_id
+         FROM analytics.analysis_workload_state state
+         LEFT JOIN analytics.analysis_runs run ON run.run_id = state.active_run_id
         WHERE state.active_run_id IS NOT NULL
           AND state.active_lease_token IS NULL
         ORDER BY state.workload, state.scope
@@ -86,7 +86,7 @@ async function main(): Promise<void> {
     const runIds = candidates.rows.map((row) => row.active_run_id);
     if (runIds.length > 0) {
       await client.query(
-        `UPDATE analysis_runs
+        `UPDATE analytics.analysis_runs
             SET status = 'failed',
                 completed_at = clock_timestamp(),
                 heartbeat_at = clock_timestamp(),
@@ -97,7 +97,7 @@ async function main(): Promise<void> {
         [runIds],
       );
       const cleared = await client.query(
-        `UPDATE analysis_workload_state
+        `UPDATE analytics.analysis_workload_state
             SET active_run_id = NULL,
                 active_lease_expires_at = NULL,
                 active_lease_owner = NULL,
@@ -122,7 +122,7 @@ async function main(): Promise<void> {
     }
     const remaining = await client.query<{ count: string }>(
       `SELECT COUNT(*)::text AS count
-         FROM analysis_workload_state
+         FROM analytics.analysis_workload_state
         WHERE active_run_id IS NOT NULL
           AND active_lease_token IS NULL`,
     );

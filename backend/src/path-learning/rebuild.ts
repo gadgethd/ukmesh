@@ -419,7 +419,7 @@ async function publishPathLearningRowsDeltaUnderAdmission(
     heartbeat.assertOwned();
     await assertAnalysisPublicationLease(client, analysisRun);
     const current = await client.query<{ model_hash: string | null }>(
-      `SELECT model_hash FROM path_model_calibration WHERE network = $1 FOR UPDATE`,
+      `SELECT model_hash FROM analytics.path_model_calibration WHERE network = $1 FOR UPDATE`,
       [network],
     );
     let upserted = 0;
@@ -440,7 +440,7 @@ async function publishPathLearningRowsDeltaUnderAdmission(
     }
     const mutationCount = upserted + deleted;
     await client.query(
-      `INSERT INTO path_model_calibration
+      `INSERT INTO analytics.path_model_calibration
          (network, evaluated_packets, top1_accuracy, mean_pred_confidence,
           confidence_scale, confidence_bias, recommended_threshold,
           input_hash, model_hash, algorithm_version, privacy_generation,
@@ -620,7 +620,7 @@ export function isPrivatePathPrefix(
 
 /** Publication-side twin of the public path-read filter: a prior row whose own
  * prefix or carried previous-hop prefix resolves onto a private node is dropped
- * before it can reach `path_prefix_priors`. */
+ * before it can reach `analytics.path_prefix_priors`. */
 export function dropPrivatePrefixRows<T extends { prefix: string; prev_prefix: string }>(
   rows: readonly T[],
   privateNodeIds: Iterable<string>,
