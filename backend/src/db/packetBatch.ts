@@ -57,6 +57,9 @@ const RETRYABLE_DATABASE_CODES = new Set([
 
 export type PacketBatchInput = {
   forwardingJson?: string | null;
+  packetUid?: string | null;
+  identityVersion?: string | null;
+  identityProvenance?: string | null;
   time: Date;
   packetHash: string;
   rxNodeId: string | null;
@@ -351,11 +354,12 @@ export async function persistEntriesCore(
     }
   }
 
-  const columnsPerRow = 27;
+  const columnsPerRow = 30;
   const casts = [
     'int', 'uuid', 'timestamptz', 'text', 'text', 'text', 'text', 'text', 'text',
     'int', 'int', 'int', 'double precision', 'double precision', 'text', 'text',
     'text', 'int', 'text[]', 'int', 'text', 'text', 'text', 'bigint', 'boolean', 'boolean', 'jsonb',
+    'text', 'text', 'text',
   ];
   const params: unknown[] = [];
   const values = entries.map(({ input: packet, observationId }, rowIndex) => {
@@ -395,6 +399,9 @@ export async function persistEntriesCore(
       privacy.isPrivate,
       privacy.pathIsValid,
       packet.forwardingJson ?? null,
+      packet.packetUid ?? null,
+      packet.identityVersion ?? null,
+      packet.identityProvenance ?? null,
     );
     const placeholders = Array.from(
       { length: columnsPerRow },
@@ -465,7 +472,8 @@ export async function persistEntriesCore(
          row_id, observation_id_in, time, packet_hash, rx_node_id, src_node_id, topic, topic_prefix,
          iata, packet_type, route_type, hop_count, rssi, snr, payload, companion_sender, raw_hex,
          advert_count, path_hashes, path_hash_size_bytes, network, transport_codes, region_scope,
-         prefix_cache_generation, classified_private, path_is_valid, forwarding_payload
+         prefix_cache_generation, classified_private, path_is_valid, forwarding_payload,
+         packet_uid, identity_version, identity_provenance
        ) AS (VALUES ${values}),
        classified AS MATERIALIZED (
          SELECT i.*,
@@ -507,12 +515,14 @@ export async function persistEntriesCore(
            observation_id, time, packet_hash, rx_node_id, src_node_id, topic, topic_prefix, iata,
            packet_type, route_type, hop_count, rssi, snr, payload, companion_sender, raw_hex,
            advert_count, path_hashes, path_hash_size_bytes, network, transport_codes,
-           region_scope, is_private, visibility_ok
+           region_scope, is_private, visibility_ok, packet_uid, identity_version, identity_provenance
          )
          SELECT observation_id, time, packet_hash, rx_node_id, src_node_id, topic, topic_prefix, iata,
                 packet_type, route_type, hop_count, rssi, snr, payload::jsonb, companion_sender, raw_hex,
                 advert_count, path_hashes, path_hash_size_bytes, network, transport_codes,
-                region_scope, is_private, path_is_valid AND NOT is_private
+                region_scope, is_private, path_is_valid AND NOT is_private,
+                CASE WHEN packet_uid IS NULL THEN NULL ELSE decode(packet_uid, 'hex') END,
+                identity_version, identity_provenance
          FROM new_rows
          RETURNING 1
        ),
@@ -532,11 +542,12 @@ export async function persistEntriesCore(
          INSERT INTO mesh.packet_paths (
            time, packet_hash, rx_node_id, src_node_id, topic, topic_prefix,
            route_type, hop_count, rssi, snr, path_hashes, path_hash_size_bytes,
-           is_private, visibility_ok, network, observation_id
+           is_private, visibility_ok, network, observation_id, packet_uid
          )
          SELECT time, packet_hash, rx_node_id, src_node_id, topic, topic_prefix,
                 route_type, hop_count, rssi, snr, path_hashes, path_hash_size_bytes,
-                is_private, path_is_valid AND NOT is_private, network, observation_id
+                is_private, path_is_valid AND NOT is_private, network, observation_id,
+                CASE WHEN packet_uid IS NULL THEN NULL ELSE decode(packet_uid, 'hex') END
          FROM new_rows
          WHERE path_hashes IS NOT NULL AND path_hash_size_bytes > 1
          ON CONFLICT DO NOTHING

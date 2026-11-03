@@ -1006,6 +1006,9 @@ async function handleMessage(
     const persistInput = {
       forwarding: { packet: livePacket, upstreamEnvelope },
       packetHash: finalHash,
+      packetUid: canonicalPacketId ?? null,
+      identityVersion: canonicalPacketId ? 'wire-sha256-v1' : null,
+      identityProvenance: canonicalPacketId ? 'meshcore-decoded-wire' : null,
       rxNodeId:   observerKey,
       srcNodeId,
       topic,

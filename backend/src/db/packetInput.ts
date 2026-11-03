@@ -9,6 +9,9 @@ export function observerRegionFromTopic(topic: string): string | null {
 export type InsertPacketInput = {
   forwarding?: { packet: import('../types/index.js').LivePacket; upstreamEnvelope: Record<string, unknown> };
   packetHash: string;
+  packetUid?: string | null;
+  identityVersion?: string | null;
+  identityProvenance?: string | null;
   rxNodeId?: string;
   srcNodeId?: string;
   topic: string;
@@ -57,6 +60,9 @@ export function buildPacketBatchInput(p: InsertPacketInput): PacketBatchInput {
     forwardingJson: p.forwarding ? JSON.stringify(p.forwarding) : null,
     time: new Date(),
     packetHash: p.packetHash,
+    packetUid: p.packetUid ?? null,
+    identityVersion: p.identityVersion ?? null,
+    identityProvenance: p.identityProvenance ?? null,
     rxNodeId: p.rxNodeId ?? null,
     srcNodeId: p.srcNodeId ?? null,
     topic: p.topic,
