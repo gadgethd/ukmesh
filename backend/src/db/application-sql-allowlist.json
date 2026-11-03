@@ -21,7 +21,6 @@
     "node_identity_aliases",
     "node_identity_link_radio_reports",
     "node_identity_links",
-    "node_identity_match_evidence",
     "node_identity_nodes",
     "node_identity_packets",
     "node_identity_refresh_state",
@@ -170,7 +169,6 @@
     ],
     "db/nodeIdentity.ts": [
       "node_identity_aliases",
-      "node_identity_match_evidence",
       "node_identity_refresh_state",
       "node_status_samples",
       "nodes",

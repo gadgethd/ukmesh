@@ -101,7 +101,7 @@ export function automaticIdentityAliasSetsEqual(
   desired: Array<Pick<IdentityAlias, 'sourceNodeId' | 'canonicalNodeId'>>,
 ): boolean {
   // Public identity and privacy projections consume only the mapping. Evidence,
-  // reason, and confidence continue to refresh in node_identity_match_evidence;
+  // reason, and confidence continue to refresh in core.node_identity_match_evidence;
   // changing that audit metadata must not invalidate every public cache.
   const currentRows = current.map((row) => `${row.source_node_id}\0${row.canonical_node_id}`).sort();
   const desiredRows = desired.map((row) => `${row.sourceNodeId}\0${row.canonicalNodeId}`).sort();
@@ -860,7 +860,7 @@ export async function refreshNodeIdentityAliases(
     }
 
     await client.query(
-      `DELETE FROM node_identity_match_evidence
+      `DELETE FROM core.node_identity_match_evidence
         WHERE source_kind = 'automatic' AND updated_at < $1`,
       [refreshStartedAt],
     );
@@ -891,7 +891,7 @@ export async function refreshNodeIdentityAliases(
           return `($${offset + 1}, $${offset + 2}, $${offset + 3}, $${offset + 4}, $${offset + 5}, $${offset + 6}::jsonb, $${offset + 7}, $${offset + 8}, $${offset + 9})`;
         }).join(', ');
         await client.query(
-          `INSERT INTO node_identity_match_evidence
+          `INSERT INTO core.node_identity_match_evidence
              (node_a_id, node_b_id, decision, confidence, reason, evidence, source_kind, updated_at, score)
            VALUES ${values}
            ON CONFLICT (node_a_id, node_b_id) DO UPDATE SET
@@ -901,7 +901,7 @@ export async function refreshNodeIdentityAliases(
              evidence = EXCLUDED.evidence,
              updated_at = EXCLUDED.updated_at,
              score = EXCLUDED.score
-           WHERE node_identity_match_evidence.source_kind = 'automatic'`,
+           WHERE core.node_identity_match_evidence.source_kind = 'automatic'`,
           params,
         );
       }
