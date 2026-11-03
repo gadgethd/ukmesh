@@ -14,7 +14,6 @@ type Row = {
   packet_hash: string;
   rx_node_id: string | null;
   raw_hex: string | null;
-  table_oid: string;
   ctid: string;
 };
 
@@ -98,21 +97,31 @@ async function loadState(client: pg.PoolClient): Promise<State> {
   return result.rows[0];
 }
 
-async function packetBatch(client: pg.PoolClient, state: State, batchSize: number, since: string | null): Promise<Row[]> {
+async function uncompressedChunks(client: pg.PoolClient): Promise<Array<{ schema: string; name: string }>> {
+  const result = await client.query<{ schema: string; name: string }>(`
+    SELECT chunk_schema AS schema, chunk_name AS name
+      FROM timescaledb_information.chunks
+     WHERE hypertable_schema = 'mesh' AND hypertable_name = 'packets' AND is_compressed = FALSE
+     ORDER BY range_start
+  `);
+  return result.rows;
+}
+
+function quoteIdent(value: string): string {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(value)) throw new Error(`refusing unexpected chunk identifier: ${value}`);
+  return `"${value}"`;
+}
+
+async function packetBatch(
+  client: pg.PoolClient,
+  state: State,
+  chunk: { schema: string; name: string },
+  batchSize: number,
+  since: string | null,
+): Promise<Row[]> {
   if (!state.high_water) return [];
   const values: unknown[] = [state.high_water];
-  const where = [
-    'packet_uid IS NULL',
-    'length(packet_hash) = 64',
-    'time <= $1',
-    `tableoid IN (
-       SELECT c.oid FROM pg_class c
-         JOIN pg_namespace n ON n.oid = c.relnamespace
-         JOIN timescaledb_information.chunks ch
-           ON ch.chunk_schema = n.nspname AND ch.chunk_name = c.relname
-        WHERE ch.hypertable_schema = 'mesh' AND ch.hypertable_name = 'packets' AND ch.is_compressed = FALSE
-     )`,
-  ];
+  const where = ['packet_uid IS NULL', 'length(packet_hash) = 64', 'time <= $1'];
   if (since) { values.push(since); where.push(`time >= $${values.length}`); }
   if (state.last_time && state.last_hash) {
     values.push(state.last_time, state.last_hash, state.last_rx_node_id ?? '');
@@ -125,9 +134,8 @@ async function packetBatch(client: pg.PoolClient, state: State, batchSize: numbe
   }
   values.push(batchSize);
   const result = await client.query<Row>(`
-    SELECT time, packet_hash, rx_node_id, raw_hex,
-           tableoid AS table_oid, ctid::text AS ctid
-      FROM mesh.packets
+    SELECT time, packet_hash, rx_node_id, raw_hex, ctid::text AS ctid
+      FROM ${quoteIdent(chunk.schema)}.${quoteIdent(chunk.name)}
      WHERE ${where.join(' AND ')}
      ORDER BY time, packet_hash, COALESCE(rx_node_id, '')
      LIMIT $${values.length}
@@ -155,14 +163,16 @@ async function backfillPackets(pool: pg.Pool, batchSize: number, dryRun: boolean
       }
     }
 
-    while (true) {
-      await client.query('BEGIN');
-      try {
-        const rows = await packetBatch(client, state, batchSize, since);
-        if (rows.length === 0) {
-          await client.query('COMMIT');
-          break;
-        }
+    const chunks = await uncompressedChunks(client);
+    for (const chunk of chunks) {
+      while (true) {
+        await client.query('BEGIN');
+        try {
+          const rows = await packetBatch(client, state, chunk, batchSize, since);
+          if (rows.length === 0) {
+            await client.query('COMMIT');
+            break;
+          }
 
         const resolved: Row[] = [];
         let unresolved = 0;
@@ -175,41 +185,21 @@ async function backfillPackets(pool: pg.Pool, batchSize: number, dryRun: boolean
         }
 
         if (!dryRun && resolved.length > 0) {
-          const oids = [...new Set(resolved.map((row) => row.table_oid))];
-          const chunkNames = await client.query<{ oid: string; chunk: string }>(`
-            SELECT c.oid::text AS oid, n.nspname || '.' || c.relname AS chunk
-              FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-             WHERE c.oid = ANY($1::oid[])
-          `, [oids]);
-          const nameByOid = new Map(chunkNames.rows.map((row) => [row.oid, row.chunk]));
-          const byChunk = new Map<string, Row[]>();
-          for (const row of resolved) {
-            const chunk = nameByOid.get(row.table_oid);
-            if (!chunk) throw new Error(`chunk OID ${row.table_oid} not found`);
-            const rows = byChunk.get(chunk) ?? [];
-            rows.push(row);
-            byChunk.set(chunk, rows);
-          }
-          for (const [chunk, chunkRows] of byChunk) {
-            if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(chunk)) {
-              throw new Error(`refusing unexpected chunk name: ${chunk}`);
-            }
-            await client.query(`
-              UPDATE "${chunk}" p
-                 SET packet_uid = decode(v.uid_hex, 'hex'),
-                     identity_version = 'wire-sha256-v1',
-                     identity_provenance = 'historical-raw-hex-recompute'
-                FROM (
-                  SELECT unnest($1::tid[]) AS ctid,
-                         unnest($2::text[]) AS uid_hex
-                ) v
-               WHERE p.ctid = v.ctid
-                 AND p.packet_uid IS NULL
-            `, [
-              chunkRows.map((row) => row.ctid),
-              chunkRows.map((row) => canonicalFromRawHex(row.raw_hex)!),
-            ]);
-          }
+          await client.query(`
+            UPDATE ${quoteIdent(chunk.schema)}.${quoteIdent(chunk.name)} p
+               SET packet_uid = decode(v.uid_hex, 'hex'),
+                   identity_version = 'wire-sha256-v1',
+                   identity_provenance = 'historical-raw-hex-recompute'
+              FROM (
+                SELECT unnest($1::tid[]) AS ctid,
+                       unnest($2::text[]) AS uid_hex
+              ) v
+             WHERE p.ctid = v.ctid
+               AND p.packet_uid IS NULL
+          `, [
+            resolved.map((row) => row.ctid),
+            resolved.map((row) => canonicalFromRawHex(row.raw_hex)!),
+          ]);
         }
 
         const last = rows[rows.length - 1]!;
@@ -238,9 +228,10 @@ async function backfillPackets(pool: pg.Pool, batchSize: number, dryRun: boolean
         if (limit > 0 && total.selected >= limit) break;
         if (dryRun || rows.length < batchSize) break;
         state = await loadState(client);
-      } catch (error) {
-        await client.query('ROLLBACK');
-        throw error;
+        } catch (error) {
+          await client.query('ROLLBACK');
+          throw error;
+        }
       }
     }
 
