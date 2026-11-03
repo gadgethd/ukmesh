@@ -37,7 +37,7 @@ SELECT 'nodes' AS relation, network, COUNT(*) FROM core.nodes GROUP BY network
 UNION ALL SELECT 'core.node_status_samples', network, COUNT(*) FROM core.node_status_samples GROUP BY network
 UNION ALL SELECT 'mesh.packets', network, COUNT(*) FROM mesh.packets GROUP BY network
 UNION ALL SELECT 'core.node_network_sightings', network, COUNT(*) FROM core.node_network_sightings GROUP BY network
-UNION ALL SELECT 'path_prefix_priors', network, COUNT(*) FROM path_prefix_priors GROUP BY network
+UNION ALL SELECT 'path_prefix_priors', network, COUNT(*) FROM analytics.path_prefix_priors GROUP BY network
 ORDER BY 1, 2;
 SQL
   log 'recent legacy-writer activity'
