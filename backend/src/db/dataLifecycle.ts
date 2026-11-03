@@ -91,6 +91,7 @@ export const DATA_LIFECYCLE_POLICIES: readonly DataLifecyclePolicy[] = Object.fr
   },
   {
     table: 'observer_region_packet_sightings',
+    qualifiedTable: 'core.observer_region_packet_sightings',
     timestampColumn: 'last_seen',
     retention: '8 days',
     kind: 'row-table',
@@ -98,6 +99,7 @@ export const DATA_LIFECYCLE_POLICIES: readonly DataLifecyclePolicy[] = Object.fr
   },
   {
     table: 'observer_region_observer_sightings',
+    qualifiedTable: 'core.observer_region_observer_sightings',
     timestampColumn: 'last_seen',
     retention: '31 days',
     kind: 'row-table',

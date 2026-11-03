@@ -402,7 +402,7 @@ async function backfillObserverRegionRollups(days: number): Promise<void> {
            AND COALESCE(NULLIF(p.topic_prefix, ''), split_part(p.topic, '/', 1)) <> 'meshcore-test'
          GROUP BY p.network, COALESCE(NULLIF(TRIM(UPPER(split_part(p.topic, '/', 2))), ''), 'UNK'), UPPER(p.packet_hash)
        ), inserted AS (
-         INSERT INTO observer_region_packet_sightings
+         INSERT INTO core.observer_region_packet_sightings
            (network, iata, packet_hash, first_seen, last_seen)
          SELECT network, iata, packet_hash, first_seen, last_seen
          FROM sightings
@@ -433,7 +433,7 @@ async function backfillObserverRegionRollups(days: number): Promise<void> {
            AND COALESCE(NULLIF(p.topic_prefix, ''), split_part(p.topic, '/', 1)) <> 'meshcore-test'
          GROUP BY p.network, COALESCE(NULLIF(TRIM(UPPER(split_part(p.topic, '/', 2))), ''), 'UNK'), UPPER(p.rx_node_id)
        ), inserted AS (
-         INSERT INTO observer_region_observer_sightings
+         INSERT INTO core.observer_region_observer_sightings
            (network, iata, rx_node_id, first_seen, last_seen)
          SELECT network, iata, rx_node_id, first_seen, last_seen
          FROM sightings

@@ -659,7 +659,7 @@ export async function persistEntriesCore(
          RETURNING 1
        ),
        packet_region_updates AS (
-         INSERT INTO observer_region_packet_sightings
+         INSERT INTO core.observer_region_packet_sightings
            (network, iata, packet_hash, first_seen, last_seen)
          SELECT network, iata, packet_hash, MIN(time), MAX(time)
          FROM new_rows
@@ -683,7 +683,7 @@ export async function persistEntriesCore(
          RETURNING 1
        ),
        observer_region_updates AS (
-         INSERT INTO observer_region_observer_sightings
+         INSERT INTO core.observer_region_observer_sightings
            (network, iata, rx_node_id, first_seen, last_seen)
          SELECT network, iata, rx_node_id, MIN(time), MAX(time)
          FROM new_rows

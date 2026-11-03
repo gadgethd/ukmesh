@@ -71,6 +71,8 @@ export type RetentionTarget = {
   retention: string;
   batchSize: number;
   extraPredicate?: string;
+  /** Physical relation when the logical table was moved to a schema. */
+  qualifiedTable?: string;
 };
 
 export const RETENTION_TARGETS: readonly RetentionTarget[] = [
@@ -78,10 +80,11 @@ export const RETENTION_TARGETS: readonly RetentionTarget[] = [
   // listed 30-day privacy limits exact for the partial oldest chunk.
   { table: 'packets', timestampColumn: 'time', retention: '30 days', batchSize: 25_000 },
   { table: 'node_status_samples', timestampColumn: 'time', retention: '30 days', batchSize: 25_000 },
-  { table: 'worker_health_snapshots', timestampColumn: 'ts', retention: '7 days', batchSize: 10_000 },
-  { table: 'frontend_error_events', timestampColumn: 'time', retention: '30 days', batchSize: 2_000 },
+  { table: 'worker_health_snapshots', qualifiedTable: 'ops.worker_health_snapshots', timestampColumn: 'ts', retention: '7 days', batchSize: 10_000 },
+  { table: 'frontend_error_events', qualifiedTable: 'ops.frontend_error_events', timestampColumn: 'time', retention: '30 days', batchSize: 2_000 },
   {
     table: 'owner_alert_deliveries',
+    qualifiedTable: 'core.owner_alert_deliveries',
     timestampColumn: 'created_at',
     retention: '90 days',
     batchSize: 1_000,
@@ -89,6 +92,7 @@ export const RETENTION_TARGETS: readonly RetentionTarget[] = [
   },
   {
     table: 'owner_packet_share_deliveries',
+    qualifiedTable: 'core.owner_packet_share_deliveries',
     timestampColumn: 'created_at',
     retention: '30 days',
     batchSize: 2_000,
@@ -96,25 +100,27 @@ export const RETENTION_TARGETS: readonly RetentionTarget[] = [
   },
   {
     table: 'public_feed_deliveries',
+    qualifiedTable: 'ops.public_feed_deliveries',
     timestampColumn: 'created_at',
     retention: '30 days',
     batchSize: 2_000,
     extraPredicate: `status IN ('succeeded', 'dead_lettered')`,
   },
-  { table: 'operational_check_results', timestampColumn: 'ts', retention: '14 days', batchSize: 2_000 },
-  { table: 'observer_region_packet_sightings', timestampColumn: 'last_seen', retention: '8 days', batchSize: 25_000 },
-  { table: 'observer_region_observer_sightings', timestampColumn: 'last_seen', retention: '31 days', batchSize: 5_000 },
-  { table: 'link_job_commits', timestampColumn: 'completed_at', retention: '180 days', batchSize: 5_000 },
+  { table: 'operational_check_results', qualifiedTable: 'ops.operational_check_results', timestampColumn: 'ts', retention: '14 days', batchSize: 2_000 },
+  { table: 'observer_region_packet_sightings', qualifiedTable: 'core.observer_region_packet_sightings', timestampColumn: 'last_seen', retention: '8 days', batchSize: 25_000 },
+  { table: 'observer_region_observer_sightings', qualifiedTable: 'core.observer_region_observer_sightings', timestampColumn: 'last_seen', retention: '31 days', batchSize: 5_000 },
+  { table: 'link_job_commits', qualifiedTable: 'ops.link_job_commits', timestampColumn: 'completed_at', retention: '180 days', batchSize: 5_000 },
   { table: 'ml_model_variant_packet_results', timestampColumn: 'created_at', retention: '180 days', batchSize: 5_000 },
   { table: 'packet_decryptions', timestampColumn: 'created_at', retention: '30 days', batchSize: 2_000 },
   {
     table: 'observer_registration_requests',
+    qualifiedTable: 'core.observer_registration_requests',
     timestampColumn: 'updated_at',
     retention: '365 days',
     batchSize: 1_000,
     extraPredicate: `status IN ('rejected', 'expired', 'provisioned')`,
   },
-  { table: 'operator_audit_events', timestampColumn: 'created_at', retention: '730 days', batchSize: 2_000 },
+  { table: 'operator_audit_events', qualifiedTable: 'ops.operator_audit_events', timestampColumn: 'created_at', retention: '730 days', batchSize: 2_000 },
 ];
 
 function refreshBackupAgeMetrics(now = new Date()): void {
@@ -278,7 +284,7 @@ export function retentionDeleteSql(target: RetentionTarget): string {
          LIMIT $2
        ) AS oldest
      )
-     DELETE FROM ${target.table} AS target
+     DELETE FROM ${target.qualifiedTable ?? target.table} AS target
      WHERE target.${target.timestampColumn} <= (SELECT boundary FROM expired)
        ${target.extraPredicate ? `AND ${target.extraPredicate}` : ''}`;
 }

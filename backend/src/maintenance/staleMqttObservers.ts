@@ -76,7 +76,7 @@ async function cleanupNodeRecords(
               AND s.last_seen_at >= NOW() - ($1 * INTERVAL '1 day')
          )
          AND NOT EXISTS (
-           SELECT 1 FROM observer_region_observer_sightings s
+           SELECT 1 FROM core.observer_region_observer_sightings s
             WHERE s.rx_node_id = n.node_id
               AND s.last_seen >= NOW() - ($1 * INTERVAL '1 day')
          )`;
@@ -143,7 +143,7 @@ async function cleanupNodeRecords(
     await client.query(
       `INSERT INTO ops.maintenance_removed_records (batch_id, source_table, record_data, reason)
        SELECT $1, 'observer_region_observer_sightings', to_jsonb(s), $2
-         FROM observer_region_observer_sightings s
+         FROM core.observer_region_observer_sightings s
         WHERE s.rx_node_id = ANY($3::text[])`,
       [batchId, reason, nodeIds],
     );
@@ -156,7 +156,7 @@ async function cleanupNodeRecords(
     );
 
     const observerSightings = await client.query(
-      `DELETE FROM observer_region_observer_sightings
+      `DELETE FROM core.observer_region_observer_sightings
         WHERE rx_node_id = ANY($1::text[])
         RETURNING 1`,
       [nodeIds],

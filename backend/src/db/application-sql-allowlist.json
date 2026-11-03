@@ -29,8 +29,6 @@
     "node_neighbor_samples",
     "node_status_samples",
     "nodes",
-    "observer_region_observer_sightings",
-    "observer_region_packet_sightings",
     "packet_daily_stats",
     "packet_decryptions",
     "packet_forwarding_outbox",
@@ -160,8 +158,6 @@
       "ingest_observation_ledger_coverage",
       "multibyte_path_facts",
       "nodes",
-      "observer_region_observer_sightings",
-      "observer_region_packet_sightings",
       "packet_daily_stats",
       "packet_decryptions",
       "packet_hourly_stats",
@@ -178,8 +174,6 @@
     "db/packetBatch.ts": [
       "ingest_observation_ledger",
       "nodes",
-      "observer_region_observer_sightings",
-      "observer_region_packet_sightings",
       "packet_daily_stats",
       "packet_forwarding_outbox",
       "packet_hourly_stats",
@@ -229,14 +223,12 @@
     ],
     "maintenance/staleMqttObservers.integration.test.ts": [
       "nodes",
-      "observer_region_observer_sightings",
       "packet_paths",
       "packets",
       "private_node_prefixes"
     ],
     "maintenance/staleMqttObservers.native.integration.test.ts": [
       "nodes",
-      "observer_region_observer_sightings",
       "packet_paths",
       "packets",
       "private_node_prefixes"
@@ -246,7 +238,6 @@
     ],
     "maintenance/staleMqttObservers.ts": [
       "nodes",
-      "observer_region_observer_sightings",
       "private_node_prefixes"
     ],
     "mqtt/client.ts": [
@@ -361,7 +352,6 @@
     ],
     "ram/runtime.integration.test.ts": [
       "ingest_observation_ledger",
-      "observer_region_packet_sightings",
       "packet_daily_stats",
       "packet_hourly_stats",
       "packet_paths",
@@ -483,8 +473,6 @@
       "multibyte_path_facts"
     ],
     "tools/backfillStatsRollups.ts": [
-      "observer_region_observer_sightings",
-      "observer_region_packet_sightings",
       "packet_daily_stats",
       "packet_hourly_stats",
       "packets"
