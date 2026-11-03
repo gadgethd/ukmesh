@@ -15,7 +15,7 @@ function fakeQuery(receptions: Reception[], nodes: NodeLoc[], links: Link[] = []
   return async <T extends Row = Row>(text: string): Promise<{ rows: T[] }> => {
     if (/FROM packets/.test(text)) return { rows: receptions as unknown as T[] };
     if (/FROM core.node_links/.test(text)) return { rows: links as unknown as T[] };
-    if (/FROM nodes/.test(text)) return { rows: nodes as unknown as T[] };
+    if (/FROM core.nodes/.test(text)) return { rows: nodes as unknown as T[] };
     return { rows: [] };
   };
 }

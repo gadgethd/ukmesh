@@ -246,7 +246,7 @@ export async function lazyResolvePath(
         AND ${packetTimePredicate}
         AND rx_node_id IS NOT NULL
         AND NOT EXISTS (
-          SELECT 1 FROM nodes private_node
+          SELECT 1 FROM core.nodes private_node
           WHERE private_node.name LIKE '%🚫%'
             AND ${privateNodePacketNetworkMatchSql('private_node', 'packets')}
             AND (
@@ -300,7 +300,7 @@ export async function lazyResolvePath(
     lon: number | null;
     name: string | null;
   }>(
-    `SELECT node_id, lat, lon, name FROM nodes
+    `SELECT node_id, lat, lon, name FROM core.nodes
       WHERE node_id = ANY($1)
         AND lat IS NOT NULL AND lon IS NOT NULL
         AND lat != 0 AND lon != 0
@@ -370,7 +370,7 @@ export async function lazyResolvePath(
       lon: number | null;
     }>(
       `SELECT node_id, name, lat, lon
-         FROM nodes
+         FROM core.nodes
         WHERE ($1::text[] IS NULL OR network = ANY($1))
           AND (name IS NULL OR name NOT LIKE '%🚫%')
           AND (${whereClauses.join(' OR ')})

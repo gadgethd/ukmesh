@@ -169,7 +169,7 @@ async function main(): Promise<void> {
 
     const { rows: nodeRows } = await pool.query<NodeMetaRow>(
       `SELECT DISTINCT ON (node_id) node_id, role, name, lat, lon
-         FROM nodes
+         FROM core.nodes
         ORDER BY node_id, last_seen DESC NULLS LAST`,
     );
     const nodeRoles = new Map<string, number | null>();

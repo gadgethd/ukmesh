@@ -218,7 +218,7 @@ async function refreshEstablishedNodes(): Promise<void> {
         AVG(NULLIF(p.payload->'appData'->'location'->>'longitude', '')::double precision) AS avg_lon,
         AVG(p.hop_count)   AS avg_hops,
         n.advert_count
-      FROM nodes n
+      FROM core.nodes n
       JOIN packets p ON p.src_node_id = n.node_id
       WHERE n.advert_count >= $1
         AND p.packet_type = 4
@@ -247,7 +247,7 @@ async function refreshEstablishedNodes(): Promise<void> {
     // Also load all known node IDs (even without stable location) for slow-burn detection
     const allIds = await query<{ node_id: string }>(
       `SELECT node_id
-         FROM nodes
+         FROM core.nodes
         WHERE last_seen > NOW() - INTERVAL '180 days'
         ORDER BY last_seen DESC
         LIMIT 100000`

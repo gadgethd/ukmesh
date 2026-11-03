@@ -259,7 +259,7 @@ export async function runMigrations(pool: pg.Pool): Promise<string[]> {
       if (replacement) {
         const contents = await client.query<{ has_rows: boolean }>(`
           SELECT
-            EXISTS (SELECT 1 FROM nodes LIMIT 1)
+            EXISTS (SELECT 1 FROM core.nodes LIMIT 1)
             OR EXISTS (SELECT 1 FROM packets LIMIT 1) AS has_rows
         `);
         if (contents.rows[0]?.has_rows) {

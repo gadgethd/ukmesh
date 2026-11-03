@@ -45,7 +45,7 @@ test('does nothing when no MQTT observers have crossed the stale threshold', asy
     observerSightings: 0,
     networkSightings: 0,
   });
-  assert.equal(stub.calls.some((call) => call.text.includes('DELETE FROM nodes')), false);
+  assert.equal(stub.calls.some((call) => call.text.includes('DELETE FROM core.nodes')), false);
   assert.equal(stub.released(), true);
 });
 
@@ -206,7 +206,7 @@ test('archives visibility records before deleting stale observer nodes', async (
   assert.match(stub.calls[2]?.text ?? '', /\(role IS NULL OR role = 2\)/);
   assert.match(stub.calls[2]?.text ?? '', /private_node_prefixes p WHERE p.node_id = n.node_id/);
   const archiveIndex = stub.calls.findIndex((call) => call.text.includes("SELECT $1, 'nodes'"));
-  const deleteIndex = stub.calls.findIndex((call) => call.text.includes('DELETE FROM nodes'));
+  const deleteIndex = stub.calls.findIndex((call) => call.text.includes('DELETE FROM core.nodes'));
   assert.ok(archiveIndex >= 0 && archiveIndex < deleteIndex);
   assert.equal(stub.released(), true);
 });

@@ -350,7 +350,7 @@ export async function touchNodesPredictedOnline(nodeIds: string[]): Promise<void
   const ids = Array.from(new Set(nodeIds.map((id) => String(id).trim()).filter(Boolean)));
   if (ids.length < 1) return;
   await pool.query(
-    `UPDATE nodes
+    `UPDATE core.nodes
      SET last_predicted_online_at = NOW()
      WHERE node_id = ANY($1::text[])`,
     [ids],
@@ -398,14 +398,14 @@ export async function refreshRecentPathEvidence(
      ),
      node_hashes AS (
        SELECT 2 AS path_hash_size_bytes, UPPER(LEFT(node_id, 4)) AS hash, node_id
-       FROM nodes
+       FROM core.nodes
        WHERE (role = 2 OR role IS NULL) AND ${pathEvidenceNodeScope}
          AND lat BETWEEN -90 AND 90
          AND lon BETWEEN -180 AND 180
          AND NOT (ABS(lat) < 1e-9 AND ABS(lon) < 1e-9)
        UNION ALL
        SELECT 3 AS path_hash_size_bytes, UPPER(LEFT(node_id, 6)) AS hash, node_id
-       FROM nodes
+       FROM core.nodes
        WHERE (role = 2 OR role IS NULL) AND ${pathEvidenceNodeScope}
          AND lat BETWEEN -90 AND 90
          AND lon BETWEEN -180 AND 180
@@ -427,7 +427,7 @@ export async function refreshRecentPathEvidence(
        GROUP BY nh.node_id
      ),
      updated AS (
-       UPDATE nodes n
+       UPDATE core.nodes n
        SET last_path_evidence_at = m.max_time
        FROM matched m
        WHERE n.node_id = m.node_id
@@ -500,7 +500,7 @@ export async function upsertNode(nodeId: string, updates: {
          ON CONFLICT (canonical_advert_hash) DO NOTHING
          RETURNING 1
        )
-       INSERT INTO nodes (node_id, name, lat, lon, iata, role, hardware_model, firmware_version, public_key, last_seen, is_online, network, last_mqtt_observer_seen_at, advert_count)
+       INSERT INTO core.nodes (node_id, name, lat, lon, iata, role, hardware_model, firmware_version, public_key, last_seen, is_online, network, last_mqtt_observer_seen_at, advert_count)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), TRUE, $10, CASE WHEN $12 THEN NOW() ELSE NULL END, (SELECT COUNT(*) FROM advert_once))
        ON CONFLICT (node_id) DO UPDATE SET
          name             = COALESCE(EXCLUDED.name, nodes.name),
@@ -536,7 +536,7 @@ export async function upsertNode(nodeId: string, updates: {
   return withIngestTransaction(async (transactionQuery) => {
     const existing = hasIncomingPosition
       ? await transactionQuery<{ lat: number | null; lon: number | null }>(
-          'SELECT lat, lon FROM nodes WHERE node_id = $1 FOR UPDATE',
+          'SELECT lat, lon FROM core.nodes WHERE node_id = $1 FOR UPDATE',
           [nodeId],
         )
       : null;
@@ -549,7 +549,7 @@ export async function upsertNode(nodeId: string, updates: {
          ON CONFLICT (canonical_advert_hash) DO NOTHING
          RETURNING 1
        )
-       INSERT INTO nodes (node_id, name, lat, lon, iata, role, hardware_model, firmware_version, public_key, last_seen, is_online, network, last_mqtt_observer_seen_at, advert_count)
+       INSERT INTO core.nodes (node_id, name, lat, lon, iata, role, hardware_model, firmware_version, public_key, last_seen, is_online, network, last_mqtt_observer_seen_at, advert_count)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), TRUE, $10, CASE WHEN $12 THEN NOW() ELSE NULL END, (SELECT COUNT(*) FROM advert_once))
        ON CONFLICT (node_id) DO UPDATE SET
          name             = COALESCE(EXCLUDED.name, nodes.name),
@@ -593,7 +593,7 @@ export async function upsertNode(nodeId: string, updates: {
     );
 
     if (coordinatesChanged) {
-      await transactionQuery('UPDATE nodes SET elevation_m = NULL WHERE node_id = $1', [nodeId]);
+      await transactionQuery('UPDATE core.nodes SET elevation_m = NULL WHERE node_id = $1', [nodeId]);
       await transactionQuery('DELETE FROM core.node_coverage WHERE node_id = $1', [nodeId]);
     }
 
@@ -631,7 +631,7 @@ export async function insertNodeStatusSample(sample: {
        VALUES (COALESCE($11::timestamptz, NOW()), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING time
      )
-     UPDATE nodes
+     UPDATE core.nodes
         SET last_status_at = GREATEST(last_status_at, (SELECT time FROM sample_insert)),
             last_seen = GREATEST(last_seen, (SELECT time FROM sample_insert)),
             is_online = is_online OR (SELECT time FROM sample_insert) > NOW() - INTERVAL '15 minutes'
@@ -1578,7 +1578,7 @@ function buildSpamSuspectWhere(options: SpamSuspectQueryOptions, params: unknown
     `ss.spoofed_name NOT LIKE '%🚫%'`,
     `NOT EXISTS (
        SELECT 1
-       FROM nodes private_node
+       FROM core.nodes private_node
        WHERE private_node.node_id = ss.src_node_id
          AND private_node.name LIKE '%🚫%'
      )`,
@@ -1718,7 +1718,7 @@ export async function getSpamPacketObservers(srcNodeId: string) {
        ss.claimed_lon,
        ss.spoofed_name
      FROM packets p
-     LEFT JOIN nodes n ON n.node_id = p.rx_node_id
+     LEFT JOIN core.nodes n ON n.node_id = p.rx_node_id
      LEFT JOIN spam_suspects ss ON ss.src_node_id = p.src_node_id
        AND ss.network = p.network
      WHERE p.src_node_id = $1
@@ -1729,7 +1729,7 @@ export async function getSpamPacketObservers(srcNodeId: string) {
        AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
        AND (ss.spoofed_name IS NULL OR ss.spoofed_name NOT LIKE '%🚫%')
        AND NOT EXISTS (
-         SELECT 1 FROM nodes source_node
+         SELECT 1 FROM core.nodes source_node
          WHERE source_node.node_id = p.src_node_id
            AND source_node.name LIKE '%🚫%'
        )
@@ -1759,7 +1759,7 @@ export async function getSpamAllObservers() {
        AND p.packet_type  = 4
        AND p.time > NOW() - INTERVAL '30 days'
        AND p.rx_node_id   IS NOT NULL
-     JOIN nodes n ON n.node_id = p.rx_node_id
+     JOIN core.nodes n ON n.node_id = p.rx_node_id
      WHERE ss.claimed_lat IS NOT NULL
        AND ss.claimed_lon IS NOT NULL
        AND ss.network = ANY($1)
@@ -1769,7 +1769,7 @@ export async function getSpamAllObservers() {
        AND ss.spoofed_name NOT LIKE '%🚫%'
        AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
        AND NOT EXISTS (
-         SELECT 1 FROM nodes source_node
+         SELECT 1 FROM core.nodes source_node
          WHERE source_node.node_id = ss.src_node_id
            AND source_node.name LIKE '%🚫%'
        )

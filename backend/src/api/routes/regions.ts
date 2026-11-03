@@ -386,7 +386,7 @@ const REGIONS_CACHE_CONTROL = 'public, max-age=300, stale-while-revalidate=900';
 function nodeMetaLateral(alias: string, filters: NetworkFilters): string {
   return `LEFT JOIN LATERAL (
     SELECT n.name, n.role, n.lat, n.lon
-      FROM nodes n
+      FROM core.nodes n
      WHERE n.node_id = ${alias}.node_id ${filters.nodesAlias('n')}
      ORDER BY n.last_seen DESC NULLS LAST
      LIMIT 1
@@ -490,7 +490,7 @@ export function registerRegionsRoutes(router: Router, deps: RegionsRouteDeps): v
         ),
         deps.query<RegionScopeNodeRow>(
           `SELECT n.node_id, n.name, n.role, n.lat, n.lon
-             FROM nodes n
+             FROM core.nodes n
             WHERE n.node_id = ${idParam} ${filters.nodesAlias('n')}
             ORDER BY n.last_seen DESC NULLS LAST
             LIMIT 1`,

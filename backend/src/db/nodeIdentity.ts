@@ -669,7 +669,7 @@ export async function refreshNodeIdentityAliases(
     const nodesResult = await client.query<IdentityNode>(
       `SELECT node_id, name, lat, lon, role, advert_count, last_seen,
               network, hardware_model, firmware_version
-         FROM nodes
+         FROM core.nodes
         WHERE network IS DISTINCT FROM 'test'`,
     );
     const nodes = nodesResult.rows.map((row) => ({

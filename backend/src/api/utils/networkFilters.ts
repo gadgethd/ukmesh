@@ -139,7 +139,7 @@ export function networkFilters(
   } else {
     packetConditions.push(`network IS DISTINCT FROM 'test'`);
     packetConditions.push(excludesLegacyTestTopic(''));
-    packetConditions.push(`COALESCE(rx_node_id, '') NOT IN (SELECT node_id FROM nodes WHERE network = 'test')`);
+    packetConditions.push(`COALESCE(rx_node_id, '') NOT IN (SELECT node_id FROM core.nodes WHERE network = 'test')`);
   }
   if (observerParam) {
     packetConditions.push(
@@ -227,7 +227,7 @@ export function networkFilters(
       } else {
         conditions.push(`${prefix}network IS DISTINCT FROM 'test'`);
         conditions.push(excludesLegacyTestTopic(prefix));
-        conditions.push(`COALESCE(${prefix}rx_node_id, '') NOT IN (SELECT node_id FROM nodes WHERE network = 'test')`);
+        conditions.push(`COALESCE(${prefix}rx_node_id, '') NOT IN (SELECT node_id FROM core.nodes WHERE network = 'test')`);
       }
       if (observerParam) {
         conditions.push(

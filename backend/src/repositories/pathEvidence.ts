@@ -60,7 +60,7 @@ export async function reactivateHistoricPathNodes(
      ),
      candidates AS (
        SELECT n.node_id, i.hash
-       FROM nodes n
+       FROM core.nodes n
        JOIN input i ON UPPER(LEFT(n.node_id, ${prefixLength})) = i.hash
        WHERE (n.role = 2 OR n.role IS NULL)
          AND ${networkScope}
@@ -81,7 +81,7 @@ export async function reactivateHistoricPathNodes(
      ),
      locked AS MATERIALIZED (
        SELECT n.node_id
-       FROM nodes n
+       FROM core.nodes n
        JOIN matched m ON m.node_id = n.node_id
        WHERE n.last_path_evidence_at IS NULL
           OR n.last_path_evidence_at < $2::timestamptz
@@ -89,7 +89,7 @@ export async function reactivateHistoricPathNodes(
        FOR UPDATE OF n
      ),
      updated AS (
-       UPDATE nodes n
+       UPDATE core.nodes n
        SET last_path_evidence_at = $2::timestamptz
        FROM locked
        WHERE n.node_id = locked.node_id

@@ -266,7 +266,7 @@ async function loadContext(
   const [nodeRows, linkRows, learningModel] = await Promise.all([
     query<MeshNode>(
       `SELECT node_id, name, lat, lon, iata, role, elevation_m, last_seen::text AS last_seen
-       FROM nodes
+       FROM core.nodes
        WHERE ($1::text[] IS NULL OR network = ANY($1))
          AND (name IS NULL OR name NOT LIKE '%🚫%')`,
       [resolverScope(network)],
@@ -285,8 +285,8 @@ async function loadContext(
       `SELECT nl.node_a_id, nl.node_b_id, nl.observed_count, nl.multibyte_observed_count,
               nl.itm_path_loss_db, nl.itm_viable, nl.count_a_to_b, nl.count_b_to_a
        FROM core.node_links nl
-       JOIN nodes a ON a.node_id = nl.node_a_id
-       JOIN nodes b ON b.node_id = nl.node_b_id
+       JOIN core.nodes a ON a.node_id = nl.node_a_id
+       JOIN core.nodes b ON b.node_id = nl.node_b_id
        WHERE (nl.itm_viable IS NOT NULL OR nl.force_viable = true)
          AND (a.name IS NULL OR a.name NOT LIKE '%🚫%')
          AND (b.name IS NULL OR b.name NOT LIKE '%🚫%')
@@ -693,7 +693,7 @@ export async function resolveBetaPathForPacketHash(
        AND ($2::text[] IS NULL OR network = ANY($2))
        ${observer ? 'AND rx_node_id = $3' : ''}
        AND NOT EXISTS (
-         SELECT 1 FROM nodes private_node
+         SELECT 1 FROM core.nodes private_node
          WHERE private_node.name LIKE '%🚫%'
            AND ${privateNodePacketNetworkMatchSql('private_node', 'packets')}
            AND (
@@ -955,7 +955,7 @@ async function loadMultiObserverInputs(
        AND time >= NOW() - ($3::int * INTERVAL '1 hour')
        AND rx_node_id IS NOT NULL
        AND NOT EXISTS (
-         SELECT 1 FROM nodes private_node
+         SELECT 1 FROM core.nodes private_node
          WHERE private_node.name LIKE '%🚫%'
            AND ${privateNodePacketNetworkMatchSql('private_node', 'packets')}
            AND (
@@ -1104,7 +1104,7 @@ export async function createMultiObserverPathBatchResolver(
                 AND p.time <= $4
                 AND p.rx_node_id IS NOT NULL
                 AND NOT EXISTS (
-                  SELECT 1 FROM nodes private_node
+                  SELECT 1 FROM core.nodes private_node
                    WHERE private_node.name LIKE '%🚫%'
                      AND ${privateNodePacketNetworkMatchSql('private_node', 'p')}
                      AND (

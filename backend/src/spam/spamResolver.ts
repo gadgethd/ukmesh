@@ -166,7 +166,7 @@ export async function resolveSpamOrigin(
   const recRes = await query<ReceptionRow>(
     `SELECT p.rx_node_id, p.hop_count, p.path_hashes, n.lat AS olat, n.lon AS olon
        FROM packets p
-       JOIN nodes n ON n.node_id = p.rx_node_id
+       JOIN core.nodes n ON n.node_id = p.rx_node_id
       WHERE p.packet_hash = ANY($1)
         AND ($2::text[] IS NULL OR p.network = ANY($2))
         AND p.path_hashes IS NOT NULL AND cardinality(p.path_hashes) > 0
@@ -175,7 +175,7 @@ export async function resolveSpamOrigin(
         AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
         AND NOT EXISTS (
           SELECT 1
-          FROM nodes private_node
+          FROM core.nodes private_node
           WHERE private_node.name LIKE '%🚫%'
             AND ${privateNodePacketNetworkMatchSql('private_node', 'p')}
             AND (
@@ -202,7 +202,7 @@ export async function resolveSpamOrigin(
 
   // 2. Located nodes across the physical mesh, indexed by path-hash prefix.
   const nodeRes = await query<NodeLoc>(
-    `SELECT node_id, name, lat, lon FROM nodes
+    `SELECT node_id, name, lat, lon FROM core.nodes
       WHERE ($1::text[] IS NULL OR network = ANY($1))
         AND lat IS NOT NULL AND lon IS NOT NULL AND lat <> 0 AND lon <> 0
         AND (name IS NULL OR name NOT LIKE '%🚫%')

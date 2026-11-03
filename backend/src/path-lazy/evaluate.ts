@@ -144,7 +144,7 @@ async function loadGoldPackets(network: string, sampleSize: number): Promise<Gol
   const scope = expandResolverScope(network);
 
   const nodeRows = await analyticsQuery<{ node_id: string; lat: number; lon: number }>(
-    `SELECT node_id, lat, lon FROM nodes
+    `SELECT node_id, lat, lon FROM core.nodes
       WHERE network = ANY($1) AND lat IS NOT NULL AND lon IS NOT NULL AND lat != 0 AND lon != 0
         AND (name IS NULL OR name NOT LIKE '%🚫%')`,
     [scope],

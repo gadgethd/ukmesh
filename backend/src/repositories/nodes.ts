@@ -195,7 +195,7 @@ export function createNodeRepository(query: QueryFn): NodeRepository {
         OR STRPOS(LOWER(COALESCE(n.iata, '')), LOWER(${searchParameter})) > 0
         OR EXISTS (
           SELECT 1 FROM core.node_name_history history
-          JOIN nodes name_source ON name_source.node_id = history.node_id
+          JOIN core.nodes name_source ON name_source.node_id = history.node_id
           WHERE history.node_id = ANY(n.identity_source_ids)
             AND history.name NOT LIKE '%🚫%'
             AND (name_source.name IS NULL OR name_source.name NOT LIKE '%🚫%')

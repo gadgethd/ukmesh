@@ -180,7 +180,7 @@ export async function loadRecentMessages(
             MAX(p.rssi)         AS best_rssi,
             MAX(p.snr)          AS best_snr
      FROM packets p
-     JOIN nodes n ON n.node_id = p.rx_node_id
+     JOIN core.nodes n ON n.node_id = p.rx_node_id
      WHERE p.packet_type = 5
        AND p.time >= $1
        AND p.time < $2

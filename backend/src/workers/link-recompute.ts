@@ -209,7 +209,7 @@ async function main(): Promise<void> {
 
     const nodes = await query<PhysicalNodeRow>(
       `SELECT n.node_id, n.lat, n.lon
-         FROM nodes n
+         FROM core.nodes n
         WHERE n.lat IS NOT NULL
           AND n.lon IS NOT NULL
           AND n.lat BETWEEN 49.5 AND 61.5

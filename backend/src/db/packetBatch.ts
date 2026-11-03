@@ -543,7 +543,7 @@ export async function persistEntriesCore(
          RETURNING 1
        ),
        observer_updates AS (
-         INSERT INTO nodes (
+         INSERT INTO core.nodes (
            node_id, iata, observer_iata, last_seen, last_rx_at, is_online,
            network, last_mqtt_observer_seen_at
          )

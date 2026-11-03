@@ -105,7 +105,7 @@ export async function lazyResolvePathLegacy(
   );
 
   const obsNodeResult = await query<{ node_id: string; lat: number | null; lon: number | null; name: string | null }>(
-    `SELECT node_id, lat, lon, name FROM nodes
+    `SELECT node_id, lat, lon, name FROM core.nodes
       WHERE node_id = ANY($1) AND lat IS NOT NULL AND lon IS NOT NULL AND lat != 0 AND lon != 0`,
     [allObserverIds],
   );
@@ -149,7 +149,7 @@ export async function lazyResolvePathLegacy(
   if (allUniqueHashes.length > 0) {
     const whereClauses = allUniqueHashes.map((_, i) => `upper(node_id) LIKE $${i + 2}`);
     const nodeResult = await query<{ node_id: string; name: string | null; lat: number | null; lon: number | null }>(
-      `SELECT node_id, name, lat, lon FROM nodes
+      `SELECT node_id, name, lat, lon FROM core.nodes
         WHERE ($1::text[] IS NULL OR network = ANY($1)) AND (${whereClauses.join(' OR ')})`,
       [scopedNetworks, ...allUniqueHashes.map((h) => h + '%')],
     );

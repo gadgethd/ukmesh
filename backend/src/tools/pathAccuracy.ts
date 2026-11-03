@@ -52,10 +52,10 @@ async function capture(file: string) {
     const capturedAt = (await rows<{ t: string }>('SELECT now()::text AS t', []))[0]!.t;
     const calibration = await rows('SELECT * FROM path_model_calibration WHERE network = $1');
     const nodes = await rows<MeshNode>(`SELECT node_id, name, lat, lon, iata, role, elevation_m, last_seen::text
-      FROM nodes WHERE ($1::text[] IS NULL OR network = ANY($1)) AND (name IS NULL OR name NOT LIKE '%🚫%') ORDER BY node_id`, [scope]);
+      FROM core.nodes WHERE ($1::text[] IS NULL OR network = ANY($1)) AND (name IS NULL OR name NOT LIKE '%🚫%') ORDER BY node_id`, [scope]);
     const links = await rows<Snapshot['links'][number]>(`SELECT nl.node_a_id, nl.node_b_id, nl.observed_count,
       nl.multibyte_observed_count, nl.itm_path_loss_db, nl.itm_viable, nl.count_a_to_b, nl.count_b_to_a
-      FROM core.node_links nl JOIN nodes a ON a.node_id = nl.node_a_id JOIN nodes b ON b.node_id = nl.node_b_id
+      FROM core.node_links nl JOIN core.nodes a ON a.node_id = nl.node_a_id JOIN core.nodes b ON b.node_id = nl.node_b_id
       WHERE ($1::text[] IS NULL OR (a.network = ANY($1) AND b.network = ANY($1))) AND (nl.itm_viable IS NOT NULL OR nl.force_viable = true)
       AND (a.name IS NULL OR a.name NOT LIKE '%🚫%') AND (b.name IS NULL OR b.name NOT LIKE '%🚫%')`, [scope]);
     const prefixes = await rows<Snapshot['prefixes'][number]>(`SELECT prefix, prev_prefix, receiver_region, node_id, count
@@ -149,7 +149,7 @@ function snapshotQuery(snapshot: Snapshot, observations: Observation[]) {
       }
       return { rows: [...byObserver.values()] };
     }
-    if (/FROM nodes\b/i.test(sql)) return { rows: snapshot.nodes.filter((node) => /node_id = ANY\(\$1\)/i.test(sql)
+    if (/FROM core.nodes\b/i.test(sql)) return { rows: snapshot.nodes.filter((node) => /node_id = ANY\(\$1\)/i.test(sql)
       ? includes(params[0], node.node_id) && node.lat != null && node.lon != null && node.lat !== 0 && node.lon !== 0
       : params.slice(1, -1).some((prefix) => typeof prefix === 'string' && node.node_id.toUpperCase().startsWith(prefix.replace('%', '')))) };
     if (/FROM core.node_links\b/i.test(sql)) return { rows: snapshot.links.filter((link) => includes(params[0], link.node_a_id) && includes(params[0], link.node_b_id)) };

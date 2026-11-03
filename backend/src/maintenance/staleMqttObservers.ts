@@ -81,7 +81,7 @@ async function cleanupNodeRecords(
               AND s.last_seen >= NOW() - ($1 * INTERVAL '1 day')
          )`;
     const candidateSelection = `SELECT node_id
-         FROM nodes n
+         FROM core.nodes n
         WHERE ${staleCondition}
           AND network IS DISTINCT FROM 'test'
           -- Node deletion cascades its privacy prefixes and the existing
@@ -136,7 +136,7 @@ async function cleanupNodeRecords(
     await client.query(
       `INSERT INTO ops.maintenance_removed_records (batch_id, source_table, record_data, reason)
        SELECT $1, 'nodes', to_jsonb(n), $2
-         FROM nodes n
+         FROM core.nodes n
         WHERE n.node_id = ANY($3::text[])`,
       [batchId, reason, nodeIds],
     );
@@ -168,7 +168,7 @@ async function cleanupNodeRecords(
       [nodeIds],
     );
     const nodes = await client.query(
-      `DELETE FROM nodes
+      `DELETE FROM core.nodes
         WHERE node_id = ANY($1::text[])
         RETURNING 1`,
       [nodeIds],

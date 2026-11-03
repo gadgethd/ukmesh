@@ -21,7 +21,7 @@ export function regionNodeSourceSql(regionParam: string): string {
         max(n.last_rx_at) OVER () AS last_rx_at,
         max(n.last_status_at) OVER () AS last_status_at,
         n.observer_iata
-      FROM nodes n
+      FROM core.nodes n
       WHERE n.node_id = ANY(ARRAY(
         SELECT members.node_id
         UNION

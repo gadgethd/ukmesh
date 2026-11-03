@@ -45,7 +45,7 @@ export function createPathingRepository(deps: PathingRepositoryDeps) {
       }>(
         `SELECT pp.prefix, pp.receiver_region, pp.prev_prefix, pp.node_id, pp.probability, pp.count
          FROM path_prefix_priors pp
-         JOIN nodes n ON n.node_id = pp.node_id
+         JOIN core.nodes n ON n.node_id = pp.node_id
          WHERE pp.network = $1
            AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
            AND NOT ${privatePrefixPathFilterSql('pp.prefix')}
@@ -63,8 +63,8 @@ export function createPathingRepository(deps: PathingRepositoryDeps) {
       }>(
         `SELECT pt.from_node_id, pt.to_node_id, pt.receiver_region, pt.probability, pt.count
          FROM path_transition_priors pt
-         JOIN nodes from_node ON from_node.node_id = pt.from_node_id
-         JOIN nodes to_node ON to_node.node_id = pt.to_node_id
+         JOIN core.nodes from_node ON from_node.node_id = pt.from_node_id
+         JOIN core.nodes to_node ON to_node.node_id = pt.to_node_id
          WHERE pt.network = $1
            AND (from_node.name IS NULL OR from_node.name NOT LIKE '%🚫%')
            AND (to_node.name IS NULL OR to_node.name NOT LIKE '%🚫%')
@@ -91,8 +91,8 @@ export function createPathingRepository(deps: PathingRepositoryDeps) {
                 pe.observed_count, pe.expected_count, pe.missing_count, pe.directional_support,
                 pe.recency_score, pe.reliability, pe.itm_path_loss_db, pe.score, pe.consistency_penalty
          FROM path_edge_priors pe
-         JOIN nodes from_node ON from_node.node_id = pe.from_node_id
-         JOIN nodes to_node ON to_node.node_id = pe.to_node_id
+         JOIN core.nodes from_node ON from_node.node_id = pe.from_node_id
+         JOIN core.nodes to_node ON to_node.node_id = pe.to_node_id
          WHERE pe.network = $1
            AND (from_node.name IS NULL OR from_node.name NOT LIKE '%🚫%')
            AND (to_node.name IS NULL OR to_node.name NOT LIKE '%🚫%')
@@ -113,7 +113,7 @@ export function createPathingRepository(deps: PathingRepositoryDeps) {
          WHERE pm.network = $1
            AND NOT EXISTS (
              SELECT 1
-             FROM nodes private_node
+             FROM core.nodes private_node
              WHERE private_node.name LIKE '%🚫%'
                AND private_node.node_id = ANY(string_to_array(pm.node_ids, '>'))
            )

@@ -677,7 +677,7 @@ async function rebuildNetworkUnderLease(
 
   const nodesResult = await analyticsQuery<LearningNode>(
     `SELECT node_id, lat, lon, elevation_m, iata
-     FROM nodes
+     FROM core.nodes
      WHERE lat IS NOT NULL
        AND lon IS NOT NULL
        AND (name IS NULL OR name NOT LIKE '%🚫%')
@@ -706,8 +706,8 @@ async function rebuildNetworkUnderLease(
   const linksResult = await analyticsQuery<LearningLink>(
     `SELECT nl.node_a_id, nl.node_b_id, nl.itm_path_loss_db, nl.count_a_to_b, nl.count_b_to_a
      FROM core.node_links nl
-     JOIN nodes a ON a.node_id = nl.node_a_id
-     JOIN nodes b ON b.node_id = nl.node_b_id
+     JOIN core.nodes a ON a.node_id = nl.node_a_id
+     JOIN core.nodes b ON b.node_id = nl.node_b_id
      WHERE (nl.itm_viable = true OR nl.force_viable = true)
        ${linkNetworkFilter}
      ORDER BY nl.node_a_id, nl.node_b_id
